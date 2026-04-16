@@ -5,6 +5,53 @@
 - Codex
 
 ### 今回の作業
+- `AuthRequest` / `Heartbeat` / `VideoFrame` の payload byte layout を設計した
+- `docs/architecture/protocol.md` に各 payload のフィールド順、wire type、可変長 field の長さ情報を追記した
+- `VideoFrame` の frame metadata と H.264 payload bytes の境界を明記した
+- `crates/protocol` に payload layout 共有用の最小定数を追加した
+
+### 変更ファイル
+- `docs/architecture/protocol.md`
+- `crates/protocol/src/lib.rs`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### 決定事項
+- payload 内の数値は fixed header と同じく little-endian とする
+- string は `u16 byte_length` + UTF-8 bytes とする
+- optional field は `u8 present` の後に値を置く形式とする
+- `VideoFrame` は `client_id` / `run_id` の後に 46 byte の numeric metadata を置き、その直後に `payload_size` byte の H.264 bytes を置く
+- H.264 bytes には追加の長さ prefix を置かず、直前の `payload_size` で境界を決める
+
+### 未解決事項
+- payload decode / encode の本実装
+- AuthResponse / HeartbeatAck / ClientStats / ServerNotice の payload byte layout
+- UDP 通信、server / client / switcher handler、fragmentation / 再送制御 / 暗号化
+
+### 次にやる候補
+- AuthRequest payload decode の最小実装範囲を決める
+- Heartbeat payload decode の最小実装範囲を決める
+- VideoFrame metadata decode と H.264 bytes 境界検証の最小実装範囲を決める
+
+### TODO更新
+- 完了:
+  - AuthRequest / Heartbeat / VideoFrame payload byte layout の docs 反映
+  - 可変長 string / optional / bytes の長さ情報方針の明記
+  - VideoFrame metadata と payload 境界の明記
+- 追加:
+  - AuthResponse / HeartbeatAck / ClientStats / ServerNotice の payload byte layout
+- 保留:
+  - payload decode / encode の本実装
+  - UDP 通信実装
+  - fragmentation / 再送制御 / 暗号化
+
+---
+
+## 2026-04-17
+### 種別
+- Codex
+
+### 今回の作業
 - `crates/protocol` に 16 byte fixed header decode の最小実装を追加した
 - `message_type`, `header_length`, `protocol_version`, `payload_length`, `flags`, `reserved` を little-endian で読むようにした
 - fixed header decode の責務を `docs/architecture/protocol.md` に反映した

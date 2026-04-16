@@ -41,6 +41,24 @@ pub const HEADER_FLAGS_OFFSET: usize = 12;
 /// Byte offset of the reserved field in the fixed packet header.
 pub const HEADER_RESERVED_OFFSET: usize = 14;
 
+/// Byte length of a variable string length prefix in message payloads.
+pub const PAYLOAD_STRING_LEN_PREFIX_LEN: u16 = 2;
+
+/// Byte length of an optional field presence tag in message payloads.
+pub const PAYLOAD_OPTION_TAG_LEN: u16 = 1;
+
+/// Byte length of a variable byte array length prefix in message payloads.
+pub const PAYLOAD_BYTES_LEN_PREFIX_LEN: u16 = 4;
+
+/// Wire value for H.264 encoded video payloads.
+pub const CODEC_H264_WIRE_VALUE: u16 = 1;
+
+/// Byte length of the fixed numeric part of the initial VideoFrame payload.
+///
+/// This excludes length-prefixed `client_id`, length-prefixed `run_id`, and
+/// the variable H.264 payload bytes.
+pub const VIDEO_FRAME_NUMERIC_METADATA_LEN: u16 = 46;
+
 /// Decoded fixed packet header.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct FixedHeader {

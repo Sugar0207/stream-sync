@@ -1,5 +1,16 @@
 <!-- stream-sync/docs/operations/todo.md -->
 
+## 2026-04-17 update: payload byte layout
+
+- [x] `AuthRequest` payload byte layout を `docs/architecture/protocol.md` に追記する
+- [x] `Heartbeat` payload byte layout を `docs/architecture/protocol.md` に追記する
+- [x] `VideoFrame` payload byte layout を `docs/architecture/protocol.md` に追記する
+- [x] 可変長 string / optional / bytes の長さ情報の持ち方を明記する
+- [x] `VideoFrame` の metadata と H.264 payload bytes の境界を明記する
+- [x] `crates/protocol` に payload layout 共有用の最小定数を追加する
+- [ ] payload decode / encode の本実装を行う
+- [ ] AuthResponse / HeartbeatAck / ClientStats / ServerNotice の payload byte layout を決める
+
 ## 2026-04-17 update: fixed header decode
 
 - [x] `crates/protocol` に 16 byte fixed header decode の最小実装を追加する
