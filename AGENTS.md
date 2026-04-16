@@ -104,8 +104,29 @@
 
 ---
 
+## 引き継ぎ方針
+- 会話履歴を共通記憶として前提にしない
+- PC を変えた場合や新しい Codex セッションでは、過去会話が引き継がれない前提で動く
+- 共通認識は必ず repo 内ファイルに残す
+- 仕様、判断、進捗、未解決事項は `docs/` と `configs/` に反映する
+- 最新の作業状態は `docs/operations/todo.md` と `docs/operations/session-log.md` を正とする
+- 新しい作業を始める前に、最低限以下を読むこと
+  - `AGENTS.md`
+  - `README.md`
+  - `docs/requirements/project-overview.md`
+  - `docs/architecture/system-design.md`
+  - `docs/architecture/protocol.md`
+  - `docs/architecture/decisions.md`
+  - `docs/operations/todo.md`
+  - `docs/operations/session-log.md`
+- 重要な判断を会話の中だけで終わらせない
+- 次の Codex や別 PC の作業者が repo だけ見て再開できる状態を維持する
+
+---
+
 ## Codex が作業時に必ず守ること
 - 作業前にこの `AGENTS.md` と `docs/` を確認する
+- 会話履歴ではなく repo 内ファイルを基準にする
 - 作業後に `docs/operations/todo.md` を更新する
 - 作業後に `docs/operations/session-log.md` に追記する
 - 仕様変更があった場合は `docs/requirements` または `docs/architecture` も更新する
@@ -119,12 +140,10 @@
 ---
 
 ## 今の優先順
-1. リポジトリ初期化
-2. README 初版作成
-3. docs 初版作成
-4. 共通型定義
-5. 認証メッセージ / heartbeat メッセージ定義
-6. 1人送信・受信・表示の PoC
+1. protocol crate の基本型定義
+2. 認証メッセージ / heartbeat メッセージの Rust 実装
+3. 共通型のシリアライズ / デシリアライズ方針の整理
+4. 1人送信・受信・表示の PoC
 
 ---
 
@@ -135,3 +154,4 @@
 - 音声統合を先に始めない
 - 1080p / 60fps を標準前提で実装しない
 - TODO や session-log を更新せずに終わらない
+- 重要な判断を repo 内ファイルへ反映せずに放置しない
