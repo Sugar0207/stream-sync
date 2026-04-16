@@ -291,6 +291,68 @@ pub fn decode_heartbeat_payload(
     })
 }
 
+/// Decode a `VideoFrame` payload after fixed header and protocol version checks.
+///
+/// This parses the frame metadata and copies the H.264 payload bytes as-is. It
+/// does not inspect, decode, fragment, or repair the encoded video data.
+pub fn decode_video_frame_payload(
+    header: FixedHeader,
+    payload: &[u8],
+) -> Result<VideoFrame, ProtocolError> {
+    if header.message_type != MessageType::VideoFrame {
+        return Err(ProtocolError::UnexpectedMessageType {
+            expected: MessageType::VideoFrame,
+            actual: header.message_type,
+        });
+    }
+
+    if payload.len() != header.payload_length as usize {
+        return Err(ProtocolError::InvalidPayloadLength {
+            expected: header.payload_length,
+            actual: payload.len(),
+        });
+    }
+
+    let mut reader = PayloadReader::new(payload);
+    let client_id = ClientId(reader.read_string()?);
+    let run_id = RunId(reader.read_string()?);
+    let frame_id = reader.read_u64()?;
+    let capture_timestamp = TimestampMicros(reader.read_u64()?);
+    let send_timestamp = TimestampMicros(reader.read_u64()?);
+    let is_keyframe = reader.read_bool()?;
+    let metadata_reserved = reader.read_array_3()?;
+    if metadata_reserved != [0; 3] {
+        return Err(ProtocolError::InvalidMetadataReserved {
+            actual: metadata_reserved,
+        });
+    }
+    let width = reader.read_u32()?;
+    let height = reader.read_u32()?;
+    let fps_nominal = reader.read_u32()?;
+    let codec = Codec::try_from(reader.read_u16()?)?;
+    let payload_size = reader.read_u32()? as usize;
+    let h264_payload = reader.read_exact_bytes(payload_size)?;
+    reader.finish()?;
+
+    Ok(VideoFrame {
+        message_type: MessageType::VideoFrame,
+        protocol_version: header.protocol_version,
+        client_id,
+        run_id,
+        frame_id,
+        capture_timestamp,
+        send_timestamp,
+        is_keyframe,
+        metadata_reserved,
+        width,
+        height,
+        fps_nominal,
+        codec,
+        payload_size,
+        payload: h264_payload,
+    })
+}
+
 struct PayloadReader<'a> {
     payload: &'a [u8],
     offset: usize,
@@ -314,12 +376,59 @@ impl<'a> PayloadReader<'a> {
         String::from_utf8(bytes.to_vec()).map_err(|_| ProtocolError::InvalidUtf8String)
     }
 
+    fn read_u16(&mut self) -> Result<u16, ProtocolError> {
+        let byte_len = 2;
+        self.ensure_available(byte_len)?;
+        let value = read_u16_le(self.payload, self.offset);
+        self.offset += byte_len;
+        Ok(value)
+    }
+
+    fn read_u32(&mut self) -> Result<u32, ProtocolError> {
+        let byte_len = 4;
+        self.ensure_available(byte_len)?;
+        let value = read_u32_le(self.payload, self.offset);
+        self.offset += byte_len;
+        Ok(value)
+    }
+
     fn read_u64(&mut self) -> Result<u64, ProtocolError> {
         let byte_len = 8;
         self.ensure_available(byte_len)?;
         let value = read_u64_le(self.payload, self.offset);
         self.offset += byte_len;
         Ok(value)
+    }
+
+    fn read_bool(&mut self) -> Result<bool, ProtocolError> {
+        self.ensure_available(1)?;
+        let value = read_u8(self.payload, self.offset);
+        self.offset += 1;
+
+        match value {
+            0 => Ok(false),
+            1 => Ok(true),
+            actual => Err(ProtocolError::InvalidBoolValue { actual }),
+        }
+    }
+
+    fn read_array_3(&mut self) -> Result<[u8; 3], ProtocolError> {
+        let byte_len = 3;
+        self.ensure_available(byte_len)?;
+        let value = [
+            self.payload[self.offset],
+            self.payload[self.offset + 1],
+            self.payload[self.offset + 2],
+        ];
+        self.offset += byte_len;
+        Ok(value)
+    }
+
+    fn read_exact_bytes(&mut self, len: usize) -> Result<Vec<u8>, ProtocolError> {
+        self.ensure_available(len)?;
+        let bytes = self.payload[self.offset..self.offset + len].to_vec();
+        self.offset += len;
+        Ok(bytes)
     }
 
     fn read_optional_string(&mut self) -> Result<Option<String>, ProtocolError> {
@@ -412,7 +521,16 @@ pub enum ProtocolError {
     InvalidOptionalTag {
         actual: u8,
     },
+    InvalidBoolValue {
+        actual: u8,
+    },
+    InvalidMetadataReserved {
+        actual: [u8; 3],
+    },
     InvalidUtf8String,
+    UnsupportedCodec {
+        actual: u16,
+    },
     UnknownMessageType(u16),
     UnexpectedMessageType {
         expected: MessageType,
@@ -477,6 +595,21 @@ impl PayloadDecoder for HeartbeatPayloadDecoder {
         payload: &[u8],
     ) -> Result<ProtocolMessage, ProtocolError> {
         decode_heartbeat_payload(header, payload).map(ProtocolMessage::Heartbeat)
+    }
+}
+
+/// Minimal payload decoder for `VideoFrame`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct VideoFramePayloadDecoder;
+
+impl PayloadDecoder for VideoFramePayloadDecoder {
+    fn decode_payload(
+        &self,
+        _context: DecodeContext,
+        header: FixedHeader,
+        payload: &[u8],
+    ) -> Result<ProtocolMessage, ProtocolError> {
+        decode_video_frame_payload(header, payload).map(ProtocolMessage::VideoFrame)
     }
 }
 
@@ -594,6 +727,7 @@ pub struct VideoFrame {
     pub capture_timestamp: TimestampMicros,
     pub send_timestamp: TimestampMicros,
     pub is_keyframe: bool,
+    pub metadata_reserved: [u8; 3],
     pub width: u32,
     pub height: u32,
     pub fps_nominal: u32,
@@ -606,6 +740,17 @@ pub struct VideoFrame {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Codec {
     H264,
+}
+
+impl TryFrom<u16> for Codec {
+    type Error = ProtocolError;
+
+    fn try_from(value: u16) -> Result<Self, Self::Error> {
+        match value {
+            CODEC_H264_WIRE_VALUE => Ok(Self::H264),
+            actual => Err(ProtocolError::UnsupportedCodec { actual }),
+        }
+    }
 }
 
 /// Periodic client-side metrics used for monitoring and troubleshooting.
@@ -989,6 +1134,155 @@ mod tests {
         );
     }
 
+    #[test]
+    fn decodes_video_frame_payload() {
+        let h264_payload = [0xaa, 0xbb, 0xcc];
+        let payload = video_frame_payload(1, [0; 3], CODEC_H264_WIRE_VALUE, &h264_payload, 3);
+        let packet = test_packet(
+            MessageType::VideoFrame as u16,
+            FIXED_HEADER_LEN,
+            2,
+            &payload,
+        );
+        let decoded = decode_fixed_header(&packet).expect("fixed header should decode");
+
+        let frame = decode_video_frame_payload(decoded.header, decoded.payload)
+            .expect("frame should decode");
+
+        assert_eq!(frame.message_type, MessageType::VideoFrame);
+        assert_eq!(frame.protocol_version, ProtocolVersion(2));
+        assert_eq!(frame.client_id, ClientId("client-1".to_string()));
+        assert_eq!(frame.run_id, RunId("run-1".to_string()));
+        assert_eq!(frame.frame_id, 42);
+        assert_eq!(frame.capture_timestamp, TimestampMicros(1_000_000));
+        assert_eq!(frame.send_timestamp, TimestampMicros(1_000_100));
+        assert!(frame.is_keyframe);
+        assert_eq!(frame.metadata_reserved, [0; 3]);
+        assert_eq!(frame.width, 1280);
+        assert_eq!(frame.height, 720);
+        assert_eq!(frame.fps_nominal, 30);
+        assert_eq!(frame.codec, Codec::H264);
+        assert_eq!(frame.payload_size, h264_payload.len());
+        assert_eq!(frame.payload, h264_payload);
+    }
+
+    #[test]
+    fn decodes_video_frame_payload_through_decoder() {
+        let h264_payload = [0x01, 0x02];
+        let payload = video_frame_payload(0, [0; 3], CODEC_H264_WIRE_VALUE, &h264_payload, 2);
+        let packet = test_packet(
+            MessageType::VideoFrame as u16,
+            FIXED_HEADER_LEN,
+            2,
+            &payload,
+        );
+        let decoded = decode_fixed_header(&packet).expect("fixed header should decode");
+        let decoder = VideoFramePayloadDecoder;
+
+        let message = decoder
+            .decode_payload(
+                DecodeContext {
+                    expected_protocol_version: ProtocolVersion(2),
+                },
+                decoded.header,
+                decoded.payload,
+            )
+            .expect("frame should decode");
+
+        let ProtocolMessage::VideoFrame(frame) = message else {
+            panic!("expected video frame message");
+        };
+        assert!(!frame.is_keyframe);
+        assert_eq!(frame.payload, h264_payload);
+    }
+
+    #[test]
+    fn rejects_video_frame_payload_for_unexpected_message_type() {
+        let payload = video_frame_payload(1, [0; 3], CODEC_H264_WIRE_VALUE, &[0xaa], 1);
+        let packet = test_packet(MessageType::Heartbeat as u16, FIXED_HEADER_LEN, 2, &payload);
+        let decoded = decode_fixed_header(&packet).expect("fixed header should decode");
+
+        let frame = decode_video_frame_payload(decoded.header, decoded.payload);
+
+        assert_eq!(
+            frame,
+            Err(ProtocolError::UnexpectedMessageType {
+                expected: MessageType::VideoFrame,
+                actual: MessageType::Heartbeat
+            })
+        );
+    }
+
+    #[test]
+    fn rejects_video_frame_payload_size_mismatch() {
+        let payload = video_frame_payload(1, [0; 3], CODEC_H264_WIRE_VALUE, &[0xaa, 0xbb], 3);
+        let packet = test_packet(
+            MessageType::VideoFrame as u16,
+            FIXED_HEADER_LEN,
+            2,
+            &payload,
+        );
+        let decoded = decode_fixed_header(&packet).expect("fixed header should decode");
+
+        let frame = decode_video_frame_payload(decoded.header, decoded.payload);
+
+        assert!(matches!(
+            frame,
+            Err(ProtocolError::InvalidPayloadLength { .. })
+        ));
+    }
+
+    #[test]
+    fn rejects_invalid_video_frame_bool() {
+        let payload = video_frame_payload(2, [0; 3], CODEC_H264_WIRE_VALUE, &[0xaa], 1);
+        let packet = test_packet(
+            MessageType::VideoFrame as u16,
+            FIXED_HEADER_LEN,
+            2,
+            &payload,
+        );
+        let decoded = decode_fixed_header(&packet).expect("fixed header should decode");
+
+        let frame = decode_video_frame_payload(decoded.header, decoded.payload);
+
+        assert_eq!(frame, Err(ProtocolError::InvalidBoolValue { actual: 2 }));
+    }
+
+    #[test]
+    fn rejects_invalid_video_frame_metadata_reserved() {
+        let payload = video_frame_payload(1, [1, 0, 0], CODEC_H264_WIRE_VALUE, &[0xaa], 1);
+        let packet = test_packet(
+            MessageType::VideoFrame as u16,
+            FIXED_HEADER_LEN,
+            2,
+            &payload,
+        );
+        let decoded = decode_fixed_header(&packet).expect("fixed header should decode");
+
+        let frame = decode_video_frame_payload(decoded.header, decoded.payload);
+
+        assert_eq!(
+            frame,
+            Err(ProtocolError::InvalidMetadataReserved { actual: [1, 0, 0] })
+        );
+    }
+
+    #[test]
+    fn rejects_unsupported_video_frame_codec() {
+        let payload = video_frame_payload(1, [0; 3], 999, &[0xaa], 1);
+        let packet = test_packet(
+            MessageType::VideoFrame as u16,
+            FIXED_HEADER_LEN,
+            2,
+            &payload,
+        );
+        let decoded = decode_fixed_header(&packet).expect("fixed header should decode");
+
+        let frame = decode_video_frame_payload(decoded.header, decoded.payload);
+
+        assert_eq!(frame, Err(ProtocolError::UnsupportedCodec { actual: 999 }));
+    }
+
     fn auth_request_payload(display_name: Option<&str>) -> Vec<u8> {
         let mut payload = Vec::new();
         push_string(&mut payload, "client-1");
@@ -1009,6 +1303,30 @@ mod tests {
         payload
     }
 
+    fn video_frame_payload(
+        is_keyframe: u8,
+        metadata_reserved: [u8; 3],
+        codec: u16,
+        h264_payload: &[u8],
+        declared_payload_size: u32,
+    ) -> Vec<u8> {
+        let mut payload = Vec::new();
+        push_string(&mut payload, "client-1");
+        push_string(&mut payload, "run-1");
+        push_u64(&mut payload, 42);
+        push_u64(&mut payload, 1_000_000);
+        push_u64(&mut payload, 1_000_100);
+        payload.push(is_keyframe);
+        payload.extend_from_slice(&metadata_reserved);
+        push_u32(&mut payload, 1280);
+        push_u32(&mut payload, 720);
+        push_u32(&mut payload, 30);
+        push_u16(&mut payload, codec);
+        push_u32(&mut payload, declared_payload_size);
+        payload.extend_from_slice(h264_payload);
+        payload
+    }
+
     fn push_string(output: &mut Vec<u8>, value: &str) {
         output.extend_from_slice(&(value.len() as u16).to_le_bytes());
         output.extend_from_slice(value.as_bytes());
@@ -1022,6 +1340,14 @@ mod tests {
             }
             None => output.push(0),
         }
+    }
+
+    fn push_u16(output: &mut Vec<u8>, value: u16) {
+        output.extend_from_slice(&value.to_le_bytes());
+    }
+
+    fn push_u32(output: &mut Vec<u8>, value: u32) {
+        output.extend_from_slice(&value.to_le_bytes());
     }
 
     fn push_u64(output: &mut Vec<u8>, value: u64) {

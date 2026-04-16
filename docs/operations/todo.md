@@ -1,5 +1,16 @@
 <!-- stream-sync/docs/operations/todo.md -->
 
+## 2026-04-17 update: VideoFrame payload decode
+
+- [x] `crates/protocol` に `VideoFrame` payload decode の最小実装を追加する
+- [x] fixed header decode 済み、`protocol_version` チェック済みの前提で `VideoFrame` を復元する入口を追加する
+- [x] `client_id`, `run_id`, `frame_id`, `capture_timestamp`, `send_timestamp`, `is_keyframe`, `metadata_reserved`, `width`, `height`, `fps_nominal`, `codec`, `payload_size`, `payload` を docs の byte layout どおり decode する
+- [x] `payload_size` と実際の H.264 byte 数の整合を確認する
+- [x] 不正 payload 長、未期待 message type、不正 bool、不正 reserved、不明 codec に対する最小 error と単体テストを追加する
+- [x] `docs/architecture/protocol.md` に `VideoFrame` payload decode の実装状態を反映する
+- [ ] encode 本実装を行う
+- [ ] `AuthResponse` / `HeartbeatAck` / `ClientStats` / `ServerNotice` の payload layout と decode 方針を決める
+
 ## 2026-04-17 update: Heartbeat payload decode
 
 - [x] `crates/protocol` に `Heartbeat` payload decode の最小実装を追加する
@@ -9,7 +20,7 @@
 - [x] `short_status` を `optional<string>` から `Option<String>` として decode する
 - [x] 不正 payload 長、未期待 message type、不正 optional tag に対する最小 error と単体テストを追加する
 - [x] `docs/architecture/protocol.md` に `Heartbeat` payload decode の実装状態を反映する
-- [ ] `VideoFrame` payload decode の最小実装を行う
+- [x] `VideoFrame` payload decode の最小実装を行う
 - [ ] encode 本実装を行う
 
 ## 2026-04-17 update: AuthRequest payload decode
@@ -21,7 +32,7 @@
 - [x] 不正 payload 長、invalid UTF-8、不正 optional tag、想定外 message type の最小 error を返す
 - [x] `docs/architecture/protocol.md` に `AuthRequest` payload decode の実装状態を反映する
 - [x] `Heartbeat` payload decode の最小実装を行う
-- [ ] `VideoFrame` payload decode の最小実装を行う
+- [x] `VideoFrame` payload decode の最小実装を行う
 - [ ] encode 本実装を行う
 
 ## 2026-04-17 update: protocol_version check

@@ -5,6 +5,53 @@
 - Codex
 
 ### 今回の作業
+- `crates/protocol` に `VideoFrame` payload decode の最小実装を追加した
+- `VideoFramePayloadDecoder` / `decode_video_frame_payload` を追加し、fixed header decode と protocol_version 期待値チェック後に payload 部分を型へ落とす入口を用意した
+- `client_id`, `run_id`, 46 byte numeric metadata, H.264 bytes を docs の byte layout どおりに読む処理を追加した
+- `payload_size` と実際の残り H.264 byte 数の整合、不正 bool、不正 `metadata_reserved`、未対応 codec を最小 error として返すようにした
+- `docs/architecture/protocol.md` と TODO を今回の実装状態に合わせて更新した
+
+### 変更ファイル
+- `crates/protocol/src/lib.rs`
+- `docs/architecture/protocol.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### 決定事項
+- `VideoFrame` payload decode は metadata と H.264 bytes の境界確認までを protocol crate の責務とする
+- H.264 bytes は中身を解釈せず、`payload_size` と残り byte 数が一致した場合にだけ `Vec<u8>` として復元する
+- `metadata_reserved` は初期 wire format では全 byte `0` のみ受理する
+- encode、UDP 通信、app handler、fragmentation / 再送制御 / 暗号化は今回の範囲外とする
+
+### 未実装 / 保留
+- encode 本実装
+- UDP 通信実装
+- server / client / switcher 側 handler 実装
+- `AuthResponse` / `HeartbeatAck` / `ClientStats` / `ServerNotice` の payload layout と decode 方針
+- fragmentation / 再送制御 / 暗号化
+
+### 次にやる候補
+- encode API の最小実装範囲を決める
+- `AuthResponse` / `HeartbeatAck` の payload byte layout を決める
+- `net-core` 側で fixed header decode と payload decoder を呼ぶ境界を設計する
+
+### TODO反映
+- 完了:
+  - `VideoFrame` payload decode の最小実装
+  - `payload_size` と H.264 bytes の境界検証
+  - `VideoFrame` decode 実装状態の docs 反映
+- 追加:
+  - `AuthResponse` / `HeartbeatAck` / `ClientStats` / `ServerNotice` の payload layout と decode 方針を決める
+- 保留:
+  - encode 本実装
+  - UDP 通信実装
+  - app handler 実装
+
+## 2026-04-17
+### 種別
+- Codex
+
+### 今回の作業
 - `crates/protocol` に `Heartbeat` payload decode の最小実装を追加した
 - docs の payload byte layout に従い、`client_id`, `run_id`, `sent_at`, `local_time`, `short_status` を復元できるようにした
 - `local_time` を `optional<u64>` から `Option<TimestampMicros>` として、`short_status` を `optional<string>` から `Option<String>` として decode するようにした
