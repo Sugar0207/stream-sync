@@ -16,6 +16,10 @@ pub struct ProtocolVersion(pub u32);
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct AppVersion(pub String);
 
+/// Timestamp value expressed in microseconds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct TimestampMicros(pub u64);
+
 /// Message kinds used by the MVP protocol.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum MessageType {
@@ -52,7 +56,7 @@ pub struct AuthResponse {
     pub accepted: bool,
     pub reason_code: AuthResponseReasonCode,
     pub message: Option<String>,
-    pub server_time: Option<u64>,
+    pub server_time: Option<TimestampMicros>,
     pub expected_protocol_version: Option<ProtocolVersion>,
 }
 
@@ -74,8 +78,8 @@ pub struct Heartbeat {
     pub protocol_version: ProtocolVersion,
     pub client_id: ClientId,
     pub run_id: RunId,
-    pub sent_at: u64,
-    pub local_time: Option<u64>,
+    pub sent_at: TimestampMicros,
+    pub local_time: Option<TimestampMicros>,
     pub short_status: Option<String>,
 }
 
@@ -86,9 +90,9 @@ pub struct HeartbeatAck {
     pub protocol_version: ProtocolVersion,
     pub client_id: ClientId,
     pub run_id: RunId,
-    pub echoed_sent_at: u64,
-    pub server_received_at: u64,
-    pub server_sent_at: u64,
+    pub echoed_sent_at: TimestampMicros,
+    pub server_received_at: TimestampMicros,
+    pub server_sent_at: TimestampMicros,
 }
 
 /// Encoded video frame sent from a client to the server.
@@ -99,8 +103,8 @@ pub struct VideoFrame {
     pub client_id: ClientId,
     pub run_id: RunId,
     pub frame_id: u64,
-    pub capture_timestamp: u64,
-    pub send_timestamp: u64,
+    pub capture_timestamp: TimestampMicros,
+    pub send_timestamp: TimestampMicros,
     pub is_keyframe: bool,
     pub width: u32,
     pub height: u32,
@@ -123,7 +127,7 @@ pub struct ClientStats {
     pub protocol_version: ProtocolVersion,
     pub client_id: ClientId,
     pub run_id: RunId,
-    pub sent_at: u64,
+    pub sent_at: TimestampMicros,
     pub capture_fps: u32,
     pub dropped_frames: u64,
     pub bitrate_kbps: u32,

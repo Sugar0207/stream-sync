@@ -99,6 +99,16 @@
 - `sent_at`
   - 送信時刻
 
+### timestamp 方針
+- protocol 内の timestamp 単位は **マイクロ秒** に統一する
+- Rust 側では `TimestampMicros` として扱い、生の `u64` を直接 timestamp として扱うことを避ける
+- `TimestampMicros` の内部値は、該当する clock domain におけるマイクロ秒単位のカウント値とする
+- `capture_timestamp`, `send_timestamp`, `sent_at`, `local_time` は、送信元 client 側の時刻を表す
+- `server_time`, `server_received_at`, `server_sent_at` は、server 側の時刻を表す
+- `echoed_sent_at` は、heartbeat で受け取った `sent_at` をそのまま返す
+- PoC / MVP では単調増加する時計を優先し、Unix epoch などの絶対時刻への固定は wire format 確定時に再検討する
+- RTT / offset / targetTime 計算では、どの clock domain の timestamp かを区別して扱う
+
 ### 備考
 実装段階では、共通ヘッダを全メッセージで完全に同一形式にするか、メッセージごとに軽量化するかを調整してよい。ただし、以下は常に取れるようにする。
 
@@ -353,16 +363,26 @@ server が client または switcher に送る通知系メッセージ。
 
 ## 8. 同期に必要な時刻情報
 
-### 8.1 client 側で送るべき時刻
+### 8.1 timestamp 単位
+同期に使う protocol timestamp は、すべてマイクロ秒単位で扱う。
+
+理由:
+- 30fps / 60fps のフレーム間隔より十分細かく、丸め誤差を抑えやすい
+- RTT / clock offset 推定に使いやすい
+- `u64` ベースなら PoC / MVP でも扱いが単純で、将来の長時間運用でも十分な範囲を持てる
+
+Rust 実装では `TimestampMicros` を使い、値の単位を型名で明示する。
+
+### 8.2 client 側で送るべき時刻
 - capture_timestamp
 - send_timestamp
 
-### 8.2 server 側で保持すべき時刻
+### 8.3 server 側で保持すべき時刻
 - packet_received_at
 - corrected_capture_time
 - targetTime
 
-### 8.3 方針
+### 8.4 方針
 - client ごとの clock offset を推定する
 - capture_timestamp を補正して共通時間軸へ変換する
 - その上で targetTime に最も近いフレームを選ぶ

@@ -294,3 +294,52 @@
 ### メモ
 - docs と実装のズレとして、`VideoFrame` の任意フィールド `encode_duration_ms` / `color_format` / `profile_name` は MVP 最小構造から外した。
 - `ClientStats` の docs 上の任意フィールドも、今回の最低限項目以外は未実装に留めた。
+
+---
+
+## 2026-04-16 23:43
+### 種別
+- Codex
+
+### 今回の作業
+- protocol timestamp の単位をマイクロ秒に統一
+- `crates/protocol` に `TimestampMicros` newtype を追加
+- 既存メッセージ型の timestamp 関連フィールドを `TimestampMicros` に変更
+- `docs/architecture/protocol.md` に timestamp 単位と clock domain 方針を追記
+- `cargo fmt --check` と `cargo check --workspace` が通ることを確認
+
+### 変更ファイル
+- `crates/protocol/src/lib.rs`
+- `docs/architecture/protocol.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### 決定事項
+- protocol timestamp の単位はマイクロ秒とする
+- Rust 側表現は `TimestampMicros(pub u64)` とする
+- client 側 timestamp と server 側 timestamp は、それぞれの clock domain の値として扱う
+- PoC / MVP では単調増加する時計を優先し、Unix epoch 固定は wire format 確定時に再検討する
+
+### 未解決事項
+- wire format 上のバイト列や endian は未確定
+- clock source の具体実装は timebase / client / server 実装時に決める
+- timestamp の妥当性検証、補正、offset 推定処理は未実装
+
+### 次にやる候補
+- 共通型のシリアライズ / デシリアライズ方針を整理する
+- protocol_version チェック方針を整理する
+- timestamp を使った RTT / offset 推定の型境界を整理する
+
+### TODO更新
+- 完了:
+  - timestamp の単位と Rust 表現を整理する
+- 追加:
+  - なし
+- 保留:
+  - シリアライズ / デシリアライズ処理
+  - UDP 通信実装
+  - server / client / switcher 側 handler 実装
+
+### メモ
+- docs とコードのズレだった timestamp 単位未確定状態を解消した。
+- `AuthResponse.server_time`, `Heartbeat.sent_at`, `Heartbeat.local_time`, `HeartbeatAck` の時刻群、`VideoFrame.capture_timestamp`, `VideoFrame.send_timestamp`, `ClientStats.sent_at` を `TimestampMicros` に変更した。
