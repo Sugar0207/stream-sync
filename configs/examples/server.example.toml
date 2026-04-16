@@ -1,0 +1,56 @@
+# stream-sync/configs/examples/server.example.toml
+
+[server]
+bind_host = "0.0.0.0"
+bind_port = 5000
+max_clients = 4
+
+[session]
+run_id = "streamsync-dev-session"
+app_version = "0.1.0"
+protocol_version = 1
+
+[auth]
+enabled = true
+require_known_clients = true
+
+[auth.clients.player1]
+display_name = "Player 1"
+shared_token = "replace-with-shared-token-1"
+
+[auth.clients.player2]
+display_name = "Player 2"
+shared_token = "replace-with-shared-token-2"
+
+[auth.clients.player3]
+display_name = "Player 3"
+shared_token = "replace-with-shared-token-3"
+
+[auth.clients.player4]
+display_name = "Player 4"
+shared_token = "replace-with-shared-token-4"
+
+[heartbeat]
+timeout_ms = 5000
+ack_enabled = true
+
+[timebase]
+sync_interval_ms = 1000
+max_allowed_offset_ms = 1000
+offset_smoothing_factor = 0.2
+
+[buffer]
+target_delay_ms = 500
+max_buffer_ms = 2000
+drop_late_frames = true
+drop_very_old_frames = true
+missing_frame_strategy = "hold_last"
+
+[metrics]
+enable_runtime_metrics = true
+stats_window_seconds = 10
+
+[logging]
+level = "info"
+json_lines = true
+output_dir = "logs/server"

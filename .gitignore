@@ -1,0 +1,19 @@
+# stream-sync/.gitignore
+
+/target/
+
+# Local runtime output
+/tmp/
+/logs/
+*.log
+
+# Editor and OS files
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Local environment files
+.env
+.env.*
+!.env.example
