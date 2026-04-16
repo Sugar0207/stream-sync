@@ -5,6 +5,52 @@
 - Codex
 
 ### 今回の作業
+- `crates/protocol` に 16 byte fixed header decode の最小実装を追加した
+- `message_type`, `header_length`, `protocol_version`, `payload_length`, `flags`, `reserved` を little-endian で読むようにした
+- fixed header decode の責務を `docs/architecture/protocol.md` に反映した
+- TODO を fixed header decode 完了状態へ更新した
+
+### 変更ファイル
+- `crates/protocol/src/lib.rs`
+- `docs/architecture/protocol.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### 決定事項
+- fixed header decode は 16 byte fixed header の構造確認と raw payload slice の切り出しまでを責務にする
+- `header_length` は現時点では `FIXED_HEADER_LEN` と一致する場合のみ受理する
+- 未知の `message_type`、短すぎる packet、`payload_length` と実 byte 数の不一致は `ProtocolError` として返す
+- `protocol_version` の期待値チェックと payload の意味解釈は fixed header decode では行わない
+
+### 未解決事項
+- payload decode / encode の本実装
+- message ごとの payload byte layout 詳細
+- UDP 通信、server / client / switcher handler、fragmentation / 再送制御 / 暗号化
+
+### 次にやる候補
+- `AuthRequest` / `Heartbeat` / `VideoFrame` の payload byte layout を決める
+- payload decode / encode の単体テスト方針を決める
+- fixed header encode の最小実装要否を判断する
+
+### TODO更新
+- 完了:
+  - fixed header decode の最小実装
+  - fixed header decode の docs 反映
+- 追加:
+  - payload decode / encode の本実装
+  - message ごとの payload byte layout 詳細
+- 保留:
+  - UDP 通信実装
+  - server / client / switcher handler 実装
+  - fragmentation / 再送制御 / 暗号化
+
+---
+
+## 2026-04-17
+### 種別
+- Codex
+
+### 今回の作業
 - `crates/protocol` における encode / decode API 境界を設計した
 - `docs/architecture/protocol.md` に fixed header decode、message dispatch、payload decode、encode、protocol_version check の位置を追記した
 - protocol crate、`net-core`、app 側の責務分離を整理した

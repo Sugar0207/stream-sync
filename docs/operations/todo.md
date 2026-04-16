@@ -1,12 +1,21 @@
 <!-- stream-sync/docs/operations/todo.md -->
 
+## 2026-04-17 update: fixed header decode
+
+- [x] `crates/protocol` に 16 byte fixed header decode の最小実装を追加する
+- [x] `message_type`, `header_length`, `protocol_version`, `payload_length`, `flags`, `reserved` を little-endian で decode する
+- [x] 短すぎる packet、未知の `message_type`、不正な `header_length`、`payload_length` 不一致を `ProtocolError` として返す
+- [x] fixed header decode の責務を docs に反映する
+- [ ] payload decode / encode の本実装を行う
+- [ ] message ごとの payload byte layout 詳細を決める
+
 ## 2026-04-17 update: encode / decode API boundary
 
 - [x] `docs/architecture/protocol.md` に encode / decode API 境界の方針を追記する
 - [x] fixed header decode / `message_type` 分岐 / payload decode 入口 / encode 入口 / `protocol_version` チェック位置を整理する
 - [x] protocol crate と `net-core` / app 側の責務分離を明記する
 - [x] `crates/protocol` に API 境界用 placeholder trait / enum / error 型を追加する
-- [ ] fixed header decode の本実装を行う
+- [x] fixed header decode の本実装を行う
 - [ ] payload decode / encode の本実装を行う
 
 ## 2026-04-16 update: minimal wire byte layout
