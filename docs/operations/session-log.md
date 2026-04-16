@@ -5,6 +5,54 @@
 - Codex
 
 ### 今回の作業
+- `crates/protocol` に `Heartbeat` payload decode の最小実装を追加した
+- docs の payload byte layout に従い、`client_id`, `run_id`, `sent_at`, `local_time`, `short_status` を復元できるようにした
+- `local_time` を `optional<u64>` から `Option<TimestampMicros>` として、`short_status` を `optional<string>` から `Option<String>` として decode するようにした
+- 不正 payload 長、未期待 message type、不正 optional tag の単体テストを追加した
+- `docs/architecture/protocol.md` と TODO を今回の実装状態に合わせて更新した
+
+### 変更ファイル
+- `crates/protocol/src/lib.rs`
+- `docs/architecture/protocol.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### 決定事項
+- `Heartbeat` payload decode は fixed header decode と protocol_version 期待値チェックが済んだ後に呼ぶ前提とする
+- protocol crate は payload を `Heartbeat` 型へ落とす責務までに留める
+- 生存確認更新、timeout 判定、RTT 計算、認証済み client 管理は app / server 側の責務とする
+- `VideoFrame` / `AuthResponse` / encode / UDP / app handler は今回の範囲外とする
+
+### 未解決事項
+- `VideoFrame` payload decode の最小実装
+- `AuthResponse` / `HeartbeatAck` / `ClientStats` / `ServerNotice` の payload layout と decode 方針
+- encode 本実装
+- UDP 通信、server / client / switcher handler 実装
+
+### 次にやる候補
+- `VideoFrame` payload decode の最小実装範囲を決める
+- `AuthResponse` / `HeartbeatAck` payload byte layout を決める
+- protocol decode 結果を server 側 handler に渡す境界を設計する
+
+### TODO更新
+- 完了:
+  - `Heartbeat` payload decode の最小実装
+  - optional timestamp / optional string decode
+  - 不正 payload に対する最小 error と単体テスト
+- 追加:
+  - `VideoFrame` payload decode の最小実装
+  - encode 本実装
+- 保留:
+  - UDP 通信と app handler 実装
+  - fragmentation / 再送制御 / 暗号化
+
+---
+
+## 2026-04-17
+### 種別
+- Codex
+
+### 今回の作業
 - `crates/protocol` に `AuthRequest` payload decode の最小実装を追加した
 - docs の payload byte layout に従い、`client_id`, `run_id`, `app_version`, `shared_token`, `display_name` を復元できるようにした
 - 可変長 string を `u16 byte_length` + UTF-8 bytes として読み、`display_name` は `u8 present` + optional string として読めるようにした

@@ -1,5 +1,17 @@
 <!-- stream-sync/docs/operations/todo.md -->
 
+## 2026-04-17 update: Heartbeat payload decode
+
+- [x] `crates/protocol` に `Heartbeat` payload decode の最小実装を追加する
+- [x] fixed header decode 済み、`protocol_version` チェック済みの前提で `Heartbeat` を復元する入口を追加する
+- [x] `client_id`, `run_id`, `sent_at`, `local_time`, `short_status` を docs の byte layout どおり decode する
+- [x] `local_time` を `optional<u64>` から `Option<TimestampMicros>` として decode する
+- [x] `short_status` を `optional<string>` から `Option<String>` として decode する
+- [x] 不正 payload 長、未期待 message type、不正 optional tag に対する最小 error と単体テストを追加する
+- [x] `docs/architecture/protocol.md` に `Heartbeat` payload decode の実装状態を反映する
+- [ ] `VideoFrame` payload decode の最小実装を行う
+- [ ] encode 本実装を行う
+
 ## 2026-04-17 update: AuthRequest payload decode
 
 - [x] `crates/protocol` に `AuthRequest` payload decode の最小実装を追加する
@@ -8,7 +20,7 @@
 - [x] `display_name` を `u8 present` + optional string として decode する
 - [x] 不正 payload 長、invalid UTF-8、不正 optional tag、想定外 message type の最小 error を返す
 - [x] `docs/architecture/protocol.md` に `AuthRequest` payload decode の実装状態を反映する
-- [ ] `Heartbeat` payload decode の最小実装を行う
+- [x] `Heartbeat` payload decode の最小実装を行う
 - [ ] `VideoFrame` payload decode の最小実装を行う
 - [ ] encode 本実装を行う
 
@@ -169,7 +181,7 @@
 - [x] ルート `Cargo.toml` を作成する
 - [x] `.gitignore` を作成する
 - [x] `rust-toolchain.toml` を作成する
-- [ ] `README.md` を作成する
+- [x] `README.md` を作成する
 - [x] `apps/client` を作成する
 - [x] `apps/server` を作成する
 - [x] `apps/switcher` を作成する

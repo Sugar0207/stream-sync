@@ -156,6 +156,19 @@ fn read_u32_le(packet: &[u8], offset: usize) -> u32 {
     ])
 }
 
+fn read_u64_le(packet: &[u8], offset: usize) -> u64 {
+    u64::from_le_bytes([
+        packet[offset],
+        packet[offset + 1],
+        packet[offset + 2],
+        packet[offset + 3],
+        packet[offset + 4],
+        packet[offset + 5],
+        packet[offset + 6],
+        packet[offset + 7],
+    ])
+}
+
 fn read_u8(packet: &[u8], offset: usize) -> u8 {
     packet[offset]
 }
@@ -236,6 +249,48 @@ pub fn decode_auth_request_payload(
     })
 }
 
+/// Decode a `Heartbeat` payload after fixed header and protocol version checks.
+///
+/// This parses only the payload layout documented for the initial MVP wire
+/// format. It does not update liveness state, compute RTT, or decide whether a
+/// client has timed out.
+pub fn decode_heartbeat_payload(
+    header: FixedHeader,
+    payload: &[u8],
+) -> Result<Heartbeat, ProtocolError> {
+    if header.message_type != MessageType::Heartbeat {
+        return Err(ProtocolError::UnexpectedMessageType {
+            expected: MessageType::Heartbeat,
+            actual: header.message_type,
+        });
+    }
+
+    if payload.len() != header.payload_length as usize {
+        return Err(ProtocolError::InvalidPayloadLength {
+            expected: header.payload_length,
+            actual: payload.len(),
+        });
+    }
+
+    let mut reader = PayloadReader::new(payload);
+    let client_id = ClientId(reader.read_string()?);
+    let run_id = RunId(reader.read_string()?);
+    let sent_at = TimestampMicros(reader.read_u64()?);
+    let local_time = reader.read_optional_u64()?.map(TimestampMicros);
+    let short_status = reader.read_optional_string()?;
+    reader.finish()?;
+
+    Ok(Heartbeat {
+        message_type: MessageType::Heartbeat,
+        protocol_version: header.protocol_version,
+        client_id,
+        run_id,
+        sent_at,
+        local_time,
+        short_status,
+    })
+}
+
 struct PayloadReader<'a> {
     payload: &'a [u8],
     offset: usize,
@@ -259,6 +314,14 @@ impl<'a> PayloadReader<'a> {
         String::from_utf8(bytes.to_vec()).map_err(|_| ProtocolError::InvalidUtf8String)
     }
 
+    fn read_u64(&mut self) -> Result<u64, ProtocolError> {
+        let byte_len = 8;
+        self.ensure_available(byte_len)?;
+        let value = read_u64_le(self.payload, self.offset);
+        self.offset += byte_len;
+        Ok(value)
+    }
+
     fn read_optional_string(&mut self) -> Result<Option<String>, ProtocolError> {
         self.ensure_available(usize::from(PAYLOAD_OPTION_TAG_LEN))?;
         let present = read_u8(self.payload, self.offset);
@@ -267,6 +330,18 @@ impl<'a> PayloadReader<'a> {
         match present {
             0 => Ok(None),
             1 => self.read_string().map(Some),
+            actual => Err(ProtocolError::InvalidOptionalTag { actual }),
+        }
+    }
+
+    fn read_optional_u64(&mut self) -> Result<Option<u64>, ProtocolError> {
+        self.ensure_available(usize::from(PAYLOAD_OPTION_TAG_LEN))?;
+        let present = read_u8(self.payload, self.offset);
+        self.offset += usize::from(PAYLOAD_OPTION_TAG_LEN);
+
+        match present {
+            0 => Ok(None),
+            1 => self.read_u64().map(Some),
             actual => Err(ProtocolError::InvalidOptionalTag { actual }),
         }
     }
@@ -387,6 +462,21 @@ impl PayloadDecoder for AuthRequestPayloadDecoder {
         payload: &[u8],
     ) -> Result<ProtocolMessage, ProtocolError> {
         decode_auth_request_payload(header, payload).map(ProtocolMessage::AuthRequest)
+    }
+}
+
+/// Minimal payload decoder for `Heartbeat`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct HeartbeatPayloadDecoder;
+
+impl PayloadDecoder for HeartbeatPayloadDecoder {
+    fn decode_payload(
+        &self,
+        _context: DecodeContext,
+        header: FixedHeader,
+        payload: &[u8],
+    ) -> Result<ProtocolMessage, ProtocolError> {
+        decode_heartbeat_payload(header, payload).map(ProtocolMessage::Heartbeat)
     }
 }
 
@@ -795,6 +885,110 @@ mod tests {
         assert_eq!(request, Err(ProtocolError::InvalidUtf8String));
     }
 
+    #[test]
+    fn decodes_heartbeat_payload_with_optional_fields() {
+        let payload = heartbeat_payload(Some(1_234_999), Some("ok"));
+        let packet = test_packet(MessageType::Heartbeat as u16, FIXED_HEADER_LEN, 2, &payload);
+        let decoded = decode_fixed_header(&packet).expect("fixed header should decode");
+
+        let heartbeat = decode_heartbeat_payload(decoded.header, decoded.payload)
+            .expect("heartbeat should decode");
+
+        assert_eq!(heartbeat.message_type, MessageType::Heartbeat);
+        assert_eq!(heartbeat.protocol_version, ProtocolVersion(2));
+        assert_eq!(heartbeat.client_id, ClientId("client-1".to_string()));
+        assert_eq!(heartbeat.run_id, RunId("run-1".to_string()));
+        assert_eq!(heartbeat.sent_at, TimestampMicros(1_234_567));
+        assert_eq!(heartbeat.local_time, Some(TimestampMicros(1_234_999)));
+        assert_eq!(heartbeat.short_status, Some("ok".to_string()));
+    }
+
+    #[test]
+    fn decodes_heartbeat_payload_without_optional_fields() {
+        let payload = heartbeat_payload(None, None);
+        let packet = test_packet(MessageType::Heartbeat as u16, FIXED_HEADER_LEN, 2, &payload);
+        let decoded = decode_fixed_header(&packet).expect("fixed header should decode");
+        let decoder = HeartbeatPayloadDecoder;
+
+        let message = decoder
+            .decode_payload(
+                DecodeContext {
+                    expected_protocol_version: ProtocolVersion(2),
+                },
+                decoded.header,
+                decoded.payload,
+            )
+            .expect("heartbeat should decode");
+
+        let ProtocolMessage::Heartbeat(heartbeat) = message else {
+            panic!("expected heartbeat message");
+        };
+        assert_eq!(heartbeat.local_time, None);
+        assert_eq!(heartbeat.short_status, None);
+    }
+
+    #[test]
+    fn rejects_heartbeat_payload_for_unexpected_message_type() {
+        let payload = heartbeat_payload(None, None);
+        let packet = test_packet(
+            MessageType::AuthRequest as u16,
+            FIXED_HEADER_LEN,
+            2,
+            &payload,
+        );
+        let decoded = decode_fixed_header(&packet).expect("fixed header should decode");
+
+        let heartbeat = decode_heartbeat_payload(decoded.header, decoded.payload);
+
+        assert_eq!(
+            heartbeat,
+            Err(ProtocolError::UnexpectedMessageType {
+                expected: MessageType::Heartbeat,
+                actual: MessageType::AuthRequest
+            })
+        );
+    }
+
+    #[test]
+    fn rejects_truncated_heartbeat_optional_timestamp() {
+        let mut payload = Vec::new();
+        push_string(&mut payload, "client-1");
+        push_string(&mut payload, "run-1");
+        push_u64(&mut payload, 1_234_567);
+        payload.push(1);
+        payload.extend_from_slice(&1_u32.to_le_bytes());
+        let packet = test_packet(MessageType::Heartbeat as u16, FIXED_HEADER_LEN, 2, &payload);
+        let decoded = decode_fixed_header(&packet).expect("fixed header should decode");
+
+        let heartbeat = decode_heartbeat_payload(decoded.header, decoded.payload);
+
+        assert_eq!(
+            heartbeat,
+            Err(ProtocolError::InvalidPayloadLength {
+                expected: payload.len() as u32 + 4,
+                actual: payload.len()
+            })
+        );
+    }
+
+    #[test]
+    fn rejects_invalid_heartbeat_optional_tag() {
+        let mut payload = Vec::new();
+        push_string(&mut payload, "client-1");
+        push_string(&mut payload, "run-1");
+        push_u64(&mut payload, 1_234_567);
+        payload.push(2);
+        let packet = test_packet(MessageType::Heartbeat as u16, FIXED_HEADER_LEN, 2, &payload);
+        let decoded = decode_fixed_header(&packet).expect("fixed header should decode");
+
+        let heartbeat = decode_heartbeat_payload(decoded.header, decoded.payload);
+
+        assert_eq!(
+            heartbeat,
+            Err(ProtocolError::InvalidOptionalTag { actual: 2 })
+        );
+    }
+
     fn auth_request_payload(display_name: Option<&str>) -> Vec<u8> {
         let mut payload = Vec::new();
         push_string(&mut payload, "client-1");
@@ -802,6 +996,16 @@ mod tests {
         push_string(&mut payload, "0.1.0");
         push_string(&mut payload, "shared-secret");
         push_optional_string(&mut payload, display_name);
+        payload
+    }
+
+    fn heartbeat_payload(local_time: Option<u64>, short_status: Option<&str>) -> Vec<u8> {
+        let mut payload = Vec::new();
+        push_string(&mut payload, "client-1");
+        push_string(&mut payload, "run-1");
+        push_u64(&mut payload, 1_234_567);
+        push_optional_u64(&mut payload, local_time);
+        push_optional_string(&mut payload, short_status);
         payload
     }
 
@@ -815,6 +1019,20 @@ mod tests {
             Some(value) => {
                 output.push(1);
                 push_string(output, value);
+            }
+            None => output.push(0),
+        }
+    }
+
+    fn push_u64(output: &mut Vec<u8>, value: u64) {
+        output.extend_from_slice(&value.to_le_bytes());
+    }
+
+    fn push_optional_u64(output: &mut Vec<u8>, value: Option<u64>) {
+        match value {
+            Some(value) => {
+                output.push(1);
+                push_u64(output, value);
             }
             None => output.push(0),
         }
