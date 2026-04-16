@@ -22,14 +22,15 @@ pub struct TimestampMicros(pub u64);
 
 /// Message kinds used by the MVP protocol.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[repr(u16)]
 pub enum MessageType {
-    AuthRequest,
-    AuthResponse,
-    Heartbeat,
-    HeartbeatAck,
-    VideoFrame,
-    ClientStats,
-    ServerNotice,
+    AuthRequest = 1,
+    AuthResponse = 2,
+    Heartbeat = 3,
+    HeartbeatAck = 4,
+    VideoFrame = 5,
+    ClientStats = 6,
+    ServerNotice = 7,
 }
 
 /// Initial authentication request sent from a client to the server.

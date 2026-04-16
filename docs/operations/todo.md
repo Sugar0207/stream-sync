@@ -152,6 +152,7 @@
 - [x] `protocol_version` の共通定義を作る
 - [x] `run_id` の共通定義を作る
 - [x] timestamp の単位と Rust 表現を整理する
+- [x] 共通型のシリアライズ / デシリアライズ方針を整理する
 - [ ] ログイベント型を定義する
 - [ ] メトリクス型を定義する
 - [ ] シリアライズ処理を実装する
@@ -546,6 +547,6 @@
 ## 直近でやるべき次の項目
 1. `docs/requirements/project-overview.md` 初版作成
 2. README 初版作成
-3. 共通型のシリアライズ / デシリアライズ方針を整理する
-4. protocol_version チェック方針を整理する
+3. protocol_version チェック方針を整理する
+4. 最小 wire format の byte layout を設計する
 5. 1人送信・受信・表示 PoC の着手準備をする

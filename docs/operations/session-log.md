@@ -343,3 +343,54 @@
 ### メモ
 - docs とコードのズレだった timestamp 単位未確定状態を解消した。
 - `AuthResponse.server_time`, `Heartbeat.sent_at`, `Heartbeat.local_time`, `HeartbeatAck` の時刻群、`VideoFrame.capture_timestamp`, `VideoFrame.send_timestamp`, `ClientStats.sent_at` を `TimestampMicros` に変更した。
+
+---
+
+## 2026-04-16 23:47
+### 種別
+- Codex
+
+### 今回の作業
+- `docs/architecture/protocol.md` にシリアライズ / デシリアライズ方針を追記
+- PoC / MVP の wire format 方針を、バイナリ寄りの独自形式として整理
+- `protocol_version` と `message_type` を payload decode 前に読む方針を明記
+- `MessageType` に初期 wire 識別子を割り当て
+- `cargo fmt --check` と `cargo check --workspace` が通ることを確認
+
+### 変更ファイル
+- `crates/protocol/src/lib.rs`
+- `docs/architecture/protocol.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### 決定事項
+- PoC / MVP では JSON ではなく、バイナリ寄りの独自 wire format を前提にする
+- 完全な byte layout はまだ固定せず、最小 envelope の設計を次段階に残す
+- envelope には最低限 `protocol_version` と `message_type` を含め、payload decode 前に検査する
+- 数値型は実装時に little-endian へ統一する方針とする
+- 未知の `message_type` や protocol mismatch は decode 失敗または packet 破棄として扱う
+
+### 未解決事項
+- encode / decode trait と実装は未追加
+- 最小 wire format の byte layout は未確定
+- fragmentation / 再送制御 / 暗号化は未設計
+- payload 長や必須フィールドの具体的な検証実装は未着手
+
+### 次にやる候補
+- protocol_version チェック方針を整理する
+- 最小 wire format の byte layout を設計する
+- 1人送信・受信・表示 PoC の着手準備をする
+
+### TODO更新
+- 完了:
+  - 共通型のシリアライズ / デシリアライズ方針を整理する
+  - 直近項目からシリアライズ / デシリアライズ方針整理を外す
+- 追加:
+  - 最小 wire format の byte layout を設計する
+- 保留:
+  - シリアライズ / デシリアライズ処理の本格実装
+  - UDP 通信実装
+  - server / client / switcher 側 handler 実装
+
+### メモ
+- `crates/protocol` 側は `MessageType` の `#[repr(u16)]` と数値割り当てのみ追加し、encode / decode 本体は実装していない。
