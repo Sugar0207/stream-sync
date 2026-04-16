@@ -189,3 +189,57 @@
   - Rust toolchain を PATH に追加して `cargo check --workspace` を確認する
 - 保留:
   - `docs/requirements/project-overview.md` の配置整理
+
+---
+
+## 2026-04-16 23:23
+### 種別
+- Codex
+
+### 今回の作業
+- `crates/protocol` に MVP 通信基盤向けの基本識別型を追加
+- 認証メッセージ `AuthRequest` / `AuthResponse` を Rust 型として定義
+- heartbeat メッセージ `Heartbeat` / `HeartbeatAck` を Rust 型として定義
+- message type 表現と認証応答 reason code を enum として定義
+- `cargo check --workspace` が通ることを確認
+
+### 変更ファイル
+- `crates/protocol/src/lib.rs`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### 決定事項
+- `ClientId`, `RunId`, `AppVersion` は文字列 newtype として定義
+- `ProtocolVersion` は整数 newtype として定義
+- 本作業では serde 等のシリアライズ / デシリアライズ実装には進まない
+- UDP 通信、handler、server / client / switcher 側の実装には進まない
+
+### 未解決事項
+- timestamp の単位と wire format は未確定
+- `capabilities` / `requested_video_profile` の詳細構造は未確定
+- VideoFrame / ClientStats / ServerNotice は未実装
+- シリアライズ / デシリアライズ方針は未整理
+
+### 次にやる候補
+- 共通型のシリアライズ / デシリアライズ方針を整理する
+- VideoFrame の最小構造を定義する
+- 1人送信・受信・表示 PoC の着手準備をする
+
+### TODO更新
+- 完了:
+  - 共通型定義を作る
+  - 認証メッセージ形式を定義する
+  - heartbeat メッセージ形式を定義する
+  - `protocol_version` の共通定義を作る
+  - `run_id` の共通定義を作る
+  - 認証メッセージに `protocol_version` / `app_version` を含める
+- 追加:
+  - なし
+- 保留:
+  - シリアライズ / デシリアライズ処理
+  - server 側の `protocol_version` 検証処理
+  - app_version 差異時の warn ログ実装
+
+### メモ
+- `cargo check --workspace` は成功。
+- docs と実装のズレとして、timestamp の単位は docs 側でもまだ詳細未確定のため、現時点では `u64` に留めた。
