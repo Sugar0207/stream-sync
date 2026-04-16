@@ -10,6 +10,7 @@
 - 作業後は `docs/operations/todo.md` と `docs/operations/session-log.md` の更新を必須とする
 - 実装範囲を明確にし、未実装にしてよい範囲も明記する
 - 変更報告の形式を固定する
+- 毎回、コミット / push の判断も報告させる
 
 ---
 
@@ -72,6 +73,7 @@
 - `docs/operations/session-log.md` に追記する
 - 必要に応じて `README.md` や `docs/architecture/*` を更新する
 - 変更内容を最後に要約する
+- コミット / push 判断を最後に報告する
 
 ### 7. 最後に出力するフォーマット
 以下の形式で必ず報告すること
@@ -99,6 +101,12 @@
 - 追加:
   - 
 - 保留:
+  - 
+
+#### Git判断
+- コミット推奨: Yes / No
+- push 推奨: Yes / No
+- 推奨コミットメッセージ:
   - 
 
 ---
@@ -141,6 +149,7 @@
 - `docs/operations/todo.md` を更新する
 - `docs/operations/session-log.md` に追記する
 - 必要に応じて関連 docs を更新する
+- コミット / push 判断を最後に報告する
 
 ### 最後に出力する形式
 #### 今回の作業
@@ -166,6 +175,12 @@
 - 追加:
   - 
 - 保留:
+  - 
+
+#### Git判断
+- コミット推奨: Yes / No
+- push 推奨: Yes / No
+- 推奨コミットメッセージ:
   - 
 
 ---
