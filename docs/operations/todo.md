@@ -1,5 +1,14 @@
 <!-- stream-sync/docs/operations/todo.md -->
 
+## 2026-04-16 update: minimal wire byte layout
+
+- [x] PoC / MVP 初期の最小 wire format byte layout を `docs/architecture/protocol.md` に追記する
+- [x] 固定ヘッダを 16 byte とし、`message_type` / `protocol_version` / `payload_length` / 可変長 payload の扱いを明記する
+- [x] `AuthRequest` と `VideoFrame` は fixed packet header のみ共通化し、認証情報や frame metadata は payload に置く方針を明記する
+- [x] `crates/protocol` に `FIXED_HEADER_LEN`、header offset 定数、`FixedHeader` placeholder を追加する
+- [ ] encode / decode 本実装を行う
+- [ ] UDP 通信実装、handler 実装、fragmentation / 再送制御 / 暗号化を行う
+
 # StreamSync TODO
 
 最終更新: 2026-04-16

@@ -20,6 +20,39 @@ pub struct AppVersion(pub String);
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct TimestampMicros(pub u64);
 
+/// Byte length of the fixed packet header used by the initial wire format.
+pub const FIXED_HEADER_LEN: u16 = 16;
+
+/// Byte offset of `message_type` in the fixed packet header.
+pub const HEADER_MESSAGE_TYPE_OFFSET: usize = 0;
+
+/// Byte offset of `header_length` in the fixed packet header.
+pub const HEADER_LENGTH_OFFSET: usize = 2;
+
+/// Byte offset of `protocol_version` in the fixed packet header.
+pub const HEADER_PROTOCOL_VERSION_OFFSET: usize = 4;
+
+/// Byte offset of `payload_length` in the fixed packet header.
+pub const HEADER_PAYLOAD_LENGTH_OFFSET: usize = 8;
+
+/// Byte offset of `flags` in the fixed packet header.
+pub const HEADER_FLAGS_OFFSET: usize = 12;
+
+/// Byte offset of the reserved field in the fixed packet header.
+pub const HEADER_RESERVED_OFFSET: usize = 14;
+
+/// Placeholder for the fixed packet header. Encoding and decoding are not
+/// implemented yet; this mirrors the documented byte layout.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct FixedHeader {
+    pub message_type: MessageType,
+    pub header_length: u16,
+    pub protocol_version: ProtocolVersion,
+    pub payload_length: u32,
+    pub flags: u16,
+    pub reserved: u16,
+}
+
 /// Message kinds used by the MVP protocol.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[repr(u16)]

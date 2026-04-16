@@ -2,6 +2,83 @@
 
 # StreamSync Protocol Design
 
+## PoC / MVP initial wire byte layout
+
+PoC / MVP 初期の wire format は、UDP packet の先頭に 16 byte の固定ヘッダを置き、その後ろに message type ごとの可変長 payload を続ける。
+
+この段階では encode / decode の本実装、fragmentation、再送制御、暗号化は行わない。byte layout の目的は、受信直後に `message_type` と `protocol_version` を小さい固定領域だけで判定できるようにすることに限定する。
+
+### Fixed packet header
+
+数値フィールドは little-endian とする。
+
+| Offset | Size | Field | Type | Notes |
+| ---: | ---: | --- | --- | --- |
+| 0 | 2 | `message_type` | `u16` | packet 種別。payload decode 前に読む。 |
+| 2 | 2 | `header_length` | `u16` | 初期値は `16`。将来ヘッダ拡張時に payload 開始位置を保つ。 |
+| 4 | 4 | `protocol_version` | `u32` | wire format の互換性判定用。payload decode 前に読む。 |
+| 8 | 4 | `payload_length` | `u32` | header 後続の payload byte 数。 |
+| 12 | 2 | `flags` | `u16` | 初期値は `0`。将来用。 |
+| 14 | 2 | `reserved` | `u16` | 初期値は `0`。受信時は現時点で意味を持たせない。 |
+
+固定ヘッダの合計は 16 byte とする。payload は `header_length` の位置から始まり、`payload_length` byte だけ続く。
+
+### Field policy
+
+- `message_type`
+  - packet 先頭 2 byte に置く。
+  - Rust 側の `MessageType` は `repr(u16)` の識別子と対応させる。
+  - 未知の値は payload decode に進まず、packet 破棄または protocol error として扱う。
+- `protocol_version`
+  - offset 4 の `u32` として置く。
+  - 受信側は payload decode 前に対応 version と一致するか確認する。
+  - MVP では複数 protocol version の同時対応はしない。
+- `payload_length`
+  - offset 8 の `u32` として置く。
+  - `payload_length` は固定ヘッダを含まない。
+  - 実受信 byte 数が `header_length + payload_length` と一致しない packet は不正として扱う。
+- 可変長 payload
+  - payload の中身は `message_type` ごとに定義する。
+  - 文字列や配列などの可変長データは payload 内で長さ情報を持つ方針とする。
+  - `VideoFrame` の H.264 data は payload 内の frame metadata の後ろに置き、protocol crate は H.264 の中身を解釈しない。
+
+### Common header scope
+
+共通ヘッダ化する範囲は、初期段階では上記の 16 byte fixed packet header までに限定する。
+
+理由:
+- `message_type` と `protocol_version` は全 packet で最初に必要になる。
+- `payload_length` は packet boundary と可変長 payload の検証に必要になる。
+- `client_id` / `run_id` / `sent_at` / `sequence_number` は message によって必要性や意味が異なるため、初期 fixed header には入れない。
+- ヘッダを大きくしすぎると PoC の encode / decode 実装開始時に負担が増える。
+
+### AuthRequest and VideoFrame split
+
+`AuthRequest` と `VideoFrame` は、固定ヘッダのみを共通化する。
+
+`AuthRequest`:
+- fixed header の `message_type = AuthRequest` で識別する。
+- `protocol_version` は fixed header で先に検証する。
+- `client_id`, `run_id`, `app_version`, `shared_token` などの認証情報は payload に置く。
+- 未認証 client の packet でも、server は固定ヘッダだけ読めば protocol mismatch と message type を判定できる。
+
+`VideoFrame`:
+- fixed header の `message_type = VideoFrame` で識別する。
+- `protocol_version` は fixed header で先に検証する。
+- `client_id`, `run_id`, `frame_id`, `capture_timestamp`, `send_timestamp`, `is_keyframe`, `width`, `height`, `fps_nominal`, `codec` は payload 先頭側の frame metadata に置く。
+- H.264 encoded bytes は frame metadata の後ろに可変長 data として置く。
+- `payload_length` は frame metadata と H.264 data の合計 byte 数を表す。
+
+### Rust placeholder
+
+`crates/protocol` には、docs とズレないように最小限の補助として以下を置く。
+
+- `FIXED_HEADER_LEN = 16`
+- fixed header 各フィールドの offset 定数
+- `FixedHeader` placeholder 型
+
+これらは byte layout の共有用であり、現時点では encode / decode の本実装ではない。
+
 ## 1. 目的
 
 このドキュメントは、StreamSync の MVP 段階における通信プロトコルの初期設計を定義するものです。

@@ -1,5 +1,54 @@
 <!-- stream-sync/docs/operations/session-log.md -->
 
+## 2026-04-16
+### 種別
+- Codex
+
+### 今回の作業
+- PoC / MVP 初期で使う最小 wire format の byte layout を設計した
+- `docs/architecture/protocol.md` に 16 byte fixed packet header と可変長 payload 方針を追記した
+- `message_type`, `protocol_version`, `payload_length` の扱いを整理した
+- `AuthRequest` と `VideoFrame` の共通ヘッダ化範囲を fixed packet header までに限定した
+- `crates/protocol` に header length / offset 定数と `FixedHeader` placeholder を追加した
+
+### 変更ファイル
+- `docs/architecture/protocol.md`
+- `crates/protocol/src/lib.rs`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### 決定事項
+- 初期 fixed packet header は 16 byte とする
+- offset 0 に `message_type: u16`、offset 4 に `protocol_version: u32`、offset 8 に `payload_length: u32` を置く
+- 数値フィールドは little-endian とする
+- `payload_length` は fixed header を含まない payload byte 数とする
+- 可変長 payload の中身は `message_type` ごとに定義する
+- `client_id` / `run_id` / timestamp / frame metadata は初期 fixed header に入れず、payload 側に置く
+
+### 未解決事項
+- encode / decode 本実装
+- payload 内の各 message byte layout の詳細
+- fragmentation / 再送制御 / 暗号化
+- UDP 通信実装と server / client / switcher handler 実装
+
+### 次にやる候補
+- payload 内の `AuthRequest` / `Heartbeat` / `VideoFrame` metadata layout を詰める
+- encode / decode API の境界だけ設計する
+- 1人送信・受信・表示 PoC の準備に進む
+
+### TODO更新
+- 完了:
+  - 最小 wire format byte layout の docs 反映
+  - fixed header 定数と placeholder 追加
+- 追加:
+  - encode / decode 本実装
+  - UDP / handler / fragmentation などの未実装項目
+- 保留:
+  - payload 内の message 別 byte layout 詳細
+  - fragmentation / 再送制御 / 暗号化
+
+---
+
 # StreamSync Session Log
 
 このファイルは、各作業セッションの記録を残すためのログです。
