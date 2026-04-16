@@ -1,5 +1,14 @@
 <!-- stream-sync/docs/operations/todo.md -->
 
+## 2026-04-17 update: protocol_version check
+
+- [x] `crates/protocol` に `protocol_version` 期待値チェックの最小実装を追加する
+- [x] fixed header decode 結果の `FixedHeader.protocol_version` と `DecodeContext.expected_protocol_version` を照合する
+- [x] 不一致時に `ProtocolError::UnsupportedProtocolVersion` を返す
+- [x] docs に fixed header decode 後 / payload decode 前の検証方針を反映する
+- [ ] payload decode / encode の本実装を行う
+- [ ] server / client / switcher 側の handler で protocol error を接続拒否や破棄へ変換する
+
 ## 2026-04-17 update: payload byte layout
 
 - [x] `AuthRequest` payload byte layout を `docs/architecture/protocol.md` に追記する

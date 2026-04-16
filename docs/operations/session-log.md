@@ -5,6 +5,49 @@
 - Codex
 
 ### 今回の作業
+- `crates/protocol` に `protocol_version` 期待値チェックの最小実装を追加した
+- fixed header decode 後の `FixedHeader.protocol_version` と `DecodeContext.expected_protocol_version` を照合できるようにした
+- 不一致時に `ProtocolError::UnsupportedProtocolVersion` を返す単体テストを追加した
+- `docs/architecture/protocol.md` に fixed header decode 後 / payload decode 前に検証する実装状態を反映した
+
+### 変更ファイル
+- `crates/protocol/src/lib.rs`
+- `docs/architecture/protocol.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### 決定事項
+- `protocol_version` の期待値は app 側が `DecodeContext` として渡す
+- protocol crate は fixed header の値を比較し、error を返す判定ロジックだけを持つ
+- `protocol_version` 検証は fixed header decode 後、payload decode 前に行う
+- payload の意味解釈、UDP 通信、app handler 側の接続拒否変換は今回の範囲外とする
+
+### 未解決事項
+- payload decode / encode の本実装
+- app / server / client / switcher 側で protocol error を接続拒否や packet 破棄へ変換する処理
+- AuthResponse / HeartbeatAck / ClientStats / ServerNotice の payload byte layout
+
+### 次にやる候補
+- AuthRequest payload decode の最小実装範囲を決める
+- Heartbeat payload decode の最小実装範囲を決める
+- app handler 側で `UnsupportedProtocolVersion` をどう扱うか決める
+
+### TODO更新
+- 完了:
+  - protocol_version 期待値チェックの最小実装
+  - fixed header decode 後 / payload decode 前の検証方針の docs 反映
+- 追加:
+  - server / client / switcher 側の handler で protocol error を接続拒否や破棄へ変換する
+- 保留:
+  - payload decode / encode の本実装
+
+---
+
+## 2026-04-17
+### 種別
+- Codex
+
+### 今回の作業
 - `AuthRequest` / `Heartbeat` / `VideoFrame` の payload byte layout を設計した
 - `docs/architecture/protocol.md` に各 payload のフィールド順、wire type、可変長 field の長さ情報を追記した
 - `VideoFrame` の frame metadata と H.264 payload bytes の境界を明記した

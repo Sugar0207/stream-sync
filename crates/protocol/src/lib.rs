@@ -162,6 +162,32 @@ pub struct DecodeContext {
     pub expected_protocol_version: ProtocolVersion,
 }
 
+impl DecodeContext {
+    /// Validate fixed header compatibility before payload decoding.
+    pub fn validate_protocol_version(&self, header: FixedHeader) -> Result<(), ProtocolError> {
+        validate_protocol_version(*self, header)
+    }
+}
+
+/// Check that a decoded fixed header matches the protocol version expected by the app.
+///
+/// The caller supplies the expected version through `DecodeContext`. This helper
+/// only compares the fixed header value and does not inspect or decode payload
+/// bytes.
+pub fn validate_protocol_version(
+    context: DecodeContext,
+    header: FixedHeader,
+) -> Result<(), ProtocolError> {
+    if header.protocol_version == context.expected_protocol_version {
+        Ok(())
+    } else {
+        Err(ProtocolError::UnsupportedProtocolVersion {
+            expected: context.expected_protocol_version,
+            actual: header.protocol_version,
+        })
+    }
+}
+
 /// Context passed to future encode entry points.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct EncodeContext {
@@ -463,6 +489,35 @@ mod tests {
             Err(ProtocolError::InvalidPayloadLength {
                 expected: 2,
                 actual: 1
+            })
+        );
+    }
+
+    #[test]
+    fn accepts_matching_protocol_version() {
+        let packet = test_packet(MessageType::Heartbeat as u16, FIXED_HEADER_LEN, 2, &[]);
+        let decoded = decode_fixed_header(&packet).expect("fixed header should decode");
+        let context = DecodeContext {
+            expected_protocol_version: ProtocolVersion(2),
+        };
+
+        assert_eq!(validate_protocol_version(context, decoded.header), Ok(()));
+        assert_eq!(context.validate_protocol_version(decoded.header), Ok(()));
+    }
+
+    #[test]
+    fn rejects_unsupported_protocol_version() {
+        let packet = test_packet(MessageType::Heartbeat as u16, FIXED_HEADER_LEN, 1, &[]);
+        let decoded = decode_fixed_header(&packet).expect("fixed header should decode");
+        let context = DecodeContext {
+            expected_protocol_version: ProtocolVersion(2),
+        };
+
+        assert_eq!(
+            validate_protocol_version(context, decoded.header),
+            Err(ProtocolError::UnsupportedProtocolVersion {
+                expected: ProtocolVersion(2),
+                actual: ProtocolVersion(1)
             })
         );
     }
