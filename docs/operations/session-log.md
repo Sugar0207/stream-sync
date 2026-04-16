@@ -1,5 +1,54 @@
 <!-- stream-sync/docs/operations/session-log.md -->
 
+## 2026-04-17
+### 種別
+- Codex
+
+### 今回の作業
+- `crates/protocol` における encode / decode API 境界を設計した
+- `docs/architecture/protocol.md` に fixed header decode、message dispatch、payload decode、encode、protocol_version check の位置を追記した
+- protocol crate、`net-core`、app 側の責務分離を整理した
+- `crates/protocol` に API 境界用の placeholder 型、trait、error 型を追加した
+
+### 変更ファイル
+- `docs/architecture/protocol.md`
+- `crates/protocol/src/lib.rs`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### 決定事項
+- protocol crate は message 型、wire layout、decode / encode の入口境界、wire error 型を持つ
+- UDP socket、送受信 loop、address、fragmentation / retry は protocol crate に入れない
+- `protocol_version` の期待値は app 側が決め、payload decode 前に検証する
+- fixed header decode は packet 構造確認と payload slice の切り出しまでに限定する
+- payload decode は `message_type` による分岐後の入口として扱う
+- encode は 1 packet buffer 作成までを protocol crate の境界とし、送信処理は `net-core` 側に置く
+
+### 未解決事項
+- fixed header decode の本実装
+- payload decode / encode の本実装
+- message ごとの payload byte layout 詳細
+- UDP 通信実装と server / client / switcher handler 実装
+
+### 次にやる候補
+- fixed header decode の最小実装を追加する
+- `AuthRequest` / `Heartbeat` / `VideoFrame` payload layout を決める
+- encode / decode の単体テスト方針を決める
+
+### TODO更新
+- 完了:
+  - encode / decode API 境界の docs 反映
+  - API 境界用 placeholder trait / enum / error 型の追加
+- 追加:
+  - fixed header decode の本実装
+  - payload decode / encode の本実装
+- 保留:
+  - UDP 通信実装
+  - server / client / switcher handler 実装
+  - fragmentation / 再送制御 / 暗号化
+
+---
+
 ## 2026-04-16
 ### 種別
 - Codex

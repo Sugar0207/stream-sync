@@ -53,6 +53,91 @@ pub struct FixedHeader {
     pub reserved: u16,
 }
 
+/// Borrowed view produced after fixed header decoding.
+///
+/// This is an API-boundary placeholder. The actual fixed header parser is not
+/// implemented yet.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PacketView<'a> {
+    pub header: FixedHeader,
+    pub payload: &'a [u8],
+}
+
+/// Context passed to future decode entry points.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct DecodeContext {
+    pub expected_protocol_version: ProtocolVersion,
+}
+
+/// Context passed to future encode entry points.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct EncodeContext {
+    pub protocol_version: ProtocolVersion,
+}
+
+/// Decoded protocol message variants.
+///
+/// This enum defines the message dispatch boundary. Constructing these variants
+/// from bytes is intentionally left for a later implementation step.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ProtocolMessage {
+    AuthRequest(AuthRequest),
+    AuthResponse(AuthResponse),
+    Heartbeat(Heartbeat),
+    HeartbeatAck(HeartbeatAck),
+    VideoFrame(VideoFrame),
+    ClientStats(ClientStats),
+    ServerNotice(ServerNotice),
+}
+
+/// Errors that future wire encode/decode entry points may return.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ProtocolError {
+    BufferTooShort,
+    InvalidHeaderLength {
+        actual: u16,
+    },
+    InvalidPayloadLength {
+        expected: u32,
+        actual: usize,
+    },
+    UnknownMessageType(u16),
+    UnsupportedProtocolVersion {
+        expected: ProtocolVersion,
+        actual: ProtocolVersion,
+    },
+    PayloadDecodeNotImplemented(MessageType),
+    EncodeNotImplemented(MessageType),
+}
+
+/// Future entry point for fixed header decoding.
+///
+/// Implementors should only parse the fixed packet header and split out the
+/// payload slice. They should not perform socket I/O or app-level handling.
+pub trait FixedHeaderDecoder {
+    fn decode_fixed_header<'a>(&self, packet: &'a [u8]) -> Result<PacketView<'a>, ProtocolError>;
+}
+
+/// Future entry point for payload decoding after message type dispatch.
+pub trait PayloadDecoder {
+    fn decode_payload(
+        &self,
+        context: DecodeContext,
+        header: FixedHeader,
+        payload: &[u8],
+    ) -> Result<ProtocolMessage, ProtocolError>;
+}
+
+/// Future entry point for message encoding into one packet buffer.
+pub trait MessageEncoder {
+    fn encode_message(
+        &self,
+        context: EncodeContext,
+        message: &ProtocolMessage,
+        output: &mut Vec<u8>,
+    ) -> Result<(), ProtocolError>;
+}
+
 /// Message kinds used by the MVP protocol.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[repr(u16)]

@@ -1,5 +1,14 @@
 <!-- stream-sync/docs/operations/todo.md -->
 
+## 2026-04-17 update: encode / decode API boundary
+
+- [x] `docs/architecture/protocol.md` に encode / decode API 境界の方針を追記する
+- [x] fixed header decode / `message_type` 分岐 / payload decode 入口 / encode 入口 / `protocol_version` チェック位置を整理する
+- [x] protocol crate と `net-core` / app 側の責務分離を明記する
+- [x] `crates/protocol` に API 境界用 placeholder trait / enum / error 型を追加する
+- [ ] fixed header decode の本実装を行う
+- [ ] payload decode / encode の本実装を行う
+
 ## 2026-04-16 update: minimal wire byte layout
 
 - [x] PoC / MVP 初期の最小 wire format byte layout を `docs/architecture/protocol.md` に追記する
