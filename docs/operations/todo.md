@@ -1,5 +1,17 @@
 <!-- stream-sync/docs/operations/todo.md -->
 
+## 2026-04-17 update: AuthRequest payload decode
+
+- [x] `crates/protocol` に `AuthRequest` payload decode の最小実装を追加する
+- [x] `client_id`, `run_id`, `app_version`, `shared_token`, `display_name` を docs の byte layout どおり decode する
+- [x] 可変長 string を `u16 byte_length` + UTF-8 bytes として decode する
+- [x] `display_name` を `u8 present` + optional string として decode する
+- [x] 不正 payload 長、invalid UTF-8、不正 optional tag、想定外 message type の最小 error を返す
+- [x] `docs/architecture/protocol.md` に `AuthRequest` payload decode の実装状態を反映する
+- [ ] `Heartbeat` payload decode の最小実装を行う
+- [ ] `VideoFrame` payload decode の最小実装を行う
+- [ ] encode 本実装を行う
+
 ## 2026-04-17 update: protocol_version check
 
 - [x] `crates/protocol` に `protocol_version` 期待値チェックの最小実装を追加する

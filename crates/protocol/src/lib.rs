@@ -156,6 +156,10 @@ fn read_u32_le(packet: &[u8], offset: usize) -> u32 {
     ])
 }
 
+fn read_u8(packet: &[u8], offset: usize) -> u8 {
+    packet[offset]
+}
+
 /// Context passed to future decode entry points.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct DecodeContext {
@@ -185,6 +189,116 @@ pub fn validate_protocol_version(
             expected: context.expected_protocol_version,
             actual: header.protocol_version,
         })
+    }
+}
+
+/// Decode an `AuthRequest` payload after fixed header and protocol version checks.
+///
+/// This parses only the payload layout documented for the initial MVP wire
+/// format. It does not authenticate the client or decide whether the request is
+/// accepted.
+pub fn decode_auth_request_payload(
+    header: FixedHeader,
+    payload: &[u8],
+) -> Result<AuthRequest, ProtocolError> {
+    if header.message_type != MessageType::AuthRequest {
+        return Err(ProtocolError::UnexpectedMessageType {
+            expected: MessageType::AuthRequest,
+            actual: header.message_type,
+        });
+    }
+
+    if payload.len() != header.payload_length as usize {
+        return Err(ProtocolError::InvalidPayloadLength {
+            expected: header.payload_length,
+            actual: payload.len(),
+        });
+    }
+
+    let mut reader = PayloadReader::new(payload);
+    let client_id = ClientId(reader.read_string()?);
+    let run_id = RunId(reader.read_string()?);
+    let app_version = AppVersion(reader.read_string()?);
+    let shared_token = reader.read_string()?;
+    let display_name = reader.read_optional_string()?;
+    reader.finish()?;
+
+    Ok(AuthRequest {
+        message_type: MessageType::AuthRequest,
+        protocol_version: header.protocol_version,
+        client_id,
+        run_id,
+        app_version,
+        shared_token,
+        display_name,
+        capabilities: Vec::new(),
+        requested_video_profile: None,
+    })
+}
+
+struct PayloadReader<'a> {
+    payload: &'a [u8],
+    offset: usize,
+}
+
+impl<'a> PayloadReader<'a> {
+    fn new(payload: &'a [u8]) -> Self {
+        Self { payload, offset: 0 }
+    }
+
+    fn read_string(&mut self) -> Result<String, ProtocolError> {
+        let len_prefix_len = usize::from(PAYLOAD_STRING_LEN_PREFIX_LEN);
+        self.ensure_available(len_prefix_len)?;
+        let byte_len = read_u16_le(self.payload, self.offset) as usize;
+        self.offset += len_prefix_len;
+
+        self.ensure_available(byte_len)?;
+        let bytes = &self.payload[self.offset..self.offset + byte_len];
+        self.offset += byte_len;
+
+        String::from_utf8(bytes.to_vec()).map_err(|_| ProtocolError::InvalidUtf8String)
+    }
+
+    fn read_optional_string(&mut self) -> Result<Option<String>, ProtocolError> {
+        self.ensure_available(usize::from(PAYLOAD_OPTION_TAG_LEN))?;
+        let present = read_u8(self.payload, self.offset);
+        self.offset += usize::from(PAYLOAD_OPTION_TAG_LEN);
+
+        match present {
+            0 => Ok(None),
+            1 => self.read_string().map(Some),
+            actual => Err(ProtocolError::InvalidOptionalTag { actual }),
+        }
+    }
+
+    fn finish(&self) -> Result<(), ProtocolError> {
+        if self.offset == self.payload.len() {
+            Ok(())
+        } else {
+            Err(ProtocolError::InvalidPayloadLength {
+                expected: self.offset as u32,
+                actual: self.payload.len(),
+            })
+        }
+    }
+
+    fn ensure_available(&self, len: usize) -> Result<(), ProtocolError> {
+        let expected = self
+            .offset
+            .checked_add(len)
+            .ok_or(ProtocolError::InvalidPayloadLength {
+                expected: u32::MAX,
+                actual: self.payload.len(),
+            })?;
+
+        if expected <= self.payload.len() {
+            Ok(())
+        } else {
+            Err(ProtocolError::InvalidPayloadLength {
+                expected: expected as u32,
+                actual: self.payload.len(),
+            })
+        }
     }
 }
 
@@ -220,7 +334,15 @@ pub enum ProtocolError {
         expected: u32,
         actual: usize,
     },
+    InvalidOptionalTag {
+        actual: u8,
+    },
+    InvalidUtf8String,
     UnknownMessageType(u16),
+    UnexpectedMessageType {
+        expected: MessageType,
+        actual: MessageType,
+    },
     UnsupportedProtocolVersion {
         expected: ProtocolVersion,
         actual: ProtocolVersion,
@@ -251,6 +373,21 @@ pub trait PayloadDecoder {
         header: FixedHeader,
         payload: &[u8],
     ) -> Result<ProtocolMessage, ProtocolError>;
+}
+
+/// Minimal payload decoder for `AuthRequest`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct AuthRequestPayloadDecoder;
+
+impl PayloadDecoder for AuthRequestPayloadDecoder {
+    fn decode_payload(
+        &self,
+        _context: DecodeContext,
+        header: FixedHeader,
+        payload: &[u8],
+    ) -> Result<ProtocolMessage, ProtocolError> {
+        decode_auth_request_payload(header, payload).map(ProtocolMessage::AuthRequest)
+    }
 }
 
 /// Future entry point for message encoding into one packet buffer.
@@ -520,6 +657,167 @@ mod tests {
                 actual: ProtocolVersion(1)
             })
         );
+    }
+
+    #[test]
+    fn decodes_auth_request_payload_with_display_name() {
+        let payload = auth_request_payload(Some("Alice"));
+        let packet = test_packet(
+            MessageType::AuthRequest as u16,
+            FIXED_HEADER_LEN,
+            2,
+            &payload,
+        );
+        let decoded = decode_fixed_header(&packet).expect("fixed header should decode");
+
+        let request = decode_auth_request_payload(decoded.header, decoded.payload)
+            .expect("auth request should decode");
+
+        assert_eq!(request.message_type, MessageType::AuthRequest);
+        assert_eq!(request.protocol_version, ProtocolVersion(2));
+        assert_eq!(request.client_id, ClientId("client-1".to_string()));
+        assert_eq!(request.run_id, RunId("run-1".to_string()));
+        assert_eq!(request.app_version, AppVersion("0.1.0".to_string()));
+        assert_eq!(request.shared_token, "shared-secret");
+        assert_eq!(request.display_name, Some("Alice".to_string()));
+        assert!(request.capabilities.is_empty());
+        assert_eq!(request.requested_video_profile, None);
+    }
+
+    #[test]
+    fn decodes_auth_request_payload_without_display_name() {
+        let payload = auth_request_payload(None);
+        let packet = test_packet(
+            MessageType::AuthRequest as u16,
+            FIXED_HEADER_LEN,
+            2,
+            &payload,
+        );
+        let decoded = decode_fixed_header(&packet).expect("fixed header should decode");
+        let decoder = AuthRequestPayloadDecoder;
+
+        let message = decoder
+            .decode_payload(
+                DecodeContext {
+                    expected_protocol_version: ProtocolVersion(2),
+                },
+                decoded.header,
+                decoded.payload,
+            )
+            .expect("auth request should decode");
+
+        let ProtocolMessage::AuthRequest(request) = message else {
+            panic!("expected auth request message");
+        };
+        assert_eq!(request.display_name, None);
+    }
+
+    #[test]
+    fn rejects_auth_request_payload_for_unexpected_message_type() {
+        let payload = auth_request_payload(None);
+        let packet = test_packet(MessageType::Heartbeat as u16, FIXED_HEADER_LEN, 2, &payload);
+        let decoded = decode_fixed_header(&packet).expect("fixed header should decode");
+
+        let request = decode_auth_request_payload(decoded.header, decoded.payload);
+
+        assert_eq!(
+            request,
+            Err(ProtocolError::UnexpectedMessageType {
+                expected: MessageType::AuthRequest,
+                actual: MessageType::Heartbeat
+            })
+        );
+    }
+
+    #[test]
+    fn rejects_truncated_auth_request_string() {
+        let mut payload = auth_request_payload(None);
+        payload.truncate(payload.len() - 1);
+        let packet = test_packet(
+            MessageType::AuthRequest as u16,
+            FIXED_HEADER_LEN,
+            2,
+            &payload,
+        );
+        let decoded = decode_fixed_header(&packet).expect("fixed header should decode");
+
+        let request = decode_auth_request_payload(decoded.header, decoded.payload);
+
+        assert_eq!(
+            request,
+            Err(ProtocolError::InvalidPayloadLength {
+                expected: payload.len() as u32 + 1,
+                actual: payload.len()
+            })
+        );
+    }
+
+    #[test]
+    fn rejects_invalid_auth_request_optional_tag() {
+        let mut payload = auth_request_payload(None);
+        let tag_offset = payload.len() - usize::from(PAYLOAD_OPTION_TAG_LEN);
+        payload[tag_offset] = 2;
+        let packet = test_packet(
+            MessageType::AuthRequest as u16,
+            FIXED_HEADER_LEN,
+            2,
+            &payload,
+        );
+        let decoded = decode_fixed_header(&packet).expect("fixed header should decode");
+
+        let request = decode_auth_request_payload(decoded.header, decoded.payload);
+
+        assert_eq!(
+            request,
+            Err(ProtocolError::InvalidOptionalTag { actual: 2 })
+        );
+    }
+
+    #[test]
+    fn rejects_invalid_auth_request_utf8() {
+        let mut payload = Vec::new();
+        payload.extend_from_slice(&1_u16.to_le_bytes());
+        payload.push(0xff);
+        push_string(&mut payload, "run-1");
+        push_string(&mut payload, "0.1.0");
+        push_string(&mut payload, "shared-secret");
+        payload.push(0);
+        let packet = test_packet(
+            MessageType::AuthRequest as u16,
+            FIXED_HEADER_LEN,
+            2,
+            &payload,
+        );
+        let decoded = decode_fixed_header(&packet).expect("fixed header should decode");
+
+        let request = decode_auth_request_payload(decoded.header, decoded.payload);
+
+        assert_eq!(request, Err(ProtocolError::InvalidUtf8String));
+    }
+
+    fn auth_request_payload(display_name: Option<&str>) -> Vec<u8> {
+        let mut payload = Vec::new();
+        push_string(&mut payload, "client-1");
+        push_string(&mut payload, "run-1");
+        push_string(&mut payload, "0.1.0");
+        push_string(&mut payload, "shared-secret");
+        push_optional_string(&mut payload, display_name);
+        payload
+    }
+
+    fn push_string(output: &mut Vec<u8>, value: &str) {
+        output.extend_from_slice(&(value.len() as u16).to_le_bytes());
+        output.extend_from_slice(value.as_bytes());
+    }
+
+    fn push_optional_string(output: &mut Vec<u8>, value: Option<&str>) {
+        match value {
+            Some(value) => {
+                output.push(1);
+                push_string(output, value);
+            }
+            None => output.push(0),
+        }
     }
 
     fn test_packet(
