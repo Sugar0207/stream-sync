@@ -23,6 +23,9 @@ pub enum MessageType {
     AuthResponse,
     Heartbeat,
     HeartbeatAck,
+    VideoFrame,
+    ClientStats,
+    ServerNotice,
 }
 
 /// Initial authentication request sent from a client to the server.
@@ -86,4 +89,62 @@ pub struct HeartbeatAck {
     pub echoed_sent_at: u64,
     pub server_received_at: u64,
     pub server_sent_at: u64,
+}
+
+/// Encoded video frame sent from a client to the server.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VideoFrame {
+    pub message_type: MessageType,
+    pub protocol_version: ProtocolVersion,
+    pub client_id: ClientId,
+    pub run_id: RunId,
+    pub frame_id: u64,
+    pub capture_timestamp: u64,
+    pub send_timestamp: u64,
+    pub is_keyframe: bool,
+    pub width: u32,
+    pub height: u32,
+    pub fps_nominal: u32,
+    pub codec: Codec,
+    pub payload_size: usize,
+    pub payload: Vec<u8>,
+}
+
+/// Video codec identifier for encoded frame payloads.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Codec {
+    H264,
+}
+
+/// Periodic client-side metrics used for monitoring and troubleshooting.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClientStats {
+    pub message_type: MessageType,
+    pub protocol_version: ProtocolVersion,
+    pub client_id: ClientId,
+    pub run_id: RunId,
+    pub sent_at: u64,
+    pub capture_fps: u32,
+    pub dropped_frames: u64,
+    pub bitrate_kbps: u32,
+}
+
+/// Server-side notice sent to report warnings, disconnects, or protocol issues.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ServerNotice {
+    pub message_type: MessageType,
+    pub protocol_version: ProtocolVersion,
+    pub run_id: RunId,
+    pub notice_type: NoticeType,
+    pub message: String,
+}
+
+/// Type of server notice.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum NoticeType {
+    Warning,
+    Disconnect,
+    ProtocolError,
+    AuthExpired,
+    ServerShutdown,
 }

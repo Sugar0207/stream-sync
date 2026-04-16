@@ -243,3 +243,54 @@
 ### メモ
 - `cargo check --workspace` は成功。
 - docs と実装のズレとして、timestamp の単位は docs 側でもまだ詳細未確定のため、現時点では `u64` に留めた。
+
+---
+
+## 2026-04-16 23:39
+### 種別
+- Codex
+
+### 今回の作業
+- `crates/protocol` に映像送信用の最小構造 `VideoFrame` を追加
+- 補助メッセージ `ClientStats` / `ServerNotice` を追加
+- `MessageType` に `VideoFrame` / `ClientStats` / `ServerNotice` を追加
+- 関連 enum として `Codec` / `NoticeType` を追加
+- `cargo fmt --check` と `cargo check --workspace` が通ることを確認
+
+### 変更ファイル
+- `crates/protocol/src/lib.rs`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### 決定事項
+- `VideoFrame` は MVP の最小構造に留め、payload は `Vec<u8>` として定義
+- timestamp は既存 protocol crate の流儀に合わせて `u64` のまま扱う
+- `Codec` は MVP 方針に合わせて現時点では `H264` のみ定義
+- `ClientStats` は最小項目として `capture_fps` / `dropped_frames` / `bitrate_kbps` に絞る
+
+### 未解決事項
+- payload fragmentation / 再送制御は未実装
+- シリアライズ / デシリアライズ方針は未整理
+- `payload_size` と `payload.len()` の検証処理は未実装
+- `ClientStats` の詳細項目と送信間隔は未確定
+
+### 次にやる候補
+- 共通型のシリアライズ / デシリアライズ方針を整理する
+- protocol_version チェック方針を整理する
+- 1人送信・受信・表示 PoC の着手準備をする
+
+### TODO更新
+- 完了:
+  - VideoFrame の最小構造を定義する
+  - stats用メッセージを定義する
+  - 直近項目から VideoFrame の最小構造定義を外す
+- 追加:
+  - protocol_version チェック方針を整理する
+- 保留:
+  - シリアライズ / デシリアライズ処理
+  - UDP 通信実装
+  - server / client / switcher 側 handler 実装
+
+### メモ
+- docs と実装のズレとして、`VideoFrame` の任意フィールド `encode_duration_ms` / `color_format` / `profile_name` は MVP 最小構造から外した。
+- `ClientStats` の docs 上の任意フィールドも、今回の最低限項目以外は未実装に留めた。
