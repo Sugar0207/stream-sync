@@ -1,3 +1,4 @@
+use stream_sync_config::{ServerAuthConfig, SharedTokenSecretRef};
 use stream_sync_net_core::{
     DecodedInboundPacket, InboundPacket, InboundPacketDecoder, NetDecodeError, OutboundPacket,
     OutboundPacketQueueBoundary, OutboundQueueItem, PacketSource,
@@ -211,6 +212,77 @@ impl ServerAuthCheck {
     pub fn display_name(&self) -> Option<&str> {
         self.request.display_name.as_deref()
     }
+}
+
+/// Boundary that combines decoded auth input with configured auth policy input.
+///
+/// This placeholder does not load config, verify tokens, perform whitelist
+/// lookup, or return an allow/reject decision. It only prepares the full input
+/// shape for future auth decision code.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct ServerAuthConfigInputBoundary;
+
+impl ServerAuthConfigInputBoundary {
+    pub fn prepare_check_input(
+        &self,
+        check: ServerAuthCheck,
+        config: &ServerAuthConfig,
+    ) -> ServerAuthCheckInput {
+        ServerAuthCheckInput {
+            check,
+            allowed_clients: config
+                .allowed_clients
+                .iter()
+                .map(|client| ServerAllowedClientAuthInput {
+                    client_id: ClientId(client.client_id.clone()),
+                    shared_token_id: client.shared_token_id.clone(),
+                })
+                .collect(),
+            shared_tokens: config
+                .shared_tokens
+                .iter()
+                .map(|token| ServerSharedTokenAuthInput {
+                    token_id: token.token_id.clone(),
+                    secret_ref: token.secret_ref.clone(),
+                })
+                .collect(),
+        }
+    }
+}
+
+/// Complete input for future auth decision logic.
+///
+/// The decoded request and configured whitelist/token references are present in
+/// one value, but no auth judgement is made here.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ServerAuthCheckInput {
+    pub check: ServerAuthCheck,
+    pub allowed_clients: Vec<ServerAllowedClientAuthInput>,
+    pub shared_tokens: Vec<ServerSharedTokenAuthInput>,
+}
+
+impl ServerAuthCheckInput {
+    pub fn presented_shared_token(&self) -> &str {
+        self.check.shared_token()
+    }
+
+    pub fn requested_client_id(&self) -> &ClientId {
+        self.check.client_id()
+    }
+}
+
+/// Whitelisted client entry prepared for auth checking.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ServerAllowedClientAuthInput {
+    pub client_id: ClientId,
+    pub shared_token_id: String,
+}
+
+/// Token reference prepared for future verification.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ServerSharedTokenAuthInput {
+    pub token_id: String,
+    pub secret_ref: SharedTokenSecretRef,
 }
 
 /// Errors at the server auth handoff boundary.
@@ -432,6 +504,7 @@ fn message_type(message: &ProtocolMessage) -> MessageType {
 mod tests {
     use super::*;
     use std::net::SocketAddr;
+    use stream_sync_config::{AllowedClientConfig, SharedTokenConfig};
     use stream_sync_protocol::{
         AppVersion, ClientId, Codec, ProtocolVersion, RunId, TimestampMicros, FIXED_HEADER_LEN,
         HEADER_FLAGS_OFFSET, HEADER_LENGTH_OFFSET, HEADER_MESSAGE_TYPE_OFFSET,
@@ -578,6 +651,62 @@ mod tests {
             Err(ServerAuthBoundaryError::UnexpectedRoute {
                 message_type: MessageType::Heartbeat
             })
+        );
+    }
+
+    #[test]
+    fn auth_config_input_boundary_combines_request_and_config_without_deciding() {
+        let source = packet_source();
+        let check = ServerAuthCheck {
+            source,
+            request: AuthRequest {
+                message_type: MessageType::AuthRequest,
+                protocol_version: ProtocolVersion(2),
+                client_id: ClientId("client-1".to_string()),
+                run_id: RunId("run-1".to_string()),
+                app_version: AppVersion("0.1.0".to_string()),
+                shared_token: "presented-secret".to_string(),
+                display_name: None,
+                capabilities: Vec::new(),
+                requested_video_profile: None,
+            },
+        };
+        let config = ServerAuthConfig {
+            allowed_clients: vec![AllowedClientConfig {
+                client_id: "client-1".to_string(),
+                shared_token_id: "token-main".to_string(),
+            }],
+            shared_tokens: vec![SharedTokenConfig {
+                token_id: "token-main".to_string(),
+                secret_ref: SharedTokenSecretRef::EnvironmentVariable(
+                    "STREAM_SYNC_TOKEN_MAIN".to_string(),
+                ),
+            }],
+        };
+        let boundary = ServerAuthConfigInputBoundary;
+
+        let input = boundary.prepare_check_input(check, &config);
+
+        assert_eq!(
+            input.requested_client_id(),
+            &ClientId("client-1".to_string())
+        );
+        assert_eq!(input.presented_shared_token(), "presented-secret");
+        assert_eq!(
+            input.allowed_clients,
+            vec![ServerAllowedClientAuthInput {
+                client_id: ClientId("client-1".to_string()),
+                shared_token_id: "token-main".to_string(),
+            }]
+        );
+        assert_eq!(
+            input.shared_tokens,
+            vec![ServerSharedTokenAuthInput {
+                token_id: "token-main".to_string(),
+                secret_ref: SharedTokenSecretRef::EnvironmentVariable(
+                    "STREAM_SYNC_TOKEN_MAIN".to_string(),
+                ),
+            }]
         );
     }
 

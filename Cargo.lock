@@ -29,6 +29,7 @@ version = "0.1.0"
 name = "stream-sync-server"
 version = "0.1.0"
 dependencies = [
+ "stream-sync-config",
  "stream-sync-net-core",
  "stream-sync-protocol",
 ]

@@ -20,9 +20,9 @@
 - Cargo workspace と `apps/*` / `crates/*` の初期 scaffold は完了
 - `crates/protocol` の基本型、主要 message 型、timestamp 型、fixed header decode、`AuthRequest` / `Heartbeat` / `VideoFrame` payload decode、`AuthResponse` / `HeartbeatAck` encode は完了
 - `crates/net-core` の inbound decode 境界、outbound packet / queue 境界、outbound queue lifecycle 境界、protocol encoder 呼び出し境界、send error / log event 分類 placeholder は完了
-- `apps/server` の inbound router、UDP receive loop step、auth handler boundary、AuthResponse response boundary、HeartbeatAck ack boundary、outbound queue handoff は placeholder として完了
+- `apps/server` の inbound router、UDP receive loop step、auth handler boundary、auth config input boundary、AuthResponse response boundary、HeartbeatAck ack boundary、outbound queue handoff は placeholder として完了
 - 実ネットワーク送受信、実認証、`AuthResponse` / `HeartbeatAck` 以外の encode 本実装、時刻同期本体、映像受信・復号・表示、switcher UI は未実装
-- 次の中心は client whitelist / token 検証入力境界、server 側の認証本体、UDP socket 送受信
+- 次の中心は server 側の認証成功 / 失敗判定、実 config 読み込み、UDP socket 送受信
 
 ---
 
@@ -52,8 +52,8 @@
 ---
 
 ## 直近でやること
-1. client whitelist 読み込みと token 検証の設定入力境界を設計する
-2. server 側の認証成功 / 失敗判定を実装する
+1. server 側の認証成功 / 失敗判定を実装する
+2. server 設定 TOML から client whitelist / token 情報を読み込む
 3. UDP socket 受信 / 送信本体の実装に進む
 4. receive / send ログ出力の最小実装方針を決める
 5. `VideoFrame` encode 方針と実装範囲を整理する
@@ -76,6 +76,7 @@
 - [x] server inbound handler 境界を整理する
 - [x] server UDP receive loop 境界を整理する
 - [x] server auth handler 境界を整理する
+- [x] client whitelist 読み込みと token 検証の設定入力境界を整理する
 - [x] AuthResponse 生成 / 送信境界を整理する
 - [x] outbound packet / queue 境界を整理する
 - [x] outbound queue の最小実処理方針を整理する
@@ -152,8 +153,11 @@
 - [x] `AuthRequest` payload decode を実装する
 - [x] `AuthResponse` 生成 / 送信境界を定義する
 - [x] `ServerAuthHandlerBoundary` / `ServerAuthCheck` / `ServerAuthBoundaryError` placeholder を追加する
+- [x] `ServerAuthConfigInputBoundary` / `ServerAuthCheckInput` placeholder を追加する
 - [x] `ServerAuthDecision` / `ServerAuthResponseBoundary` / `ServerOutboundAuthResponse` placeholder を追加する
 - [x] 認証判定入力として `shared_token` / `client_id` / `protocol_version` / `app_version` を参照できる形を定義する
+- [x] client whitelist / token 情報を認証判定入力へ変換する設定入力境界を定義する
+- [ ] server 設定 TOML から client whitelist / token 情報を読み込む
 - [ ] client whitelist 読み込みを実装する
 - [ ] token 検証を実装する
 - [ ] 認証成功 / 失敗判定を実装する
@@ -333,6 +337,7 @@
 - [x] fixed header encode
 - [x] `HeartbeatAck` encode 方針
 - [x] `HeartbeatAck` encode 本実装
+- [x] client whitelist / token 検証の設定入力境界整理
 - [ ] UDP receive / send 最小実装
 - [ ] server auth decision 最小実装
 - [x] send error / log event 方針整理

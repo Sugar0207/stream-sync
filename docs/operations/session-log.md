@@ -5,6 +5,60 @@
 - Codex
 
 ### 今回の作業
+- client whitelist 読み込みと token 検証の設定入力境界を整理した。
+- `docs/architecture/system-design.md` と `docs/architecture/protocol.md` に `config` / server auth handler / auth check input / auth decision の責務分離を追記した。
+- `crates/config` に server auth config の placeholder 型と config loading boundary を追加した。
+- `apps/server` に decode 済み `AuthRequest` と auth config を `ServerAuthCheckInput` へまとめる境界を追加した。
+- 実 TOML 読み込み、secret 解決、token 比較、認証成功 / 失敗判定には進まなかった。
+
+### 変更ファイル
+- `apps/server/Cargo.toml`
+- `apps/server/src/lib.rs`
+- `crates/config/src/lib.rs`
+- `docs/architecture/system-design.md`
+- `docs/architecture/protocol.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### 決定事項
+- `config` は許可済み client 一覧と token 参照を保持する設定形状を担当する。
+- server auth handler は decode 済み `AuthRequest` と送信元 metadata を `ServerAuthCheck` として保持する。
+- `ServerAuthConfigInputBoundary` は `ServerAuthCheck` と `ServerAuthConfig` を受け取り、将来の判定入力 `ServerAuthCheckInput` へ変換する。
+- whitelist lookup、token verification、protocol/app version policy、accepted/rejected の生成は auth decision 層に残す。
+- `ServerAuthConfigBoundary` は将来の TOML 読み込み境界名だけを固定し、現時点では `NotImplemented` を返す。
+
+### 未解決事項
+- server 設定 TOML からの本物の client whitelist 読み込み
+- token secret の解決
+- token 検証
+- 認証成功 / 失敗判定
+- 認証済み送信元の登録 / 管理
+- UDP socket 送受信
+
+### 次にやる候補
+- server auth decision の最小実装を行う
+- server auth config の TOML schema と読み込み実装を追加する
+- UDP socket receive / send の最小実装へ進む
+
+### TODO更新
+- 完了:
+  - client whitelist / token 検証の設定入力境界整理
+  - `ServerAuthConfigInputBoundary` / `ServerAuthCheckInput` placeholder 追加
+  - `ServerAuthConfig` / `AllowedClientConfig` / `SharedTokenConfig` placeholder 追加
+- 追加:
+  - server 設定 TOML から client whitelist / token 情報を読み込む
+- 保留:
+  - token 検証
+  - 認証成功 / 失敗判定
+  - UDP socket 実装
+
+---
+
+## 2026-04-17
+### 種別
+- Codex
+
+### 今回の作業
 - outbound queue の最小実処理方針を整理した。
 - `docs/architecture/system-design.md` に `ServerOutboundQueueBoundary` から `OutboundQueueItem` が渡され、queue が item を保持して send layer に handoff する流れを追記した。
 - encode 前 / encode 後 / send 後の責務境界と、`server` / `outbound queue` / `net send layer` / `socket send` の責務分離を docs に追記した。

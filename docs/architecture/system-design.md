@@ -441,6 +441,61 @@ remain unimplemented.
 
 ---
 
+## Server Auth Config Input Boundary
+
+PoC / MVP initial implementation separates auth configuration input from the
+actual authentication decision. The server will eventually read the allowed
+client whitelist and shared token information from server configuration, but
+the current boundary only fixes the handoff shape.
+
+Flow:
+
+1. The future config loader reads server settings from TOML and produces
+   `ServerAuthConfig`.
+2. `ServerAuthConfig` contains the allowed client list and token references
+   needed for authentication.
+3. `protocol` / `net-core` decode an inbound `AuthRequest`.
+4. `ServerAuthHandlerBoundary` receives the decoded `AuthRequest` and produces
+   `ServerAuthCheck`.
+5. `ServerAuthConfigInputBoundary` receives `ServerAuthCheck` plus
+   `ServerAuthConfig`.
+6. The boundary converts whitelist and token configuration into
+   `ServerAuthCheckInput`, which is the input shape for future auth decision
+   logic.
+7. The real success / failure decision, token comparison, source registration,
+   and `AuthResponse` selection remain in the next stage.
+
+Responsibility split:
+
+- `config`
+  - Owns the server auth setting shape: allowed client entries and shared token
+    references.
+  - Future owner of TOML loading and secret-reference resolution boundaries.
+  - Does not decode packets, inspect `AuthRequest`, verify presented tokens, or
+    decide authentication.
+- server auth handler
+  - Receives decode済み `AuthRequest` from server routing.
+  - Preserves source metadata and request fields as `ServerAuthCheck`.
+  - Does not read files, resolve secrets, or decide allow / reject.
+- auth check input boundary
+  - Combines `ServerAuthCheck` with `ServerAuthConfig`.
+  - Converts configured client IDs and token references into server-side check
+    input types.
+  - Does not compare the presented token with configured token material.
+- auth decision
+  - Future owner of whitelist lookup, token verification, protocol/app version
+    policy, and accepted/rejected result generation.
+  - Will return data consumed by the response boundary.
+
+Current code reflects this with `stream-sync-config::ServerAuthConfig`,
+`AllowedClientConfig`, `SharedTokenConfig`, `ServerAuthConfigBoundary`, and
+`apps/server::ServerAuthConfigInputBoundary`. These types are placeholders for
+configuration and decision-input handoff only. Real TOML loading, real token
+verification, auth success/failure decisions, authenticated source state, and
+UDP sending remain unimplemented.
+
+---
+
 ## Server AuthResponse Boundary
 
 PoC / MVP initial implementation separates the future auth decision from

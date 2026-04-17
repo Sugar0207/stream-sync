@@ -956,6 +956,45 @@ Current placeholder: `apps/server::ServerAuthHandlerBoundary` accepts
 handoff shape; real token verification, whitelist loading, success/failure
 decisions, and response sending remain out of scope.
 
+### Auth Configuration Input Boundary
+
+`AuthRequest` decode and auth configuration loading are separate inputs to the
+server auth decision layer. `crates/protocol` only restores the presented
+request fields from bytes. `crates/config` owns the future server auth settings:
+allowed client entries and shared token references.
+
+Flow:
+
+1. Future config loading produces `ServerAuthConfig` from server settings.
+2. `ServerAuthConfig` carries the client whitelist and token reference list.
+3. `ServerAuthHandlerBoundary` prepares `ServerAuthCheck` from decode済み
+   `AuthRequest`.
+4. `ServerAuthConfigInputBoundary` combines `ServerAuthCheck` and
+   `ServerAuthConfig` into `ServerAuthCheckInput`.
+5. Future auth decision code consumes `ServerAuthCheckInput` to perform
+   whitelist lookup and token verification.
+
+Responsibility split:
+
+- `config`
+  - Defines and later loads the whitelist/token configuration.
+  - Does not inspect packets or decide authentication.
+- server auth handler
+  - Owns the handoff from decode済み `AuthRequest` to auth input.
+  - Does not load TOML or compare tokens.
+- auth check input
+  - Carries request fields, source metadata, allowed client entries, and token
+    references together.
+  - Does not produce accepted/rejected output.
+- auth decision
+  - Future owner of whitelist match, token verification, protocol/app version
+    policy, and decision result.
+
+Current placeholder: `stream-sync-config::ServerAuthConfigBoundary` names the
+future config-loading boundary and returns `NotImplemented`.
+`apps/server::ServerAuthConfigInputBoundary` converts config values into
+server-side auth check input without performing the actual decision.
+
 ---
 
 ## AuthResponse Generation / Send Boundary
