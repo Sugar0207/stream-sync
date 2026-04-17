@@ -224,6 +224,34 @@ encode 入口は byte buffer 作成までに限定する。送信先 address、r
   - 認証、heartbeat、video frame の処理責務を持つ。
   - 現時点では route 分類のみを置き、認証判定、timeout 管理、video frame 処理本体は実装しない。
 
+### server UDP receive loop boundary
+
+`apps/server` の UDP 受信 loop は、将来の socket 層で packet bytes と送信元 address を受け取った後の制御境界とする。現時点では `ServerReceiveLoopStep` を 1 packet 分の placeholder として置く。
+
+最小 flow:
+
+1. socket 層が packet bytes を受信する。
+2. socket 層が送信元 address を取得する。
+3. server receive loop が `PacketSource` と `InboundPacket` を作る。
+4. server receive loop が `InboundPacketDecoder` を呼ぶ。
+5. decode 成功時、server receive loop が `DecodedInboundPacket` を `ServerInboundRouter` へ渡す。
+6. `ServerInboundRouter` が `ServerInboundRoute` を返す。
+7. route ごとの server handler 本体が後続処理を行う。
+
+decode error / protocol error の初期方針:
+
+- `UnsupportedProtocolVersion`
+  - `RejectProtocolVersion` として分類する。
+  - packet は破棄する。拒否応答は encode 実装後に検討する。
+- `PayloadDecodeNotImplemented`
+  - `UnsupportedInboundMessage` として分類する。
+  - packet は破棄する。server inbound として扱う message は別タスクで増やす。
+- その他の `ProtocolError`
+  - `DropPacket` として分類する。
+  - malformed packet とみなし、handler 本体へは渡さない。
+
+この境界では UDP socket の本実装、非同期 runtime 導入、packet 受信本体、認証成功 / 失敗判定、heartbeat 管理、video frame 処理本体は行わない。
+
 ## 1. 目的
 
 このドキュメントは、StreamSync の MVP 段階における通信プロトコルの初期設計を定義するものです。

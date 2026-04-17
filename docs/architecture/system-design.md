@@ -212,6 +212,36 @@ server 側の分岐:
 
 実装上は `apps/server` に `ServerInboundRouter` を置き、`DecodedInboundPacket` を `ServerInboundRoute` に分類する。これは handler 本体ではなく、server handler へ渡す境界名を固定するための placeholder とする。認証成功 / 失敗判定、heartbeat 管理、video frame 処理本体はまだ実装しない。
 
+### 5.5 server UDP receive loop boundary
+
+server 側の UDP 受信 loop は、将来の UDP socket 実装で packet bytes と送信元情報を受け取った後、decode と server route へ渡すまでを担当する。現時点では socket の `bind`、`recv_from`、非同期 runtime、packet 受信本体は実装しない。
+
+最小処理順:
+
+1. UDP socket 層が packet bytes を受信する。
+2. UDP socket 層が送信元 address を取得する。
+3. server receive loop が送信元 address を `PacketSource` に変換する。
+4. server receive loop が packet bytes と `PacketSource` から `InboundPacket` を生成する。
+5. server receive loop が `InboundPacketDecoder` を呼ぶ。
+6. `InboundPacketDecoder` が fixed header decode、`protocol_version` check、payload decode を行い、成功時に `DecodedInboundPacket` を返す。
+7. server receive loop が `DecodedInboundPacket` を `ServerInboundRouter` に渡す。
+8. `ServerInboundRouter` が `ServerInboundRoute` を返す。
+9. server handler 本体が route ごとの処理を行う。
+
+decode error / protocol error の扱い:
+
+- `UnsupportedProtocolVersion`
+  - protocol version mismatch として分類する。
+  - 初期実装では packet を破棄し、将来 `AuthResponse` / `ServerNotice` の encode が入った段階で拒否通知を検討する。
+- `PayloadDecodeNotImplemented`
+  - server inbound として未対応の message として分類する。
+  - 初期実装では packet を破棄し、warn ログ候補とする。
+- その他の `ProtocolError`
+  - malformed packet として分類する。
+  - 初期実装では packet を破棄する。
+
+実装上は `apps/server` に `ServerReceiveLoopStep` を置く。これは 1 packet 分の placeholder であり、既に受信済みの packet bytes と `PacketSource` を受け取り、`InboundPacketDecoder` と `ServerInboundRouter` を順番に呼ぶ。成功時は `ServerReceiveLoopOutcome::Routed`、失敗時は `ServerReceiveLoopOutcome::Rejected` を返す。実際の socket loop、ログ出力、認証判定、heartbeat 管理、video frame 処理本体はまだ持たない。
+
 ---
 
 ## 6. 同期の考え方

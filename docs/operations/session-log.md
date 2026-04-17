@@ -5,6 +5,60 @@
 - Codex
 
 ### 今回の作業
+- server 側 UDP 受信 loop の最小設計を行った
+- `docs/architecture/system-design.md` に packet bytes 受信、送信元情報取得、`InboundPacket` 生成、decode、router 受け渡しの流れを追記した
+- `docs/architecture/protocol.md` に receive loop 境界と decode error / protocol error の分類方針を追記した
+- `apps/server` に `ServerReceiveLoopStep` / `ServerReceiveLoopOutcome` / `ServerRejectedPacket` / `ServerDecodeErrorAction` placeholder を追加した
+- `ServerReceiveLoopStep` は既に受信済みの packet bytes と `PacketSource` を受け取り、`InboundPacketDecoder` と `ServerInboundRouter` を順番に呼ぶだけに留めた
+
+### 変更ファイル
+- `apps/server/src/lib.rs`
+- `docs/architecture/system-design.md`
+- `docs/architecture/protocol.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### 決定事項
+- UDP 受信 loop の責務は、packet bytes と送信元情報を受け取り、decode して server route へ渡すところまでに限定する
+- `UnsupportedProtocolVersion` は `RejectProtocolVersion` として分類する
+- `PayloadDecodeNotImplemented` は `UnsupportedInboundMessage` として分類する
+- その他の `ProtocolError` は malformed packet として `DropPacket` に分類する
+- socket 実装、非同期 runtime、packet 受信本体、認証判定、heartbeat 管理、video frame 処理本体は今回の範囲外とする
+
+### 未実装 / 保留
+- UDP socket の本実装
+- 非同期 runtime 導入
+- packet 受信本体
+- receive loop のログ出力実装
+- 認証成功 / 失敗判定の本実装
+- heartbeat 管理 / timeout 管理
+- video frame 受理 / 同期バッファ投入
+- encode 本実装
+- fragmentation / 再送制御 / 暗号化
+
+### 次にやる候補
+- server 側の認証 handler 境界を設計する
+- receive loop のログイベント型を設計する
+- UDP socket 実装前の設定値と bind address 方針を決める
+
+### TODO反映
+- 完了:
+  - server UDP 受信 loop 境界 docs 反映
+  - `ServerReceiveLoopStep` placeholder 追加
+  - decode error / protocol error の分類方針追加
+- 追加:
+  - packet 受信本体を実装する
+  - receive loop のログ出力方針を実装する
+- 保留:
+  - UDP socket の本実装
+  - 認証 / heartbeat / video frame 処理本体
+  - encode / fragmentation / 再送制御 / 暗号化
+
+## 2026-04-17
+### 種別
+- Codex
+
+### 今回の作業
 - server 側 handler が `DecodedInboundPacket` を受け取る境界を設計した
 - `docs/architecture/system-design.md` に server handler 境界と `AuthRequest` / `Heartbeat` / `VideoFrame` の分岐責務を追記した
 - `docs/architecture/protocol.md` に `protocol` / `net-core` / `apps/server` の責務分離を追記した

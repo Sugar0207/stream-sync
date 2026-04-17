@@ -1,5 +1,15 @@
 <!-- stream-sync/docs/operations/todo.md -->
 
+## 2026-04-17 update: server UDP receive loop boundary
+
+- [x] `docs/architecture/system-design.md` に server UDP 受信 loop の最小設計を追記する
+- [x] `docs/architecture/protocol.md` に packet bytes 受信 -> decode -> route の流れを追記する
+- [x] `apps/server` に `ServerReceiveLoopStep` / `ServerReceiveLoopOutcome` / `ServerRejectedPacket` placeholder を追加する
+- [x] decode error / protocol error を `DropPacket` / `RejectProtocolVersion` / `UnsupportedInboundMessage` に分類する方針を追加する
+- [ ] UDP socket の本実装を行う
+- [ ] packet 受信本体を実装する
+- [ ] receive loop のログ出力方針を実装する
+
 ## 2026-04-17 update: server handler boundary
 
 - [x] `docs/architecture/system-design.md` に server 側 handler 境界を追記する
@@ -17,6 +27,7 @@
 - [x] `crates/protocol` に `message_type` に応じた payload decoder dispatch helper を追加する
 - [x] `crates/net-core` に `InboundPacket` / `PacketSource` / `InboundPacketDecoder` / `DecodedInboundPacket` / `NetDecodeError` の最小境界型を追加する
 - [x] `net-core` が raw packet bytes と送信元 metadata を受け取り、protocol decode 結果を app / server handler 側へ渡す境界を定義する
+- [x] server UDP 受信 loop 境界を設計する
 - [ ] UDP socket 実装を行う
 - [x] server 側 handler 境界を設計する
 - [ ] server / client / switcher 側 handler 本体実装を行う
