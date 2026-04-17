@@ -285,17 +285,92 @@ pub struct ServerSharedTokenAuthInput {
     pub secret_ref: SharedTokenSecretRef,
 }
 
+/// Minimal server auth decision boundary.
+///
+/// This checks the prepared client whitelist and token input and returns a
+/// `ServerAuthDecision`. It does not read TOML, resolve external secrets,
+/// register authenticated sources, or send responses.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct ServerAuthDecisionBoundary;
+
+impl ServerAuthDecisionBoundary {
+    pub fn decide(&self, input: ServerAuthCheckInput) -> ServerAuthDecision {
+        let source = input.check.source;
+        let client_id = input.check.request.client_id.clone();
+        let run_id = input.check.request.run_id.clone();
+        let protocol_version = input.check.request.protocol_version;
+
+        let Some(allowed_client) = input
+            .allowed_clients
+            .iter()
+            .find(|client| client.client_id == client_id)
+        else {
+            return ServerAuthDecision::rejected(
+                source,
+                client_id,
+                run_id,
+                protocol_version,
+                AuthResponseReasonCode::UnknownClient,
+                Some("unknown client_id".to_string()),
+                None,
+            );
+        };
+
+        let Some(shared_token) = input
+            .shared_tokens
+            .iter()
+            .find(|token| token.token_id == allowed_client.shared_token_id)
+        else {
+            return ServerAuthDecision::rejected(
+                source,
+                client_id,
+                run_id,
+                protocol_version,
+                AuthResponseReasonCode::InternalError,
+                Some("configured token reference was not found".to_string()),
+                None,
+            );
+        };
+
+        match &shared_token.secret_ref {
+            SharedTokenSecretRef::InlinePlaceholder(expected_token) => {
+                if input.presented_shared_token() == expected_token {
+                    ServerAuthDecision::accepted(source, client_id, run_id, protocol_version, None)
+                } else {
+                    ServerAuthDecision::rejected(
+                        source,
+                        client_id,
+                        run_id,
+                        protocol_version,
+                        AuthResponseReasonCode::InvalidToken,
+                        Some("invalid shared_token".to_string()),
+                        None,
+                    )
+                }
+            }
+            SharedTokenSecretRef::EnvironmentVariable(_) => ServerAuthDecision::rejected(
+                source,
+                client_id,
+                run_id,
+                protocol_version,
+                AuthResponseReasonCode::InternalError,
+                Some("token secret is not resolved".to_string()),
+                None,
+            ),
+        }
+    }
+}
+
 /// Errors at the server auth handoff boundary.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ServerAuthBoundaryError {
     UnexpectedRoute { message_type: MessageType },
 }
 
-/// Result produced by future server auth decision logic.
+/// Result produced by server auth decision logic.
 ///
 /// This type carries the decision into the response boundary. It does not
-/// perform token validation, whitelist lookup, connection state updates, or
-/// socket sends.
+/// perform checks by itself, update connection state, or send sockets.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ServerAuthDecision {
     pub source: PacketSource,
@@ -711,6 +786,76 @@ mod tests {
     }
 
     #[test]
+    fn auth_decision_accepts_known_client_with_matching_inline_token() {
+        let input = auth_check_input("client-1", "presented-secret", Some("presented-secret"));
+        let boundary = ServerAuthDecisionBoundary;
+
+        let decision = boundary.decide(input);
+
+        assert!(decision.accepted);
+        assert_eq!(decision.reason_code, AuthResponseReasonCode::Ok);
+        assert_eq!(decision.client_id, ClientId("client-1".to_string()));
+        assert_eq!(decision.run_id, RunId("run-1".to_string()));
+        assert_eq!(decision.server_time, None);
+    }
+
+    #[test]
+    fn auth_decision_rejects_unknown_client() {
+        let input = auth_check_input("client-2", "presented-secret", Some("presented-secret"));
+        let boundary = ServerAuthDecisionBoundary;
+
+        let decision = boundary.decide(input);
+
+        assert!(!decision.accepted);
+        assert_eq!(decision.reason_code, AuthResponseReasonCode::UnknownClient);
+        assert_eq!(decision.message.as_deref(), Some("unknown client_id"));
+    }
+
+    #[test]
+    fn auth_decision_rejects_invalid_token() {
+        let input = auth_check_input("client-1", "wrong-secret", Some("presented-secret"));
+        let boundary = ServerAuthDecisionBoundary;
+
+        let decision = boundary.decide(input);
+
+        assert!(!decision.accepted);
+        assert_eq!(decision.reason_code, AuthResponseReasonCode::InvalidToken);
+        assert_eq!(decision.message.as_deref(), Some("invalid shared_token"));
+    }
+
+    #[test]
+    fn auth_decision_rejects_missing_configured_token_as_internal_error() {
+        let input = auth_check_input("client-1", "presented-secret", None);
+        let boundary = ServerAuthDecisionBoundary;
+
+        let decision = boundary.decide(input);
+
+        assert!(!decision.accepted);
+        assert_eq!(decision.reason_code, AuthResponseReasonCode::InternalError);
+        assert_eq!(
+            decision.message.as_deref(),
+            Some("configured token reference was not found")
+        );
+    }
+
+    #[test]
+    fn auth_decision_rejects_unresolved_token_reference_as_internal_error() {
+        let mut input = auth_check_input("client-1", "presented-secret", Some("presented-secret"));
+        input.shared_tokens[0].secret_ref =
+            SharedTokenSecretRef::EnvironmentVariable("STREAM_SYNC_TOKEN_MAIN".to_string());
+        let boundary = ServerAuthDecisionBoundary;
+
+        let decision = boundary.decide(input);
+
+        assert!(!decision.accepted);
+        assert_eq!(decision.reason_code, AuthResponseReasonCode::InternalError);
+        assert_eq!(
+            decision.message.as_deref(),
+            Some("token secret is not resolved")
+        );
+    }
+
+    #[test]
     fn auth_response_boundary_builds_accepted_response_for_send() {
         let source = packet_source();
         let boundary = ServerAuthResponseBoundary;
@@ -911,6 +1056,44 @@ mod tests {
             .parse::<SocketAddr>()
             .expect("source address should parse")
             .into()
+    }
+
+    fn auth_check_input(
+        request_client_id: &str,
+        presented_token: &str,
+        configured_token: Option<&str>,
+    ) -> ServerAuthCheckInput {
+        let check = ServerAuthCheck {
+            source: packet_source(),
+            request: AuthRequest {
+                message_type: MessageType::AuthRequest,
+                protocol_version: ProtocolVersion(2),
+                client_id: ClientId(request_client_id.to_string()),
+                run_id: RunId("run-1".to_string()),
+                app_version: AppVersion("0.1.0".to_string()),
+                shared_token: presented_token.to_string(),
+                display_name: None,
+                capabilities: Vec::new(),
+                requested_video_profile: None,
+            },
+        };
+
+        let config = ServerAuthConfig {
+            allowed_clients: vec![AllowedClientConfig {
+                client_id: "client-1".to_string(),
+                shared_token_id: "token-main".to_string(),
+            }],
+            shared_tokens: configured_token
+                .map(|token| {
+                    vec![SharedTokenConfig {
+                        token_id: "token-main".to_string(),
+                        secret_ref: SharedTokenSecretRef::InlinePlaceholder(token.to_string()),
+                    }]
+                })
+                .unwrap_or_default(),
+        };
+
+        ServerAuthConfigInputBoundary.prepare_check_input(check, &config)
     }
 
     fn heartbeat_payload() -> Vec<u8> {

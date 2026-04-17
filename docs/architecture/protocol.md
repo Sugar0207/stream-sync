@@ -971,8 +971,8 @@ Flow:
    `AuthRequest`.
 4. `ServerAuthConfigInputBoundary` combines `ServerAuthCheck` and
    `ServerAuthConfig` into `ServerAuthCheckInput`.
-5. Future auth decision code consumes `ServerAuthCheckInput` to perform
-   whitelist lookup and token verification.
+5. `ServerAuthDecisionBoundary` consumes `ServerAuthCheckInput` to perform the
+   minimal whitelist lookup and inline placeholder token comparison.
 
 Responsibility split:
 
@@ -987,13 +987,47 @@ Responsibility split:
     references together.
   - Does not produce accepted/rejected output.
 - auth decision
-  - Future owner of whitelist match, token verification, protocol/app version
-    policy, and decision result.
+  - Owns the current minimal whitelist match, inline placeholder token
+    comparison, and decision result.
+  - Future owner of fuller protocol/app version policy and external secret
+    verification.
 
 Current placeholder: `stream-sync-config::ServerAuthConfigBoundary` names the
 future config-loading boundary and returns `NotImplemented`.
 `apps/server::ServerAuthConfigInputBoundary` converts config values into
 server-side auth check input without performing the actual decision.
+
+### Minimal Auth Decision Boundary
+
+The server auth decision boundary converts prepared auth input into
+`ServerAuthDecision`. This is the first minimal decision implementation; it is
+not full production auth.
+
+Decision rules:
+
+1. Find `requested_client_id` in the prepared allowed client list.
+2. If missing, reject with `AuthResponseReasonCode::UnknownClient`.
+3. Find the allowed client's `shared_token_id` in the prepared token list.
+4. If missing, reject with `AuthResponseReasonCode::InternalError`.
+5. If token material is an unresolved external reference, reject with
+   `AuthResponseReasonCode::InternalError`.
+6. If token material is `InlinePlaceholder`, compare it with the presented
+   `shared_token`.
+7. Matching token accepts with `AuthResponseReasonCode::Ok`; mismatch rejects
+   with `AuthResponseReasonCode::InvalidToken`.
+
+Responsibility split:
+
+- auth decision
+  - Produces accepted/rejected `ServerAuthDecision`.
+  - Uses only prepared auth input.
+  - Does not read TOML, resolve external secrets, mutate authenticated-source
+    state, build `AuthResponse`, enqueue packets, or send UDP.
+- response boundary
+  - Receives `ServerAuthDecision` and builds `ProtocolMessage::AuthResponse`.
+  - Does not perform auth checks.
+
+Current implementation: `apps/server::ServerAuthDecisionBoundary`.
 
 ---
 
@@ -1009,8 +1043,8 @@ Flow:
    as `DecodedInboundPacket`.
 2. `ServerInboundRouter` routes the decoded `AuthRequest` to the auth handler
    boundary.
-3. The auth handler / auth decision layer will evaluate token, `client_id`,
-   `protocol_version`, and `app_version` and return an auth decision.
+3. The auth decision boundary evaluates the prepared `client_id` and
+   `shared_token` input and returns an auth decision.
 4. The server response boundary receives the auth decision as
    `ServerAuthDecision`.
 5. The response boundary builds `ProtocolMessage::AuthResponse`.
@@ -1026,9 +1060,11 @@ Responsibility split:
   - Does not own server auth policy, outbound queueing, socket sends, or real
     packet encode in this step.
 - server auth handler / decision layer
-  - Owns the future authentication judgement.
+  - Owns the minimal authentication judgement.
   - Produces accepted/rejected result, reason code, and optional response
     metadata.
+  - Leaves real config loading, external secret resolution, authenticated
+    source state, and UDP send to later layers.
 - response boundary
   - Converts the decision into a typed `AuthResponse` message.
   - Keeps destination metadata so the send layer knows where to send.
@@ -1039,8 +1075,9 @@ Responsibility split:
 
 Current placeholder: `apps/server::ServerAuthResponseBoundary` converts
 `ServerAuthDecision` into `ServerOutboundAuthResponse`. This is only the
-message-generation and send-layer handoff shape. Real auth decisions,
-`AuthResponse` encode, and socket send remain out of scope.
+message-generation and send-layer handoff shape. Minimal auth decisions are
+implemented by `ServerAuthDecisionBoundary`; authenticated source registration
+and socket send remain out of scope.
 
 ---
 

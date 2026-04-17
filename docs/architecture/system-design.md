@@ -462,8 +462,10 @@ Flow:
 6. The boundary converts whitelist and token configuration into
    `ServerAuthCheckInput`, which is the input shape for future auth decision
    logic.
-7. The real success / failure decision, token comparison, source registration,
-   and `AuthResponse` selection remain in the next stage.
+7. The minimal auth decision boundary consumes `ServerAuthCheckInput` and
+   returns `ServerAuthDecision`.
+8. Source registration, real TOML loading, external secret resolution, and UDP
+   sends remain in later stages.
 
 Responsibility split:
 
@@ -483,16 +485,61 @@ Responsibility split:
     input types.
   - Does not compare the presented token with configured token material.
 - auth decision
-  - Future owner of whitelist lookup, token verification, protocol/app version
-    policy, and accepted/rejected result generation.
-  - Will return data consumed by the response boundary.
+  - Owns the minimal accepted/rejected result generation.
+  - Checks the prepared client whitelist and token input.
+  - Does not update authenticated-client state or send responses.
 
 Current code reflects this with `stream-sync-config::ServerAuthConfig`,
 `AllowedClientConfig`, `SharedTokenConfig`, `ServerAuthConfigBoundary`, and
 `apps/server::ServerAuthConfigInputBoundary`. These types are placeholders for
-configuration and decision-input handoff only. Real TOML loading, real token
-verification, auth success/failure decisions, authenticated source state, and
-UDP sending remain unimplemented.
+configuration and decision-input handoff only. Minimal auth decision logic is
+implemented separately in `apps/server::ServerAuthDecisionBoundary`. Real TOML
+loading, external secret resolution, authenticated source state, and UDP
+sending remain unimplemented.
+
+---
+
+## Server Auth Decision Boundary
+
+PoC / MVP initial implementation now includes the smallest server auth decision
+step. It consumes already-prepared auth input and produces a
+`ServerAuthDecision` for the existing response boundary.
+
+Flow:
+
+1. `ServerAuthConfigInputBoundary` produces `ServerAuthCheckInput`.
+2. `ServerAuthDecisionBoundary` looks up the requested `client_id` in
+   `allowed_clients`.
+3. If no entry exists, it returns rejected `ServerAuthDecision` with
+   `UnknownClient`.
+4. If the client entry exists, it finds the configured shared token entry by
+   `shared_token_id`.
+5. If the token entry is missing, or if the token material is only an unresolved
+   external reference, it returns rejected `ServerAuthDecision` with
+   `InternalError`.
+6. If the token entry contains inline placeholder token material, it compares
+   the presented `shared_token` with that placeholder.
+7. Matching token returns accepted `ServerAuthDecision`; mismatch returns
+   rejected `ServerAuthDecision` with `InvalidToken`.
+
+Responsibility split:
+
+- auth config input boundary
+  - Carries decoded request fields plus configured whitelist/token references.
+  - Does not decide accepted/rejected.
+- auth decision boundary
+  - Owns minimal `client_id` lookup and inline placeholder token comparison.
+  - Produces `ServerAuthDecision` with `Ok`, `UnknownClient`, `InvalidToken`,
+    or `InternalError`.
+  - Does not read TOML, resolve environment variables, register authenticated
+    sources, build `AuthResponse`, enqueue packets, or send UDP.
+- response boundary
+  - Converts `ServerAuthDecision` into `ProtocolMessage::AuthResponse`.
+  - Does not repeat auth checks.
+
+Current code reflects this with `apps/server::ServerAuthDecisionBoundary`. This
+is a minimal PoC decision only; real config loading, real secret resolution,
+authenticated source management, logging, and UDP sending remain future tasks.
 
 ---
 
@@ -521,8 +568,8 @@ Responsibility split:
   - Does not decide authentication, update server state, encode packets, or
     send sockets.
 - server auth handler / auth decision layer
-  - Future owner of token, `client_id`, `protocol_version`, and `app_version`
-    checks.
+  - Owns the minimal `client_id` and inline placeholder token checks.
+  - Future owner of fuller `protocol_version` and `app_version` policy.
   - Returns the auth decision data used to construct an `AuthResponse`.
   - Does not perform wire encoding or socket sending.
 - response boundary
@@ -536,8 +583,9 @@ Responsibility split:
 
 Current code reflects this with `ServerAuthDecision`,
 `ServerAuthResponseBoundary`, and `ServerOutboundAuthResponse` placeholders in
-`apps/server`. Real success/failure judgement, whitelist loading, token
-verification, `AuthResponse` wire encode, and UDP send remain unimplemented.
+`apps/server`. Minimal success/failure judgement now exists in
+`ServerAuthDecisionBoundary`; whitelist loading, external secret resolution,
+authenticated source registration, and UDP send remain unimplemented.
 
 ---
 

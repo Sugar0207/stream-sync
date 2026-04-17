@@ -5,6 +5,59 @@
 - Codex
 
 ### 今回の作業
+- server auth decision の最小実装を追加した。
+- `apps/server` に `ServerAuthDecisionBoundary` を追加し、`ServerAuthCheckInput` から `ServerAuthDecision` を返す流れを実装した。
+- `client_id` whitelist、設定入力境界から渡された shared token 情報、提示された `shared_token` を使って accepted / rejected を判定する最小ロジックを追加した。
+- `UnknownClient` / `InvalidToken` / `InternalError` の rejected reason を返せるようにした。
+- `docs/architecture/system-design.md` と `docs/architecture/protocol.md` に auth decision 境界の責務を反映した。
+
+### 変更ファイル
+- `apps/server/src/lib.rs`
+- `docs/architecture/system-design.md`
+- `docs/architecture/protocol.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### 決定事項
+- auth decision は `ServerAuthCheckInput` を入力にし、`ServerAuthDecision` を出力する。
+- `client_id` が allowed client に無い場合は `UnknownClient` で rejected にする。
+- allowed client の `shared_token_id` に対応する token が無い場合は config 不整合として `InternalError` にする。
+- `SharedTokenSecretRef::InlinePlaceholder` は PoC 用の比較可能な token 材料として扱い、一致すれば accepted、不一致なら `InvalidToken` にする。
+- `SharedTokenSecretRef::EnvironmentVariable` はまだ secret 解決を実装しないため `InternalError` にする。
+- 認証済み送信元登録、`AuthResponse` queue handoff、UDP socket send は既存境界または将来タスクに残す。
+
+### 未解決事項
+- server 設定 TOML からの本物の client whitelist 読み込み
+- 環境変数などからの secret 解決
+- secret 解決後の本物の token 検証
+- 認証済み送信元の登録 / 管理
+- auth failure / success ログ出力
+- UDP socket 送受信
+
+### 次にやる候補
+- server 設定 TOML から client whitelist / token 情報を読み込む
+- 認証済み送信元の登録 / 管理境界を設計する
+- auth decision から AuthResponse outbound queue handoff までの server step を接続する
+
+### TODO更新
+- 完了:
+  - server auth decision 最小実装
+  - `UnknownClient` / `InvalidToken` / `InternalError` rejected reason 追加
+  - auth decision 境界 docs 反映
+- 追加:
+  - 認証済み送信元の登録 / 管理境界を設計する
+- 保留:
+  - 本物の TOML 読み込み
+  - secret 解決
+  - UDP socket 実装
+
+---
+
+## 2026-04-17
+### 種別
+- Codex
+
+### 今回の作業
 - client whitelist 読み込みと token 検証の設定入力境界を整理した。
 - `docs/architecture/system-design.md` と `docs/architecture/protocol.md` に `config` / server auth handler / auth check input / auth decision の責務分離を追記した。
 - `crates/config` に server auth config の placeholder 型と config loading boundary を追加した。
