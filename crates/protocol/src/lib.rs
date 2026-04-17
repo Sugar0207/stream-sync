@@ -353,6 +353,28 @@ pub fn decode_video_frame_payload(
     })
 }
 
+/// Decode a payload by dispatching on the fixed header `message_type`.
+///
+/// The caller is expected to run fixed header decode and protocol version
+/// validation first. This helper only chooses the message-specific payload
+/// decoder and does not perform socket I/O or app handler work.
+pub fn decode_payload_by_message_type(
+    context: DecodeContext,
+    header: FixedHeader,
+    payload: &[u8],
+) -> Result<ProtocolMessage, ProtocolError> {
+    match header.message_type {
+        MessageType::AuthRequest => {
+            AuthRequestPayloadDecoder.decode_payload(context, header, payload)
+        }
+        MessageType::Heartbeat => HeartbeatPayloadDecoder.decode_payload(context, header, payload),
+        MessageType::VideoFrame => {
+            VideoFramePayloadDecoder.decode_payload(context, header, payload)
+        }
+        message_type => Err(ProtocolError::PayloadDecodeNotImplemented(message_type)),
+    }
+}
+
 struct PayloadReader<'a> {
     payload: &'a [u8],
     offset: usize,
@@ -1194,6 +1216,48 @@ mod tests {
         };
         assert!(!frame.is_keyframe);
         assert_eq!(frame.payload, h264_payload);
+    }
+
+    #[test]
+    fn dispatches_payload_decode_by_message_type() {
+        let payload = heartbeat_payload(None, None);
+        let packet = test_packet(MessageType::Heartbeat as u16, FIXED_HEADER_LEN, 2, &payload);
+        let decoded = decode_fixed_header(&packet).expect("fixed header should decode");
+
+        let message = decode_payload_by_message_type(
+            DecodeContext {
+                expected_protocol_version: ProtocolVersion(2),
+            },
+            decoded.header,
+            decoded.payload,
+        )
+        .expect("heartbeat should decode");
+
+        let ProtocolMessage::Heartbeat(heartbeat) = message else {
+            panic!("expected heartbeat message");
+        };
+        assert_eq!(heartbeat.client_id, ClientId("client-1".to_string()));
+    }
+
+    #[test]
+    fn returns_not_implemented_for_undecoded_message_type() {
+        let packet = test_packet(MessageType::AuthResponse as u16, FIXED_HEADER_LEN, 2, &[]);
+        let decoded = decode_fixed_header(&packet).expect("fixed header should decode");
+
+        let message = decode_payload_by_message_type(
+            DecodeContext {
+                expected_protocol_version: ProtocolVersion(2),
+            },
+            decoded.header,
+            decoded.payload,
+        );
+
+        assert_eq!(
+            message,
+            Err(ProtocolError::PayloadDecodeNotImplemented(
+                MessageType::AuthResponse
+            ))
+        );
     }
 
     #[test]

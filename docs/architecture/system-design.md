@@ -150,6 +150,40 @@ MVP では、音声は StreamSync の中核責務に含めない。
 6. server が timeout を監視
 7. 切断または timeout 時に認証済み状態を解除する
 
+### 5.3 net-core / protocol receive boundary
+
+PoC / MVP 初期では、UDP socket 実装に進む前に、受信 packet bytes から decode 済み message を app / server handler へ渡す境界だけを固定する。
+
+受信時の責務分担:
+
+- `crates/net-core`
+  - 将来の UDP 受信層から生の packet bytes と送信元 address を受け取る。
+  - packet bytes と送信元 metadata を `InboundPacket` として保持する。
+  - `protocol` crate の fixed header decode、protocol_version 検証、message_type dispatch を順番に呼ぶ。
+  - decode に成功した場合は、送信元 metadata と `ProtocolMessage` を `DecodedInboundPacket` として app / server handler 側へ渡す。
+  - decode error は送信元 metadata と合わせて返す。
+- `crates/protocol`
+  - 16 byte fixed header を decode し、payload slice の境界を決める。
+  - `DecodeContext.expected_protocol_version` と fixed header の `protocol_version` を比較する。
+  - `message_type` に応じて payload decoder を選び、payload bytes を message 型へ変換する。
+  - UDP socket、認証済み送信元管理、handler 実行、ログ出力判断は持たない。
+- app / server handler
+  - decode 済み message と送信元 metadata を受け取る。
+  - 認証、client whitelist、heartbeat timeout、VideoFrame 受理、同期バッファ投入などの app 状態変更を行う。
+  - protocol error を接続拒否、packet 破棄、ログ出力へ変換する。
+
+呼び出し順序:
+
+1. UDP 受信層が raw packet bytes と送信元 address を得る。
+2. `net-core` が `InboundPacket` と `DecodeContext` を受け取る。
+3. `net-core` が `protocol::decode_fixed_header` を呼ぶ。
+4. `net-core` が `protocol::validate_protocol_version` を呼ぶ。
+5. `net-core` が `protocol::decode_payload_by_message_type` を呼ぶ。
+6. `net-core` が `DecodedInboundPacket` を app / server handler 側へ返す。
+7. app / server handler が認証、同期、buffer、表示などの処理を行う。
+
+この境界は packet decode の接続点を決めるためのものであり、実際の UDP socket loop、送信処理、server / client / switcher handler 実装はまだ行わない。
+
 ---
 
 ## 6. 同期の考え方

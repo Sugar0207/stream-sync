@@ -10,5 +10,8 @@ rust-version.workspace = true
 name = "stream_sync_net_core"
 path = "src/lib.rs"
 
+[dependencies]
+stream-sync-protocol = { path = "../protocol" }
+
 [lints]
 workspace = true

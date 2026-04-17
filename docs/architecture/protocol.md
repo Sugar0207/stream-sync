@@ -124,14 +124,17 @@ PoC / MVP 初期では、`crates/protocol` は wire format と message 型の境
 - fixed header layout、offset、message type、protocol version 型を定義する
 - fixed header decode の入口を定義する
 - `message_type` による payload decode 分岐の入口を定義する
+- payload decoder の dispatch helper を定義する
 - encode の入口を定義する
 - wire format 上の error 型を定義する
 - H.264 payload の中身は解釈しない
 
 `crates/net-core` の責務:
-- UDP socket の送受信を扱う
-- datagram buffer を確保し、protocol crate に byte slice を渡す
-- packet の送信先 / 受信元 address を扱う
+- 将来の UDP 受信層から raw packet bytes と送信元 address を受け取る
+- raw packet bytes と送信元 address を `InboundPacket` として保持する
+- protocol crate の fixed header decode、protocol_version check、payload decoder dispatch を順番に呼ぶ
+- decode 済み message と送信元 metadata を `DecodedInboundPacket` として app / server handler 側へ返す
+- 実際の UDP socket loop や handler 実行はまだ持たない
 - 将来の fragmentation / 再送制御を扱う場合も protocol crate ではなく net 側で境界を持つ
 
 `apps/client` / `apps/server` / `apps/switcher` の責務:
@@ -144,14 +147,16 @@ PoC / MVP 初期では、`crates/protocol` は wire format と message 型の境
 
 受信時の想定順序:
 
-1. `net-core` が UDP datagram を受け取り、byte slice と送信元 address を app 側へ渡す。
+1. UDP 受信層が raw packet bytes と送信元 address を得る。
 2. app 側は `DecodeContext { expected_protocol_version }` を用意する。
-3. protocol crate の fixed header decode 入口で 16 byte fixed header を読む。
-4. fixed header decode は `message_type`, `header_length`, `protocol_version`, `payload_length`, `flags`, `reserved` と payload slice の境界だけを返す。
-5. app 側は `DecodeContext` で期待する `protocol_version` を渡し、protocol crate の `validate_protocol_version` で payload decode 前に一致を確認する。
-6. `message_type` で payload decoder を分岐する。
-7. payload decoder は `AuthRequest`, `Heartbeat`, `VideoFrame` などの message 型へ変換する。
-8. app 側 handler が認証、同期、buffer、表示などの処理を行う。
+3. `net-core` が raw packet bytes と送信元 address を `InboundPacket` として受け取る。
+4. `net-core` が protocol crate の `decode_fixed_header` を呼び、16 byte fixed header を読む。
+5. fixed header decode は `message_type`, `header_length`, `protocol_version`, `payload_length`, `flags`, `reserved` と payload slice の境界だけを返す。
+6. `net-core` が `DecodeContext` と fixed header を使い、protocol crate の `validate_protocol_version` で payload decode 前に一致を確認する。
+7. `net-core` が protocol crate の `decode_payload_by_message_type` を呼び、`message_type` に応じた payload decoder を dispatch する。
+8. payload decoder は `AuthRequest`, `Heartbeat`, `VideoFrame` などの message 型へ変換する。
+9. `net-core` は送信元 metadata と decode 済み message を `DecodedInboundPacket` として app / server handler 側へ返す。
+10. app / server handler が認証、同期、buffer、表示などの処理を行う。
 
 fixed header decode は packet の構造確認だけを行う入口とする。認証済み client かどうか、VideoFrame を受け入れるかどうか、古い frame を破棄するかどうかは app / sync 側の責務とする。
 
@@ -179,8 +184,21 @@ encode 入口は byte buffer 作成までに限定する。送信先 address、r
 - `FixedHeaderDecoder`
 - `PayloadDecoder`
 - `MessageEncoder`
+- `decode_payload_by_message_type`
 
-`FixedHeaderCodec` と `decode_fixed_header` は、16 byte fixed header の byte parsing と payload slice の切り出しだけを行う。`AuthRequestPayloadDecoder` / `decode_auth_request_payload` は `AuthRequest` payload のみを、`HeartbeatPayloadDecoder` / `decode_heartbeat_payload` は `Heartbeat` payload のみを、`VideoFramePayloadDecoder` / `decode_video_frame_payload` は `VideoFrame` payload のみを型へ変換する。`MessageEncoder` は境界名と責務を固定するための placeholder であり、現時点では byte writing は実装しない。
+`FixedHeaderCodec` と `decode_fixed_header` は、16 byte fixed header の byte parsing と payload slice の切り出しだけを行う。`decode_payload_by_message_type` は fixed header の `message_type` に応じて payload decoder を選ぶ dispatch helper とする。`AuthRequestPayloadDecoder` / `decode_auth_request_payload` は `AuthRequest` payload のみを、`HeartbeatPayloadDecoder` / `decode_heartbeat_payload` は `Heartbeat` payload のみを、`VideoFramePayloadDecoder` / `decode_video_frame_payload` は `VideoFrame` payload のみを型へ変換する。`MessageEncoder` は境界名と責務を固定するための placeholder であり、現時点では byte writing は実装しない。
+
+### net-core call boundary
+
+`crates/net-core` は `protocol` crate の decode entry point を呼ぶ橋渡しを担当する。現時点で持つのは `InboundPacket`, `PacketSource`, `InboundPacketDecoder`, `DecodedInboundPacket`, `NetDecodeError` の境界型だけとし、UDP socket の bind / receive loop / send、app handler 呼び出しは実装しない。
+
+`InboundPacketDecoder` の最小処理順:
+
+1. `InboundPacket.bytes` を `protocol::decode_fixed_header` に渡す。
+2. 得られた `FixedHeader` を `protocol::validate_protocol_version` で検証する。
+3. `protocol::decode_payload_by_message_type` で `message_type` に応じた payload decoder を呼ぶ。
+4. 成功時は `PacketSource` と `ProtocolMessage` を `DecodedInboundPacket` にまとめる。
+5. 失敗時は `PacketSource` と `ProtocolError` を `NetDecodeError::Protocol` として返す。
 
 ## 1. 目的
 

@@ -17,6 +17,9 @@ version = "0.1.0"
 [[package]]
 name = "stream-sync-net-core"
 version = "0.1.0"
+dependencies = [
+ "stream-sync-protocol",
+]
 
 [[package]]
 name = "stream-sync-protocol"

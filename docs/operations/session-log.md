@@ -5,6 +5,56 @@
 - Codex
 
 ### 今回の作業
+- `net-core` と `protocol` の受信 decode 境界を設計した
+- `docs/architecture/system-design.md` に raw packet bytes 受領から decode 済み message を app / server handler へ渡すまでの責務分担を追記した
+- `docs/architecture/protocol.md` に fixed header decode -> protocol_version check -> payload decoder dispatch -> app 受け渡しの順序を反映した
+- `crates/protocol` に `decode_payload_by_message_type` を追加し、既存の `AuthRequest` / `Heartbeat` / `VideoFrame` payload decoder を message type で dispatch できるようにした
+- `crates/net-core` に `InboundPacket`, `PacketSource`, `InboundPacketDecoder`, `DecodedInboundPacket`, `NetDecodeError` の最小境界型を追加した
+
+### 変更ファイル
+- `crates/protocol/src/lib.rs`
+- `crates/net-core/Cargo.toml`
+- `crates/net-core/src/lib.rs`
+- `docs/architecture/system-design.md`
+- `docs/architecture/protocol.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### 決定事項
+- `net-core` は raw packet bytes と送信元 metadata を受け取り、protocol crate の decode entry point を順番に呼ぶ橋渡しに留める
+- fixed header decode、protocol_version 期待値チェック、payload decoder dispatch は protocol crate の責務とする
+- decode 成功時は `DecodedInboundPacket` として送信元 metadata と `ProtocolMessage` を app / server handler 側へ返す
+- UDP socket loop、送信処理、app handler 実行、認証済み client 管理は今回の範囲外とする
+
+### 未実装 / 保留
+- UDP socket 実装
+- server / client / switcher 側 handler 実装
+- encode 本実装
+- `AuthResponse` / `HeartbeatAck` / `ClientStats` / `ServerNotice` の decode / encode
+- fragmentation / 再送制御 / 暗号化
+
+### 次にやる候補
+- UDP 受信 loop の最小設計を行う
+- server 側 handler が `DecodedInboundPacket` を受け取る境界を設計する
+- `AuthResponse` / `HeartbeatAck` の payload byte layout を決める
+
+### TODO反映
+- 完了:
+  - `net-core` / `protocol` の受信 decode 境界 docs 反映
+  - `decode_payload_by_message_type` の追加
+  - `net-core` の最小 decode 境界型追加
+- 追加:
+  - UDP socket 実装
+  - server / client / switcher 側 handler 実装
+- 保留:
+  - encode 本実装
+  - fragmentation / 再送制御 / 暗号化
+
+## 2026-04-17
+### 種別
+- Codex
+
+### 今回の作業
 - `crates/protocol` に `VideoFrame` payload decode の最小実装を追加した
 - `VideoFramePayloadDecoder` / `decode_video_frame_payload` を追加し、fixed header decode と protocol_version 期待値チェック後に payload 部分を型へ落とす入口を用意した
 - `client_id`, `run_id`, 46 byte numeric metadata, H.264 bytes を docs の byte layout どおりに読む処理を追加した

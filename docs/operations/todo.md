@@ -1,5 +1,15 @@
 <!-- stream-sync/docs/operations/todo.md -->
 
+## 2026-04-17 update: net-core / protocol decode boundary
+
+- [x] `docs/architecture/system-design.md` に `net-core` と `protocol` の受信 decode 境界を追記する
+- [x] `docs/architecture/protocol.md` に fixed header decode -> protocol_version check -> payload decode -> app 受け渡しの流れを反映する
+- [x] `crates/protocol` に `message_type` に応じた payload decoder dispatch helper を追加する
+- [x] `crates/net-core` に `InboundPacket` / `PacketSource` / `InboundPacketDecoder` / `DecodedInboundPacket` / `NetDecodeError` の最小境界型を追加する
+- [x] `net-core` が raw packet bytes と送信元 metadata を受け取り、protocol decode 結果を app / server handler 側へ渡す境界を定義する
+- [ ] UDP socket 実装を行う
+- [ ] server / client / switcher 側 handler 実装を行う
+
 ## 2026-04-17 update: VideoFrame payload decode
 
 - [x] `crates/protocol` に `VideoFrame` payload decode の最小実装を追加する
