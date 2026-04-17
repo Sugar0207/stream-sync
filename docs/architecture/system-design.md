@@ -384,3 +384,148 @@ switcher 上でリアルタイム表示する。
 - 5人以上対応
 - 視点数動的増減
 - 1080p / 60fps の本格運用
+---
+
+## Server Auth Handler Boundary
+
+PoC / MVP initial implementation keeps server authentication as a boundary,
+not as completed business logic.
+
+Flow:
+
+1. `net-core` receives raw packet bytes and source metadata through the future
+   UDP receive layer.
+2. `net-core` calls `protocol` to decode the fixed header, validate
+   `protocol_version`, dispatch by `message_type`, and produce
+   `DecodedInboundPacket`.
+3. `ServerInboundRouter` receives `DecodedInboundPacket`.
+4. `ServerInboundRouter` recognizes `ProtocolMessage::AuthRequest` and returns
+   `ServerInboundRoute::AuthRequest`.
+5. The auth handler boundary receives the decoded `AuthRequest` and prepares
+   auth decision input.
+6. Applying the auth result to server state and generating an `AuthResponse`
+   is handled outside the auth handler boundary.
+
+Responsibility split:
+
+- `protocol`
+  - Owns wire format, fixed header decode, `protocol_version` validation helper,
+    `message_type` dispatch, and `AuthRequest` payload decode.
+  - Does not know token validity, client whitelist, source trust, server state,
+    or response policy.
+- `net-core`
+  - Owns raw packet bytes plus source metadata and calls protocol decode.
+  - Produces `DecodedInboundPacket`.
+  - Does not run authentication logic or server state transitions.
+- `ServerInboundRouter`
+  - Owns routing decoded messages to server-side boundaries.
+  - Recognizes `AuthRequest` and passes the decoded message to the auth route.
+  - Does not validate token, whitelist, `app_version`, or connection state.
+- auth handler boundary
+  - Receives decoded `AuthRequest`.
+  - Owns the future decision inputs: `shared_token`, `client_id`,
+    `protocol_version`, `app_version`, plus `run_id` and `display_name` when
+    useful for logging or state correlation.
+  - Does not update authenticated-client state, send responses, or manage UDP
+    source registration in this step.
+- server state / response layer
+  - Will consume the future auth result.
+  - Owns connection allow/reject state updates, authenticated source
+    registration, and outbound `AuthResponse` generation/sending.
+
+Current code reflects this with `ServerAuthHandlerBoundary` and
+`ServerAuthCheck` placeholders in `apps/server`. These types only prepare the
+decoded `AuthRequest` for future auth decision logic. Real token verification,
+client whitelist loading, auth success/failure decisions, and response sending
+remain unimplemented.
+
+---
+
+## Server AuthResponse Boundary
+
+PoC / MVP initial implementation separates the future auth decision from
+response generation and network sending.
+
+Flow:
+
+1. The auth handler or auth decision layer returns a `ServerAuthDecision`.
+2. `ServerAuthDecision` carries the source address, `client_id`, `run_id`,
+   `protocol_version`, accepted/rejected result, reason code, optional message,
+   optional server time, and optional expected protocol version.
+3. `ServerAuthResponseBoundary` receives the decision.
+4. `ServerAuthResponseBoundary` builds `ProtocolMessage::AuthResponse` from the
+   decision.
+5. The boundary returns `ServerOutboundAuthResponse`, which contains the
+   destination `PacketSource` and typed protocol message.
+6. A future net send layer will wire-encode the message and send it over UDP.
+
+Responsibility split:
+
+- `protocol`
+  - Owns the `AuthResponse` message shape and `AuthResponseReasonCode`.
+  - Does not decide authentication, update server state, encode packets, or
+    send sockets.
+- server auth handler / auth decision layer
+  - Future owner of token, `client_id`, `protocol_version`, and `app_version`
+    checks.
+  - Returns the auth decision data used to construct an `AuthResponse`.
+  - Does not perform wire encoding or socket sending.
+- response boundary
+  - Converts `ServerAuthDecision` into `ProtocolMessage::AuthResponse`.
+  - Preserves the destination source metadata for the send layer.
+  - Does not perform real auth checks, server state updates, wire encoding, or
+    UDP sends.
+- net send layer
+  - Future owner of outbound packet encoding and socket transmission.
+  - Will receive typed outbound intent from server-side response boundaries.
+
+Current code reflects this with `ServerAuthDecision`,
+`ServerAuthResponseBoundary`, and `ServerOutboundAuthResponse` placeholders in
+`apps/server`. Real success/failure judgement, whitelist loading, token
+verification, `AuthResponse` wire encode, and UDP send remain unimplemented.
+
+---
+
+## Server Outbound Packet / Queue Boundary
+
+PoC / MVP initial implementation keeps outbound sending split into typed
+message generation, queue handoff, wire encode, and socket send.
+
+Flow:
+
+1. Server response boundaries create outbound typed messages such as
+   `ProtocolMessage::AuthResponse`.
+2. Future server notification paths can create other outbound typed messages
+   such as `HeartbeatAck` or `ServerNotice` using the same send-layer shape.
+3. The server response boundary attaches destination metadata to the
+   `ProtocolMessage`.
+4. The server outbound queue boundary converts the server-specific response
+   handoff into the generic `net-core` `OutboundPacket`.
+5. `net-core` `OutboundPacketQueueBoundary` returns an `OutboundQueueItem` as
+   the handoff shape for a future queue.
+6. A later queue implementation will decide buffering, ordering, backpressure,
+   logging, and retry policy if needed.
+7. A later send implementation will wire-encode the `ProtocolMessage` and send
+   the resulting bytes through UDP.
+
+Responsibility split:
+
+- server handlers
+  - Decide that a response or notice should be sent.
+  - Do not encode bytes or write sockets.
+- response boundary
+  - Builds typed `ProtocolMessage` values and preserves destination metadata.
+  - Does not own generic queue behavior, encode, or socket send.
+- net send layer boundary
+  - Receives `ProtocolMessage` plus destination information as `OutboundPacket`.
+  - Provides a queue handoff item without implementing a real queue.
+  - Does not encode wire bytes or call UDP sockets in this step.
+- socket send layer
+  - Future owner of byte encode result transmission over UDP.
+  - Will handle send errors and runtime/socket details.
+
+Current code reflects this with `net-core::OutboundPacket`,
+`net-core::OutboundQueueItem`, `net-core::OutboundPacketQueueBoundary`, and
+`apps/server::ServerOutboundQueueBoundary`. These are carrier and handoff
+types only. UDP socket send, protocol encode, queue implementation, async
+runtime, retry, fragmentation, and encryption remain unimplemented.

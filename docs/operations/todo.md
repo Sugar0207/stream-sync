@@ -1,5 +1,16 @@
 <!-- stream-sync/docs/operations/todo.md -->
 
+## 2026-04-17 update: server outbound packet / queue boundary
+
+- [x] `docs/architecture/system-design.md` に outbound packet / queue 境界を追記する
+- [x] `docs/architecture/protocol.md` に typed outbound message -> queue handoff -> future encode / socket send の責務分離を追記する
+- [x] `crates/net-core` に `OutboundPacket` / `OutboundQueueItem` / `OutboundPacketQueueBoundary` placeholder を追加する
+- [x] `apps/server` に `ServerOutboundQueueBoundary` placeholder を追加する
+- [x] server response boundary が作った `ProtocolMessage` と宛先情報を net send layer へ渡す形を定義する
+- [ ] outbound queue の実装本体を行う
+- [ ] `AuthResponse` encode 本実装を行う
+- [ ] UDP socket 送信本体を実装する
+
 ## 2026-04-17 update: server UDP receive loop boundary
 
 - [x] `docs/architecture/system-design.md` に server UDP 受信 loop の最小設計を追記する
@@ -664,3 +675,26 @@
 3. protocol_version チェック方針を整理する
 4. 最小 wire format の byte layout を設計する
 5. 1人送信・受信・表示 PoC の着手準備をする
+## 2026-04-17 update: server auth handler boundary
+
+## 2026-04-17 update: server AuthResponse boundary
+
+- [x] `docs/architecture/system-design.md` に `AuthResponse` 生成 / 送信境界を追記する
+- [x] `docs/architecture/protocol.md` に auth decision -> `AuthResponse` -> send layer handoff の責務分離を追記する
+- [x] `apps/server` に `ServerAuthDecision` / `ServerAuthResponseBoundary` / `ServerOutboundAuthResponse` placeholder を追加する
+- [x] 認証結果から `ProtocolMessage::AuthResponse` を構築し、宛先 `PacketSource` と一緒に送信レイヤへ渡す形を定義する
+- [ ] 認証成功 / 失敗判定の本実装を行う
+- [ ] `AuthResponse` encode 本実装を行う
+- [x] net send layer の outbound packet 型 / queue 境界を設計する
+- [ ] UDP socket 送信本体を実装する
+
+
+- [x] `docs/architecture/system-design.md` に server 認証 handler 境界を追記する
+- [x] `docs/architecture/protocol.md` に `protocol` / `net-core` / `ServerInboundRouter` / auth handler の責務分離を追記する
+- [x] `apps/server` に `ServerAuthHandlerBoundary` / `ServerAuthCheck` / `ServerAuthBoundaryError` placeholder を追加する
+- [x] `ServerInboundRouter` で認識した `AuthRequest` route を auth handler boundary へ渡す形を定義する
+- [x] 認証判定の入力として `shared_token` / `client_id` / `protocol_version` / `app_version` を参照できる形を定義する
+- [ ] 認証成功 / 失敗判定の本実装を行う
+- [ ] client whitelist 読み込みを実装する
+- [ ] 本物の token 検証を実装する
+- [x] `AuthResponse` 生成 / 送信境界を設計する

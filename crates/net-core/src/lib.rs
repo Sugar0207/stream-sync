@@ -22,6 +22,29 @@ impl From<SocketAddr> for PacketSource {
     }
 }
 
+/// Destination address for a packet that should be sent later.
+///
+/// This is metadata only. The actual UDP socket send is outside this
+/// placeholder.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct PacketDestination {
+    pub address: SocketAddr,
+}
+
+impl From<SocketAddr> for PacketDestination {
+    fn from(address: SocketAddr) -> Self {
+        Self { address }
+    }
+}
+
+impl From<PacketSource> for PacketDestination {
+    fn from(source: PacketSource) -> Self {
+        Self {
+            address: source.address,
+        }
+    }
+}
+
 /// Raw packet bytes plus the source metadata collected by the future UDP layer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct InboundPacket<'a> {
@@ -34,6 +57,35 @@ pub struct InboundPacket<'a> {
 pub struct DecodedInboundPacket {
     pub source: PacketSource,
     pub message: ProtocolMessage,
+}
+
+/// Typed outbound message plus destination metadata for the future send layer.
+///
+/// This is intentionally pre-encode: it carries a `ProtocolMessage`, not wire
+/// bytes, and does not imply any queue or socket behavior.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OutboundPacket {
+    pub destination: PacketDestination,
+    pub message: ProtocolMessage,
+}
+
+/// Single outbound queue handoff item.
+///
+/// The real queue implementation, async runtime, backpressure, encode, and UDP
+/// socket send remain outside this placeholder.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OutboundQueueItem {
+    pub packet: OutboundPacket,
+}
+
+/// Minimal boundary between app/server response code and a future send queue.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct OutboundPacketQueueBoundary;
+
+impl OutboundPacketQueueBoundary {
+    pub fn handoff(&self, packet: OutboundPacket) -> OutboundQueueItem {
+        OutboundQueueItem { packet }
+    }
 }
 
 /// Error returned while bridging raw packet bytes into protocol messages.
@@ -166,6 +218,29 @@ mod tests {
                 error: ProtocolError::PayloadDecodeNotImplemented(MessageType::AuthResponse)
             })
         );
+    }
+
+    #[test]
+    fn prepares_outbound_packet_for_queue_handoff() {
+        let destination: PacketDestination = packet_source().into();
+        let message = ProtocolMessage::HeartbeatAck(stream_sync_protocol::HeartbeatAck {
+            message_type: MessageType::HeartbeatAck,
+            protocol_version: ProtocolVersion(2),
+            client_id: ClientId("client-1".to_string()),
+            run_id: stream_sync_protocol::RunId("run-1".to_string()),
+            echoed_sent_at: TimestampMicros(1_000_000),
+            server_received_at: TimestampMicros(1_000_100),
+            server_sent_at: TimestampMicros(1_000_200),
+        });
+        let boundary = OutboundPacketQueueBoundary;
+
+        let item = boundary.handoff(OutboundPacket {
+            destination,
+            message: message.clone(),
+        });
+
+        assert_eq!(item.packet.destination, destination);
+        assert_eq!(item.packet.message, message);
     }
 
     fn packet_source() -> PacketSource {

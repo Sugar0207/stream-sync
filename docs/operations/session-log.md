@@ -5,6 +5,108 @@
 - Codex
 
 ### 今回の作業
+- server 側の net send layer における outbound packet / queue 境界を設計した
+- `ProtocolMessage` と宛先情報を `net-core::OutboundPacket` として保持し、future queue へ渡す `OutboundQueueItem` placeholder を追加した
+- `apps/server` に `ServerOutboundQueueBoundary` を追加し、`ServerOutboundAuthResponse` を generic outbound handoff に変換できる形にした
+- `docs/architecture/system-design.md` と `docs/architecture/protocol.md` に server / response boundary / net send layer / socket send の責務分離を追記した
+
+### 変更ファイル
+- `crates/net-core/src/lib.rs`
+- `apps/server/src/lib.rs`
+- `docs/architecture/system-design.md`
+- `docs/architecture/protocol.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### 決定事項
+- outbound send boundary は wire bytes ではなく、typed `ProtocolMessage` と destination metadata を受け取る
+- response boundary は message 生成と宛先保持までを担当する
+- `net-core` は generic outbound carrier と queue handoff item の形だけを担当する
+- 実 queue、wire encode、UDP socket send、retry、fragmentation は後続タスクに残す
+
+### 未実装 / 保留
+- outbound queue の実装本体
+- encode 本実装
+- UDP socket 送信本体
+- retry / fragmentation / encryption
+- 認証成功 / 失敗判定
+- heartbeat / video frame 処理本体
+
+### 次にやる候補
+- `AuthResponse` encode 境界と payload byte layout を整理する
+- net send layer の encode 呼び出し境界を設計する
+- UDP socket 送信本体前の send error / log event 方針を設計する
+
+### TODO更新
+- 完了:
+  - outbound packet / queue 境界 docs 反映
+  - `OutboundPacket` / `OutboundQueueItem` / `OutboundPacketQueueBoundary` placeholder 追加
+  - `ServerOutboundQueueBoundary` placeholder 追加
+- 追加:
+  - outbound queue の実装本体
+  - net send layer の encode 呼び出し境界設計
+- 保留:
+  - encode 本実装
+  - UDP socket 送信本体
+  - queue 実処理 / async runtime
+
+---
+
+## 2026-04-17
+### 種別
+- Codex
+
+### 今回の作業
+- server 側で `AuthResponse` を生成し、送信レイヤへ渡す境界を設計した
+- `ServerAuthDecision` から `ProtocolMessage::AuthResponse` を構築し、宛先 `PacketSource` と一緒に `ServerOutboundAuthResponse` として返す placeholder を追加した
+- `docs/architecture/system-design.md` と `docs/architecture/protocol.md` に `protocol` / server auth handler / response boundary / net send layer の責務分離を追記した
+
+### 変更ファイル
+- `apps/server/src/lib.rs`
+- `docs/architecture/system-design.md`
+- `docs/architecture/protocol.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### 決定事項
+- `protocol` は `AuthResponse` message 型と reason code を持つ
+- server auth handler / decision layer は将来、token / `client_id` / `protocol_version` / `app_version` を見て認証結果を返す
+- response boundary は認証結果を `AuthResponse` message と送信先 metadata に変換するだけに留める
+- wire encode と UDP socket 送信は future net send layer に残す
+
+### 未実装 / 保留
+- 認証成功 / 失敗判定の本実装
+- client whitelist 読み込み
+- 本物の token 検証
+- `AuthResponse` encode 本実装
+- UDP socket 送信本体
+- heartbeat / video frame 処理本体
+
+### 次にやる候補
+- net send layer の outbound packet 型 / queue 境界を設計する
+- `AuthResponse` payload byte layout と encode 境界を整理する
+- server 側の認証状態更新境界を設計する
+
+### TODO更新
+- 完了:
+  - `AuthResponse` 生成 / 送信境界 docs 反映
+  - `ServerAuthDecision` / `ServerAuthResponseBoundary` / `ServerOutboundAuthResponse` placeholder 追加
+  - auth decision -> `AuthResponse` -> send layer handoff の流れを定義
+- 追加:
+  - net send layer の outbound packet 型 / queue 境界を設計する
+  - `AuthResponse` encode 本実装を行う
+- 保留:
+  - 認証成功 / 失敗判定
+  - UDP socket 送信本体
+  - encode / fragmentation / 再送制御 / 暗号化
+
+---
+
+## 2026-04-17
+### 種別
+- Codex
+
+### 今回の作業
 - server 側 UDP 受信 loop の最小設計を行った
 - `docs/architecture/system-design.md` に packet bytes 受信、送信元情報取得、`InboundPacket` 生成、decode、router 受け渡しの流れを追記した
 - `docs/architecture/protocol.md` に receive loop 境界と decode error / protocol error の分類方針を追記した
@@ -929,3 +1031,57 @@
 
 ### メモ
 - `crates/protocol` 側は `MessageType` の `#[repr(u16)]` と数値割り当てのみ追加し、encode / decode 本体は実装していない。
+## 2026-04-17
+### 種別
+- Codex
+
+### 今回の作業
+- server 側の認証 handler 境界を設計した
+- `ServerInboundRouter` が認識した `AuthRequest` route を auth handler boundary へ渡す形を追加した
+- `ServerAuthHandlerBoundary` / `ServerAuthCheck` / `ServerAuthBoundaryError` placeholder を `apps/server` に追加した
+- `docs/architecture/system-design.md` と `docs/architecture/protocol.md` に `protocol` / `net-core` / `ServerInboundRouter` / auth handler の責務分離を追記した
+
+### 変更ファイル
+- `apps/server/src/lib.rs`
+- `docs/architecture/system-design.md`
+- `docs/architecture/protocol.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### 決定事項
+- `protocol` は wire decode と `AuthRequest` payload decode までを担当し、認証ビジネスロジックは持たない
+- `net-core` は raw packet bytes と source metadata から `DecodedInboundPacket` を作る橋渡しに留める
+- `ServerInboundRouter` は `AuthRequest` を認証 route として分類するだけに留める
+- auth handler boundary は decoded `AuthRequest` から `shared_token` / `client_id` / `protocol_version` / `app_version` などの認証判定入力を準備する
+- 認証結果による server 状態更新、認証済み送信元登録、`AuthResponse` 生成 / 送信は auth handler boundary の外側に残す
+
+### 未実装 / 保留
+- 認証成功 / 失敗判定の本実装
+- client whitelist 読み込み
+- 本物の token 検証
+- `AuthResponse` 生成 / 送信境界
+- UDP socket 実装
+- heartbeat 管理 / timeout 管理
+- video frame 受理 / 同期バッファ投入
+
+### 次にやる候補
+- `AuthResponse` 生成 / 送信境界を設計する
+- client whitelist と token 検証の設定入力境界を設計する
+- heartbeat handler 境界と timeout 管理の最小設計を行う
+
+### TODO更新
+- 完了:
+  - server 認証 handler 境界 docs 反映
+  - `ServerAuthHandlerBoundary` / `ServerAuthCheck` placeholder 追加
+  - `AuthRequest` route から認証判定入力を準備する境界追加
+- 追加:
+  - 認証成功 / 失敗判定の本実装
+  - client whitelist 読み込み
+  - 本物の token 検証
+  - `AuthResponse` 生成 / 送信境界設計
+- 保留:
+  - UDP socket 実装
+  - heartbeat / video frame 処理本体
+  - encode / fragmentation / 再送制御 / 暗号化
+
+---
