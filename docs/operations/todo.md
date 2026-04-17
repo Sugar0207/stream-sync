@@ -21,7 +21,7 @@
 - [x] `AuthResponse` を `ProtocolMessage::AuthResponse` として net send layer の `OutboundPacket` へ渡す encode input boundary を整理する
 - [x] `crates/protocol` に `AuthResponseReasonCode` の wire code placeholder と長さ定数を追加する
 - [ ] `AuthResponse` encode 本実装を行う
-- [ ] net send layer から protocol encoder を呼ぶ境界を設計する
+- [x] net send layer から protocol encoder を呼ぶ境界を設計する
 - [ ] UDP socket 送信本体を実装する
 
 ## 2026-04-17 update: server outbound packet / queue boundary

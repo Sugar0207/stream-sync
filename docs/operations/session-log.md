@@ -5,6 +5,48 @@
 - Codex
 
 ### 今回の作業
+- net send layer から protocol encoder を呼ぶ境界が docs とコードに反映済みであることを確認した。
+- `system-design.md` / `protocol.md` の response boundary、net send layer、protocol encoder、socket send の責務分離を確認した。
+- `crates/protocol` の `ProtocolMessageEncoderBoundary` と `crates/net-core` の `OutboundPacketEncoderBoundary` が encode 本実装なしの境界 placeholder に留まっていることを確認した。
+- `cargo fmt --check` と `cargo check --workspace` が通ることを確認した。
+
+### 変更ファイル
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### 決定事項
+- server 側の response boundary と将来の通知系は typed `ProtocolMessage` と宛先 metadata を `OutboundPacket` / `OutboundQueueItem` として net send layer へ渡す。
+- net send layer は `ProtocolMessage` と宛先情報を保持し、`EncodeContext` とともに protocol encoder 境界へ handoff する。
+- protocol encoder は将来 fixed header + payload bytes を生成する責務を持つが、現時点では `EncodeNotImplemented` placeholder に留める。
+- socket send は将来 `EncodedOutboundPacket` の bytes と宛先だけを受け取り、typed message は解釈しない。
+
+### 未解決事項
+- `AuthResponse` encode 本実装
+- fixed header / payload bytes 生成本体
+- UDP socket 送信本体
+- outbound queue 実処理
+- retry / fragmentation / encryption
+
+### 次にやる候補
+- `AuthResponse` encode の最小実装を追加する
+- UDP socket 送信前の send error / log event 方針を整理する
+- outbound queue の最小実処理を設計する
+
+### TODO更新
+- 完了:
+  - AuthResponse payload layout / encode boundary 節の「net send layer から protocol encoder を呼ぶ境界を設計する」を完了に更新
+- 追加:
+  - なし
+- 保留:
+  - encode 本実装
+  - UDP socket send
+  - queue runtime / retry / fragmentation / encryption
+
+## 2026-04-17
+### 種別
+- Codex
+
+### 今回の作業
 - net send layer から protocol encoder を呼ぶ境界を設計した。
 - `OutboundQueueItem` から `OutboundEncodeRequest` を作り、`MessageEncoder` へ `ProtocolMessage` と `EncodeContext` を渡す placeholder を追加した。
 - protocol 側には `ProtocolMessage::message_type()` と、現時点では `EncodeNotImplemented` を返す `ProtocolMessageEncoderBoundary` を追加した。
