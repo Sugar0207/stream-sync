@@ -617,3 +617,90 @@ Current code reflects this with `net-core::OutboundEncodeRequest`,
 currently encodes `AuthResponse` and `HeartbeatAck`, and returns
 `EncodeNotImplemented` for other outbound messages. Queue processing and UDP
 socket send remain unimplemented.
+
+---
+
+## Send Error / Log Event Boundary
+
+PoC / MVP initial implementation keeps send error handling as classification
+and structured log context only. It does not implement UDP socket send, retry,
+queue mutation, or async runtime behavior.
+
+Send path checkpoints:
+
+1. `server` response / ack boundaries create typed outbound messages and
+   destination metadata.
+2. `outbound queue` boundary hands `OutboundQueueItem` to the net send layer
+   without executing a real queue.
+3. `net send layer` extracts log context from the typed message before encode:
+   `run_id`, optional `client_id`, destination, and `message_type`.
+4. `protocol encoder` converts supported messages into fixed header + payload
+   bytes.
+5. After encode success, the net send layer can log `encode_succeeded` with the
+   encoded byte length before handing bytes to the future socket send layer.
+6. Before socket send, the net send layer can reject local send-preparation
+   problems such as missing destination metadata or packet size policy.
+7. The future socket send layer will report socket-level errors after a real
+   `send_to` attempt.
+
+Error classification:
+
+| Stage | Error kind | Initial disposition | Notes |
+| --- | --- | --- | --- |
+| encode | `EncodeFailed` | drop candidate | Message cannot be represented by current protocol encoder. This is a code / compatibility issue, not a UDP retry issue. |
+| before socket send | `DestinationUnavailable` | drop candidate | Required destination metadata is absent or unusable before socket call. |
+| before socket send | `PacketTooLarge` | drop candidate | Encoded datagram violates current size policy. Fragmentation is not implemented yet. |
+| socket send | `SocketWouldBlock` | retry candidate | Future nonblocking socket path may retry or requeue later. |
+| socket send | `SocketInterrupted` | retry candidate | Future socket path may retry immediately or requeue. |
+| socket send | `ConnectionRefused` | warning candidate | UDP may surface ICMP/refused depending on platform; log with context and let higher-level state decide later. |
+| socket send | `NetworkUnreachable` | warning candidate | Log with destination; future policy may mark client degraded or disconnected. |
+| socket send | `PermissionDenied` | warning candidate | Usually configuration / OS policy issue; log clearly. |
+| socket send | `OtherSocketError` | warning candidate | Preserve error class for future logging and diagnostics. |
+
+Log event field policy:
+
+- `run_id`
+  - Extract from `ProtocolMessage` whenever present.
+  - Required for `AuthRequest`, `AuthResponse`, `Heartbeat`, `HeartbeatAck`,
+    `VideoFrame`, `ClientStats`, and `ServerNotice`.
+- `client_id`
+  - Extract from `ProtocolMessage` whenever present.
+  - Present for client-scoped messages such as `AuthResponse` and
+    `HeartbeatAck`; absent for server-wide notices.
+- `destination`
+  - Use `PacketDestination.address`.
+  - Include it in every send event, including encode failures, because the
+    destination remains attached before and after encode.
+- `message_type`
+  - Use `ProtocolMessage::message_type()` before encode.
+  - Include it even when encode fails.
+- `encoded_len`
+  - Include after encode success and on socket send failures.
+  - Omit for encode failures that produced no packet buffer.
+- `stage`, `failure`, `disposition`
+  - Include on failures so logs can distinguish encode, pre-socket, and socket
+    send problems.
+
+Responsibility split:
+
+- `server`
+  - Decides that a response / ack / notice should be sent.
+  - Builds typed `ProtocolMessage` values and destination metadata.
+  - Does not classify socket errors, retry, or write sockets.
+- `outbound queue`
+  - Future owner of buffering, ordering, and backpressure.
+  - May use disposition hints later, but no queue behavior is implemented now.
+- `net send layer`
+  - Owns send log context extraction and send failure classification.
+  - Keeps `run_id`, `client_id`, destination, and `message_type` attached to
+    encode and future socket-send results.
+  - Does not execute retry or socket I/O in this step.
+- `socket send`
+  - Future owner of calling UDP `send_to` and mapping OS/socket errors into
+    the send failure categories.
+  - Does not inspect typed protocol messages.
+
+Current code reflects this with `net-core::OutboundSendLogContext`,
+`net-core::SendLogStage`, `net-core::SendFailureKind`,
+`net-core::SendFailureDisposition`, and `net-core::SendLogEvent`. These are
+classification and structured event placeholder types only.

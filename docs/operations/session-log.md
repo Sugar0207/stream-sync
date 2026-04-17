@@ -5,6 +5,61 @@
 - Codex
 
 ### 今回の作業
+- UDP socket 送信前の send error / log event 方針を整理した。
+- `docs/architecture/system-design.md` に encode 成功後、socket send 前後で扱う error 分類と責務分離を追記した。
+- `docs/architecture/protocol.md` に protocol encode 後の send log context は `net-core` が持つ方針を追記した。
+- `crates/net-core` に `OutboundSendLogContext`, `SendLogStage`, `SendFailureKind`, `SendFailureDisposition`, `SendLogEvent` placeholder を追加した。
+- `run_id` / `client_id` / destination / `message_type` を send log context として抽出する最小実装と単体テストを追加した。
+
+### 変更ファイル
+- `crates/net-core/src/lib.rs`
+- `docs/architecture/system-design.md`
+- `docs/architecture/protocol.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### 決定事項
+- send log context は `run_id`, optional `client_id`, destination, `message_type` を基本フィールドにする。
+- encode 成功時は encoded byte length を記録できる形にする。
+- encode failure / pre-socket failure / socket send failure は `SendLogStage` で区別する。
+- `SocketWouldBlock` / `SocketInterrupted` は retry candidate、`EncodeFailed` / `DestinationUnavailable` / `PacketTooLarge` は drop candidate、その他 socket error は warning candidate とする。
+- retry 実行、queue mutation、UDP socket send、実ログ出力は今回実装しない。
+
+### 未解決事項
+- UDP socket 送信本体
+- outbound queue 実処理
+- retry 実行本体
+- receive / send ログ出力本体
+- OS/socket error から `SendFailureKind` への実マッピング
+- fragmentation / encryption
+
+### 次にやる候補
+- outbound queue の最小実処理を設計する
+- client whitelist 読み込みと token 検証の設定入力境界を設計する
+- server 側の認証成功 / 失敗判定を実装する
+
+### TODO更新
+- 完了:
+  - UDP socket 送信前の send error / log event 方針整理
+  - `OutboundSendLogContext` / `SendLogEvent` placeholder 追加
+  - send failure classification placeholder 追加
+- 追加:
+  - send error ログ出力を実装する
+  - receive / send ログ最小実装
+- 保留:
+  - UDP socket send
+  - queue runtime
+  - retry 実行
+  - fragmentation / encryption
+
+### メモ
+- send error / log event 方針の責務は、送信失敗を分類し、`run_id` / `client_id` / destination / `message_type` 付きで将来 JSON Lines に載せやすい構造にするところまで。
+
+## 2026-04-17
+### 種別
+- Codex
+
+### 今回の作業
 - `HeartbeatAck` encode の最小実装を `crates/protocol` に追加した。
 - `HeartbeatAck` payload を docs の順序どおり `client_id`, `run_id`, `echoed_sent_at`, `server_received_at`, `server_sent_at` として byte 化する処理を追加した。
 - 既存の 16 byte fixed header encode 補助を再利用し、`ProtocolMessageEncoderBoundary` が `ProtocolMessage::HeartbeatAck` を fixed header + payload bytes に変換するようにした。

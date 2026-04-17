@@ -1,8 +1,9 @@
 use std::net::SocketAddr;
 
 use stream_sync_protocol::{
-    decode_fixed_header, decode_payload_by_message_type, validate_protocol_version, DecodeContext,
-    EncodeContext, MessageEncoder, ProtocolError, ProtocolMessage,
+    decode_fixed_header, decode_payload_by_message_type, validate_protocol_version, ClientId,
+    DecodeContext, EncodeContext, MessageEncoder, MessageType, ProtocolError, ProtocolMessage,
+    RunId,
 };
 
 pub const CRATE_NAME: &str = "stream-sync-net-core";
@@ -109,6 +110,118 @@ pub struct EncodedOutboundPacket {
     pub bytes: Vec<u8>,
 }
 
+/// Log context that should follow an outbound message through encode and send.
+///
+/// This is structured for future JSON Lines output. It intentionally carries
+/// metadata only and does not perform logging by itself.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OutboundSendLogContext {
+    pub destination: PacketDestination,
+    pub message_type: MessageType,
+    pub run_id: Option<RunId>,
+    pub client_id: Option<ClientId>,
+}
+
+impl OutboundSendLogContext {
+    pub fn from_packet(packet: &OutboundPacket) -> Self {
+        let (run_id, client_id) = outbound_message_ids(&packet.message);
+
+        Self {
+            destination: packet.destination,
+            message_type: packet.message.message_type(),
+            run_id,
+            client_id,
+        }
+    }
+}
+
+/// Send path stage used by future send log events.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum SendLogStage {
+    Encode,
+    BeforeSocketSend,
+    SocketSend,
+}
+
+/// Minimal outbound send failure categories.
+///
+/// These categories are policy hints only. They do not execute retry, queue
+/// mutation, socket writes, or logging.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum SendFailureKind {
+    EncodeFailed,
+    DestinationUnavailable,
+    PacketTooLarge,
+    SocketWouldBlock,
+    SocketInterrupted,
+    ConnectionRefused,
+    NetworkUnreachable,
+    PermissionDenied,
+    OtherSocketError,
+}
+
+/// Initial action hint for send failures.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum SendFailureDisposition {
+    RetryCandidate,
+    DropCandidate,
+    WarningCandidate,
+}
+
+impl SendFailureKind {
+    pub const fn disposition(self) -> SendFailureDisposition {
+        match self {
+            Self::SocketWouldBlock | Self::SocketInterrupted => {
+                SendFailureDisposition::RetryCandidate
+            }
+            Self::EncodeFailed | Self::DestinationUnavailable | Self::PacketTooLarge => {
+                SendFailureDisposition::DropCandidate
+            }
+            Self::ConnectionRefused
+            | Self::NetworkUnreachable
+            | Self::PermissionDenied
+            | Self::OtherSocketError => SendFailureDisposition::WarningCandidate,
+        }
+    }
+}
+
+/// Structured send event placeholder for future JSON Lines logging.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SendLogEvent {
+    pub context: OutboundSendLogContext,
+    pub stage: SendLogStage,
+    pub encoded_len: Option<usize>,
+    pub failure: Option<SendFailureKind>,
+    pub disposition: Option<SendFailureDisposition>,
+}
+
+impl SendLogEvent {
+    pub fn encode_succeeded(context: OutboundSendLogContext, encoded_len: usize) -> Self {
+        Self {
+            context,
+            stage: SendLogStage::Encode,
+            encoded_len: Some(encoded_len),
+            failure: None,
+            disposition: None,
+        }
+    }
+
+    pub fn send_failed(
+        context: OutboundSendLogContext,
+        stage: SendLogStage,
+        encoded_len: Option<usize>,
+        failure: SendFailureKind,
+    ) -> Self {
+        Self {
+            context,
+            stage,
+            encoded_len,
+            failure: Some(failure),
+            disposition: Some(failure.disposition()),
+        }
+    }
+}
+
 /// Error returned while bridging outbound typed messages into encoded packets.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum NetEncodeError {
@@ -152,6 +265,36 @@ impl OutboundPacketEncoderBoundary {
             destination: request.destination,
             bytes,
         })
+    }
+}
+
+fn outbound_message_ids(message: &ProtocolMessage) -> (Option<RunId>, Option<ClientId>) {
+    match message {
+        ProtocolMessage::AuthRequest(message) => (
+            Some(message.run_id.clone()),
+            Some(message.client_id.clone()),
+        ),
+        ProtocolMessage::AuthResponse(message) => (
+            Some(message.run_id.clone()),
+            Some(message.client_id.clone()),
+        ),
+        ProtocolMessage::Heartbeat(message) => (
+            Some(message.run_id.clone()),
+            Some(message.client_id.clone()),
+        ),
+        ProtocolMessage::HeartbeatAck(message) => (
+            Some(message.run_id.clone()),
+            Some(message.client_id.clone()),
+        ),
+        ProtocolMessage::VideoFrame(message) => (
+            Some(message.run_id.clone()),
+            Some(message.client_id.clone()),
+        ),
+        ProtocolMessage::ClientStats(message) => (
+            Some(message.run_id.clone()),
+            Some(message.client_id.clone()),
+        ),
+        ProtocolMessage::ServerNotice(message) => (Some(message.run_id.clone()), None),
     }
 }
 
@@ -300,6 +443,64 @@ mod tests {
 
         assert_eq!(item.packet.destination, destination);
         assert_eq!(item.packet.message, message);
+    }
+
+    #[test]
+    fn extracts_outbound_send_log_context_from_typed_message() {
+        let destination: PacketDestination = packet_source().into();
+        let packet = OutboundPacket {
+            destination,
+            message: heartbeat_ack_message(),
+        };
+
+        let context = OutboundSendLogContext::from_packet(&packet);
+
+        assert_eq!(context.destination, destination);
+        assert_eq!(context.message_type, MessageType::HeartbeatAck);
+        assert_eq!(context.run_id, Some(RunId("run-1".to_string())));
+        assert_eq!(context.client_id, Some(ClientId("client-1".to_string())));
+    }
+
+    #[test]
+    fn classifies_send_failures_for_future_policy() {
+        assert_eq!(
+            SendFailureKind::SocketWouldBlock.disposition(),
+            SendFailureDisposition::RetryCandidate
+        );
+        assert_eq!(
+            SendFailureKind::EncodeFailed.disposition(),
+            SendFailureDisposition::DropCandidate
+        );
+        assert_eq!(
+            SendFailureKind::NetworkUnreachable.disposition(),
+            SendFailureDisposition::WarningCandidate
+        );
+    }
+
+    #[test]
+    fn builds_send_log_event_with_context_and_disposition() {
+        let destination: PacketDestination = packet_source().into();
+        let packet = OutboundPacket {
+            destination,
+            message: heartbeat_ack_message(),
+        };
+        let context = OutboundSendLogContext::from_packet(&packet);
+
+        let event = SendLogEvent::send_failed(
+            context.clone(),
+            SendLogStage::SocketSend,
+            Some(32),
+            SendFailureKind::ConnectionRefused,
+        );
+
+        assert_eq!(event.context, context);
+        assert_eq!(event.stage, SendLogStage::SocketSend);
+        assert_eq!(event.encoded_len, Some(32));
+        assert_eq!(event.failure, Some(SendFailureKind::ConnectionRefused));
+        assert_eq!(
+            event.disposition,
+            Some(SendFailureDisposition::WarningCandidate)
+        );
     }
 
     #[test]

@@ -1051,6 +1051,12 @@ outbound handoff placeholders for `AuthResponse` and `HeartbeatAck`. These
 types keep the send-layer contract visible while leaving queue implementation,
 UDP socket send, fragmentation, retry, and encryption out of scope.
 
+Send error / log event policy is owned by `net-core` after protocol encode.
+`protocol` returns encode errors, while `net-core` keeps destination metadata
+and extracts `run_id`, optional `client_id`, destination, and `message_type` for
+future JSON Lines send logs. Retry execution, queue mutation, and UDP socket
+send remain outside this protocol boundary.
+
 ---
 
 ## Net Send Layer / Protocol Encoder Boundary
@@ -1113,6 +1119,9 @@ Current code:
   `ProtocolError::EncodeNotImplemented` for other message types.
 - `crates/net-core::OutboundPacketEncoderBoundary` prepares encode requests and
   maps protocol encode errors while keeping the destination attached.
+- `crates/net-core::OutboundSendLogContext` and `SendLogEvent` define the
+  future send log context shape for encode success / failure and socket send
+  failures.
 - `apps/server::ServerHeartbeatAckBoundary` builds
   `ProtocolMessage::HeartbeatAck` and hands it to the same outbound queue
   boundary shape as other typed responses.
