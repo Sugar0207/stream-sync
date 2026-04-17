@@ -240,7 +240,9 @@ encode 入口は byte buffer 作成までに限定する。送信先 address、r
 4. server receive loop が `InboundPacketDecoder` を呼ぶ。
 5. decode 成功時、server receive loop が `DecodedInboundPacket` を `ServerInboundRouter` へ渡す。
 6. `ServerInboundRouter` が `ServerInboundRoute` を返す。
-7. route ごとの server handler 本体が後続処理を行う。
+7. decode 成功時、server receive loop が `PacketAcceptanceGateBoundary` を呼ぶ。
+8. accepted の route だけが handler / router 後続境界へ進む。
+9. rejected は handler 本体へ渡さず、将来の drop / log layer へ渡す decision として返す。
 
 decode error / protocol error の初期方針:
 
@@ -254,7 +256,30 @@ decode error / protocol error の初期方針:
   - `DropPacket` として分類する。
   - malformed packet とみなし、handler 本体へは渡さない。
 
-この境界では UDP socket の本実装、非同期 runtime 導入、packet 受信本体、認証成功 / 失敗判定、heartbeat 管理、video frame 処理本体は行わない。
+receive loop と gate の接続境界:
+
+- `ServerReceiveLoopStep`
+  - raw packet bytes と `PacketSource` を受け取る 1 packet 分の placeholder。
+  - decode 成功後に `ServerInboundRouter` で `ServerInboundRoute` を作る。
+  - gate 接続版では route 作成後に `PacketAcceptanceGateBoundary` を呼ぶ。
+- `PacketAcceptanceGateBoundary`
+  - decode 済み route と `AuthenticatedSenderRegistry` から accepted / rejected を判断する。
+  - `AuthRequest` は registry 登録前の入口として accepted にする。
+  - `Heartbeat` / `VideoFrame` は `client_id` と endpoint を registry に照合する。
+- handler / router 後続境界
+  - accepted route だけを受け取る。
+  - heartbeat 処理や video frame 処理本体はまだ実装しない。
+- drop / log layer
+  - decode rejection と acceptance rejection を区別して受け取る将来境界。
+  - 実際の packet 破棄と JSON Lines ログ出力はまだ実装しない。
+
+Current implementation: `apps/server::ServerReceiveLoopStep` has
+`handle_received_packet_with_gate`, which returns
+`ServerReceiveLoopGateOutcome::Accepted` for accepted routes and
+`ServerReceiveLoopGateOutcome::Rejected` with either decode rejection or packet
+acceptance rejection. この境界では UDP socket の本実装、非同期 runtime 導入、
+packet 受信本体、実際の packet 破棄、ログ出力、認証成功 / 失敗判定、heartbeat
+管理、video frame 処理本体は行わない。
 
 ## 1. 目的
 
@@ -1160,8 +1185,12 @@ Responsibility split:
 
 Current implementation: `apps/server::PacketAcceptanceGateBoundary` evaluates
 `ServerInboundRoute` values against `AuthenticatedSenderRegistry` and returns
-`PacketAcceptanceDecision`. UDP socket integration, actual packet discard, and
-logging are still out of scope.
+`PacketAcceptanceDecision`. `apps/server::ServerReceiveLoopStep` now calls this
+gate after decode and route classification through
+`handle_received_packet_with_gate`. Accepted routes are returned as the only
+handler candidates, while rejected routes are returned as decisions for future
+drop / log handling. UDP socket integration, actual packet discard, and logging
+are still out of scope.
 
 ---
 

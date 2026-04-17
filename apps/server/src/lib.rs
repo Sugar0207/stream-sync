@@ -19,6 +19,7 @@ use stream_sync_protocol::{
 pub struct ServerReceiveLoopStep {
     decoder: InboundPacketDecoder,
     router: ServerInboundRouter,
+    gate: PacketAcceptanceGateBoundary,
 }
 
 impl ServerReceiveLoopStep {
@@ -28,6 +29,44 @@ impl ServerReceiveLoopStep {
         source: PacketSource,
         packet_bytes: &[u8],
     ) -> ServerReceiveLoopOutcome {
+        match self.decode_and_route(expected_protocol_version, source, packet_bytes) {
+            Ok(route) => ServerReceiveLoopOutcome::Routed(route),
+            Err(rejection) => ServerReceiveLoopOutcome::Rejected(rejection),
+        }
+    }
+
+    pub fn handle_received_packet_with_gate(
+        &self,
+        expected_protocol_version: ProtocolVersion,
+        registry: &AuthenticatedSenderRegistry,
+        source: PacketSource,
+        packet_bytes: &[u8],
+    ) -> ServerReceiveLoopGateOutcome {
+        let route = match self.decode_and_route(expected_protocol_version, source, packet_bytes) {
+            Ok(route) => route,
+            Err(rejection) => {
+                return ServerReceiveLoopGateOutcome::Rejected(
+                    ServerReceiveLoopGateRejection::Decode(rejection),
+                );
+            }
+        };
+
+        match self.gate.evaluate_route(registry, &route) {
+            PacketAcceptanceDecision::Accepted => ServerReceiveLoopGateOutcome::Accepted(route),
+            PacketAcceptanceDecision::Rejected(rejection) => {
+                ServerReceiveLoopGateOutcome::Rejected(ServerReceiveLoopGateRejection::Acceptance(
+                    rejection,
+                ))
+            }
+        }
+    }
+
+    fn decode_and_route(
+        &self,
+        expected_protocol_version: ProtocolVersion,
+        source: PacketSource,
+        packet_bytes: &[u8],
+    ) -> Result<ServerInboundRoute, ServerRejectedPacket> {
         let context = stream_sync_protocol::DecodeContext {
             expected_protocol_version,
         };
@@ -37,14 +76,12 @@ impl ServerReceiveLoopStep {
         };
 
         match self.decoder.decode(context, packet) {
-            Ok(decoded) => ServerReceiveLoopOutcome::Routed(self.router.route(decoded)),
-            Err(NetDecodeError::Protocol { source, error }) => {
-                ServerReceiveLoopOutcome::Rejected(ServerRejectedPacket {
-                    source,
-                    action: classify_protocol_error(&error),
-                    error,
-                })
-            }
+            Ok(decoded) => Ok(self.router.route(decoded)),
+            Err(NetDecodeError::Protocol { source, error }) => Err(ServerRejectedPacket {
+                source,
+                action: classify_protocol_error(&error),
+                error,
+            }),
         }
     }
 }
@@ -54,6 +91,20 @@ impl ServerReceiveLoopStep {
 pub enum ServerReceiveLoopOutcome {
     Routed(ServerInboundRoute),
     Rejected(ServerRejectedPacket),
+}
+
+/// Result after decode, route, and packet acceptance gate evaluation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ServerReceiveLoopGateOutcome {
+    Accepted(ServerInboundRoute),
+    Rejected(ServerReceiveLoopGateRejection),
+}
+
+/// Rejection decision passed to future drop / log handling.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ServerReceiveLoopGateRejection {
+    Decode(ServerRejectedPacket),
+    Acceptance(PacketAcceptanceRejection),
 }
 
 /// Decode failure plus the server receive loop policy for that failure.
@@ -931,6 +982,91 @@ mod tests {
                 action: ServerDecodeErrorAction::DropPacket,
                 error: ProtocolError::BufferTooShort
             })
+        );
+    }
+
+    #[test]
+    fn receive_loop_with_gate_accepts_registered_heartbeat() {
+        let source = packet_source();
+        let payload = heartbeat_payload();
+        let packet = test_packet(MessageType::Heartbeat as u16, FIXED_HEADER_LEN, 2, &payload);
+        let registry = registry_with_client("client-1", source);
+        let receive_loop = ServerReceiveLoopStep::default();
+
+        let outcome = receive_loop.handle_received_packet_with_gate(
+            ProtocolVersion(2),
+            &registry,
+            source,
+            packet.as_slice(),
+        );
+
+        let ServerReceiveLoopGateOutcome::Accepted(ServerInboundRoute::Heartbeat {
+            source: routed_source,
+            heartbeat,
+        }) = outcome
+        else {
+            panic!("expected accepted heartbeat");
+        };
+        assert_eq!(routed_source, source);
+        assert_eq!(heartbeat.client_id, ClientId("client-1".to_string()));
+        assert_eq!(heartbeat.sent_at, TimestampMicros(1_234_567));
+    }
+
+    #[test]
+    fn receive_loop_with_gate_rejects_unauthenticated_heartbeat() {
+        let source = packet_source();
+        let payload = heartbeat_payload();
+        let packet = test_packet(MessageType::Heartbeat as u16, FIXED_HEADER_LEN, 2, &payload);
+        let registry = AuthenticatedSenderRegistry::default();
+        let receive_loop = ServerReceiveLoopStep::default();
+
+        let outcome = receive_loop.handle_received_packet_with_gate(
+            ProtocolVersion(2),
+            &registry,
+            source,
+            packet.as_slice(),
+        );
+
+        assert_eq!(
+            outcome,
+            ServerReceiveLoopGateOutcome::Rejected(ServerReceiveLoopGateRejection::Acceptance(
+                PacketAcceptanceRejection {
+                    source,
+                    message_type: MessageType::Heartbeat,
+                    client_id: Some(ClientId("client-1".to_string())),
+                    reason: PacketAcceptanceRejectReason::UnauthenticatedSource,
+                }
+            ))
+        );
+    }
+
+    #[test]
+    fn receive_loop_with_gate_keeps_decode_rejection_for_drop_or_log_layer() {
+        let source = packet_source();
+        let payload = heartbeat_payload();
+        let packet = test_packet(MessageType::Heartbeat as u16, FIXED_HEADER_LEN, 1, &payload);
+        let registry = AuthenticatedSenderRegistry::default();
+        let receive_loop = ServerReceiveLoopStep::default();
+
+        let outcome = receive_loop.handle_received_packet_with_gate(
+            ProtocolVersion(2),
+            &registry,
+            source,
+            packet.as_slice(),
+        );
+
+        assert_eq!(
+            outcome,
+            ServerReceiveLoopGateOutcome::Rejected(ServerReceiveLoopGateRejection::Decode(
+                ServerRejectedPacket {
+                    source,
+                    action: ServerDecodeErrorAction::RejectProtocolVersion,
+                    error: ProtocolError::UnsupportedProtocolVersion {
+                        expected: ProtocolVersion(2),
+                        actual: ProtocolVersion(1)
+                    }
+                }
+            ))
         );
     }
 

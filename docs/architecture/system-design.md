@@ -226,7 +226,9 @@ server 側の UDP 受信 loop は、将来の UDP socket 実装で packet bytes 
 6. `InboundPacketDecoder` が fixed header decode、`protocol_version` check、payload decode を行い、成功時に `DecodedInboundPacket` を返す。
 7. server receive loop が `DecodedInboundPacket` を `ServerInboundRouter` に渡す。
 8. `ServerInboundRouter` が `ServerInboundRoute` を返す。
-9. server handler 本体が route ごとの処理を行う。
+9. decode 成功時、server receive loop が packet acceptance gate を呼ぶ。
+10. accepted の route だけが server handler / router 後続境界へ進む。
+11. rejected は実際の handler を呼ばず、将来の drop / log layer へ渡す decision として保持する。
 
 decode error / protocol error の扱い:
 
@@ -240,7 +242,26 @@ decode error / protocol error の扱い:
   - malformed packet として分類する。
   - 初期実装では packet を破棄する。
 
-実装上は `apps/server` に `ServerReceiveLoopStep` を置く。これは 1 packet 分の placeholder であり、既に受信済みの packet bytes と `PacketSource` を受け取り、`InboundPacketDecoder` と `ServerInboundRouter` を順番に呼ぶ。成功時は `ServerReceiveLoopOutcome::Routed`、失敗時は `ServerReceiveLoopOutcome::Rejected` を返す。実際の socket loop、ログ出力、認証判定、heartbeat 管理、video frame 処理本体はまだ持たない。
+receive loop / gate 接続の責務分離:
+
+- receive loop
+  - raw packet bytes と source metadata を受け取る future socket 層の直後に置く。
+  - `InboundPacketDecoder` を呼び、decode error は `ServerRejectedPacket` として分類する。
+  - decode 成功後、`ServerInboundRouter` で route を作り、`PacketAcceptanceGateBoundary` を呼ぶ。
+  - gate の rejected decision を drop / log layer へ渡す形に留め、実際の破棄やログ出力は行わない。
+- decode / protocol
+  - fixed header、`protocol_version`、payload layout を検証し、decode 済み message を返す。
+  - 認証済み endpoint かどうかは判断しない。
+- packet acceptance gate
+  - route と `AuthenticatedSenderRegistry` を見て accepted / rejected を返す。
+  - `AuthRequest` は認証前の入口として通し、`Heartbeat` / `VideoFrame` は registry lookup 対象にする。
+- handler
+  - accepted の route だけを受け取る将来境界とする。
+  - heartbeat 管理、video frame 処理、state 更新はここより後段に残す。
+- drop / log layer
+  - rejected decision を受け取り、将来の実破棄と JSON Lines ログ出力を担当する。
+
+実装上は `apps/server` に `ServerReceiveLoopStep` を置く。これは 1 packet 分の placeholder であり、既に受信済みの packet bytes と `PacketSource` を受け取り、`InboundPacketDecoder` と `ServerInboundRouter` を順番に呼ぶ。既存の decode / route だけの結果は `ServerReceiveLoopOutcome` で返し、gate 接続版は `ServerReceiveLoopGateOutcome` で accepted route または decode / acceptance rejection を返す。実際の socket loop、packet 破棄、ログ出力、認証判定、heartbeat 管理、video frame 処理本体はまだ持たない。
 
 ---
 
@@ -697,9 +718,12 @@ Responsibility split:
 Current code reflects this with
 `apps/server::PacketAcceptanceGateBoundary`,
 `PacketAcceptanceDecision`, `PacketAcceptanceRejection`, and
-`PacketAcceptanceRejectReason`. It is a boundary helper only; actual packet
-drop execution, receive-loop integration, and JSON Lines logging remain future
-tasks.
+`PacketAcceptanceRejectReason`. `ServerReceiveLoopStep` now has a connected
+gate path that returns `ServerReceiveLoopGateOutcome`: accepted routes are the
+only ones eligible for future handler execution, while decode errors and gate
+rejections are separated for future drop / log handling. This is still a
+boundary helper only; actual packet drop execution and JSON Lines logging
+remain future tasks.
 
 ---
 

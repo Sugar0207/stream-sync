@@ -5,6 +5,60 @@
 - Codex
 
 ### 今回の作業
+- receive loop から packet acceptance gate を呼ぶ接続境界を設計した。
+- `docs/architecture/system-design.md` と `docs/architecture/protocol.md` に receive loop -> decode -> gate -> handler / drop の流れを追記した。
+- `apps/server` の `ServerReceiveLoopStep` に gate 接続版の `handle_received_packet_with_gate` を追加した。
+- accepted route と decode / acceptance rejection を分ける `ServerReceiveLoopGateOutcome` / `ServerReceiveLoopGateRejection` を追加した。
+- 登録済み heartbeat が accepted になり、未認証 heartbeat と decode error が drop / log layer 用 decision になる単体テストを追加した。
+
+### 変更ファイル
+- `apps/server/src/lib.rs`
+- `docs/architecture/system-design.md`
+- `docs/architecture/protocol.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### 決定事項
+- receive loop は raw packet decode 成功後に `ServerInboundRouter` で route を作り、その直後に `PacketAcceptanceGateBoundary` を呼ぶ。
+- accepted の route だけが将来の handler / router 後続境界へ進む。
+- decode error は `ServerRejectedPacket`、gate rejection は `PacketAcceptanceRejection` として分け、将来の drop / log layer へ渡す。
+- gate は判定だけを行い、実際の packet 破棄、JSON Lines ログ出力、UDP socket I/O、heartbeat / video frame 処理本体は行わない。
+
+### 未解決事項
+- 実際の packet 破棄処理
+- receive loop / packet acceptance rejection のログ出力
+- auth success / failure ログ出力
+- UDP socket 送受信
+- timeout / 失効 / 再認証の本実装
+
+### 次にやる候補
+- auth success / failure ログ出力境界を設計する
+- packet acceptance rejection を drop / log layer へ渡す境界を整理する
+- UDP socket 受信 / 送信本体の実装に進む
+
+### TODO更新
+- 完了:
+  - receive loop から packet acceptance gate を呼ぶ接続境界を整理する
+  - `ServerReceiveLoopGateOutcome` / `ServerReceiveLoopGateRejection` 追加
+  - receive loop から gate を呼ぶ接続 helper 追加
+- 追加:
+  - packet acceptance rejection を drop / log layer へ渡す境界を整理する
+- 保留:
+  - packet 破棄本体
+  - receive loop / packet acceptance rejection のログ出力
+  - UDP socket 実装
+  - heartbeat / video frame 処理本体
+
+### メモ
+- receive loop と gate 接続境界の責務は、decode 済み route を handler に渡す前に registry ベースで受理判定し、accepted route または drop / log 用 rejection decision を返すところまで。
+
+---
+
+## 2026-04-18
+### 種別
+- Codex
+
+### 今回の作業
 - 未認証 / endpoint mismatch packet の破棄境界を設計した。
 - `docs/architecture/system-design.md` と `docs/architecture/protocol.md` に packet acceptance gate の flow と責務分離を追記した。
 - `apps/server` に `PacketAcceptanceGateBoundary`, `PacketAcceptanceDecision`, `PacketAcceptanceRejection`, `PacketAcceptanceRejectReason` を追加した。
