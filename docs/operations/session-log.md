@@ -5,6 +5,60 @@
 - Codex
 
 ### 今回の作業
+- server 側 handler が `DecodedInboundPacket` を受け取る境界を設計した
+- `docs/architecture/system-design.md` に server handler 境界と `AuthRequest` / `Heartbeat` / `VideoFrame` の分岐責務を追記した
+- `docs/architecture/protocol.md` に `protocol` / `net-core` / `apps/server` の責務分離を追記した
+- `apps/server` に `ServerInboundRouter` / `ServerInboundRoute` placeholder を追加した
+- `ServerInboundRouter` は `DecodedInboundPacket` を受け取り、decode 済み message を server 側 route に分類するだけに留めた
+
+### 変更ファイル
+- `apps/server/Cargo.toml`
+- `apps/server/src/lib.rs`
+- `docs/architecture/system-design.md`
+- `docs/architecture/protocol.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### 決定事項
+- server は `net-core` から `DecodedInboundPacket` を受け取る
+- server 側は `ProtocolMessage` variant、つまり `message_type` 相当の意味を見て処理方針を分岐する
+- 認証、heartbeat、video frame の処理責務は server 側に残す
+- `protocol` は wire format と decode、`net-core` は raw packet から decode 済み packet 生成、server は app 状態へ反映するための分岐を担当する
+- 今回は route 分類だけを置き、認証判定、heartbeat 管理、video frame 処理本体は実装しない
+
+### 未実装 / 保留
+- UDP socket 実装
+- 認証成功 / 失敗判定の本実装
+- heartbeat 管理 / timeout 管理
+- video frame 受理 / 同期バッファ投入
+- encode 本実装
+- `AuthResponse` / `HeartbeatAck` / `ClientStats` / `ServerNotice` の decode / encode
+- fragmentation / 再送制御 / 暗号化
+
+### 次にやる候補
+- server 側の認証 handler 境界を設計する
+- heartbeat handler 境界と timeout 管理の最小状態型を設計する
+- UDP 受信 loop の最小設計を行う
+
+### TODO反映
+- 完了:
+  - server handler 境界 docs 反映
+  - `ServerInboundRouter` / `ServerInboundRoute` placeholder 追加
+  - `AuthRequest` / `Heartbeat` / `VideoFrame` の route 分類
+- 追加:
+  - 認証成功 / 失敗判定の本実装
+  - heartbeat 管理 / timeout 管理の本実装
+  - video frame 受理 / 同期バッファ投入の本実装
+- 保留:
+  - UDP socket 実装
+  - encode 本実装
+  - fragmentation / 再送制御 / 暗号化
+
+## 2026-04-17
+### 種別
+- Codex
+
+### 今回の作業
 - `net-core` と `protocol` の受信 decode 境界を設計した
 - `docs/architecture/system-design.md` に raw packet bytes 受領から decode 済み message を app / server handler へ渡すまでの責務分担を追記した
 - `docs/architecture/protocol.md` に fixed header decode -> protocol_version check -> payload decoder dispatch -> app 受け渡しの順序を反映した

@@ -143,6 +143,12 @@ PoC / MVP 初期では、`crates/protocol` は wire format と message 型の境
 - 認証状態、clientId whitelist、heartbeat timeout、buffer 管理、UI 表示を扱う
 - protocol error をログや切断判断へ変換する
 
+`apps/server` の inbound handler 境界:
+- `net-core` から `DecodedInboundPacket` を受け取る
+- `DecodedInboundPacket.message` の `ProtocolMessage` variant、つまり `message_type` 相当の意味で分岐する
+- `AuthRequest` は認証処理へ、`Heartbeat` は生存確認 / RTT 材料の処理へ、`VideoFrame` は受理判定 / 同期バッファ処理へ渡す
+- 認証成功 / 失敗判定、heartbeat timeout 管理、video frame の受理 / 破棄 / buffer 投入は server 側の責務とし、`protocol` / `net-core` には入れない
+
 ### Decode boundary
 
 受信時の想定順序:
@@ -199,6 +205,24 @@ encode 入口は byte buffer 作成までに限定する。送信先 address、r
 3. `protocol::decode_payload_by_message_type` で `message_type` に応じた payload decoder を呼ぶ。
 4. 成功時は `PacketSource` と `ProtocolMessage` を `DecodedInboundPacket` にまとめる。
 5. 失敗時は `PacketSource` と `ProtocolError` を `NetDecodeError::Protocol` として返す。
+
+### server handler boundary
+
+`apps/server` は `net-core` から `DecodedInboundPacket` を受け取り、decode 済み message の種類に応じて server 側処理へ分岐する。初期実装では `ServerInboundRouter` / `ServerInboundRoute` を境界 placeholder とし、`AuthRequest`, `Heartbeat`, `VideoFrame` の route だけを定義する。
+
+責務分離:
+
+- `protocol`
+  - fixed header と payload を decode し、`ProtocolMessage` を返す。
+  - 認証状態、送信元 address、heartbeat timeout、frame buffer は扱わない。
+- `net-core`
+  - raw packet bytes と送信元 metadata を受け取り、protocol decode を呼ぶ。
+  - 成功時に `DecodedInboundPacket` を返す。
+  - app handler の実行や server 状態変更は行わない。
+- `apps/server`
+  - `DecodedInboundPacket` を受け取り、message 種別ごとの server handler に振り分ける。
+  - 認証、heartbeat、video frame の処理責務を持つ。
+  - 現時点では route 分類のみを置き、認証判定、timeout 管理、video frame 処理本体は実装しない。
 
 ## 1. 目的
 

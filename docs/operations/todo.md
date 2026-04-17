@@ -1,5 +1,15 @@
 <!-- stream-sync/docs/operations/todo.md -->
 
+## 2026-04-17 update: server handler boundary
+
+- [x] `docs/architecture/system-design.md` に server 側 handler 境界を追記する
+- [x] `docs/architecture/protocol.md` に `protocol` / `net-core` / `server` の責務分離を追記する
+- [x] `apps/server` に `DecodedInboundPacket` を受け取る `ServerInboundRouter` / `ServerInboundRoute` placeholder を追加する
+- [x] `AuthRequest` / `Heartbeat` / `VideoFrame` を server 側処理へ分岐する境界を定義する
+- [ ] 認証成功 / 失敗判定の本実装を行う
+- [ ] heartbeat 管理 / timeout 管理の本実装を行う
+- [ ] video frame 受理 / 同期バッファ投入の本実装を行う
+
 ## 2026-04-17 update: net-core / protocol decode boundary
 
 - [x] `docs/architecture/system-design.md` に `net-core` と `protocol` の受信 decode 境界を追記する
@@ -8,7 +18,8 @@
 - [x] `crates/net-core` に `InboundPacket` / `PacketSource` / `InboundPacketDecoder` / `DecodedInboundPacket` / `NetDecodeError` の最小境界型を追加する
 - [x] `net-core` が raw packet bytes と送信元 metadata を受け取り、protocol decode 結果を app / server handler 側へ渡す境界を定義する
 - [ ] UDP socket 実装を行う
-- [ ] server / client / switcher 側 handler 実装を行う
+- [x] server 側 handler 境界を設計する
+- [ ] server / client / switcher 側 handler 本体実装を行う
 
 ## 2026-04-17 update: VideoFrame payload decode
 

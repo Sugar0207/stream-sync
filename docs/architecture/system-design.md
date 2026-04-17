@@ -184,6 +184,34 @@ PoC / MVP 初期では、UDP socket 実装に進む前に、受信 packet bytes 
 
 この境界は packet decode の接続点を決めるためのものであり、実際の UDP socket loop、送信処理、server / client / switcher handler 実装はまだ行わない。
 
+### 5.4 server handler boundary
+
+server 側 handler は、`net-core` から `DecodedInboundPacket` を受け取った後の app 境界とする。`protocol` と `net-core` は packet を decode 済み message に変換するまでを担当し、server は decode 済み message の種類を見て、認証、heartbeat、video frame の各処理へ分岐する。
+
+server 側の入力:
+- `DecodedInboundPacket.source`
+  - raw UDP packet の送信元 metadata。
+  - 認証済み送信元管理やログ付与の材料にする。
+- `DecodedInboundPacket.message`
+  - `protocol` が復元した `ProtocolMessage`。
+  - server は message variant と `message_type` 相当の意味を見て処理方針を選ぶ。
+
+server 側の分岐:
+- `AuthRequest`
+  - 認証処理へ渡す。
+  - shared token 検証、client whitelist 照合、認証済み送信元登録、AuthResponse 生成判断は server 側の責務とする。
+- `Heartbeat`
+  - heartbeat 処理へ渡す。
+  - 生存確認更新、timeout 管理、RTT / offset 計測材料としての扱い、HeartbeatAck 生成判断は server 側の責務とする。
+- `VideoFrame`
+  - video frame 処理へ渡す。
+  - 認証済み client かどうかの確認、古い frame の破棄、時刻補正、ジッターバッファ投入、同期処理は server / sync 側の責務とする。
+- その他 message
+  - 現時点では server inbound の対象外として扱う。
+  - `AuthResponse`, `HeartbeatAck`, `ClientStats`, `ServerNotice` の decode / encode 本実装や扱いは別タスクで決める。
+
+実装上は `apps/server` に `ServerInboundRouter` を置き、`DecodedInboundPacket` を `ServerInboundRoute` に分類する。これは handler 本体ではなく、server handler へ渡す境界名を固定するための placeholder とする。認証成功 / 失敗判定、heartbeat 管理、video frame 処理本体はまだ実装しない。
+
 ---
 
 ## 6. 同期の考え方

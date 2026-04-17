@@ -28,6 +28,10 @@ version = "0.1.0"
 [[package]]
 name = "stream-sync-server"
 version = "0.1.0"
+dependencies = [
+ "stream-sync-net-core",
+ "stream-sync-protocol",
+]
 
 [[package]]
 name = "stream-sync-switcher"
