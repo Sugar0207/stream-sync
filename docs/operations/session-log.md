@@ -5,6 +5,57 @@
 - Codex
 
 ### 今回の作業
+- `AuthResponse` の payload byte layout と encode input boundary を整理した。
+- `docs/architecture/protocol.md` に `client_id`, `run_id`, `accepted`, `reason_code`, `message`, `server_time`, `expected_protocol_version` の wire 順序と型を追記した。
+- `accepted` は `u8` bool、`reason_code` は `u16` little-endian の stable code として固定した。
+- `message`, `server_time`, `expected_protocol_version` は `u8 present` tag 付き optional として整理した。
+- `crates/protocol` に `AuthResponseReasonCode` の wire code placeholder と reason code 長さ定数を追加した。
+- `AuthResponse` は `ProtocolMessage::AuthResponse` のまま `OutboundPacket` へ渡し、wire encode と UDP send は後続層に残す方針を docs に反映した。
+
+### 変更ファイル
+- `crates/protocol/src/lib.rs`
+- `docs/architecture/protocol.md`
+- `docs/architecture/system-design.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### 決定事項
+- `AuthResponse` payload は fixed header の後ろに `client_id`, `run_id`, `accepted`, `reason_code`, `message`, `server_time`, `expected_protocol_version` の順で置く。
+- `protocol_version` は fixed header の値を使い、payload には重複して入れない。
+- `reason_code` の wire 値は `Ok = 0`, `InvalidToken = 1`, `UnknownClient = 2`, `ProtocolMismatch = 3`, `AlreadyConnected = 4`, `InternalError = 5` とする。
+- `expected_protocol_version` は主に `ProtocolMismatch` で present にする想定とし、それ以外では省略してよい。
+- 今回は payload layout と encode input boundary の整理までで、byte buffer 生成や UDP 送信は実装しない。
+
+### 未実装 / 保留
+- `AuthResponse` encode 本実装
+- protocol encoder 呼び出し境界
+- UDP socket 送信本体
+- outbound queue 実処理
+- 認証成功 / 失敗判定本体
+- fragmentation / retry / encryption
+
+### 次にやる候補
+- net send layer から protocol encoder を呼ぶ境界を設計する
+- `AuthResponse` encode の最小実装を追加する
+- UDP socket 送信前の send error / log event 方針を整理する
+
+### TODO更新
+- 完了:
+  - `AuthResponse` payload byte layout docs 反映
+  - `accepted` / `reason_code` / optional field wire rule 整理
+  - `AuthResponseReasonCode` wire code placeholder 追加
+- 追加:
+  - net send layer から protocol encoder を呼ぶ境界を設計する
+- 保留:
+  - `AuthResponse` encode 本実装
+  - UDP socket 送信本体
+  - queue 実処理 / async runtime
+
+## 2026-04-17
+### 種別
+- Codex
+
+### 今回の作業
 - server 側の net send layer における outbound packet / queue 境界を設計した
 - `ProtocolMessage` と宛先情報を `net-core::OutboundPacket` として保持し、future queue へ渡す `OutboundQueueItem` placeholder を追加した
 - `apps/server` に `ServerOutboundQueueBoundary` を追加し、`ServerOutboundAuthResponse` を generic outbound handoff に変換できる形にした

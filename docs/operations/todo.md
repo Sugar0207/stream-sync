@@ -1,5 +1,18 @@
 <!-- stream-sync/docs/operations/todo.md -->
 
+## 2026-04-17 update: AuthResponse payload layout / encode boundary
+
+- [x] `docs/architecture/protocol.md` に `AuthResponse` payload byte layout を追記する
+- [x] `accepted` の wire 表現を `u8` bool (`0 = false`, `1 = true`) として整理する
+- [x] `reason_code` の wire 表現を `u16` little-endian として整理する
+- [x] `reason_code` の stable code を `Ok = 0`, `InvalidToken = 1`, `UnknownClient = 2`, `ProtocolMismatch = 3`, `AlreadyConnected = 4`, `InternalError = 5` として固定する
+- [x] `message`, `server_time`, `expected_protocol_version` の optional ルールを整理する
+- [x] `AuthResponse` を `ProtocolMessage::AuthResponse` として net send layer の `OutboundPacket` へ渡す encode input boundary を整理する
+- [x] `crates/protocol` に `AuthResponseReasonCode` の wire code placeholder と長さ定数を追加する
+- [ ] `AuthResponse` encode 本実装を行う
+- [ ] net send layer から protocol encoder を呼ぶ境界を設計する
+- [ ] UDP socket 送信本体を実装する
+
 ## 2026-04-17 update: server outbound packet / queue boundary
 
 - [x] `docs/architecture/system-design.md` に outbound packet / queue 境界を追記する

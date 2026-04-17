@@ -497,6 +497,47 @@ server が client に返す認証応答。
 - `already_connected`
 - `internal_error`
 
+#### Payload byte layout
+
+`AuthResponse` payload follows the same primitive rules as `AuthRequest`: all
+numeric fields are little-endian, `string` is `u16 byte_length` plus UTF-8
+bytes, and optional fields start with a `u8 present` tag.
+
+The fixed header carries `message_type = AuthResponse`, `protocol_version`, and
+`payload_length`. `protocol_version` is not repeated inside the payload.
+
+| Order | Field | Wire type | Notes |
+| ---: | --- | --- | --- |
+| 1 | `client_id` | `string` | `u16 byte_length` + UTF-8 bytes. Mirrors the request identity. |
+| 2 | `run_id` | `string` | `u16 byte_length` + UTF-8 bytes. Mirrors the request run/session. |
+| 3 | `accepted` | `bool` / `u8` | `0 = false`, `1 = true`. Any other value is invalid when decode is implemented. |
+| 4 | `reason_code` | `u16` | Stable little-endian code: `0 = Ok`, `1 = InvalidToken`, `2 = UnknownClient`, `3 = ProtocolMismatch`, `4 = AlreadyConnected`, `5 = InternalError`. |
+| 5 | `message` | `optional<string>` | `u8 present`; when `1`, followed by `u16 byte_length` + UTF-8 bytes. Usually omitted for accepted responses. |
+| 6 | `server_time` | `optional<u64>` | `u8 present`; when `1`, followed by server timestamp in microseconds. Useful for diagnostics or future time sync hints. |
+| 7 | `expected_protocol_version` | `optional<u32>` | `u8 present`; when `1`, followed by the server expected protocol version. Present mainly for `ProtocolMismatch`. |
+
+Optional field rules:
+
+- `present = 0` means the value is absent and no value bytes follow.
+- `present = 1` means the value bytes immediately follow the tag.
+- Other `present` values are invalid for future decode.
+- `expected_protocol_version` should be present when `reason_code =
+  ProtocolMismatch`; otherwise it may be omitted.
+
+Encode boundary:
+
+1. server auth decision code produces a `ServerAuthDecision`.
+2. `ServerAuthResponseBoundary` constructs `ProtocolMessage::AuthResponse`.
+3. `ServerOutboundQueueBoundary` hands the typed message and destination to
+   `net-core::OutboundPacket`.
+4. A future protocol encoder will write fixed header + this payload layout into
+   bytes.
+5. A future socket send layer will transmit those bytes over UDP.
+
+This step defines the payload layout and typed handoff only. `AuthResponse`
+wire encode, byte buffer creation, queue processing, and UDP send remain
+unimplemented.
+
 ---
 
 ### 7.3 Heartbeat

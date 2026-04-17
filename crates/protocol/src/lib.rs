@@ -50,6 +50,12 @@ pub const PAYLOAD_OPTION_TAG_LEN: u16 = 1;
 /// Byte length of a variable byte array length prefix in message payloads.
 pub const PAYLOAD_BYTES_LEN_PREFIX_LEN: u16 = 4;
 
+/// Byte length of a bool field in message payloads.
+pub const PAYLOAD_BOOL_LEN: u16 = 1;
+
+/// Byte length of an AuthResponse reason code in message payloads.
+pub const AUTH_RESPONSE_REASON_CODE_LEN: u16 = 2;
+
 /// Wire value for H.264 encoded video payloads.
 pub const CODEC_H264_WIRE_VALUE: u16 = 1;
 
@@ -705,13 +711,20 @@ pub struct AuthResponse {
 
 /// Reason code for an authentication response.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[repr(u16)]
 pub enum AuthResponseReasonCode {
-    Ok,
-    InvalidToken,
-    UnknownClient,
-    ProtocolMismatch,
-    AlreadyConnected,
-    InternalError,
+    Ok = 0,
+    InvalidToken = 1,
+    UnknownClient = 2,
+    ProtocolMismatch = 3,
+    AlreadyConnected = 4,
+    InternalError = 5,
+}
+
+impl AuthResponseReasonCode {
+    pub const fn wire_code(self) -> u16 {
+        self as u16
+    }
 }
 
 /// Periodic liveness message sent by an authenticated client.
@@ -914,6 +927,17 @@ mod tests {
                 actual: ProtocolVersion(1)
             })
         );
+    }
+
+    #[test]
+    fn auth_response_reason_code_wire_values_are_stable() {
+        assert_eq!(AUTH_RESPONSE_REASON_CODE_LEN, 2);
+        assert_eq!(AuthResponseReasonCode::Ok.wire_code(), 0);
+        assert_eq!(AuthResponseReasonCode::InvalidToken.wire_code(), 1);
+        assert_eq!(AuthResponseReasonCode::UnknownClient.wire_code(), 2);
+        assert_eq!(AuthResponseReasonCode::ProtocolMismatch.wire_code(), 3);
+        assert_eq!(AuthResponseReasonCode::AlreadyConnected.wire_code(), 4);
+        assert_eq!(AuthResponseReasonCode::InternalError.wire_code(), 5);
     }
 
     #[test]

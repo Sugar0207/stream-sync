@@ -529,3 +529,16 @@ Current code reflects this with `net-core::OutboundPacket`,
 `apps/server::ServerOutboundQueueBoundary`. These are carrier and handoff
 types only. UDP socket send, protocol encode, queue implementation, async
 runtime, retry, fragmentation, and encryption remain unimplemented.
+
+AuthResponse-specific encode boundary:
+
+1. Future auth decision logic returns `ServerAuthDecision`.
+2. `ServerAuthResponseBoundary` converts the decision into
+   `ProtocolMessage::AuthResponse`.
+3. `ServerOutboundQueueBoundary` hands the typed response and destination to the
+   generic net send layer as `OutboundPacket`.
+4. The typed `AuthResponse` is the encode input. The response boundary does not
+   write fixed headers, payload bytes, or UDP packets.
+5. Future protocol encode code will use the `AuthResponse` payload layout
+   defined in `docs/architecture/protocol.md`; future socket code will send the
+   encoded bytes.
