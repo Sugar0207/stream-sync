@@ -4,8 +4,8 @@ use stream_sync_net_core::{
 };
 use stream_sync_protocol::{
     AppVersion, AuthRequest, AuthResponse, AuthResponseReasonCode, ClientId, Heartbeat,
-    MessageType, ProtocolError, ProtocolMessage, ProtocolVersion, RunId, TimestampMicros,
-    VideoFrame,
+    HeartbeatAck, MessageType, ProtocolError, ProtocolMessage, ProtocolVersion, RunId,
+    TimestampMicros, VideoFrame,
 };
 
 /// One-packet receive loop boundary for the future UDP server.
@@ -333,6 +333,70 @@ impl ServerOutboundAuthResponse {
     }
 }
 
+/// Input for building a typed heartbeat acknowledgement handoff.
+///
+/// This is not heartbeat management. It only carries the already-decided ack
+/// fields into the outbound message boundary.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ServerHeartbeatAckInput {
+    pub destination: PacketSource,
+    pub protocol_version: ProtocolVersion,
+    pub client_id: ClientId,
+    pub run_id: RunId,
+    pub echoed_sent_at: TimestampMicros,
+    pub server_received_at: TimestampMicros,
+    pub server_sent_at: TimestampMicros,
+}
+
+/// Boundary that converts heartbeat ack fields into a typed outbound message.
+///
+/// This does not update heartbeat state, calculate RTT, encode bytes, or send
+/// through UDP sockets.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct ServerHeartbeatAckBoundary;
+
+impl ServerHeartbeatAckBoundary {
+    pub fn build_for_send(&self, input: ServerHeartbeatAckInput) -> ServerOutboundHeartbeatAck {
+        let ack = HeartbeatAck {
+            message_type: MessageType::HeartbeatAck,
+            protocol_version: input.protocol_version,
+            client_id: input.client_id,
+            run_id: input.run_id,
+            echoed_sent_at: input.echoed_sent_at,
+            server_received_at: input.server_received_at,
+            server_sent_at: input.server_sent_at,
+        };
+
+        ServerOutboundHeartbeatAck {
+            destination: input.destination,
+            message: ProtocolMessage::HeartbeatAck(ack),
+        }
+    }
+}
+
+/// HeartbeatAck handoff for a future net send layer.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ServerOutboundHeartbeatAck {
+    pub destination: PacketSource,
+    pub message: ProtocolMessage,
+}
+
+impl ServerOutboundHeartbeatAck {
+    pub fn heartbeat_ack(&self) -> Option<&HeartbeatAck> {
+        match &self.message {
+            ProtocolMessage::HeartbeatAck(ack) => Some(ack),
+            _ => None,
+        }
+    }
+
+    pub fn into_outbound_packet(self) -> OutboundPacket {
+        OutboundPacket {
+            destination: self.destination.into(),
+            message: self.message,
+        }
+    }
+}
+
 /// Server-side outbound handoff boundary for a future net send queue.
 ///
 /// This is a one-item handoff only. It does not implement an in-memory queue,
@@ -345,6 +409,10 @@ pub struct ServerOutboundQueueBoundary {
 impl ServerOutboundQueueBoundary {
     pub fn handoff_auth_response(&self, response: ServerOutboundAuthResponse) -> OutboundQueueItem {
         self.queue.handoff(response.into_outbound_packet())
+    }
+
+    pub fn handoff_heartbeat_ack(&self, ack: ServerOutboundHeartbeatAck) -> OutboundQueueItem {
+        self.queue.handoff(ack.into_outbound_packet())
     }
 }
 
@@ -601,6 +669,60 @@ mod tests {
         };
         assert_eq!(response.message_type, MessageType::AuthResponse);
         assert!(response.accepted);
+    }
+
+    #[test]
+    fn heartbeat_ack_boundary_builds_ack_for_send() {
+        let source = packet_source();
+        let boundary = ServerHeartbeatAckBoundary;
+        let input = ServerHeartbeatAckInput {
+            destination: source,
+            protocol_version: ProtocolVersion(2),
+            client_id: ClientId("client-1".to_string()),
+            run_id: RunId("run-1".to_string()),
+            echoed_sent_at: TimestampMicros(1_000_000),
+            server_received_at: TimestampMicros(1_000_100),
+            server_sent_at: TimestampMicros(1_000_200),
+        };
+
+        let outbound = boundary.build_for_send(input);
+
+        assert_eq!(outbound.destination, source);
+        let ack = outbound
+            .heartbeat_ack()
+            .expect("outbound message should be HeartbeatAck");
+        assert_eq!(ack.message_type, MessageType::HeartbeatAck);
+        assert_eq!(ack.protocol_version, ProtocolVersion(2));
+        assert_eq!(ack.client_id, ClientId("client-1".to_string()));
+        assert_eq!(ack.run_id, RunId("run-1".to_string()));
+        assert_eq!(ack.echoed_sent_at, TimestampMicros(1_000_000));
+        assert_eq!(ack.server_received_at, TimestampMicros(1_000_100));
+        assert_eq!(ack.server_sent_at, TimestampMicros(1_000_200));
+    }
+
+    #[test]
+    fn outbound_queue_boundary_hands_off_heartbeat_ack_to_net_send_layer() {
+        let source = packet_source();
+        let ack_boundary = ServerHeartbeatAckBoundary;
+        let queue_boundary = ServerOutboundQueueBoundary::default();
+        let outbound = ack_boundary.build_for_send(ServerHeartbeatAckInput {
+            destination: source,
+            protocol_version: ProtocolVersion(2),
+            client_id: ClientId("client-1".to_string()),
+            run_id: RunId("run-1".to_string()),
+            echoed_sent_at: TimestampMicros(1_000_000),
+            server_received_at: TimestampMicros(1_000_100),
+            server_sent_at: TimestampMicros(1_000_200),
+        });
+
+        let queue_item = queue_boundary.handoff_heartbeat_ack(outbound);
+
+        assert_eq!(queue_item.packet.destination.address, source.address);
+        let ProtocolMessage::HeartbeatAck(ack) = queue_item.packet.message else {
+            panic!("expected HeartbeatAck outbound message");
+        };
+        assert_eq!(ack.message_type, MessageType::HeartbeatAck);
+        assert_eq!(ack.echoed_sent_at, TimestampMicros(1_000_000));
     }
 
     #[test]

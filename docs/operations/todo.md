@@ -18,11 +18,11 @@
 ## 現在位置
 - 仕様固定と土台作りは概ね完了
 - Cargo workspace と `apps/*` / `crates/*` の初期 scaffold は完了
-- `crates/protocol` の基本型、主要 message 型、timestamp 型、fixed header decode、`AuthRequest` / `Heartbeat` / `VideoFrame` payload decode、`AuthResponse` encode は完了
+- `crates/protocol` の基本型、主要 message 型、timestamp 型、fixed header decode、`AuthRequest` / `Heartbeat` / `VideoFrame` payload decode、`AuthResponse` encode、`HeartbeatAck` payload layout 整理は完了
 - `crates/net-core` の inbound decode 境界、outbound packet / queue 境界、protocol encoder 呼び出し境界は placeholder として完了
-- `apps/server` の inbound router、UDP receive loop step、auth handler boundary、AuthResponse response boundary、outbound queue handoff は placeholder として完了
+- `apps/server` の inbound router、UDP receive loop step、auth handler boundary、AuthResponse response boundary、HeartbeatAck ack boundary、outbound queue handoff は placeholder として完了
 - 実ネットワーク送受信、実認証、`AuthResponse` 以外の encode 本実装、時刻同期本体、映像受信・復号・表示、switcher UI は未実装
-- 次の中心は HeartbeatAck / outbound encode 周辺、UDP socket 送受信、server 側の認証本体
+- 次の中心は `HeartbeatAck` encode 本実装、UDP socket 送受信、server 側の認証本体
 
 ---
 
@@ -52,7 +52,7 @@
 ---
 
 ## 直近でやること
-1. `HeartbeatAck` の payload layout / encode 方針を整理する
+1. `HeartbeatAck` encode の最小実装を追加する
 2. UDP socket 送信前の send error / log event 方針を整理する
 3. outbound queue の最小実処理を設計する
 4. client whitelist 読み込みと token 検証の設定入力境界を設計する
@@ -79,6 +79,7 @@
 - [x] AuthResponse 生成 / 送信境界を整理する
 - [x] outbound packet / queue 境界を整理する
 - [x] net send layer / protocol encoder 境界を整理する
+- [x] `HeartbeatAck` encode 入力境界を整理する
 - [ ] 状態遷移を詳細化する
 - [ ] 異常時の挙動を実装レベルに落とす
 - [ ] ログイベント仕様を詳細化する
@@ -106,11 +107,12 @@
 - [x] `Heartbeat` payload byte layout と decode を実装する
 - [x] `VideoFrame` payload byte layout と decode を実装する
 - [x] `AuthResponse` payload byte layout と encode input boundary を整理する
+- [x] `HeartbeatAck` payload layout / encode 方針を決める
 - [x] `ProtocolMessage::message_type()` と `ProtocolMessageEncoderBoundary` placeholder を追加する
 - [x] `AuthResponse` encode 本実装を行う
 - [x] fixed header encode 本実装を行う
 - [ ] message ごとの payload encode 本実装を行う
-- [ ] `HeartbeatAck` payload layout / encode 方針を決める
+- [ ] `HeartbeatAck` encode 本実装を行う
 - [ ] `ClientStats` / `ServerNotice` の payload layout と decode / encode 方針を決める
 - [ ] payload fragmentation の要否と方式を決める
 - [ ] 再送制御 / 暗号化は MVP 初期で扱うか保留するか明記する
@@ -127,6 +129,7 @@
 - [x] `OutboundPacket` / `OutboundQueueItem` / `OutboundPacketQueueBoundary` placeholder を追加する
 - [x] `OutboundEncodeRequest` / `EncodedOutboundPacket` / `OutboundPacketEncoderBoundary` / `NetEncodeError` placeholder を追加する
 - [x] server 側 `ServerOutboundQueueBoundary` placeholder を追加する
+- [x] server 側 `ServerHeartbeatAckBoundary` / `ServerOutboundHeartbeatAck` placeholder を追加する
 - [ ] UDP socket の bind / receive / send 本実装を行う
 - [ ] packet 受信本体を実装する
 - [ ] packet 送信本体を実装する
@@ -161,7 +164,8 @@
 - [x] `Heartbeat` / `HeartbeatAck` 型を定義する
 - [x] `Heartbeat` payload decode を実装する
 - [x] timestamp 単位をマイクロ秒に整理する
-- [ ] `HeartbeatAck` payload layout / encode 方針を決める
+- [x] `HeartbeatAck` payload layout / encode 方針を決める
+- [ ] `HeartbeatAck` encode 本実装を行う
 - [ ] heartbeat 送信処理を client 側に実装する
 - [ ] heartbeat 受信処理を server 側に実装する
 - [ ] heartbeat timeout 管理を実装する
@@ -319,7 +323,8 @@
 ### フェーズ2: protocol encode と UDP PoC 準備
 - [x] `AuthResponse` encode
 - [x] fixed header encode
-- [ ] `HeartbeatAck` encode 方針
+- [x] `HeartbeatAck` encode 方針
+- [ ] `HeartbeatAck` encode 本実装
 - [ ] UDP receive / send 最小実装
 - [ ] server auth decision 最小実装
 - [ ] receive / send ログ最小実装

@@ -495,8 +495,10 @@ Flow:
 
 1. Server response boundaries create outbound typed messages such as
    `ProtocolMessage::AuthResponse`.
-2. Future server notification paths can create other outbound typed messages
-   such as `HeartbeatAck` or `ServerNotice` using the same send-layer shape.
+2. Server ack boundaries can create other outbound typed messages such as
+   `ProtocolMessage::HeartbeatAck` using the same send-layer shape.
+   Future notification paths can do the same for messages such as
+   `ServerNotice`.
 3. The server response boundary attaches destination metadata to the
    `ProtocolMessage`.
 4. The server outbound queue boundary converts the server-specific response
@@ -526,9 +528,11 @@ Responsibility split:
 
 Current code reflects this with `net-core::OutboundPacket`,
 `net-core::OutboundQueueItem`, `net-core::OutboundPacketQueueBoundary`, and
-`apps/server::ServerOutboundQueueBoundary`. These are carrier and handoff
-types only. UDP socket send, protocol encode, queue implementation, async
-runtime, retry, fragmentation, and encryption remain unimplemented.
+`apps/server::ServerOutboundQueueBoundary`. `apps/server` currently has typed
+handoff placeholders for `AuthResponse` and `HeartbeatAck`. These are carrier
+and handoff types only. UDP socket send, `HeartbeatAck` protocol encode, queue
+implementation, async runtime, retry, fragmentation, and encryption remain
+unimplemented.
 
 AuthResponse-specific encode boundary:
 
@@ -540,6 +544,21 @@ AuthResponse-specific encode boundary:
 4. The typed `AuthResponse` is the encode input. The response boundary does not
    write fixed headers, payload bytes, or UDP packets.
 5. Future protocol encode code will use the `AuthResponse` payload layout
+   defined in `docs/architecture/protocol.md`; future socket code will send the
+   encoded bytes.
+
+HeartbeatAck-specific encode input boundary:
+
+1. Future heartbeat handling decides the ack timestamps after receiving
+   `ProtocolMessage::Heartbeat`.
+2. `ServerHeartbeatAckBoundary` converts the already-decided fields into
+   `ProtocolMessage::HeartbeatAck`.
+3. `ServerOutboundQueueBoundary` hands the typed ack and destination to the
+   generic net send layer as `OutboundPacket`.
+4. The typed `HeartbeatAck` is the future encode input. The ack boundary does
+   not calculate heartbeat state, write fixed headers, write payload bytes, or
+   send UDP packets.
+5. Future protocol encode code will use the `HeartbeatAck` payload layout
    defined in `docs/architecture/protocol.md`; future socket code will send the
    encoded bytes.
 
@@ -596,5 +615,6 @@ Current code reflects this with `net-core::OutboundEncodeRequest`,
 `net-core::EncodedOutboundPacket`, `net-core::OutboundPacketEncoderBoundary`,
 `net-core::NetEncodeError`, and
 `protocol::ProtocolMessageEncoderBoundary`. The protocol encoder placeholder
-returns `EncodeNotImplemented`; real fixed header writing, payload writing,
-queue processing, and UDP socket send remain unimplemented.
+currently encodes `AuthResponse` only and returns `EncodeNotImplemented` for
+messages such as `HeartbeatAck`. `HeartbeatAck` fixed header writing, payload
+writing, queue processing, and UDP socket send remain unimplemented.

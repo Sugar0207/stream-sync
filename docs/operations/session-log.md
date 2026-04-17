@@ -5,6 +5,60 @@
 - Codex
 
 ### 今回の作業
+- `HeartbeatAck` の payload byte layout と encode 入力境界を整理した。
+- `docs/architecture/protocol.md` に `client_id`, `run_id`, `echoed_sent_at`, `server_received_at`, `server_sent_at` の wire 順序と型を追記した。
+- `HeartbeatAck` を server 側 ack boundary から `ProtocolMessage::HeartbeatAck` として net send layer へ渡す流れを docs に反映した。
+- `apps/server` に `ServerHeartbeatAckBoundary` / `ServerOutboundHeartbeatAck` / queue handoff placeholder を追加した。
+- `HeartbeatAck` 境界の単体テストを追加した。
+
+### 変更ファイル
+- `apps/server/src/lib.rs`
+- `docs/architecture/protocol.md`
+- `docs/architecture/system-design.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### 決定事項
+- `HeartbeatAck` payload は fixed header の後ろに `client_id`, `run_id`, `echoed_sent_at`, `server_received_at`, `server_sent_at` の順で置く。
+- `client_id` / `run_id` は既存 string 方針どおり `u16 byte_length` + UTF-8 bytes とする。
+- timestamp は既存方針どおり `TimestampMicros` 相当の `u64` microseconds とし、wire 上は little-endian とする。
+- server 側 ack boundary は、決定済み timestamp 群を typed `ProtocolMessage::HeartbeatAck` と宛先 metadata に変換するだけに留める。
+- `HeartbeatAck` の wire encode、heartbeat 管理、timeout 管理、UDP socket send、queue 実処理は今回実装しない。
+
+### 未解決事項
+- `HeartbeatAck` encode 本実装
+- UDP socket 送信本体
+- outbound queue 実処理
+- heartbeat 管理 / timeout 管理
+- RTT / offset 推定本体
+- retry / fragmentation / encryption
+
+### 次にやる候補
+- `HeartbeatAck` encode の最小実装を追加する
+- UDP socket 送信前の send error / log event 方針を整理する
+- outbound queue の最小実処理を設計する
+
+### TODO更新
+- 完了:
+  - `HeartbeatAck` payload layout / encode 方針整理
+  - `HeartbeatAck` encode 入力境界 docs 反映
+  - `ServerHeartbeatAckBoundary` / `ServerOutboundHeartbeatAck` placeholder 追加
+- 追加:
+  - `HeartbeatAck` encode 本実装
+- 保留:
+  - UDP socket send
+  - queue runtime
+  - heartbeat 管理 / timeout 管理
+  - retry / fragmentation / encryption
+
+### メモ
+- `HeartbeatAck` encode 境界の責務は、決定済み ack fields を typed `ProtocolMessage::HeartbeatAck` と宛先 metadata として net send layer へ渡すところまで。
+
+## 2026-04-17
+### 種別
+- Codex
+
+### 今回の作業
 - `AuthResponse` encode の最小実装を `crates/protocol` に追加した。
 - `AuthResponse` payload を docs の順序どおり `client_id`, `run_id`, `accepted`, `reason_code`, `message`, `server_time`, `expected_protocol_version` として byte 化する処理を追加した。
 - 16 byte fixed header encode の最小補助を追加し、`ProtocolMessageEncoderBoundary` が `ProtocolMessage::AuthResponse` だけを fixed header + payload bytes に変換するようにした。

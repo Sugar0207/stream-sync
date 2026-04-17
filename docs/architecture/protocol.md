@@ -600,9 +600,33 @@ server が heartbeat に応答するメッセージ。
 - server_received_at
 - server_sent_at
 
+#### Payload byte layout
+
+fixed header の `message_type = HeartbeatAck` の後続 payload は以下の順序とする。
+数値フィールドは fixed header と同じく little-endian とし、timestamp は既存方針どおり `u64` microseconds として置く。
+
+| Order | Field | Wire type | Notes |
+| ---: | --- | --- | --- |
+| 1 | `client_id` | `string` | `u16 byte_length` + UTF-8 bytes。heartbeat の送信元 client を示す。 |
+| 2 | `run_id` | `string` | `u16 byte_length` + UTF-8 bytes。heartbeat の session / run と照合する。 |
+| 3 | `echoed_sent_at` | `u64` | 受信した `Heartbeat.sent_at` をそのまま返す。client clock domain の microseconds。 |
+| 4 | `server_received_at` | `u64` | server が heartbeat を受信した時刻。server clock domain の microseconds。 |
+| 5 | `server_sent_at` | `u64` | server が ack を送信層へ渡す時刻。server clock domain の microseconds。 |
+
+`HeartbeatAck` は `Heartbeat` の受信に対して server が返す typed response として扱う。server 側の heartbeat handler / timebase 層が `HeartbeatAck` の各 timestamp 値を決め、response / ack boundary が `ProtocolMessage::HeartbeatAck` と宛先 metadata を net send layer へ渡す。protocol encoder は後続タスクでこの payload layout を fixed header の後ろに書く。
+
+Encode input boundary:
+
+1. server heartbeat handler が `Heartbeat` の受信結果と server-side timestamps を用意する。
+2. `ServerHeartbeatAckBoundary` が `ProtocolMessage::HeartbeatAck` を構築する。
+3. `ServerOutboundQueueBoundary` が typed message と destination を `net-core::OutboundPacket` / `OutboundQueueItem` として net send layer へ渡す。
+4. `HeartbeatAck` の wire encode はまだ実装しない。将来 protocol encoder が fixed header + payload bytes を生成する。
+5. UDP socket send はさらに後続の socket send layer に残す。
+
 #### 備考
 - client はこれを使って RTT の概算を取れる
 - server 側でも受信時刻を保持して offset 推定に使える
+- 現時点の code placeholder は typed handoff までで、heartbeat 管理、timeout 管理、wire encode、UDP send は行わない
 
 ---
 
@@ -1021,9 +1045,11 @@ Responsibility split:
 
 Current placeholders: `OutboundPacket`, `OutboundQueueItem`, and
 `OutboundPacketQueueBoundary` in `crates/net-core`, plus
-`ServerOutboundQueueBoundary` in `apps/server`. These types keep the send-layer
-contract visible while leaving queue implementation, `AuthResponse` encode,
-UDP socket send, fragmentation, retry, and encryption out of scope.
+`ServerOutboundQueueBoundary` in `apps/server`. `apps/server` also has typed
+outbound handoff placeholders for `AuthResponse` and `HeartbeatAck`. These
+types keep the send-layer contract visible while leaving queue implementation,
+`HeartbeatAck` encode, UDP socket send, fragmentation, retry, and encryption
+out of scope.
 
 ---
 
@@ -1085,7 +1111,11 @@ Current code:
   `ProtocolError::EncodeNotImplemented` for other message types.
 - `crates/net-core::OutboundPacketEncoderBoundary` prepares encode requests and
   maps protocol encode errors while keeping the destination attached.
+- `apps/server::ServerHeartbeatAckBoundary` builds
+  `ProtocolMessage::HeartbeatAck` and hands it to the same outbound queue
+  boundary shape as other typed responses.
 
 `AuthResponse` encode now writes the 16 byte fixed header and the documented
-payload bytes. Other outbound message encoders, outbound queue processing, and
-UDP socket send are still future tasks.
+payload bytes. `HeartbeatAck` currently has a documented payload layout and a
+typed send-layer handoff only. Its wire encoder, other outbound message
+encoders, outbound queue processing, and UDP socket send are still future tasks.
