@@ -179,6 +179,24 @@ fn read_u8(packet: &[u8], offset: usize) -> u8 {
     packet[offset]
 }
 
+/// Encode the initial 16 byte fixed header into `output`.
+///
+/// This writes only the protocol envelope. It does not encode payload fields,
+/// choose a destination, queue packets, or send through UDP sockets.
+pub fn encode_fixed_header(
+    message_type: MessageType,
+    protocol_version: ProtocolVersion,
+    payload_length: u32,
+    output: &mut Vec<u8>,
+) {
+    output.extend_from_slice(&(message_type as u16).to_le_bytes());
+    output.extend_from_slice(&FIXED_HEADER_LEN.to_le_bytes());
+    output.extend_from_slice(&protocol_version.0.to_le_bytes());
+    output.extend_from_slice(&payload_length.to_le_bytes());
+    output.extend_from_slice(&0_u16.to_le_bytes());
+    output.extend_from_slice(&0_u16.to_le_bytes());
+}
+
 /// Context passed to future decode entry points.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct DecodeContext {
@@ -514,10 +532,100 @@ impl<'a> PayloadReader<'a> {
     }
 }
 
+fn write_string(output: &mut Vec<u8>, value: &str) -> Result<(), ProtocolError> {
+    let byte_len = value.len();
+    let byte_len = u16::try_from(byte_len)
+        .map_err(|_| ProtocolError::PayloadStringTooLong { actual: byte_len })?;
+    output.extend_from_slice(&byte_len.to_le_bytes());
+    output.extend_from_slice(value.as_bytes());
+    Ok(())
+}
+
+fn write_bool(output: &mut Vec<u8>, value: bool) {
+    output.push(u8::from(value));
+}
+
+fn write_optional_string(output: &mut Vec<u8>, value: Option<&str>) -> Result<(), ProtocolError> {
+    match value {
+        Some(value) => {
+            output.push(1);
+            write_string(output, value)
+        }
+        None => {
+            output.push(0);
+            Ok(())
+        }
+    }
+}
+
+fn write_optional_u64(output: &mut Vec<u8>, value: Option<u64>) {
+    match value {
+        Some(value) => {
+            output.push(1);
+            output.extend_from_slice(&value.to_le_bytes());
+        }
+        None => output.push(0),
+    }
+}
+
+fn write_optional_protocol_version(output: &mut Vec<u8>, value: Option<ProtocolVersion>) {
+    match value {
+        Some(value) => {
+            output.push(1);
+            output.extend_from_slice(&value.0.to_le_bytes());
+        }
+        None => output.push(0),
+    }
+}
+
 /// Context passed to future encode entry points.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct EncodeContext {
     pub protocol_version: ProtocolVersion,
+}
+
+/// Encode one `AuthResponse` packet as fixed header plus payload bytes.
+///
+/// The payload follows the documented order: `client_id`, `run_id`, `accepted`,
+/// `reason_code`, `message`, `server_time`, and
+/// `expected_protocol_version`. This function does not send the bytes or manage
+/// destinations.
+pub fn encode_auth_response(
+    context: EncodeContext,
+    response: &AuthResponse,
+    output: &mut Vec<u8>,
+) -> Result<(), ProtocolError> {
+    let mut payload = Vec::new();
+    encode_auth_response_payload(response, &mut payload)?;
+    let payload_length =
+        u32::try_from(payload.len()).map_err(|_| ProtocolError::InvalidPayloadLength {
+            expected: u32::MAX,
+            actual: payload.len(),
+        })?;
+
+    encode_fixed_header(
+        MessageType::AuthResponse,
+        context.protocol_version,
+        payload_length,
+        output,
+    );
+    output.extend_from_slice(&payload);
+    Ok(())
+}
+
+/// Encode only the `AuthResponse` payload body.
+pub fn encode_auth_response_payload(
+    response: &AuthResponse,
+    output: &mut Vec<u8>,
+) -> Result<(), ProtocolError> {
+    write_string(output, &response.client_id.0)?;
+    write_string(output, &response.run_id.0)?;
+    write_bool(output, response.accepted);
+    output.extend_from_slice(&response.reason_code.wire_code().to_le_bytes());
+    write_optional_string(output, response.message.as_deref())?;
+    write_optional_u64(output, response.server_time.map(|timestamp| timestamp.0));
+    write_optional_protocol_version(output, response.expected_protocol_version);
+    Ok(())
 }
 
 /// Decoded protocol message variants.
@@ -581,6 +689,9 @@ pub enum ProtocolError {
     UnsupportedProtocolVersion {
         expected: ProtocolVersion,
         actual: ProtocolVersion,
+    },
+    PayloadStringTooLong {
+        actual: usize,
     },
     PayloadDecodeNotImplemented(MessageType),
     EncodeNotImplemented(MessageType),
@@ -665,21 +776,26 @@ pub trait MessageEncoder {
     ) -> Result<(), ProtocolError>;
 }
 
-/// Placeholder protocol encoder boundary.
+/// Protocol encoder boundary for currently supported outbound messages.
 ///
-/// This fixes the call site shape for future encode work. It intentionally does
-/// not write fixed headers or payload bytes yet.
+/// This writes one complete packet buffer for `AuthResponse` only. Other
+/// messages remain unsupported until their payload layouts are implemented.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
 pub struct ProtocolMessageEncoderBoundary;
 
 impl MessageEncoder for ProtocolMessageEncoderBoundary {
     fn encode_message(
         &self,
-        _context: EncodeContext,
+        context: EncodeContext,
         message: &ProtocolMessage,
-        _output: &mut Vec<u8>,
+        output: &mut Vec<u8>,
     ) -> Result<(), ProtocolError> {
-        Err(ProtocolError::EncodeNotImplemented(message.message_type()))
+        match message {
+            ProtocolMessage::AuthResponse(response) => {
+                encode_auth_response(context, response, output)
+            }
+            message => Err(ProtocolError::EncodeNotImplemented(message.message_type())),
+        }
     }
 }
 
@@ -970,6 +1086,109 @@ mod tests {
         assert_eq!(AuthResponseReasonCode::ProtocolMismatch.wire_code(), 3);
         assert_eq!(AuthResponseReasonCode::AlreadyConnected.wire_code(), 4);
         assert_eq!(AuthResponseReasonCode::InternalError.wire_code(), 5);
+    }
+
+    #[test]
+    fn encodes_auth_response_payload_without_optional_fields() {
+        let response = AuthResponse {
+            message_type: MessageType::AuthResponse,
+            protocol_version: ProtocolVersion(2),
+            client_id: ClientId("client-1".to_string()),
+            run_id: RunId("run-1".to_string()),
+            accepted: true,
+            reason_code: AuthResponseReasonCode::Ok,
+            message: None,
+            server_time: None,
+            expected_protocol_version: None,
+        };
+        let mut payload = Vec::new();
+
+        encode_auth_response_payload(&response, &mut payload)
+            .expect("auth response payload should encode");
+
+        let mut expected = Vec::new();
+        push_string(&mut expected, "client-1");
+        push_string(&mut expected, "run-1");
+        expected.push(1);
+        push_u16(&mut expected, AuthResponseReasonCode::Ok.wire_code());
+        expected.push(0);
+        expected.push(0);
+        expected.push(0);
+        assert_eq!(payload, expected);
+    }
+
+    #[test]
+    fn encodes_auth_response_payload_with_optional_fields() {
+        let response = AuthResponse {
+            message_type: MessageType::AuthResponse,
+            protocol_version: ProtocolVersion(1),
+            client_id: ClientId("client-1".to_string()),
+            run_id: RunId("run-1".to_string()),
+            accepted: false,
+            reason_code: AuthResponseReasonCode::ProtocolMismatch,
+            message: Some("unsupported protocol_version".to_string()),
+            server_time: Some(TimestampMicros(2_000_000)),
+            expected_protocol_version: Some(ProtocolVersion(2)),
+        };
+        let mut payload = Vec::new();
+
+        encode_auth_response_payload(&response, &mut payload)
+            .expect("auth response payload should encode");
+
+        let mut expected = Vec::new();
+        push_string(&mut expected, "client-1");
+        push_string(&mut expected, "run-1");
+        expected.push(0);
+        push_u16(
+            &mut expected,
+            AuthResponseReasonCode::ProtocolMismatch.wire_code(),
+        );
+        push_optional_string(&mut expected, Some("unsupported protocol_version"));
+        push_optional_u64(&mut expected, Some(2_000_000));
+        expected.push(1);
+        push_u32(&mut expected, 2);
+        assert_eq!(payload, expected);
+    }
+
+    #[test]
+    fn protocol_message_encoder_encodes_auth_response_packet() {
+        let response = AuthResponse {
+            message_type: MessageType::AuthResponse,
+            protocol_version: ProtocolVersion(2),
+            client_id: ClientId("client-1".to_string()),
+            run_id: RunId("run-1".to_string()),
+            accepted: true,
+            reason_code: AuthResponseReasonCode::Ok,
+            message: None,
+            server_time: Some(TimestampMicros(2_000_000)),
+            expected_protocol_version: None,
+        };
+        let message = ProtocolMessage::AuthResponse(response.clone());
+        let encoder = ProtocolMessageEncoderBoundary;
+        let mut output = Vec::new();
+
+        encoder
+            .encode_message(
+                EncodeContext {
+                    protocol_version: ProtocolVersion(2),
+                },
+                &message,
+                &mut output,
+            )
+            .expect("auth response packet should encode");
+
+        let decoded = decode_fixed_header(&output).expect("encoded fixed header should decode");
+        assert_eq!(decoded.header.message_type, MessageType::AuthResponse);
+        assert_eq!(decoded.header.header_length, FIXED_HEADER_LEN);
+        assert_eq!(decoded.header.protocol_version, ProtocolVersion(2));
+        assert_eq!(decoded.header.flags, 0);
+        assert_eq!(decoded.header.reserved, 0);
+
+        let mut expected_payload = Vec::new();
+        encode_auth_response_payload(&response, &mut expected_payload)
+            .expect("expected payload should encode");
+        assert_eq!(decoded.header.payload_length, expected_payload.len() as u32);
+        assert_eq!(decoded.payload, expected_payload.as_slice());
     }
 
     #[test]

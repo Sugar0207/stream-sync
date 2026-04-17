@@ -5,6 +5,57 @@
 - Codex
 
 ### 今回の作業
+- `AuthResponse` encode の最小実装を `crates/protocol` に追加した。
+- `AuthResponse` payload を docs の順序どおり `client_id`, `run_id`, `accepted`, `reason_code`, `message`, `server_time`, `expected_protocol_version` として byte 化する処理を追加した。
+- 16 byte fixed header encode の最小補助を追加し、`ProtocolMessageEncoderBoundary` が `ProtocolMessage::AuthResponse` だけを fixed header + payload bytes に変換するようにした。
+- `AuthResponse` encode の単体テストを追加した。
+- `docs/architecture/protocol.md` と TODO を今回の実装状態に合わせて更新した。
+
+### 変更ファイル
+- `crates/protocol/src/lib.rs`
+- `docs/architecture/protocol.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### 決定事項
+- `AuthResponse` encode は `crates/protocol` の責務とし、destination metadata、queue、UDP socket send は扱わない。
+- fixed header の `message_type` は `AuthResponse`、`protocol_version` は `EncodeContext.protocol_version`、`payload_length` は生成した payload byte 数から計算する。
+- `accepted` は `u8`、`reason_code` は `u16 little-endian`、optional 項目は `u8 present + value` で encode する。
+- `ProtocolMessageEncoderBoundary` は `AuthResponse` 以外の outbound message では引き続き `EncodeNotImplemented` を返す。
+
+### 未解決事項
+- `HeartbeatAck` / `VideoFrame` / `ClientStats` / `ServerNotice` の encode
+- UDP socket 送信本体
+- outbound queue 実処理
+- 認証成功 / 失敗判定の本実装
+- retry / fragmentation / encryption
+
+### 次にやる候補
+- `HeartbeatAck` payload layout / encode 方針を整理する
+- UDP socket 送信前の send error / log event 方針を整理する
+- outbound queue の最小実処理を設計する
+
+### TODO更新
+- 完了:
+  - `AuthResponse` encode 本実装
+  - fixed header encode 本実装
+  - `AuthResponse` encode の単体テスト追加
+- 追加:
+  - なし
+- 保留:
+  - `AuthResponse` 以外の message encode
+  - UDP socket send
+  - queue runtime / retry / fragmentation / encryption
+
+### メモ
+- `cargo fmt --check` と `cargo check --workspace` は成功。
+- `cargo test -p stream-sync-protocol` は MSVC linker `link.exe` が見つからない環境理由で失敗した。
+
+## 2026-04-17
+### 種別
+- Codex
+
+### 今回の作業
 - net send layer から protocol encoder を呼ぶ境界が docs とコードに反映済みであることを確認した。
 - `system-design.md` / `protocol.md` の response boundary、net send layer、protocol encoder、socket send の責務分離を確認した。
 - `crates/protocol` の `ProtocolMessageEncoderBoundary` と `crates/net-core` の `OutboundPacketEncoderBoundary` が encode 本実装なしの境界 placeholder に留まっていることを確認した。

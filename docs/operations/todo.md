@@ -18,11 +18,11 @@
 ## 現在位置
 - 仕様固定と土台作りは概ね完了
 - Cargo workspace と `apps/*` / `crates/*` の初期 scaffold は完了
-- `crates/protocol` の基本型、主要 message 型、timestamp 型、fixed header decode、`AuthRequest` / `Heartbeat` / `VideoFrame` payload decode は完了
+- `crates/protocol` の基本型、主要 message 型、timestamp 型、fixed header decode、`AuthRequest` / `Heartbeat` / `VideoFrame` payload decode、`AuthResponse` encode は完了
 - `crates/net-core` の inbound decode 境界、outbound packet / queue 境界、protocol encoder 呼び出し境界は placeholder として完了
 - `apps/server` の inbound router、UDP receive loop step、auth handler boundary、AuthResponse response boundary、outbound queue handoff は placeholder として完了
-- 実ネットワーク送受信、実認証、encode 本実装、時刻同期本体、映像受信・復号・表示、switcher UI は未実装
-- 次の中心は `AuthResponse` encode、HeartbeatAck / outbound encode 周辺、UDP socket 送受信、server 側の認証本体
+- 実ネットワーク送受信、実認証、`AuthResponse` 以外の encode 本実装、時刻同期本体、映像受信・復号・表示、switcher UI は未実装
+- 次の中心は HeartbeatAck / outbound encode 周辺、UDP socket 送受信、server 側の認証本体
 
 ---
 
@@ -52,14 +52,12 @@
 ---
 
 ## 直近でやること
-1. `AuthResponse` encode の最小実装を追加する
-2. protocol encoder の fixed header / payload byte 生成を実装する
-3. `HeartbeatAck` の payload layout / encode 方針を整理する
-4. UDP socket 送信前の send error / log event 方針を整理する
-5. outbound queue の最小実処理を設計する
-6. client whitelist 読み込みと token 検証の設定入力境界を設計する
-7. server 側の認証成功 / 失敗判定を実装する
-8. UDP socket 受信 / 送信本体の実装に進む
+1. `HeartbeatAck` の payload layout / encode 方針を整理する
+2. UDP socket 送信前の send error / log event 方針を整理する
+3. outbound queue の最小実処理を設計する
+4. client whitelist 読み込みと token 検証の設定入力境界を設計する
+5. server 側の認証成功 / 失敗判定を実装する
+6. UDP socket 受信 / 送信本体の実装に進む
 
 ---
 
@@ -109,8 +107,8 @@
 - [x] `VideoFrame` payload byte layout と decode を実装する
 - [x] `AuthResponse` payload byte layout と encode input boundary を整理する
 - [x] `ProtocolMessage::message_type()` と `ProtocolMessageEncoderBoundary` placeholder を追加する
-- [ ] `AuthResponse` encode 本実装を行う
-- [ ] fixed header encode 本実装を行う
+- [x] `AuthResponse` encode 本実装を行う
+- [x] fixed header encode 本実装を行う
 - [ ] message ごとの payload encode 本実装を行う
 - [ ] `HeartbeatAck` payload layout / encode 方針を決める
 - [ ] `ClientStats` / `ServerNotice` の payload layout と decode / encode 方針を決める
@@ -273,7 +271,7 @@
 ## 検証 / テスト
 - [x] 過去作業で `cargo fmt --check` が通ることを確認した
 - [x] 過去作業で `cargo check --workspace` が通ることを確認した
-- [ ] `AuthResponse` encode の単体テストを追加する
+- [x] `AuthResponse` encode の単体テストを追加する
 - [ ] fixed header encode / decode roundtrip test を追加する
 - [ ] protocol error の単体テストを拡充する
 - [ ] net-core inbound / outbound 境界の単体テストを追加する
@@ -319,8 +317,8 @@
 - [x] net-core / server の境界 placeholder
 
 ### フェーズ2: protocol encode と UDP PoC 準備
-- [ ] `AuthResponse` encode
-- [ ] fixed header encode
+- [x] `AuthResponse` encode
+- [x] fixed header encode
 - [ ] `HeartbeatAck` encode 方針
 - [ ] UDP receive / send 最小実装
 - [ ] server auth decision 最小実装
