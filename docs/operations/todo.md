@@ -1,724 +1,350 @@
 <!-- stream-sync/docs/operations/todo.md -->
 
-## 2026-04-17 update: net send layer / protocol encoder boundary
-
-- [x] `docs/architecture/system-design.md` に net send layer -> protocol encoder -> socket send の境界を追記する
-- [x] `docs/architecture/protocol.md` に typed outbound message -> encoder -> encoded bytes -> socket send の流れを追記する
-- [x] `crates/protocol` に `ProtocolMessage::message_type()` と `ProtocolMessageEncoderBoundary` placeholder を追加する
-- [x] `crates/net-core` に `OutboundEncodeRequest` / `EncodedOutboundPacket` / `OutboundPacketEncoderBoundary` / `NetEncodeError` placeholder を追加する
-- [x] net send layer が `ProtocolMessage` と宛先情報を protocol encoder 境界へ渡す形をコードで固定する
-- [ ] `AuthResponse` encode 本実装を行う
-- [ ] UDP socket 送信本体を実装する
-- [ ] outbound queue 実処理を実装する
-
-## 2026-04-17 update: AuthResponse payload layout / encode boundary
-
-- [x] `docs/architecture/protocol.md` に `AuthResponse` payload byte layout を追記する
-- [x] `accepted` の wire 表現を `u8` bool (`0 = false`, `1 = true`) として整理する
-- [x] `reason_code` の wire 表現を `u16` little-endian として整理する
-- [x] `reason_code` の stable code を `Ok = 0`, `InvalidToken = 1`, `UnknownClient = 2`, `ProtocolMismatch = 3`, `AlreadyConnected = 4`, `InternalError = 5` として固定する
-- [x] `message`, `server_time`, `expected_protocol_version` の optional ルールを整理する
-- [x] `AuthResponse` を `ProtocolMessage::AuthResponse` として net send layer の `OutboundPacket` へ渡す encode input boundary を整理する
-- [x] `crates/protocol` に `AuthResponseReasonCode` の wire code placeholder と長さ定数を追加する
-- [ ] `AuthResponse` encode 本実装を行う
-- [x] net send layer から protocol encoder を呼ぶ境界を設計する
-- [ ] UDP socket 送信本体を実装する
-
-## 2026-04-17 update: server outbound packet / queue boundary
-
-- [x] `docs/architecture/system-design.md` に outbound packet / queue 境界を追記する
-- [x] `docs/architecture/protocol.md` に typed outbound message -> queue handoff -> future encode / socket send の責務分離を追記する
-- [x] `crates/net-core` に `OutboundPacket` / `OutboundQueueItem` / `OutboundPacketQueueBoundary` placeholder を追加する
-- [x] `apps/server` に `ServerOutboundQueueBoundary` placeholder を追加する
-- [x] server response boundary が作った `ProtocolMessage` と宛先情報を net send layer へ渡す形を定義する
-- [ ] outbound queue の実装本体を行う
-- [ ] `AuthResponse` encode 本実装を行う
-- [ ] UDP socket 送信本体を実装する
-
-## 2026-04-17 update: server UDP receive loop boundary
-
-- [x] `docs/architecture/system-design.md` に server UDP 受信 loop の最小設計を追記する
-- [x] `docs/architecture/protocol.md` に packet bytes 受信 -> decode -> route の流れを追記する
-- [x] `apps/server` に `ServerReceiveLoopStep` / `ServerReceiveLoopOutcome` / `ServerRejectedPacket` placeholder を追加する
-- [x] decode error / protocol error を `DropPacket` / `RejectProtocolVersion` / `UnsupportedInboundMessage` に分類する方針を追加する
-- [ ] UDP socket の本実装を行う
-- [ ] packet 受信本体を実装する
-- [ ] receive loop のログ出力方針を実装する
-
-## 2026-04-17 update: server handler boundary
-
-- [x] `docs/architecture/system-design.md` に server 側 handler 境界を追記する
-- [x] `docs/architecture/protocol.md` に `protocol` / `net-core` / `server` の責務分離を追記する
-- [x] `apps/server` に `DecodedInboundPacket` を受け取る `ServerInboundRouter` / `ServerInboundRoute` placeholder を追加する
-- [x] `AuthRequest` / `Heartbeat` / `VideoFrame` を server 側処理へ分岐する境界を定義する
-- [ ] 認証成功 / 失敗判定の本実装を行う
-- [ ] heartbeat 管理 / timeout 管理の本実装を行う
-- [ ] video frame 受理 / 同期バッファ投入の本実装を行う
-
-## 2026-04-17 update: net-core / protocol decode boundary
-
-- [x] `docs/architecture/system-design.md` に `net-core` と `protocol` の受信 decode 境界を追記する
-- [x] `docs/architecture/protocol.md` に fixed header decode -> protocol_version check -> payload decode -> app 受け渡しの流れを反映する
-- [x] `crates/protocol` に `message_type` に応じた payload decoder dispatch helper を追加する
-- [x] `crates/net-core` に `InboundPacket` / `PacketSource` / `InboundPacketDecoder` / `DecodedInboundPacket` / `NetDecodeError` の最小境界型を追加する
-- [x] `net-core` が raw packet bytes と送信元 metadata を受け取り、protocol decode 結果を app / server handler 側へ渡す境界を定義する
-- [x] server UDP 受信 loop 境界を設計する
-- [ ] UDP socket 実装を行う
-- [x] server 側 handler 境界を設計する
-- [ ] server / client / switcher 側 handler 本体実装を行う
-
-## 2026-04-17 update: VideoFrame payload decode
-
-- [x] `crates/protocol` に `VideoFrame` payload decode の最小実装を追加する
-- [x] fixed header decode 済み、`protocol_version` チェック済みの前提で `VideoFrame` を復元する入口を追加する
-- [x] `client_id`, `run_id`, `frame_id`, `capture_timestamp`, `send_timestamp`, `is_keyframe`, `metadata_reserved`, `width`, `height`, `fps_nominal`, `codec`, `payload_size`, `payload` を docs の byte layout どおり decode する
-- [x] `payload_size` と実際の H.264 byte 数の整合を確認する
-- [x] 不正 payload 長、未期待 message type、不正 bool、不正 reserved、不明 codec に対する最小 error と単体テストを追加する
-- [x] `docs/architecture/protocol.md` に `VideoFrame` payload decode の実装状態を反映する
-- [ ] encode 本実装を行う
-- [ ] `AuthResponse` / `HeartbeatAck` / `ClientStats` / `ServerNotice` の payload layout と decode 方針を決める
-
-## 2026-04-17 update: Heartbeat payload decode
-
-- [x] `crates/protocol` に `Heartbeat` payload decode の最小実装を追加する
-- [x] fixed header decode 済み、`protocol_version` チェック済みの前提で `Heartbeat` を復元する入口を追加する
-- [x] `client_id`, `run_id`, `sent_at`, `local_time`, `short_status` を docs の byte layout どおり decode する
-- [x] `local_time` を `optional<u64>` から `Option<TimestampMicros>` として decode する
-- [x] `short_status` を `optional<string>` から `Option<String>` として decode する
-- [x] 不正 payload 長、未期待 message type、不正 optional tag に対する最小 error と単体テストを追加する
-- [x] `docs/architecture/protocol.md` に `Heartbeat` payload decode の実装状態を反映する
-- [x] `VideoFrame` payload decode の最小実装を行う
-- [ ] encode 本実装を行う
-
-## 2026-04-17 update: AuthRequest payload decode
-
-- [x] `crates/protocol` に `AuthRequest` payload decode の最小実装を追加する
-- [x] `client_id`, `run_id`, `app_version`, `shared_token`, `display_name` を docs の byte layout どおり decode する
-- [x] 可変長 string を `u16 byte_length` + UTF-8 bytes として decode する
-- [x] `display_name` を `u8 present` + optional string として decode する
-- [x] 不正 payload 長、invalid UTF-8、不正 optional tag、想定外 message type の最小 error を返す
-- [x] `docs/architecture/protocol.md` に `AuthRequest` payload decode の実装状態を反映する
-- [x] `Heartbeat` payload decode の最小実装を行う
-- [x] `VideoFrame` payload decode の最小実装を行う
-- [ ] encode 本実装を行う
-
-## 2026-04-17 update: protocol_version check
-
-- [x] `crates/protocol` に `protocol_version` 期待値チェックの最小実装を追加する
-- [x] fixed header decode 結果の `FixedHeader.protocol_version` と `DecodeContext.expected_protocol_version` を照合する
-- [x] 不一致時に `ProtocolError::UnsupportedProtocolVersion` を返す
-- [x] docs に fixed header decode 後 / payload decode 前の検証方針を反映する
-- [ ] payload decode / encode の本実装を行う
-- [ ] server / client / switcher 側の handler で protocol error を接続拒否や破棄へ変換する
-
-## 2026-04-17 update: payload byte layout
-
-- [x] `AuthRequest` payload byte layout を `docs/architecture/protocol.md` に追記する
-- [x] `Heartbeat` payload byte layout を `docs/architecture/protocol.md` に追記する
-- [x] `VideoFrame` payload byte layout を `docs/architecture/protocol.md` に追記する
-- [x] 可変長 string / optional / bytes の長さ情報の持ち方を明記する
-- [x] `VideoFrame` の metadata と H.264 payload bytes の境界を明記する
-- [x] `crates/protocol` に payload layout 共有用の最小定数を追加する
-- [ ] payload decode / encode の本実装を行う
-- [ ] AuthResponse / HeartbeatAck / ClientStats / ServerNotice の payload byte layout を決める
-
-## 2026-04-17 update: fixed header decode
-
-- [x] `crates/protocol` に 16 byte fixed header decode の最小実装を追加する
-- [x] `message_type`, `header_length`, `protocol_version`, `payload_length`, `flags`, `reserved` を little-endian で decode する
-- [x] 短すぎる packet、未知の `message_type`、不正な `header_length`、`payload_length` 不一致を `ProtocolError` として返す
-- [x] fixed header decode の責務を docs に反映する
-- [ ] payload decode / encode の本実装を行う
-- [ ] message ごとの payload byte layout 詳細を決める
-
-## 2026-04-17 update: encode / decode API boundary
-
-- [x] `docs/architecture/protocol.md` に encode / decode API 境界の方針を追記する
-- [x] fixed header decode / `message_type` 分岐 / payload decode 入口 / encode 入口 / `protocol_version` チェック位置を整理する
-- [x] protocol crate と `net-core` / app 側の責務分離を明記する
-- [x] `crates/protocol` に API 境界用 placeholder trait / enum / error 型を追加する
-- [x] fixed header decode の本実装を行う
-- [ ] payload decode / encode の本実装を行う
-
-## 2026-04-16 update: minimal wire byte layout
-
-- [x] PoC / MVP 初期の最小 wire format byte layout を `docs/architecture/protocol.md` に追記する
-- [x] 固定ヘッダを 16 byte とし、`message_type` / `protocol_version` / `payload_length` / 可変長 payload の扱いを明記する
-- [x] `AuthRequest` と `VideoFrame` は fixed packet header のみ共通化し、認証情報や frame metadata は payload に置く方針を明記する
-- [x] `crates/protocol` に `FIXED_HEADER_LEN`、header offset 定数、`FixedHeader` placeholder を追加する
-- [ ] encode / decode 本実装を行う
-- [ ] UDP 通信実装、handler 実装、fragmentation / 再送制御 / 暗号化を行う
-
 # StreamSync TODO
 
-最終更新: 2026-04-16
+最終更新: 2026-04-17
+
+このファイルは「現在どこまで終わっていて、次に何をやるか」を確認するための TODO です。時系列の作業履歴は `docs/operations/session-log.md` を正とします。
 
 ## 運用ルール
 - このファイルを StreamSync の最新版 TODO として扱う
 - 項目の状態が変わったら必ず更新する
 - 大きな仕様変更があれば関連する `docs/requirements` や `docs/architecture` も更新する
 - Codex 作業後は、この TODO と `docs/operations/session-log.md` を更新する
+- 完了済みの細かい作業履歴はここに積まず、session-log に寄せる
 
 ---
 
-## 0. 決定済み方針
-- [x] プロジェクト名を正式決定した
-  - `StreamSync`
-- [x] リポジトリ名 / ルートフォルダ名を決定した
-  - `stream-sync`
-- [x] プロジェクトの目的を定義した
-  - 4人のゲーム映像を受信し、共通の時間軸で同期したうえで、OBSに載せられる形で表示・手動切り替えできる多視点スイッチング配信ツールを作る
-- [x] PoC完了条件を定義した
-- [x] MVP完了条件を定義した
-- [x] MVPでやらないことを定義した
-- [x] 将来拡張項目を整理した
-- [x] 技術スタックを決定した
-  - Rust
-  - FFmpeg系
-  - UDP独自プロトコル
-  - Rust製最小GUI
-  - OBS Window Capture
-- [x] コーデック方針を決定した
-  - H.264
-- [x] 初期標準品質を決定した
-  - 720p / 30fps
-- [x] 将来拡張方針を決定した
-  - 1080p / 60fps に上げられる設計にする
-- [x] 1080p / 60fps は条件付き上位運用モードとして扱う
-- [x] リポジトリ構成を仮決定した
-  - Cargo workspace の monorepo
-  - `apps/client`, `apps/server`, `apps/switcher`
-  - `crates/*`
-- [x] OBS連携方法を決定した
-  - switcher の専用表示ウィンドウを OBS の Window Capture で取り込む
-- [x] 音声の暫定運用方針を決定した
-  - MVPでは Discord を継続使用し、配信用音声を1系統に固定して映像側を合わせる
-- [x] ネットワーク構成を決定した
-  - 4人の client が中央 server に直接 UDP 送信するスター構成
-  - server が同期責任を持つ
-  - server と switcher は初期段階では同一PC運用
-- [x] 認証方式を決定した
-  - 事前共有トークン方式 + clientId ホワイトリスト
-  - 認証済みクライアントの UDP パケットのみ受理
-- [x] ログ・計測方式を決定した
-  - JSON Lines 形式の構造化ログ
-  - switcher UI 上のリアルタイム簡易メトリクス表示
-  - `run_id` / `client_id` で追跡可能にする
-- [x] バージョン管理方針を決定した
-  - app_version と protocol_version を分離
-  - protocol_version 不一致は接続拒否
-  - app_version 差異は warn ログ
+## 現在位置
+- 仕様固定と土台作りは概ね完了
+- Cargo workspace と `apps/*` / `crates/*` の初期 scaffold は完了
+- `crates/protocol` の基本型、主要 message 型、timestamp 型、fixed header decode、`AuthRequest` / `Heartbeat` / `VideoFrame` payload decode は完了
+- `crates/net-core` の inbound decode 境界、outbound packet / queue 境界、protocol encoder 呼び出し境界は placeholder として完了
+- `apps/server` の inbound router、UDP receive loop step、auth handler boundary、AuthResponse response boundary、outbound queue handoff は placeholder として完了
+- 実ネットワーク送受信、実認証、encode 本実装、時刻同期本体、映像受信・復号・表示、switcher UI は未実装
+- 次の中心は `AuthResponse` encode、HeartbeatAck / outbound encode 周辺、UDP socket 送受信、server 側の認証本体
 
 ---
 
-## 1. 企画・要件整理
-- [x] プロジェクト名を正式決定する
-- [x] ツールの目的を1文で定義する
-- [x] 想定利用シーンを明文化する
-- [x] 対象人数を4人固定で確定する
-- [x] 初期目標を 720p / 30fps / 映像優先 に固定する
-- [x] 成功条件を定義する
-- [x] PoCの完了条件を定義する
-- [x] MVPの完了条件を定義する
-- [x] MVPでやらないことを明記する
-- [x] 将来拡張項目を別枠で整理する
+## 決定済み方針
+- [x] プロジェクト名は `StreamSync`
+- [x] リポジトリ名 / ルートフォルダ名は `stream-sync`
+- [x] MVP は 4 人固定
+- [x] 完全同期に近い映像同期基盤を最優先する
+- [x] 初期標準品質は 720p / 30fps
+- [x] 1080p / 60fps は条件付き上位運用モード
+- [x] 言語は Rust
+- [x] 映像処理は FFmpeg 系
+- [x] 通信は UDP 独自プロトコル
+- [x] コーデックは H.264
+- [x] UI は Rust 製の最小 GUI
+- [x] OBS 連携は switcher 専用ウィンドウの Window Capture
+- [x] 設定ファイルは TOML
+- [x] ログは JSON Lines 形式の構造化ログ
+- [x] 認証は事前共有トークン方式 + clientId ホワイトリスト
+- [x] `app_version` と `protocol_version` は分離管理
+- [x] MVP の音声は Discord 継続使用
+- [x] client 4 台が中央 server に直接 UDP 送信するスター構成
+- [x] server が同期責任を持つ
+- [x] switcher は表示専用
+- [x] MVP 初期段階では server と switcher は同一 PC 運用でよい
 
 ---
 
-## 2. 技術方針の決定
-- [x] 開発言語・技術スタックを決める
-- [x] リポジトリ構成を決める
-- [x] 通信方式を決める
-- [x] エンコード方式を決める
-- [x] OBS連携方法を最終決定する
-- [x] 音声の暫定運用方針を最終決定する
-- [x] ネットワーク構成を決める
-- [x] 認証方式を決める
-- [x] ログ・計測方式を決める
-- [x] バージョン管理方針を決める
+## 直近でやること
+1. `AuthResponse` encode の最小実装を追加する
+2. protocol encoder の fixed header / payload byte 生成を実装する
+3. `HeartbeatAck` の payload layout / encode 方針を整理する
+4. UDP socket 送信前の send error / log event 方針を整理する
+5. outbound queue の最小実処理を設計する
+6. client whitelist 読み込みと token 検証の設定入力境界を設計する
+7. server 側の認証成功 / 失敗判定を実装する
+8. UDP socket 受信 / 送信本体の実装に進む
 
 ---
 
-## 3. ドキュメント・設計
-- [ ] README初版を作る
-- [ ] システム構成図を作る
-- [ ] データフロー図を作る
-- [ ] コンポーネントごとの責務を定義する
-- [ ] 状態遷移を定義する
-- [ ] メタデータ仕様を定義する
-- [ ] 通信プロトコル仕様を定義する
-- [ ] 異常時の挙動を定義する
-- [ ] ログ仕様を定義する
-- [ ] 配信時の運用方針を定義する
-- [ ] バージョン互換性ルールを定義する
+## 仕様 / 設計
+- [x] `docs/requirements/project-overview.md` を作成する
+- [x] `docs/architecture/system-design.md` を作成する
+- [x] `docs/architecture/protocol.md` を作成する
+- [x] `docs/architecture/decisions.md` を作成する
+- [x] README を作成する
+- [x] PoC 完了条件を定義する
+- [x] MVP 完了条件を定義する
+- [x] MVP でやらないことを定義する
+- [x] 将来拡張項目を整理する
+- [x] コンポーネントごとの責務を定義する
+- [x] protocol / net-core / server の受信 decode 境界を整理する
+- [x] server inbound handler 境界を整理する
+- [x] server UDP receive loop 境界を整理する
+- [x] server auth handler 境界を整理する
+- [x] AuthResponse 生成 / 送信境界を整理する
+- [x] outbound packet / queue 境界を整理する
+- [x] net send layer / protocol encoder 境界を整理する
+- [ ] 状態遷移を詳細化する
+- [ ] 異常時の挙動を実装レベルに落とす
+- [ ] ログイベント仕様を詳細化する
+- [ ] 配信時の運用方針を手順書へ落とす
+- [ ] バージョン互換性ルールを実装と運用手順へ反映する
 
 ---
 
-## 4. リポジトリ・開発環境構築
-- [x] Cargo workspace を作成する
-- [x] ルート `Cargo.toml` を作成する
-- [x] `.gitignore` を作成する
-- [x] `rust-toolchain.toml` を作成する
-- [x] `README.md` を作成する
-- [x] `apps/client` を作成する
-- [x] `apps/server` を作成する
-- [x] `apps/switcher` を作成する
-- [x] `crates/protocol` を作成する
-- [x] `crates/config` を作成する
-- [x] `crates/logging` を作成する
-- [x] `crates/timebase` を作成する
-- [x] `crates/video-core` を作成する
-- [x] `crates/net-core` を作成する
-- [x] `crates/sync-core` を作成する
-- [x] `crates/ui-core` を作成する
-- [ ] `docs/architecture` を作成する
-- [ ] `docs/requirements` を作成する
-- [x] `docs/operations/todo.md` を作る
-- [x] `docs/operations/session-log.md` を作る
-- [ ] `docs/requirements/project-overview.md` を作る
-- [ ] `configs/examples` を作成する
-- [ ] `scripts` を作成する
-- [ ] `assets` を作成する
-- [x] `tmp` を git 管理外にする
-- [ ] formatter を導入する
-- [ ] linter を導入する
-- [ ] build / dev コマンドを整備する
-- [ ] サンプル設定ファイルを作る
-- [ ] ローカル起動手順を確認する
-- [ ] ログ出力先ディレクトリ方針を決める
-
----
-
-## 5. 共通基盤実装
+## protocol / wire format
 - [x] 共通型定義を作る
-- [ ] フレームヘッダ構造を定義する
-- [x] VideoFrame の最小構造を定義する
-- [ ] 接続時メッセージを定義する
-- [ ] 同期用メッセージを定義する
-- [x] stats用メッセージを定義する
-- [x] 認証メッセージ形式を定義する
-- [x] heartbeat メッセージ形式を定義する
-- [x] `protocol_version` の共通定義を作る
-- [x] `run_id` の共通定義を作る
-- [x] timestamp の単位と Rust 表現を整理する
-- [x] 共通型のシリアライズ / デシリアライズ方針を整理する
-- [ ] ログイベント型を定義する
-- [ ] メトリクス型を定義する
-- [ ] シリアライズ処理を実装する
-- [ ] デシリアライズ処理を実装する
-- [ ] プロトコルバージョン管理を入れる
-- [ ] 不正データ検出を入れる
-- [x] 認証メッセージに `protocol_version` を含める
-- [x] 認証メッセージに `app_version` を含める
-- [ ] server 側で `protocol_version` 検証処理を作る
-- [ ] app_version 差異時の warn ログを実装する
+- [x] `ClientId`, `RunId`, `AppVersion`, `ProtocolVersion` を定義する
+- [x] `TimestampMicros` を定義し、timestamp 単位をマイクロ秒に整理する
+- [x] `AuthRequest` / `AuthResponse` の Rust 型を定義する
+- [x] `Heartbeat` / `HeartbeatAck` の Rust 型を定義する
+- [x] `VideoFrame` の最小構造を定義する
+- [x] `ClientStats` / `ServerNotice` の最小型を定義する
+- [x] `MessageType`, `Codec`, `NoticeType`, auth reason code を定義する
+- [x] PoC / MVP 初期の最小 wire format を 16 byte fixed header として整理する
+- [x] 数値フィールドを little-endian とする方針を整理する
+- [x] `message_type`, `header_length`, `protocol_version`, `payload_length`, `flags`, `reserved` を fixed header に定義する
+- [x] fixed header decode を実装する
+- [x] `protocol_version` 期待値チェックを実装する
+- [x] payload decoder dispatch helper を実装する
+- [x] `AuthRequest` payload byte layout と decode を実装する
+- [x] `Heartbeat` payload byte layout と decode を実装する
+- [x] `VideoFrame` payload byte layout と decode を実装する
+- [x] `AuthResponse` payload byte layout と encode input boundary を整理する
+- [x] `ProtocolMessage::message_type()` と `ProtocolMessageEncoderBoundary` placeholder を追加する
+- [ ] `AuthResponse` encode 本実装を行う
+- [ ] fixed header encode 本実装を行う
+- [ ] message ごとの payload encode 本実装を行う
+- [ ] `HeartbeatAck` payload layout / encode 方針を決める
+- [ ] `ClientStats` / `ServerNotice` の payload layout と decode / encode 方針を決める
+- [ ] payload fragmentation の要否と方式を決める
+- [ ] 再送制御 / 暗号化は MVP 初期で扱うか保留するか明記する
 
 ---
 
-## 6. 送信クライアント実装
-### 6-1. 基本機能
+## net-core / server 境界
+- [x] `InboundPacket` / `PacketSource` / `InboundPacketDecoder` / `DecodedInboundPacket` / `NetDecodeError` を追加する
+- [x] raw packet bytes と送信元 metadata を protocol decode 結果へ変換する境界を定義する
+- [x] server 側 `ServerInboundRouter` / `ServerInboundRoute` placeholder を追加する
+- [x] `AuthRequest` / `Heartbeat` / `VideoFrame` の server route 分類を定義する
+- [x] `ServerReceiveLoopStep` / `ServerReceiveLoopOutcome` / `ServerRejectedPacket` placeholder を追加する
+- [x] decode error / protocol error の分類方針を定義する
+- [x] `OutboundPacket` / `OutboundQueueItem` / `OutboundPacketQueueBoundary` placeholder を追加する
+- [x] `OutboundEncodeRequest` / `EncodedOutboundPacket` / `OutboundPacketEncoderBoundary` / `NetEncodeError` placeholder を追加する
+- [x] server 側 `ServerOutboundQueueBoundary` placeholder を追加する
+- [ ] UDP socket の bind / receive / send 本実装を行う
+- [ ] packet 受信本体を実装する
+- [ ] packet 送信本体を実装する
+- [ ] receive loop のログ出力を実装する
+- [ ] outbound queue の実処理を実装する
+- [ ] send error の分類とログ方針を実装する
+- [ ] async runtime 導入方針を決める
+
+---
+
+## 認証まわり
+- [x] 認証方式を事前共有トークン + clientId ホワイトリストに決定する
+- [x] `AuthRequest` / `AuthResponse` 型を定義する
+- [x] `AuthRequest` payload decode を実装する
+- [x] `AuthResponse` 生成 / 送信境界を定義する
+- [x] `ServerAuthHandlerBoundary` / `ServerAuthCheck` / `ServerAuthBoundaryError` placeholder を追加する
+- [x] `ServerAuthDecision` / `ServerAuthResponseBoundary` / `ServerOutboundAuthResponse` placeholder を追加する
+- [x] 認証判定入力として `shared_token` / `client_id` / `protocol_version` / `app_version` を参照できる形を定義する
+- [ ] client whitelist 読み込みを実装する
+- [ ] token 検証を実装する
+- [ ] 認証成功 / 失敗判定を実装する
+- [ ] 認証済み送信元の登録 / 管理を実装する
+- [ ] 未認証送信元の `VideoFrame` 破棄を実装する
+- [ ] `protocol_version` 不一致時の接続拒否を server 側に実装する
+- [ ] `app_version` 差異時の warn ログを実装する
+- [ ] 認証期限切れ / 再認証方針を実装する
+- [ ] ログに secret を残さない処理を実装する
+
+---
+
+## heartbeat / 時刻同期
+- [x] `Heartbeat` / `HeartbeatAck` 型を定義する
+- [x] `Heartbeat` payload decode を実装する
+- [x] timestamp 単位をマイクロ秒に整理する
+- [ ] `HeartbeatAck` payload layout / encode 方針を決める
+- [ ] heartbeat 送信処理を client 側に実装する
+- [ ] heartbeat 受信処理を server 側に実装する
+- [ ] heartbeat timeout 管理を実装する
+- [ ] RTT 計測を実装する
+- [ ] clock offset 推定を実装する
+- [ ] offset 平滑化を実装する
+- [ ] 補正後 timestamp へ変換する処理を実装する
+- [ ] targetTime 計算へ接続する
+- [ ] 同期精度をログに出す
+
+---
+
+## video frame / 映像受信
+- [x] `VideoFrame` の最小構造を定義する
+- [x] H.264 payload を `Vec<u8>` として保持する方針を定義する
+- [x] `VideoFrame` payload decode を実装する
+- [x] `payload_size` と実際の H.264 byte 数の整合確認を実装する
+- [x] 不正 bool / reserved / codec / payload 長の最小 error を実装する
+- [ ] client 側で frame metadata を付与する
+- [ ] client 側で H.264 encode を行う
+- [ ] `VideoFrame` encode を実装する
+- [ ] UDP で frame を送信する
+- [ ] server 側で認証済み client の frame だけ受理する
+- [ ] server 側で client ごとの受信キューを作る
+- [ ] 不正 frame 破棄を実装する
+- [ ] 受信遅延と drop を計測する
+- [ ] sync-core のジッターバッファへ投入する
+- [ ] frame 欠落時の代替表示方針を決める
+
+---
+
+## client 側
 - [ ] クライアント起動処理を作る
-- [ ] 設定読み込み処理を作る
-- [ ] 接続処理を作る
-- [ ] 切断処理を作る
-- [ ] 再接続処理を作る
-- [ ] `client_id` を設定から読み込めるようにする
-- [ ] `shared_token` を設定から読み込めるようにする
+- [ ] TOML 設定読み込み処理を作る
+- [ ] `client_id` / `shared_token` を設定から読み込む
+- [ ] `run_id` を受け取る、または生成する
+- [ ] `app_version` / `protocol_version` を送信する
 - [ ] 認証メッセージ送信処理を作る
 - [ ] heartbeat 送信処理を作る
-- [ ] 起動時に `run_id` を受け取る or 生成できるようにする
-- [ ] `app_version` を送信できるようにする
-- [ ] `protocol_version` を送信できるようにする
-
-### 6-2. 画面取得
 - [ ] 画面キャプチャに成功する
-- [ ] 対象ウィンドウキャプチャに成功する
-- [ ] Minecraftウィンドウの取得確認をする
-- [ ] 解像度変更時の挙動を確認する
-- [ ] フルスクリーン時の挙動を確認する
-
-### 6-3. フレーム処理
-- [ ] フレーム番号を付与する
-- [ ] captureTimestampを付与する
-- [ ] sendTimestampを付与する
-- [ ] フレーム欠落時の処理を入れる
-- [ ] stats収集を入れる
-
-### 6-4. エンコード
-- [ ] H.264エンコード処理を実装する
-- [ ] ハードウェアエンコード優先処理を実装する
-- [ ] ソフトウェアエンコードへのフォールバックを実装する
-- [ ] 解像度設定を反映できるようにする
-- [ ] fps設定を反映できるようにする
-- [ ] ビットレート設定を反映できるようにする
-- [ ] キーフレーム間隔設定を反映できるようにする
-- [ ] プリセット設定を反映できるようにする
-- [ ] エンコード失敗時の復旧処理を入れる
+- [ ] Minecraft ウィンドウの取得確認をする
+- [ ] frame id / captureTimestamp / sendTimestamp を付与する
+- [ ] H.264 encode 処理を実装する
+- [ ] ハードウェア encode 優先処理を実装する
+- [ ] ソフトウェア encode fallback を実装する
 - [ ] 720p / 30fps を初期値にする
 - [ ] 1080p / 60fps を将来有効化できる構造にする
-- [ ] 起動時にハードウェアエンコード可否を確認する
-- [ ] ハードウェア未対応時に警告を出す
-- [ ] 高負荷時に低設定へ落とせる方針を入れる
-
-### 6-5. 送信
-- [ ] ヘッダ付きでフレーム送信する
-- [ ] 定期的にstats送信する
-- [ ] 接続異常検知を入れる
-- [ ] 認証付き接続に対応する
+- [ ] UDP 送信処理を実装する
+- [ ] stats 送信処理を実装する
+- [ ] 切断 / 再接続処理を実装する
 
 ---
 
-## 7. 時刻同期機能実装
-- [ ] サーバー基準時刻を扱えるようにする
-- [ ] RTT計測を実装する
-- [ ] clock offset推定を実装する
-- [ ] 接続時同期を実装する
-- [ ] 定期再同期を実装する
-- [ ] offset平滑化を実装する
-- [ ] 異常な時刻ずれの警告を出せるようにする
-- [ ] 補正後タイムスタンプに変換できるようにする
-- [ ] 同期精度をログに出せるようにする
-
----
-
-## 8. 受信サーバー実装
-### 8-1. 基本機能
-- [ ] サーバー起動処理を作る
-- [ ] 接続受付処理を作る
-- [ ] 切断処理を作る
-- [ ] クライアント一覧管理を作る
-- [ ] clientId管理を作る
-- [ ] 許可済み clientId 一覧を設定から読み込めるようにする
-- [ ] clientId ごとの token 検証処理を作る
-- [ ] 認証済み送信元の管理を作る
-- [ ] 認証期限切れ処理を作る
-- [ ] 未認証送信元のフレーム破棄処理を作る
-- [ ] `run_id` をセッション単位で管理する
-- [ ] `protocol_version` 不一致時の接続拒否を実装する
-- [ ] `app_version` 差異時の warn ログを実装する
-
-### 8-2. フレーム受信
-- [ ] ヘッダ受信処理を作る
-- [ ] ペイロード受信処理を作る
-- [ ] clientごとの受信キューを作る
-- [ ] 不正フレームを破棄する
-- [ ] 受信遅延を計測する
-- [ ] 受信statsを集計する
-
-### 8-3. 時刻補正適用
-- [ ] 補正後共通時刻を計算する
-- [ ] 各フレームに共通時刻を付与する
-- [ ] 補正結果をログ出力する
-
-### 8-4. 管理API
-- [ ] client一覧取得APIを作る
-- [ ] client状態取得APIを作る
-- [ ] 遅延取得APIを作る
-- [ ] drop率取得APIを作る
-- [ ] サーバー正常性確認APIを作る
-
----
-
-## 9. ジッターバッファ・同期表示基盤
-- [ ] clientごとのフレームバッファを作る
-- [ ] 時刻順保持を実装する
-- [ ] 古いフレーム破棄を実装する
-- [ ] バッファ上限を設定できるようにする
-- [ ] 共通targetTime計算を実装する
-- [ ] 固定遅延量を設定できるようにする
-- [ ] targetTimeに最も近いフレーム選択処理を作る
-- [ ] フレーム欠落時の代替表示を決める
-- [ ] underflow / overflow処理を入れる
-- [ ] 実効遅延とjitterを可視化する
-
----
-
-## 10. 映像復号・表示機能
-### 10-1. 単独表示
-- [ ] 1視点の復号に成功する
-- [ ] 1視点の表示に成功する
-- [ ] 名前表示を付ける
-- [ ] fps表示を付ける
-- [ ] 遅延表示を付ける
-- [ ] 接続状態表示を付ける
-
-### 10-2. 4分割表示
-- [ ] 2x2レイアウトを作る
-- [ ] 各枠に名前を表示する
-- [ ] 各枠に状態を表示する
-- [ ] 各枠に遅延を表示する
-- [ ] 切断中表示を作る
-- [ ] 準備中表示を作る
-
-### 10-3. 異常時表示
-- [ ] 復号不能時表示を作る
-- [ ] フレーム不足時表示を作る
-- [ ] client未接続時表示を作る
-
----
-
-## 11. スイッチャーUI実装
-- [ ] メイン表示領域を作る
-- [ ] サブ視点一覧を作る
-- [ ] 4分割表示モードを作る
+## switcher / 表示 / OBS
+- [x] OBS 連携方法を Window Capture に決定する
+- [x] switcher は表示専用とする方針を決定する
+- [x] 4 分割表示と単独表示の切り替えを MVP 対象にする
+- [ ] 1 視点の復号に成功する
+- [ ] 1 視点の表示に成功する
+- [ ] 2x2 の 4 分割レイアウトを作る
 - [ ] 単独表示モードを作る
-- [ ] クリック切り替えを実装する
-- [ ] ダブルクリック切り替えを実装する
-- [ ] ホットキー切り替えを実装する
-- [ ] 4分割復帰操作を実装する
+- [ ] クリック / ダブルクリック / ホットキー切り替えを実装する
 - [ ] 現在メイン視点を強調表示する
-- [ ] 遅延悪化視点を警告表示する
-- [ ] 切断視点をグレーアウトする
-- [ ] 誤操作しにくいUIに調整する
-- [ ] client ごとの接続状態表示を作る
-- [ ] client ごとの RTT 表示を作る
-- [ ] client ごとの offset 表示を作る
-- [ ] client ごとの実効遅延表示を作る
-- [ ] client ごとの fps 表示を作る
-- [ ] client ごとの drop率表示を作る
+- [ ] 切断 / 準備中 / 復号不能 / frame 不足表示を作る
+- [ ] client ごとの接続状態 / RTT / offset / 実効遅延 / fps / drop 率を表示する
 - [ ] buffer 状態表示を作る
 - [ ] デバッグ表示 ON/OFF を作る
-
----
-
-## 12. OBS連携
-- [x] OBS連携方法を最終決定する
-- [x] 最初はウィンドウキャプチャ前提で実装する
 - [ ] 配信用表示と操作用表示を分けるか決める
-- [ ] OBSで映像表示に成功する
-- [ ] 720pで表示確認する
-- [ ] 30fpsで表示確認する
+- [ ] OBS で映像表示に成功する
+- [ ] 720p / 30fps で表示確認する
 - [ ] 長時間表示でも安定することを確認する
-- [ ] 不要UI非表示モードを作る
-- [ ] OBSシーン切り替えとの相性を確認する
+- [ ] 不要 UI 非表示モードを作る
 
 ---
 
-## 13. 音声暫定運用
-- [x] MVPで使う音声経路を確定する
-- [ ] Discord使用時の遅延測定方法を決める
-- [ ] 配信用音声の基準系統を決める
-- [ ] 映像側の遅延調整方針を決める
-- [ ] スイッチャー監視用音声と配信用音声の扱いを決める
-- [ ] 視聴者向けに違和感が出ないか確認する
-
----
-
-## 14. セキュリティ・運用前提
-- [x] 接続認証方針を決定する
-- [x] なりすまし対策の最小方針を決定する
-- [x] インターネット越しかローカル限定かを明記する
-- [ ] 許可外クライアントを拒否する実装を入れる
-- [ ] ログに秘密情報を残さないようにする
-- [ ] 必要ポートを整理する
-- [ ] ファイアウォール設定手順を用意する
-- [ ] 設定ファイルの秘密情報管理方法を決める
-
----
-
-## 15. 計測・ログ・デバッグ支援
-- [x] 接続ログを出す
-- [x] 切断ログを出す
-- [x] 再接続ログを出す
-- [x] 受信数ログを出す
-- [x] ドロップログを出す
-- [x] 同期誤差ログを出す
-- [x] clientごとのRTT表示を作る
-- [x] clientごとの実効遅延表示を作る
-- [x] clientごとのfps表示を作る
-- [x] clientごとのdrop率表示を作る
-- [x] デバッグ表示ON/OFFを作る
+## ログ / 計測
+- [x] ログ方針を JSON Lines 形式に決定する
+- [x] `run_id` / `client_id` で追跡可能にする方針を決定する
+- [x] switcher UI 上のリアルタイム簡易メトリクス表示方針を決定する
+- [ ] ログイベント型を定義する
 - [ ] JSON Lines 形式でログ出力する
 - [ ] `run_id` / `client_id` を各ログに付与する
-- [ ] client ごとの offset 表示を作る
-- [ ] buffer 状態表示を作る
+- [ ] 接続 / 切断 / 再接続ログを実装する
+- [ ] 受信数 / drop / 同期誤差ログを実装する
+- [ ] protocol error / malformed packet / auth failure ログを実装する
+- [ ] receive loop / send error のログを実装する
+- [ ] `app_version` / `protocol_version` を接続時ログへ記録する
 - [ ] server 全体メトリクス表示を作る
-- [ ] 接続時に `app_version` をログへ記録する
-- [ ] 接続時に `protocol_version` をログへ記録する
-- [ ] 1080p / 60fps時の負荷測定項目を用意する
+- [ ] 720p / 30fps と 1080p / 60fps の負荷測定項目を整理する
 
 ---
 
-## 16. 疑似クライアント・検証支援
-- [ ] ダミー映像送信クライアントを作る
-- [ ] 1台で複数clientを模擬できるようにする
-- [ ] 人工遅延を加えるテストを作る
-- [ ] 人工jitterを加えるテストを作る
-- [ ] フレーム欠損テストを作る
-- [ ] 長時間試験用の自動実行を作る
-- [ ] サンプル映像を使った再現試験を作る
+## PoC に必要な最小ライン
+1. `AuthResponse` encode と fixed header encode が動く
+2. UDP socket の receive / send が最小で動く
+3. client が `AuthRequest` を送り、server が `AuthResponse` を返せる
+4. client が `Heartbeat` を送り、server が RTT / offset 推定に使える時刻情報を返せる
+5. client が 1 視点の H.264 `VideoFrame` を送れる
+6. server が 1 視点の frame を受信し、破棄 / 受理を判定できる
+7. switcher が 1 視点を復号・表示できる
+8. 2 視点で targetTime による簡易同期表示を確認できる
+9. 4 視点で 2x2 表示を確認できる
+10. OBS Window Capture で switcher 表示を取り込める
 
 ---
 
-## 17. PoCテスト
-### 17-1. 1人PoC
-- [ ] 1人送信に成功する
-- [ ] 1人受信に成功する
-- [ ] 1人表示に成功する
-- [ ] 30分連続動作確認をする
-
-### 17-2. 2人PoC
-- [ ] 2人同時受信に成功する
-- [ ] 2人同時表示に成功する
-- [ ] 基本的な時刻同期確認をする
-- [ ] 遅延差吸収を確認する
-
-### 17-3. 4人PoC
-- [ ] 4人同時受信に成功する
-- [ ] 4分割表示に成功する
-- [ ] targetTime同期確認をする
-- [ ] 4視点の安定表示を確認する
-- [ ] OBSで取り込める形で表示できる
+## 検証 / テスト
+- [x] 過去作業で `cargo fmt --check` が通ることを確認した
+- [x] 過去作業で `cargo check --workspace` が通ることを確認した
+- [ ] `AuthResponse` encode の単体テストを追加する
+- [ ] fixed header encode / decode roundtrip test を追加する
+- [ ] protocol error の単体テストを拡充する
+- [ ] net-core inbound / outbound 境界の単体テストを追加する
+- [ ] server inbound route の単体テストを追加する
+- [ ] 疑似 client を作る
+- [ ] 人工遅延 / jitter / frame 欠損テストを作る
+- [ ] 1 人 PoC を 30 分連続確認する
+- [ ] 2 人同期表示を確認する
+- [ ] 4 人同期表示を確認する
+- [ ] Minecraft 実機で確認する
 
 ---
 
-## 18. MVP完成テスト
-- [ ] 4人同時接続で安定する
-- [ ] 4分割表示が安定する
-- [ ] 単独切り替えが安定する
-- [ ] ホットキー操作が安定する
-- [ ] OBS出力が安定する
-- [ ] 30分〜1時間連続動作確認をする
-- [ ] Minecraft実機でのテストを行う
-- [ ] 移動シーンの滑らかさを確認する
-- [ ] 戦闘シーンの滑らかさを確認する
-- [ ] 視聴上の違和感がないか確認する
-
----
-
-## 19. 異常系テスト
-- [ ] client切断時の挙動を確認する
-- [ ] client再接続時の挙動を確認する
-- [ ] 1人だけ遅延が悪化した時の挙動を確認する
-- [ ] 復号失敗時の挙動を確認する
-- [ ] キーフレーム欠落時の挙動を確認する
-- [ ] バッファ不足時の挙動を確認する
-- [ ] バッファ過多時の挙動を確認する
-- [ ] サーバー再起動時の挙動を確認する
-- [ ] 不正クライアント接続時の挙動を確認する
-
----
-
-## 20. 性能確認
-- [x] 720p / 30fps 時の 1視点あたりの想定ビットレートを定義する
-- [x] 720p / 30fps × 4視点の総帯域見積もりを出す
-- [x] クライアント側の最低上り回線要件を定義する
-- [x] server / switcher 側の最低下り回線要件を定義する
-- [ ] 720p / 30fps × 4視点時の client 側GPU負荷を測定する
-- [ ] 720p / 30fps × 4視点時の受信・復号・描画負荷を測定する
-- [x] 1080p / 60fps 時の帯域見積もりを出す
-- [x] 1080p / 60fps は上位運用モードとして扱う方針を定義する
-- [ ] 1080p / 60fps 時の client 側GPU負荷を測定する
-- [ ] 1080p / 60fps 時の受信・復号・描画負荷を測定する
-- [ ] 1080p / 60fps を有効化できる最低ハードウェア条件を定義する
-- [ ] 1視点あたりの通信量を測定する
-- [ ] 4視点同時時の総帯域を測定する
-- [ ] しきい値を超えた時の警告を確認する
-
----
-
-## 21. 本番運用準備
-- [ ] 起動手順書を作る
-- [ ] 接続手順書を作る
-- [ ] 配信前チェックリストを作る
-- [ ] 配信中チェック項目を作る
-- [ ] トラブル対応手順を作る
-- [ ] ログ保存手順を作る
-- [ ] リハーサル手順を作る
-- [ ] 本番メンバーの役割分担を決める
-- [ ] スイッチ担当を決める
-- [ ] 障害時の連絡方法を決める
-- [x] 1080p / 60fps を有効にする条件を定義する
-- [ ] 低設定へフォールバックする条件を定義する
-- [x] 720p / 30fps の標準運用時の回線要件を手順書に記載する
-- [ ] 1080p / 60fps の上位運用時の回線要件を手順書に記載する
-- [ ] メンバーPCの最低ハードウェア条件を整理する
-
----
-
-## 22. 完成条件
-- [ ] 4人の映像を安定して受信できる
-- [ ] 4人の映像を同じ時間軸で揃えて表示できる
-- [ ] 4分割表示と単独表示を切り替えられる
-- [ ] OBSで問題なく配信に載せられる
-- [ ] 30分〜1時間の実運用に耐えられる
-- [ ] 配信当日に再現可能な手順が整っている
-- [ ] 将来の1080p / 60fps拡張に耐える設定駆動構造になっている
+## 後回し項目
+- [ ] 音声統合
+- [ ] 自動スイッチング
+- [ ] 発話検知による自動強調
+- [ ] Minecraft イベント連動演出
+- [ ] 録画保存 / アーカイブ管理
+- [ ] リプレイ機能
+- [ ] クリップ自動生成
+- [ ] 5 人以上への一般化
+- [ ] 視点数の動的増減対応
+- [ ] 高度な権限管理
+- [ ] 一般公開向けの完成品品質への仕上げ
+- [ ] OBS の高度な自動制御
+- [ ] OBS WebSocket 連携
+- [ ] WebRTC / TCP / SRT / RIST への変更
+- [ ] Electron 中心構成への変更
+- [ ] 本格的な retry / fragmentation / encryption
 
 ---
 
 ## 優先順ロードマップ
 
 ### フェーズ1: 仕様固定と土台
-- [x] 目的定義
-- [x] PoC定義
-- [x] MVP定義
-- [x] 非対象範囲定義
-- [x] 技術スタック決定
-- [x] 通信方式決定
-- [x] エンコード方式決定
-- [x] OBS連携方式決定
-- [x] 音声暫定方針決定
-- [x] ネットワーク構成決定
-- [x] 認証方式決定
-- [x] ログ・計測方式決定
-- [x] バージョン管理方針決定
-- [x] リポジトリ初期化
+- [x] 目的 / PoC / MVP / 非対象範囲定義
+- [x] 技術スタック / 通信 / codec / OBS / 音声 / 認証 / ログ方針決定
+- [x] Cargo workspace 初期化
+- [x] protocol crate の基本型定義
+- [x] wire format 初期設計
+- [x] decode 境界と主要 inbound payload decode
+- [x] net-core / server の境界 placeholder
 
-### フェーズ2: PoC
-- [ ] 1人送信・受信・表示
-- [ ] タイムスタンプ付与
-- [ ] RTT / offset推定
-- [ ] 2人同期表示
-- [ ] 4人同時表示
-- [ ] OBS取り込み確認
+### フェーズ2: protocol encode と UDP PoC 準備
+- [ ] `AuthResponse` encode
+- [ ] fixed header encode
+- [ ] `HeartbeatAck` encode 方針
+- [ ] UDP receive / send 最小実装
+- [ ] server auth decision 最小実装
+- [ ] receive / send ログ最小実装
 
-### フェーズ3: MVP
+### フェーズ3: 1 人送信・受信・表示 PoC
+- [ ] client capture / encode
+- [ ] `VideoFrame` encode / UDP send
+- [ ] server frame receive / queue
+- [ ] switcher decode / single view display
+- [ ] 30 分連続確認
+
+### フェーズ4: 2 人 / 4 人同期 PoC
+- [ ] RTT / offset 推定
 - [ ] ジッターバッファ
-- [ ] 4分割UI
-- [ ] スイッチャーUI
-- [ ] OBS連携安定化
-- [ ] 音声暫定運用
+- [ ] targetTime frame selection
+- [ ] 2 人同期表示
+- [ ] 4 人 2x2 表示
+- [ ] OBS 取り込み確認
+
+### フェーズ5: MVP 安定化
+- [ ] switcher UI
+- [ ] 認証 / reconnect / timeout
 - [ ] 異常系対応
-- [ ] 認証導入
 - [ ] ログ可視化
-
-### フェーズ4: 実運用準備
 - [ ] 長時間試験
-- [ ] 性能計測
-- [ ] トラブル対応整備
-- [ ] 手順書整備
-- [ ] リハーサル
-- [ ] 1080p / 60fps 拡張条件整理
-
----
-
-## 直近でやるべき次の項目
-1. `docs/requirements/project-overview.md` 初版作成
-2. README 初版作成
-3. protocol_version チェック方針を整理する
-4. 最小 wire format の byte layout を設計する
-5. 1人送信・受信・表示 PoC の着手準備をする
-## 2026-04-17 update: server auth handler boundary
-
-## 2026-04-17 update: server AuthResponse boundary
-
-- [x] `docs/architecture/system-design.md` に `AuthResponse` 生成 / 送信境界を追記する
-- [x] `docs/architecture/protocol.md` に auth decision -> `AuthResponse` -> send layer handoff の責務分離を追記する
-- [x] `apps/server` に `ServerAuthDecision` / `ServerAuthResponseBoundary` / `ServerOutboundAuthResponse` placeholder を追加する
-- [x] 認証結果から `ProtocolMessage::AuthResponse` を構築し、宛先 `PacketSource` と一緒に送信レイヤへ渡す形を定義する
-- [ ] 認証成功 / 失敗判定の本実装を行う
-- [ ] `AuthResponse` encode 本実装を行う
-- [x] net send layer の outbound packet 型 / queue 境界を設計する
-- [ ] UDP socket 送信本体を実装する
-
-
-- [x] `docs/architecture/system-design.md` に server 認証 handler 境界を追記する
-- [x] `docs/architecture/protocol.md` に `protocol` / `net-core` / `ServerInboundRouter` / auth handler の責務分離を追記する
-- [x] `apps/server` に `ServerAuthHandlerBoundary` / `ServerAuthCheck` / `ServerAuthBoundaryError` placeholder を追加する
-- [x] `ServerInboundRouter` で認識した `AuthRequest` route を auth handler boundary へ渡す形を定義する
-- [x] 認証判定の入力として `shared_token` / `client_id` / `protocol_version` / `app_version` を参照できる形を定義する
-- [ ] 認証成功 / 失敗判定の本実装を行う
-- [ ] client whitelist 読み込みを実装する
-- [ ] 本物の token 検証を実装する
-- [x] `AuthResponse` 生成 / 送信境界を設計する
+- [ ] 運用手順整備

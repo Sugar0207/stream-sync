@@ -200,6 +200,57 @@
 - Codex
 
 ### 今回の作業
+- `docs/operations/todo.md` を、時系列の追記型から現在位置と次の優先順位が見える構成へ全体整理した。
+- 完了済みの細かい作業ログは `docs/operations/session-log.md` に寄せる方針にし、`todo.md` には領域別の現状と未完了項目を残した。
+- 決定済み方針、直近でやること、仕様 / 設計、protocol / wire format、net-core / server 境界、認証、heartbeat / 時刻同期、video frame、client、switcher / OBS、ログ / 計測、PoC 最小ライン、後回し項目、ロードマップの順に再編した。
+- コードファイルは変更していない。
+
+### 変更ファイル
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### 決定事項
+- `todo.md` は履歴の倉庫ではなく、現在位置と次の順番を示す文書として運用する。
+- 詳細な時系列履歴は `session-log.md` を正とする。
+- 直近の優先は `AuthResponse` encode、protocol encoder の fixed header / payload byte 生成、`HeartbeatAck` 方針、UDP socket 送受信、server 認証本体とする。
+
+### 未実装 / 保留
+- コード変更は今回の対象外。
+- `AuthResponse` encode 本実装
+- fixed header / payload encode 本実装
+- UDP socket 送受信本体
+- server 認証成功 / 失敗判定
+- heartbeat / timebase / video frame / switcher 実装本体
+
+### 次にやる候補
+- `AuthResponse` encode の最小実装を追加する
+- fixed header encode / decode roundtrip test を追加する
+- UDP socket 送信前の send error / log event 方針を整理する
+
+### TODO更新
+- 完了:
+  - TODO の構造整理
+  - 現在位置と直近優先順位の明確化
+  - 領域別タスクへの重複統合
+- 追加:
+  - PoC に必要な最小ライン
+  - protocol encode と UDP PoC 準備を中心にした優先順ロードマップ
+- 保留:
+  - 実装タスク本体
+  - 設計判断の変更
+  - コードファイルの変更
+
+### メモ
+- 今回は `docs/operations/todo.md` と `docs/operations/session-log.md` のみ変更した。
+- 完了 / 未完了の状態は既存 TODO と session-log に記録済みの範囲をもとに整理し、技術スタックや通信方式の変更は行っていない。
+
+---
+
+## 2026-04-17
+### 種別
+- Codex
+
+### 今回の作業
 - server 側で `AuthResponse` を生成し、送信レイヤへ渡す境界を設計した
 - `ServerAuthDecision` から `ProtocolMessage::AuthResponse` を構築し、宛先 `PacketSource` と一緒に `ServerOutboundAuthResponse` として返す placeholder を追加した
 - `docs/architecture/system-design.md` と `docs/architecture/protocol.md` に `protocol` / server auth handler / response boundary / net send layer の責務分離を追記した
