@@ -647,6 +647,62 @@ heartbeat handling, video frame handling, or UDP socket I/O.
 
 ---
 
+## Packet Acceptance / Rejection Boundary
+
+PoC / MVP initial implementation adds a gate between server routing and later
+packet handlers. The gate decides whether a decoded, client-scoped packet may
+reach its handler by consulting the authenticated sender registry.
+
+Flow:
+
+1. The receive loop decodes packet bytes and preserves source endpoint metadata.
+2. `ServerInboundRouter` classifies the decoded message as `AuthRequest`,
+   `Heartbeat`, `VideoFrame`, or unsupported.
+3. `AuthRequest` is allowed to reach the auth flow before registry lookup,
+   because the registry is populated only after auth success.
+4. After auth success, `AuthenticatedSenderRegistry` contains accepted
+   `client_id` to endpoint bindings.
+5. For later `Heartbeat` and `VideoFrame` routes,
+   `PacketAcceptanceGateBoundary` checks decoded `client_id` plus source
+   endpoint against the registry before handler execution.
+6. If the source endpoint has no authenticated binding, the gate returns
+   `UnauthenticatedSource`.
+7. If the endpoint is authenticated but the decoded `client_id` is unknown to
+   the registry, the gate returns `UnknownClient`.
+8. If the decoded `client_id` is registered but the endpoint differs, the gate
+   returns `EndpointMismatch`.
+9. The current gate returns a decision only. Future receive code will decide how
+   to drop and log rejected packets.
+
+Responsibility split:
+
+- receive loop
+  - Owns raw packet receive, decode call order, source metadata preservation,
+    and routing into server-side boundaries.
+  - Future owner of applying the gate result to real packet drop behavior.
+  - Does not own registry state or handler business logic.
+- authenticated sender registry
+  - Owns the accepted `client_id` to endpoint mapping.
+  - Provides lookup only.
+  - Does not drop packets or emit logs.
+- packet acceptance gate
+  - Owns early accept / reject decisions for client-scoped decoded routes.
+  - Distinguishes unauthenticated source, unknown client, and endpoint mismatch.
+  - Does not run heartbeat handling, video frame handling, UDP socket I/O, or
+    log output.
+- handler
+  - Receives only accepted routes in the future flow.
+  - Owns heartbeat and video frame business behavior after acceptance.
+
+Current code reflects this with
+`apps/server::PacketAcceptanceGateBoundary`,
+`PacketAcceptanceDecision`, `PacketAcceptanceRejection`, and
+`PacketAcceptanceRejectReason`. It is a boundary helper only; actual packet
+drop execution, receive-loop integration, and JSON Lines logging remain future
+tasks.
+
+---
+
 ## Server AuthResponse Boundary
 
 PoC / MVP initial implementation separates the future auth decision from

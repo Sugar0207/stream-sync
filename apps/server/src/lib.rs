@@ -434,6 +434,12 @@ impl AuthenticatedSenderRegistry {
     pub fn get(&self, client_id: &ClientId) -> Option<&AuthenticatedSenderEntry> {
         self.entries_by_client_id.get(client_id.0.as_str())
     }
+
+    pub fn contains_source(&self, source: PacketSource) -> bool {
+        self.entries_by_client_id
+            .values()
+            .any(|entry| entry.source == source)
+    }
 }
 
 /// One accepted client to source-endpoint binding.
@@ -536,6 +542,108 @@ impl AuthenticatedSenderRegistryBoundary {
         }
 
         AuthenticatedSenderCheck::Accepted(entry.clone())
+    }
+}
+
+/// Boundary decision for allowing a decoded route to reach its handler.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PacketAcceptanceDecision {
+    Accepted,
+    Rejected(PacketAcceptanceRejection),
+}
+
+/// Rejection data produced before handler execution.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PacketAcceptanceRejection {
+    pub source: PacketSource,
+    pub message_type: MessageType,
+    pub client_id: Option<ClientId>,
+    pub reason: PacketAcceptanceRejectReason,
+}
+
+/// Minimal authenticated packet rejection reasons.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum PacketAcceptanceRejectReason {
+    UnauthenticatedSource,
+    UnknownClient,
+    EndpointMismatch,
+}
+
+/// Gate between server routing and later packet handlers.
+///
+/// This consults the authenticated sender registry for client-scoped packets.
+/// It does not drop packets, emit logs, update timeout state, or run heartbeat /
+/// video frame handlers.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct PacketAcceptanceGateBoundary {
+    registry: AuthenticatedSenderRegistryBoundary,
+}
+
+impl PacketAcceptanceGateBoundary {
+    pub fn evaluate_route(
+        &self,
+        registry: &AuthenticatedSenderRegistry,
+        route: &ServerInboundRoute,
+    ) -> PacketAcceptanceDecision {
+        match route {
+            ServerInboundRoute::AuthRequest { .. } => PacketAcceptanceDecision::Accepted,
+            ServerInboundRoute::Heartbeat { source, heartbeat } => self.evaluate_client_packet(
+                registry,
+                *source,
+                &heartbeat.client_id,
+                MessageType::Heartbeat,
+            ),
+            ServerInboundRoute::VideoFrame { source, frame } => self.evaluate_client_packet(
+                registry,
+                *source,
+                &frame.client_id,
+                MessageType::VideoFrame,
+            ),
+            ServerInboundRoute::UnsupportedForServer { .. } => PacketAcceptanceDecision::Accepted,
+        }
+    }
+
+    fn evaluate_client_packet(
+        &self,
+        registry: &AuthenticatedSenderRegistry,
+        source: PacketSource,
+        client_id: &ClientId,
+        message_type: MessageType,
+    ) -> PacketAcceptanceDecision {
+        match self.registry.check_source(registry, client_id, source) {
+            AuthenticatedSenderCheck::Accepted(_) => PacketAcceptanceDecision::Accepted,
+            AuthenticatedSenderCheck::Rejected(
+                AuthenticatedSenderRejectReason::EndpointMismatch,
+            ) => self.reject(
+                source,
+                message_type,
+                Some(client_id.clone()),
+                PacketAcceptanceRejectReason::EndpointMismatch,
+            ),
+            AuthenticatedSenderCheck::Rejected(AuthenticatedSenderRejectReason::UnknownClient) => {
+                let reason = if registry.contains_source(source) {
+                    PacketAcceptanceRejectReason::UnknownClient
+                } else {
+                    PacketAcceptanceRejectReason::UnauthenticatedSource
+                };
+                self.reject(source, message_type, Some(client_id.clone()), reason)
+            }
+        }
+    }
+
+    fn reject(
+        &self,
+        source: PacketSource,
+        message_type: MessageType,
+        client_id: Option<ClientId>,
+        reason: PacketAcceptanceRejectReason,
+    ) -> PacketAcceptanceDecision {
+        PacketAcceptanceDecision::Rejected(PacketAcceptanceRejection {
+            source,
+            message_type,
+            client_id,
+            reason,
+        })
     }
 }
 
@@ -1245,6 +1353,97 @@ mod tests {
     }
 
     #[test]
+    fn packet_acceptance_gate_allows_auth_request_before_registry_lookup() {
+        let source = packet_source();
+        let gate = PacketAcceptanceGateBoundary::default();
+        let registry = AuthenticatedSenderRegistry::default();
+        let route = ServerInboundRoute::AuthRequest {
+            source,
+            request: auth_request("client-1", "presented-secret"),
+        };
+
+        let decision = gate.evaluate_route(&registry, &route);
+
+        assert_eq!(decision, PacketAcceptanceDecision::Accepted);
+    }
+
+    #[test]
+    fn packet_acceptance_gate_accepts_registered_heartbeat() {
+        let source = packet_source();
+        let gate = PacketAcceptanceGateBoundary::default();
+        let registry = registry_with_client("client-1", source);
+        let route = heartbeat_route("client-1", source);
+
+        let decision = gate.evaluate_route(&registry, &route);
+
+        assert_eq!(decision, PacketAcceptanceDecision::Accepted);
+    }
+
+    #[test]
+    fn packet_acceptance_gate_rejects_unauthenticated_source() {
+        let source = packet_source();
+        let gate = PacketAcceptanceGateBoundary::default();
+        let registry = AuthenticatedSenderRegistry::default();
+        let route = heartbeat_route("client-1", source);
+
+        let decision = gate.evaluate_route(&registry, &route);
+
+        assert_eq!(
+            decision,
+            PacketAcceptanceDecision::Rejected(PacketAcceptanceRejection {
+                source,
+                message_type: MessageType::Heartbeat,
+                client_id: Some(ClientId("client-1".to_string())),
+                reason: PacketAcceptanceRejectReason::UnauthenticatedSource,
+            })
+        );
+    }
+
+    #[test]
+    fn packet_acceptance_gate_rejects_unknown_client_from_authenticated_source() {
+        let source = packet_source();
+        let gate = PacketAcceptanceGateBoundary::default();
+        let registry = registry_with_client("client-1", source);
+        let route = heartbeat_route("client-2", source);
+
+        let decision = gate.evaluate_route(&registry, &route);
+
+        assert_eq!(
+            decision,
+            PacketAcceptanceDecision::Rejected(PacketAcceptanceRejection {
+                source,
+                message_type: MessageType::Heartbeat,
+                client_id: Some(ClientId("client-2".to_string())),
+                reason: PacketAcceptanceRejectReason::UnknownClient,
+            })
+        );
+    }
+
+    #[test]
+    fn packet_acceptance_gate_rejects_endpoint_mismatch_for_video_frame() {
+        let registered_source = packet_source();
+        let packet_source: PacketSource = "127.0.0.1:5001"
+            .parse::<SocketAddr>()
+            .expect("source address should parse")
+            .into();
+        let gate = PacketAcceptanceGateBoundary::default();
+        let registry = registry_with_client("client-1", registered_source);
+        let route = video_frame_route("client-1", packet_source);
+
+        let decision = gate.evaluate_route(&registry, &route);
+
+        assert_eq!(
+            decision,
+            PacketAcceptanceDecision::Rejected(PacketAcceptanceRejection {
+                source: packet_source,
+                message_type: MessageType::VideoFrame,
+                client_id: Some(ClientId("client-1".to_string())),
+                reason: PacketAcceptanceRejectReason::EndpointMismatch,
+            })
+        );
+    }
+
+    #[test]
     fn auth_response_boundary_builds_accepted_response_for_send() {
         let source = packet_source();
         let boundary = ServerAuthResponseBoundary;
@@ -1490,6 +1689,59 @@ mod tests {
                     }]
                 })
                 .unwrap_or_default(),
+        }
+    }
+
+    fn registry_with_client(client_id: &str, source: PacketSource) -> AuthenticatedSenderRegistry {
+        let mut registry = AuthenticatedSenderRegistry::default();
+        AuthenticatedSenderRegistryBoundary.register(
+            &mut registry,
+            AuthenticatedSenderRegistration {
+                client_id: ClientId(client_id.to_string()),
+                source,
+                run_id: RunId("run-1".to_string()),
+                protocol_version: ProtocolVersion(2),
+                registered_at: None,
+            },
+        );
+        registry
+    }
+
+    fn heartbeat_route(client_id: &str, source: PacketSource) -> ServerInboundRoute {
+        ServerInboundRoute::Heartbeat {
+            source,
+            heartbeat: Heartbeat {
+                message_type: MessageType::Heartbeat,
+                protocol_version: ProtocolVersion(2),
+                client_id: ClientId(client_id.to_string()),
+                run_id: RunId("run-1".to_string()),
+                sent_at: TimestampMicros(1_234_567),
+                local_time: None,
+                short_status: None,
+            },
+        }
+    }
+
+    fn video_frame_route(client_id: &str, source: PacketSource) -> ServerInboundRoute {
+        ServerInboundRoute::VideoFrame {
+            source,
+            frame: VideoFrame {
+                message_type: MessageType::VideoFrame,
+                protocol_version: ProtocolVersion(2),
+                client_id: ClientId(client_id.to_string()),
+                run_id: RunId("run-1".to_string()),
+                frame_id: 42,
+                capture_timestamp: TimestampMicros(1_000_000),
+                send_timestamp: TimestampMicros(1_000_100),
+                is_keyframe: true,
+                metadata_reserved: [0; 3],
+                width: 1280,
+                height: 720,
+                fps_nominal: 30,
+                codec: Codec::H264,
+                payload_size: 3,
+                payload: vec![0xaa, 0xbb, 0xcc],
+            },
         }
     }
 

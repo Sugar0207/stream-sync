@@ -1119,6 +1119,52 @@ source endpoint pairs against an in-memory `AuthenticatedSenderRegistry`.
 
 ---
 
+### Packet Acceptance / Rejection Boundary
+
+The packet acceptance gate sits after decode and routing, but before
+client-scoped handlers. It is the early decision point for unauthenticated or
+endpoint-mismatched packets.
+
+Flow:
+
+1. `protocol` decodes client-scoped payload fields such as `client_id`.
+2. `net-core` preserves the source endpoint as `PacketSource`.
+3. `ServerInboundRouter` returns a decoded route.
+4. `AuthRequest` routes bypass the registry check so that initial auth can run.
+5. After auth success registers a sender, later `Heartbeat` and `VideoFrame`
+   routes are checked against `AuthenticatedSenderRegistry`.
+6. If the source endpoint is not registered for any accepted client, the gate
+   returns `UnauthenticatedSource`.
+7. If the endpoint is known but the decoded `client_id` is not registered, the
+   gate returns `UnknownClient`.
+8. If the `client_id` is registered but the packet source endpoint differs, the
+   gate returns `EndpointMismatch`.
+9. Accepted routes may proceed to future heartbeat / video frame handlers.
+
+Responsibility split:
+
+- protocol
+  - Decodes `client_id`; does not decide authentication state.
+- receive loop
+  - Preserves source endpoint and will call the gate early in the receive path.
+  - Future owner of turning rejections into real packet drops.
+- authenticated sender registry
+  - Stores and looks up accepted `client_id` to endpoint bindings.
+  - Does not emit logs or mutate packet flow.
+- packet acceptance gate
+  - Produces accept / reject decisions from decoded route plus registry state.
+  - Does not execute drop, log output, timeout, or reauthentication.
+- handler
+  - Runs only after acceptance in the future flow.
+  - Owns heartbeat and video frame processing, not source authentication.
+
+Current implementation: `apps/server::PacketAcceptanceGateBoundary` evaluates
+`ServerInboundRoute` values against `AuthenticatedSenderRegistry` and returns
+`PacketAcceptanceDecision`. UDP socket integration, actual packet discard, and
+logging are still out of scope.
+
+---
+
 ## AuthResponse Generation / Send Boundary
 
 `AuthResponse` is generated from a server-side auth decision, not directly from

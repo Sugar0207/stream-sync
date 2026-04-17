@@ -1,5 +1,60 @@
 <!-- stream-sync/docs/operations/session-log.md -->
 
+## 2026-04-18
+### 種別
+- Codex
+
+### 今回の作業
+- 未認証 / endpoint mismatch packet の破棄境界を設計した。
+- `docs/architecture/system-design.md` と `docs/architecture/protocol.md` に packet acceptance gate の flow と責務分離を追記した。
+- `apps/server` に `PacketAcceptanceGateBoundary`, `PacketAcceptanceDecision`, `PacketAcceptanceRejection`, `PacketAcceptanceRejectReason` を追加した。
+- registry 参照により `Heartbeat` / `VideoFrame` の `client_id` と source endpoint を受理 / 拒否判定できる最小 helper を追加した。
+- `UnauthenticatedSource` / `UnknownClient` / `EndpointMismatch` を区別する単体テストを追加した。
+
+### 変更ファイル
+- `apps/server/src/lib.rs`
+- `docs/architecture/system-design.md`
+- `docs/architecture/protocol.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### 決定事項
+- packet acceptance gate は decode / routing 後、heartbeat / video frame handler の前に置く。
+- `AuthRequest` は registry 登録前の認証入口なので registry check を bypass する。
+- auth success 後に `AuthenticatedSenderRegistry` へ登録された `client_id` / endpoint のみが client-scoped packet の受理対象になる。
+- source endpoint が registry に無い場合は `UnauthenticatedSource`、endpoint は登録済みだが `client_id` が無い場合は `UnknownClient`、`client_id` はあるが endpoint が違う場合は `EndpointMismatch` とする。
+- gate は decision を返すだけで、実際の packet 破棄、ログ出力、UDP socket I/O、timeout / 再認証は行わない。
+
+### 未解決事項
+- receive loop から packet acceptance gate を呼ぶ接続
+- 実際の packet 破棄処理
+- 未認証 / endpoint mismatch packet のログ出力
+- timeout / 失効 / 再認証の本実装
+- UDP socket 送受信
+
+### 次にやる候補
+- auth success / failure ログ出力境界を設計する
+- receive loop から packet acceptance gate を呼ぶ接続境界を設計する
+- UDP socket 受信 / 送信本体の実装に進む
+
+### TODO更新
+- 完了:
+  - 未認証 / endpoint mismatch packet の破棄境界を整理する
+  - `PacketAcceptanceGateBoundary` / `PacketAcceptanceDecision` placeholder 追加
+  - registry 参照による packet 受理 / 拒否判定 helper 追加
+- 追加:
+  - receive loop から packet acceptance gate を呼ぶ接続境界を設計する
+- 保留:
+  - packet 破棄本体
+  - ログ出力本実装
+  - UDP socket 実装
+  - timeout / 失効 / 再認証
+
+### メモ
+- packet acceptance / rejection 境界の責務は、registry を参照して client-scoped packet を handler 前に受理 / 拒否判定し、drop 実行やログ出力へ渡せる decision を作るところまで。
+
+---
+
 ## 2026-04-17
 ### 種別
 - Codex
