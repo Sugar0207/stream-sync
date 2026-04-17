@@ -613,6 +613,34 @@ pub fn encode_auth_response(
     Ok(())
 }
 
+/// Encode one `HeartbeatAck` packet as fixed header plus payload bytes.
+///
+/// The payload follows the documented order: `client_id`, `run_id`,
+/// `echoed_sent_at`, `server_received_at`, and `server_sent_at`. This function
+/// does not send the bytes, manage heartbeat state, or calculate RTT / offset.
+pub fn encode_heartbeat_ack(
+    context: EncodeContext,
+    ack: &HeartbeatAck,
+    output: &mut Vec<u8>,
+) -> Result<(), ProtocolError> {
+    let mut payload = Vec::new();
+    encode_heartbeat_ack_payload(ack, &mut payload)?;
+    let payload_length =
+        u32::try_from(payload.len()).map_err(|_| ProtocolError::InvalidPayloadLength {
+            expected: u32::MAX,
+            actual: payload.len(),
+        })?;
+
+    encode_fixed_header(
+        MessageType::HeartbeatAck,
+        context.protocol_version,
+        payload_length,
+        output,
+    );
+    output.extend_from_slice(&payload);
+    Ok(())
+}
+
 /// Encode only the `AuthResponse` payload body.
 pub fn encode_auth_response_payload(
     response: &AuthResponse,
@@ -625,6 +653,19 @@ pub fn encode_auth_response_payload(
     write_optional_string(output, response.message.as_deref())?;
     write_optional_u64(output, response.server_time.map(|timestamp| timestamp.0));
     write_optional_protocol_version(output, response.expected_protocol_version);
+    Ok(())
+}
+
+/// Encode only the `HeartbeatAck` payload body.
+pub fn encode_heartbeat_ack_payload(
+    ack: &HeartbeatAck,
+    output: &mut Vec<u8>,
+) -> Result<(), ProtocolError> {
+    write_string(output, &ack.client_id.0)?;
+    write_string(output, &ack.run_id.0)?;
+    output.extend_from_slice(&ack.echoed_sent_at.0.to_le_bytes());
+    output.extend_from_slice(&ack.server_received_at.0.to_le_bytes());
+    output.extend_from_slice(&ack.server_sent_at.0.to_le_bytes());
     Ok(())
 }
 
@@ -778,8 +819,9 @@ pub trait MessageEncoder {
 
 /// Protocol encoder boundary for currently supported outbound messages.
 ///
-/// This writes one complete packet buffer for `AuthResponse` only. Other
-/// messages remain unsupported until their payload layouts are implemented.
+/// This writes one complete packet buffer for supported outbound messages.
+/// Other messages remain unsupported until their payload layouts are
+/// implemented.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
 pub struct ProtocolMessageEncoderBoundary;
 
@@ -794,6 +836,7 @@ impl MessageEncoder for ProtocolMessageEncoderBoundary {
             ProtocolMessage::AuthResponse(response) => {
                 encode_auth_response(context, response, output)
             }
+            ProtocolMessage::HeartbeatAck(ack) => encode_heartbeat_ack(context, ack, output),
             message => Err(ProtocolError::EncodeNotImplemented(message.message_type())),
         }
     }
@@ -1192,8 +1235,8 @@ mod tests {
     }
 
     #[test]
-    fn protocol_message_encoder_boundary_returns_not_implemented() {
-        let message = ProtocolMessage::HeartbeatAck(HeartbeatAck {
+    fn encodes_heartbeat_ack_payload() {
+        let ack = HeartbeatAck {
             message_type: MessageType::HeartbeatAck,
             protocol_version: ProtocolVersion(2),
             client_id: ClientId("client-1".to_string()),
@@ -1201,25 +1244,58 @@ mod tests {
             echoed_sent_at: TimestampMicros(1_000_000),
             server_received_at: TimestampMicros(1_000_100),
             server_sent_at: TimestampMicros(1_000_200),
-        });
+        };
+        let mut payload = Vec::new();
+
+        encode_heartbeat_ack_payload(&ack, &mut payload)
+            .expect("heartbeat ack payload should encode");
+
+        let mut expected = Vec::new();
+        push_string(&mut expected, "client-1");
+        push_string(&mut expected, "run-1");
+        push_u64(&mut expected, 1_000_000);
+        push_u64(&mut expected, 1_000_100);
+        push_u64(&mut expected, 1_000_200);
+        assert_eq!(payload, expected);
+    }
+
+    #[test]
+    fn protocol_message_encoder_encodes_heartbeat_ack_packet() {
+        let ack = HeartbeatAck {
+            message_type: MessageType::HeartbeatAck,
+            protocol_version: ProtocolVersion(2),
+            client_id: ClientId("client-1".to_string()),
+            run_id: RunId("run-1".to_string()),
+            echoed_sent_at: TimestampMicros(1_000_000),
+            server_received_at: TimestampMicros(1_000_100),
+            server_sent_at: TimestampMicros(1_000_200),
+        };
+        let message = ProtocolMessage::HeartbeatAck(ack.clone());
         let encoder = ProtocolMessageEncoderBoundary;
         let mut output = Vec::new();
 
-        let encoded = encoder.encode_message(
-            EncodeContext {
-                protocol_version: ProtocolVersion(2),
-            },
-            &message,
-            &mut output,
-        );
+        encoder
+            .encode_message(
+                EncodeContext {
+                    protocol_version: ProtocolVersion(2),
+                },
+                &message,
+                &mut output,
+            )
+            .expect("heartbeat ack packet should encode");
 
-        assert_eq!(
-            encoded,
-            Err(ProtocolError::EncodeNotImplemented(
-                MessageType::HeartbeatAck
-            ))
-        );
-        assert!(output.is_empty());
+        let decoded = decode_fixed_header(&output).expect("encoded fixed header should decode");
+        assert_eq!(decoded.header.message_type, MessageType::HeartbeatAck);
+        assert_eq!(decoded.header.header_length, FIXED_HEADER_LEN);
+        assert_eq!(decoded.header.protocol_version, ProtocolVersion(2));
+        assert_eq!(decoded.header.flags, 0);
+        assert_eq!(decoded.header.reserved, 0);
+
+        let mut expected_payload = Vec::new();
+        encode_heartbeat_ack_payload(&ack, &mut expected_payload)
+            .expect("expected payload should encode");
+        assert_eq!(decoded.header.payload_length, expected_payload.len() as u32);
+        assert_eq!(decoded.payload, expected_payload.as_slice());
     }
 
     #[test]

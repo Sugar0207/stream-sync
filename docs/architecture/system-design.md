@@ -208,7 +208,7 @@ server 側の分岐:
   - 認証済み client かどうかの確認、古い frame の破棄、時刻補正、ジッターバッファ投入、同期処理は server / sync 側の責務とする。
 - その他 message
   - 現時点では server inbound の対象外として扱う。
-  - `AuthResponse`, `HeartbeatAck`, `ClientStats`, `ServerNotice` の decode / encode 本実装や扱いは別タスクで決める。
+  - `AuthResponse`, `HeartbeatAck`, `ClientStats`, `ServerNotice` の server inbound としての扱いは別タスクで決める。
 
 実装上は `apps/server` に `ServerInboundRouter` を置き、`DecodedInboundPacket` を `ServerInboundRoute` に分類する。これは handler 本体ではなく、server handler へ渡す境界名を固定するための placeholder とする。認証成功 / 失敗判定、heartbeat 管理、video frame 処理本体はまだ実装しない。
 
@@ -530,9 +530,8 @@ Current code reflects this with `net-core::OutboundPacket`,
 `net-core::OutboundQueueItem`, `net-core::OutboundPacketQueueBoundary`, and
 `apps/server::ServerOutboundQueueBoundary`. `apps/server` currently has typed
 handoff placeholders for `AuthResponse` and `HeartbeatAck`. These are carrier
-and handoff types only. UDP socket send, `HeartbeatAck` protocol encode, queue
-implementation, async runtime, retry, fragmentation, and encryption remain
-unimplemented.
+and handoff types only. UDP socket send, queue implementation, async runtime,
+retry, fragmentation, and encryption remain unimplemented.
 
 AuthResponse-specific encode boundary:
 
@@ -555,12 +554,12 @@ HeartbeatAck-specific encode input boundary:
    `ProtocolMessage::HeartbeatAck`.
 3. `ServerOutboundQueueBoundary` hands the typed ack and destination to the
    generic net send layer as `OutboundPacket`.
-4. The typed `HeartbeatAck` is the future encode input. The ack boundary does
+4. The typed `HeartbeatAck` is the encode input. The ack boundary does
    not calculate heartbeat state, write fixed headers, write payload bytes, or
    send UDP packets.
-5. Future protocol encode code will use the `HeartbeatAck` payload layout
-   defined in `docs/architecture/protocol.md`; future socket code will send the
-   encoded bytes.
+5. Protocol encode code uses the `HeartbeatAck` payload layout defined in
+   `docs/architecture/protocol.md`; future socket code will send the encoded
+   bytes.
 
 ---
 
@@ -615,6 +614,6 @@ Current code reflects this with `net-core::OutboundEncodeRequest`,
 `net-core::EncodedOutboundPacket`, `net-core::OutboundPacketEncoderBoundary`,
 `net-core::NetEncodeError`, and
 `protocol::ProtocolMessageEncoderBoundary`. The protocol encoder placeholder
-currently encodes `AuthResponse` only and returns `EncodeNotImplemented` for
-messages such as `HeartbeatAck`. `HeartbeatAck` fixed header writing, payload
-writing, queue processing, and UDP socket send remain unimplemented.
+currently encodes `AuthResponse` and `HeartbeatAck`, and returns
+`EncodeNotImplemented` for other outbound messages. Queue processing and UDP
+socket send remain unimplemented.

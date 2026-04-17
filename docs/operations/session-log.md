@@ -5,6 +5,59 @@
 - Codex
 
 ### 今回の作業
+- `HeartbeatAck` encode の最小実装を `crates/protocol` に追加した。
+- `HeartbeatAck` payload を docs の順序どおり `client_id`, `run_id`, `echoed_sent_at`, `server_received_at`, `server_sent_at` として byte 化する処理を追加した。
+- 既存の 16 byte fixed header encode 補助を再利用し、`ProtocolMessageEncoderBoundary` が `ProtocolMessage::HeartbeatAck` を fixed header + payload bytes に変換するようにした。
+- `HeartbeatAck` encode の単体テストを追加した。
+- `docs/architecture/protocol.md` / `docs/architecture/system-design.md` と TODO を今回の実装状態に合わせて更新した。
+
+### 変更ファイル
+- `crates/protocol/src/lib.rs`
+- `docs/architecture/protocol.md`
+- `docs/architecture/system-design.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### 決定事項
+- `HeartbeatAck` encode は `crates/protocol` の責務とし、destination metadata、queue、UDP socket send は扱わない。
+- fixed header の `message_type` は `HeartbeatAck`、`protocol_version` は `EncodeContext.protocol_version`、`payload_length` は生成した payload byte 数から計算する。
+- `client_id` / `run_id` は `u16 byte_length` + UTF-8 bytes とし、timestamp 3項目は `TimestampMicros` の内部値を `u64 little-endian` で encode する。
+- `ProtocolMessageEncoderBoundary` は `AuthResponse` と `HeartbeatAck` を encode 対象とし、それ以外の outbound message では引き続き `EncodeNotImplemented` を返す。
+
+### 未解決事項
+- UDP socket 送信本体
+- outbound queue 実処理
+- heartbeat 管理 / timeout 管理
+- RTT / offset 推定本体
+- `VideoFrame` / `ClientStats` / `ServerNotice` の encode
+- retry / fragmentation / encryption
+
+### 次にやる候補
+- UDP socket 送信前の send error / log event 方針を整理する
+- outbound queue の最小実処理を設計する
+- client whitelist 読み込みと token 検証の設定入力境界を設計する
+
+### TODO更新
+- 完了:
+  - `HeartbeatAck` encode 本実装
+  - `HeartbeatAck` encode の単体テスト追加
+- 追加:
+  - `VideoFrame` encode 方針と実装範囲を整理する
+- 保留:
+  - UDP socket send
+  - queue runtime
+  - heartbeat 管理 / timeout 管理
+  - RTT / offset 推定
+  - retry / fragmentation / encryption
+
+### メモ
+- `HeartbeatAck` encode の責務は、typed `HeartbeatAck` message を docs の payload layout に従って fixed header + payload bytes に変換するところまで。
+
+## 2026-04-17
+### 種別
+- Codex
+
+### 今回の作業
 - `HeartbeatAck` の payload byte layout と encode 入力境界を整理した。
 - `docs/architecture/protocol.md` に `client_id`, `run_id`, `echoed_sent_at`, `server_received_at`, `server_sent_at` の wire 順序と型を追記した。
 - `HeartbeatAck` を server 側 ack boundary から `ProtocolMessage::HeartbeatAck` として net send layer へ渡す流れを docs に反映した。
