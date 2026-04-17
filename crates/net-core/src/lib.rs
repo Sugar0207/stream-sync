@@ -2,7 +2,7 @@ use std::net::SocketAddr;
 
 use stream_sync_protocol::{
     decode_fixed_header, decode_payload_by_message_type, validate_protocol_version, DecodeContext,
-    ProtocolError, ProtocolMessage,
+    EncodeContext, MessageEncoder, ProtocolError, ProtocolMessage,
 };
 
 pub const CRATE_NAME: &str = "stream-sync-net-core";
@@ -88,6 +88,73 @@ impl OutboundPacketQueueBoundary {
     }
 }
 
+/// Request passed from the net send layer into the protocol encoder boundary.
+///
+/// This keeps destination metadata alongside the typed message while the encoder
+/// only receives protocol-specific inputs.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OutboundEncodeRequest {
+    pub destination: PacketDestination,
+    pub context: EncodeContext,
+    pub message: ProtocolMessage,
+}
+
+/// Encoded outbound packet ready for a future socket send layer.
+///
+/// This type is a boundary shape only. No real encoder or UDP send is
+/// implemented in net-core.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EncodedOutboundPacket {
+    pub destination: PacketDestination,
+    pub bytes: Vec<u8>,
+}
+
+/// Error returned while bridging outbound typed messages into encoded packets.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum NetEncodeError {
+    Protocol {
+        destination: PacketDestination,
+        error: ProtocolError,
+    },
+}
+
+/// Minimal net send layer to protocol encoder boundary.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct OutboundPacketEncoderBoundary;
+
+impl OutboundPacketEncoderBoundary {
+    pub fn prepare_encode(
+        &self,
+        context: EncodeContext,
+        item: OutboundQueueItem,
+    ) -> OutboundEncodeRequest {
+        OutboundEncodeRequest {
+            destination: item.packet.destination,
+            context,
+            message: item.packet.message,
+        }
+    }
+
+    pub fn encode_with<E: MessageEncoder>(
+        &self,
+        encoder: &E,
+        request: OutboundEncodeRequest,
+    ) -> Result<EncodedOutboundPacket, NetEncodeError> {
+        let mut bytes = Vec::new();
+        encoder
+            .encode_message(request.context, &request.message, &mut bytes)
+            .map_err(|error| NetEncodeError::Protocol {
+                destination: request.destination,
+                error,
+            })?;
+
+        Ok(EncodedOutboundPacket {
+            destination: request.destination,
+            bytes,
+        })
+    }
+}
+
 /// Error returned while bridging raw packet bytes into protocol messages.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum NetDecodeError {
@@ -134,8 +201,8 @@ fn protocol_error(source: PacketSource, error: ProtocolError) -> NetDecodeError 
 mod tests {
     use super::*;
     use stream_sync_protocol::{
-        ClientId, MessageType, ProtocolVersion, TimestampMicros, FIXED_HEADER_LEN,
-        HEADER_FLAGS_OFFSET, HEADER_LENGTH_OFFSET, HEADER_MESSAGE_TYPE_OFFSET,
+        ClientId, HeartbeatAck, MessageType, ProtocolVersion, RunId, TimestampMicros,
+        FIXED_HEADER_LEN, HEADER_FLAGS_OFFSET, HEADER_LENGTH_OFFSET, HEADER_MESSAGE_TYPE_OFFSET,
         HEADER_PAYLOAD_LENGTH_OFFSET, HEADER_PROTOCOL_VERSION_OFFSET, HEADER_RESERVED_OFFSET,
     };
 
@@ -223,15 +290,7 @@ mod tests {
     #[test]
     fn prepares_outbound_packet_for_queue_handoff() {
         let destination: PacketDestination = packet_source().into();
-        let message = ProtocolMessage::HeartbeatAck(stream_sync_protocol::HeartbeatAck {
-            message_type: MessageType::HeartbeatAck,
-            protocol_version: ProtocolVersion(2),
-            client_id: ClientId("client-1".to_string()),
-            run_id: stream_sync_protocol::RunId("run-1".to_string()),
-            echoed_sent_at: TimestampMicros(1_000_000),
-            server_received_at: TimestampMicros(1_000_100),
-            server_sent_at: TimestampMicros(1_000_200),
-        });
+        let message = heartbeat_ack_message();
         let boundary = OutboundPacketQueueBoundary;
 
         let item = boundary.handoff(OutboundPacket {
@@ -243,11 +302,87 @@ mod tests {
         assert_eq!(item.packet.message, message);
     }
 
+    #[test]
+    fn prepares_outbound_encode_request_from_queue_item() {
+        let destination: PacketDestination = packet_source().into();
+        let message = heartbeat_ack_message();
+        let queue_boundary = OutboundPacketQueueBoundary;
+        let encoder_boundary = OutboundPacketEncoderBoundary;
+        let item = queue_boundary.handoff(OutboundPacket {
+            destination,
+            message: message.clone(),
+        });
+
+        let request = encoder_boundary.prepare_encode(
+            EncodeContext {
+                protocol_version: ProtocolVersion(2),
+            },
+            item,
+        );
+
+        assert_eq!(request.destination, destination);
+        assert_eq!(request.context.protocol_version, ProtocolVersion(2));
+        assert_eq!(request.message, message);
+    }
+
+    #[test]
+    fn maps_protocol_encoder_error_with_destination() {
+        let destination: PacketDestination = packet_source().into();
+        let queue_boundary = OutboundPacketQueueBoundary;
+        let encoder_boundary = OutboundPacketEncoderBoundary;
+        let item = queue_boundary.handoff(OutboundPacket {
+            destination,
+            message: heartbeat_ack_message(),
+        });
+        let request = encoder_boundary.prepare_encode(
+            EncodeContext {
+                protocol_version: ProtocolVersion(2),
+            },
+            item,
+        );
+
+        let encoded = encoder_boundary.encode_with(&RejectingEncoder, request);
+
+        assert_eq!(
+            encoded,
+            Err(NetEncodeError::Protocol {
+                destination,
+                error: ProtocolError::EncodeNotImplemented(MessageType::HeartbeatAck)
+            })
+        );
+    }
+
     fn packet_source() -> PacketSource {
         "127.0.0.1:5000"
             .parse::<SocketAddr>()
             .expect("source address should parse")
             .into()
+    }
+
+    #[derive(Debug, Clone, Copy, Default)]
+    struct RejectingEncoder;
+
+    impl MessageEncoder for RejectingEncoder {
+        fn encode_message(
+            &self,
+            _context: EncodeContext,
+            message: &ProtocolMessage,
+            _output: &mut Vec<u8>,
+        ) -> Result<(), ProtocolError> {
+            Err(ProtocolError::EncodeNotImplemented(message.message_type()))
+        }
+    }
+
+    fn heartbeat_ack_message() -> ProtocolMessage {
+        ProtocolMessage::HeartbeatAck(HeartbeatAck {
+            message_type: MessageType::HeartbeatAck,
+            protocol_version: ProtocolVersion(2),
+            client_id: ClientId("client-1".to_string()),
+            run_id: RunId("run-1".to_string()),
+            echoed_sent_at: TimestampMicros(1_000_000),
+            server_received_at: TimestampMicros(1_000_100),
+            server_sent_at: TimestampMicros(1_000_200),
+        })
     }
 
     fn heartbeat_payload() -> Vec<u8> {

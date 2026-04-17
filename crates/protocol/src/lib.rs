@@ -535,6 +535,20 @@ pub enum ProtocolMessage {
     ServerNotice(ServerNotice),
 }
 
+impl ProtocolMessage {
+    pub fn message_type(&self) -> MessageType {
+        match self {
+            Self::AuthRequest(_) => MessageType::AuthRequest,
+            Self::AuthResponse(_) => MessageType::AuthResponse,
+            Self::Heartbeat(_) => MessageType::Heartbeat,
+            Self::HeartbeatAck(_) => MessageType::HeartbeatAck,
+            Self::VideoFrame(_) => MessageType::VideoFrame,
+            Self::ClientStats(_) => MessageType::ClientStats,
+            Self::ServerNotice(_) => MessageType::ServerNotice,
+        }
+    }
+}
+
 /// Errors that future wire encode/decode entry points may return.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ProtocolError {
@@ -649,6 +663,24 @@ pub trait MessageEncoder {
         message: &ProtocolMessage,
         output: &mut Vec<u8>,
     ) -> Result<(), ProtocolError>;
+}
+
+/// Placeholder protocol encoder boundary.
+///
+/// This fixes the call site shape for future encode work. It intentionally does
+/// not write fixed headers or payload bytes yet.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct ProtocolMessageEncoderBoundary;
+
+impl MessageEncoder for ProtocolMessageEncoderBoundary {
+    fn encode_message(
+        &self,
+        _context: EncodeContext,
+        message: &ProtocolMessage,
+        _output: &mut Vec<u8>,
+    ) -> Result<(), ProtocolError> {
+        Err(ProtocolError::EncodeNotImplemented(message.message_type()))
+    }
 }
 
 /// Message kinds used by the MVP protocol.
@@ -938,6 +970,37 @@ mod tests {
         assert_eq!(AuthResponseReasonCode::ProtocolMismatch.wire_code(), 3);
         assert_eq!(AuthResponseReasonCode::AlreadyConnected.wire_code(), 4);
         assert_eq!(AuthResponseReasonCode::InternalError.wire_code(), 5);
+    }
+
+    #[test]
+    fn protocol_message_encoder_boundary_returns_not_implemented() {
+        let message = ProtocolMessage::HeartbeatAck(HeartbeatAck {
+            message_type: MessageType::HeartbeatAck,
+            protocol_version: ProtocolVersion(2),
+            client_id: ClientId("client-1".to_string()),
+            run_id: RunId("run-1".to_string()),
+            echoed_sent_at: TimestampMicros(1_000_000),
+            server_received_at: TimestampMicros(1_000_100),
+            server_sent_at: TimestampMicros(1_000_200),
+        });
+        let encoder = ProtocolMessageEncoderBoundary;
+        let mut output = Vec::new();
+
+        let encoded = encoder.encode_message(
+            EncodeContext {
+                protocol_version: ProtocolVersion(2),
+            },
+            &message,
+            &mut output,
+        );
+
+        assert_eq!(
+            encoded,
+            Err(ProtocolError::EncodeNotImplemented(
+                MessageType::HeartbeatAck
+            ))
+        );
+        assert!(output.is_empty());
     }
 
     #[test]

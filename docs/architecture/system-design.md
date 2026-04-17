@@ -542,3 +542,59 @@ AuthResponse-specific encode boundary:
 5. Future protocol encode code will use the `AuthResponse` payload layout
    defined in `docs/architecture/protocol.md`; future socket code will send the
    encoded bytes.
+
+---
+
+## Net Send Layer / Protocol Encoder Boundary
+
+PoC / MVP initial implementation keeps the send path split at the point where
+typed outbound messages are handed to the protocol encoder. This step fixes the
+boundary only; it does not implement real wire encoding, a queue runtime, or UDP
+socket sends.
+
+Flow:
+
+1. Server response boundaries such as `ServerAuthResponseBoundary`, and future
+   notification paths such as `HeartbeatAck` or `ServerNotice`, create typed
+   `ProtocolMessage` values.
+2. The response path attaches destination metadata and hands the message to the
+   net send layer as `OutboundPacket` / `OutboundQueueItem`.
+3. The net send layer receives the destination and `ProtocolMessage`, then
+   prepares an `OutboundEncodeRequest` with `EncodeContext`.
+4. The protocol encoder boundary receives `ProtocolMessage` plus
+   `EncodeContext`.
+5. The protocol encoder boundary is responsible for converting the message into
+   one UDP packet buffer: fixed header followed by payload bytes.
+6. The net send layer keeps the encoded bytes paired with destination metadata
+   as `EncodedOutboundPacket`.
+7. A future socket send layer receives encoded bytes plus destination and writes
+   them to UDP.
+
+Responsibility split:
+
+- server handlers / response boundary
+  - Decide that a response or notice should be sent.
+  - Build typed `ProtocolMessage` values and destination metadata.
+  - Do not encode fixed headers, payload bytes, or send sockets.
+- net send layer
+  - Owns the generic outbound carrier and handoff shape.
+  - Calls the protocol encoder boundary with `ProtocolMessage` and
+    `EncodeContext`.
+  - Preserves destination metadata across encode.
+  - Does not implement message-specific encode rules or UDP socket sends.
+- protocol encoder
+  - Owns future conversion from `ProtocolMessage` to fixed header plus payload
+    bytes.
+  - Uses `protocol_version`, `message_type`, and payload layout rules from the
+    protocol crate.
+  - Does not own destination metadata, queue policy, retry, or socket errors.
+- socket send layer
+  - Future owner of sending encoded bytes to the destination over UDP.
+  - Does not inspect typed protocol messages.
+
+Current code reflects this with `net-core::OutboundEncodeRequest`,
+`net-core::EncodedOutboundPacket`, `net-core::OutboundPacketEncoderBoundary`,
+`net-core::NetEncodeError`, and
+`protocol::ProtocolMessageEncoderBoundary`. The protocol encoder placeholder
+returns `EncodeNotImplemented`; real fixed header writing, payload writing,
+queue processing, and UDP socket send remain unimplemented.

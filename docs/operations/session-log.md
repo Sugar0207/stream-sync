@@ -5,6 +5,56 @@
 - Codex
 
 ### 今回の作業
+- net send layer から protocol encoder を呼ぶ境界を設計した。
+- `OutboundQueueItem` から `OutboundEncodeRequest` を作り、`MessageEncoder` へ `ProtocolMessage` と `EncodeContext` を渡す placeholder を追加した。
+- protocol 側には `ProtocolMessage::message_type()` と、現時点では `EncodeNotImplemented` を返す `ProtocolMessageEncoderBoundary` を追加した。
+- docs に response boundary / net send layer / protocol encoder / socket send の責務分離を追記した。
+
+### 変更ファイル
+- `crates/protocol/src/lib.rs`
+- `crates/net-core/src/lib.rs`
+- `docs/architecture/system-design.md`
+- `docs/architecture/protocol.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### 決定事項
+- outbound path は typed `ProtocolMessage` と destination metadata を net send layer へ渡す。
+- net send layer は destination metadata を保持したまま protocol encoder 境界を呼ぶ。
+- protocol encoder は将来 fixed header + payload bytes を生成する責務を持つが、現時点では placeholder として `EncodeNotImplemented` を返す。
+- socket send layer は encode 済み bytes と destination だけを受け取り、typed message を解釈しない。
+
+### 未実装 / 保留
+- `AuthResponse` encode 本実装
+- fixed header / payload bytes 生成
+- UDP socket 送信本体
+- outbound queue 実処理
+- retry / fragmentation / encryption
+
+### 次にやる候補
+- `AuthResponse` encode の最小実装を追加する
+- UDP socket 送信前の send error / log event 方針を整理する
+- outbound queue の最小実処理を設計する
+
+### TODO更新
+- 完了:
+  - net send layer -> protocol encoder -> socket send 境界 docs 反映
+  - `ProtocolMessageEncoderBoundary` placeholder 追加
+  - `OutboundPacketEncoderBoundary` / `OutboundEncodeRequest` / `EncodedOutboundPacket` placeholder 追加
+- 追加:
+  - `AuthResponse` encode 本実装を行う
+  - UDP socket 送信本体を実装する
+  - outbound queue 実処理を実装する
+- 保留:
+  - encode 本実装
+  - UDP socket send
+  - queue runtime / retry / fragmentation / encryption
+
+## 2026-04-17
+### 種別
+- Codex
+
+### 今回の作業
 - `AuthResponse` の payload byte layout と encode input boundary を整理した。
 - `docs/architecture/protocol.md` に `client_id`, `run_id`, `accepted`, `reason_code`, `message`, `server_time`, `expected_protocol_version` の wire 順序と型を追記した。
 - `accepted` は `u8` bool、`reason_code` は `u16` little-endian の stable code として固定した。

@@ -1022,3 +1022,67 @@ Current placeholders: `OutboundPacket`, `OutboundQueueItem`, and
 `ServerOutboundQueueBoundary` in `apps/server`. These types keep the send-layer
 contract visible while leaving queue implementation, `AuthResponse` encode,
 UDP socket send, fragmentation, retry, and encryption out of scope.
+
+---
+
+## Net Send Layer / Protocol Encoder Boundary
+
+Outbound messages remain typed until the net send layer explicitly calls the
+protocol encoder boundary. This boundary is the point where a
+`ProtocolMessage` becomes fixed header plus payload bytes, but the current code
+only defines the call shape and returns `EncodeNotImplemented`.
+
+Send path:
+
+1. Server response boundaries or future notification paths create an outbound
+   `ProtocolMessage`.
+2. The server side attaches destination metadata and hands it to `net-core` as
+   `OutboundPacket` / `OutboundQueueItem`.
+3. `net-core` prepares `OutboundEncodeRequest`, which carries:
+   - destination metadata
+   - `EncodeContext { protocol_version }`
+   - typed `ProtocolMessage`
+4. `net-core` calls a `protocol::MessageEncoder` implementation with
+   `EncodeContext`, `ProtocolMessage`, and an output byte buffer.
+5. The future protocol encoder writes the 16 byte fixed header first, then the
+   message-specific payload bytes.
+6. `net-core` pairs the encoded byte buffer with destination metadata as
+   `EncodedOutboundPacket`.
+7. Future socket send code receives encoded bytes plus destination and sends the
+   UDP datagram.
+
+Responsibility split:
+
+- `protocol`
+  - Defines `ProtocolMessage`, `EncodeContext`, `MessageEncoder`, and protocol
+    encode errors.
+  - Future owner of fixed header writing, `message_type` selection,
+    `protocol_version` writing, `payload_length` calculation, and payload
+    layout encoding.
+  - Does not know destination addresses, queues, retries, or socket errors.
+- `net-core`
+  - Receives `ProtocolMessage` plus destination metadata from server-side
+    response boundaries or future queues.
+  - Calls the protocol encoder boundary.
+  - Preserves destination metadata before and after encode.
+  - Does not implement message-specific wire encoding or UDP socket sends.
+- server response boundary
+  - Builds outbound typed messages such as `AuthResponse`.
+  - Does not call socket send and does not write bytes.
+- socket send layer
+  - Future owner of sending `EncodedOutboundPacket.bytes` to
+    `EncodedOutboundPacket.destination`.
+  - Does not inspect or route typed messages.
+
+Current code:
+
+- `crates/protocol::ProtocolMessage::message_type()` exposes the stable
+  message kind for encoder boundary and errors.
+- `crates/protocol::ProtocolMessageEncoderBoundary` implements
+  `MessageEncoder` but intentionally returns
+  `ProtocolError::EncodeNotImplemented`.
+- `crates/net-core::OutboundPacketEncoderBoundary` prepares encode requests and
+  maps protocol encode errors while keeping the destination attached.
+
+`AuthResponse` encode, fixed header writing, payload bytes generation, outbound
+queue processing, and UDP socket send are still future tasks.

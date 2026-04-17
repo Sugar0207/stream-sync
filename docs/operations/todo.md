@@ -1,5 +1,16 @@
 <!-- stream-sync/docs/operations/todo.md -->
 
+## 2026-04-17 update: net send layer / protocol encoder boundary
+
+- [x] `docs/architecture/system-design.md` に net send layer -> protocol encoder -> socket send の境界を追記する
+- [x] `docs/architecture/protocol.md` に typed outbound message -> encoder -> encoded bytes -> socket send の流れを追記する
+- [x] `crates/protocol` に `ProtocolMessage::message_type()` と `ProtocolMessageEncoderBoundary` placeholder を追加する
+- [x] `crates/net-core` に `OutboundEncodeRequest` / `EncodedOutboundPacket` / `OutboundPacketEncoderBoundary` / `NetEncodeError` placeholder を追加する
+- [x] net send layer が `ProtocolMessage` と宛先情報を protocol encoder 境界へ渡す形をコードで固定する
+- [ ] `AuthResponse` encode 本実装を行う
+- [ ] UDP socket 送信本体を実装する
+- [ ] outbound queue 実処理を実装する
+
 ## 2026-04-17 update: AuthResponse payload layout / encode boundary
 
 - [x] `docs/architecture/protocol.md` に `AuthResponse` payload byte layout を追記する
