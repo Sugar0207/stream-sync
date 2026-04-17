@@ -533,6 +533,55 @@ handoff placeholders for `AuthResponse` and `HeartbeatAck`. These are carrier
 and handoff types only. UDP socket send, queue implementation, async runtime,
 retry, fragmentation, and encryption remain unimplemented.
 
+Outbound queue minimal processing policy:
+
+1. `ServerOutboundQueueBoundary` receives a typed server outbound response or
+   ack and converts it into `net-core::OutboundQueueItem`.
+2. The outbound queue owns the item while it is waiting to be sent. In the
+   current code this is represented only as one-item state, not as a real
+   collection.
+3. When the next item is ready, the queue hands `OutboundQueueItem` to the net
+   send layer.
+4. The net send layer performs protocol encode after queue handoff. The queue
+   does not call `protocol::MessageEncoder` directly.
+5. After encode success, the net send layer owns `EncodedOutboundPacket` and can
+   pass encoded bytes plus destination to the future socket send layer.
+6. After socket send success or failure, future code may notify the queue of a
+   terminal state or retry candidate, but retry execution is not part of the
+   current queue boundary.
+
+Queue item states:
+
+| State | Owner / meaning | Current implementation |
+| --- | --- | --- |
+| `Queued` | Queue has accepted the item and is holding it for later send. | Placeholder only. |
+| `ReadyForEncode` | Queue has selected the item for the send layer. | Named state for future queue policy. |
+| `Encoded` | Net send layer encoded the item into bytes. | Placeholder mark only. |
+| `Sent` | Future socket send layer reported success. | Placeholder mark only. |
+| `Dropped` | Item should not be retried by the current policy. | Placeholder mark only. |
+
+Encode / send responsibility boundaries:
+
+- encode前
+  - server creates `ProtocolMessage` plus destination metadata.
+  - `ServerOutboundQueueBoundary` produces `OutboundQueueItem`.
+  - outbound queue may hold and later select the item.
+- encode後
+  - net send layer owns `EncodedOutboundPacket`.
+  - outbound queue no longer inspects typed message bytes or encoded payload.
+  - send log context may record encoded length and message metadata.
+- send後
+  - socket send layer reports success or categorized failure.
+  - outbound queue may later consume retry / drop hints, but current code only
+    names terminal states and does not retry.
+
+Current code reflects the one-item lifecycle with
+`net-core::QueuedOutboundItem`, `net-core::OutboundQueueItemState`,
+`net-core::OutboundQueueSendHandoff`, and
+`net-core::OutboundQueueLifecycleBoundary`. These types do not implement
+buffering, ordering, async wakeups, retry, encode, UDP socket send, or
+backpressure.
+
 AuthResponse-specific encode boundary:
 
 1. Future auth decision logic returns `ServerAuthDecision`.

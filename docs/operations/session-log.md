@@ -5,6 +5,60 @@
 - Codex
 
 ### 今回の作業
+- outbound queue の最小実処理方針を整理した。
+- `docs/architecture/system-design.md` に `ServerOutboundQueueBoundary` から `OutboundQueueItem` が渡され、queue が item を保持して send layer に handoff する流れを追記した。
+- encode 前 / encode 後 / send 後の責務境界と、`server` / `outbound queue` / `net send layer` / `socket send` の責務分離を docs に追記した。
+- `crates/net-core` に `QueuedOutboundItem`, `OutboundQueueItemState`, `OutboundQueueSendHandoff`, `OutboundQueueLifecycleBoundary` placeholder を追加した。
+- 1 item の hold / send-layer handoff / encoded / sent / dropped state の単体テストを追加した。
+
+### 変更ファイル
+- `crates/net-core/src/lib.rs`
+- `docs/architecture/system-design.md`
+- `docs/architecture/protocol.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### 決定事項
+- queue は `OutboundQueueItem` を保持し、選択した item を net send layer へ渡す責務に限定する。
+- protocol encode は queue handoff 後に net send layer で行う。
+- encode 後は `EncodedOutboundPacket` を net send layer / socket send 側が扱い、queue は encoded payload の中身を見ない。
+- send 後の成功 / 失敗は将来 queue state へ反映できるが、今回の queue 境界は retry 実行を持たない。
+- 現時点の code は 1 item lifecycle placeholder のみで、実 queue、capacity、backpressure、async wakeup、UDP socket send は実装しない。
+
+### 未解決事項
+- outbound queue 実処理本体
+- queue capacity / backpressure 方針
+- async runtime 導入
+- UDP socket 送信本体
+- retry 実行本体
+- fragmentation / encryption
+
+### 次にやる候補
+- client whitelist 読み込みと token 検証の設定入力境界を設計する
+- server 側の認証成功 / 失敗判定を実装する
+- UDP socket 受信 / 送信本体の実装に進む
+
+### TODO更新
+- 完了:
+  - outbound queue の最小実処理方針整理
+  - `QueuedOutboundItem` / `OutboundQueueItemState` / `OutboundQueueLifecycleBoundary` placeholder 追加
+- 追加:
+  - outbound queue の backpressure / capacity 方針を決める
+- 保留:
+  - queue 実処理本体
+  - async runtime
+  - UDP socket send
+  - retry 実行
+  - fragmentation / encryption
+
+### メモ
+- outbound queue の責務は、送るべき `OutboundQueueItem` を保持し、選択した item を net send layer に handoff するところまで。
+
+## 2026-04-17
+### 種別
+- Codex
+
+### 今回の作業
 - UDP socket 送信前の send error / log event 方針を整理した。
 - `docs/architecture/system-design.md` に encode 成功後、socket send 前後で扱う error 分類と責務分離を追記した。
 - `docs/architecture/protocol.md` に protocol encode 後の send log context は `net-core` が持つ方針を追記した。

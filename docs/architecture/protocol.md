@@ -1051,6 +1051,13 @@ outbound handoff placeholders for `AuthResponse` and `HeartbeatAck`. These
 types keep the send-layer contract visible while leaving queue implementation,
 UDP socket send, fragmentation, retry, and encryption out of scope.
 
+Outbound queue minimal processing is defined as a handoff lifecycle, not as a
+real queue runtime. `ServerOutboundQueueBoundary` produces `OutboundQueueItem`;
+the future queue holds that item, selects it for send, and hands it to the net
+send layer. Protocol encode happens after this queue handoff in the net send
+layer. Encode result handling and socket send result handling may update future
+queue state, but retry execution remains a later task.
+
 Send error / log event policy is owned by `net-core` after protocol encode.
 `protocol` returns encode errors, while `net-core` keeps destination metadata
 and extracts `run_id`, optional `client_id`, destination, and `message_type` for
@@ -1119,6 +1126,9 @@ Current code:
   `ProtocolError::EncodeNotImplemented` for other message types.
 - `crates/net-core::OutboundPacketEncoderBoundary` prepares encode requests and
   maps protocol encode errors while keeping the destination attached.
+- `crates/net-core::OutboundQueueLifecycleBoundary` defines the one-item queue
+  lifecycle placeholder from queued item to send-layer handoff and terminal
+  states.
 - `crates/net-core::OutboundSendLogContext` and `SendLogEvent` define the
   future send log context shape for encode success / failure and socket send
   failures.

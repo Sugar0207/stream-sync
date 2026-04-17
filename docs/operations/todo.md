@@ -19,10 +19,10 @@
 - 仕様固定と土台作りは概ね完了
 - Cargo workspace と `apps/*` / `crates/*` の初期 scaffold は完了
 - `crates/protocol` の基本型、主要 message 型、timestamp 型、fixed header decode、`AuthRequest` / `Heartbeat` / `VideoFrame` payload decode、`AuthResponse` / `HeartbeatAck` encode は完了
-- `crates/net-core` の inbound decode 境界、outbound packet / queue 境界、protocol encoder 呼び出し境界、send error / log event 分類 placeholder は完了
+- `crates/net-core` の inbound decode 境界、outbound packet / queue 境界、outbound queue lifecycle 境界、protocol encoder 呼び出し境界、send error / log event 分類 placeholder は完了
 - `apps/server` の inbound router、UDP receive loop step、auth handler boundary、AuthResponse response boundary、HeartbeatAck ack boundary、outbound queue handoff は placeholder として完了
 - 実ネットワーク送受信、実認証、`AuthResponse` / `HeartbeatAck` 以外の encode 本実装、時刻同期本体、映像受信・復号・表示、switcher UI は未実装
-- 次の中心は outbound queue の最小実処理、UDP socket 送受信、server 側の認証本体
+- 次の中心は client whitelist / token 検証入力境界、server 側の認証本体、UDP socket 送受信
 
 ---
 
@@ -52,12 +52,12 @@
 ---
 
 ## 直近でやること
-1. outbound queue の最小実処理を設計する
-2. client whitelist 読み込みと token 検証の設定入力境界を設計する
-3. server 側の認証成功 / 失敗判定を実装する
-4. UDP socket 受信 / 送信本体の実装に進む
-5. receive / send ログ出力の最小実装方針を決める
-6. `VideoFrame` encode 方針と実装範囲を整理する
+1. client whitelist 読み込みと token 検証の設定入力境界を設計する
+2. server 側の認証成功 / 失敗判定を実装する
+3. UDP socket 受信 / 送信本体の実装に進む
+4. receive / send ログ出力の最小実装方針を決める
+5. `VideoFrame` encode 方針と実装範囲を整理する
+6. outbound queue の実処理範囲と backpressure 方針を実装前に詰める
 
 ---
 
@@ -78,6 +78,7 @@
 - [x] server auth handler 境界を整理する
 - [x] AuthResponse 生成 / 送信境界を整理する
 - [x] outbound packet / queue 境界を整理する
+- [x] outbound queue の最小実処理方針を整理する
 - [x] net send layer / protocol encoder 境界を整理する
 - [x] `HeartbeatAck` encode 入力境界を整理する
 - [x] UDP socket 送信前の send error / log event 方針を整理する
@@ -128,6 +129,7 @@
 - [x] `ServerReceiveLoopStep` / `ServerReceiveLoopOutcome` / `ServerRejectedPacket` placeholder を追加する
 - [x] decode error / protocol error の分類方針を定義する
 - [x] `OutboundPacket` / `OutboundQueueItem` / `OutboundPacketQueueBoundary` placeholder を追加する
+- [x] `QueuedOutboundItem` / `OutboundQueueItemState` / `OutboundQueueLifecycleBoundary` placeholder を追加する
 - [x] `OutboundEncodeRequest` / `EncodedOutboundPacket` / `OutboundPacketEncoderBoundary` / `NetEncodeError` placeholder を追加する
 - [x] `OutboundSendLogContext` / `SendLogEvent` / send failure classification placeholder を追加する
 - [x] server 側 `ServerOutboundQueueBoundary` placeholder を追加する
@@ -137,6 +139,7 @@
 - [ ] packet 送信本体を実装する
 - [ ] receive loop のログ出力を実装する
 - [ ] outbound queue の実処理を実装する
+- [ ] outbound queue の backpressure / capacity 方針を決める
 - [x] send error の分類とログ方針を整理する
 - [ ] send error ログ出力を実装する
 - [ ] async runtime 導入方針を決める
@@ -333,6 +336,7 @@
 - [ ] UDP receive / send 最小実装
 - [ ] server auth decision 最小実装
 - [x] send error / log event 方針整理
+- [x] outbound queue 最小実処理方針整理
 - [ ] receive / send ログ最小実装
 
 ### フェーズ3: 1 人送信・受信・表示 PoC

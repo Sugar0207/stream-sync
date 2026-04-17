@@ -79,6 +79,35 @@ pub struct OutboundQueueItem {
     pub packet: OutboundPacket,
 }
 
+/// Queue-side state for a single outbound item.
+///
+/// This is not a real queue implementation. It only names the lifecycle states
+/// that a future queue will use while handing items to the send layer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum OutboundQueueItemState {
+    Queued,
+    ReadyForEncode,
+    Encoded,
+    Sent,
+    Dropped,
+}
+
+/// One outbound item while it is owned by a future queue.
+///
+/// Holding a single item in this type documents ownership without implementing
+/// buffering, ordering, wakeups, retry, or backpressure.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct QueuedOutboundItem {
+    pub item: OutboundQueueItem,
+    pub state: OutboundQueueItemState,
+}
+
+/// Handoff from the outbound queue to the net send layer.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OutboundQueueSendHandoff {
+    pub item: OutboundQueueItem,
+}
+
 /// Minimal boundary between app/server response code and a future send queue.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
 pub struct OutboundPacketQueueBoundary;
@@ -86,6 +115,39 @@ pub struct OutboundPacketQueueBoundary;
 impl OutboundPacketQueueBoundary {
     pub fn handoff(&self, packet: OutboundPacket) -> OutboundQueueItem {
         OutboundQueueItem { packet }
+    }
+}
+
+/// Minimal queue lifecycle boundary.
+///
+/// This boundary models one-item state transitions only. It does not store a
+/// collection, schedule work, run async tasks, execute retry, encode packets, or
+/// call sockets.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct OutboundQueueLifecycleBoundary;
+
+impl OutboundQueueLifecycleBoundary {
+    pub fn hold_for_send(&self, item: OutboundQueueItem) -> QueuedOutboundItem {
+        QueuedOutboundItem {
+            item,
+            state: OutboundQueueItemState::Queued,
+        }
+    }
+
+    pub fn handoff_to_send_layer(&self, queued: QueuedOutboundItem) -> OutboundQueueSendHandoff {
+        OutboundQueueSendHandoff { item: queued.item }
+    }
+
+    pub fn mark_encoded(&self, _packet: &EncodedOutboundPacket) -> OutboundQueueItemState {
+        OutboundQueueItemState::Encoded
+    }
+
+    pub fn mark_send_completed(&self) -> OutboundQueueItemState {
+        OutboundQueueItemState::Sent
+    }
+
+    pub fn mark_dropped(&self) -> OutboundQueueItemState {
+        OutboundQueueItemState::Dropped
     }
 }
 
@@ -443,6 +505,48 @@ mod tests {
 
         assert_eq!(item.packet.destination, destination);
         assert_eq!(item.packet.message, message);
+    }
+
+    #[test]
+    fn queue_lifecycle_holds_item_and_hands_off_to_send_layer() {
+        let destination: PacketDestination = packet_source().into();
+        let message = heartbeat_ack_message();
+        let queue_boundary = OutboundPacketQueueBoundary;
+        let lifecycle = OutboundQueueLifecycleBoundary;
+        let item = queue_boundary.handoff(OutboundPacket {
+            destination,
+            message: message.clone(),
+        });
+
+        let queued = lifecycle.hold_for_send(item);
+
+        assert_eq!(queued.state, OutboundQueueItemState::Queued);
+        assert_eq!(queued.item.packet.destination, destination);
+        assert_eq!(queued.item.packet.message, message);
+
+        let handoff = lifecycle.handoff_to_send_layer(queued);
+
+        assert_eq!(handoff.item.packet.destination, destination);
+    }
+
+    #[test]
+    fn queue_lifecycle_marks_encode_and_send_terminal_states() {
+        let destination: PacketDestination = packet_source().into();
+        let lifecycle = OutboundQueueLifecycleBoundary;
+        let encoded = EncodedOutboundPacket {
+            destination,
+            bytes: vec![0xaa, 0xbb],
+        };
+
+        assert_eq!(
+            lifecycle.mark_encoded(&encoded),
+            OutboundQueueItemState::Encoded
+        );
+        assert_eq!(
+            lifecycle.mark_send_completed(),
+            OutboundQueueItemState::Sent
+        );
+        assert_eq!(lifecycle.mark_dropped(), OutboundQueueItemState::Dropped);
     }
 
     #[test]
