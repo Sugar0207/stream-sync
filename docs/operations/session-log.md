@@ -5,6 +5,60 @@
 - Codex
 
 ### 今回の作業
+- server 設定 TOML から client whitelist / token 情報を読み込む最小実装を追加した。
+- `crates/config` に最小 auth-section parser を追加し、`ServerAuthConfigBoundary` が TOML file または string から `ServerAuthConfig` を作れるようにした。
+- `[auth.clients.<client_id>]` を `AllowedClientConfig` と `SharedTokenConfig` へ変換する実装を追加した。
+- `configs/examples/server.example.toml` と整合する読み込みテストを追加した。
+- `docs/architecture/system-design.md` と `docs/architecture/protocol.md` に auth config 読み込み境界の現在の責務を反映した。
+
+### 変更ファイル
+- `crates/config/src/lib.rs`
+- `docs/architecture/system-design.md`
+- `docs/architecture/protocol.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### 決定事項
+- config crate は server TOML の auth client table から typed auth config を作る責務に限定する。
+- `[auth.clients.<client_id>]` の table key を whitelisted `client_id` と最小 `shared_token_id` に使う。
+- TOML の `shared_token` は PoC 用の `SharedTokenSecretRef::InlinePlaceholder` として保持する。
+- 環境変数や secret store からの secret 解決、本物の token 検証、auth state 更新、UDP socket 実装は今回行わない。
+
+### 未解決事項
+- secret 解決方式
+- secret 解決後の本物の token 検証
+- 認証済み送信元の登録 / 管理
+- auth success / failure ログ出力
+- UDP socket 送受信
+
+### 次にやる候補
+- 認証済み送信元の登録 / 管理境界を設計する
+- auth success / failure ログ出力境界を設計する
+- UDP socket 受信 / 送信本体の実装に進む
+
+### TODO更新
+- 完了:
+  - server 設定 TOML から client whitelist / token 情報を読み込む
+  - client whitelist 読み込みを実装する
+  - `configs/examples/server.example.toml` と整合する auth config 読み込みテスト追加
+- 追加:
+  - secret 解決方式と token 保護方針を設計する
+- 保留:
+  - secret 解決
+  - 本物の token 検証
+  - 認証済み送信元登録
+  - UDP socket 実装
+
+### メモ
+- auth config 読み込みの責務は、server TOML の auth client table を typed whitelist / token config へ変換し、server 側の auth input boundary に渡せる形にするところまで。
+
+---
+
+## 2026-04-17
+### 種別
+- Codex
+
+### 今回の作業
 - auth decision から `AuthResponse` outbound queue handoff までの server step を接続した。
 - `apps/server` に `ServerAuthFlowStep` / `ServerAuthFlowOutcome` を追加した。
 - `ServerAuthFlowStep` が `ServerInboundRoute::AuthRequest` から `ServerAuthCheck`、`ServerAuthCheckInput`、`ServerAuthDecision`、`ServerOutboundAuthResponse`、`OutboundQueueItem` まで既存 boundary を順番に呼ぶようにした。

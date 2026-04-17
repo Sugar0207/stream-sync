@@ -19,10 +19,11 @@
 - 仕様固定と土台作りは概ね完了
 - Cargo workspace と `apps/*` / `crates/*` の初期 scaffold は完了
 - `crates/protocol` の基本型、主要 message 型、timestamp 型、fixed header decode、`AuthRequest` / `Heartbeat` / `VideoFrame` payload decode、`AuthResponse` / `HeartbeatAck` encode は完了
+- `crates/config` の server auth 設定 TOML 読み込み最小実装は完了
 - `crates/net-core` の inbound decode 境界、outbound packet / queue 境界、outbound queue lifecycle 境界、protocol encoder 呼び出し境界、send error / log event 分類 placeholder は完了
 - `apps/server` の inbound router、UDP receive loop step、auth handler boundary、auth config input boundary、server auth decision 最小実装、auth flow step、AuthResponse response boundary、HeartbeatAck ack boundary、outbound queue handoff は完了
-- 実ネットワーク送受信、本物の設定読み込み / secret 解決、認証済み送信元管理、`AuthResponse` / `HeartbeatAck` 以外の encode 本実装、時刻同期本体、映像受信・復号・表示、switcher UI は未実装
-- 次の中心は実 config 読み込み、認証済み送信元管理、UDP socket 送受信
+- 実ネットワーク送受信、secret 解決、認証済み送信元管理、`AuthResponse` / `HeartbeatAck` 以外の encode 本実装、時刻同期本体、映像受信・復号・表示、switcher UI は未実装
+- 次の中心は認証済み送信元管理、auth success / failure ログ、UDP socket 送受信
 
 ---
 
@@ -52,12 +53,12 @@
 ---
 
 ## 直近でやること
-1. server 設定 TOML から client whitelist / token 情報を読み込む
-2. 認証済み送信元の登録 / 管理境界を設計する
-3. auth success / failure ログ出力境界を設計する
-4. UDP socket 受信 / 送信本体の実装に進む
-5. `VideoFrame` encode 方針と実装範囲を整理する
-6. outbound queue の実処理範囲と backpressure 方針を実装前に詰める
+1. 認証済み送信元の登録 / 管理境界を設計する
+2. auth success / failure ログ出力境界を設計する
+3. UDP socket 受信 / 送信本体の実装に進む
+4. `VideoFrame` encode 方針と実装範囲を整理する
+5. outbound queue の実処理範囲と backpressure 方針を実装前に詰める
+6. secret 解決方式と token 保護方針を設計する
 
 ---
 
@@ -161,8 +162,8 @@
 - [x] server auth decision の最小実装を追加する
 - [x] `UnknownClient` / `InvalidToken` / `InternalError` の最小 rejected reason を返す
 - [x] `ServerAuthFlowStep` で `ServerAuthCheckInput` -> `ServerAuthDecision` -> `ServerOutboundAuthResponse` -> `OutboundQueueItem` を接続する
-- [ ] server 設定 TOML から client whitelist / token 情報を読み込む
-- [ ] client whitelist 読み込みを実装する
+- [x] server 設定 TOML から client whitelist / token 情報を読み込む
+- [x] client whitelist 読み込みを実装する
 - [ ] secret 解決後の本物の token 検証を実装する
 - [ ] 認証済み送信元の登録 / 管理を実装する
 - [ ] 未認証送信元の `VideoFrame` 破棄を実装する

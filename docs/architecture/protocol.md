@@ -960,24 +960,31 @@ decisions, and response sending remain out of scope.
 
 `AuthRequest` decode and auth configuration loading are separate inputs to the
 server auth decision layer. `crates/protocol` only restores the presented
-request fields from bytes. `crates/config` owns the future server auth settings:
-allowed client entries and shared token references.
+request fields from bytes. `crates/config` owns minimal TOML loading for server
+auth settings: allowed client entries and shared token references.
 
 Flow:
 
-1. Future config loading produces `ServerAuthConfig` from server settings.
-2. `ServerAuthConfig` carries the client whitelist and token reference list.
-3. `ServerAuthHandlerBoundary` prepares `ServerAuthCheck` from decode済み
+1. `ServerAuthConfigBoundary` reads server TOML and produces
+   `ServerAuthConfig`.
+2. `[auth.clients.<client_id>]` table names become whitelisted `client_id`
+   values.
+3. Each table's `shared_token` becomes a `SharedTokenConfig` using
+   `SharedTokenSecretRef::InlinePlaceholder`.
+4. `ServerAuthConfig` carries the client whitelist and token reference list.
+5. `ServerAuthHandlerBoundary` prepares `ServerAuthCheck` from decode済み
    `AuthRequest`.
-4. `ServerAuthConfigInputBoundary` combines `ServerAuthCheck` and
+6. `ServerAuthConfigInputBoundary` combines `ServerAuthCheck` and
    `ServerAuthConfig` into `ServerAuthCheckInput`.
-5. `ServerAuthDecisionBoundary` consumes `ServerAuthCheckInput` to perform the
+7. `ServerAuthDecisionBoundary` consumes `ServerAuthCheckInput` to perform the
    minimal whitelist lookup and inline placeholder token comparison.
 
 Responsibility split:
 
 - `config`
-  - Defines and later loads the whitelist/token configuration.
+  - Defines and loads the minimal whitelist/token configuration from TOML.
+  - Does not resolve environment variables, secret stores, or other external
+    secret references.
   - Does not inspect packets or decide authentication.
 - server auth handler
   - Owns the handoff from decode済み `AuthRequest` to auth input.
@@ -992,10 +999,11 @@ Responsibility split:
   - Future owner of fuller protocol/app version policy and external secret
     verification.
 
-Current placeholder: `stream-sync-config::ServerAuthConfigBoundary` names the
-future config-loading boundary and returns `NotImplemented`.
-`apps/server::ServerAuthConfigInputBoundary` converts config values into
-server-side auth check input without performing the actual decision.
+Current implementation: `stream-sync-config::ServerAuthConfigBoundary` reads the
+auth portion of `configs/examples/server.example.toml`-compatible TOML and
+produces `ServerAuthConfig`. `apps/server::ServerAuthConfigInputBoundary`
+converts config values into server-side auth check input without performing the
+actual decision.
 
 ### Minimal Auth Decision Boundary
 

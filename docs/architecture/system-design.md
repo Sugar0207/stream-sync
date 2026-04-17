@@ -443,36 +443,43 @@ remain unimplemented.
 
 ## Server Auth Config Input Boundary
 
-PoC / MVP initial implementation separates auth configuration input from the
-actual authentication decision. The server will eventually read the allowed
-client whitelist and shared token information from server configuration, but
-the current boundary only fixes the handoff shape.
+PoC / MVP initial implementation separates auth configuration loading from the
+actual authentication decision. The config crate now performs the minimal TOML
+read for allowed clients and shared token entries, while the server keeps token
+comparison and auth state changes in later boundaries.
 
 Flow:
 
-1. The future config loader reads server settings from TOML and produces
-   `ServerAuthConfig`.
-2. `ServerAuthConfig` contains the allowed client list and token references
-   needed for authentication.
-3. `protocol` / `net-core` decode an inbound `AuthRequest`.
-4. `ServerAuthHandlerBoundary` receives the decoded `AuthRequest` and produces
+1. `ServerAuthConfigBoundary` reads the auth portion of server TOML and
+   produces `ServerAuthConfig`.
+2. For each `[auth.clients.<client_id>]` entry, config creates one
+   `AllowedClientConfig` and one `SharedTokenConfig`.
+3. The auth client table key becomes both the whitelisted `client_id` and the
+   minimal `shared_token_id`.
+4. The TOML `shared_token` value is stored as
+   `SharedTokenSecretRef::InlinePlaceholder` for PoC comparison.
+5. `protocol` / `net-core` decode an inbound `AuthRequest`.
+6. `ServerAuthHandlerBoundary` receives the decoded `AuthRequest` and produces
    `ServerAuthCheck`.
-5. `ServerAuthConfigInputBoundary` receives `ServerAuthCheck` plus
+7. `ServerAuthConfigInputBoundary` receives `ServerAuthCheck` plus
    `ServerAuthConfig`.
-6. The boundary converts whitelist and token configuration into
+8. The boundary converts whitelist and token configuration into
    `ServerAuthCheckInput`, which is the input shape for future auth decision
    logic.
-7. The minimal auth decision boundary consumes `ServerAuthCheckInput` and
+9. The minimal auth decision boundary consumes `ServerAuthCheckInput` and
    returns `ServerAuthDecision`.
-8. Source registration, real TOML loading, external secret resolution, and UDP
-   sends remain in later stages.
+10. Source registration, external secret resolution, and UDP sends remain in
+    later stages.
 
 Responsibility split:
 
 - `config`
   - Owns the server auth setting shape: allowed client entries and shared token
     references.
-  - Future owner of TOML loading and secret-reference resolution boundaries.
+  - Owns minimal TOML loading from `[auth.clients.<client_id>]`.
+  - Maps TOML client entries into typed `ServerAuthConfig`.
+  - Does not resolve environment variables, secret stores, or other external
+    secret references.
   - Does not decode packets, inspect `AuthRequest`, verify presented tokens, or
     decide authentication.
 - server auth handler
@@ -491,11 +498,11 @@ Responsibility split:
 
 Current code reflects this with `stream-sync-config::ServerAuthConfig`,
 `AllowedClientConfig`, `SharedTokenConfig`, `ServerAuthConfigBoundary`, and
-`apps/server::ServerAuthConfigInputBoundary`. These types are placeholders for
-configuration and decision-input handoff only. Minimal auth decision logic is
-implemented separately in `apps/server::ServerAuthDecisionBoundary`. Real TOML
-loading, external secret resolution, authenticated source state, and UDP
-sending remain unimplemented.
+`apps/server::ServerAuthConfigInputBoundary`. The config boundary can read the
+minimal auth portion of `configs/examples/server.example.toml` and produce typed
+auth config. Minimal auth decision logic is implemented separately in
+`apps/server::ServerAuthDecisionBoundary`. External secret resolution,
+authenticated source state, and UDP sending remain unimplemented.
 
 ---
 
