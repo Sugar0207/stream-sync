@@ -595,6 +595,58 @@ decoded request to outbound queue item.
 
 ---
 
+## Authenticated Sender Registry Boundary
+
+PoC / MVP initial implementation separates accepted auth decisions from later
+packet acceptance checks. The authenticated sender registry is the server-side
+boundary that records which UDP source endpoint is allowed to send packets for
+which `client_id`.
+
+Flow:
+
+1. `ServerAuthFlowStep` receives `ServerAuthDecision` from
+   `ServerAuthDecisionBoundary`.
+2. If `ServerAuthDecision.accepted = true`,
+   `AuthenticatedSenderRegistryBoundary` creates
+   `AuthenticatedSenderRegistration`.
+3. The registration carries `client_id`, source `PacketSource`, `run_id`,
+   `protocol_version`, and optional registration timestamp.
+4. The registry stores a binding from `client_id` to the authenticated source
+   endpoint.
+5. Later heartbeat / video frame receive paths will check the packet's
+   `client_id` and source endpoint against this registry before accepting the
+   packet.
+6. If no matching `client_id` exists, or if the endpoint does not match, the
+   later packet is a reject/drop candidate.
+7. Timeout, expiration, revocation, and reauthentication policy are design
+   placeholders only at this stage.
+
+Responsibility split:
+
+- server auth flow
+  - Produces `ServerAuthDecision`.
+  - On accepted decisions, creates the registry registration handoff.
+  - Still builds `AuthResponse` and outbound queue handoff separately.
+  - Does not run UDP sockets, heartbeat timeout, revocation, or persistence.
+- authenticated sender registry
+  - Owns the in-memory mapping of `client_id` to source endpoint.
+  - Provides a minimal lookup for later packet acceptance checks.
+  - Does not decode packets, verify tokens, send responses, persist state, or
+    enforce timeout / reauthentication.
+- receive loop / later handlers
+  - Decode incoming packets and route them by message type.
+  - Before accepting heartbeat or video frame data, consult the authenticated
+    sender registry using `client_id` plus source endpoint.
+  - Own future drop / log behavior for unauthenticated or mismatched packets.
+
+Current code reflects this with `apps/server::AuthenticatedSenderRegistry`,
+`AuthenticatedSenderRegistration`, `AuthenticatedSenderRegistryBoundary`, and
+`AuthenticatedSenderCheck`. This is an in-memory boundary shape only. It does
+not implement real state persistence, timeout, revocation, reauthentication,
+heartbeat handling, video frame handling, or UDP socket I/O.
+
+---
+
 ## Server AuthResponse Boundary
 
 PoC / MVP initial implementation separates the future auth decision from

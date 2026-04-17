@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use stream_sync_config::{ServerAuthConfig, SharedTokenSecretRef};
 use stream_sync_net_core::{
     DecodedInboundPacket, InboundPacket, InboundPacketDecoder, NetDecodeError, OutboundPacket,
@@ -371,6 +372,7 @@ pub struct ServerAuthFlowStep {
     auth_handler: ServerAuthHandlerBoundary,
     config_input: ServerAuthConfigInputBoundary,
     decision: ServerAuthDecisionBoundary,
+    sender_registry: AuthenticatedSenderRegistryBoundary,
     response: ServerAuthResponseBoundary,
     queue: ServerOutboundQueueBoundary,
 }
@@ -392,11 +394,13 @@ impl ServerAuthFlowStep {
     ) -> ServerAuthFlowOutcome {
         let auth_input = self.config_input.prepare_check_input(check, config);
         let decision = self.decision.decide(auth_input);
+        let registry_registration = self.sender_registry.registration_from_decision(&decision);
         let outbound_response = self.response.build_for_send(decision.clone());
         let queue_item = self.queue.handoff_auth_response(outbound_response.clone());
 
         ServerAuthFlowOutcome {
             decision,
+            registry_registration,
             outbound_response,
             queue_item,
         }
@@ -407,8 +411,132 @@ impl ServerAuthFlowStep {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ServerAuthFlowOutcome {
     pub decision: ServerAuthDecision,
+    pub registry_registration: Option<AuthenticatedSenderRegistration>,
     pub outbound_response: ServerOutboundAuthResponse,
     pub queue_item: OutboundQueueItem,
+}
+
+/// In-memory authenticated sender registry boundary.
+///
+/// This maps an accepted `client_id` to the source endpoint observed during
+/// auth. It does not persist state, manage timeout, revoke entries, or perform
+/// reauthentication policy.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct AuthenticatedSenderRegistry {
+    entries_by_client_id: BTreeMap<String, AuthenticatedSenderEntry>,
+}
+
+impl AuthenticatedSenderRegistry {
+    pub fn entries(&self) -> impl Iterator<Item = &AuthenticatedSenderEntry> {
+        self.entries_by_client_id.values()
+    }
+
+    pub fn get(&self, client_id: &ClientId) -> Option<&AuthenticatedSenderEntry> {
+        self.entries_by_client_id.get(client_id.0.as_str())
+    }
+}
+
+/// One accepted client to source-endpoint binding.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AuthenticatedSenderEntry {
+    pub client_id: ClientId,
+    pub source: PacketSource,
+    pub run_id: RunId,
+    pub protocol_version: ProtocolVersion,
+    pub registered_at: Option<TimestampMicros>,
+}
+
+/// Registration input produced from an accepted auth decision.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AuthenticatedSenderRegistration {
+    pub client_id: ClientId,
+    pub source: PacketSource,
+    pub run_id: RunId,
+    pub protocol_version: ProtocolVersion,
+    pub registered_at: Option<TimestampMicros>,
+}
+
+impl AuthenticatedSenderRegistration {
+    fn into_entry(self) -> AuthenticatedSenderEntry {
+        AuthenticatedSenderEntry {
+            client_id: self.client_id,
+            source: self.source,
+            run_id: self.run_id,
+            protocol_version: self.protocol_version,
+            registered_at: self.registered_at,
+        }
+    }
+}
+
+/// Result of checking whether a decoded packet belongs to an authenticated
+/// sender binding.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AuthenticatedSenderCheck {
+    Accepted(AuthenticatedSenderEntry),
+    Rejected(AuthenticatedSenderRejectReason),
+}
+
+/// Minimal reject reasons for authenticated sender lookup.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum AuthenticatedSenderRejectReason {
+    UnknownClient,
+    EndpointMismatch,
+}
+
+/// Boundary that registers accepted auth decisions and checks later packets.
+///
+/// This boundary owns only the accepted-client to endpoint mapping shape. It
+/// does not run UDP receive loops, persist state, enforce timeout/revocation, or
+/// execute reauthentication.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct AuthenticatedSenderRegistryBoundary;
+
+impl AuthenticatedSenderRegistryBoundary {
+    pub fn registration_from_decision(
+        &self,
+        decision: &ServerAuthDecision,
+    ) -> Option<AuthenticatedSenderRegistration> {
+        decision.accepted.then(|| AuthenticatedSenderRegistration {
+            client_id: decision.client_id.clone(),
+            source: decision.source,
+            run_id: decision.run_id.clone(),
+            protocol_version: decision.protocol_version,
+            registered_at: decision.server_time,
+        })
+    }
+
+    pub fn register(
+        &self,
+        registry: &mut AuthenticatedSenderRegistry,
+        registration: AuthenticatedSenderRegistration,
+    ) -> AuthenticatedSenderEntry {
+        let entry = registration.into_entry();
+        registry
+            .entries_by_client_id
+            .insert(entry.client_id.0.clone(), entry.clone());
+        entry
+    }
+
+    pub fn check_source(
+        &self,
+        registry: &AuthenticatedSenderRegistry,
+        client_id: &ClientId,
+        source: PacketSource,
+    ) -> AuthenticatedSenderCheck {
+        let Some(entry) = registry.get(client_id) else {
+            return AuthenticatedSenderCheck::Rejected(
+                AuthenticatedSenderRejectReason::UnknownClient,
+            );
+        };
+
+        if entry.source != source {
+            return AuthenticatedSenderCheck::Rejected(
+                AuthenticatedSenderRejectReason::EndpointMismatch,
+            );
+        }
+
+        AuthenticatedSenderCheck::Accepted(entry.clone())
+    }
 }
 
 /// Errors at the server auth handoff boundary.
@@ -921,6 +1049,16 @@ mod tests {
 
         assert!(outcome.decision.accepted);
         assert_eq!(outcome.decision.reason_code, AuthResponseReasonCode::Ok);
+        assert_eq!(
+            outcome.registry_registration,
+            Some(AuthenticatedSenderRegistration {
+                client_id: ClientId("client-1".to_string()),
+                source,
+                run_id: RunId("run-1".to_string()),
+                protocol_version: ProtocolVersion(2),
+                registered_at: None,
+            })
+        );
         let outbound_response = outcome
             .outbound_response
             .auth_response()
@@ -958,6 +1096,7 @@ mod tests {
             outcome.decision.reason_code,
             AuthResponseReasonCode::InvalidToken
         );
+        assert_eq!(outcome.registry_registration, None);
         let ProtocolMessage::AuthResponse(queued_response) = outcome.queue_item.packet.message
         else {
             panic!("expected queued AuthResponse");
@@ -1000,6 +1139,108 @@ mod tests {
             Err(ServerAuthBoundaryError::UnexpectedRoute {
                 message_type: MessageType::Heartbeat
             })
+        );
+    }
+
+    #[test]
+    fn authenticated_sender_registry_registers_accepted_decision() {
+        let source = packet_source();
+        let boundary = AuthenticatedSenderRegistryBoundary;
+        let mut registry = AuthenticatedSenderRegistry::default();
+        let decision = ServerAuthDecision::accepted(
+            source,
+            ClientId("client-1".to_string()),
+            RunId("run-1".to_string()),
+            ProtocolVersion(2),
+            Some(TimestampMicros(2_000_000)),
+        );
+        let registration = boundary
+            .registration_from_decision(&decision)
+            .expect("accepted decision should produce registration");
+
+        let entry = boundary.register(&mut registry, registration);
+
+        assert_eq!(entry.client_id, ClientId("client-1".to_string()));
+        assert_eq!(entry.source, source);
+        assert_eq!(entry.run_id, RunId("run-1".to_string()));
+        assert_eq!(entry.registered_at, Some(TimestampMicros(2_000_000)));
+        assert_eq!(registry.entries().count(), 1);
+    }
+
+    #[test]
+    fn authenticated_sender_registry_ignores_rejected_decision() {
+        let source = packet_source();
+        let boundary = AuthenticatedSenderRegistryBoundary;
+        let decision = ServerAuthDecision::rejected(
+            source,
+            ClientId("client-1".to_string()),
+            RunId("run-1".to_string()),
+            ProtocolVersion(2),
+            AuthResponseReasonCode::InvalidToken,
+            Some("invalid shared_token".to_string()),
+            None,
+        );
+
+        let registration = boundary.registration_from_decision(&decision);
+
+        assert_eq!(registration, None);
+    }
+
+    #[test]
+    fn authenticated_sender_registry_checks_later_packet_source() {
+        let source = packet_source();
+        let boundary = AuthenticatedSenderRegistryBoundary;
+        let mut registry = AuthenticatedSenderRegistry::default();
+        let registration = AuthenticatedSenderRegistration {
+            client_id: ClientId("client-1".to_string()),
+            source,
+            run_id: RunId("run-1".to_string()),
+            protocol_version: ProtocolVersion(2),
+            registered_at: None,
+        };
+        boundary.register(&mut registry, registration.clone());
+
+        let check = boundary.check_source(&registry, &registration.client_id, source);
+
+        assert_eq!(
+            check,
+            AuthenticatedSenderCheck::Accepted(AuthenticatedSenderEntry {
+                client_id: ClientId("client-1".to_string()),
+                source,
+                run_id: RunId("run-1".to_string()),
+                protocol_version: ProtocolVersion(2),
+                registered_at: None,
+            })
+        );
+    }
+
+    #[test]
+    fn authenticated_sender_registry_rejects_unknown_or_mismatched_source() {
+        let source = packet_source();
+        let other_source: PacketSource = "127.0.0.1:5001"
+            .parse::<SocketAddr>()
+            .expect("source address should parse")
+            .into();
+        let boundary = AuthenticatedSenderRegistryBoundary;
+        let mut registry = AuthenticatedSenderRegistry::default();
+        boundary.register(
+            &mut registry,
+            AuthenticatedSenderRegistration {
+                client_id: ClientId("client-1".to_string()),
+                source,
+                run_id: RunId("run-1".to_string()),
+                protocol_version: ProtocolVersion(2),
+                registered_at: None,
+            },
+        );
+
+        assert_eq!(
+            boundary.check_source(&registry, &ClientId("client-2".to_string()), source),
+            AuthenticatedSenderCheck::Rejected(AuthenticatedSenderRejectReason::UnknownClient)
+        );
+        assert_eq!(
+            boundary.check_source(&registry, &ClientId("client-1".to_string()), other_source),
+            AuthenticatedSenderCheck::Rejected(AuthenticatedSenderRejectReason::EndpointMismatch)
         );
     }
 

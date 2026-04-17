@@ -5,6 +5,61 @@
 - Codex
 
 ### 今回の作業
+- 認証済み送信元の登録 / 管理境界を設計した。
+- `docs/architecture/system-design.md` と `docs/architecture/protocol.md` に accepted auth decision から registry handoff までの流れを追記した。
+- `apps/server` に `AuthenticatedSenderRegistry`, `AuthenticatedSenderRegistration`, `AuthenticatedSenderRegistryBoundary`, `AuthenticatedSenderCheck` を追加した。
+- accepted decision から registration を作り、`client_id` と source endpoint の対応を in-memory registry に登録できるようにした。
+- 後続 packet の `client_id` / source endpoint 受理判定用の最小 lookup を追加した。
+
+### 変更ファイル
+- `apps/server/src/lib.rs`
+- `docs/architecture/system-design.md`
+- `docs/architecture/protocol.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### 決定事項
+- registry は `client_id` と `PacketSource` を対応付ける server 側境界とする。
+- `ServerAuthFlowStep` は accepted decision から `AuthenticatedSenderRegistration` を作るが、registry state の永続化や timeout 管理は行わない。
+- 後続の heartbeat / video frame 受理判定は、decode 済み `client_id` と packet source endpoint を registry に問い合わせる方針にする。
+- missing client / endpoint mismatch は後続 packet の reject/drop 候補とする。
+- timeout、失効、再認証、state 永続化、UDP socket 実装は今回行わない。
+
+### 未解決事項
+- registry を receive loop / heartbeat / video frame handler に接続する処理
+- timeout / 失効 / 再認証の本実装
+- auth success / failure ログ出力
+- 未認証 / endpoint mismatch packet の破棄ログ
+- UDP socket 送受信
+
+### 次にやる候補
+- auth success / failure ログ出力境界を設計する
+- 未認証 / endpoint mismatch packet の破棄境界を設計する
+- UDP socket 受信 / 送信本体の実装に進む
+
+### TODO更新
+- 完了:
+  - 認証済み送信元の登録 / 管理境界を整理する
+  - `AuthenticatedSenderRegistryBoundary` / `AuthenticatedSenderRegistry` placeholder 追加
+  - accepted auth decision から registry registration への handoff 追加
+- 追加:
+  - 未認証 / endpoint mismatch packet の破棄境界を設計する
+- 保留:
+  - state 永続化
+  - timeout / 失効 / 再認証
+  - registry と receive loop / packet handler の接続
+  - UDP socket 実装
+
+### メモ
+- 認証済み送信元 registry 境界の責務は、accepted decision を `client_id` と source endpoint の対応として登録し、後続 packet の受理判定が参照できる最小 lookup を提供するところまで。
+
+---
+
+## 2026-04-17
+### 種別
+- Codex
+
+### 今回の作業
 - server 設定 TOML から client whitelist / token 情報を読み込む最小実装を追加した。
 - `crates/config` に最小 auth-section parser を追加し、`ServerAuthConfigBoundary` が TOML file または string から `ServerAuthConfig` を作れるようにした。
 - `[auth.clients.<client_id>]` を `AllowedClientConfig` と `SharedTokenConfig` へ変換する実装を追加した。
