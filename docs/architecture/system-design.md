@@ -543,6 +543,51 @@ authenticated source management, logging, and UDP sending remain future tasks.
 
 ---
 
+## Server Auth Flow Step
+
+PoC / MVP initial implementation connects the existing auth boundaries inside
+the server process. This step starts from a decoded auth route and ends at the
+outbound queue handoff shape. It does not perform socket I/O or update
+authenticated source state.
+
+Flow:
+
+1. `ServerInboundRouter` returns `ServerInboundRoute::AuthRequest` with decoded
+   `AuthRequest` and source metadata.
+2. `ServerAuthFlowStep` calls `ServerAuthHandlerBoundary` to convert the route
+   into `ServerAuthCheck`.
+3. `ServerAuthFlowStep` calls `ServerAuthConfigInputBoundary` with
+   `ServerAuthCheck` and `ServerAuthConfig` to produce `ServerAuthCheckInput`.
+4. `ServerAuthFlowStep` calls `ServerAuthDecisionBoundary` to produce
+   `ServerAuthDecision`.
+5. `ServerAuthFlowStep` calls `ServerAuthResponseBoundary` to convert the
+   decision into `ServerOutboundAuthResponse`.
+6. `ServerAuthFlowStep` calls `ServerOutboundQueueBoundary` to hand the
+   response to the outbound queue as `OutboundQueueItem`.
+7. Later net send code may encode the queued `ProtocolMessage::AuthResponse`
+   and later socket code may send the bytes.
+
+Responsibility split:
+
+- auth flow step
+  - Orchestrates existing server boundaries in order.
+  - Returns the decision, typed outbound response, and queue handoff item for
+    inspection by future server code.
+  - Does not load config from disk, resolve secrets, register authenticated
+    sources, run a queue, encode bytes, or send UDP.
+- auth decision boundary
+  - Produces accepted/rejected `ServerAuthDecision`.
+- response boundary
+  - Converts `ServerAuthDecision` into typed `AuthResponse`.
+- outbound queue boundary
+  - Produces the `OutboundQueueItem` handoff shape only.
+
+Current code reflects this with `apps/server::ServerAuthFlowStep` and
+`ServerAuthFlowOutcome`. This is the first connected server auth path from
+decoded request to outbound queue item.
+
+---
+
 ## Server AuthResponse Boundary
 
 PoC / MVP initial implementation separates the future auth decision from
@@ -550,7 +595,7 @@ response generation and network sending.
 
 Flow:
 
-1. The auth handler or auth decision layer returns a `ServerAuthDecision`.
+1. The auth flow step or auth decision layer returns a `ServerAuthDecision`.
 2. `ServerAuthDecision` carries the source address, `client_id`, `run_id`,
    `protocol_version`, accepted/rejected result, reason code, optional message,
    optional server time, and optional expected protocol version.
@@ -559,7 +604,9 @@ Flow:
    decision.
 5. The boundary returns `ServerOutboundAuthResponse`, which contains the
    destination `PacketSource` and typed protocol message.
-6. A future net send layer will wire-encode the message and send it over UDP.
+6. `ServerOutboundQueueBoundary` can hand the typed response to the outbound
+   queue as `OutboundQueueItem`.
+7. A future net send layer will wire-encode the message and send it over UDP.
 
 Responsibility split:
 
@@ -584,7 +631,8 @@ Responsibility split:
 Current code reflects this with `ServerAuthDecision`,
 `ServerAuthResponseBoundary`, and `ServerOutboundAuthResponse` placeholders in
 `apps/server`. Minimal success/failure judgement now exists in
-`ServerAuthDecisionBoundary`; whitelist loading, external secret resolution,
+`ServerAuthDecisionBoundary`, and `ServerAuthFlowStep` connects the decision to
+`AuthResponse` queue handoff. Whitelist loading, external secret resolution,
 authenticated source registration, and UDP send remain unimplemented.
 
 ---

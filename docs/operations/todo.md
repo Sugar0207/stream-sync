@@ -20,7 +20,7 @@
 - Cargo workspace と `apps/*` / `crates/*` の初期 scaffold は完了
 - `crates/protocol` の基本型、主要 message 型、timestamp 型、fixed header decode、`AuthRequest` / `Heartbeat` / `VideoFrame` payload decode、`AuthResponse` / `HeartbeatAck` encode は完了
 - `crates/net-core` の inbound decode 境界、outbound packet / queue 境界、outbound queue lifecycle 境界、protocol encoder 呼び出し境界、send error / log event 分類 placeholder は完了
-- `apps/server` の inbound router、UDP receive loop step、auth handler boundary、auth config input boundary、server auth decision 最小実装、AuthResponse response boundary、HeartbeatAck ack boundary、outbound queue handoff は完了
+- `apps/server` の inbound router、UDP receive loop step、auth handler boundary、auth config input boundary、server auth decision 最小実装、auth flow step、AuthResponse response boundary、HeartbeatAck ack boundary、outbound queue handoff は完了
 - 実ネットワーク送受信、本物の設定読み込み / secret 解決、認証済み送信元管理、`AuthResponse` / `HeartbeatAck` 以外の encode 本実装、時刻同期本体、映像受信・復号・表示、switcher UI は未実装
 - 次の中心は実 config 読み込み、認証済み送信元管理、UDP socket 送受信
 
@@ -54,8 +54,8 @@
 ## 直近でやること
 1. server 設定 TOML から client whitelist / token 情報を読み込む
 2. 認証済み送信元の登録 / 管理境界を設計する
-3. UDP socket 受信 / 送信本体の実装に進む
-4. receive / send ログ出力の最小実装方針を決める
+3. auth success / failure ログ出力境界を設計する
+4. UDP socket 受信 / 送信本体の実装に進む
 5. `VideoFrame` encode 方針と実装範囲を整理する
 6. outbound queue の実処理範囲と backpressure 方針を実装前に詰める
 
@@ -77,6 +77,7 @@
 - [x] server UDP receive loop 境界を整理する
 - [x] server auth handler 境界を整理する
 - [x] client whitelist 読み込みと token 検証の設定入力境界を整理する
+- [x] auth decision から `AuthResponse` outbound queue handoff までの server step を整理する
 - [x] AuthResponse 生成 / 送信境界を整理する
 - [x] outbound packet / queue 境界を整理する
 - [x] outbound queue の最小実処理方針を整理する
@@ -159,6 +160,7 @@
 - [x] client whitelist / token 情報を認証判定入力へ変換する設定入力境界を定義する
 - [x] server auth decision の最小実装を追加する
 - [x] `UnknownClient` / `InvalidToken` / `InternalError` の最小 rejected reason を返す
+- [x] `ServerAuthFlowStep` で `ServerAuthCheckInput` -> `ServerAuthDecision` -> `ServerOutboundAuthResponse` -> `OutboundQueueItem` を接続する
 - [ ] server 設定 TOML から client whitelist / token 情報を読み込む
 - [ ] client whitelist 読み込みを実装する
 - [ ] secret 解決後の本物の token 検証を実装する
@@ -341,6 +343,7 @@
 - [x] client whitelist / token 検証の設定入力境界整理
 - [ ] UDP receive / send 最小実装
 - [x] server auth decision 最小実装
+- [x] auth decision から AuthResponse outbound queue handoff までの server step 接続
 - [x] send error / log event 方針整理
 - [x] outbound queue 最小実処理方針整理
 - [ ] receive / send ログ最小実装

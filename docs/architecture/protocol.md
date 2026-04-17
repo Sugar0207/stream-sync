@@ -1029,6 +1029,42 @@ Responsibility split:
 
 Current implementation: `apps/server::ServerAuthDecisionBoundary`.
 
+### Connected Server Auth Flow Step
+
+The server auth flow step connects decoded `AuthRequest` handling to outbound
+`AuthResponse` queue handoff. It composes existing boundaries and does not add
+network I/O.
+
+Flow:
+
+1. `ServerInboundRoute::AuthRequest` carries decoded `AuthRequest` plus source
+   metadata.
+2. `ServerAuthFlowStep` converts the route into `ServerAuthCheck` through
+   `ServerAuthHandlerBoundary`.
+3. `ServerAuthFlowStep` combines the check with `ServerAuthConfig` through
+   `ServerAuthConfigInputBoundary`.
+4. `ServerAuthFlowStep` runs `ServerAuthDecisionBoundary`.
+5. `ServerAuthFlowStep` passes the decision to `ServerAuthResponseBoundary`.
+6. `ServerAuthFlowStep` hands the resulting `ServerOutboundAuthResponse` to
+   `ServerOutboundQueueBoundary`.
+7. The output is `ServerAuthFlowOutcome`, containing the `ServerAuthDecision`,
+   typed outbound response, and `OutboundQueueItem`.
+
+Responsibility split:
+
+- server auth flow step
+  - Owns orchestration from decoded auth route to queue handoff.
+  - Does not read TOML, resolve secrets, register authenticated sources, encode
+    bytes, run a queue, or send UDP.
+- outbound queue boundary
+  - Receives typed `AuthResponse` and destination metadata.
+  - Produces an `OutboundQueueItem` handoff only.
+- net send layer
+  - Future owner of encoding the queued `ProtocolMessage::AuthResponse`.
+
+Current implementation: `apps/server::ServerAuthFlowStep` and
+`ServerAuthFlowOutcome`.
+
 ---
 
 ## AuthResponse Generation / Send Boundary
@@ -1043,14 +1079,17 @@ Flow:
    as `DecodedInboundPacket`.
 2. `ServerInboundRouter` routes the decoded `AuthRequest` to the auth handler
    boundary.
-3. The auth decision boundary evaluates the prepared `client_id` and
+3. The auth flow step prepares auth input from decoded `AuthRequest` and
+   config input.
+4. The auth decision boundary evaluates the prepared `client_id` and
    `shared_token` input and returns an auth decision.
-4. The server response boundary receives the auth decision as
+5. The server response boundary receives the auth decision as
    `ServerAuthDecision`.
-5. The response boundary builds `ProtocolMessage::AuthResponse`.
-6. The response boundary returns an outbound handoff containing the destination
+6. The response boundary builds `ProtocolMessage::AuthResponse`.
+7. The response boundary returns an outbound handoff containing the destination
    source metadata and typed message.
-7. The future net send layer performs wire encode and UDP socket send.
+8. The outbound queue boundary converts it into `OutboundQueueItem`.
+9. The future net send layer performs wire encode and UDP socket send.
 
 Responsibility split:
 
@@ -1077,7 +1116,8 @@ Current placeholder: `apps/server::ServerAuthResponseBoundary` converts
 `ServerAuthDecision` into `ServerOutboundAuthResponse`. This is only the
 message-generation and send-layer handoff shape. Minimal auth decisions are
 implemented by `ServerAuthDecisionBoundary`; authenticated source registration
-and socket send remain out of scope.
+and socket send remain out of scope. `ServerAuthFlowStep` now connects the
+decision and response boundaries to the outbound queue handoff.
 
 ---
 

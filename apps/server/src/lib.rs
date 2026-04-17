@@ -361,6 +361,56 @@ impl ServerAuthDecisionBoundary {
     }
 }
 
+/// Minimal server auth flow step from decoded auth route to outbound queue item.
+///
+/// This connects existing boundaries only. It does not load real config,
+/// resolve secrets, register authenticated sources, run a queue, encode bytes,
+/// or send UDP packets.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct ServerAuthFlowStep {
+    auth_handler: ServerAuthHandlerBoundary,
+    config_input: ServerAuthConfigInputBoundary,
+    decision: ServerAuthDecisionBoundary,
+    response: ServerAuthResponseBoundary,
+    queue: ServerOutboundQueueBoundary,
+}
+
+impl ServerAuthFlowStep {
+    pub fn handle_auth_route(
+        &self,
+        route: ServerInboundRoute,
+        config: &ServerAuthConfig,
+    ) -> Result<ServerAuthFlowOutcome, ServerAuthBoundaryError> {
+        let check = self.auth_handler.prepare_from_route(route)?;
+        Ok(self.handle_auth_check(check, config))
+    }
+
+    pub fn handle_auth_check(
+        &self,
+        check: ServerAuthCheck,
+        config: &ServerAuthConfig,
+    ) -> ServerAuthFlowOutcome {
+        let auth_input = self.config_input.prepare_check_input(check, config);
+        let decision = self.decision.decide(auth_input);
+        let outbound_response = self.response.build_for_send(decision.clone());
+        let queue_item = self.queue.handoff_auth_response(outbound_response.clone());
+
+        ServerAuthFlowOutcome {
+            decision,
+            outbound_response,
+            queue_item,
+        }
+    }
+}
+
+/// Result of connecting auth decision to the outbound queue handoff.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ServerAuthFlowOutcome {
+    pub decision: ServerAuthDecision,
+    pub outbound_response: ServerOutboundAuthResponse,
+    pub queue_item: OutboundQueueItem,
+}
+
 /// Errors at the server auth handoff boundary.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ServerAuthBoundaryError {
@@ -856,6 +906,104 @@ mod tests {
     }
 
     #[test]
+    fn auth_flow_step_hands_accepted_decision_to_auth_response_queue() {
+        let source = packet_source();
+        let route = ServerInboundRoute::AuthRequest {
+            source,
+            request: auth_request("client-1", "presented-secret"),
+        };
+        let config = auth_config(Some("presented-secret"));
+        let step = ServerAuthFlowStep::default();
+
+        let outcome = step
+            .handle_auth_route(route, &config)
+            .expect("auth route should be handled");
+
+        assert!(outcome.decision.accepted);
+        assert_eq!(outcome.decision.reason_code, AuthResponseReasonCode::Ok);
+        let outbound_response = outcome
+            .outbound_response
+            .auth_response()
+            .expect("outbound message should be AuthResponse");
+        assert!(outbound_response.accepted);
+        assert_eq!(outbound_response.reason_code, AuthResponseReasonCode::Ok);
+        let ProtocolMessage::AuthResponse(queued_response) = outcome.queue_item.packet.message
+        else {
+            panic!("expected queued AuthResponse");
+        };
+        assert_eq!(
+            outcome.queue_item.packet.destination.address,
+            source.address
+        );
+        assert!(queued_response.accepted);
+        assert_eq!(queued_response.reason_code, AuthResponseReasonCode::Ok);
+    }
+
+    #[test]
+    fn auth_flow_step_hands_rejected_decision_to_auth_response_queue() {
+        let source = packet_source();
+        let route = ServerInboundRoute::AuthRequest {
+            source,
+            request: auth_request("client-1", "wrong-secret"),
+        };
+        let config = auth_config(Some("presented-secret"));
+        let step = ServerAuthFlowStep::default();
+
+        let outcome = step
+            .handle_auth_route(route, &config)
+            .expect("auth route should be handled");
+
+        assert!(!outcome.decision.accepted);
+        assert_eq!(
+            outcome.decision.reason_code,
+            AuthResponseReasonCode::InvalidToken
+        );
+        let ProtocolMessage::AuthResponse(queued_response) = outcome.queue_item.packet.message
+        else {
+            panic!("expected queued AuthResponse");
+        };
+        assert_eq!(
+            outcome.queue_item.packet.destination.address,
+            source.address
+        );
+        assert!(!queued_response.accepted);
+        assert_eq!(
+            queued_response.reason_code,
+            AuthResponseReasonCode::InvalidToken
+        );
+        assert_eq!(
+            queued_response.message.as_deref(),
+            Some("invalid shared_token")
+        );
+    }
+
+    #[test]
+    fn auth_flow_step_rejects_non_auth_route_before_decision() {
+        let source = packet_source();
+        let heartbeat = Heartbeat {
+            message_type: MessageType::Heartbeat,
+            protocol_version: ProtocolVersion(2),
+            client_id: ClientId("client-1".to_string()),
+            run_id: RunId("run-1".to_string()),
+            sent_at: TimestampMicros(1_234_567),
+            local_time: None,
+            short_status: None,
+        };
+        let step = ServerAuthFlowStep::default();
+        let config = auth_config(Some("presented-secret"));
+
+        let result =
+            step.handle_auth_route(ServerInboundRoute::Heartbeat { source, heartbeat }, &config);
+
+        assert_eq!(
+            result,
+            Err(ServerAuthBoundaryError::UnexpectedRoute {
+                message_type: MessageType::Heartbeat
+            })
+        );
+    }
+
+    #[test]
     fn auth_response_boundary_builds_accepted_response_for_send() {
         let source = packet_source();
         let boundary = ServerAuthResponseBoundary;
@@ -1065,20 +1213,30 @@ mod tests {
     ) -> ServerAuthCheckInput {
         let check = ServerAuthCheck {
             source: packet_source(),
-            request: AuthRequest {
-                message_type: MessageType::AuthRequest,
-                protocol_version: ProtocolVersion(2),
-                client_id: ClientId(request_client_id.to_string()),
-                run_id: RunId("run-1".to_string()),
-                app_version: AppVersion("0.1.0".to_string()),
-                shared_token: presented_token.to_string(),
-                display_name: None,
-                capabilities: Vec::new(),
-                requested_video_profile: None,
-            },
+            request: auth_request(request_client_id, presented_token),
         };
 
-        let config = ServerAuthConfig {
+        let config = auth_config(configured_token);
+
+        ServerAuthConfigInputBoundary.prepare_check_input(check, &config)
+    }
+
+    fn auth_request(client_id: &str, shared_token: &str) -> AuthRequest {
+        AuthRequest {
+            message_type: MessageType::AuthRequest,
+            protocol_version: ProtocolVersion(2),
+            client_id: ClientId(client_id.to_string()),
+            run_id: RunId("run-1".to_string()),
+            app_version: AppVersion("0.1.0".to_string()),
+            shared_token: shared_token.to_string(),
+            display_name: None,
+            capabilities: Vec::new(),
+            requested_video_profile: None,
+        }
+    }
+
+    fn auth_config(configured_token: Option<&str>) -> ServerAuthConfig {
+        ServerAuthConfig {
             allowed_clients: vec![AllowedClientConfig {
                 client_id: "client-1".to_string(),
                 shared_token_id: "token-main".to_string(),
@@ -1091,9 +1249,7 @@ mod tests {
                     }]
                 })
                 .unwrap_or_default(),
-        };
-
-        ServerAuthConfigInputBoundary.prepare_check_input(check, &config)
+        }
     }
 
     fn heartbeat_payload() -> Vec<u8> {

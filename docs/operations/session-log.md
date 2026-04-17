@@ -5,6 +5,60 @@
 - Codex
 
 ### 今回の作業
+- auth decision から `AuthResponse` outbound queue handoff までの server step を接続した。
+- `apps/server` に `ServerAuthFlowStep` / `ServerAuthFlowOutcome` を追加した。
+- `ServerAuthFlowStep` が `ServerInboundRoute::AuthRequest` から `ServerAuthCheck`、`ServerAuthCheckInput`、`ServerAuthDecision`、`ServerOutboundAuthResponse`、`OutboundQueueItem` まで既存 boundary を順番に呼ぶようにした。
+- accepted / rejected の `AuthResponse` が outbound queue item へ handoff される単体テストを追加した。
+- `docs/architecture/system-design.md` と `docs/architecture/protocol.md` に server auth flow 接続を追記した。
+
+### 変更ファイル
+- `apps/server/src/lib.rs`
+- `docs/architecture/system-design.md`
+- `docs/architecture/protocol.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### 決定事項
+- `ServerAuthFlowStep` は server 内の orchestration 境界とし、既存 boundary を接続するだけに留める。
+- decode 済み `AuthRequest` は `ServerAuthHandlerBoundary` で `ServerAuthCheck` に変換する。
+- auth config input boundary は `ServerAuthCheck` と `ServerAuthConfig` から `ServerAuthCheckInput` を作る。
+- auth decision boundary は `ServerAuthDecision` を返し、response boundary が `ProtocolMessage::AuthResponse` を作る。
+- outbound queue boundary は typed response を `OutboundQueueItem` に変換する。
+- 認証済み送信元登録、実 queue、wire encode、UDP socket send、TOML 読み込み、secret 解決は今回実装しない。
+
+### 未解決事項
+- server 設定 TOML からの本物の client whitelist 読み込み
+- secret 解決
+- 認証済み送信元の登録 / 管理
+- auth success / failure ログ出力
+- outbound queue 実処理
+- UDP socket 送受信
+
+### 次にやる候補
+- server 設定 TOML から client whitelist / token 情報を読み込む
+- 認証済み送信元の登録 / 管理境界を設計する
+- auth success / failure ログ出力境界を設計する
+
+### TODO更新
+- 完了:
+  - auth decision から `AuthResponse` outbound queue handoff までの server step 接続
+  - `ServerAuthFlowStep` / `ServerAuthFlowOutcome` 追加
+  - server auth flow 接続 docs 反映
+- 追加:
+  - auth success / failure ログ出力境界を設計する
+- 保留:
+  - 本物の TOML 読み込み
+  - secret 解決
+  - 認証済み送信元登録
+  - UDP socket 実装
+
+---
+
+## 2026-04-17
+### 種別
+- Codex
+
+### 今回の作業
 - server auth decision の最小実装を追加した。
 - `apps/server` に `ServerAuthDecisionBoundary` を追加し、`ServerAuthCheckInput` から `ServerAuthDecision` を返す流れを実装した。
 - `client_id` whitelist、設定入力境界から渡された shared token 情報、提示された `shared_token` を使って accepted / rejected を判定する最小ロジックを追加した。
