@@ -107,6 +107,81 @@ pub enum ServerReceiveLoopGateRejection {
     Acceptance(PacketAcceptanceRejection),
 }
 
+/// Boundary that prepares receive rejections for future drop and log layers.
+///
+/// This preserves the rejection reason for both layers. It does not execute the
+/// packet drop, emit logs, update state, or call UDP sockets.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct ServerRejectionDropLogHandoffBoundary;
+
+impl ServerRejectionDropLogHandoffBoundary {
+    pub fn handoff(
+        &self,
+        rejection: ServerReceiveLoopGateRejection,
+    ) -> ServerRejectionDropLogInput {
+        let (source, reason) = match rejection {
+            ServerReceiveLoopGateRejection::Decode(rejected) => (
+                rejected.source,
+                ServerRejectionHandoffReason::Decode {
+                    action: rejected.action,
+                    error: rejected.error,
+                },
+            ),
+            ServerReceiveLoopGateRejection::Acceptance(rejected) => (
+                rejected.source,
+                ServerRejectionHandoffReason::Acceptance {
+                    message_type: rejected.message_type,
+                    client_id: rejected.client_id,
+                    reason: rejected.reason,
+                },
+            ),
+        };
+
+        ServerRejectionDropLogInput {
+            drop_input: ServerPacketDropInput {
+                source,
+                reason: reason.clone(),
+            },
+            log_input: ServerPacketLogInput { source, reason },
+        }
+    }
+}
+
+/// Typed handoff to future packet drop and receive log layers.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ServerRejectionDropLogInput {
+    pub drop_input: ServerPacketDropInput,
+    pub log_input: ServerPacketLogInput,
+}
+
+/// Input for a future packet drop layer.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ServerPacketDropInput {
+    pub source: PacketSource,
+    pub reason: ServerRejectionHandoffReason,
+}
+
+/// Input for a future receive log layer.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ServerPacketLogInput {
+    pub source: PacketSource,
+    pub reason: ServerRejectionHandoffReason,
+}
+
+/// Receive rejection reason preserved across drop and log handoff.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ServerRejectionHandoffReason {
+    Decode {
+        action: ServerDecodeErrorAction,
+        error: ProtocolError,
+    },
+    Acceptance {
+        message_type: MessageType,
+        client_id: Option<ClientId>,
+        reason: PacketAcceptanceRejectReason,
+    },
+}
+
 /// Decode failure plus the server receive loop policy for that failure.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ServerRejectedPacket {
@@ -1067,6 +1142,118 @@ mod tests {
                     }
                 }
             ))
+        );
+    }
+
+    #[test]
+    fn rejection_handoff_preserves_decode_error_for_drop_and_log_layers() {
+        let source = packet_source();
+        let boundary = ServerRejectionDropLogHandoffBoundary;
+        let rejection = ServerReceiveLoopGateRejection::Decode(ServerRejectedPacket {
+            source,
+            action: ServerDecodeErrorAction::RejectProtocolVersion,
+            error: ProtocolError::UnsupportedProtocolVersion {
+                expected: ProtocolVersion(2),
+                actual: ProtocolVersion(1),
+            },
+        });
+
+        let input = boundary.handoff(rejection);
+        let reason = ServerRejectionHandoffReason::Decode {
+            action: ServerDecodeErrorAction::RejectProtocolVersion,
+            error: ProtocolError::UnsupportedProtocolVersion {
+                expected: ProtocolVersion(2),
+                actual: ProtocolVersion(1),
+            },
+        };
+
+        assert_eq!(
+            input,
+            ServerRejectionDropLogInput {
+                drop_input: ServerPacketDropInput {
+                    source,
+                    reason: reason.clone(),
+                },
+                log_input: ServerPacketLogInput { source, reason },
+            }
+        );
+    }
+
+    #[test]
+    fn rejection_handoff_preserves_unauthenticated_source_for_drop_and_log_layers() {
+        let source = packet_source();
+        let boundary = ServerRejectionDropLogHandoffBoundary;
+        let rejection = ServerReceiveLoopGateRejection::Acceptance(PacketAcceptanceRejection {
+            source,
+            message_type: MessageType::Heartbeat,
+            client_id: Some(ClientId("client-1".to_string())),
+            reason: PacketAcceptanceRejectReason::UnauthenticatedSource,
+        });
+
+        let input = boundary.handoff(rejection);
+        let reason = ServerRejectionHandoffReason::Acceptance {
+            message_type: MessageType::Heartbeat,
+            client_id: Some(ClientId("client-1".to_string())),
+            reason: PacketAcceptanceRejectReason::UnauthenticatedSource,
+        };
+
+        assert_eq!(
+            input,
+            ServerRejectionDropLogInput {
+                drop_input: ServerPacketDropInput {
+                    source,
+                    reason: reason.clone(),
+                },
+                log_input: ServerPacketLogInput { source, reason },
+            }
+        );
+    }
+
+    #[test]
+    fn rejection_handoff_preserves_unknown_client_and_endpoint_mismatch_reasons() {
+        let source = packet_source();
+        let boundary = ServerRejectionDropLogHandoffBoundary;
+
+        let unknown_client = boundary.handoff(ServerReceiveLoopGateRejection::Acceptance(
+            PacketAcceptanceRejection {
+                source,
+                message_type: MessageType::Heartbeat,
+                client_id: Some(ClientId("client-2".to_string())),
+                reason: PacketAcceptanceRejectReason::UnknownClient,
+            },
+        ));
+        assert_eq!(
+            unknown_client.drop_input.reason,
+            ServerRejectionHandoffReason::Acceptance {
+                message_type: MessageType::Heartbeat,
+                client_id: Some(ClientId("client-2".to_string())),
+                reason: PacketAcceptanceRejectReason::UnknownClient,
+            }
+        );
+        assert_eq!(
+            unknown_client.log_input.reason,
+            unknown_client.drop_input.reason
+        );
+
+        let endpoint_mismatch = boundary.handoff(ServerReceiveLoopGateRejection::Acceptance(
+            PacketAcceptanceRejection {
+                source,
+                message_type: MessageType::VideoFrame,
+                client_id: Some(ClientId("client-1".to_string())),
+                reason: PacketAcceptanceRejectReason::EndpointMismatch,
+            },
+        ));
+        assert_eq!(
+            endpoint_mismatch.drop_input.reason,
+            ServerRejectionHandoffReason::Acceptance {
+                message_type: MessageType::VideoFrame,
+                client_id: Some(ClientId("client-1".to_string())),
+                reason: PacketAcceptanceRejectReason::EndpointMismatch,
+            }
+        );
+        assert_eq!(
+            endpoint_mismatch.log_input.reason,
+            endpoint_mismatch.drop_input.reason
         );
     }
 

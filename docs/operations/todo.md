@@ -21,9 +21,9 @@
 - `crates/protocol` の基本型、主要 message 型、timestamp 型、fixed header decode、`AuthRequest` / `Heartbeat` / `VideoFrame` payload decode、`AuthResponse` / `HeartbeatAck` encode は完了
 - `crates/config` の server auth 設定 TOML 読み込み最小実装は完了
 - `crates/net-core` の inbound decode 境界、outbound packet / queue 境界、outbound queue lifecycle 境界、protocol encoder 呼び出し境界、send error / log event 分類 placeholder は完了
-- `apps/server` の inbound router、UDP receive loop step、receive loop から packet acceptance gate への接続境界、auth handler boundary、auth config input boundary、server auth decision 最小実装、auth flow step、認証済み送信元 registry 境界、packet acceptance gate 境界、AuthResponse response boundary、HeartbeatAck ack boundary、outbound queue handoff は完了
+- `apps/server` の inbound router、UDP receive loop step、receive loop から packet acceptance gate への接続境界、packet acceptance rejection の drop / log handoff 境界、auth handler boundary、auth config input boundary、server auth decision 最小実装、auth flow step、認証済み送信元 registry 境界、packet acceptance gate 境界、AuthResponse response boundary、HeartbeatAck ack boundary、outbound queue handoff は完了
 - 実ネットワーク送受信、secret 解決、認証済み送信元の timeout / 失効 / 再認証、実際の packet 破棄 / ログ出力、`AuthResponse` / `HeartbeatAck` 以外の encode 本実装、時刻同期本体、映像受信・復号・表示、switcher UI は未実装
-- 次の中心は auth success / failure ログ、実際の packet drop / receive log 境界、UDP socket 送受信
+- 次の中心は auth success / failure ログ、receive rejection の実ログイベント設計、UDP socket 送受信
 
 ---
 
@@ -54,7 +54,7 @@
 
 ## 直近でやること
 1. auth success / failure ログ出力境界を設計する
-2. packet acceptance rejection を drop / log layer へ渡す境界を整理する
+2. receive rejection の JSON Lines ログイベント仕様を整理する
 3. UDP socket 受信 / 送信本体の実装に進む
 4. `VideoFrame` encode 方針と実装範囲を整理する
 5. outbound queue の実処理範囲と backpressure 方針を実装前に詰める
@@ -82,6 +82,7 @@
 - [x] 認証済み送信元の登録 / 管理境界を整理する
 - [x] 未認証 / endpoint mismatch packet の破棄境界を整理する
 - [x] receive loop から packet acceptance gate を呼ぶ接続境界を整理する
+- [x] packet acceptance rejection を drop / log layer へ渡す境界を整理する
 - [x] AuthResponse 生成 / 送信境界を整理する
 - [x] outbound packet / queue 境界を整理する
 - [x] outbound queue の最小実処理方針を整理する
@@ -143,6 +144,7 @@
 - [x] server 側 `AuthenticatedSenderRegistryBoundary` / `AuthenticatedSenderRegistry` placeholder を追加する
 - [x] server 側 `PacketAcceptanceGateBoundary` / `PacketAcceptanceDecision` placeholder を追加する
 - [x] `ServerReceiveLoopGateOutcome` / receive loop から gate を呼ぶ接続 helper を追加する
+- [x] `ServerRejectionDropLogHandoffBoundary` / drop-log handoff input placeholder を追加する
 - [ ] UDP socket の bind / receive / send 本実装を行う
 - [ ] packet 受信本体を実装する
 - [ ] packet 送信本体を実装する

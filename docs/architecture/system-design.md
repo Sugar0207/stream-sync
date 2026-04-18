@@ -727,6 +727,61 @@ remain future tasks.
 
 ---
 
+## Receive Rejection Drop / Log Handoff Boundary
+
+PoC / MVP initial implementation keeps packet rejection handling split into
+decision, drop input, and log input. The receive loop and packet acceptance gate
+only decide that a packet must not reach a handler. They do not execute the
+drop and do not write JSON Lines logs.
+
+Flow:
+
+1. `ServerReceiveLoopStep` decodes packet bytes and routes decoded messages.
+2. Decode failures become `ServerReceiveLoopGateRejection::Decode`.
+3. Gate failures become `ServerReceiveLoopGateRejection::Acceptance`.
+4. `ServerRejectionDropLogHandoffBoundary` receives the rejection decision.
+5. The boundary converts it into `ServerRejectionDropLogInput`.
+6. `ServerRejectionDropLogInput.drop_input` is the future packet drop layer
+   input.
+7. `ServerRejectionDropLogInput.log_input` is the future receive log layer
+   input.
+8. Both inputs preserve the same reason so `UnauthenticatedSource`,
+   `UnknownClient`, `EndpointMismatch`, and decode error rejections remain
+   distinguishable.
+
+Responsibility split:
+
+- receive loop
+  - Owns decode and route call order.
+  - Produces decode rejection decisions for malformed packet, unsupported
+    protocol version, or unsupported inbound payload.
+  - Does not drop packets or emit logs.
+- packet acceptance gate
+  - Produces acceptance rejection decisions after registry lookup.
+  - Preserves `message_type`, optional `client_id`, source endpoint, and
+    `PacketAcceptanceRejectReason`.
+  - Does not drop packets or emit logs.
+- drop handoff boundary
+  - Converts receive / gate rejection decisions into typed drop and log inputs.
+  - Preserves the rejection reason without deciding final log formatting or
+    metrics policy.
+- drop layer
+  - Future owner of the actual packet discard behavior.
+  - Does not exist as runtime code in the current step.
+- log layer
+  - Future owner of JSON Lines receive rejection events.
+  - Will use the typed reason to include source, message type, client_id, and
+    decode error context where available.
+
+Current code reflects this with
+`apps/server::ServerRejectionDropLogHandoffBoundary`,
+`ServerRejectionDropLogInput`, `ServerPacketDropInput`,
+`ServerPacketLogInput`, and `ServerRejectionHandoffReason`. These are typed
+handoff placeholders only. UDP socket I/O, packet drop execution, log output,
+heartbeat handling, and video frame handling remain unimplemented.
+
+---
+
 ## Server AuthResponse Boundary
 
 PoC / MVP initial implementation separates the future auth decision from

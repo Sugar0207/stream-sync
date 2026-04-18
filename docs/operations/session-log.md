@@ -5,6 +5,60 @@
 - Codex
 
 ### 今回の作業
+- packet acceptance rejection を drop / log layer へ渡す境界を設計した。
+- `docs/architecture/system-design.md` と `docs/architecture/protocol.md` に receive loop / gate / drop layer / log layer の責務分離を追記した。
+- `apps/server` に `ServerRejectionDropLogHandoffBoundary` を追加した。
+- `ServerReceiveLoopGateRejection` を `ServerRejectionDropLogInput` に変換し、drop input と log input の両方へ同じ rejection reason を渡せるようにした。
+- `UnauthenticatedSource` / `UnknownClient` / `EndpointMismatch` / decode error 由来の rejection reason を保持する単体テストを追加した。
+
+### 変更ファイル
+- `apps/server/src/lib.rs`
+- `docs/architecture/system-design.md`
+- `docs/architecture/protocol.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### 決定事項
+- receive loop / gate は rejection decision を作るところまでを担当する。
+- `ServerRejectionDropLogHandoffBoundary` は rejection decision を future drop layer と future log layer の typed input に変換する。
+- `ServerRejectionHandoffReason` は decode error と acceptance rejection を分け、acceptance 側では `message_type`、optional `client_id`、`PacketAcceptanceRejectReason` を保持する。
+- drop 実行、JSON Lines ログ出力、metrics 更新、UDP socket I/O は今回の境界に含めない。
+
+### 未解決事項
+- 実際の packet 破棄処理
+- receive rejection の JSON Lines ログイベント仕様
+- receive loop / packet acceptance rejection のログ出力本実装
+- auth success / failure ログ出力
+- UDP socket 送受信
+
+### 次にやる候補
+- auth success / failure ログ出力境界を設計する
+- receive rejection の JSON Lines ログイベント仕様を整理する
+- UDP socket 受信 / 送信本体の実装に進む
+
+### TODO更新
+- 完了:
+  - packet acceptance rejection を drop / log layer へ渡す境界を整理する
+  - `ServerRejectionDropLogHandoffBoundary` 追加
+  - `ServerRejectionDropLogInput` / `ServerPacketDropInput` / `ServerPacketLogInput` / `ServerRejectionHandoffReason` 追加
+- 追加:
+  - receive rejection の JSON Lines ログイベント仕様を整理する
+- 保留:
+  - packet 破棄本体
+  - ログ出力本実装
+  - UDP socket 実装
+  - heartbeat / video frame 処理本体
+
+### メモ
+- rejection handoff 境界の責務は、receive loop / gate の rejection decision を drop layer と log layer が使う typed input に変換し、rejection reason を失わず次段へ渡すところまで。
+
+---
+
+## 2026-04-18
+### 種別
+- Codex
+
+### 今回の作業
 - receive loop から packet acceptance gate を呼ぶ接続境界を設計した。
 - `docs/architecture/system-design.md` と `docs/architecture/protocol.md` に receive loop -> decode -> gate -> handler / drop の流れを追記した。
 - `apps/server` の `ServerReceiveLoopStep` に gate 接続版の `handle_received_packet_with_gate` を追加した。

@@ -1194,6 +1194,54 @@ are still out of scope.
 
 ---
 
+### Receive Rejection Drop / Log Handoff Boundary
+
+Receive-side rejections remain typed when they leave the receive loop / gate.
+The handoff boundary is the point where a rejection decision becomes input for
+future packet drop and receive log layers.
+
+Flow:
+
+1. Decode failure produces `ServerReceiveLoopGateRejection::Decode`.
+2. Packet acceptance failure produces
+   `ServerReceiveLoopGateRejection::Acceptance`.
+3. `ServerRejectionDropLogHandoffBoundary` converts the rejection into
+   `ServerRejectionDropLogInput`.
+4. The `drop_input` side carries source endpoint plus the exact rejection
+   reason for the future drop layer.
+5. The `log_input` side carries the same source endpoint and reason for the
+   future log layer.
+6. `UnauthenticatedSource`, `UnknownClient`, `EndpointMismatch`, and decode
+   error rejections are preserved as separate typed cases.
+
+Responsibility split:
+
+- receive loop
+  - Calls decode, route, and gate.
+  - Produces rejection decisions.
+  - Does not drop packets or write logs.
+- packet acceptance gate
+  - Owns registry-based rejection reason selection.
+  - Does not know log schema or drop execution.
+- drop / log handoff boundary
+  - Converts rejection decisions into typed drop and log inputs.
+  - Does not execute packet discard, JSON Lines logging, metrics updates, or
+    handler behavior.
+- drop layer
+  - Future owner of actual discard.
+- log layer
+  - Future owner of receive rejection JSON Lines events.
+
+Current implementation: `apps/server::ServerRejectionDropLogHandoffBoundary`
+preserves decode errors as `ServerRejectionHandoffReason::Decode` and packet
+acceptance failures as `ServerRejectionHandoffReason::Acceptance`. The
+acceptance variant keeps `message_type`, optional `client_id`, and
+`PacketAcceptanceRejectReason` unchanged. UDP socket integration, actual packet
+discard, receive log output, heartbeat handling, and video frame handling are
+still out of scope.
+
+---
+
 ## AuthResponse Generation / Send Boundary
 
 `AuthResponse` is generated from a server-side auth decision, not directly from
