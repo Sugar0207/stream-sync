@@ -5,6 +5,60 @@
 - Codex
 
 ### 今回の作業
+- `VideoFrame` encode 方針と最小実装範囲を整理した。
+- `docs/architecture/protocol.md` に metadata encode 順、`payload_size` の決め方、H.264 bytes をそのまま載せる方針、fixed header + payload bytes の組み立て方を追記した。
+- `crates/protocol` に `encode_video_frame` / `encode_video_frame_payload` を追加し、`ProtocolMessageEncoderBoundary` から `ProtocolMessage::VideoFrame` を encode できるようにした。
+- `VideoFrame` payload encode、packet encode、`payload_size` mismatch、reserved metadata reject の単体テストを追加した。
+- `docs/architecture/system-design.md` と operations docs に現在の encoder support 状態を反映した。
+
+### 変更ファイル
+- `crates/protocol/src/lib.rs`
+- `docs/architecture/protocol.md`
+- `docs/architecture/system-design.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### 決定事項
+- `VideoFrame` encode は frame metadata を docs の payload layout 順に書き、その直後に H.264 encoded bytes を無変換で連結する。
+- `payload_size` は `VideoFrame.payload.len()` から決め、`VideoFrame.payload_size` と実 payload 長が一致しない場合は encode error とする。
+- fixed header の `payload_length` は metadata と H.264 bytes を含む payload 全体の byte 長とする。
+- protocol crate は H.264 圧縮、NAL unit 解釈、fragmentation、retry、encryption、UDP socket send を持たない。
+
+### 未解決事項
+- client 側の frame metadata 付与
+- H.264 encode 本体
+- `VideoFrame` UDP send 接続
+- fragmentation / retry / encryption
+- server 側 video frame handler / sync buffer 投入
+
+### 次にやる候補
+- secret 解決方式と token 保護方針を設計する
+- receive rejection ログ出力本実装を行う
+- UDP socket を auth response PoC の起動処理へ接続する
+
+### TODO更新
+- 完了:
+  - `VideoFrame` encode 方針と最小実装範囲を整理する
+  - `VideoFrame` fixed header + payload bytes の最小 encode 実装を追加する
+  - `VideoFrame` encode の単体テストを追加する
+- 追加:
+  - `VideoFrame` UDP send
+  - `ClientStats` / `ServerNotice` の payload layout と decode / encode 方針整理
+- 保留:
+  - H.264 encode 本体
+  - fragmentation / retry / encryption
+  - video frame handler / sync buffer 投入
+
+### メモ
+- `VideoFrame` encode の責務は、typed metadata と既存 H.264 bytes を docs の wire layout どおりに fixed header + payload bytes へ変換するところまで。
+
+---
+
+## 2026-04-18
+### 種別
+- Codex
+
+### 今回の作業
 - UDP socket 受信 / 送信本体の最小実装を追加した。
 - `crates/net-core` に同期 `std::net::UdpSocket` 用の `UdpSocketIoBoundary` と `UdpReceivedPacket` を追加した。
 - bind 済み socket から 1 packet を `recv_from` し、受信 bytes と source を `PacketSource` 付きで返せるようにした。

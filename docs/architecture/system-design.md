@@ -1226,7 +1226,7 @@ Current code reflects this with `net-core::OutboundEncodeRequest`,
 `net-core::EncodedOutboundPacket`, `net-core::OutboundPacketEncoderBoundary`,
 `net-core::NetEncodeError`, and
 `protocol::ProtocolMessageEncoderBoundary`. The protocol encoder placeholder
-currently encodes `AuthResponse` and `HeartbeatAck`, and returns
+currently encodes `AuthResponse`, `HeartbeatAck`, and `VideoFrame`, and returns
 `EncodeNotImplemented` for other outbound messages. `UdpSocketIoBoundary` can
 send an already encoded packet; queue processing and continuous send
 orchestration remain unimplemented.

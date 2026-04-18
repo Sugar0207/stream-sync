@@ -3,6 +3,11 @@
 # StreamSync TODO
 
 ## 2026-04-18 Codex update
+- [x] `VideoFrame` encode 方針と最小実装範囲を整理する
+- [x] `VideoFrame` fixed header + payload bytes の最小 encode 実装を追加する
+- 次の中心: secret 解決、receive rejection ログ出力本実装、UDP socket を auth response PoC の起動処理へ接続
+
+## 2026-04-18 Codex update
 - [x] UDP socket 受信 / 送信本体の最小実装を追加する
 - [x] `UdpSocketIoBoundary` / `ServerUdpSocketIoStep` を追加する
 - 次の中心: `VideoFrame` encode、secret 解決、receive rejection ログ出力本実装
@@ -28,12 +33,12 @@
 ## 現在位置
 - 仕様固定と土台作りは概ね完了
 - Cargo workspace と `apps/*` / `crates/*` の初期 scaffold は完了
-- `crates/protocol` の基本型、主要 message 型、timestamp 型、fixed header decode、`AuthRequest` / `Heartbeat` / `VideoFrame` payload decode、`AuthResponse` / `HeartbeatAck` encode は完了
+- `crates/protocol` の基本型、主要 message 型、timestamp 型、fixed header decode、`AuthRequest` / `Heartbeat` / `VideoFrame` payload decode、`AuthResponse` / `HeartbeatAck` / `VideoFrame` encode は完了
 - `crates/config` の server auth 設定 TOML 読み込み最小実装は完了
 - `crates/net-core` の inbound decode 境界、outbound packet / queue 境界、outbound queue lifecycle 境界、protocol encoder 呼び出し境界、send error / log event 分類 placeholder、UDP socket 1 datagram receive / send adapter は完了
 - `apps/server` の inbound router、UDP receive loop step、UDP socket adapter 接続、receive loop から packet acceptance gate への接続境界、packet acceptance rejection の drop / log handoff 境界、receive rejection JSON Lines event schema 境界、auth handler boundary、auth config input boundary、server auth decision 最小実装、auth success / failure log handoff 境界、auth JSON Lines event schema 境界、auth flow step、認証済み送信元 registry 境界、packet acceptance gate 境界、AuthResponse response boundary、HeartbeatAck ack boundary、outbound queue handoff は完了
-- secret 解決、認証済み送信元の timeout / 失効 / 再認証、実際の packet 破棄 / ログ出力、`AuthResponse` / `HeartbeatAck` 以外の encode 本実装、時刻同期本体、映像受信・復号・表示、switcher UI は未実装
-- 次の中心は `VideoFrame` encode、secret 解決、receive rejection ログ出力本実装
+- secret 解決、認証済み送信元の timeout / 失効 / 再認証、実際の packet 破棄 / ログ出力、`ClientStats` / `ServerNotice` など残り message の encode 本実装、時刻同期本体、映像受信・復号・表示、switcher UI は未実装
+- 次の中心は secret 解決、receive rejection ログ出力本実装、UDP socket を auth response PoC の起動処理へ接続
 
 ---
 
@@ -63,11 +68,11 @@
 ---
 
 ## 直近でやること
-1. `VideoFrame` encode 方針と実装範囲を整理する
-2. outbound queue の実処理範囲と backpressure 方針を実装前に詰める
-3. secret 解決方式と token 保護方針を設計する
-4. receive rejection ログ出力本実装を行う
-5. UDP socket を auth response PoC の起動処理へ接続する
+1. secret 解決方式と token 保護方針を設計する
+2. receive rejection ログ出力本実装を行う
+3. UDP socket を auth response PoC の起動処理へ接続する
+4. outbound queue の実処理範囲と backpressure 方針を実装前に詰める
+5. `ClientStats` / `ServerNotice` の payload layout と decode / encode 方針を決める
 
 ---
 
@@ -102,6 +107,7 @@
 - [x] UDP socket 送信前の send error / log event 方針を整理する
 - [x] receive rejection の JSON Lines ログイベント仕様を整理する
 - [x] UDP socket 受信 / 送信本体の最小実装を追加する
+- [x] `VideoFrame` encode 方針と最小実装範囲を整理する
 - [ ] 状態遷移を詳細化する
 - [ ] 異常時の挙動を実装レベルに落とす
 - [ ] ログイベント仕様を詳細化する
@@ -133,6 +139,8 @@
 - [x] `ProtocolMessage::message_type()` と `ProtocolMessageEncoderBoundary` placeholder を追加する
 - [x] `AuthResponse` encode 本実装を行う
 - [x] `HeartbeatAck` encode 本実装を行う
+- [x] `VideoFrame` encode 方針と最小実装範囲を整理する
+- [x] `VideoFrame` encode 本実装を行う
 - [x] fixed header encode 本実装を行う
 - [ ] message ごとの payload encode 本実装を行う
 - [ ] `ClientStats` / `ServerNotice` の payload layout と decode / encode 方針を決める
@@ -229,9 +237,10 @@
 - [x] `VideoFrame` payload decode を実装する
 - [x] `payload_size` と実際の H.264 byte 数の整合確認を実装する
 - [x] 不正 bool / reserved / codec / payload 長の最小 error を実装する
+- [x] `VideoFrame` encode 方針と最小実装範囲を整理する
+- [x] `VideoFrame` encode を実装する
 - [ ] client 側で frame metadata を付与する
 - [ ] client 側で H.264 encode を行う
-- [ ] `VideoFrame` encode を実装する
 - [ ] UDP で frame を送信する
 - [ ] server 側で認証済み client の frame だけ受理する
 - [ ] server 側で client ごとの受信キューを作る
@@ -325,6 +334,7 @@
 - [x] 過去作業で `cargo check --workspace` が通ることを確認した
 - [x] `AuthResponse` encode の単体テストを追加する
 - [x] `HeartbeatAck` encode の単体テストを追加する
+- [x] `VideoFrame` encode の単体テストを追加する
 - [ ] fixed header encode / decode roundtrip test を追加する
 - [ ] protocol error の単体テストを拡充する
 - [ ] net-core inbound / outbound 境界の単体テストを追加する
@@ -374,6 +384,7 @@
 - [x] fixed header encode
 - [x] `HeartbeatAck` encode 方針
 - [x] `HeartbeatAck` encode 本実装
+- [x] `VideoFrame` encode
 - [x] client whitelist / token 検証の設定入力境界整理
 - [x] UDP receive / send 最小実装
 - [x] server auth decision 最小実装
@@ -384,7 +395,8 @@
 
 ### フェーズ3: 1 人送信・受信・表示 PoC
 - [ ] client capture / encode
-- [ ] `VideoFrame` encode / UDP send
+- [x] `VideoFrame` encode
+- [ ] `VideoFrame` UDP send
 - [ ] server frame receive / queue
 - [ ] switcher decode / single view display
 - [ ] 30 分連続確認
