@@ -214,7 +214,7 @@ server 側の分岐:
 
 ### 5.5 server UDP receive loop boundary
 
-server 側の UDP 受信 loop は、将来の UDP socket 実装で packet bytes と送信元情報を受け取った後、decode と server route へ渡すまでを担当する。現時点では socket の `bind`、`recv_from`、非同期 runtime、packet 受信本体は実装しない。
+server 側の UDP 受信 loop は、UDP socket で packet bytes と送信元情報を受け取った後、decode と server route へ渡すまでを担当する。現在は同期 `UdpSocket` で 1 packet を受信して既存の receive loop 境界へ渡す最小 adapter だけを実装し、継続 loop、非同期 runtime、handler 本体、packet 破棄、ログ出力はまだ実装しない。
 
 最小処理順:
 
@@ -261,7 +261,49 @@ receive loop / gate 接続の責務分離:
 - drop / log layer
   - rejected decision を受け取り、将来の実破棄と JSON Lines ログ出力を担当する。
 
-実装上は `apps/server` に `ServerReceiveLoopStep` を置く。これは 1 packet 分の placeholder であり、既に受信済みの packet bytes と `PacketSource` を受け取り、`InboundPacketDecoder` と `ServerInboundRouter` を順番に呼ぶ。既存の decode / route だけの結果は `ServerReceiveLoopOutcome` で返し、gate 接続版は `ServerReceiveLoopGateOutcome` で accepted route または decode / acceptance rejection を返す。実際の socket loop、packet 破棄、ログ出力、認証判定、heartbeat 管理、video frame 処理本体はまだ持たない。
+実装上は `apps/server` に `ServerReceiveLoopStep` を置く。これは 1 packet 分の境界であり、受信済みの packet bytes と `PacketSource` を受け取り、`InboundPacketDecoder` と `ServerInboundRouter` を順番に呼ぶ。既存の decode / route だけの結果は `ServerReceiveLoopOutcome` で返し、gate 接続版は `ServerReceiveLoopGateOutcome` で accepted route または decode / acceptance rejection を返す。実際の継続 socket loop、packet 破棄、ログ出力、認証判定、heartbeat 管理、video frame 処理本体はまだ持たない。
+
+### 5.6 UDP socket minimal I/O
+
+UDP socket I/O の最小実装は、同期 `std::net::UdpSocket` を使った 1 datagram 単位の adapter とする。これは PoC の socket 接続確認を進めるための最小層であり、async runtime、retry、fragmentation、encryption、queue 実処理は含めない。
+
+Receive flow:
+
+1. 呼び出し側が bind 済み `UdpSocket` と受信用 buffer を用意する。
+2. `net-core::UdpSocketIoBoundary::receive_one` が `recv_from` を 1 回呼ぶ。
+3. 受信した source address を `PacketSource` に変換し、buffer slice と合わせて `UdpReceivedPacket` として返す。
+4. `apps/server::ServerUdpSocketIoStep::receive_one_with_gate` が `UdpReceivedPacket` を `ServerReceiveLoopStep::handle_received_packet_with_gate` へ渡す。
+5. accepted route は handler 後続境界の候補になり、rejected decision は drop / log handoff の候補になる。
+
+Send flow:
+
+1. outbound item は既存の net send layer / protocol encoder 境界で `EncodedOutboundPacket` になる。
+2. `net-core::UdpSocketIoBoundary::send_encoded` が encode 済み bytes と destination を受け取る。
+3. `send_to` を 1 回呼び、送信できた byte 数を返す。
+4. `apps/server::ServerUdpSocketIoStep::send_encoded` は server 側から同じ送信 adapter を呼ぶ薄い接続境界とする。
+
+Responsibility split:
+
+- UDP socket I/O
+  - Owns `bind`, one-packet `recv_from`, and one-packet `send_to`.
+  - Does not decode protocol payloads, run handlers, retry, fragment, encrypt,
+    or write logs.
+- receive loop
+  - Receives bytes plus `PacketSource` from socket I/O and calls decode / route
+    / gate.
+  - Does not call `recv_from` directly in its core boundary.
+- net send layer / protocol encoder
+  - Produces `EncodedOutboundPacket` before socket send.
+  - Does not own the OS socket.
+- queue / retry policy
+  - Still future work. The current socket adapter sends one encoded datagram
+    and returns the OS result.
+
+Current code reflects this with `net-core::UdpSocketIoBoundary`,
+`net-core::UdpReceivedPacket`, `net-core::DEFAULT_UDP_PACKET_BUFFER_LEN`, and
+`apps/server::ServerUdpSocketIoStep`. Continuous receive loop orchestration,
+async runtime integration, retry, fragmentation, encryption, queue runtime,
+packet drop execution, and JSON Lines log output remain unimplemented.
 
 ---
 
@@ -891,8 +933,9 @@ Current code reflects this with
 `apps/server::ServerRejectionDropLogHandoffBoundary`,
 `ServerRejectionDropLogInput`, `ServerPacketDropInput`,
 `ServerPacketLogInput`, and `ServerRejectionHandoffReason`. These are typed
-handoff placeholders only. UDP socket I/O, packet drop execution, log output,
-heartbeat handling, and video frame handling remain unimplemented.
+handoff placeholders only. Packet drop execution, log output, heartbeat
+handling, and video frame handling remain unimplemented; UDP socket I/O is
+limited to the one-datagram adapter described above.
 
 ---
 
@@ -1049,8 +1092,9 @@ Current code reflects this with `net-core::OutboundPacket`,
 `net-core::OutboundQueueItem`, `net-core::OutboundPacketQueueBoundary`, and
 `apps/server::ServerOutboundQueueBoundary`. `apps/server` currently has typed
 handoff placeholders for `AuthResponse` and `HeartbeatAck`. These are carrier
-and handoff types only. UDP socket send, queue implementation, async runtime,
-retry, fragmentation, and encryption remain unimplemented.
+and handoff types only. One encoded datagram can now be sent through
+`UdpSocketIoBoundary`; queue implementation, async runtime, retry,
+fragmentation, encryption, and full send orchestration remain unimplemented.
 
 Outbound queue minimal processing policy:
 
@@ -1183,16 +1227,18 @@ Current code reflects this with `net-core::OutboundEncodeRequest`,
 `net-core::NetEncodeError`, and
 `protocol::ProtocolMessageEncoderBoundary`. The protocol encoder placeholder
 currently encodes `AuthResponse` and `HeartbeatAck`, and returns
-`EncodeNotImplemented` for other outbound messages. Queue processing and UDP
-socket send remain unimplemented.
+`EncodeNotImplemented` for other outbound messages. `UdpSocketIoBoundary` can
+send an already encoded packet; queue processing and continuous send
+orchestration remain unimplemented.
 
 ---
 
 ## Send Error / Log Event Boundary
 
 PoC / MVP initial implementation keeps send error handling as classification
-and structured log context only. It does not implement UDP socket send, retry,
-queue mutation, or async runtime behavior.
+and structured log context only. Minimal UDP `send_to` exists for already
+encoded packets, but this boundary does not implement retry, queue mutation,
+JSON Lines output, or async runtime behavior.
 
 Send path checkpoints:
 

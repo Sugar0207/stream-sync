@@ -5,6 +5,66 @@
 - Codex
 
 ### 今回の作業
+- UDP socket 受信 / 送信本体の最小実装を追加した。
+- `crates/net-core` に同期 `std::net::UdpSocket` 用の `UdpSocketIoBoundary` と `UdpReceivedPacket` を追加した。
+- bind 済み socket から 1 packet を `recv_from` し、受信 bytes と source を `PacketSource` 付きで返せるようにした。
+- `EncodedOutboundPacket` の bytes と destination を `send_to` へ渡す最小送信処理を追加した。
+- `apps/server` に `ServerUdpSocketIoStep` を追加し、受信した 1 packet を `ServerReceiveLoopStep::handle_received_packet_with_gate` へ接続した。
+- docs に receive: socket -> receive loop -> decode -> gate、send: encoded outbound packet -> socket send の現在の実装状態を反映した。
+
+### 変更ファイル
+- `crates/net-core/src/lib.rs`
+- `apps/server/src/lib.rs`
+- `docs/architecture/system-design.md`
+- `docs/architecture/protocol.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### 決定事項
+- UDP socket I/O は同期 `UdpSocket` の 1 datagram adapter として実装する。
+- receive adapter は caller-owned buffer を借用し、受信 bytes と source を `UdpReceivedPacket` で返す。
+- server adapter は socket I/O と既存 receive loop / gate 境界を接続するだけに留める。
+- send adapter は encode 済み `EncodedOutboundPacket` だけを受け取り、typed `ProtocolMessage` は見ない。
+- async runtime、retry、fragmentation、encryption、queue runtime、JSON Lines 出力は今回の範囲外とする。
+
+### 未解決事項
+- 継続 receive / send loop
+- server 起動処理への socket 接続
+- retry / fragmentation / encryption
+- queue 実処理 / backpressure
+- receive / send log writer
+- heartbeat / video frame 処理本体
+
+### 次にやる候補
+- `VideoFrame` encode 方針と実装範囲を整理する
+- secret 解決方式と token 保護方針を設計する
+- UDP socket を auth response PoC の起動処理へ接続する
+
+### TODO更新
+- 完了:
+  - UDP socket 受信 / 送信本体の最小実装を追加する
+  - `UdpSocketIoBoundary` / `UdpReceivedPacket` 追加
+  - `ServerUdpSocketIoStep` 追加
+- 追加:
+  - packet 受信継続 loop
+  - packet 送信継続 loop
+  - UDP socket を auth response PoC の起動処理へ接続する
+- 保留:
+  - async runtime
+  - retry / fragmentation / encryption
+  - queue 実処理
+  - JSON Lines 出力本実装
+
+### メモ
+- UDP socket 最小実装の責務は、1 datagram を受けて既存 receive loop / gate へ渡すこと、または encode 済み bytes を destination へ 1 回 `send_to` することまで。
+
+---
+
+## 2026-04-18
+### 種別
+- Codex
+
+### 今回の作業
 - receive rejection の JSON Lines ログイベント仕様を整理した。
 - `docs/architecture/system-design.md` と `docs/architecture/protocol.md` に receive loop / gate / rejection handoff / JSON Lines event schema / log writer の責務分離を追記した。
 - event schema として `event_name`, `run_id`, `client_id`, `source`, `message_type`, `rejection_reason`, `detail`, `timestamp` を整理した。

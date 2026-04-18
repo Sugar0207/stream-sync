@@ -200,7 +200,7 @@ encode 入口は byte buffer 作成までに限定する。送信先 address、r
 
 ### net-core call boundary
 
-`crates/net-core` は `protocol` crate の decode entry point を呼ぶ橋渡しを担当する。現時点で持つのは `InboundPacket`, `PacketSource`, `InboundPacketDecoder`, `DecodedInboundPacket`, `NetDecodeError` の境界型だけとし、UDP socket の bind / receive loop / send、app handler 呼び出しは実装しない。
+`crates/net-core` は `protocol` crate の decode entry point を呼ぶ橋渡しを担当する。`InboundPacket`, `PacketSource`, `InboundPacketDecoder`, `DecodedInboundPacket`, `NetDecodeError` に加え、現在は同期 `UdpSocket` の 1 packet receive / send adapter だけを持つ。継続 receive loop、async runtime、retry、fragmentation、encryption、app handler 呼び出しは実装しない。
 
 `InboundPacketDecoder` の最小処理順:
 
@@ -277,9 +277,56 @@ Current implementation: `apps/server::ServerReceiveLoopStep` has
 `handle_received_packet_with_gate`, which returns
 `ServerReceiveLoopGateOutcome::Accepted` for accepted routes and
 `ServerReceiveLoopGateOutcome::Rejected` with either decode rejection or packet
-acceptance rejection. この境界では UDP socket の本実装、非同期 runtime 導入、
-packet 受信本体、実際の packet 破棄、ログ出力、認証成功 / 失敗判定、heartbeat
+acceptance rejection. この境界では継続 socket loop、非同期 runtime 導入、
+実際の packet 破棄、ログ出力、認証成功 / 失敗判定、heartbeat
 管理、video frame 処理本体は行わない。
+
+### UDP Socket Minimal I/O Boundary
+
+The current UDP implementation is a synchronous one-datagram adapter. It
+connects OS socket I/O to the existing receive and send boundaries without
+introducing an async runtime, retry, fragmentation, encryption, or queue
+runtime behavior.
+
+Receive path:
+
+1. A caller owns a bound `std::net::UdpSocket` and a mutable receive buffer.
+2. `net-core::UdpSocketIoBoundary::receive_one` calls `recv_from` once.
+3. The socket adapter returns `UdpReceivedPacket`, carrying `PacketSource` and
+   the received byte slice.
+4. `apps/server::ServerUdpSocketIoStep::receive_one_with_gate` passes those
+   bytes and source into `ServerReceiveLoopStep::handle_received_packet_with_gate`.
+5. The existing receive loop performs decode, route, gate, and accepted /
+   rejected outcome selection.
+
+Send path:
+
+1. The outbound queue / encoder boundary produces `EncodedOutboundPacket`.
+2. `net-core::UdpSocketIoBoundary::send_encoded` receives encoded bytes plus
+   `PacketDestination`.
+3. The socket adapter calls `send_to` once and returns the sent byte count.
+4. `apps/server::ServerUdpSocketIoStep::send_encoded` is the server-side thin
+   adapter over that generic socket send.
+
+Responsibility split:
+
+- UDP socket adapter
+  - Owns bind helper, one `recv_from`, and one `send_to`.
+  - Does not decode messages, route handlers, retry, fragment, encrypt, or log.
+- receive loop
+  - Owns decode -> route -> gate after bytes and source are available.
+  - Does not own OS socket setup or blocking I/O.
+- protocol encoder / net send layer
+  - Owns typed message to encoded packet conversion before socket send.
+  - Does not own the OS socket.
+- future runtime / queue policy
+  - Will own continuous receive/send orchestration, backpressure, retry, and
+    async integration later.
+
+Current implementation: `net-core::UdpSocketIoBoundary`,
+`net-core::UdpReceivedPacket`, and `apps/server::ServerUdpSocketIoStep`.
+Continuous socket loops, async runtime, retry, fragmentation, encryption,
+actual packet drop, and JSON Lines output remain future work.
 
 ## 1. 目的
 
@@ -560,11 +607,12 @@ Encode boundary:
 3. `ServerOutboundQueueBoundary` hands the typed message and destination to
    `net-core::OutboundPacket`.
 4. The protocol encoder writes fixed header + this payload layout into bytes.
-5. A future socket send layer will transmit those bytes over UDP.
+5. The UDP socket adapter can transmit those encoded bytes over UDP.
 
 `AuthResponse` wire encode is implemented in `crates/protocol` as a minimal
 fixed header + payload byte writer. Queue processing, destination management,
-and UDP send remain outside `crates/protocol` and are still unimplemented.
+and UDP send remain outside `crates/protocol`; continuous send orchestration is
+still unimplemented.
 
 ---
 
@@ -647,12 +695,12 @@ Encode input boundary:
 2. `ServerHeartbeatAckBoundary` が `ProtocolMessage::HeartbeatAck` を構築する。
 3. `ServerOutboundQueueBoundary` が typed message と destination を `net-core::OutboundPacket` / `OutboundQueueItem` として net send layer へ渡す。
 4. protocol encoder が `HeartbeatAck` を fixed header + payload bytes に変換する。
-5. UDP socket send はさらに後続の socket send layer に残す。
+5. UDP socket adapter が encode 済み bytes と destination を受け取り、1 datagram を送信できる。
 
 #### 備考
 - client はこれを使って RTT の概算を取れる
 - server 側でも受信時刻を保持して offset 推定に使える
-- 現時点の code は typed handoff と protocol encode までで、heartbeat 管理、timeout 管理、UDP send は行わない
+- 現時点の code は typed handoff、protocol encode、encode 済み datagram の最小 UDP send までで、heartbeat 管理、timeout 管理、継続 send loop は行わない
 
 ---
 
@@ -1281,8 +1329,8 @@ Current implementation: `apps/server::PacketAcceptanceGateBoundary` evaluates
 gate after decode and route classification through
 `handle_received_packet_with_gate`. Accepted routes are returned as the only
 handler candidates, while rejected routes are returned as decisions for future
-drop / log handling. UDP socket integration, actual packet discard, and logging
-are still out of scope.
+drop / log handling. UDP socket integration is limited to the one-datagram
+adapter; actual packet discard and logging are still out of scope.
 
 ---
 
@@ -1328,9 +1376,9 @@ Current implementation: `apps/server::ServerRejectionDropLogHandoffBoundary`
 preserves decode errors as `ServerRejectionHandoffReason::Decode` and packet
 acceptance failures as `ServerRejectionHandoffReason::Acceptance`. The
 acceptance variant keeps `message_type`, optional `client_id`, and
-`PacketAcceptanceRejectReason` unchanged. UDP socket integration, actual packet
-discard, receive log output, heartbeat handling, and video frame handling are
-still out of scope.
+`PacketAcceptanceRejectReason` unchanged. Actual packet discard, receive log
+output, heartbeat handling, and video frame handling are still out of scope;
+UDP socket integration is limited to the one-datagram adapter.
 
 ---
 
@@ -1407,7 +1455,8 @@ Flow:
 7. The response boundary returns an outbound handoff containing the destination
    source metadata and typed message.
 8. The outbound queue boundary converts it into `OutboundQueueItem`.
-9. The future net send layer performs wire encode and UDP socket send.
+9. The net send layer performs wire encode, then the UDP socket adapter can
+   send the encoded datagram.
 
 Responsibility split:
 
@@ -1427,15 +1476,15 @@ Responsibility split:
   - Keeps destination metadata so the send layer knows where to send.
   - Does not update authenticated-client state, encode bytes, or send packets.
 - net send layer
-  - Future owner of converting the typed message into wire bytes and sending
-    through UDP.
+  - Owner of converting the typed message into wire bytes before the UDP socket
+    adapter sends the encoded datagram.
 
 Current placeholder: `apps/server::ServerAuthResponseBoundary` converts
 `ServerAuthDecision` into `ServerOutboundAuthResponse`. This is only the
 message-generation and send-layer handoff shape. Minimal auth decisions are
 implemented by `ServerAuthDecisionBoundary`; authenticated source registration
-and socket send remain out of scope. `ServerAuthFlowStep` now connects the
-decision and response boundaries to the outbound queue handoff.
+and full send orchestration remain out of scope. `ServerAuthFlowStep` now
+connects the decision and response boundaries to the outbound queue handoff.
 
 ---
 
@@ -1483,7 +1532,8 @@ Current placeholders: `OutboundPacket`, `OutboundQueueItem`, and
 `ServerOutboundQueueBoundary` in `apps/server`. `apps/server` also has typed
 outbound handoff placeholders for `AuthResponse` and `HeartbeatAck`. These
 types keep the send-layer contract visible while leaving queue implementation,
-UDP socket send, fragmentation, retry, and encryption out of scope.
+fragmentation, retry, and encryption out of scope. A minimal socket adapter can
+send an already encoded datagram.
 
 Outbound queue minimal processing is defined as a handoff lifecycle, not as a
 real queue runtime. `ServerOutboundQueueBoundary` produces `OutboundQueueItem`;
@@ -1495,8 +1545,9 @@ queue state, but retry execution remains a later task.
 Send error / log event policy is owned by `net-core` after protocol encode.
 `protocol` returns encode errors, while `net-core` keeps destination metadata
 and extracts `run_id`, optional `client_id`, destination, and `message_type` for
-future JSON Lines send logs. Retry execution, queue mutation, and UDP socket
-send remain outside this protocol boundary.
+future JSON Lines send logs. Retry execution and queue mutation remain outside
+this protocol boundary; encoded datagram socket send is handled by the UDP
+socket adapter.
 
 ---
 
@@ -1524,7 +1575,7 @@ Send path:
    message-specific payload bytes for supported outbound messages.
 6. `net-core` pairs the encoded byte buffer with destination metadata as
    `EncodedOutboundPacket`.
-7. Future socket send code receives encoded bytes plus destination and sends the
+7. The UDP socket adapter receives encoded bytes plus destination and sends one
    UDP datagram.
 
 Responsibility split:
@@ -1546,7 +1597,7 @@ Responsibility split:
   - Builds outbound typed messages such as `AuthResponse`.
   - Does not call socket send and does not write bytes.
 - socket send layer
-  - Future owner of sending `EncodedOutboundPacket.bytes` to
+  - Owner of sending `EncodedOutboundPacket.bytes` to
     `EncodedOutboundPacket.destination`.
   - Does not inspect or route typed messages.
 
@@ -1569,7 +1620,10 @@ Current code:
 - `apps/server::ServerHeartbeatAckBoundary` builds
   `ProtocolMessage::HeartbeatAck` and hands it to the same outbound queue
   boundary shape as other typed responses.
+- `crates/net-core::UdpSocketIoBoundary` sends already encoded packets with one
+  `send_to` call.
 
 `AuthResponse` and `HeartbeatAck` encode now write the 16 byte fixed header and
 the documented payload bytes. Other outbound message encoders, outbound queue
-processing, and UDP socket send are still future tasks.
+processing, continuous send orchestration, retry, and fragmentation are still
+future tasks.

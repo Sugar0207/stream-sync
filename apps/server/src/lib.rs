@@ -1,8 +1,9 @@
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, io, net::UdpSocket};
 use stream_sync_config::{ServerAuthConfig, SharedTokenSecretRef};
 use stream_sync_net_core::{
-    DecodedInboundPacket, InboundPacket, InboundPacketDecoder, NetDecodeError, OutboundPacket,
-    OutboundPacketQueueBoundary, OutboundQueueItem, PacketSource,
+    DecodedInboundPacket, EncodedOutboundPacket, InboundPacket, InboundPacketDecoder,
+    NetDecodeError, OutboundPacket, OutboundPacketQueueBoundary, OutboundQueueItem, PacketSource,
+    UdpSocketIoBoundary,
 };
 use stream_sync_protocol::{
     AppVersion, AuthRequest, AuthResponse, AuthResponseReasonCode, ClientId, Heartbeat,
@@ -83,6 +84,46 @@ impl ServerReceiveLoopStep {
                 error,
             }),
         }
+    }
+}
+
+/// Minimal synchronous UDP socket adapter for the server.
+///
+/// This is the first concrete socket I/O layer: it receives one datagram from a
+/// bound UDP socket and immediately hands it to `ServerReceiveLoopStep`, or
+/// sends already-encoded bytes to a destination. It does not run an event loop,
+/// spawn async tasks, execute retry, fragment packets, or handle application
+/// routes.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct ServerUdpSocketIoStep {
+    socket_io: UdpSocketIoBoundary,
+    receive_loop: ServerReceiveLoopStep,
+}
+
+impl ServerUdpSocketIoStep {
+    pub fn receive_one_with_gate(
+        &self,
+        socket: &UdpSocket,
+        buffer: &mut [u8],
+        expected_protocol_version: ProtocolVersion,
+        registry: &AuthenticatedSenderRegistry,
+    ) -> io::Result<ServerReceiveLoopGateOutcome> {
+        let packet = self.socket_io.receive_one(socket, buffer)?;
+
+        Ok(self.receive_loop.handle_received_packet_with_gate(
+            expected_protocol_version,
+            registry,
+            packet.source,
+            packet.bytes,
+        ))
+    }
+
+    pub fn send_encoded(
+        &self,
+        socket: &UdpSocket,
+        packet: &EncodedOutboundPacket,
+    ) -> io::Result<usize> {
+        self.socket_io.send_encoded(socket, packet)
     }
 }
 
@@ -1203,7 +1244,7 @@ fn message_type(message: &ProtocolMessage) -> MessageType {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::net::SocketAddr;
+    use std::net::{SocketAddr, UdpSocket};
     use stream_sync_config::{AllowedClientConfig, SharedTokenConfig};
     use stream_sync_protocol::{
         AppVersion, ClientId, Codec, ProtocolVersion, RunId, TimestampMicros, FIXED_HEADER_LEN,
@@ -1356,6 +1397,67 @@ mod tests {
                 }
             ))
         );
+    }
+
+    #[test]
+    fn udp_socket_step_receives_packet_and_calls_receive_loop_gate() {
+        let step = ServerUdpSocketIoStep::default();
+        let receiver = UdpSocket::bind("127.0.0.1:0").expect("receiver should bind");
+        let sender = UdpSocket::bind("127.0.0.1:0").expect("sender should bind");
+        let receiver_addr = receiver.local_addr().expect("receiver should have address");
+        let sender_source: PacketSource = sender
+            .local_addr()
+            .expect("sender should have address")
+            .into();
+        let payload = heartbeat_payload();
+        let packet = test_packet(MessageType::Heartbeat as u16, FIXED_HEADER_LEN, 2, &payload);
+        let registry = registry_with_client("client-1", sender_source);
+
+        sender
+            .send_to(packet.as_slice(), receiver_addr)
+            .expect("packet should send");
+
+        let mut buffer = [0_u8; 128];
+        let outcome = step
+            .receive_one_with_gate(&receiver, &mut buffer, ProtocolVersion(2), &registry)
+            .expect("packet should receive");
+
+        let ServerReceiveLoopGateOutcome::Accepted(ServerInboundRoute::Heartbeat {
+            source,
+            heartbeat,
+        }) = outcome
+        else {
+            panic!("expected accepted heartbeat");
+        };
+        assert_eq!(source, sender_source);
+        assert_eq!(heartbeat.client_id, ClientId("client-1".to_string()));
+    }
+
+    #[test]
+    fn udp_socket_step_sends_encoded_packet() {
+        let step = ServerUdpSocketIoStep::default();
+        let sender = UdpSocket::bind("127.0.0.1:0").expect("sender should bind");
+        let receiver = UdpSocket::bind("127.0.0.1:0").expect("receiver should bind");
+        let receiver_addr = receiver.local_addr().expect("receiver should have address");
+        let packet = EncodedOutboundPacket {
+            destination: receiver_addr.into(),
+            bytes: vec![0x44, 0x55, 0x66],
+        };
+
+        let sent = step
+            .send_encoded(&sender, &packet)
+            .expect("packet should send");
+
+        let mut buffer = [0_u8; 16];
+        let (received_len, source) = receiver
+            .recv_from(&mut buffer)
+            .expect("packet should receive");
+        assert_eq!(sent, packet.bytes.len());
+        assert_eq!(
+            source,
+            sender.local_addr().expect("sender should have address")
+        );
+        assert_eq!(&buffer[..received_len], packet.bytes.as_slice());
     }
 
     #[test]

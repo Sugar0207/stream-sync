@@ -1,4 +1,7 @@
-use std::net::SocketAddr;
+use std::{
+    io,
+    net::{SocketAddr, UdpSocket},
+};
 
 use stream_sync_protocol::{
     decode_fixed_header, decode_payload_by_message_type, validate_protocol_version, ClientId,
@@ -7,6 +10,7 @@ use stream_sync_protocol::{
 };
 
 pub const CRATE_NAME: &str = "stream-sync-net-core";
+pub const DEFAULT_UDP_PACKET_BUFFER_LEN: usize = 65_507;
 
 /// Source address attached to a received packet.
 ///
@@ -43,6 +47,52 @@ impl From<PacketSource> for PacketDestination {
         Self {
             address: source.address,
         }
+    }
+}
+
+/// One received UDP datagram plus source metadata.
+///
+/// The byte slice borrows the caller-owned receive buffer. This keeps the
+/// socket layer allocation-free while still letting the server receive loop
+/// consume the packet immediately.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct UdpReceivedPacket<'a> {
+    pub source: PacketSource,
+    pub bytes: &'a [u8],
+}
+
+/// Minimal synchronous UDP socket I/O boundary.
+///
+/// This owns only one-datagram receive and send operations. It does not run an
+/// async runtime, retry, fragmentation, encryption, queue processing, or log
+/// output.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct UdpSocketIoBoundary;
+
+impl UdpSocketIoBoundary {
+    pub fn bind(&self, address: SocketAddr) -> io::Result<UdpSocket> {
+        UdpSocket::bind(address)
+    }
+
+    pub fn receive_one<'a>(
+        &self,
+        socket: &UdpSocket,
+        buffer: &'a mut [u8],
+    ) -> io::Result<UdpReceivedPacket<'a>> {
+        let (len, source) = socket.recv_from(buffer)?;
+
+        Ok(UdpReceivedPacket {
+            source: source.into(),
+            bytes: &buffer[..len],
+        })
+    }
+
+    pub fn send_encoded(
+        &self,
+        socket: &UdpSocket,
+        packet: &EncodedOutboundPacket,
+    ) -> io::Result<usize> {
+        socket.send_to(&packet.bytes, packet.destination.address)
     }
 }
 
@@ -605,6 +655,60 @@ mod tests {
             event.disposition,
             Some(SendFailureDisposition::WarningCandidate)
         );
+    }
+
+    #[test]
+    fn udp_socket_io_receives_one_packet_with_source() {
+        let io = UdpSocketIoBoundary;
+        let receiver = io
+            .bind("127.0.0.1:0".parse().expect("address should parse"))
+            .expect("receiver should bind");
+        let sender = UdpSocket::bind("127.0.0.1:0").expect("sender should bind");
+        let receiver_addr = receiver.local_addr().expect("receiver should have address");
+        let sender_addr = sender.local_addr().expect("sender should have address");
+
+        sender
+            .send_to(&[0xaa, 0xbb, 0xcc], receiver_addr)
+            .expect("packet should send");
+
+        let mut buffer = [0_u8; 16];
+        let packet = io
+            .receive_one(&receiver, &mut buffer)
+            .expect("packet should receive");
+
+        assert_eq!(packet.source.address, sender_addr);
+        assert_eq!(packet.bytes, &[0xaa, 0xbb, 0xcc]);
+    }
+
+    #[test]
+    fn udp_socket_io_sends_encoded_packet_to_destination() {
+        let io = UdpSocketIoBoundary;
+        let sender = io
+            .bind("127.0.0.1:0".parse().expect("address should parse"))
+            .expect("sender should bind");
+        let receiver = UdpSocket::bind("127.0.0.1:0").expect("receiver should bind");
+        let receiver_addr = receiver.local_addr().expect("receiver should have address");
+        let packet = EncodedOutboundPacket {
+            destination: PacketDestination {
+                address: receiver_addr,
+            },
+            bytes: vec![0x11, 0x22, 0x33],
+        };
+
+        let sent = io
+            .send_encoded(&sender, &packet)
+            .expect("packet should send");
+
+        let mut buffer = [0_u8; 16];
+        let (received_len, source) = receiver
+            .recv_from(&mut buffer)
+            .expect("packet should receive");
+        assert_eq!(sent, packet.bytes.len());
+        assert_eq!(
+            source,
+            sender.local_addr().expect("sender should have address")
+        );
+        assert_eq!(&buffer[..received_len], packet.bytes.as_slice());
     }
 
     #[test]
