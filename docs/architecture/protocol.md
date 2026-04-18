@@ -1054,19 +1054,55 @@ Responsibility split:
 - auth decision
   - Produces accepted/rejected `ServerAuthDecision`.
   - Uses only prepared auth input.
+  - Preserves auth context such as source, `client_id`, `run_id`, optional
+    `app_version`, `protocol_version`, and reason code for downstream
+    handoffs.
   - Does not read TOML, resolve external secrets, mutate authenticated-source
-    state, build `AuthResponse`, enqueue packets, or send UDP.
+    state, build `AuthResponse`, enqueue packets, write logs, or send UDP.
 - response boundary
   - Receives `ServerAuthDecision` and builds `ProtocolMessage::AuthResponse`.
   - Does not perform auth checks.
 
 Current implementation: `apps/server::ServerAuthDecisionBoundary`.
 
+### Auth Success / Failure Log Handoff Boundary
+
+Auth success / failure logging is a server-side handoff boundary, not protocol
+wire format. The server keeps the auth result typed until a future log layer
+formats JSON Lines events.
+
+Flow:
+
+1. `ServerAuthDecisionBoundary` returns `ServerAuthDecision`.
+2. `ServerAuthLogHandoffBoundary` receives the decision by reference.
+3. The boundary produces `ServerAuthLogInput`.
+4. `ServerAuthLogInput` keeps source endpoint, `client_id`, `run_id`, optional
+   `app_version`, `protocol_version`, success / failure outcome,
+   `AuthResponseReasonCode`, optional message, server time, and expected
+   protocol version.
+5. The future log layer will consume this typed input and decide the JSON Lines
+   event shape.
+
+Responsibility split:
+
+- auth decision
+  - Decides accepted / rejected and reason code.
+  - Does not emit logs.
+- auth log handoff
+  - Converts `ServerAuthDecision` into typed log input while preserving context.
+  - Does not serialize JSON, write files, update metrics, mutate registry
+    state, or send UDP.
+- log layer
+  - Future owner of JSON Lines formatting and output.
+
+Current implementation: `apps/server::ServerAuthLogHandoffBoundary`,
+`ServerAuthLogInput`, and `ServerAuthLogOutcome`.
+
 ### Connected Server Auth Flow Step
 
 The server auth flow step connects decoded `AuthRequest` handling to outbound
-`AuthResponse` queue handoff. It composes existing boundaries and does not add
-network I/O.
+`AuthResponse` queue handoff and auth log handoff. It composes existing
+boundaries and does not add network I/O or log output.
 
 Flow:
 
@@ -1077,18 +1113,23 @@ Flow:
 3. `ServerAuthFlowStep` combines the check with `ServerAuthConfig` through
    `ServerAuthConfigInputBoundary`.
 4. `ServerAuthFlowStep` runs `ServerAuthDecisionBoundary`.
-5. `ServerAuthFlowStep` passes the decision to `ServerAuthResponseBoundary`.
-6. `ServerAuthFlowStep` hands the resulting `ServerOutboundAuthResponse` to
+5. `ServerAuthFlowStep` passes the decision to
+   `ServerAuthLogHandoffBoundary`.
+6. `ServerAuthFlowStep` passes the decision to `ServerAuthResponseBoundary`.
+7. `ServerAuthFlowStep` hands the resulting `ServerOutboundAuthResponse` to
    `ServerOutboundQueueBoundary`.
-7. The output is `ServerAuthFlowOutcome`, containing the `ServerAuthDecision`,
-   typed outbound response, and `OutboundQueueItem`.
+8. The output is `ServerAuthFlowOutcome`, containing the `ServerAuthDecision`,
+   auth log input, typed outbound response, and `OutboundQueueItem`.
 
 Responsibility split:
 
 - server auth flow step
-  - Owns orchestration from decoded auth route to queue handoff.
+  - Owns orchestration from decoded auth route to log and queue handoff.
   - Does not read TOML, resolve secrets, register authenticated sources, encode
-    bytes, run a queue, or send UDP.
+    bytes, run a queue, write logs, or send UDP.
+- auth log handoff boundary
+  - Receives `ServerAuthDecision` and produces `ServerAuthLogInput`.
+  - Does not perform JSON Lines output.
 - outbound queue boundary
   - Receives typed `AuthResponse` and destination metadata.
   - Produces an `OutboundQueueItem` handoff only.

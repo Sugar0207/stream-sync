@@ -426,6 +426,7 @@ impl ServerAuthDecisionBoundary {
         let client_id = input.check.request.client_id.clone();
         let run_id = input.check.request.run_id.clone();
         let protocol_version = input.check.request.protocol_version;
+        let app_version = input.check.request.app_version.clone();
 
         let Some(allowed_client) = input
             .allowed_clients
@@ -440,7 +441,8 @@ impl ServerAuthDecisionBoundary {
                 AuthResponseReasonCode::UnknownClient,
                 Some("unknown client_id".to_string()),
                 None,
-            );
+            )
+            .with_app_version(app_version);
         };
 
         let Some(shared_token) = input
@@ -456,13 +458,15 @@ impl ServerAuthDecisionBoundary {
                 AuthResponseReasonCode::InternalError,
                 Some("configured token reference was not found".to_string()),
                 None,
-            );
+            )
+            .with_app_version(app_version);
         };
 
         match &shared_token.secret_ref {
             SharedTokenSecretRef::InlinePlaceholder(expected_token) => {
                 if input.presented_shared_token() == expected_token {
                     ServerAuthDecision::accepted(source, client_id, run_id, protocol_version, None)
+                        .with_app_version(app_version)
                 } else {
                     ServerAuthDecision::rejected(
                         source,
@@ -473,6 +477,7 @@ impl ServerAuthDecisionBoundary {
                         Some("invalid shared_token".to_string()),
                         None,
                     )
+                    .with_app_version(app_version)
                 }
             }
             SharedTokenSecretRef::EnvironmentVariable(_) => ServerAuthDecision::rejected(
@@ -483,7 +488,8 @@ impl ServerAuthDecisionBoundary {
                 AuthResponseReasonCode::InternalError,
                 Some("token secret is not resolved".to_string()),
                 None,
-            ),
+            )
+            .with_app_version(app_version),
         }
     }
 }
@@ -498,6 +504,7 @@ pub struct ServerAuthFlowStep {
     auth_handler: ServerAuthHandlerBoundary,
     config_input: ServerAuthConfigInputBoundary,
     decision: ServerAuthDecisionBoundary,
+    auth_log: ServerAuthLogHandoffBoundary,
     sender_registry: AuthenticatedSenderRegistryBoundary,
     response: ServerAuthResponseBoundary,
     queue: ServerOutboundQueueBoundary,
@@ -520,12 +527,14 @@ impl ServerAuthFlowStep {
     ) -> ServerAuthFlowOutcome {
         let auth_input = self.config_input.prepare_check_input(check, config);
         let decision = self.decision.decide(auth_input);
+        let auth_log_input = self.auth_log.handoff(&decision);
         let registry_registration = self.sender_registry.registration_from_decision(&decision);
         let outbound_response = self.response.build_for_send(decision.clone());
         let queue_item = self.queue.handoff_auth_response(outbound_response.clone());
 
         ServerAuthFlowOutcome {
             decision,
+            auth_log_input,
             registry_registration,
             outbound_response,
             queue_item,
@@ -537,6 +546,7 @@ impl ServerAuthFlowStep {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ServerAuthFlowOutcome {
     pub decision: ServerAuthDecision,
+    pub auth_log_input: ServerAuthLogInput,
     pub registry_registration: Option<AuthenticatedSenderRegistration>,
     pub outbound_response: ServerOutboundAuthResponse,
     pub queue_item: OutboundQueueItem,
@@ -788,6 +798,7 @@ pub struct ServerAuthDecision {
     pub source: PacketSource,
     pub client_id: ClientId,
     pub run_id: RunId,
+    pub app_version: Option<AppVersion>,
     pub protocol_version: ProtocolVersion,
     pub accepted: bool,
     pub reason_code: AuthResponseReasonCode,
@@ -808,6 +819,7 @@ impl ServerAuthDecision {
             source,
             client_id,
             run_id,
+            app_version: None,
             protocol_version,
             accepted: true,
             reason_code: AuthResponseReasonCode::Ok,
@@ -830,6 +842,7 @@ impl ServerAuthDecision {
             source,
             client_id,
             run_id,
+            app_version: None,
             protocol_version,
             accepted: false,
             reason_code,
@@ -838,6 +851,61 @@ impl ServerAuthDecision {
             expected_protocol_version,
         }
     }
+
+    pub fn with_app_version(mut self, app_version: AppVersion) -> Self {
+        self.app_version = Some(app_version);
+        self
+    }
+}
+
+/// Boundary that prepares auth decisions for a future log layer.
+///
+/// This keeps success/failure context together and does not emit JSON Lines,
+/// update metrics, mutate auth state, or call UDP sockets.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct ServerAuthLogHandoffBoundary;
+
+impl ServerAuthLogHandoffBoundary {
+    pub fn handoff(&self, decision: &ServerAuthDecision) -> ServerAuthLogInput {
+        ServerAuthLogInput {
+            source: decision.source,
+            client_id: decision.client_id.clone(),
+            run_id: decision.run_id.clone(),
+            app_version: decision.app_version.clone(),
+            protocol_version: decision.protocol_version,
+            outcome: if decision.accepted {
+                ServerAuthLogOutcome::Success
+            } else {
+                ServerAuthLogOutcome::Failure
+            },
+            reason_code: decision.reason_code,
+            message: decision.message.clone(),
+            server_time: decision.server_time,
+            expected_protocol_version: decision.expected_protocol_version,
+        }
+    }
+}
+
+/// Typed input for future auth success / failure logging.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ServerAuthLogInput {
+    pub source: PacketSource,
+    pub client_id: ClientId,
+    pub run_id: RunId,
+    pub app_version: Option<AppVersion>,
+    pub protocol_version: ProtocolVersion,
+    pub outcome: ServerAuthLogOutcome,
+    pub reason_code: AuthResponseReasonCode,
+    pub message: Option<String>,
+    pub server_time: Option<TimestampMicros>,
+    pub expected_protocol_version: Option<ProtocolVersion>,
+}
+
+/// Auth result category for future log layer input.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ServerAuthLogOutcome {
+    Success,
+    Failure,
 }
 
 /// Boundary that converts auth decisions into outbound auth responses.
@@ -1405,6 +1473,7 @@ mod tests {
         assert_eq!(decision.reason_code, AuthResponseReasonCode::Ok);
         assert_eq!(decision.client_id, ClientId("client-1".to_string()));
         assert_eq!(decision.run_id, RunId("run-1".to_string()));
+        assert_eq!(decision.app_version, Some(AppVersion("0.1.0".to_string())));
         assert_eq!(decision.server_time, None);
     }
 
@@ -1417,6 +1486,7 @@ mod tests {
 
         assert!(!decision.accepted);
         assert_eq!(decision.reason_code, AuthResponseReasonCode::UnknownClient);
+        assert_eq!(decision.app_version, Some(AppVersion("0.1.0".to_string())));
         assert_eq!(decision.message.as_deref(), Some("unknown client_id"));
     }
 
@@ -1429,7 +1499,65 @@ mod tests {
 
         assert!(!decision.accepted);
         assert_eq!(decision.reason_code, AuthResponseReasonCode::InvalidToken);
+        assert_eq!(decision.app_version, Some(AppVersion("0.1.0".to_string())));
         assert_eq!(decision.message.as_deref(), Some("invalid shared_token"));
+    }
+
+    #[test]
+    fn auth_log_handoff_preserves_success_context() {
+        let decision = ServerAuthDecision::accepted(
+            packet_source(),
+            ClientId("client-1".to_string()),
+            RunId("run-1".to_string()),
+            ProtocolVersion(2),
+            Some(TimestampMicros(2_000_000)),
+        )
+        .with_app_version(AppVersion("0.1.0".to_string()));
+        let boundary = ServerAuthLogHandoffBoundary;
+
+        let input = boundary.handoff(&decision);
+
+        assert_eq!(
+            input,
+            ServerAuthLogInput {
+                source: packet_source(),
+                client_id: ClientId("client-1".to_string()),
+                run_id: RunId("run-1".to_string()),
+                app_version: Some(AppVersion("0.1.0".to_string())),
+                protocol_version: ProtocolVersion(2),
+                outcome: ServerAuthLogOutcome::Success,
+                reason_code: AuthResponseReasonCode::Ok,
+                message: None,
+                server_time: Some(TimestampMicros(2_000_000)),
+                expected_protocol_version: None,
+            }
+        );
+    }
+
+    #[test]
+    fn auth_log_handoff_preserves_failure_reason_and_context() {
+        let decision = ServerAuthDecision::rejected(
+            packet_source(),
+            ClientId("client-1".to_string()),
+            RunId("run-1".to_string()),
+            ProtocolVersion(2),
+            AuthResponseReasonCode::InvalidToken,
+            Some("invalid shared_token".to_string()),
+            None,
+        )
+        .with_app_version(AppVersion("0.1.0".to_string()));
+        let boundary = ServerAuthLogHandoffBoundary;
+
+        let input = boundary.handoff(&decision);
+
+        assert_eq!(input.source, packet_source());
+        assert_eq!(input.client_id, ClientId("client-1".to_string()));
+        assert_eq!(input.run_id, RunId("run-1".to_string()));
+        assert_eq!(input.app_version, Some(AppVersion("0.1.0".to_string())));
+        assert_eq!(input.protocol_version, ProtocolVersion(2));
+        assert_eq!(input.outcome, ServerAuthLogOutcome::Failure);
+        assert_eq!(input.reason_code, AuthResponseReasonCode::InvalidToken);
+        assert_eq!(input.message.as_deref(), Some("invalid shared_token"));
     }
 
     #[test]
@@ -1481,6 +1609,21 @@ mod tests {
         assert!(outcome.decision.accepted);
         assert_eq!(outcome.decision.reason_code, AuthResponseReasonCode::Ok);
         assert_eq!(
+            outcome.auth_log_input,
+            ServerAuthLogInput {
+                source,
+                client_id: ClientId("client-1".to_string()),
+                run_id: RunId("run-1".to_string()),
+                app_version: Some(AppVersion("0.1.0".to_string())),
+                protocol_version: ProtocolVersion(2),
+                outcome: ServerAuthLogOutcome::Success,
+                reason_code: AuthResponseReasonCode::Ok,
+                message: None,
+                server_time: None,
+                expected_protocol_version: None,
+            }
+        );
+        assert_eq!(
             outcome.registry_registration,
             Some(AuthenticatedSenderRegistration {
                 client_id: ClientId("client-1".to_string()),
@@ -1526,6 +1669,21 @@ mod tests {
         assert_eq!(
             outcome.decision.reason_code,
             AuthResponseReasonCode::InvalidToken
+        );
+        assert_eq!(
+            outcome.auth_log_input,
+            ServerAuthLogInput {
+                source,
+                client_id: ClientId("client-1".to_string()),
+                run_id: RunId("run-1".to_string()),
+                app_version: Some(AppVersion("0.1.0".to_string())),
+                protocol_version: ProtocolVersion(2),
+                outcome: ServerAuthLogOutcome::Failure,
+                reason_code: AuthResponseReasonCode::InvalidToken,
+                message: Some("invalid shared_token".to_string()),
+                server_time: None,
+                expected_protocol_version: None,
+            }
         );
         assert_eq!(outcome.registry_registration, None);
         let ProtocolMessage::AuthResponse(queued_response) = outcome.queue_item.packet.message

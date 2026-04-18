@@ -567,7 +567,60 @@ Responsibility split:
 
 Current code reflects this with `apps/server::ServerAuthDecisionBoundary`. This
 is a minimal PoC decision only; real config loading, real secret resolution,
-authenticated source management, logging, and UDP sending remain future tasks.
+authenticated source management, JSON Lines output, and UDP sending remain
+future tasks.
+
+---
+
+## Server Auth Log Handoff Boundary
+
+PoC / MVP initial implementation keeps auth result logging as a typed handoff
+only. The auth decision layer decides success / failure, and the auth log
+handoff boundary preserves the context needed by a future JSON Lines log layer.
+It does not write log files.
+
+Flow:
+
+1. `ServerAuthConfigInputBoundary` prepares `ServerAuthCheckInput` from decoded
+   `AuthRequest` plus auth config.
+2. `ServerAuthDecisionBoundary` returns `ServerAuthDecision`.
+3. `ServerAuthDecision` carries success / failure, `reason_code`,
+   `client_id`, `run_id`, source endpoint, optional `app_version`,
+   `protocol_version`, optional message, server time, and expected protocol
+   version.
+4. `ServerAuthLogHandoffBoundary` receives the decision by reference.
+5. The boundary converts it into `ServerAuthLogInput` for the future log layer.
+6. The log input preserves whether the result is success or failure and keeps
+   the original auth reason without formatting or writing JSON Lines.
+7. `ServerAuthFlowStep` produces this log handoff alongside the auth response
+   queue handoff.
+
+Responsibility split:
+
+- auth flow
+  - Orchestrates decoded auth route, config input, decision, log handoff,
+    response generation, and queue handoff.
+  - Does not write logs or run UDP sockets.
+- auth decision
+  - Owns the minimal accepted / rejected result.
+  - Preserves auth context for downstream handoff.
+  - Does not decide log schema or output destination.
+- auth log handoff
+  - Converts `ServerAuthDecision` into `ServerAuthLogInput`.
+  - Keeps `client_id`, `run_id`, source, optional `app_version`,
+    `protocol_version`, success / failure, reason code, and optional message.
+  - Does not emit JSON Lines, update metrics, mutate authenticated state, or
+    send packets.
+- log layer
+  - Future owner of JSON Lines formatting and output.
+  - Will consume typed auth log input and apply the final log schema.
+
+Current code reflects this with `apps/server::ServerAuthLogHandoffBoundary`,
+`ServerAuthLogInput`, and `ServerAuthLogOutcome`. `ServerAuthFlowOutcome`
+now carries `auth_log_input` so the auth result can be handed to a future log
+layer without losing success / failure reason or auth context. JSON Lines
+output, metrics updates, UDP socket I/O, and state persistence remain
+unimplemented.
 
 ---
 
@@ -588,23 +641,28 @@ Flow:
    `ServerAuthCheck` and `ServerAuthConfig` to produce `ServerAuthCheckInput`.
 4. `ServerAuthFlowStep` calls `ServerAuthDecisionBoundary` to produce
    `ServerAuthDecision`.
-5. `ServerAuthFlowStep` calls `ServerAuthResponseBoundary` to convert the
+5. `ServerAuthFlowStep` calls `ServerAuthLogHandoffBoundary` to convert the
+   decision into `ServerAuthLogInput`.
+6. `ServerAuthFlowStep` calls `ServerAuthResponseBoundary` to convert the
    decision into `ServerOutboundAuthResponse`.
-6. `ServerAuthFlowStep` calls `ServerOutboundQueueBoundary` to hand the
+7. `ServerAuthFlowStep` calls `ServerOutboundQueueBoundary` to hand the
    response to the outbound queue as `OutboundQueueItem`.
-7. Later net send code may encode the queued `ProtocolMessage::AuthResponse`
+8. Later net send code may encode the queued `ProtocolMessage::AuthResponse`
    and later socket code may send the bytes.
 
 Responsibility split:
 
 - auth flow step
   - Orchestrates existing server boundaries in order.
-  - Returns the decision, typed outbound response, and queue handoff item for
-    inspection by future server code.
+  - Returns the decision, auth log input, typed outbound response, and queue
+    handoff item for inspection by future server code.
   - Does not load config from disk, resolve secrets, register authenticated
-    sources, run a queue, encode bytes, or send UDP.
+    sources, write logs, run a queue, encode bytes, or send UDP.
 - auth decision boundary
   - Produces accepted/rejected `ServerAuthDecision`.
+- auth log handoff boundary
+  - Converts `ServerAuthDecision` into typed log input.
+  - Does not write JSON Lines.
 - response boundary
   - Converts `ServerAuthDecision` into typed `AuthResponse`.
 - outbound queue boundary
@@ -612,7 +670,7 @@ Responsibility split:
 
 Current code reflects this with `apps/server::ServerAuthFlowStep` and
 `ServerAuthFlowOutcome`. This is the first connected server auth path from
-decoded request to outbound queue item.
+decoded request to auth log handoff and outbound queue item.
 
 ---
 

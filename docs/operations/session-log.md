@@ -5,6 +5,61 @@
 - Codex
 
 ### 今回の作業
+- auth success / failure ログ出力境界を設計した。
+- `docs/architecture/system-design.md` と `docs/architecture/protocol.md` に auth flow / auth decision / auth log handoff / log layer の責務分離を追記した。
+- `apps/server` に `ServerAuthLogHandoffBoundary`, `ServerAuthLogInput`, `ServerAuthLogOutcome` を追加した。
+- `ServerAuthDecision` に optional `app_version` を保持できるようにし、auth decision boundary からの decision では decoded `AuthRequest` の `app_version` を引き継ぐようにした。
+- `ServerAuthFlowStep` が auth decision から log layer 用 typed input を作り、`ServerAuthFlowOutcome.auth_log_input` に含めるようにした。
+- success / failure reason と `client_id` / `run_id` / source / `app_version` / `protocol_version` を保持する単体テストを追加した。
+
+### 変更ファイル
+- `apps/server/src/lib.rs`
+- `docs/architecture/system-design.md`
+- `docs/architecture/protocol.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### 決定事項
+- auth decision は accepted / rejected と reason code を作り、ログ出力そのものは行わない。
+- auth log handoff は `ServerAuthDecision` を `ServerAuthLogInput` に変換し、success / failure、reason code、context を保持する。
+- `ServerAuthLogInput` は source、`client_id`、`run_id`、optional `app_version`、`protocol_version`、optional message、server time、expected protocol version を持つ。
+- JSON Lines 出力、metrics 更新、UDP socket I/O、state 永続化は今回の境界に含めない。
+
+### 未解決事項
+- auth success / failure の JSON Lines ログイベント仕様
+- JSON Lines 出力本実装
+- UDP socket 送受信
+- packet 破棄本体
+- heartbeat / video frame 処理本体
+
+### 次にやる候補
+- auth success / failure の JSON Lines ログイベント仕様を整理する
+- receive rejection の JSON Lines ログイベント仕様を整理する
+- UDP socket 受信 / 送信本体の実装に進む
+
+### TODO更新
+- 完了:
+  - auth success / failure ログ出力境界を整理する
+  - `ServerAuthLogHandoffBoundary` 追加
+  - `ServerAuthLogInput` / `ServerAuthLogOutcome` 追加
+- 追加:
+  - auth success / failure の JSON Lines ログイベント仕様を整理する
+- 保留:
+  - JSON Lines 出力本実装
+  - UDP socket 実装
+  - packet 破棄本体
+  - heartbeat / video frame 処理本体
+
+### メモ
+- auth log handoff 境界の責務は、auth decision の success / failure と理由、client/run/source/version 文脈を log layer 用 typed input に変換し、実際の JSON Lines 出力は後段に残すところまで。
+
+---
+
+## 2026-04-18
+### 種別
+- Codex
+
+### 今回の作業
 - packet acceptance rejection を drop / log layer へ渡す境界を設計した。
 - `docs/architecture/system-design.md` と `docs/architecture/protocol.md` に receive loop / gate / drop layer / log layer の責務分離を追記した。
 - `apps/server` に `ServerRejectionDropLogHandoffBoundary` を追加した。
