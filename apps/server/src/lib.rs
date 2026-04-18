@@ -1,9 +1,17 @@
-use std::{collections::BTreeMap, io, net::UdpSocket};
-use stream_sync_config::{ServerAuthConfig, SharedTokenSecretRef};
+use std::{
+    collections::BTreeMap,
+    fs, io,
+    net::{SocketAddr, ToSocketAddrs, UdpSocket},
+    path::{Path, PathBuf},
+};
+use stream_sync_config::{
+    ConfigLoadError, ServerAuthConfig, ServerAuthConfigBoundary, SharedTokenSecretRef,
+};
 use stream_sync_net_core::{
     DecodedInboundPacket, EncodedOutboundPacket, InboundPacket, InboundPacketDecoder,
     NetDecodeError, NetEncodeError, OutboundPacket, OutboundPacketEncoderBoundary,
     OutboundPacketQueueBoundary, OutboundQueueItem, PacketSource, UdpSocketIoBoundary,
+    DEFAULT_UDP_PACKET_BUFFER_LEN,
 };
 use stream_sync_protocol::{
     AppVersion, AuthRequest, AuthResponse, AuthResponseReasonCode, ClientId, Heartbeat,
@@ -213,6 +221,327 @@ pub enum ServerAuthResponsePocError {
     Auth(ServerAuthBoundaryError),
     Encode(NetEncodeError),
     Send(io::ErrorKind),
+}
+
+/// Launcher for the one-shot auth response PoC.
+///
+/// This is the minimal startup boundary: it loads server config, resolves the
+/// bind address, binds one UDP socket, initializes the in-memory registry, and
+/// calls `ServerAuthResponsePocStep` once. It does not run a continuous loop,
+/// spawn an async runtime, write logs, retry, fragment, or handle heartbeat /
+/// video frame packets.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct ServerAuthResponsePocLauncher {
+    socket_io: UdpSocketIoBoundary,
+    poc_step: ServerAuthResponsePocStep,
+}
+
+impl ServerAuthResponsePocLauncher {
+    pub fn load_startup_config_from_path(
+        &self,
+        path: impl AsRef<Path>,
+    ) -> Result<ServerAuthResponsePocStartupConfig, ServerAuthResponsePocStartupError> {
+        let path = path.as_ref();
+        let content =
+            fs::read_to_string(path).map_err(|error| ServerAuthResponsePocStartupError::Io {
+                path: path.to_path_buf(),
+                message: error.to_string(),
+            })?;
+        self.load_startup_config_from_str(&content)
+    }
+
+    pub fn load_startup_config_from_str(
+        &self,
+        input: &str,
+    ) -> Result<ServerAuthResponsePocStartupConfig, ServerAuthResponsePocStartupError> {
+        let server_settings = parse_server_poc_settings(input)?;
+        let auth_config = ServerAuthConfigBoundary::load_from_str(input)
+            .map_err(ServerAuthResponsePocStartupError::AuthConfig)?;
+
+        Ok(ServerAuthResponsePocStartupConfig {
+            bind_address: resolve_bind_address(
+                &server_settings.bind_host,
+                server_settings.bind_port,
+            )?,
+            expected_protocol_version: ProtocolVersion(server_settings.protocol_version),
+            auth_config,
+        })
+    }
+
+    pub fn run_once_from_path(
+        &self,
+        path: impl AsRef<Path>,
+    ) -> Result<ServerAuthResponsePocStartupOutcome, ServerAuthResponsePocStartupError> {
+        let startup_config = self.load_startup_config_from_path(path)?;
+        self.run_once(startup_config)
+    }
+
+    pub fn run_once(
+        &self,
+        startup_config: ServerAuthResponsePocStartupConfig,
+    ) -> Result<ServerAuthResponsePocStartupOutcome, ServerAuthResponsePocStartupError> {
+        let socket = self
+            .socket_io
+            .bind(startup_config.bind_address)
+            .map_err(|error| ServerAuthResponsePocStartupError::Bind {
+                address: startup_config.bind_address,
+                kind: error.kind(),
+            })?;
+        let mut buffer = vec![0_u8; DEFAULT_UDP_PACKET_BUFFER_LEN];
+        let mut registry = AuthenticatedSenderRegistry::default();
+        let outcome = self
+            .poc_step
+            .run_one(
+                &socket,
+                &mut buffer,
+                startup_config.expected_protocol_version,
+                &startup_config.auth_config,
+                &mut registry,
+            )
+            .map_err(ServerAuthResponsePocStartupError::Poc)?;
+
+        Ok(ServerAuthResponsePocStartupOutcome {
+            bind_address: startup_config.bind_address,
+            registry,
+            outcome,
+        })
+    }
+}
+
+/// Startup config needed by the one-shot auth response PoC.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ServerAuthResponsePocStartupConfig {
+    pub bind_address: SocketAddr,
+    pub expected_protocol_version: ProtocolVersion,
+    pub auth_config: ServerAuthConfig,
+}
+
+/// Result of launching the one-shot auth response PoC.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ServerAuthResponsePocStartupOutcome {
+    pub bind_address: SocketAddr,
+    pub registry: AuthenticatedSenderRegistry,
+    pub outcome: ServerAuthResponsePocOutcome,
+}
+
+/// Startup error for the one-shot auth response PoC.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ServerAuthResponsePocStartupError {
+    Io {
+        path: PathBuf,
+        message: String,
+    },
+    Config(ServerAuthResponsePocConfigError),
+    AuthConfig(ConfigLoadError),
+    Bind {
+        address: SocketAddr,
+        kind: io::ErrorKind,
+    },
+    Poc(ServerAuthResponsePocError),
+}
+
+/// Minimal config parse errors for the one-shot auth response PoC launcher.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ServerAuthResponsePocConfigError {
+    InvalidTomlLine {
+        line: usize,
+        message: String,
+    },
+    InvalidTomlString {
+        line: usize,
+        key: String,
+    },
+    InvalidNumber {
+        line: usize,
+        key: String,
+    },
+    MissingField {
+        section: &'static str,
+        key: &'static str,
+    },
+    InvalidBindAddress {
+        value: String,
+        message: String,
+    },
+}
+
+/// Convenience entry point for the server binary and manual PoC wiring.
+pub fn run_auth_response_poc_once_from_path(
+    path: impl AsRef<Path>,
+) -> Result<ServerAuthResponsePocStartupOutcome, ServerAuthResponsePocStartupError> {
+    ServerAuthResponsePocLauncher::default().run_once_from_path(path)
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ServerPocSettings {
+    bind_host: String,
+    bind_port: u16,
+    protocol_version: u32,
+}
+
+#[derive(Debug, Default)]
+struct PartialServerPocSettings {
+    bind_host: Option<String>,
+    bind_port: Option<u16>,
+    protocol_version: Option<u32>,
+}
+
+fn parse_server_poc_settings(
+    input: &str,
+) -> Result<ServerPocSettings, ServerAuthResponsePocStartupError> {
+    let mut current_section: Option<&str> = None;
+    let mut parsed = PartialServerPocSettings::default();
+
+    for (index, raw_line) in input.lines().enumerate() {
+        let line_number = index + 1;
+        let line = strip_toml_comment(raw_line).trim();
+        if line.is_empty() {
+            continue;
+        }
+
+        if let Some(section_name) = line
+            .strip_prefix('[')
+            .and_then(|value| value.strip_suffix(']'))
+        {
+            current_section = match section_name {
+                "server" => Some("server"),
+                "session" => Some("session"),
+                _ => None,
+            };
+            continue;
+        }
+
+        let Some(section) = current_section else {
+            continue;
+        };
+        let Some((key, raw_value)) = line.split_once('=') else {
+            return Err(ServerAuthResponsePocStartupError::Config(
+                ServerAuthResponsePocConfigError::InvalidTomlLine {
+                    line: line_number,
+                    message: "expected key = value".to_string(),
+                },
+            ));
+        };
+        let key = key.trim();
+        let value = raw_value.trim();
+
+        match (section, key) {
+            ("server", "bind_host") => {
+                parsed.bind_host = Some(parse_poc_toml_string(value, line_number, key)?);
+            }
+            ("server", "bind_port") => {
+                parsed.bind_port = Some(parse_poc_u16(value, line_number, key)?);
+            }
+            ("session", "protocol_version") => {
+                parsed.protocol_version = Some(parse_poc_u32(value, line_number, key)?);
+            }
+            _ => {}
+        }
+    }
+
+    Ok(ServerPocSettings {
+        bind_host: parsed.bind_host.ok_or_else(|| {
+            ServerAuthResponsePocStartupError::Config(
+                ServerAuthResponsePocConfigError::MissingField {
+                    section: "server",
+                    key: "bind_host",
+                },
+            )
+        })?,
+        bind_port: parsed.bind_port.ok_or_else(|| {
+            ServerAuthResponsePocStartupError::Config(
+                ServerAuthResponsePocConfigError::MissingField {
+                    section: "server",
+                    key: "bind_port",
+                },
+            )
+        })?,
+        protocol_version: parsed.protocol_version.ok_or_else(|| {
+            ServerAuthResponsePocStartupError::Config(
+                ServerAuthResponsePocConfigError::MissingField {
+                    section: "session",
+                    key: "protocol_version",
+                },
+            )
+        })?,
+    })
+}
+
+fn resolve_bind_address(
+    host: &str,
+    port: u16,
+) -> Result<SocketAddr, ServerAuthResponsePocStartupError> {
+    let value = format!("{host}:{port}");
+    (host, port)
+        .to_socket_addrs()
+        .map_err(|error| {
+            ServerAuthResponsePocStartupError::Config(
+                ServerAuthResponsePocConfigError::InvalidBindAddress {
+                    value: value.clone(),
+                    message: error.to_string(),
+                },
+            )
+        })?
+        .next()
+        .ok_or_else(|| {
+            ServerAuthResponsePocStartupError::Config(
+                ServerAuthResponsePocConfigError::InvalidBindAddress {
+                    value,
+                    message: "address resolved to no socket addresses".to_string(),
+                },
+            )
+        })
+}
+
+fn parse_poc_toml_string(
+    value: &str,
+    line: usize,
+    key: &str,
+) -> Result<String, ServerAuthResponsePocStartupError> {
+    value
+        .strip_prefix('"')
+        .and_then(|value| value.strip_suffix('"'))
+        .map(ToString::to_string)
+        .ok_or_else(|| {
+            ServerAuthResponsePocStartupError::Config(
+                ServerAuthResponsePocConfigError::InvalidTomlString {
+                    line,
+                    key: key.to_string(),
+                },
+            )
+        })
+}
+
+fn parse_poc_u16(
+    value: &str,
+    line: usize,
+    key: &str,
+) -> Result<u16, ServerAuthResponsePocStartupError> {
+    value.parse::<u16>().map_err(|_| {
+        ServerAuthResponsePocStartupError::Config(ServerAuthResponsePocConfigError::InvalidNumber {
+            line,
+            key: key.to_string(),
+        })
+    })
+}
+
+fn parse_poc_u32(
+    value: &str,
+    line: usize,
+    key: &str,
+) -> Result<u32, ServerAuthResponsePocStartupError> {
+    value.parse::<u32>().map_err(|_| {
+        ServerAuthResponsePocStartupError::Config(ServerAuthResponsePocConfigError::InvalidNumber {
+            line,
+            key: key.to_string(),
+        })
+    })
+}
+
+fn strip_toml_comment(line: &str) -> &str {
+    line.split_once('#')
+        .map(|(before_comment, _)| before_comment)
+        .unwrap_or(line)
 }
 
 /// Result of processing one already-received packet through the server boundary.
@@ -1606,6 +1935,56 @@ mod tests {
             .expect("expected auth response payload should encode");
         assert_eq!(decoded.header.payload_length, expected_payload.len() as u32);
         assert_eq!(decoded.payload, expected_payload.as_slice());
+    }
+
+    #[test]
+    fn auth_response_poc_launcher_loads_startup_config_from_example() {
+        let launcher = ServerAuthResponsePocLauncher::default();
+        let startup_config = launcher
+            .load_startup_config_from_str(include_str!(
+                "../../../configs/examples/server.example.toml"
+            ))
+            .expect("example config should load");
+
+        assert_eq!(
+            startup_config.bind_address,
+            "0.0.0.0:5000"
+                .parse::<SocketAddr>()
+                .expect("address should parse")
+        );
+        assert_eq!(startup_config.expected_protocol_version, ProtocolVersion(1));
+        assert_eq!(startup_config.auth_config.allowed_clients.len(), 4);
+        assert_eq!(startup_config.auth_config.shared_tokens.len(), 4);
+    }
+
+    #[test]
+    fn auth_response_poc_launcher_requires_bind_port() {
+        let launcher = ServerAuthResponsePocLauncher::default();
+        let result = launcher.load_startup_config_from_str(
+            r#"
+[server]
+bind_host = "127.0.0.1"
+
+[session]
+protocol_version = 2
+
+[auth]
+enabled = true
+
+[auth.clients.client-1]
+shared_token = "secret"
+"#,
+        );
+
+        assert_eq!(
+            result,
+            Err(ServerAuthResponsePocStartupError::Config(
+                ServerAuthResponsePocConfigError::MissingField {
+                    section: "server",
+                    key: "bind_port",
+                }
+            ))
+        );
     }
 
     #[test]

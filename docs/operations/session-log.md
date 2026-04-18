@@ -5,6 +5,63 @@
 - Codex
 
 ### 今回の作業
+- auth response PoC の起動設定接続を追加した。
+- `apps/server` に `ServerAuthResponsePocLauncher`, `ServerAuthResponsePocStartupConfig`, `ServerAuthResponsePocStartupOutcome`, `ServerAuthResponsePocStartupError` を追加した。
+- server TOML から `[server].bind_host`, `[server].bind_port`, `[session].protocol_version` を読み取り、bind address と expected protocol version を用意できるようにした。
+- 同じ TOML content を `ServerAuthConfigBoundary` に渡し、allowed clients / shared token placeholder を読み込む形にした。
+- `UdpSocketIoBoundary::bind`、空の `AuthenticatedSenderRegistry` 初期化、`ServerAuthResponsePocStep::run_one` 呼び出しまでを接続した。
+- server binary に `--auth-response-poc-once [config-path]` の明示入口を追加した。
+- docs に auth response PoC startup config entry の flow と責務分離を追記した。
+
+### 変更ファイル
+- `apps/server/src/lib.rs`
+- `apps/server/src/main.rs`
+- `docs/architecture/system-design.md`
+- `docs/architecture/protocol.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### 決定事項
+- 起動設定接続は `configs/examples/server.example.toml` と同じ形の TOML を入力にする。
+- launcher は bind address 解決、UDP socket bind、auth config 読み込み、registry 初期化、one-shot PoC step 呼び出しだけを担当する。
+- binary はデフォルトでは scaffold 表示のままとし、`--auth-response-poc-once` が指定された場合だけ 1 packet 待ち受けに入る。
+- 継続 loop、async runtime、JSON Lines 出力、retry、fragmentation、encryption、heartbeat / video frame 処理本体は今回の範囲外とする。
+
+### 未解決事項
+- client 側 AuthRequest 送信 PoC
+- secret 解決本実装
+- receive rejection / auth / send の JSON Lines 出力本実装
+- 継続 receive / send loop
+- heartbeat / video frame 処理本体
+
+### 次にやる候補
+- client 側 AuthRequest 送信 PoC を追加する
+- secret 解決方式と token 保護方針を設計する
+- receive rejection ログ出力本実装を行う
+
+### TODO更新
+- 完了:
+  - auth response PoC の起動設定接続を追加する
+  - `ServerAuthResponsePocLauncher` 追加
+  - `--auth-response-poc-once [config-path]` 入口追加
+- 追加:
+  - client 側 AuthRequest 送信 PoC
+- 保留:
+  - 継続 loop / async runtime
+  - JSON Lines 出力本実装
+  - retry / fragmentation / encryption
+  - heartbeat / video frame 処理本体
+
+### メモ
+- auth response PoC 起動入口の責務は、server TOML から bind / auth config / protocol version を用意し、UDP socket と registry を初期化して `ServerAuthResponsePocStep` を 1 回呼ぶところまで。
+
+---
+
+## 2026-04-18
+### 種別
+- Codex
+
+### 今回の作業
 - UDP socket を auth response PoC の起動処理へ最小接続した。
 - `apps/server` に `ServerAuthResponsePocStep` / `ServerAuthResponsePocOutcome` / `ServerAuthResponsePocError` を追加した。
 - 1 packet の UDP receive から receive loop / decode / gate / auth flow / outbound queue handoff / protocol encode / UDP send までを接続した。

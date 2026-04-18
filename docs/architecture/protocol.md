@@ -1305,6 +1305,29 @@ Current implementation: `apps/server::ServerAuthResponsePocStep`. It does not
 run heartbeat / video frame handlers, JSON Lines output, retry, fragmentation,
 encryption, or a long-running receive loop.
 
+### AuthResponse PoC Startup Config Entry
+
+The one-shot auth response PoC can now be launched from server configuration.
+This startup entry is an app-side adapter around existing protocol and net
+boundaries.
+
+Flow:
+
+1. `apps/server` reads a server TOML file.
+2. The launcher extracts `bind_host`, `bind_port`, and `protocol_version`.
+3. `ServerAuthConfigBoundary` loads allowed clients and shared token placeholder
+   values from the same TOML content.
+4. The launcher resolves and binds the UDP socket.
+5. The launcher creates an empty `AuthenticatedSenderRegistry`.
+6. The launcher calls `ServerAuthResponsePocStep::run_one`.
+7. The protocol encoder still only receives typed `ProtocolMessage` plus
+   `EncodeContext`; it does not read config or bind sockets.
+
+Current implementation: `apps/server::ServerAuthResponsePocLauncher` and
+`run_auth_response_poc_once_from_path`. The binary exposes this path with
+`--auth-response-poc-once [config-path]`. It remains one-shot and does not
+introduce a continuous receive loop or async runtime.
+
 ---
 
 ### Authenticated Sender Registry Boundary

@@ -354,6 +354,51 @@ looping, async runtime integration, real queue scheduling, retry,
 fragmentation, encryption, JSON Lines output, heartbeat handling, and video
 frame handling remain unimplemented.
 
+### 5.8 AuthResponse PoC startup config entry
+
+The auth response PoC startup config entry connects the example server TOML to
+the one-shot socket/auth step. This is the smallest runnable server-side entry
+for the auth response round trip.
+
+Flow:
+
+1. The caller passes a server TOML path to the PoC launcher.
+2. `ServerAuthResponsePocLauncher` reads the TOML file.
+3. The launcher extracts `[server].bind_host`, `[server].bind_port`, and
+   `[session].protocol_version` for socket bind and protocol validation.
+4. The same TOML content is passed to `ServerAuthConfigBoundary` to build
+   `ServerAuthConfig` from the allowed clients and shared token placeholders.
+5. The launcher resolves `bind_host + bind_port` into a `SocketAddr`.
+6. The launcher binds one synchronous UDP socket through `UdpSocketIoBoundary`.
+7. The launcher initializes an empty `AuthenticatedSenderRegistry`.
+8. The launcher calls `ServerAuthResponsePocStep::run_one`.
+9. `run_one` waits for one packet, handles one accepted `AuthRequest`, encodes
+   one `AuthResponse`, and sends one UDP datagram back to the request source.
+
+Responsibility split:
+
+- config loading
+  - Owns TOML file reading and minimal extraction of bind address and protocol
+    version.
+  - Uses `ServerAuthConfigBoundary` for auth config shape.
+- launcher
+  - Owns binding the UDP socket, allocating the receive buffer, creating the
+    in-memory registry, and calling the one-shot PoC step.
+  - Does not run a loop, write logs, retry, fragment, encrypt, or handle
+    heartbeat / video frame packets.
+- PoC step
+  - Owns one packet of receive -> auth flow -> encode -> send composition.
+- binary entry
+  - Exposes the launcher through an explicit `--auth-response-poc-once`
+    command-line flag.
+
+Current code reflects this with `apps/server::ServerAuthResponsePocLauncher`,
+`ServerAuthResponsePocStartupConfig`,
+`ServerAuthResponsePocStartupOutcome`,
+`ServerAuthResponsePocStartupError`, and
+`run_auth_response_poc_once_from_path`. The default server binary still prints
+a scaffold message unless the explicit one-shot PoC flag is supplied.
+
 ---
 
 ## 6. 同期の考え方
