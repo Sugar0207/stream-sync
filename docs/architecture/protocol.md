@@ -1098,6 +1098,57 @@ Responsibility split:
 Current implementation: `apps/server::ServerAuthLogHandoffBoundary`,
 `ServerAuthLogInput`, and `ServerAuthLogOutcome`.
 
+### Auth JSON Lines Event Schema Boundary
+
+Auth success / failure logs are JSON Lines application events, not protocol
+wire messages. The server keeps the result typed until the log layer writes a
+record.
+
+Flow:
+
+1. `ServerAuthLogHandoffBoundary` produces `ServerAuthLogInput`.
+2. `ServerAuthJsonLogEventBoundary` receives that typed input plus an explicit
+   log timestamp.
+3. The boundary produces `ServerAuthJsonLogEventInput`.
+4. A future JSON Lines writer serializes the event input. The current boundary
+   does not write JSON Lines.
+
+Auth result event schema:
+
+| Field | Type | Policy |
+| --- | --- | --- |
+| `event_name` | string | Always `server.auth_result`. |
+| `run_id` | `RunId` | Common success / failure field. |
+| `client_id` | `ClientId` | Common success / failure field. |
+| `source` | endpoint | Common source endpoint field from `PacketSource`. |
+| `accepted` | bool | Common field; true for success and false for failure. |
+| `reason_code` | `AuthResponseReasonCode` | Common field; `Ok` for success, rejection reason for failure. |
+| `message` | optional string | Failure detail; normally omitted for success. |
+| `app_version` | optional `AppVersion` | Common context from decoded `AuthRequest` when present. |
+| `protocol_version` | `ProtocolVersion` | Common context from decoded `AuthRequest`. |
+| `timestamp` | `TimestampMicros` | Log event timestamp supplied by the caller / future log layer. |
+| `expected_protocol_version` | optional `ProtocolVersion` | Failure-only detail for protocol mismatch style rejections. |
+
+Responsibility split:
+
+- auth flow / auth decision
+  - Decide accepted / rejected and preserve context.
+  - Do not write logs.
+- auth log handoff
+  - Converts `ServerAuthDecision` into `ServerAuthLogInput`.
+  - Does not define JSON serialization behavior.
+- JSON Lines event schema boundary
+  - Converts auth log handoff input into event-schema input.
+  - Preserves `run_id`, `client_id`, source, accepted flag, reason, message,
+    versions, and timestamp.
+  - Does not perform JSON Lines output.
+- log writer
+  - Future owner of serializing one JSON object per line and writing it.
+
+Current implementation: `apps/server::ServerAuthJsonLogEventBoundary` and
+`ServerAuthJsonLogEventInput`. JSON Lines output, file rotation, sinks, and
+metrics updates remain future work.
+
 ### Connected Server Auth Flow Step
 
 The server auth flow step connects decoded `AuthRequest` handling to outbound

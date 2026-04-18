@@ -624,6 +624,62 @@ unimplemented.
 
 ---
 
+## Auth JSON Lines Event Schema Boundary
+
+PoC / MVP initial implementation keeps auth result logging split into typed
+auth log handoff, JSON Lines event schema input, and the future log writer. The
+current code can build the event input shape, but it does not serialize JSON or
+write log files.
+
+Flow:
+
+1. `ServerAuthDecisionBoundary` returns accepted / rejected
+   `ServerAuthDecision`.
+2. `ServerAuthLogHandoffBoundary` converts it into `ServerAuthLogInput`.
+3. `ServerAuthJsonLogEventBoundary` converts `ServerAuthLogInput` plus an
+   explicit log timestamp into `ServerAuthJsonLogEventInput`.
+4. The future JSON Lines writer will serialize that event input as one log
+   record.
+
+Event schema:
+
+| Field | Type | Success / failure policy |
+| --- | --- | --- |
+| `event_name` | string | Always `server.auth_result`. |
+| `run_id` | `RunId` | Common field. Preserved from decoded auth request. |
+| `client_id` | `ClientId` | Common field. Preserved from decoded auth request. |
+| `source` | endpoint | Common field. Preserved from packet source metadata. |
+| `accepted` | bool | Common field. `true` for success, `false` for failure. |
+| `reason_code` | `AuthResponseReasonCode` | Common field. `Ok` for success; rejection reason for failure. |
+| `message` | optional string | Present mainly for failure detail; normally absent for success. |
+| `app_version` | optional `AppVersion` | Common context from `AuthRequest` when available. |
+| `protocol_version` | `ProtocolVersion` | Common context from `AuthRequest`. |
+| `timestamp` | `TimestampMicros` | Common log timestamp supplied by the caller / future log layer. |
+| `expected_protocol_version` | optional `ProtocolVersion` | Failure-only detail for protocol mismatch style rejections. |
+
+Responsibility split:
+
+- auth flow
+  - Produces auth decisions and auth log handoff input.
+  - Does not serialize or write log records.
+- auth log handoff
+  - Preserves auth context and success / failure reason in a server-owned typed
+    input.
+  - Does not decide final JSON Lines field names.
+- JSON Lines event schema boundary
+  - Maps typed auth log input to the auth result event schema.
+  - Adds the explicit log `timestamp`.
+  - Does not perform JSON serialization, file I/O, metrics, UDP I/O, or auth
+    state mutation.
+- log writer
+  - Future owner of JSON Lines serialization and output.
+
+Current code reflects this with `apps/server::ServerAuthJsonLogEventBoundary`
+and `ServerAuthJsonLogEventInput`. These are event-schema inputs only; actual
+JSON Lines output remains unimplemented.
+
+---
+
 ## Server Auth Flow Step
 
 PoC / MVP initial implementation connects the existing auth boundaries inside

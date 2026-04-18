@@ -5,6 +5,58 @@
 - Codex
 
 ### 今回の作業
+- auth success / failure の JSON Lines ログイベント仕様を整理した。
+- `docs/architecture/system-design.md` と `docs/architecture/protocol.md` に auth flow / auth log handoff / JSON Lines event schema / log writer の責務分離を追記した。
+- event schema として `event_name`, `run_id`, `client_id`, `source`, `accepted`, `reason_code`, `message`, `app_version`, `protocol_version`, `timestamp`, `expected_protocol_version` を整理した。
+- `apps/server` に `ServerAuthJsonLogEventBoundary` と `ServerAuthJsonLogEventInput` を追加し、`ServerAuthLogInput` から future JSON Lines event 入力へ変換できる placeholder を追加した。
+- success / failure の共通フィールドと、failure detail として使う `message` / `expected_protocol_version` を区別した。
+
+### 変更ファイル
+- `apps/server/src/lib.rs`
+- `docs/architecture/system-design.md`
+- `docs/architecture/protocol.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### 決定事項
+- auth JSON Lines event name は `server.auth_result` とする。
+- auth JSON Lines event schema 境界は typed auth log input を記録形式の入力へ写すだけに留める。
+- log `timestamp` は境界の呼び出し側 / 将来の log layer から明示的に渡し、現在の境界では clock source を持たない。
+- JSON serialization、ファイル出力、metrics 更新、UDP socket I/O は今回の範囲外とする。
+
+### 未解決事項
+- 実際の JSON Lines 出力本実装
+- receive rejection の JSON Lines ログイベント仕様
+- receive / send log writer
+- UDP socket 受信 / 送信
+- heartbeat / video frame 処理本体
+
+### 次にやる候補
+- receive rejection の JSON Lines ログイベント仕様を整理する
+- UDP socket 受信 / 送信本体の最小実装に進む
+- secret 解決方式と token 保護方針を設計する
+
+### TODO更新
+- 完了:
+  - auth success / failure の JSON Lines ログイベント仕様を整理する
+  - `ServerAuthJsonLogEventBoundary` / `ServerAuthJsonLogEventInput` placeholder を追加する
+- 追加:
+  - なし
+- 保留:
+  - JSON Lines 出力本実装
+  - receive rejection の JSON Lines ログイベント仕様
+  - UDP socket 実装
+
+### メモ
+- auth JSON Lines event schema の責務は、auth log handoff の文脈を `server.auth_result` event 入力へ変換し、writer がそのまま JSON Lines 化できる typed field set を固定するところまで。
+
+---
+
+## 2026-04-18
+### 種別
+- Codex
+
+### 今回の作業
 - auth success / failure ログ出力境界を設計した。
 - `docs/architecture/system-design.md` と `docs/architecture/protocol.md` に auth flow / auth decision / auth log handoff / log layer の責務分離を追記した。
 - `apps/server` に `ServerAuthLogHandoffBoundary`, `ServerAuthLogInput`, `ServerAuthLogOutcome` を追加した。

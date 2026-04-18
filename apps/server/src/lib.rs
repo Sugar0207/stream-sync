@@ -908,6 +908,54 @@ pub enum ServerAuthLogOutcome {
     Failure,
 }
 
+/// Event name used by the future JSON Lines auth result log.
+pub const SERVER_AUTH_JSON_LOG_EVENT_NAME: &str = "server.auth_result";
+
+/// Boundary that maps typed auth log handoff input to the future JSON Lines
+/// event schema input.
+///
+/// This does not serialize JSON, write files, update metrics, or decide auth.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct ServerAuthJsonLogEventBoundary;
+
+impl ServerAuthJsonLogEventBoundary {
+    pub fn build_event(
+        &self,
+        input: ServerAuthLogInput,
+        timestamp: TimestampMicros,
+    ) -> ServerAuthJsonLogEventInput {
+        ServerAuthJsonLogEventInput {
+            event_name: SERVER_AUTH_JSON_LOG_EVENT_NAME,
+            run_id: input.run_id,
+            client_id: input.client_id,
+            source: input.source,
+            accepted: matches!(input.outcome, ServerAuthLogOutcome::Success),
+            reason_code: input.reason_code,
+            message: input.message,
+            app_version: input.app_version,
+            protocol_version: input.protocol_version,
+            timestamp,
+            expected_protocol_version: input.expected_protocol_version,
+        }
+    }
+}
+
+/// Input shape for the future auth result JSON Lines event writer.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ServerAuthJsonLogEventInput {
+    pub event_name: &'static str,
+    pub run_id: RunId,
+    pub client_id: ClientId,
+    pub source: PacketSource,
+    pub accepted: bool,
+    pub reason_code: AuthResponseReasonCode,
+    pub message: Option<String>,
+    pub app_version: Option<AppVersion>,
+    pub protocol_version: ProtocolVersion,
+    pub timestamp: TimestampMicros,
+    pub expected_protocol_version: Option<ProtocolVersion>,
+}
+
 /// Boundary that converts auth decisions into outbound auth responses.
 ///
 /// This builds the typed `AuthResponse` message and destination handoff only.
@@ -1558,6 +1606,67 @@ mod tests {
         assert_eq!(input.outcome, ServerAuthLogOutcome::Failure);
         assert_eq!(input.reason_code, AuthResponseReasonCode::InvalidToken);
         assert_eq!(input.message.as_deref(), Some("invalid shared_token"));
+    }
+
+    #[test]
+    fn auth_json_log_event_boundary_builds_success_event_schema_input() {
+        let input = ServerAuthLogInput {
+            source: packet_source(),
+            client_id: ClientId("client-1".to_string()),
+            run_id: RunId("run-1".to_string()),
+            app_version: Some(AppVersion("0.1.0".to_string())),
+            protocol_version: ProtocolVersion(2),
+            outcome: ServerAuthLogOutcome::Success,
+            reason_code: AuthResponseReasonCode::Ok,
+            message: None,
+            server_time: Some(TimestampMicros(2_000_000)),
+            expected_protocol_version: None,
+        };
+        let boundary = ServerAuthJsonLogEventBoundary;
+
+        let event = boundary.build_event(input, TimestampMicros(2_000_100));
+
+        assert_eq!(event.event_name, SERVER_AUTH_JSON_LOG_EVENT_NAME);
+        assert_eq!(event.run_id, RunId("run-1".to_string()));
+        assert_eq!(event.client_id, ClientId("client-1".to_string()));
+        assert_eq!(event.source, packet_source());
+        assert!(event.accepted);
+        assert_eq!(event.reason_code, AuthResponseReasonCode::Ok);
+        assert_eq!(event.message, None);
+        assert_eq!(event.app_version, Some(AppVersion("0.1.0".to_string())));
+        assert_eq!(event.protocol_version, ProtocolVersion(2));
+        assert_eq!(event.timestamp, TimestampMicros(2_000_100));
+        assert_eq!(event.expected_protocol_version, None);
+    }
+
+    #[test]
+    fn auth_json_log_event_boundary_preserves_failure_fields() {
+        let input = ServerAuthLogInput {
+            source: packet_source(),
+            client_id: ClientId("client-1".to_string()),
+            run_id: RunId("run-1".to_string()),
+            app_version: Some(AppVersion("0.1.0".to_string())),
+            protocol_version: ProtocolVersion(1),
+            outcome: ServerAuthLogOutcome::Failure,
+            reason_code: AuthResponseReasonCode::ProtocolMismatch,
+            message: Some("unsupported protocol_version".to_string()),
+            server_time: None,
+            expected_protocol_version: Some(ProtocolVersion(2)),
+        };
+        let boundary = ServerAuthJsonLogEventBoundary;
+
+        let event = boundary.build_event(input, TimestampMicros(2_000_200));
+
+        assert_eq!(event.event_name, SERVER_AUTH_JSON_LOG_EVENT_NAME);
+        assert!(!event.accepted);
+        assert_eq!(event.reason_code, AuthResponseReasonCode::ProtocolMismatch);
+        assert_eq!(
+            event.message.as_deref(),
+            Some("unsupported protocol_version")
+        );
+        assert_eq!(event.protocol_version, ProtocolVersion(1));
+        assert_eq!(event.expected_protocol_version, Some(ProtocolVersion(2)));
+        assert_eq!(event.timestamp, TimestampMicros(2_000_200));
     }
 
     #[test]
