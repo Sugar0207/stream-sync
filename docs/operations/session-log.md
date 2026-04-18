@@ -5,6 +5,58 @@
 - Codex
 
 ### 今回の作業
+- receive rejection の JSON Lines ログイベント仕様を整理した。
+- `docs/architecture/system-design.md` と `docs/architecture/protocol.md` に receive loop / gate / rejection handoff / JSON Lines event schema / log writer の責務分離を追記した。
+- event schema として `event_name`, `run_id`, `client_id`, `source`, `message_type`, `rejection_reason`, `detail`, `timestamp` を整理した。
+- `apps/server` に `ServerReceiveRejectionJsonLogEventBoundary` と `ServerReceiveRejectionJsonLogEventInput` を追加し、`ServerPacketLogInput` から future JSON Lines event 入力へ変換できる placeholder を追加した。
+- decode error 由来の rejection と `UnauthenticatedSource` / `UnknownClient` / `EndpointMismatch` を区別したまま handoff できる単体テストを追加した。
+
+### 変更ファイル
+- `apps/server/src/lib.rs`
+- `docs/architecture/system-design.md`
+- `docs/architecture/protocol.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### 決定事項
+- receive rejection JSON Lines event name は `server.receive_rejection` とする。
+- `run_id`, `client_id`, `message_type` は decode / gate の段階で常に取得できるとは限らないため optional field とする。
+- `detail` は decode rejection では `ServerDecodeErrorAction` と `ProtocolError`、acceptance rejection では `PacketAcceptanceRejectReason` を保持する。
+- JSON serialization、ファイル出力、packet drop 実行、metrics 更新、UDP socket I/O は今回の範囲外とする。
+
+### 未解決事項
+- 実際の JSON Lines 出力本実装
+- UDP socket 受信 / 送信
+- packet drop 実行
+- receive / send log writer
+- heartbeat / video frame 処理本体
+
+### 次にやる候補
+- UDP socket 受信 / 送信本体の最小実装に進む
+- secret 解決方式と token 保護方針を設計する
+- receive rejection ログ出力本実装を行う
+
+### TODO更新
+- 完了:
+  - receive rejection の JSON Lines ログイベント仕様を整理する
+  - `ServerReceiveRejectionJsonLogEventBoundary` / `ServerReceiveRejectionJsonLogEventInput` placeholder を追加する
+- 追加:
+  - receive rejection ログ出力本実装
+- 保留:
+  - JSON Lines 出力本実装
+  - UDP socket 実装
+  - packet drop 実行
+
+### メモ
+- receive rejection JSON Lines event schema の責務は、rejection handoff の文脈を `server.receive_rejection` event 入力へ変換し、writer がそのまま JSON Lines 化できる typed field set を固定するところまで。
+
+---
+
+## 2026-04-18
+### 種別
+- Codex
+
+### 今回の作業
 - auth success / failure の JSON Lines ログイベント仕様を整理した。
 - `docs/architecture/system-design.md` と `docs/architecture/protocol.md` に auth flow / auth log handoff / JSON Lines event schema / log writer の責務分離を追記した。
 - event schema として `event_name`, `run_id`, `client_id`, `source`, `accepted`, `reason_code`, `message`, `app_version`, `protocol_version`, `timestamp`, `expected_protocol_version` を整理した。

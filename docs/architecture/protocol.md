@@ -1334,6 +1334,57 @@ still out of scope.
 
 ---
 
+### Receive Rejection JSON Lines Event Schema Boundary
+
+Receive rejection logging uses a typed event schema before any JSON Lines
+writer exists. `ServerPacketLogInput` is converted into an event input that a
+future writer can serialize without reinterpreting gate reasons.
+
+Flow:
+
+1. Receive loop / gate yields a rejection decision.
+2. Rejection handoff converts it to `ServerPacketLogInput`.
+3. `ServerReceiveRejectionJsonLogEventBoundary` builds
+   `ServerReceiveRejectionJsonLogEventInput`.
+4. A future writer serializes the event input as JSON Lines.
+
+Event schema:
+
+| Field | Type | Notes |
+| --- | --- | --- |
+| `event_name` | string | Always `server.receive_rejection`. |
+| `run_id` | optional `RunId` | Reserved for correlation. Current decode / gate handoff may not know it, so it can be absent. |
+| `client_id` | optional `ClientId` | Preserved when the gate or decoded packet knows it. |
+| `source` | `PacketSource` | Source endpoint of the rejected packet. |
+| `message_type` | optional `MessageType` | Present for acceptance rejections; absent for decode failures without a decoded type. |
+| `rejection_reason` | enum | `DecodeError`, `UnauthenticatedSource`, `UnknownClient`, or `EndpointMismatch`. |
+| `detail` | enum/object | Decode detail keeps `ServerDecodeErrorAction` and `ProtocolError`; acceptance detail keeps `PacketAcceptanceRejectReason`. |
+| `timestamp` | `TimestampMicros` | Server-side event timestamp supplied by the caller. |
+
+Responsibility split:
+
+- receive loop
+  - Calls decode and gate, then produces accepted route or rejected decision.
+  - Does not write logs.
+- packet acceptance gate
+  - Selects rejection reasons from registry lookup.
+  - Does not know JSON Lines schema.
+- rejection handoff
+  - Preserves source, optional client id, message type, and rejection detail.
+  - Does not serialize events.
+- JSON Lines event schema boundary
+  - Maps handoff reasons into `server.receive_rejection` event fields.
+  - Does not perform JSON Lines output.
+- log writer
+  - Future owner of serialization and sinks.
+
+Current implementation: `apps/server::ServerReceiveRejectionJsonLogEventBoundary`
+builds `ServerReceiveRejectionJsonLogEventInput` from `ServerPacketLogInput`.
+It preserves `UnauthenticatedSource`, `UnknownClient`, `EndpointMismatch`, and
+decode-error detail without performing JSON Lines output.
+
+---
+
 ## AuthResponse Generation / Send Boundary
 
 `AuthResponse` is generated from a server-side auth decision, not directly from

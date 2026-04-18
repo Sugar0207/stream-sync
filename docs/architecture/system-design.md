@@ -896,6 +896,66 @@ heartbeat handling, and video frame handling remain unimplemented.
 
 ---
 
+## Receive Rejection JSON Lines Event Schema Boundary
+
+Receive rejection logs use a typed event input before any JSON Lines writer is
+introduced. The boundary converts `ServerPacketLogInput` into a stable field
+set for future structured logging, while preserving the exact rejection reason
+and detail.
+
+Flow:
+
+1. Receive loop / packet acceptance gate produces a rejection decision.
+2. `ServerRejectionDropLogHandoffBoundary` converts the rejection into
+   `ServerPacketLogInput`.
+3. `ServerReceiveRejectionJsonLogEventBoundary` converts that log handoff input
+   into `ServerReceiveRejectionJsonLogEventInput`.
+4. A future JSON Lines writer serializes the event input as one receive
+   rejection log record.
+5. The current boundary does not write JSON Lines, drop packets, update
+   metrics, or call sockets.
+
+Event schema:
+
+| Field | Type | Notes |
+| --- | --- | --- |
+| `event_name` | string | Always `server.receive_rejection`. |
+| `run_id` | optional `RunId` | Included in the schema for correlation. Current decode / gate rejections do not always know it, so it is `None` until a later boundary carries it. |
+| `client_id` | optional `ClientId` | Present when the packet was decoded far enough or the gate extracted it. Decode errors may leave it absent. |
+| `source` | `PacketSource` | UDP source endpoint captured before decode / gate processing. |
+| `message_type` | optional `MessageType` | Present for packet acceptance rejections; absent for decode failures that cannot identify a message type. |
+| `rejection_reason` | enum | `DecodeError`, `UnauthenticatedSource`, `UnknownClient`, or `EndpointMismatch`. |
+| `detail` | enum/object | Decode detail keeps `ServerDecodeErrorAction` and `ProtocolError`; acceptance detail keeps `PacketAcceptanceRejectReason`. |
+| `timestamp` | `TimestampMicros` | Server-side event timestamp supplied by the caller. |
+
+Responsibility split:
+
+- receive loop
+  - Owns raw packet intake, decode handoff, and gate invocation.
+  - Produces rejection decisions.
+  - Does not format or write JSON Lines.
+- packet acceptance gate
+  - Owns registry lookup and acceptance rejection reason selection.
+  - Does not know log event field names.
+- rejection handoff boundary
+  - Preserves source, message type, optional client id, decode error, and
+    rejection reason for downstream layers.
+  - Does not choose a JSON Lines event name.
+- JSON Lines event schema boundary
+  - Owns the receive rejection event field set and maps typed handoff reasons
+    to log-event reasons.
+  - Does not serialize JSON Lines or write to disk/stdout.
+- log writer
+  - Future owner of JSON Lines serialization, sinks, rotation, and flushing.
+
+Current code reflects this with
+`apps/server::ServerReceiveRejectionJsonLogEventBoundary`,
+`ServerReceiveRejectionJsonLogEventInput`,
+`ServerReceiveRejectionReason`, and `ServerReceiveRejectionDetail`. JSON Lines
+output remains unimplemented.
+
+---
+
 ## Server AuthResponse Boundary
 
 PoC / MVP initial implementation separates the future auth decision from

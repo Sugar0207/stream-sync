@@ -2,6 +2,11 @@
 
 # StreamSync TODO
 
+## 2026-04-18 Codex update
+- [x] receive rejection JSON Lines event schema を整理する
+- [x] `ServerReceiveRejectionJsonLogEventBoundary` / `ServerReceiveRejectionJsonLogEventInput` を追加する
+- 次の中心: UDP socket 送受信、secret 解決、receive rejection ログ出力本実装
+
 最終更新: 2026-04-18
 
 このファイルは「現在どこまで終わっていて、次に何をやるか」を確認するための TODO です。時系列の作業履歴は `docs/operations/session-log.md` を正とします。
@@ -21,9 +26,9 @@
 - `crates/protocol` の基本型、主要 message 型、timestamp 型、fixed header decode、`AuthRequest` / `Heartbeat` / `VideoFrame` payload decode、`AuthResponse` / `HeartbeatAck` encode は完了
 - `crates/config` の server auth 設定 TOML 読み込み最小実装は完了
 - `crates/net-core` の inbound decode 境界、outbound packet / queue 境界、outbound queue lifecycle 境界、protocol encoder 呼び出し境界、send error / log event 分類 placeholder は完了
-- `apps/server` の inbound router、UDP receive loop step、receive loop から packet acceptance gate への接続境界、packet acceptance rejection の drop / log handoff 境界、auth handler boundary、auth config input boundary、server auth decision 最小実装、auth success / failure log handoff 境界、auth JSON Lines event schema 境界、auth flow step、認証済み送信元 registry 境界、packet acceptance gate 境界、AuthResponse response boundary、HeartbeatAck ack boundary、outbound queue handoff は完了
+- `apps/server` の inbound router、UDP receive loop step、receive loop から packet acceptance gate への接続境界、packet acceptance rejection の drop / log handoff 境界、receive rejection JSON Lines event schema 境界、auth handler boundary、auth config input boundary、server auth decision 最小実装、auth success / failure log handoff 境界、auth JSON Lines event schema 境界、auth flow step、認証済み送信元 registry 境界、packet acceptance gate 境界、AuthResponse response boundary、HeartbeatAck ack boundary、outbound queue handoff は完了
 - 実ネットワーク送受信、secret 解決、認証済み送信元の timeout / 失効 / 再認証、実際の packet 破棄 / ログ出力、`AuthResponse` / `HeartbeatAck` 以外の encode 本実装、時刻同期本体、映像受信・復号・表示、switcher UI は未実装
-- 次の中心は receive rejection の実ログイベント設計、UDP socket 送受信、secret 解決
+- 次の中心は UDP socket 送受信、secret 解決、receive rejection ログ出力本実装
 
 ---
 
@@ -53,11 +58,11 @@
 ---
 
 ## 直近でやること
-1. receive rejection の JSON Lines ログイベント仕様を整理する
-2. UDP socket 受信 / 送信本体の実装に進む
-3. `VideoFrame` encode 方針と実装範囲を整理する
-4. outbound queue の実処理範囲と backpressure 方針を実装前に詰める
-5. secret 解決方式と token 保護方針を設計する
+1. UDP socket 受信 / 送信本体の実装に進む
+2. `VideoFrame` encode 方針と実装範囲を整理する
+3. outbound queue の実処理範囲と backpressure 方針を実装前に詰める
+4. secret 解決方式と token 保護方針を設計する
+5. receive rejection ログ出力本実装を行う
 
 ---
 
@@ -90,6 +95,7 @@
 - [x] net send layer / protocol encoder 境界を整理する
 - [x] `HeartbeatAck` encode 入力境界を整理する
 - [x] UDP socket 送信前の send error / log event 方針を整理する
+- [x] receive rejection の JSON Lines ログイベント仕様を整理する
 - [ ] 状態遷移を詳細化する
 - [ ] 異常時の挙動を実装レベルに落とす
 - [ ] ログイベント仕様を詳細化する
@@ -146,6 +152,7 @@
 - [x] server 側 `PacketAcceptanceGateBoundary` / `PacketAcceptanceDecision` placeholder を追加する
 - [x] `ServerReceiveLoopGateOutcome` / receive loop から gate を呼ぶ接続 helper を追加する
 - [x] `ServerRejectionDropLogHandoffBoundary` / drop-log handoff input placeholder を追加する
+- [x] `ServerReceiveRejectionJsonLogEventBoundary` / receive rejection JSON Lines event input placeholder を追加する
 - [ ] UDP socket の bind / receive / send 本実装を行う
 - [ ] packet 受信本体を実装する
 - [ ] packet 送信本体を実装する
@@ -275,6 +282,7 @@
 - [x] `run_id` / `client_id` で追跡可能にする方針を決定する
 - [x] switcher UI 上のリアルタイム簡易メトリクス表示方針を決定する
 - [x] auth success / failure の JSON Lines ログイベント仕様を整理する
+- [x] receive rejection の JSON Lines ログイベント仕様を整理する
 - [ ] ログイベント型を定義する
 - [ ] JSON Lines 形式でログ出力する
 - [ ] `run_id` / `client_id` を各ログに付与する

@@ -168,6 +168,103 @@ pub struct ServerPacketLogInput {
     pub reason: ServerRejectionHandoffReason,
 }
 
+pub const SERVER_RECEIVE_REJECTION_JSON_LOG_EVENT_NAME: &str = "server.receive_rejection";
+
+/// Boundary that maps receive rejection log handoff input to JSON Lines event input.
+///
+/// This prepares typed event fields for a future JSON Lines writer. It does not
+/// serialize JSON, write files, emit logs, or execute packet drops.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct ServerReceiveRejectionJsonLogEventBoundary;
+
+impl ServerReceiveRejectionJsonLogEventBoundary {
+    pub fn build_event(
+        &self,
+        input: ServerPacketLogInput,
+        timestamp: TimestampMicros,
+    ) -> ServerReceiveRejectionJsonLogEventInput {
+        let ServerPacketLogInput { source, reason } = input;
+        let (client_id, message_type, rejection_reason, detail) = match reason {
+            ServerRejectionHandoffReason::Decode { action, error } => (
+                None,
+                None,
+                ServerReceiveRejectionReason::DecodeError,
+                ServerReceiveRejectionDetail::Decode { action, error },
+            ),
+            ServerRejectionHandoffReason::Acceptance {
+                message_type,
+                client_id,
+                reason,
+            } => {
+                let rejection_reason = match &reason {
+                    PacketAcceptanceRejectReason::UnauthenticatedSource => {
+                        ServerReceiveRejectionReason::UnauthenticatedSource
+                    }
+                    PacketAcceptanceRejectReason::UnknownClient => {
+                        ServerReceiveRejectionReason::UnknownClient
+                    }
+                    PacketAcceptanceRejectReason::EndpointMismatch => {
+                        ServerReceiveRejectionReason::EndpointMismatch
+                    }
+                };
+
+                (
+                    client_id,
+                    Some(message_type),
+                    rejection_reason,
+                    ServerReceiveRejectionDetail::Acceptance { reason },
+                )
+            }
+        };
+
+        ServerReceiveRejectionJsonLogEventInput {
+            event_name: SERVER_RECEIVE_REJECTION_JSON_LOG_EVENT_NAME,
+            run_id: None,
+            client_id,
+            source,
+            message_type,
+            rejection_reason,
+            detail,
+            timestamp,
+        }
+    }
+}
+
+/// JSON Lines event input for receive rejections.
+///
+/// `run_id`, `client_id`, and `message_type` stay optional because decode
+/// failures and early gate rejections may happen before those fields are known.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ServerReceiveRejectionJsonLogEventInput {
+    pub event_name: &'static str,
+    pub run_id: Option<RunId>,
+    pub client_id: Option<ClientId>,
+    pub source: PacketSource,
+    pub message_type: Option<MessageType>,
+    pub rejection_reason: ServerReceiveRejectionReason,
+    pub detail: ServerReceiveRejectionDetail,
+    pub timestamp: TimestampMicros,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ServerReceiveRejectionReason {
+    DecodeError,
+    UnauthenticatedSource,
+    UnknownClient,
+    EndpointMismatch,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ServerReceiveRejectionDetail {
+    Decode {
+        action: ServerDecodeErrorAction,
+        error: ProtocolError,
+    },
+    Acceptance {
+        reason: PacketAcceptanceRejectReason,
+    },
+}
+
 /// Receive rejection reason preserved across drop and log handoff.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ServerRejectionHandoffReason {
@@ -1370,6 +1467,80 @@ mod tests {
         assert_eq!(
             endpoint_mismatch.log_input.reason,
             endpoint_mismatch.drop_input.reason
+        );
+    }
+
+    #[test]
+    fn receive_rejection_json_log_event_boundary_builds_decode_event_input() {
+        let source = packet_source();
+        let boundary = ServerReceiveRejectionJsonLogEventBoundary;
+
+        let event = boundary.build_event(
+            ServerPacketLogInput {
+                source,
+                reason: ServerRejectionHandoffReason::Decode {
+                    action: ServerDecodeErrorAction::RejectProtocolVersion,
+                    error: ProtocolError::UnsupportedProtocolVersion {
+                        expected: ProtocolVersion(2),
+                        actual: ProtocolVersion(1),
+                    },
+                },
+            },
+            TimestampMicros(123_456),
+        );
+
+        assert_eq!(
+            event,
+            ServerReceiveRejectionJsonLogEventInput {
+                event_name: SERVER_RECEIVE_REJECTION_JSON_LOG_EVENT_NAME,
+                run_id: None,
+                client_id: None,
+                source,
+                message_type: None,
+                rejection_reason: ServerReceiveRejectionReason::DecodeError,
+                detail: ServerReceiveRejectionDetail::Decode {
+                    action: ServerDecodeErrorAction::RejectProtocolVersion,
+                    error: ProtocolError::UnsupportedProtocolVersion {
+                        expected: ProtocolVersion(2),
+                        actual: ProtocolVersion(1),
+                    },
+                },
+                timestamp: TimestampMicros(123_456),
+            }
+        );
+    }
+
+    #[test]
+    fn receive_rejection_json_log_event_boundary_preserves_acceptance_reason() {
+        let source = packet_source();
+        let boundary = ServerReceiveRejectionJsonLogEventBoundary;
+
+        let event = boundary.build_event(
+            ServerPacketLogInput {
+                source,
+                reason: ServerRejectionHandoffReason::Acceptance {
+                    message_type: MessageType::VideoFrame,
+                    client_id: Some(ClientId("client-1".to_string())),
+                    reason: PacketAcceptanceRejectReason::EndpointMismatch,
+                },
+            },
+            TimestampMicros(234_567),
+        );
+
+        assert_eq!(
+            event,
+            ServerReceiveRejectionJsonLogEventInput {
+                event_name: SERVER_RECEIVE_REJECTION_JSON_LOG_EVENT_NAME,
+                run_id: None,
+                client_id: Some(ClientId("client-1".to_string())),
+                source,
+                message_type: Some(MessageType::VideoFrame),
+                rejection_reason: ServerReceiveRejectionReason::EndpointMismatch,
+                detail: ServerReceiveRejectionDetail::Acceptance {
+                    reason: PacketAcceptanceRejectReason::EndpointMismatch,
+                },
+                timestamp: TimestampMicros(234_567),
+            }
         );
     }
 
