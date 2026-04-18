@@ -3,6 +3,11 @@
 # StreamSync TODO
 
 ## 2026-04-18 Codex update
+- [x] UDP socket を auth response PoC の起動処理へ最小接続する
+- [x] `ServerAuthResponsePocStep` で 1 packet receive -> auth flow -> encode -> send を接続する
+- 次の中心: secret 解決、receive rejection ログ出力本実装、auth response PoC の起動設定接続
+
+## 2026-04-18 Codex update
 - [x] `VideoFrame` encode 方針と最小実装範囲を整理する
 - [x] `VideoFrame` fixed header + payload bytes の最小 encode 実装を追加する
 - 次の中心: secret 解決、receive rejection ログ出力本実装、UDP socket を auth response PoC の起動処理へ接続
@@ -36,9 +41,9 @@
 - `crates/protocol` の基本型、主要 message 型、timestamp 型、fixed header decode、`AuthRequest` / `Heartbeat` / `VideoFrame` payload decode、`AuthResponse` / `HeartbeatAck` / `VideoFrame` encode は完了
 - `crates/config` の server auth 設定 TOML 読み込み最小実装は完了
 - `crates/net-core` の inbound decode 境界、outbound packet / queue 境界、outbound queue lifecycle 境界、protocol encoder 呼び出し境界、send error / log event 分類 placeholder、UDP socket 1 datagram receive / send adapter は完了
-- `apps/server` の inbound router、UDP receive loop step、UDP socket adapter 接続、receive loop から packet acceptance gate への接続境界、packet acceptance rejection の drop / log handoff 境界、receive rejection JSON Lines event schema 境界、auth handler boundary、auth config input boundary、server auth decision 最小実装、auth success / failure log handoff 境界、auth JSON Lines event schema 境界、auth flow step、認証済み送信元 registry 境界、packet acceptance gate 境界、AuthResponse response boundary、HeartbeatAck ack boundary、outbound queue handoff は完了
+- `apps/server` の inbound router、UDP receive loop step、UDP socket adapter 接続、auth response PoC one-shot 起動接続、receive loop から packet acceptance gate への接続境界、packet acceptance rejection の drop / log handoff 境界、receive rejection JSON Lines event schema 境界、auth handler boundary、auth config input boundary、server auth decision 最小実装、auth success / failure log handoff 境界、auth JSON Lines event schema 境界、auth flow step、認証済み送信元 registry 境界、packet acceptance gate 境界、AuthResponse response boundary、HeartbeatAck ack boundary、outbound queue handoff は完了
 - secret 解決、認証済み送信元の timeout / 失効 / 再認証、実際の packet 破棄 / ログ出力、`ClientStats` / `ServerNotice` など残り message の encode 本実装、時刻同期本体、映像受信・復号・表示、switcher UI は未実装
-- 次の中心は secret 解決、receive rejection ログ出力本実装、UDP socket を auth response PoC の起動処理へ接続
+- 次の中心は secret 解決、receive rejection ログ出力本実装、auth response PoC の起動設定接続
 
 ---
 
@@ -70,7 +75,7 @@
 ## 直近でやること
 1. secret 解決方式と token 保護方針を設計する
 2. receive rejection ログ出力本実装を行う
-3. UDP socket を auth response PoC の起動処理へ接続する
+3. auth response PoC の起動設定接続を行う
 4. outbound queue の実処理範囲と backpressure 方針を実装前に詰める
 5. `ClientStats` / `ServerNotice` の payload layout と decode / encode 方針を決める
 
@@ -108,6 +113,7 @@
 - [x] receive rejection の JSON Lines ログイベント仕様を整理する
 - [x] UDP socket 受信 / 送信本体の最小実装を追加する
 - [x] `VideoFrame` encode 方針と最小実装範囲を整理する
+- [x] UDP socket を auth response PoC の起動処理へ最小接続する
 - [ ] 状態遷移を詳細化する
 - [ ] 異常時の挙動を実装レベルに落とす
 - [ ] ログイベント仕様を詳細化する
@@ -171,6 +177,7 @@
 - [x] bind 済み UDP socket から 1 packet を受信する最小処理を追加する
 - [x] encode 済み bytes と destination を UDP socket へ送信する最小処理を追加する
 - [x] `ServerUdpSocketIoStep` で受信 packet を receive loop / gate 境界へ渡す
+- [x] `ServerAuthResponsePocStep` で UDP socket から auth response send までを 1 回分接続する
 - [ ] packet 受信継続 loop を実装する
 - [ ] packet 送信継続 loop を実装する
 - [ ] receive loop のログ出力を実装する
@@ -198,6 +205,7 @@
 - [x] `UnknownClient` / `InvalidToken` / `InternalError` の最小 rejected reason を返す
 - [x] `ServerAuthFlowStep` で `ServerAuthCheckInput` -> `ServerAuthDecision` -> `ServerOutboundAuthResponse` -> `OutboundQueueItem` を接続する
 - [x] server 設定 TOML から client whitelist / token 情報を読み込む
+- [x] UDP socket から `AuthRequest` を 1 packet 受信し、`AuthResponse` を 1 packet 返す PoC 接続を追加する
 - [x] client whitelist 読み込みを実装する
 - [x] 認証済み送信元の登録 / 管理境界を設計する
 - [x] accepted auth decision から registry registration への handoff を追加する
@@ -387,6 +395,7 @@
 - [x] `VideoFrame` encode
 - [x] client whitelist / token 検証の設定入力境界整理
 - [x] UDP receive / send 最小実装
+- [x] UDP socket を auth response PoC の起動処理へ最小接続
 - [x] server auth decision 最小実装
 - [x] auth decision から AuthResponse outbound queue handoff までの server step 接続
 - [x] send error / log event 方針整理

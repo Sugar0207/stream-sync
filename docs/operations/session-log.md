@@ -5,6 +5,61 @@
 - Codex
 
 ### 今回の作業
+- UDP socket を auth response PoC の起動処理へ最小接続した。
+- `apps/server` に `ServerAuthResponsePocStep` / `ServerAuthResponsePocOutcome` / `ServerAuthResponsePocError` を追加した。
+- 1 packet の UDP receive から receive loop / decode / gate / auth flow / outbound queue handoff / protocol encode / UDP send までを接続した。
+- accepted auth decision の registry registration handoff を、既存の in-memory registry 境界へ反映できるようにした。
+- UDP socket を使う最小テストで、`AuthRequest` を受けて encoded `AuthResponse` が返ることを確認する構造を追加した。
+- docs に auth response PoC one-shot 起動フローと責務分離を追記した。
+
+### 変更ファイル
+- `apps/server/src/lib.rs`
+- `docs/architecture/system-design.md`
+- `docs/architecture/protocol.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### 決定事項
+- auth response PoC 起動処理は同期 `UdpSocket` の 1 datagram receive / 1 datagram send に限定する。
+- receive 側は既存の `ServerUdpSocketIoStep::receive_one_with_gate` を使い、accepted `AuthRequest` だけを auth flow へ渡す。
+- send 側は `ServerAuthFlowStep` の `OutboundQueueItem` を `OutboundPacketEncoderBoundary` と `ProtocolMessageEncoderBoundary` で encode してから socket send へ渡す。
+- 継続 loop、async runtime、retry、fragmentation、encryption、JSON Lines 出力、heartbeat / video frame handler は今回の範囲外とする。
+
+### 未解決事項
+- server 起動設定から socket bind / config 読み込み / PoC step 呼び出しを行う処理
+- 継続 receive / send loop
+- receive rejection / auth / send の JSON Lines 出力本実装
+- secret 解決本実装
+- heartbeat / video frame 処理本体
+
+### 次にやる候補
+- auth response PoC の起動設定接続を行う
+- secret 解決方式と token 保護方針を設計する
+- receive rejection ログ出力本実装を行う
+
+### TODO更新
+- 完了:
+  - UDP socket を auth response PoC の起動処理へ最小接続する
+  - `ServerAuthResponsePocStep` 追加
+  - receive -> auth flow -> outbound queue -> encoder -> socket send の 1 回分接続
+- 追加:
+  - auth response PoC の起動設定接続
+- 保留:
+  - 継続 loop / async runtime
+  - retry / fragmentation / encryption
+  - JSON Lines 出力本実装
+  - heartbeat / video frame 処理本体
+
+### メモ
+- auth response PoC 接続の責務は、既存境界を合成して 1 packet の `AuthRequest` に対する encoded `AuthResponse` を同じ UDP socket から 1 回返すところまで。
+
+---
+
+## 2026-04-18
+### 種別
+- Codex
+
+### 今回の作業
 - `VideoFrame` encode 方針と最小実装範囲を整理した。
 - `docs/architecture/protocol.md` に metadata encode 順、`payload_size` の決め方、H.264 bytes をそのまま載せる方針、fixed header + payload bytes の組み立て方を追記した。
 - `crates/protocol` に `encode_video_frame` / `encode_video_frame_payload` を追加し、`ProtocolMessageEncoderBoundary` から `ProtocolMessage::VideoFrame` を encode できるようにした。

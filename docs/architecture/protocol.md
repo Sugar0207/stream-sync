@@ -1273,6 +1273,40 @@ Current implementation: `apps/server::ServerAuthFlowStep` and
 
 ---
 
+### AuthResponse PoC Socket Startup Boundary
+
+The auth response PoC startup path connects the existing receive and send
+boundaries for one packet. It proves the minimal round trip without introducing
+a continuous loop or async runtime.
+
+Flow:
+
+1. A bound synchronous UDP socket receives one datagram.
+2. The received bytes and source endpoint pass through receive loop -> decode
+   -> packet acceptance gate.
+3. An accepted `AuthRequest` route is passed to `ServerAuthFlowStep`.
+4. The auth flow produces `ServerAuthDecision`, auth log handoff input,
+   optional authenticated-sender registration, typed `AuthResponse`, and
+   `OutboundQueueItem`.
+5. The outbound queue handoff item is passed to `OutboundPacketEncoderBoundary`.
+6. `ProtocolMessageEncoderBoundary` encodes `ProtocolMessage::AuthResponse`
+   into fixed header + payload bytes.
+7. The UDP socket adapter sends the encoded datagram to the request source.
+
+The boundary keeps responsibilities unchanged:
+
+- `protocol` owns wire encode / decode only.
+- `net-core` owns inbound packet decode, outbound encode handoff, and encoded
+  packet shape.
+- `apps/server` owns the one-shot PoC composition and auth decision flow.
+- socket I/O owns one `recv_from` and one `send_to`.
+
+Current implementation: `apps/server::ServerAuthResponsePocStep`. It does not
+run heartbeat / video frame handlers, JSON Lines output, retry, fragmentation,
+encryption, or a long-running receive loop.
+
+---
+
 ### Authenticated Sender Registry Boundary
 
 After an accepted auth decision, the server needs a separate boundary for

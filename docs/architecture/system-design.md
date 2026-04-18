@@ -305,6 +305,55 @@ Current code reflects this with `net-core::UdpSocketIoBoundary`,
 async runtime integration, retry, fragmentation, encryption, queue runtime,
 packet drop execution, and JSON Lines log output remain unimplemented.
 
+### 5.7 AuthResponse PoC one-shot startup step
+
+AuthResponse PoC startup uses the existing boundaries as a one-packet
+connection path. It is not a long-running server loop.
+
+Flow:
+
+1. A caller owns a bound synchronous `UdpSocket`, a receive buffer,
+   `ServerAuthConfig`, and an in-memory `AuthenticatedSenderRegistry`.
+2. `ServerAuthResponsePocStep::run_one` calls
+   `ServerUdpSocketIoStep::receive_one_with_gate`.
+3. The receive side performs socket receive -> receive loop -> fixed header
+   decode -> payload decode -> packet acceptance gate.
+4. Only an accepted `AuthRequest` route continues to `ServerAuthFlowStep`.
+5. `ServerAuthFlowStep` prepares auth input, runs the minimal auth decision,
+   creates typed `AuthResponse`, and hands it to `ServerOutboundQueueBoundary`
+   as `OutboundQueueItem`.
+6. Accepted decisions may register the source in the in-memory authenticated
+   sender registry through the existing registry boundary.
+7. `OutboundPacketEncoderBoundary` prepares the encode request and calls
+   `ProtocolMessageEncoderBoundary`.
+8. The encoded `AuthResponse` bytes and destination are passed to
+   `ServerUdpSocketIoStep::send_encoded`, which performs one `send_to`.
+
+Responsibility split:
+
+- auth response PoC step
+  - Composes existing receive, auth, queue handoff, encode, and socket send
+    boundaries for one packet.
+  - Does not own auth policy, queue runtime, retry, fragmentation, encryption,
+    JSON Lines output, heartbeat handling, or video frame handling.
+- receive loop / gate
+  - Produces an accepted route or typed rejection.
+  - Does not execute the auth decision.
+- auth flow
+  - Produces `ServerAuthDecision`, auth log handoff input, registry
+    registration handoff, `AuthResponse`, and `OutboundQueueItem`.
+  - Does not encode or send bytes.
+- net send / protocol encoder
+  - Converts the queued typed `AuthResponse` into fixed header + payload bytes.
+- socket send
+  - Sends the already encoded datagram once.
+
+Current code reflects this with `apps/server::ServerAuthResponsePocStep`,
+`ServerAuthResponsePocOutcome`, and `ServerAuthResponsePocError`. Continuous
+looping, async runtime integration, real queue scheduling, retry,
+fragmentation, encryption, JSON Lines output, heartbeat handling, and video
+frame handling remain unimplemented.
+
 ---
 
 ## 6. 同期の考え方

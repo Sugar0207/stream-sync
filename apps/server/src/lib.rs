@@ -2,13 +2,13 @@ use std::{collections::BTreeMap, io, net::UdpSocket};
 use stream_sync_config::{ServerAuthConfig, SharedTokenSecretRef};
 use stream_sync_net_core::{
     DecodedInboundPacket, EncodedOutboundPacket, InboundPacket, InboundPacketDecoder,
-    NetDecodeError, OutboundPacket, OutboundPacketQueueBoundary, OutboundQueueItem, PacketSource,
-    UdpSocketIoBoundary,
+    NetDecodeError, NetEncodeError, OutboundPacket, OutboundPacketEncoderBoundary,
+    OutboundPacketQueueBoundary, OutboundQueueItem, PacketSource, UdpSocketIoBoundary,
 };
 use stream_sync_protocol::{
     AppVersion, AuthRequest, AuthResponse, AuthResponseReasonCode, ClientId, Heartbeat,
-    HeartbeatAck, MessageType, ProtocolError, ProtocolMessage, ProtocolVersion, RunId,
-    TimestampMicros, VideoFrame,
+    HeartbeatAck, MessageType, ProtocolError, ProtocolMessage, ProtocolMessageEncoderBoundary,
+    ProtocolVersion, RunId, TimestampMicros, VideoFrame,
 };
 
 /// One-packet receive loop boundary for the future UDP server.
@@ -125,6 +125,94 @@ impl ServerUdpSocketIoStep {
     ) -> io::Result<usize> {
         self.socket_io.send_encoded(socket, packet)
     }
+}
+
+/// One-shot auth response PoC connection from UDP receive to UDP send.
+///
+/// This composes the existing receive, auth flow, outbound queue handoff,
+/// protocol encode, and socket send boundaries for one packet. It does not run
+/// a continuous loop, spawn async tasks, write JSON Lines logs, retry, fragment,
+/// encrypt, or handle heartbeat / video frame routes.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct ServerAuthResponsePocStep {
+    socket_io: ServerUdpSocketIoStep,
+    auth_flow: ServerAuthFlowStep,
+    sender_registry: AuthenticatedSenderRegistryBoundary,
+    outbound_encoder: OutboundPacketEncoderBoundary,
+    protocol_encoder: ProtocolMessageEncoderBoundary,
+}
+
+impl ServerAuthResponsePocStep {
+    pub fn run_one(
+        &self,
+        socket: &UdpSocket,
+        buffer: &mut [u8],
+        expected_protocol_version: ProtocolVersion,
+        config: &ServerAuthConfig,
+        registry: &mut AuthenticatedSenderRegistry,
+    ) -> Result<ServerAuthResponsePocOutcome, ServerAuthResponsePocError> {
+        let receive_outcome = self
+            .socket_io
+            .receive_one_with_gate(socket, buffer, expected_protocol_version, registry)
+            .map_err(|error| ServerAuthResponsePocError::Receive(error.kind()))?;
+
+        let route = match receive_outcome {
+            ServerReceiveLoopGateOutcome::Accepted(route) => route,
+            ServerReceiveLoopGateOutcome::Rejected(rejection) => {
+                return Err(ServerAuthResponsePocError::Rejected(rejection));
+            }
+        };
+
+        let auth_flow = self
+            .auth_flow
+            .handle_auth_route(route, config)
+            .map_err(ServerAuthResponsePocError::Auth)?;
+        let registered_sender = auth_flow
+            .registry_registration
+            .clone()
+            .map(|registration| self.sender_registry.register(registry, registration));
+
+        let encode_request = self.outbound_encoder.prepare_encode(
+            stream_sync_protocol::EncodeContext {
+                protocol_version: expected_protocol_version,
+            },
+            auth_flow.queue_item.clone(),
+        );
+        let encoded_packet = self
+            .outbound_encoder
+            .encode_with(&self.protocol_encoder, encode_request)
+            .map_err(ServerAuthResponsePocError::Encode)?;
+        let bytes_sent = self
+            .socket_io
+            .send_encoded(socket, &encoded_packet)
+            .map_err(|error| ServerAuthResponsePocError::Send(error.kind()))?;
+
+        Ok(ServerAuthResponsePocOutcome {
+            auth_flow,
+            registered_sender,
+            encoded_packet,
+            bytes_sent,
+        })
+    }
+}
+
+/// Result of one auth response PoC receive/process/send step.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ServerAuthResponsePocOutcome {
+    pub auth_flow: ServerAuthFlowOutcome,
+    pub registered_sender: Option<AuthenticatedSenderEntry>,
+    pub encoded_packet: EncodedOutboundPacket,
+    pub bytes_sent: usize,
+}
+
+/// Error from one auth response PoC step.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ServerAuthResponsePocError {
+    Receive(io::ErrorKind),
+    Rejected(ServerReceiveLoopGateRejection),
+    Auth(ServerAuthBoundaryError),
+    Encode(NetEncodeError),
+    Send(io::ErrorKind),
 }
 
 /// Result of processing one already-received packet through the server boundary.
@@ -1247,9 +1335,10 @@ mod tests {
     use std::net::{SocketAddr, UdpSocket};
     use stream_sync_config::{AllowedClientConfig, SharedTokenConfig};
     use stream_sync_protocol::{
-        AppVersion, ClientId, Codec, ProtocolVersion, RunId, TimestampMicros, FIXED_HEADER_LEN,
-        HEADER_FLAGS_OFFSET, HEADER_LENGTH_OFFSET, HEADER_MESSAGE_TYPE_OFFSET,
-        HEADER_PAYLOAD_LENGTH_OFFSET, HEADER_PROTOCOL_VERSION_OFFSET, HEADER_RESERVED_OFFSET,
+        decode_fixed_header, encode_auth_response_payload, AppVersion, ClientId, Codec,
+        ProtocolVersion, RunId, TimestampMicros, FIXED_HEADER_LEN, HEADER_FLAGS_OFFSET,
+        HEADER_LENGTH_OFFSET, HEADER_MESSAGE_TYPE_OFFSET, HEADER_PAYLOAD_LENGTH_OFFSET,
+        HEADER_PROTOCOL_VERSION_OFFSET, HEADER_RESERVED_OFFSET,
     };
 
     #[test]
@@ -1458,6 +1547,65 @@ mod tests {
             sender.local_addr().expect("sender should have address")
         );
         assert_eq!(&buffer[..received_len], packet.bytes.as_slice());
+    }
+
+    #[test]
+    fn auth_response_poc_receives_auth_request_and_sends_auth_response() {
+        let server_socket = UdpSocket::bind("127.0.0.1:0").expect("server socket should bind");
+        let client_socket = UdpSocket::bind("127.0.0.1:0").expect("client socket should bind");
+        client_socket
+            .set_read_timeout(Some(std::time::Duration::from_secs(1)))
+            .expect("client read timeout should be set");
+        let server_address = server_socket
+            .local_addr()
+            .expect("server socket should have address");
+        let auth_packet = auth_request_packet("client-1", "presented-secret");
+        client_socket
+            .send_to(auth_packet.as_slice(), server_address)
+            .expect("auth request should send");
+        let mut receive_buffer = vec![0_u8; 1024];
+        let mut registry = AuthenticatedSenderRegistry::default();
+        let config = auth_config(Some("presented-secret"));
+        let step = ServerAuthResponsePocStep::default();
+
+        let outcome = step
+            .run_one(
+                &server_socket,
+                &mut receive_buffer,
+                ProtocolVersion(2),
+                &config,
+                &mut registry,
+            )
+            .expect("auth response PoC step should complete");
+
+        assert!(outcome.auth_flow.decision.accepted);
+        assert_eq!(
+            outcome.auth_flow.decision.reason_code,
+            AuthResponseReasonCode::Ok
+        );
+        assert!(outcome.registered_sender.is_some());
+        assert!(registry.get(&ClientId("client-1".to_string())).is_some());
+        assert_eq!(outcome.bytes_sent, outcome.encoded_packet.bytes.len());
+
+        let mut response_buffer = vec![0_u8; 1024];
+        let (response_len, _source) = client_socket
+            .recv_from(&mut response_buffer)
+            .expect("auth response should receive");
+        let decoded = decode_fixed_header(&response_buffer[..response_len])
+            .expect("auth response fixed header should decode");
+        assert_eq!(decoded.header.message_type, MessageType::AuthResponse);
+        assert_eq!(decoded.header.protocol_version, ProtocolVersion(2));
+
+        let auth_response = outcome
+            .auth_flow
+            .outbound_response
+            .auth_response()
+            .expect("outbound response should carry AuthResponse");
+        let mut expected_payload = Vec::new();
+        encode_auth_response_payload(auth_response, &mut expected_payload)
+            .expect("expected auth response payload should encode");
+        assert_eq!(decoded.header.payload_length, expected_payload.len() as u32);
+        assert_eq!(decoded.payload, expected_payload.as_slice());
     }
 
     #[test]
@@ -2536,6 +2684,21 @@ mod tests {
             capabilities: Vec::new(),
             requested_video_profile: None,
         }
+    }
+
+    fn auth_request_packet(client_id: &str, shared_token: &str) -> Vec<u8> {
+        let mut payload = Vec::new();
+        push_string(&mut payload, client_id);
+        push_string(&mut payload, "run-1");
+        push_string(&mut payload, "0.1.0");
+        push_string(&mut payload, shared_token);
+        payload.push(0);
+        test_packet(
+            MessageType::AuthRequest as u16,
+            FIXED_HEADER_LEN,
+            2,
+            &payload,
+        )
     }
 
     fn auth_config(configured_token: Option<&str>) -> ServerAuthConfig {
