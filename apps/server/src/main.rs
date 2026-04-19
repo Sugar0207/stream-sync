@@ -7,6 +7,15 @@ fn main() {
                 .unwrap_or_else(|| "configs/examples/server.example.toml".to_string());
             match stream_sync_server::run_auth_response_poc_once_from_path(&config_path) {
                 Ok(outcome) => {
+                    let log_boundary = stream_sync_server::ServerAuthLogOutputBoundary::default();
+                    if let Err(log_error) = log_boundary.write_auth_result(
+                        outcome.outcome.auth_flow.auth_log_input.clone(),
+                        current_timestamp_micros(),
+                        std::io::stderr().lock(),
+                    ) {
+                        eprintln!("auth result log output failed: {log_error:?}");
+                    }
+
                     let decision = &outcome.outcome.auth_flow.decision;
                     println!(
                         "auth response PoC handled one packet on {} and sent {} bytes; client_id={} run_id={} accepted={} reason_code={:?}",

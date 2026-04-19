@@ -379,6 +379,8 @@ Flow:
 8. The launcher calls `ServerAuthResponsePocStep::run_one`.
 9. `run_one` waits for one packet, handles one accepted `AuthRequest`, encodes
    one `AuthResponse`, and sends one UDP datagram back to the request source.
+10. The one-shot CLI writes the resulting auth success / failure event to
+    stderr through `ServerAuthLogOutputBoundary`.
 
 Responsibility split:
 
@@ -396,6 +398,10 @@ Responsibility split:
 - binary entry
   - Exposes the launcher through an explicit `--auth-response-poc-once`
     command-line flag.
+  - Owns the PoC default auth result log sink: one JSON Lines event to stderr
+    after a decision exists.
+  - Does not configure file sinks, rotation, retention, async logging, or
+    process-wide logging.
 
 Current code reflects this with `apps/server::ServerAuthResponsePocLauncher`,
 `ServerAuthResponsePocStartupConfig`,
@@ -970,10 +976,11 @@ Responsibility split:
 
 Current code reflects this with `apps/server::ServerAuthJsonLogEventBoundary`
 and `ServerAuthJsonLogEventInput`. Minimal JSON Lines output is available
-through `ServerAuthLogOutputBoundary` and `ServerAuthJsonLineWriter`, but the
-server CLI does not emit auth result logs yet. This keeps auth result output
-available to the next writer connection step without expanding into a general
-logging framework.
+through `ServerAuthLogOutputBoundary` and `ServerAuthJsonLineWriter`. The
+one-shot server CLI emits auth result logs to stderr after
+`ServerAuthResponsePocStep` returns a decision. This is the current default sink
+for the one-shot path only; a future continuous loop should call the same
+boundary at its auth decision point without changing the event schema.
 
 ---
 
@@ -990,7 +997,8 @@ Current connection scope:
   - Event schema: `ServerAuthJsonLogEventInput`
   - Writer boundary: `ServerAuthLogOutputBoundary`
   - Writer: `ServerAuthJsonLineWriter`
-  - Current sink: none wired by default; the boundary can write to any
+  - Current sink: one-shot server CLI writes auth result events to stderr after
+    `AuthResponse` handling completes; the boundary can also write to any
     caller-provided `io::Write`.
 - receive rejection
   - Handoff: `ServerPacketLogInput`
@@ -1008,6 +1016,7 @@ Out of scope for this stage:
 - async logging
 - metrics fanout
 - joining auth and receive events into a generic logging crate API
+- moving auth result output into a continuous loop sink before that loop exists
 
 This keeps both log families aligned without forcing a broad logging
 infrastructure before the PoC receive/auth path is stable.

@@ -1318,10 +1318,11 @@ Responsibility split:
 
 Current implementation: `apps/server::ServerAuthJsonLogEventBoundary` and
 `ServerAuthJsonLogEventInput`. `ServerAuthLogOutputBoundary` connects that
-event schema to `ServerAuthJsonLineWriter`. The boundary is available for the
-next server writer connection step, but the one-shot server CLI does not emit
-auth result JSON Lines by default yet. File rotation, configured sinks, async
-logging, and metrics updates remain future work.
+event schema to `ServerAuthJsonLineWriter`. The one-shot server CLI emits auth
+result JSON Lines to stderr after the auth response PoC step returns an auth
+decision. A future continuous loop should use the same boundary at the auth
+decision point, but file rotation, configured sinks, async logging, and metrics
+updates remain future work.
 
 Example shape:
 
@@ -1335,12 +1336,15 @@ Auth result and receive rejection logs use parallel connection boundaries:
 
 | Log family | Handoff input | Event schema input | Writer boundary | Current default sink |
 | --- | --- | --- | --- | --- |
-| Auth result | `ServerAuthLogInput` | `ServerAuthJsonLogEventInput` | `ServerAuthLogOutputBoundary` | None yet |
+| Auth result | `ServerAuthLogInput` | `ServerAuthJsonLogEventInput` | `ServerAuthLogOutputBoundary` | one-shot server stderr |
 | Receive rejection | `ServerPacketLogInput` | `ServerReceiveRejectionJsonLogEventInput` | `ServerReceiveRejectionLogOutputBoundary` | one-shot server stderr |
 
 Both writers are schema-specific and synchronous over caller-owned
 `io::Write`. They do not define process-wide logger setup, file paths, rotation,
 retention, async logging, metrics fanout, or a generic logging crate API.
+The future receive loop should call the auth writer at the same logical point:
+after auth decision creation and before/around response handoff, without
+changing the JSON Lines schema.
 
 ### Connected Server Auth Flow Step
 

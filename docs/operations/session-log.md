@@ -5,6 +5,58 @@
 - Codex
 
 ### 今回の作業
+- auth result writer の有効化位置を、one-shot auth response PoC CLI の auth decision 後に決めた。
+- `apps/server/src/main.rs` で `ServerAuthLogOutputBoundary` を呼び、auth success / failure を stderr へ JSON Lines 1 行として出すようにした。
+- future loop は同じ writer boundary を auth decision point で呼ぶ方針に留め、file sink / rotation / async logging / 汎用 logging 基盤は未実装に残した。
+- `docs/architecture/system-design.md` と `docs/architecture/protocol.md` に current sink と future loop の接続位置を反映した。
+
+### 変更ファイル
+- `apps/server/src/main.rs`
+- `docs/architecture/system-design.md`
+- `docs/architecture/protocol.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### 決定事項
+- one-shot path の auth result log は stderr に出す。
+- 出力タイミングは `ServerAuthResponsePocStep` が auth decision と auth log handoff input を返した後にする。
+- receive rejection log と同じく、PoC CLI の観測用 sink として扱い、file sink や process-wide logger は作らない。
+- future continuous loop は auth decision 作成直後に同じ `ServerAuthLogOutputBoundary` を呼ぶ。
+
+### 未解決事項
+- secret resolver 本実装
+- heartbeat / video frame handler へ accepted route を渡す接続
+- auth / receive JSON Lines の file sink 設定方針
+- log rotation / retention / buffering
+
+### 次にやる候補
+- secret resolver 本実装を行う
+- heartbeat / video frame handler へ registered packet を渡す接続方針を整理する
+- auth / receive JSON Lines の file sink 設定方針を整理する
+
+### TODO更新
+- 完了:
+  - auth result writer の one-shot CLI stderr 接続判断
+  - one-shot auth response PoC の auth result JSON Lines stderr 出力
+  - future loop の writer 呼び出し位置の docs 整理
+- 追加:
+  - auth / receive JSON Lines の file sink 設定方針
+- 保留:
+  - secret resolver 本実装
+  - heartbeat / video frame 処理本体
+  - async runtime
+  - 大規模 logging 基盤
+
+### メモ
+- `cargo fmt --check` と `cargo check --workspace` が通ることを確認した。
+
+---
+
+## 2026-04-19
+### 種別
+- Codex
+
+### 今回の作業
 - 認証済み送信元登録の実処理を auth accepted path へ接続済みであることを確認し、責務を docs に反映した。
 - `ServerAuthResponsePocStep` の責務コメントを、accepted registration を registry に適用する現在の実装に合わせた。
 - accepted auth flow の `AuthenticatedSenderRegistration` を in-memory registry に登録し、後続 `PacketAcceptanceGateBoundary` が同一 client/source の `Heartbeat` を accepted にする最小テストを追加した。

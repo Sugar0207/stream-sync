@@ -3,6 +3,12 @@
 # StreamSync TODO
 
 ## 2026-04-19 Codex update
+- [x] auth result writer の有効化位置を one-shot CLI stderr として決める
+- [x] one-shot auth response PoC の auth decision 後に `ServerAuthLogOutputBoundary` を接続する
+- [x] future loop は同じ writer boundary を auth decision point で呼ぶ方針として docs に残す
+- 次の中心: secret resolver 本実装、heartbeat / video frame handler 接続方針、auth log file sink 方針
+
+## 2026-04-19 Codex update
 - [x] 認証済み送信元登録の実処理を auth accepted path へ接続済みであることを明示する
 - [x] accepted auth flow registration が in-memory registry を更新し、後続 gate が accepted にできる最小テストを追加する
 - [x] registry 登録の実処理範囲を architecture docs に反映する
@@ -109,13 +115,13 @@
 - `crates/config` の server auth 設定 TOML 読み込み最小実装は完了
 - `crates/config` の `shared_token` / `shared_token_env` token reference 読み分けと inline secret debug redaction は完了
 - `crates/net-core` の inbound decode 境界、outbound packet / queue 境界、outbound queue lifecycle 境界、protocol encoder 呼び出し境界、send error / log event 分類 placeholder、UDP socket 1 datagram receive / send adapter は完了
-- `apps/server` の inbound router、UDP receive loop step、UDP socket adapter 接続、auth response PoC one-shot 起動接続、auth response PoC 起動設定接続、receive loop から packet acceptance gate への接続境界、packet acceptance rejection の drop / log handoff 境界、receive rejection JSON Lines event schema 境界、receive rejection stderr JSON Lines 最小出力、auth handler boundary、auth config input boundary、server auth decision 最小実装、auth success / failure log handoff 境界、auth JSON Lines event schema 境界、auth flow step、認証済み送信元 registry 境界、packet acceptance gate 境界、AuthResponse response boundary、HeartbeatAck ack boundary、outbound queue handoff は完了
+- `apps/server` の inbound router、UDP receive loop step、UDP socket adapter 接続、auth response PoC one-shot 起動接続、auth response PoC 起動設定接続、receive loop から packet acceptance gate への接続境界、packet acceptance rejection の drop / log handoff 境界、receive rejection JSON Lines event schema 境界、receive rejection stderr JSON Lines 最小出力、auth handler boundary、auth config input boundary、server auth decision 最小実装、auth success / failure log handoff 境界、auth JSON Lines event schema 境界、auth result stderr JSON Lines 最小出力、auth flow step、認証済み送信元 registry 境界、packet acceptance gate 境界、AuthResponse response boundary、HeartbeatAck ack boundary、outbound queue handoff は完了
 - accepted auth path で `AuthenticatedSenderRegistry` へ in-memory 登録する実処理は完了
 - `apps/client` の client 設定読み込み、AuthRequest 構築、protocol encoder、UDP one-shot send の PoC 入口は完了
 - server / client one-shot auth round trip の手動確認手順と accepted path 用 helper config は完了
 - accepted path の手動確認は成功し、`configs/examples/server.example.toml` と `configs/examples/client.accepted.example.toml` の組み合わせで `accepted=true`, `reason_code=Ok` を観測済み
 - secret resolver 本実装、認証済み送信元の timeout / 失効 / 再認証、実際の packet 破棄、`ClientStats` / `ServerNotice` など残り message の encode 本実装、時刻同期本体、映像受信・復号・表示、switcher UI は未実装
-- 次の中心は auth result writer の CLI 接続判断、secret resolver 本実装、heartbeat / video frame handler 接続方針
+- 次の中心は secret resolver 本実装、heartbeat / video frame handler 接続方針、auth log file sink 方針
 
 ---
 
@@ -145,9 +151,9 @@
 ---
 
 ## 直近でやること
-1. auth result writer を one-shot / future loop のどこで有効化するか決める
-2. secret resolver 本実装を行う
-3. heartbeat / video frame handler へ registered packet を渡す接続方針を整理する
+1. secret resolver 本実装を行う
+2. heartbeat / video frame handler へ registered packet を渡す接続方針を整理する
+3. auth / receive JSON Lines の file sink 設定方針を整理する
 4. outbound queue の実処理範囲と backpressure 方針を実装前に詰める
 5. `ClientStats` / `ServerNotice` の payload layout と decode / encode 方針を決める
 
@@ -171,6 +177,7 @@
 - [x] client whitelist 読み込みと token 検証の設定入力境界を整理する
 - [x] auth success / failure ログ出力境界を整理する
 - [x] auth success / failure の JSON Lines ログイベント仕様を整理する
+- [x] auth result writer を one-shot server stderr へ接続する
 - [x] auth decision から `AuthResponse` outbound queue handoff までの server step を整理する
 - [x] 認証済み送信元の登録 / 管理境界を整理する
 - [x] accepted auth path で認証済み送信元を in-memory registry へ登録する
@@ -286,6 +293,7 @@
 - [x] `ServerAuthLogHandoffBoundary` / `ServerAuthLogInput` placeholder を追加する
 - [x] `ServerAuthJsonLogEventBoundary` / `ServerAuthJsonLogEventInput` placeholder を追加する
 - [x] `ServerAuthLogOutputBoundary` / auth result JSON Lines writer を追加する
+- [x] one-shot auth response PoC の auth result JSON Lines stderr 出力を追加する
 - [x] 認証判定入力として `shared_token` / `client_id` / `protocol_version` / `app_version` を参照できる形を定義する
 - [x] client whitelist / token 情報を認証判定入力へ変換する設定入力境界を定義する
 - [x] server auth decision の最小実装を追加する
