@@ -838,17 +838,35 @@ client が定期送信する状態メッセージ。
 - client_id
 - run_id
 - sent_at
+- capture_fps
+- dropped_frames
+- bitrate_kbps
 
 #### 任意フィールド
-- capture_fps
 - encode_fps
 - send_fps
-- dropped_frames
 - encoder_name
-- bitrate_kbps
 - cpu_usage
 - gpu_usage
 - queue_depth
+- heartbeat observation block
+
+#### Payload byte layout
+
+fixed header の `message_type = ClientStats` の後続 payload は以下の順序
+とする方針にする。今回の code はこの layout plan を持つが、payload
+encode / decode 本実装はまだ行わない。
+
+| Order | Field | Type | Notes |
+| --- | --- | --- | --- |
+| 1 | `client_id` | `string` | `u16 byte_length` + UTF-8 bytes。 |
+| 2 | `run_id` | `string` | `u16 byte_length` + UTF-8 bytes。 |
+| 3 | `sent_at` | `u64` | little-endian。client clock domain。stats sample 作成時刻。 |
+| 4 | `capture_fps` | `u32` | little-endian。PoC/MVP 初期の最小 stats。 |
+| 5 | `dropped_frames` | `u64` | little-endian。client 側累積 drop 数。 |
+| 6 | `bitrate_kbps` | `u32` | little-endian。直近または設定上の送信 bitrate。 |
+| 7 | `heartbeat_observation_present` | `u8` | `0` = absent, `1` = observation block follows。 |
+| 8 | `heartbeat_observation` | optional block | present = `1` の場合だけ下記 block を続ける。 |
 
 #### 備考
 - MVP では必須項目を絞ってよい
@@ -863,20 +881,36 @@ client が定期送信する状態メッセージ。
 calculator へ戻すための carrier であり、継続 heartbeat loop や smoothing
 本体ではない。
 
-将来の `ClientStats` payload では、既存の最小 stats fields の後ろに以下を
-置く方針とする。
+`heartbeat_observation_present = 1` の場合、`ClientStats` payload では
+最小 stats fields の後ろに以下を置く方針とする。
 
 | Order | Field | Type | Notes |
 | --- | --- | --- | --- |
-| 1 | `heartbeat_observation_present` | `u8` | `0` = absent, `1` = following observation fields are present. |
-| 2 | `echoed_sent_at` | `u64` | little-endian。client clock domain。 |
-| 3 | `server_received_at` | `u64` | little-endian。server clock domain。 |
-| 4 | `server_sent_at` | `u64` | little-endian。server clock domain。 |
-| 5 | `client_received_at` | `u64` | little-endian。client clock domain。 |
+| 1 | `echoed_sent_at` | `u64` | little-endian。client clock domain。 |
+| 2 | `server_received_at` | `u64` | little-endian。server clock domain。 |
+| 3 | `server_sent_at` | `u64` | little-endian。server clock domain。 |
+| 4 | `client_received_at` | `u64` | little-endian。client clock domain。 |
 
 `client_id` と `run_id` は `ClientStats` の共通 field を使う。server は
 `client_id`, `run_id`, `echoed_sent_at`, `server_received_at`,
 `server_sent_at` を stored timebase plan と照合してから calculator に渡す。
+
+Encode / decode 方針:
+
+- encode
+  - `ClientStats` 共通 fields を上記順序で書く。
+  - `heartbeat_observation` が `Some` の場合は present = `1` とし、4 つの
+    timestamp を little-endian `u64` で続ける。
+  - `None` の場合は present = `0` のみを書き、observation block は書かない。
+- decode
+  - fixed header と `protocol_version` 確認後、共通 fields を読む。
+  - present が `0` なら observation は `None`。
+  - present が `1` なら 4 timestamp を読み、`client_id` / `run_id` と合わせて
+    `HeartbeatAckObservation` を作る。
+  - present が `0` / `1` 以外なら `InvalidOptionalTag` とする。
+- 現時点
+  - `ClientStatsPayloadPlanBoundary` が layout plan を返すだけで、
+    `ClientStats` payload encode / decode はまだ実装しない。
 
 ---
 
@@ -1859,6 +1893,11 @@ Current implementation: `crates/protocol::HeartbeatObservationCarrier` and
 `apps/client::ClientHeartbeatObservationCarrierBoundary`, and
 `apps/server::ServerHeartbeatObservationCarrierBoundary`. `ClientStats` payload
 encode/decode and continuous send/receive wiring remain future work.
+
+The current protocol code also defines `ClientStatsPayloadPlanBoundary` and
+payload length constants for the planned fixed numeric section and optional
+heartbeat observation block. These helpers prepare the wire implementation
+without enabling `ProtocolMessageEncoderBoundary` for `ClientStats` yet.
 
 ---
 

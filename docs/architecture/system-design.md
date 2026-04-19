@@ -1509,12 +1509,17 @@ Payload direction for the future `ClientStats` extension:
 
 | Order | Field | Type | Notes |
 | --- | --- | --- | --- |
-| 1 | existing `ClientStats` fields | existing layout | `client_id`, `run_id`, `sent_at`, and minimal stats fields. |
-| 2 | `heartbeat_observation_present` | `u8` | `0` = absent, `1` = observation block follows. |
-| 3 | `echoed_sent_at` | `u64 little-endian` | Client clock domain. Mirrors `HeartbeatAck.echoed_sent_at`. |
-| 4 | `server_received_at` | `u64 little-endian` | Server clock domain from `HeartbeatAck`. |
-| 5 | `server_sent_at` | `u64 little-endian` | Server clock domain from `HeartbeatAck`. |
-| 6 | `client_received_at` | `u64 little-endian` | Client clock domain captured at ack receive. |
+| 1 | `client_id` | string | ClientStats common field. |
+| 2 | `run_id` | string | ClientStats common field. |
+| 3 | `sent_at` | `u64 little-endian` | Client stats sample time in client clock domain. |
+| 4 | `capture_fps` | `u32 little-endian` | Minimal MVP stats field. |
+| 5 | `dropped_frames` | `u64 little-endian` | Minimal MVP stats field. |
+| 6 | `bitrate_kbps` | `u32 little-endian` | Minimal MVP stats field. |
+| 7 | `heartbeat_observation_present` | `u8` | `0` = absent, `1` = observation block follows. |
+| 8 | `echoed_sent_at` | optional `u64 little-endian` | Present only when observation flag is `1`. |
+| 9 | `server_received_at` | optional `u64 little-endian` | Present only when observation flag is `1`. |
+| 10 | `server_sent_at` | optional `u64 little-endian` | Present only when observation flag is `1`. |
+| 11 | `client_received_at` | optional `u64 little-endian` | Present only when observation flag is `1`. |
 
 Responsibility split:
 
@@ -1528,13 +1533,18 @@ Responsibility split:
   - Does not run receive loop, gate, smoothing, or state commit.
 - future `ClientStats` encode/decode
   - Owns the actual payload bytes for the optional observation block.
+  - Writes `heartbeat_observation_present = 0` when no ack observation is
+    available.
+  - Rejects presence tags other than `0` or `1` during decode.
 
 Current code reflects this with `protocol::HeartbeatObservationCarrier`,
 `protocol::HeartbeatObservationCarrierBoundary`,
 `apps/client::ClientHeartbeatObservationCarrierBoundary`, and
 `apps/server::ServerHeartbeatObservationCarrierBoundary`. The actual
 `ClientStats` payload encode/decode, UDP send/receive connection, and timebase
-state update remain future work.
+state update remain future work. `protocol::ClientStatsPayloadPlanBoundary`
+records the planned fixed numeric length and optional observation block length
+without writing or reading wire bytes.
 
 ---
 

@@ -65,6 +65,17 @@ pub const CODEC_H264_WIRE_VALUE: u16 = 1;
 /// the variable H.264 payload bytes.
 pub const VIDEO_FRAME_NUMERIC_METADATA_LEN: u16 = 46;
 
+/// Byte length of the fixed numeric part of the planned ClientStats payload.
+///
+/// This excludes length-prefixed `client_id`, length-prefixed `run_id`, and
+/// the optional heartbeat observation block. It includes:
+/// `sent_at`, `capture_fps`, `dropped_frames`, `bitrate_kbps`, and
+/// `heartbeat_observation_present`.
+pub const CLIENT_STATS_BASE_NUMERIC_PAYLOAD_LEN: u16 = 25;
+
+/// Byte length of the optional heartbeat observation block in ClientStats.
+pub const CLIENT_STATS_HEARTBEAT_OBSERVATION_BLOCK_LEN: u16 = 32;
+
 /// Decoded fixed packet header.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct FixedHeader {
@@ -1173,6 +1184,34 @@ pub struct ClientStats {
     pub capture_fps: u32,
     pub dropped_frames: u64,
     pub bitrate_kbps: u32,
+    pub heartbeat_observation: Option<HeartbeatAckObservation>,
+}
+
+/// Planned ClientStats payload shape.
+///
+/// This prepares the encode/decode contract without implementing wire bytes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct ClientStatsPayloadPlan {
+    pub base_numeric_payload_len: u16,
+    pub heartbeat_observation_present: bool,
+    pub heartbeat_observation_block_len: u16,
+}
+
+/// Boundary that exposes the planned ClientStats payload shape.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct ClientStatsPayloadPlanBoundary;
+
+impl ClientStatsPayloadPlanBoundary {
+    pub fn build_plan(&self, stats: &ClientStats) -> ClientStatsPayloadPlan {
+        ClientStatsPayloadPlan {
+            base_numeric_payload_len: CLIENT_STATS_BASE_NUMERIC_PAYLOAD_LEN,
+            heartbeat_observation_present: stats.heartbeat_observation.is_some(),
+            heartbeat_observation_block_len: match stats.heartbeat_observation {
+                Some(_) => CLIENT_STATS_HEARTBEAT_OBSERVATION_BLOCK_LEN,
+                None => 0,
+            },
+        }
+    }
 }
 
 /// Server-side notice sent to report warnings, disconnects, or protocol issues.
@@ -1593,6 +1632,63 @@ mod tests {
         assert_eq!(carrier.message_type, MessageType::ClientStats);
         assert_eq!(carrier.protocol_version, ProtocolVersion(2));
         assert_eq!(carrier.observation, observation);
+    }
+
+    #[test]
+    fn client_stats_payload_plan_marks_absent_heartbeat_observation() {
+        let stats = ClientStats {
+            message_type: MessageType::ClientStats,
+            protocol_version: ProtocolVersion(2),
+            client_id: ClientId("client-1".to_string()),
+            run_id: RunId("run-1".to_string()),
+            sent_at: TimestampMicros(3_000),
+            capture_fps: 30,
+            dropped_frames: 2,
+            bitrate_kbps: 4_000,
+            heartbeat_observation: None,
+        };
+        let boundary = ClientStatsPayloadPlanBoundary;
+
+        let plan = boundary.build_plan(&stats);
+
+        assert_eq!(
+            plan.base_numeric_payload_len,
+            CLIENT_STATS_BASE_NUMERIC_PAYLOAD_LEN
+        );
+        assert!(!plan.heartbeat_observation_present);
+        assert_eq!(plan.heartbeat_observation_block_len, 0);
+    }
+
+    #[test]
+    fn client_stats_payload_plan_marks_present_heartbeat_observation() {
+        let observation = HeartbeatAckObservation {
+            client_id: ClientId("client-1".to_string()),
+            run_id: RunId("run-1".to_string()),
+            echoed_sent_at: TimestampMicros(1_000),
+            server_received_at: TimestampMicros(2_100),
+            server_sent_at: TimestampMicros(2_150),
+            client_received_at: TimestampMicros(1_150),
+        };
+        let stats = ClientStats {
+            message_type: MessageType::ClientStats,
+            protocol_version: ProtocolVersion(2),
+            client_id: ClientId("client-1".to_string()),
+            run_id: RunId("run-1".to_string()),
+            sent_at: TimestampMicros(3_000),
+            capture_fps: 30,
+            dropped_frames: 2,
+            bitrate_kbps: 4_000,
+            heartbeat_observation: Some(observation),
+        };
+        let boundary = ClientStatsPayloadPlanBoundary;
+
+        let plan = boundary.build_plan(&stats);
+
+        assert!(plan.heartbeat_observation_present);
+        assert_eq!(
+            plan.heartbeat_observation_block_len,
+            CLIENT_STATS_HEARTBEAT_OBSERVATION_BLOCK_LEN
+        );
     }
 
     #[test]

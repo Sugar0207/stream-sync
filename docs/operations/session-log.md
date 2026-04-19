@@ -5,6 +5,58 @@
 - Codex
 
 ### 今回の作業
+- `ClientStats` payload encode / decode 方針を決めた。
+- heartbeat observation optional block を含む `ClientStats` payload 順序を docs に明記した。
+- `crates/protocol` に `ClientStatsPayloadPlanBoundary` と payload length constants を追加した。
+- `ClientStats` 型に optional `heartbeat_observation` を追加し、wire 実装前の payload plan を確認できるようにした。
+
+### 変更ファイル
+- `crates/protocol/src/lib.rs`
+- `docs/architecture/system-design.md`
+- `docs/architecture/protocol.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### 決定事項
+- `ClientStats` payload は `client_id`, `run_id`, `sent_at`, `capture_fps`, `dropped_frames`, `bitrate_kbps`, `heartbeat_observation_present` の順にする。
+- `heartbeat_observation_present = 1` の場合だけ、`echoed_sent_at`, `server_received_at`, `server_sent_at`, `client_received_at` を `u64 little-endian` で続ける。
+- `heartbeat_observation_present = 0` の場合は optional block を書かない。
+- decode 時、present tag が `0` / `1` 以外なら `InvalidOptionalTag` とする方針にする。
+- 今回は payload plan までで、`ProtocolMessageEncoderBoundary` の `ClientStats` encode / decode 本実装はまだ行わない。
+
+### 未解決事項
+- `ClientStats` payload encode / decode 最小実装
+- `ClientStats` receive route / gate / handler 接続
+- heartbeat observation を使った RTT / offset state commit
+- `ServerNotice` payload layout / encode / decode 方針
+
+### 次にやる候補
+- auth / receive JSON Lines の file sink 設定方針を整理する
+- secret store 連携や token rotation の方針を整理する
+- `ClientStats` payload encode/decode 最小実装を行う
+
+### TODO更新
+- 完了:
+  - `ClientStats` payload encode/decode 方針決定
+  - heartbeat observation optional block を含む payload 順序 docs 反映
+  - `ClientStatsPayloadPlanBoundary` placeholder 追加
+- 追加:
+  - `ClientStats` payload encode/decode 最小実装を次候補へ移動
+- 保留:
+  - `ClientStats` payload encode/decode 本実装
+  - `ClientStats` receive route 接続
+  - RTT / offset state commit
+
+### メモ
+- `cargo fmt --check`、`cargo check --workspace`、`cargo test -p stream-sync-protocol client_stats_payload_plan` が通ることを確認した。
+
+---
+
+## 2026-04-20
+### 種別
+- Codex
+
+### 今回の作業
 - heartbeat observation carrier を設計した。
 - `HeartbeatAckObservation` を `ClientStats` carrier に載せる typed boundary を追加した。
 - `apps/client` に observation を future `ClientStats` carrier へ wrap する boundary を追加した。
