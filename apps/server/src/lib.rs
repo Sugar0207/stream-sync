@@ -2324,10 +2324,86 @@ pub struct ServerHeartbeatAckTiming {
     pub server_sent_at: TimestampMicros,
 }
 
+/// Input for future heartbeat liveness state updates.
+///
+/// This is a data handoff only. It does not update state or evaluate timeout.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ServerHeartbeatStateInput {
+    pub source: PacketSource,
+    pub authenticated_sender: AuthenticatedSenderEntry,
+    pub client_id: ClientId,
+    pub run_id: RunId,
+    pub protocol_version: ProtocolVersion,
+    pub heartbeat_sent_at: TimestampMicros,
+    pub server_received_at: TimestampMicros,
+    pub short_status: Option<String>,
+}
+
+/// Input sample for future RTT / offset estimation.
+///
+/// The timestamp values preserve their original clock domains. This type does
+/// not calculate RTT, offset, or smoothing.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ServerHeartbeatTimebaseInput {
+    pub client_id: ClientId,
+    pub run_id: RunId,
+    pub client_sent_at: TimestampMicros,
+    pub client_local_time: Option<TimestampMicros>,
+    pub server_received_at: TimestampMicros,
+    pub server_sent_at: TimestampMicros,
+}
+
+/// Combined heartbeat inputs for state and timebase layers.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ServerHeartbeatProcessingInputs {
+    pub state: ServerHeartbeatStateInput,
+    pub timebase: ServerHeartbeatTimebaseInput,
+    pub ack_timing: ServerHeartbeatAckTiming,
+}
+
+/// Boundary that prepares heartbeat state/timebase inputs.
+///
+/// This consumes a registered heartbeat packet and explicit server timing. It
+/// does not mutate heartbeat state, calculate RTT / offset, or build ack
+/// messages.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct ServerHeartbeatInputBoundary;
+
+impl ServerHeartbeatInputBoundary {
+    pub fn prepare_inputs(
+        &self,
+        packet: &ServerRegisteredHeartbeatPacket,
+        timing: ServerHeartbeatAckTiming,
+    ) -> ServerHeartbeatProcessingInputs {
+        ServerHeartbeatProcessingInputs {
+            state: ServerHeartbeatStateInput {
+                source: packet.source,
+                authenticated_sender: packet.authenticated_sender.clone(),
+                client_id: packet.heartbeat.client_id.clone(),
+                run_id: packet.heartbeat.run_id.clone(),
+                protocol_version: packet.heartbeat.protocol_version,
+                heartbeat_sent_at: packet.heartbeat.sent_at,
+                server_received_at: timing.server_received_at,
+                short_status: packet.heartbeat.short_status.clone(),
+            },
+            timebase: ServerHeartbeatTimebaseInput {
+                client_id: packet.heartbeat.client_id.clone(),
+                run_id: packet.heartbeat.run_id.clone(),
+                client_sent_at: packet.heartbeat.sent_at,
+                client_local_time: packet.heartbeat.local_time,
+                server_received_at: timing.server_received_at,
+                server_sent_at: timing.server_sent_at,
+            },
+            ack_timing: timing,
+        }
+    }
+}
+
 /// Result of connecting a registered heartbeat packet to ack queue handoff.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ServerHeartbeatAckHandoff {
     pub registered_packet: ServerRegisteredHeartbeatPacket,
+    pub processing_inputs: ServerHeartbeatProcessingInputs,
     pub ack_input: ServerHeartbeatAckInput,
     pub outbound_ack: ServerOutboundHeartbeatAck,
     pub queue_item: OutboundQueueItem,
@@ -2341,6 +2417,7 @@ pub struct ServerHeartbeatAckHandoff {
 /// encode bytes, or send UDP packets.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
 pub struct ServerHeartbeatHandlerBoundary {
+    input: ServerHeartbeatInputBoundary,
     ack: ServerHeartbeatAckBoundary,
     queue: ServerOutboundQueueBoundary,
 }
@@ -2351,6 +2428,7 @@ impl ServerHeartbeatHandlerBoundary {
         packet: ServerRegisteredHeartbeatPacket,
         timing: ServerHeartbeatAckTiming,
     ) -> ServerHeartbeatAckHandoff {
+        let processing_inputs = self.input.prepare_inputs(&packet, timing);
         let ack_input = ServerHeartbeatAckInput {
             destination: packet.source,
             protocol_version: packet.heartbeat.protocol_version,
@@ -2365,6 +2443,7 @@ impl ServerHeartbeatHandlerBoundary {
 
         ServerHeartbeatAckHandoff {
             registered_packet: packet,
+            processing_inputs,
             ack_input,
             outbound_ack,
             queue_item,
@@ -4172,8 +4251,8 @@ shared_token = "secret"
                 client_id: ClientId("client-1".to_string()),
                 run_id: RunId("run-1".to_string()),
                 sent_at: TimestampMicros(2_000_000),
-                local_time: None,
-                short_status: None,
+                local_time: Some(TimestampMicros(1_999_900)),
+                short_status: Some("ready".to_string()),
             },
         };
         let timing = ServerHeartbeatAckTiming {
@@ -4186,6 +4265,30 @@ shared_token = "secret"
 
         assert_eq!(handoff.registered_packet, registered_packet);
         assert_eq!(handoff.ack_input.destination, source);
+        assert_eq!(
+            handoff.processing_inputs.state.client_id,
+            ClientId("client-1".to_string())
+        );
+        assert_eq!(
+            handoff.processing_inputs.state.heartbeat_sent_at,
+            TimestampMicros(2_000_000)
+        );
+        assert_eq!(
+            handoff.processing_inputs.state.short_status.as_deref(),
+            Some("ready")
+        );
+        assert_eq!(
+            handoff.processing_inputs.timebase.client_sent_at,
+            TimestampMicros(2_000_000)
+        );
+        assert_eq!(
+            handoff.processing_inputs.timebase.client_local_time,
+            Some(TimestampMicros(1_999_900))
+        );
+        assert_eq!(
+            handoff.processing_inputs.timebase.server_received_at,
+            TimestampMicros(2_000_100)
+        );
         assert_eq!(handoff.ack_input.echoed_sent_at, TimestampMicros(2_000_000));
         assert_eq!(
             handoff.ack_input.server_received_at,
@@ -4204,6 +4307,57 @@ shared_token = "secret"
         assert_eq!(ack.echoed_sent_at, TimestampMicros(2_000_000));
         assert_eq!(ack.server_received_at, TimestampMicros(2_000_100));
         assert_eq!(ack.server_sent_at, TimestampMicros(2_000_200));
+    }
+
+    #[test]
+    fn heartbeat_input_boundary_prepares_state_and_timebase_inputs() {
+        let source = packet_source();
+        let packet = ServerRegisteredHeartbeatPacket {
+            source,
+            authenticated_sender: AuthenticatedSenderEntry {
+                client_id: ClientId("client-1".to_string()),
+                source,
+                run_id: RunId("run-1".to_string()),
+                protocol_version: ProtocolVersion(2),
+                registered_at: None,
+            },
+            heartbeat: Heartbeat {
+                message_type: MessageType::Heartbeat,
+                protocol_version: ProtocolVersion(2),
+                client_id: ClientId("client-1".to_string()),
+                run_id: RunId("run-1".to_string()),
+                sent_at: TimestampMicros(3_000_000),
+                local_time: Some(TimestampMicros(2_999_900)),
+                short_status: Some("ok".to_string()),
+            },
+        };
+        let timing = ServerHeartbeatAckTiming {
+            server_received_at: TimestampMicros(3_000_100),
+            server_sent_at: TimestampMicros(3_000_200),
+        };
+        let boundary = ServerHeartbeatInputBoundary;
+
+        let inputs = boundary.prepare_inputs(&packet, timing);
+
+        assert_eq!(inputs.ack_timing, timing);
+        assert_eq!(inputs.state.source, source);
+        assert_eq!(
+            inputs.state.authenticated_sender,
+            packet.authenticated_sender
+        );
+        assert_eq!(inputs.state.heartbeat_sent_at, TimestampMicros(3_000_000));
+        assert_eq!(inputs.state.server_received_at, TimestampMicros(3_000_100));
+        assert_eq!(inputs.state.short_status.as_deref(), Some("ok"));
+        assert_eq!(inputs.timebase.client_sent_at, TimestampMicros(3_000_000));
+        assert_eq!(
+            inputs.timebase.client_local_time,
+            Some(TimestampMicros(2_999_900))
+        );
+        assert_eq!(
+            inputs.timebase.server_received_at,
+            TimestampMicros(3_000_100)
+        );
+        assert_eq!(inputs.timebase.server_sent_at, TimestampMicros(3_000_200));
     }
 
     #[test]

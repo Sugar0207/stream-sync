@@ -1294,6 +1294,53 @@ send execution remain unimplemented.
 
 ---
 
+## Heartbeat State / Timebase Input Boundary
+
+Heartbeat state updates and RTT / offset estimation need the same registered
+heartbeat packet, but they are separate responsibilities from ack generation.
+The input boundary prepares those data shapes without performing calculations.
+
+Flow:
+
+1. `ServerRegisteredPacketBoundary` produces `ServerRegisteredHeartbeatPacket`.
+2. The caller supplies `ServerHeartbeatAckTiming` with server receive / send
+   timestamps.
+3. `ServerHeartbeatInputBoundary` prepares `ServerHeartbeatProcessingInputs`.
+4. `ServerHeartbeatStateInput` carries liveness-state material:
+   source endpoint, authenticated sender entry, `client_id`, `run_id`,
+   `protocol_version`, heartbeat `sent_at`, server receive time, and optional
+   `short_status`.
+5. `ServerHeartbeatTimebaseInput` carries future RTT / offset material:
+   `client_sent_at`, optional `client_local_time`, `server_received_at`, and
+   `server_sent_at`.
+6. `ServerHeartbeatHandlerBoundary` includes these processing inputs in the
+   ack handoff result so future heartbeat state and timebase layers can consume
+   them without re-parsing the packet.
+
+Responsibility split:
+
+- registered heartbeat packet
+  - Proves source authentication and carries decoded heartbeat fields.
+- ack timing
+  - Supplies server receive / send timestamps.
+  - Does not decide how to calculate RTT / offset.
+- heartbeat input boundary
+  - Splits registered heartbeat data into state input and timebase input.
+  - Does not mutate state, estimate offset, smooth values, or decide timeout.
+- heartbeat handler boundary
+  - Uses the same registered packet and timing to build ack handoff.
+  - Carries processing inputs forward for future state / timebase layers.
+- timebase / heartbeat state layers
+  - Future owners of RTT, offset estimation, smoothing, liveness updates, and
+    timeout policy.
+
+Current code reflects this with `apps/server::ServerHeartbeatInputBoundary`,
+`ServerHeartbeatProcessingInputs`, `ServerHeartbeatStateInput`, and
+`ServerHeartbeatTimebaseInput`. The `crates/timebase` calculation logic remains
+unimplemented.
+
+---
+
 ## Receive Rejection Drop / Log Handoff Boundary
 
 PoC / MVP initial implementation keeps packet rejection handling split into

@@ -1,5 +1,57 @@
 <!-- stream-sync/docs/operations/session-log.md -->
 
+## 2026-04-20
+### 種別
+- Codex
+
+### 今回の作業
+- heartbeat state / RTT / offset 推定へ渡す入力境界を整理した。
+- `apps/server` に `ServerHeartbeatInputBoundary`, `ServerHeartbeatProcessingInputs`, `ServerHeartbeatStateInput`, `ServerHeartbeatTimebaseInput` を追加した。
+- registered heartbeat packet と explicit ack timing から state input / timebase input を作り、`ServerHeartbeatAckHandoff` に同梱するようにした。
+- docs に registered heartbeat packet / ack timing / heartbeat state input / timebase input の責務分離を追記した。
+
+### 変更ファイル
+- `apps/server/src/lib.rs`
+- `docs/architecture/system-design.md`
+- `docs/architecture/protocol.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### 決定事項
+- state input は生存確認 / timeout 管理の将来入力として、source、authenticated sender、client/run/protocol、heartbeat sent_at、server_received_at、short_status を保持する。
+- timebase input は RTT / offset 推定の将来入力として、client_sent_at、client_local_time、server_received_at、server_sent_at を保持する。
+- `ServerHeartbeatInputBoundary` は入力 shape を作るだけで、state mutation、RTT / offset 計算、平滑化、timeout 判定は行わない。
+- `crates/timebase` の本計算は今回も未実装に残す。
+
+### 未解決事項
+- heartbeat state / timeout 更新の本実装
+- RTT / offset 推定と smoothing の本実装
+- auth / receive JSON Lines の file sink 設定方針
+- secret store 連携や token rotation 方針
+
+### 次にやる候補
+- auth / receive JSON Lines の file sink 設定方針を整理する
+- secret store 連携や token rotation の方針を整理する
+- heartbeat state / RTT / offset 推定の本計算方針を整理する
+
+### TODO更新
+- 完了:
+  - heartbeat state / RTT / offset 推定の入力境界整理
+  - `ServerHeartbeatInputBoundary` / state input / timebase input placeholder 追加
+  - registered heartbeat packet / ack timing / timebase 入力の責務分離更新
+- 追加:
+  - heartbeat state / RTT / offset 推定の本計算方針
+- 保留:
+  - RTT / offset 本計算
+  - heartbeat state 更新
+  - async runtime
+  - secret store 連携
+
+### メモ
+- `cargo fmt --check`、`cargo check --workspace`、`cargo test -p stream-sync-server heartbeat_input_boundary`、`cargo test -p stream-sync-server heartbeat_handler_handoff` が通ることを確認した。
+
+---
+
 ## 2026-04-19
 ### 種別
 - Codex

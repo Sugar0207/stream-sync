@@ -1629,6 +1629,51 @@ continuous loop integration and heartbeat processing remain future work.
 
 ---
 
+### Heartbeat State / Timebase Input Boundary
+
+Heartbeat state and timebase estimation are downstream consumers of registered
+heartbeat packets. They receive typed inputs, not raw protocol payloads.
+
+Flow:
+
+1. `ServerRegisteredHeartbeatPacket` carries source-authenticated heartbeat
+   data.
+2. `ServerHeartbeatAckTiming` carries server receive / send timestamps.
+3. `ServerHeartbeatInputBoundary` builds `ServerHeartbeatProcessingInputs`.
+4. `ServerHeartbeatStateInput` is for future liveness state and timeout logic.
+5. `ServerHeartbeatTimebaseInput` is for future RTT / offset estimation.
+6. `ServerHeartbeatHandlerBoundary` returns these inputs next to the ack queue
+   handoff.
+
+Field intent:
+
+- state input
+  - `source`, `AuthenticatedSenderEntry`, `client_id`, `run_id`,
+    `protocol_version`, `heartbeat_sent_at`, `server_received_at`, and optional
+    `short_status`.
+- timebase input
+  - `client_sent_at`, optional `client_local_time`, `server_received_at`, and
+    `server_sent_at`.
+
+Responsibility split:
+
+- protocol
+  - Decodes timestamp fields into `TimestampMicros`.
+- registered packet boundary
+  - Ensures the heartbeat is source-authenticated.
+- heartbeat input boundary
+  - Builds state/timebase input shapes.
+  - Does not calculate RTT, offset, smoothing, liveness, or timeout.
+- timebase crate / heartbeat state layer
+  - Future owner of actual estimation and state update algorithms.
+
+Current implementation: `apps/server::ServerHeartbeatInputBoundary`,
+`ServerHeartbeatProcessingInputs`, `ServerHeartbeatStateInput`, and
+`ServerHeartbeatTimebaseInput`. `crates/timebase` remains a placeholder and
+does not implement RTT / offset math yet.
+
+---
+
 ### Receive Rejection Drop / Log Handoff Boundary
 
 Receive-side rejections remain typed when they leave the receive loop / gate.
