@@ -10,6 +10,7 @@ rust-version.workspace = true
 stream-sync-config = { path = "../../crates/config" }
 stream-sync-net-core = { path = "../../crates/net-core" }
 stream-sync-protocol = { path = "../../crates/protocol" }
+stream-sync-timebase = { path = "../../crates/timebase" }
 
 [lints]
 workspace = true

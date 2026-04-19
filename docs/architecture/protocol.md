@@ -1642,7 +1642,9 @@ Flow:
 3. `ServerHeartbeatInputBoundary` builds `ServerHeartbeatProcessingInputs`.
 4. `ServerHeartbeatStateInput` is for future liveness state and timeout logic.
 5. `ServerHeartbeatTimebaseInput` is for future RTT / offset estimation.
-6. `ServerHeartbeatHandlerBoundary` returns these inputs next to the ack queue
+6. `ServerHeartbeatTimebasePlanBoundary` converts the timebase input into a
+   `crates/timebase` estimation plan.
+7. `ServerHeartbeatHandlerBoundary` returns these inputs next to the ack queue
    handoff.
 
 Field intent:
@@ -1664,13 +1666,56 @@ Responsibility split:
 - heartbeat input boundary
   - Builds state/timebase input shapes.
   - Does not calculate RTT, offset, smoothing, liveness, or timeout.
+- timebase plan boundary
+  - Maps timestamp input into a calculation plan.
+  - Does not produce numeric estimates.
 - timebase crate / heartbeat state layer
   - Future owner of actual estimation and state update algorithms.
 
 Current implementation: `apps/server::ServerHeartbeatInputBoundary`,
 `ServerHeartbeatProcessingInputs`, `ServerHeartbeatStateInput`, and
-`ServerHeartbeatTimebaseInput`. `crates/timebase` remains a placeholder and
-does not implement RTT / offset math yet.
+`ServerHeartbeatTimebaseInput`. `apps/server::ServerHeartbeatTimebasePlanBoundary`
+bridges that input to `crates/timebase::HeartbeatTimebasePlanBoundary` and
+stores the result as `ServerHeartbeatTimebasePlan`.
+
+### Heartbeat RTT / Offset Calculation Policy
+
+Heartbeat timestamp fields must keep their clock domains explicit. The current
+code records a calculation plan only; final RTT / offset values and smoothing
+state remain future work.
+
+Policy:
+
+- RTT
+  - A server receive sample cannot complete RTT by itself because the server
+    does not know the client's ack receive time.
+  - The plan records `RequiresClientAckObservation` with the echoed
+    `Heartbeat.sent_at` and `HeartbeatAck.server_sent_at`.
+  - A future client-side observation can combine client send time, client ack
+    receive time, and server ack timestamps.
+- Offset
+  - `Heartbeat.local_time` is optional. When present, it becomes an offset
+    candidate paired with `server_received_at`.
+  - The future estimator must apply delay / RTT compensation before accepting
+    the candidate as a client clock offset.
+  - When absent, the plan records `MissingClientLocalTime` and no offset update
+    should be attempted.
+- Smoothing
+  - The current plan is `Deferred`.
+  - Numeric smoothing factor, outlier handling, warm-up behavior, and
+    per-client estimate storage belong to the future timebase calculation layer.
+
+Responsibility split:
+
+- protocol
+  - Defines and decodes heartbeat timestamp fields.
+- server heartbeat input boundary
+  - Provides raw timestamp observations after source authentication.
+- timebase plan boundary
+  - Chooses the applicable calculation path without mutating state.
+- timebase calculation layer
+  - Future owner of RTT completion, delay compensation, offset smoothing, and
+    estimate state.
 
 ---
 

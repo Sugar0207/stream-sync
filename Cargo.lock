@@ -35,6 +35,7 @@ dependencies = [
  "stream-sync-config",
  "stream-sync-net-core",
  "stream-sync-protocol",
+ "stream-sync-timebase",
 ]
 
 [[package]]

@@ -18,6 +18,9 @@ use stream_sync_protocol::{
     HeartbeatAck, MessageType, ProtocolError, ProtocolMessage, ProtocolMessageEncoderBoundary,
     ProtocolVersion, RunId, TimestampMicros, VideoFrame,
 };
+use stream_sync_timebase::{
+    HeartbeatTimebaseEstimatePlan, HeartbeatTimebasePlanBoundary, HeartbeatTimebaseSample,
+};
 
 /// One-packet receive loop boundary for the future UDP server.
 ///
@@ -2353,11 +2356,46 @@ pub struct ServerHeartbeatTimebaseInput {
     pub server_sent_at: TimestampMicros,
 }
 
+/// Server bridge from heartbeat timebase input to the timebase crate plan.
+///
+/// This preserves app-level ids beside the estimator plan. It does not compute
+/// RTT, offset, or smoothing.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ServerHeartbeatTimebasePlan {
+    pub client_id: ClientId,
+    pub run_id: RunId,
+    pub estimate: HeartbeatTimebaseEstimatePlan,
+}
+
+/// Boundary that converts server heartbeat timebase input into estimator plan.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct ServerHeartbeatTimebasePlanBoundary {
+    timebase: HeartbeatTimebasePlanBoundary,
+}
+
+impl ServerHeartbeatTimebasePlanBoundary {
+    pub fn build_plan(&self, input: &ServerHeartbeatTimebaseInput) -> ServerHeartbeatTimebasePlan {
+        let sample = HeartbeatTimebaseSample {
+            client_sent_at_micros: input.client_sent_at.0,
+            client_local_time_micros: input.client_local_time.map(|timestamp| timestamp.0),
+            server_received_at_micros: input.server_received_at.0,
+            server_sent_at_micros: input.server_sent_at.0,
+        };
+
+        ServerHeartbeatTimebasePlan {
+            client_id: input.client_id.clone(),
+            run_id: input.run_id.clone(),
+            estimate: self.timebase.build_plan(sample),
+        }
+    }
+}
+
 /// Combined heartbeat inputs for state and timebase layers.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ServerHeartbeatProcessingInputs {
     pub state: ServerHeartbeatStateInput,
     pub timebase: ServerHeartbeatTimebaseInput,
+    pub timebase_plan: ServerHeartbeatTimebasePlan,
     pub ack_timing: ServerHeartbeatAckTiming,
 }
 
@@ -2375,6 +2413,16 @@ impl ServerHeartbeatInputBoundary {
         packet: &ServerRegisteredHeartbeatPacket,
         timing: ServerHeartbeatAckTiming,
     ) -> ServerHeartbeatProcessingInputs {
+        let timebase = ServerHeartbeatTimebaseInput {
+            client_id: packet.heartbeat.client_id.clone(),
+            run_id: packet.heartbeat.run_id.clone(),
+            client_sent_at: packet.heartbeat.sent_at,
+            client_local_time: packet.heartbeat.local_time,
+            server_received_at: timing.server_received_at,
+            server_sent_at: timing.server_sent_at,
+        };
+        let timebase_plan = ServerHeartbeatTimebasePlanBoundary::default().build_plan(&timebase);
+
         ServerHeartbeatProcessingInputs {
             state: ServerHeartbeatStateInput {
                 source: packet.source,
@@ -2386,14 +2434,8 @@ impl ServerHeartbeatInputBoundary {
                 server_received_at: timing.server_received_at,
                 short_status: packet.heartbeat.short_status.clone(),
             },
-            timebase: ServerHeartbeatTimebaseInput {
-                client_id: packet.heartbeat.client_id.clone(),
-                run_id: packet.heartbeat.run_id.clone(),
-                client_sent_at: packet.heartbeat.sent_at,
-                client_local_time: packet.heartbeat.local_time,
-                server_received_at: timing.server_received_at,
-                server_sent_at: timing.server_sent_at,
-            },
+            timebase,
+            timebase_plan,
             ack_timing: timing,
         }
     }
@@ -4289,6 +4331,15 @@ shared_token = "secret"
             handoff.processing_inputs.timebase.server_received_at,
             TimestampMicros(2_000_100)
         );
+        assert_eq!(
+            handoff
+                .processing_inputs
+                .timebase_plan
+                .estimate
+                .sample
+                .client_sent_at_micros,
+            2_000_000
+        );
         assert_eq!(handoff.ack_input.echoed_sent_at, TimestampMicros(2_000_000));
         assert_eq!(
             handoff.ack_input.server_received_at,
@@ -4358,6 +4409,41 @@ shared_token = "secret"
             TimestampMicros(3_000_100)
         );
         assert_eq!(inputs.timebase.server_sent_at, TimestampMicros(3_000_200));
+        assert_eq!(
+            inputs.timebase_plan.client_id,
+            ClientId("client-1".to_string())
+        );
+        assert_eq!(inputs.timebase_plan.run_id, RunId("run-1".to_string()));
+        assert_eq!(
+            inputs
+                .timebase_plan
+                .estimate
+                .sample
+                .client_local_time_micros,
+            Some(2_999_900)
+        );
+    }
+
+    #[test]
+    fn heartbeat_timebase_plan_boundary_preserves_ids_and_timestamp_sample() {
+        let input = ServerHeartbeatTimebaseInput {
+            client_id: ClientId("client-1".to_string()),
+            run_id: RunId("run-1".to_string()),
+            client_sent_at: TimestampMicros(4_000_000),
+            client_local_time: None,
+            server_received_at: TimestampMicros(4_000_100),
+            server_sent_at: TimestampMicros(4_000_200),
+        };
+        let boundary = ServerHeartbeatTimebasePlanBoundary::default();
+
+        let plan = boundary.build_plan(&input);
+
+        assert_eq!(plan.client_id, ClientId("client-1".to_string()));
+        assert_eq!(plan.run_id, RunId("run-1".to_string()));
+        assert_eq!(plan.estimate.sample.client_sent_at_micros, 4_000_000);
+        assert_eq!(plan.estimate.sample.client_local_time_micros, None);
+        assert_eq!(plan.estimate.sample.server_received_at_micros, 4_000_100);
+        assert_eq!(plan.estimate.sample.server_sent_at_micros, 4_000_200);
     }
 
     #[test]

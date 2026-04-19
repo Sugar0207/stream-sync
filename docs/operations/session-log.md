@@ -5,6 +5,59 @@
 - Codex
 
 ### 今回の作業
+- heartbeat state / RTT / offset 推定の本計算方針を整理した。
+- `crates/timebase` に heartbeat timebase sample から RTT / offset / smoothing の計算 plan を作る placeholder を追加した。
+- `apps/server` に heartbeat timebase input から timebase plan へ橋渡しする `ServerHeartbeatTimebasePlanBoundary` を追加した。
+- docs に state input / timebase input / timebase plan / 将来の計算層の責務分離を追記した。
+
+### 変更ファイル
+- `apps/server/Cargo.toml`
+- `apps/server/src/lib.rs`
+- `crates/timebase/src/lib.rs`
+- `docs/architecture/system-design.md`
+- `docs/architecture/protocol.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### 決定事項
+- RTT は server 側の heartbeat 受信 sample だけでは完了しないため、`RequiresClientAckObservation` として client 側 ack 観測待ちの plan にする。
+- offset は `Heartbeat.local_time` がある場合だけ候補化し、delay / RTT 補償を future estimator に残す。
+- `local_time` がない heartbeat では `MissingClientLocalTime` とし、offset 更新を試みない。
+- smoothing は `Deferred` とし、平滑化係数、外れ値処理、warm-up、per-client estimate state は future timebase calculation layer に残す。
+
+### 未解決事項
+- RTT completion の実計算
+- delay compensation を含む clock offset 推定
+- offset smoothing / outlier handling
+- heartbeat state / timeout 更新
+
+### 次にやる候補
+- auth / receive JSON Lines の file sink 設定方針を整理する
+- secret store 連携や token rotation の方針を整理する
+- heartbeat RTT / offset の小さな実計算単位を決める
+
+### TODO更新
+- 完了:
+  - heartbeat state / RTT / offset 推定の本計算方針整理
+  - `HeartbeatTimebaseEstimatePlan` / `HeartbeatTimebasePlanBoundary` 追加
+  - server heartbeat timebase input から timebase plan への bridge 追加
+- 追加:
+  - heartbeat RTT / offset の小さな実計算単位を次候補へ移動
+- 保留:
+  - RTT / offset 本計算
+  - heartbeat state 更新
+  - async runtime
+
+### メモ
+- `cargo fmt --check`、`cargo check --workspace`、`cargo test -p stream-sync-timebase heartbeat_timebase_plan`、`cargo test -p stream-sync-server heartbeat_input_boundary` が通ることを確認した。
+
+---
+
+## 2026-04-20
+### 種別
+- Codex
+
+### 今回の作業
 - heartbeat state / RTT / offset 推定へ渡す入力境界を整理した。
 - `apps/server` に `ServerHeartbeatInputBoundary`, `ServerHeartbeatProcessingInputs`, `ServerHeartbeatStateInput`, `ServerHeartbeatTimebaseInput` を追加した。
 - registered heartbeat packet と explicit ack timing から state input / timebase input を作り、`ServerHeartbeatAckHandoff` に同梱するようにした。

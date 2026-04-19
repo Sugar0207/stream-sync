@@ -3,6 +3,12 @@
 # StreamSync TODO
 
 ## 2026-04-20 Codex update
+- [x] heartbeat state / RTT / offset 推定の本計算方針を整理する
+- [x] `crates/timebase` に `HeartbeatTimebaseEstimatePlan` / `HeartbeatTimebasePlanBoundary` を追加する
+- [x] server heartbeat timebase input から timebase plan への bridge を追加する
+- 次の中心: auth / receive JSON Lines file sink 方針、secret store / rotation 方針、heartbeat RTT / offset の小さな実計算単位
+
+## 2026-04-20 Codex update
 - [x] heartbeat state / RTT / offset 推定の入力境界を整理する
 - [x] `ServerHeartbeatInputBoundary` / state input / timebase input placeholder を追加する
 - [x] registered heartbeat packet / ack timing / timebase 入力の責務分離を docs に反映する
@@ -33,7 +39,7 @@
 - 次の中心: heartbeat / video frame handler 接続方針、auth / receive JSON Lines file sink 方針、secret store / rotation 方針
 
 
-最終更新: 2026-04-19
+最終更新: 2026-04-20
 
 このファイルは「現在どこまで終わっていて、次に何をやるか」を確認するための TODO です。時系列の作業履歴は `docs/operations/session-log.md` を正とします。
 
@@ -61,7 +67,7 @@
 - accepted path の手動確認は成功し、`configs/examples/server.example.toml` と `configs/examples/client.accepted.example.toml` の組み合わせで `accepted=true`, `reason_code=Ok` を観測済み
 - `shared_token_env` accepted path の手動確認は成功し、`configs/examples/server.env-token.example.toml` と `configs/examples/client.accepted.example.toml` の組み合わせで `accepted=true`, `reason_code=Ok` を観測済み
 - secret store 連携、token hashing / rotation、認証済み送信元の timeout / 失効 / 再認証、実際の packet 破棄、`ClientStats` / `ServerNotice` など残り message の encode 本実装、時刻同期本体、映像受信・復号・表示、switcher UI は未実装
-- 次の中心は auth / receive JSON Lines file sink 方針、secret store / rotation 方針、heartbeat state / RTT 本計算方針
+- 次の中心は auth / receive JSON Lines file sink 方針、secret store / rotation 方針、heartbeat RTT / offset の小さな実計算単位
 
 ---
 
@@ -93,7 +99,7 @@
 ## 直近でやること
 1. auth / receive JSON Lines の file sink 設定方針を整理する
 2. secret store 連携や token rotation の方針を整理する
-3. heartbeat state / RTT / offset 推定の本計算方針を整理する
+3. heartbeat RTT / offset の小さな実計算単位を決める
 4. outbound queue の実処理範囲と backpressure 方針を実装前に詰める
 5. `ClientStats` / `ServerNotice` の payload layout と decode / encode 方針を決める
 
@@ -126,6 +132,7 @@
 - [x] registered packet を heartbeat / video frame handler へ渡す接続方針を整理する
 - [x] registered heartbeat packet から `HeartbeatAck` queue handoff までの最小接続方針を整理する
 - [x] heartbeat state / RTT / offset 推定へ渡す入力境界を整理する
+- [x] heartbeat state / RTT / offset 推定の本計算方針を整理する
 - [x] packet acceptance rejection を drop / log layer へ渡す境界を整理する
 - [x] AuthResponse 生成 / 送信境界を整理する
 - [x] outbound packet / queue 境界を整理する
@@ -284,6 +291,7 @@
 - [x] `HeartbeatAck` payload layout / encode 方針を決める
 - [x] `HeartbeatAck` encode 本実装を行う
 - [x] heartbeat state / RTT / offset 推定の入力境界を整理する
+- [x] heartbeat state / RTT / offset 推定の本計算方針を整理する
 - [ ] heartbeat 送信処理を client 側に実装する
 - [ ] heartbeat 受信処理を server 側に実装する
 - [ ] heartbeat timeout 管理を実装する
