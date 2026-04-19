@@ -3,6 +3,12 @@
 # StreamSync TODO
 
 ## 2026-04-19 Codex update
+- [x] `shared_token_env` one-shot auth round trip accepted path を実機手動確認する
+- [x] 実行コマンド、環境変数設定、観測結果を `docs/operations/auth-roundtrip-manual-check.md` に記録する
+- [x] env-token helper config では 4 つの `STREAMSYNC_PLAYER*_TOKEN` が必要なことを手順に反映する
+- 次の中心: heartbeat / video frame handler 接続方針、auth / receive JSON Lines file sink 方針、secret store / rotation 方針
+
+## 2026-04-19 Codex update
 - [x] `shared_token_env` を使う one-shot auth round trip 手順を追加する
 - [x] `configs/examples/server.env-token.example.toml` を追加する
 - [x] env token accepted / missing / empty / mismatch の確認ポイントを整理する
@@ -35,6 +41,7 @@
 - server / client one-shot auth round trip の手動確認手順と accepted path 用 helper config は完了
 - `shared_token_env` を使う one-shot auth round trip 手順と server helper config は完了
 - accepted path の手動確認は成功し、`configs/examples/server.example.toml` と `configs/examples/client.accepted.example.toml` の組み合わせで `accepted=true`, `reason_code=Ok` を観測済み
+- `shared_token_env` accepted path の手動確認は成功し、`configs/examples/server.env-token.example.toml` と `configs/examples/client.accepted.example.toml` の組み合わせで `accepted=true`, `reason_code=Ok` を観測済み
 - secret store 連携、token hashing / rotation、認証済み送信元の timeout / 失効 / 再認証、実際の packet 破棄、`ClientStats` / `ServerNotice` など残り message の encode 本実装、時刻同期本体、映像受信・復号・表示、switcher UI は未実装
 - 次の中心は heartbeat / video frame handler 接続方針、auth / receive JSON Lines file sink 方針、secret store / rotation 方針
 
@@ -117,6 +124,7 @@
 - [x] server / client one-shot auth round trip の accepted path 用 helper config と手順を追加する
 - [x] server / client one-shot auth round trip の accepted path 成功結果を記録する
 - [x] `shared_token_env` を使う one-shot auth round trip 手順を追加する
+- [x] `shared_token_env` one-shot auth round trip accepted path 成功結果を記録する
 - [x] secret 解決方式と token 保護方針を整理する
 - [x] secret resolver 本実装範囲を確定する
 - [x] `shared_token_env` secret resolver の最小本実装を追加する

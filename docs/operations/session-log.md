@@ -5,6 +5,60 @@
 - Codex
 
 ### 今回の作業
+- `shared_token_env` one-shot auth round trip を実機手動確認し、結果を repo 内 docs に記録した。
+- `docs/operations/auth-roundtrip-manual-check.md` に実行コマンド、server 環境変数、client / server の観測結果を追記した。
+- env-token helper config では `player1` から `player4` までの token reference を resolver がまとめて解決するため、4 つすべての `STREAMSYNC_PLAYER*_TOKEN` を設定する必要があることを手順へ反映した。
+
+### 変更ファイル
+- `docs/operations/auth-roundtrip-manual-check.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### 決定事項
+- `configs/examples/server.env-token.example.toml` を使う accepted path 確認では、server 起動ターミナルに `STREAMSYNC_PLAYER1_TOKEN` から `STREAMSYNC_PLAYER4_TOKEN` までを設定する。
+- 成功確認は server stdout の `accepted=true reason_code=Ok` と、server stderr の `server.auth_result` JSON Lines で行う。
+- `STREAMSYNC_PLAYER1_TOKEN` だけの設定では、未設定 token reference が残るため `InternalError` になることを補足として残す。
+
+### 確認結果
+- 結果: 成功
+- client stdout: `auth request PoC sent 96 bytes to 127.0.0.1:5000; client_id=player1 run_id=streamsync-dev-session protocol_version=1`
+- server stdout: `auth response PoC handled one packet on 0.0.0.0:5000 and sent 55 bytes; client_id=player1 run_id=streamsync-dev-session accepted=true reason_code=Ok`
+- server stderr: `server.auth_result` JSON Lines で `accepted=true`, `reason_code=Ok`
+
+### 未解決事項
+- heartbeat / video frame handler へ accepted route を渡す接続
+- auth / receive JSON Lines の file sink 設定方針
+- secret store 連携や token rotation 方針
+
+### 次にやる候補
+- heartbeat / video frame handler へ registered packet を渡す接続方針を整理する
+- auth / receive JSON Lines の file sink 設定方針を整理する
+- secret store 連携や token rotation の方針を整理する
+
+### TODO更新
+- 完了:
+  - `shared_token_env` one-shot auth round trip accepted path の実機確認
+  - 実行コマンド、環境変数設定、観測結果の記録
+  - env-token helper config の必要 env var 補足
+- 追加:
+  - なし
+- 保留:
+  - secret store 連携
+  - token rotation
+  - heartbeat / video frame 処理本体
+  - file sink / rotation / retention
+
+### メモ
+- `cargo build -p stream-sync-server -p stream-sync-client` 後に server / client one-shot を実行した。
+- `cargo fmt --check` と `cargo check --workspace` が通ることを確認した。
+
+---
+
+## 2026-04-19
+### 種別
+- Codex
+
+### 今回の作業
 - `shared_token_env` を使う one-shot auth round trip 手順を repo 内 docs に追加した。
 - `configs/examples/server.env-token.example.toml` を追加し、server 側 token material を `STREAMSYNC_PLAYER*_TOKEN` から解決する確認用 config を用意した。
 - `docs/operations/auth-roundtrip-manual-check.md` に PowerShell での環境変数設定、server / client 起動コマンド、成功時 / 失敗時の確認ポイントを追記した。
