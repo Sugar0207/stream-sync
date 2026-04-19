@@ -1455,11 +1455,13 @@ Flow:
    `AuthenticatedSenderRegistryBoundary`.
 3. The registry handoff stores `client_id`, source endpoint, `run_id`, and
    `protocol_version`.
-4. Later receive paths for `Heartbeat` and `VideoFrame` use decoded
+4. The one-shot auth response PoC step applies that handoff to the in-memory
+   `AuthenticatedSenderRegistry` when the auth decision is accepted.
+5. Later receive paths for `Heartbeat` and `VideoFrame` use decoded
    `client_id` plus packet source endpoint to query the registry.
-5. A missing `client_id` binding or endpoint mismatch is a reject/drop
+6. A missing `client_id` binding or endpoint mismatch is a reject/drop
    candidate for that later packet.
-6. Timeout, expiration, revocation, and reauthentication remain future design
+7. Timeout, expiration, revocation, and reauthentication remain future design
    work and are not executed by the current boundary.
 
 Responsibility split:
@@ -1469,20 +1471,22 @@ Responsibility split:
   - Does not know whether the sender endpoint is authenticated.
 - receive loop / server routing
   - Preserves packet source metadata and decoded message fields.
-  - Future owner of calling the registry before accepting heartbeat or video
-    frame work.
+  - Calls the packet acceptance gate before accepting heartbeat or video frame
+    work.
 - server auth flow
   - Produces accepted/rejected auth decisions and the accepted registration
     handoff.
-  - Does not persist state or enforce timeout.
+  - Does not mutate registry state, persist state, or enforce timeout.
 - authenticated sender registry
   - Owns the `client_id` to endpoint binding lookup.
   - Does not verify tokens, decode packets, build `AuthResponse`, run UDP
     sockets, or implement reauthentication.
 
 Current implementation: `apps/server::AuthenticatedSenderRegistryBoundary`
-creates registrations from accepted decisions and checks later `client_id` /
-source endpoint pairs against an in-memory `AuthenticatedSenderRegistry`.
+creates registrations from accepted decisions, `ServerAuthResponsePocStep`
+registers accepted senders into an in-memory `AuthenticatedSenderRegistry`, and
+the packet acceptance gate checks later `client_id` / source endpoint pairs
+against that registry.
 
 ---
 

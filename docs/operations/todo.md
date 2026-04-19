@@ -3,6 +3,12 @@
 # StreamSync TODO
 
 ## 2026-04-19 Codex update
+- [x] 認証済み送信元登録の実処理を auth accepted path へ接続済みであることを明示する
+- [x] accepted auth flow registration が in-memory registry を更新し、後続 gate が accepted にできる最小テストを追加する
+- [x] registry 登録の実処理範囲を architecture docs に反映する
+- 次の中心: auth result writer の CLI 接続判断、secret resolver 本実装、heartbeat / video frame handler 接続方針
+
+## 2026-04-19 Codex update
 - [x] secret resolver 本実装範囲を docs に確定する
 - [x] `ServerSecretResolverBoundary` / `ServerSecretResolutionPlan` placeholder を追加する
 - [x] resolver / config / auth decision の責務分離を更新する
@@ -104,11 +110,12 @@
 - `crates/config` の `shared_token` / `shared_token_env` token reference 読み分けと inline secret debug redaction は完了
 - `crates/net-core` の inbound decode 境界、outbound packet / queue 境界、outbound queue lifecycle 境界、protocol encoder 呼び出し境界、send error / log event 分類 placeholder、UDP socket 1 datagram receive / send adapter は完了
 - `apps/server` の inbound router、UDP receive loop step、UDP socket adapter 接続、auth response PoC one-shot 起動接続、auth response PoC 起動設定接続、receive loop から packet acceptance gate への接続境界、packet acceptance rejection の drop / log handoff 境界、receive rejection JSON Lines event schema 境界、receive rejection stderr JSON Lines 最小出力、auth handler boundary、auth config input boundary、server auth decision 最小実装、auth success / failure log handoff 境界、auth JSON Lines event schema 境界、auth flow step、認証済み送信元 registry 境界、packet acceptance gate 境界、AuthResponse response boundary、HeartbeatAck ack boundary、outbound queue handoff は完了
+- accepted auth path で `AuthenticatedSenderRegistry` へ in-memory 登録する実処理は完了
 - `apps/client` の client 設定読み込み、AuthRequest 構築、protocol encoder、UDP one-shot send の PoC 入口は完了
 - server / client one-shot auth round trip の手動確認手順と accepted path 用 helper config は完了
 - accepted path の手動確認は成功し、`configs/examples/server.example.toml` と `configs/examples/client.accepted.example.toml` の組み合わせで `accepted=true`, `reason_code=Ok` を観測済み
 - secret resolver 本実装、認証済み送信元の timeout / 失効 / 再認証、実際の packet 破棄、`ClientStats` / `ServerNotice` など残り message の encode 本実装、時刻同期本体、映像受信・復号・表示、switcher UI は未実装
-- 次の中心は認証済み送信元登録の実処理、auth result writer の CLI 接続判断、secret resolver 本実装
+- 次の中心は auth result writer の CLI 接続判断、secret resolver 本実装、heartbeat / video frame handler 接続方針
 
 ---
 
@@ -138,9 +145,9 @@
 ---
 
 ## 直近でやること
-1. 認証済み送信元登録の実処理を auth accepted path へ接続する
-2. auth result writer を one-shot / future loop のどこで有効化するか決める
-3. secret resolver 本実装を行う
+1. auth result writer を one-shot / future loop のどこで有効化するか決める
+2. secret resolver 本実装を行う
+3. heartbeat / video frame handler へ registered packet を渡す接続方針を整理する
 4. outbound queue の実処理範囲と backpressure 方針を実装前に詰める
 5. `ClientStats` / `ServerNotice` の payload layout と decode / encode 方針を決める
 
@@ -166,6 +173,7 @@
 - [x] auth success / failure の JSON Lines ログイベント仕様を整理する
 - [x] auth decision から `AuthResponse` outbound queue handoff までの server step を整理する
 - [x] 認証済み送信元の登録 / 管理境界を整理する
+- [x] accepted auth path で認証済み送信元を in-memory registry へ登録する
 - [x] 未認証 / endpoint mismatch packet の破棄境界を整理する
 - [x] receive loop から packet acceptance gate を呼ぶ接続境界を整理する
 - [x] packet acceptance rejection を drop / log layer へ渡す境界を整理する
@@ -298,8 +306,9 @@
 - [x] registry 参照による packet 受理 / 拒否判定 helper を追加する
 - [x] secret resolver 本実装範囲を確定する
 - [x] `ServerSecretResolverBoundary` / secret resolution plan placeholder を追加する
+- [x] accepted auth path で in-memory registry 登録実処理を接続する
 - [ ] secret 解決後の本物の token 検証を実装する
-- [ ] 認証済み送信元の登録 / 管理を実装する
+- [ ] 認証済み送信元の timeout / 失効 / 再認証を実装する
 - [ ] 未認証送信元の `VideoFrame` 破棄を実装する
 - [ ] `protocol_version` 不一致時の接続拒否を server 側に実装する
 - [ ] `app_version` 差異時の warn ログを実装する

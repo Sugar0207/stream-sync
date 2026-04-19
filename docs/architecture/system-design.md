@@ -322,8 +322,9 @@ Flow:
 5. `ServerAuthFlowStep` prepares auth input, runs the minimal auth decision,
    creates typed `AuthResponse`, and hands it to `ServerOutboundQueueBoundary`
    as `OutboundQueueItem`.
-6. Accepted decisions may register the source in the in-memory authenticated
-   sender registry through the existing registry boundary.
+6. Accepted decisions register the source in the in-memory authenticated
+   sender registry through the existing registry boundary before the response
+   is encoded and sent.
 7. `OutboundPacketEncoderBoundary` prepares the encode request and calls
    `ProtocolMessageEncoderBoundary`.
 8. The encoded `AuthResponse` bytes and destination are passed to
@@ -342,7 +343,11 @@ Responsibility split:
 - auth flow
   - Produces `ServerAuthDecision`, auth log handoff input, registry
     registration handoff, `AuthResponse`, and `OutboundQueueItem`.
-  - Does not encode or send bytes.
+  - Does not mutate registry state, encode, or send bytes.
+- authenticated sender registry
+  - Stores the accepted `client_id` to source endpoint binding in memory when
+    the PoC step applies the registration handoff.
+  - Does not persist state, expire entries, or perform reauthentication.
 - net send / protocol encoder
   - Converts the queued typed `AuthResponse` into fixed header + payload bytes.
 - socket send
@@ -351,8 +356,8 @@ Responsibility split:
 Current code reflects this with `apps/server::ServerAuthResponsePocStep`,
 `ServerAuthResponsePocOutcome`, and `ServerAuthResponsePocError`. Continuous
 looping, async runtime integration, real queue scheduling, retry,
-fragmentation, encryption, JSON Lines output, heartbeat handling, and video
-frame handling remain unimplemented.
+fragmentation, encryption, JSON Lines output, heartbeat handling, video frame
+handling, timeout, revocation, and registry persistence remain unimplemented.
 
 ### 5.8 AuthResponse PoC startup config entry
 
@@ -1077,7 +1082,7 @@ Flow:
    `protocol_version`, and optional registration timestamp.
 4. The registry stores a binding from `client_id` to the authenticated source
    endpoint.
-5. Later heartbeat / video frame receive paths will check the packet's
+5. Later heartbeat / video frame receive paths check the packet's
    `client_id` and source endpoint against this registry before accepting the
    packet.
 6. If no matching `client_id` exists, or if the endpoint does not match, the
@@ -1105,9 +1110,11 @@ Responsibility split:
 
 Current code reflects this with `apps/server::AuthenticatedSenderRegistry`,
 `AuthenticatedSenderRegistration`, `AuthenticatedSenderRegistryBoundary`, and
-`AuthenticatedSenderCheck`. This is an in-memory boundary shape only. It does
-not implement real state persistence, timeout, revocation, reauthentication,
-heartbeat handling, video frame handling, or UDP socket I/O.
+`AuthenticatedSenderCheck`. `ServerAuthResponsePocStep` applies accepted
+registrations to the in-memory registry on the auth accepted path, and the
+packet acceptance gate uses the registry for later `Heartbeat` / `VideoFrame`
+routes. It does not implement real state persistence, timeout, revocation,
+reauthentication, heartbeat handling, or video frame handling.
 
 ---
 

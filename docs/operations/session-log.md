@@ -5,6 +5,57 @@
 - Codex
 
 ### 今回の作業
+- 認証済み送信元登録の実処理を auth accepted path へ接続済みであることを確認し、責務を docs に反映した。
+- `ServerAuthResponsePocStep` の責務コメントを、accepted registration を registry に適用する現在の実装に合わせた。
+- accepted auth flow の `AuthenticatedSenderRegistration` を in-memory registry に登録し、後続 `PacketAcceptanceGateBoundary` が同一 client/source の `Heartbeat` を accepted にする最小テストを追加した。
+
+### 変更ファイル
+- `apps/server/src/lib.rs`
+- `docs/architecture/system-design.md`
+- `docs/architecture/protocol.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### 決定事項
+- auth flow は accepted decision から registry registration handoff を作るだけに留める。
+- one-shot auth response PoC step が、その handoff を `AuthenticatedSenderRegistryBoundary::register` に渡して in-memory registry を更新する。
+- registry は `client_id` と source endpoint の対応を保持し、後続 packet acceptance gate の lookup に使う。
+- timeout、失効、再認証、永続化は今回も未実装に残す。
+
+### 未解決事項
+- auth result writer の CLI 接続判断
+- secret resolver 本実装
+- 認証済み送信元の timeout / 失効 / 再認証
+- heartbeat / video frame handler へ accepted route を渡す接続
+
+### 次にやる候補
+- auth result writer を one-shot / future loop のどこで有効化するか決める
+- secret resolver 本実装を行う
+- heartbeat / video frame handler へ registered packet を渡す接続方針を整理する
+
+### TODO更新
+- 完了:
+  - accepted auth path の in-memory registry 登録実処理
+  - accepted registration 後に packet acceptance gate が後続 packet を accepted にできるテスト追加
+  - architecture docs の registry 実処理範囲更新
+- 追加:
+  - heartbeat / video frame handler へ registered packet を渡す接続方針
+- 保留:
+  - secret resolver 本実装
+  - auth result writer の CLI 接続
+  - timeout / 失効 / 再認証
+  - heartbeat / video frame 処理本体
+
+### メモ
+- `cargo fmt --check`、`cargo check --workspace`、`cargo test -p stream-sync-server accepted_auth_flow_registration_updates_registry_for_later_gate` が通ることを確認した。
+
+---
+
+## 2026-04-19
+### 種別
+- Codex
+
+### 今回の作業
 - secret resolver 本実装範囲を確定し、docs と placeholder に反映した。
 - `apps/server` に `ServerSecretResolverBoundary`, `ServerSecretResolutionPlan`, `ServerResolvedSharedTokenAuthInput`, `ServerResolvedSharedTokenMaterial` を追加した。
 - placeholder は inline PoC token を `AlreadyResolved`、`shared_token_env` を `NeedsEnvironmentVariable` として分類するだけに留め、環境変数の読み取りは実装しない。

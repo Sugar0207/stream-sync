@@ -138,9 +138,10 @@ impl ServerUdpSocketIoStep {
 /// One-shot auth response PoC connection from UDP receive to UDP send.
 ///
 /// This composes the existing receive, auth flow, outbound queue handoff,
-/// protocol encode, and socket send boundaries for one packet. It does not run
-/// a continuous loop, spawn async tasks, write JSON Lines logs, retry, fragment,
-/// encrypt, or handle heartbeat / video frame routes.
+/// accepted sender registry registration, protocol encode, and socket send
+/// boundaries for one packet. It does not run a continuous loop, spawn async
+/// tasks, write JSON Lines logs, retry, fragment, encrypt, or handle heartbeat
+/// / video frame routes.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
 pub struct ServerAuthResponsePocStep {
     socket_io: ServerUdpSocketIoStep,
@@ -3131,6 +3132,35 @@ shared_token = "secret"
         assert_eq!(
             queued_response.message.as_deref(),
             Some("invalid shared_token")
+        );
+    }
+
+    #[test]
+    fn accepted_auth_flow_registration_updates_registry_for_later_gate() {
+        let source = packet_source();
+        let route = ServerInboundRoute::AuthRequest {
+            source,
+            request: auth_request("client-1", "presented-secret"),
+        };
+        let config = auth_config(Some("presented-secret"));
+        let flow_step = ServerAuthFlowStep::default();
+        let registry_boundary = AuthenticatedSenderRegistryBoundary;
+        let gate = PacketAcceptanceGateBoundary::default();
+        let mut registry = AuthenticatedSenderRegistry::default();
+
+        let outcome = flow_step
+            .handle_auth_route(route, &config)
+            .expect("accepted auth route should be handled");
+        let registration = outcome
+            .registry_registration
+            .expect("accepted auth should produce registry registration");
+        let entry = registry_boundary.register(&mut registry, registration);
+
+        assert_eq!(entry.client_id, ClientId("client-1".to_string()));
+        assert_eq!(entry.source, source);
+        assert_eq!(
+            gate.evaluate_route(&registry, &heartbeat_route("client-1", source)),
+            PacketAcceptanceDecision::Accepted
         );
     }
 
