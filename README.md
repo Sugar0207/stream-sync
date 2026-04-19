@@ -128,6 +128,7 @@ MVP では以下の方式を採用します。
 - `docs/requirements/project-overview.md`
 - `docs/operations/todo.md`
 - `docs/operations/session-log.md`
+- `docs/operations/auth-roundtrip-manual-check.md`
 
 今後、以下のドキュメントを追加予定です。
 

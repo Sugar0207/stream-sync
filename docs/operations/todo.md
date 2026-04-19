@@ -2,6 +2,12 @@
 
 # StreamSync TODO
 
+## 2026-04-19 Codex update
+- [x] server / client one-shot auth round trip の手動確認手順を追加する
+- [x] `docs/operations/auth-roundtrip-manual-check.md` に server / client 起動コマンド、config path、成功時 / 失敗時の見方を整理する
+- [x] PoC 実行時の stdout に `client_id` / `run_id` / `protocol_version` / `accepted` / `reason_code` を表示する最小観測補助を追加する
+- 次の中心: accepted path の手動確認、secret 解決、receive rejection ログ出力本実装
+
 ## 2026-04-18 Codex update
 - [x] client 側 `AuthRequest` 送信 PoC を追加する
 - [x] `AuthRequest` fixed header + payload bytes の最小 encode 実装を追加する
@@ -33,7 +39,7 @@
 - [x] `ServerReceiveRejectionJsonLogEventBoundary` / `ServerReceiveRejectionJsonLogEventInput` を追加する
 - 次の中心: UDP socket 送受信、secret 解決、receive rejection ログ出力本実装
 
-最終更新: 2026-04-18
+最終更新: 2026-04-19
 
 このファイルは「現在どこまで終わっていて、次に何をやるか」を確認するための TODO です。時系列の作業履歴は `docs/operations/session-log.md` を正とします。
 
@@ -54,8 +60,9 @@
 - `crates/net-core` の inbound decode 境界、outbound packet / queue 境界、outbound queue lifecycle 境界、protocol encoder 呼び出し境界、send error / log event 分類 placeholder、UDP socket 1 datagram receive / send adapter は完了
 - `apps/server` の inbound router、UDP receive loop step、UDP socket adapter 接続、auth response PoC one-shot 起動接続、auth response PoC 起動設定接続、receive loop から packet acceptance gate への接続境界、packet acceptance rejection の drop / log handoff 境界、receive rejection JSON Lines event schema 境界、auth handler boundary、auth config input boundary、server auth decision 最小実装、auth success / failure log handoff 境界、auth JSON Lines event schema 境界、auth flow step、認証済み送信元 registry 境界、packet acceptance gate 境界、AuthResponse response boundary、HeartbeatAck ack boundary、outbound queue handoff は完了
 - `apps/client` の client 設定読み込み、AuthRequest 構築、protocol encoder、UDP one-shot send の PoC 入口は完了
+- server / client one-shot auth round trip の手動確認手順は完了
 - secret 解決、認証済み送信元の timeout / 失効 / 再認証、実際の packet 破棄 / ログ出力、`ClientStats` / `ServerNotice` など残り message の encode 本実装、時刻同期本体、映像受信・復号・表示、switcher UI は未実装
-- 次の中心は server / client one-shot auth round trip 手動確認、secret 解決、receive rejection ログ出力本実装
+- 次の中心は accepted path の手動確認、secret 解決、receive rejection ログ出力本実装
 
 ---
 
@@ -85,7 +92,7 @@
 ---
 
 ## 直近でやること
-1. server / client one-shot auth round trip を手動確認する
+1. server / client one-shot auth round trip の accepted path を手動確認する
 2. secret 解決方式と token 保護方針を設計する
 3. receive rejection ログ出力本実装を行う
 4. outbound queue の実処理範囲と backpressure 方針を実装前に詰める
@@ -128,6 +135,7 @@
 - [x] UDP socket を auth response PoC の起動処理へ最小接続する
 - [x] auth response PoC の起動設定接続を追加する
 - [x] client 側 AuthRequest one-shot PoC の flow と責務分離を整理する
+- [x] server / client one-shot auth round trip の手動確認手順を追加する
 - [ ] 状態遷移を詳細化する
 - [ ] 異常時の挙動を実装レベルに落とす
 - [ ] ログイベント仕様を詳細化する
@@ -223,6 +231,7 @@
 - [x] server 設定 TOML から client whitelist / token 情報を読み込む
 - [x] UDP socket から `AuthRequest` を 1 packet 受信し、`AuthResponse` を 1 packet 返す PoC 接続を追加する
 - [x] server 設定から auth response PoC 起動入口を接続する
+- [x] server / client one-shot auth round trip の手動確認手順を追加する
 - [x] client whitelist 読み込みを実装する
 - [x] 認証済み送信元の登録 / 管理境界を設計する
 - [x] accepted auth decision から registry registration への handoff を追加する
@@ -283,6 +292,7 @@
 - [x] `run_id` を設定から受け取る
 - [x] `app_version` / `protocol_version` を `AuthRequest` に入れて送信する
 - [x] 認証メッセージを 1 回だけ送信する PoC 処理を作る
+- [x] server / client one-shot auth round trip の手動確認手順を追加する
 - [ ] heartbeat 送信処理を作る
 - [ ] 画面キャプチャに成功する
 - [ ] Minecraft ウィンドウの取得確認をする
@@ -357,6 +367,7 @@
 ## 検証 / テスト
 - [x] 過去作業で `cargo fmt --check` が通ることを確認した
 - [x] 過去作業で `cargo check --workspace` が通ることを確認した
+- [x] one-shot auth round trip 手動確認手順を追加する
 - [x] `AuthResponse` encode の単体テストを追加する
 - [x] `HeartbeatAck` encode の単体テストを追加する
 - [x] `VideoFrame` encode の単体テストを追加する

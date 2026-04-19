@@ -1,5 +1,60 @@
 <!-- stream-sync/docs/operations/session-log.md -->
 
+## 2026-04-19
+### 種別
+- Codex
+
+### 今回の作業
+- server / client one-shot auth round trip の手動確認手順を追加した。
+- `docs/operations/auth-roundtrip-manual-check.md` を追加し、server / client の起動コマンド、使用 config path、成功時の stdout、失敗時に見る場所を整理した。
+- server PoC の成功時 stdout に `client_id`, `run_id`, `accepted`, `reason_code` を表示する最小観測補助を追加した。
+- client PoC の成功時 stdout に `client_id`, `run_id`, `protocol_version` を表示する最小観測補助を追加した。
+- README のドキュメント一覧に手動確認手順を追加した。
+
+### 変更ファイル
+- `README.md`
+- `apps/server/src/main.rs`
+- `apps/client/src/main.rs`
+- `docs/operations/auth-roundtrip-manual-check.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### 決定事項
+- 手動確認は既存の one-shot PoC をそのまま使い、ターミナル 2 つで server を先に起動してから client を起動する。
+- 使用 config は `configs/examples/server.example.toml` と `configs/examples/client.example.toml` とする。
+- 現在の example config は token が一致しないため、そのまま実行した場合は round trip 成功かつ auth decision は `accepted=false`, `reason_code=InvalidToken` になる。
+- accepted path を見る場合は、作業用 client config copy の `shared_token` を server 側 `player1` と同じ `replace-with-shared-token-1` に合わせる。
+- JSON Lines 出力、継続 loop、async runtime、heartbeat / video frame、retry、fragmentation、encryption は今回も範囲外とする。
+
+### 未解決事項
+- accepted path の手動実行確認
+- secret 解決本実装
+- JSON Lines 出力本実装
+- heartbeat / video frame 処理本体
+- 継続 receive / send loop
+
+### 次にやる候補
+- server / client one-shot auth round trip の accepted path を手動確認する
+- secret 解決方式と token 保護方針を設計する
+- receive rejection ログ出力本実装を行う
+
+### TODO更新
+- 完了:
+  - one-shot auth round trip 手動確認手順
+  - server / client PoC stdout の最小観測補助
+- 追加:
+  - accepted path の手動確認
+- 保留:
+  - 継続 loop / async runtime
+  - heartbeat / video frame 処理
+  - JSON Lines 出力本実装
+  - retry / fragmentation / encryption
+
+### メモ
+- 手動確認の責務は、既存 one-shot server/client PoC を順に起動し、stdout / stderr から UDP 1 往復と auth decision を確認できるようにすることまで。
+
+---
+
 ## 2026-04-18
 ### 種別
 - Codex

@@ -8,8 +8,12 @@ fn main() {
             match stream_sync_client::run_auth_request_poc_once_from_path(&config_path) {
                 Ok(outcome) => {
                     println!(
-                        "auth request PoC sent {} bytes to {}",
-                        outcome.bytes_sent, outcome.destination
+                        "auth request PoC sent {} bytes to {}; client_id={} run_id={} protocol_version={}",
+                        outcome.bytes_sent,
+                        outcome.destination,
+                        outcome.request.client_id.0,
+                        outcome.request.run_id.0,
+                        outcome.request.protocol_version.0
                     );
                 }
                 Err(error) => {

@@ -7,9 +7,15 @@ fn main() {
                 .unwrap_or_else(|| "configs/examples/server.example.toml".to_string());
             match stream_sync_server::run_auth_response_poc_once_from_path(&config_path) {
                 Ok(outcome) => {
+                    let decision = &outcome.outcome.auth_flow.decision;
                     println!(
-                        "auth response PoC handled one packet on {} and sent {} bytes",
-                        outcome.bind_address, outcome.outcome.bytes_sent
+                        "auth response PoC handled one packet on {} and sent {} bytes; client_id={} run_id={} accepted={} reason_code={:?}",
+                        outcome.bind_address,
+                        outcome.outcome.bytes_sent,
+                        decision.client_id.0,
+                        decision.run_id.0,
+                        decision.accepted,
+                        decision.reason_code
                     );
                 }
                 Err(error) => {
