@@ -1805,6 +1805,151 @@ impl PacketAcceptanceGateBoundary {
     }
 }
 
+/// Registered client packet ready to be handed to a server handler.
+///
+/// This is produced only after decode, route classification, packet acceptance,
+/// and authenticated sender registry lookup. It does not run heartbeat or video
+/// frame business logic.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ServerRegisteredClientPacket {
+    Heartbeat(ServerRegisteredHeartbeatPacket),
+    VideoFrame(ServerRegisteredVideoFramePacket),
+}
+
+/// Handler input for an accepted heartbeat packet.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ServerRegisteredHeartbeatPacket {
+    pub source: PacketSource,
+    pub authenticated_sender: AuthenticatedSenderEntry,
+    pub heartbeat: Heartbeat,
+}
+
+/// Handler input for an accepted video frame packet.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ServerRegisteredVideoFramePacket {
+    pub source: PacketSource,
+    pub authenticated_sender: AuthenticatedSenderEntry,
+    pub frame: VideoFrame,
+}
+
+/// Error from converting an accepted route into registered handler input.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ServerRegisteredPacketBoundaryError {
+    NotClientScoped { message_type: MessageType },
+    NotAccepted(PacketAcceptanceRejection),
+}
+
+/// Bridge from accepted receive routes to future heartbeat / video handlers.
+///
+/// This boundary preserves the authenticated sender binding next to the decoded
+/// message so later handlers do not repeat source-authentication policy. It
+/// does not update heartbeat state, enqueue video frames, emit logs, drop
+/// packets, manage timeout, or perform reauthentication.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct ServerRegisteredPacketBoundary {
+    gate: PacketAcceptanceGateBoundary,
+    registry: AuthenticatedSenderRegistryBoundary,
+}
+
+impl ServerRegisteredPacketBoundary {
+    pub fn prepare_for_handler(
+        &self,
+        registry: &AuthenticatedSenderRegistry,
+        route: ServerInboundRoute,
+    ) -> Result<ServerRegisteredClientPacket, ServerRegisteredPacketBoundaryError> {
+        match self.gate.evaluate_route(registry, &route) {
+            PacketAcceptanceDecision::Accepted => self.attach_sender(registry, route),
+            PacketAcceptanceDecision::Rejected(rejection) => {
+                Err(ServerRegisteredPacketBoundaryError::NotAccepted(rejection))
+            }
+        }
+    }
+
+    fn attach_sender(
+        &self,
+        registry: &AuthenticatedSenderRegistry,
+        route: ServerInboundRoute,
+    ) -> Result<ServerRegisteredClientPacket, ServerRegisteredPacketBoundaryError> {
+        match route {
+            ServerInboundRoute::Heartbeat { source, heartbeat } => {
+                let authenticated_sender = self.require_sender(
+                    registry,
+                    &heartbeat.client_id,
+                    source,
+                    MessageType::Heartbeat,
+                )?;
+                Ok(ServerRegisteredClientPacket::Heartbeat(
+                    ServerRegisteredHeartbeatPacket {
+                        source,
+                        authenticated_sender,
+                        heartbeat,
+                    },
+                ))
+            }
+            ServerInboundRoute::VideoFrame { source, frame } => {
+                let authenticated_sender = self.require_sender(
+                    registry,
+                    &frame.client_id,
+                    source,
+                    MessageType::VideoFrame,
+                )?;
+                Ok(ServerRegisteredClientPacket::VideoFrame(
+                    ServerRegisteredVideoFramePacket {
+                        source,
+                        authenticated_sender,
+                        frame,
+                    },
+                ))
+            }
+            ServerInboundRoute::AuthRequest { .. } => {
+                Err(ServerRegisteredPacketBoundaryError::NotClientScoped {
+                    message_type: MessageType::AuthRequest,
+                })
+            }
+            ServerInboundRoute::UnsupportedForServer { message_type, .. } => {
+                Err(ServerRegisteredPacketBoundaryError::NotClientScoped { message_type })
+            }
+        }
+    }
+
+    fn require_sender(
+        &self,
+        registry: &AuthenticatedSenderRegistry,
+        client_id: &ClientId,
+        source: PacketSource,
+        message_type: MessageType,
+    ) -> Result<AuthenticatedSenderEntry, ServerRegisteredPacketBoundaryError> {
+        match self.registry.check_source(registry, client_id, source) {
+            AuthenticatedSenderCheck::Accepted(entry) => Ok(entry),
+            AuthenticatedSenderCheck::Rejected(
+                AuthenticatedSenderRejectReason::EndpointMismatch,
+            ) => Err(ServerRegisteredPacketBoundaryError::NotAccepted(
+                PacketAcceptanceRejection {
+                    source,
+                    message_type,
+                    client_id: Some(client_id.clone()),
+                    reason: PacketAcceptanceRejectReason::EndpointMismatch,
+                },
+            )),
+            AuthenticatedSenderCheck::Rejected(AuthenticatedSenderRejectReason::UnknownClient) => {
+                let reason = if registry.contains_source(source) {
+                    PacketAcceptanceRejectReason::UnknownClient
+                } else {
+                    PacketAcceptanceRejectReason::UnauthenticatedSource
+                };
+                Err(ServerRegisteredPacketBoundaryError::NotAccepted(
+                    PacketAcceptanceRejection {
+                        source,
+                        message_type,
+                        client_id: Some(client_id.clone()),
+                        reason,
+                    },
+                ))
+            }
+        }
+    }
+}
+
 /// Errors at the server auth handoff boundary.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ServerAuthBoundaryError {
@@ -3712,6 +3857,97 @@ shared_token = "secret"
                 message_type: MessageType::VideoFrame,
                 client_id: Some(ClientId("client-1".to_string())),
                 reason: PacketAcceptanceRejectReason::EndpointMismatch,
+            })
+        );
+    }
+
+    #[test]
+    fn registered_packet_boundary_prepares_heartbeat_handler_input() {
+        let source = packet_source();
+        let registry = registry_with_client("client-1", source);
+        let route = heartbeat_route("client-1", source);
+        let boundary = ServerRegisteredPacketBoundary::default();
+
+        let packet = boundary
+            .prepare_for_handler(&registry, route)
+            .expect("registered heartbeat should be prepared for handler");
+
+        let ServerRegisteredClientPacket::Heartbeat(heartbeat) = packet else {
+            panic!("expected registered heartbeat packet");
+        };
+        assert_eq!(heartbeat.source, source);
+        assert_eq!(
+            heartbeat.authenticated_sender.client_id,
+            ClientId("client-1".to_string())
+        );
+        assert_eq!(heartbeat.authenticated_sender.source, source);
+        assert_eq!(
+            heartbeat.heartbeat.client_id,
+            ClientId("client-1".to_string())
+        );
+    }
+
+    #[test]
+    fn registered_packet_boundary_prepares_video_frame_handler_input() {
+        let source = packet_source();
+        let registry = registry_with_client("client-1", source);
+        let route = video_frame_route("client-1", source);
+        let boundary = ServerRegisteredPacketBoundary::default();
+
+        let packet = boundary
+            .prepare_for_handler(&registry, route)
+            .expect("registered video frame should be prepared for handler");
+
+        let ServerRegisteredClientPacket::VideoFrame(frame) = packet else {
+            panic!("expected registered video frame packet");
+        };
+        assert_eq!(frame.source, source);
+        assert_eq!(
+            frame.authenticated_sender.client_id,
+            ClientId("client-1".to_string())
+        );
+        assert_eq!(frame.authenticated_sender.source, source);
+        assert_eq!(frame.frame.client_id, ClientId("client-1".to_string()));
+    }
+
+    #[test]
+    fn registered_packet_boundary_keeps_rejection_for_unregistered_packet() {
+        let source = packet_source();
+        let registry = AuthenticatedSenderRegistry::default();
+        let route = heartbeat_route("client-1", source);
+        let boundary = ServerRegisteredPacketBoundary::default();
+
+        let result = boundary.prepare_for_handler(&registry, route);
+
+        assert_eq!(
+            result,
+            Err(ServerRegisteredPacketBoundaryError::NotAccepted(
+                PacketAcceptanceRejection {
+                    source,
+                    message_type: MessageType::Heartbeat,
+                    client_id: Some(ClientId("client-1".to_string())),
+                    reason: PacketAcceptanceRejectReason::UnauthenticatedSource,
+                }
+            ))
+        );
+    }
+
+    #[test]
+    fn registered_packet_boundary_rejects_auth_route_as_not_client_scoped() {
+        let source = packet_source();
+        let registry = AuthenticatedSenderRegistry::default();
+        let route = ServerInboundRoute::AuthRequest {
+            source,
+            request: auth_request("client-1", "presented-secret"),
+        };
+        let boundary = ServerRegisteredPacketBoundary::default();
+
+        let result = boundary.prepare_for_handler(&registry, route);
+
+        assert_eq!(
+            result,
+            Err(ServerRegisteredPacketBoundaryError::NotClientScoped {
+                message_type: MessageType::AuthRequest,
             })
         );
     }

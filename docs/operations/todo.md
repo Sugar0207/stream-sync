@@ -3,6 +3,12 @@
 # StreamSync TODO
 
 ## 2026-04-19 Codex update
+- [x] heartbeat / video frame handler へ registered packet を渡す接続方針を整理する
+- [x] `ServerRegisteredPacketBoundary` / registered handler input placeholder を追加する
+- [x] receive loop / gate / registry / handler の責務分離を docs に反映する
+- 次の中心: auth / receive JSON Lines file sink 方針、secret store / rotation 方針、heartbeat handler 最小 ack 接続
+
+## 2026-04-19 Codex update
 - [x] `shared_token_env` one-shot auth round trip accepted path を実機手動確認する
 - [x] 実行コマンド、環境変数設定、観測結果を `docs/operations/auth-roundtrip-manual-check.md` に記録する
 - [x] env-token helper config では 4 つの `STREAMSYNC_PLAYER*_TOKEN` が必要なことを手順に反映する
@@ -35,7 +41,7 @@
 - `crates/config` の server auth 設定 TOML 読み込み最小実装は完了
 - `crates/config` の `shared_token` / `shared_token_env` token reference 読み分けと inline secret debug redaction は完了
 - `crates/net-core` の inbound decode 境界、outbound packet / queue 境界、outbound queue lifecycle 境界、protocol encoder 呼び出し境界、send error / log event 分類 placeholder、UDP socket 1 datagram receive / send adapter は完了
-- `apps/server` の inbound router、UDP receive loop step、UDP socket adapter 接続、auth response PoC one-shot 起動接続、auth response PoC 起動設定接続、receive loop から packet acceptance gate への接続境界、packet acceptance rejection の drop / log handoff 境界、receive rejection JSON Lines event schema 境界、receive rejection stderr JSON Lines 最小出力、auth handler boundary、auth config input boundary、server auth decision 最小実装、`shared_token_env` secret resolver 最小実装、auth success / failure log handoff 境界、auth JSON Lines event schema 境界、auth result stderr JSON Lines 最小出力、auth flow step、認証済み送信元 registry 境界、packet acceptance gate 境界、AuthResponse response boundary、HeartbeatAck ack boundary、outbound queue handoff は完了
+- `apps/server` の inbound router、UDP receive loop step、UDP socket adapter 接続、auth response PoC one-shot 起動接続、auth response PoC 起動設定接続、receive loop から packet acceptance gate への接続境界、registered packet handler handoff 境界、packet acceptance rejection の drop / log handoff 境界、receive rejection JSON Lines event schema 境界、receive rejection stderr JSON Lines 最小出力、auth handler boundary、auth config input boundary、server auth decision 最小実装、`shared_token_env` secret resolver 最小実装、auth success / failure log handoff 境界、auth JSON Lines event schema 境界、auth result stderr JSON Lines 最小出力、auth flow step、認証済み送信元 registry 境界、packet acceptance gate 境界、AuthResponse response boundary、HeartbeatAck ack boundary、outbound queue handoff は完了
 - accepted auth path で `AuthenticatedSenderRegistry` へ in-memory 登録する実処理は完了
 - `apps/client` の client 設定読み込み、AuthRequest 構築、protocol encoder、UDP one-shot send の PoC 入口は完了
 - server / client one-shot auth round trip の手動確認手順と accepted path 用 helper config は完了
@@ -43,7 +49,7 @@
 - accepted path の手動確認は成功し、`configs/examples/server.example.toml` と `configs/examples/client.accepted.example.toml` の組み合わせで `accepted=true`, `reason_code=Ok` を観測済み
 - `shared_token_env` accepted path の手動確認は成功し、`configs/examples/server.env-token.example.toml` と `configs/examples/client.accepted.example.toml` の組み合わせで `accepted=true`, `reason_code=Ok` を観測済み
 - secret store 連携、token hashing / rotation、認証済み送信元の timeout / 失効 / 再認証、実際の packet 破棄、`ClientStats` / `ServerNotice` など残り message の encode 本実装、時刻同期本体、映像受信・復号・表示、switcher UI は未実装
-- 次の中心は heartbeat / video frame handler 接続方針、auth / receive JSON Lines file sink 方針、secret store / rotation 方針
+- 次の中心は auth / receive JSON Lines file sink 方針、secret store / rotation 方針、heartbeat handler 最小 ack 接続
 
 ---
 
@@ -73,9 +79,9 @@
 ---
 
 ## 直近でやること
-1. heartbeat / video frame handler へ registered packet を渡す接続方針を整理する
-2. auth / receive JSON Lines の file sink 設定方針を整理する
-3. secret store 連携や token rotation の方針を整理する
+1. auth / receive JSON Lines の file sink 設定方針を整理する
+2. secret store 連携や token rotation の方針を整理する
+3. heartbeat handler の最小 ack 接続範囲を整理する
 4. outbound queue の実処理範囲と backpressure 方針を実装前に詰める
 5. `ClientStats` / `ServerNotice` の payload layout と decode / encode 方針を決める
 
@@ -105,6 +111,7 @@
 - [x] accepted auth path で認証済み送信元を in-memory registry へ登録する
 - [x] 未認証 / endpoint mismatch packet の破棄境界を整理する
 - [x] receive loop から packet acceptance gate を呼ぶ接続境界を整理する
+- [x] registered packet を heartbeat / video frame handler へ渡す接続方針を整理する
 - [x] packet acceptance rejection を drop / log layer へ渡す境界を整理する
 - [x] AuthResponse 生成 / 送信境界を整理する
 - [x] outbound packet / queue 境界を整理する
@@ -185,6 +192,7 @@
 - [x] server 側 `ServerHeartbeatAckBoundary` / `ServerOutboundHeartbeatAck` placeholder を追加する
 - [x] server 側 `AuthenticatedSenderRegistryBoundary` / `AuthenticatedSenderRegistry` placeholder を追加する
 - [x] server 側 `PacketAcceptanceGateBoundary` / `PacketAcceptanceDecision` placeholder を追加する
+- [x] server 側 `ServerRegisteredPacketBoundary` / registered handler input placeholder を追加する
 - [x] `ServerReceiveLoopGateOutcome` / receive loop から gate を呼ぶ接続 helper を追加する
 - [x] `ServerRejectionDropLogHandoffBoundary` / drop-log handoff input placeholder を追加する
 - [x] `ServerReceiveRejectionJsonLogEventBoundary` / receive rejection JSON Lines event input placeholder を追加する

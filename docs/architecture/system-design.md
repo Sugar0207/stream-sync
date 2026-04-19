@@ -1197,6 +1197,58 @@ remain future tasks.
 
 ---
 
+## Registered Packet Handler Handoff Boundary
+
+After packet acceptance succeeds, heartbeat and video frame handlers need both
+the decoded message and the authenticated sender binding. The registered packet
+handoff boundary is the bridge from an accepted route to handler input.
+
+Flow:
+
+1. `ServerReceiveLoopStep` decodes packet bytes and routes them into
+   `ServerInboundRoute`.
+2. `PacketAcceptanceGateBoundary` accepts only packets whose `client_id` and
+   source endpoint match `AuthenticatedSenderRegistry`.
+3. `ServerRegisteredPacketBoundary` receives the accepted route plus the
+   registry.
+4. For `Heartbeat`, it produces `ServerRegisteredHeartbeatPacket` containing
+   source endpoint, `AuthenticatedSenderEntry`, and decoded `Heartbeat`.
+5. For `VideoFrame`, it produces `ServerRegisteredVideoFramePacket` containing
+   source endpoint, `AuthenticatedSenderEntry`, and decoded `VideoFrame`.
+6. `AuthRequest` and unsupported routes are not client-scoped handler inputs
+   for this boundary.
+7. The boundary may return the same typed acceptance rejection if a caller
+   invokes it with an unregistered or mismatched packet.
+
+Responsibility split:
+
+- receive loop
+  - Owns decode, routing, and calling the packet acceptance gate.
+  - Does not build heartbeat ack data or enqueue video frames.
+- packet acceptance gate
+  - Owns accept / reject policy before handler execution.
+  - Does not construct handler input.
+- authenticated sender registry
+  - Owns the `client_id` to endpoint binding and returns the registered sender
+    entry.
+  - Does not run handler behavior.
+- registered packet boundary
+  - Attaches the authenticated sender entry to accepted heartbeat / video frame
+    routes.
+  - Does not update heartbeat state, calculate RTT, buffer video, write logs,
+    drop packets, manage timeout, or reauthenticate.
+- heartbeat / video frame handlers
+  - Future owner of heartbeat ack decisions, RTT / offset input, video frame
+    buffer handoff, and frame drop policy after source acceptance.
+
+Current code reflects this with `apps/server::ServerRegisteredPacketBoundary`,
+`ServerRegisteredClientPacket`, `ServerRegisteredHeartbeatPacket`, and
+`ServerRegisteredVideoFramePacket`. This is a bridge only; heartbeat processing,
+video buffering, sync decisions, and outbound ack execution remain
+unimplemented.
+
+---
+
 ## Receive Rejection Drop / Log Handoff Boundary
 
 PoC / MVP initial implementation keeps packet rejection handling split into

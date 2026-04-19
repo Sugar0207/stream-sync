@@ -1548,6 +1548,52 @@ adapter; actual packet discard and logging are still out of scope.
 
 ---
 
+### Registered Packet Handler Handoff Boundary
+
+Accepted heartbeat and video frame routes are still not enough for handler
+execution because handlers also need the authenticated sender binding that
+proved the packet is allowed. The registered packet handoff boundary attaches
+that binding to decoded handler input.
+
+Flow:
+
+1. Receive loop returns an accepted `ServerInboundRoute` after decode, routing,
+   and packet acceptance gate evaluation.
+2. `ServerRegisteredPacketBoundary` receives the accepted route plus
+   `AuthenticatedSenderRegistry`.
+3. `Heartbeat` routes become `ServerRegisteredHeartbeatPacket` with source,
+   `AuthenticatedSenderEntry`, and decoded `Heartbeat`.
+4. `VideoFrame` routes become `ServerRegisteredVideoFramePacket` with source,
+   `AuthenticatedSenderEntry`, and decoded `VideoFrame`.
+5. The boundary rejects `AuthRequest` and unsupported routes as
+   `NotClientScoped`.
+6. If a caller passes an unregistered or endpoint-mismatched client packet, the
+   boundary preserves the typed packet acceptance rejection.
+
+Responsibility split:
+
+- receive loop / gate
+  - Decide whether the packet may reach a handler.
+  - Do not run handler logic.
+- authenticated sender registry
+  - Supplies the registered sender entry.
+  - Does not own heartbeat or video semantics.
+- registered packet boundary
+  - Converts accepted client-scoped routes into handler inputs.
+  - Does not calculate RTT, build `HeartbeatAck`, buffer frames, drop late
+    frames, write logs, or manage timeout.
+- heartbeat handler
+  - Future owner of heartbeat state updates and ack input creation.
+- video frame handler
+  - Future owner of frame acceptance beyond source auth and sync buffer handoff.
+
+Current implementation: `apps/server::ServerRegisteredPacketBoundary`,
+`ServerRegisteredClientPacket`, `ServerRegisteredHeartbeatPacket`, and
+`ServerRegisteredVideoFramePacket`. These are typed bridge values only; handler
+business logic remains unimplemented.
+
+---
+
 ### Receive Rejection Drop / Log Handoff Boundary
 
 Receive-side rejections remain typed when they leave the receive loop / gate.

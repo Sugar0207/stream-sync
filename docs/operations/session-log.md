@@ -5,6 +5,58 @@
 - Codex
 
 ### 今回の作業
+- heartbeat / video frame handler へ registered packet を渡す接続方針を整理した。
+- `apps/server` に `ServerRegisteredPacketBoundary`, `ServerRegisteredClientPacket`, `ServerRegisteredHeartbeatPacket`, `ServerRegisteredVideoFramePacket` を追加した。
+- accepted route と authenticated sender registry から、handler 用の decoded message + authenticated sender binding を作る bridge を追加した。
+- docs に receive loop / gate / registry / registered packet boundary / handler の責務分離を追記した。
+
+### 変更ファイル
+- `apps/server/src/lib.rs`
+- `docs/architecture/system-design.md`
+- `docs/architecture/protocol.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### 決定事項
+- packet acceptance gate は accept / reject の判定までを担当し、handler input は作らない。
+- registered packet boundary が `Heartbeat` / `VideoFrame` route に `AuthenticatedSenderEntry` を添えて handler input にする。
+- `AuthRequest` と unsupported route は registered client packet boundary では `NotClientScoped` とする。
+- heartbeat state 更新、RTT / offset 計算、`HeartbeatAck` queue handoff、video frame buffering は今回も未実装に残す。
+
+### 未解決事項
+- heartbeat handler の最小 ack 接続
+- video frame handler の最小 buffer handoff
+- auth / receive JSON Lines の file sink 設定方針
+- secret store 連携や token rotation 方針
+
+### 次にやる候補
+- auth / receive JSON Lines の file sink 設定方針を整理する
+- secret store 連携や token rotation の方針を整理する
+- heartbeat handler の最小 ack 接続範囲を整理する
+
+### TODO更新
+- 完了:
+  - registered packet handler handoff 方針
+  - `ServerRegisteredPacketBoundary` / registered handler input placeholder 追加
+  - receive loop / gate / registry / handler の責務分離更新
+- 追加:
+  - heartbeat handler の最小 ack 接続範囲
+- 保留:
+  - heartbeat / video frame 処理本体
+  - async runtime
+  - secret store 連携
+  - file sink / rotation / retention
+
+### メモ
+- `cargo fmt --check`、`cargo check --workspace`、`cargo test -p stream-sync-server registered_packet_boundary` が通ることを確認した。
+
+---
+
+## 2026-04-19
+### 種別
+- Codex
+
+### 今回の作業
 - `shared_token_env` one-shot auth round trip を実機手動確認し、結果を repo 内 docs に記録した。
 - `docs/operations/auth-roundtrip-manual-check.md` に実行コマンド、server 環境変数、client / server の観測結果を追記した。
 - env-token helper config では `player1` から `player4` までの token reference を resolver がまとめて解決するため、4 つすべての `STREAMSYNC_PLAYER*_TOKEN` を設定する必要があることを手順へ反映した。
