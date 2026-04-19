@@ -1290,13 +1290,38 @@ Responsibility split:
   - Converts auth log handoff input into event-schema input.
   - Preserves `run_id`, `client_id`, source, accepted flag, reason, message,
     versions, and timestamp.
-  - Does not perform JSON Lines output.
+  - Does not choose sinks, retention, or metrics behavior.
 - log writer
-  - Future owner of serializing one JSON object per line and writing it.
+  - Current minimal writer serializes this one auth event shape to an
+    `io::Write` sink.
+  - Future owner of file sinks, rotation, buffering, and a broader JSON Lines
+    framework.
 
 Current implementation: `apps/server::ServerAuthJsonLogEventBoundary` and
-`ServerAuthJsonLogEventInput`. JSON Lines output, file rotation, sinks, and
-metrics updates remain future work.
+`ServerAuthJsonLogEventInput`. `ServerAuthLogOutputBoundary` connects that
+event schema to `ServerAuthJsonLineWriter`. The boundary is available for the
+next server writer connection step, but the one-shot server CLI does not emit
+auth result JSON Lines by default yet. File rotation, configured sinks, async
+logging, and metrics updates remain future work.
+
+Example shape:
+
+```json
+{"event_name":"server.auth_result","run_id":"run-1","client_id":"client-1","source":"127.0.0.1:5000","accepted":false,"reason_code":"InvalidToken","message":"invalid shared_token","app_version":"0.1.0","protocol_version":1,"timestamp":2000300,"expected_protocol_version":2}
+```
+
+### JSON Lines Writer Connection Scope
+
+Auth result and receive rejection logs use parallel connection boundaries:
+
+| Log family | Handoff input | Event schema input | Writer boundary | Current default sink |
+| --- | --- | --- | --- | --- |
+| Auth result | `ServerAuthLogInput` | `ServerAuthJsonLogEventInput` | `ServerAuthLogOutputBoundary` | None yet |
+| Receive rejection | `ServerPacketLogInput` | `ServerReceiveRejectionJsonLogEventInput` | `ServerReceiveRejectionLogOutputBoundary` | one-shot server stderr |
+
+Both writers are schema-specific and synchronous over caller-owned
+`io::Write`. They do not define process-wide logger setup, file paths, rotation,
+retention, async logging, metrics fanout, or a generic logging crate API.
 
 ### Connected Server Auth Flow Step
 

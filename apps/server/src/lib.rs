@@ -1708,6 +1708,81 @@ pub struct ServerAuthJsonLogEventInput {
     pub expected_protocol_version: Option<ProtocolVersion>,
 }
 
+/// Minimal auth result log output boundary.
+///
+/// This connects the existing auth log handoff and event schema to an
+/// `io::Write` sink. It writes one JSON Lines record and does not own files,
+/// rotation, async I/O, buffering policy, metrics, or global logging config.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct ServerAuthLogOutputBoundary {
+    event: ServerAuthJsonLogEventBoundary,
+    writer: ServerAuthJsonLineWriter,
+}
+
+impl ServerAuthLogOutputBoundary {
+    pub fn write_auth_result<W: io::Write>(
+        &self,
+        input: ServerAuthLogInput,
+        timestamp: TimestampMicros,
+        writer: W,
+    ) -> io::Result<ServerAuthJsonLogEventInput> {
+        let event = self.event.build_event(input, timestamp);
+        self.writer.write_event(&event, writer)?;
+        Ok(event)
+    }
+}
+
+/// Minimal JSON Lines writer for auth result events.
+///
+/// This is schema-specific and intentionally separate from receive rejection
+/// output. A future shared writer can replace it while keeping the auth event
+/// schema stable.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct ServerAuthJsonLineWriter;
+
+impl ServerAuthJsonLineWriter {
+    pub fn write_event<W: io::Write>(
+        &self,
+        event: &ServerAuthJsonLogEventInput,
+        mut writer: W,
+    ) -> io::Result<()> {
+        write!(writer, "{{")?;
+        write_json_field(&mut writer, "event_name", event.event_name)?;
+        write!(writer, ",")?;
+        write_json_field(&mut writer, "run_id", &event.run_id.0)?;
+        write!(writer, ",")?;
+        write_json_field(&mut writer, "client_id", &event.client_id.0)?;
+        write!(writer, ",")?;
+        write_json_field(&mut writer, "source", &event.source.address.to_string())?;
+        write!(writer, ",\"accepted\":{}", event.accepted)?;
+        write!(writer, ",")?;
+        write_json_field(
+            &mut writer,
+            "reason_code",
+            auth_response_reason_code_name(event.reason_code),
+        )?;
+        write!(writer, ",")?;
+        write_optional_json_field(&mut writer, "message", event.message.as_deref())?;
+        write!(writer, ",")?;
+        write_optional_json_field(
+            &mut writer,
+            "app_version",
+            event
+                .app_version
+                .as_ref()
+                .map(|app_version| app_version.0.as_str()),
+        )?;
+        write!(writer, ",\"protocol_version\":{}", event.protocol_version.0)?;
+        write!(writer, ",\"timestamp\":{}", event.timestamp.0)?;
+        write!(writer, ",\"expected_protocol_version\":")?;
+        match event.expected_protocol_version {
+            Some(protocol_version) => write!(writer, "{}", protocol_version.0)?,
+            None => write!(writer, "null")?,
+        }
+        writeln!(writer, "}}")
+    }
+}
+
 /// Boundary that converts auth decisions into outbound auth responses.
 ///
 /// This builds the typed `AuthResponse` message and destination handoff only.
@@ -1840,6 +1915,17 @@ impl ServerOutboundQueueBoundary {
 
     pub fn handoff_heartbeat_ack(&self, ack: ServerOutboundHeartbeatAck) -> OutboundQueueItem {
         self.queue.handoff(ack.into_outbound_packet())
+    }
+}
+
+fn auth_response_reason_code_name(reason_code: AuthResponseReasonCode) -> &'static str {
+    match reason_code {
+        AuthResponseReasonCode::Ok => "Ok",
+        AuthResponseReasonCode::InvalidToken => "InvalidToken",
+        AuthResponseReasonCode::UnknownClient => "UnknownClient",
+        AuthResponseReasonCode::ProtocolMismatch => "ProtocolMismatch",
+        AuthResponseReasonCode::AlreadyConnected => "AlreadyConnected",
+        AuthResponseReasonCode::InternalError => "InternalError",
     }
 }
 
@@ -2721,6 +2807,65 @@ shared_token = "secret"
         assert_eq!(event.protocol_version, ProtocolVersion(1));
         assert_eq!(event.expected_protocol_version, Some(ProtocolVersion(2)));
         assert_eq!(event.timestamp, TimestampMicros(2_000_200));
+    }
+
+    #[test]
+    fn auth_json_line_writer_outputs_minimal_json_line() {
+        let writer = ServerAuthJsonLineWriter;
+        let event = ServerAuthJsonLogEventInput {
+            event_name: SERVER_AUTH_JSON_LOG_EVENT_NAME,
+            run_id: RunId("run-1".to_string()),
+            client_id: ClientId("client-1".to_string()),
+            source: packet_source(),
+            accepted: false,
+            reason_code: AuthResponseReasonCode::InvalidToken,
+            message: Some("invalid shared_token".to_string()),
+            app_version: Some(AppVersion("0.1.0".to_string())),
+            protocol_version: ProtocolVersion(1),
+            timestamp: TimestampMicros(2_000_300),
+            expected_protocol_version: Some(ProtocolVersion(2)),
+        };
+        let mut output = Vec::new();
+
+        writer
+            .write_event(&event, &mut output)
+            .expect("json line should write");
+
+        assert_eq!(
+            String::from_utf8(output).expect("json line should be utf8"),
+            r#"{"event_name":"server.auth_result","run_id":"run-1","client_id":"client-1","source":"127.0.0.1:5000","accepted":false,"reason_code":"InvalidToken","message":"invalid shared_token","app_version":"0.1.0","protocol_version":1,"timestamp":2000300,"expected_protocol_version":2}"#
+                .to_string()
+                + "\n"
+        );
+    }
+
+    #[test]
+    fn auth_log_output_boundary_connects_event_schema_and_writer() {
+        let input = ServerAuthLogInput {
+            source: packet_source(),
+            client_id: ClientId("client-1".to_string()),
+            run_id: RunId("run-1".to_string()),
+            app_version: None,
+            protocol_version: ProtocolVersion(1),
+            outcome: ServerAuthLogOutcome::Success,
+            reason_code: AuthResponseReasonCode::Ok,
+            message: None,
+            server_time: None,
+            expected_protocol_version: None,
+        };
+        let boundary = ServerAuthLogOutputBoundary::default();
+        let mut output = Vec::new();
+
+        let event = boundary
+            .write_auth_result(input, TimestampMicros(2_000_400), &mut output)
+            .expect("json line should write");
+
+        assert!(event.accepted);
+        let output = String::from_utf8(output).expect("json line should be utf8");
+        assert!(output.contains(r#""event_name":"server.auth_result""#));
+        assert!(output.contains(r#""accepted":true"#));
+        assert!(output.contains(r#""reason_code":"Ok""#));
+        assert!(output.contains(r#""timestamp":2000400"#));
     }
 
     #[test]

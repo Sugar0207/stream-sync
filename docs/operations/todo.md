@@ -3,6 +3,12 @@
 # StreamSync TODO
 
 ## 2026-04-19 Codex update
+- [x] auth success / failure と receive rejection の JSON Lines writer 接続範囲を整理する
+- [x] `ServerAuthLogOutputBoundary` / `ServerAuthJsonLineWriter` を追加する
+- [x] auth / receive writer の現在の sink 範囲と未実装範囲を docs に反映する
+- 次の中心: secret resolver 本実装範囲の確定、認証済み送信元登録の実処理、auth result writer の CLI 接続判断
+
+## 2026-04-19 Codex update
 - [x] receive rejection ログ出力の最小実装を追加する
 - [x] `ServerReceiveRejectionLogOutputBoundary` / `ServerReceiveRejectionJsonLineWriter` を追加する
 - [x] one-shot server CLI の receive rejection 時に stderr へ JSON Lines 1 行を出す
@@ -96,7 +102,7 @@
 - server / client one-shot auth round trip の手動確認手順と accepted path 用 helper config は完了
 - accepted path の手動確認は成功し、`configs/examples/server.example.toml` と `configs/examples/client.accepted.example.toml` の組み合わせで `accepted=true`, `reason_code=Ok` を観測済み
 - secret resolver 本実装、認証済み送信元の timeout / 失効 / 再認証、実際の packet 破棄 / ログ出力、`ClientStats` / `ServerNotice` など残り message の encode 本実装、時刻同期本体、映像受信・復号・表示、switcher UI は未実装
-- 次の中心は auth / receive ログ writer 接続範囲の整理、secret resolver 本実装範囲の確定、認証済み送信元登録の実処理
+- 次の中心は secret resolver 本実装範囲の確定、認証済み送信元登録の実処理、auth result writer の CLI 接続判断
 
 ---
 
@@ -126,9 +132,9 @@
 ---
 
 ## 直近でやること
-1. auth success / failure と receive rejection の JSON Lines writer 接続範囲を決める
-2. secret resolver 本実装範囲を確定する
-3. 認証済み送信元登録の実処理を auth accepted path へ接続する
+1. secret resolver 本実装範囲を確定する
+2. 認証済み送信元登録の実処理を auth accepted path へ接続する
+3. auth result writer を one-shot / future loop のどこで有効化するか決める
 4. outbound queue の実処理範囲と backpressure 方針を実装前に詰める
 5. `ClientStats` / `ServerNotice` の payload layout と decode / encode 方針を決める
 
@@ -165,6 +171,7 @@
 - [x] UDP socket 送信前の send error / log event 方針を整理する
 - [x] receive rejection の JSON Lines ログイベント仕様を整理する
 - [x] receive rejection ログ出力の最小実装を追加する
+- [x] auth / receive JSON Lines writer 接続範囲を整理する
 - [x] UDP socket 受信 / 送信本体の最小実装を追加する
 - [x] `VideoFrame` encode 方針と最小実装範囲を整理する
 - [x] UDP socket を auth response PoC の起動処理へ最小接続する
@@ -263,6 +270,7 @@
 - [x] `ServerAuthDecision` / `ServerAuthResponseBoundary` / `ServerOutboundAuthResponse` placeholder を追加する
 - [x] `ServerAuthLogHandoffBoundary` / `ServerAuthLogInput` placeholder を追加する
 - [x] `ServerAuthJsonLogEventBoundary` / `ServerAuthJsonLogEventInput` placeholder を追加する
+- [x] `ServerAuthLogOutputBoundary` / auth result JSON Lines writer を追加する
 - [x] 認証判定入力として `shared_token` / `client_id` / `protocol_version` / `app_version` を参照できる形を定義する
 - [x] client whitelist / token 情報を認証判定入力へ変換する設定入力境界を定義する
 - [x] server auth decision の最小実装を追加する
@@ -383,6 +391,8 @@
 - [x] auth success / failure の JSON Lines ログイベント仕様を整理する
 - [x] receive rejection の JSON Lines ログイベント仕様を整理する
 - [x] receive rejection JSON Lines の最小 stderr 出力を実装する
+- [x] auth result JSON Lines writer boundary を追加する
+- [x] auth / receive JSON Lines writer 接続範囲を整理する
 - [ ] ログイベント型を定義する
 - [ ] JSON Lines 形式でログ出力する
 - [ ] `run_id` / `client_id` を各ログに付与する

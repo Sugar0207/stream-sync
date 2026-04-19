@@ -5,6 +5,60 @@
 - Codex
 
 ### 今回の作業
+- auth success / failure と receive rejection の JSON Lines writer 接続範囲を整理した。
+- `apps/server` に `ServerAuthLogOutputBoundary` と `ServerAuthJsonLineWriter` を追加し、既存の `ServerAuthJsonLogEventBoundary` から 1 行 JSON Lines を `io::Write` へ出せるようにした。
+- receive rejection 側の既存 `ServerReceiveRejectionLogOutputBoundary` と並ぶ接続形として、auth result / receive rejection の handoff input、event schema input、writer boundary、current sink を docs に整理した。
+- `docs/architecture/system-design.md` と `docs/architecture/protocol.md` に、schema-specific writer までを現在の接続範囲とし、file sink / rotation / async logging / 汎用 logging crate API は未実装に残す方針を追記した。
+
+### 変更ファイル
+- `apps/server/src/lib.rs`
+- `docs/architecture/system-design.md`
+- `docs/architecture/protocol.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### 決定事項
+- auth result と receive rejection は、typed handoff input -> event schema input -> schema-specific JSON Lines writer -> caller-owned `io::Write` sink の同じ接続形にする。
+- receive rejection は one-shot server CLI の stderr に接続済みとする。
+- auth result writer は boundary と writer まで追加し、CLI の既定出力にはまだ接続しない。
+- file sink、rotation、retention、async logging、metrics fanout、汎用 logging crate API は今回の範囲外とする。
+
+### 未解決事項
+- auth result writer を one-shot / future loop のどこで有効化するか
+- secret resolver 本実装範囲の確定
+- 認証済み送信元登録の実処理接続
+- file sink / rotation / retention
+- heartbeat / video frame 処理本体
+
+### 次にやる候補
+- secret resolver 本実装範囲を確定する
+- 認証済み送信元登録の実処理を auth accepted path へ接続する
+- auth result writer を one-shot / future loop のどこで有効化するか決める
+
+### TODO更新
+- 完了:
+  - auth / receive JSON Lines writer 接続範囲の整理
+  - `ServerAuthLogOutputBoundary` / `ServerAuthJsonLineWriter` の追加
+  - auth result writer の単体テスト
+- 追加:
+  - auth result writer の有効化位置の判断
+- 保留:
+  - 汎用 logging 基盤
+  - async runtime
+  - heartbeat / video frame 処理
+  - secret resolver 本実装
+
+### メモ
+- `cargo fmt --check` と `cargo check --workspace` が通ることを確認した。
+- `cargo test -p stream-sync-server auth_json` と `cargo test -p stream-sync-server log_output_boundary` が通ることを確認した。
+
+---
+
+## 2026-04-19
+### 種別
+- Codex
+
+### 今回の作業
 - receive rejection ログ出力の最小実装を追加した。
 - `apps/server` に `ServerReceiveRejectionLogOutputBoundary` と `ServerReceiveRejectionJsonLineWriter` を追加した。
 - 既存の `ServerRejectionDropLogHandoffBoundary` と `ServerReceiveRejectionJsonLogEventBoundary` を接続し、receive rejection を 1 行 JSON Lines として `io::Write` へ出力できるようにした。

@@ -912,14 +912,56 @@ Responsibility split:
 - JSON Lines event schema boundary
   - Maps typed auth log input to the auth result event schema.
   - Adds the explicit log `timestamp`.
-  - Does not perform JSON serialization, file I/O, metrics, UDP I/O, or auth
-    state mutation.
+  - Does not choose sinks, retention, metrics, UDP I/O, or auth state mutation.
 - log writer
-  - Future owner of JSON Lines serialization and output.
+  - Current minimal writer serializes the auth result event to one JSON Lines
+    record for an `io::Write` sink.
+  - Future owner of file sinks, rotation, buffering policy, retention, and
+    broader logging configuration.
 
 Current code reflects this with `apps/server::ServerAuthJsonLogEventBoundary`
-and `ServerAuthJsonLogEventInput`. These are event-schema inputs only; actual
-JSON Lines output remains unimplemented.
+and `ServerAuthJsonLogEventInput`. Minimal JSON Lines output is available
+through `ServerAuthLogOutputBoundary` and `ServerAuthJsonLineWriter`, but the
+server CLI does not emit auth result logs yet. This keeps auth result output
+available to the next writer connection step without expanding into a general
+logging framework.
+
+---
+
+## Server JSON Lines Writer Connection Scope
+
+Auth result and receive rejection logs now share the same connection shape:
+typed handoff input -> event schema boundary -> schema-specific JSON Lines
+writer -> caller-owned `io::Write` sink.
+
+Current connection scope:
+
+- auth result
+  - Handoff: `ServerAuthLogInput`
+  - Event schema: `ServerAuthJsonLogEventInput`
+  - Writer boundary: `ServerAuthLogOutputBoundary`
+  - Writer: `ServerAuthJsonLineWriter`
+  - Current sink: none wired by default; the boundary can write to any
+    caller-provided `io::Write`.
+- receive rejection
+  - Handoff: `ServerPacketLogInput`
+  - Event schema: `ServerReceiveRejectionJsonLogEventInput`
+  - Writer boundary: `ServerReceiveRejectionLogOutputBoundary`
+  - Writer: `ServerReceiveRejectionJsonLineWriter`
+  - Current sink: one-shot server CLI writes rejected receive events to stderr.
+
+Out of scope for this stage:
+
+- process-wide logger initialization
+- file path configuration
+- log rotation / retention
+- buffering and flush policy
+- async logging
+- metrics fanout
+- joining auth and receive events into a generic logging crate API
+
+This keeps both log families aligned without forcing a broad logging
+infrastructure before the PoC receive/auth path is stable.
 
 ---
 
