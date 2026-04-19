@@ -709,6 +709,67 @@ authenticated source state, and UDP sending remain unimplemented.
 
 ---
 
+## Server Secret Resolution and Token Protection Boundary
+
+PoC keeps inline `shared_token` support so the one-shot auth round trip remains
+easy to verify. MVP / production settings should treat inline token material as
+a placeholder and prefer a reference such as `shared_token_env`, which points to
+an environment variable name. The current scope defines the boundary and
+configuration shape only; it does not read environment variables or integrate a
+secret store.
+
+Flow:
+
+1. `ServerAuthConfigBoundary` reads each `[auth.clients.<client_id>]` entry.
+2. Exactly one of `shared_token` or `shared_token_env` may be set for a client.
+3. `shared_token` becomes `SharedTokenSecretRef::InlinePlaceholder`.
+4. `shared_token_env` becomes `SharedTokenSecretRef::EnvironmentVariable`.
+5. `ServerAuthConfigInputBoundary` carries those references into
+   `ServerAuthCheckInput` without resolving them.
+6. The future secret resolution boundary will convert external references into
+   verified token material before production auth decision.
+7. Until that resolver exists, `ServerAuthDecisionBoundary` accepts only inline
+   PoC placeholders and rejects unresolved external references with
+   `InternalError`.
+
+Token protection rules:
+
+- Do not log raw `shared_token` values from config or `AuthRequest`.
+- Do not include token material in JSON Lines auth events, receive rejection
+  events, panic messages, or debug-oriented operator messages.
+- `SharedTokenSecretRef` debug output redacts inline token material.
+- Environment variable names may be recorded as references, but their resolved
+  values must stay out of logs and auth responses.
+- `AuthResponse.message` must describe the failure class, not echo presented or
+  expected token material.
+- Config owns references only; auth input carries references; auth decision
+  compares only resolved or PoC inline material.
+
+Responsibility split:
+
+- config
+  - Parses `shared_token` and `shared_token_env` into typed secret references.
+  - Rejects missing, empty, or conflicting token references.
+  - Does not resolve environment variables, secret stores, or validate a
+    presented token.
+- auth input boundary
+  - Moves configured secret references next to decoded request context.
+  - Does not reveal, log, or resolve secret material.
+- secret resolution boundary
+  - Future owner of reading environment variables or secret stores.
+  - Produces token material for verification without exposing it to logs.
+- auth decision
+  - Owns whitelist lookup and token comparison against prepared material.
+  - Does not read TOML, environment variables, or external secret stores.
+
+Current code reflects this with `SharedTokenSecretRef::InlinePlaceholder`,
+`SharedTokenSecretRef::EnvironmentVariable`, and
+`apps/server::ServerSharedTokenSecretResolutionStatus`. The latter is a
+placeholder classification only; real environment variable lookup and secret
+store integration remain unimplemented.
+
+---
+
 ## Server Auth Decision Boundary
 
 PoC / MVP initial implementation now includes the smallest server auth decision

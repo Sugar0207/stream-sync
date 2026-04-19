@@ -13,6 +13,10 @@ protocol_version = 1
 [auth]
 enabled = true
 require_known_clients = true
+# PoC uses inline shared_token values for manual round-trip checks.
+# Future production configs should prefer shared_token_env = "ENV_NAME" and let
+# the server secret resolution boundary resolve the token material before auth
+# decision. Do not set shared_token and shared_token_env on the same client.
 
 [auth.clients.player1]
 display_name = "Player 1"

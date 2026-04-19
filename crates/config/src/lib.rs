@@ -1,6 +1,6 @@
 use std::{
     collections::BTreeMap,
-    fs,
+    fmt, fs,
     path::{Path, PathBuf},
 };
 
@@ -32,10 +32,25 @@ pub struct SharedTokenConfig {
 }
 
 /// Reference to token material that future verification code may resolve.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub enum SharedTokenSecretRef {
     InlinePlaceholder(String),
     EnvironmentVariable(String),
+}
+
+impl fmt::Debug for SharedTokenSecretRef {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::InlinePlaceholder(_) => formatter
+                .debug_tuple("InlinePlaceholder")
+                .field(&"<redacted>")
+                .finish(),
+            Self::EnvironmentVariable(name) => formatter
+                .debug_tuple("EnvironmentVariable")
+                .field(name)
+                .finish(),
+        }
+    }
 }
 
 /// Boundary for future server auth config loading.
@@ -72,16 +87,30 @@ impl ServerAuthConfigBoundary {
         let mut shared_tokens = Vec::with_capacity(parsed.clients.len());
 
         for (client_id, client) in parsed.clients {
-            let shared_token =
-                client
-                    .shared_token
-                    .ok_or_else(|| ConfigLoadError::MissingSharedToken {
+            let secret_ref = match (client.shared_token, client.shared_token_env) {
+                (Some(_), Some(_)) => {
+                    return Err(ConfigLoadError::ConflictingSharedTokenRefs {
                         client_id: client_id.clone(),
-                    })?;
-
-            if shared_token.trim().is_empty() {
-                return Err(ConfigLoadError::MissingSharedToken { client_id });
-            }
+                    });
+                }
+                (Some(shared_token), None) => {
+                    if shared_token.trim().is_empty() {
+                        return Err(ConfigLoadError::MissingSharedToken { client_id });
+                    }
+                    SharedTokenSecretRef::InlinePlaceholder(shared_token)
+                }
+                (None, Some(environment_variable)) => {
+                    if environment_variable.trim().is_empty() {
+                        return Err(ConfigLoadError::MissingSharedToken { client_id });
+                    }
+                    SharedTokenSecretRef::EnvironmentVariable(environment_variable)
+                }
+                (None, None) => {
+                    return Err(ConfigLoadError::MissingSharedToken {
+                        client_id: client_id.clone(),
+                    });
+                }
+            };
 
             allowed_clients.push(AllowedClientConfig {
                 client_id: client_id.clone(),
@@ -89,7 +118,7 @@ impl ServerAuthConfigBoundary {
             });
             shared_tokens.push(SharedTokenConfig {
                 token_id: client_id,
-                secret_ref: SharedTokenSecretRef::InlinePlaceholder(shared_token),
+                secret_ref,
             });
         }
 
@@ -124,6 +153,7 @@ pub enum ConfigLoadError {
     MissingAuthSection,
     NoAuthClients,
     MissingSharedToken { client_id: String },
+    ConflictingSharedTokenRefs { client_id: String },
 }
 
 #[derive(Debug, Default)]
@@ -135,6 +165,7 @@ struct ParsedAuthToml {
 #[derive(Debug, Default)]
 struct ParsedAuthClientToml {
     shared_token: Option<String>,
+    shared_token_env: Option<String>,
 }
 
 fn parse_auth_clients(input: &str) -> Result<ParsedAuthToml, ConfigLoadError> {
@@ -196,6 +227,13 @@ fn parse_auth_clients(input: &str) -> Result<ParsedAuthToml, ConfigLoadError> {
                 .entry(client_id.to_string())
                 .or_default()
                 .shared_token = Some(value);
+        } else if key == "shared_token_env" {
+            let value = parse_toml_string(raw_value, line_number, key)?;
+            parsed
+                .clients
+                .entry(client_id.to_string())
+                .or_default()
+                .shared_token_env = Some(value);
         }
     }
 
@@ -337,6 +375,55 @@ shared_token = " "
             Err(ConfigLoadError::MissingSharedToken {
                 client_id: "player1".to_string()
             })
+        );
+    }
+
+    #[test]
+    fn loads_environment_variable_secret_ref() {
+        let config = ServerAuthConfigBoundary::load_from_str(
+            r#"
+[auth.clients.player1]
+shared_token_env = "STREAMSYNC_PLAYER1_TOKEN"
+"#,
+        )
+        .expect("auth config should parse env secret ref");
+
+        assert_eq!(
+            config.shared_tokens,
+            vec![SharedTokenConfig {
+                token_id: "player1".to_string(),
+                secret_ref: SharedTokenSecretRef::EnvironmentVariable(
+                    "STREAMSYNC_PLAYER1_TOKEN".to_string()
+                ),
+            }]
+        );
+    }
+
+    #[test]
+    fn rejects_conflicting_shared_token_refs() {
+        let result = ServerAuthConfigBoundary::load_from_str(
+            r#"
+[auth.clients.player1]
+shared_token = "token"
+shared_token_env = "STREAMSYNC_PLAYER1_TOKEN"
+"#,
+        );
+
+        assert_eq!(
+            result,
+            Err(ConfigLoadError::ConflictingSharedTokenRefs {
+                client_id: "player1".to_string()
+            })
+        );
+    }
+
+    #[test]
+    fn redacts_inline_secret_ref_in_debug_output() {
+        let secret_ref = SharedTokenSecretRef::InlinePlaceholder("do-not-print".to_string());
+
+        assert_eq!(
+            format!("{secret_ref:?}"),
+            "InlinePlaceholder(\"<redacted>\")"
         );
     }
 }

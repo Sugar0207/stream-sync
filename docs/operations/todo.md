@@ -3,6 +3,12 @@
 # StreamSync TODO
 
 ## 2026-04-19 Codex update
+- [x] secret 解決方式と token 保護方針を docs に整理する
+- [x] `shared_token_env` の config placeholder と token debug redaction を追加する
+- [x] server 側に secret resolution status placeholder を追加する
+- 次の中心: receive rejection ログ出力本実装、auth / receive ログ writer 接続、secret resolver 本実装範囲の確定
+
+## 2026-04-19 Codex update
 - [x] server / client one-shot auth round trip accepted path の成功を確認する
 - [x] 確認コマンドと観測結果を `docs/operations/auth-roundtrip-manual-check.md` に記録する
 - 次の中心: secret 解決、receive rejection ログ出力本実装、auth / receive ログ writer 接続
@@ -77,13 +83,14 @@
 - Cargo workspace と `apps/*` / `crates/*` の初期 scaffold は完了
 - `crates/protocol` の基本型、主要 message 型、timestamp 型、fixed header decode、`AuthRequest` / `Heartbeat` / `VideoFrame` payload decode、`AuthRequest` / `AuthResponse` / `HeartbeatAck` / `VideoFrame` encode は完了
 - `crates/config` の server auth 設定 TOML 読み込み最小実装は完了
+- `crates/config` の `shared_token` / `shared_token_env` token reference 読み分けと inline secret debug redaction は完了
 - `crates/net-core` の inbound decode 境界、outbound packet / queue 境界、outbound queue lifecycle 境界、protocol encoder 呼び出し境界、send error / log event 分類 placeholder、UDP socket 1 datagram receive / send adapter は完了
 - `apps/server` の inbound router、UDP receive loop step、UDP socket adapter 接続、auth response PoC one-shot 起動接続、auth response PoC 起動設定接続、receive loop から packet acceptance gate への接続境界、packet acceptance rejection の drop / log handoff 境界、receive rejection JSON Lines event schema 境界、auth handler boundary、auth config input boundary、server auth decision 最小実装、auth success / failure log handoff 境界、auth JSON Lines event schema 境界、auth flow step、認証済み送信元 registry 境界、packet acceptance gate 境界、AuthResponse response boundary、HeartbeatAck ack boundary、outbound queue handoff は完了
 - `apps/client` の client 設定読み込み、AuthRequest 構築、protocol encoder、UDP one-shot send の PoC 入口は完了
 - server / client one-shot auth round trip の手動確認手順と accepted path 用 helper config は完了
 - accepted path の手動確認は成功し、`configs/examples/server.example.toml` と `configs/examples/client.accepted.example.toml` の組み合わせで `accepted=true`, `reason_code=Ok` を観測済み
-- secret 解決、認証済み送信元の timeout / 失効 / 再認証、実際の packet 破棄 / ログ出力、`ClientStats` / `ServerNotice` など残り message の encode 本実装、時刻同期本体、映像受信・復号・表示、switcher UI は未実装
-- 次の中心は secret 解決、receive rejection ログ出力本実装、auth / receive ログ writer 接続
+- secret resolver 本実装、認証済み送信元の timeout / 失効 / 再認証、実際の packet 破棄 / ログ出力、`ClientStats` / `ServerNotice` など残り message の encode 本実装、時刻同期本体、映像受信・復号・表示、switcher UI は未実装
+- 次の中心は receive rejection ログ出力本実装、auth / receive ログ writer 接続、secret resolver 本実装範囲の確定
 
 ---
 
@@ -113,9 +120,9 @@
 ---
 
 ## 直近でやること
-1. secret 解決方式と token 保護方針を設計する
-2. receive rejection ログ出力本実装を行う
-3. auth success / failure と receive rejection の JSON Lines writer 接続範囲を決める
+1. receive rejection ログ出力本実装を行う
+2. auth success / failure と receive rejection の JSON Lines writer 接続範囲を決める
+3. secret resolver 本実装範囲を確定する
 4. outbound queue の実処理範囲と backpressure 方針を実装前に詰める
 5. `ClientStats` / `ServerNotice` の payload layout と decode / encode 方針を決める
 
@@ -159,6 +166,7 @@
 - [x] server / client one-shot auth round trip の手動確認手順を追加する
 - [x] server / client one-shot auth round trip の accepted path 用 helper config と手順を追加する
 - [x] server / client one-shot auth round trip の accepted path 成功結果を記録する
+- [x] secret 解決方式と token 保護方針を整理する
 - [ ] 状態遷移を詳細化する
 - [ ] 異常時の挙動を実装レベルに落とす
 - [ ] ログイベント仕様を詳細化する
@@ -257,10 +265,14 @@
 - [x] server / client one-shot auth round trip の手動確認手順を追加する
 - [x] server / client one-shot auth round trip の accepted path 成功を確認する
 - [x] client whitelist 読み込みを実装する
+- [x] `shared_token_env` token reference placeholder を追加する
+- [x] inline token debug redaction を追加する
+- [x] secret resolution status placeholder を追加する
 - [x] 認証済み送信元の登録 / 管理境界を設計する
 - [x] accepted auth decision から registry registration への handoff を追加する
 - [x] 未認証 / endpoint mismatch packet の破棄境界を設計する
 - [x] registry 参照による packet 受理 / 拒否判定 helper を追加する
+- [ ] secret resolver 本実装範囲を確定する
 - [ ] secret 解決後の本物の token 検証を実装する
 - [ ] 認証済み送信元の登録 / 管理を実装する
 - [ ] 未認証送信元の `VideoFrame` 破棄を実装する

@@ -5,6 +5,66 @@
 - Codex
 
 ### 今回の作業
+- secret 解決方式と token 保護方針を docs に整理した。
+- `docs/architecture/system-design.md` と `docs/architecture/protocol.md` に、`shared_token` / `shared_token_env` の責務、secret resolution boundary、token 非露出方針を追記した。
+- `crates/config` で `shared_token_env` を `SharedTokenSecretRef::EnvironmentVariable` として読める placeholder を追加した。
+- `shared_token` と `shared_token_env` の同時指定を config error として扱うようにした。
+- `SharedTokenSecretRef` の Debug 出力で inline token material を `<redacted>` にするようにした。
+- `apps/server` に `ServerSharedTokenSecretResolutionStatus` placeholder を追加し、auth input の token reference が PoC inline か未解決 env ref か分類できるようにした。
+- `configs/examples/server.example.toml` に PoC inline token と将来の `shared_token_env` 運用方針のコメントを追加した。
+
+### 変更ファイル
+- `crates/config/src/lib.rs`
+- `apps/server/src/lib.rs`
+- `configs/examples/server.example.toml`
+- `docs/architecture/system-design.md`
+- `docs/architecture/protocol.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### 決定事項
+- PoC の one-shot auth round trip は引き続き inline `shared_token` を使う。
+- 本運用寄りの config では `shared_token_env` を優先し、config は環境変数名などの reference だけを保持する。
+- `config` は secret reference の parse まで、auth input boundary は request context との組み合わせまで、secret resolver は将来の外部 lookup、auth decision は prepared material との比較までを責務とする。
+- raw token は stdout、JSON Lines、auth response message、debug 出力へ出さない。
+
+### 未解決事項
+- 環境変数や secret store から token material を解決する本実装
+- secret 解決後の token 検証への接続
+- receive rejection ログ出力本実装
+- auth / receive JSON Lines writer 接続
+- heartbeat / video frame 処理本体
+
+### 次にやる候補
+- receive rejection ログ出力本実装を行う
+- auth success / failure と receive rejection の JSON Lines writer 接続範囲を決める
+- secret resolver 本実装範囲を確定する
+
+### TODO更新
+- 完了:
+  - secret 解決方式と token 保護方針の整理
+  - `shared_token_env` placeholder の追加
+  - inline token debug redaction の追加
+  - server secret resolution status placeholder の追加
+- 追加:
+  - secret resolver 本実装範囲の確定
+- 保留:
+  - 本物の secret store 連携
+  - JSON Lines 出力本実装
+  - heartbeat / video frame 処理
+  - retry / fragmentation / encryption
+
+### メモ
+- `cargo fmt --check` と `cargo check --workspace` が通ることを確認した。
+- `cargo test -p stream-sync-config` が通ることを確認した。
+
+---
+
+## 2026-04-19
+### 種別
+- Codex
+
+### 今回の作業
 - server / client one-shot auth round trip の accepted path を実機手動確認した。
 - `cargo build -p stream-sync-server -p stream-sync-client` が成功することを確認した。
 - server を `--auth-response-poc-once configs/examples/server.example.toml`、client を `--auth-request-poc-once configs/examples/client.accepted.example.toml` で実行した。

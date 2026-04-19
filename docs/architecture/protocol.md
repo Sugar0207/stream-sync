@@ -1142,6 +1142,43 @@ produces `ServerAuthConfig`. `apps/server::ServerAuthConfigInputBoundary`
 converts config values into server-side auth check input without performing the
 actual decision.
 
+### Secret Resolution and Token Protection
+
+`shared_token` is kept as a PoC-only inline placeholder so the one-shot auth
+round trip can be run from repository example configs. For future operation,
+server config may use `shared_token_env` to point at an environment variable
+name. This stage defines the reference shape and token handling policy only; it
+does not read environment variables or secret stores.
+
+Config rules:
+
+1. Each `[auth.clients.<client_id>]` must provide exactly one token reference.
+2. `shared_token = "..."` is parsed as
+   `SharedTokenSecretRef::InlinePlaceholder`.
+3. `shared_token_env = "ENV_NAME"` is parsed as
+   `SharedTokenSecretRef::EnvironmentVariable`.
+4. Empty or conflicting token references are config errors.
+
+Boundary flow:
+
+1. `ServerAuthConfigBoundary` parses the token reference.
+2. `ServerAuthConfigInputBoundary` copies the reference into
+   `ServerAuthCheckInput`.
+3. A future secret resolver will turn external references into token material.
+4. `ServerAuthDecisionBoundary` compares only prepared token material. In the
+   current PoC, inline placeholders are the only comparable material.
+5. Unresolved external references reject with `InternalError` until the resolver
+   is implemented.
+
+Protection rules:
+
+- Raw token material must not appear in auth logs, receive rejection logs,
+  `AuthResponse.message`, operator stdout, or debug dumps.
+- Inline token debug output is redacted by `SharedTokenSecretRef`.
+- Environment variable names may appear as references; resolved values must not.
+- `config` owns reference parsing, auth input owns context assembly, secret
+  resolution owns external lookup, and auth decision owns comparison.
+
 ### Minimal Auth Decision Boundary
 
 The server auth decision boundary converts prepared auth input into

@@ -967,6 +967,32 @@ pub struct ServerSharedTokenAuthInput {
     pub secret_ref: SharedTokenSecretRef,
 }
 
+impl ServerSharedTokenAuthInput {
+    pub fn secret_resolution_status(&self) -> ServerSharedTokenSecretResolutionStatus {
+        match &self.secret_ref {
+            SharedTokenSecretRef::InlinePlaceholder(_) => {
+                ServerSharedTokenSecretResolutionStatus::InlinePlaceholderAvailable
+            }
+            SharedTokenSecretRef::EnvironmentVariable(name) => {
+                ServerSharedTokenSecretResolutionStatus::EnvironmentVariablePending {
+                    name: name.clone(),
+                }
+            }
+        }
+    }
+}
+
+/// Placeholder status for the future secret resolution boundary.
+///
+/// This type classifies whether auth decision input already carries PoC inline
+/// token material or only a reference that must be resolved before production
+/// verification. It does not read environment variables or secret stores.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ServerSharedTokenSecretResolutionStatus {
+    InlinePlaceholderAvailable,
+    EnvironmentVariablePending { name: String },
+}
+
 /// Minimal server auth decision boundary.
 ///
 /// This checks the prepared client whitelist and token input and returns a
