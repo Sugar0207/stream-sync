@@ -5,6 +5,58 @@
 - Codex
 
 ### 今回の作業
+- heartbeat RTT / offset の小さな実計算単位を決めた。
+- `crates/timebase` に four-timestamp exchange を入力にした stateless RTT / offset calculator を追加した。
+- `apps/server` に `ServerHeartbeatTimebasePlan` と future client ack observation を照合して calculator へ渡す boundary を追加した。
+- docs に state input / timebase input / plan / minimal calculation unit / future estimator state の責務分離を追記した。
+
+### 変更ファイル
+- `apps/server/src/lib.rs`
+- `crates/timebase/src/lib.rs`
+- `docs/architecture/system-design.md`
+- `docs/architecture/protocol.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### 決定事項
+- 最小実計算単位は `client_sent_at`, `server_received_at`, `server_sent_at`, `client_received_at` の 4 timestamp exchange とする。
+- `rtt = (client_received_at - client_sent_at) - (server_sent_at - server_received_at)` とする。
+- `clock_offset = ((server_received_at - client_sent_at) + (server_sent_at - client_received_at)) / 2` とし、server clock minus client clock として扱う。
+- この単位は stateless helper に留め、smoothing、履歴、outlier policy、timeout、補正後 timestamp 生成は future estimator state に残す。
+
+### 未解決事項
+- client ack receive observation を protocol / client / server flow でどう返すか
+- RTT / offset の per-client state 更新
+- smoothing / outlier handling
+- heartbeat timeout と sync-core への補正時刻接続
+
+### 次にやる候補
+- auth / receive JSON Lines の file sink 設定方針を整理する
+- secret store 連携や token rotation の方針を整理する
+- heartbeat client ack observation flow を設計する
+
+### TODO更新
+- 完了:
+  - heartbeat RTT / offset の小さな実計算単位決定
+  - four-timestamp exchange の stateless calculator 追加
+  - server plan と future client ack observation の calculation boundary 追加
+- 追加:
+  - heartbeat client ack observation flow を次候補へ移動
+- 保留:
+  - RTT / offset の大きな完成実装
+  - smoothing / per-client state
+  - async runtime
+
+### メモ
+- `cargo fmt --check`、`cargo check --workspace`、`cargo test -p stream-sync-timebase heartbeat_rtt_offset`、`cargo test -p stream-sync-server heartbeat_rtt_offset` が通ることを確認した。
+
+---
+
+## 2026-04-20
+### 種別
+- Codex
+
+### 今回の作業
 - heartbeat state / RTT / offset 推定の本計算方針を整理した。
 - `crates/timebase` に heartbeat timebase sample から RTT / offset / smoothing の計算 plan を作る placeholder を追加した。
 - `apps/server` に heartbeat timebase input から timebase plan へ橋渡しする `ServerHeartbeatTimebasePlanBoundary` を追加した。

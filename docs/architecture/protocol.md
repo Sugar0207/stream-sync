@@ -1717,6 +1717,38 @@ Responsibility split:
   - Future owner of RTT completion, delay compensation, offset smoothing, and
     estimate state.
 
+### Heartbeat RTT / Offset Minimal Calculation Unit
+
+The smallest calculation unit is a stateless four-timestamp exchange. It is the
+first step after the plan says a client ack receive observation is required.
+
+Fields:
+
+| Field | Clock domain | Notes |
+| --- | --- | --- |
+| `client_sent_at` | client | Original `Heartbeat.sent_at`. |
+| `server_received_at` | server | Server receive timestamp for the heartbeat. |
+| `server_sent_at` | server | Server send timestamp for the `HeartbeatAck`. |
+| `client_received_at` | client | Future client-side ack receive observation. |
+
+The unit computes:
+
+- `server_processing = server_sent_at - server_received_at`
+- `rtt = (client_received_at - client_sent_at) - server_processing`
+- `clock_offset = ((server_received_at - client_sent_at) + (server_sent_at - client_received_at)) / 2`
+
+`clock_offset` is server clock minus client clock. This unit rejects impossible
+timestamp ordering, but it does not smooth values, hold per-client history,
+mark clients timed out, or convert frame timestamps. Those behaviors remain in
+future heartbeat state / timebase estimator work.
+
+Current implementation: `crates/timebase::HeartbeatExchangeObservation`,
+`HeartbeatRttOffsetCalculator`, and `HeartbeatRttOffsetEstimate` define the
+stateless unit. `apps/server::ServerHeartbeatRttOffsetCalculationBoundary`
+bridges from `ServerHeartbeatTimebasePlan` plus a future
+`ServerHeartbeatClientAckObservation`, validating `client_id`, `run_id`, and
+the echoed `sent_at` before calling the calculator.
+
 ---
 
 ### Receive Rejection Drop / Log Handoff Boundary

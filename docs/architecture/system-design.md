@@ -1385,6 +1385,54 @@ Responsibility split:
   - Future owner of RTT completion, delay compensation, offset smoothing,
     outlier handling, and per-client estimate state.
 
+### Heartbeat RTT / Offset Minimal Calculation Unit
+
+The first real calculation unit is intentionally small and stateless. It takes
+one four-timestamp heartbeat exchange and returns one RTT / offset estimate
+candidate. It does not update heartbeat state, smooth estimates, reject network
+outliers beyond impossible timestamp ordering, or decide timeout policy.
+
+Required timestamps:
+
+| Field | Clock domain | Source |
+| --- | --- | --- |
+| `client_sent_at` | client | Original `Heartbeat.sent_at`. |
+| `server_received_at` | server | Server timestamp captured when the heartbeat packet was received. |
+| `server_sent_at` | server | Server timestamp captured when the `HeartbeatAck` is sent. |
+| `client_received_at` | client | Future client-side observation of when the ack was received. |
+
+Formulas for the minimal unit:
+
+- `server_processing = server_sent_at - server_received_at`
+- `rtt = (client_received_at - client_sent_at) - server_processing`
+- `clock_offset = ((server_received_at - client_sent_at) + (server_sent_at - client_received_at)) / 2`
+
+`clock_offset` is server clock minus client clock. A positive value means the
+server clock is ahead for that sample. The calculation rejects samples where
+the client receive time is before client send time, server send time is before
+server receive time, or total client elapsed time is shorter than server
+processing time.
+
+Responsibility split:
+
+- state input
+  - Supplies liveness material only.
+- timebase input
+  - Supplies server-side heartbeat timestamps.
+- timebase plan
+  - Records that a client ack receive observation is needed.
+- minimal calculation unit
+  - Computes one stateless `rtt_micros` and `clock_offset_micros` candidate once
+    all four timestamps exist.
+- future estimator state
+  - Owns smoothing, history, outlier policy, timeout integration, and exposing
+    corrected timestamps to sync-core.
+
+Current code reflects this with `crates/timebase::HeartbeatExchangeObservation`,
+`HeartbeatRttOffsetCalculator`, and `HeartbeatRttOffsetEstimate`.
+`apps/server::ServerHeartbeatRttOffsetCalculationBoundary` validates client /
+run correlation and echoed `sent_at` before calling the stateless calculator.
+
 ---
 
 ## Receive Rejection Drop / Log Handoff Boundary

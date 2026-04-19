@@ -19,7 +19,9 @@ use stream_sync_protocol::{
     ProtocolVersion, RunId, TimestampMicros, VideoFrame,
 };
 use stream_sync_timebase::{
-    HeartbeatTimebaseEstimatePlan, HeartbeatTimebasePlanBoundary, HeartbeatTimebaseSample,
+    HeartbeatExchangeObservation, HeartbeatRttOffsetCalculationError, HeartbeatRttOffsetCalculator,
+    HeartbeatRttOffsetEstimate, HeartbeatTimebaseEstimatePlan, HeartbeatTimebasePlanBoundary,
+    HeartbeatTimebaseSample,
 };
 
 /// One-packet receive loop boundary for the future UDP server.
@@ -2390,6 +2392,89 @@ impl ServerHeartbeatTimebasePlanBoundary {
     }
 }
 
+/// Future client-side observation needed to complete the small RTT / offset unit.
+///
+/// This is not produced by the current heartbeat handler. A future client
+/// report can carry this observation back to the server.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ServerHeartbeatClientAckObservation {
+    pub client_id: ClientId,
+    pub run_id: RunId,
+    pub echoed_client_sent_at: TimestampMicros,
+    pub client_received_at: TimestampMicros,
+}
+
+/// One stateless RTT / offset calculation result with server correlation ids.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ServerHeartbeatRttOffsetCalculation {
+    pub client_id: ClientId,
+    pub run_id: RunId,
+    pub estimate: HeartbeatRttOffsetEstimate,
+}
+
+/// Server-side validation errors before or during one timebase calculation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ServerHeartbeatRttOffsetCalculationError {
+    ClientIdMismatch,
+    RunIdMismatch,
+    EchoedSentAtMismatch {
+        expected: TimestampMicros,
+        actual: TimestampMicros,
+    },
+    Calculation(HeartbeatRttOffsetCalculationError),
+}
+
+impl From<HeartbeatRttOffsetCalculationError> for ServerHeartbeatRttOffsetCalculationError {
+    fn from(error: HeartbeatRttOffsetCalculationError) -> Self {
+        Self::Calculation(error)
+    }
+}
+
+/// Boundary for the smallest stateless RTT / offset calculation unit.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct ServerHeartbeatRttOffsetCalculationBoundary {
+    calculator: HeartbeatRttOffsetCalculator,
+}
+
+impl ServerHeartbeatRttOffsetCalculationBoundary {
+    pub fn calculate(
+        &self,
+        plan: &ServerHeartbeatTimebasePlan,
+        observation: &ServerHeartbeatClientAckObservation,
+    ) -> Result<ServerHeartbeatRttOffsetCalculation, ServerHeartbeatRttOffsetCalculationError> {
+        if plan.client_id != observation.client_id {
+            return Err(ServerHeartbeatRttOffsetCalculationError::ClientIdMismatch);
+        }
+        if plan.run_id != observation.run_id {
+            return Err(ServerHeartbeatRttOffsetCalculationError::RunIdMismatch);
+        }
+
+        let sample = plan.estimate.sample;
+        let expected = TimestampMicros(sample.client_sent_at_micros);
+        if expected != observation.echoed_client_sent_at {
+            return Err(
+                ServerHeartbeatRttOffsetCalculationError::EchoedSentAtMismatch {
+                    expected,
+                    actual: observation.echoed_client_sent_at,
+                },
+            );
+        }
+
+        let estimate = self.calculator.calculate(HeartbeatExchangeObservation {
+            client_sent_at_micros: sample.client_sent_at_micros,
+            server_received_at_micros: sample.server_received_at_micros,
+            server_sent_at_micros: sample.server_sent_at_micros,
+            client_received_at_micros: observation.client_received_at.0,
+        })?;
+
+        Ok(ServerHeartbeatRttOffsetCalculation {
+            client_id: plan.client_id.clone(),
+            run_id: plan.run_id.clone(),
+            estimate,
+        })
+    }
+}
+
 /// Combined heartbeat inputs for state and timebase layers.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ServerHeartbeatProcessingInputs {
@@ -4444,6 +4529,63 @@ shared_token = "secret"
         assert_eq!(plan.estimate.sample.client_local_time_micros, None);
         assert_eq!(plan.estimate.sample.server_received_at_micros, 4_000_100);
         assert_eq!(plan.estimate.sample.server_sent_at_micros, 4_000_200);
+    }
+
+    #[test]
+    fn heartbeat_rtt_offset_calculation_boundary_calculates_single_exchange() {
+        let timebase_input = ServerHeartbeatTimebaseInput {
+            client_id: ClientId("client-1".to_string()),
+            run_id: RunId("run-1".to_string()),
+            client_sent_at: TimestampMicros(1_000),
+            client_local_time: Some(TimestampMicros(1_000)),
+            server_received_at: TimestampMicros(2_100),
+            server_sent_at: TimestampMicros(2_150),
+        };
+        let plan = ServerHeartbeatTimebasePlanBoundary::default().build_plan(&timebase_input);
+        let observation = ServerHeartbeatClientAckObservation {
+            client_id: ClientId("client-1".to_string()),
+            run_id: RunId("run-1".to_string()),
+            echoed_client_sent_at: TimestampMicros(1_000),
+            client_received_at: TimestampMicros(1_150),
+        };
+        let boundary = ServerHeartbeatRttOffsetCalculationBoundary::default();
+
+        let calculation = boundary.calculate(&plan, &observation).unwrap();
+
+        assert_eq!(calculation.client_id, ClientId("client-1".to_string()));
+        assert_eq!(calculation.run_id, RunId("run-1".to_string()));
+        assert_eq!(calculation.estimate.rtt_micros, 100);
+        assert_eq!(calculation.estimate.clock_offset_micros, 1_050);
+    }
+
+    #[test]
+    fn heartbeat_rtt_offset_calculation_boundary_rejects_mismatched_echo() {
+        let timebase_input = ServerHeartbeatTimebaseInput {
+            client_id: ClientId("client-1".to_string()),
+            run_id: RunId("run-1".to_string()),
+            client_sent_at: TimestampMicros(1_000),
+            client_local_time: None,
+            server_received_at: TimestampMicros(2_100),
+            server_sent_at: TimestampMicros(2_150),
+        };
+        let plan = ServerHeartbeatTimebasePlanBoundary::default().build_plan(&timebase_input);
+        let observation = ServerHeartbeatClientAckObservation {
+            client_id: ClientId("client-1".to_string()),
+            run_id: RunId("run-1".to_string()),
+            echoed_client_sent_at: TimestampMicros(999),
+            client_received_at: TimestampMicros(1_150),
+        };
+        let boundary = ServerHeartbeatRttOffsetCalculationBoundary::default();
+
+        let error = boundary.calculate(&plan, &observation).unwrap_err();
+
+        assert_eq!(
+            error,
+            ServerHeartbeatRttOffsetCalculationError::EchoedSentAtMismatch {
+                expected: TimestampMicros(1_000),
+                actual: TimestampMicros(999),
+            }
+        );
     }
 
     #[test]

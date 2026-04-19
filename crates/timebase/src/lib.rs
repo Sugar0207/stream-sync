@@ -87,6 +87,79 @@ impl HeartbeatTimebasePlanBoundary {
     }
 }
 
+/// Four-timestamp observation for the smallest RTT / offset calculation unit.
+///
+/// This mirrors the NTP-style exchange:
+/// client send -> server receive -> server send -> client receive.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct HeartbeatExchangeObservation {
+    /// Client clock domain. Original heartbeat send time.
+    pub client_sent_at_micros: u64,
+    /// Server clock domain. Server heartbeat receive time.
+    pub server_received_at_micros: u64,
+    /// Server clock domain. Server ack send time.
+    pub server_sent_at_micros: u64,
+    /// Client clock domain. Client ack receive time.
+    pub client_received_at_micros: u64,
+}
+
+/// Result of one stateless RTT / offset calculation.
+///
+/// `clock_offset_micros` is server clock minus client clock. Positive values
+/// mean the server clock is ahead of the client clock for this sample.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct HeartbeatRttOffsetEstimate {
+    pub rtt_micros: u64,
+    pub server_processing_micros: u64,
+    pub clock_offset_micros: i64,
+}
+
+/// Errors for the stateless RTT / offset calculation unit.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum HeartbeatRttOffsetCalculationError {
+    ClientReceiveBeforeSend,
+    ServerSendBeforeReceive,
+    RoundTripShorterThanServerProcessing,
+    ClockOffsetOutOfRange,
+}
+
+/// Stateless calculator for one heartbeat exchange observation.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct HeartbeatRttOffsetCalculator;
+
+impl HeartbeatRttOffsetCalculator {
+    pub fn calculate(
+        &self,
+        observation: HeartbeatExchangeObservation,
+    ) -> Result<HeartbeatRttOffsetEstimate, HeartbeatRttOffsetCalculationError> {
+        let total_client_elapsed = observation
+            .client_received_at_micros
+            .checked_sub(observation.client_sent_at_micros)
+            .ok_or(HeartbeatRttOffsetCalculationError::ClientReceiveBeforeSend)?;
+        let server_processing = observation
+            .server_sent_at_micros
+            .checked_sub(observation.server_received_at_micros)
+            .ok_or(HeartbeatRttOffsetCalculationError::ServerSendBeforeReceive)?;
+        let rtt_micros = total_client_elapsed
+            .checked_sub(server_processing)
+            .ok_or(HeartbeatRttOffsetCalculationError::RoundTripShorterThanServerProcessing)?;
+
+        let client_to_server = observation.server_received_at_micros as i128
+            - observation.client_sent_at_micros as i128;
+        let server_to_client = observation.server_sent_at_micros as i128
+            - observation.client_received_at_micros as i128;
+        let offset = (client_to_server + server_to_client) / 2;
+        let clock_offset_micros = i64::try_from(offset)
+            .map_err(|_| HeartbeatRttOffsetCalculationError::ClockOffsetOutOfRange)?;
+
+        Ok(HeartbeatRttOffsetEstimate {
+            rtt_micros,
+            server_processing_micros: server_processing,
+            clock_offset_micros,
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -133,5 +206,40 @@ mod tests {
         let plan = boundary.build_plan(sample);
 
         assert_eq!(plan.offset, ClockOffsetEstimatePlan::MissingClientLocalTime);
+    }
+
+    #[test]
+    fn heartbeat_rtt_offset_calculator_estimates_single_exchange() {
+        let observation = HeartbeatExchangeObservation {
+            client_sent_at_micros: 1_000,
+            server_received_at_micros: 2_100,
+            server_sent_at_micros: 2_150,
+            client_received_at_micros: 1_150,
+        };
+        let calculator = HeartbeatRttOffsetCalculator;
+
+        let estimate = calculator.calculate(observation).unwrap();
+
+        assert_eq!(estimate.rtt_micros, 100);
+        assert_eq!(estimate.server_processing_micros, 50);
+        assert_eq!(estimate.clock_offset_micros, 1_050);
+    }
+
+    #[test]
+    fn heartbeat_rtt_offset_calculator_rejects_impossible_elapsed_times() {
+        let observation = HeartbeatExchangeObservation {
+            client_sent_at_micros: 1_000,
+            server_received_at_micros: 2_000,
+            server_sent_at_micros: 2_300,
+            client_received_at_micros: 1_100,
+        };
+        let calculator = HeartbeatRttOffsetCalculator;
+
+        let error = calculator.calculate(observation).unwrap_err();
+
+        assert_eq!(
+            error,
+            HeartbeatRttOffsetCalculationError::RoundTripShorterThanServerProcessing
+        );
     }
 }
