@@ -1433,6 +1433,57 @@ Current code reflects this with `crates/timebase::HeartbeatExchangeObservation`,
 `apps/server::ServerHeartbeatRttOffsetCalculationBoundary` validates client /
 run correlation and echoed `sent_at` before calling the stateless calculator.
 
+### Heartbeat Client Ack Observation Flow
+
+The client ack observation flow returns the missing `client_received_at`
+timestamp to the server-side timebase calculator. This is a typed flow design
+only; the current code does not add a wire payload, continuous heartbeat loop,
+or client-to-server report sender.
+
+Flow:
+
+1. Server receives an authenticated `Heartbeat` and records
+   `server_received_at`.
+2. Server builds and sends `HeartbeatAck` with:
+   - `echoed_sent_at`
+   - `server_received_at`
+   - `server_sent_at`
+3. Client receives the `HeartbeatAck` and immediately records
+   `client_received_at` in the client clock domain.
+4. Client creates `HeartbeatAckObservation` from the received ack plus
+   `client_received_at`.
+5. A future client-to-server report path sends that observation back to the
+   server. The carrier is intentionally not fixed yet; likely candidates are a
+   small extension to `ClientStats` or a dedicated later message.
+6. Server converts the protocol-level observation into
+   `ServerHeartbeatClientAckObservation`.
+7. Server matches it with the stored `ServerHeartbeatTimebasePlan` using
+   `client_id`, `run_id`, `echoed_sent_at`, `server_received_at`, and
+   `server_sent_at`.
+8. After the match, `ServerHeartbeatRttOffsetCalculationBoundary` calls the
+   stateless timebase calculator with the complete four-timestamp exchange.
+
+Responsibility split:
+
+- client
+  - Owns capturing `client_received_at` as close as possible to ack receive.
+  - Does not calculate final server-side estimate state.
+- protocol
+  - Owns the typed `HeartbeatAckObservation` field set.
+  - Does not currently encode or decode it as a wire payload.
+- server
+  - Owns correlation against the stored heartbeat timebase plan.
+  - Does not smooth or commit estimates in this boundary.
+- timebase
+  - Owns the stateless four-timestamp calculation only.
+
+Current code reflects this with
+`protocol::HeartbeatAckObservationBoundary`,
+`apps/client::ClientHeartbeatAckObservationBoundary`, and
+`apps/server::ServerHeartbeatClientAckObservationBoundary`. The actual report
+carrier, send / receive loop integration, state update, and smoothing remain
+future work.
+
 ---
 
 ## Receive Rejection Drop / Log Handoff Boundary

@@ -1052,6 +1052,42 @@ pub struct HeartbeatAck {
     pub server_sent_at: TimestampMicros,
 }
 
+/// Client-side observation created after receiving one `HeartbeatAck`.
+///
+/// This is a typed flow object for future RTT / offset reporting. It is not
+/// encoded as a wire payload by the current protocol encoder.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HeartbeatAckObservation {
+    pub client_id: ClientId,
+    pub run_id: RunId,
+    pub echoed_sent_at: TimestampMicros,
+    pub server_received_at: TimestampMicros,
+    pub server_sent_at: TimestampMicros,
+    pub client_received_at: TimestampMicros,
+}
+
+/// Boundary that turns a received `HeartbeatAck` plus client receive time into
+/// an observation for a future client-to-server report.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct HeartbeatAckObservationBoundary;
+
+impl HeartbeatAckObservationBoundary {
+    pub fn observe(
+        &self,
+        ack: &HeartbeatAck,
+        client_received_at: TimestampMicros,
+    ) -> HeartbeatAckObservation {
+        HeartbeatAckObservation {
+            client_id: ack.client_id.clone(),
+            run_id: ack.run_id.clone(),
+            echoed_sent_at: ack.echoed_sent_at,
+            server_received_at: ack.server_received_at,
+            server_sent_at: ack.server_sent_at,
+            client_received_at,
+        }
+    }
+}
+
 /// Encoded video frame sent from a client to the server.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VideoFrame {
@@ -1486,6 +1522,29 @@ mod tests {
             .expect("expected payload should encode");
         assert_eq!(decoded.header.payload_length, expected_payload.len() as u32);
         assert_eq!(decoded.payload, expected_payload.as_slice());
+    }
+
+    #[test]
+    fn heartbeat_ack_observation_boundary_preserves_ack_fields() {
+        let ack = HeartbeatAck {
+            message_type: MessageType::HeartbeatAck,
+            protocol_version: ProtocolVersion(2),
+            client_id: ClientId("client-1".to_string()),
+            run_id: RunId("run-1".to_string()),
+            echoed_sent_at: TimestampMicros(1_000),
+            server_received_at: TimestampMicros(2_100),
+            server_sent_at: TimestampMicros(2_150),
+        };
+        let boundary = HeartbeatAckObservationBoundary;
+
+        let observation = boundary.observe(&ack, TimestampMicros(1_150));
+
+        assert_eq!(observation.client_id, ClientId("client-1".to_string()));
+        assert_eq!(observation.run_id, RunId("run-1".to_string()));
+        assert_eq!(observation.echoed_sent_at, TimestampMicros(1_000));
+        assert_eq!(observation.server_received_at, TimestampMicros(2_100));
+        assert_eq!(observation.server_sent_at, TimestampMicros(2_150));
+        assert_eq!(observation.client_received_at, TimestampMicros(1_150));
     }
 
     #[test]

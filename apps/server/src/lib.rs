@@ -15,8 +15,8 @@ use stream_sync_net_core::{
 };
 use stream_sync_protocol::{
     AppVersion, AuthRequest, AuthResponse, AuthResponseReasonCode, ClientId, Heartbeat,
-    HeartbeatAck, MessageType, ProtocolError, ProtocolMessage, ProtocolMessageEncoderBoundary,
-    ProtocolVersion, RunId, TimestampMicros, VideoFrame,
+    HeartbeatAck, HeartbeatAckObservation, MessageType, ProtocolError, ProtocolMessage,
+    ProtocolMessageEncoderBoundary, ProtocolVersion, RunId, TimestampMicros, VideoFrame,
 };
 use stream_sync_timebase::{
     HeartbeatExchangeObservation, HeartbeatRttOffsetCalculationError, HeartbeatRttOffsetCalculator,
@@ -2401,7 +2401,29 @@ pub struct ServerHeartbeatClientAckObservation {
     pub client_id: ClientId,
     pub run_id: RunId,
     pub echoed_client_sent_at: TimestampMicros,
+    pub server_received_at: TimestampMicros,
+    pub server_sent_at: TimestampMicros,
     pub client_received_at: TimestampMicros,
+}
+
+/// Boundary that accepts a protocol-level HeartbeatAck observation for server use.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct ServerHeartbeatClientAckObservationBoundary;
+
+impl ServerHeartbeatClientAckObservationBoundary {
+    pub fn prepare(
+        &self,
+        observation: HeartbeatAckObservation,
+    ) -> ServerHeartbeatClientAckObservation {
+        ServerHeartbeatClientAckObservation {
+            client_id: observation.client_id,
+            run_id: observation.run_id,
+            echoed_client_sent_at: observation.echoed_sent_at,
+            server_received_at: observation.server_received_at,
+            server_sent_at: observation.server_sent_at,
+            client_received_at: observation.client_received_at,
+        }
+    }
 }
 
 /// One stateless RTT / offset calculation result with server correlation ids.
@@ -2418,6 +2440,14 @@ pub enum ServerHeartbeatRttOffsetCalculationError {
     ClientIdMismatch,
     RunIdMismatch,
     EchoedSentAtMismatch {
+        expected: TimestampMicros,
+        actual: TimestampMicros,
+    },
+    ServerReceivedAtMismatch {
+        expected: TimestampMicros,
+        actual: TimestampMicros,
+    },
+    ServerSentAtMismatch {
         expected: TimestampMicros,
         actual: TimestampMicros,
     },
@@ -2456,6 +2486,24 @@ impl ServerHeartbeatRttOffsetCalculationBoundary {
                 ServerHeartbeatRttOffsetCalculationError::EchoedSentAtMismatch {
                     expected,
                     actual: observation.echoed_client_sent_at,
+                },
+            );
+        }
+        let expected_server_received_at = TimestampMicros(sample.server_received_at_micros);
+        if expected_server_received_at != observation.server_received_at {
+            return Err(
+                ServerHeartbeatRttOffsetCalculationError::ServerReceivedAtMismatch {
+                    expected: expected_server_received_at,
+                    actual: observation.server_received_at,
+                },
+            );
+        }
+        let expected_server_sent_at = TimestampMicros(sample.server_sent_at_micros);
+        if expected_server_sent_at != observation.server_sent_at {
+            return Err(
+                ServerHeartbeatRttOffsetCalculationError::ServerSentAtMismatch {
+                    expected: expected_server_sent_at,
+                    actual: observation.server_sent_at,
                 },
             );
         }
@@ -4546,6 +4594,8 @@ shared_token = "secret"
             client_id: ClientId("client-1".to_string()),
             run_id: RunId("run-1".to_string()),
             echoed_client_sent_at: TimestampMicros(1_000),
+            server_received_at: TimestampMicros(2_100),
+            server_sent_at: TimestampMicros(2_150),
             client_received_at: TimestampMicros(1_150),
         };
         let boundary = ServerHeartbeatRttOffsetCalculationBoundary::default();
@@ -4573,6 +4623,8 @@ shared_token = "secret"
             client_id: ClientId("client-1".to_string()),
             run_id: RunId("run-1".to_string()),
             echoed_client_sent_at: TimestampMicros(999),
+            server_received_at: TimestampMicros(2_100),
+            server_sent_at: TimestampMicros(2_150),
             client_received_at: TimestampMicros(1_150),
         };
         let boundary = ServerHeartbeatRttOffsetCalculationBoundary::default();
@@ -4585,6 +4637,40 @@ shared_token = "secret"
                 expected: TimestampMicros(1_000),
                 actual: TimestampMicros(999),
             }
+        );
+    }
+
+    #[test]
+    fn heartbeat_client_ack_observation_boundary_maps_protocol_observation() {
+        let observation = HeartbeatAckObservation {
+            client_id: ClientId("client-1".to_string()),
+            run_id: RunId("run-1".to_string()),
+            echoed_sent_at: TimestampMicros(1_000),
+            server_received_at: TimestampMicros(2_100),
+            server_sent_at: TimestampMicros(2_150),
+            client_received_at: TimestampMicros(1_150),
+        };
+        let boundary = ServerHeartbeatClientAckObservationBoundary;
+
+        let server_observation = boundary.prepare(observation);
+
+        assert_eq!(
+            server_observation.client_id,
+            ClientId("client-1".to_string())
+        );
+        assert_eq!(server_observation.run_id, RunId("run-1".to_string()));
+        assert_eq!(
+            server_observation.echoed_client_sent_at,
+            TimestampMicros(1_000)
+        );
+        assert_eq!(
+            server_observation.server_received_at,
+            TimestampMicros(2_100)
+        );
+        assert_eq!(server_observation.server_sent_at, TimestampMicros(2_150));
+        assert_eq!(
+            server_observation.client_received_at,
+            TimestampMicros(1_150)
         );
     }
 

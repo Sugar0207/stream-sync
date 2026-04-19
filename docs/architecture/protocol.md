@@ -1749,6 +1749,56 @@ bridges from `ServerHeartbeatTimebasePlan` plus a future
 `ServerHeartbeatClientAckObservation`, validating `client_id`, `run_id`, and
 the echoed `sent_at` before calling the calculator.
 
+### Heartbeat Client Ack Observation Flow
+
+`client_received_at` is observed on the client after it receives
+`HeartbeatAck`. It must be returned to the server before the four-timestamp
+RTT / offset calculator can run.
+
+Flow:
+
+1. Server sends `HeartbeatAck` containing `echoed_sent_at`,
+   `server_received_at`, and `server_sent_at`.
+2. Client receives the ack and records `client_received_at`.
+3. Client creates `HeartbeatAckObservation`:
+   - `client_id`
+   - `run_id`
+   - `echoed_sent_at`
+   - `server_received_at`
+   - `server_sent_at`
+   - `client_received_at`
+4. A future client report carrier sends the observation to the server.
+5. Server maps it into `ServerHeartbeatClientAckObservation`.
+6. Server validates it against the stored `ServerHeartbeatTimebasePlan`.
+7. The timebase calculator receives the complete four-timestamp observation.
+
+The report carrier is not fixed in this step. The current preference is to keep
+the observation as typed input and choose the wire carrier later, likely either
+a minimal `ClientStats` extension or a dedicated observation message. Until that
+carrier is defined, `HeartbeatAckObservation` is not encoded by
+`ProtocolMessageEncoderBoundary`.
+
+Responsibility split:
+
+- client
+  - Captures `client_received_at` and builds a typed observation.
+- protocol
+  - Defines the observation field set and preserves clock-domain-specific
+    timestamps.
+  - Does not decide the future carrier or send policy.
+- server
+  - Correlates the observation with the stored timebase plan.
+- timebase
+  - Performs only the stateless four-timestamp calculation.
+
+Current implementation:
+`crates/protocol::HeartbeatAckObservationBoundary` builds the protocol-level
+observation, `apps/client::ClientHeartbeatAckObservationBoundary` exposes that
+on the client side, and
+`apps/server::ServerHeartbeatClientAckObservationBoundary` prepares the server
+calculator input. Wire encode/decode, continuous heartbeat handling, state
+commit, and smoothing remain future work.
+
 ---
 
 ### Receive Rejection Drop / Log Handoff Boundary

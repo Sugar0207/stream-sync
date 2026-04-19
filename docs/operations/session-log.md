@@ -5,6 +5,60 @@
 - Codex
 
 ### 今回の作業
+- heartbeat client ack observation flow を設計した。
+- `crates/protocol` に `HeartbeatAck` と `client_received_at` から `HeartbeatAckObservation` を作る typed boundary を追加した。
+- `apps/client` に client 側で `HeartbeatAckObservation` を作る boundary を追加した。
+- `apps/server` に protocol-level observation を server calculator input へ変換する boundary を追加し、calculator 境界で server timestamps も照合するようにした。
+- docs に client / protocol / server / timebase の責務分離と、wire carrier を今後決める方針を追記した。
+
+### 変更ファイル
+- `apps/client/src/lib.rs`
+- `apps/server/src/lib.rs`
+- `crates/protocol/src/lib.rs`
+- `docs/architecture/system-design.md`
+- `docs/architecture/protocol.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### 決定事項
+- `client_received_at` は client が `HeartbeatAck` を受信した直後に client clock domain で観測する。
+- client は `HeartbeatAckObservation` に `client_id`, `run_id`, `echoed_sent_at`, `server_received_at`, `server_sent_at`, `client_received_at` を保持する。
+- server は observation を stored `ServerHeartbeatTimebasePlan` と照合してから RTT / offset calculator に渡す。
+- observation の wire carrier は今回固定しない。候補は `ClientStats` extension または dedicated observation message とし、現時点では encode / decode しない。
+
+### 未解決事項
+- heartbeat observation carrier の payload layout / decode / encode
+- client から server へ observation を送る実処理
+- server receive loop で observation を route / gate / handler へ接続する処理
+- RTT / offset state commit と smoothing
+
+### 次にやる候補
+- auth / receive JSON Lines の file sink 設定方針を整理する
+- secret store 連携や token rotation の方針を整理する
+- heartbeat observation carrier を設計する
+
+### TODO更新
+- 完了:
+  - heartbeat client ack observation flow 設計
+  - `HeartbeatAckObservation` boundary 追加
+  - server observation と timebase plan の照合方針反映
+- 追加:
+  - heartbeat observation carrier 設計を次候補へ移動
+- 保留:
+  - observation の wire encode / decode
+  - continuous heartbeat loop
+  - RTT / offset の state commit
+
+### メモ
+- `cargo fmt --check`、`cargo check --workspace`、`cargo test -p stream-sync-protocol heartbeat_ack_observation`、`cargo test -p stream-sync-client heartbeat_ack_observation`、`cargo test -p stream-sync-server heartbeat_client_ack_observation` が通ることを確認した。
+
+---
+
+## 2026-04-20
+### 種別
+- Codex
+
+### 今回の作業
 - heartbeat RTT / offset の小さな実計算単位を決めた。
 - `crates/timebase` に four-timestamp exchange を入力にした stateless RTT / offset calculator を追加した。
 - `apps/server` に `ServerHeartbeatTimebasePlan` と future client ack observation を照合して calculator へ渡す boundary を追加した。

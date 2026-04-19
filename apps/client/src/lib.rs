@@ -5,8 +5,9 @@ use std::{
 };
 
 use stream_sync_protocol::{
-    AppVersion, AuthRequest, ClientId, EncodeContext, MessageEncoder, MessageType, ProtocolError,
-    ProtocolMessage, ProtocolMessageEncoderBoundary, ProtocolVersion, RunId,
+    AppVersion, AuthRequest, ClientId, EncodeContext, HeartbeatAck, HeartbeatAckObservation,
+    HeartbeatAckObservationBoundary, MessageEncoder, MessageType, ProtocolError, ProtocolMessage,
+    ProtocolMessageEncoderBoundary, ProtocolVersion, RunId, TimestampMicros,
 };
 
 /// One-shot client-side AuthRequest send PoC.
@@ -97,6 +98,26 @@ pub fn run_auth_request_poc_once_from_path(
     path: impl AsRef<Path>,
 ) -> Result<ClientAuthRequestPocOutcome, ClientAuthRequestPocError> {
     ClientAuthRequestPocLauncher::default().run_once_from_path(path)
+}
+
+/// Client boundary for observing one received HeartbeatAck.
+///
+/// This captures the client-side receive timestamp and creates a typed
+/// observation for a future client-to-server stats/report path. It does not
+/// encode or send that report.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct ClientHeartbeatAckObservationBoundary {
+    protocol: HeartbeatAckObservationBoundary,
+}
+
+impl ClientHeartbeatAckObservationBoundary {
+    pub fn observe_ack(
+        &self,
+        ack: &HeartbeatAck,
+        client_received_at: TimestampMicros,
+    ) -> HeartbeatAckObservation {
+        self.protocol.observe(ack, client_received_at)
+    }
 }
 
 /// Startup config needed by the one-shot client AuthRequest PoC.
@@ -424,5 +445,28 @@ mod tests {
         let decoded_request = decode_auth_request_payload(decoded.header, decoded.payload)
             .expect("encoded auth request should decode");
         assert_eq!(decoded_request, request);
+    }
+
+    #[test]
+    fn client_heartbeat_ack_observation_boundary_captures_receive_time() {
+        let ack = HeartbeatAck {
+            message_type: MessageType::HeartbeatAck,
+            protocol_version: ProtocolVersion(2),
+            client_id: ClientId("client-1".to_string()),
+            run_id: RunId("run-1".to_string()),
+            echoed_sent_at: TimestampMicros(1_000),
+            server_received_at: TimestampMicros(2_100),
+            server_sent_at: TimestampMicros(2_150),
+        };
+        let boundary = ClientHeartbeatAckObservationBoundary::default();
+
+        let observation = boundary.observe_ack(&ack, TimestampMicros(1_150));
+
+        assert_eq!(observation.client_id, ClientId("client-1".to_string()));
+        assert_eq!(observation.run_id, RunId("run-1".to_string()));
+        assert_eq!(observation.echoed_sent_at, TimestampMicros(1_000));
+        assert_eq!(observation.server_received_at, TimestampMicros(2_100));
+        assert_eq!(observation.server_sent_at, TimestampMicros(2_150));
+        assert_eq!(observation.client_received_at, TimestampMicros(1_150));
     }
 }
