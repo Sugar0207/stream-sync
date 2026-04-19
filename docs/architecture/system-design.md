@@ -811,17 +811,20 @@ Updated responsibility split:
   - Does not inspect `AuthRequest`, check client whitelist, or build
     `AuthResponse`.
 - auth input boundary
-  - Will combine decoded request context, allowed clients, and resolved token
-    material once the resolver is connected.
+  - Combines decoded request context, allowed clients, and configured token
+    references before resolver execution.
 - auth decision
   - Owns whitelist lookup and comparison against already-prepared material.
   - Does not read TOML, environment variables, or secret stores.
 
-Current placeholder: `apps/server::ServerSecretResolverBoundary` exposes
-`plan_resolution`. It does not read the environment yet; it returns
-`AlreadyResolved` for PoC inline tokens and `NeedsEnvironmentVariable` for env
-refs so the next implementation can replace the plan with real resolution
-without changing config parsing.
+Current implementation: `apps/server::ServerSecretResolverBoundary` resolves
+PoC inline tokens as already-available material and reads `shared_token_env`
+from the named environment variable. Missing, empty, and invalid environment
+variables return typed `ServerSecretResolutionError` values without token
+material. `ServerAuthFlowStep` resolves configured token references before
+calling `ServerAuthDecisionBoundary`; resolver failures become rejected
+`ServerAuthDecision` values with `InternalError`. Secret stores, hashing,
+rotation, caching, and hot reload remain unimplemented.
 
 ---
 
@@ -834,18 +837,20 @@ step. It consumes already-prepared auth input and produces a
 Flow:
 
 1. `ServerAuthConfigInputBoundary` produces `ServerAuthCheckInput`.
-2. `ServerAuthDecisionBoundary` looks up the requested `client_id` in
+2. `ServerSecretResolverBoundary` converts configured token references into
+   resolved token material or returns a typed resolution error.
+3. `ServerAuthDecisionBoundary` looks up the requested `client_id` in
    `allowed_clients`.
-3. If no entry exists, it returns rejected `ServerAuthDecision` with
+4. If no entry exists, it returns rejected `ServerAuthDecision` with
    `UnknownClient`.
-4. If the client entry exists, it finds the configured shared token entry by
+5. If the client entry exists, it finds the configured shared token entry by
    `shared_token_id`.
-5. If the token entry is missing, or if the token material is only an unresolved
-   external reference, it returns rejected `ServerAuthDecision` with
+6. If the token entry is missing, it returns rejected `ServerAuthDecision` with
    `InternalError`.
-6. If the token entry contains inline placeholder token material, it compares
-   the presented `shared_token` with that placeholder.
-7. Matching token returns accepted `ServerAuthDecision`; mismatch returns
+7. If the token entry contains resolved material from inline PoC config or
+   `shared_token_env`, it compares the presented `shared_token` with that
+   material.
+8. Matching token returns accepted `ServerAuthDecision`; mismatch returns
    rejected `ServerAuthDecision` with `InvalidToken`.
 
 Responsibility split:
@@ -853,8 +858,13 @@ Responsibility split:
 - auth config input boundary
   - Carries decoded request fields plus configured whitelist/token references.
   - Does not decide accepted/rejected.
+- secret resolver
+  - Resolves inline PoC token material and `shared_token_env` before auth
+    decision.
+  - Produces typed missing / empty / invalid environment variable errors.
+  - Does not compare tokens or decide accepted/rejected.
 - auth decision boundary
-  - Owns minimal `client_id` lookup and inline placeholder token comparison.
+  - Owns minimal `client_id` lookup and resolved token comparison.
   - Produces `ServerAuthDecision` with `Ok`, `UnknownClient`, `InvalidToken`,
     or `InternalError`.
   - Does not read TOML, resolve environment variables, register authenticated
@@ -863,10 +873,11 @@ Responsibility split:
   - Converts `ServerAuthDecision` into `ProtocolMessage::AuthResponse`.
   - Does not repeat auth checks.
 
-Current code reflects this with `apps/server::ServerAuthDecisionBoundary`. This
-is a minimal PoC decision only; real config loading, real secret resolution,
-authenticated source management, JSON Lines output, and UDP sending remain
-future tasks.
+Current code reflects this with `apps/server::ServerAuthFlowStep`,
+`ServerSecretResolverBoundary`, and `ServerAuthDecisionBoundary`. This is still
+a minimal PoC decision path: secret store integrations, token hashing /
+rotation, authenticated source timeout, heartbeat handling, video frame
+handling, and async runtime integration remain future tasks.
 
 ---
 

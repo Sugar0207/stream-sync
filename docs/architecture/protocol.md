@@ -1194,9 +1194,13 @@ First real resolver scope:
   rotation, hashing/KDF, auth decision, response generation, logging, or socket
   I/O.
 
-Current placeholder: `ServerSecretResolverBoundary::plan_resolution` classifies
-inline tokens as `AlreadyResolved` and env refs as `NeedsEnvironmentVariable`.
-It deliberately does not call `std::env` yet.
+Current implementation: `ServerSecretResolverBoundary::resolve_auth_input`
+turns `ServerAuthCheckInput` into resolved auth decision input. Inline tokens
+remain supported as already-available PoC material, and `shared_token_env`
+reads exactly the named environment variable. Missing, empty, and invalid env
+values return typed `ServerSecretResolutionError` variants without carrying
+token values. `plan_resolution` remains available as a non-reading planning
+helper for docs/tests.
 
 ### Minimal Auth Decision Boundary
 
@@ -1210,10 +1214,10 @@ Decision rules:
 2. If missing, reject with `AuthResponseReasonCode::UnknownClient`.
 3. Find the allowed client's `shared_token_id` in the prepared token list.
 4. If missing, reject with `AuthResponseReasonCode::InternalError`.
-5. If token material is an unresolved external reference, reject with
-   `AuthResponseReasonCode::InternalError`.
-6. If token material is `InlinePlaceholder`, compare it with the presented
-   `shared_token`.
+5. If secret resolution failed before the decision, the auth flow returns an
+   `InternalError` decision with a non-secret failure message.
+6. If token material is resolved from inline PoC config or `shared_token_env`,
+   compare it with the presented `shared_token`.
 7. Matching token accepts with `AuthResponseReasonCode::Ok`; mismatch rejects
    with `AuthResponseReasonCode::InvalidToken`.
 
@@ -1221,7 +1225,7 @@ Responsibility split:
 
 - auth decision
   - Produces accepted/rejected `ServerAuthDecision`.
-  - Uses only prepared auth input.
+  - Uses only resolved auth input.
   - Preserves auth context such as source, `client_id`, `run_id`, optional
     `app_version`, `protocol_version`, and reason code for downstream
     handoffs.

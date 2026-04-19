@@ -1,6 +1,6 @@
 use std::{
     collections::BTreeMap,
-    fs, io,
+    env, fs, io,
     net::{SocketAddr, ToSocketAddrs, UdpSocket},
     path::{Path, PathBuf},
 };
@@ -1125,6 +1125,28 @@ impl ServerAuthCheckInput {
     }
 }
 
+/// Auth decision input after configured token references have been resolved.
+///
+/// This keeps decoded request context and whitelist entries unchanged, but
+/// replaces token references with redacted-debug material prepared by the
+/// secret resolver.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ServerResolvedAuthCheckInput {
+    pub check: ServerAuthCheck,
+    pub allowed_clients: Vec<ServerAllowedClientAuthInput>,
+    pub shared_tokens: Vec<ServerResolvedSharedTokenAuthInput>,
+}
+
+impl ServerResolvedAuthCheckInput {
+    pub fn presented_shared_token(&self) -> &str {
+        self.check.shared_token()
+    }
+
+    pub fn requested_client_id(&self) -> &ClientId {
+        self.check.client_id()
+    }
+}
+
 /// Whitelisted client entry prepared for auth checking.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ServerAllowedClientAuthInput {
@@ -1165,16 +1187,70 @@ pub enum ServerSharedTokenSecretResolutionStatus {
     EnvironmentVariablePending { name: String },
 }
 
-/// Placeholder boundary for future server secret resolution.
+/// Minimal boundary for server secret resolution.
 ///
-/// This boundary defines the implementation scope for the real resolver. It
-/// classifies configured token references into either already-available PoC
-/// inline material or a required external lookup. It does not read environment
-/// variables, connect to secret stores, compare tokens, or log token material.
+/// This resolves PoC inline token material and `shared_token_env` references
+/// into redacted-debug token material for auth decision input. It does not
+/// connect to secret stores, compare tokens, or log token material.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
 pub struct ServerSecretResolverBoundary;
 
 impl ServerSecretResolverBoundary {
+    pub fn resolve_auth_input(
+        &self,
+        input: ServerAuthCheckInput,
+    ) -> Result<ServerResolvedAuthCheckInput, ServerSecretResolutionError> {
+        let shared_tokens = input
+            .shared_tokens
+            .iter()
+            .map(|token| self.resolve_token(token))
+            .collect::<Result<Vec<_>, _>>()?;
+
+        Ok(ServerResolvedAuthCheckInput {
+            check: input.check,
+            allowed_clients: input.allowed_clients,
+            shared_tokens,
+        })
+    }
+
+    pub fn resolve_token(
+        &self,
+        token: &ServerSharedTokenAuthInput,
+    ) -> Result<ServerResolvedSharedTokenAuthInput, ServerSecretResolutionError> {
+        match &token.secret_ref {
+            SharedTokenSecretRef::InlinePlaceholder(value) => {
+                Ok(ServerResolvedSharedTokenAuthInput {
+                    token_id: token.token_id.clone(),
+                    material: ServerResolvedSharedTokenMaterial::PoCInline(value.clone()),
+                })
+            }
+            SharedTokenSecretRef::EnvironmentVariable(name) => match env::var(name) {
+                Ok(value) if value.trim().is_empty() => {
+                    Err(ServerSecretResolutionError::EmptyEnvironmentVariable {
+                        token_id: token.token_id.clone(),
+                        name: name.clone(),
+                    })
+                }
+                Ok(value) => Ok(ServerResolvedSharedTokenAuthInput {
+                    token_id: token.token_id.clone(),
+                    material: ServerResolvedSharedTokenMaterial::EnvironmentVariable(value),
+                }),
+                Err(env::VarError::NotPresent) => {
+                    Err(ServerSecretResolutionError::MissingEnvironmentVariable {
+                        token_id: token.token_id.clone(),
+                        name: name.clone(),
+                    })
+                }
+                Err(env::VarError::NotUnicode(_)) => {
+                    Err(ServerSecretResolutionError::InvalidEnvironmentVariable {
+                        token_id: token.token_id.clone(),
+                        name: name.clone(),
+                    })
+                }
+            },
+        }
+    }
+
     pub fn plan_resolution(
         &self,
         token: &ServerSharedTokenAuthInput,
@@ -1194,6 +1270,17 @@ impl ServerSecretResolverBoundary {
             }
         }
     }
+}
+
+/// Typed failure from resolving configured shared token references.
+///
+/// Token values are never carried in these errors. Environment variable names
+/// are configuration references, not secret material.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ServerSecretResolutionError {
+    MissingEnvironmentVariable { token_id: String, name: String },
+    EmptyEnvironmentVariable { token_id: String, name: String },
+    InvalidEnvironmentVariable { token_id: String, name: String },
 }
 
 /// Resolution plan for one configured server shared token.
@@ -1227,6 +1314,15 @@ impl std::fmt::Debug for ServerResolvedSharedTokenAuthInput {
 #[derive(Clone, PartialEq, Eq)]
 pub enum ServerResolvedSharedTokenMaterial {
     PoCInline(String),
+    EnvironmentVariable(String),
+}
+
+impl ServerResolvedSharedTokenMaterial {
+    fn as_str(&self) -> &str {
+        match self {
+            Self::PoCInline(value) | Self::EnvironmentVariable(value) => value,
+        }
+    }
 }
 
 impl std::fmt::Debug for ServerResolvedSharedTokenMaterial {
@@ -1234,6 +1330,10 @@ impl std::fmt::Debug for ServerResolvedSharedTokenMaterial {
         match self {
             Self::PoCInline(_) => formatter
                 .debug_tuple("PoCInline")
+                .field(&"<redacted>")
+                .finish(),
+            Self::EnvironmentVariable(_) => formatter
+                .debug_tuple("EnvironmentVariable")
                 .field(&"<redacted>")
                 .finish(),
         }
@@ -1249,6 +1349,93 @@ impl std::fmt::Debug for ServerResolvedSharedTokenMaterial {
 pub struct ServerAuthDecisionBoundary;
 
 impl ServerAuthDecisionBoundary {
+    pub fn decide_resolved(&self, input: ServerResolvedAuthCheckInput) -> ServerAuthDecision {
+        let source = input.check.source;
+        let client_id = input.check.request.client_id.clone();
+        let run_id = input.check.request.run_id.clone();
+        let protocol_version = input.check.request.protocol_version;
+        let app_version = input.check.request.app_version.clone();
+
+        let Some(allowed_client) = input
+            .allowed_clients
+            .iter()
+            .find(|client| client.client_id == client_id)
+        else {
+            return ServerAuthDecision::rejected(
+                source,
+                client_id,
+                run_id,
+                protocol_version,
+                AuthResponseReasonCode::UnknownClient,
+                Some("unknown client_id".to_string()),
+                None,
+            )
+            .with_app_version(app_version);
+        };
+
+        let Some(shared_token) = input
+            .shared_tokens
+            .iter()
+            .find(|token| token.token_id == allowed_client.shared_token_id)
+        else {
+            return ServerAuthDecision::rejected(
+                source,
+                client_id,
+                run_id,
+                protocol_version,
+                AuthResponseReasonCode::InternalError,
+                Some("configured token reference was not found".to_string()),
+                None,
+            )
+            .with_app_version(app_version);
+        };
+
+        if input.presented_shared_token() == shared_token.material.as_str() {
+            ServerAuthDecision::accepted(source, client_id, run_id, protocol_version, None)
+                .with_app_version(app_version)
+        } else {
+            ServerAuthDecision::rejected(
+                source,
+                client_id,
+                run_id,
+                protocol_version,
+                AuthResponseReasonCode::InvalidToken,
+                Some("invalid shared_token".to_string()),
+                None,
+            )
+            .with_app_version(app_version)
+        }
+    }
+
+    pub fn reject_secret_resolution_error(
+        &self,
+        check: &ServerAuthCheck,
+        error: &ServerSecretResolutionError,
+    ) -> ServerAuthDecision {
+        let message = match error {
+            ServerSecretResolutionError::MissingEnvironmentVariable { .. } => {
+                "token secret environment variable is missing"
+            }
+            ServerSecretResolutionError::EmptyEnvironmentVariable { .. } => {
+                "token secret environment variable is empty"
+            }
+            ServerSecretResolutionError::InvalidEnvironmentVariable { .. } => {
+                "token secret environment variable is invalid"
+            }
+        };
+
+        ServerAuthDecision::rejected(
+            check.source,
+            check.request.client_id.clone(),
+            check.request.run_id.clone(),
+            check.request.protocol_version,
+            AuthResponseReasonCode::InternalError,
+            Some(message.to_string()),
+            None,
+        )
+        .with_app_version(check.request.app_version.clone())
+    }
+
     pub fn decide(&self, input: ServerAuthCheckInput) -> ServerAuthDecision {
         let source = input.check.source;
         let client_id = input.check.request.client_id.clone();
@@ -1325,12 +1512,14 @@ impl ServerAuthDecisionBoundary {
 /// Minimal server auth flow step from decoded auth route to outbound queue item.
 ///
 /// This connects existing boundaries only. It does not load real config,
-/// resolve secrets, register authenticated sources, run a queue, encode bytes,
-/// or send UDP packets.
+/// register authenticated sources, run a queue, encode bytes, or send UDP
+/// packets. Secret resolution is limited to PoC inline material and
+/// `shared_token_env` environment variable lookup.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
 pub struct ServerAuthFlowStep {
     auth_handler: ServerAuthHandlerBoundary,
     config_input: ServerAuthConfigInputBoundary,
+    secret_resolver: ServerSecretResolverBoundary,
     decision: ServerAuthDecisionBoundary,
     auth_log: ServerAuthLogHandoffBoundary,
     sender_registry: AuthenticatedSenderRegistryBoundary,
@@ -1354,7 +1543,12 @@ impl ServerAuthFlowStep {
         config: &ServerAuthConfig,
     ) -> ServerAuthFlowOutcome {
         let auth_input = self.config_input.prepare_check_input(check, config);
-        let decision = self.decision.decide(auth_input);
+        let decision = match self.secret_resolver.resolve_auth_input(auth_input.clone()) {
+            Ok(resolved_auth_input) => self.decision.decide_resolved(resolved_auth_input),
+            Err(error) => self
+                .decision
+                .reject_secret_resolution_error(&auth_input.check, &error),
+        };
         let auth_log_input = self.auth_log.handoff(&decision);
         let registry_registration = self.sender_registry.registration_from_decision(&decision);
         let outbound_response = self.response.build_for_send(decision.clone());
@@ -3019,6 +3213,145 @@ shared_token = "secret"
                 token_id: "client-1".to_string(),
                 name: "STREAM_SYNC_TOKEN_MAIN".to_string(),
             }
+        );
+    }
+
+    #[test]
+    fn secret_resolver_boundary_resolves_environment_variable() {
+        let variable_name = "STREAM_SYNC_TEST_TOKEN_RESOLVES_ENVIRONMENT_VARIABLE";
+        std::env::set_var(variable_name, "presented-secret");
+        let boundary = ServerSecretResolverBoundary;
+        let token = ServerSharedTokenAuthInput {
+            token_id: "client-1".to_string(),
+            secret_ref: SharedTokenSecretRef::EnvironmentVariable(variable_name.to_string()),
+        };
+
+        let resolved = boundary
+            .resolve_token(&token)
+            .expect("environment variable token should resolve");
+
+        assert_eq!(
+            resolved,
+            ServerResolvedSharedTokenAuthInput {
+                token_id: "client-1".to_string(),
+                material: ServerResolvedSharedTokenMaterial::EnvironmentVariable(
+                    "presented-secret".to_string()
+                ),
+            }
+        );
+        assert_eq!(
+            format!("{resolved:?}"),
+            "ServerResolvedSharedTokenAuthInput { token_id: \"client-1\", material: EnvironmentVariable(\"<redacted>\") }"
+        );
+        std::env::remove_var(variable_name);
+    }
+
+    #[test]
+    fn secret_resolver_boundary_rejects_missing_environment_variable() {
+        let variable_name = "STREAM_SYNC_TEST_TOKEN_MISSING_ENVIRONMENT_VARIABLE";
+        std::env::remove_var(variable_name);
+        let boundary = ServerSecretResolverBoundary;
+        let token = ServerSharedTokenAuthInput {
+            token_id: "client-1".to_string(),
+            secret_ref: SharedTokenSecretRef::EnvironmentVariable(variable_name.to_string()),
+        };
+
+        let result = boundary.resolve_token(&token);
+
+        assert_eq!(
+            result,
+            Err(ServerSecretResolutionError::MissingEnvironmentVariable {
+                token_id: "client-1".to_string(),
+                name: variable_name.to_string(),
+            })
+        );
+    }
+
+    #[test]
+    fn secret_resolver_boundary_rejects_empty_environment_variable() {
+        let variable_name = "STREAM_SYNC_TEST_TOKEN_EMPTY_ENVIRONMENT_VARIABLE";
+        std::env::set_var(variable_name, "  ");
+        let boundary = ServerSecretResolverBoundary;
+        let token = ServerSharedTokenAuthInput {
+            token_id: "client-1".to_string(),
+            secret_ref: SharedTokenSecretRef::EnvironmentVariable(variable_name.to_string()),
+        };
+
+        let result = boundary.resolve_token(&token);
+
+        assert_eq!(
+            result,
+            Err(ServerSecretResolutionError::EmptyEnvironmentVariable {
+                token_id: "client-1".to_string(),
+                name: variable_name.to_string(),
+            })
+        );
+        std::env::remove_var(variable_name);
+    }
+
+    #[test]
+    fn auth_flow_step_accepts_environment_variable_token() {
+        let variable_name = "STREAM_SYNC_TEST_TOKEN_AUTH_FLOW_ACCEPTS_ENV";
+        std::env::set_var(variable_name, "presented-secret");
+        let source = packet_source();
+        let route = ServerInboundRoute::AuthRequest {
+            source,
+            request: auth_request("client-1", "presented-secret"),
+        };
+        let config = ServerAuthConfig {
+            allowed_clients: vec![AllowedClientConfig {
+                client_id: "client-1".to_string(),
+                shared_token_id: "token-main".to_string(),
+            }],
+            shared_tokens: vec![SharedTokenConfig {
+                token_id: "token-main".to_string(),
+                secret_ref: SharedTokenSecretRef::EnvironmentVariable(variable_name.to_string()),
+            }],
+        };
+        let step = ServerAuthFlowStep::default();
+
+        let outcome = step
+            .handle_auth_route(route, &config)
+            .expect("auth route should be handled");
+
+        assert!(outcome.decision.accepted);
+        assert_eq!(outcome.decision.reason_code, AuthResponseReasonCode::Ok);
+        std::env::remove_var(variable_name);
+    }
+
+    #[test]
+    fn auth_flow_step_rejects_missing_environment_variable_token() {
+        let variable_name = "STREAM_SYNC_TEST_TOKEN_AUTH_FLOW_MISSING_ENV";
+        std::env::remove_var(variable_name);
+        let source = packet_source();
+        let route = ServerInboundRoute::AuthRequest {
+            source,
+            request: auth_request("client-1", "presented-secret"),
+        };
+        let config = ServerAuthConfig {
+            allowed_clients: vec![AllowedClientConfig {
+                client_id: "client-1".to_string(),
+                shared_token_id: "token-main".to_string(),
+            }],
+            shared_tokens: vec![SharedTokenConfig {
+                token_id: "token-main".to_string(),
+                secret_ref: SharedTokenSecretRef::EnvironmentVariable(variable_name.to_string()),
+            }],
+        };
+        let step = ServerAuthFlowStep::default();
+
+        let outcome = step
+            .handle_auth_route(route, &config)
+            .expect("auth route should be handled");
+
+        assert!(!outcome.decision.accepted);
+        assert_eq!(
+            outcome.decision.reason_code,
+            AuthResponseReasonCode::InternalError
+        );
+        assert_eq!(
+            outcome.decision.message.as_deref(),
+            Some("token secret environment variable is missing")
         );
     }
 

@@ -5,6 +5,61 @@
 - Codex
 
 ### 今回の作業
+- secret resolver の最小本実装を追加した。
+- `ServerSecretResolverBoundary` が `shared_token_env` の環境変数を読み、inline PoC token と同じ resolved token material として auth decision input へ渡せるようにした。
+- missing / empty / invalid environment variable を `ServerSecretResolutionError` の typed error として扱うようにした。
+- `ServerAuthFlowStep` で config input -> secret resolver -> resolved auth decision input -> auth decision の順に接続した。
+- docs に現在の実装範囲と未実装範囲を反映した。
+
+### 変更ファイル
+- `apps/server/src/lib.rs`
+- `docs/architecture/system-design.md`
+- `docs/architecture/protocol.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### 決定事項
+- `shared_token_env` は named environment variable を同期的に 1 回読む最小 resolver とする。
+- missing / empty / invalid env var は token 値を持たない typed error にする。
+- auth decision は env を読まず、resolved token material と presented token の比較だけを行う。
+- resolver error は auth flow 内で `InternalError` の `ServerAuthDecision` に変換する。
+- secret store、hashing / KDF、rotation、cache / hot reload は今回の範囲外とする。
+
+### 未解決事項
+- secret store 連携や token rotation 方針
+- `shared_token_env` を使う手動 round trip 手順
+- heartbeat / video frame handler へ accepted route を渡す接続
+- auth / receive JSON Lines の file sink 設定方針
+
+### 次にやる候補
+- heartbeat / video frame handler へ registered packet を渡す接続方針を整理する
+- auth / receive JSON Lines の file sink 設定方針を整理する
+- `shared_token_env` を使う one-shot auth round trip 手順を整理する
+
+### TODO更新
+- 完了:
+  - `shared_token_env` secret resolver の最小本実装
+  - missing / empty / invalid env var typed error
+  - resolved token material から auth decision へ渡す flow 接続
+- 追加:
+  - `shared_token_env` を使う one-shot auth round trip 手順
+  - secret store 連携や token hashing / rotation 方針
+- 保留:
+  - secret store 連携
+  - token hashing / KDF / rotation
+  - heartbeat / video frame 処理本体
+  - async runtime
+
+### メモ
+- `cargo fmt --check`、`cargo check --workspace`、`cargo test -p stream-sync-server secret_resolver`、`cargo test -p stream-sync-server environment_variable_token` が通ることを確認した。
+
+---
+
+## 2026-04-19
+### 種別
+- Codex
+
+### 今回の作業
 - auth result writer の有効化位置を、one-shot auth response PoC CLI の auth decision 後に決めた。
 - `apps/server/src/main.rs` で `ServerAuthLogOutputBoundary` を呼び、auth success / failure を stderr へ JSON Lines 1 行として出すようにした。
 - future loop は同じ writer boundary を auth decision point で呼ぶ方針に留め、file sink / rotation / async logging / 汎用 logging 基盤は未実装に残した。

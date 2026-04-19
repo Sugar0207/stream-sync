@@ -2,98 +2,6 @@
 
 # StreamSync TODO
 
-## 2026-04-19 Codex update
-- [x] auth result writer の有効化位置を one-shot CLI stderr として決める
-- [x] one-shot auth response PoC の auth decision 後に `ServerAuthLogOutputBoundary` を接続する
-- [x] future loop は同じ writer boundary を auth decision point で呼ぶ方針として docs に残す
-- 次の中心: secret resolver 本実装、heartbeat / video frame handler 接続方針、auth log file sink 方針
-
-## 2026-04-19 Codex update
-- [x] 認証済み送信元登録の実処理を auth accepted path へ接続済みであることを明示する
-- [x] accepted auth flow registration が in-memory registry を更新し、後続 gate が accepted にできる最小テストを追加する
-- [x] registry 登録の実処理範囲を architecture docs に反映する
-- 次の中心: auth result writer の CLI 接続判断、secret resolver 本実装、heartbeat / video frame handler 接続方針
-
-## 2026-04-19 Codex update
-- [x] secret resolver 本実装範囲を docs に確定する
-- [x] `ServerSecretResolverBoundary` / `ServerSecretResolutionPlan` placeholder を追加する
-- [x] resolver / config / auth decision の責務分離を更新する
-- 次の中心: 認証済み送信元登録の実処理、auth result writer の CLI 接続判断、secret resolver 本実装
-
-## 2026-04-19 Codex update
-- [x] auth success / failure と receive rejection の JSON Lines writer 接続範囲を整理する
-- [x] `ServerAuthLogOutputBoundary` / `ServerAuthJsonLineWriter` を追加する
-- [x] auth / receive writer の現在の sink 範囲と未実装範囲を docs に反映する
-- 次の中心: secret resolver 本実装範囲の確定、認証済み送信元登録の実処理、auth result writer の CLI 接続判断
-
-## 2026-04-19 Codex update
-- [x] receive rejection ログ出力の最小実装を追加する
-- [x] `ServerReceiveRejectionLogOutputBoundary` / `ServerReceiveRejectionJsonLineWriter` を追加する
-- [x] one-shot server CLI の receive rejection 時に stderr へ JSON Lines 1 行を出す
-- 次の中心: auth / receive ログ writer 接続範囲の整理、secret resolver 本実装範囲の確定、認証済み送信元登録の実処理
-
-## 2026-04-19 Codex update
-- [x] secret 解決方式と token 保護方針を docs に整理する
-- [x] `shared_token_env` の config placeholder と token debug redaction を追加する
-- [x] server 側に secret resolution status placeholder を追加する
-- 次の中心: receive rejection ログ出力本実装、auth / receive ログ writer 接続、secret resolver 本実装範囲の確定
-
-## 2026-04-19 Codex update
-- [x] server / client one-shot auth round trip accepted path の成功を確認する
-- [x] 確認コマンドと観測結果を `docs/operations/auth-roundtrip-manual-check.md` に記録する
-- 次の中心: secret 解決、receive rejection ログ出力本実装、auth / receive ログ writer 接続
-
-## 2026-04-19 Codex update
-- [x] server / client one-shot auth round trip accepted path の手動確認を試行する
-- [x] `link.exe` 不足により binary link 前で停止した結果を `docs/operations/auth-roundtrip-manual-check.md` に記録する
-- 次の中心: MSVC linker が使える環境で accepted path を再実行、secret 解決、receive rejection ログ出力本実装
-
-## 2026-04-19 Codex update
-- [x] server / client one-shot auth round trip の accepted path 用 config を追加する
-- [x] accepted path 用の手動確認手順を `docs/operations/auth-roundtrip-manual-check.md` に反映する
-- 次の中心: accepted path の手動実行確認、secret 解決、receive rejection ログ出力本実装
-
-## 2026-04-19 Codex update
-- [x] AGENTS.md を軽量版へ置き換える運用更新を確認する
-- [x] 重要ルールを維持した軽量版 AGENTS.md の状態を確認する
-- 次の中心: accepted path の手動確認、secret 解決、receive rejection ログ出力本実装
-
-## 2026-04-19 Codex update
-- [x] server / client one-shot auth round trip の手動確認手順を追加する
-- [x] `docs/operations/auth-roundtrip-manual-check.md` に server / client 起動コマンド、config path、成功時 / 失敗時の見方を整理する
-- [x] PoC 実行時の stdout に `client_id` / `run_id` / `protocol_version` / `accepted` / `reason_code` を表示する最小観測補助を追加する
-- 次の中心: accepted path の手動確認、secret 解決、receive rejection ログ出力本実装
-
-## 2026-04-18 Codex update
-- [x] client 側 `AuthRequest` 送信 PoC を追加する
-- [x] `AuthRequest` fixed header + payload bytes の最小 encode 実装を追加する
-- [x] client 設定から destination / auth 情報を読み、1 回だけ UDP send できる入口を追加する
-- 次の中心: server / client one-shot auth round trip 手動確認、secret 解決、receive rejection ログ出力本実装
-
-## 2026-04-18 Codex update
-- [x] auth response PoC の起動設定接続を追加する
-- [x] `ServerAuthResponsePocLauncher` / `run_auth_response_poc_once_from_path` を追加する
-- 次の中心: secret 解決、receive rejection ログ出力本実装、client 側 AuthRequest 送信 PoC
-
-## 2026-04-18 Codex update
-- [x] UDP socket を auth response PoC の起動処理へ最小接続する
-- [x] `ServerAuthResponsePocStep` で 1 packet receive -> auth flow -> encode -> send を接続する
-- 次の中心: secret 解決、receive rejection ログ出力本実装、auth response PoC の起動設定接続
-
-## 2026-04-18 Codex update
-- [x] `VideoFrame` encode 方針と最小実装範囲を整理する
-- [x] `VideoFrame` fixed header + payload bytes の最小 encode 実装を追加する
-- 次の中心: secret 解決、receive rejection ログ出力本実装、UDP socket を auth response PoC の起動処理へ接続
-
-## 2026-04-18 Codex update
-- [x] UDP socket 受信 / 送信本体の最小実装を追加する
-- [x] `UdpSocketIoBoundary` / `ServerUdpSocketIoStep` を追加する
-- 次の中心: `VideoFrame` encode、secret 解決、receive rejection ログ出力本実装
-
-## 2026-04-18 Codex update
-- [x] receive rejection JSON Lines event schema を整理する
-- [x] `ServerReceiveRejectionJsonLogEventBoundary` / `ServerReceiveRejectionJsonLogEventInput` を追加する
-- 次の中心: UDP socket 送受信、secret 解決、receive rejection ログ出力本実装
 
 最終更新: 2026-04-19
 
@@ -115,13 +23,13 @@
 - `crates/config` の server auth 設定 TOML 読み込み最小実装は完了
 - `crates/config` の `shared_token` / `shared_token_env` token reference 読み分けと inline secret debug redaction は完了
 - `crates/net-core` の inbound decode 境界、outbound packet / queue 境界、outbound queue lifecycle 境界、protocol encoder 呼び出し境界、send error / log event 分類 placeholder、UDP socket 1 datagram receive / send adapter は完了
-- `apps/server` の inbound router、UDP receive loop step、UDP socket adapter 接続、auth response PoC one-shot 起動接続、auth response PoC 起動設定接続、receive loop から packet acceptance gate への接続境界、packet acceptance rejection の drop / log handoff 境界、receive rejection JSON Lines event schema 境界、receive rejection stderr JSON Lines 最小出力、auth handler boundary、auth config input boundary、server auth decision 最小実装、auth success / failure log handoff 境界、auth JSON Lines event schema 境界、auth result stderr JSON Lines 最小出力、auth flow step、認証済み送信元 registry 境界、packet acceptance gate 境界、AuthResponse response boundary、HeartbeatAck ack boundary、outbound queue handoff は完了
+- `apps/server` の inbound router、UDP receive loop step、UDP socket adapter 接続、auth response PoC one-shot 起動接続、auth response PoC 起動設定接続、receive loop から packet acceptance gate への接続境界、packet acceptance rejection の drop / log handoff 境界、receive rejection JSON Lines event schema 境界、receive rejection stderr JSON Lines 最小出力、auth handler boundary、auth config input boundary、server auth decision 最小実装、`shared_token_env` secret resolver 最小実装、auth success / failure log handoff 境界、auth JSON Lines event schema 境界、auth result stderr JSON Lines 最小出力、auth flow step、認証済み送信元 registry 境界、packet acceptance gate 境界、AuthResponse response boundary、HeartbeatAck ack boundary、outbound queue handoff は完了
 - accepted auth path で `AuthenticatedSenderRegistry` へ in-memory 登録する実処理は完了
 - `apps/client` の client 設定読み込み、AuthRequest 構築、protocol encoder、UDP one-shot send の PoC 入口は完了
 - server / client one-shot auth round trip の手動確認手順と accepted path 用 helper config は完了
 - accepted path の手動確認は成功し、`configs/examples/server.example.toml` と `configs/examples/client.accepted.example.toml` の組み合わせで `accepted=true`, `reason_code=Ok` を観測済み
-- secret resolver 本実装、認証済み送信元の timeout / 失効 / 再認証、実際の packet 破棄、`ClientStats` / `ServerNotice` など残り message の encode 本実装、時刻同期本体、映像受信・復号・表示、switcher UI は未実装
-- 次の中心は secret resolver 本実装、heartbeat / video frame handler 接続方針、auth log file sink 方針
+- secret store 連携、token hashing / rotation、認証済み送信元の timeout / 失効 / 再認証、実際の packet 破棄、`ClientStats` / `ServerNotice` など残り message の encode 本実装、時刻同期本体、映像受信・復号・表示、switcher UI は未実装
+- 次の中心は heartbeat / video frame handler 接続方針、auth / receive JSON Lines file sink 方針、secret 運用手順
 
 ---
 
@@ -151,9 +59,9 @@
 ---
 
 ## 直近でやること
-1. secret resolver 本実装を行う
-2. heartbeat / video frame handler へ registered packet を渡す接続方針を整理する
-3. auth / receive JSON Lines の file sink 設定方針を整理する
+1. heartbeat / video frame handler へ registered packet を渡す接続方針を整理する
+2. auth / receive JSON Lines の file sink 設定方針を整理する
+3. `shared_token_env` を使う one-shot auth round trip 手順を整理する
 4. outbound queue の実処理範囲と backpressure 方針を実装前に詰める
 5. `ClientStats` / `ServerNotice` の payload layout と decode / encode 方針を決める
 
@@ -203,6 +111,7 @@
 - [x] server / client one-shot auth round trip の accepted path 成功結果を記録する
 - [x] secret 解決方式と token 保護方針を整理する
 - [x] secret resolver 本実装範囲を確定する
+- [x] `shared_token_env` secret resolver の最小本実装を追加する
 - [ ] 状態遷移を詳細化する
 - [ ] 異常時の挙動を実装レベルに落とす
 - [ ] ログイベント仕様を詳細化する
@@ -314,8 +223,10 @@
 - [x] registry 参照による packet 受理 / 拒否判定 helper を追加する
 - [x] secret resolver 本実装範囲を確定する
 - [x] `ServerSecretResolverBoundary` / secret resolution plan placeholder を追加する
+- [x] `shared_token_env` の環境変数読み取りを `ServerSecretResolverBoundary` に追加する
+- [x] secret 解決後の token material を auth decision input へ接続する
 - [x] accepted auth path で in-memory registry 登録実処理を接続する
-- [ ] secret 解決後の本物の token 検証を実装する
+- [ ] secret store 連携や token hashing / rotation 方針を設計する
 - [ ] 認証済み送信元の timeout / 失効 / 再認証を実装する
 - [ ] 未認証送信元の `VideoFrame` 破棄を実装する
 - [ ] `protocol_version` 不一致時の接続拒否を server 側に実装する
