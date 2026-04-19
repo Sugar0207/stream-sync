@@ -3,6 +3,11 @@
 # StreamSync TODO
 
 ## 2026-04-19 Codex update
+- [x] server / client one-shot auth round trip の accepted path 用 config を追加する
+- [x] accepted path 用の手動確認手順を `docs/operations/auth-roundtrip-manual-check.md` に反映する
+- 次の中心: accepted path の手動実行確認、secret 解決、receive rejection ログ出力本実装
+
+## 2026-04-19 Codex update
 - [x] AGENTS.md を軽量版へ置き換える運用更新を確認する
 - [x] 重要ルールを維持した軽量版 AGENTS.md の状態を確認する
 - 次の中心: accepted path の手動確認、secret 解決、receive rejection ログ出力本実装
@@ -65,9 +70,9 @@
 - `crates/net-core` の inbound decode 境界、outbound packet / queue 境界、outbound queue lifecycle 境界、protocol encoder 呼び出し境界、send error / log event 分類 placeholder、UDP socket 1 datagram receive / send adapter は完了
 - `apps/server` の inbound router、UDP receive loop step、UDP socket adapter 接続、auth response PoC one-shot 起動接続、auth response PoC 起動設定接続、receive loop から packet acceptance gate への接続境界、packet acceptance rejection の drop / log handoff 境界、receive rejection JSON Lines event schema 境界、auth handler boundary、auth config input boundary、server auth decision 最小実装、auth success / failure log handoff 境界、auth JSON Lines event schema 境界、auth flow step、認証済み送信元 registry 境界、packet acceptance gate 境界、AuthResponse response boundary、HeartbeatAck ack boundary、outbound queue handoff は完了
 - `apps/client` の client 設定読み込み、AuthRequest 構築、protocol encoder、UDP one-shot send の PoC 入口は完了
-- server / client one-shot auth round trip の手動確認手順は完了
+- server / client one-shot auth round trip の手動確認手順と accepted path 用 helper config は完了
 - secret 解決、認証済み送信元の timeout / 失効 / 再認証、実際の packet 破棄 / ログ出力、`ClientStats` / `ServerNotice` など残り message の encode 本実装、時刻同期本体、映像受信・復号・表示、switcher UI は未実装
-- 次の中心は accepted path の手動確認、secret 解決、receive rejection ログ出力本実装
+- 次の中心は accepted path の手動実行確認、secret 解決、receive rejection ログ出力本実装
 
 ---
 
@@ -97,7 +102,7 @@
 ---
 
 ## 直近でやること
-1. server / client one-shot auth round trip の accepted path を手動確認する
+1. server / client one-shot auth round trip の accepted path を実機で手動確認する
 2. secret 解決方式と token 保護方針を設計する
 3. receive rejection ログ出力本実装を行う
 4. outbound queue の実処理範囲と backpressure 方針を実装前に詰める
@@ -141,6 +146,7 @@
 - [x] auth response PoC の起動設定接続を追加する
 - [x] client 側 AuthRequest one-shot PoC の flow と責務分離を整理する
 - [x] server / client one-shot auth round trip の手動確認手順を追加する
+- [x] server / client one-shot auth round trip の accepted path 用 helper config と手順を追加する
 - [ ] 状態遷移を詳細化する
 - [ ] 異常時の挙動を実装レベルに落とす
 - [ ] ログイベント仕様を詳細化する
@@ -298,6 +304,7 @@
 - [x] `app_version` / `protocol_version` を `AuthRequest` に入れて送信する
 - [x] 認証メッセージを 1 回だけ送信する PoC 処理を作る
 - [x] server / client one-shot auth round trip の手動確認手順を追加する
+- [x] accepted path 用の one-shot client example config を追加する
 - [ ] heartbeat 送信処理を作る
 - [ ] 画面キャプチャに成功する
 - [ ] Minecraft ウィンドウの取得確認をする
@@ -373,6 +380,7 @@
 - [x] 過去作業で `cargo fmt --check` が通ることを確認した
 - [x] 過去作業で `cargo check --workspace` が通ることを確認した
 - [x] one-shot auth round trip 手動確認手順を追加する
+- [x] accepted path 用 one-shot auth round trip 手動確認手順を追加する
 - [x] `AuthResponse` encode の単体テストを追加する
 - [x] `HeartbeatAck` encode の単体テストを追加する
 - [x] `VideoFrame` encode の単体テストを追加する

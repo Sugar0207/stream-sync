@@ -5,6 +5,55 @@
 - Codex
 
 ### 今回の作業
+- server / client one-shot auth round trip の accepted path 用 client config を追加した。
+- `docs/operations/auth-roundtrip-manual-check.md` を更新し、accepted path を `configs/examples/client.accepted.example.toml` で確認する手順に整理した。
+- 既存の `configs/examples/client.example.toml` は token mismatch による rejected path 確認用として明記した。
+
+### 変更ファイル
+- `configs/examples/client.accepted.example.toml`
+- `docs/operations/auth-roundtrip-manual-check.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### 決定事項
+- accepted path の手動確認では、server に `configs/examples/server.example.toml`、client に `configs/examples/client.accepted.example.toml` を使う。
+- rejected path の確認では、client に既存の `configs/examples/client.example.toml` を使える。
+- 継続 loop、async runtime、heartbeat / video frame、JSON Lines 出力、retry、fragmentation、encryption は今回も範囲外とする。
+
+### 未解決事項
+- accepted path の実機手動実行確認
+- secret 解決本実装
+- JSON Lines 出力本実装
+- heartbeat / video frame 処理本体
+- 継続 receive / send loop
+
+### 次にやる候補
+- accepted path 手順を実際に server / client で実行し、stdout の `accepted=true reason_code=Ok` を確認する
+- secret 解決方式と token 保護方針を設計する
+- receive rejection ログ出力本実装を行う
+
+### TODO更新
+- 完了:
+  - accepted path 用 client config の追加
+  - accepted path 手動確認手順の更新
+- 追加:
+  - accepted path の実機手動実行確認
+- 保留:
+  - 継続 loop / async runtime
+  - heartbeat / video frame 処理
+  - JSON Lines 出力本実装
+  - retry / fragmentation / encryption
+
+### メモ
+- `cargo fmt --check` と `cargo check --workspace` が通ることを確認した。
+
+---
+
+## 2026-04-19
+### 種別
+- Codex
+
+### 今回の作業
 - AGENTS.md が軽量版になっていることを確認した。
 - 重要ルールとして、技術方針、禁止事項、repo 内 docs を正とする運用、TODO / session-log 更新、Git 判断報告が維持されていることを確認した。
 - `docs/operations/todo.md` に今回の運用更新を追記した。
