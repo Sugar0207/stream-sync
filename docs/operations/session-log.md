@@ -5,6 +5,58 @@
 - Codex
 
 ### 今回の作業
+- server / client one-shot auth round trip の accepted path を実機手動確認した。
+- `cargo build -p stream-sync-server -p stream-sync-client` が成功することを確認した。
+- server を `--auth-response-poc-once configs/examples/server.example.toml`、client を `--auth-request-poc-once configs/examples/client.accepted.example.toml` で実行した。
+- client stdout で 96 bytes の `AuthRequest` 送信を確認した。
+- server stdout で 55 bytes の `AuthResponse` 送信、`accepted=true`, `reason_code=Ok` を確認した。
+- `docs/operations/auth-roundtrip-manual-check.md` に accepted path 成功履歴を追記した。
+- `docs/operations/todo.md` の次の実装優先順位を、secret 解決、receive rejection ログ出力、JSON Lines writer 接続中心へ更新した。
+
+### 変更ファイル
+- `docs/operations/auth-roundtrip-manual-check.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### 決定事項
+- one-shot auth round trip の accepted path は、server config `configs/examples/server.example.toml` と client config `configs/examples/client.accepted.example.toml` の組み合わせで確認済みとする。
+- 次の実装優先順位は、secret 解決、receive rejection ログ出力本実装、auth / receive ログ writer 接続の順に寄せる。
+- 継続 loop、async runtime、heartbeat / video frame、JSON Lines 出力本実装の広い拡張は今回も範囲外とする。
+
+### 未解決事項
+- secret 解決本実装
+- JSON Lines writer 接続範囲の決定と本実装
+- receive rejection ログ出力本実装
+- heartbeat / video frame 処理本体
+- 継続 receive / send loop
+
+### 次にやる候補
+- secret 解決方式と token 保護方針を設計する
+- receive rejection ログ出力本実装を行う
+- auth success / failure と receive rejection の JSON Lines writer 接続範囲を決める
+
+### TODO更新
+- 完了:
+  - accepted path 成功確認
+  - accepted path 確認コマンドと観測結果の記録
+- 追加:
+  - auth / receive ログ writer 接続範囲の整理
+- 保留:
+  - 継続 loop / async runtime
+  - heartbeat / video frame 処理
+  - JSON Lines 出力本実装の広い拡張
+  - retry / fragmentation / encryption
+
+### メモ
+- `cargo fmt --check` と `cargo check --workspace` が通ることを確認した。
+
+---
+
+## 2026-04-19
+### 種別
+- Codex
+
+### 今回の作業
 - server / client one-shot auth round trip の accepted path 手動確認を試行した。
 - server を `--auth-response-poc-once configs/examples/server.example.toml`、client を `--auth-request-poc-once configs/examples/client.accepted.example.toml` で実行する確認を試した。
 - 最初の試行では同時 `cargo run` により artifact directory の lock 待ちが発生したため、事前 build に切り替えて確認した。
