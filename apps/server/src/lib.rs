@@ -2314,6 +2314,64 @@ impl ServerOutboundHeartbeatAck {
     }
 }
 
+/// Server-side timestamps prepared for the minimal heartbeat ack handoff.
+///
+/// This is explicit input so the handler boundary does not read clocks or
+/// calculate RTT / offset.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct ServerHeartbeatAckTiming {
+    pub server_received_at: TimestampMicros,
+    pub server_sent_at: TimestampMicros,
+}
+
+/// Result of connecting a registered heartbeat packet to ack queue handoff.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ServerHeartbeatAckHandoff {
+    pub registered_packet: ServerRegisteredHeartbeatPacket,
+    pub ack_input: ServerHeartbeatAckInput,
+    pub outbound_ack: ServerOutboundHeartbeatAck,
+    pub queue_item: OutboundQueueItem,
+}
+
+/// Minimal heartbeat handler bridge for producing a HeartbeatAck queue item.
+///
+/// This consumes an already registered heartbeat packet, echoes `sent_at`, and
+/// hands a typed `HeartbeatAck` to the outbound queue boundary. It does not
+/// update heartbeat state, calculate RTT / offset, read clocks, manage timeout,
+/// encode bytes, or send UDP packets.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct ServerHeartbeatHandlerBoundary {
+    ack: ServerHeartbeatAckBoundary,
+    queue: ServerOutboundQueueBoundary,
+}
+
+impl ServerHeartbeatHandlerBoundary {
+    pub fn handoff_ack(
+        &self,
+        packet: ServerRegisteredHeartbeatPacket,
+        timing: ServerHeartbeatAckTiming,
+    ) -> ServerHeartbeatAckHandoff {
+        let ack_input = ServerHeartbeatAckInput {
+            destination: packet.source,
+            protocol_version: packet.heartbeat.protocol_version,
+            client_id: packet.heartbeat.client_id.clone(),
+            run_id: packet.heartbeat.run_id.clone(),
+            echoed_sent_at: packet.heartbeat.sent_at,
+            server_received_at: timing.server_received_at,
+            server_sent_at: timing.server_sent_at,
+        };
+        let outbound_ack = self.ack.build_for_send(ack_input.clone());
+        let queue_item = self.queue.handoff_heartbeat_ack(outbound_ack.clone());
+
+        ServerHeartbeatAckHandoff {
+            registered_packet: packet,
+            ack_input,
+            outbound_ack,
+            queue_item,
+        }
+    }
+}
+
 /// Server-side outbound handoff boundary for a future net send queue.
 ///
 /// This is a one-item handoff only. It does not implement an in-memory queue,
@@ -4094,6 +4152,58 @@ shared_token = "secret"
         };
         assert_eq!(ack.message_type, MessageType::HeartbeatAck);
         assert_eq!(ack.echoed_sent_at, TimestampMicros(1_000_000));
+    }
+
+    #[test]
+    fn heartbeat_handler_handoff_builds_ack_queue_item_from_registered_packet() {
+        let source = packet_source();
+        let registered_packet = ServerRegisteredHeartbeatPacket {
+            source,
+            authenticated_sender: AuthenticatedSenderEntry {
+                client_id: ClientId("client-1".to_string()),
+                source,
+                run_id: RunId("run-1".to_string()),
+                protocol_version: ProtocolVersion(2),
+                registered_at: Some(TimestampMicros(1_000_000)),
+            },
+            heartbeat: Heartbeat {
+                message_type: MessageType::Heartbeat,
+                protocol_version: ProtocolVersion(2),
+                client_id: ClientId("client-1".to_string()),
+                run_id: RunId("run-1".to_string()),
+                sent_at: TimestampMicros(2_000_000),
+                local_time: None,
+                short_status: None,
+            },
+        };
+        let timing = ServerHeartbeatAckTiming {
+            server_received_at: TimestampMicros(2_000_100),
+            server_sent_at: TimestampMicros(2_000_200),
+        };
+        let handler = ServerHeartbeatHandlerBoundary::default();
+
+        let handoff = handler.handoff_ack(registered_packet.clone(), timing);
+
+        assert_eq!(handoff.registered_packet, registered_packet);
+        assert_eq!(handoff.ack_input.destination, source);
+        assert_eq!(handoff.ack_input.echoed_sent_at, TimestampMicros(2_000_000));
+        assert_eq!(
+            handoff.ack_input.server_received_at,
+            TimestampMicros(2_000_100)
+        );
+        assert_eq!(handoff.ack_input.server_sent_at, TimestampMicros(2_000_200));
+        let ProtocolMessage::HeartbeatAck(ack) = handoff.queue_item.packet.message else {
+            panic!("expected queued HeartbeatAck");
+        };
+        assert_eq!(
+            handoff.queue_item.packet.destination.address,
+            source.address
+        );
+        assert_eq!(ack.client_id, ClientId("client-1".to_string()));
+        assert_eq!(ack.run_id, RunId("run-1".to_string()));
+        assert_eq!(ack.echoed_sent_at, TimestampMicros(2_000_000));
+        assert_eq!(ack.server_received_at, TimestampMicros(2_000_100));
+        assert_eq!(ack.server_sent_at, TimestampMicros(2_000_200));
     }
 
     #[test]

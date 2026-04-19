@@ -1594,6 +1594,41 @@ business logic remains unimplemented.
 
 ---
 
+### Heartbeat Handler Ack Handoff Boundary
+
+The first heartbeat handler connection turns a registered heartbeat packet into
+a typed `HeartbeatAck` outbound queue item. It intentionally stops before
+heartbeat state management or RTT / offset calculation.
+
+Flow:
+
+1. `ServerRegisteredPacketBoundary` produces `ServerRegisteredHeartbeatPacket`.
+2. The heartbeat handler boundary receives the registered packet and explicit
+   `ServerHeartbeatAckTiming`.
+3. It maps `Heartbeat.sent_at` to `HeartbeatAck.echoed_sent_at`.
+4. It maps supplied timing to `server_received_at` and `server_sent_at`.
+5. `ServerHeartbeatAckBoundary` builds `ProtocolMessage::HeartbeatAck`.
+6. `ServerOutboundQueueBoundary` turns the typed ack into `OutboundQueueItem`.
+
+Responsibility split:
+
+- registered packet boundary
+  - Supplies source-authenticated heartbeat input.
+- heartbeat handler boundary
+  - Builds ack handoff input from registered heartbeat and explicit timing.
+  - Does not read clocks, mutate heartbeat state, calculate RTT / offset, or
+    decide timeout.
+- ack / queue boundaries
+  - Preserve typed outbound handoff shape for the send layer.
+  - Do not encode bytes or send UDP.
+
+Current implementation: `apps/server::ServerHeartbeatHandlerBoundary`,
+`ServerHeartbeatAckTiming`, and `ServerHeartbeatAckHandoff`. This is a minimal
+bridge to the existing `ServerHeartbeatAckBoundary` and outbound queue handoff;
+continuous loop integration and heartbeat processing remain future work.
+
+---
+
 ### Receive Rejection Drop / Log Handoff Boundary
 
 Receive-side rejections remain typed when they leave the receive loop / gate.

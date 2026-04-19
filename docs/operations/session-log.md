@@ -5,6 +5,59 @@
 - Codex
 
 ### 今回の作業
+- heartbeat handler の最小 ack 接続範囲を整理した。
+- `apps/server` に `ServerHeartbeatHandlerBoundary`, `ServerHeartbeatAckTiming`, `ServerHeartbeatAckHandoff` を追加した。
+- registered heartbeat packet から `ServerHeartbeatAckInput`、typed `HeartbeatAck`、`OutboundQueueItem` までをつなぐ bridge を追加した。
+- docs に receive loop / gate / registered packet / heartbeat handler / ack queue handoff の責務分離を追記した。
+
+### 変更ファイル
+- `apps/server/src/lib.rs`
+- `docs/architecture/system-design.md`
+- `docs/architecture/protocol.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### 決定事項
+- heartbeat handler boundary は registered heartbeat packet と explicit timing input から ack handoff を作る。
+- `Heartbeat.sent_at` を `HeartbeatAck.echoed_sent_at` として返す。
+- `server_received_at` / `server_sent_at` は handler 内で時計を読まず、外から渡された `ServerHeartbeatAckTiming` を使う。
+- heartbeat state 更新、timeout、RTT / offset 計算、UDP send 実行、queue runtime は今回も未実装に残す。
+
+### 未解決事項
+- heartbeat state / timeout 管理
+- RTT / offset 推定の入力境界
+- continuous receive loop への heartbeat handler 接続
+- auth / receive JSON Lines の file sink 設定方針
+- secret store 連携や token rotation 方針
+
+### 次にやる候補
+- auth / receive JSON Lines の file sink 設定方針を整理する
+- secret store 連携や token rotation の方針を整理する
+- heartbeat state / RTT / offset 推定の入力境界を整理する
+
+### TODO更新
+- 完了:
+  - heartbeat handler の最小 ack 接続範囲整理
+  - `ServerHeartbeatHandlerBoundary` / `ServerHeartbeatAckHandoff` placeholder 追加
+  - registered heartbeat packet から `HeartbeatAck` outbound queue handoff までの docs 反映
+- 追加:
+  - heartbeat state / RTT / offset 推定の入力境界
+- 保留:
+  - heartbeat state 更新
+  - RTT / offset 本計算
+  - async runtime
+  - UDP send loop
+
+### メモ
+- `cargo fmt --check`、`cargo check --workspace`、`cargo test -p stream-sync-server heartbeat_handler_handoff` が通ることを確認した。
+
+---
+
+## 2026-04-19
+### 種別
+- Codex
+
+### 今回の作業
 - heartbeat / video frame handler へ registered packet を渡す接続方針を整理した。
 - `apps/server` に `ServerRegisteredPacketBoundary`, `ServerRegisteredClientPacket`, `ServerRegisteredHeartbeatPacket`, `ServerRegisteredVideoFramePacket` を追加した。
 - accepted route と authenticated sender registry から、handler 用の decoded message + authenticated sender binding を作る bridge を追加した。

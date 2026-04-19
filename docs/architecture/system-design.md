@@ -1249,6 +1249,51 @@ unimplemented.
 
 ---
 
+## Heartbeat Handler Ack Handoff Boundary
+
+The minimal heartbeat handler connection starts from a registered heartbeat
+packet and ends at an outbound queue item for `HeartbeatAck`. It is not the
+heartbeat state machine.
+
+Flow:
+
+1. Receive loop decodes a `Heartbeat` and preserves source endpoint metadata.
+2. Packet acceptance gate checks the decoded `client_id` and source endpoint
+   against `AuthenticatedSenderRegistry`.
+3. `ServerRegisteredPacketBoundary` produces `ServerRegisteredHeartbeatPacket`
+   containing source, `AuthenticatedSenderEntry`, and decoded `Heartbeat`.
+4. The heartbeat handler boundary receives that registered packet plus explicit
+   `ServerHeartbeatAckTiming`.
+5. The handler boundary creates `ServerHeartbeatAckInput`:
+   - destination = registered packet source
+   - `client_id` / `run_id` / `protocol_version` = decoded heartbeat fields
+   - `echoed_sent_at` = `Heartbeat.sent_at`
+   - `server_received_at` / `server_sent_at` = supplied timing input
+6. `ServerHeartbeatAckBoundary` builds typed `ProtocolMessage::HeartbeatAck`.
+7. `ServerOutboundQueueBoundary` hands that typed ack to the outbound queue as
+   `OutboundQueueItem`.
+
+Responsibility split:
+
+- receive loop / gate
+  - Decode, route, and accept/reject the packet before handler execution.
+- registered packet boundary
+  - Attaches authenticated sender context to the decoded heartbeat.
+- heartbeat handler boundary
+  - Converts registered heartbeat + explicit timing into ack handoff.
+  - Does not update heartbeat state, read clocks, calculate RTT / offset,
+    manage timeout, encode bytes, send UDP, or run a queue.
+- ack boundary / outbound queue boundary
+  - Build typed `HeartbeatAck` and hand it to the send queue shape.
+  - Do not decide heartbeat policy or source authentication.
+
+Current code reflects this with `apps/server::ServerHeartbeatHandlerBoundary`,
+`ServerHeartbeatAckTiming`, and `ServerHeartbeatAckHandoff`. Heartbeat liveness
+state, timeout, RTT / offset estimation, continuous loop integration, and UDP
+send execution remain unimplemented.
+
+---
+
 ## Receive Rejection Drop / Log Handoff Boundary
 
 PoC / MVP initial implementation keeps packet rejection handling split into
