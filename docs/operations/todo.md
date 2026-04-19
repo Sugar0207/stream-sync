@@ -2,6 +2,12 @@
 
 # StreamSync TODO
 
+## 2026-04-19 Codex update
+- [x] `shared_token_env` を使う one-shot auth round trip 手順を追加する
+- [x] `configs/examples/server.env-token.example.toml` を追加する
+- [x] env token accepted / missing / empty / mismatch の確認ポイントを整理する
+- 次の中心: heartbeat / video frame handler 接続方針、auth / receive JSON Lines file sink 方針、secret store / rotation 方針
+
 
 最終更新: 2026-04-19
 
@@ -27,9 +33,10 @@
 - accepted auth path で `AuthenticatedSenderRegistry` へ in-memory 登録する実処理は完了
 - `apps/client` の client 設定読み込み、AuthRequest 構築、protocol encoder、UDP one-shot send の PoC 入口は完了
 - server / client one-shot auth round trip の手動確認手順と accepted path 用 helper config は完了
+- `shared_token_env` を使う one-shot auth round trip 手順と server helper config は完了
 - accepted path の手動確認は成功し、`configs/examples/server.example.toml` と `configs/examples/client.accepted.example.toml` の組み合わせで `accepted=true`, `reason_code=Ok` を観測済み
 - secret store 連携、token hashing / rotation、認証済み送信元の timeout / 失効 / 再認証、実際の packet 破棄、`ClientStats` / `ServerNotice` など残り message の encode 本実装、時刻同期本体、映像受信・復号・表示、switcher UI は未実装
-- 次の中心は heartbeat / video frame handler 接続方針、auth / receive JSON Lines file sink 方針、secret 運用手順
+- 次の中心は heartbeat / video frame handler 接続方針、auth / receive JSON Lines file sink 方針、secret store / rotation 方針
 
 ---
 
@@ -61,7 +68,7 @@
 ## 直近でやること
 1. heartbeat / video frame handler へ registered packet を渡す接続方針を整理する
 2. auth / receive JSON Lines の file sink 設定方針を整理する
-3. `shared_token_env` を使う one-shot auth round trip 手順を整理する
+3. secret store 連携や token rotation の方針を整理する
 4. outbound queue の実処理範囲と backpressure 方針を実装前に詰める
 5. `ClientStats` / `ServerNotice` の payload layout と decode / encode 方針を決める
 
@@ -109,6 +116,7 @@
 - [x] server / client one-shot auth round trip の手動確認手順を追加する
 - [x] server / client one-shot auth round trip の accepted path 用 helper config と手順を追加する
 - [x] server / client one-shot auth round trip の accepted path 成功結果を記録する
+- [x] `shared_token_env` を使う one-shot auth round trip 手順を追加する
 - [x] secret 解決方式と token 保護方針を整理する
 - [x] secret resolver 本実装範囲を確定する
 - [x] `shared_token_env` secret resolver の最小本実装を追加する
@@ -225,6 +233,7 @@
 - [x] `ServerSecretResolverBoundary` / secret resolution plan placeholder を追加する
 - [x] `shared_token_env` の環境変数読み取りを `ServerSecretResolverBoundary` に追加する
 - [x] secret 解決後の token material を auth decision input へ接続する
+- [x] `shared_token_env` を使う one-shot auth round trip 手順を整理する
 - [x] accepted auth path で in-memory registry 登録実処理を接続する
 - [ ] secret store 連携や token hashing / rotation 方針を設計する
 - [ ] 認証済み送信元の timeout / 失効 / 再認証を実装する

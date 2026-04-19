@@ -5,6 +5,56 @@
 - Codex
 
 ### 今回の作業
+- `shared_token_env` を使う one-shot auth round trip 手順を repo 内 docs に追加した。
+- `configs/examples/server.env-token.example.toml` を追加し、server 側 token material を `STREAMSYNC_PLAYER*_TOKEN` から解決する確認用 config を用意した。
+- `docs/operations/auth-roundtrip-manual-check.md` に PowerShell での環境変数設定、server / client 起動コマンド、成功時 / 失敗時の確認ポイントを追記した。
+
+### 変更ファイル
+- `configs/examples/server.env-token.example.toml`
+- `docs/operations/auth-roundtrip-manual-check.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### 決定事項
+- inline token の既存 accepted 手順は維持し、`shared_token_env` 用 server config は別ファイルに分ける。
+- `player1` の env-token 手動確認では `STREAMSYNC_PLAYER1_TOKEN = "replace-with-shared-token-1"` を server 起動ターミナルに設定する。
+- 成功確認は server stdout の `accepted=true reason_code=Ok` と、stderr の `server.auth_result` JSON Lines で行う。
+- file sink / rotation / retention は今回も未実装に残す。
+
+### 未解決事項
+- `shared_token_env` 手順の実機実行結果の記録
+- heartbeat / video frame handler へ accepted route を渡す接続
+- auth / receive JSON Lines の file sink 設定方針
+- secret store 連携や token rotation 方針
+
+### 次にやる候補
+- heartbeat / video frame handler へ registered packet を渡す接続方針を整理する
+- auth / receive JSON Lines の file sink 設定方針を整理する
+- `shared_token_env` one-shot auth round trip を実機手動確認して結果を記録する
+
+### TODO更新
+- 完了:
+  - `shared_token_env` one-shot auth round trip 手順追加
+  - env-token server helper config 追加
+  - env token accepted / missing / empty / mismatch の確認ポイント整理
+- 追加:
+  - `shared_token_env` one-shot auth round trip の実機手動確認
+- 保留:
+  - secret store 連携
+  - token rotation
+  - heartbeat / video frame 処理本体
+  - async runtime
+
+### メモ
+- `cargo fmt --check` と `cargo check --workspace` が通ることを確認した。
+
+---
+
+## 2026-04-19
+### 種別
+- Codex
+
+### 今回の作業
 - secret resolver の最小本実装を追加した。
 - `ServerSecretResolverBoundary` が `shared_token_env` の環境変数を読み、inline PoC token と同じ resolved token material として auth decision input へ渡せるようにした。
 - missing / empty / invalid environment variable を `ServerSecretResolutionError` の typed error として扱うようにした。
