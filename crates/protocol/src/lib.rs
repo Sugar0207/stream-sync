@@ -1088,6 +1088,35 @@ impl HeartbeatAckObservationBoundary {
     }
 }
 
+/// Typed carrier for returning one heartbeat ack observation to the server.
+///
+/// The selected future wire carrier is `ClientStats`. This type fixes the
+/// message flow without implementing `ClientStats` payload encode/decode yet.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HeartbeatObservationCarrier {
+    pub message_type: MessageType,
+    pub protocol_version: ProtocolVersion,
+    pub observation: HeartbeatAckObservation,
+}
+
+/// Boundary that wraps an observation in the future `ClientStats` carrier.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct HeartbeatObservationCarrierBoundary;
+
+impl HeartbeatObservationCarrierBoundary {
+    pub fn build_client_stats_carrier(
+        &self,
+        protocol_version: ProtocolVersion,
+        observation: HeartbeatAckObservation,
+    ) -> HeartbeatObservationCarrier {
+        HeartbeatObservationCarrier {
+            message_type: MessageType::ClientStats,
+            protocol_version,
+            observation,
+        }
+    }
+}
+
 /// Encoded video frame sent from a client to the server.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VideoFrame {
@@ -1545,6 +1574,25 @@ mod tests {
         assert_eq!(observation.server_received_at, TimestampMicros(2_100));
         assert_eq!(observation.server_sent_at, TimestampMicros(2_150));
         assert_eq!(observation.client_received_at, TimestampMicros(1_150));
+    }
+
+    #[test]
+    fn heartbeat_observation_carrier_boundary_uses_client_stats_carrier() {
+        let observation = HeartbeatAckObservation {
+            client_id: ClientId("client-1".to_string()),
+            run_id: RunId("run-1".to_string()),
+            echoed_sent_at: TimestampMicros(1_000),
+            server_received_at: TimestampMicros(2_100),
+            server_sent_at: TimestampMicros(2_150),
+            client_received_at: TimestampMicros(1_150),
+        };
+        let boundary = HeartbeatObservationCarrierBoundary;
+
+        let carrier = boundary.build_client_stats_carrier(ProtocolVersion(2), observation.clone());
+
+        assert_eq!(carrier.message_type, MessageType::ClientStats);
+        assert_eq!(carrier.protocol_version, ProtocolVersion(2));
+        assert_eq!(carrier.observation, observation);
     }
 
     #[test]

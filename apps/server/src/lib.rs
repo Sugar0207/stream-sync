@@ -15,8 +15,9 @@ use stream_sync_net_core::{
 };
 use stream_sync_protocol::{
     AppVersion, AuthRequest, AuthResponse, AuthResponseReasonCode, ClientId, Heartbeat,
-    HeartbeatAck, HeartbeatAckObservation, MessageType, ProtocolError, ProtocolMessage,
-    ProtocolMessageEncoderBoundary, ProtocolVersion, RunId, TimestampMicros, VideoFrame,
+    HeartbeatAck, HeartbeatAckObservation, HeartbeatObservationCarrier, MessageType, ProtocolError,
+    ProtocolMessage, ProtocolMessageEncoderBoundary, ProtocolVersion, RunId, TimestampMicros,
+    VideoFrame,
 };
 use stream_sync_timebase::{
     HeartbeatExchangeObservation, HeartbeatRttOffsetCalculationError, HeartbeatRttOffsetCalculator,
@@ -2426,6 +2427,24 @@ impl ServerHeartbeatClientAckObservationBoundary {
     }
 }
 
+/// Server boundary for accepting the future heartbeat observation carrier.
+///
+/// This unwraps the typed carrier only. Receive routing, packet acceptance,
+/// and `ClientStats` payload decode remain future work.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct ServerHeartbeatObservationCarrierBoundary {
+    observation: ServerHeartbeatClientAckObservationBoundary,
+}
+
+impl ServerHeartbeatObservationCarrierBoundary {
+    pub fn prepare(
+        &self,
+        carrier: HeartbeatObservationCarrier,
+    ) -> ServerHeartbeatClientAckObservation {
+        self.observation.prepare(carrier.observation)
+    }
+}
+
 /// One stateless RTT / offset calculation result with server correlation ids.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ServerHeartbeatRttOffsetCalculation {
@@ -4653,6 +4672,45 @@ shared_token = "secret"
         let boundary = ServerHeartbeatClientAckObservationBoundary;
 
         let server_observation = boundary.prepare(observation);
+
+        assert_eq!(
+            server_observation.client_id,
+            ClientId("client-1".to_string())
+        );
+        assert_eq!(server_observation.run_id, RunId("run-1".to_string()));
+        assert_eq!(
+            server_observation.echoed_client_sent_at,
+            TimestampMicros(1_000)
+        );
+        assert_eq!(
+            server_observation.server_received_at,
+            TimestampMicros(2_100)
+        );
+        assert_eq!(server_observation.server_sent_at, TimestampMicros(2_150));
+        assert_eq!(
+            server_observation.client_received_at,
+            TimestampMicros(1_150)
+        );
+    }
+
+    #[test]
+    fn heartbeat_observation_carrier_boundary_unwraps_client_stats_carrier() {
+        let observation = HeartbeatAckObservation {
+            client_id: ClientId("client-1".to_string()),
+            run_id: RunId("run-1".to_string()),
+            echoed_sent_at: TimestampMicros(1_000),
+            server_received_at: TimestampMicros(2_100),
+            server_sent_at: TimestampMicros(2_150),
+            client_received_at: TimestampMicros(1_150),
+        };
+        let carrier = HeartbeatObservationCarrier {
+            message_type: MessageType::ClientStats,
+            protocol_version: ProtocolVersion(2),
+            observation,
+        };
+        let boundary = ServerHeartbeatObservationCarrierBoundary::default();
+
+        let server_observation = boundary.prepare(carrier);
 
         assert_eq!(
             server_observation.client_id,

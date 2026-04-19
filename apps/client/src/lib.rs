@@ -6,8 +6,9 @@ use std::{
 
 use stream_sync_protocol::{
     AppVersion, AuthRequest, ClientId, EncodeContext, HeartbeatAck, HeartbeatAckObservation,
-    HeartbeatAckObservationBoundary, MessageEncoder, MessageType, ProtocolError, ProtocolMessage,
-    ProtocolMessageEncoderBoundary, ProtocolVersion, RunId, TimestampMicros,
+    HeartbeatAckObservationBoundary, HeartbeatObservationCarrier,
+    HeartbeatObservationCarrierBoundary, MessageEncoder, MessageType, ProtocolError,
+    ProtocolMessage, ProtocolMessageEncoderBoundary, ProtocolVersion, RunId, TimestampMicros,
 };
 
 /// One-shot client-side AuthRequest send PoC.
@@ -117,6 +118,26 @@ impl ClientHeartbeatAckObservationBoundary {
         client_received_at: TimestampMicros,
     ) -> HeartbeatAckObservation {
         self.protocol.observe(ack, client_received_at)
+    }
+}
+
+/// Client boundary for wrapping a heartbeat ack observation in its future carrier.
+///
+/// This does not encode or send a packet; it only fixes the typed handoff into
+/// the future `ClientStats` carrier.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct ClientHeartbeatObservationCarrierBoundary {
+    protocol: HeartbeatObservationCarrierBoundary,
+}
+
+impl ClientHeartbeatObservationCarrierBoundary {
+    pub fn build_client_stats_carrier(
+        &self,
+        protocol_version: ProtocolVersion,
+        observation: HeartbeatAckObservation,
+    ) -> HeartbeatObservationCarrier {
+        self.protocol
+            .build_client_stats_carrier(protocol_version, observation)
     }
 }
 
@@ -468,5 +489,24 @@ mod tests {
         assert_eq!(observation.server_received_at, TimestampMicros(2_100));
         assert_eq!(observation.server_sent_at, TimestampMicros(2_150));
         assert_eq!(observation.client_received_at, TimestampMicros(1_150));
+    }
+
+    #[test]
+    fn client_heartbeat_observation_carrier_boundary_wraps_client_stats_carrier() {
+        let observation = HeartbeatAckObservation {
+            client_id: ClientId("client-1".to_string()),
+            run_id: RunId("run-1".to_string()),
+            echoed_sent_at: TimestampMicros(1_000),
+            server_received_at: TimestampMicros(2_100),
+            server_sent_at: TimestampMicros(2_150),
+            client_received_at: TimestampMicros(1_150),
+        };
+        let boundary = ClientHeartbeatObservationCarrierBoundary::default();
+
+        let carrier = boundary.build_client_stats_carrier(ProtocolVersion(2), observation.clone());
+
+        assert_eq!(carrier.message_type, MessageType::ClientStats);
+        assert_eq!(carrier.protocol_version, ProtocolVersion(2));
+        assert_eq!(carrier.observation, observation);
     }
 }

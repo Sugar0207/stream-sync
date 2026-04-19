@@ -5,6 +5,60 @@
 - Codex
 
 ### 今回の作業
+- heartbeat observation carrier を設計した。
+- `HeartbeatAckObservation` を `ClientStats` carrier に載せる typed boundary を追加した。
+- `apps/client` に observation を future `ClientStats` carrier へ wrap する boundary を追加した。
+- `apps/server` に future carrier から server calculator input を取り出す boundary を追加した。
+- docs に `ClientStats` optional heartbeat observation block の payload 方針と責務分離を追記した。
+
+### 変更ファイル
+- `apps/client/src/lib.rs`
+- `apps/server/src/lib.rs`
+- `crates/protocol/src/lib.rs`
+- `docs/architecture/system-design.md`
+- `docs/architecture/protocol.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### 決定事項
+- heartbeat observation carrier は `ClientStats` の optional block として扱う方針にする。
+- optional block は `heartbeat_observation_present: u8` の後ろに `echoed_sent_at`, `server_received_at`, `server_sent_at`, `client_received_at` を `u64 little-endian` で置く。
+- `client_id` と `run_id` は `ClientStats` 共通 field を使う。
+- 今回は typed carrier のみで、`ClientStats` payload encode / decode や UDP send/receive 接続は実装しない。
+
+### 未解決事項
+- `ClientStats` payload encode / decode 本実装
+- `ClientStats` receive route / gate / handler 接続
+- heartbeat observation を継続送信する client loop
+- server 側 RTT / offset state commit と smoothing
+
+### 次にやる候補
+- auth / receive JSON Lines の file sink 設定方針を整理する
+- secret store 連携や token rotation の方針を整理する
+- `ClientStats` payload encode/decode 方針を決める
+
+### TODO更新
+- 完了:
+  - heartbeat observation carrier 設計
+  - `HeartbeatAckObservation` を `ClientStats` carrier に載せる typed boundary 追加
+  - `ClientStats` optional observation block の payload 方針 docs 反映
+- 追加:
+  - `ClientStats` payload encode/decode 方針を次候補へ移動
+- 保留:
+  - observation の wire encode / decode
+  - continuous heartbeat loop
+  - RTT / offset の state commit
+
+### メモ
+- `cargo fmt --check`、`cargo check --workspace`、`cargo test -p stream-sync-protocol heartbeat_observation_carrier`、`cargo test -p stream-sync-client heartbeat_observation_carrier`、`cargo test -p stream-sync-server heartbeat_observation_carrier` が通ることを確認した。
+
+---
+
+## 2026-04-20
+### 種別
+- Codex
+
+### 今回の作業
 - heartbeat client ack observation flow を設計した。
 - `crates/protocol` に `HeartbeatAck` と `client_received_at` から `HeartbeatAckObservation` を作る typed boundary を追加した。
 - `apps/client` に client 側で `HeartbeatAckObservation` を作る boundary を追加した。

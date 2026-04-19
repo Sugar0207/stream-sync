@@ -853,6 +853,30 @@ client が定期送信する状態メッセージ。
 #### 備考
 - MVP では必須項目を絞ってよい
 - 最初は capture_fps / dropped_frames / bitrate_kbps 程度から始めてもよい
+- heartbeat observation carrier として optional block を追加する方針とする。
+  ただし `ClientStats` payload encode / decode 本実装はまだ行わない。
+
+#### Heartbeat observation optional block
+
+`HeartbeatAckObservation` は `ClientStats` の optional block として server
+へ戻す方針にする。これは `client_received_at` を server 側 RTT / offset
+calculator へ戻すための carrier であり、継続 heartbeat loop や smoothing
+本体ではない。
+
+将来の `ClientStats` payload では、既存の最小 stats fields の後ろに以下を
+置く方針とする。
+
+| Order | Field | Type | Notes |
+| --- | --- | --- | --- |
+| 1 | `heartbeat_observation_present` | `u8` | `0` = absent, `1` = following observation fields are present. |
+| 2 | `echoed_sent_at` | `u64` | little-endian。client clock domain。 |
+| 3 | `server_received_at` | `u64` | little-endian。server clock domain。 |
+| 4 | `server_sent_at` | `u64` | little-endian。server clock domain。 |
+| 5 | `client_received_at` | `u64` | little-endian。client clock domain。 |
+
+`client_id` と `run_id` は `ClientStats` の共通 field を使う。server は
+`client_id`, `run_id`, `echoed_sent_at`, `server_received_at`,
+`server_sent_at` を stored timebase plan と照合してから calculator に渡す。
 
 ---
 
@@ -1798,6 +1822,43 @@ on the client side, and
 `apps/server::ServerHeartbeatClientAckObservationBoundary` prepares the server
 calculator input. Wire encode/decode, continuous heartbeat handling, state
 commit, and smoothing remain future work.
+
+### Heartbeat Observation Carrier
+
+The heartbeat observation carrier is `ClientStats` with an optional
+heartbeat-observation block. This keeps timebase feedback in the client
+telemetry stream and avoids adding a new wire message type during the early PoC.
+
+Typed flow:
+
+1. `HeartbeatAckObservationBoundary` creates `HeartbeatAckObservation`.
+2. `HeartbeatObservationCarrierBoundary` wraps it as
+   `HeartbeatObservationCarrier { message_type = ClientStats, protocol_version,
+   observation }`.
+3. A future `ClientStats` encoder writes the common stats payload and then the
+   optional heartbeat observation block.
+4. Server-side `ClientStats` decode extracts the optional block and maps it to
+   `ServerHeartbeatClientAckObservation`.
+5. The server calculator boundary validates correlation against the stored
+   `ServerHeartbeatTimebasePlan`.
+
+Responsibility split:
+
+- client observation
+  - Captures `client_received_at`.
+- protocol carrier
+  - Defines the typed carrier and future payload field set.
+  - Does not encode/decode the current wire payload yet.
+- server carrier
+  - Converts decoded carrier data into calculator input.
+- timebase
+  - Computes one stateless RTT / offset sample after correlation succeeds.
+
+Current implementation: `crates/protocol::HeartbeatObservationCarrier` and
+`HeartbeatObservationCarrierBoundary`,
+`apps/client::ClientHeartbeatObservationCarrierBoundary`, and
+`apps/server::ServerHeartbeatObservationCarrierBoundary`. `ClientStats` payload
+encode/decode and continuous send/receive wiring remain future work.
 
 ---
 

@@ -1484,6 +1484,58 @@ Current code reflects this with
 carrier, send / receive loop integration, state update, and smoothing remain
 future work.
 
+### Heartbeat Observation Carrier
+
+The heartbeat observation carrier is the client-to-server message flow that
+will carry `HeartbeatAckObservation` back to the server. The selected carrier
+for MVP planning is `ClientStats` with an optional heartbeat observation block.
+This keeps heartbeat timing feedback tied to the existing client telemetry path
+and avoids adding a new wire message type before the rest of `ClientStats`
+payload layout is finalized.
+
+Message flow:
+
+1. Client observes `HeartbeatAck` and creates `HeartbeatAckObservation`.
+2. Client wraps that observation in a typed `HeartbeatObservationCarrier` with
+   `message_type = ClientStats`.
+3. A future `ClientStats` sender encodes and sends the carrier to the server.
+4. Server receives and decodes `ClientStats`.
+5. Server extracts the optional heartbeat observation block and maps it to
+   `ServerHeartbeatClientAckObservation`.
+6. Server correlates it with the stored timebase plan and calls the RTT /
+   offset calculator.
+
+Payload direction for the future `ClientStats` extension:
+
+| Order | Field | Type | Notes |
+| --- | --- | --- | --- |
+| 1 | existing `ClientStats` fields | existing layout | `client_id`, `run_id`, `sent_at`, and minimal stats fields. |
+| 2 | `heartbeat_observation_present` | `u8` | `0` = absent, `1` = observation block follows. |
+| 3 | `echoed_sent_at` | `u64 little-endian` | Client clock domain. Mirrors `HeartbeatAck.echoed_sent_at`. |
+| 4 | `server_received_at` | `u64 little-endian` | Server clock domain from `HeartbeatAck`. |
+| 5 | `server_sent_at` | `u64 little-endian` | Server clock domain from `HeartbeatAck`. |
+| 6 | `client_received_at` | `u64 little-endian` | Client clock domain captured at ack receive. |
+
+Responsibility split:
+
+- client observation boundary
+  - Captures `client_received_at` and creates `HeartbeatAckObservation`.
+- protocol carrier boundary
+  - Wraps the observation in a typed `ClientStats` carrier.
+  - Does not encode bytes or send UDP packets.
+- server carrier boundary
+  - Extracts the typed observation for calculator input.
+  - Does not run receive loop, gate, smoothing, or state commit.
+- future `ClientStats` encode/decode
+  - Owns the actual payload bytes for the optional observation block.
+
+Current code reflects this with `protocol::HeartbeatObservationCarrier`,
+`protocol::HeartbeatObservationCarrierBoundary`,
+`apps/client::ClientHeartbeatObservationCarrierBoundary`, and
+`apps/server::ServerHeartbeatObservationCarrierBoundary`. The actual
+`ClientStats` payload encode/decode, UDP send/receive connection, and timebase
+state update remain future work.
+
 ---
 
 ## Receive Rejection Drop / Log Handoff Boundary
