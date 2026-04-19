@@ -5,6 +5,46 @@
 - Codex
 
 ### 今回の作業
+- AGENTS.md が軽量版になっていることを確認した。
+- 重要ルールとして、技術方針、禁止事項、repo 内 docs を正とする運用、TODO / session-log 更新、Git 判断報告が維持されていることを確認した。
+- `docs/operations/todo.md` に今回の運用更新を追記した。
+- コード変更は行っていない。
+
+### 変更ファイル
+- `AGENTS.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### 決定事項
+- 今後の Codex 運用では、軽量化された `AGENTS.md` を入口にし、詳細な進捗や判断は `docs/operations/todo.md` と `docs/operations/session-log.md` を正として確認する。
+- 技術方針、MVP 対象外、禁止事項、Git 運用、docs 更新ルールの意味は変更しない。
+
+### 未解決事項
+- なし
+
+### 次にやる候補
+- server / client one-shot auth round trip の accepted path を手動確認する
+- secret 解決方式と token 保護方針を設計する
+- receive rejection ログ出力本実装を行う
+
+### TODO更新
+- 完了:
+  - AGENTS.md 軽量版への運用更新確認
+- 追加:
+  - なし
+- 保留:
+  - なし
+
+### メモ
+- cargo 系コマンドは今回の対象外のため実行していない。
+
+---
+
+## 2026-04-19
+### 種別
+- Codex
+
+### 今回の作業
 - server / client one-shot auth round trip の手動確認手順を追加した。
 - `docs/operations/auth-roundtrip-manual-check.md` を追加し、server / client の起動コマンド、使用 config path、成功時の stdout、失敗時に見る場所を整理した。
 - server PoC の成功時 stdout に `client_id`, `run_id`, `accepted`, `reason_code` を表示する最小観測補助を追加した。

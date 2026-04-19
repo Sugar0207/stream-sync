@@ -3,6 +3,11 @@
 # StreamSync TODO
 
 ## 2026-04-19 Codex update
+- [x] AGENTS.md を軽量版へ置き換える運用更新を確認する
+- [x] 重要ルールを維持した軽量版 AGENTS.md の状態を確認する
+- 次の中心: accepted path の手動確認、secret 解決、receive rejection ログ出力本実装
+
+## 2026-04-19 Codex update
 - [x] server / client one-shot auth round trip の手動確認手順を追加する
 - [x] `docs/operations/auth-roundtrip-manual-check.md` に server / client 起動コマンド、config path、成功時 / 失敗時の見方を整理する
 - [x] PoC 実行時の stdout に `client_id` / `run_id` / `protocol_version` / `accepted` / `reason_code` を表示する最小観測補助を追加する
