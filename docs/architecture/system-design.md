@@ -399,6 +399,52 @@ Current code reflects this with `apps/server::ServerAuthResponsePocLauncher`,
 `run_auth_response_poc_once_from_path`. The default server binary still prints
 a scaffold message unless the explicit one-shot PoC flag is supplied.
 
+### 5.9 Client AuthRequest one-shot PoC startup entry
+
+The client auth request PoC startup entry connects the example client TOML to a
+single UDP `AuthRequest` send. This is the smallest runnable client-side entry
+for the server auth response round trip.
+
+Flow:
+
+1. The caller passes a client TOML path to the PoC launcher.
+2. `ClientAuthRequestPocLauncher` reads the TOML file.
+3. The launcher extracts `[client].server_host`, `[client].server_port`,
+   `[client].client_id`, `[client].shared_token`, optional
+   `[client].display_name`, `[session].run_id`, `[session].app_version`, and
+   `[session].protocol_version`.
+4. The launcher resolves `server_host + server_port` into a destination
+   `SocketAddr`.
+5. The launcher builds `ProtocolMessage::AuthRequest`.
+6. `ProtocolMessageEncoderBoundary` converts the typed request into fixed
+   header + payload bytes.
+7. The launcher binds an ephemeral local synchronous UDP socket.
+8. The launcher sends one encoded datagram to the destination.
+
+Responsibility split:
+
+- config loading
+  - Owns TOML file reading and minimal extraction of the destination and auth
+    request fields.
+  - Does not resolve secrets from environment variables or secret stores.
+- client PoC launcher
+  - Owns destination resolution, `AuthRequest` construction, protocol encode,
+    ephemeral UDP bind, and one `send_to`.
+  - Does not run a loop, reconnect, send heartbeat / video frames, write JSON
+    Lines logs, retry, fragment, or encrypt.
+- protocol encoder
+  - Owns converting `AuthRequest` to the documented fixed header + payload
+    bytes.
+  - Does not know socket addresses or connection state.
+- socket send
+  - Owns sending already encoded bytes to the resolved destination once.
+
+Current code reflects this with `apps/client::ClientAuthRequestPocLauncher`,
+`ClientAuthRequestPocStartupConfig`, `ClientAuthRequestPocOutcome`,
+`ClientAuthRequestPocError`, and `run_auth_request_poc_once_from_path`. The
+default client binary still prints a scaffold message unless the explicit
+`--auth-request-poc-once` flag is supplied.
+
 ---
 
 ## 6. 同期の考え方

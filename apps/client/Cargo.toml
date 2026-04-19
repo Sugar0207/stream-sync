@@ -6,5 +6,8 @@ license.workspace = true
 publish.workspace = true
 rust-version.workspace = true
 
+[dependencies]
+stream-sync-protocol = { path = "../../crates/protocol" }
+
 [lints]
 workspace = true

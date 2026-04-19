@@ -584,6 +584,34 @@ pub struct EncodeContext {
     pub protocol_version: ProtocolVersion,
 }
 
+/// Encode one `AuthRequest` packet as fixed header plus payload bytes.
+///
+/// The payload follows the documented order: `client_id`, `run_id`,
+/// `app_version`, `shared_token`, and `display_name`. This function does not
+/// resolve destinations, open sockets, retry, or manage authentication state.
+pub fn encode_auth_request(
+    context: EncodeContext,
+    request: &AuthRequest,
+    output: &mut Vec<u8>,
+) -> Result<(), ProtocolError> {
+    let mut payload = Vec::new();
+    encode_auth_request_payload(request, &mut payload)?;
+    let payload_length =
+        u32::try_from(payload.len()).map_err(|_| ProtocolError::InvalidPayloadLength {
+            expected: u32::MAX,
+            actual: payload.len(),
+        })?;
+
+    encode_fixed_header(
+        MessageType::AuthRequest,
+        context.protocol_version,
+        payload_length,
+        output,
+    );
+    output.extend_from_slice(&payload);
+    Ok(())
+}
+
 /// Encode one `AuthResponse` packet as fixed header plus payload bytes.
 ///
 /// The payload follows the documented order: `client_id`, `run_id`, `accepted`,
@@ -666,6 +694,19 @@ pub fn encode_video_frame(
         output,
     );
     output.extend_from_slice(&payload);
+    Ok(())
+}
+
+/// Encode only the `AuthRequest` payload body.
+pub fn encode_auth_request_payload(
+    request: &AuthRequest,
+    output: &mut Vec<u8>,
+) -> Result<(), ProtocolError> {
+    write_string(output, &request.client_id.0)?;
+    write_string(output, &request.run_id.0)?;
+    write_string(output, &request.app_version.0)?;
+    write_string(output, &request.shared_token)?;
+    write_optional_string(output, request.display_name.as_deref())?;
     Ok(())
 }
 
@@ -900,6 +941,7 @@ impl MessageEncoder for ProtocolMessageEncoderBoundary {
         output: &mut Vec<u8>,
     ) -> Result<(), ProtocolError> {
         match message {
+            ProtocolMessage::AuthRequest(request) => encode_auth_request(context, request, output),
             ProtocolMessage::AuthResponse(response) => {
                 encode_auth_response(context, response, output)
             }
@@ -1205,6 +1247,78 @@ mod tests {
         assert_eq!(AuthResponseReasonCode::ProtocolMismatch.wire_code(), 3);
         assert_eq!(AuthResponseReasonCode::AlreadyConnected.wire_code(), 4);
         assert_eq!(AuthResponseReasonCode::InternalError.wire_code(), 5);
+    }
+
+    #[test]
+    fn encodes_auth_request_payload_with_display_name() {
+        let request = AuthRequest {
+            message_type: MessageType::AuthRequest,
+            protocol_version: ProtocolVersion(2),
+            client_id: ClientId("client-1".to_string()),
+            run_id: RunId("run-1".to_string()),
+            app_version: AppVersion("0.1.0".to_string()),
+            shared_token: "shared-secret".to_string(),
+            display_name: Some("Alice".to_string()),
+            capabilities: Vec::new(),
+            requested_video_profile: None,
+        };
+        let mut payload = Vec::new();
+
+        encode_auth_request_payload(&request, &mut payload)
+            .expect("auth request payload should encode");
+
+        let mut expected = Vec::new();
+        push_string(&mut expected, "client-1");
+        push_string(&mut expected, "run-1");
+        push_string(&mut expected, "0.1.0");
+        push_string(&mut expected, "shared-secret");
+        push_optional_string(&mut expected, Some("Alice"));
+        assert_eq!(payload, expected);
+    }
+
+    #[test]
+    fn protocol_message_encoder_encodes_auth_request_packet() {
+        let request = AuthRequest {
+            message_type: MessageType::AuthRequest,
+            protocol_version: ProtocolVersion(2),
+            client_id: ClientId("client-1".to_string()),
+            run_id: RunId("run-1".to_string()),
+            app_version: AppVersion("0.1.0".to_string()),
+            shared_token: "shared-secret".to_string(),
+            display_name: None,
+            capabilities: Vec::new(),
+            requested_video_profile: None,
+        };
+        let message = ProtocolMessage::AuthRequest(request.clone());
+        let encoder = ProtocolMessageEncoderBoundary;
+        let mut output = Vec::new();
+
+        encoder
+            .encode_message(
+                EncodeContext {
+                    protocol_version: ProtocolVersion(2),
+                },
+                &message,
+                &mut output,
+            )
+            .expect("auth request packet should encode");
+
+        let decoded = decode_fixed_header(&output).expect("encoded fixed header should decode");
+        assert_eq!(decoded.header.message_type, MessageType::AuthRequest);
+        assert_eq!(decoded.header.header_length, FIXED_HEADER_LEN);
+        assert_eq!(decoded.header.protocol_version, ProtocolVersion(2));
+        assert_eq!(decoded.header.flags, 0);
+        assert_eq!(decoded.header.reserved, 0);
+
+        let mut expected_payload = Vec::new();
+        encode_auth_request_payload(&request, &mut expected_payload)
+            .expect("expected payload should encode");
+        assert_eq!(decoded.header.payload_length, expected_payload.len() as u32);
+        assert_eq!(decoded.payload, expected_payload.as_slice());
+
+        let decoded_request = decode_auth_request_payload(decoded.header, decoded.payload)
+            .expect("encoded request should decode");
+        assert_eq!(decoded_request, request);
     }
 
     #[test]

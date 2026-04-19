@@ -5,6 +5,65 @@
 - Codex
 
 ### 今回の作業
+- client 側 `AuthRequest` 送信 PoC を追加した。
+- `crates/protocol` に `AuthRequest` payload encode と fixed header + payload encode を追加した。
+- `ProtocolMessageEncoderBoundary` から `ProtocolMessage::AuthRequest` を encode できるようにした。
+- `apps/client` に `ClientAuthRequestPocLauncher`, `ClientAuthRequestPocStartupConfig`, `ClientAuthRequestPocOutcome`, `ClientAuthRequestPocError` を追加した。
+- client TOML から server destination、`client_id`, `shared_token`, optional `display_name`, `run_id`, `app_version`, `protocol_version` を読み、`AuthRequest` を 1 回だけ UDP 送信できるようにした。
+- client binary に `--auth-request-poc-once [config-path]` の明示入口を追加した。
+- docs に client 側 auth request one-shot PoC の flow と責務分離を追記した。
+
+### 変更ファイル
+- `apps/client/Cargo.toml`
+- `apps/client/src/lib.rs`
+- `apps/client/src/main.rs`
+- `crates/protocol/src/lib.rs`
+- `docs/architecture/system-design.md`
+- `docs/architecture/protocol.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### 決定事項
+- client auth request PoC は `configs/examples/client.example.toml` と同じ形の TOML を入力にする。
+- client launcher は config 読み込み、destination 解決、`AuthRequest` 構築、protocol encode、ephemeral UDP bind、1 回の `send_to` だけを担当する。
+- `AuthRequest` encode は既存 decode と同じ payload layout に合わせ、`client_id`, `run_id`, `app_version`, `shared_token`, `display_name` を書く。
+- 継続 loop、heartbeat / video frame 送信、async runtime、retry、fragmentation、encryption、secret 解決本実装は今回の範囲外とする。
+
+### 未解決事項
+- server / client one-shot auth round trip の手動確認
+- secret 解決本実装
+- heartbeat / video frame 送信
+- 継続 loop / reconnect
+- JSON Lines 出力本実装
+
+### 次にやる候補
+- server / client one-shot auth round trip を手動確認する
+- secret 解決方式と token 保護方針を設計する
+- receive rejection ログ出力本実装を行う
+
+### TODO更新
+- 完了:
+  - client 側 `AuthRequest` 送信 PoC
+  - `AuthRequest` encode 本実装
+  - `--auth-request-poc-once [config-path]` 入口追加
+- 追加:
+  - server / client one-shot auth round trip 手動確認
+- 保留:
+  - 継続 loop / async runtime
+  - heartbeat / video frame 送信
+  - retry / fragmentation / encryption
+  - secret 解決本実装
+
+### メモ
+- client 側 auth request PoC の責務は、client TOML から 1 回分の `AuthRequest` と destination を作り、protocol encoder で bytes 化して UDP に 1 datagram 送るところまで。
+
+---
+
+## 2026-04-18
+### 種別
+- Codex
+
+### 今回の作業
 - auth response PoC の起動設定接続を追加した。
 - `apps/server` に `ServerAuthResponsePocLauncher`, `ServerAuthResponsePocStartupConfig`, `ServerAuthResponsePocStartupOutcome`, `ServerAuthResponsePocStartupError` を追加した。
 - server TOML から `[server].bind_host`, `[server].bind_port`, `[session].protocol_version` を読み取り、bind address と expected protocol version を用意できるようにした。

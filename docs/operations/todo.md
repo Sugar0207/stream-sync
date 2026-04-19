@@ -3,6 +3,12 @@
 # StreamSync TODO
 
 ## 2026-04-18 Codex update
+- [x] client 側 `AuthRequest` 送信 PoC を追加する
+- [x] `AuthRequest` fixed header + payload bytes の最小 encode 実装を追加する
+- [x] client 設定から destination / auth 情報を読み、1 回だけ UDP send できる入口を追加する
+- 次の中心: server / client one-shot auth round trip 手動確認、secret 解決、receive rejection ログ出力本実装
+
+## 2026-04-18 Codex update
 - [x] auth response PoC の起動設定接続を追加する
 - [x] `ServerAuthResponsePocLauncher` / `run_auth_response_poc_once_from_path` を追加する
 - 次の中心: secret 解決、receive rejection ログ出力本実装、client 側 AuthRequest 送信 PoC
@@ -43,12 +49,13 @@
 ## 現在位置
 - 仕様固定と土台作りは概ね完了
 - Cargo workspace と `apps/*` / `crates/*` の初期 scaffold は完了
-- `crates/protocol` の基本型、主要 message 型、timestamp 型、fixed header decode、`AuthRequest` / `Heartbeat` / `VideoFrame` payload decode、`AuthResponse` / `HeartbeatAck` / `VideoFrame` encode は完了
+- `crates/protocol` の基本型、主要 message 型、timestamp 型、fixed header decode、`AuthRequest` / `Heartbeat` / `VideoFrame` payload decode、`AuthRequest` / `AuthResponse` / `HeartbeatAck` / `VideoFrame` encode は完了
 - `crates/config` の server auth 設定 TOML 読み込み最小実装は完了
 - `crates/net-core` の inbound decode 境界、outbound packet / queue 境界、outbound queue lifecycle 境界、protocol encoder 呼び出し境界、send error / log event 分類 placeholder、UDP socket 1 datagram receive / send adapter は完了
 - `apps/server` の inbound router、UDP receive loop step、UDP socket adapter 接続、auth response PoC one-shot 起動接続、auth response PoC 起動設定接続、receive loop から packet acceptance gate への接続境界、packet acceptance rejection の drop / log handoff 境界、receive rejection JSON Lines event schema 境界、auth handler boundary、auth config input boundary、server auth decision 最小実装、auth success / failure log handoff 境界、auth JSON Lines event schema 境界、auth flow step、認証済み送信元 registry 境界、packet acceptance gate 境界、AuthResponse response boundary、HeartbeatAck ack boundary、outbound queue handoff は完了
+- `apps/client` の client 設定読み込み、AuthRequest 構築、protocol encoder、UDP one-shot send の PoC 入口は完了
 - secret 解決、認証済み送信元の timeout / 失効 / 再認証、実際の packet 破棄 / ログ出力、`ClientStats` / `ServerNotice` など残り message の encode 本実装、時刻同期本体、映像受信・復号・表示、switcher UI は未実装
-- 次の中心は secret 解決、receive rejection ログ出力本実装、client 側 AuthRequest 送信 PoC
+- 次の中心は server / client one-shot auth round trip 手動確認、secret 解決、receive rejection ログ出力本実装
 
 ---
 
@@ -78,9 +85,9 @@
 ---
 
 ## 直近でやること
-1. secret 解決方式と token 保護方針を設計する
-2. receive rejection ログ出力本実装を行う
-3. client 側 AuthRequest 送信 PoC を追加する
+1. server / client one-shot auth round trip を手動確認する
+2. secret 解決方式と token 保護方針を設計する
+3. receive rejection ログ出力本実装を行う
 4. outbound queue の実処理範囲と backpressure 方針を実装前に詰める
 5. `ClientStats` / `ServerNotice` の payload layout と decode / encode 方針を決める
 
@@ -120,6 +127,7 @@
 - [x] `VideoFrame` encode 方針と最小実装範囲を整理する
 - [x] UDP socket を auth response PoC の起動処理へ最小接続する
 - [x] auth response PoC の起動設定接続を追加する
+- [x] client 側 AuthRequest one-shot PoC の flow と責務分離を整理する
 - [ ] 状態遷移を詳細化する
 - [ ] 異常時の挙動を実装レベルに落とす
 - [ ] ログイベント仕様を詳細化する
@@ -149,12 +157,13 @@
 - [x] `AuthResponse` payload byte layout と encode input boundary を整理する
 - [x] `HeartbeatAck` payload layout / encode 方針を決める
 - [x] `ProtocolMessage::message_type()` と `ProtocolMessageEncoderBoundary` placeholder を追加する
+- [x] `AuthRequest` encode 本実装を行う
 - [x] `AuthResponse` encode 本実装を行う
 - [x] `HeartbeatAck` encode 本実装を行う
 - [x] `VideoFrame` encode 方針と最小実装範囲を整理する
 - [x] `VideoFrame` encode 本実装を行う
 - [x] fixed header encode 本実装を行う
-- [ ] message ごとの payload encode 本実装を行う
+- [ ] `ClientStats` / `ServerNotice` など残り message の payload encode 本実装を行う
 - [ ] `ClientStats` / `ServerNotice` の payload layout と decode / encode 方針を決める
 - [ ] payload fragmentation の要否と方式を決める
 - [ ] 再送制御 / 暗号化は MVP 初期で扱うか保留するか明記する
@@ -268,12 +277,12 @@
 ---
 
 ## client 側
-- [ ] クライアント起動処理を作る
-- [ ] TOML 設定読み込み処理を作る
-- [ ] `client_id` / `shared_token` を設定から読み込む
-- [ ] `run_id` を受け取る、または生成する
-- [ ] `app_version` / `protocol_version` を送信する
-- [ ] 認証メッセージ送信処理を作る
+- [x] AuthRequest one-shot PoC 用のクライアント起動処理を作る
+- [x] AuthRequest one-shot PoC 用の TOML 設定読み込み処理を作る
+- [x] `client_id` / `shared_token` を設定から読み込む
+- [x] `run_id` を設定から受け取る
+- [x] `app_version` / `protocol_version` を `AuthRequest` に入れて送信する
+- [x] 認証メッセージを 1 回だけ送信する PoC 処理を作る
 - [ ] heartbeat 送信処理を作る
 - [ ] 画面キャプチャに成功する
 - [ ] Minecraft ウィンドウの取得確認をする
