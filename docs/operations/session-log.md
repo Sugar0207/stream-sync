@@ -5,6 +5,57 @@
 - Codex
 
 ### 今回の作業
+- server / client one-shot auth round trip の accepted path 手動確認を試行した。
+- server を `--auth-response-poc-once configs/examples/server.example.toml`、client を `--auth-request-poc-once configs/examples/client.accepted.example.toml` で実行する確認を試した。
+- 最初の試行では同時 `cargo run` により artifact directory の lock 待ちが発生したため、事前 build に切り替えて確認した。
+- `cargo build -p stream-sync-server -p stream-sync-client` が MSVC linker `link.exe` 不足で失敗し、UDP 送受信前に停止した。
+- `docs/operations/auth-roundtrip-manual-check.md` に確認履歴、観測結果、詰まり箇所を追記した。
+
+### 変更ファイル
+- `docs/operations/auth-roundtrip-manual-check.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### 決定事項
+- 今回の accepted path 確認結果は未完了として扱う。
+- 詰まり箇所は auth flow ではなく、`stream-sync-server` / `stream-sync-client` binary のリンク環境。
+- 次回は MSVC linker `link.exe` が使える Visual Studio Build Tools 環境、または Rust target に合った linker が有効な shell で同じ手順を再実行する。
+
+### 未解決事項
+- accepted path の `accepted=true reason_code=Ok` 実機観測
+- MSVC linker を使える実行環境の用意
+- secret 解決本実装
+- JSON Lines 出力本実装
+- heartbeat / video frame 処理本体
+
+### 次にやる候補
+- MSVC linker が使える環境で accepted path 手順を再実行し、stdout の `accepted=true reason_code=Ok` を確認する
+- secret 解決方式と token 保護方針を設計する
+- receive rejection ログ出力本実装を行う
+
+### TODO更新
+- 完了:
+  - accepted path 手動確認の試行
+  - link error による未完了結果の記録
+- 追加:
+  - MSVC linker が使える環境で accepted path を再実行する
+- 保留:
+  - 継続 loop / async runtime
+  - heartbeat / video frame 処理
+  - JSON Lines 出力本実装
+  - retry / fragmentation / encryption
+
+### メモ
+- `cargo build -p stream-sync-server -p stream-sync-client` は `link.exe` 不足で失敗した。
+- `cargo fmt --check` と `cargo check --workspace` が通ることを確認した。
+
+---
+
+## 2026-04-19
+### 種別
+- Codex
+
+### 今回の作業
 - server / client one-shot auth round trip の accepted path 用 client config を追加した。
 - `docs/operations/auth-roundtrip-manual-check.md` を更新し、accepted path を `configs/examples/client.accepted.example.toml` で確認する手順に整理した。
 - 既存の `configs/examples/client.example.toml` は token mismatch による rejected path 確認用として明記した。
