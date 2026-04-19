@@ -5,6 +5,63 @@
 - Codex
 
 ### 今回の作業
+- receive rejection ログ出力の最小実装を追加した。
+- `apps/server` に `ServerReceiveRejectionLogOutputBoundary` と `ServerReceiveRejectionJsonLineWriter` を追加した。
+- 既存の `ServerRejectionDropLogHandoffBoundary` と `ServerReceiveRejectionJsonLogEventBoundary` を接続し、receive rejection を 1 行 JSON Lines として `io::Write` へ出力できるようにした。
+- server one-shot auth response PoC で `ServerAuthResponsePocError::Rejected` が返った場合、stderr へ receive rejection JSON Lines を 1 行出してから既存の error message を出すようにした。
+- `docs/architecture/system-design.md` と `docs/architecture/protocol.md` に、出力先、出力 fields、今回も file writer / rotation / async logging へ広げない方針を追記した。
+
+### 変更ファイル
+- `apps/server/src/lib.rs`
+- `apps/server/src/main.rs`
+- `docs/architecture/system-design.md`
+- `docs/architecture/protocol.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### 決定事項
+- receive rejection の最小出力先は、現時点では one-shot server CLI の stderr とする。
+- 出力形式は `server.receive_rejection` の JSON Lines 1 行とする。
+- 出力 fields は `event_name`, `run_id`, `client_id`, `source`, `message_type`, `rejection_reason`, `detail`, `timestamp` とする。
+- file sink、rotation、buffering policy、async logging、汎用 JSON Lines writer は今回の範囲外とする。
+
+### 未解決事項
+- auth success / failure JSON Lines writer 接続
+- receive rejection の file sink / rotation / retention
+- secret resolver 本実装
+- 認証済み送信元登録の実処理接続
+- heartbeat / video frame 処理本体
+
+### 次にやる候補
+- auth success / failure と receive rejection の JSON Lines writer 接続範囲を決める
+- secret resolver 本実装範囲を確定する
+- 認証済み送信元登録の実処理を auth accepted path へ接続する
+
+### TODO更新
+- 完了:
+  - receive rejection ログ出力の最小実装
+  - one-shot server CLI の rejected path stderr JSON Lines 出力
+  - receive rejection JSON Lines writer の単体テスト
+- 追加:
+  - auth / receive ログ writer 接続範囲の整理
+  - 認証済み送信元登録の実処理接続
+- 保留:
+  - JSON Lines の大規模 writer 基盤
+  - async runtime
+  - heartbeat / video frame 処理
+  - secret resolver 本実装
+
+### メモ
+- `cargo fmt --check` と `cargo check --workspace` が通ることを確認した。
+- `cargo test -p stream-sync-server receive_rejection` が通ることを確認した。
+
+---
+
+## 2026-04-19
+### 種別
+- Codex
+
+### 今回の作業
 - secret 解決方式と token 保護方針を docs に整理した。
 - `docs/architecture/system-design.md` と `docs/architecture/protocol.md` に、`shared_token` / `shared_token_env` の責務、secret resolution boundary、token 非露出方針を追記した。
 - `crates/config` で `shared_token_env` を `SharedTokenSecretRef::EnvironmentVariable` として読める placeholder を追加した。

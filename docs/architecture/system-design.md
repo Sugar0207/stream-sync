@@ -1188,15 +1188,36 @@ Responsibility split:
 - JSON Lines event schema boundary
   - Owns the receive rejection event field set and maps typed handoff reasons
     to log-event reasons.
-  - Does not serialize JSON Lines or write to disk/stdout.
+  - Does not choose sinks, retention, or process-wide logging policy.
 - log writer
-  - Future owner of JSON Lines serialization, sinks, rotation, and flushing.
+  - Current minimal writer serializes the receive rejection event to one JSON
+    Lines record for an `io::Write` sink.
+  - Future owner of file sinks, rotation, buffering policy, retention, and
+    broader logging configuration.
 
 Current code reflects this with
 `apps/server::ServerReceiveRejectionJsonLogEventBoundary`,
 `ServerReceiveRejectionJsonLogEventInput`,
-`ServerReceiveRejectionReason`, and `ServerReceiveRejectionDetail`. JSON Lines
-output remains unimplemented.
+`ServerReceiveRejectionReason`, and `ServerReceiveRejectionDetail`. Minimal
+JSON Lines output is connected through
+`ServerReceiveRejectionLogOutputBoundary` and
+`ServerReceiveRejectionJsonLineWriter`. The one-shot server CLI writes one
+receive rejection JSON Lines record to stderr when
+`ServerAuthResponsePocError::Rejected` occurs, then prints the existing PoC
+error message. This remains synchronous and schema-specific; file output,
+rotation, buffering policy, async logging, and a general JSON Lines writer
+remain future work.
+
+Minimal emitted fields:
+
+- `event_name`
+- `run_id`
+- `client_id`
+- `source`
+- `message_type`
+- `rejection_reason`
+- `detail`
+- `timestamp`
 
 ---
 

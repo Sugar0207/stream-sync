@@ -704,6 +704,87 @@ pub struct ServerReceiveRejectionJsonLogEventInput {
     pub timestamp: TimestampMicros,
 }
 
+/// Minimal receive rejection log output boundary.
+///
+/// This connects the existing rejection handoff and event schema to an
+/// `io::Write` sink. It writes one JSON Lines record and does not own files,
+/// rotation, async I/O, buffering policy, or global logging configuration.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct ServerReceiveRejectionLogOutputBoundary {
+    handoff: ServerRejectionDropLogHandoffBoundary,
+    event: ServerReceiveRejectionJsonLogEventBoundary,
+    writer: ServerReceiveRejectionJsonLineWriter,
+}
+
+impl ServerReceiveRejectionLogOutputBoundary {
+    pub fn write_rejection<W: io::Write>(
+        &self,
+        rejection: ServerReceiveLoopGateRejection,
+        timestamp: TimestampMicros,
+        writer: W,
+    ) -> io::Result<ServerReceiveRejectionJsonLogEventInput> {
+        let handoff = self.handoff.handoff(rejection);
+        let event = self.event.build_event(handoff.log_input, timestamp);
+        self.writer.write_event(&event, writer)?;
+        Ok(event)
+    }
+}
+
+/// Minimal JSON Lines writer for receive rejection events.
+///
+/// This is intentionally small and schema-specific. A broader JSON Lines writer
+/// can replace this boundary later without changing the receive rejection event
+/// schema.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct ServerReceiveRejectionJsonLineWriter;
+
+impl ServerReceiveRejectionJsonLineWriter {
+    pub fn write_event<W: io::Write>(
+        &self,
+        event: &ServerReceiveRejectionJsonLogEventInput,
+        mut writer: W,
+    ) -> io::Result<()> {
+        write!(writer, "{{")?;
+        write_json_field(&mut writer, "event_name", event.event_name)?;
+        write!(writer, ",")?;
+        write_optional_json_field(
+            &mut writer,
+            "run_id",
+            event.run_id.as_ref().map(|run_id| run_id.0.as_str()),
+        )?;
+        write!(writer, ",")?;
+        write_optional_json_field(
+            &mut writer,
+            "client_id",
+            event
+                .client_id
+                .as_ref()
+                .map(|client_id| client_id.0.as_str()),
+        )?;
+        write!(writer, ",")?;
+        write_json_field(&mut writer, "source", &event.source.address.to_string())?;
+        write!(writer, ",")?;
+        write_optional_json_field(
+            &mut writer,
+            "message_type",
+            event
+                .message_type
+                .as_ref()
+                .map(|message_type| receive_rejection_message_type_name(*message_type)),
+        )?;
+        write!(writer, ",")?;
+        write_json_field(
+            &mut writer,
+            "rejection_reason",
+            receive_rejection_reason_name(event.rejection_reason),
+        )?;
+        write!(writer, ",\"detail\":")?;
+        write_receive_rejection_detail(&mut writer, &event.detail)?;
+        write!(writer, ",\"timestamp\":{}", event.timestamp.0)?;
+        writeln!(writer, "}}")
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ServerReceiveRejectionReason {
     DecodeError,
@@ -721,6 +802,96 @@ pub enum ServerReceiveRejectionDetail {
     Acceptance {
         reason: PacketAcceptanceRejectReason,
     },
+}
+
+fn write_json_field<W: io::Write>(writer: &mut W, key: &str, value: &str) -> io::Result<()> {
+    write!(writer, "\"{key}\":")?;
+    write_json_string(writer, value)
+}
+
+fn write_optional_json_field<W: io::Write>(
+    writer: &mut W,
+    key: &str,
+    value: Option<&str>,
+) -> io::Result<()> {
+    write!(writer, "\"{key}\":")?;
+    match value {
+        Some(value) => write_json_string(writer, value),
+        None => write!(writer, "null"),
+    }
+}
+
+fn write_receive_rejection_detail<W: io::Write>(
+    writer: &mut W,
+    detail: &ServerReceiveRejectionDetail,
+) -> io::Result<()> {
+    match detail {
+        ServerReceiveRejectionDetail::Decode { action, error } => {
+            write!(writer, "{{")?;
+            write_json_field(writer, "kind", "Decode")?;
+            write!(writer, ",")?;
+            write_json_field(writer, "action", &format!("{action:?}"))?;
+            write!(writer, ",")?;
+            write_json_field(writer, "error", &format!("{error:?}"))?;
+            write!(writer, "}}")
+        }
+        ServerReceiveRejectionDetail::Acceptance { reason } => {
+            write!(writer, "{{")?;
+            write_json_field(writer, "kind", "Acceptance")?;
+            write!(writer, ",")?;
+            write_json_field(
+                writer,
+                "reason",
+                packet_acceptance_reject_reason_name(*reason),
+            )?;
+            write!(writer, "}}")
+        }
+    }
+}
+
+fn write_json_string<W: io::Write>(writer: &mut W, value: &str) -> io::Result<()> {
+    write!(writer, "\"")?;
+    for character in value.chars() {
+        match character {
+            '"' => write!(writer, "\\\"")?,
+            '\\' => write!(writer, "\\\\")?,
+            '\n' => write!(writer, "\\n")?,
+            '\r' => write!(writer, "\\r")?,
+            '\t' => write!(writer, "\\t")?,
+            character if character.is_control() => write!(writer, "\\u{:04x}", character as u32)?,
+            character => write!(writer, "{character}")?,
+        }
+    }
+    write!(writer, "\"")
+}
+
+fn receive_rejection_message_type_name(message_type: MessageType) -> &'static str {
+    match message_type {
+        MessageType::AuthRequest => "AuthRequest",
+        MessageType::AuthResponse => "AuthResponse",
+        MessageType::Heartbeat => "Heartbeat",
+        MessageType::HeartbeatAck => "HeartbeatAck",
+        MessageType::VideoFrame => "VideoFrame",
+        MessageType::ClientStats => "ClientStats",
+        MessageType::ServerNotice => "ServerNotice",
+    }
+}
+
+fn receive_rejection_reason_name(reason: ServerReceiveRejectionReason) -> &'static str {
+    match reason {
+        ServerReceiveRejectionReason::DecodeError => "DecodeError",
+        ServerReceiveRejectionReason::UnauthenticatedSource => "UnauthenticatedSource",
+        ServerReceiveRejectionReason::UnknownClient => "UnknownClient",
+        ServerReceiveRejectionReason::EndpointMismatch => "EndpointMismatch",
+    }
+}
+
+fn packet_acceptance_reject_reason_name(reason: PacketAcceptanceRejectReason) -> &'static str {
+    match reason {
+        PacketAcceptanceRejectReason::UnauthenticatedSource => "UnauthenticatedSource",
+        PacketAcceptanceRejectReason::UnknownClient => "UnknownClient",
+        PacketAcceptanceRejectReason::EndpointMismatch => "EndpointMismatch",
+    }
 }
 
 /// Receive rejection reason preserved across drop and log handoff.
@@ -2197,6 +2368,63 @@ shared_token = "secret"
                 timestamp: TimestampMicros(234_567),
             }
         );
+    }
+
+    #[test]
+    fn receive_rejection_json_line_writer_outputs_minimal_json_line() {
+        let source = packet_source();
+        let writer = ServerReceiveRejectionJsonLineWriter;
+        let event = ServerReceiveRejectionJsonLogEventInput {
+            event_name: SERVER_RECEIVE_REJECTION_JSON_LOG_EVENT_NAME,
+            run_id: None,
+            client_id: Some(ClientId("client-1".to_string())),
+            source,
+            message_type: Some(MessageType::Heartbeat),
+            rejection_reason: ServerReceiveRejectionReason::UnauthenticatedSource,
+            detail: ServerReceiveRejectionDetail::Acceptance {
+                reason: PacketAcceptanceRejectReason::UnauthenticatedSource,
+            },
+            timestamp: TimestampMicros(345_678),
+        };
+        let mut output = Vec::new();
+
+        writer
+            .write_event(&event, &mut output)
+            .expect("json line should write");
+
+        assert_eq!(
+            String::from_utf8(output).expect("json line should be utf8"),
+            r#"{"event_name":"server.receive_rejection","run_id":null,"client_id":"client-1","source":"127.0.0.1:5000","message_type":"Heartbeat","rejection_reason":"UnauthenticatedSource","detail":{"kind":"Acceptance","reason":"UnauthenticatedSource"},"timestamp":345678}"#
+                .to_string()
+                + "\n"
+        );
+    }
+
+    #[test]
+    fn receive_rejection_log_output_boundary_connects_handoff_event_and_writer() {
+        let source = packet_source();
+        let boundary = ServerReceiveRejectionLogOutputBoundary::default();
+        let rejection = ServerReceiveLoopGateRejection::Acceptance(PacketAcceptanceRejection {
+            source,
+            message_type: MessageType::VideoFrame,
+            client_id: Some(ClientId("client-1".to_string())),
+            reason: PacketAcceptanceRejectReason::EndpointMismatch,
+        });
+        let mut output = Vec::new();
+
+        let event = boundary
+            .write_rejection(rejection, TimestampMicros(456_789), &mut output)
+            .expect("json line should write");
+
+        assert_eq!(
+            event.rejection_reason,
+            ServerReceiveRejectionReason::EndpointMismatch
+        );
+        let output = String::from_utf8(output).expect("json line should be utf8");
+        assert!(output.contains(r#""event_name":"server.receive_rejection""#));
+        assert!(output.contains(r#""message_type":"VideoFrame""#));
+        assert!(output.contains(r#""rejection_reason":"EndpointMismatch""#));
+        assert!(output.contains(r#""timestamp":456789"#));
     }
 
     #[test]

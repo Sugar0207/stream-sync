@@ -3,6 +3,12 @@
 # StreamSync TODO
 
 ## 2026-04-19 Codex update
+- [x] receive rejection ログ出力の最小実装を追加する
+- [x] `ServerReceiveRejectionLogOutputBoundary` / `ServerReceiveRejectionJsonLineWriter` を追加する
+- [x] one-shot server CLI の receive rejection 時に stderr へ JSON Lines 1 行を出す
+- 次の中心: auth / receive ログ writer 接続範囲の整理、secret resolver 本実装範囲の確定、認証済み送信元登録の実処理
+
+## 2026-04-19 Codex update
 - [x] secret 解決方式と token 保護方針を docs に整理する
 - [x] `shared_token_env` の config placeholder と token debug redaction を追加する
 - [x] server 側に secret resolution status placeholder を追加する
@@ -85,12 +91,12 @@
 - `crates/config` の server auth 設定 TOML 読み込み最小実装は完了
 - `crates/config` の `shared_token` / `shared_token_env` token reference 読み分けと inline secret debug redaction は完了
 - `crates/net-core` の inbound decode 境界、outbound packet / queue 境界、outbound queue lifecycle 境界、protocol encoder 呼び出し境界、send error / log event 分類 placeholder、UDP socket 1 datagram receive / send adapter は完了
-- `apps/server` の inbound router、UDP receive loop step、UDP socket adapter 接続、auth response PoC one-shot 起動接続、auth response PoC 起動設定接続、receive loop から packet acceptance gate への接続境界、packet acceptance rejection の drop / log handoff 境界、receive rejection JSON Lines event schema 境界、auth handler boundary、auth config input boundary、server auth decision 最小実装、auth success / failure log handoff 境界、auth JSON Lines event schema 境界、auth flow step、認証済み送信元 registry 境界、packet acceptance gate 境界、AuthResponse response boundary、HeartbeatAck ack boundary、outbound queue handoff は完了
+- `apps/server` の inbound router、UDP receive loop step、UDP socket adapter 接続、auth response PoC one-shot 起動接続、auth response PoC 起動設定接続、receive loop から packet acceptance gate への接続境界、packet acceptance rejection の drop / log handoff 境界、receive rejection JSON Lines event schema 境界、receive rejection stderr JSON Lines 最小出力、auth handler boundary、auth config input boundary、server auth decision 最小実装、auth success / failure log handoff 境界、auth JSON Lines event schema 境界、auth flow step、認証済み送信元 registry 境界、packet acceptance gate 境界、AuthResponse response boundary、HeartbeatAck ack boundary、outbound queue handoff は完了
 - `apps/client` の client 設定読み込み、AuthRequest 構築、protocol encoder、UDP one-shot send の PoC 入口は完了
 - server / client one-shot auth round trip の手動確認手順と accepted path 用 helper config は完了
 - accepted path の手動確認は成功し、`configs/examples/server.example.toml` と `configs/examples/client.accepted.example.toml` の組み合わせで `accepted=true`, `reason_code=Ok` を観測済み
 - secret resolver 本実装、認証済み送信元の timeout / 失効 / 再認証、実際の packet 破棄 / ログ出力、`ClientStats` / `ServerNotice` など残り message の encode 本実装、時刻同期本体、映像受信・復号・表示、switcher UI は未実装
-- 次の中心は receive rejection ログ出力本実装、auth / receive ログ writer 接続、secret resolver 本実装範囲の確定
+- 次の中心は auth / receive ログ writer 接続範囲の整理、secret resolver 本実装範囲の確定、認証済み送信元登録の実処理
 
 ---
 
@@ -120,9 +126,9 @@
 ---
 
 ## 直近でやること
-1. receive rejection ログ出力本実装を行う
-2. auth success / failure と receive rejection の JSON Lines writer 接続範囲を決める
-3. secret resolver 本実装範囲を確定する
+1. auth success / failure と receive rejection の JSON Lines writer 接続範囲を決める
+2. secret resolver 本実装範囲を確定する
+3. 認証済み送信元登録の実処理を auth accepted path へ接続する
 4. outbound queue の実処理範囲と backpressure 方針を実装前に詰める
 5. `ClientStats` / `ServerNotice` の payload layout と decode / encode 方針を決める
 
@@ -158,6 +164,7 @@
 - [x] `HeartbeatAck` encode 入力境界を整理する
 - [x] UDP socket 送信前の send error / log event 方針を整理する
 - [x] receive rejection の JSON Lines ログイベント仕様を整理する
+- [x] receive rejection ログ出力の最小実装を追加する
 - [x] UDP socket 受信 / 送信本体の最小実装を追加する
 - [x] `VideoFrame` encode 方針と最小実装範囲を整理する
 - [x] UDP socket を auth response PoC の起動処理へ最小接続する
@@ -227,6 +234,7 @@
 - [x] `ServerReceiveLoopGateOutcome` / receive loop から gate を呼ぶ接続 helper を追加する
 - [x] `ServerRejectionDropLogHandoffBoundary` / drop-log handoff input placeholder を追加する
 - [x] `ServerReceiveRejectionJsonLogEventBoundary` / receive rejection JSON Lines event input placeholder を追加する
+- [x] `ServerReceiveRejectionLogOutputBoundary` / receive rejection JSON Lines writer を追加する
 - [x] UDP socket の bind / receive / send 最小実装を行う
 - [x] bind 済み UDP socket から 1 packet を受信する最小処理を追加する
 - [x] encode 済み bytes と destination を UDP socket へ送信する最小処理を追加する
@@ -235,7 +243,8 @@
 - [x] `ServerAuthResponsePocLauncher` で server 設定から bind / auth config / registry 初期化 / PoC step 呼び出しを接続する
 - [ ] packet 受信継続 loop を実装する
 - [ ] packet 送信継続 loop を実装する
-- [ ] receive loop のログ出力を実装する
+- [x] receive rejection の最小 stderr JSON Lines 出力を実装する
+- [ ] receive loop の継続運用向けログ出力を実装する
 - [ ] outbound queue の実処理を実装する
 - [ ] outbound queue の backpressure / capacity 方針を決める
 - [x] send error の分類とログ方針を整理する
@@ -373,6 +382,7 @@
 - [x] switcher UI 上のリアルタイム簡易メトリクス表示方針を決定する
 - [x] auth success / failure の JSON Lines ログイベント仕様を整理する
 - [x] receive rejection の JSON Lines ログイベント仕様を整理する
+- [x] receive rejection JSON Lines の最小 stderr 出力を実装する
 - [ ] ログイベント型を定義する
 - [ ] JSON Lines 形式でログ出力する
 - [ ] `run_id` / `client_id` を各ログに付与する

@@ -1580,14 +1580,27 @@ Responsibility split:
   - Does not serialize events.
 - JSON Lines event schema boundary
   - Maps handoff reasons into `server.receive_rejection` event fields.
-  - Does not perform JSON Lines output.
+  - Does not choose sinks or retention policy.
 - log writer
-  - Future owner of serialization and sinks.
+  - Current minimal writer serializes this one event shape to an `io::Write`
+    sink.
+  - Future owner of file sinks, rotation, buffering, and a broader JSON Lines
+    framework.
 
 Current implementation: `apps/server::ServerReceiveRejectionJsonLogEventBoundary`
 builds `ServerReceiveRejectionJsonLogEventInput` from `ServerPacketLogInput`.
 It preserves `UnauthenticatedSource`, `UnknownClient`, `EndpointMismatch`, and
-decode-error detail without performing JSON Lines output.
+decode-error detail. `ServerReceiveRejectionLogOutputBoundary` connects the
+handoff, event schema, and `ServerReceiveRejectionJsonLineWriter` to write one
+JSON Lines record. The server one-shot auth response PoC uses it only when a
+receive rejection reaches `ServerAuthResponsePocError::Rejected`, writing to
+stderr before the existing error message.
+
+Example shape:
+
+```json
+{"event_name":"server.receive_rejection","run_id":null,"client_id":"client-1","source":"127.0.0.1:5000","message_type":"Heartbeat","rejection_reason":"UnauthenticatedSource","detail":{"kind":"Acceptance","reason":"UnauthenticatedSource"},"timestamp":345678}
+```
 
 ---
 

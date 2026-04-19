@@ -19,6 +19,20 @@ fn main() {
                     );
                 }
                 Err(error) => {
+                    if let stream_sync_server::ServerAuthResponsePocStartupError::Poc(
+                        stream_sync_server::ServerAuthResponsePocError::Rejected(rejection),
+                    ) = &error
+                    {
+                        let log_boundary =
+                            stream_sync_server::ServerReceiveRejectionLogOutputBoundary::default();
+                        if let Err(log_error) = log_boundary.write_rejection(
+                            rejection.clone(),
+                            current_timestamp_micros(),
+                            std::io::stderr().lock(),
+                        ) {
+                            eprintln!("receive rejection log output failed: {log_error:?}");
+                        }
+                    }
                     eprintln!("auth response PoC failed: {error:?}");
                     std::process::exit(1);
                 }
@@ -30,4 +44,12 @@ fn main() {
             );
         }
     }
+}
+
+fn current_timestamp_micros() -> stream_sync_protocol::TimestampMicros {
+    let micros = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_micros())
+        .unwrap_or(0);
+    stream_sync_protocol::TimestampMicros(u64::try_from(micros).unwrap_or(u64::MAX))
 }
