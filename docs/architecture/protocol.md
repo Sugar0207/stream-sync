@@ -1179,6 +1179,25 @@ Protection rules:
 - `config` owns reference parsing, auth input owns context assembly, secret
   resolution owns external lookup, and auth decision owns comparison.
 
+First real resolver scope:
+
+- Input: `ServerSharedTokenAuthInput` / token id plus `SharedTokenSecretRef`.
+- Output: resolved token material suitable for auth decision input, with debug
+  output redacted.
+- Supported source: environment variables named by `shared_token_env`.
+- PoC compatibility: inline placeholder material stays supported as already
+  resolved token material.
+- Errors: missing environment variable, empty environment variable, unsupported
+  reference type, and internal resolver error. Error messages must not include
+  token values.
+- Not included: secret store integrations, network calls, caching, hot reload,
+  rotation, hashing/KDF, auth decision, response generation, logging, or socket
+  I/O.
+
+Current placeholder: `ServerSecretResolverBoundary::plan_resolution` classifies
+inline tokens as `AlreadyResolved` and env refs as `NeedsEnvironmentVariable`.
+It deliberately does not call `std::env` yet.
+
 ### Minimal Auth Decision Boundary
 
 The server auth decision boundary converts prepared auth input into

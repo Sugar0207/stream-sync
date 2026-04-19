@@ -1164,6 +1164,81 @@ pub enum ServerSharedTokenSecretResolutionStatus {
     EnvironmentVariablePending { name: String },
 }
 
+/// Placeholder boundary for future server secret resolution.
+///
+/// This boundary defines the implementation scope for the real resolver. It
+/// classifies configured token references into either already-available PoC
+/// inline material or a required external lookup. It does not read environment
+/// variables, connect to secret stores, compare tokens, or log token material.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct ServerSecretResolverBoundary;
+
+impl ServerSecretResolverBoundary {
+    pub fn plan_resolution(
+        &self,
+        token: &ServerSharedTokenAuthInput,
+    ) -> ServerSecretResolutionPlan {
+        match &token.secret_ref {
+            SharedTokenSecretRef::InlinePlaceholder(value) => {
+                ServerSecretResolutionPlan::AlreadyResolved(ServerResolvedSharedTokenAuthInput {
+                    token_id: token.token_id.clone(),
+                    material: ServerResolvedSharedTokenMaterial::PoCInline(value.clone()),
+                })
+            }
+            SharedTokenSecretRef::EnvironmentVariable(name) => {
+                ServerSecretResolutionPlan::NeedsEnvironmentVariable {
+                    token_id: token.token_id.clone(),
+                    name: name.clone(),
+                }
+            }
+        }
+    }
+}
+
+/// Resolution plan for one configured server shared token.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ServerSecretResolutionPlan {
+    AlreadyResolved(ServerResolvedSharedTokenAuthInput),
+    NeedsEnvironmentVariable { token_id: String, name: String },
+}
+
+/// Token material prepared for future auth decision input.
+///
+/// The value is intentionally debug-redacted because it may contain shared
+/// token material after the real resolver is implemented.
+#[derive(Clone, PartialEq, Eq)]
+pub struct ServerResolvedSharedTokenAuthInput {
+    pub token_id: String,
+    pub material: ServerResolvedSharedTokenMaterial,
+}
+
+impl std::fmt::Debug for ServerResolvedSharedTokenAuthInput {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("ServerResolvedSharedTokenAuthInput")
+            .field("token_id", &self.token_id)
+            .field("material", &self.material)
+            .finish()
+    }
+}
+
+/// Resolved token material. Debug output must never reveal the material value.
+#[derive(Clone, PartialEq, Eq)]
+pub enum ServerResolvedSharedTokenMaterial {
+    PoCInline(String),
+}
+
+impl std::fmt::Debug for ServerResolvedSharedTokenMaterial {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::PoCInline(_) => formatter
+                .debug_tuple("PoCInline")
+                .field(&"<redacted>")
+                .finish(),
+        }
+    }
+}
+
 /// Minimal server auth decision boundary.
 ///
 /// This checks the prepared client whitelist and token input and returns a
@@ -2897,6 +2972,52 @@ shared_token = "secret"
         assert_eq!(
             decision.message.as_deref(),
             Some("token secret is not resolved")
+        );
+    }
+
+    #[test]
+    fn secret_resolver_boundary_plans_inline_placeholder_as_resolved() {
+        let boundary = ServerSecretResolverBoundary;
+        let token = ServerSharedTokenAuthInput {
+            token_id: "client-1".to_string(),
+            secret_ref: SharedTokenSecretRef::InlinePlaceholder("presented-secret".to_string()),
+        };
+
+        let plan = boundary.plan_resolution(&token);
+
+        assert_eq!(
+            plan,
+            ServerSecretResolutionPlan::AlreadyResolved(ServerResolvedSharedTokenAuthInput {
+                token_id: "client-1".to_string(),
+                material: ServerResolvedSharedTokenMaterial::PoCInline(
+                    "presented-secret".to_string()
+                ),
+            })
+        );
+        assert_eq!(
+            format!("{plan:?}"),
+            "AlreadyResolved(ServerResolvedSharedTokenAuthInput { token_id: \"client-1\", material: PoCInline(\"<redacted>\") })"
+        );
+    }
+
+    #[test]
+    fn secret_resolver_boundary_plans_environment_variable_lookup() {
+        let boundary = ServerSecretResolverBoundary;
+        let token = ServerSharedTokenAuthInput {
+            token_id: "client-1".to_string(),
+            secret_ref: SharedTokenSecretRef::EnvironmentVariable(
+                "STREAM_SYNC_TOKEN_MAIN".to_string(),
+            ),
+        };
+
+        let plan = boundary.plan_resolution(&token);
+
+        assert_eq!(
+            plan,
+            ServerSecretResolutionPlan::NeedsEnvironmentVariable {
+                token_id: "client-1".to_string(),
+                name: "STREAM_SYNC_TOKEN_MAIN".to_string(),
+            }
         );
     }
 

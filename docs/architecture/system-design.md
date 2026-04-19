@@ -768,6 +768,50 @@ Current code reflects this with `SharedTokenSecretRef::InlinePlaceholder`,
 placeholder classification only; real environment variable lookup and secret
 store integration remain unimplemented.
 
+Secret resolver implementation scope:
+
+- In scope for the first real resolver:
+  - Receive `ServerSharedTokenAuthInput` values that contain token ids and
+    `SharedTokenSecretRef` references.
+  - Treat `InlinePlaceholder` as already available PoC token material.
+  - Resolve `EnvironmentVariable` by reading exactly the named environment
+    variable.
+  - Reject missing or empty resolved values before auth decision.
+  - Produce redacted-debug `ServerResolvedSharedTokenAuthInput` values for auth
+    decision input.
+  - Return typed resolution errors that do not include token values.
+- Out of scope for the first real resolver:
+  - External secret stores.
+  - Network calls.
+  - Token hashing / KDF / rotation.
+  - Caching and hot reload.
+  - Deciding whether a client is accepted.
+  - Logging resolved token material.
+
+Updated responsibility split:
+
+- config
+  - Parses TOML into `SharedTokenSecretRef`.
+  - Validates only reference presence, emptiness, and conflicts.
+  - Does not read environment variables or produce resolved material.
+- resolver
+  - Owns reference resolution and resolved-token error classification.
+  - Produces resolved token material with redacted debug output.
+  - Does not inspect `AuthRequest`, check client whitelist, or build
+    `AuthResponse`.
+- auth input boundary
+  - Will combine decoded request context, allowed clients, and resolved token
+    material once the resolver is connected.
+- auth decision
+  - Owns whitelist lookup and comparison against already-prepared material.
+  - Does not read TOML, environment variables, or secret stores.
+
+Current placeholder: `apps/server::ServerSecretResolverBoundary` exposes
+`plan_resolution`. It does not read the environment yet; it returns
+`AlreadyResolved` for PoC inline tokens and `NeedsEnvironmentVariable` for env
+refs so the next implementation can replace the plan with real resolution
+without changing config parsing.
+
 ---
 
 ## Server Auth Decision Boundary

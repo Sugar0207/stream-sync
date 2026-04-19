@@ -3,6 +3,12 @@
 # StreamSync TODO
 
 ## 2026-04-19 Codex update
+- [x] secret resolver 本実装範囲を docs に確定する
+- [x] `ServerSecretResolverBoundary` / `ServerSecretResolutionPlan` placeholder を追加する
+- [x] resolver / config / auth decision の責務分離を更新する
+- 次の中心: 認証済み送信元登録の実処理、auth result writer の CLI 接続判断、secret resolver 本実装
+
+## 2026-04-19 Codex update
 - [x] auth success / failure と receive rejection の JSON Lines writer 接続範囲を整理する
 - [x] `ServerAuthLogOutputBoundary` / `ServerAuthJsonLineWriter` を追加する
 - [x] auth / receive writer の現在の sink 範囲と未実装範囲を docs に反映する
@@ -101,8 +107,8 @@
 - `apps/client` の client 設定読み込み、AuthRequest 構築、protocol encoder、UDP one-shot send の PoC 入口は完了
 - server / client one-shot auth round trip の手動確認手順と accepted path 用 helper config は完了
 - accepted path の手動確認は成功し、`configs/examples/server.example.toml` と `configs/examples/client.accepted.example.toml` の組み合わせで `accepted=true`, `reason_code=Ok` を観測済み
-- secret resolver 本実装、認証済み送信元の timeout / 失効 / 再認証、実際の packet 破棄 / ログ出力、`ClientStats` / `ServerNotice` など残り message の encode 本実装、時刻同期本体、映像受信・復号・表示、switcher UI は未実装
-- 次の中心は secret resolver 本実装範囲の確定、認証済み送信元登録の実処理、auth result writer の CLI 接続判断
+- secret resolver 本実装、認証済み送信元の timeout / 失効 / 再認証、実際の packet 破棄、`ClientStats` / `ServerNotice` など残り message の encode 本実装、時刻同期本体、映像受信・復号・表示、switcher UI は未実装
+- 次の中心は認証済み送信元登録の実処理、auth result writer の CLI 接続判断、secret resolver 本実装
 
 ---
 
@@ -132,9 +138,9 @@
 ---
 
 ## 直近でやること
-1. secret resolver 本実装範囲を確定する
-2. 認証済み送信元登録の実処理を auth accepted path へ接続する
-3. auth result writer を one-shot / future loop のどこで有効化するか決める
+1. 認証済み送信元登録の実処理を auth accepted path へ接続する
+2. auth result writer を one-shot / future loop のどこで有効化するか決める
+3. secret resolver 本実装を行う
 4. outbound queue の実処理範囲と backpressure 方針を実装前に詰める
 5. `ClientStats` / `ServerNotice` の payload layout と decode / encode 方針を決める
 
@@ -181,6 +187,7 @@
 - [x] server / client one-shot auth round trip の accepted path 用 helper config と手順を追加する
 - [x] server / client one-shot auth round trip の accepted path 成功結果を記録する
 - [x] secret 解決方式と token 保護方針を整理する
+- [x] secret resolver 本実装範囲を確定する
 - [ ] 状態遷移を詳細化する
 - [ ] 異常時の挙動を実装レベルに落とす
 - [ ] ログイベント仕様を詳細化する
@@ -289,7 +296,8 @@
 - [x] accepted auth decision から registry registration への handoff を追加する
 - [x] 未認証 / endpoint mismatch packet の破棄境界を設計する
 - [x] registry 参照による packet 受理 / 拒否判定 helper を追加する
-- [ ] secret resolver 本実装範囲を確定する
+- [x] secret resolver 本実装範囲を確定する
+- [x] `ServerSecretResolverBoundary` / secret resolution plan placeholder を追加する
 - [ ] secret 解決後の本物の token 検証を実装する
 - [ ] 認証済み送信元の登録 / 管理を実装する
 - [ ] 未認証送信元の `VideoFrame` 破棄を実装する

@@ -5,6 +5,61 @@
 - Codex
 
 ### 今回の作業
+- secret resolver 本実装範囲を確定し、docs と placeholder に反映した。
+- `apps/server` に `ServerSecretResolverBoundary`, `ServerSecretResolutionPlan`, `ServerResolvedSharedTokenAuthInput`, `ServerResolvedSharedTokenMaterial` を追加した。
+- placeholder は inline PoC token を `AlreadyResolved`、`shared_token_env` を `NeedsEnvironmentVariable` として分類するだけに留め、環境変数の読み取りは実装しない。
+- `docs/architecture/system-design.md` と `docs/architecture/protocol.md` に、最初の real resolver が扱う範囲、未対応範囲、config / resolver / auth input / auth decision の責務分離を追記した。
+
+### 変更ファイル
+- `apps/server/src/lib.rs`
+- `docs/architecture/system-design.md`
+- `docs/architecture/protocol.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### 決定事項
+- 最初の real resolver は `shared_token_env` の環境変数読み取りまでを対象にする。
+- inline `shared_token` は PoC 互換の already-resolved material として残す。
+- secret store、network call、cache / hot reload、rotation、hashing / KDF は最初の resolver から外す。
+- config は reference parsing、resolver は reference resolution、auth input は context assembly、auth decision は prepared material との比較を担当する。
+- 解決済み token material は Debug で redacted 表示にする。
+
+### 未解決事項
+- `shared_token_env` の実際の環境変数読み取り
+- secret 解決後の auth decision input への接続
+- 認証済み送信元登録の実処理接続
+- auth result writer の CLI 接続判断
+- heartbeat / video frame 処理本体
+
+### 次にやる候補
+- 認証済み送信元登録の実処理を auth accepted path へ接続する
+- auth result writer を one-shot / future loop のどこで有効化するか決める
+- secret resolver 本実装を行う
+
+### TODO更新
+- 完了:
+  - secret resolver 本実装範囲の確定
+  - `ServerSecretResolverBoundary` / secret resolution plan placeholder の追加
+  - config / resolver / auth decision の責務分離更新
+- 追加:
+  - secret resolver 本実装
+- 保留:
+  - 本物の secret store 連携
+  - async runtime
+  - heartbeat / video frame 処理
+  - 大規模 logging 基盤
+
+### メモ
+- `cargo fmt --check` と `cargo check --workspace` が通ることを確認した。
+- `cargo test -p stream-sync-server secret_resolver` が通ることを確認した。
+
+---
+
+## 2026-04-19
+### 種別
+- Codex
+
+### 今回の作業
 - auth success / failure と receive rejection の JSON Lines writer 接続範囲を整理した。
 - `apps/server` に `ServerAuthLogOutputBoundary` と `ServerAuthJsonLineWriter` を追加し、既存の `ServerAuthJsonLogEventBoundary` から 1 行 JSON Lines を `io::Write` へ出せるようにした。
 - receive rejection 側の既存 `ServerReceiveRejectionLogOutputBoundary` と並ぶ接続形として、auth result / receive rejection の handoff input、event schema input、writer boundary、current sink を docs に整理した。
