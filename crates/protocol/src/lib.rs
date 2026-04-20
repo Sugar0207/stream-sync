@@ -56,6 +56,9 @@ pub const PAYLOAD_BOOL_LEN: u16 = 1;
 /// Byte length of an AuthResponse reason code in message payloads.
 pub const AUTH_RESPONSE_REASON_CODE_LEN: u16 = 2;
 
+/// Byte length of a ServerNotice notice type in message payloads.
+pub const SERVER_NOTICE_TYPE_LEN: u16 = 2;
+
 /// Wire value for H.264 encoded video payloads.
 pub const CODEC_H264_WIRE_VALUE: u16 = 1;
 
@@ -1364,14 +1367,60 @@ pub struct ServerNotice {
     pub message: String,
 }
 
+/// Planned ServerNotice payload shape.
+///
+/// This exposes the layout that a future ServerNotice payload encoder/decoder
+/// must use without implementing the encoder or decoder in this step.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct ServerNoticePayloadPlan {
+    pub notice_type_len: u16,
+    pub run_id_byte_len: u16,
+    pub message_byte_len: u16,
+}
+
+/// Boundary that exposes the planned ServerNotice payload shape.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct ServerNoticePayloadPlanBoundary;
+
+impl ServerNoticePayloadPlanBoundary {
+    pub fn build_plan(
+        &self,
+        notice: &ServerNotice,
+    ) -> Result<ServerNoticePayloadPlan, ProtocolError> {
+        let run_id_byte_len = u16::try_from(notice.run_id.0.len()).map_err(|_| {
+            ProtocolError::PayloadStringTooLong {
+                actual: notice.run_id.0.len(),
+            }
+        })?;
+        let message_byte_len = u16::try_from(notice.message.len()).map_err(|_| {
+            ProtocolError::PayloadStringTooLong {
+                actual: notice.message.len(),
+            }
+        })?;
+
+        Ok(ServerNoticePayloadPlan {
+            notice_type_len: SERVER_NOTICE_TYPE_LEN,
+            run_id_byte_len,
+            message_byte_len,
+        })
+    }
+}
+
 /// Type of server notice.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[repr(u16)]
 pub enum NoticeType {
-    Warning,
-    Disconnect,
-    ProtocolError,
-    AuthExpired,
-    ServerShutdown,
+    Warning = 1,
+    Disconnect = 2,
+    ProtocolError = 3,
+    AuthExpired = 4,
+    ServerShutdown = 5,
+}
+
+impl NoticeType {
+    pub const fn wire_code(self) -> u16 {
+        self as u16
+    }
 }
 
 #[cfg(test)]
@@ -1828,6 +1877,36 @@ mod tests {
         assert_eq!(
             plan.heartbeat_observation_block_len,
             CLIENT_STATS_HEARTBEAT_OBSERVATION_BLOCK_LEN
+        );
+    }
+
+    #[test]
+    fn server_notice_payload_plan_reports_wire_field_lengths() {
+        let notice = test_server_notice("server is draining");
+        let boundary = ServerNoticePayloadPlanBoundary;
+
+        let plan = boundary
+            .build_plan(&notice)
+            .expect("server notice payload plan should build");
+
+        assert_eq!(plan.notice_type_len, SERVER_NOTICE_TYPE_LEN);
+        assert_eq!(plan.run_id_byte_len, 5);
+        assert_eq!(plan.message_byte_len, 18);
+        assert_eq!(notice.notice_type.wire_code(), 1);
+    }
+
+    #[test]
+    fn server_notice_payload_plan_rejects_too_long_message() {
+        let notice = test_server_notice(&"x".repeat(usize::from(u16::MAX) + 1));
+        let boundary = ServerNoticePayloadPlanBoundary;
+
+        let plan = boundary.build_plan(&notice);
+
+        assert_eq!(
+            plan,
+            Err(ProtocolError::PayloadStringTooLong {
+                actual: usize::from(u16::MAX) + 1
+            })
         );
     }
 
@@ -2516,6 +2595,16 @@ mod tests {
             dropped_frames: 2,
             bitrate_kbps: 4_000,
             heartbeat_observation,
+        }
+    }
+
+    fn test_server_notice(message: &str) -> ServerNotice {
+        ServerNotice {
+            message_type: MessageType::ServerNotice,
+            protocol_version: ProtocolVersion(2),
+            run_id: RunId("run-1".to_string()),
+            notice_type: NoticeType::Warning,
+            message: message.to_string(),
         }
     }
 

@@ -5,6 +5,54 @@
 - Codex
 
 ### 今回の作業
+- `ServerNotice` payload layout と decode / encode 方針を docs に明記した。
+- `ServerNotice` payload は fixed header + `run_id` string + `notice_type` u16 + `message` string とする方針にした。
+- `crates/protocol` に `SERVER_NOTICE_TYPE_LEN`, `NoticeType::wire_code`, `ServerNoticePayloadPlanBoundary` を追加した。
+- `apps/server` に `ServerNoticeBoundary` / `ServerOutboundNotice` と outbound queue handoff helper を追加した。
+
+### 変更ファイル
+- `crates/protocol/src/lib.rs`
+- `apps/server/src/lib.rs`
+- `docs/architecture/system-design.md`
+- `docs/architecture/protocol.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### 決定事項
+- `ServerNotice` の destination は payload ではなく net send layer の destination metadata で保持する。
+- payload は `run_id`, `notice_type`, `message` の順にする。
+- `notice_type` は `u16 little-endian` とし、`Warning = 1`, `Disconnect = 2`, `ProtocolError = 3`, `AuthExpired = 4`, `ServerShutdown = 5` とする。
+- `message` は人間向けの短い説明であり、機械処理は `notice_type` を基準にする。
+- 現時点では payload plan と server outbound handoff までに留め、実 encode/decode は次以降に残す。
+
+### 未実装 / 保留
+- `ServerNotice` payload encode/decode 本体
+- `ProtocolMessageEncoderBoundary` の `ServerNotice` encode 対応
+- `decode_payload_by_message_type` の `ServerNotice` decode 対応
+- notice trigger policy
+- continuous send loop / UDP send / notice log output
+
+### 次にやる候補
+- auth / receive JSON Lines file sink 方針を整理する
+- secret store / token rotation 方針を整理する
+- `ServerNotice` payload encode/decode 最小実装範囲を確認する
+
+### TODO更新
+- 現在位置に `ServerNotice` payload layout と decode / encode 方針の整理完了を反映した。
+- 直近でやることを `ServerNotice` payload 方針決定から payload encode/decode 最小実装範囲の確認へ更新した。
+- 仕様 / 設計、protocol / wire format、net-core / server 境界に今回の完了項目を反映した。
+
+### メモ
+- `cargo fmt --check` と `cargo check --workspace` は今回の変更後に成功した。
+- 追加確認として `cargo test -p stream-sync-protocol server_notice_payload_plan` と `cargo test -p stream-sync-server server_notice` も成功した。
+
+---
+
+## 2026-04-21
+### 種別
+- Codex
+
+### 今回の作業
 - outbound queue の実処理範囲を、bounded in-memory handoff / admission policy / one-item lifecycle までに限定して docs に明記した。
 - backpressure 方針として、bounded capacity、non-blocking admission、control drop-incoming、time-sensitive video drop-oldest-then-accept、telemetry drop-incoming を整理した。
 - `crates/net-core` に queue admission / capacity / drop policy の placeholder 型を追加した。

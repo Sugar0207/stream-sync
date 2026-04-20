@@ -17,8 +17,8 @@ use stream_sync_net_core::{
 use stream_sync_protocol::{
     AppVersion, AuthRequest, AuthResponse, AuthResponseReasonCode, ClientId, ClientStats,
     Heartbeat, HeartbeatAck, HeartbeatAckObservation, HeartbeatObservationCarrier, MessageType,
-    ProtocolError, ProtocolMessage, ProtocolMessageEncoderBoundary, ProtocolVersion, RunId,
-    TimestampMicros, VideoFrame,
+    NoticeType, ProtocolError, ProtocolMessage, ProtocolMessageEncoderBoundary, ProtocolVersion,
+    RunId, ServerNotice, TimestampMicros, VideoFrame,
 };
 use stream_sync_timebase::{
     HeartbeatExchangeObservation, HeartbeatRttOffsetCalculationError, HeartbeatRttOffsetCalculator,
@@ -2364,6 +2364,66 @@ impl ServerOutboundHeartbeatAck {
     }
 }
 
+/// Input for building a typed server notice handoff.
+///
+/// This is not notice policy. It only carries already-decided notice fields into
+/// the outbound message boundary.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ServerNoticeInput {
+    pub destination: PacketSource,
+    pub protocol_version: ProtocolVersion,
+    pub run_id: RunId,
+    pub notice_type: NoticeType,
+    pub message: String,
+}
+
+/// Boundary that converts server notice fields into a typed outbound message.
+///
+/// This does not decide when to notify, encode bytes, enqueue real items, write
+/// logs, or send through UDP sockets.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct ServerNoticeBoundary;
+
+impl ServerNoticeBoundary {
+    pub fn build_for_send(&self, input: ServerNoticeInput) -> ServerOutboundNotice {
+        let notice = ServerNotice {
+            message_type: MessageType::ServerNotice,
+            protocol_version: input.protocol_version,
+            run_id: input.run_id,
+            notice_type: input.notice_type,
+            message: input.message,
+        };
+
+        ServerOutboundNotice {
+            destination: input.destination,
+            message: ProtocolMessage::ServerNotice(notice),
+        }
+    }
+}
+
+/// ServerNotice handoff for a future net send layer.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ServerOutboundNotice {
+    pub destination: PacketSource,
+    pub message: ProtocolMessage,
+}
+
+impl ServerOutboundNotice {
+    pub fn server_notice(&self) -> Option<&ServerNotice> {
+        match &self.message {
+            ProtocolMessage::ServerNotice(notice) => Some(notice),
+            _ => None,
+        }
+    }
+
+    pub fn into_outbound_packet(self) -> OutboundPacket {
+        OutboundPacket {
+            destination: self.destination.into(),
+            message: self.message,
+        }
+    }
+}
+
 /// Server-side timestamps prepared for the minimal heartbeat ack handoff.
 ///
 /// This is explicit input so the handler boundary does not read clocks or
@@ -2770,6 +2830,10 @@ impl ServerOutboundQueueBoundary {
 
     pub fn handoff_heartbeat_ack(&self, ack: ServerOutboundHeartbeatAck) -> OutboundQueueItem {
         self.queue.handoff(ack.into_outbound_packet())
+    }
+
+    pub fn handoff_notice(&self, notice: ServerOutboundNotice) -> OutboundQueueItem {
+        self.queue.handoff(notice.into_outbound_packet())
     }
 
     pub fn evaluate_admission(
@@ -4548,6 +4612,55 @@ shared_token = "secret"
         };
         assert_eq!(ack.message_type, MessageType::HeartbeatAck);
         assert_eq!(ack.echoed_sent_at, TimestampMicros(1_000_000));
+    }
+
+    #[test]
+    fn server_notice_boundary_builds_notice_for_send() {
+        let source = packet_source();
+        let boundary = ServerNoticeBoundary;
+        let input = ServerNoticeInput {
+            destination: source,
+            protocol_version: ProtocolVersion(2),
+            run_id: RunId("run-1".to_string()),
+            notice_type: NoticeType::ProtocolError,
+            message: "unsupported protocol_version".to_string(),
+        };
+
+        let outbound = boundary.build_for_send(input);
+
+        assert_eq!(outbound.destination, source);
+        let notice = outbound
+            .server_notice()
+            .expect("outbound message should be ServerNotice");
+        assert_eq!(notice.message_type, MessageType::ServerNotice);
+        assert_eq!(notice.protocol_version, ProtocolVersion(2));
+        assert_eq!(notice.run_id, RunId("run-1".to_string()));
+        assert_eq!(notice.notice_type, NoticeType::ProtocolError);
+        assert_eq!(notice.message, "unsupported protocol_version");
+    }
+
+    #[test]
+    fn outbound_queue_boundary_hands_off_server_notice_to_net_send_layer() {
+        let source = packet_source();
+        let notice_boundary = ServerNoticeBoundary;
+        let queue_boundary = ServerOutboundQueueBoundary::default();
+        let outbound = notice_boundary.build_for_send(ServerNoticeInput {
+            destination: source,
+            protocol_version: ProtocolVersion(2),
+            run_id: RunId("run-1".to_string()),
+            notice_type: NoticeType::Warning,
+            message: "server warning".to_string(),
+        });
+
+        let queue_item = queue_boundary.handoff_notice(outbound);
+
+        assert_eq!(queue_item.packet.destination.address, source.address);
+        let ProtocolMessage::ServerNotice(notice) = queue_item.packet.message else {
+            panic!("expected ServerNotice outbound message");
+        };
+        assert_eq!(notice.message_type, MessageType::ServerNotice);
+        assert_eq!(notice.notice_type, NoticeType::Warning);
+        assert_eq!(notice.message, "server warning");
     }
 
     #[test]

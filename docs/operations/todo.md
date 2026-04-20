@@ -36,10 +36,11 @@
 - accepted path の手動確認は成功し、`configs/examples/server.example.toml` と `configs/examples/client.accepted.example.toml` の組み合わせで `accepted=true`, `reason_code=Ok` を観測済み
 - `shared_token_env` accepted path の手動確認は成功し、`configs/examples/server.env-token.example.toml` と `configs/examples/client.accepted.example.toml` の組み合わせで `accepted=true`, `reason_code=Ok` を観測済み
 - `ClientStats` payload encode/decode と heartbeat observation optional block の最小 wire 変換は完了
-- secret store 連携、token hashing / rotation、認証済み送信元の timeout / 失効 / 再認証、実際の packet 破棄、`ServerNotice` payload encode/decode、時刻同期本体、映像受信・復号・表示、switcher UI は未実装
+- secret store 連携、token hashing / rotation、認証済み送信元の timeout / 失効 / 再認証、実際の packet 破棄、`ServerNotice` payload encode/decode 本体、時刻同期本体、映像受信・復号・表示、switcher UI は未実装
 - `ClientStats` receive route / gate / registered handler bridge は完了。継続送信 loop、metrics state commit、RTT / offset state commit は未実装
 - outbound queue の実処理範囲と backpressure / capacity 方針は整理済み。実キュー、送信継続 loop、retry 実行は未実装
-- 次の中心は auth / receive JSON Lines file sink 方針、secret store / rotation 方針、`ServerNotice` payload 方針
+- `ServerNotice` payload layout と decode / encode 方針は整理済み。実 payload encode/decode、notice trigger policy、送信継続 loop は未実装
+- 次の中心は auth / receive JSON Lines file sink 方針、secret store / rotation 方針、`ServerNotice` payload encode/decode 最小実装
 
 ---
 
@@ -71,7 +72,7 @@
 ## 直近でやること
 1. auth / receive JSON Lines の file sink 設定方針を整理する
 2. secret store 連携や token rotation の方針を整理する
-3. `ServerNotice` の payload layout と decode / encode 方針を決める
+3. `ServerNotice` の payload encode/decode 最小実装範囲を確認する
 4. outbound queue の実キュー実装範囲を、送信継続 loop 着手前に再確認する
 
 ---
@@ -134,6 +135,7 @@
 - [x] secret 解決方式と token 保護方針を整理する
 - [x] secret resolver 本実装範囲を確定する
 - [x] `shared_token_env` secret resolver の最小本実装を追加する
+- [x] `ServerNotice` payload layout と decode / encode 方針を決める
 - [ ] 状態遷移を詳細化する
 - [ ] 異常時の挙動を実装レベルに落とす
 - [ ] ログイベント仕様を詳細化する
@@ -171,7 +173,7 @@
 - [x] fixed header encode 本実装を行う
 - [x] `ClientStats` payload layout と decode / encode 方針を決める
 - [x] `ClientStats` payload encode/decode 本実装を行う
-- [ ] `ServerNotice` の payload layout と decode / encode 方針を決める
+- [x] `ServerNotice` の payload layout と decode / encode 方針を決める
 - [ ] `ServerNotice` の payload encode/decode 本実装を行う
 - [ ] payload fragmentation の要否と方式を決める
 - [ ] 再送制御 / 暗号化は MVP 初期で扱うか保留するか明記する
@@ -191,6 +193,7 @@
 - [x] `OutboundSendLogContext` / `SendLogEvent` / send failure classification placeholder を追加する
 - [x] server 側 `ServerOutboundQueueBoundary` placeholder を追加する
 - [x] server 側 `ServerHeartbeatAckBoundary` / `ServerOutboundHeartbeatAck` placeholder を追加する
+- [x] server 側 `ServerNoticeBoundary` / `ServerOutboundNotice` placeholder を追加する
 - [x] server 側 `ServerHeartbeatHandlerBoundary` / `ServerHeartbeatAckHandoff` placeholder を追加する
 - [x] server 側 `ServerHeartbeatInputBoundary` / state input / timebase input placeholder を追加する
 - [x] server 側 `AuthenticatedSenderRegistryBoundary` / `AuthenticatedSenderRegistry` placeholder を追加する

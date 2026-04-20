@@ -1990,10 +1990,51 @@ Current code reflects this with `net-core::OutboundEncodeRequest`,
 `net-core::EncodedOutboundPacket`, `net-core::OutboundPacketEncoderBoundary`,
 `net-core::NetEncodeError`, and
 `protocol::ProtocolMessageEncoderBoundary`. The protocol encoder placeholder
-currently encodes `AuthResponse`, `HeartbeatAck`, and `VideoFrame`, and returns
-`EncodeNotImplemented` for other outbound messages. `UdpSocketIoBoundary` can
-send an already encoded packet; queue processing and continuous send
-orchestration remain unimplemented.
+currently encodes `AuthRequest`, `AuthResponse`, `HeartbeatAck`, `VideoFrame`,
+and `ClientStats`, and returns `EncodeNotImplemented` for `ServerNotice` until
+its payload encoder is implemented. `UdpSocketIoBoundary` can send an already
+encoded packet; queue processing and continuous send orchestration remain
+unimplemented.
+
+---
+
+## ServerNotice Payload / Handling Boundary
+
+`ServerNotice` is a future lightweight outbound control message from server to
+client or switcher. It is not part of heartbeat, video frame, auth secret, or
+sync-buffer processing.
+
+Payload layout policy:
+
+1. Fixed header carries `message_type = ServerNotice`, `protocol_version`, and
+   `payload_length`.
+2. Payload writes `run_id` as the existing length-prefixed UTF-8 string.
+3. Payload writes `notice_type` as `u16 little-endian`.
+4. Payload writes `message` as the existing length-prefixed UTF-8 string.
+
+Responsibility split:
+
+- `protocol`
+  - Owns `ServerNotice`, `NoticeType`, `NoticeType::wire_code`, and the planned
+    payload layout.
+  - Current code exposes `ServerNoticePayloadPlanBoundary` only.
+  - Does not yet encode or decode `ServerNotice` payload bytes.
+- server notice boundary
+  - Builds typed `ProtocolMessage::ServerNotice` plus destination metadata from
+    already-decided notice fields.
+  - Does not decide when to notify, encode bytes, write logs, or send sockets.
+- outbound queue / net send
+  - Receives the typed notice through the same `OutboundQueueItem` handoff as
+    other outbound control messages.
+  - Continues to get `EncodeNotImplemented` until protocol encode is added.
+- notice policy / handler
+  - Future owner of deciding when to send disconnect, protocol error, auth
+    expiry, warning, or shutdown notices.
+
+Current code reflects this with `ServerNoticePayloadPlanBoundary` in
+`crates/protocol` and `ServerNoticeBoundary` / `ServerOutboundNotice` in
+`apps/server`. Actual `ServerNotice` encode/decode, notice-trigger policy,
+continuous send loop, socket send, and log output remain future work.
 
 ---
 

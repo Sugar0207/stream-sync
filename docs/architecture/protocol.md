@@ -944,6 +944,58 @@ server が client または switcher に送る通知系メッセージ。
 - `auth_expired`
 - `server_shutdown`
 
+#### payload layout
+
+`ServerNotice` は server から送る軽量な制御通知として扱う。MVP 初期では
+通知対象の client を payload に入れず、宛先は net send layer の
+destination metadata が保持する。
+
+Fixed header:
+
+| Field | Value |
+| --- | --- |
+| `message_type` | `ServerNotice` (`7`) |
+| `protocol_version` | sender が使う protocol version |
+| `payload_length` | 下記 payload byte 数 |
+
+Payload:
+
+| Order | Field | Type | Notes |
+| --- | --- | --- | --- |
+| 1 | `run_id` | `string` | `u16 byte_length` + UTF-8 bytes。 |
+| 2 | `notice_type` | `u16` | little-endian。下記 wire code を使う。 |
+| 3 | `message` | `string` | `u16 byte_length` + UTF-8 bytes。人間向けの短い説明。 |
+
+`notice_type` wire code:
+
+| Code | Variant | Intended use |
+| ---: | --- | --- |
+| 1 | `Warning` | 一般的な警告。 |
+| 2 | `Disconnect` | server 都合または状態遷移による切断通知。 |
+| 3 | `ProtocolError` | protocol mismatch / malformed packet などの通知候補。 |
+| 4 | `AuthExpired` | 認証期限切れまたは再認証要求候補。 |
+| 5 | `ServerShutdown` | server 停止通知。 |
+
+Encode / decode 方針:
+
+- encode
+  - fixed header の `message_type = ServerNotice` を書く。
+  - payload は `run_id`, `notice_type`, `message` の順に書く。
+  - `run_id` と `message` は既存 payload string と同じ `u16` length prefix
+    + UTF-8 bytes とする。
+  - `notice_type` は `NoticeType::wire_code()` の `u16 little-endian` とする。
+- decode
+  - fixed header と `protocol_version` 確認後、payload を同じ順序で読む。
+  - unknown `notice_type` は protocol error として扱う。
+  - payload に余剰 byte があれば `InvalidPayloadLength` とする。
+- 現時点
+  - `ServerNoticePayloadPlanBoundary` は上記 layout の長さ検証用 placeholder
+    のみを提供する。
+  - `ProtocolMessageEncoderBoundary` はまだ `ServerNotice` を encode しない。
+  - `decode_payload_by_message_type` はまだ `ServerNotice` を decode しない。
+  - server 側は typed outbound notice handoff だけを持ち、通知発火 policy、
+    encode、UDP send、ログ出力は別タスクに残す。
+
 ---
 
 ## 8. 認証シーケンス
@@ -2163,8 +2215,8 @@ socket adapter.
 Outbound messages remain typed until the net send layer explicitly calls the
 protocol encoder boundary. This boundary is the point where a
 `ProtocolMessage` becomes fixed header plus payload bytes. The current code
-encodes `AuthResponse`, `HeartbeatAck`, and `VideoFrame`; unsupported outbound
-messages still return `EncodeNotImplemented`.
+encodes `AuthRequest`, `AuthResponse`, `HeartbeatAck`, `VideoFrame`, and
+`ClientStats`; `ServerNotice` still returns `EncodeNotImplemented`.
 
 Send path:
 
@@ -2214,9 +2266,10 @@ Current code:
   message kind for encoder boundary and errors.
 - `crates/protocol::ProtocolMessageEncoderBoundary` implements
   `MessageEncoder`, encodes `ProtocolMessage::AuthRequest`,
-  `ProtocolMessage::AuthResponse`, `ProtocolMessage::HeartbeatAck`, and
-  `ProtocolMessage::VideoFrame`, and returns
-  `ProtocolError::EncodeNotImplemented` for other message types.
+  `ProtocolMessage::AuthResponse`, `ProtocolMessage::HeartbeatAck`,
+  `ProtocolMessage::VideoFrame`, and `ProtocolMessage::ClientStats`, and
+  returns `ProtocolError::EncodeNotImplemented` for `ServerNotice` and other
+  unsupported message types.
 - `crates/net-core::OutboundPacketEncoderBoundary` prepares encode requests and
   maps protocol encode errors while keeping the destination attached.
 - `crates/net-core::OutboundQueueLifecycleBoundary` defines the one-item queue
