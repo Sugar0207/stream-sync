@@ -2223,6 +2223,11 @@ Responsibility split:
   - Connects one selected queue item to encoder handoff and send log context.
   - Names encode and socket-send observation states for a future loop.
   - Does not run continuously, retry, requeue, write logs, or call sockets.
+- send-loop lifecycle boundary
+  - Names the future loop body's stop / wait / process-one-item / retry-defer
+    decisions.
+  - Does not dequeue real items, schedule work, execute retry, requeue, or
+    block handlers.
 - socket send layer
   - Future owner of UDP transmission and send errors.
 
@@ -2267,6 +2272,19 @@ Outbound queue backpressure policy is bounded and non-blocking:
   `OutboundSendLoopEvent`, and `OutboundSendLoopTickBoundary` record the
   minimal one-tick connection from queue-selected item to encoder input and
   send log event candidates. They do not implement a continuous send loop.
+- `OutboundSendLoopLifecycleState`, `OutboundSendLoopDequeueStatus`,
+  `OutboundSendLoopLifecycleAction`, `OutboundSendLoopLifecycleInput`,
+  `OutboundSendLoopLifecyclePlan`, and `OutboundSendLoopLifecycleBoundary`
+  record the future continuous send-loop body decisions. They only decide
+  stop, wait, process one item, or defer retry policy; they do not implement
+  queue dequeue, retry execution, requeue, socket send loops, or scheduling.
+
+The packet send-loop body implementation scope is limited to a synchronous
+single-item progression: observe dequeue status, process one ready item through
+the existing tick boundary, observe encode/socket-send results as log event
+candidates, and defer retry policy when a retryable send failure is reported.
+This scope does not introduce an async runtime, a blocking worker loop, retry
+budgets, retry timers, queue mutation, or JSON Lines log writing.
 
 Send error / log event policy is owned by `net-core` after protocol encode.
 `protocol` returns encode errors, while `net-core` keeps destination metadata
@@ -2349,6 +2367,9 @@ Current code:
 - `crates/net-core::OutboundSendLoopTickBoundary` defines the one-tick
   connection from queue handoff to encoder request and send log event
   candidates.
+- `crates/net-core::OutboundSendLoopLifecycleBoundary` defines the future
+  continuous send-loop body decisions around stop, wait, process-one-item, and
+  retry defer.
 - `apps/server::ServerHeartbeatAckBoundary` builds
   `ProtocolMessage::HeartbeatAck` and hands it to the same outbound queue
   boundary shape as other typed responses.

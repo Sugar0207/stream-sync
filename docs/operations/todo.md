@@ -38,11 +38,11 @@
 - `ClientStats` payload encode/decode と heartbeat observation optional block の最小 wire 変換は完了
 - secret store provider 連携、token hashing、rotation 実行、認証済み送信元の timeout / 失効 / 再認証、実際の packet 破棄、時刻同期本体、映像受信・復号・表示、switcher UI は未実装
 - `ClientStats` receive route / gate / registered handler bridge は完了。継続送信 loop、metrics state commit、RTT / offset state commit は未実装
-- outbound queue の実処理範囲、backpressure / capacity 方針、送信継続 loop 前の bounded storage / encoder handoff 範囲、packet 送信継続 loop の最小接続範囲は整理済み。実キュー collection、送信継続 loop本体、retry 実行は未実装
+- outbound queue の実処理範囲、backpressure / capacity 方針、送信継続 loop 前の bounded storage / encoder handoff 範囲、packet 送信継続 loop の最小接続範囲と loop 本体の実装範囲は整理済み。実キュー collection、送信継続 loop 本実装、retry 実行 / requeue は未実装
 - `ServerNotice` payload layout、decode / encode 最小実装、notice trigger policy の実装範囲整理は完了。state transition 検知、重複抑制、rate limit、送信継続 loop、socket send 接続は未実装
 - auth / receive JSON Lines file sink 方針は整理済み。実 file open、rotation、retention、async logging、process-wide logger は未実装
 - secret store / token rotation 方針は整理済み。SecretStore 参照と rotation policy placeholder は追加済みだが、provider 連携、rotation 実行、hot reload は未実装
-- 次の中心は file sink 実 file open 範囲の再確認、ServerNotice trigger の state transition 接続範囲の再確認、secret store provider / token rotation 実行範囲の再確認
+- 次の中心は file sink 実 file open 範囲の再確認、ServerNotice trigger の state transition 接続範囲の再確認、secret store provider / token rotation 実行範囲の再確認、send error JSON Lines 出力範囲の整理
 
 ---
 
@@ -75,7 +75,7 @@
 1. auth / receive JSON Lines file sink の実 file open 範囲を必要になった時点で再確認する
 2. `ServerNotice` trigger の state transition 接続範囲を必要になった時点で再確認する
 3. secret store provider 連携または token rotation 実行範囲を必要になった時点で再確認する
-4. packet 送信継続 loop 本体の実装範囲を必要になった時点で整理する
+4. send error JSON Lines 出力範囲を必要になった時点で整理する
 
 ---
 
@@ -197,6 +197,7 @@
 - [x] `OutboundEncodeRequest` / `EncodedOutboundPacket` / `OutboundPacketEncoderBoundary` / `NetEncodeError` placeholder を追加する
 - [x] `OutboundSendLogContext` / `SendLogEvent` / send failure classification placeholder を追加する
 - [x] `OutboundSendLoopTickBoundary` / send loop tick state placeholder を追加する
+- [x] `OutboundSendLoopLifecycleBoundary` / send loop lifecycle placeholder を追加する
 - [x] server 側 `ServerOutboundQueueBoundary` placeholder を追加する
 - [x] server 側 `ServerHeartbeatAckBoundary` / `ServerOutboundHeartbeatAck` placeholder を追加する
 - [x] server 側 `ServerNoticeBoundary` / `ServerOutboundNotice` placeholder を追加する
@@ -220,6 +221,7 @@
 - [ ] packet 受信継続 loop を実装する
 - [ ] packet 送信継続 loop を実装する
 - [x] packet 送信継続 loop の最小接続範囲を整理する
+- [x] packet 送信継続 loop 本体の実装範囲を整理する
 - [x] receive rejection の最小 stderr JSON Lines 出力を実装する
 - [ ] receive loop の継続運用向けログ出力を実装する
 - [ ] outbound queue の実処理を実装する

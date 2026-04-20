@@ -261,6 +261,105 @@ impl OutboundSendLoopTickBoundary {
     }
 }
 
+/// Lifecycle states for a future continuous outbound send loop.
+///
+/// This is not a loop implementation. It only defines the control checkpoints
+/// around dequeue, one-item processing, retry deferral, and shutdown.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum OutboundSendLoopLifecycleState {
+    Stopped,
+    WaitingForQueueItem,
+    ProcessingOneItem,
+    RetryDeferred,
+}
+
+/// Result of asking future queue storage for the next ready item.
+///
+/// The actual queue collection and dequeue operation remain out of scope.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum OutboundSendLoopDequeueStatus {
+    NoReadyItem,
+    ReadyItem,
+}
+
+/// Next action a future send loop body may take.
+///
+/// These are planning values only. They do not block, sleep, spawn work, send
+/// sockets, retry, or requeue.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum OutboundSendLoopLifecycleAction {
+    Stop,
+    WaitForQueueItem,
+    ProcessOneItem,
+    DeferRetry,
+}
+
+/// Minimal input for planning one continuous send-loop lifecycle step.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct OutboundSendLoopLifecycleInput {
+    pub stop_requested: bool,
+    pub dequeue_status: OutboundSendLoopDequeueStatus,
+}
+
+/// Planned lifecycle state/action for the future continuous send loop body.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct OutboundSendLoopLifecyclePlan {
+    pub state: OutboundSendLoopLifecycleState,
+    pub action: OutboundSendLoopLifecycleAction,
+}
+
+/// Minimal lifecycle boundary for the future outbound send loop body.
+///
+/// This boundary decides whether the loop should stop, wait for a queue item,
+/// process one selected item through the tick boundary, or defer retry policy.
+/// It does not own queue storage, encode, socket send, retry execution, requeue,
+/// scheduling, or logging.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct OutboundSendLoopLifecycleBoundary;
+
+impl OutboundSendLoopLifecycleBoundary {
+    pub fn plan_next(
+        &self,
+        input: OutboundSendLoopLifecycleInput,
+    ) -> OutboundSendLoopLifecyclePlan {
+        if input.stop_requested {
+            return OutboundSendLoopLifecyclePlan {
+                state: OutboundSendLoopLifecycleState::Stopped,
+                action: OutboundSendLoopLifecycleAction::Stop,
+            };
+        }
+
+        match input.dequeue_status {
+            OutboundSendLoopDequeueStatus::NoReadyItem => OutboundSendLoopLifecyclePlan {
+                state: OutboundSendLoopLifecycleState::WaitingForQueueItem,
+                action: OutboundSendLoopLifecycleAction::WaitForQueueItem,
+            },
+            OutboundSendLoopDequeueStatus::ReadyItem => OutboundSendLoopLifecyclePlan {
+                state: OutboundSendLoopLifecycleState::ProcessingOneItem,
+                action: OutboundSendLoopLifecycleAction::ProcessOneItem,
+            },
+        }
+    }
+
+    pub fn plan_after_send_failure(
+        &self,
+        disposition: SendFailureDisposition,
+    ) -> OutboundSendLoopLifecyclePlan {
+        match disposition {
+            SendFailureDisposition::RetryCandidate => OutboundSendLoopLifecyclePlan {
+                state: OutboundSendLoopLifecycleState::RetryDeferred,
+                action: OutboundSendLoopLifecycleAction::DeferRetry,
+            },
+            SendFailureDisposition::DropCandidate | SendFailureDisposition::WarningCandidate => {
+                OutboundSendLoopLifecyclePlan {
+                    state: OutboundSendLoopLifecycleState::WaitingForQueueItem,
+                    action: OutboundSendLoopLifecycleAction::WaitForQueueItem,
+                }
+            }
+        }
+    }
+}
+
 /// Current MVP queue sizing policy.
 ///
 /// This is an admission-policy placeholder, not a real queue. The future queue
@@ -1124,6 +1223,76 @@ mod tests {
                 Some(42),
                 SendFailureKind::SocketWouldBlock,
             ))
+        );
+    }
+
+    #[test]
+    fn send_loop_lifecycle_waits_when_queue_has_no_ready_item() {
+        let lifecycle = OutboundSendLoopLifecycleBoundary;
+
+        let plan = lifecycle.plan_next(OutboundSendLoopLifecycleInput {
+            stop_requested: false,
+            dequeue_status: OutboundSendLoopDequeueStatus::NoReadyItem,
+        });
+
+        assert_eq!(
+            plan,
+            OutboundSendLoopLifecyclePlan {
+                state: OutboundSendLoopLifecycleState::WaitingForQueueItem,
+                action: OutboundSendLoopLifecycleAction::WaitForQueueItem,
+            }
+        );
+    }
+
+    #[test]
+    fn send_loop_lifecycle_processes_one_ready_item() {
+        let lifecycle = OutboundSendLoopLifecycleBoundary;
+
+        let plan = lifecycle.plan_next(OutboundSendLoopLifecycleInput {
+            stop_requested: false,
+            dequeue_status: OutboundSendLoopDequeueStatus::ReadyItem,
+        });
+
+        assert_eq!(
+            plan,
+            OutboundSendLoopLifecyclePlan {
+                state: OutboundSendLoopLifecycleState::ProcessingOneItem,
+                action: OutboundSendLoopLifecycleAction::ProcessOneItem,
+            }
+        );
+    }
+
+    #[test]
+    fn send_loop_lifecycle_stops_when_requested() {
+        let lifecycle = OutboundSendLoopLifecycleBoundary;
+
+        let plan = lifecycle.plan_next(OutboundSendLoopLifecycleInput {
+            stop_requested: true,
+            dequeue_status: OutboundSendLoopDequeueStatus::ReadyItem,
+        });
+
+        assert_eq!(
+            plan,
+            OutboundSendLoopLifecyclePlan {
+                state: OutboundSendLoopLifecycleState::Stopped,
+                action: OutboundSendLoopLifecycleAction::Stop,
+            }
+        );
+    }
+
+    #[test]
+    fn send_loop_lifecycle_defers_retry_without_requeue() {
+        let lifecycle = OutboundSendLoopLifecycleBoundary;
+
+        let plan =
+            lifecycle.plan_after_send_failure(SendFailureKind::SocketWouldBlock.disposition());
+
+        assert_eq!(
+            plan,
+            OutboundSendLoopLifecyclePlan {
+                state: OutboundSendLoopLifecycleState::RetryDeferred,
+                action: OutboundSendLoopLifecycleAction::DeferRetry,
+            }
         );
     }
 

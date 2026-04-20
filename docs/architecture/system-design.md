@@ -1897,6 +1897,10 @@ Responsibility split:
   - Observes encode success/failure and socket send success/failure as state
     names and log event candidates.
   - Does not run a loop, block, sleep, retry, requeue, or write logs.
+- send-loop lifecycle boundary
+  - Names the future loop body's stop / wait / process-one-item / retry-defer
+    decisions.
+  - Does not dequeue real items, schedule work, execute retry, or requeue.
 - socket send layer
   - Future owner of byte encode result transmission over UDP.
   - Will handle send errors and runtime/socket details.
@@ -1920,6 +1924,43 @@ The minimal packet send-loop connection is represented by
 `OutboundSendLoopEvent`, and `OutboundSendLoopTickBoundary`. These types model
 one selected item moving toward encode/socket-send observation; they do not
 implement a continuous send loop.
+The future loop body lifecycle is represented by
+`OutboundSendLoopLifecycleState`, `OutboundSendLoopDequeueStatus`,
+`OutboundSendLoopLifecycleAction`, `OutboundSendLoopLifecycleInput`,
+`OutboundSendLoopLifecyclePlan`, and `OutboundSendLoopLifecycleBoundary`.
+These types document loop-body decisions only.
+
+Packet send-loop body implementation scope is intentionally narrow. The future
+loop body may ask queue storage for one ready item, use
+`OutboundSendLoopLifecycleBoundary` to decide stop / wait / process-one-item,
+run the existing one-tick encode and socket-send handoff for that item, emit
+send log event candidates, and then return to the next lifecycle decision.
+Retry is represented only as `RetryDeferred`; the current scope does not
+execute retry, requeue an item, sleep, block a handler, or introduce an async
+runtime.
+
+Send-loop body responsibility split:
+
+- queue dequeue
+  - Future queue collection owns item ordering and selecting one ready item.
+  - Current code only names `NoReadyItem` / `ReadyItem` as dequeue status.
+- send-loop lifecycle
+  - Decides whether to stop, wait, process one item, or defer retry policy.
+  - Does not own collection mutation, encode, socket send, log writing, or
+    scheduling.
+- one-tick send processing
+  - Uses `OutboundSendLoopTickBoundary` to prepare encoder input and observe
+    encode/socket outcomes.
+  - Does not run a continuous loop or retry.
+- socket send
+  - Sends one already encoded datagram through the UDP socket adapter.
+  - Does not inspect typed protocol messages or queue policy.
+- send log
+  - Receives `SendLogEvent` candidates from the tick boundary.
+  - JSON Lines writer connection remains a later task.
+- retry defer
+  - `RetryCandidate` failures are marked as deferred policy work.
+  - Requeue timing, retry budget, and retry execution remain unimplemented.
 
 ---
 

@@ -5,6 +5,55 @@
 - Codex
 
 ### 今回の作業
+- packet 送信継続 loop 本体の実装範囲を docs に明記した。
+- `crates/net-core` に send loop lifecycle placeholder を追加した。
+- queue dequeue / encode / socket send / send log / retry defer の責務分離を整理した。
+
+### 変更ファイル
+- `crates/net-core/src/lib.rs`
+- `docs/architecture/system-design.md`
+- `docs/architecture/protocol.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### 決定事項
+- continuous send loop 本体の最小範囲は、dequeue status を見て stop / wait / process-one-item を決め、1 item だけを既存 tick boundary へ渡すところまでとする。
+- socket send 後の retryable failure は `RetryDeferred` として扱い、retry 実行、retry budget、timer、requeue は今回の範囲に含めない。
+- lifecycle boundary は queue collection、protocol encode、UDP socket send、JSON Lines writer、scheduler を持たない。
+- async runtime、blocking worker loop、heartbeat / video frame 処理本体には進まない。
+
+### 未実装 / 保留
+- continuous send loop 本実装
+- 実 queue collection からの dequeue
+- UDP socket send の継続 loop 接続
+- retry 実行 / requeue / retry budget
+- send error JSON Lines 出力
+- async runtime
+
+### 次にやる候補
+- auth / receive JSON Lines file sink の実 file open 範囲を必要になった時点で再確認する
+- `ServerNotice` trigger の state transition 接続範囲を必要になった時点で再確認する
+- secret store provider 連携または token rotation 実行範囲を必要になった時点で再確認する
+- send error JSON Lines 出力範囲を必要になった時点で整理する
+
+### TODO更新
+- 現在位置に packet 送信継続 loop 本体の実装範囲整理完了を反映した。
+- 直近でやることから packet 送信継続 loop 本体の範囲整理を外し、send error JSON Lines 出力範囲整理へ更新した。
+- net-core / server 境界に `OutboundSendLoopLifecycleBoundary` / send loop lifecycle placeholder 追加完了を反映した。
+- net-core / server 境界に packet 送信継続 loop 本体の実装範囲整理完了を反映した。
+
+### メモ
+- `cargo fmt --check` は成功した。
+- `cargo check --workspace` は成功した。
+- 追加確認として `cargo test -p stream-sync-net-core send_loop` も成功した。
+
+---
+
+## 2026-04-21
+### 種別
+- Codex
+
+### 今回の作業
 - packet 送信継続 loop の最小接続範囲を docs に明記した。
 - `crates/net-core` に one-tick send loop placeholder を追加した。
 - queue storage / encoder handoff / socket send / send error logging の責務分離を整理した。
