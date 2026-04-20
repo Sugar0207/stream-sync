@@ -2,7 +2,7 @@
 
 # StreamSync TODO
 
-最終更新: 2026-04-20
+最終更新: 2026-04-21
 
 このファイルは「現在どこまで終わっていて、次に何をやるか」を確認するための TODO です。  
 時系列の作業履歴、判断理由、各回の作業メモは `docs/operations/session-log.md` を正とします。
@@ -37,7 +37,8 @@
 - `shared_token_env` accepted path の手動確認は成功し、`configs/examples/server.env-token.example.toml` と `configs/examples/client.accepted.example.toml` の組み合わせで `accepted=true`, `reason_code=Ok` を観測済み
 - `ClientStats` payload encode/decode と heartbeat observation optional block の最小 wire 変換は完了
 - secret store 連携、token hashing / rotation、認証済み送信元の timeout / 失効 / 再認証、実際の packet 破棄、`ServerNotice` payload encode/decode、時刻同期本体、映像受信・復号・表示、switcher UI は未実装
-- 次の中心は auth / receive JSON Lines file sink 方針、secret store / rotation 方針、`ClientStats` receive route / handler 接続
+- `ClientStats` receive route / gate / registered handler bridge は完了。継続送信 loop、metrics state commit、RTT / offset state commit は未実装
+- 次の中心は auth / receive JSON Lines file sink 方針、secret store / rotation 方針、outbound queue の実処理範囲
 
 ---
 
@@ -69,9 +70,8 @@
 ## 直近でやること
 1. auth / receive JSON Lines の file sink 設定方針を整理する
 2. secret store 連携や token rotation の方針を整理する
-3. `ClientStats` receive route / handler 接続を設計する
-4. outbound queue の実処理範囲と backpressure 方針を実装前に詰める
-5. `ServerNotice` の payload layout と decode / encode 方針を決める
+3. outbound queue の実処理範囲と backpressure 方針を実装前に詰める
+4. `ServerNotice` の payload layout と decode / encode 方針を決める
 
 ---
 
@@ -108,6 +108,7 @@
 - [x] heartbeat observation carrier を設計する
 - [x] `ClientStats` payload encode/decode 方針を決める
 - [x] `ClientStats` payload encode/decode の最小実装を追加する
+- [x] `ClientStats` receive route / gate / registered handler bridge を追加する
 - [x] packet acceptance rejection を drop / log layer へ渡す境界を整理する
 - [x] AuthResponse 生成 / 送信境界を整理する
 - [x] outbound packet / queue 境界を整理する
@@ -203,6 +204,7 @@
 - [x] `ServerUdpSocketIoStep` で受信 packet を receive loop / gate 境界へ渡す
 - [x] `ServerAuthResponsePocStep` で UDP socket から auth response send までを 1 回分接続する
 - [x] `ServerAuthResponsePocLauncher` で server 設定から bind / auth config / registry 初期化 / PoC step 呼び出しを接続する
+- [x] `ClientStats` を server inbound route / packet acceptance gate / registered handler bridge に接続する
 - [ ] packet 受信継続 loop を実装する
 - [ ] packet 送信継続 loop を実装する
 - [x] receive rejection の最小 stderr JSON Lines 出力を実装する
@@ -274,6 +276,7 @@
 - [x] heartbeat observation carrier を設計する
 - [x] `ClientStats` payload encode/decode 方針を決める
 - [x] `ClientStats` heartbeat observation optional block の wire 変換を実装する
+- [x] `ClientStats` optional heartbeat observation を server handler bridge から timebase 入力形へ変換する
 - [ ] heartbeat 送信処理を client 側に実装する
 - [ ] heartbeat 受信処理を server 側に実装する
 - [ ] heartbeat timeout 管理を実装する

@@ -1786,6 +1786,46 @@ and handoff types only. One encoded datagram can now be sent through
 `UdpSocketIoBoundary`; queue implementation, async runtime, retry,
 fragmentation, encryption, and full send orchestration remain unimplemented.
 
+---
+
+## ClientStats Receive Route / Handler Boundary
+
+`ClientStats` is a client-scoped inbound server packet. It uses the same decode
+and acceptance path as `Heartbeat` and `VideoFrame`, but its handler bridge is
+limited to metrics/timebase input extraction.
+
+Flow:
+
+1. UDP receive loop receives packet bytes and source metadata.
+2. `net-core::InboundPacketDecoder` decodes fixed header, protocol version, and
+   `ClientStats` payload into `ProtocolMessage::ClientStats`.
+3. `ServerInboundRouter` maps it to `ServerInboundRoute::ClientStats`.
+4. `PacketAcceptanceGateBoundary` checks the decoded `client_id` against
+   `AuthenticatedSenderRegistry`.
+5. `ServerRegisteredPacketBoundary` attaches the authenticated sender and
+   returns `ServerRegisteredClientPacket::ClientStats`.
+6. `ServerClientStatsHandlerBoundary` prepares `ServerClientStatsHandlerInput`.
+7. If the decoded stats packet contains a heartbeat observation block, the
+   handler bridge converts it into `ServerHeartbeatClientAckObservation`.
+8. Future metrics and timebase state layers consume the prepared input.
+
+Responsibility split:
+
+- protocol decode owns wire validation and `ClientStats` payload decode only.
+- receive loop owns packet intake, decode handoff, route handoff, and gate
+  invocation only.
+- packet acceptance gate owns authenticated source lookup for client-scoped
+  packets, including `ClientStats`.
+- handler bridge owns typed input extraction for future stats/timebase state.
+- timebase calculator remains separate and only runs after future state
+  correlation provides a stored `ServerHeartbeatTimebasePlan`.
+
+Current code reflects this with `ServerInboundRoute::ClientStats`,
+`ServerRegisteredClientStatsPacket`, and
+`ServerClientStatsHandlerBoundary`. Continuous client stats sending, metrics
+state commit, heartbeat observation smoothing, timeout handling, log output,
+and async runtime behavior remain unimplemented.
+
 Outbound queue minimal processing policy:
 
 1. `ServerOutboundQueueBoundary` receives a typed server outbound response or

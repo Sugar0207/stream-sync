@@ -14,10 +14,10 @@ use stream_sync_net_core::{
     DEFAULT_UDP_PACKET_BUFFER_LEN,
 };
 use stream_sync_protocol::{
-    AppVersion, AuthRequest, AuthResponse, AuthResponseReasonCode, ClientId, Heartbeat,
-    HeartbeatAck, HeartbeatAckObservation, HeartbeatObservationCarrier, MessageType, ProtocolError,
-    ProtocolMessage, ProtocolMessageEncoderBoundary, ProtocolVersion, RunId, TimestampMicros,
-    VideoFrame,
+    AppVersion, AuthRequest, AuthResponse, AuthResponseReasonCode, ClientId, ClientStats,
+    Heartbeat, HeartbeatAck, HeartbeatAckObservation, HeartbeatObservationCarrier, MessageType,
+    ProtocolError, ProtocolMessage, ProtocolMessageEncoderBoundary, ProtocolVersion, RunId,
+    TimestampMicros, VideoFrame,
 };
 use stream_sync_timebase::{
     HeartbeatExchangeObservation, HeartbeatRttOffsetCalculationError, HeartbeatRttOffsetCalculator,
@@ -966,6 +966,10 @@ impl ServerInboundRouter {
                 source: packet.source,
                 frame,
             },
+            ProtocolMessage::ClientStats(stats) => ServerInboundRoute::ClientStats {
+                source: packet.source,
+                stats,
+            },
             message => ServerInboundRoute::UnsupportedForServer {
                 source: packet.source,
                 message_type: message_type(&message),
@@ -989,6 +993,10 @@ pub enum ServerInboundRoute {
     VideoFrame {
         source: PacketSource,
         frame: VideoFrame,
+    },
+    ClientStats {
+        source: PacketSource,
+        stats: ClientStats,
     },
     UnsupportedForServer {
         source: PacketSource,
@@ -1020,6 +1028,11 @@ impl ServerAuthHandlerBoundary {
             ServerInboundRoute::VideoFrame { .. } => {
                 Err(ServerAuthBoundaryError::UnexpectedRoute {
                     message_type: MessageType::VideoFrame,
+                })
+            }
+            ServerInboundRoute::ClientStats { .. } => {
+                Err(ServerAuthBoundaryError::UnexpectedRoute {
+                    message_type: MessageType::ClientStats,
                 })
             }
             ServerInboundRoute::UnsupportedForServer { message_type, .. } => {
@@ -1763,6 +1776,12 @@ impl PacketAcceptanceGateBoundary {
                 &frame.client_id,
                 MessageType::VideoFrame,
             ),
+            ServerInboundRoute::ClientStats { source, stats } => self.evaluate_client_packet(
+                registry,
+                *source,
+                &stats.client_id,
+                MessageType::ClientStats,
+            ),
             ServerInboundRoute::UnsupportedForServer { .. } => PacketAcceptanceDecision::Accepted,
         }
     }
@@ -1820,6 +1839,7 @@ impl PacketAcceptanceGateBoundary {
 pub enum ServerRegisteredClientPacket {
     Heartbeat(ServerRegisteredHeartbeatPacket),
     VideoFrame(ServerRegisteredVideoFramePacket),
+    ClientStats(ServerRegisteredClientStatsPacket),
 }
 
 /// Handler input for an accepted heartbeat packet.
@@ -1836,6 +1856,14 @@ pub struct ServerRegisteredVideoFramePacket {
     pub source: PacketSource,
     pub authenticated_sender: AuthenticatedSenderEntry,
     pub frame: VideoFrame,
+}
+
+/// Handler input for an accepted client stats packet.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ServerRegisteredClientStatsPacket {
+    pub source: PacketSource,
+    pub authenticated_sender: AuthenticatedSenderEntry,
+    pub stats: ClientStats,
 }
 
 /// Error from converting an accepted route into registered handler input.
@@ -1904,6 +1932,21 @@ impl ServerRegisteredPacketBoundary {
                         source,
                         authenticated_sender,
                         frame,
+                    },
+                ))
+            }
+            ServerInboundRoute::ClientStats { source, stats } => {
+                let authenticated_sender = self.require_sender(
+                    registry,
+                    &stats.client_id,
+                    source,
+                    MessageType::ClientStats,
+                )?;
+                Ok(ServerRegisteredClientPacket::ClientStats(
+                    ServerRegisteredClientStatsPacket {
+                        source,
+                        authenticated_sender,
+                        stats,
                     },
                 ))
             }
@@ -2442,6 +2485,69 @@ impl ServerHeartbeatObservationCarrierBoundary {
         carrier: HeartbeatObservationCarrier,
     ) -> ServerHeartbeatClientAckObservation {
         self.observation.prepare(carrier.observation)
+    }
+}
+
+/// Stats fields prepared for a future metrics/state update.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ServerClientStatsStateInput {
+    pub source: PacketSource,
+    pub authenticated_sender: AuthenticatedSenderEntry,
+    pub client_id: ClientId,
+    pub run_id: RunId,
+    pub protocol_version: ProtocolVersion,
+    pub sent_at: TimestampMicros,
+    pub capture_fps: u32,
+    pub dropped_frames: u64,
+    pub bitrate_kbps: u32,
+}
+
+/// Handler input extracted from a registered ClientStats packet.
+///
+/// The heartbeat observation is already converted to the server timebase input
+/// shape when present, but no RTT/offset calculation or state commit happens
+/// here.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ServerClientStatsHandlerInput {
+    pub state: ServerClientStatsStateInput,
+    pub heartbeat_observation: Option<ServerHeartbeatClientAckObservation>,
+}
+
+/// Minimal ClientStats handler bridge.
+///
+/// This boundary separates decoded/gated ClientStats handling from protocol
+/// decode and receive loop work. It does not update metrics, commit timebase
+/// estimates, emit logs, send responses, or run a continuous stats loop.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct ServerClientStatsHandlerBoundary {
+    observation: ServerHeartbeatClientAckObservationBoundary,
+}
+
+impl ServerClientStatsHandlerBoundary {
+    pub fn prepare_input(
+        &self,
+        packet: ServerRegisteredClientStatsPacket,
+    ) -> ServerClientStatsHandlerInput {
+        let heartbeat_observation = packet
+            .stats
+            .heartbeat_observation
+            .clone()
+            .map(|observation| self.observation.prepare(observation));
+
+        ServerClientStatsHandlerInput {
+            state: ServerClientStatsStateInput {
+                source: packet.source,
+                authenticated_sender: packet.authenticated_sender,
+                client_id: packet.stats.client_id,
+                run_id: packet.stats.run_id,
+                protocol_version: packet.stats.protocol_version,
+                sent_at: packet.stats.sent_at,
+                capture_fps: packet.stats.capture_fps,
+                dropped_frames: packet.stats.dropped_frames,
+                bitrate_kbps: packet.stats.bitrate_kbps,
+            },
+            heartbeat_observation,
+        }
     }
 }
 
@@ -4784,6 +4890,90 @@ shared_token = "secret"
         assert_eq!(route, ServerInboundRoute::VideoFrame { source, frame });
     }
 
+    #[test]
+    fn routes_client_stats_to_stats_boundary() {
+        let source = packet_source();
+        let stats = client_stats("client-1");
+        let router = ServerInboundRouter;
+
+        let route = router.route(DecodedInboundPacket {
+            source,
+            message: ProtocolMessage::ClientStats(stats.clone()),
+        });
+
+        assert_eq!(route, ServerInboundRoute::ClientStats { source, stats });
+    }
+
+    #[test]
+    fn packet_acceptance_gate_checks_client_stats_sender() {
+        let source = packet_source();
+        let registry = registry_with_client("client-1", source);
+        let gate = PacketAcceptanceGateBoundary::default();
+        let route = client_stats_route("client-1", source);
+
+        let decision = gate.evaluate_route(&registry, &route);
+
+        assert_eq!(decision, PacketAcceptanceDecision::Accepted);
+    }
+
+    #[test]
+    fn registered_packet_boundary_prepares_client_stats_for_handler() {
+        let source = packet_source();
+        let registry = registry_with_client("client-1", source);
+        let boundary = ServerRegisteredPacketBoundary::default();
+        let route = client_stats_route("client-1", source);
+
+        let registered = boundary
+            .prepare_for_handler(&registry, route)
+            .expect("client stats should be accepted");
+
+        let ServerRegisteredClientPacket::ClientStats(packet) = registered else {
+            panic!("expected registered ClientStats packet");
+        };
+        assert_eq!(packet.source, source);
+        assert_eq!(
+            packet.authenticated_sender.client_id,
+            ClientId("client-1".to_string())
+        );
+        assert_eq!(packet.stats.message_type, MessageType::ClientStats);
+        assert_eq!(packet.stats.capture_fps, 30);
+    }
+
+    #[test]
+    fn client_stats_handler_boundary_extracts_metrics_and_observation() {
+        let source = packet_source();
+        let authenticated_sender = AuthenticatedSenderEntry {
+            client_id: ClientId("client-1".to_string()),
+            source,
+            run_id: RunId("run-1".to_string()),
+            protocol_version: ProtocolVersion(2),
+            registered_at: Some(TimestampMicros(1_000)),
+        };
+        let packet = ServerRegisteredClientStatsPacket {
+            source,
+            authenticated_sender: authenticated_sender.clone(),
+            stats: client_stats_with_observation("client-1"),
+        };
+        let boundary = ServerClientStatsHandlerBoundary::default();
+
+        let input = boundary.prepare_input(packet);
+
+        assert_eq!(input.state.source, source);
+        assert_eq!(input.state.authenticated_sender, authenticated_sender);
+        assert_eq!(input.state.capture_fps, 30);
+        assert_eq!(input.state.dropped_frames, 2);
+        assert_eq!(input.state.bitrate_kbps, 4500);
+        let observation = input
+            .heartbeat_observation
+            .expect("heartbeat observation should be preserved");
+        assert_eq!(observation.client_id, ClientId("client-1".to_string()));
+        assert_eq!(
+            observation.echoed_client_sent_at,
+            TimestampMicros(2_000_000)
+        );
+        assert_eq!(observation.client_received_at, TimestampMicros(2_000_250));
+    }
+
     fn packet_source() -> PacketSource {
         "127.0.0.1:5000"
             .parse::<SocketAddr>()
@@ -4903,6 +5093,40 @@ shared_token = "secret"
                 payload: vec![0xaa, 0xbb, 0xcc],
             },
         }
+    }
+
+    fn client_stats_route(client_id: &str, source: PacketSource) -> ServerInboundRoute {
+        ServerInboundRoute::ClientStats {
+            source,
+            stats: client_stats(client_id),
+        }
+    }
+
+    fn client_stats(client_id: &str) -> ClientStats {
+        ClientStats {
+            message_type: MessageType::ClientStats,
+            protocol_version: ProtocolVersion(2),
+            client_id: ClientId(client_id.to_string()),
+            run_id: RunId("run-1".to_string()),
+            sent_at: TimestampMicros(3_000_000),
+            capture_fps: 30,
+            dropped_frames: 2,
+            bitrate_kbps: 4500,
+            heartbeat_observation: None,
+        }
+    }
+
+    fn client_stats_with_observation(client_id: &str) -> ClientStats {
+        let mut stats = client_stats(client_id);
+        stats.heartbeat_observation = Some(HeartbeatAckObservation {
+            client_id: ClientId(client_id.to_string()),
+            run_id: RunId("run-1".to_string()),
+            echoed_sent_at: TimestampMicros(2_000_000),
+            server_received_at: TimestampMicros(2_000_100),
+            server_sent_at: TimestampMicros(2_000_150),
+            client_received_at: TimestampMicros(2_000_250),
+        });
+        stats
     }
 
     fn heartbeat_payload() -> Vec<u8> {

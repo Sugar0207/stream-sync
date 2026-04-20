@@ -2218,3 +2218,32 @@ Current code:
 write the 16 byte fixed header and the documented payload bytes. Other message
 encoders, outbound queue processing, continuous send orchestration, retry, and
 fragmentation are still future tasks.
+
+---
+
+## ClientStats Server Receive Connection
+
+`ClientStats` is decoded by `crates/protocol` and routed by `apps/server`.
+The protocol crate does not decide whether the sender is authenticated and does
+not update metrics or timebase state.
+
+Server receive path:
+
+1. `decode_payload_by_message_type` dispatches `MessageType::ClientStats` to
+   `ClientStatsPayloadDecoder`.
+2. `net-core` wraps the decoded message and source as `DecodedInboundPacket`.
+3. `ServerInboundRouter` converts `ProtocolMessage::ClientStats` into
+   `ServerInboundRoute::ClientStats`.
+4. `PacketAcceptanceGateBoundary` treats `ClientStats` as client-scoped and
+   checks `client_id` plus source endpoint against the authenticated sender
+   registry.
+5. `ServerRegisteredPacketBoundary` converts an accepted route into
+   `ServerRegisteredClientPacket::ClientStats`.
+6. `ServerClientStatsHandlerBoundary` extracts stats fields and optional
+   heartbeat observation input for later metrics/timebase layers.
+
+The optional heartbeat observation block remains part of the `ClientStats`
+payload. Server-side route/handler wiring now preserves it as
+`ServerHeartbeatClientAckObservation`, but RTT/offset calculation, estimator
+state commit, smoothing, and continuous client send loops are still out of
+scope.

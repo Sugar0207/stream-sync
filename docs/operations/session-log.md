@@ -1,5 +1,49 @@
 <!-- stream-sync/docs/operations/session-log.md -->
 
+## 2026-04-21
+### 種別
+- Codex
+
+### 今回の作業
+- `ClientStats` receive route / handler 接続方針を docs に明記した。
+- `apps/server` に `ClientStats` route / gate / registered handler bridge を追加した。
+- decoded `ClientStats` の optional heartbeat observation を server timebase 入力形へ変換する最小 boundary を追加した。
+
+### 変更ファイル
+- `apps/server/src/lib.rs`
+- `docs/architecture/system-design.md`
+- `docs/architecture/protocol.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### 決定事項
+- `ClientStats` は `Heartbeat` / `VideoFrame` と同じ client-scoped inbound packet として扱う。
+- `ServerInboundRouter` は `ProtocolMessage::ClientStats` を `ServerInboundRoute::ClientStats` へ分類する。
+- `PacketAcceptanceGateBoundary` は `ClientStats.client_id` と source endpoint を `AuthenticatedSenderRegistry` で検証する。
+- `ServerRegisteredPacketBoundary` は accepted `ClientStats` に authenticated sender を付与して handler 境界へ渡す。
+- `ServerClientStatsHandlerBoundary` は stats fields と optional heartbeat observation を抽出するだけで、metrics state commit や RTT / offset state commit は行わない。
+
+### 未実装 / 保留
+- `ClientStats` の client 継続送信 loop
+- server metrics state commit
+- heartbeat observation を使った RTT / offset state commit と smoothing
+- receive loop の継続運用、drop/log 本体、async runtime
+
+### 次にやる候補
+- auth / receive JSON Lines file sink 方針を整理する
+- secret store / token rotation 方針を整理する
+- outbound queue の実処理範囲と backpressure 方針を詰める
+
+### TODO更新
+- 現在位置に `ClientStats` receive route / gate / registered handler bridge 完了を反映した。
+- 直近タスクから `ClientStats` receive route / handler 接続を外した。
+- net-core / server 境界と heartbeat / 時刻同期の完了項目に今回の bridge を追加した。
+
+### メモ
+- `ClientStats` の継続送信 loop、heartbeat / video frame 処理本体、secret store 連携、async runtime は今回の範囲外。
+
+---
+
 ## 2026-04-20
 ### 種別
 - Codex
