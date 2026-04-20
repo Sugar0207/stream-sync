@@ -2188,9 +2188,11 @@ Flow:
    `OutboundQueueItem` for a future queue implementation.
 6. The queue admission boundary checks bounded-capacity policy and returns an
    immediate accept / drop / replace decision.
-7. Future encode code will convert the `ProtocolMessage` into fixed header plus
+7. Future queue storage keeps accepted items as typed `OutboundQueueItem`
+   values until a send loop selects one item.
+8. Future encode code will convert the `ProtocolMessage` into fixed header plus
    payload bytes.
-8. Future socket code will send those bytes through UDP.
+9. Future socket code will send those bytes through UDP.
 
 Responsibility split:
 
@@ -2206,23 +2208,34 @@ Responsibility split:
   - Owns generic outbound carriers: destination plus `ProtocolMessage`.
   - Owns the shape of the queue handoff item.
   - Does not implement the real queue, async runtime, wire encode, or UDP send.
+- outbound queue storage
+  - Future owner of bounded typed item storage, ordering, and dequeue selection.
+  - Applies admission before storage and hands one selected item to the encoder.
+  - Does not encode bytes, call sockets, block handlers, or run retry.
+- encoder handoff
+  - Receives one selected queue item and prepares `OutboundEncodeRequest`.
+  - Does not own queue storage or socket sends.
 - socket send layer
   - Future owner of UDP transmission and send errors.
 
 Current placeholders: `OutboundPacket`, `OutboundQueueItem`, and
 `OutboundPacketQueueBoundary` in `crates/net-core`, plus
+`OutboundQueueStorageState`, `OutboundQueueStorageDecision`, and
+`OutboundQueueStorageBoundary` for pre-loop storage planning, plus
 `ServerOutboundQueueBoundary` in `apps/server`. `apps/server` also has typed
-outbound handoff placeholders for `AuthResponse` and `HeartbeatAck`. These
+outbound handoff placeholders for `AuthResponse`, `HeartbeatAck`, and
+`ServerNotice`. These
 types keep the send-layer contract visible while leaving queue implementation,
 fragmentation, retry, and encryption out of scope. A minimal socket adapter can
 send an already encoded datagram.
 
 Outbound queue minimal processing is defined as a handoff lifecycle, not as a
 real queue runtime. `ServerOutboundQueueBoundary` produces `OutboundQueueItem`;
-the future queue holds that item, selects it for send, and hands it to the net
-send layer. Protocol encode happens after this queue handoff in the net send
-layer. Encode result handling and socket send result handling may update future
-queue state, but retry execution remains a later task.
+the future queue holds that item in bounded typed storage, selects one item for
+send, and hands it to the net send layer. Protocol encode happens after this
+queue handoff in the net send layer. Encode result handling and socket send
+result handling may update future queue state, but retry execution remains a
+later task.
 
 Outbound queue backpressure policy is bounded and non-blocking:
 
@@ -2239,6 +2252,9 @@ Outbound queue backpressure policy is bounded and non-blocking:
   concerns.
 - The current code returns typed policy decisions only. It does not evict real
   items, execute retry, or write logs.
+- `OutboundQueueStorageState` and `OutboundQueueStorageDecision` record the
+  current length/capacity snapshot and the push decision that a future bounded
+  queue must apply. They do not allocate or mutate a collection.
 
 Send error / log event policy is owned by `net-core` after protocol encode.
 `protocol` returns encode errors, while `net-core` keeps destination metadata

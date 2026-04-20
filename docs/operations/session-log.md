@@ -5,6 +5,58 @@
 - Codex
 
 ### 今回の作業
+- outbound queue の実キュー実装範囲を、送信継続 loop 前提で docs に明記した。
+- `crates/net-core` に queue storage state / push decision の最小 placeholder を追加した。
+- `apps/server` の `ServerOutboundQueueBoundary` から storage push plan を確認できる helper を追加した。
+- queue storage / admission / encoder handoff / socket send loop の責務分離を整理した。
+
+### 変更ファイル
+- `crates/net-core/src/lib.rs`
+- `apps/server/src/lib.rs`
+- `docs/architecture/system-design.md`
+- `docs/architecture/protocol.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### 決定事項
+- outbound queue storage は protocol encode 前の typed `OutboundQueueItem` を保持する。
+- 送信継続 loop 前に必要な実キュー範囲は、bounded storage、admission、FIFO-compatible ordering、one-item dequeue handoff までとする。
+- queue は protocol encode、encoded byte 検査、UDP socket send、retry 実行、ログ出力を持たない。
+- admission は receive / handler path を block せず、現在長と capacity policy から即時 decision を返す。
+- encoder handoff は queue が選んだ 1 item を `OutboundPacketEncoderBoundary` へ渡す境界とする。
+
+### 未実装 / 保留
+- 実 `VecDeque` などの queue collection
+- FIFO / per-destination / per-class ordering の実装
+- dequeue loop / continuous send loop
+- retry 実行と queue 再投入
+- send error ログ出力
+- async runtime
+
+### 次にやる候補
+- auth / receive JSON Lines file sink の実 file open 範囲を必要になった時点で再確認する
+- `ServerNotice` trigger の state transition 接続範囲を必要になった時点で再確認する
+- secret store provider 連携または token rotation 実行範囲を必要になった時点で再確認する
+- packet 送信継続 loop の最小接続範囲を必要になった時点で整理する
+
+### TODO更新
+- 現在位置に outbound queue の bounded storage / encoder handoff 範囲整理完了を反映した。
+- 直近でやることから outbound queue 実キュー範囲の再確認を外した。
+- net-core / server 境界に `OutboundQueueStorageState` / `OutboundQueueStorageBoundary` placeholder 追加完了を反映した。
+- net-core / server 境界に outbound queue 実キュー実装範囲の再確認完了を反映した。
+
+### メモ
+- `cargo fmt --check` は成功した。
+- `cargo check --workspace` は成功した。
+- 追加確認として `cargo test -p stream-sync-net-core outbound_queue` と `cargo test -p stream-sync-server outbound_queue` も成功した。
+
+---
+
+## 2026-04-21
+### 種別
+- Codex
+
+### 今回の作業
 - `ServerNotice` notice trigger policy の実装範囲を docs に明記した。
 - `apps/server` に `ServerNoticeTriggerPolicyBoundary` / trigger input / trigger source / trigger plan placeholder を追加した。
 - server state transition / notice generation / outbound handoff の責務分離を整理した。

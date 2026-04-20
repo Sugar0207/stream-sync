@@ -1828,14 +1828,30 @@ Outbound queue MVP processing scope:
 
 - The outbound queue is a bounded in-memory handoff between server response
   generation and the net send layer.
-- The queue may own typed `OutboundQueueItem` values and select an item for the
-  encoder.
+- The queue storage scope before a continuous send loop is limited to bounded
+  typed `OutboundQueueItem` storage, FIFO-compatible ordering, and one-item
+  dequeue handoff to the encoder.
+- The queue may own typed `OutboundQueueItem` values and select one item for
+  the encoder.
 - The queue does not encode protocol bytes, inspect encoded payload bytes, call
   UDP sockets, perform retry, sleep, spawn tasks, or write logs.
 - The queue must not block receive / handler work. On pressure it returns a
   typed admission decision immediately.
-- The current implementation only models one-item lifecycle and admission
-  policy. It does not implement a FIFO collection or a continuous send loop.
+- The current implementation models storage state metadata, one-item lifecycle,
+  and admission policy. It does not implement a FIFO collection or a continuous
+  send loop.
+
+Send-loop precondition scope:
+
+1. Server handlers create typed outbound items through `ServerOutboundQueueBoundary`.
+2. Queue storage admission runs before inserting an item.
+3. A future queue collection stores accepted typed items, still pre-encode.
+4. A future send loop asks the queue for one ready item.
+5. The queue hands that item to the net send layer as `OutboundQueueSendHandoff`.
+6. The net send layer encodes the item using `OutboundPacketEncoderBoundary`.
+7. The socket send layer sends an already encoded datagram.
+8. Queue mutation after encode/send errors is future retry/drop policy, not part
+   of this step.
 
 Backpressure / drop policy:
 
@@ -1863,8 +1879,15 @@ Responsibility split:
   - Provides a queue handoff item without implementing a real queue.
   - Does not encode wire bytes or call UDP sockets in this step.
 - outbound queue
-  - Owns admission, bounded capacity, ordering, and item selection.
+  - Owns future storage, admission, bounded capacity, ordering, and item
+    selection.
+  - Before the send loop exists, exposes storage state and admission decisions
+    only.
   - Does not own protocol encode, socket send, retry execution, or log writing.
+- encoder handoff
+  - Receives one selected `OutboundQueueItem` from queue storage.
+  - Owns conversion to `OutboundEncodeRequest` and `EncodedOutboundPacket`.
+  - Does not inspect queue capacity or call sockets.
 - socket send layer
   - Future owner of byte encode result transmission over UDP.
   - Will handle send errors and runtime/socket details.
@@ -1879,6 +1902,10 @@ fragmentation, encryption, and full send orchestration remain unimplemented.
 Backpressure policy is represented by `OutboundQueueCapacityPolicy`,
 `OutboundQueueAdmissionPolicyBoundary`, `OutboundQueueAdmissionDecision`, and
 the server-side `ServerOutboundQueueBoundary::evaluate_admission` helper.
+Queue storage planning is represented by `OutboundQueueStorageState`,
+`OutboundQueueStorageDecision`, `OutboundQueueStorageBoundary`, and
+`ServerOutboundQueueBoundary::evaluate_storage_push`. These do not store items;
+they document the state and decision that a future bounded collection must use.
 
 ---
 

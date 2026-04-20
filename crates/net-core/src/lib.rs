@@ -220,6 +220,62 @@ pub enum OutboundQueueAdmissionDecision {
     },
 }
 
+/// Snapshot of future bounded outbound queue storage.
+///
+/// This is state metadata only. It does not own a collection, allocate storage,
+/// preserve ordering, or wake a send loop.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct OutboundQueueStorageState {
+    pub len: usize,
+    pub capacity: usize,
+}
+
+impl OutboundQueueStorageState {
+    pub fn from_policy(policy: OutboundQueueCapacityPolicy, len: usize) -> Self {
+        Self {
+            len,
+            capacity: policy.max_items,
+        }
+    }
+
+    pub fn has_capacity(self) -> bool {
+        self.len < self.capacity
+    }
+
+    pub fn is_full(self) -> bool {
+        !self.has_capacity()
+    }
+}
+
+/// Result of evaluating one candidate against future queue storage state.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct OutboundQueueStorageDecision {
+    pub state_before: OutboundQueueStorageState,
+    pub admission: OutboundQueueAdmissionDecision,
+}
+
+impl OutboundQueueStorageDecision {
+    pub fn accepts_candidate(self) -> bool {
+        matches!(
+            self.admission,
+            OutboundQueueAdmissionDecision::Accepted { .. }
+                | OutboundQueueAdmissionDecision::DropOldestThenAccept { .. }
+        )
+    }
+
+    pub fn planned_len_after(self) -> usize {
+        match self.admission {
+            OutboundQueueAdmissionDecision::Accepted { .. } => {
+                self.state_before.len.saturating_add(1)
+            }
+            OutboundQueueAdmissionDecision::DropIncoming { .. } => self.state_before.len,
+            OutboundQueueAdmissionDecision::DropOldestThenAccept { .. } => {
+                self.state_before.capacity
+            }
+        }
+    }
+}
+
 /// Minimal admission-policy boundary for the future outbound queue.
 ///
 /// It only decides what should happen for a single candidate item at a given
@@ -262,6 +318,32 @@ impl OutboundQueueAdmissionPolicyBoundary {
                     reason: OutboundQueueDropReason::CapacityReached,
                 }
             }
+        }
+    }
+}
+
+/// Minimal queue storage planning boundary.
+///
+/// This binds bounded storage metadata to admission policy before a future send
+/// loop exists. It does not push into a collection, evict items, dequeue,
+/// encode, send sockets, or retry.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct OutboundQueueStorageBoundary {
+    admission: OutboundQueueAdmissionPolicyBoundary,
+}
+
+impl OutboundQueueStorageBoundary {
+    pub fn evaluate_push(
+        &self,
+        policy: OutboundQueueCapacityPolicy,
+        current_len: usize,
+        item: &OutboundQueueItem,
+    ) -> OutboundQueueStorageDecision {
+        let state_before = OutboundQueueStorageState::from_policy(policy, current_len);
+        let admission = self.admission.evaluate(policy, current_len, item);
+        OutboundQueueStorageDecision {
+            state_before,
+            admission,
         }
     }
 }
@@ -781,6 +863,72 @@ mod tests {
                 reason: OutboundQueueDropReason::CapacityReached
             }
         );
+    }
+
+    #[test]
+    fn outbound_queue_storage_state_tracks_capacity_without_collection() {
+        let state =
+            OutboundQueueStorageState::from_policy(OutboundQueueCapacityPolicy::default(), 7);
+
+        assert_eq!(state.len, 7);
+        assert_eq!(state.capacity, 64);
+        assert!(state.has_capacity());
+        assert!(!state.is_full());
+    }
+
+    #[test]
+    fn outbound_queue_storage_boundary_plans_push_before_send_loop() {
+        let destination: PacketDestination = packet_source().into();
+        let queue_boundary = OutboundPacketQueueBoundary;
+        let storage = OutboundQueueStorageBoundary::default();
+        let policy = OutboundQueueCapacityPolicy::default();
+        let item = queue_boundary.handoff(OutboundPacket {
+            destination,
+            message: heartbeat_ack_message(),
+        });
+
+        let decision = storage.evaluate_push(policy, 0, &item);
+
+        assert_eq!(
+            decision.state_before,
+            OutboundQueueStorageState {
+                len: 0,
+                capacity: policy.max_items,
+            }
+        );
+        assert_eq!(
+            decision.admission,
+            OutboundQueueAdmissionDecision::Accepted {
+                item_class: OutboundQueueItemClass::Control
+            }
+        );
+        assert!(decision.accepts_candidate());
+        assert_eq!(decision.planned_len_after(), 1);
+    }
+
+    #[test]
+    fn outbound_queue_storage_boundary_preserves_full_queue_drop_policy() {
+        let destination: PacketDestination = packet_source().into();
+        let queue_boundary = OutboundPacketQueueBoundary;
+        let storage = OutboundQueueStorageBoundary::default();
+        let policy = OutboundQueueCapacityPolicy::default();
+        let item = queue_boundary.handoff(OutboundPacket {
+            destination,
+            message: heartbeat_ack_message(),
+        });
+
+        let decision = storage.evaluate_push(policy, policy.max_items, &item);
+
+        assert!(decision.state_before.is_full());
+        assert_eq!(
+            decision.admission,
+            OutboundQueueAdmissionDecision::DropIncoming {
+                item_class: OutboundQueueItemClass::Control,
+                reason: OutboundQueueDropReason::CapacityReached,
+            }
+        );
+        assert!(!decision.accepts_candidate());
+        assert_eq!(decision.planned_len_after(), policy.max_items);
     }
 
     #[test]

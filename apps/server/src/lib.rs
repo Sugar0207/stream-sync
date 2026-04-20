@@ -14,7 +14,8 @@ use stream_sync_net_core::{
     NetDecodeError, NetEncodeError, OutboundPacket, OutboundPacketEncoderBoundary,
     OutboundPacketQueueBoundary, OutboundQueueAdmissionDecision,
     OutboundQueueAdmissionPolicyBoundary, OutboundQueueCapacityPolicy, OutboundQueueItem,
-    PacketSource, UdpSocketIoBoundary, DEFAULT_UDP_PACKET_BUFFER_LEN,
+    OutboundQueueStorageBoundary, OutboundQueueStorageDecision, PacketSource, UdpSocketIoBoundary,
+    DEFAULT_UDP_PACKET_BUFFER_LEN,
 };
 use stream_sync_protocol::{
     AppVersion, AuthRequest, AuthResponse, AuthResponseReasonCode, ClientId, ClientStats,
@@ -3032,6 +3033,7 @@ impl ServerHeartbeatHandlerBoundary {
 pub struct ServerOutboundQueueBoundary {
     queue: OutboundPacketQueueBoundary,
     admission: OutboundQueueAdmissionPolicyBoundary,
+    storage: OutboundQueueStorageBoundary,
     capacity_policy: OutboundQueueCapacityPolicy,
 }
 
@@ -3055,6 +3057,15 @@ impl ServerOutboundQueueBoundary {
     ) -> OutboundQueueAdmissionDecision {
         self.admission
             .evaluate(self.capacity_policy, current_len, item)
+    }
+
+    pub fn evaluate_storage_push(
+        &self,
+        current_len: usize,
+        item: &OutboundQueueItem,
+    ) -> OutboundQueueStorageDecision {
+        self.storage
+            .evaluate_push(self.capacity_policy, current_len, item)
     }
 
     pub const fn capacity_policy(&self) -> OutboundQueueCapacityPolicy {
@@ -3091,7 +3102,9 @@ mod tests {
     use std::net::{SocketAddr, UdpSocket};
     use stream_sync_config::{AllowedClientConfig, SharedTokenConfig};
     use stream_sync_logging::JsonLinesSinkDestination;
-    use stream_sync_net_core::{OutboundQueueDropReason, OutboundQueueItemClass};
+    use stream_sync_net_core::{
+        OutboundQueueDropReason, OutboundQueueItemClass, OutboundQueueStorageState,
+    };
     use stream_sync_protocol::{
         decode_fixed_header, encode_auth_response_payload, AppVersion, ClientId, Codec,
         ProtocolVersion, RunId, TimestampMicros, FIXED_HEADER_LEN, HEADER_FLAGS_OFFSET,
@@ -5067,6 +5080,35 @@ shared_token = "secret"
                 reason: OutboundQueueDropReason::CapacityReached
             }
         );
+    }
+
+    #[test]
+    fn outbound_queue_boundary_exposes_storage_push_plan_before_send_loop() {
+        let source = packet_source();
+        let ack_boundary = ServerHeartbeatAckBoundary;
+        let queue_boundary = ServerOutboundQueueBoundary::default();
+        let outbound = ack_boundary.build_for_send(ServerHeartbeatAckInput {
+            destination: source,
+            protocol_version: ProtocolVersion(2),
+            client_id: ClientId("client-1".to_string()),
+            run_id: RunId("run-1".to_string()),
+            echoed_sent_at: TimestampMicros(1_000_000),
+            server_received_at: TimestampMicros(1_000_100),
+            server_sent_at: TimestampMicros(1_000_200),
+        });
+        let queue_item = queue_boundary.handoff_heartbeat_ack(outbound);
+
+        let decision = queue_boundary.evaluate_storage_push(0, &queue_item);
+
+        assert_eq!(
+            decision.state_before,
+            OutboundQueueStorageState {
+                len: 0,
+                capacity: queue_boundary.capacity_policy().max_items,
+            }
+        );
+        assert!(decision.accepts_candidate());
+        assert_eq!(decision.planned_len_after(), 1);
     }
 
     #[test]
