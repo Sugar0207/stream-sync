@@ -40,7 +40,8 @@
 - `ClientStats` receive route / gate / registered handler bridge は完了。継続送信 loop、metrics state commit、RTT / offset state commit は未実装
 - outbound queue の実処理範囲と backpressure / capacity 方針は整理済み。実キュー、送信継続 loop、retry 実行は未実装
 - `ServerNotice` payload layout と decode / encode の最小実装は完了。notice trigger policy、送信継続 loop、socket send 接続は未実装
-- 次の中心は auth / receive JSON Lines file sink 方針、secret store / rotation 方針、notice trigger policy の実装範囲整理
+- auth / receive JSON Lines file sink 方針は整理済み。実 file open、rotation、retention、async logging、process-wide logger は未実装
+- 次の中心は secret store / rotation 方針、notice trigger policy の実装範囲整理、outbound queue 実キュー範囲の再確認
 
 ---
 
@@ -70,10 +71,10 @@
 ---
 
 ## 直近でやること
-1. auth / receive JSON Lines の file sink 設定方針を整理する
-2. secret store 連携や token rotation の方針を整理する
-3. `ServerNotice` notice trigger policy の実装範囲を整理する
-4. outbound queue の実キュー実装範囲を、送信継続 loop 着手前に再確認する
+1. secret store 連携や token rotation の方針を整理する
+2. `ServerNotice` notice trigger policy の実装範囲を整理する
+3. outbound queue の実キュー実装範囲を、送信継続 loop 着手前に再確認する
+4. auth / receive JSON Lines file sink の実 file open 範囲を必要になった時点で再確認する
 
 ---
 
@@ -370,7 +371,7 @@
 - [x] receive rejection JSON Lines の最小 stderr 出力を実装する
 - [x] auth result JSON Lines writer boundary を追加する
 - [x] auth / receive JSON Lines writer 接続範囲を整理する
-- [ ] auth / receive JSON Lines の file sink 設定方針を整理する
+- [x] auth / receive JSON Lines の file sink 設定方針を整理する
 - [ ] ログイベント型を定義する
 - [ ] JSON Lines 形式でログ出力する
 - [ ] `run_id` / `client_id` を各ログに付与する

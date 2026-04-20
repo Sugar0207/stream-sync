@@ -33,6 +33,7 @@ name = "stream-sync-server"
 version = "0.1.0"
 dependencies = [
  "stream-sync-config",
+ "stream-sync-logging",
  "stream-sync-net-core",
  "stream-sync-protocol",
  "stream-sync-timebase",

@@ -7,6 +7,7 @@ use std::{
 use stream_sync_config::{
     ConfigLoadError, ServerAuthConfig, ServerAuthConfigBoundary, SharedTokenSecretRef,
 };
+use stream_sync_logging::{JsonLinesSinkConfig, JsonLinesSinkPlan, JsonLinesSinkPlanBoundary};
 use stream_sync_net_core::{
     DecodedInboundPacket, EncodedOutboundPacket, InboundPacket, InboundPacketDecoder,
     NetDecodeError, NetEncodeError, OutboundPacket, OutboundPacketEncoderBoundary,
@@ -36,6 +37,60 @@ pub struct ServerReceiveLoopStep {
     decoder: InboundPacketDecoder,
     router: ServerInboundRouter,
     gate: PacketAcceptanceGateBoundary,
+}
+
+/// Server-side JSON Lines sink config for auth and receive rejection events.
+///
+/// This is a config/planning boundary only. It does not open files, write
+/// records, rotate logs, or install a global logger.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct ServerAuthReceiveJsonLinesSinkConfig {
+    pub auth_result: JsonLinesSinkConfig,
+    pub receive_rejection: JsonLinesSinkConfig,
+}
+
+impl ServerAuthReceiveJsonLinesSinkConfig {
+    pub fn stderr_default() -> Self {
+        Self {
+            auth_result: JsonLinesSinkConfig::stderr(),
+            receive_rejection: JsonLinesSinkConfig::stderr(),
+        }
+    }
+
+    pub fn file_sinks(
+        auth_result_path: impl Into<PathBuf>,
+        receive_rejection_path: impl Into<PathBuf>,
+    ) -> Self {
+        Self {
+            auth_result: JsonLinesSinkConfig::file(auth_result_path),
+            receive_rejection: JsonLinesSinkConfig::file(receive_rejection_path),
+        }
+    }
+}
+
+/// Normalized server JSON Lines sink plan for the current auth/receive writers.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct ServerAuthReceiveJsonLinesSinkPlan {
+    pub auth_result: JsonLinesSinkPlan,
+    pub receive_rejection: JsonLinesSinkPlan,
+}
+
+/// Boundary that maps server logging config to auth/receive sink plans.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct ServerAuthReceiveJsonLinesSinkBoundary {
+    sink_plan: JsonLinesSinkPlanBoundary,
+}
+
+impl ServerAuthReceiveJsonLinesSinkBoundary {
+    pub fn plan(
+        &self,
+        config: ServerAuthReceiveJsonLinesSinkConfig,
+    ) -> ServerAuthReceiveJsonLinesSinkPlan {
+        ServerAuthReceiveJsonLinesSinkPlan {
+            auth_result: self.sink_plan.plan(config.auth_result),
+            receive_rejection: self.sink_plan.plan(config.receive_rejection),
+        }
+    }
 }
 
 impl ServerReceiveLoopStep {
@@ -2878,6 +2933,7 @@ mod tests {
     use super::*;
     use std::net::{SocketAddr, UdpSocket};
     use stream_sync_config::{AllowedClientConfig, SharedTokenConfig};
+    use stream_sync_logging::JsonLinesSinkDestination;
     use stream_sync_net_core::{OutboundQueueDropReason, OutboundQueueItemClass};
     use stream_sync_protocol::{
         decode_fixed_header, encode_auth_response_payload, AppVersion, ClientId, Codec,
@@ -2885,6 +2941,47 @@ mod tests {
         HEADER_LENGTH_OFFSET, HEADER_MESSAGE_TYPE_OFFSET, HEADER_PAYLOAD_LENGTH_OFFSET,
         HEADER_PROTOCOL_VERSION_OFFSET, HEADER_RESERVED_OFFSET,
     };
+
+    #[test]
+    fn server_auth_receive_json_lines_sink_defaults_to_stderr() {
+        let boundary = ServerAuthReceiveJsonLinesSinkBoundary::default();
+
+        let plan = boundary.plan(ServerAuthReceiveJsonLinesSinkConfig::stderr_default());
+
+        assert_eq!(
+            plan.auth_result.destination,
+            JsonLinesSinkDestination::Stderr
+        );
+        assert_eq!(
+            plan.receive_rejection.destination,
+            JsonLinesSinkDestination::Stderr
+        );
+        assert!(!plan.auth_result.is_file_sink());
+        assert!(!plan.receive_rejection.is_file_sink());
+    }
+
+    #[test]
+    fn server_auth_receive_json_lines_sink_accepts_separate_file_paths() {
+        let boundary = ServerAuthReceiveJsonLinesSinkBoundary::default();
+
+        let plan = boundary.plan(ServerAuthReceiveJsonLinesSinkConfig::file_sinks(
+            "logs/auth.jsonl",
+            "logs/receive-rejection.jsonl",
+        ));
+
+        let JsonLinesSinkDestination::File(auth_file) = plan.auth_result.destination else {
+            panic!("expected auth file sink");
+        };
+        let JsonLinesSinkDestination::File(receive_file) = plan.receive_rejection.destination
+        else {
+            panic!("expected receive rejection file sink");
+        };
+        assert_eq!(auth_file.path, PathBuf::from("logs/auth.jsonl"));
+        assert_eq!(
+            receive_file.path,
+            PathBuf::from("logs/receive-rejection.jsonl")
+        );
+    }
 
     #[test]
     fn receive_loop_routes_decoded_packet() {

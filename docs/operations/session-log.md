@@ -5,6 +5,58 @@
 - Codex
 
 ### 今回の作業
+- auth / receive JSON Lines file sink 方針を docs に明記した。
+- `crates/logging` に JSON Lines sink config / plan の最小 placeholder を追加した。
+- `apps/server` に auth result と receive rejection の sink plan boundary を追加した。
+- stderr 出力、file sink plan、future logging 基盤の責務分離を整理した。
+
+### 変更ファイル
+- `crates/logging/src/lib.rs`
+- `apps/server/Cargo.toml`
+- `apps/server/src/lib.rs`
+- `docs/architecture/system-design.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### 決定事項
+- stderr は PoC / one-shot の既定 sink として維持する。
+- file sink は現時点では config / plan placeholder までとし、実 file open は行わない。
+- auth result と receive rejection は別 file path を持てる方針にする。
+- file sink の将来実装は append-create を基本とする。
+- rotation、retention、compression、directory creation、async logging、process-wide logger は future work とする。
+- schema-specific writer は引き続き caller-owned `io::Write` に 1 JSON object + newline を書く。
+
+### 未実装 / 保留
+- TOML からの logging sink 設定読み込み
+- 実 file open / directory creation
+- log rotation / retention / compression
+- async logging / buffering policy
+- process-wide logger
+- auth / receive 以外の共通ログイベント型への統合
+
+### 次にやる候補
+- secret store / token rotation 方針を整理する
+- `ServerNotice` notice trigger policy の実装範囲を整理する
+- outbound queue の実キュー実装範囲を送信継続 loop 前に再確認する
+- file sink の実 file open 範囲を必要になった時点で再確認する
+
+### TODO更新
+- 現在位置に auth / receive JSON Lines file sink 方針の整理完了を反映した。
+- 直近でやることから file sink 方針整理を外し、実 file open の再確認を後続候補へ移した。
+- ログ / 計測の `auth / receive JSON Lines の file sink 設定方針を整理する` を完了にした。
+
+### メモ
+- `cargo fmt --check` は成功した。
+- `cargo check --workspace` は成功した。
+- 追加確認として `cargo test -p stream-sync-logging` と `cargo test -p stream-sync-server json_lines_sink` も成功した。
+
+---
+
+## 2026-04-21
+### 種別
+- Codex
+
+### 今回の作業
 - `ServerNotice` payload encode/decode の最小実装範囲を確認し、`crates/protocol` に実装した。
 - `ProtocolMessageEncoderBoundary` と `decode_payload_by_message_type` の `ServerNotice` 対応を追加した。
 - protocol / server / outbound notice handoff の責務分離を docs に反映した。

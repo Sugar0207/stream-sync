@@ -8,6 +8,7 @@ rust-version.workspace = true
 
 [dependencies]
 stream-sync-config = { path = "../../crates/config" }
+stream-sync-logging = { path = "../../crates/logging" }
 stream-sync-net-core = { path = "../../crates/net-core" }
 stream-sync-protocol = { path = "../../crates/protocol" }
 stream-sync-timebase = { path = "../../crates/timebase" }

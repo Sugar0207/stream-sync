@@ -400,8 +400,8 @@ Responsibility split:
     command-line flag.
   - Owns the PoC default auth result log sink: one JSON Lines event to stderr
     after a decision exists.
-  - Does not configure file sinks, rotation, retention, async logging, or
-    process-wide logging.
+  - Does not open file sinks, rotate logs, apply retention, run async logging,
+    or install process-wide logging.
 
 Current code reflects this with `apps/server::ServerAuthResponsePocLauncher`,
 `ServerAuthResponsePocStartupConfig`,
@@ -982,8 +982,8 @@ Responsibility split:
 - log writer
   - Current minimal writer serializes the auth result event to one JSON Lines
     record for an `io::Write` sink.
-  - Future owner of file sinks, rotation, buffering policy, retention, and
-    broader logging configuration.
+  - Does not own file opening, rotation, retention, async logging, or
+    process-wide logging configuration.
 
 Current code reflects this with `apps/server::ServerAuthJsonLogEventBoundary`
 and `ServerAuthJsonLogEventInput`. Minimal JSON Lines output is available
@@ -1017,20 +1017,48 @@ Current connection scope:
   - Writer boundary: `ServerReceiveRejectionLogOutputBoundary`
   - Writer: `ServerReceiveRejectionJsonLineWriter`
   - Current sink: one-shot server CLI writes rejected receive events to stderr.
+- sink planning
+  - Shared config shape: `logging::JsonLinesSinkConfig`
+  - Shared plan boundary: `logging::JsonLinesSinkPlanBoundary`
+  - Server auth/receive plan boundary:
+    `ServerAuthReceiveJsonLinesSinkBoundary`
+
+File sink policy:
+
+- stderr remains the PoC default sink for auth result and receive rejection
+  events.
+- file sink configuration is represented as a plan only; it does not open the
+  file yet.
+- auth result and receive rejection may use separate file paths.
+- file sinks use append-create semantics when implemented later.
+- each event remains one JSON object plus newline.
+- rotation, retention, compression, directory creation, and async logging are
+  explicitly future work.
+- schema-specific writers keep accepting caller-owned `io::Write`; the future
+  file sink layer will provide that writer after opening the configured file.
 
 Out of scope for this stage:
 
 - process-wide logger initialization
-- file path configuration
-- log rotation / retention
-- buffering and flush policy
+- actual file opening / directory creation
+- log rotation / retention / compression
+- buffering and flush policy beyond caller-owned writes
 - async logging
 - metrics fanout
-- joining auth and receive events into a generic logging crate API
+- replacing schema-specific event writers with a generic logging writer
 - moving auth result output into a continuous loop sink before that loop exists
 
 This keeps both log families aligned without forcing a broad logging
 infrastructure before the PoC receive/auth path is stable.
+
+Current code reflects the sink planning boundary with
+`crates/logging::JsonLinesSinkConfig`, `JsonLinesSinkDestination`,
+`JsonLinesFileSinkConfig`, `JsonLinesSinkPlan`, and
+`JsonLinesSinkPlanBoundary`, plus
+`apps/server::ServerAuthReceiveJsonLinesSinkConfig`,
+`ServerAuthReceiveJsonLinesSinkPlan`, and
+`ServerAuthReceiveJsonLinesSinkBoundary`. The current one-shot server CLI still
+writes to stderr; no file is opened by this boundary.
 
 ---
 
@@ -1660,8 +1688,8 @@ Responsibility split:
 - log writer
   - Current minimal writer serializes the receive rejection event to one JSON
     Lines record for an `io::Write` sink.
-  - Future owner of file sinks, rotation, buffering policy, retention, and
-    broader logging configuration.
+  - Does not own file opening, rotation, retention, async logging, or
+    process-wide logging configuration.
 
 Current code reflects this with
 `apps/server::ServerReceiveRejectionJsonLogEventBoundary`,
@@ -1674,7 +1702,9 @@ receive rejection JSON Lines record to stderr when
 `ServerAuthResponsePocError::Rejected` occurs, then prints the existing PoC
 error message. This remains synchronous and schema-specific; file output,
 rotation, buffering policy, async logging, and a general JSON Lines writer
-remain future work.
+remain future work. File sink configuration is represented by the shared
+`crates/logging` sink plan described in the Server JSON Lines Writer Connection
+Scope section.
 
 Minimal emitted fields:
 
