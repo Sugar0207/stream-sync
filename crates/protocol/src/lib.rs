@@ -388,6 +388,51 @@ pub fn decode_video_frame_payload(
     })
 }
 
+/// Decode a `ClientStats` payload after fixed header and protocol version checks.
+///
+/// This parses the MVP-minimal stats fields and the optional heartbeat
+/// observation block. It does not update metrics, timebase state, or UI state.
+pub fn decode_client_stats_payload(
+    header: FixedHeader,
+    payload: &[u8],
+) -> Result<ClientStats, ProtocolError> {
+    if header.message_type != MessageType::ClientStats {
+        return Err(ProtocolError::UnexpectedMessageType {
+            expected: MessageType::ClientStats,
+            actual: header.message_type,
+        });
+    }
+
+    if payload.len() != header.payload_length as usize {
+        return Err(ProtocolError::InvalidPayloadLength {
+            expected: header.payload_length,
+            actual: payload.len(),
+        });
+    }
+
+    let mut reader = PayloadReader::new(payload);
+    let client_id = ClientId(reader.read_string()?);
+    let run_id = RunId(reader.read_string()?);
+    let sent_at = TimestampMicros(reader.read_u64()?);
+    let capture_fps = reader.read_u32()?;
+    let dropped_frames = reader.read_u64()?;
+    let bitrate_kbps = reader.read_u32()?;
+    let heartbeat_observation = reader.read_optional_heartbeat_observation(&client_id, &run_id)?;
+    reader.finish()?;
+
+    Ok(ClientStats {
+        message_type: MessageType::ClientStats,
+        protocol_version: header.protocol_version,
+        client_id,
+        run_id,
+        sent_at,
+        capture_fps,
+        dropped_frames,
+        bitrate_kbps,
+        heartbeat_observation,
+    })
+}
+
 /// Decode a payload by dispatching on the fixed header `message_type`.
 ///
 /// The caller is expected to run fixed header decode and protocol version
@@ -405,6 +450,9 @@ pub fn decode_payload_by_message_type(
         MessageType::Heartbeat => HeartbeatPayloadDecoder.decode_payload(context, header, payload),
         MessageType::VideoFrame => {
             VideoFramePayloadDecoder.decode_payload(context, header, payload)
+        }
+        MessageType::ClientStats => {
+            ClientStatsPayloadDecoder.decode_payload(context, header, payload)
         }
         message_type => Err(ProtocolError::PayloadDecodeNotImplemented(message_type)),
     }
@@ -508,6 +556,29 @@ impl<'a> PayloadReader<'a> {
         match present {
             0 => Ok(None),
             1 => self.read_u64().map(Some),
+            actual => Err(ProtocolError::InvalidOptionalTag { actual }),
+        }
+    }
+
+    fn read_optional_heartbeat_observation(
+        &mut self,
+        client_id: &ClientId,
+        run_id: &RunId,
+    ) -> Result<Option<HeartbeatAckObservation>, ProtocolError> {
+        self.ensure_available(usize::from(PAYLOAD_OPTION_TAG_LEN))?;
+        let present = read_u8(self.payload, self.offset);
+        self.offset += usize::from(PAYLOAD_OPTION_TAG_LEN);
+
+        match present {
+            0 => Ok(None),
+            1 => Ok(Some(HeartbeatAckObservation {
+                client_id: client_id.clone(),
+                run_id: run_id.clone(),
+                echoed_sent_at: TimestampMicros(self.read_u64()?),
+                server_received_at: TimestampMicros(self.read_u64()?),
+                server_sent_at: TimestampMicros(self.read_u64()?),
+                client_received_at: TimestampMicros(self.read_u64()?),
+            })),
             actual => Err(ProtocolError::InvalidOptionalTag { actual }),
         }
     }
@@ -708,6 +779,34 @@ pub fn encode_video_frame(
     Ok(())
 }
 
+/// Encode one `ClientStats` packet as fixed header plus payload bytes.
+///
+/// The payload follows the MVP-minimal stats layout plus the optional heartbeat
+/// observation block. This function does not send the bytes or update
+/// timebase/metrics state.
+pub fn encode_client_stats(
+    context: EncodeContext,
+    stats: &ClientStats,
+    output: &mut Vec<u8>,
+) -> Result<(), ProtocolError> {
+    let mut payload = Vec::new();
+    encode_client_stats_payload(stats, &mut payload)?;
+    let payload_length =
+        u32::try_from(payload.len()).map_err(|_| ProtocolError::InvalidPayloadLength {
+            expected: u32::MAX,
+            actual: payload.len(),
+        })?;
+
+    encode_fixed_header(
+        MessageType::ClientStats,
+        context.protocol_version,
+        payload_length,
+        output,
+    );
+    output.extend_from_slice(&payload);
+    Ok(())
+}
+
 /// Encode only the `AuthRequest` payload body.
 pub fn encode_auth_request_payload(
     request: &AuthRequest,
@@ -785,6 +884,30 @@ pub fn encode_video_frame_payload(
     output.extend_from_slice(&frame.codec.wire_code().to_le_bytes());
     output.extend_from_slice(&payload_size.to_le_bytes());
     output.extend_from_slice(&frame.payload);
+    Ok(())
+}
+
+/// Encode only the `ClientStats` payload body.
+pub fn encode_client_stats_payload(
+    stats: &ClientStats,
+    output: &mut Vec<u8>,
+) -> Result<(), ProtocolError> {
+    write_string(output, &stats.client_id.0)?;
+    write_string(output, &stats.run_id.0)?;
+    output.extend_from_slice(&stats.sent_at.0.to_le_bytes());
+    output.extend_from_slice(&stats.capture_fps.to_le_bytes());
+    output.extend_from_slice(&stats.dropped_frames.to_le_bytes());
+    output.extend_from_slice(&stats.bitrate_kbps.to_le_bytes());
+    match &stats.heartbeat_observation {
+        Some(observation) => {
+            output.push(1);
+            output.extend_from_slice(&observation.echoed_sent_at.0.to_le_bytes());
+            output.extend_from_slice(&observation.server_received_at.0.to_le_bytes());
+            output.extend_from_slice(&observation.server_sent_at.0.to_le_bytes());
+            output.extend_from_slice(&observation.client_received_at.0.to_le_bytes());
+        }
+        None => output.push(0),
+    }
     Ok(())
 }
 
@@ -926,6 +1049,21 @@ impl PayloadDecoder for VideoFramePayloadDecoder {
     }
 }
 
+/// Minimal payload decoder for `ClientStats`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct ClientStatsPayloadDecoder;
+
+impl PayloadDecoder for ClientStatsPayloadDecoder {
+    fn decode_payload(
+        &self,
+        _context: DecodeContext,
+        header: FixedHeader,
+        payload: &[u8],
+    ) -> Result<ProtocolMessage, ProtocolError> {
+        decode_client_stats_payload(header, payload).map(ProtocolMessage::ClientStats)
+    }
+}
+
 /// Future entry point for message encoding into one packet buffer.
 pub trait MessageEncoder {
     fn encode_message(
@@ -958,6 +1096,7 @@ impl MessageEncoder for ProtocolMessageEncoderBoundary {
             }
             ProtocolMessage::HeartbeatAck(ack) => encode_heartbeat_ack(context, ack, output),
             ProtocolMessage::VideoFrame(frame) => encode_video_frame(context, frame, output),
+            ProtocolMessage::ClientStats(stats) => encode_client_stats(context, stats, output),
             message => Err(ProtocolError::EncodeNotImplemented(message.message_type())),
         }
     }
@@ -1101,8 +1240,8 @@ impl HeartbeatAckObservationBoundary {
 
 /// Typed carrier for returning one heartbeat ack observation to the server.
 ///
-/// The selected future wire carrier is `ClientStats`. This type fixes the
-/// message flow without implementing `ClientStats` payload encode/decode yet.
+/// The selected wire carrier is `ClientStats`. This type fixes the message
+/// flow before client send loop and server route/handler wiring are connected.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HeartbeatObservationCarrier {
     pub message_type: MessageType,
@@ -1110,7 +1249,7 @@ pub struct HeartbeatObservationCarrier {
     pub observation: HeartbeatAckObservation,
 }
 
-/// Boundary that wraps an observation in the future `ClientStats` carrier.
+/// Boundary that wraps an observation in the `ClientStats` carrier.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
 pub struct HeartbeatObservationCarrierBoundary;
 
@@ -1189,7 +1328,8 @@ pub struct ClientStats {
 
 /// Planned ClientStats payload shape.
 ///
-/// This prepares the encode/decode contract without implementing wire bytes.
+/// This exposes the fixed numeric and optional observation block lengths used
+/// by the minimal ClientStats payload encoder and decoder.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct ClientStatsPayloadPlan {
     pub base_numeric_payload_len: u16,
@@ -1689,6 +1829,130 @@ mod tests {
             plan.heartbeat_observation_block_len,
             CLIENT_STATS_HEARTBEAT_OBSERVATION_BLOCK_LEN
         );
+    }
+
+    #[test]
+    fn encodes_client_stats_payload_without_heartbeat_observation() {
+        let stats = test_client_stats(None);
+        let mut payload = Vec::new();
+
+        encode_client_stats_payload(&stats, &mut payload)
+            .expect("client stats payload should encode");
+
+        let expected = client_stats_payload(false);
+        assert_eq!(payload, expected);
+    }
+
+    #[test]
+    fn encodes_client_stats_payload_with_heartbeat_observation() {
+        let observation = test_heartbeat_ack_observation();
+        let stats = test_client_stats(Some(observation));
+        let mut payload = Vec::new();
+
+        encode_client_stats_payload(&stats, &mut payload)
+            .expect("client stats payload should encode");
+
+        let expected = client_stats_payload(true);
+        assert_eq!(payload, expected);
+    }
+
+    #[test]
+    fn protocol_message_encoder_encodes_client_stats_packet() {
+        let stats = test_client_stats(Some(test_heartbeat_ack_observation()));
+        let message = ProtocolMessage::ClientStats(stats.clone());
+        let encoder = ProtocolMessageEncoderBoundary;
+        let mut output = Vec::new();
+
+        encoder
+            .encode_message(
+                EncodeContext {
+                    protocol_version: ProtocolVersion(2),
+                },
+                &message,
+                &mut output,
+            )
+            .expect("client stats packet should encode");
+
+        let decoded = decode_fixed_header(&output).expect("encoded fixed header should decode");
+        assert_eq!(decoded.header.message_type, MessageType::ClientStats);
+        assert_eq!(decoded.header.header_length, FIXED_HEADER_LEN);
+        assert_eq!(decoded.header.protocol_version, ProtocolVersion(2));
+
+        let decoded_stats = decode_client_stats_payload(decoded.header, decoded.payload)
+            .expect("encoded client stats should decode");
+        assert_eq!(decoded_stats, stats);
+    }
+
+    #[test]
+    fn decodes_client_stats_payload_without_heartbeat_observation() {
+        let payload = client_stats_payload(false);
+        let packet = test_packet(
+            MessageType::ClientStats as u16,
+            FIXED_HEADER_LEN,
+            2,
+            &payload,
+        );
+        let decoded = decode_fixed_header(&packet).expect("fixed header should decode");
+
+        let stats = decode_client_stats_payload(decoded.header, decoded.payload)
+            .expect("client stats should decode");
+
+        assert_eq!(stats.message_type, MessageType::ClientStats);
+        assert_eq!(stats.protocol_version, ProtocolVersion(2));
+        assert_eq!(stats.client_id, ClientId("client-1".to_string()));
+        assert_eq!(stats.run_id, RunId("run-1".to_string()));
+        assert_eq!(stats.sent_at, TimestampMicros(3_000));
+        assert_eq!(stats.capture_fps, 30);
+        assert_eq!(stats.dropped_frames, 2);
+        assert_eq!(stats.bitrate_kbps, 4_000);
+        assert_eq!(stats.heartbeat_observation, None);
+    }
+
+    #[test]
+    fn decodes_client_stats_payload_with_heartbeat_observation_through_dispatch() {
+        let payload = client_stats_payload(true);
+        let packet = test_packet(
+            MessageType::ClientStats as u16,
+            FIXED_HEADER_LEN,
+            2,
+            &payload,
+        );
+        let decoded = decode_fixed_header(&packet).expect("fixed header should decode");
+
+        let message = decode_payload_by_message_type(
+            DecodeContext {
+                expected_protocol_version: ProtocolVersion(2),
+            },
+            decoded.header,
+            decoded.payload,
+        )
+        .expect("client stats should decode");
+
+        let ProtocolMessage::ClientStats(stats) = message else {
+            panic!("expected client stats message");
+        };
+        assert_eq!(
+            stats.heartbeat_observation,
+            Some(test_heartbeat_ack_observation())
+        );
+    }
+
+    #[test]
+    fn rejects_invalid_client_stats_heartbeat_observation_tag() {
+        let mut payload = client_stats_payload(false);
+        let tag_offset = payload.len() - usize::from(PAYLOAD_OPTION_TAG_LEN);
+        payload[tag_offset] = 2;
+        let packet = test_packet(
+            MessageType::ClientStats as u16,
+            FIXED_HEADER_LEN,
+            2,
+            &payload,
+        );
+        let decoded = decode_fixed_header(&packet).expect("fixed header should decode");
+
+        let stats = decode_client_stats_payload(decoded.header, decoded.payload);
+
+        assert_eq!(stats, Err(ProtocolError::InvalidOptionalTag { actual: 2 }));
     }
 
     #[test]
@@ -2219,6 +2483,51 @@ mod tests {
         push_optional_u64(&mut payload, local_time);
         push_optional_string(&mut payload, short_status);
         payload
+    }
+
+    fn client_stats_payload(include_observation: bool) -> Vec<u8> {
+        let mut payload = Vec::new();
+        push_string(&mut payload, "client-1");
+        push_string(&mut payload, "run-1");
+        push_u64(&mut payload, 3_000);
+        push_u32(&mut payload, 30);
+        push_u64(&mut payload, 2);
+        push_u32(&mut payload, 4_000);
+        if include_observation {
+            payload.push(1);
+            push_u64(&mut payload, 1_000);
+            push_u64(&mut payload, 2_100);
+            push_u64(&mut payload, 2_150);
+            push_u64(&mut payload, 1_150);
+        } else {
+            payload.push(0);
+        }
+        payload
+    }
+
+    fn test_client_stats(heartbeat_observation: Option<HeartbeatAckObservation>) -> ClientStats {
+        ClientStats {
+            message_type: MessageType::ClientStats,
+            protocol_version: ProtocolVersion(2),
+            client_id: ClientId("client-1".to_string()),
+            run_id: RunId("run-1".to_string()),
+            sent_at: TimestampMicros(3_000),
+            capture_fps: 30,
+            dropped_frames: 2,
+            bitrate_kbps: 4_000,
+            heartbeat_observation,
+        }
+    }
+
+    fn test_heartbeat_ack_observation() -> HeartbeatAckObservation {
+        HeartbeatAckObservation {
+            client_id: ClientId("client-1".to_string()),
+            run_id: RunId("run-1".to_string()),
+            echoed_sent_at: TimestampMicros(1_000),
+            server_received_at: TimestampMicros(2_100),
+            server_sent_at: TimestampMicros(2_150),
+            client_received_at: TimestampMicros(1_150),
+        }
     }
 
     fn video_frame_payload(

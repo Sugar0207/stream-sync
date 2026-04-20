@@ -2430,7 +2430,7 @@ impl ServerHeartbeatClientAckObservationBoundary {
 /// Server boundary for accepting the future heartbeat observation carrier.
 ///
 /// This unwraps the typed carrier only. Receive routing, packet acceptance,
-/// and `ClientStats` payload decode remain future work.
+/// and `ClientStats` handler wiring remain future work.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
 pub struct ServerHeartbeatObservationCarrierBoundary {
     observation: ServerHeartbeatClientAckObservationBoundary,

@@ -35,9 +35,9 @@
 - `shared_token_env` を使う one-shot auth round trip 手順と server helper config は完了
 - accepted path の手動確認は成功し、`configs/examples/server.example.toml` と `configs/examples/client.accepted.example.toml` の組み合わせで `accepted=true`, `reason_code=Ok` を観測済み
 - `shared_token_env` accepted path の手動確認は成功し、`configs/examples/server.env-token.example.toml` と `configs/examples/client.accepted.example.toml` の組み合わせで `accepted=true`, `reason_code=Ok` を観測済み
-- `ClientStats` payload plan と heartbeat observation optional block の payload 方針は完了
-- secret store 連携、token hashing / rotation、認証済み送信元の timeout / 失効 / 再認証、実際の packet 破棄、`ClientStats` / `ServerNotice` など残り message の encode 本実装、時刻同期本体、映像受信・復号・表示、switcher UI は未実装
-- 次の中心は auth / receive JSON Lines file sink 方針、secret store / rotation 方針、`ClientStats` payload encode/decode 最小実装
+- `ClientStats` payload encode/decode と heartbeat observation optional block の最小 wire 変換は完了
+- secret store 連携、token hashing / rotation、認証済み送信元の timeout / 失効 / 再認証、実際の packet 破棄、`ServerNotice` payload encode/decode、時刻同期本体、映像受信・復号・表示、switcher UI は未実装
+- 次の中心は auth / receive JSON Lines file sink 方針、secret store / rotation 方針、`ClientStats` receive route / handler 接続
 
 ---
 
@@ -69,7 +69,7 @@
 ## 直近でやること
 1. auth / receive JSON Lines の file sink 設定方針を整理する
 2. secret store 連携や token rotation の方針を整理する
-3. `ClientStats` payload encode/decode 最小実装を行う
+3. `ClientStats` receive route / handler 接続を設計する
 4. outbound queue の実処理範囲と backpressure 方針を実装前に詰める
 5. `ServerNotice` の payload layout と decode / encode 方針を決める
 
@@ -107,6 +107,7 @@
 - [x] heartbeat client ack observation flow を設計する
 - [x] heartbeat observation carrier を設計する
 - [x] `ClientStats` payload encode/decode 方針を決める
+- [x] `ClientStats` payload encode/decode の最小実装を追加する
 - [x] packet acceptance rejection を drop / log layer へ渡す境界を整理する
 - [x] AuthResponse 生成 / 送信境界を整理する
 - [x] outbound packet / queue 境界を整理する
@@ -166,7 +167,7 @@
 - [x] `VideoFrame` encode 本実装を行う
 - [x] fixed header encode 本実装を行う
 - [x] `ClientStats` payload layout と decode / encode 方針を決める
-- [ ] `ClientStats` payload encode/decode 本実装を行う
+- [x] `ClientStats` payload encode/decode 本実装を行う
 - [ ] `ServerNotice` の payload layout と decode / encode 方針を決める
 - [ ] `ServerNotice` の payload encode/decode 本実装を行う
 - [ ] payload fragmentation の要否と方式を決める
@@ -272,6 +273,7 @@
 - [x] heartbeat client ack observation flow を設計する
 - [x] heartbeat observation carrier を設計する
 - [x] `ClientStats` payload encode/decode 方針を決める
+- [x] `ClientStats` heartbeat observation optional block の wire 変換を実装する
 - [ ] heartbeat 送信処理を client 側に実装する
 - [ ] heartbeat 受信処理を server 側に実装する
 - [ ] heartbeat timeout 管理を実装する

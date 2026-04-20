@@ -123,8 +123,8 @@ impl ClientHeartbeatAckObservationBoundary {
 
 /// Client boundary for wrapping a heartbeat ack observation in its future carrier.
 ///
-/// This does not encode or send a packet; it only fixes the typed handoff into
-/// the future `ClientStats` carrier.
+/// This does not send a packet; it only fixes the typed handoff into the
+/// `ClientStats` carrier used by the protocol payload encoder.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
 pub struct ClientHeartbeatObservationCarrierBoundary {
     protocol: HeartbeatObservationCarrierBoundary,

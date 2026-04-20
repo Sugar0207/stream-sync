@@ -5,6 +5,59 @@
 - Codex
 
 ### 今回の作業
+- `ClientStats` payload encode/decode の最小実装を追加した。
+- heartbeat observation optional block を含む `ClientStats` wire 変換を追加した。
+- `ProtocolMessageEncoderBoundary` から `ProtocolMessage::ClientStats` を encode できるようにした。
+- docs と TODO を現在の実装範囲に合わせて更新した。
+
+### 変更ファイル
+- `crates/protocol/src/lib.rs`
+- `apps/client/src/lib.rs`
+- `apps/server/src/lib.rs`
+- `docs/architecture/protocol.md`
+- `docs/architecture/system-design.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### 決定事項
+- `ClientStats` payload は `client_id`, `run_id`, `sent_at`, `capture_fps`, `dropped_frames`, `bitrate_kbps`, `heartbeat_observation_present` の順に encode/decode する。
+- `heartbeat_observation_present = 1` の場合だけ `echoed_sent_at`, `server_received_at`, `server_sent_at`, `client_received_at` を `u64 little-endian` で続ける。
+- `heartbeat_observation_present = 0` の場合は observation を `None` とする。
+- present tag が `0` / `1` 以外なら `InvalidOptionalTag` とする。
+
+### 未解決事項
+- `ClientStats` の client 継続送信 loop
+- server receive route / gate / handler への `ClientStats` 接続
+- heartbeat observation を使った RTT / offset state commit と smoothing
+- `ServerNotice` payload layout / encode / decode
+
+### 次にやる候補
+- auth / receive JSON Lines の file sink 設定方針を整理する
+- secret store 連携や token rotation の方針を整理する
+- `ClientStats` receive route / handler 接続を設計する
+
+### TODO更新
+- 完了:
+  - `ClientStats` payload encode/decode の最小実装
+  - heartbeat observation optional block の wire 変換
+  - `ProtocolMessageEncoderBoundary` の `ClientStats` encode 対応
+- 追加:
+  - `ClientStats` receive route / handler 接続を次候補へ移動
+- 保留:
+  - 継続 stats 送信
+  - RTT / offset state commit
+  - `ServerNotice` payload encode/decode
+
+### メモ
+- `cargo test -p stream-sync-protocol client_stats`、`cargo fmt --check`、`cargo check --workspace` が通ることを確認した。
+
+---
+
+## 2026-04-20
+### 種別
+- Codex
+
+### 今回の作業
 - `ClientStats` payload encode / decode 方針を決めた。
 - heartbeat observation optional block を含む `ClientStats` payload 順序を docs に明記した。
 - `crates/protocol` に `ClientStatsPayloadPlanBoundary` と payload length constants を追加した。

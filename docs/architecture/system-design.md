@@ -1498,14 +1498,15 @@ Message flow:
 1. Client observes `HeartbeatAck` and creates `HeartbeatAckObservation`.
 2. Client wraps that observation in a typed `HeartbeatObservationCarrier` with
    `message_type = ClientStats`.
-3. A future `ClientStats` sender encodes and sends the carrier to the server.
+3. A future `ClientStats` sender uses the protocol encoder and sends the
+   carrier to the server.
 4. Server receives and decodes `ClientStats`.
 5. Server extracts the optional heartbeat observation block and maps it to
    `ServerHeartbeatClientAckObservation`.
 6. Server correlates it with the stored timebase plan and calls the RTT /
    offset calculator.
 
-Payload direction for the future `ClientStats` extension:
+Payload direction for the `ClientStats` extension:
 
 | Order | Field | Type | Notes |
 | --- | --- | --- | --- |
@@ -1527,11 +1528,13 @@ Responsibility split:
   - Captures `client_received_at` and creates `HeartbeatAckObservation`.
 - protocol carrier boundary
   - Wraps the observation in a typed `ClientStats` carrier.
-  - Does not encode bytes or send UDP packets.
+  - Owns the minimal `ClientStats` payload bytes, including the optional
+    observation block.
+  - Does not send UDP packets.
 - server carrier boundary
   - Extracts the typed observation for calculator input.
   - Does not run receive loop, gate, smoothing, or state commit.
-- future `ClientStats` encode/decode
+- `ClientStats` encode/decode
   - Owns the actual payload bytes for the optional observation block.
   - Writes `heartbeat_observation_present = 0` when no ack observation is
     available.
@@ -1540,11 +1543,12 @@ Responsibility split:
 Current code reflects this with `protocol::HeartbeatObservationCarrier`,
 `protocol::HeartbeatObservationCarrierBoundary`,
 `apps/client::ClientHeartbeatObservationCarrierBoundary`, and
-`apps/server::ServerHeartbeatObservationCarrierBoundary`. The actual
-`ClientStats` payload encode/decode, UDP send/receive connection, and timebase
-state update remain future work. `protocol::ClientStatsPayloadPlanBoundary`
-records the planned fixed numeric length and optional observation block length
-without writing or reading wire bytes.
+`apps/server::ServerHeartbeatObservationCarrierBoundary`.
+`crates/protocol` also implements minimal `ClientStats` payload encode/decode
+and `ProtocolMessageEncoderBoundary` support. UDP send/receive connection,
+server route / handler wiring, and timebase state update remain future work.
+`protocol::ClientStatsPayloadPlanBoundary` records the fixed numeric length and
+optional observation block length used by the encoder/decoder.
 
 ---
 
