@@ -5,6 +5,55 @@
 - Codex
 
 ### 今回の作業
+- packet 送信継続 loop の最小接続範囲を docs に明記した。
+- `crates/net-core` に one-tick send loop placeholder を追加した。
+- queue storage / encoder handoff / socket send / send error logging の責務分離を整理した。
+
+### 変更ファイル
+- `crates/net-core/src/lib.rs`
+- `docs/architecture/system-design.md`
+- `docs/architecture/protocol.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### 決定事項
+- continuous send loop 本体ではなく、queue-selected item を 1 tick で encode 計画へ渡す範囲だけを扱う。
+- `OutboundSendLoopTickBoundary` は `OutboundQueueSendHandoff` から `OutboundEncodeRequest` と send log context を作る。
+- encode success / encode failure / socket send success / socket send failure は state 名と `SendLogEvent` 候補として観測する。
+- socket send 実行、retry、requeue、blocking loop、async runtime、log writer はこの boundary の責務に含めない。
+
+### 未実装 / 保留
+- continuous send loop 本体
+- queue collection からの dequeue 実装
+- UDP socket send の loop 接続
+- retry 実行 / requeue
+- send error JSON Lines 出力
+- async runtime
+
+### 次にやる候補
+- auth / receive JSON Lines file sink の実 file open 範囲を必要になった時点で再確認する
+- `ServerNotice` trigger の state transition 接続範囲を必要になった時点で再確認する
+- secret store provider 連携または token rotation 実行範囲を必要になった時点で再確認する
+- packet 送信継続 loop 本体の実装範囲を必要になった時点で整理する
+
+### TODO更新
+- 現在位置に packet 送信継続 loop の最小接続範囲整理完了を反映した。
+- 直近でやることを packet 送信継続 loop 本体の範囲整理へ更新した。
+- net-core / server 境界に `OutboundSendLoopTickBoundary` / send loop tick state placeholder 追加完了を反映した。
+- net-core / server 境界に packet 送信継続 loop の最小接続範囲整理完了を反映した。
+
+### メモ
+- `cargo fmt --check` は成功した。
+- `cargo check --workspace` は成功した。
+- 追加確認として `cargo test -p stream-sync-net-core send_loop` と `cargo test -p stream-sync-net-core outbound_queue` も成功した。
+
+---
+
+## 2026-04-21
+### 種別
+- Codex
+
+### 今回の作業
 - outbound queue の実キュー実装範囲を、送信継続 loop 前提で docs に明記した。
 - `crates/net-core` に queue storage state / push decision の最小 placeholder を追加した。
 - `apps/server` の `ServerOutboundQueueBoundary` から storage push plan を確認できる helper を追加した。

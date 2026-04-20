@@ -1848,9 +1848,13 @@ Send-loop precondition scope:
 3. A future queue collection stores accepted typed items, still pre-encode.
 4. A future send loop asks the queue for one ready item.
 5. The queue hands that item to the net send layer as `OutboundQueueSendHandoff`.
-6. The net send layer encodes the item using `OutboundPacketEncoderBoundary`.
-7. The socket send layer sends an already encoded datagram.
-8. Queue mutation after encode/send errors is future retry/drop policy, not part
+6. `OutboundSendLoopTickBoundary` prepares one encode request and the send log
+   context for that selected item.
+7. The net send layer encodes the item using `OutboundPacketEncoderBoundary`.
+8. The socket send layer sends an already encoded datagram.
+9. The send-loop tick boundary may turn observed encode/socket results into
+   `SendLogEvent` candidates.
+10. Queue mutation after encode/send errors is future retry/drop policy, not part
    of this step.
 
 Backpressure / drop policy:
@@ -1888,6 +1892,11 @@ Responsibility split:
   - Receives one selected `OutboundQueueItem` from queue storage.
   - Owns conversion to `OutboundEncodeRequest` and `EncodedOutboundPacket`.
   - Does not inspect queue capacity or call sockets.
+- send-loop tick boundary
+  - Connects one dequeued item to encoder input and send log context.
+  - Observes encode success/failure and socket send success/failure as state
+    names and log event candidates.
+  - Does not run a loop, block, sleep, retry, requeue, or write logs.
 - socket send layer
   - Future owner of byte encode result transmission over UDP.
   - Will handle send errors and runtime/socket details.
@@ -1906,6 +1915,11 @@ Queue storage planning is represented by `OutboundQueueStorageState`,
 `OutboundQueueStorageDecision`, `OutboundQueueStorageBoundary`, and
 `ServerOutboundQueueBoundary::evaluate_storage_push`. These do not store items;
 they document the state and decision that a future bounded collection must use.
+The minimal packet send-loop connection is represented by
+`OutboundSendLoopTickState`, `OutboundSendLoopTickPlan`,
+`OutboundSendLoopEvent`, and `OutboundSendLoopTickBoundary`. These types model
+one selected item moving toward encode/socket-send observation; they do not
+implement a continuous send loop.
 
 ---
 
@@ -2164,7 +2178,8 @@ Send path checkpoints:
    destination metadata.
 2. `outbound queue` boundary hands `OutboundQueueItem` to the net send layer
    without executing a real queue.
-3. `net send layer` extracts log context from the typed message before encode:
+3. `OutboundSendLoopTickBoundary` plans one selected item for encode and
+   extracts log context from the typed message before encode:
    `run_id`, optional `client_id`, destination, and `message_type`.
 4. `protocol encoder` converts supported messages into fixed header + payload
    bytes.
@@ -2226,7 +2241,10 @@ Responsibility split:
   - Owns send log context extraction and send failure classification.
   - Keeps `run_id`, `client_id`, destination, and `message_type` attached to
     encode and future socket-send results.
-  - Does not execute retry or socket I/O in this step.
+  - Owns the one-tick placeholder that connects a dequeued item to encoder
+    input and send log event candidates.
+  - Does not execute retry, requeue, continuous loops, or socket I/O in this
+    step.
 - `socket send`
   - Future owner of calling UDP `send_to` and mapping OS/socket errors into
     the send failure categories.
@@ -2234,5 +2252,8 @@ Responsibility split:
 
 Current code reflects this with `net-core::OutboundSendLogContext`,
 `net-core::SendLogStage`, `net-core::SendFailureKind`,
-`net-core::SendFailureDisposition`, and `net-core::SendLogEvent`. These are
-classification and structured event placeholder types only.
+`net-core::SendFailureDisposition`, `net-core::SendLogEvent`,
+`net-core::OutboundSendLoopTickState`, `net-core::OutboundSendLoopTickPlan`,
+`net-core::OutboundSendLoopEvent`, and
+`net-core::OutboundSendLoopTickBoundary`. These are classification and one-tick
+connection placeholder types only.

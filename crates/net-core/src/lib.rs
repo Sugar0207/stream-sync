@@ -158,6 +158,109 @@ pub struct OutboundQueueSendHandoff {
     pub item: OutboundQueueItem,
 }
 
+/// State names for one future packet send-loop tick.
+///
+/// This is not a continuous loop implementation. It only names the checkpoints
+/// that connect queue dequeue, encoder handoff, socket send, and send logging.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum OutboundSendLoopTickState {
+    ReadyForEncode,
+    Encoded,
+    SocketSendSucceeded,
+    Failed,
+}
+
+/// Plan for one send-loop tick after queue storage selects an item.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OutboundSendLoopTickPlan {
+    pub state: OutboundSendLoopTickState,
+    pub encode_request: OutboundEncodeRequest,
+    pub log_context: OutboundSendLogContext,
+}
+
+/// Event produced by observing a send-loop checkpoint.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OutboundSendLoopEvent {
+    pub state: OutboundSendLoopTickState,
+    pub log_event: Option<SendLogEvent>,
+}
+
+/// Minimal boundary for one packet send-loop tick.
+///
+/// This boundary does not own queue storage, run a loop, encode bytes, call
+/// sockets, retry, requeue, or write logs. It prepares the handoff into the
+/// encoder and turns observed encode/socket results into structured log events.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct OutboundSendLoopTickBoundary {
+    encoder: OutboundPacketEncoderBoundary,
+}
+
+impl OutboundSendLoopTickBoundary {
+    pub fn plan_encode(
+        &self,
+        context: EncodeContext,
+        handoff: OutboundQueueSendHandoff,
+    ) -> OutboundSendLoopTickPlan {
+        let log_context = OutboundSendLogContext::from_packet(&handoff.item.packet);
+        let encode_request = self.encoder.prepare_encode(context, handoff.item);
+        OutboundSendLoopTickPlan {
+            state: OutboundSendLoopTickState::ReadyForEncode,
+            encode_request,
+            log_context,
+        }
+    }
+
+    pub fn observe_encode_success(
+        &self,
+        plan: &OutboundSendLoopTickPlan,
+        encoded: &EncodedOutboundPacket,
+    ) -> OutboundSendLoopEvent {
+        OutboundSendLoopEvent {
+            state: OutboundSendLoopTickState::Encoded,
+            log_event: Some(SendLogEvent::encode_succeeded(
+                plan.log_context.clone(),
+                encoded.bytes.len(),
+            )),
+        }
+    }
+
+    pub fn observe_encode_failure(&self, plan: &OutboundSendLoopTickPlan) -> OutboundSendLoopEvent {
+        OutboundSendLoopEvent {
+            state: OutboundSendLoopTickState::Failed,
+            log_event: Some(SendLogEvent::send_failed(
+                plan.log_context.clone(),
+                SendLogStage::Encode,
+                None,
+                SendFailureKind::EncodeFailed,
+            )),
+        }
+    }
+
+    pub fn observe_socket_send_success(&self) -> OutboundSendLoopEvent {
+        OutboundSendLoopEvent {
+            state: OutboundSendLoopTickState::SocketSendSucceeded,
+            log_event: None,
+        }
+    }
+
+    pub fn observe_socket_send_failure(
+        &self,
+        plan: &OutboundSendLoopTickPlan,
+        encoded_len: usize,
+        failure: SendFailureKind,
+    ) -> OutboundSendLoopEvent {
+        OutboundSendLoopEvent {
+            state: OutboundSendLoopTickState::Failed,
+            log_event: Some(SendLogEvent::send_failed(
+                plan.log_context.clone(),
+                SendLogStage::SocketSend,
+                Some(encoded_len),
+                failure,
+            )),
+        }
+    }
+}
+
 /// Current MVP queue sizing policy.
 ///
 /// This is an admission-policy placeholder, not a real queue. The future queue
@@ -929,6 +1032,99 @@ mod tests {
         );
         assert!(!decision.accepts_candidate());
         assert_eq!(decision.planned_len_after(), policy.max_items);
+    }
+
+    #[test]
+    fn send_loop_tick_boundary_plans_encoder_handoff_from_queue_item() {
+        let destination: PacketDestination = packet_source().into();
+        let queue_boundary = OutboundPacketQueueBoundary;
+        let lifecycle = OutboundQueueLifecycleBoundary;
+        let send_loop = OutboundSendLoopTickBoundary::default();
+        let item = queue_boundary.handoff(OutboundPacket {
+            destination,
+            message: heartbeat_ack_message(),
+        });
+        let queued = lifecycle.hold_for_send(item);
+        let handoff = lifecycle.handoff_to_send_layer(queued);
+
+        let plan = send_loop.plan_encode(
+            EncodeContext {
+                protocol_version: ProtocolVersion(2),
+            },
+            handoff,
+        );
+
+        assert_eq!(plan.state, OutboundSendLoopTickState::ReadyForEncode);
+        assert_eq!(plan.encode_request.destination, destination);
+        assert_eq!(
+            plan.encode_request.context.protocol_version,
+            ProtocolVersion(2)
+        );
+        assert_eq!(plan.log_context.destination, destination);
+        assert_eq!(plan.log_context.message_type, MessageType::HeartbeatAck);
+        assert_eq!(plan.log_context.run_id, Some(RunId("run-1".to_string())));
+    }
+
+    #[test]
+    fn send_loop_tick_boundary_observes_encode_success_as_log_event() {
+        let destination: PacketDestination = packet_source().into();
+        let queue_boundary = OutboundPacketQueueBoundary;
+        let lifecycle = OutboundQueueLifecycleBoundary;
+        let send_loop = OutboundSendLoopTickBoundary::default();
+        let item = queue_boundary.handoff(OutboundPacket {
+            destination,
+            message: heartbeat_ack_message(),
+        });
+        let plan = send_loop.plan_encode(
+            EncodeContext {
+                protocol_version: ProtocolVersion(2),
+            },
+            lifecycle.handoff_to_send_layer(lifecycle.hold_for_send(item)),
+        );
+        let encoded = EncodedOutboundPacket {
+            destination,
+            bytes: vec![0xaa, 0xbb, 0xcc],
+        };
+
+        let event = send_loop.observe_encode_success(&plan, &encoded);
+
+        assert_eq!(event.state, OutboundSendLoopTickState::Encoded);
+        assert_eq!(
+            event.log_event,
+            Some(SendLogEvent::encode_succeeded(plan.log_context, 3))
+        );
+    }
+
+    #[test]
+    fn send_loop_tick_boundary_observes_socket_send_failure_as_log_event() {
+        let destination: PacketDestination = packet_source().into();
+        let queue_boundary = OutboundPacketQueueBoundary;
+        let lifecycle = OutboundQueueLifecycleBoundary;
+        let send_loop = OutboundSendLoopTickBoundary::default();
+        let item = queue_boundary.handoff(OutboundPacket {
+            destination,
+            message: heartbeat_ack_message(),
+        });
+        let plan = send_loop.plan_encode(
+            EncodeContext {
+                protocol_version: ProtocolVersion(2),
+            },
+            lifecycle.handoff_to_send_layer(lifecycle.hold_for_send(item)),
+        );
+
+        let event =
+            send_loop.observe_socket_send_failure(&plan, 42, SendFailureKind::SocketWouldBlock);
+
+        assert_eq!(event.state, OutboundSendLoopTickState::Failed);
+        assert_eq!(
+            event.log_event,
+            Some(SendLogEvent::send_failed(
+                plan.log_context,
+                SendLogStage::SocketSend,
+                Some(42),
+                SendFailureKind::SocketWouldBlock,
+            ))
+        );
     }
 
     #[test]

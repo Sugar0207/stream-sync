@@ -2190,9 +2190,13 @@ Flow:
    immediate accept / drop / replace decision.
 7. Future queue storage keeps accepted items as typed `OutboundQueueItem`
    values until a send loop selects one item.
-8. Future encode code will convert the `ProtocolMessage` into fixed header plus
+8. `OutboundSendLoopTickBoundary` prepares one selected item for encode and
+   keeps send log context attached.
+9. Future encode code will convert the `ProtocolMessage` into fixed header plus
    payload bytes.
-9. Future socket code will send those bytes through UDP.
+10. Future socket code will send those bytes through UDP.
+11. The send-loop tick boundary may turn observed encode/socket send results
+    into `SendLogEvent` candidates.
 
 Responsibility split:
 
@@ -2215,6 +2219,10 @@ Responsibility split:
 - encoder handoff
   - Receives one selected queue item and prepares `OutboundEncodeRequest`.
   - Does not own queue storage or socket sends.
+- send-loop tick boundary
+  - Connects one selected queue item to encoder handoff and send log context.
+  - Names encode and socket-send observation states for a future loop.
+  - Does not run continuously, retry, requeue, write logs, or call sockets.
 - socket send layer
   - Future owner of UDP transmission and send errors.
 
@@ -2255,6 +2263,10 @@ Outbound queue backpressure policy is bounded and non-blocking:
 - `OutboundQueueStorageState` and `OutboundQueueStorageDecision` record the
   current length/capacity snapshot and the push decision that a future bounded
   queue must apply. They do not allocate or mutate a collection.
+- `OutboundSendLoopTickState`, `OutboundSendLoopTickPlan`,
+  `OutboundSendLoopEvent`, and `OutboundSendLoopTickBoundary` record the
+  minimal one-tick connection from queue-selected item to encoder input and
+  send log event candidates. They do not implement a continuous send loop.
 
 Send error / log event policy is owned by `net-core` after protocol encode.
 `protocol` returns encode errors, while `net-core` keeps destination metadata
@@ -2334,6 +2346,9 @@ Current code:
 - `crates/net-core::OutboundSendLogContext` and `SendLogEvent` define the
   future send log context shape for encode success / failure and socket send
   failures.
+- `crates/net-core::OutboundSendLoopTickBoundary` defines the one-tick
+  connection from queue handoff to encoder request and send log event
+  candidates.
 - `apps/server::ServerHeartbeatAckBoundary` builds
   `ProtocolMessage::HeartbeatAck` and hands it to the same outbound queue
   boundary shape as other typed responses.
