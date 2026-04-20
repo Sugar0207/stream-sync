@@ -2,77 +2,22 @@
 
 # StreamSync TODO
 
-## 2026-04-20 Codex update
-- [x] `ClientStats` payload encode/decode 方針を決める
-- [x] heartbeat observation optional block を含む payload 順序を docs に反映する
-- [x] `ClientStatsPayloadPlanBoundary` placeholder を追加する
-- 次の中心: auth / receive JSON Lines file sink 方針、secret store / rotation 方針、ClientStats payload encode/decode 最小実装
-
-## 2026-04-20 Codex update
-- [x] heartbeat observation carrier を設計する
-- [x] `HeartbeatAckObservation` を `ClientStats` carrier に載せる typed boundary を追加する
-- [x] `ClientStats` optional observation block の payload 方針を docs に反映する
-- 次の中心: auth / receive JSON Lines file sink 方針、secret store / rotation 方針、ClientStats payload encode/decode 方針
-
-## 2026-04-20 Codex update
-- [x] heartbeat client ack observation flow を設計する
-- [x] `HeartbeatAck` + `client_received_at` から `HeartbeatAckObservation` を作る境界を追加する
-- [x] server 側 observation を timebase plan と照合して calculator へ渡す流れを整理する
-- 次の中心: auth / receive JSON Lines file sink 方針、secret store / rotation 方針、heartbeat observation carrier 設計
-
-## 2026-04-20 Codex update
-- [x] heartbeat RTT / offset の小さな実計算単位を決める
-- [x] `crates/timebase` に four-timestamp exchange の stateless calculator を追加する
-- [x] server timebase plan と future client ack observation をつなぐ calculation boundary を追加する
-- 次の中心: auth / receive JSON Lines file sink 方針、secret store / rotation 方針、heartbeat client ack observation flow
-
-## 2026-04-20 Codex update
-- [x] heartbeat state / RTT / offset 推定の本計算方針を整理する
-- [x] `crates/timebase` に `HeartbeatTimebaseEstimatePlan` / `HeartbeatTimebasePlanBoundary` を追加する
-- [x] server heartbeat timebase input から timebase plan への bridge を追加する
-- 次の中心: auth / receive JSON Lines file sink 方針、secret store / rotation 方針、heartbeat RTT / offset の小さな実計算単位
-
-## 2026-04-20 Codex update
-- [x] heartbeat state / RTT / offset 推定の入力境界を整理する
-- [x] `ServerHeartbeatInputBoundary` / state input / timebase input placeholder を追加する
-- [x] registered heartbeat packet / ack timing / timebase 入力の責務分離を docs に反映する
-- 次の中心: auth / receive JSON Lines file sink 方針、secret store / rotation 方針、heartbeat state / RTT 本計算方針
-
-## 2026-04-19 Codex update
-- [x] heartbeat handler の最小 ack 接続範囲を整理する
-- [x] `ServerHeartbeatHandlerBoundary` / `ServerHeartbeatAckHandoff` placeholder を追加する
-- [x] registered heartbeat packet から `HeartbeatAck` outbound queue handoff までを docs に反映する
-- 次の中心: auth / receive JSON Lines file sink 方針、secret store / rotation 方針、heartbeat state / RTT 方針
-
-## 2026-04-19 Codex update
-- [x] heartbeat / video frame handler へ registered packet を渡す接続方針を整理する
-- [x] `ServerRegisteredPacketBoundary` / registered handler input placeholder を追加する
-- [x] receive loop / gate / registry / handler の責務分離を docs に反映する
-- 次の中心: auth / receive JSON Lines file sink 方針、secret store / rotation 方針、heartbeat handler 最小 ack 接続
-
-## 2026-04-19 Codex update
-- [x] `shared_token_env` one-shot auth round trip accepted path を実機手動確認する
-- [x] 実行コマンド、環境変数設定、観測結果を `docs/operations/auth-roundtrip-manual-check.md` に記録する
-- [x] env-token helper config では 4 つの `STREAMSYNC_PLAYER*_TOKEN` が必要なことを手順に反映する
-- 次の中心: heartbeat / video frame handler 接続方針、auth / receive JSON Lines file sink 方針、secret store / rotation 方針
-
-## 2026-04-19 Codex update
-- [x] `shared_token_env` を使う one-shot auth round trip 手順を追加する
-- [x] `configs/examples/server.env-token.example.toml` を追加する
-- [x] env token accepted / missing / empty / mismatch の確認ポイントを整理する
-- 次の中心: heartbeat / video frame handler 接続方針、auth / receive JSON Lines file sink 方針、secret store / rotation 方針
-
-
 最終更新: 2026-04-20
 
-このファイルは「現在どこまで終わっていて、次に何をやるか」を確認するための TODO です。時系列の作業履歴は `docs/operations/session-log.md` を正とします。
+このファイルは「現在どこまで終わっていて、次に何をやるか」を確認するための TODO です。  
+時系列の作業履歴、判断理由、各回の作業メモは `docs/operations/session-log.md` を正とします。
 
 ## 運用ルール
 - このファイルを StreamSync の最新版 TODO として扱う
+- このファイルには現在位置とタスク一覧を書く
+- このファイルには時系列の作業履歴を書かない
+- 時系列の作業履歴は `docs/operations/session-log.md` を正とする
+- 同じ意味のタスクを複数箇所に重複して書かない
+- 完了タスクは `[x]` のまま残してよい
+- 未完了タスクは `[ ]` として管理する
 - 項目の状態が変わったら必ず更新する
 - 大きな仕様変更があれば関連する `docs/requirements` や `docs/architecture` も更新する
 - Codex 作業後は、この TODO と `docs/operations/session-log.md` を更新する
-- 完了済みの細かい作業履歴はここに積まず、session-log に寄せる
 
 ---
 
@@ -83,15 +28,16 @@
 - `crates/config` の server auth 設定 TOML 読み込み最小実装は完了
 - `crates/config` の `shared_token` / `shared_token_env` token reference 読み分けと inline secret debug redaction は完了
 - `crates/net-core` の inbound decode 境界、outbound packet / queue 境界、outbound queue lifecycle 境界、protocol encoder 呼び出し境界、send error / log event 分類 placeholder、UDP socket 1 datagram receive / send adapter は完了
-- `apps/server` の inbound router、UDP receive loop step、UDP socket adapter 接続、auth response PoC one-shot 起動接続、auth response PoC 起動設定接続、receive loop から packet acceptance gate への接続境界、registered packet handler handoff 境界、heartbeat handler ack handoff 境界、heartbeat state / timebase input 境界、packet acceptance rejection の drop / log handoff 境界、receive rejection JSON Lines event schema 境界、receive rejection stderr JSON Lines 最小出力、auth handler boundary、auth config input boundary、server auth decision 最小実装、`shared_token_env` secret resolver 最小実装、auth success / failure log handoff 境界、auth JSON Lines event schema 境界、auth result stderr JSON Lines 最小出力、auth flow step、認証済み送信元 registry 境界、packet acceptance gate 境界、AuthResponse response boundary、HeartbeatAck ack boundary、outbound queue handoff は完了
+- `apps/server` の inbound router、UDP receive loop step、UDP socket adapter 接続、auth response PoC one-shot 起動接続、auth response PoC 起動設定接続、receive loop から packet acceptance gate への接続境界、registered packet handler handoff 境界、heartbeat handler ack handoff 境界、heartbeat state / timebase input 境界、heartbeat timebase plan、heartbeat RTT / offset stateless calculator、heartbeat ack observation flow、heartbeat observation carrier、packet acceptance rejection の drop / log handoff 境界、receive rejection JSON Lines event schema 境界、receive rejection stderr JSON Lines 最小出力、auth handler boundary、auth config input boundary、server auth decision 最小実装、`shared_token_env` secret resolver 最小実装、auth success / failure log handoff 境界、auth JSON Lines event schema 境界、auth result stderr JSON Lines 最小出力、auth flow step、認証済み送信元 registry 境界、packet acceptance gate 境界、AuthResponse response boundary、HeartbeatAck ack boundary、outbound queue handoff は完了
 - accepted auth path で `AuthenticatedSenderRegistry` へ in-memory 登録する実処理は完了
 - `apps/client` の client 設定読み込み、AuthRequest 構築、protocol encoder、UDP one-shot send の PoC 入口は完了
 - server / client one-shot auth round trip の手動確認手順と accepted path 用 helper config は完了
 - `shared_token_env` を使う one-shot auth round trip 手順と server helper config は完了
 - accepted path の手動確認は成功し、`configs/examples/server.example.toml` と `configs/examples/client.accepted.example.toml` の組み合わせで `accepted=true`, `reason_code=Ok` を観測済み
 - `shared_token_env` accepted path の手動確認は成功し、`configs/examples/server.env-token.example.toml` と `configs/examples/client.accepted.example.toml` の組み合わせで `accepted=true`, `reason_code=Ok` を観測済み
+- `ClientStats` payload plan と heartbeat observation optional block の payload 方針は完了
 - secret store 連携、token hashing / rotation、認証済み送信元の timeout / 失効 / 再認証、実際の packet 破棄、`ClientStats` / `ServerNotice` など残り message の encode 本実装、時刻同期本体、映像受信・復号・表示、switcher UI は未実装
-- 次の中心は auth / receive JSON Lines file sink 方針、secret store / rotation 方針、ClientStats payload encode/decode 最小実装
+- 次の中心は auth / receive JSON Lines file sink 方針、secret store / rotation 方針、`ClientStats` payload encode/decode 最小実装
 
 ---
 
@@ -125,7 +71,7 @@
 2. secret store 連携や token rotation の方針を整理する
 3. `ClientStats` payload encode/decode 最小実装を行う
 4. outbound queue の実処理範囲と backpressure 方針を実装前に詰める
-5. `ClientStats` / `ServerNotice` の payload layout と decode / encode 方針を決める
+5. `ServerNotice` の payload layout と decode / encode 方針を決める
 
 ---
 
@@ -219,9 +165,10 @@
 - [x] `VideoFrame` encode 方針と最小実装範囲を整理する
 - [x] `VideoFrame` encode 本実装を行う
 - [x] fixed header encode 本実装を行う
-- [ ] `ClientStats` / `ServerNotice` など残り message の payload encode 本実装を行う
 - [x] `ClientStats` payload layout と decode / encode 方針を決める
+- [ ] `ClientStats` payload encode/decode 本実装を行う
 - [ ] `ServerNotice` の payload layout と decode / encode 方針を決める
+- [ ] `ServerNotice` の payload encode/decode 本実装を行う
 - [ ] payload fragmentation の要否と方式を決める
 - [ ] 再送制御 / 暗号化は MVP 初期で扱うか保留するか明記する
 
@@ -412,6 +359,7 @@
 - [x] receive rejection JSON Lines の最小 stderr 出力を実装する
 - [x] auth result JSON Lines writer boundary を追加する
 - [x] auth / receive JSON Lines writer 接続範囲を整理する
+- [ ] auth / receive JSON Lines の file sink 設定方針を整理する
 - [ ] ログイベント型を定義する
 - [ ] JSON Lines 形式でログ出力する
 - [ ] `run_id` / `client_id` を各ログに付与する
@@ -427,16 +375,16 @@
 ---
 
 ## PoC に必要な最小ライン
-1. `AuthResponse` encode と fixed header encode が動く
-2. UDP socket の receive / send が最小で動く
-3. client が `AuthRequest` を送り、server が `AuthResponse` を返せる
-4. client が `Heartbeat` を送り、server が RTT / offset 推定に使える時刻情報を返せる
-5. client が 1 視点の H.264 `VideoFrame` を送れる
-6. server が 1 視点の frame を受信し、破棄 / 受理を判定できる
-7. switcher が 1 視点を復号・表示できる
-8. 2 視点で targetTime による簡易同期表示を確認できる
-9. 4 視点で 2x2 表示を確認できる
-10. OBS Window Capture で switcher 表示を取り込める
+1. [x] `AuthResponse` encode と fixed header encode が動く
+2. [x] UDP socket の receive / send が最小で動く
+3. [x] client が `AuthRequest` を送り、server が `AuthResponse` を返せる
+4. [ ] client が `Heartbeat` を送り、server が RTT / offset 推定に使える時刻情報を返せる
+5. [ ] client が 1 視点の H.264 `VideoFrame` を送れる
+6. [ ] server が 1 視点の frame を受信し、破棄 / 受理を判定できる
+7. [ ] switcher が 1 視点を復号・表示できる
+8. [ ] 2 視点で targetTime による簡易同期表示を確認できる
+9. [ ] 4 視点で 2x2 表示を確認できる
+10. [ ] OBS Window Capture で switcher 表示を取り込める
 
 ---
 

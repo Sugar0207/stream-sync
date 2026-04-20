@@ -107,6 +107,20 @@
 
 ---
 
+## todo.md の運用ルール
+- `docs/operations/todo.md` は現在位置とタスク一覧を書く
+- `docs/operations/todo.md` に時系列の作業履歴を書かない
+- 時系列の作業履歴、判断理由、各回の作業メモは `docs/operations/session-log.md` にだけ残す
+- `Codex update` のような履歴見出しを `todo.md` に追加しない
+- 同じ意味のタスクを `todo.md` の複数箇所に重複して書かない
+- 完了タスクは `[x]` のまま `todo.md` に残してよい
+- 未完了タスクは `[ ]` として管理する
+- 完了済みで現在地として重要なものは `現在位置` に要約してよい
+- `直近でやること` は常に最新の優先順位に更新する
+- ロードマップには詳細タスクを重複して書かず、フェーズの状態と残りの要点だけを書く
+
+---
+
 ## Git運用ルール
 - 作業ごとに Git checkpoint を意識する
 - `cargo check` や `cargo fmt --check` が通っている場合はコミット推奨を明示する
@@ -124,6 +138,9 @@
 - 作業後に `docs/operations/todo.md` を更新する
 - 作業後に `docs/operations/session-log.md` に追記する
 - 仕様変更があれば `docs/requirements` または `docs/architecture` も更新する
+- `todo.md` は履歴置き場にせず、現在位置とタスク一覧として更新する
+- `session-log.md` に書いた履歴を `todo.md` に重複して残さない
+- 同じ意味のタスクを `todo.md` の複数箇所に重複して書かない
 - 最後に以下を報告する
   - 変更ファイル一覧
   - 実装したこと
