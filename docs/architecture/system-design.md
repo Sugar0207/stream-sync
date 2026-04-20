@@ -1757,10 +1757,37 @@ Flow:
    handoff into the generic `net-core` `OutboundPacket`.
 5. `net-core` `OutboundPacketQueueBoundary` returns an `OutboundQueueItem` as
    the handoff shape for a future queue.
-6. A later queue implementation will decide buffering, ordering, backpressure,
-   logging, and retry policy if needed.
+6. The queue admission boundary applies the bounded-capacity policy before an
+   item becomes queue-owned. Current code only returns the admission decision;
+   it does not store a collection.
 7. A later send implementation will wire-encode the `ProtocolMessage` and send
    the resulting bytes through UDP.
+
+Outbound queue MVP processing scope:
+
+- The outbound queue is a bounded in-memory handoff between server response
+  generation and the net send layer.
+- The queue may own typed `OutboundQueueItem` values and select an item for the
+  encoder.
+- The queue does not encode protocol bytes, inspect encoded payload bytes, call
+  UDP sockets, perform retry, sleep, spawn tasks, or write logs.
+- The queue must not block receive / handler work. On pressure it returns a
+  typed admission decision immediately.
+- The current implementation only models one-item lifecycle and admission
+  policy. It does not implement a FIFO collection or a continuous send loop.
+
+Backpressure / drop policy:
+
+| Item class | Messages | Full queue action | Reason |
+| --- | --- | --- | --- |
+| Control | `AuthResponse`, `HeartbeatAck`, `ServerNotice` and other control messages | Drop incoming item | Control responses are useful only if timely; blocking the receive path would hurt synchronization. |
+| Time-sensitive video | `VideoFrame` | Drop oldest queued video item, then accept incoming item | Newer frames are more useful than stale frames for live sync. |
+| Telemetry | `ClientStats` if used on an outbound path later | Drop incoming item | Telemetry can be sampled; it must not compete with control or video delivery. |
+
+The initial capacity placeholder is `max_items = 64`. This is a policy marker,
+not a tuned production value. Future implementation may split queues per
+destination or per message class, but the MVP rule remains bounded and
+non-blocking.
 
 Responsibility split:
 
@@ -1774,6 +1801,9 @@ Responsibility split:
   - Receives `ProtocolMessage` plus destination information as `OutboundPacket`.
   - Provides a queue handoff item without implementing a real queue.
   - Does not encode wire bytes or call UDP sockets in this step.
+- outbound queue
+  - Owns admission, bounded capacity, ordering, and item selection.
+  - Does not own protocol encode, socket send, retry execution, or log writing.
 - socket send layer
   - Future owner of byte encode result transmission over UDP.
   - Will handle send errors and runtime/socket details.
@@ -1785,6 +1815,9 @@ handoff placeholders for `AuthResponse` and `HeartbeatAck`. These are carrier
 and handoff types only. One encoded datagram can now be sent through
 `UdpSocketIoBoundary`; queue implementation, async runtime, retry,
 fragmentation, encryption, and full send orchestration remain unimplemented.
+Backpressure policy is represented by `OutboundQueueCapacityPolicy`,
+`OutboundQueueAdmissionPolicyBoundary`, `OutboundQueueAdmissionDecision`, and
+the server-side `ServerOutboundQueueBoundary::evaluate_admission` helper.
 
 ---
 
@@ -1873,7 +1906,8 @@ Current code reflects the one-item lifecycle with
 `net-core::OutboundQueueSendHandoff`, and
 `net-core::OutboundQueueLifecycleBoundary`. These types do not implement
 buffering, ordering, async wakeups, retry, encode, UDP socket send, or
-backpressure.
+backpressure execution. Admission/backpressure decisions are named separately
+by `OutboundQueueAdmissionPolicyBoundary`.
 
 AuthResponse-specific encode boundary:
 

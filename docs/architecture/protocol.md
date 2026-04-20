@@ -2095,7 +2095,8 @@ Flow:
    into `net-core::OutboundPacket`.
 5. `net-core::OutboundPacketQueueBoundary` returns an
    `OutboundQueueItem` for a future queue implementation.
-6. Future queue code may buffer or schedule the item.
+6. The queue admission boundary checks bounded-capacity policy and returns an
+   immediate accept / drop / replace decision.
 7. Future encode code will convert the `ProtocolMessage` into fixed header plus
    payload bytes.
 8. Future socket code will send those bytes through UDP.
@@ -2131,6 +2132,22 @@ the future queue holds that item, selects it for send, and hands it to the net
 send layer. Protocol encode happens after this queue handoff in the net send
 layer. Encode result handling and socket send result handling may update future
 queue state, but retry execution remains a later task.
+
+Outbound queue backpressure policy is bounded and non-blocking:
+
+- Current placeholder capacity is `max_items = 64`.
+- If capacity remains, the item is accepted.
+- If full, control items such as `AuthResponse`, `HeartbeatAck`, and
+  `ServerNotice` drop the incoming item instead of blocking.
+- If full, time-sensitive `VideoFrame` items prefer `DropOldestThenAccept`
+  because stale video is worse than a fresh frame for live sync.
+- If full, telemetry items such as a future outbound `ClientStats` path drop the
+  incoming item.
+- The queue decision happens before protocol encode. Encoded byte length and
+  socket errors are net send / socket send concerns, not queue admission
+  concerns.
+- The current code returns typed policy decisions only. It does not evict real
+  items, execute retry, or write logs.
 
 Send error / log event policy is owned by `net-core` after protocol encode.
 `protocol` returns encode errors, while `net-core` keeps destination metadata

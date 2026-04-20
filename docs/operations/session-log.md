@@ -5,6 +5,54 @@
 - Codex
 
 ### 今回の作業
+- outbound queue の実処理範囲を、bounded in-memory handoff / admission policy / one-item lifecycle までに限定して docs に明記した。
+- backpressure 方針として、bounded capacity、non-blocking admission、control drop-incoming、time-sensitive video drop-oldest-then-accept、telemetry drop-incoming を整理した。
+- `crates/net-core` に queue admission / capacity / drop policy の placeholder 型を追加した。
+- `apps/server` の `ServerOutboundQueueBoundary` から admission policy を評価できる最小 helper を追加した。
+
+### 変更ファイル
+- `crates/net-core/src/lib.rs`
+- `apps/server/src/lib.rs`
+- `docs/architecture/system-design.md`
+- `docs/architecture/protocol.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### 決定事項
+- outbound queue は protocol encode 前の typed `OutboundQueueItem` を扱う。
+- protocol encode は net send layer の責務であり、queue は `protocol::MessageEncoder` を直接呼ばない。
+- UDP socket send は socket send layer の責務であり、queue は `send_to` を呼ばない。
+- queue pressure は受信 / handler path を block せず、即時の admission decision として扱う。
+- MVP 初期 placeholder capacity は `max_items = 64` とし、実運用値のチューニングは future queue 実装時に再確認する。
+
+### 未実装 / 保留
+- 実キュー collection / FIFO ordering / per-destination queue
+- packet 送信継続 loop
+- retry 実行
+- send error log output
+- queue admission decision から実際に item を evict / drop する処理
+
+### 次にやる候補
+- auth / receive JSON Lines file sink 方針を整理する
+- secret store / token rotation 方針を整理する
+- `ServerNotice` payload layout と decode / encode 方針を決める
+
+### TODO更新
+- 現在位置に outbound queue の実処理範囲と backpressure / capacity 方針の整理完了を反映した。
+- 直近でやることから今回完了した outbound queue 方針整理を外し、`ServerNotice` payload 方針を次候補に上げた。
+- 仕様 / 設計と net-core / server 境界の backpressure / capacity 方針項目を完了にした。
+
+### メモ
+- `cargo fmt --check` と `cargo check --workspace` は今回の変更後に成功した。
+- 追加確認として `cargo test -p stream-sync-net-core outbound_queue_admission` と `cargo test -p stream-sync-server outbound_queue_boundary_exposes_capacity_policy_for_handoff_items` も成功した。
+
+---
+
+## 2026-04-21
+### 種別
+- Codex
+
+### 今回の作業
 - `ClientStats` receive route / handler 接続方針を docs に明記した。
 - `apps/server` に `ClientStats` route / gate / registered handler bridge を追加した。
 - decoded `ClientStats` の optional heartbeat observation を server timebase 入力形へ変換する最小 boundary を追加した。

@@ -158,6 +158,114 @@ pub struct OutboundQueueSendHandoff {
     pub item: OutboundQueueItem,
 }
 
+/// Current MVP queue sizing policy.
+///
+/// This is an admission-policy placeholder, not a real queue. The future queue
+/// should stay bounded and return a decision immediately instead of blocking a
+/// receive or handler path.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct OutboundQueueCapacityPolicy {
+    pub max_items: usize,
+    pub control_when_full: OutboundQueueBackpressureAction,
+    pub video_when_full: OutboundQueueBackpressureAction,
+    pub telemetry_when_full: OutboundQueueBackpressureAction,
+}
+
+impl Default for OutboundQueueCapacityPolicy {
+    fn default() -> Self {
+        Self {
+            max_items: 64,
+            control_when_full: OutboundQueueBackpressureAction::DropIncoming,
+            video_when_full: OutboundQueueBackpressureAction::DropOldestThenAccept,
+            telemetry_when_full: OutboundQueueBackpressureAction::DropIncoming,
+        }
+    }
+}
+
+/// Queue policy class derived from the outbound message type.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum OutboundQueueItemClass {
+    Control,
+    TimeSensitiveVideo,
+    Telemetry,
+}
+
+/// Backpressure action selected when the future bounded queue is full.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum OutboundQueueBackpressureAction {
+    Accept,
+    DropIncoming,
+    DropOldestThenAccept,
+}
+
+/// Reason attached to a queue admission rejection or replacement decision.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum OutboundQueueDropReason {
+    CapacityReached,
+}
+
+/// Result of applying queue admission policy to one item.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum OutboundQueueAdmissionDecision {
+    Accepted {
+        item_class: OutboundQueueItemClass,
+    },
+    DropIncoming {
+        item_class: OutboundQueueItemClass,
+        reason: OutboundQueueDropReason,
+    },
+    DropOldestThenAccept {
+        item_class: OutboundQueueItemClass,
+        reason: OutboundQueueDropReason,
+    },
+}
+
+/// Minimal admission-policy boundary for the future outbound queue.
+///
+/// It only decides what should happen for a single candidate item at a given
+/// queue length. It does not mutate a collection, choose a concrete item to
+/// evict, encode bytes, send sockets, sleep, or retry.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct OutboundQueueAdmissionPolicyBoundary;
+
+impl OutboundQueueAdmissionPolicyBoundary {
+    pub fn evaluate(
+        &self,
+        policy: OutboundQueueCapacityPolicy,
+        current_len: usize,
+        item: &OutboundQueueItem,
+    ) -> OutboundQueueAdmissionDecision {
+        let item_class = outbound_queue_item_class(&item.packet.message);
+        if current_len < policy.max_items {
+            return OutboundQueueAdmissionDecision::Accepted { item_class };
+        }
+
+        let action = match item_class {
+            OutboundQueueItemClass::Control => policy.control_when_full,
+            OutboundQueueItemClass::TimeSensitiveVideo => policy.video_when_full,
+            OutboundQueueItemClass::Telemetry => policy.telemetry_when_full,
+        };
+
+        match action {
+            OutboundQueueBackpressureAction::Accept => {
+                OutboundQueueAdmissionDecision::Accepted { item_class }
+            }
+            OutboundQueueBackpressureAction::DropIncoming => {
+                OutboundQueueAdmissionDecision::DropIncoming {
+                    item_class,
+                    reason: OutboundQueueDropReason::CapacityReached,
+                }
+            }
+            OutboundQueueBackpressureAction::DropOldestThenAccept => {
+                OutboundQueueAdmissionDecision::DropOldestThenAccept {
+                    item_class,
+                    reason: OutboundQueueDropReason::CapacityReached,
+                }
+            }
+        }
+    }
+}
+
 /// Minimal boundary between app/server response code and a future send queue.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
 pub struct OutboundPacketQueueBoundary;
@@ -410,6 +518,18 @@ fn outbound_message_ids(message: &ProtocolMessage) -> (Option<RunId>, Option<Cli
     }
 }
 
+fn outbound_queue_item_class(message: &ProtocolMessage) -> OutboundQueueItemClass {
+    match message {
+        ProtocolMessage::VideoFrame(_) => OutboundQueueItemClass::TimeSensitiveVideo,
+        ProtocolMessage::ClientStats(_) => OutboundQueueItemClass::Telemetry,
+        ProtocolMessage::AuthRequest(_)
+        | ProtocolMessage::AuthResponse(_)
+        | ProtocolMessage::Heartbeat(_)
+        | ProtocolMessage::HeartbeatAck(_)
+        | ProtocolMessage::ServerNotice(_) => OutboundQueueItemClass::Control,
+    }
+}
+
 /// Error returned while bridging raw packet bytes into protocol messages.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum NetDecodeError {
@@ -456,7 +576,7 @@ fn protocol_error(source: PacketSource, error: ProtocolError) -> NetDecodeError 
 mod tests {
     use super::*;
     use stream_sync_protocol::{
-        ClientId, HeartbeatAck, MessageType, ProtocolVersion, RunId, TimestampMicros,
+        ClientId, Codec, HeartbeatAck, MessageType, ProtocolVersion, RunId, TimestampMicros,
         FIXED_HEADER_LEN, HEADER_FLAGS_OFFSET, HEADER_LENGTH_OFFSET, HEADER_MESSAGE_TYPE_OFFSET,
         HEADER_PAYLOAD_LENGTH_OFFSET, HEADER_PROTOCOL_VERSION_OFFSET, HEADER_RESERVED_OFFSET,
     };
@@ -597,6 +717,70 @@ mod tests {
             OutboundQueueItemState::Sent
         );
         assert_eq!(lifecycle.mark_dropped(), OutboundQueueItemState::Dropped);
+    }
+
+    #[test]
+    fn outbound_queue_admission_accepts_when_capacity_remains() {
+        let destination: PacketDestination = packet_source().into();
+        let queue_boundary = OutboundPacketQueueBoundary;
+        let admission = OutboundQueueAdmissionPolicyBoundary;
+        let item = queue_boundary.handoff(OutboundPacket {
+            destination,
+            message: heartbeat_ack_message(),
+        });
+
+        let decision = admission.evaluate(OutboundQueueCapacityPolicy::default(), 0, &item);
+
+        assert_eq!(
+            decision,
+            OutboundQueueAdmissionDecision::Accepted {
+                item_class: OutboundQueueItemClass::Control
+            }
+        );
+    }
+
+    #[test]
+    fn outbound_queue_admission_drops_incoming_control_when_full() {
+        let destination: PacketDestination = packet_source().into();
+        let queue_boundary = OutboundPacketQueueBoundary;
+        let admission = OutboundQueueAdmissionPolicyBoundary;
+        let policy = OutboundQueueCapacityPolicy::default();
+        let item = queue_boundary.handoff(OutboundPacket {
+            destination,
+            message: heartbeat_ack_message(),
+        });
+
+        let decision = admission.evaluate(policy, policy.max_items, &item);
+
+        assert_eq!(
+            decision,
+            OutboundQueueAdmissionDecision::DropIncoming {
+                item_class: OutboundQueueItemClass::Control,
+                reason: OutboundQueueDropReason::CapacityReached
+            }
+        );
+    }
+
+    #[test]
+    fn outbound_queue_admission_replaces_oldest_video_when_full() {
+        let destination: PacketDestination = packet_source().into();
+        let queue_boundary = OutboundPacketQueueBoundary;
+        let admission = OutboundQueueAdmissionPolicyBoundary;
+        let policy = OutboundQueueCapacityPolicy::default();
+        let item = queue_boundary.handoff(OutboundPacket {
+            destination,
+            message: video_frame_message(),
+        });
+
+        let decision = admission.evaluate(policy, policy.max_items, &item);
+
+        assert_eq!(
+            decision,
+            OutboundQueueAdmissionDecision::DropOldestThenAccept {
+                item_class: OutboundQueueItemClass::TimeSensitiveVideo,
+                reason: OutboundQueueDropReason::CapacityReached
+            }
+        );
     }
 
     #[test]
@@ -791,6 +975,26 @@ mod tests {
             echoed_sent_at: TimestampMicros(1_000_000),
             server_received_at: TimestampMicros(1_000_100),
             server_sent_at: TimestampMicros(1_000_200),
+        })
+    }
+
+    fn video_frame_message() -> ProtocolMessage {
+        ProtocolMessage::VideoFrame(stream_sync_protocol::VideoFrame {
+            message_type: MessageType::VideoFrame,
+            protocol_version: ProtocolVersion(2),
+            client_id: ClientId("client-1".to_string()),
+            run_id: RunId("run-1".to_string()),
+            frame_id: 1,
+            capture_timestamp: TimestampMicros(1_000_000),
+            send_timestamp: TimestampMicros(1_000_050),
+            is_keyframe: false,
+            metadata_reserved: [0; 3],
+            width: 1280,
+            height: 720,
+            fps_nominal: 30,
+            codec: Codec::H264,
+            payload_size: 3,
+            payload: vec![0xaa, 0xbb, 0xcc],
         })
     }
 

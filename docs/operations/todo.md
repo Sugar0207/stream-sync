@@ -38,7 +38,8 @@
 - `ClientStats` payload encode/decode と heartbeat observation optional block の最小 wire 変換は完了
 - secret store 連携、token hashing / rotation、認証済み送信元の timeout / 失効 / 再認証、実際の packet 破棄、`ServerNotice` payload encode/decode、時刻同期本体、映像受信・復号・表示、switcher UI は未実装
 - `ClientStats` receive route / gate / registered handler bridge は完了。継続送信 loop、metrics state commit、RTT / offset state commit は未実装
-- 次の中心は auth / receive JSON Lines file sink 方針、secret store / rotation 方針、outbound queue の実処理範囲
+- outbound queue の実処理範囲と backpressure / capacity 方針は整理済み。実キュー、送信継続 loop、retry 実行は未実装
+- 次の中心は auth / receive JSON Lines file sink 方針、secret store / rotation 方針、`ServerNotice` payload 方針
 
 ---
 
@@ -70,8 +71,8 @@
 ## 直近でやること
 1. auth / receive JSON Lines の file sink 設定方針を整理する
 2. secret store 連携や token rotation の方針を整理する
-3. outbound queue の実処理範囲と backpressure 方針を実装前に詰める
-4. `ServerNotice` の payload layout と decode / encode 方針を決める
+3. `ServerNotice` の payload layout と decode / encode 方針を決める
+4. outbound queue の実キュー実装範囲を、送信継続 loop 着手前に再確認する
 
 ---
 
@@ -113,6 +114,7 @@
 - [x] AuthResponse 生成 / 送信境界を整理する
 - [x] outbound packet / queue 境界を整理する
 - [x] outbound queue の最小実処理方針を整理する
+- [x] outbound queue の backpressure / capacity 方針を整理する
 - [x] net send layer / protocol encoder 境界を整理する
 - [x] `HeartbeatAck` encode 入力境界を整理する
 - [x] UDP socket 送信前の send error / log event 方針を整理する
@@ -210,7 +212,7 @@
 - [x] receive rejection の最小 stderr JSON Lines 出力を実装する
 - [ ] receive loop の継続運用向けログ出力を実装する
 - [ ] outbound queue の実処理を実装する
-- [ ] outbound queue の backpressure / capacity 方針を決める
+- [x] outbound queue の backpressure / capacity 方針を決める
 - [x] send error の分類とログ方針を整理する
 - [ ] send error ログ出力を実装する
 - [ ] async runtime 導入方針を決める

@@ -10,8 +10,9 @@ use stream_sync_config::{
 use stream_sync_net_core::{
     DecodedInboundPacket, EncodedOutboundPacket, InboundPacket, InboundPacketDecoder,
     NetDecodeError, NetEncodeError, OutboundPacket, OutboundPacketEncoderBoundary,
-    OutboundPacketQueueBoundary, OutboundQueueItem, PacketSource, UdpSocketIoBoundary,
-    DEFAULT_UDP_PACKET_BUFFER_LEN,
+    OutboundPacketQueueBoundary, OutboundQueueAdmissionDecision,
+    OutboundQueueAdmissionPolicyBoundary, OutboundQueueCapacityPolicy, OutboundQueueItem,
+    PacketSource, UdpSocketIoBoundary, DEFAULT_UDP_PACKET_BUFFER_LEN,
 };
 use stream_sync_protocol::{
     AppVersion, AuthRequest, AuthResponse, AuthResponseReasonCode, ClientId, ClientStats,
@@ -2758,6 +2759,8 @@ impl ServerHeartbeatHandlerBoundary {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
 pub struct ServerOutboundQueueBoundary {
     queue: OutboundPacketQueueBoundary,
+    admission: OutboundQueueAdmissionPolicyBoundary,
+    capacity_policy: OutboundQueueCapacityPolicy,
 }
 
 impl ServerOutboundQueueBoundary {
@@ -2767,6 +2770,19 @@ impl ServerOutboundQueueBoundary {
 
     pub fn handoff_heartbeat_ack(&self, ack: ServerOutboundHeartbeatAck) -> OutboundQueueItem {
         self.queue.handoff(ack.into_outbound_packet())
+    }
+
+    pub fn evaluate_admission(
+        &self,
+        current_len: usize,
+        item: &OutboundQueueItem,
+    ) -> OutboundQueueAdmissionDecision {
+        self.admission
+            .evaluate(self.capacity_policy, current_len, item)
+    }
+
+    pub const fn capacity_policy(&self) -> OutboundQueueCapacityPolicy {
+        self.capacity_policy
     }
 }
 
@@ -2798,6 +2814,7 @@ mod tests {
     use super::*;
     use std::net::{SocketAddr, UdpSocket};
     use stream_sync_config::{AllowedClientConfig, SharedTokenConfig};
+    use stream_sync_net_core::{OutboundQueueDropReason, OutboundQueueItemClass};
     use stream_sync_protocol::{
         decode_fixed_header, encode_auth_response_payload, AppVersion, ClientId, Codec,
         ProtocolVersion, RunId, TimestampMicros, FIXED_HEADER_LEN, HEADER_FLAGS_OFFSET,
@@ -4531,6 +4548,34 @@ shared_token = "secret"
         };
         assert_eq!(ack.message_type, MessageType::HeartbeatAck);
         assert_eq!(ack.echoed_sent_at, TimestampMicros(1_000_000));
+    }
+
+    #[test]
+    fn outbound_queue_boundary_exposes_capacity_policy_for_handoff_items() {
+        let source = packet_source();
+        let ack_boundary = ServerHeartbeatAckBoundary;
+        let queue_boundary = ServerOutboundQueueBoundary::default();
+        let outbound = ack_boundary.build_for_send(ServerHeartbeatAckInput {
+            destination: source,
+            protocol_version: ProtocolVersion(2),
+            client_id: ClientId("client-1".to_string()),
+            run_id: RunId("run-1".to_string()),
+            echoed_sent_at: TimestampMicros(1_000_000),
+            server_received_at: TimestampMicros(1_000_100),
+            server_sent_at: TimestampMicros(1_000_200),
+        });
+        let queue_item = queue_boundary.handoff_heartbeat_ack(outbound);
+        let policy = queue_boundary.capacity_policy();
+
+        let decision = queue_boundary.evaluate_admission(policy.max_items, &queue_item);
+
+        assert_eq!(
+            decision,
+            OutboundQueueAdmissionDecision::DropIncoming {
+                item_class: OutboundQueueItemClass::Control,
+                reason: OutboundQueueDropReason::CapacityReached
+            }
+        );
     }
 
     #[test]
