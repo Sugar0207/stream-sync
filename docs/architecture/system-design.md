@@ -1989,12 +1989,11 @@ Responsibility split:
 Current code reflects this with `net-core::OutboundEncodeRequest`,
 `net-core::EncodedOutboundPacket`, `net-core::OutboundPacketEncoderBoundary`,
 `net-core::NetEncodeError`, and
-`protocol::ProtocolMessageEncoderBoundary`. The protocol encoder placeholder
-currently encodes `AuthRequest`, `AuthResponse`, `HeartbeatAck`, `VideoFrame`,
-and `ClientStats`, and returns `EncodeNotImplemented` for `ServerNotice` until
-its payload encoder is implemented. `UdpSocketIoBoundary` can send an already
-encoded packet; queue processing and continuous send orchestration remain
-unimplemented.
+`protocol::ProtocolMessageEncoderBoundary`. The protocol encoder currently
+encodes `AuthRequest`, `AuthResponse`, `HeartbeatAck`, `VideoFrame`,
+`ClientStats`, and `ServerNotice`; remaining unsupported messages return
+`EncodeNotImplemented`. `UdpSocketIoBoundary` can send an already encoded
+packet; queue processing and continuous send orchestration remain unimplemented.
 
 ---
 
@@ -2015,10 +2014,12 @@ Payload layout policy:
 Responsibility split:
 
 - `protocol`
-  - Owns `ServerNotice`, `NoticeType`, `NoticeType::wire_code`, and the planned
-    payload layout.
-  - Current code exposes `ServerNoticePayloadPlanBoundary` only.
-  - Does not yet encode or decode `ServerNotice` payload bytes.
+  - Owns `ServerNotice`, `NoticeType`, `NoticeType::wire_code`, payload layout,
+    and minimal payload encode/decode.
+  - Exposes `ServerNoticePayloadPlanBoundary`,
+    `encode_server_notice_payload`, `decode_server_notice_payload`,
+    `ServerNoticePayloadDecoder`, and `ProtocolMessageEncoderBoundary`
+    support.
 - server notice boundary
   - Builds typed `ProtocolMessage::ServerNotice` plus destination metadata from
     already-decided notice fields.
@@ -2026,15 +2027,17 @@ Responsibility split:
 - outbound queue / net send
   - Receives the typed notice through the same `OutboundQueueItem` handoff as
     other outbound control messages.
-  - Continues to get `EncodeNotImplemented` until protocol encode is added.
+  - May encode the typed notice through the protocol encoder once a send step
+    calls the net send layer.
 - notice policy / handler
   - Future owner of deciding when to send disconnect, protocol error, auth
     expiry, warning, or shutdown notices.
 
-Current code reflects this with `ServerNoticePayloadPlanBoundary` in
-`crates/protocol` and `ServerNoticeBoundary` / `ServerOutboundNotice` in
-`apps/server`. Actual `ServerNotice` encode/decode, notice-trigger policy,
-continuous send loop, socket send, and log output remain future work.
+Current code reflects this with `ServerNoticePayloadPlanBoundary`, minimal
+payload encode/decode, decode dispatch, and encoder-boundary support in
+`crates/protocol`, plus `ServerNoticeBoundary` / `ServerOutboundNotice` in
+`apps/server`. Notice-trigger policy, continuous send loop, socket send, and log
+output remain future work.
 
 ---
 

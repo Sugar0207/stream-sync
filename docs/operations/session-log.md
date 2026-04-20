@@ -5,6 +5,52 @@
 - Codex
 
 ### 今回の作業
+- `ServerNotice` payload encode/decode の最小実装範囲を確認し、`crates/protocol` に実装した。
+- `ProtocolMessageEncoderBoundary` と `decode_payload_by_message_type` の `ServerNotice` 対応を追加した。
+- protocol / server / outbound notice handoff の責務分離を docs に反映した。
+
+### 変更ファイル
+- `crates/protocol/src/lib.rs`
+- `docs/architecture/system-design.md`
+- `docs/architecture/protocol.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### 決定事項
+- `ServerNotice` payload の最小実装範囲は `run_id` string、`notice_type` u16 little-endian、`message` string の encode/decode までとする。
+- unknown `notice_type` は `ProtocolError::UnsupportedNoticeType` として扱う。
+- `protocol` は wire 変換と decoder dispatch / encoder boundary までを持つ。
+- `server` は typed outbound notice handoff までを持ち、通知発火 policy、継続送信 loop、UDP socket send、ログ出力は持たない。
+
+### 未実装 / 保留
+- notice trigger policy
+- continuous send loop / UDP socket send 接続
+- notice log output
+- `ServerNotice` をどの server state transition で発火するかの詳細化
+
+### 次にやる候補
+- auth / receive JSON Lines file sink 方針を整理する
+- secret store / token rotation 方針を整理する
+- `ServerNotice` notice trigger policy の実装範囲を整理する
+- outbound queue の実キュー実装範囲を、送信継続 loop 着手前に再確認する
+
+### TODO更新
+- 現在位置から `ServerNotice` payload encode/decode 本体の未実装記述を外した。
+- 直近でやることを `ServerNotice` payload encode/decode 確認から notice trigger policy の実装範囲整理へ更新した。
+- protocol / wire format に `ServerNotice` payload encode/decode と encoder / decode dispatch 対応の完了を反映した。
+
+### メモ
+- `cargo fmt --check` は成功した。
+- `cargo check --workspace` は成功した。
+- 追加確認として `cargo test -p stream-sync-protocol server_notice` と `cargo test -p stream-sync-server server_notice` も成功した。
+
+---
+
+## 2026-04-21
+### 種別
+- Codex
+
+### 今回の作業
 - `ServerNotice` payload layout と decode / encode 方針を docs に明記した。
 - `ServerNotice` payload は fixed header + `run_id` string + `notice_type` u16 + `message` string とする方針にした。
 - `crates/protocol` に `SERVER_NOTICE_TYPE_LEN`, `NoticeType::wire_code`, `ServerNoticePayloadPlanBoundary` を追加した。

@@ -198,7 +198,7 @@ encode 入口は byte buffer 作成までに限定する。送信先 address、r
 - `MessageEncoder`
 - `decode_payload_by_message_type`
 
-`FixedHeaderCodec` と `decode_fixed_header` は、16 byte fixed header の byte parsing と payload slice の切り出しだけを行う。`decode_payload_by_message_type` は fixed header の `message_type` に応じて payload decoder を選ぶ dispatch helper とする。`AuthRequestPayloadDecoder` / `decode_auth_request_payload` は `AuthRequest` payload のみを、`HeartbeatPayloadDecoder` / `decode_heartbeat_payload` は `Heartbeat` payload のみを、`VideoFramePayloadDecoder` / `decode_video_frame_payload` は `VideoFrame` payload のみを、`ClientStatsPayloadDecoder` / `decode_client_stats_payload` は `ClientStats` payload のみを型へ変換する。`MessageEncoder` は境界名と責務を固定するための入口であり、現時点では `AuthRequest`, `AuthResponse`, `HeartbeatAck`, `VideoFrame`, `ClientStats` の fixed header + payload bytes を書く。その他 message は `EncodeNotImplemented` を返す。
+`FixedHeaderCodec` と `decode_fixed_header` は、16 byte fixed header の byte parsing と payload slice の切り出しだけを行う。`decode_payload_by_message_type` は fixed header の `message_type` に応じて payload decoder を選ぶ dispatch helper とする。`AuthRequestPayloadDecoder` / `decode_auth_request_payload` は `AuthRequest` payload のみを、`HeartbeatPayloadDecoder` / `decode_heartbeat_payload` は `Heartbeat` payload のみを、`VideoFramePayloadDecoder` / `decode_video_frame_payload` は `VideoFrame` payload のみを、`ClientStatsPayloadDecoder` / `decode_client_stats_payload` は `ClientStats` payload のみを、`ServerNoticePayloadDecoder` / `decode_server_notice_payload` は `ServerNotice` payload のみを型へ変換する。`MessageEncoder` は境界名と責務を固定するための入口であり、現時点では `AuthRequest`, `AuthResponse`, `HeartbeatAck`, `VideoFrame`, `ClientStats`, `ServerNotice` の fixed header + payload bytes を書く。その他 message は `EncodeNotImplemented` を返す。
 
 ### net-core call boundary
 
@@ -989,12 +989,16 @@ Encode / decode 方針:
   - unknown `notice_type` は protocol error として扱う。
   - payload に余剰 byte があれば `InvalidPayloadLength` とする。
 - 現時点
-  - `ServerNoticePayloadPlanBoundary` は上記 layout の長さ検証用 placeholder
-    のみを提供する。
-  - `ProtocolMessageEncoderBoundary` はまだ `ServerNotice` を encode しない。
-  - `decode_payload_by_message_type` はまだ `ServerNotice` を decode しない。
+  - `ServerNoticePayloadPlanBoundary` は上記 layout の固定部分長と最小
+    payload 長を明示する。
+  - `encode_server_notice_payload` / `decode_server_notice_payload` は
+    `run_id`, `notice_type`, `message` の最小 payload 変換だけを行う。
+  - `ServerNoticePayloadDecoder` は `decode_payload_by_message_type` から呼ばれ、
+    `ProtocolMessage::ServerNotice` を返す。
+  - `ProtocolMessageEncoderBoundary` は `ProtocolMessage::ServerNotice` を
+    fixed header + payload bytes へ変換する。
   - server 側は typed outbound notice handoff だけを持ち、通知発火 policy、
-    encode、UDP send、ログ出力は別タスクに残す。
+    継続送信 loop、UDP socket send、ログ出力は別タスクに残す。
 
 ---
 
@@ -2215,8 +2219,9 @@ socket adapter.
 Outbound messages remain typed until the net send layer explicitly calls the
 protocol encoder boundary. This boundary is the point where a
 `ProtocolMessage` becomes fixed header plus payload bytes. The current code
-encodes `AuthRequest`, `AuthResponse`, `HeartbeatAck`, `VideoFrame`, and
-`ClientStats`; `ServerNotice` still returns `EncodeNotImplemented`.
+encodes `AuthRequest`, `AuthResponse`, `HeartbeatAck`, `VideoFrame`,
+`ClientStats`, and `ServerNotice`. Remaining unsupported messages still return
+`EncodeNotImplemented`.
 
 Send path:
 
@@ -2267,9 +2272,9 @@ Current code:
 - `crates/protocol::ProtocolMessageEncoderBoundary` implements
   `MessageEncoder`, encodes `ProtocolMessage::AuthRequest`,
   `ProtocolMessage::AuthResponse`, `ProtocolMessage::HeartbeatAck`,
-  `ProtocolMessage::VideoFrame`, and `ProtocolMessage::ClientStats`, and
-  returns `ProtocolError::EncodeNotImplemented` for `ServerNotice` and other
-  unsupported message types.
+  `ProtocolMessage::VideoFrame`, `ProtocolMessage::ClientStats`, and
+  `ProtocolMessage::ServerNotice`, and returns
+  `ProtocolError::EncodeNotImplemented` for other unsupported message types.
 - `crates/net-core::OutboundPacketEncoderBoundary` prepares encode requests and
   maps protocol encode errors while keeping the destination attached.
 - `crates/net-core::OutboundQueueLifecycleBoundary` defines the one-item queue

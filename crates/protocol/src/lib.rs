@@ -436,6 +436,43 @@ pub fn decode_client_stats_payload(
     })
 }
 
+/// Decode a `ServerNotice` payload after fixed header and protocol version checks.
+///
+/// This parses only the lightweight notice fields. It does not decide when a
+/// notice should be sent, update server state, write logs, or send sockets.
+pub fn decode_server_notice_payload(
+    header: FixedHeader,
+    payload: &[u8],
+) -> Result<ServerNotice, ProtocolError> {
+    if header.message_type != MessageType::ServerNotice {
+        return Err(ProtocolError::UnexpectedMessageType {
+            expected: MessageType::ServerNotice,
+            actual: header.message_type,
+        });
+    }
+
+    if payload.len() != header.payload_length as usize {
+        return Err(ProtocolError::InvalidPayloadLength {
+            expected: header.payload_length,
+            actual: payload.len(),
+        });
+    }
+
+    let mut reader = PayloadReader::new(payload);
+    let run_id = RunId(reader.read_string()?);
+    let notice_type = NoticeType::try_from(reader.read_u16()?)?;
+    let message = reader.read_string()?;
+    reader.finish()?;
+
+    Ok(ServerNotice {
+        message_type: MessageType::ServerNotice,
+        protocol_version: header.protocol_version,
+        run_id,
+        notice_type,
+        message,
+    })
+}
+
 /// Decode a payload by dispatching on the fixed header `message_type`.
 ///
 /// The caller is expected to run fixed header decode and protocol version
@@ -456,6 +493,9 @@ pub fn decode_payload_by_message_type(
         }
         MessageType::ClientStats => {
             ClientStatsPayloadDecoder.decode_payload(context, header, payload)
+        }
+        MessageType::ServerNotice => {
+            ServerNoticePayloadDecoder.decode_payload(context, header, payload)
         }
         message_type => Err(ProtocolError::PayloadDecodeNotImplemented(message_type)),
     }
@@ -810,6 +850,34 @@ pub fn encode_client_stats(
     Ok(())
 }
 
+/// Encode one `ServerNotice` packet as fixed header plus payload bytes.
+///
+/// The payload follows the documented order: `run_id`, `notice_type`, and
+/// `message`. This function does not decide notice policy, log, queue, retry,
+/// or send the bytes.
+pub fn encode_server_notice(
+    context: EncodeContext,
+    notice: &ServerNotice,
+    output: &mut Vec<u8>,
+) -> Result<(), ProtocolError> {
+    let mut payload = Vec::new();
+    encode_server_notice_payload(notice, &mut payload)?;
+    let payload_length =
+        u32::try_from(payload.len()).map_err(|_| ProtocolError::InvalidPayloadLength {
+            expected: u32::MAX,
+            actual: payload.len(),
+        })?;
+
+    encode_fixed_header(
+        MessageType::ServerNotice,
+        context.protocol_version,
+        payload_length,
+        output,
+    );
+    output.extend_from_slice(&payload);
+    Ok(())
+}
+
 /// Encode only the `AuthRequest` payload body.
 pub fn encode_auth_request_payload(
     request: &AuthRequest,
@@ -914,6 +982,17 @@ pub fn encode_client_stats_payload(
     Ok(())
 }
 
+/// Encode only the `ServerNotice` payload body.
+pub fn encode_server_notice_payload(
+    notice: &ServerNotice,
+    output: &mut Vec<u8>,
+) -> Result<(), ProtocolError> {
+    write_string(output, &notice.run_id.0)?;
+    output.extend_from_slice(&notice.notice_type.wire_code().to_le_bytes());
+    write_string(output, &notice.message)?;
+    Ok(())
+}
+
 /// Decoded protocol message variants.
 ///
 /// This enum defines the message dispatch boundary. Constructing these variants
@@ -965,6 +1044,9 @@ pub enum ProtocolError {
     },
     InvalidUtf8String,
     UnsupportedCodec {
+        actual: u16,
+    },
+    UnsupportedNoticeType {
         actual: u16,
     },
     UnknownMessageType(u16),
@@ -1067,6 +1149,21 @@ impl PayloadDecoder for ClientStatsPayloadDecoder {
     }
 }
 
+/// Minimal payload decoder for `ServerNotice`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct ServerNoticePayloadDecoder;
+
+impl PayloadDecoder for ServerNoticePayloadDecoder {
+    fn decode_payload(
+        &self,
+        _context: DecodeContext,
+        header: FixedHeader,
+        payload: &[u8],
+    ) -> Result<ProtocolMessage, ProtocolError> {
+        decode_server_notice_payload(header, payload).map(ProtocolMessage::ServerNotice)
+    }
+}
+
 /// Future entry point for message encoding into one packet buffer.
 pub trait MessageEncoder {
     fn encode_message(
@@ -1100,6 +1197,7 @@ impl MessageEncoder for ProtocolMessageEncoderBoundary {
             ProtocolMessage::HeartbeatAck(ack) => encode_heartbeat_ack(context, ack, output),
             ProtocolMessage::VideoFrame(frame) => encode_video_frame(context, frame, output),
             ProtocolMessage::ClientStats(stats) => encode_client_stats(context, stats, output),
+            ProtocolMessage::ServerNotice(notice) => encode_server_notice(context, notice, output),
             message => Err(ProtocolError::EncodeNotImplemented(message.message_type())),
         }
     }
@@ -1420,6 +1518,21 @@ pub enum NoticeType {
 impl NoticeType {
     pub const fn wire_code(self) -> u16 {
         self as u16
+    }
+}
+
+impl TryFrom<u16> for NoticeType {
+    type Error = ProtocolError;
+
+    fn try_from(value: u16) -> Result<Self, Self::Error> {
+        match value {
+            1 => Ok(Self::Warning),
+            2 => Ok(Self::Disconnect),
+            3 => Ok(Self::ProtocolError),
+            4 => Ok(Self::AuthExpired),
+            5 => Ok(Self::ServerShutdown),
+            actual => Err(ProtocolError::UnsupportedNoticeType { actual }),
+        }
     }
 }
 
@@ -1907,6 +2020,95 @@ mod tests {
             Err(ProtocolError::PayloadStringTooLong {
                 actual: usize::from(u16::MAX) + 1
             })
+        );
+    }
+
+    #[test]
+    fn encodes_server_notice_payload() {
+        let notice = test_server_notice("server is draining");
+        let mut payload = Vec::new();
+
+        encode_server_notice_payload(&notice, &mut payload)
+            .expect("server notice payload should encode");
+
+        assert_eq!(
+            payload,
+            server_notice_payload(NoticeType::Warning, "server is draining")
+        );
+    }
+
+    #[test]
+    fn protocol_message_encoder_encodes_server_notice_packet() {
+        let notice = test_server_notice("server is draining");
+        let message = ProtocolMessage::ServerNotice(notice.clone());
+        let encoder = ProtocolMessageEncoderBoundary;
+        let mut output = Vec::new();
+
+        encoder
+            .encode_message(
+                EncodeContext {
+                    protocol_version: ProtocolVersion(2),
+                },
+                &message,
+                &mut output,
+            )
+            .expect("server notice packet should encode");
+
+        let decoded = decode_fixed_header(&output).expect("encoded fixed header should decode");
+        assert_eq!(decoded.header.message_type, MessageType::ServerNotice);
+        assert_eq!(decoded.header.protocol_version, ProtocolVersion(2));
+
+        let decoded_notice = decode_server_notice_payload(decoded.header, decoded.payload)
+            .expect("encoded server notice should decode");
+        assert_eq!(decoded_notice, notice);
+    }
+
+    #[test]
+    fn decodes_server_notice_payload_through_dispatch() {
+        let payload = server_notice_payload(NoticeType::ProtocolError, "protocol mismatch");
+        let packet = test_packet(
+            MessageType::ServerNotice as u16,
+            FIXED_HEADER_LEN,
+            2,
+            &payload,
+        );
+        let decoded = decode_fixed_header(&packet).expect("fixed header should decode");
+
+        let message = decode_payload_by_message_type(
+            DecodeContext {
+                expected_protocol_version: ProtocolVersion(2),
+            },
+            decoded.header,
+            decoded.payload,
+        )
+        .expect("server notice should decode");
+
+        let ProtocolMessage::ServerNotice(notice) = message else {
+            panic!("expected server notice message");
+        };
+        assert_eq!(notice.message_type, MessageType::ServerNotice);
+        assert_eq!(notice.protocol_version, ProtocolVersion(2));
+        assert_eq!(notice.run_id, RunId("run-1".to_string()));
+        assert_eq!(notice.notice_type, NoticeType::ProtocolError);
+        assert_eq!(notice.message, "protocol mismatch");
+    }
+
+    #[test]
+    fn rejects_unknown_server_notice_type() {
+        let payload = server_notice_payload_raw(999, "unknown notice");
+        let packet = test_packet(
+            MessageType::ServerNotice as u16,
+            FIXED_HEADER_LEN,
+            2,
+            &payload,
+        );
+        let decoded = decode_fixed_header(&packet).expect("fixed header should decode");
+
+        let notice = decode_server_notice_payload(decoded.header, decoded.payload);
+
+        assert_eq!(
+            notice,
+            Err(ProtocolError::UnsupportedNoticeType { actual: 999 })
         );
     }
 
@@ -2581,6 +2783,18 @@ mod tests {
         } else {
             payload.push(0);
         }
+        payload
+    }
+
+    fn server_notice_payload(notice_type: NoticeType, message: &str) -> Vec<u8> {
+        server_notice_payload_raw(notice_type.wire_code(), message)
+    }
+
+    fn server_notice_payload_raw(notice_type: u16, message: &str) -> Vec<u8> {
+        let mut payload = Vec::new();
+        push_string(&mut payload, "run-1");
+        push_u16(&mut payload, notice_type);
+        push_string(&mut payload, message);
         payload
     }
 
