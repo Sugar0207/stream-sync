@@ -1227,15 +1227,18 @@ Flow:
    `ServerAuthConfig`.
 2. `[auth.clients.<client_id>]` table names become whitelisted `client_id`
    values.
-3. Each table's `shared_token` becomes a `SharedTokenConfig` using
-   `SharedTokenSecretRef::InlinePlaceholder`.
+3. Each table's token reference becomes a `SharedTokenConfig` using
+   `SharedTokenSecretRef::InlinePlaceholder` or
+   `SharedTokenSecretRef::EnvironmentVariable`.
 4. `ServerAuthConfig` carries the client whitelist and token reference list.
 5. `ServerAuthHandlerBoundary` prepares `ServerAuthCheck` from decode済み
    `AuthRequest`.
 6. `ServerAuthConfigInputBoundary` combines `ServerAuthCheck` and
    `ServerAuthConfig` into `ServerAuthCheckInput`.
-7. `ServerAuthDecisionBoundary` consumes `ServerAuthCheckInput` to perform the
-   minimal whitelist lookup and inline placeholder token comparison.
+7. `ServerSecretResolverBoundary` resolves inline PoC or `shared_token_env`
+   material.
+8. `ServerAuthDecisionBoundary` consumes resolved input to perform the minimal
+   whitelist lookup and token comparison.
 
 Responsibility split:
 
@@ -1252,10 +1255,9 @@ Responsibility split:
     references together.
   - Does not produce accepted/rejected output.
 - auth decision
-  - Owns the current minimal whitelist match, inline placeholder token
-    comparison, and decision result.
-  - Future owner of fuller protocol/app version policy and external secret
-    verification.
+  - Owns the current minimal whitelist match, resolved token comparison, and
+    decision result.
+  - Future owner of fuller protocol/app version policy.
 
 Current implementation: `stream-sync-config::ServerAuthConfigBoundary` reads the
 auth portion of `configs/examples/server.example.toml`-compatible TOML and
@@ -1268,28 +1270,31 @@ actual decision.
 `shared_token` is kept as a PoC-only inline placeholder so the one-shot auth
 round trip can be run from repository example configs. For future operation,
 server config may use `shared_token_env` to point at an environment variable
-name. This stage defines the reference shape and token handling policy only; it
-does not read environment variables or secret stores.
+name. The current resolver reads `shared_token_env`; future external secret
+stores and token rotation remain planning boundaries only.
 
 Config rules:
 
-1. Each `[auth.clients.<client_id>]` must provide exactly one token reference.
+1. Each `[auth.clients.<client_id>]` must provide exactly one active token
+   reference.
 2. `shared_token = "..."` is parsed as
    `SharedTokenSecretRef::InlinePlaceholder`.
 3. `shared_token_env = "ENV_NAME"` is parsed as
    `SharedTokenSecretRef::EnvironmentVariable`.
-4. Empty or conflicting token references are config errors.
+4. Future secret store refs use `SharedTokenSecretRef::SecretStore`, but the
+   current TOML parser does not construct that variant yet.
+5. Empty or conflicting token references are config errors.
 
 Boundary flow:
 
 1. `ServerAuthConfigBoundary` parses the token reference.
 2. `ServerAuthConfigInputBoundary` copies the reference into
    `ServerAuthCheckInput`.
-3. A future secret resolver will turn external references into token material.
-4. `ServerAuthDecisionBoundary` compares only prepared token material. In the
-   current PoC, inline placeholders are the only comparable material.
-5. Unresolved external references reject with `InternalError` until the resolver
-   is implemented.
+3. `ServerSecretResolverBoundary` turns inline PoC material and
+   `shared_token_env` references into resolved token material.
+4. Secret store references are classified as future lookups and reject with
+   `InternalError` until a provider implementation exists.
+5. `ServerAuthDecisionBoundary` compares only prepared token material.
 
 Protection rules:
 
@@ -1297,6 +1302,8 @@ Protection rules:
   `AuthResponse.message`, operator stdout, or debug dumps.
 - Inline token debug output is redacted by `SharedTokenSecretRef`.
 - Environment variable names may appear as references; resolved values must not.
+- Secret store ids, secret ids, and version labels are references only and must
+  not contain token material.
 - `config` owns reference parsing, auth input owns context assembly, secret
   resolution owns external lookup, and auth decision owns comparison.
 
@@ -1305,15 +1312,30 @@ First real resolver scope:
 - Input: `ServerSharedTokenAuthInput` / token id plus `SharedTokenSecretRef`.
 - Output: resolved token material suitable for auth decision input, with debug
   output redacted.
-- Supported source: environment variables named by `shared_token_env`.
+- Supported sources: inline PoC material and environment variables named by
+  `shared_token_env`.
 - PoC compatibility: inline placeholder material stays supported as already
   resolved token material.
-- Errors: missing environment variable, empty environment variable, unsupported
-  reference type, and internal resolver error. Error messages must not include
-  token values.
-- Not included: secret store integrations, network calls, caching, hot reload,
-  rotation, hashing/KDF, auth decision, response generation, logging, or socket
-  I/O.
+- Errors: missing environment variable, empty environment variable, invalid
+  environment variable, unsupported secret store reference, and internal
+  resolver error. Error messages must not include token values.
+- Not included: secret store provider integrations, network calls, caching, hot
+  reload, rotation execution, hashing/KDF, auth decision, response generation,
+  logging, or socket I/O.
+
+Secret store / token rotation policy:
+
+- `SharedTokenSecretRef::SecretStore` and `SecretStoreSecretRef` are reference
+  placeholders for future provider integration.
+- Secret store refs carry `store_id`, `secret_id`, and optional `version`; these
+  fields are identifiers, not token material.
+- Current resolver planning may return `NeedsSecretStore`, but resolution
+  returns `UnsupportedSecretStore`.
+- MVP rotation is disabled: one active token reference per client.
+- Future rotation should use manual overlap: accept previous and current token
+  for a bounded operator-defined window, then remove the previous token.
+- Rotation must not change the UDP wire protocol or `AuthRequest` payload in
+  MVP.
 
 Current implementation: `ServerSecretResolverBoundary::resolve_auth_input`
 turns `ServerAuthCheckInput` into resolved auth decision input. Inline tokens
@@ -1321,7 +1343,9 @@ remain supported as already-available PoC material, and `shared_token_env`
 reads exactly the named environment variable. Missing, empty, and invalid env
 values return typed `ServerSecretResolutionError` variants without carrying
 token values. `plan_resolution` remains available as a non-reading planning
-helper for docs/tests.
+helper for docs/tests. `SharedTokenRotationConfig` and
+`ServerSharedTokenRotationBoundary` record disabled MVP rotation and the future
+manual-overlap placeholder only.
 
 ### Minimal Auth Decision Boundary
 

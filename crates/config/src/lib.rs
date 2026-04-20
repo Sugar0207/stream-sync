@@ -36,6 +36,50 @@ pub struct SharedTokenConfig {
 pub enum SharedTokenSecretRef {
     InlinePlaceholder(String),
     EnvironmentVariable(String),
+    SecretStore(SecretStoreSecretRef),
+}
+
+/// Reference shape for a future external secret store integration.
+///
+/// These fields are identifiers only, not resolved token material. The current
+/// TOML parser does not construct this shape yet.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct SecretStoreSecretRef {
+    pub store_id: String,
+    pub secret_id: String,
+    pub version: Option<String>,
+}
+
+/// Placeholder token rotation config.
+///
+/// MVP keeps one active shared token per client. Manual overlap is only a
+/// documented future shape and is not enforced by the current auth path.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct SharedTokenRotationConfig {
+    pub mode: SharedTokenRotationMode,
+}
+
+impl SharedTokenRotationConfig {
+    pub fn disabled_for_mvp() -> Self {
+        Self {
+            mode: SharedTokenRotationMode::DisabledForMvp,
+        }
+    }
+
+    pub fn manual_overlap_placeholder(overlap_window_seconds: u64) -> Self {
+        Self {
+            mode: SharedTokenRotationMode::ManualOverlapPlaceholder {
+                overlap_window_seconds,
+            },
+        }
+    }
+}
+
+/// Token rotation modes known to config.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum SharedTokenRotationMode {
+    DisabledForMvp,
+    ManualOverlapPlaceholder { overlap_window_seconds: u64 },
 }
 
 impl fmt::Debug for SharedTokenSecretRef {
@@ -48,6 +92,10 @@ impl fmt::Debug for SharedTokenSecretRef {
             Self::EnvironmentVariable(name) => formatter
                 .debug_tuple("EnvironmentVariable")
                 .field(name)
+                .finish(),
+            Self::SecretStore(reference) => formatter
+                .debug_tuple("SecretStore")
+                .field(reference)
                 .finish(),
         }
     }
@@ -424,6 +472,42 @@ shared_token_env = "STREAMSYNC_PLAYER1_TOKEN"
         assert_eq!(
             format!("{secret_ref:?}"),
             "InlinePlaceholder(\"<redacted>\")"
+        );
+    }
+
+    #[test]
+    fn represents_future_secret_store_reference_without_secret_material() {
+        let secret_ref = SharedTokenSecretRef::SecretStore(SecretStoreSecretRef {
+            store_id: "local-dev-store".to_string(),
+            secret_id: "stream-sync/player1".to_string(),
+            version: Some("current".to_string()),
+        });
+
+        assert_eq!(
+            format!("{secret_ref:?}"),
+            "SecretStore(SecretStoreSecretRef { store_id: \"local-dev-store\", secret_id: \"stream-sync/player1\", version: Some(\"current\") })"
+        );
+    }
+
+    #[test]
+    fn token_rotation_config_defaults_to_disabled_for_mvp() {
+        assert_eq!(
+            SharedTokenRotationConfig::disabled_for_mvp(),
+            SharedTokenRotationConfig {
+                mode: SharedTokenRotationMode::DisabledForMvp,
+            }
+        );
+    }
+
+    #[test]
+    fn token_rotation_config_can_describe_future_manual_overlap() {
+        assert_eq!(
+            SharedTokenRotationConfig::manual_overlap_placeholder(900),
+            SharedTokenRotationConfig {
+                mode: SharedTokenRotationMode::ManualOverlapPlaceholder {
+                    overlap_window_seconds: 900,
+                },
+            }
         );
     }
 }

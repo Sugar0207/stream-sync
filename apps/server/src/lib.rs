@@ -5,7 +5,8 @@ use std::{
     path::{Path, PathBuf},
 };
 use stream_sync_config::{
-    ConfigLoadError, ServerAuthConfig, ServerAuthConfigBoundary, SharedTokenSecretRef,
+    ConfigLoadError, SecretStoreSecretRef, ServerAuthConfig, ServerAuthConfigBoundary,
+    SharedTokenRotationConfig, SharedTokenRotationMode, SharedTokenSecretRef,
 };
 use stream_sync_logging::{JsonLinesSinkConfig, JsonLinesSinkPlan, JsonLinesSinkPlanBoundary};
 use stream_sync_net_core::{
@@ -1247,6 +1248,11 @@ impl ServerSharedTokenAuthInput {
                     name: name.clone(),
                 }
             }
+            SharedTokenSecretRef::SecretStore(reference) => {
+                ServerSharedTokenSecretResolutionStatus::SecretStorePending {
+                    reference: reference.clone(),
+                }
+            }
         }
     }
 }
@@ -1260,6 +1266,7 @@ impl ServerSharedTokenAuthInput {
 pub enum ServerSharedTokenSecretResolutionStatus {
     InlinePlaceholderAvailable,
     EnvironmentVariablePending { name: String },
+    SecretStorePending { reference: SecretStoreSecretRef },
 }
 
 /// Minimal boundary for server secret resolution.
@@ -1323,6 +1330,12 @@ impl ServerSecretResolverBoundary {
                     })
                 }
             },
+            SharedTokenSecretRef::SecretStore(reference) => {
+                Err(ServerSecretResolutionError::UnsupportedSecretStore {
+                    token_id: token.token_id.clone(),
+                    reference: reference.clone(),
+                })
+            }
         }
     }
 
@@ -1343,6 +1356,12 @@ impl ServerSecretResolverBoundary {
                     name: name.clone(),
                 }
             }
+            SharedTokenSecretRef::SecretStore(reference) => {
+                ServerSecretResolutionPlan::NeedsSecretStore {
+                    token_id: token.token_id.clone(),
+                    reference: reference.clone(),
+                }
+            }
         }
     }
 }
@@ -1353,16 +1372,36 @@ impl ServerSecretResolverBoundary {
 /// are configuration references, not secret material.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ServerSecretResolutionError {
-    MissingEnvironmentVariable { token_id: String, name: String },
-    EmptyEnvironmentVariable { token_id: String, name: String },
-    InvalidEnvironmentVariable { token_id: String, name: String },
+    MissingEnvironmentVariable {
+        token_id: String,
+        name: String,
+    },
+    EmptyEnvironmentVariable {
+        token_id: String,
+        name: String,
+    },
+    InvalidEnvironmentVariable {
+        token_id: String,
+        name: String,
+    },
+    UnsupportedSecretStore {
+        token_id: String,
+        reference: SecretStoreSecretRef,
+    },
 }
 
 /// Resolution plan for one configured server shared token.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ServerSecretResolutionPlan {
     AlreadyResolved(ServerResolvedSharedTokenAuthInput),
-    NeedsEnvironmentVariable { token_id: String, name: String },
+    NeedsEnvironmentVariable {
+        token_id: String,
+        name: String,
+    },
+    NeedsSecretStore {
+        token_id: String,
+        reference: SecretStoreSecretRef,
+    },
 }
 
 /// Token material prepared for future auth decision input.
@@ -1497,6 +1536,9 @@ impl ServerAuthDecisionBoundary {
             ServerSecretResolutionError::InvalidEnvironmentVariable { .. } => {
                 "token secret environment variable is invalid"
             }
+            ServerSecretResolutionError::UnsupportedSecretStore { .. } => {
+                "token secret store reference is not supported"
+            }
         };
 
         ServerAuthDecision::rejected(
@@ -1580,6 +1622,46 @@ impl ServerAuthDecisionBoundary {
                 None,
             )
             .with_app_version(app_version),
+            SharedTokenSecretRef::SecretStore(_) => ServerAuthDecision::rejected(
+                source,
+                client_id,
+                run_id,
+                protocol_version,
+                AuthResponseReasonCode::InternalError,
+                Some("token secret is not resolved".to_string()),
+                None,
+            )
+            .with_app_version(app_version),
+        }
+    }
+}
+
+/// Server-side token rotation plan.
+///
+/// MVP auth accepts one resolved token per client. Future manual overlap may
+/// accept previous and current token material during a bounded operator-driven
+/// window, but no multi-token comparison is implemented here.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ServerSharedTokenRotationPlan {
+    DisabledForMvp,
+    ManualOverlapPlaceholder { overlap_window_seconds: u64 },
+}
+
+/// Boundary that normalizes config-level token rotation policy for server auth.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct ServerSharedTokenRotationBoundary;
+
+impl ServerSharedTokenRotationBoundary {
+    pub fn plan(&self, config: SharedTokenRotationConfig) -> ServerSharedTokenRotationPlan {
+        match config.mode {
+            SharedTokenRotationMode::DisabledForMvp => {
+                ServerSharedTokenRotationPlan::DisabledForMvp
+            }
+            SharedTokenRotationMode::ManualOverlapPlaceholder {
+                overlap_window_seconds,
+            } => ServerSharedTokenRotationPlan::ManualOverlapPlaceholder {
+                overlap_window_seconds,
+            },
         }
     }
 }
@@ -3931,6 +4013,23 @@ shared_token = "secret"
     }
 
     #[test]
+    fn auth_decision_rejects_secret_store_reference_until_resolved() {
+        let mut input = auth_check_input("client-1", "presented-secret", Some("presented-secret"));
+        input.shared_tokens[0].secret_ref =
+            SharedTokenSecretRef::SecretStore(test_secret_store_reference("stream-sync/player1"));
+        let boundary = ServerAuthDecisionBoundary;
+
+        let decision = boundary.decide(input);
+
+        assert!(!decision.accepted);
+        assert_eq!(decision.reason_code, AuthResponseReasonCode::InternalError);
+        assert_eq!(
+            decision.message.as_deref(),
+            Some("token secret is not resolved")
+        );
+    }
+
+    #[test]
     fn secret_resolver_boundary_plans_inline_placeholder_as_resolved() {
         let boundary = ServerSecretResolverBoundary;
         let token = ServerSharedTokenAuthInput {
@@ -3972,6 +4071,69 @@ shared_token = "secret"
             ServerSecretResolutionPlan::NeedsEnvironmentVariable {
                 token_id: "client-1".to_string(),
                 name: "STREAM_SYNC_TOKEN_MAIN".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn secret_resolver_boundary_plans_secret_store_as_future_lookup() {
+        let boundary = ServerSecretResolverBoundary;
+        let reference = test_secret_store_reference("stream-sync/player1");
+        let token = ServerSharedTokenAuthInput {
+            token_id: "client-1".to_string(),
+            secret_ref: SharedTokenSecretRef::SecretStore(reference.clone()),
+        };
+
+        let plan = boundary.plan_resolution(&token);
+
+        assert_eq!(
+            plan,
+            ServerSecretResolutionPlan::NeedsSecretStore {
+                token_id: "client-1".to_string(),
+                reference,
+            }
+        );
+    }
+
+    #[test]
+    fn secret_resolver_boundary_rejects_secret_store_until_implemented() {
+        let boundary = ServerSecretResolverBoundary;
+        let reference = test_secret_store_reference("stream-sync/player1");
+        let token = ServerSharedTokenAuthInput {
+            token_id: "client-1".to_string(),
+            secret_ref: SharedTokenSecretRef::SecretStore(reference.clone()),
+        };
+
+        let resolved = boundary.resolve_token(&token);
+
+        assert_eq!(
+            resolved,
+            Err(ServerSecretResolutionError::UnsupportedSecretStore {
+                token_id: "client-1".to_string(),
+                reference,
+            })
+        );
+    }
+
+    #[test]
+    fn shared_token_rotation_boundary_keeps_mvp_disabled() {
+        let boundary = ServerSharedTokenRotationBoundary;
+
+        let plan = boundary.plan(SharedTokenRotationConfig::disabled_for_mvp());
+
+        assert_eq!(plan, ServerSharedTokenRotationPlan::DisabledForMvp);
+    }
+
+    #[test]
+    fn shared_token_rotation_boundary_records_future_overlap_window() {
+        let boundary = ServerSharedTokenRotationBoundary;
+
+        let plan = boundary.plan(SharedTokenRotationConfig::manual_overlap_placeholder(900));
+
+        assert_eq!(
+            plan,
+            ServerSharedTokenRotationPlan::ManualOverlapPlaceholder {
+                overlap_window_seconds: 900
             }
         );
     }
@@ -5382,6 +5544,14 @@ shared_token = "secret"
             client_received_at: TimestampMicros(2_000_250),
         });
         stats
+    }
+
+    fn test_secret_store_reference(secret_id: &str) -> SecretStoreSecretRef {
+        SecretStoreSecretRef {
+            store_id: "local-dev-store".to_string(),
+            secret_id: secret_id.to_string(),
+            version: Some("current".to_string()),
+        }
     }
 
     fn heartbeat_payload() -> Vec<u8> {

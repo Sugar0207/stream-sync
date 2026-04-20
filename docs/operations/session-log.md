@@ -5,6 +5,61 @@
 - Codex
 
 ### 今回の作業
+- secret store / token rotation 方針を docs に明記した。
+- `crates/config` に future secret store 参照型と token rotation policy placeholder を追加した。
+- `apps/server` の secret resolver / auth decision / rotation boundary に future secret store と rotation placeholder の扱いを追加した。
+- inline token / `shared_token_env` / future secret store の責務分離を整理した。
+
+### 変更ファイル
+- `crates/config/src/lib.rs`
+- `apps/server/src/lib.rs`
+- `docs/architecture/system-design.md`
+- `docs/architecture/protocol.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+- `configs/examples/server.example.toml`
+- `configs/examples/server.env-token.example.toml`
+
+### 決定事項
+- `shared_token` は PoC 用 inline placeholder として維持する。
+- `shared_token_env` は現行の推奨参照で、`ServerSecretResolverBoundary` が環境変数を読む。
+- future secret store は `SharedTokenSecretRef::SecretStore` / `SecretStoreSecretRef` の参照型だけ追加し、provider 連携は実装しない。
+- secret store 参照は `store_id`, `secret_id`, optional `version` を持つが、これらは token material ではない。
+- MVP の token rotation は disabled とし、将来の manual overlap window だけ placeholder として残す。
+- rotation は UDP wire protocol / `AuthRequest` payload を変更しない方針とする。
+
+### 未実装 / 保留
+- secret store provider 連携
+- secret store TOML parsing
+- token hashing / KDF
+- token rotation 実行
+- hot reload / caching / background refresh
+- 複数 token material の同時比較
+
+### 次にやる候補
+- `ServerNotice` notice trigger policy の実装範囲を整理する
+- outbound queue の実キュー実装範囲を送信継続 loop 前に再確認する
+- auth / receive JSON Lines file sink の実 file open 範囲を必要になった時点で再確認する
+- secret store provider 連携または token rotation 実行範囲を必要になった時点で再確認する
+
+### TODO更新
+- 現在位置に secret store / token rotation 方針整理完了を反映した。
+- 直近でやることから secret store / rotation 方針整理を外した。
+- 認証まわりの `secret store 連携や token hashing / rotation 方針を設計する` を完了にした。
+- future secret store 参照と token rotation policy placeholder の完了項目を追加した。
+
+### メモ
+- `cargo fmt --check` は成功した。
+- `cargo check --workspace` は成功した。
+- 追加確認として `cargo test -p stream-sync-config secret`, `cargo test -p stream-sync-config secret_store`, `cargo test -p stream-sync-config token_rotation`, `cargo test -p stream-sync-server secret`, `cargo test -p stream-sync-server secret_store`, `cargo test -p stream-sync-server rotation` も成功した。
+
+---
+
+## 2026-04-21
+### 種別
+- Codex
+
+### 今回の作業
 - auth / receive JSON Lines file sink 方針を docs に明記した。
 - `crates/logging` に JSON Lines sink config / plan の最小 placeholder を追加した。
 - `apps/server` に auth result と receive rejection の sink plan boundary を追加した。

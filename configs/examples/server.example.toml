@@ -17,6 +17,8 @@ require_known_clients = true
 # Future production configs should prefer shared_token_env = "ENV_NAME" and let
 # the server secret resolution boundary resolve the token material before auth
 # decision. Do not set shared_token and shared_token_env on the same client.
+# Future secret store references and token rotation are documented placeholders
+# only; this example intentionally keeps one active token reference per client.
 
 [auth.clients.player1]
 display_name = "Player 1"

@@ -725,23 +725,25 @@ authenticated source state, and UDP sending remain unimplemented.
 PoC keeps inline `shared_token` support so the one-shot auth round trip remains
 easy to verify. MVP / production settings should treat inline token material as
 a placeholder and prefer a reference such as `shared_token_env`, which points to
-an environment variable name. The current scope defines the boundary and
-configuration shape only; it does not read environment variables or integrate a
-secret store.
+an environment variable name. The current implementation resolves
+`shared_token_env`; external secret stores and token rotation are planned
+boundaries only.
 
 Flow:
 
 1. `ServerAuthConfigBoundary` reads each `[auth.clients.<client_id>]` entry.
-2. Exactly one of `shared_token` or `shared_token_env` may be set for a client.
+2. Exactly one token reference may be set for a client.
 3. `shared_token` becomes `SharedTokenSecretRef::InlinePlaceholder`.
 4. `shared_token_env` becomes `SharedTokenSecretRef::EnvironmentVariable`.
-5. `ServerAuthConfigInputBoundary` carries those references into
+5. A future secret store config will become
+   `SharedTokenSecretRef::SecretStore`, but the current TOML parser does not
+   construct it yet.
+6. `ServerAuthConfigInputBoundary` carries those references into
    `ServerAuthCheckInput` without resolving them.
-6. The future secret resolution boundary will convert external references into
-   verified token material before production auth decision.
-7. Until that resolver exists, `ServerAuthDecisionBoundary` accepts only inline
-   PoC placeholders and rejects unresolved external references with
-   `InternalError`.
+7. `ServerSecretResolverBoundary` resolves inline PoC material and
+   `shared_token_env` before auth decision.
+8. Secret store references are classified as future work and rejected before
+   auth decision with a non-secret `InternalError` message.
 
 Token protection rules:
 
@@ -751,6 +753,8 @@ Token protection rules:
 - `SharedTokenSecretRef` debug output redacts inline token material.
 - Environment variable names may be recorded as references, but their resolved
   values must stay out of logs and auth responses.
+- Secret store ids, secret ids, and version labels are references only; they
+  must not contain token material.
 - `AuthResponse.message` must describe the failure class, not echo presented or
   expected token material.
 - Config owns references only; auth input carries references; auth decision
@@ -760,6 +764,7 @@ Responsibility split:
 
 - config
   - Parses `shared_token` and `shared_token_env` into typed secret references.
+  - Defines the future `SecretStore` reference shape.
   - Rejects missing, empty, or conflicting token references.
   - Does not resolve environment variables, secret stores, or validate a
     presented token.
@@ -767,17 +772,24 @@ Responsibility split:
   - Moves configured secret references next to decoded request context.
   - Does not reveal, log, or resolve secret material.
 - secret resolution boundary
-  - Future owner of reading environment variables or secret stores.
+  - Owns reading environment variables in the current MVP path.
+  - Future owner of reading secret stores.
   - Produces token material for verification without exposing it to logs.
 - auth decision
   - Owns whitelist lookup and token comparison against prepared material.
   - Does not read TOML, environment variables, or external secret stores.
+- token rotation boundary
+  - Current policy is `DisabledForMvp`: one active token per client.
+  - Future manual overlap may allow previous and current tokens during an
+    operator-defined window.
+  - Does not hot-reload, cache, or compare multiple token materials now.
 
 Current code reflects this with `SharedTokenSecretRef::InlinePlaceholder`,
 `SharedTokenSecretRef::EnvironmentVariable`, and
-`apps/server::ServerSharedTokenSecretResolutionStatus`. The latter is a
-placeholder classification only; real environment variable lookup and secret
-store integration remain unimplemented.
+`SharedTokenSecretRef::SecretStore`, plus
+`apps/server::ServerSharedTokenSecretResolutionStatus`. The resolver supports
+inline PoC values and environment variables; secret store integration remains
+unimplemented.
 
 Secret resolver implementation scope:
 
@@ -798,6 +810,22 @@ Secret resolver implementation scope:
   - Caching and hot reload.
   - Deciding whether a client is accepted.
   - Logging resolved token material.
+
+Secret store / rotation policy:
+
+- `SecretStoreSecretRef` carries `store_id`, `secret_id`, and optional
+  `version` as future reference metadata only.
+- `ServerSecretResolverBoundary::plan_resolution` may report
+  `NeedsSecretStore`, but `resolve_token` returns
+  `UnsupportedSecretStore` until a provider is selected.
+- MVP token rotation is disabled. Each client has one active token reference.
+- Future rotation should use explicit operator-driven manual overlap: add a new
+  token, accept previous and current token for a bounded window, then remove
+  the previous token.
+- Rotation must not change the UDP protocol or AuthRequest payload in MVP; the
+  client still presents one `shared_token`.
+- Automatic hot reload, token caching, token hashing/KDF, provider-specific
+  APIs, and background refresh are not part of this step.
 
 Updated responsibility split:
 
@@ -821,10 +849,13 @@ Current implementation: `apps/server::ServerSecretResolverBoundary` resolves
 PoC inline tokens as already-available material and reads `shared_token_env`
 from the named environment variable. Missing, empty, and invalid environment
 variables return typed `ServerSecretResolutionError` values without token
-material. `ServerAuthFlowStep` resolves configured token references before
-calling `ServerAuthDecisionBoundary`; resolver failures become rejected
-`ServerAuthDecision` values with `InternalError`. Secret stores, hashing,
-rotation, caching, and hot reload remain unimplemented.
+material. Secret store references return `UnsupportedSecretStore`.
+`ServerAuthFlowStep` resolves configured token references before calling
+`ServerAuthDecisionBoundary`; resolver failures become rejected
+`ServerAuthDecision` values with `InternalError`. `SharedTokenRotationConfig`
+and `ServerSharedTokenRotationBoundary` document disabled MVP rotation and the
+future manual-overlap placeholder. Secret stores, hashing, rotation execution,
+caching, and hot reload remain unimplemented.
 
 ---
 
@@ -1746,7 +1777,7 @@ Responsibility split:
   - Does not decide authentication, update server state, encode packets, or
     send sockets.
 - server auth handler / auth decision layer
-  - Owns the minimal `client_id` and inline placeholder token checks.
+  - Owns the minimal `client_id` and resolved token checks.
   - Future owner of fuller `protocol_version` and `app_version` policy.
   - Returns the auth decision data used to construct an `AuthResponse`.
   - Does not perform wire encoding or socket sending.
