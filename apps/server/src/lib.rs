@@ -2514,6 +2514,81 @@ pub struct ServerNoticeInput {
     pub message: String,
 }
 
+/// Explicit server event that may become a `ServerNotice`.
+///
+/// This is not state transition detection. Future handlers decide that one of
+/// these trigger sources happened, then pass it to the notice trigger boundary.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ServerNoticeTriggerSource {
+    Warning,
+    Disconnect,
+    ProtocolError,
+    AuthExpired,
+    ServerShutdown,
+}
+
+impl ServerNoticeTriggerSource {
+    pub fn notice_type(self) -> NoticeType {
+        match self {
+            Self::Warning => NoticeType::Warning,
+            Self::Disconnect => NoticeType::Disconnect,
+            Self::ProtocolError => NoticeType::ProtocolError,
+            Self::AuthExpired => NoticeType::AuthExpired,
+            Self::ServerShutdown => NoticeType::ServerShutdown,
+        }
+    }
+}
+
+/// Input for planning a `ServerNotice` from an already-decided trigger.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ServerNoticeTriggerInput {
+    pub destination: PacketSource,
+    pub protocol_version: ProtocolVersion,
+    pub run_id: RunId,
+    pub source: ServerNoticeTriggerSource,
+    pub message: String,
+}
+
+/// Planned notice output from a trigger policy boundary.
+///
+/// This remains a typed plan. It does not enqueue, encode, send, log, or mutate
+/// server state.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ServerNoticeTriggerPlan {
+    pub source: ServerNoticeTriggerSource,
+    pub notice: ServerNoticeInput,
+}
+
+impl ServerNoticeTriggerPlan {
+    pub fn into_notice_input(self) -> ServerNoticeInput {
+        self.notice
+    }
+}
+
+/// Minimal trigger policy boundary for `ServerNotice`.
+///
+/// The boundary only maps an explicit trigger source to the corresponding
+/// notice type and preserves destination/run context. It does not decide that a
+/// trigger happened and does not suppress, rate-limit, enqueue, or send notices.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct ServerNoticeTriggerPolicyBoundary;
+
+impl ServerNoticeTriggerPolicyBoundary {
+    pub fn plan_notice(&self, input: ServerNoticeTriggerInput) -> ServerNoticeTriggerPlan {
+        let notice_type = input.source.notice_type();
+        ServerNoticeTriggerPlan {
+            source: input.source,
+            notice: ServerNoticeInput {
+                destination: input.destination,
+                protocol_version: input.protocol_version,
+                run_id: input.run_id,
+                notice_type,
+                message: input.message,
+            },
+        }
+    }
+}
+
 /// Boundary that converts server notice fields into a typed outbound message.
 ///
 /// This does not decide when to notify, encode bytes, enqueue real items, write
@@ -4896,6 +4971,50 @@ shared_token = "secret"
         assert_eq!(notice.run_id, RunId("run-1".to_string()));
         assert_eq!(notice.notice_type, NoticeType::ProtocolError);
         assert_eq!(notice.message, "unsupported protocol_version");
+    }
+
+    #[test]
+    fn server_notice_trigger_policy_maps_protocol_error_to_notice_plan() {
+        let source = packet_source();
+        let boundary = ServerNoticeTriggerPolicyBoundary;
+
+        let plan = boundary.plan_notice(ServerNoticeTriggerInput {
+            destination: source,
+            protocol_version: ProtocolVersion(2),
+            run_id: RunId("run-1".to_string()),
+            source: ServerNoticeTriggerSource::ProtocolError,
+            message: "unsupported protocol_version".to_string(),
+        });
+
+        assert_eq!(plan.source, ServerNoticeTriggerSource::ProtocolError);
+        assert_eq!(plan.notice.destination, source);
+        assert_eq!(plan.notice.protocol_version, ProtocolVersion(2));
+        assert_eq!(plan.notice.run_id, RunId("run-1".to_string()));
+        assert_eq!(plan.notice.notice_type, NoticeType::ProtocolError);
+        assert_eq!(plan.notice.message, "unsupported protocol_version");
+    }
+
+    #[test]
+    fn server_notice_trigger_plan_can_feed_notice_boundary_without_sending() {
+        let source = packet_source();
+        let trigger_boundary = ServerNoticeTriggerPolicyBoundary;
+        let notice_boundary = ServerNoticeBoundary;
+        let plan = trigger_boundary.plan_notice(ServerNoticeTriggerInput {
+            destination: source,
+            protocol_version: ProtocolVersion(2),
+            run_id: RunId("run-1".to_string()),
+            source: ServerNoticeTriggerSource::ServerShutdown,
+            message: "server is shutting down".to_string(),
+        });
+
+        let outbound = notice_boundary.build_for_send(plan.into_notice_input());
+
+        assert_eq!(outbound.destination, source);
+        let notice = outbound
+            .server_notice()
+            .expect("outbound message should be ServerNotice");
+        assert_eq!(notice.notice_type, NoticeType::ServerShutdown);
+        assert_eq!(notice.message, "server is shutting down");
     }
 
     #[test]

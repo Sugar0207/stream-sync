@@ -36,13 +36,13 @@
 - accepted path の手動確認は成功し、`configs/examples/server.example.toml` と `configs/examples/client.accepted.example.toml` の組み合わせで `accepted=true`, `reason_code=Ok` を観測済み
 - `shared_token_env` accepted path の手動確認は成功し、`configs/examples/server.env-token.example.toml` と `configs/examples/client.accepted.example.toml` の組み合わせで `accepted=true`, `reason_code=Ok` を観測済み
 - `ClientStats` payload encode/decode と heartbeat observation optional block の最小 wire 変換は完了
-- secret store provider 連携、token hashing、rotation 実行、認証済み送信元の timeout / 失効 / 再認証、実際の packet 破棄、`ServerNotice` notice trigger policy、時刻同期本体、映像受信・復号・表示、switcher UI は未実装
+- secret store provider 連携、token hashing、rotation 実行、認証済み送信元の timeout / 失効 / 再認証、実際の packet 破棄、時刻同期本体、映像受信・復号・表示、switcher UI は未実装
 - `ClientStats` receive route / gate / registered handler bridge は完了。継続送信 loop、metrics state commit、RTT / offset state commit は未実装
 - outbound queue の実処理範囲と backpressure / capacity 方針は整理済み。実キュー、送信継続 loop、retry 実行は未実装
-- `ServerNotice` payload layout と decode / encode の最小実装は完了。notice trigger policy、送信継続 loop、socket send 接続は未実装
+- `ServerNotice` payload layout、decode / encode 最小実装、notice trigger policy の実装範囲整理は完了。state transition 検知、重複抑制、rate limit、送信継続 loop、socket send 接続は未実装
 - auth / receive JSON Lines file sink 方針は整理済み。実 file open、rotation、retention、async logging、process-wide logger は未実装
 - secret store / token rotation 方針は整理済み。SecretStore 参照と rotation policy placeholder は追加済みだが、provider 連携、rotation 実行、hot reload は未実装
-- 次の中心は notice trigger policy の実装範囲整理、outbound queue 実キュー範囲の再確認、file sink 実 file open 範囲の再確認
+- 次の中心は outbound queue 実キュー範囲の再確認、file sink 実 file open 範囲の再確認、ServerNotice trigger の state transition 接続範囲の再確認
 
 ---
 
@@ -72,9 +72,9 @@
 ---
 
 ## 直近でやること
-1. `ServerNotice` notice trigger policy の実装範囲を整理する
-2. outbound queue の実キュー実装範囲を、送信継続 loop 着手前に再確認する
-3. auth / receive JSON Lines file sink の実 file open 範囲を必要になった時点で再確認する
+1. outbound queue の実キュー実装範囲を、送信継続 loop 着手前に再確認する
+2. auth / receive JSON Lines file sink の実 file open 範囲を必要になった時点で再確認する
+3. `ServerNotice` trigger の state transition 接続範囲を必要になった時点で再確認する
 4. secret store provider 連携または token rotation 実行範囲を必要になった時点で再確認する
 
 ---
@@ -138,6 +138,7 @@
 - [x] secret resolver 本実装範囲を確定する
 - [x] `shared_token_env` secret resolver の最小本実装を追加する
 - [x] `ServerNotice` payload layout と decode / encode 方針を決める
+- [x] `ServerNotice` notice trigger policy の実装範囲を整理する
 - [ ] 状態遷移を詳細化する
 - [ ] 異常時の挙動を実装レベルに落とす
 - [ ] ログイベント仕様を詳細化する
@@ -197,6 +198,7 @@
 - [x] server 側 `ServerOutboundQueueBoundary` placeholder を追加する
 - [x] server 側 `ServerHeartbeatAckBoundary` / `ServerOutboundHeartbeatAck` placeholder を追加する
 - [x] server 側 `ServerNoticeBoundary` / `ServerOutboundNotice` placeholder を追加する
+- [x] server 側 `ServerNoticeTriggerPolicyBoundary` / trigger plan placeholder を追加する
 - [x] server 側 `ServerHeartbeatHandlerBoundary` / `ServerHeartbeatAckHandoff` placeholder を追加する
 - [x] server 側 `ServerHeartbeatInputBoundary` / state input / timebase input placeholder を追加する
 - [x] server 側 `AuthenticatedSenderRegistryBoundary` / `AuthenticatedSenderRegistry` placeholder を追加する

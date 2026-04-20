@@ -988,6 +988,15 @@ Encode / decode 方針:
   - fixed header と `protocol_version` 確認後、payload を同じ順序で読む。
   - unknown `notice_type` は protocol error として扱う。
   - payload に余剰 byte があれば `InvalidPayloadLength` とする。
+- trigger policy
+  - server 側の state transition handler が明示的な trigger source を作る。
+  - trigger source は `Warning`, `Disconnect`, `ProtocolError`,
+    `AuthExpired`, `ServerShutdown` に限定する。
+  - trigger policy boundary は trigger source を `NoticeType` に写像し、
+    `run_id`, `protocol_version`, destination metadata, message を保持した
+    notice plan を作る。
+  - trigger policy boundary は state transition 検知、重複抑制、
+    rate limit、queue 投入、encode、socket send、ログ出力を行わない。
 - 現時点
   - `ServerNoticePayloadPlanBoundary` は上記 layout の固定部分長と最小
     payload 長を明示する。
@@ -997,8 +1006,10 @@ Encode / decode 方針:
     `ProtocolMessage::ServerNotice` を返す。
   - `ProtocolMessageEncoderBoundary` は `ProtocolMessage::ServerNotice` を
     fixed header + payload bytes へ変換する。
-  - server 側は typed outbound notice handoff だけを持ち、通知発火 policy、
-    継続送信 loop、UDP socket send、ログ出力は別タスクに残す。
+  - server 側は `ServerNoticeTriggerPolicyBoundary` で trigger plan を作り、
+    `ServerNoticeBoundary` で typed outbound notice handoff を作る。
+  - state transition 検知、重複抑制、rate limit、継続送信 loop、
+    UDP socket send、ログ出力は別タスクに残す。
 
 ---
 

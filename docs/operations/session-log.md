@@ -5,6 +5,54 @@
 - Codex
 
 ### 今回の作業
+- `ServerNotice` notice trigger policy の実装範囲を docs に明記した。
+- `apps/server` に `ServerNoticeTriggerPolicyBoundary` / trigger input / trigger source / trigger plan placeholder を追加した。
+- server state transition / notice generation / outbound handoff の責務分離を整理した。
+
+### 変更ファイル
+- `apps/server/src/lib.rs`
+- `docs/architecture/system-design.md`
+- `docs/architecture/protocol.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### 決定事項
+- trigger policy boundary は、明示的な trigger source を `NoticeType` に写像するだけに限定する。
+- trigger source は `Warning`, `Disconnect`, `ProtocolError`, `AuthExpired`, `ServerShutdown` を最初の placeholder 範囲とする。
+- state transition handler が将来 trigger source を作る。trigger policy boundary は状態検知しない。
+- `ServerNoticeTriggerPlan` は `ServerNoticeInput` を保持し、既存 `ServerNoticeBoundary` へ渡せる形にする。
+- trigger policy boundary は重複抑制、rate limit、queue 投入、encode、socket send、ログ出力を行わない。
+
+### 未実装 / 保留
+- state transition 検知
+- duplicate suppression / rate limit
+- trigger から outbound queue までの運用接続
+- continuous send loop / UDP socket send 接続
+- notice log output
+
+### 次にやる候補
+- outbound queue の実キュー実装範囲を送信継続 loop 前に再確認する
+- auth / receive JSON Lines file sink の実 file open 範囲を必要になった時点で再確認する
+- `ServerNotice` trigger の state transition 接続範囲を必要になった時点で再確認する
+
+### TODO更新
+- 現在位置に `ServerNotice` notice trigger policy 範囲整理完了を反映した。
+- 直近でやることから notice trigger policy 範囲整理を外した。
+- 仕様 / 設計に `ServerNotice` notice trigger policy 範囲整理完了を追加した。
+- net-core / server 境界に `ServerNoticeTriggerPolicyBoundary` / trigger plan placeholder 追加完了を反映した。
+
+### メモ
+- `cargo fmt --check` は成功した。
+- `cargo check --workspace` は成功した。
+- 追加確認として `cargo test -p stream-sync-server server_notice` も成功した。
+
+---
+
+## 2026-04-21
+### 種別
+- Codex
+
+### 今回の作業
 - secret store / token rotation 方針を docs に明記した。
 - `crates/config` に future secret store 参照型と token rotation policy placeholder を追加した。
 - `apps/server` の secret resolver / auth decision / rotation boundary に future secret store と rotation placeholder の扱いを追加した。

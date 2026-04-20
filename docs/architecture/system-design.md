@@ -2072,6 +2072,19 @@ Payload layout policy:
 3. Payload writes `notice_type` as `u16 little-endian`.
 4. Payload writes `message` as the existing length-prefixed UTF-8 string.
 
+Trigger policy scope:
+
+1. Server state transition handlers may later emit explicit notice trigger
+   sources.
+2. The trigger policy boundary maps only already-decided trigger sources to
+   `NoticeType`.
+3. Trigger sources in scope for the first placeholder are `Warning`,
+   `Disconnect`, `ProtocolError`, `AuthExpired`, and `ServerShutdown`.
+4. The policy boundary preserves destination metadata, `run_id`,
+   `protocol_version`, and an operator/client-facing short message.
+5. The policy boundary does not detect state transitions, suppress duplicate
+   notices, rate-limit, enqueue, encode, send sockets, or write logs.
+
 Responsibility split:
 
 - `protocol`
@@ -2085,20 +2098,29 @@ Responsibility split:
   - Builds typed `ProtocolMessage::ServerNotice` plus destination metadata from
     already-decided notice fields.
   - Does not decide when to notify, encode bytes, write logs, or send sockets.
+- server notice trigger policy
+  - Maps explicit trigger sources to `NoticeType`.
+  - Produces a typed `ServerNoticeInput` plan for the notice boundary.
+  - Does not inspect server state, decide state transitions, rate-limit, log,
+    enqueue, encode, or send.
+- server state transition handlers
+  - Future owner of deciding that a trigger happened, such as protocol error,
+    auth expiry, disconnect, warning, or shutdown.
+  - Must pass explicit trigger input to the notice trigger policy boundary.
 - outbound queue / net send
   - Receives the typed notice through the same `OutboundQueueItem` handoff as
     other outbound control messages.
   - May encode the typed notice through the protocol encoder once a send step
     calls the net send layer.
-- notice policy / handler
-  - Future owner of deciding when to send disconnect, protocol error, auth
-    expiry, warning, or shutdown notices.
 
 Current code reflects this with `ServerNoticePayloadPlanBoundary`, minimal
 payload encode/decode, decode dispatch, and encoder-boundary support in
 `crates/protocol`, plus `ServerNoticeBoundary` / `ServerOutboundNotice` in
-`apps/server`. Notice-trigger policy, continuous send loop, socket send, and log
-output remain future work.
+`apps/server`. `ServerNoticeTriggerPolicyBoundary`,
+`ServerNoticeTriggerInput`, `ServerNoticeTriggerSource`, and
+`ServerNoticeTriggerPlan` define the trigger planning boundary. Actual state
+transition detection, duplicate suppression, rate limiting, continuous send
+loop, socket send, and log output remain future work.
 
 ---
 
