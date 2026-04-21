@@ -5,6 +5,60 @@
 - Codex
 
 ### 今回の作業
+- completed one-iteration runtime の CLI / config 接続を追加した。
+- `apps/server` から one-iteration receive/send runtime を呼べる手動確認入口を追加した。
+- 既存 server / client example config を使う accepted auth round trip の手動確認手順を docs に反映した。
+
+### 変更ファイル
+- `apps/server/src/lib.rs`
+- `apps/server/src/main.rs`
+- `docs/architecture/system-design.md`
+- `docs/architecture/protocol.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### 決定事項
+- CLI 入口は `--receive-send-once [config-path]` とし、既定値は `configs/examples/server.example.toml` とする。
+- launcher は既存の server TOML shape を読み、UDP socket bind、in-memory registry、outbound queue collection を初期化して `ServerControllerReceiveSendRuntimeBoundary` を 1 回だけ呼ぶ。
+- CLI は caller-owned stderr writer へ receive / rejection / auth JSON Lines を渡し、stdout には短い summary だけを出す。
+- この入口は accepted auth response が queue から encode / send まで流れる手動確認用であり、continuous receive/send loop ではない。
+- retry / requeue、file sink open、process-wide logger、secret store、heartbeat / video / stats 本体拡張は今回も未実装のまま残す。
+
+### 未実装 / 保留
+- 完成した continuous receive loop
+- 完成した continuous send loop
+- retry / requeue
+- send JSON Lines writer 実接続
+- rejection response 送信 policy
+- heartbeat ack の queue storage / send 接続
+- video buffer / sync-core handoff 本体
+- stats metrics state commit / heartbeat observation commit
+- packet drop 本体
+- file sink open / process-wide logger
+- secret store 連携
+
+### 次にやる候補
+- `--receive-send-once` と accepted auth client config の組み合わせで手動通し確認を行う
+- auth / receive JSON Lines file sink の実 file open 範囲を再確認する
+- ServerNotice trigger の state transition 接続範囲を再確認する
+
+### TODO 更新
+- 現在位置に completed one-iteration runtime の CLI / config 接続範囲整理完了を反映した。
+- net-core / server 境界に `ServerReceiveSendOneIterationLauncher` / completed one-iteration runtime CLI config entry placeholder 追加完了を反映した。
+- 直近でやることを `--receive-send-once` の手動通し確認中心へ更新した。
+
+### 検証
+- `cargo fmt`
+- `cargo test -p stream-sync-server receive_send_one_iteration`
+- `cargo fmt --check`
+- `cargo check --workspace`
+
+---
+
+### 種別
+- Codex
+
+### 今回の作業
 - controller が one-iteration receive/send runtime を呼ぶ最小実装を追加した。
 - stop 判定と 1 iteration 実行を `ServerControllerReceiveSendRuntimeBoundary` で接続した。
 - accepted auth request を起点に controller から UDP response send まで通す近い統合テストを追加した。

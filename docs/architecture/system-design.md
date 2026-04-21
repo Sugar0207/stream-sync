@@ -1074,6 +1074,38 @@ Current code reflects this with `ServerControllerReceiveSendRuntimeInput`,
 `ServerControllerReceiveSendRuntimeError`, and
 `ServerControllerReceiveSendRuntimeBoundary`.
 
+Completed one-iteration CLI / config entry:
+
+1. `ServerReceiveSendOneIterationLauncher` loads the same server TOML shape used
+   by the auth response PoC: `[server].bind_host`, `[server].bind_port`,
+   `[session].protocol_version`, and `[auth]`.
+2. The launcher binds one UDP socket, initializes an in-memory
+   `AuthenticatedSenderRegistry` and `ServerOutboundQueueCollection`, and calls
+   `ServerControllerReceiveSendRuntimeBoundary` once.
+3. `apps/server` exposes this through
+   `--receive-send-once [config-path]`.
+4. The CLI writes receive-loop / rejection / auth JSON Lines records to
+   caller-owned stderr handles and prints a short summary to stdout.
+5. The CLI waits for exactly one packet and exits after that one controller
+   step. It does not repeat, retry, requeue, rotate files, or install a global
+   logger.
+
+Manual check shape:
+
+1. In one terminal, run:
+   `cargo run -p stream-sync-server -- --receive-send-once configs/examples/server.example.toml`
+2. In another terminal, send an accepted auth request with the accepted client
+   example:
+   `cargo run -p stream-sync-client -- --auth-request-poc-once configs/examples/client.accepted.example.toml`
+3. Expected result: server stderr includes auth / receive JSON Lines, server
+   stdout reports one handled packet with non-zero `sent_bytes`, and the client
+   receives an accepted `AuthResponse`.
+
+Current code reflects this with `ServerReceiveSendOneIterationLauncher`,
+`ServerReceiveSendOneIterationStartupOutcome`,
+`ServerReceiveSendOneIterationStartupError`, and the server CLI flag
+`--receive-send-once`.
+
 ### 5.7 AuthResponse PoC one-shot startup step
 
 AuthResponse PoC startup uses the existing boundaries as a one-packet

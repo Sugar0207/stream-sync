@@ -555,6 +555,135 @@ pub fn run_auth_response_poc_once_from_path(
     ServerAuthResponsePocLauncher::default().run_once_from_path(path)
 }
 
+/// Launcher for one controller receive/send iteration from server config.
+///
+/// This is a manual check entry point. It binds one UDP socket, initializes
+/// caller-owned in-memory state, and calls the controller receive/send runtime
+/// once. It does not loop, retry, requeue, open file sinks, or install global
+/// logging.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ServerReceiveSendOneIterationLauncher {
+    socket_io: UdpSocketIoBoundary,
+    runtime: ServerControllerReceiveSendRuntimeBoundary,
+}
+
+impl ServerReceiveSendOneIterationLauncher {
+    pub fn load_startup_config_from_path(
+        &self,
+        path: impl AsRef<Path>,
+    ) -> Result<ServerAuthResponsePocStartupConfig, ServerReceiveSendOneIterationStartupError> {
+        ServerAuthResponsePocLauncher::default()
+            .load_startup_config_from_path(path)
+            .map_err(ServerReceiveSendOneIterationStartupError::StartupConfig)
+    }
+
+    pub fn load_startup_config_from_str(
+        &self,
+        input: &str,
+    ) -> Result<ServerAuthResponsePocStartupConfig, ServerReceiveSendOneIterationStartupError> {
+        ServerAuthResponsePocLauncher::default()
+            .load_startup_config_from_str(input)
+            .map_err(ServerReceiveSendOneIterationStartupError::StartupConfig)
+    }
+
+    pub fn run_once_from_path_with_writers<OW: io::Write, RW: io::Write, AW: io::Write>(
+        &self,
+        path: impl AsRef<Path>,
+        operational_writer: OW,
+        rejection_writer: RW,
+        auth_log_writer: AW,
+    ) -> Result<
+        ServerReceiveSendOneIterationStartupOutcome,
+        ServerReceiveSendOneIterationStartupError,
+    > {
+        let startup_config = self.load_startup_config_from_path(path)?;
+        self.run_once_with_writers(
+            startup_config,
+            operational_writer,
+            rejection_writer,
+            auth_log_writer,
+        )
+    }
+
+    pub fn run_once_with_writers<OW: io::Write, RW: io::Write, AW: io::Write>(
+        &self,
+        startup_config: ServerAuthResponsePocStartupConfig,
+        operational_writer: OW,
+        rejection_writer: RW,
+        auth_log_writer: AW,
+    ) -> Result<
+        ServerReceiveSendOneIterationStartupOutcome,
+        ServerReceiveSendOneIterationStartupError,
+    > {
+        let socket = self
+            .socket_io
+            .bind(startup_config.bind_address)
+            .map_err(|error| ServerReceiveSendOneIterationStartupError::Bind {
+                address: startup_config.bind_address,
+                kind: error.kind(),
+            })?;
+        let mut buffer = vec![0_u8; DEFAULT_UDP_PACKET_BUFFER_LEN];
+        let mut registry = AuthenticatedSenderRegistry::default();
+        let mut queue_collection = ServerOutboundQueueCollection::default();
+        let timestamp = current_system_timestamp_micros();
+        let outcome = self
+            .runtime
+            .run_once(
+                &socket,
+                &mut buffer,
+                &mut registry,
+                &mut queue_collection,
+                &startup_config.auth_config,
+                ServerControllerReceiveSendRuntimeInput {
+                    controller: ServerContinuousReceiveLoopControllerInput {
+                        expected_protocol_version: startup_config.expected_protocol_version,
+                        timestamp,
+                        continue_requested: true,
+                    },
+                    heartbeat_timing: ServerHeartbeatAckTiming {
+                        server_received_at: timestamp,
+                        server_sent_at: timestamp,
+                    },
+                    encode_context: EncodeContext {
+                        protocol_version: startup_config.expected_protocol_version,
+                    },
+                    auth_log_timestamp: timestamp,
+                },
+                operational_writer,
+                rejection_writer,
+                auth_log_writer,
+            )
+            .map_err(ServerReceiveSendOneIterationStartupError::Runtime)?;
+
+        Ok(ServerReceiveSendOneIterationStartupOutcome {
+            bind_address: startup_config.bind_address,
+            registry,
+            queue_collection,
+            outcome,
+        })
+    }
+}
+
+/// Result of launching one controller receive/send iteration from config.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ServerReceiveSendOneIterationStartupOutcome {
+    pub bind_address: SocketAddr,
+    pub registry: AuthenticatedSenderRegistry,
+    pub queue_collection: ServerOutboundQueueCollection,
+    pub outcome: ServerControllerReceiveSendRuntimeResult,
+}
+
+/// Startup error for one controller receive/send iteration.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ServerReceiveSendOneIterationStartupError {
+    StartupConfig(ServerAuthResponsePocStartupError),
+    Bind {
+        address: SocketAddr,
+        kind: io::ErrorKind,
+    },
+    Runtime(ServerControllerReceiveSendRuntimeError),
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct ServerPocSettings {
     bind_host: String,
@@ -725,6 +854,14 @@ fn strip_toml_comment(line: &str) -> &str {
     line.split_once('#')
         .map(|(before_comment, _)| before_comment)
         .unwrap_or(line)
+}
+
+fn current_system_timestamp_micros() -> TimestampMicros {
+    let micros = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_micros())
+        .unwrap_or(0);
+    TimestampMicros(u64::try_from(micros).unwrap_or(u64::MAX))
 }
 
 /// Result of processing one already-received packet through the server boundary.
@@ -5850,6 +5987,26 @@ mod tests {
                 "../../../configs/examples/server.example.toml"
             ))
             .expect("example config should load");
+
+        assert_eq!(
+            startup_config.bind_address,
+            "0.0.0.0:5000"
+                .parse::<SocketAddr>()
+                .expect("address should parse")
+        );
+        assert_eq!(startup_config.expected_protocol_version, ProtocolVersion(1));
+        assert_eq!(startup_config.auth_config.allowed_clients.len(), 4);
+        assert_eq!(startup_config.auth_config.shared_tokens.len(), 4);
+    }
+
+    #[test]
+    fn receive_send_one_iteration_launcher_loads_startup_config_from_example() {
+        let launcher = ServerReceiveSendOneIterationLauncher::default();
+        let startup_config = launcher
+            .load_startup_config_from_str(include_str!(
+                "../../../configs/examples/server.example.toml"
+            ))
+            .expect("example config should load for receive/send one iteration");
 
         assert_eq!(
             startup_config.bind_address,

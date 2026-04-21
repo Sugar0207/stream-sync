@@ -47,9 +47,54 @@ fn main() {
                 }
             }
         }
+        Some("--receive-send-once") => {
+            let config_path = args
+                .next()
+                .unwrap_or_else(|| "configs/examples/server.example.toml".to_string());
+            let launcher = stream_sync_server::ServerReceiveSendOneIterationLauncher::default();
+            match launcher.run_once_from_path_with_writers(
+                &config_path,
+                std::io::stderr(),
+                std::io::stderr(),
+                std::io::stderr(),
+            ) {
+                Ok(outcome) => match &outcome.outcome {
+                    stream_sync_server::ServerControllerReceiveSendRuntimeResult::Stopped {
+                        plan,
+                    } => {
+                        println!(
+                            "receive/send one-iteration runtime stopped on {}; state={:?} action={:?}",
+                            outcome.bind_address, plan.state, plan.action
+                        );
+                    }
+                    stream_sync_server::ServerControllerReceiveSendRuntimeResult::Iteration {
+                        observation,
+                        iteration,
+                        ..
+                    } => {
+                        let sent_bytes = iteration
+                            .send
+                            .as_ref()
+                            .map(|send| send.bytes_sent)
+                            .unwrap_or(0);
+                        println!(
+                            "receive/send one-iteration runtime handled one packet on {}; sent_bytes={} observation_state={:?} observation_action={:?}",
+                            outcome.bind_address,
+                            sent_bytes,
+                            observation.state,
+                            observation.action
+                        );
+                    }
+                },
+                Err(error) => {
+                    eprintln!("receive/send one-iteration runtime failed: {error:?}");
+                    std::process::exit(1);
+                }
+            }
+        }
         _ => {
             println!(
-                "stream-sync-server scaffold; use --auth-response-poc-once [config-path] for one-shot auth response PoC"
+                "stream-sync-server scaffold; use --auth-response-poc-once [config-path] or --receive-send-once [config-path]"
             );
         }
     }

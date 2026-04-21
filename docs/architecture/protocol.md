@@ -698,6 +698,25 @@ Current code reflects this with `ServerControllerReceiveSendRuntimeInput`,
 `ServerControllerReceiveSendRuntimeError`, and
 `ServerControllerReceiveSendRuntimeBoundary`.
 
+The completed one-iteration runtime can be launched from server config:
+
+- `ServerReceiveSendOneIterationLauncher` reads the existing server example
+  config shape and calls the controller receive/send runtime once.
+- `apps/server` exposes `--receive-send-once [config-path]`.
+- A manual accepted-auth round trip can use
+  `configs/examples/server.example.toml` with
+  `configs/examples/client.accepted.example.toml`.
+- The server command waits for one packet, emits caller-owned stderr JSON Lines
+  records, sends an accepted `AuthResponse` when auth succeeds, prints a short
+  stdout summary, and exits.
+- This is a manual check entry only. It is not a continuous receive/send loop
+  and does not implement retry, requeue, file sinks, process-wide logging, or
+  async runtime behavior.
+
+Current code reflects this with `ServerReceiveSendOneIterationLauncher`,
+`ServerReceiveSendOneIterationStartupOutcome`,
+`ServerReceiveSendOneIterationStartupError`, and `--receive-send-once`.
+
 ## 1. 目的
 
 このドキュメントは、StreamSync の MVP 段階における通信プロトコルの初期設計を定義するものです。
