@@ -358,6 +358,33 @@ types only. They do not call sockets, run a continuous loop, invoke handlers,
 drop packets, write logs, sleep, block beyond a socket adapter call, or
 introduce an async runtime.
 
+Continuous receive loop 1 tick connection scope:
+
+1. `plan_next` decides whether the next tick should stop or wait for one
+   datagram.
+2. `observe_received_packet` records the received datagram length and moves the
+   tick to decode / gate planning.
+3. The caller uses `ServerReceiveLoopStep` to decode, route, and evaluate the
+   packet acceptance gate.
+4. `observe_gate_outcome` records the gate outcome and marks whether
+   operational logging, rejection logging, or handler handoff is needed.
+5. `observe_socket_receive_error` records the socket receive error checkpoint
+   without deciding retry or logging policy.
+
+The 1 tick placeholder does not own the actual socket call, receive buffer,
+registry mutation, handler execution, packet drop, JSON Lines writes, or retry.
+It only makes the connection between socket receive result, lifecycle decision,
+operational logging requirement, detailed rejection logging requirement, and
+future handler handoff explicit.
+
+Current code reflects the 1 tick connection with
+`ServerContinuousReceiveLoopTickState`,
+`ServerContinuousReceiveLoopTickPlan`, and
+`ServerContinuousReceiveLoopTickBoundary`. These types are intentionally
+separate from `ServerReceiveLoopStep`: the step performs one-packet
+decode/route/gate when called, while the tick boundary only describes how a
+future loop will connect that step to socket receive and downstream handoffs.
+
 ### 5.7 AuthResponse PoC one-shot startup step
 
 AuthResponse PoC startup uses the existing boundaries as a one-packet

@@ -352,6 +352,19 @@ decisions through `ServerContinuousReceiveLoopLifecycleState`,
 blocking loop, invoke handlers, drop packets, write JSON Lines, or introduce an
 async runtime.
 
+The 1 tick connection scope is represented separately by
+`ServerContinuousReceiveLoopTickBoundary`. It records:
+
+- the next stop / receive-one-datagram decision
+- that a received datagram is ready for `ServerReceiveLoopStep`
+- accepted outcomes that require operational logging and future handler handoff
+- rejected outcomes that require operational logging and detailed rejection
+  logging handoff
+- socket receive error checkpoints
+
+The tick boundary does not own the UDP socket, the receive buffer, JSON Lines
+writers, handler dispatch, packet drop, retry, or runtime orchestration.
+
 ## 1. 目的
 
 このドキュメントは、StreamSync の MVP 段階における通信プロトコルの初期設計を定義するものです。

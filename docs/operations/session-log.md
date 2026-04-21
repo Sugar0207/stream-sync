@@ -5,6 +5,55 @@
 - Codex
 
 ### 今回の作業
+- continuous receive loop の 1 tick 実接続範囲を docs に明記した。
+- `apps/server` に continuous receive loop tick placeholder を追加した。
+- socket receive / lifecycle / operational logging / rejection logging / handler handoff の責務分離を整理した。
+
+### 変更ファイル
+- `apps/server/src/lib.rs`
+- `docs/architecture/system-design.md`
+- `docs/architecture/protocol.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### 決定事項
+- 1 tick の範囲は、stop / receive-one-datagram 判定、受信済み packet の decode/gate 計画、gate outcome 後の operational log / rejection log / handler handoff 要否の計画までとする。
+- `ServerContinuousReceiveLoopTickBoundary` は socket call、receive buffer 管理、JSON Lines writer 呼び出し、handler dispatch、packet drop、retry、runtime orchestration を持たない。
+- accepted outcome は operational log と future handler handoff を要求する。
+- rejected outcome は operational log と detailed receive rejection log handoff を要求する。
+
+### 未実装 / 保留
+- continuous receive loop 実行本体
+- socket receive の実呼び出しから tick boundary への接続
+- operational / rejection writer の loop 内実接続
+- handler dispatch 本体
+- packet drop 本体
+- async runtime
+
+### 次にやる候補
+- auth / receive JSON Lines file sink の実 file open 範囲を必要になった時点で再確認する
+- `ServerNotice` trigger の state transition 接続範囲を必要になった時点で再確認する
+- secret store provider 連携または token rotation 実行範囲を必要になった時点で再確認する
+- continuous receive loop から operational / rejection writer への実接続範囲を必要になった時点で整理する
+
+### TODO更新
+- 現在位置に continuous receive loop の 1 tick 実接続範囲整理完了を反映した。
+- 直近でやることを continuous receive loop から operational / rejection writer への実接続範囲整理へ更新した。
+- net-core / server 境界に `ServerContinuousReceiveLoopTickBoundary` / continuous receive loop tick placeholder 追加完了を反映した。
+- net-core / server 境界に continuous receive loop の 1 tick 実接続範囲整理完了を反映した。
+
+### メモ
+- `cargo fmt --check` は成功した。
+- `cargo check --workspace` は成功した。
+- 追加確認として `cargo test -p stream-sync-server continuous_receive_loop_tick` も成功した。
+
+---
+
+## 2026-04-21
+### 種別
+- Codex
+
+### 今回の作業
 - continuous receive loop 本体の実装範囲を docs に明記した。
 - `apps/server` に continuous receive loop lifecycle placeholder を追加した。
 - socket receive / decode / gate / handler handoff / operational logging / rejection logging の責務分離を整理した。
