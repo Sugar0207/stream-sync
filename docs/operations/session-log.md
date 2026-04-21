@@ -1,5 +1,76 @@
 <!-- stream-sync/docs/operations/session-log.md -->
 
+## 2026-04-22
+### 種別
+- Codex
+
+### 今回の作業
+- client 側の `--auth-request-poc-once` で、`AuthRequest` 送信後に同じ UDP socket から `AuthResponse` を 1 回受信して stdout 表示する最小実装を追加した。
+- `crates/protocol` に `AuthResponse` payload decode と decode dispatch 対応を追加した。
+- `--receive-send-once` と accepted client config の手動通し確認を再実行し、client stdout でも `accepted=true`, `reason_code=Ok` を観測した。
+
+### 変更ファイル
+- `apps/client/src/lib.rs`
+- `apps/client/src/main.rs`
+- `crates/protocol/src/lib.rs`
+- `crates/net-core/src/lib.rs`
+- `docs/architecture/protocol.md`
+- `docs/operations/auth-roundtrip-manual-check.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### 決定事項
+- `--auth-request-poc-once` は送信専用ではなく、送信後に `AuthResponse` を 1 packet だけ待つ。
+- client stdout は accepted / rejected の判断に必要な `accepted`, `reason_code`, `message`, `expected_protocol_version` を最小表示する。
+- read timeout は既存 client config の `[network].connect_timeout_ms` を使い、未指定時は 5000ms とする。
+- 継続 receive/send loop、heartbeat、video、switcher、retry、requeue、secret store 連携は今回も対象外のまま残す。
+
+### 実装したこと
+- `decode_auth_response_payload` / `AuthResponsePayloadDecoder` / `AuthResponseReasonCode::try_from` を追加した。
+- `decode_payload_by_message_type` と `InboundPacketDecoder` が `AuthResponse` を decode できるようにした。
+- client one-shot launcher が `AuthRequest` encode/send 後、read timeout 付きで `AuthResponse` を 1 回 receive/decode するようにした。
+- client CLI の stdout に response byte 数、source、accepted、reason_code、message、expected_protocol_version を表示するようにした。
+- protocol / net-core / client の関連単体テストを追加・更新した。
+
+### 手動確認
+- `cargo build -p stream-sync-server -p stream-sync-client`
+- server: `target/debug/stream-sync-server.exe --receive-send-once configs/examples/server.example.toml`
+- client: `target/debug/stream-sync-client.exe --auth-request-poc-once configs/examples/client.accepted.example.toml`
+- client stdout は `received AuthResponse 55 bytes`, `accepted=true`, `reason_code=Ok`, `message=null`, `expected_protocol_version=null` を表示した。
+- server stdout は `sent_bytes=55`, `BodyIterationCompleted`, `YieldToCaller` を表示した。
+- server stderr は `server.receive_loop`, `server.auth_result`, `server.send` を出力し、`server.send` は `message_type="AuthResponse"`, `bytes_sent=55` だった。
+
+### 未実装 / 保留
+- completed continuous receive/send loop
+- heartbeat / video / switcher 側への拡張
+- retry / requeue
+- auth / receive / send JSON Lines file sink open / rotation / retention
+- process-wide logger
+- secret store 連携
+
+### 次にやる候補
+- heartbeat 送信処理を client 側に最小実装する
+- auth / receive / send JSON Lines file sink の実 file open 範囲を再確認する
+- `ServerNotice` trigger の state transition 接続範囲を必要時に整理する
+
+### TODO 更新
+- 現在位置に `AuthResponse` payload decode 完了と client one-shot receive / stdout 表示完了を反映した。
+- client 側タスクに `--auth-request-poc-once` の `AuthResponse` 1 回受信表示完了を追加した。
+- 検証タスクに `AuthResponse` decode と client one-shot receive の関連単体テスト追加を反映した。
+- `auth-roundtrip-manual-check.md` に client 側 accepted / rejected 表示方針と 2026-04-22 の accepted path 手動確認結果を追加した。
+
+### 検証
+- `cargo fmt --check`
+- `cargo test -p stream-sync-protocol auth_response`
+- `cargo test -p stream-sync-net-core auth_response`
+- `cargo test -p stream-sync-client auth_request_poc`
+- `cargo check --workspace`
+- `cargo build -p stream-sync-server -p stream-sync-client`
+- `target/debug/stream-sync-server.exe --receive-send-once configs/examples/server.example.toml`
+- `target/debug/stream-sync-client.exe --auth-request-poc-once configs/examples/client.accepted.example.toml`
+
+---
+
 ## 2026-04-21
 ### 種別
 - Codex

@@ -2,7 +2,7 @@
 
 # StreamSync TODO
 
-最終更新: 2026-04-21
+最終更新: 2026-04-22
 
 このファイルは「現在どこまで終わっていて、次に何をやるか」を確認するための TODO です。  
 時系列の作業履歴、判断理由、各回の作業メモは `docs/operations/session-log.md` を正とします。
@@ -24,18 +24,19 @@
 ## 現在位置
 - 仕様固定と土台作りは概ね完了
 - Cargo workspace と `apps/*` / `crates/*` の初期 scaffold は完了
-- `crates/protocol` の基本型、主要 message 型、timestamp 型、fixed header decode、`AuthRequest` / `Heartbeat` / `VideoFrame` payload decode、`AuthRequest` / `AuthResponse` / `HeartbeatAck` / `VideoFrame` encode は完了
+- `crates/protocol` の基本型、主要 message 型、timestamp 型、fixed header decode、`AuthRequest` / `AuthResponse` / `Heartbeat` / `VideoFrame` payload decode、`AuthRequest` / `AuthResponse` / `HeartbeatAck` / `VideoFrame` encode は完了
 - `crates/config` の server auth 設定 TOML 読み込み最小実装は完了
 - `crates/config` の `shared_token` / `shared_token_env` token reference 読み分けと inline secret debug redaction は完了
 - `crates/net-core` の inbound decode 境界、outbound packet / queue 境界、outbound queue lifecycle 境界、protocol encoder 呼び出し境界、send error / log event 分類 placeholder、UDP socket 1 datagram receive / send adapter は完了
 - `apps/server` の inbound router、UDP receive loop step、UDP socket adapter 接続、auth response PoC one-shot 起動接続、auth response PoC 起動設定接続、receive loop から packet acceptance gate への接続境界、registered packet handler handoff 境界、heartbeat handler ack handoff 境界、heartbeat state / timebase input 境界、heartbeat timebase plan、heartbeat RTT / offset stateless calculator、heartbeat ack observation flow、heartbeat observation carrier、packet acceptance rejection の drop / log handoff 境界、receive rejection JSON Lines event schema 境界、receive rejection stderr JSON Lines 最小出力、auth handler boundary、auth config input boundary、server auth decision 最小実装、`shared_token_env` secret resolver 最小実装、auth success / failure log handoff 境界、auth JSON Lines event schema 境界、auth result stderr JSON Lines 最小出力、auth flow step、認証済み送信元 registry 境界、packet acceptance gate 境界、AuthResponse response boundary、HeartbeatAck ack boundary、outbound queue handoff は完了
 - accepted auth path で `AuthenticatedSenderRegistry` へ in-memory 登録する実処理は完了
-- `apps/client` の client 設定読み込み、AuthRequest 構築、protocol encoder、UDP one-shot send の PoC 入口は完了
+- `apps/client` の client 設定読み込み、AuthRequest 構築、protocol encoder、UDP one-shot send、AuthResponse one-shot receive / stdout 表示の PoC 入口は完了
 - server / client one-shot auth round trip の手動確認手順と accepted path 用 helper config は完了
 - `shared_token_env` を使う one-shot auth round trip 手順と server helper config は完了
 - accepted path の手動確認は成功し、`configs/examples/server.example.toml` と `configs/examples/client.accepted.example.toml` の組み合わせで `accepted=true`, `reason_code=Ok` を観測済み
 - `shared_token_env` accepted path の手動確認は成功し、`configs/examples/server.env-token.example.toml` と `configs/examples/client.accepted.example.toml` の組み合わせで `accepted=true`, `reason_code=Ok` を観測済み
 - `--receive-send-once` accepted path の手動通し確認は成功し、`configs/examples/server.example.toml` と `configs/examples/client.accepted.example.toml` の組み合わせで server 側 `sent_bytes=55`, `accepted=true`, `reason_code=Ok` を観測済み
+- `--auth-request-poc-once` は accepted path で client 側 `AuthResponse` を 1 回受信して stdout に表示できる。`accepted=true`, `reason_code=Ok` を client stdout で観測済み
 - `ClientStats` payload encode/decode と heartbeat observation optional block の最小 wire 変換は完了
 - secret store provider 連携、token hashing、rotation 実行、認証済み送信元の timeout / 失効 / 再認証、実際の packet 破棄、時刻同期本体、映像受信・復号・表示、switcher UI は未実装
 - `ClientStats` receive route / gate / registered handler bridge は完了。継続送信 loop、metrics state commit、RTT / offset state commit は未実装
@@ -168,6 +169,7 @@
 - [x] `protocol_version` 期待値チェックを実装する
 - [x] payload decoder dispatch helper を実装する
 - [x] `AuthRequest` payload byte layout と decode を実装する
+- [x] `AuthResponse` payload byte layout と decode を実装する
 - [x] `Heartbeat` payload byte layout と decode を実装する
 - [x] `VideoFrame` payload byte layout と decode を実装する
 - [x] `AuthResponse` payload byte layout と encode input boundary を整理する
@@ -371,6 +373,7 @@
 - [x] `run_id` を設定から受け取る
 - [x] `app_version` / `protocol_version` を `AuthRequest` に入れて送信する
 - [x] 認証メッセージを 1 回だけ送信する PoC 処理を作る
+- [x] `--auth-request-poc-once` で `AuthResponse` を 1 回だけ受信して stdout に表示する
 - [x] server / client one-shot auth round trip の手動確認手順を追加する
 - [x] accepted path 用の one-shot client example config を追加する
 - [ ] heartbeat 送信処理を作る
@@ -457,6 +460,7 @@
 - [x] accepted path 用 one-shot auth round trip 手動確認手順を追加する
 - [x] accepted path one-shot auth round trip 成功結果を記録する
 - [x] `AuthResponse` encode の単体テストを追加する
+- [x] `AuthResponse` decode と client one-shot receive の単体テストを追加する
 - [x] `HeartbeatAck` encode の単体テストを追加する
 - [x] `VideoFrame` encode の単体テストを追加する
 - [ ] fixed header encode / decode roundtrip test を追加する

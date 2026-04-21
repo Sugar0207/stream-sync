@@ -2,21 +2,27 @@ use std::{
     fs, io,
     net::{SocketAddr, ToSocketAddrs, UdpSocket},
     path::{Path, PathBuf},
+    time::Duration,
 };
 
 use stream_sync_protocol::{
-    AppVersion, AuthRequest, ClientId, EncodeContext, HeartbeatAck, HeartbeatAckObservation,
-    HeartbeatAckObservationBoundary, HeartbeatObservationCarrier,
+    decode_fixed_header, decode_payload_by_message_type, validate_protocol_version, AppVersion,
+    AuthRequest, AuthResponse, ClientId, DecodeContext, EncodeContext, HeartbeatAck,
+    HeartbeatAckObservation, HeartbeatAckObservationBoundary, HeartbeatObservationCarrier,
     HeartbeatObservationCarrierBoundary, MessageEncoder, MessageType, ProtocolError,
     ProtocolMessage, ProtocolMessageEncoderBoundary, ProtocolVersion, RunId, TimestampMicros,
 };
 
+const DEFAULT_AUTH_RESPONSE_TIMEOUT_MS: u64 = 5_000;
+const UDP_PACKET_BUFFER_LEN: usize = 65_507;
+
 /// One-shot client-side AuthRequest send PoC.
 ///
 /// This boundary loads the minimal client config, builds one `AuthRequest`,
-/// encodes it through the protocol encoder, and sends one UDP datagram. It does
-/// not run a continuous loop, send heartbeat/video frames, retry, fragment,
-/// encrypt, or introduce an async runtime.
+/// encodes it through the protocol encoder, sends one UDP datagram, and waits
+/// for one `AuthResponse` datagram on the same socket. It does not run a
+/// continuous loop, send heartbeat/video frames, retry, fragment, encrypt, or
+/// introduce an async runtime.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
 pub struct ClientAuthRequestPocLauncher {
     encoder: ProtocolMessageEncoderBoundary,
@@ -44,6 +50,7 @@ impl ClientAuthRequestPocLauncher {
 
         Ok(ClientAuthRequestPocStartupConfig {
             destination,
+            response_timeout_ms: u64::from(settings.connect_timeout_ms),
             request: AuthRequest {
                 message_type: MessageType::AuthRequest,
                 protocol_version: ProtocolVersion(settings.protocol_version),
@@ -81,15 +88,44 @@ impl ClientAuthRequestPocLauncher {
 
         let socket = UdpSocket::bind(ephemeral_bind_address(startup_config.destination))
             .map_err(|error| ClientAuthRequestPocError::Bind(error.kind()))?;
+        socket
+            .set_read_timeout(Some(Duration::from_millis(
+                startup_config.response_timeout_ms,
+            )))
+            .map_err(|error| ClientAuthRequestPocError::SetReadTimeout(error.kind()))?;
         let bytes_sent = socket
             .send_to(&bytes, startup_config.destination)
             .map_err(|error| ClientAuthRequestPocError::Send(error.kind()))?;
+
+        let mut response_buffer = vec![0_u8; UDP_PACKET_BUFFER_LEN];
+        let (response_len, response_source) = socket
+            .recv_from(&mut response_buffer)
+            .map_err(|error| ClientAuthRequestPocError::Receive(error.kind()))?;
+        let response_bytes = response_buffer[..response_len].to_vec();
+        let packet_view =
+            decode_fixed_header(&response_bytes).map_err(ClientAuthRequestPocError::Decode)?;
+        let decode_context = DecodeContext {
+            expected_protocol_version: startup_config.request.protocol_version,
+        };
+        validate_protocol_version(decode_context, packet_view.header)
+            .map_err(ClientAuthRequestPocError::Decode)?;
+        let decoded_message =
+            decode_payload_by_message_type(decode_context, packet_view.header, packet_view.payload)
+                .map_err(ClientAuthRequestPocError::Decode)?;
+        let ProtocolMessage::AuthResponse(response) = decoded_message else {
+            return Err(ClientAuthRequestPocError::UnexpectedResponseMessage {
+                actual: decoded_message.message_type(),
+            });
+        };
 
         Ok(ClientAuthRequestPocOutcome {
             destination: startup_config.destination,
             request: startup_config.request,
             encoded_bytes: bytes,
             bytes_sent,
+            response_source,
+            response_bytes,
+            response,
         })
     }
 }
@@ -145,16 +181,20 @@ impl ClientHeartbeatObservationCarrierBoundary {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ClientAuthRequestPocStartupConfig {
     pub destination: SocketAddr,
+    pub response_timeout_ms: u64,
     pub request: AuthRequest,
 }
 
-/// Result of one AuthRequest encode/send step.
+/// Result of one AuthRequest encode/send and AuthResponse receive/decode step.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ClientAuthRequestPocOutcome {
     pub destination: SocketAddr,
     pub request: AuthRequest,
     pub encoded_bytes: Vec<u8>,
     pub bytes_sent: usize,
+    pub response_source: SocketAddr,
+    pub response_bytes: Vec<u8>,
+    pub response: AuthResponse,
 }
 
 /// Error from the one-shot client AuthRequest PoC.
@@ -165,7 +205,11 @@ pub enum ClientAuthRequestPocError {
     Destination(ClientAuthRequestPocConfigError),
     Encode(ProtocolError),
     Bind(io::ErrorKind),
+    SetReadTimeout(io::ErrorKind),
     Send(io::ErrorKind),
+    Receive(io::ErrorKind),
+    Decode(ProtocolError),
+    UnexpectedResponseMessage { actual: MessageType },
 }
 
 /// Minimal config parse errors for the one-shot client AuthRequest PoC.
@@ -203,6 +247,7 @@ struct ClientPocSettings {
     run_id: String,
     app_version: String,
     protocol_version: u32,
+    connect_timeout_ms: u32,
 }
 
 #[derive(Debug, Default)]
@@ -215,6 +260,7 @@ struct PartialClientPocSettings {
     run_id: Option<String>,
     app_version: Option<String>,
     protocol_version: Option<u32>,
+    connect_timeout_ms: Option<u32>,
 }
 
 fn parse_client_poc_settings(input: &str) -> Result<ClientPocSettings, ClientAuthRequestPocError> {
@@ -235,6 +281,7 @@ fn parse_client_poc_settings(input: &str) -> Result<ClientPocSettings, ClientAut
             current_section = match section_name {
                 "client" => Some("client"),
                 "session" => Some("session"),
+                "network" => Some("network"),
                 _ => None,
             };
             continue;
@@ -279,6 +326,9 @@ fn parse_client_poc_settings(input: &str) -> Result<ClientPocSettings, ClientAut
             ("session", "protocol_version") => {
                 parsed.protocol_version = Some(parse_poc_u32(value, line_number, key)?);
             }
+            ("network", "connect_timeout_ms") => {
+                parsed.connect_timeout_ms = Some(parse_poc_u32(value, line_number, key)?);
+            }
             _ => {}
         }
     }
@@ -292,6 +342,9 @@ fn parse_client_poc_settings(input: &str) -> Result<ClientPocSettings, ClientAut
         run_id: require_string(parsed.run_id, "session", "run_id")?,
         app_version: require_string(parsed.app_version, "session", "app_version")?,
         protocol_version: require_u32(parsed.protocol_version, "session", "protocol_version")?,
+        connect_timeout_ms: parsed
+            .connect_timeout_ms
+            .unwrap_or(DEFAULT_AUTH_RESPONSE_TIMEOUT_MS as u32),
     })
 }
 
@@ -402,7 +455,9 @@ fn strip_toml_comment(line: &str) -> &str {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use stream_sync_protocol::{decode_auth_request_payload, decode_fixed_header};
+    use stream_sync_protocol::{
+        decode_auth_request_payload, decode_fixed_header, AuthResponseReasonCode,
+    };
 
     #[test]
     fn client_auth_request_poc_launcher_loads_example_config() {
@@ -424,10 +479,11 @@ mod tests {
         assert_eq!(config.request.app_version, AppVersion("0.1.0".to_string()));
         assert_eq!(config.request.shared_token, "replace-with-shared-token");
         assert_eq!(config.request.display_name, Some("Player 1".to_string()));
+        assert_eq!(config.response_timeout_ms, 5_000);
     }
 
     #[test]
-    fn client_auth_request_poc_sends_encoded_auth_request_once() {
+    fn client_auth_request_poc_sends_request_and_receives_auth_response_once() {
         let receiver = UdpSocket::bind("127.0.0.1:0").expect("receiver should bind");
         receiver
             .set_read_timeout(Some(std::time::Duration::from_secs(1)))
@@ -446,26 +502,62 @@ mod tests {
         };
         let config = ClientAuthRequestPocStartupConfig {
             destination,
+            response_timeout_ms: 1_000,
             request: request.clone(),
         };
+        let response = AuthResponse {
+            message_type: MessageType::AuthResponse,
+            protocol_version: ProtocolVersion(2),
+            client_id: request.client_id.clone(),
+            run_id: request.run_id.clone(),
+            accepted: true,
+            reason_code: AuthResponseReasonCode::Ok,
+            message: None,
+            server_time: Some(TimestampMicros(2_000_000)),
+            expected_protocol_version: None,
+        };
+        let response_for_thread = response.clone();
+        let server = std::thread::spawn(move || {
+            let mut buffer = [0_u8; 512];
+            let (len, source) = receiver
+                .recv_from(&mut buffer)
+                .expect("receiver should get one packet");
+            let decoded =
+                decode_fixed_header(&buffer[..len]).expect("encoded fixed header should decode");
+            let decoded_request = decode_auth_request_payload(decoded.header, decoded.payload)
+                .expect("encoded auth request should decode");
+            assert_eq!(decoded_request, request);
+
+            let mut response_bytes = Vec::new();
+            ProtocolMessageEncoderBoundary
+                .encode_message(
+                    EncodeContext {
+                        protocol_version: response_for_thread.protocol_version,
+                    },
+                    &ProtocolMessage::AuthResponse(response_for_thread),
+                    &mut response_bytes,
+                )
+                .expect("auth response should encode");
+            receiver
+                .send_to(&response_bytes, source)
+                .expect("auth response should send");
+            len
+        });
 
         let outcome = ClientAuthRequestPocLauncher::default()
             .run_once(config)
-            .expect("auth request should send");
+            .expect("auth request should send and receive response");
 
-        let mut buffer = [0_u8; 512];
-        let (len, source) = receiver
-            .recv_from(&mut buffer)
-            .expect("receiver should get one packet");
-        assert_eq!(source.ip(), destination.ip());
-        assert_eq!(outcome.bytes_sent, len);
-        assert_eq!(&outcome.encoded_bytes, &buffer[..len]);
+        let received_request_len = server.join().expect("server thread should finish");
+        assert_eq!(outcome.bytes_sent, received_request_len);
+        assert_eq!(outcome.response_source, destination);
+        assert_eq!(outcome.response, response);
 
-        let decoded =
-            decode_fixed_header(&buffer[..len]).expect("encoded fixed header should decode");
+        let decoded = decode_fixed_header(&outcome.encoded_bytes)
+            .expect("encoded fixed header should decode");
         let decoded_request = decode_auth_request_payload(decoded.header, decoded.payload)
             .expect("encoded auth request should decode");
-        assert_eq!(decoded_request, request);
+        assert_eq!(decoded_request.client_id, ClientId("client-1".to_string()));
     }
 
     #[test]

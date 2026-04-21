@@ -287,6 +287,52 @@ pub fn decode_auth_request_payload(
     })
 }
 
+/// Decode an `AuthResponse` payload after fixed header and protocol version checks.
+///
+/// This parses only the authentication result fields returned by the server. It
+/// does not update client authentication state, start heartbeat, or decide
+/// reconnect behavior.
+pub fn decode_auth_response_payload(
+    header: FixedHeader,
+    payload: &[u8],
+) -> Result<AuthResponse, ProtocolError> {
+    if header.message_type != MessageType::AuthResponse {
+        return Err(ProtocolError::UnexpectedMessageType {
+            expected: MessageType::AuthResponse,
+            actual: header.message_type,
+        });
+    }
+
+    if payload.len() != header.payload_length as usize {
+        return Err(ProtocolError::InvalidPayloadLength {
+            expected: header.payload_length,
+            actual: payload.len(),
+        });
+    }
+
+    let mut reader = PayloadReader::new(payload);
+    let client_id = ClientId(reader.read_string()?);
+    let run_id = RunId(reader.read_string()?);
+    let accepted = reader.read_bool()?;
+    let reason_code = AuthResponseReasonCode::try_from(reader.read_u16()?)?;
+    let message = reader.read_optional_string()?;
+    let server_time = reader.read_optional_u64()?.map(TimestampMicros);
+    let expected_protocol_version = reader.read_optional_u32()?.map(ProtocolVersion);
+    reader.finish()?;
+
+    Ok(AuthResponse {
+        message_type: MessageType::AuthResponse,
+        protocol_version: header.protocol_version,
+        client_id,
+        run_id,
+        accepted,
+        reason_code,
+        message,
+        server_time,
+        expected_protocol_version,
+    })
+}
+
 /// Decode a `Heartbeat` payload after fixed header and protocol version checks.
 ///
 /// This parses only the payload layout documented for the initial MVP wire
@@ -487,6 +533,9 @@ pub fn decode_payload_by_message_type(
         MessageType::AuthRequest => {
             AuthRequestPayloadDecoder.decode_payload(context, header, payload)
         }
+        MessageType::AuthResponse => {
+            AuthResponsePayloadDecoder.decode_payload(context, header, payload)
+        }
         MessageType::Heartbeat => HeartbeatPayloadDecoder.decode_payload(context, header, payload),
         MessageType::VideoFrame => {
             VideoFramePayloadDecoder.decode_payload(context, header, payload)
@@ -599,6 +648,18 @@ impl<'a> PayloadReader<'a> {
         match present {
             0 => Ok(None),
             1 => self.read_u64().map(Some),
+            actual => Err(ProtocolError::InvalidOptionalTag { actual }),
+        }
+    }
+
+    fn read_optional_u32(&mut self) -> Result<Option<u32>, ProtocolError> {
+        self.ensure_available(usize::from(PAYLOAD_OPTION_TAG_LEN))?;
+        let present = read_u8(self.payload, self.offset);
+        self.offset += usize::from(PAYLOAD_OPTION_TAG_LEN);
+
+        match present {
+            0 => Ok(None),
+            1 => self.read_u32().map(Some),
             actual => Err(ProtocolError::InvalidOptionalTag { actual }),
         }
     }
@@ -1043,6 +1104,9 @@ pub enum ProtocolError {
         actual: [u8; 3],
     },
     InvalidUtf8String,
+    UnsupportedAuthResponseReasonCode {
+        actual: u16,
+    },
     UnsupportedCodec {
         actual: u16,
     },
@@ -1101,6 +1165,21 @@ impl PayloadDecoder for AuthRequestPayloadDecoder {
         payload: &[u8],
     ) -> Result<ProtocolMessage, ProtocolError> {
         decode_auth_request_payload(header, payload).map(ProtocolMessage::AuthRequest)
+    }
+}
+
+/// Minimal payload decoder for `AuthResponse`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct AuthResponsePayloadDecoder;
+
+impl PayloadDecoder for AuthResponsePayloadDecoder {
+    fn decode_payload(
+        &self,
+        _context: DecodeContext,
+        header: FixedHeader,
+        payload: &[u8],
+    ) -> Result<ProtocolMessage, ProtocolError> {
+        decode_auth_response_payload(header, payload).map(ProtocolMessage::AuthResponse)
     }
 }
 
@@ -1276,6 +1355,22 @@ pub enum AuthResponseReasonCode {
 impl AuthResponseReasonCode {
     pub const fn wire_code(self) -> u16 {
         self as u16
+    }
+}
+
+impl TryFrom<u16> for AuthResponseReasonCode {
+    type Error = ProtocolError;
+
+    fn try_from(value: u16) -> Result<Self, Self::Error> {
+        match value {
+            0 => Ok(Self::Ok),
+            1 => Ok(Self::InvalidToken),
+            2 => Ok(Self::UnknownClient),
+            3 => Ok(Self::ProtocolMismatch),
+            4 => Ok(Self::AlreadyConnected),
+            5 => Ok(Self::InternalError),
+            actual => Err(ProtocolError::UnsupportedAuthResponseReasonCode { actual }),
+        }
     }
 }
 
@@ -1828,6 +1923,98 @@ mod tests {
             .expect("expected payload should encode");
         assert_eq!(decoded.header.payload_length, expected_payload.len() as u32);
         assert_eq!(decoded.payload, expected_payload.as_slice());
+    }
+
+    #[test]
+    fn decodes_auth_response_payload_with_optional_fields() {
+        let expected = AuthResponse {
+            message_type: MessageType::AuthResponse,
+            protocol_version: ProtocolVersion(2),
+            client_id: ClientId("client-1".to_string()),
+            run_id: RunId("run-1".to_string()),
+            accepted: false,
+            reason_code: AuthResponseReasonCode::ProtocolMismatch,
+            message: Some("unsupported protocol_version".to_string()),
+            server_time: Some(TimestampMicros(2_000_000)),
+            expected_protocol_version: Some(ProtocolVersion(3)),
+        };
+        let mut payload = Vec::new();
+        encode_auth_response_payload(&expected, &mut payload)
+            .expect("auth response payload should encode");
+        let packet = test_packet(
+            MessageType::AuthResponse as u16,
+            FIXED_HEADER_LEN,
+            2,
+            &payload,
+        );
+        let decoded = decode_fixed_header(&packet).expect("fixed header should decode");
+
+        let response = decode_auth_response_payload(decoded.header, decoded.payload)
+            .expect("auth response should decode");
+
+        assert_eq!(response, expected);
+    }
+
+    #[test]
+    fn decodes_auth_response_payload_through_dispatch() {
+        let expected = AuthResponse {
+            message_type: MessageType::AuthResponse,
+            protocol_version: ProtocolVersion(2),
+            client_id: ClientId("client-1".to_string()),
+            run_id: RunId("run-1".to_string()),
+            accepted: true,
+            reason_code: AuthResponseReasonCode::Ok,
+            message: None,
+            server_time: None,
+            expected_protocol_version: None,
+        };
+        let mut payload = Vec::new();
+        encode_auth_response_payload(&expected, &mut payload)
+            .expect("auth response payload should encode");
+        let packet = test_packet(
+            MessageType::AuthResponse as u16,
+            FIXED_HEADER_LEN,
+            2,
+            &payload,
+        );
+        let decoded = decode_fixed_header(&packet).expect("fixed header should decode");
+
+        let message = decode_payload_by_message_type(
+            DecodeContext {
+                expected_protocol_version: ProtocolVersion(2),
+            },
+            decoded.header,
+            decoded.payload,
+        )
+        .expect("auth response should decode");
+
+        assert_eq!(message, ProtocolMessage::AuthResponse(expected));
+    }
+
+    #[test]
+    fn rejects_unknown_auth_response_reason_code() {
+        let mut payload = Vec::new();
+        push_string(&mut payload, "client-1");
+        push_string(&mut payload, "run-1");
+        payload.push(0);
+        push_u16(&mut payload, 99);
+        payload.push(0);
+        payload.push(0);
+        payload.push(0);
+        let packet = test_packet(
+            MessageType::AuthResponse as u16,
+            FIXED_HEADER_LEN,
+            2,
+            &payload,
+        );
+        let decoded = decode_fixed_header(&packet).expect("fixed header should decode");
+
+        let response = decode_auth_response_payload(decoded.header, decoded.payload);
+
+        assert_eq!(
+            response,
+            Err(ProtocolError::UnsupportedAuthResponseReasonCode { actual: 99 })
+        );
     }
 
     #[test]
@@ -2640,7 +2827,7 @@ mod tests {
 
     #[test]
     fn returns_not_implemented_for_undecoded_message_type() {
-        let packet = test_packet(MessageType::AuthResponse as u16, FIXED_HEADER_LEN, 2, &[]);
+        let packet = test_packet(MessageType::HeartbeatAck as u16, FIXED_HEADER_LEN, 2, &[]);
         let decoded = decode_fixed_header(&packet).expect("fixed header should decode");
 
         let message = decode_payload_by_message_type(
@@ -2654,7 +2841,7 @@ mod tests {
         assert_eq!(
             message,
             Err(ProtocolError::PayloadDecodeNotImplemented(
-                MessageType::AuthResponse
+                MessageType::HeartbeatAck
             ))
         );
     }

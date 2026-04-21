@@ -860,8 +860,9 @@ fn protocol_error(source: PacketSource, error: ProtocolError) -> NetDecodeError 
 mod tests {
     use super::*;
     use stream_sync_protocol::{
-        ClientId, Codec, HeartbeatAck, MessageType, ProtocolVersion, RunId, TimestampMicros,
-        FIXED_HEADER_LEN, HEADER_FLAGS_OFFSET, HEADER_LENGTH_OFFSET, HEADER_MESSAGE_TYPE_OFFSET,
+        encode_auth_response_payload, AuthResponse, AuthResponseReasonCode, ClientId, Codec,
+        HeartbeatAck, MessageType, ProtocolVersion, RunId, TimestampMicros, FIXED_HEADER_LEN,
+        HEADER_FLAGS_OFFSET, HEADER_LENGTH_OFFSET, HEADER_MESSAGE_TYPE_OFFSET,
         HEADER_PAYLOAD_LENGTH_OFFSET, HEADER_PROTOCOL_VERSION_OFFSET, HEADER_RESERVED_OFFSET,
     };
 
@@ -922,9 +923,28 @@ mod tests {
     }
 
     #[test]
-    fn returns_not_implemented_for_undecoded_payload() {
+    fn decodes_auth_response_packet() {
         let source = packet_source();
-        let packet = test_packet(MessageType::AuthResponse as u16, FIXED_HEADER_LEN, 2, &[]);
+        let response = AuthResponse {
+            message_type: MessageType::AuthResponse,
+            protocol_version: ProtocolVersion(2),
+            client_id: ClientId("client-1".to_string()),
+            run_id: RunId("run-1".to_string()),
+            accepted: true,
+            reason_code: AuthResponseReasonCode::Ok,
+            message: None,
+            server_time: Some(TimestampMicros(2_000_000)),
+            expected_protocol_version: None,
+        };
+        let mut payload = Vec::new();
+        encode_auth_response_payload(&response, &mut payload)
+            .expect("auth response payload should encode");
+        let packet = test_packet(
+            MessageType::AuthResponse as u16,
+            FIXED_HEADER_LEN,
+            2,
+            &payload,
+        );
         let decoder = InboundPacketDecoder;
 
         let decoded = decoder.decode(
@@ -937,13 +957,9 @@ mod tests {
             },
         );
 
-        assert_eq!(
-            decoded,
-            Err(NetDecodeError::Protocol {
-                source,
-                error: ProtocolError::PayloadDecodeNotImplemented(MessageType::AuthResponse)
-            })
-        );
+        let decoded = decoded.expect("auth response should decode");
+        assert_eq!(decoded.source, source);
+        assert_eq!(decoded.message, ProtocolMessage::AuthResponse(response));
     }
 
     #[test]
