@@ -5,6 +5,58 @@
 - Codex
 
 ### 今回の作業
+- continuous receive loop と one-item send runtime の結合範囲を docs に明記した。
+- `apps/server` に receive-send one iteration integration placeholder を追加した。
+- accepted auth request を起点に receive body から dispatch / side effect / queue / one-item send runtime まで通す近い統合テストを追加した。
+
+### 変更ファイル
+- `apps/server/src/lib.rs`
+- `docs/architecture/system-design.md`
+- `docs/architecture/protocol.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### 決定事項
+- receive-send integration は `ServerReceiveSendOneIterationRuntimeBoundary` として、1 receive body iteration と optional 1 send attempt だけを接続する。
+- boundary は body result、dispatch、side effect、output apply、queue push、dequeue、send outcome をすべて返し、future controller が次の判断をできるようにする。
+- caller-owned socket / receive buffer / registry / queue collection / writers を受け取り、境界内部で file open や process-wide logger を持たない。
+- queue collection は accepted auth response の queued item を push し、最大 1 item だけ dequeue する。
+- send runtime は 1 item の encode + UDP send attempt だけを行い、retry / requeue / continuous send loop は持たない。
+
+### 未実装 / 保留
+- 完成した continuous receive loop
+- 完成した continuous send loop
+- controller による反復 / shutdown policy
+- retry / requeue
+- send JSON Lines writer 実接続
+- rejection response 送信 policy
+- heartbeat ack の queue storage / send 接続
+- video buffer / sync-core handoff 本体
+- stats metrics state commit / heartbeat observation commit
+- packet drop 本体
+- file sink open / process-wide logger
+
+### 次にやる候補
+- controller が one-iteration receive/send runtime を呼ぶ範囲を必要時に整理する
+- auth / receive JSON Lines file sink の実 file open 範囲を再確認する
+- ServerNotice trigger の state transition 接続範囲を再確認する
+
+### TODO 更新
+- 現在位置に continuous receive loop と one-item send runtime の最小結合範囲整理完了を反映した。
+- net-core / server 境界に `ServerReceiveSendOneIterationRuntimeBoundary` / receive-send one iteration integration placeholder 追加完了を反映した。
+- 直近でやることを controller が one-iteration receive/send runtime を呼ぶ範囲整理へ更新した。
+
+### 検証
+- `cargo fmt --check`
+- `cargo test -p stream-sync-server receive_send_one_iteration_runtime_sends_accepted_auth_response`
+- `cargo check --workspace`
+
+---
+
+### 種別
+- Codex
+
+### 今回の作業
 - send loop / queue collection の最小接続を追加した。
 - accepted auth response が queue collection から dequeue され、encode / socket send 側へ流れる最小統合経路を追加した。
 - accepted auth request を起点に receive body / dispatch / side effect / output apply / queue collection / send one runtime まで通す近い統合テストを追加した。

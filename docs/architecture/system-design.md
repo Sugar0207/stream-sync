@@ -1008,6 +1008,43 @@ Current code reflects this with `ServerOutboundQueueCollection`,
 `ServerOutboundSendOneRuntimeOutcome`, `ServerOutboundSendOneRuntimeError`,
 and `ServerOutboundSendOneRuntimeBoundary`.
 
+Receive/send one-iteration integration scope:
+
+1. `ServerReceiveSendOneIterationRuntimeBoundary` receives caller-owned socket,
+   receive buffer, authenticated sender registry, outbound queue collection,
+   auth config, and log writers.
+2. It executes exactly one `ServerContinuousReceiveLoopBodyBoundary::run_once`.
+3. It passes the body result through body dispatch, side-effect apply, and
+   output apply.
+4. It pushes any accepted auth response queued item into the caller-owned queue
+   collection, dequeues at most one item, and passes that item to
+   `ServerOutboundSendOneRuntimeBoundary`.
+5. It returns the body, dispatch, side-effect, output, queue push, dequeue, and
+   optional send outcome so a future controller can decide what to do next.
+
+Responsibility split for receive/send integration:
+
+- receive body
+  - Owns one synchronous UDP receive and receive-side writer handoff.
+- dispatch
+  - Owns handler lane classification and one handler runtime chain.
+- side-effect apply
+  - Owns accepted auth registry registration only.
+- output apply
+  - Owns auth log writer handoff and accepted auth queue storage planning.
+- queue collection / dequeue
+  - Owns caller-provided typed queue storage and one-item selection.
+- one-item send runtime
+  - Owns one encode + socket send attempt.
+- future controller
+  - Owns repetition, shutdown policy, retry/requeue, queue retention, send log
+    writing, file sink open, process-wide logger, and packet drop policy.
+
+Current code reflects this with `ServerReceiveSendOneIterationRuntimeInput`,
+`ServerReceiveSendOneIterationRuntimeOutcome`,
+`ServerReceiveSendOneIterationRuntimeError`, and
+`ServerReceiveSendOneIterationRuntimeBoundary`.
+
 ### 5.7 AuthResponse PoC one-shot startup step
 
 AuthResponse PoC startup uses the existing boundaries as a one-packet

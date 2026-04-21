@@ -2333,6 +2333,119 @@ impl ServerOutboundSendOneRuntimeBoundary {
     }
 }
 
+/// Input for one receive-then-send integration step.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct ServerReceiveSendOneIterationRuntimeInput {
+    pub body: ServerContinuousReceiveLoopBodyInput,
+    pub heartbeat_timing: ServerHeartbeatAckTiming,
+    pub encode_context: EncodeContext,
+    pub auth_log_timestamp: TimestampMicros,
+}
+
+/// Outcome of connecting one receive iteration to one optional send step.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ServerReceiveSendOneIterationRuntimeOutcome {
+    pub body: ServerContinuousReceiveLoopBodyResult,
+    pub dispatch: ServerContinuousReceiveLoopBodyDispatchRuntimeOutcome,
+    pub side_effect: ServerDispatchRuntimeSideEffectApplyOutcome,
+    pub output: ServerDispatchRuntimeOutputApplyOutcome,
+    pub queue_push: ServerOutboundQueueCollectionPushOutcome,
+    pub dequeue: ServerOutboundQueueDequeueRuntimeResult,
+    pub send: Option<ServerOutboundSendOneRuntimeOutcome>,
+}
+
+/// Error from the one-iteration receive/send integration runtime.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ServerReceiveSendOneIterationRuntimeError {
+    ReceiveBody(io::ErrorKind),
+    OutputApply(io::ErrorKind),
+    Send(ServerOutboundSendOneRuntimeError),
+}
+
+/// Minimal integration boundary from one receive body iteration to one send.
+///
+/// This boundary composes existing one-step runtimes only. It does not repeat
+/// receive or send loops, retry, requeue, open files, install process-wide
+/// logging, or process heartbeat/video/stat side effects.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ServerReceiveSendOneIterationRuntimeBoundary {
+    body: ServerContinuousReceiveLoopBodyBoundary,
+    dispatch: ServerContinuousReceiveLoopBodyDispatchRuntimeBoundary,
+    side_effect: ServerDispatchRuntimeSideEffectApplyBoundary,
+    output: ServerDispatchRuntimeOutputApplyBoundary,
+    queue: ServerOutboundQueueCollectionBoundary,
+    send: ServerOutboundSendOneRuntimeBoundary,
+}
+
+impl ServerReceiveSendOneIterationRuntimeBoundary {
+    pub fn run_once<OW: io::Write, RW: io::Write, AW: io::Write>(
+        &self,
+        socket: &UdpSocket,
+        buffer: &mut [u8],
+        registry: &mut AuthenticatedSenderRegistry,
+        queue_collection: &mut ServerOutboundQueueCollection,
+        auth_config: &ServerAuthConfig,
+        input: ServerReceiveSendOneIterationRuntimeInput,
+        operational_writer: OW,
+        rejection_writer: RW,
+        auth_log_writer: AW,
+    ) -> Result<
+        ServerReceiveSendOneIterationRuntimeOutcome,
+        ServerReceiveSendOneIterationRuntimeError,
+    > {
+        let body = self
+            .body
+            .run_once(
+                socket,
+                buffer,
+                registry,
+                input.body,
+                operational_writer,
+                rejection_writer,
+            )
+            .map_err(|error| {
+                ServerReceiveSendOneIterationRuntimeError::ReceiveBody(error.kind())
+            })?;
+        let dispatch =
+            self.dispatch
+                .dispatch_body_result(&body, auth_config, input.heartbeat_timing);
+        let side_effect = self
+            .side_effect
+            .apply_body_dispatch_outcome(registry, dispatch.clone());
+        let output = self
+            .output
+            .apply_outputs(
+                side_effect.clone(),
+                queue_collection.len(),
+                input.auth_log_timestamp,
+                auth_log_writer,
+            )
+            .map_err(|error| {
+                ServerReceiveSendOneIterationRuntimeError::OutputApply(error.kind())
+            })?;
+        let queue_push = self.queue.push_from_output_apply(queue_collection, &output);
+        let dequeue = self.queue.dequeue_one(queue_collection);
+        let send = match dequeue.clone() {
+            ServerOutboundQueueDequeueRuntimeResult::Ready(queued) => Some(
+                self.send
+                    .send_queued(socket, queued, input.encode_context)
+                    .map_err(ServerReceiveSendOneIterationRuntimeError::Send)?,
+            ),
+            ServerOutboundQueueDequeueRuntimeResult::Empty => None,
+        };
+
+        Ok(ServerReceiveSendOneIterationRuntimeOutcome {
+            body,
+            dispatch,
+            side_effect,
+            output,
+            queue_push,
+            dequeue,
+            send,
+        })
+    }
+}
+
 fn send_failure_kind_from_io_error_kind(error_kind: io::ErrorKind) -> SendFailureKind {
     match error_kind {
         io::ErrorKind::WouldBlock => SendFailureKind::SocketWouldBlock,
@@ -7257,6 +7370,79 @@ shared_token = "secret"
         assert_eq!(decoded.header.protocol_version, ProtocolVersion(2));
         assert!(registry.get(&ClientId("client-1".to_string())).is_some());
         let auth_log = String::from_utf8(auth_log).expect("auth log should be utf8");
+        assert!(auth_log.contains(r#""accepted":true"#));
+    }
+
+    #[test]
+    fn receive_send_one_iteration_runtime_sends_accepted_auth_response() {
+        let server_socket = UdpSocket::bind("127.0.0.1:0").expect("server socket should bind");
+        let client_socket = UdpSocket::bind("127.0.0.1:0").expect("client socket should bind");
+        client_socket
+            .set_read_timeout(Some(std::time::Duration::from_secs(1)))
+            .expect("client read timeout should be set");
+        let server_address = server_socket
+            .local_addr()
+            .expect("server socket should have address");
+        client_socket
+            .send_to(
+                auth_request_packet("client-1", "presented-secret").as_slice(),
+                server_address,
+            )
+            .expect("auth request should send");
+        let mut receive_buffer = vec![0_u8; 1024];
+        let mut registry = AuthenticatedSenderRegistry::default();
+        let mut queue_collection = ServerOutboundQueueCollection::default();
+        let mut operational_output = Vec::new();
+        let mut rejection_output = Vec::new();
+        let mut auth_log = Vec::new();
+        let runtime = ServerReceiveSendOneIterationRuntimeBoundary::default();
+
+        let outcome = runtime
+            .run_once(
+                &server_socket,
+                &mut receive_buffer,
+                &mut registry,
+                &mut queue_collection,
+                &auth_config(Some("presented-secret")),
+                ServerReceiveSendOneIterationRuntimeInput {
+                    body: ServerContinuousReceiveLoopBodyInput {
+                        expected_protocol_version: ProtocolVersion(2),
+                        timestamp: TimestampMicros(9_000_000),
+                        stop_requested: false,
+                    },
+                    heartbeat_timing: body_dispatch_timing(),
+                    encode_context: EncodeContext {
+                        protocol_version: ProtocolVersion(2),
+                    },
+                    auth_log_timestamp: TimestampMicros(9_000_010),
+                },
+                &mut operational_output,
+                &mut rejection_output,
+                &mut auth_log,
+            )
+            .expect("one iteration receive/send runtime should complete");
+
+        assert!(outcome.queue_push.queued);
+        assert!(matches!(
+            outcome.dequeue,
+            ServerOutboundQueueDequeueRuntimeResult::Ready(_)
+        ));
+        let send = outcome
+            .send
+            .expect("accepted auth should send one response");
+        assert_eq!(send.bytes_sent, send.encoded_packet.bytes.len());
+        assert!(queue_collection.is_empty());
+        assert!(registry.get(&ClientId("client-1".to_string())).is_some());
+
+        let mut response_buffer = vec![0_u8; 1024];
+        let (response_len, _source) = client_socket
+            .recv_from(&mut response_buffer)
+            .expect("auth response should receive from integrated runtime");
+        let decoded = decode_fixed_header(&response_buffer[..response_len])
+            .expect("auth response fixed header should decode");
+        assert_eq!(decoded.header.message_type, MessageType::AuthResponse);
+        let auth_log = String::from_utf8(auth_log).expect("auth log should be utf8");
+        assert!(auth_log.contains(r#""event_name":"server.auth_result""#));
         assert!(auth_log.contains(r#""accepted":true"#));
     }
 

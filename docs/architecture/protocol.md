@@ -660,6 +660,26 @@ Current code reflects this with `ServerOutboundQueueCollection`,
 `ServerOutboundSendOneRuntimeOutcome`, `ServerOutboundSendOneRuntimeError`,
 and `ServerOutboundSendOneRuntimeBoundary`.
 
+The receive/send one-iteration runtime connects one receive body result to one
+optional send attempt:
+
+- It calls `ServerContinuousReceiveLoopBodyBoundary::run_once` once.
+- It passes the body result through body dispatch, side-effect apply, and output
+  apply.
+- It pushes an accepted auth response queued item into caller-owned queue
+  collection storage, dequeues at most one item, and passes it to
+  `ServerOutboundSendOneRuntimeBoundary`.
+- It returns every intermediate handoff and the optional send outcome for a
+  future controller.
+- It does not repeat, retry, requeue, retain unsent queue items beyond the
+  caller-owned collection, write send logs, open files, install a process-wide
+  logger, or implement packet drop policy.
+
+Current code reflects this with `ServerReceiveSendOneIterationRuntimeInput`,
+`ServerReceiveSendOneIterationRuntimeOutcome`,
+`ServerReceiveSendOneIterationRuntimeError`, and
+`ServerReceiveSendOneIterationRuntimeBoundary`.
+
 ## 1. 目的
 
 このドキュメントは、StreamSync の MVP 段階における通信プロトコルの初期設計を定義するものです。
