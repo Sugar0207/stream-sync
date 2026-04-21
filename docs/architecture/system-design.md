@@ -445,6 +445,48 @@ Current code reflects this with
 `ServerContinuousReceiveLoopWriterRuntimeResult` and
 `ServerContinuousReceiveLoopWriterRuntimeBoundary`.
 
+Continuous receive loop handler handoff runtime scope:
+
+1. A future receive tick supplies `ServerReceiveLoopGateOutcome`, packet length,
+   timestamp, caller-owned writers, and the current in-memory
+   `AuthenticatedSenderRegistry`.
+2. `ServerContinuousReceiveLoopHandlerHandoffRuntimeBoundary` first delegates
+   operational / rejection JSON Lines output to
+   `ServerContinuousReceiveLoopWriterRuntimeBoundary`.
+3. If the outcome was rejected, the handler handoff plan is `NotRequired` and
+   no handler input is created.
+4. If the accepted route is `AuthRequest`, the boundary converts it to
+   `ServerAuthCheck` through `ServerAuthHandlerBoundary`.
+5. If the accepted route is `Heartbeat`, `VideoFrame`, or `ClientStats`, the
+   boundary converts it to `ServerRegisteredClientPacket` through
+   `ServerRegisteredPacketBoundary`, preserving the authenticated sender
+   binding.
+6. If the accepted route is unsupported for the server, the boundary records an
+   unsupported handoff plan with source and `MessageType` only.
+
+This is the maximum current handler handoff connection before the continuous
+receive loop body. It does not execute auth decisions, call heartbeat / video /
+stats handlers, enqueue outbound responses, update state, drop packets, choose
+log sinks, open files, install a process-wide logger, retry, or run a loop.
+
+Responsibility split:
+
+- receive tick
+  - Owns socket receive and decode / gate composition in the future loop.
+- writer runtime
+  - Writes one operational event and, when rejected, one detailed rejection
+    event to caller-owned writers.
+- handler handoff runtime
+  - Converts only accepted routes into the next handler input shape.
+- future loop body
+  - Owns sequencing socket receive, writer runtime, handler execution, packet
+    drop, shutdown, and retry/defer policy.
+
+Current code reflects this with
+`ServerContinuousReceiveLoopHandlerHandoffRuntimePlan`,
+`ServerContinuousReceiveLoopHandlerHandoffRuntimeResult`, and
+`ServerContinuousReceiveLoopHandlerHandoffRuntimeBoundary`.
+
 ### 5.7 AuthResponse PoC one-shot startup step
 
 AuthResponse PoC startup uses the existing boundaries as a one-packet

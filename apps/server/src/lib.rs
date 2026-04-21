@@ -1061,6 +1061,119 @@ impl ServerContinuousReceiveLoopWriterRuntimeBoundary {
     }
 }
 
+/// Reason no handler handoff is produced after a receive-loop tick.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ServerContinuousReceiveLoopHandlerHandoffSkipReason {
+    RejectedOutcome,
+    HandlerHandoffNotRequired,
+}
+
+/// Planned handler handoff after writer runtime processing.
+///
+/// This names the exact runtime bridge before the future continuous loop calls
+/// real handlers. It does not execute auth decisions, update heartbeat/video
+/// state, drop packets, enqueue outbound responses, or own log sinks.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ServerContinuousReceiveLoopHandlerHandoffRuntimePlan {
+    Auth(ServerAuthCheck),
+    RegisteredClient(ServerRegisteredClientPacket),
+    Unsupported {
+        source: PacketSource,
+        message_type: MessageType,
+    },
+    AuthError(ServerAuthBoundaryError),
+    RegisteredPacketError(ServerRegisteredPacketBoundaryError),
+    NotRequired(ServerContinuousReceiveLoopHandlerHandoffSkipReason),
+}
+
+/// Result of connecting one receive-loop outcome to writers and handler input.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ServerContinuousReceiveLoopHandlerHandoffRuntimeResult {
+    pub writer: ServerContinuousReceiveLoopWriterRuntimeResult,
+    pub handler: ServerContinuousReceiveLoopHandlerHandoffRuntimePlan,
+}
+
+/// Runtime boundary that connects writer output to the next handler input.
+///
+/// The caller still owns socket receive, loop lifecycle, writer sink selection,
+/// handler execution, packet drop, and retry decisions.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ServerContinuousReceiveLoopHandlerHandoffRuntimeBoundary {
+    writer: ServerContinuousReceiveLoopWriterRuntimeBoundary,
+    auth_handler: ServerAuthHandlerBoundary,
+    registered_handler: ServerRegisteredPacketBoundary,
+}
+
+impl ServerContinuousReceiveLoopHandlerHandoffRuntimeBoundary {
+    pub fn handoff_after_gate_outcome<OW: io::Write, RW: io::Write>(
+        &self,
+        registry: &AuthenticatedSenderRegistry,
+        packet_len: usize,
+        outcome: ServerReceiveLoopGateOutcome,
+        timestamp: TimestampMicros,
+        operational_writer: OW,
+        rejection_writer: RW,
+    ) -> io::Result<ServerContinuousReceiveLoopHandlerHandoffRuntimeResult> {
+        let writer = self.writer.write_after_gate_outcome(
+            packet_len,
+            &outcome,
+            timestamp,
+            operational_writer,
+            rejection_writer,
+        )?;
+        let handler = match outcome {
+            ServerReceiveLoopGateOutcome::Accepted(route)
+                if writer.handoff.handler_handoff_required =>
+            {
+                self.prepare_handler_handoff(registry, route)
+            }
+            ServerReceiveLoopGateOutcome::Accepted(_) => {
+                ServerContinuousReceiveLoopHandlerHandoffRuntimePlan::NotRequired(
+                    ServerContinuousReceiveLoopHandlerHandoffSkipReason::HandlerHandoffNotRequired,
+                )
+            }
+            ServerReceiveLoopGateOutcome::Rejected(_) => {
+                ServerContinuousReceiveLoopHandlerHandoffRuntimePlan::NotRequired(
+                    ServerContinuousReceiveLoopHandlerHandoffSkipReason::RejectedOutcome,
+                )
+            }
+        };
+
+        Ok(ServerContinuousReceiveLoopHandlerHandoffRuntimeResult { writer, handler })
+    }
+
+    fn prepare_handler_handoff(
+        &self,
+        registry: &AuthenticatedSenderRegistry,
+        route: ServerInboundRoute,
+    ) -> ServerContinuousReceiveLoopHandlerHandoffRuntimePlan {
+        match route {
+            ServerInboundRoute::AuthRequest { .. } => self
+                .auth_handler
+                .prepare_from_route(route)
+                .map(ServerContinuousReceiveLoopHandlerHandoffRuntimePlan::Auth)
+                .unwrap_or_else(ServerContinuousReceiveLoopHandlerHandoffRuntimePlan::AuthError),
+            ServerInboundRoute::Heartbeat { .. }
+            | ServerInboundRoute::VideoFrame { .. }
+            | ServerInboundRoute::ClientStats { .. } => self
+                .registered_handler
+                .prepare_for_handler(registry, route)
+                .map(ServerContinuousReceiveLoopHandlerHandoffRuntimePlan::RegisteredClient)
+                .unwrap_or_else(
+                    ServerContinuousReceiveLoopHandlerHandoffRuntimePlan::RegisteredPacketError,
+                ),
+            ServerInboundRoute::UnsupportedForServer {
+                source,
+                message_type,
+                ..
+            } => ServerContinuousReceiveLoopHandlerHandoffRuntimePlan::Unsupported {
+                source,
+                message_type,
+            },
+        }
+    }
+}
+
 pub const SERVER_RECEIVE_LOOP_JSON_LOG_EVENT_NAME: &str = "server.receive_loop";
 
 /// Operational receive loop outcome used by future continuous-loop logging.
@@ -4957,6 +5070,118 @@ shared_token = "secret"
         assert!(rejection_output.contains(r#""event_name":"server.receive_rejection""#));
         assert!(rejection_output.contains(r#""rejection_reason":"EndpointMismatch""#));
         assert!(rejection_output.contains(r#""timestamp":912345"#));
+    }
+
+    #[test]
+    fn continuous_receive_loop_handler_handoff_runtime_prepares_auth_input() {
+        let source = packet_source();
+        let boundary = ServerContinuousReceiveLoopHandlerHandoffRuntimeBoundary::default();
+        let registry = AuthenticatedSenderRegistry::default();
+        let outcome = ServerReceiveLoopGateOutcome::Accepted(ServerInboundRoute::AuthRequest {
+            source,
+            request: auth_request("client-1", "presented-secret"),
+        });
+        let mut operational_output = Vec::new();
+        let mut rejection_output = Vec::new();
+
+        let result = boundary
+            .handoff_after_gate_outcome(
+                &registry,
+                192,
+                outcome,
+                TimestampMicros(923_456),
+                &mut operational_output,
+                &mut rejection_output,
+            )
+            .expect("handler handoff runtime should succeed");
+
+        assert!(matches!(
+            result.handler,
+            ServerContinuousReceiveLoopHandlerHandoffRuntimePlan::Auth(ServerAuthCheck {
+                request: AuthRequest { ref client_id, .. },
+                ..
+            }) if client_id == &ClientId("client-1".to_string())
+        ));
+        assert!(result.writer.operational_event.is_some());
+        assert_eq!(result.writer.rejection_event, None);
+        assert!(String::from_utf8(operational_output)
+            .expect("json line should be utf8")
+            .contains(r#""outcome":"Accepted""#));
+        assert!(rejection_output.is_empty());
+    }
+
+    #[test]
+    fn continuous_receive_loop_handler_handoff_runtime_prepares_registered_input() {
+        let source = packet_source();
+        let boundary = ServerContinuousReceiveLoopHandlerHandoffRuntimeBoundary::default();
+        let registry = registry_with_client("client-1", source);
+        let outcome = ServerReceiveLoopGateOutcome::Accepted(heartbeat_route("client-1", source));
+        let mut operational_output = Vec::new();
+        let mut rejection_output = Vec::new();
+
+        let result = boundary
+            .handoff_after_gate_outcome(
+                &registry,
+                160,
+                outcome,
+                TimestampMicros(934_567),
+                &mut operational_output,
+                &mut rejection_output,
+            )
+            .expect("handler handoff runtime should succeed");
+
+        assert!(matches!(
+            result.handler,
+            ServerContinuousReceiveLoopHandlerHandoffRuntimePlan::RegisteredClient(
+                ServerRegisteredClientPacket::Heartbeat(ServerRegisteredHeartbeatPacket {
+                    heartbeat: Heartbeat { ref client_id, .. },
+                    ..
+                })
+            ) if client_id == &ClientId("client-1".to_string())
+        ));
+        assert!(result.writer.operational_event.is_some());
+        assert_eq!(result.writer.rejection_event, None);
+        assert!(!operational_output.is_empty());
+        assert!(rejection_output.is_empty());
+    }
+
+    #[test]
+    fn continuous_receive_loop_handler_handoff_runtime_skips_rejected_outcome() {
+        let source = packet_source();
+        let boundary = ServerContinuousReceiveLoopHandlerHandoffRuntimeBoundary::default();
+        let registry = AuthenticatedSenderRegistry::default();
+        let outcome = ServerReceiveLoopGateOutcome::Rejected(
+            ServerReceiveLoopGateRejection::Acceptance(PacketAcceptanceRejection {
+                source,
+                message_type: MessageType::VideoFrame,
+                client_id: Some(ClientId("client-1".to_string())),
+                reason: PacketAcceptanceRejectReason::UnauthenticatedSource,
+            }),
+        );
+        let mut operational_output = Vec::new();
+        let mut rejection_output = Vec::new();
+
+        let result = boundary
+            .handoff_after_gate_outcome(
+                &registry,
+                256,
+                outcome,
+                TimestampMicros(945_678),
+                &mut operational_output,
+                &mut rejection_output,
+            )
+            .expect("handler handoff runtime should succeed");
+
+        assert_eq!(
+            result.handler,
+            ServerContinuousReceiveLoopHandlerHandoffRuntimePlan::NotRequired(
+                ServerContinuousReceiveLoopHandlerHandoffSkipReason::RejectedOutcome
+            )
+        );
+        assert!(result.writer.operational_event.is_some());
+        assert!(result.writer.rejection_event.is_some());
+        assert!(!operational_output.is_empty());
+        assert!(!rejection_output.is_empty());
     }
 
     #[test]

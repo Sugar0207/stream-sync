@@ -387,6 +387,21 @@ returns the emitted event inputs. It does not choose stderr vs file, open files,
 install process-wide logging, run a receive loop, dispatch handlers, or drop
 packets.
 
+Handler handoff after writer runtime is represented by
+`ServerContinuousReceiveLoopHandlerHandoffRuntimeBoundary`. It first performs
+the caller-owned writer runtime connection, then converts only accepted routes
+to the next handler input shape:
+
+- `AuthRequest` -> `ServerAuthCheck` via `ServerAuthHandlerBoundary`
+- `Heartbeat` / `VideoFrame` / `ClientStats` ->
+  `ServerRegisteredClientPacket` via `ServerRegisteredPacketBoundary`
+- server-unsupported accepted route -> source + `MessageType` marker
+- rejected outcome -> `NotRequired`
+
+This boundary intentionally stops before auth decision execution, heartbeat /
+video / stats handler execution, outbound response enqueue, packet drop, retry,
+sink selection, file open, or continuous loop orchestration.
+
 ## 1. 目的
 
 このドキュメントは、StreamSync の MVP 段階における通信プロトコルの初期設計を定義するものです。
