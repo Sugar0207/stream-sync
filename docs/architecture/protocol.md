@@ -498,6 +498,28 @@ consumes `ServerContinuousReceiveLoopHandlerDispatchHandoff` and produces
 Current code reflects this with `ServerHandlerDispatchResult`,
 `ServerHandlerDispatchOutcome`, and `ServerHandlerDispatchBoundary`.
 
+The minimal auth dispatch runtime is the first concrete lane-specific
+connection after generic handler dispatch:
+
+- It consumes `ServerHandlerDispatchOutcome`.
+- `ServerHandlerDispatchResult::Auth` is passed to
+  `ServerAuthFlowStep::handle_auth_check` together with `ServerAuthConfig`.
+- The result is `ServerAuthDispatchRuntimeOutcome`, carrying the original
+  packet length and `ServerAuthFlowOutcome`.
+- Non-auth results are returned as `NotAuth` with the original
+  `ServerHandlerDispatchResult`; heartbeat, video frame, and stats lanes remain
+  future registered packet dispatch work.
+- Auth decision remains owned by `ServerAuthFlowStep` /
+  `ServerAuthDecisionBoundary`.
+- `AuthResponse` creation and outbound queue item handoff remain owned by
+  `ServerAuthResponseBoundary` and `ServerOutboundQueueBoundary`.
+- Registry registration application, log writing, queue storage, packet
+  encoding, UDP send, retry, and continuous loop control remain future loop
+  body or send-loop responsibilities.
+
+Current code reflects this with `ServerAuthDispatchRuntimeResult`,
+`ServerAuthDispatchRuntimeOutcome`, and `ServerAuthDispatchRuntimeBoundary`.
+
 ## 1. 目的
 
 このドキュメントは、StreamSync の MVP 段階における通信プロトコルの初期設計を定義するものです。

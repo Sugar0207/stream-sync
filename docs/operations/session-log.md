@@ -5,6 +5,55 @@
 - Codex
 
 ### 今回の作業
+- auth dispatch の最小実接続範囲を docs に明記した。
+- `apps/server` に auth dispatch runtime placeholder を追加した。
+- auth dispatch / auth decision / outbound response handoff / future loop 本体の責務分離を整理した。
+
+### 変更ファイル
+- `apps/server/src/lib.rs`
+- `docs/architecture/system-design.md`
+- `docs/architecture/protocol.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### 決定事項
+- auth dispatch runtime は `ServerAuthDispatchRuntimeBoundary` として、`ServerHandlerDispatchOutcome` のうち `Auth` だけを既存の `ServerAuthFlowStep` へ渡す。
+- auth decision は `ServerAuthFlowStep` / `ServerAuthDecisionBoundary` の責務に残す。
+- AuthResponse 生成と outbound queue item handoff は `ServerAuthResponseBoundary` / `ServerOutboundQueueBoundary` の責務に残す。
+- registry registration の適用、auth log 書き込み、queue storage、packet encode、UDP send、retry、future loop body 制御は今回の runtime では実行しない。
+- 非 Auth の handler dispatch result は `NotAuth` として保持し、registered packet dispatch 側へ残す。
+
+### 未実装 / 保留
+- registered packet handler 本体
+- registry registration の continuous loop 内適用
+- auth log writer への continuous loop 内実接続
+- outbound queue storage / send loop への実接続
+- packet drop 本体
+- file sink open / process-wide logger
+- 完成した continuous receive loop / while loop
+
+### 次にやる候補
+- registered packet handler の最小実接続範囲を整理する
+- auth / receive JSON Lines file sink の実 file open 範囲を再確認する
+- ServerNotice trigger の state transition 接続範囲を再確認する
+- continuous receive loop body から auth dispatch runtime を呼ぶ範囲を必要時に整理する
+
+### TODO 更新
+- 現在位置に auth dispatch の最小実接続範囲整理完了を反映した。
+- net-core / server 境界に `ServerAuthDispatchRuntimeBoundary` / auth dispatch runtime placeholder 追加完了を反映した。
+- 直近でやることから auth dispatch 範囲整理を外し、registered packet handler の最小実接続範囲整理へ更新した。
+
+### 検証
+- `cargo fmt --check`
+- `cargo test -p stream-sync-server auth_dispatch_runtime`
+- `cargo check --workspace`
+
+---
+
+### 種別
+- Codex
+
+### 今回の作業
 - handler dispatch 本体の最小実装範囲を docs に明記した。
 - `apps/server` に handler dispatch result placeholder を追加した。
 - auth dispatch / registered packet dispatch / future outbound enqueue / future stats handling の責務分離を整理した。

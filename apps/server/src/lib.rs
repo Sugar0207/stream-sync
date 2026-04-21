@@ -1683,6 +1683,56 @@ impl ServerHandlerDispatchBoundary {
     }
 }
 
+/// Result of running the minimal auth dispatch runtime.
+///
+/// `Dispatched` means the existing auth flow step produced decision, log
+/// handoff, registry registration handoff, and outbound queue handoff. Non-auth
+/// handler lanes are preserved for a different dispatch runtime.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ServerAuthDispatchRuntimeResult {
+    Dispatched(ServerAuthFlowOutcome),
+    NotAuth(ServerHandlerDispatchResult),
+}
+
+/// Outcome of attempting auth dispatch for one handler dispatch result.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ServerAuthDispatchRuntimeOutcome {
+    pub packet_len: Option<usize>,
+    pub result: ServerAuthDispatchRuntimeResult,
+}
+
+/// Minimal runtime connection from handler dispatch to the auth flow step.
+///
+/// This boundary calls auth flow only for `ServerHandlerDispatchResult::Auth`.
+/// It does not register authenticated sources, write logs, persist queue items,
+/// encode bytes, send UDP, run packet drop policy, or own the future loop body.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct ServerAuthDispatchRuntimeBoundary {
+    auth_flow: ServerAuthFlowStep,
+}
+
+impl ServerAuthDispatchRuntimeBoundary {
+    pub fn dispatch_outcome(
+        &self,
+        outcome: ServerHandlerDispatchOutcome,
+        config: &ServerAuthConfig,
+    ) -> ServerAuthDispatchRuntimeOutcome {
+        let result = match outcome.result {
+            ServerHandlerDispatchResult::Auth(check) => {
+                ServerAuthDispatchRuntimeResult::Dispatched(
+                    self.auth_flow.handle_auth_check(check, config),
+                )
+            }
+            other => ServerAuthDispatchRuntimeResult::NotAuth(other),
+        };
+
+        ServerAuthDispatchRuntimeOutcome {
+            packet_len: outcome.packet_len,
+            result,
+        }
+    }
+}
+
 pub const SERVER_RECEIVE_LOOP_JSON_LOG_EVENT_NAME: &str = "server.receive_loop";
 
 /// Operational receive loop outcome used by future continuous-loop logging.
@@ -5986,6 +6036,69 @@ shared_token = "secret"
                 ..
             })
         ));
+    }
+
+    #[test]
+    fn auth_dispatch_runtime_connects_auth_to_flow_step() {
+        let source = packet_source();
+        let auth = ServerAuthCheck {
+            source,
+            request: auth_request("client-1", "presented-secret"),
+        };
+        let handler_outcome = ServerHandlerDispatchBoundary.dispatch_handoff(
+            ServerContinuousReceiveLoopHandlerDispatchHandoff {
+                packet_len: Some(88),
+                plan: ServerContinuousReceiveLoopHandlerDispatchPlan::Auth(auth),
+            },
+        );
+        let runtime = ServerAuthDispatchRuntimeBoundary::default();
+
+        let outcome =
+            runtime.dispatch_outcome(handler_outcome, &auth_config(Some("presented-secret")));
+
+        assert_eq!(outcome.packet_len, Some(88));
+        let ServerAuthDispatchRuntimeResult::Dispatched(flow) = outcome.result else {
+            panic!("expected auth flow dispatch");
+        };
+        assert!(flow.decision.accepted);
+        assert_eq!(flow.decision.reason_code, AuthResponseReasonCode::Ok);
+        assert_eq!(
+            flow.registry_registration,
+            Some(AuthenticatedSenderRegistration {
+                client_id: ClientId("client-1".to_string()),
+                source,
+                run_id: RunId("run-1".to_string()),
+                protocol_version: ProtocolVersion(2),
+                registered_at: None,
+            })
+        );
+        let ProtocolMessage::AuthResponse(response) = flow.queue_item.packet.message else {
+            panic!("expected queued AuthResponse");
+        };
+        assert!(response.accepted);
+        assert_eq!(response.reason_code, AuthResponseReasonCode::Ok);
+    }
+
+    #[test]
+    fn auth_dispatch_runtime_skips_non_auth_results() {
+        let runtime = ServerAuthDispatchRuntimeBoundary::default();
+        let handler_outcome = ServerHandlerDispatchOutcome {
+            packet_len: None,
+            result: ServerHandlerDispatchResult::NotRequired(
+                ServerContinuousReceiveLoopHandlerDispatchSkipReason::LoopStopped,
+            ),
+        };
+
+        let outcome =
+            runtime.dispatch_outcome(handler_outcome, &auth_config(Some("presented-secret")));
+
+        assert_eq!(outcome.packet_len, None);
+        assert_eq!(
+            outcome.result,
+            ServerAuthDispatchRuntimeResult::NotAuth(ServerHandlerDispatchResult::NotRequired(
+                ServerContinuousReceiveLoopHandlerDispatchSkipReason::LoopStopped
+            ))
+        );
     }
 
     #[test]

@@ -707,6 +707,43 @@ Responsibility split after the handler dispatch bridge:
 Current code reflects this with `ServerHandlerDispatchResult`,
 `ServerHandlerDispatchOutcome`, and `ServerHandlerDispatchBoundary`.
 
+Auth dispatch minimal runtime scope:
+
+1. The auth dispatch runtime receives `ServerHandlerDispatchOutcome` from the
+   generic handler dispatch body.
+2. If the result is `ServerHandlerDispatchResult::Auth`, it calls the existing
+   `ServerAuthFlowStep::handle_auth_check` with `ServerAuthConfig`.
+3. It returns `ServerAuthDispatchRuntimeOutcome`, preserving `packet_len` and
+   the `ServerAuthFlowOutcome`.
+4. If the result is not auth, it returns `NotAuth` with the original
+   `ServerHandlerDispatchResult` so another future dispatch runtime can handle
+   that lane.
+5. The auth dispatch runtime does not register authenticated senders, write
+   JSON Lines, persist queue items, encode packets, send UDP, run packet drop
+   policy, or own the continuous loop body.
+
+Responsibility split for auth dispatch:
+
+- auth dispatch runtime
+  - Selects only the auth lane from handler dispatch output.
+  - Calls the existing auth flow step and returns its typed result.
+- auth decision
+  - Remains inside `ServerAuthFlowStep` / `ServerAuthDecisionBoundary`.
+  - Owns config input preparation, secret resolution result handling, and
+    accepted / rejected decision construction.
+- outbound response handoff
+  - Remains inside `ServerAuthResponseBoundary` and
+    `ServerOutboundQueueBoundary`.
+  - Produces an `OutboundQueueItem` only; it does not push into durable or
+    in-memory queue storage from this runtime.
+- future loop body
+  - Will decide when to call auth dispatch, where to store queue items, when to
+    apply registry registration, and when to hand logs to a writer.
+  - Remains synchronous for MVP; no async runtime is introduced here.
+
+Current code reflects this with `ServerAuthDispatchRuntimeResult`,
+`ServerAuthDispatchRuntimeOutcome`, and `ServerAuthDispatchRuntimeBoundary`.
+
 ### 5.7 AuthResponse PoC one-shot startup step
 
 AuthResponse PoC startup uses the existing boundaries as a one-packet
