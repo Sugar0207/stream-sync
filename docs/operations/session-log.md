@@ -5,6 +5,55 @@
 - Codex
 
 ### 今回の作業
+- video / stats handler の最小実接続範囲を docs に明記した。
+- `apps/server` に video stats handler input runtime placeholder を追加した。
+- registered packet dispatch / future video handler / future stats handling / heartbeat state commit / outbound enqueue の責務分離を整理した。
+
+### 変更ファイル
+- `apps/server/src/lib.rs`
+- `docs/architecture/system-design.md`
+- `docs/architecture/protocol.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### 決定事項
+- video / stats handler runtime は `ServerVideoStatsHandlerRuntimeBoundary` として、registered packet dispatch runtime の `FutureVideoFrame` / `FutureClientStats` だけを typed handler input へ変換する。
+- video は `ServerVideoFrameHandlerInput` として registered packet と payload byte length を保持するだけに留め、H.264 decode、frame buffer、sync scheduling、file sink、drop policy は行わない。
+- stats は既存の `ServerClientStatsHandlerBoundary::prepare_input` を呼び、metrics state commit、heartbeat observation commit、durable RTT / offset state update、stats log output は行わない。
+- heartbeat ack result とその他 lane は `NotVideoOrStats` として保持し、heartbeat state commit と outbound enqueue の責務を混ぜない。
+- この runtime は outbound queue item 生成、packet encode、UDP send、sink open、continuous loop body 制御を持たない。
+
+### 未実装 / 保留
+- video buffer / sync-core handoff 本体
+- stats metrics state commit / heartbeat observation commit
+- heartbeat state commit / RTT offset state commit
+- outbound queue storage / send loop への実接続
+- packet drop 本体
+- file sink open / process-wide logger
+- 完成した continuous receive loop / while loop
+
+### 次にやる候補
+- continuous receive loop body から auth / registered / video stats dispatch runtime を呼ぶ範囲を必要時に整理する
+- auth / receive JSON Lines file sink の実 file open 範囲を再確認する
+- ServerNotice trigger の state transition 接続範囲を再確認する
+- video buffer / sync-core handoff の最小境界を必要時に整理する
+
+### TODO 更新
+- 現在位置に video / stats handler の最小 input 接続範囲整理完了を反映した。
+- net-core / server 境界に `ServerVideoStatsHandlerRuntimeBoundary` / video stats handler input runtime placeholder 追加完了を反映した。
+- 直近でやることから video / stats handler 範囲整理を外し、continuous receive loop body から dispatch runtime を呼ぶ範囲整理へ更新した。
+
+### 検証
+- `cargo fmt --check`
+- `cargo test -p stream-sync-server video_stats_handler_runtime`
+- `cargo check --workspace`
+
+---
+
+### 種別
+- Codex
+
+### 今回の作業
 - registered packet handler の最小実接続範囲を docs に明記した。
 - `apps/server` に registered packet dispatch runtime placeholder を追加した。
 - registered packet dispatch / heartbeat handler / future video handler / future stats handling / outbound enqueue の責務分離を整理した。

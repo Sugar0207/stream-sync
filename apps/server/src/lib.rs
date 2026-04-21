@@ -1792,6 +1792,85 @@ impl ServerRegisteredPacketDispatchRuntimeBoundary {
     }
 }
 
+/// Minimal video frame handler input.
+///
+/// This preserves the authenticated registered packet and records the payload
+/// byte length for later buffering policy. It does not decode H.264, enqueue a
+/// frame, run sync scheduling, or apply video drop policy.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ServerVideoFrameHandlerInput {
+    pub registered_packet: ServerRegisteredVideoFramePacket,
+    pub payload_len: usize,
+}
+
+/// Minimal video frame handler boundary.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct ServerVideoFrameHandlerBoundary;
+
+impl ServerVideoFrameHandlerBoundary {
+    pub fn prepare_input(
+        &self,
+        packet: ServerRegisteredVideoFramePacket,
+    ) -> ServerVideoFrameHandlerInput {
+        let payload_len = packet.frame.payload.len();
+        ServerVideoFrameHandlerInput {
+            registered_packet: packet,
+            payload_len,
+        }
+    }
+}
+
+/// Result of running the minimal video / stats handler runtime.
+///
+/// This connects future video and stats lanes to typed handler inputs only.
+/// Heartbeat ack results and unrelated lanes are preserved for their owners.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ServerVideoStatsHandlerRuntimeResult {
+    VideoFrame(ServerVideoFrameHandlerInput),
+    ClientStats(ServerClientStatsHandlerInput),
+    NotVideoOrStats(ServerRegisteredPacketDispatchRuntimeResult),
+}
+
+/// Outcome of attempting video / stats handler input preparation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ServerVideoStatsHandlerRuntimeOutcome {
+    pub packet_len: Option<usize>,
+    pub result: ServerVideoStatsHandlerRuntimeResult,
+}
+
+/// Minimal runtime connection from registered dispatch to video / stats inputs.
+///
+/// This boundary does not commit heartbeat state, enqueue outbound messages,
+/// buffer video frames, update metrics, calculate RTT / offset state, write
+/// logs, or own the future loop body.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct ServerVideoStatsHandlerRuntimeBoundary {
+    video: ServerVideoFrameHandlerBoundary,
+    stats: ServerClientStatsHandlerBoundary,
+}
+
+impl ServerVideoStatsHandlerRuntimeBoundary {
+    pub fn dispatch_outcome(
+        &self,
+        outcome: ServerRegisteredPacketDispatchRuntimeOutcome,
+    ) -> ServerVideoStatsHandlerRuntimeOutcome {
+        let result = match outcome.result {
+            ServerRegisteredPacketDispatchRuntimeResult::FutureVideoFrame(packet) => {
+                ServerVideoStatsHandlerRuntimeResult::VideoFrame(self.video.prepare_input(packet))
+            }
+            ServerRegisteredPacketDispatchRuntimeResult::FutureClientStats(packet) => {
+                ServerVideoStatsHandlerRuntimeResult::ClientStats(self.stats.prepare_input(packet))
+            }
+            other => ServerVideoStatsHandlerRuntimeResult::NotVideoOrStats(other),
+        };
+
+        ServerVideoStatsHandlerRuntimeOutcome {
+            packet_len: outcome.packet_len,
+            result,
+        }
+    }
+}
+
 pub const SERVER_RECEIVE_LOOP_JSON_LOG_EVENT_NAME: &str = "server.receive_loop";
 
 /// Operational receive loop outcome used by future continuous-loop logging.
@@ -6232,6 +6311,80 @@ shared_token = "secret"
                 }
             )
         ));
+    }
+
+    #[test]
+    fn video_stats_handler_runtime_prepares_video_input_without_buffering() {
+        let source = packet_source();
+        let registry = registry_with_client("client-1", source);
+        let route = video_frame_route("client-1", source);
+        let registered = ServerRegisteredPacketBoundary::default()
+            .prepare_for_handler(&registry, route)
+            .expect("video frame should be accepted");
+        let handler_outcome = ServerHandlerDispatchBoundary.dispatch_handoff(
+            ServerContinuousReceiveLoopHandlerDispatchHandoff {
+                packet_len: Some(128),
+                plan: ServerContinuousReceiveLoopHandlerDispatchPlan::RegisteredClient(registered),
+            },
+        );
+        let timing = ServerHeartbeatAckTiming {
+            server_received_at: TimestampMicros(2_000_100),
+            server_sent_at: TimestampMicros(2_000_200),
+        };
+        let registered_outcome = ServerRegisteredPacketDispatchRuntimeBoundary::default()
+            .dispatch_outcome(handler_outcome, timing);
+        let runtime = ServerVideoStatsHandlerRuntimeBoundary::default();
+
+        let outcome = runtime.dispatch_outcome(registered_outcome);
+
+        assert_eq!(outcome.packet_len, Some(128));
+        let ServerVideoStatsHandlerRuntimeResult::VideoFrame(input) = outcome.result else {
+            panic!("expected video handler input");
+        };
+        assert_eq!(input.payload_len, 3);
+        assert_eq!(input.registered_packet.source, source);
+        assert_eq!(
+            input.registered_packet.authenticated_sender.client_id,
+            ClientId("client-1".to_string())
+        );
+        assert_eq!(input.registered_packet.frame.frame_id, 42);
+        assert!(input.registered_packet.frame.is_keyframe);
+    }
+
+    #[test]
+    fn video_stats_handler_runtime_prepares_stats_input_without_commit() {
+        let source = packet_source();
+        let registry = registry_with_client("client-1", source);
+        let route = client_stats_route("client-1", source);
+        let registered = ServerRegisteredPacketBoundary::default()
+            .prepare_for_handler(&registry, route)
+            .expect("client stats should be accepted");
+        let handler_outcome = ServerHandlerDispatchBoundary.dispatch_handoff(
+            ServerContinuousReceiveLoopHandlerDispatchHandoff {
+                packet_len: Some(96),
+                plan: ServerContinuousReceiveLoopHandlerDispatchPlan::RegisteredClient(registered),
+            },
+        );
+        let timing = ServerHeartbeatAckTiming {
+            server_received_at: TimestampMicros(2_000_100),
+            server_sent_at: TimestampMicros(2_000_200),
+        };
+        let registered_outcome = ServerRegisteredPacketDispatchRuntimeBoundary::default()
+            .dispatch_outcome(handler_outcome, timing);
+        let runtime = ServerVideoStatsHandlerRuntimeBoundary::default();
+
+        let outcome = runtime.dispatch_outcome(registered_outcome);
+
+        assert_eq!(outcome.packet_len, Some(96));
+        let ServerVideoStatsHandlerRuntimeResult::ClientStats(input) = outcome.result else {
+            panic!("expected client stats handler input");
+        };
+        assert_eq!(input.state.source, source);
+        assert_eq!(input.state.client_id, ClientId("client-1".to_string()));
+        assert_eq!(input.state.capture_fps, 30);
+        assert_eq!(input.state.dropped_frames, 2);
+        assert_eq!(input.state.bitrate_kbps, 4500);
+        assert_eq!(input.heartbeat_observation, None);
     }
 
     #[test]

@@ -787,6 +787,48 @@ Current code reflects this with
 `ServerRegisteredPacketDispatchRuntimeOutcome`, and
 `ServerRegisteredPacketDispatchRuntimeBoundary`.
 
+Video / stats handler minimal runtime scope:
+
+1. The video / stats handler runtime receives
+   `ServerRegisteredPacketDispatchRuntimeOutcome`.
+2. If the result is `FutureVideoFrame`, it produces
+   `ServerVideoFrameHandlerInput` from the registered packet and records the
+   H.264 payload byte length. It does not decode video, buffer frames, schedule
+   sync, write files, or apply video drop policy.
+3. If the result is `FutureClientStats`, it calls the existing
+   `ServerClientStatsHandlerBoundary::prepare_input` and produces
+   `ServerClientStatsHandlerInput`. It does not commit metrics state, commit
+   heartbeat observation state, calculate durable RTT / offset state, or write
+   stats logs.
+4. Heartbeat ack results and unrelated lanes are returned as `NotVideoOrStats`
+   so heartbeat state commit and outbound work remain owned by their own
+   layers.
+
+Responsibility split for video / stats:
+
+- registered packet dispatch
+  - Classifies registered packets into heartbeat ack, future video, and future
+    stats lanes.
+  - Does not own video buffering, stats commit, or send-loop side effects.
+- future video handler
+  - Owns later validation beyond packet acceptance, frame buffering, sync-core
+    handoff, decoder handoff, and frame drop policy.
+  - Current placeholder only preserves the registered packet and payload length.
+- future stats handling
+  - Owns later metrics state commit and optional heartbeat observation commit.
+  - Current runtime only prepares `ServerClientStatsHandlerInput`.
+- heartbeat state commit
+  - Remains separate from video / stats handling. Heartbeat state/timebase input
+    is produced by heartbeat handling but not committed here.
+- outbound enqueue
+  - Remains separate from video / stats handling. This runtime creates no
+    outbound queue items.
+
+Current code reflects this with `ServerVideoFrameHandlerInput`,
+`ServerVideoFrameHandlerBoundary`, `ServerVideoStatsHandlerRuntimeResult`,
+`ServerVideoStatsHandlerRuntimeOutcome`, and
+`ServerVideoStatsHandlerRuntimeBoundary`.
+
 ### 5.7 AuthResponse PoC one-shot startup step
 
 AuthResponse PoC startup uses the existing boundaries as a one-packet

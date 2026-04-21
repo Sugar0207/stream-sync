@@ -544,6 +544,29 @@ Current code reflects this with
 `ServerRegisteredPacketDispatchRuntimeOutcome`, and
 `ServerRegisteredPacketDispatchRuntimeBoundary`.
 
+The minimal video / stats handler runtime stops at typed handler input
+preparation:
+
+- It consumes `ServerRegisteredPacketDispatchRuntimeOutcome`.
+- `FutureVideoFrame` becomes `ServerVideoFrameHandlerInput`, which preserves
+  the registered packet and H.264 payload byte length only. Video decode,
+  buffering, sync scheduling, file sinks, and video drop policy are future
+  handler responsibilities.
+- `FutureClientStats` becomes `ServerClientStatsHandlerInput` through the
+  existing stats handler boundary. Metrics state commit, heartbeat observation
+  commit, durable RTT / offset state update, and stats log output remain future
+  stats handling responsibilities.
+- Heartbeat ack results and unrelated lanes are returned as `NotVideoOrStats`.
+  Heartbeat state commit and outbound enqueue remain separate from video /
+  stats handler input preparation.
+- The runtime does not create outbound queue items, encode packets, send UDP,
+  open sinks, or own the continuous loop body.
+
+Current code reflects this with `ServerVideoFrameHandlerInput`,
+`ServerVideoFrameHandlerBoundary`, `ServerVideoStatsHandlerRuntimeResult`,
+`ServerVideoStatsHandlerRuntimeOutcome`, and
+`ServerVideoStatsHandlerRuntimeBoundary`.
+
 ## 1. 目的
 
 このドキュメントは、StreamSync の MVP 段階における通信プロトコルの初期設計を定義するものです。
