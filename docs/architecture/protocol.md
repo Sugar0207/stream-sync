@@ -330,6 +330,28 @@ Current implementation: `net-core::UdpSocketIoBoundary`,
 Continuous socket loops, async runtime, retry, fragmentation, encryption,
 actual packet drop, and JSON Lines output remain future work.
 
+Continuous receive loop body scope remains a lifecycle plan, not a completed
+runtime loop:
+
+1. Decide stop vs receive-one-datagram.
+2. Receive at most one UDP datagram through the existing synchronous socket
+   adapter.
+3. Run `ServerReceiveLoopStep` for decode / route / packet acceptance gate.
+4. For accepted outcomes, prepare `server.receive_loop` operational logging
+   and future handler handoff.
+5. For rejected outcomes, prepare `server.receive_loop` operational logging
+   plus detailed `server.receive_rejection` logging handoff.
+6. Return to the next lifecycle decision.
+
+Current implementation:
+`apps/server::ServerContinuousReceiveLoopLifecycleBoundary` records these
+decisions through `ServerContinuousReceiveLoopLifecycleState`,
+`ServerContinuousReceiveLoopAction`,
+`ServerContinuousReceiveLoopLifecycleInput`, and
+`ServerContinuousReceiveLoopLifecyclePlan`. It does not call sockets, run a
+blocking loop, invoke handlers, drop packets, write JSON Lines, or introduce an
+async runtime.
+
 ## 1. 目的
 
 このドキュメントは、StreamSync の MVP 段階における通信プロトコルの初期設計を定義するものです。

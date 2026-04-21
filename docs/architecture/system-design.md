@@ -305,6 +305,59 @@ Current code reflects this with `net-core::UdpSocketIoBoundary`,
 async runtime integration, retry, fragmentation, encryption, queue runtime,
 packet drop execution, and JSON Lines log output remain unimplemented.
 
+Continuous receive loop body implementation scope:
+
+1. Check whether a stop has been requested.
+2. If not stopping, receive at most one UDP datagram through the existing
+   synchronous socket adapter.
+3. Pass the received bytes and source endpoint to `ServerReceiveLoopStep` for
+   decode, route, and packet acceptance gate evaluation.
+4. For `Accepted`, prepare operational receive-loop logging and hand the
+   accepted route to future handler dispatch.
+5. For `Rejected`, prepare operational receive-loop logging and receive
+   rejection logging handoff.
+6. Return to the next lifecycle decision.
+
+Current lifecycle placeholder:
+
+- `ServerContinuousReceiveLoopLifecycleBoundary::plan_next` decides only
+  stop vs receive-one-datagram.
+- `plan_received_packet` marks the point where one received datagram should be
+  decoded and gated by `ServerReceiveLoopStep`.
+- `plan_after_gate_outcome` marks whether an accepted route should be handed to
+  handlers or a rejection should be prepared for logs.
+- `plan_socket_receive_error` records a socket receive failure checkpoint only.
+
+Responsibility split for the future loop body:
+
+- socket receive
+  - Owns one blocking `recv_from` through the existing synchronous adapter.
+  - Does not decode, authenticate, dispatch handlers, or write logs.
+- decode / gate
+  - Owned by `ServerReceiveLoopStep` and `PacketAcceptanceGateBoundary`.
+  - Does not run an outer loop or write JSON Lines.
+- handler handoff
+  - Future owner of dispatching accepted routes to auth / registered packet
+    handlers.
+  - Not implemented by the lifecycle placeholder.
+- operational logging
+  - Uses `ServerReceiveLoopLogOutputBoundary` shape for `server.receive_loop`.
+  - Not connected to a real continuous loop yet.
+- rejection logging
+  - Uses `ServerReceiveRejectionLogOutputBoundary` shape for detailed
+    `server.receive_rejection`.
+  - Packet drop execution remains future work.
+
+Current code reflects this with
+`apps/server::ServerContinuousReceiveLoopLifecycleState`,
+`ServerContinuousReceiveLoopAction`,
+`ServerContinuousReceiveLoopLifecycleInput`,
+`ServerContinuousReceiveLoopLifecyclePlan`, and
+`ServerContinuousReceiveLoopLifecycleBoundary`. These are loop-body planning
+types only. They do not call sockets, run a continuous loop, invoke handlers,
+drop packets, write logs, sleep, block beyond a socket adapter call, or
+introduce an async runtime.
+
 ### 5.7 AuthResponse PoC one-shot startup step
 
 AuthResponse PoC startup uses the existing boundaries as a one-packet

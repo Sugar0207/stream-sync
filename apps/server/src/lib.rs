@@ -723,6 +723,122 @@ pub enum ServerReceiveLoopGateRejection {
     Acceptance(PacketAcceptanceRejection),
 }
 
+/// Lifecycle states for a future continuous receive loop body.
+///
+/// This does not implement a loop. It only names the checkpoints around socket
+/// receive, one-packet processing, accepted dispatch, rejection logging, and
+/// shutdown.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ServerContinuousReceiveLoopLifecycleState {
+    Stopped,
+    AwaitingSocketReceive,
+    ProcessingReceivedPacket,
+    DispatchingAcceptedRoute,
+    PreparingRejectionLogs,
+    SocketReceiveFailed,
+}
+
+/// Next action a future continuous receive loop body may take.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ServerContinuousReceiveLoopAction {
+    Stop,
+    ReceiveOneDatagram,
+    DecodeAndGateOnePacket,
+    DispatchAcceptedRoute,
+    PrepareRejectionLogs,
+    ObserveSocketReceiveError,
+}
+
+/// Minimal input for planning the next continuous receive loop step.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct ServerContinuousReceiveLoopLifecycleInput {
+    pub stop_requested: bool,
+}
+
+/// Planned lifecycle state/action for a future continuous receive loop body.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct ServerContinuousReceiveLoopLifecyclePlan {
+    pub state: ServerContinuousReceiveLoopLifecycleState,
+    pub action: ServerContinuousReceiveLoopAction,
+    pub operational_log_required: bool,
+    pub rejection_log_required: bool,
+    pub handler_handoff_required: bool,
+}
+
+/// Minimal lifecycle boundary for the future continuous receive loop body.
+///
+/// This boundary does not call sockets, decode packets, run handlers, drop
+/// packets, write logs, block, sleep, or spawn async tasks.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct ServerContinuousReceiveLoopLifecycleBoundary;
+
+impl ServerContinuousReceiveLoopLifecycleBoundary {
+    pub fn plan_next(
+        &self,
+        input: ServerContinuousReceiveLoopLifecycleInput,
+    ) -> ServerContinuousReceiveLoopLifecyclePlan {
+        if input.stop_requested {
+            return ServerContinuousReceiveLoopLifecyclePlan {
+                state: ServerContinuousReceiveLoopLifecycleState::Stopped,
+                action: ServerContinuousReceiveLoopAction::Stop,
+                operational_log_required: false,
+                rejection_log_required: false,
+                handler_handoff_required: false,
+            };
+        }
+
+        ServerContinuousReceiveLoopLifecyclePlan {
+            state: ServerContinuousReceiveLoopLifecycleState::AwaitingSocketReceive,
+            action: ServerContinuousReceiveLoopAction::ReceiveOneDatagram,
+            operational_log_required: false,
+            rejection_log_required: false,
+            handler_handoff_required: false,
+        }
+    }
+
+    pub fn plan_received_packet(&self) -> ServerContinuousReceiveLoopLifecyclePlan {
+        ServerContinuousReceiveLoopLifecyclePlan {
+            state: ServerContinuousReceiveLoopLifecycleState::ProcessingReceivedPacket,
+            action: ServerContinuousReceiveLoopAction::DecodeAndGateOnePacket,
+            operational_log_required: false,
+            rejection_log_required: false,
+            handler_handoff_required: false,
+        }
+    }
+
+    pub fn plan_after_gate_outcome(
+        &self,
+        outcome: &ServerReceiveLoopGateOutcome,
+    ) -> ServerContinuousReceiveLoopLifecyclePlan {
+        match outcome {
+            ServerReceiveLoopGateOutcome::Accepted(_) => ServerContinuousReceiveLoopLifecyclePlan {
+                state: ServerContinuousReceiveLoopLifecycleState::DispatchingAcceptedRoute,
+                action: ServerContinuousReceiveLoopAction::DispatchAcceptedRoute,
+                operational_log_required: true,
+                rejection_log_required: false,
+                handler_handoff_required: true,
+            },
+            ServerReceiveLoopGateOutcome::Rejected(_) => ServerContinuousReceiveLoopLifecyclePlan {
+                state: ServerContinuousReceiveLoopLifecycleState::PreparingRejectionLogs,
+                action: ServerContinuousReceiveLoopAction::PrepareRejectionLogs,
+                operational_log_required: true,
+                rejection_log_required: true,
+                handler_handoff_required: false,
+            },
+        }
+    }
+
+    pub fn plan_socket_receive_error(&self) -> ServerContinuousReceiveLoopLifecyclePlan {
+        ServerContinuousReceiveLoopLifecyclePlan {
+            state: ServerContinuousReceiveLoopLifecycleState::SocketReceiveFailed,
+            action: ServerContinuousReceiveLoopAction::ObserveSocketReceiveError,
+            operational_log_required: false,
+            rejection_log_required: false,
+            handler_handoff_required: false,
+        }
+    }
+}
+
 pub const SERVER_RECEIVE_LOOP_JSON_LOG_EVENT_NAME: &str = "server.receive_loop";
 
 /// Operational receive loop outcome used by future continuous-loop logging.
@@ -4301,6 +4417,93 @@ shared_token = "secret"
         assert!(output.contains(r#""message_type":"VideoFrame""#));
         assert!(output.contains(r#""rejection_reason":"EndpointMismatch""#));
         assert!(output.contains(r#""timestamp":456789"#));
+    }
+
+    #[test]
+    fn continuous_receive_loop_lifecycle_stops_when_requested() {
+        let lifecycle = ServerContinuousReceiveLoopLifecycleBoundary;
+
+        let plan = lifecycle.plan_next(ServerContinuousReceiveLoopLifecycleInput {
+            stop_requested: true,
+        });
+
+        assert_eq!(
+            plan,
+            ServerContinuousReceiveLoopLifecyclePlan {
+                state: ServerContinuousReceiveLoopLifecycleState::Stopped,
+                action: ServerContinuousReceiveLoopAction::Stop,
+                operational_log_required: false,
+                rejection_log_required: false,
+                handler_handoff_required: false,
+            }
+        );
+    }
+
+    #[test]
+    fn continuous_receive_loop_lifecycle_waits_for_one_datagram() {
+        let lifecycle = ServerContinuousReceiveLoopLifecycleBoundary;
+
+        let plan = lifecycle.plan_next(ServerContinuousReceiveLoopLifecycleInput {
+            stop_requested: false,
+        });
+
+        assert_eq!(
+            plan,
+            ServerContinuousReceiveLoopLifecyclePlan {
+                state: ServerContinuousReceiveLoopLifecycleState::AwaitingSocketReceive,
+                action: ServerContinuousReceiveLoopAction::ReceiveOneDatagram,
+                operational_log_required: false,
+                rejection_log_required: false,
+                handler_handoff_required: false,
+            }
+        );
+    }
+
+    #[test]
+    fn continuous_receive_loop_lifecycle_dispatches_accepted_route() {
+        let source = packet_source();
+        let lifecycle = ServerContinuousReceiveLoopLifecycleBoundary;
+        let outcome = ServerReceiveLoopGateOutcome::Accepted(heartbeat_route("client-1", source));
+
+        let plan = lifecycle.plan_after_gate_outcome(&outcome);
+
+        assert_eq!(
+            plan,
+            ServerContinuousReceiveLoopLifecyclePlan {
+                state: ServerContinuousReceiveLoopLifecycleState::DispatchingAcceptedRoute,
+                action: ServerContinuousReceiveLoopAction::DispatchAcceptedRoute,
+                operational_log_required: true,
+                rejection_log_required: false,
+                handler_handoff_required: true,
+            }
+        );
+    }
+
+    #[test]
+    fn continuous_receive_loop_lifecycle_prepares_rejection_logs() {
+        let source = packet_source();
+        let lifecycle = ServerContinuousReceiveLoopLifecycleBoundary;
+        let outcome = ServerReceiveLoopGateOutcome::Rejected(
+            ServerReceiveLoopGateRejection::Acceptance(PacketAcceptanceRejection {
+                source,
+                message_type: MessageType::Heartbeat,
+                client_id: Some(ClientId("client-2".to_string())),
+                reason: PacketAcceptanceRejectReason::UnknownClient,
+            }),
+        );
+
+        let plan = lifecycle.plan_after_gate_outcome(&outcome);
+
+        assert_eq!(
+            plan,
+            ServerContinuousReceiveLoopLifecyclePlan {
+                state: ServerContinuousReceiveLoopLifecycleState::PreparingRejectionLogs,
+                action: ServerContinuousReceiveLoopAction::PrepareRejectionLogs,
+                operational_log_required: true,
+                rejection_log_required: true,
+                handler_handoff_required: false,
+            }
+        );
     }
 
     #[test]
