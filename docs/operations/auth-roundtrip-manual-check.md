@@ -117,6 +117,61 @@ client 側 stdout は通常の accepted path と同じく、1 回送信した by
 - server が戻らない場合
   - inline token 手順と同じく、client destination、firewall、bind port、server 起動順を確認します。
 
+## `--receive-send-once` accepted path 手動確認結果
+
+completed one-iteration runtime の CLI / config 接続を確認する手順です。
+
+この経路は `ServerReceiveSendOneIterationLauncher` から
+`ServerControllerReceiveSendRuntimeBoundary` を 1 回だけ呼び、accepted
+auth request を receive body -> dispatch -> side effect apply -> outbound
+queue collection -> one-item send runtime へ渡します。継続 receive/send loop、
+retry / requeue、file sink open、process-wide logger は含みません。
+
+### 実行コマンド
+
+server:
+
+```powershell
+cargo run -p stream-sync-server -- --receive-send-once configs/examples/server.example.toml
+```
+
+client:
+
+```powershell
+cargo run -p stream-sync-client -- --auth-request-poc-once configs/examples/client.accepted.example.toml
+```
+
+### 2026-04-21 実行結果
+
+結果: 成功。
+
+server stdout:
+
+```text
+receive/send one-iteration runtime handled one packet on 0.0.0.0:5000; sent_bytes=55 observation_state=BodyIterationCompleted observation_action=YieldToCaller
+```
+
+server stderr の要点:
+
+```json
+{"event_name":"server.receive_loop","source":"127.0.0.1:<client-port>","outcome":"Accepted","packet_len":96,"message_type":"AuthRequest","client_id":"player1","rejection_reason":null,"timestamp":<timestamp>}
+{"event_name":"server.auth_result","run_id":"streamsync-dev-session","client_id":"player1","source":"127.0.0.1:<client-port>","accepted":true,"reason_code":"Ok","message":null,"app_version":"0.1.0","protocol_version":1,"timestamp":<timestamp>,"expected_protocol_version":null}
+```
+
+client stdout:
+
+```text
+auth request PoC sent 96 bytes to 127.0.0.1:5000; client_id=player1 run_id=streamsync-dev-session protocol_version=1
+```
+
+client stderr は cargo の build / run 表示のみ。
+
+この確認で、accepted auth request が `--receive-send-once` 入口から 1 回の
+controller receive/send runtime に入り、server 側で `AuthResponse` 55 bytes
+を UDP send したことを確認した。現行 client の
+`--auth-request-poc-once` は送信専用 PoC のため、client stdout には
+`AuthResponse` 受信結果は表示されない。
+
 ## 成功時の見方
 
 client 側には、送信 byte 数、destination、`client_id`、`run_id`、`protocol_version` が表示されます。

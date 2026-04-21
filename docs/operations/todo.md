@@ -35,6 +35,7 @@
 - `shared_token_env` を使う one-shot auth round trip 手順と server helper config は完了
 - accepted path の手動確認は成功し、`configs/examples/server.example.toml` と `configs/examples/client.accepted.example.toml` の組み合わせで `accepted=true`, `reason_code=Ok` を観測済み
 - `shared_token_env` accepted path の手動確認は成功し、`configs/examples/server.env-token.example.toml` と `configs/examples/client.accepted.example.toml` の組み合わせで `accepted=true`, `reason_code=Ok` を観測済み
+- `--receive-send-once` accepted path の手動通し確認は成功し、`configs/examples/server.example.toml` と `configs/examples/client.accepted.example.toml` の組み合わせで server 側 `sent_bytes=55`, `accepted=true`, `reason_code=Ok` を観測済み
 - `ClientStats` payload encode/decode と heartbeat observation optional block の最小 wire 変換は完了
 - secret store provider 連携、token hashing、rotation 実行、認証済み送信元の timeout / 失効 / 再認証、実際の packet 破棄、時刻同期本体、映像受信・復号・表示、switcher UI は未実装
 - `ClientStats` receive route / gate / registered handler bridge は完了。継続送信 loop、metrics state commit、RTT / offset state commit は未実装
@@ -45,7 +46,7 @@
 - receive loop の継続運用向けログ範囲は整理済み。`server.receive_loop` の event schema / caller-owned writer / sink plan placeholder は追加済みだが、continuous receive loop からの実接続、file sink open、process-wide logger は未実装
 - continuous receive loop 本体の実装範囲、1 tick 実接続範囲、operational / rejection writer への handoff 範囲、caller-owned writer 呼び出し範囲、handler handoff 実接続範囲、最小 1 tick 実行接続範囲、継続 loop controller の外枠範囲、handler dispatch への最小 handoff 範囲、handler dispatch 本体の最小分類範囲、auth dispatch の最小実接続範囲、registered packet handler の最小実接続範囲、video / stats handler の最小 input 接続範囲、continuous receive loop body から dispatch runtime を呼ぶ最小範囲、dispatch runtime 結果の side effect 適用範囲、accepted auth の outbound queue storage / auth log writer 最小接続範囲、send loop / queue collection の最小接続範囲、continuous receive loop と one-item send runtime の最小結合範囲、controller が one-iteration receive/send runtime を呼ぶ最小範囲、completed one-iteration runtime の CLI / config 接続範囲は整理済み。loop lifecycle / tick / writer handoff / writer runtime / handler handoff runtime / one-tick runtime / controller / handler dispatch bridge / handler dispatch result / auth dispatch runtime / registered packet dispatch runtime / video stats handler runtime / body dispatch runtime / side effect apply / output apply / queue collection / send one runtime / receive-send one iteration runtime / controller receive-send runtime placeholder、one-iteration launcher、1 iteration だけの最小 loop body は追加済みだが、完成した継続 receive/send loop、retry / requeue、rejection response 送信 policy、video buffer / sync handoff 本体、stats state commit 本体、packet drop 本体、file sink open、process-wide logger は未実装
 - secret store / token rotation 方針は整理済み。SecretStore 参照と rotation policy placeholder は追加済みだが、provider 連携、rotation 実行、hot reload は未実装
-- 次の中心は `--receive-send-once` の手動通し確認、auth / receive JSON Lines file sink 実 file open 範囲の再確認、ServerNotice trigger の state transition 接続範囲の再確認
+- 次の中心は auth / receive JSON Lines file sink 実 file open 範囲の再確認、ServerNotice trigger の state transition 接続範囲の再確認、必要になった時点で send JSON Lines writer 実接続範囲の整理
 
 ---
 
@@ -75,9 +76,9 @@
 ---
 
 ## 直近でやること
-1. `--receive-send-once` と accepted auth client config の組み合わせで手動通し確認を行う
-2. auth / receive JSON Lines file sink の実 file open 範囲を必要になった時点で再確認する
-3. `ServerNotice` trigger の state transition 接続範囲を必要になった時点で再確認する
+1. auth / receive JSON Lines file sink の実 file open 範囲を必要になった時点で再確認する
+2. `ServerNotice` trigger の state transition 接続範囲を必要になった時点で再確認する
+3. send JSON Lines writer の実接続範囲を必要になった時点で整理する
 
 ---
 
@@ -136,6 +137,7 @@
 - [x] server / client one-shot auth round trip の accepted path 成功結果を記録する
 - [x] `shared_token_env` を使う one-shot auth round trip 手順を追加する
 - [x] `shared_token_env` one-shot auth round trip accepted path 成功結果を記録する
+- [x] `--receive-send-once` accepted auth request の手動通し確認結果を記録する
 - [x] secret 解決方式と token 保護方針を整理する
 - [x] secret resolver 本実装範囲を確定する
 - [x] `shared_token_env` secret resolver の最小本実装を追加する

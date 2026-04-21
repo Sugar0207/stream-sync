@@ -5,6 +5,63 @@
 - Codex
 
 ### 今回の作業
+- `--receive-send-once` を使って accepted auth request の手動通し確認を実行した。
+- server / client example config の組み合わせで、accepted AuthRequest が one-iteration receive/send runtime から UDP send 側へ流れることを確認した。
+- 観測した stdout / stderr の要点を `docs/operations/auth-roundtrip-manual-check.md` に記録した。
+
+### 変更ファイル
+- `docs/operations/auth-roundtrip-manual-check.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### 実行コマンド
+- `cargo build -p stream-sync-server -p stream-sync-client`
+- server: `cargo run -p stream-sync-server -- --receive-send-once configs/examples/server.example.toml`
+- client: `cargo run -p stream-sync-client -- --auth-request-poc-once configs/examples/client.accepted.example.toml`
+
+### 観測結果
+- server は 1 packet を処理して終了した。
+- server stdout は `sent_bytes=55`, `observation_state=BodyIterationCompleted`, `observation_action=YieldToCaller` を表示した。
+- server stderr には `server.receive_loop` JSON Lines が出力され、`outcome="Accepted"`, `message_type="AuthRequest"`, `client_id="player1"` を確認した。
+- server stderr には `server.auth_result` JSON Lines が出力され、`accepted=true`, `reason_code="Ok"`, `protocol_version=1` を確認した。
+- client stdout は `auth request PoC sent 96 bytes to 127.0.0.1:5000; client_id=player1 run_id=streamsync-dev-session protocol_version=1` を表示した。
+- client stderr は cargo の build / run 表示のみだった。
+
+### 決定事項
+- `--receive-send-once` は accepted auth request の手動通し確認入口として成立した。
+- 現行 client の `--auth-request-poc-once` は送信専用 PoC のため、client stdout には `AuthResponse` 受信結果は表示されない。
+- `sent_bytes=55` は server 側で accepted `AuthResponse` を encode / UDP send まで渡した確認値として扱う。
+
+### 未実装 / 保留
+- completed continuous receive/send loop
+- client 側での `AuthResponse` 受信表示
+- retry / requeue
+- send JSON Lines writer 実接続
+- file sink open / process-wide logger
+- heartbeat / video / stats 本体拡張
+- secret store 連携
+
+### 次にやる候補
+- auth / receive JSON Lines file sink の実 file open 範囲を再確認する
+- ServerNotice trigger の state transition 接続範囲を再確認する
+- send JSON Lines writer の実接続範囲を必要時に整理する
+
+### TODO 更新
+- 現在位置に `--receive-send-once` accepted path 手動通し確認成功を反映した。
+- 仕様 / 設計に `--receive-send-once` accepted auth request の手動通し確認結果記録完了を追加した。
+- 直近でやることから `--receive-send-once` 手動通し確認を外し、file sink / ServerNotice / send log writer 側へ更新した。
+
+### 検証
+- `cargo build -p stream-sync-server -p stream-sync-client`
+- `cargo run -p stream-sync-server -- --receive-send-once configs/examples/server.example.toml`
+- `cargo run -p stream-sync-client -- --auth-request-poc-once configs/examples/client.accepted.example.toml`
+
+---
+
+### 種別
+- Codex
+
+### 今回の作業
 - completed one-iteration runtime の CLI / config 接続を追加した。
 - `apps/server` から one-iteration receive/send runtime を呼べる手動確認入口を追加した。
 - 既存 server / client example config を使う accepted auth round trip の手動確認手順を docs に反映した。
