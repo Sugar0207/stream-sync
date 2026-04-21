@@ -680,6 +680,24 @@ Current code reflects this with `ServerReceiveSendOneIterationRuntimeInput`,
 `ServerReceiveSendOneIterationRuntimeError`, and
 `ServerReceiveSendOneIterationRuntimeBoundary`.
 
+The controller receive/send runtime is the current highest-level synchronous
+entry:
+
+- It calls the controller planner once.
+- `Stop` returns without touching receive, dispatch, queue, encode, or socket
+  send.
+- `RunBodyOnce` calls the receive/send one-iteration runtime once and observes
+  the body result through the controller boundary.
+- The result carries the controller plan, the one-iteration outcome, and the
+  controller observation.
+- It does not implement a continuous loop, retry/requeue, file sink open,
+  process-wide logging, packet drop policy, or async runtime.
+
+Current code reflects this with `ServerControllerReceiveSendRuntimeInput`,
+`ServerControllerReceiveSendRuntimeResult`,
+`ServerControllerReceiveSendRuntimeError`, and
+`ServerControllerReceiveSendRuntimeBoundary`.
+
 ## 1. 目的
 
 このドキュメントは、StreamSync の MVP 段階における通信プロトコルの初期設計を定義するものです。

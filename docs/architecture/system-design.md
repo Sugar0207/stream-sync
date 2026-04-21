@@ -1045,6 +1045,35 @@ Current code reflects this with `ServerReceiveSendOneIterationRuntimeInput`,
 `ServerReceiveSendOneIterationRuntimeError`, and
 `ServerReceiveSendOneIterationRuntimeBoundary`.
 
+Controller to receive/send one-iteration scope:
+
+1. `ServerControllerReceiveSendRuntimeBoundary` receives controller input and
+   caller-owned socket, receive buffer, registry, queue collection, auth config,
+   and writers.
+2. It calls `ServerContinuousReceiveLoopControllerBoundary::plan_next_iteration`.
+3. If the controller action is `Stop`, it returns `Stopped` without receiving,
+   dispatching, queueing, writing, encoding, or sending.
+4. If the controller action is `RunBodyOnce`, it calls
+   `ServerReceiveSendOneIterationRuntimeBoundary` exactly once.
+5. It observes the returned body result with
+   `ServerContinuousReceiveLoopControllerBoundary::observe_body_result` and
+   returns the plan, iteration outcome, and observation.
+
+Responsibility split for controller receive/send runtime:
+
+- controller
+  - Owns stop vs run-one-iteration decision and body-result observation.
+- one-iteration receive/send runtime
+  - Owns one receive body execution and optional one send attempt.
+- caller/future loop
+  - Owns repeated invocation, timestamp generation, shutdown policy, retry /
+    requeue, sink lifecycle, process-wide logger, and error policy.
+
+Current code reflects this with `ServerControllerReceiveSendRuntimeInput`,
+`ServerControllerReceiveSendRuntimeResult`,
+`ServerControllerReceiveSendRuntimeError`, and
+`ServerControllerReceiveSendRuntimeBoundary`.
+
 ### 5.7 AuthResponse PoC one-shot startup step
 
 AuthResponse PoC startup uses the existing boundaries as a one-packet

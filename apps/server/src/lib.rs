@@ -2446,6 +2446,103 @@ impl ServerReceiveSendOneIterationRuntimeBoundary {
     }
 }
 
+/// Input for the minimal controller-to-receive/send runtime connection.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct ServerControllerReceiveSendRuntimeInput {
+    pub controller: ServerContinuousReceiveLoopControllerInput,
+    pub heartbeat_timing: ServerHeartbeatAckTiming,
+    pub encode_context: EncodeContext,
+    pub auth_log_timestamp: TimestampMicros,
+}
+
+/// Result of one controller step that may run one receive/send iteration.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ServerControllerReceiveSendRuntimeResult {
+    Stopped {
+        plan: ServerContinuousReceiveLoopControllerPlan,
+    },
+    Iteration {
+        plan: ServerContinuousReceiveLoopControllerPlan,
+        iteration: ServerReceiveSendOneIterationRuntimeOutcome,
+        observation: ServerContinuousReceiveLoopControllerObservation,
+    },
+}
+
+/// Error from the minimal controller receive/send runtime.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ServerControllerReceiveSendRuntimeError {
+    MissingBodyInput(ServerContinuousReceiveLoopControllerPlan),
+    Iteration(ServerReceiveSendOneIterationRuntimeError),
+}
+
+/// Minimal controller-side handoff to one receive/send iteration.
+///
+/// This boundary runs the controller stop check and, if requested, calls one
+/// receive/send integration step. It does not loop, sleep, retry, requeue,
+/// open files, install process-wide logging, or own shutdown policy.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ServerControllerReceiveSendRuntimeBoundary {
+    controller: ServerContinuousReceiveLoopControllerBoundary,
+    iteration: ServerReceiveSendOneIterationRuntimeBoundary,
+}
+
+impl ServerControllerReceiveSendRuntimeBoundary {
+    pub fn run_once<OW: io::Write, RW: io::Write, AW: io::Write>(
+        &self,
+        socket: &UdpSocket,
+        buffer: &mut [u8],
+        registry: &mut AuthenticatedSenderRegistry,
+        queue_collection: &mut ServerOutboundQueueCollection,
+        auth_config: &ServerAuthConfig,
+        input: ServerControllerReceiveSendRuntimeInput,
+        operational_writer: OW,
+        rejection_writer: RW,
+        auth_log_writer: AW,
+    ) -> Result<ServerControllerReceiveSendRuntimeResult, ServerControllerReceiveSendRuntimeError>
+    {
+        let plan = self.controller.plan_next_iteration(input.controller);
+        if matches!(
+            plan.action,
+            ServerContinuousReceiveLoopControllerAction::Stop
+        ) {
+            return Ok(ServerControllerReceiveSendRuntimeResult::Stopped { plan });
+        }
+
+        let Some(body_input) = plan.body_input else {
+            return Err(ServerControllerReceiveSendRuntimeError::MissingBodyInput(
+                plan,
+            ));
+        };
+
+        let iteration = self
+            .iteration
+            .run_once(
+                socket,
+                buffer,
+                registry,
+                queue_collection,
+                auth_config,
+                ServerReceiveSendOneIterationRuntimeInput {
+                    body: body_input,
+                    heartbeat_timing: input.heartbeat_timing,
+                    encode_context: input.encode_context,
+                    auth_log_timestamp: input.auth_log_timestamp,
+                },
+                operational_writer,
+                rejection_writer,
+                auth_log_writer,
+            )
+            .map_err(ServerControllerReceiveSendRuntimeError::Iteration)?;
+        let observation = self.controller.observe_body_result(&iteration.body);
+
+        Ok(ServerControllerReceiveSendRuntimeResult::Iteration {
+            plan,
+            iteration,
+            observation,
+        })
+    }
+}
+
 fn send_failure_kind_from_io_error_kind(error_kind: io::ErrorKind) -> SendFailureKind {
     match error_kind {
         io::ErrorKind::WouldBlock => SendFailureKind::SocketWouldBlock,
@@ -7443,6 +7540,142 @@ shared_token = "secret"
         assert_eq!(decoded.header.message_type, MessageType::AuthResponse);
         let auth_log = String::from_utf8(auth_log).expect("auth log should be utf8");
         assert!(auth_log.contains(r#""event_name":"server.auth_result""#));
+        assert!(auth_log.contains(r#""accepted":true"#));
+    }
+
+    #[test]
+    fn controller_receive_send_runtime_stops_without_iteration() {
+        let server_socket = UdpSocket::bind("127.0.0.1:0").expect("server socket should bind");
+        let mut receive_buffer = vec![0_u8; 1024];
+        let mut registry = AuthenticatedSenderRegistry::default();
+        let mut queue_collection = ServerOutboundQueueCollection::default();
+        let mut operational_output = Vec::new();
+        let mut rejection_output = Vec::new();
+        let mut auth_log = Vec::new();
+        let runtime = ServerControllerReceiveSendRuntimeBoundary::default();
+
+        let outcome = runtime
+            .run_once(
+                &server_socket,
+                &mut receive_buffer,
+                &mut registry,
+                &mut queue_collection,
+                &auth_config(Some("presented-secret")),
+                ServerControllerReceiveSendRuntimeInput {
+                    controller: ServerContinuousReceiveLoopControllerInput {
+                        expected_protocol_version: ProtocolVersion(2),
+                        timestamp: TimestampMicros(9_000_000),
+                        continue_requested: false,
+                    },
+                    heartbeat_timing: body_dispatch_timing(),
+                    encode_context: EncodeContext {
+                        protocol_version: ProtocolVersion(2),
+                    },
+                    auth_log_timestamp: TimestampMicros(9_000_010),
+                },
+                &mut operational_output,
+                &mut rejection_output,
+                &mut auth_log,
+            )
+            .expect("stopped controller should not run iteration");
+
+        assert_eq!(
+            outcome,
+            ServerControllerReceiveSendRuntimeResult::Stopped {
+                plan: ServerContinuousReceiveLoopControllerPlan {
+                    state: ServerContinuousReceiveLoopControllerState::Stopped,
+                    action: ServerContinuousReceiveLoopControllerAction::Stop,
+                    body_input: None,
+                },
+            }
+        );
+        assert_eq!(registry.entries().count(), 0);
+        assert!(queue_collection.is_empty());
+        assert!(operational_output.is_empty());
+        assert!(rejection_output.is_empty());
+        assert!(auth_log.is_empty());
+    }
+
+    #[test]
+    fn controller_receive_send_runtime_runs_one_auth_iteration() {
+        let server_socket = UdpSocket::bind("127.0.0.1:0").expect("server socket should bind");
+        let client_socket = UdpSocket::bind("127.0.0.1:0").expect("client socket should bind");
+        client_socket
+            .set_read_timeout(Some(std::time::Duration::from_secs(1)))
+            .expect("client read timeout should be set");
+        let server_address = server_socket
+            .local_addr()
+            .expect("server socket should have address");
+        client_socket
+            .send_to(
+                auth_request_packet("client-1", "presented-secret").as_slice(),
+                server_address,
+            )
+            .expect("auth request should send");
+        let mut receive_buffer = vec![0_u8; 1024];
+        let mut registry = AuthenticatedSenderRegistry::default();
+        let mut queue_collection = ServerOutboundQueueCollection::default();
+        let mut operational_output = Vec::new();
+        let mut rejection_output = Vec::new();
+        let mut auth_log = Vec::new();
+        let runtime = ServerControllerReceiveSendRuntimeBoundary::default();
+
+        let outcome = runtime
+            .run_once(
+                &server_socket,
+                &mut receive_buffer,
+                &mut registry,
+                &mut queue_collection,
+                &auth_config(Some("presented-secret")),
+                ServerControllerReceiveSendRuntimeInput {
+                    controller: ServerContinuousReceiveLoopControllerInput {
+                        expected_protocol_version: ProtocolVersion(2),
+                        timestamp: TimestampMicros(9_000_000),
+                        continue_requested: true,
+                    },
+                    heartbeat_timing: body_dispatch_timing(),
+                    encode_context: EncodeContext {
+                        protocol_version: ProtocolVersion(2),
+                    },
+                    auth_log_timestamp: TimestampMicros(9_000_010),
+                },
+                &mut operational_output,
+                &mut rejection_output,
+                &mut auth_log,
+            )
+            .expect("controller receive/send runtime should complete");
+
+        let ServerControllerReceiveSendRuntimeResult::Iteration {
+            plan,
+            iteration,
+            observation,
+        } = outcome
+        else {
+            panic!("expected one controller iteration");
+        };
+        assert_eq!(
+            plan.action,
+            ServerContinuousReceiveLoopControllerAction::RunBodyOnce
+        );
+        assert_eq!(
+            observation,
+            ServerContinuousReceiveLoopControllerObservation {
+                state: ServerContinuousReceiveLoopControllerState::BodyIterationCompleted,
+                action: ServerContinuousReceiveLoopControllerAction::YieldToCaller,
+            }
+        );
+        assert!(iteration.send.is_some());
+        assert!(registry.get(&ClientId("client-1".to_string())).is_some());
+        assert!(queue_collection.is_empty());
+
+        let mut response_buffer = vec![0_u8; 1024];
+        let (response_len, _source) = client_socket
+            .recv_from(&mut response_buffer)
+            .expect("auth response should receive from controller runtime");
+        let decoded = decode_fixed_header(&response_buffer[..response_len])
+            .expect("auth response fixed header should decode");
+        assert_eq!(decoded.header.message_type, MessageType::AuthResponse);
+        let auth_log = String::from_utf8(auth_log).expect("auth log should be utf8");
         assert!(auth_log.contains(r#""accepted":true"#));
     }
 

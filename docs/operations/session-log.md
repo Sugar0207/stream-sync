@@ -5,6 +5,58 @@
 - Codex
 
 ### 今回の作業
+- controller が one-iteration receive/send runtime を呼ぶ最小実装を追加した。
+- stop 判定と 1 iteration 実行を `ServerControllerReceiveSendRuntimeBoundary` で接続した。
+- accepted auth request を起点に controller から UDP response send まで通す近い統合テストを追加した。
+
+### 変更ファイル
+- `apps/server/src/lib.rs`
+- `docs/architecture/system-design.md`
+- `docs/architecture/protocol.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### 決定事項
+- controller receive-send runtime は `ServerControllerReceiveSendRuntimeBoundary` として、controller plan を 1 回作る。
+- `continue_requested=false` の場合は `Stopped` を返し、receive / dispatch / queue / encode / send / log writer を呼ばない。
+- `RunBodyOnce` の場合は `ServerReceiveSendOneIterationRuntimeBoundary` を 1 回だけ呼び、body result を controller boundary で observe する。
+- 戻り値は controller plan、one-iteration outcome、controller observation を保持し、future loop controller が次の判断に使える形にする。
+- 反復、shutdown policy、retry / requeue、file sink open、process-wide logger、packet drop policy は今回も未実装のまま残す。
+
+### 未実装 / 保留
+- 完成した continuous receive loop
+- 完成した continuous send loop
+- controller による反復 / shutdown policy
+- retry / requeue
+- send JSON Lines writer 実接続
+- rejection response 送信 policy
+- heartbeat ack の queue storage / send 接続
+- video buffer / sync-core handoff 本体
+- stats metrics state commit / heartbeat observation commit
+- packet drop 本体
+- file sink open / process-wide logger
+
+### 次にやる候補
+- completed one-iteration runtime の CLI / config 接続範囲を必要時に整理する
+- auth / receive JSON Lines file sink の実 file open 範囲を再確認する
+- ServerNotice trigger の state transition 接続範囲を再確認する
+
+### TODO 更新
+- 現在位置に controller が one-iteration receive/send runtime を呼ぶ最小範囲整理完了を反映した。
+- net-core / server 境界に `ServerControllerReceiveSendRuntimeBoundary` / controller receive-send runtime placeholder 追加完了を反映した。
+- 直近でやることを completed one-iteration runtime の CLI / config 接続範囲整理へ更新した。
+
+### 検証
+- `cargo fmt --check`
+- `cargo test -p stream-sync-server controller_receive_send_runtime`
+- `cargo check --workspace`
+
+---
+
+### 種別
+- Codex
+
+### 今回の作業
 - continuous receive loop と one-item send runtime の結合範囲を docs に明記した。
 - `apps/server` に receive-send one iteration integration placeholder を追加した。
 - accepted auth request を起点に receive body から dispatch / side effect / queue / one-item send runtime まで通す近い統合テストを追加した。
