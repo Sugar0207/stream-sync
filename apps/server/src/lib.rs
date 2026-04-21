@@ -1,5 +1,5 @@
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, VecDeque},
     env, fs, io,
     net::{SocketAddr, ToSocketAddrs, UdpSocket},
     path::{Path, PathBuf},
@@ -14,16 +14,17 @@ use stream_sync_net_core::{
     NetDecodeError, NetEncodeError, OutboundPacket, OutboundPacketEncoderBoundary,
     OutboundPacketQueueBoundary, OutboundQueueAdmissionDecision,
     OutboundQueueAdmissionPolicyBoundary, OutboundQueueCapacityPolicy, OutboundQueueItem,
-    OutboundQueueLifecycleBoundary, OutboundQueueStorageBoundary, OutboundQueueStorageDecision,
-    OutboundSendLogContext, PacketDestination, PacketSource, QueuedOutboundItem,
-    SendFailureDisposition, SendFailureKind, SendLogEvent, SendLogStage, UdpSocketIoBoundary,
-    DEFAULT_UDP_PACKET_BUFFER_LEN,
+    OutboundQueueItemState, OutboundQueueLifecycleBoundary, OutboundQueueStorageBoundary,
+    OutboundQueueStorageDecision, OutboundSendLogContext, OutboundSendLoopEvent,
+    OutboundSendLoopTickBoundary, OutboundSendLoopTickPlan, PacketDestination, PacketSource,
+    QueuedOutboundItem, SendFailureDisposition, SendFailureKind, SendLogEvent, SendLogStage,
+    UdpSocketIoBoundary, DEFAULT_UDP_PACKET_BUFFER_LEN,
 };
 use stream_sync_protocol::{
     AppVersion, AuthRequest, AuthResponse, AuthResponseReasonCode, ClientId, ClientStats,
-    Heartbeat, HeartbeatAck, HeartbeatAckObservation, HeartbeatObservationCarrier, MessageType,
-    NoticeType, ProtocolError, ProtocolMessage, ProtocolMessageEncoderBoundary, ProtocolVersion,
-    RunId, ServerNotice, TimestampMicros, VideoFrame,
+    EncodeContext, Heartbeat, HeartbeatAck, HeartbeatAckObservation, HeartbeatObservationCarrier,
+    MessageType, NoticeType, ProtocolError, ProtocolMessage, ProtocolMessageEncoderBoundary,
+    ProtocolVersion, RunId, ServerNotice, TimestampMicros, VideoFrame,
 };
 use stream_sync_timebase::{
     HeartbeatExchangeObservation, HeartbeatRttOffsetCalculationError, HeartbeatRttOffsetCalculator,
@@ -2169,6 +2170,177 @@ impl ServerDispatchRuntimeOutputApplyBoundary {
             decision,
             queued_item,
         }
+    }
+}
+
+/// Minimal outbound queue collection for one synchronous send handoff path.
+///
+/// This stores typed queued items in FIFO order only. It does not run a
+/// background loop, wake tasks, retry, requeue, persist, or apply drop policy.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ServerOutboundQueueCollection {
+    items: VecDeque<QueuedOutboundItem>,
+}
+
+impl ServerOutboundQueueCollection {
+    pub fn len(&self) -> usize {
+        self.items.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.items.is_empty()
+    }
+}
+
+/// Result of pushing output-apply queue handoff into the collection.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ServerOutboundQueueCollectionPushOutcome {
+    pub queued: bool,
+    pub queue_len: usize,
+}
+
+/// Result of dequeueing one item for the send side.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ServerOutboundQueueDequeueRuntimeResult {
+    Ready(QueuedOutboundItem),
+    Empty,
+}
+
+/// Minimal queue collection boundary.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct ServerOutboundQueueCollectionBoundary;
+
+impl ServerOutboundQueueCollectionBoundary {
+    pub fn push_from_output_apply(
+        &self,
+        collection: &mut ServerOutboundQueueCollection,
+        outcome: &ServerDispatchRuntimeOutputApplyOutcome,
+    ) -> ServerOutboundQueueCollectionPushOutcome {
+        let queued_item = match &outcome.result {
+            ServerDispatchRuntimeOutputApplyResult::Auth {
+                auth_response_storage: Some(storage),
+                ..
+            } => storage.queued_item.clone(),
+            _ => None,
+        };
+
+        let queued = if let Some(item) = queued_item {
+            collection.items.push_back(item);
+            true
+        } else {
+            false
+        };
+
+        ServerOutboundQueueCollectionPushOutcome {
+            queued,
+            queue_len: collection.len(),
+        }
+    }
+
+    pub fn dequeue_one(
+        &self,
+        collection: &mut ServerOutboundQueueCollection,
+    ) -> ServerOutboundQueueDequeueRuntimeResult {
+        collection
+            .items
+            .pop_front()
+            .map(ServerOutboundQueueDequeueRuntimeResult::Ready)
+            .unwrap_or(ServerOutboundQueueDequeueRuntimeResult::Empty)
+    }
+}
+
+/// Outcome of sending one queued outbound item.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ServerOutboundSendOneRuntimeOutcome {
+    pub plan: OutboundSendLoopTickPlan,
+    pub encoded_packet: EncodedOutboundPacket,
+    pub encode_event: OutboundSendLoopEvent,
+    pub bytes_sent: usize,
+    pub send_event: OutboundSendLoopEvent,
+    pub final_state: OutboundQueueItemState,
+}
+
+/// Error from the minimal one-item send runtime.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ServerOutboundSendOneRuntimeError {
+    Encode {
+        error: NetEncodeError,
+        event: OutboundSendLoopEvent,
+    },
+    SocketSend {
+        error_kind: io::ErrorKind,
+        event: OutboundSendLoopEvent,
+    },
+}
+
+/// Minimal runtime from one queued item to encode and socket send.
+///
+/// This sends one already queued item through the protocol encoder and UDP
+/// adapter. It does not loop, retry, requeue, open logs, or own queue storage.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct ServerOutboundSendOneRuntimeBoundary {
+    queue_lifecycle: OutboundQueueLifecycleBoundary,
+    send_tick: OutboundSendLoopTickBoundary,
+    encoder: OutboundPacketEncoderBoundary,
+    protocol_encoder: ProtocolMessageEncoderBoundary,
+    socket_io: ServerUdpSocketIoStep,
+}
+
+impl ServerOutboundSendOneRuntimeBoundary {
+    pub fn send_queued(
+        &self,
+        socket: &UdpSocket,
+        queued: QueuedOutboundItem,
+        context: EncodeContext,
+    ) -> Result<ServerOutboundSendOneRuntimeOutcome, ServerOutboundSendOneRuntimeError> {
+        let handoff = self.queue_lifecycle.handoff_to_send_layer(queued);
+        let plan = self.send_tick.plan_encode(context, handoff);
+        let encoded_packet = self
+            .encoder
+            .encode_with(&self.protocol_encoder, plan.encode_request.clone())
+            .map_err(|error| ServerOutboundSendOneRuntimeError::Encode {
+                error,
+                event: self.send_tick.observe_encode_failure(&plan),
+            })?;
+        let encode_event = self
+            .send_tick
+            .observe_encode_success(&plan, &encoded_packet);
+
+        let bytes_sent = self
+            .socket_io
+            .send_encoded(socket, &encoded_packet)
+            .map_err(|error| {
+                let error_kind = error.kind();
+                ServerOutboundSendOneRuntimeError::SocketSend {
+                    error_kind,
+                    event: self.send_tick.observe_socket_send_failure(
+                        &plan,
+                        encoded_packet.bytes.len(),
+                        send_failure_kind_from_io_error_kind(error_kind),
+                    ),
+                }
+            })?;
+        let send_event = self.send_tick.observe_socket_send_success();
+
+        Ok(ServerOutboundSendOneRuntimeOutcome {
+            plan,
+            encoded_packet,
+            encode_event,
+            bytes_sent,
+            send_event,
+            final_state: self.queue_lifecycle.mark_send_completed(),
+        })
+    }
+}
+
+fn send_failure_kind_from_io_error_kind(error_kind: io::ErrorKind) -> SendFailureKind {
+    match error_kind {
+        io::ErrorKind::WouldBlock => SendFailureKind::SocketWouldBlock,
+        io::ErrorKind::Interrupted => SendFailureKind::SocketInterrupted,
+        io::ErrorKind::ConnectionRefused => SendFailureKind::ConnectionRefused,
+        io::ErrorKind::NetworkUnreachable => SendFailureKind::NetworkUnreachable,
+        io::ErrorKind::PermissionDenied => SendFailureKind::PermissionDenied,
+        _ => SendFailureKind::OtherSocketError,
     }
 }
 
@@ -5085,6 +5257,7 @@ mod tests {
     use stream_sync_logging::JsonLinesSinkDestination;
     use stream_sync_net_core::{
         OutboundQueueDropReason, OutboundQueueItemClass, OutboundQueueStorageState,
+        OutboundSendLoopTickState,
     };
     use stream_sync_protocol::{
         decode_fixed_header, encode_auth_response_payload, AppVersion, ClientId, Codec,
@@ -6993,6 +7166,98 @@ shared_token = "secret"
         let auth_log = String::from_utf8(auth_log).expect("auth log should be utf8");
         assert!(auth_log.contains(r#""accepted":false"#));
         assert!(auth_log.contains(r#""reason_code":"InvalidToken""#));
+    }
+
+    #[test]
+    fn queue_collection_dequeues_accepted_auth_response_for_send_runtime() {
+        let server_socket = UdpSocket::bind("127.0.0.1:0").expect("server socket should bind");
+        let client_socket = UdpSocket::bind("127.0.0.1:0").expect("client socket should bind");
+        client_socket
+            .set_read_timeout(Some(std::time::Duration::from_secs(1)))
+            .expect("client read timeout should be set");
+        let server_address = server_socket
+            .local_addr()
+            .expect("server socket should have address");
+        client_socket
+            .send_to(
+                auth_request_packet("client-1", "presented-secret").as_slice(),
+                server_address,
+            )
+            .expect("auth request should send");
+        let mut registry = AuthenticatedSenderRegistry::default();
+        let mut receive_buffer = vec![0_u8; 1024];
+        let mut operational_output = Vec::new();
+        let mut rejection_output = Vec::new();
+        let body = ServerContinuousReceiveLoopBodyBoundary::default();
+
+        let body_result = body
+            .run_once(
+                &server_socket,
+                &mut receive_buffer,
+                &registry,
+                ServerContinuousReceiveLoopBodyInput {
+                    expected_protocol_version: ProtocolVersion(2),
+                    timestamp: TimestampMicros(9_000_000),
+                    stop_requested: false,
+                },
+                &mut operational_output,
+                &mut rejection_output,
+            )
+            .expect("body run once should receive auth request");
+        let dispatch = ServerContinuousReceiveLoopBodyDispatchRuntimeBoundary::default()
+            .dispatch_body_result(
+                &body_result,
+                &auth_config(Some("presented-secret")),
+                body_dispatch_timing(),
+            );
+        let side_effect = ServerDispatchRuntimeSideEffectApplyBoundary::default()
+            .apply_body_dispatch_outcome(&mut registry, dispatch);
+        let mut auth_log = Vec::new();
+        let output = ServerDispatchRuntimeOutputApplyBoundary::default()
+            .apply_outputs(side_effect, 0, TimestampMicros(9_000_010), &mut auth_log)
+            .expect("output apply should write auth log");
+        let queue = ServerOutboundQueueCollectionBoundary;
+        let mut collection = ServerOutboundQueueCollection::default();
+
+        let push = queue.push_from_output_apply(&mut collection, &output);
+        let dequeued = queue.dequeue_one(&mut collection);
+
+        assert!(push.queued);
+        assert_eq!(push.queue_len, 1);
+        assert!(collection.is_empty());
+        let ServerOutboundQueueDequeueRuntimeResult::Ready(queued) = dequeued else {
+            panic!("expected queued auth response");
+        };
+
+        let send = ServerOutboundSendOneRuntimeBoundary::default()
+            .send_queued(
+                &server_socket,
+                queued,
+                EncodeContext {
+                    protocol_version: ProtocolVersion(2),
+                },
+            )
+            .expect("queued auth response should encode and send");
+
+        assert_eq!(send.bytes_sent, send.encoded_packet.bytes.len());
+        assert_eq!(send.final_state, OutboundQueueItemState::Sent);
+        assert_eq!(send.encode_event.state, OutboundSendLoopTickState::Encoded);
+        assert_eq!(
+            send.send_event.state,
+            OutboundSendLoopTickState::SocketSendSucceeded
+        );
+
+        let mut response_buffer = vec![0_u8; 1024];
+        let (response_len, _source) = client_socket
+            .recv_from(&mut response_buffer)
+            .expect("auth response should receive from send runtime");
+        let decoded = decode_fixed_header(&response_buffer[..response_len])
+            .expect("auth response fixed header should decode");
+        assert_eq!(decoded.header.message_type, MessageType::AuthResponse);
+        assert_eq!(decoded.header.protocol_version, ProtocolVersion(2));
+        assert!(registry.get(&ClientId("client-1".to_string())).is_some());
+        let auth_log = String::from_utf8(auth_log).expect("auth log should be utf8");
+        assert!(auth_log.contains(r#""accepted":true"#));
     }
 
     #[test]

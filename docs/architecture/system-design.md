@@ -965,6 +965,49 @@ Current code reflects this with `ServerOutboundQueueStorageApplyResult`,
 `ServerDispatchRuntimeOutputApplyOutcome`, and
 `ServerDispatchRuntimeOutputApplyBoundary`.
 
+Minimal queue collection and send runtime scope:
+
+1. Accepted auth output apply can produce a one-item `QueuedOutboundItem`.
+2. `ServerOutboundQueueCollectionBoundary` may push that queued item into a
+   caller-owned `ServerOutboundQueueCollection`.
+3. The same boundary can dequeue one item and hand it to
+   `ServerOutboundSendOneRuntimeBoundary`.
+4. The send runtime uses `OutboundQueueLifecycleBoundary` to create an
+   `OutboundQueueSendHandoff`, `OutboundSendLoopTickBoundary` to plan one
+   encode step, `OutboundPacketEncoderBoundary` /
+   `ProtocolMessageEncoderBoundary` to produce `EncodedOutboundPacket`, and
+   `ServerUdpSocketIoStep::send_encoded` to perform one synchronous UDP send.
+5. The send runtime records encode and socket-send observations but does not
+   write send logs, retry, requeue, or continue a loop.
+
+Responsibility split for the minimal send path:
+
+- queue storage
+  - Owns caller-provided collection storage for typed queued items.
+  - Current collection is FIFO-compatible and minimal; it does not implement
+    backpressure, eviction, wakeups, persistence, or retries.
+- dequeue
+  - Selects at most one queued item for this send step.
+  - Empty queue remains a no-op result.
+- encode
+  - Converts one typed `OutboundQueueItem` into `EncodedOutboundPacket`.
+  - Does not inspect queue policy or socket behavior.
+- socket send
+  - Sends one encoded UDP datagram through the existing synchronous socket
+    adapter.
+  - Does not retry or fragment.
+- send log
+  - Encode / send observations are returned as typed events only.
+  - JSON Lines send log writing and process-wide logger integration remain
+    future work.
+
+Current code reflects this with `ServerOutboundQueueCollection`,
+`ServerOutboundQueueCollectionBoundary`,
+`ServerOutboundQueueCollectionPushOutcome`,
+`ServerOutboundQueueDequeueRuntimeResult`,
+`ServerOutboundSendOneRuntimeOutcome`, `ServerOutboundSendOneRuntimeError`,
+and `ServerOutboundSendOneRuntimeBoundary`.
+
 ### 5.7 AuthResponse PoC one-shot startup step
 
 AuthResponse PoC startup uses the existing boundaries as a one-packet

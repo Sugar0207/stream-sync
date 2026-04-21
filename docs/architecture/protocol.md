@@ -637,6 +637,29 @@ Current code reflects this with `ServerOutboundQueueStorageApplyResult`,
 `ServerDispatchRuntimeOutputApplyOutcome`, and
 `ServerDispatchRuntimeOutputApplyBoundary`.
 
+The minimal queue collection and send runtime connects queued accepted auth
+responses to encode and UDP send:
+
+- `ServerOutboundQueueCollection` stores typed `QueuedOutboundItem` values in a
+  caller-owned FIFO-compatible collection.
+- `ServerOutboundQueueCollectionBoundary` pushes queued auth responses produced
+  by output apply and can dequeue one item.
+- `ServerOutboundSendOneRuntimeBoundary` turns one dequeued item into
+  `OutboundQueueSendHandoff`, plans one send tick, encodes it into
+  `EncodedOutboundPacket`, and sends one UDP datagram through
+  `ServerUdpSocketIoStep::send_encoded`.
+- Encode and socket-send observations are returned as typed events. Send JSON
+  Lines writing remains future work.
+- No continuous send loop, retry, requeue, queue eviction, file sink open,
+  process-wide logger, or async runtime is introduced here.
+
+Current code reflects this with `ServerOutboundQueueCollection`,
+`ServerOutboundQueueCollectionBoundary`,
+`ServerOutboundQueueCollectionPushOutcome`,
+`ServerOutboundQueueDequeueRuntimeResult`,
+`ServerOutboundSendOneRuntimeOutcome`, `ServerOutboundSendOneRuntimeError`,
+and `ServerOutboundSendOneRuntimeBoundary`.
+
 ## 1. 目的
 
 このドキュメントは、StreamSync の MVP 段階における通信プロトコルの初期設計を定義するものです。

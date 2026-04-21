@@ -5,6 +5,58 @@
 - Codex
 
 ### 今回の作業
+- send loop / queue collection の最小接続を追加した。
+- accepted auth response が queue collection から dequeue され、encode / socket send 側へ流れる最小統合経路を追加した。
+- accepted auth request を起点に receive body / dispatch / side effect / output apply / queue collection / send one runtime まで通す近い統合テストを追加した。
+
+### 変更ファイル
+- `apps/server/src/lib.rs`
+- `docs/architecture/system-design.md`
+- `docs/architecture/protocol.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### 決定事項
+- queue collection は `ServerOutboundQueueCollection` と `ServerOutboundQueueCollectionBoundary` として caller-owned FIFO-compatible collection に限定する。
+- dequeue は `ServerOutboundQueueDequeueRuntimeResult` として 1 item または empty を返すだけにする。
+- send runtime は `ServerOutboundSendOneRuntimeBoundary` として 1 queued item を `OutboundQueueSendHandoff`、encode、`EncodedOutboundPacket`、`ServerUdpSocketIoStep::send_encoded` へ同期接続する。
+- send runtime は encode / socket send の typed event を返すが、send JSON Lines 書き込みは行わない。
+- continuous send loop、retry、requeue、queue eviction、file sink open、process-wide logger、async runtime は今回も未実装のまま残す。
+
+### 未実装 / 保留
+- 完成した continuous send loop
+- retry / requeue
+- queue eviction / backpressure side effect
+- send JSON Lines writer 実接続
+- rejection response 送信 policy
+- heartbeat ack の queue storage / send 接続
+- video buffer / sync-core handoff 本体
+- stats metrics state commit / heartbeat observation commit
+- packet drop 本体
+- file sink open / process-wide logger
+
+### 次にやる候補
+- continuous receive loop と one-item send runtime の結合範囲を必要時に整理する
+- auth / receive JSON Lines file sink の実 file open 範囲を再確認する
+- ServerNotice trigger の state transition 接続範囲を再確認する
+
+### TODO 更新
+- 現在位置に send loop / queue collection の最小接続範囲整理完了を反映した。
+- net-core / server 境界に `ServerOutboundQueueCollectionBoundary` / queue collection placeholder 追加完了を反映した。
+- net-core / server 境界に `ServerOutboundSendOneRuntimeBoundary` / one-item encode and socket send runtime placeholder 追加完了を反映した。
+- 直近でやることを continuous receive loop と one-item send runtime の結合範囲整理へ更新した。
+
+### 検証
+- `cargo fmt --check`
+- `cargo test -p stream-sync-server queue_collection_dequeues_accepted_auth_response_for_send_runtime`
+- `cargo check --workspace`
+
+---
+
+### 種別
+- Codex
+
+### 今回の作業
 - dispatch runtime side effect apply から outbound queue storage / auth log writer への最小実接続を追加した。
 - accepted auth の `AuthResponse` queue item を outbound queue storage planning / one-item queued placeholder へ渡す境界を追加した。
 - auth log input を既存 `ServerAuthLogOutputBoundary` へ渡して caller-owned writer に JSON Lines 1 行を書けるようにした。
