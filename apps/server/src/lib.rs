@@ -14,9 +14,10 @@ use stream_sync_net_core::{
     NetDecodeError, NetEncodeError, OutboundPacket, OutboundPacketEncoderBoundary,
     OutboundPacketQueueBoundary, OutboundQueueAdmissionDecision,
     OutboundQueueAdmissionPolicyBoundary, OutboundQueueCapacityPolicy, OutboundQueueItem,
-    OutboundQueueStorageBoundary, OutboundQueueStorageDecision, OutboundSendLogContext,
-    PacketDestination, PacketSource, SendFailureDisposition, SendFailureKind, SendLogEvent,
-    SendLogStage, UdpSocketIoBoundary, DEFAULT_UDP_PACKET_BUFFER_LEN,
+    OutboundQueueLifecycleBoundary, OutboundQueueStorageBoundary, OutboundQueueStorageDecision,
+    OutboundSendLogContext, PacketDestination, PacketSource, QueuedOutboundItem,
+    SendFailureDisposition, SendFailureKind, SendLogEvent, SendLogStage, UdpSocketIoBoundary,
+    DEFAULT_UDP_PACKET_BUFFER_LEN,
 };
 use stream_sync_protocol::{
     AppVersion, AuthRequest, AuthResponse, AuthResponseReasonCode, ClientId, ClientStats,
@@ -2071,6 +2072,102 @@ impl ServerDispatchRuntimeSideEffectApplyBoundary {
                     result,
                 },
             ),
+        }
+    }
+}
+
+/// Result of passing one outbound item to the minimal queue storage side.
+///
+/// This records the storage decision and a one-item queued placeholder when the
+/// candidate is accepted. It does not mutate a queue collection or wake a send
+/// loop.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ServerOutboundQueueStorageApplyResult {
+    pub decision: OutboundQueueStorageDecision,
+    pub queued_item: Option<QueuedOutboundItem>,
+}
+
+/// Result of applying output side effects after dispatch side-effect apply.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ServerDispatchRuntimeOutputApplyResult {
+    Auth {
+        flow: ServerAuthFlowOutcome,
+        registered_sender: Option<AuthenticatedSenderEntry>,
+        auth_log_event: ServerAuthJsonLogEventInput,
+        auth_response_storage: Option<ServerOutboundQueueStorageApplyResult>,
+    },
+    Preserved(ServerDispatchRuntimeSideEffectApplyResult),
+}
+
+/// Outcome of connecting dispatch side-effect output to queue/log boundaries.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ServerDispatchRuntimeOutputApplyOutcome {
+    pub result: ServerDispatchRuntimeOutputApplyResult,
+}
+
+/// Minimal output application after dispatch side-effect apply.
+///
+/// This writes auth log input to a caller-owned writer and passes accepted auth
+/// response queue items to queue storage planning. It does not open files, own
+/// a process-wide logger, store a real queue collection, encode packets, send
+/// UDP, retry, or process heartbeat/video/stats handoffs.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct ServerDispatchRuntimeOutputApplyBoundary {
+    auth_log: ServerAuthLogOutputBoundary,
+    queue: ServerOutboundQueueBoundary,
+    queue_lifecycle: OutboundQueueLifecycleBoundary,
+}
+
+impl ServerDispatchRuntimeOutputApplyBoundary {
+    pub fn apply_outputs<W: io::Write>(
+        &self,
+        outcome: ServerDispatchRuntimeSideEffectApplyOutcome,
+        current_queue_len: usize,
+        log_timestamp: TimestampMicros,
+        mut auth_log_writer: W,
+    ) -> io::Result<ServerDispatchRuntimeOutputApplyOutcome> {
+        let result = match outcome.result {
+            ServerDispatchRuntimeSideEffectApplyResult::Auth {
+                flow,
+                registered_sender,
+            } => {
+                let auth_log_event = self.auth_log.write_auth_result(
+                    flow.auth_log_input.clone(),
+                    log_timestamp,
+                    &mut auth_log_writer,
+                )?;
+                let auth_response_storage = if flow.decision.accepted {
+                    Some(self.plan_auth_response_storage(current_queue_len, &flow.queue_item))
+                } else {
+                    None
+                };
+
+                ServerDispatchRuntimeOutputApplyResult::Auth {
+                    flow,
+                    registered_sender,
+                    auth_log_event,
+                    auth_response_storage,
+                }
+            }
+            other => ServerDispatchRuntimeOutputApplyResult::Preserved(other),
+        };
+
+        Ok(ServerDispatchRuntimeOutputApplyOutcome { result })
+    }
+
+    fn plan_auth_response_storage(
+        &self,
+        current_queue_len: usize,
+        item: &OutboundQueueItem,
+    ) -> ServerOutboundQueueStorageApplyResult {
+        let decision = self.queue.evaluate_storage_push(current_queue_len, item);
+        let queued_item = decision
+            .accepts_candidate()
+            .then(|| self.queue_lifecycle.hold_for_send(item.clone()));
+
+        ServerOutboundQueueStorageApplyResult {
+            decision,
+            queued_item,
         }
     }
 }
@@ -6796,6 +6893,106 @@ shared_token = "secret"
         assert_eq!(input.state.capture_fps, 30);
         assert_eq!(input.state.dropped_frames, 2);
         assert_eq!(input.heartbeat_observation, None);
+    }
+
+    #[test]
+    fn dispatch_output_apply_writes_auth_log_and_holds_accepted_auth_response() {
+        let source = packet_source();
+        let body_result = body_result_with_handler_handoff(
+            88,
+            ServerContinuousReceiveLoopHandlerHandoffRuntimePlan::Auth(ServerAuthCheck {
+                source,
+                request: auth_request("client-1", "presented-secret"),
+            }),
+        );
+        let dispatch = ServerContinuousReceiveLoopBodyDispatchRuntimeBoundary::default()
+            .dispatch_body_result(
+                &body_result,
+                &auth_config(Some("presented-secret")),
+                body_dispatch_timing(),
+            );
+        let mut registry = AuthenticatedSenderRegistry::default();
+        let side_effect = ServerDispatchRuntimeSideEffectApplyBoundary::default()
+            .apply_body_dispatch_outcome(&mut registry, dispatch);
+        let output = ServerDispatchRuntimeOutputApplyBoundary::default();
+        let mut auth_log = Vec::new();
+
+        let outcome = output
+            .apply_outputs(side_effect, 0, TimestampMicros(9_000_000), &mut auth_log)
+            .expect("auth output apply should write log");
+
+        let ServerDispatchRuntimeOutputApplyResult::Auth {
+            flow,
+            registered_sender,
+            auth_log_event,
+            auth_response_storage,
+        } = outcome.result
+        else {
+            panic!("expected auth output result");
+        };
+        assert!(flow.decision.accepted);
+        assert!(registered_sender.is_some());
+        assert!(auth_log_event.accepted);
+        assert_eq!(auth_log_event.reason_code, AuthResponseReasonCode::Ok);
+        let storage = auth_response_storage.expect("accepted auth response should reach storage");
+        assert!(storage.decision.accepts_candidate());
+        let queued = storage.queued_item.expect("accepted item should be held");
+        let ProtocolMessage::AuthResponse(response) = queued.item.packet.message else {
+            panic!("expected queued AuthResponse");
+        };
+        assert!(response.accepted);
+        let auth_log = String::from_utf8(auth_log).expect("auth log should be utf8");
+        assert!(auth_log.contains(r#""event_name":"server.auth_result""#));
+        assert!(auth_log.contains(r#""accepted":true"#));
+    }
+
+    #[test]
+    fn dispatch_output_apply_writes_rejected_auth_log_without_queue_storage() {
+        let source = packet_source();
+        let body_result = body_result_with_handler_handoff(
+            88,
+            ServerContinuousReceiveLoopHandlerHandoffRuntimePlan::Auth(ServerAuthCheck {
+                source,
+                request: auth_request("client-1", "wrong-secret"),
+            }),
+        );
+        let dispatch = ServerContinuousReceiveLoopBodyDispatchRuntimeBoundary::default()
+            .dispatch_body_result(
+                &body_result,
+                &auth_config(Some("presented-secret")),
+                body_dispatch_timing(),
+            );
+        let mut registry = AuthenticatedSenderRegistry::default();
+        let side_effect = ServerDispatchRuntimeSideEffectApplyBoundary::default()
+            .apply_body_dispatch_outcome(&mut registry, dispatch);
+        let output = ServerDispatchRuntimeOutputApplyBoundary::default();
+        let mut auth_log = Vec::new();
+
+        let outcome = output
+            .apply_outputs(side_effect, 0, TimestampMicros(9_000_000), &mut auth_log)
+            .expect("auth output apply should write log");
+
+        let ServerDispatchRuntimeOutputApplyResult::Auth {
+            flow,
+            registered_sender,
+            auth_log_event,
+            auth_response_storage,
+        } = outcome.result
+        else {
+            panic!("expected auth output result");
+        };
+        assert!(!flow.decision.accepted);
+        assert_eq!(registered_sender, None);
+        assert_eq!(registry.entries().count(), 0);
+        assert!(!auth_log_event.accepted);
+        assert_eq!(
+            auth_log_event.reason_code,
+            AuthResponseReasonCode::InvalidToken
+        );
+        assert_eq!(auth_response_storage, None);
+        let auth_log = String::from_utf8(auth_log).expect("auth log should be utf8");
+        assert!(auth_log.contains(r#""accepted":false"#));
+        assert!(auth_log.contains(r#""reason_code":"InvalidToken""#));
     }
 
     #[test]

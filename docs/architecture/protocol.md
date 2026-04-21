@@ -615,6 +615,28 @@ Current code reflects this with `ServerDispatchRuntimeSideEffectApplyResult`,
 `ServerDispatchRuntimeSideEffectApplyOutcome`, and
 `ServerDispatchRuntimeSideEffectApplyBoundary`.
 
+The minimal output apply boundary connects auth side-effect output to queue
+storage planning and auth log writing:
+
+- Auth results write `ServerAuthLogInput` through `ServerAuthLogOutputBoundary`
+  to a caller-owned writer.
+- Accepted auth results pass the `AuthResponse` `OutboundQueueItem` to
+  `ServerOutboundQueueBoundary::evaluate_storage_push`; accepted storage
+  decisions are converted to a one-item `QueuedOutboundItem` through
+  `OutboundQueueLifecycleBoundary::hold_for_send`.
+- Rejected auth results currently write auth logs only. Whether rejection
+  responses are stored/sent by the continuous loop remains future policy.
+- Registry mutation stays in the previous side-effect apply boundary.
+- Heartbeat, video, and stats handoffs are preserved; heartbeat ack queue
+  storage, video buffer handoff, and stats state commit remain future work.
+- The boundary does not own queue collections, file opening, process-wide
+  logging, packet encoding, UDP send, retry, or loop scheduling.
+
+Current code reflects this with `ServerOutboundQueueStorageApplyResult`,
+`ServerDispatchRuntimeOutputApplyResult`,
+`ServerDispatchRuntimeOutputApplyOutcome`, and
+`ServerDispatchRuntimeOutputApplyBoundary`.
+
 ## 1. 目的
 
 このドキュメントは、StreamSync の MVP 段階における通信プロトコルの初期設計を定義するものです。

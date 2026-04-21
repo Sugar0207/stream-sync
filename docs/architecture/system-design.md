@@ -924,6 +924,47 @@ Current code reflects this with `ServerDispatchRuntimeSideEffectApplyResult`,
 `ServerDispatchRuntimeSideEffectApplyOutcome`, and
 `ServerDispatchRuntimeSideEffectApplyBoundary`.
 
+Dispatch runtime output apply scope:
+
+1. The output apply boundary receives
+   `ServerDispatchRuntimeSideEffectApplyOutcome`.
+2. For auth results, it writes `ServerAuthLogInput` through the existing
+   `ServerAuthLogOutputBoundary` to a caller-owned `io::Write`.
+3. For accepted auth results only, it passes the `AuthResponse`
+   `OutboundQueueItem` to `ServerOutboundQueueBoundary::evaluate_storage_push`
+   and then to `OutboundQueueLifecycleBoundary::hold_for_send` when the storage
+   decision accepts the candidate.
+4. Rejected auth results currently write auth logs but do not enter outbound
+   queue storage from this boundary. Rejection response sending policy remains a
+   future loop decision.
+5. Registry registration remains owned by the previous side-effect apply
+   boundary. This output boundary does not mutate the registry.
+6. Heartbeat, video, and stats handoffs are preserved and not routed to queue
+   storage or log writers here.
+
+Responsibility split for output apply:
+
+- registry registration
+  - Already applied before this boundary for accepted auth only.
+- outbound queue
+  - Receives accepted auth `AuthResponse` as typed `OutboundQueueItem` storage
+    planning and one-item queued placeholder only.
+  - Does not own a collection, dequeue, encode, send, retry, or wake a send
+    loop.
+- auth log writer
+  - Uses the existing auth log event schema and JSON Lines writer with a
+    caller-owned writer.
+  - Does not open files, rotate sinks, buffer globally, or install a
+    process-wide logger.
+- future heartbeat / video / stats handoff
+  - Remains outside this output boundary. Heartbeat ack queue storage, video
+    buffer handoff, and stats state commit are future work.
+
+Current code reflects this with `ServerOutboundQueueStorageApplyResult`,
+`ServerDispatchRuntimeOutputApplyResult`,
+`ServerDispatchRuntimeOutputApplyOutcome`, and
+`ServerDispatchRuntimeOutputApplyBoundary`.
+
 ### 5.7 AuthResponse PoC one-shot startup step
 
 AuthResponse PoC startup uses the existing boundaries as a one-packet

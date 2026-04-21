@@ -5,6 +5,57 @@
 - Codex
 
 ### 今回の作業
+- dispatch runtime side effect apply から outbound queue storage / auth log writer への最小実接続を追加した。
+- accepted auth の `AuthResponse` queue item を outbound queue storage planning / one-item queued placeholder へ渡す境界を追加した。
+- auth log input を既存 `ServerAuthLogOutputBoundary` へ渡して caller-owned writer に JSON Lines 1 行を書けるようにした。
+
+### 変更ファイル
+- `apps/server/src/lib.rs`
+- `docs/architecture/system-design.md`
+- `docs/architecture/protocol.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### 決定事項
+- output apply boundary は `ServerDispatchRuntimeOutputApplyBoundary` として、`ServerDispatchRuntimeSideEffectApplyOutcome` を受け取る。
+- auth result は `ServerAuthLogOutputBoundary` で caller-owned writer へ JSON Lines を書く。
+- accepted auth の `AuthResponse` `OutboundQueueItem` だけを `ServerOutboundQueueBoundary::evaluate_storage_push` に渡し、accepted storage decision の場合に `OutboundQueueLifecycleBoundary::hold_for_send` で `QueuedOutboundItem` にする。
+- rejected auth は auth log 書き込みのみ行い、rejection response を queue storage へ渡すかは future continuous loop policy に残す。
+- registry registration は前段の side effect apply boundary の責務に残し、この output apply boundary では registry を変更しない。
+- heartbeat / video / stats handoff は保持のみで、heartbeat ack queue storage、video buffer handoff、stats state commit は未実装のまま残す。
+
+### 未実装 / 保留
+- 実 queue collection / dequeue
+- send loop への実接続
+- rejection response 送信 policy
+- heartbeat ack の queue storage 接続
+- video buffer / sync-core handoff 本体
+- stats metrics state commit / heartbeat observation commit
+- packet drop 本体
+- file sink open / process-wide logger
+- 完成した continuous receive loop / while loop
+
+### 次にやる候補
+- send loop / queue collection の最小接続範囲を必要時に整理する
+- auth / receive JSON Lines file sink の実 file open 範囲を再確認する
+- ServerNotice trigger の state transition 接続範囲を再確認する
+
+### TODO 更新
+- 現在位置に accepted auth の outbound queue storage / auth log writer 最小接続範囲整理完了を反映した。
+- net-core / server 境界に `ServerDispatchRuntimeOutputApplyBoundary` / accepted auth queue storage and auth log writer placeholder 追加完了を反映した。
+- 直近でやることを send loop / queue collection の最小接続範囲整理へ更新した。
+
+### 検証
+- `cargo fmt --check`
+- `cargo test -p stream-sync-server dispatch_output_apply`
+- `cargo check --workspace`
+
+---
+
+### 種別
+- Codex
+
+### 今回の作業
 - dispatch runtime 結果の side effect 適用範囲を docs に明記した。
 - `apps/server` に dispatch side effect apply placeholder を追加した。
 - auth flow result / registry registration / outbound enqueue / stats prepare result / future state commit の責務分離を整理した。
