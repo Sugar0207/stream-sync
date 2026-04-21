@@ -1475,6 +1475,130 @@ impl ServerContinuousReceiveLoopControllerBoundary {
     }
 }
 
+/// Reason the receive-loop dispatch bridge does not produce handler work.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ServerContinuousReceiveLoopHandlerDispatchSkipReason {
+    LoopStopped,
+    SocketReceiveFailed,
+    RejectedOutcome,
+    HandlerHandoffNotRequired,
+}
+
+/// Error carried to a future handler dispatch layer.
+///
+/// The dispatch bridge preserves preparation errors but does not execute error
+/// policy, write logs, or drop packets.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ServerContinuousReceiveLoopHandlerDispatchError {
+    Auth(ServerAuthBoundaryError),
+    RegisteredPacket(ServerRegisteredPacketBoundaryError),
+}
+
+/// Minimal handoff plan from the continuous receive loop to future handlers.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ServerContinuousReceiveLoopHandlerDispatchPlan {
+    Auth(ServerAuthCheck),
+    RegisteredClient(ServerRegisteredClientPacket),
+    Unsupported {
+        source: PacketSource,
+        message_type: MessageType,
+    },
+    NotRequired(ServerContinuousReceiveLoopHandlerDispatchSkipReason),
+    HandoffError(ServerContinuousReceiveLoopHandlerDispatchError),
+}
+
+/// Handoff from one receive-loop body result to the future dispatch layer.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ServerContinuousReceiveLoopHandlerDispatchHandoff {
+    pub packet_len: Option<usize>,
+    pub plan: ServerContinuousReceiveLoopHandlerDispatchPlan,
+}
+
+/// Boundary between the continuous receive loop and future handler dispatch.
+///
+/// This consumes the handler handoff result produced by the one-tick runtime
+/// and shapes it for a future dispatch body. It does not run auth decisions,
+/// heartbeat / video / stats handlers, outbound enqueue, packet drop, sink
+/// selection, retry, shutdown policy, or async work.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ServerContinuousReceiveLoopHandlerDispatchBoundary;
+
+impl ServerContinuousReceiveLoopHandlerDispatchBoundary {
+    pub fn plan_from_body_result(
+        &self,
+        result: &ServerContinuousReceiveLoopBodyResult,
+    ) -> ServerContinuousReceiveLoopHandlerDispatchHandoff {
+        match &result.tick.outcome {
+            ServerContinuousReceiveLoopOneTickRuntimeOutcome::Stopped => {
+                ServerContinuousReceiveLoopHandlerDispatchHandoff {
+                    packet_len: None,
+                    plan: ServerContinuousReceiveLoopHandlerDispatchPlan::NotRequired(
+                        ServerContinuousReceiveLoopHandlerDispatchSkipReason::LoopStopped,
+                    ),
+                }
+            }
+            ServerContinuousReceiveLoopOneTickRuntimeOutcome::SocketReceiveFailed { .. } => {
+                ServerContinuousReceiveLoopHandlerDispatchHandoff {
+                    packet_len: None,
+                    plan: ServerContinuousReceiveLoopHandlerDispatchPlan::NotRequired(
+                        ServerContinuousReceiveLoopHandlerDispatchSkipReason::SocketReceiveFailed,
+                    ),
+                }
+            }
+            ServerContinuousReceiveLoopOneTickRuntimeOutcome::Completed {
+                packet_len,
+                handler,
+            } => ServerContinuousReceiveLoopHandlerDispatchHandoff {
+                packet_len: Some(*packet_len),
+                plan: self.plan_from_handler_handoff(&handler.handler),
+            },
+        }
+    }
+
+    pub fn plan_from_handler_handoff(
+        &self,
+        handler: &ServerContinuousReceiveLoopHandlerHandoffRuntimePlan,
+    ) -> ServerContinuousReceiveLoopHandlerDispatchPlan {
+        match handler {
+            ServerContinuousReceiveLoopHandlerHandoffRuntimePlan::Auth(auth) => {
+                ServerContinuousReceiveLoopHandlerDispatchPlan::Auth(auth.clone())
+            }
+            ServerContinuousReceiveLoopHandlerHandoffRuntimePlan::RegisteredClient(packet) => {
+                ServerContinuousReceiveLoopHandlerDispatchPlan::RegisteredClient(packet.clone())
+            }
+            ServerContinuousReceiveLoopHandlerHandoffRuntimePlan::Unsupported {
+                source,
+                message_type,
+            } => ServerContinuousReceiveLoopHandlerDispatchPlan::Unsupported {
+                source: *source,
+                message_type: *message_type,
+            },
+            ServerContinuousReceiveLoopHandlerHandoffRuntimePlan::AuthError(error) => {
+                ServerContinuousReceiveLoopHandlerDispatchPlan::HandoffError(
+                    ServerContinuousReceiveLoopHandlerDispatchError::Auth(error.clone()),
+                )
+            }
+            ServerContinuousReceiveLoopHandlerHandoffRuntimePlan::RegisteredPacketError(error) => {
+                ServerContinuousReceiveLoopHandlerDispatchPlan::HandoffError(
+                    ServerContinuousReceiveLoopHandlerDispatchError::RegisteredPacket(
+                        error.clone(),
+                    ),
+                )
+            }
+            ServerContinuousReceiveLoopHandlerHandoffRuntimePlan::NotRequired(reason) => {
+                ServerContinuousReceiveLoopHandlerDispatchPlan::NotRequired(match reason {
+                    ServerContinuousReceiveLoopHandlerHandoffSkipReason::RejectedOutcome => {
+                        ServerContinuousReceiveLoopHandlerDispatchSkipReason::RejectedOutcome
+                    }
+                    ServerContinuousReceiveLoopHandlerHandoffSkipReason::HandlerHandoffNotRequired => {
+                        ServerContinuousReceiveLoopHandlerDispatchSkipReason::HandlerHandoffNotRequired
+                    }
+                })
+            }
+        }
+    }
+}
+
 pub const SERVER_RECEIVE_LOOP_JSON_LOG_EVENT_NAME: &str = "server.receive_loop";
 
 /// Operational receive loop outcome used by future continuous-loop logging.
@@ -5403,6 +5527,15 @@ shared_token = "secret"
                 ..
             }) if client_id == &ClientId("client-1".to_string())
         ));
+        let dispatch = ServerContinuousReceiveLoopHandlerDispatchBoundary
+            .plan_from_handler_handoff(&result.handler);
+        assert!(matches!(
+            dispatch,
+            ServerContinuousReceiveLoopHandlerDispatchPlan::Auth(ServerAuthCheck {
+                request: AuthRequest { ref client_id, .. },
+                ..
+            }) if client_id == &ClientId("client-1".to_string())
+        ));
         assert!(result.writer.operational_event.is_some());
         assert_eq!(result.writer.rejection_event, None);
         assert!(String::from_utf8(operational_output)
@@ -5477,6 +5610,14 @@ shared_token = "secret"
             result.handler,
             ServerContinuousReceiveLoopHandlerHandoffRuntimePlan::NotRequired(
                 ServerContinuousReceiveLoopHandlerHandoffSkipReason::RejectedOutcome
+            )
+        );
+        let dispatch = ServerContinuousReceiveLoopHandlerDispatchBoundary
+            .plan_from_handler_handoff(&result.handler);
+        assert_eq!(
+            dispatch,
+            ServerContinuousReceiveLoopHandlerDispatchPlan::NotRequired(
+                ServerContinuousReceiveLoopHandlerDispatchSkipReason::RejectedOutcome
             )
         );
         assert!(result.writer.operational_event.is_some());
@@ -5628,6 +5769,17 @@ shared_token = "secret"
             result.tick.outcome,
             ServerContinuousReceiveLoopOneTickRuntimeOutcome::Stopped
         );
+        let dispatch =
+            ServerContinuousReceiveLoopHandlerDispatchBoundary.plan_from_body_result(&result);
+        assert_eq!(
+            dispatch,
+            ServerContinuousReceiveLoopHandlerDispatchHandoff {
+                packet_len: None,
+                plan: ServerContinuousReceiveLoopHandlerDispatchPlan::NotRequired(
+                    ServerContinuousReceiveLoopHandlerDispatchSkipReason::LoopStopped
+                ),
+            }
+        );
         assert!(operational_output.is_empty());
         assert!(rejection_output.is_empty());
     }
@@ -5674,6 +5826,28 @@ shared_token = "secret"
                 }),
             }
         );
+    }
+
+    #[test]
+    fn continuous_receive_loop_handler_dispatch_plans_auth_input() {
+        let source = packet_source();
+        let auth = ServerAuthCheck {
+            source,
+            request: auth_request("client-1", "presented-secret"),
+        };
+
+        let dispatch = ServerContinuousReceiveLoopHandlerDispatchBoundary
+            .plan_from_handler_handoff(
+                &ServerContinuousReceiveLoopHandlerHandoffRuntimePlan::Auth(auth),
+            );
+
+        assert!(matches!(
+            dispatch,
+            ServerContinuousReceiveLoopHandlerDispatchPlan::Auth(ServerAuthCheck {
+                request: AuthRequest { ref client_id, .. },
+                ..
+            }) if client_id == &ClientId("client-1".to_string())
+        ));
     }
 
     #[test]
@@ -5727,6 +5901,18 @@ shared_token = "secret"
                 action: ServerContinuousReceiveLoopControllerAction::YieldToCaller,
             }
         );
+        let dispatch =
+            ServerContinuousReceiveLoopHandlerDispatchBoundary.plan_from_body_result(&result);
+        assert_eq!(dispatch.packet_len, Some(packet.len()));
+        assert!(matches!(
+            dispatch.plan,
+            ServerContinuousReceiveLoopHandlerDispatchPlan::RegisteredClient(
+                ServerRegisteredClientPacket::Heartbeat(ServerRegisteredHeartbeatPacket {
+                    heartbeat: Heartbeat { ref client_id, .. },
+                    ..
+                })
+            ) if client_id == &ClientId("client-1".to_string())
+        ));
         let ServerContinuousReceiveLoopOneTickRuntimeOutcome::Completed {
             packet_len,
             handler,

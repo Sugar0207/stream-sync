@@ -623,6 +623,48 @@ Current code reflects this with
 continuous receive-loop controller scope; it is not the completed continuous
 receive loop implementation.
 
+Continuous receive loop to handler dispatch bridge scope:
+
+1. After one `run_once` body iteration returns, the future controller may pass
+   the body result to a handler dispatch bridge.
+2. The bridge reads only the existing one-tick outcome and the
+   `ServerContinuousReceiveLoopHandlerHandoffRuntimePlan` prepared by the
+   one-tick runtime.
+3. If the loop stopped or socket receive failed, the bridge produces
+   `NotRequired` and preserves that no handler should run for this iteration.
+4. If a packet completed and the handler handoff contains `Auth`, the bridge
+   exposes `ServerAuthCheck` as the future auth dispatch input.
+5. If the handoff contains `RegisteredClient`, the bridge exposes
+   `ServerRegisteredClientPacket` as the future registered-client dispatch
+   input.
+6. Unsupported routes and handoff preparation errors are preserved as dispatch
+   handoff plans, but no policy is executed at this layer.
+
+Responsibility split:
+
+- controller
+  - Decides whether to request one body iteration and observes the body result.
+  - Does not call concrete handlers.
+- `run_once` body
+  - Produces one body result containing one-tick runtime output.
+- one-tick runtime
+  - Produces writer output and handler handoff preparation for one packet.
+- handler handoff runtime
+  - Converts accepted routes into typed handler inputs only.
+- handler dispatch bridge
+  - Converts the body / handoff result into a future dispatch plan.
+  - Does not run auth decisions, heartbeat / video / stats handlers, outbound
+    enqueue, packet drop, state mutation, retry/backoff, sink selection, file
+    open, process-wide logging, or async runtime.
+- future handler dispatch body
+  - Will own actual handler execution and any resulting state changes or
+    outbound queue handoffs.
+
+Current code reflects this with
+`ServerContinuousReceiveLoopHandlerDispatchPlan`,
+`ServerContinuousReceiveLoopHandlerDispatchHandoff`, and
+`ServerContinuousReceiveLoopHandlerDispatchBoundary`.
+
 ### 5.7 AuthResponse PoC one-shot startup step
 
 AuthResponse PoC startup uses the existing boundaries as a one-packet

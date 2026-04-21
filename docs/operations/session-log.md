@@ -5,6 +5,56 @@
 - Codex
 
 ### 今回の作業
+- continuous receive loop から handler dispatch への最小実接続範囲を docs に明記した。
+- `apps/server` に handler dispatch bridge placeholder を追加した。
+- controller / body / one-tick runtime / handler handoff runtime / future handler dispatch 本体の責務分離を整理した。
+
+### 変更ファイル
+- `apps/server/src/lib.rs`
+- `docs/architecture/system-design.md`
+- `docs/architecture/protocol.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### 決定事項
+- dispatch bridge は `ServerContinuousReceiveLoopHandlerDispatchBoundary` として、body result から future handler dispatch への typed handoff 計画だけを担当する。
+- stopped loop、socket receive failure、rejected outcome は `NotRequired` として handler 実行へ進めない。
+- accepted `AuthRequest` は `ServerAuthCheck` を future auth dispatch input として保持する。
+- accepted `Heartbeat` / `VideoFrame` / `ClientStats` は `ServerRegisteredClientPacket` を future registered-client dispatch input として保持する。
+- unsupported route と handoff preparation error は marker として保持し、policy 実行は後段に残す。
+- auth decision、heartbeat / video / stats handler 本体、outbound enqueue、packet drop、file sink open、process-wide logger、retry/backoff、async runtime は今回も未実装のまま残す。
+
+### 未実装 / 保留
+- handler dispatch 本体
+- auth decision / outbound response queue への continuous loop 内実接続
+- heartbeat / video / stats handler 本体
+- packet drop 本体
+- 完成した continuous receive loop / while loop
+- shutdown signal / retry / backoff policy
+- file sink open / process-wide logger
+
+### 次にやる候補
+- auth / receive JSON Lines file sink の実 file open 範囲を必要になった時点で再確認する。
+- `ServerNotice` trigger の state transition 接続範囲を必要になった時点で再確認する。
+- handler dispatch 本体の最小実装範囲を必要になった時点で整理する。
+
+### TODO更新
+- 現在位置に handler dispatch bridge placeholder 追加済み、handler dispatch 本体は未実装であることを反映した。
+- 直近でやることから handler dispatch bridge 整理を外し、file sink / ServerNotice trigger / handler dispatch 本体の範囲整理へ更新した。
+- net-core / server 境界に `ServerContinuousReceiveLoopHandlerDispatchBoundary` 追加完了を反映した。
+
+### メモ
+- `cargo fmt --check` は成功した。
+- `cargo check --workspace` は成功した。
+- 追加確認として `cargo test -p stream-sync-server continuous_receive_loop_handler_dispatch` は成功した。
+
+---
+
+## 2026-04-21
+### 種別
+- Codex
+
+### 今回の作業
 - continuous receive loop controller の継続実行範囲を docs に明記した。
 - `apps/server` に outer controller lifecycle placeholder を追加した。
 - controller / run_once body / one-tick runtime / handler dispatch / shutdown policy の責務分離を整理した。

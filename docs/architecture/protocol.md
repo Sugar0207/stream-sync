@@ -453,6 +453,29 @@ Current code reflects this with
 `ServerContinuousReceiveLoopControllerObservation`, and
 `ServerContinuousReceiveLoopControllerBoundary`.
 
+The receive-loop to handler-dispatch bridge is the next handoff after
+`run_once` returns. It reads the body result and the handler handoff plan that
+the one-tick runtime already prepared, then produces a future dispatch plan:
+
+- stopped loop or socket receive failure -> `NotRequired`
+- rejected packet -> `NotRequired`
+- accepted `AuthRequest` -> `ServerAuthCheck`
+- accepted `Heartbeat` / `VideoFrame` / `ClientStats` ->
+  `ServerRegisteredClientPacket`
+- unsupported route -> unsupported dispatch marker
+- preparation error -> handoff error marker
+
+The bridge does not execute auth decision logic, heartbeat / video / stats
+handling, outbound enqueue, packet drop, state mutation, retry/backoff, sink
+selection, file open, process-wide logging, or async runtime behavior. It only
+keeps the minimum typed connection from continuous receive-loop output to the
+future handler dispatch body.
+
+Current code reflects this with
+`ServerContinuousReceiveLoopHandlerDispatchPlan`,
+`ServerContinuousReceiveLoopHandlerDispatchHandoff`, and
+`ServerContinuousReceiveLoopHandlerDispatchBoundary`.
+
 ## 1. 目的
 
 このドキュメントは、StreamSync の MVP 段階における通信プロトコルの初期設計を定義するものです。
