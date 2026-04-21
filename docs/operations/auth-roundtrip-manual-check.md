@@ -156,6 +156,7 @@ server stderr の要点:
 ```json
 {"event_name":"server.receive_loop","source":"127.0.0.1:<client-port>","outcome":"Accepted","packet_len":96,"message_type":"AuthRequest","client_id":"player1","rejection_reason":null,"timestamp":<timestamp>}
 {"event_name":"server.auth_result","run_id":"streamsync-dev-session","client_id":"player1","source":"127.0.0.1:<client-port>","accepted":true,"reason_code":"Ok","message":null,"app_version":"0.1.0","protocol_version":1,"timestamp":<timestamp>,"expected_protocol_version":null}
+{"event_name":"server.send","outcome":"Success","run_id":"streamsync-dev-session","client_id":"player1","destination":"127.0.0.1:<client-port>","message_type":"AuthResponse","stage":"SocketSend","encoded_len":55,"bytes_sent":55,"failure":null,"disposition":null,"timestamp":<timestamp>}
 ```
 
 client stdout:
@@ -168,7 +169,7 @@ client stderr は cargo の build / run 表示のみ。
 
 この確認で、accepted auth request が `--receive-send-once` 入口から 1 回の
 controller receive/send runtime に入り、server 側で `AuthResponse` 55 bytes
-を UDP send したことを確認した。現行 client の
+を UDP send し、`server.send` success observation を出力したことを確認した。現行 client の
 `--auth-request-poc-once` は送信専用 PoC のため、client stdout には
 `AuthResponse` 受信結果は表示されない。
 

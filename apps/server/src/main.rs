@@ -57,6 +57,7 @@ fn main() {
                 std::io::stderr(),
                 std::io::stderr(),
                 std::io::stderr(),
+                std::io::stderr(),
             ) {
                 Ok(outcome) => match &outcome.outcome {
                     stream_sync_server::ServerControllerReceiveSendRuntimeResult::Stopped {

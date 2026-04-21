@@ -586,12 +586,18 @@ impl ServerReceiveSendOneIterationLauncher {
             .map_err(ServerReceiveSendOneIterationStartupError::StartupConfig)
     }
 
-    pub fn run_once_from_path_with_writers<OW: io::Write, RW: io::Write, AW: io::Write>(
+    pub fn run_once_from_path_with_writers<
+        OW: io::Write,
+        RW: io::Write,
+        AW: io::Write,
+        SW: io::Write,
+    >(
         &self,
         path: impl AsRef<Path>,
         operational_writer: OW,
         rejection_writer: RW,
         auth_log_writer: AW,
+        send_log_writer: SW,
     ) -> Result<
         ServerReceiveSendOneIterationStartupOutcome,
         ServerReceiveSendOneIterationStartupError,
@@ -602,15 +608,17 @@ impl ServerReceiveSendOneIterationLauncher {
             operational_writer,
             rejection_writer,
             auth_log_writer,
+            send_log_writer,
         )
     }
 
-    pub fn run_once_with_writers<OW: io::Write, RW: io::Write, AW: io::Write>(
+    pub fn run_once_with_writers<OW: io::Write, RW: io::Write, AW: io::Write, SW: io::Write>(
         &self,
         startup_config: ServerAuthResponsePocStartupConfig,
         operational_writer: OW,
         rejection_writer: RW,
         auth_log_writer: AW,
+        send_log_writer: SW,
     ) -> Result<
         ServerReceiveSendOneIterationStartupOutcome,
         ServerReceiveSendOneIterationStartupError,
@@ -648,10 +656,12 @@ impl ServerReceiveSendOneIterationLauncher {
                         protocol_version: startup_config.expected_protocol_version,
                     },
                     auth_log_timestamp: timestamp,
+                    send_log_timestamp: timestamp,
                 },
                 operational_writer,
                 rejection_writer,
                 auth_log_writer,
+                send_log_writer,
             )
             .map_err(ServerReceiveSendOneIterationStartupError::Runtime)?;
 
@@ -2477,6 +2487,7 @@ pub struct ServerReceiveSendOneIterationRuntimeInput {
     pub heartbeat_timing: ServerHeartbeatAckTiming,
     pub encode_context: EncodeContext,
     pub auth_log_timestamp: TimestampMicros,
+    pub send_log_timestamp: TimestampMicros,
 }
 
 /// Outcome of connecting one receive iteration to one optional send step.
@@ -2489,6 +2500,7 @@ pub struct ServerReceiveSendOneIterationRuntimeOutcome {
     pub queue_push: ServerOutboundQueueCollectionPushOutcome,
     pub dequeue: ServerOutboundQueueDequeueRuntimeResult,
     pub send: Option<ServerOutboundSendOneRuntimeOutcome>,
+    pub send_log: Option<ServerSendJsonLogEventInput>,
 }
 
 /// Error from the one-iteration receive/send integration runtime.
@@ -2496,6 +2508,7 @@ pub struct ServerReceiveSendOneIterationRuntimeOutcome {
 pub enum ServerReceiveSendOneIterationRuntimeError {
     ReceiveBody(io::ErrorKind),
     OutputApply(io::ErrorKind),
+    SendLog(io::ErrorKind),
     Send(ServerOutboundSendOneRuntimeError),
 }
 
@@ -2512,10 +2525,11 @@ pub struct ServerReceiveSendOneIterationRuntimeBoundary {
     output: ServerDispatchRuntimeOutputApplyBoundary,
     queue: ServerOutboundQueueCollectionBoundary,
     send: ServerOutboundSendOneRuntimeBoundary,
+    send_log: ServerSendLogOutputBoundary,
 }
 
 impl ServerReceiveSendOneIterationRuntimeBoundary {
-    pub fn run_once<OW: io::Write, RW: io::Write, AW: io::Write>(
+    pub fn run_once<OW: io::Write, RW: io::Write, AW: io::Write, SW: io::Write>(
         &self,
         socket: &UdpSocket,
         buffer: &mut [u8],
@@ -2526,6 +2540,7 @@ impl ServerReceiveSendOneIterationRuntimeBoundary {
         operational_writer: OW,
         rejection_writer: RW,
         auth_log_writer: AW,
+        send_log_writer: SW,
     ) -> Result<
         ServerReceiveSendOneIterationRuntimeOutcome,
         ServerReceiveSendOneIterationRuntimeError,
@@ -2562,13 +2577,29 @@ impl ServerReceiveSendOneIterationRuntimeBoundary {
             })?;
         let queue_push = self.queue.push_from_output_apply(queue_collection, &output);
         let dequeue = self.queue.dequeue_one(queue_collection);
-        let send = match dequeue.clone() {
-            ServerOutboundQueueDequeueRuntimeResult::Ready(queued) => Some(
-                self.send
-                    .send_queued(socket, queued, input.encode_context)
-                    .map_err(ServerReceiveSendOneIterationRuntimeError::Send)?,
-            ),
-            ServerOutboundQueueDequeueRuntimeResult::Empty => None,
+        let (send, send_log) = match dequeue.clone() {
+            ServerOutboundQueueDequeueRuntimeResult::Ready(queued) => {
+                match self.send.send_queued(socket, queued, input.encode_context) {
+                    Ok(send) => {
+                        let send_log = self
+                            .send_log
+                            .write_send_success(&send, input.send_log_timestamp, send_log_writer)
+                            .map_err(|error| {
+                                ServerReceiveSendOneIterationRuntimeError::SendLog(error.kind())
+                            })?;
+                        (Some(send), Some(send_log))
+                    }
+                    Err(error) => {
+                        self.send_log
+                            .write_send_failure(&error, input.send_log_timestamp, send_log_writer)
+                            .map_err(|log_error| {
+                                ServerReceiveSendOneIterationRuntimeError::SendLog(log_error.kind())
+                            })?;
+                        return Err(ServerReceiveSendOneIterationRuntimeError::Send(error));
+                    }
+                }
+            }
+            ServerOutboundQueueDequeueRuntimeResult::Empty => (None, None),
         };
 
         Ok(ServerReceiveSendOneIterationRuntimeOutcome {
@@ -2579,6 +2610,7 @@ impl ServerReceiveSendOneIterationRuntimeBoundary {
             queue_push,
             dequeue,
             send,
+            send_log,
         })
     }
 }
@@ -2590,6 +2622,7 @@ pub struct ServerControllerReceiveSendRuntimeInput {
     pub heartbeat_timing: ServerHeartbeatAckTiming,
     pub encode_context: EncodeContext,
     pub auth_log_timestamp: TimestampMicros,
+    pub send_log_timestamp: TimestampMicros,
 }
 
 /// Result of one controller step that may run one receive/send iteration.
@@ -2624,7 +2657,7 @@ pub struct ServerControllerReceiveSendRuntimeBoundary {
 }
 
 impl ServerControllerReceiveSendRuntimeBoundary {
-    pub fn run_once<OW: io::Write, RW: io::Write, AW: io::Write>(
+    pub fn run_once<OW: io::Write, RW: io::Write, AW: io::Write, SW: io::Write>(
         &self,
         socket: &UdpSocket,
         buffer: &mut [u8],
@@ -2635,6 +2668,7 @@ impl ServerControllerReceiveSendRuntimeBoundary {
         operational_writer: OW,
         rejection_writer: RW,
         auth_log_writer: AW,
+        send_log_writer: SW,
     ) -> Result<ServerControllerReceiveSendRuntimeResult, ServerControllerReceiveSendRuntimeError>
     {
         let plan = self.controller.plan_next_iteration(input.controller);
@@ -2664,10 +2698,12 @@ impl ServerControllerReceiveSendRuntimeBoundary {
                     heartbeat_timing: input.heartbeat_timing,
                     encode_context: input.encode_context,
                     auth_log_timestamp: input.auth_log_timestamp,
+                    send_log_timestamp: input.send_log_timestamp,
                 },
                 operational_writer,
                 rejection_writer,
                 auth_log_writer,
+                send_log_writer,
             )
             .map_err(ServerControllerReceiveSendRuntimeError::Iteration)?;
         let observation = self.controller.observe_body_result(&iteration.body);
@@ -3105,6 +3141,197 @@ impl ServerReceiveRejectionJsonLineWriter {
 }
 
 pub const SERVER_SEND_ERROR_EVENT_NAME: &str = "server.send_error";
+pub const SERVER_SEND_EVENT_NAME: &str = "server.send";
+
+/// Minimal send log outcome for one-item send observation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ServerSendLogOutcome {
+    Success,
+    Failure,
+}
+
+/// JSON Lines event input for send success/failure observation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ServerSendJsonLogEventInput {
+    pub event_name: &'static str,
+    pub outcome: ServerSendLogOutcome,
+    pub run_id: Option<RunId>,
+    pub client_id: Option<ClientId>,
+    pub destination: PacketDestination,
+    pub message_type: MessageType,
+    pub stage: SendLogStage,
+    pub encoded_len: Option<usize>,
+    pub bytes_sent: Option<usize>,
+    pub failure: Option<SendFailureKind>,
+    pub disposition: Option<SendFailureDisposition>,
+    pub timestamp: TimestampMicros,
+}
+
+/// Boundary that maps one-item send success/failure into send JSON Lines input.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct ServerSendJsonLogEventBoundary;
+
+impl ServerSendJsonLogEventBoundary {
+    pub fn build_success_event(
+        &self,
+        outcome: &ServerOutboundSendOneRuntimeOutcome,
+        timestamp: TimestampMicros,
+    ) -> ServerSendJsonLogEventInput {
+        ServerSendJsonLogEventInput {
+            event_name: SERVER_SEND_EVENT_NAME,
+            outcome: ServerSendLogOutcome::Success,
+            run_id: outcome.plan.log_context.run_id.clone(),
+            client_id: outcome.plan.log_context.client_id.clone(),
+            destination: outcome.plan.log_context.destination,
+            message_type: outcome.plan.log_context.message_type,
+            stage: SendLogStage::SocketSend,
+            encoded_len: Some(outcome.encoded_packet.bytes.len()),
+            bytes_sent: Some(outcome.bytes_sent),
+            failure: None,
+            disposition: None,
+            timestamp,
+        }
+    }
+
+    pub fn build_failure_event(
+        &self,
+        error: &ServerOutboundSendOneRuntimeError,
+        timestamp: TimestampMicros,
+    ) -> Option<ServerSendJsonLogEventInput> {
+        let send_event = match error {
+            ServerOutboundSendOneRuntimeError::Encode { event, .. }
+            | ServerOutboundSendOneRuntimeError::SocketSend { event, .. } => {
+                event.log_event.as_ref()?
+            }
+        };
+        let failure = send_event.failure?;
+        Some(ServerSendJsonLogEventInput {
+            event_name: SERVER_SEND_EVENT_NAME,
+            outcome: ServerSendLogOutcome::Failure,
+            run_id: send_event.context.run_id.clone(),
+            client_id: send_event.context.client_id.clone(),
+            destination: send_event.context.destination,
+            message_type: send_event.context.message_type,
+            stage: send_event.stage,
+            encoded_len: send_event.encoded_len,
+            bytes_sent: None,
+            failure: Some(failure),
+            disposition: Some(
+                send_event
+                    .disposition
+                    .unwrap_or_else(|| failure.disposition()),
+            ),
+            timestamp,
+        })
+    }
+}
+
+/// Minimal JSON Lines writer for one-item send success/failure events.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct ServerSendJsonLineWriter;
+
+impl ServerSendJsonLineWriter {
+    pub fn write_event<W: io::Write>(
+        &self,
+        event: &ServerSendJsonLogEventInput,
+        mut writer: W,
+    ) -> io::Result<()> {
+        write!(writer, "{{")?;
+        write_json_field(&mut writer, "event_name", event.event_name)?;
+        write!(writer, ",")?;
+        write_json_field(&mut writer, "outcome", send_log_outcome_name(event.outcome))?;
+        write!(writer, ",")?;
+        write_optional_json_field(
+            &mut writer,
+            "run_id",
+            event.run_id.as_ref().map(|run_id| run_id.0.as_str()),
+        )?;
+        write!(writer, ",")?;
+        write_optional_json_field(
+            &mut writer,
+            "client_id",
+            event
+                .client_id
+                .as_ref()
+                .map(|client_id| client_id.0.as_str()),
+        )?;
+        write!(writer, ",")?;
+        write_json_field(
+            &mut writer,
+            "destination",
+            &event.destination.address.to_string(),
+        )?;
+        write!(writer, ",")?;
+        write_json_field(
+            &mut writer,
+            "message_type",
+            receive_rejection_message_type_name(event.message_type),
+        )?;
+        write!(writer, ",")?;
+        write_json_field(&mut writer, "stage", send_log_stage_name(event.stage))?;
+        write!(writer, ",\"encoded_len\":")?;
+        match event.encoded_len {
+            Some(encoded_len) => write!(writer, "{encoded_len}")?,
+            None => write!(writer, "null")?,
+        }
+        write!(writer, ",\"bytes_sent\":")?;
+        match event.bytes_sent {
+            Some(bytes_sent) => write!(writer, "{bytes_sent}")?,
+            None => write!(writer, "null")?,
+        }
+        write!(writer, ",")?;
+        write_optional_json_field(
+            &mut writer,
+            "failure",
+            event.failure.map(send_failure_kind_name),
+        )?;
+        write!(writer, ",")?;
+        write_optional_json_field(
+            &mut writer,
+            "disposition",
+            event.disposition.map(send_failure_disposition_name),
+        )?;
+        write!(writer, ",\"timestamp\":{}", event.timestamp.0)?;
+        writeln!(writer, "}}")
+    }
+}
+
+/// Minimal send log output boundary.
+///
+/// This writes one success/failure observation for one-item send runtime to a
+/// caller-owned writer. It does not own files, rotate logs, buffer globally,
+/// retry, requeue, or install a process-wide logger.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct ServerSendLogOutputBoundary {
+    event: ServerSendJsonLogEventBoundary,
+    writer: ServerSendJsonLineWriter,
+}
+
+impl ServerSendLogOutputBoundary {
+    pub fn write_send_success<W: io::Write>(
+        &self,
+        outcome: &ServerOutboundSendOneRuntimeOutcome,
+        timestamp: TimestampMicros,
+        writer: W,
+    ) -> io::Result<ServerSendJsonLogEventInput> {
+        let event = self.event.build_success_event(outcome, timestamp);
+        self.writer.write_event(&event, writer)?;
+        Ok(event)
+    }
+
+    pub fn write_send_failure<W: io::Write>(
+        &self,
+        error: &ServerOutboundSendOneRuntimeError,
+        timestamp: TimestampMicros,
+        writer: W,
+    ) -> io::Result<Option<ServerSendJsonLogEventInput>> {
+        let Some(event) = self.event.build_failure_event(error, timestamp) else {
+            return Ok(None);
+        };
+        self.writer.write_event(&event, writer)?;
+        Ok(Some(event))
+    }
+}
 
 /// Send error input handed from net-core send events into server logging.
 ///
@@ -3376,6 +3603,13 @@ fn send_log_stage_name(stage: SendLogStage) -> &'static str {
         SendLogStage::Encode => "Encode",
         SendLogStage::BeforeSocketSend => "BeforeSocketSend",
         SendLogStage::SocketSend => "SocketSend",
+    }
+}
+
+fn send_log_outcome_name(outcome: ServerSendLogOutcome) -> &'static str {
+    match outcome {
+        ServerSendLogOutcome::Success => "Success",
+        ServerSendLogOutcome::Failure => "Failure",
     }
 }
 
@@ -7649,6 +7883,7 @@ shared_token = "secret"
         let mut operational_output = Vec::new();
         let mut rejection_output = Vec::new();
         let mut auth_log = Vec::new();
+        let mut send_log = Vec::new();
         let runtime = ServerReceiveSendOneIterationRuntimeBoundary::default();
 
         let outcome = runtime
@@ -7669,10 +7904,12 @@ shared_token = "secret"
                         protocol_version: ProtocolVersion(2),
                     },
                     auth_log_timestamp: TimestampMicros(9_000_010),
+                    send_log_timestamp: TimestampMicros(9_000_020),
                 },
                 &mut operational_output,
                 &mut rejection_output,
                 &mut auth_log,
+                &mut send_log,
             )
             .expect("one iteration receive/send runtime should complete");
 
@@ -7684,6 +7921,11 @@ shared_token = "secret"
         let send = outcome
             .send
             .expect("accepted auth should send one response");
+        let send_log_event = outcome
+            .send_log
+            .expect("accepted auth should write send log");
+        assert_eq!(send_log_event.outcome, ServerSendLogOutcome::Success);
+        assert_eq!(send_log_event.bytes_sent, Some(send.bytes_sent));
         assert_eq!(send.bytes_sent, send.encoded_packet.bytes.len());
         assert!(queue_collection.is_empty());
         assert!(registry.get(&ClientId("client-1".to_string())).is_some());
@@ -7698,6 +7940,11 @@ shared_token = "secret"
         let auth_log = String::from_utf8(auth_log).expect("auth log should be utf8");
         assert!(auth_log.contains(r#""event_name":"server.auth_result""#));
         assert!(auth_log.contains(r#""accepted":true"#));
+        let send_log = String::from_utf8(send_log).expect("send log should be utf8");
+        assert!(send_log.contains(r#""event_name":"server.send""#));
+        assert!(send_log.contains(r#""outcome":"Success""#));
+        assert!(send_log.contains(r#""message_type":"AuthResponse""#));
+        assert!(send_log.contains(r#""bytes_sent":"#));
     }
 
     #[test]
@@ -7709,6 +7956,7 @@ shared_token = "secret"
         let mut operational_output = Vec::new();
         let mut rejection_output = Vec::new();
         let mut auth_log = Vec::new();
+        let mut send_log = Vec::new();
         let runtime = ServerControllerReceiveSendRuntimeBoundary::default();
 
         let outcome = runtime
@@ -7729,10 +7977,12 @@ shared_token = "secret"
                         protocol_version: ProtocolVersion(2),
                     },
                     auth_log_timestamp: TimestampMicros(9_000_010),
+                    send_log_timestamp: TimestampMicros(9_000_020),
                 },
                 &mut operational_output,
                 &mut rejection_output,
                 &mut auth_log,
+                &mut send_log,
             )
             .expect("stopped controller should not run iteration");
 
@@ -7751,6 +8001,7 @@ shared_token = "secret"
         assert!(operational_output.is_empty());
         assert!(rejection_output.is_empty());
         assert!(auth_log.is_empty());
+        assert!(send_log.is_empty());
     }
 
     #[test]
@@ -7775,6 +8026,7 @@ shared_token = "secret"
         let mut operational_output = Vec::new();
         let mut rejection_output = Vec::new();
         let mut auth_log = Vec::new();
+        let mut send_log = Vec::new();
         let runtime = ServerControllerReceiveSendRuntimeBoundary::default();
 
         let outcome = runtime
@@ -7795,10 +8047,12 @@ shared_token = "secret"
                         protocol_version: ProtocolVersion(2),
                     },
                     auth_log_timestamp: TimestampMicros(9_000_010),
+                    send_log_timestamp: TimestampMicros(9_000_020),
                 },
                 &mut operational_output,
                 &mut rejection_output,
                 &mut auth_log,
+                &mut send_log,
             )
             .expect("controller receive/send runtime should complete");
 
@@ -7834,6 +8088,9 @@ shared_token = "secret"
         assert_eq!(decoded.header.message_type, MessageType::AuthResponse);
         let auth_log = String::from_utf8(auth_log).expect("auth log should be utf8");
         assert!(auth_log.contains(r#""accepted":true"#));
+        let send_log = String::from_utf8(send_log).expect("send log should be utf8");
+        assert!(send_log.contains(r#""event_name":"server.send""#));
+        assert!(send_log.contains(r#""outcome":"Success""#));
     }
 
     #[test]
@@ -8030,6 +8287,69 @@ shared_token = "secret"
         assert!(output.contains(r#""message_type":"Heartbeat""#));
         assert!(output.contains(r#""rejection_reason":"UnknownClient""#));
         assert!(output.contains(r#""timestamp":678901"#));
+    }
+
+    #[test]
+    fn send_json_line_writer_outputs_success_observation() {
+        let event = ServerSendJsonLogEventInput {
+            event_name: SERVER_SEND_EVENT_NAME,
+            outcome: ServerSendLogOutcome::Success,
+            run_id: Some(RunId("run-1".to_string())),
+            client_id: Some(ClientId("client-1".to_string())),
+            destination: packet_source().into(),
+            message_type: MessageType::AuthResponse,
+            stage: SendLogStage::SocketSend,
+            encoded_len: Some(55),
+            bytes_sent: Some(55),
+            failure: None,
+            disposition: None,
+            timestamp: TimestampMicros(789_012),
+        };
+        let writer = ServerSendJsonLineWriter;
+        let mut output = Vec::new();
+
+        writer
+            .write_event(&event, &mut output)
+            .expect("send json line should write");
+
+        assert_eq!(
+            String::from_utf8(output).expect("json line should be utf8"),
+            r#"{"event_name":"server.send","outcome":"Success","run_id":"run-1","client_id":"client-1","destination":"127.0.0.1:5000","message_type":"AuthResponse","stage":"SocketSend","encoded_len":55,"bytes_sent":55,"failure":null,"disposition":null,"timestamp":789012}"#
+                .to_string()
+                + "\n"
+        );
+    }
+
+    #[test]
+    fn send_log_output_boundary_writes_failure_observation() {
+        let boundary = ServerSendLogOutputBoundary::default();
+        let error = ServerOutboundSendOneRuntimeError::SocketSend {
+            error_kind: io::ErrorKind::NetworkUnreachable,
+            event: OutboundSendLoopEvent {
+                state: OutboundSendLoopTickState::Failed,
+                log_event: Some(SendLogEvent::send_failed(
+                    send_log_context(),
+                    SendLogStage::SocketSend,
+                    Some(55),
+                    SendFailureKind::NetworkUnreachable,
+                )),
+            },
+        };
+        let mut output = Vec::new();
+
+        let event = boundary
+            .write_send_failure(&error, TimestampMicros(890_123), &mut output)
+            .expect("send failure log should write")
+            .expect("failure event should be produced");
+
+        assert_eq!(event.outcome, ServerSendLogOutcome::Failure);
+        assert_eq!(event.failure, Some(SendFailureKind::NetworkUnreachable));
+        let output = String::from_utf8(output).expect("json line should be utf8");
+        assert!(output.contains(r#""event_name":"server.send""#));
+        assert!(output.contains(r#""outcome":"Failure""#));
+        assert!(output.contains(r#""failure":"NetworkUnreachable""#));
+        assert!(output.contains(r#""disposition":"WarningCandidate""#));
+        assert!(output.contains(r#""timestamp":890123"#));
     }
 
     #[test]

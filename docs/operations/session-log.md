@@ -5,6 +5,76 @@
 - Codex
 
 ### 今回の作業
+- send JSON Lines writer の one-iteration 実接続範囲を整理した。
+- one-item send runtime の success / failure observation を `server.send` JSON Lines として caller-owned writer へ渡す最小接続を追加した。
+- `--receive-send-once` の accepted auth 手動確認を再実行し、`server.send` success observation を観測した。
+
+### 変更ファイル
+- `apps/server/src/lib.rs`
+- `apps/server/src/main.rs`
+- `docs/architecture/system-design.md`
+- `docs/architecture/protocol.md`
+- `docs/operations/auth-roundtrip-manual-check.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### 決定事項
+- `server.send_error` は既存どおり failure-only の send error boundary として残す。
+- 新しい `server.send` は one-iteration receive/send runtime の success / failure observation 用とする。
+- success は `outcome="Success"`, `stage="SocketSend"`, `encoded_len`, `bytes_sent`, `failure=null` を記録する。
+- failure は `outcome="Failure"`, `stage`, `encoded_len`, `failure`, `disposition` を記録し、`bytes_sent=null` とする。
+- writer は caller-owned `io::Write` のみを受け取り、file open / rotation / process-wide logger / retry / requeue は持たない。
+
+### 実装したこと
+- `ServerSendJsonLogEventInput`, `ServerSendJsonLogEventBoundary`, `ServerSendJsonLineWriter`, `ServerSendLogOutputBoundary` を追加した。
+- `ServerReceiveSendOneIterationRuntimeBoundary` に send log writer と send log timestamp を渡し、send success/failure 時に `server.send` を 1 行書くようにした。
+- `ServerControllerReceiveSendRuntimeBoundary` と `ServerReceiveSendOneIterationLauncher` から send log writer を引き回した。
+- server CLI `--receive-send-once` で send log writer を stderr へ接続した。
+- success / failure writer と receive-send one-iteration runtime の関連テストを更新した。
+
+### 手動確認
+- 最初に `cargo run` 同士で確認した際は、server 側の再コンパイル中に client が先に送信し、server が packet を受け取れなかった。
+- 先に `cargo build -p stream-sync-server -p stream-sync-client` を実行してから binary を直接起動し、accepted path を確認した。
+- server stdout は `sent_bytes=55`, `BodyIterationCompleted`, `YieldToCaller` を表示した。
+- server stderr には `server.receive_loop`, `server.auth_result`, `server.send` の 3 行が出力された。
+- `server.send` は `outcome="Success"`, `message_type="AuthResponse"`, `encoded_len=55`, `bytes_sent=55` を記録した。
+
+### 未実装 / 保留
+- completed continuous send loop
+- continuous send loop から send log writer へ渡す本接続
+- retry / requeue
+- send log file sink open / rotation / retention
+- process-wide logger
+- heartbeat / video / switcher 側の拡張
+- secret store 連携
+
+### 次にやる候補
+- auth / receive / send JSON Lines file sink の実 file open 範囲を再確認する
+- `ServerNotice` trigger の state transition 接続範囲を再確認する
+- continuous send loop から send log writer へ渡す範囲を必要時に整理する
+
+### TODO 更新
+- 現在位置に send JSON Lines writer の one-iteration 最小実接続完了を反映した。
+- net-core / server 境界に `ServerSendLogOutputBoundary` / one-iteration send success/failure JSON Lines writer 追加完了を反映した。
+- 直近でやることを auth / receive / send file sink 範囲、ServerNotice trigger、continuous send loop から send log writer への接続範囲へ更新した。
+
+### 検証
+- `cargo fmt`
+- `cargo test -p stream-sync-server send_log`
+- `cargo test -p stream-sync-server receive_send_one_iteration`
+- `cargo test -p stream-sync-server send_`
+- `cargo build -p stream-sync-server -p stream-sync-client`
+- `target/debug/stream-sync-server.exe --receive-send-once configs/examples/server.example.toml`
+- `target/debug/stream-sync-client.exe --auth-request-poc-once configs/examples/client.accepted.example.toml`
+- `cargo fmt --check`
+- `cargo check --workspace`
+
+---
+
+### 種別
+- Codex
+
+### 今回の作業
 - `--receive-send-once` を使って accepted auth request の手動通し確認を実行した。
 - server / client example config の組み合わせで、accepted AuthRequest が one-iteration receive/send runtime から UDP send 側へ流れることを確認した。
 - 観測した stdout / stderr の要点を `docs/operations/auth-roundtrip-manual-check.md` に記録した。

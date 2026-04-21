@@ -648,8 +648,9 @@ responses to encode and UDP send:
   `OutboundQueueSendHandoff`, plans one send tick, encodes it into
   `EncodedOutboundPacket`, and sends one UDP datagram through
   `ServerUdpSocketIoStep::send_encoded`.
-- Encode and socket-send observations are returned as typed events. Send JSON
-  Lines writing remains future work.
+- Encode and socket-send observations remain typed. The one-iteration runtime
+  can write one `server.send` JSON Lines observation for send success or
+  failure to a caller-owned writer.
 - No continuous send loop, retry, requeue, queue eviction, file sink open,
   process-wide logger, or async runtime is introduced here.
 
@@ -669,11 +670,13 @@ optional send attempt:
 - It pushes an accepted auth response queued item into caller-owned queue
   collection storage, dequeues at most one item, and passes it to
   `ServerOutboundSendOneRuntimeBoundary`.
-- It returns every intermediate handoff and the optional send outcome for a
-  future controller.
+- It writes one send success/failure observation to the caller-owned send log
+  writer when an item reaches the send runtime.
+- It returns every intermediate handoff, the optional send outcome, and the
+  optional send log event for a future controller.
 - It does not repeat, retry, requeue, retain unsent queue items beyond the
-  caller-owned collection, write send logs, open files, install a process-wide
-  logger, or implement packet drop policy.
+  caller-owned collection, open files, install a process-wide logger, or
+  implement packet drop policy.
 
 Current code reflects this with `ServerReceiveSendOneIterationRuntimeInput`,
 `ServerReceiveSendOneIterationRuntimeOutcome`,
@@ -2729,13 +2732,14 @@ budgets, retry timers, queue mutation, or JSON Lines log writing.
 Send error / log event policy is owned by `net-core` after protocol encode.
 `protocol` returns encode errors, while `net-core` keeps destination metadata
 and extracts `run_id`, optional `client_id`, destination, and `message_type` for
-send log events. Server-side JSON Lines output is failure-only at this stage:
-`apps/server` filters failure `SendLogEvent` values into
-`ServerSendErrorLogInput`, builds `ServerSendErrorJsonLogEventInput`, and can
-write one `server.send_error` JSON Lines record to a caller-owned `io::Write`.
-Retry execution, requeue, continuous loop wiring, file sink opening, rotation,
-and process-wide logging remain outside this protocol boundary; encoded
-datagram socket send is handled by the UDP socket adapter.
+send log events. Server-side JSON Lines output has two scopes:
+`server.send_error` remains the failure-only boundary for failure
+`SendLogEvent` values, and `server.send` records one-iteration send
+success/failure observations from the one-item send runtime. Both write to
+caller-owned `io::Write` sinks. Retry execution, requeue, continuous loop
+wiring, file sink opening, rotation, and process-wide logging remain outside
+this protocol boundary; encoded datagram socket send is handled by the UDP
+socket adapter.
 
 ---
 
@@ -2808,6 +2812,10 @@ Current code:
 - `crates/net-core::OutboundSendLogContext` and `SendLogEvent` define the
   future send log context shape for encode success / failure and socket send
   failures.
+- `apps/server::ServerSendJsonLogEventBoundary`,
+  `ServerSendLogOutputBoundary`, and `ServerSendJsonLineWriter` define the
+  one-iteration `server.send` JSON Lines writer connection for send success and
+  failure observations.
 - `apps/server::ServerSendErrorLogHandoffBoundary`,
   `ServerSendErrorJsonLogEventBoundary`, and
   `ServerSendErrorLogOutputBoundary` define the failure-only JSON Lines handoff

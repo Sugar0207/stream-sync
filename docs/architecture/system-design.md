@@ -978,7 +978,7 @@ Minimal queue collection and send runtime scope:
    `ProtocolMessageEncoderBoundary` to produce `EncodedOutboundPacket`, and
    `ServerUdpSocketIoStep::send_encoded` to perform one synchronous UDP send.
 5. The send runtime records encode and socket-send observations but does not
-   write send logs, retry, requeue, or continue a loop.
+   write logs, retry, requeue, or continue a loop.
 
 Responsibility split for the minimal send path:
 
@@ -997,16 +997,18 @@ Responsibility split for the minimal send path:
     adapter.
   - Does not retry or fragment.
 - send log
-  - Encode / send observations are returned as typed events only.
-  - JSON Lines send log writing and process-wide logger integration remain
-    future work.
+  - `ServerSendLogOutputBoundary` may write one `server.send` JSON Lines
+    record for one-item send success or failure.
+  - File sink open, process-wide logger integration, buffering policy, retry,
+    and requeue remain future work.
 
 Current code reflects this with `ServerOutboundQueueCollection`,
 `ServerOutboundQueueCollectionBoundary`,
 `ServerOutboundQueueCollectionPushOutcome`,
 `ServerOutboundQueueDequeueRuntimeResult`,
 `ServerOutboundSendOneRuntimeOutcome`, `ServerOutboundSendOneRuntimeError`,
-and `ServerOutboundSendOneRuntimeBoundary`.
+`ServerOutboundSendOneRuntimeBoundary`, `ServerSendJsonLogEventInput`,
+`ServerSendLogOutputBoundary`, and `ServerSendJsonLineWriter`.
 
 Receive/send one-iteration integration scope:
 
@@ -1019,8 +1021,11 @@ Receive/send one-iteration integration scope:
 4. It pushes any accepted auth response queued item into the caller-owned queue
    collection, dequeues at most one item, and passes that item to
    `ServerOutboundSendOneRuntimeBoundary`.
-5. It returns the body, dispatch, side-effect, output, queue push, dequeue, and
-   optional send outcome so a future controller can decide what to do next.
+5. If one item is sent, it writes a single `server.send` JSON Lines observation
+   to the caller-owned send log writer.
+6. It returns the body, dispatch, side-effect, output, queue push, dequeue,
+   optional send outcome, and optional send log event so a future controller can
+   decide what to do next.
 
 Responsibility split for receive/send integration:
 
@@ -1036,9 +1041,12 @@ Responsibility split for receive/send integration:
   - Owns caller-provided typed queue storage and one-item selection.
 - one-item send runtime
   - Owns one encode + socket send attempt.
+- send log writer
+  - Owns one caller-owned JSON Lines write for send success/failure
+    observation.
 - future controller
-  - Owns repetition, shutdown policy, retry/requeue, queue retention, send log
-    writing, file sink open, process-wide logger, and packet drop policy.
+  - Owns repetition, shutdown policy, retry/requeue, queue retention, file sink
+    open, process-wide logger, and packet drop policy.
 
 Current code reflects this with `ServerReceiveSendOneIterationRuntimeInput`,
 `ServerReceiveSendOneIterationRuntimeOutcome`,
@@ -1084,7 +1092,7 @@ Completed one-iteration CLI / config entry:
    `ServerControllerReceiveSendRuntimeBoundary` once.
 3. `apps/server` exposes this through
    `--receive-send-once [config-path]`.
-4. The CLI writes receive-loop / rejection / auth JSON Lines records to
+4. The CLI writes receive-loop / rejection / auth / send JSON Lines records to
    caller-owned stderr handles and prints a short summary to stdout.
 5. The CLI waits for exactly one packet and exits after that one controller
    step. It does not repeat, retry, requeue, rotate files, or install a global
@@ -3182,6 +3190,21 @@ Send error JSON Lines output scope:
   opening files, creating directories, rotation, retention, buffering beyond
   caller-owned writes, and process-wide logger setup remain future work.
 
+One-iteration send JSON Lines output scope:
+
+- Event name is `server.send`.
+- The event records success and failure observations for one-item send runtime.
+- Success events use `outcome="Success"`, `stage="SocketSend"`,
+  `encoded_len=<bytes>`, `bytes_sent=<bytes>`, and `failure=null`.
+- Failure events use `outcome="Failure"`, preserve `stage`, `encoded_len`
+  when available, set `bytes_sent=null`, and include `failure` /
+  `disposition`.
+- The writer accepts a caller-owned `io::Write` and emits exactly one JSON
+  object plus newline per observed one-item send result.
+- This scope is intentionally narrower than a completed send loop: it does not
+  open file sinks, choose retention, buffer globally, retry, requeue, or install
+  a process-wide logger.
+
 Responsibility split:
 
 - `server`
@@ -3209,6 +3232,12 @@ Responsibility split:
     to a caller-owned writer.
   - Does not own queue mutation, retry policy, file opening, rotation, async
     logging, or process-wide logging.
+- `server send JSON Lines boundary`
+  - Builds `server.send` success/failure observations from one-item send
+    runtime outcome or error.
+  - Writes to a caller-owned writer from receive/send one-iteration runtime.
+  - Does not replace the failure-only `server.send_error` boundary and does not
+    own file opening, retry, requeue, or continuous loop scheduling.
 - `logging` sink plan
   - Normalizes stderr/file destination plans for future runtime wiring.
   - Does not open files or write records.
@@ -3225,4 +3254,7 @@ represented by `apps/server::ServerSendErrorLogHandoffBoundary`,
 `ServerSendErrorJsonLogEventInput`, `ServerSendErrorLogOutputBoundary`,
 `ServerSendErrorJsonLineWriter`, `ServerSendErrorJsonLinesSinkConfig`,
 `ServerSendErrorJsonLinesSinkPlan`, and
-`ServerSendErrorJsonLinesSinkBoundary`.
+`ServerSendErrorJsonLinesSinkBoundary`. One-iteration success/failure send
+observation is represented by `apps/server::ServerSendJsonLogEventInput`,
+`ServerSendJsonLogEventBoundary`, `ServerSendLogOutputBoundary`, and
+`ServerSendJsonLineWriter`.

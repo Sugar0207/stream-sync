@@ -42,11 +42,11 @@
 - outbound queue の実処理範囲、backpressure / capacity 方針、送信継続 loop 前の bounded storage / encoder handoff 範囲、packet 送信継続 loop の最小接続範囲と loop 本体の実装範囲は整理済み。実キュー collection、送信継続 loop 本実装、retry 実行 / requeue は未実装
 - `ServerNotice` payload layout、decode / encode 最小実装、notice trigger policy の実装範囲整理は完了。state transition 検知、重複抑制、rate limit、送信継続 loop、socket send 接続は未実装
 - auth / receive JSON Lines file sink 方針は整理済み。実 file open、rotation、retention、async logging、process-wide logger は未実装
-- send error JSON Lines 出力範囲は整理済み。failure-only の event schema / caller-owned writer / sink plan placeholder は追加済みだが、send loop からの実接続、file sink open、process-wide logger は未実装
+- send JSON Lines writer の実接続範囲は整理済み。failure-only の `server.send_error` event schema / caller-owned writer / sink plan placeholder と、one-iteration receive/send runtime から `server.send` success/failure observation を caller-owned writer へ書く最小接続は追加済みだが、continuous send loop からの実接続、file sink open、process-wide logger は未実装
 - receive loop の継続運用向けログ範囲は整理済み。`server.receive_loop` の event schema / caller-owned writer / sink plan placeholder は追加済みだが、continuous receive loop からの実接続、file sink open、process-wide logger は未実装
-- continuous receive loop 本体の実装範囲、1 tick 実接続範囲、operational / rejection writer への handoff 範囲、caller-owned writer 呼び出し範囲、handler handoff 実接続範囲、最小 1 tick 実行接続範囲、継続 loop controller の外枠範囲、handler dispatch への最小 handoff 範囲、handler dispatch 本体の最小分類範囲、auth dispatch の最小実接続範囲、registered packet handler の最小実接続範囲、video / stats handler の最小 input 接続範囲、continuous receive loop body から dispatch runtime を呼ぶ最小範囲、dispatch runtime 結果の side effect 適用範囲、accepted auth の outbound queue storage / auth log writer 最小接続範囲、send loop / queue collection の最小接続範囲、continuous receive loop と one-item send runtime の最小結合範囲、controller が one-iteration receive/send runtime を呼ぶ最小範囲、completed one-iteration runtime の CLI / config 接続範囲は整理済み。loop lifecycle / tick / writer handoff / writer runtime / handler handoff runtime / one-tick runtime / controller / handler dispatch bridge / handler dispatch result / auth dispatch runtime / registered packet dispatch runtime / video stats handler runtime / body dispatch runtime / side effect apply / output apply / queue collection / send one runtime / receive-send one iteration runtime / controller receive-send runtime placeholder、one-iteration launcher、1 iteration だけの最小 loop body は追加済みだが、完成した継続 receive/send loop、retry / requeue、rejection response 送信 policy、video buffer / sync handoff 本体、stats state commit 本体、packet drop 本体、file sink open、process-wide logger は未実装
+- continuous receive loop 本体の実装範囲、1 tick 実接続範囲、operational / rejection writer への handoff 範囲、caller-owned writer 呼び出し範囲、handler handoff 実接続範囲、最小 1 tick 実行接続範囲、継続 loop controller の外枠範囲、handler dispatch への最小 handoff 範囲、handler dispatch 本体の最小分類範囲、auth dispatch の最小実接続範囲、registered packet handler の最小実接続範囲、video / stats handler の最小 input 接続範囲、continuous receive loop body から dispatch runtime を呼ぶ最小範囲、dispatch runtime 結果の side effect 適用範囲、accepted auth の outbound queue storage / auth log writer 最小接続範囲、send loop / queue collection の最小接続範囲、send JSON Lines writer の one-iteration 最小実接続範囲、continuous receive loop と one-item send runtime の最小結合範囲、controller が one-iteration receive/send runtime を呼ぶ最小範囲、completed one-iteration runtime の CLI / config 接続範囲は整理済み。loop lifecycle / tick / writer handoff / writer runtime / handler handoff runtime / one-tick runtime / controller / handler dispatch bridge / handler dispatch result / auth dispatch runtime / registered packet dispatch runtime / video stats handler runtime / body dispatch runtime / side effect apply / output apply / queue collection / send one runtime / send log output / receive-send one iteration runtime / controller receive-send runtime placeholder、one-iteration launcher、1 iteration だけの最小 loop body は追加済みだが、完成した継続 receive/send loop、retry / requeue、rejection response 送信 policy、video buffer / sync handoff 本体、stats state commit 本体、packet drop 本体、file sink open、process-wide logger は未実装
 - secret store / token rotation 方針は整理済み。SecretStore 参照と rotation policy placeholder は追加済みだが、provider 連携、rotation 実行、hot reload は未実装
-- 次の中心は auth / receive JSON Lines file sink 実 file open 範囲の再確認、ServerNotice trigger の state transition 接続範囲の再確認、必要になった時点で send JSON Lines writer 実接続範囲の整理
+- 次の中心は auth / receive / send JSON Lines file sink 実 file open 範囲の再確認、ServerNotice trigger の state transition 接続範囲の再確認、必要になった時点で continuous send loop から send log writer へ渡す範囲の整理
 
 ---
 
@@ -76,9 +76,9 @@
 ---
 
 ## 直近でやること
-1. auth / receive JSON Lines file sink の実 file open 範囲を必要になった時点で再確認する
+1. auth / receive / send JSON Lines file sink の実 file open 範囲を必要になった時点で再確認する
 2. `ServerNotice` trigger の state transition 接続範囲を必要になった時点で再確認する
-3. send JSON Lines writer の実接続範囲を必要になった時点で整理する
+3. continuous send loop から send log writer へ渡す範囲を必要になった時点で整理する
 
 ---
 
@@ -127,6 +127,7 @@
 - [x] receive rejection の JSON Lines ログイベント仕様を整理する
 - [x] receive rejection ログ出力の最小実装を追加する
 - [x] auth / receive JSON Lines writer 接続範囲を整理する
+- [x] send JSON Lines writer の one-iteration 最小実接続範囲を整理する
 - [x] UDP socket 受信 / 送信本体の最小実装を追加する
 - [x] `VideoFrame` encode 方針と最小実装範囲を整理する
 - [x] UDP socket を auth response PoC の起動処理へ最小接続する
@@ -223,6 +224,7 @@
 - [x] `OutboundSendLogContext` / `SendLogEvent` / send failure classification placeholder を追加する
 - [x] `OutboundSendLoopTickBoundary` / send loop tick state placeholder を追加する
 - [x] `OutboundSendLoopLifecycleBoundary` / send loop lifecycle placeholder を追加する
+- [x] `ServerSendLogOutputBoundary` / one-iteration send success/failure JSON Lines writer を追加する
 - [x] `ServerSendErrorLogOutputBoundary` / send error JSON Lines writer placeholder を追加する
 - [x] server 側 `ServerOutboundQueueBoundary` placeholder を追加する
 - [x] server 側 `ServerHeartbeatAckBoundary` / `ServerOutboundHeartbeatAck` placeholder を追加する
