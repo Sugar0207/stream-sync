@@ -487,6 +487,55 @@ Current code reflects this with
 `ServerContinuousReceiveLoopHandlerHandoffRuntimeResult`, and
 `ServerContinuousReceiveLoopHandlerHandoffRuntimeBoundary`.
 
+Continuous receive loop minimal one-tick runtime execution scope:
+
+1. The caller owns a bound synchronous `UdpSocket`, receive buffer, current
+   `AuthenticatedSenderRegistry`, expected `ProtocolVersion`, timestamp, and
+   caller-owned operational / rejection writers.
+2. `ServerContinuousReceiveLoopOneTickRuntimeBoundary` asks
+   `ServerContinuousReceiveLoopTickBoundary` for the start tick plan.
+3. If stop is requested, the boundary returns `Stopped` before any socket
+   receive or writer call.
+4. Otherwise it calls `ServerUdpSocketIoStep::receive_one_with_gate_details`,
+   which performs one blocking datagram receive and returns both packet length
+   and `ServerReceiveLoopGateOutcome`.
+5. The boundary passes that outcome to
+   `ServerContinuousReceiveLoopHandlerHandoffRuntimeBoundary`, which writes
+   operational / rejection logs through caller-owned writers and prepares the
+   handler handoff plan.
+6. Socket receive errors are returned as a one-tick `SocketReceiveFailed`
+   outcome with the socket-error tick plan. Writer errors remain `io::Result`
+   errors from the runtime call.
+
+This is still not the continuous receive loop body. It executes exactly one
+tick and does not repeat, sleep, own shutdown policy beyond one stop flag,
+dispatch handlers, apply packet drop side effects, mutate auth/session state,
+open file sinks, install a process-wide logger, retry, or spawn async work.
+
+Responsibility split:
+
+- socket receive
+  - `ServerUdpSocketIoStep` owns one synchronous datagram receive and
+    decode/gate connection.
+- tick plan
+  - `ServerContinuousReceiveLoopTickBoundary` owns stop / receive /
+    socket-error checkpoint naming.
+- writer runtime
+  - Caller-owned writers receive at most one operational event and one
+    rejection event.
+- handler handoff runtime
+  - Accepted routes are converted only into the next handler input.
+- future loop body
+  - Owns repeated ticks, shutdown policy, backoff, handler execution, packet
+    drop, metrics state commits, and sink lifecycle.
+
+Current code reflects this with
+`ServerUdpSocketGateReceiveOutcome`,
+`ServerContinuousReceiveLoopOneTickRuntimeInput`,
+`ServerContinuousReceiveLoopOneTickRuntimeOutcome`,
+`ServerContinuousReceiveLoopOneTickRuntimeResult`, and
+`ServerContinuousReceiveLoopOneTickRuntimeBoundary`.
+
 ### 5.7 AuthResponse PoC one-shot startup step
 
 AuthResponse PoC startup uses the existing boundaries as a one-packet

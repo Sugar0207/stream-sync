@@ -5,6 +5,58 @@
 - Codex
 
 ### 今回の作業
+- continuous receive loop 本体の最小 1 tick 実行接続範囲を docs に明記した。
+- `apps/server` に one-tick runtime execution placeholder を追加した。
+- socket receive / tick plan / writer runtime / handler handoff runtime / future loop 本体の責務分離を整理した。
+
+### 変更ファイル
+- `apps/server/src/lib.rs`
+- `docs/architecture/system-design.md`
+- `docs/architecture/protocol.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### 決定事項
+- one-tick runtime は stop 判定、1 datagram receive、decode / gate、writer runtime、handler handoff runtime を 1 回分だけ同期的に接続する。
+- `ServerUdpSocketIoStep::receive_one_with_gate_details` は `ServerReceiveLoopGateOutcome` と packet length を返し、writer runtime の packet length 入力を満たす。
+- stop requested の場合は socket receive と writer 呼び出しを行わず `Stopped` を返す。
+- socket receive error は `SocketReceiveFailed` outcome として tick checkpoint と `io::ErrorKind` を返す。
+- writer error は caller-owned writer runtime の `io::Result` error として返す。
+- one-tick runtime は継続 loop、handler dispatch、packet drop、file sink open、process-wide logger、retry、async runtime を持たない。
+
+### 未実装 / 保留
+- continuous receive loop の継続実行本体
+- handler dispatch 本体
+- auth decision / outbound response queue への loop 内接続
+- heartbeat / video / stats handler 本体
+- packet drop 本体
+- file sink open / process-wide logger
+- retry / backoff / shutdown policy 本体
+
+### 次にやる候補
+- continuous receive loop の継続実行 loop body 着手前の範囲を再確認する
+- auth / receive JSON Lines file sink の実 file open 範囲を必要になった時点で再確認する
+- `ServerNotice` trigger の state transition 接続範囲を必要になった時点で再確認する
+- secret store provider 連携または token rotation 実行範囲を必要になった時点で再確認する
+
+### TODO更新
+- 現在位置に continuous receive loop の最小 1 tick 実行接続範囲整理完了を反映した。
+- 直近でやることを continuous receive loop の継続実行 loop body 着手前の範囲再確認へ更新した。
+- net-core / server 境界に `ServerContinuousReceiveLoopOneTickRuntimeBoundary` / minimal one-tick runtime execution placeholder 追加完了を反映した。
+- net-core / server 境界に continuous receive loop 本体の最小 1 tick 実行接続範囲整理完了を反映した。
+
+### メモ
+- `cargo fmt --check` は成功した。
+- `cargo check --workspace` は成功した。
+- 追加確認として `cargo test -p stream-sync-server continuous_receive_loop_one_tick_runtime` は成功した。
+
+---
+
+## 2026-04-21
+### 種別
+- Codex
+
+### 今回の作業
 - continuous receive loop 本体へ進む前の handler handoff 実接続範囲を docs に明記した。
 - `apps/server` に writer runtime 後の handler handoff runtime placeholder を追加した。
 - receive tick / writer runtime / handler handoff runtime / future loop 本体の責務分離を整理した。

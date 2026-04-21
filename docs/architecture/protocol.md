@@ -402,6 +402,23 @@ This boundary intentionally stops before auth decision execution, heartbeat /
 video / stats handler execution, outbound response enqueue, packet drop, retry,
 sink selection, file open, or continuous loop orchestration.
 
+The minimal one-tick receive-loop runtime execution is represented by
+`ServerContinuousReceiveLoopOneTickRuntimeBoundary`. It connects the current
+pieces in this order for exactly one synchronous tick:
+
+1. Build the start tick plan with `ServerContinuousReceiveLoopTickBoundary`.
+2. Stop before socket I/O when `stop_requested` is true.
+3. Receive one datagram through
+   `ServerUdpSocketIoStep::receive_one_with_gate_details`.
+4. Preserve `packet_len` next to `ServerReceiveLoopGateOutcome`.
+5. Call `ServerContinuousReceiveLoopHandlerHandoffRuntimeBoundary` so writer
+   output and handler handoff planning happen from the same gate outcome.
+
+The one-tick boundary may report a socket receive failure checkpoint, but it
+does not implement repeated looping, handler execution, packet drop side
+effects, file sink lifecycle, retry, backoff, async runtime, or process-wide
+logging.
+
 ## 1. 目的
 
 このドキュメントは、StreamSync の MVP 段階における通信プロトコルの初期設計を定義するものです。

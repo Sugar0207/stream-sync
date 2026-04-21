@@ -265,6 +265,13 @@ pub struct ServerUdpSocketIoStep {
     receive_loop: ServerReceiveLoopStep,
 }
 
+/// Result of one UDP receive plus decode / gate evaluation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ServerUdpSocketGateReceiveOutcome {
+    pub packet_len: usize,
+    pub outcome: ServerReceiveLoopGateOutcome,
+}
+
 impl ServerUdpSocketIoStep {
     pub fn receive_one_with_gate(
         &self,
@@ -273,14 +280,30 @@ impl ServerUdpSocketIoStep {
         expected_protocol_version: ProtocolVersion,
         registry: &AuthenticatedSenderRegistry,
     ) -> io::Result<ServerReceiveLoopGateOutcome> {
-        let packet = self.socket_io.receive_one(socket, buffer)?;
+        self.receive_one_with_gate_details(socket, buffer, expected_protocol_version, registry)
+            .map(|details| details.outcome)
+    }
 
-        Ok(self.receive_loop.handle_received_packet_with_gate(
+    pub fn receive_one_with_gate_details(
+        &self,
+        socket: &UdpSocket,
+        buffer: &mut [u8],
+        expected_protocol_version: ProtocolVersion,
+        registry: &AuthenticatedSenderRegistry,
+    ) -> io::Result<ServerUdpSocketGateReceiveOutcome> {
+        let packet = self.socket_io.receive_one(socket, buffer)?;
+        let packet_len = packet.bytes.len();
+        let outcome = self.receive_loop.handle_received_packet_with_gate(
             expected_protocol_version,
             registry,
             packet.source,
             packet.bytes,
-        ))
+        );
+
+        Ok(ServerUdpSocketGateReceiveOutcome {
+            packet_len,
+            outcome,
+        })
     }
 
     pub fn send_encoded(
@@ -1171,6 +1194,109 @@ impl ServerContinuousReceiveLoopHandlerHandoffRuntimeBoundary {
                 message_type,
             },
         }
+    }
+}
+
+/// Runtime input for executing a single continuous receive-loop tick.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct ServerContinuousReceiveLoopOneTickRuntimeInput {
+    pub expected_protocol_version: ProtocolVersion,
+    pub timestamp: TimestampMicros,
+    pub stop_requested: bool,
+}
+
+/// Outcome of the minimal one-tick receive-loop runtime connection.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ServerContinuousReceiveLoopOneTickRuntimeOutcome {
+    Stopped,
+    SocketReceiveFailed {
+        socket_error_tick: ServerContinuousReceiveLoopTickPlan,
+        error_kind: io::ErrorKind,
+    },
+    Completed {
+        packet_len: usize,
+        handler: ServerContinuousReceiveLoopHandlerHandoffRuntimeResult,
+    },
+}
+
+/// Result of one receive-loop runtime tick.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ServerContinuousReceiveLoopOneTickRuntimeResult {
+    pub start_tick: ServerContinuousReceiveLoopTickPlan,
+    pub outcome: ServerContinuousReceiveLoopOneTickRuntimeOutcome,
+}
+
+/// Minimal runtime boundary for executing one synchronous receive-loop tick.
+///
+/// This composes stop planning, one socket receive, decode / gate, writer
+/// runtime, and handler handoff runtime. It does not run a loop, dispatch
+/// handlers, drop packets, open file sinks, install logging, or spawn async
+/// work.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ServerContinuousReceiveLoopOneTickRuntimeBoundary {
+    tick: ServerContinuousReceiveLoopTickBoundary,
+    socket_io: ServerUdpSocketIoStep,
+    handler_handoff: ServerContinuousReceiveLoopHandlerHandoffRuntimeBoundary,
+}
+
+impl ServerContinuousReceiveLoopOneTickRuntimeBoundary {
+    pub fn execute_one_tick<OW: io::Write, RW: io::Write>(
+        &self,
+        socket: &UdpSocket,
+        buffer: &mut [u8],
+        registry: &AuthenticatedSenderRegistry,
+        input: ServerContinuousReceiveLoopOneTickRuntimeInput,
+        operational_writer: OW,
+        rejection_writer: RW,
+    ) -> io::Result<ServerContinuousReceiveLoopOneTickRuntimeResult> {
+        let start_tick = self
+            .tick
+            .plan_next(ServerContinuousReceiveLoopLifecycleInput {
+                stop_requested: input.stop_requested,
+            });
+
+        if input.stop_requested {
+            return Ok(ServerContinuousReceiveLoopOneTickRuntimeResult {
+                start_tick,
+                outcome: ServerContinuousReceiveLoopOneTickRuntimeOutcome::Stopped,
+            });
+        }
+
+        let received = match self.socket_io.receive_one_with_gate_details(
+            socket,
+            buffer,
+            input.expected_protocol_version,
+            registry,
+        ) {
+            Ok(received) => received,
+            Err(error) => {
+                return Ok(ServerContinuousReceiveLoopOneTickRuntimeResult {
+                    start_tick,
+                    outcome:
+                        ServerContinuousReceiveLoopOneTickRuntimeOutcome::SocketReceiveFailed {
+                            socket_error_tick: self.tick.observe_socket_receive_error(),
+                            error_kind: error.kind(),
+                        },
+                });
+            }
+        };
+
+        let handler = self.handler_handoff.handoff_after_gate_outcome(
+            registry,
+            received.packet_len,
+            received.outcome,
+            input.timestamp,
+            operational_writer,
+            rejection_writer,
+        )?;
+
+        Ok(ServerContinuousReceiveLoopOneTickRuntimeResult {
+            start_tick,
+            outcome: ServerContinuousReceiveLoopOneTickRuntimeOutcome::Completed {
+                packet_len: received.packet_len,
+                handler,
+            },
+        })
     }
 }
 
@@ -5182,6 +5308,120 @@ shared_token = "secret"
         assert!(result.writer.rejection_event.is_some());
         assert!(!operational_output.is_empty());
         assert!(!rejection_output.is_empty());
+    }
+
+    #[test]
+    fn continuous_receive_loop_one_tick_runtime_stops_before_socket_receive() {
+        let boundary = ServerContinuousReceiveLoopOneTickRuntimeBoundary::default();
+        let receiver = UdpSocket::bind("127.0.0.1:0").expect("receiver should bind");
+        let registry = AuthenticatedSenderRegistry::default();
+        let mut buffer = [0_u8; 128];
+        let mut operational_output = Vec::new();
+        let mut rejection_output = Vec::new();
+
+        let result = boundary
+            .execute_one_tick(
+                &receiver,
+                &mut buffer,
+                &registry,
+                ServerContinuousReceiveLoopOneTickRuntimeInput {
+                    expected_protocol_version: ProtocolVersion(2),
+                    timestamp: TimestampMicros(956_789),
+                    stop_requested: true,
+                },
+                &mut operational_output,
+                &mut rejection_output,
+            )
+            .expect("one tick runtime should stop cleanly");
+
+        assert_eq!(
+            result.start_tick,
+            ServerContinuousReceiveLoopTickPlan {
+                state: ServerContinuousReceiveLoopTickState::Stopped,
+                lifecycle: ServerContinuousReceiveLoopLifecyclePlan {
+                    state: ServerContinuousReceiveLoopLifecycleState::Stopped,
+                    action: ServerContinuousReceiveLoopAction::Stop,
+                    operational_log_required: false,
+                    rejection_log_required: false,
+                    handler_handoff_required: false,
+                },
+                packet_len: None,
+            }
+        );
+        assert_eq!(
+            result.outcome,
+            ServerContinuousReceiveLoopOneTickRuntimeOutcome::Stopped
+        );
+        assert!(operational_output.is_empty());
+        assert!(rejection_output.is_empty());
+    }
+
+    #[test]
+    fn continuous_receive_loop_one_tick_runtime_receives_writes_and_prepares_handler() {
+        let boundary = ServerContinuousReceiveLoopOneTickRuntimeBoundary::default();
+        let receiver = UdpSocket::bind("127.0.0.1:0").expect("receiver should bind");
+        let sender = UdpSocket::bind("127.0.0.1:0").expect("sender should bind");
+        receiver
+            .set_read_timeout(Some(std::time::Duration::from_secs(1)))
+            .expect("read timeout should be set");
+        let receiver_addr = receiver.local_addr().expect("receiver should have address");
+        let sender_source: PacketSource = sender
+            .local_addr()
+            .expect("sender should have address")
+            .into();
+        let payload = heartbeat_payload();
+        let packet = test_packet(MessageType::Heartbeat as u16, FIXED_HEADER_LEN, 2, &payload);
+        let registry = registry_with_client("client-1", sender_source);
+        let mut buffer = [0_u8; 256];
+        let mut operational_output = Vec::new();
+        let mut rejection_output = Vec::new();
+
+        sender
+            .send_to(packet.as_slice(), receiver_addr)
+            .expect("packet should send");
+
+        let result = boundary
+            .execute_one_tick(
+                &receiver,
+                &mut buffer,
+                &registry,
+                ServerContinuousReceiveLoopOneTickRuntimeInput {
+                    expected_protocol_version: ProtocolVersion(2),
+                    timestamp: TimestampMicros(967_890),
+                    stop_requested: false,
+                },
+                &mut operational_output,
+                &mut rejection_output,
+            )
+            .expect("one tick runtime should succeed");
+
+        assert_eq!(
+            result.start_tick.state,
+            ServerContinuousReceiveLoopTickState::AwaitingSocketReceive
+        );
+        let ServerContinuousReceiveLoopOneTickRuntimeOutcome::Completed {
+            packet_len,
+            handler,
+        } = result.outcome
+        else {
+            panic!("expected completed one tick outcome");
+        };
+        assert_eq!(packet_len, packet.len());
+        assert!(matches!(
+            handler.handler,
+            ServerContinuousReceiveLoopHandlerHandoffRuntimePlan::RegisteredClient(
+                ServerRegisteredClientPacket::Heartbeat(ServerRegisteredHeartbeatPacket {
+                    heartbeat: Heartbeat { ref client_id, .. },
+                    ..
+                })
+            ) if client_id == &ClientId("client-1".to_string())
+        ));
+        assert!(handler.writer.operational_event.is_some());
+        assert_eq!(handler.writer.rejection_event, None);
+        assert!(String::from_utf8(operational_output)
+            .expect("json line should be utf8")
+            .contains(r#""event_name":"server.receive_loop""#));
+        assert!(rejection_output.is_empty());
     }
 
     #[test]
