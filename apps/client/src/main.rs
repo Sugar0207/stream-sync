@@ -34,9 +34,41 @@ fn main() {
                 }
             }
         }
+        Some("--auth-heartbeat-poc-once") => {
+            let config_path = args
+                .next()
+                .unwrap_or_else(|| "configs/examples/client.accepted.example.toml".to_string());
+            match stream_sync_client::run_auth_heartbeat_poc_once_from_path(&config_path) {
+                Ok(outcome) => {
+                    println!(
+                        "auth heartbeat PoC sent AuthRequest {} bytes to {} and received AuthResponse {} bytes from {}; accepted={} reason_code={:?}; sent Heartbeat {} bytes and received HeartbeatAck {} bytes from {}; client_id={} run_id={} protocol_version={} heartbeat_sent_at={} echoed_sent_at={} server_received_at={} server_sent_at={}",
+                        outcome.auth_request_bytes_sent,
+                        outcome.destination,
+                        outcome.auth_response_bytes.len(),
+                        outcome.auth_response_source,
+                        outcome.auth_response.accepted,
+                        outcome.auth_response.reason_code,
+                        outcome.heartbeat_bytes_sent,
+                        outcome.heartbeat_ack_bytes.len(),
+                        outcome.heartbeat_ack_source,
+                        outcome.request.client_id.0,
+                        outcome.request.run_id.0,
+                        outcome.request.protocol_version.0,
+                        outcome.heartbeat.sent_at.0,
+                        outcome.heartbeat_ack.echoed_sent_at.0,
+                        outcome.heartbeat_ack.server_received_at.0,
+                        outcome.heartbeat_ack.server_sent_at.0
+                    );
+                }
+                Err(error) => {
+                    eprintln!("auth heartbeat PoC failed: {error:?}");
+                    std::process::exit(1);
+                }
+            }
+        }
         _ => {
             println!(
-                "stream-sync-client scaffold; use --auth-request-poc-once [config-path] for one-shot auth request PoC"
+                "stream-sync-client scaffold; use --auth-request-poc-once [config-path] or --auth-heartbeat-poc-once [config-path]"
             );
         }
     }

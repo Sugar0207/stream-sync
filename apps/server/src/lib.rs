@@ -694,6 +694,156 @@ pub enum ServerReceiveSendOneIterationStartupError {
     Runtime(ServerControllerReceiveSendRuntimeError),
 }
 
+/// Launcher for exactly two controller receive/send iterations from server config.
+///
+/// This is a manual auth-then-heartbeat check entry point. It keeps one UDP
+/// socket, registry, and queue collection across two calls to the existing
+/// one-iteration runtime. It does not implement a continuous loop, retry,
+/// requeue, file sinks, or process-wide logging.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ServerReceiveSendTwoIterationLauncher {
+    socket_io: UdpSocketIoBoundary,
+    runtime: ServerControllerReceiveSendRuntimeBoundary,
+}
+
+impl ServerReceiveSendTwoIterationLauncher {
+    pub fn load_startup_config_from_path(
+        &self,
+        path: impl AsRef<Path>,
+    ) -> Result<ServerAuthResponsePocStartupConfig, ServerReceiveSendOneIterationStartupError> {
+        ServerReceiveSendOneIterationLauncher::default().load_startup_config_from_path(path)
+    }
+
+    pub fn run_two_from_path_with_writers<
+        OW: io::Write,
+        RW: io::Write,
+        AW: io::Write,
+        SW: io::Write,
+    >(
+        &self,
+        path: impl AsRef<Path>,
+        operational_writer: OW,
+        rejection_writer: RW,
+        auth_log_writer: AW,
+        send_log_writer: SW,
+    ) -> Result<
+        ServerReceiveSendTwoIterationStartupOutcome,
+        ServerReceiveSendOneIterationStartupError,
+    > {
+        let startup_config = self.load_startup_config_from_path(path)?;
+        self.run_two_with_writers(
+            startup_config,
+            operational_writer,
+            rejection_writer,
+            auth_log_writer,
+            send_log_writer,
+        )
+    }
+
+    pub fn run_two_with_writers<OW: io::Write, RW: io::Write, AW: io::Write, SW: io::Write>(
+        &self,
+        startup_config: ServerAuthResponsePocStartupConfig,
+        mut operational_writer: OW,
+        mut rejection_writer: RW,
+        mut auth_log_writer: AW,
+        mut send_log_writer: SW,
+    ) -> Result<
+        ServerReceiveSendTwoIterationStartupOutcome,
+        ServerReceiveSendOneIterationStartupError,
+    > {
+        let socket = self
+            .socket_io
+            .bind(startup_config.bind_address)
+            .map_err(|error| ServerReceiveSendOneIterationStartupError::Bind {
+                address: startup_config.bind_address,
+                kind: error.kind(),
+            })?;
+        let mut buffer = vec![0_u8; DEFAULT_UDP_PACKET_BUFFER_LEN];
+        let mut registry = AuthenticatedSenderRegistry::default();
+        let mut queue_collection = ServerOutboundQueueCollection::default();
+        let first_timestamp = current_system_timestamp_micros();
+        let first = self
+            .runtime
+            .run_once(
+                &socket,
+                &mut buffer,
+                &mut registry,
+                &mut queue_collection,
+                &startup_config.auth_config,
+                ServerControllerReceiveSendRuntimeInput {
+                    controller: ServerContinuousReceiveLoopControllerInput {
+                        expected_protocol_version: startup_config.expected_protocol_version,
+                        timestamp: first_timestamp,
+                        continue_requested: true,
+                    },
+                    heartbeat_timing: ServerHeartbeatAckTiming {
+                        server_received_at: first_timestamp,
+                        server_sent_at: first_timestamp,
+                    },
+                    encode_context: EncodeContext {
+                        protocol_version: startup_config.expected_protocol_version,
+                    },
+                    auth_log_timestamp: first_timestamp,
+                    send_log_timestamp: first_timestamp,
+                },
+                &mut operational_writer,
+                &mut rejection_writer,
+                &mut auth_log_writer,
+                &mut send_log_writer,
+            )
+            .map_err(ServerReceiveSendOneIterationStartupError::Runtime)?;
+        let second_timestamp = current_system_timestamp_micros();
+        let second = self
+            .runtime
+            .run_once(
+                &socket,
+                &mut buffer,
+                &mut registry,
+                &mut queue_collection,
+                &startup_config.auth_config,
+                ServerControllerReceiveSendRuntimeInput {
+                    controller: ServerContinuousReceiveLoopControllerInput {
+                        expected_protocol_version: startup_config.expected_protocol_version,
+                        timestamp: second_timestamp,
+                        continue_requested: true,
+                    },
+                    heartbeat_timing: ServerHeartbeatAckTiming {
+                        server_received_at: second_timestamp,
+                        server_sent_at: second_timestamp,
+                    },
+                    encode_context: EncodeContext {
+                        protocol_version: startup_config.expected_protocol_version,
+                    },
+                    auth_log_timestamp: second_timestamp,
+                    send_log_timestamp: second_timestamp,
+                },
+                &mut operational_writer,
+                &mut rejection_writer,
+                &mut auth_log_writer,
+                &mut send_log_writer,
+            )
+            .map_err(ServerReceiveSendOneIterationStartupError::Runtime)?;
+
+        Ok(ServerReceiveSendTwoIterationStartupOutcome {
+            bind_address: startup_config.bind_address,
+            registry,
+            queue_collection,
+            first,
+            second,
+        })
+    }
+}
+
+/// Result of launching exactly two controller receive/send iterations.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ServerReceiveSendTwoIterationStartupOutcome {
+    pub bind_address: SocketAddr,
+    pub registry: AuthenticatedSenderRegistry,
+    pub queue_collection: ServerOutboundQueueCollection,
+    pub first: ServerControllerReceiveSendRuntimeResult,
+    pub second: ServerControllerReceiveSendRuntimeResult,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct ServerPocSettings {
     bind_host: String,
@@ -2256,9 +2406,10 @@ pub struct ServerDispatchRuntimeOutputApplyOutcome {
 /// Minimal output application after dispatch side-effect apply.
 ///
 /// This writes auth log input to a caller-owned writer and passes accepted auth
-/// response queue items to queue storage planning. It does not open files, own
-/// a process-wide logger, store a real queue collection, encode packets, send
-/// UDP, retry, or process heartbeat/video/stats handoffs.
+/// response queue items to queue storage planning. Heartbeat ack handoffs are
+/// preserved for the queue collection bridge. It does not open files, own a
+/// process-wide logger, store a real queue collection, encode packets, send
+/// UDP, retry, or process video/stats handoffs.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
 pub struct ServerDispatchRuntimeOutputApplyBoundary {
     auth_log: ServerAuthLogOutputBoundary,
@@ -2368,6 +2519,15 @@ impl ServerOutboundQueueCollectionBoundary {
                 auth_response_storage: Some(storage),
                 ..
             } => storage.queued_item.clone(),
+            ServerDispatchRuntimeOutputApplyResult::Preserved(
+                ServerDispatchRuntimeSideEffectApplyResult::HeartbeatAck(handoff),
+            ) => {
+                let queue = ServerOutboundQueueBoundary::default();
+                let decision = queue.evaluate_storage_push(collection.len(), &handoff.queue_item);
+                decision.accepts_candidate().then(|| {
+                    OutboundQueueLifecycleBoundary.hold_for_send(handoff.queue_item.clone())
+                })
+            }
             _ => None,
         };
 
@@ -7948,6 +8108,88 @@ shared_token = "secret"
     }
 
     #[test]
+    fn receive_send_one_iteration_runtime_sends_registered_heartbeat_ack() {
+        let server_socket = UdpSocket::bind("127.0.0.1:0").expect("server socket should bind");
+        let client_socket = UdpSocket::bind("127.0.0.1:0").expect("client socket should bind");
+        client_socket
+            .set_read_timeout(Some(std::time::Duration::from_secs(1)))
+            .expect("client read timeout should be set");
+        let server_address = server_socket
+            .local_addr()
+            .expect("server socket should have address");
+        let client_source: PacketSource = client_socket
+            .local_addr()
+            .expect("client socket should have address")
+            .into();
+        let packet = test_packet(
+            MessageType::Heartbeat as u16,
+            FIXED_HEADER_LEN,
+            2,
+            &heartbeat_payload(),
+        );
+        client_socket
+            .send_to(packet.as_slice(), server_address)
+            .expect("heartbeat should send");
+        let mut receive_buffer = vec![0_u8; 1024];
+        let mut registry = registry_with_client("client-1", client_source);
+        let mut queue_collection = ServerOutboundQueueCollection::default();
+        let mut operational_output = Vec::new();
+        let mut rejection_output = Vec::new();
+        let mut auth_log = Vec::new();
+        let mut send_log = Vec::new();
+        let runtime = ServerReceiveSendOneIterationRuntimeBoundary::default();
+
+        let outcome = runtime
+            .run_once(
+                &server_socket,
+                &mut receive_buffer,
+                &mut registry,
+                &mut queue_collection,
+                &auth_config(Some("presented-secret")),
+                ServerReceiveSendOneIterationRuntimeInput {
+                    body: ServerContinuousReceiveLoopBodyInput {
+                        expected_protocol_version: ProtocolVersion(2),
+                        timestamp: TimestampMicros(9_000_000),
+                        stop_requested: false,
+                    },
+                    heartbeat_timing: ServerHeartbeatAckTiming {
+                        server_received_at: TimestampMicros(9_000_100),
+                        server_sent_at: TimestampMicros(9_000_200),
+                    },
+                    encode_context: EncodeContext {
+                        protocol_version: ProtocolVersion(2),
+                    },
+                    auth_log_timestamp: TimestampMicros(9_000_010),
+                    send_log_timestamp: TimestampMicros(9_000_020),
+                },
+                &mut operational_output,
+                &mut rejection_output,
+                &mut auth_log,
+                &mut send_log,
+            )
+            .expect("one iteration receive/send runtime should complete");
+
+        assert!(outcome.queue_push.queued);
+        let send = outcome
+            .send
+            .expect("registered heartbeat should send one ack");
+        assert_eq!(send.bytes_sent, send.encoded_packet.bytes.len());
+        assert!(queue_collection.is_empty());
+
+        let mut response_buffer = vec![0_u8; 1024];
+        let (response_len, _source) = client_socket
+            .recv_from(&mut response_buffer)
+            .expect("heartbeat ack should receive from integrated runtime");
+        let decoded = decode_fixed_header(&response_buffer[..response_len])
+            .expect("heartbeat ack fixed header should decode");
+        assert_eq!(decoded.header.message_type, MessageType::HeartbeatAck);
+        assert_eq!(decoded.header.protocol_version, ProtocolVersion(2));
+        let send_log = String::from_utf8(send_log).expect("send log should be utf8");
+        assert!(send_log.contains(r#""message_type":"HeartbeatAck""#));
+        assert!(auth_log.is_empty());
+    }
+
+    #[test]
     fn controller_receive_send_runtime_stops_without_iteration() {
         let server_socket = UdpSocket::bind("127.0.0.1:0").expect("server socket should bind");
         let mut receive_buffer = vec![0_u8; 1024];
@@ -8091,6 +8333,132 @@ shared_token = "secret"
         let send_log = String::from_utf8(send_log).expect("send log should be utf8");
         assert!(send_log.contains(r#""event_name":"server.send""#));
         assert!(send_log.contains(r#""outcome":"Success""#));
+    }
+
+    #[test]
+    fn controller_receive_send_runtime_can_run_auth_then_heartbeat_iterations() {
+        let server_socket = UdpSocket::bind("127.0.0.1:0").expect("server socket should bind");
+        let client_socket = UdpSocket::bind("127.0.0.1:0").expect("client socket should bind");
+        client_socket
+            .set_read_timeout(Some(std::time::Duration::from_secs(1)))
+            .expect("client read timeout should be set");
+        let server_address = server_socket
+            .local_addr()
+            .expect("server socket should have address");
+        client_socket
+            .send_to(
+                auth_request_packet("client-1", "presented-secret").as_slice(),
+                server_address,
+            )
+            .expect("auth request should send");
+        let mut receive_buffer = vec![0_u8; 1024];
+        let mut registry = AuthenticatedSenderRegistry::default();
+        let mut queue_collection = ServerOutboundQueueCollection::default();
+        let mut operational_output = Vec::new();
+        let mut rejection_output = Vec::new();
+        let mut auth_log = Vec::new();
+        let mut send_log = Vec::new();
+        let runtime = ServerControllerReceiveSendRuntimeBoundary::default();
+
+        let first = runtime
+            .run_once(
+                &server_socket,
+                &mut receive_buffer,
+                &mut registry,
+                &mut queue_collection,
+                &auth_config(Some("presented-secret")),
+                ServerControllerReceiveSendRuntimeInput {
+                    controller: ServerContinuousReceiveLoopControllerInput {
+                        expected_protocol_version: ProtocolVersion(2),
+                        timestamp: TimestampMicros(9_000_000),
+                        continue_requested: true,
+                    },
+                    heartbeat_timing: body_dispatch_timing(),
+                    encode_context: EncodeContext {
+                        protocol_version: ProtocolVersion(2),
+                    },
+                    auth_log_timestamp: TimestampMicros(9_000_010),
+                    send_log_timestamp: TimestampMicros(9_000_020),
+                },
+                &mut operational_output,
+                &mut rejection_output,
+                &mut auth_log,
+                &mut send_log,
+            )
+            .expect("auth iteration should complete");
+
+        assert!(matches!(
+            first,
+            ServerControllerReceiveSendRuntimeResult::Iteration { .. }
+        ));
+        assert!(registry.get(&ClientId("client-1".to_string())).is_some());
+        let mut response_buffer = vec![0_u8; 1024];
+        let (auth_response_len, _source) = client_socket
+            .recv_from(&mut response_buffer)
+            .expect("auth response should receive");
+        let decoded_auth_response = decode_fixed_header(&response_buffer[..auth_response_len])
+            .expect("auth response fixed header should decode");
+        assert_eq!(
+            decoded_auth_response.header.message_type,
+            MessageType::AuthResponse
+        );
+
+        let heartbeat = test_packet(
+            MessageType::Heartbeat as u16,
+            FIXED_HEADER_LEN,
+            2,
+            &heartbeat_payload(),
+        );
+        client_socket
+            .send_to(heartbeat.as_slice(), server_address)
+            .expect("heartbeat should send");
+
+        let second = runtime
+            .run_once(
+                &server_socket,
+                &mut receive_buffer,
+                &mut registry,
+                &mut queue_collection,
+                &auth_config(Some("presented-secret")),
+                ServerControllerReceiveSendRuntimeInput {
+                    controller: ServerContinuousReceiveLoopControllerInput {
+                        expected_protocol_version: ProtocolVersion(2),
+                        timestamp: TimestampMicros(9_000_100),
+                        continue_requested: true,
+                    },
+                    heartbeat_timing: ServerHeartbeatAckTiming {
+                        server_received_at: TimestampMicros(9_000_110),
+                        server_sent_at: TimestampMicros(9_000_120),
+                    },
+                    encode_context: EncodeContext {
+                        protocol_version: ProtocolVersion(2),
+                    },
+                    auth_log_timestamp: TimestampMicros(9_000_130),
+                    send_log_timestamp: TimestampMicros(9_000_140),
+                },
+                &mut operational_output,
+                &mut rejection_output,
+                &mut auth_log,
+                &mut send_log,
+            )
+            .expect("heartbeat iteration should complete");
+
+        assert!(matches!(
+            second,
+            ServerControllerReceiveSendRuntimeResult::Iteration { .. }
+        ));
+        let (heartbeat_ack_len, _source) = client_socket
+            .recv_from(&mut response_buffer)
+            .expect("heartbeat ack should receive");
+        let decoded_heartbeat_ack = decode_fixed_header(&response_buffer[..heartbeat_ack_len])
+            .expect("heartbeat ack fixed header should decode");
+        assert_eq!(
+            decoded_heartbeat_ack.header.message_type,
+            MessageType::HeartbeatAck
+        );
+        let send_log = String::from_utf8(send_log).expect("send log should be utf8");
+        assert!(send_log.contains(r#""message_type":"AuthResponse""#));
+        assert!(send_log.contains(r#""message_type":"HeartbeatAck""#));
     }
 
     #[test]

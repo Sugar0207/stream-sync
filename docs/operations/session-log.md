@@ -5,6 +5,77 @@
 - Codex
 
 ### 今回の作業
+- client 側で accepted auth 後に `Heartbeat` を 1 回だけ送信し、`HeartbeatAck` を 1 回受信して stdout 表示する最小入口を追加した。
+- protocol 側に `Heartbeat` encode と `HeartbeatAck` decode を追加し、client が Heartbeat round trip を扱えるようにした。
+- server 側の既存 heartbeat ack handoff を one-iteration send path へ渡し、auth-then-heartbeat を 2 iteration で確認できる入口を追加した。
+
+### 変更ファイル
+- `apps/client/src/lib.rs`
+- `apps/client/src/main.rs`
+- `apps/server/src/lib.rs`
+- `apps/server/src/main.rs`
+- `crates/protocol/src/lib.rs`
+- `docs/architecture/protocol.md`
+- `docs/architecture/system-design.md`
+- `docs/operations/auth-roundtrip-manual-check.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### 決定事項
+- heartbeat の手動確認入口は continuous loop ではなく、`--auth-heartbeat-poc-once` と `--receive-send-twice` の組み合わせに留める。
+- `--auth-heartbeat-poc-once` は同じ UDP socket で `AuthRequest` -> `AuthResponse` -> `Heartbeat` -> `HeartbeatAck` の順に 1 回ずつ処理する。
+- server 側は `--receive-send-twice` で同じ socket / registry / queue collection を 2 iteration だけ共有し、accepted auth で登録された source からの `Heartbeat` だけを `HeartbeatAck` 送信へ進める。
+- heartbeat timeout、continuous heartbeat loop、RTT / offset state commit、video / switcher 連携は今回も対象外に残す。
+
+### 実装したこと
+- `encode_heartbeat` / `encode_heartbeat_payload` を追加し、`ProtocolMessageEncoderBoundary` が `ProtocolMessage::Heartbeat` を encode できるようにした。
+- `decode_heartbeat_ack_payload` / `HeartbeatAckPayloadDecoder` を追加し、decode dispatch が `HeartbeatAck` を返せるようにした。
+- `ClientAuthHeartbeatPocLauncher` と `run_auth_heartbeat_poc_once_from_path` を追加し、client CLI に `--auth-heartbeat-poc-once` を追加した。
+- `ServerOutboundQueueCollectionBoundary` が preserved `ServerHeartbeatAckHandoff` を one-item queue に載せられるようにした。
+- `ServerReceiveSendTwoIterationLauncher` と server CLI `--receive-send-twice` を追加した。
+- protocol / client / server の関連単体テストを追加した。
+
+### 未実装 / 保留
+- completed continuous heartbeat loop
+- heartbeat timeout / liveness state commit
+- RTT / offset 推定結果の durable state commit
+- `HeartbeatAckObservation` を client から `ClientStats` に載せて server に返す実送信経路
+- video / switcher 側への拡張
+- retry / requeue / file sink open / process-wide logger
+
+### 次にやる候補
+- `HeartbeatAckObservation` を client 側 `ClientStats` carrier に載せ、server 側 timebase 入力へ返す最小経路を実装する。
+- heartbeat timeout / liveness state commit の実装範囲を整理する。
+- continuous heartbeat loop に進む前の送信間隔、停止条件、ログ出力範囲を整理する。
+
+### TODO 更新
+- 現在位置に `Heartbeat` encode / `HeartbeatAck` decode 完了と client auth-then-heartbeat one-shot 入口完了を反映した。
+- heartbeat / client 側タスクで one-shot heartbeat 送信と registered heartbeat -> `HeartbeatAck` one-shot send を完了にした。
+- PoC 最小ラインの `client が Heartbeat を送り、server が RTT / offset 推定に使える時刻情報を返せる` を完了にした。
+- 直近でやることを heartbeat observation return path、timeout / liveness state commit、continuous heartbeat loop 前の境界整理へ更新した。
+
+### 検証
+- `cargo fmt`
+- `cargo check --workspace`
+- `cargo test -p stream-sync-protocol`
+- `cargo test -p stream-sync-client`
+- `cargo test -p stream-sync-server`
+- `cargo test -p stream-sync-net-core`
+- `cargo fmt --check`
+- `cargo build -p stream-sync-server -p stream-sync-client`
+- `target/debug/stream-sync-server.exe --receive-send-twice configs/examples/server.example.toml`
+- `target/debug/stream-sync-client.exe --auth-heartbeat-poc-once configs/examples/client.accepted.example.toml`
+- 手動確認で client stdout に `accepted=true`, `reason_code=Ok`, `sent Heartbeat 77 bytes`, `received HeartbeatAck 73 bytes` を観測した。
+- 手動確認で server stdout に `first_sent_bytes=55`, `second_sent_bytes=73`, `registered_clients=1` を観測した。
+- 手動確認で server stderr に `message_type="Heartbeat"` の accepted receive log と `message_type="HeartbeatAck"` の send success log を観測した。
+
+---
+
+## 2026-04-22
+### 種別
+- Codex
+
+### 今回の作業
 - client 側の `--auth-request-poc-once` で、`AuthRequest` 送信後に同じ UDP socket から `AuthResponse` を 1 回受信して stdout 表示する最小実装を追加した。
 - `crates/protocol` に `AuthResponse` payload decode と decode dispatch 対応を追加した。
 - `--receive-send-once` と accepted client config の手動通し確認を再実行し、client stdout でも `accepted=true`, `reason_code=Ok` を観測した。

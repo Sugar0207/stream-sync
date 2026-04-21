@@ -375,6 +375,47 @@ pub fn decode_heartbeat_payload(
     })
 }
 
+/// Decode a `HeartbeatAck` payload after fixed header and protocol version checks.
+///
+/// This parses the server response fields only. It does not create a client
+/// observation, calculate RTT / offset, or update heartbeat state.
+pub fn decode_heartbeat_ack_payload(
+    header: FixedHeader,
+    payload: &[u8],
+) -> Result<HeartbeatAck, ProtocolError> {
+    if header.message_type != MessageType::HeartbeatAck {
+        return Err(ProtocolError::UnexpectedMessageType {
+            expected: MessageType::HeartbeatAck,
+            actual: header.message_type,
+        });
+    }
+
+    if payload.len() != header.payload_length as usize {
+        return Err(ProtocolError::InvalidPayloadLength {
+            expected: header.payload_length,
+            actual: payload.len(),
+        });
+    }
+
+    let mut reader = PayloadReader::new(payload);
+    let client_id = ClientId(reader.read_string()?);
+    let run_id = RunId(reader.read_string()?);
+    let echoed_sent_at = TimestampMicros(reader.read_u64()?);
+    let server_received_at = TimestampMicros(reader.read_u64()?);
+    let server_sent_at = TimestampMicros(reader.read_u64()?);
+    reader.finish()?;
+
+    Ok(HeartbeatAck {
+        message_type: MessageType::HeartbeatAck,
+        protocol_version: header.protocol_version,
+        client_id,
+        run_id,
+        echoed_sent_at,
+        server_received_at,
+        server_sent_at,
+    })
+}
+
 /// Decode a `VideoFrame` payload after fixed header and protocol version checks.
 ///
 /// This parses the frame metadata and copies the H.264 payload bytes as-is. It
@@ -537,6 +578,9 @@ pub fn decode_payload_by_message_type(
             AuthResponsePayloadDecoder.decode_payload(context, header, payload)
         }
         MessageType::Heartbeat => HeartbeatPayloadDecoder.decode_payload(context, header, payload),
+        MessageType::HeartbeatAck => {
+            HeartbeatAckPayloadDecoder.decode_payload(context, header, payload)
+        }
         MessageType::VideoFrame => {
             VideoFramePayloadDecoder.decode_payload(context, header, payload)
         }
@@ -546,7 +590,6 @@ pub fn decode_payload_by_message_type(
         MessageType::ServerNotice => {
             ServerNoticePayloadDecoder.decode_payload(context, header, payload)
         }
-        message_type => Err(ProtocolError::PayloadDecodeNotImplemented(message_type)),
     }
 }
 
@@ -827,6 +870,34 @@ pub fn encode_auth_response(
     Ok(())
 }
 
+/// Encode one `Heartbeat` packet as fixed header plus payload bytes.
+///
+/// The payload follows the documented order: `client_id`, `run_id`, `sent_at`,
+/// `local_time`, and `short_status`. This function does not send the bytes,
+/// manage heartbeat cadence, or start a continuous loop.
+pub fn encode_heartbeat(
+    context: EncodeContext,
+    heartbeat: &Heartbeat,
+    output: &mut Vec<u8>,
+) -> Result<(), ProtocolError> {
+    let mut payload = Vec::new();
+    encode_heartbeat_payload(heartbeat, &mut payload)?;
+    let payload_length =
+        u32::try_from(payload.len()).map_err(|_| ProtocolError::InvalidPayloadLength {
+            expected: u32::MAX,
+            actual: payload.len(),
+        })?;
+
+    encode_fixed_header(
+        MessageType::Heartbeat,
+        context.protocol_version,
+        payload_length,
+        output,
+    );
+    output.extend_from_slice(&payload);
+    Ok(())
+}
+
 /// Encode one `HeartbeatAck` packet as fixed header plus payload bytes.
 ///
 /// The payload follows the documented order: `client_id`, `run_id`,
@@ -964,6 +1035,19 @@ pub fn encode_auth_response_payload(
     write_optional_string(output, response.message.as_deref())?;
     write_optional_u64(output, response.server_time.map(|timestamp| timestamp.0));
     write_optional_protocol_version(output, response.expected_protocol_version);
+    Ok(())
+}
+
+/// Encode only the `Heartbeat` payload body.
+pub fn encode_heartbeat_payload(
+    heartbeat: &Heartbeat,
+    output: &mut Vec<u8>,
+) -> Result<(), ProtocolError> {
+    write_string(output, &heartbeat.client_id.0)?;
+    write_string(output, &heartbeat.run_id.0)?;
+    output.extend_from_slice(&heartbeat.sent_at.0.to_le_bytes());
+    write_optional_u64(output, heartbeat.local_time.map(|timestamp| timestamp.0));
+    write_optional_string(output, heartbeat.short_status.as_deref())?;
     Ok(())
 }
 
@@ -1198,6 +1282,21 @@ impl PayloadDecoder for HeartbeatPayloadDecoder {
     }
 }
 
+/// Minimal payload decoder for `HeartbeatAck`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct HeartbeatAckPayloadDecoder;
+
+impl PayloadDecoder for HeartbeatAckPayloadDecoder {
+    fn decode_payload(
+        &self,
+        _context: DecodeContext,
+        header: FixedHeader,
+        payload: &[u8],
+    ) -> Result<ProtocolMessage, ProtocolError> {
+        decode_heartbeat_ack_payload(header, payload).map(ProtocolMessage::HeartbeatAck)
+    }
+}
+
 /// Minimal payload decoder for `VideoFrame`.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
 pub struct VideoFramePayloadDecoder;
@@ -1273,11 +1372,11 @@ impl MessageEncoder for ProtocolMessageEncoderBoundary {
             ProtocolMessage::AuthResponse(response) => {
                 encode_auth_response(context, response, output)
             }
+            ProtocolMessage::Heartbeat(heartbeat) => encode_heartbeat(context, heartbeat, output),
             ProtocolMessage::HeartbeatAck(ack) => encode_heartbeat_ack(context, ack, output),
             ProtocolMessage::VideoFrame(frame) => encode_video_frame(context, frame, output),
             ProtocolMessage::ClientStats(stats) => encode_client_stats(context, stats, output),
             ProtocolMessage::ServerNotice(notice) => encode_server_notice(context, notice, output),
-            message => Err(ProtocolError::EncodeNotImplemented(message.message_type())),
         }
     }
 }
@@ -2018,6 +2117,64 @@ mod tests {
     }
 
     #[test]
+    fn encodes_heartbeat_payload() {
+        let heartbeat = Heartbeat {
+            message_type: MessageType::Heartbeat,
+            protocol_version: ProtocolVersion(2),
+            client_id: ClientId("client-1".to_string()),
+            run_id: RunId("run-1".to_string()),
+            sent_at: TimestampMicros(1_234_567),
+            local_time: Some(TimestampMicros(1_234_999)),
+            short_status: Some("ok".to_string()),
+        };
+        let mut payload = Vec::new();
+
+        encode_heartbeat_payload(&heartbeat, &mut payload)
+            .expect("heartbeat payload should encode");
+
+        assert_eq!(payload, heartbeat_payload(Some(1_234_999), Some("ok")));
+    }
+
+    #[test]
+    fn protocol_message_encoder_encodes_heartbeat_packet() {
+        let heartbeat = Heartbeat {
+            message_type: MessageType::Heartbeat,
+            protocol_version: ProtocolVersion(2),
+            client_id: ClientId("client-1".to_string()),
+            run_id: RunId("run-1".to_string()),
+            sent_at: TimestampMicros(1_234_567),
+            local_time: None,
+            short_status: None,
+        };
+        let message = ProtocolMessage::Heartbeat(heartbeat.clone());
+        let encoder = ProtocolMessageEncoderBoundary;
+        let mut output = Vec::new();
+
+        encoder
+            .encode_message(
+                EncodeContext {
+                    protocol_version: ProtocolVersion(2),
+                },
+                &message,
+                &mut output,
+            )
+            .expect("heartbeat packet should encode");
+
+        let decoded = decode_fixed_header(&output).expect("encoded fixed header should decode");
+        assert_eq!(decoded.header.message_type, MessageType::Heartbeat);
+        assert_eq!(decoded.header.header_length, FIXED_HEADER_LEN);
+        assert_eq!(decoded.header.protocol_version, ProtocolVersion(2));
+        assert_eq!(decoded.header.flags, 0);
+        assert_eq!(decoded.header.reserved, 0);
+
+        let mut expected_payload = Vec::new();
+        encode_heartbeat_payload(&heartbeat, &mut expected_payload)
+            .expect("expected payload should encode");
+        assert_eq!(decoded.header.payload_length, expected_payload.len() as u32);
+        assert_eq!(decoded.payload, expected_payload.as_slice());
+    }
+
+    #[test]
     fn encodes_heartbeat_ack_payload() {
         let ack = HeartbeatAck {
             message_type: MessageType::HeartbeatAck,
@@ -2040,6 +2197,29 @@ mod tests {
         push_u64(&mut expected, 1_000_100);
         push_u64(&mut expected, 1_000_200);
         assert_eq!(payload, expected);
+    }
+
+    #[test]
+    fn decodes_heartbeat_ack_payload() {
+        let payload = heartbeat_ack_payload();
+        let packet = test_packet(
+            MessageType::HeartbeatAck as u16,
+            FIXED_HEADER_LEN,
+            2,
+            &payload,
+        );
+        let decoded = decode_fixed_header(&packet).expect("fixed header should decode");
+
+        let ack = decode_heartbeat_ack_payload(decoded.header, decoded.payload)
+            .expect("heartbeat ack should decode");
+
+        assert_eq!(ack.message_type, MessageType::HeartbeatAck);
+        assert_eq!(ack.protocol_version, ProtocolVersion(2));
+        assert_eq!(ack.client_id, ClientId("client-1".to_string()));
+        assert_eq!(ack.run_id, RunId("run-1".to_string()));
+        assert_eq!(ack.echoed_sent_at, TimestampMicros(1_000_000));
+        assert_eq!(ack.server_received_at, TimestampMicros(1_000_100));
+        assert_eq!(ack.server_sent_at, TimestampMicros(1_000_200));
     }
 
     #[test]
@@ -2826,8 +3006,14 @@ mod tests {
     }
 
     #[test]
-    fn returns_not_implemented_for_undecoded_message_type() {
-        let packet = test_packet(MessageType::HeartbeatAck as u16, FIXED_HEADER_LEN, 2, &[]);
+    fn dispatches_heartbeat_ack_payload_decode_by_message_type() {
+        let payload = heartbeat_ack_payload();
+        let packet = test_packet(
+            MessageType::HeartbeatAck as u16,
+            FIXED_HEADER_LEN,
+            2,
+            &payload,
+        );
         let decoded = decode_fixed_header(&packet).expect("fixed header should decode");
 
         let message = decode_payload_by_message_type(
@@ -2836,14 +3022,14 @@ mod tests {
             },
             decoded.header,
             decoded.payload,
-        );
+        )
+        .expect("heartbeat ack should decode");
 
-        assert_eq!(
-            message,
-            Err(ProtocolError::PayloadDecodeNotImplemented(
-                MessageType::HeartbeatAck
-            ))
-        );
+        let ProtocolMessage::HeartbeatAck(ack) = message else {
+            panic!("expected heartbeat ack message");
+        };
+        assert_eq!(ack.client_id, ClientId("client-1".to_string()));
+        assert_eq!(ack.echoed_sent_at, TimestampMicros(1_000_000));
     }
 
     #[test]
@@ -2950,6 +3136,16 @@ mod tests {
         push_u64(&mut payload, 1_234_567);
         push_optional_u64(&mut payload, local_time);
         push_optional_string(&mut payload, short_status);
+        payload
+    }
+
+    fn heartbeat_ack_payload() -> Vec<u8> {
+        let mut payload = Vec::new();
+        push_string(&mut payload, "client-1");
+        push_string(&mut payload, "run-1");
+        push_u64(&mut payload, 1_000_000);
+        push_u64(&mut payload, 1_000_100);
+        push_u64(&mut payload, 1_000_200);
         payload
     }
 

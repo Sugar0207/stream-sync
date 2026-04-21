@@ -206,9 +206,12 @@ server 側の分岐:
 - `VideoFrame`
   - video frame 処理へ渡す。
   - 認証済み client かどうかの確認、古い frame の破棄、時刻補正、ジッターバッファ投入、同期処理は server / sync 側の責務とする。
+- `ClientStats`
+  - stats / heartbeat observation 処理へ渡す。
+  - metrics commit、HeartbeatAck observation の照合、RTT / offset state commit は server / timebase 側の責務とする。
 - その他 message
   - 現時点では server inbound の対象外として扱う。
-  - `AuthResponse`, `HeartbeatAck`, `ClientStats`, `ServerNotice` の server inbound としての扱いは別タスクで決める。
+  - `AuthResponse`, `HeartbeatAck`, `ServerNotice` の server inbound としての扱いは別タスクで決める。
 
 実装上は `apps/server` に `ServerInboundRouter` を置き、`DecodedInboundPacket` を `ServerInboundRoute` に分類する。これは handler 本体ではなく、server handler へ渡す境界名を固定するための placeholder とする。認証成功 / 失敗判定、heartbeat 管理、video frame 処理本体はまだ実装しない。
 
@@ -939,8 +942,9 @@ Dispatch runtime output apply scope:
    future loop decision.
 5. Registry registration remains owned by the previous side-effect apply
    boundary. This output boundary does not mutate the registry.
-6. Heartbeat, video, and stats handoffs are preserved and not routed to queue
-   storage or log writers here.
+6. Heartbeat ack handoffs are preserved by output apply and routed by the
+   following queue collection bridge. Video and stats handoffs remain preserved
+   and are not routed to queue storage or log writers here.
 
 Responsibility split for output apply:
 
@@ -956,9 +960,10 @@ Responsibility split for output apply:
     caller-owned writer.
   - Does not open files, rotate sinks, buffer globally, or install a
     process-wide logger.
-- future heartbeat / video / stats handoff
-  - Remains outside this output boundary. Heartbeat ack queue storage, video
-    buffer handoff, and stats state commit are future work.
+- heartbeat / video / stats handoff
+  - Heartbeat ack handoff remains typed and is picked up by the queue
+    collection bridge for the one-shot receive/send confirmation path.
+  - Video buffer handoff and stats state commit are future work.
 
 Current code reflects this with `ServerOutboundQueueStorageApplyResult`,
 `ServerDispatchRuntimeOutputApplyResult`,
@@ -969,7 +974,10 @@ Minimal queue collection and send runtime scope:
 
 1. Accepted auth output apply can produce a one-item `QueuedOutboundItem`.
 2. `ServerOutboundQueueCollectionBoundary` may push that queued item into a
-   caller-owned `ServerOutboundQueueCollection`.
+   caller-owned `ServerOutboundQueueCollection`. It also accepts a preserved
+   `ServerHeartbeatAckHandoff` and turns its typed `OutboundQueueItem` into a
+   one-item queued placeholder for the one-shot heartbeat ack confirmation
+   path.
 3. The same boundary can dequeue one item and hand it to
    `ServerOutboundSendOneRuntimeBoundary`.
 4. The send runtime uses `OutboundQueueLifecycleBoundary` to create an
@@ -1018,9 +1026,9 @@ Receive/send one-iteration integration scope:
 2. It executes exactly one `ServerContinuousReceiveLoopBodyBoundary::run_once`.
 3. It passes the body result through body dispatch, side-effect apply, and
    output apply.
-4. It pushes any accepted auth response queued item into the caller-owned queue
-   collection, dequeues at most one item, and passes that item to
-   `ServerOutboundSendOneRuntimeBoundary`.
+4. It pushes any accepted auth response queued item or preserved heartbeat ack
+   handoff into the caller-owned queue collection, dequeues at most one item,
+   and passes that item to `ServerOutboundSendOneRuntimeBoundary`.
 5. If one item is sent, it writes a single `server.send` JSON Lines observation
    to the caller-owned send log writer.
 6. It returns the body, dispatch, side-effect, output, queue push, dequeue,
@@ -1038,7 +1046,8 @@ Responsibility split for receive/send integration:
 - output apply
   - Owns auth log writer handoff and accepted auth queue storage planning.
 - queue collection / dequeue
-  - Owns caller-provided typed queue storage and one-item selection.
+  - Owns caller-provided typed queue storage and one-item selection for
+    accepted auth responses and heartbeat ack handoffs.
 - one-item send runtime
   - Owns one encode + socket send attempt.
 - send log writer
@@ -1113,6 +1122,33 @@ Current code reflects this with `ServerReceiveSendOneIterationLauncher`,
 `ServerReceiveSendOneIterationStartupOutcome`,
 `ServerReceiveSendOneIterationStartupError`, and the server CLI flag
 `--receive-send-once`.
+
+Completed two-iteration auth-then-heartbeat CLI / config entry:
+
+1. `ServerReceiveSendTwoIterationLauncher` loads the same server TOML shape as
+   `--receive-send-once`.
+2. The launcher binds one UDP socket and keeps one in-memory
+   `AuthenticatedSenderRegistry` and `ServerOutboundQueueCollection` across
+   exactly two controller receive/send runtime calls.
+3. The expected manual shape is accepted auth request first, then one
+   `Heartbeat` from the same client UDP source.
+4. The first iteration can send `AuthResponse`; the second iteration can route
+   the registered heartbeat to `ServerHeartbeatHandlerBoundary`, queue one
+   `HeartbeatAck`, and send it through the one-item send runtime.
+5. `apps/server` exposes this through
+   `--receive-send-twice [config-path]`. It does not run a continuous loop,
+   retry, requeue, open file sinks, or install a global logger.
+
+Manual check shape:
+
+1. In one terminal, run:
+   `cargo run -p stream-sync-server -- --receive-send-twice configs/examples/server.example.toml`
+2. In another terminal, run:
+   `cargo run -p stream-sync-client -- --auth-heartbeat-poc-once configs/examples/client.accepted.example.toml`
+3. Expected result: server stderr includes receive / auth / send JSON Lines for
+   `AuthResponse` and `HeartbeatAck`, server stdout reports two handled packets
+   with non-zero sent bytes, and the client stdout displays the received
+   `HeartbeatAck` timestamps.
 
 ### 5.7 AuthResponse PoC one-shot startup step
 
@@ -3034,10 +3070,10 @@ Current code reflects this with `net-core::OutboundEncodeRequest`,
 `net-core::EncodedOutboundPacket`, `net-core::OutboundPacketEncoderBoundary`,
 `net-core::NetEncodeError`, and
 `protocol::ProtocolMessageEncoderBoundary`. The protocol encoder currently
-encodes `AuthRequest`, `AuthResponse`, `HeartbeatAck`, `VideoFrame`,
-`ClientStats`, and `ServerNotice`; remaining unsupported messages return
-`EncodeNotImplemented`. `UdpSocketIoBoundary` can send an already encoded
-packet; queue processing and continuous send orchestration remain unimplemented.
+encodes `AuthRequest`, `AuthResponse`, `Heartbeat`, `HeartbeatAck`,
+`VideoFrame`, `ClientStats`, and `ServerNotice`. `UdpSocketIoBoundary` can send
+an already encoded packet; queue processing and continuous send orchestration
+remain unimplemented.
 
 ---
 

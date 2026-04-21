@@ -4,7 +4,7 @@
 
 この手順は、server / client の one-shot auth PoC が UDP で 1 往復分つながることを手動確認するためのものです。
 
-対象は `AuthRequest` を 1 回送り、server が `AuthResponse` を 1 回返すところまでです。継続 loop、async runtime、heartbeat、video frame、JSON Lines 出力、retry、fragmentation、encryption は含みません。
+主対象は `AuthRequest` を 1 回送り、server が `AuthResponse` を 1 回返すところまでです。追加の auth-then-heartbeat 手順では、同じ UDP socket で accepted auth 後に `Heartbeat` を 1 回送り、server が `HeartbeatAck` を 1 回返すところまで確認します。継続 loop、async runtime、continuous heartbeat、video frame、retry、fragmentation、encryption は含みません。
 
 ## 使用する config
 
@@ -172,6 +172,107 @@ controller receive/send runtime に入り、server 側で `AuthResponse` 55 byte
 を UDP send し、`server.send` success observation を出力したことを確認した。client 側の
 `--auth-request-poc-once` は同じ UDP socket で `AuthResponse` を 1 回だけ受信し、
 stdout に `accepted` / `reason_code` / `message` / `expected_protocol_version` を表示する。
+
+## `--receive-send-twice` auth-then-heartbeat 手動確認手順
+
+accepted auth 後、同じ client UDP source から `Heartbeat` を 1 回送って `HeartbeatAck` を 1 回受ける確認手順です。
+
+この経路は `ServerReceiveSendTwoIterationLauncher` から
+`ServerControllerReceiveSendRuntimeBoundary` を 2 回だけ呼びます。1 回目で
+accepted auth と `AuthenticatedSenderRegistry` 登録、2 回目で registered
+heartbeat route から `ServerHeartbeatHandlerBoundary` -> `HeartbeatAck`
+queue handoff -> one-item send runtime までを確認します。継続 receive/send loop、
+continuous heartbeat loop、retry / requeue、file sink open、process-wide logger は含みません。
+
+### 実行コマンド
+
+server:
+
+```powershell
+cargo run -p stream-sync-server -- --receive-send-twice configs/examples/server.example.toml
+```
+
+client:
+
+```powershell
+cargo run -p stream-sync-client -- --auth-heartbeat-poc-once configs/examples/client.accepted.example.toml
+```
+
+### 成功時の見方
+
+client stdout は、`AuthResponse` accepted と `HeartbeatAck` の時刻群を 1 行で表示します。
+
+```text
+auth heartbeat PoC sent AuthRequest <bytes> bytes to 127.0.0.1:5000 and received AuthResponse <bytes> bytes from 127.0.0.1:5000; accepted=true reason_code=Ok; sent Heartbeat <bytes> bytes and received HeartbeatAck <bytes> bytes from 127.0.0.1:5000; client_id=player1 run_id=streamsync-dev-session protocol_version=1 heartbeat_sent_at=<client-sent-at> echoed_sent_at=<echoed-sent-at> server_received_at=<server-received-at> server_sent_at=<server-sent-at>
+```
+
+server stdout は、2 packet を処理し、1 回目と 2 回目の send byte 数を表示します。
+
+```text
+receive/send two-iteration runtime handled two packets on 0.0.0.0:5000; first_sent_bytes=<auth-response-bytes> second_sent_bytes=<heartbeat-ack-bytes> registered_clients=1
+```
+
+server stderr の要点:
+
+```json
+{"event_name":"server.receive_loop","source":"127.0.0.1:<client-port>","outcome":"Accepted","packet_len":<bytes>,"message_type":"AuthRequest","client_id":"player1","rejection_reason":null,"timestamp":<timestamp>}
+{"event_name":"server.auth_result","run_id":"streamsync-dev-session","client_id":"player1","source":"127.0.0.1:<client-port>","accepted":true,"reason_code":"Ok","message":null,"app_version":"0.1.0","protocol_version":1,"timestamp":<timestamp>,"expected_protocol_version":null}
+{"event_name":"server.send","outcome":"Success","run_id":"streamsync-dev-session","client_id":"player1","destination":"127.0.0.1:<client-port>","message_type":"AuthResponse","stage":"SocketSend","encoded_len":<bytes>,"bytes_sent":<bytes>,"failure":null,"disposition":null,"timestamp":<timestamp>}
+{"event_name":"server.receive_loop","source":"127.0.0.1:<client-port>","outcome":"Accepted","packet_len":<bytes>,"message_type":"Heartbeat","client_id":"player1","rejection_reason":null,"timestamp":<timestamp>}
+{"event_name":"server.send","outcome":"Success","run_id":"streamsync-dev-session","client_id":"player1","destination":"127.0.0.1:<client-port>","message_type":"HeartbeatAck","stage":"SocketSend","encoded_len":<bytes>,"bytes_sent":<bytes>,"failure":null,"disposition":null,"timestamp":<timestamp>}
+```
+
+確認の中心は、client が accepted auth 後も同じ UDP socket を使い、`Heartbeat` を 1 回だけ送ること、server が登録済み source として受理して `HeartbeatAck` を 1 回返すこと、client stdout で `echoed_sent_at` が `heartbeat_sent_at` と一致することです。
+
+### 2026-04-22 Codex 環境 auth-then-heartbeat accepted path 成功
+
+結果: 成功。
+
+事前 build:
+
+```powershell
+cargo build -p stream-sync-server -p stream-sync-client
+```
+
+server:
+
+```powershell
+target/debug/stream-sync-server.exe --receive-send-twice configs/examples/server.example.toml
+```
+
+client:
+
+```powershell
+target/debug/stream-sync-client.exe --auth-heartbeat-poc-once configs/examples/client.accepted.example.toml
+```
+
+client stdout 観測結果:
+
+```text
+auth heartbeat PoC sent AuthRequest 96 bytes to 127.0.0.1:5000 and received AuthResponse 55 bytes from 127.0.0.1:5000; accepted=true reason_code=Ok; sent Heartbeat 77 bytes and received HeartbeatAck 73 bytes from 127.0.0.1:5000; client_id=player1 run_id=streamsync-dev-session protocol_version=1 heartbeat_sent_at=<client-sent-at> echoed_sent_at=<same-client-sent-at> server_received_at=<server-received-at> server_sent_at=<server-sent-at>
+```
+
+server stdout 観測結果:
+
+```text
+receive/send two-iteration runtime handled two packets on 0.0.0.0:5000; first_sent_bytes=55 second_sent_bytes=73 registered_clients=1
+```
+
+server stderr 観測結果:
+
+```json
+{"event_name":"server.receive_loop","source":"127.0.0.1:<client-port>","outcome":"Accepted","packet_len":96,"message_type":"AuthRequest","client_id":"player1","rejection_reason":null,"timestamp":<timestamp>}
+{"event_name":"server.auth_result","run_id":"streamsync-dev-session","client_id":"player1","source":"127.0.0.1:<client-port>","accepted":true,"reason_code":"Ok","message":null,"app_version":"0.1.0","protocol_version":1,"timestamp":<timestamp>,"expected_protocol_version":null}
+{"event_name":"server.send","outcome":"Success","run_id":"streamsync-dev-session","client_id":"player1","destination":"127.0.0.1:<client-port>","message_type":"AuthResponse","stage":"SocketSend","encoded_len":55,"bytes_sent":55,"failure":null,"disposition":null,"timestamp":<timestamp>}
+{"event_name":"server.receive_loop","source":"127.0.0.1:<client-port>","outcome":"Accepted","packet_len":77,"message_type":"Heartbeat","client_id":"player1","rejection_reason":null,"timestamp":<timestamp>}
+{"event_name":"server.send","outcome":"Success","run_id":"streamsync-dev-session","client_id":"player1","destination":"127.0.0.1:<client-port>","message_type":"HeartbeatAck","stage":"SocketSend","encoded_len":73,"bytes_sent":73,"failure":null,"disposition":null,"timestamp":<timestamp>}
+```
+
+確認できたこと:
+
+- client が accepted auth 後に同じ UDP socket で `Heartbeat` を 1 回送信できる。
+- server が登録済み source からの `Heartbeat` を accepted として処理し、`HeartbeatAck` 73 bytes を 1 回返せる。
+- client stdout で `heartbeat_sent_at` と `echoed_sent_at` が一致する。
 
 ## 成功時の見方
 
