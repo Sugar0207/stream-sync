@@ -829,6 +829,56 @@ Current code reflects this with `ServerVideoFrameHandlerInput`,
 `ServerVideoStatsHandlerRuntimeOutcome`, and
 `ServerVideoStatsHandlerRuntimeBoundary`.
 
+Continuous receive loop body to dispatch runtime scope:
+
+1. The body dispatch runtime receives one `ServerContinuousReceiveLoopBodyResult`.
+2. It uses `ServerContinuousReceiveLoopHandlerDispatchBoundary` to turn the
+   body result into a handler dispatch handoff.
+3. It uses `ServerHandlerDispatchBoundary` to classify the handoff into an auth
+   lane, registered packet lane, or no-dispatch result.
+4. If the lane is auth, it calls `ServerAuthDispatchRuntimeBoundary` once and
+   returns the auth dispatch runtime outcome.
+5. If the lane is registered heartbeat, it calls
+   `ServerRegisteredPacketDispatchRuntimeBoundary` once and returns the
+   heartbeat ack handoff outcome.
+6. If the lane is registered video or stats, it calls
+   `ServerRegisteredPacketDispatchRuntimeBoundary` once and then
+   `ServerVideoStatsHandlerRuntimeBoundary` once to prepare typed video / stats
+   handler input.
+7. Stopped loops, socket receive failures, rejected outcomes, unsupported
+   routes, and handoff errors remain no-dispatch results for future policy.
+
+Responsibility split for body dispatch:
+
+- receive loop body
+  - Owns one synchronous `run_once` iteration and produces
+    `ServerContinuousReceiveLoopBodyResult`.
+  - Does not run handler runtimes itself.
+- body dispatch runtime
+  - Owns the one-result orchestration from body output to the existing handler
+    runtime chain.
+  - Does not repeat, sleep, back off, open sinks, write logs, mutate registry
+    state, persist queue items, encode packets, send UDP, or drop packets.
+- auth dispatch
+  - Owns the existing auth flow result for one auth handler input.
+  - Registry registration application and auth log writing remain future loop
+    responsibilities.
+- registered packet dispatch
+  - Owns heartbeat ack handoff and the transition to future video / stats lanes.
+  - Heartbeat state commit and outbound queue storage remain separate.
+- video stats handler runtime
+  - Owns typed video / stats input preparation only.
+  - Video buffering, sync handoff, stats state commit, and RTT / offset state
+    commit remain future work.
+- future loop body
+  - Will own repetition, shutdown policy, side-effect application, queue storage,
+    log writing, packet drop policy, and error handling.
+
+Current code reflects this with
+`ServerContinuousReceiveLoopBodyDispatchRuntimeResult`,
+`ServerContinuousReceiveLoopBodyDispatchRuntimeOutcome`, and
+`ServerContinuousReceiveLoopBodyDispatchRuntimeBoundary`.
+
 ### 5.7 AuthResponse PoC one-shot startup step
 
 AuthResponse PoC startup uses the existing boundaries as a one-packet

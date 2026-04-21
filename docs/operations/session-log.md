@@ -5,6 +5,60 @@
 - Codex
 
 ### 今回の作業
+- continuous receive loop body から auth / registered / video stats dispatch runtime を呼ぶ最小実接続範囲を docs に明記した。
+- `apps/server` に body dispatch runtime placeholder を追加した。
+- receive loop body / auth dispatch / registered packet dispatch / video stats handler runtime / future loop 本体の責務分離を整理した。
+
+### 変更ファイル
+- `apps/server/src/lib.rs`
+- `docs/architecture/system-design.md`
+- `docs/architecture/protocol.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### 決定事項
+- body dispatch runtime は `ServerContinuousReceiveLoopBodyDispatchRuntimeBoundary` として、1 つの `ServerContinuousReceiveLoopBodyResult` を既存の dispatch runtime chain へ接続する。
+- body result は `ServerContinuousReceiveLoopHandlerDispatchBoundary` と `ServerHandlerDispatchBoundary` で lane 分類してから、auth / registered / video stats runtime のいずれかへ 1 回だけ渡す。
+- Auth lane は `ServerAuthDispatchRuntimeBoundary` を 1 回呼ぶ。
+- registered heartbeat lane は `ServerRegisteredPacketDispatchRuntimeBoundary` を 1 回呼び、HeartbeatAck handoff までで止める。
+- registered video / stats lane は `ServerRegisteredPacketDispatchRuntimeBoundary` の後に `ServerVideoStatsHandlerRuntimeBoundary` を 1 回呼び、typed input 準備までで止める。
+- stopped / socket receive failure / rejected outcome / unsupported / handoff error は no-dispatch result として保持し、future policy へ残す。
+- registry registration 適用、auth log 書き込み、queue storage、heartbeat/video/stats state commit、packet encode、UDP send、packet drop、loop 反復は今回の runtime では実行しない。
+
+### 未実装 / 保留
+- dispatch runtime 結果の side effect 適用
+- registry registration の continuous loop 内適用
+- auth log writer への continuous loop 内実接続
+- outbound queue storage / send loop への実接続
+- heartbeat state commit / RTT offset state commit
+- video buffer / sync-core handoff 本体
+- stats metrics state commit / heartbeat observation commit
+- packet drop 本体
+- file sink open / process-wide logger
+- 完成した continuous receive loop / while loop
+
+### 次にやる候補
+- dispatch runtime 結果の side effect 適用範囲を必要時に整理する
+- auth / receive JSON Lines file sink の実 file open 範囲を再確認する
+- ServerNotice trigger の state transition 接続範囲を再確認する
+- video buffer / sync-core handoff の最小境界を必要時に整理する
+
+### TODO 更新
+- 現在位置に continuous receive loop body から dispatch runtime を呼ぶ最小範囲整理完了を反映した。
+- net-core / server 境界に `ServerContinuousReceiveLoopBodyDispatchRuntimeBoundary` / body dispatch runtime placeholder 追加完了を反映した。
+- 直近でやることを dispatch runtime 結果の side effect 適用範囲整理へ更新した。
+
+### 検証
+- `cargo fmt --check`
+- `cargo test -p stream-sync-server body_dispatch_runtime`
+- `cargo check --workspace`
+
+---
+
+### 種別
+- Codex
+
+### 今回の作業
 - video / stats handler の最小実接続範囲を docs に明記した。
 - `apps/server` に video stats handler input runtime placeholder を追加した。
 - registered packet dispatch / future video handler / future stats handling / heartbeat state commit / outbound enqueue の責務分離を整理した。

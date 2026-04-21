@@ -1871,6 +1871,78 @@ impl ServerVideoStatsHandlerRuntimeBoundary {
     }
 }
 
+/// Result of dispatching one receive-loop body result through handler runtimes.
+///
+/// This is one body-result orchestration only. It does not repeat the loop,
+/// apply registry registrations, store queue items, write auth logs, encode
+/// outbound packets, or send UDP.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ServerContinuousReceiveLoopBodyDispatchRuntimeResult {
+    Auth(ServerAuthDispatchRuntimeOutcome),
+    Registered(ServerRegisteredPacketDispatchRuntimeOutcome),
+    VideoStats(ServerVideoStatsHandlerRuntimeOutcome),
+    NoDispatch(ServerHandlerDispatchOutcome),
+}
+
+/// Outcome of the minimal body-result to handler-runtime connection.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ServerContinuousReceiveLoopBodyDispatchRuntimeOutcome {
+    pub result: ServerContinuousReceiveLoopBodyDispatchRuntimeResult,
+}
+
+/// Minimal runtime connection from one body result to handler runtimes.
+///
+/// The body still owns only one receive-loop iteration. This boundary consumes
+/// that result and calls the appropriate lane runtime once. Future loop code
+/// remains responsible for when to repeat, when to apply side effects, and how
+/// to handle shutdown / retry policy.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ServerContinuousReceiveLoopBodyDispatchRuntimeBoundary {
+    bridge: ServerContinuousReceiveLoopHandlerDispatchBoundary,
+    handler: ServerHandlerDispatchBoundary,
+    auth: ServerAuthDispatchRuntimeBoundary,
+    registered: ServerRegisteredPacketDispatchRuntimeBoundary,
+    video_stats: ServerVideoStatsHandlerRuntimeBoundary,
+}
+
+impl ServerContinuousReceiveLoopBodyDispatchRuntimeBoundary {
+    pub fn dispatch_body_result(
+        &self,
+        result: &ServerContinuousReceiveLoopBodyResult,
+        auth_config: &ServerAuthConfig,
+        heartbeat_timing: ServerHeartbeatAckTiming,
+    ) -> ServerContinuousReceiveLoopBodyDispatchRuntimeOutcome {
+        let handoff = self.bridge.plan_from_body_result(result);
+        let handler = self.handler.dispatch_handoff(handoff);
+        let result = match handler.result {
+            ServerHandlerDispatchResult::Auth(_) => {
+                ServerContinuousReceiveLoopBodyDispatchRuntimeResult::Auth(
+                    self.auth.dispatch_outcome(handler, auth_config),
+                )
+            }
+            ServerHandlerDispatchResult::RegisteredHeartbeat(_)
+            | ServerHandlerDispatchResult::RegisteredVideoFrame(_)
+            | ServerHandlerDispatchResult::RegisteredClientStats(_) => {
+                let registered = self.registered.dispatch_outcome(handler, heartbeat_timing);
+                match &registered.result {
+                    ServerRegisteredPacketDispatchRuntimeResult::FutureVideoFrame(_)
+                    | ServerRegisteredPacketDispatchRuntimeResult::FutureClientStats(_) => {
+                        ServerContinuousReceiveLoopBodyDispatchRuntimeResult::VideoStats(
+                            self.video_stats.dispatch_outcome(registered),
+                        )
+                    }
+                    _ => {
+                        ServerContinuousReceiveLoopBodyDispatchRuntimeResult::Registered(registered)
+                    }
+                }
+            }
+            _ => ServerContinuousReceiveLoopBodyDispatchRuntimeResult::NoDispatch(handler),
+        };
+
+        ServerContinuousReceiveLoopBodyDispatchRuntimeOutcome { result }
+    }
+}
+
 pub const SERVER_RECEIVE_LOOP_JSON_LOG_EVENT_NAME: &str = "server.receive_loop";
 
 /// Operational receive loop outcome used by future continuous-loop logging.
@@ -6388,6 +6460,101 @@ shared_token = "secret"
     }
 
     #[test]
+    fn body_dispatch_runtime_connects_body_result_to_auth_dispatch() {
+        let source = packet_source();
+        let body_result = body_result_with_handler_handoff(
+            88,
+            ServerContinuousReceiveLoopHandlerHandoffRuntimePlan::Auth(ServerAuthCheck {
+                source,
+                request: auth_request("client-1", "presented-secret"),
+            }),
+        );
+        let runtime = ServerContinuousReceiveLoopBodyDispatchRuntimeBoundary::default();
+
+        let outcome = runtime.dispatch_body_result(
+            &body_result,
+            &auth_config(Some("presented-secret")),
+            body_dispatch_timing(),
+        );
+
+        let ServerContinuousReceiveLoopBodyDispatchRuntimeResult::Auth(auth) = outcome.result
+        else {
+            panic!("expected auth dispatch result");
+        };
+        assert_eq!(auth.packet_len, Some(88));
+        let ServerAuthDispatchRuntimeResult::Dispatched(flow) = auth.result else {
+            panic!("expected auth flow dispatch");
+        };
+        assert!(flow.decision.accepted);
+        assert_eq!(flow.decision.reason_code, AuthResponseReasonCode::Ok);
+    }
+
+    #[test]
+    fn body_dispatch_runtime_connects_body_result_to_registered_heartbeat_dispatch() {
+        let source = packet_source();
+        let registry = registry_with_client("client-1", source);
+        let registered = ServerRegisteredPacketBoundary::default()
+            .prepare_for_handler(&registry, heartbeat_route("client-1", source))
+            .expect("heartbeat should be accepted");
+        let body_result = body_result_with_handler_handoff(
+            72,
+            ServerContinuousReceiveLoopHandlerHandoffRuntimePlan::RegisteredClient(registered),
+        );
+        let runtime = ServerContinuousReceiveLoopBodyDispatchRuntimeBoundary::default();
+
+        let outcome = runtime.dispatch_body_result(
+            &body_result,
+            &auth_config(Some("presented-secret")),
+            body_dispatch_timing(),
+        );
+
+        let ServerContinuousReceiveLoopBodyDispatchRuntimeResult::Registered(registered) =
+            outcome.result
+        else {
+            panic!("expected registered dispatch result");
+        };
+        assert_eq!(registered.packet_len, Some(72));
+        let ServerRegisteredPacketDispatchRuntimeResult::HeartbeatAck(handoff) = registered.result
+        else {
+            panic!("expected heartbeat ack handoff");
+        };
+        assert_eq!(handoff.ack_input.destination, source);
+        assert_eq!(handoff.ack_input.echoed_sent_at, TimestampMicros(1_234_567));
+    }
+
+    #[test]
+    fn body_dispatch_runtime_connects_body_result_to_video_stats_runtime() {
+        let source = packet_source();
+        let registry = registry_with_client("client-1", source);
+        let registered = ServerRegisteredPacketBoundary::default()
+            .prepare_for_handler(&registry, video_frame_route("client-1", source))
+            .expect("video frame should be accepted");
+        let body_result = body_result_with_handler_handoff(
+            128,
+            ServerContinuousReceiveLoopHandlerHandoffRuntimePlan::RegisteredClient(registered),
+        );
+        let runtime = ServerContinuousReceiveLoopBodyDispatchRuntimeBoundary::default();
+
+        let outcome = runtime.dispatch_body_result(
+            &body_result,
+            &auth_config(Some("presented-secret")),
+            body_dispatch_timing(),
+        );
+
+        let ServerContinuousReceiveLoopBodyDispatchRuntimeResult::VideoStats(video_stats) =
+            outcome.result
+        else {
+            panic!("expected video stats dispatch result");
+        };
+        assert_eq!(video_stats.packet_len, Some(128));
+        let ServerVideoStatsHandlerRuntimeResult::VideoFrame(input) = video_stats.result else {
+            panic!("expected video input");
+        };
+        assert_eq!(input.payload_len, 3);
+        assert_eq!(input.registered_packet.frame.frame_id, 42);
+    }
+
+    #[test]
     fn continuous_receive_loop_body_executes_one_tick_runtime() {
         let boundary = ServerContinuousReceiveLoopBodyBoundary::default();
         let receiver = UdpSocket::bind("127.0.0.1:0").expect("receiver should bind");
@@ -8614,6 +8781,55 @@ shared_token = "secret"
             },
         );
         registry
+    }
+
+    fn body_result_with_handler_handoff(
+        packet_len: usize,
+        handler: ServerContinuousReceiveLoopHandlerHandoffRuntimePlan,
+    ) -> ServerContinuousReceiveLoopBodyResult {
+        let lifecycle = ServerContinuousReceiveLoopLifecyclePlan {
+            state: ServerContinuousReceiveLoopLifecycleState::DispatchingAcceptedRoute,
+            action: ServerContinuousReceiveLoopAction::DispatchAcceptedRoute,
+            operational_log_required: true,
+            rejection_log_required: false,
+            handler_handoff_required: true,
+        };
+        let tick = ServerContinuousReceiveLoopTickPlan {
+            state: ServerContinuousReceiveLoopTickState::AcceptedRouteReadyForHandoff,
+            lifecycle,
+            packet_len: Some(packet_len),
+        };
+        let writer = ServerContinuousReceiveLoopWriterRuntimeResult {
+            handoff: ServerContinuousReceiveLoopWriterHandoffPlan {
+                handler_handoff_required: true,
+                tick,
+                operational_log: None,
+                rejection_log: None,
+            },
+            operational_event: None,
+            rejection_event: None,
+        };
+
+        ServerContinuousReceiveLoopBodyResult {
+            action: ServerContinuousReceiveLoopBodyAction::ExecuteOneTick,
+            tick: ServerContinuousReceiveLoopOneTickRuntimeResult {
+                start_tick: tick,
+                outcome: ServerContinuousReceiveLoopOneTickRuntimeOutcome::Completed {
+                    packet_len,
+                    handler: ServerContinuousReceiveLoopHandlerHandoffRuntimeResult {
+                        writer,
+                        handler,
+                    },
+                },
+            },
+        }
+    }
+
+    fn body_dispatch_timing() -> ServerHeartbeatAckTiming {
+        ServerHeartbeatAckTiming {
+            server_received_at: TimestampMicros(2_000_100),
+            server_sent_at: TimestampMicros(2_000_200),
+        }
     }
 
     fn heartbeat_route(client_id: &str, source: PacketSource) -> ServerInboundRoute {

@@ -567,6 +567,31 @@ Current code reflects this with `ServerVideoFrameHandlerInput`,
 `ServerVideoStatsHandlerRuntimeOutcome`, and
 `ServerVideoStatsHandlerRuntimeBoundary`.
 
+The minimal body dispatch runtime connects one receive-loop body result to the
+existing dispatch runtime chain:
+
+- It consumes `ServerContinuousReceiveLoopBodyResult`.
+- The body result is first converted by
+  `ServerContinuousReceiveLoopHandlerDispatchBoundary`, then classified by
+  `ServerHandlerDispatchBoundary`.
+- Auth lanes call `ServerAuthDispatchRuntimeBoundary` once.
+- Registered heartbeat lanes call
+  `ServerRegisteredPacketDispatchRuntimeBoundary` once and stop at the
+  heartbeat ack handoff.
+- Registered video / stats lanes call
+  `ServerRegisteredPacketDispatchRuntimeBoundary` once and then
+  `ServerVideoStatsHandlerRuntimeBoundary` once.
+- Stopped loops, socket receive failures, rejected outcomes, unsupported
+  routes, and handoff errors stay as no-dispatch results for future policy.
+- The runtime does not repeat the loop, apply registry registration, write auth
+  logs, store outbound queue items, commit heartbeat/video/stats state, encode
+  packets, send UDP, open sinks, or run packet drop policy.
+
+Current code reflects this with
+`ServerContinuousReceiveLoopBodyDispatchRuntimeResult`,
+`ServerContinuousReceiveLoopBodyDispatchRuntimeOutcome`, and
+`ServerContinuousReceiveLoopBodyDispatchRuntimeBoundary`.
+
 ## 1. 目的
 
 このドキュメントは、StreamSync の MVP 段階における通信プロトコルの初期設計を定義するものです。
