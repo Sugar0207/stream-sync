@@ -42,8 +42,9 @@
 - `ServerNotice` payload layout、decode / encode 最小実装、notice trigger policy の実装範囲整理は完了。state transition 検知、重複抑制、rate limit、送信継続 loop、socket send 接続は未実装
 - auth / receive JSON Lines file sink 方針は整理済み。実 file open、rotation、retention、async logging、process-wide logger は未実装
 - send error JSON Lines 出力範囲は整理済み。failure-only の event schema / caller-owned writer / sink plan placeholder は追加済みだが、send loop からの実接続、file sink open、process-wide logger は未実装
+- receive loop の継続運用向けログ範囲は整理済み。`server.receive_loop` の event schema / caller-owned writer / sink plan placeholder は追加済みだが、continuous receive loop からの実接続、file sink open、process-wide logger は未実装
 - secret store / token rotation 方針は整理済み。SecretStore 参照と rotation policy placeholder は追加済みだが、provider 連携、rotation 実行、hot reload は未実装
-- 次の中心は file sink 実 file open 範囲の再確認、ServerNotice trigger の state transition 接続範囲の再確認、secret store provider / token rotation 実行範囲の再確認、receive loop の継続運用向けログ範囲の整理
+- 次の中心は file sink 実 file open 範囲の再確認、ServerNotice trigger の state transition 接続範囲の再確認、secret store provider / token rotation 実行範囲の再確認、continuous receive loop 本体の実装範囲整理
 
 ---
 
@@ -76,7 +77,7 @@
 1. auth / receive JSON Lines file sink の実 file open 範囲を必要になった時点で再確認する
 2. `ServerNotice` trigger の state transition 接続範囲を必要になった時点で再確認する
 3. secret store provider 連携または token rotation 実行範囲を必要になった時点で再確認する
-4. receive loop の継続運用向けログ範囲を必要になった時点で整理する
+4. continuous receive loop 本体の実装範囲を必要になった時点で整理する
 
 ---
 
@@ -210,6 +211,7 @@
 - [x] server 側 `PacketAcceptanceGateBoundary` / `PacketAcceptanceDecision` placeholder を追加する
 - [x] server 側 `ServerRegisteredPacketBoundary` / registered handler input placeholder を追加する
 - [x] `ServerReceiveLoopGateOutcome` / receive loop から gate を呼ぶ接続 helper を追加する
+- [x] `ServerReceiveLoopLogOutputBoundary` / receive loop operational JSON Lines writer placeholder を追加する
 - [x] `ServerRejectionDropLogHandoffBoundary` / drop-log handoff input placeholder を追加する
 - [x] `ServerReceiveRejectionJsonLogEventBoundary` / receive rejection JSON Lines event input placeholder を追加する
 - [x] `ServerReceiveRejectionLogOutputBoundary` / receive rejection JSON Lines writer を追加する
@@ -225,6 +227,7 @@
 - [x] packet 送信継続 loop の最小接続範囲を整理する
 - [x] packet 送信継続 loop 本体の実装範囲を整理する
 - [x] receive rejection の最小 stderr JSON Lines 出力を実装する
+- [x] receive loop の継続運用向けログ範囲を整理する
 - [ ] receive loop の継続運用向けログ出力を実装する
 - [ ] outbound queue の実処理を実装する
 - [x] outbound queue の backpressure / capacity 方針を決める
@@ -386,6 +389,7 @@
 - [x] auth / receive JSON Lines writer 接続範囲を整理する
 - [x] auth / receive JSON Lines の file sink 設定方針を整理する
 - [x] send error JSON Lines 出力範囲を整理する
+- [x] receive loop の継続運用向けログ範囲を整理する
 - [ ] ログイベント型を定義する
 - [ ] JSON Lines 形式でログ出力する
 - [ ] `run_id` / `client_id` を各ログに付与する

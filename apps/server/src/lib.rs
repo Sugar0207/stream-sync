@@ -96,6 +96,52 @@ impl ServerAuthReceiveJsonLinesSinkBoundary {
     }
 }
 
+/// Server-side JSON Lines sink config for receive loop operational events.
+///
+/// This plans where future continuous receive-loop observations should go. It
+/// does not open files, write records, rotate logs, or install a global logger.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct ServerReceiveLoopJsonLinesSinkConfig {
+    pub receive_loop: JsonLinesSinkConfig,
+}
+
+impl ServerReceiveLoopJsonLinesSinkConfig {
+    pub fn stderr_default() -> Self {
+        Self {
+            receive_loop: JsonLinesSinkConfig::stderr(),
+        }
+    }
+
+    pub fn file_sink(receive_loop_path: impl Into<PathBuf>) -> Self {
+        Self {
+            receive_loop: JsonLinesSinkConfig::file(receive_loop_path),
+        }
+    }
+}
+
+/// Normalized server JSON Lines sink plan for receive loop operational events.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct ServerReceiveLoopJsonLinesSinkPlan {
+    pub receive_loop: JsonLinesSinkPlan,
+}
+
+/// Boundary that maps receive loop logging config to a sink plan.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct ServerReceiveLoopJsonLinesSinkBoundary {
+    sink_plan: JsonLinesSinkPlanBoundary,
+}
+
+impl ServerReceiveLoopJsonLinesSinkBoundary {
+    pub fn plan(
+        &self,
+        config: ServerReceiveLoopJsonLinesSinkConfig,
+    ) -> ServerReceiveLoopJsonLinesSinkPlan {
+        ServerReceiveLoopJsonLinesSinkPlan {
+            receive_loop: self.sink_plan.plan(config.receive_loop),
+        }
+    }
+}
+
 /// Server-side JSON Lines sink config for send error events.
 ///
 /// This is a config/planning boundary only. It does not open files, write
@@ -677,6 +723,199 @@ pub enum ServerReceiveLoopGateRejection {
     Acceptance(PacketAcceptanceRejection),
 }
 
+pub const SERVER_RECEIVE_LOOP_JSON_LOG_EVENT_NAME: &str = "server.receive_loop";
+
+/// Operational receive loop outcome used by future continuous-loop logging.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ServerReceiveLoopLogOutcome {
+    Accepted,
+    DecodeRejected,
+    AcceptanceRejected,
+}
+
+/// Lightweight receive loop observation for future operational JSON Lines logs.
+///
+/// This records the one-packet loop outcome only. Detailed rejection diagnostics
+/// stay in `server.receive_rejection`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ServerReceiveLoopLogInput {
+    pub source: PacketSource,
+    pub outcome: ServerReceiveLoopLogOutcome,
+    pub packet_len: usize,
+    pub message_type: Option<MessageType>,
+    pub client_id: Option<ClientId>,
+    pub rejection_reason: Option<ServerReceiveRejectionReason>,
+}
+
+/// Boundary that converts one receive loop outcome into operational log input.
+///
+/// It does not write JSON Lines, drop packets, call handlers, update metrics,
+/// or run the continuous receive loop.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct ServerReceiveLoopLogHandoffBoundary;
+
+impl ServerReceiveLoopLogHandoffBoundary {
+    pub fn handoff(
+        &self,
+        outcome: &ServerReceiveLoopGateOutcome,
+        packet_len: usize,
+    ) -> ServerReceiveLoopLogInput {
+        match outcome {
+            ServerReceiveLoopGateOutcome::Accepted(route) => {
+                let metadata = inbound_route_log_metadata(route);
+                ServerReceiveLoopLogInput {
+                    source: metadata.source,
+                    outcome: ServerReceiveLoopLogOutcome::Accepted,
+                    packet_len,
+                    message_type: Some(metadata.message_type),
+                    client_id: metadata.client_id,
+                    rejection_reason: None,
+                }
+            }
+            ServerReceiveLoopGateOutcome::Rejected(ServerReceiveLoopGateRejection::Decode(
+                rejected,
+            )) => ServerReceiveLoopLogInput {
+                source: rejected.source,
+                outcome: ServerReceiveLoopLogOutcome::DecodeRejected,
+                packet_len,
+                message_type: None,
+                client_id: None,
+                rejection_reason: Some(ServerReceiveRejectionReason::DecodeError),
+            },
+            ServerReceiveLoopGateOutcome::Rejected(ServerReceiveLoopGateRejection::Acceptance(
+                rejected,
+            )) => ServerReceiveLoopLogInput {
+                source: rejected.source,
+                outcome: ServerReceiveLoopLogOutcome::AcceptanceRejected,
+                packet_len,
+                message_type: Some(rejected.message_type),
+                client_id: rejected.client_id.clone(),
+                rejection_reason: Some(match rejected.reason {
+                    PacketAcceptanceRejectReason::UnauthenticatedSource => {
+                        ServerReceiveRejectionReason::UnauthenticatedSource
+                    }
+                    PacketAcceptanceRejectReason::UnknownClient => {
+                        ServerReceiveRejectionReason::UnknownClient
+                    }
+                    PacketAcceptanceRejectReason::EndpointMismatch => {
+                        ServerReceiveRejectionReason::EndpointMismatch
+                    }
+                }),
+            },
+        }
+    }
+}
+
+/// Boundary that maps receive loop operational input to JSON Lines event fields.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct ServerReceiveLoopJsonLogEventBoundary;
+
+impl ServerReceiveLoopJsonLogEventBoundary {
+    pub fn build_event(
+        &self,
+        input: ServerReceiveLoopLogInput,
+        timestamp: TimestampMicros,
+    ) -> ServerReceiveLoopJsonLogEventInput {
+        ServerReceiveLoopJsonLogEventInput {
+            event_name: SERVER_RECEIVE_LOOP_JSON_LOG_EVENT_NAME,
+            source: input.source,
+            outcome: input.outcome,
+            packet_len: input.packet_len,
+            message_type: input.message_type,
+            client_id: input.client_id,
+            rejection_reason: input.rejection_reason,
+            timestamp,
+        }
+    }
+}
+
+/// JSON Lines event input for receive loop operational observations.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ServerReceiveLoopJsonLogEventInput {
+    pub event_name: &'static str,
+    pub source: PacketSource,
+    pub outcome: ServerReceiveLoopLogOutcome,
+    pub packet_len: usize,
+    pub message_type: Option<MessageType>,
+    pub client_id: Option<ClientId>,
+    pub rejection_reason: Option<ServerReceiveRejectionReason>,
+    pub timestamp: TimestampMicros,
+}
+
+/// Minimal receive loop operational log output boundary.
+///
+/// This writes one lightweight JSON Lines observation to a caller-owned writer.
+/// It does not own files, rotation, async I/O, buffering policy, packet drop,
+/// handler execution, metrics aggregation, or global logging configuration.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct ServerReceiveLoopLogOutputBoundary {
+    handoff: ServerReceiveLoopLogHandoffBoundary,
+    event: ServerReceiveLoopJsonLogEventBoundary,
+    writer: ServerReceiveLoopJsonLineWriter,
+}
+
+impl ServerReceiveLoopLogOutputBoundary {
+    pub fn write_receive_loop_event<W: io::Write>(
+        &self,
+        outcome: &ServerReceiveLoopGateOutcome,
+        packet_len: usize,
+        timestamp: TimestampMicros,
+        writer: W,
+    ) -> io::Result<ServerReceiveLoopJsonLogEventInput> {
+        let input = self.handoff.handoff(outcome, packet_len);
+        let event = self.event.build_event(input, timestamp);
+        self.writer.write_event(&event, writer)?;
+        Ok(event)
+    }
+}
+
+/// Minimal JSON Lines writer for receive loop operational events.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct ServerReceiveLoopJsonLineWriter;
+
+impl ServerReceiveLoopJsonLineWriter {
+    pub fn write_event<W: io::Write>(
+        &self,
+        event: &ServerReceiveLoopJsonLogEventInput,
+        mut writer: W,
+    ) -> io::Result<()> {
+        write!(writer, "{{")?;
+        write_json_field(&mut writer, "event_name", event.event_name)?;
+        write!(writer, ",")?;
+        write_json_field(&mut writer, "source", &event.source.address.to_string())?;
+        write!(writer, ",")?;
+        write_json_field(
+            &mut writer,
+            "outcome",
+            receive_loop_log_outcome_name(event.outcome),
+        )?;
+        write!(writer, ",\"packet_len\":{}", event.packet_len)?;
+        write!(writer, ",")?;
+        write_optional_json_field(
+            &mut writer,
+            "message_type",
+            event.message_type.map(receive_rejection_message_type_name),
+        )?;
+        write!(writer, ",")?;
+        write_optional_json_field(
+            &mut writer,
+            "client_id",
+            event
+                .client_id
+                .as_ref()
+                .map(|client_id| client_id.0.as_str()),
+        )?;
+        write!(writer, ",")?;
+        write_optional_json_field(
+            &mut writer,
+            "rejection_reason",
+            event.rejection_reason.map(receive_rejection_reason_name),
+        )?;
+        write!(writer, ",\"timestamp\":{}", event.timestamp.0)?;
+        writeln!(writer, "}}")
+    }
+}
+
 /// Boundary that prepares receive rejections for future drop and log layers.
 ///
 /// This preserves the rejection reason for both layers. It does not execute the
@@ -1156,6 +1395,14 @@ fn receive_rejection_message_type_name(message_type: MessageType) -> &'static st
     }
 }
 
+fn receive_loop_log_outcome_name(outcome: ServerReceiveLoopLogOutcome) -> &'static str {
+    match outcome {
+        ServerReceiveLoopLogOutcome::Accepted => "Accepted",
+        ServerReceiveLoopLogOutcome::DecodeRejected => "DecodeRejected",
+        ServerReceiveLoopLogOutcome::AcceptanceRejected => "AcceptanceRejected",
+    }
+}
+
 fn send_log_stage_name(stage: SendLogStage) -> &'static str {
     match stage {
         SendLogStage::Encode => "Encode",
@@ -1183,6 +1430,47 @@ fn send_failure_disposition_name(disposition: SendFailureDisposition) -> &'stati
         SendFailureDisposition::RetryCandidate => "RetryCandidate",
         SendFailureDisposition::DropCandidate => "DropCandidate",
         SendFailureDisposition::WarningCandidate => "WarningCandidate",
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct InboundRouteLogMetadata {
+    source: PacketSource,
+    message_type: MessageType,
+    client_id: Option<ClientId>,
+}
+
+fn inbound_route_log_metadata(route: &ServerInboundRoute) -> InboundRouteLogMetadata {
+    match route {
+        ServerInboundRoute::AuthRequest { source, request } => InboundRouteLogMetadata {
+            source: *source,
+            message_type: MessageType::AuthRequest,
+            client_id: Some(request.client_id.clone()),
+        },
+        ServerInboundRoute::Heartbeat { source, heartbeat } => InboundRouteLogMetadata {
+            source: *source,
+            message_type: MessageType::Heartbeat,
+            client_id: Some(heartbeat.client_id.clone()),
+        },
+        ServerInboundRoute::VideoFrame { source, frame } => InboundRouteLogMetadata {
+            source: *source,
+            message_type: MessageType::VideoFrame,
+            client_id: Some(frame.client_id.clone()),
+        },
+        ServerInboundRoute::ClientStats { source, stats } => InboundRouteLogMetadata {
+            source: *source,
+            message_type: MessageType::ClientStats,
+            client_id: Some(stats.client_id.clone()),
+        },
+        ServerInboundRoute::UnsupportedForServer {
+            source,
+            message_type,
+            ..
+        } => InboundRouteLogMetadata {
+            source: *source,
+            message_type: *message_type,
+            client_id: None,
+        },
     }
 }
 
@@ -3425,6 +3713,37 @@ mod tests {
     }
 
     #[test]
+    fn server_receive_loop_json_lines_sink_defaults_to_stderr() {
+        let boundary = ServerReceiveLoopJsonLinesSinkBoundary::default();
+
+        let plan = boundary.plan(ServerReceiveLoopJsonLinesSinkConfig::stderr_default());
+
+        assert_eq!(
+            plan.receive_loop.destination,
+            JsonLinesSinkDestination::Stderr
+        );
+        assert!(!plan.receive_loop.is_file_sink());
+    }
+
+    #[test]
+    fn server_receive_loop_json_lines_sink_accepts_file_path_without_opening_it() {
+        let boundary = ServerReceiveLoopJsonLinesSinkBoundary::default();
+
+        let plan = boundary.plan(ServerReceiveLoopJsonLinesSinkConfig::file_sink(
+            "logs/receive-loop.jsonl",
+        ));
+
+        let JsonLinesSinkDestination::File(receive_loop_file) = plan.receive_loop.destination
+        else {
+            panic!("expected receive loop file sink");
+        };
+        assert_eq!(
+            receive_loop_file.path,
+            PathBuf::from("logs/receive-loop.jsonl")
+        );
+    }
+
+    #[test]
     fn receive_loop_routes_decoded_packet() {
         let source = packet_source();
         let payload = heartbeat_payload();
@@ -3982,6 +4301,116 @@ shared_token = "secret"
         assert!(output.contains(r#""message_type":"VideoFrame""#));
         assert!(output.contains(r#""rejection_reason":"EndpointMismatch""#));
         assert!(output.contains(r#""timestamp":456789"#));
+    }
+
+    #[test]
+    fn receive_loop_log_handoff_records_accepted_packet() {
+        let source = packet_source();
+        let boundary = ServerReceiveLoopLogHandoffBoundary;
+        let outcome = ServerReceiveLoopGateOutcome::Accepted(heartbeat_route("client-1", source));
+
+        let input = boundary.handoff(&outcome, 128);
+
+        assert_eq!(
+            input,
+            ServerReceiveLoopLogInput {
+                source,
+                outcome: ServerReceiveLoopLogOutcome::Accepted,
+                packet_len: 128,
+                message_type: Some(MessageType::Heartbeat),
+                client_id: Some(ClientId("client-1".to_string())),
+                rejection_reason: None,
+            }
+        );
+    }
+
+    #[test]
+    fn receive_loop_log_handoff_records_decode_rejection() {
+        let source = packet_source();
+        let boundary = ServerReceiveLoopLogHandoffBoundary;
+        let outcome = ServerReceiveLoopGateOutcome::Rejected(
+            ServerReceiveLoopGateRejection::Decode(ServerRejectedPacket {
+                source,
+                action: ServerDecodeErrorAction::DropPacket,
+                error: ProtocolError::BufferTooShort,
+            }),
+        );
+
+        let input = boundary.handoff(&outcome, 4);
+
+        assert_eq!(
+            input,
+            ServerReceiveLoopLogInput {
+                source,
+                outcome: ServerReceiveLoopLogOutcome::DecodeRejected,
+                packet_len: 4,
+                message_type: None,
+                client_id: None,
+                rejection_reason: Some(ServerReceiveRejectionReason::DecodeError),
+            }
+        );
+    }
+
+    #[test]
+    fn receive_loop_json_line_writer_outputs_minimal_json_line() {
+        let source = packet_source();
+        let writer = ServerReceiveLoopJsonLineWriter;
+        let event = ServerReceiveLoopJsonLogEventInput {
+            event_name: SERVER_RECEIVE_LOOP_JSON_LOG_EVENT_NAME,
+            source,
+            outcome: ServerReceiveLoopLogOutcome::AcceptanceRejected,
+            packet_len: 96,
+            message_type: Some(MessageType::VideoFrame),
+            client_id: Some(ClientId("client-1".to_string())),
+            rejection_reason: Some(ServerReceiveRejectionReason::EndpointMismatch),
+            timestamp: TimestampMicros(567_890),
+        };
+        let mut output = Vec::new();
+
+        writer
+            .write_event(&event, &mut output)
+            .expect("json line should write");
+
+        assert_eq!(
+            String::from_utf8(output).expect("json line should be utf8"),
+            r#"{"event_name":"server.receive_loop","source":"127.0.0.1:5000","outcome":"AcceptanceRejected","packet_len":96,"message_type":"VideoFrame","client_id":"client-1","rejection_reason":"EndpointMismatch","timestamp":567890}"#
+                .to_string()
+                + "\n"
+        );
+    }
+
+    #[test]
+    fn receive_loop_log_output_boundary_connects_handoff_event_and_writer() {
+        let source = packet_source();
+        let boundary = ServerReceiveLoopLogOutputBoundary::default();
+        let outcome = ServerReceiveLoopGateOutcome::Rejected(
+            ServerReceiveLoopGateRejection::Acceptance(PacketAcceptanceRejection {
+                source,
+                message_type: MessageType::Heartbeat,
+                client_id: Some(ClientId("client-2".to_string())),
+                reason: PacketAcceptanceRejectReason::UnknownClient,
+            }),
+        );
+        let mut output = Vec::new();
+
+        let event = boundary
+            .write_receive_loop_event(&outcome, 72, TimestampMicros(678_901), &mut output)
+            .expect("json line should write");
+
+        assert_eq!(
+            event.outcome,
+            ServerReceiveLoopLogOutcome::AcceptanceRejected
+        );
+        assert_eq!(
+            event.rejection_reason,
+            Some(ServerReceiveRejectionReason::UnknownClient)
+        );
+        let output = String::from_utf8(output).expect("json line should be utf8");
+        assert!(output.contains(r#""event_name":"server.receive_loop""#));
+        assert!(output.contains(r#""outcome":"AcceptanceRejected""#));
+        assert!(output.contains(r#""message_type":"Heartbeat""#));
+        assert!(output.contains(r#""rejection_reason":"UnknownClient""#));
+        assert!(output.contains(r#""timestamp":678901"#));
     }
 
     #[test]

@@ -5,6 +5,55 @@
 - Codex
 
 ### 今回の作業
+- receive loop の継続運用向けログ範囲を docs に明記した。
+- `apps/server` に `server.receive_loop` の operational handoff / JSON Lines event schema / caller-owned writer boundary を追加した。
+- receive loop / decode rejection / acceptance rejection / JSON Lines writer / sink plan の責務分離を整理した。
+
+### 変更ファイル
+- `apps/server/src/lib.rs`
+- `docs/architecture/system-design.md`
+- `docs/architecture/protocol.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### 決定事項
+- receive loop 継続運用ログは `server.receive_loop` とし、1 packet の `Accepted` / `DecodeRejected` / `AcceptanceRejected` outcome を記録する。
+- 詳細な decode / gate rejection 情報は既存の `server.receive_rejection` に残し、`server.receive_loop` は operational counters 用の軽量 event とする。
+- `packet_len`、source、message_type、client_id、rejection_reason、timestamp を保持するが、handler 実行、packet drop、metrics 集約は行わない。
+- sink plan は `crates/logging` の既存 JSON Lines sink plan を使うが、file open、rotation、retention、process-wide logger は今回の範囲に含めない。
+
+### 未実装 / 保留
+- continuous receive loop 本体
+- receive loop から operational writer への実接続
+- packet drop 本体
+- file sink open / directory creation
+- log rotation / retention / compression
+- process-wide logger / async logging
+
+### 次にやる候補
+- auth / receive JSON Lines file sink の実 file open 範囲を必要になった時点で再確認する
+- `ServerNotice` trigger の state transition 接続範囲を必要になった時点で再確認する
+- secret store provider 連携または token rotation 実行範囲を必要になった時点で再確認する
+- continuous receive loop 本体の実装範囲を必要になった時点で整理する
+
+### TODO更新
+- 現在位置に receive loop 継続運用向けログ範囲整理完了を反映した。
+- 直近でやることから receive loop 継続運用向けログ範囲整理を外し、continuous receive loop 本体の実装範囲整理へ更新した。
+- net-core / server 境界に `ServerReceiveLoopLogOutputBoundary` / receive loop operational JSON Lines writer placeholder 追加完了を反映した。
+- ログ / 計測に receive loop 継続運用向けログ範囲整理完了を反映した。
+
+### メモ
+- `cargo fmt --check` は成功した。
+- `cargo check --workspace` は成功した。
+- 追加確認として `cargo test -p stream-sync-server receive_loop` も成功した。
+
+---
+
+## 2026-04-21
+### 種別
+- Codex
+
+### 今回の作業
 - send error JSON Lines 出力範囲を docs に明記した。
 - `apps/server` に send error の failure-only handoff / JSON Lines event schema / caller-owned writer boundary を追加した。
 - send loop / send failure classification / JSON Lines writer / sink plan の責務分離を整理した。

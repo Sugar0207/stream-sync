@@ -1028,9 +1028,9 @@ boundary at its auth decision point without changing the event schema.
 
 ## Server JSON Lines Writer Connection Scope
 
-Auth result, receive rejection, and send error logs share the same connection shape:
-typed handoff input -> event schema boundary -> schema-specific JSON Lines
-writer -> caller-owned `io::Write` sink.
+Auth result, receive rejection, receive loop, and send error logs share the same
+connection shape: typed handoff input -> event schema boundary ->
+schema-specific JSON Lines writer -> caller-owned `io::Write` sink.
 
 Current connection scope:
 
@@ -1048,6 +1048,13 @@ Current connection scope:
   - Writer boundary: `ServerReceiveRejectionLogOutputBoundary`
   - Writer: `ServerReceiveRejectionJsonLineWriter`
   - Current sink: one-shot server CLI writes rejected receive events to stderr.
+- receive loop
+  - Handoff: `ServerReceiveLoopLogInput`
+  - Event schema: `ServerReceiveLoopJsonLogEventInput`
+  - Writer boundary: `ServerReceiveLoopLogOutputBoundary`
+  - Writer: `ServerReceiveLoopJsonLineWriter`
+  - Current sink: caller-owned `io::Write` only until a continuous receive loop
+    exists.
 - send error
   - Handoff: `ServerSendErrorLogInput`
   - Event schema: `ServerSendErrorJsonLogEventInput`
@@ -1059,15 +1066,17 @@ Current connection scope:
   - Shared plan boundary: `logging::JsonLinesSinkPlanBoundary`
   - Server auth/receive plan boundary:
     `ServerAuthReceiveJsonLinesSinkBoundary`
+  - Server receive-loop plan boundary: `ServerReceiveLoopJsonLinesSinkBoundary`
   - Server send-error plan boundary: `ServerSendErrorJsonLinesSinkBoundary`
 
 File sink policy:
 
-- stderr remains the PoC default sink for auth result, receive rejection, and
-  planned send error events.
+- stderr remains the PoC default sink for auth result, receive rejection,
+  planned receive loop, and planned send error events.
 - file sink configuration is represented as a plan only; it does not open the
   file yet.
-- auth result, receive rejection, and send error may use separate file paths.
+- auth result, receive rejection, receive loop, and send error may use separate
+  file paths.
 - file sinks use append-create semantics when implemented later.
 - each event remains one JSON object plus newline.
 - rotation, retention, compression, directory creation, and async logging are
@@ -1097,6 +1106,8 @@ Current code reflects the sink planning boundary with
 `apps/server::ServerAuthReceiveJsonLinesSinkConfig`,
 `ServerAuthReceiveJsonLinesSinkPlan`, and
 `ServerAuthReceiveJsonLinesSinkBoundary`,
+`ServerReceiveLoopJsonLinesSinkConfig`,
+`ServerReceiveLoopJsonLinesSinkPlan`, `ServerReceiveLoopJsonLinesSinkBoundary`,
 `ServerSendErrorJsonLinesSinkConfig`, `ServerSendErrorJsonLinesSinkPlan`, and
 `ServerSendErrorJsonLinesSinkBoundary`. The current one-shot server CLI still
 writes auth/receive events to stderr. Send error output is available only as a
@@ -1759,6 +1770,75 @@ Minimal emitted fields:
 - `rejection_reason`
 - `detail`
 - `timestamp`
+
+---
+
+## Receive Loop Operational JSON Lines Boundary
+
+Receive loop operational logs are lightweight per-packet observations for a
+future continuous receive loop. They are separate from
+`server.receive_rejection`: rejection logs keep detailed decode / gate failure
+diagnostics, while receive loop logs record the loop outcome needed for
+operations and counters.
+
+Flow:
+
+1. `ServerReceiveLoopStep` processes one received packet through decode, route,
+   and optional packet acceptance gate.
+2. The result is `ServerReceiveLoopGateOutcome::Accepted` or
+   `ServerReceiveLoopGateOutcome::Rejected`.
+3. `ServerReceiveLoopLogHandoffBoundary` converts the outcome plus packet
+   length into `ServerReceiveLoopLogInput`.
+4. `ServerReceiveLoopJsonLogEventBoundary` maps that input into
+   `ServerReceiveLoopJsonLogEventInput`.
+5. `ServerReceiveLoopLogOutputBoundary` can write one `server.receive_loop`
+   JSON Lines record to a caller-owned `io::Write` sink.
+
+Event schema:
+
+| Field | Type | Notes |
+| --- | --- | --- |
+| `event_name` | string | Always `server.receive_loop`. |
+| `source` | `PacketSource` | UDP source endpoint captured before decode / gate processing. |
+| `outcome` | enum | `Accepted`, `DecodeRejected`, or `AcceptanceRejected`. |
+| `packet_len` | integer | Received datagram length supplied by the caller. |
+| `message_type` | optional `MessageType` | Present after successful decode / route or acceptance rejection; absent for decode failures without a message type. |
+| `client_id` | optional `ClientId` | Present when the decoded route or gate rejection carries a client id. |
+| `rejection_reason` | optional enum | Present only for rejected outcomes. Detailed rejection data remains in `server.receive_rejection`. |
+| `timestamp` | `TimestampMicros` | Server-side event timestamp supplied by the caller. |
+
+Responsibility split:
+
+- receive loop
+  - Owns raw packet intake, decode, route, and gate invocation.
+  - Does not decide JSON Lines field names, open sinks, or write logs.
+- receive loop operational log handoff
+  - Converts accepted / decode rejected / acceptance rejected outcomes into a
+    small observation event.
+  - Does not drop packets, call handlers, update metrics, or perform auth.
+- decode / acceptance rejection logging
+  - Keeps detailed failure reason and detail in `server.receive_rejection`.
+  - Does not own operational loop counters.
+- JSON Lines writer
+  - Serializes one `server.receive_loop` record to a caller-owned writer.
+  - Does not own file opening, rotation, retention, async logging, or
+    process-wide logging.
+- sink plan
+  - Uses `crates/logging::JsonLinesSinkPlanBoundary` to normalize stderr/file
+    destinations for future runtime wiring.
+  - Does not open files or write records.
+
+Current code reflects this with
+`apps/server::ServerReceiveLoopLogHandoffBoundary`,
+`ServerReceiveLoopLogInput`, `ServerReceiveLoopLogOutcome`,
+`ServerReceiveLoopJsonLogEventBoundary`,
+`ServerReceiveLoopJsonLogEventInput`,
+`ServerReceiveLoopLogOutputBoundary`, `ServerReceiveLoopJsonLineWriter`,
+`ServerReceiveLoopJsonLinesSinkConfig`,
+`ServerReceiveLoopJsonLinesSinkPlan`, and
+`ServerReceiveLoopJsonLinesSinkBoundary`. Continuous receive loop execution,
+packet drop execution, metrics aggregation, process-wide logging, file opening,
+and async logging remain future work.
 
 ---
 

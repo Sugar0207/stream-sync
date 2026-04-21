@@ -1492,13 +1492,14 @@ Example shape:
 
 ### JSON Lines Writer Connection Scope
 
-Auth result, receive rejection, and send error logs use parallel connection
-boundaries:
+Auth result, receive rejection, receive loop, and send error logs use parallel
+connection boundaries:
 
 | Log family | Handoff input | Event schema input | Writer boundary | Current default sink |
 | --- | --- | --- | --- | --- |
 | Auth result | `ServerAuthLogInput` | `ServerAuthJsonLogEventInput` | `ServerAuthLogOutputBoundary` | one-shot server stderr |
 | Receive rejection | `ServerPacketLogInput` | `ServerReceiveRejectionJsonLogEventInput` | `ServerReceiveRejectionLogOutputBoundary` | one-shot server stderr |
+| Receive loop | `ServerReceiveLoopLogInput` | `ServerReceiveLoopJsonLogEventInput` | `ServerReceiveLoopLogOutputBoundary` | caller-owned writer only |
 | Send error | `ServerSendErrorLogInput` | `ServerSendErrorJsonLogEventInput` | `ServerSendErrorLogOutputBoundary` | caller-owned writer only |
 
 These writers are schema-specific and synchronous over caller-owned
@@ -2112,6 +2113,56 @@ Example shape:
 
 ```json
 {"event_name":"server.receive_rejection","run_id":null,"client_id":"client-1","source":"127.0.0.1:5000","message_type":"Heartbeat","rejection_reason":"UnauthenticatedSource","detail":{"kind":"Acceptance","reason":"UnauthenticatedSource"},"timestamp":345678}
+```
+
+---
+
+### Receive Loop Operational JSON Lines Boundary
+
+Receive loop operational logs are application-level observations around one
+received packet. They do not change the wire protocol and do not replace
+`server.receive_rejection`; rejection logs keep detailed decode / gate failure
+context, while `server.receive_loop` records the continuous-loop outcome shape.
+
+Flow:
+
+1. `ServerReceiveLoopStep` returns `ServerReceiveLoopGateOutcome`.
+2. `ServerReceiveLoopLogHandoffBoundary` maps the outcome and received packet
+   length to `ServerReceiveLoopLogInput`.
+3. `ServerReceiveLoopJsonLogEventBoundary` builds
+   `ServerReceiveLoopJsonLogEventInput`.
+4. `ServerReceiveLoopLogOutputBoundary` writes one JSON Lines record to a
+   caller-owned `io::Write` sink when called by future loop orchestration.
+
+Event schema:
+
+| Field | Type | Notes |
+| --- | --- | --- |
+| `event_name` | string | Always `server.receive_loop`. |
+| `source` | endpoint string | UDP source endpoint. |
+| `outcome` | string | `Accepted`, `DecodeRejected`, or `AcceptanceRejected`. |
+| `packet_len` | integer | Received datagram length. |
+| `message_type` | optional string | Known after successful decode / route or acceptance rejection. |
+| `client_id` | optional string | Known when decoded route / gate rejection carries a client id. |
+| `rejection_reason` | optional string | Present only for rejected outcomes. |
+| `timestamp` | integer | Server-side timestamp in microseconds. |
+
+Responsibility split:
+
+- receive loop owns packet intake, decode, route, and gate invocation.
+- receive loop operational logging records accepted / rejected outcome and
+  packet length only.
+- decode rejection and acceptance rejection detail stay in
+  `server.receive_rejection`.
+- JSON Lines writer owns only schema-specific serialization to caller-owned
+  `io::Write`.
+- sink planning uses `crates/logging` placeholders but does not open files,
+  rotate logs, install process-wide logging, or introduce async logging.
+
+Minimal example:
+
+```json
+{"event_name":"server.receive_loop","source":"127.0.0.1:5000","outcome":"AcceptanceRejected","packet_len":96,"message_type":"VideoFrame","client_id":"client-1","rejection_reason":"EndpointMismatch","timestamp":567890}
 ```
 
 ---
