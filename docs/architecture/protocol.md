@@ -520,6 +520,30 @@ connection after generic handler dispatch:
 Current code reflects this with `ServerAuthDispatchRuntimeResult`,
 `ServerAuthDispatchRuntimeOutcome`, and `ServerAuthDispatchRuntimeBoundary`.
 
+The minimal registered packet dispatch runtime is the next lane-specific
+connection:
+
+- It consumes `ServerHandlerDispatchOutcome`.
+- `RegisteredHeartbeat` is passed to
+  `ServerHeartbeatHandlerBoundary::handoff_ack` with caller-owned
+  `ServerHeartbeatAckTiming`.
+- The result is `ServerRegisteredPacketDispatchRuntimeOutcome`, carrying the
+  original packet length and `ServerHeartbeatAckHandoff`.
+- `RegisteredVideoFrame` is returned as `FutureVideoFrame`; frame buffering,
+  sync scheduling, decoder handoff, and video drop policy remain future work.
+- `RegisteredClientStats` is returned as `FutureClientStats`; metrics state
+  commit and heartbeat observation commit remain future stats handling work.
+- Non-registered results are returned as `NotRegistered` so auth dispatch and
+  registered packet dispatch stay separate.
+- Outbound enqueue is limited to the existing heartbeat ack `OutboundQueueItem`
+  handoff. Queue storage, packet encoding, UDP send, retry, and send-loop
+  scheduling remain outside this runtime.
+
+Current code reflects this with
+`ServerRegisteredPacketDispatchRuntimeResult`,
+`ServerRegisteredPacketDispatchRuntimeOutcome`, and
+`ServerRegisteredPacketDispatchRuntimeBoundary`.
+
 ## 1. 目的
 
 このドキュメントは、StreamSync の MVP 段階における通信プロトコルの初期設計を定義するものです。

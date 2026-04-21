@@ -744,6 +744,49 @@ Responsibility split for auth dispatch:
 Current code reflects this with `ServerAuthDispatchRuntimeResult`,
 `ServerAuthDispatchRuntimeOutcome`, and `ServerAuthDispatchRuntimeBoundary`.
 
+Registered packet dispatch minimal runtime scope:
+
+1. The registered packet dispatch runtime receives `ServerHandlerDispatchOutcome`
+   from the generic handler dispatch body.
+2. If the result is `RegisteredHeartbeat`, it calls the existing
+   `ServerHeartbeatHandlerBoundary::handoff_ack` with caller-owned
+   `ServerHeartbeatAckTiming`.
+3. It returns `ServerRegisteredPacketDispatchRuntimeOutcome`, preserving
+   `packet_len` and the heartbeat ack handoff result.
+4. `RegisteredVideoFrame` is preserved as `FutureVideoFrame`; no video decode,
+   frame buffer, sync scheduling, or file sink work is performed.
+5. `RegisteredClientStats` is preserved as `FutureClientStats`; no metrics
+   state commit, RTT / offset state commit, or stats log output is performed.
+6. Non-registered handler dispatch results are returned as `NotRegistered` so
+   auth and other future dispatch runtimes remain separate.
+
+Responsibility split for registered packet dispatch:
+
+- registered packet dispatch runtime
+  - Selects registered heartbeat / video / stats lanes from handler dispatch
+    output.
+  - Connects heartbeat to the minimal ack handoff only.
+- heartbeat handler
+  - Owns heartbeat state/timebase input preparation and `HeartbeatAck` handoff.
+  - Does not mutate heartbeat state, calculate committed RTT / offset state,
+    store queue items, encode bytes, or send UDP.
+- future video handler
+  - Will own video frame validation beyond packet acceptance, frame buffering,
+    sync scheduling, decoder handoff, and drop policy.
+- future stats handling
+  - Will own metrics state commit and optional heartbeat observation commit.
+  - The current dispatch runtime only preserves the typed stats packet.
+- outbound enqueue
+  - Is limited here to the existing one-item `OutboundQueueItem` handoff from
+    the heartbeat ack boundary.
+  - Queue storage, admission side effects, send-loop scheduling, encoding, and
+    socket send remain future responsibilities.
+
+Current code reflects this with
+`ServerRegisteredPacketDispatchRuntimeResult`,
+`ServerRegisteredPacketDispatchRuntimeOutcome`, and
+`ServerRegisteredPacketDispatchRuntimeBoundary`.
+
 ### 5.7 AuthResponse PoC one-shot startup step
 
 AuthResponse PoC startup uses the existing boundaries as a one-packet

@@ -5,6 +5,56 @@
 - Codex
 
 ### 今回の作業
+- registered packet handler の最小実接続範囲を docs に明記した。
+- `apps/server` に registered packet dispatch runtime placeholder を追加した。
+- registered packet dispatch / heartbeat handler / future video handler / future stats handling / outbound enqueue の責務分離を整理した。
+
+### 変更ファイル
+- `apps/server/src/lib.rs`
+- `docs/architecture/system-design.md`
+- `docs/architecture/protocol.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### 決定事項
+- registered packet dispatch runtime は `ServerRegisteredPacketDispatchRuntimeBoundary` として、`ServerHandlerDispatchOutcome` の registered lanes だけを扱う。
+- `RegisteredHeartbeat` は既存の `ServerHeartbeatHandlerBoundary::handoff_ack` へ接続し、`HeartbeatAck` の one-item outbound handoff まで行う。
+- heartbeat timing は caller-owned とし、この runtime では clock / runtime policy を持たない。
+- `RegisteredVideoFrame` は `FutureVideoFrame` として保持し、video frame buffering、sync scheduling、decoder handoff、drop policy は後段へ残す。
+- `RegisteredClientStats` は `FutureClientStats` として保持し、metrics state commit、heartbeat observation commit、stats log output は後段へ残す。
+- queue storage、packet encode、UDP send、retry、send-loop scheduling は今回の runtime では実行しない。
+
+### 未実装 / 保留
+- video handler 本体
+- stats handler 本体
+- heartbeat state commit / RTT offset state commit
+- outbound queue storage / send loop への実接続
+- packet drop 本体
+- file sink open / process-wide logger
+- 完成した continuous receive loop / while loop
+
+### 次にやる候補
+- video / stats handler の最小実接続範囲を必要時に整理する
+- auth / receive JSON Lines file sink の実 file open 範囲を再確認する
+- ServerNotice trigger の state transition 接続範囲を再確認する
+- continuous receive loop body から auth / registered dispatch runtime を呼ぶ範囲を必要時に整理する
+
+### TODO 更新
+- 現在位置に registered packet handler の最小実接続範囲整理完了を反映した。
+- net-core / server 境界に `ServerRegisteredPacketDispatchRuntimeBoundary` / registered packet dispatch runtime placeholder 追加完了を反映した。
+- 直近でやることから registered packet handler 範囲整理を外し、video / stats handler の最小実接続範囲整理へ更新した。
+
+### 検証
+- `cargo fmt --check`
+- `cargo test -p stream-sync-server registered_packet_dispatch_runtime`
+- `cargo check --workspace`
+
+---
+
+### 種別
+- Codex
+
+### 今回の作業
 - auth dispatch の最小実接続範囲を docs に明記した。
 - `apps/server` に auth dispatch runtime placeholder を追加した。
 - auth dispatch / auth decision / outbound response handoff / future loop 本体の責務分離を整理した。

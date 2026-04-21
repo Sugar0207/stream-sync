@@ -1733,6 +1733,65 @@ impl ServerAuthDispatchRuntimeBoundary {
     }
 }
 
+/// Result of running the minimal registered packet dispatch runtime.
+///
+/// Heartbeat is connected to the existing ack handoff boundary. Video frame
+/// and client stats lanes are preserved for future concrete handlers.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ServerRegisteredPacketDispatchRuntimeResult {
+    HeartbeatAck(ServerHeartbeatAckHandoff),
+    FutureVideoFrame(ServerRegisteredVideoFramePacket),
+    FutureClientStats(ServerRegisteredClientStatsPacket),
+    NotRegistered(ServerHandlerDispatchResult),
+}
+
+/// Outcome of attempting registered packet dispatch for one handler result.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ServerRegisteredPacketDispatchRuntimeOutcome {
+    pub packet_len: Option<usize>,
+    pub result: ServerRegisteredPacketDispatchRuntimeResult,
+}
+
+/// Minimal runtime connection from handler dispatch to registered handlers.
+///
+/// This boundary connects heartbeat to the existing ack handoff only. It does
+/// not update heartbeat state, buffer video frames, commit stats, persist queue
+/// items, encode bytes, send UDP, run packet drop policy, or own the future
+/// loop body. Heartbeat timing is caller-owned to avoid clock/runtime policy in
+/// this dispatch layer.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct ServerRegisteredPacketDispatchRuntimeBoundary {
+    heartbeat: ServerHeartbeatHandlerBoundary,
+}
+
+impl ServerRegisteredPacketDispatchRuntimeBoundary {
+    pub fn dispatch_outcome(
+        &self,
+        outcome: ServerHandlerDispatchOutcome,
+        heartbeat_timing: ServerHeartbeatAckTiming,
+    ) -> ServerRegisteredPacketDispatchRuntimeOutcome {
+        let result = match outcome.result {
+            ServerHandlerDispatchResult::RegisteredHeartbeat(packet) => {
+                ServerRegisteredPacketDispatchRuntimeResult::HeartbeatAck(
+                    self.heartbeat.handoff_ack(packet, heartbeat_timing),
+                )
+            }
+            ServerHandlerDispatchResult::RegisteredVideoFrame(packet) => {
+                ServerRegisteredPacketDispatchRuntimeResult::FutureVideoFrame(packet)
+            }
+            ServerHandlerDispatchResult::RegisteredClientStats(packet) => {
+                ServerRegisteredPacketDispatchRuntimeResult::FutureClientStats(packet)
+            }
+            other => ServerRegisteredPacketDispatchRuntimeResult::NotRegistered(other),
+        };
+
+        ServerRegisteredPacketDispatchRuntimeOutcome {
+            packet_len: outcome.packet_len,
+            result,
+        }
+    }
+}
+
 pub const SERVER_RECEIVE_LOOP_JSON_LOG_EVENT_NAME: &str = "server.receive_loop";
 
 /// Operational receive loop outcome used by future continuous-loop logging.
@@ -6099,6 +6158,80 @@ shared_token = "secret"
                 ServerContinuousReceiveLoopHandlerDispatchSkipReason::LoopStopped
             ))
         );
+    }
+
+    #[test]
+    fn registered_packet_dispatch_runtime_connects_heartbeat_to_ack_handoff() {
+        let source = packet_source();
+        let registry = registry_with_client("client-1", source);
+        let route = heartbeat_route("client-1", source);
+        let registered = ServerRegisteredPacketBoundary::default()
+            .prepare_for_handler(&registry, route)
+            .expect("heartbeat should be accepted");
+        let handler_outcome = ServerHandlerDispatchBoundary.dispatch_handoff(
+            ServerContinuousReceiveLoopHandlerDispatchHandoff {
+                packet_len: Some(72),
+                plan: ServerContinuousReceiveLoopHandlerDispatchPlan::RegisteredClient(registered),
+            },
+        );
+        let timing = ServerHeartbeatAckTiming {
+            server_received_at: TimestampMicros(2_000_100),
+            server_sent_at: TimestampMicros(2_000_200),
+        };
+        let runtime = ServerRegisteredPacketDispatchRuntimeBoundary::default();
+
+        let outcome = runtime.dispatch_outcome(handler_outcome, timing);
+
+        assert_eq!(outcome.packet_len, Some(72));
+        let ServerRegisteredPacketDispatchRuntimeResult::HeartbeatAck(handoff) = outcome.result
+        else {
+            panic!("expected heartbeat ack handoff");
+        };
+        assert_eq!(handoff.ack_input.destination, source);
+        assert_eq!(handoff.ack_input.echoed_sent_at, TimestampMicros(1_234_567));
+        let ProtocolMessage::HeartbeatAck(ack) = handoff.queue_item.packet.message else {
+            panic!("expected queued HeartbeatAck");
+        };
+        assert_eq!(ack.client_id, ClientId("client-1".to_string()));
+        assert_eq!(ack.server_received_at, TimestampMicros(2_000_100));
+        assert_eq!(ack.server_sent_at, TimestampMicros(2_000_200));
+    }
+
+    #[test]
+    fn registered_packet_dispatch_runtime_preserves_future_client_stats() {
+        let source = packet_source();
+        let registry = registry_with_client("client-1", source);
+        let route = client_stats_route("client-1", source);
+        let registered = ServerRegisteredPacketBoundary::default()
+            .prepare_for_handler(&registry, route)
+            .expect("client stats should be accepted");
+        let handler_outcome = ServerHandlerDispatchBoundary.dispatch_handoff(
+            ServerContinuousReceiveLoopHandlerDispatchHandoff {
+                packet_len: Some(96),
+                plan: ServerContinuousReceiveLoopHandlerDispatchPlan::RegisteredClient(registered),
+            },
+        );
+        let timing = ServerHeartbeatAckTiming {
+            server_received_at: TimestampMicros(2_000_100),
+            server_sent_at: TimestampMicros(2_000_200),
+        };
+        let runtime = ServerRegisteredPacketDispatchRuntimeBoundary::default();
+
+        let outcome = runtime.dispatch_outcome(handler_outcome, timing);
+
+        assert_eq!(outcome.packet_len, Some(96));
+        assert!(matches!(
+            outcome.result,
+            ServerRegisteredPacketDispatchRuntimeResult::FutureClientStats(
+                ServerRegisteredClientStatsPacket {
+                    stats: ClientStats {
+                        capture_fps: 30,
+                        ..
+                    },
+                    ..
+                }
+            )
+        ));
     }
 
     #[test]
