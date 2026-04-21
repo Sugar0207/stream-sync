@@ -43,9 +43,9 @@
 - auth / receive JSON Lines file sink 方針は整理済み。実 file open、rotation、retention、async logging、process-wide logger は未実装
 - send error JSON Lines 出力範囲は整理済み。failure-only の event schema / caller-owned writer / sink plan placeholder は追加済みだが、send loop からの実接続、file sink open、process-wide logger は未実装
 - receive loop の継続運用向けログ範囲は整理済み。`server.receive_loop` の event schema / caller-owned writer / sink plan placeholder は追加済みだが、continuous receive loop からの実接続、file sink open、process-wide logger は未実装
-- continuous receive loop 本体の実装範囲、1 tick 実接続範囲、operational / rejection writer への handoff 範囲は整理済み。loop lifecycle / tick / writer handoff placeholder は追加済みだが、実 loop、handler dispatch、packet drop 本体、ログ writer 呼び出し実接続は未実装
+- continuous receive loop 本体の実装範囲、1 tick 実接続範囲、operational / rejection writer への handoff 範囲、caller-owned writer 呼び出し範囲は整理済み。loop lifecycle / tick / writer handoff / writer runtime placeholder は追加済みだが、実 loop、handler dispatch、packet drop 本体、file sink open、process-wide logger は未実装
 - secret store / token rotation 方針は整理済み。SecretStore 参照と rotation policy placeholder は追加済みだが、provider 連携、rotation 実行、hot reload は未実装
-- 次の中心は file sink 実 file open 範囲の再確認、ServerNotice trigger の state transition 接続範囲の再確認、secret store provider / token rotation 実行範囲の再確認、continuous receive loop の writer 呼び出し実接続範囲整理
+- 次の中心は file sink 実 file open 範囲の再確認、ServerNotice trigger の state transition 接続範囲の再確認、secret store provider / token rotation 実行範囲の再確認、continuous receive loop 本体へ進む前の handler handoff 実接続範囲整理
 
 ---
 
@@ -78,7 +78,7 @@
 1. auth / receive JSON Lines file sink の実 file open 範囲を必要になった時点で再確認する
 2. `ServerNotice` trigger の state transition 接続範囲を必要になった時点で再確認する
 3. secret store provider 連携または token rotation 実行範囲を必要になった時点で再確認する
-4. continuous receive loop の writer 呼び出し実接続範囲を必要になった時点で整理する
+4. continuous receive loop 本体へ進む前の handler handoff 実接続範囲を必要になった時点で整理する
 
 ---
 
@@ -196,6 +196,7 @@
 - [x] `ServerContinuousReceiveLoopLifecycleBoundary` / continuous receive loop lifecycle placeholder を追加する
 - [x] `ServerContinuousReceiveLoopTickBoundary` / continuous receive loop tick placeholder を追加する
 - [x] `ServerContinuousReceiveLoopWriterHandoffBoundary` / operational・rejection writer handoff placeholder を追加する
+- [x] `ServerContinuousReceiveLoopWriterRuntimeBoundary` / caller-owned writer runtime handoff placeholder を追加する
 - [x] decode error / protocol error の分類方針を定義する
 - [x] `OutboundPacket` / `OutboundQueueItem` / `OutboundPacketQueueBoundary` placeholder を追加する
 - [x] `QueuedOutboundItem` / `OutboundQueueItemState` / `OutboundQueueLifecycleBoundary` placeholder を追加する
@@ -230,6 +231,7 @@
 - [x] continuous receive loop 本体の実装範囲を整理する
 - [x] continuous receive loop の 1 tick 実接続範囲を整理する
 - [x] continuous receive loop から operational / rejection writer への実接続範囲を整理する
+- [x] continuous receive loop の writer 呼び出し実接続範囲を整理する
 - [ ] packet 送信継続 loop を実装する
 - [x] packet 送信継続 loop の最小接続範囲を整理する
 - [x] packet 送信継続 loop 本体の実装範囲を整理する

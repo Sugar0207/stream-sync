@@ -999,6 +999,68 @@ impl ServerContinuousReceiveLoopWriterHandoffBoundary {
     }
 }
 
+/// Result of calling caller-owned writers for one receive-loop gate outcome.
+///
+/// This keeps the handoff plan next to the written event inputs so a future
+/// loop can inspect what was emitted without depending on a process-wide logger.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ServerContinuousReceiveLoopWriterRuntimeResult {
+    pub handoff: ServerContinuousReceiveLoopWriterHandoffPlan,
+    pub operational_event: Option<ServerReceiveLoopJsonLogEventInput>,
+    pub rejection_event: Option<ServerReceiveRejectionJsonLogEventInput>,
+}
+
+/// Runtime boundary that connects one receive-loop outcome to caller-owned
+/// operational / rejection JSON Lines writers.
+///
+/// This is still not a continuous loop and does not own sink selection, file
+/// opening, process-wide logging, handler dispatch, packet drop, or async I/O.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct ServerContinuousReceiveLoopWriterRuntimeBoundary {
+    handoff: ServerContinuousReceiveLoopWriterHandoffBoundary,
+    operational_output: ServerReceiveLoopLogOutputBoundary,
+    rejection_output: ServerReceiveRejectionLogOutputBoundary,
+}
+
+impl ServerContinuousReceiveLoopWriterRuntimeBoundary {
+    pub fn write_after_gate_outcome<OW: io::Write, RW: io::Write>(
+        &self,
+        packet_len: usize,
+        outcome: &ServerReceiveLoopGateOutcome,
+        timestamp: TimestampMicros,
+        mut operational_writer: OW,
+        mut rejection_writer: RW,
+    ) -> io::Result<ServerContinuousReceiveLoopWriterRuntimeResult> {
+        let handoff = self.handoff.plan_after_gate_outcome(packet_len, outcome);
+
+        let operational_event = if handoff.operational_log.is_some() {
+            Some(self.operational_output.write_receive_loop_event(
+                outcome,
+                packet_len,
+                timestamp,
+                &mut operational_writer,
+            )?)
+        } else {
+            None
+        };
+
+        let rejection_event = match handoff.rejection_log.clone() {
+            Some(rejection) => Some(self.rejection_output.write_rejection(
+                rejection,
+                timestamp,
+                &mut rejection_writer,
+            )?),
+            None => None,
+        };
+
+        Ok(ServerContinuousReceiveLoopWriterRuntimeResult {
+            handoff,
+            operational_event,
+            rejection_event,
+        })
+    }
+}
+
 pub const SERVER_RECEIVE_LOOP_JSON_LOG_EVENT_NAME: &str = "server.receive_loop";
 
 /// Operational receive loop outcome used by future continuous-loop logging.
@@ -4827,6 +4889,74 @@ shared_token = "secret"
                 rejection_reason: Some(ServerReceiveRejectionReason::EndpointMismatch),
             })
         );
+    }
+
+    #[test]
+    fn continuous_receive_loop_writer_runtime_writes_operational_log_for_accepted_outcome() {
+        let source = packet_source();
+        let boundary = ServerContinuousReceiveLoopWriterRuntimeBoundary::default();
+        let outcome = ServerReceiveLoopGateOutcome::Accepted(heartbeat_route("client-1", source));
+        let mut operational_output = Vec::new();
+        let mut rejection_output = Vec::new();
+
+        let result = boundary
+            .write_after_gate_outcome(
+                160,
+                &outcome,
+                TimestampMicros(901_234),
+                &mut operational_output,
+                &mut rejection_output,
+            )
+            .expect("writer runtime should succeed");
+
+        assert!(result.operational_event.is_some());
+        assert_eq!(result.rejection_event, None);
+        assert!(result.handoff.handler_handoff_required);
+        let operational_output =
+            String::from_utf8(operational_output).expect("json line should be utf8");
+        assert!(operational_output.contains(r#""event_name":"server.receive_loop""#));
+        assert!(operational_output.contains(r#""outcome":"Accepted""#));
+        assert!(operational_output.contains(r#""timestamp":901234"#));
+        assert!(rejection_output.is_empty());
+    }
+
+    #[test]
+    fn continuous_receive_loop_writer_runtime_writes_operational_and_rejection_logs() {
+        let source = packet_source();
+        let boundary = ServerContinuousReceiveLoopWriterRuntimeBoundary::default();
+        let outcome = ServerReceiveLoopGateOutcome::Rejected(
+            ServerReceiveLoopGateRejection::Acceptance(PacketAcceptanceRejection {
+                source,
+                message_type: MessageType::VideoFrame,
+                client_id: Some(ClientId("client-1".to_string())),
+                reason: PacketAcceptanceRejectReason::EndpointMismatch,
+            }),
+        );
+        let mut operational_output = Vec::new();
+        let mut rejection_output = Vec::new();
+
+        let result = boundary
+            .write_after_gate_outcome(
+                256,
+                &outcome,
+                TimestampMicros(912_345),
+                &mut operational_output,
+                &mut rejection_output,
+            )
+            .expect("writer runtime should succeed");
+
+        assert!(result.operational_event.is_some());
+        assert!(result.rejection_event.is_some());
+        assert!(!result.handoff.handler_handoff_required);
+        let operational_output =
+            String::from_utf8(operational_output).expect("json line should be utf8");
+        let rejection_output =
+            String::from_utf8(rejection_output).expect("json line should be utf8");
+        assert!(operational_output.contains(r#""event_name":"server.receive_loop""#));
+        assert!(operational_output.contains(r#""outcome":"AcceptanceRejected""#));
+        assert!(rejection_output.contains(r#""event_name":"server.receive_rejection""#));
+        assert!(rejection_output.contains(r#""rejection_reason":"EndpointMismatch""#));
+        assert!(rejection_output.contains(r#""timestamp":912345"#));
     }
 
     #[test]

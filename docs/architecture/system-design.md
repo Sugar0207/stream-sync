@@ -421,6 +421,30 @@ Current code reflects this with
 `ServerContinuousReceiveLoopWriterHandoffPlan` and
 `ServerContinuousReceiveLoopWriterHandoffBoundary`.
 
+Continuous receive loop writer call scope:
+
+1. A future receive tick supplies `ServerReceiveLoopGateOutcome`, packet length,
+   timestamp, and caller-owned operational / rejection writers.
+2. `ServerContinuousReceiveLoopWriterRuntimeBoundary` builds the same writer
+   handoff plan described above.
+3. If operational logging is required, it calls
+   `ServerReceiveLoopLogOutputBoundary` to write one `server.receive_loop`
+   record to the caller-owned operational writer.
+4. If rejection logging is required, it calls
+   `ServerReceiveRejectionLogOutputBoundary` to write one
+   `server.receive_rejection` record to the caller-owned rejection writer.
+5. It returns the handoff plan and the emitted event inputs for the caller.
+
+This is the maximum current writer connection scope. It does not own the
+receive loop, socket receive, receive buffer lifetime, sink selection, file
+opening, directory creation, process-wide logger setup, async logging, handler
+dispatch, or packet drop. File and stderr choices remain sink-plan/runtime
+wiring concerns outside this boundary.
+
+Current code reflects this with
+`ServerContinuousReceiveLoopWriterRuntimeResult` and
+`ServerContinuousReceiveLoopWriterRuntimeBoundary`.
+
 ### 5.7 AuthResponse PoC one-shot startup step
 
 AuthResponse PoC startup uses the existing boundaries as a one-packet

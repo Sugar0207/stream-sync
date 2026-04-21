@@ -378,6 +378,15 @@ Writer handoff from a receive tick is represented by
 It does not write JSON Lines, choose a sink, open files, dispatch handlers, or
 drop packets.
 
+The actual writer-call connection remains caller-owned:
+`ServerContinuousReceiveLoopWriterRuntimeBoundary` accepts the outcome, packet
+length, timestamp, and caller-provided writers. It may call
+`ServerReceiveLoopLogOutputBoundary` for `server.receive_loop` and
+`ServerReceiveRejectionLogOutputBoundary` for `server.receive_rejection`, then
+returns the emitted event inputs. It does not choose stderr vs file, open files,
+install process-wide logging, run a receive loop, dispatch handlers, or drop
+packets.
+
 ## 1. 目的
 
 このドキュメントは、StreamSync の MVP 段階における通信プロトコルの初期設計を定義するものです。
