@@ -1943,6 +1943,138 @@ impl ServerContinuousReceiveLoopBodyDispatchRuntimeBoundary {
     }
 }
 
+/// Result of applying the minimal side effects from dispatch runtime output.
+///
+/// Only auth registry registration is applied here. Outbound queue items,
+/// auth log input, heartbeat ack handoff, video input, and stats input stay as
+/// typed handoffs for future loop-owned side effects.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ServerDispatchRuntimeSideEffectApplyResult {
+    Auth {
+        flow: ServerAuthFlowOutcome,
+        registered_sender: Option<AuthenticatedSenderEntry>,
+    },
+    HeartbeatAck(ServerHeartbeatAckHandoff),
+    VideoFrame(ServerVideoFrameHandlerInput),
+    ClientStats(ServerClientStatsHandlerInput),
+    NoDispatch(ServerHandlerDispatchOutcome),
+    UnappliedRegistered(ServerRegisteredPacketDispatchRuntimeOutcome),
+    UnappliedVideoStats(ServerVideoStatsHandlerRuntimeOutcome),
+}
+
+/// Outcome of applying minimal dispatch runtime side effects.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ServerDispatchRuntimeSideEffectApplyOutcome {
+    pub result: ServerDispatchRuntimeSideEffectApplyResult,
+}
+
+/// Minimal side-effect application boundary for dispatch runtime output.
+///
+/// This boundary applies only accepted auth registry registration. It does not
+/// write auth logs, store outbound queue items, commit heartbeat/video/stats
+/// state, encode packets, send UDP, open file sinks, or run packet drop policy.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct ServerDispatchRuntimeSideEffectApplyBoundary {
+    registry: AuthenticatedSenderRegistryBoundary,
+}
+
+impl ServerDispatchRuntimeSideEffectApplyBoundary {
+    pub fn apply_body_dispatch_outcome(
+        &self,
+        registry: &mut AuthenticatedSenderRegistry,
+        outcome: ServerContinuousReceiveLoopBodyDispatchRuntimeOutcome,
+    ) -> ServerDispatchRuntimeSideEffectApplyOutcome {
+        let result = match outcome.result {
+            ServerContinuousReceiveLoopBodyDispatchRuntimeResult::Auth(auth) => {
+                self.apply_auth(registry, auth)
+            }
+            ServerContinuousReceiveLoopBodyDispatchRuntimeResult::Registered(registered) => {
+                self.apply_registered(registered)
+            }
+            ServerContinuousReceiveLoopBodyDispatchRuntimeResult::VideoStats(video_stats) => {
+                self.apply_video_stats(video_stats)
+            }
+            ServerContinuousReceiveLoopBodyDispatchRuntimeResult::NoDispatch(handler) => {
+                ServerDispatchRuntimeSideEffectApplyResult::NoDispatch(handler)
+            }
+        };
+
+        ServerDispatchRuntimeSideEffectApplyOutcome { result }
+    }
+
+    fn apply_auth(
+        &self,
+        registry: &mut AuthenticatedSenderRegistry,
+        outcome: ServerAuthDispatchRuntimeOutcome,
+    ) -> ServerDispatchRuntimeSideEffectApplyResult {
+        match outcome.result {
+            ServerAuthDispatchRuntimeResult::Dispatched(flow) => {
+                let registered_sender = flow
+                    .registry_registration
+                    .clone()
+                    .map(|registration| self.registry.register(registry, registration));
+                ServerDispatchRuntimeSideEffectApplyResult::Auth {
+                    flow,
+                    registered_sender,
+                }
+            }
+            ServerAuthDispatchRuntimeResult::NotAuth(result) => {
+                ServerDispatchRuntimeSideEffectApplyResult::NoDispatch(
+                    ServerHandlerDispatchOutcome {
+                        packet_len: outcome.packet_len,
+                        result,
+                    },
+                )
+            }
+        }
+    }
+
+    fn apply_registered(
+        &self,
+        outcome: ServerRegisteredPacketDispatchRuntimeOutcome,
+    ) -> ServerDispatchRuntimeSideEffectApplyResult {
+        match outcome.result {
+            ServerRegisteredPacketDispatchRuntimeResult::HeartbeatAck(handoff) => {
+                ServerDispatchRuntimeSideEffectApplyResult::HeartbeatAck(handoff)
+            }
+            ServerRegisteredPacketDispatchRuntimeResult::NotRegistered(result) => {
+                ServerDispatchRuntimeSideEffectApplyResult::NoDispatch(
+                    ServerHandlerDispatchOutcome {
+                        packet_len: outcome.packet_len,
+                        result,
+                    },
+                )
+            }
+            result => ServerDispatchRuntimeSideEffectApplyResult::UnappliedRegistered(
+                ServerRegisteredPacketDispatchRuntimeOutcome {
+                    packet_len: outcome.packet_len,
+                    result,
+                },
+            ),
+        }
+    }
+
+    fn apply_video_stats(
+        &self,
+        outcome: ServerVideoStatsHandlerRuntimeOutcome,
+    ) -> ServerDispatchRuntimeSideEffectApplyResult {
+        match outcome.result {
+            ServerVideoStatsHandlerRuntimeResult::VideoFrame(input) => {
+                ServerDispatchRuntimeSideEffectApplyResult::VideoFrame(input)
+            }
+            ServerVideoStatsHandlerRuntimeResult::ClientStats(input) => {
+                ServerDispatchRuntimeSideEffectApplyResult::ClientStats(input)
+            }
+            result => ServerDispatchRuntimeSideEffectApplyResult::UnappliedVideoStats(
+                ServerVideoStatsHandlerRuntimeOutcome {
+                    packet_len: outcome.packet_len,
+                    result,
+                },
+            ),
+        }
+    }
+}
+
 pub const SERVER_RECEIVE_LOOP_JSON_LOG_EVENT_NAME: &str = "server.receive_loop";
 
 /// Operational receive loop outcome used by future continuous-loop logging.
@@ -6552,6 +6684,118 @@ shared_token = "secret"
         };
         assert_eq!(input.payload_len, 3);
         assert_eq!(input.registered_packet.frame.frame_id, 42);
+    }
+
+    #[test]
+    fn dispatch_side_effect_apply_registers_auth_sender_only() {
+        let source = packet_source();
+        let body_result = body_result_with_handler_handoff(
+            88,
+            ServerContinuousReceiveLoopHandlerHandoffRuntimePlan::Auth(ServerAuthCheck {
+                source,
+                request: auth_request("client-1", "presented-secret"),
+            }),
+        );
+        let dispatch = ServerContinuousReceiveLoopBodyDispatchRuntimeBoundary::default()
+            .dispatch_body_result(
+                &body_result,
+                &auth_config(Some("presented-secret")),
+                body_dispatch_timing(),
+            );
+        let mut registry = AuthenticatedSenderRegistry::default();
+        let apply = ServerDispatchRuntimeSideEffectApplyBoundary::default();
+
+        let outcome = apply.apply_body_dispatch_outcome(&mut registry, dispatch);
+
+        let ServerDispatchRuntimeSideEffectApplyResult::Auth {
+            flow,
+            registered_sender,
+        } = outcome.result
+        else {
+            panic!("expected auth side effect result");
+        };
+        assert!(flow.decision.accepted);
+        let ProtocolMessage::AuthResponse(response) = flow.queue_item.packet.message else {
+            panic!("expected queued AuthResponse");
+        };
+        assert!(response.accepted);
+        let registered_sender = registered_sender.expect("sender should register");
+        assert_eq!(
+            registered_sender.client_id,
+            ClientId("client-1".to_string())
+        );
+        assert_eq!(registry.entries().count(), 1);
+        assert_eq!(
+            registry
+                .get(&ClientId("client-1".to_string()))
+                .expect("registry should contain client")
+                .source,
+            source
+        );
+    }
+
+    #[test]
+    fn dispatch_side_effect_apply_preserves_heartbeat_outbound_handoff() {
+        let source = packet_source();
+        let mut registry = registry_with_client("client-1", source);
+        let registered = ServerRegisteredPacketBoundary::default()
+            .prepare_for_handler(&registry, heartbeat_route("client-1", source))
+            .expect("heartbeat should be accepted");
+        let body_result = body_result_with_handler_handoff(
+            72,
+            ServerContinuousReceiveLoopHandlerHandoffRuntimePlan::RegisteredClient(registered),
+        );
+        let dispatch = ServerContinuousReceiveLoopBodyDispatchRuntimeBoundary::default()
+            .dispatch_body_result(
+                &body_result,
+                &auth_config(Some("presented-secret")),
+                body_dispatch_timing(),
+            );
+        let apply = ServerDispatchRuntimeSideEffectApplyBoundary::default();
+
+        let outcome = apply.apply_body_dispatch_outcome(&mut registry, dispatch);
+
+        let ServerDispatchRuntimeSideEffectApplyResult::HeartbeatAck(handoff) = outcome.result
+        else {
+            panic!("expected heartbeat ack side effect handoff");
+        };
+        assert_eq!(registry.entries().count(), 1);
+        let ProtocolMessage::HeartbeatAck(ack) = handoff.queue_item.packet.message else {
+            panic!("expected queued HeartbeatAck");
+        };
+        assert_eq!(ack.client_id, ClientId("client-1".to_string()));
+        assert_eq!(ack.server_sent_at, TimestampMicros(2_000_200));
+    }
+
+    #[test]
+    fn dispatch_side_effect_apply_preserves_stats_prepare_result_without_commit() {
+        let source = packet_source();
+        let mut registry = registry_with_client("client-1", source);
+        let registered = ServerRegisteredPacketBoundary::default()
+            .prepare_for_handler(&registry, client_stats_route("client-1", source))
+            .expect("client stats should be accepted");
+        let body_result = body_result_with_handler_handoff(
+            96,
+            ServerContinuousReceiveLoopHandlerHandoffRuntimePlan::RegisteredClient(registered),
+        );
+        let dispatch = ServerContinuousReceiveLoopBodyDispatchRuntimeBoundary::default()
+            .dispatch_body_result(
+                &body_result,
+                &auth_config(Some("presented-secret")),
+                body_dispatch_timing(),
+            );
+        let apply = ServerDispatchRuntimeSideEffectApplyBoundary::default();
+
+        let outcome = apply.apply_body_dispatch_outcome(&mut registry, dispatch);
+
+        let ServerDispatchRuntimeSideEffectApplyResult::ClientStats(input) = outcome.result else {
+            panic!("expected stats prepare side effect handoff");
+        };
+        assert_eq!(registry.entries().count(), 1);
+        assert_eq!(input.state.client_id, ClientId("client-1".to_string()));
+        assert_eq!(input.state.capture_fps, 30);
+        assert_eq!(input.state.dropped_frames, 2);
+        assert_eq!(input.heartbeat_observation, None);
     }
 
     #[test]

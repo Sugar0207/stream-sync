@@ -879,6 +879,51 @@ Current code reflects this with
 `ServerContinuousReceiveLoopBodyDispatchRuntimeOutcome`, and
 `ServerContinuousReceiveLoopBodyDispatchRuntimeBoundary`.
 
+Dispatch runtime side-effect apply scope:
+
+1. The side-effect apply boundary receives
+   `ServerContinuousReceiveLoopBodyDispatchRuntimeOutcome`.
+2. For auth dispatch results, it applies only
+   `AuthenticatedSenderRegistration` to the in-memory
+   `AuthenticatedSenderRegistry` through `AuthenticatedSenderRegistryBoundary`.
+3. Auth log input and the `AuthResponse` `OutboundQueueItem` remain part of the
+   returned `ServerAuthFlowOutcome`; this boundary does not write logs or store
+   queue items.
+4. For heartbeat results, it preserves `ServerHeartbeatAckHandoff`, including
+   its `OutboundQueueItem`, but does not commit heartbeat state, store queue
+   items, encode packets, or send UDP.
+5. For video results, it preserves `ServerVideoFrameHandlerInput` only. Frame
+   buffering, sync-core handoff, decoder handoff, and drop policy remain future
+   work.
+6. For stats results, it preserves `ServerClientStatsHandlerInput` only.
+   Metrics commit, heartbeat observation commit, and durable RTT / offset state
+   commit remain future work.
+7. No-dispatch, unsupported, and error lanes are preserved without packet drop
+   policy or error policy execution.
+
+Responsibility split for side-effect apply:
+
+- auth flow result
+  - Owns the decision, auth log handoff input, optional registry registration,
+    outbound response, and outbound queue item.
+  - Does not mutate process state by itself.
+- registry registration
+  - The only side effect currently applied by this boundary.
+  - Applies accepted auth sender binding to the caller-owned in-memory registry.
+- outbound enqueue
+  - Remains a typed handoff only. Queue storage, admission side effects,
+    send-loop scheduling, encoding, retry, and UDP send stay outside this layer.
+- stats prepare result
+  - Remains a typed input for future stats state work.
+  - No metrics or heartbeat observation state is committed here.
+- future state commit
+  - Will own heartbeat state, RTT / offset state, video buffer state, stats
+    state, and packet drop policy.
+
+Current code reflects this with `ServerDispatchRuntimeSideEffectApplyResult`,
+`ServerDispatchRuntimeSideEffectApplyOutcome`, and
+`ServerDispatchRuntimeSideEffectApplyBoundary`.
+
 ### 5.7 AuthResponse PoC one-shot startup step
 
 AuthResponse PoC startup uses the existing boundaries as a one-packet

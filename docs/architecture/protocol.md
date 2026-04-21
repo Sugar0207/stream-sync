@@ -592,6 +592,29 @@ Current code reflects this with
 `ServerContinuousReceiveLoopBodyDispatchRuntimeOutcome`, and
 `ServerContinuousReceiveLoopBodyDispatchRuntimeBoundary`.
 
+The minimal side-effect apply boundary consumes dispatch runtime output and
+keeps side effects deliberately narrow:
+
+- Auth results apply only accepted sender registration to the caller-owned
+  in-memory `AuthenticatedSenderRegistry`.
+- Auth log input and `AuthResponse` `OutboundQueueItem` remain in
+  `ServerAuthFlowOutcome`; the boundary does not write logs, store queue items,
+  encode packets, or send UDP.
+- Heartbeat results preserve `ServerHeartbeatAckHandoff`, including its typed
+  outbound queue item. Heartbeat state commit and outbound queue storage remain
+  future work.
+- Video results preserve `ServerVideoFrameHandlerInput`; frame buffering,
+  sync-core handoff, decoder handoff, and drop policy remain future work.
+- Stats results preserve `ServerClientStatsHandlerInput`; metrics state commit,
+  heartbeat observation commit, and durable RTT / offset state update remain
+  future work.
+- No-dispatch, unsupported, and error lanes are preserved without packet drop
+  or error policy execution.
+
+Current code reflects this with `ServerDispatchRuntimeSideEffectApplyResult`,
+`ServerDispatchRuntimeSideEffectApplyOutcome`, and
+`ServerDispatchRuntimeSideEffectApplyBoundary`.
+
 ## 1. 目的
 
 このドキュメントは、StreamSync の MVP 段階における通信プロトコルの初期設計を定義するものです。

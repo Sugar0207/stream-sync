@@ -5,6 +5,57 @@
 - Codex
 
 ### 今回の作業
+- dispatch runtime 結果の side effect 適用範囲を docs に明記した。
+- `apps/server` に dispatch side effect apply placeholder を追加した。
+- auth flow result / registry registration / outbound enqueue / stats prepare result / future state commit の責務分離を整理した。
+
+### 変更ファイル
+- `apps/server/src/lib.rs`
+- `docs/architecture/system-design.md`
+- `docs/architecture/protocol.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### 決定事項
+- side effect apply boundary は `ServerDispatchRuntimeSideEffectApplyBoundary` として、dispatch runtime output を受け取る。
+- 現時点で実適用する side effect は accepted auth の `AuthenticatedSenderRegistration` を caller-owned `AuthenticatedSenderRegistry` へ反映することだけに限定する。
+- auth log input と `AuthResponse` `OutboundQueueItem` は `ServerAuthFlowOutcome` 内の handoff として保持し、log 書き込みや queue storage は行わない。
+- heartbeat は `ServerHeartbeatAckHandoff` を保持するだけで、heartbeat state commit、queue storage、encode、UDP send は行わない。
+- video は `ServerVideoFrameHandlerInput`、stats は `ServerClientStatsHandlerInput` を保持するだけで、video buffer / sync handoff、metrics commit、heartbeat observation commit、RTT / offset state commit は行わない。
+- unsupported / error / no-dispatch lane は packet drop policy や error policy を実行せず保持する。
+
+### 未実装 / 保留
+- outbound queue storage / send loop への実接続
+- auth log writer への continuous loop 内実接続
+- heartbeat state commit / RTT offset state commit
+- video buffer / sync-core handoff 本体
+- stats metrics state commit / heartbeat observation commit
+- packet drop 本体
+- file sink open / process-wide logger
+- 完成した continuous receive loop / while loop
+
+### 次にやる候補
+- outbound queue storage / log writer 実接続範囲を必要時に整理する
+- auth / receive JSON Lines file sink の実 file open 範囲を再確認する
+- ServerNotice trigger の state transition 接続範囲を再確認する
+- video buffer / sync-core handoff の最小境界を必要時に整理する
+
+### TODO 更新
+- 現在位置に dispatch runtime 結果の side effect 適用範囲整理完了を反映した。
+- net-core / server 境界に `ServerDispatchRuntimeSideEffectApplyBoundary` / dispatch side effect apply placeholder 追加完了を反映した。
+- 直近でやることを outbound queue storage / log writer 実接続範囲整理へ更新した。
+
+### 検証
+- `cargo fmt --check`
+- `cargo test -p stream-sync-server dispatch_side_effect_apply`
+- `cargo check --workspace`
+
+---
+
+### 種別
+- Codex
+
+### 今回の作業
 - continuous receive loop body から auth / registered / video stats dispatch runtime を呼ぶ最小実接続範囲を docs に明記した。
 - `apps/server` に body dispatch runtime placeholder を追加した。
 - receive loop body / auth dispatch / registered packet dispatch / video stats handler runtime / future loop 本体の責務分離を整理した。
