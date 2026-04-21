@@ -41,8 +41,9 @@
 - outbound queue の実処理範囲、backpressure / capacity 方針、送信継続 loop 前の bounded storage / encoder handoff 範囲、packet 送信継続 loop の最小接続範囲と loop 本体の実装範囲は整理済み。実キュー collection、送信継続 loop 本実装、retry 実行 / requeue は未実装
 - `ServerNotice` payload layout、decode / encode 最小実装、notice trigger policy の実装範囲整理は完了。state transition 検知、重複抑制、rate limit、送信継続 loop、socket send 接続は未実装
 - auth / receive JSON Lines file sink 方針は整理済み。実 file open、rotation、retention、async logging、process-wide logger は未実装
+- send error JSON Lines 出力範囲は整理済み。failure-only の event schema / caller-owned writer / sink plan placeholder は追加済みだが、send loop からの実接続、file sink open、process-wide logger は未実装
 - secret store / token rotation 方針は整理済み。SecretStore 参照と rotation policy placeholder は追加済みだが、provider 連携、rotation 実行、hot reload は未実装
-- 次の中心は file sink 実 file open 範囲の再確認、ServerNotice trigger の state transition 接続範囲の再確認、secret store provider / token rotation 実行範囲の再確認、send error JSON Lines 出力範囲の整理
+- 次の中心は file sink 実 file open 範囲の再確認、ServerNotice trigger の state transition 接続範囲の再確認、secret store provider / token rotation 実行範囲の再確認、receive loop の継続運用向けログ範囲の整理
 
 ---
 
@@ -75,7 +76,7 @@
 1. auth / receive JSON Lines file sink の実 file open 範囲を必要になった時点で再確認する
 2. `ServerNotice` trigger の state transition 接続範囲を必要になった時点で再確認する
 3. secret store provider 連携または token rotation 実行範囲を必要になった時点で再確認する
-4. send error JSON Lines 出力範囲を必要になった時点で整理する
+4. receive loop の継続運用向けログ範囲を必要になった時点で整理する
 
 ---
 
@@ -198,6 +199,7 @@
 - [x] `OutboundSendLogContext` / `SendLogEvent` / send failure classification placeholder を追加する
 - [x] `OutboundSendLoopTickBoundary` / send loop tick state placeholder を追加する
 - [x] `OutboundSendLoopLifecycleBoundary` / send loop lifecycle placeholder を追加する
+- [x] `ServerSendErrorLogOutputBoundary` / send error JSON Lines writer placeholder を追加する
 - [x] server 側 `ServerOutboundQueueBoundary` placeholder を追加する
 - [x] server 側 `ServerHeartbeatAckBoundary` / `ServerOutboundHeartbeatAck` placeholder を追加する
 - [x] server 側 `ServerNoticeBoundary` / `ServerOutboundNotice` placeholder を追加する
@@ -228,6 +230,7 @@
 - [x] outbound queue の backpressure / capacity 方針を決める
 - [x] outbound queue の実キュー実装範囲を送信継続 loop 前提で再確認する
 - [x] send error の分類とログ方針を整理する
+- [x] send error JSON Lines 出力範囲を整理する
 - [ ] send error ログ出力を実装する
 - [ ] async runtime 導入方針を決める
 
@@ -382,6 +385,7 @@
 - [x] auth result JSON Lines writer boundary を追加する
 - [x] auth / receive JSON Lines writer 接続範囲を整理する
 - [x] auth / receive JSON Lines の file sink 設定方針を整理する
+- [x] send error JSON Lines 出力範囲を整理する
 - [ ] ログイベント型を定義する
 - [ ] JSON Lines 形式でログ出力する
 - [ ] `run_id` / `client_id` を各ログに付与する

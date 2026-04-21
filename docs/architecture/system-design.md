@@ -1028,7 +1028,7 @@ boundary at its auth decision point without changing the event schema.
 
 ## Server JSON Lines Writer Connection Scope
 
-Auth result and receive rejection logs now share the same connection shape:
+Auth result, receive rejection, and send error logs share the same connection shape:
 typed handoff input -> event schema boundary -> schema-specific JSON Lines
 writer -> caller-owned `io::Write` sink.
 
@@ -1048,19 +1048,26 @@ Current connection scope:
   - Writer boundary: `ServerReceiveRejectionLogOutputBoundary`
   - Writer: `ServerReceiveRejectionJsonLineWriter`
   - Current sink: one-shot server CLI writes rejected receive events to stderr.
+- send error
+  - Handoff: `ServerSendErrorLogInput`
+  - Event schema: `ServerSendErrorJsonLogEventInput`
+  - Writer boundary: `ServerSendErrorLogOutputBoundary`
+  - Writer: `ServerSendErrorJsonLineWriter`
+  - Current sink: caller-owned `io::Write` only until a send loop exists.
 - sink planning
   - Shared config shape: `logging::JsonLinesSinkConfig`
   - Shared plan boundary: `logging::JsonLinesSinkPlanBoundary`
   - Server auth/receive plan boundary:
     `ServerAuthReceiveJsonLinesSinkBoundary`
+  - Server send-error plan boundary: `ServerSendErrorJsonLinesSinkBoundary`
 
 File sink policy:
 
-- stderr remains the PoC default sink for auth result and receive rejection
-  events.
+- stderr remains the PoC default sink for auth result, receive rejection, and
+  planned send error events.
 - file sink configuration is represented as a plan only; it does not open the
   file yet.
-- auth result and receive rejection may use separate file paths.
+- auth result, receive rejection, and send error may use separate file paths.
 - file sinks use append-create semantics when implemented later.
 - each event remains one JSON object plus newline.
 - rotation, retention, compression, directory creation, and async logging are
@@ -1077,9 +1084,10 @@ Out of scope for this stage:
 - async logging
 - metrics fanout
 - replacing schema-specific event writers with a generic logging writer
-- moving auth result output into a continuous loop sink before that loop exists
+- moving auth result or send error output into a continuous loop sink before
+  that loop exists
 
-This keeps both log families aligned without forcing a broad logging
+This keeps the current log families aligned without forcing a broad logging
 infrastructure before the PoC receive/auth path is stable.
 
 Current code reflects the sink planning boundary with
@@ -1088,8 +1096,12 @@ Current code reflects the sink planning boundary with
 `JsonLinesSinkPlanBoundary`, plus
 `apps/server::ServerAuthReceiveJsonLinesSinkConfig`,
 `ServerAuthReceiveJsonLinesSinkPlan`, and
-`ServerAuthReceiveJsonLinesSinkBoundary`. The current one-shot server CLI still
-writes to stderr; no file is opened by this boundary.
+`ServerAuthReceiveJsonLinesSinkBoundary`,
+`ServerSendErrorJsonLinesSinkConfig`, `ServerSendErrorJsonLinesSinkPlan`, and
+`ServerSendErrorJsonLinesSinkBoundary`. The current one-shot server CLI still
+writes auth/receive events to stderr. Send error output is available only as a
+caller-owned writer boundary until a send loop exists; no file is opened by
+these boundaries.
 
 ---
 
@@ -2208,10 +2220,11 @@ loop, socket send, and log output remain future work.
 
 ## Send Error / Log Event Boundary
 
-PoC / MVP initial implementation keeps send error handling as classification
-and structured log context only. Minimal UDP `send_to` exists for already
-encoded packets, but this boundary does not implement retry, queue mutation,
-JSON Lines output, or async runtime behavior.
+PoC / MVP initial implementation keeps send error handling split into
+classification, server-side JSON Lines event shaping, and a caller-owned writer
+boundary. Minimal UDP `send_to` exists for already encoded packets, but this
+boundary does not implement retry, queue mutation, file sink opening, process
+wide logging, or async runtime behavior.
 
 Send path checkpoints:
 
@@ -2228,8 +2241,14 @@ Send path checkpoints:
    encoded byte length before handing bytes to the future socket send layer.
 6. Before socket send, the net send layer can reject local send-preparation
    problems such as missing destination metadata or packet size policy.
-7. The future socket send layer will report socket-level errors after a real
+7. The future socket send layer reports socket-level errors after a real
    `send_to` attempt.
+8. `ServerSendErrorLogHandoffBoundary` accepts failure `SendLogEvent` values
+   and ignores non-error send observations.
+9. `ServerSendErrorJsonLogEventBoundary` maps the handoff into
+   `ServerSendErrorJsonLogEventInput`.
+10. `ServerSendErrorLogOutputBoundary` writes one `server.send_error` JSON
+    Lines record to a caller-owned `io::Write` sink.
 
 Error classification:
 
@@ -2269,6 +2288,19 @@ Log event field policy:
   - Include on failures so logs can distinguish encode, pre-socket, and socket
     send problems.
 
+Send error JSON Lines output scope:
+
+- Event name is `server.send_error`.
+- Only failure events are in scope. Encode success events may still be observed
+  by `net-core::SendLogEvent`, but the server send-error handoff ignores them.
+- Output uses schema-specific writer code in `apps/server`, matching auth and
+  receive rejection logging.
+- The writer accepts a caller-owned `io::Write` and emits exactly one JSON
+  object plus newline.
+- Sink config uses the shared `crates/logging::JsonLinesSinkPlanBoundary`, but
+  opening files, creating directories, rotation, retention, buffering beyond
+  caller-owned writes, and process-wide logger setup remain future work.
+
 Responsibility split:
 
 - `server`
@@ -2284,12 +2316,21 @@ Responsibility split:
     encode and future socket-send results.
   - Owns the one-tick placeholder that connects a dequeued item to encoder
     input and send log event candidates.
-  - Does not execute retry, requeue, continuous loops, or socket I/O in this
-    step.
+  - Does not write JSON Lines, choose sinks, execute retry, requeue,
+    continuous loops, or socket I/O in this step.
 - `socket send`
   - Future owner of calling UDP `send_to` and mapping OS/socket errors into
     the send failure categories.
   - Does not inspect typed protocol messages.
+- `server send error JSON Lines boundary`
+  - Filters failure `SendLogEvent` values into `ServerSendErrorLogInput`.
+  - Builds `ServerSendErrorJsonLogEventInput` and writes one JSON Lines record
+    to a caller-owned writer.
+  - Does not own queue mutation, retry policy, file opening, rotation, async
+    logging, or process-wide logging.
+- `logging` sink plan
+  - Normalizes stderr/file destination plans for future runtime wiring.
+  - Does not open files or write records.
 
 Current code reflects this with `net-core::OutboundSendLogContext`,
 `net-core::SendLogStage`, `net-core::SendFailureKind`,
@@ -2297,4 +2338,10 @@ Current code reflects this with `net-core::OutboundSendLogContext`,
 `net-core::OutboundSendLoopTickState`, `net-core::OutboundSendLoopTickPlan`,
 `net-core::OutboundSendLoopEvent`, and
 `net-core::OutboundSendLoopTickBoundary`. These are classification and one-tick
-connection placeholder types only.
+connection placeholder types only. Server-side JSON Lines output scope is
+represented by `apps/server::ServerSendErrorLogHandoffBoundary`,
+`ServerSendErrorLogInput`, `ServerSendErrorJsonLogEventBoundary`,
+`ServerSendErrorJsonLogEventInput`, `ServerSendErrorLogOutputBoundary`,
+`ServerSendErrorJsonLineWriter`, `ServerSendErrorJsonLinesSinkConfig`,
+`ServerSendErrorJsonLinesSinkPlan`, and
+`ServerSendErrorJsonLinesSinkBoundary`.

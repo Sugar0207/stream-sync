@@ -1492,14 +1492,16 @@ Example shape:
 
 ### JSON Lines Writer Connection Scope
 
-Auth result and receive rejection logs use parallel connection boundaries:
+Auth result, receive rejection, and send error logs use parallel connection
+boundaries:
 
 | Log family | Handoff input | Event schema input | Writer boundary | Current default sink |
 | --- | --- | --- | --- | --- |
 | Auth result | `ServerAuthLogInput` | `ServerAuthJsonLogEventInput` | `ServerAuthLogOutputBoundary` | one-shot server stderr |
 | Receive rejection | `ServerPacketLogInput` | `ServerReceiveRejectionJsonLogEventInput` | `ServerReceiveRejectionLogOutputBoundary` | one-shot server stderr |
+| Send error | `ServerSendErrorLogInput` | `ServerSendErrorJsonLogEventInput` | `ServerSendErrorLogOutputBoundary` | caller-owned writer only |
 
-Both writers are schema-specific and synchronous over caller-owned
+These writers are schema-specific and synchronous over caller-owned
 `io::Write`. They do not define process-wide logger setup, file paths, rotation,
 retention, async logging, metrics fanout, or a generic logging crate API.
 The future receive loop should call the auth writer at the same logical point:
@@ -2289,9 +2291,13 @@ budgets, retry timers, queue mutation, or JSON Lines log writing.
 Send error / log event policy is owned by `net-core` after protocol encode.
 `protocol` returns encode errors, while `net-core` keeps destination metadata
 and extracts `run_id`, optional `client_id`, destination, and `message_type` for
-future JSON Lines send logs. Retry execution and queue mutation remain outside
-this protocol boundary; encoded datagram socket send is handled by the UDP
-socket adapter.
+send log events. Server-side JSON Lines output is failure-only at this stage:
+`apps/server` filters failure `SendLogEvent` values into
+`ServerSendErrorLogInput`, builds `ServerSendErrorJsonLogEventInput`, and can
+write one `server.send_error` JSON Lines record to a caller-owned `io::Write`.
+Retry execution, requeue, continuous loop wiring, file sink opening, rotation,
+and process-wide logging remain outside this protocol boundary; encoded
+datagram socket send is handled by the UDP socket adapter.
 
 ---
 
@@ -2364,6 +2370,10 @@ Current code:
 - `crates/net-core::OutboundSendLogContext` and `SendLogEvent` define the
   future send log context shape for encode success / failure and socket send
   failures.
+- `apps/server::ServerSendErrorLogHandoffBoundary`,
+  `ServerSendErrorJsonLogEventBoundary`, and
+  `ServerSendErrorLogOutputBoundary` define the failure-only JSON Lines handoff
+  and caller-owned writer connection for send errors.
 - `crates/net-core::OutboundSendLoopTickBoundary` defines the one-tick
   connection from queue handoff to encoder request and send log event
   candidates.

@@ -14,8 +14,9 @@ use stream_sync_net_core::{
     NetDecodeError, NetEncodeError, OutboundPacket, OutboundPacketEncoderBoundary,
     OutboundPacketQueueBoundary, OutboundQueueAdmissionDecision,
     OutboundQueueAdmissionPolicyBoundary, OutboundQueueCapacityPolicy, OutboundQueueItem,
-    OutboundQueueStorageBoundary, OutboundQueueStorageDecision, PacketSource, UdpSocketIoBoundary,
-    DEFAULT_UDP_PACKET_BUFFER_LEN,
+    OutboundQueueStorageBoundary, OutboundQueueStorageDecision, OutboundSendLogContext,
+    PacketDestination, PacketSource, SendFailureDisposition, SendFailureKind, SendLogEvent,
+    SendLogStage, UdpSocketIoBoundary, DEFAULT_UDP_PACKET_BUFFER_LEN,
 };
 use stream_sync_protocol::{
     AppVersion, AuthRequest, AuthResponse, AuthResponseReasonCode, ClientId, ClientStats,
@@ -91,6 +92,52 @@ impl ServerAuthReceiveJsonLinesSinkBoundary {
         ServerAuthReceiveJsonLinesSinkPlan {
             auth_result: self.sink_plan.plan(config.auth_result),
             receive_rejection: self.sink_plan.plan(config.receive_rejection),
+        }
+    }
+}
+
+/// Server-side JSON Lines sink config for send error events.
+///
+/// This is a config/planning boundary only. It does not open files, write
+/// records, rotate logs, or install a global logger.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct ServerSendErrorJsonLinesSinkConfig {
+    pub send_error: JsonLinesSinkConfig,
+}
+
+impl ServerSendErrorJsonLinesSinkConfig {
+    pub fn stderr_default() -> Self {
+        Self {
+            send_error: JsonLinesSinkConfig::stderr(),
+        }
+    }
+
+    pub fn file_sink(send_error_path: impl Into<PathBuf>) -> Self {
+        Self {
+            send_error: JsonLinesSinkConfig::file(send_error_path),
+        }
+    }
+}
+
+/// Normalized server JSON Lines sink plan for future send error output.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct ServerSendErrorJsonLinesSinkPlan {
+    pub send_error: JsonLinesSinkPlan,
+}
+
+/// Boundary that maps server send error logging config to a sink plan.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct ServerSendErrorJsonLinesSinkBoundary {
+    sink_plan: JsonLinesSinkPlanBoundary,
+}
+
+impl ServerSendErrorJsonLinesSinkBoundary {
+    pub fn plan(
+        &self,
+        config: ServerSendErrorJsonLinesSinkConfig,
+    ) -> ServerSendErrorJsonLinesSinkPlan {
+        ServerSendErrorJsonLinesSinkPlan {
+            send_error: self.sink_plan.plan(config.send_error),
         }
     }
 }
@@ -850,6 +897,173 @@ impl ServerReceiveRejectionJsonLineWriter {
     }
 }
 
+pub const SERVER_SEND_ERROR_EVENT_NAME: &str = "server.send_error";
+
+/// Send error input handed from net-core send events into server logging.
+///
+/// This is failure-only. Encode/socket success events may be observed by the
+/// send loop, but they are not part of the initial send error JSON Lines scope.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ServerSendErrorLogInput {
+    pub context: OutboundSendLogContext,
+    pub stage: SendLogStage,
+    pub encoded_len: Option<usize>,
+    pub failure: SendFailureKind,
+    pub disposition: SendFailureDisposition,
+}
+
+/// Boundary that filters net-core send events into send error log handoff input.
+///
+/// It does not write JSON Lines, choose sinks, mutate queues, execute retry, or
+/// call sockets.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct ServerSendErrorLogHandoffBoundary;
+
+impl ServerSendErrorLogHandoffBoundary {
+    pub fn handoff(&self, event: SendLogEvent) -> Option<ServerSendErrorLogInput> {
+        let failure = event.failure?;
+        Some(ServerSendErrorLogInput {
+            context: event.context,
+            stage: event.stage,
+            encoded_len: event.encoded_len,
+            failure,
+            disposition: event.disposition.unwrap_or_else(|| failure.disposition()),
+        })
+    }
+}
+
+/// Boundary that maps send error log handoff input to JSON Lines event fields.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct ServerSendErrorJsonLogEventBoundary;
+
+impl ServerSendErrorJsonLogEventBoundary {
+    pub fn build_event(
+        &self,
+        input: ServerSendErrorLogInput,
+        timestamp: TimestampMicros,
+    ) -> ServerSendErrorJsonLogEventInput {
+        ServerSendErrorJsonLogEventInput {
+            event_name: SERVER_SEND_ERROR_EVENT_NAME,
+            run_id: input.context.run_id,
+            client_id: input.context.client_id,
+            destination: input.context.destination,
+            message_type: input.context.message_type,
+            stage: input.stage,
+            encoded_len: input.encoded_len,
+            failure: input.failure,
+            disposition: input.disposition,
+            timestamp,
+        }
+    }
+}
+
+/// JSON Lines event input for send errors.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ServerSendErrorJsonLogEventInput {
+    pub event_name: &'static str,
+    pub run_id: Option<RunId>,
+    pub client_id: Option<ClientId>,
+    pub destination: PacketDestination,
+    pub message_type: MessageType,
+    pub stage: SendLogStage,
+    pub encoded_len: Option<usize>,
+    pub failure: SendFailureKind,
+    pub disposition: SendFailureDisposition,
+    pub timestamp: TimestampMicros,
+}
+
+/// Minimal send error log output boundary.
+///
+/// This connects net-core send log events, a server JSON Lines schema, and an
+/// `io::Write` sink. It writes one JSON Lines record and does not own files,
+/// rotation, async I/O, buffering policy, retry, queue mutation, or global
+/// logging configuration.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct ServerSendErrorLogOutputBoundary {
+    handoff: ServerSendErrorLogHandoffBoundary,
+    event: ServerSendErrorJsonLogEventBoundary,
+    writer: ServerSendErrorJsonLineWriter,
+}
+
+impl ServerSendErrorLogOutputBoundary {
+    pub fn write_send_error<W: io::Write>(
+        &self,
+        send_event: SendLogEvent,
+        timestamp: TimestampMicros,
+        writer: W,
+    ) -> io::Result<Option<ServerSendErrorJsonLogEventInput>> {
+        let Some(input) = self.handoff.handoff(send_event) else {
+            return Ok(None);
+        };
+        let event = self.event.build_event(input, timestamp);
+        self.writer.write_event(&event, writer)?;
+        Ok(Some(event))
+    }
+}
+
+/// Minimal JSON Lines writer for send error events.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct ServerSendErrorJsonLineWriter;
+
+impl ServerSendErrorJsonLineWriter {
+    pub fn write_event<W: io::Write>(
+        &self,
+        event: &ServerSendErrorJsonLogEventInput,
+        mut writer: W,
+    ) -> io::Result<()> {
+        write!(writer, "{{")?;
+        write_json_field(&mut writer, "event_name", event.event_name)?;
+        write!(writer, ",")?;
+        write_optional_json_field(
+            &mut writer,
+            "run_id",
+            event.run_id.as_ref().map(|run_id| run_id.0.as_str()),
+        )?;
+        write!(writer, ",")?;
+        write_optional_json_field(
+            &mut writer,
+            "client_id",
+            event
+                .client_id
+                .as_ref()
+                .map(|client_id| client_id.0.as_str()),
+        )?;
+        write!(writer, ",")?;
+        write_json_field(
+            &mut writer,
+            "destination",
+            &event.destination.address.to_string(),
+        )?;
+        write!(writer, ",")?;
+        write_json_field(
+            &mut writer,
+            "message_type",
+            receive_rejection_message_type_name(event.message_type),
+        )?;
+        write!(writer, ",")?;
+        write_json_field(&mut writer, "stage", send_log_stage_name(event.stage))?;
+        write!(writer, ",\"encoded_len\":")?;
+        match event.encoded_len {
+            Some(encoded_len) => write!(writer, "{encoded_len}")?,
+            None => write!(writer, "null")?,
+        }
+        write!(writer, ",")?;
+        write_json_field(
+            &mut writer,
+            "failure",
+            send_failure_kind_name(event.failure),
+        )?;
+        write!(writer, ",")?;
+        write_json_field(
+            &mut writer,
+            "disposition",
+            send_failure_disposition_name(event.disposition),
+        )?;
+        write!(writer, ",\"timestamp\":{}", event.timestamp.0)?;
+        writeln!(writer, "}}")
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ServerReceiveRejectionReason {
     DecodeError,
@@ -939,6 +1153,36 @@ fn receive_rejection_message_type_name(message_type: MessageType) -> &'static st
         MessageType::VideoFrame => "VideoFrame",
         MessageType::ClientStats => "ClientStats",
         MessageType::ServerNotice => "ServerNotice",
+    }
+}
+
+fn send_log_stage_name(stage: SendLogStage) -> &'static str {
+    match stage {
+        SendLogStage::Encode => "Encode",
+        SendLogStage::BeforeSocketSend => "BeforeSocketSend",
+        SendLogStage::SocketSend => "SocketSend",
+    }
+}
+
+fn send_failure_kind_name(failure: SendFailureKind) -> &'static str {
+    match failure {
+        SendFailureKind::EncodeFailed => "EncodeFailed",
+        SendFailureKind::DestinationUnavailable => "DestinationUnavailable",
+        SendFailureKind::PacketTooLarge => "PacketTooLarge",
+        SendFailureKind::SocketWouldBlock => "SocketWouldBlock",
+        SendFailureKind::SocketInterrupted => "SocketInterrupted",
+        SendFailureKind::ConnectionRefused => "ConnectionRefused",
+        SendFailureKind::NetworkUnreachable => "NetworkUnreachable",
+        SendFailureKind::PermissionDenied => "PermissionDenied",
+        SendFailureKind::OtherSocketError => "OtherSocketError",
+    }
+}
+
+fn send_failure_disposition_name(disposition: SendFailureDisposition) -> &'static str {
+    match disposition {
+        SendFailureDisposition::RetryCandidate => "RetryCandidate",
+        SendFailureDisposition::DropCandidate => "DropCandidate",
+        SendFailureDisposition::WarningCandidate => "WarningCandidate",
     }
 }
 
@@ -3154,6 +3398,33 @@ mod tests {
     }
 
     #[test]
+    fn server_send_error_json_lines_sink_defaults_to_stderr() {
+        let boundary = ServerSendErrorJsonLinesSinkBoundary::default();
+
+        let plan = boundary.plan(ServerSendErrorJsonLinesSinkConfig::stderr_default());
+
+        assert_eq!(
+            plan.send_error.destination,
+            JsonLinesSinkDestination::Stderr
+        );
+        assert!(!plan.send_error.is_file_sink());
+    }
+
+    #[test]
+    fn server_send_error_json_lines_sink_accepts_file_path_without_opening_it() {
+        let boundary = ServerSendErrorJsonLinesSinkBoundary::default();
+
+        let plan = boundary.plan(ServerSendErrorJsonLinesSinkConfig::file_sink(
+            "logs/send-error.jsonl",
+        ));
+
+        let JsonLinesSinkDestination::File(send_error_file) = plan.send_error.destination else {
+            panic!("expected send error file sink");
+        };
+        assert_eq!(send_error_file.path, PathBuf::from("logs/send-error.jsonl"));
+    }
+
+    #[test]
     fn receive_loop_routes_decoded_packet() {
         let source = packet_source();
         let payload = heartbeat_payload();
@@ -3711,6 +3982,108 @@ shared_token = "secret"
         assert!(output.contains(r#""message_type":"VideoFrame""#));
         assert!(output.contains(r#""rejection_reason":"EndpointMismatch""#));
         assert!(output.contains(r#""timestamp":456789"#));
+    }
+
+    #[test]
+    fn send_error_log_handoff_ignores_success_events() {
+        let boundary = ServerSendErrorLogHandoffBoundary;
+        let event = SendLogEvent::encode_succeeded(send_log_context(), 64);
+
+        let input = boundary.handoff(event);
+
+        assert_eq!(input, None);
+    }
+
+    #[test]
+    fn send_error_json_log_event_boundary_preserves_failure_context() {
+        let destination: PacketDestination = packet_source().into();
+        let boundary = ServerSendErrorJsonLogEventBoundary;
+        let input = ServerSendErrorLogInput {
+            context: OutboundSendLogContext {
+                destination,
+                message_type: MessageType::HeartbeatAck,
+                run_id: Some(RunId("run-1".to_string())),
+                client_id: Some(ClientId("client-1".to_string())),
+            },
+            stage: SendLogStage::SocketSend,
+            encoded_len: Some(48),
+            failure: SendFailureKind::SocketWouldBlock,
+            disposition: SendFailureDisposition::RetryCandidate,
+        };
+
+        let event = boundary.build_event(input, TimestampMicros(567_890));
+
+        assert_eq!(
+            event,
+            ServerSendErrorJsonLogEventInput {
+                event_name: SERVER_SEND_ERROR_EVENT_NAME,
+                run_id: Some(RunId("run-1".to_string())),
+                client_id: Some(ClientId("client-1".to_string())),
+                destination,
+                message_type: MessageType::HeartbeatAck,
+                stage: SendLogStage::SocketSend,
+                encoded_len: Some(48),
+                failure: SendFailureKind::SocketWouldBlock,
+                disposition: SendFailureDisposition::RetryCandidate,
+                timestamp: TimestampMicros(567_890),
+            }
+        );
+    }
+
+    #[test]
+    fn send_error_json_line_writer_outputs_minimal_json_line() {
+        let destination: PacketDestination = packet_source().into();
+        let writer = ServerSendErrorJsonLineWriter;
+        let event = ServerSendErrorJsonLogEventInput {
+            event_name: SERVER_SEND_ERROR_EVENT_NAME,
+            run_id: Some(RunId("run-1".to_string())),
+            client_id: Some(ClientId("client-1".to_string())),
+            destination,
+            message_type: MessageType::HeartbeatAck,
+            stage: SendLogStage::SocketSend,
+            encoded_len: Some(48),
+            failure: SendFailureKind::SocketWouldBlock,
+            disposition: SendFailureDisposition::RetryCandidate,
+            timestamp: TimestampMicros(678_901),
+        };
+        let mut output = Vec::new();
+
+        writer
+            .write_event(&event, &mut output)
+            .expect("json line should write");
+
+        assert_eq!(
+            String::from_utf8(output).expect("json line should be utf8"),
+            r#"{"event_name":"server.send_error","run_id":"run-1","client_id":"client-1","destination":"127.0.0.1:5000","message_type":"HeartbeatAck","stage":"SocketSend","encoded_len":48,"failure":"SocketWouldBlock","disposition":"RetryCandidate","timestamp":678901}"#
+                .to_string()
+                + "\n"
+        );
+    }
+
+    #[test]
+    fn send_error_log_output_boundary_connects_handoff_event_and_writer() {
+        let boundary = ServerSendErrorLogOutputBoundary::default();
+        let send_event = SendLogEvent::send_failed(
+            send_log_context(),
+            SendLogStage::SocketSend,
+            Some(52),
+            SendFailureKind::NetworkUnreachable,
+        );
+        let mut output = Vec::new();
+
+        let event = boundary
+            .write_send_error(send_event, TimestampMicros(789_012), &mut output)
+            .expect("json line should write")
+            .expect("failure event should produce json input");
+
+        assert_eq!(event.failure, SendFailureKind::NetworkUnreachable);
+        assert_eq!(event.disposition, SendFailureDisposition::WarningCandidate);
+        let output = String::from_utf8(output).expect("json line should be utf8");
+        assert!(output.contains(r#""event_name":"server.send_error""#));
+        assert!(output.contains(r#""stage":"SocketSend""#));
+        assert!(output.contains(r#""failure":"NetworkUnreachable""#));
+        assert!(output.contains(r#""disposition":"WarningCandidate""#));
+        assert!(output.contains(r#""timestamp":789012"#));
     }
 
     #[test]
@@ -5557,6 +5930,15 @@ shared_token = "secret"
             .parse::<SocketAddr>()
             .expect("source address should parse")
             .into()
+    }
+
+    fn send_log_context() -> OutboundSendLogContext {
+        OutboundSendLogContext {
+            destination: packet_source().into(),
+            message_type: MessageType::HeartbeatAck,
+            run_id: Some(RunId("run-1".to_string())),
+            client_id: Some(ClientId("client-1".to_string())),
+        }
     }
 
     fn auth_check_input(
