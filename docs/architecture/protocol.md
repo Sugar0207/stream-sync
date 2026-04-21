@@ -426,6 +426,33 @@ It returns the selected body action plus the one-tick runtime result. It still
 does not repeat ticks, derive timestamps, dispatch handlers, mutate state, open
 file sinks, retry, back off, or install process-wide logging.
 
+The outer continuous receive loop controller is intentionally one level above
+`run_once`. Its current scope is to plan at most one body iteration from a
+caller-owned `continue_requested` decision, then observe the returned body
+result. The controller placeholder may return `Stop`, `RunBodyOnce`,
+`YieldToCaller`, or `DeferErrorPolicy`; it does not execute a `while` loop,
+block for shutdown signals, calculate timestamps, dispatch handlers, execute
+packet drop, open file sinks, install a process-wide logger, retry, back off,
+or introduce an async runtime.
+
+Controller responsibility split:
+
+- controller: outer iteration checkpoint only; consumes `continue_requested`
+  and prepares one `ServerContinuousReceiveLoopBodyInput`.
+- `run_once` body: one stop check and one one-tick runtime delegation.
+- one-tick runtime: one socket receive plus decode / gate / writer /
+  handler-handoff preparation.
+- handler dispatch: future owner of auth decisions, heartbeat/video/stats
+  handling, outbound enqueue, state mutation, and packet drop side effects.
+- shutdown policy: future owner of converting signals, operator intent,
+  socket-error policy, or config into `continue_requested`.
+
+Current code reflects this with
+`ServerContinuousReceiveLoopControllerInput`,
+`ServerContinuousReceiveLoopControllerPlan`,
+`ServerContinuousReceiveLoopControllerObservation`, and
+`ServerContinuousReceiveLoopControllerBoundary`.
+
 ## 1. 目的
 
 このドキュメントは、StreamSync の MVP 段階における通信プロトコルの初期設計を定義するものです。

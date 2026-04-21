@@ -574,6 +574,55 @@ Current code reflects this with
 `ServerContinuousReceiveLoopBodyResult`, and
 `ServerContinuousReceiveLoopBodyBoundary`.
 
+Continuous receive loop controller scope:
+
+1. The future controller is the outer orchestration boundary above
+   `ServerContinuousReceiveLoopBodyBoundary::run_once`.
+2. The controller may ask the caller to execute one body iteration when the
+   caller has already decided that the server should continue.
+3. The controller consumes a caller-owned `continue_requested` decision instead
+   of reading OS signals, channels, config, or operator state directly.
+4. The controller passes caller-supplied protocol version and timestamp into a
+   `ServerContinuousReceiveLoopBodyInput` for exactly one body iteration.
+5. After the body returns, the controller classifies the result as stopped,
+   completed, or error-policy-deferred, then yields back to the caller.
+6. Repeating the next iteration is still caller-owned. The current controller
+   placeholder does not implement a `while` loop.
+
+Responsibility split:
+
+- controller
+  - Owns the future outer checkpoint: stop vs run one body iteration.
+  - Owns observation of body results for caller-level orchestration.
+  - Does not own socket receive, decode, gate, writer calls, handler dispatch,
+    packet drop side effects, retry/backoff, timestamp generation, file sink
+    lifecycle, process-wide logging, or async runtime.
+- `run_once` body
+  - Owns one stop check and one delegation to the one-tick runtime.
+  - Does not repeat by itself.
+- one-tick runtime
+  - Owns one synchronous datagram receive plus decode / gate / writer /
+    handler-handoff preparation.
+  - Does not execute real handlers or mutate heartbeat/video state.
+- handler dispatch
+  - Remains future work after the handler handoff result.
+  - Auth decision, outbound enqueue, heartbeat handling, video frame handling,
+    stats state commits, and packet drop side effects are not part of the
+    controller placeholder.
+- shutdown policy
+  - Remains outside the controller placeholder.
+  - A future shutdown policy may convert signals, config, operator actions, or
+    error policy into `continue_requested`; the controller only consumes that
+    decision.
+
+Current code reflects this with
+`ServerContinuousReceiveLoopControllerInput`,
+`ServerContinuousReceiveLoopControllerPlan`,
+`ServerContinuousReceiveLoopControllerObservation`, and
+`ServerContinuousReceiveLoopControllerBoundary`. This is the current maximum
+continuous receive-loop controller scope; it is not the completed continuous
+receive loop implementation.
+
 ### 5.7 AuthResponse PoC one-shot startup step
 
 AuthResponse PoC startup uses the existing boundaries as a one-packet

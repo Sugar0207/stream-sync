@@ -5,6 +5,56 @@
 - Codex
 
 ### 今回の作業
+- continuous receive loop controller の継続実行範囲を docs に明記した。
+- `apps/server` に outer controller lifecycle placeholder を追加した。
+- controller / run_once body / one-tick runtime / handler dispatch / shutdown policy の責務分離を整理した。
+
+### 変更ファイル
+- `apps/server/src/lib.rs`
+- `docs/architecture/system-design.md`
+- `docs/architecture/protocol.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### 決定事項
+- controller は `ServerContinuousReceiveLoopControllerBoundary` として、外側の iteration checkpoint だけを担当する。
+- controller は caller-owned の `continue_requested` を消費して、次に `run_once` body を 1 回実行するか停止するかを計画する。
+- controller は body 結果を stopped / completed / error-policy-deferred として分類し、次の判断は caller に返す。
+- `run_once` body は 1 回分の stop check と one-tick runtime delegation のみを担当する。
+- one-tick runtime は 1 datagram receive、decode / gate、writer runtime、handler handoff preparation までを担当する。
+- handler dispatch 本体、packet drop 本体、shutdown policy、retry/backoff、file sink open、process-wide logger、async runtime は今回も未実装のまま残す。
+
+### 未実装 / 保留
+- 完成した continuous receive loop controller / while loop
+- handler dispatch 本体
+- auth decision / outbound response queue への continuous loop 内実接続
+- heartbeat / video / stats handler 本体
+- packet drop 本体
+- shutdown signal / retry / backoff policy
+- file sink open / process-wide logger
+
+### 次にやる候補
+- continuous receive loop から handler dispatch への最小実接続範囲を整理する。
+- auth / receive JSON Lines file sink の実 file open 範囲を必要になった時点で再確認する。
+- `ServerNotice` trigger の state transition 接続範囲を必要になった時点で再確認する。
+
+### TODO更新
+- 現在位置に controller placeholder 追加済み、完成した継続 loop は未実装であることを反映した。
+- 直近でやることから controller 整理を外し、handler dispatch 実接続範囲整理を次優先に更新した。
+- net-core / server 境界に `ServerContinuousReceiveLoopControllerBoundary` 追加完了を反映した。
+
+### メモ
+- `cargo fmt --check` は成功した。
+- `cargo check --workspace` は成功した。
+- 追加確認として `cargo test -p stream-sync-server continuous_receive_loop_controller` は成功した。
+
+---
+
+## 2026-04-21
+### 種別
+- Codex
+
+### 今回の作業
 - continuous receive loop の最小 loop body 実装範囲を docs に明記した。
 - `apps/server` に 1 iteration だけの minimal loop body placeholder を追加した。
 - stop 判定、one-tick runtime 呼び出し、writer runtime / handler handoff runtime との接続を整理した。

@@ -1365,6 +1365,116 @@ impl ServerContinuousReceiveLoopBodyBoundary {
     }
 }
 
+/// Lifecycle state for the future outer continuous receive-loop controller.
+///
+/// The controller boundary names only the outer orchestration checkpoints
+/// around repeated body iterations. It is deliberately separate from the
+/// one-iteration body and does not implement a `while` loop.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ServerContinuousReceiveLoopControllerState {
+    Stopped,
+    ReadyToRunBodyOnce,
+    BodyIterationCompleted,
+    BodyIterationFailed,
+}
+
+/// Action selected by the future outer continuous receive-loop controller.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ServerContinuousReceiveLoopControllerAction {
+    Stop,
+    RunBodyOnce,
+    YieldToCaller,
+    DeferErrorPolicy,
+}
+
+/// Input for planning the next outer controller iteration.
+///
+/// `continue_requested` is intentionally caller-owned. A future shutdown
+/// policy may compute it from signals, errors, or operator state, but this
+/// placeholder only consumes the already-decided boolean.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct ServerContinuousReceiveLoopControllerInput {
+    pub expected_protocol_version: ProtocolVersion,
+    pub timestamp: TimestampMicros,
+    pub continue_requested: bool,
+}
+
+/// Plan for the next receive-loop body iteration.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct ServerContinuousReceiveLoopControllerPlan {
+    pub state: ServerContinuousReceiveLoopControllerState,
+    pub action: ServerContinuousReceiveLoopControllerAction,
+    pub body_input: Option<ServerContinuousReceiveLoopBodyInput>,
+}
+
+/// Observation after one body iteration returns to the controller caller.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct ServerContinuousReceiveLoopControllerObservation {
+    pub state: ServerContinuousReceiveLoopControllerState,
+    pub action: ServerContinuousReceiveLoopControllerAction,
+}
+
+/// Minimal boundary for the future outer continuous receive-loop controller.
+///
+/// This boundary does not run a continuous loop. It only decides whether the
+/// caller should execute one body iteration and classifies the returned body
+/// result. The caller still owns repeated invocation, shutdown policy, handler
+/// dispatch, packet drop side effects, file sink lifecycle, process-wide
+/// logging, retry / backoff, and timestamp generation.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ServerContinuousReceiveLoopControllerBoundary;
+
+impl ServerContinuousReceiveLoopControllerBoundary {
+    pub fn plan_next_iteration(
+        &self,
+        input: ServerContinuousReceiveLoopControllerInput,
+    ) -> ServerContinuousReceiveLoopControllerPlan {
+        if !input.continue_requested {
+            return ServerContinuousReceiveLoopControllerPlan {
+                state: ServerContinuousReceiveLoopControllerState::Stopped,
+                action: ServerContinuousReceiveLoopControllerAction::Stop,
+                body_input: None,
+            };
+        }
+
+        ServerContinuousReceiveLoopControllerPlan {
+            state: ServerContinuousReceiveLoopControllerState::ReadyToRunBodyOnce,
+            action: ServerContinuousReceiveLoopControllerAction::RunBodyOnce,
+            body_input: Some(ServerContinuousReceiveLoopBodyInput {
+                expected_protocol_version: input.expected_protocol_version,
+                timestamp: input.timestamp,
+                stop_requested: false,
+            }),
+        }
+    }
+
+    pub fn observe_body_result(
+        &self,
+        result: &ServerContinuousReceiveLoopBodyResult,
+    ) -> ServerContinuousReceiveLoopControllerObservation {
+        match result.tick.outcome {
+            ServerContinuousReceiveLoopOneTickRuntimeOutcome::Stopped => {
+                ServerContinuousReceiveLoopControllerObservation {
+                    state: ServerContinuousReceiveLoopControllerState::Stopped,
+                    action: ServerContinuousReceiveLoopControllerAction::Stop,
+                }
+            }
+            ServerContinuousReceiveLoopOneTickRuntimeOutcome::SocketReceiveFailed { .. } => {
+                ServerContinuousReceiveLoopControllerObservation {
+                    state: ServerContinuousReceiveLoopControllerState::BodyIterationFailed,
+                    action: ServerContinuousReceiveLoopControllerAction::DeferErrorPolicy,
+                }
+            }
+            ServerContinuousReceiveLoopOneTickRuntimeOutcome::Completed { .. } => {
+                ServerContinuousReceiveLoopControllerObservation {
+                    state: ServerContinuousReceiveLoopControllerState::BodyIterationCompleted,
+                    action: ServerContinuousReceiveLoopControllerAction::YieldToCaller,
+                }
+            }
+        }
+    }
+}
+
 pub const SERVER_RECEIVE_LOOP_JSON_LOG_EVENT_NAME: &str = "server.receive_loop";
 
 /// Operational receive loop outcome used by future continuous-loop logging.
@@ -5523,6 +5633,50 @@ shared_token = "secret"
     }
 
     #[test]
+    fn continuous_receive_loop_controller_stops_when_continue_not_requested() {
+        let controller = ServerContinuousReceiveLoopControllerBoundary;
+
+        let plan = controller.plan_next_iteration(ServerContinuousReceiveLoopControllerInput {
+            expected_protocol_version: ProtocolVersion(2),
+            timestamp: TimestampMicros(990_001),
+            continue_requested: false,
+        });
+
+        assert_eq!(
+            plan,
+            ServerContinuousReceiveLoopControllerPlan {
+                state: ServerContinuousReceiveLoopControllerState::Stopped,
+                action: ServerContinuousReceiveLoopControllerAction::Stop,
+                body_input: None,
+            }
+        );
+    }
+
+    #[test]
+    fn continuous_receive_loop_controller_plans_one_body_iteration() {
+        let controller = ServerContinuousReceiveLoopControllerBoundary;
+
+        let plan = controller.plan_next_iteration(ServerContinuousReceiveLoopControllerInput {
+            expected_protocol_version: ProtocolVersion(2),
+            timestamp: TimestampMicros(990_002),
+            continue_requested: true,
+        });
+
+        assert_eq!(
+            plan,
+            ServerContinuousReceiveLoopControllerPlan {
+                state: ServerContinuousReceiveLoopControllerState::ReadyToRunBodyOnce,
+                action: ServerContinuousReceiveLoopControllerAction::RunBodyOnce,
+                body_input: Some(ServerContinuousReceiveLoopBodyInput {
+                    expected_protocol_version: ProtocolVersion(2),
+                    timestamp: TimestampMicros(990_002),
+                    stop_requested: false,
+                }),
+            }
+        );
+    }
+
+    #[test]
     fn continuous_receive_loop_body_executes_one_tick_runtime() {
         let boundary = ServerContinuousReceiveLoopBodyBoundary::default();
         let receiver = UdpSocket::bind("127.0.0.1:0").expect("receiver should bind");
@@ -5564,6 +5718,14 @@ shared_token = "secret"
         assert_eq!(
             result.action,
             ServerContinuousReceiveLoopBodyAction::ExecuteOneTick
+        );
+        let controller = ServerContinuousReceiveLoopControllerBoundary;
+        assert_eq!(
+            controller.observe_body_result(&result),
+            ServerContinuousReceiveLoopControllerObservation {
+                state: ServerContinuousReceiveLoopControllerState::BodyIterationCompleted,
+                action: ServerContinuousReceiveLoopControllerAction::YieldToCaller,
+            }
         );
         let ServerContinuousReceiveLoopOneTickRuntimeOutcome::Completed {
             packet_len,
