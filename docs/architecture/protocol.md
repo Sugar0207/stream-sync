@@ -365,6 +365,19 @@ The 1 tick connection scope is represented separately by
 The tick boundary does not own the UDP socket, the receive buffer, JSON Lines
 writers, handler dispatch, packet drop, retry, or runtime orchestration.
 
+Writer handoff from a receive tick is represented by
+`ServerContinuousReceiveLoopWriterHandoffBoundary`. Given a
+`ServerReceiveLoopGateOutcome` and packet length, it prepares:
+
+- `ServerReceiveLoopLogInput` for the lightweight `server.receive_loop`
+  operational log
+- `ServerReceiveLoopGateRejection` for the detailed `server.receive_rejection`
+  log when the outcome is rejected
+- a handler-handoff-required flag when the outcome is accepted
+
+It does not write JSON Lines, choose a sink, open files, dispatch handlers, or
+drop packets.
+
 ## 1. 目的
 
 このドキュメントは、StreamSync の MVP 段階における通信プロトコルの初期設計を定義するものです。

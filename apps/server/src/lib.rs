@@ -946,6 +946,59 @@ impl ServerContinuousReceiveLoopTickBoundary {
     }
 }
 
+/// Planned writer / handler handoff after one receive-loop tick outcome.
+///
+/// This is the connection shape between a future receive tick and existing
+/// operational / rejection writer boundaries. It does not write logs or run
+/// handlers by itself.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ServerContinuousReceiveLoopWriterHandoffPlan {
+    pub tick: ServerContinuousReceiveLoopTickPlan,
+    pub operational_log: Option<ServerReceiveLoopLogInput>,
+    pub rejection_log: Option<ServerReceiveLoopGateRejection>,
+    pub handler_handoff_required: bool,
+}
+
+/// Boundary that plans log-writer handoff after one receive-loop tick outcome.
+///
+/// This boundary does not call JSON Lines writers, open sinks, dispatch
+/// handlers, drop packets, retry, or run the continuous loop. It only prepares
+/// typed inputs for the existing operational and rejection logging boundaries.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct ServerContinuousReceiveLoopWriterHandoffBoundary {
+    tick: ServerContinuousReceiveLoopTickBoundary,
+    operational_log: ServerReceiveLoopLogHandoffBoundary,
+}
+
+impl ServerContinuousReceiveLoopWriterHandoffBoundary {
+    pub fn plan_after_gate_outcome(
+        &self,
+        packet_len: usize,
+        outcome: &ServerReceiveLoopGateOutcome,
+    ) -> ServerContinuousReceiveLoopWriterHandoffPlan {
+        let tick = self.tick.observe_gate_outcome(packet_len, outcome);
+        let operational_log = tick
+            .lifecycle
+            .operational_log_required
+            .then(|| self.operational_log.handoff(outcome, packet_len));
+        let rejection_log = match outcome {
+            ServerReceiveLoopGateOutcome::Rejected(rejection)
+                if tick.lifecycle.rejection_log_required =>
+            {
+                Some(rejection.clone())
+            }
+            _ => None,
+        };
+
+        ServerContinuousReceiveLoopWriterHandoffPlan {
+            handler_handoff_required: tick.lifecycle.handler_handoff_required,
+            tick,
+            operational_log,
+            rejection_log,
+        }
+    }
+}
+
 pub const SERVER_RECEIVE_LOOP_JSON_LOG_EVENT_NAME: &str = "server.receive_loop";
 
 /// Operational receive loop outcome used by future continuous-loop logging.
@@ -4711,6 +4764,68 @@ shared_token = "secret"
                 },
                 packet_len: Some(256),
             }
+        );
+    }
+
+    #[test]
+    fn continuous_receive_loop_writer_handoff_plans_operational_log_for_accepted_outcome() {
+        let source = packet_source();
+        let boundary = ServerContinuousReceiveLoopWriterHandoffBoundary::default();
+        let outcome = ServerReceiveLoopGateOutcome::Accepted(heartbeat_route("client-1", source));
+
+        let plan = boundary.plan_after_gate_outcome(160, &outcome);
+
+        assert_eq!(plan.tick.packet_len, Some(160));
+        assert_eq!(
+            plan.tick.state,
+            ServerContinuousReceiveLoopTickState::AcceptedRouteReadyForHandoff
+        );
+        assert!(plan.handler_handoff_required);
+        assert_eq!(plan.rejection_log, None);
+        assert_eq!(
+            plan.operational_log,
+            Some(ServerReceiveLoopLogInput {
+                source,
+                outcome: ServerReceiveLoopLogOutcome::Accepted,
+                packet_len: 160,
+                message_type: Some(MessageType::Heartbeat),
+                client_id: Some(ClientId("client-1".to_string())),
+                rejection_reason: None,
+            })
+        );
+    }
+
+    #[test]
+    fn continuous_receive_loop_writer_handoff_plans_operational_and_rejection_logs() {
+        let source = packet_source();
+        let boundary = ServerContinuousReceiveLoopWriterHandoffBoundary::default();
+        let rejection = ServerReceiveLoopGateRejection::Acceptance(PacketAcceptanceRejection {
+            source,
+            message_type: MessageType::VideoFrame,
+            client_id: Some(ClientId("client-1".to_string())),
+            reason: PacketAcceptanceRejectReason::EndpointMismatch,
+        });
+        let outcome = ServerReceiveLoopGateOutcome::Rejected(rejection.clone());
+
+        let plan = boundary.plan_after_gate_outcome(256, &outcome);
+
+        assert_eq!(plan.tick.packet_len, Some(256));
+        assert_eq!(
+            plan.tick.state,
+            ServerContinuousReceiveLoopTickState::RejectionReadyForLogs
+        );
+        assert!(!plan.handler_handoff_required);
+        assert_eq!(plan.rejection_log, Some(rejection));
+        assert_eq!(
+            plan.operational_log,
+            Some(ServerReceiveLoopLogInput {
+                source,
+                outcome: ServerReceiveLoopLogOutcome::AcceptanceRejected,
+                packet_len: 256,
+                message_type: Some(MessageType::VideoFrame),
+                client_id: Some(ClientId("client-1".to_string())),
+                rejection_reason: Some(ServerReceiveRejectionReason::EndpointMismatch),
+            })
         );
     }
 

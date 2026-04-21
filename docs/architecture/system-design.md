@@ -385,6 +385,42 @@ separate from `ServerReceiveLoopStep`: the step performs one-packet
 decode/route/gate when called, while the tick boundary only describes how a
 future loop will connect that step to socket receive and downstream handoffs.
 
+Continuous receive loop writer handoff scope:
+
+1. A future receive tick obtains `ServerReceiveLoopGateOutcome` and packet
+   length after decode / gate.
+2. `ServerContinuousReceiveLoopWriterHandoffBoundary` observes that outcome and
+   reuses the tick boundary to determine whether operational logging, rejection
+   logging, or handler handoff is required.
+3. For accepted outcomes, it prepares `ServerReceiveLoopLogInput` for
+   `server.receive_loop` and marks handler handoff as required.
+4. For rejected outcomes, it prepares `ServerReceiveLoopLogInput` for
+   `server.receive_loop` and preserves `ServerReceiveLoopGateRejection` for the
+   detailed `server.receive_rejection` writer.
+5. It does not call either writer. The caller remains responsible for passing
+   the prepared inputs to `ServerReceiveLoopJsonLogEventBoundary` /
+   `ServerReceiveLoopJsonLineWriter` and
+   `ServerReceiveRejectionLogOutputBoundary` when the real loop exists.
+
+Responsibility split:
+
+- receive tick
+  - Produces or observes one `ServerReceiveLoopGateOutcome`.
+  - Does not own writer calls or sink choice.
+- operational logging handoff
+  - Prepares lightweight `server.receive_loop` input for accepted and rejected
+    outcomes.
+  - Does not write JSON Lines.
+- rejection logging handoff
+  - Preserves detailed rejection input only for rejected outcomes.
+  - Does not execute packet drop.
+- sink plan
+  - Remains a config/runtime wiring concern; no file is opened by this handoff.
+
+Current code reflects this with
+`ServerContinuousReceiveLoopWriterHandoffPlan` and
+`ServerContinuousReceiveLoopWriterHandoffBoundary`.
+
 ### 5.7 AuthResponse PoC one-shot startup step
 
 AuthResponse PoC startup uses the existing boundaries as a one-packet
