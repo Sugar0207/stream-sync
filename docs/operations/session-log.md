@@ -5,6 +5,55 @@
 - Codex
 
 ### 今回の作業
+- handler dispatch 本体の最小実装範囲を docs に明記した。
+- `apps/server` に handler dispatch result placeholder を追加した。
+- auth dispatch / registered packet dispatch / future outbound enqueue / future stats handling の責務分離を整理した。
+
+### 変更ファイル
+- `apps/server/src/lib.rs`
+- `docs/architecture/system-design.md`
+- `docs/architecture/protocol.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### 決定事項
+- handler dispatch 本体の現在範囲は `ServerHandlerDispatchBoundary` として、dispatch bridge の handoff を handler lane へ分類するところまでとする。
+- `Auth` は `ServerHandlerDispatchResult::Auth` として `ServerAuthCheck` を保持するだけで、auth decision、registry mutation、AuthResponse enqueue は行わない。
+- `RegisteredClient` は heartbeat / video frame / client stats の dispatch result に分けるだけで、heartbeat ack/state、video buffering、stats state commit、timebase update は行わない。
+- unsupported route、skip、handoff error は dispatch result として保持し、packet drop policy や error logging policy は後段へ残す。
+- future outbound enqueue と future stats handling は generic dispatch classification から分離する。
+
+### 未実装 / 保留
+- auth dispatch 本体
+- registered packet handler 本体
+- outbound enqueue への handler output 実接続
+- stats metrics state commit / heartbeat observation commit
+- packet drop 本体
+- file sink open / process-wide logger
+- 完成した continuous receive loop / while loop
+
+### 次にやる候補
+- auth dispatch の最小実接続範囲を整理する
+- registered packet handler の最小実接続範囲を整理する
+- auth / receive JSON Lines file sink の実 file open 範囲を再確認する
+- ServerNotice trigger の state transition 接続範囲を再確認する
+
+### TODO 更新
+- 現在位置に handler dispatch 本体の最小分類範囲整理完了を反映した。
+- net-core / server 境界に `ServerHandlerDispatchBoundary` / handler dispatch result placeholder 追加完了を反映した。
+- 直近でやることから handler dispatch 本体の範囲整理を外し、auth dispatch / registered packet handler の最小実接続範囲整理へ更新した。
+
+### 検証
+- `cargo fmt --check`
+- `cargo test -p stream-sync-server handler_dispatch_body`
+- `cargo check --workspace`
+
+---
+
+### 種別
+- Codex
+
+### 今回の作業
 - continuous receive loop から handler dispatch への最小実接続範囲を docs に明記した。
 - `apps/server` に handler dispatch bridge placeholder を追加した。
 - controller / body / one-tick runtime / handler handoff runtime / future handler dispatch 本体の責務分離を整理した。

@@ -43,9 +43,9 @@
 - auth / receive JSON Lines file sink 方針は整理済み。実 file open、rotation、retention、async logging、process-wide logger は未実装
 - send error JSON Lines 出力範囲は整理済み。failure-only の event schema / caller-owned writer / sink plan placeholder は追加済みだが、send loop からの実接続、file sink open、process-wide logger は未実装
 - receive loop の継続運用向けログ範囲は整理済み。`server.receive_loop` の event schema / caller-owned writer / sink plan placeholder は追加済みだが、continuous receive loop からの実接続、file sink open、process-wide logger は未実装
-- continuous receive loop 本体の実装範囲、1 tick 実接続範囲、operational / rejection writer への handoff 範囲、caller-owned writer 呼び出し範囲、handler handoff 実接続範囲、最小 1 tick 実行接続範囲、継続 loop controller の外枠範囲、handler dispatch への最小 handoff 範囲は整理済み。loop lifecycle / tick / writer handoff / writer runtime / handler handoff runtime / one-tick runtime / controller / handler dispatch bridge placeholder と、1 iteration だけの最小 loop body は追加済みだが、完成した継続 loop、handler dispatch 本体、packet drop 本体、file sink open、process-wide logger は未実装
+- continuous receive loop 本体の実装範囲、1 tick 実接続範囲、operational / rejection writer への handoff 範囲、caller-owned writer 呼び出し範囲、handler handoff 実接続範囲、最小 1 tick 実行接続範囲、継続 loop controller の外枠範囲、handler dispatch への最小 handoff 範囲、handler dispatch 本体の最小分類範囲は整理済み。loop lifecycle / tick / writer handoff / writer runtime / handler handoff runtime / one-tick runtime / controller / handler dispatch bridge / handler dispatch result placeholder と、1 iteration だけの最小 loop body は追加済みだが、完成した継続 loop、auth dispatch 本体、registered packet handler 本体、packet drop 本体、file sink open、process-wide logger は未実装
 - secret store / token rotation 方針は整理済み。SecretStore 参照と rotation policy placeholder は追加済みだが、provider 連携、rotation 実行、hot reload は未実装
-- 次の中心は auth / receive JSON Lines file sink 実 file open 範囲の再確認、ServerNotice trigger の state transition 接続範囲の再確認、必要になった時点で handler dispatch 本体の最小実装範囲整理
+- 次の中心は auth / receive JSON Lines file sink 実 file open 範囲の再確認、ServerNotice trigger の state transition 接続範囲の再確認、必要になった時点で auth dispatch / registered packet handler の最小実接続範囲整理
 
 ---
 
@@ -201,6 +201,7 @@
 - [x] `ServerContinuousReceiveLoopBodyBoundary` / minimal loop body placeholder を追加する
 - [x] `ServerContinuousReceiveLoopControllerBoundary` / outer controller lifecycle placeholder を追加する
 - [x] `ServerContinuousReceiveLoopHandlerDispatchBoundary` / handler dispatch bridge placeholder を追加する
+- [x] `ServerHandlerDispatchBoundary` / handler dispatch result placeholder を追加する
 - [x] decode error / protocol error の分類方針を定義する
 - [x] `OutboundPacket` / `OutboundQueueItem` / `OutboundPacketQueueBoundary` placeholder を追加する
 - [x] `QueuedOutboundItem` / `OutboundQueueItemState` / `OutboundQueueLifecycleBoundary` placeholder を追加する

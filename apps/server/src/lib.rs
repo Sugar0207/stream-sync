@@ -1599,6 +1599,90 @@ impl ServerContinuousReceiveLoopHandlerDispatchBoundary {
     }
 }
 
+/// Result of the minimal server handler dispatch body.
+///
+/// This is a typed classification result only. It preserves the work that a
+/// future concrete handler will own without executing auth decisions,
+/// heartbeat / video / stats handling, outbound enqueue, or packet drop.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ServerHandlerDispatchResult {
+    Auth(ServerAuthCheck),
+    RegisteredHeartbeat(ServerRegisteredHeartbeatPacket),
+    RegisteredVideoFrame(ServerRegisteredVideoFramePacket),
+    RegisteredClientStats(ServerRegisteredClientStatsPacket),
+    Unsupported {
+        source: PacketSource,
+        message_type: MessageType,
+    },
+    NotRequired(ServerContinuousReceiveLoopHandlerDispatchSkipReason),
+    HandoffError(ServerContinuousReceiveLoopHandlerDispatchError),
+}
+
+/// Outcome of dispatching one receive-loop handoff into a handler lane.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ServerHandlerDispatchOutcome {
+    pub packet_len: Option<usize>,
+    pub result: ServerHandlerDispatchResult,
+}
+
+/// Minimal handler dispatch body boundary.
+///
+/// The current implementation only separates handler lanes after the
+/// continuous receive loop bridge. Concrete auth flow execution, registered
+/// packet handlers, outbound enqueue, and stats state commits remain future
+/// responsibilities.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ServerHandlerDispatchBoundary;
+
+impl ServerHandlerDispatchBoundary {
+    pub fn dispatch_handoff(
+        &self,
+        handoff: ServerContinuousReceiveLoopHandlerDispatchHandoff,
+    ) -> ServerHandlerDispatchOutcome {
+        ServerHandlerDispatchOutcome {
+            packet_len: handoff.packet_len,
+            result: self.dispatch_plan(handoff.plan),
+        }
+    }
+
+    pub fn dispatch_plan(
+        &self,
+        plan: ServerContinuousReceiveLoopHandlerDispatchPlan,
+    ) -> ServerHandlerDispatchResult {
+        match plan {
+            ServerContinuousReceiveLoopHandlerDispatchPlan::Auth(auth) => {
+                ServerHandlerDispatchResult::Auth(auth)
+            }
+            ServerContinuousReceiveLoopHandlerDispatchPlan::RegisteredClient(packet) => {
+                match packet {
+                    ServerRegisteredClientPacket::Heartbeat(packet) => {
+                        ServerHandlerDispatchResult::RegisteredHeartbeat(packet)
+                    }
+                    ServerRegisteredClientPacket::VideoFrame(packet) => {
+                        ServerHandlerDispatchResult::RegisteredVideoFrame(packet)
+                    }
+                    ServerRegisteredClientPacket::ClientStats(packet) => {
+                        ServerHandlerDispatchResult::RegisteredClientStats(packet)
+                    }
+                }
+            }
+            ServerContinuousReceiveLoopHandlerDispatchPlan::Unsupported {
+                source,
+                message_type,
+            } => ServerHandlerDispatchResult::Unsupported {
+                source,
+                message_type,
+            },
+            ServerContinuousReceiveLoopHandlerDispatchPlan::NotRequired(reason) => {
+                ServerHandlerDispatchResult::NotRequired(reason)
+            }
+            ServerContinuousReceiveLoopHandlerDispatchPlan::HandoffError(error) => {
+                ServerHandlerDispatchResult::HandoffError(error)
+            }
+        }
+    }
+}
+
 pub const SERVER_RECEIVE_LOOP_JSON_LOG_EVENT_NAME: &str = "server.receive_loop";
 
 /// Operational receive loop outcome used by future continuous-loop logging.
@@ -5847,6 +5931,60 @@ shared_token = "secret"
                 request: AuthRequest { ref client_id, .. },
                 ..
             }) if client_id == &ClientId("client-1".to_string())
+        ));
+    }
+
+    #[test]
+    fn handler_dispatch_body_routes_auth_without_deciding() {
+        let source = packet_source();
+        let auth = ServerAuthCheck {
+            source,
+            request: auth_request("client-1", "presented-secret"),
+        };
+
+        let outcome = ServerHandlerDispatchBoundary.dispatch_handoff(
+            ServerContinuousReceiveLoopHandlerDispatchHandoff {
+                packet_len: Some(88),
+                plan: ServerContinuousReceiveLoopHandlerDispatchPlan::Auth(auth),
+            },
+        );
+
+        assert_eq!(outcome.packet_len, Some(88));
+        assert!(matches!(
+            outcome.result,
+            ServerHandlerDispatchResult::Auth(ServerAuthCheck {
+                request: AuthRequest { ref client_id, .. },
+                ..
+            }) if client_id == &ClientId("client-1".to_string())
+        ));
+    }
+
+    #[test]
+    fn handler_dispatch_body_routes_client_stats_without_handling() {
+        let source = packet_source();
+        let registry = registry_with_client("client-1", source);
+        let route = client_stats_route("client-1", source);
+        let registered = ServerRegisteredPacketBoundary::default()
+            .prepare_for_handler(&registry, route)
+            .expect("client stats should be accepted");
+
+        let outcome = ServerHandlerDispatchBoundary.dispatch_handoff(
+            ServerContinuousReceiveLoopHandlerDispatchHandoff {
+                packet_len: Some(96),
+                plan: ServerContinuousReceiveLoopHandlerDispatchPlan::RegisteredClient(registered),
+            },
+        );
+
+        assert_eq!(outcome.packet_len, Some(96));
+        assert!(matches!(
+            outcome.result,
+            ServerHandlerDispatchResult::RegisteredClientStats(ServerRegisteredClientStatsPacket {
+                stats: ClientStats {
+                    capture_fps: 30,
+                    ..
+                },
+                ..
+            })
         ));
     }
 

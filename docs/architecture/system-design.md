@@ -665,6 +665,48 @@ Current code reflects this with
 `ServerContinuousReceiveLoopHandlerDispatchHandoff`, and
 `ServerContinuousReceiveLoopHandlerDispatchBoundary`.
 
+Handler dispatch minimal body scope:
+
+1. The minimal dispatch body receives
+   `ServerContinuousReceiveLoopHandlerDispatchHandoff` from the bridge and
+   returns `ServerHandlerDispatchOutcome`.
+2. It classifies `Auth` into `ServerHandlerDispatchResult::Auth` and preserves
+   `ServerAuthCheck` for a future auth flow step. It does not decide accept /
+   reject, mutate the authenticated sender registry, or enqueue `AuthResponse`.
+3. It splits `RegisteredClient` into heartbeat, video frame, and client stats
+   result lanes. It does not run heartbeat ack/state handling, video frame
+   buffering, sync scheduling, stats state commit, or timebase updates.
+4. Unsupported routes, skipped iterations, and handoff preparation errors are
+   preserved as dispatch results. Packet drop policy and error logging policy
+   remain outside this boundary.
+5. Future outbound enqueue is not part of the dispatch body. Handler execution
+   may later produce outbound handoff items, but the queue lifecycle and send
+   loop remain separate responsibilities.
+6. Future stats handling is separate from dispatch classification. Dispatch
+   only preserves `ServerRegisteredClientStatsPacket`; conversion into metrics
+   state or heartbeat observation state remains handler work.
+
+Responsibility split after the handler dispatch bridge:
+
+- auth dispatch
+  - Owns future auth flow execution from `ServerAuthCheck`.
+  - May later call auth decision, registry update, auth log output, and outbound
+    response handoff.
+- registered packet dispatch
+  - Owns future heartbeat / video / client stats handler calls from typed
+    registered packets.
+  - Does not own packet acceptance or sender lookup; those already happened in
+    the handler handoff runtime.
+- future outbound enqueue
+  - Owns conversion from handler outputs to outbound queue items.
+  - Remains separate from classifying inbound handler work.
+- future stats handling
+  - Owns stats metrics state commit and optional heartbeat observation commit.
+  - Remains separate from generic dispatch routing.
+
+Current code reflects this with `ServerHandlerDispatchResult`,
+`ServerHandlerDispatchOutcome`, and `ServerHandlerDispatchBoundary`.
+
 ### 5.7 AuthResponse PoC one-shot startup step
 
 AuthResponse PoC startup uses the existing boundaries as a one-packet

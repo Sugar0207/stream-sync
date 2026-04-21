@@ -476,6 +476,28 @@ Current code reflects this with
 `ServerContinuousReceiveLoopHandlerDispatchHandoff`, and
 `ServerContinuousReceiveLoopHandlerDispatchBoundary`.
 
+The minimal handler dispatch body is the next boundary after that bridge. It
+consumes `ServerContinuousReceiveLoopHandlerDispatchHandoff` and produces
+`ServerHandlerDispatchOutcome`:
+
+- `Auth` stays as `ServerHandlerDispatchResult::Auth` and carries
+  `ServerAuthCheck` only. Auth decision, registry mutation, auth response
+  enqueue, and auth logging remain future auth dispatch work.
+- `RegisteredClient` is split into heartbeat, video frame, and client stats
+  dispatch results. Heartbeat ack/state updates, video frame buffering, sync
+  scheduling, stats state commit, and timebase updates remain future registered
+  packet handler work.
+- Unsupported routes, skipped iterations, and handoff errors remain typed
+  dispatch results. Packet drop policy and operational error policy are not
+  executed by the dispatch body.
+- Future outbound enqueue is a separate responsibility after concrete handlers
+  produce outbound work.
+- Future stats handling is separate from generic dispatch classification. The
+  dispatch body only preserves `ServerRegisteredClientStatsPacket`.
+
+Current code reflects this with `ServerHandlerDispatchResult`,
+`ServerHandlerDispatchOutcome`, and `ServerHandlerDispatchBoundary`.
+
 ## 1. 目的
 
 このドキュメントは、StreamSync の MVP 段階における通信プロトコルの初期設計を定義するものです。
