@@ -1300,6 +1300,71 @@ impl ServerContinuousReceiveLoopOneTickRuntimeBoundary {
     }
 }
 
+/// Input for one minimal continuous receive-loop body iteration.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct ServerContinuousReceiveLoopBodyInput {
+    pub expected_protocol_version: ProtocolVersion,
+    pub timestamp: TimestampMicros,
+    pub stop_requested: bool,
+}
+
+/// Action selected by the minimal loop body before delegating to one tick.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ServerContinuousReceiveLoopBodyAction {
+    Stop,
+    ExecuteOneTick,
+}
+
+/// Result of one minimal loop body iteration.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ServerContinuousReceiveLoopBodyResult {
+    pub action: ServerContinuousReceiveLoopBodyAction,
+    pub tick: ServerContinuousReceiveLoopOneTickRuntimeResult,
+}
+
+/// Minimal continuous receive-loop body boundary.
+///
+/// This is one loop body iteration only: it evaluates the stop flag and
+/// delegates to the one-tick runtime. It does not repeat, dispatch handlers,
+/// drop packets, open log files, install process-wide logging, or own retry /
+/// backoff policy.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ServerContinuousReceiveLoopBodyBoundary {
+    one_tick: ServerContinuousReceiveLoopOneTickRuntimeBoundary,
+}
+
+impl ServerContinuousReceiveLoopBodyBoundary {
+    pub fn run_once<OW: io::Write, RW: io::Write>(
+        &self,
+        socket: &UdpSocket,
+        buffer: &mut [u8],
+        registry: &AuthenticatedSenderRegistry,
+        input: ServerContinuousReceiveLoopBodyInput,
+        operational_writer: OW,
+        rejection_writer: RW,
+    ) -> io::Result<ServerContinuousReceiveLoopBodyResult> {
+        let action = if input.stop_requested {
+            ServerContinuousReceiveLoopBodyAction::Stop
+        } else {
+            ServerContinuousReceiveLoopBodyAction::ExecuteOneTick
+        };
+        let tick = self.one_tick.execute_one_tick(
+            socket,
+            buffer,
+            registry,
+            ServerContinuousReceiveLoopOneTickRuntimeInput {
+                expected_protocol_version: input.expected_protocol_version,
+                timestamp: input.timestamp,
+                stop_requested: input.stop_requested,
+            },
+            operational_writer,
+            rejection_writer,
+        )?;
+
+        Ok(ServerContinuousReceiveLoopBodyResult { action, tick })
+    }
+}
+
 pub const SERVER_RECEIVE_LOOP_JSON_LOG_EVENT_NAME: &str = "server.receive_loop";
 
 /// Operational receive loop outcome used by future continuous-loop logging.
@@ -5418,6 +5483,105 @@ shared_token = "secret"
         ));
         assert!(handler.writer.operational_event.is_some());
         assert_eq!(handler.writer.rejection_event, None);
+        assert!(String::from_utf8(operational_output)
+            .expect("json line should be utf8")
+            .contains(r#""event_name":"server.receive_loop""#));
+        assert!(rejection_output.is_empty());
+    }
+
+    #[test]
+    fn continuous_receive_loop_body_stops_without_receiving() {
+        let boundary = ServerContinuousReceiveLoopBodyBoundary::default();
+        let receiver = UdpSocket::bind("127.0.0.1:0").expect("receiver should bind");
+        let registry = AuthenticatedSenderRegistry::default();
+        let mut buffer = [0_u8; 128];
+        let mut operational_output = Vec::new();
+        let mut rejection_output = Vec::new();
+
+        let result = boundary
+            .run_once(
+                &receiver,
+                &mut buffer,
+                &registry,
+                ServerContinuousReceiveLoopBodyInput {
+                    expected_protocol_version: ProtocolVersion(2),
+                    timestamp: TimestampMicros(978_901),
+                    stop_requested: true,
+                },
+                &mut operational_output,
+                &mut rejection_output,
+            )
+            .expect("loop body should stop cleanly");
+
+        assert_eq!(result.action, ServerContinuousReceiveLoopBodyAction::Stop);
+        assert_eq!(
+            result.tick.outcome,
+            ServerContinuousReceiveLoopOneTickRuntimeOutcome::Stopped
+        );
+        assert!(operational_output.is_empty());
+        assert!(rejection_output.is_empty());
+    }
+
+    #[test]
+    fn continuous_receive_loop_body_executes_one_tick_runtime() {
+        let boundary = ServerContinuousReceiveLoopBodyBoundary::default();
+        let receiver = UdpSocket::bind("127.0.0.1:0").expect("receiver should bind");
+        let sender = UdpSocket::bind("127.0.0.1:0").expect("sender should bind");
+        receiver
+            .set_read_timeout(Some(std::time::Duration::from_secs(1)))
+            .expect("read timeout should be set");
+        let receiver_addr = receiver.local_addr().expect("receiver should have address");
+        let sender_source: PacketSource = sender
+            .local_addr()
+            .expect("sender should have address")
+            .into();
+        let payload = heartbeat_payload();
+        let packet = test_packet(MessageType::Heartbeat as u16, FIXED_HEADER_LEN, 2, &payload);
+        let registry = registry_with_client("client-1", sender_source);
+        let mut buffer = [0_u8; 256];
+        let mut operational_output = Vec::new();
+        let mut rejection_output = Vec::new();
+
+        sender
+            .send_to(packet.as_slice(), receiver_addr)
+            .expect("packet should send");
+
+        let result = boundary
+            .run_once(
+                &receiver,
+                &mut buffer,
+                &registry,
+                ServerContinuousReceiveLoopBodyInput {
+                    expected_protocol_version: ProtocolVersion(2),
+                    timestamp: TimestampMicros(989_012),
+                    stop_requested: false,
+                },
+                &mut operational_output,
+                &mut rejection_output,
+            )
+            .expect("loop body should execute one tick");
+
+        assert_eq!(
+            result.action,
+            ServerContinuousReceiveLoopBodyAction::ExecuteOneTick
+        );
+        let ServerContinuousReceiveLoopOneTickRuntimeOutcome::Completed {
+            packet_len,
+            handler,
+        } = result.tick.outcome
+        else {
+            panic!("expected completed one tick outcome");
+        };
+        assert_eq!(packet_len, packet.len());
+        assert!(matches!(
+            handler.handler,
+            ServerContinuousReceiveLoopHandlerHandoffRuntimePlan::RegisteredClient(
+                ServerRegisteredClientPacket::Heartbeat(ServerRegisteredHeartbeatPacket {
+                    heartbeat: Heartbeat { ref client_id, .. },
+                    ..
+                })
+            ) if client_id == &ClientId("client-1".to_string())
+        ));
         assert!(String::from_utf8(operational_output)
             .expect("json line should be utf8")
             .contains(r#""event_name":"server.receive_loop""#));

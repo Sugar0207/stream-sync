@@ -536,6 +536,44 @@ Current code reflects this with
 `ServerContinuousReceiveLoopOneTickRuntimeResult`, and
 `ServerContinuousReceiveLoopOneTickRuntimeBoundary`.
 
+Continuous receive loop minimal body implementation scope:
+
+1. A caller owns the bound synchronous `UdpSocket`, receive buffer,
+   `AuthenticatedSenderRegistry`, expected `ProtocolVersion`, timestamp, stop
+   flag, and caller-owned operational / rejection writers.
+2. `ServerContinuousReceiveLoopBodyBoundary::run_once` evaluates the stop flag
+   and records whether this body iteration should stop or execute one tick.
+3. The body delegates to `ServerContinuousReceiveLoopOneTickRuntimeBoundary`
+   with the same socket, buffer, registry, timestamp, protocol version, and
+   writers.
+4. If stop was requested, the one-tick runtime stops before socket receive.
+5. If stop was not requested, the one-tick runtime performs one datagram
+   receive, decode / gate, writer runtime, and handler handoff runtime.
+6. The body returns both the selected body action and the one-tick runtime
+   result to the caller.
+
+This is the current maximum loop body implementation. It is not a complete
+continuous receive loop: it does not repeat automatically, calculate wall-clock
+timestamps, own shutdown signals, open file sinks, install process-wide logging,
+dispatch handlers, mutate auth/session/heartbeat/video state, execute packet
+drop side effects, retry, back off, or spawn async work.
+
+Responsibility split:
+
+- loop body
+  - Owns one stop check and one delegation to the one-tick runtime.
+- one-tick runtime
+  - Owns one socket receive plus decode / gate / writer / handoff connection.
+- future continuous loop controller
+  - Will own repeated calls, timing, shutdown, retry/backoff, and stateful
+    handler dispatch.
+
+Current code reflects this with
+`ServerContinuousReceiveLoopBodyInput`,
+`ServerContinuousReceiveLoopBodyAction`,
+`ServerContinuousReceiveLoopBodyResult`, and
+`ServerContinuousReceiveLoopBodyBoundary`.
+
 ### 5.7 AuthResponse PoC one-shot startup step
 
 AuthResponse PoC startup uses the existing boundaries as a one-packet

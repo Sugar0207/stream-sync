@@ -419,6 +419,13 @@ does not implement repeated looping, handler execution, packet drop side
 effects, file sink lifecycle, retry, backoff, async runtime, or process-wide
 logging.
 
+The minimal loop body is represented by
+`ServerContinuousReceiveLoopBodyBoundary`. `run_once` performs one stop
+decision and delegates to `ServerContinuousReceiveLoopOneTickRuntimeBoundary`.
+It returns the selected body action plus the one-tick runtime result. It still
+does not repeat ticks, derive timestamps, dispatch handlers, mutate state, open
+file sinks, retry, back off, or install process-wide logging.
+
 ## 1. 目的
 
 このドキュメントは、StreamSync の MVP 段階における通信プロトコルの初期設計を定義するものです。

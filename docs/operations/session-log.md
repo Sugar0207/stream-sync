@@ -5,6 +5,57 @@
 - Codex
 
 ### 今回の作業
+- continuous receive loop の最小 loop body 実装範囲を docs に明記した。
+- `apps/server` に 1 iteration だけの minimal loop body placeholder を追加した。
+- stop 判定、one-tick runtime 呼び出し、writer runtime / handler handoff runtime との接続を整理した。
+
+### 変更ファイル
+- `apps/server/src/lib.rs`
+- `docs/architecture/system-design.md`
+- `docs/architecture/protocol.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### 決定事項
+- minimal loop body は `ServerContinuousReceiveLoopBodyBoundary::run_once` として、1 回分の body iteration だけを実行する。
+- body は stop flag を評価し、`Stop` または `ExecuteOneTick` の action を記録する。
+- 実際の socket receive、decode / gate、writer runtime、handler handoff runtime は既存の `ServerContinuousReceiveLoopOneTickRuntimeBoundary` に委譲する。
+- stop requested の場合は one-tick runtime 側で socket receive 前に停止する。
+- body は自動繰り返し、時刻生成、shutdown signal 管理、handler dispatch、packet drop、file sink open、process-wide logger、retry / backoff、async runtime を持たない。
+
+### 未実装 / 保留
+- continuous receive loop controller の継続実行本体
+- handler dispatch 本体
+- auth decision / outbound response queue への loop 内接続
+- heartbeat / video / stats handler 本体
+- packet drop 本体
+- file sink open / process-wide logger
+- retry / backoff / shutdown policy 本体
+
+### 次にやる候補
+- continuous receive loop controller の継続実行範囲を整理する
+- continuous receive loop から handler dispatch への最小実接続範囲を整理する
+- auth / receive JSON Lines file sink の実 file open 範囲を必要になった時点で再確認する
+- `ServerNotice` trigger の state transition 接続範囲を必要になった時点で再確認する
+
+### TODO更新
+- 現在位置に continuous receive loop の最小 loop body 実装追加完了を反映した。
+- 直近でやることを continuous receive loop controller の継続実行範囲整理と handler dispatch 最小接続範囲整理へ更新した。
+- net-core / server 境界に `ServerContinuousReceiveLoopBodyBoundary` / minimal loop body placeholder 追加完了を反映した。
+- net-core / server 境界に continuous receive loop の最小 loop body 実装追加完了を反映した。
+
+### メモ
+- `cargo fmt --check` は成功した。
+- `cargo check --workspace` は成功した。
+- 追加確認として `cargo test -p stream-sync-server continuous_receive_loop_body` は成功した。
+
+---
+
+## 2026-04-21
+### 種別
+- Codex
+
+### 今回の作業
 - continuous receive loop 本体の最小 1 tick 実行接続範囲を docs に明記した。
 - `apps/server` に one-tick runtime execution placeholder を追加した。
 - socket receive / tick plan / writer runtime / handler handoff runtime / future loop 本体の責務分離を整理した。
