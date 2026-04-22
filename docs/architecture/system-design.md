@@ -3554,8 +3554,97 @@ Current code reflects this with
 `ClientHeartbeatLoopSleepDecision`,
 `ClientHeartbeatLoopRetryApplyBoundary`, and
 `ClientHeartbeatLoopRetryApplyResult`. The completed continuous heartbeat loop,
-actual sleeping, repeated retry execution, socket timeout application, client
-loop logging, and shutdown integration remain future work.
+actual sleeping, repeated retry execution, and socket timeout application
+remain future work.
+
+### Client Loop Logging / Shutdown Integration Boundary
+
+Before implementing the completed continuous heartbeat loop, the client loop
+now has a final pure connection point that turns a controller plan into:
+
+- a controller action class
+- an optional logging handoff
+- a shutdown decision
+- an optional iteration result that may be committed to counters
+
+Current implementation scope:
+
+1. `ClientHeartbeatLoopControllerBoundary::plan_next` still produces
+   `ClientHeartbeatLoopControllerPlan`.
+2. `ClientHeartbeatLoopControllerLogHandoffBoundary::prepare` observes that
+   plan and prepares `ClientHeartbeatLoopControllerLogHandoff` for stop, wait,
+   and send-heartbeat decisions.
+3. `OwnershipNotReady` intentionally produces no client loop log handoff in
+   this boundary; the future loop body may treat it as startup/precondition
+   failure separately.
+4. `ClientHeartbeatLoopShutdownDecisionBoundary::decide` maps only a controller
+   `Stop` plan to `ClientHeartbeatLoopShutdownDecision::Stop`.
+5. `Sleep`, `SendHeartbeat`, and `OwnershipNotReady` currently map to
+   `Continue`; they do not execute shutdown.
+6. `ClientHeartbeatLoopControllerResultBoundary::finalize` combines the
+   original plan, action, optional log handoff, shutdown decision, and optional
+   iteration result into `ClientHeartbeatLoopControllerResult`.
+7. The boundary does not write JSON Lines, open sinks, install a process-wide
+   logger, sleep, retry, mutate counters, execute shutdown, call sockets, or
+   repeat.
+
+Responsibility split:
+
+- heartbeat policy
+  - `ClientHeartbeatLoopPolicyBoundary` owns stop / wait / send selection from
+    cadence, stop condition, and policy snapshot.
+  - It produces the policy-level `ClientHeartbeatLoopLogHandoff`.
+- one-iteration body
+  - `ClientHeartbeatLoopBodyBoundary` owns auth/socket precondition checks and
+    turns send policy into `ClientHeartbeatLoopBodySendHandoff`.
+- encode-send
+  - `ClientHeartbeatLoopEncodeSendBoundary` owns one heartbeat build, protocol
+    encode, and one UDP `send_to`.
+  - It does not write loop logs or decide shutdown.
+- ack receive / observation return
+  - `ClientHeartbeatLoopAckObservationReturnBoundary` owns one
+    `HeartbeatAck` receive/decode/correlation step and optional encoded
+    `ClientStats` return handoff.
+  - It does not write loop logs or decide shutdown.
+- stats return send
+  - `ClientHeartbeatLoopClientStatsReturnSendBoundary` owns one send of an
+    already encoded `ClientStats` return datagram.
+  - It does not retry, log, or decide shutdown.
+- counters update
+  - `ClientHeartbeatLoopCountersBoundary` remains the only boundary that
+    mutates caller-owned client loop counters.
+  - It consumes typed iteration results after the future loop body decides to
+    commit them.
+- sleep-retry
+  - `ClientHeartbeatLoopSleepBoundary` and
+    `ClientHeartbeatLoopRetryApplyBoundary` only produce sleep / retry plans.
+  - They do not execute timers or retry socket operations.
+- logging
+  - `ClientHeartbeatLoopControllerLogHandoffBoundary` prepares typed handoffs
+    only.
+  - JSON Lines event schema, caller-owned writer, sink selection, file open,
+    rotation, buffering, and process-wide logger setup remain future work.
+- shutdown
+  - `ClientHeartbeatLoopShutdownDecisionBoundary` names the stop decision from
+    controller output only.
+  - Actual loop exit, resource cleanup, final log flush, and operator signal
+    integration remain future work.
+- future loop body
+  - Owns repeated controller calls, heartbeat send, ack wait, optional stats
+    return send, counters commit order, retry execution, real sleeping,
+    shutdown execution, and log writer invocation.
+
+Current code reflects this with
+`apps/client::ClientHeartbeatLoopControllerAction`,
+`ClientHeartbeatLoopControllerLogHandoff`,
+`ClientHeartbeatLoopControllerLogHandoffBoundary`,
+`ClientHeartbeatLoopShutdownDecision`,
+`ClientHeartbeatLoopShutdownDecisionBoundary`,
+`ClientHeartbeatLoopControllerResult`, and
+`ClientHeartbeatLoopControllerResultBoundary`. A completed continuous heartbeat
+loop, JSON Lines writer connection, actual shutdown execution, real timer
+sleep, repeated retry execution, and socket timeout application remain future
+work.
 
 ### Heartbeat Client Ack Observation Flow
 

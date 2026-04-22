@@ -1529,6 +1529,134 @@ pub enum ClientHeartbeatLoopControllerPlan {
     },
 }
 
+/// Coarse action class selected by the client loop controller.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ClientHeartbeatLoopControllerAction {
+    OwnershipNotReady,
+    Stop,
+    Sleep,
+    SendHeartbeat,
+}
+
+/// Shutdown decision extracted from one controller plan.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ClientHeartbeatLoopShutdownDecision {
+    Continue,
+    Stop {
+        reason: ClientHeartbeatLoopPolicyReason,
+    },
+}
+
+/// Typed log handoff prepared after controller planning.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClientHeartbeatLoopControllerLogHandoff {
+    pub action: ClientHeartbeatLoopControllerAction,
+    pub policy_log: ClientHeartbeatLoopLogHandoff,
+    pub iteration_result: Option<ClientHeartbeatLoopIterationRuntimeResult>,
+}
+
+/// Final typed result for one pre-loop controller step.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClientHeartbeatLoopControllerResult {
+    pub action: ClientHeartbeatLoopControllerAction,
+    pub plan: ClientHeartbeatLoopControllerPlan,
+    pub log: Option<ClientHeartbeatLoopControllerLogHandoff>,
+    pub shutdown: ClientHeartbeatLoopShutdownDecision,
+    pub iteration_result: Option<ClientHeartbeatLoopIterationRuntimeResult>,
+}
+
+/// Boundary that prepares controller log handoff without writing logs.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct ClientHeartbeatLoopControllerLogHandoffBoundary;
+
+impl ClientHeartbeatLoopControllerLogHandoffBoundary {
+    pub fn prepare(
+        &self,
+        plan: &ClientHeartbeatLoopControllerPlan,
+    ) -> Option<ClientHeartbeatLoopControllerLogHandoff> {
+        match plan {
+            ClientHeartbeatLoopControllerPlan::OwnershipNotReady { .. } => None,
+            ClientHeartbeatLoopControllerPlan::Stop {
+                log,
+                iteration_result,
+                ..
+            } => Some(ClientHeartbeatLoopControllerLogHandoff {
+                action: ClientHeartbeatLoopControllerAction::Stop,
+                policy_log: log.clone(),
+                iteration_result: Some(iteration_result.clone()),
+            }),
+            ClientHeartbeatLoopControllerPlan::Sleep {
+                log,
+                iteration_result,
+                ..
+            } => Some(ClientHeartbeatLoopControllerLogHandoff {
+                action: ClientHeartbeatLoopControllerAction::Sleep,
+                policy_log: log.clone(),
+                iteration_result: Some(iteration_result.clone()),
+            }),
+            ClientHeartbeatLoopControllerPlan::SendHeartbeat { log, .. } => {
+                Some(ClientHeartbeatLoopControllerLogHandoff {
+                    action: ClientHeartbeatLoopControllerAction::SendHeartbeat,
+                    policy_log: log.clone(),
+                    iteration_result: None,
+                })
+            }
+        }
+    }
+}
+
+/// Boundary that maps a controller plan to a one-step shutdown decision.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct ClientHeartbeatLoopShutdownDecisionBoundary;
+
+impl ClientHeartbeatLoopShutdownDecisionBoundary {
+    pub fn decide(
+        &self,
+        plan: &ClientHeartbeatLoopControllerPlan,
+    ) -> ClientHeartbeatLoopShutdownDecision {
+        match plan {
+            ClientHeartbeatLoopControllerPlan::Stop { reason, .. } => {
+                ClientHeartbeatLoopShutdownDecision::Stop { reason: *reason }
+            }
+            ClientHeartbeatLoopControllerPlan::OwnershipNotReady { .. }
+            | ClientHeartbeatLoopControllerPlan::Sleep { .. }
+            | ClientHeartbeatLoopControllerPlan::SendHeartbeat { .. } => {
+                ClientHeartbeatLoopShutdownDecision::Continue
+            }
+        }
+    }
+}
+
+/// Boundary that combines controller plan, log handoff, and shutdown decision.
+///
+/// This is the last pre-loop connection point. It does not execute shutdown,
+/// write JSON Lines, mutate counters, sleep, retry, or call sockets.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct ClientHeartbeatLoopControllerResultBoundary {
+    log: ClientHeartbeatLoopControllerLogHandoffBoundary,
+    shutdown: ClientHeartbeatLoopShutdownDecisionBoundary,
+}
+
+impl ClientHeartbeatLoopControllerResultBoundary {
+    pub fn finalize(
+        &self,
+        plan: ClientHeartbeatLoopControllerPlan,
+    ) -> ClientHeartbeatLoopControllerResult {
+        let action = client_heartbeat_loop_controller_action(&plan);
+        let log = self.log.prepare(&plan);
+        let shutdown = self.shutdown.decide(&plan);
+        let iteration_result = client_heartbeat_loop_controller_iteration_result(&plan);
+
+        ClientHeartbeatLoopControllerResult {
+            action,
+            plan,
+            log,
+            shutdown,
+            iteration_result,
+        }
+    }
+}
+
 /// Minimal controller boundary for one pre-loop client heartbeat step.
 ///
 /// It connects the body decision to either a typed send handoff, a bounded
@@ -1577,6 +1705,38 @@ impl ClientHeartbeatLoopControllerBoundary {
                 ClientHeartbeatLoopControllerPlan::SendHeartbeat { handoff, log }
             }
         }
+    }
+}
+
+fn client_heartbeat_loop_controller_action(
+    plan: &ClientHeartbeatLoopControllerPlan,
+) -> ClientHeartbeatLoopControllerAction {
+    match plan {
+        ClientHeartbeatLoopControllerPlan::OwnershipNotReady { .. } => {
+            ClientHeartbeatLoopControllerAction::OwnershipNotReady
+        }
+        ClientHeartbeatLoopControllerPlan::Stop { .. } => ClientHeartbeatLoopControllerAction::Stop,
+        ClientHeartbeatLoopControllerPlan::Sleep { .. } => {
+            ClientHeartbeatLoopControllerAction::Sleep
+        }
+        ClientHeartbeatLoopControllerPlan::SendHeartbeat { .. } => {
+            ClientHeartbeatLoopControllerAction::SendHeartbeat
+        }
+    }
+}
+
+fn client_heartbeat_loop_controller_iteration_result(
+    plan: &ClientHeartbeatLoopControllerPlan,
+) -> Option<ClientHeartbeatLoopIterationRuntimeResult> {
+    match plan {
+        ClientHeartbeatLoopControllerPlan::Stop {
+            iteration_result, ..
+        }
+        | ClientHeartbeatLoopControllerPlan::Sleep {
+            iteration_result, ..
+        } => Some(iteration_result.clone()),
+        ClientHeartbeatLoopControllerPlan::OwnershipNotReady { .. }
+        | ClientHeartbeatLoopControllerPlan::SendHeartbeat { .. } => None,
     }
 }
 
@@ -3198,5 +3358,131 @@ mod tests {
                 next_heartbeat_due_at: TimestampMicros(11_000),
             }
         );
+    }
+
+    #[test]
+    fn client_heartbeat_loop_controller_result_marks_stop_for_shutdown_and_logging() {
+        let log = ClientHeartbeatLoopLogHandoff {
+            client_id: ClientId("client-1".to_string()),
+            run_id: RunId("run-1".to_string()),
+            observed_at: TimestampMicros(10_000),
+            reason: ClientHeartbeatLoopPolicyReason::StopRequested,
+            heartbeat_interval_micros: 1_000,
+            ack_receive_timeout_micros: 2_000,
+            sent_heartbeats: 2,
+            received_acks: 2,
+            missed_acks: 0,
+        };
+        let plan = ClientHeartbeatLoopControllerPlan::Stop {
+            reason: ClientHeartbeatLoopPolicyReason::StopRequested,
+            log: log.clone(),
+            iteration_result: ClientHeartbeatLoopIterationRuntimeResult::Stopped {
+                reason: ClientHeartbeatLoopPolicyReason::StopRequested,
+            },
+        };
+
+        let result = ClientHeartbeatLoopControllerResultBoundary::default().finalize(plan);
+
+        assert_eq!(result.action, ClientHeartbeatLoopControllerAction::Stop);
+        assert_eq!(
+            result.shutdown,
+            ClientHeartbeatLoopShutdownDecision::Stop {
+                reason: ClientHeartbeatLoopPolicyReason::StopRequested
+            }
+        );
+        assert_eq!(
+            result.iteration_result,
+            Some(ClientHeartbeatLoopIterationRuntimeResult::Stopped {
+                reason: ClientHeartbeatLoopPolicyReason::StopRequested,
+            })
+        );
+        let log_handoff = result.log.expect("stop should produce log handoff");
+        assert_eq!(
+            log_handoff.action,
+            ClientHeartbeatLoopControllerAction::Stop
+        );
+        assert_eq!(log_handoff.policy_log, log);
+        assert_eq!(
+            log_handoff.iteration_result,
+            Some(ClientHeartbeatLoopIterationRuntimeResult::Stopped {
+                reason: ClientHeartbeatLoopPolicyReason::StopRequested,
+            })
+        );
+    }
+
+    #[test]
+    fn client_heartbeat_loop_controller_result_keeps_send_as_continue_handoff() {
+        let log = ClientHeartbeatLoopLogHandoff {
+            client_id: ClientId("client-1".to_string()),
+            run_id: RunId("run-1".to_string()),
+            observed_at: TimestampMicros(10_000),
+            reason: ClientHeartbeatLoopPolicyReason::HeartbeatDue,
+            heartbeat_interval_micros: 1_000,
+            ack_receive_timeout_micros: 2_000,
+            sent_heartbeats: 1,
+            received_acks: 1,
+            missed_acks: 0,
+        };
+        let handoff = ClientHeartbeatLoopBodySendHandoff {
+            client_id: ClientId("client-1".to_string()),
+            run_id: RunId("run-1".to_string()),
+            protocol_version: ProtocolVersion(2),
+            send_at: TimestampMicros(10_000),
+            ack_deadline_at: TimestampMicros(12_000),
+            ack_wait: ClientHeartbeatAckReceiveTimeoutDecision::Wait {
+                receive_timeout_micros: 500,
+                deadline_at: TimestampMicros(12_000),
+            },
+            ack_observation_return: ClientHeartbeatAckObservationReturnMode::ClientStatsOncePerAck,
+        };
+        let plan = ClientHeartbeatLoopControllerPlan::SendHeartbeat {
+            handoff,
+            log: log.clone(),
+        };
+
+        let result = ClientHeartbeatLoopControllerResultBoundary::default().finalize(plan);
+
+        assert_eq!(
+            result.action,
+            ClientHeartbeatLoopControllerAction::SendHeartbeat
+        );
+        assert_eq!(
+            result.shutdown,
+            ClientHeartbeatLoopShutdownDecision::Continue
+        );
+        assert_eq!(result.iteration_result, None);
+        let log_handoff = result
+            .log
+            .expect("send heartbeat should produce log handoff");
+        assert_eq!(
+            log_handoff.action,
+            ClientHeartbeatLoopControllerAction::SendHeartbeat
+        );
+        assert_eq!(log_handoff.policy_log, log);
+        assert_eq!(log_handoff.iteration_result, None);
+    }
+
+    #[test]
+    fn client_heartbeat_loop_controller_result_does_not_log_ownership_not_ready() {
+        let plan = ClientHeartbeatLoopControllerPlan::OwnershipNotReady {
+            decision: ClientHeartbeatLoopOwnershipDecision::NotReady {
+                client_id: ClientId("client-1".to_string()),
+                run_id: RunId("run-1".to_string()),
+                reason: ClientHeartbeatLoopOwnershipNotReadyReason::AuthNotAccepted,
+            },
+        };
+
+        let result = ClientHeartbeatLoopControllerResultBoundary::default().finalize(plan);
+
+        assert_eq!(
+            result.action,
+            ClientHeartbeatLoopControllerAction::OwnershipNotReady
+        );
+        assert_eq!(
+            result.shutdown,
+            ClientHeartbeatLoopShutdownDecision::Continue
+        );
+        assert_eq!(result.log, None);
+        assert_eq!(result.iteration_result, None);
     }
 }

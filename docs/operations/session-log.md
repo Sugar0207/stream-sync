@@ -5,6 +5,60 @@
 - Codex
 
 ### 今回の作業
+- continuous heartbeat loop 本体へ進む前の client loop logging / shutdown integration 接続範囲を整理した。
+- client controller plan から typed log handoff、shutdown decision、controller result へ変換する最小境界を追加した。
+- heartbeat policy / encode-send / ack receive / stats return / counters update / sleep-retry / logging / shutdown / future loop body の責務分離を architecture docs に反映した。
+
+### 変更ファイル
+- `apps/client/src/lib.rs`
+- `docs/architecture/system-design.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### 決定事項
+- client loop logging は、現段階では `ClientHeartbeatLoopControllerLogHandoffBoundary` が typed handoff を作るところまでに限定する。
+- shutdown integration は、現段階では `ClientHeartbeatLoopShutdownDecisionBoundary` が controller `Stop` plan を `Stop` decision に変換するところまでに限定する。
+- `OwnershipNotReady` は今回の client loop log handoff 対象外とし、将来の startup / precondition failure 側で扱う余地を残す。
+- JSON Lines writer、file sink open、process-wide logger、実 shutdown、実 sleep、retry execution、continuous loop 本体は今回の対象外に残す。
+
+### 実装したこと
+- `ClientHeartbeatLoopControllerAction` を追加した。
+- `ClientHeartbeatLoopControllerLogHandoff` / `ClientHeartbeatLoopControllerLogHandoffBoundary` を追加した。
+- `ClientHeartbeatLoopShutdownDecision` / `ClientHeartbeatLoopShutdownDecisionBoundary` を追加した。
+- `ClientHeartbeatLoopControllerResult` / `ClientHeartbeatLoopControllerResultBoundary` を追加した。
+- controller result の stop / send / ownership-not-ready の単体テストを追加した。
+
+### 未実装 / 保留
+- completed continuous heartbeat loop
+- JSON Lines event schema / caller-owned writer / sink 接続
+- actual shutdown execution / final flush / resource cleanup
+- actual sleep / timer integration
+- retry execution / socket timeout application
+- stats metrics state commit
+
+### 次にやる候補
+- heartbeat timeout notice wakeup 実行本体に進む前の境界整理を続ける。
+- RTT / offset metrics snapshot の具体的な export cadence / dashboard refresh 方針を整理する。
+- client 側 continuous heartbeat loop 本体の最小実装範囲を整理する。
+
+### TODO 更新
+- 現在位置に client loop logging / shutdown integration 境界の完了を反映した。
+- 直近でやることから client loop logging / shutdown integration 整理を外し、client 側 continuous heartbeat loop 本体の最小実装範囲整理へ更新した。
+- heartbeat / client / 検証タスクに `ClientHeartbeatLoopControllerResultBoundary` と関連単体テストの完了を追加した。
+
+### 検証
+- `cargo fmt`
+- `cargo fmt --check`
+- `cargo test -p stream-sync-client client_heartbeat_loop_controller_result`
+- `cargo check --workspace`
+
+---
+
+## 2026-04-23
+### 種別
+- Codex
+
+### 今回の作業
 - continuous heartbeat loop 本体へ進む前の client loop controller / retry execution / sleep integration 接続範囲を整理した。
 - `ClientHeartbeatLoopBodyResult` を send handoff / sleep plan / stop result へ変換する最小 controller 境界を追加した。
 - retry decision を failure iteration result と bounded sleep decision へ接続する最小 retry apply 境界を追加した。
