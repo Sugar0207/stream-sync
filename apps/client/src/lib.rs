@@ -1176,6 +1176,48 @@ impl ClientHeartbeatLoopAckObservationReturnBoundary {
     }
 }
 
+/// Runtime-shaped result after sending one ClientStats return datagram.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClientHeartbeatLoopClientStatsReturnSendRuntimeResult {
+    pub handoff: ClientHeartbeatLoopClientStatsReturnHandoff,
+    pub bytes_sent: usize,
+}
+
+/// Error from sending one ClientStats return datagram.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ClientHeartbeatLoopClientStatsReturnSendError {
+    Send(io::ErrorKind),
+}
+
+/// Boundary that sends one already-encoded ClientStats return datagram.
+///
+/// This boundary consumes the handoff prepared by
+/// `ClientHeartbeatLoopAckObservationReturnBoundary` and performs one UDP
+/// `send_to` using the caller-owned socket. It does not encode `ClientStats`,
+/// wait for another ack, retry, sleep, or run a continuous heartbeat loop.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct ClientHeartbeatLoopClientStatsReturnSendBoundary;
+
+impl ClientHeartbeatLoopClientStatsReturnSendBoundary {
+    pub fn send_one(
+        &self,
+        socket: &UdpSocket,
+        handoff: ClientHeartbeatLoopClientStatsReturnHandoff,
+    ) -> Result<
+        ClientHeartbeatLoopClientStatsReturnSendRuntimeResult,
+        ClientHeartbeatLoopClientStatsReturnSendError,
+    > {
+        let bytes_sent = socket
+            .send_to(&handoff.encoded_bytes, handoff.destination)
+            .map_err(|error| ClientHeartbeatLoopClientStatsReturnSendError::Send(error.kind()))?;
+
+        Ok(ClientHeartbeatLoopClientStatsReturnSendRuntimeResult {
+            handoff,
+            bytes_sent,
+        })
+    }
+}
+
 /// Startup config needed by the one-shot client AuthRequest PoC.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ClientAuthRequestPocStartupConfig {
@@ -2479,5 +2521,65 @@ mod tests {
             ClientId("client-1".to_string())
         );
         assert!(result.client_stats_return.is_none());
+    }
+
+    #[test]
+    fn client_heartbeat_loop_client_stats_return_send_boundary_sends_one_datagram() {
+        let receiver = UdpSocket::bind("127.0.0.1:0").expect("receiver should bind");
+        receiver
+            .set_read_timeout(Some(std::time::Duration::from_secs(1)))
+            .expect("receiver read timeout should be set");
+        let destination = receiver.local_addr().expect("receiver addr should exist");
+        let sender = UdpSocket::bind("127.0.0.1:0").expect("sender should bind");
+        let observation = HeartbeatAckObservation {
+            client_id: ClientId("client-1".to_string()),
+            run_id: RunId("run-1".to_string()),
+            echoed_sent_at: TimestampMicros(10_000),
+            server_received_at: TimestampMicros(10_500),
+            server_sent_at: TimestampMicros(10_600),
+            client_received_at: TimestampMicros(10_900),
+        };
+        let client_stats = ClientStats {
+            message_type: MessageType::ClientStats,
+            protocol_version: ProtocolVersion(2),
+            client_id: ClientId("client-1".to_string()),
+            run_id: RunId("run-1".to_string()),
+            sent_at: TimestampMicros(10_950),
+            capture_fps: 0,
+            dropped_frames: 0,
+            bitrate_kbps: 0,
+            heartbeat_observation: Some(observation),
+        };
+        let mut encoded_bytes = Vec::new();
+        ProtocolMessageEncoderBoundary
+            .encode_message(
+                EncodeContext {
+                    protocol_version: ProtocolVersion(2),
+                },
+                &ProtocolMessage::ClientStats(client_stats.clone()),
+                &mut encoded_bytes,
+            )
+            .expect("client stats should encode");
+        let handoff = ClientHeartbeatLoopClientStatsReturnHandoff {
+            destination,
+            client_stats: client_stats.clone(),
+            encoded_bytes,
+        };
+
+        let result = ClientHeartbeatLoopClientStatsReturnSendBoundary
+            .send_one(&sender, handoff)
+            .expect("client stats return should send once");
+
+        let mut buffer = [0_u8; 2048];
+        let (received_len, _) = receiver
+            .recv_from(&mut buffer)
+            .expect("receiver should get client stats datagram");
+        assert_eq!(result.bytes_sent, received_len);
+        assert_eq!(result.handoff.client_stats, client_stats);
+        let packet =
+            decode_fixed_header(&buffer[..received_len]).expect("client stats should decode");
+        let decoded_stats = decode_client_stats_payload(packet.header, packet.payload)
+            .expect("client stats payload should decode");
+        assert_eq!(decoded_stats, client_stats);
     }
 }

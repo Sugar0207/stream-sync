@@ -3371,6 +3371,47 @@ Current code reflects this with
 `ClientHeartbeatLoopClientStatsReturnHandoff`, and
 `ClientHeartbeatLoopAckObservationReturnRuntimeResult`.
 
+### Client Stats Return Send Handoff Boundary
+
+The client stats return send handoff is the narrow send step after ack
+observation return has already built and encoded a `ClientStats` datagram. It
+does not encode telemetry and it does not continue the heartbeat loop.
+
+Current implementation scope:
+
+1. `ClientHeartbeatLoopAckObservationReturnBoundary` may produce
+   `ClientHeartbeatLoopClientStatsReturnHandoff`.
+2. The handoff contains:
+   - destination socket address
+   - typed `ClientStats`
+   - encoded fixed-header + payload bytes
+3. `ClientHeartbeatLoopClientStatsReturnSendBoundary::send_one` receives a
+   caller-owned `UdpSocket` and the handoff.
+4. It performs exactly one UDP `send_to`.
+5. It returns `ClientHeartbeatLoopClientStatsReturnSendRuntimeResult` with the
+   original handoff and sent byte count.
+
+Responsibility split:
+
+- `ClientStats` encode
+  - Owned by `ClientHeartbeatLoopAckObservationReturnBoundary`.
+  - The send boundary trusts the encoded bytes in the handoff.
+- UDP send
+  - Owned by `ClientHeartbeatLoopClientStatsReturnSendBoundary` for one
+    datagram only.
+  - It does not bind sockets, set timeouts, retry, fragment, or encrypt.
+- ack observation return
+  - Owns deciding whether a `ClientStats` return exists for the ack.
+  - The send boundary does not inspect `HeartbeatAckObservation`.
+- future loop body
+  - Owns deciding when to call this send boundary, how to handle send errors,
+    loop counter updates, retry execution, sleep, and shutdown integration.
+
+Current code reflects this with
+`apps/client::ClientHeartbeatLoopClientStatsReturnSendBoundary`,
+`ClientHeartbeatLoopClientStatsReturnSendRuntimeResult`, and
+`ClientHeartbeatLoopClientStatsReturnSendError`.
+
 ### Heartbeat Client Ack Observation Flow
 
 The client ack observation flow returns the missing `client_received_at`
