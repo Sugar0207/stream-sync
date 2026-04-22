@@ -5,6 +5,65 @@
 - Codex
 
 ### 今回の作業
+- continuous heartbeat loop 本体へ進む前の client ack receive / observation return 接続範囲を整理した。
+- 送信済み heartbeat handoff から `HeartbeatAck` receive / decode / correlation check / `HeartbeatAckObservation` build へつなぐ最小境界を追加した。
+- observation return mode が `ClientStatsOncePerAck` の場合に、返送用 `ClientStats` datagram を encode する handoff を追加した。
+
+### 変更ファイル
+- `apps/client/src/lib.rs`
+- `docs/architecture/system-design.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### 決定事項
+- ack receive / decode は caller-owned `UdpSocket` から 1 回だけ受信する境界に留める。
+- ack correlation は `client_id` / `run_id` / `echoed_sent_at` で確認する。
+- `HeartbeatAckObservation` build は既存 `ClientHeartbeatAckObservationBoundary` に委譲する。
+- `ClientStats` return は typed handoff と encoded bytes を作るだけにし、実 UDP send は次段に残す。
+- retry、sleep、socket timeout 設定、loop counter 更新、shutdown integration は future loop body に残す。
+
+### 実装したこと
+- `ClientHeartbeatLoopAckObservationReturnInput` を追加した。
+- `ClientHeartbeatLoopClientStatsReturnHandoff` を追加した。
+- `ClientHeartbeatLoopAckObservationReturnRuntimeResult` を追加した。
+- `ClientHeartbeatLoopAckObservationReturnError` を追加した。
+- `ClientHeartbeatLoopAckObservationReturnBoundary::receive_one` を追加した。
+- `ClientHeartbeatLoopAckObservationReturnBoundary::prepare_return` を追加した。
+- ack observation から `ClientStats` return handoff を作る単体テストを追加した。
+- caller-owned UDP socket から `HeartbeatAck` を 1 回受信する単体テストを追加した。
+
+### 未実装 / 保留
+- completed continuous heartbeat loop
+- `ClientStats` return datagram の UDP send 接続
+- ack receive timeout / retry execution の実接続
+- loop counters / missed ack counters の更新
+- sleep / timer / shutdown integration
+- metrics snapshot の具体的な export cadence / dashboard refresh
+- timeout notice wakeup 実行本体
+
+### 次にやる候補
+- heartbeat timeout notice wakeup 実行本体に進む前の境界整理を続ける。
+- RTT / offset metrics snapshot の具体的な export cadence / dashboard refresh 方針を整理する。
+- continuous heartbeat loop 本体へ進む前の client stats return send handoff 接続範囲を整理する。
+
+### TODO 更新
+- 現在位置に client ack receive / observation return handoff 境界の完了を反映した。
+- 直近でやることを timeout notice wakeup 実行本体前の境界整理、metrics snapshot cadence / dashboard refresh 方針、client stats return send handoff 接続範囲整理へ更新した。
+- heartbeat / client / 検証タスクに `ClientHeartbeatLoopAckObservationReturnBoundary` と関連単体テストの完了を追加した。
+
+### 検証
+- `cargo fmt`
+- `cargo test -p stream-sync-client client_heartbeat_loop_ack_return`
+- `cargo fmt --check`
+- `cargo check --workspace`
+
+---
+
+## 2026-04-23
+### 種別
+- Codex
+
+### 今回の作業
 - continuous heartbeat loop 本体へ進む前の client heartbeat encode/send handoff 接続範囲を整理した。
 - `ClientHeartbeatLoopBodySendHandoff` から `Heartbeat` build / protocol encode / 1 回の UDP send へつなぐ最小境界を追加した。
 - ack wait / observation return は handoff に保持し、`HeartbeatAck` receive / `ClientStats` return / retry 実行には進まなかった。

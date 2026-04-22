@@ -3314,6 +3314,63 @@ Current code reflects this with
 `ClientHeartbeatLoopEncodedSendHandoff`, and
 `ClientHeartbeatLoopEncodeSendRuntimeResult`.
 
+### Client Ack Receive / Observation Return Handoff Boundary
+
+The client ack receive / observation return handoff connects one sent heartbeat
+to the feedback path needed by server-side RTT / offset calculation. It is the
+next step after heartbeat encode/send, but it is still not a completed
+continuous heartbeat loop.
+
+Current implementation scope:
+
+1. `ClientHeartbeatLoopAckObservationReturnBoundary::receive_one` receives and
+   decodes one `HeartbeatAck` from a caller-owned `UdpSocket`.
+2. The boundary validates that the ack matches the sent heartbeat by checking:
+   - `client_id`
+   - `run_id`
+   - `echoed_sent_at`
+3. The boundary records a client receive timestamp and creates one
+   `HeartbeatAckObservation` through
+   `ClientHeartbeatAckObservationBoundary`.
+4. If the original send handoff selected
+   `ClientHeartbeatAckObservationReturnMode::Disabled`, the runtime result
+   contains no `ClientStats` return.
+5. If the original send handoff selected
+   `ClientStatsOncePerAck`, the boundary:
+   - wraps the observation with `ClientHeartbeatObservationCarrierBoundary`
+   - builds one `ClientStats` payload with zeroed non-heartbeat stats fields
+   - encodes the payload through `ProtocolMessageEncoderBoundary`
+   - returns `ClientHeartbeatLoopClientStatsReturnHandoff`
+6. The return handoff preserves the destination, typed `ClientStats`, and
+   encoded bytes for a later send step.
+
+Responsibility split:
+
+- ack receive
+  - `receive_one` owns one blocking `recv_from` through the existing client
+    response decode helper.
+  - It does not loop, retry, or alter socket timeout settings.
+- decode
+  - Existing protocol decode validates fixed header, protocol version, message
+    type, and `HeartbeatAck` payload shape.
+- observation build
+  - `ClientHeartbeatAckObservationBoundary` owns conversion from ack timestamps
+    plus client receive timestamp into `HeartbeatAckObservation`.
+- `ClientStats` return
+  - This boundary can build and encode a return datagram when the mode requests
+    one.
+  - It does not send the datagram.
+- future loop body
+  - Owns when to call ack receive, how to handle timeout/error retry, when to
+    send the encoded `ClientStats` return, and how to update loop counters or
+    shutdown state.
+
+Current code reflects this with
+`apps/client::ClientHeartbeatLoopAckObservationReturnBoundary`,
+`ClientHeartbeatLoopAckObservationReturnInput`,
+`ClientHeartbeatLoopClientStatsReturnHandoff`, and
+`ClientHeartbeatLoopAckObservationReturnRuntimeResult`.
+
 ### Heartbeat Client Ack Observation Flow
 
 The client ack observation flow returns the missing `client_received_at`

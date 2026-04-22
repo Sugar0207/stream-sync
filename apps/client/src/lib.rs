@@ -998,6 +998,184 @@ impl ClientHeartbeatLoopEncodeSendBoundary {
     }
 }
 
+/// Input for preparing ack observation return from a decoded HeartbeatAck.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClientHeartbeatLoopAckObservationReturnInput {
+    pub sent: ClientHeartbeatLoopEncodedSendHandoff,
+    pub ack_source: SocketAddr,
+    pub ack_bytes: Vec<u8>,
+    pub ack: HeartbeatAck,
+    pub client_received_at: TimestampMicros,
+    pub client_stats_sent_at: TimestampMicros,
+}
+
+/// Handoff for a future `ClientStats` return datagram.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClientHeartbeatLoopClientStatsReturnHandoff {
+    pub destination: SocketAddr,
+    pub client_stats: ClientStats,
+    pub encoded_bytes: Vec<u8>,
+}
+
+/// Runtime-shaped result after receiving an ack and preparing optional return.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClientHeartbeatLoopAckObservationReturnRuntimeResult {
+    pub ack_source: SocketAddr,
+    pub ack_bytes: Vec<u8>,
+    pub ack: HeartbeatAck,
+    pub observation: HeartbeatAckObservation,
+    pub client_stats_return: Option<ClientHeartbeatLoopClientStatsReturnHandoff>,
+}
+
+/// Error from the client ack receive / observation return boundary.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ClientHeartbeatLoopAckObservationReturnError {
+    AckReceive(ClientResponseReceiveError),
+    AckCorrelationMismatch {
+        expected_client_id: ClientId,
+        actual_client_id: ClientId,
+        expected_run_id: RunId,
+        actual_run_id: RunId,
+        expected_echoed_sent_at: TimestampMicros,
+        actual_echoed_sent_at: TimestampMicros,
+    },
+    Encode(ProtocolError),
+}
+
+/// Boundary that connects ack receive/decode to observation return handoff.
+///
+/// This can receive and decode one `HeartbeatAck`, build one
+/// `HeartbeatAckObservation`, and optionally encode one `ClientStats` return
+/// datagram. It does not send the `ClientStats` datagram, retry, sleep, or run
+/// a continuous heartbeat loop.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct ClientHeartbeatLoopAckObservationReturnBoundary {
+    observation: ClientHeartbeatAckObservationBoundary,
+    carrier: ClientHeartbeatObservationCarrierBoundary,
+    encoder: ProtocolMessageEncoderBoundary,
+}
+
+impl ClientHeartbeatLoopAckObservationReturnBoundary {
+    pub fn receive_one(
+        &self,
+        socket: &UdpSocket,
+        sent: ClientHeartbeatLoopEncodedSendHandoff,
+    ) -> Result<
+        ClientHeartbeatLoopAckObservationReturnRuntimeResult,
+        ClientHeartbeatLoopAckObservationReturnError,
+    > {
+        let (ack_source, ack_bytes, ack) =
+            receive_heartbeat_ack(socket, sent.heartbeat.protocol_version)
+                .map_err(ClientHeartbeatLoopAckObservationReturnError::AckReceive)?;
+        let client_received_at = current_timestamp_micros();
+        self.prepare_return(ClientHeartbeatLoopAckObservationReturnInput {
+            sent,
+            ack_source,
+            ack_bytes,
+            ack,
+            client_received_at,
+            client_stats_sent_at: current_timestamp_micros(),
+        })
+    }
+
+    pub fn prepare_return(
+        &self,
+        input: ClientHeartbeatLoopAckObservationReturnInput,
+    ) -> Result<
+        ClientHeartbeatLoopAckObservationReturnRuntimeResult,
+        ClientHeartbeatLoopAckObservationReturnError,
+    > {
+        self.validate_ack_correlation(&input.sent.heartbeat, &input.ack)?;
+
+        let observation = self
+            .observation
+            .observe_ack(&input.ack, input.client_received_at);
+        let client_stats_return = match input.sent.ack_observation_return {
+            ClientHeartbeatAckObservationReturnMode::Disabled => None,
+            ClientHeartbeatAckObservationReturnMode::ClientStatsOncePerAck => {
+                Some(self.build_client_stats_return(
+                    input.sent.destination,
+                    input.sent.heartbeat.protocol_version,
+                    observation.clone(),
+                    input.client_stats_sent_at,
+                )?)
+            }
+        };
+
+        Ok(ClientHeartbeatLoopAckObservationReturnRuntimeResult {
+            ack_source: input.ack_source,
+            ack_bytes: input.ack_bytes,
+            ack: input.ack,
+            observation,
+            client_stats_return,
+        })
+    }
+
+    fn validate_ack_correlation(
+        &self,
+        heartbeat: &Heartbeat,
+        ack: &HeartbeatAck,
+    ) -> Result<(), ClientHeartbeatLoopAckObservationReturnError> {
+        if heartbeat.client_id != ack.client_id
+            || heartbeat.run_id != ack.run_id
+            || heartbeat.sent_at != ack.echoed_sent_at
+        {
+            return Err(
+                ClientHeartbeatLoopAckObservationReturnError::AckCorrelationMismatch {
+                    expected_client_id: heartbeat.client_id.clone(),
+                    actual_client_id: ack.client_id.clone(),
+                    expected_run_id: heartbeat.run_id.clone(),
+                    actual_run_id: ack.run_id.clone(),
+                    expected_echoed_sent_at: heartbeat.sent_at,
+                    actual_echoed_sent_at: ack.echoed_sent_at,
+                },
+            );
+        }
+
+        Ok(())
+    }
+
+    fn build_client_stats_return(
+        &self,
+        destination: SocketAddr,
+        protocol_version: ProtocolVersion,
+        observation: HeartbeatAckObservation,
+        sent_at: TimestampMicros,
+    ) -> Result<
+        ClientHeartbeatLoopClientStatsReturnHandoff,
+        ClientHeartbeatLoopAckObservationReturnError,
+    > {
+        let carrier = self
+            .carrier
+            .build_client_stats_carrier(protocol_version, observation.clone());
+        let client_stats = ClientStats {
+            message_type: MessageType::ClientStats,
+            protocol_version: carrier.protocol_version,
+            client_id: carrier.observation.client_id.clone(),
+            run_id: carrier.observation.run_id.clone(),
+            sent_at,
+            capture_fps: 0,
+            dropped_frames: 0,
+            bitrate_kbps: 0,
+            heartbeat_observation: Some(carrier.observation),
+        };
+        let mut encoded_bytes = Vec::new();
+        self.encoder
+            .encode_message(
+                EncodeContext { protocol_version },
+                &ProtocolMessage::ClientStats(client_stats.clone()),
+                &mut encoded_bytes,
+            )
+            .map_err(ClientHeartbeatLoopAckObservationReturnError::Encode)?;
+
+        Ok(ClientHeartbeatLoopClientStatsReturnHandoff {
+            destination,
+            client_stats,
+            encoded_bytes,
+        })
+    }
+}
+
 /// Startup config needed by the one-shot client AuthRequest PoC.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ClientAuthRequestPocStartupConfig {
@@ -2168,5 +2346,138 @@ mod tests {
         assert_eq!(heartbeat.client_id, ClientId("client-1".to_string()));
         assert_eq!(heartbeat.run_id, RunId("run-1".to_string()));
         assert_eq!(heartbeat.sent_at, TimestampMicros(10_000));
+    }
+
+    #[test]
+    fn client_heartbeat_loop_ack_return_boundary_builds_client_stats_handoff() {
+        let destination = "127.0.0.1:5000".parse().unwrap();
+        let sent = ClientHeartbeatLoopEncodedSendHandoff {
+            destination,
+            heartbeat: Heartbeat {
+                message_type: MessageType::Heartbeat,
+                protocol_version: ProtocolVersion(2),
+                client_id: ClientId("client-1".to_string()),
+                run_id: RunId("run-1".to_string()),
+                sent_at: TimestampMicros(10_000),
+                local_time: Some(TimestampMicros(10_000)),
+                short_status: None,
+            },
+            encoded_bytes: Vec::new(),
+            ack_deadline_at: TimestampMicros(12_000),
+            ack_wait: ClientHeartbeatAckReceiveTimeoutDecision::Wait {
+                receive_timeout_micros: 500,
+                deadline_at: TimestampMicros(12_000),
+            },
+            ack_observation_return: ClientHeartbeatAckObservationReturnMode::ClientStatsOncePerAck,
+        };
+        let ack = HeartbeatAck {
+            message_type: MessageType::HeartbeatAck,
+            protocol_version: ProtocolVersion(2),
+            client_id: ClientId("client-1".to_string()),
+            run_id: RunId("run-1".to_string()),
+            echoed_sent_at: TimestampMicros(10_000),
+            server_received_at: TimestampMicros(10_500),
+            server_sent_at: TimestampMicros(10_600),
+        };
+
+        let result = ClientHeartbeatLoopAckObservationReturnBoundary::default()
+            .prepare_return(ClientHeartbeatLoopAckObservationReturnInput {
+                sent,
+                ack_source: destination,
+                ack_bytes: vec![1, 2, 3],
+                ack,
+                client_received_at: TimestampMicros(10_900),
+                client_stats_sent_at: TimestampMicros(10_950),
+            })
+            .expect("ack observation return should be prepared");
+
+        assert_eq!(
+            result.observation.client_id,
+            ClientId("client-1".to_string())
+        );
+        assert_eq!(result.observation.run_id, RunId("run-1".to_string()));
+        assert_eq!(result.observation.echoed_sent_at, TimestampMicros(10_000));
+        assert_eq!(
+            result.observation.client_received_at,
+            TimestampMicros(10_900)
+        );
+        let stats_return = result
+            .client_stats_return
+            .expect("client stats return should be prepared");
+        assert_eq!(stats_return.destination, destination);
+        assert_eq!(stats_return.client_stats.sent_at, TimestampMicros(10_950));
+        assert_eq!(
+            stats_return.client_stats.heartbeat_observation,
+            Some(result.observation)
+        );
+        let packet = decode_fixed_header(&stats_return.encoded_bytes)
+            .expect("encoded client stats fixed header should decode");
+        let decoded_stats = decode_client_stats_payload(packet.header, packet.payload)
+            .expect("encoded client stats should decode");
+        assert_eq!(decoded_stats, stats_return.client_stats);
+    }
+
+    #[test]
+    fn client_heartbeat_loop_ack_return_boundary_receives_ack_once() {
+        let receiver = UdpSocket::bind("127.0.0.1:0").expect("receiver should bind");
+        receiver
+            .set_read_timeout(Some(std::time::Duration::from_secs(1)))
+            .expect("receiver read timeout should be set");
+        let receiver_addr = receiver.local_addr().expect("receiver addr should exist");
+        let sender = UdpSocket::bind("127.0.0.1:0").expect("sender should bind");
+        let sender_addr = sender.local_addr().expect("sender addr should exist");
+        let ack = HeartbeatAck {
+            message_type: MessageType::HeartbeatAck,
+            protocol_version: ProtocolVersion(2),
+            client_id: ClientId("client-1".to_string()),
+            run_id: RunId("run-1".to_string()),
+            echoed_sent_at: TimestampMicros(10_000),
+            server_received_at: TimestampMicros(10_500),
+            server_sent_at: TimestampMicros(10_600),
+        };
+        let mut ack_bytes = Vec::new();
+        ProtocolMessageEncoderBoundary
+            .encode_message(
+                EncodeContext {
+                    protocol_version: ProtocolVersion(2),
+                },
+                &ProtocolMessage::HeartbeatAck(ack),
+                &mut ack_bytes,
+            )
+            .expect("ack should encode");
+        sender
+            .send_to(&ack_bytes, receiver_addr)
+            .expect("ack should send to receiver");
+        let sent = ClientHeartbeatLoopEncodedSendHandoff {
+            destination: sender_addr,
+            heartbeat: Heartbeat {
+                message_type: MessageType::Heartbeat,
+                protocol_version: ProtocolVersion(2),
+                client_id: ClientId("client-1".to_string()),
+                run_id: RunId("run-1".to_string()),
+                sent_at: TimestampMicros(10_000),
+                local_time: None,
+                short_status: None,
+            },
+            encoded_bytes: Vec::new(),
+            ack_deadline_at: TimestampMicros(12_000),
+            ack_wait: ClientHeartbeatAckReceiveTimeoutDecision::Wait {
+                receive_timeout_micros: 500,
+                deadline_at: TimestampMicros(12_000),
+            },
+            ack_observation_return: ClientHeartbeatAckObservationReturnMode::Disabled,
+        };
+
+        let result = ClientHeartbeatLoopAckObservationReturnBoundary::default()
+            .receive_one(&receiver, sent)
+            .expect("ack should be received and observed");
+
+        assert_eq!(result.ack_source, sender_addr);
+        assert_eq!(result.ack.echoed_sent_at, TimestampMicros(10_000));
+        assert_eq!(
+            result.observation.client_id,
+            ClientId("client-1".to_string())
+        );
+        assert!(result.client_stats_return.is_none());
     }
 }
