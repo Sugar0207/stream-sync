@@ -5,6 +5,64 @@
 - Codex
 
 ### 今回の作業
+- RTT / offset estimate を server 側 state に commit する最小範囲を整理した。
+- stateless calculator の結果を per-client latest estimate state に保存する `ServerHeartbeatRttOffsetCommitBoundary` を追加した。
+- `--receive-send-three` で returned observation の RTT / offset candidate を 1 回 commit し、stdout に state entry 数と sample count を表示するようにした。
+
+### 変更ファイル
+- `apps/server/src/lib.rs`
+- `apps/server/src/main.rs`
+- `docs/architecture/system-design.md`
+- `docs/operations/auth-roundtrip-manual-check.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### 決定事項
+- stateless calculator は 1 exchange の RTT / offset candidate 算出だけを担当する。
+- state commit boundary は latest estimate と same-run sample count の保持だけを担当する。
+- 同じ `client_id` で `run_id` が変わった場合は sample count を 1 に戻し、previous run replacement として outcome に残す。
+- smoothing、outlier rejection、confidence、history、補正後 timestamp の公開は future estimator state に残す。
+- timeout loop は liveness / timeout を担当し、RTT / offset state commit とは分離する。
+
+### 実装したこと
+- `ServerHeartbeatRttOffsetStateEntry` と `ServerHeartbeatRttOffsetState` を追加した。
+- `ServerHeartbeatRttOffsetCommitInput` と `ServerHeartbeatRttOffsetCommitOutcome` を追加した。
+- `ServerHeartbeatRttOffsetCommitBoundary::commit` を追加した。
+- `ServerReceiveSendThreeIterationLauncher` で one-shot calculation を state に commit し、outcome に state / commit result を載せた。
+- server CLI `--receive-send-three` stdout に `heartbeat_rtt_offset_entries` と `heartbeat_rtt_offset_samples` を追加した。
+- first commit、same-run sample increment、new-run reset の単体テストを追加した。
+
+### 未実装 / 保留
+- smoothing / outlier policy
+- estimate history / confidence
+- corrected timestamp を sync-core / targetTime へ公開する処理
+- continuous heartbeat loop からの継続 observation commit
+- metrics state commit
+- video / switcher 側への拡張
+
+### 次にやる候補
+- heartbeat timeout loop tick の notice queue storage / send wakeup 方針を整理する。
+- RTT / offset smoothing / outlier policy の範囲を整理する。
+- continuous heartbeat loop に進む前の送信間隔、停止条件、ログ出力範囲を整理する。
+
+### TODO 更新
+- 現在位置に heartbeat RTT / offset state commit 境界と `--receive-send-three` の commit 表示完了を反映した。
+- 直近でやることを timeout loop tick の notice queue storage / send wakeup、RTT / offset smoothing / outlier policy、continuous heartbeat loop 前の境界整理へ更新した。
+- heartbeat / net-core / 検証タスクに RTT / offset state commit boundary と関連単体テストの完了を追加した。
+
+### 検証
+- `cargo fmt`
+- `cargo fmt --check`
+- `cargo test -p stream-sync-server heartbeat_rtt_offset_commit`
+- `cargo check --workspace`
+
+---
+
+## 2026-04-22
+### 種別
+- Codex
+
+### 今回の作業
 - timeout evaluation / action plan / apply boundary を future continuous loop からどう呼ぶかを整理した。
 - future loop が選んだ 1 client 分だけ timeout evaluation -> action plan -> apply を実行する最小 loop tick 境界を追加した。
 - continuous heartbeat loop 本体、client scan、sleep、notice 送信本体、file sink open には進めなかった。

@@ -870,6 +870,7 @@ pub struct ServerReceiveSendThreeIterationLauncher {
     runtime: ServerControllerReceiveSendRuntimeBoundary,
     observation_return: ServerHeartbeatObservationReturnBoundary,
     liveness_commit: ServerHeartbeatLivenessCommitBoundary,
+    rtt_offset_commit: ServerHeartbeatRttOffsetCommitBoundary,
 }
 
 impl ServerReceiveSendThreeIterationLauncher {
@@ -931,6 +932,7 @@ impl ServerReceiveSendThreeIterationLauncher {
         let mut registry = AuthenticatedSenderRegistry::default();
         let mut queue_collection = ServerOutboundQueueCollection::default();
         let mut heartbeat_liveness_state = ServerHeartbeatLivenessState::default();
+        let mut heartbeat_rtt_offset_state = ServerHeartbeatRttOffsetState::default();
 
         let first = self.run_controller_once(
             &socket,
@@ -981,6 +983,13 @@ impl ServerReceiveSendThreeIterationLauncher {
             .observation_return
             .calculate_from_client_stats(heartbeat_handoff, client_stats)
             .map_err(ServerReceiveSendThreeIterationStartupError::ObservationReturn)?;
+        let heartbeat_rtt_offset_commit = self.rtt_offset_commit.commit(
+            &mut heartbeat_rtt_offset_state,
+            ServerHeartbeatRttOffsetCommitInput {
+                calculation: heartbeat_calculation.clone(),
+                committed_at: Some(current_system_timestamp_micros()),
+            },
+        );
 
         Ok(ServerReceiveSendThreeIterationStartupOutcome {
             bind_address: startup_config.bind_address,
@@ -992,6 +1001,8 @@ impl ServerReceiveSendThreeIterationLauncher {
             heartbeat_calculation,
             heartbeat_liveness_state,
             heartbeat_liveness_commit,
+            heartbeat_rtt_offset_state,
+            heartbeat_rtt_offset_commit,
         })
     }
 
@@ -1053,6 +1064,8 @@ pub struct ServerReceiveSendThreeIterationStartupOutcome {
     pub heartbeat_calculation: ServerHeartbeatRttOffsetCalculation,
     pub heartbeat_liveness_state: ServerHeartbeatLivenessState,
     pub heartbeat_liveness_commit: ServerHeartbeatLivenessCommitOutcome,
+    pub heartbeat_rtt_offset_state: ServerHeartbeatRttOffsetState,
+    pub heartbeat_rtt_offset_commit: ServerHeartbeatRttOffsetCommitOutcome,
 }
 
 /// Startup error for exactly three controller receive/send iterations.
@@ -6540,6 +6553,102 @@ pub struct ServerHeartbeatRttOffsetCalculation {
     pub client_id: ClientId,
     pub run_id: RunId,
     pub estimate: HeartbeatRttOffsetEstimate,
+}
+
+/// Server-side latest committed RTT / offset estimate for one client.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ServerHeartbeatRttOffsetStateEntry {
+    pub client_id: ClientId,
+    pub run_id: RunId,
+    pub latest_estimate: HeartbeatRttOffsetEstimate,
+    pub committed_samples: u64,
+    pub last_committed_at: Option<TimestampMicros>,
+}
+
+/// In-memory server-side RTT / offset state keyed by `client_id`.
+///
+/// This stores only the latest accepted estimate and sample count. It does not
+/// smooth offset, reject outliers, expose corrected timestamps, or drive
+/// timeout policy.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ServerHeartbeatRttOffsetState {
+    entries_by_client_id: BTreeMap<String, ServerHeartbeatRttOffsetStateEntry>,
+}
+
+impl ServerHeartbeatRttOffsetState {
+    pub fn entries(&self) -> impl Iterator<Item = &ServerHeartbeatRttOffsetStateEntry> {
+        self.entries_by_client_id.values()
+    }
+
+    pub fn get(&self, client_id: &ClientId) -> Option<&ServerHeartbeatRttOffsetStateEntry> {
+        self.entries_by_client_id.get(client_id.0.as_str())
+    }
+
+    pub fn len(&self) -> usize {
+        self.entries_by_client_id.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.entries_by_client_id.is_empty()
+    }
+}
+
+/// Input for committing one calculated RTT / offset estimate to server state.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ServerHeartbeatRttOffsetCommitInput {
+    pub calculation: ServerHeartbeatRttOffsetCalculation,
+    pub committed_at: Option<TimestampMicros>,
+}
+
+/// Result of committing one RTT / offset estimate to server state.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ServerHeartbeatRttOffsetCommitOutcome {
+    pub previous: Option<ServerHeartbeatRttOffsetStateEntry>,
+    pub committed: ServerHeartbeatRttOffsetStateEntry,
+    pub replaced_previous_run: bool,
+}
+
+/// Boundary that commits stateless RTT / offset estimates into server state.
+///
+/// This boundary overwrites the per-client latest estimate and increments a
+/// same-run sample count. It does not calculate estimates, smooth offset,
+/// reject outliers, mutate liveness state, emit logs, or run timeout policy.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct ServerHeartbeatRttOffsetCommitBoundary;
+
+impl ServerHeartbeatRttOffsetCommitBoundary {
+    pub fn commit(
+        &self,
+        state: &mut ServerHeartbeatRttOffsetState,
+        input: ServerHeartbeatRttOffsetCommitInput,
+    ) -> ServerHeartbeatRttOffsetCommitOutcome {
+        let key = input.calculation.client_id.0.clone();
+        let previous = state.entries_by_client_id.get(&key).cloned();
+        let replaced_previous_run = previous
+            .as_ref()
+            .map(|entry| entry.run_id != input.calculation.run_id)
+            .unwrap_or(false);
+        let committed_samples = previous
+            .as_ref()
+            .filter(|entry| entry.run_id == input.calculation.run_id)
+            .map(|entry| entry.committed_samples.saturating_add(1))
+            .unwrap_or(1);
+        let committed = ServerHeartbeatRttOffsetStateEntry {
+            client_id: input.calculation.client_id,
+            run_id: input.calculation.run_id,
+            latest_estimate: input.calculation.estimate,
+            committed_samples,
+            last_committed_at: input.committed_at,
+        };
+
+        state.entries_by_client_id.insert(key, committed.clone());
+
+        ServerHeartbeatRttOffsetCommitOutcome {
+            previous,
+            committed,
+            replaced_previous_run,
+        }
+    }
 }
 
 /// Server-side validation errors before or during one timebase calculation.
@@ -12088,6 +12197,139 @@ shared_token = "secret"
                 actual: TimestampMicros(999),
             }
         );
+    }
+
+    #[test]
+    fn heartbeat_rtt_offset_commit_boundary_commits_first_estimate() {
+        let boundary = ServerHeartbeatRttOffsetCommitBoundary;
+        let mut state = ServerHeartbeatRttOffsetState::default();
+        let calculation = ServerHeartbeatRttOffsetCalculation {
+            client_id: ClientId("client-1".to_string()),
+            run_id: RunId("run-1".to_string()),
+            estimate: HeartbeatRttOffsetEstimate {
+                rtt_micros: 100,
+                server_processing_micros: 20,
+                clock_offset_micros: 1_000,
+            },
+        };
+
+        let outcome = boundary.commit(
+            &mut state,
+            ServerHeartbeatRttOffsetCommitInput {
+                calculation,
+                committed_at: Some(TimestampMicros(10_000)),
+            },
+        );
+
+        assert_eq!(state.len(), 1);
+        assert_eq!(outcome.previous, None);
+        assert!(!outcome.replaced_previous_run);
+        assert_eq!(
+            outcome.committed.client_id,
+            ClientId("client-1".to_string())
+        );
+        assert_eq!(outcome.committed.run_id, RunId("run-1".to_string()));
+        assert_eq!(outcome.committed.latest_estimate.rtt_micros, 100);
+        assert_eq!(outcome.committed.latest_estimate.clock_offset_micros, 1_000);
+        assert_eq!(outcome.committed.committed_samples, 1);
+        assert_eq!(
+            outcome.committed.last_committed_at,
+            Some(TimestampMicros(10_000))
+        );
+        assert_eq!(
+            state
+                .get(&ClientId("client-1".to_string()))
+                .expect("estimate should be committed"),
+            &outcome.committed
+        );
+    }
+
+    #[test]
+    fn heartbeat_rtt_offset_commit_boundary_increments_same_run_samples() {
+        let boundary = ServerHeartbeatRttOffsetCommitBoundary;
+        let mut state = ServerHeartbeatRttOffsetState::default();
+        let first = ServerHeartbeatRttOffsetCalculation {
+            client_id: ClientId("client-1".to_string()),
+            run_id: RunId("run-1".to_string()),
+            estimate: HeartbeatRttOffsetEstimate {
+                rtt_micros: 100,
+                server_processing_micros: 20,
+                clock_offset_micros: 1_000,
+            },
+        };
+        let second = ServerHeartbeatRttOffsetCalculation {
+            client_id: ClientId("client-1".to_string()),
+            run_id: RunId("run-1".to_string()),
+            estimate: HeartbeatRttOffsetEstimate {
+                rtt_micros: 120,
+                server_processing_micros: 30,
+                clock_offset_micros: 1_010,
+            },
+        };
+
+        boundary.commit(
+            &mut state,
+            ServerHeartbeatRttOffsetCommitInput {
+                calculation: first,
+                committed_at: None,
+            },
+        );
+        let outcome = boundary.commit(
+            &mut state,
+            ServerHeartbeatRttOffsetCommitInput {
+                calculation: second,
+                committed_at: Some(TimestampMicros(11_000)),
+            },
+        );
+
+        assert!(outcome.previous.is_some());
+        assert!(!outcome.replaced_previous_run);
+        assert_eq!(outcome.committed.committed_samples, 2);
+        assert_eq!(outcome.committed.latest_estimate.rtt_micros, 120);
+        assert_eq!(outcome.committed.latest_estimate.clock_offset_micros, 1_010);
+    }
+
+    #[test]
+    fn heartbeat_rtt_offset_commit_boundary_resets_sample_count_on_new_run() {
+        let boundary = ServerHeartbeatRttOffsetCommitBoundary;
+        let mut state = ServerHeartbeatRttOffsetState::default();
+        boundary.commit(
+            &mut state,
+            ServerHeartbeatRttOffsetCommitInput {
+                calculation: ServerHeartbeatRttOffsetCalculation {
+                    client_id: ClientId("client-1".to_string()),
+                    run_id: RunId("run-1".to_string()),
+                    estimate: HeartbeatRttOffsetEstimate {
+                        rtt_micros: 100,
+                        server_processing_micros: 20,
+                        clock_offset_micros: 1_000,
+                    },
+                },
+                committed_at: None,
+            },
+        );
+
+        let outcome = boundary.commit(
+            &mut state,
+            ServerHeartbeatRttOffsetCommitInput {
+                calculation: ServerHeartbeatRttOffsetCalculation {
+                    client_id: ClientId("client-1".to_string()),
+                    run_id: RunId("run-2".to_string()),
+                    estimate: HeartbeatRttOffsetEstimate {
+                        rtt_micros: 90,
+                        server_processing_micros: 10,
+                        clock_offset_micros: 900,
+                    },
+                },
+                committed_at: Some(TimestampMicros(12_000)),
+            },
+        );
+
+        assert!(outcome.previous.is_some());
+        assert!(outcome.replaced_previous_run);
+        assert_eq!(outcome.committed.run_id, RunId("run-2".to_string()));
+        assert_eq!(outcome.committed.committed_samples, 1);
+        assert_eq!(outcome.committed.latest_estimate.clock_offset_micros, 900);
     }
 
     #[test]

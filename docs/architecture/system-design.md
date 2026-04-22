@@ -2606,6 +2606,50 @@ Current code reflects this with `crates/timebase::HeartbeatExchangeObservation`,
 `apps/server::ServerHeartbeatRttOffsetCalculationBoundary` validates client /
 run correlation and echoed `sent_at` before calling the stateless calculator.
 
+### Heartbeat RTT / Offset State Commit Boundary
+
+The RTT / offset state commit boundary records the latest stateless estimate in
+server memory. It is deliberately smaller than the future estimator state: it
+does not smooth, reject outliers, or expose corrected timestamps.
+
+Current implementation scope:
+
+1. `ServerHeartbeatRttOffsetCalculationBoundary` produces one
+   `ServerHeartbeatRttOffsetCalculation`.
+2. `ServerHeartbeatRttOffsetCommitBoundary::commit` accepts that calculation
+   through `ServerHeartbeatRttOffsetCommitInput`.
+3. `ServerHeartbeatRttOffsetState` stores one
+   `ServerHeartbeatRttOffsetStateEntry` per `client_id`.
+4. Each entry stores:
+   - `client_id`
+   - `run_id`
+   - latest `HeartbeatRttOffsetEstimate`
+   - committed sample count
+   - optional server commit timestamp
+5. A same-run commit overwrites the latest estimate and increments the sample
+   count.
+6. A new `run_id` for the same `client_id` overwrites the latest estimate and
+   resets the sample count to 1. The outcome records that the previous run was
+   replaced.
+7. `--receive-send-three` commits the one returned observation calculation into
+   this state and reports the entry count / sample count in stdout.
+
+Responsibility split:
+
+- stateless calculator
+  - Validates one returned observation and computes one RTT / offset candidate.
+  - Does not retain history or mutate server state.
+- state commit boundary
+  - Stores the latest candidate and simple per-run sample count.
+  - Does not calculate, smooth, reject outliers, alter timeout state, log, or
+    notify clients.
+- future smoothing / estimator state
+  - Owns smoothing factor, warm-up, outlier policy, confidence, history, and
+    corrected timestamp exposure to sync-core.
+- future timeout loop
+  - Owns liveness / timeout decisions.
+  - Does not depend on RTT / offset smoothing being complete.
+
 ### Heartbeat Client Ack Observation Flow
 
 The client ack observation flow returns the missing `client_received_at`

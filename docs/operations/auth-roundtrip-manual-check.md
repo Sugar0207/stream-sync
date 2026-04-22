@@ -315,7 +315,7 @@ auth heartbeat stats PoC sent AuthRequest <bytes> bytes to 127.0.0.1:5000 and re
 server stdout は、3 packet を処理し、3 回目の `ClientStats` では送信しないこと、stateless RTT / offset candidate を計算したことを表示します。
 
 ```text
-receive/send three-iteration runtime handled three packets on 0.0.0.0:5000; first_sent_bytes=<auth-response-bytes> second_sent_bytes=<heartbeat-ack-bytes> third_sent_bytes=0 registered_clients=1 heartbeat_liveness_entries=1 heartbeat_received_count=1 heartbeat_rtt_micros=<rtt> heartbeat_server_processing_micros=<server-processing> heartbeat_clock_offset_micros=<offset>
+receive/send three-iteration runtime handled three packets on 0.0.0.0:5000; first_sent_bytes=<auth-response-bytes> second_sent_bytes=<heartbeat-ack-bytes> third_sent_bytes=0 registered_clients=1 heartbeat_liveness_entries=1 heartbeat_received_count=1 heartbeat_rtt_offset_entries=1 heartbeat_rtt_offset_samples=1 heartbeat_rtt_micros=<rtt> heartbeat_server_processing_micros=<server-processing> heartbeat_clock_offset_micros=<offset>
 ```
 
 server stderr の要点:
@@ -329,7 +329,7 @@ server stderr の要点:
 {"event_name":"server.receive_loop","source":"127.0.0.1:<client-port>","outcome":"Accepted","packet_len":<bytes>,"message_type":"ClientStats","client_id":"player1","rejection_reason":null,"timestamp":<timestamp>}
 ```
 
-確認の中心は、client が `HeartbeatAck` 受信後に `HeartbeatAckObservation` を `ClientStats` に載せて 1 回だけ返すこと、server が登録済み source からの `ClientStats` を accepted として処理し、observation を既存 timebase plan と照合して stateless calculator へ渡せることです。併せて、2 回目の registered heartbeat が liveness state へ 1 回 commit されることを `heartbeat_liveness_entries=1` と `heartbeat_received_count=1` で確認します。
+確認の中心は、client が `HeartbeatAck` 受信後に `HeartbeatAckObservation` を `ClientStats` に載せて 1 回だけ返すこと、server が登録済み source からの `ClientStats` を accepted として処理し、observation を既存 timebase plan と照合して stateless calculator へ渡せることです。併せて、2 回目の registered heartbeat が liveness state へ 1 回 commit されることを `heartbeat_liveness_entries=1` と `heartbeat_received_count=1` で確認します。返った RTT / offset candidate が server 側 timebase state へ 1 回 commit されることは `heartbeat_rtt_offset_entries=1` と `heartbeat_rtt_offset_samples=1` で確認します。
 
 ### 2026-04-22 Codex 環境 auth-heartbeat-stats accepted path 成功
 
@@ -362,7 +362,7 @@ auth heartbeat stats PoC sent AuthRequest 96 bytes to 127.0.0.1:5000 and receive
 server stdout 観測結果:
 
 ```text
-receive/send three-iteration runtime handled three packets on 0.0.0.0:5000; first_sent_bytes=55 second_sent_bytes=73 third_sent_bytes=0 registered_clients=1 heartbeat_liveness_entries=1 heartbeat_received_count=1 heartbeat_rtt_micros=<rtt> heartbeat_server_processing_micros=0 heartbeat_clock_offset_micros=<offset>
+receive/send three-iteration runtime handled three packets on 0.0.0.0:5000; first_sent_bytes=55 second_sent_bytes=73 third_sent_bytes=0 registered_clients=1 heartbeat_liveness_entries=1 heartbeat_received_count=1 heartbeat_rtt_offset_entries=1 heartbeat_rtt_offset_samples=1 heartbeat_rtt_micros=<rtt> heartbeat_server_processing_micros=0 heartbeat_clock_offset_micros=<offset>
 ```
 
 server stderr 観測結果:
