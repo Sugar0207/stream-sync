@@ -3484,6 +3484,79 @@ Current code reflects this with
 controller, sleep/timer integration, retry execution, and log output remain
 future work.
 
+### Client Loop Controller / Retry / Sleep Integration Boundary
+
+The client loop controller / retry / sleep integration boundary fixes how the
+already-separated client heartbeat steps will be connected before implementing
+the completed continuous heartbeat loop. It produces typed plans only; it does
+not run a loop or block the thread.
+
+Current implementation scope:
+
+1. `ClientHeartbeatLoopControllerBoundary::plan_next` receives one
+   `ClientHeartbeatLoopBodyResult`.
+2. `OwnershipNotReady` is returned as-is so the future loop controller can
+   stop before socket work.
+3. `Stop` becomes a `Stopped` iteration result that may be committed through
+   `ClientHeartbeatLoopCountersBoundary`.
+4. `Wait` becomes:
+   - a bounded `ClientHeartbeatLoopSleepDecision`
+   - a `Waited` iteration result
+5. `SendHeartbeat` is passed through as the next typed handoff for
+   `ClientHeartbeatLoopEncodeSendBoundary`.
+6. `ClientHeartbeatLoopRetryApplyBoundary::apply_failure` receives one
+   classified failure and connects it to:
+   - a `Failed` iteration result for counters
+   - a `ClientHeartbeatLoopRetryDecision`
+   - a bounded retry sleep decision when retry is still allowed
+7. `ClientHeartbeatLoopSleepBoundary::plan_sleep` converts a planned wake time
+   into either `NoSleep` or one bounded sleep duration.
+
+Responsibility split:
+
+- heartbeat policy
+  - `ClientHeartbeatLoopPolicyBoundary` still decides stop / wait / send from
+    cadence and snapshot state.
+  - The controller only consumes the body result derived from that policy.
+- encode-send
+  - `ClientHeartbeatLoopEncodeSendBoundary` still builds, encodes, and sends
+    one heartbeat datagram.
+  - The controller only passes the send handoff forward.
+- ack receive
+  - `ClientHeartbeatLoopAckObservationReturnBoundary` still receives and
+    decodes one `HeartbeatAck`.
+  - Retry apply can classify an ack timeout/decode failure after that step
+    fails, but it does not perform the receive.
+- stats return
+  - `ClientHeartbeatLoopClientStatsReturnSendBoundary` still sends one encoded
+    `ClientStats` return.
+  - Retry apply can classify a stats return send failure, but it does not
+    resend.
+- counters update
+  - `ClientHeartbeatLoopCountersBoundary` remains the only boundary that
+    mutates caller-owned counters.
+  - Controller and retry apply only produce iteration results that the caller
+    may commit.
+- sleep-retry
+  - `ClientHeartbeatLoopSleepBoundary` plans sleep duration.
+  - `ClientHeartbeatLoopRetryApplyBoundary` connects retry timing to that
+    sleep plan.
+  - Neither boundary calls `sleep`, `set_read_timeout`, or socket APIs.
+- future loop body
+  - Owns the actual order of controller planning, heartbeat send, ack wait,
+    optional stats return, counters commit, retry execution, sleeping, stop
+    handling, shutdown integration, and repeated iteration.
+
+Current code reflects this with
+`apps/client::ClientHeartbeatLoopControllerBoundary`,
+`ClientHeartbeatLoopControllerPlan`,
+`ClientHeartbeatLoopSleepBoundary`,
+`ClientHeartbeatLoopSleepDecision`,
+`ClientHeartbeatLoopRetryApplyBoundary`, and
+`ClientHeartbeatLoopRetryApplyResult`. The completed continuous heartbeat loop,
+actual sleeping, repeated retry execution, socket timeout application, client
+loop logging, and shutdown integration remain future work.
+
 ### Heartbeat Client Ack Observation Flow
 
 The client ack observation flow returns the missing `client_received_at`

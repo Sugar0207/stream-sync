@@ -1376,6 +1376,210 @@ impl ClientHeartbeatLoopCountersBoundary {
     }
 }
 
+/// Why a future client heartbeat controller would sleep or decline sleeping.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ClientHeartbeatLoopSleepReason {
+    CadenceWait,
+    AckWait,
+    RetryBackoff,
+    RetryExhausted,
+}
+
+/// Input for converting a planned wake timestamp into one bounded sleep.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct ClientHeartbeatLoopSleepInput {
+    pub now: TimestampMicros,
+    pub wake_at: TimestampMicros,
+    pub max_sleep_micros: u64,
+    pub reason: ClientHeartbeatLoopSleepReason,
+}
+
+/// Sleep decision for one future controller step.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ClientHeartbeatLoopSleepDecision {
+    NoSleep {
+        reason: ClientHeartbeatLoopSleepReason,
+    },
+    Sleep {
+        reason: ClientHeartbeatLoopSleepReason,
+        sleep_micros: u64,
+        wake_at: TimestampMicros,
+    },
+}
+
+/// Boundary that plans one bounded sleep without blocking the current thread.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct ClientHeartbeatLoopSleepBoundary;
+
+impl ClientHeartbeatLoopSleepBoundary {
+    pub fn plan_sleep(
+        &self,
+        input: ClientHeartbeatLoopSleepInput,
+    ) -> ClientHeartbeatLoopSleepDecision {
+        if input.now.0 >= input.wake_at.0 || input.max_sleep_micros == 0 {
+            return ClientHeartbeatLoopSleepDecision::NoSleep {
+                reason: input.reason,
+            };
+        }
+
+        ClientHeartbeatLoopSleepDecision::Sleep {
+            reason: input.reason,
+            sleep_micros: (input.wake_at.0 - input.now.0).min(input.max_sleep_micros),
+            wake_at: input.wake_at,
+        }
+    }
+}
+
+/// Input for applying one retry decision to failure and sleep handoffs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct ClientHeartbeatLoopRetryApplyInput {
+    pub reason: ClientHeartbeatLoopRetryReason,
+    pub failure_kind: ClientHeartbeatLoopIterationFailureKind,
+    pub attempts_used: u32,
+    pub policy: ClientHeartbeatLoopRetryPolicy,
+    pub failed_at: TimestampMicros,
+    pub max_sleep_micros: u64,
+}
+
+/// Result of connecting one failed step to retry and sleep planning.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClientHeartbeatLoopRetryApplyResult {
+    pub failure_result: ClientHeartbeatLoopIterationRuntimeResult,
+    pub retry_decision: ClientHeartbeatLoopRetryDecision,
+    pub sleep: ClientHeartbeatLoopSleepDecision,
+}
+
+/// Boundary that connects a classified failure to retry and sleep handoffs.
+///
+/// This does not re-run the failed operation, block the thread, or mutate
+/// counters. The caller may commit `failure_result` through
+/// `ClientHeartbeatLoopCountersBoundary`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct ClientHeartbeatLoopRetryApplyBoundary {
+    retry: ClientHeartbeatLoopRetryBoundary,
+    sleep: ClientHeartbeatLoopSleepBoundary,
+}
+
+impl ClientHeartbeatLoopRetryApplyBoundary {
+    pub fn apply_failure(
+        &self,
+        input: ClientHeartbeatLoopRetryApplyInput,
+    ) -> ClientHeartbeatLoopRetryApplyResult {
+        let failure_result = ClientHeartbeatLoopIterationRuntimeResult::Failed {
+            kind: input.failure_kind,
+            failed_at: input.failed_at,
+        };
+        let retry_decision = self.retry.decide(ClientHeartbeatLoopRetryInput {
+            reason: input.reason,
+            attempts_used: input.attempts_used,
+            policy: input.policy,
+            now: input.failed_at,
+        });
+        let sleep = match retry_decision {
+            ClientHeartbeatLoopRetryDecision::RetryLater { retry_at, .. } => {
+                self.sleep.plan_sleep(ClientHeartbeatLoopSleepInput {
+                    now: input.failed_at,
+                    wake_at: retry_at,
+                    max_sleep_micros: input.max_sleep_micros,
+                    reason: ClientHeartbeatLoopSleepReason::RetryBackoff,
+                })
+            }
+            ClientHeartbeatLoopRetryDecision::GiveUp { .. } => {
+                ClientHeartbeatLoopSleepDecision::NoSleep {
+                    reason: ClientHeartbeatLoopSleepReason::RetryExhausted,
+                }
+            }
+        };
+
+        ClientHeartbeatLoopRetryApplyResult {
+            failure_result,
+            retry_decision,
+            sleep,
+        }
+    }
+}
+
+/// Input for a minimal controller step over one body result.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClientHeartbeatLoopControllerInput {
+    pub body_result: ClientHeartbeatLoopBodyResult,
+    pub now: TimestampMicros,
+    pub max_sleep_micros: u64,
+}
+
+/// Controller plan after one policy/body result.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ClientHeartbeatLoopControllerPlan {
+    OwnershipNotReady {
+        decision: ClientHeartbeatLoopOwnershipDecision,
+    },
+    Stop {
+        reason: ClientHeartbeatLoopPolicyReason,
+        log: ClientHeartbeatLoopLogHandoff,
+        iteration_result: ClientHeartbeatLoopIterationRuntimeResult,
+    },
+    Sleep {
+        sleep: ClientHeartbeatLoopSleepDecision,
+        log: ClientHeartbeatLoopLogHandoff,
+        iteration_result: ClientHeartbeatLoopIterationRuntimeResult,
+    },
+    SendHeartbeat {
+        handoff: ClientHeartbeatLoopBodySendHandoff,
+        log: ClientHeartbeatLoopLogHandoff,
+    },
+}
+
+/// Minimal controller boundary for one pre-loop client heartbeat step.
+///
+/// It connects the body decision to either a typed send handoff, a bounded
+/// sleep plan, or an iteration result that can later be committed to counters.
+/// It does not call socket I/O, actually sleep, retry, or run a loop.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct ClientHeartbeatLoopControllerBoundary {
+    sleep: ClientHeartbeatLoopSleepBoundary,
+}
+
+impl ClientHeartbeatLoopControllerBoundary {
+    pub fn plan_next(
+        &self,
+        input: ClientHeartbeatLoopControllerInput,
+    ) -> ClientHeartbeatLoopControllerPlan {
+        match input.body_result {
+            ClientHeartbeatLoopBodyResult::OwnershipNotReady(decision) => {
+                ClientHeartbeatLoopControllerPlan::OwnershipNotReady { decision }
+            }
+            ClientHeartbeatLoopBodyResult::Stop { reason, log } => {
+                ClientHeartbeatLoopControllerPlan::Stop {
+                    reason,
+                    log,
+                    iteration_result: ClientHeartbeatLoopIterationRuntimeResult::Stopped { reason },
+                }
+            }
+            ClientHeartbeatLoopBodyResult::Wait {
+                next_heartbeat_due_at,
+                log,
+            } => {
+                let sleep = self.sleep.plan_sleep(ClientHeartbeatLoopSleepInput {
+                    now: input.now,
+                    wake_at: next_heartbeat_due_at,
+                    max_sleep_micros: input.max_sleep_micros,
+                    reason: ClientHeartbeatLoopSleepReason::CadenceWait,
+                });
+                ClientHeartbeatLoopControllerPlan::Sleep {
+                    sleep,
+                    log,
+                    iteration_result: ClientHeartbeatLoopIterationRuntimeResult::Waited {
+                        next_heartbeat_due_at,
+                    },
+                }
+            }
+            ClientHeartbeatLoopBodyResult::SendHeartbeat { handoff, log } => {
+                ClientHeartbeatLoopControllerPlan::SendHeartbeat { handoff, log }
+            }
+        }
+    }
+}
+
 /// Startup config needed by the one-shot client AuthRequest PoC.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ClientAuthRequestPocStartupConfig {
@@ -2852,6 +3056,146 @@ mod tests {
                 missed_acks: 1,
                 last_heartbeat_sent_at: Some(TimestampMicros(30_000)),
                 stop_requested: true,
+            }
+        );
+    }
+
+    #[test]
+    fn client_heartbeat_loop_sleep_boundary_clamps_sleep_duration() {
+        let decision = ClientHeartbeatLoopSleepBoundary.plan_sleep(ClientHeartbeatLoopSleepInput {
+            now: TimestampMicros(10_000),
+            wake_at: TimestampMicros(15_000),
+            max_sleep_micros: 1_000,
+            reason: ClientHeartbeatLoopSleepReason::CadenceWait,
+        });
+
+        assert_eq!(
+            decision,
+            ClientHeartbeatLoopSleepDecision::Sleep {
+                reason: ClientHeartbeatLoopSleepReason::CadenceWait,
+                sleep_micros: 1_000,
+                wake_at: TimestampMicros(15_000),
+            }
+        );
+    }
+
+    #[test]
+    fn client_heartbeat_loop_retry_apply_plans_failure_result_and_retry_sleep() {
+        let result = ClientHeartbeatLoopRetryApplyBoundary::default().apply_failure(
+            ClientHeartbeatLoopRetryApplyInput {
+                reason: ClientHeartbeatLoopRetryReason::AckReceiveTimeout,
+                failure_kind: ClientHeartbeatLoopIterationFailureKind::AckReceive,
+                attempts_used: 1,
+                policy: ClientHeartbeatLoopRetryPolicy {
+                    max_attempts: 3,
+                    retry_delay_micros: 5_000,
+                },
+                failed_at: TimestampMicros(10_000),
+                max_sleep_micros: 1_000,
+            },
+        );
+
+        assert_eq!(
+            result.failure_result,
+            ClientHeartbeatLoopIterationRuntimeResult::Failed {
+                kind: ClientHeartbeatLoopIterationFailureKind::AckReceive,
+                failed_at: TimestampMicros(10_000),
+            }
+        );
+        assert_eq!(
+            result.retry_decision,
+            ClientHeartbeatLoopRetryDecision::RetryLater {
+                reason: ClientHeartbeatLoopRetryReason::AckReceiveTimeout,
+                next_attempt: 2,
+                retry_at: TimestampMicros(15_000),
+            }
+        );
+        assert_eq!(
+            result.sleep,
+            ClientHeartbeatLoopSleepDecision::Sleep {
+                reason: ClientHeartbeatLoopSleepReason::RetryBackoff,
+                sleep_micros: 1_000,
+                wake_at: TimestampMicros(15_000),
+            }
+        );
+    }
+
+    #[test]
+    fn client_heartbeat_loop_retry_apply_does_not_sleep_when_retry_exhausted() {
+        let result = ClientHeartbeatLoopRetryApplyBoundary::default().apply_failure(
+            ClientHeartbeatLoopRetryApplyInput {
+                reason: ClientHeartbeatLoopRetryReason::StatsReturnSendFailed,
+                failure_kind: ClientHeartbeatLoopIterationFailureKind::ClientStatsReturnSend,
+                attempts_used: 3,
+                policy: ClientHeartbeatLoopRetryPolicy {
+                    max_attempts: 3,
+                    retry_delay_micros: 5_000,
+                },
+                failed_at: TimestampMicros(10_000),
+                max_sleep_micros: 1_000,
+            },
+        );
+
+        assert_eq!(
+            result.retry_decision,
+            ClientHeartbeatLoopRetryDecision::GiveUp {
+                reason: ClientHeartbeatLoopRetryReason::StatsReturnSendFailed,
+                attempts_used: 3,
+            }
+        );
+        assert_eq!(
+            result.sleep,
+            ClientHeartbeatLoopSleepDecision::NoSleep {
+                reason: ClientHeartbeatLoopSleepReason::RetryExhausted,
+            }
+        );
+    }
+
+    #[test]
+    fn client_heartbeat_loop_controller_turns_wait_into_sleep_and_iteration_result() {
+        let log = ClientHeartbeatLoopLogHandoff {
+            client_id: ClientId("client-1".to_string()),
+            run_id: RunId("run-1".to_string()),
+            observed_at: TimestampMicros(10_000),
+            reason: ClientHeartbeatLoopPolicyReason::WaitingForCadence,
+            heartbeat_interval_micros: 1_000,
+            ack_receive_timeout_micros: 2_000,
+            sent_heartbeats: 1,
+            received_acks: 1,
+            missed_acks: 0,
+        };
+
+        let plan = ClientHeartbeatLoopControllerBoundary::default().plan_next(
+            ClientHeartbeatLoopControllerInput {
+                body_result: ClientHeartbeatLoopBodyResult::Wait {
+                    next_heartbeat_due_at: TimestampMicros(11_000),
+                    log,
+                },
+                now: TimestampMicros(10_000),
+                max_sleep_micros: 500,
+            },
+        );
+
+        let ClientHeartbeatLoopControllerPlan::Sleep {
+            sleep,
+            iteration_result,
+            ..
+        } = plan
+        else {
+            panic!("wait body result should become a controller sleep plan");
+        };
+        assert_eq!(
+            sleep,
+            ClientHeartbeatLoopSleepDecision::Sleep {
+                reason: ClientHeartbeatLoopSleepReason::CadenceWait,
+                sleep_micros: 500,
+                wake_at: TimestampMicros(11_000),
+            }
+        );
+        assert_eq!(
+            iteration_result,
+            ClientHeartbeatLoopIterationRuntimeResult::Waited {
+                next_heartbeat_due_at: TimestampMicros(11_000),
             }
         );
     }

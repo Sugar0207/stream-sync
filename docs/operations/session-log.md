@@ -5,6 +5,69 @@
 - Codex
 
 ### 今回の作業
+- continuous heartbeat loop 本体へ進む前の client loop controller / retry execution / sleep integration 接続範囲を整理した。
+- `ClientHeartbeatLoopBodyResult` を send handoff / sleep plan / stop result へ変換する最小 controller 境界を追加した。
+- retry decision を failure iteration result と bounded sleep decision へ接続する最小 retry apply 境界を追加した。
+
+### 変更ファイル
+- `apps/client/src/lib.rs`
+- `docs/architecture/system-design.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### 決定事項
+- controller 境界は body result を次 step plan へ変換するだけにし、socket I/O、実 sleep、retry 実行、loop 実行は行わない。
+- wait は `ClientHeartbeatLoopSleepDecision` と `Waited` iteration result に分ける。
+- retry apply は classified failure を `Failed` iteration result と retry / sleep plan へ分ける。
+- counters mutation は引き続き `ClientHeartbeatLoopCountersBoundary` にだけ置く。
+- `SleepBoundary` は wake timestamp と max sleep duration から bounded sleep を返すだけにする。
+
+### 実装したこと
+- `ClientHeartbeatLoopSleepReason` を追加した。
+- `ClientHeartbeatLoopSleepInput` を追加した。
+- `ClientHeartbeatLoopSleepDecision` を追加した。
+- `ClientHeartbeatLoopSleepBoundary::plan_sleep` を追加した。
+- `ClientHeartbeatLoopRetryApplyInput` / `ClientHeartbeatLoopRetryApplyResult` を追加した。
+- `ClientHeartbeatLoopRetryApplyBoundary::apply_failure` を追加した。
+- `ClientHeartbeatLoopControllerInput` / `ClientHeartbeatLoopControllerPlan` を追加した。
+- `ClientHeartbeatLoopControllerBoundary::plan_next` を追加した。
+- sleep clamp、retry sleep、retry exhausted、controller wait plan の単体テストを追加した。
+
+### 未実装 / 保留
+- completed continuous heartbeat loop
+- actual retry execution
+- actual sleep / timer integration
+- socket timeout application
+- client loop logging
+- shutdown integration
+- timeout notice wakeup 実行本体
+- metrics snapshot の具体的な export cadence / dashboard refresh
+
+### 次にやる候補
+- heartbeat timeout notice wakeup 実行本体に進む前の境界整理を続ける。
+- RTT / offset metrics snapshot の具体的な export cadence / dashboard refresh 方針を整理する。
+- continuous heartbeat loop 本体へ進む前の client loop logging / shutdown integration 接続範囲を整理する。
+
+### TODO 更新
+- 現在位置に client loop controller / retry apply / sleep decision 境界の完了を反映した。
+- 直近でやることを timeout notice wakeup 実行本体前の境界整理、metrics snapshot cadence / dashboard refresh 方針、client loop logging / shutdown integration 接続範囲整理へ更新した。
+- heartbeat / client / 検証タスクに controller / retry apply / sleep decision boundary と関連単体テストの完了を追加した。
+
+### 検証
+- `cargo fmt`
+- `cargo test -p stream-sync-client client_heartbeat_loop_sleep`
+- `cargo test -p stream-sync-client client_heartbeat_loop_retry_apply`
+- `cargo test -p stream-sync-client client_heartbeat_loop_controller`
+- `cargo fmt --check`
+- `cargo check --workspace`
+
+---
+
+## 2026-04-23
+### 種別
+- Codex
+
+### 今回の作業
 - continuous heartbeat loop 本体へ進む前の client loop iteration result / counters 接続範囲を整理した。
 - heartbeat send / ack receive / observation return / ClientStats send の各 step 結果を、client-local counters state に反映する最小境界を追加した。
 - counters は future loop body の実行順序を決めず、成功または分類済み failure を受けて状態を更新するだけにした。
