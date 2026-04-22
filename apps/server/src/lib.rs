@@ -7481,6 +7481,200 @@ impl ServerHeartbeatContinuousLoopPolicyBoundary {
     }
 }
 
+/// Missing ownership prerequisite for a future server heartbeat loop body.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ServerHeartbeatContinuousLoopOwnershipMissing {
+    AuthenticatedSenderRegistry,
+    LivenessState,
+    OutboundQueue,
+    TimeoutLogWriter,
+    RejectedCandidateMetricsState,
+}
+
+/// Ownership inputs needed before entering a future server heartbeat loop body.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct ServerHeartbeatContinuousLoopOwnershipInput {
+    pub registry_available: bool,
+    pub liveness_state_available: bool,
+    pub outbound_queue_available: bool,
+    pub timeout_log_writer_available: bool,
+    pub rejected_candidate_metrics_state_available: bool,
+}
+
+/// State ownership plan for a future server heartbeat loop body.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct ServerHeartbeatContinuousLoopOwnershipPlan {
+    pub owns_registry: bool,
+    pub owns_liveness_state: bool,
+    pub owns_outbound_queue: bool,
+    pub owns_timeout_log_writer: bool,
+    pub owns_rejected_candidate_metrics_state: bool,
+}
+
+/// Readiness decision before a future server heartbeat loop owns state.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ServerHeartbeatContinuousLoopOwnershipDecision {
+    Ready(ServerHeartbeatContinuousLoopOwnershipPlan),
+    NotReady {
+        missing: Vec<ServerHeartbeatContinuousLoopOwnershipMissing>,
+    },
+}
+
+/// Boundary that names server-side state ownership before entering a future loop.
+///
+/// This boundary only checks that the caller has prepared the state holders the
+/// future loop body will own. It does not scan clients, evaluate timeouts,
+/// mutate registry state, store notices, write logs, export metrics, or start
+/// a loop.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct ServerHeartbeatContinuousLoopOwnershipBoundary;
+
+impl ServerHeartbeatContinuousLoopOwnershipBoundary {
+    pub fn evaluate(
+        &self,
+        input: ServerHeartbeatContinuousLoopOwnershipInput,
+    ) -> ServerHeartbeatContinuousLoopOwnershipDecision {
+        let mut missing = Vec::new();
+        if !input.registry_available {
+            missing
+                .push(ServerHeartbeatContinuousLoopOwnershipMissing::AuthenticatedSenderRegistry);
+        }
+        if !input.liveness_state_available {
+            missing.push(ServerHeartbeatContinuousLoopOwnershipMissing::LivenessState);
+        }
+        if !input.outbound_queue_available {
+            missing.push(ServerHeartbeatContinuousLoopOwnershipMissing::OutboundQueue);
+        }
+        if !input.timeout_log_writer_available {
+            missing.push(ServerHeartbeatContinuousLoopOwnershipMissing::TimeoutLogWriter);
+        }
+        if !input.rejected_candidate_metrics_state_available {
+            missing
+                .push(ServerHeartbeatContinuousLoopOwnershipMissing::RejectedCandidateMetricsState);
+        }
+
+        if !missing.is_empty() {
+            return ServerHeartbeatContinuousLoopOwnershipDecision::NotReady { missing };
+        }
+
+        ServerHeartbeatContinuousLoopOwnershipDecision::Ready(
+            ServerHeartbeatContinuousLoopOwnershipPlan {
+                owns_registry: true,
+                owns_liveness_state: true,
+                owns_outbound_queue: true,
+                owns_timeout_log_writer: true,
+                owns_rejected_candidate_metrics_state: true,
+            },
+        )
+    }
+}
+
+/// Input for deriving the socket receive timeout before heartbeat loop work.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct ServerHeartbeatContinuousLoopSocketReceiveTimeoutInput {
+    pub now: TimestampMicros,
+    pub next_heartbeat_work_due_at: TimestampMicros,
+    pub max_socket_receive_timeout_micros: u64,
+}
+
+/// Socket wait decision before a future server receive attempt.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ServerHeartbeatContinuousLoopSocketReceiveTimeoutDecision {
+    HeartbeatWorkDueNow,
+    Wait {
+        receive_timeout_micros: u64,
+        heartbeat_work_due_at: TimestampMicros,
+    },
+}
+
+/// Boundary that derives how long a server socket receive may block before
+/// heartbeat work is due.
+///
+/// This does not call `set_read_timeout`, receive packets, run timeout ticks,
+/// export metrics, or sleep.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct ServerHeartbeatContinuousLoopSocketReceiveTimeoutBoundary;
+
+impl ServerHeartbeatContinuousLoopSocketReceiveTimeoutBoundary {
+    pub fn plan_wait(
+        &self,
+        input: ServerHeartbeatContinuousLoopSocketReceiveTimeoutInput,
+    ) -> ServerHeartbeatContinuousLoopSocketReceiveTimeoutDecision {
+        if input.now.0 >= input.next_heartbeat_work_due_at.0 {
+            return ServerHeartbeatContinuousLoopSocketReceiveTimeoutDecision::HeartbeatWorkDueNow;
+        }
+
+        let remaining_micros = input.next_heartbeat_work_due_at.0 - input.now.0;
+        ServerHeartbeatContinuousLoopSocketReceiveTimeoutDecision::Wait {
+            receive_timeout_micros: remaining_micros.min(input.max_socket_receive_timeout_micros),
+            heartbeat_work_due_at: input.next_heartbeat_work_due_at,
+        }
+    }
+}
+
+/// Retry reason placeholder for future server heartbeat loop work.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ServerHeartbeatContinuousLoopRetryReason {
+    SocketReceiveInterrupted,
+    TimeoutTickApplyFailed,
+    NoticeQueueStorageFailed,
+    MetricsSnapshotHandoffFailed,
+}
+
+/// Retry policy placeholder for future server heartbeat loop work.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct ServerHeartbeatContinuousLoopRetryPolicy {
+    pub max_attempts: u32,
+    pub retry_delay_micros: u64,
+}
+
+/// Input for one retry decision in a future server heartbeat loop.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct ServerHeartbeatContinuousLoopRetryInput {
+    pub reason: ServerHeartbeatContinuousLoopRetryReason,
+    pub attempts_used: u32,
+    pub policy: ServerHeartbeatContinuousLoopRetryPolicy,
+    pub now: TimestampMicros,
+}
+
+/// Retry decision placeholder for future server heartbeat loop work.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ServerHeartbeatContinuousLoopRetryDecision {
+    RetryLater {
+        reason: ServerHeartbeatContinuousLoopRetryReason,
+        next_attempt: u32,
+        retry_at: TimestampMicros,
+    },
+    GiveUp {
+        reason: ServerHeartbeatContinuousLoopRetryReason,
+        attempts_used: u32,
+    },
+}
+
+/// Boundary that classifies retry timing without executing retry.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct ServerHeartbeatContinuousLoopRetryBoundary;
+
+impl ServerHeartbeatContinuousLoopRetryBoundary {
+    pub fn decide(
+        &self,
+        input: ServerHeartbeatContinuousLoopRetryInput,
+    ) -> ServerHeartbeatContinuousLoopRetryDecision {
+        if input.attempts_used >= input.policy.max_attempts {
+            return ServerHeartbeatContinuousLoopRetryDecision::GiveUp {
+                reason: input.reason,
+                attempts_used: input.attempts_used,
+            };
+        }
+
+        ServerHeartbeatContinuousLoopRetryDecision::RetryLater {
+            reason: input.reason,
+            next_attempt: input.attempts_used.saturating_add(1),
+            retry_at: server_timestamp_saturating_add(input.now, input.policy.retry_delay_micros),
+        }
+    }
+}
+
 /// Combined handoff emitted after policy commit skips a rejected candidate.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ServerHeartbeatRttOffsetRejectedCandidateHandoff {
@@ -14281,6 +14475,73 @@ shared_token = "secret"
         assert_eq!(
             log.reason,
             ServerHeartbeatContinuousLoopPolicyReason::MaxTimeoutTicksReached
+        );
+    }
+
+    #[test]
+    fn heartbeat_continuous_loop_ownership_boundary_reports_missing_state() {
+        let input = ServerHeartbeatContinuousLoopOwnershipInput {
+            registry_available: true,
+            liveness_state_available: false,
+            outbound_queue_available: true,
+            timeout_log_writer_available: true,
+            rejected_candidate_metrics_state_available: false,
+        };
+
+        let decision = ServerHeartbeatContinuousLoopOwnershipBoundary.evaluate(input);
+
+        let ServerHeartbeatContinuousLoopOwnershipDecision::NotReady { missing } = decision else {
+            panic!("missing state holders should not be ready");
+        };
+        assert_eq!(
+            missing,
+            vec![
+                ServerHeartbeatContinuousLoopOwnershipMissing::LivenessState,
+                ServerHeartbeatContinuousLoopOwnershipMissing::RejectedCandidateMetricsState,
+            ]
+        );
+    }
+
+    #[test]
+    fn heartbeat_continuous_loop_socket_receive_timeout_clamps_to_next_work() {
+        let decision = ServerHeartbeatContinuousLoopSocketReceiveTimeoutBoundary.plan_wait(
+            ServerHeartbeatContinuousLoopSocketReceiveTimeoutInput {
+                now: TimestampMicros(10_000),
+                next_heartbeat_work_due_at: TimestampMicros(12_500),
+                max_socket_receive_timeout_micros: 5_000,
+            },
+        );
+
+        assert_eq!(
+            decision,
+            ServerHeartbeatContinuousLoopSocketReceiveTimeoutDecision::Wait {
+                receive_timeout_micros: 2_500,
+                heartbeat_work_due_at: TimestampMicros(12_500),
+            }
+        );
+    }
+
+    #[test]
+    fn heartbeat_continuous_loop_retry_boundary_schedules_next_attempt() {
+        let decision = ServerHeartbeatContinuousLoopRetryBoundary.decide(
+            ServerHeartbeatContinuousLoopRetryInput {
+                reason: ServerHeartbeatContinuousLoopRetryReason::SocketReceiveInterrupted,
+                attempts_used: 1,
+                policy: ServerHeartbeatContinuousLoopRetryPolicy {
+                    max_attempts: 3,
+                    retry_delay_micros: 750,
+                },
+                now: TimestampMicros(10_000),
+            },
+        );
+
+        assert_eq!(
+            decision,
+            ServerHeartbeatContinuousLoopRetryDecision::RetryLater {
+                reason: ServerHeartbeatContinuousLoopRetryReason::SocketReceiveInterrupted,
+                next_attempt: 2,
+                retry_at: TimestampMicros(10_750),
+            }
         );
     }
 

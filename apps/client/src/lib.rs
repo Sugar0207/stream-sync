@@ -619,6 +619,188 @@ impl ClientHeartbeatLoopPolicyBoundary {
     }
 }
 
+/// Why a future client heartbeat loop cannot take ownership yet.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ClientHeartbeatLoopOwnershipNotReadyReason {
+    AuthNotAccepted,
+    SocketNotBound,
+}
+
+/// Ownership inputs needed before entering a future client heartbeat loop body.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClientHeartbeatLoopOwnershipInput {
+    pub client_id: ClientId,
+    pub run_id: RunId,
+    pub protocol_version: ProtocolVersion,
+    pub auth_accepted: bool,
+    pub socket_bound: bool,
+}
+
+/// State ownership plan for a future client heartbeat loop body.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClientHeartbeatLoopOwnershipPlan {
+    pub client_id: ClientId,
+    pub run_id: RunId,
+    pub protocol_version: ProtocolVersion,
+    pub owns_udp_socket: bool,
+    pub owns_loop_state: bool,
+    pub owns_ack_wait: bool,
+    pub owns_stats_return: bool,
+}
+
+/// Readiness decision before a future client heartbeat loop owns state.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ClientHeartbeatLoopOwnershipDecision {
+    Ready(ClientHeartbeatLoopOwnershipPlan),
+    NotReady {
+        client_id: ClientId,
+        run_id: RunId,
+        reason: ClientHeartbeatLoopOwnershipNotReadyReason,
+    },
+}
+
+/// Boundary that names client-side ownership before entering a future loop.
+///
+/// This boundary only validates that accepted auth and a bound socket exist,
+/// then names the state the future loop body owns. It does not start the loop,
+/// move a real `UdpSocket`, send heartbeats, receive acks, or retry.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct ClientHeartbeatLoopOwnershipBoundary;
+
+impl ClientHeartbeatLoopOwnershipBoundary {
+    pub fn evaluate(
+        &self,
+        input: ClientHeartbeatLoopOwnershipInput,
+    ) -> ClientHeartbeatLoopOwnershipDecision {
+        if !input.auth_accepted {
+            return ClientHeartbeatLoopOwnershipDecision::NotReady {
+                client_id: input.client_id,
+                run_id: input.run_id,
+                reason: ClientHeartbeatLoopOwnershipNotReadyReason::AuthNotAccepted,
+            };
+        }
+        if !input.socket_bound {
+            return ClientHeartbeatLoopOwnershipDecision::NotReady {
+                client_id: input.client_id,
+                run_id: input.run_id,
+                reason: ClientHeartbeatLoopOwnershipNotReadyReason::SocketNotBound,
+            };
+        }
+
+        ClientHeartbeatLoopOwnershipDecision::Ready(ClientHeartbeatLoopOwnershipPlan {
+            client_id: input.client_id,
+            run_id: input.run_id,
+            protocol_version: input.protocol_version,
+            owns_udp_socket: true,
+            owns_loop_state: true,
+            owns_ack_wait: true,
+            owns_stats_return: true,
+        })
+    }
+}
+
+/// Input for deriving one ack receive socket wait timeout.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct ClientHeartbeatAckReceiveTimeoutInput {
+    pub now: TimestampMicros,
+    pub ack_deadline_at: TimestampMicros,
+    pub max_socket_wait_micros: u64,
+}
+
+/// Socket wait decision for one future ack receive attempt.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ClientHeartbeatAckReceiveTimeoutDecision {
+    DeadlineElapsed,
+    Wait {
+        receive_timeout_micros: u64,
+        deadline_at: TimestampMicros,
+    },
+}
+
+/// Boundary that derives the blocking receive timeout for one ack wait.
+///
+/// This only calculates the timeout value a future socket wait would use. It
+/// does not call `set_read_timeout`, receive UDP packets, or classify errors.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct ClientHeartbeatAckReceiveTimeoutBoundary;
+
+impl ClientHeartbeatAckReceiveTimeoutBoundary {
+    pub fn plan_wait(
+        &self,
+        input: ClientHeartbeatAckReceiveTimeoutInput,
+    ) -> ClientHeartbeatAckReceiveTimeoutDecision {
+        if input.now.0 >= input.ack_deadline_at.0 {
+            return ClientHeartbeatAckReceiveTimeoutDecision::DeadlineElapsed;
+        }
+
+        let remaining_micros = input.ack_deadline_at.0 - input.now.0;
+        ClientHeartbeatAckReceiveTimeoutDecision::Wait {
+            receive_timeout_micros: remaining_micros.min(input.max_socket_wait_micros),
+            deadline_at: input.ack_deadline_at,
+        }
+    }
+}
+
+/// Retry reason placeholder for future client heartbeat loop failures.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ClientHeartbeatLoopRetryReason {
+    HeartbeatSendFailed,
+    AckReceiveTimeout,
+    AckDecodeFailed,
+    StatsReturnSendFailed,
+}
+
+/// Retry policy placeholder for future client heartbeat loop work.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct ClientHeartbeatLoopRetryPolicy {
+    pub max_attempts: u32,
+    pub retry_delay_micros: u64,
+}
+
+/// Input for one retry decision in a future client heartbeat loop.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct ClientHeartbeatLoopRetryInput {
+    pub reason: ClientHeartbeatLoopRetryReason,
+    pub attempts_used: u32,
+    pub policy: ClientHeartbeatLoopRetryPolicy,
+    pub now: TimestampMicros,
+}
+
+/// Retry decision placeholder for future client heartbeat loop work.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ClientHeartbeatLoopRetryDecision {
+    RetryLater {
+        reason: ClientHeartbeatLoopRetryReason,
+        next_attempt: u32,
+        retry_at: TimestampMicros,
+    },
+    GiveUp {
+        reason: ClientHeartbeatLoopRetryReason,
+        attempts_used: u32,
+    },
+}
+
+/// Boundary that classifies retry timing without executing retry.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct ClientHeartbeatLoopRetryBoundary;
+
+impl ClientHeartbeatLoopRetryBoundary {
+    pub fn decide(&self, input: ClientHeartbeatLoopRetryInput) -> ClientHeartbeatLoopRetryDecision {
+        if input.attempts_used >= input.policy.max_attempts {
+            return ClientHeartbeatLoopRetryDecision::GiveUp {
+                reason: input.reason,
+                attempts_used: input.attempts_used,
+            };
+        }
+
+        ClientHeartbeatLoopRetryDecision::RetryLater {
+            reason: input.reason,
+            next_attempt: input.attempts_used.saturating_add(1),
+            retry_at: timestamp_saturating_add(input.now, input.policy.retry_delay_micros),
+        }
+    }
+}
+
 /// Startup config needed by the one-shot client AuthRequest PoC.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ClientAuthRequestPocStartupConfig {
@@ -1538,6 +1720,70 @@ mod tests {
         assert_eq!(
             log.reason,
             ClientHeartbeatLoopPolicyReason::MaxHeartbeatsReached
+        );
+    }
+
+    #[test]
+    fn client_heartbeat_loop_ownership_boundary_requires_accepted_auth_and_socket() {
+        let input = ClientHeartbeatLoopOwnershipInput {
+            client_id: ClientId("client-1".to_string()),
+            run_id: RunId("run-1".to_string()),
+            protocol_version: ProtocolVersion(2),
+            auth_accepted: true,
+            socket_bound: true,
+        };
+
+        let decision = ClientHeartbeatLoopOwnershipBoundary.evaluate(input);
+
+        let ClientHeartbeatLoopOwnershipDecision::Ready(plan) = decision else {
+            panic!("accepted auth and bound socket should be ready");
+        };
+        assert_eq!(plan.client_id, ClientId("client-1".to_string()));
+        assert_eq!(plan.run_id, RunId("run-1".to_string()));
+        assert_eq!(plan.protocol_version, ProtocolVersion(2));
+        assert!(plan.owns_udp_socket);
+        assert!(plan.owns_loop_state);
+        assert!(plan.owns_ack_wait);
+        assert!(plan.owns_stats_return);
+    }
+
+    #[test]
+    fn client_heartbeat_ack_receive_timeout_clamps_to_max_socket_wait() {
+        let decision = ClientHeartbeatAckReceiveTimeoutBoundary.plan_wait(
+            ClientHeartbeatAckReceiveTimeoutInput {
+                now: TimestampMicros(10_000),
+                ack_deadline_at: TimestampMicros(15_000),
+                max_socket_wait_micros: 1_000,
+            },
+        );
+
+        assert_eq!(
+            decision,
+            ClientHeartbeatAckReceiveTimeoutDecision::Wait {
+                receive_timeout_micros: 1_000,
+                deadline_at: TimestampMicros(15_000),
+            }
+        );
+    }
+
+    #[test]
+    fn client_heartbeat_retry_boundary_gives_up_when_attempt_budget_is_used() {
+        let decision = ClientHeartbeatLoopRetryBoundary.decide(ClientHeartbeatLoopRetryInput {
+            reason: ClientHeartbeatLoopRetryReason::AckReceiveTimeout,
+            attempts_used: 3,
+            policy: ClientHeartbeatLoopRetryPolicy {
+                max_attempts: 3,
+                retry_delay_micros: 500,
+            },
+            now: TimestampMicros(10_000),
+        });
+
+        assert_eq!(
+            decision,
+            ClientHeartbeatLoopRetryDecision::GiveUp {
+                reason: ClientHeartbeatLoopRetryReason::AckReceiveTimeout,
+                attempts_used: 3,
+            }
         );
     }
 }

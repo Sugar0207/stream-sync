@@ -5,6 +5,68 @@
 - Codex
 
 ### 今回の作業
+- continuous heartbeat loop 本体へ進む前の state ownership / socket receive timeout / retry 範囲を整理した。
+- client 側に heartbeat loop ownership、ack receive timeout、retry policy placeholder の最小境界を追加した。
+- server 側に heartbeat continuous loop ownership、socket receive timeout、retry policy placeholder の最小境界を追加した。
+- completed continuous heartbeat loop 本体、実 socket 操作、retry 実行、sleep / timer には進まなかった。
+
+### 変更ファイル
+- `apps/client/src/lib.rs`
+- `apps/server/src/lib.rs`
+- `docs/architecture/system-design.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### 決定事項
+- client loop は accepted auth と bound UDP socket がそろった後に、UDP socket use / loop state / ack wait / stats return を所有する想定にする。
+- client ack receive timeout は ack deadline と max socket wait の小さい方へ clamp する。
+- server loop は authenticated sender registry、liveness state、outbound queue、timeout log writer、rejected-candidate metrics state を caller-owned holder として受け取る想定にする。
+- server socket receive timeout は次の heartbeat work due と max socket receive wait の小さい方へ clamp し、timeout tick / metrics handoff を blocking receive で遅らせない。
+- retry boundary は `RetryLater` / `GiveUp` の decision だけを返し、sleep、再送、requeue、再実行は future loop body に残す。
+
+### 実装したこと
+- `ClientHeartbeatLoopOwnershipBoundary` を追加した。
+- `ClientHeartbeatAckReceiveTimeoutBoundary` を追加した。
+- `ClientHeartbeatLoopRetryBoundary` を追加した。
+- `ServerHeartbeatContinuousLoopOwnershipBoundary` を追加した。
+- `ServerHeartbeatContinuousLoopSocketReceiveTimeoutBoundary` を追加した。
+- `ServerHeartbeatContinuousLoopRetryBoundary` を追加した。
+- ownership / timeout / retry の client / server 単体テストを追加した。
+
+### 未実装 / 保留
+- completed continuous heartbeat loop
+- 実際の `UdpSocket` 所有移譲 / socket 設定 / receive 呼び出し
+- 実際の sleep / timer / retry execution
+- heartbeat packet 継続送信
+- ack observation の継続的な `ClientStats` 返送
+- 複数 client timeout scan
+- timeout notice wakeup 実行本体
+- metrics snapshot の具体的な export cadence / dashboard refresh
+
+### 次にやる候補
+- heartbeat timeout notice wakeup 実行本体に進む前の境界整理を続ける。
+- RTT / offset metrics snapshot の具体的な export cadence / dashboard refresh 方針を整理する。
+- continuous heartbeat loop 本体へ進む前の 1 iteration body 接続範囲を整理する。
+
+### TODO 更新
+- 現在位置に continuous heartbeat loop ownership / socket receive timeout / retry 境界の完了を反映した。
+- 直近でやることを timeout notice wakeup 実行本体前の境界整理、metrics snapshot の cadence / dashboard refresh 方針、continuous heartbeat loop 1 iteration body 接続範囲整理へ更新した。
+- heartbeat / client / 検証タスクに ownership / timeout / retry boundary と関連単体テストの完了を追加した。
+
+### 検証
+- `cargo fmt`
+- `cargo test -p stream-sync-client`
+- `cargo test -p stream-sync-server heartbeat_continuous_loop`
+- `cargo fmt --check`
+- `cargo check --workspace`
+
+---
+
+## 2026-04-22
+### 種別
+- Codex
+
+### 今回の作業
 - continuous heartbeat loop に進む前の送信間隔、停止条件、ログ出力範囲を整理した。
 - client 側 heartbeat send cadence / ack observation return / stop / log handoff の最小 policy 境界を追加した。
 - server 側 timeout tick / metrics snapshot handoff cadence / stop / log handoff の最小 policy 境界を追加した。

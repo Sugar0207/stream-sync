@@ -3021,6 +3021,137 @@ Current code reflects this with
 placeholder policy boundaries only; no completed continuous heartbeat loop is
 implemented.
 
+### Continuous Heartbeat Loop Ownership / Timeout / Retry Boundary
+
+Before a completed continuous heartbeat loop is implemented, state ownership,
+socket receive timeout, and retry handling are fixed as separate inputs. These
+boundaries are intentionally data-only and do not move real sockets or execute
+retry.
+
+Client state ownership:
+
+1. The future client heartbeat loop may start only after accepted auth and a
+   bound UDP socket exist.
+2. `ClientHeartbeatLoopOwnershipBoundary::evaluate` receives:
+   - `client_id`
+   - `run_id`
+   - `protocol_version`
+   - whether auth was accepted
+   - whether the socket is bound
+3. If auth is not accepted or no bound socket is available, it returns
+   `NotReady`.
+4. If ready, it returns a `ClientHeartbeatLoopOwnershipPlan` that names the
+   future loop body as owner of:
+   - UDP socket use for heartbeat/ack work
+   - heartbeat loop counters
+   - ack wait state
+   - stats return state
+5. The boundary does not move a `UdpSocket`, send heartbeats, wait for acks, or
+   start the loop.
+
+Client socket receive timeout:
+
+1. `ClientHeartbeatAckReceiveTimeoutBoundary::plan_wait` receives:
+   - current client timestamp
+   - ack deadline timestamp
+   - max socket wait duration
+2. If the ack deadline has already elapsed, it returns `DeadlineElapsed`.
+3. Otherwise it returns a receive timeout clamped to the smaller of:
+   - remaining time before ack deadline
+   - max socket wait duration
+4. The boundary does not call `set_read_timeout`, receive UDP packets, decode
+   `HeartbeatAck`, or classify socket errors.
+
+Client retry placeholder:
+
+1. `ClientHeartbeatLoopRetryBoundary::decide` receives a reason, attempts used,
+   retry policy, and current timestamp.
+2. If attempts are exhausted, it returns `GiveUp`.
+3. Otherwise it returns `RetryLater` with the next attempt number and retry
+   timestamp.
+4. The boundary does not sleep, resend, recreate observations, or mutate loop
+   state.
+
+Server state ownership:
+
+1. The future server heartbeat loop must be given caller-owned holders for:
+   - authenticated sender registry
+   - liveness state
+   - outbound queue collection
+   - timeout log writer
+   - rejected-candidate metrics state
+2. `ServerHeartbeatContinuousLoopOwnershipBoundary::evaluate` checks whether
+   those holders are available.
+3. If any holder is missing, it returns `NotReady` with the missing list.
+4. If ready, it returns a `ServerHeartbeatContinuousLoopOwnershipPlan` naming
+   those state holders as future loop-owned for the duration of the loop body.
+5. The boundary does not scan clients, mutate registry state, store notices,
+   write logs, export metrics, or start a loop.
+
+Server socket receive timeout:
+
+1. `ServerHeartbeatContinuousLoopSocketReceiveTimeoutBoundary::plan_wait`
+   receives:
+   - current server timestamp
+   - next heartbeat work due timestamp
+   - max socket receive wait duration
+2. If heartbeat work is already due, it returns `HeartbeatWorkDueNow`.
+3. Otherwise it returns a receive timeout clamped to the smaller of:
+   - remaining time before heartbeat work is due
+   - max socket receive wait duration
+4. This prevents a future blocking receive wait from delaying timeout ticks or
+   metrics snapshot handoff decisions beyond their due time.
+5. The boundary does not call socket APIs, receive packets, run timeout ticks,
+   or export metrics.
+
+Server retry placeholder:
+
+1. `ServerHeartbeatContinuousLoopRetryBoundary::decide` receives a reason,
+   attempts used, retry policy, and current timestamp.
+2. Retry reasons are placeholders for interrupted socket receive, timeout tick
+   apply failure, notice queue storage failure, and metrics snapshot handoff
+   failure.
+3. The boundary returns either `RetryLater` or `GiveUp`.
+4. It does not re-run timeout evaluation, requeue notices, wake send loops,
+   export metrics, or sleep.
+
+Responsibility split:
+
+- heartbeat send cadence
+  - Still belongs to `ClientHeartbeatLoopPolicyBoundary`.
+  - Ownership / timeout / retry boundaries only prepare the surrounding loop
+    state and failure handling shape.
+- socket wait
+  - Client ack wait and server receive wait are explicit timeout calculations.
+  - Real socket configuration and `recv_from` calls remain future loop body
+    work.
+- ack receive
+  - Future client loop body owns receiving and decoding `HeartbeatAck`.
+  - Ack observation construction remains in `ClientHeartbeatAckObservationBoundary`.
+- stats return
+  - Future client loop body owns deciding when to send `ClientStats`.
+  - Carrier construction remains in `ClientHeartbeatObservationCarrierBoundary`.
+- timeout tick
+  - Server ownership boundary ensures liveness/registry/log/queue state is
+    available.
+  - `ServerHeartbeatTimeoutLoopTickBoundary` still owns one-client timeout
+    evaluation/action/apply once the loop selects a client.
+- metrics handoff
+  - Server ownership boundary ensures metrics state is available.
+  - `ServerHeartbeatRttOffsetMetricsSnapshotExportHandoffBoundary` still owns
+    snapshot handoff creation.
+- future loop body
+  - Owns real state mutation order, socket calls, sleeping, retry execution,
+    shutdown integration, and backpressure.
+
+Current code reflects this with
+`apps/client::ClientHeartbeatLoopOwnershipBoundary`,
+`apps/client::ClientHeartbeatAckReceiveTimeoutBoundary`,
+`apps/client::ClientHeartbeatLoopRetryBoundary`,
+`apps/server::ServerHeartbeatContinuousLoopOwnershipBoundary`,
+`apps/server::ServerHeartbeatContinuousLoopSocketReceiveTimeoutBoundary`, and
+`apps/server::ServerHeartbeatContinuousLoopRetryBoundary`.
+
 ### Heartbeat Client Ack Observation Flow
 
 The client ack observation flow returns the missing `client_received_at`
