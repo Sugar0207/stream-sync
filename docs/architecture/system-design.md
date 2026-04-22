@@ -3152,6 +3152,103 @@ Current code reflects this with
 `apps/server::ServerHeartbeatContinuousLoopSocketReceiveTimeoutBoundary`, and
 `apps/server::ServerHeartbeatContinuousLoopRetryBoundary`.
 
+### Continuous Heartbeat Loop One-Iteration Body Boundary
+
+The one-iteration body boundary is the final pre-loop connection point before
+implementing a completed continuous heartbeat loop. It composes the existing
+preflight boundaries and emits typed handoffs for the future loop body, but it
+still does not perform socket I/O or mutate long-lived runtime state.
+
+Client one-iteration body:
+
+1. `ClientHeartbeatLoopBodyBoundary::run_one` receives:
+   - `ClientHeartbeatLoopOwnershipInput`
+   - `ClientHeartbeatLoopPolicyInput`
+   - max ack socket wait duration
+2. The body first checks auth/socket readiness with
+   `ClientHeartbeatLoopOwnershipBoundary`.
+3. If ownership is not ready, it returns `OwnershipNotReady`.
+4. If ownership is ready, it evaluates cadence and stop state with
+   `ClientHeartbeatLoopPolicyBoundary`.
+5. `Stop` and `Wait` are returned as runtime-shaped results without sending.
+6. `SendHeartbeat` is converted into `ClientHeartbeatLoopBodySendHandoff`
+   carrying:
+   - `client_id`
+   - `run_id`
+   - `protocol_version`
+   - heartbeat `send_at`
+   - `ack_deadline_at`
+   - `ClientHeartbeatAckReceiveTimeoutDecision`
+   - ack observation return mode
+7. The body uses `ClientHeartbeatAckReceiveTimeoutBoundary` only to calculate
+   the future ack wait timeout.
+8. It does not construct a `Heartbeat`, call protocol encode, send UDP,
+   receive `HeartbeatAck`, create `HeartbeatAckObservation`, send
+   `ClientStats`, sleep, or retry.
+
+Server one-iteration body:
+
+1. `ServerHeartbeatContinuousLoopBodyBoundary::run_one` receives:
+   - `ServerHeartbeatContinuousLoopOwnershipInput`
+   - `ServerHeartbeatContinuousLoopPolicyInput`
+   - max socket receive wait duration
+   - selected metrics snapshot consumer
+2. The body first checks loop state holder availability with
+   `ServerHeartbeatContinuousLoopOwnershipBoundary`.
+3. If ownership is not ready, it returns `OwnershipNotReady`.
+4. If ownership is ready, it evaluates cadence and stop state with
+   `ServerHeartbeatContinuousLoopPolicyBoundary`.
+5. `Stop` is returned without side effects.
+6. `Wait` is converted into a socket wait decision through
+   `ServerHeartbeatContinuousLoopSocketReceiveTimeoutBoundary`.
+7. `Run` is converted into `ServerHeartbeatContinuousLoopBodyHandoff` with
+   optional handoffs for:
+   - timeout tick work
+   - rejected-candidate metrics snapshot work
+8. The timeout handoff records only the evaluation timestamp. The future body
+   still selects clients and calls `ServerHeartbeatTimeoutLoopTickBoundary`.
+9. The metrics handoff records the export timestamp and selected consumer. The
+   future body still calls
+   `ServerHeartbeatRttOffsetMetricsSnapshotExportHandoffBoundary`.
+10. The body does not scan clients, apply timeout actions, store notices, wake
+    send loops, receive packets, write logs, export metrics, sleep, or retry.
+
+Responsibility split:
+
+- client send cadence
+  - `ClientHeartbeatLoopPolicyBoundary` decides stop / wait / send.
+  - `ClientHeartbeatLoopBodyBoundary` only wraps the send decision in a typed
+    handoff.
+- auth precondition
+  - `ClientHeartbeatLoopOwnershipBoundary` blocks body work when accepted auth
+    or a bound socket is missing.
+- ack receive
+  - The body computes the future socket wait timeout only.
+  - Actual receive/decode remains future loop body work.
+- observation return
+  - The body carries the selected return mode.
+  - `HeartbeatAckObservation` creation and `ClientStats` send remain separate
+    future body steps.
+- server timeout tick
+  - The server body emits a timeout tick handoff only.
+  - Client iteration and `ServerHeartbeatTimeoutLoopTickBoundary` invocation
+    remain future body work.
+- metrics handoff
+  - The server body emits a metrics snapshot handoff only.
+  - Snapshot export and consumer routing remain in the existing metrics
+    boundaries.
+- future continuous loop body
+  - Owns real socket calls, state mutation order, selected client iteration,
+    actual `Heartbeat` / `ClientStats` send, `HeartbeatAck` receive, timeout
+    apply, notice queue storage, send wakeup execution, retry execution,
+    sleeping, and shutdown integration.
+
+Current code reflects this with
+`apps/client::ClientHeartbeatLoopBodyBoundary` and
+`apps/server::ServerHeartbeatContinuousLoopBodyBoundary`. These are
+one-iteration body boundaries only; no completed continuous heartbeat loop is
+implemented.
+
 ### Heartbeat Client Ack Observation Flow
 
 The client ack observation flow returns the missing `client_received_at`

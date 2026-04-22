@@ -801,6 +801,105 @@ impl ClientHeartbeatLoopRetryBoundary {
     }
 }
 
+/// Input for one future client heartbeat loop body iteration.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClientHeartbeatLoopBodyInput {
+    pub ownership: ClientHeartbeatLoopOwnershipInput,
+    pub policy: ClientHeartbeatLoopPolicyInput,
+    pub max_ack_socket_wait_micros: u64,
+}
+
+/// Handoff telling a future body to send exactly one heartbeat.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClientHeartbeatLoopBodySendHandoff {
+    pub client_id: ClientId,
+    pub run_id: RunId,
+    pub protocol_version: ProtocolVersion,
+    pub send_at: TimestampMicros,
+    pub ack_deadline_at: TimestampMicros,
+    pub ack_wait: ClientHeartbeatAckReceiveTimeoutDecision,
+    pub ack_observation_return: ClientHeartbeatAckObservationReturnMode,
+}
+
+/// Runtime-shaped result for one future client heartbeat loop body iteration.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ClientHeartbeatLoopBodyResult {
+    OwnershipNotReady(ClientHeartbeatLoopOwnershipDecision),
+    Stop {
+        reason: ClientHeartbeatLoopPolicyReason,
+        log: ClientHeartbeatLoopLogHandoff,
+    },
+    Wait {
+        next_heartbeat_due_at: TimestampMicros,
+        log: ClientHeartbeatLoopLogHandoff,
+    },
+    SendHeartbeat {
+        handoff: ClientHeartbeatLoopBodySendHandoff,
+        log: ClientHeartbeatLoopLogHandoff,
+    },
+}
+
+/// Boundary for one future client heartbeat loop body iteration.
+///
+/// This composes auth/socket ownership, cadence policy, and ack wait timeout
+/// planning for one iteration. It does not send UDP packets, receive acks,
+/// build observations, send stats, sleep, or retry.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct ClientHeartbeatLoopBodyBoundary {
+    ownership: ClientHeartbeatLoopOwnershipBoundary,
+    policy: ClientHeartbeatLoopPolicyBoundary,
+    ack_wait: ClientHeartbeatAckReceiveTimeoutBoundary,
+}
+
+impl ClientHeartbeatLoopBodyBoundary {
+    pub fn run_one(&self, input: ClientHeartbeatLoopBodyInput) -> ClientHeartbeatLoopBodyResult {
+        let ownership = self.ownership.evaluate(input.ownership);
+        let ClientHeartbeatLoopOwnershipDecision::Ready(ownership_plan) = ownership else {
+            return ClientHeartbeatLoopBodyResult::OwnershipNotReady(ownership);
+        };
+
+        match self.policy.evaluate(input.policy) {
+            ClientHeartbeatLoopPolicyAction::Stop { reason, log } => {
+                ClientHeartbeatLoopBodyResult::Stop { reason, log }
+            }
+            ClientHeartbeatLoopPolicyAction::Wait {
+                next_heartbeat_due_at,
+                log,
+            } => ClientHeartbeatLoopBodyResult::Wait {
+                next_heartbeat_due_at,
+                log,
+            },
+            ClientHeartbeatLoopPolicyAction::SendHeartbeat {
+                send_at,
+                ack_deadline_at,
+                ack_observation_return,
+                log,
+            } => {
+                let ack_wait = self
+                    .ack_wait
+                    .plan_wait(ClientHeartbeatAckReceiveTimeoutInput {
+                        now: send_at,
+                        ack_deadline_at,
+                        max_socket_wait_micros: input.max_ack_socket_wait_micros,
+                    });
+
+                ClientHeartbeatLoopBodyResult::SendHeartbeat {
+                    handoff: ClientHeartbeatLoopBodySendHandoff {
+                        client_id: ownership_plan.client_id,
+                        run_id: ownership_plan.run_id,
+                        protocol_version: ownership_plan.protocol_version,
+                        send_at,
+                        ack_deadline_at,
+                        ack_wait,
+                        ack_observation_return,
+                    },
+                    log,
+                }
+            }
+        }
+    }
+}
+
 /// Startup config needed by the one-shot client AuthRequest PoC.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ClientAuthRequestPocStartupConfig {
@@ -1784,6 +1883,107 @@ mod tests {
                 reason: ClientHeartbeatLoopRetryReason::AckReceiveTimeout,
                 attempts_used: 3,
             }
+        );
+    }
+
+    #[test]
+    fn client_heartbeat_loop_body_emits_send_handoff_when_heartbeat_is_due() {
+        let input = ClientHeartbeatLoopBodyInput {
+            ownership: ClientHeartbeatLoopOwnershipInput {
+                client_id: ClientId("client-1".to_string()),
+                run_id: RunId("run-1".to_string()),
+                protocol_version: ProtocolVersion(2),
+                auth_accepted: true,
+                socket_bound: true,
+            },
+            policy: ClientHeartbeatLoopPolicyInput {
+                client_id: ClientId("client-1".to_string()),
+                run_id: RunId("run-1".to_string()),
+                now: TimestampMicros(10_000),
+                cadence: ClientHeartbeatLoopCadenceInput {
+                    heartbeat_interval_micros: 1_000,
+                    ack_receive_timeout_micros: 2_000,
+                    ack_observation_return:
+                        ClientHeartbeatAckObservationReturnMode::ClientStatsOncePerAck,
+                },
+                stop_condition: ClientHeartbeatLoopStopCondition::RunUntilStopped,
+                state: ClientHeartbeatLoopStateSnapshot {
+                    sent_heartbeats: 0,
+                    received_acks: 0,
+                    missed_acks: 0,
+                    last_heartbeat_sent_at: None,
+                    stop_requested: false,
+                },
+            },
+            max_ack_socket_wait_micros: 500,
+        };
+
+        let result = ClientHeartbeatLoopBodyBoundary::default().run_one(input);
+
+        let ClientHeartbeatLoopBodyResult::SendHeartbeat { handoff, log } = result else {
+            panic!("heartbeat body should emit send handoff");
+        };
+        assert_eq!(handoff.client_id, ClientId("client-1".to_string()));
+        assert_eq!(handoff.run_id, RunId("run-1".to_string()));
+        assert_eq!(handoff.protocol_version, ProtocolVersion(2));
+        assert_eq!(handoff.send_at, TimestampMicros(10_000));
+        assert_eq!(handoff.ack_deadline_at, TimestampMicros(12_000));
+        assert_eq!(
+            handoff.ack_wait,
+            ClientHeartbeatAckReceiveTimeoutDecision::Wait {
+                receive_timeout_micros: 500,
+                deadline_at: TimestampMicros(12_000),
+            }
+        );
+        assert_eq!(
+            handoff.ack_observation_return,
+            ClientHeartbeatAckObservationReturnMode::ClientStatsOncePerAck
+        );
+        assert_eq!(log.reason, ClientHeartbeatLoopPolicyReason::HeartbeatDue);
+    }
+
+    #[test]
+    fn client_heartbeat_loop_body_stops_when_auth_precondition_is_missing() {
+        let input = ClientHeartbeatLoopBodyInput {
+            ownership: ClientHeartbeatLoopOwnershipInput {
+                client_id: ClientId("client-1".to_string()),
+                run_id: RunId("run-1".to_string()),
+                protocol_version: ProtocolVersion(2),
+                auth_accepted: false,
+                socket_bound: true,
+            },
+            policy: ClientHeartbeatLoopPolicyInput {
+                client_id: ClientId("client-1".to_string()),
+                run_id: RunId("run-1".to_string()),
+                now: TimestampMicros(10_000),
+                cadence: ClientHeartbeatLoopCadenceInput {
+                    heartbeat_interval_micros: 1_000,
+                    ack_receive_timeout_micros: 2_000,
+                    ack_observation_return: ClientHeartbeatAckObservationReturnMode::Disabled,
+                },
+                stop_condition: ClientHeartbeatLoopStopCondition::RunUntilStopped,
+                state: ClientHeartbeatLoopStateSnapshot {
+                    sent_heartbeats: 0,
+                    received_acks: 0,
+                    missed_acks: 0,
+                    last_heartbeat_sent_at: None,
+                    stop_requested: false,
+                },
+            },
+            max_ack_socket_wait_micros: 500,
+        };
+
+        let result = ClientHeartbeatLoopBodyBoundary::default().run_one(input);
+
+        let ClientHeartbeatLoopBodyResult::OwnershipNotReady(
+            ClientHeartbeatLoopOwnershipDecision::NotReady { reason, .. },
+        ) = result
+        else {
+            panic!("missing accepted auth should stop before body work");
+        };
+        assert_eq!(
+            reason,
+            ClientHeartbeatLoopOwnershipNotReadyReason::AuthNotAccepted
         );
     }
 }

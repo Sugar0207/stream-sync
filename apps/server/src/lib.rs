@@ -7675,6 +7675,121 @@ impl ServerHeartbeatContinuousLoopRetryBoundary {
     }
 }
 
+/// Input for one future server heartbeat loop body iteration.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct ServerHeartbeatContinuousLoopBodyInput {
+    pub ownership: ServerHeartbeatContinuousLoopOwnershipInput,
+    pub policy: ServerHeartbeatContinuousLoopPolicyInput,
+    pub max_socket_receive_timeout_micros: u64,
+    pub metrics_snapshot_consumer: ServerHeartbeatRttOffsetMetricsSnapshotConsumer,
+}
+
+/// Handoff telling a future body to run timeout tick work.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct ServerHeartbeatContinuousLoopTimeoutTickHandoff {
+    pub evaluated_at: TimestampMicros,
+}
+
+/// Handoff telling a future body to export rejected-candidate metrics.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct ServerHeartbeatContinuousLoopMetricsSnapshotHandoff {
+    pub exported_at: TimestampMicros,
+    pub consumer: ServerHeartbeatRttOffsetMetricsSnapshotConsumer,
+}
+
+/// Work handoffs emitted for one future server heartbeat loop body iteration.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct ServerHeartbeatContinuousLoopBodyHandoff {
+    pub timeout_tick: Option<ServerHeartbeatContinuousLoopTimeoutTickHandoff>,
+    pub metrics_snapshot: Option<ServerHeartbeatContinuousLoopMetricsSnapshotHandoff>,
+}
+
+/// Runtime-shaped result for one future server heartbeat loop body iteration.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ServerHeartbeatContinuousLoopBodyResult {
+    OwnershipNotReady(ServerHeartbeatContinuousLoopOwnershipDecision),
+    Stop {
+        reason: ServerHeartbeatContinuousLoopPolicyReason,
+        log: ServerHeartbeatContinuousLoopLogHandoff,
+    },
+    Wait {
+        socket_wait: ServerHeartbeatContinuousLoopSocketReceiveTimeoutDecision,
+        log: ServerHeartbeatContinuousLoopLogHandoff,
+    },
+    Run {
+        handoff: ServerHeartbeatContinuousLoopBodyHandoff,
+        log: ServerHeartbeatContinuousLoopLogHandoff,
+    },
+}
+
+/// Boundary for one future server heartbeat loop body iteration.
+///
+/// This composes state ownership, cadence policy, and socket wait planning for
+/// one iteration. It only emits handoffs for timeout tick and metrics snapshot
+/// work; it does not scan clients, mutate state, write logs, receive packets,
+/// store notices, export metrics, sleep, or retry.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct ServerHeartbeatContinuousLoopBodyBoundary {
+    ownership: ServerHeartbeatContinuousLoopOwnershipBoundary,
+    policy: ServerHeartbeatContinuousLoopPolicyBoundary,
+    socket_wait: ServerHeartbeatContinuousLoopSocketReceiveTimeoutBoundary,
+}
+
+impl ServerHeartbeatContinuousLoopBodyBoundary {
+    pub fn run_one(
+        &self,
+        input: ServerHeartbeatContinuousLoopBodyInput,
+    ) -> ServerHeartbeatContinuousLoopBodyResult {
+        let ownership = self.ownership.evaluate(input.ownership);
+        if !matches!(
+            ownership,
+            ServerHeartbeatContinuousLoopOwnershipDecision::Ready(_)
+        ) {
+            return ServerHeartbeatContinuousLoopBodyResult::OwnershipNotReady(ownership);
+        }
+
+        match self.policy.evaluate(input.policy) {
+            ServerHeartbeatContinuousLoopPolicyAction::Stop { reason, log } => {
+                ServerHeartbeatContinuousLoopBodyResult::Stop { reason, log }
+            }
+            ServerHeartbeatContinuousLoopPolicyAction::Wait {
+                next_wakeup_at,
+                log,
+            } => {
+                let socket_wait = self.socket_wait.plan_wait(
+                    ServerHeartbeatContinuousLoopSocketReceiveTimeoutInput {
+                        now: input.policy.now,
+                        next_heartbeat_work_due_at: next_wakeup_at,
+                        max_socket_receive_timeout_micros: input.max_socket_receive_timeout_micros,
+                    },
+                );
+
+                ServerHeartbeatContinuousLoopBodyResult::Wait { socket_wait, log }
+            }
+            ServerHeartbeatContinuousLoopPolicyAction::Run {
+                run_timeout_tick,
+                export_metrics_snapshot,
+                log,
+            } => ServerHeartbeatContinuousLoopBodyResult::Run {
+                handoff: ServerHeartbeatContinuousLoopBodyHandoff {
+                    timeout_tick: run_timeout_tick.then_some(
+                        ServerHeartbeatContinuousLoopTimeoutTickHandoff {
+                            evaluated_at: input.policy.now,
+                        },
+                    ),
+                    metrics_snapshot: export_metrics_snapshot.then_some(
+                        ServerHeartbeatContinuousLoopMetricsSnapshotHandoff {
+                            exported_at: input.policy.now,
+                            consumer: input.metrics_snapshot_consumer,
+                        },
+                    ),
+                },
+                log,
+            },
+        }
+    }
+}
+
 /// Combined handoff emitted after policy commit skips a rejected candidate.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ServerHeartbeatRttOffsetRejectedCandidateHandoff {
@@ -14542,6 +14657,106 @@ shared_token = "secret"
                 next_attempt: 2,
                 retry_at: TimestampMicros(10_750),
             }
+        );
+    }
+
+    #[test]
+    fn heartbeat_continuous_loop_body_emits_timeout_and_metrics_handoffs() {
+        let input = ServerHeartbeatContinuousLoopBodyInput {
+            ownership: ServerHeartbeatContinuousLoopOwnershipInput {
+                registry_available: true,
+                liveness_state_available: true,
+                outbound_queue_available: true,
+                timeout_log_writer_available: true,
+                rejected_candidate_metrics_state_available: true,
+            },
+            policy: ServerHeartbeatContinuousLoopPolicyInput {
+                now: TimestampMicros(10_000),
+                cadence: ServerHeartbeatContinuousLoopCadenceInput {
+                    timeout_tick_interval_micros: 1_000,
+                    metrics_snapshot_interval_micros: Some(5_000),
+                },
+                stop_condition: ServerHeartbeatContinuousLoopStopCondition::RunUntilStopped,
+                state: ServerHeartbeatContinuousLoopStateSnapshot {
+                    completed_timeout_ticks: 1,
+                    exported_metrics_snapshots: 1,
+                    last_timeout_tick_at: Some(TimestampMicros(9_000)),
+                    last_metrics_snapshot_at: Some(TimestampMicros(5_000)),
+                    stop_requested: false,
+                },
+            },
+            max_socket_receive_timeout_micros: 2_000,
+            metrics_snapshot_consumer: ServerHeartbeatRttOffsetMetricsSnapshotConsumer::FutureLoop,
+        };
+
+        let result = ServerHeartbeatContinuousLoopBodyBoundary::default().run_one(input);
+
+        let ServerHeartbeatContinuousLoopBodyResult::Run { handoff, log } = result else {
+            panic!("server heartbeat body should emit due handoffs");
+        };
+        assert_eq!(
+            handoff.timeout_tick,
+            Some(ServerHeartbeatContinuousLoopTimeoutTickHandoff {
+                evaluated_at: TimestampMicros(10_000),
+            })
+        );
+        assert_eq!(
+            handoff.metrics_snapshot,
+            Some(ServerHeartbeatContinuousLoopMetricsSnapshotHandoff {
+                exported_at: TimestampMicros(10_000),
+                consumer: ServerHeartbeatRttOffsetMetricsSnapshotConsumer::FutureLoop,
+            })
+        );
+        assert_eq!(
+            log.reason,
+            ServerHeartbeatContinuousLoopPolicyReason::TimeoutTickAndMetricsSnapshotDue
+        );
+    }
+
+    #[test]
+    fn heartbeat_continuous_loop_body_waits_with_socket_timeout() {
+        let input = ServerHeartbeatContinuousLoopBodyInput {
+            ownership: ServerHeartbeatContinuousLoopOwnershipInput {
+                registry_available: true,
+                liveness_state_available: true,
+                outbound_queue_available: true,
+                timeout_log_writer_available: true,
+                rejected_candidate_metrics_state_available: true,
+            },
+            policy: ServerHeartbeatContinuousLoopPolicyInput {
+                now: TimestampMicros(10_000),
+                cadence: ServerHeartbeatContinuousLoopCadenceInput {
+                    timeout_tick_interval_micros: 3_000,
+                    metrics_snapshot_interval_micros: None,
+                },
+                stop_condition: ServerHeartbeatContinuousLoopStopCondition::RunUntilStopped,
+                state: ServerHeartbeatContinuousLoopStateSnapshot {
+                    completed_timeout_ticks: 1,
+                    exported_metrics_snapshots: 0,
+                    last_timeout_tick_at: Some(TimestampMicros(8_000)),
+                    last_metrics_snapshot_at: None,
+                    stop_requested: false,
+                },
+            },
+            max_socket_receive_timeout_micros: 500,
+            metrics_snapshot_consumer: ServerHeartbeatRttOffsetMetricsSnapshotConsumer::FutureLoop,
+        };
+
+        let result = ServerHeartbeatContinuousLoopBodyBoundary::default().run_one(input);
+
+        let ServerHeartbeatContinuousLoopBodyResult::Wait { socket_wait, log } = result else {
+            panic!("server heartbeat body should wait before cadence is due");
+        };
+        assert_eq!(
+            socket_wait,
+            ServerHeartbeatContinuousLoopSocketReceiveTimeoutDecision::Wait {
+                receive_timeout_micros: 500,
+                heartbeat_work_due_at: TimestampMicros(11_000),
+            }
+        );
+        assert_eq!(
+            log.reason,
+            ServerHeartbeatContinuousLoopPolicyReason::WaitingForCadence
         );
     }
 
