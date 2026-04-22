@@ -2368,6 +2368,58 @@ This does not mutate the auth registry, remove liveness entries, emit logs, or
 notify clients. The future continuous loop should be the owner of when timeout
 evaluation runs and what state transition / log / notice follows.
 
+### Heartbeat Timeout Action Boundary
+
+Timeout evaluation is separated from the actions that should follow a timeout.
+The current implementation adds a decision boundary that plans these actions
+without running a continuous scanner or performing socket I/O.
+
+Current implementation scope:
+
+1. `ServerHeartbeatLivenessCommitBoundary::evaluate_timeout` returns one
+   `ServerHeartbeatTimeoutEvaluation`.
+2. `ServerHeartbeatTimeoutActionBoundary::plan_actions` consumes that
+   evaluation, the current `ServerHeartbeatLivenessState`, and the server
+   timestamp used for the evaluation.
+3. For `Alive`, the action plan contains no registry invalidation, no timeout
+   log input, and no notice.
+4. For `NoHeartbeat`, the action plan also contains no side effects because
+   there is no source endpoint / run context to invalidate or notify.
+5. For `TimedOut` with a matching liveness entry, the action plan includes:
+   - `AuthenticatedSenderInvalidation` with reason `HeartbeatTimeout`
+   - `ServerHeartbeatTimeoutLogInput`
+   - `ServerNoticeTriggerPlan` using `ServerNoticeTriggerSource::AuthExpired`
+6. `AuthenticatedSenderRegistryBoundary::invalidate` can apply the explicit
+   invalidation command by removing the client entry from the in-memory
+   registry.
+7. `ServerHeartbeatTimeoutJsonLogEventBoundary` maps timeout log handoff input
+   to the future `server.heartbeat_timeout` JSON Lines event shape.
+
+Responsibility split:
+
+- liveness evaluation
+  - Decides only whether a client is `Alive`, `TimedOut`, or has no heartbeat
+    state at a caller-supplied timestamp.
+  - Does not mutate auth, log, or send notices.
+- timeout action boundary
+  - Converts a `TimedOut` result into typed action plans.
+  - Does not apply those actions.
+- registry invalidation
+  - Applies an explicit invalidation command to the in-memory auth registry.
+  - Does not decide timeout policy or reauthentication policy.
+- timeout log
+  - Receives a typed log event input with elapsed time and timeout threshold.
+  - Writer / file sink / process-wide logger wiring remains future work.
+- timeout notice
+  - Uses the existing `ServerNotice` trigger policy and maps heartbeat timeout
+    to `AuthExpired`.
+  - Queue storage, rate limiting, duplicate suppression, and UDP send remain
+    future work.
+
+This preserves the current policy that a timeout can be reasoned about in one
+small step, while the continuous heartbeat loop remains responsible for when to
+run timeout evaluation and which planned effects it actually applies.
+
 ### Heartbeat RTT / Offset Calculation Policy
 
 The current implementation records the calculation plan only. It deliberately

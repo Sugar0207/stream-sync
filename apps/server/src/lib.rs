@@ -4954,9 +4954,10 @@ pub enum AuthenticatedSenderRejectReason {
 
 /// Boundary that registers accepted auth decisions and checks later packets.
 ///
-/// This boundary owns only the accepted-client to endpoint mapping shape. It
-/// does not run UDP receive loops, persist state, enforce timeout/revocation, or
-/// execute reauthentication.
+/// This boundary owns only the accepted-client to endpoint mapping shape and
+/// can apply explicit invalidation commands from a higher policy layer. It does
+/// not run UDP receive loops, persist state, decide timeout policy, or execute
+/// reauthentication.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
 pub struct AuthenticatedSenderRegistryBoundary;
 
@@ -4984,6 +4985,21 @@ impl AuthenticatedSenderRegistryBoundary {
             .entries_by_client_id
             .insert(entry.client_id.0.clone(), entry.clone());
         entry
+    }
+
+    pub fn invalidate(
+        &self,
+        registry: &mut AuthenticatedSenderRegistry,
+        invalidation: AuthenticatedSenderInvalidation,
+    ) -> AuthenticatedSenderInvalidationOutcome {
+        let removed_entry = registry
+            .entries_by_client_id
+            .remove(invalidation.client_id.0.as_str());
+
+        AuthenticatedSenderInvalidationOutcome {
+            invalidation,
+            removed_entry,
+        }
     }
 
     pub fn check_source(
@@ -5900,6 +5916,186 @@ pub enum ServerHeartbeatTimeoutEvaluation {
         elapsed_micros: u64,
         timeout_after_micros: u64,
     },
+}
+
+/// Reason for removing an authenticated sender entry through an explicit policy.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum AuthenticatedSenderInvalidationReason {
+    HeartbeatTimeout,
+}
+
+/// Explicit invalidation command for the authenticated sender registry.
+///
+/// This is produced by a higher policy boundary. The registry boundary applies
+/// it, but does not decide when timeout or reauthentication should happen.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AuthenticatedSenderInvalidation {
+    pub client_id: ClientId,
+    pub source: PacketSource,
+    pub run_id: RunId,
+    pub protocol_version: ProtocolVersion,
+    pub reason: AuthenticatedSenderInvalidationReason,
+    pub invalidated_at: TimestampMicros,
+}
+
+/// Result of applying one authenticated sender invalidation command.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AuthenticatedSenderInvalidationOutcome {
+    pub invalidation: AuthenticatedSenderInvalidation,
+    pub removed_entry: Option<AuthenticatedSenderEntry>,
+}
+
+/// Timeout log handoff produced from a timed-out heartbeat evaluation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ServerHeartbeatTimeoutLogInput {
+    pub source: PacketSource,
+    pub client_id: ClientId,
+    pub run_id: RunId,
+    pub protocol_version: ProtocolVersion,
+    pub last_server_received_at: TimestampMicros,
+    pub evaluated_at: TimestampMicros,
+    pub elapsed_micros: u64,
+    pub timeout_after_micros: u64,
+    pub registry_invalidation_planned: bool,
+    pub notice_planned: bool,
+}
+
+/// Event name for future heartbeat timeout JSON Lines records.
+pub const SERVER_HEARTBEAT_TIMEOUT_JSON_LOG_EVENT_NAME: &str = "server.heartbeat_timeout";
+
+/// JSON Lines event input for heartbeat timeout observations.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ServerHeartbeatTimeoutJsonLogEventInput {
+    pub event_name: &'static str,
+    pub source: PacketSource,
+    pub client_id: ClientId,
+    pub run_id: RunId,
+    pub protocol_version: ProtocolVersion,
+    pub last_server_received_at: TimestampMicros,
+    pub evaluated_at: TimestampMicros,
+    pub elapsed_micros: u64,
+    pub timeout_after_micros: u64,
+    pub registry_invalidation_planned: bool,
+    pub notice_planned: bool,
+}
+
+/// Boundary that maps timeout log handoff input to a JSON Lines event shape.
+///
+/// This does not write files, update metrics, apply invalidation, enqueue
+/// notices, or run a timeout scanner.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct ServerHeartbeatTimeoutJsonLogEventBoundary;
+
+impl ServerHeartbeatTimeoutJsonLogEventBoundary {
+    pub fn build_event(
+        &self,
+        input: ServerHeartbeatTimeoutLogInput,
+    ) -> ServerHeartbeatTimeoutJsonLogEventInput {
+        ServerHeartbeatTimeoutJsonLogEventInput {
+            event_name: SERVER_HEARTBEAT_TIMEOUT_JSON_LOG_EVENT_NAME,
+            source: input.source,
+            client_id: input.client_id,
+            run_id: input.run_id,
+            protocol_version: input.protocol_version,
+            last_server_received_at: input.last_server_received_at,
+            evaluated_at: input.evaluated_at,
+            elapsed_micros: input.elapsed_micros,
+            timeout_after_micros: input.timeout_after_micros,
+            registry_invalidation_planned: input.registry_invalidation_planned,
+            notice_planned: input.notice_planned,
+        }
+    }
+}
+
+/// Planned effects for one heartbeat timeout evaluation.
+///
+/// The plan is a typed handoff only. Applying registry invalidation, writing
+/// logs, enqueueing notices, and sending UDP packets are separate steps.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ServerHeartbeatTimeoutActionPlan {
+    pub evaluation: ServerHeartbeatTimeoutEvaluation,
+    pub registry_invalidation: Option<AuthenticatedSenderInvalidation>,
+    pub timeout_log: Option<ServerHeartbeatTimeoutLogInput>,
+    pub notice: Option<ServerNoticeTriggerPlan>,
+}
+
+/// Boundary that connects timeout evaluation to later invalidation/log/notice
+/// handoffs.
+///
+/// It plans effects only for `TimedOut` entries that still exist in liveness
+/// state. It does not mutate state, remove registry entries, write logs,
+/// enqueue notices, send UDP packets, or run a continuous loop.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct ServerHeartbeatTimeoutActionBoundary {
+    notice: ServerNoticeTriggerPolicyBoundary,
+}
+
+impl ServerHeartbeatTimeoutActionBoundary {
+    pub fn plan_actions(
+        &self,
+        state: &ServerHeartbeatLivenessState,
+        evaluation: ServerHeartbeatTimeoutEvaluation,
+        evaluated_at: TimestampMicros,
+    ) -> ServerHeartbeatTimeoutActionPlan {
+        let (registry_invalidation, timeout_log, notice) = match &evaluation {
+            ServerHeartbeatTimeoutEvaluation::TimedOut {
+                client_id,
+                last_server_received_at,
+                elapsed_micros,
+                timeout_after_micros,
+            } => {
+                let Some(entry) = state.get(client_id) else {
+                    return ServerHeartbeatTimeoutActionPlan {
+                        evaluation,
+                        registry_invalidation: None,
+                        timeout_log: None,
+                        notice: None,
+                    };
+                };
+                let invalidation = AuthenticatedSenderInvalidation {
+                    client_id: entry.client_id.clone(),
+                    source: entry.source,
+                    run_id: entry.run_id.clone(),
+                    protocol_version: entry.protocol_version,
+                    reason: AuthenticatedSenderInvalidationReason::HeartbeatTimeout,
+                    invalidated_at: evaluated_at,
+                };
+                let log = ServerHeartbeatTimeoutLogInput {
+                    source: entry.source,
+                    client_id: entry.client_id.clone(),
+                    run_id: entry.run_id.clone(),
+                    protocol_version: entry.protocol_version,
+                    last_server_received_at: *last_server_received_at,
+                    evaluated_at,
+                    elapsed_micros: *elapsed_micros,
+                    timeout_after_micros: *timeout_after_micros,
+                    registry_invalidation_planned: true,
+                    notice_planned: true,
+                };
+                let notice = self.notice.plan_notice(ServerNoticeTriggerInput {
+                    destination: entry.source,
+                    protocol_version: entry.protocol_version,
+                    run_id: entry.run_id.clone(),
+                    source: ServerNoticeTriggerSource::AuthExpired,
+                    message: format!(
+                        "heartbeat timeout: elapsed_micros={} timeout_after_micros={}",
+                        elapsed_micros, timeout_after_micros
+                    ),
+                });
+
+                (Some(invalidation), Some(log), Some(notice))
+            }
+            ServerHeartbeatTimeoutEvaluation::Alive { .. }
+            | ServerHeartbeatTimeoutEvaluation::NoHeartbeat { .. } => (None, None, None),
+        };
+
+        ServerHeartbeatTimeoutActionPlan {
+            evaluation,
+            registry_invalidation,
+            timeout_log,
+            notice,
+        }
+    }
 }
 
 /// Boundary that commits heartbeat liveness state and evaluates timeout policy.
@@ -11178,6 +11374,180 @@ shared_token = "secret"
             }
         );
         assert_eq!(state.len(), 1);
+    }
+
+    #[test]
+    fn heartbeat_timeout_action_boundary_plans_invalidation_log_and_notice() {
+        let source = packet_source();
+        let liveness = ServerHeartbeatLivenessCommitBoundary;
+        let mut state = ServerHeartbeatLivenessState::default();
+        liveness.commit(
+            &mut state,
+            ServerHeartbeatStateInput {
+                source,
+                authenticated_sender: AuthenticatedSenderEntry {
+                    client_id: ClientId("client-1".to_string()),
+                    source,
+                    run_id: RunId("run-1".to_string()),
+                    protocol_version: ProtocolVersion(2),
+                    registered_at: None,
+                },
+                client_id: ClientId("client-1".to_string()),
+                run_id: RunId("run-1".to_string()),
+                protocol_version: ProtocolVersion(2),
+                heartbeat_sent_at: TimestampMicros(2_000_000),
+                server_received_at: TimestampMicros(2_000_100),
+                short_status: None,
+            },
+        );
+        let evaluation = liveness.evaluate_timeout(
+            &state,
+            &ClientId("client-1".to_string()),
+            TimestampMicros(2_000_600),
+            ServerHeartbeatTimeoutPolicy::new(500),
+        );
+        let boundary = ServerHeartbeatTimeoutActionBoundary::default();
+
+        let plan = boundary.plan_actions(&state, evaluation, TimestampMicros(2_000_600));
+
+        assert!(matches!(
+            plan.evaluation,
+            ServerHeartbeatTimeoutEvaluation::TimedOut { .. }
+        ));
+        let invalidation = plan
+            .registry_invalidation
+            .expect("timeout should plan registry invalidation");
+        assert_eq!(invalidation.client_id, ClientId("client-1".to_string()));
+        assert_eq!(invalidation.source, source);
+        assert_eq!(invalidation.run_id, RunId("run-1".to_string()));
+        assert_eq!(
+            invalidation.reason,
+            AuthenticatedSenderInvalidationReason::HeartbeatTimeout
+        );
+        assert_eq!(invalidation.invalidated_at, TimestampMicros(2_000_600));
+
+        let log = plan.timeout_log.expect("timeout should plan log handoff");
+        assert_eq!(log.source, source);
+        assert_eq!(log.client_id, ClientId("client-1".to_string()));
+        assert_eq!(log.last_server_received_at, TimestampMicros(2_000_100));
+        assert_eq!(log.evaluated_at, TimestampMicros(2_000_600));
+        assert_eq!(log.elapsed_micros, 500);
+        assert_eq!(log.timeout_after_micros, 500);
+        assert!(log.registry_invalidation_planned);
+        assert!(log.notice_planned);
+
+        let notice = plan.notice.expect("timeout should plan notice");
+        assert_eq!(notice.source, ServerNoticeTriggerSource::AuthExpired);
+        assert_eq!(notice.notice.destination, source);
+        assert_eq!(notice.notice.notice_type, NoticeType::AuthExpired);
+        assert_eq!(notice.notice.run_id, RunId("run-1".to_string()));
+        assert!(notice.notice.message.contains("heartbeat timeout"));
+    }
+
+    #[test]
+    fn heartbeat_timeout_action_boundary_ignores_alive_or_missing_evaluations() {
+        let source = packet_source();
+        let liveness = ServerHeartbeatLivenessCommitBoundary;
+        let mut state = ServerHeartbeatLivenessState::default();
+        liveness.commit(
+            &mut state,
+            ServerHeartbeatStateInput {
+                source,
+                authenticated_sender: AuthenticatedSenderEntry {
+                    client_id: ClientId("client-1".to_string()),
+                    source,
+                    run_id: RunId("run-1".to_string()),
+                    protocol_version: ProtocolVersion(2),
+                    registered_at: None,
+                },
+                client_id: ClientId("client-1".to_string()),
+                run_id: RunId("run-1".to_string()),
+                protocol_version: ProtocolVersion(2),
+                heartbeat_sent_at: TimestampMicros(3_000_000),
+                server_received_at: TimestampMicros(3_000_100),
+                short_status: None,
+            },
+        );
+        let alive = liveness.evaluate_timeout(
+            &state,
+            &ClientId("client-1".to_string()),
+            TimestampMicros(3_000_199),
+            ServerHeartbeatTimeoutPolicy::new(500),
+        );
+        let missing = liveness.evaluate_timeout(
+            &state,
+            &ClientId("client-2".to_string()),
+            TimestampMicros(3_000_700),
+            ServerHeartbeatTimeoutPolicy::new(500),
+        );
+        let boundary = ServerHeartbeatTimeoutActionBoundary::default();
+
+        let alive_plan = boundary.plan_actions(&state, alive, TimestampMicros(3_000_199));
+        let missing_plan = boundary.plan_actions(&state, missing, TimestampMicros(3_000_700));
+
+        assert!(alive_plan.registry_invalidation.is_none());
+        assert!(alive_plan.timeout_log.is_none());
+        assert!(alive_plan.notice.is_none());
+        assert!(missing_plan.registry_invalidation.is_none());
+        assert!(missing_plan.timeout_log.is_none());
+        assert!(missing_plan.notice.is_none());
+    }
+
+    #[test]
+    fn heartbeat_timeout_log_event_boundary_preserves_timeout_fields() {
+        let source = packet_source();
+        let input = ServerHeartbeatTimeoutLogInput {
+            source,
+            client_id: ClientId("client-1".to_string()),
+            run_id: RunId("run-1".to_string()),
+            protocol_version: ProtocolVersion(2),
+            last_server_received_at: TimestampMicros(4_000_100),
+            evaluated_at: TimestampMicros(4_000_700),
+            elapsed_micros: 600,
+            timeout_after_micros: 500,
+            registry_invalidation_planned: true,
+            notice_planned: true,
+        };
+        let boundary = ServerHeartbeatTimeoutJsonLogEventBoundary;
+
+        let event = boundary.build_event(input);
+
+        assert_eq!(
+            event.event_name,
+            SERVER_HEARTBEAT_TIMEOUT_JSON_LOG_EVENT_NAME
+        );
+        assert_eq!(event.source, source);
+        assert_eq!(event.client_id, ClientId("client-1".to_string()));
+        assert_eq!(event.run_id, RunId("run-1".to_string()));
+        assert_eq!(event.last_server_received_at, TimestampMicros(4_000_100));
+        assert_eq!(event.evaluated_at, TimestampMicros(4_000_700));
+        assert_eq!(event.elapsed_micros, 600);
+        assert_eq!(event.timeout_after_micros, 500);
+        assert!(event.registry_invalidation_planned);
+        assert!(event.notice_planned);
+    }
+
+    #[test]
+    fn authenticated_sender_registry_boundary_applies_explicit_timeout_invalidation() {
+        let source = packet_source();
+        let mut registry = registry_with_client("client-1", source);
+        let boundary = AuthenticatedSenderRegistryBoundary;
+        let invalidation = AuthenticatedSenderInvalidation {
+            client_id: ClientId("client-1".to_string()),
+            source,
+            run_id: RunId("run-1".to_string()),
+            protocol_version: ProtocolVersion(2),
+            reason: AuthenticatedSenderInvalidationReason::HeartbeatTimeout,
+            invalidated_at: TimestampMicros(5_000_000),
+        };
+
+        let outcome = boundary.invalidate(&mut registry, invalidation);
+
+        assert!(outcome.removed_entry.is_some());
+        assert_eq!(
+            boundary.check_source(&registry, &ClientId("client-1".to_string()), source),
+            AuthenticatedSenderCheck::Rejected(AuthenticatedSenderRejectReason::UnknownClient)
+        );
     }
 
     #[test]

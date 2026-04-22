@@ -5,6 +5,62 @@
 - Codex
 
 ### 今回の作業
+- timeout evaluation 結果を auth 失効 / ログ / notice へ接続する方針を整理した。
+- `TimedOut` evaluation から auth registry invalidation command、timeout log event input、`AuthExpired` notice plan を作る最小 action boundary を追加した。
+- registry invalidation は timeout 判定側で直接決めず、明示 command を `AuthenticatedSenderRegistryBoundary` が適用する形に分離した。
+
+### 変更ファイル
+- `apps/server/src/lib.rs`
+- `docs/architecture/system-design.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### 決定事項
+- liveness evaluation は `Alive` / `TimedOut` / `NoHeartbeat` の分類だけを担当し、auth 失効、ログ、notice は実行しない。
+- `ServerHeartbeatTimeoutActionBoundary` は `TimedOut` かつ liveness entry が残っている場合だけ、後続 action plan を作る。
+- auth registry 失効は `AuthenticatedSenderInvalidation` command として表現し、`AuthenticatedSenderRegistryBoundary::invalidate` が明示的に適用する。
+- timeout notice は既存 `ServerNoticeTriggerPolicyBoundary` を使い、最小実装では `ServerNoticeTriggerSource::AuthExpired` に写像する。
+- timeout log は `server.heartbeat_timeout` event input までを作り、writer / file sink / process-wide logger 接続は future work に残す。
+
+### 実装したこと
+- `AuthenticatedSenderInvalidationReason`、`AuthenticatedSenderInvalidation`、`AuthenticatedSenderInvalidationOutcome` を追加した。
+- `AuthenticatedSenderRegistryBoundary::invalidate` を追加した。
+- `ServerHeartbeatTimeoutLogInput`、`SERVER_HEARTBEAT_TIMEOUT_JSON_LOG_EVENT_NAME`、`ServerHeartbeatTimeoutJsonLogEventInput`、`ServerHeartbeatTimeoutJsonLogEventBoundary` を追加した。
+- `ServerHeartbeatTimeoutActionPlan` と `ServerHeartbeatTimeoutActionBoundary` を追加した。
+- timeout action plan、Alive / NoHeartbeat no-op、timeout log event、explicit registry invalidation の単体テストを追加した。
+
+### 未実装 / 保留
+- continuous heartbeat loop から timeout evaluation / action plan を呼ぶ処理
+- timeout action plan の実適用順序制御
+- timeout log JSON Lines writer / file sink / process-wide logger 接続
+- timeout notice の queue storage / rate limit / duplicate suppression / UDP send
+- reauthentication policy
+- RTT / offset estimate の durable state commit と smoothing
+
+### 次にやる候補
+- timeout action plan を continuous loop から実適用する方針を整理する。
+- RTT / offset estimate を server 側 state に commit する最小境界を整理する。
+- continuous heartbeat loop に進む前の送信間隔、停止条件、ログ出力範囲を整理する。
+
+### TODO 更新
+- 現在位置に heartbeat timeout action plan 境界、timeout log event 境界、auth invalidation command 境界の完了を反映した。
+- 直近でやることを timeout action plan の continuous loop 適用方針、RTT / offset state commit、continuous heartbeat loop 前の境界整理へ更新した。
+- heartbeat / net-core / 検証タスクに timeout action plan と関連単体テストの完了を追加した。
+
+### 検証
+- `cargo fmt`
+- `cargo fmt --check`
+- `cargo test -p stream-sync-server heartbeat_timeout`
+- `cargo test -p stream-sync-server authenticated_sender_registry_boundary_applies_explicit_timeout_invalidation`
+- `cargo check --workspace`
+
+---
+
+## 2026-04-22
+### 種別
+- Codex
+
+### 今回の作業
 - heartbeat timeout / liveness state commit の実装範囲を整理した。
 - registered heartbeat から作られた `ServerHeartbeatStateInput` を server 側 `ServerHeartbeatLivenessState` へ 1 回 commit する最小境界を追加した。
 - timeout は continuous loop での自動失効ではなく、caller supplied timestamp で 1 client 分を評価する policy boundary として追加した。
