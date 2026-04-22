@@ -5,6 +5,68 @@
 - Codex
 
 ### 今回の作業
+- continuous heartbeat loop に進む前の送信間隔、停止条件、ログ出力範囲を整理した。
+- client 側 heartbeat send cadence / ack observation return / stop / log handoff の最小 policy 境界を追加した。
+- server 側 timeout tick / metrics snapshot handoff cadence / stop / log handoff の最小 policy 境界を追加した。
+- completed continuous heartbeat loop 本体、実際の sleep / socket I/O / retry / wakeup 実行には進まなかった。
+
+### 変更ファイル
+- `apps/client/src/lib.rs`
+- `apps/server/src/lib.rs`
+- `docs/architecture/system-design.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### 決定事項
+- client 側 continuous heartbeat loop の事前境界は `Stop` / `Wait` / `SendHeartbeat` の decision だけを返す。
+- client 側の ack observation return は `ClientHeartbeatAckObservationReturnMode` として policy decision に載せるが、実際の `HeartbeatAckObservation` 生成と `ClientStats` 送信は既存境界と future loop body に残す。
+- server 側 continuous heartbeat loop の事前境界は timeout tick と metrics snapshot export の due 判定だけを返す。
+- timeout evaluation / action apply / notice queue storage / metrics snapshot handoff は既存の個別境界に残し、policy boundary からは直接実行しない。
+- log は caller-owned writer へ渡す前の typed handoff だけを作る。JSON Lines event schema / file sink / process-wide logger は future work に残す。
+
+### 実装したこと
+- `ClientHeartbeatLoopCadenceInput` を追加した。
+- `ClientHeartbeatLoopStopCondition` / `ClientHeartbeatLoopPolicyAction` / `ClientHeartbeatLoopLogHandoff` を追加した。
+- `ClientHeartbeatLoopPolicyBoundary::evaluate` を追加した。
+- `ServerHeartbeatContinuousLoopCadenceInput` を追加した。
+- `ServerHeartbeatContinuousLoopStopCondition` / `ServerHeartbeatContinuousLoopPolicyAction` / `ServerHeartbeatContinuousLoopLogHandoff` を追加した。
+- `ServerHeartbeatContinuousLoopPolicyBoundary::evaluate` を追加した。
+- client / server の policy boundary 単体テストを追加した。
+
+### 未実装 / 保留
+- completed continuous heartbeat loop
+- 実際の heartbeat packet 継続送信
+- 実際の sleep / timer / socket receive timeout / retry
+- ack observation の継続的な `ClientStats` 返送
+- 複数 client の timeout scan
+- timeout notice wakeup 実行本体
+- metrics snapshot の具体的な export cadence / dashboard refresh
+- JSON Lines event schema / writer runtime / file sink
+
+### 次にやる候補
+- heartbeat timeout notice wakeup 実行本体に進む前の境界整理を続ける。
+- RTT / offset metrics snapshot の具体的な export cadence / dashboard refresh 方針を整理する。
+- continuous heartbeat loop 本体へ進む前の state ownership / socket receive timeout / retry 範囲を整理する。
+
+### TODO 更新
+- 現在位置に continuous heartbeat loop preflight policy 境界の完了を反映した。
+- 直近でやることを timeout notice wakeup 実行本体前の境界整理、metrics snapshot の export cadence / dashboard refresh 方針、continuous loop 本体前の state ownership / timeout / retry 整理へ更新した。
+- heartbeat / client / 検証タスクに client/server policy boundary と関連単体テストの完了を追加した。
+
+### 検証
+- `cargo fmt`
+- `cargo test -p stream-sync-client client_heartbeat_loop_policy`
+- `cargo test -p stream-sync-server heartbeat_continuous_loop_policy`
+- `cargo fmt --check`
+- `cargo check --workspace`
+
+---
+
+## 2026-04-22
+### 種別
+- Codex
+
+### 今回の作業
 - RTT / offset metrics snapshot を future loop / dashboard へどう連携するかを整理した。
 - rejected candidate metrics snapshot を future loop / dashboard consumer へ渡す export handoff の最小境界を追加した。
 - dashboard 本体や completed metrics pipeline には進まず、consumer placeholder の型だけを追加した。

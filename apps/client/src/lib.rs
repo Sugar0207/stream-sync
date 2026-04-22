@@ -448,6 +448,177 @@ impl ClientHeartbeatObservationCarrierBoundary {
     }
 }
 
+/// How a future heartbeat loop should return ack observations to the server.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ClientHeartbeatAckObservationReturnMode {
+    Disabled,
+    ClientStatsOncePerAck,
+}
+
+/// Cadence inputs for a future continuous client heartbeat loop.
+///
+/// This is data only. It does not sleep, receive acks, send stats, or start a
+/// loop.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct ClientHeartbeatLoopCadenceInput {
+    pub heartbeat_interval_micros: u64,
+    pub ack_receive_timeout_micros: u64,
+    pub ack_observation_return: ClientHeartbeatAckObservationReturnMode,
+}
+
+/// Stop policy inputs for a future continuous client heartbeat loop.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ClientHeartbeatLoopStopCondition {
+    RunUntilStopped,
+    MaxHeartbeats { max_sent_heartbeats: u64 },
+    MaxMissedAcks { max_missed_acks: u64 },
+}
+
+/// Snapshot of loop state supplied by a future loop body.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct ClientHeartbeatLoopStateSnapshot {
+    pub sent_heartbeats: u64,
+    pub received_acks: u64,
+    pub missed_acks: u64,
+    pub last_heartbeat_sent_at: Option<TimestampMicros>,
+    pub stop_requested: bool,
+}
+
+/// Input for deciding the next future client heartbeat loop action.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClientHeartbeatLoopPolicyInput {
+    pub client_id: ClientId,
+    pub run_id: RunId,
+    pub now: TimestampMicros,
+    pub cadence: ClientHeartbeatLoopCadenceInput,
+    pub stop_condition: ClientHeartbeatLoopStopCondition,
+    pub state: ClientHeartbeatLoopStateSnapshot,
+}
+
+/// Reason a future client heartbeat loop policy reached its decision.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ClientHeartbeatLoopPolicyReason {
+    StopRequested,
+    MaxHeartbeatsReached,
+    MaxMissedAcksReached,
+    WaitingForCadence,
+    HeartbeatDue,
+}
+
+/// Typed log handoff for a future client heartbeat loop decision.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClientHeartbeatLoopLogHandoff {
+    pub client_id: ClientId,
+    pub run_id: RunId,
+    pub observed_at: TimestampMicros,
+    pub reason: ClientHeartbeatLoopPolicyReason,
+    pub heartbeat_interval_micros: u64,
+    pub ack_receive_timeout_micros: u64,
+    pub sent_heartbeats: u64,
+    pub received_acks: u64,
+    pub missed_acks: u64,
+}
+
+/// Next action selected for a future client heartbeat loop.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ClientHeartbeatLoopPolicyAction {
+    Stop {
+        reason: ClientHeartbeatLoopPolicyReason,
+        log: ClientHeartbeatLoopLogHandoff,
+    },
+    Wait {
+        next_heartbeat_due_at: TimestampMicros,
+        log: ClientHeartbeatLoopLogHandoff,
+    },
+    SendHeartbeat {
+        send_at: TimestampMicros,
+        ack_deadline_at: TimestampMicros,
+        ack_observation_return: ClientHeartbeatAckObservationReturnMode,
+        log: ClientHeartbeatLoopLogHandoff,
+    },
+}
+
+/// Policy boundary for a future continuous client heartbeat loop.
+///
+/// This boundary decides only whether the next loop body should stop, wait, or
+/// send one heartbeat. It does not sleep, send UDP packets, receive acks,
+/// create `HeartbeatAckObservation`, send `ClientStats`, or write logs.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct ClientHeartbeatLoopPolicyBoundary;
+
+impl ClientHeartbeatLoopPolicyBoundary {
+    pub fn evaluate(
+        &self,
+        input: ClientHeartbeatLoopPolicyInput,
+    ) -> ClientHeartbeatLoopPolicyAction {
+        if input.state.stop_requested {
+            return ClientHeartbeatLoopPolicyAction::Stop {
+                reason: ClientHeartbeatLoopPolicyReason::StopRequested,
+                log: client_heartbeat_loop_log(
+                    &input,
+                    ClientHeartbeatLoopPolicyReason::StopRequested,
+                ),
+            };
+        }
+
+        match input.stop_condition {
+            ClientHeartbeatLoopStopCondition::RunUntilStopped => {}
+            ClientHeartbeatLoopStopCondition::MaxHeartbeats {
+                max_sent_heartbeats,
+            } if input.state.sent_heartbeats >= max_sent_heartbeats => {
+                return ClientHeartbeatLoopPolicyAction::Stop {
+                    reason: ClientHeartbeatLoopPolicyReason::MaxHeartbeatsReached,
+                    log: client_heartbeat_loop_log(
+                        &input,
+                        ClientHeartbeatLoopPolicyReason::MaxHeartbeatsReached,
+                    ),
+                };
+            }
+            ClientHeartbeatLoopStopCondition::MaxMissedAcks { max_missed_acks }
+                if input.state.missed_acks >= max_missed_acks =>
+            {
+                return ClientHeartbeatLoopPolicyAction::Stop {
+                    reason: ClientHeartbeatLoopPolicyReason::MaxMissedAcksReached,
+                    log: client_heartbeat_loop_log(
+                        &input,
+                        ClientHeartbeatLoopPolicyReason::MaxMissedAcksReached,
+                    ),
+                };
+            }
+            ClientHeartbeatLoopStopCondition::MaxHeartbeats { .. }
+            | ClientHeartbeatLoopStopCondition::MaxMissedAcks { .. } => {}
+        }
+
+        let next_heartbeat_due_at = input
+            .state
+            .last_heartbeat_sent_at
+            .map(|timestamp| {
+                timestamp_saturating_add(timestamp, input.cadence.heartbeat_interval_micros)
+            })
+            .unwrap_or(input.now);
+
+        if input.now.0 < next_heartbeat_due_at.0 {
+            return ClientHeartbeatLoopPolicyAction::Wait {
+                next_heartbeat_due_at,
+                log: client_heartbeat_loop_log(
+                    &input,
+                    ClientHeartbeatLoopPolicyReason::WaitingForCadence,
+                ),
+            };
+        }
+
+        ClientHeartbeatLoopPolicyAction::SendHeartbeat {
+            send_at: input.now,
+            ack_deadline_at: timestamp_saturating_add(
+                input.now,
+                input.cadence.ack_receive_timeout_micros,
+            ),
+            ack_observation_return: input.cadence.ack_observation_return,
+            log: client_heartbeat_loop_log(&input, ClientHeartbeatLoopPolicyReason::HeartbeatDue),
+        }
+    }
+}
+
 /// Startup config needed by the one-shot client AuthRequest PoC.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ClientAuthRequestPocStartupConfig {
@@ -795,6 +966,27 @@ fn current_timestamp_micros() -> TimestampMicros {
         .map(|duration| duration.as_micros())
         .unwrap_or(0);
     TimestampMicros(u64::try_from(micros).unwrap_or(u64::MAX))
+}
+
+fn timestamp_saturating_add(timestamp: TimestampMicros, micros: u64) -> TimestampMicros {
+    TimestampMicros(timestamp.0.saturating_add(micros))
+}
+
+fn client_heartbeat_loop_log(
+    input: &ClientHeartbeatLoopPolicyInput,
+    reason: ClientHeartbeatLoopPolicyReason,
+) -> ClientHeartbeatLoopLogHandoff {
+    ClientHeartbeatLoopLogHandoff {
+        client_id: input.client_id.clone(),
+        run_id: input.run_id.clone(),
+        observed_at: input.now,
+        reason,
+        heartbeat_interval_micros: input.cadence.heartbeat_interval_micros,
+        ack_receive_timeout_micros: input.cadence.ack_receive_timeout_micros,
+        sent_heartbeats: input.state.sent_heartbeats,
+        received_acks: input.state.received_acks,
+        missed_acks: input.state.missed_acks,
+    }
 }
 
 fn parse_poc_toml_string(
@@ -1228,5 +1420,124 @@ mod tests {
         assert_eq!(carrier.message_type, MessageType::ClientStats);
         assert_eq!(carrier.protocol_version, ProtocolVersion(2));
         assert_eq!(carrier.observation, observation);
+    }
+
+    #[test]
+    fn client_heartbeat_loop_policy_sends_when_no_previous_heartbeat_exists() {
+        let input = ClientHeartbeatLoopPolicyInput {
+            client_id: ClientId("client-1".to_string()),
+            run_id: RunId("run-1".to_string()),
+            now: TimestampMicros(10_000),
+            cadence: ClientHeartbeatLoopCadenceInput {
+                heartbeat_interval_micros: 1_000_000,
+                ack_receive_timeout_micros: 200_000,
+                ack_observation_return:
+                    ClientHeartbeatAckObservationReturnMode::ClientStatsOncePerAck,
+            },
+            stop_condition: ClientHeartbeatLoopStopCondition::RunUntilStopped,
+            state: ClientHeartbeatLoopStateSnapshot {
+                sent_heartbeats: 0,
+                received_acks: 0,
+                missed_acks: 0,
+                last_heartbeat_sent_at: None,
+                stop_requested: false,
+            },
+        };
+
+        let action = ClientHeartbeatLoopPolicyBoundary.evaluate(input);
+
+        let ClientHeartbeatLoopPolicyAction::SendHeartbeat {
+            send_at,
+            ack_deadline_at,
+            ack_observation_return,
+            log,
+        } = action
+        else {
+            panic!("first loop policy decision should send a heartbeat");
+        };
+        assert_eq!(send_at, TimestampMicros(10_000));
+        assert_eq!(ack_deadline_at, TimestampMicros(210_000));
+        assert_eq!(
+            ack_observation_return,
+            ClientHeartbeatAckObservationReturnMode::ClientStatsOncePerAck
+        );
+        assert_eq!(log.reason, ClientHeartbeatLoopPolicyReason::HeartbeatDue);
+        assert_eq!(log.client_id, ClientId("client-1".to_string()));
+    }
+
+    #[test]
+    fn client_heartbeat_loop_policy_waits_until_next_cadence() {
+        let input = ClientHeartbeatLoopPolicyInput {
+            client_id: ClientId("client-1".to_string()),
+            run_id: RunId("run-1".to_string()),
+            now: TimestampMicros(10_500),
+            cadence: ClientHeartbeatLoopCadenceInput {
+                heartbeat_interval_micros: 1_000,
+                ack_receive_timeout_micros: 200,
+                ack_observation_return:
+                    ClientHeartbeatAckObservationReturnMode::ClientStatsOncePerAck,
+            },
+            stop_condition: ClientHeartbeatLoopStopCondition::RunUntilStopped,
+            state: ClientHeartbeatLoopStateSnapshot {
+                sent_heartbeats: 1,
+                received_acks: 1,
+                missed_acks: 0,
+                last_heartbeat_sent_at: Some(TimestampMicros(10_000)),
+                stop_requested: false,
+            },
+        };
+
+        let action = ClientHeartbeatLoopPolicyBoundary.evaluate(input);
+
+        let ClientHeartbeatLoopPolicyAction::Wait {
+            next_heartbeat_due_at,
+            log,
+        } = action
+        else {
+            panic!("loop policy should wait until heartbeat cadence is due");
+        };
+        assert_eq!(next_heartbeat_due_at, TimestampMicros(11_000));
+        assert_eq!(
+            log.reason,
+            ClientHeartbeatLoopPolicyReason::WaitingForCadence
+        );
+    }
+
+    #[test]
+    fn client_heartbeat_loop_policy_stops_after_max_heartbeats() {
+        let input = ClientHeartbeatLoopPolicyInput {
+            client_id: ClientId("client-1".to_string()),
+            run_id: RunId("run-1".to_string()),
+            now: TimestampMicros(10_000),
+            cadence: ClientHeartbeatLoopCadenceInput {
+                heartbeat_interval_micros: 1_000,
+                ack_receive_timeout_micros: 200,
+                ack_observation_return: ClientHeartbeatAckObservationReturnMode::Disabled,
+            },
+            stop_condition: ClientHeartbeatLoopStopCondition::MaxHeartbeats {
+                max_sent_heartbeats: 3,
+            },
+            state: ClientHeartbeatLoopStateSnapshot {
+                sent_heartbeats: 3,
+                received_acks: 3,
+                missed_acks: 0,
+                last_heartbeat_sent_at: Some(TimestampMicros(9_000)),
+                stop_requested: false,
+            },
+        };
+
+        let action = ClientHeartbeatLoopPolicyBoundary.evaluate(input);
+
+        let ClientHeartbeatLoopPolicyAction::Stop { reason, log } = action else {
+            panic!("loop policy should stop at max heartbeat count");
+        };
+        assert_eq!(
+            reason,
+            ClientHeartbeatLoopPolicyReason::MaxHeartbeatsReached
+        );
+        assert_eq!(
+            log.reason,
+            ClientHeartbeatLoopPolicyReason::MaxHeartbeatsReached
+        );
     }
 }

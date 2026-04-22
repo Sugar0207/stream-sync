@@ -1289,6 +1289,34 @@ fn current_system_timestamp_micros() -> TimestampMicros {
     TimestampMicros(u64::try_from(micros).unwrap_or(u64::MAX))
 }
 
+fn server_timestamp_saturating_add(timestamp: TimestampMicros, micros: u64) -> TimestampMicros {
+    TimestampMicros(timestamp.0.saturating_add(micros))
+}
+
+fn server_min_timestamp(
+    first: TimestampMicros,
+    second: Option<TimestampMicros>,
+) -> TimestampMicros {
+    match second {
+        Some(second) if second.0 < first.0 => second,
+        _ => first,
+    }
+}
+
+fn server_heartbeat_continuous_loop_log(
+    input: ServerHeartbeatContinuousLoopPolicyInput,
+    reason: ServerHeartbeatContinuousLoopPolicyReason,
+) -> ServerHeartbeatContinuousLoopLogHandoff {
+    ServerHeartbeatContinuousLoopLogHandoff {
+        observed_at: input.now,
+        reason,
+        timeout_tick_interval_micros: input.cadence.timeout_tick_interval_micros,
+        metrics_snapshot_interval_micros: input.cadence.metrics_snapshot_interval_micros,
+        completed_timeout_ticks: input.state.completed_timeout_ticks,
+        exported_metrics_snapshots: input.state.exported_metrics_snapshots,
+    }
+}
+
 /// Result of processing one already-received packet through the server boundary.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ServerReceiveLoopOutcome {
@@ -7277,6 +7305,178 @@ impl ServerHeartbeatRttOffsetMetricsSnapshotConsumerBoundary {
                     },
                 )
             }
+        }
+    }
+}
+
+/// Cadence inputs for a future server-side continuous heartbeat loop.
+///
+/// This controls only when the future loop body should consider calling the
+/// already-separated timeout tick and metrics snapshot handoff boundaries.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct ServerHeartbeatContinuousLoopCadenceInput {
+    pub timeout_tick_interval_micros: u64,
+    pub metrics_snapshot_interval_micros: Option<u64>,
+}
+
+/// Stop policy inputs for a future server-side continuous heartbeat loop.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ServerHeartbeatContinuousLoopStopCondition {
+    RunUntilStopped,
+    MaxTimeoutTicks { max_timeout_ticks: u64 },
+}
+
+/// Snapshot of server heartbeat loop state supplied by a future loop body.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct ServerHeartbeatContinuousLoopStateSnapshot {
+    pub completed_timeout_ticks: u64,
+    pub exported_metrics_snapshots: u64,
+    pub last_timeout_tick_at: Option<TimestampMicros>,
+    pub last_metrics_snapshot_at: Option<TimestampMicros>,
+    pub stop_requested: bool,
+}
+
+/// Input for deciding the next future server heartbeat loop action.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct ServerHeartbeatContinuousLoopPolicyInput {
+    pub now: TimestampMicros,
+    pub cadence: ServerHeartbeatContinuousLoopCadenceInput,
+    pub stop_condition: ServerHeartbeatContinuousLoopStopCondition,
+    pub state: ServerHeartbeatContinuousLoopStateSnapshot,
+}
+
+/// Reason a future server heartbeat loop policy reached its decision.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ServerHeartbeatContinuousLoopPolicyReason {
+    StopRequested,
+    MaxTimeoutTicksReached,
+    WaitingForCadence,
+    TimeoutTickDue,
+    MetricsSnapshotDue,
+    TimeoutTickAndMetricsSnapshotDue,
+}
+
+/// Typed log handoff for a future server heartbeat loop decision.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct ServerHeartbeatContinuousLoopLogHandoff {
+    pub observed_at: TimestampMicros,
+    pub reason: ServerHeartbeatContinuousLoopPolicyReason,
+    pub timeout_tick_interval_micros: u64,
+    pub metrics_snapshot_interval_micros: Option<u64>,
+    pub completed_timeout_ticks: u64,
+    pub exported_metrics_snapshots: u64,
+}
+
+/// Next action selected for a future server heartbeat loop body.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ServerHeartbeatContinuousLoopPolicyAction {
+    Stop {
+        reason: ServerHeartbeatContinuousLoopPolicyReason,
+        log: ServerHeartbeatContinuousLoopLogHandoff,
+    },
+    Wait {
+        next_wakeup_at: TimestampMicros,
+        log: ServerHeartbeatContinuousLoopLogHandoff,
+    },
+    Run {
+        run_timeout_tick: bool,
+        export_metrics_snapshot: bool,
+        log: ServerHeartbeatContinuousLoopLogHandoff,
+    },
+}
+
+/// Policy boundary for a future server-side continuous heartbeat loop.
+///
+/// This boundary decides only whether the next server loop body should stop,
+/// wait, run timeout tick work, and/or export a metrics snapshot. It does not
+/// iterate clients, evaluate timeouts, store notices, wake send loops, write
+/// logs, export metrics, sleep, or start a completed loop.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct ServerHeartbeatContinuousLoopPolicyBoundary;
+
+impl ServerHeartbeatContinuousLoopPolicyBoundary {
+    pub fn evaluate(
+        &self,
+        input: ServerHeartbeatContinuousLoopPolicyInput,
+    ) -> ServerHeartbeatContinuousLoopPolicyAction {
+        if input.state.stop_requested {
+            return ServerHeartbeatContinuousLoopPolicyAction::Stop {
+                reason: ServerHeartbeatContinuousLoopPolicyReason::StopRequested,
+                log: server_heartbeat_continuous_loop_log(
+                    input,
+                    ServerHeartbeatContinuousLoopPolicyReason::StopRequested,
+                ),
+            };
+        }
+
+        match input.stop_condition {
+            ServerHeartbeatContinuousLoopStopCondition::RunUntilStopped => {}
+            ServerHeartbeatContinuousLoopStopCondition::MaxTimeoutTicks { max_timeout_ticks }
+                if input.state.completed_timeout_ticks >= max_timeout_ticks =>
+            {
+                return ServerHeartbeatContinuousLoopPolicyAction::Stop {
+                    reason: ServerHeartbeatContinuousLoopPolicyReason::MaxTimeoutTicksReached,
+                    log: server_heartbeat_continuous_loop_log(
+                        input,
+                        ServerHeartbeatContinuousLoopPolicyReason::MaxTimeoutTicksReached,
+                    ),
+                };
+            }
+            ServerHeartbeatContinuousLoopStopCondition::MaxTimeoutTicks { .. } => {}
+        }
+
+        let next_timeout_tick_at = input
+            .state
+            .last_timeout_tick_at
+            .map(|timestamp| {
+                server_timestamp_saturating_add(
+                    timestamp,
+                    input.cadence.timeout_tick_interval_micros,
+                )
+            })
+            .unwrap_or(input.now);
+        let timeout_tick_due = input.now.0 >= next_timeout_tick_at.0;
+
+        let next_metrics_snapshot_at =
+            input
+                .cadence
+                .metrics_snapshot_interval_micros
+                .map(|interval| {
+                    input
+                        .state
+                        .last_metrics_snapshot_at
+                        .map(|timestamp| server_timestamp_saturating_add(timestamp, interval))
+                        .unwrap_or(input.now)
+                });
+        let metrics_snapshot_due = next_metrics_snapshot_at
+            .map(|timestamp| input.now.0 >= timestamp.0)
+            .unwrap_or(false);
+
+        if !timeout_tick_due && !metrics_snapshot_due {
+            let next_wakeup_at =
+                server_min_timestamp(next_timeout_tick_at, next_metrics_snapshot_at);
+            return ServerHeartbeatContinuousLoopPolicyAction::Wait {
+                next_wakeup_at,
+                log: server_heartbeat_continuous_loop_log(
+                    input,
+                    ServerHeartbeatContinuousLoopPolicyReason::WaitingForCadence,
+                ),
+            };
+        }
+
+        let reason = match (timeout_tick_due, metrics_snapshot_due) {
+            (true, true) => {
+                ServerHeartbeatContinuousLoopPolicyReason::TimeoutTickAndMetricsSnapshotDue
+            }
+            (true, false) => ServerHeartbeatContinuousLoopPolicyReason::TimeoutTickDue,
+            (false, true) => ServerHeartbeatContinuousLoopPolicyReason::MetricsSnapshotDue,
+            (false, false) => unreachable!("handled by wait branch"),
+        };
+
+        ServerHeartbeatContinuousLoopPolicyAction::Run {
+            run_timeout_tick: timeout_tick_due,
+            export_metrics_snapshot: metrics_snapshot_due,
+            log: server_heartbeat_continuous_loop_log(input, reason),
         }
     }
 }
@@ -13976,6 +14176,111 @@ shared_token = "secret"
         assert_eq!(
             loop_handoff.snapshot.records[0].run_id,
             RunId("run-4".to_string())
+        );
+    }
+
+    #[test]
+    fn heartbeat_continuous_loop_policy_runs_timeout_and_metrics_when_both_due() {
+        let input = ServerHeartbeatContinuousLoopPolicyInput {
+            now: TimestampMicros(10_000),
+            cadence: ServerHeartbeatContinuousLoopCadenceInput {
+                timeout_tick_interval_micros: 1_000,
+                metrics_snapshot_interval_micros: Some(5_000),
+            },
+            stop_condition: ServerHeartbeatContinuousLoopStopCondition::RunUntilStopped,
+            state: ServerHeartbeatContinuousLoopStateSnapshot {
+                completed_timeout_ticks: 1,
+                exported_metrics_snapshots: 1,
+                last_timeout_tick_at: Some(TimestampMicros(9_000)),
+                last_metrics_snapshot_at: Some(TimestampMicros(5_000)),
+                stop_requested: false,
+            },
+        };
+
+        let action = ServerHeartbeatContinuousLoopPolicyBoundary.evaluate(input);
+
+        let ServerHeartbeatContinuousLoopPolicyAction::Run {
+            run_timeout_tick,
+            export_metrics_snapshot,
+            log,
+        } = action
+        else {
+            panic!("server heartbeat loop policy should run due work");
+        };
+        assert!(run_timeout_tick);
+        assert!(export_metrics_snapshot);
+        assert_eq!(
+            log.reason,
+            ServerHeartbeatContinuousLoopPolicyReason::TimeoutTickAndMetricsSnapshotDue
+        );
+    }
+
+    #[test]
+    fn heartbeat_continuous_loop_policy_waits_for_earliest_due_work() {
+        let input = ServerHeartbeatContinuousLoopPolicyInput {
+            now: TimestampMicros(10_000),
+            cadence: ServerHeartbeatContinuousLoopCadenceInput {
+                timeout_tick_interval_micros: 3_000,
+                metrics_snapshot_interval_micros: Some(5_000),
+            },
+            stop_condition: ServerHeartbeatContinuousLoopStopCondition::RunUntilStopped,
+            state: ServerHeartbeatContinuousLoopStateSnapshot {
+                completed_timeout_ticks: 1,
+                exported_metrics_snapshots: 1,
+                last_timeout_tick_at: Some(TimestampMicros(8_000)),
+                last_metrics_snapshot_at: Some(TimestampMicros(6_000)),
+                stop_requested: false,
+            },
+        };
+
+        let action = ServerHeartbeatContinuousLoopPolicyBoundary.evaluate(input);
+
+        let ServerHeartbeatContinuousLoopPolicyAction::Wait {
+            next_wakeup_at,
+            log,
+        } = action
+        else {
+            panic!("server heartbeat loop policy should wait before cadence is due");
+        };
+        assert_eq!(next_wakeup_at, TimestampMicros(11_000));
+        assert_eq!(
+            log.reason,
+            ServerHeartbeatContinuousLoopPolicyReason::WaitingForCadence
+        );
+    }
+
+    #[test]
+    fn heartbeat_continuous_loop_policy_stops_after_max_timeout_ticks() {
+        let input = ServerHeartbeatContinuousLoopPolicyInput {
+            now: TimestampMicros(10_000),
+            cadence: ServerHeartbeatContinuousLoopCadenceInput {
+                timeout_tick_interval_micros: 1_000,
+                metrics_snapshot_interval_micros: None,
+            },
+            stop_condition: ServerHeartbeatContinuousLoopStopCondition::MaxTimeoutTicks {
+                max_timeout_ticks: 2,
+            },
+            state: ServerHeartbeatContinuousLoopStateSnapshot {
+                completed_timeout_ticks: 2,
+                exported_metrics_snapshots: 0,
+                last_timeout_tick_at: Some(TimestampMicros(9_000)),
+                last_metrics_snapshot_at: None,
+                stop_requested: false,
+            },
+        };
+
+        let action = ServerHeartbeatContinuousLoopPolicyBoundary.evaluate(input);
+
+        let ServerHeartbeatContinuousLoopPolicyAction::Stop { reason, log } = action else {
+            panic!("server heartbeat loop policy should stop at max timeout ticks");
+        };
+        assert_eq!(
+            reason,
+            ServerHeartbeatContinuousLoopPolicyReason::MaxTimeoutTicksReached
+        );
+        assert_eq!(
+            log.reason,
+            ServerHeartbeatContinuousLoopPolicyReason::MaxTimeoutTicksReached
         );
     }
 

@@ -2920,6 +2920,107 @@ Responsibility split:
 This keeps both completed metrics pipeline and dashboard implementation out of
 scope while fixing the type-level connection the future loop can call.
 
+### Continuous Heartbeat Loop Preflight Policy
+
+The continuous heartbeat loop is still out of scope. Before implementing it,
+the current boundary fixes only the cadence, stop condition, and log handoff
+decisions that a future loop body will consume.
+
+Client-side send cadence:
+
+1. The future client loop supplies `ClientHeartbeatLoopCadenceInput`:
+   - `heartbeat_interval_micros`
+   - `ack_receive_timeout_micros`
+   - `ClientHeartbeatAckObservationReturnMode`
+2. `ClientHeartbeatLoopPolicyBoundary::evaluate` receives the cadence,
+   caller-owned loop state, stop condition, client id, run id, and current
+   client timestamp.
+3. The boundary returns exactly one of:
+   - `Stop`
+   - `Wait`
+   - `SendHeartbeat`
+4. `SendHeartbeat` includes:
+   - `send_at`
+   - `ack_deadline_at`
+   - selected ack observation return mode
+   - one `ClientHeartbeatLoopLogHandoff`
+5. The boundary does not encode or send `Heartbeat`, receive `HeartbeatAck`,
+   create `HeartbeatAckObservation`, send `ClientStats`, sleep, retry, or start
+   a loop.
+
+Server-side timeout / metrics cadence:
+
+1. The future server loop supplies
+   `ServerHeartbeatContinuousLoopCadenceInput`:
+   - `timeout_tick_interval_micros`
+   - optional `metrics_snapshot_interval_micros`
+2. `ServerHeartbeatContinuousLoopPolicyBoundary::evaluate` receives the
+   cadence, caller-owned loop state, stop condition, and current server
+   timestamp.
+3. The boundary returns exactly one of:
+   - `Stop`
+   - `Wait`
+   - `Run`
+4. `Run` only says whether the future body should call:
+   - `ServerHeartbeatTimeoutLoopTickBoundary`
+   - `ServerHeartbeatRttOffsetMetricsSnapshotExportHandoffBoundary`
+5. The boundary does not iterate clients, evaluate timeouts, apply timeout
+   actions, store timeout notices, wake the send loop, export metrics, render a
+   dashboard, write logs, sleep, or start a loop.
+
+Stop conditions:
+
+- Client:
+  - external stop request
+  - max sent heartbeat count
+  - max missed ack count
+  - otherwise run until stopped
+- Server:
+  - external stop request
+  - max completed timeout tick count
+  - otherwise run until stopped
+
+Log output scope:
+
+- The new policy boundaries produce typed log handoffs only.
+- Client log handoff records `client_id`, `run_id`, observed timestamp,
+  decision reason, heartbeat interval, ack timeout, sent heartbeat count,
+  received ack count, and missed ack count.
+- Server log handoff records observed timestamp, decision reason, timeout tick
+  interval, optional metrics snapshot interval, completed timeout tick count,
+  and exported metrics snapshot count.
+- JSON Lines event names, file sinks, process-wide logger setup, and actual
+  writer calls remain future work.
+
+Responsibility split:
+
+- heartbeat send cadence
+  - Client policy chooses stop / wait / send for one future loop decision.
+  - It does not construct or send the heartbeat packet.
+- ack observation return
+  - Client policy carries the chosen observation return mode.
+  - `ClientHeartbeatAckObservationBoundary` and
+    `ClientHeartbeatObservationCarrierBoundary` still own observation and
+    `ClientStats` carrier construction after an ack is actually received.
+- timeout loop tick
+  - Server policy decides only whether timeout tick work is due.
+  - `ServerHeartbeatTimeoutLoopTickBoundary` still owns one selected client's
+    timeout evaluation / action plan / apply sequence.
+- metrics snapshot handoff
+  - Server policy decides only whether a metrics snapshot export is due.
+  - `ServerHeartbeatRttOffsetMetricsSnapshotExportHandoffBoundary` still owns
+    snapshot handoff creation for the selected consumer.
+- future continuous loop body
+  - Owns sleeping, iteration, socket I/O, state mutation order, writer
+    selection, queue ownership, send wakeup execution, retry, and shutdown
+    integration.
+
+Current code reflects this with
+`apps/client::ClientHeartbeatLoopPolicyBoundary` and
+`apps/server::ServerHeartbeatContinuousLoopPolicyBoundary`. Both are
+placeholder policy boundaries only; no completed continuous heartbeat loop is
+implemented.
+
 ### Heartbeat Client Ack Observation Flow
 
 The client ack observation flow returns the missing `client_received_at`
