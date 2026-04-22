@@ -2704,6 +2704,9 @@ Responsibility split:
   - Runs after policy commit returns `Skipped(RejectedOutlier)`.
   - Builds one typed log input and one metrics counter handoff.
   - Does not decide policy or mutate RTT / offset state.
+- rejected candidate metrics state
+  - Aggregates rejected candidate counters by `client_id` and `run_id`.
+  - Does not write logs, export records, or own loop cadence.
 - future smoothing / corrected timestamp publisher
   - Owns EWMA or other smoothing, outlier model, warm-up, confidence, and
     publishing corrected timestamps to sync-core / targetTime.
@@ -2733,6 +2736,10 @@ Current implementation scope:
    event shape.
 8. `ServerHeartbeatRttOffsetRejectedCandidateLogOutputBoundary` can write one
    event to a caller-owned writer.
+9. `ServerHeartbeatRttOffsetRejectedCandidateMetricsCommitBoundary` can commit
+   the metrics handoff to in-memory per-client-run counters.
+10. `ServerHeartbeatRttOffsetRejectedCandidateMetricsExportBoundary` can create
+    a typed snapshot for future exporters or dashboards.
 
 Responsibility split:
 
@@ -2750,9 +2757,37 @@ Responsibility split:
   - Names the future counter deltas:
     `rejected_candidates_delta = 1` and `skipped_commits_delta = 1`.
   - Does not store, aggregate, export, or display metrics.
+- metrics state
+  - Stores aggregated counters keyed by `(client_id, run_id)`.
+  - Tracks total rejected candidates, total skipped commits, RTT-delta
+    rejections, clock-offset-delta rejections, and the last update timestamp.
+  - Does not inspect candidate values, write logs, export over a socket, persist
+    records, or drive timeout decisions.
+- metrics export placeholder
+  - Creates a typed snapshot from the current in-memory metrics state.
+  - Does not serialize, push to a backend, render a dashboard, or retain
+    historical time series.
 - future timeout / heartbeat loop
   - May call the handoff boundary after each policy commit outcome.
-  - Owns loop cadence, writer selection, metrics storage, and backpressure.
+  - Owns loop cadence, writer selection, metrics state ownership, export
+    trigger timing, and backpressure.
+- future dashboard
+  - May consume snapshot records to show per-client / per-run outlier counts.
+  - Does not belong to the current server-side metrics boundary.
+
+Current storage / aggregation / export policy:
+
+- Storage is caller-owned in-memory state:
+  `ServerHeartbeatRttOffsetRejectedCandidateMetricsState`.
+- Aggregation is additive and per client run. A new `run_id` creates a separate
+  entry rather than merging with earlier runs.
+- Reason-specific counters are intentionally minimal:
+  `rtt_delta_rejections` and `clock_offset_delta_rejections`.
+- Export is a snapshot placeholder:
+  `ServerHeartbeatRttOffsetRejectedCandidateMetricsSnapshot`.
+- No completed metrics pipeline exists yet. File sinks, process-wide metrics,
+  network export, UI dashboard, alert thresholds, retention, and time-series
+  history remain future work.
 
 ### Heartbeat Client Ack Observation Flow
 

@@ -6891,6 +6891,180 @@ pub struct ServerHeartbeatRttOffsetRejectedCandidateMetricsHandoff {
     pub skipped_commits_delta: u64,
 }
 
+/// Aggregated rejected-candidate metrics for one client run.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ServerHeartbeatRttOffsetRejectedCandidateMetricsStateEntry {
+    pub client_id: ClientId,
+    pub run_id: RunId,
+    pub total_rejected_candidates: u64,
+    pub total_skipped_commits: u64,
+    pub rtt_delta_rejections: u64,
+    pub clock_offset_delta_rejections: u64,
+    pub last_updated_at: Option<TimestampMicros>,
+}
+
+/// In-memory rejected-candidate metrics state keyed by `(client_id, run_id)`.
+///
+/// This aggregates only counters needed by the current RTT / offset policy
+/// boundary. It does not expose dashboards, write logs, export over a socket,
+/// persist metrics, or own loop cadence.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ServerHeartbeatRttOffsetRejectedCandidateMetricsState {
+    entries_by_client_run:
+        BTreeMap<(String, String), ServerHeartbeatRttOffsetRejectedCandidateMetricsStateEntry>,
+}
+
+impl ServerHeartbeatRttOffsetRejectedCandidateMetricsState {
+    pub fn entries(
+        &self,
+    ) -> impl Iterator<Item = &ServerHeartbeatRttOffsetRejectedCandidateMetricsStateEntry> {
+        self.entries_by_client_run.values()
+    }
+
+    pub fn get(
+        &self,
+        client_id: &ClientId,
+        run_id: &RunId,
+    ) -> Option<&ServerHeartbeatRttOffsetRejectedCandidateMetricsStateEntry> {
+        self.entries_by_client_run
+            .get(&(client_id.0.clone(), run_id.0.clone()))
+    }
+
+    pub fn len(&self) -> usize {
+        self.entries_by_client_run.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.entries_by_client_run.is_empty()
+    }
+}
+
+/// Input for committing one rejected-candidate metrics handoff.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ServerHeartbeatRttOffsetRejectedCandidateMetricsCommitInput {
+    pub handoff: ServerHeartbeatRttOffsetRejectedCandidateMetricsHandoff,
+    pub updated_at: Option<TimestampMicros>,
+}
+
+/// Result of committing one rejected-candidate metrics handoff.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ServerHeartbeatRttOffsetRejectedCandidateMetricsCommitOutcome {
+    pub previous: Option<ServerHeartbeatRttOffsetRejectedCandidateMetricsStateEntry>,
+    pub committed: ServerHeartbeatRttOffsetRejectedCandidateMetricsStateEntry,
+}
+
+/// Boundary that aggregates rejected RTT / offset candidate metrics.
+///
+/// This boundary consumes the counter delta prepared by the rejected-candidate
+/// handoff. It does not evaluate policy, mutate RTT / offset estimate state,
+/// write logs, export metrics, or run a continuous loop.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct ServerHeartbeatRttOffsetRejectedCandidateMetricsCommitBoundary;
+
+impl ServerHeartbeatRttOffsetRejectedCandidateMetricsCommitBoundary {
+    pub fn commit(
+        &self,
+        state: &mut ServerHeartbeatRttOffsetRejectedCandidateMetricsState,
+        input: ServerHeartbeatRttOffsetRejectedCandidateMetricsCommitInput,
+    ) -> ServerHeartbeatRttOffsetRejectedCandidateMetricsCommitOutcome {
+        let key = (
+            input.handoff.client_id.0.clone(),
+            input.handoff.run_id.0.clone(),
+        );
+        let previous = state.entries_by_client_run.get(&key).cloned();
+        let mut committed = previous.clone().unwrap_or(
+            ServerHeartbeatRttOffsetRejectedCandidateMetricsStateEntry {
+                client_id: input.handoff.client_id,
+                run_id: input.handoff.run_id,
+                total_rejected_candidates: 0,
+                total_skipped_commits: 0,
+                rtt_delta_rejections: 0,
+                clock_offset_delta_rejections: 0,
+                last_updated_at: None,
+            },
+        );
+
+        committed.total_rejected_candidates = committed
+            .total_rejected_candidates
+            .saturating_add(input.handoff.rejected_candidates_delta);
+        committed.total_skipped_commits = committed
+            .total_skipped_commits
+            .saturating_add(input.handoff.skipped_commits_delta);
+        match input.handoff.reason {
+            ServerHeartbeatRttOffsetOutlierReason::RttDeltaExceeded { .. } => {
+                committed.rtt_delta_rejections = committed
+                    .rtt_delta_rejections
+                    .saturating_add(input.handoff.rejected_candidates_delta);
+            }
+            ServerHeartbeatRttOffsetOutlierReason::ClockOffsetDeltaExceeded { .. } => {
+                committed.clock_offset_delta_rejections = committed
+                    .clock_offset_delta_rejections
+                    .saturating_add(input.handoff.rejected_candidates_delta);
+            }
+        }
+        committed.last_updated_at = input.updated_at;
+
+        state.entries_by_client_run.insert(key, committed.clone());
+
+        ServerHeartbeatRttOffsetRejectedCandidateMetricsCommitOutcome {
+            previous,
+            committed,
+        }
+    }
+}
+
+/// Exportable rejected-candidate metrics record.
+///
+/// This is a typed snapshot shape only. A future exporter can map it to JSON,
+/// a UI model, or another metrics backend without exposing the internal map.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ServerHeartbeatRttOffsetRejectedCandidateMetricsExportRecord {
+    pub client_id: ClientId,
+    pub run_id: RunId,
+    pub total_rejected_candidates: u64,
+    pub total_skipped_commits: u64,
+    pub rtt_delta_rejections: u64,
+    pub clock_offset_delta_rejections: u64,
+    pub last_updated_at: Option<TimestampMicros>,
+}
+
+/// Snapshot produced for future metrics exporters or dashboards.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ServerHeartbeatRttOffsetRejectedCandidateMetricsSnapshot {
+    pub records: Vec<ServerHeartbeatRttOffsetRejectedCandidateMetricsExportRecord>,
+}
+
+/// Boundary that snapshots rejected-candidate metrics for future export.
+///
+/// This does not serialize, write files, send network traffic, retain history,
+/// or render a dashboard.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct ServerHeartbeatRttOffsetRejectedCandidateMetricsExportBoundary;
+
+impl ServerHeartbeatRttOffsetRejectedCandidateMetricsExportBoundary {
+    pub fn snapshot(
+        &self,
+        state: &ServerHeartbeatRttOffsetRejectedCandidateMetricsState,
+    ) -> ServerHeartbeatRttOffsetRejectedCandidateMetricsSnapshot {
+        let records = state
+            .entries()
+            .map(
+                |entry| ServerHeartbeatRttOffsetRejectedCandidateMetricsExportRecord {
+                    client_id: entry.client_id.clone(),
+                    run_id: entry.run_id.clone(),
+                    total_rejected_candidates: entry.total_rejected_candidates,
+                    total_skipped_commits: entry.total_skipped_commits,
+                    rtt_delta_rejections: entry.rtt_delta_rejections,
+                    clock_offset_delta_rejections: entry.clock_offset_delta_rejections,
+                    last_updated_at: entry.last_updated_at,
+                },
+            )
+            .collect();
+
+        ServerHeartbeatRttOffsetRejectedCandidateMetricsSnapshot { records }
+    }
+}
+
 /// Combined handoff emitted after policy commit skips a rejected candidate.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ServerHeartbeatRttOffsetRejectedCandidateHandoff {
@@ -13242,6 +13416,149 @@ shared_token = "secret"
         assert!(output.contains("\"reject_reason\":\"RttDeltaExceeded\""));
         assert!(output.contains("\"state_commit_skipped\":true"));
         assert!(output.contains("\"observed_at\":18000"));
+    }
+
+    #[test]
+    fn heartbeat_rtt_offset_rejected_candidate_metrics_commit_creates_entry() {
+        let boundary = ServerHeartbeatRttOffsetRejectedCandidateMetricsCommitBoundary;
+        let mut state = ServerHeartbeatRttOffsetRejectedCandidateMetricsState::default();
+
+        let outcome = boundary.commit(
+            &mut state,
+            ServerHeartbeatRttOffsetRejectedCandidateMetricsCommitInput {
+                handoff: ServerHeartbeatRttOffsetRejectedCandidateMetricsHandoff {
+                    client_id: ClientId("client-1".to_string()),
+                    run_id: RunId("run-1".to_string()),
+                    reason: ServerHeartbeatRttOffsetOutlierReason::RttDeltaExceeded {
+                        previous_micros: 100,
+                        candidate_micros: 250,
+                        delta_micros: 150,
+                        max_delta_micros: 50,
+                    },
+                    rejected_candidates_delta: 1,
+                    skipped_commits_delta: 1,
+                },
+                updated_at: Some(TimestampMicros(19_000)),
+            },
+        );
+
+        assert!(outcome.previous.is_none());
+        assert_eq!(
+            outcome.committed.client_id,
+            ClientId("client-1".to_string())
+        );
+        assert_eq!(outcome.committed.run_id, RunId("run-1".to_string()));
+        assert_eq!(outcome.committed.total_rejected_candidates, 1);
+        assert_eq!(outcome.committed.total_skipped_commits, 1);
+        assert_eq!(outcome.committed.rtt_delta_rejections, 1);
+        assert_eq!(outcome.committed.clock_offset_delta_rejections, 0);
+        assert_eq!(
+            outcome.committed.last_updated_at,
+            Some(TimestampMicros(19_000))
+        );
+        assert_eq!(state.len(), 1);
+    }
+
+    #[test]
+    fn heartbeat_rtt_offset_rejected_candidate_metrics_commit_aggregates_by_reason() {
+        let boundary = ServerHeartbeatRttOffsetRejectedCandidateMetricsCommitBoundary;
+        let mut state = ServerHeartbeatRttOffsetRejectedCandidateMetricsState::default();
+
+        boundary.commit(
+            &mut state,
+            ServerHeartbeatRttOffsetRejectedCandidateMetricsCommitInput {
+                handoff: ServerHeartbeatRttOffsetRejectedCandidateMetricsHandoff {
+                    client_id: ClientId("client-1".to_string()),
+                    run_id: RunId("run-1".to_string()),
+                    reason: ServerHeartbeatRttOffsetOutlierReason::RttDeltaExceeded {
+                        previous_micros: 100,
+                        candidate_micros: 180,
+                        delta_micros: 80,
+                        max_delta_micros: 50,
+                    },
+                    rejected_candidates_delta: 1,
+                    skipped_commits_delta: 1,
+                },
+                updated_at: Some(TimestampMicros(20_000)),
+            },
+        );
+        let outcome = boundary.commit(
+            &mut state,
+            ServerHeartbeatRttOffsetRejectedCandidateMetricsCommitInput {
+                handoff: ServerHeartbeatRttOffsetRejectedCandidateMetricsHandoff {
+                    client_id: ClientId("client-1".to_string()),
+                    run_id: RunId("run-1".to_string()),
+                    reason: ServerHeartbeatRttOffsetOutlierReason::ClockOffsetDeltaExceeded {
+                        previous_micros: 1_000,
+                        candidate_micros: 1_250,
+                        delta_micros: 250,
+                        max_delta_micros: 100,
+                    },
+                    rejected_candidates_delta: 1,
+                    skipped_commits_delta: 1,
+                },
+                updated_at: Some(TimestampMicros(20_100)),
+            },
+        );
+
+        assert!(outcome.previous.is_some());
+        assert_eq!(outcome.committed.total_rejected_candidates, 2);
+        assert_eq!(outcome.committed.total_skipped_commits, 2);
+        assert_eq!(outcome.committed.rtt_delta_rejections, 1);
+        assert_eq!(outcome.committed.clock_offset_delta_rejections, 1);
+        assert_eq!(
+            outcome.committed.last_updated_at,
+            Some(TimestampMicros(20_100))
+        );
+        let entry = state
+            .get(
+                &ClientId("client-1".to_string()),
+                &RunId("run-1".to_string()),
+            )
+            .expect("metrics entry should be stored");
+        assert_eq!(entry.total_rejected_candidates, 2);
+    }
+
+    #[test]
+    fn heartbeat_rtt_offset_rejected_candidate_metrics_export_snapshots_entries() {
+        let commit = ServerHeartbeatRttOffsetRejectedCandidateMetricsCommitBoundary;
+        let mut state = ServerHeartbeatRttOffsetRejectedCandidateMetricsState::default();
+        commit.commit(
+            &mut state,
+            ServerHeartbeatRttOffsetRejectedCandidateMetricsCommitInput {
+                handoff: ServerHeartbeatRttOffsetRejectedCandidateMetricsHandoff {
+                    client_id: ClientId("client-2".to_string()),
+                    run_id: RunId("run-2".to_string()),
+                    reason: ServerHeartbeatRttOffsetOutlierReason::RttDeltaExceeded {
+                        previous_micros: 100,
+                        candidate_micros: 200,
+                        delta_micros: 100,
+                        max_delta_micros: 50,
+                    },
+                    rejected_candidates_delta: 1,
+                    skipped_commits_delta: 1,
+                },
+                updated_at: Some(TimestampMicros(21_000)),
+            },
+        );
+        let export = ServerHeartbeatRttOffsetRejectedCandidateMetricsExportBoundary;
+
+        let snapshot = export.snapshot(&state);
+
+        assert_eq!(snapshot.records.len(), 1);
+        assert_eq!(
+            snapshot.records[0].client_id,
+            ClientId("client-2".to_string())
+        );
+        assert_eq!(snapshot.records[0].run_id, RunId("run-2".to_string()));
+        assert_eq!(snapshot.records[0].total_rejected_candidates, 1);
+        assert_eq!(snapshot.records[0].total_skipped_commits, 1);
+        assert_eq!(snapshot.records[0].rtt_delta_rejections, 1);
+        assert_eq!(snapshot.records[0].clock_offset_delta_rejections, 0);
+        assert_eq!(
+            snapshot.records[0].last_updated_at,
+            Some(TimestampMicros(21_000))
+        );
     }
 
     #[test]

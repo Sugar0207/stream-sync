@@ -5,6 +5,61 @@
 - Codex
 
 ### 今回の作業
+- RTT / offset rejected candidate metrics の storage / aggregation / export 方針を整理した。
+- rejected candidate handoff が作る metrics counter delta を、caller-owned in-memory state へ集約する最小境界を追加した。
+- future exporter / dashboard が読むための snapshot export placeholder を追加した。
+
+### 変更ファイル
+- `apps/server/src/lib.rs`
+- `docs/architecture/system-design.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### 決定事項
+- rejected candidate handoff は counter delta を作るだけに留める。
+- metrics state は `(client_id, run_id)` ごとに rejected candidate count / skipped commit count / reason-specific count を集約する。
+- `run_id` が変わる場合は別 entry とし、過去 run と merge しない。
+- export は typed snapshot を作るだけに留め、JSON serialization、file sink、network export、dashboard 表示は future work に残す。
+- continuous heartbeat loop は metrics state の所有、snapshot export の呼び出しタイミング、backpressure を後で決める。
+
+### 実装したこと
+- `ServerHeartbeatRttOffsetRejectedCandidateMetricsState` と state entry を追加した。
+- `ServerHeartbeatRttOffsetRejectedCandidateMetricsCommitBoundary::commit` を追加した。
+- `ServerHeartbeatRttOffsetRejectedCandidateMetricsSnapshot` / export record を追加した。
+- `ServerHeartbeatRttOffsetRejectedCandidateMetricsExportBoundary::snapshot` を追加した。
+- metrics state commit、reason 別 aggregation、snapshot export の単体テストを追加した。
+
+### 未実装 / 保留
+- completed metrics pipeline
+- metrics snapshot の JSON / file / network export
+- process-wide metrics registry
+- dashboard / switcher UI 連携
+- retention / time-series history
+- continuous heartbeat loop からの commit / export 呼び出し
+
+### 次にやる候補
+- heartbeat timeout loop tick の notice queue storage / send wakeup 方針を整理する。
+- RTT / offset metrics snapshot の future loop / dashboard 連携方針を整理する。
+- continuous heartbeat loop に進む前の送信間隔、停止条件、ログ出力範囲を整理する。
+
+### TODO 更新
+- 現在位置に RTT / offset rejected candidate metrics state / snapshot export 境界の完了を反映した。
+- 直近でやることを timeout loop tick の notice queue storage / send wakeup、RTT / offset metrics snapshot の future loop / dashboard 連携、continuous heartbeat loop 前の境界整理へ更新した。
+- heartbeat / net-core / 検証タスクに metrics state / snapshot export boundary と関連単体テストの完了を追加した。
+
+### 検証
+- `cargo fmt`
+- `cargo fmt --check`
+- `cargo test -p stream-sync-server heartbeat_rtt_offset_rejected_candidate_metrics`
+- `cargo check --workspace`
+
+---
+
+## 2026-04-22
+### 種別
+- Codex
+
+### 今回の作業
 - RTT / offset rejected candidate の log / metrics 方針を整理した。
 - policy commit で `Skipped(RejectedOutlier)` になった candidate だけを、後段の log / metrics handoff 入力へ変換する最小境界を追加した。
 - accepted candidate / committed candidate では rejected-candidate handoff を発生させない形にした。
