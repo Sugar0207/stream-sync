@@ -870,7 +870,7 @@ pub struct ServerReceiveSendThreeIterationLauncher {
     runtime: ServerControllerReceiveSendRuntimeBoundary,
     observation_return: ServerHeartbeatObservationReturnBoundary,
     liveness_commit: ServerHeartbeatLivenessCommitBoundary,
-    rtt_offset_commit: ServerHeartbeatRttOffsetCommitBoundary,
+    rtt_offset_policy_commit: ServerHeartbeatRttOffsetPolicyCommitBoundary,
 }
 
 impl ServerReceiveSendThreeIterationLauncher {
@@ -983,12 +983,11 @@ impl ServerReceiveSendThreeIterationLauncher {
             .observation_return
             .calculate_from_client_stats(heartbeat_handoff, client_stats)
             .map_err(ServerReceiveSendThreeIterationStartupError::ObservationReturn)?;
-        let heartbeat_rtt_offset_commit = self.rtt_offset_commit.commit(
+        let heartbeat_rtt_offset_policy_commit = self.rtt_offset_policy_commit.evaluate_and_commit(
             &mut heartbeat_rtt_offset_state,
-            ServerHeartbeatRttOffsetCommitInput {
-                calculation: heartbeat_calculation.clone(),
-                committed_at: Some(current_system_timestamp_micros()),
-            },
+            heartbeat_calculation.clone(),
+            ServerHeartbeatRttOffsetCandidatePolicy::default(),
+            Some(current_system_timestamp_micros()),
         );
 
         Ok(ServerReceiveSendThreeIterationStartupOutcome {
@@ -1002,7 +1001,7 @@ impl ServerReceiveSendThreeIterationLauncher {
             heartbeat_liveness_state,
             heartbeat_liveness_commit,
             heartbeat_rtt_offset_state,
-            heartbeat_rtt_offset_commit,
+            heartbeat_rtt_offset_policy_commit,
         })
     }
 
@@ -1065,7 +1064,7 @@ pub struct ServerReceiveSendThreeIterationStartupOutcome {
     pub heartbeat_liveness_state: ServerHeartbeatLivenessState,
     pub heartbeat_liveness_commit: ServerHeartbeatLivenessCommitOutcome,
     pub heartbeat_rtt_offset_state: ServerHeartbeatRttOffsetState,
-    pub heartbeat_rtt_offset_commit: ServerHeartbeatRttOffsetCommitOutcome,
+    pub heartbeat_rtt_offset_policy_commit: ServerHeartbeatRttOffsetPolicyCommitOutcome,
 }
 
 /// Startup error for exactly three controller receive/send iterations.
@@ -6750,6 +6749,40 @@ impl ServerHeartbeatRttOffsetCandidatePolicyBoundary {
     }
 }
 
+/// Reason for skipping latest estimate commit after candidate policy.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ServerHeartbeatRttOffsetCommitSkipReason {
+    RejectedOutlier(ServerHeartbeatRttOffsetOutlierReason),
+}
+
+/// Final result after candidate policy decides whether commit may proceed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ServerHeartbeatRttOffsetPolicyCommitResult {
+    Committed(ServerHeartbeatRttOffsetCommitOutcome),
+    Skipped(ServerHeartbeatRttOffsetCommitSkipReason),
+}
+
+/// Combined policy-and-commit outcome for one RTT / offset candidate.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ServerHeartbeatRttOffsetPolicyCommitOutcome {
+    pub policy: ServerHeartbeatRttOffsetCandidatePolicyResult,
+    pub result: ServerHeartbeatRttOffsetPolicyCommitResult,
+}
+
+impl ServerHeartbeatRttOffsetPolicyCommitOutcome {
+    pub fn commit_outcome(&self) -> Option<&ServerHeartbeatRttOffsetCommitOutcome> {
+        match &self.result {
+            ServerHeartbeatRttOffsetPolicyCommitResult::Committed(outcome) => Some(outcome),
+            ServerHeartbeatRttOffsetPolicyCommitResult::Skipped(_) => None,
+        }
+    }
+
+    pub fn committed_samples(&self) -> Option<u64> {
+        self.commit_outcome()
+            .map(|outcome| outcome.committed.committed_samples)
+    }
+}
+
 /// Boundary that commits stateless RTT / offset estimates into server state.
 ///
 /// This boundary overwrites the per-client latest estimate and increments a
@@ -6790,6 +6823,47 @@ impl ServerHeartbeatRttOffsetCommitBoundary {
             committed,
             replaced_previous_run,
         }
+    }
+}
+
+/// Boundary that evaluates candidate policy before committing RTT / offset state.
+///
+/// Rejected candidates are not committed. This boundary still does not smooth
+/// values, keep history, publish corrected timestamps, emit logs, or mutate
+/// timeout state.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct ServerHeartbeatRttOffsetPolicyCommitBoundary {
+    policy: ServerHeartbeatRttOffsetCandidatePolicyBoundary,
+    commit: ServerHeartbeatRttOffsetCommitBoundary,
+}
+
+impl ServerHeartbeatRttOffsetPolicyCommitBoundary {
+    pub fn evaluate_and_commit(
+        &self,
+        state: &mut ServerHeartbeatRttOffsetState,
+        calculation: ServerHeartbeatRttOffsetCalculation,
+        candidate_policy: ServerHeartbeatRttOffsetCandidatePolicy,
+        committed_at: Option<TimestampMicros>,
+    ) -> ServerHeartbeatRttOffsetPolicyCommitOutcome {
+        let policy = self.policy.evaluate(state, &calculation, candidate_policy);
+        let result = match policy.decision {
+            ServerHeartbeatRttOffsetCandidatePolicyDecision::Accept { .. } => {
+                ServerHeartbeatRttOffsetPolicyCommitResult::Committed(self.commit.commit(
+                    state,
+                    ServerHeartbeatRttOffsetCommitInput {
+                        calculation,
+                        committed_at,
+                    },
+                ))
+            }
+            ServerHeartbeatRttOffsetCandidatePolicyDecision::RejectOutlier { reason } => {
+                ServerHeartbeatRttOffsetPolicyCommitResult::Skipped(
+                    ServerHeartbeatRttOffsetCommitSkipReason::RejectedOutlier(reason),
+                )
+            }
+        };
+
+        ServerHeartbeatRttOffsetPolicyCommitOutcome { policy, result }
     }
 }
 
@@ -12678,6 +12752,113 @@ shared_token = "secret"
                 smoothing: ServerHeartbeatRttOffsetSmoothingMode::Deferred
             }
         );
+    }
+
+    #[test]
+    fn heartbeat_rtt_offset_policy_commit_boundary_commits_accepted_candidate() {
+        let boundary = ServerHeartbeatRttOffsetPolicyCommitBoundary::default();
+        let mut state = ServerHeartbeatRttOffsetState::default();
+        let calculation = ServerHeartbeatRttOffsetCalculation {
+            client_id: ClientId("client-1".to_string()),
+            run_id: RunId("run-1".to_string()),
+            estimate: HeartbeatRttOffsetEstimate {
+                rtt_micros: 100,
+                server_processing_micros: 20,
+                clock_offset_micros: 1_000,
+            },
+        };
+
+        let outcome = boundary.evaluate_and_commit(
+            &mut state,
+            calculation,
+            ServerHeartbeatRttOffsetCandidatePolicy::default(),
+            Some(TimestampMicros(13_000)),
+        );
+
+        assert!(matches!(
+            outcome.policy.decision,
+            ServerHeartbeatRttOffsetCandidatePolicyDecision::Accept { .. }
+        ));
+        let commit = outcome
+            .commit_outcome()
+            .expect("accepted candidate should be committed");
+        assert_eq!(commit.committed.committed_samples, 1);
+        assert_eq!(outcome.committed_samples(), Some(1));
+        assert_eq!(state.len(), 1);
+        assert_eq!(
+            state
+                .get(&ClientId("client-1".to_string()))
+                .expect("accepted candidate should be stored")
+                .latest_estimate
+                .clock_offset_micros,
+            1_000
+        );
+    }
+
+    #[test]
+    fn heartbeat_rtt_offset_policy_commit_boundary_skips_rejected_candidate_without_state_change() {
+        let commit = ServerHeartbeatRttOffsetCommitBoundary;
+        let mut state = ServerHeartbeatRttOffsetState::default();
+        commit.commit(
+            &mut state,
+            ServerHeartbeatRttOffsetCommitInput {
+                calculation: ServerHeartbeatRttOffsetCalculation {
+                    client_id: ClientId("client-1".to_string()),
+                    run_id: RunId("run-1".to_string()),
+                    estimate: HeartbeatRttOffsetEstimate {
+                        rtt_micros: 100,
+                        server_processing_micros: 20,
+                        clock_offset_micros: 1_000,
+                    },
+                },
+                committed_at: Some(TimestampMicros(14_000)),
+            },
+        );
+        let boundary = ServerHeartbeatRttOffsetPolicyCommitBoundary::default();
+        let rejected = ServerHeartbeatRttOffsetCalculation {
+            client_id: ClientId("client-1".to_string()),
+            run_id: RunId("run-1".to_string()),
+            estimate: HeartbeatRttOffsetEstimate {
+                rtt_micros: 250,
+                server_processing_micros: 20,
+                clock_offset_micros: 1_500,
+            },
+        };
+
+        let outcome = boundary.evaluate_and_commit(
+            &mut state,
+            rejected,
+            ServerHeartbeatRttOffsetCandidatePolicy {
+                smoothing: ServerHeartbeatRttOffsetSmoothingMode::Deferred,
+                outlier: ServerHeartbeatRttOffsetOutlierPolicy {
+                    max_rtt_delta_micros: Some(50),
+                    max_clock_offset_delta_micros: Some(100),
+                },
+            },
+            Some(TimestampMicros(15_000)),
+        );
+
+        assert_eq!(
+            outcome.result,
+            ServerHeartbeatRttOffsetPolicyCommitResult::Skipped(
+                ServerHeartbeatRttOffsetCommitSkipReason::RejectedOutlier(
+                    ServerHeartbeatRttOffsetOutlierReason::RttDeltaExceeded {
+                        previous_micros: 100,
+                        candidate_micros: 250,
+                        delta_micros: 150,
+                        max_delta_micros: 50,
+                    }
+                )
+            )
+        );
+        assert_eq!(outcome.committed_samples(), None);
+        let entry = state
+            .get(&ClientId("client-1".to_string()))
+            .expect("previous estimate should remain");
+        assert_eq!(entry.latest_estimate.rtt_micros, 100);
+        assert_eq!(entry.latest_estimate.clock_offset_micros, 1_000);
+        assert_eq!(entry.committed_samples, 1);
+        assert_eq!(entry.last_committed_at, Some(TimestampMicros(14_000)));
     }
 
     #[test]

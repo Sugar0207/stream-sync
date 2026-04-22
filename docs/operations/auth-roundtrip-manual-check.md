@@ -329,7 +329,7 @@ server stderr の要点:
 {"event_name":"server.receive_loop","source":"127.0.0.1:<client-port>","outcome":"Accepted","packet_len":<bytes>,"message_type":"ClientStats","client_id":"player1","rejection_reason":null,"timestamp":<timestamp>}
 ```
 
-確認の中心は、client が `HeartbeatAck` 受信後に `HeartbeatAckObservation` を `ClientStats` に載せて 1 回だけ返すこと、server が登録済み source からの `ClientStats` を accepted として処理し、observation を既存 timebase plan と照合して stateless calculator へ渡せることです。併せて、2 回目の registered heartbeat が liveness state へ 1 回 commit されることを `heartbeat_liveness_entries=1` と `heartbeat_received_count=1` で確認します。返った RTT / offset candidate が server 側 timebase state へ 1 回 commit されることは `heartbeat_rtt_offset_entries=1` と `heartbeat_rtt_offset_samples=1` で確認します。
+確認の中心は、client が `HeartbeatAck` 受信後に `HeartbeatAckObservation` を `ClientStats` に載せて 1 回だけ返すこと、server が登録済み source からの `ClientStats` を accepted として処理し、observation を既存 timebase plan と照合して stateless calculator へ渡せることです。併せて、2 回目の registered heartbeat が liveness state へ 1 回 commit されることを `heartbeat_liveness_entries=1` と `heartbeat_received_count=1` で確認します。返った RTT / offset candidate が default candidate policy を通って server 側 timebase state へ 1 回 commit されることは `heartbeat_rtt_offset_entries=1` と `heartbeat_rtt_offset_samples=1` で確認します。
 
 ### 2026-04-22 Codex 環境 auth-heartbeat-stats accepted path 成功
 

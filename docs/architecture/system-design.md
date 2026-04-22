@@ -2616,23 +2616,28 @@ Current implementation scope:
 
 1. `ServerHeartbeatRttOffsetCalculationBoundary` produces one
    `ServerHeartbeatRttOffsetCalculation`.
-2. `ServerHeartbeatRttOffsetCommitBoundary::commit` accepts that calculation
-   through `ServerHeartbeatRttOffsetCommitInput`.
-3. `ServerHeartbeatRttOffsetState` stores one
+2. `ServerHeartbeatRttOffsetCandidatePolicyBoundary::evaluate` evaluates the
+   calculation before commit.
+3. `ServerHeartbeatRttOffsetPolicyCommitBoundary::evaluate_and_commit` commits
+   accepted candidates and skips rejected candidates.
+4. `ServerHeartbeatRttOffsetCommitBoundary::commit` accepts an approved
+   calculation through `ServerHeartbeatRttOffsetCommitInput`.
+5. `ServerHeartbeatRttOffsetState` stores one
    `ServerHeartbeatRttOffsetStateEntry` per `client_id`.
-4. Each entry stores:
+6. Each entry stores:
    - `client_id`
    - `run_id`
    - latest `HeartbeatRttOffsetEstimate`
    - committed sample count
    - optional server commit timestamp
-5. A same-run commit overwrites the latest estimate and increments the sample
+7. A same-run commit overwrites the latest estimate and increments the sample
    count.
-6. A new `run_id` for the same `client_id` overwrites the latest estimate and
+8. A new `run_id` for the same `client_id` overwrites the latest estimate and
    resets the sample count to 1. The outcome records that the previous run was
    replaced.
-7. `--receive-send-three` commits the one returned observation calculation into
-   this state and reports the entry count / sample count in stdout.
+9. `--receive-send-three` runs the default candidate policy before committing
+   the one returned observation calculation into this state and reports the
+   entry count / sample count in stdout.
 
 Responsibility split:
 
@@ -2643,6 +2648,9 @@ Responsibility split:
   - Stores the latest candidate and simple per-run sample count.
   - Does not calculate, smooth, reject outliers, alter timeout state, log, or
     notify clients.
+- policy commit boundary
+  - Connects candidate policy to latest estimate commit.
+  - Does not commit rejected candidates.
 - future smoothing / estimator state
   - Owns smoothing factor, warm-up, outlier policy, confidence, history, and
     corrected timestamp exposure to sync-core.
@@ -2688,6 +2696,9 @@ Responsibility split:
 - latest estimate commit
   - Stores the accepted candidate and sample count.
   - Does not decide whether a candidate is an outlier.
+- policy commit
+  - Calls candidate policy before commit and skips rejected candidates.
+  - Does not smooth or publish corrected timestamps.
 - future smoothing / corrected timestamp publisher
   - Owns EWMA or other smoothing, outlier model, warm-up, confidence, and
     publishing corrected timestamps to sync-core / targetTime.

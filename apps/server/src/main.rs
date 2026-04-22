@@ -153,9 +153,9 @@ fn main() {
                             .received_heartbeats,
                         outcome.heartbeat_rtt_offset_state.len(),
                         outcome
-                            .heartbeat_rtt_offset_commit
-                            .committed
-                            .committed_samples,
+                            .heartbeat_rtt_offset_policy_commit
+                            .committed_samples()
+                            .unwrap_or(0),
                         outcome.heartbeat_calculation.estimate.rtt_micros,
                         outcome.heartbeat_calculation.estimate.server_processing_micros,
                         outcome.heartbeat_calculation.estimate.clock_offset_micros
