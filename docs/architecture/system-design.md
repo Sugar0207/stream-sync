@@ -2650,6 +2650,48 @@ Responsibility split:
   - Owns liveness / timeout decisions.
   - Does not depend on RTT / offset smoothing being complete.
 
+### Heartbeat RTT / Offset Candidate Policy Boundary
+
+The candidate policy boundary sits between stateless calculation and latest
+estimate commit. It is not the completed smoothing / outlier implementation; it
+only fixes the decision shape for future estimator work.
+
+Current implementation scope:
+
+1. `ServerHeartbeatRttOffsetCandidatePolicyBoundary::evaluate` receives:
+   - current `ServerHeartbeatRttOffsetState`
+   - one `ServerHeartbeatRttOffsetCalculation`
+   - `ServerHeartbeatRttOffsetCandidatePolicy`
+2. The policy contains:
+   - `ServerHeartbeatRttOffsetSmoothingMode::Deferred`
+   - optional RTT delta threshold
+   - optional clock offset delta threshold
+3. If no same-run previous estimate exists, the candidate is accepted.
+4. If the previous estimate is from a different `run_id`, cross-run outlier
+   comparison is skipped and the candidate is accepted.
+5. If optional thresholds are configured for the same run, the boundary can
+   reject a candidate as:
+   - `RttDeltaExceeded`
+   - `ClockOffsetDeltaExceeded`
+6. Accepted candidates still report smoothing as `Deferred`.
+
+Responsibility split:
+
+- stateless calculator
+  - Produces one numeric candidate from one heartbeat exchange.
+  - Does not inspect previous estimates.
+- candidate policy boundary
+  - Performs only optional same-run delta checks against the latest committed
+    estimate.
+  - Does not mutate state, smooth values, keep history, calculate confidence,
+    or publish corrected timestamps.
+- latest estimate commit
+  - Stores the accepted candidate and sample count.
+  - Does not decide whether a candidate is an outlier.
+- future smoothing / corrected timestamp publisher
+  - Owns EWMA or other smoothing, outlier model, warm-up, confidence, and
+    publishing corrected timestamps to sync-core / targetTime.
+
 ### Heartbeat Client Ack Observation Flow
 
 The client ack observation flow returns the missing `client_received_at`

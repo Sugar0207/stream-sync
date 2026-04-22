@@ -5,6 +5,61 @@
 - Codex
 
 ### 今回の作業
+- RTT / offset smoothing / outlier policy の最小範囲を整理した。
+- completed smoothing には進めず、latest estimate commit 前に置ける candidate policy 境界を追加した。
+- optional same-run delta threshold による outlier reject と、smoothing deferred の decision shape を追加した。
+
+### 変更ファイル
+- `apps/server/src/lib.rs`
+- `docs/architecture/system-design.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### 決定事項
+- stateless calculator は previous estimate を見ず、1 exchange の numeric candidate だけを作る。
+- candidate policy boundary は latest same-run estimate との差分だけを見る。履歴、confidence、EWMA、補正 timestamp 公開はまだ持たない。
+- default policy は threshold 無効で candidate を accept し、smoothing は `Deferred` として返す。
+- `run_id` が変わった candidate は cross-run outlier comparison をせず accept し、sample count reset は commit boundary 側に任せる。
+- latest estimate commit は accepted candidate を保存する責務に留め、outlier 判定や smoothing は行わない。
+
+### 実装したこと
+- `ServerHeartbeatRttOffsetSmoothingMode` を追加した。
+- `ServerHeartbeatRttOffsetOutlierPolicy` と `ServerHeartbeatRttOffsetCandidatePolicy` を追加した。
+- `ServerHeartbeatRttOffsetOutlierReason`、`ServerHeartbeatRttOffsetCandidatePolicyDecision`、`ServerHeartbeatRttOffsetCandidatePolicyResult` を追加した。
+- `ServerHeartbeatRttOffsetCandidatePolicyBoundary::evaluate` を追加した。
+- threshold 無効時の accept、RTT delta reject、clock offset delta reject、new-run accept の単体テストを追加した。
+
+### 未実装 / 保留
+- candidate policy を `--receive-send-three` の commit 前へ接続する処理
+- EWMA などの smoothing 本体
+- outlier history / confidence / warm-up
+- corrected timestamp publish
+- sync-core / targetTime への接続
+- continuous heartbeat loop からの継続 observation commit
+
+### 次にやる候補
+- heartbeat timeout loop tick の notice queue storage / send wakeup 方針を整理する。
+- RTT / offset candidate policy を commit 前に接続する方針を整理する。
+- continuous heartbeat loop に進む前の送信間隔、停止条件、ログ出力範囲を整理する。
+
+### TODO 更新
+- 現在位置に RTT / offset candidate policy 境界の完了を反映した。
+- 直近でやることを timeout loop tick の notice queue storage / send wakeup、RTT / offset candidate policy の commit 前接続、continuous heartbeat loop 前の境界整理へ更新した。
+- heartbeat / net-core / 検証タスクに RTT / offset candidate policy boundary と関連単体テストの完了を追加した。
+
+### 検証
+- `cargo fmt`
+- `cargo fmt --check`
+- `cargo test -p stream-sync-server heartbeat_rtt_offset_candidate_policy`
+- `cargo check --workspace`
+
+---
+
+## 2026-04-22
+### 種別
+- Codex
+
+### 今回の作業
 - RTT / offset estimate を server 側 state に commit する最小範囲を整理した。
 - stateless calculator の結果を per-client latest estimate state に保存する `ServerHeartbeatRttOffsetCommitBoundary` を追加した。
 - `--receive-send-three` で returned observation の RTT / offset candidate を 1 回 commit し、stdout に state entry 数と sample count を表示するようにした。

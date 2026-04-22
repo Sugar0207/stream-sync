@@ -6608,6 +6608,148 @@ pub struct ServerHeartbeatRttOffsetCommitOutcome {
     pub replaced_previous_run: bool,
 }
 
+/// Smoothing mode for server-side RTT / offset candidates.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ServerHeartbeatRttOffsetSmoothingMode {
+    Deferred,
+}
+
+impl Default for ServerHeartbeatRttOffsetSmoothingMode {
+    fn default() -> Self {
+        Self::Deferred
+    }
+}
+
+/// Minimal outlier policy for candidate evaluation.
+///
+/// `None` disables each threshold. This is a guardrail only; it is not a
+/// complete outlier model.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct ServerHeartbeatRttOffsetOutlierPolicy {
+    pub max_rtt_delta_micros: Option<u64>,
+    pub max_clock_offset_delta_micros: Option<u64>,
+}
+
+/// Minimal candidate policy for future estimator work.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct ServerHeartbeatRttOffsetCandidatePolicy {
+    pub smoothing: ServerHeartbeatRttOffsetSmoothingMode,
+    pub outlier: ServerHeartbeatRttOffsetOutlierPolicy,
+}
+
+/// Reason a candidate was classified as an outlier by the minimal policy.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ServerHeartbeatRttOffsetOutlierReason {
+    RttDeltaExceeded {
+        previous_micros: u64,
+        candidate_micros: u64,
+        delta_micros: u64,
+        max_delta_micros: u64,
+    },
+    ClockOffsetDeltaExceeded {
+        previous_micros: i64,
+        candidate_micros: i64,
+        delta_micros: u64,
+        max_delta_micros: u64,
+    },
+}
+
+/// Candidate policy decision before committing latest RTT / offset state.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ServerHeartbeatRttOffsetCandidatePolicyDecision {
+    Accept {
+        smoothing: ServerHeartbeatRttOffsetSmoothingMode,
+    },
+    RejectOutlier {
+        reason: ServerHeartbeatRttOffsetOutlierReason,
+    },
+}
+
+/// Result of evaluating one RTT / offset candidate against policy.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ServerHeartbeatRttOffsetCandidatePolicyResult {
+    pub client_id: ClientId,
+    pub run_id: RunId,
+    pub previous: Option<ServerHeartbeatRttOffsetStateEntry>,
+    pub candidate: HeartbeatRttOffsetEstimate,
+    pub decision: ServerHeartbeatRttOffsetCandidatePolicyDecision,
+}
+
+/// Boundary that evaluates an RTT / offset candidate before state commit.
+///
+/// This boundary only compares a candidate with the latest same-run estimate
+/// when optional thresholds are configured. It does not calculate RTT / offset,
+/// commit state, smooth values, keep history, publish corrected timestamps, or
+/// interact with timeout state.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct ServerHeartbeatRttOffsetCandidatePolicyBoundary;
+
+impl ServerHeartbeatRttOffsetCandidatePolicyBoundary {
+    pub fn evaluate(
+        &self,
+        state: &ServerHeartbeatRttOffsetState,
+        calculation: &ServerHeartbeatRttOffsetCalculation,
+        policy: ServerHeartbeatRttOffsetCandidatePolicy,
+    ) -> ServerHeartbeatRttOffsetCandidatePolicyResult {
+        let previous = state.get(&calculation.client_id).cloned();
+        let decision = previous
+            .as_ref()
+            .filter(|entry| entry.run_id == calculation.run_id)
+            .and_then(|entry| {
+                self.evaluate_outlier(entry.latest_estimate, calculation.estimate, policy.outlier)
+            })
+            .map(|reason| ServerHeartbeatRttOffsetCandidatePolicyDecision::RejectOutlier { reason })
+            .unwrap_or(ServerHeartbeatRttOffsetCandidatePolicyDecision::Accept {
+                smoothing: policy.smoothing,
+            });
+
+        ServerHeartbeatRttOffsetCandidatePolicyResult {
+            client_id: calculation.client_id.clone(),
+            run_id: calculation.run_id.clone(),
+            previous,
+            candidate: calculation.estimate,
+            decision,
+        }
+    }
+
+    fn evaluate_outlier(
+        &self,
+        previous: HeartbeatRttOffsetEstimate,
+        candidate: HeartbeatRttOffsetEstimate,
+        policy: ServerHeartbeatRttOffsetOutlierPolicy,
+    ) -> Option<ServerHeartbeatRttOffsetOutlierReason> {
+        if let Some(max_delta_micros) = policy.max_rtt_delta_micros {
+            let delta_micros = previous.rtt_micros.abs_diff(candidate.rtt_micros);
+            if delta_micros > max_delta_micros {
+                return Some(ServerHeartbeatRttOffsetOutlierReason::RttDeltaExceeded {
+                    previous_micros: previous.rtt_micros,
+                    candidate_micros: candidate.rtt_micros,
+                    delta_micros,
+                    max_delta_micros,
+                });
+            }
+        }
+
+        if let Some(max_delta_micros) = policy.max_clock_offset_delta_micros {
+            let delta_micros = previous
+                .clock_offset_micros
+                .abs_diff(candidate.clock_offset_micros);
+            if delta_micros > max_delta_micros {
+                return Some(
+                    ServerHeartbeatRttOffsetOutlierReason::ClockOffsetDeltaExceeded {
+                        previous_micros: previous.clock_offset_micros,
+                        candidate_micros: candidate.clock_offset_micros,
+                        delta_micros,
+                        max_delta_micros,
+                    },
+                );
+            }
+        }
+
+        None
+    }
+}
+
 /// Boundary that commits stateless RTT / offset estimates into server state.
 ///
 /// This boundary overwrites the per-client latest estimate and increments a
@@ -12330,6 +12472,212 @@ shared_token = "secret"
         assert_eq!(outcome.committed.run_id, RunId("run-2".to_string()));
         assert_eq!(outcome.committed.committed_samples, 1);
         assert_eq!(outcome.committed.latest_estimate.clock_offset_micros, 900);
+    }
+
+    #[test]
+    fn heartbeat_rtt_offset_candidate_policy_accepts_without_thresholds() {
+        let commit = ServerHeartbeatRttOffsetCommitBoundary;
+        let mut state = ServerHeartbeatRttOffsetState::default();
+        commit.commit(
+            &mut state,
+            ServerHeartbeatRttOffsetCommitInput {
+                calculation: ServerHeartbeatRttOffsetCalculation {
+                    client_id: ClientId("client-1".to_string()),
+                    run_id: RunId("run-1".to_string()),
+                    estimate: HeartbeatRttOffsetEstimate {
+                        rtt_micros: 100,
+                        server_processing_micros: 20,
+                        clock_offset_micros: 1_000,
+                    },
+                },
+                committed_at: None,
+            },
+        );
+        let candidate = ServerHeartbeatRttOffsetCalculation {
+            client_id: ClientId("client-1".to_string()),
+            run_id: RunId("run-1".to_string()),
+            estimate: HeartbeatRttOffsetEstimate {
+                rtt_micros: 1_000_000,
+                server_processing_micros: 20,
+                clock_offset_micros: -1_000_000,
+            },
+        };
+        let boundary = ServerHeartbeatRttOffsetCandidatePolicyBoundary;
+
+        let result = boundary.evaluate(
+            &state,
+            &candidate,
+            ServerHeartbeatRttOffsetCandidatePolicy::default(),
+        );
+
+        assert!(result.previous.is_some());
+        assert_eq!(
+            result.decision,
+            ServerHeartbeatRttOffsetCandidatePolicyDecision::Accept {
+                smoothing: ServerHeartbeatRttOffsetSmoothingMode::Deferred
+            }
+        );
+    }
+
+    #[test]
+    fn heartbeat_rtt_offset_candidate_policy_rejects_rtt_delta_outlier() {
+        let commit = ServerHeartbeatRttOffsetCommitBoundary;
+        let mut state = ServerHeartbeatRttOffsetState::default();
+        commit.commit(
+            &mut state,
+            ServerHeartbeatRttOffsetCommitInput {
+                calculation: ServerHeartbeatRttOffsetCalculation {
+                    client_id: ClientId("client-1".to_string()),
+                    run_id: RunId("run-1".to_string()),
+                    estimate: HeartbeatRttOffsetEstimate {
+                        rtt_micros: 100,
+                        server_processing_micros: 20,
+                        clock_offset_micros: 1_000,
+                    },
+                },
+                committed_at: None,
+            },
+        );
+        let candidate = ServerHeartbeatRttOffsetCalculation {
+            client_id: ClientId("client-1".to_string()),
+            run_id: RunId("run-1".to_string()),
+            estimate: HeartbeatRttOffsetEstimate {
+                rtt_micros: 180,
+                server_processing_micros: 20,
+                clock_offset_micros: 1_010,
+            },
+        };
+        let boundary = ServerHeartbeatRttOffsetCandidatePolicyBoundary;
+
+        let result = boundary.evaluate(
+            &state,
+            &candidate,
+            ServerHeartbeatRttOffsetCandidatePolicy {
+                smoothing: ServerHeartbeatRttOffsetSmoothingMode::Deferred,
+                outlier: ServerHeartbeatRttOffsetOutlierPolicy {
+                    max_rtt_delta_micros: Some(50),
+                    max_clock_offset_delta_micros: Some(100),
+                },
+            },
+        );
+
+        assert_eq!(
+            result.decision,
+            ServerHeartbeatRttOffsetCandidatePolicyDecision::RejectOutlier {
+                reason: ServerHeartbeatRttOffsetOutlierReason::RttDeltaExceeded {
+                    previous_micros: 100,
+                    candidate_micros: 180,
+                    delta_micros: 80,
+                    max_delta_micros: 50,
+                }
+            }
+        );
+    }
+
+    #[test]
+    fn heartbeat_rtt_offset_candidate_policy_rejects_offset_delta_outlier() {
+        let commit = ServerHeartbeatRttOffsetCommitBoundary;
+        let mut state = ServerHeartbeatRttOffsetState::default();
+        commit.commit(
+            &mut state,
+            ServerHeartbeatRttOffsetCommitInput {
+                calculation: ServerHeartbeatRttOffsetCalculation {
+                    client_id: ClientId("client-1".to_string()),
+                    run_id: RunId("run-1".to_string()),
+                    estimate: HeartbeatRttOffsetEstimate {
+                        rtt_micros: 100,
+                        server_processing_micros: 20,
+                        clock_offset_micros: 1_000,
+                    },
+                },
+                committed_at: None,
+            },
+        );
+        let candidate = ServerHeartbeatRttOffsetCalculation {
+            client_id: ClientId("client-1".to_string()),
+            run_id: RunId("run-1".to_string()),
+            estimate: HeartbeatRttOffsetEstimate {
+                rtt_micros: 110,
+                server_processing_micros: 20,
+                clock_offset_micros: 1_250,
+            },
+        };
+        let boundary = ServerHeartbeatRttOffsetCandidatePolicyBoundary;
+
+        let result = boundary.evaluate(
+            &state,
+            &candidate,
+            ServerHeartbeatRttOffsetCandidatePolicy {
+                smoothing: ServerHeartbeatRttOffsetSmoothingMode::Deferred,
+                outlier: ServerHeartbeatRttOffsetOutlierPolicy {
+                    max_rtt_delta_micros: Some(50),
+                    max_clock_offset_delta_micros: Some(100),
+                },
+            },
+        );
+
+        assert_eq!(
+            result.decision,
+            ServerHeartbeatRttOffsetCandidatePolicyDecision::RejectOutlier {
+                reason: ServerHeartbeatRttOffsetOutlierReason::ClockOffsetDeltaExceeded {
+                    previous_micros: 1_000,
+                    candidate_micros: 1_250,
+                    delta_micros: 250,
+                    max_delta_micros: 100,
+                }
+            }
+        );
+    }
+
+    #[test]
+    fn heartbeat_rtt_offset_candidate_policy_accepts_new_run_without_cross_run_outlier_check() {
+        let commit = ServerHeartbeatRttOffsetCommitBoundary;
+        let mut state = ServerHeartbeatRttOffsetState::default();
+        commit.commit(
+            &mut state,
+            ServerHeartbeatRttOffsetCommitInput {
+                calculation: ServerHeartbeatRttOffsetCalculation {
+                    client_id: ClientId("client-1".to_string()),
+                    run_id: RunId("run-1".to_string()),
+                    estimate: HeartbeatRttOffsetEstimate {
+                        rtt_micros: 100,
+                        server_processing_micros: 20,
+                        clock_offset_micros: 1_000,
+                    },
+                },
+                committed_at: None,
+            },
+        );
+        let candidate = ServerHeartbeatRttOffsetCalculation {
+            client_id: ClientId("client-1".to_string()),
+            run_id: RunId("run-2".to_string()),
+            estimate: HeartbeatRttOffsetEstimate {
+                rtt_micros: 10_000,
+                server_processing_micros: 20,
+                clock_offset_micros: -10_000,
+            },
+        };
+        let boundary = ServerHeartbeatRttOffsetCandidatePolicyBoundary;
+
+        let result = boundary.evaluate(
+            &state,
+            &candidate,
+            ServerHeartbeatRttOffsetCandidatePolicy {
+                smoothing: ServerHeartbeatRttOffsetSmoothingMode::Deferred,
+                outlier: ServerHeartbeatRttOffsetOutlierPolicy {
+                    max_rtt_delta_micros: Some(50),
+                    max_clock_offset_delta_micros: Some(100),
+                },
+            },
+        );
+
+        assert!(result.previous.is_some());
+        assert_eq!(
+            result.decision,
+            ServerHeartbeatRttOffsetCandidatePolicyDecision::Accept {
+                smoothing: ServerHeartbeatRttOffsetSmoothingMode::Deferred
+            }
+        );
     }
 
     #[test]
