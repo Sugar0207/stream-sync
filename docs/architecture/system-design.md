@@ -2493,6 +2493,11 @@ Current implementation scope:
    `AuthExpired` notice handoff.
 6. `Alive` and `NoHeartbeat` return a result without registry invalidation,
    timeout log event, or notice handoff.
+7. If the caller wants to store the timeout notice for a future send loop, it
+   passes the apply result to
+   `ServerHeartbeatTimeoutNoticeQueueStorageBoundary::store_notice`.
+8. Notice queue storage may push the typed notice item into caller-owned
+   `ServerOutboundQueueCollection` and return a send wakeup placeholder.
 
 Responsibility split:
 
@@ -2509,13 +2514,74 @@ Responsibility split:
   - Does not mutate state.
 - apply
   - Applies only the explicit one-client plan.
-  - Does not choose the next client or repeat.
+  - Produces a typed notice handoff only.
+  - Does not store the notice in queue storage, wake a sender, choose the next
+    client, or repeat.
+- notice queue storage
+  - Receives the timeout apply result and caller-owned outbound queue
+    collection.
+  - Stores only `notice_handoff.queue_item` when storage admission accepts it.
+  - Does not encode, send, retry, rate-limit, or wake a real task.
+- future send wakeup
+  - Is represented by `ServerHeartbeatTimeoutNoticeSendWakeupPlan`.
+  - Is requested only when a timeout notice is actually queued.
+  - Does not signal a condvar, spawn a task, or call UDP sockets.
 - future loop body
   - Still owns client iteration order, cadence, stop condition, timeout policy
-    selection, queue storage of notice items, send-loop wakeup, and metrics.
+    selection, queue ownership, wakeup execution, and metrics.
 
 This keeps the completed continuous heartbeat loop out of scope while fixing
 the call shape that the future loop should use.
+
+### Heartbeat Timeout Notice Queue Storage / Send Wakeup
+
+Timeout notice queue storage is the narrow boundary after timeout apply. It is
+not the completed send loop and it does not perform a real wakeup. It only
+makes the storage and wakeup contract explicit for the future continuous loop.
+
+Current implementation scope:
+
+1. `ServerHeartbeatTimeoutApplyBoundary::apply_plan` may produce
+   `ServerHeartbeatTimeoutNoticeHandoff`.
+2. `ServerHeartbeatTimeoutNoticeQueueStorageBoundary::store_notice` receives:
+   - caller-owned `ServerOutboundQueueCollection`
+   - `ServerHeartbeatTimeoutApplyResult`
+3. If the apply result has no notice handoff, it returns `NoNotice` with
+   `ServerHeartbeatTimeoutNoticeSendWakeupPlan::NotRequested`.
+4. If a notice exists, the boundary evaluates existing outbound queue storage
+   admission with `ServerOutboundQueueBoundary::evaluate_storage_push`.
+5. If storage rejects the notice, it returns `Dropped` and does not request a
+   wakeup.
+6. If storage accepts the notice, it holds the item as `QueuedOutboundItem`,
+   pushes it to the caller-owned collection, and returns `Stored` with
+   `RequestSendLoopWakeup`.
+
+Responsibility split:
+
+- timeout apply
+  - Owns registry invalidation, timeout log writer handoff, and typed notice
+    handoff creation.
+  - Does not decide queue storage or wakeup execution.
+- notice queue handoff
+  - Preserves `ServerNotice`, `OutboundQueueItem`, and trigger metadata from
+    timeout apply.
+  - Does not store the item by itself.
+- notice queue storage boundary
+  - Owns one synchronous push into caller-owned in-memory queue collection.
+  - Uses the existing outbound queue admission policy.
+  - Does not create a continuous queue worker.
+- future send wakeup
+  - Is a typed plan attached to successful storage.
+  - Later loop/controller code must choose the actual wake mechanism.
+- future continuous loop
+  - Owns client scanning, repeated timeout ticks, queue collection ownership,
+    wakeup execution, send-loop scheduling, retry, and backpressure policy.
+
+Current code reflects this with
+`ServerHeartbeatTimeoutNoticeQueueStorageBoundary`,
+`ServerHeartbeatTimeoutNoticeQueueStorageResult`, and
+`ServerHeartbeatTimeoutNoticeSendWakeupPlan`. The wakeup plan is intentionally
+data only; no thread, async runtime, or socket send is started here.
 
 ### Heartbeat RTT / Offset Calculation Policy
 
@@ -2767,6 +2833,18 @@ Responsibility split:
   - Creates a typed snapshot from the current in-memory metrics state.
   - Does not serialize, push to a backend, render a dashboard, or retain
     historical time series.
+- export handoff
+  - Wraps a non-empty snapshot with a selected consumer and optional export
+    timestamp.
+  - Returns `NoRecords` for empty state instead of creating an empty dashboard
+    or loop event.
+- future loop consumer
+  - Receives the typed snapshot handoff for later cadence, logging, or fanout
+    decisions.
+  - Does not own the metrics state or dashboard rendering.
+- future dashboard consumer
+  - Receives a dashboard input placeholder with exported timestamp and records.
+  - Does not render UI, store dashboard state, or define refresh transport.
 - future timeout / heartbeat loop
   - May call the handoff boundary after each policy commit outcome.
   - Owns loop cadence, writer selection, metrics state ownership, export
@@ -2785,9 +2863,62 @@ Current storage / aggregation / export policy:
   `rtt_delta_rejections` and `clock_offset_delta_rejections`.
 - Export is a snapshot placeholder:
   `ServerHeartbeatRttOffsetRejectedCandidateMetricsSnapshot`.
+- Export handoff is explicit:
+  `ServerHeartbeatRttOffsetMetricsSnapshotExportHandoffBoundary` selects a
+  consumer and returns either `NoRecords` or a typed handoff.
+- Snapshot consumption is still placeholder-only:
+  `ServerHeartbeatRttOffsetMetricsSnapshotConsumerBoundary` routes a handoff to
+  either a future loop handoff or a future dashboard input shape.
 - No completed metrics pipeline exists yet. File sinks, process-wide metrics,
   network export, UI dashboard, alert thresholds, retention, and time-series
   history remain future work.
+
+### Heartbeat RTT / Offset Metrics Snapshot Loop / Dashboard Handoff
+
+The RTT / offset metrics snapshot handoff connects current in-memory
+rejected-candidate metrics to future loop and dashboard consumers without
+implementing a metrics pipeline or dashboard.
+
+Current implementation scope:
+
+1. `ServerHeartbeatRttOffsetRejectedCandidateMetricsState` remains the
+   caller-owned in-memory aggregation state.
+2. `ServerHeartbeatRttOffsetRejectedCandidateMetricsExportBoundary::snapshot`
+   produces a typed snapshot.
+3. `ServerHeartbeatRttOffsetMetricsSnapshotExportHandoffBoundary::export_for_consumer`
+   receives:
+   - current metrics state
+   - `ServerHeartbeatRttOffsetMetricsSnapshotConsumer`
+   - optional `exported_at`
+4. If the snapshot is empty, it returns `NoRecords`.
+5. If the snapshot has records, it returns
+   `ServerHeartbeatRttOffsetMetricsSnapshotExportHandoff`.
+6. `ServerHeartbeatRttOffsetMetricsSnapshotConsumerBoundary::consume` routes
+   the handoff to either:
+   - `FutureLoop`, preserving the handoff for future loop fanout decisions
+   - `FutureDashboard`, converting it to
+     `ServerHeartbeatRttOffsetMetricsDashboardSnapshotInput`
+
+Responsibility split:
+
+- rejected candidate metrics state
+  - Owns in-memory counters only.
+  - Does not choose export cadence or dashboard refresh policy.
+- snapshot export
+  - Converts current state into immutable records.
+  - Does not serialize, write, send, or render.
+- export handoff
+  - Names the intended consumer for one snapshot.
+  - Does not run periodically or retain history.
+- future loop consumer
+  - Later owns export cadence, fanout, logging decisions, and backpressure.
+  - Current placeholder only preserves the handoff.
+- future dashboard consumer
+  - Later owns dashboard storage, refresh transport, and UI rendering.
+  - Current placeholder only names the dashboard input shape.
+
+This keeps both completed metrics pipeline and dashboard implementation out of
+scope while fixing the type-level connection the future loop can call.
 
 ### Heartbeat Client Ack Observation Flow
 

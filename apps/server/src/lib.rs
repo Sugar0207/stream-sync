@@ -6248,6 +6248,116 @@ impl ServerHeartbeatTimeoutApplyBoundary {
     }
 }
 
+/// Reason a future send loop should be woken after timeout notice storage.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ServerHeartbeatTimeoutNoticeSendWakeupReason {
+    TimeoutNoticeQueued,
+}
+
+/// Placeholder plan for waking a future send loop.
+///
+/// This does not signal a condvar, spawn a task, send a datagram, or run a send
+/// loop. It only records whether the caller should wake whatever send-loop
+/// mechanism later owns the queue.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ServerHeartbeatTimeoutNoticeSendWakeupPlan {
+    NotRequested,
+    RequestSendLoopWakeup {
+        reason: ServerHeartbeatTimeoutNoticeSendWakeupReason,
+    },
+}
+
+/// Stored timeout notice queue item plus the future wakeup request.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ServerHeartbeatTimeoutNoticeQueueStored {
+    pub decision: OutboundQueueStorageDecision,
+    pub queued_item: QueuedOutboundItem,
+    pub queue_len: usize,
+    pub wakeup: ServerHeartbeatTimeoutNoticeSendWakeupPlan,
+}
+
+/// Dropped timeout notice queue item.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ServerHeartbeatTimeoutNoticeQueueDropped {
+    pub decision: OutboundQueueStorageDecision,
+    pub queue_len: usize,
+    pub wakeup: ServerHeartbeatTimeoutNoticeSendWakeupPlan,
+}
+
+/// Result of applying timeout notice handoff to caller-owned queue storage.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ServerHeartbeatTimeoutNoticeQueueStorageResult {
+    NoNotice {
+        wakeup: ServerHeartbeatTimeoutNoticeSendWakeupPlan,
+    },
+    Stored(ServerHeartbeatTimeoutNoticeQueueStored),
+    Dropped(ServerHeartbeatTimeoutNoticeQueueDropped),
+}
+
+impl ServerHeartbeatTimeoutNoticeQueueStorageResult {
+    pub fn wakeup(&self) -> ServerHeartbeatTimeoutNoticeSendWakeupPlan {
+        match self {
+            ServerHeartbeatTimeoutNoticeQueueStorageResult::NoNotice { wakeup } => *wakeup,
+            ServerHeartbeatTimeoutNoticeQueueStorageResult::Stored(stored) => stored.wakeup,
+            ServerHeartbeatTimeoutNoticeQueueStorageResult::Dropped(dropped) => dropped.wakeup,
+        }
+    }
+}
+
+/// Boundary that stores timeout notice queue items and plans future send wakeup.
+///
+/// This is the narrow bridge after `ServerHeartbeatTimeoutApplyBoundary`: it
+/// moves an optional notice handoff into caller-owned in-memory queue storage
+/// and returns a wakeup placeholder only when an item is actually queued. It
+/// does not scan clients, run continuously, wake a thread, encode, send UDP,
+/// retry, or open log sinks.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct ServerHeartbeatTimeoutNoticeQueueStorageBoundary {
+    queue: ServerOutboundQueueBoundary,
+    lifecycle: OutboundQueueLifecycleBoundary,
+}
+
+impl ServerHeartbeatTimeoutNoticeQueueStorageBoundary {
+    pub fn store_notice(
+        &self,
+        collection: &mut ServerOutboundQueueCollection,
+        apply: &ServerHeartbeatTimeoutApplyResult,
+    ) -> ServerHeartbeatTimeoutNoticeQueueStorageResult {
+        let Some(notice) = &apply.notice_handoff else {
+            return ServerHeartbeatTimeoutNoticeQueueStorageResult::NoNotice {
+                wakeup: ServerHeartbeatTimeoutNoticeSendWakeupPlan::NotRequested,
+            };
+        };
+
+        let decision = self
+            .queue
+            .evaluate_storage_push(collection.len(), &notice.queue_item);
+        if !decision.accepts_candidate() {
+            return ServerHeartbeatTimeoutNoticeQueueStorageResult::Dropped(
+                ServerHeartbeatTimeoutNoticeQueueDropped {
+                    decision,
+                    queue_len: collection.len(),
+                    wakeup: ServerHeartbeatTimeoutNoticeSendWakeupPlan::NotRequested,
+                },
+            );
+        }
+
+        let queued_item = self.lifecycle.hold_for_send(notice.queue_item.clone());
+        collection.items.push_back(queued_item.clone());
+
+        ServerHeartbeatTimeoutNoticeQueueStorageResult::Stored(
+            ServerHeartbeatTimeoutNoticeQueueStored {
+                decision,
+                queued_item,
+                queue_len: collection.len(),
+                wakeup: ServerHeartbeatTimeoutNoticeSendWakeupPlan::RequestSendLoopWakeup {
+                    reason: ServerHeartbeatTimeoutNoticeSendWakeupReason::TimeoutNoticeQueued,
+                },
+            },
+        )
+    }
+}
+
 /// Input for one future heartbeat timeout loop tick for a single client.
 ///
 /// The caller chooses which client to evaluate and supplies the current server
@@ -7062,6 +7172,112 @@ impl ServerHeartbeatRttOffsetRejectedCandidateMetricsExportBoundary {
             .collect();
 
         ServerHeartbeatRttOffsetRejectedCandidateMetricsSnapshot { records }
+    }
+}
+
+/// Consumer target for rejected-candidate metrics snapshots.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ServerHeartbeatRttOffsetMetricsSnapshotConsumer {
+    FutureLoop,
+    FutureDashboard,
+}
+
+/// Typed handoff from metrics state snapshot export to a future consumer.
+///
+/// This does not serialize the snapshot, send it over the network, render a UI,
+/// or schedule a periodic export.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ServerHeartbeatRttOffsetMetricsSnapshotExportHandoff {
+    pub consumer: ServerHeartbeatRttOffsetMetricsSnapshotConsumer,
+    pub exported_at: Option<TimestampMicros>,
+    pub snapshot: ServerHeartbeatRttOffsetRejectedCandidateMetricsSnapshot,
+}
+
+/// Runtime-shaped result for a single metrics snapshot export attempt.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ServerHeartbeatRttOffsetMetricsSnapshotExportRuntimeResult {
+    NoRecords {
+        consumer: ServerHeartbeatRttOffsetMetricsSnapshotConsumer,
+        exported_at: Option<TimestampMicros>,
+    },
+    Handoff(ServerHeartbeatRttOffsetMetricsSnapshotExportHandoff),
+}
+
+/// Boundary that creates a metrics snapshot handoff for a future consumer.
+///
+/// A future loop may call this at a chosen cadence. This boundary only creates
+/// one typed handoff from current in-memory state; it does not own cadence,
+/// retention, dashboard state, JSON output, file sinks, or network export.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct ServerHeartbeatRttOffsetMetricsSnapshotExportHandoffBoundary {
+    export: ServerHeartbeatRttOffsetRejectedCandidateMetricsExportBoundary,
+}
+
+impl ServerHeartbeatRttOffsetMetricsSnapshotExportHandoffBoundary {
+    pub fn export_for_consumer(
+        &self,
+        state: &ServerHeartbeatRttOffsetRejectedCandidateMetricsState,
+        consumer: ServerHeartbeatRttOffsetMetricsSnapshotConsumer,
+        exported_at: Option<TimestampMicros>,
+    ) -> ServerHeartbeatRttOffsetMetricsSnapshotExportRuntimeResult {
+        let snapshot = self.export.snapshot(state);
+        if snapshot.records.is_empty() {
+            return ServerHeartbeatRttOffsetMetricsSnapshotExportRuntimeResult::NoRecords {
+                consumer,
+                exported_at,
+            };
+        }
+
+        ServerHeartbeatRttOffsetMetricsSnapshotExportRuntimeResult::Handoff(
+            ServerHeartbeatRttOffsetMetricsSnapshotExportHandoff {
+                consumer,
+                exported_at,
+                snapshot,
+            },
+        )
+    }
+}
+
+/// Placeholder input shape for a future dashboard consumer.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ServerHeartbeatRttOffsetMetricsDashboardSnapshotInput {
+    pub exported_at: Option<TimestampMicros>,
+    pub records: Vec<ServerHeartbeatRttOffsetRejectedCandidateMetricsExportRecord>,
+}
+
+/// Placeholder output after routing a snapshot handoff to its selected consumer.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ServerHeartbeatRttOffsetMetricsSnapshotConsumerResult {
+    FutureLoop(ServerHeartbeatRttOffsetMetricsSnapshotExportHandoff),
+    FutureDashboard(ServerHeartbeatRttOffsetMetricsDashboardSnapshotInput),
+}
+
+/// Boundary that names how a future consumer receives a metrics snapshot.
+///
+/// This only adapts the typed snapshot handoff to a future loop or dashboard
+/// placeholder. It does not store dashboard state, render UI, notify another
+/// thread, or export metrics externally.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct ServerHeartbeatRttOffsetMetricsSnapshotConsumerBoundary;
+
+impl ServerHeartbeatRttOffsetMetricsSnapshotConsumerBoundary {
+    pub fn consume(
+        &self,
+        handoff: ServerHeartbeatRttOffsetMetricsSnapshotExportHandoff,
+    ) -> ServerHeartbeatRttOffsetMetricsSnapshotConsumerResult {
+        match handoff.consumer {
+            ServerHeartbeatRttOffsetMetricsSnapshotConsumer::FutureLoop => {
+                ServerHeartbeatRttOffsetMetricsSnapshotConsumerResult::FutureLoop(handoff)
+            }
+            ServerHeartbeatRttOffsetMetricsSnapshotConsumer::FutureDashboard => {
+                ServerHeartbeatRttOffsetMetricsSnapshotConsumerResult::FutureDashboard(
+                    ServerHeartbeatRttOffsetMetricsDashboardSnapshotInput {
+                        exported_at: handoff.exported_at,
+                        records: handoff.snapshot.records,
+                    },
+                )
+            }
+        }
     }
 }
 
@@ -12648,6 +12864,104 @@ shared_token = "secret"
     }
 
     #[test]
+    fn heartbeat_timeout_notice_queue_storage_stores_notice_and_requests_wakeup() {
+        let source = packet_source();
+        let mut registry = registry_with_client("client-1", source);
+        let liveness = ServerHeartbeatLivenessCommitBoundary;
+        let mut state = ServerHeartbeatLivenessState::default();
+        liveness.commit(
+            &mut state,
+            ServerHeartbeatStateInput {
+                source,
+                authenticated_sender: AuthenticatedSenderEntry {
+                    client_id: ClientId("client-1".to_string()),
+                    source,
+                    run_id: RunId("run-1".to_string()),
+                    protocol_version: ProtocolVersion(2),
+                    registered_at: None,
+                },
+                client_id: ClientId("client-1".to_string()),
+                run_id: RunId("run-1".to_string()),
+                protocol_version: ProtocolVersion(2),
+                heartbeat_sent_at: TimestampMicros(22_000_000),
+                server_received_at: TimestampMicros(22_000_100),
+                short_status: None,
+            },
+        );
+        let evaluation = liveness.evaluate_timeout(
+            &state,
+            &ClientId("client-1".to_string()),
+            TimestampMicros(22_000_700),
+            ServerHeartbeatTimeoutPolicy::new(500),
+        );
+        let plan = ServerHeartbeatTimeoutActionBoundary::default().plan_actions(
+            &state,
+            evaluation,
+            TimestampMicros(22_000_700),
+        );
+        let mut timeout_log = Vec::new();
+        let apply = ServerHeartbeatTimeoutApplyBoundary::default()
+            .apply_plan(&mut registry, plan, &mut timeout_log)
+            .expect("timeout apply should create notice handoff");
+        let boundary = ServerHeartbeatTimeoutNoticeQueueStorageBoundary::default();
+        let mut collection = ServerOutboundQueueCollection::default();
+
+        let result = boundary.store_notice(&mut collection, &apply);
+
+        let ServerHeartbeatTimeoutNoticeQueueStorageResult::Stored(stored) = result else {
+            panic!("timeout notice should be stored");
+        };
+        assert_eq!(stored.queue_len, 1);
+        assert_eq!(
+            stored.wakeup,
+            ServerHeartbeatTimeoutNoticeSendWakeupPlan::RequestSendLoopWakeup {
+                reason: ServerHeartbeatTimeoutNoticeSendWakeupReason::TimeoutNoticeQueued
+            }
+        );
+        assert_eq!(stored.queued_item.state, OutboundQueueItemState::Queued);
+        assert_eq!(collection.len(), 1);
+        let dequeued = ServerOutboundQueueCollectionBoundary.dequeue_one(&mut collection);
+        let ServerOutboundQueueDequeueRuntimeResult::Ready(queued) = dequeued else {
+            panic!("queued timeout notice should be ready for send");
+        };
+        let ProtocolMessage::ServerNotice(notice) = queued.item.packet.message else {
+            panic!("expected queued ServerNotice");
+        };
+        assert_eq!(notice.notice_type, NoticeType::AuthExpired);
+    }
+
+    #[test]
+    fn heartbeat_timeout_notice_queue_storage_ignores_missing_notice() {
+        let boundary = ServerHeartbeatTimeoutNoticeQueueStorageBoundary::default();
+        let mut collection = ServerOutboundQueueCollection::default();
+        let apply = ServerHeartbeatTimeoutApplyResult {
+            evaluation: ServerHeartbeatTimeoutEvaluation::Alive {
+                client_id: ClientId("client-1".to_string()),
+                last_server_received_at: TimestampMicros(23_000_000),
+                elapsed_micros: 100,
+                timeout_after_micros: 500,
+            },
+            registry_invalidation: None,
+            timeout_log_event: None,
+            notice_handoff: None,
+        };
+
+        let result = boundary.store_notice(&mut collection, &apply);
+
+        assert_eq!(
+            result,
+            ServerHeartbeatTimeoutNoticeQueueStorageResult::NoNotice {
+                wakeup: ServerHeartbeatTimeoutNoticeSendWakeupPlan::NotRequested
+            }
+        );
+        assert!(collection.is_empty());
+        assert_eq!(
+            result.wakeup(),
+            ServerHeartbeatTimeoutNoticeSendWakeupPlan::NotRequested
+        );
+    }
+
+    #[test]
     fn heartbeat_timeout_loop_tick_boundary_runs_one_client_timeout_path() {
         let source = packet_source();
         let mut registry = registry_with_client("client-1", source);
@@ -13558,6 +13872,110 @@ shared_token = "secret"
         assert_eq!(
             snapshot.records[0].last_updated_at,
             Some(TimestampMicros(21_000))
+        );
+    }
+
+    #[test]
+    fn heartbeat_rtt_offset_metrics_snapshot_export_handoff_returns_no_records_for_empty_state() {
+        let state = ServerHeartbeatRttOffsetRejectedCandidateMetricsState::default();
+        let boundary = ServerHeartbeatRttOffsetMetricsSnapshotExportHandoffBoundary::default();
+
+        let result = boundary.export_for_consumer(
+            &state,
+            ServerHeartbeatRttOffsetMetricsSnapshotConsumer::FutureDashboard,
+            Some(TimestampMicros(22_000)),
+        );
+
+        assert_eq!(
+            result,
+            ServerHeartbeatRttOffsetMetricsSnapshotExportRuntimeResult::NoRecords {
+                consumer: ServerHeartbeatRttOffsetMetricsSnapshotConsumer::FutureDashboard,
+                exported_at: Some(TimestampMicros(22_000)),
+            }
+        );
+    }
+
+    #[test]
+    fn heartbeat_rtt_offset_metrics_snapshot_export_handoff_targets_future_dashboard() {
+        let commit = ServerHeartbeatRttOffsetRejectedCandidateMetricsCommitBoundary;
+        let mut state = ServerHeartbeatRttOffsetRejectedCandidateMetricsState::default();
+        commit.commit(
+            &mut state,
+            ServerHeartbeatRttOffsetRejectedCandidateMetricsCommitInput {
+                handoff: ServerHeartbeatRttOffsetRejectedCandidateMetricsHandoff {
+                    client_id: ClientId("client-3".to_string()),
+                    run_id: RunId("run-3".to_string()),
+                    reason: ServerHeartbeatRttOffsetOutlierReason::ClockOffsetDeltaExceeded {
+                        previous_micros: 1_000,
+                        candidate_micros: 1_300,
+                        delta_micros: 300,
+                        max_delta_micros: 100,
+                    },
+                    rejected_candidates_delta: 1,
+                    skipped_commits_delta: 1,
+                },
+                updated_at: Some(TimestampMicros(23_000)),
+            },
+        );
+        let export = ServerHeartbeatRttOffsetMetricsSnapshotExportHandoffBoundary::default();
+        let consumer = ServerHeartbeatRttOffsetMetricsSnapshotConsumerBoundary;
+
+        let result = export.export_for_consumer(
+            &state,
+            ServerHeartbeatRttOffsetMetricsSnapshotConsumer::FutureDashboard,
+            Some(TimestampMicros(23_100)),
+        );
+        let ServerHeartbeatRttOffsetMetricsSnapshotExportRuntimeResult::Handoff(handoff) = result
+        else {
+            panic!("non-empty metrics state should export handoff");
+        };
+        let consumed = consumer.consume(handoff);
+
+        let ServerHeartbeatRttOffsetMetricsSnapshotConsumerResult::FutureDashboard(input) =
+            consumed
+        else {
+            panic!("expected dashboard consumer input");
+        };
+        assert_eq!(input.exported_at, Some(TimestampMicros(23_100)));
+        assert_eq!(input.records.len(), 1);
+        assert_eq!(input.records[0].client_id, ClientId("client-3".to_string()));
+        assert_eq!(input.records[0].clock_offset_delta_rejections, 1);
+    }
+
+    #[test]
+    fn heartbeat_rtt_offset_metrics_snapshot_consumer_preserves_future_loop_handoff() {
+        let snapshot = ServerHeartbeatRttOffsetRejectedCandidateMetricsSnapshot {
+            records: vec![
+                ServerHeartbeatRttOffsetRejectedCandidateMetricsExportRecord {
+                    client_id: ClientId("client-4".to_string()),
+                    run_id: RunId("run-4".to_string()),
+                    total_rejected_candidates: 2,
+                    total_skipped_commits: 2,
+                    rtt_delta_rejections: 2,
+                    clock_offset_delta_rejections: 0,
+                    last_updated_at: Some(TimestampMicros(24_000)),
+                },
+            ],
+        };
+        let handoff = ServerHeartbeatRttOffsetMetricsSnapshotExportHandoff {
+            consumer: ServerHeartbeatRttOffsetMetricsSnapshotConsumer::FutureLoop,
+            exported_at: Some(TimestampMicros(24_100)),
+            snapshot,
+        };
+        let boundary = ServerHeartbeatRttOffsetMetricsSnapshotConsumerBoundary;
+
+        let result = boundary.consume(handoff);
+
+        let ServerHeartbeatRttOffsetMetricsSnapshotConsumerResult::FutureLoop(loop_handoff) =
+            result
+        else {
+            panic!("expected future loop handoff");
+        };
+        assert_eq!(loop_handoff.exported_at, Some(TimestampMicros(24_100)));
+        assert_eq!(loop_handoff.snapshot.records.len(), 1);
+        assert_eq!(
+            loop_handoff.snapshot.records[0].run_id,
+            RunId("run-4".to_string())
         );
     }
 

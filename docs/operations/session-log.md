@@ -5,6 +5,118 @@
 - Codex
 
 ### 今回の作業
+- RTT / offset metrics snapshot を future loop / dashboard へどう連携するかを整理した。
+- rejected candidate metrics snapshot を future loop / dashboard consumer へ渡す export handoff の最小境界を追加した。
+- dashboard 本体や completed metrics pipeline には進まず、consumer placeholder の型だけを追加した。
+
+### 変更ファイル
+- `apps/server/src/lib.rs`
+- `docs/architecture/system-design.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### 決定事項
+- metrics state は caller-owned in-memory aggregation のままにする。
+- snapshot export は現在の state を immutable record snapshot に変換するだけにする。
+- export handoff は consumer と `exported_at` を付けて future loop / dashboard へ渡す型だけを担当する。
+- empty snapshot は `NoRecords` として扱い、空 dashboard update や loop event は作らない。
+- dashboard consumer は input shape だけを受け取り、UI rendering / refresh transport / storage は future work に残す。
+
+### 実装したこと
+- `ServerHeartbeatRttOffsetMetricsSnapshotConsumer` を追加した。
+- `ServerHeartbeatRttOffsetMetricsSnapshotExportHandoff` を追加した。
+- `ServerHeartbeatRttOffsetMetricsSnapshotExportRuntimeResult` を追加した。
+- `ServerHeartbeatRttOffsetMetricsSnapshotExportHandoffBoundary::export_for_consumer` を追加した。
+- `ServerHeartbeatRttOffsetMetricsDashboardSnapshotInput` を追加した。
+- `ServerHeartbeatRttOffsetMetricsSnapshotConsumerBoundary::consume` を追加した。
+- empty snapshot、dashboard consumer、future loop consumer の単体テストを追加した。
+
+### 未実装 / 保留
+- completed metrics pipeline
+- dashboard 本体
+- dashboard refresh transport / storage
+- export cadence / retention / time-series history
+- JSON / file / network export
+- continuous heartbeat loop からの定期呼び出し
+
+### 次にやる候補
+- continuous heartbeat loop に進む前の送信間隔、停止条件、ログ出力範囲を整理する。
+- heartbeat timeout notice wakeup 実行本体に進む前の境界整理を続ける。
+- RTT / offset metrics snapshot の具体的な export cadence / dashboard refresh 方針を整理する。
+
+### TODO 更新
+- 現在位置に RTT / offset metrics snapshot loop / dashboard handoff 境界の完了を反映した。
+- 直近でやることを continuous heartbeat loop 前の境界整理、timeout notice wakeup 実行本体前の境界整理、metrics snapshot の export cadence / dashboard refresh 方針へ更新した。
+- heartbeat / 検証タスクに metrics snapshot loop / dashboard handoff boundary と関連単体テストの完了を追加した。
+
+### 検証
+- `cargo fmt`
+- `cargo fmt --check`
+- `cargo test -p stream-sync-server heartbeat_rtt_offset_metrics_snapshot`
+- `cargo check --workspace`
+
+---
+
+## 2026-04-22
+### 種別
+- Codex
+
+### 今回の作業
+- heartbeat timeout loop tick の notice queue storage / send wakeup 方針を整理した。
+- timeout apply が作る `AuthExpired` notice handoff を caller-owned outbound queue collection へ保存する最小境界を追加した。
+- notice が実際に queue へ保存された場合だけ future send loop wakeup placeholder を返す形にした。
+
+### 変更ファイル
+- `apps/server/src/lib.rs`
+- `docs/architecture/system-design.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### 決定事項
+- timeout apply は registry invalidation / timeout log / typed notice handoff 作成までを担当する。
+- notice queue storage は apply result を受け取り、`notice_handoff.queue_item` だけを caller-owned queue collection へ保存する。
+- send wakeup は `ServerHeartbeatTimeoutNoticeSendWakeupPlan` の typed placeholder に留める。
+- wakeup は notice の storage が成功した場合だけ request し、NoNotice / dropped の場合は request しない。
+- 実際の wakeup 実行、send loop 起動、encode / UDP send、retry は future work に残す。
+
+### 実装したこと
+- `ServerHeartbeatTimeoutNoticeSendWakeupPlan` と wakeup reason を追加した。
+- `ServerHeartbeatTimeoutNoticeQueueStorageResult` / Stored / Dropped result 型を追加した。
+- `ServerHeartbeatTimeoutNoticeQueueStorageBoundary::store_notice` を追加した。
+- timeout notice storage 成功時に `QueuedOutboundItem` を `ServerOutboundQueueCollection` へ push する最小処理を追加した。
+- notice storage 成功時と no-notice 時の単体テストを追加した。
+
+### 未実装 / 保留
+- completed continuous heartbeat loop
+- 実際の send wakeup 通知本体
+- send loop scheduling / retry / requeue
+- notice duplicate suppression / rate limit
+- file sink open / process-wide logger
+- 複数 client timeout scan
+
+### 次にやる候補
+- RTT / offset metrics snapshot の future loop / dashboard 連携方針を整理する。
+- continuous heartbeat loop に進む前の送信間隔、停止条件、ログ出力範囲を整理する。
+- heartbeat timeout notice wakeup 実行本体に進む前の境界整理を続ける。
+
+### TODO 更新
+- 現在位置に heartbeat timeout notice queue storage / send wakeup plan 境界の完了を反映した。
+- 直近でやることを RTT / offset metrics snapshot の future loop / dashboard 連携、continuous heartbeat loop 前の境界整理、notice wakeup 実行本体前の境界整理へ更新した。
+- heartbeat / 検証タスクに notice queue storage / send wakeup boundary と関連単体テストの完了を追加した。
+
+### 検証
+- `cargo fmt`
+- `cargo fmt --check`
+- `cargo test -p stream-sync-server heartbeat_timeout_notice_queue_storage`
+- `cargo check --workspace`
+
+---
+
+## 2026-04-22
+### 種別
+- Codex
+
+### 今回の作業
 - RTT / offset rejected candidate metrics の storage / aggregation / export 方針を整理した。
 - rejected candidate handoff が作る metrics counter delta を、caller-owned in-memory state へ集約する最小境界を追加した。
 - future exporter / dashboard が読むための snapshot export placeholder を追加した。
