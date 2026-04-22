@@ -66,9 +66,44 @@ fn main() {
                 }
             }
         }
+        Some("--auth-heartbeat-stats-poc-once") => {
+            let config_path = args
+                .next()
+                .unwrap_or_else(|| "configs/examples/client.accepted.example.toml".to_string());
+            match stream_sync_client::run_auth_heartbeat_stats_poc_once_from_path(&config_path) {
+                Ok(outcome) => {
+                    let heartbeat = &outcome.heartbeat;
+                    println!(
+                        "auth heartbeat stats PoC sent AuthRequest {} bytes to {} and received AuthResponse {} bytes from {}; accepted={} reason_code={:?}; sent Heartbeat {} bytes and received HeartbeatAck {} bytes from {}; sent ClientStats {} bytes with HeartbeatAckObservation; client_id={} run_id={} protocol_version={} heartbeat_sent_at={} echoed_sent_at={} server_received_at={} server_sent_at={} client_received_at={}",
+                        heartbeat.auth_request_bytes_sent,
+                        heartbeat.destination,
+                        heartbeat.auth_response_bytes.len(),
+                        heartbeat.auth_response_source,
+                        heartbeat.auth_response.accepted,
+                        heartbeat.auth_response.reason_code,
+                        heartbeat.heartbeat_bytes_sent,
+                        heartbeat.heartbeat_ack_bytes.len(),
+                        heartbeat.heartbeat_ack_source,
+                        outcome.client_stats_bytes_sent,
+                        heartbeat.request.client_id.0,
+                        heartbeat.request.run_id.0,
+                        heartbeat.request.protocol_version.0,
+                        heartbeat.heartbeat.sent_at.0,
+                        outcome.heartbeat_ack_observation.echoed_sent_at.0,
+                        outcome.heartbeat_ack_observation.server_received_at.0,
+                        outcome.heartbeat_ack_observation.server_sent_at.0,
+                        outcome.heartbeat_ack_observation.client_received_at.0
+                    );
+                }
+                Err(error) => {
+                    eprintln!("auth heartbeat stats PoC failed: {error:?}");
+                    std::process::exit(1);
+                }
+            }
+        }
         _ => {
             println!(
-                "stream-sync-client scaffold; use --auth-request-poc-once [config-path] or --auth-heartbeat-poc-once [config-path]"
+                "stream-sync-client scaffold; use --auth-request-poc-once [config-path], --auth-heartbeat-poc-once [config-path], or --auth-heartbeat-stats-poc-once [config-path]"
             );
         }
     }

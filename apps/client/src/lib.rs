@@ -7,10 +7,11 @@ use std::{
 
 use stream_sync_protocol::{
     decode_fixed_header, decode_payload_by_message_type, validate_protocol_version, AppVersion,
-    AuthRequest, AuthResponse, ClientId, DecodeContext, EncodeContext, Heartbeat, HeartbeatAck,
-    HeartbeatAckObservation, HeartbeatAckObservationBoundary, HeartbeatObservationCarrier,
-    HeartbeatObservationCarrierBoundary, MessageEncoder, MessageType, ProtocolError,
-    ProtocolMessage, ProtocolMessageEncoderBoundary, ProtocolVersion, RunId, TimestampMicros,
+    AuthRequest, AuthResponse, ClientId, ClientStats, DecodeContext, EncodeContext, Heartbeat,
+    HeartbeatAck, HeartbeatAckObservation, HeartbeatAckObservationBoundary,
+    HeartbeatObservationCarrier, HeartbeatObservationCarrierBoundary, MessageEncoder, MessageType,
+    ProtocolError, ProtocolMessage, ProtocolMessageEncoderBoundary, ProtocolVersion, RunId,
+    TimestampMicros,
 };
 
 const DEFAULT_AUTH_RESPONSE_TIMEOUT_MS: u64 = 5_000;
@@ -257,6 +258,156 @@ pub fn run_auth_heartbeat_poc_once_from_path(
     ClientAuthHeartbeatPocLauncher::default().run_once_from_path(path)
 }
 
+/// One-shot client-side auth + heartbeat + stats observation PoC.
+///
+/// This keeps a single UDP socket, sends one `AuthRequest`, one `Heartbeat`,
+/// observes one `HeartbeatAck`, wraps that observation in the `ClientStats`
+/// carrier, and sends one `ClientStats` packet. It does not start continuous
+/// heartbeat/stats loops, send video, retry, fragment, encrypt, or introduce
+/// an async runtime.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct ClientAuthHeartbeatStatsPocLauncher {
+    encoder: ProtocolMessageEncoderBoundary,
+}
+
+impl ClientAuthHeartbeatStatsPocLauncher {
+    pub fn load_startup_config_from_path(
+        &self,
+        path: impl AsRef<Path>,
+    ) -> Result<ClientAuthHeartbeatPocStartupConfig, ClientAuthHeartbeatPocError> {
+        ClientAuthHeartbeatPocLauncher::default().load_startup_config_from_path(path)
+    }
+
+    pub fn run_once_from_path(
+        &self,
+        path: impl AsRef<Path>,
+    ) -> Result<ClientAuthHeartbeatStatsPocOutcome, ClientAuthHeartbeatPocError> {
+        let startup_config = self.load_startup_config_from_path(path)?;
+        self.run_once(startup_config)
+    }
+
+    pub fn run_once(
+        &self,
+        startup_config: ClientAuthHeartbeatPocStartupConfig,
+    ) -> Result<ClientAuthHeartbeatStatsPocOutcome, ClientAuthHeartbeatPocError> {
+        let socket = UdpSocket::bind(ephemeral_bind_address(startup_config.destination))
+            .map_err(|error| ClientAuthHeartbeatPocError::Bind(error.kind()))?;
+        socket
+            .set_read_timeout(Some(Duration::from_millis(
+                startup_config.response_timeout_ms,
+            )))
+            .map_err(|error| ClientAuthHeartbeatPocError::SetReadTimeout(error.kind()))?;
+
+        let mut auth_request_bytes = Vec::new();
+        let context = EncodeContext {
+            protocol_version: startup_config.request.protocol_version,
+        };
+        self.encoder
+            .encode_message(
+                context,
+                &ProtocolMessage::AuthRequest(startup_config.request.clone()),
+                &mut auth_request_bytes,
+            )
+            .map_err(ClientAuthHeartbeatPocError::Encode)?;
+        let auth_request_bytes_sent = socket
+            .send_to(&auth_request_bytes, startup_config.destination)
+            .map_err(|error| ClientAuthHeartbeatPocError::Send(error.kind()))?;
+
+        let (auth_response_source, auth_response_bytes, auth_response) =
+            receive_auth_response(&socket, startup_config.request.protocol_version)
+                .map_err(ClientAuthHeartbeatPocError::AuthResponse)?;
+        if !auth_response.accepted {
+            return Err(ClientAuthHeartbeatPocError::AuthRejected(auth_response));
+        }
+
+        let sent_at = current_timestamp_micros();
+        let heartbeat = Heartbeat {
+            message_type: MessageType::Heartbeat,
+            protocol_version: startup_config.request.protocol_version,
+            client_id: startup_config.request.client_id.clone(),
+            run_id: startup_config.request.run_id.clone(),
+            sent_at,
+            local_time: Some(sent_at),
+            short_status: startup_config.heartbeat_short_status,
+        };
+        let mut heartbeat_bytes = Vec::new();
+        self.encoder
+            .encode_message(
+                context,
+                &ProtocolMessage::Heartbeat(heartbeat.clone()),
+                &mut heartbeat_bytes,
+            )
+            .map_err(ClientAuthHeartbeatPocError::Encode)?;
+        let heartbeat_bytes_sent = socket
+            .send_to(&heartbeat_bytes, startup_config.destination)
+            .map_err(|error| ClientAuthHeartbeatPocError::Send(error.kind()))?;
+
+        let (heartbeat_ack_source, heartbeat_ack_bytes, heartbeat_ack) =
+            receive_heartbeat_ack(&socket, heartbeat.protocol_version)
+                .map_err(ClientAuthHeartbeatPocError::HeartbeatAck)?;
+        let heartbeat_ack_client_received_at = current_timestamp_micros();
+        let heartbeat_ack_observation = ClientHeartbeatAckObservationBoundary::default()
+            .observe_ack(&heartbeat_ack, heartbeat_ack_client_received_at);
+        let heartbeat_observation_carrier = ClientHeartbeatObservationCarrierBoundary::default()
+            .build_client_stats_carrier(
+                heartbeat.protocol_version,
+                heartbeat_ack_observation.clone(),
+            );
+        let client_stats = ClientStats {
+            message_type: MessageType::ClientStats,
+            protocol_version: heartbeat_observation_carrier.protocol_version,
+            client_id: heartbeat_observation_carrier.observation.client_id.clone(),
+            run_id: heartbeat_observation_carrier.observation.run_id.clone(),
+            sent_at: current_timestamp_micros(),
+            capture_fps: 0,
+            dropped_frames: 0,
+            bitrate_kbps: 0,
+            heartbeat_observation: Some(heartbeat_observation_carrier.observation.clone()),
+        };
+        let mut client_stats_bytes = Vec::new();
+        self.encoder
+            .encode_message(
+                context,
+                &ProtocolMessage::ClientStats(client_stats.clone()),
+                &mut client_stats_bytes,
+            )
+            .map_err(ClientAuthHeartbeatPocError::Encode)?;
+        let client_stats_bytes_sent = socket
+            .send_to(&client_stats_bytes, startup_config.destination)
+            .map_err(|error| ClientAuthHeartbeatPocError::Send(error.kind()))?;
+
+        Ok(ClientAuthHeartbeatStatsPocOutcome {
+            heartbeat: ClientAuthHeartbeatPocOutcome {
+                destination: startup_config.destination,
+                request: startup_config.request,
+                auth_request_bytes,
+                auth_request_bytes_sent,
+                auth_response_source,
+                auth_response_bytes,
+                auth_response,
+                heartbeat,
+                heartbeat_bytes,
+                heartbeat_bytes_sent,
+                heartbeat_ack_source,
+                heartbeat_ack_bytes,
+                heartbeat_ack,
+            },
+            heartbeat_ack_observation,
+            heartbeat_observation_carrier,
+            client_stats,
+            client_stats_bytes,
+            client_stats_bytes_sent,
+        })
+    }
+}
+
+/// Convenience entry point for the client binary and manual PoC wiring.
+pub fn run_auth_heartbeat_stats_poc_once_from_path(
+    path: impl AsRef<Path>,
+) -> Result<ClientAuthHeartbeatStatsPocOutcome, ClientAuthHeartbeatPocError> {
+    ClientAuthHeartbeatStatsPocLauncher::default().run_once_from_path(path)
+}
+
 /// Client boundary for observing one received HeartbeatAck.
 ///
 /// This captures the client-side receive timestamp and creates a typed
@@ -342,6 +493,17 @@ pub struct ClientAuthHeartbeatPocOutcome {
     pub heartbeat_ack_source: SocketAddr,
     pub heartbeat_ack_bytes: Vec<u8>,
     pub heartbeat_ack: HeartbeatAck,
+}
+
+/// Result of auth + heartbeat round trip followed by one ClientStats observation send.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClientAuthHeartbeatStatsPocOutcome {
+    pub heartbeat: ClientAuthHeartbeatPocOutcome,
+    pub heartbeat_ack_observation: HeartbeatAckObservation,
+    pub heartbeat_observation_carrier: HeartbeatObservationCarrier,
+    pub client_stats: ClientStats,
+    pub client_stats_bytes: Vec<u8>,
+    pub client_stats_bytes_sent: usize,
 }
 
 /// Error from the one-shot client AuthRequest PoC.
@@ -680,8 +842,8 @@ fn strip_toml_comment(line: &str) -> &str {
 mod tests {
     use super::*;
     use stream_sync_protocol::{
-        decode_auth_request_payload, decode_fixed_header, decode_heartbeat_payload,
-        AuthResponseReasonCode,
+        decode_auth_request_payload, decode_client_stats_payload, decode_fixed_header,
+        decode_heartbeat_payload, AuthResponseReasonCode,
     };
 
     #[test]
@@ -897,6 +1059,132 @@ mod tests {
         assert_eq!(
             outcome.heartbeat_ack.echoed_sent_at,
             outcome.heartbeat.sent_at
+        );
+    }
+
+    #[test]
+    fn client_auth_heartbeat_stats_poc_sends_observation_in_client_stats_once() {
+        let receiver = UdpSocket::bind("127.0.0.1:0").expect("receiver should bind");
+        receiver
+            .set_read_timeout(Some(std::time::Duration::from_secs(1)))
+            .expect("read timeout should be set");
+        let destination = receiver.local_addr().expect("local addr should exist");
+        let request = AuthRequest {
+            message_type: MessageType::AuthRequest,
+            protocol_version: ProtocolVersion(2),
+            client_id: ClientId("client-1".to_string()),
+            run_id: RunId("run-1".to_string()),
+            app_version: AppVersion("0.1.0".to_string()),
+            shared_token: "shared-secret".to_string(),
+            display_name: Some("Alice".to_string()),
+            capabilities: Vec::new(),
+            requested_video_profile: None,
+        };
+        let config = ClientAuthHeartbeatPocStartupConfig {
+            destination,
+            response_timeout_ms: 1_000,
+            request: request.clone(),
+            heartbeat_short_status: Some("test-once".to_string()),
+        };
+        let response = AuthResponse {
+            message_type: MessageType::AuthResponse,
+            protocol_version: ProtocolVersion(2),
+            client_id: request.client_id.clone(),
+            run_id: request.run_id.clone(),
+            accepted: true,
+            reason_code: AuthResponseReasonCode::Ok,
+            message: None,
+            server_time: Some(TimestampMicros(2_000_000)),
+            expected_protocol_version: None,
+        };
+        let response_for_thread = response.clone();
+        let server = std::thread::spawn(move || {
+            let mut buffer = [0_u8; 2048];
+            let (auth_len, source) = receiver
+                .recv_from(&mut buffer)
+                .expect("receiver should get auth request");
+            let decoded_auth =
+                decode_fixed_header(&buffer[..auth_len]).expect("auth fixed header should decode");
+            let decoded_request =
+                decode_auth_request_payload(decoded_auth.header, decoded_auth.payload)
+                    .expect("auth request should decode");
+            assert_eq!(decoded_request, request);
+
+            let mut response_bytes = Vec::new();
+            ProtocolMessageEncoderBoundary
+                .encode_message(
+                    EncodeContext {
+                        protocol_version: response_for_thread.protocol_version,
+                    },
+                    &ProtocolMessage::AuthResponse(response_for_thread),
+                    &mut response_bytes,
+                )
+                .expect("auth response should encode");
+            receiver
+                .send_to(&response_bytes, source)
+                .expect("auth response should send");
+
+            let (heartbeat_len, heartbeat_source) = receiver
+                .recv_from(&mut buffer)
+                .expect("receiver should get heartbeat");
+            assert_eq!(heartbeat_source, source);
+            let decoded_heartbeat = decode_fixed_header(&buffer[..heartbeat_len])
+                .expect("heartbeat fixed header should decode");
+            let heartbeat =
+                decode_heartbeat_payload(decoded_heartbeat.header, decoded_heartbeat.payload)
+                    .expect("heartbeat should decode");
+
+            let ack = HeartbeatAck {
+                message_type: MessageType::HeartbeatAck,
+                protocol_version: ProtocolVersion(2),
+                client_id: heartbeat.client_id,
+                run_id: heartbeat.run_id,
+                echoed_sent_at: heartbeat.sent_at,
+                server_received_at: TimestampMicros(3_000_100),
+                server_sent_at: TimestampMicros(3_000_200),
+            };
+            let mut ack_bytes = Vec::new();
+            ProtocolMessageEncoderBoundary
+                .encode_message(
+                    EncodeContext {
+                        protocol_version: ack.protocol_version,
+                    },
+                    &ProtocolMessage::HeartbeatAck(ack.clone()),
+                    &mut ack_bytes,
+                )
+                .expect("heartbeat ack should encode");
+            receiver
+                .send_to(&ack_bytes, source)
+                .expect("heartbeat ack should send");
+
+            let (stats_len, stats_source) = receiver
+                .recv_from(&mut buffer)
+                .expect("receiver should get client stats");
+            assert_eq!(stats_source, source);
+            let decoded_stats = decode_fixed_header(&buffer[..stats_len])
+                .expect("client stats fixed header should decode");
+            let stats = decode_client_stats_payload(decoded_stats.header, decoded_stats.payload)
+                .expect("client stats should decode");
+            (stats_len, ack, stats)
+        });
+
+        let outcome = ClientAuthHeartbeatStatsPocLauncher::default()
+            .run_once(config)
+            .expect("auth heartbeat stats should complete");
+
+        let (stats_len, ack, stats) = server.join().expect("server thread should finish");
+        assert_eq!(outcome.client_stats_bytes_sent, stats_len);
+        assert_eq!(outcome.heartbeat.heartbeat_ack, ack);
+        assert_eq!(stats.capture_fps, 0);
+        assert_eq!(stats.dropped_frames, 0);
+        assert_eq!(stats.bitrate_kbps, 0);
+        assert_eq!(
+            stats.heartbeat_observation,
+            Some(outcome.heartbeat_ack_observation.clone())
+        );
+        assert_eq!(
+            outcome.heartbeat_observation_carrier.observation,
+            outcome.heartbeat_ack_observation
         );
     }
 

@@ -274,6 +274,111 @@ server stderr 観測結果:
 - server が登録済み source からの `Heartbeat` を accepted として処理し、`HeartbeatAck` 73 bytes を 1 回返せる。
 - client stdout で `heartbeat_sent_at` と `echoed_sent_at` が一致する。
 
+## `--receive-send-three` auth-heartbeat-stats 手動確認手順
+
+accepted auth、`Heartbeat` / `HeartbeatAck` の後、client が `HeartbeatAckObservation` を `ClientStats` の optional block に載せて 1 回返す確認手順です。
+
+この経路は `ServerReceiveSendThreeIterationLauncher` から
+`ServerControllerReceiveSendRuntimeBoundary` を 3 回だけ呼びます。1 回目で
+accepted auth と `AuthenticatedSenderRegistry` 登録、2 回目で `HeartbeatAck`
+送信と timebase plan 保持、3 回目で `ClientStats` から observation を取り出し、
+`ServerHeartbeatObservationReturnBoundary` 経由で stateless RTT / offset
+calculator へ渡します。継続 receive/send loop、continuous heartbeat loop、metrics
+state commit、durable RTT / offset state commit、retry / requeue、file sink open、
+process-wide logger は含みません。
+
+### 実行コマンド
+
+server:
+
+```powershell
+cargo run -p stream-sync-server -- --receive-send-three configs/examples/server.example.toml
+```
+
+client:
+
+```powershell
+cargo run -p stream-sync-client -- --auth-heartbeat-stats-poc-once configs/examples/client.accepted.example.toml
+```
+
+### 成功時の見方
+
+client stdout は、`HeartbeatAckObservation` を載せた `ClientStats` を 1 回送ったことを表示します。
+
+```text
+auth heartbeat stats PoC sent AuthRequest <bytes> bytes to 127.0.0.1:5000 and received AuthResponse <bytes> bytes from 127.0.0.1:5000; accepted=true reason_code=Ok; sent Heartbeat <bytes> bytes and received HeartbeatAck <bytes> bytes from 127.0.0.1:5000; sent ClientStats <bytes> bytes with HeartbeatAckObservation; client_id=player1 run_id=streamsync-dev-session protocol_version=1 heartbeat_sent_at=<client-sent-at> echoed_sent_at=<echoed-sent-at> server_received_at=<server-received-at> server_sent_at=<server-sent-at> client_received_at=<client-received-at>
+```
+
+server stdout は、3 packet を処理し、3 回目の `ClientStats` では送信しないこと、stateless RTT / offset candidate を計算したことを表示します。
+
+```text
+receive/send three-iteration runtime handled three packets on 0.0.0.0:5000; first_sent_bytes=<auth-response-bytes> second_sent_bytes=<heartbeat-ack-bytes> third_sent_bytes=0 registered_clients=1 heartbeat_rtt_micros=<rtt> heartbeat_server_processing_micros=<server-processing> heartbeat_clock_offset_micros=<offset>
+```
+
+server stderr の要点:
+
+```json
+{"event_name":"server.receive_loop","source":"127.0.0.1:<client-port>","outcome":"Accepted","packet_len":<bytes>,"message_type":"AuthRequest","client_id":"player1","rejection_reason":null,"timestamp":<timestamp>}
+{"event_name":"server.auth_result","run_id":"streamsync-dev-session","client_id":"player1","source":"127.0.0.1:<client-port>","accepted":true,"reason_code":"Ok","message":null,"app_version":"0.1.0","protocol_version":1,"timestamp":<timestamp>,"expected_protocol_version":null}
+{"event_name":"server.send","outcome":"Success","run_id":"streamsync-dev-session","client_id":"player1","destination":"127.0.0.1:<client-port>","message_type":"AuthResponse","stage":"SocketSend","encoded_len":<bytes>,"bytes_sent":<bytes>,"failure":null,"disposition":null,"timestamp":<timestamp>}
+{"event_name":"server.receive_loop","source":"127.0.0.1:<client-port>","outcome":"Accepted","packet_len":<bytes>,"message_type":"Heartbeat","client_id":"player1","rejection_reason":null,"timestamp":<timestamp>}
+{"event_name":"server.send","outcome":"Success","run_id":"streamsync-dev-session","client_id":"player1","destination":"127.0.0.1:<client-port>","message_type":"HeartbeatAck","stage":"SocketSend","encoded_len":<bytes>,"bytes_sent":<bytes>,"failure":null,"disposition":null,"timestamp":<timestamp>}
+{"event_name":"server.receive_loop","source":"127.0.0.1:<client-port>","outcome":"Accepted","packet_len":<bytes>,"message_type":"ClientStats","client_id":"player1","rejection_reason":null,"timestamp":<timestamp>}
+```
+
+確認の中心は、client が `HeartbeatAck` 受信後に `HeartbeatAckObservation` を `ClientStats` に載せて 1 回だけ返すこと、server が登録済み source からの `ClientStats` を accepted として処理し、observation を既存 timebase plan と照合して stateless calculator へ渡せることです。
+
+### 2026-04-22 Codex 環境 auth-heartbeat-stats accepted path 成功
+
+結果: 成功。
+
+事前 build:
+
+```powershell
+cargo build -p stream-sync-server -p stream-sync-client
+```
+
+server:
+
+```powershell
+target/debug/stream-sync-server.exe --receive-send-three configs/examples/server.example.toml
+```
+
+client:
+
+```powershell
+target/debug/stream-sync-client.exe --auth-heartbeat-stats-poc-once configs/examples/client.accepted.example.toml
+```
+
+client stdout 観測結果:
+
+```text
+auth heartbeat stats PoC sent AuthRequest 96 bytes to 127.0.0.1:5000 and received AuthResponse 55 bytes from 127.0.0.1:5000; accepted=true reason_code=Ok; sent Heartbeat 77 bytes and received HeartbeatAck 73 bytes from 127.0.0.1:5000; sent ClientStats 106 bytes with HeartbeatAckObservation; client_id=player1 run_id=streamsync-dev-session protocol_version=1 heartbeat_sent_at=<client-sent-at> echoed_sent_at=<same-client-sent-at> server_received_at=<server-received-at> server_sent_at=<server-sent-at> client_received_at=<client-received-at>
+```
+
+server stdout 観測結果:
+
+```text
+receive/send three-iteration runtime handled three packets on 0.0.0.0:5000; first_sent_bytes=55 second_sent_bytes=73 third_sent_bytes=0 registered_clients=1 heartbeat_rtt_micros=<rtt> heartbeat_server_processing_micros=0 heartbeat_clock_offset_micros=<offset>
+```
+
+server stderr 観測結果:
+
+```json
+{"event_name":"server.receive_loop","source":"127.0.0.1:<client-port>","outcome":"Accepted","packet_len":96,"message_type":"AuthRequest","client_id":"player1","rejection_reason":null,"timestamp":<timestamp>}
+{"event_name":"server.auth_result","run_id":"streamsync-dev-session","client_id":"player1","source":"127.0.0.1:<client-port>","accepted":true,"reason_code":"Ok","message":null,"app_version":"0.1.0","protocol_version":1,"timestamp":<timestamp>,"expected_protocol_version":null}
+{"event_name":"server.send","outcome":"Success","run_id":"streamsync-dev-session","client_id":"player1","destination":"127.0.0.1:<client-port>","message_type":"AuthResponse","stage":"SocketSend","encoded_len":55,"bytes_sent":55,"failure":null,"disposition":null,"timestamp":<timestamp>}
+{"event_name":"server.receive_loop","source":"127.0.0.1:<client-port>","outcome":"Accepted","packet_len":77,"message_type":"Heartbeat","client_id":"player1","rejection_reason":null,"timestamp":<timestamp>}
+{"event_name":"server.send","outcome":"Success","run_id":"streamsync-dev-session","client_id":"player1","destination":"127.0.0.1:<client-port>","message_type":"HeartbeatAck","stage":"SocketSend","encoded_len":73,"bytes_sent":73,"failure":null,"disposition":null,"timestamp":<timestamp>}
+{"event_name":"server.receive_loop","source":"127.0.0.1:<client-port>","outcome":"Accepted","packet_len":106,"message_type":"ClientStats","client_id":"player1","rejection_reason":null,"timestamp":<timestamp>}
+```
+
+確認できたこと:
+
+- client が `HeartbeatAck` 受信後に `HeartbeatAckObservation` を `ClientStats` optional block に載せて 1 回送信できる。
+- server が同じ登録済み source からの `ClientStats` を accepted として処理できる。
+- server が returned observation を heartbeat timebase plan と照合し、stateless RTT / offset calculator へ渡して stdout に candidate を表示できる。
+
 ## 成功時の見方
 
 client 側には、送信 byte 数、destination、`client_id`、`run_id`、`protocol_version` が表示されます。

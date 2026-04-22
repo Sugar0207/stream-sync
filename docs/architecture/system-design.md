@@ -1150,6 +1150,40 @@ Manual check shape:
    with non-zero sent bytes, and the client stdout displays the received
    `HeartbeatAck` timestamps.
 
+Completed three-iteration auth-then-heartbeat-observation CLI / config entry:
+
+1. `ServerReceiveSendThreeIterationLauncher` loads the same server TOML shape as
+   `--receive-send-once`.
+2. The launcher binds one UDP socket and keeps one in-memory
+   `AuthenticatedSenderRegistry` and `ServerOutboundQueueCollection` across
+   exactly three controller receive/send runtime calls.
+3. The expected manual shape is accepted auth request first, one `Heartbeat`
+   from the same client UDP source second, then one `ClientStats` packet with
+   `HeartbeatAckObservation` third.
+4. The first iteration can send `AuthResponse`; the second iteration can send
+   `HeartbeatAck` and preserves the heartbeat `timebase_plan`; the third
+   iteration extracts `HeartbeatAckObservation` from `ClientStats`.
+5. `ServerHeartbeatObservationReturnBoundary` connects the preserved
+   `ServerHeartbeatAckHandoff` and returned `ServerClientStatsHandlerInput` to
+   `ServerHeartbeatRttOffsetCalculationBoundary`.
+6. `apps/server` exposes this through
+   `--receive-send-three [config-path]`. It calculates one stateless RTT /
+   offset candidate for stdout, but does not commit heartbeat state, smooth
+   offset, run a continuous loop, retry, requeue, open file sinks, or install a
+   global logger.
+
+Manual check shape:
+
+1. In one terminal, run:
+   `cargo run -p stream-sync-server -- --receive-send-three configs/examples/server.example.toml`
+2. In another terminal, run:
+   `cargo run -p stream-sync-client -- --auth-heartbeat-stats-poc-once configs/examples/client.accepted.example.toml`
+3. Expected result: server stderr includes receive / auth / send JSON Lines for
+   `AuthResponse`, `HeartbeatAck`, and the returned `ClientStats`; server
+   stdout reports three handled packets plus one stateless heartbeat RTT /
+   offset calculation; client stdout displays the sent `ClientStats` observation
+   fields.
+
 ### 5.7 AuthResponse PoC one-shot startup step
 
 AuthResponse PoC startup uses the existing boundaries as a one-packet
@@ -2363,9 +2397,9 @@ run correlation and echoed `sent_at` before calling the stateless calculator.
 ### Heartbeat Client Ack Observation Flow
 
 The client ack observation flow returns the missing `client_received_at`
-timestamp to the server-side timebase calculator. This is a typed flow design
-only; the current code does not add a wire payload, continuous heartbeat loop,
-or client-to-server report sender.
+timestamp to the server-side timebase calculator. The current implementation
+supports one explicit client-to-server report through `ClientStats`; it does
+not add a continuous heartbeat loop or commit estimator state.
 
 Flow:
 
@@ -2379,9 +2413,8 @@ Flow:
    `client_received_at` in the client clock domain.
 4. Client creates `HeartbeatAckObservation` from the received ack plus
    `client_received_at`.
-5. A future client-to-server report path sends that observation back to the
-   server. The carrier is intentionally not fixed yet; likely candidates are a
-   small extension to `ClientStats` or a dedicated later message.
+5. The one-shot client report path sends that observation back to the server in
+   the optional heartbeat observation block of `ClientStats`.
 6. Server converts the protocol-level observation into
    `ServerHeartbeatClientAckObservation`.
 7. Server matches it with the stored `ServerHeartbeatTimebasePlan` using
@@ -2407,9 +2440,11 @@ Responsibility split:
 Current code reflects this with
 `protocol::HeartbeatAckObservationBoundary`,
 `apps/client::ClientHeartbeatAckObservationBoundary`, and
-`apps/server::ServerHeartbeatClientAckObservationBoundary`. The actual report
-carrier, send / receive loop integration, state update, and smoothing remain
-future work.
+`apps/server::ServerHeartbeatClientAckObservationBoundary`. The one-shot report
+sender is `apps/client::ClientAuthHeartbeatStatsPocLauncher`, and the one-shot
+server bridge is `apps/server::ServerHeartbeatObservationReturnBoundary`.
+Continuous report loops, durable state update, and smoothing remain future
+work.
 
 ### Heartbeat Observation Carrier
 
@@ -2425,7 +2460,7 @@ Message flow:
 1. Client observes `HeartbeatAck` and creates `HeartbeatAckObservation`.
 2. Client wraps that observation in a typed `HeartbeatObservationCarrier` with
    `message_type = ClientStats`.
-3. A future `ClientStats` sender uses the protocol encoder and sends the
+3. The one-shot `ClientStats` sender uses the protocol encoder and sends the
    carrier to the server.
 4. Server receives and decodes `ClientStats`.
 5. Server extracts the optional heartbeat observation block and maps it to
@@ -2472,8 +2507,11 @@ Current code reflects this with `protocol::HeartbeatObservationCarrier`,
 `apps/client::ClientHeartbeatObservationCarrierBoundary`, and
 `apps/server::ServerHeartbeatObservationCarrierBoundary`.
 `crates/protocol` also implements minimal `ClientStats` payload encode/decode
-and `ProtocolMessageEncoderBoundary` support. UDP send/receive connection,
-server route / handler wiring, and timebase state update remain future work.
+and `ProtocolMessageEncoderBoundary` support. `apps/client` can send one
+`ClientStats` observation through `--auth-heartbeat-stats-poc-once`, and
+`apps/server` can receive it through `--receive-send-three` and pass it to the
+stateless RTT / offset calculator. Continuous stats send loops, durable
+timebase state update, and smoothing remain future work.
 `protocol::ClientStatsPayloadPlanBoundary` records the fixed numeric length and
 optional observation block length used by the encoder/decoder.
 

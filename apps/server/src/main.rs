@@ -122,9 +122,43 @@ fn main() {
                 }
             }
         }
+        Some("--receive-send-three") => {
+            let config_path = args
+                .next()
+                .unwrap_or_else(|| "configs/examples/server.example.toml".to_string());
+            let launcher = stream_sync_server::ServerReceiveSendThreeIterationLauncher::default();
+            match launcher.run_three_from_path_with_writers(
+                &config_path,
+                std::io::stderr(),
+                std::io::stderr(),
+                std::io::stderr(),
+                std::io::stderr(),
+            ) {
+                Ok(outcome) => {
+                    let first_sent = sent_bytes(&outcome.first);
+                    let second_sent = sent_bytes(&outcome.second);
+                    let third_sent = sent_bytes(&outcome.third);
+                    println!(
+                        "receive/send three-iteration runtime handled three packets on {}; first_sent_bytes={} second_sent_bytes={} third_sent_bytes={} registered_clients={} heartbeat_rtt_micros={} heartbeat_server_processing_micros={} heartbeat_clock_offset_micros={}",
+                        outcome.bind_address,
+                        first_sent,
+                        second_sent,
+                        third_sent,
+                        outcome.registry.entries().count(),
+                        outcome.heartbeat_calculation.estimate.rtt_micros,
+                        outcome.heartbeat_calculation.estimate.server_processing_micros,
+                        outcome.heartbeat_calculation.estimate.clock_offset_micros
+                    );
+                }
+                Err(error) => {
+                    eprintln!("receive/send three-iteration runtime failed: {error:?}");
+                    std::process::exit(1);
+                }
+            }
+        }
         _ => {
             println!(
-                "stream-sync-server scaffold; use --auth-response-poc-once [config-path], --receive-send-once [config-path], or --receive-send-twice [config-path]"
+                "stream-sync-server scaffold; use --auth-response-poc-once [config-path], --receive-send-once [config-path], --receive-send-twice [config-path], or --receive-send-three [config-path]"
             );
         }
     }

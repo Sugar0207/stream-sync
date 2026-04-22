@@ -5,6 +5,77 @@
 - Codex
 
 ### 今回の作業
+- `HeartbeatAck` 受信後に client 側で `HeartbeatAckObservation` を作り、`ClientStats` の optional heartbeat observation block に載せて 1 回送信する入口を追加した。
+- server 側で returned `ClientStats` から observation を取り出し、直前の heartbeat timebase plan と照合して stateless RTT / offset calculator へ渡す最小接続を追加した。
+- auth -> heartbeat -> stats observation return を 3 packet だけ処理する manual check 入口を追加した。
+
+### 変更ファイル
+- `apps/client/src/lib.rs`
+- `apps/client/src/main.rs`
+- `apps/server/src/lib.rs`
+- `apps/server/src/main.rs`
+- `docs/architecture/system-design.md`
+- `docs/operations/auth-roundtrip-manual-check.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### 決定事項
+- observation return の手動確認入口は continuous loop ではなく、`--auth-heartbeat-stats-poc-once` と `--receive-send-three` の組み合わせに留める。
+- client は `HeartbeatAck` 受信直後に `client_received_at` を記録し、`HeartbeatAckObservation` を `ClientStats.heartbeat_observation` に載せる。
+- server は 2 回目の heartbeat handoff に含まれる `timebase_plan` と、3 回目の `ClientStats` から得た observation を突き合わせ、1 回だけ stateless calculator を呼ぶ。
+- metrics state commit、RTT / offset state commit、smoothing、heartbeat timeout、continuous heartbeat / stats loop は今回も対象外に残す。
+
+### 実装したこと
+- `ClientAuthHeartbeatStatsPocLauncher` と `run_auth_heartbeat_stats_poc_once_from_path` を追加した。
+- client CLI に `--auth-heartbeat-stats-poc-once` を追加した。
+- `ServerHeartbeatObservationReturnBoundary` を追加し、`ServerHeartbeatAckHandoff` + `ServerClientStatsHandlerInput` から `ServerHeartbeatRttOffsetCalculationBoundary` へ接続した。
+- `ServerReceiveSendThreeIterationLauncher` と server CLI `--receive-send-three` を追加した。
+- client / server の関連単体テストを追加した。
+
+### 未実装 / 保留
+- completed continuous heartbeat loop
+- continuous stats send loop
+- heartbeat timeout / liveness state commit
+- RTT / offset estimate の durable state commit と smoothing
+- metrics state commit
+- video / switcher 側への拡張
+- retry / requeue / file sink open / process-wide logger
+
+### 次にやる候補
+- heartbeat timeout / liveness state commit の実装範囲を整理する。
+- RTT / offset estimate を server 側 state に commit する最小境界を整理する。
+- continuous heartbeat loop に進む前の送信間隔、停止条件、ログ出力範囲を整理する。
+
+### TODO 更新
+- 現在位置に `HeartbeatAckObservation` を `ClientStats` で 1 回返す client 入口と、server 側 calculator 接続完了を反映した。
+- 直近でやることを timeout / liveness state commit、RTT / offset state commit、continuous heartbeat loop 前の境界整理へ更新した。
+- heartbeat / client / 検証タスクに observation return one-shot と関連単体テストを完了として追加した。
+- manual check docs に `--receive-send-three` + `--auth-heartbeat-stats-poc-once` 手順を追加した。
+
+### 検証
+- `cargo fmt --check`
+- `cargo check --workspace`
+- `cargo build -p stream-sync-server -p stream-sync-client`
+- `cargo test -p stream-sync-client auth_heartbeat_stats`
+- `cargo test -p stream-sync-server heartbeat_observation`
+- `cargo test -p stream-sync-client`
+- `cargo test -p stream-sync-server`
+- `target/debug/stream-sync-server.exe --receive-send-three configs/examples/server.example.toml`
+- `target/debug/stream-sync-client.exe --auth-heartbeat-stats-poc-once configs/examples/client.accepted.example.toml`
+- 手動確認で client stdout に `sent ClientStats 106 bytes with HeartbeatAckObservation` を観測した。
+- 手動確認で server stdout に `third_sent_bytes=0`, `registered_clients=1`, `heartbeat_rtt_micros=<value>` を観測した。
+- 手動確認で server stderr に `message_type="ClientStats"` の accepted receive log を観測した。
+
+### 補足
+- server テスト実行時に `target` artifact 書き込みが `os error 112` で一度失敗したため、承認済みの `cargo clean` で Cargo build artifacts を削除してから再実行した。
+
+---
+
+## 2026-04-22
+### 種別
+- Codex
+
+### 今回の作業
 - client 側で accepted auth 後に `Heartbeat` を 1 回だけ送信し、`HeartbeatAck` を 1 回受信して stdout 表示する最小入口を追加した。
 - protocol 側に `Heartbeat` encode と `HeartbeatAck` decode を追加し、client が Heartbeat round trip を扱えるようにした。
 - server 側の既存 heartbeat ack handoff を one-iteration send path へ渡し、auth-then-heartbeat を 2 iteration で確認できる入口を追加した。

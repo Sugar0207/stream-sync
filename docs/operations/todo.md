@@ -28,9 +28,9 @@
 - `crates/config` の server auth 設定 TOML 読み込み最小実装は完了
 - `crates/config` の `shared_token` / `shared_token_env` token reference 読み分けと inline secret debug redaction は完了
 - `crates/net-core` の inbound decode 境界、outbound packet / queue 境界、outbound queue lifecycle 境界、protocol encoder 呼び出し境界、send error / log event 分類 placeholder、UDP socket 1 datagram receive / send adapter は完了
-- `apps/server` の inbound router、UDP receive loop step、UDP socket adapter 接続、auth response PoC one-shot 起動接続、auth response PoC 起動設定接続、receive loop から packet acceptance gate への接続境界、registered packet handler handoff 境界、heartbeat handler ack handoff 境界、heartbeat state / timebase input 境界、heartbeat timebase plan、heartbeat RTT / offset stateless calculator、heartbeat ack observation flow、heartbeat observation carrier、packet acceptance rejection の drop / log handoff 境界、receive rejection JSON Lines event schema 境界、receive rejection stderr JSON Lines 最小出力、auth handler boundary、auth config input boundary、server auth decision 最小実装、`shared_token_env` secret resolver 最小実装、auth success / failure log handoff 境界、auth JSON Lines event schema 境界、auth result stderr JSON Lines 最小出力、auth flow step、認証済み送信元 registry 境界、packet acceptance gate 境界、AuthResponse response boundary、HeartbeatAck ack boundary、outbound queue handoff、`--receive-send-twice` による auth-then-heartbeat 2 iteration 入口は完了
+- `apps/server` の inbound router、UDP receive loop step、UDP socket adapter 接続、auth response PoC one-shot 起動接続、auth response PoC 起動設定接続、receive loop から packet acceptance gate への接続境界、registered packet handler handoff 境界、heartbeat handler ack handoff 境界、heartbeat state / timebase input 境界、heartbeat timebase plan、heartbeat RTT / offset stateless calculator、heartbeat ack observation flow、heartbeat observation carrier、packet acceptance rejection の drop / log handoff 境界、receive rejection JSON Lines event schema 境界、receive rejection stderr JSON Lines 最小出力、auth handler boundary、auth config input boundary、server auth decision 最小実装、`shared_token_env` secret resolver 最小実装、auth success / failure log handoff 境界、auth JSON Lines event schema 境界、auth result stderr JSON Lines 最小出力、auth flow step、認証済み送信元 registry 境界、packet acceptance gate 境界、AuthResponse response boundary、HeartbeatAck ack boundary、outbound queue handoff、`--receive-send-twice` による auth-then-heartbeat 2 iteration 入口、`--receive-send-three` による heartbeat observation return 入口は完了
 - accepted auth path で `AuthenticatedSenderRegistry` へ in-memory 登録する実処理は完了
-- `apps/client` の client 設定読み込み、AuthRequest 構築、protocol encoder、UDP one-shot send、AuthResponse one-shot receive / stdout 表示、accepted auth 後の Heartbeat one-shot send / HeartbeatAck receive stdout 表示の PoC 入口は完了
+- `apps/client` の client 設定読み込み、AuthRequest 構築、protocol encoder、UDP one-shot send、AuthResponse one-shot receive / stdout 表示、accepted auth 後の Heartbeat one-shot send / HeartbeatAck receive stdout 表示、HeartbeatAckObservation を載せた ClientStats one-shot send の PoC 入口は完了
 - server / client one-shot auth round trip の手動確認手順と accepted path 用 helper config は完了
 - `shared_token_env` を使う one-shot auth round trip 手順と server helper config は完了
 - accepted path の手動確認は成功し、`configs/examples/server.example.toml` と `configs/examples/client.accepted.example.toml` の組み合わせで `accepted=true`, `reason_code=Ok` を観測済み
@@ -38,9 +38,10 @@
 - `--receive-send-once` accepted path の手動通し確認は成功し、`configs/examples/server.example.toml` と `configs/examples/client.accepted.example.toml` の組み合わせで server 側 `sent_bytes=55`, `accepted=true`, `reason_code=Ok` を観測済み
 - `--auth-request-poc-once` は accepted path で client 側 `AuthResponse` を 1 回受信して stdout に表示できる。`accepted=true`, `reason_code=Ok` を client stdout で観測済み
 - `--auth-heartbeat-poc-once` は accepted auth 後に同じ UDP socket で `Heartbeat` を 1 回送り、`HeartbeatAck` を 1 回受信して stdout に表示する入口として追加済み。`--receive-send-twice` と組み合わせる手順は docs に反映済み
+- `--auth-heartbeat-stats-poc-once` は `HeartbeatAck` 受信後に `HeartbeatAckObservation` を `ClientStats` optional block へ載せて 1 回送信できる。`--receive-send-three` はそれを受信して既存 timebase plan / stateless calculator へ渡す入口として追加済み
 - `ClientStats` payload encode/decode と heartbeat observation optional block の最小 wire 変換は完了
 - secret store provider 連携、token hashing、rotation 実行、認証済み送信元の timeout / 失効 / 再認証、実際の packet 破棄、時刻同期本体、映像受信・復号・表示、switcher UI は未実装
-- `ClientStats` receive route / gate / registered handler bridge は完了。継続送信 loop、metrics state commit、RTT / offset state commit は未実装
+- `ClientStats` receive route / gate / registered handler bridge と、`HeartbeatAckObservation` を既存 timebase plan / stateless calculator へ渡す最小接続は完了。継続送信 loop、metrics state commit、RTT / offset state commit は未実装
 - outbound queue の実処理範囲、backpressure / capacity 方針、送信継続 loop 前の bounded storage / encoder handoff 範囲、packet 送信継続 loop の最小接続範囲と loop 本体の実装範囲は整理済み。実キュー collection、送信継続 loop 本実装、retry 実行 / requeue は未実装
 - `ServerNotice` payload layout、decode / encode 最小実装、notice trigger policy の実装範囲整理は完了。state transition 検知、重複抑制、rate limit、送信継続 loop、socket send 接続は未実装
 - auth / receive JSON Lines file sink 方針は整理済み。実 file open、rotation、retention、async logging、process-wide logger は未実装
@@ -48,7 +49,7 @@
 - receive loop の継続運用向けログ範囲は整理済み。`server.receive_loop` の event schema / caller-owned writer / sink plan placeholder は追加済みだが、continuous receive loop からの実接続、file sink open、process-wide logger は未実装
 - continuous receive loop 本体の実装範囲、1 tick 実接続範囲、operational / rejection writer への handoff 範囲、caller-owned writer 呼び出し範囲、handler handoff 実接続範囲、最小 1 tick 実行接続範囲、継続 loop controller の外枠範囲、handler dispatch への最小 handoff 範囲、handler dispatch 本体の最小分類範囲、auth dispatch の最小実接続範囲、registered packet handler の最小実接続範囲、video / stats handler の最小 input 接続範囲、continuous receive loop body から dispatch runtime を呼ぶ最小範囲、dispatch runtime 結果の side effect 適用範囲、accepted auth の outbound queue storage / auth log writer 最小接続範囲、send loop / queue collection の最小接続範囲、send JSON Lines writer の one-iteration 最小実接続範囲、continuous receive loop と one-item send runtime の最小結合範囲、controller が one-iteration receive/send runtime を呼ぶ最小範囲、completed one-iteration runtime の CLI / config 接続範囲は整理済み。loop lifecycle / tick / writer handoff / writer runtime / handler handoff runtime / one-tick runtime / controller / handler dispatch bridge / handler dispatch result / auth dispatch runtime / registered packet dispatch runtime / video stats handler runtime / body dispatch runtime / side effect apply / output apply / queue collection / send one runtime / send log output / receive-send one iteration runtime / controller receive-send runtime placeholder、one-iteration launcher、1 iteration だけの最小 loop body は追加済みだが、完成した継続 receive/send loop、retry / requeue、rejection response 送信 policy、video buffer / sync handoff 本体、stats state commit 本体、packet drop 本体、file sink open、process-wide logger は未実装
 - secret store / token rotation 方針は整理済み。SecretStore 参照と rotation policy placeholder は追加済みだが、provider 連携、rotation 実行、hot reload は未実装
-- 次の中心は `HeartbeatAck` 観測を client 側 `ClientStats` へ載せて server に返す最小経路、heartbeat timeout / liveness state commit の実装範囲、continuous heartbeat loop に進む前の境界整理
+- 次の中心は heartbeat timeout / liveness state commit の実装範囲、RTT / offset estimate の state commit 方針、continuous heartbeat loop に進む前の境界整理
 
 ---
 
@@ -78,8 +79,8 @@
 ---
 
 ## 直近でやること
-1. `HeartbeatAck` observation を client 側で `ClientStats` carrier に載せ、server 側 timebase 入力へ返す最小経路を実装する
-2. heartbeat timeout / liveness state commit の実装範囲を整理する
+1. heartbeat timeout / liveness state commit の実装範囲を整理する
+2. RTT / offset estimate を server 側 state に commit する最小境界を整理する
 3. continuous heartbeat loop に進む前の送信間隔、停止条件、ログ出力範囲を整理する
 
 ---
@@ -222,6 +223,7 @@
 - [x] `ServerControllerReceiveSendRuntimeBoundary` / controller receive-send runtime placeholder を追加する
 - [x] `ServerReceiveSendOneIterationLauncher` / completed one-iteration runtime CLI config entry placeholder を追加する
 - [x] `ServerReceiveSendTwoIterationLauncher` / auth-then-heartbeat two-iteration runtime CLI config entry を追加する
+- [x] `ServerReceiveSendThreeIterationLauncher` / heartbeat observation return three-iteration runtime CLI config entry を追加する
 - [x] decode error / protocol error の分類方針を定義する
 - [x] `OutboundPacket` / `OutboundQueueItem` / `OutboundPacketQueueBoundary` placeholder を追加する
 - [x] `QueuedOutboundItem` / `OutboundQueueItemState` / `OutboundQueueLifecycleBoundary` placeholder を追加する
@@ -340,6 +342,8 @@
 - [x] `ClientStats` payload encode/decode 方針を決める
 - [x] `ClientStats` heartbeat observation optional block の wire 変換を実装する
 - [x] `ClientStats` optional heartbeat observation を server handler bridge から timebase 入力形へ変換する
+- [x] `HeartbeatAckObservation` を client 側 `ClientStats` carrier に載せて 1 回送信する
+- [x] `ClientStats` から返った observation を既存 timebase plan / stateless calculator へ渡す
 - [x] accepted auth 後の heartbeat one-shot 送信処理を client 側に実装する
 - [x] registered heartbeat 受信から `HeartbeatAck` one-shot send までを server 側に接続する
 - [ ] continuous heartbeat loop を client 側に実装する
@@ -382,6 +386,7 @@
 - [x] 認証メッセージを 1 回だけ送信する PoC 処理を作る
 - [x] `--auth-request-poc-once` で `AuthResponse` を 1 回だけ受信して stdout に表示する
 - [x] `--auth-heartbeat-poc-once` で accepted auth 後に `Heartbeat` を 1 回だけ送信し、`HeartbeatAck` を stdout に表示する
+- [x] `--auth-heartbeat-stats-poc-once` で `HeartbeatAckObservation` を `ClientStats` に載せて 1 回だけ送信する
 - [x] server / client one-shot auth round trip の手動確認手順を追加する
 - [x] accepted path 用の one-shot client example config を追加する
 - [x] heartbeat one-shot 送信処理を作る
@@ -471,6 +476,7 @@
 - [x] `AuthResponse` encode の単体テストを追加する
 - [x] `AuthResponse` decode と client one-shot receive の単体テストを追加する
 - [x] `Heartbeat` encode / `HeartbeatAck` decode と client auth-then-heartbeat one-shot の単体テストを追加する
+- [x] client auth-then-heartbeat-stats one-shot と server observation return 接続の単体テストを追加する
 - [x] `HeartbeatAck` encode の単体テストを追加する
 - [x] `VideoFrame` encode の単体テストを追加する
 - [ ] fixed header encode / decode roundtrip test を追加する
