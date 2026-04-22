@@ -704,6 +704,7 @@ pub enum ServerReceiveSendOneIterationStartupError {
 pub struct ServerReceiveSendTwoIterationLauncher {
     socket_io: UdpSocketIoBoundary,
     runtime: ServerControllerReceiveSendRuntimeBoundary,
+    liveness_commit: ServerHeartbeatLivenessCommitBoundary,
 }
 
 impl ServerReceiveSendTwoIterationLauncher {
@@ -761,6 +762,7 @@ impl ServerReceiveSendTwoIterationLauncher {
         let mut buffer = vec![0_u8; DEFAULT_UDP_PACKET_BUFFER_LEN];
         let mut registry = AuthenticatedSenderRegistry::default();
         let mut queue_collection = ServerOutboundQueueCollection::default();
+        let mut heartbeat_liveness_state = ServerHeartbeatLivenessState::default();
         let first_timestamp = current_system_timestamp_micros();
         let first = self
             .runtime
@@ -823,6 +825,13 @@ impl ServerReceiveSendTwoIterationLauncher {
                 &mut send_log_writer,
             )
             .map_err(ServerReceiveSendOneIterationStartupError::Runtime)?;
+        let heartbeat_liveness_commit =
+            heartbeat_handoff_from_controller_result(&second).map(|handoff| {
+                self.liveness_commit.commit(
+                    &mut heartbeat_liveness_state,
+                    handoff.processing_inputs.state.clone(),
+                )
+            });
 
         Ok(ServerReceiveSendTwoIterationStartupOutcome {
             bind_address: startup_config.bind_address,
@@ -830,6 +839,8 @@ impl ServerReceiveSendTwoIterationLauncher {
             queue_collection,
             first,
             second,
+            heartbeat_liveness_state,
+            heartbeat_liveness_commit,
         })
     }
 }
@@ -842,6 +853,8 @@ pub struct ServerReceiveSendTwoIterationStartupOutcome {
     pub queue_collection: ServerOutboundQueueCollection,
     pub first: ServerControllerReceiveSendRuntimeResult,
     pub second: ServerControllerReceiveSendRuntimeResult,
+    pub heartbeat_liveness_state: ServerHeartbeatLivenessState,
+    pub heartbeat_liveness_commit: Option<ServerHeartbeatLivenessCommitOutcome>,
 }
 
 /// Launcher for exactly three controller receive/send iterations from server config.
@@ -856,6 +869,7 @@ pub struct ServerReceiveSendThreeIterationLauncher {
     socket_io: UdpSocketIoBoundary,
     runtime: ServerControllerReceiveSendRuntimeBoundary,
     observation_return: ServerHeartbeatObservationReturnBoundary,
+    liveness_commit: ServerHeartbeatLivenessCommitBoundary,
 }
 
 impl ServerReceiveSendThreeIterationLauncher {
@@ -916,6 +930,7 @@ impl ServerReceiveSendThreeIterationLauncher {
         let mut buffer = vec![0_u8; DEFAULT_UDP_PACKET_BUFFER_LEN];
         let mut registry = AuthenticatedSenderRegistry::default();
         let mut queue_collection = ServerOutboundQueueCollection::default();
+        let mut heartbeat_liveness_state = ServerHeartbeatLivenessState::default();
 
         let first = self.run_controller_once(
             &socket,
@@ -956,6 +971,10 @@ impl ServerReceiveSendThreeIterationLauncher {
 
         let heartbeat_handoff = heartbeat_handoff_from_controller_result(&second)
             .ok_or(ServerReceiveSendThreeIterationStartupError::MissingHeartbeatHandoff)?;
+        let heartbeat_liveness_commit = self.liveness_commit.commit(
+            &mut heartbeat_liveness_state,
+            heartbeat_handoff.processing_inputs.state.clone(),
+        );
         let client_stats = client_stats_input_from_controller_result(&third)
             .ok_or(ServerReceiveSendThreeIterationStartupError::MissingClientStats)?;
         let heartbeat_calculation = self
@@ -971,6 +990,8 @@ impl ServerReceiveSendThreeIterationLauncher {
             second,
             third,
             heartbeat_calculation,
+            heartbeat_liveness_state,
+            heartbeat_liveness_commit,
         })
     }
 
@@ -1030,6 +1051,8 @@ pub struct ServerReceiveSendThreeIterationStartupOutcome {
     pub second: ServerControllerReceiveSendRuntimeResult,
     pub third: ServerControllerReceiveSendRuntimeResult,
     pub heartbeat_calculation: ServerHeartbeatRttOffsetCalculation,
+    pub heartbeat_liveness_state: ServerHeartbeatLivenessState,
+    pub heartbeat_liveness_commit: ServerHeartbeatLivenessCommitOutcome,
 }
 
 /// Startup error for exactly three controller receive/send iterations.
@@ -5784,6 +5807,172 @@ pub struct ServerHeartbeatStateInput {
     pub heartbeat_sent_at: TimestampMicros,
     pub server_received_at: TimestampMicros,
     pub short_status: Option<String>,
+}
+
+/// Current server-side liveness status for one authenticated heartbeat sender.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ServerHeartbeatLivenessStatus {
+    Alive,
+    TimedOut,
+}
+
+/// In-memory heartbeat liveness state for one client.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ServerHeartbeatLivenessEntry {
+    pub source: PacketSource,
+    pub authenticated_sender: AuthenticatedSenderEntry,
+    pub client_id: ClientId,
+    pub run_id: RunId,
+    pub protocol_version: ProtocolVersion,
+    pub last_heartbeat_sent_at: TimestampMicros,
+    pub last_server_received_at: TimestampMicros,
+    pub last_short_status: Option<String>,
+    pub received_heartbeats: u64,
+    pub status: ServerHeartbeatLivenessStatus,
+}
+
+/// In-memory heartbeat liveness state keyed by `client_id`.
+///
+/// This is not a durable store and does not revoke auth registry entries. It is
+/// a small commit target for registered heartbeat observations.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ServerHeartbeatLivenessState {
+    entries_by_client_id: BTreeMap<String, ServerHeartbeatLivenessEntry>,
+}
+
+impl ServerHeartbeatLivenessState {
+    pub fn entries(&self) -> impl Iterator<Item = &ServerHeartbeatLivenessEntry> {
+        self.entries_by_client_id.values()
+    }
+
+    pub fn get(&self, client_id: &ClientId) -> Option<&ServerHeartbeatLivenessEntry> {
+        self.entries_by_client_id.get(client_id.0.as_str())
+    }
+
+    pub fn len(&self) -> usize {
+        self.entries_by_client_id.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.entries_by_client_id.is_empty()
+    }
+}
+
+/// Result of committing one registered heartbeat into liveness state.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ServerHeartbeatLivenessCommitOutcome {
+    pub previous: Option<ServerHeartbeatLivenessEntry>,
+    pub committed: ServerHeartbeatLivenessEntry,
+}
+
+/// Explicit timeout policy for future liveness evaluation.
+///
+/// The current one-shot runtimes can evaluate this policy, but they do not run
+/// a continuous timeout scanner or remove authenticated sender entries.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct ServerHeartbeatTimeoutPolicy {
+    pub timeout_after_micros: u64,
+}
+
+impl ServerHeartbeatTimeoutPolicy {
+    pub fn new(timeout_after_micros: u64) -> Self {
+        Self {
+            timeout_after_micros,
+        }
+    }
+}
+
+/// Timeout evaluation for one client at a caller-supplied server timestamp.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ServerHeartbeatTimeoutEvaluation {
+    NoHeartbeat {
+        client_id: ClientId,
+    },
+    Alive {
+        client_id: ClientId,
+        last_server_received_at: TimestampMicros,
+        elapsed_micros: u64,
+        timeout_after_micros: u64,
+    },
+    TimedOut {
+        client_id: ClientId,
+        last_server_received_at: TimestampMicros,
+        elapsed_micros: u64,
+        timeout_after_micros: u64,
+    },
+}
+
+/// Boundary that commits heartbeat liveness state and evaluates timeout policy.
+///
+/// This boundary consumes `ServerHeartbeatStateInput` produced by the heartbeat
+/// handler. It does not read clocks, send notices, revoke authentication,
+/// remove registry entries, or run a continuous heartbeat loop.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct ServerHeartbeatLivenessCommitBoundary;
+
+impl ServerHeartbeatLivenessCommitBoundary {
+    pub fn commit(
+        &self,
+        state: &mut ServerHeartbeatLivenessState,
+        input: ServerHeartbeatStateInput,
+    ) -> ServerHeartbeatLivenessCommitOutcome {
+        let key = input.client_id.0.clone();
+        let previous = state.entries_by_client_id.get(&key).cloned();
+        let received_heartbeats = previous
+            .as_ref()
+            .map(|entry| entry.received_heartbeats.saturating_add(1))
+            .unwrap_or(1);
+        let committed = ServerHeartbeatLivenessEntry {
+            source: input.source,
+            authenticated_sender: input.authenticated_sender,
+            client_id: input.client_id,
+            run_id: input.run_id,
+            protocol_version: input.protocol_version,
+            last_heartbeat_sent_at: input.heartbeat_sent_at,
+            last_server_received_at: input.server_received_at,
+            last_short_status: input.short_status,
+            received_heartbeats,
+            status: ServerHeartbeatLivenessStatus::Alive,
+        };
+
+        state.entries_by_client_id.insert(key, committed.clone());
+
+        ServerHeartbeatLivenessCommitOutcome {
+            previous,
+            committed,
+        }
+    }
+
+    pub fn evaluate_timeout(
+        &self,
+        state: &ServerHeartbeatLivenessState,
+        client_id: &ClientId,
+        now: TimestampMicros,
+        policy: ServerHeartbeatTimeoutPolicy,
+    ) -> ServerHeartbeatTimeoutEvaluation {
+        let Some(entry) = state.get(client_id) else {
+            return ServerHeartbeatTimeoutEvaluation::NoHeartbeat {
+                client_id: client_id.clone(),
+            };
+        };
+        let elapsed_micros = now.0.saturating_sub(entry.last_server_received_at.0);
+
+        if elapsed_micros >= policy.timeout_after_micros {
+            ServerHeartbeatTimeoutEvaluation::TimedOut {
+                client_id: client_id.clone(),
+                last_server_received_at: entry.last_server_received_at,
+                elapsed_micros,
+                timeout_after_micros: policy.timeout_after_micros,
+            }
+        } else {
+            ServerHeartbeatTimeoutEvaluation::Alive {
+                client_id: client_id.clone(),
+                last_server_received_at: entry.last_server_received_at,
+                elapsed_micros,
+                timeout_after_micros: policy.timeout_after_micros,
+            }
+        }
+    }
 }
 
 /// Input sample for future RTT / offset estimation.
@@ -10809,6 +10998,186 @@ shared_token = "secret"
                 .client_local_time_micros,
             Some(2_999_900)
         );
+    }
+
+    #[test]
+    fn heartbeat_liveness_commit_boundary_commits_first_heartbeat() {
+        let source = packet_source();
+        let input = ServerHeartbeatStateInput {
+            source,
+            authenticated_sender: AuthenticatedSenderEntry {
+                client_id: ClientId("client-1".to_string()),
+                source,
+                run_id: RunId("run-1".to_string()),
+                protocol_version: ProtocolVersion(2),
+                registered_at: Some(TimestampMicros(900_000)),
+            },
+            client_id: ClientId("client-1".to_string()),
+            run_id: RunId("run-1".to_string()),
+            protocol_version: ProtocolVersion(2),
+            heartbeat_sent_at: TimestampMicros(1_000_000),
+            server_received_at: TimestampMicros(1_000_100),
+            short_status: Some("ready".to_string()),
+        };
+        let boundary = ServerHeartbeatLivenessCommitBoundary;
+        let mut state = ServerHeartbeatLivenessState::default();
+
+        let outcome = boundary.commit(&mut state, input);
+
+        assert_eq!(state.len(), 1);
+        assert_eq!(outcome.previous, None);
+        assert_eq!(outcome.committed.source, source);
+        assert_eq!(
+            outcome.committed.client_id,
+            ClientId("client-1".to_string())
+        );
+        assert_eq!(
+            outcome.committed.last_heartbeat_sent_at,
+            TimestampMicros(1_000_000)
+        );
+        assert_eq!(
+            outcome.committed.last_server_received_at,
+            TimestampMicros(1_000_100)
+        );
+        assert_eq!(
+            outcome.committed.last_short_status.as_deref(),
+            Some("ready")
+        );
+        assert_eq!(outcome.committed.received_heartbeats, 1);
+        assert_eq!(
+            outcome.committed.status,
+            ServerHeartbeatLivenessStatus::Alive
+        );
+        assert_eq!(
+            state
+                .get(&ClientId("client-1".to_string()))
+                .expect("liveness entry should be committed"),
+            &outcome.committed
+        );
+    }
+
+    #[test]
+    fn heartbeat_liveness_commit_boundary_updates_existing_heartbeat() {
+        let source = packet_source();
+        let boundary = ServerHeartbeatLivenessCommitBoundary;
+        let mut state = ServerHeartbeatLivenessState::default();
+        let first = ServerHeartbeatStateInput {
+            source,
+            authenticated_sender: AuthenticatedSenderEntry {
+                client_id: ClientId("client-1".to_string()),
+                source,
+                run_id: RunId("run-1".to_string()),
+                protocol_version: ProtocolVersion(2),
+                registered_at: None,
+            },
+            client_id: ClientId("client-1".to_string()),
+            run_id: RunId("run-1".to_string()),
+            protocol_version: ProtocolVersion(2),
+            heartbeat_sent_at: TimestampMicros(1_000_000),
+            server_received_at: TimestampMicros(1_000_100),
+            short_status: Some("first".to_string()),
+        };
+        let mut second = first.clone();
+        second.heartbeat_sent_at = TimestampMicros(1_500_000);
+        second.server_received_at = TimestampMicros(1_500_100);
+        second.short_status = Some("second".to_string());
+
+        boundary.commit(&mut state, first);
+        let outcome = boundary.commit(&mut state, second);
+
+        assert!(outcome.previous.is_some());
+        assert_eq!(outcome.committed.received_heartbeats, 2);
+        assert_eq!(
+            outcome.committed.last_heartbeat_sent_at,
+            TimestampMicros(1_500_000)
+        );
+        assert_eq!(
+            outcome.committed.last_server_received_at,
+            TimestampMicros(1_500_100)
+        );
+        assert_eq!(
+            outcome.committed.last_short_status.as_deref(),
+            Some("second")
+        );
+        assert_eq!(
+            state
+                .get(&ClientId("client-1".to_string()))
+                .expect("liveness entry should be updated")
+                .received_heartbeats,
+            2
+        );
+    }
+
+    #[test]
+    fn heartbeat_liveness_commit_boundary_evaluates_timeout_without_revoking_registry() {
+        let source = packet_source();
+        let boundary = ServerHeartbeatLivenessCommitBoundary;
+        let mut state = ServerHeartbeatLivenessState::default();
+        boundary.commit(
+            &mut state,
+            ServerHeartbeatStateInput {
+                source,
+                authenticated_sender: AuthenticatedSenderEntry {
+                    client_id: ClientId("client-1".to_string()),
+                    source,
+                    run_id: RunId("run-1".to_string()),
+                    protocol_version: ProtocolVersion(2),
+                    registered_at: None,
+                },
+                client_id: ClientId("client-1".to_string()),
+                run_id: RunId("run-1".to_string()),
+                protocol_version: ProtocolVersion(2),
+                heartbeat_sent_at: TimestampMicros(2_000_000),
+                server_received_at: TimestampMicros(2_000_100),
+                short_status: None,
+            },
+        );
+        let policy = ServerHeartbeatTimeoutPolicy::new(500);
+
+        let alive = boundary.evaluate_timeout(
+            &state,
+            &ClientId("client-1".to_string()),
+            TimestampMicros(2_000_599),
+            policy,
+        );
+        let timed_out = boundary.evaluate_timeout(
+            &state,
+            &ClientId("client-1".to_string()),
+            TimestampMicros(2_000_600),
+            policy,
+        );
+        let missing = boundary.evaluate_timeout(
+            &state,
+            &ClientId("client-2".to_string()),
+            TimestampMicros(2_000_600),
+            policy,
+        );
+
+        assert_eq!(
+            alive,
+            ServerHeartbeatTimeoutEvaluation::Alive {
+                client_id: ClientId("client-1".to_string()),
+                last_server_received_at: TimestampMicros(2_000_100),
+                elapsed_micros: 499,
+                timeout_after_micros: 500,
+            }
+        );
+        assert_eq!(
+            timed_out,
+            ServerHeartbeatTimeoutEvaluation::TimedOut {
+                client_id: ClientId("client-1".to_string()),
+                last_server_received_at: TimestampMicros(2_000_100),
+                elapsed_micros: 500,
+                timeout_after_micros: 500,
+            }
+        );
+        assert_eq!(
+            missing,
+            ServerHeartbeatTimeoutEvaluation::NoHeartbeat {
+                client_id: ClientId("client-2".to_string())
+            }
+        );
+        assert_eq!(state.len(), 1);
     }
 
     #[test]

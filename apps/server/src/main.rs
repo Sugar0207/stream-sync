@@ -109,11 +109,12 @@ fn main() {
                     let first_sent = sent_bytes(&outcome.first);
                     let second_sent = sent_bytes(&outcome.second);
                     println!(
-                        "receive/send two-iteration runtime handled two packets on {}; first_sent_bytes={} second_sent_bytes={} registered_clients={}",
+                        "receive/send two-iteration runtime handled two packets on {}; first_sent_bytes={} second_sent_bytes={} registered_clients={} heartbeat_liveness_entries={}",
                         outcome.bind_address,
                         first_sent,
                         second_sent,
-                        outcome.registry.entries().count()
+                        outcome.registry.entries().count(),
+                        outcome.heartbeat_liveness_state.len()
                     );
                 }
                 Err(error) => {
@@ -139,12 +140,17 @@ fn main() {
                     let second_sent = sent_bytes(&outcome.second);
                     let third_sent = sent_bytes(&outcome.third);
                     println!(
-                        "receive/send three-iteration runtime handled three packets on {}; first_sent_bytes={} second_sent_bytes={} third_sent_bytes={} registered_clients={} heartbeat_rtt_micros={} heartbeat_server_processing_micros={} heartbeat_clock_offset_micros={}",
+                        "receive/send three-iteration runtime handled three packets on {}; first_sent_bytes={} second_sent_bytes={} third_sent_bytes={} registered_clients={} heartbeat_liveness_entries={} heartbeat_received_count={} heartbeat_rtt_micros={} heartbeat_server_processing_micros={} heartbeat_clock_offset_micros={}",
                         outcome.bind_address,
                         first_sent,
                         second_sent,
                         third_sent,
                         outcome.registry.entries().count(),
+                        outcome.heartbeat_liveness_state.len(),
+                        outcome
+                            .heartbeat_liveness_commit
+                            .committed
+                            .received_heartbeats,
                         outcome.heartbeat_calculation.estimate.rtt_micros,
                         outcome.heartbeat_calculation.estimate.server_processing_micros,
                         outcome.heartbeat_calculation.estimate.clock_offset_micros

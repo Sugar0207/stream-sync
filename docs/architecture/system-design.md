@@ -1134,10 +1134,12 @@ Completed two-iteration auth-then-heartbeat CLI / config entry:
    `Heartbeat` from the same client UDP source.
 4. The first iteration can send `AuthResponse`; the second iteration can route
    the registered heartbeat to `ServerHeartbeatHandlerBoundary`, queue one
-   `HeartbeatAck`, and send it through the one-item send runtime.
+   `HeartbeatAck`, commit one liveness state update from the preserved
+   heartbeat handoff, and send the ack through the one-item send runtime.
 5. `apps/server` exposes this through
    `--receive-send-twice [config-path]`. It does not run a continuous loop,
-   retry, requeue, open file sinks, or install a global logger.
+   timeout scanner, retry, requeue, open file sinks, or install a global
+   logger.
 
 Manual check shape:
 
@@ -1147,7 +1149,7 @@ Manual check shape:
    `cargo run -p stream-sync-client -- --auth-heartbeat-poc-once configs/examples/client.accepted.example.toml`
 3. Expected result: server stderr includes receive / auth / send JSON Lines for
    `AuthResponse` and `HeartbeatAck`, server stdout reports two handled packets
-   with non-zero sent bytes, and the client stdout displays the received
+   with non-zero sent bytes and one liveness entry, and the client stdout displays the received
    `HeartbeatAck` timestamps.
 
 Completed three-iteration auth-then-heartbeat-observation CLI / config entry:
@@ -2250,8 +2252,9 @@ Responsibility split:
 
 Current code reflects this with `apps/server::ServerHeartbeatHandlerBoundary`,
 `ServerHeartbeatAckTiming`, and `ServerHeartbeatAckHandoff`. Heartbeat liveness
-state, timeout, RTT / offset estimation, continuous loop integration, and UDP
-send execution remain unimplemented.
+state commit is handled by a separate boundary. Timeout enforcement, durable
+RTT / offset state, continuous loop integration, and UDP send execution beyond
+the current one-item runtime remain unimplemented.
 
 ---
 
@@ -2306,10 +2309,70 @@ Current code reflects this with `apps/server::ServerHeartbeatInputBoundary`,
 bridges to `crates/timebase::HeartbeatTimebasePlanBoundary` and stores the
 result as `ServerHeartbeatTimebasePlan`.
 
+### Heartbeat Liveness State Commit Boundary
+
+The heartbeat liveness state commit boundary records that a registered heartbeat
+was observed by the server. It is intentionally separate from auth registry
+management and from ack generation.
+
+Current implementation scope:
+
+1. `ServerHeartbeatHandlerBoundary` receives a registered heartbeat and returns
+   `ServerHeartbeatAckHandoff`.
+2. The handoff includes `ServerHeartbeatProcessingInputs.state`, which is a
+   `ServerHeartbeatStateInput`.
+3. `ServerHeartbeatLivenessCommitBoundary::commit` writes that input into
+   `ServerHeartbeatLivenessState`.
+4. `ServerHeartbeatLivenessState` is an in-memory map keyed by `client_id`.
+5. Each `ServerHeartbeatLivenessEntry` stores:
+   - source endpoint
+   - authenticated sender snapshot
+   - `client_id`
+   - `run_id`
+   - `protocol_version`
+   - last heartbeat client `sent_at`
+   - last server receive timestamp
+   - optional short status
+   - received heartbeat count
+   - liveness status
+6. A commit always marks the entry `Alive` and increments the per-client
+   received heartbeat count.
+7. The two-iteration and three-iteration manual runtimes commit the heartbeat
+   state once from the preserved heartbeat handoff, then expose the resulting
+   liveness entry count in stdout.
+
+Responsibility split:
+
+- authenticated sender registry
+  - Owns accepted auth source binding.
+  - Does not own heartbeat freshness, heartbeat counters, or timeout state.
+- registered heartbeat / ack timing
+  - Supplies authenticated heartbeat data and explicit server timestamps.
+  - Does not persist liveness state.
+- heartbeat ack handoff
+  - Builds the outbound `HeartbeatAck` queue item.
+  - Carries state/timebase inputs for later layers.
+- liveness commit boundary
+  - Persists the latest registered heartbeat observation in memory.
+  - Does not send `ServerNotice`, revoke auth entries, drop packets, or run
+    periodic scans.
+- timebase / stats path
+  - Uses heartbeat timestamps and returned client observation for RTT / offset.
+  - Does not own liveness freshness or auth expiry.
+
+Timeout policy is represented as an explicit evaluation, not as an automatic
+loop. `ServerHeartbeatTimeoutPolicy` supplies `timeout_after_micros`, and
+`ServerHeartbeatLivenessCommitBoundary::evaluate_timeout` classifies one client
+at a caller-supplied server timestamp as `Alive`, `TimedOut`, or `NoHeartbeat`.
+This does not mutate the auth registry, remove liveness entries, emit logs, or
+notify clients. The future continuous loop should be the owner of when timeout
+evaluation runs and what state transition / log / notice follows.
+
 ### Heartbeat RTT / Offset Calculation Policy
 
 The current implementation records the calculation plan only. It deliberately
-does not complete RTT, clock offset, smoothing, timeout, or state mutation.
+does not complete durable RTT / offset state, smoothing, automatic timeout
+enforcement, or auth revocation.
 
 Calculation policy:
 

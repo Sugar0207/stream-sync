@@ -5,6 +5,64 @@
 - Codex
 
 ### 今回の作業
+- heartbeat timeout / liveness state commit の実装範囲を整理した。
+- registered heartbeat から作られた `ServerHeartbeatStateInput` を server 側 `ServerHeartbeatLivenessState` へ 1 回 commit する最小境界を追加した。
+- timeout は continuous loop での自動失効ではなく、caller supplied timestamp で 1 client 分を評価する policy boundary として追加した。
+
+### 変更ファイル
+- `apps/server/src/lib.rs`
+- `apps/server/src/main.rs`
+- `docs/architecture/system-design.md`
+- `docs/operations/auth-roundtrip-manual-check.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### 決定事項
+- `AuthenticatedSenderRegistry` は accepted auth の source binding を保持するだけに留め、heartbeat freshness / count / timeout evaluation は `ServerHeartbeatLivenessState` 側へ分離する。
+- `ServerHeartbeatLivenessCommitBoundary::commit` は registered heartbeat observation を in-memory state に保存し、entry を `Alive` として扱う。
+- `ServerHeartbeatTimeoutPolicy` / `evaluate_timeout` は `Alive` / `TimedOut` / `NoHeartbeat` を返すだけで、auth registry 失効、notice 送信、ログ出力、packet drop には接続しない。
+- `--receive-send-twice` と `--receive-send-three` では preserved heartbeat handoff から liveness state を 1 回だけ commit し、continuous heartbeat loop には進めない。
+
+### 実装したこと
+- `ServerHeartbeatLivenessStatus`、`ServerHeartbeatLivenessEntry`、`ServerHeartbeatLivenessState`、`ServerHeartbeatLivenessCommitOutcome` を追加した。
+- `ServerHeartbeatTimeoutPolicy` と `ServerHeartbeatTimeoutEvaluation` を追加した。
+- `ServerHeartbeatLivenessCommitBoundary` に commit と timeout evaluation を追加した。
+- `ServerReceiveSendTwoIterationLauncher` / `ServerReceiveSendThreeIterationLauncher` の outcome に liveness state commit 結果を載せた。
+- server CLI の `--receive-send-twice` / `--receive-send-three` stdout に liveness entry 数を追加した。
+- heartbeat liveness commit / update / timeout evaluation の単体テストを追加した。
+
+### 未実装 / 保留
+- continuous heartbeat loop
+- timeout evaluation 結果による auth registry 失効 / 再認証要求
+- timeout / disconnect の JSON Lines ログ出力
+- timeout notice / ServerNotice 送信 policy
+- RTT / offset estimate の durable state commit と smoothing
+- video / switcher 側への拡張
+
+### 次にやる候補
+- timeout evaluation 結果を auth 失効 / ログ / notice へ接続する方針を整理する。
+- RTT / offset estimate を server 側 state に commit する最小境界を整理する。
+- continuous heartbeat loop に進む前の送信間隔、停止条件、ログ出力範囲を整理する。
+
+### TODO 更新
+- 現在位置に heartbeat liveness state commit 境界と timeout policy evaluation 境界の完了を反映した。
+- 直近でやることを timeout evaluation 結果の失効 / ログ / notice 接続方針、RTT / offset state commit、continuous heartbeat loop 前の境界整理へ更新した。
+- heartbeat / net-core / 検証タスクに liveness commit と timeout evaluation の完了を追加した。
+
+### 検証
+- `cargo fmt`
+- `cargo fmt --check`
+- `cargo test -p stream-sync-server heartbeat_liveness`
+- `cargo check --workspace`
+- `git diff --check`
+
+---
+
+## 2026-04-22
+### 種別
+- Codex
+
+### 今回の作業
 - `HeartbeatAck` 受信後に client 側で `HeartbeatAckObservation` を作り、`ClientStats` の optional heartbeat observation block に載せて 1 回送信する入口を追加した。
 - server 側で returned `ClientStats` から observation を取り出し、直前の heartbeat timebase plan と照合して stateless RTT / offset calculator へ渡す最小接続を追加した。
 - auth -> heartbeat -> stats observation return を 3 packet だけ処理する manual check 入口を追加した。
