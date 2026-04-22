@@ -900,6 +900,104 @@ impl ClientHeartbeatLoopBodyBoundary {
     }
 }
 
+/// Input for building, encoding, and sending one heartbeat from a loop handoff.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClientHeartbeatLoopEncodeSendInput {
+    pub destination: SocketAddr,
+    pub handoff: ClientHeartbeatLoopBodySendHandoff,
+    pub local_time: Option<TimestampMicros>,
+    pub short_status: Option<String>,
+}
+
+/// Encoded heartbeat handoff produced before the UDP send attempt.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClientHeartbeatLoopEncodedSendHandoff {
+    pub destination: SocketAddr,
+    pub heartbeat: Heartbeat,
+    pub encoded_bytes: Vec<u8>,
+    pub ack_deadline_at: TimestampMicros,
+    pub ack_wait: ClientHeartbeatAckReceiveTimeoutDecision,
+    pub ack_observation_return: ClientHeartbeatAckObservationReturnMode,
+}
+
+/// Runtime-shaped result after one heartbeat send attempt.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClientHeartbeatLoopEncodeSendRuntimeResult {
+    pub handoff: ClientHeartbeatLoopEncodedSendHandoff,
+    pub bytes_sent: usize,
+}
+
+/// Error from the client heartbeat encode/send handoff boundary.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ClientHeartbeatLoopEncodeSendError {
+    Encode(ProtocolError),
+    Send(io::ErrorKind),
+}
+
+/// Boundary that connects a body send handoff to heartbeat build/encode/send.
+///
+/// This builds one `Heartbeat`, encodes it through the protocol encoder, and
+/// performs one UDP `send_to` using the caller-owned socket. It does not wait
+/// for `HeartbeatAck`, create observations, send `ClientStats`, retry, sleep,
+/// or run a continuous heartbeat loop.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct ClientHeartbeatLoopEncodeSendBoundary {
+    encoder: ProtocolMessageEncoderBoundary,
+}
+
+impl ClientHeartbeatLoopEncodeSendBoundary {
+    pub fn encode_handoff(
+        &self,
+        input: ClientHeartbeatLoopEncodeSendInput,
+    ) -> Result<ClientHeartbeatLoopEncodedSendHandoff, ClientHeartbeatLoopEncodeSendError> {
+        let heartbeat = Heartbeat {
+            message_type: MessageType::Heartbeat,
+            protocol_version: input.handoff.protocol_version,
+            client_id: input.handoff.client_id,
+            run_id: input.handoff.run_id,
+            sent_at: input.handoff.send_at,
+            local_time: input.local_time,
+            short_status: input.short_status,
+        };
+        let mut encoded_bytes = Vec::new();
+        self.encoder
+            .encode_message(
+                EncodeContext {
+                    protocol_version: heartbeat.protocol_version,
+                },
+                &ProtocolMessage::Heartbeat(heartbeat.clone()),
+                &mut encoded_bytes,
+            )
+            .map_err(ClientHeartbeatLoopEncodeSendError::Encode)?;
+
+        Ok(ClientHeartbeatLoopEncodedSendHandoff {
+            destination: input.destination,
+            heartbeat,
+            encoded_bytes,
+            ack_deadline_at: input.handoff.ack_deadline_at,
+            ack_wait: input.handoff.ack_wait,
+            ack_observation_return: input.handoff.ack_observation_return,
+        })
+    }
+
+    pub fn send_one(
+        &self,
+        socket: &UdpSocket,
+        input: ClientHeartbeatLoopEncodeSendInput,
+    ) -> Result<ClientHeartbeatLoopEncodeSendRuntimeResult, ClientHeartbeatLoopEncodeSendError>
+    {
+        let handoff = self.encode_handoff(input)?;
+        let bytes_sent = socket
+            .send_to(&handoff.encoded_bytes, handoff.destination)
+            .map_err(|error| ClientHeartbeatLoopEncodeSendError::Send(error.kind()))?;
+
+        Ok(ClientHeartbeatLoopEncodeSendRuntimeResult {
+            handoff,
+            bytes_sent,
+        })
+    }
+}
+
 /// Startup config needed by the one-shot client AuthRequest PoC.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ClientAuthRequestPocStartupConfig {
@@ -1985,5 +2083,90 @@ mod tests {
             reason,
             ClientHeartbeatLoopOwnershipNotReadyReason::AuthNotAccepted
         );
+    }
+
+    #[test]
+    fn client_heartbeat_loop_encode_send_boundary_encodes_body_handoff() {
+        let input = ClientHeartbeatLoopEncodeSendInput {
+            destination: "127.0.0.1:5000".parse().unwrap(),
+            handoff: ClientHeartbeatLoopBodySendHandoff {
+                client_id: ClientId("client-1".to_string()),
+                run_id: RunId("run-1".to_string()),
+                protocol_version: ProtocolVersion(2),
+                send_at: TimestampMicros(10_000),
+                ack_deadline_at: TimestampMicros(12_000),
+                ack_wait: ClientHeartbeatAckReceiveTimeoutDecision::Wait {
+                    receive_timeout_micros: 500,
+                    deadline_at: TimestampMicros(12_000),
+                },
+                ack_observation_return:
+                    ClientHeartbeatAckObservationReturnMode::ClientStatsOncePerAck,
+            },
+            local_time: Some(TimestampMicros(10_000)),
+            short_status: Some("loop-once".to_string()),
+        };
+
+        let encoded = ClientHeartbeatLoopEncodeSendBoundary::default()
+            .encode_handoff(input)
+            .expect("heartbeat should encode");
+
+        let packet = decode_fixed_header(&encoded.encoded_bytes)
+            .expect("encoded heartbeat fixed header should decode");
+        let heartbeat = decode_heartbeat_payload(packet.header, packet.payload)
+            .expect("encoded heartbeat payload should decode");
+        assert_eq!(heartbeat.client_id, ClientId("client-1".to_string()));
+        assert_eq!(heartbeat.run_id, RunId("run-1".to_string()));
+        assert_eq!(heartbeat.sent_at, TimestampMicros(10_000));
+        assert_eq!(heartbeat.local_time, Some(TimestampMicros(10_000)));
+        assert_eq!(heartbeat.short_status, Some("loop-once".to_string()));
+        assert_eq!(encoded.ack_deadline_at, TimestampMicros(12_000));
+        assert_eq!(
+            encoded.ack_observation_return,
+            ClientHeartbeatAckObservationReturnMode::ClientStatsOncePerAck
+        );
+    }
+
+    #[test]
+    fn client_heartbeat_loop_encode_send_boundary_sends_one_udp_datagram() {
+        let receiver = UdpSocket::bind("127.0.0.1:0").expect("receiver should bind");
+        receiver
+            .set_read_timeout(Some(std::time::Duration::from_secs(1)))
+            .expect("read timeout should be set");
+        let destination = receiver.local_addr().expect("local addr should exist");
+        let sender = UdpSocket::bind("127.0.0.1:0").expect("sender should bind");
+        let input = ClientHeartbeatLoopEncodeSendInput {
+            destination,
+            handoff: ClientHeartbeatLoopBodySendHandoff {
+                client_id: ClientId("client-1".to_string()),
+                run_id: RunId("run-1".to_string()),
+                protocol_version: ProtocolVersion(2),
+                send_at: TimestampMicros(10_000),
+                ack_deadline_at: TimestampMicros(12_000),
+                ack_wait: ClientHeartbeatAckReceiveTimeoutDecision::Wait {
+                    receive_timeout_micros: 500,
+                    deadline_at: TimestampMicros(12_000),
+                },
+                ack_observation_return: ClientHeartbeatAckObservationReturnMode::Disabled,
+            },
+            local_time: None,
+            short_status: None,
+        };
+
+        let result = ClientHeartbeatLoopEncodeSendBoundary::default()
+            .send_one(&sender, input)
+            .expect("heartbeat should send once");
+
+        let mut buffer = [0_u8; 1024];
+        let (received_len, _) = receiver
+            .recv_from(&mut buffer)
+            .expect("receiver should get heartbeat datagram");
+        assert_eq!(result.bytes_sent, received_len);
+        let packet =
+            decode_fixed_header(&buffer[..received_len]).expect("sent heartbeat should decode");
+        let heartbeat = decode_heartbeat_payload(packet.header, packet.payload)
+            .expect("sent heartbeat payload should decode");
+        assert_eq!(heartbeat.client_id, ClientId("client-1".to_string()));
+        assert_eq!(heartbeat.run_id, RunId("run-1".to_string()));
+        assert_eq!(heartbeat.sent_at, TimestampMicros(10_000));
     }
 }

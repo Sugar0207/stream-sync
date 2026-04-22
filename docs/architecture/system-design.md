@@ -3249,6 +3249,71 @@ Current code reflects this with
 one-iteration body boundaries only; no completed continuous heartbeat loop is
 implemented.
 
+### Client Heartbeat Encode / Send Handoff Boundary
+
+The client heartbeat encode/send handoff connects the one-iteration body send
+decision to one concrete heartbeat datagram send. It is still not a completed
+continuous heartbeat loop and it does not wait for the ack.
+
+Current implementation scope:
+
+1. `ClientHeartbeatLoopBodyBoundary::run_one` may emit
+   `ClientHeartbeatLoopBodySendHandoff`.
+2. `ClientHeartbeatLoopEncodeSendBoundary::encode_handoff` receives:
+   - destination socket address
+   - body send handoff
+   - optional client local time
+   - optional short status
+3. The boundary builds one `Heartbeat` using:
+   - `client_id`
+   - `run_id`
+   - `protocol_version`
+   - body `send_at`
+   - supplied `local_time`
+   - supplied `short_status`
+4. The boundary encodes the heartbeat through `ProtocolMessageEncoderBoundary`.
+5. The encoded handoff preserves:
+   - destination
+   - typed `Heartbeat`
+   - encoded bytes
+   - ack deadline
+   - ack wait decision
+   - ack observation return mode
+6. `ClientHeartbeatLoopEncodeSendBoundary::send_one` performs one UDP
+   `send_to` using the caller-owned socket and returns
+   `ClientHeartbeatLoopEncodeSendRuntimeResult`.
+7. The send result reports only the encoded handoff and sent byte count.
+
+Responsibility split:
+
+- heartbeat build
+  - Owned by `ClientHeartbeatLoopEncodeSendBoundary`.
+  - Uses timestamps and identity from the body handoff.
+  - Does not decide cadence or auth readiness.
+- protocol encode
+  - Still owned by `ProtocolMessageEncoderBoundary`.
+  - The client boundary only selects `ProtocolMessage::Heartbeat`.
+- UDP send
+  - `send_one` performs one caller-owned socket `send_to`.
+  - It does not bind sockets, loop, retry, fragment, or encrypt.
+- ack wait
+  - The encode/send result carries `ack_wait` and `ack_deadline_at`.
+  - It does not call `recv_from` or decode `HeartbeatAck`.
+- observation return
+  - The result carries `ClientHeartbeatAckObservationReturnMode`.
+  - `HeartbeatAckObservation` creation and `ClientStats` return remain later
+    future loop body steps.
+- future loop body
+  - Owns calling this boundary repeatedly, handling send failures, waiting for
+    acks, creating observations, returning stats, retry execution, sleeping,
+    and shutdown integration.
+
+Current code reflects this with
+`apps/client::ClientHeartbeatLoopEncodeSendBoundary`,
+`ClientHeartbeatLoopEncodeSendInput`,
+`ClientHeartbeatLoopEncodedSendHandoff`, and
+`ClientHeartbeatLoopEncodeSendRuntimeResult`.
+
 ### Heartbeat Client Ack Observation Flow
 
 The client ack observation flow returns the missing `client_received_at`

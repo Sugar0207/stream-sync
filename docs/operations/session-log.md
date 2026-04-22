@@ -5,6 +5,64 @@
 - Codex
 
 ### 今回の作業
+- continuous heartbeat loop 本体へ進む前の client heartbeat encode/send handoff 接続範囲を整理した。
+- `ClientHeartbeatLoopBodySendHandoff` から `Heartbeat` build / protocol encode / 1 回の UDP send へつなぐ最小境界を追加した。
+- ack wait / observation return は handoff に保持し、`HeartbeatAck` receive / `ClientStats` return / retry 実行には進まなかった。
+
+### 変更ファイル
+- `apps/client/src/lib.rs`
+- `docs/architecture/system-design.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### 決定事項
+- heartbeat build は `ClientHeartbeatLoopEncodeSendBoundary` が担当する。
+- protocol encode は既存 `ProtocolMessageEncoderBoundary` に委譲し、client 境界は `ProtocolMessage::Heartbeat` の選択だけを担当する。
+- UDP send は caller-owned `UdpSocket` に対して 1 回 `send_to` するだけに留める。
+- ack wait decision、ack deadline、observation return mode は encode/send result に保持し、次段の future loop body へ渡す。
+- ack receive、observation 生成、`ClientStats` 返送、retry execution、sleep / shutdown integration は future work に残す。
+
+### 実装したこと
+- `ClientHeartbeatLoopEncodeSendInput` を追加した。
+- `ClientHeartbeatLoopEncodedSendHandoff` を追加した。
+- `ClientHeartbeatLoopEncodeSendRuntimeResult` を追加した。
+- `ClientHeartbeatLoopEncodeSendError` を追加した。
+- `ClientHeartbeatLoopEncodeSendBoundary::encode_handoff` を追加した。
+- `ClientHeartbeatLoopEncodeSendBoundary::send_one` を追加した。
+- heartbeat encode と 1 UDP datagram send の単体テストを追加した。
+
+### 未実装 / 保留
+- completed continuous heartbeat loop
+- ack receive / decode の loop body 接続
+- `HeartbeatAckObservation` 生成と `ClientStats` 継続返送
+- retry execution / backoff / requeue
+- sleep / timer / shutdown integration
+- metrics snapshot の具体的な export cadence / dashboard refresh
+- timeout notice wakeup 実行本体
+
+### 次にやる候補
+- heartbeat timeout notice wakeup 実行本体に進む前の境界整理を続ける。
+- RTT / offset metrics snapshot の具体的な export cadence / dashboard refresh 方針を整理する。
+- continuous heartbeat loop 本体へ進む前の client ack receive / observation return 接続範囲を整理する。
+
+### TODO 更新
+- 現在位置に client heartbeat encode/send handoff 境界の完了を反映した。
+- 直近でやることを timeout notice wakeup 実行本体前の境界整理、metrics snapshot cadence / dashboard refresh 方針、client ack receive / observation return 接続範囲整理へ更新した。
+- heartbeat / client / 検証タスクに `ClientHeartbeatLoopEncodeSendBoundary` と関連単体テストの完了を追加した。
+
+### 検証
+- `cargo fmt`
+- `cargo test -p stream-sync-client client_heartbeat_loop_encode_send`
+- `cargo fmt --check`
+- `cargo check --workspace`
+
+---
+
+## 2026-04-23
+### 種別
+- Codex
+
+### 今回の作業
 - continuous heartbeat loop 本体へ進む前の 1 iteration body 接続範囲を整理した。
 - client 側に auth precondition / send cadence / ack wait timeout を束ねる `ClientHeartbeatLoopBodyBoundary` を追加した。
 - server 側に ownership / cadence / socket wait / timeout tick handoff / metrics snapshot handoff を束ねる `ServerHeartbeatContinuousLoopBodyBoundary` を追加した。
