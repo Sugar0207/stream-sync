@@ -5,6 +5,64 @@
 - Codex
 
 ### 今回の作業
+- continuous heartbeat loop 本体へ進む前の client loop iteration result / counters 接続範囲を整理した。
+- heartbeat send / ack receive / observation return / ClientStats send の各 step 結果を、client-local counters state に反映する最小境界を追加した。
+- counters は future loop body の実行順序を決めず、成功または分類済み failure を受けて状態を更新するだけにした。
+
+### 変更ファイル
+- `apps/client/src/lib.rs`
+- `docs/architecture/system-design.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### 決定事項
+- `ClientHeartbeatLoopIterationRuntimeResult` は future loop body が各 step 実行後に emit する runtime-shaped result とする。
+- `ClientHeartbeatLoopCountersState` は sent heartbeat / received ack / missed ack / stats return sent / step failure counters と last timestamp を保持する。
+- `ClientHeartbeatLoopCountersBoundary` は caller-owned counters へ 1 result だけ commit する。
+- policy へ戻す情報は `as_policy_snapshot` で `ClientHeartbeatLoopStateSnapshot` に絞る。
+- Ack receive failure は failure counter として扱い、missed ack は `AckMissed` の明示 result でだけ増やす。
+
+### 実装したこと
+- `ClientHeartbeatLoopCountersState` を追加した。
+- `ClientHeartbeatLoopIterationFailureKind` を追加した。
+- `ClientHeartbeatLoopIterationRuntimeResult` を追加した。
+- 既存 send / ack / stats return runtime result から iteration result を作る helper を追加した。
+- `ClientHeartbeatLoopCountersUpdateOutcome` を追加した。
+- `ClientHeartbeatLoopCountersBoundary::commit_result` を追加した。
+- counters update と policy snapshot の単体テストを追加した。
+
+### 未実装 / 保留
+- completed continuous heartbeat loop
+- loop controller / iteration orchestration
+- retry execution / backoff / sleep integration
+- log output handoff for client loop counters
+- shutdown integration
+- metrics snapshot の具体的な export cadence / dashboard refresh
+- timeout notice wakeup 実行本体
+
+### 次にやる候補
+- heartbeat timeout notice wakeup 実行本体に進む前の境界整理を続ける。
+- RTT / offset metrics snapshot の具体的な export cadence / dashboard refresh 方針を整理する。
+- continuous heartbeat loop 本体へ進む前の client loop controller / retry execution / sleep integration 接続範囲を整理する。
+
+### TODO 更新
+- 現在位置に client loop iteration result / counters 境界の完了を反映した。
+- 直近でやることを timeout notice wakeup 実行本体前の境界整理、metrics snapshot cadence / dashboard refresh 方針、client loop controller / retry execution / sleep integration 接続範囲整理へ更新した。
+- heartbeat / client / 検証タスクに `ClientHeartbeatLoopCountersBoundary` と関連単体テストの完了を追加した。
+
+### 検証
+- `cargo fmt`
+- `cargo test -p stream-sync-client client_heartbeat_loop_counters`
+- `cargo fmt --check`
+- `cargo check --workspace`
+
+---
+
+## 2026-04-23
+### 種別
+- Codex
+
+### 今回の作業
 - continuous heartbeat loop 本体へ進む前の client stats return send handoff 接続範囲を整理した。
 - ack observation return 境界が作った encoded `ClientStats` handoff を caller-owned UDP socket へ 1 回送る最小境界を追加した。
 - `ClientStats` encode は既存 ack observation return 境界に残し、今回の send 境界では送信のみを担当する形にした。

@@ -3412,6 +3412,78 @@ Current code reflects this with
 `ClientHeartbeatLoopClientStatsReturnSendRuntimeResult`, and
 `ClientHeartbeatLoopClientStatsReturnSendError`.
 
+### Client Loop Iteration Result / Counters Boundary
+
+The client loop iteration result / counters boundary records what happened in
+one future heartbeat loop iteration after the already-separated step
+boundaries have run. It is the state commit point for client-local counters
+only; it is not the continuous loop body.
+
+Current implementation scope:
+
+1. `ClientHeartbeatLoopIterationRuntimeResult` can represent:
+   - wait / stop decisions
+   - one successful heartbeat send
+   - one received `HeartbeatAck`
+   - one missed ack
+   - one sent `ClientStats` return
+   - one classified step failure
+2. `ClientHeartbeatLoopCountersState` records:
+   - sent heartbeats
+   - received acks
+   - missed acks
+   - sent `ClientStats` returns
+   - heartbeat send / ack receive / stats return send failures
+   - last heartbeat send / ack receive / stats return timestamps
+3. `ClientHeartbeatLoopCountersBoundary::commit_result` applies exactly one
+   iteration result to caller-owned counters and returns the before/after
+   state.
+4. `ClientHeartbeatLoopCountersState::as_policy_snapshot` exposes only the
+   subset needed by `ClientHeartbeatLoopPolicyBoundary` for the next policy
+   decision.
+
+Responsibility split:
+
+- heartbeat send
+  - `ClientHeartbeatLoopEncodeSendBoundary` still builds, encodes, and sends
+    one heartbeat datagram.
+  - The counters boundary records `HeartbeatSent` only after that send step
+    has succeeded.
+- ack receive
+  - `ClientHeartbeatLoopAckObservationReturnBoundary` still receives, decodes,
+    correlates, and observes one `HeartbeatAck`.
+  - The counters boundary records `AckReceived` only after that boundary
+    returns a successful runtime result.
+- observation return
+  - `ClientHeartbeatLoopAckObservationReturnBoundary` still decides whether a
+    `ClientStats` return handoff should be prepared for the ack.
+  - The counters boundary records ack receipt separately from the later stats
+    return send.
+- `ClientStats` send
+  - `ClientHeartbeatLoopClientStatsReturnSendBoundary` still sends one
+    already-encoded `ClientStats` datagram.
+  - The counters boundary records `ClientStatsReturnSent` only after that
+    send succeeds.
+- counters update
+  - `ClientHeartbeatLoopCountersBoundary` owns the state mutation from a typed
+    result to counters.
+  - It does not call sockets, encode/decode, build observations, retry, sleep,
+    write logs, or decide shutdown.
+- future loop body
+  - Owns the execution order across heartbeat send, ack wait, ack observation
+    return, optional stats return send, timeout/error classification, retry
+    execution, and when to feed the next policy snapshot back into
+    `ClientHeartbeatLoopPolicyBoundary`.
+
+Current code reflects this with
+`apps/client::ClientHeartbeatLoopIterationRuntimeResult`,
+`ClientHeartbeatLoopIterationFailureKind`,
+`ClientHeartbeatLoopCountersState`,
+`ClientHeartbeatLoopCountersUpdateOutcome`, and
+`ClientHeartbeatLoopCountersBoundary`. A completed continuous heartbeat loop,
+controller, sleep/timer integration, retry execution, and log output remain
+future work.
+
 ### Heartbeat Client Ack Observation Flow
 
 The client ack observation flow returns the missing `client_received_at`

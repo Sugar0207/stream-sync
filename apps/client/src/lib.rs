@@ -1218,6 +1218,164 @@ impl ClientHeartbeatLoopClientStatsReturnSendBoundary {
     }
 }
 
+/// Mutable counters owned by a future continuous client heartbeat loop.
+///
+/// This state is intentionally small and local to the client loop. It records
+/// the result of already-executed loop steps; it does not send packets, wait on
+/// sockets, retry, sleep, or decide the next loop action.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ClientHeartbeatLoopCountersState {
+    pub sent_heartbeats: u64,
+    pub received_acks: u64,
+    pub missed_acks: u64,
+    pub stats_returns_sent: u64,
+    pub heartbeat_send_failures: u64,
+    pub ack_receive_failures: u64,
+    pub stats_return_send_failures: u64,
+    pub last_heartbeat_sent_at: Option<TimestampMicros>,
+    pub last_ack_received_at: Option<TimestampMicros>,
+    pub last_stats_return_sent_at: Option<TimestampMicros>,
+}
+
+impl ClientHeartbeatLoopCountersState {
+    pub fn as_policy_snapshot(&self, stop_requested: bool) -> ClientHeartbeatLoopStateSnapshot {
+        ClientHeartbeatLoopStateSnapshot {
+            sent_heartbeats: self.sent_heartbeats,
+            received_acks: self.received_acks,
+            missed_acks: self.missed_acks,
+            last_heartbeat_sent_at: self.last_heartbeat_sent_at,
+            stop_requested,
+        }
+    }
+}
+
+/// Failure class used when a future loop body reports a failed iteration step.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ClientHeartbeatLoopIterationFailureKind {
+    HeartbeatSend,
+    AckReceive,
+    ClientStatsReturnSend,
+}
+
+/// Runtime-shaped result emitted by one client heartbeat loop iteration step.
+///
+/// The future continuous loop body will choose which variant to emit after it
+/// runs heartbeat send, ack receive, observation return, and optional
+/// `ClientStats` send steps. This type does not perform those steps.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ClientHeartbeatLoopIterationRuntimeResult {
+    Waited {
+        next_heartbeat_due_at: TimestampMicros,
+    },
+    Stopped {
+        reason: ClientHeartbeatLoopPolicyReason,
+    },
+    HeartbeatSent {
+        sent_at: TimestampMicros,
+    },
+    AckReceived {
+        client_received_at: TimestampMicros,
+        stats_return_prepared: bool,
+    },
+    AckMissed {
+        missed_at: TimestampMicros,
+    },
+    ClientStatsReturnSent {
+        sent_at: TimestampMicros,
+    },
+    Failed {
+        kind: ClientHeartbeatLoopIterationFailureKind,
+        failed_at: TimestampMicros,
+    },
+}
+
+impl ClientHeartbeatLoopIterationRuntimeResult {
+    pub fn from_heartbeat_send(result: &ClientHeartbeatLoopEncodeSendRuntimeResult) -> Self {
+        Self::HeartbeatSent {
+            sent_at: result.handoff.heartbeat.sent_at,
+        }
+    }
+
+    pub fn from_ack_return(result: &ClientHeartbeatLoopAckObservationReturnRuntimeResult) -> Self {
+        Self::AckReceived {
+            client_received_at: result.observation.client_received_at,
+            stats_return_prepared: result.client_stats_return.is_some(),
+        }
+    }
+
+    pub fn from_stats_return_send(
+        result: &ClientHeartbeatLoopClientStatsReturnSendRuntimeResult,
+    ) -> Self {
+        Self::ClientStatsReturnSent {
+            sent_at: result.handoff.client_stats.sent_at,
+        }
+    }
+}
+
+/// Result of applying one iteration result to client loop counters.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClientHeartbeatLoopCountersUpdateOutcome {
+    pub previous: ClientHeartbeatLoopCountersState,
+    pub current: ClientHeartbeatLoopCountersState,
+}
+
+/// Boundary that commits one client loop iteration result into counters.
+///
+/// It is a pure state-update boundary for future loop orchestration. It does
+/// not execute heartbeat send, receive `HeartbeatAck`, build observations,
+/// send `ClientStats`, decide retries, write logs, or run a continuous loop.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct ClientHeartbeatLoopCountersBoundary;
+
+impl ClientHeartbeatLoopCountersBoundary {
+    pub fn commit_result(
+        &self,
+        state: &mut ClientHeartbeatLoopCountersState,
+        result: ClientHeartbeatLoopIterationRuntimeResult,
+    ) -> ClientHeartbeatLoopCountersUpdateOutcome {
+        let previous = state.clone();
+
+        match result {
+            ClientHeartbeatLoopIterationRuntimeResult::Waited { .. }
+            | ClientHeartbeatLoopIterationRuntimeResult::Stopped { .. } => {}
+            ClientHeartbeatLoopIterationRuntimeResult::HeartbeatSent { sent_at } => {
+                state.sent_heartbeats = state.sent_heartbeats.saturating_add(1);
+                state.last_heartbeat_sent_at = Some(sent_at);
+            }
+            ClientHeartbeatLoopIterationRuntimeResult::AckReceived {
+                client_received_at, ..
+            } => {
+                state.received_acks = state.received_acks.saturating_add(1);
+                state.last_ack_received_at = Some(client_received_at);
+            }
+            ClientHeartbeatLoopIterationRuntimeResult::AckMissed { .. } => {
+                state.missed_acks = state.missed_acks.saturating_add(1);
+            }
+            ClientHeartbeatLoopIterationRuntimeResult::ClientStatsReturnSent { sent_at } => {
+                state.stats_returns_sent = state.stats_returns_sent.saturating_add(1);
+                state.last_stats_return_sent_at = Some(sent_at);
+            }
+            ClientHeartbeatLoopIterationRuntimeResult::Failed { kind, .. } => match kind {
+                ClientHeartbeatLoopIterationFailureKind::HeartbeatSend => {
+                    state.heartbeat_send_failures = state.heartbeat_send_failures.saturating_add(1);
+                }
+                ClientHeartbeatLoopIterationFailureKind::AckReceive => {
+                    state.ack_receive_failures = state.ack_receive_failures.saturating_add(1);
+                }
+                ClientHeartbeatLoopIterationFailureKind::ClientStatsReturnSend => {
+                    state.stats_return_send_failures =
+                        state.stats_return_send_failures.saturating_add(1);
+                }
+            },
+        }
+
+        ClientHeartbeatLoopCountersUpdateOutcome {
+            previous,
+            current: state.clone(),
+        }
+    }
+}
+
 /// Startup config needed by the one-shot client AuthRequest PoC.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ClientAuthRequestPocStartupConfig {
@@ -2581,5 +2739,120 @@ mod tests {
         let decoded_stats = decode_client_stats_payload(packet.header, packet.payload)
             .expect("client stats payload should decode");
         assert_eq!(decoded_stats, client_stats);
+    }
+
+    #[test]
+    fn client_heartbeat_loop_counters_boundary_updates_send_ack_and_stats_return() {
+        let mut state = ClientHeartbeatLoopCountersState::default();
+        let boundary = ClientHeartbeatLoopCountersBoundary;
+
+        let send_outcome = boundary.commit_result(
+            &mut state,
+            ClientHeartbeatLoopIterationRuntimeResult::HeartbeatSent {
+                sent_at: TimestampMicros(10_000),
+            },
+        );
+        assert_eq!(
+            send_outcome.previous,
+            ClientHeartbeatLoopCountersState::default()
+        );
+        assert_eq!(send_outcome.current.sent_heartbeats, 1);
+        assert_eq!(
+            send_outcome.current.last_heartbeat_sent_at,
+            Some(TimestampMicros(10_000))
+        );
+
+        boundary.commit_result(
+            &mut state,
+            ClientHeartbeatLoopIterationRuntimeResult::AckReceived {
+                client_received_at: TimestampMicros(10_900),
+                stats_return_prepared: true,
+            },
+        );
+        boundary.commit_result(
+            &mut state,
+            ClientHeartbeatLoopIterationRuntimeResult::ClientStatsReturnSent {
+                sent_at: TimestampMicros(10_950),
+            },
+        );
+
+        assert_eq!(state.sent_heartbeats, 1);
+        assert_eq!(state.received_acks, 1);
+        assert_eq!(state.missed_acks, 0);
+        assert_eq!(state.stats_returns_sent, 1);
+        assert_eq!(state.last_ack_received_at, Some(TimestampMicros(10_900)));
+        assert_eq!(
+            state.last_stats_return_sent_at,
+            Some(TimestampMicros(10_950))
+        );
+    }
+
+    #[test]
+    fn client_heartbeat_loop_counters_boundary_tracks_missed_ack_and_failures() {
+        let mut state = ClientHeartbeatLoopCountersState::default();
+        let boundary = ClientHeartbeatLoopCountersBoundary;
+
+        boundary.commit_result(
+            &mut state,
+            ClientHeartbeatLoopIterationRuntimeResult::AckMissed {
+                missed_at: TimestampMicros(12_000),
+            },
+        );
+        boundary.commit_result(
+            &mut state,
+            ClientHeartbeatLoopIterationRuntimeResult::Failed {
+                kind: ClientHeartbeatLoopIterationFailureKind::HeartbeatSend,
+                failed_at: TimestampMicros(13_000),
+            },
+        );
+        boundary.commit_result(
+            &mut state,
+            ClientHeartbeatLoopIterationRuntimeResult::Failed {
+                kind: ClientHeartbeatLoopIterationFailureKind::AckReceive,
+                failed_at: TimestampMicros(14_000),
+            },
+        );
+        boundary.commit_result(
+            &mut state,
+            ClientHeartbeatLoopIterationRuntimeResult::Failed {
+                kind: ClientHeartbeatLoopIterationFailureKind::ClientStatsReturnSend,
+                failed_at: TimestampMicros(15_000),
+            },
+        );
+
+        assert_eq!(state.missed_acks, 1);
+        assert_eq!(state.heartbeat_send_failures, 1);
+        assert_eq!(state.ack_receive_failures, 1);
+        assert_eq!(state.stats_return_send_failures, 1);
+        assert_eq!(state.sent_heartbeats, 0);
+        assert_eq!(state.received_acks, 0);
+        assert_eq!(state.stats_returns_sent, 0);
+    }
+
+    #[test]
+    fn client_heartbeat_loop_counters_state_exports_policy_snapshot() {
+        let state = ClientHeartbeatLoopCountersState {
+            sent_heartbeats: 3,
+            received_acks: 2,
+            missed_acks: 1,
+            stats_returns_sent: 2,
+            heartbeat_send_failures: 0,
+            ack_receive_failures: 1,
+            stats_return_send_failures: 0,
+            last_heartbeat_sent_at: Some(TimestampMicros(30_000)),
+            last_ack_received_at: Some(TimestampMicros(30_500)),
+            last_stats_return_sent_at: Some(TimestampMicros(30_550)),
+        };
+
+        assert_eq!(
+            state.as_policy_snapshot(true),
+            ClientHeartbeatLoopStateSnapshot {
+                sent_heartbeats: 3,
+                received_acks: 2,
+                missed_acks: 1,
+                last_heartbeat_sent_at: Some(TimestampMicros(30_000)),
+                stop_requested: true,
+            }
+        );
     }
 }
