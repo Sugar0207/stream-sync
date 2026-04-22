@@ -2468,6 +2468,55 @@ Responsibility split:
   - Later work must decide queue storage, send-loop wakeup, notice duplicate
     suppression, disconnect metrics, and reauthentication policy.
 
+### Heartbeat Timeout Loop Tick Boundary
+
+The timeout loop tick boundary is the current connection point for a future
+continuous heartbeat loop. It composes the already-separated timeout stages for
+one caller-selected client, without becoming a completed loop.
+
+Current implementation scope:
+
+1. The future loop selects one `client_id`, a server timestamp, and a
+   `ServerHeartbeatTimeoutPolicy`.
+2. It passes those values to
+   `ServerHeartbeatTimeoutLoopTickBoundary::run_one_client`.
+3. The tick boundary calls:
+   - `ServerHeartbeatLivenessCommitBoundary::evaluate_timeout`
+   - `ServerHeartbeatTimeoutActionBoundary::plan_actions`
+   - `ServerHeartbeatTimeoutApplyBoundary::apply_plan`
+4. The tick result preserves:
+   - original one-client tick input
+   - action plan
+   - apply result
+5. `TimedOut` can therefore remove the in-memory auth registry entry, write one
+   timeout JSON Lines record to a caller-owned writer, and produce one typed
+   `AuthExpired` notice handoff.
+6. `Alive` and `NoHeartbeat` return a result without registry invalidation,
+   timeout log event, or notice handoff.
+
+Responsibility split:
+
+- liveness commit
+  - Updates `ServerHeartbeatLivenessState` only when registered heartbeat input
+    is observed.
+  - Does not run timeout scans.
+- timeout evaluation
+  - Reads liveness state for one explicit client at one explicit timestamp.
+  - Does not apply effects.
+- action planning
+  - Converts a timed-out evaluation into explicit invalidation/log/notice
+    plans.
+  - Does not mutate state.
+- apply
+  - Applies only the explicit one-client plan.
+  - Does not choose the next client or repeat.
+- future loop body
+  - Still owns client iteration order, cadence, stop condition, timeout policy
+    selection, queue storage of notice items, send-loop wakeup, and metrics.
+
+This keeps the completed continuous heartbeat loop out of scope while fixing
+the call shape that the future loop should use.
+
 ### Heartbeat RTT / Offset Calculation Policy
 
 The current implementation records the calculation plan only. It deliberately

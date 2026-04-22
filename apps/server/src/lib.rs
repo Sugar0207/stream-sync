@@ -6236,6 +6236,68 @@ impl ServerHeartbeatTimeoutApplyBoundary {
     }
 }
 
+/// Input for one future heartbeat timeout loop tick for a single client.
+///
+/// The caller chooses which client to evaluate and supplies the current server
+/// timestamp. This input does not imply scanning, sleeping, or a completed
+/// continuous heartbeat loop.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ServerHeartbeatTimeoutLoopTickInput {
+    pub client_id: ClientId,
+    pub evaluated_at: TimestampMicros,
+    pub policy: ServerHeartbeatTimeoutPolicy,
+}
+
+/// Result of one future heartbeat timeout loop tick for a single client.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ServerHeartbeatTimeoutLoopTickResult {
+    pub input: ServerHeartbeatTimeoutLoopTickInput,
+    pub action_plan: ServerHeartbeatTimeoutActionPlan,
+    pub apply: ServerHeartbeatTimeoutApplyResult,
+}
+
+/// Boundary a future continuous heartbeat loop can call for one client.
+///
+/// This composes timeout evaluation, action planning, and apply for exactly one
+/// caller-selected client. It does not scan all clients, loop, sleep, open file
+/// sinks, store notice queue items, encode, send UDP packets, retry, or manage
+/// reauthentication.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct ServerHeartbeatTimeoutLoopTickBoundary {
+    liveness: ServerHeartbeatLivenessCommitBoundary,
+    action: ServerHeartbeatTimeoutActionBoundary,
+    apply: ServerHeartbeatTimeoutApplyBoundary,
+}
+
+impl ServerHeartbeatTimeoutLoopTickBoundary {
+    pub fn run_one_client<W: io::Write>(
+        &self,
+        liveness_state: &ServerHeartbeatLivenessState,
+        registry: &mut AuthenticatedSenderRegistry,
+        input: ServerHeartbeatTimeoutLoopTickInput,
+        timeout_log_writer: W,
+    ) -> io::Result<ServerHeartbeatTimeoutLoopTickResult> {
+        let evaluation = self.liveness.evaluate_timeout(
+            liveness_state,
+            &input.client_id,
+            input.evaluated_at,
+            input.policy,
+        );
+        let action_plan = self
+            .action
+            .plan_actions(liveness_state, evaluation, input.evaluated_at);
+        let apply = self
+            .apply
+            .apply_plan(registry, action_plan.clone(), timeout_log_writer)?;
+
+        Ok(ServerHeartbeatTimeoutLoopTickResult {
+            input,
+            action_plan,
+            apply,
+        })
+    }
+}
+
 /// Boundary that commits heartbeat liveness state and evaluates timeout policy.
 ///
 /// This boundary consumes `ServerHeartbeatStateInput` produced by the heartbeat
@@ -11829,6 +11891,111 @@ shared_token = "secret"
         assert!(result.registry_invalidation.is_none());
         assert!(result.timeout_log_event.is_none());
         assert!(result.notice_handoff.is_none());
+        assert!(output.is_empty());
+        assert!(matches!(
+            AuthenticatedSenderRegistryBoundary.check_source(
+                &registry,
+                &ClientId("client-1".to_string()),
+                source,
+            ),
+            AuthenticatedSenderCheck::Accepted(_)
+        ));
+    }
+
+    #[test]
+    fn heartbeat_timeout_loop_tick_boundary_runs_one_client_timeout_path() {
+        let source = packet_source();
+        let mut registry = registry_with_client("client-1", source);
+        let liveness = ServerHeartbeatLivenessCommitBoundary;
+        let mut state = ServerHeartbeatLivenessState::default();
+        liveness.commit(
+            &mut state,
+            ServerHeartbeatStateInput {
+                source,
+                authenticated_sender: AuthenticatedSenderEntry {
+                    client_id: ClientId("client-1".to_string()),
+                    source,
+                    run_id: RunId("run-1".to_string()),
+                    protocol_version: ProtocolVersion(2),
+                    registered_at: None,
+                },
+                client_id: ClientId("client-1".to_string()),
+                run_id: RunId("run-1".to_string()),
+                protocol_version: ProtocolVersion(2),
+                heartbeat_sent_at: TimestampMicros(8_000_000),
+                server_received_at: TimestampMicros(8_000_100),
+                short_status: None,
+            },
+        );
+        let boundary = ServerHeartbeatTimeoutLoopTickBoundary::default();
+        let mut output = Vec::new();
+
+        let result = boundary
+            .run_one_client(
+                &state,
+                &mut registry,
+                ServerHeartbeatTimeoutLoopTickInput {
+                    client_id: ClientId("client-1".to_string()),
+                    evaluated_at: TimestampMicros(8_000_700),
+                    policy: ServerHeartbeatTimeoutPolicy::new(500),
+                },
+                &mut output,
+            )
+            .expect("one timeout loop tick should write timeout log");
+
+        assert_eq!(result.input.client_id, ClientId("client-1".to_string()));
+        assert!(matches!(
+            result.action_plan.evaluation,
+            ServerHeartbeatTimeoutEvaluation::TimedOut { .. }
+        ));
+        assert!(result
+            .apply
+            .registry_invalidation
+            .as_ref()
+            .and_then(|outcome| outcome.removed_entry.as_ref())
+            .is_some());
+        assert!(result.apply.timeout_log_event.is_some());
+        assert!(result.apply.notice_handoff.is_some());
+        assert_eq!(
+            AuthenticatedSenderRegistryBoundary.check_source(
+                &registry,
+                &ClientId("client-1".to_string()),
+                source,
+            ),
+            AuthenticatedSenderCheck::Rejected(AuthenticatedSenderRejectReason::UnknownClient)
+        );
+        let output = String::from_utf8(output).expect("timeout log should be utf-8");
+        assert!(output.contains("\"event_name\":\"server.heartbeat_timeout\""));
+    }
+
+    #[test]
+    fn heartbeat_timeout_loop_tick_boundary_preserves_missing_client_without_side_effects() {
+        let source = packet_source();
+        let mut registry = registry_with_client("client-1", source);
+        let state = ServerHeartbeatLivenessState::default();
+        let boundary = ServerHeartbeatTimeoutLoopTickBoundary::default();
+        let mut output = Vec::new();
+
+        let result = boundary
+            .run_one_client(
+                &state,
+                &mut registry,
+                ServerHeartbeatTimeoutLoopTickInput {
+                    client_id: ClientId("client-2".to_string()),
+                    evaluated_at: TimestampMicros(9_000_000),
+                    policy: ServerHeartbeatTimeoutPolicy::new(500),
+                },
+                &mut output,
+            )
+            .expect("missing heartbeat loop tick should not write log");
+
+        assert!(matches!(
+            result.action_plan.evaluation,
+            ServerHeartbeatTimeoutEvaluation::NoHeartbeat { .. }
+        ));
+        assert!(result.apply.registry_invalidation.is_none());
+        assert!(result.apply.timeout_log_event.is_none());
+        assert!(result.apply.notice_handoff.is_none());
         assert!(output.is_empty());
         assert!(matches!(
             AuthenticatedSenderRegistryBoundary.check_source(

@@ -5,6 +5,62 @@
 - Codex
 
 ### 今回の作業
+- timeout evaluation / action plan / apply boundary を future continuous loop からどう呼ぶかを整理した。
+- future loop が選んだ 1 client 分だけ timeout evaluation -> action plan -> apply を実行する最小 loop tick 境界を追加した。
+- continuous heartbeat loop 本体、client scan、sleep、notice 送信本体、file sink open には進めなかった。
+
+### 変更ファイル
+- `apps/server/src/lib.rs`
+- `docs/architecture/system-design.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### 決定事項
+- future loop は client iteration / cadence / stop condition / timeout policy selection を所有する。
+- `ServerHeartbeatTimeoutLoopTickBoundary` は caller-selected `client_id` 1 件だけを処理し、timeout evaluation、action planning、apply を順番に呼ぶ。
+- `Alive` / `NoHeartbeat` の tick は registry invalidation、timeout log、notice handoff を発生させない。
+- `TimedOut` の tick は既存 apply boundary を通じて registry invalidation、caller-owned timeout log writer、typed `AuthExpired` notice handoff まで行う。
+- notice queue storage、send-loop wakeup、encode、UDP send、retry、重複抑制、rate limit は future loop / send layer 側へ残す。
+
+### 実装したこと
+- `ServerHeartbeatTimeoutLoopTickInput` を追加した。
+- `ServerHeartbeatTimeoutLoopTickResult` を追加した。
+- `ServerHeartbeatTimeoutLoopTickBoundary::run_one_client` を追加した。
+- timed-out client の one-client loop tick が invalidation / timeout log / notice handoff まで進む単体テストを追加した。
+- missing client の one-client loop tick が no-op result になる単体テストを追加した。
+
+### 未実装 / 保留
+- 複数 client を走査する heartbeat timeout loop 本体
+- loop cadence / sleep / stop condition
+- timeout policy の設定化
+- notice queue item の queue collection storage と send-loop wakeup
+- timeout notice の encode / UDP send / retry / duplicate suppression / rate limit
+- timeout log file sink open / rotation / process-wide logger
+- RTT / offset estimate の durable state commit と smoothing
+
+### 次にやる候補
+- RTT / offset estimate を server 側 state に commit する最小境界を整理する。
+- heartbeat timeout loop tick の notice queue storage / send wakeup 方針を整理する。
+- continuous heartbeat loop に進む前の送信間隔、停止条件、ログ出力範囲を整理する。
+
+### TODO 更新
+- 現在位置に heartbeat timeout one-client loop tick 境界の完了を反映した。
+- 直近でやることを RTT / offset state commit、timeout loop tick の notice queue storage / send wakeup、continuous heartbeat loop 前の境界整理へ更新した。
+- heartbeat / net-core / 検証タスクに timeout loop tick boundary と関連単体テストの完了を追加した。
+
+### 検証
+- `cargo fmt`
+- `cargo fmt --check`
+- `cargo test -p stream-sync-server heartbeat_timeout_loop_tick`
+- `cargo check --workspace`
+
+---
+
+## 2026-04-22
+### 種別
+- Codex
+
+### 今回の作業
 - timeout action plan を continuous loop からどう実適用するかの方針を整理した。
 - future continuous loop が呼べる最小 apply boundary と apply result 型を追加した。
 - timeout notice は typed queue item handoff までに留め、送信本体や file sink open / process-wide logger には進めなかった。
