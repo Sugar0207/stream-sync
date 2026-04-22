@@ -5,6 +5,62 @@
 - Codex
 
 ### 今回の作業
+- RTT / offset rejected candidate の log / metrics 方針を整理した。
+- policy commit で `Skipped(RejectedOutlier)` になった candidate だけを、後段の log / metrics handoff 入力へ変換する最小境界を追加した。
+- accepted candidate / committed candidate では rejected-candidate handoff を発生させない形にした。
+
+### 変更ファイル
+- `apps/server/src/lib.rs`
+- `docs/architecture/system-design.md`
+- `docs/architecture/protocol.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### 決定事項
+- candidate policy reject は outlier 判定と理由だけを担当する。
+- state commit skip は latest estimate state を変更しない責務だけを担当する。
+- rejected candidate の JSON Lines event と metrics counter delta は、policy commit 後の handoff 境界で作る。
+- metrics handoff は counter delta の型だけを持ち、metrics storage / aggregation / export は future work に残す。
+- log output は caller-owned writer への 1 record 出力までとし、file sink open / process-wide logger は実装しない。
+
+### 実装したこと
+- `ServerHeartbeatRttOffsetRejectedCandidateLogInput` を追加した。
+- `ServerHeartbeatRttOffsetRejectedCandidateMetricsHandoff` を追加した。
+- `ServerHeartbeatRttOffsetRejectedCandidateHandoffBoundary::prepare` を追加した。
+- `server.heartbeat_rtt_offset_rejected_candidate` JSON Lines event boundary / writer / output boundary を追加した。
+- rejected candidate handoff、committed candidate no-op、JSON Lines writer の単体テストを追加した。
+
+### 未実装 / 保留
+- rejected candidate metrics storage / aggregation / export
+- rejected candidate log の continuous loop からの writer 選択
+- candidate policy threshold の設定化
+- EWMA などの smoothing 本体
+- corrected timestamp publish
+- continuous heartbeat loop からの継続 observation commit
+
+### 次にやる候補
+- heartbeat timeout loop tick の notice queue storage / send wakeup 方針を整理する。
+- RTT / offset rejected candidate metrics storage / export 方針を整理する。
+- continuous heartbeat loop に進む前の送信間隔、停止条件、ログ出力範囲を整理する。
+
+### TODO 更新
+- 現在位置に RTT / offset rejected candidate log / metrics handoff 境界の完了を反映した。
+- 直近でやることを timeout loop tick の notice queue storage / send wakeup、RTT / offset rejected candidate metrics storage / export、continuous heartbeat loop 前の境界整理へ更新した。
+- heartbeat / net-core / 検証タスクに rejected candidate log / metrics handoff boundary と関連単体テストの完了を追加した。
+
+### 検証
+- `cargo fmt`
+- `cargo fmt --check`
+- `cargo test -p stream-sync-server heartbeat_rtt_offset_rejected_candidate`
+- `cargo check --workspace`
+
+---
+
+## 2026-04-22
+### 種別
+- Codex
+
+### 今回の作業
 - RTT / offset candidate policy を commit 前に接続した。
 - policy で rejected outlier になった candidate を `ServerHeartbeatRttOffsetState` に保存しない最小実装を追加した。
 - `--receive-send-three` の RTT / offset commit 経路を policy commit 境界経由に変更した。

@@ -1894,6 +1894,7 @@ connection boundaries:
 | Receive rejection | `ServerPacketLogInput` | `ServerReceiveRejectionJsonLogEventInput` | `ServerReceiveRejectionLogOutputBoundary` | one-shot server stderr |
 | Receive loop | `ServerReceiveLoopLogInput` | `ServerReceiveLoopJsonLogEventInput` | `ServerReceiveLoopLogOutputBoundary` | caller-owned writer only |
 | Send error | `ServerSendErrorLogInput` | `ServerSendErrorJsonLogEventInput` | `ServerSendErrorLogOutputBoundary` | caller-owned writer only |
+| Heartbeat RTT / offset rejected candidate | `ServerHeartbeatRttOffsetRejectedCandidateLogInput` | `ServerHeartbeatRttOffsetRejectedCandidateJsonLogEventInput` | `ServerHeartbeatRttOffsetRejectedCandidateLogOutputBoundary` | caller-owned writer only |
 
 These writers are schema-specific and synchronous over caller-owned
 `io::Write`. They do not define process-wide logger setup, file paths, rotation,

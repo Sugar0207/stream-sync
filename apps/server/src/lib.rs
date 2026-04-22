@@ -6867,6 +6867,213 @@ impl ServerHeartbeatRttOffsetPolicyCommitBoundary {
     }
 }
 
+/// Typed log handoff for a rejected RTT / offset candidate.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ServerHeartbeatRttOffsetRejectedCandidateLogInput {
+    pub client_id: ClientId,
+    pub run_id: RunId,
+    pub candidate: HeartbeatRttOffsetEstimate,
+    pub reason: ServerHeartbeatRttOffsetOutlierReason,
+    pub state_commit_skipped: bool,
+    pub observed_at: TimestampMicros,
+}
+
+/// Typed metrics handoff for future rejected RTT / offset counters.
+///
+/// This only names the counter deltas. It does not own metrics storage,
+/// aggregation, export, or alerting.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ServerHeartbeatRttOffsetRejectedCandidateMetricsHandoff {
+    pub client_id: ClientId,
+    pub run_id: RunId,
+    pub reason: ServerHeartbeatRttOffsetOutlierReason,
+    pub rejected_candidates_delta: u64,
+    pub skipped_commits_delta: u64,
+}
+
+/// Combined handoff emitted after policy commit skips a rejected candidate.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ServerHeartbeatRttOffsetRejectedCandidateHandoff {
+    pub log: ServerHeartbeatRttOffsetRejectedCandidateLogInput,
+    pub metrics: ServerHeartbeatRttOffsetRejectedCandidateMetricsHandoff,
+}
+
+/// Result of preparing rejected-candidate side-effect handoffs.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ServerHeartbeatRttOffsetRejectedCandidateHandoffResult {
+    Prepared(ServerHeartbeatRttOffsetRejectedCandidateHandoff),
+    NotRejected,
+}
+
+/// Boundary that prepares log / metrics handoffs for rejected candidates.
+///
+/// This boundary is intended to be called after
+/// `ServerHeartbeatRttOffsetPolicyCommitBoundary`. It does not evaluate
+/// policy, commit state, write logs, update metrics, smooth values, or run a
+/// continuous heartbeat loop.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct ServerHeartbeatRttOffsetRejectedCandidateHandoffBoundary;
+
+impl ServerHeartbeatRttOffsetRejectedCandidateHandoffBoundary {
+    pub fn prepare(
+        &self,
+        outcome: &ServerHeartbeatRttOffsetPolicyCommitOutcome,
+        observed_at: TimestampMicros,
+    ) -> ServerHeartbeatRttOffsetRejectedCandidateHandoffResult {
+        let reason = match &outcome.result {
+            ServerHeartbeatRttOffsetPolicyCommitResult::Skipped(
+                ServerHeartbeatRttOffsetCommitSkipReason::RejectedOutlier(reason),
+            ) => *reason,
+            ServerHeartbeatRttOffsetPolicyCommitResult::Committed(_) => {
+                return ServerHeartbeatRttOffsetRejectedCandidateHandoffResult::NotRejected;
+            }
+        };
+
+        let log = ServerHeartbeatRttOffsetRejectedCandidateLogInput {
+            client_id: outcome.policy.client_id.clone(),
+            run_id: outcome.policy.run_id.clone(),
+            candidate: outcome.policy.candidate,
+            reason,
+            state_commit_skipped: true,
+            observed_at,
+        };
+        let metrics = ServerHeartbeatRttOffsetRejectedCandidateMetricsHandoff {
+            client_id: outcome.policy.client_id.clone(),
+            run_id: outcome.policy.run_id.clone(),
+            reason,
+            rejected_candidates_delta: 1,
+            skipped_commits_delta: 1,
+        };
+
+        ServerHeartbeatRttOffsetRejectedCandidateHandoffResult::Prepared(
+            ServerHeartbeatRttOffsetRejectedCandidateHandoff { log, metrics },
+        )
+    }
+}
+
+pub const SERVER_HEARTBEAT_RTT_OFFSET_REJECTED_CANDIDATE_JSON_LOG_EVENT_NAME: &str =
+    "server.heartbeat_rtt_offset_rejected_candidate";
+
+/// JSON Lines event input for rejected RTT / offset candidates.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ServerHeartbeatRttOffsetRejectedCandidateJsonLogEventInput {
+    pub event_name: &'static str,
+    pub client_id: ClientId,
+    pub run_id: RunId,
+    pub candidate: HeartbeatRttOffsetEstimate,
+    pub reason: ServerHeartbeatRttOffsetOutlierReason,
+    pub state_commit_skipped: bool,
+    pub observed_at: TimestampMicros,
+}
+
+/// Boundary that maps rejected-candidate log handoff input to event fields.
+///
+/// This does not write JSON Lines, update metrics, or mutate RTT / offset
+/// state.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct ServerHeartbeatRttOffsetRejectedCandidateJsonLogEventBoundary;
+
+impl ServerHeartbeatRttOffsetRejectedCandidateJsonLogEventBoundary {
+    pub fn build_event(
+        &self,
+        input: ServerHeartbeatRttOffsetRejectedCandidateLogInput,
+    ) -> ServerHeartbeatRttOffsetRejectedCandidateJsonLogEventInput {
+        ServerHeartbeatRttOffsetRejectedCandidateJsonLogEventInput {
+            event_name: SERVER_HEARTBEAT_RTT_OFFSET_REJECTED_CANDIDATE_JSON_LOG_EVENT_NAME,
+            client_id: input.client_id,
+            run_id: input.run_id,
+            candidate: input.candidate,
+            reason: input.reason,
+            state_commit_skipped: input.state_commit_skipped,
+            observed_at: input.observed_at,
+        }
+    }
+}
+
+/// Minimal rejected-candidate log output boundary.
+///
+/// This writes one JSON Lines record to a caller-owned writer. It does not open
+/// files, install a process-wide logger, update metrics, or run a continuous
+/// heartbeat loop.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct ServerHeartbeatRttOffsetRejectedCandidateLogOutputBoundary {
+    event: ServerHeartbeatRttOffsetRejectedCandidateJsonLogEventBoundary,
+    writer: ServerHeartbeatRttOffsetRejectedCandidateJsonLineWriter,
+}
+
+impl ServerHeartbeatRttOffsetRejectedCandidateLogOutputBoundary {
+    pub fn write_rejected_candidate<W: io::Write>(
+        &self,
+        input: ServerHeartbeatRttOffsetRejectedCandidateLogInput,
+        writer: W,
+    ) -> io::Result<ServerHeartbeatRttOffsetRejectedCandidateJsonLogEventInput> {
+        let event = self.event.build_event(input);
+        self.writer.write_event(&event, writer)?;
+        Ok(event)
+    }
+}
+
+/// Minimal JSON Lines writer for rejected RTT / offset candidate events.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct ServerHeartbeatRttOffsetRejectedCandidateJsonLineWriter;
+
+impl ServerHeartbeatRttOffsetRejectedCandidateJsonLineWriter {
+    pub fn write_event<W: io::Write>(
+        &self,
+        event: &ServerHeartbeatRttOffsetRejectedCandidateJsonLogEventInput,
+        mut writer: W,
+    ) -> io::Result<()> {
+        let reason = rejected_candidate_reason_fields(event.reason);
+
+        write!(writer, "{{")?;
+        write_json_field(&mut writer, "event_name", event.event_name)?;
+        write!(writer, ",")?;
+        write_json_field(&mut writer, "client_id", &event.client_id.0)?;
+        write!(writer, ",")?;
+        write_json_field(&mut writer, "run_id", &event.run_id.0)?;
+        write!(
+            writer,
+            ",\"candidate_rtt_micros\":{}",
+            event.candidate.rtt_micros
+        )?;
+        write!(
+            writer,
+            ",\"candidate_server_processing_micros\":{}",
+            event.candidate.server_processing_micros
+        )?;
+        write!(
+            writer,
+            ",\"candidate_clock_offset_micros\":{}",
+            event.candidate.clock_offset_micros
+        )?;
+        write!(writer, ",")?;
+        write_json_field(&mut writer, "reject_reason", reason.name)?;
+        write!(
+            writer,
+            ",\"reason_previous_micros\":{}",
+            reason.previous_micros
+        )?;
+        write!(
+            writer,
+            ",\"reason_candidate_micros\":{}",
+            reason.candidate_micros
+        )?;
+        write!(writer, ",\"reason_delta_micros\":{}", reason.delta_micros)?;
+        write!(
+            writer,
+            ",\"reason_max_delta_micros\":{}",
+            reason.max_delta_micros
+        )?;
+        write!(
+            writer,
+            ",\"state_commit_skipped\":{}",
+            event.state_commit_skipped
+        )?;
+        write!(writer, ",\"observed_at\":{}", event.observed_at.0)?;
+        writeln!(writer, "}}")
+    }
+}
+
 /// Server-side validation errors before or during one timebase calculation.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ServerHeartbeatRttOffsetCalculationError {
@@ -7152,6 +7359,45 @@ fn auth_response_reason_code_name(reason_code: AuthResponseReasonCode) -> &'stat
         AuthResponseReasonCode::ProtocolMismatch => "ProtocolMismatch",
         AuthResponseReasonCode::AlreadyConnected => "AlreadyConnected",
         AuthResponseReasonCode::InternalError => "InternalError",
+    }
+}
+
+struct RejectedCandidateReasonJsonFields {
+    name: &'static str,
+    previous_micros: i128,
+    candidate_micros: i128,
+    delta_micros: u64,
+    max_delta_micros: u64,
+}
+
+fn rejected_candidate_reason_fields(
+    reason: ServerHeartbeatRttOffsetOutlierReason,
+) -> RejectedCandidateReasonJsonFields {
+    match reason {
+        ServerHeartbeatRttOffsetOutlierReason::RttDeltaExceeded {
+            previous_micros,
+            candidate_micros,
+            delta_micros,
+            max_delta_micros,
+        } => RejectedCandidateReasonJsonFields {
+            name: "RttDeltaExceeded",
+            previous_micros: i128::from(previous_micros),
+            candidate_micros: i128::from(candidate_micros),
+            delta_micros,
+            max_delta_micros,
+        },
+        ServerHeartbeatRttOffsetOutlierReason::ClockOffsetDeltaExceeded {
+            previous_micros,
+            candidate_micros,
+            delta_micros,
+            max_delta_micros,
+        } => RejectedCandidateReasonJsonFields {
+            name: "ClockOffsetDeltaExceeded",
+            previous_micros: i128::from(previous_micros),
+            candidate_micros: i128::from(candidate_micros),
+            delta_micros,
+            max_delta_micros,
+        },
     }
 }
 
@@ -12859,6 +13105,143 @@ shared_token = "secret"
         assert_eq!(entry.latest_estimate.clock_offset_micros, 1_000);
         assert_eq!(entry.committed_samples, 1);
         assert_eq!(entry.last_committed_at, Some(TimestampMicros(14_000)));
+    }
+
+    #[test]
+    fn heartbeat_rtt_offset_rejected_candidate_handoff_prepares_log_and_metrics() {
+        let commit = ServerHeartbeatRttOffsetCommitBoundary;
+        let mut state = ServerHeartbeatRttOffsetState::default();
+        commit.commit(
+            &mut state,
+            ServerHeartbeatRttOffsetCommitInput {
+                calculation: ServerHeartbeatRttOffsetCalculation {
+                    client_id: ClientId("client-1".to_string()),
+                    run_id: RunId("run-1".to_string()),
+                    estimate: HeartbeatRttOffsetEstimate {
+                        rtt_micros: 100,
+                        server_processing_micros: 20,
+                        clock_offset_micros: 1_000,
+                    },
+                },
+                committed_at: None,
+            },
+        );
+        let policy_commit = ServerHeartbeatRttOffsetPolicyCommitBoundary::default();
+        let outcome = policy_commit.evaluate_and_commit(
+            &mut state,
+            ServerHeartbeatRttOffsetCalculation {
+                client_id: ClientId("client-1".to_string()),
+                run_id: RunId("run-1".to_string()),
+                estimate: HeartbeatRttOffsetEstimate {
+                    rtt_micros: 100,
+                    server_processing_micros: 20,
+                    clock_offset_micros: 1_250,
+                },
+            },
+            ServerHeartbeatRttOffsetCandidatePolicy {
+                smoothing: ServerHeartbeatRttOffsetSmoothingMode::Deferred,
+                outlier: ServerHeartbeatRttOffsetOutlierPolicy {
+                    max_rtt_delta_micros: Some(500),
+                    max_clock_offset_delta_micros: Some(100),
+                },
+            },
+            Some(TimestampMicros(16_000)),
+        );
+        let boundary = ServerHeartbeatRttOffsetRejectedCandidateHandoffBoundary;
+
+        let result = boundary.prepare(&outcome, TimestampMicros(16_100));
+
+        let ServerHeartbeatRttOffsetRejectedCandidateHandoffResult::Prepared(handoff) = result
+        else {
+            panic!("rejected candidate should prepare log and metrics handoff");
+        };
+        assert_eq!(handoff.log.client_id, ClientId("client-1".to_string()));
+        assert_eq!(handoff.log.run_id, RunId("run-1".to_string()));
+        assert_eq!(handoff.log.candidate.clock_offset_micros, 1_250);
+        assert!(handoff.log.state_commit_skipped);
+        assert_eq!(handoff.log.observed_at, TimestampMicros(16_100));
+        assert_eq!(handoff.metrics.rejected_candidates_delta, 1);
+        assert_eq!(handoff.metrics.skipped_commits_delta, 1);
+        assert_eq!(
+            handoff.metrics.reason,
+            ServerHeartbeatRttOffsetOutlierReason::ClockOffsetDeltaExceeded {
+                previous_micros: 1_000,
+                candidate_micros: 1_250,
+                delta_micros: 250,
+                max_delta_micros: 100,
+            }
+        );
+    }
+
+    #[test]
+    fn heartbeat_rtt_offset_rejected_candidate_handoff_ignores_committed_candidate() {
+        let policy_commit = ServerHeartbeatRttOffsetPolicyCommitBoundary::default();
+        let mut state = ServerHeartbeatRttOffsetState::default();
+        let outcome = policy_commit.evaluate_and_commit(
+            &mut state,
+            ServerHeartbeatRttOffsetCalculation {
+                client_id: ClientId("client-1".to_string()),
+                run_id: RunId("run-1".to_string()),
+                estimate: HeartbeatRttOffsetEstimate {
+                    rtt_micros: 100,
+                    server_processing_micros: 20,
+                    clock_offset_micros: 1_000,
+                },
+            },
+            ServerHeartbeatRttOffsetCandidatePolicy::default(),
+            Some(TimestampMicros(17_000)),
+        );
+        let boundary = ServerHeartbeatRttOffsetRejectedCandidateHandoffBoundary;
+
+        let result = boundary.prepare(&outcome, TimestampMicros(17_100));
+
+        assert_eq!(
+            result,
+            ServerHeartbeatRttOffsetRejectedCandidateHandoffResult::NotRejected
+        );
+    }
+
+    #[test]
+    fn heartbeat_rtt_offset_rejected_candidate_log_writer_writes_json_line() {
+        let boundary = ServerHeartbeatRttOffsetRejectedCandidateLogOutputBoundary::default();
+        let mut output = Vec::new();
+
+        let event = boundary
+            .write_rejected_candidate(
+                ServerHeartbeatRttOffsetRejectedCandidateLogInput {
+                    client_id: ClientId("client-1".to_string()),
+                    run_id: RunId("run-1".to_string()),
+                    candidate: HeartbeatRttOffsetEstimate {
+                        rtt_micros: 250,
+                        server_processing_micros: 20,
+                        clock_offset_micros: 1_500,
+                    },
+                    reason: ServerHeartbeatRttOffsetOutlierReason::RttDeltaExceeded {
+                        previous_micros: 100,
+                        candidate_micros: 250,
+                        delta_micros: 150,
+                        max_delta_micros: 50,
+                    },
+                    state_commit_skipped: true,
+                    observed_at: TimestampMicros(18_000),
+                },
+                &mut output,
+            )
+            .expect("rejected candidate log should be written");
+
+        assert_eq!(
+            event.event_name,
+            SERVER_HEARTBEAT_RTT_OFFSET_REJECTED_CANDIDATE_JSON_LOG_EVENT_NAME
+        );
+        let output =
+            String::from_utf8(output).expect("rejected candidate log should be valid utf-8");
+        assert!(
+            output.contains("\"event_name\":\"server.heartbeat_rtt_offset_rejected_candidate\"")
+        );
+        assert!(output.contains("\"client_id\":\"client-1\""));
+        assert!(output.contains("\"reject_reason\":\"RttDeltaExceeded\""));
+        assert!(output.contains("\"state_commit_skipped\":true"));
+        assert!(output.contains("\"observed_at\":18000"));
     }
 
     #[test]

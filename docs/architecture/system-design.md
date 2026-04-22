@@ -2698,10 +2698,61 @@ Responsibility split:
   - Does not decide whether a candidate is an outlier.
 - policy commit
   - Calls candidate policy before commit and skips rejected candidates.
-  - Does not smooth or publish corrected timestamps.
+  - Does not smooth, publish corrected timestamps, write logs, or update
+    metrics.
+- rejected candidate log / metrics handoff
+  - Runs after policy commit returns `Skipped(RejectedOutlier)`.
+  - Builds one typed log input and one metrics counter handoff.
+  - Does not decide policy or mutate RTT / offset state.
 - future smoothing / corrected timestamp publisher
   - Owns EWMA or other smoothing, outlier model, warm-up, confidence, and
     publishing corrected timestamps to sync-core / targetTime.
+
+### Heartbeat RTT / Offset Rejected Candidate Log / Metrics
+
+Rejected RTT / offset candidates are operational observations, not state
+updates. The current implementation keeps this split explicit so an outlier
+does not accidentally enter the latest estimate state while still being visible
+to future logs and metrics.
+
+Current implementation scope:
+
+1. `ServerHeartbeatRttOffsetPolicyCommitBoundary::evaluate_and_commit`
+   evaluates candidate policy first.
+2. If policy accepts the candidate, latest estimate state commit proceeds and
+   no rejected-candidate handoff is produced.
+3. If policy rejects the candidate, state commit is skipped.
+4. `ServerHeartbeatRttOffsetRejectedCandidateHandoffBoundary::prepare` can be
+   called with the policy commit outcome.
+5. For `Skipped(RejectedOutlier)`, it prepares:
+   - `ServerHeartbeatRttOffsetRejectedCandidateLogInput`
+   - `ServerHeartbeatRttOffsetRejectedCandidateMetricsHandoff`
+6. For committed candidates, it returns `NotRejected`.
+7. `ServerHeartbeatRttOffsetRejectedCandidateJsonLogEventBoundary` maps the log
+   input to the `server.heartbeat_rtt_offset_rejected_candidate` JSON Lines
+   event shape.
+8. `ServerHeartbeatRttOffsetRejectedCandidateLogOutputBoundary` can write one
+   event to a caller-owned writer.
+
+Responsibility split:
+
+- candidate policy reject
+  - Owns only the outlier decision and reason.
+  - Does not write logs, update metrics, or mutate state.
+- state commit skip
+  - Preserves the previous latest estimate when policy rejects a candidate.
+  - Does not decide whether to emit operational output.
+- rejected candidate log boundary
+  - Converts a skipped rejected candidate into one typed JSON Lines event.
+  - Uses caller-owned writers only.
+  - Does not open files, install a process-wide logger, or run a loop.
+- metrics handoff
+  - Names the future counter deltas:
+    `rejected_candidates_delta = 1` and `skipped_commits_delta = 1`.
+  - Does not store, aggregate, export, or display metrics.
+- future timeout / heartbeat loop
+  - May call the handoff boundary after each policy commit outcome.
+  - Owns loop cadence, writer selection, metrics storage, and backpressure.
 
 ### Heartbeat Client Ack Observation Flow
 
