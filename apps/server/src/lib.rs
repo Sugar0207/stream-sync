@@ -6007,6 +6007,70 @@ impl ServerHeartbeatTimeoutJsonLogEventBoundary {
     }
 }
 
+/// Minimal heartbeat timeout log output boundary.
+///
+/// This writes one timeout JSON Lines record to a caller-owned writer. It does
+/// not open files, rotate logs, install a process-wide logger, apply registry
+/// invalidation, enqueue notices, or run a timeout scanner.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct ServerHeartbeatTimeoutLogOutputBoundary {
+    event: ServerHeartbeatTimeoutJsonLogEventBoundary,
+    writer: ServerHeartbeatTimeoutJsonLineWriter,
+}
+
+impl ServerHeartbeatTimeoutLogOutputBoundary {
+    pub fn write_timeout<W: io::Write>(
+        &self,
+        input: ServerHeartbeatTimeoutLogInput,
+        writer: W,
+    ) -> io::Result<ServerHeartbeatTimeoutJsonLogEventInput> {
+        let event = self.event.build_event(input);
+        self.writer.write_event(&event, writer)?;
+        Ok(event)
+    }
+}
+
+/// Minimal JSON Lines writer for heartbeat timeout events.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct ServerHeartbeatTimeoutJsonLineWriter;
+
+impl ServerHeartbeatTimeoutJsonLineWriter {
+    pub fn write_event<W: io::Write>(
+        &self,
+        event: &ServerHeartbeatTimeoutJsonLogEventInput,
+        mut writer: W,
+    ) -> io::Result<()> {
+        write!(writer, "{{")?;
+        write_json_field(&mut writer, "event_name", event.event_name)?;
+        write!(writer, ",")?;
+        write_json_field(&mut writer, "source", &event.source.address.to_string())?;
+        write!(writer, ",")?;
+        write_json_field(&mut writer, "client_id", &event.client_id.0)?;
+        write!(writer, ",")?;
+        write_json_field(&mut writer, "run_id", &event.run_id.0)?;
+        write!(writer, ",\"protocol_version\":{}", event.protocol_version.0)?;
+        write!(
+            writer,
+            ",\"last_server_received_at\":{}",
+            event.last_server_received_at.0
+        )?;
+        write!(writer, ",\"evaluated_at\":{}", event.evaluated_at.0)?;
+        write!(writer, ",\"elapsed_micros\":{}", event.elapsed_micros)?;
+        write!(
+            writer,
+            ",\"timeout_after_micros\":{}",
+            event.timeout_after_micros
+        )?;
+        write!(
+            writer,
+            ",\"registry_invalidation_planned\":{}",
+            event.registry_invalidation_planned
+        )?;
+        write!(writer, ",\"notice_planned\":{}", event.notice_planned)?;
+        writeln!(writer, "}}")
+    }
+}
+
 /// Planned effects for one heartbeat timeout evaluation.
 ///
 /// The plan is a typed handoff only. Applying registry invalidation, writing
@@ -6095,6 +6159,80 @@ impl ServerHeartbeatTimeoutActionBoundary {
             timeout_log,
             notice,
         }
+    }
+}
+
+/// Notice handoff produced while applying one heartbeat timeout action plan.
+///
+/// This reaches the typed outbound queue item boundary only. Queue storage,
+/// encoding, UDP send, retry, and duplicate suppression remain separate work.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ServerHeartbeatTimeoutNoticeHandoff {
+    pub trigger_plan: ServerNoticeTriggerPlan,
+    pub outbound_notice: ServerOutboundNotice,
+    pub queue_item: OutboundQueueItem,
+}
+
+/// Result of applying one timeout action plan.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ServerHeartbeatTimeoutApplyResult {
+    pub evaluation: ServerHeartbeatTimeoutEvaluation,
+    pub registry_invalidation: Option<AuthenticatedSenderInvalidationOutcome>,
+    pub timeout_log_event: Option<ServerHeartbeatTimeoutJsonLogEventInput>,
+    pub notice_handoff: Option<ServerHeartbeatTimeoutNoticeHandoff>,
+}
+
+/// Boundary that applies planned heartbeat timeout effects for a future loop.
+///
+/// This is the smallest apply point a continuous heartbeat loop can call after
+/// evaluation and action planning. It may remove one registry entry, write one
+/// timeout record to a caller-owned writer, and create one typed notice queue
+/// item. It does not scan clients, open files, store notice queue items, encode
+/// packets, send UDP, retry, rate-limit notices, or request reauthentication.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct ServerHeartbeatTimeoutApplyBoundary {
+    registry: AuthenticatedSenderRegistryBoundary,
+    timeout_log: ServerHeartbeatTimeoutLogOutputBoundary,
+    notice: ServerNoticeBoundary,
+    queue: ServerOutboundQueueBoundary,
+}
+
+impl ServerHeartbeatTimeoutApplyBoundary {
+    pub fn apply_plan<W: io::Write>(
+        &self,
+        registry: &mut AuthenticatedSenderRegistry,
+        plan: ServerHeartbeatTimeoutActionPlan,
+        mut timeout_log_writer: W,
+    ) -> io::Result<ServerHeartbeatTimeoutApplyResult> {
+        let evaluation = plan.evaluation;
+        let registry_invalidation = plan
+            .registry_invalidation
+            .map(|invalidation| self.registry.invalidate(registry, invalidation));
+        let timeout_log_event = match plan.timeout_log {
+            Some(input) => Some(
+                self.timeout_log
+                    .write_timeout(input, &mut timeout_log_writer)?,
+            ),
+            None => None,
+        };
+        let notice_handoff = plan.notice.map(|trigger_plan| {
+            let outbound_notice = self
+                .notice
+                .build_for_send(trigger_plan.clone().into_notice_input());
+            let queue_item = self.queue.handoff_notice(outbound_notice.clone());
+            ServerHeartbeatTimeoutNoticeHandoff {
+                trigger_plan,
+                outbound_notice,
+                queue_item,
+            }
+        });
+
+        Ok(ServerHeartbeatTimeoutApplyResult {
+            evaluation,
+            registry_invalidation,
+            timeout_log_event,
+            notice_handoff,
+        })
     }
 }
 
@@ -11548,6 +11686,158 @@ shared_token = "secret"
             boundary.check_source(&registry, &ClientId("client-1".to_string()), source),
             AuthenticatedSenderCheck::Rejected(AuthenticatedSenderRejectReason::UnknownClient)
         );
+    }
+
+    #[test]
+    fn heartbeat_timeout_apply_boundary_applies_invalidation_log_and_notice_handoff() {
+        let source = packet_source();
+        let mut registry = registry_with_client("client-1", source);
+        let liveness = ServerHeartbeatLivenessCommitBoundary;
+        let mut state = ServerHeartbeatLivenessState::default();
+        liveness.commit(
+            &mut state,
+            ServerHeartbeatStateInput {
+                source,
+                authenticated_sender: AuthenticatedSenderEntry {
+                    client_id: ClientId("client-1".to_string()),
+                    source,
+                    run_id: RunId("run-1".to_string()),
+                    protocol_version: ProtocolVersion(2),
+                    registered_at: None,
+                },
+                client_id: ClientId("client-1".to_string()),
+                run_id: RunId("run-1".to_string()),
+                protocol_version: ProtocolVersion(2),
+                heartbeat_sent_at: TimestampMicros(6_000_000),
+                server_received_at: TimestampMicros(6_000_100),
+                short_status: None,
+            },
+        );
+        let evaluation = liveness.evaluate_timeout(
+            &state,
+            &ClientId("client-1".to_string()),
+            TimestampMicros(6_000_700),
+            ServerHeartbeatTimeoutPolicy::new(500),
+        );
+        let plan = ServerHeartbeatTimeoutActionBoundary::default().plan_actions(
+            &state,
+            evaluation,
+            TimestampMicros(6_000_700),
+        );
+        let boundary = ServerHeartbeatTimeoutApplyBoundary::default();
+        let mut output = Vec::new();
+
+        let result = boundary
+            .apply_plan(&mut registry, plan, &mut output)
+            .expect("timeout apply should write log");
+
+        assert!(matches!(
+            result.evaluation,
+            ServerHeartbeatTimeoutEvaluation::TimedOut { .. }
+        ));
+        assert!(result
+            .registry_invalidation
+            .as_ref()
+            .and_then(|outcome| outcome.removed_entry.as_ref())
+            .is_some());
+        assert_eq!(
+            AuthenticatedSenderRegistryBoundary.check_source(
+                &registry,
+                &ClientId("client-1".to_string()),
+                source,
+            ),
+            AuthenticatedSenderCheck::Rejected(AuthenticatedSenderRejectReason::UnknownClient)
+        );
+        let event = result
+            .timeout_log_event
+            .expect("timeout apply should return log event");
+        assert_eq!(
+            event.event_name,
+            SERVER_HEARTBEAT_TIMEOUT_JSON_LOG_EVENT_NAME
+        );
+        assert_eq!(event.elapsed_micros, 600);
+        let output = String::from_utf8(output).expect("timeout log should be utf-8");
+        assert!(output.contains("\"event_name\":\"server.heartbeat_timeout\""));
+        assert!(output.contains("\"client_id\":\"client-1\""));
+
+        let notice_handoff = result
+            .notice_handoff
+            .expect("timeout apply should hand off notice");
+        assert_eq!(
+            notice_handoff.trigger_plan.source,
+            ServerNoticeTriggerSource::AuthExpired
+        );
+        let notice = notice_handoff
+            .outbound_notice
+            .server_notice()
+            .expect("outbound timeout notice should be ServerNotice");
+        assert_eq!(notice.notice_type, NoticeType::AuthExpired);
+        let ProtocolMessage::ServerNotice(queued_notice) = notice_handoff.queue_item.packet.message
+        else {
+            panic!("expected queued ServerNotice");
+        };
+        assert_eq!(queued_notice.notice_type, NoticeType::AuthExpired);
+    }
+
+    #[test]
+    fn heartbeat_timeout_apply_boundary_preserves_alive_plan_without_side_effects() {
+        let source = packet_source();
+        let mut registry = registry_with_client("client-1", source);
+        let liveness = ServerHeartbeatLivenessCommitBoundary;
+        let mut state = ServerHeartbeatLivenessState::default();
+        liveness.commit(
+            &mut state,
+            ServerHeartbeatStateInput {
+                source,
+                authenticated_sender: AuthenticatedSenderEntry {
+                    client_id: ClientId("client-1".to_string()),
+                    source,
+                    run_id: RunId("run-1".to_string()),
+                    protocol_version: ProtocolVersion(2),
+                    registered_at: None,
+                },
+                client_id: ClientId("client-1".to_string()),
+                run_id: RunId("run-1".to_string()),
+                protocol_version: ProtocolVersion(2),
+                heartbeat_sent_at: TimestampMicros(7_000_000),
+                server_received_at: TimestampMicros(7_000_100),
+                short_status: None,
+            },
+        );
+        let evaluation = liveness.evaluate_timeout(
+            &state,
+            &ClientId("client-1".to_string()),
+            TimestampMicros(7_000_200),
+            ServerHeartbeatTimeoutPolicy::new(500),
+        );
+        let plan = ServerHeartbeatTimeoutActionBoundary::default().plan_actions(
+            &state,
+            evaluation,
+            TimestampMicros(7_000_200),
+        );
+        let boundary = ServerHeartbeatTimeoutApplyBoundary::default();
+        let mut output = Vec::new();
+
+        let result = boundary
+            .apply_plan(&mut registry, plan, &mut output)
+            .expect("alive apply should not write log");
+
+        assert!(matches!(
+            result.evaluation,
+            ServerHeartbeatTimeoutEvaluation::Alive { .. }
+        ));
+        assert!(result.registry_invalidation.is_none());
+        assert!(result.timeout_log_event.is_none());
+        assert!(result.notice_handoff.is_none());
+        assert!(output.is_empty());
+        assert!(matches!(
+            AuthenticatedSenderRegistryBoundary.check_source(
+                &registry,
+                &ClientId("client-1".to_string()),
+                source,
+            ),
+            AuthenticatedSenderCheck::Accepted(_)
+        ));
     }
 
     #[test]

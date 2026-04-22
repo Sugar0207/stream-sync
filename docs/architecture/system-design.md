@@ -2420,6 +2420,54 @@ This preserves the current policy that a timeout can be reasoned about in one
 small step, while the continuous heartbeat loop remains responsible for when to
 run timeout evaluation and which planned effects it actually applies.
 
+### Heartbeat Timeout Apply Boundary
+
+The timeout apply boundary is the smallest point a future continuous heartbeat
+loop can call after evaluation and action planning. It applies the already
+planned effects in a deterministic order, but it still does not run the loop or
+send packets.
+
+Current implementation scope:
+
+1. The future loop chooses a client and calls
+   `ServerHeartbeatLivenessCommitBoundary::evaluate_timeout`.
+2. The loop passes that evaluation to
+   `ServerHeartbeatTimeoutActionBoundary::plan_actions`.
+3. The loop passes the action plan to
+   `ServerHeartbeatTimeoutApplyBoundary::apply_plan`.
+4. `apply_plan` applies only these minimal effects:
+   - remove one auth registry entry through
+     `AuthenticatedSenderRegistryBoundary::invalidate`
+   - write one `server.heartbeat_timeout` JSON Lines record to a caller-owned
+     writer
+   - convert the `AuthExpired` notice plan into typed `ServerNotice` outbound
+     handoff and `OutboundQueueItem`
+5. The apply result reports:
+   - original timeout evaluation
+   - optional registry invalidation outcome
+   - optional timeout log event
+   - optional notice handoff
+
+Responsibility split:
+
+- timeout evaluation
+  - Reads liveness state and returns `Alive`, `TimedOut`, or `NoHeartbeat`.
+  - Does not decide or apply effects.
+- action plan
+  - Decides which effects should happen for one `TimedOut` evaluation.
+  - Does not mutate state or write logs.
+- apply boundary
+  - Applies the explicit invalidation command, writes to a caller-owned writer,
+    and prepares the typed notice queue item.
+  - Does not scan clients, run a continuous loop, open file sinks, install a
+    global logger, store the notice in the queue collection, encode, send,
+    retry, rate-limit, or suppress duplicates.
+- future continuous loop
+  - Owns when to evaluate clients, which timeout policy to use, and when to
+    call the apply boundary.
+  - Later work must decide queue storage, send-loop wakeup, notice duplicate
+    suppression, disconnect metrics, and reauthentication policy.
+
 ### Heartbeat RTT / Offset Calculation Policy
 
 The current implementation records the calculation plan only. It deliberately

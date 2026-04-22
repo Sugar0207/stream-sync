@@ -5,6 +5,60 @@
 - Codex
 
 ### 今回の作業
+- timeout action plan を continuous loop からどう実適用するかの方針を整理した。
+- future continuous loop が呼べる最小 apply boundary と apply result 型を追加した。
+- timeout notice は typed queue item handoff までに留め、送信本体や file sink open / process-wide logger には進めなかった。
+
+### 変更ファイル
+- `apps/server/src/lib.rs`
+- `docs/architecture/system-design.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### 決定事項
+- future loop の順序は timeout evaluation -> timeout action plan -> timeout apply boundary とする。
+- apply boundary は明示 invalidation command の適用、caller-owned writer への `server.heartbeat_timeout` 1 行出力、`AuthExpired` notice の typed queue item handoff だけを担当する。
+- notice は `OutboundQueueItem` 作成までで止め、queue collection への storage、encode、UDP send、retry、重複抑制、rate limit は future work に残す。
+- timeout log は caller-owned writer への最小 JSON Lines 出力までで、file sink open、rotation、process-wide logger は future work に残す。
+
+### 実装したこと
+- `ServerHeartbeatTimeoutLogOutputBoundary` と `ServerHeartbeatTimeoutJsonLineWriter` を追加した。
+- `ServerHeartbeatTimeoutNoticeHandoff` と `ServerHeartbeatTimeoutApplyResult` を追加した。
+- `ServerHeartbeatTimeoutApplyBoundary::apply_plan` を追加した。
+- timeout apply boundary が `TimedOut` plan で registry invalidation、timeout log write、notice queue item handoff を行う単体テストを追加した。
+- `Alive` plan では registry / log / notice に副作用を出さない単体テストを追加した。
+
+### 未実装 / 保留
+- continuous heartbeat loop から timeout evaluation / action plan / apply boundary を呼ぶ処理
+- notice queue item の queue collection storage
+- timeout notice の encode / UDP send / retry / duplicate suppression / rate limit
+- timeout log file sink open / rotation / process-wide logger
+- reauthentication policy
+- RTT / offset estimate の durable state commit と smoothing
+
+### 次にやる候補
+- timeout evaluation / action plan / apply boundary を continuous loop から呼ぶ方針を整理する。
+- RTT / offset estimate を server 側 state に commit する最小境界を整理する。
+- continuous heartbeat loop に進む前の送信間隔、停止条件、ログ出力範囲を整理する。
+
+### TODO 更新
+- 現在位置に heartbeat timeout apply 境界、caller-owned timeout log writer 境界、notice queue item handoff の完了を反映した。
+- 直近でやることを timeout evaluation / action plan / apply boundary の continuous loop 呼び出し方針へ更新した。
+- heartbeat / net-core / 検証タスクに timeout apply boundary と関連単体テストの完了を追加した。
+
+### 検証
+- `cargo fmt`
+- `cargo fmt --check`
+- `cargo test -p stream-sync-server heartbeat_timeout_apply`
+- `cargo check --workspace`
+
+---
+
+## 2026-04-22
+### 種別
+- Codex
+
+### 今回の作業
 - timeout evaluation 結果を auth 失効 / ログ / notice へ接続する方針を整理した。
 - `TimedOut` evaluation から auth registry invalidation command、timeout log event input、`AuthExpired` notice plan を作る最小 action boundary を追加した。
 - registry invalidation は timeout 判定側で直接決めず、明示 command を `AuthenticatedSenderRegistryBoundary` が適用する形に分離した。
