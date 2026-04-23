@@ -61,6 +61,56 @@
 - Codex
 
 ### 今回の作業
+- future repeated loop body から outer repeated loop controller / shutdown apply をどう呼ぶかの最小範囲を整理した。
+- repeated body の結果を outer controller が観測し、shutdown apply が typed result を返すだけの 1 step 境界を追加した。
+- launcher ownership / repeated loop body / outer controller / shutdown apply / future completed loop の責務分離を docs に追記した。
+
+### 変更ファイル
+- `apps/client/src/lib.rs`
+- `docs/architecture/system-design.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### 実装したこと
+- `ClientHeartbeatLoopOuterControllerAction`
+- `ClientHeartbeatLoopOuterControllerResult`
+- `ClientHeartbeatLoopOuterControllerBoundary`
+- `ClientHeartbeatLoopShutdownApplyResult`
+- `ClientHeartbeatLoopShutdownApplyBoundary`
+- `ClientHeartbeatLoopRepeatedRuntimeLoopStepResult`
+- `ClientHeartbeatLoopRepeatedRuntimeLoopStepBoundary`
+- outer controller continue path と loop step stop path の単体テストを追加
+
+### 未実装 / 保留
+- completed continuous heartbeat loop
+- future completed loop lifecycle 本体
+- 実 sleep / timer / retry / reconnect
+- shutdown cleanup / log writer invocation / process lifetime control
+
+### 次にやる候補
+- outer repeated loop controller / shutdown apply から future completed loop lifecycle へ進む最小範囲整理
+- heartbeat timeout notice wakeup 実行本体に進む前の境界整理
+- RTT / offset metrics snapshot export cadence / dashboard refresh 方針整理
+
+### TODO 更新
+- 現在位置に outer repeated loop controller / shutdown apply の最小境界完了を反映した。
+- 直近でやることを future completed loop lifecycle へ進む最小範囲整理へ更新した。
+- client / 検証タスクに outer controller / shutdown apply 境界と関連単体テスト完了を追加した。
+
+### 検証
+- `cargo fmt`
+- `cargo test -p stream-sync-client client_heartbeat_loop_outer_controller`
+- `cargo test -p stream-sync-client client_heartbeat_loop_repeated_runtime_loop_step`
+- `cargo fmt --check`
+- `cargo check --workspace`
+
+---
+
+## 2026-04-23
+### 担当
+- Codex
+
+### 今回の作業
 - client one-tick runtime から future repeated loop body をどう呼ぶかの最小範囲を整理した。
 - future repeated loop body が持つ動的入力と、one-tick runtime に委譲する 1 回分の bridge を追加した。
 - launcher ownership / one-tick runtime / repeated-loop body / shutdown responsibility の責務分離を docs に追記した。

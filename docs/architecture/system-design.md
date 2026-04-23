@@ -3905,6 +3905,61 @@ Current code reflects this with
 heartbeat loop, timer execution, repeated retry execution, reconnect, and
 shutdown cleanup remain future work.
 
+### Client Outer Repeated Loop Controller / Shutdown Apply Minimal Scope
+
+After one repeated-loop body step returns, the future outer repeated loop still
+needs one minimal orchestration layer that decides whether iteration may
+continue and whether shutdown work must be applied. The current scope fixes
+that bridge without implementing the completed loop.
+
+Current minimal scope:
+
+1. `ClientHeartbeatLoopRepeatedRuntimeLoopStepBoundary` receives:
+   - caller-owned `UdpSocket`
+   - caller-owned `ClientHeartbeatLoopCountersState`
+   - `ClientHeartbeatLoopRepeatedRuntimeBodyInput`
+2. It calls `ClientHeartbeatLoopRepeatedRuntimeBodyBoundary::run_one`.
+3. It passes the returned body result to
+   `ClientHeartbeatLoopOuterControllerBoundary::observe`.
+4. The outer controller maps only:
+   - `ClientHeartbeatLoopShutdownDecision::Continue` ->
+     `ContinueLoop`
+   - `ClientHeartbeatLoopShutdownDecision::Stop` ->
+     `StopLoop`
+5. It passes that same shutdown decision to
+   `ClientHeartbeatLoopShutdownApplyBoundary::apply`.
+6. Shutdown apply returns typed work only:
+   - `ContinueLoop`
+   - `StopLoop { reason, cleanup_required }`
+7. The step returns `ClientHeartbeatLoopRepeatedRuntimeLoopStepResult`
+   containing:
+   - repeated body result
+   - outer controller result
+   - shutdown apply result
+
+Responsibility split:
+
+- launcher ownership
+  - Produces static repeated-loop handoff after accepted auth/bootstrap.
+- repeated-loop body
+  - Produces one body/runtime/shutdown result from one dynamic iteration input.
+- outer controller
+  - Classifies one body result as continue-loop or stop-loop.
+  - Does not sleep, retry, reconnect, or execute cleanup.
+- shutdown apply
+  - Converts one shutdown decision into typed future apply work.
+  - Does not flush logs, close sockets, or stop a real worker/process.
+- future completed loop
+  - Will own repetition, backoff/timer execution, reconnect, cleanup ordering,
+    and the actual application of shutdown work.
+
+Current code reflects this with
+`ClientHeartbeatLoopOuterControllerBoundary`,
+`ClientHeartbeatLoopShutdownApplyResult`,
+`ClientHeartbeatLoopShutdownApplyBoundary`,
+`ClientHeartbeatLoopRepeatedRuntimeLoopStepResult`, and
+`ClientHeartbeatLoopRepeatedRuntimeLoopStepBoundary`.
+
 ### Heartbeat Client Ack Observation Flow
 
 The client ack observation flow returns the missing `client_received_at`

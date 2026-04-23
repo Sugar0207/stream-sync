@@ -2208,6 +2208,93 @@ pub struct ClientHeartbeatLoopRepeatedRuntimeBodyResult {
     pub shutdown: ClientHeartbeatLoopShutdownDecision,
 }
 
+/// Coarse outer-loop action after one repeated body step.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ClientHeartbeatLoopOuterControllerAction {
+    ContinueLoop,
+    StopLoop,
+}
+
+/// Final outer-controller result after observing one repeated body step.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClientHeartbeatLoopOuterControllerResult {
+    pub action: ClientHeartbeatLoopOuterControllerAction,
+    pub shutdown: ClientHeartbeatLoopShutdownDecision,
+}
+
+/// Boundary that classifies one repeated body step for a future outer loop.
+///
+/// This boundary does not run timers, retries, reconnects, or process
+/// shutdown. It only maps one repeated body result to a coarse outer-loop
+/// action.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct ClientHeartbeatLoopOuterControllerBoundary;
+
+impl ClientHeartbeatLoopOuterControllerBoundary {
+    pub fn observe(
+        &self,
+        body: &ClientHeartbeatLoopRepeatedRuntimeBodyResult,
+    ) -> ClientHeartbeatLoopOuterControllerResult {
+        let action = match body.shutdown {
+            ClientHeartbeatLoopShutdownDecision::Continue => {
+                ClientHeartbeatLoopOuterControllerAction::ContinueLoop
+            }
+            ClientHeartbeatLoopShutdownDecision::Stop { .. } => {
+                ClientHeartbeatLoopOuterControllerAction::StopLoop
+            }
+        };
+
+        ClientHeartbeatLoopOuterControllerResult {
+            action,
+            shutdown: body.shutdown,
+        }
+    }
+}
+
+/// Result of mapping one shutdown decision to future apply work.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ClientHeartbeatLoopShutdownApplyResult {
+    ContinueLoop,
+    StopLoop {
+        reason: ClientHeartbeatLoopPolicyReason,
+        cleanup_required: bool,
+    },
+}
+
+/// Boundary that prepares typed shutdown-apply work without executing it.
+///
+/// This does not flush logs, close sockets, stop threads, or clean up
+/// resources. It only names what a future outer loop/apply layer must do.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct ClientHeartbeatLoopShutdownApplyBoundary;
+
+impl ClientHeartbeatLoopShutdownApplyBoundary {
+    pub fn apply(
+        &self,
+        decision: ClientHeartbeatLoopShutdownDecision,
+    ) -> ClientHeartbeatLoopShutdownApplyResult {
+        match decision {
+            ClientHeartbeatLoopShutdownDecision::Continue => {
+                ClientHeartbeatLoopShutdownApplyResult::ContinueLoop
+            }
+            ClientHeartbeatLoopShutdownDecision::Stop { reason } => {
+                ClientHeartbeatLoopShutdownApplyResult::StopLoop {
+                    reason,
+                    cleanup_required: true,
+                }
+            }
+        }
+    }
+}
+
+/// Full one-step result for future outer repeated-loop orchestration.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClientHeartbeatLoopRepeatedRuntimeLoopStepResult {
+    pub body: ClientHeartbeatLoopRepeatedRuntimeBodyResult,
+    pub controller: ClientHeartbeatLoopOuterControllerResult,
+    pub shutdown_apply: ClientHeartbeatLoopShutdownApplyResult,
+}
+
 /// Boundary that shows how a future repeated loop body delegates one step.
 ///
 /// This boundary owns only the one-iteration bridge from caller-owned loop
@@ -2240,6 +2327,37 @@ impl ClientHeartbeatLoopRepeatedRuntimeBodyBoundary {
             one_tick_input,
             runtime,
             shutdown,
+        }
+    }
+}
+
+/// Boundary that shows the smallest outer repeated-loop step orchestration.
+///
+/// It runs one repeated body step, lets the outer controller classify it, and
+/// converts the returned shutdown decision into typed apply work. It does not
+/// repeat, sleep, reconnect, or execute shutdown.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct ClientHeartbeatLoopRepeatedRuntimeLoopStepBoundary {
+    body: ClientHeartbeatLoopRepeatedRuntimeBodyBoundary,
+    controller: ClientHeartbeatLoopOuterControllerBoundary,
+    shutdown_apply: ClientHeartbeatLoopShutdownApplyBoundary,
+}
+
+impl ClientHeartbeatLoopRepeatedRuntimeLoopStepBoundary {
+    pub fn run_one(
+        &self,
+        socket: &UdpSocket,
+        counters: &mut ClientHeartbeatLoopCountersState,
+        input: ClientHeartbeatLoopRepeatedRuntimeBodyInput,
+    ) -> ClientHeartbeatLoopRepeatedRuntimeLoopStepResult {
+        let body = self.body.run_one(socket, counters, input);
+        let controller = self.controller.observe(&body);
+        let shutdown_apply = self.shutdown_apply.apply(controller.shutdown);
+
+        ClientHeartbeatLoopRepeatedRuntimeLoopStepResult {
+            body,
+            controller,
+            shutdown_apply,
         }
     }
 }
@@ -3706,6 +3824,166 @@ mod tests {
             }
         );
         assert_eq!(result.runtime.heartbeat_send, None);
+    }
+
+    #[test]
+    fn client_heartbeat_loop_outer_controller_continues_on_non_stop_body_result() {
+        let handoff = ClientHeartbeatLoopRepeatedRuntimeHandoff {
+            mode: ClientHeartbeatOneTickRuntimeMode::HeartbeatOnly,
+            destination: "127.0.0.1:5000".parse().unwrap(),
+            client_id: ClientId("client-1".to_string()),
+            run_id: RunId("run-1".to_string()),
+            protocol_version: ProtocolVersion(2),
+            cadence: ClientHeartbeatLoopCadenceInput {
+                heartbeat_interval_micros: 1_000,
+                ack_receive_timeout_micros: 500,
+                ack_observation_return: ClientHeartbeatAckObservationReturnMode::Disabled,
+            },
+            stop_condition: ClientHeartbeatLoopStopCondition::RunUntilStopped,
+            max_ack_socket_wait_micros: 500,
+            max_sleep_micros: 250,
+            retry_policy: ClientHeartbeatLoopRetryPolicy {
+                max_attempts: 3,
+                retry_delay_micros: 1_000,
+            },
+            local_time_enabled: true,
+            short_status: Some("one-tick-runtime".to_string()),
+        };
+        let body = ClientHeartbeatLoopRepeatedRuntimeBodyResult {
+            handoff,
+            one_tick_input: ClientHeartbeatLoopRepeatedRuntimeHandoff {
+                mode: ClientHeartbeatOneTickRuntimeMode::HeartbeatOnly,
+                destination: "127.0.0.1:5000".parse().unwrap(),
+                client_id: ClientId("client-1".to_string()),
+                run_id: RunId("run-1".to_string()),
+                protocol_version: ProtocolVersion(2),
+                cadence: ClientHeartbeatLoopCadenceInput {
+                    heartbeat_interval_micros: 1_000,
+                    ack_receive_timeout_micros: 500,
+                    ack_observation_return: ClientHeartbeatAckObservationReturnMode::Disabled,
+                },
+                stop_condition: ClientHeartbeatLoopStopCondition::RunUntilStopped,
+                max_ack_socket_wait_micros: 500,
+                max_sleep_micros: 250,
+                retry_policy: ClientHeartbeatLoopRetryPolicy {
+                    max_attempts: 3,
+                    retry_delay_micros: 1_000,
+                },
+                local_time_enabled: true,
+                short_status: Some("one-tick-runtime".to_string()),
+            }
+            .build_one_tick_input(
+                TimestampMicros(10_500),
+                ClientHeartbeatLoopStateSnapshot {
+                    sent_heartbeats: 0,
+                    received_acks: 0,
+                    missed_acks: 0,
+                    last_heartbeat_sent_at: Some(TimestampMicros(10_000)),
+                    stop_requested: false,
+                },
+                0,
+            ),
+            runtime: ClientHeartbeatLoopOneTickRuntimeResult {
+                controller: ClientHeartbeatLoopControllerResult {
+                    action: ClientHeartbeatLoopControllerAction::Sleep,
+                    plan: ClientHeartbeatLoopControllerPlan::Sleep {
+                        sleep: ClientHeartbeatLoopSleepDecision::Sleep {
+                            reason: ClientHeartbeatLoopSleepReason::CadenceWait,
+                            sleep_micros: 250,
+                            wake_at: TimestampMicros(11_000),
+                        },
+                        log: ClientHeartbeatLoopLogHandoff {
+                            client_id: ClientId("client-1".to_string()),
+                            run_id: RunId("run-1".to_string()),
+                            observed_at: TimestampMicros(10_500),
+                            reason: ClientHeartbeatLoopPolicyReason::WaitingForCadence,
+                            heartbeat_interval_micros: 1_000,
+                            ack_receive_timeout_micros: 500,
+                            sent_heartbeats: 0,
+                            received_acks: 0,
+                            missed_acks: 0,
+                        },
+                        iteration_result: ClientHeartbeatLoopIterationRuntimeResult::Waited {
+                            next_heartbeat_due_at: TimestampMicros(11_000),
+                        },
+                    },
+                    log: None,
+                    shutdown: ClientHeartbeatLoopShutdownDecision::Continue,
+                    iteration_result: Some(ClientHeartbeatLoopIterationRuntimeResult::Waited {
+                        next_heartbeat_due_at: TimestampMicros(11_000),
+                    }),
+                },
+                heartbeat_send: None,
+                ack_return: None,
+                stats_return_send: None,
+                retry: None,
+                failure: None,
+                counters_updates: Vec::new(),
+                final_counters: ClientHeartbeatLoopCountersState::default(),
+            },
+            shutdown: ClientHeartbeatLoopShutdownDecision::Continue,
+        };
+
+        let result = ClientHeartbeatLoopOuterControllerBoundary.observe(&body);
+
+        assert_eq!(
+            result.action,
+            ClientHeartbeatLoopOuterControllerAction::ContinueLoop
+        );
+        assert_eq!(
+            result.shutdown,
+            ClientHeartbeatLoopShutdownDecision::Continue
+        );
+    }
+
+    #[test]
+    fn client_heartbeat_loop_repeated_runtime_loop_step_marks_shutdown_apply_on_stop() {
+        let socket = UdpSocket::bind("127.0.0.1:0").expect("socket should bind");
+        let mut counters = ClientHeartbeatLoopCountersState::default();
+        let handoff = ClientHeartbeatLoopRepeatedRuntimeHandoff {
+            mode: ClientHeartbeatOneTickRuntimeMode::HeartbeatOnly,
+            destination: "127.0.0.1:5000".parse().unwrap(),
+            client_id: ClientId("client-1".to_string()),
+            run_id: RunId("run-1".to_string()),
+            protocol_version: ProtocolVersion(2),
+            cadence: ClientHeartbeatLoopCadenceInput {
+                heartbeat_interval_micros: 1_000,
+                ack_receive_timeout_micros: 500,
+                ack_observation_return: ClientHeartbeatAckObservationReturnMode::Disabled,
+            },
+            stop_condition: ClientHeartbeatLoopStopCondition::RunUntilStopped,
+            max_ack_socket_wait_micros: 500,
+            max_sleep_micros: 250,
+            retry_policy: ClientHeartbeatLoopRetryPolicy {
+                max_attempts: 3,
+                retry_delay_micros: 1_000,
+            },
+            local_time_enabled: true,
+            short_status: Some("one-tick-runtime".to_string()),
+        };
+
+        let result = ClientHeartbeatLoopRepeatedRuntimeLoopStepBoundary::default().run_one(
+            &socket,
+            &mut counters,
+            ClientHeartbeatLoopRepeatedRuntimeBodyInput {
+                handoff,
+                now: TimestampMicros(10_500),
+                stop_requested: true,
+                retry_attempts_used: 0,
+            },
+        );
+
+        assert_eq!(
+            result.controller.action,
+            ClientHeartbeatLoopOuterControllerAction::StopLoop
+        );
+        assert_eq!(
+            result.shutdown_apply,
+            ClientHeartbeatLoopShutdownApplyResult::StopLoop {
+                reason: ClientHeartbeatLoopPolicyReason::StopRequested,
+                cleanup_required: true
+            }
+        );
     }
 
     #[test]
