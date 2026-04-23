@@ -4971,6 +4971,71 @@ Current code reflects this with
 `ClientHeartbeatLoopTimerRetryReconnectIntegrationResult`, and
 `ClientHeartbeatLoopTimerRetryReconnectIntegrationBoundary`.
 
+### Client Actual Timer / Retry / Reconnect Execution Integration Minimal Scope
+
+After future timer / retry / reconnect planning handoff becomes available,
+actual execution integration remains a separate boundary. The current scope
+adds only the minimal conversion from planning handoff into explicit future
+actual execution actions or explicit stop passthrough; it does not execute
+timer wait, retry execution, reconnect, or timeout wakeup behavior.
+
+Current minimal scope:
+
+1. `ClientHeartbeatLoopActualTimerRetryReconnectExecutionInput::from_planning_handoff(...)`
+   converts `ClientHeartbeatLoopTimerRetryReconnectIntegrationResult` into:
+   - `Ok(input)` for continue-path planning handoff
+   - `Err(output)` for explicit stop-path output
+2. `ClientHeartbeatLoopActualTimerRetryReconnectExecutionBoundary` receives one
+   `ClientHeartbeatLoopTimerRetryReconnectIntegrationResult`.
+3. If timer / retry / reconnect integration returns `ContinuePlanning { handoff }`:
+   - actual execution integration returns `ContinueExecution { handoff }`
+   - continue path preserves explicit future actual execution actions
+4. If timer / retry / reconnect integration returns `Stop { output }`:
+   - actual execution integration returns `Stop { output }`
+   - stop path remains explicit and is not collapsed into continue execution
+5. Minimal safe actual-execution scope:
+   - planning handoff is the only source for actual execution input
+   - continue path preserves explicit future actions for `TimerWait`, `RetryExecution`, and `ReconnectExecution`
+   - reconnect stays explicit even when only `NoReconnectExecution` exists today
+   - no heartbeat timeout wakeup is executed here
+
+Relationship between timer / retry / reconnect planning handoff, actual
+execution integration input, actual execution integration result, and future
+completed continuous heartbeat loop body:
+
+- timer / retry / reconnect planning handoff
+  - Is the only source for actual execution integration input.
+- actual execution integration input
+  - Wraps only continue-path planning handoff.
+  - Is not created for explicit stop-path output.
+- actual execution integration result
+  - Returns either explicit future actual execution handoff for continue path or explicit stop passthrough.
+  - Keeps timer wait / retry execution / reconnect execution visible.
+- future completed continuous heartbeat loop body
+  - Will later consume the actual execution integration result without hiding side effects inside the dumb while-loop.
+  - Remains outside the current scope.
+
+Responsibility split:
+
+- timer / retry / reconnect integration boundary
+  - Produces explicit planning handoff or explicit stop output only.
+  - Does not own actual execution integration.
+- actual timer / retry / reconnect execution integration boundary
+  - Converts planning handoff into explicit future actual execution actions only.
+  - Does not execute runtime behavior or reinterpret cleanup logic.
+- future completed continuous heartbeat loop body
+  - Will later own the next-stage actual execution wiring around this handoff.
+  - Is not implemented in the current scope.
+
+Current code reflects this with
+`ClientHeartbeatLoopActualTimerRetryReconnectExecutionInput`,
+`ClientHeartbeatLoopFutureActualTimerWaitAction`,
+`ClientHeartbeatLoopFutureActualRetryExecutionAction`,
+`ClientHeartbeatLoopFutureActualReconnectExecutionAction`,
+`ClientHeartbeatLoopActualTimerRetryReconnectExecutionHandoff`,
+`ClientHeartbeatLoopActualTimerRetryReconnectExecutionResult`, and
+`ClientHeartbeatLoopActualTimerRetryReconnectExecutionBoundary`.
+
 ### Heartbeat Client Ack Observation Flow
 
 The client ack observation flow returns the missing `client_received_at`
