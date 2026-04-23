@@ -4845,6 +4845,70 @@ Current code reflects this with
 `ClientHeartbeatLoopActualWhileLoopTerminationResult`, and
 `ClientHeartbeatLoopActualWhileLoopTerminationBoundary`.
 
+### Client Completed Loop Body Integration Minimal Scope
+
+After actual while-loop termination becomes available, completed continuous
+heartbeat loop body integration remains a separate boundary. The current scope
+adds only the minimal conversion from actual while-loop termination result
+into completed loop body result; it does not implement future timer wait,
+retry execution, reconnect, or timeout wakeup execution.
+
+Current minimal scope:
+
+1. `ClientHeartbeatLoopCompletedBodyInput::from_actual_while_loop_termination(...)`
+   converts `ClientHeartbeatLoopActualWhileLoopTerminationResult` into:
+   - `Ok(input)` for stop-path actual termination output
+   - `Err(carry)` for continue-path carry
+2. `ClientHeartbeatLoopCompletedBodyIntegrationBoundary` receives one
+   `ClientHeartbeatLoopActualWhileLoopTerminationResult`.
+3. If actual while-loop termination returns `Continue { carry }`:
+   - completed loop body integration returns `Continue`
+   - no completed loop body stop-path input is produced
+4. If actual while-loop termination returns `Terminated { output }`:
+   - completed loop body integration returns `Stop { output }`
+   - completed loop body result preserves `stop_reason`
+   - completed loop body result preserves `cleanup_completed`
+   - completed loop body result preserves explicit flush/log/release apply order
+5. Minimal safe completed-body scope:
+   - actual while-loop termination result is the only source for completed body input
+   - continue carry, termination result, and completed loop body result stay separate
+   - no cleanup ordering / execution planning / side-effect apply / termination logic is re-interpreted here
+   - future timer / retry / reconnect integration remains outside this boundary
+
+Relationship between actual while-loop termination result, completed
+continuous heartbeat loop body input, completed continuous heartbeat loop body
+result, and future timer / retry / reconnect integration:
+
+- actual while-loop termination result
+  - Is the only stop-path source for completed loop body input.
+- completed continuous heartbeat loop body input
+  - Wraps only actual while-loop terminal output.
+  - Is not created for continue-path carry.
+- completed continuous heartbeat loop body result
+  - Is produced only after actual while-loop termination is available.
+  - Preserves `stop_reason`, `cleanup_completed`, and `applied_actions`.
+- future timer / retry / reconnect integration
+  - Will later consume the completed body result while keeping the actual while-loop dumb.
+  - Is not implemented in the current scope.
+
+Responsibility split:
+
+- actual while-loop termination boundary
+  - Produces explicit termination output only.
+  - Does not own completed continuous heartbeat loop body integration.
+- completed loop body integration boundary
+  - Converts actual while-loop termination result into completed body result only.
+  - Does not reinterpret cleanup logic or add runtime behavior.
+- future timer / retry / reconnect integration
+  - Will later own non-stop-path integration around completed loop body flow.
+  - Is not implemented in the current scope.
+
+Current code reflects this with
+`ClientHeartbeatLoopCompletedBodyInput`,
+`ClientHeartbeatLoopCompletedBodyTerminalOutput`,
+`ClientHeartbeatLoopCompletedBodyIntegrationResult`, and
+`ClientHeartbeatLoopCompletedBodyIntegrationBoundary`.
+
 ### Heartbeat Client Ack Observation Flow
 
 The client ack observation flow returns the missing `client_received_at`
