@@ -4059,6 +4059,52 @@ Current code reflects this with `ClientHeartbeatLoopTimerWaitDecision`,
 `ClientHeartbeatLoopSequencingResult`, and
 `ClientHeartbeatLoopSequencingBoundary`.
 
+### Client Completed Loop Body Ordering Minimal Scope
+
+After sequencing decides stop, retry, wait, or no-wait, the future completed
+loop still needs one ordering layer that tells the completed body what to call
+next. The current scope fixes that order without adding a real while-loop or
+executing timer / retry / cleanup work.
+
+Current minimal scope:
+
+1. `ClientHeartbeatLoopStepOrderingBoundary` receives one
+   `ClientHeartbeatLoopSequencingResult`.
+2. If sequencing already entered cleanup:
+   - ordering returns `Stop`
+   - stop result preserves `stop_reason`
+   - caller can later hand this into real cleanup execution
+3. If retry work is scheduled:
+   - ordering returns `RetryThenContinue { retry }`
+   - retry ordering wins over timer-wait ordering
+4. If no retry is scheduled but `timer_wait = Wait { sleep }`:
+   - ordering returns `WaitThenContinue { sleep }`
+5. Otherwise:
+   - ordering returns `ContinueImmediately`
+6. It returns either:
+   - `ClientHeartbeatLoopStepOrderingResult::Continue { handoff }`
+   - `ClientHeartbeatLoopStepOrderingResult::Stop { result }`
+
+Responsibility split:
+
+- lifecycle
+  - Decides continue vs stop and cleanup requirement.
+- sequencing
+  - Names typed timer / retry / cleanup follow-up work.
+- future completed loop body
+  - Consumes ordering output and invokes the next concrete branch in order.
+  - Will later own actual timer wait call, retry execution call, cleanup call,
+    and one-step repetition contract.
+- eventual while-loop
+  - Will own repeated invocation, caller stop flag refresh, socket lifetime,
+    and process shutdown boundary.
+
+Current code reflects this with `ClientHeartbeatLoopStepOrdering`,
+`ClientHeartbeatLoopCompletedBodySequencingHandoff`,
+`ClientHeartbeatLoopCompletedBodyStopResult`,
+`ClientHeartbeatLoopStepOrderingResult`, and
+`ClientHeartbeatLoopStepOrderingBoundary`.
+
 ### Heartbeat Client Ack Observation Flow
 
 The client ack observation flow returns the missing `client_received_at`
