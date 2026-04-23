@@ -4909,6 +4909,68 @@ Current code reflects this with
 `ClientHeartbeatLoopCompletedBodyIntegrationResult`, and
 `ClientHeartbeatLoopCompletedBodyIntegrationBoundary`.
 
+### Client Timer / Retry / Reconnect Integration Minimal Scope
+
+After completed loop body output becomes available, future timer / retry /
+reconnect integration remains a separate boundary. The current scope adds only
+the minimal conversion from completed loop body result into explicit future
+planning handoff or explicit stop passthrough; it does not execute timer wait,
+retry execution, reconnect, or timeout wakeup behavior.
+
+Current minimal scope:
+
+1. `ClientHeartbeatLoopTimerRetryReconnectIntegrationInput::from_completed_body_result(...)`
+   converts `ClientHeartbeatLoopCompletedBodyIntegrationResult` into:
+   - `Ok(input)` for continue-path carry
+   - `Err(output)` for explicit stop-path output
+2. `ClientHeartbeatLoopTimerRetryReconnectIntegrationBoundary` receives one
+   `ClientHeartbeatLoopCompletedBodyIntegrationResult`.
+3. If completed loop body integration returns `Continue { carry }`:
+   - timer / retry / reconnect integration returns `ContinuePlanning { handoff }`
+   - future planning handoff preserves continue carry explicitly
+4. If completed loop body integration returns `Stop { output }`:
+   - timer / retry / reconnect integration returns `Stop { output }`
+   - stop path remains explicit and is not collapsed into continue planning
+5. Minimal safe integration scope:
+   - completed loop body result is the only source for planning input
+   - continue carry, stop result, and future planning result stay separate
+   - no cleanup logic is re-interpreted here
+   - no timer wait / retry execution / reconnect / timeout wakeup is executed here
+
+Relationship between completed loop body result, timer / retry / reconnect
+integration input, timer / retry / reconnect integration result, and future
+completed continuous heartbeat loop body:
+
+- completed loop body result
+  - Is the only source for timer / retry / reconnect integration input.
+- timer / retry / reconnect integration input
+  - Wraps only continue-path carry.
+  - Is not created for explicit stop-path output.
+- timer / retry / reconnect integration result
+  - Returns either future planning handoff for continue path or explicit stop passthrough.
+  - Keeps continue / stop / future planning distinct.
+- future completed continuous heartbeat loop body
+  - Will later consume this integration result without moving business logic into the dumb actual while-loop.
+  - Remains outside the current scope.
+
+Responsibility split:
+
+- completed loop body integration boundary
+  - Produces explicit continue carry or explicit stop output only.
+  - Does not own timer / retry / reconnect planning.
+- timer / retry / reconnect integration boundary
+  - Converts completed loop body result into future planning handoff or stop passthrough only.
+  - Does not reinterpret cleanup logic or execute runtime behavior.
+- future completed continuous heartbeat loop body
+  - Will later own the next-stage integration around timer / retry / reconnect.
+  - Is not implemented in the current scope.
+
+Current code reflects this with
+`ClientHeartbeatLoopTimerRetryReconnectIntegrationInput`,
+`ClientHeartbeatLoopFutureTimerRetryReconnectPlanningHandoff`,
+`ClientHeartbeatLoopTimerRetryReconnectIntegrationResult`, and
+`ClientHeartbeatLoopTimerRetryReconnectIntegrationBoundary`.
+
 ### Heartbeat Client Ack Observation Flow
 
 The client ack observation flow returns the missing `client_received_at`

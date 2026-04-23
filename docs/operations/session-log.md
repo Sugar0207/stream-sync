@@ -5,6 +5,56 @@
 - Codex
 
 ### 今回の作業
+- completed loop body result から future timer / retry / reconnect integration へ進む最小範囲を整理した。
+- completed loop body result だけから continue-path planning input を作る最小境界を追加した。
+- continue carry、stop result、future planning result を分離した timer / retry / reconnect integration boundary を追加した。
+
+### 変更ファイル
+- `apps/client/src/lib.rs`
+- `docs/architecture/system-design.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### 実装したこと
+- `ClientHeartbeatLoopTimerRetryReconnectIntegrationInput`
+- `ClientHeartbeatLoopFutureTimerRetryReconnectPlanningHandoff`
+- `ClientHeartbeatLoopTimerRetryReconnectIntegrationResult`
+- `ClientHeartbeatLoopTimerRetryReconnectIntegrationInput::from_completed_body_result(...)`
+- `ClientHeartbeatLoopTimerRetryReconnectIntegrationBoundary`
+- continue path から timer / retry / reconnect integration input を作る単体テスト
+- stop path では timer / retry / reconnect integration input を作らない単体テスト
+- stop path を continue planning に畳み込まない単体テスト
+- stop-only semantics を保った integration result の単体テスト
+- continue / stop / future planning の分離を保つ単体テスト
+
+### 未実装 / 保留
+- completed continuous heartbeat loop 本体
+- actual timer wait / retry execution / reconnect
+- heartbeat timeout wakeup execution
+- future actual timer wait / retry execution / reconnect integration
+- final flush / log writer invocation / resource release の複雑な実処理
+
+### 次にやる候補
+- future actual timer wait / retry execution / reconnect integration へ planning handoff を接続する最小範囲整理
+- heartbeat timeout notice wakeup 実行本体に進む前の境界整理
+- RTT / offset metrics snapshot export cadence / dashboard refresh 方針整理
+
+### TODO 更新内容
+- 現在位置に completed loop body result から future timer / retry / reconnect integration への最小境界完了を反映した。
+- 直近でやることを future actual timer wait / retry execution / reconnect integration への planning handoff 接続へ更新した。
+- client / 検証タスクに timer / retry / reconnect integration 境界と関連単体テスト完了を追加した。
+
+### 検証
+- `cargo fmt`
+- `cargo fmt --check`
+- `cargo test -p stream-sync-client client_heartbeat_loop_cleanup`
+- `cargo check --workspace`
+
+## 2026-04-24
+### 担当
+- Codex
+
+### 今回の作業
 - actual while-loop termination result から future completed continuous heartbeat loop body へ進む最小範囲を整理した。
 - actual while-loop termination result だけから completed loop body stop-path input を作る stop-only 境界を追加した。
 - continue carry、termination result、completed loop body result を分離した completed-body integration boundary を追加した。
