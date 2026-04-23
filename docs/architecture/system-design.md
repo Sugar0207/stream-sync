@@ -4241,6 +4241,47 @@ Current code reflects this with `ClientHeartbeatLoopStopRefreshInput`,
 `ClientHeartbeatLoopSkeletonResult`, and
 `ClientHeartbeatLoopSkeletonBoundary`.
 
+### Client Actual Apply Call Order Minimal Scope
+
+After repeated invocation skeleton builds carry or stop state, the future
+runtime still needs one thin layer that decides which apply branch would run
+next. The current scope fixes that call order without executing timer waits,
+retry work, or cleanup.
+
+Current minimal scope:
+
+1. `ClientHeartbeatLoopApplyOrderBoundary` receives one
+   `ClientHeartbeatLoopSkeletonResult`.
+2. If skeleton returns `Stop { handoff }`:
+   - apply order returns `TriggerCleanup`
+   - stop handoff is wrapped into `ClientHeartbeatLoopCleanupTrigger`
+3. If skeleton returns `Continue { carry }`:
+   - `ContinueImmediately` becomes `ContinueWithoutApply`
+   - `WaitThenContinue { sleep }` becomes `ApplyTimerThenContinue`
+   - `RetryThenContinue { retry }` becomes `ApplyRetryThenContinue`
+4. The returned result is typed only:
+   - no timer wait is executed
+   - no retry is executed
+   - no cleanup is executed
+
+Responsibility split:
+
+- sequencing
+  - Names typed timer / retry / cleanup work.
+- ordering
+  - Chooses the next logical branch.
+- caller contract
+  - Hands that branch to eventual while-loop ownership.
+- repeated invocation skeleton
+  - Refreshes stop flag and builds next carry state.
+- future actual apply order
+  - Decides which apply branch would run next.
+  - Does not perform the apply itself.
+
+Current code reflects this with `ClientHeartbeatLoopCleanupTrigger`,
+`ClientHeartbeatLoopApplyOrderResult`, and
+`ClientHeartbeatLoopApplyOrderBoundary`.
+
 ### Heartbeat Client Ack Observation Flow
 
 The client ack observation flow returns the missing `client_received_at`
