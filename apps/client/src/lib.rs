@@ -2480,6 +2480,26 @@ pub enum ClientHeartbeatLoopApplyOrderResult {
     },
 }
 
+/// Why a future completed continuous loop outer shell would stop.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ClientHeartbeatLoopShellStopReason {
+    CleanupRequested {
+        stop_reason: ClientHeartbeatLoopLifecycleStopReason,
+    },
+}
+
+/// Caller-facing result of one outer-shell planning step.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ClientHeartbeatLoopShellResult {
+    Continue {
+        apply_order: ClientHeartbeatLoopApplyOrderResult,
+    },
+    Stop {
+        reason: ClientHeartbeatLoopShellStopReason,
+        trigger: ClientHeartbeatLoopCleanupTrigger,
+    },
+}
+
 /// Boundary that connects one step result to future completed-loop lifecycle flow.
 ///
 /// This does not run a while-loop, sleep, reconnect, flush logs, close
@@ -2797,6 +2817,33 @@ impl ClientHeartbeatLoopApplyOrderBoundary {
                     }
                 }
             },
+        }
+    }
+}
+
+/// Boundary that exposes the smallest caller-facing outer shell result.
+///
+/// This boundary does not repeat a loop, execute timer waits, perform retries,
+/// reconnect sockets, flush logs, or run cleanup. It only converts apply-order
+/// planning into a final continue-or-stop shell result.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct ClientHeartbeatLoopOuterShellBoundary;
+
+impl ClientHeartbeatLoopOuterShellBoundary {
+    pub fn plan_next(
+        &self,
+        apply_order: ClientHeartbeatLoopApplyOrderResult,
+    ) -> ClientHeartbeatLoopShellResult {
+        match apply_order {
+            ClientHeartbeatLoopApplyOrderResult::TriggerCleanup { trigger } => {
+                ClientHeartbeatLoopShellResult::Stop {
+                    reason: ClientHeartbeatLoopShellStopReason::CleanupRequested {
+                        stop_reason: trigger.handoff.stop.stop_reason,
+                    },
+                    trigger,
+                }
+            }
+            apply_order => ClientHeartbeatLoopShellResult::Continue { apply_order },
         }
     }
 }
@@ -5913,6 +5960,95 @@ mod tests {
             result,
             ClientHeartbeatLoopApplyOrderResult::TriggerCleanup {
                 trigger: ClientHeartbeatLoopCleanupTrigger { handoff }
+            }
+        );
+    }
+
+    #[test]
+    fn client_heartbeat_loop_outer_shell_preserves_continue_apply_order() {
+        let apply_order = ClientHeartbeatLoopApplyOrderResult::ApplyTimerThenContinue {
+            sleep: ClientHeartbeatLoopSleepDecision::Sleep {
+                reason: ClientHeartbeatLoopSleepReason::CadenceWait,
+                sleep_micros: 250,
+                wake_at: TimestampMicros(11_000),
+            },
+            carry: ClientHeartbeatLoopIterationCarryState {
+                ordering: ClientHeartbeatLoopStepOrdering::WaitThenContinue {
+                    sleep: ClientHeartbeatLoopSleepDecision::Sleep {
+                        reason: ClientHeartbeatLoopSleepReason::CadenceWait,
+                        sleep_micros: 250,
+                        wake_at: TimestampMicros(11_000),
+                    },
+                },
+                final_counters: ClientHeartbeatLoopCountersState::default(),
+                next_runtime_input: ClientHeartbeatLoopCompletedStepRuntimeInput {
+                    continue_requested: true,
+                    body: ClientHeartbeatLoopRepeatedRuntimeBodyInput {
+                        handoff: ClientHeartbeatLoopRepeatedRuntimeHandoff {
+                            mode: ClientHeartbeatOneTickRuntimeMode::HeartbeatOnly,
+                            destination: "127.0.0.1:5000".parse().unwrap(),
+                            client_id: ClientId("client-1".to_string()),
+                            run_id: RunId("run-1".to_string()),
+                            protocol_version: ProtocolVersion(2),
+                            cadence: ClientHeartbeatLoopCadenceInput {
+                                heartbeat_interval_micros: 1_000,
+                                ack_receive_timeout_micros: 500,
+                                ack_observation_return:
+                                    ClientHeartbeatAckObservationReturnMode::Disabled,
+                            },
+                            stop_condition: ClientHeartbeatLoopStopCondition::RunUntilStopped,
+                            max_ack_socket_wait_micros: 500,
+                            max_sleep_micros: 250,
+                            retry_policy: ClientHeartbeatLoopRetryPolicy {
+                                max_attempts: 3,
+                                retry_delay_micros: 1_000,
+                            },
+                            local_time_enabled: true,
+                            short_status: Some("one-tick-runtime".to_string()),
+                        },
+                        now: TimestampMicros(11_000),
+                        stop_requested: false,
+                        retry_attempts_used: 0,
+                    },
+                },
+            },
+        };
+
+        let result = ClientHeartbeatLoopOuterShellBoundary.plan_next(apply_order.clone());
+
+        assert_eq!(
+            result,
+            ClientHeartbeatLoopShellResult::Continue { apply_order }
+        );
+    }
+
+    #[test]
+    fn client_heartbeat_loop_outer_shell_maps_cleanup_trigger_to_stop_reason() {
+        let trigger = ClientHeartbeatLoopCleanupTrigger {
+            handoff: ClientHeartbeatLoopWhileLoopStopHandoff {
+                stop: ClientHeartbeatLoopCompletedBodyStopResult {
+                    stop_reason: ClientHeartbeatLoopLifecycleStopReason::CallerRequestedStop,
+                    cleanup: ClientHeartbeatLoopCleanupSequencingResult::BeginCleanup {
+                        stop_reason: ClientHeartbeatLoopLifecycleStopReason::CallerRequestedStop,
+                    },
+                },
+                final_counters: ClientHeartbeatLoopCountersState::default(),
+            },
+        };
+
+        let result = ClientHeartbeatLoopOuterShellBoundary.plan_next(
+            ClientHeartbeatLoopApplyOrderResult::TriggerCleanup {
+                trigger: trigger.clone(),
+            },
+        );
+
+        assert_eq!(
+            result,
+            ClientHeartbeatLoopShellResult::Stop {
+                reason: ClientHeartbeatLoopShellStopReason::CleanupRequested {
+                    stop_reason: ClientHeartbeatLoopLifecycleStopReason::CallerRequestedStop,
+                },
+                trigger,
             }
         );
     }

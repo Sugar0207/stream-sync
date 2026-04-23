@@ -5,6 +5,52 @@
 - Codex
 
 ### 今回の作業
+- completed continuous heartbeat loop outer shell の最小範囲を整理した。
+- apply-order の結果を caller-facing な continue / stop に変換する outer shell 境界を追加した。
+- actual timer / retry / cleanup / final flush は実行せず、typed result の返却だけに留めた。
+
+### 変更ファイル
+- `apps/client/src/lib.rs`
+- `docs/architecture/system-design.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### 実装したこと
+- `ClientHeartbeatLoopShellStopReason`
+- `ClientHeartbeatLoopShellResult`
+- `ClientHeartbeatLoopOuterShellBoundary`
+- continue apply-order をそのまま保持する単体テスト
+- cleanup trigger を shell stop reason へ変換する単体テスト
+
+### 未実装 / 保留
+- completed continuous heartbeat loop
+- caller-facing shell runner / repeated loop entry
+- actual timer wait / retry execution / reconnect
+- actual cleanup / final flush / log writer invocation
+
+### 次にやる候補
+- completed continuous heartbeat loop outer shell から caller-facing shell runner へ進む最小範囲整理
+- heartbeat timeout notice wakeup 実行本体に進む前の境界整理
+- RTT / offset metrics snapshot export cadence / dashboard refresh 方針整理
+
+### TODO 更新内容
+- 現在位置に completed continuous heartbeat loop outer shell の最小境界完了を反映した。
+- 直近でやることを caller-facing shell runner 整理へ更新した。
+- client / 検証タスクに outer shell 境界と関連単体テスト完了を追加した。
+
+### 検証
+- `cargo fmt`
+- `cargo test -p stream-sync-client client_heartbeat_loop_outer_shell`
+- `cargo fmt --check`
+- `cargo check --workspace`
+
+---
+
+## 2026-04-24
+### 担当
+- Codex
+
+### 今回の作業
 - future actual timer / retry / cleanup apply call order の最小範囲を整理した。
 - repeated invocation skeleton の結果から、次に timer / retry / cleanup のどれを呼ぶべきかだけを返す apply-order 境界を追加した。
 - 実 timer / retry / cleanup / final flush は実装しなかった。

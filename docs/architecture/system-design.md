@@ -4282,6 +4282,54 @@ Current code reflects this with `ClientHeartbeatLoopCleanupTrigger`,
 `ClientHeartbeatLoopApplyOrderResult`, and
 `ClientHeartbeatLoopApplyOrderBoundary`.
 
+### Client Completed Continuous Loop Outer Shell Minimal Scope
+
+After apply order decides the next branch, the caller still needs one thin
+outer shell result that says whether a future completed continuous heartbeat
+loop would continue or stop. The current scope fixes that caller-facing
+handoff without implementing repeated execution.
+
+Current minimal scope:
+
+1. `ClientHeartbeatLoopOuterShellBoundary` receives one
+   `ClientHeartbeatLoopApplyOrderResult`.
+2. If apply order returns:
+   - `ContinueWithoutApply`
+   - `ApplyTimerThenContinue`
+   - `ApplyRetryThenContinue`
+   then outer shell returns `Continue` and preserves that apply-order result.
+3. If apply order returns `TriggerCleanup { trigger }`:
+   - outer shell returns `Stop`
+   - stop reason becomes `CleanupRequested`
+   - cleanup trigger is preserved unchanged for future cleanup ownership
+4. The returned shell result is typed only:
+   - no loop repetition is executed
+   - no timer wait is executed
+   - no retry is executed
+   - no cleanup is executed
+
+Responsibility split:
+
+- lifecycle
+  - Decides whether one repeated step continues or stops.
+- sequencing
+  - Names timer / retry / cleanup follow-up work.
+- ordering
+  - Fixes the next logical branch.
+- caller contract
+  - Converts one completed step into caller-owned continue vs stop state.
+- repeated invocation skeleton
+  - Refreshes stop input and builds next iteration carry state.
+- apply order
+  - Decides which apply branch would run next.
+- outer shell
+  - Converts apply order into caller-facing continue vs stop.
+  - Does not execute the loop body or cleanup.
+
+Current code reflects this with `ClientHeartbeatLoopShellStopReason`,
+`ClientHeartbeatLoopShellResult`, and
+`ClientHeartbeatLoopOuterShellBoundary`.
+
 ### Heartbeat Client Ack Observation Flow
 
 The client ack observation flow returns the missing `client_received_at`
