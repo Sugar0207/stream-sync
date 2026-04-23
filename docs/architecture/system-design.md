@@ -4781,6 +4781,70 @@ Current code reflects this with
 `ClientHeartbeatLoopCompletedLoopStopPathResult`, and
 `ClientHeartbeatLoopCompletedLoopStopPathBoundary`.
 
+### Client Actual While-Loop Termination Minimal Scope
+
+After completed-loop terminal stop-path output becomes available, actual
+while-loop termination remains a separate boundary. The current scope adds
+only the minimal conversion from completed-loop stop-path result into explicit
+actual while-loop termination output; it does not implement the full completed
+continuous heartbeat loop body.
+
+Current minimal scope:
+
+1. `ClientHeartbeatLoopActualWhileLoopTerminationInput::from_completed_loop_stop_path(...)`
+   converts `ClientHeartbeatLoopCompletedLoopStopPathResult` into:
+   - `Ok(input)` for stop-path completed-loop handoff
+   - `Err(carry)` for continue-path carry
+2. `ClientHeartbeatLoopActualWhileLoopTerminationBoundary` receives one
+   `ClientHeartbeatLoopCompletedLoopStopPathResult`.
+3. If completed-loop stop-path boundary returns `Continue { carry }`:
+   - actual while-loop termination returns `Continue`
+   - no actual while-loop termination input is produced
+4. If completed-loop stop-path boundary returns `Stop { handoff }`:
+   - actual while-loop termination returns `Terminated { output }`
+   - termination output preserves `stop_reason`
+   - termination output preserves `cleanup_completed`
+   - termination output preserves explicit flush/log/release apply order
+5. Minimal safe termination scope:
+   - completed-loop stop-path result is the only source for termination input
+   - continue carry, terminal stop-path output, and actual termination result stay separate
+   - no cleanup ordering / execution planning / side-effect apply logic is re-interpreted here
+   - no business logic is moved into the actual while-loop body
+
+Relationship between completed-loop stop-path output, actual while-loop
+termination input, actual while-loop terminal output, and the future completed
+continuous heartbeat loop body:
+
+- completed-loop stop-path output
+  - Is the only stop-path source for actual while-loop termination input.
+- actual while-loop termination input
+  - Wraps only completed-loop stop-path handoff.
+  - Is not created for continue-path carry.
+- actual while-loop terminal output
+  - Is produced only after completed-loop stop-path output is available.
+  - Preserves `stop_reason`, `cleanup_completed`, and `applied_actions`.
+- future completed continuous heartbeat loop body
+  - Will later consume the termination result while keeping the while-loop dumb.
+  - Remains outside this minimal boundary.
+
+Responsibility split:
+
+- completed-loop stop-path output boundary
+  - Produces terminal stop-path output only.
+  - Does not own actual while-loop termination.
+- actual while-loop termination boundary
+  - Converts completed-loop stop-path output into actual termination output only.
+  - Does not re-run or reinterpret cleanup logic.
+- future completed continuous heartbeat loop body
+  - Will later own final termination wiring around the dumb while-loop.
+  - Is not implemented in the current scope.
+
+Current code reflects this with
+`ClientHeartbeatLoopActualWhileLoopTerminationInput`,
+`ClientHeartbeatLoopActualWhileLoopTerminalOutput`,
+`ClientHeartbeatLoopActualWhileLoopTerminationResult`, and
+`ClientHeartbeatLoopActualWhileLoopTerminationBoundary`.
+
 ### Heartbeat Client Ack Observation Flow
 
 The client ack observation flow returns the missing `client_received_at`

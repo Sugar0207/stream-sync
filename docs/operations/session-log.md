@@ -5,6 +5,55 @@
 - Codex
 
 ### 今回の作業
+- completed-loop terminal stop-path output から future actual while-loop termination へ進む最小範囲を整理した。
+- completed-loop stop-path result だけから actual while-loop termination input を作る stop-only 境界を追加した。
+- continue carry、terminal stop-path output、actual while-loop termination result を分離した termination boundary を追加した。
+
+### 変更ファイル
+- `apps/client/src/lib.rs`
+- `docs/architecture/system-design.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### 実装したこと
+- `ClientHeartbeatLoopActualWhileLoopTerminationInput`
+- `ClientHeartbeatLoopActualWhileLoopTerminalOutput`
+- `ClientHeartbeatLoopActualWhileLoopTerminationResult`
+- `ClientHeartbeatLoopActualWhileLoopTerminationInput::from_completed_loop_stop_path(...)`
+- `ClientHeartbeatLoopActualWhileLoopTerminationBoundary`
+- stop path から actual while-loop termination input を作る単体テスト
+- continue path では actual while-loop termination input を作らない単体テスト
+- continue carry を termination output に変換しない単体テスト
+- stop-only semantics を保った actual while-loop termination result の単体テスト
+- stop_reason / cleanup_completed / applied_actions を再解釈せず保持する単体テスト
+
+### 未実装 / 保留
+- completed continuous heartbeat loop 本体
+- actual while-loop termination result を future completed continuous heartbeat loop body へつなぐ統合
+- actual timer wait / retry execution / reconnect
+- final flush / log writer invocation / resource release の複雑な実処理
+
+### 次にやる候補
+- future completed continuous heartbeat loop body へ actual while-loop termination result を接続する最小範囲整理
+- heartbeat timeout notice wakeup 実行本体に進む前の境界整理
+- RTT / offset metrics snapshot export cadence / dashboard refresh 方針整理
+
+### TODO 更新内容
+- 現在位置に completed-loop terminal stop-path output から future actual while-loop termination への最小境界完了を反映した。
+- 直近でやることを actual while-loop termination result から future completed continuous heartbeat loop body への接続へ更新した。
+- client / 検証タスクに actual while-loop termination 境界と関連単体テスト完了を追加した。
+
+### 検証
+- `cargo fmt`
+- `cargo fmt --check`
+- `cargo test -p stream-sync-client client_heartbeat_loop_cleanup`
+- `cargo check --workspace`
+
+## 2026-04-24
+### 担当
+- Codex
+
+### 今回の作業
 - cleanup actual side-effect result から future completed continuous heartbeat loop stop path へ進む最小範囲を整理した。
 - cleanup side-effect result だけから terminal stop-path input を作る stop-only 境界を追加した。
 - continue carry と terminal stop-path output を分離した completed-loop stop-path boundary を追加した。
