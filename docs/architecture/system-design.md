@@ -4007,6 +4007,58 @@ Current code reflects this with
 `ClientHeartbeatLoopLifecycleResult`, and
 `ClientHeartbeatLoopLifecycleBoundary`.
 
+### Client Timer / Retry / Cleanup Sequencing Minimal Scope
+
+After lifecycle decides continue or stop, the future completed loop still
+needs one thin sequencing layer that tells the caller which follow-up branch
+would run next. The current scope fixes that handoff without introducing real
+timers, retry execution, reconnects, or cleanup work.
+
+Current minimal scope:
+
+1. `ClientHeartbeatLoopSequencingBoundary` receives one
+   `ClientHeartbeatLoopLifecycleResult`.
+2. If lifecycle already stopped:
+   - `timer_wait = NoWait`
+   - `retry_execution = NoRetryScheduled`
+   - `cleanup = BeginCleanup { stop_reason }`
+3. If lifecycle continues and one-tick runtime produced retry work:
+   - sequencing preserves `ClientHeartbeatLoopRetryApplyResult`
+   - retry sleep wins over controller cadence sleep
+4. If lifecycle continues and no retry is scheduled:
+   - sequencing inspects controller `Sleep` plan
+   - bounded sleep becomes `Wait { sleep }`
+   - non-sleep plans stay `NoWait`
+5. It returns `ClientHeartbeatLoopSequencingResult` containing:
+   - the preserved lifecycle result
+   - `timer_wait`
+   - `retry_execution`
+   - `cleanup`
+
+Responsibility split:
+
+- lifecycle
+  - Decides continue vs stop and whether cleanup is required.
+- timer wait
+  - Selects only the next wait handoff for cadence or retry backoff.
+  - Does not block the thread or own a timer implementation.
+- retry execution
+  - Carries typed retry work from one-tick runtime into future completed-loop
+    orchestration.
+  - Does not re-run the failed operation.
+- cleanup sequencing
+  - Carries typed stop reason into future shutdown / flush / socket-close work.
+  - Does not execute cleanup.
+- future completed loop body
+  - Will consume lifecycle plus sequencing output to run actual sleep, retry,
+    reconnect, cleanup ordering, and process lifetime transitions.
+
+Current code reflects this with `ClientHeartbeatLoopTimerWaitDecision`,
+`ClientHeartbeatLoopRetryExecutionResult`,
+`ClientHeartbeatLoopCleanupSequencingResult`,
+`ClientHeartbeatLoopSequencingResult`, and
+`ClientHeartbeatLoopSequencingBoundary`.
+
 ### Heartbeat Client Ack Observation Flow
 
 The client ack observation flow returns the missing `client_received_at`

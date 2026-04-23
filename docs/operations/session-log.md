@@ -1,5 +1,55 @@
 <!-- stream-sync/docs/operations/session-log.md -->
 
+## 2026-04-24
+### 担当
+- Codex
+
+### 今回の作業
+- future completed loop lifecycle から actual timer / retry / cleanup sequencing へ進む最小範囲を整理した。
+- lifecycle の continue / stop 判定を、timer wait / retry execution / cleanup sequencing の typed handoff に落とす最小境界を追加した。
+- actual sleep、retry 再実行、reconnect、cleanup 実行には進まず、future completed loop body が消費する sequencing までに止めた。
+
+### 変更ファイル
+- `apps/client/src/lib.rs`
+- `docs/architecture/system-design.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### 実装したこと
+- `ClientHeartbeatLoopTimerWaitDecision`
+- `ClientHeartbeatLoopRetryExecutionResult`
+- `ClientHeartbeatLoopCleanupSequencingResult`
+- `ClientHeartbeatLoopSequencingResult`
+- `ClientHeartbeatLoopSequencingBoundary`
+- retry sleep を controller sleep より優先する sequencing 判定
+- lifecycle stop から cleanup 開始 handoff へ落とす sequencing 判定
+- sequencing 境界の単体テストを追加
+
+### 未実装 / 保留
+- completed continuous heartbeat loop
+- actual timer wait 実行
+- retry execution / reconnect
+- shutdown cleanup / final flush / log writer invocation
+- future completed loop body の while-loop 本体
+
+### 次にやる候補
+- actual timer / retry / cleanup sequencing から future completed loop body の実行順序へ進む最小範囲整理
+- heartbeat timeout notice wakeup 実行本体に進む前の境界整理
+- RTT / offset metrics snapshot export cadence / dashboard refresh 方針整理
+
+### TODO 更新内容
+- 現在位置に actual timer / retry / cleanup sequencing の最小境界完了を反映した。
+- 直近でやることを future completed loop body の実行順序整理へ更新した。
+- client / 検証タスクに sequencing 境界と関連単体テスト完了を追加した。
+
+### 検証
+- `cargo fmt`
+- `cargo test -p stream-sync-client client_heartbeat_loop_sequencing`
+- `cargo fmt --check`
+- `cargo check --workspace`
+
+---
+
 ## 2026-04-23
 ### 種別
 - Codex
