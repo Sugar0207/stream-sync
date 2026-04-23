@@ -1565,6 +1565,40 @@ pub struct ClientHeartbeatLoopControllerResult {
     pub iteration_result: Option<ClientHeartbeatLoopIterationRuntimeResult>,
 }
 
+/// Input for one minimal client heartbeat loop runtime tick.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClientHeartbeatLoopOneTickRuntimeInput {
+    pub destination: SocketAddr,
+    pub body: ClientHeartbeatLoopBodyInput,
+    pub local_time: Option<TimestampMicros>,
+    pub short_status: Option<String>,
+    pub controller_now: TimestampMicros,
+    pub max_sleep_micros: u64,
+    pub retry_policy: ClientHeartbeatLoopRetryPolicy,
+    pub retry_attempts_used: u32,
+}
+
+/// Failure observed by the one-tick runtime boundary.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ClientHeartbeatLoopOneTickRuntimeFailure {
+    HeartbeatSend(ClientHeartbeatLoopEncodeSendError),
+    AckReceive(ClientHeartbeatLoopAckObservationReturnError),
+    ClientStatsReturnSend(ClientHeartbeatLoopClientStatsReturnSendError),
+}
+
+/// Result of one minimal client heartbeat loop runtime tick.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClientHeartbeatLoopOneTickRuntimeResult {
+    pub controller: ClientHeartbeatLoopControllerResult,
+    pub heartbeat_send: Option<ClientHeartbeatLoopEncodeSendRuntimeResult>,
+    pub ack_return: Option<ClientHeartbeatLoopAckObservationReturnRuntimeResult>,
+    pub stats_return_send: Option<ClientHeartbeatLoopClientStatsReturnSendRuntimeResult>,
+    pub retry: Option<ClientHeartbeatLoopRetryApplyResult>,
+    pub failure: Option<ClientHeartbeatLoopOneTickRuntimeFailure>,
+    pub counters_updates: Vec<ClientHeartbeatLoopCountersUpdateOutcome>,
+    pub final_counters: ClientHeartbeatLoopCountersState,
+}
+
 /// Boundary that prepares controller log handoff without writing logs.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
 pub struct ClientHeartbeatLoopControllerLogHandoffBoundary;
@@ -1657,6 +1691,227 @@ impl ClientHeartbeatLoopControllerResultBoundary {
     }
 }
 
+/// Minimal one-tick runtime boundary for the future client heartbeat loop.
+///
+/// This connects the already-separated body, controller, encode/send, ack
+/// receive, optional stats return, counters, retry planning, log handoff, and
+/// shutdown decision exactly once. It does not repeat, sleep, open log sinks,
+/// execute shutdown cleanup, or introduce an async runtime.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct ClientHeartbeatLoopOneTickRuntimeBoundary {
+    body: ClientHeartbeatLoopBodyBoundary,
+    controller: ClientHeartbeatLoopControllerBoundary,
+    controller_result: ClientHeartbeatLoopControllerResultBoundary,
+    encode_send: ClientHeartbeatLoopEncodeSendBoundary,
+    ack_return: ClientHeartbeatLoopAckObservationReturnBoundary,
+    stats_return_send: ClientHeartbeatLoopClientStatsReturnSendBoundary,
+    counters: ClientHeartbeatLoopCountersBoundary,
+    retry: ClientHeartbeatLoopRetryApplyBoundary,
+}
+
+impl ClientHeartbeatLoopOneTickRuntimeBoundary {
+    pub fn run_one(
+        &self,
+        socket: &UdpSocket,
+        counters: &mut ClientHeartbeatLoopCountersState,
+        input: ClientHeartbeatLoopOneTickRuntimeInput,
+    ) -> ClientHeartbeatLoopOneTickRuntimeResult {
+        let body_result = self.body.run_one(input.body.clone());
+        let controller_plan = self
+            .controller
+            .plan_next(ClientHeartbeatLoopControllerInput {
+                body_result,
+                now: input.controller_now,
+                max_sleep_micros: input.max_sleep_micros,
+            });
+        let controller = self.controller_result.finalize(controller_plan.clone());
+        let mut result = ClientHeartbeatLoopOneTickRuntimeResult {
+            controller,
+            heartbeat_send: None,
+            ack_return: None,
+            stats_return_send: None,
+            retry: None,
+            failure: None,
+            counters_updates: Vec::new(),
+            final_counters: counters.clone(),
+        };
+
+        match controller_plan {
+            ClientHeartbeatLoopControllerPlan::OwnershipNotReady { .. } => {
+                result.final_counters = counters.clone();
+                result
+            }
+            ClientHeartbeatLoopControllerPlan::Stop {
+                iteration_result, ..
+            }
+            | ClientHeartbeatLoopControllerPlan::Sleep {
+                iteration_result, ..
+            } => {
+                self.commit_iteration(counters, &mut result, iteration_result);
+                result
+            }
+            ClientHeartbeatLoopControllerPlan::SendHeartbeat { handoff, .. } => {
+                self.run_send_ack_stats(socket, counters, &mut result, handoff, input);
+                result
+            }
+        }
+    }
+
+    fn run_send_ack_stats(
+        &self,
+        socket: &UdpSocket,
+        counters: &mut ClientHeartbeatLoopCountersState,
+        result: &mut ClientHeartbeatLoopOneTickRuntimeResult,
+        handoff: ClientHeartbeatLoopBodySendHandoff,
+        input: ClientHeartbeatLoopOneTickRuntimeInput,
+    ) {
+        let send = match self.encode_send.send_one(
+            socket,
+            ClientHeartbeatLoopEncodeSendInput {
+                destination: input.destination,
+                handoff,
+                local_time: input.local_time,
+                short_status: input.short_status,
+            },
+        ) {
+            Ok(send) => send,
+            Err(error) => {
+                self.apply_failure(
+                    counters,
+                    result,
+                    ClientHeartbeatLoopOneTickRuntimeFailure::HeartbeatSend(error),
+                    ClientHeartbeatLoopRetryReason::HeartbeatSendFailed,
+                    ClientHeartbeatLoopIterationFailureKind::HeartbeatSend,
+                    input.retry_attempts_used,
+                    input.retry_policy,
+                    input.controller_now,
+                    input.max_sleep_micros,
+                );
+                return;
+            }
+        };
+        self.commit_iteration(
+            counters,
+            result,
+            ClientHeartbeatLoopIterationRuntimeResult::from_heartbeat_send(&send),
+        );
+        result.heartbeat_send = Some(send.clone());
+
+        if matches!(
+            send.handoff.ack_wait,
+            ClientHeartbeatAckReceiveTimeoutDecision::DeadlineElapsed
+        ) {
+            self.commit_iteration(
+                counters,
+                result,
+                ClientHeartbeatLoopIterationRuntimeResult::AckMissed {
+                    missed_at: input.controller_now,
+                },
+            );
+            return;
+        }
+
+        let ack = match self.ack_return.receive_one(socket, send.handoff.clone()) {
+            Ok(ack) => ack,
+            Err(error) => {
+                if client_heartbeat_loop_ack_error_is_timeout(&error) {
+                    self.commit_iteration(
+                        counters,
+                        result,
+                        ClientHeartbeatLoopIterationRuntimeResult::AckMissed {
+                            missed_at: input.controller_now,
+                        },
+                    );
+                }
+                self.apply_failure(
+                    counters,
+                    result,
+                    ClientHeartbeatLoopOneTickRuntimeFailure::AckReceive(error.clone()),
+                    client_heartbeat_loop_retry_reason_for_ack_error(&error),
+                    ClientHeartbeatLoopIterationFailureKind::AckReceive,
+                    input.retry_attempts_used,
+                    input.retry_policy,
+                    input.controller_now,
+                    input.max_sleep_micros,
+                );
+                return;
+            }
+        };
+        self.commit_iteration(
+            counters,
+            result,
+            ClientHeartbeatLoopIterationRuntimeResult::from_ack_return(&ack),
+        );
+        result.ack_return = Some(ack.clone());
+
+        let Some(stats_return) = ack.client_stats_return else {
+            return;
+        };
+        match self.stats_return_send.send_one(socket, stats_return) {
+            Ok(stats_send) => {
+                self.commit_iteration(
+                    counters,
+                    result,
+                    ClientHeartbeatLoopIterationRuntimeResult::from_stats_return_send(&stats_send),
+                );
+                result.stats_return_send = Some(stats_send);
+            }
+            Err(error) => {
+                self.apply_failure(
+                    counters,
+                    result,
+                    ClientHeartbeatLoopOneTickRuntimeFailure::ClientStatsReturnSend(error),
+                    ClientHeartbeatLoopRetryReason::StatsReturnSendFailed,
+                    ClientHeartbeatLoopIterationFailureKind::ClientStatsReturnSend,
+                    input.retry_attempts_used,
+                    input.retry_policy,
+                    input.controller_now,
+                    input.max_sleep_micros,
+                );
+            }
+        }
+    }
+
+    fn commit_iteration(
+        &self,
+        counters: &mut ClientHeartbeatLoopCountersState,
+        result: &mut ClientHeartbeatLoopOneTickRuntimeResult,
+        iteration_result: ClientHeartbeatLoopIterationRuntimeResult,
+    ) {
+        let update = self.counters.commit_result(counters, iteration_result);
+        result.final_counters = update.current.clone();
+        result.counters_updates.push(update);
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn apply_failure(
+        &self,
+        counters: &mut ClientHeartbeatLoopCountersState,
+        result: &mut ClientHeartbeatLoopOneTickRuntimeResult,
+        failure: ClientHeartbeatLoopOneTickRuntimeFailure,
+        retry_reason: ClientHeartbeatLoopRetryReason,
+        failure_kind: ClientHeartbeatLoopIterationFailureKind,
+        attempts_used: u32,
+        retry_policy: ClientHeartbeatLoopRetryPolicy,
+        failed_at: TimestampMicros,
+        max_sleep_micros: u64,
+    ) {
+        let retry = self
+            .retry
+            .apply_failure(ClientHeartbeatLoopRetryApplyInput {
+                reason: retry_reason,
+                failure_kind,
+                attempts_used,
+                policy: retry_policy,
+                failed_at,
+                max_sleep_micros,
+            });
+        self.commit_iteration(counters, result, retry.failure_result.clone());
+        result.retry = Some(retry);
+        result.failure = Some(failure);
+    }
+}
+
 /// Minimal controller boundary for one pre-loop client heartbeat step.
 ///
 /// It connects the body decision to either a typed send handoff, a bounded
@@ -1737,6 +1992,29 @@ fn client_heartbeat_loop_controller_iteration_result(
         } => Some(iteration_result.clone()),
         ClientHeartbeatLoopControllerPlan::OwnershipNotReady { .. }
         | ClientHeartbeatLoopControllerPlan::SendHeartbeat { .. } => None,
+    }
+}
+
+fn client_heartbeat_loop_ack_error_is_timeout(
+    error: &ClientHeartbeatLoopAckObservationReturnError,
+) -> bool {
+    matches!(
+        error,
+        ClientHeartbeatLoopAckObservationReturnError::AckReceive(
+            ClientResponseReceiveError::Receive(
+                io::ErrorKind::TimedOut | io::ErrorKind::WouldBlock
+            )
+        )
+    )
+}
+
+fn client_heartbeat_loop_retry_reason_for_ack_error(
+    error: &ClientHeartbeatLoopAckObservationReturnError,
+) -> ClientHeartbeatLoopRetryReason {
+    if client_heartbeat_loop_ack_error_is_timeout(error) {
+        ClientHeartbeatLoopRetryReason::AckReceiveTimeout
+    } else {
+        ClientHeartbeatLoopRetryReason::AckDecodeFailed
     }
 }
 
@@ -3484,5 +3762,200 @@ mod tests {
         );
         assert_eq!(result.log, None);
         assert_eq!(result.iteration_result, None);
+    }
+
+    #[test]
+    fn client_heartbeat_loop_one_tick_runtime_commits_wait_without_sleeping() {
+        let socket = UdpSocket::bind("127.0.0.1:0").expect("socket should bind");
+        let destination = "127.0.0.1:5000".parse().unwrap();
+        let mut counters = ClientHeartbeatLoopCountersState {
+            last_heartbeat_sent_at: Some(TimestampMicros(10_000)),
+            ..ClientHeartbeatLoopCountersState::default()
+        };
+        let policy_snapshot = counters.as_policy_snapshot(false);
+
+        let result = ClientHeartbeatLoopOneTickRuntimeBoundary::default().run_one(
+            &socket,
+            &mut counters,
+            ClientHeartbeatLoopOneTickRuntimeInput {
+                destination,
+                body: ClientHeartbeatLoopBodyInput {
+                    ownership: ClientHeartbeatLoopOwnershipInput {
+                        client_id: ClientId("client-1".to_string()),
+                        run_id: RunId("run-1".to_string()),
+                        protocol_version: ProtocolVersion(2),
+                        auth_accepted: true,
+                        socket_bound: true,
+                    },
+                    policy: ClientHeartbeatLoopPolicyInput {
+                        client_id: ClientId("client-1".to_string()),
+                        run_id: RunId("run-1".to_string()),
+                        now: TimestampMicros(10_500),
+                        cadence: ClientHeartbeatLoopCadenceInput {
+                            heartbeat_interval_micros: 1_000,
+                            ack_receive_timeout_micros: 2_000,
+                            ack_observation_return:
+                                ClientHeartbeatAckObservationReturnMode::Disabled,
+                        },
+                        stop_condition: ClientHeartbeatLoopStopCondition::RunUntilStopped,
+                        state: policy_snapshot,
+                    },
+                    max_ack_socket_wait_micros: 500,
+                },
+                local_time: None,
+                short_status: None,
+                controller_now: TimestampMicros(10_500),
+                max_sleep_micros: 250,
+                retry_policy: ClientHeartbeatLoopRetryPolicy {
+                    max_attempts: 3,
+                    retry_delay_micros: 1_000,
+                },
+                retry_attempts_used: 0,
+            },
+        );
+
+        assert_eq!(
+            result.controller.action,
+            ClientHeartbeatLoopControllerAction::Sleep
+        );
+        assert_eq!(result.heartbeat_send, None);
+        assert_eq!(result.ack_return, None);
+        assert_eq!(result.stats_return_send, None);
+        assert_eq!(result.retry, None);
+        assert_eq!(result.counters_updates.len(), 1);
+        assert_eq!(
+            result.counters_updates[0].current,
+            ClientHeartbeatLoopCountersState {
+                last_heartbeat_sent_at: Some(TimestampMicros(10_000)),
+                ..ClientHeartbeatLoopCountersState::default()
+            }
+        );
+    }
+
+    #[test]
+    fn client_heartbeat_loop_one_tick_runtime_sends_ack_returns_stats_and_updates_counters() {
+        let client_socket = UdpSocket::bind("127.0.0.1:0").expect("client socket should bind");
+        client_socket
+            .set_read_timeout(Some(std::time::Duration::from_secs(1)))
+            .expect("client read timeout should be set");
+        let client_addr = client_socket
+            .local_addr()
+            .expect("client socket addr should exist");
+        let server_socket = UdpSocket::bind("127.0.0.1:0").expect("server socket should bind");
+        server_socket
+            .set_read_timeout(Some(std::time::Duration::from_secs(1)))
+            .expect("server read timeout should be set");
+        let server_addr = server_socket
+            .local_addr()
+            .expect("server socket addr should exist");
+        let ack_sender = UdpSocket::bind("127.0.0.1:0").expect("ack sender should bind");
+        let ack = HeartbeatAck {
+            message_type: MessageType::HeartbeatAck,
+            protocol_version: ProtocolVersion(2),
+            client_id: ClientId("client-1".to_string()),
+            run_id: RunId("run-1".to_string()),
+            echoed_sent_at: TimestampMicros(10_000),
+            server_received_at: TimestampMicros(10_100),
+            server_sent_at: TimestampMicros(10_200),
+        };
+        let mut ack_bytes = Vec::new();
+        ProtocolMessageEncoderBoundary
+            .encode_message(
+                EncodeContext {
+                    protocol_version: ProtocolVersion(2),
+                },
+                &ProtocolMessage::HeartbeatAck(ack),
+                &mut ack_bytes,
+            )
+            .expect("ack should encode");
+        ack_sender
+            .send_to(&ack_bytes, client_addr)
+            .expect("ack should be queued for client");
+
+        let mut counters = ClientHeartbeatLoopCountersState::default();
+        let policy_snapshot = counters.as_policy_snapshot(false);
+        let result = ClientHeartbeatLoopOneTickRuntimeBoundary::default().run_one(
+            &client_socket,
+            &mut counters,
+            ClientHeartbeatLoopOneTickRuntimeInput {
+                destination: server_addr,
+                body: ClientHeartbeatLoopBodyInput {
+                    ownership: ClientHeartbeatLoopOwnershipInput {
+                        client_id: ClientId("client-1".to_string()),
+                        run_id: RunId("run-1".to_string()),
+                        protocol_version: ProtocolVersion(2),
+                        auth_accepted: true,
+                        socket_bound: true,
+                    },
+                    policy: ClientHeartbeatLoopPolicyInput {
+                        client_id: ClientId("client-1".to_string()),
+                        run_id: RunId("run-1".to_string()),
+                        now: TimestampMicros(10_000),
+                        cadence: ClientHeartbeatLoopCadenceInput {
+                            heartbeat_interval_micros: 1_000,
+                            ack_receive_timeout_micros: 2_000,
+                            ack_observation_return:
+                                ClientHeartbeatAckObservationReturnMode::ClientStatsOncePerAck,
+                        },
+                        stop_condition: ClientHeartbeatLoopStopCondition::RunUntilStopped,
+                        state: policy_snapshot,
+                    },
+                    max_ack_socket_wait_micros: 500,
+                },
+                local_time: Some(TimestampMicros(10_000)),
+                short_status: Some("one-tick".to_string()),
+                controller_now: TimestampMicros(10_000),
+                max_sleep_micros: 250,
+                retry_policy: ClientHeartbeatLoopRetryPolicy {
+                    max_attempts: 3,
+                    retry_delay_micros: 1_000,
+                },
+                retry_attempts_used: 0,
+            },
+        );
+
+        assert_eq!(
+            result.controller.action,
+            ClientHeartbeatLoopControllerAction::SendHeartbeat
+        );
+        assert!(result.heartbeat_send.is_some());
+        assert!(result.ack_return.is_some());
+        assert!(result.stats_return_send.is_some());
+        assert_eq!(result.retry, None);
+        assert_eq!(result.failure, None);
+        assert_eq!(result.final_counters.sent_heartbeats, 1);
+        assert_eq!(result.final_counters.received_acks, 1);
+        assert_eq!(result.final_counters.stats_returns_sent, 1);
+        assert_eq!(result.final_counters.missed_acks, 0);
+        assert_eq!(result.counters_updates.len(), 3);
+
+        let mut saw_heartbeat = false;
+        let mut saw_stats = false;
+        for _ in 0..2 {
+            let mut buffer = [0_u8; 2048];
+            let (received_len, _) = server_socket
+                .recv_from(&mut buffer)
+                .expect("server should receive heartbeat and stats");
+            let packet = decode_fixed_header(&buffer[..received_len])
+                .expect("received packet should decode fixed header");
+            match packet.header.message_type {
+                MessageType::Heartbeat => {
+                    let heartbeat = decode_heartbeat_payload(packet.header, packet.payload)
+                        .expect("heartbeat should decode");
+                    assert_eq!(heartbeat.sent_at, TimestampMicros(10_000));
+                    assert_eq!(heartbeat.short_status, Some("one-tick".to_string()));
+                    saw_heartbeat = true;
+                }
+                MessageType::ClientStats => {
+                    let stats = decode_client_stats_payload(packet.header, packet.payload)
+                        .expect("client stats should decode");
+                    assert!(stats.heartbeat_observation.is_some());
+                    saw_stats = true;
+                }
+                other => panic!("unexpected packet type received by server: {other:?}"),
+            }
+        }
+        assert!(saw_heartbeat);
+        assert!(saw_stats);
     }
 }

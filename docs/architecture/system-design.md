@@ -3646,6 +3646,87 @@ loop, JSON Lines writer connection, actual shutdown execution, real timer
 sleep, repeated retry execution, and socket timeout application remain future
 work.
 
+### Client Continuous Heartbeat Loop Minimal Runtime Scope
+
+The client-side continuous heartbeat loop is not implemented as a completed
+loop yet. The current minimal runtime scope is a single synchronous tick that
+connects the existing boundaries once, using caller-owned state and sockets.
+It is intentionally a one-call bridge, not a repeating loop.
+
+Current implementation scope:
+
+1. `ClientHeartbeatLoopOneTickRuntimeBoundary::run_one` receives:
+   - caller-owned `UdpSocket`
+   - caller-owned `ClientHeartbeatLoopCountersState`
+   - `ClientHeartbeatLoopOneTickRuntimeInput`
+2. It calls `ClientHeartbeatLoopBodyBoundary::run_one` to evaluate ownership,
+   cadence, stop condition, and ack wait handoff.
+3. It calls `ClientHeartbeatLoopControllerBoundary::plan_next` and
+   `ClientHeartbeatLoopControllerResultBoundary::finalize` to produce the
+   controller result, typed log handoff, shutdown decision, and optional
+   controller-level iteration result.
+4. For `Stop` and `Sleep`, it commits the controller-level iteration result to
+   counters and returns without sleeping or exiting a process.
+5. For `SendHeartbeat`, it calls
+   `ClientHeartbeatLoopEncodeSendBoundary::send_one` once.
+6. On heartbeat send success, it commits `HeartbeatSent` to counters and then
+   calls `ClientHeartbeatLoopAckObservationReturnBoundary::receive_one` unless
+   the ack deadline was already elapsed.
+7. On ack success, it commits `AckReceived` to counters and, if a
+   `ClientStats` return handoff exists, calls
+   `ClientHeartbeatLoopClientStatsReturnSendBoundary::send_one` once.
+8. On stats return send success, it commits `ClientStatsReturnSent` to
+   counters.
+9. On heartbeat send, ack receive/decode/correlation, or stats return send
+   failure, it calls `ClientHeartbeatLoopRetryApplyBoundary::apply_failure`,
+   commits the produced failure iteration result to counters, and returns the
+   retry plan without executing it.
+10. Ack receive timeout additionally commits `AckMissed` before the retry
+    failure result, so missed ack counters remain visible to later policy
+    snapshots.
+
+Responsibility split:
+
+- controller / body
+  - Own precondition, policy, send handoff, bounded sleep decision, log handoff,
+    and shutdown decision.
+  - They do not run the repeated loop.
+- encode-send
+  - Owns one heartbeat build / encode / UDP send.
+- ack receive
+  - Owns one blocking ack receive / decode / correlation through the caller
+    socket.
+  - The one-tick runtime does not set socket timeout; the caller remains
+    responsible for socket timeout configuration.
+- stats return
+  - Owns one optional already-encoded `ClientStats` return send.
+- counters
+  - The one-tick runtime is allowed to call
+    `ClientHeartbeatLoopCountersBoundary::commit_result` in the order each
+    one-step operation completes.
+- sleep-retry
+  - Retry apply returns typed retry and sleep decisions only.
+  - No retry operation or timer sleep is executed by the one-tick runtime.
+- logging
+  - The runtime returns the controller log handoff inside
+    `ClientHeartbeatLoopControllerResult`.
+  - It does not serialize JSON Lines or choose sinks.
+- shutdown
+  - The runtime returns `ClientHeartbeatLoopShutdownDecision`.
+  - It does not clean up resources, flush logs, or stop an outer loop.
+- future completed loop body
+  - Will own repeated calls to the one-tick runtime, real sleep/timer
+    execution, socket timeout application, retry execution, log writer
+    invocation, shutdown cleanup, and reconnect behavior.
+
+Current code reflects this with
+`apps/client::ClientHeartbeatLoopOneTickRuntimeInput`,
+`ClientHeartbeatLoopOneTickRuntimeFailure`,
+`ClientHeartbeatLoopOneTickRuntimeResult`, and
+`ClientHeartbeatLoopOneTickRuntimeBoundary`. Completed continuous looping,
+async runtime integration, real timer sleep, shutdown cleanup, reconnect,
+JSON Lines writer invocation, and video sending remain future work.
+
 ### Heartbeat Client Ack Observation Flow
 
 The client ack observation flow returns the missing `client_received_at`

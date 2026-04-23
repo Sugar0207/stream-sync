@@ -5,6 +5,62 @@
 - Codex
 
 ### 今回の作業
+- client 側 continuous heartbeat loop 本体の最小実装範囲を整理した。
+- completed loop には進まず、caller-owned socket / counters を使う 1 tick runtime 境界を追加した。
+- controller / body / encode-send / ack receive / stats return / counters / sleep-retry / logging / shutdown を 1 回だけ接続した。
+
+### 変更ファイル
+- `apps/client/src/lib.rs`
+- `docs/architecture/system-design.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### 決定事項
+- client 側の最小実装は `ClientHeartbeatLoopOneTickRuntimeBoundary::run_one` とし、繰り返し loop ではなく 1 tick の同期実行境界に限定する。
+- one-tick runtime は caller-owned `UdpSocket` と caller-owned `ClientHeartbeatLoopCountersState` を受け取る。
+- one-tick runtime は body -> controller -> controller result -> heartbeat send -> ack receive -> optional stats return send -> counters commit -> retry plan の順に接続する。
+- ack receive timeout は `AckMissed` として counters に反映し、retry apply の failure result も返す。
+- 実 sleep、socket timeout 設定、JSON Lines writer 呼び出し、shutdown cleanup、retry execution、completed continuous loop は今回の対象外に残す。
+
+### 実装したこと
+- `ClientHeartbeatLoopOneTickRuntimeInput` を追加した。
+- `ClientHeartbeatLoopOneTickRuntimeFailure` を追加した。
+- `ClientHeartbeatLoopOneTickRuntimeResult` を追加した。
+- `ClientHeartbeatLoopOneTickRuntimeBoundary::run_one` を追加した。
+- wait path と heartbeat send -> ack receive -> ClientStats return send path の単体テストを追加した。
+
+### 未実装 / 保留
+- completed continuous heartbeat loop
+- actual sleep / timer integration
+- socket timeout application
+- retry execution / reconnect
+- JSON Lines writer invocation / file sink open / process-wide logger
+- shutdown cleanup / final flush
+- video / switcher 側接続
+
+### 次にやる候補
+- client one-tick runtime の CLI / config 接続範囲を整理する。
+- heartbeat timeout notice wakeup 実行本体に進む前の境界整理を続ける。
+- RTT / offset metrics snapshot の具体的な export cadence / dashboard refresh 方針を整理する。
+
+### TODO 更新
+- 現在位置に client one-tick minimal runtime 境界の完了を反映した。
+- 直近でやることを client one-tick runtime の CLI / config 接続範囲整理へ更新した。
+- heartbeat / client / 検証タスクに `ClientHeartbeatLoopOneTickRuntimeBoundary` と関連単体テストの完了を追加した。
+
+### 検証
+- `cargo fmt`
+- `cargo test -p stream-sync-client client_heartbeat_loop_one_tick_runtime`
+- `cargo fmt --check`
+- `cargo check --workspace`
+
+---
+
+## 2026-04-23
+### 種別
+- Codex
+
+### 今回の作業
 - continuous heartbeat loop 本体へ進む前の client loop logging / shutdown integration 接続範囲を整理した。
 - client controller plan から typed log handoff、shutdown decision、controller result へ変換する最小境界を追加した。
 - heartbeat policy / encode-send / ack receive / stats return / counters update / sleep-retry / logging / shutdown / future loop body の責務分離を architecture docs に反映した。
