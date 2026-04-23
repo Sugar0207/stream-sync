@@ -2393,6 +2393,23 @@ pub enum ClientHeartbeatLoopStepOrderingResult {
     },
 }
 
+/// Input for one minimal completed-loop-equivalent client step.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClientHeartbeatLoopCompletedStepRuntimeInput {
+    pub continue_requested: bool,
+    pub body: ClientHeartbeatLoopRepeatedRuntimeBodyInput,
+}
+
+/// Result of connecting one repeated step through lifecycle and ordering.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClientHeartbeatLoopCompletedStepRuntimeResult {
+    pub step: ClientHeartbeatLoopRepeatedRuntimeLoopStepResult,
+    pub lifecycle: ClientHeartbeatLoopLifecycleResult,
+    pub sequencing: ClientHeartbeatLoopSequencingResult,
+    pub ordering: ClientHeartbeatLoopStepOrderingResult,
+    pub final_counters: ClientHeartbeatLoopCountersState,
+}
+
 /// Boundary that connects one step result to future completed-loop lifecycle flow.
 ///
 /// This does not run a while-loop, sleep, reconnect, flush logs, close
@@ -2543,6 +2560,45 @@ impl ClientHeartbeatLoopStepOrderingBoundary {
                 sequencing,
                 ordering,
             },
+        }
+    }
+}
+
+/// Minimal runtime boundary before a full completed continuous heartbeat loop.
+///
+/// It connects one repeated-loop step to lifecycle, sequencing, and ordering
+/// exactly once. It does not repeat, sleep, retry, reconnect, or execute
+/// cleanup; it only returns the typed next-step decision for caller-owned loop
+/// orchestration.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct ClientHeartbeatLoopCompletedStepRuntimeBoundary {
+    step: ClientHeartbeatLoopRepeatedRuntimeLoopStepBoundary,
+    lifecycle: ClientHeartbeatLoopLifecycleBoundary,
+    sequencing: ClientHeartbeatLoopSequencingBoundary,
+    ordering: ClientHeartbeatLoopStepOrderingBoundary,
+}
+
+impl ClientHeartbeatLoopCompletedStepRuntimeBoundary {
+    pub fn run_one(
+        &self,
+        socket: &UdpSocket,
+        counters: &mut ClientHeartbeatLoopCountersState,
+        input: ClientHeartbeatLoopCompletedStepRuntimeInput,
+    ) -> ClientHeartbeatLoopCompletedStepRuntimeResult {
+        let step = self.step.run_one(socket, counters, input.body);
+        let lifecycle = self.lifecycle.plan_next(ClientHeartbeatLoopLifecycleInput {
+            continue_requested: input.continue_requested,
+            step: step.clone(),
+        });
+        let sequencing = self.sequencing.plan_next(lifecycle.clone());
+        let ordering = self.ordering.plan_next(sequencing.clone());
+
+        ClientHeartbeatLoopCompletedStepRuntimeResult {
+            step,
+            lifecycle,
+            sequencing,
+            ordering,
+            final_counters: counters.clone(),
         }
     }
 }
@@ -5032,6 +5088,130 @@ mod tests {
                 },
             }
         );
+    }
+
+    #[test]
+    fn client_heartbeat_loop_completed_step_runtime_returns_wait_ordering() {
+        let socket = UdpSocket::bind("127.0.0.1:0").expect("socket should bind");
+        let mut counters = ClientHeartbeatLoopCountersState {
+            last_heartbeat_sent_at: Some(TimestampMicros(10_000)),
+            ..ClientHeartbeatLoopCountersState::default()
+        };
+        let handoff = ClientHeartbeatLoopRepeatedRuntimeHandoff {
+            mode: ClientHeartbeatOneTickRuntimeMode::HeartbeatOnly,
+            destination: "127.0.0.1:5000".parse().unwrap(),
+            client_id: ClientId("client-1".to_string()),
+            run_id: RunId("run-1".to_string()),
+            protocol_version: ProtocolVersion(2),
+            cadence: ClientHeartbeatLoopCadenceInput {
+                heartbeat_interval_micros: 1_000,
+                ack_receive_timeout_micros: 500,
+                ack_observation_return: ClientHeartbeatAckObservationReturnMode::Disabled,
+            },
+            stop_condition: ClientHeartbeatLoopStopCondition::RunUntilStopped,
+            max_ack_socket_wait_micros: 500,
+            max_sleep_micros: 250,
+            retry_policy: ClientHeartbeatLoopRetryPolicy {
+                max_attempts: 3,
+                retry_delay_micros: 1_000,
+            },
+            local_time_enabled: true,
+            short_status: Some("one-tick-runtime".to_string()),
+        };
+
+        let result = ClientHeartbeatLoopCompletedStepRuntimeBoundary::default().run_one(
+            &socket,
+            &mut counters,
+            ClientHeartbeatLoopCompletedStepRuntimeInput {
+                continue_requested: true,
+                body: ClientHeartbeatLoopRepeatedRuntimeBodyInput {
+                    handoff,
+                    now: TimestampMicros(10_500),
+                    stop_requested: false,
+                    retry_attempts_used: 0,
+                },
+            },
+        );
+
+        assert!(result.lifecycle.continue_loop);
+        assert_eq!(
+            result.ordering,
+            ClientHeartbeatLoopStepOrderingResult::Continue {
+                handoff: ClientHeartbeatLoopCompletedBodySequencingHandoff {
+                    sequencing: result.sequencing.clone(),
+                    ordering: ClientHeartbeatLoopStepOrdering::WaitThenContinue {
+                        sleep: ClientHeartbeatLoopSleepDecision::Sleep {
+                            reason: ClientHeartbeatLoopSleepReason::CadenceWait,
+                            sleep_micros: 250,
+                            wake_at: TimestampMicros(11_000),
+                        },
+                    },
+                },
+            }
+        );
+        assert_eq!(result.final_counters, counters);
+    }
+
+    #[test]
+    fn client_heartbeat_loop_completed_step_runtime_returns_stop_when_caller_stops() {
+        let socket = UdpSocket::bind("127.0.0.1:0").expect("socket should bind");
+        let mut counters = ClientHeartbeatLoopCountersState {
+            last_heartbeat_sent_at: Some(TimestampMicros(10_000)),
+            ..ClientHeartbeatLoopCountersState::default()
+        };
+        let handoff = ClientHeartbeatLoopRepeatedRuntimeHandoff {
+            mode: ClientHeartbeatOneTickRuntimeMode::HeartbeatOnly,
+            destination: "127.0.0.1:5000".parse().unwrap(),
+            client_id: ClientId("client-1".to_string()),
+            run_id: RunId("run-1".to_string()),
+            protocol_version: ProtocolVersion(2),
+            cadence: ClientHeartbeatLoopCadenceInput {
+                heartbeat_interval_micros: 1_000,
+                ack_receive_timeout_micros: 500,
+                ack_observation_return: ClientHeartbeatAckObservationReturnMode::Disabled,
+            },
+            stop_condition: ClientHeartbeatLoopStopCondition::RunUntilStopped,
+            max_ack_socket_wait_micros: 500,
+            max_sleep_micros: 250,
+            retry_policy: ClientHeartbeatLoopRetryPolicy {
+                max_attempts: 3,
+                retry_delay_micros: 1_000,
+            },
+            local_time_enabled: true,
+            short_status: Some("one-tick-runtime".to_string()),
+        };
+
+        let result = ClientHeartbeatLoopCompletedStepRuntimeBoundary::default().run_one(
+            &socket,
+            &mut counters,
+            ClientHeartbeatLoopCompletedStepRuntimeInput {
+                continue_requested: false,
+                body: ClientHeartbeatLoopRepeatedRuntimeBodyInput {
+                    handoff,
+                    now: TimestampMicros(10_500),
+                    stop_requested: false,
+                    retry_attempts_used: 0,
+                },
+            },
+        );
+
+        assert!(!result.lifecycle.continue_loop);
+        assert_eq!(
+            result.lifecycle.stop_reason,
+            Some(ClientHeartbeatLoopLifecycleStopReason::CallerRequestedStop)
+        );
+        assert_eq!(
+            result.ordering,
+            ClientHeartbeatLoopStepOrderingResult::Stop {
+                result: ClientHeartbeatLoopCompletedBodyStopResult {
+                    stop_reason: ClientHeartbeatLoopLifecycleStopReason::CallerRequestedStop,
+                    cleanup: ClientHeartbeatLoopCleanupSequencingResult::BeginCleanup {
+                        stop_reason: ClientHeartbeatLoopLifecycleStopReason::CallerRequestedStop,
+                    },
+                },
+            }
+        );
+        assert_eq!(result.final_counters, counters);
     }
 
     #[test]

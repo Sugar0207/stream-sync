@@ -5,6 +5,53 @@
 - Codex
 
 ### 今回の作業
+- client 側 continuous heartbeat loop の completed 本体に入る前の最小実装として、completed-loop 相当 1 step runtime 境界を追加した。
+- repeated body -> outer controller / shutdown apply -> lifecycle -> sequencing -> ordering を 1 回だけつなぎ、caller-owned input から typed decision を返す最小 runtime に留めた。
+- 実 sleep / timer / retry / reconnect / shutdown cleanup / final flush / 無限 while-loop には進まなかった。
+
+### 変更ファイル
+- `apps/client/src/lib.rs`
+- `docs/architecture/system-design.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### 実装したこと
+- `ClientHeartbeatLoopCompletedStepRuntimeInput`
+- `ClientHeartbeatLoopCompletedStepRuntimeResult`
+- `ClientHeartbeatLoopCompletedStepRuntimeBoundary`
+- wait ordering を返す completed-step runtime テスト
+- caller stop で cleanup stop を返す completed-step runtime テスト
+
+### 未実装 / 保留
+- completed continuous heartbeat loop
+- eventual while-loop ownership / caller contract
+- actual timer wait / retry execution / reconnect
+- shutdown cleanup / final flush / log writer invocation
+- future completed loop body の実処理
+
+### 次にやる候補
+- completed-loop 相当 1 step runtime から eventual while-loop ownership / caller contract へ進む最小範囲整理
+- heartbeat timeout notice wakeup 実行本体に進む前の境界整理
+- RTT / offset metrics snapshot export cadence / dashboard refresh 方針整理
+
+### TODO 更新内容
+- 現在位置に completed-loop 相当 1 step runtime 境界の完了を反映した。
+- 直近でやることを eventual while-loop ownership / caller contract 整理へ更新した。
+- client / 検証タスクに completed-step runtime 境界と関連単体テスト完了を追加した。
+
+### 検証
+- `cargo fmt`
+- `cargo test -p stream-sync-client client_heartbeat_loop_completed_step_runtime`
+- `cargo fmt --check`
+- `cargo check --workspace`
+
+---
+
+## 2026-04-24
+### 担当
+- Codex
+
+### 今回の作業
 - actual timer / retry / cleanup sequencing から future completed loop body の実行順序へ進む最小範囲を整理した。
 - sequencing の typed handoff を受けて、completed body が stop / retry / wait / immediate continue のどれを先に呼ぶかだけを返す ordering 境界を追加した。
 - actual timer wait、retry 実行、cleanup 実行、while-loop 本体には進まなかった。

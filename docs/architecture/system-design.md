@@ -4105,6 +4105,56 @@ Current code reflects this with `ClientHeartbeatLoopStepOrdering`,
 `ClientHeartbeatLoopStepOrderingResult`, and
 `ClientHeartbeatLoopStepOrderingBoundary`.
 
+### Client Completed Step Runtime Minimal Scope
+
+Before a real completed continuous heartbeat loop exists, the client side
+still needs one thin runtime that connects the already-separated boundaries in
+the same order the future loop will use. The current scope runs exactly one
+completed-loop-equivalent step and returns the typed decision to the caller.
+
+Current minimal scope:
+
+1. `ClientHeartbeatLoopCompletedStepRuntimeBoundary` receives:
+   - caller-owned `UdpSocket`
+   - caller-owned `ClientHeartbeatLoopCountersState`
+   - `ClientHeartbeatLoopCompletedStepRuntimeInput`
+2. It runs exactly one `ClientHeartbeatLoopRepeatedRuntimeLoopStepBoundary`.
+3. It passes that step result through:
+   - `ClientHeartbeatLoopLifecycleBoundary`
+   - `ClientHeartbeatLoopSequencingBoundary`
+   - `ClientHeartbeatLoopStepOrderingBoundary`
+4. It returns `ClientHeartbeatLoopCompletedStepRuntimeResult` containing:
+   - preserved repeated-loop step result
+   - lifecycle result
+   - sequencing result
+   - ordering result
+   - final counters snapshot
+
+Responsibility split:
+
+- launcher ownership
+  - Produces static repeated-loop handoff and caller-owned socket/counters.
+- repeated body
+  - Executes one dynamic iteration through one-tick runtime.
+- outer controller / shutdown apply
+  - Classify one repeated step and name stop/apply work.
+- lifecycle
+  - Decide continue vs stop.
+- sequencing
+  - Name typed timer / retry / cleanup follow-up work.
+- ordering
+  - Fix the next branch the future completed body would call.
+- future completed loop body
+  - Will own actual timer / retry / cleanup invocation using the ordered
+    result.
+- future completed loop body / eventual while-loop
+  - Will later own repeated invocation, stop flag refresh, and worker/process
+    lifetime.
+
+Current code reflects this with `ClientHeartbeatLoopCompletedStepRuntimeInput`,
+`ClientHeartbeatLoopCompletedStepRuntimeResult`, and
+`ClientHeartbeatLoopCompletedStepRuntimeBoundary`.
+
 ### Heartbeat Client Ack Observation Flow
 
 The client ack observation flow returns the missing `client_received_at`
