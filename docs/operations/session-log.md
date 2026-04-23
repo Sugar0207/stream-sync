@@ -4,6 +4,55 @@
 ### 担当 - Codex
 
 ### 今回の作業
+- completed continuous heartbeat loop body result から heartbeat timeout notice wakeup planning へ進む最小境界を追加した。
+- stop path はそのまま passthrough し、continue path だけを `ContinueWithoutWakeup` と `ContinueWithWakeup` に分離して、wakeup follow-up の必要性を explicit にした。
+- wakeup planning は timer / retry / reconnect execution 本体と分離したまま、timer wait がある continue path だけを wakeup-ready handoff にする shape で固定した。
+
+### 変更ファイル
+- `apps/client/src/lib.rs`
+- `docs/architecture/system-design.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### 実装したこと
+- `ClientHeartbeatLoopHeartbeatTimeoutNoticeWakeupInput`
+- `ClientHeartbeatLoopFutureHeartbeatTimeoutNoticeWakeupPlan`
+- `ClientHeartbeatLoopHeartbeatTimeoutNoticeWakeupHandoff`
+- `ClientHeartbeatLoopHeartbeatTimeoutNoticeWakeupResult`
+- `ClientHeartbeatLoopHeartbeatTimeoutNoticeWakeupBoundary`
+- completed continuous heartbeat loop body result から continue-path output のみを wakeup planning input に変換する最小境界
+- continue without wakeup / continue with wakeup-ready handoff / stop passthrough を分離する単体テスト
+- timer wait / retry / reconnect execution concern と wakeup planning concern を分離したまま保持する単体テスト
+
+### 未実装 / 保留
+- heartbeat timeout notice wakeup execution 本体
+- continuous heartbeat loop 本体
+- actual timer wait / retry execution / reconnect の実処理
+- stats metrics state commit
+- completed smoothing / outlier model
+- dashboard 本体
+- final flush / log writer invocation / resource release の複雑な実処理
+
+### 次にやる候補
+- heartbeat timeout notice wakeup 実行本体の最小範囲整理
+- actual timer wait / retry / reconnect の実行本体に進む前の境界整理
+- RTT / offset metrics snapshot の export cadence / dashboard refresh 方針整理
+
+### TODO更新内容
+- 現在位置に completed continuous heartbeat loop body result から heartbeat timeout notice wakeup planning への最小境界完了を反映した。
+- 直近でやることを heartbeat timeout notice wakeup 実行本体の最小範囲整理へ更新した。
+- client / 検証タスクに heartbeat timeout notice wakeup planning 境界と関連単体テスト完了を追加した。
+
+### 検証
+- `cargo fmt`
+- `cargo fmt --check`
+- `cargo test -p stream-sync-client client_heartbeat_loop_cleanup`
+- `cargo check --workspace`
+
+## 2026-04-24
+### 担当 - Codex
+
+### 今回の作業
 - repeated invocation result から completed continuous heartbeat loop body まで既存 boundary を薄く配線する最小 composition を completed continuous heartbeat loop body として整理した。
 - continue path は `carry` / `timer_wait` / `retry_execution` / `reconnect_execution`、stop path は `stop_reason` / `cleanup_completed` / `applied_actions` をそのまま保持する shape を確認した。
 - completed continuous heartbeat loop body 自体の単体テストと architecture / todo の更新を追加した。

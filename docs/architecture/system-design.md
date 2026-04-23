@@ -5184,6 +5184,81 @@ Current code reflects this with
 `ClientHeartbeatLoopCompletedContinuousBodyResult` and
 `ClientHeartbeatLoopCompletedContinuousBodyBoundary`.
 
+### Client Heartbeat Timeout Notice Wakeup Minimal Scope
+
+Before future heartbeat timeout notice wakeup execution exists, the client
+still needs one explicit boundary that decides whether wakeup-related
+follow-up is needed. The current scope adds only that planning boundary; it
+does not execute wakeup, timer wait, retry execution, reconnect execution, or
+reinterpret cleanup logic.
+
+Current minimal scope:
+
+1. `ClientHeartbeatLoopHeartbeatTimeoutNoticeWakeupInput::from_completed_continuous_body(...)`
+   converts `ClientHeartbeatLoopCompletedContinuousBodyResult` into:
+   - `Ok(input)` for continue-path completed body output
+   - `Err(output)` for explicit stop-path output
+2. `ClientHeartbeatLoopHeartbeatTimeoutNoticeWakeupBoundary` receives one
+   `ClientHeartbeatLoopCompletedContinuousBodyResult`.
+3. If completed body returns `Continue { output }` with
+   `timer_wait = NoTimerWait`:
+   - wakeup boundary returns `ContinueWithoutWakeup { output }`
+   - continue path stays explicit without creating wakeup follow-up
+4. If completed body returns `Continue { output }` with
+   `timer_wait = TimerWait { sleep }`:
+   - wakeup boundary returns `ContinueWithWakeup { handoff }`
+   - wakeup-ready handoff preserves the existing continue output and adds an
+     explicit `WakeupDuringTimerWait { sleep }` plan
+5. If completed body returns `Stop { output }`:
+   - wakeup boundary returns `Stop { output }`
+   - stop path remains explicit and unchanged
+6. Minimal safe wakeup-planning scope:
+   - completed continuous heartbeat loop body result is the only source for
+     wakeup input
+   - continue without wakeup, continue with wakeup-ready handoff, and stop
+     passthrough stay separate
+   - wakeup logic stays outside timer / retry / reconnect execution concerns
+   - no metrics cadence or dashboard logic is introduced here
+
+Relationship between continue carry / current loop result, timeout notice
+wakeup triggerability, wakeup handoff / passthrough, and future actual wakeup
+execution:
+
+- completed continuous heartbeat loop body result
+  - Is the only entry into wakeup planning.
+  - Already preserves explicit continue output or explicit stop output.
+- timeout notice wakeup triggerability
+  - Is determined only from explicit continue output, currently by whether a
+    future timer wait exists.
+  - Does not reinterpret cleanup state or stop semantics.
+- wakeup handoff / passthrough
+  - Returns explicit continue passthrough when no wakeup is needed.
+  - Returns explicit wakeup-ready handoff when timer wait could later be made
+    interruptible.
+  - Returns explicit stop passthrough unchanged.
+- future actual wakeup execution
+  - Will later consume only wakeup-ready handoff.
+  - Remains outside the current scope.
+
+Responsibility split:
+
+- completed continuous heartbeat loop body boundary
+  - Produces explicit continue output or explicit stop output only.
+  - Does not decide wakeup follow-up.
+- heartbeat timeout notice wakeup boundary
+  - Decides only whether continue output needs explicit wakeup-ready follow-up.
+  - Does not execute wakeup, timer wait, retry, reconnect, or metrics cadence.
+- future actual wakeup execution
+  - Will later own the runtime side effect for wakeup-ready handoff.
+  - Is not implemented in the current scope.
+
+Current code reflects this with
+`ClientHeartbeatLoopHeartbeatTimeoutNoticeWakeupInput`,
+`ClientHeartbeatLoopFutureHeartbeatTimeoutNoticeWakeupPlan`,
+`ClientHeartbeatLoopHeartbeatTimeoutNoticeWakeupHandoff`,
+`ClientHeartbeatLoopHeartbeatTimeoutNoticeWakeupResult`, and
+`ClientHeartbeatLoopHeartbeatTimeoutNoticeWakeupBoundary`.
+
 ### Heartbeat Client Ack Observation Flow
 
 The client ack observation flow returns the missing `client_received_at`

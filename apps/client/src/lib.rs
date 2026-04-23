@@ -3012,6 +3012,55 @@ pub enum ClientHeartbeatLoopCompletedContinuousBodyResult {
     },
 }
 
+/// Explicit continue-path input handed into future heartbeat timeout notice wakeup planning.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClientHeartbeatLoopHeartbeatTimeoutNoticeWakeupInput {
+    pub output: ClientHeartbeatLoopCompletedContinuousBodyConnectionOutput,
+}
+
+impl ClientHeartbeatLoopHeartbeatTimeoutNoticeWakeupInput {
+    pub fn from_completed_continuous_body(
+        body: ClientHeartbeatLoopCompletedContinuousBodyResult,
+    ) -> Result<Self, ClientHeartbeatLoopCompletedBodyTerminalOutput> {
+        match body {
+            ClientHeartbeatLoopCompletedContinuousBodyResult::Continue { output } => {
+                Ok(Self { output })
+            }
+            ClientHeartbeatLoopCompletedContinuousBodyResult::Stop { output } => Err(output),
+        }
+    }
+}
+
+/// Future heartbeat timeout notice wakeup scope kept explicit before runtime behavior exists.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ClientHeartbeatLoopFutureHeartbeatTimeoutNoticeWakeupPlan {
+    WakeupNotNeeded,
+    WakeupDuringTimerWait {
+        sleep: ClientHeartbeatLoopSleepDecision,
+    },
+}
+
+/// Continue-path handoff returned when future heartbeat timeout notice wakeup remains explicit.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClientHeartbeatLoopHeartbeatTimeoutNoticeWakeupHandoff {
+    pub output: ClientHeartbeatLoopCompletedContinuousBodyConnectionOutput,
+    pub wakeup: ClientHeartbeatLoopFutureHeartbeatTimeoutNoticeWakeupPlan,
+}
+
+/// Result of determining whether future heartbeat timeout notice wakeup follow-up is needed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ClientHeartbeatLoopHeartbeatTimeoutNoticeWakeupResult {
+    ContinueWithoutWakeup {
+        output: ClientHeartbeatLoopCompletedContinuousBodyConnectionOutput,
+    },
+    ContinueWithWakeup {
+        handoff: ClientHeartbeatLoopHeartbeatTimeoutNoticeWakeupHandoff,
+    },
+    Stop {
+        output: ClientHeartbeatLoopCompletedBodyTerminalOutput,
+    },
+}
+
 /// Boundary that connects one step result to future completed-loop lifecycle flow.
 ///
 /// This does not run a while-loop, sleep, reconnect, flush logs, close
@@ -3887,6 +3936,45 @@ impl ClientHeartbeatLoopCompletedContinuousBodyBoundary {
             ClientHeartbeatLoopCompletedContinuousBodyConnectionResult::Stop { output } => {
                 ClientHeartbeatLoopCompletedContinuousBodyResult::Stop { output }
             }
+        }
+    }
+}
+
+/// Boundary that exposes future heartbeat timeout notice wakeup need explicitly.
+///
+/// This boundary consumes completed continuous heartbeat loop body result only.
+/// It does not execute timeout notice wakeup, timer wait, retry execution,
+/// reconnect execution, or reinterpret cleanup logic.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct ClientHeartbeatLoopHeartbeatTimeoutNoticeWakeupBoundary;
+
+impl ClientHeartbeatLoopHeartbeatTimeoutNoticeWakeupBoundary {
+    pub fn plan_next(
+        &self,
+        body: ClientHeartbeatLoopCompletedContinuousBodyResult,
+    ) -> ClientHeartbeatLoopHeartbeatTimeoutNoticeWakeupResult {
+        match ClientHeartbeatLoopHeartbeatTimeoutNoticeWakeupInput::from_completed_continuous_body(
+            body,
+        ) {
+            Err(output) => ClientHeartbeatLoopHeartbeatTimeoutNoticeWakeupResult::Stop { output },
+            Ok(input) => match input.output.timer_wait {
+                ClientHeartbeatLoopFutureActualTimerWaitAction::NoTimerWait => {
+                    ClientHeartbeatLoopHeartbeatTimeoutNoticeWakeupResult::ContinueWithoutWakeup {
+                        output: input.output,
+                    }
+                }
+                ClientHeartbeatLoopFutureActualTimerWaitAction::TimerWait { sleep } => {
+                    ClientHeartbeatLoopHeartbeatTimeoutNoticeWakeupResult::ContinueWithWakeup {
+                        handoff: ClientHeartbeatLoopHeartbeatTimeoutNoticeWakeupHandoff {
+                            output: input.output,
+                            wakeup:
+                                ClientHeartbeatLoopFutureHeartbeatTimeoutNoticeWakeupPlan::WakeupDuringTimerWait {
+                                    sleep,
+                                },
+                        },
+                    }
+                }
+            },
         }
     }
 }
@@ -9465,6 +9553,312 @@ mod tests {
                 panic!("stop path should not collapse into continue output");
             }
         }
+    }
+
+    #[test]
+    fn client_heartbeat_loop_cleanup_timeout_notice_wakeup_input_converts_continue_with_timer_wait()
+    {
+        let output = ClientHeartbeatLoopCompletedContinuousBodyConnectionOutput {
+            carry: ClientHeartbeatLoopRepeatedInvocationNextStepCarry::ApplyTimerThenContinue {
+                sleep: ClientHeartbeatLoopSleepDecision::Sleep {
+                    reason: ClientHeartbeatLoopSleepReason::CadenceWait,
+                    sleep_micros: 1_000,
+                    wake_at: TimestampMicros(12_000),
+                },
+                carry: ClientHeartbeatLoopIterationCarryState {
+                    ordering: ClientHeartbeatLoopStepOrdering::WaitThenContinue {
+                        sleep: ClientHeartbeatLoopSleepDecision::Sleep {
+                            reason: ClientHeartbeatLoopSleepReason::CadenceWait,
+                            sleep_micros: 1_000,
+                            wake_at: TimestampMicros(12_000),
+                        },
+                    },
+                    final_counters: ClientHeartbeatLoopCountersState::default(),
+                    next_runtime_input: ClientHeartbeatLoopCompletedStepRuntimeInput {
+                        continue_requested: true,
+                        body: ClientHeartbeatLoopRepeatedRuntimeBodyInput {
+                            handoff: ClientHeartbeatLoopRepeatedRuntimeHandoff {
+                                mode: ClientHeartbeatOneTickRuntimeMode::HeartbeatOnly,
+                                destination: "127.0.0.1:5000".parse().unwrap(),
+                                client_id: ClientId("client-1".to_string()),
+                                run_id: RunId("run-1".to_string()),
+                                protocol_version: ProtocolVersion(2),
+                                cadence: ClientHeartbeatLoopCadenceInput {
+                                    heartbeat_interval_micros: 1_000,
+                                    ack_receive_timeout_micros: 500,
+                                    ack_observation_return:
+                                        ClientHeartbeatAckObservationReturnMode::Disabled,
+                                },
+                                stop_condition: ClientHeartbeatLoopStopCondition::RunUntilStopped,
+                                max_ack_socket_wait_micros: 500,
+                                max_sleep_micros: 250,
+                                retry_policy: ClientHeartbeatLoopRetryPolicy {
+                                    max_attempts: 3,
+                                    retry_delay_micros: 1_000,
+                                },
+                                local_time_enabled: true,
+                                short_status: Some("one-tick-runtime".to_string()),
+                            },
+                            now: TimestampMicros(11_000),
+                            stop_requested: false,
+                            retry_attempts_used: 0,
+                        },
+                    },
+                },
+            },
+            timer_wait: ClientHeartbeatLoopFutureActualTimerWaitAction::TimerWait {
+                sleep: ClientHeartbeatLoopSleepDecision::Sleep {
+                    reason: ClientHeartbeatLoopSleepReason::CadenceWait,
+                    sleep_micros: 1_000,
+                    wake_at: TimestampMicros(12_000),
+                },
+            },
+            retry_execution: ClientHeartbeatLoopFutureActualRetryExecutionAction::NoRetryExecution,
+            reconnect_execution:
+                ClientHeartbeatLoopFutureActualReconnectExecutionAction::NoReconnectExecution,
+        };
+
+        let input =
+            ClientHeartbeatLoopHeartbeatTimeoutNoticeWakeupInput::from_completed_continuous_body(
+                ClientHeartbeatLoopCompletedContinuousBodyResult::Continue {
+                    output: output.clone(),
+                },
+            )
+            .expect("continue body output should produce timeout notice wakeup input");
+
+        assert_eq!(
+            input,
+            ClientHeartbeatLoopHeartbeatTimeoutNoticeWakeupInput { output }
+        );
+    }
+
+    #[test]
+    fn client_heartbeat_loop_cleanup_timeout_notice_wakeup_can_pass_through_without_wakeup() {
+        let retry = ClientHeartbeatLoopRetryApplyResult {
+            failure_result: ClientHeartbeatLoopIterationRuntimeResult::Failed {
+                kind: ClientHeartbeatLoopIterationFailureKind::AckReceive,
+                failed_at: TimestampMicros(11_000),
+            },
+            retry_decision: ClientHeartbeatLoopRetryDecision::RetryLater {
+                reason: ClientHeartbeatLoopRetryReason::AckReceiveTimeout,
+                next_attempt: 2,
+                retry_at: TimestampMicros(12_000),
+            },
+            sleep: ClientHeartbeatLoopSleepDecision::Sleep {
+                reason: ClientHeartbeatLoopSleepReason::RetryBackoff,
+                sleep_micros: 1_000,
+                wake_at: TimestampMicros(12_000),
+            },
+        };
+
+        let result = ClientHeartbeatLoopHeartbeatTimeoutNoticeWakeupBoundary
+            .plan_next(ClientHeartbeatLoopCompletedContinuousBodyResult::Continue {
+            output: ClientHeartbeatLoopCompletedContinuousBodyConnectionOutput {
+                carry: ClientHeartbeatLoopRepeatedInvocationNextStepCarry::ApplyRetryThenContinue {
+                    retry: retry.clone(),
+                    carry: ClientHeartbeatLoopIterationCarryState {
+                        ordering: ClientHeartbeatLoopStepOrdering::RetryThenContinue {
+                            retry: retry.clone(),
+                        },
+                        final_counters: ClientHeartbeatLoopCountersState::default(),
+                        next_runtime_input: ClientHeartbeatLoopCompletedStepRuntimeInput {
+                            continue_requested: true,
+                            body: ClientHeartbeatLoopRepeatedRuntimeBodyInput {
+                                handoff: ClientHeartbeatLoopRepeatedRuntimeHandoff {
+                                    mode: ClientHeartbeatOneTickRuntimeMode::HeartbeatOnly,
+                                    destination: "127.0.0.1:5000".parse().unwrap(),
+                                    client_id: ClientId("client-1".to_string()),
+                                    run_id: RunId("run-1".to_string()),
+                                    protocol_version: ProtocolVersion(2),
+                                    cadence: ClientHeartbeatLoopCadenceInput {
+                                        heartbeat_interval_micros: 1_000,
+                                        ack_receive_timeout_micros: 500,
+                                        ack_observation_return:
+                                            ClientHeartbeatAckObservationReturnMode::Disabled,
+                                    },
+                                    stop_condition:
+                                        ClientHeartbeatLoopStopCondition::RunUntilStopped,
+                                    max_ack_socket_wait_micros: 500,
+                                    max_sleep_micros: 250,
+                                    retry_policy: ClientHeartbeatLoopRetryPolicy {
+                                        max_attempts: 3,
+                                        retry_delay_micros: 1_000,
+                                    },
+                                    local_time_enabled: true,
+                                    short_status: Some("one-tick-runtime".to_string()),
+                                },
+                                now: TimestampMicros(11_000),
+                                stop_requested: false,
+                                retry_attempts_used: 1,
+                            },
+                        },
+                    },
+                },
+                timer_wait: ClientHeartbeatLoopFutureActualTimerWaitAction::NoTimerWait,
+                retry_execution:
+                    ClientHeartbeatLoopFutureActualRetryExecutionAction::RetryExecution { retry },
+                reconnect_execution:
+                    ClientHeartbeatLoopFutureActualReconnectExecutionAction::NoReconnectExecution,
+            },
+        });
+
+        let ClientHeartbeatLoopHeartbeatTimeoutNoticeWakeupResult::ContinueWithoutWakeup { output } =
+            result
+        else {
+            panic!("continue path without timer wait should pass through without wakeup");
+        };
+
+        assert_eq!(
+            output.timer_wait,
+            ClientHeartbeatLoopFutureActualTimerWaitAction::NoTimerWait
+        );
+        match output.retry_execution {
+            ClientHeartbeatLoopFutureActualRetryExecutionAction::RetryExecution { .. } => {}
+            ClientHeartbeatLoopFutureActualRetryExecutionAction::NoRetryExecution => {
+                panic!("retry execution should remain separate from wakeup planning");
+            }
+        }
+        assert_eq!(
+            output.reconnect_execution,
+            ClientHeartbeatLoopFutureActualReconnectExecutionAction::NoReconnectExecution
+        );
+    }
+
+    #[test]
+    fn client_heartbeat_loop_cleanup_timeout_notice_wakeup_preserves_stop_passthrough() {
+        let output = ClientHeartbeatLoopCompletedBodyTerminalOutput {
+            stop_reason: ClientHeartbeatLoopRepeatedInvocationStopReason::CleanupRequested {
+                stop_reason: ClientHeartbeatLoopLifecycleStopReason::CallerRequestedStop,
+            },
+            cleanup_completed: true,
+            applied_actions: [
+                ClientHeartbeatLoopCleanupAppliedAction::FinalFlush,
+                ClientHeartbeatLoopCleanupAppliedAction::LogWriterInvocation,
+                ClientHeartbeatLoopCleanupAppliedAction::ResourceRelease,
+            ],
+        };
+
+        let input_result =
+            ClientHeartbeatLoopHeartbeatTimeoutNoticeWakeupInput::from_completed_continuous_body(
+                ClientHeartbeatLoopCompletedContinuousBodyResult::Stop {
+                    output: output.clone(),
+                },
+            );
+        let boundary_result = ClientHeartbeatLoopHeartbeatTimeoutNoticeWakeupBoundary.plan_next(
+            ClientHeartbeatLoopCompletedContinuousBodyResult::Stop {
+                output: output.clone(),
+            },
+        );
+
+        assert_eq!(input_result, Err(output.clone()));
+        assert_eq!(
+            boundary_result,
+            ClientHeartbeatLoopHeartbeatTimeoutNoticeWakeupResult::Stop { output }
+        );
+    }
+
+    #[test]
+    fn client_heartbeat_loop_cleanup_timeout_notice_wakeup_stays_separate_from_timer_retry_reconnect_execution(
+    ) {
+        let result = ClientHeartbeatLoopHeartbeatTimeoutNoticeWakeupBoundary
+            .plan_next(ClientHeartbeatLoopCompletedContinuousBodyResult::Continue {
+            output: ClientHeartbeatLoopCompletedContinuousBodyConnectionOutput {
+                carry: ClientHeartbeatLoopRepeatedInvocationNextStepCarry::ApplyTimerThenContinue {
+                    sleep: ClientHeartbeatLoopSleepDecision::Sleep {
+                        reason: ClientHeartbeatLoopSleepReason::CadenceWait,
+                        sleep_micros: 1_000,
+                        wake_at: TimestampMicros(12_000),
+                    },
+                    carry: ClientHeartbeatLoopIterationCarryState {
+                        ordering: ClientHeartbeatLoopStepOrdering::WaitThenContinue {
+                            sleep: ClientHeartbeatLoopSleepDecision::Sleep {
+                                reason: ClientHeartbeatLoopSleepReason::CadenceWait,
+                                sleep_micros: 1_000,
+                                wake_at: TimestampMicros(12_000),
+                            },
+                        },
+                        final_counters: ClientHeartbeatLoopCountersState::default(),
+                        next_runtime_input: ClientHeartbeatLoopCompletedStepRuntimeInput {
+                            continue_requested: true,
+                            body: ClientHeartbeatLoopRepeatedRuntimeBodyInput {
+                                handoff: ClientHeartbeatLoopRepeatedRuntimeHandoff {
+                                    mode: ClientHeartbeatOneTickRuntimeMode::HeartbeatOnly,
+                                    destination: "127.0.0.1:5000".parse().unwrap(),
+                                    client_id: ClientId("client-1".to_string()),
+                                    run_id: RunId("run-1".to_string()),
+                                    protocol_version: ProtocolVersion(2),
+                                    cadence: ClientHeartbeatLoopCadenceInput {
+                                        heartbeat_interval_micros: 1_000,
+                                        ack_receive_timeout_micros: 500,
+                                        ack_observation_return:
+                                            ClientHeartbeatAckObservationReturnMode::Disabled,
+                                    },
+                                    stop_condition:
+                                        ClientHeartbeatLoopStopCondition::RunUntilStopped,
+                                    max_ack_socket_wait_micros: 500,
+                                    max_sleep_micros: 250,
+                                    retry_policy: ClientHeartbeatLoopRetryPolicy {
+                                        max_attempts: 3,
+                                        retry_delay_micros: 1_000,
+                                    },
+                                    local_time_enabled: true,
+                                    short_status: Some("one-tick-runtime".to_string()),
+                                },
+                                now: TimestampMicros(11_000),
+                                stop_requested: false,
+                                retry_attempts_used: 0,
+                            },
+                        },
+                    },
+                },
+                timer_wait: ClientHeartbeatLoopFutureActualTimerWaitAction::TimerWait {
+                    sleep: ClientHeartbeatLoopSleepDecision::Sleep {
+                        reason: ClientHeartbeatLoopSleepReason::CadenceWait,
+                        sleep_micros: 1_000,
+                        wake_at: TimestampMicros(12_000),
+                    },
+                },
+                retry_execution:
+                    ClientHeartbeatLoopFutureActualRetryExecutionAction::NoRetryExecution,
+                reconnect_execution:
+                    ClientHeartbeatLoopFutureActualReconnectExecutionAction::NoReconnectExecution,
+            },
+        });
+
+        let ClientHeartbeatLoopHeartbeatTimeoutNoticeWakeupResult::ContinueWithWakeup { handoff } =
+            result
+        else {
+            panic!("timer wait should produce an explicit wakeup-ready handoff");
+        };
+
+        assert_eq!(
+            handoff.wakeup,
+            ClientHeartbeatLoopFutureHeartbeatTimeoutNoticeWakeupPlan::WakeupDuringTimerWait {
+                sleep: ClientHeartbeatLoopSleepDecision::Sleep {
+                    reason: ClientHeartbeatLoopSleepReason::CadenceWait,
+                    sleep_micros: 1_000,
+                    wake_at: TimestampMicros(12_000),
+                },
+            }
+        );
+        assert_eq!(
+            handoff.output.timer_wait,
+            ClientHeartbeatLoopFutureActualTimerWaitAction::TimerWait {
+                sleep: ClientHeartbeatLoopSleepDecision::Sleep {
+                    reason: ClientHeartbeatLoopSleepReason::CadenceWait,
+                    sleep_micros: 1_000,
+                    wake_at: TimestampMicros(12_000),
+                },
+            }
+        );
+        assert_eq!(
+            handoff.output.retry_execution,
+            ClientHeartbeatLoopFutureActualRetryExecutionAction::NoRetryExecution
+        );
+        assert_eq!(
+            handoff.output.reconnect_execution,
+            ClientHeartbeatLoopFutureActualReconnectExecutionAction::NoReconnectExecution
+        );
     }
 
     #[test]
