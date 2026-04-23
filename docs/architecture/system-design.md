@@ -3960,6 +3960,53 @@ Current code reflects this with
 `ClientHeartbeatLoopRepeatedRuntimeLoopStepResult`, and
 `ClientHeartbeatLoopRepeatedRuntimeLoopStepBoundary`.
 
+### Client Completed Loop Lifecycle Minimal Scope
+
+After the outer controller and shutdown-apply step finish, the future completed
+loop still needs one lifecycle boundary that decides whether the next
+iteration may begin or whether stop/cleanup flow should start. The current
+scope fixes that decision without implementing the completed loop.
+
+Current minimal scope:
+
+1. `ClientHeartbeatLoopLifecycleBoundary` receives
+   `ClientHeartbeatLoopLifecycleInput`:
+   - caller-owned `continue_requested`
+   - one `ClientHeartbeatLoopRepeatedRuntimeLoopStepResult`
+2. If `continue_requested = false`, lifecycle returns stop immediately with
+   `CallerRequestedStop`.
+3. Otherwise it inspects `shutdown_apply` from the step result:
+   - `ContinueLoop` keeps lifecycle in continue state
+   - `StopLoop { reason, .. }` becomes
+     `PolicyRequestedStop { reason }`
+4. It returns `ClientHeartbeatLoopLifecycleResult` containing:
+   - the preserved loop-step result
+   - `continue_loop`
+   - optional `stop_reason`
+   - `cleanup_required`
+
+Responsibility split:
+
+- launcher ownership
+  - Produces static repeated-loop handoff after accepted auth/bootstrap.
+- repeated-loop body
+  - Delegates one dynamic iteration to one-tick runtime.
+- outer controller / shutdown apply
+  - Classify one step and name future stop/apply work.
+- lifecycle
+  - Decides only whether the future completed loop would start another
+    iteration or enter stop/cleanup flow.
+  - Does not perform cleanup, close sockets, flush logs, or run a real loop.
+- future completed loop lifecycle
+  - Will own actual while-loop repetition, stop sequencing, cleanup ordering,
+    and worker/process lifetime transitions.
+
+Current code reflects this with
+`ClientHeartbeatLoopLifecycleStopReason`,
+`ClientHeartbeatLoopLifecycleInput`,
+`ClientHeartbeatLoopLifecycleResult`, and
+`ClientHeartbeatLoopLifecycleBoundary`.
+
 ### Heartbeat Client Ack Observation Flow
 
 The client ack observation flow returns the missing `client_received_at`

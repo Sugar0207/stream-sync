@@ -61,6 +61,52 @@
 - Codex
 
 ### 今回の作業
+- outer repeated loop controller / shutdown apply から future completed loop lifecycle へどう進むかの最小範囲を整理した。
+- caller の継続要求と 1 step 結果から、continue / stop / cleanup 開始要否を決める lifecycle 境界を追加した。
+- launcher ownership / repeated loop body / outer controller / shutdown apply / future completed loop lifecycle の責務分離を docs に追記した。
+
+### 変更ファイル
+- `apps/client/src/lib.rs`
+- `docs/architecture/system-design.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### 実装したこと
+- `ClientHeartbeatLoopLifecycleStopReason`
+- `ClientHeartbeatLoopLifecycleInput`
+- `ClientHeartbeatLoopLifecycleResult`
+- `ClientHeartbeatLoopLifecycleBoundary`
+- lifecycle continue path / caller-stop path の単体テストを追加
+
+### 未実装 / 保留
+- completed continuous heartbeat loop
+- actual timer / retry / cleanup sequencing
+- reconnect / shutdown cleanup / log writer invocation
+- process lifetime control
+
+### 次にやる候補
+- future completed loop lifecycle から actual timer / retry / cleanup sequencing へ進む最小範囲整理
+- heartbeat timeout notice wakeup 実行本体に進む前の境界整理
+- RTT / offset metrics snapshot export cadence / dashboard refresh 方針整理
+
+### TODO 更新
+- 現在位置に future completed loop lifecycle の最小境界完了を反映した。
+- 直近でやることを actual timer / retry / cleanup sequencing へ進む最小範囲整理へ更新した。
+- client / 検証タスクに lifecycle 境界と関連単体テスト完了を追加した。
+
+### 検証
+- `cargo fmt`
+- `cargo test -p stream-sync-client client_heartbeat_loop_lifecycle`
+- `cargo fmt --check`
+- `cargo check --workspace`
+
+---
+
+## 2026-04-23
+### 担当
+- Codex
+
+### 今回の作業
 - future repeated loop body から outer repeated loop controller / shutdown apply をどう呼ぶかの最小範囲を整理した。
 - repeated body の結果を outer controller が観測し、shutdown apply が typed result を返すだけの 1 step 境界を追加した。
 - launcher ownership / repeated loop body / outer controller / shutdown apply / future completed loop の責務分離を docs に追記した。
