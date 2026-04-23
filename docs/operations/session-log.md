@@ -5,6 +5,55 @@
 - Codex
 
 ### 今回の作業
+- future actual timer wait / retry execution / reconnect actions から completed continuous heartbeat loop body へ進む最小範囲を整理した。
+- actual execution integration result だけから completed loop body connection input を作る最小境界を追加した。
+- continue execution handoff、stop result、completed loop body connection result を分離し、future execution actions を explicit に保つ接続 boundary を追加した。
+
+### 変更ファイル
+- `apps/client/src/lib.rs`
+- `docs/architecture/system-design.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### 実装したこと
+- `ClientHeartbeatLoopCompletedContinuousBodyConnectionInput`
+- `ClientHeartbeatLoopCompletedContinuousBodyConnectionOutput`
+- `ClientHeartbeatLoopCompletedContinuousBodyConnectionResult`
+- `ClientHeartbeatLoopCompletedContinuousBodyConnectionInput::from_actual_execution_integration(...)`
+- `ClientHeartbeatLoopCompletedContinuousBodyConnectionBoundary`
+- continue path から completed loop body connection input を作る単体テスト
+- stop path では completed loop body connection input を作らない単体テスト
+- continue / stop separation を保つ単体テスト
+- timer wait / retry / reconnect を explicit future execution actions のまま保つ単体テスト
+
+### 未実装 / 保留
+- completed continuous heartbeat loop 本体
+- actual timer wait / retry execution / reconnect の実処理
+- heartbeat timeout wakeup execution
+- future full completed continuous heartbeat loop implementation
+- final flush / log writer invocation / resource release の複雑な実処理
+
+### 次にやる候補
+- completed continuous heartbeat loop 本体の最小実装整理
+- heartbeat timeout notice wakeup 実行本体に進む前の境界整理
+- RTT / offset metrics snapshot export cadence / dashboard refresh 方針整理
+
+### TODO 更新内容
+- 現在位置に future actual timer wait / retry execution / reconnect actions から completed continuous heartbeat loop body への最小境界完了を反映した。
+- 直近でやることを completed continuous heartbeat loop 本体の最小実装整理へ更新した。
+- client / 検証タスクに completed continuous heartbeat loop body connection 境界と関連単体テスト完了を追加した。
+
+### 検証
+- `cargo fmt`
+- `cargo fmt --check`
+- `cargo test -p stream-sync-client client_heartbeat_loop_cleanup`
+- `cargo check --workspace`
+
+## 2026-04-24
+### 担当
+- Codex
+
+### 今回の作業
 - future timer / retry / reconnect planning handoff から future actual timer wait / retry execution / reconnect integration へ進む最小範囲を整理した。
 - planning handoff だけから actual execution integration input を作る最小境界を追加した。
 - continue execution handoff と stop passthrough を分離し、timer wait / retry / reconnect scope を explicit actions として固定した。

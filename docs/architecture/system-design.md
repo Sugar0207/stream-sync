@@ -5036,6 +5036,70 @@ Current code reflects this with
 `ClientHeartbeatLoopActualTimerRetryReconnectExecutionResult`, and
 `ClientHeartbeatLoopActualTimerRetryReconnectExecutionBoundary`.
 
+### Client Completed Continuous Heartbeat Loop Body Connection Minimal Scope
+
+After future actual timer / retry / reconnect execution actions become
+available, completed continuous heartbeat loop body connection remains a
+separate boundary. The current scope adds only the minimal conversion from
+actual execution integration result into completed loop body connection
+result; it does not execute timer wait, retry execution, reconnect, or timeout
+wakeup behavior.
+
+Current minimal scope:
+
+1. `ClientHeartbeatLoopCompletedContinuousBodyConnectionInput::from_actual_execution_integration(...)`
+   converts `ClientHeartbeatLoopActualTimerRetryReconnectExecutionResult` into:
+   - `Ok(input)` for continue-path execution handoff
+   - `Err(output)` for explicit stop-path output
+2. `ClientHeartbeatLoopCompletedContinuousBodyConnectionBoundary` receives one
+   `ClientHeartbeatLoopActualTimerRetryReconnectExecutionResult`.
+3. If actual execution integration returns `ContinueExecution { handoff }`:
+   - completed loop body connection returns `Continue { output }`
+   - continue path preserves explicit future execution actions
+4. If actual execution integration returns `Stop { output }`:
+   - completed loop body connection returns `Stop { output }`
+   - stop path remains explicit and is not collapsed into continue connection
+5. Minimal safe completed-body-connection scope:
+   - actual execution integration result is the only source for completed loop body connection input
+   - continue execution handoff, stop result, and completed loop body connection result stay separate
+   - timer wait / retry / reconnect remain explicit future execution actions
+   - no cleanup logic or stop-path semantics are re-interpreted here
+
+Relationship between actual timer / retry / reconnect execution integration
+result, completed continuous heartbeat loop body connection input, completed
+continuous heartbeat loop body connection result, and the future full
+completed continuous heartbeat loop implementation:
+
+- actual timer / retry / reconnect execution integration result
+  - Is the only source for completed loop body connection input.
+- completed continuous heartbeat loop body connection input
+  - Wraps only continue-path execution handoff.
+  - Is not created for explicit stop-path output.
+- completed continuous heartbeat loop body connection result
+  - Returns either explicit continue output with future execution state or explicit stop passthrough.
+  - Keeps timer wait / retry / reconnect visible.
+- future full completed continuous heartbeat loop implementation
+  - Will later consume this connection result without hiding side effects in the dumb actual while-loop.
+  - Remains outside the current scope.
+
+Responsibility split:
+
+- actual timer / retry / reconnect execution integration boundary
+  - Produces explicit continue execution handoff or explicit stop output only.
+  - Does not own completed continuous heartbeat loop body connection.
+- completed continuous heartbeat loop body connection boundary
+  - Converts actual execution integration result into completed loop body connection result only.
+  - Does not execute runtime behavior or reinterpret cleanup logic.
+- future full completed continuous heartbeat loop implementation
+  - Will later own the final loop-body wiring around this connected result.
+  - Is not implemented in the current scope.
+
+Current code reflects this with
+`ClientHeartbeatLoopCompletedContinuousBodyConnectionInput`,
+`ClientHeartbeatLoopCompletedContinuousBodyConnectionOutput`,
+`ClientHeartbeatLoopCompletedContinuousBodyConnectionResult`, and
+`ClientHeartbeatLoopCompletedContinuousBodyConnectionBoundary`.
+
 ### Heartbeat Client Ack Observation Flow
 
 The client ack observation flow returns the missing `client_received_at`
