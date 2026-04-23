@@ -4719,6 +4719,68 @@ Current code reflects this with
 `ClientHeartbeatLoopCleanupSideEffectResult`, and
 `ClientHeartbeatLoopCleanupSideEffectBoundary`.
 
+### Client Completed Loop Stop-Path Output Minimal Scope
+
+After stop-path cleanup side-effect apply finishes, terminal stop-path output
+for a future completed continuous heartbeat loop remains a separate boundary.
+The current scope adds only the minimal conversion from cleanup side-effect
+result into terminal stop-path output; it does not implement the full
+completed loop body or actual while-loop termination.
+
+Current minimal scope:
+
+1. `ClientHeartbeatLoopCompletedLoopStopPathInput::from_cleanup_side_effect(...)`
+   converts `ClientHeartbeatLoopCleanupSideEffectResult` into:
+   - `Ok(input)` for stop-path cleanup apply result
+   - `Err(carry)` for continue-path carry
+2. `ClientHeartbeatLoopCompletedLoopStopPathBoundary` receives one
+   `ClientHeartbeatLoopCleanupSideEffectResult`.
+3. If cleanup side-effect apply returns `Continue { carry }`:
+   - completed-loop stop-path boundary returns `Continue`
+   - no terminal stop-path output is produced
+4. If cleanup side-effect apply returns `Applied { result }`:
+   - completed-loop stop-path boundary returns `Stop { handoff }`
+   - terminal output preserves `stop_reason`
+   - terminal output preserves `cleanup_completed`
+   - terminal output preserves explicit flush/log/release apply order
+5. Minimal safe terminal stop-path scope:
+   - terminal output is created from cleanup side-effect result only
+   - continue carry stays separate from terminal stop-path output
+   - no cleanup ordering or execution planning logic is re-interpreted here
+   - no actual while-loop business logic is added here
+
+Relationship between cleanup actual side-effect result, completed continuous
+heartbeat loop stop-path output, and future actual while-loop termination:
+
+- cleanup actual side-effect result
+  - Is the only source for terminal stop-path input.
+- completed continuous heartbeat loop stop-path output
+  - Is created only after cleanup side-effect apply completes.
+  - Keeps stop-only semantics explicit.
+  - Remains separate from continue carry.
+- future actual while-loop termination
+  - Will later consume the terminal stop-path output.
+  - Remains outside this minimal boundary.
+
+Responsibility split:
+
+- cleanup actual side-effect apply
+  - Produces explicit stop-path apply result only.
+  - Does not own terminal completed-loop stop output.
+- completed-loop stop-path output boundary
+  - Converts side-effect result into terminal stop-path output only.
+  - Does not re-order cleanup or execute new side effects.
+- future actual while-loop termination
+  - Will later own final stop-path termination wiring.
+  - Is not implemented in the current scope.
+
+Current code reflects this with
+`ClientHeartbeatLoopCompletedLoopStopPathInput`,
+`ClientHeartbeatLoopTerminalStopPathOutput`,
+`ClientHeartbeatLoopCompletedLoopStopPathHandoff`,
+`ClientHeartbeatLoopCompletedLoopStopPathResult`, and
+`ClientHeartbeatLoopCompletedLoopStopPathBoundary`.
+
 ### Heartbeat Client Ack Observation Flow
 
 The client ack observation flow returns the missing `client_received_at`

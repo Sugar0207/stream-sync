@@ -5,6 +5,56 @@
 - Codex
 
 ### 今回の作業
+- cleanup actual side-effect result から future completed continuous heartbeat loop stop path へ進む最小範囲を整理した。
+- cleanup side-effect result だけから terminal stop-path input を作る stop-only 境界を追加した。
+- continue carry と terminal stop-path output を分離した completed-loop stop-path boundary を追加した。
+
+### 変更ファイル
+- `apps/client/src/lib.rs`
+- `docs/architecture/system-design.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### 実装したこと
+- `ClientHeartbeatLoopCompletedLoopStopPathInput`
+- `ClientHeartbeatLoopTerminalStopPathOutput`
+- `ClientHeartbeatLoopCompletedLoopStopPathHandoff`
+- `ClientHeartbeatLoopCompletedLoopStopPathResult`
+- `ClientHeartbeatLoopCompletedLoopStopPathInput::from_cleanup_side_effect(...)`
+- `ClientHeartbeatLoopCompletedLoopStopPathBoundary`
+- stop path から terminal stop-path input を作る単体テスト
+- continue path では terminal stop-path input を作らない単体テスト
+- continue carry を terminal output に変換しない単体テスト
+- stop-only semantics を保った terminal stop-path output の単体テスト
+- cleanup ordering / execution planning を再解釈しない単体テスト
+
+### 未実装 / 保留
+- completed continuous heartbeat loop 本体
+- terminal stop-path output を future actual while-loop termination へつなぐ統合
+- actual timer wait / retry execution / reconnect
+- final flush / log writer invocation / resource release の複雑な実処理
+
+### 次にやる候補
+- completed continuous heartbeat loop の terminal stop-path output を future actual while-loop termination へ接続する最小範囲整理
+- heartbeat timeout notice wakeup 実行本体に進む前の境界整理
+- RTT / offset metrics snapshot export cadence / dashboard refresh 方針整理
+
+### TODO 更新内容
+- 現在位置に cleanup actual side-effect result から future completed continuous heartbeat loop stop path への最小境界完了を反映した。
+- 直近でやることを terminal stop-path output から future actual while-loop termination への接続へ更新した。
+- client / 検証タスクに completed-loop stop-path 境界と関連単体テスト完了を追加した。
+
+### 検証
+- `cargo fmt`
+- `cargo fmt --check`
+- `cargo test -p stream-sync-client client_heartbeat_loop_cleanup`
+- `cargo check --workspace`
+
+## 2026-04-24
+### 担当
+- Codex
+
+### 今回の作業
 - cleanup execution planning から future actual cleanup side effects へ進む最小範囲を整理した。
 - cleanup execution planning result だけから actual cleanup side-effect input を作る stop-only 境界を追加した。
 - final flush / log writer invocation / resource release を stop-path ordered apply result としてだけ返す最小 side-effect apply 境界を追加した。
