@@ -5,6 +5,52 @@
 - Codex
 
 ### 今回の作業
+- completed continuous heartbeat loop outer shell から caller-facing shell runner へ進む最小範囲を整理した。
+- outer shell を 1 回呼んで caller-facing な continue / stop result を返す shell runner 境界を追加した。
+- actual timer / retry / cleanup / final flush は実行せず、typed result の返却だけに留めた。
+
+### 変更ファイル
+- `apps/client/src/lib.rs`
+- `docs/architecture/system-design.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### 実装したこと
+- `ClientHeartbeatLoopShellRunnerStopReason`
+- `ClientHeartbeatLoopShellRunnerResult`
+- `ClientHeartbeatLoopShellRunnerBoundary`
+- continue apply-order を保持する shell runner 単体テスト
+- cleanup trigger を runner stop reason へ変換する単体テスト
+
+### 未実装 / 保留
+- completed continuous heartbeat loop
+- shell runner の次段になる eventual repeated invocation
+- actual timer wait / retry execution / reconnect
+- actual cleanup / final flush / log writer invocation
+
+### 次にやる候補
+- caller-facing shell runner から eventual repeated invocation へ進む最小範囲整理
+- heartbeat timeout notice wakeup 実行本体に進む前の境界整理
+- RTT / offset metrics snapshot export cadence / dashboard refresh 方針整理
+
+### TODO 更新内容
+- 現在位置に caller-facing shell runner の最小境界完了を反映した。
+- 直近でやることを eventual repeated invocation 整理へ更新した。
+- client / 検証タスクに shell runner 境界と関連単体テスト完了を追加した。
+
+### 検証
+- `cargo fmt`
+- `cargo test -p stream-sync-client client_heartbeat_loop_shell_runner`
+- `cargo fmt --check`
+- `cargo check --workspace`
+
+---
+
+## 2026-04-24
+### 担当
+- Codex
+
+### 今回の作業
 - completed continuous heartbeat loop outer shell の最小範囲を整理した。
 - apply-order の結果を caller-facing な continue / stop に変換する outer shell 境界を追加した。
 - actual timer / retry / cleanup / final flush は実行せず、typed result の返却だけに留めた。

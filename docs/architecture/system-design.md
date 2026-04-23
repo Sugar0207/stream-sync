@@ -4330,6 +4330,49 @@ Current code reflects this with `ClientHeartbeatLoopShellStopReason`,
 `ClientHeartbeatLoopShellResult`, and
 `ClientHeartbeatLoopOuterShellBoundary`.
 
+### Client Caller-Facing Shell Runner Minimal Scope
+
+After outer shell produces a typed continue-or-stop result, the caller still
+needs one minimal runner entry that it can invoke directly before a real
+completed continuous loop exists. The current scope keeps that entry thin: it
+invokes outer shell exactly once and returns a caller-facing result.
+
+Current minimal scope:
+
+1. `ClientHeartbeatLoopShellRunnerBoundary` receives one
+   `ClientHeartbeatLoopApplyOrderResult`.
+2. Runner calls `ClientHeartbeatLoopOuterShellBoundary` exactly once.
+3. If outer shell returns `Continue { apply_order }`:
+   - runner returns `Continue`
+   - apply-order result is preserved unchanged for future repeated invocation
+4. If outer shell returns `Stop { reason, trigger }`:
+   - runner returns `Stop`
+   - stop reason is converted into runner-owned stop reason
+   - cleanup trigger is preserved unchanged for future cleanup ownership
+5. The runner remains typed only:
+   - no repeated invocation is executed
+   - no timer wait is executed
+   - no retry is executed
+   - no cleanup is executed
+
+Responsibility split:
+
+- outer shell
+  - Converts apply order into typed continue vs stop.
+- caller-facing shell runner
+  - Owns the direct caller entry above outer shell.
+  - Returns the result that future caller-owned loop orchestration will consume.
+- eventual repeated invocation
+  - Will decide whether and when to call the next shell runner turn.
+  - Remains outside the current boundary.
+- cleanup responsibility
+  - Starts only after runner returns `Stop`.
+  - Remains outside the current boundary.
+
+Current code reflects this with `ClientHeartbeatLoopShellRunnerStopReason`,
+`ClientHeartbeatLoopShellRunnerResult`, and
+`ClientHeartbeatLoopShellRunnerBoundary`.
+
 ### Heartbeat Client Ack Observation Flow
 
 The client ack observation flow returns the missing `client_received_at`
