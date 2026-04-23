@@ -3783,6 +3783,74 @@ Responsibility split:
   - Will own repeated launcher/runtime calls, reconnect, timer execution,
     shutdown cleanup, and log writer invocation.
 
+### Client Launcher / Repeated Loop Ownership
+
+Before implementing the completed continuous heartbeat loop, launcher
+ownership and repeated-loop ownership are separated explicitly so the one-tick
+entry does not silently become the loop owner.
+
+Minimal ownership boundary:
+
+1. `ClientHeartbeatLoopLauncherOwnershipBoundary` receives:
+   - accepted-auth bootstrap result
+   - socket bound readiness
+   - static cadence / retry / short-status config
+2. It reuses `ClientHeartbeatLoopOwnershipBoundary` only to prove:
+   - auth was accepted
+   - a UDP socket is already bound
+3. On success it produces `ClientHeartbeatLoopRepeatedRuntimeHandoff`.
+4. On failure it returns `ClientHeartbeatLoopOwnershipDecision::NotReady` and
+   does not produce repeated-loop handoff state.
+
+Handoff scope:
+
+- `ClientHeartbeatLoopRepeatedRuntimeHandoff`
+  - Owns only static runtime material:
+    - destination
+    - client/run/protocol identity
+    - cadence
+    - stop condition
+    - retry policy
+    - short-status / local-time mode
+  - Does not own:
+    - real `UdpSocket`
+    - counters state
+    - current timestamp
+    - retry attempt count
+    - shutdown execution
+- `build_one_tick_input(now, state, retry_attempts_used)`
+  - Exists only to show how a future repeated loop converts its own current
+    time, current counters snapshot, and retry state into one
+    `ClientHeartbeatLoopOneTickRuntimeInput`.
+
+Responsibility split:
+
+- config load
+  - `ClientHeartbeatOneTickRuntimeLauncher` owns TOML load and destination
+    resolution.
+- socket ownership
+  - Launcher owns the first ephemeral UDP bind and auth bootstrap on that
+    socket.
+  - Future repeated loop will own continuing use of the already-bound socket
+    after launcher/bootstrap work is complete.
+- one-tick runtime
+  - Owns one synchronous loop step only.
+  - Receives caller-owned socket/counters and never claims repeated ownership.
+- future repeated loop
+  - Will own:
+    - persistent socket lifetime
+    - counters state lifetime
+    - current time generation for each tick
+    - repeated calls to `build_one_tick_input(...)`
+    - stop/shutdown orchestration
+    - retry execution, reconnect, sleep/timer execution
+- shutdown responsibility
+  - Launcher owns auth-bootstrap failure handling and may return without ever
+    producing a repeated-loop handoff.
+  - One-tick runtime returns only `ClientHeartbeatLoopShutdownDecision`.
+  - Future repeated loop will decide whether to stop the process/worker,
+    flush logs, and clean up resources.
+
 ### Heartbeat Client Ack Observation Flow
 
 The client ack observation flow returns the missing `client_received_at`

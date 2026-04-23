@@ -2128,7 +2128,140 @@ pub struct ClientHeartbeatOneTickRuntimeOutcome {
     pub auth_response_source: SocketAddr,
     pub auth_response_bytes: Vec<u8>,
     pub auth_response: AuthResponse,
+    pub repeated_loop_handoff: ClientHeartbeatLoopRepeatedRuntimeHandoff,
     pub runtime: ClientHeartbeatLoopOneTickRuntimeResult,
+}
+
+/// Static handoff produced by the launcher for a future repeated loop owner.
+///
+/// This names the configuration and accepted-auth identity that a future
+/// repeated loop would keep after launcher/bootstrap work is complete. It does
+/// not own a real socket, counters state, timers, shutdown execution, or retry.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClientHeartbeatLoopRepeatedRuntimeHandoff {
+    pub mode: ClientHeartbeatOneTickRuntimeMode,
+    pub destination: SocketAddr,
+    pub client_id: ClientId,
+    pub run_id: RunId,
+    pub protocol_version: ProtocolVersion,
+    pub cadence: ClientHeartbeatLoopCadenceInput,
+    pub stop_condition: ClientHeartbeatLoopStopCondition,
+    pub max_ack_socket_wait_micros: u64,
+    pub max_sleep_micros: u64,
+    pub retry_policy: ClientHeartbeatLoopRetryPolicy,
+    pub local_time_enabled: bool,
+    pub short_status: Option<String>,
+}
+
+impl ClientHeartbeatLoopRepeatedRuntimeHandoff {
+    pub fn build_one_tick_input(
+        &self,
+        now: TimestampMicros,
+        state: ClientHeartbeatLoopStateSnapshot,
+        retry_attempts_used: u32,
+    ) -> ClientHeartbeatLoopOneTickRuntimeInput {
+        ClientHeartbeatLoopOneTickRuntimeInput {
+            destination: self.destination,
+            body: ClientHeartbeatLoopBodyInput {
+                ownership: ClientHeartbeatLoopOwnershipInput {
+                    client_id: self.client_id.clone(),
+                    run_id: self.run_id.clone(),
+                    protocol_version: self.protocol_version,
+                    auth_accepted: true,
+                    socket_bound: true,
+                },
+                policy: ClientHeartbeatLoopPolicyInput {
+                    client_id: self.client_id.clone(),
+                    run_id: self.run_id.clone(),
+                    now,
+                    cadence: self.cadence,
+                    stop_condition: self.stop_condition,
+                    state,
+                },
+                max_ack_socket_wait_micros: self.max_ack_socket_wait_micros,
+            },
+            local_time: self.local_time_enabled.then_some(now),
+            short_status: self.short_status.clone(),
+            controller_now: now,
+            max_sleep_micros: self.max_sleep_micros,
+            retry_policy: self.retry_policy,
+            retry_attempts_used,
+        }
+    }
+}
+
+/// Inputs needed before the launcher can hand work to a future repeated loop.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClientHeartbeatLoopLauncherOwnershipInput {
+    pub mode: ClientHeartbeatOneTickRuntimeMode,
+    pub destination: SocketAddr,
+    pub request: AuthRequest,
+    pub auth_response: AuthResponse,
+    pub socket_bound: bool,
+    pub cadence: ClientHeartbeatLoopCadenceInput,
+    pub stop_condition: ClientHeartbeatLoopStopCondition,
+    pub max_ack_socket_wait_micros: u64,
+    pub max_sleep_micros: u64,
+    pub retry_policy: ClientHeartbeatLoopRetryPolicy,
+    pub local_time_enabled: bool,
+    pub short_status: Option<String>,
+}
+
+/// Result of launcher-side ownership preparation for a future repeated loop.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClientHeartbeatLoopLauncherOwnershipResult {
+    pub ownership: ClientHeartbeatLoopOwnershipDecision,
+    pub repeated_loop_handoff: Option<ClientHeartbeatLoopRepeatedRuntimeHandoff>,
+}
+
+/// Boundary that separates launcher/bootstrap ownership from a future repeated loop.
+///
+/// This checks only that accepted auth and a bound socket exist, then fixes the
+/// static handoff a future repeated loop would own. It does not run the loop,
+/// move a real socket, mutate counters, sleep, retry, or execute shutdown.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct ClientHeartbeatLoopLauncherOwnershipBoundary {
+    ownership: ClientHeartbeatLoopOwnershipBoundary,
+}
+
+impl ClientHeartbeatLoopLauncherOwnershipBoundary {
+    pub fn prepare(
+        &self,
+        input: ClientHeartbeatLoopLauncherOwnershipInput,
+    ) -> ClientHeartbeatLoopLauncherOwnershipResult {
+        let ownership = self.ownership.evaluate(ClientHeartbeatLoopOwnershipInput {
+            client_id: input.request.client_id.clone(),
+            run_id: input.request.run_id.clone(),
+            protocol_version: input.request.protocol_version,
+            auth_accepted: input.auth_response.accepted,
+            socket_bound: input.socket_bound,
+        });
+
+        let repeated_loop_handoff = match &ownership {
+            ClientHeartbeatLoopOwnershipDecision::Ready(_) => {
+                Some(ClientHeartbeatLoopRepeatedRuntimeHandoff {
+                    mode: input.mode,
+                    destination: input.destination,
+                    client_id: input.request.client_id,
+                    run_id: input.request.run_id,
+                    protocol_version: input.request.protocol_version,
+                    cadence: input.cadence,
+                    stop_condition: input.stop_condition,
+                    max_ack_socket_wait_micros: input.max_ack_socket_wait_micros,
+                    max_sleep_micros: input.max_sleep_micros,
+                    retry_policy: input.retry_policy,
+                    local_time_enabled: input.local_time_enabled,
+                    short_status: input.short_status,
+                })
+            }
+            ClientHeartbeatLoopOwnershipDecision::NotReady { .. } => None,
+        };
+
+        ClientHeartbeatLoopLauncherOwnershipResult {
+            ownership,
+            repeated_loop_handoff,
+        }
+    }
 }
 
 /// Launcher for one accepted auth round trip plus one client heartbeat loop tick.
@@ -2140,6 +2273,7 @@ pub struct ClientHeartbeatOneTickRuntimeOutcome {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
 pub struct ClientHeartbeatOneTickRuntimeLauncher {
     encoder: ProtocolMessageEncoderBoundary,
+    ownership: ClientHeartbeatLoopLauncherOwnershipBoundary,
     runtime: ClientHeartbeatLoopOneTickRuntimeBoundary,
 }
 
@@ -2242,43 +2376,36 @@ impl ClientHeartbeatOneTickRuntimeLauncher {
             ));
         }
 
+        let launcher = self
+            .ownership
+            .prepare(ClientHeartbeatLoopLauncherOwnershipInput {
+                mode: startup_config.mode,
+                destination: startup_config.destination,
+                request: startup_config.request.clone(),
+                auth_response: auth_response.clone(),
+                socket_bound: true,
+                cadence: ClientHeartbeatLoopCadenceInput {
+                    heartbeat_interval_micros: startup_config.heartbeat_interval_micros,
+                    ack_receive_timeout_micros: startup_config.max_ack_socket_wait_micros,
+                    ack_observation_return: startup_config.mode.ack_observation_return(),
+                },
+                stop_condition: ClientHeartbeatLoopStopCondition::RunUntilStopped,
+                max_ack_socket_wait_micros: startup_config.max_ack_socket_wait_micros,
+                max_sleep_micros: startup_config.max_sleep_micros,
+                retry_policy: startup_config.retry_policy,
+                local_time_enabled: true,
+                short_status: startup_config.short_status.clone(),
+            });
+        let repeated_loop_handoff = launcher
+            .repeated_loop_handoff
+            .expect("accepted auth and bound socket should produce launcher handoff");
         let mut counters = ClientHeartbeatLoopCountersState::default();
         let now = current_timestamp_micros();
         let policy_snapshot = counters.as_policy_snapshot(false);
         let runtime = self.runtime.run_one(
             &socket,
             &mut counters,
-            ClientHeartbeatLoopOneTickRuntimeInput {
-                destination: startup_config.destination,
-                body: ClientHeartbeatLoopBodyInput {
-                    ownership: ClientHeartbeatLoopOwnershipInput {
-                        client_id: startup_config.request.client_id.clone(),
-                        run_id: startup_config.request.run_id.clone(),
-                        protocol_version: startup_config.request.protocol_version,
-                        auth_accepted: true,
-                        socket_bound: true,
-                    },
-                    policy: ClientHeartbeatLoopPolicyInput {
-                        client_id: startup_config.request.client_id.clone(),
-                        run_id: startup_config.request.run_id.clone(),
-                        now,
-                        cadence: ClientHeartbeatLoopCadenceInput {
-                            heartbeat_interval_micros: startup_config.heartbeat_interval_micros,
-                            ack_receive_timeout_micros: startup_config.max_ack_socket_wait_micros,
-                            ack_observation_return: startup_config.mode.ack_observation_return(),
-                        },
-                        stop_condition: ClientHeartbeatLoopStopCondition::RunUntilStopped,
-                        state: policy_snapshot,
-                    },
-                    max_ack_socket_wait_micros: startup_config.max_ack_socket_wait_micros,
-                },
-                local_time: Some(now),
-                short_status: startup_config.short_status.clone(),
-                controller_now: now,
-                max_sleep_micros: startup_config.max_sleep_micros,
-                retry_policy: startup_config.retry_policy,
-                retry_attempts_used: 0,
-            },
+            repeated_loop_handoff.build_one_tick_input(now, policy_snapshot, 0),
         );
 
         if runtime.failure.is_some() {
@@ -2299,6 +2426,7 @@ impl ClientHeartbeatOneTickRuntimeLauncher {
             auth_response_source,
             auth_response_bytes,
             auth_response,
+            repeated_loop_handoff,
             runtime,
         })
     }
@@ -3292,6 +3420,126 @@ mod tests {
         assert!(plan.owns_loop_state);
         assert!(plan.owns_ack_wait);
         assert!(plan.owns_stats_return);
+    }
+
+    #[test]
+    fn client_heartbeat_loop_launcher_ownership_boundary_prepares_repeated_loop_handoff() {
+        let request = AuthRequest {
+            message_type: MessageType::AuthRequest,
+            protocol_version: ProtocolVersion(2),
+            client_id: ClientId("client-1".to_string()),
+            run_id: RunId("run-1".to_string()),
+            app_version: AppVersion("0.1.0".to_string()),
+            shared_token: "shared-secret".to_string(),
+            display_name: Some("Alice".to_string()),
+            capabilities: Vec::new(),
+            requested_video_profile: None,
+        };
+        let auth_response = AuthResponse {
+            message_type: MessageType::AuthResponse,
+            protocol_version: ProtocolVersion(2),
+            client_id: request.client_id.clone(),
+            run_id: request.run_id.clone(),
+            accepted: true,
+            reason_code: AuthResponseReasonCode::Ok,
+            message: None,
+            server_time: Some(TimestampMicros(2_000)),
+            expected_protocol_version: None,
+        };
+
+        let result = ClientHeartbeatLoopLauncherOwnershipBoundary::default().prepare(
+            ClientHeartbeatLoopLauncherOwnershipInput {
+                mode: ClientHeartbeatOneTickRuntimeMode::HeartbeatWithStats,
+                destination: "127.0.0.1:5000".parse().unwrap(),
+                request,
+                auth_response,
+                socket_bound: true,
+                cadence: ClientHeartbeatLoopCadenceInput {
+                    heartbeat_interval_micros: 1_000_000,
+                    ack_receive_timeout_micros: 5_000_000,
+                    ack_observation_return:
+                        ClientHeartbeatAckObservationReturnMode::ClientStatsOncePerAck,
+                },
+                stop_condition: ClientHeartbeatLoopStopCondition::RunUntilStopped,
+                max_ack_socket_wait_micros: 5_000_000,
+                max_sleep_micros: 1_000_000,
+                retry_policy: ClientHeartbeatLoopRetryPolicy {
+                    max_attempts: 3,
+                    retry_delay_micros: 1_000_000,
+                },
+                local_time_enabled: true,
+                short_status: Some("one-tick-runtime-stats".to_string()),
+            },
+        );
+
+        let ClientHeartbeatLoopOwnershipDecision::Ready(plan) = result.ownership else {
+            panic!("accepted auth should prepare repeated loop ownership");
+        };
+        assert!(plan.owns_udp_socket);
+        let handoff = result
+            .repeated_loop_handoff
+            .expect("ready launcher ownership should produce handoff");
+        assert_eq!(
+            handoff.mode,
+            ClientHeartbeatOneTickRuntimeMode::HeartbeatWithStats
+        );
+        assert_eq!(handoff.destination, "127.0.0.1:5000".parse().unwrap());
+        assert_eq!(handoff.client_id, ClientId("client-1".to_string()));
+        assert_eq!(handoff.run_id, RunId("run-1".to_string()));
+        assert_eq!(handoff.protocol_version, ProtocolVersion(2));
+        assert_eq!(
+            handoff.cadence.ack_observation_return,
+            ClientHeartbeatAckObservationReturnMode::ClientStatsOncePerAck
+        );
+        assert!(handoff.local_time_enabled);
+    }
+
+    #[test]
+    fn client_heartbeat_loop_repeated_runtime_handoff_builds_one_tick_input() {
+        let handoff = ClientHeartbeatLoopRepeatedRuntimeHandoff {
+            mode: ClientHeartbeatOneTickRuntimeMode::HeartbeatOnly,
+            destination: "127.0.0.1:5000".parse().unwrap(),
+            client_id: ClientId("client-1".to_string()),
+            run_id: RunId("run-1".to_string()),
+            protocol_version: ProtocolVersion(2),
+            cadence: ClientHeartbeatLoopCadenceInput {
+                heartbeat_interval_micros: 1_000_000,
+                ack_receive_timeout_micros: 500_000,
+                ack_observation_return: ClientHeartbeatAckObservationReturnMode::Disabled,
+            },
+            stop_condition: ClientHeartbeatLoopStopCondition::RunUntilStopped,
+            max_ack_socket_wait_micros: 500_000,
+            max_sleep_micros: 1_000_000,
+            retry_policy: ClientHeartbeatLoopRetryPolicy {
+                max_attempts: 3,
+                retry_delay_micros: 1_000_000,
+            },
+            local_time_enabled: true,
+            short_status: Some("one-tick-runtime".to_string()),
+        };
+
+        let input = handoff.build_one_tick_input(
+            TimestampMicros(10_000),
+            ClientHeartbeatLoopStateSnapshot {
+                sent_heartbeats: 1,
+                received_acks: 1,
+                missed_acks: 0,
+                last_heartbeat_sent_at: Some(TimestampMicros(9_000)),
+                stop_requested: false,
+            },
+            2,
+        );
+
+        assert_eq!(input.destination, "127.0.0.1:5000".parse().unwrap());
+        assert_eq!(
+            input.body.ownership.client_id,
+            ClientId("client-1".to_string())
+        );
+        assert_eq!(input.body.policy.now, TimestampMicros(10_000));
+        assert_eq!(input.body.policy.state.sent_heartbeats, 1);
+        assert_eq!(input.local_time, Some(TimestampMicros(10_000)));
+        assert_eq!(input.short_status, Some("one-tick-runtime".to_string()));
+        assert_eq!(input.retry_attempts_used, 2);
     }
 
     #[test]
@@ -4409,6 +4657,15 @@ mod tests {
             ClientHeartbeatOneTickRuntimeMode::HeartbeatOnly
         );
         assert!(outcome.auth_response.accepted);
+        assert_eq!(
+            outcome.repeated_loop_handoff.client_id,
+            ClientId("client-1".to_string())
+        );
+        assert_eq!(
+            outcome.repeated_loop_handoff.short_status,
+            Some("one-tick-runtime".to_string())
+        );
+        assert!(outcome.repeated_loop_handoff.local_time_enabled);
         assert_eq!(
             outcome.runtime.controller.action,
             ClientHeartbeatLoopControllerAction::SendHeartbeat

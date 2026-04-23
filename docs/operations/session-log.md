@@ -61,6 +61,56 @@
 - Codex
 
 ### 今回の作業
+- client one-tick runtime の launcher / repeated-loop ownership 方針を整理した。
+- continuous heartbeat loop 本体へ進む前に、launcher が持つ責務と future repeated loop が持つ責務の境界を固定した。
+- docs に config load / socket ownership / one-tick runtime / future repeated loop / shutdown responsibility の責務分離を追記した。
+
+### 変更ファイル
+- `apps/client/src/lib.rs`
+- `docs/architecture/system-design.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### 実装したこと
+- `ClientHeartbeatLoopRepeatedRuntimeHandoff`
+- `ClientHeartbeatLoopLauncherOwnershipInput`
+- `ClientHeartbeatLoopLauncherOwnershipResult`
+- `ClientHeartbeatLoopLauncherOwnershipBoundary`
+- `ClientHeartbeatLoopRepeatedRuntimeHandoff::build_one_tick_input(...)`
+- `ClientHeartbeatOneTickRuntimeOutcome` に repeated-loop handoff を追加
+- one-tick launcher が accepted auth 後に ownership boundary を通し、その handoff から one-tick input を組み立てるように接続
+- launcher ownership boundary / repeated-loop handoff の単体テストを追加
+
+### 未実装 / 保留
+- completed continuous heartbeat loop
+- future repeated loop body 本体
+- 実 sleep / timer / retry execution
+- reconnect / shutdown cleanup / log writer invocation
+
+### 次にやる候補
+- client one-tick runtime から future repeated loop body を呼ぶ最小範囲整理
+- heartbeat timeout notice wakeup 実行本体に進む前の境界整理
+- RTT / offset metrics snapshot export cadence / dashboard refresh 方針整理
+
+### TODO 更新
+- 現在位置に client launcher / repeated-loop ownership 境界完了を反映した。
+- 直近でやることを future repeated loop body を呼ぶ最小範囲整理へ更新した。
+- client / 検証タスクに launcher / repeated-loop ownership 境界と関連単体テスト完了を追加した。
+
+### 検証
+- `cargo fmt`
+- `cargo test -p stream-sync-client client_heartbeat_loop_launcher_ownership`
+- `cargo test -p stream-sync-client client_heartbeat_one_tick_runtime_launcher`
+- `cargo fmt --check`
+- `cargo check --workspace`
+
+---
+
+## 2026-04-23
+### 担当
+- Codex
+
+### 今回の作業
 - client one-tick heartbeat runtime の accepted path を実機手動確認した。
 - `--receive-send-twice` と `--auth-heartbeat-one-tick-runtime` の組み合わせを確認した。
 - `--receive-send-three` と `--auth-heartbeat-stats-one-tick-runtime` の組み合わせも確認した。
