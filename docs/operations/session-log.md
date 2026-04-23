@@ -5,6 +5,57 @@
 - Codex
 
 ### 今回の作業
+- cleanup execution planning から future actual cleanup side effects へ進む最小範囲を整理した。
+- cleanup execution planning result だけから actual cleanup side-effect input を作る stop-only 境界を追加した。
+- final flush / log writer invocation / resource release を stop-path ordered apply result としてだけ返す最小 side-effect apply 境界を追加した。
+
+### 変更ファイル
+- `apps/client/src/lib.rs`
+- `docs/architecture/system-design.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### 実装したこと
+- `ClientHeartbeatLoopCleanupSideEffectInput`
+- `ClientHeartbeatLoopCleanupAppliedAction`
+- `ClientHeartbeatLoopCleanupSideEffectApplyResult`
+- `ClientHeartbeatLoopCleanupSideEffectResult`
+- `ClientHeartbeatLoopCleanupSideEffectInput::from_execution_planning(...)`
+- `ClientHeartbeatLoopCleanupSideEffectBoundary`
+- stop path から actual cleanup side-effect input を作る単体テスト
+- continue path では side-effect input を作らない単体テスト
+- stop-only semantics を保った side-effect apply result の単体テスト
+- flush / log / release の apply 順序を explicit に保つ単体テスト
+
+### 未実装 / 保留
+- completed continuous heartbeat loop
+- cleanup side-effect result を future completed continuous heartbeat loop stop path へつなぐ統合
+- actual timer wait / retry execution / reconnect
+- final flush / log writer invocation / resource release の複雑な実処理
+
+### 次にやる候補
+- future completed continuous heartbeat loop stop path へ cleanup side-effect result を接続する最小範囲整理
+- heartbeat timeout notice wakeup 実行本体に進む前の境界整理
+- RTT / offset metrics snapshot export cadence / dashboard refresh 方針整理
+
+### TODO 更新内容
+- 現在位置に cleanup actual side-effect apply の最小境界完了を反映した。
+- 直近でやることを future completed continuous heartbeat loop stop path 接続へ更新した。
+- client / 検証タスクに cleanup actual side-effect apply 境界と関連単体テスト完了を追加した。
+
+### 検証
+- `cargo fmt`
+- `cargo fmt --check`
+- `cargo test -p stream-sync-client client_heartbeat_loop_cleanup`
+- `cargo check --workspace`
+
+---
+
+## 2026-04-24
+### 担当
+- Codex
+
+### 今回の作業
 - cleanup ordering から future actual cleanup execution へ進む最小範囲を整理した。
 - ordered cleanup handoff だけから execution planning input を作る stop-only 境界を追加した。
 - final flush / log writer invocation / resource release を future ordered actions としてだけ表現する execution planning を追加した。

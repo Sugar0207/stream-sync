@@ -4626,7 +4626,7 @@ planning result, and future actual cleanup side effects:
   - Preserves future action order without running side effects.
 - future actual cleanup side effects
   - Will later consume the planned execution handoff.
-  - Must run after planning and remain outside this scope.
+  - Are still separate from planning in this scope.
 
 Responsibility split:
 
@@ -4649,6 +4649,75 @@ Current code reflects this with
 `ClientHeartbeatLoopCleanupExecutionPlanningHandoff`,
 `ClientHeartbeatLoopCleanupExecutionResult`, and
 `ClientHeartbeatLoopCleanupExecutionBoundary`.
+
+### Client Cleanup Side-Effect Apply Minimal Scope
+
+After cleanup execution planning returns a stop-only planned handoff, actual
+cleanup side-effect apply remains a separate step. The current scope adds only
+the minimal stop-path apply boundary and explicit ordered apply result; it does
+not introduce complex final flush, log writer, or resource release bodies.
+
+Current minimal scope:
+
+1. `ClientHeartbeatLoopCleanupSideEffectInput::from_execution_planning(...)`
+   converts `ClientHeartbeatLoopCleanupExecutionResult` into:
+   - `Ok(input)` for stop-only planned cleanup handoff
+   - `Err(carry)` for continue-path carry
+2. `ClientHeartbeatLoopCleanupSideEffectBoundary` receives one
+   `ClientHeartbeatLoopCleanupExecutionResult`.
+3. If cleanup execution planning returns `Continue { carry }`:
+   - side-effect apply returns `Continue`
+   - no side-effect input is produced
+4. If cleanup execution planning returns `Planned { handoff }`:
+   - side-effect apply returns `Applied { result }`
+   - result preserves `stop_reason`
+   - result marks cleanup completion explicitly
+   - result keeps applied action order explicit
+5. The stop-only apply scope is limited to ordered placeholder application of:
+   - `FinalFlush`
+   - `LogWriterInvocation`
+   - `ResourceRelease`
+6. Minimal safe side-effect scope:
+   - stop path only
+   - no retry-triggered cleanup apply
+   - no per-iteration cleanup apply
+   - no ordering logic moved into side-effect apply
+
+Relationship between cleanup execution planning handoff, actual cleanup
+side-effect input, actual cleanup side-effect result, and the future completed
+continuous heartbeat loop stop path:
+
+- cleanup execution planning handoff
+  - Is the only stop-path source for actual cleanup side-effect input.
+- actual cleanup side-effect input
+  - Wraps the planned cleanup handoff explicitly.
+  - Is not created for continue-path carry.
+- actual cleanup side-effect result
+  - Returns only continue carry or an explicit stop-path apply result.
+  - Keeps flush/log/release apply order visible.
+- future completed continuous heartbeat loop stop path
+  - Will later consume the side-effect result as the terminal stop-path output.
+  - Remains separate from the dumb actual while-loop.
+
+Responsibility split:
+
+- cleanup execution planning
+  - Produces a stop-only planned cleanup handoff.
+  - Does not apply side effects.
+- cleanup side-effect apply
+  - Applies only planned stop-path actions.
+  - Preserves explicit flush/log/release order.
+  - Does not add retry-triggered cleanup or per-iteration cleanup.
+- future completed continuous heartbeat loop stop path
+  - Will later own terminal stop-path wiring after side-effect apply finishes.
+  - Does not exist as a completed integration in the current scope.
+
+Current code reflects this with
+`ClientHeartbeatLoopCleanupSideEffectInput`,
+`ClientHeartbeatLoopCleanupAppliedAction`,
+`ClientHeartbeatLoopCleanupSideEffectApplyResult`,
+`ClientHeartbeatLoopCleanupSideEffectResult`, and
+`ClientHeartbeatLoopCleanupSideEffectBoundary`.
 
 ### Heartbeat Client Ack Observation Flow
 
