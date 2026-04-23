@@ -3001,6 +3001,17 @@ pub enum ClientHeartbeatLoopCompletedContinuousBodyConnectionResult {
     },
 }
 
+/// Final result surfaced by the minimal completed continuous heartbeat loop body.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ClientHeartbeatLoopCompletedContinuousBodyResult {
+    Continue {
+        output: ClientHeartbeatLoopCompletedContinuousBodyConnectionOutput,
+    },
+    Stop {
+        output: ClientHeartbeatLoopCompletedBodyTerminalOutput,
+    },
+}
+
 /// Boundary that connects one step result to future completed-loop lifecycle flow.
 ///
 /// This does not run a while-loop, sleep, reconnect, flush logs, close
@@ -3825,6 +3836,57 @@ impl ClientHeartbeatLoopCompletedContinuousBodyConnectionBoundary {
             Err(output) => ClientHeartbeatLoopCompletedContinuousBodyConnectionResult::Stop {
                 output,
             },
+        }
+    }
+}
+
+/// Minimal completed continuous heartbeat loop body composition over existing boundaries.
+///
+/// This boundary wires repeated invocation, stop-path cleanup flow, actual
+/// while-loop termination, completed body integration, timer/retry/reconnect
+/// integration, actual execution integration, and completed body connection
+/// once. It does not execute timer wait, retry work, reconnects, timeout
+/// wakeup, or a real while-loop.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct ClientHeartbeatLoopCompletedContinuousBodyBoundary {
+    actual_while_loop: ClientHeartbeatLoopActualWhileLoopBoundary,
+    cleanup_responsibility: ClientHeartbeatLoopCleanupResponsibilityBoundary,
+    cleanup_ordering: ClientHeartbeatLoopCleanupOrderingBoundary,
+    cleanup_execution: ClientHeartbeatLoopCleanupExecutionBoundary,
+    cleanup_side_effect: ClientHeartbeatLoopCleanupSideEffectBoundary,
+    stop_path: ClientHeartbeatLoopCompletedLoopStopPathBoundary,
+    termination: ClientHeartbeatLoopActualWhileLoopTerminationBoundary,
+    completed_body_integration: ClientHeartbeatLoopCompletedBodyIntegrationBoundary,
+    timer_retry_reconnect_integration: ClientHeartbeatLoopTimerRetryReconnectIntegrationBoundary,
+    actual_execution: ClientHeartbeatLoopActualTimerRetryReconnectExecutionBoundary,
+    body_connection: ClientHeartbeatLoopCompletedContinuousBodyConnectionBoundary,
+}
+
+impl ClientHeartbeatLoopCompletedContinuousBodyBoundary {
+    pub fn plan_next(
+        &self,
+        repeated: ClientHeartbeatLoopRepeatedInvocationResult,
+    ) -> ClientHeartbeatLoopCompletedContinuousBodyResult {
+        let step = self.actual_while_loop.plan_next(repeated);
+        let responsibility = self.cleanup_responsibility.plan_next(step);
+        let ordering = self.cleanup_ordering.plan_next(responsibility);
+        let execution = self.cleanup_execution.plan_next(ordering);
+        let side_effect = self.cleanup_side_effect.apply(execution);
+        let stop_path = self.stop_path.plan_next(side_effect);
+        let termination = self.termination.plan_next(stop_path);
+        let completed_body = self.completed_body_integration.plan_next(termination);
+        let planning = self
+            .timer_retry_reconnect_integration
+            .plan_next(completed_body);
+        let actual_execution = self.actual_execution.plan_next(planning);
+
+        match self.body_connection.plan_next(actual_execution) {
+            ClientHeartbeatLoopCompletedContinuousBodyConnectionResult::Continue { output } => {
+                ClientHeartbeatLoopCompletedContinuousBodyResult::Continue { output }
+            }
+            ClientHeartbeatLoopCompletedContinuousBodyConnectionResult::Stop { output } => {
+                ClientHeartbeatLoopCompletedContinuousBodyResult::Stop { output }
+            }
         }
     }
 }
@@ -9200,6 +9262,209 @@ mod tests {
             output.reconnect_execution,
             ClientHeartbeatLoopFutureActualReconnectExecutionAction::NoReconnectExecution
         );
+    }
+
+    #[test]
+    fn client_heartbeat_loop_cleanup_completed_continuous_body_preserves_continue_future_execution_actions(
+    ) {
+        let carry = ClientHeartbeatLoopRepeatedInvocationNextStepCarry::ApplyTimerThenContinue {
+            sleep: ClientHeartbeatLoopSleepDecision::Sleep {
+                reason: ClientHeartbeatLoopSleepReason::CadenceWait,
+                sleep_micros: 1_000,
+                wake_at: TimestampMicros(12_000),
+            },
+            carry: ClientHeartbeatLoopIterationCarryState {
+                ordering: ClientHeartbeatLoopStepOrdering::WaitThenContinue {
+                    sleep: ClientHeartbeatLoopSleepDecision::Sleep {
+                        reason: ClientHeartbeatLoopSleepReason::CadenceWait,
+                        sleep_micros: 1_000,
+                        wake_at: TimestampMicros(12_000),
+                    },
+                },
+                final_counters: ClientHeartbeatLoopCountersState::default(),
+                next_runtime_input: ClientHeartbeatLoopCompletedStepRuntimeInput {
+                    continue_requested: true,
+                    body: ClientHeartbeatLoopRepeatedRuntimeBodyInput {
+                        handoff: ClientHeartbeatLoopRepeatedRuntimeHandoff {
+                            mode: ClientHeartbeatOneTickRuntimeMode::HeartbeatOnly,
+                            destination: "127.0.0.1:5000".parse().unwrap(),
+                            client_id: ClientId("client-1".to_string()),
+                            run_id: RunId("run-1".to_string()),
+                            protocol_version: ProtocolVersion(2),
+                            cadence: ClientHeartbeatLoopCadenceInput {
+                                heartbeat_interval_micros: 1_000,
+                                ack_receive_timeout_micros: 500,
+                                ack_observation_return:
+                                    ClientHeartbeatAckObservationReturnMode::Disabled,
+                            },
+                            stop_condition: ClientHeartbeatLoopStopCondition::RunUntilStopped,
+                            max_ack_socket_wait_micros: 500,
+                            max_sleep_micros: 250,
+                            retry_policy: ClientHeartbeatLoopRetryPolicy {
+                                max_attempts: 3,
+                                retry_delay_micros: 1_000,
+                            },
+                            local_time_enabled: true,
+                            short_status: Some("one-tick-runtime".to_string()),
+                        },
+                        now: TimestampMicros(11_000),
+                        stop_requested: false,
+                        retry_attempts_used: 0,
+                    },
+                },
+            },
+        };
+
+        let result = ClientHeartbeatLoopCompletedContinuousBodyBoundary::default().plan_next(
+            ClientHeartbeatLoopRepeatedInvocationResult::Continue {
+                carry: carry.clone(),
+            },
+        );
+
+        let ClientHeartbeatLoopCompletedContinuousBodyResult::Continue { output } = result else {
+            panic!("continue path should remain explicit in completed continuous body");
+        };
+
+        assert_eq!(output.carry, carry);
+        assert_eq!(
+            output.timer_wait,
+            ClientHeartbeatLoopFutureActualTimerWaitAction::TimerWait {
+                sleep: ClientHeartbeatLoopSleepDecision::Sleep {
+                    reason: ClientHeartbeatLoopSleepReason::CadenceWait,
+                    sleep_micros: 1_000,
+                    wake_at: TimestampMicros(12_000),
+                },
+            }
+        );
+        assert_eq!(
+            output.retry_execution,
+            ClientHeartbeatLoopFutureActualRetryExecutionAction::NoRetryExecution
+        );
+        assert_eq!(
+            output.reconnect_execution,
+            ClientHeartbeatLoopFutureActualReconnectExecutionAction::NoReconnectExecution
+        );
+    }
+
+    #[test]
+    fn client_heartbeat_loop_cleanup_completed_continuous_body_preserves_stop_semantics() {
+        let trigger = ClientHeartbeatLoopCleanupTrigger {
+            handoff: ClientHeartbeatLoopWhileLoopStopHandoff {
+                stop: ClientHeartbeatLoopCompletedBodyStopResult {
+                    stop_reason: ClientHeartbeatLoopLifecycleStopReason::CallerRequestedStop,
+                    cleanup: ClientHeartbeatLoopCleanupSequencingResult::BeginCleanup {
+                        stop_reason: ClientHeartbeatLoopLifecycleStopReason::CallerRequestedStop,
+                    },
+                },
+                final_counters: ClientHeartbeatLoopCountersState::default(),
+            },
+        };
+
+        let result = ClientHeartbeatLoopCompletedContinuousBodyBoundary::default().plan_next(
+            ClientHeartbeatLoopRepeatedInvocationResult::Stop {
+                reason: ClientHeartbeatLoopRepeatedInvocationStopReason::CleanupRequested {
+                    stop_reason: ClientHeartbeatLoopLifecycleStopReason::CallerRequestedStop,
+                },
+                trigger,
+            },
+        );
+
+        assert_eq!(
+            result,
+            ClientHeartbeatLoopCompletedContinuousBodyResult::Stop {
+                output: ClientHeartbeatLoopCompletedBodyTerminalOutput {
+                    stop_reason:
+                        ClientHeartbeatLoopRepeatedInvocationStopReason::CleanupRequested {
+                            stop_reason:
+                                ClientHeartbeatLoopLifecycleStopReason::CallerRequestedStop,
+                        },
+                    cleanup_completed: true,
+                    applied_actions: [
+                        ClientHeartbeatLoopCleanupAppliedAction::FinalFlush,
+                        ClientHeartbeatLoopCleanupAppliedAction::LogWriterInvocation,
+                        ClientHeartbeatLoopCleanupAppliedAction::ResourceRelease,
+                    ],
+                },
+            }
+        );
+    }
+
+    #[test]
+    fn client_heartbeat_loop_cleanup_completed_continuous_body_keeps_continue_and_stop_distinct() {
+        let continue_result = ClientHeartbeatLoopCompletedContinuousBodyBoundary::default()
+            .plan_next(ClientHeartbeatLoopRepeatedInvocationResult::Continue {
+                carry: ClientHeartbeatLoopRepeatedInvocationNextStepCarry::ContinueImmediately {
+                    carry: ClientHeartbeatLoopIterationCarryState {
+                        ordering: ClientHeartbeatLoopStepOrdering::ContinueImmediately,
+                        final_counters: ClientHeartbeatLoopCountersState::default(),
+                        next_runtime_input: ClientHeartbeatLoopCompletedStepRuntimeInput {
+                            continue_requested: true,
+                            body: ClientHeartbeatLoopRepeatedRuntimeBodyInput {
+                                handoff: ClientHeartbeatLoopRepeatedRuntimeHandoff {
+                                    mode: ClientHeartbeatOneTickRuntimeMode::HeartbeatOnly,
+                                    destination: "127.0.0.1:5000".parse().unwrap(),
+                                    client_id: ClientId("client-1".to_string()),
+                                    run_id: RunId("run-1".to_string()),
+                                    protocol_version: ProtocolVersion(2),
+                                    cadence: ClientHeartbeatLoopCadenceInput {
+                                        heartbeat_interval_micros: 1_000,
+                                        ack_receive_timeout_micros: 500,
+                                        ack_observation_return:
+                                            ClientHeartbeatAckObservationReturnMode::Disabled,
+                                    },
+                                    stop_condition:
+                                        ClientHeartbeatLoopStopCondition::RunUntilStopped,
+                                    max_ack_socket_wait_micros: 500,
+                                    max_sleep_micros: 250,
+                                    retry_policy: ClientHeartbeatLoopRetryPolicy {
+                                        max_attempts: 3,
+                                        retry_delay_micros: 1_000,
+                                    },
+                                    local_time_enabled: true,
+                                    short_status: Some("one-tick-runtime".to_string()),
+                                },
+                                now: TimestampMicros(11_000),
+                                stop_requested: false,
+                                retry_attempts_used: 0,
+                            },
+                        },
+                    },
+                },
+            });
+        let stop_result = ClientHeartbeatLoopCompletedContinuousBodyBoundary::default().plan_next(
+            ClientHeartbeatLoopRepeatedInvocationResult::Stop {
+                reason: ClientHeartbeatLoopRepeatedInvocationStopReason::CleanupRequested {
+                    stop_reason: ClientHeartbeatLoopLifecycleStopReason::CallerRequestedStop,
+                },
+                trigger: ClientHeartbeatLoopCleanupTrigger {
+                    handoff: ClientHeartbeatLoopWhileLoopStopHandoff {
+                        stop: ClientHeartbeatLoopCompletedBodyStopResult {
+                            stop_reason:
+                                ClientHeartbeatLoopLifecycleStopReason::CallerRequestedStop,
+                            cleanup: ClientHeartbeatLoopCleanupSequencingResult::BeginCleanup {
+                                stop_reason:
+                                    ClientHeartbeatLoopLifecycleStopReason::CallerRequestedStop,
+                            },
+                        },
+                        final_counters: ClientHeartbeatLoopCountersState::default(),
+                    },
+                },
+            },
+        );
+
+        match continue_result {
+            ClientHeartbeatLoopCompletedContinuousBodyResult::Continue { .. } => {}
+            ClientHeartbeatLoopCompletedContinuousBodyResult::Stop { .. } => {
+                panic!("continue path should not collapse into stop output");
+            }
+        }
+
+        match stop_result {
+            ClientHeartbeatLoopCompletedContinuousBodyResult::Stop { .. } => {}
+            ClientHeartbeatLoopCompletedContinuousBodyResult::Continue { .. } => {
+                panic!("stop path should not collapse into continue output");
+            }
+        }
     }
 
     #[test]

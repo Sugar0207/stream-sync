@@ -1,6 +1,53 @@
 <!-- stream-sync/docs/operations/session-log.md -->
 
 ## 2026-04-24
+### 担当 - Codex
+
+### 今回の作業
+- repeated invocation result から completed continuous heartbeat loop body まで既存 boundary を薄く配線する最小 composition を completed continuous heartbeat loop body として整理した。
+- continue path は `carry` / `timer_wait` / `retry_execution` / `reconnect_execution`、stop path は `stop_reason` / `cleanup_completed` / `applied_actions` をそのまま保持する shape を確認した。
+- completed continuous heartbeat loop body 自体の単体テストと architecture / todo の更新を追加した。
+
+### 変更ファイル
+- `apps/client/src/lib.rs`
+- `docs/architecture/system-design.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### 実装したこと
+- `ClientHeartbeatLoopCompletedContinuousBodyBoundary`
+- `ClientHeartbeatLoopCompletedContinuousBodyResult`
+- repeated invocation -> actual while-loop -> cleanup responsibility -> cleanup ordering -> cleanup execution planning -> cleanup actual side-effect apply -> completed-loop stop-path output -> actual while-loop termination -> completed body integration -> timer / retry / reconnect integration -> actual execution integration -> completed body connection を 1 回だけ配線する最小 completed body composition
+- continue path で explicit future execution actions を保持する completed continuous heartbeat loop body の単体テスト
+- stop path で explicit cleanup-completed terminal output を保持する completed continuous heartbeat loop body の単体テスト
+- continue / stop を vague result に潰さない completed continuous heartbeat loop body の単体テスト
+
+### 未実装 / 保留
+- continuous heartbeat loop 本体
+- actual timer wait / retry execution / reconnect の実処理
+- heartbeat timeout wakeup execution
+- stats metrics state commit
+- completed smoothing / outlier model
+- dashboard 本体
+- final flush / log writer invocation / resource release の複雑な実処理
+
+### 次にやる候補
+- heartbeat timeout notice wakeup 実行本体に進む前の境界整理を続ける
+- actual timer wait / retry / reconnect の実行本体に進む前の境界整理を続ける
+- RTT / offset metrics snapshot の export cadence / dashboard refresh 方針を整理する
+
+### TODO更新内容
+- 現在位置に completed continuous heartbeat loop body の最小実装完了を反映した。
+- 直近でやることを completed continuous heartbeat loop 本体の最小実装整理から次の未実装項目へ更新した。
+- client / 検証タスクに completed continuous heartbeat loop body 境界と関連単体テスト完了を追加した。
+
+### 検証
+- `cargo fmt`
+- `cargo fmt --check`
+- `cargo test -p stream-sync-client client_heartbeat_loop_cleanup`
+- `cargo check --workspace`
+
+## 2026-04-24
 ### 担当
 - Codex
 

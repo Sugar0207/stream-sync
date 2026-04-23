@@ -5100,6 +5100,90 @@ Current code reflects this with
 `ClientHeartbeatLoopCompletedContinuousBodyConnectionResult`, and
 `ClientHeartbeatLoopCompletedContinuousBodyConnectionBoundary`.
 
+### Client Completed Continuous Heartbeat Loop Body Minimal Scope
+
+Once repeated invocation, stop-path cleanup flow, actual while-loop
+termination, completed body integration, timer / retry / reconnect planning,
+actual execution integration, and completed body connection all exist as
+separate boundaries, completed continuous heartbeat loop body can stay a thin
+composition layer. The current scope adds only that minimal composition; it
+does not execute timer wait, retry execution, reconnect execution, timeout
+wakeup, or a real while-loop.
+
+Current minimal scope:
+
+1. `ClientHeartbeatLoopCompletedContinuousBodyBoundary` receives one
+   `ClientHeartbeatLoopRepeatedInvocationResult`.
+2. It wires existing boundaries once in this order:
+   - actual while-loop
+   - cleanup responsibility
+   - cleanup ordering
+   - cleanup execution planning
+   - cleanup actual side-effect apply
+   - completed-loop stop-path output
+   - actual while-loop termination
+   - completed body integration
+   - timer / retry / reconnect integration
+   - actual timer / retry / reconnect execution integration
+   - completed continuous body connection
+3. If repeated invocation returns `Continue { carry }`:
+   - completed body returns `Continue { output }`
+   - continue path preserves `carry`, `timer_wait`, `retry_execution`, and
+     `reconnect_execution` without executing them
+4. If repeated invocation returns `Stop { reason, trigger }`:
+   - completed body returns `Stop { output }`
+   - stop path preserves `stop_reason`, `cleanup_completed`, and
+     `applied_actions` after cleanup side-effect apply completes
+5. Minimal safe completed-body scope:
+   - repeated invocation result is the only entry into completed continuous
+     heartbeat loop body
+   - stop path remains explicit end-to-end
+   - continue path remains explicit and does not hide future execution actions
+   - completed body does not reinterpret cleanup ordering, cleanup execution
+     planning, cleanup side-effect apply, or termination logic
+
+Relationship between repeated invocation result, stop-path cleanup flow,
+actual while-loop termination result, completed body integration / connection
+result, and the final completed continuous heartbeat loop body result:
+
+- repeated invocation result
+  - Is the only entry into completed continuous heartbeat loop body.
+  - Starts either explicit continue flow or explicit stop cleanup flow.
+- stop-path cleanup flow
+  - Runs through responsibility, ordering, execution planning, and
+    side-effect apply before any terminal output exists.
+  - Remains separate from continue-path planning.
+- actual while-loop termination result
+  - Converts completed-loop stop-path output into explicit terminal
+    termination only.
+  - Is passed forward without reinterpretation.
+- completed body integration / connection result
+  - Keeps continue planning and future execution actions explicit.
+  - Preserves explicit stop passthrough.
+- final completed continuous heartbeat loop body result
+  - Returns either explicit continue output with unapplied future execution
+    actions or explicit stop output with cleanup completion details.
+  - Does not execute runtime side effects.
+
+Responsibility split:
+
+- upstream existing boundaries
+  - Own stop-path cleanup flow, termination shaping, and continue-path
+    planning / execution-action shaping.
+  - Do not own completed continuous heartbeat loop body composition.
+- completed continuous heartbeat loop body boundary
+  - Wires existing boundaries together once and exposes the final explicit
+    continue / stop result.
+  - Does not execute timer wait, retry, reconnect, timeout wakeup, or a real
+    while-loop.
+- future full completed continuous heartbeat loop implementation
+  - Will later own actual repeated execution around this composed body.
+  - Is outside the current scope.
+
+Current code reflects this with
+`ClientHeartbeatLoopCompletedContinuousBodyResult` and
+`ClientHeartbeatLoopCompletedContinuousBodyBoundary`.
+
 ### Heartbeat Client Ack Observation Flow
 
 The client ack observation flow returns the missing `client_received_at`
