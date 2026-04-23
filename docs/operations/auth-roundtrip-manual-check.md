@@ -690,6 +690,58 @@ Check points:
 - final counters stay at `sent_heartbeats=1`, `received_acks=1`,
   `stats_returns_sent=0`
 
+### 2026-04-23 Codex result
+
+Status: success
+
+Build:
+
+```powershell
+cargo build -p stream-sync-server -p stream-sync-client
+```
+
+server:
+
+```powershell
+target/debug/stream-sync-server.exe --receive-send-twice configs/examples/server.example.toml
+```
+
+client:
+
+```powershell
+target/debug/stream-sync-client.exe --auth-heartbeat-one-tick-runtime configs/examples/client.accepted.example.toml
+```
+
+Observed client stdout:
+
+```text
+auth heartbeat one-tick runtime sent AuthRequest 96 bytes to 127.0.0.1:5000 and received AuthResponse 55 bytes from 127.0.0.1:5000; accepted=true reason_code=Ok; controller_action=SendHeartbeat shutdown=Continue; sent Heartbeat 85 bytes and received HeartbeatAck 73 bytes from 127.0.0.1:5000; client_id=player1 run_id=streamsync-dev-session protocol_version=1 heartbeat_sent_at=1776936652354672 echoed_sent_at=1776936652354672 server_received_at=1776936652450854 server_sent_at=1776936652450854 sent_heartbeats=1 received_acks=1 missed_acks=0 stats_returns_sent=0
+```
+
+Observed server stdout:
+
+```text
+receive/send two-iteration runtime handled two packets on 0.0.0.0:5000; first_sent_bytes=55 second_sent_bytes=73 registered_clients=1 heartbeat_liveness_entries=1
+```
+
+Observed server stderr:
+
+```json
+{"event_name":"server.receive_loop","source":"127.0.0.1:57742","outcome":"Accepted","packet_len":96,"message_type":"AuthRequest","client_id":"player1","rejection_reason":null,"timestamp":1776936650952812}
+{"event_name":"server.auth_result","run_id":"streamsync-dev-session","client_id":"player1","source":"127.0.0.1:57742","accepted":true,"reason_code":"Ok","message":null,"app_version":"0.1.0","protocol_version":1,"timestamp":1776936650952812,"expected_protocol_version":null}
+{"event_name":"server.send","outcome":"Success","run_id":"streamsync-dev-session","client_id":"player1","destination":"127.0.0.1:57742","message_type":"AuthResponse","stage":"SocketSend","encoded_len":55,"bytes_sent":55,"failure":null,"disposition":null,"timestamp":1776936650952812}
+{"event_name":"server.receive_loop","source":"127.0.0.1:57742","outcome":"Accepted","packet_len":85,"message_type":"Heartbeat","client_id":"player1","rejection_reason":null,"timestamp":1776936652450854}
+{"event_name":"server.send","outcome":"Success","run_id":"streamsync-dev-session","client_id":"player1","destination":"127.0.0.1:57742","message_type":"HeartbeatAck","stage":"SocketSend","encoded_len":73,"bytes_sent":73,"failure":null,"disposition":null,"timestamp":1776936652450854}
+```
+
+Notes:
+
+- accepted auth completed before the one-tick runtime heartbeat send
+- `controller_action=SendHeartbeat` and `shutdown=Continue` matched the expected
+  one-tick runtime path
+- observed `Heartbeat` packet length was 85 bytes in this run because the
+  launcher supplied `short_status="one-tick-runtime"`
+
 ## `--auth-heartbeat-stats-one-tick-runtime` manual check
 
 This entry is the minimal CLI/config bridge for the client one-tick heartbeat
@@ -729,3 +781,57 @@ Check points:
   one stateless RTT/offset result
 - final counters stay at `sent_heartbeats=1`, `received_acks=1`,
   `stats_returns_sent=1`
+
+### 2026-04-23 Codex result
+
+Status: success
+
+Build:
+
+```powershell
+cargo build -p stream-sync-server -p stream-sync-client
+```
+
+server:
+
+```powershell
+target/debug/stream-sync-server.exe --receive-send-three configs/examples/server.example.toml
+```
+
+client:
+
+```powershell
+target/debug/stream-sync-client.exe --auth-heartbeat-stats-one-tick-runtime configs/examples/client.accepted.example.toml
+```
+
+Observed client stdout:
+
+```text
+auth heartbeat stats one-tick runtime sent AuthRequest 96 bytes to 127.0.0.1:5000 and received AuthResponse 55 bytes from 127.0.0.1:5000; accepted=true reason_code=Ok; controller_action=SendHeartbeat shutdown=Continue; sent Heartbeat 91 bytes and received HeartbeatAck 73 bytes from 127.0.0.1:5000; sent ClientStats 106 bytes with HeartbeatAckObservation; client_id=player1 run_id=streamsync-dev-session protocol_version=1 heartbeat_sent_at=1776936677794807 echoed_sent_at=1776936677794807 server_received_at=1776936677895165 server_sent_at=1776936677895165 client_received_at=1776936677912453 sent_heartbeats=1 received_acks=1 missed_acks=0 stats_returns_sent=1
+```
+
+Observed server stdout:
+
+```text
+receive/send three-iteration runtime handled three packets on 0.0.0.0:5000; first_sent_bytes=55 second_sent_bytes=73 third_sent_bytes=0 registered_clients=1 heartbeat_liveness_entries=1 heartbeat_received_count=1 heartbeat_rtt_offset_entries=1 heartbeat_rtt_offset_samples=1 heartbeat_rtt_micros=117646 heartbeat_server_processing_micros=0 heartbeat_clock_offset_micros=41535
+```
+
+Observed server stderr:
+
+```json
+{"event_name":"server.receive_loop","source":"127.0.0.1:54038","outcome":"Accepted","packet_len":96,"message_type":"AuthRequest","client_id":"player1","rejection_reason":null,"timestamp":1776936677256987}
+{"event_name":"server.auth_result","run_id":"streamsync-dev-session","client_id":"player1","source":"127.0.0.1:54038","accepted":true,"reason_code":"Ok","message":null,"app_version":"0.1.0","protocol_version":1,"timestamp":1776936677256987,"expected_protocol_version":null}
+{"event_name":"server.send","outcome":"Success","run_id":"streamsync-dev-session","client_id":"player1","destination":"127.0.0.1:54038","message_type":"AuthResponse","stage":"SocketSend","encoded_len":55,"bytes_sent":55,"failure":null,"disposition":null,"timestamp":1776936677256987}
+{"event_name":"server.receive_loop","source":"127.0.0.1:54038","outcome":"Accepted","packet_len":91,"message_type":"Heartbeat","client_id":"player1","rejection_reason":null,"timestamp":1776936677895165}
+{"event_name":"server.send","outcome":"Success","run_id":"streamsync-dev-session","client_id":"player1","destination":"127.0.0.1:54038","message_type":"HeartbeatAck","stage":"SocketSend","encoded_len":73,"bytes_sent":73,"failure":null,"disposition":null,"timestamp":1776936677895165}
+{"event_name":"server.receive_loop","source":"127.0.0.1:54038","outcome":"Accepted","packet_len":106,"message_type":"ClientStats","client_id":"player1","rejection_reason":null,"timestamp":1776936677960147}
+```
+
+Notes:
+
+- client one-tick runtime completed auth -> heartbeat -> ack -> `ClientStats`
+  observation return in one synchronous call chain
+- server `--receive-send-three` accepted all three packets and exposed one
+  stateless RTT/offset sample on stdout
+- observed `Heartbeat` packet length was 91 bytes in this run because the
+  launcher supplied `short_status="one-tick-runtime-stats"`

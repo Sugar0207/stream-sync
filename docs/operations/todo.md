@@ -39,6 +39,8 @@
 - `--auth-request-poc-once` は accepted path で client 側 `AuthResponse` を 1 回受信して stdout に表示できる。`accepted=true`, `reason_code=Ok` を client stdout で観測済み
 - `--auth-heartbeat-poc-once` は accepted auth 後に同じ UDP socket で `Heartbeat` を 1 回送り、`HeartbeatAck` を 1 回受信して stdout に表示する入口として追加済み。`--receive-send-twice` と組み合わせる手順は docs に反映済み
 - `--auth-heartbeat-stats-poc-once` は `HeartbeatAck` 受信後に `HeartbeatAckObservation` を `ClientStats` optional block へ載せて 1 回送信できる。`--receive-send-three` はそれを受信して既存 timebase plan / stateless calculator へ渡す入口として追加済み
+- `--auth-heartbeat-one-tick-runtime` の accepted path 手動確認は成功し、`configs/examples/server.example.toml` と `configs/examples/client.accepted.example.toml` の組み合わせで client 側 `controller_action=SendHeartbeat`, `shutdown=Continue`, `sent_heartbeats=1`, `received_acks=1` と server 側 `first_sent_bytes=55`, `second_sent_bytes=73`, `heartbeat_liveness_entries=1` を観測済み
+- `--auth-heartbeat-stats-one-tick-runtime` の accepted path 手動確認は成功し、`configs/examples/server.example.toml` と `configs/examples/client.accepted.example.toml` の組み合わせで client 側 `stats_returns_sent=1` と server 側 `third_sent_bytes=0`, `heartbeat_rtt_offset_entries=1`, `heartbeat_rtt_offset_samples=1` を観測済み
 - `--receive-send-three` は stateless RTT / offset candidate を default candidate policy に通してから `ServerHeartbeatRttOffsetState` へ 1 回 commit し、stdout に `heartbeat_rtt_offset_entries` / `heartbeat_rtt_offset_samples` を表示できる。rejected candidate は policy commit 境界で state commit されず、後段の log / metrics handoff 境界で可視化入力へ変換できる
 - `ServerHeartbeatLivenessCommitBoundary` は registered heartbeat から作られた `ServerHeartbeatStateInput` を `ServerHeartbeatLivenessState` へ 1 回 commit できる。`--receive-send-twice` / `--receive-send-three` は preserved heartbeat handoff から liveness state を 1 回更新し、stdout に entry 数を表示できる
 - heartbeat timeout は `ServerHeartbeatTimeoutPolicy` と `evaluate_timeout` で 1 client 分を `Alive` / `TimedOut` / `NoHeartbeat` に分類できる。`TimedOut` 結果から auth registry invalidation command、timeout log event input、`AuthExpired` notice plan を作る最小 action boundary と、registry invalidation / caller-owned timeout log writer / notice queue item handoff までを適用する最小 apply boundary、notice queue storage / send wakeup plan 境界も追加済み
@@ -53,7 +55,7 @@
 - receive loop の継続運用向けログ範囲は整理済み。`server.receive_loop` の event schema / caller-owned writer / sink plan placeholder は追加済みだが、continuous receive loop からの実接続、file sink open、process-wide logger は未実装
 - continuous receive loop 本体の実装範囲、1 tick 実接続範囲、operational / rejection writer への handoff 範囲、caller-owned writer 呼び出し範囲、handler handoff 実接続範囲、最小 1 tick 実行接続範囲、継続 loop controller の外枠範囲、handler dispatch への最小 handoff 範囲、handler dispatch 本体の最小分類範囲、auth dispatch の最小実接続範囲、registered packet handler の最小実接続範囲、video / stats handler の最小 input 接続範囲、continuous receive loop body から dispatch runtime を呼ぶ最小範囲、dispatch runtime 結果の side effect 適用範囲、accepted auth の outbound queue storage / auth log writer 最小接続範囲、send loop / queue collection の最小接続範囲、send JSON Lines writer の one-iteration 最小実接続範囲、continuous receive loop と one-item send runtime の最小結合範囲、controller が one-iteration receive/send runtime を呼ぶ最小範囲、completed one-iteration runtime の CLI / config 接続範囲は整理済み。loop lifecycle / tick / writer handoff / writer runtime / handler handoff runtime / one-tick runtime / controller / handler dispatch bridge / handler dispatch result / auth dispatch runtime / registered packet dispatch runtime / video stats handler runtime / body dispatch runtime / side effect apply / output apply / queue collection / send one runtime / send log output / receive-send one iteration runtime / controller receive-send runtime placeholder、one-iteration launcher、1 iteration だけの最小 loop body は追加済みだが、完成した継続 receive/send loop、retry / requeue、rejection response 送信 policy、video buffer / sync handoff 本体、stats state commit 本体、packet drop 本体、file sink open、process-wide logger は未実装
 - secret store / token rotation 方針は整理済み。SecretStore 参照と rotation policy placeholder は追加済みだが、provider 連携、rotation 実行、hot reload は未実装
-- 次の中心は heartbeat timeout notice wakeup 実行本体に進む前の境界整理、RTT / offset metrics snapshot の具体的な export cadence / dashboard refresh 方針、client one-tick runtime accepted path の手動確認と launcher / repeated-loop ownership 方針整理
+- 次の中心は heartbeat timeout notice wakeup 実行本体に進む前の境界整理、RTT / offset metrics snapshot の具体的な export cadence / dashboard refresh 方針、client one-tick runtime の launcher / repeated-loop ownership 方針整理
 
 ---
 
@@ -85,7 +87,7 @@
 ## 直近でやること
 1. heartbeat timeout notice wakeup 実行本体に進む前の境界整理を続ける
 2. RTT / offset metrics snapshot の具体的な export cadence / dashboard refresh 方針を整理する
-3. client one-tick runtime accepted path の手動確認と launcher / repeated-loop ownership 方針を整理する
+3. client one-tick runtime の launcher / repeated-loop ownership 方針を整理する
 
 ---
 

@@ -57,6 +57,69 @@
 ---
 
 ## 2026-04-23
+### 担当
+- Codex
+
+### 今回の作業
+- client one-tick heartbeat runtime の accepted path を実機手動確認した。
+- `--receive-send-twice` と `--auth-heartbeat-one-tick-runtime` の組み合わせを確認した。
+- `--receive-send-three` と `--auth-heartbeat-stats-one-tick-runtime` の組み合わせも確認した。
+- stdout / stderr の要点を manual check docs と operations docs に反映した。
+
+### 変更ファイル
+- `docs/operations/auth-roundtrip-manual-check.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### 実施結果
+- `target/debug/stream-sync-server.exe --receive-send-twice configs/examples/server.example.toml`
+  と
+  `target/debug/stream-sync-client.exe --auth-heartbeat-one-tick-runtime configs/examples/client.accepted.example.toml`
+  の accepted path は成功した。
+- client stdout では `accepted=true`, `controller_action=SendHeartbeat`,
+  `shutdown=Continue`, `sent_heartbeats=1`, `received_acks=1`,
+  `stats_returns_sent=0` を確認した。
+- server stdout では `first_sent_bytes=55`, `second_sent_bytes=73`,
+  `registered_clients=1`, `heartbeat_liveness_entries=1` を確認した。
+- server stderr では accepted `AuthRequest` -> accepted `Heartbeat` ->
+  `HeartbeatAck` send の JSON Lines を確認した。
+- `target/debug/stream-sync-server.exe --receive-send-three configs/examples/server.example.toml`
+  と
+  `target/debug/stream-sync-client.exe --auth-heartbeat-stats-one-tick-runtime configs/examples/client.accepted.example.toml`
+  の accepted path も成功した。
+- client stdout では `stats_returns_sent=1` まで進み、`ClientStats 106 bytes`
+  の observation return を確認した。
+- server stdout では `third_sent_bytes=0`, `heartbeat_rtt_offset_entries=1`,
+  `heartbeat_rtt_offset_samples=1`, `heartbeat_rtt_micros=117646`,
+  `heartbeat_clock_offset_micros=41535` を確認した。
+- server stderr では accepted `ClientStats` 受信までの JSON Lines を確認した。
+
+### 未実装 / 保留
+- launcher / repeated-loop ownership 方針の明文化
+- completed continuous heartbeat loop
+- 実 sleep / timer / retry execution
+- JSON Lines writer invocation / shutdown cleanup
+
+### 次にやる候補
+- client one-tick runtime の launcher / repeated-loop ownership 方針整理
+- heartbeat timeout notice wakeup 実行本体に進む前の境界整理
+- RTT / offset metrics snapshot export cadence / dashboard refresh 方針整理
+
+### TODO 更新
+- 現在位置に one-tick runtime accepted path 手動確認の成功結果を反映した。
+- 直近でやることから accepted path manual check を外し、launcher /
+  repeated-loop ownership 方針整理へ更新した。
+
+### 検証
+- `cargo build -p stream-sync-server -p stream-sync-client`
+- `target/debug/stream-sync-server.exe --receive-send-twice configs/examples/server.example.toml`
+- `target/debug/stream-sync-client.exe --auth-heartbeat-one-tick-runtime configs/examples/client.accepted.example.toml`
+- `target/debug/stream-sync-server.exe --receive-send-three configs/examples/server.example.toml`
+- `target/debug/stream-sync-client.exe --auth-heartbeat-stats-one-tick-runtime configs/examples/client.accepted.example.toml`
+
+---
+
+## 2026-04-23
 ### 種別
 - Codex
 
