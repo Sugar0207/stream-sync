@@ -15,6 +15,8 @@ use stream_sync_protocol::{
 };
 
 const DEFAULT_AUTH_RESPONSE_TIMEOUT_MS: u64 = 5_000;
+const DEFAULT_HEARTBEAT_INTERVAL_MS: u32 = 1_000;
+const DEFAULT_ONE_TICK_RETRY_ATTEMPTS: u32 = 3;
 const UDP_PACKET_BUFFER_LEN: usize = 65_507;
 
 /// One-shot client-side AuthRequest send PoC.
@@ -2076,6 +2078,248 @@ pub struct ClientAuthHeartbeatStatsPocOutcome {
     pub client_stats_bytes_sent: usize,
 }
 
+/// Return mode used by the one-tick heartbeat runtime launcher.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ClientHeartbeatOneTickRuntimeMode {
+    HeartbeatOnly,
+    HeartbeatWithStats,
+}
+
+impl ClientHeartbeatOneTickRuntimeMode {
+    fn ack_observation_return(self) -> ClientHeartbeatAckObservationReturnMode {
+        match self {
+            Self::HeartbeatOnly => ClientHeartbeatAckObservationReturnMode::Disabled,
+            Self::HeartbeatWithStats => {
+                ClientHeartbeatAckObservationReturnMode::ClientStatsOncePerAck
+            }
+        }
+    }
+
+    fn default_short_status(self) -> &'static str {
+        match self {
+            Self::HeartbeatOnly => "one-tick-runtime",
+            Self::HeartbeatWithStats => "one-tick-runtime-stats",
+        }
+    }
+}
+
+/// Startup config for one auth round trip followed by one client loop tick.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClientHeartbeatOneTickRuntimeStartupConfig {
+    pub mode: ClientHeartbeatOneTickRuntimeMode,
+    pub destination: SocketAddr,
+    pub response_timeout_ms: u64,
+    pub request: AuthRequest,
+    pub heartbeat_interval_micros: u64,
+    pub max_ack_socket_wait_micros: u64,
+    pub max_sleep_micros: u64,
+    pub retry_policy: ClientHeartbeatLoopRetryPolicy,
+    pub short_status: Option<String>,
+}
+
+/// Outcome of one auth round trip followed by one client heartbeat loop tick.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClientHeartbeatOneTickRuntimeOutcome {
+    pub mode: ClientHeartbeatOneTickRuntimeMode,
+    pub destination: SocketAddr,
+    pub request: AuthRequest,
+    pub auth_request_bytes: Vec<u8>,
+    pub auth_request_bytes_sent: usize,
+    pub auth_response_source: SocketAddr,
+    pub auth_response_bytes: Vec<u8>,
+    pub auth_response: AuthResponse,
+    pub runtime: ClientHeartbeatLoopOneTickRuntimeResult,
+}
+
+/// Launcher for one accepted auth round trip plus one client heartbeat loop tick.
+///
+/// This entry point is for manual/runtime wiring only. It binds one UDP socket,
+/// performs one accepted auth round trip, then delegates exactly one tick to
+/// `ClientHeartbeatLoopOneTickRuntimeBoundary`. It does not repeat, sleep, run
+/// a completed continuous loop, or introduce an async runtime.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct ClientHeartbeatOneTickRuntimeLauncher {
+    encoder: ProtocolMessageEncoderBoundary,
+    runtime: ClientHeartbeatLoopOneTickRuntimeBoundary,
+}
+
+impl ClientHeartbeatOneTickRuntimeLauncher {
+    pub fn load_startup_config_from_path_with_mode(
+        &self,
+        path: impl AsRef<Path>,
+        mode: ClientHeartbeatOneTickRuntimeMode,
+    ) -> Result<ClientHeartbeatOneTickRuntimeStartupConfig, ClientHeartbeatOneTickRuntimeError>
+    {
+        let path = path.as_ref();
+        let content =
+            fs::read_to_string(path).map_err(|error| ClientHeartbeatOneTickRuntimeError::Io {
+                path: path.to_path_buf(),
+                message: error.to_string(),
+            })?;
+        self.load_startup_config_from_str_with_mode(&content, mode)
+    }
+
+    pub fn load_startup_config_from_str_with_mode(
+        &self,
+        input: &str,
+        mode: ClientHeartbeatOneTickRuntimeMode,
+    ) -> Result<ClientHeartbeatOneTickRuntimeStartupConfig, ClientHeartbeatOneTickRuntimeError>
+    {
+        let settings = parse_client_poc_settings(input)
+            .map_err(ClientHeartbeatOneTickRuntimeError::from_auth_request_error)?;
+        let destination = resolve_destination(&settings.server_host, settings.server_port)
+            .map_err(ClientHeartbeatOneTickRuntimeError::from_auth_request_error)?;
+        let heartbeat_interval_micros =
+            u64::from(settings.heartbeat_interval_ms).saturating_mul(1_000);
+        let response_timeout_ms = u64::from(settings.connect_timeout_ms);
+
+        Ok(ClientHeartbeatOneTickRuntimeStartupConfig {
+            mode,
+            destination,
+            response_timeout_ms,
+            request: AuthRequest {
+                message_type: MessageType::AuthRequest,
+                protocol_version: ProtocolVersion(settings.protocol_version),
+                client_id: ClientId(settings.client_id),
+                run_id: RunId(settings.run_id),
+                app_version: AppVersion(settings.app_version),
+                shared_token: settings.shared_token,
+                display_name: settings.display_name,
+                capabilities: Vec::new(),
+                requested_video_profile: None,
+            },
+            heartbeat_interval_micros,
+            max_ack_socket_wait_micros: response_timeout_ms.saturating_mul(1_000),
+            max_sleep_micros: heartbeat_interval_micros,
+            retry_policy: ClientHeartbeatLoopRetryPolicy {
+                max_attempts: DEFAULT_ONE_TICK_RETRY_ATTEMPTS,
+                retry_delay_micros: heartbeat_interval_micros,
+            },
+            short_status: Some(mode.default_short_status().to_string()),
+        })
+    }
+
+    pub fn run_once_from_path_with_mode(
+        &self,
+        path: impl AsRef<Path>,
+        mode: ClientHeartbeatOneTickRuntimeMode,
+    ) -> Result<ClientHeartbeatOneTickRuntimeOutcome, ClientHeartbeatOneTickRuntimeError> {
+        let startup_config = self.load_startup_config_from_path_with_mode(path, mode)?;
+        self.run_once(startup_config)
+    }
+
+    pub fn run_once(
+        &self,
+        startup_config: ClientHeartbeatOneTickRuntimeStartupConfig,
+    ) -> Result<ClientHeartbeatOneTickRuntimeOutcome, ClientHeartbeatOneTickRuntimeError> {
+        let socket = UdpSocket::bind(ephemeral_bind_address(startup_config.destination))
+            .map_err(|error| ClientHeartbeatOneTickRuntimeError::Bind(error.kind()))?;
+        socket
+            .set_read_timeout(Some(Duration::from_millis(
+                startup_config.response_timeout_ms,
+            )))
+            .map_err(|error| ClientHeartbeatOneTickRuntimeError::SetReadTimeout(error.kind()))?;
+
+        let mut auth_request_bytes = Vec::new();
+        self.encoder
+            .encode_message(
+                EncodeContext {
+                    protocol_version: startup_config.request.protocol_version,
+                },
+                &ProtocolMessage::AuthRequest(startup_config.request.clone()),
+                &mut auth_request_bytes,
+            )
+            .map_err(ClientHeartbeatOneTickRuntimeError::Encode)?;
+        let auth_request_bytes_sent = socket
+            .send_to(&auth_request_bytes, startup_config.destination)
+            .map_err(|error| ClientHeartbeatOneTickRuntimeError::Send(error.kind()))?;
+        let (auth_response_source, auth_response_bytes, auth_response) =
+            receive_auth_response(&socket, startup_config.request.protocol_version)
+                .map_err(ClientHeartbeatOneTickRuntimeError::AuthResponse)?;
+        if !auth_response.accepted {
+            return Err(ClientHeartbeatOneTickRuntimeError::AuthRejected(
+                auth_response,
+            ));
+        }
+
+        let mut counters = ClientHeartbeatLoopCountersState::default();
+        let now = current_timestamp_micros();
+        let policy_snapshot = counters.as_policy_snapshot(false);
+        let runtime = self.runtime.run_one(
+            &socket,
+            &mut counters,
+            ClientHeartbeatLoopOneTickRuntimeInput {
+                destination: startup_config.destination,
+                body: ClientHeartbeatLoopBodyInput {
+                    ownership: ClientHeartbeatLoopOwnershipInput {
+                        client_id: startup_config.request.client_id.clone(),
+                        run_id: startup_config.request.run_id.clone(),
+                        protocol_version: startup_config.request.protocol_version,
+                        auth_accepted: true,
+                        socket_bound: true,
+                    },
+                    policy: ClientHeartbeatLoopPolicyInput {
+                        client_id: startup_config.request.client_id.clone(),
+                        run_id: startup_config.request.run_id.clone(),
+                        now,
+                        cadence: ClientHeartbeatLoopCadenceInput {
+                            heartbeat_interval_micros: startup_config.heartbeat_interval_micros,
+                            ack_receive_timeout_micros: startup_config.max_ack_socket_wait_micros,
+                            ack_observation_return: startup_config.mode.ack_observation_return(),
+                        },
+                        stop_condition: ClientHeartbeatLoopStopCondition::RunUntilStopped,
+                        state: policy_snapshot,
+                    },
+                    max_ack_socket_wait_micros: startup_config.max_ack_socket_wait_micros,
+                },
+                local_time: Some(now),
+                short_status: startup_config.short_status.clone(),
+                controller_now: now,
+                max_sleep_micros: startup_config.max_sleep_micros,
+                retry_policy: startup_config.retry_policy,
+                retry_attempts_used: 0,
+            },
+        );
+
+        if runtime.failure.is_some() {
+            return Err(ClientHeartbeatOneTickRuntimeError::RuntimeFailed(runtime));
+        }
+        if runtime.controller.action != ClientHeartbeatLoopControllerAction::SendHeartbeat {
+            return Err(ClientHeartbeatOneTickRuntimeError::UnexpectedController(
+                runtime.controller,
+            ));
+        }
+
+        Ok(ClientHeartbeatOneTickRuntimeOutcome {
+            mode: startup_config.mode,
+            destination: startup_config.destination,
+            request: startup_config.request,
+            auth_request_bytes,
+            auth_request_bytes_sent,
+            auth_response_source,
+            auth_response_bytes,
+            auth_response,
+            runtime,
+        })
+    }
+}
+
+/// Convenience entry point for one auth round trip plus one heartbeat runtime tick.
+pub fn run_auth_heartbeat_one_tick_runtime_from_path(
+    path: impl AsRef<Path>,
+) -> Result<ClientHeartbeatOneTickRuntimeOutcome, ClientHeartbeatOneTickRuntimeError> {
+    ClientHeartbeatOneTickRuntimeLauncher::default()
+        .run_once_from_path_with_mode(path, ClientHeartbeatOneTickRuntimeMode::HeartbeatOnly)
+}
+
+/// Convenience entry point for one auth round trip plus one stats-returning heartbeat tick.
+pub fn run_auth_heartbeat_stats_one_tick_runtime_from_path(
+    path: impl AsRef<Path>,
+) -> Result<ClientHeartbeatOneTickRuntimeOutcome, ClientHeartbeatOneTickRuntimeError> {
+    ClientHeartbeatOneTickRuntimeLauncher::default()
+        .run_once_from_path_with_mode(path, ClientHeartbeatOneTickRuntimeMode::HeartbeatWithStats)
+}
+
 /// Error from the one-shot client AuthRequest PoC.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ClientAuthRequestPocError {
@@ -2102,6 +2346,45 @@ pub enum ClientAuthHeartbeatPocError {
     AuthResponse(ClientResponseReceiveError),
     AuthRejected(AuthResponse),
     HeartbeatAck(ClientResponseReceiveError),
+}
+
+/// Error from one auth round trip plus one client heartbeat loop tick.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ClientHeartbeatOneTickRuntimeError {
+    Io { path: PathBuf, message: String },
+    Config(ClientAuthRequestPocConfigError),
+    Destination(ClientAuthRequestPocConfigError),
+    Encode(ProtocolError),
+    Bind(io::ErrorKind),
+    SetReadTimeout(io::ErrorKind),
+    Send(io::ErrorKind),
+    AuthResponse(ClientResponseReceiveError),
+    AuthRejected(AuthResponse),
+    UnexpectedController(ClientHeartbeatLoopControllerResult),
+    RuntimeFailed(ClientHeartbeatLoopOneTickRuntimeResult),
+}
+
+impl ClientHeartbeatOneTickRuntimeError {
+    fn from_auth_request_error(error: ClientAuthRequestPocError) -> Self {
+        match error {
+            ClientAuthRequestPocError::Io { path, message } => Self::Io { path, message },
+            ClientAuthRequestPocError::Config(error) => Self::Config(error),
+            ClientAuthRequestPocError::Destination(error) => Self::Destination(error),
+            ClientAuthRequestPocError::Encode(error) => Self::Encode(error),
+            ClientAuthRequestPocError::Bind(error) => Self::Bind(error),
+            ClientAuthRequestPocError::SetReadTimeout(error) => Self::SetReadTimeout(error),
+            ClientAuthRequestPocError::Send(error) => Self::Send(error),
+            ClientAuthRequestPocError::Receive(error) => {
+                Self::AuthResponse(ClientResponseReceiveError::Receive(error))
+            }
+            ClientAuthRequestPocError::Decode(error) => {
+                Self::AuthResponse(ClientResponseReceiveError::Decode(error))
+            }
+            ClientAuthRequestPocError::UnexpectedResponseMessage { actual } => {
+                Self::AuthResponse(ClientResponseReceiveError::UnexpectedResponseMessage { actual })
+            }
+        }
+    }
 }
 
 /// Error from receiving and decoding one expected client-side response.
@@ -2147,6 +2430,7 @@ struct ClientPocSettings {
     run_id: String,
     app_version: String,
     protocol_version: u32,
+    heartbeat_interval_ms: u32,
     connect_timeout_ms: u32,
 }
 
@@ -2160,6 +2444,7 @@ struct PartialClientPocSettings {
     run_id: Option<String>,
     app_version: Option<String>,
     protocol_version: Option<u32>,
+    heartbeat_interval_ms: Option<u32>,
     connect_timeout_ms: Option<u32>,
 }
 
@@ -2226,6 +2511,9 @@ fn parse_client_poc_settings(input: &str) -> Result<ClientPocSettings, ClientAut
             ("session", "protocol_version") => {
                 parsed.protocol_version = Some(parse_poc_u32(value, line_number, key)?);
             }
+            ("network", "heartbeat_interval_ms") => {
+                parsed.heartbeat_interval_ms = Some(parse_poc_u32(value, line_number, key)?);
+            }
             ("network", "connect_timeout_ms") => {
                 parsed.connect_timeout_ms = Some(parse_poc_u32(value, line_number, key)?);
             }
@@ -2242,6 +2530,9 @@ fn parse_client_poc_settings(input: &str) -> Result<ClientPocSettings, ClientAut
         run_id: require_string(parsed.run_id, "session", "run_id")?,
         app_version: require_string(parsed.app_version, "session", "app_version")?,
         protocol_version: require_u32(parsed.protocol_version, "session", "protocol_version")?,
+        heartbeat_interval_ms: parsed
+            .heartbeat_interval_ms
+            .unwrap_or(DEFAULT_HEARTBEAT_INTERVAL_MS),
         connect_timeout_ms: parsed
             .connect_timeout_ms
             .unwrap_or(DEFAULT_AUTH_RESPONSE_TIMEOUT_MS as u32),
@@ -2458,6 +2749,45 @@ mod tests {
         assert_eq!(config.request.shared_token, "replace-with-shared-token");
         assert_eq!(config.request.display_name, Some("Player 1".to_string()));
         assert_eq!(config.response_timeout_ms, 5_000);
+    }
+
+    #[test]
+    fn client_heartbeat_one_tick_runtime_launcher_loads_example_config() {
+        let launcher = ClientHeartbeatOneTickRuntimeLauncher::default();
+        let config = launcher
+            .load_startup_config_from_str_with_mode(
+                include_str!("../../../configs/examples/client.accepted.example.toml"),
+                ClientHeartbeatOneTickRuntimeMode::HeartbeatWithStats,
+            )
+            .expect("accepted example config should load");
+
+        assert_eq!(
+            config.mode,
+            ClientHeartbeatOneTickRuntimeMode::HeartbeatWithStats
+        );
+        assert_eq!(config.destination, "127.0.0.1:5000".parse().unwrap());
+        assert_eq!(config.request.message_type, MessageType::AuthRequest);
+        assert_eq!(config.request.protocol_version, ProtocolVersion(1));
+        assert_eq!(config.request.client_id, ClientId("player1".to_string()));
+        assert_eq!(
+            config.request.run_id,
+            RunId("streamsync-dev-session".to_string())
+        );
+        assert_eq!(config.response_timeout_ms, 5_000);
+        assert_eq!(config.heartbeat_interval_micros, 1_000_000);
+        assert_eq!(config.max_ack_socket_wait_micros, 5_000_000);
+        assert_eq!(config.max_sleep_micros, 1_000_000);
+        assert_eq!(
+            config.retry_policy,
+            ClientHeartbeatLoopRetryPolicy {
+                max_attempts: DEFAULT_ONE_TICK_RETRY_ATTEMPTS,
+                retry_delay_micros: 1_000_000,
+            }
+        );
+        assert_eq!(
+            config.short_status,
+            Some("one-tick-runtime-stats".to_string())
+        );
     }
 
     #[test]
@@ -3957,5 +4287,139 @@ mod tests {
         }
         assert!(saw_heartbeat);
         assert!(saw_stats);
+    }
+
+    #[test]
+    fn client_heartbeat_one_tick_runtime_launcher_runs_auth_and_one_heartbeat_tick() {
+        let server_socket = UdpSocket::bind("127.0.0.1:0").expect("server socket should bind");
+        server_socket
+            .set_read_timeout(Some(std::time::Duration::from_secs(1)))
+            .expect("server read timeout should be set");
+        let destination = server_socket
+            .local_addr()
+            .expect("server local addr should exist");
+
+        let request = AuthRequest {
+            message_type: MessageType::AuthRequest,
+            protocol_version: ProtocolVersion(2),
+            client_id: ClientId("client-1".to_string()),
+            run_id: RunId("run-1".to_string()),
+            app_version: AppVersion("0.1.0".to_string()),
+            shared_token: "shared-secret".to_string(),
+            display_name: Some("Alice".to_string()),
+            capabilities: Vec::new(),
+            requested_video_profile: None,
+        };
+        let request_for_thread = request.clone();
+        let server = std::thread::spawn(move || {
+            let encoder = ProtocolMessageEncoderBoundary;
+            let mut auth_buffer = [0_u8; 1024];
+            let (auth_len, auth_source) = server_socket
+                .recv_from(&mut auth_buffer)
+                .expect("server should receive auth request");
+            let auth_packet = decode_fixed_header(&auth_buffer[..auth_len])
+                .expect("auth request should decode fixed header");
+            let auth_request = decode_auth_request_payload(auth_packet.header, auth_packet.payload)
+                .expect("auth request should decode");
+            assert_eq!(auth_request.client_id, request_for_thread.client_id);
+            assert_eq!(auth_request.run_id, request_for_thread.run_id);
+
+            let auth_response = AuthResponse {
+                message_type: MessageType::AuthResponse,
+                protocol_version: request_for_thread.protocol_version,
+                client_id: request_for_thread.client_id.clone(),
+                run_id: request_for_thread.run_id.clone(),
+                accepted: true,
+                reason_code: AuthResponseReasonCode::Ok,
+                message: None,
+                server_time: Some(TimestampMicros(20_000)),
+                expected_protocol_version: None,
+            };
+            let mut auth_response_bytes = Vec::new();
+            encoder
+                .encode_message(
+                    EncodeContext {
+                        protocol_version: request_for_thread.protocol_version,
+                    },
+                    &ProtocolMessage::AuthResponse(auth_response),
+                    &mut auth_response_bytes,
+                )
+                .expect("auth response should encode");
+            server_socket
+                .send_to(&auth_response_bytes, auth_source)
+                .expect("server should send auth response");
+
+            let mut heartbeat_buffer = [0_u8; 1024];
+            let (heartbeat_len, heartbeat_source) = server_socket
+                .recv_from(&mut heartbeat_buffer)
+                .expect("server should receive heartbeat");
+            let heartbeat_packet = decode_fixed_header(&heartbeat_buffer[..heartbeat_len])
+                .expect("heartbeat should decode fixed header");
+            let heartbeat =
+                decode_heartbeat_payload(heartbeat_packet.header, heartbeat_packet.payload)
+                    .expect("heartbeat should decode");
+            assert_eq!(heartbeat.client_id, request_for_thread.client_id);
+            assert_eq!(heartbeat.run_id, request_for_thread.run_id);
+            assert_eq!(heartbeat.short_status, Some("one-tick-runtime".to_string()));
+
+            let heartbeat_ack = HeartbeatAck {
+                message_type: MessageType::HeartbeatAck,
+                protocol_version: request_for_thread.protocol_version,
+                client_id: request_for_thread.client_id.clone(),
+                run_id: request_for_thread.run_id.clone(),
+                echoed_sent_at: heartbeat.sent_at,
+                server_received_at: TimestampMicros(30_000),
+                server_sent_at: TimestampMicros(30_500),
+            };
+            let mut heartbeat_ack_bytes = Vec::new();
+            encoder
+                .encode_message(
+                    EncodeContext {
+                        protocol_version: request_for_thread.protocol_version,
+                    },
+                    &ProtocolMessage::HeartbeatAck(heartbeat_ack),
+                    &mut heartbeat_ack_bytes,
+                )
+                .expect("heartbeat ack should encode");
+            server_socket
+                .send_to(&heartbeat_ack_bytes, heartbeat_source)
+                .expect("server should send heartbeat ack");
+        });
+
+        let outcome = ClientHeartbeatOneTickRuntimeLauncher::default()
+            .run_once(ClientHeartbeatOneTickRuntimeStartupConfig {
+                mode: ClientHeartbeatOneTickRuntimeMode::HeartbeatOnly,
+                destination,
+                response_timeout_ms: 1_000,
+                request,
+                heartbeat_interval_micros: 1_000_000,
+                max_ack_socket_wait_micros: 1_000_000,
+                max_sleep_micros: 1_000_000,
+                retry_policy: ClientHeartbeatLoopRetryPolicy {
+                    max_attempts: DEFAULT_ONE_TICK_RETRY_ATTEMPTS,
+                    retry_delay_micros: 1_000_000,
+                },
+                short_status: Some("one-tick-runtime".to_string()),
+            })
+            .expect("launcher should complete one auth and heartbeat tick");
+        server.join().expect("server thread should exit cleanly");
+
+        assert_eq!(
+            outcome.mode,
+            ClientHeartbeatOneTickRuntimeMode::HeartbeatOnly
+        );
+        assert!(outcome.auth_response.accepted);
+        assert_eq!(
+            outcome.runtime.controller.action,
+            ClientHeartbeatLoopControllerAction::SendHeartbeat
+        );
+        assert!(outcome.runtime.heartbeat_send.is_some());
+        assert!(outcome.runtime.ack_return.is_some());
+        assert_eq!(outcome.runtime.stats_return_send, None);
+        assert_eq!(outcome.runtime.retry, None);
+        assert_eq!(outcome.runtime.failure, None);
+        assert_eq!(outcome.runtime.final_counters.sent_heartbeats, 1);
+        assert_eq!(outcome.runtime.final_counters.received_acks, 1);
+        assert_eq!(outcome.runtime.final_counters.stats_returns_sent, 0);
     }
 }

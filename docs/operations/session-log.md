@@ -6782,3 +6782,57 @@
   - encode / fragmentation / 再送制御 / 暗号化
 
 ---
+## 2026-04-23
+### 担当
+- Codex
+
+### 今回の作業
+- client one-tick heartbeat runtime の CLI / config 入口を追加した。
+- accepted auth 後に one-tick runtime を 1 回だけ起動する minimal launcher を追加した。
+- `--receive-send-twice` / `--receive-send-three` と組み合わせる手動確認手順を docs に追記した。
+
+### 変更ファイル
+- `apps/client/src/lib.rs`
+- `apps/client/src/main.rs`
+- `docs/architecture/system-design.md`
+- `docs/operations/auth-roundtrip-manual-check.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### 実装したこと
+- `ClientHeartbeatOneTickRuntimeMode`
+- `ClientHeartbeatOneTickRuntimeStartupConfig`
+- `ClientHeartbeatOneTickRuntimeOutcome`
+- `ClientHeartbeatOneTickRuntimeLauncher`
+- `run_auth_heartbeat_one_tick_runtime_from_path`
+- `run_auth_heartbeat_stats_one_tick_runtime_from_path`
+- client config から `network.heartbeat_interval_ms` を読み取り、one-tick runtime cadence / retry delay へ接続
+- client CLI に `--auth-heartbeat-one-tick-runtime` と `--auth-heartbeat-stats-one-tick-runtime` を追加
+- launcher config load test と auth + one heartbeat tick の最小 socket test を追加
+
+### 未実装 / 保留
+- completed continuous heartbeat loop
+- 実 sleep / timer 実行
+- reconnect / repeated retry execution
+- JSON Lines writer invocation / file sink open / process-wide logger
+- shutdown cleanup / final flush
+- accepted path の実機 manual run 結果記録
+
+### 次にやる候補
+- heartbeat timeout notice wakeup 実行本体に進む前の境界整理
+- RTT / offset metrics snapshot の export cadence / dashboard refresh 方針整理
+- client one-tick runtime accepted path の実機 manual check と launcher / repeated-loop ownership 整理
+
+### TODO 更新
+- 現在位置に client one-tick heartbeat runtime CLI / config 入口の完了を反映した。
+- 直近でやることを accepted path manual check と launcher / repeated-loop ownership 整理へ更新した。
+- client / 検証タスクに one-tick launcher / CLI / config 完了と関連単体テスト完了を追加した。
+
+### 検証
+- `cargo fmt`
+- `cargo test -p stream-sync-client client_heartbeat_one_tick_runtime_launcher`
+- `cargo test -p stream-sync-client client_heartbeat_loop_one_tick_runtime`
+- `cargo fmt --check`
+- `cargo check --workspace`
+
+---

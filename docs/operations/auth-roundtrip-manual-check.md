@@ -650,3 +650,82 @@ note: the msvc targets depend on the msvc linker but `link.exe` was not found
 - UDP socket bind / send、decode、gate、auth decision には未到達
 
 次回確認では、MSVC linker `link.exe` が使える Visual Studio Build Tools 環境、または Rust target に合った linker が有効な shell で同じ手順を再実行します。期待する server 出力は `accepted=true reason_code=Ok` です。
+## `--auth-heartbeat-one-tick-runtime` manual check
+
+This entry is the minimal CLI/config bridge for the client one-tick heartbeat
+runtime. It reuses the accepted-path client config and pairs with the existing
+server two-iteration runtime. It is still one auth round trip plus one runtime
+tick, not a completed continuous heartbeat loop.
+
+server:
+
+```powershell
+cargo run -p stream-sync-server -- --receive-send-twice configs/examples/server.example.toml
+```
+
+client:
+
+```powershell
+cargo run -p stream-sync-client -- --auth-heartbeat-one-tick-runtime configs/examples/client.accepted.example.toml
+```
+
+Expected client stdout shape:
+
+```text
+auth heartbeat one-tick runtime sent AuthRequest <bytes> bytes to 127.0.0.1:5000 and received AuthResponse <bytes> bytes from 127.0.0.1:5000; accepted=true reason_code=Ok; controller_action=SendHeartbeat shutdown=Continue; sent Heartbeat <bytes> bytes and received HeartbeatAck <bytes> bytes from 127.0.0.1:5000; client_id=player1 run_id=streamsync-dev-session protocol_version=1 heartbeat_sent_at=<client-sent-at> echoed_sent_at=<same-client-sent-at> server_received_at=<server-received-at> server_sent_at=<server-sent-at> sent_heartbeats=1 received_acks=1 missed_acks=0 stats_returns_sent=0
+```
+
+Expected server stdout shape:
+
+```text
+receive/send two-iteration runtime handled two packets on 0.0.0.0:5000; first_sent_bytes=<auth-response-bytes> second_sent_bytes=<heartbeat-ack-bytes> registered_clients=1 heartbeat_liveness_entries=1
+```
+
+Check points:
+
+- client loads `network.heartbeat_interval_ms` and `network.connect_timeout_ms`
+  from `configs/examples/client.accepted.example.toml`
+- one accepted auth round trip completes before the one-tick runtime starts
+- one heartbeat and one ack are visible without a repeated loop
+- final counters stay at `sent_heartbeats=1`, `received_acks=1`,
+  `stats_returns_sent=0`
+
+## `--auth-heartbeat-stats-one-tick-runtime` manual check
+
+This entry is the minimal CLI/config bridge for the client one-tick heartbeat
+runtime in observation-return mode. It pairs with the existing server
+three-iteration runtime and sends one `ClientStats` payload after one
+successful ack.
+
+server:
+
+```powershell
+cargo run -p stream-sync-server -- --receive-send-three configs/examples/server.example.toml
+```
+
+client:
+
+```powershell
+cargo run -p stream-sync-client -- --auth-heartbeat-stats-one-tick-runtime configs/examples/client.accepted.example.toml
+```
+
+Expected client stdout shape:
+
+```text
+auth heartbeat stats one-tick runtime sent AuthRequest <bytes> bytes to 127.0.0.1:5000 and received AuthResponse <bytes> bytes from 127.0.0.1:5000; accepted=true reason_code=Ok; controller_action=SendHeartbeat shutdown=Continue; sent Heartbeat <bytes> bytes and received HeartbeatAck <bytes> bytes from 127.0.0.1:5000; sent ClientStats <bytes> bytes with HeartbeatAckObservation; client_id=player1 run_id=streamsync-dev-session protocol_version=1 heartbeat_sent_at=<client-sent-at> echoed_sent_at=<same-client-sent-at> server_received_at=<server-received-at> server_sent_at=<server-sent-at> client_received_at=<client-received-at> sent_heartbeats=1 received_acks=1 missed_acks=0 stats_returns_sent=1
+```
+
+Expected server stdout shape:
+
+```text
+receive/send three-iteration runtime handled three packets on 0.0.0.0:5000; first_sent_bytes=<auth-response-bytes> second_sent_bytes=<heartbeat-ack-bytes> third_sent_bytes=0 registered_clients=1 heartbeat_liveness_entries=1 heartbeat_received_count=1 heartbeat_rtt_offset_entries=1 heartbeat_rtt_offset_samples=1 heartbeat_rtt_micros=<rtt> heartbeat_server_processing_micros=<server-processing> heartbeat_clock_offset_micros=<offset>
+```
+
+Check points:
+
+- client one-tick runtime sends exactly one `ClientStats` observation return
+  after the ack
+- server `--receive-send-three` accepts the returned observation and exposes
+  one stateless RTT/offset result
+- final counters stay at `sent_heartbeats=1`, `received_acks=1`,
+  `stats_returns_sent=1`

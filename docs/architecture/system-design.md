@@ -3727,6 +3727,62 @@ Current code reflects this with
 async runtime integration, real timer sleep, shutdown cleanup, reconnect,
 JSON Lines writer invocation, and video sending remain future work.
 
+### Client One-Tick Runtime CLI / Config Entry
+
+The client-side one-tick runtime now has a minimal launcher and CLI/config
+entry for manual checks. This still does not create a completed continuous
+heartbeat loop.
+
+Current launcher scope:
+
+1. `ClientHeartbeatOneTickRuntimeLauncher` reads the existing client auth/PoC
+   TOML shape and reuses:
+   - `client.server_host`
+   - `client.server_port`
+   - `client.client_id`
+   - `client.shared_token`
+   - `session.run_id`
+   - `session.app_version`
+   - `session.protocol_version`
+   - `network.heartbeat_interval_ms`
+   - `network.connect_timeout_ms`
+2. The launcher binds one caller-local UDP socket, sends one `AuthRequest`,
+   waits for one accepted `AuthResponse`, and only then delegates one tick to
+   `ClientHeartbeatLoopOneTickRuntimeBoundary`.
+3. `network.heartbeat_interval_ms` feeds:
+   - heartbeat cadence
+   - one-tick `max_sleep_micros`
+   - placeholder retry delay
+4. `network.connect_timeout_ms` feeds:
+   - auth response socket timeout
+   - one-tick ack wait clamp
+5. The launcher supports two explicit modes:
+   - `--auth-heartbeat-one-tick-runtime`
+     - pairs with server `--receive-send-twice`
+     - executes auth + one heartbeat send + one ack receive
+   - `--auth-heartbeat-stats-one-tick-runtime`
+     - pairs with server `--receive-send-three`
+     - executes auth + one heartbeat send + one ack receive + one
+       `ClientStats` observation return send
+6. CLI stdout reports only the one-tick runtime outcome:
+   - auth request/response byte counts
+   - controller action / shutdown decision
+   - heartbeat / ack / optional stats byte counts
+   - final one-tick counters snapshot
+
+Responsibility split:
+
+- launcher / config entry
+  - Owns config load, destination resolution, auth bootstrap, and the single
+    delegation to the one-tick runtime.
+  - Does not repeat, reconnect, sleep, flush logs, or clean up a completed
+    loop.
+- one-tick runtime
+  - Owns one body/controller/send/ack/stats/counters/retry pass.
+- future completed loop
+  - Will own repeated launcher/runtime calls, reconnect, timer execution,
+    shutdown cleanup, and log writer invocation.
+
 ### Heartbeat Client Ack Observation Flow
 
 The client ack observation flow returns the missing `client_received_at`
