@@ -4155,6 +4155,45 @@ Current code reflects this with `ClientHeartbeatLoopCompletedStepRuntimeInput`,
 `ClientHeartbeatLoopCompletedStepRuntimeResult`, and
 `ClientHeartbeatLoopCompletedStepRuntimeBoundary`.
 
+### Client While-Loop Ownership / Caller Contract Minimal Scope
+
+After one completed-step runtime finishes, the future eventual while-loop
+still needs one caller contract boundary that says whether the caller keeps
+ownership for another step or hands stop state into cleanup flow. The current
+scope fixes that contract without implementing repeated invocation.
+
+Current minimal scope:
+
+1. `ClientHeartbeatLoopWhileLoopOwnershipBoundary` receives one
+   `ClientHeartbeatLoopCompletedStepRuntimeResult`.
+2. If completed-step ordering returned `Continue { handoff }`:
+   - caller contract returns `Continue`
+   - it preserves the ordering handoff
+   - it preserves final counters snapshot
+3. If completed-step ordering returned `Stop { result }`:
+   - caller contract returns `Stop`
+   - it wraps stop state into `ClientHeartbeatLoopWhileLoopStopHandoff`
+   - cleanup responsibility moves to the future caller/cleanup layer
+
+Responsibility split:
+
+- launcher ownership
+  - Produces static loop handoff and initial caller-owned socket/counters.
+- completed-step runtime
+  - Executes exactly one repeated step plus lifecycle / sequencing / ordering.
+- eventual while-loop
+  - Will own repeated invocation, stop-flag refresh, and next-step scheduling.
+- caller contract
+  - Tells the caller whether it still owns another step or must hand off stop
+    state.
+- cleanup responsibility
+  - Starts only after stop handoff is returned.
+  - Does not execute inside the current ownership boundary.
+
+Current code reflects this with `ClientHeartbeatLoopWhileLoopStopHandoff`,
+`ClientHeartbeatLoopCallerContractResult`, and
+`ClientHeartbeatLoopWhileLoopOwnershipBoundary`.
+
 ### Heartbeat Client Ack Observation Flow
 
 The client ack observation flow returns the missing `client_received_at`

@@ -2410,6 +2410,25 @@ pub struct ClientHeartbeatLoopCompletedStepRuntimeResult {
     pub final_counters: ClientHeartbeatLoopCountersState,
 }
 
+/// Stop handoff from a one-step completed runtime into future cleanup ownership.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClientHeartbeatLoopWhileLoopStopHandoff {
+    pub stop: ClientHeartbeatLoopCompletedBodyStopResult,
+    pub final_counters: ClientHeartbeatLoopCountersState,
+}
+
+/// Caller-facing result after handing one completed step to eventual while-loop ownership.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ClientHeartbeatLoopCallerContractResult {
+    Continue {
+        ordering: ClientHeartbeatLoopCompletedBodySequencingHandoff,
+        final_counters: ClientHeartbeatLoopCountersState,
+    },
+    Stop {
+        handoff: ClientHeartbeatLoopWhileLoopStopHandoff,
+    },
+}
+
 /// Boundary that connects one step result to future completed-loop lifecycle flow.
 ///
 /// This does not run a while-loop, sleep, reconnect, flush logs, close
@@ -2599,6 +2618,38 @@ impl ClientHeartbeatLoopCompletedStepRuntimeBoundary {
             sequencing,
             ordering,
             final_counters: counters.clone(),
+        }
+    }
+}
+
+/// Boundary that maps one completed-step runtime result into caller-owned loop ownership.
+///
+/// This boundary does not run a while-loop, refresh stop flags, sleep, retry,
+/// reconnect, or execute cleanup. It only tells the eventual caller whether it
+/// still owns another step or should hand stop state into cleanup flow.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct ClientHeartbeatLoopWhileLoopOwnershipBoundary;
+
+impl ClientHeartbeatLoopWhileLoopOwnershipBoundary {
+    pub fn handoff(
+        &self,
+        runtime: ClientHeartbeatLoopCompletedStepRuntimeResult,
+    ) -> ClientHeartbeatLoopCallerContractResult {
+        match runtime.ordering {
+            ClientHeartbeatLoopStepOrderingResult::Continue { handoff: ordering } => {
+                ClientHeartbeatLoopCallerContractResult::Continue {
+                    ordering,
+                    final_counters: runtime.final_counters,
+                }
+            }
+            ClientHeartbeatLoopStepOrderingResult::Stop { result: stop } => {
+                ClientHeartbeatLoopCallerContractResult::Stop {
+                    handoff: ClientHeartbeatLoopWhileLoopStopHandoff {
+                        stop,
+                        final_counters: runtime.final_counters,
+                    },
+                }
+            }
         }
     }
 }
@@ -5212,6 +5263,129 @@ mod tests {
             }
         );
         assert_eq!(result.final_counters, counters);
+    }
+
+    #[test]
+    fn client_heartbeat_loop_while_loop_ownership_returns_continue_contract() {
+        let socket = UdpSocket::bind("127.0.0.1:0").expect("socket should bind");
+        let mut counters = ClientHeartbeatLoopCountersState {
+            last_heartbeat_sent_at: Some(TimestampMicros(10_000)),
+            ..ClientHeartbeatLoopCountersState::default()
+        };
+        let handoff = ClientHeartbeatLoopRepeatedRuntimeHandoff {
+            mode: ClientHeartbeatOneTickRuntimeMode::HeartbeatOnly,
+            destination: "127.0.0.1:5000".parse().unwrap(),
+            client_id: ClientId("client-1".to_string()),
+            run_id: RunId("run-1".to_string()),
+            protocol_version: ProtocolVersion(2),
+            cadence: ClientHeartbeatLoopCadenceInput {
+                heartbeat_interval_micros: 1_000,
+                ack_receive_timeout_micros: 500,
+                ack_observation_return: ClientHeartbeatAckObservationReturnMode::Disabled,
+            },
+            stop_condition: ClientHeartbeatLoopStopCondition::RunUntilStopped,
+            max_ack_socket_wait_micros: 500,
+            max_sleep_micros: 250,
+            retry_policy: ClientHeartbeatLoopRetryPolicy {
+                max_attempts: 3,
+                retry_delay_micros: 1_000,
+            },
+            local_time_enabled: true,
+            short_status: Some("one-tick-runtime".to_string()),
+        };
+        let runtime = ClientHeartbeatLoopCompletedStepRuntimeBoundary::default().run_one(
+            &socket,
+            &mut counters,
+            ClientHeartbeatLoopCompletedStepRuntimeInput {
+                continue_requested: true,
+                body: ClientHeartbeatLoopRepeatedRuntimeBodyInput {
+                    handoff,
+                    now: TimestampMicros(10_500),
+                    stop_requested: false,
+                    retry_attempts_used: 0,
+                },
+            },
+        );
+
+        let result = ClientHeartbeatLoopWhileLoopOwnershipBoundary.handoff(runtime.clone());
+
+        assert_eq!(
+            result,
+            ClientHeartbeatLoopCallerContractResult::Continue {
+                ordering: ClientHeartbeatLoopCompletedBodySequencingHandoff {
+                    sequencing: runtime.sequencing.clone(),
+                    ordering: ClientHeartbeatLoopStepOrdering::WaitThenContinue {
+                        sleep: ClientHeartbeatLoopSleepDecision::Sleep {
+                            reason: ClientHeartbeatLoopSleepReason::CadenceWait,
+                            sleep_micros: 250,
+                            wake_at: TimestampMicros(11_000),
+                        },
+                    },
+                },
+                final_counters: counters,
+            }
+        );
+    }
+
+    #[test]
+    fn client_heartbeat_loop_while_loop_ownership_returns_stop_handoff() {
+        let socket = UdpSocket::bind("127.0.0.1:0").expect("socket should bind");
+        let mut counters = ClientHeartbeatLoopCountersState {
+            last_heartbeat_sent_at: Some(TimestampMicros(10_000)),
+            ..ClientHeartbeatLoopCountersState::default()
+        };
+        let handoff = ClientHeartbeatLoopRepeatedRuntimeHandoff {
+            mode: ClientHeartbeatOneTickRuntimeMode::HeartbeatOnly,
+            destination: "127.0.0.1:5000".parse().unwrap(),
+            client_id: ClientId("client-1".to_string()),
+            run_id: RunId("run-1".to_string()),
+            protocol_version: ProtocolVersion(2),
+            cadence: ClientHeartbeatLoopCadenceInput {
+                heartbeat_interval_micros: 1_000,
+                ack_receive_timeout_micros: 500,
+                ack_observation_return: ClientHeartbeatAckObservationReturnMode::Disabled,
+            },
+            stop_condition: ClientHeartbeatLoopStopCondition::RunUntilStopped,
+            max_ack_socket_wait_micros: 500,
+            max_sleep_micros: 250,
+            retry_policy: ClientHeartbeatLoopRetryPolicy {
+                max_attempts: 3,
+                retry_delay_micros: 1_000,
+            },
+            local_time_enabled: true,
+            short_status: Some("one-tick-runtime".to_string()),
+        };
+        let runtime = ClientHeartbeatLoopCompletedStepRuntimeBoundary::default().run_one(
+            &socket,
+            &mut counters,
+            ClientHeartbeatLoopCompletedStepRuntimeInput {
+                continue_requested: false,
+                body: ClientHeartbeatLoopRepeatedRuntimeBodyInput {
+                    handoff,
+                    now: TimestampMicros(10_500),
+                    stop_requested: false,
+                    retry_attempts_used: 0,
+                },
+            },
+        );
+
+        let result = ClientHeartbeatLoopWhileLoopOwnershipBoundary.handoff(runtime);
+
+        assert_eq!(
+            result,
+            ClientHeartbeatLoopCallerContractResult::Stop {
+                handoff: ClientHeartbeatLoopWhileLoopStopHandoff {
+                    stop: ClientHeartbeatLoopCompletedBodyStopResult {
+                        stop_reason: ClientHeartbeatLoopLifecycleStopReason::CallerRequestedStop,
+                        cleanup: ClientHeartbeatLoopCleanupSequencingResult::BeginCleanup {
+                            stop_reason:
+                                ClientHeartbeatLoopLifecycleStopReason::CallerRequestedStop,
+                        },
+                    },
+                    final_counters: counters,
+                },
+            }
+        );
     }
 
     #[test]
