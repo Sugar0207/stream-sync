@@ -2600,12 +2600,103 @@ pub enum ClientHeartbeatLoopCleanupResponsibilityResult {
     },
 }
 
-/// Typed cleanup execution result returned before any real cleanup runs.
+/// Explicit stop-only input handed from cleanup responsibility into cleanup ordering.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ClientHeartbeatLoopCleanupExecutionResult {
-    pub stop_reason: ClientHeartbeatLoopRepeatedInvocationStopReason,
-    pub cleanup_required: bool,
+pub struct ClientHeartbeatLoopCleanupOrderingInput {
+    pub handoff: ClientHeartbeatLoopActualWhileLoopStopHandoff,
     pub plan: ClientHeartbeatLoopCleanupPlan,
+}
+
+impl ClientHeartbeatLoopCleanupOrderingInput {
+    pub fn from_responsibility(
+        responsibility: ClientHeartbeatLoopCleanupResponsibilityResult,
+    ) -> Result<Self, ClientHeartbeatLoopRepeatedInvocationNextStepCarry> {
+        match responsibility {
+            ClientHeartbeatLoopCleanupResponsibilityResult::Continue { carry } => Err(carry),
+            ClientHeartbeatLoopCleanupResponsibilityResult::Cleanup { input } => Ok(Self {
+                handoff: input.handoff,
+                plan: input.plan,
+            }),
+        }
+    }
+}
+
+/// Ordered cleanup plan produced after stop-only cleanup ordering.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ClientHeartbeatLoopOrderedCleanupPlan {
+    CleanupOnStop {
+        trigger: ClientHeartbeatLoopCleanupTrigger,
+    },
+}
+
+/// Ordered handoff returned before any future cleanup execution runs.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClientHeartbeatLoopCleanupOrderingHandoff {
+    pub stop_reason: ClientHeartbeatLoopRepeatedInvocationStopReason,
+    pub ordered_plan: ClientHeartbeatLoopOrderedCleanupPlan,
+}
+
+/// Result of mapping cleanup responsibility into cleanup ordering state.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ClientHeartbeatLoopCleanupOrderingResult {
+    Continue {
+        carry: ClientHeartbeatLoopRepeatedInvocationNextStepCarry,
+    },
+    Ordered {
+        handoff: ClientHeartbeatLoopCleanupOrderingHandoff,
+    },
+}
+
+/// Explicit stop-only input handed from cleanup ordering into execution planning.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClientHeartbeatLoopCleanupExecutionInput {
+    pub handoff: ClientHeartbeatLoopCleanupOrderingHandoff,
+}
+
+impl ClientHeartbeatLoopCleanupExecutionInput {
+    pub fn from_ordering(
+        ordering: ClientHeartbeatLoopCleanupOrderingResult,
+    ) -> Result<Self, ClientHeartbeatLoopRepeatedInvocationNextStepCarry> {
+        match ordering {
+            ClientHeartbeatLoopCleanupOrderingResult::Continue { carry } => Err(carry),
+            ClientHeartbeatLoopCleanupOrderingResult::Ordered { handoff } => Ok(Self { handoff }),
+        }
+    }
+}
+
+/// Future stop-path cleanup actions that remain ordered but unexecuted.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ClientHeartbeatLoopFutureCleanupAction {
+    FinalFlush,
+    LogWriterInvocation,
+    ResourceRelease,
+}
+
+/// Stop-only cleanup execution plan returned before any real side effects run.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ClientHeartbeatLoopCleanupExecutionPlan {
+    CleanupOnStop {
+        trigger: ClientHeartbeatLoopCleanupTrigger,
+        future_actions: [ClientHeartbeatLoopFutureCleanupAction; 3],
+    },
+}
+
+/// Execution planning handoff returned before future cleanup side effects.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClientHeartbeatLoopCleanupExecutionPlanningHandoff {
+    pub stop_reason: ClientHeartbeatLoopRepeatedInvocationStopReason,
+    pub execution_plan: ClientHeartbeatLoopCleanupExecutionPlan,
+}
+
+/// Typed cleanup execution planning result returned before any real cleanup runs.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ClientHeartbeatLoopCleanupExecutionResult {
+    Continue {
+        carry: ClientHeartbeatLoopRepeatedInvocationNextStepCarry,
+    },
+    Planned {
+        handoff: ClientHeartbeatLoopCleanupExecutionPlanningHandoff,
+    },
 }
 
 /// Boundary that connects one step result to future completed-loop lifecycle flow.
@@ -3112,23 +3203,75 @@ impl ClientHeartbeatLoopCleanupResponsibilityBoundary {
     }
 }
 
-/// Boundary that exposes explicit cleanup execution input without side effects.
+/// Boundary that fixes explicit stop-only cleanup ordering before execution.
+///
+/// This boundary does not execute cleanup, flush logs, close sockets, or run
+/// final release logic. It only orders stop-path cleanup into a typed handoff
+/// that a later cleanup execution boundary can consume.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct ClientHeartbeatLoopCleanupOrderingBoundary;
+
+impl ClientHeartbeatLoopCleanupOrderingBoundary {
+    pub fn plan_next(
+        &self,
+        responsibility: ClientHeartbeatLoopCleanupResponsibilityResult,
+    ) -> ClientHeartbeatLoopCleanupOrderingResult {
+        match ClientHeartbeatLoopCleanupOrderingInput::from_responsibility(responsibility) {
+            Err(carry) => ClientHeartbeatLoopCleanupOrderingResult::Continue { carry },
+            Ok(input) => {
+                let ordered_plan = match input.plan {
+                    ClientHeartbeatLoopCleanupPlan::CleanupOnStop { trigger } => {
+                        ClientHeartbeatLoopOrderedCleanupPlan::CleanupOnStop { trigger }
+                    }
+                };
+
+                ClientHeartbeatLoopCleanupOrderingResult::Ordered {
+                    handoff: ClientHeartbeatLoopCleanupOrderingHandoff {
+                        stop_reason: input.handoff.reason,
+                        ordered_plan,
+                    },
+                }
+            }
+        }
+    }
+}
+
+/// Boundary that exposes explicit cleanup execution planning without side effects.
 ///
 /// This boundary does not flush logs, close sockets, sleep, retry, reconnect,
-/// or run final cleanup. It only names the cleanup work that a later
-/// implementation must execute.
+/// or run final cleanup. It only converts ordered stop-path cleanup into a
+/// future execution plan that later side-effect code must consume.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
 pub struct ClientHeartbeatLoopCleanupExecutionBoundary;
 
 impl ClientHeartbeatLoopCleanupExecutionBoundary {
     pub fn plan_next(
         &self,
-        input: ClientHeartbeatLoopCleanupResponsibilityInput,
+        ordering: ClientHeartbeatLoopCleanupOrderingResult,
     ) -> ClientHeartbeatLoopCleanupExecutionResult {
-        ClientHeartbeatLoopCleanupExecutionResult {
-            stop_reason: input.handoff.reason,
-            cleanup_required: true,
-            plan: input.plan,
+        match ClientHeartbeatLoopCleanupExecutionInput::from_ordering(ordering) {
+            Err(carry) => ClientHeartbeatLoopCleanupExecutionResult::Continue { carry },
+            Ok(input) => {
+                let execution_plan = match input.handoff.ordered_plan {
+                    ClientHeartbeatLoopOrderedCleanupPlan::CleanupOnStop { trigger } => {
+                        ClientHeartbeatLoopCleanupExecutionPlan::CleanupOnStop {
+                            trigger,
+                            future_actions: [
+                                ClientHeartbeatLoopFutureCleanupAction::FinalFlush,
+                                ClientHeartbeatLoopFutureCleanupAction::LogWriterInvocation,
+                                ClientHeartbeatLoopFutureCleanupAction::ResourceRelease,
+                            ],
+                        }
+                    }
+                };
+
+                ClientHeartbeatLoopCleanupExecutionResult::Planned {
+                    handoff: ClientHeartbeatLoopCleanupExecutionPlanningHandoff {
+                        stop_reason: input.handoff.stop_reason,
+                        execution_plan,
+                    },
+                }
+            }
         }
     }
 }
@@ -6730,7 +6873,7 @@ mod tests {
     }
 
     #[test]
-    fn client_heartbeat_loop_cleanup_execution_keeps_cleanup_explicit() {
+    fn client_heartbeat_loop_cleanup_execution_input_converts_stop_path() {
         let trigger = ClientHeartbeatLoopCleanupTrigger {
             handoff: ClientHeartbeatLoopWhileLoopStopHandoff {
                 stop: ClientHeartbeatLoopCompletedBodyStopResult {
@@ -6742,26 +6885,303 @@ mod tests {
                 final_counters: ClientHeartbeatLoopCountersState::default(),
             },
         };
-        let input = ClientHeartbeatLoopCleanupResponsibilityInput {
-            handoff: ClientHeartbeatLoopActualWhileLoopStopHandoff {
-                reason: ClientHeartbeatLoopRepeatedInvocationStopReason::CleanupRequested {
-                    stop_reason: ClientHeartbeatLoopLifecycleStopReason::CallerRequestedStop,
-                },
-                trigger: trigger.clone(),
+        let handoff = ClientHeartbeatLoopCleanupOrderingHandoff {
+            stop_reason: ClientHeartbeatLoopRepeatedInvocationStopReason::CleanupRequested {
+                stop_reason: ClientHeartbeatLoopLifecycleStopReason::CallerRequestedStop,
             },
-            plan: ClientHeartbeatLoopCleanupPlan::CleanupOnStop { trigger },
+            ordered_plan: ClientHeartbeatLoopOrderedCleanupPlan::CleanupOnStop { trigger },
         };
 
-        let result = ClientHeartbeatLoopCleanupExecutionBoundary.plan_next(input.clone());
+        let input = ClientHeartbeatLoopCleanupExecutionInput::from_ordering(
+            ClientHeartbeatLoopCleanupOrderingResult::Ordered {
+                handoff: handoff.clone(),
+            },
+        )
+        .expect("stop path should produce cleanup execution input");
+
+        assert_eq!(input, ClientHeartbeatLoopCleanupExecutionInput { handoff });
+    }
+
+    #[test]
+    fn client_heartbeat_loop_cleanup_execution_skips_continue_path() {
+        let carry = ClientHeartbeatLoopRepeatedInvocationNextStepCarry::ContinueImmediately {
+            carry: ClientHeartbeatLoopIterationCarryState {
+                ordering: ClientHeartbeatLoopStepOrdering::ContinueImmediately,
+                final_counters: ClientHeartbeatLoopCountersState::default(),
+                next_runtime_input: ClientHeartbeatLoopCompletedStepRuntimeInput {
+                    continue_requested: true,
+                    body: ClientHeartbeatLoopRepeatedRuntimeBodyInput {
+                        handoff: ClientHeartbeatLoopRepeatedRuntimeHandoff {
+                            mode: ClientHeartbeatOneTickRuntimeMode::HeartbeatOnly,
+                            destination: "127.0.0.1:5000".parse().unwrap(),
+                            client_id: ClientId("client-1".to_string()),
+                            run_id: RunId("run-1".to_string()),
+                            protocol_version: ProtocolVersion(2),
+                            cadence: ClientHeartbeatLoopCadenceInput {
+                                heartbeat_interval_micros: 1_000,
+                                ack_receive_timeout_micros: 500,
+                                ack_observation_return:
+                                    ClientHeartbeatAckObservationReturnMode::Disabled,
+                            },
+                            stop_condition: ClientHeartbeatLoopStopCondition::RunUntilStopped,
+                            max_ack_socket_wait_micros: 500,
+                            max_sleep_micros: 250,
+                            retry_policy: ClientHeartbeatLoopRetryPolicy {
+                                max_attempts: 3,
+                                retry_delay_micros: 1_000,
+                            },
+                            local_time_enabled: true,
+                            short_status: Some("one-tick-runtime".to_string()),
+                        },
+                        now: TimestampMicros(11_000),
+                        stop_requested: false,
+                        retry_attempts_used: 0,
+                    },
+                },
+            },
+        };
+
+        let result = ClientHeartbeatLoopCleanupExecutionInput::from_ordering(
+            ClientHeartbeatLoopCleanupOrderingResult::Continue {
+                carry: carry.clone(),
+            },
+        );
+
+        assert_eq!(result, Err(carry));
+    }
+
+    #[test]
+    fn client_heartbeat_loop_cleanup_execution_planning_preserves_stop_only_semantics() {
+        let trigger = ClientHeartbeatLoopCleanupTrigger {
+            handoff: ClientHeartbeatLoopWhileLoopStopHandoff {
+                stop: ClientHeartbeatLoopCompletedBodyStopResult {
+                    stop_reason: ClientHeartbeatLoopLifecycleStopReason::CallerRequestedStop,
+                    cleanup: ClientHeartbeatLoopCleanupSequencingResult::BeginCleanup {
+                        stop_reason: ClientHeartbeatLoopLifecycleStopReason::CallerRequestedStop,
+                    },
+                },
+                final_counters: ClientHeartbeatLoopCountersState::default(),
+            },
+        };
+
+        let result = ClientHeartbeatLoopCleanupExecutionBoundary.plan_next(
+            ClientHeartbeatLoopCleanupOrderingResult::Ordered {
+                handoff: ClientHeartbeatLoopCleanupOrderingHandoff {
+                    stop_reason:
+                        ClientHeartbeatLoopRepeatedInvocationStopReason::CleanupRequested {
+                            stop_reason:
+                                ClientHeartbeatLoopLifecycleStopReason::CallerRequestedStop,
+                        },
+                    ordered_plan: ClientHeartbeatLoopOrderedCleanupPlan::CleanupOnStop {
+                        trigger: trigger.clone(),
+                    },
+                },
+            },
+        );
 
         assert_eq!(
             result,
-            ClientHeartbeatLoopCleanupExecutionResult {
-                stop_reason: ClientHeartbeatLoopRepeatedInvocationStopReason::CleanupRequested {
-                    stop_reason: ClientHeartbeatLoopLifecycleStopReason::CallerRequestedStop,
+            ClientHeartbeatLoopCleanupExecutionResult::Planned {
+                handoff: ClientHeartbeatLoopCleanupExecutionPlanningHandoff {
+                    stop_reason:
+                        ClientHeartbeatLoopRepeatedInvocationStopReason::CleanupRequested {
+                            stop_reason:
+                                ClientHeartbeatLoopLifecycleStopReason::CallerRequestedStop,
+                        },
+                    execution_plan: ClientHeartbeatLoopCleanupExecutionPlan::CleanupOnStop {
+                        trigger,
+                        future_actions: [
+                            ClientHeartbeatLoopFutureCleanupAction::FinalFlush,
+                            ClientHeartbeatLoopFutureCleanupAction::LogWriterInvocation,
+                            ClientHeartbeatLoopFutureCleanupAction::ResourceRelease,
+                        ],
+                    },
                 },
-                cleanup_required: true,
-                plan: input.plan,
+            }
+        );
+    }
+
+    #[test]
+    fn client_heartbeat_loop_cleanup_execution_keeps_future_actions_ordered_only() {
+        let trigger = ClientHeartbeatLoopCleanupTrigger {
+            handoff: ClientHeartbeatLoopWhileLoopStopHandoff {
+                stop: ClientHeartbeatLoopCompletedBodyStopResult {
+                    stop_reason: ClientHeartbeatLoopLifecycleStopReason::CallerRequestedStop,
+                    cleanup: ClientHeartbeatLoopCleanupSequencingResult::BeginCleanup {
+                        stop_reason: ClientHeartbeatLoopLifecycleStopReason::CallerRequestedStop,
+                    },
+                },
+                final_counters: ClientHeartbeatLoopCountersState::default(),
+            },
+        };
+
+        let result = ClientHeartbeatLoopCleanupExecutionBoundary.plan_next(
+            ClientHeartbeatLoopCleanupOrderingResult::Ordered {
+                handoff: ClientHeartbeatLoopCleanupOrderingHandoff {
+                    stop_reason:
+                        ClientHeartbeatLoopRepeatedInvocationStopReason::CleanupRequested {
+                            stop_reason:
+                                ClientHeartbeatLoopLifecycleStopReason::CallerRequestedStop,
+                        },
+                    ordered_plan: ClientHeartbeatLoopOrderedCleanupPlan::CleanupOnStop { trigger },
+                },
+            },
+        );
+
+        let ClientHeartbeatLoopCleanupExecutionResult::Planned { handoff } = result else {
+            panic!("stop path should produce cleanup execution planning");
+        };
+
+        let future_actions = match handoff.execution_plan {
+            ClientHeartbeatLoopCleanupExecutionPlan::CleanupOnStop { future_actions, .. } => {
+                future_actions
+            }
+        };
+
+        assert_eq!(
+            future_actions,
+            [
+                ClientHeartbeatLoopFutureCleanupAction::FinalFlush,
+                ClientHeartbeatLoopFutureCleanupAction::LogWriterInvocation,
+                ClientHeartbeatLoopFutureCleanupAction::ResourceRelease,
+            ]
+        );
+    }
+
+    #[test]
+    fn client_heartbeat_loop_cleanup_ordering_input_converts_stop_path() {
+        let trigger = ClientHeartbeatLoopCleanupTrigger {
+            handoff: ClientHeartbeatLoopWhileLoopStopHandoff {
+                stop: ClientHeartbeatLoopCompletedBodyStopResult {
+                    stop_reason: ClientHeartbeatLoopLifecycleStopReason::CallerRequestedStop,
+                    cleanup: ClientHeartbeatLoopCleanupSequencingResult::BeginCleanup {
+                        stop_reason: ClientHeartbeatLoopLifecycleStopReason::CallerRequestedStop,
+                    },
+                },
+                final_counters: ClientHeartbeatLoopCountersState::default(),
+            },
+        };
+        let handoff = ClientHeartbeatLoopActualWhileLoopStopHandoff {
+            reason: ClientHeartbeatLoopRepeatedInvocationStopReason::CleanupRequested {
+                stop_reason: ClientHeartbeatLoopLifecycleStopReason::CallerRequestedStop,
+            },
+            trigger: trigger.clone(),
+        };
+
+        let input = ClientHeartbeatLoopCleanupOrderingInput::from_responsibility(
+            ClientHeartbeatLoopCleanupResponsibilityResult::Cleanup {
+                input: ClientHeartbeatLoopCleanupResponsibilityInput {
+                    handoff: handoff.clone(),
+                    plan: ClientHeartbeatLoopCleanupPlan::CleanupOnStop {
+                        trigger: trigger.clone(),
+                    },
+                },
+            },
+        )
+        .expect("stop path should produce cleanup ordering input");
+
+        assert_eq!(
+            input,
+            ClientHeartbeatLoopCleanupOrderingInput {
+                handoff,
+                plan: ClientHeartbeatLoopCleanupPlan::CleanupOnStop { trigger },
+            }
+        );
+    }
+
+    #[test]
+    fn client_heartbeat_loop_cleanup_ordering_skips_continue_path() {
+        let carry = ClientHeartbeatLoopRepeatedInvocationNextStepCarry::ContinueImmediately {
+            carry: ClientHeartbeatLoopIterationCarryState {
+                ordering: ClientHeartbeatLoopStepOrdering::ContinueImmediately,
+                final_counters: ClientHeartbeatLoopCountersState::default(),
+                next_runtime_input: ClientHeartbeatLoopCompletedStepRuntimeInput {
+                    continue_requested: true,
+                    body: ClientHeartbeatLoopRepeatedRuntimeBodyInput {
+                        handoff: ClientHeartbeatLoopRepeatedRuntimeHandoff {
+                            mode: ClientHeartbeatOneTickRuntimeMode::HeartbeatOnly,
+                            destination: "127.0.0.1:5000".parse().unwrap(),
+                            client_id: ClientId("client-1".to_string()),
+                            run_id: RunId("run-1".to_string()),
+                            protocol_version: ProtocolVersion(2),
+                            cadence: ClientHeartbeatLoopCadenceInput {
+                                heartbeat_interval_micros: 1_000,
+                                ack_receive_timeout_micros: 500,
+                                ack_observation_return:
+                                    ClientHeartbeatAckObservationReturnMode::Disabled,
+                            },
+                            stop_condition: ClientHeartbeatLoopStopCondition::RunUntilStopped,
+                            max_ack_socket_wait_micros: 500,
+                            max_sleep_micros: 250,
+                            retry_policy: ClientHeartbeatLoopRetryPolicy {
+                                max_attempts: 3,
+                                retry_delay_micros: 1_000,
+                            },
+                            local_time_enabled: true,
+                            short_status: Some("one-tick-runtime".to_string()),
+                        },
+                        now: TimestampMicros(11_000),
+                        stop_requested: false,
+                        retry_attempts_used: 0,
+                    },
+                },
+            },
+        };
+
+        let result = ClientHeartbeatLoopCleanupOrderingBoundary.plan_next(
+            ClientHeartbeatLoopCleanupResponsibilityResult::Continue {
+                carry: carry.clone(),
+            },
+        );
+
+        assert_eq!(
+            result,
+            ClientHeartbeatLoopCleanupOrderingResult::Continue { carry }
+        );
+    }
+
+    #[test]
+    fn client_heartbeat_loop_cleanup_ordering_preserves_stop_only_semantics() {
+        let trigger = ClientHeartbeatLoopCleanupTrigger {
+            handoff: ClientHeartbeatLoopWhileLoopStopHandoff {
+                stop: ClientHeartbeatLoopCompletedBodyStopResult {
+                    stop_reason: ClientHeartbeatLoopLifecycleStopReason::CallerRequestedStop,
+                    cleanup: ClientHeartbeatLoopCleanupSequencingResult::BeginCleanup {
+                        stop_reason: ClientHeartbeatLoopLifecycleStopReason::CallerRequestedStop,
+                    },
+                },
+                final_counters: ClientHeartbeatLoopCountersState::default(),
+            },
+        };
+
+        let result = ClientHeartbeatLoopCleanupOrderingBoundary.plan_next(
+            ClientHeartbeatLoopCleanupResponsibilityResult::Cleanup {
+                input: ClientHeartbeatLoopCleanupResponsibilityInput {
+                    handoff: ClientHeartbeatLoopActualWhileLoopStopHandoff {
+                        reason: ClientHeartbeatLoopRepeatedInvocationStopReason::CleanupRequested {
+                            stop_reason:
+                                ClientHeartbeatLoopLifecycleStopReason::CallerRequestedStop,
+                        },
+                        trigger: trigger.clone(),
+                    },
+                    plan: ClientHeartbeatLoopCleanupPlan::CleanupOnStop {
+                        trigger: trigger.clone(),
+                    },
+                },
+            },
+        );
+
+        assert_eq!(
+            result,
+            ClientHeartbeatLoopCleanupOrderingResult::Ordered {
+                handoff: ClientHeartbeatLoopCleanupOrderingHandoff {
+                    stop_reason:
+                        ClientHeartbeatLoopRepeatedInvocationStopReason::CleanupRequested {
+                            stop_reason:
+                                ClientHeartbeatLoopLifecycleStopReason::CallerRequestedStop,
+                        },
+                    ordered_plan: ClientHeartbeatLoopOrderedCleanupPlan::CleanupOnStop { trigger },
+                },
             }
         );
     }

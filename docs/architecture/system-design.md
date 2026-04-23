@@ -4469,7 +4469,7 @@ Current code reflects this with
 
 After the future actual while-loop returns a typed step result, cleanup must be
 entered only through an explicit boundary. The current scope fixes that
-ownership handoff and cleanup plan naming without implementing real cleanup.
+ownership handoff without implementing real cleanup.
 
 Current minimal scope:
 
@@ -4483,13 +4483,7 @@ Current minimal scope:
    - cleanup responsibility returns `Cleanup { input }`
    - input preserves the stop handoff
    - input adds explicit `ClientHeartbeatLoopCleanupPlan::CleanupOnStop`
-4. `ClientHeartbeatLoopCleanupExecutionBoundary` receives only
-   `ClientHeartbeatLoopCleanupResponsibilityInput`.
-5. Cleanup execution returns typed execution data only:
-   - `stop_reason`
-   - `cleanup_required = true`
-   - preserved cleanup plan
-6. Minimal trigger policy:
+4. Minimal trigger policy:
    - cleanup runs on stop only
    - cleanup does not run on retry planning
    - cleanup does not run on every iteration
@@ -4503,8 +4497,7 @@ Relationship between stop handoff, retry plan, and cleanup plan:
   - Never triggers cleanup in the current minimal scope.
 - cleanup plan
   - Is created only after stop handoff reaches cleanup responsibility.
-  - Remains explicit and side-effect-free until a future real cleanup
-    implementation consumes it.
+  - Remains explicit and side-effect-free until cleanup ordering consumes it.
 
 Responsibility split:
 
@@ -4514,16 +4507,147 @@ Responsibility split:
 - cleanup responsibility
   - Converts stop-only loop output into explicit cleanup input.
   - Does not execute cleanup implicitly.
+- cleanup ordering
+  - Remains outside the current boundary.
 - cleanup execution
-  - Names the cleanup work that must run later.
-  - Does not flush logs, close sockets, or perform final cleanup yet.
+  - Remains outside the current boundary.
 
 Current code reflects this with
 `ClientHeartbeatLoopCleanupPlan`,
 `ClientHeartbeatLoopCleanupResponsibilityInput`,
 `ClientHeartbeatLoopCleanupResponsibilityResult`,
-`ClientHeartbeatLoopCleanupExecutionResult`,
-`ClientHeartbeatLoopCleanupResponsibilityBoundary`, and
+and `ClientHeartbeatLoopCleanupResponsibilityBoundary`.
+
+### Client Cleanup Ordering Minimal Scope
+
+After cleanup responsibility returns explicit stop-only cleanup input, a
+separate ordering layer still decides what future cleanup execution will
+consume. The current scope fixes that ordering handoff without implementing any
+cleanup side effects.
+
+Current minimal scope:
+
+1. `ClientHeartbeatLoopCleanupOrderingInput::from_responsibility(...)`
+   converts `ClientHeartbeatLoopCleanupResponsibilityResult` into:
+   - `Ok(input)` for stop-only cleanup input
+   - `Err(carry)` for continue-path carry
+2. `ClientHeartbeatLoopCleanupOrderingBoundary` receives one
+   `ClientHeartbeatLoopCleanupResponsibilityResult`.
+3. If cleanup responsibility returns `Continue { carry }`:
+   - ordering returns `Continue`
+   - no cleanup ordering is produced
+4. If cleanup responsibility returns `Cleanup { input }`:
+   - ordering returns `Ordered { handoff }`
+   - handoff preserves `stop_reason`
+   - handoff converts `ClientHeartbeatLoopCleanupPlan` into
+     `ClientHeartbeatLoopOrderedCleanupPlan`
+5. Minimal safe ordering scope:
+   - stop path only
+   - no retry-triggered cleanup ordering
+   - no per-iteration cleanup ordering
+
+Relationship between stop handoff, cleanup plan, cleanup ordering, and future
+cleanup execution:
+
+- stop handoff
+  - Reaches cleanup responsibility from loop control.
+- cleanup plan
+  - Is created by cleanup responsibility on stop only.
+- cleanup ordering
+  - Converts explicit cleanup plan into ordered cleanup handoff.
+  - Does not execute cleanup.
+- future cleanup execution
+  - Will later consume ordered cleanup handoff.
+  - Does not exist as side effects in the current scope.
+
+Responsibility split:
+
+- loop control
+  - Stops or continues; never orders cleanup directly.
+- cleanup responsibility
+  - Creates explicit stop-only cleanup input.
+- cleanup ordering
+  - Converts explicit cleanup input into ordered cleanup handoff.
+  - Does not collapse into execution.
+- cleanup execution
+  - Names the cleanup work a later implementation must run.
+  - Does not flush logs, close sockets, or perform final cleanup yet.
+
+Current code reflects this with
+`ClientHeartbeatLoopCleanupOrderingInput`,
+`ClientHeartbeatLoopOrderedCleanupPlan`,
+`ClientHeartbeatLoopCleanupOrderingHandoff`,
+`ClientHeartbeatLoopCleanupOrderingResult`,
+and `ClientHeartbeatLoopCleanupOrderingBoundary`.
+
+### Client Cleanup Execution Planning Minimal Scope
+
+After cleanup ordering returns an ordered stop-only handoff, execution planning
+still remains separate from any real cleanup side effects. The current scope
+fixes only the execution-side planning boundary and the minimal future action
+order it returns.
+
+Current minimal scope:
+
+1. `ClientHeartbeatLoopCleanupExecutionInput::from_ordering(...)`
+   converts `ClientHeartbeatLoopCleanupOrderingResult` into:
+   - `Ok(input)` for ordered stop-only cleanup handoff
+   - `Err(carry)` for continue-path carry
+2. `ClientHeartbeatLoopCleanupExecutionBoundary` receives one
+   `ClientHeartbeatLoopCleanupOrderingResult`.
+3. If cleanup ordering returns `Continue { carry }`:
+   - execution planning returns `Continue`
+   - no execution planning input is produced
+4. If cleanup ordering returns `Ordered { handoff }`:
+   - execution planning returns `Planned { handoff }`
+   - planned handoff preserves `stop_reason`
+   - planned handoff converts `ClientHeartbeatLoopOrderedCleanupPlan` into
+     `ClientHeartbeatLoopCleanupExecutionPlan`
+5. The stop-only execution plan keeps future ordered actions explicit:
+   - `FinalFlush`
+   - `LogWriterInvocation`
+   - `ResourceRelease`
+6. Minimal safe execution-planning scope:
+   - stop path only
+   - no retry-triggered cleanup planning
+   - no per-iteration cleanup planning
+   - no real flush/log/release side effects
+
+Relationship between cleanup ordering handoff, execution input, execution
+planning result, and future actual cleanup side effects:
+
+- cleanup ordering handoff
+  - Is the only stop-path source for execution planning.
+- execution input
+  - Wraps the ordered cleanup handoff explicitly.
+  - Is not created for continue-path carry.
+- execution planning result
+  - Returns only continue carry or a stop-only cleanup execution plan.
+  - Preserves future action order without running side effects.
+- future actual cleanup side effects
+  - Will later consume the planned execution handoff.
+  - Must run after planning and remain outside this scope.
+
+Responsibility split:
+
+- cleanup ordering
+  - Produces ordered cleanup handoff only.
+  - Does not decide future flush/log/release execution order.
+- cleanup execution planning
+  - Converts ordered cleanup handoff into a stop-only execution plan.
+  - Keeps final flush, log writer invocation, and resource release as future
+    ordered actions only.
+  - Does not collapse into side-effect execution.
+- future actual cleanup side effects
+  - Will later run flush/log/release in the planned order.
+  - Do not exist in the current implementation.
+
+Current code reflects this with
+`ClientHeartbeatLoopCleanupExecutionInput`,
+`ClientHeartbeatLoopFutureCleanupAction`,
+`ClientHeartbeatLoopCleanupExecutionPlan`,
+`ClientHeartbeatLoopCleanupExecutionPlanningHandoff`,
+`ClientHeartbeatLoopCleanupExecutionResult`, and
 `ClientHeartbeatLoopCleanupExecutionBoundary`.
 
 ### Heartbeat Client Ack Observation Flow

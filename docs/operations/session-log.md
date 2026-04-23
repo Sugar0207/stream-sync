@@ -5,6 +5,109 @@
 - Codex
 
 ### 今回の作業
+- cleanup ordering から future actual cleanup execution へ進む最小範囲を整理した。
+- ordered cleanup handoff だけから execution planning input を作る stop-only 境界を追加した。
+- final flush / log writer invocation / resource release を future ordered actions としてだけ表現する execution planning を追加した。
+
+### 変更ファイル
+- `apps/client/src/lib.rs`
+- `docs/architecture/system-design.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### 実装したこと
+- `ClientHeartbeatLoopCleanupExecutionInput`
+- `ClientHeartbeatLoopFutureCleanupAction`
+- `ClientHeartbeatLoopCleanupExecutionPlan`
+- `ClientHeartbeatLoopCleanupExecutionPlanningHandoff`
+- `ClientHeartbeatLoopCleanupExecutionResult`
+- `ClientHeartbeatLoopCleanupExecutionInput::from_ordering(...)`
+- `ClientHeartbeatLoopCleanupExecutionBoundary`
+- stop path から execution input を作る単体テスト
+- continue path では execution planning input を作らない単体テスト
+- stop-only semantics を保った execution planning result の単体テスト
+- flush / log / release を future ordered actions のみで保持する単体テスト
+
+### 未実装 / 保留
+- completed continuous heartbeat loop
+- cleanup execution planning の次段になる future actual cleanup side effects
+- actual timer wait / retry execution / reconnect
+- actual cleanup / final flush / log writer invocation / resource release の実処理
+
+### 次にやる候補
+- cleanup execution planning から future actual cleanup side effects へ進む最小範囲整理
+- heartbeat timeout notice wakeup 実行本体に進む前の境界整理
+- RTT / offset metrics snapshot export cadence / dashboard refresh 方針整理
+
+### TODO 更新内容
+- 現在位置に cleanup execution planning の最小境界完了を反映した。
+- 直近でやることを future actual cleanup side effects 整理へ更新した。
+- client / 検証タスクに cleanup execution planning 境界と関連単体テスト完了を追加した。
+
+### 検証
+- `cargo fmt`
+- `cargo fmt --check`
+- `cargo test -p stream-sync-client client_heartbeat_loop_cleanup`
+- `cargo check --workspace`
+
+---
+
+## 2026-04-24
+### 担当
+- Codex
+
+### 今回の作業
+- cleanup responsibility から future actual cleanup ordering へ進む最小範囲を整理した。
+- cleanup responsibility の stop-only input を cleanup ordering input / ordered handoff に変換する境界を追加した。
+- cleanup ordering は continue path では何も生成せず、stop path のみ ordered cleanup plan を返す方針に固定した。
+
+### 変更ファイル
+- `apps/client/src/lib.rs`
+- `docs/architecture/system-design.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### 実装したこと
+- `ClientHeartbeatLoopCleanupOrderingInput`
+- `ClientHeartbeatLoopOrderedCleanupPlan`
+- `ClientHeartbeatLoopCleanupOrderingHandoff`
+- `ClientHeartbeatLoopCleanupOrderingResult`
+- `ClientHeartbeatLoopCleanupOrderingBoundary`
+- `ClientHeartbeatLoopCleanupOrderingInput::from_responsibility(...)`
+- stop path から cleanup ordering input を作る単体テスト
+- continue path では cleanup ordering を作らない単体テスト
+- stop-only semantics を保った ordered cleanup handoff の単体テスト
+- cleanup execution boundary を ordered handoff 入力へ更新
+
+### 未実装 / 保留
+- completed continuous heartbeat loop
+- cleanup ordering の次段になる future actual cleanup execution
+- actual timer wait / retry execution / reconnect
+- actual cleanup / final flush / log writer invocation
+
+### 次にやる候補
+- cleanup ordering から future actual cleanup execution へ進む最小範囲整理
+- heartbeat timeout notice wakeup 実行本体に進む前の境界整理
+- RTT / offset metrics snapshot export cadence / dashboard refresh 方針整理
+
+### TODO 更新内容
+- 現在位置に cleanup ordering の最小境界完了を反映した。
+- 直近でやることを future actual cleanup execution 整理へ更新した。
+- client / 検証タスクに cleanup ordering 境界と関連単体テスト完了を追加した。
+
+### 検証
+- `cargo fmt`
+- `cargo test -p stream-sync-client client_heartbeat_loop_cleanup`
+- `cargo fmt --check`
+- `cargo check --workspace`
+
+---
+
+## 2026-04-24
+### 担当
+- Codex
+
+### 今回の作業
 - future actual while-loop から cleanup responsibility へ進む最小範囲を整理した。
 - stop handoff から明示的な cleanup input / cleanup plan を作る responsibility / execution 境界を追加した。
 - cleanup は stop 時のみ起動し、retry や通常 iteration では起動しない最小方針を docs と code に固定した。
