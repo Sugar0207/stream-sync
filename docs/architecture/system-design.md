@@ -4422,6 +4422,110 @@ Current code reflects this with
 `ClientHeartbeatLoopRepeatedInvocationResult`, and
 `ClientHeartbeatLoopRepeatedInvocationBoundary`.
 
+### Client Future Actual While-Loop Minimal Scope
+
+After repeated invocation returns typed continue-or-stop state, the future
+runtime still needs one smallest caller-facing while-loop step that says
+whether the next iteration is still caller-owned or cleanup ownership should
+begin. The current scope fixes that handoff without implementing real loop
+repetition.
+
+Current minimal scope:
+
+1. `ClientHeartbeatLoopActualWhileLoopBoundary` receives one
+   `ClientHeartbeatLoopRepeatedInvocationResult`.
+2. If repeated invocation returns `Continue { carry }`:
+   - while-loop boundary returns `Continue`
+   - next-step carry is preserved unchanged for the future actual loop owner
+3. If repeated invocation returns `Stop { reason, trigger }`:
+   - while-loop boundary returns `Stop`
+   - stop state is wrapped into `ClientHeartbeatLoopActualWhileLoopStopHandoff`
+   - cleanup trigger is preserved unchanged
+4. The returned step result is typed only:
+   - no real repeated invocation is executed
+   - no timer wait is executed
+   - no retry is executed
+   - no cleanup is executed
+
+Responsibility split:
+
+- shell runner
+  - Exposes one caller-facing turn above outer shell.
+- repeated invocation
+  - Converts one runner turn into next-step carry or stop handoff.
+- future actual while-loop
+  - Owns the caller-facing step result consumed by a later real loop shell.
+  - Does not perform repeated execution yet.
+- cleanup responsibility
+  - Starts only after the while-loop boundary returns `Stop`.
+  - Remains outside the current boundary.
+
+Current code reflects this with
+`ClientHeartbeatLoopActualWhileLoopStopHandoff`,
+`ClientHeartbeatLoopInvocationStepResult`, and
+`ClientHeartbeatLoopActualWhileLoopBoundary`.
+
+### Client Cleanup Responsibility Minimal Scope
+
+After the future actual while-loop returns a typed step result, cleanup must be
+entered only through an explicit boundary. The current scope fixes that
+ownership handoff and cleanup plan naming without implementing real cleanup.
+
+Current minimal scope:
+
+1. `ClientHeartbeatLoopCleanupResponsibilityBoundary` receives one
+   `ClientHeartbeatLoopInvocationStepResult`.
+2. If the while-loop step returns `Continue { carry }`:
+   - cleanup responsibility returns `Continue`
+   - next-step carry is preserved unchanged
+   - cleanup is not triggered
+3. If the while-loop step returns `Stop { handoff }`:
+   - cleanup responsibility returns `Cleanup { input }`
+   - input preserves the stop handoff
+   - input adds explicit `ClientHeartbeatLoopCleanupPlan::CleanupOnStop`
+4. `ClientHeartbeatLoopCleanupExecutionBoundary` receives only
+   `ClientHeartbeatLoopCleanupResponsibilityInput`.
+5. Cleanup execution returns typed execution data only:
+   - `stop_reason`
+   - `cleanup_required = true`
+   - preserved cleanup plan
+6. Minimal trigger policy:
+   - cleanup runs on stop only
+   - cleanup does not run on retry planning
+   - cleanup does not run on every iteration
+
+Relationship between stop handoff, retry plan, and cleanup plan:
+
+- stop handoff
+  - Is the only source that can trigger cleanup responsibility.
+- retry plan
+  - Remains entirely in continue-path carry.
+  - Never triggers cleanup in the current minimal scope.
+- cleanup plan
+  - Is created only after stop handoff reaches cleanup responsibility.
+  - Remains explicit and side-effect-free until a future real cleanup
+    implementation consumes it.
+
+Responsibility split:
+
+- loop control
+  - Covers shell runner, repeated invocation, and future actual while-loop.
+  - Decides continue vs stop and preserves next-step carry.
+- cleanup responsibility
+  - Converts stop-only loop output into explicit cleanup input.
+  - Does not execute cleanup implicitly.
+- cleanup execution
+  - Names the cleanup work that must run later.
+  - Does not flush logs, close sockets, or perform final cleanup yet.
+
+Current code reflects this with
+`ClientHeartbeatLoopCleanupPlan`,
+`ClientHeartbeatLoopCleanupResponsibilityInput`,
+`ClientHeartbeatLoopCleanupResponsibilityResult`,
+`ClientHeartbeatLoopCleanupExecutionResult`,
+`ClientHeartbeatLoopCleanupResponsibilityBoundary`, and
+`ClientHeartbeatLoopCleanupExecutionBoundary`.
+
 ### Heartbeat Client Ack Observation Flow
 
 The client ack observation flow returns the missing `client_received_at`

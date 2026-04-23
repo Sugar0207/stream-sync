@@ -2556,6 +2556,58 @@ pub enum ClientHeartbeatLoopRepeatedInvocationResult {
     },
 }
 
+/// Stop handoff returned from a future actual while-loop step into cleanup ownership.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClientHeartbeatLoopActualWhileLoopStopHandoff {
+    pub reason: ClientHeartbeatLoopRepeatedInvocationStopReason,
+    pub trigger: ClientHeartbeatLoopCleanupTrigger,
+}
+
+/// Caller-facing result of one future actual while-loop invocation step.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ClientHeartbeatLoopInvocationStepResult {
+    Continue {
+        carry: ClientHeartbeatLoopRepeatedInvocationNextStepCarry,
+    },
+    Stop {
+        handoff: ClientHeartbeatLoopActualWhileLoopStopHandoff,
+    },
+}
+
+/// Explicit cleanup plan extracted after the while-loop decides to stop.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ClientHeartbeatLoopCleanupPlan {
+    CleanupOnStop {
+        trigger: ClientHeartbeatLoopCleanupTrigger,
+    },
+}
+
+/// Input owned by cleanup responsibility after loop control stops.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClientHeartbeatLoopCleanupResponsibilityInput {
+    pub handoff: ClientHeartbeatLoopActualWhileLoopStopHandoff,
+    pub plan: ClientHeartbeatLoopCleanupPlan,
+}
+
+/// Result of deciding whether loop control continues or cleanup takes ownership.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ClientHeartbeatLoopCleanupResponsibilityResult {
+    Continue {
+        carry: ClientHeartbeatLoopRepeatedInvocationNextStepCarry,
+    },
+    Cleanup {
+        input: ClientHeartbeatLoopCleanupResponsibilityInput,
+    },
+}
+
+/// Typed cleanup execution result returned before any real cleanup runs.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClientHeartbeatLoopCleanupExecutionResult {
+    pub stop_reason: ClientHeartbeatLoopRepeatedInvocationStopReason,
+    pub cleanup_required: bool,
+    pub plan: ClientHeartbeatLoopCleanupPlan,
+}
+
 /// Boundary that connects one step result to future completed-loop lifecycle flow.
 ///
 /// This does not run a while-loop, sleep, reconnect, flush logs, close
@@ -3000,6 +3052,83 @@ impl ClientHeartbeatLoopRepeatedInvocationBoundary {
 
                 ClientHeartbeatLoopRepeatedInvocationResult::Stop { reason, trigger }
             }
+        }
+    }
+}
+
+/// Boundary that exposes the smallest caller-facing step of a future actual while-loop.
+///
+/// This boundary does not actually repeat, wait on timers, execute retries,
+/// reconnect sockets, flush logs, or run cleanup. It only converts one
+/// repeated-invocation result into the next while-loop step result.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct ClientHeartbeatLoopActualWhileLoopBoundary;
+
+impl ClientHeartbeatLoopActualWhileLoopBoundary {
+    pub fn plan_next(
+        &self,
+        repeated: ClientHeartbeatLoopRepeatedInvocationResult,
+    ) -> ClientHeartbeatLoopInvocationStepResult {
+        match repeated {
+            ClientHeartbeatLoopRepeatedInvocationResult::Continue { carry } => {
+                ClientHeartbeatLoopInvocationStepResult::Continue { carry }
+            }
+            ClientHeartbeatLoopRepeatedInvocationResult::Stop { reason, trigger } => {
+                ClientHeartbeatLoopInvocationStepResult::Stop {
+                    handoff: ClientHeartbeatLoopActualWhileLoopStopHandoff { reason, trigger },
+                }
+            }
+        }
+    }
+}
+
+/// Boundary that explicitly transfers ownership from loop control to cleanup.
+///
+/// Cleanup is triggered only after the while-loop step has already stopped. It
+/// is not entered on retry planning or normal continue iterations.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct ClientHeartbeatLoopCleanupResponsibilityBoundary;
+
+impl ClientHeartbeatLoopCleanupResponsibilityBoundary {
+    pub fn plan_next(
+        &self,
+        step: ClientHeartbeatLoopInvocationStepResult,
+    ) -> ClientHeartbeatLoopCleanupResponsibilityResult {
+        match step {
+            ClientHeartbeatLoopInvocationStepResult::Continue { carry } => {
+                ClientHeartbeatLoopCleanupResponsibilityResult::Continue { carry }
+            }
+            ClientHeartbeatLoopInvocationStepResult::Stop { handoff } => {
+                ClientHeartbeatLoopCleanupResponsibilityResult::Cleanup {
+                    input: ClientHeartbeatLoopCleanupResponsibilityInput {
+                        plan: ClientHeartbeatLoopCleanupPlan::CleanupOnStop {
+                            trigger: handoff.trigger.clone(),
+                        },
+                        handoff,
+                    },
+                }
+            }
+        }
+    }
+}
+
+/// Boundary that exposes explicit cleanup execution input without side effects.
+///
+/// This boundary does not flush logs, close sockets, sleep, retry, reconnect,
+/// or run final cleanup. It only names the cleanup work that a later
+/// implementation must execute.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct ClientHeartbeatLoopCleanupExecutionBoundary;
+
+impl ClientHeartbeatLoopCleanupExecutionBoundary {
+    pub fn plan_next(
+        &self,
+        input: ClientHeartbeatLoopCleanupResponsibilityInput,
+    ) -> ClientHeartbeatLoopCleanupExecutionResult {
+        ClientHeartbeatLoopCleanupExecutionResult {
+            stop_reason: input.handoff.reason,
+            cleanup_required: true,
+            plan: input.plan,
         }
     }
 }
@@ -6421,6 +6550,218 @@ mod tests {
                     stop_reason: ClientHeartbeatLoopLifecycleStopReason::CallerRequestedStop,
                 },
                 trigger,
+            }
+        );
+    }
+
+    #[test]
+    fn client_heartbeat_loop_actual_while_loop_preserves_continue_carry() {
+        let carry = ClientHeartbeatLoopRepeatedInvocationNextStepCarry::ContinueImmediately {
+            carry: ClientHeartbeatLoopIterationCarryState {
+                ordering: ClientHeartbeatLoopStepOrdering::ContinueImmediately,
+                final_counters: ClientHeartbeatLoopCountersState::default(),
+                next_runtime_input: ClientHeartbeatLoopCompletedStepRuntimeInput {
+                    continue_requested: true,
+                    body: ClientHeartbeatLoopRepeatedRuntimeBodyInput {
+                        handoff: ClientHeartbeatLoopRepeatedRuntimeHandoff {
+                            mode: ClientHeartbeatOneTickRuntimeMode::HeartbeatOnly,
+                            destination: "127.0.0.1:5000".parse().unwrap(),
+                            client_id: ClientId("client-1".to_string()),
+                            run_id: RunId("run-1".to_string()),
+                            protocol_version: ProtocolVersion(2),
+                            cadence: ClientHeartbeatLoopCadenceInput {
+                                heartbeat_interval_micros: 1_000,
+                                ack_receive_timeout_micros: 500,
+                                ack_observation_return:
+                                    ClientHeartbeatAckObservationReturnMode::Disabled,
+                            },
+                            stop_condition: ClientHeartbeatLoopStopCondition::RunUntilStopped,
+                            max_ack_socket_wait_micros: 500,
+                            max_sleep_micros: 250,
+                            retry_policy: ClientHeartbeatLoopRetryPolicy {
+                                max_attempts: 3,
+                                retry_delay_micros: 1_000,
+                            },
+                            local_time_enabled: true,
+                            short_status: Some("one-tick-runtime".to_string()),
+                        },
+                        now: TimestampMicros(11_000),
+                        stop_requested: false,
+                        retry_attempts_used: 0,
+                    },
+                },
+            },
+        };
+
+        let result = ClientHeartbeatLoopActualWhileLoopBoundary.plan_next(
+            ClientHeartbeatLoopRepeatedInvocationResult::Continue {
+                carry: carry.clone(),
+            },
+        );
+
+        assert_eq!(
+            result,
+            ClientHeartbeatLoopInvocationStepResult::Continue { carry }
+        );
+    }
+
+    #[test]
+    fn client_heartbeat_loop_actual_while_loop_maps_stop_to_handoff() {
+        let trigger = ClientHeartbeatLoopCleanupTrigger {
+            handoff: ClientHeartbeatLoopWhileLoopStopHandoff {
+                stop: ClientHeartbeatLoopCompletedBodyStopResult {
+                    stop_reason: ClientHeartbeatLoopLifecycleStopReason::CallerRequestedStop,
+                    cleanup: ClientHeartbeatLoopCleanupSequencingResult::BeginCleanup {
+                        stop_reason: ClientHeartbeatLoopLifecycleStopReason::CallerRequestedStop,
+                    },
+                },
+                final_counters: ClientHeartbeatLoopCountersState::default(),
+            },
+        };
+
+        let result = ClientHeartbeatLoopActualWhileLoopBoundary.plan_next(
+            ClientHeartbeatLoopRepeatedInvocationResult::Stop {
+                reason: ClientHeartbeatLoopRepeatedInvocationStopReason::CleanupRequested {
+                    stop_reason: ClientHeartbeatLoopLifecycleStopReason::CallerRequestedStop,
+                },
+                trigger: trigger.clone(),
+            },
+        );
+
+        assert_eq!(
+            result,
+            ClientHeartbeatLoopInvocationStepResult::Stop {
+                handoff: ClientHeartbeatLoopActualWhileLoopStopHandoff {
+                    reason: ClientHeartbeatLoopRepeatedInvocationStopReason::CleanupRequested {
+                        stop_reason: ClientHeartbeatLoopLifecycleStopReason::CallerRequestedStop,
+                    },
+                    trigger,
+                },
+            }
+        );
+    }
+
+    #[test]
+    fn client_heartbeat_loop_cleanup_responsibility_preserves_continue_carry() {
+        let carry = ClientHeartbeatLoopRepeatedInvocationNextStepCarry::ContinueImmediately {
+            carry: ClientHeartbeatLoopIterationCarryState {
+                ordering: ClientHeartbeatLoopStepOrdering::ContinueImmediately,
+                final_counters: ClientHeartbeatLoopCountersState::default(),
+                next_runtime_input: ClientHeartbeatLoopCompletedStepRuntimeInput {
+                    continue_requested: true,
+                    body: ClientHeartbeatLoopRepeatedRuntimeBodyInput {
+                        handoff: ClientHeartbeatLoopRepeatedRuntimeHandoff {
+                            mode: ClientHeartbeatOneTickRuntimeMode::HeartbeatOnly,
+                            destination: "127.0.0.1:5000".parse().unwrap(),
+                            client_id: ClientId("client-1".to_string()),
+                            run_id: RunId("run-1".to_string()),
+                            protocol_version: ProtocolVersion(2),
+                            cadence: ClientHeartbeatLoopCadenceInput {
+                                heartbeat_interval_micros: 1_000,
+                                ack_receive_timeout_micros: 500,
+                                ack_observation_return:
+                                    ClientHeartbeatAckObservationReturnMode::Disabled,
+                            },
+                            stop_condition: ClientHeartbeatLoopStopCondition::RunUntilStopped,
+                            max_ack_socket_wait_micros: 500,
+                            max_sleep_micros: 250,
+                            retry_policy: ClientHeartbeatLoopRetryPolicy {
+                                max_attempts: 3,
+                                retry_delay_micros: 1_000,
+                            },
+                            local_time_enabled: true,
+                            short_status: Some("one-tick-runtime".to_string()),
+                        },
+                        now: TimestampMicros(11_000),
+                        stop_requested: false,
+                        retry_attempts_used: 0,
+                    },
+                },
+            },
+        };
+
+        let result = ClientHeartbeatLoopCleanupResponsibilityBoundary.plan_next(
+            ClientHeartbeatLoopInvocationStepResult::Continue {
+                carry: carry.clone(),
+            },
+        );
+
+        assert_eq!(
+            result,
+            ClientHeartbeatLoopCleanupResponsibilityResult::Continue { carry }
+        );
+    }
+
+    #[test]
+    fn client_heartbeat_loop_cleanup_responsibility_builds_explicit_cleanup_input() {
+        let trigger = ClientHeartbeatLoopCleanupTrigger {
+            handoff: ClientHeartbeatLoopWhileLoopStopHandoff {
+                stop: ClientHeartbeatLoopCompletedBodyStopResult {
+                    stop_reason: ClientHeartbeatLoopLifecycleStopReason::CallerRequestedStop,
+                    cleanup: ClientHeartbeatLoopCleanupSequencingResult::BeginCleanup {
+                        stop_reason: ClientHeartbeatLoopLifecycleStopReason::CallerRequestedStop,
+                    },
+                },
+                final_counters: ClientHeartbeatLoopCountersState::default(),
+            },
+        };
+        let handoff = ClientHeartbeatLoopActualWhileLoopStopHandoff {
+            reason: ClientHeartbeatLoopRepeatedInvocationStopReason::CleanupRequested {
+                stop_reason: ClientHeartbeatLoopLifecycleStopReason::CallerRequestedStop,
+            },
+            trigger: trigger.clone(),
+        };
+
+        let result = ClientHeartbeatLoopCleanupResponsibilityBoundary.plan_next(
+            ClientHeartbeatLoopInvocationStepResult::Stop {
+                handoff: handoff.clone(),
+            },
+        );
+
+        assert_eq!(
+            result,
+            ClientHeartbeatLoopCleanupResponsibilityResult::Cleanup {
+                input: ClientHeartbeatLoopCleanupResponsibilityInput {
+                    handoff,
+                    plan: ClientHeartbeatLoopCleanupPlan::CleanupOnStop { trigger },
+                },
+            }
+        );
+    }
+
+    #[test]
+    fn client_heartbeat_loop_cleanup_execution_keeps_cleanup_explicit() {
+        let trigger = ClientHeartbeatLoopCleanupTrigger {
+            handoff: ClientHeartbeatLoopWhileLoopStopHandoff {
+                stop: ClientHeartbeatLoopCompletedBodyStopResult {
+                    stop_reason: ClientHeartbeatLoopLifecycleStopReason::CallerRequestedStop,
+                    cleanup: ClientHeartbeatLoopCleanupSequencingResult::BeginCleanup {
+                        stop_reason: ClientHeartbeatLoopLifecycleStopReason::CallerRequestedStop,
+                    },
+                },
+                final_counters: ClientHeartbeatLoopCountersState::default(),
+            },
+        };
+        let input = ClientHeartbeatLoopCleanupResponsibilityInput {
+            handoff: ClientHeartbeatLoopActualWhileLoopStopHandoff {
+                reason: ClientHeartbeatLoopRepeatedInvocationStopReason::CleanupRequested {
+                    stop_reason: ClientHeartbeatLoopLifecycleStopReason::CallerRequestedStop,
+                },
+                trigger: trigger.clone(),
+            },
+            plan: ClientHeartbeatLoopCleanupPlan::CleanupOnStop { trigger },
+        };
+
+        let result = ClientHeartbeatLoopCleanupExecutionBoundary.plan_next(input.clone());
+
+        assert_eq!(
+            result,
+            ClientHeartbeatLoopCleanupExecutionResult {
+                stop_reason: ClientHeartbeatLoopRepeatedInvocationStopReason::CleanupRequested {
+                    stop_reason: ClientHeartbeatLoopLifecycleStopReason::CallerRequestedStop,
+                },
+                cleanup_required: true,
+                plan: input.plan,
             }
         );
     }

@@ -5,6 +5,102 @@
 - Codex
 
 ### 今回の作業
+- future actual while-loop から cleanup responsibility へ進む最小範囲を整理した。
+- stop handoff から明示的な cleanup input / cleanup plan を作る responsibility / execution 境界を追加した。
+- cleanup は stop 時のみ起動し、retry や通常 iteration では起動しない最小方針を docs と code に固定した。
+
+### 変更ファイル
+- `apps/client/src/lib.rs`
+- `docs/architecture/system-design.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### 実装したこと
+- `ClientHeartbeatLoopCleanupPlan`
+- `ClientHeartbeatLoopCleanupResponsibilityInput`
+- `ClientHeartbeatLoopCleanupResponsibilityResult`
+- `ClientHeartbeatLoopCleanupExecutionResult`
+- `ClientHeartbeatLoopCleanupResponsibilityBoundary`
+- `ClientHeartbeatLoopCleanupExecutionBoundary`
+- continue carry をそのまま返す cleanup responsibility 単体テスト
+- stop handoff から explicit cleanup input を作る単体テスト
+- cleanup execution が side effect なしで plan を返す単体テスト
+
+### 未実装 / 保留
+- completed continuous heartbeat loop
+- cleanup responsibility の次段になる future actual cleanup ordering
+- actual timer wait / retry execution / reconnect
+- actual cleanup / final flush / log writer invocation
+
+### 次にやる候補
+- cleanup responsibility から future actual cleanup ordering へ進む最小範囲整理
+- heartbeat timeout notice wakeup 実行本体に進む前の境界整理
+- RTT / offset metrics snapshot export cadence / dashboard refresh 方針整理
+
+### TODO 更新内容
+- 現在位置に cleanup responsibility の最小境界完了を反映した。
+- 直近でやることを future actual cleanup ordering 整理へ更新した。
+- client / 検証タスクに cleanup responsibility 境界と関連単体テスト完了を追加した。
+
+### 検証
+- `cargo fmt`
+- `cargo test -p stream-sync-client client_heartbeat_loop_cleanup`
+- `cargo fmt --check`
+- `cargo check --workspace`
+
+---
+
+## 2026-04-24
+### 担当
+- Codex
+
+### 今回の作業
+- eventual repeated invocation から future actual while-loop へ進む最小範囲を整理した。
+- repeated invocation の continue / stop を caller-facing な while-loop step result に落とす境界を追加した。
+- actual timer / retry / cleanup / final flush は実行せず、typed result の返却だけに留めた。
+
+### 変更ファイル
+- `apps/client/src/lib.rs`
+- `docs/architecture/system-design.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### 実装したこと
+- `ClientHeartbeatLoopActualWhileLoopStopHandoff`
+- `ClientHeartbeatLoopInvocationStepResult`
+- `ClientHeartbeatLoopActualWhileLoopBoundary`
+- continue carry を保持する future actual while-loop 単体テスト
+- stop を loop stop handoff に変換する future actual while-loop 単体テスト
+
+### 未実装 / 保留
+- completed continuous heartbeat loop
+- future actual while-loop の次段になる cleanup responsibility
+- actual timer wait / retry execution / reconnect
+- actual cleanup / final flush / log writer invocation
+
+### 次にやる候補
+- future actual while-loop から cleanup responsibility へ進む最小範囲整理
+- heartbeat timeout notice wakeup 実行本体に進む前の境界整理
+- RTT / offset metrics snapshot export cadence / dashboard refresh 方針整理
+
+### TODO 更新内容
+- 現在位置に future actual while-loop の最小境界完了を反映した。
+- 直近でやることを cleanup responsibility 整理へ更新した。
+- client / 検証タスクに future actual while-loop 境界と関連単体テスト完了を追加した。
+
+### 検証
+- `cargo fmt`
+- `cargo test -p stream-sync-client client_heartbeat_loop_actual_while_loop`
+- `cargo fmt --check`
+- `cargo check --workspace`
+
+---
+
+## 2026-04-24
+### 担当
+- Codex
+
+### 今回の作業
 - caller-facing shell runner から eventual repeated invocation へ進む最小範囲を整理した。
 - shell runner の continue / stop を next-step carry / cleanup handoff に落とす repeated invocation 境界を追加した。
 - actual timer / retry / cleanup / final flush は実行せず、typed result の返却だけに留めた。
