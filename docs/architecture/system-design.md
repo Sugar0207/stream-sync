@@ -4373,6 +4373,55 @@ Current code reflects this with `ClientHeartbeatLoopShellRunnerStopReason`,
 `ClientHeartbeatLoopShellRunnerResult`, and
 `ClientHeartbeatLoopShellRunnerBoundary`.
 
+### Client Eventual Repeated Invocation Minimal Scope
+
+After shell runner returns a caller-facing continue-or-stop result, the future
+runtime still needs one thin layer that turns that result into repeated
+invocation carry or cleanup stop handoff. The current scope fixes that mapping
+without implementing a real while-loop.
+
+Current minimal scope:
+
+1. `ClientHeartbeatLoopRepeatedInvocationBoundary` receives one
+   `ClientHeartbeatLoopShellRunnerResult`.
+2. If shell runner returns `Continue { apply_order }`:
+   - repeated invocation returns `Continue`
+   - continue state is narrowed into
+     `ClientHeartbeatLoopRepeatedInvocationNextStepCarry`
+   - next-step carry preserves the branch-specific data:
+     - immediate continue
+     - timer-then-continue
+     - retry-then-continue
+3. If shell runner returns `Stop { reason, trigger }`:
+   - repeated invocation returns `Stop`
+   - stop reason is converted into repeated-invocation-owned stop reason
+   - cleanup trigger is preserved unchanged
+4. The returned state is typed only:
+   - no actual repeated invocation is executed
+   - no timer wait is executed
+   - no retry is executed
+   - no cleanup is executed
+
+Responsibility split:
+
+- shell runner
+  - Exposes one caller-facing turn above outer shell.
+- repeated invocation
+  - Converts one runner turn into next-step carry or stop handoff.
+  - Does not run the next turn by itself.
+- future actual while-loop
+  - Will own repeated execution and decide when to call the next runner turn.
+  - Remains outside the current boundary.
+- cleanup responsibility
+  - Starts only after repeated invocation returns `Stop`.
+  - Remains outside the current boundary.
+
+Current code reflects this with
+`ClientHeartbeatLoopRepeatedInvocationStopReason`,
+`ClientHeartbeatLoopRepeatedInvocationNextStepCarry`,
+`ClientHeartbeatLoopRepeatedInvocationResult`, and
+`ClientHeartbeatLoopRepeatedInvocationBoundary`.
+
 ### Heartbeat Client Ack Observation Flow
 
 The client ack observation flow returns the missing `client_received_at`
