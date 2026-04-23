@@ -5,6 +5,54 @@
 - Codex
 
 ### 今回の作業
+- eventual while-loop repeated invocation skeleton / stop flag refresh の最小範囲を整理した。
+- caller contract の continue / stop を受けて、次 iteration の carry state か stop handoff を返す skeleton 境界を追加した。
+- 実 repeated invocation、while-loop、本 sleep / retry / reconnect / cleanup 実行には進まなかった。
+
+### 変更ファイル
+- `apps/client/src/lib.rs`
+- `docs/architecture/system-design.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### 実装したこと
+- `ClientHeartbeatLoopStopRefreshInput`
+- `ClientHeartbeatLoopIterationCarryState`
+- `ClientHeartbeatLoopSkeletonResult`
+- `ClientHeartbeatLoopSkeletonBoundary`
+- wait contract から次 iteration carry を組むテスト
+- retry attempt を carry するテスト
+
+### 未実装 / 保留
+- completed continuous heartbeat loop
+- future actual timer / retry / cleanup apply call order
+- actual repeated invocation / stop flag refresh 実行本体
+- actual timer wait / retry execution / reconnect
+- shutdown cleanup / final flush / log writer invocation
+
+### 次にやる候補
+- future actual timer / retry / cleanup apply call order の最小範囲整理
+- heartbeat timeout notice wakeup 実行本体に進む前の境界整理
+- RTT / offset metrics snapshot export cadence / dashboard refresh 方針整理
+
+### TODO 更新内容
+- 現在位置に repeated invocation skeleton / stop flag refresh 境界完了を反映した。
+- 直近でやることを future actual timer / retry / cleanup apply call order 整理へ更新した。
+- client / 検証タスクに skeleton 境界と関連単体テスト完了を追加した。
+
+### 検証
+- `cargo fmt`
+- `cargo test -p stream-sync-client client_heartbeat_loop_skeleton`
+- `cargo fmt --check`
+- `cargo check --workspace`
+
+---
+
+## 2026-04-24
+### 担当
+- Codex
+
+### 今回の作業
 - completed-step runtime から eventual while-loop ownership / caller contract へ進む最小範囲を整理した。
 - 1 step runtime の結果から、caller が次 step の所有権を維持するか、cleanup へ stop handoff を渡すかだけを返す最小境界を追加した。
 - 実 while-loop、stop flag refresh、本 sleep / retry / reconnect / cleanup 実行には進まなかった。

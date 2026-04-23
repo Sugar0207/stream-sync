@@ -4194,6 +4194,53 @@ Current code reflects this with `ClientHeartbeatLoopWhileLoopStopHandoff`,
 `ClientHeartbeatLoopCallerContractResult`, and
 `ClientHeartbeatLoopWhileLoopOwnershipBoundary`.
 
+### Client Repeated Invocation Skeleton Minimal Scope
+
+After caller contract says continue or stop, the eventual while-loop still
+needs one tiny skeleton layer that refreshes caller-owned stop input and
+builds the next iteration carry state. The current scope fixes that data flow
+without implementing repeated invocation.
+
+Current minimal scope:
+
+1. `ClientHeartbeatLoopSkeletonBoundary` receives:
+   - one `ClientHeartbeatLoopCallerContractResult`
+   - one `ClientHeartbeatLoopStopRefreshInput`
+2. If caller contract is `Stop`:
+   - skeleton returns `Stop`
+   - stop handoff is preserved unchanged for future cleanup ownership
+3. If caller contract is `Continue`:
+   - skeleton returns `Continue { carry }`
+   - carry preserves the prior ordering
+   - carry preserves final counters snapshot
+   - carry builds the next `ClientHeartbeatLoopCompletedStepRuntimeInput`
+4. Retry attempt carry rules:
+   - `ContinueImmediately` and `WaitThenContinue` reset
+     `retry_attempts_used = 0`
+   - `RetryThenContinue` carries the next retry attempt count forward
+5. Stop flag refresh rules:
+   - `continue_requested = !stop_requested`
+   - `body.stop_requested = stop_requested`
+   - `body.now = refresh.now`
+
+Responsibility split:
+
+- completed-step runtime
+  - Produces one typed step result.
+- caller contract
+  - Converts one step result into continue vs stop ownership.
+- repeated invocation skeleton
+  - Refreshes caller stop input and builds next carry state only.
+  - Does not run another iteration by itself.
+- future cleanup responsibility
+  - Starts only after skeleton returns `Stop`.
+  - Remains outside the current boundary.
+
+Current code reflects this with `ClientHeartbeatLoopStopRefreshInput`,
+`ClientHeartbeatLoopIterationCarryState`,
+`ClientHeartbeatLoopSkeletonResult`, and
+`ClientHeartbeatLoopSkeletonBoundary`.
+
 ### Heartbeat Client Ack Observation Flow
 
 The client ack observation flow returns the missing `client_received_at`
