@@ -5259,6 +5259,79 @@ Current code reflects this with
 `ClientHeartbeatLoopHeartbeatTimeoutNoticeWakeupResult`, and
 `ClientHeartbeatLoopHeartbeatTimeoutNoticeWakeupBoundary`.
 
+### Client Heartbeat Timeout Notice Wakeup Execution Minimal Scope
+
+Once wakeup planning exists, the next client-side step can remain a minimal
+execution boundary that still does not perform a real wakeup side effect. The
+current scope adds only that explicit execution shaping; it does not execute
+timer wait, retry execution, reconnect execution, metrics cadence, or cleanup
+logic.
+
+Current minimal scope:
+
+1. `ClientHeartbeatLoopHeartbeatTimeoutNoticeWakeupExecutionInput::from_wakeup_planning(...)`
+   converts `ClientHeartbeatLoopHeartbeatTimeoutNoticeWakeupResult` into:
+   - `Ok(input)` for `ContinueWithWakeup { handoff }`
+   - `Err(planning)` for `ContinueWithoutWakeup { output }`
+   - `Err(planning)` for `Stop { output }`
+2. `ClientHeartbeatLoopHeartbeatTimeoutNoticeWakeupExecutionBoundary` receives
+   one `ClientHeartbeatLoopHeartbeatTimeoutNoticeWakeupResult`.
+3. If wakeup planning returns `ContinueWithoutWakeup { output }`:
+   - wakeup execution returns `ContinueWithoutWakeupExecution { output }`
+   - continue path remains explicit and no wakeup execution input is created
+4. If wakeup planning returns `ContinueWithWakeup { handoff }`:
+   - wakeup execution returns `ContinueWithWakeupExecutionApplied { output }`
+   - wakeup-applied output preserves the original continue output and the
+     explicit wakeup plan as `WakeupApplied`
+5. If wakeup planning returns `Stop { output }`:
+   - wakeup execution returns `Stop { output }`
+   - stop path remains explicit and unchanged
+6. Minimal safe wakeup-execution scope:
+   - wakeup planning result is the only source for wakeup execution input
+   - continue without wakeup execution, continue with wakeup execution
+     applied, and stop passthrough stay separate
+   - wakeup execution remains separate from timer / retry / reconnect concerns
+   - no metrics cadence or dashboard logic is introduced here
+
+Relationship between `ContinueWithoutWakeup`, `ContinueWithWakeup`, wakeup
+execution input, wakeup execution result, and stop passthrough:
+
+- `ContinueWithoutWakeup`
+  - Does not create wakeup execution input.
+  - Passes through as explicit continue without wakeup execution.
+- `ContinueWithWakeup`
+  - Is the only source that creates wakeup execution input.
+  - Preserves explicit wakeup-ready handoff into execution.
+- wakeup execution input
+  - Wraps only wakeup-ready handoff.
+  - Is not created for continue-without-wakeup or stop.
+- wakeup execution result
+  - Returns either explicit continue without wakeup execution, explicit
+    continue with wakeup execution applied, or explicit stop passthrough.
+  - Keeps timer wait / retry / reconnect state visible and unchanged.
+- stop passthrough
+  - Remains outside wakeup execution input and is not collapsed into continue.
+
+Responsibility split:
+
+- wakeup planning boundary
+  - Determines only whether wakeup-related follow-up is needed.
+  - Does not own wakeup execution shaping.
+- wakeup execution boundary
+  - Converts wakeup planning result into explicit execution result only.
+  - Does not perform a real wakeup side effect or own timer/retry/reconnect
+    execution.
+- future actual wakeup execution
+  - Will later own the runtime side effect behind wakeup-applied output.
+  - Is not implemented in the current scope.
+
+Current code reflects this with
+`ClientHeartbeatLoopHeartbeatTimeoutNoticeWakeupExecutionInput`,
+`ClientHeartbeatLoopHeartbeatTimeoutNoticeWakeupApplyResult`,
+`ClientHeartbeatLoopHeartbeatTimeoutNoticeWakeupExecutionOutput`,
+`ClientHeartbeatLoopHeartbeatTimeoutNoticeWakeupExecutionResult`, and
+`ClientHeartbeatLoopHeartbeatTimeoutNoticeWakeupExecutionBoundary`.
+
 ### Heartbeat Client Ack Observation Flow
 
 The client ack observation flow returns the missing `client_received_at`

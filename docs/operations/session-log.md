@@ -4,6 +4,55 @@
 ### 担当 - Codex
 
 ### 今回の作業
+- heartbeat timeout notice wakeup planning から wakeup execution へ進む最小境界を追加した。
+- `ContinueWithoutWakeup` / `ContinueWithWakeup` / `Stop` を維持したまま、execution 側で `ContinueWithoutWakeupExecution` / `ContinueWithWakeupExecutionApplied` / `Stop` に分離した。
+- wakeup execution は timer wait / retry / reconnect execution とは別責務のまま、real wakeup side effect なしで explicit result shape だけを定義した。
+
+### 変更ファイル
+- `apps/client/src/lib.rs`
+- `docs/architecture/system-design.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### 実装したこと
+- `ClientHeartbeatLoopHeartbeatTimeoutNoticeWakeupExecutionInput`
+- `ClientHeartbeatLoopHeartbeatTimeoutNoticeWakeupApplyResult`
+- `ClientHeartbeatLoopHeartbeatTimeoutNoticeWakeupExecutionOutput`
+- `ClientHeartbeatLoopHeartbeatTimeoutNoticeWakeupExecutionResult`
+- `ClientHeartbeatLoopHeartbeatTimeoutNoticeWakeupExecutionBoundary`
+- wakeup planning result だけを入力源にして wakeup execution input を作る最小変換
+- continue with wakeup の execution input / applied result、continue without wakeup の explicit passthrough、stop passthrough の単体テスト
+- wakeup execution result が timer / retry / reconnect concern と混ざらないことの単体テスト
+
+### 未実装 / 保留
+- heartbeat timeout notice wakeup の実 side effect
+- continuous heartbeat loop 本体
+- actual timer wait / retry execution / reconnect の実処理
+- stats metrics state commit
+- completed smoothing / outlier model
+- dashboard 本体
+- final flush / log writer invocation / resource release の複雑な実処理
+
+### 次にやる候補
+- heartbeat timeout notice wakeup の実 side effect 最小範囲整理
+- actual timer wait / retry / reconnect の実行本体に進む前の境界整理
+- RTT / offset metrics snapshot の export cadence / dashboard refresh 方針整理
+
+### TODO更新内容
+- 現在位置に heartbeat timeout notice wakeup planning から wakeup execution への最小境界完了を反映した。
+- 直近でやることを wakeup execution から wakeup の実 side effect 最小範囲整理へ更新した。
+- client / 検証タスクに heartbeat timeout notice wakeup execution 境界と関連単体テスト完了を追加した。
+
+### 検証
+- `cargo fmt`
+- `cargo fmt --check`
+- `cargo test -p stream-sync-client client_heartbeat_loop_cleanup`
+- `cargo check --workspace`
+
+## 2026-04-24
+### 担当 - Codex
+
+### 今回の作業
 - completed continuous heartbeat loop body result から heartbeat timeout notice wakeup planning へ進む最小境界を追加した。
 - stop path はそのまま passthrough し、continue path だけを `ContinueWithoutWakeup` と `ContinueWithWakeup` に分離して、wakeup follow-up の必要性を explicit にした。
 - wakeup planning は timer / retry / reconnect execution 本体と分離したまま、timer wait がある continue path だけを wakeup-ready handoff にする shape で固定した。
