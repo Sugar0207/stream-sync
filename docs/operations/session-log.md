@@ -61,6 +61,54 @@
 - Codex
 
 ### 今回の作業
+- client one-tick runtime から future repeated loop body をどう呼ぶかの最小範囲を整理した。
+- future repeated loop body が持つ動的入力と、one-tick runtime に委譲する 1 回分の bridge を追加した。
+- launcher ownership / one-tick runtime / repeated-loop body / shutdown responsibility の責務分離を docs に追記した。
+
+### 変更ファイル
+- `apps/client/src/lib.rs`
+- `docs/architecture/system-design.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### 実装したこと
+- `ClientHeartbeatLoopRepeatedRuntimeBodyInput`
+- `ClientHeartbeatLoopRepeatedRuntimeBodyResult`
+- `ClientHeartbeatLoopRepeatedRuntimeBodyBoundary`
+- launcher が repeated-loop handoff を作り、repeated body がその handoff と
+  dynamic per-step input から one-tick runtime を 1 回呼ぶ接続へ更新
+- repeated loop body wait path / stop path の単体テストを追加
+
+### 未実装 / 保留
+- completed continuous heartbeat loop
+- outer repeated loop controller / shutdown apply 本体
+- 実 sleep / timer / retry execution
+- reconnect / shutdown cleanup / log writer invocation
+
+### 次にやる候補
+- future repeated loop body から outer repeated loop controller / shutdown apply を呼ぶ最小範囲整理
+- heartbeat timeout notice wakeup 実行本体に進む前の境界整理
+- RTT / offset metrics snapshot export cadence / dashboard refresh 方針整理
+
+### TODO 更新
+- 現在位置に future repeated loop body の最小境界完了を反映した。
+- 直近でやることを outer repeated loop controller / shutdown apply の最小範囲整理へ更新した。
+- client / 検証タスクに repeated loop body 境界と関連単体テスト完了を追加した。
+
+### 検証
+- `cargo fmt`
+- `cargo test -p stream-sync-client client_heartbeat_loop_repeated_runtime_body`
+- `cargo test -p stream-sync-client client_heartbeat_one_tick_runtime_launcher`
+- `cargo fmt --check`
+- `cargo check --workspace`
+
+---
+
+## 2026-04-23
+### 担当
+- Codex
+
+### 今回の作業
 - client one-tick runtime の launcher / repeated-loop ownership 方針を整理した。
 - continuous heartbeat loop 本体へ進む前に、launcher が持つ責務と future repeated loop が持つ責務の境界を固定した。
 - docs に config load / socket ownership / one-tick runtime / future repeated loop / shutdown responsibility の責務分離を追記した。

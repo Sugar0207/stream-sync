@@ -2190,6 +2190,60 @@ impl ClientHeartbeatLoopRepeatedRuntimeHandoff {
     }
 }
 
+/// Dynamic inputs owned by a future repeated loop body for one iteration.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClientHeartbeatLoopRepeatedRuntimeBodyInput {
+    pub handoff: ClientHeartbeatLoopRepeatedRuntimeHandoff,
+    pub now: TimestampMicros,
+    pub stop_requested: bool,
+    pub retry_attempts_used: u32,
+}
+
+/// Result of one future repeated loop body delegation into the one-tick runtime.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClientHeartbeatLoopRepeatedRuntimeBodyResult {
+    pub handoff: ClientHeartbeatLoopRepeatedRuntimeHandoff,
+    pub one_tick_input: ClientHeartbeatLoopOneTickRuntimeInput,
+    pub runtime: ClientHeartbeatLoopOneTickRuntimeResult,
+    pub shutdown: ClientHeartbeatLoopShutdownDecision,
+}
+
+/// Boundary that shows how a future repeated loop body delegates one step.
+///
+/// This boundary owns only the one-iteration bridge from caller-owned loop
+/// state into `ClientHeartbeatLoopOneTickRuntimeBoundary`. It does not repeat,
+/// sleep, reconnect, execute shutdown, or decide process lifetime.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct ClientHeartbeatLoopRepeatedRuntimeBodyBoundary {
+    runtime: ClientHeartbeatLoopOneTickRuntimeBoundary,
+}
+
+impl ClientHeartbeatLoopRepeatedRuntimeBodyBoundary {
+    pub fn run_one(
+        &self,
+        socket: &UdpSocket,
+        counters: &mut ClientHeartbeatLoopCountersState,
+        input: ClientHeartbeatLoopRepeatedRuntimeBodyInput,
+    ) -> ClientHeartbeatLoopRepeatedRuntimeBodyResult {
+        let state = counters.as_policy_snapshot(input.stop_requested);
+        let one_tick_input =
+            input
+                .handoff
+                .build_one_tick_input(input.now, state, input.retry_attempts_used);
+        let runtime = self
+            .runtime
+            .run_one(socket, counters, one_tick_input.clone());
+        let shutdown = runtime.controller.shutdown;
+
+        ClientHeartbeatLoopRepeatedRuntimeBodyResult {
+            handoff: input.handoff,
+            one_tick_input,
+            runtime,
+            shutdown,
+        }
+    }
+}
+
 /// Inputs needed before the launcher can hand work to a future repeated loop.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ClientHeartbeatLoopLauncherOwnershipInput {
@@ -2274,7 +2328,7 @@ impl ClientHeartbeatLoopLauncherOwnershipBoundary {
 pub struct ClientHeartbeatOneTickRuntimeLauncher {
     encoder: ProtocolMessageEncoderBoundary,
     ownership: ClientHeartbeatLoopLauncherOwnershipBoundary,
-    runtime: ClientHeartbeatLoopOneTickRuntimeBoundary,
+    repeated_body: ClientHeartbeatLoopRepeatedRuntimeBodyBoundary,
 }
 
 impl ClientHeartbeatOneTickRuntimeLauncher {
@@ -2402,11 +2456,17 @@ impl ClientHeartbeatOneTickRuntimeLauncher {
         let mut counters = ClientHeartbeatLoopCountersState::default();
         let now = current_timestamp_micros();
         let policy_snapshot = counters.as_policy_snapshot(false);
-        let runtime = self.runtime.run_one(
+        let repeated_body = self.repeated_body.run_one(
             &socket,
             &mut counters,
-            repeated_loop_handoff.build_one_tick_input(now, policy_snapshot, 0),
+            ClientHeartbeatLoopRepeatedRuntimeBodyInput {
+                handoff: repeated_loop_handoff.clone(),
+                now,
+                stop_requested: policy_snapshot.stop_requested,
+                retry_attempts_used: 0,
+            },
         );
+        let runtime = repeated_body.runtime;
 
         if runtime.failure.is_some() {
             return Err(ClientHeartbeatOneTickRuntimeError::RuntimeFailed(runtime));
@@ -3540,6 +3600,112 @@ mod tests {
         assert_eq!(input.local_time, Some(TimestampMicros(10_000)));
         assert_eq!(input.short_status, Some("one-tick-runtime".to_string()));
         assert_eq!(input.retry_attempts_used, 2);
+    }
+
+    #[test]
+    fn client_heartbeat_loop_repeated_runtime_body_delegates_wait_path() {
+        let socket = UdpSocket::bind("127.0.0.1:0").expect("socket should bind");
+        let mut counters = ClientHeartbeatLoopCountersState {
+            last_heartbeat_sent_at: Some(TimestampMicros(10_000)),
+            ..ClientHeartbeatLoopCountersState::default()
+        };
+        let handoff = ClientHeartbeatLoopRepeatedRuntimeHandoff {
+            mode: ClientHeartbeatOneTickRuntimeMode::HeartbeatOnly,
+            destination: "127.0.0.1:5000".parse().unwrap(),
+            client_id: ClientId("client-1".to_string()),
+            run_id: RunId("run-1".to_string()),
+            protocol_version: ProtocolVersion(2),
+            cadence: ClientHeartbeatLoopCadenceInput {
+                heartbeat_interval_micros: 1_000,
+                ack_receive_timeout_micros: 500,
+                ack_observation_return: ClientHeartbeatAckObservationReturnMode::Disabled,
+            },
+            stop_condition: ClientHeartbeatLoopStopCondition::RunUntilStopped,
+            max_ack_socket_wait_micros: 500,
+            max_sleep_micros: 250,
+            retry_policy: ClientHeartbeatLoopRetryPolicy {
+                max_attempts: 3,
+                retry_delay_micros: 1_000,
+            },
+            local_time_enabled: true,
+            short_status: Some("one-tick-runtime".to_string()),
+        };
+
+        let result = ClientHeartbeatLoopRepeatedRuntimeBodyBoundary::default().run_one(
+            &socket,
+            &mut counters,
+            ClientHeartbeatLoopRepeatedRuntimeBodyInput {
+                handoff,
+                now: TimestampMicros(10_500),
+                stop_requested: false,
+                retry_attempts_used: 1,
+            },
+        );
+
+        assert_eq!(
+            result.one_tick_input.controller_now,
+            TimestampMicros(10_500)
+        );
+        assert_eq!(result.one_tick_input.retry_attempts_used, 1);
+        assert_eq!(result.one_tick_input.body.policy.state.sent_heartbeats, 0);
+        assert_eq!(
+            result.runtime.controller.action,
+            ClientHeartbeatLoopControllerAction::Sleep
+        );
+        assert_eq!(
+            result.shutdown,
+            ClientHeartbeatLoopShutdownDecision::Continue
+        );
+    }
+
+    #[test]
+    fn client_heartbeat_loop_repeated_runtime_body_returns_stop_without_executing_shutdown() {
+        let socket = UdpSocket::bind("127.0.0.1:0").expect("socket should bind");
+        let mut counters = ClientHeartbeatLoopCountersState::default();
+        let handoff = ClientHeartbeatLoopRepeatedRuntimeHandoff {
+            mode: ClientHeartbeatOneTickRuntimeMode::HeartbeatOnly,
+            destination: "127.0.0.1:5000".parse().unwrap(),
+            client_id: ClientId("client-1".to_string()),
+            run_id: RunId("run-1".to_string()),
+            protocol_version: ProtocolVersion(2),
+            cadence: ClientHeartbeatLoopCadenceInput {
+                heartbeat_interval_micros: 1_000,
+                ack_receive_timeout_micros: 500,
+                ack_observation_return: ClientHeartbeatAckObservationReturnMode::Disabled,
+            },
+            stop_condition: ClientHeartbeatLoopStopCondition::RunUntilStopped,
+            max_ack_socket_wait_micros: 500,
+            max_sleep_micros: 250,
+            retry_policy: ClientHeartbeatLoopRetryPolicy {
+                max_attempts: 3,
+                retry_delay_micros: 1_000,
+            },
+            local_time_enabled: true,
+            short_status: Some("one-tick-runtime".to_string()),
+        };
+
+        let result = ClientHeartbeatLoopRepeatedRuntimeBodyBoundary::default().run_one(
+            &socket,
+            &mut counters,
+            ClientHeartbeatLoopRepeatedRuntimeBodyInput {
+                handoff,
+                now: TimestampMicros(10_500),
+                stop_requested: true,
+                retry_attempts_used: 0,
+            },
+        );
+
+        assert_eq!(
+            result.runtime.controller.action,
+            ClientHeartbeatLoopControllerAction::Stop
+        );
+        assert_eq!(
+            result.shutdown,
+            ClientHeartbeatLoopShutdownDecision::Stop {
+                reason: ClientHeartbeatLoopPolicyReason::StopRequested
+            }
+        );
+        assert_eq!(result.runtime.heartbeat_send, None);
     }
 
     #[test]

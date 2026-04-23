@@ -3851,6 +3851,60 @@ Responsibility split:
   - Future repeated loop will decide whether to stop the process/worker,
     flush logs, and clean up resources.
 
+### Client Repeated Loop Body Minimal Scope
+
+Before implementing the completed continuous heartbeat loop, the future
+repeated loop body is fixed as one narrow bridge that delegates exactly one
+step to the existing one-tick runtime.
+
+Current minimal scope:
+
+1. `ClientHeartbeatLoopRepeatedRuntimeBodyBoundary` receives:
+   - caller-owned `UdpSocket`
+   - caller-owned `ClientHeartbeatLoopCountersState`
+   - `ClientHeartbeatLoopRepeatedRuntimeBodyInput`
+2. `ClientHeartbeatLoopRepeatedRuntimeBodyInput` carries only dynamic per-step
+   values that the launcher does not own:
+   - `now`
+   - `stop_requested`
+   - `retry_attempts_used`
+   - previously prepared `ClientHeartbeatLoopRepeatedRuntimeHandoff`
+3. The body snapshots counters through
+   `ClientHeartbeatLoopCountersState::as_policy_snapshot(stop_requested)`.
+4. It calls `ClientHeartbeatLoopRepeatedRuntimeHandoff::build_one_tick_input`
+   once.
+5. It delegates that one input to
+   `ClientHeartbeatLoopOneTickRuntimeBoundary::run_one`.
+6. It returns `ClientHeartbeatLoopRepeatedRuntimeBodyResult` containing:
+   - the repeated-loop handoff
+   - the exact one-tick input used for the call
+   - the one-tick runtime result
+   - the returned shutdown decision
+
+Responsibility split:
+
+- launcher ownership
+  - Produces static repeated-loop handoff after accepted auth/bootstrap.
+  - Does not own per-iteration `now`, stop flags, or retry-attempt counters.
+- repeated-loop body
+  - Owns only one-iteration bridging from dynamic loop state to one-tick
+    runtime input.
+  - Does not repeat, sleep, reconnect, mutate process lifetime, or execute
+    shutdown.
+- one-tick runtime
+  - Owns the existing body/controller/send/ack/stats/counters/retry sequence.
+- shutdown responsibility
+  - Repeated-loop body returns `ClientHeartbeatLoopShutdownDecision` unchanged.
+  - A future outer repeated loop will decide whether to stop iteration, flush
+    logs, close sockets, or exit a worker/process.
+
+Current code reflects this with
+`ClientHeartbeatLoopRepeatedRuntimeBodyInput`,
+`ClientHeartbeatLoopRepeatedRuntimeBodyResult`, and
+`ClientHeartbeatLoopRepeatedRuntimeBodyBoundary`. The completed continuous
+heartbeat loop, timer execution, repeated retry execution, reconnect, and
+shutdown cleanup remain future work.
+
 ### Heartbeat Client Ack Observation Flow
 
 The client ack observation flow returns the missing `client_received_at`
