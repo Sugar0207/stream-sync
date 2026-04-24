@@ -2412,6 +2412,146 @@ impl ServerVideoFrameHandlerBoundary {
     }
 }
 
+/// Per-client storage policy for the first single-view video PoC queue.
+///
+/// The default keeps a tiny live-video queue. When a client's queue is full,
+/// the oldest frame is dropped before storing the newest one because stale
+/// frames are less useful for a live single-view PoC.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct ServerVideoFrameQueuePolicy {
+    pub max_frames_per_client: usize,
+}
+
+impl Default for ServerVideoFrameQueuePolicy {
+    fn default() -> Self {
+        Self {
+            max_frames_per_client: 8,
+        }
+    }
+}
+
+/// One accepted video frame stored for later sync/display handoff.
+///
+/// This is still encoded frame data. The queue does not decode H.264, select a
+/// target time, or render anything.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ServerQueuedVideoFrame {
+    pub source: PacketSource,
+    pub authenticated_sender: AuthenticatedSenderEntry,
+    pub frame: VideoFrame,
+    pub payload_len: usize,
+    pub queued_at: TimestampMicros,
+}
+
+/// Caller-owned per-client frame queue state for the first video PoC slice.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ServerVideoFrameQueueState {
+    frames_by_client_id: BTreeMap<String, VecDeque<ServerQueuedVideoFrame>>,
+}
+
+impl ServerVideoFrameQueueState {
+    pub fn client_queue_len(&self, client_id: &ClientId) -> usize {
+        self.frames_by_client_id
+            .get(&client_id.0)
+            .map(VecDeque::len)
+            .unwrap_or(0)
+    }
+
+    pub fn total_len(&self) -> usize {
+        self.frames_by_client_id.values().map(VecDeque::len).sum()
+    }
+
+    pub fn frames_for_client(
+        &self,
+        client_id: &ClientId,
+    ) -> impl Iterator<Item = &ServerQueuedVideoFrame> {
+        self.frames_by_client_id
+            .get(&client_id.0)
+            .into_iter()
+            .flat_map(|frames| frames.iter())
+    }
+
+    pub fn pop_front(&mut self, client_id: &ClientId) -> Option<ServerQueuedVideoFrame> {
+        let queue = self.frames_by_client_id.get_mut(&client_id.0)?;
+        let frame = queue.pop_front();
+        if queue.is_empty() {
+            self.frames_by_client_id.remove(&client_id.0);
+        }
+        frame
+    }
+}
+
+/// Reason a video frame was not stored.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ServerVideoFrameQueueDropReason {
+    CapacityZero,
+}
+
+/// Result of storing one accepted video frame into caller-owned queue state.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ServerVideoFrameQueueStorageResult {
+    Stored {
+        queued: ServerQueuedVideoFrame,
+        previous_client_queue_len: usize,
+        current_client_queue_len: usize,
+        dropped_oldest: Option<ServerQueuedVideoFrame>,
+    },
+    Dropped {
+        input: ServerVideoFrameHandlerInput,
+        reason: ServerVideoFrameQueueDropReason,
+    },
+}
+
+/// Boundary that stores accepted video frames for the first single-view PoC.
+///
+/// This boundary consumes the existing authenticated video handler input and
+/// mutates caller-owned queue state. It does not authenticate packets, decode
+/// H.264, run sync scheduling, choose display frames, notify switcher, render
+/// UI, send UDP, or touch OBS.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct ServerVideoFrameQueueStorageBoundary;
+
+impl ServerVideoFrameQueueStorageBoundary {
+    pub fn store_frame(
+        &self,
+        state: &mut ServerVideoFrameQueueState,
+        input: ServerVideoFrameHandlerInput,
+        queued_at: TimestampMicros,
+        policy: ServerVideoFrameQueuePolicy,
+    ) -> ServerVideoFrameQueueStorageResult {
+        if policy.max_frames_per_client == 0 {
+            return ServerVideoFrameQueueStorageResult::Dropped {
+                input,
+                reason: ServerVideoFrameQueueDropReason::CapacityZero,
+            };
+        }
+
+        let client_id = input.registered_packet.frame.client_id.0.clone();
+        let queue = state.frames_by_client_id.entry(client_id).or_default();
+        let previous_client_queue_len = queue.len();
+        let dropped_oldest = if queue.len() >= policy.max_frames_per_client {
+            queue.pop_front()
+        } else {
+            None
+        };
+        let queued = ServerQueuedVideoFrame {
+            source: input.registered_packet.source,
+            authenticated_sender: input.registered_packet.authenticated_sender,
+            frame: input.registered_packet.frame,
+            payload_len: input.payload_len,
+            queued_at,
+        };
+        queue.push_back(queued.clone());
+
+        ServerVideoFrameQueueStorageResult::Stored {
+            queued,
+            previous_client_queue_len,
+            current_client_queue_len: queue.len(),
+            dropped_oldest,
+        }
+    }
+}
+
 /// Result of running the minimal video / stats handler runtime.
 ///
 /// This connects future video and stats lanes to typed handler inputs only.
@@ -10009,6 +10149,136 @@ shared_token = "secret"
     }
 
     #[test]
+    fn video_frame_queue_storage_stores_accepted_frame_per_client() {
+        let source = packet_source();
+        let input = video_handler_input("client-1", source);
+        let mut state = ServerVideoFrameQueueState::default();
+
+        let result = ServerVideoFrameQueueStorageBoundary.store_frame(
+            &mut state,
+            input,
+            TimestampMicros(2_500_000),
+            ServerVideoFrameQueuePolicy::default(),
+        );
+
+        let ServerVideoFrameQueueStorageResult::Stored {
+            queued,
+            previous_client_queue_len,
+            current_client_queue_len,
+            dropped_oldest,
+        } = result
+        else {
+            panic!("accepted video frame should be stored");
+        };
+        assert_eq!(previous_client_queue_len, 0);
+        assert_eq!(current_client_queue_len, 1);
+        assert_eq!(dropped_oldest, None);
+        assert_eq!(queued.frame.client_id, ClientId("client-1".to_string()));
+        assert_eq!(queued.frame.frame_id, 42);
+        assert_eq!(queued.payload_len, 3);
+        assert_eq!(queued.queued_at, TimestampMicros(2_500_000));
+        assert_eq!(state.total_len(), 1);
+        assert_eq!(state.client_queue_len(&ClientId("client-1".to_string())), 1);
+    }
+
+    #[test]
+    fn video_frame_queue_storage_keeps_state_caller_owned() {
+        let source = packet_source();
+        let input = video_handler_input("client-1", source);
+        let mut state = ServerVideoFrameQueueState::default();
+
+        let _result = ServerVideoFrameQueueStorageBoundary.store_frame(
+            &mut state,
+            input,
+            TimestampMicros(2_600_000),
+            ServerVideoFrameQueuePolicy::default(),
+        );
+
+        let queued = state
+            .pop_front(&ClientId("client-1".to_string()))
+            .expect("caller-owned queue should hold the frame");
+        assert_eq!(queued.frame.frame_id, 42);
+        assert_eq!(state.total_len(), 0);
+    }
+
+    #[test]
+    fn video_frame_queue_storage_drops_oldest_when_client_queue_is_full() {
+        let source = packet_source();
+        let mut first = video_handler_input("client-1", source);
+        first.registered_packet.frame.frame_id = 1;
+        let mut second = video_handler_input("client-1", source);
+        second.registered_packet.frame.frame_id = 2;
+        let mut state = ServerVideoFrameQueueState::default();
+        let policy = ServerVideoFrameQueuePolicy {
+            max_frames_per_client: 1,
+        };
+
+        let first_result = ServerVideoFrameQueueStorageBoundary.store_frame(
+            &mut state,
+            first,
+            TimestampMicros(2_700_000),
+            policy,
+        );
+        assert!(matches!(
+            first_result,
+            ServerVideoFrameQueueStorageResult::Stored { .. }
+        ));
+        let second_result = ServerVideoFrameQueueStorageBoundary.store_frame(
+            &mut state,
+            second,
+            TimestampMicros(2_700_100),
+            policy,
+        );
+
+        let ServerVideoFrameQueueStorageResult::Stored {
+            current_client_queue_len,
+            dropped_oldest,
+            ..
+        } = second_result
+        else {
+            panic!("newest frame should be stored after dropping oldest");
+        };
+        assert_eq!(current_client_queue_len, 1);
+        assert_eq!(
+            dropped_oldest
+                .expect("oldest frame should be dropped")
+                .frame
+                .frame_id,
+            1
+        );
+        let remaining: Vec<u64> = state
+            .frames_for_client(&ClientId("client-1".to_string()))
+            .map(|frame| frame.frame.frame_id)
+            .collect();
+        assert_eq!(remaining, vec![2]);
+    }
+
+    #[test]
+    fn video_frame_queue_storage_keeps_display_execution_deferred() {
+        let source = packet_source();
+        let input = video_handler_input("client-1", source);
+        let mut state = ServerVideoFrameQueueState::default();
+
+        let result = ServerVideoFrameQueueStorageBoundary.store_frame(
+            &mut state,
+            input,
+            TimestampMicros(2_800_000),
+            ServerVideoFrameQueuePolicy {
+                max_frames_per_client: 0,
+            },
+        );
+
+        assert!(matches!(
+            result,
+            ServerVideoFrameQueueStorageResult::Dropped {
+                reason: ServerVideoFrameQueueDropReason::CapacityZero,
+                ..
+            }
+        ));
+        assert_eq!(state.total_len(), 0);
+    }
+
+    #[test]
     fn video_stats_handler_runtime_prepares_stats_input_without_commit() {
         let source = packet_source();
         let registry = registry_with_client("client-1", source);
@@ -15570,6 +15840,17 @@ shared_token = "secret"
                 payload: vec![0xaa, 0xbb, 0xcc],
             },
         }
+    }
+
+    fn video_handler_input(client_id: &str, source: PacketSource) -> ServerVideoFrameHandlerInput {
+        let registry = registry_with_client(client_id, source);
+        let registered = ServerRegisteredPacketBoundary::default()
+            .prepare_for_handler(&registry, video_frame_route(client_id, source))
+            .expect("video frame should be accepted");
+        let ServerRegisteredClientPacket::VideoFrame(packet) = registered else {
+            panic!("expected registered video frame packet");
+        };
+        ServerVideoFrameHandlerBoundary.prepare_input(packet)
     }
 
     fn client_stats_route(client_id: &str, source: PacketSource) -> ServerInboundRoute {

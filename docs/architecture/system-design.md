@@ -2596,6 +2596,55 @@ Current code reflects this with
 `ServerHeartbeatTimeoutMultiClientLoopResult`, and
 `ServerHeartbeatTimeoutMultiClientLoopBoundary`.
 
+### Single-View Video PoC: Server Frame Queue Storage
+
+The first video-path PoC slice is intentionally server-side and narrow. The
+existing receive/router/authentication path can already produce an accepted
+`ServerVideoFrameHandlerInput`. The new boundary stores that accepted encoded
+frame into caller-owned per-client queue state so later steps can wire client
+UDP send and switcher display without changing authentication or protocol
+boundaries.
+
+Current implementation scope:
+
+1. `ServerRegisteredPacketBoundary` still owns authenticated sender lookup for
+   `VideoFrame`.
+2. `ServerVideoFrameHandlerBoundary` still converts the accepted registered
+   packet into `ServerVideoFrameHandlerInput` and records payload length.
+3. `ServerVideoFrameQueueStorageBoundary::store_frame` stores that handler
+   input into caller-owned `ServerVideoFrameQueueState`.
+4. The queue is keyed by `ClientId` and stores encoded `VideoFrame` payloads
+   as `ServerQueuedVideoFrame`.
+5. `ServerVideoFrameQueuePolicy` controls per-client queue capacity. The
+   initial live-video policy drops the oldest frame when a client's queue is
+   full, then stores the newest frame.
+
+Responsibility split:
+
+- protocol
+  - Owns `VideoFrame` payload encode/decode and does not inspect H.264 content.
+- net-core / receive route
+  - Owns packet decode handoff and source metadata preservation.
+- authenticated sender registry
+  - Owns accept/drop decision before a frame can be queued.
+- video handler input boundary
+  - Preserves accepted packet metadata and payload length only.
+- video frame queue storage
+  - Mutates caller-owned encoded-frame queue state.
+  - Does not decode H.264, select target time, sync multiple clients, notify a
+    switcher, render UI, send UDP, or touch OBS.
+- future continuous server loop owner
+  - Will decide when to call queue storage from receive-loop side effects and
+    how to hand queued frames to switcher/sync code.
+
+Deferred work:
+
+- client-side capture placeholder or frame source
+- client-side `VideoFrame` metadata construction and UDP send
+- server receive-loop-to-queue runtime wiring
+- H.264 decode and single-view display placeholder
+- 2-view / 4-view sync, switcher UI, and OBS integration
+
 ### Heartbeat Timeout Notice Queue Storage / Send Wakeup
 
 Timeout notice queue storage is the narrow boundary after timeout apply. It is

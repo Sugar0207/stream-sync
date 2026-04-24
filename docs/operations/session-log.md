@@ -8938,3 +8938,43 @@
 - Marked server heartbeat timeout multi-client loop body complete.
 - Current focus updated with the completed multi-client timeout loop boundary.
 - Next items reduced to later video/switcher/OBS integration.
+
+---
+
+## 2026-04-24
+### Type
+- Codex
+
+### Work
+- Audited the current video path and chose the smallest safe first single-view PoC slice.
+- Added server-side `VideoFrame` queue storage after the existing authenticated video handler input.
+- Added caller-owned per-client encoded-frame queue state and a small live-video capacity policy that drops the oldest frame when full.
+- Kept authentication, protocol decode/encode, frame queue storage, H.264 decode, display, switcher, and OBS responsibilities separate.
+
+### Changed Files
+- `apps/server/src/lib.rs`
+- `docs/architecture/system-design.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### Decisions
+- The first video PoC implementation slice is server-side queue storage, not client capture/encode or switcher display.
+- The queue stores encoded `VideoFrame` data and metadata only; it does not decode H.264 or choose display frames.
+- Queue state remains caller-owned so the future continuous receive/send loop can decide when to store and drain frames.
+- Full switcher UI, OBS integration, 2-view/4-view sync, and dashboard UI remain out of scope.
+
+### Unresolved
+- client-side `VideoFrame` metadata construction / placeholder H.264 payload / UDP send
+- receive-loop-to-video-queue runtime wiring
+- single-view decode/display placeholder
+- real H.264 capture/encode/decode
+- 4-view sync and OBS integration
+
+### Next
+- Add client-side `VideoFrame` metadata / placeholder payload / UDP send boundary.
+- Connect accepted server video handler side effect to queue storage in the future receive-loop owner.
+- Add a switcher-side single-view decode/display placeholder later.
+
+### TODO Update
+- Marked server authenticated frame acceptance and per-client receive queue tasks complete.
+- Updated Current Focus and Next Items to the next one-client video PoC steps.
