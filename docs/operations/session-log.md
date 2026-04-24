@@ -9020,3 +9020,44 @@
 - Marked explicit placeholder encoded H.264 payload source complete.
 - Marked client-side `VideoFrame` UDP send complete for the placeholder-payload PoC.
 - Reordered Next Items around server receive-loop-to-queue wiring, switcher placeholder display, and later real capture/encode.
+
+---
+
+## 2026-04-24
+### Type
+- Codex
+
+### Work
+- Added server-side runtime wiring from accepted `VideoFrame` receive side effects into caller-owned video frame queue storage.
+- Added an explicit queue runtime result for queued frames versus not-queued paths.
+- Surfaced rejected / unauthenticated `VideoFrame` packets as not queued instead of letting them reach storage.
+- Preserved queue storage policy behavior, including drop-oldest when a per-client queue is full.
+- Kept H.264 decode, sync scheduling, switcher display, 4-view sync, and OBS out of scope.
+
+### Changed Files
+- `apps/server/src/lib.rs`
+- `docs/architecture/system-design.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### Decisions
+- The queue runtime consumes `ServerDispatchRuntimeSideEffectApplyOutcome` rather than changing packet acceptance or registered handler boundaries.
+- `ServerVideoFrameQueueState` remains caller-owned.
+- `ServerVideoFrameQueueStorageBoundary` remains the only mutating storage boundary.
+- Rejected / unauthenticated video packets are reported as skipped runtime results and do not enter the queue.
+
+### Unresolved
+- switcher single-view decode/display placeholder
+- real screen capture / real H.264 encode
+- optional video send CLI/config launcher
+- 2-view / 4-view sync and OBS integration
+
+### Next
+- Add switcher-side single-view decode/display placeholder.
+- Decide whether a video send CLI/config launcher is needed for manual PoC runs.
+- Later replace the placeholder encoded payload source with a real capture/encode boundary.
+
+### TODO Update
+- Marked the server one-view receive / accept-drop / queue PoC line complete.
+- Updated Current Focus to say receive-side runtime wiring now stores accepted `VideoFrame` side effects in caller-owned queues.
+- Reordered Next Items around switcher display placeholder, real capture/encode, and optional video launcher work.

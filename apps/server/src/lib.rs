@@ -2552,6 +2552,81 @@ impl ServerVideoFrameQueueStorageBoundary {
     }
 }
 
+/// Reason the video queue runtime did not store a frame.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ServerVideoFrameQueueRuntimeSkipReason {
+    RejectedVideoFrame(ServerReceiveLoopGateRejection),
+    NoAcceptedVideoFrame,
+}
+
+/// Result of applying video queue storage after dispatch side effects.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ServerVideoFrameQueueRuntimeResult {
+    Queued(ServerVideoFrameQueueStorageResult),
+    NotQueued {
+        reason: ServerVideoFrameQueueRuntimeSkipReason,
+        side_effect: ServerDispatchRuntimeSideEffectApplyResult,
+    },
+}
+
+/// Runtime boundary from accepted video side effect to caller-owned queue state.
+///
+/// This is the narrow receive-loop wiring for the first single-view PoC. It
+/// stores only authenticated `VideoFrame` handler inputs into the existing
+/// encoded-frame queue. It does not decode H.264, schedule sync, display
+/// frames, notify a switcher, write logs, send UDP, or touch OBS.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct ServerVideoFrameQueueRuntimeBoundary {
+    storage: ServerVideoFrameQueueStorageBoundary,
+}
+
+impl ServerVideoFrameQueueRuntimeBoundary {
+    pub fn store_from_receive_side_effect(
+        &self,
+        state: &mut ServerVideoFrameQueueState,
+        body: &ServerContinuousReceiveLoopBodyResult,
+        side_effect: ServerDispatchRuntimeSideEffectApplyOutcome,
+        queued_at: TimestampMicros,
+        policy: ServerVideoFrameQueuePolicy,
+    ) -> ServerVideoFrameQueueRuntimeResult {
+        match side_effect.result {
+            ServerDispatchRuntimeSideEffectApplyResult::VideoFrame(input) => {
+                ServerVideoFrameQueueRuntimeResult::Queued(
+                    self.storage.store_frame(state, input, queued_at, policy),
+                )
+            }
+            other => {
+                let reason = rejected_video_frame_from_body(body)
+                    .map(ServerVideoFrameQueueRuntimeSkipReason::RejectedVideoFrame)
+                    .unwrap_or(ServerVideoFrameQueueRuntimeSkipReason::NoAcceptedVideoFrame);
+                ServerVideoFrameQueueRuntimeResult::NotQueued {
+                    reason,
+                    side_effect: other,
+                }
+            }
+        }
+    }
+}
+
+fn rejected_video_frame_from_body(
+    body: &ServerContinuousReceiveLoopBodyResult,
+) -> Option<ServerReceiveLoopGateRejection> {
+    let ServerContinuousReceiveLoopOneTickRuntimeOutcome::Completed { handler, .. } =
+        &body.tick.outcome
+    else {
+        return None;
+    };
+    let rejection = handler.writer.handoff.rejection_log.as_ref()?;
+    match rejection {
+        ServerReceiveLoopGateRejection::Acceptance(packet)
+            if packet.message_type == MessageType::VideoFrame =>
+        {
+            Some(rejection.clone())
+        }
+        _ => None,
+    }
+}
+
 /// Result of running the minimal video / stats handler runtime.
 ///
 /// This connects future video and stats lanes to typed handler inputs only.
@@ -10279,6 +10354,186 @@ shared_token = "secret"
     }
 
     #[test]
+    fn video_frame_queue_runtime_stores_authenticated_frame_in_client_queue() {
+        let source = packet_source();
+        let registry = registry_with_client("client-1", source);
+        let registered = ServerRegisteredPacketBoundary::default()
+            .prepare_for_handler(&registry, video_frame_route("client-1", source))
+            .expect("video frame should be accepted");
+        let body = body_result_with_handler_handoff(
+            128,
+            ServerContinuousReceiveLoopHandlerHandoffRuntimePlan::RegisteredClient(registered),
+        );
+        let dispatch = ServerContinuousReceiveLoopBodyDispatchRuntimeBoundary::default()
+            .dispatch_body_result(&body, &auth_config(None), body_dispatch_timing());
+        let side_effect = ServerDispatchRuntimeSideEffectApplyBoundary::default()
+            .apply_body_dispatch_outcome(&mut AuthenticatedSenderRegistry::default(), dispatch);
+        let mut state = ServerVideoFrameQueueState::default();
+
+        let result = ServerVideoFrameQueueRuntimeBoundary::default()
+            .store_from_receive_side_effect(
+                &mut state,
+                &body,
+                side_effect,
+                TimestampMicros(2_900_000),
+                ServerVideoFrameQueuePolicy::default(),
+            );
+
+        let ServerVideoFrameQueueRuntimeResult::Queued(
+            ServerVideoFrameQueueStorageResult::Stored {
+                queued,
+                previous_client_queue_len,
+                current_client_queue_len,
+                dropped_oldest,
+            },
+        ) = result
+        else {
+            panic!("authenticated video frame should be queued");
+        };
+        assert_eq!(queued.frame.client_id, ClientId("client-1".to_string()));
+        assert_eq!(queued.frame.frame_id, 42);
+        assert_eq!(queued.payload_len, 3);
+        assert_eq!(previous_client_queue_len, 0);
+        assert_eq!(current_client_queue_len, 1);
+        assert_eq!(dropped_oldest, None);
+        assert_eq!(state.client_queue_len(&ClientId("client-1".to_string())), 1);
+    }
+
+    #[test]
+    fn video_frame_queue_runtime_does_not_store_rejected_video_frame() {
+        let source = packet_source();
+        let rejection = ServerReceiveLoopGateRejection::Acceptance(PacketAcceptanceRejection {
+            source,
+            message_type: MessageType::VideoFrame,
+            client_id: Some(ClientId("client-1".to_string())),
+            reason: PacketAcceptanceRejectReason::UnauthenticatedSource,
+        });
+        let body = body_result_with_gate_rejection(128, rejection.clone());
+        let dispatch = ServerContinuousReceiveLoopBodyDispatchRuntimeBoundary::default()
+            .dispatch_body_result(&body, &auth_config(None), body_dispatch_timing());
+        let side_effect = ServerDispatchRuntimeSideEffectApplyBoundary::default()
+            .apply_body_dispatch_outcome(&mut AuthenticatedSenderRegistry::default(), dispatch);
+        let mut state = ServerVideoFrameQueueState::default();
+
+        let result = ServerVideoFrameQueueRuntimeBoundary::default()
+            .store_from_receive_side_effect(
+                &mut state,
+                &body,
+                side_effect,
+                TimestampMicros(2_900_100),
+                ServerVideoFrameQueuePolicy::default(),
+            );
+
+        assert_eq!(state.total_len(), 0);
+        let ServerVideoFrameQueueRuntimeResult::NotQueued {
+            reason: ServerVideoFrameQueueRuntimeSkipReason::RejectedVideoFrame(actual_rejection),
+            side_effect,
+        } = result
+        else {
+            panic!("rejected video frame should be reported as not queued");
+        };
+        assert_eq!(actual_rejection, rejection);
+        assert!(matches!(
+            side_effect,
+            ServerDispatchRuntimeSideEffectApplyResult::NoDispatch(ServerHandlerDispatchOutcome {
+                result: ServerHandlerDispatchResult::NotRequired(
+                    ServerContinuousReceiveLoopHandlerDispatchSkipReason::RejectedOutcome
+                ),
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn video_frame_queue_runtime_surfaces_drop_oldest_storage_result() {
+        let source = packet_source();
+        let mut state = ServerVideoFrameQueueState::default();
+        let policy = ServerVideoFrameQueuePolicy {
+            max_frames_per_client: 1,
+        };
+        let first = video_frame_queue_runtime_body_for_frame("client-1", source, 1);
+        let first_side_effect = video_frame_side_effect_from_body(&first);
+        let first_result = ServerVideoFrameQueueRuntimeBoundary::default()
+            .store_from_receive_side_effect(
+                &mut state,
+                &first,
+                first_side_effect,
+                TimestampMicros(2_900_200),
+                policy,
+            );
+        assert!(matches!(
+            first_result,
+            ServerVideoFrameQueueRuntimeResult::Queued(
+                ServerVideoFrameQueueStorageResult::Stored { .. }
+            )
+        ));
+
+        let second = video_frame_queue_runtime_body_for_frame("client-1", source, 2);
+        let second_side_effect = video_frame_side_effect_from_body(&second);
+        let second_result = ServerVideoFrameQueueRuntimeBoundary::default()
+            .store_from_receive_side_effect(
+                &mut state,
+                &second,
+                second_side_effect,
+                TimestampMicros(2_900_300),
+                policy,
+            );
+
+        let ServerVideoFrameQueueRuntimeResult::Queued(
+            ServerVideoFrameQueueStorageResult::Stored {
+                current_client_queue_len,
+                dropped_oldest,
+                queued,
+                ..
+            },
+        ) = second_result
+        else {
+            panic!("second frame should be queued after dropping oldest");
+        };
+        assert_eq!(current_client_queue_len, 1);
+        assert_eq!(queued.frame.frame_id, 2);
+        assert_eq!(
+            dropped_oldest
+                .expect("oldest should be surfaced")
+                .frame
+                .frame_id,
+            1
+        );
+        let remaining: Vec<u64> = state
+            .frames_for_client(&ClientId("client-1".to_string()))
+            .map(|frame| frame.frame.frame_id)
+            .collect();
+        assert_eq!(remaining, vec![2]);
+    }
+
+    #[test]
+    fn video_frame_queue_runtime_keeps_decode_and_display_deferred() {
+        let source = packet_source();
+        let body = video_frame_queue_runtime_body_for_frame("client-1", source, 42);
+        let side_effect = video_frame_side_effect_from_body(&body);
+        let mut state = ServerVideoFrameQueueState::default();
+
+        let result = ServerVideoFrameQueueRuntimeBoundary::default()
+            .store_from_receive_side_effect(
+                &mut state,
+                &body,
+                side_effect,
+                TimestampMicros(2_900_400),
+                ServerVideoFrameQueuePolicy::default(),
+            );
+
+        let ServerVideoFrameQueueRuntimeResult::Queued(
+            ServerVideoFrameQueueStorageResult::Stored { queued, .. },
+        ) = result
+        else {
+            panic!("video frame should be queued");
+        };
+        assert_eq!(queued.frame.payload, vec![0xaa, 0xbb, 0xcc]);
+        assert_eq!(queued.payload_len, queued.frame.payload.len());
+        assert_eq!(state.total_len(), 1);
+    }
+
+    #[test]
     fn video_stats_handler_runtime_prepares_stats_input_without_commit() {
         let source = packet_source();
         let registry = registry_with_client("client-1", source);
@@ -15795,6 +16050,78 @@ shared_token = "secret"
                 },
             },
         }
+    }
+
+    fn body_result_with_gate_rejection(
+        packet_len: usize,
+        rejection: ServerReceiveLoopGateRejection,
+    ) -> ServerContinuousReceiveLoopBodyResult {
+        let lifecycle = ServerContinuousReceiveLoopLifecyclePlan {
+            state: ServerContinuousReceiveLoopLifecycleState::PreparingRejectionLogs,
+            action: ServerContinuousReceiveLoopAction::PrepareRejectionLogs,
+            operational_log_required: false,
+            rejection_log_required: true,
+            handler_handoff_required: false,
+        };
+        let tick = ServerContinuousReceiveLoopTickPlan {
+            state: ServerContinuousReceiveLoopTickState::RejectionReadyForLogs,
+            lifecycle,
+            packet_len: Some(packet_len),
+        };
+        let writer = ServerContinuousReceiveLoopWriterRuntimeResult {
+            handoff: ServerContinuousReceiveLoopWriterHandoffPlan {
+                handler_handoff_required: false,
+                tick,
+                operational_log: None,
+                rejection_log: Some(rejection),
+            },
+            operational_event: None,
+            rejection_event: None,
+        };
+
+        ServerContinuousReceiveLoopBodyResult {
+            action: ServerContinuousReceiveLoopBodyAction::ExecuteOneTick,
+            tick: ServerContinuousReceiveLoopOneTickRuntimeResult {
+                start_tick: tick,
+                outcome: ServerContinuousReceiveLoopOneTickRuntimeOutcome::Completed {
+                    packet_len,
+                    handler: ServerContinuousReceiveLoopHandlerHandoffRuntimeResult {
+                        writer,
+                        handler: ServerContinuousReceiveLoopHandlerHandoffRuntimePlan::NotRequired(
+                            ServerContinuousReceiveLoopHandlerHandoffSkipReason::RejectedOutcome,
+                        ),
+                    },
+                },
+            },
+        }
+    }
+
+    fn video_frame_queue_runtime_body_for_frame(
+        client_id: &str,
+        source: PacketSource,
+        frame_id: u64,
+    ) -> ServerContinuousReceiveLoopBodyResult {
+        let registry = registry_with_client(client_id, source);
+        let mut route = video_frame_route(client_id, source);
+        if let ServerInboundRoute::VideoFrame { frame, .. } = &mut route {
+            frame.frame_id = frame_id;
+        }
+        let registered = ServerRegisteredPacketBoundary::default()
+            .prepare_for_handler(&registry, route)
+            .expect("video frame should be accepted");
+        body_result_with_handler_handoff(
+            128,
+            ServerContinuousReceiveLoopHandlerHandoffRuntimePlan::RegisteredClient(registered),
+        )
+    }
+
+    fn video_frame_side_effect_from_body(
+        body: &ServerContinuousReceiveLoopBodyResult,
+    ) -> ServerDispatchRuntimeSideEffectApplyOutcome {
+        let dispatch = ServerContinuousReceiveLoopBodyDispatchRuntimeBoundary::default()
+            .dispatch_body_result(body, &auth_config(None), body_dispatch_timing());
+        ServerDispatchRuntimeSideEffectApplyBoundary::default()
+            .apply_body_dispatch_outcome(&mut AuthenticatedSenderRegistry::default(), dispatch)
     }
 
     fn body_dispatch_timing() -> ServerHeartbeatAckTiming {

@@ -2668,11 +2668,16 @@ Current implementation scope:
    `VideoFrame`.
 2. `ServerVideoFrameHandlerBoundary` still converts the accepted registered
    packet into `ServerVideoFrameHandlerInput` and records payload length.
-3. `ServerVideoFrameQueueStorageBoundary::store_frame` stores that handler
-   input into caller-owned `ServerVideoFrameQueueState`.
-4. The queue is keyed by `ClientId` and stores encoded `VideoFrame` payloads
+3. `ServerDispatchRuntimeSideEffectApplyBoundary` preserves accepted video as
+   `ServerDispatchRuntimeSideEffectApplyResult::VideoFrame`.
+4. `ServerVideoFrameQueueRuntimeBoundary::store_from_receive_side_effect`
+   connects that accepted receive side effect to
+   `ServerVideoFrameQueueStorageBoundary::store_frame`.
+5. Rejected / unauthenticated `VideoFrame` packets remain not queued and are
+   surfaced as `ServerVideoFrameQueueRuntimeSkipReason::RejectedVideoFrame`.
+6. The queue is keyed by `ClientId` and stores encoded `VideoFrame` payloads
    as `ServerQueuedVideoFrame`.
-5. `ServerVideoFrameQueuePolicy` controls per-client queue capacity. The
+7. `ServerVideoFrameQueuePolicy` controls per-client queue capacity. The
    initial live-video policy drops the oldest frame when a client's queue is
    full, then stores the newest frame.
 
@@ -2690,16 +2695,25 @@ Responsibility split:
   - Mutates caller-owned encoded-frame queue state.
   - Does not decode H.264, select target time, sync multiple clients, notify a
     switcher, render UI, send UDP, or touch OBS.
+- video frame queue runtime
+  - Consumes only the receive side-effect output and caller-owned queue state.
+  - Stores accepted authenticated frames.
+  - Keeps rejected / unauthenticated frames out of the queue and reports that
+    skip separately from normal non-video side effects.
 - future continuous server loop owner
-  - Will decide when to call queue storage from receive-loop side effects and
-    how to hand queued frames to switcher/sync code.
+  - Will decide cadence, longer-lived queue ownership, draining, switcher/sync
+    handoff, and file/process logging policy.
+
+Current code reflects this with
+`ServerVideoFrameQueueState`, `ServerVideoFrameQueueStorageBoundary`,
+`ServerVideoFrameQueueRuntimeBoundary`, and
+`ServerVideoFrameQueueRuntimeResult`.
 
 Deferred work:
 
 - real client-side capture or frame source
 - real client-side H.264 encoding
 - video send CLI/config launcher
-- server receive-loop-to-queue runtime wiring
 - H.264 decode and single-view display placeholder
 - 2-view / 4-view sync, switcher UI, and OBS integration
 
