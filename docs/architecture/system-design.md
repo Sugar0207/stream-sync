@@ -5645,6 +5645,72 @@ Current code reflects this with
 `ClientHeartbeatLoopOuterWhileLoopActualExecutionResult`, and
 `ClientHeartbeatLoopOuterWhileLoopActualExecutionBoundary`.
 
+### Client Outer While-Loop Repeated Body Minimal Scope
+
+After one-turn execution body and actual timer / retry / reconnect execution
+boundaries exist, the next minimal step can finally add a repeated outer
+while-loop body. This repeated body must remain a thin loop over the existing
+boundaries; it should not hide wakeup, timer wait, retry execution, reconnect
+execution, or stop semantics inside one vague side effect.
+
+Current minimal scope:
+
+1. `ClientHeartbeatLoopOuterWhileLoopRepeatedBodyInput` receives:
+   - one caller-owned current `ClientHeartbeatLoopRepeatedInvocationResult`
+   - one caller-owned `max_turns` guard
+2. `ClientHeartbeatLoopOuterWhileLoopRepeatedBodyBoundary` runs, in order, for
+   each turn:
+   - `ClientHeartbeatLoopOuterWhileLoopConnectionBoundary`
+   - `ClientHeartbeatLoopOuterWhileLoopOneTurnExecutionBoundary`
+   - `ClientHeartbeatLoopOuterWhileLoopActualExecutionBoundary`
+3. If actual execution returns `Continue { output }`:
+   - repeated body updates next carry from `output.next`
+   - repeated body preserves last explicit execution output
+   - repeated body loops again until caller-owned `max_turns` is reached
+4. If actual execution returns `Stop { output }`:
+   - repeated body returns `Stopped { output }`
+   - stop path preserves:
+     - `stop_reason`
+     - `cleanup_completed`
+     - `applied_actions`
+5. If continue path reaches caller-owned `max_turns` first:
+   - repeated body returns `ReachedTurnGuard { state }`
+   - continuation state preserves:
+     - `turns_completed`
+     - explicit next carry
+     - last explicit execution output
+6. Minimal safe repeated-body scope:
+   - repeated body stays a thin loop over existing boundaries only
+   - stop path remains passthrough and is not reinterpreted
+   - continue path updates carry only from actual execution result
+   - wakeup / timer wait / retry execution / reconnect execution stay visible
+   - no metrics cadence, dashboard refresh, video, switcher, OBS, or full
+     reconnect policy is introduced here
+
+Relationship between one-turn execution result, actual timer / retry /
+reconnect execution result, next carry, and future reconnect policy / socket
+re-establishment:
+
+- outer while-loop one-turn execution result
+  - Remains the only source for actual execution input.
+  - Keeps wakeup and future actions explicit.
+- outer while-loop actual execution result
+  - Becomes the only source for repeated-body next carry updates.
+  - Preserves separated timer / retry / reconnect execution output.
+- next carry
+  - Is returned from repeated body only through explicit continuation state.
+  - Is used to build the next repeated invocation turn.
+- future reconnect policy / socket re-establishment
+  - Remains outside the repeated-body minimal scope.
+  - Will later refine reconnect execution behavior without changing the
+    repeated-body call order.
+
+Current code reflects this with
+`ClientHeartbeatLoopOuterWhileLoopRepeatedBodyInput`,
+`ClientHeartbeatLoopOuterWhileLoopRepeatedBodyContinuationState`,
+`ClientHeartbeatLoopOuterWhileLoopRepeatedBodyResult`, and
+`ClientHeartbeatLoopOuterWhileLoopRepeatedBodyBoundary`.
+
 ### Heartbeat Client Ack Observation Flow
 
 The client ack observation flow returns the missing `client_received_at`

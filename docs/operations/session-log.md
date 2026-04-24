@@ -4,6 +4,50 @@
 ### 担当 - Codex
 
 ### 今回の作業
+- client continuous heartbeat loop execution path に戻り、outer while-loop 反復実行本体の最小実装形を追加した。
+- repeated body は connection -> one-turn execution -> actual timer/retry/reconnect execution を薄く繰り返すだけにし、continue path では next carry を更新し、stop path では terminal output をそのまま返す形に揃えた。
+- caller-owned `max_turns` guard を追加し、継続 state と last explicit execution output を返せるようにしてテストを deterministic にした。
+
+### 変更ファイル
+- `apps/client/src/lib.rs`
+- `docs/architecture/system-design.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### 実装したこと
+- `ClientHeartbeatLoopOuterWhileLoopRepeatedBodyInput`
+- `ClientHeartbeatLoopOuterWhileLoopRepeatedBodyContinuationState`
+- `ClientHeartbeatLoopOuterWhileLoopRepeatedBodyResult`
+- `ClientHeartbeatLoopOuterWhileLoopRepeatedBodyBoundary`
+- repeated body が existing boundary を順に呼び、continue では `next carry` と `last_execution` を保持し、stop では `stop_reason` / `cleanup_completed` / `applied_actions` を再解釈しない薄い runner
+- continue 1 turn / stop passthrough / stop terminal output preservation / wakeup-timer-retry-reconnect separation / caller-owned max-turn guard を固定する単体テスト
+
+### 未実装 / 保留
+- actual reconnect policy / socket 再確立の本実装
+- RTT / offset metrics state commit の継続 loop 接続
+- metrics snapshot export cadence / dashboard refresh 方針
+- video path / switcher / OBS の本実装
+
+### 次にやる候補
+- actual reconnect policy / socket 再確立の最小本実装を outer while-loop 経路へ接続する
+- RTT / offset metrics state commit を client continuous heartbeat loop へ接続する
+- metrics snapshot export cadence / dashboard refresh 方針整理
+
+### TODO更新内容
+- 現在位置に outer while-loop 反復実行本体の完了を反映した。
+- 直近でやることを reconnect policy と metrics 接続側へ更新した。
+- heartbeat / 検証タスクに outer while-loop 反復実行本体と関連単体テスト完了を追加した。
+
+### 検証
+- `cargo fmt`
+- `cargo fmt --check`
+- `cargo test -p stream-sync-client client_heartbeat_loop_cleanup`
+- `cargo check --workspace`
+
+## 2026-04-24
+### 担当 - Codex
+
+### 今回の作業
 - client continuous heartbeat loop execution path に戻り、outer while-loop one-turn execution result から actual timer wait / retry execution / reconnect execution を分離して適用する最小実装形を追加した。
 - stop path では timer / retry / reconnect execution input を作らず、`stop_reason` / `cleanup_completed` / `applied_actions` をそのまま passthrough する形を維持した。
 - wakeup を timer / retry / reconnect から分離したまま、future repeated outer while-loop body が順番に呼べる explicit execution result を追加した。

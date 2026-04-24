@@ -3402,6 +3402,32 @@ pub enum ClientHeartbeatLoopOuterWhileLoopActualExecutionResult {
     },
 }
 
+/// Caller-owned input for the minimal repeated outer while-loop body.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClientHeartbeatLoopOuterWhileLoopRepeatedBodyInput {
+    pub current: ClientHeartbeatLoopRepeatedInvocationResult,
+    pub max_turns: std::num::NonZeroUsize,
+}
+
+/// Continue-state surfaced when repeated outer while-loop body hits its turn guard.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClientHeartbeatLoopOuterWhileLoopRepeatedBodyContinuationState {
+    pub turns_completed: usize,
+    pub next: ClientHeartbeatLoopOuterWhileLoopOneTurnNextStepState,
+    pub last_execution: ClientHeartbeatLoopOuterWhileLoopActualExecutionOutput,
+}
+
+/// Result of running the minimal repeated outer while-loop body.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ClientHeartbeatLoopOuterWhileLoopRepeatedBodyResult {
+    ReachedTurnGuard {
+        state: ClientHeartbeatLoopOuterWhileLoopRepeatedBodyContinuationState,
+    },
+    Stopped {
+        output: ClientHeartbeatLoopCompletedBodyTerminalOutput,
+    },
+}
+
 /// Boundary that connects one step result to future completed-loop lifecycle flow.
 ///
 /// This does not run a while-loop, sleep, reconnect, flush logs, close
@@ -4711,6 +4737,60 @@ impl ClientHeartbeatLoopOuterWhileLoopActualExecutionBoundary {
                 _,
                 ClientHeartbeatLoopOuterWhileLoopActualReconnectExecutionResult::Stop { output },
             ) => ClientHeartbeatLoopOuterWhileLoopActualExecutionResult::Stop { output },
+        }
+    }
+}
+
+/// Boundary that keeps repeated outer while-loop control as a thin delegate.
+///
+/// This boundary only loops over existing boundaries in order:
+/// connection, one-turn execution, and actual timer/retry/reconnect execution.
+/// It does not reinterpret stop output, add metrics cadence, or implement a
+/// broad reconnect policy. A caller-owned max-turn guard keeps tests
+/// deterministic while preserving explicit continue state.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct ClientHeartbeatLoopOuterWhileLoopRepeatedBodyBoundary {
+    connection: ClientHeartbeatLoopOuterWhileLoopConnectionBoundary,
+    one_turn: ClientHeartbeatLoopOuterWhileLoopOneTurnExecutionBoundary,
+    actual_execution: ClientHeartbeatLoopOuterWhileLoopActualExecutionBoundary,
+}
+
+impl ClientHeartbeatLoopOuterWhileLoopRepeatedBodyBoundary {
+    pub fn run(
+        &self,
+        input: ClientHeartbeatLoopOuterWhileLoopRepeatedBodyInput,
+    ) -> ClientHeartbeatLoopOuterWhileLoopRepeatedBodyResult {
+        let mut current = input.current;
+        let mut turns_completed = 0usize;
+
+        loop {
+            let connection = self.connection.plan_next(current);
+            let one_turn = self.one_turn.run_turn(connection);
+            let actual_execution = self.actual_execution.apply(one_turn);
+
+            match actual_execution {
+                ClientHeartbeatLoopOuterWhileLoopActualExecutionResult::Stop { output } => {
+                    return ClientHeartbeatLoopOuterWhileLoopRepeatedBodyResult::Stopped { output };
+                }
+                ClientHeartbeatLoopOuterWhileLoopActualExecutionResult::Continue { output } => {
+                    turns_completed += 1;
+                    let next = output.next.clone();
+                    let state = ClientHeartbeatLoopOuterWhileLoopRepeatedBodyContinuationState {
+                        turns_completed,
+                        next: next.clone(),
+                        last_execution: output.clone(),
+                    };
+
+                    if turns_completed >= input.max_turns.get() {
+                        return ClientHeartbeatLoopOuterWhileLoopRepeatedBodyResult::ReachedTurnGuard {
+                            state,
+                        };
+                    }
+
+                    current =
+                        ClientHeartbeatLoopRepeatedInvocationResult::Continue { carry: next.carry };
+                }
+            }
         }
     }
 }
@@ -12034,6 +12114,169 @@ mod tests {
                             ),
                         },
                     },
+                },
+            }
+        );
+    }
+
+    #[test]
+    fn client_heartbeat_loop_cleanup_outer_while_loop_repeated_body_runs_continue_turn_and_returns_updated_carry(
+    ) {
+        let result = ClientHeartbeatLoopOuterWhileLoopRepeatedBodyBoundary::default().run(
+            ClientHeartbeatLoopOuterWhileLoopRepeatedBodyInput {
+                current: cleanup_test_repeated_apply_timer_continue(),
+                max_turns: std::num::NonZeroUsize::new(1).unwrap(),
+            },
+        );
+
+        let ClientHeartbeatLoopOuterWhileLoopRepeatedBodyResult::ReachedTurnGuard { state } =
+            result
+        else {
+            panic!("single continue turn should reach caller-owned guard");
+        };
+
+        assert_eq!(state.turns_completed, 1);
+        assert_eq!(
+            state.next,
+            ClientHeartbeatLoopOuterWhileLoopOneTurnNextStepState {
+                carry: ClientHeartbeatLoopRepeatedInvocationNextStepCarry::ApplyTimerThenContinue {
+                    sleep: cleanup_test_timer_sleep(),
+                    carry: cleanup_test_iteration_carry(
+                        ClientHeartbeatLoopStepOrdering::WaitThenContinue {
+                            sleep: cleanup_test_timer_sleep(),
+                        },
+                        0,
+                    ),
+                },
+            }
+        );
+    }
+
+    #[test]
+    fn client_heartbeat_loop_cleanup_outer_while_loop_repeated_body_stops_when_one_turn_path_stops()
+    {
+        let result = ClientHeartbeatLoopOuterWhileLoopRepeatedBodyBoundary::default().run(
+            ClientHeartbeatLoopOuterWhileLoopRepeatedBodyInput {
+                current: cleanup_test_repeated_stop(),
+                max_turns: std::num::NonZeroUsize::new(1).unwrap(),
+            },
+        );
+
+        assert!(matches!(
+            result,
+            ClientHeartbeatLoopOuterWhileLoopRepeatedBodyResult::Stopped { .. }
+        ));
+    }
+
+    #[test]
+    fn client_heartbeat_loop_cleanup_outer_while_loop_repeated_body_preserves_stop_reason_cleanup_and_applied_actions(
+    ) {
+        let result = ClientHeartbeatLoopOuterWhileLoopRepeatedBodyBoundary::default().run(
+            ClientHeartbeatLoopOuterWhileLoopRepeatedBodyInput {
+                current: cleanup_test_repeated_stop(),
+                max_turns: std::num::NonZeroUsize::new(2).unwrap(),
+            },
+        );
+
+        assert_eq!(
+            result,
+            ClientHeartbeatLoopOuterWhileLoopRepeatedBodyResult::Stopped {
+                output: ClientHeartbeatLoopCompletedBodyTerminalOutput {
+                    stop_reason:
+                        ClientHeartbeatLoopRepeatedInvocationStopReason::CleanupRequested {
+                            stop_reason:
+                                ClientHeartbeatLoopLifecycleStopReason::CallerRequestedStop,
+                        },
+                    cleanup_completed: true,
+                    applied_actions: [
+                        ClientHeartbeatLoopCleanupAppliedAction::FinalFlush,
+                        ClientHeartbeatLoopCleanupAppliedAction::LogWriterInvocation,
+                        ClientHeartbeatLoopCleanupAppliedAction::ResourceRelease,
+                    ],
+                },
+            }
+        );
+    }
+
+    #[test]
+    fn client_heartbeat_loop_cleanup_outer_while_loop_repeated_body_does_not_collapse_wakeup_timer_retry_reconnect_concerns(
+    ) {
+        let result = ClientHeartbeatLoopOuterWhileLoopRepeatedBodyBoundary::default().run(
+            ClientHeartbeatLoopOuterWhileLoopRepeatedBodyInput {
+                current: cleanup_test_repeated_apply_timer_continue(),
+                max_turns: std::num::NonZeroUsize::new(1).unwrap(),
+            },
+        );
+
+        let ClientHeartbeatLoopOuterWhileLoopRepeatedBodyResult::ReachedTurnGuard { state } =
+            result
+        else {
+            panic!("continue path should reach guard with explicit execution state");
+        };
+
+        assert_eq!(
+            state.last_execution.wakeup,
+            ClientHeartbeatLoopOuterWhileLoopWakeupState::WakeupSideEffectApplied {
+                wakeup_apply:
+                    ClientHeartbeatLoopHeartbeatTimeoutNoticeWakeupApplyResult::WakeupApplied {
+                        wakeup:
+                            ClientHeartbeatLoopFutureHeartbeatTimeoutNoticeWakeupPlan::WakeupDuringTimerWait {
+                                sleep: cleanup_test_timer_sleep(),
+                            },
+                    },
+                wakeup_side_effect:
+                    ClientHeartbeatLoopHeartbeatTimeoutNoticeWakeupActualSideEffectApplyResult::WakeupSideEffectApplied {
+                        wakeup:
+                            ClientHeartbeatLoopFutureHeartbeatTimeoutNoticeWakeupPlan::WakeupDuringTimerWait {
+                                sleep: cleanup_test_timer_sleep(),
+                            },
+                    },
+            }
+        );
+        assert_eq!(
+            state.last_execution.timer_wait,
+            ClientHeartbeatLoopOuterWhileLoopActualTimerWaitExecutionApplyResult::TimerWaitApplied {
+                sleep: cleanup_test_timer_sleep(),
+            }
+        );
+        assert_eq!(
+            state.last_execution.retry_execution,
+            ClientHeartbeatLoopOuterWhileLoopActualRetryExecutionApplyResult::NoRetryExecutionApplied
+        );
+        assert_eq!(
+            state.last_execution.reconnect_execution,
+            ClientHeartbeatLoopOuterWhileLoopActualReconnectExecutionApplyResult::NoReconnectExecutionApplied
+        );
+    }
+
+    #[test]
+    fn client_heartbeat_loop_cleanup_outer_while_loop_repeated_body_respects_caller_owned_max_turn_guard(
+    ) {
+        let result = ClientHeartbeatLoopOuterWhileLoopRepeatedBodyBoundary::default().run(
+            ClientHeartbeatLoopOuterWhileLoopRepeatedBodyInput {
+                current: cleanup_test_repeated_apply_timer_continue(),
+                max_turns: std::num::NonZeroUsize::new(2).unwrap(),
+            },
+        );
+
+        let ClientHeartbeatLoopOuterWhileLoopRepeatedBodyResult::ReachedTurnGuard { state } =
+            result
+        else {
+            panic!("continue path should stop at caller-owned max-turn guard");
+        };
+
+        assert_eq!(state.turns_completed, 2);
+        assert_eq!(
+            state.next,
+            ClientHeartbeatLoopOuterWhileLoopOneTurnNextStepState {
+                carry: ClientHeartbeatLoopRepeatedInvocationNextStepCarry::ApplyTimerThenContinue {
+                    sleep: cleanup_test_timer_sleep(),
+                    carry: cleanup_test_iteration_carry(
+                        ClientHeartbeatLoopStepOrdering::WaitThenContinue {
+                            sleep: cleanup_test_timer_sleep(),
+                        },
+                        0,
+                    ),
                 },
             }
         );
