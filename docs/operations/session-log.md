@@ -8675,3 +8675,41 @@
 - `cargo check --workspace`
 
 ---
+---
+
+## 2026-04-24
+### Type
+- Codex
+
+### Work
+- Defined the minimal client-side RTT / offset metrics state commit boundary for the continuous heartbeat loop.
+- Added commit input derivation from `HeartbeatAckObservation`, `ClientStats.heartbeat_observation`, and `ClientHeartbeatLoopOneTickRuntimeResult`.
+- Added explicit commit results for applied, no commit needed, deferred, and stop passthrough.
+- Kept metrics state commit separate from timer wait, retry, reconnect, socket re-establishment, metrics snapshot export cadence, and dashboard refresh.
+
+### Changed Files
+- `apps/client/Cargo.toml`
+- `apps/client/src/lib.rs`
+- `docs/architecture/system-design.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### Decisions
+- Metrics commit input is derived only from explicit observation/state already surfaced by the heartbeat loop.
+- Missing observation is represented as an explicit no-commit result.
+- Missing caller-owned metrics state or invalid RTT / offset calculation is represented as deferred commit, not as retry/reconnect/timer behavior.
+- Snapshot export cadence and dashboard refresh remain future boundaries, not side effects of per-sample commit.
+
+### Unresolved
+- live socket ownership wiring for the future continuous loop runner
+- metrics snapshot export cadence policy
+- dashboard refresh handoff policy
+- video path / switcher / OBS integration
+
+### Next
+- Wire live socket ownership into the future client continuous heartbeat loop runner.
+- Define metrics snapshot export cadence and dashboard refresh policy as separate boundaries.
+
+### TODO Update
+- Current focus updated to reflect completed metrics commit boundary.
+- Next items reordered around live socket ownership, metrics snapshot cadence, dashboard refresh, server timeout loop, and later video/switcher/OBS work.

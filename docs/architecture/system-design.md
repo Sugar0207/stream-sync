@@ -6769,3 +6769,20 @@ represented by `apps/server::ServerSendErrorLogHandoffBoundary`,
 observation is represented by `apps/server::ServerSendJsonLogEventInput`,
 `ServerSendJsonLogEventBoundary`, `ServerSendLogOutputBoundary`, and
 `ServerSendJsonLineWriter`.
+---
+
+## Client Heartbeat RTT / Offset Metrics Commit Boundary
+
+The client continuous heartbeat loop keeps RTT / offset metrics state commit as a separate boundary from loop execution concerns.
+
+- Commit input is created only from explicit heartbeat ack observation state:
+  - `HeartbeatAckObservation` produced by the ack observation return path
+  - `ClientStats.heartbeat_observation` when the stats return path carries an observation
+  - `ClientHeartbeatLoopOneTickRuntimeResult.ack_return` when a one-tick loop result observed an ack
+- The commit boundary calculates one RTT / offset estimate and updates caller-owned client metrics state.
+- The commit boundary does not reinterpret timer wait, retry, reconnect, socket re-establishment, cleanup, or stop decisions.
+- Stop remains an explicit passthrough result when the loop result is already stopping.
+- Missing observation remains an explicit no-commit result.
+- Missing caller-owned metrics state or invalid RTT / offset calculation remains an explicit deferred commit result.
+
+Metrics snapshot export cadence is a later policy boundary. Dashboard refresh is a later consumer/refresh boundary. Neither is implemented as part of per-sample metrics state commit.

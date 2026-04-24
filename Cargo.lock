@@ -7,6 +7,7 @@ name = "stream-sync-client"
 version = "0.1.0"
 dependencies = [
  "stream-sync-protocol",
+ "stream-sync-timebase",
 ]
 
 [[package]]

@@ -653,3 +653,16 @@
 - [ ] ログ可視化
 - [ ] 長時間試験
 - [ ] 運用手順整備
+---
+
+## Current Focus
+- client continuous heartbeat loop is complete through repeated body execution and caller-owned socket re-establishment hook injection.
+- RTT / offset metrics state commit now has a minimal client loop boundary based only on explicit heartbeat ack observation / ClientStats observation / one-tick runtime result state.
+- metrics commit remains separate from timer wait, retry, reconnect, socket ownership, cleanup, metrics snapshot export cadence, and dashboard refresh.
+
+## Next Items
+1. future client continuous heartbeat loop runner live socket ownership wiring
+2. metrics snapshot export cadence policy
+3. dashboard refresh handoff policy
+4. server heartbeat timeout loop tick multi-client continuous execution
+5. video path / switcher / OBS integration later

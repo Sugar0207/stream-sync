@@ -8,6 +8,7 @@ rust-version.workspace = true
 
 [dependencies]
 stream-sync-protocol = { path = "../../crates/protocol" }
+stream-sync-timebase = { path = "../../crates/timebase" }
 
 [lints]
 workspace = true

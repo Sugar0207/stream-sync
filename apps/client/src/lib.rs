@@ -1,4 +1,5 @@
 use std::{
+    collections::BTreeMap,
     fs, io,
     net::{SocketAddr, ToSocketAddrs, UdpSocket},
     path::{Path, PathBuf},
@@ -13,6 +14,10 @@ use stream_sync_protocol::{
     HeartbeatObservationCarrier, HeartbeatObservationCarrierBoundary, MessageEncoder, MessageType,
     ProtocolError, ProtocolMessage, ProtocolMessageEncoderBoundary, ProtocolVersion, RunId,
     TimestampMicros,
+};
+use stream_sync_timebase::{
+    HeartbeatExchangeObservation, HeartbeatRttOffsetCalculationError, HeartbeatRttOffsetCalculator,
+    HeartbeatRttOffsetEstimate,
 };
 
 const DEFAULT_AUTH_RESPONSE_TIMEOUT_MS: u64 = 5_000;
@@ -1028,6 +1033,264 @@ pub struct ClientHeartbeatLoopAckObservationReturnRuntimeResult {
     pub ack: HeartbeatAck,
     pub observation: HeartbeatAckObservation,
     pub client_stats_return: Option<ClientHeartbeatLoopClientStatsReturnHandoff>,
+}
+
+/// Source path that produced a client RTT / offset metrics commit input.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ClientHeartbeatRttOffsetMetricsCommitInputSource {
+    AckObservationReturn,
+    ClientStatsReturnPath,
+    OneTickRuntimeAckObservation,
+}
+
+/// Minimal input for committing one client-side RTT / offset metrics sample.
+///
+/// The input is intentionally only the typed heartbeat ack observation plus its
+/// source. It does not carry timer, retry, reconnect, socket, or dashboard
+/// refresh state.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClientHeartbeatRttOffsetMetricsCommitInput {
+    pub source: ClientHeartbeatRttOffsetMetricsCommitInputSource,
+    pub observation: HeartbeatAckObservation,
+}
+
+/// Why a client loop turn does not produce a metrics commit input.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ClientHeartbeatRttOffsetMetricsNoCommitReason {
+    NoAckObservation,
+    ClientStatsWithoutHeartbeatObservation,
+}
+
+/// Result of deriving a metrics commit input from explicit loop state.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ClientHeartbeatRttOffsetMetricsCommitInputResult {
+    Commit(ClientHeartbeatRttOffsetMetricsCommitInput),
+    NoCommitNeeded(ClientHeartbeatRttOffsetMetricsNoCommitReason),
+    StopPassthrough {
+        reason: ClientHeartbeatLoopPolicyReason,
+    },
+}
+
+/// Stored client-side RTT / offset metrics sample.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClientHeartbeatRttOffsetMetricsStateEntry {
+    pub client_id: ClientId,
+    pub run_id: RunId,
+    pub latest_observation: HeartbeatAckObservation,
+    pub latest_estimate: HeartbeatRttOffsetEstimate,
+    pub samples_committed: u64,
+}
+
+/// Minimal client-side RTT / offset metrics state.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ClientHeartbeatRttOffsetMetricsState {
+    entries_by_client_run: BTreeMap<(String, String), ClientHeartbeatRttOffsetMetricsStateEntry>,
+}
+
+impl ClientHeartbeatRttOffsetMetricsState {
+    pub fn entries(&self) -> impl Iterator<Item = &ClientHeartbeatRttOffsetMetricsStateEntry> {
+        self.entries_by_client_run.values()
+    }
+
+    pub fn get(
+        &self,
+        client_id: &ClientId,
+        run_id: &RunId,
+    ) -> Option<&ClientHeartbeatRttOffsetMetricsStateEntry> {
+        self.entries_by_client_run
+            .get(&(client_id.0.clone(), run_id.0.clone()))
+    }
+}
+
+/// State update outcome after applying one client RTT / offset metrics sample.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClientHeartbeatRttOffsetMetricsCommitOutcome {
+    pub previous: Option<ClientHeartbeatRttOffsetMetricsStateEntry>,
+    pub committed: ClientHeartbeatRttOffsetMetricsStateEntry,
+}
+
+/// Why a metrics commit is deferred without reinterpreting loop execution.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ClientHeartbeatRttOffsetMetricsCommitDeferredReason {
+    MetricsStateUnavailable,
+    CalculationFailed(HeartbeatRttOffsetCalculationError),
+}
+
+/// Explicit result of the client RTT / offset metrics commit boundary.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ClientHeartbeatRttOffsetMetricsCommitResult {
+    Applied(ClientHeartbeatRttOffsetMetricsCommitOutcome),
+    NoCommitNeeded(ClientHeartbeatRttOffsetMetricsNoCommitReason),
+    Deferred {
+        input: ClientHeartbeatRttOffsetMetricsCommitInput,
+        reason: ClientHeartbeatRttOffsetMetricsCommitDeferredReason,
+    },
+    StopPassthrough {
+        reason: ClientHeartbeatLoopPolicyReason,
+    },
+}
+
+/// Future snapshot export cadence remains separate from per-sample state commit.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ClientHeartbeatRttOffsetMetricsSnapshotExportCadenceDecision {
+    NotEvaluated,
+}
+
+/// Future dashboard refresh remains separate from metrics commit and snapshot cadence.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ClientHeartbeatRttOffsetMetricsDashboardRefreshDecision {
+    NotImplemented,
+}
+
+/// Boundary that derives metrics commit input only from explicit observation paths.
+///
+/// It does not calculate RTT / offset, mutate state, inspect timers, retry
+/// policy, reconnect state, or decide snapshot/dashboard cadence.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct ClientHeartbeatRttOffsetMetricsCommitInputBoundary;
+
+impl ClientHeartbeatRttOffsetMetricsCommitInputBoundary {
+    pub fn from_ack_return(
+        &self,
+        ack_return: Option<&ClientHeartbeatLoopAckObservationReturnRuntimeResult>,
+    ) -> ClientHeartbeatRttOffsetMetricsCommitInputResult {
+        match ack_return {
+            Some(ack_return) => ClientHeartbeatRttOffsetMetricsCommitInputResult::Commit(
+                ClientHeartbeatRttOffsetMetricsCommitInput {
+                    source: ClientHeartbeatRttOffsetMetricsCommitInputSource::AckObservationReturn,
+                    observation: ack_return.observation.clone(),
+                },
+            ),
+            None => ClientHeartbeatRttOffsetMetricsCommitInputResult::NoCommitNeeded(
+                ClientHeartbeatRttOffsetMetricsNoCommitReason::NoAckObservation,
+            ),
+        }
+    }
+
+    pub fn from_client_stats(
+        &self,
+        client_stats: &ClientStats,
+    ) -> ClientHeartbeatRttOffsetMetricsCommitInputResult {
+        match &client_stats.heartbeat_observation {
+            Some(observation) => ClientHeartbeatRttOffsetMetricsCommitInputResult::Commit(
+                ClientHeartbeatRttOffsetMetricsCommitInput {
+                    source:
+                        ClientHeartbeatRttOffsetMetricsCommitInputSource::ClientStatsReturnPath,
+                    observation: observation.clone(),
+                },
+            ),
+            None => ClientHeartbeatRttOffsetMetricsCommitInputResult::NoCommitNeeded(
+                ClientHeartbeatRttOffsetMetricsNoCommitReason::ClientStatsWithoutHeartbeatObservation,
+            ),
+        }
+    }
+
+    pub fn from_one_tick_runtime(
+        &self,
+        runtime: &ClientHeartbeatLoopOneTickRuntimeResult,
+    ) -> ClientHeartbeatRttOffsetMetricsCommitInputResult {
+        if let ClientHeartbeatLoopShutdownDecision::Stop { reason } = runtime.controller.shutdown {
+            return ClientHeartbeatRttOffsetMetricsCommitInputResult::StopPassthrough { reason };
+        }
+
+        match &runtime.ack_return {
+            Some(ack_return) => ClientHeartbeatRttOffsetMetricsCommitInputResult::Commit(
+                ClientHeartbeatRttOffsetMetricsCommitInput {
+                    source:
+                        ClientHeartbeatRttOffsetMetricsCommitInputSource::OneTickRuntimeAckObservation,
+                    observation: ack_return.observation.clone(),
+                },
+            ),
+            None => ClientHeartbeatRttOffsetMetricsCommitInputResult::NoCommitNeeded(
+                ClientHeartbeatRttOffsetMetricsNoCommitReason::NoAckObservation,
+            ),
+        }
+    }
+}
+
+/// Boundary that commits one RTT / offset metrics input into caller-owned state.
+///
+/// This boundary only calculates one estimate and updates metrics state. It
+/// does not reinterpret timer waits, retries, reconnects, snapshot export
+/// cadence, dashboard refresh, or stop/cleanup behavior.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct ClientHeartbeatRttOffsetMetricsCommitBoundary {
+    calculator: HeartbeatRttOffsetCalculator,
+}
+
+impl ClientHeartbeatRttOffsetMetricsCommitBoundary {
+    pub fn commit_from_loop_result(
+        &self,
+        state: Option<&mut ClientHeartbeatRttOffsetMetricsState>,
+        input: ClientHeartbeatRttOffsetMetricsCommitInputResult,
+    ) -> ClientHeartbeatRttOffsetMetricsCommitResult {
+        match input {
+            ClientHeartbeatRttOffsetMetricsCommitInputResult::Commit(input) => {
+                let Some(state) = state else {
+                    return ClientHeartbeatRttOffsetMetricsCommitResult::Deferred {
+                        input,
+                        reason:
+                            ClientHeartbeatRttOffsetMetricsCommitDeferredReason::MetricsStateUnavailable,
+                    };
+                };
+                self.commit(state, input)
+            }
+            ClientHeartbeatRttOffsetMetricsCommitInputResult::NoCommitNeeded(reason) => {
+                ClientHeartbeatRttOffsetMetricsCommitResult::NoCommitNeeded(reason)
+            }
+            ClientHeartbeatRttOffsetMetricsCommitInputResult::StopPassthrough { reason } => {
+                ClientHeartbeatRttOffsetMetricsCommitResult::StopPassthrough { reason }
+            }
+        }
+    }
+
+    pub fn commit(
+        &self,
+        state: &mut ClientHeartbeatRttOffsetMetricsState,
+        input: ClientHeartbeatRttOffsetMetricsCommitInput,
+    ) -> ClientHeartbeatRttOffsetMetricsCommitResult {
+        let estimate = match self.calculator.calculate(HeartbeatExchangeObservation {
+            client_sent_at_micros: input.observation.echoed_sent_at.0,
+            server_received_at_micros: input.observation.server_received_at.0,
+            server_sent_at_micros: input.observation.server_sent_at.0,
+            client_received_at_micros: input.observation.client_received_at.0,
+        }) {
+            Ok(estimate) => estimate,
+            Err(error) => {
+                return ClientHeartbeatRttOffsetMetricsCommitResult::Deferred {
+                    input,
+                    reason: ClientHeartbeatRttOffsetMetricsCommitDeferredReason::CalculationFailed(
+                        error,
+                    ),
+                };
+            }
+        };
+
+        let key = (
+            input.observation.client_id.0.clone(),
+            input.observation.run_id.0.clone(),
+        );
+        let previous = state.entries_by_client_run.get(&key).cloned();
+        let samples_committed = previous
+            .as_ref()
+            .map(|entry| entry.samples_committed.saturating_add(1))
+            .unwrap_or(1);
+        let committed = ClientHeartbeatRttOffsetMetricsStateEntry {
+            client_id: input.observation.client_id.clone(),
+            run_id: input.observation.run_id.clone(),
+            latest_observation: input.observation,
+            latest_estimate: estimate,
+            samples_committed,
+        };
+        state.entries_by_client_run.insert(key, committed.clone());
+
+        ClientHeartbeatRttOffsetMetricsCommitResult::Applied(
+            ClientHeartbeatRttOffsetMetricsCommitOutcome {
+                previous,
+                committed,
+            },
+        )
+    }
 }
 
 /// Error from the client ack receive / observation return boundary.
@@ -14059,6 +14322,217 @@ mod tests {
         let decoded_stats = decode_client_stats_payload(packet.header, packet.payload)
             .expect("client stats payload should decode");
         assert_eq!(decoded_stats, client_stats);
+    }
+
+    #[test]
+    fn client_heartbeat_loop_cleanup_metrics_commit_input_is_created_only_from_observation() {
+        let destination = "127.0.0.1:5000".parse().unwrap();
+        let observation = HeartbeatAckObservation {
+            client_id: ClientId("client-1".to_string()),
+            run_id: RunId("run-1".to_string()),
+            echoed_sent_at: TimestampMicros(10_000),
+            server_received_at: TimestampMicros(10_500),
+            server_sent_at: TimestampMicros(10_600),
+            client_received_at: TimestampMicros(10_900),
+        };
+        let ack_return = ClientHeartbeatLoopAckObservationReturnRuntimeResult {
+            ack_source: destination,
+            ack_bytes: vec![1, 2, 3],
+            ack: HeartbeatAck {
+                message_type: MessageType::HeartbeatAck,
+                protocol_version: ProtocolVersion(2),
+                client_id: ClientId("client-1".to_string()),
+                run_id: RunId("run-1".to_string()),
+                echoed_sent_at: TimestampMicros(10_000),
+                server_received_at: TimestampMicros(10_500),
+                server_sent_at: TimestampMicros(10_600),
+            },
+            observation: observation.clone(),
+            client_stats_return: None,
+        };
+
+        let input =
+            ClientHeartbeatRttOffsetMetricsCommitInputBoundary.from_ack_return(Some(&ack_return));
+
+        assert_eq!(
+            input,
+            ClientHeartbeatRttOffsetMetricsCommitInputResult::Commit(
+                ClientHeartbeatRttOffsetMetricsCommitInput {
+                    source: ClientHeartbeatRttOffsetMetricsCommitInputSource::AckObservationReturn,
+                    observation,
+                }
+            )
+        );
+        assert_eq!(
+            ClientHeartbeatRttOffsetMetricsCommitInputBoundary.from_ack_return(None),
+            ClientHeartbeatRttOffsetMetricsCommitInputResult::NoCommitNeeded(
+                ClientHeartbeatRttOffsetMetricsNoCommitReason::NoAckObservation
+            )
+        );
+    }
+
+    #[test]
+    fn client_heartbeat_loop_cleanup_metrics_commit_no_observation_path_remains_explicit() {
+        let client_stats = ClientStats {
+            message_type: MessageType::ClientStats,
+            protocol_version: ProtocolVersion(2),
+            client_id: ClientId("client-1".to_string()),
+            run_id: RunId("run-1".to_string()),
+            sent_at: TimestampMicros(11_000),
+            capture_fps: 30,
+            dropped_frames: 0,
+            bitrate_kbps: 2_000,
+            heartbeat_observation: None,
+        };
+
+        let result =
+            ClientHeartbeatRttOffsetMetricsCommitInputBoundary.from_client_stats(&client_stats);
+
+        assert_eq!(
+            result,
+            ClientHeartbeatRttOffsetMetricsCommitInputResult::NoCommitNeeded(
+                ClientHeartbeatRttOffsetMetricsNoCommitReason::ClientStatsWithoutHeartbeatObservation
+            )
+        );
+    }
+
+    #[test]
+    fn client_heartbeat_loop_cleanup_metrics_commit_applies_without_snapshot_or_dashboard_policy() {
+        let observation = HeartbeatAckObservation {
+            client_id: ClientId("client-1".to_string()),
+            run_id: RunId("run-1".to_string()),
+            echoed_sent_at: TimestampMicros(10_000),
+            server_received_at: TimestampMicros(10_500),
+            server_sent_at: TimestampMicros(10_600),
+            client_received_at: TimestampMicros(10_900),
+        };
+        let input = ClientHeartbeatRttOffsetMetricsCommitInputResult::Commit(
+            ClientHeartbeatRttOffsetMetricsCommitInput {
+                source:
+                    ClientHeartbeatRttOffsetMetricsCommitInputSource::OneTickRuntimeAckObservation,
+                observation: observation.clone(),
+            },
+        );
+        let mut state = ClientHeartbeatRttOffsetMetricsState::default();
+
+        let result = ClientHeartbeatRttOffsetMetricsCommitBoundary::default()
+            .commit_from_loop_result(Some(&mut state), input);
+
+        let ClientHeartbeatRttOffsetMetricsCommitResult::Applied(outcome) = result else {
+            panic!("metrics commit should be applied");
+        };
+        assert_eq!(outcome.previous, None);
+        assert_eq!(outcome.committed.latest_observation, observation);
+        assert_eq!(outcome.committed.latest_estimate.rtt_micros, 800);
+        assert_eq!(
+            outcome.committed.latest_estimate.server_processing_micros,
+            100
+        );
+        assert_eq!(outcome.committed.latest_estimate.clock_offset_micros, 100);
+        assert_eq!(outcome.committed.samples_committed, 1);
+        assert_eq!(state.entries().count(), 1);
+        assert_eq!(
+            ClientHeartbeatRttOffsetMetricsSnapshotExportCadenceDecision::NotEvaluated,
+            ClientHeartbeatRttOffsetMetricsSnapshotExportCadenceDecision::NotEvaluated
+        );
+        assert_eq!(
+            ClientHeartbeatRttOffsetMetricsDashboardRefreshDecision::NotImplemented,
+            ClientHeartbeatRttOffsetMetricsDashboardRefreshDecision::NotImplemented
+        );
+    }
+
+    #[test]
+    fn client_heartbeat_loop_cleanup_metrics_commit_does_not_reinterpret_timer_retry_reconnect() {
+        let observation = HeartbeatAckObservation {
+            client_id: ClientId("client-1".to_string()),
+            run_id: RunId("run-1".to_string()),
+            echoed_sent_at: TimestampMicros(10_000),
+            server_received_at: TimestampMicros(10_500),
+            server_sent_at: TimestampMicros(10_600),
+            client_received_at: TimestampMicros(10_900),
+        };
+        let input = ClientHeartbeatRttOffsetMetricsCommitInputResult::Commit(
+            ClientHeartbeatRttOffsetMetricsCommitInput {
+                source: ClientHeartbeatRttOffsetMetricsCommitInputSource::AckObservationReturn,
+                observation,
+            },
+        );
+
+        let result = ClientHeartbeatRttOffsetMetricsCommitBoundary::default()
+            .commit_from_loop_result(None, input.clone());
+
+        assert_eq!(
+            result,
+            ClientHeartbeatRttOffsetMetricsCommitResult::Deferred {
+                input: match input {
+                    ClientHeartbeatRttOffsetMetricsCommitInputResult::Commit(input) => input,
+                    _ => unreachable!(),
+                },
+                reason:
+                    ClientHeartbeatRttOffsetMetricsCommitDeferredReason::MetricsStateUnavailable,
+            }
+        );
+        assert_eq!(
+            ClientHeartbeatLoopOuterWhileLoopActualTimerWaitExecutionApplyResult::NoTimerWaitApplied,
+            ClientHeartbeatLoopOuterWhileLoopActualTimerWaitExecutionApplyResult::NoTimerWaitApplied
+        );
+        assert_eq!(
+            ClientHeartbeatLoopOuterWhileLoopActualRetryExecutionApplyResult::NoRetryExecutionApplied,
+            ClientHeartbeatLoopOuterWhileLoopActualRetryExecutionApplyResult::NoRetryExecutionApplied
+        );
+        assert_eq!(
+            ClientHeartbeatLoopOuterWhileLoopActualReconnectExecutionApplyResult::NoReconnectExecutionApplied,
+            ClientHeartbeatLoopOuterWhileLoopActualReconnectExecutionApplyResult::NoReconnectExecutionApplied
+        );
+    }
+
+    #[test]
+    fn client_heartbeat_loop_cleanup_metrics_commit_preserves_stop_passthrough() {
+        let reason = ClientHeartbeatLoopPolicyReason::StopRequested;
+        let log = ClientHeartbeatLoopLogHandoff {
+            client_id: ClientId("client-1".to_string()),
+            run_id: RunId("run-1".to_string()),
+            observed_at: TimestampMicros(10_000),
+            reason,
+            heartbeat_interval_micros: 1_000,
+            ack_receive_timeout_micros: 2_000,
+            sent_heartbeats: 1,
+            received_acks: 1,
+            missed_acks: 0,
+        };
+        let runtime = ClientHeartbeatLoopOneTickRuntimeResult {
+            controller: ClientHeartbeatLoopControllerResult {
+                action: ClientHeartbeatLoopControllerAction::Stop,
+                plan: ClientHeartbeatLoopControllerPlan::Stop {
+                    reason,
+                    log,
+                    iteration_result: ClientHeartbeatLoopIterationRuntimeResult::Stopped { reason },
+                },
+                log: None,
+                shutdown: ClientHeartbeatLoopShutdownDecision::Stop { reason },
+                iteration_result: None,
+            },
+            heartbeat_send: None,
+            ack_return: None,
+            stats_return_send: None,
+            retry: None,
+            failure: None,
+            counters_updates: Vec::new(),
+            final_counters: ClientHeartbeatLoopCountersState::default(),
+        };
+
+        let input =
+            ClientHeartbeatRttOffsetMetricsCommitInputBoundary.from_one_tick_runtime(&runtime);
+        let result = ClientHeartbeatRttOffsetMetricsCommitBoundary::default()
+            .commit_from_loop_result(
+                Some(&mut ClientHeartbeatRttOffsetMetricsState::default()),
+                input,
+            );
+
+        assert_eq!(
+            result,
+            ClientHeartbeatRttOffsetMetricsCommitResult::StopPassthrough { reason }
+        );
     }
 
     #[test]
