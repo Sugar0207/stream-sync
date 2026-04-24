@@ -44,6 +44,9 @@ video queue for one auth packet followed by one video packet.
 - Switcher can run a fixture-backed manual helper that feeds a caller-owned
   `ServerVideoFrameQueueState` into the same selection / placeholder handoff
   boundary and prints a compact summary.
+- Switcher can run an in-process bridge launcher that owns the server
+  auth-then-video queue path in the same process, then passes the returned
+  caller-owned queue state into the switcher placeholder helper.
 
 ## Manual Command Sequence
 
@@ -190,37 +193,39 @@ The switcher helper consumes a caller-owned / fixture
 `ServerVideoFrameQueueState`. It does not read the server manual launcher's
 in-memory queue across process boundaries.
 
-## Minimal Missing Manual Wiring
+## In-Process Bridge Verification Available Now
 
-Bridge decision for the next PoC step:
-
-- Use a switcher-owned in-process integration launcher as the next bridge.
-- The launcher should call the existing server auth-then-video queue launcher
-  in-process, then pass the returned caller-owned `video_queue_state` to
-  `SwitcherPlaceholderManualVerificationBoundary`.
-- Do not add file, socket, or shared-memory queue sharing for this PoC step.
-- Do not make the server process expose its private in-memory queue yet.
-- Do not make `apps/server` depend on `apps/switcher`; the current workable
-  dependency direction is `switcher -> server`.
-
-A future command can be shaped like:
+The switcher-owned in-process bridge can be run with:
 
 ```powershell
 cargo run -p stream-sync-switcher -- --receive-auth-video-placeholder-bridge-once configs/examples/server.example.toml client-1
 ```
 
-Expected output should combine the server queue summary and switcher placeholder
-summary:
+Then run the same-socket client sender in another terminal:
 
+```powershell
+cargo run -p stream-sync-client -- --auth-placeholder-video-frame-poc-once configs/examples/client.accepted.example.toml
+```
+
+Expected switcher bridge stdout combines server queue state and switcher
+placeholder handoff summary:
+
+- `in_process=true`
+- `cross_process_queue=false`
 - auth accepted / rejected
-- video queued / not queued
+- video received / accepted / rejected
+- queued / not queued
+- queue length / dropped-oldest
 - selected client id
-- frame id
+- selected frame id
 - payload length
 - `decode_status=DeferredPlaceholder`
 - no-frame state when the queue is empty or no accepted frame was queued
 
+The bridge still does not share queue state with a separate server process. It
+calls the server auth-then-video queue launcher in-process and consumes the
+returned caller-owned `ServerVideoFrameQueueState`.
+
 The manual client-to-server queue path is now runnable as a two-command PoC.
-The switcher fixture helper verifies queue-to-switcher placeholder handoff only.
 Decode, rendering, switcher window output, OBS capture, cross-process queue
 sharing, and 4-view sync remain outside this manual launcher.

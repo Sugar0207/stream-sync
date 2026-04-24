@@ -7360,10 +7360,10 @@ caller-owned ServerVideoFrameQueueState -> latest-frame selection -> decode-defe
 This helper does not decode H.264, render a switcher window, select target time,
 mutate queue storage, implement 4-view sync, or touch OBS.
 
-## Server-To-Switcher Placeholder Bridge Decision
+## Server-To-Switcher Placeholder Bridge Boundary
 
-The next one-client placeholder PoC bridge should be an in-process integration
-launcher owned from the switcher side.
+The one-client placeholder PoC bridge is an in-process integration launcher
+owned from the switcher side.
 
 Chosen shape:
 
@@ -7375,16 +7375,14 @@ switcher manual bridge launcher
   -> prints auth / queue / placeholder handoff summary
 ```
 
-Decision:
+Implemented decision:
 
-- Prefer an in-process integration helper for the next PoC step.
+- Use an in-process integration helper for this PoC step.
 - Do not add file, socket, or shared-memory queue sharing for this step.
 - Do not make the running server process expose its private in-memory queue yet.
 - Do not make `apps/server` depend on `apps/switcher`; current dependency
   direction is `switcher -> server`, so the bridge owner should be switcher or
   a later shared runtime crate.
-- Do not defer the bridge until real decode/rendering, because the next useful
-  manual proof is still encoded-frame queue to placeholder handoff.
 
 Reasoning:
 
@@ -7400,12 +7398,14 @@ Reasoning:
 - This preserves the existing packet acceptance gate, server queue storage, and
   switcher placeholder boundaries.
 
-The minimal next implementation is a switcher-side manual bridge launcher such
-as `--receive-auth-video-placeholder-bridge-once [config-path] [client-id]`.
-It should reuse `ServerReceiveAuthVideoQueueOnceLauncher` and then call
-`SwitcherPlaceholderManualVerificationBoundary` on the returned
-`video_queue_state`. It should print auth accepted/rejected, video queued/not
-queued, selected client id, frame id, payload length, and
+CLI entry point:
+`--receive-auth-video-placeholder-bridge-once [config-path] [client-id]`.
+
+The bridge reuses `ServerReceiveAuthVideoQueueOnceLauncher` and then calls
+`SwitcherAuthVideoPlaceholderBridgeBoundary::verify_server_outcome` on the
+returned `video_queue_state`. It prints auth accepted/rejected, video
+received/accepted/rejected, queued/not queued, queue length, drop-oldest,
+selected client id, frame id, payload length, and
 `decode_status=DeferredPlaceholder` or no-frame.
 
 This bridge still must not decode H.264, render a window, integrate OBS, add

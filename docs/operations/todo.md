@@ -679,12 +679,13 @@
 - switcher video path now has a manual placeholder verification helper and fixture CLI path over caller-owned `ServerVideoFrameQueueState`; it verifies queue-to-switcher placeholder handoff without pretending to share a server process's in-memory queue.
 - manual placeholder VideoFrame PoC status is now documented in `docs/operations/manual-placeholder-video-poc.md`: the client same-socket auth-then-video sender and server queue-owning auth-then-video receiver can be run as a two-command manual client-to-server queue PoC, and the switcher fixture helper can verify the queue-to-placeholder handoff separately.
 - server-to-switcher placeholder bridge decision is now explicit: the next bridge should be a switcher-owned in-process integration launcher that calls the server queue launcher/boundary and then passes the returned caller-owned queue state to the existing switcher placeholder helper; file/socket/shared-memory queue sharing remains deferred.
+- switcher now has the in-process manual bridge launcher `--receive-auth-video-placeholder-bridge-once [config-path] [client-id]`, which runs the server auth-then-video queue path in-process and then verifies the returned caller-owned queue state through the switcher placeholder bridge boundary.
 - metrics commit, snapshot export cadence, dashboard refresh consumer policy, and dashboard refresh runtime wiring remain separate from timer wait, retry, reconnect, socket ownership, cleanup, UI rendering, video, switcher, and OBS.
 - server notice queue storage remains separate from notice send wakeup execution.
 - actual dashboard UI rendering remains unimplemented.
 
 ## Next Items
-1. add a switcher-owned in-process manual bridge launcher that runs auth-then-video queue receive and then invokes the placeholder handoff helper on the returned caller-owned queue state
-2. real capture / real H.264 encode boundary replacing the placeholder payload source
-3. real H.264 decode / switcher window rendering boundary
-4. targetTime / jitter-buffer selection design for the next 2-view sync PoC
+1. real capture / real H.264 encode boundary replacing the placeholder payload source
+2. real H.264 decode / switcher window rendering boundary
+3. targetTime / jitter-buffer selection design for the next 2-view sync PoC
+4. decide later whether any cross-process server-to-switcher queue bridge is needed for continuous runtime operation

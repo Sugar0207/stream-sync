@@ -3,10 +3,12 @@ use stream_sync_protocol::{
     ClientId, Codec, MessageType, ProtocolVersion, RunId, TimestampMicros, VideoFrame,
 };
 use stream_sync_server::{
-    AuthenticatedSenderEntry, ServerRegisteredVideoFramePacket, ServerVideoFrameHandlerBoundary,
-    ServerVideoFrameQueuePolicy, ServerVideoFrameQueueState, ServerVideoFrameQueueStorageBoundary,
+    AuthenticatedSenderEntry, ServerReceiveAuthVideoQueueOnceLauncher,
+    ServerRegisteredVideoFramePacket, ServerVideoFrameHandlerBoundary, ServerVideoFrameQueuePolicy,
+    ServerVideoFrameQueueState, ServerVideoFrameQueueStorageBoundary,
 };
 use stream_sync_switcher::{
+    SwitcherAuthVideoPlaceholderBridgeBoundary, SwitcherAuthVideoPlaceholderBridgeResult,
     SwitcherPlaceholderManualVerificationBoundary, SwitcherPlaceholderManualVerificationInput,
     SwitcherPlaceholderManualVerificationResult,
 };
@@ -34,9 +36,33 @@ fn main() {
                 });
             print_summary(result, true);
         }
+        Some("--receive-auth-video-placeholder-bridge-once") => {
+            let config_path = args
+                .next()
+                .unwrap_or_else(|| "configs/examples/server.example.toml".to_string());
+            let client_id = ClientId(args.next().unwrap_or_else(|| "client-1".to_string()));
+            let launcher = ServerReceiveAuthVideoQueueOnceLauncher::default();
+            match launcher.run_once_from_path_with_writers(
+                &config_path,
+                std::io::stderr(),
+                std::io::stderr(),
+                std::io::stderr(),
+                std::io::stderr(),
+            ) {
+                Ok(server_outcome) => {
+                    let result = SwitcherAuthVideoPlaceholderBridgeBoundary::default()
+                        .verify_server_outcome(&server_outcome, &client_id);
+                    print_bridge_summary(result);
+                }
+                Err(error) => {
+                    eprintln!("switcher auth/video placeholder bridge failed: {error:?}");
+                    std::process::exit(1);
+                }
+            }
+        }
         _ => {
             println!(
-                "stream-sync-switcher scaffold; use --placeholder-fixture-once [client-id] or --placeholder-empty-once [client-id]"
+                "stream-sync-switcher scaffold; use --placeholder-fixture-once [client-id], --placeholder-empty-once [client-id], or --receive-auth-video-placeholder-bridge-once [config-path] [client-id]"
             );
         }
     }
@@ -59,6 +85,42 @@ fn print_summary(result: SwitcherPlaceholderManualVerificationResult, fixture_qu
             println!(
                 "switcher placeholder helper fixture_queue={} cross_process_queue=false no_frame={} selected_client_id={} frame_id=none payload_len=none decode_status=none",
                 fixture_queue, summary.no_frame, summary.selected_client_id.0
+            );
+        }
+    }
+}
+
+fn print_bridge_summary(result: SwitcherAuthVideoPlaceholderBridgeResult) {
+    match result {
+        SwitcherAuthVideoPlaceholderBridgeResult::PlaceholderReady { summary, .. } => {
+            println!(
+                "switcher auth/video placeholder bridge in_process=true cross_process_queue=false auth_accepted={} video_received={} video_accepted={} video_rejected={} queued={} queue_len={} dropped_oldest={} no_frame={} selected_client_id={} frame_id={} payload_len={} decode_status={:?}",
+                summary.auth_accepted,
+                summary.video_received,
+                summary.video_accepted,
+                summary.video_rejected,
+                summary.queued,
+                summary.queue_len,
+                summary.dropped_oldest,
+                summary.no_frame,
+                summary.selected_client_id.0,
+                summary.selected_frame_id.unwrap_or(0),
+                summary.payload_len.unwrap_or(0),
+                summary.decode_status
+            );
+        }
+        SwitcherAuthVideoPlaceholderBridgeResult::NoFrame { summary } => {
+            println!(
+                "switcher auth/video placeholder bridge in_process=true cross_process_queue=false auth_accepted={} video_received={} video_accepted={} video_rejected={} queued={} queue_len={} dropped_oldest={} no_frame={} selected_client_id={} frame_id=none payload_len=none decode_status=none",
+                summary.auth_accepted,
+                summary.video_received,
+                summary.video_accepted,
+                summary.video_rejected,
+                summary.queued,
+                summary.queue_len,
+                summary.dropped_oldest,
+                summary.no_frame,
+                summary.selected_client_id.0
             );
         }
     }

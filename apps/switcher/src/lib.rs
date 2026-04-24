@@ -1,5 +1,9 @@
 use stream_sync_protocol::{ClientId, TimestampMicros};
-use stream_sync_server::{ServerQueuedVideoFrame, ServerVideoFrameQueueState};
+use stream_sync_server::{
+    ServerQueuedVideoFrame, ServerReceiveAuthVideoQueueOnceStartupOutcome,
+    ServerReceiveAuthVideoQueueOnceVideoOutcome, ServerVideoFrameQueueRuntimeResult,
+    ServerVideoFrameQueueState, ServerVideoFrameQueueStorageResult,
+};
 
 pub const CRATE_NAME: &str = "stream-sync-switcher";
 
@@ -227,14 +231,178 @@ impl SwitcherPlaceholderManualVerificationBoundary {
     }
 }
 
+/// Minimal server-to-switcher bridge video observation.
+///
+/// This is a compact view of the server manual receive path. It does not share
+/// queue state across processes or reinterpret packet acceptance.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum SwitcherAuthVideoPlaceholderBridgeVideoStatus {
+    NotReceivedAuthRejected,
+    Received,
+    NotReceivedControllerStopped,
+}
+
+/// Input for the in-process auth/video queue to switcher placeholder bridge.
+///
+/// The queue state remains caller-owned and borrowed read-only. The optional
+/// queue result is the server queue runtime result for the packet that produced
+/// the state.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SwitcherAuthVideoPlaceholderBridgeInput<'a> {
+    pub auth_accepted: bool,
+    pub video_status: SwitcherAuthVideoPlaceholderBridgeVideoStatus,
+    pub queue_result: Option<&'a ServerVideoFrameQueueRuntimeResult>,
+    pub queue_state: &'a ServerVideoFrameQueueState,
+    pub client_id: &'a ClientId,
+}
+
+/// Compact stdout/test summary for the in-process bridge.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SwitcherAuthVideoPlaceholderBridgeSummary {
+    pub auth_accepted: bool,
+    pub video_received: bool,
+    pub video_accepted: bool,
+    pub video_rejected: bool,
+    pub queued: bool,
+    pub dropped_oldest: bool,
+    pub queue_len: usize,
+    pub selected_client_id: ClientId,
+    pub selected_frame_id: Option<u64>,
+    pub payload_len: Option<usize>,
+    pub decode_status: Option<SwitcherSingleViewDecodeStatus>,
+    pub no_frame: bool,
+}
+
+/// Result of the switcher-owned in-process bridge.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SwitcherAuthVideoPlaceholderBridgeResult {
+    PlaceholderReady {
+        summary: SwitcherAuthVideoPlaceholderBridgeSummary,
+        handoff: SwitcherSingleViewDisplayPlaceholderHandoff,
+    },
+    NoFrame {
+        summary: SwitcherAuthVideoPlaceholderBridgeSummary,
+    },
+}
+
+/// Switcher-owned in-process bridge for manual placeholder PoC verification.
+///
+/// This composes an already-run server auth/video queue outcome with the
+/// existing switcher placeholder helper. It does not run a cross-process queue
+/// bridge, decode H.264, render UI, sync views, or touch OBS.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct SwitcherAuthVideoPlaceholderBridgeBoundary {
+    verification: SwitcherPlaceholderManualVerificationBoundary,
+}
+
+impl SwitcherAuthVideoPlaceholderBridgeBoundary {
+    pub fn verify(
+        &self,
+        input: SwitcherAuthVideoPlaceholderBridgeInput<'_>,
+    ) -> SwitcherAuthVideoPlaceholderBridgeResult {
+        let placeholder = self.verification.verify_latest_placeholder(
+            SwitcherPlaceholderManualVerificationInput {
+                queue_state: input.queue_state,
+                client_id: input.client_id,
+            },
+        );
+
+        match placeholder {
+            SwitcherPlaceholderManualVerificationResult::PlaceholderReady { summary, handoff } => {
+                SwitcherAuthVideoPlaceholderBridgeResult::PlaceholderReady {
+                    summary: self.summary_from(input, summary),
+                    handoff,
+                }
+            }
+            SwitcherPlaceholderManualVerificationResult::NoFrame { summary } => {
+                SwitcherAuthVideoPlaceholderBridgeResult::NoFrame {
+                    summary: self.summary_from(input, summary),
+                }
+            }
+        }
+    }
+
+    pub fn verify_server_outcome(
+        &self,
+        outcome: &ServerReceiveAuthVideoQueueOnceStartupOutcome,
+        client_id: &ClientId,
+    ) -> SwitcherAuthVideoPlaceholderBridgeResult {
+        let (video_status, queue_result) = match &outcome.video {
+            ServerReceiveAuthVideoQueueOnceVideoOutcome::NotReceivedAuthRejected => (
+                SwitcherAuthVideoPlaceholderBridgeVideoStatus::NotReceivedAuthRejected,
+                None,
+            ),
+            ServerReceiveAuthVideoQueueOnceVideoOutcome::Received { queue, .. } => (
+                if queue.is_some() {
+                    SwitcherAuthVideoPlaceholderBridgeVideoStatus::Received
+                } else {
+                    SwitcherAuthVideoPlaceholderBridgeVideoStatus::NotReceivedControllerStopped
+                },
+                queue.as_ref(),
+            ),
+        };
+
+        self.verify(SwitcherAuthVideoPlaceholderBridgeInput {
+            auth_accepted: outcome.first_auth.auth_flow.decision.accepted,
+            video_status,
+            queue_result,
+            queue_state: &outcome.video_queue_state,
+            client_id,
+        })
+    }
+
+    fn summary_from(
+        &self,
+        input: SwitcherAuthVideoPlaceholderBridgeInput<'_>,
+        placeholder: SwitcherPlaceholderManualVerificationSummary,
+    ) -> SwitcherAuthVideoPlaceholderBridgeSummary {
+        let video_received =
+            input.video_status == SwitcherAuthVideoPlaceholderBridgeVideoStatus::Received;
+        let (video_accepted, video_rejected, queued, dropped_oldest) =
+            queue_result_summary(input.queue_result);
+
+        SwitcherAuthVideoPlaceholderBridgeSummary {
+            auth_accepted: input.auth_accepted,
+            video_received,
+            video_accepted,
+            video_rejected,
+            queued,
+            dropped_oldest,
+            queue_len: input.queue_state.total_len(),
+            selected_client_id: placeholder.selected_client_id,
+            selected_frame_id: placeholder.frame_id,
+            payload_len: placeholder.encoded_payload_len,
+            decode_status: placeholder.decode_status,
+            no_frame: placeholder.no_frame,
+        }
+    }
+}
+
+fn queue_result_summary(
+    queue_result: Option<&ServerVideoFrameQueueRuntimeResult>,
+) -> (bool, bool, bool, bool) {
+    match queue_result {
+        Some(ServerVideoFrameQueueRuntimeResult::Queued(
+            ServerVideoFrameQueueStorageResult::Stored { dropped_oldest, .. },
+        )) => (true, false, true, dropped_oldest.is_some()),
+        Some(ServerVideoFrameQueueRuntimeResult::Queued(
+            ServerVideoFrameQueueStorageResult::Dropped { .. },
+        )) => (true, false, false, false),
+        Some(ServerVideoFrameQueueRuntimeResult::NotQueued { .. }) => (false, true, false, false),
+        None => (false, false, false, false),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use stream_sync_net_core::PacketSource;
     use stream_sync_protocol::{Codec, MessageType, ProtocolVersion, RunId, VideoFrame};
     use stream_sync_server::{
-        AuthenticatedSenderEntry, ServerRegisteredVideoFramePacket,
-        ServerVideoFrameHandlerBoundary, ServerVideoFrameQueuePolicy,
+        AuthenticatedSenderEntry, ServerDispatchRuntimeSideEffectApplyResult,
+        ServerHandlerDispatchOutcome, ServerHandlerDispatchResult,
+        ServerRegisteredVideoFramePacket, ServerVideoFrameHandlerBoundary,
+        ServerVideoFrameQueuePolicy, ServerVideoFrameQueueRuntimeSkipReason,
         ServerVideoFrameQueueStorageBoundary,
     };
 
@@ -493,12 +661,181 @@ mod tests {
         assert_eq!(frame_ids, vec![14, 15]);
     }
 
+    #[test]
+    fn bridge_composes_server_queue_result_and_switcher_placeholder_handoff() {
+        let mut state = ServerVideoFrameQueueState::default();
+        let storage = store_frame(&mut state, "client-1", 16, TimestampMicros(2_800_000));
+        let queue_result = ServerVideoFrameQueueRuntimeResult::Queued(storage);
+        let client_id = ClientId("client-1".to_string());
+
+        let result = SwitcherAuthVideoPlaceholderBridgeBoundary::default().verify(
+            SwitcherAuthVideoPlaceholderBridgeInput {
+                auth_accepted: true,
+                video_status: SwitcherAuthVideoPlaceholderBridgeVideoStatus::Received,
+                queue_result: Some(&queue_result),
+                queue_state: &state,
+                client_id: &client_id,
+            },
+        );
+
+        let SwitcherAuthVideoPlaceholderBridgeResult::PlaceholderReady { summary, handoff } =
+            result
+        else {
+            panic!("queued frame should produce placeholder handoff");
+        };
+        assert!(summary.auth_accepted);
+        assert!(summary.video_received);
+        assert!(summary.video_accepted);
+        assert!(!summary.video_rejected);
+        assert!(summary.queued);
+        assert_eq!(summary.queue_len, 1);
+        assert_eq!(summary.selected_client_id, client_id);
+        assert_eq!(summary.selected_frame_id, Some(16));
+        assert_eq!(summary.payload_len, Some(3));
+        assert_eq!(
+            summary.decode_status,
+            Some(SwitcherSingleViewDecodeStatus::DeferredPlaceholder)
+        );
+        assert_eq!(handoff.selected.frame_id, 16);
+    }
+
+    #[test]
+    fn bridge_selects_queued_frame_by_client_id() {
+        let mut state = ServerVideoFrameQueueState::default();
+        store_frame(&mut state, "client-1", 17, TimestampMicros(2_900_000));
+        let storage = store_frame(&mut state, "client-2", 21, TimestampMicros(2_900_100));
+        let queue_result = ServerVideoFrameQueueRuntimeResult::Queued(storage);
+        let client_id = ClientId("client-2".to_string());
+
+        let result = SwitcherAuthVideoPlaceholderBridgeBoundary::default().verify(
+            SwitcherAuthVideoPlaceholderBridgeInput {
+                auth_accepted: true,
+                video_status: SwitcherAuthVideoPlaceholderBridgeVideoStatus::Received,
+                queue_result: Some(&queue_result),
+                queue_state: &state,
+                client_id: &client_id,
+            },
+        );
+
+        let SwitcherAuthVideoPlaceholderBridgeResult::PlaceholderReady { summary, handoff } =
+            result
+        else {
+            panic!("client-2 queued frame should be selected");
+        };
+        assert_eq!(summary.selected_client_id, client_id);
+        assert_eq!(summary.selected_frame_id, Some(21));
+        assert_eq!(handoff.selected.frame_id, 21);
+    }
+
+    #[test]
+    fn bridge_reports_no_frame_when_queue_has_no_selected_client_frame() {
+        let state = ServerVideoFrameQueueState::default();
+        let client_id = ClientId("client-1".to_string());
+
+        let result = SwitcherAuthVideoPlaceholderBridgeBoundary::default().verify(
+            SwitcherAuthVideoPlaceholderBridgeInput {
+                auth_accepted: true,
+                video_status: SwitcherAuthVideoPlaceholderBridgeVideoStatus::Received,
+                queue_result: None,
+                queue_state: &state,
+                client_id: &client_id,
+            },
+        );
+
+        assert_eq!(
+            result,
+            SwitcherAuthVideoPlaceholderBridgeResult::NoFrame {
+                summary: SwitcherAuthVideoPlaceholderBridgeSummary {
+                    auth_accepted: true,
+                    video_received: true,
+                    video_accepted: false,
+                    video_rejected: false,
+                    queued: false,
+                    dropped_oldest: false,
+                    queue_len: 0,
+                    selected_client_id: client_id,
+                    selected_frame_id: None,
+                    payload_len: None,
+                    decode_status: None,
+                    no_frame: true,
+                }
+            }
+        );
+    }
+
+    #[test]
+    fn bridge_rejected_video_does_not_produce_fake_selected_frame() {
+        let state = ServerVideoFrameQueueState::default();
+        let client_id = ClientId("client-1".to_string());
+        let queue_result = ServerVideoFrameQueueRuntimeResult::NotQueued {
+            reason: ServerVideoFrameQueueRuntimeSkipReason::NoAcceptedVideoFrame,
+            side_effect: ServerDispatchRuntimeSideEffectApplyResult::NoDispatch(
+                ServerHandlerDispatchOutcome {
+                    packet_len: None,
+                    result: ServerHandlerDispatchResult::Unsupported {
+                        source: PacketSource {
+                            address: "127.0.0.1:5001".parse().unwrap(),
+                        },
+                        message_type: MessageType::VideoFrame,
+                    },
+                },
+            ),
+        };
+
+        let result = SwitcherAuthVideoPlaceholderBridgeBoundary::default().verify(
+            SwitcherAuthVideoPlaceholderBridgeInput {
+                auth_accepted: true,
+                video_status: SwitcherAuthVideoPlaceholderBridgeVideoStatus::Received,
+                queue_result: Some(&queue_result),
+                queue_state: &state,
+                client_id: &client_id,
+            },
+        );
+
+        let SwitcherAuthVideoPlaceholderBridgeResult::NoFrame { summary } = result else {
+            panic!("rejected video should not produce a placeholder frame");
+        };
+        assert!(summary.video_received);
+        assert!(!summary.video_accepted);
+        assert!(summary.video_rejected);
+        assert!(!summary.queued);
+        assert_eq!(summary.selected_frame_id, None);
+        assert!(summary.no_frame);
+    }
+
+    #[test]
+    fn bridge_does_not_mutate_queue() {
+        let mut state = ServerVideoFrameQueueState::default();
+        store_frame(&mut state, "client-1", 18, TimestampMicros(3_000_000));
+        let storage = store_frame(&mut state, "client-1", 19, TimestampMicros(3_000_100));
+        let queue_result = ServerVideoFrameQueueRuntimeResult::Queued(storage);
+        let client_id = ClientId("client-1".to_string());
+        let before_len = state.client_queue_len(&client_id);
+
+        let _result = SwitcherAuthVideoPlaceholderBridgeBoundary::default().verify(
+            SwitcherAuthVideoPlaceholderBridgeInput {
+                auth_accepted: true,
+                video_status: SwitcherAuthVideoPlaceholderBridgeVideoStatus::Received,
+                queue_result: Some(&queue_result),
+                queue_state: &state,
+                client_id: &client_id,
+            },
+        );
+
+        assert_eq!(state.client_queue_len(&client_id), before_len);
+        let frame_ids: Vec<u64> = state
+            .frames_for_client(&client_id)
+            .map(|queued| queued.frame.frame_id)
+            .collect();
+        assert_eq!(frame_ids, vec![18, 19]);
+    }
+
     fn store_frame(
         state: &mut ServerVideoFrameQueueState,
         client_id: &str,
         frame_id: u64,
         queued_at: TimestampMicros,
-    ) {
+    ) -> ServerVideoFrameQueueStorageResult {
         let source = PacketSource {
             address: "127.0.0.1:5001".parse().unwrap(),
         };
@@ -530,11 +867,11 @@ mod tests {
             },
         };
         let input = ServerVideoFrameHandlerBoundary.prepare_input(packet);
-        let _result = ServerVideoFrameQueueStorageBoundary.store_frame(
+        ServerVideoFrameQueueStorageBoundary.store_frame(
             state,
             input,
             queued_at,
             ServerVideoFrameQueuePolicy::default(),
-        );
+        )
     }
 }

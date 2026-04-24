@@ -9378,3 +9378,51 @@
 - `cargo fmt`
 - `cargo fmt --check`
 - `cargo check --workspace`
+
+---
+
+## 2026-04-25
+### Type
+- Codex
+
+### Work
+- Implemented the smallest switcher-owned in-process manual bridge launcher.
+- Added `SwitcherAuthVideoPlaceholderBridgeBoundary` and summary/result types.
+- Added `--receive-auth-video-placeholder-bridge-once [config-path] [client-id]` to the switcher CLI.
+- The CLI runs `ServerReceiveAuthVideoQueueOnceLauncher` in-process, receives the caller-owned `ServerVideoFrameQueueState`, then passes it to the switcher placeholder bridge boundary.
+- Added focused switcher tests for queued handoff composition, client-id selection, no-frame, rejected/not queued video, and read-only queue behavior.
+- Kept cross-process queue sharing, H.264 decode, rendering, OBS, and 4-view sync out of scope.
+
+### Changed Files
+- `apps/switcher/src/lib.rs`
+- `apps/switcher/src/main.rs`
+- `docs/operations/manual-placeholder-video-poc.md`
+- `docs/architecture/system-design.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### Decisions
+- The bridge remains switcher-owned and in-process.
+- The bridge reuses the server queue launcher outcome instead of duplicating packet acceptance or queue storage logic.
+- The switcher placeholder helper remains read-only and decode-deferred.
+- File/socket/shared-memory queue sharing remains deferred.
+
+### Unresolved
+- real capture / real H.264 encode
+- real H.264 decode / switcher window rendering
+- sync scheduling, 4-view sync, and OBS integration
+- future continuous-runtime server-to-switcher queue transport, if needed
+
+### Next
+- Move to real capture / H.264 encode boundary, or real decode/window rendering if display proof is the next priority.
+
+### TODO Update
+- Marked the in-process bridge launcher as complete in Current Focus.
+- Removed the bridge launcher from Next Items.
+- Kept real capture/encode, real decode/rendering, targetTime/jitter, and later cross-process bridge decision as remaining items.
+
+### Validation
+- `cargo fmt`
+- `cargo fmt --check`
+- `cargo test -p stream-sync-switcher`
+- `cargo check --workspace`
