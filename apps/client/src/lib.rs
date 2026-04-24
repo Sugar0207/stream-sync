@@ -5284,6 +5284,16 @@ impl ClientHeartbeatLoopOuterWhileLoopRepeatedBodyBoundary {
         &self,
         input: ClientHeartbeatLoopOuterWhileLoopRepeatedBodyInput,
     ) -> ClientHeartbeatLoopOuterWhileLoopRepeatedBodyResult {
+        self.run_with_hook(input, &ClientHeartbeatLoopDeferredSocketReestablishmentHook)
+    }
+
+    /// Runs the repeated body while keeping actual socket replacement delegated
+    /// through the existing caller-owned hook abstraction.
+    pub fn run_with_hook<H: ClientHeartbeatLoopSocketReestablishmentHook>(
+        &self,
+        input: ClientHeartbeatLoopOuterWhileLoopRepeatedBodyInput,
+        hook: &H,
+    ) -> ClientHeartbeatLoopOuterWhileLoopRepeatedBodyResult {
         let mut current = input.current;
         let mut turns_completed = 0usize;
 
@@ -5291,7 +5301,7 @@ impl ClientHeartbeatLoopOuterWhileLoopRepeatedBodyBoundary {
             let connection = self.connection.plan_next(current);
             let one_turn = self.one_turn.run_turn(connection);
             let actual_execution = self.actual_execution.apply(one_turn);
-            let reconnect = self.reconnect.apply(actual_execution);
+            let reconnect = self.reconnect.apply_with_hook(actual_execution, hook);
 
             match reconnect {
                 ClientHeartbeatLoopOuterWhileLoopReconnectResult::Stop { output } => {
@@ -13322,6 +13332,45 @@ mod tests {
     }
 
     #[test]
+    fn client_heartbeat_loop_cleanup_outer_while_loop_repeated_body_keeps_timer_retry_separate_from_socket_reestablishment_hook(
+    ) {
+        let calls = std::rc::Rc::new(std::cell::Cell::new(0));
+        let hook = CleanupTestDeferredSocketReestablishmentHook {
+            calls: calls.clone(),
+        };
+        let result = ClientHeartbeatLoopOuterWhileLoopRepeatedBodyBoundary::default()
+            .run_with_hook(
+                ClientHeartbeatLoopOuterWhileLoopRepeatedBodyInput {
+                    current: cleanup_test_repeated_apply_timer_continue(),
+                    max_turns: std::num::NonZeroUsize::new(1).unwrap(),
+                },
+                &hook,
+            );
+
+        let ClientHeartbeatLoopOuterWhileLoopRepeatedBodyResult::ReachedTurnGuard { state } =
+            result
+        else {
+            panic!("continue path should reach guard without invoking socket replacement");
+        };
+
+        assert_eq!(calls.get(), 0);
+        assert_eq!(
+            state.last_execution.timer_wait,
+            ClientHeartbeatLoopOuterWhileLoopActualTimerWaitExecutionApplyResult::TimerWaitApplied {
+                sleep: cleanup_test_timer_sleep(),
+            }
+        );
+        assert_eq!(
+            state.last_execution.retry_execution,
+            ClientHeartbeatLoopOuterWhileLoopActualRetryExecutionApplyResult::NoRetryExecutionApplied
+        );
+        assert_eq!(
+            state.last_reconnect,
+            ClientHeartbeatLoopOuterWhileLoopReconnectState::NoReconnectNeeded
+        );
+    }
+
+    #[test]
     fn client_heartbeat_loop_cleanup_outer_while_loop_repeated_body_stops_when_one_turn_path_stops()
     {
         let result = ClientHeartbeatLoopOuterWhileLoopRepeatedBodyBoundary::default().run(
@@ -13335,6 +13384,43 @@ mod tests {
             result,
             ClientHeartbeatLoopOuterWhileLoopRepeatedBodyResult::Stopped { .. }
         ));
+    }
+
+    #[test]
+    fn client_heartbeat_loop_cleanup_outer_while_loop_repeated_body_preserves_stop_passthrough_with_socket_reestablishment_hook_available(
+    ) {
+        let calls = std::rc::Rc::new(std::cell::Cell::new(0));
+        let hook = CleanupTestDeferredSocketReestablishmentHook {
+            calls: calls.clone(),
+        };
+        let result = ClientHeartbeatLoopOuterWhileLoopRepeatedBodyBoundary::default()
+            .run_with_hook(
+                ClientHeartbeatLoopOuterWhileLoopRepeatedBodyInput {
+                    current: cleanup_test_repeated_stop(),
+                    max_turns: std::num::NonZeroUsize::new(1).unwrap(),
+                },
+                &hook,
+            );
+
+        assert_eq!(
+            result,
+            ClientHeartbeatLoopOuterWhileLoopRepeatedBodyResult::Stopped {
+                output: ClientHeartbeatLoopCompletedBodyTerminalOutput {
+                    stop_reason:
+                        ClientHeartbeatLoopRepeatedInvocationStopReason::CleanupRequested {
+                            stop_reason:
+                                ClientHeartbeatLoopLifecycleStopReason::CallerRequestedStop,
+                        },
+                    cleanup_completed: true,
+                    applied_actions: [
+                        ClientHeartbeatLoopCleanupAppliedAction::FinalFlush,
+                        ClientHeartbeatLoopCleanupAppliedAction::LogWriterInvocation,
+                        ClientHeartbeatLoopCleanupAppliedAction::ResourceRelease,
+                    ],
+                },
+            }
+        );
+        assert_eq!(calls.get(), 0);
     }
 
     #[test]

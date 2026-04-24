@@ -26,7 +26,7 @@
 - `crates/protocol` / `crates/config` / `crates/net-core` の最小実装は揃っており、主要 message 型、timestamp 型、fixed header decode / encode、server auth 設定読み込み、`shared_token_env` 解決、UDP 1 datagram receive / send adapter までは完了している
 - server 側は auth one-shot、accepted auth registry 登録、heartbeat ack / liveness / timeout action plan / timeout apply / notice queue storage、RTT / offset state commit と metrics snapshot handoff までの最小境界が揃っている
 - client 側は auth one-shot、heartbeat one-shot、`HeartbeatAckObservation` 付き `ClientStats` one-shot、one-tick runtime、accepted path 手動確認まで完了している
-- client continuous heartbeat loop は thin composition の completed body まで実装済みで、heartbeat timeout notice wakeup planning 境界、wakeup execution 境界、wakeup actual side-effect 境界、outer while-loop connection 境界、outer while-loop one-turn execution body 境界、actual timer wait / retry execution / reconnect 実行境界、outer while-loop 反復実行本体、reconnect policy 境界、caller-owned hook 付き actual socket 再確立境界、real UDP socket 差し替え hook も完了している
+- client continuous heartbeat loop は thin composition の completed body まで実装済みで、heartbeat timeout notice wakeup planning 境界、wakeup execution 境界、wakeup actual side-effect 境界、outer while-loop connection 境界、outer while-loop one-turn execution body 境界、actual timer wait / retry execution / reconnect 実行境界、outer while-loop 反復実行本体、reconnect policy 境界、caller-owned hook 付き actual socket 再確立境界、real UDP socket 差し替え hook、repeated body からの hook 注入経路まで完了している
 - 未完了の中心は server 側 heartbeat timeout loop tick の複数 client 継続実行、RTT / offset metrics state commit の continuous loop 接続、metrics snapshot export cadence / dashboard refresh 方針の具体化
 - outbound queue 実キュー、continuous receive/send loop 本体、send / receive の継続ログ出力、file sink open、process-wide logger、`ServerNotice` 実送信は未実装
 - video path / switcher / OBS 連携はまだ PoC 前段で、映像受信・復号・表示は未着手に近い
@@ -387,6 +387,7 @@
 - [x] outer while-loop reconnect policy 境界を追加する
 - [x] outer while-loop actual socket 再確立 boundary / caller-owned hook を追加する
 - [x] caller-owned socket 再確立 hook を実 UDP socket 差し替えへ接続する
+- [ ] future client continuous heartbeat loop runner に caller-owned UDP socket slot の live ownership を接続する
 - [ ] server 側 heartbeat timeout loop tick を複数 client に対して継続実行する loop 本体を実装する
 - [x] RTT 計測 candidate を server 側 state に commit する
 - [x] clock offset 推定 candidate を server 側 state に commit する

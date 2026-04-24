@@ -4,6 +4,47 @@
 ### 作業者 - Codex
 
 ### 今回の作業
+- client continuous heartbeat loop execution path に戻り、outer while-loop repeated body から caller-owned socket 再確立 hook を注入できる最小配線を追加した。
+- real UDP socket 差し替えは既存の hook 抽象をそのまま使い、outer while-loop repeated body 自体は bind / connect / slot 置換を直接持たない形を維持した。
+- future continuous heartbeat loop runner が caller-owned UDP socket slot を持ち、real hook を repeated body へ渡すだけで接続できる最小実装形を docs に反映した。
+
+### 変更ファイル
+- `apps/client/src/lib.rs`
+- `docs/architecture/system-design.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### 実装したこと
+- `ClientHeartbeatLoopOuterWhileLoopRepeatedBodyBoundary::run_with_hook(...)`
+- repeated body で timer / retry と socket re-establishment hook 呼び出しを分離する単体テスト
+- repeated body で stop path passthrough を hook 利用可能時も維持する単体テスト
+- future runner から `ClientHeartbeatLoopRealUdpSocketReestablishmentHook` を渡す最小関係の設計追記
+
+### 未実装 / 保留
+- future client continuous heartbeat loop runner で caller-owned UDP socket slot を live socket 運用へ接続する本配線
+- RTT / offset metrics state commit の continuous loop 接続
+- metrics snapshot export cadence / dashboard refresh 方針
+- server 側 heartbeat timeout loop tick の複数 client 継続実行
+
+### 次にやる候補
+- RTT / offset metrics state commit を client continuous heartbeat loop へ接続する
+- metrics snapshot export cadence / dashboard refresh 方針を詰める
+- future continuous heartbeat loop runner の live socket ownership 配線を最小境界で足す
+
+### TODO更新内容
+- 現在位置に repeated body から caller-owned socket 再確立 hook を注入できる状態を反映した。
+- heartbeat / client 継続 loop タスクに future runner 側 live socket ownership 配線の保留項目を追加した。
+
+### 検証
+- `cargo fmt`
+- `cargo fmt --check`
+- `cargo test -p stream-sync-client client_heartbeat_loop_cleanup`
+- `cargo check --workspace`
+
+## 2026-04-24
+### 作業者 - Codex
+
+### 今回の作業
 - client continuous heartbeat loop execution path に戻り、caller-owned socket 再確立 hook を real UDP socket 差し替えへ接続する最小実装を追加した。
 - reconnect policy handoff だけを入力源にし、hook 入力から destination / bind address を導出して `bind -> connect -> caller-owned slot 置換` を行う形にした。
 - outer while-loop repeated body は変更せず、reconnect flow は `actual reconnect execution result -> reconnect policy -> actual socket re-establishment hook -> continuation state` の explicit な分離を維持した。

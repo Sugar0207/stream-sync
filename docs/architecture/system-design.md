@@ -5717,6 +5717,11 @@ Current code reflects this with
 `ClientHeartbeatLoopOuterWhileLoopRepeatedBodyResult`, and
 `ClientHeartbeatLoopOuterWhileLoopRepeatedBodyBoundary`.
 
+A future client continuous heartbeat loop runner can keep socket ownership
+caller-owned by invoking `ClientHeartbeatLoopOuterWhileLoopRepeatedBodyBoundary::run_with_hook(...)`
+with a caller-provided socket re-establishment hook. This keeps bind/connect
+and socket-slot replacement outside the repeated body itself.
+
 ### Client Outer While-Loop Reconnect Policy / Actual Socket Re-Establishment Minimal Scope
 
 After repeated outer while-loop body exists, reconnect still must remain a
@@ -5762,7 +5767,12 @@ Current minimal scope:
 9. `ClientHeartbeatLoopOuterWhileLoopReconnectBoundary` keeps outer while-loop
    integration thin by composing reconnect policy and actual socket
    re-establishment boundaries only
-10. Minimal safe reconnect scope:
+10. A future client continuous heartbeat loop runner can keep a caller-owned
+    live UDP socket slot, construct
+    `ClientHeartbeatLoopRealUdpSocketReestablishmentHook`, and pass that hook
+    into repeated-body `run_with_hook(...)` without moving bind/connect logic
+    into outer while-loop control
+11. Minimal safe reconnect scope:
    - reconnect policy consumes only explicit reconnect execution state/result
    - timer wait and retry execution are not reinterpreted by reconnect policy
    - actual socket re-establishment consumes only explicit reconnect/socket
@@ -5770,6 +5780,8 @@ Current minimal scope:
    - real UDP socket replacement stays inside the caller-owned hook
    - the outer while-loop repeated body does not directly own bind/connect or
      socket slot replacement logic
+   - broader live-socket borrowing and future socket option reapplication
+     remain runner-owned follow-up work
    - no metrics cadence, dashboard refresh, video, switcher, OBS, or broad
      generic error recovery is introduced here
 
@@ -5815,7 +5827,9 @@ Current code reflects this with
 `ClientHeartbeatLoopOuterWhileLoopReconnectState`,
 `ClientHeartbeatLoopOuterWhileLoopReconnectPolicyBoundary`,
 `ClientHeartbeatLoopOuterWhileLoopSocketReestablishmentBoundary`, and
-`ClientHeartbeatLoopOuterWhileLoopReconnectBoundary`.
+`ClientHeartbeatLoopOuterWhileLoopReconnectBoundary`, plus
+`ClientHeartbeatLoopOuterWhileLoopRepeatedBodyBoundary::run_with_hook(...)`
+for future caller-owned runner wiring.
 
 ### Heartbeat Client Ack Observation Flow
 
