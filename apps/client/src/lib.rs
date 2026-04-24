@@ -3481,14 +3481,64 @@ impl ClientHeartbeatLoopOuterWhileLoopSocketReestablishmentInput {
     }
 }
 
-/// Explicit result of applying minimal socket re-establishment handling.
+/// Minimal failure kind surfaced when actual socket re-establishment fails.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ClientHeartbeatLoopSocketReestablishmentFailureKind {
+    HookRejected,
+}
+
+/// Minimal explicit error surfaced when actual socket re-establishment fails.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClientHeartbeatLoopSocketReestablishmentError {
+    pub kind: ClientHeartbeatLoopSocketReestablishmentFailureKind,
+    pub detail: String,
+}
+
+/// Caller-owned result returned by actual socket re-establishment hook.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ClientHeartbeatLoopSocketReestablishmentHookResult {
+    Applied,
+    Deferred,
+    Failed {
+        error: ClientHeartbeatLoopSocketReestablishmentError,
+    },
+}
+
+/// Caller-owned hook used by actual socket re-establishment boundary.
+pub trait ClientHeartbeatLoopSocketReestablishmentHook {
+    fn reestablish_socket(
+        &self,
+        input: ClientHeartbeatLoopOuterWhileLoopSocketReestablishmentInput,
+    ) -> ClientHeartbeatLoopSocketReestablishmentHookResult;
+}
+
+/// Default caller-owned hook that keeps socket re-establishment deferred.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct ClientHeartbeatLoopDeferredSocketReestablishmentHook;
+
+impl ClientHeartbeatLoopSocketReestablishmentHook
+    for ClientHeartbeatLoopDeferredSocketReestablishmentHook
+{
+    fn reestablish_socket(
+        &self,
+        _input: ClientHeartbeatLoopOuterWhileLoopSocketReestablishmentInput,
+    ) -> ClientHeartbeatLoopSocketReestablishmentHookResult {
+        ClientHeartbeatLoopSocketReestablishmentHookResult::Deferred
+    }
+}
+
+/// Explicit result of applying actual socket re-establishment handling.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ClientHeartbeatLoopOuterWhileLoopSocketReestablishmentApplyResult {
-    SocketReestablishmentDeferred {
+    SocketReestablishmentAttemptedApplied {
         reason: ClientHeartbeatLoopReconnectReason,
     },
-    SocketReestablishmentApplied {
+    SocketReestablishmentAttemptedDeferred {
         reason: ClientHeartbeatLoopReconnectReason,
+    },
+    SocketReestablishmentAttemptedFailed {
+        reason: ClientHeartbeatLoopReconnectReason,
+        error: ClientHeartbeatLoopSocketReestablishmentError,
     },
 }
 
@@ -3512,6 +3562,9 @@ pub enum ClientHeartbeatLoopOuterWhileLoopReconnectResult {
     ContinueWithReconnectApplied {
         output: ClientHeartbeatLoopOuterWhileLoopSocketReestablishmentOutput,
     },
+    ContinueWithReconnectFailed {
+        output: ClientHeartbeatLoopOuterWhileLoopSocketReestablishmentOutput,
+    },
     Stop {
         output: ClientHeartbeatLoopCompletedBodyTerminalOutput,
     },
@@ -3526,6 +3579,10 @@ pub enum ClientHeartbeatLoopOuterWhileLoopReconnectState {
         socket_reestablishment: ClientHeartbeatLoopOuterWhileLoopSocketReestablishmentApplyResult,
     },
     ReconnectApplied {
+        reconnect_plan: ClientHeartbeatLoopFutureSocketReestablishmentPlan,
+        socket_reestablishment: ClientHeartbeatLoopOuterWhileLoopSocketReestablishmentApplyResult,
+    },
+    ReconnectFailed {
         reconnect_plan: ClientHeartbeatLoopFutureSocketReestablishmentPlan,
         socket_reestablishment: ClientHeartbeatLoopOuterWhileLoopSocketReestablishmentApplyResult,
     },
@@ -4917,11 +4974,11 @@ impl ClientHeartbeatLoopOuterWhileLoopReconnectPolicyBoundary {
     }
 }
 
-/// Boundary that keeps socket re-establishment placeholder handling explicit.
+/// Boundary that keeps actual socket re-establishment handling explicit.
 ///
-/// This boundary consumes reconnect policy only. It does not implement a full
-/// reconnect policy or recreate sockets yet; it only returns explicit deferred
-/// or applied placeholder output while preserving stop passthrough.
+/// This boundary consumes reconnect policy only. It delegates actual socket
+/// replacement to a caller-owned hook and returns explicit applied, deferred,
+/// or failed output while preserving stop passthrough.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
 pub struct ClientHeartbeatLoopOuterWhileLoopSocketReestablishmentBoundary;
 
@@ -4929,6 +4986,17 @@ impl ClientHeartbeatLoopOuterWhileLoopSocketReestablishmentBoundary {
     pub fn apply(
         &self,
         policy: ClientHeartbeatLoopOuterWhileLoopReconnectPolicyResult,
+    ) -> ClientHeartbeatLoopOuterWhileLoopReconnectResult {
+        self.apply_with_hook(
+            policy,
+            &ClientHeartbeatLoopDeferredSocketReestablishmentHook,
+        )
+    }
+
+    pub fn apply_with_hook<H: ClientHeartbeatLoopSocketReestablishmentHook>(
+        &self,
+        policy: ClientHeartbeatLoopOuterWhileLoopReconnectPolicyResult,
+        hook: &H,
     ) -> ClientHeartbeatLoopOuterWhileLoopReconnectResult {
         match ClientHeartbeatLoopOuterWhileLoopSocketReestablishmentInput::from_reconnect_policy(
             policy,
@@ -4940,15 +5008,44 @@ impl ClientHeartbeatLoopOuterWhileLoopSocketReestablishmentBoundary {
                     } => reason,
                 };
 
-                ClientHeartbeatLoopOuterWhileLoopReconnectResult::ContinueWithReconnectDeferred {
-                    output: ClientHeartbeatLoopOuterWhileLoopSocketReestablishmentOutput {
-                        output: input.handoff.output,
-                        reconnect_plan: input.handoff.reconnect_plan,
-                        socket_reestablishment:
-                            ClientHeartbeatLoopOuterWhileLoopSocketReestablishmentApplyResult::SocketReestablishmentDeferred {
-                                reason,
+                match hook.reestablish_socket(input.clone()) {
+                    ClientHeartbeatLoopSocketReestablishmentHookResult::Applied => {
+                        ClientHeartbeatLoopOuterWhileLoopReconnectResult::ContinueWithReconnectApplied {
+                            output: ClientHeartbeatLoopOuterWhileLoopSocketReestablishmentOutput {
+                                output: input.handoff.output,
+                                reconnect_plan: input.handoff.reconnect_plan,
+                                socket_reestablishment:
+                                    ClientHeartbeatLoopOuterWhileLoopSocketReestablishmentApplyResult::SocketReestablishmentAttemptedApplied {
+                                        reason,
+                                    },
                             },
-                    },
+                        }
+                    }
+                    ClientHeartbeatLoopSocketReestablishmentHookResult::Deferred => {
+                        ClientHeartbeatLoopOuterWhileLoopReconnectResult::ContinueWithReconnectDeferred {
+                            output: ClientHeartbeatLoopOuterWhileLoopSocketReestablishmentOutput {
+                                output: input.handoff.output,
+                                reconnect_plan: input.handoff.reconnect_plan,
+                                socket_reestablishment:
+                                    ClientHeartbeatLoopOuterWhileLoopSocketReestablishmentApplyResult::SocketReestablishmentAttemptedDeferred {
+                                        reason,
+                                    },
+                            },
+                        }
+                    }
+                    ClientHeartbeatLoopSocketReestablishmentHookResult::Failed { error } => {
+                        ClientHeartbeatLoopOuterWhileLoopReconnectResult::ContinueWithReconnectFailed {
+                            output: ClientHeartbeatLoopOuterWhileLoopSocketReestablishmentOutput {
+                                output: input.handoff.output,
+                                reconnect_plan: input.handoff.reconnect_plan,
+                                socket_reestablishment:
+                                    ClientHeartbeatLoopOuterWhileLoopSocketReestablishmentApplyResult::SocketReestablishmentAttemptedFailed {
+                                        reason,
+                                        error,
+                                    },
+                            },
+                        }
+                    }
                 }
             }
             Err(
@@ -4975,9 +5072,9 @@ impl ClientHeartbeatLoopOuterWhileLoopSocketReestablishmentBoundary {
 /// Boundary that connects reconnect policy into outer while-loop continuation flow.
 ///
 /// This boundary keeps the actual while-loop dumb: it consumes actual
-/// reconnect execution result only, runs reconnect policy and minimal socket
-/// re-establishment placeholder handling, and returns explicit continue or stop
-/// output without reinterpreting timer wait or retry execution.
+/// reconnect execution result only, runs reconnect policy and actual socket
+/// re-establishment handling, and returns explicit continue or stop output
+/// without reinterpreting timer wait or retry execution.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
 pub struct ClientHeartbeatLoopOuterWhileLoopReconnectBoundary {
     policy: ClientHeartbeatLoopOuterWhileLoopReconnectPolicyBoundary,
@@ -4991,6 +5088,15 @@ impl ClientHeartbeatLoopOuterWhileLoopReconnectBoundary {
     ) -> ClientHeartbeatLoopOuterWhileLoopReconnectResult {
         let policy = self.policy.plan_next(execution);
         self.socket_reestablishment.apply(policy)
+    }
+
+    pub fn apply_with_hook<H: ClientHeartbeatLoopSocketReestablishmentHook>(
+        &self,
+        execution: ClientHeartbeatLoopOuterWhileLoopActualExecutionResult,
+        hook: &H,
+    ) -> ClientHeartbeatLoopOuterWhileLoopReconnectResult {
+        let policy = self.policy.plan_next(execution);
+        self.socket_reestablishment.apply_with_hook(policy, hook)
     }
 }
 
@@ -5083,6 +5189,30 @@ impl ClientHeartbeatLoopOuterWhileLoopRepeatedBodyBoundary {
                         next: next.clone(),
                         last_execution: output.output.clone(),
                         last_reconnect: ClientHeartbeatLoopOuterWhileLoopReconnectState::ReconnectApplied {
+                            reconnect_plan: output.reconnect_plan,
+                            socket_reestablishment: output.socket_reestablishment,
+                        },
+                    };
+
+                    if turns_completed >= input.max_turns.get() {
+                        return ClientHeartbeatLoopOuterWhileLoopRepeatedBodyResult::ReachedTurnGuard {
+                            state,
+                        };
+                    }
+
+                    current =
+                        ClientHeartbeatLoopRepeatedInvocationResult::Continue { carry: next.carry };
+                }
+                ClientHeartbeatLoopOuterWhileLoopReconnectResult::ContinueWithReconnectFailed {
+                    output,
+                } => {
+                    turns_completed += 1;
+                    let next = output.output.next.clone();
+                    let state = ClientHeartbeatLoopOuterWhileLoopRepeatedBodyContinuationState {
+                        turns_completed,
+                        next: next.clone(),
+                        last_execution: output.output.clone(),
+                        last_reconnect: ClientHeartbeatLoopOuterWhileLoopReconnectState::ReconnectFailed {
                             reconnect_plan: output.reconnect_plan,
                             socket_reestablishment: output.socket_reestablishment,
                         },
@@ -12011,6 +12141,56 @@ mod tests {
             .apply(cleanup_test_outer_one_turn_continue_with_reconnect_needed())
     }
 
+    #[derive(Clone)]
+    struct CleanupTestDeferredSocketReestablishmentHook {
+        calls: std::rc::Rc<std::cell::Cell<usize>>,
+    }
+
+    impl ClientHeartbeatLoopSocketReestablishmentHook for CleanupTestDeferredSocketReestablishmentHook {
+        fn reestablish_socket(
+            &self,
+            _input: ClientHeartbeatLoopOuterWhileLoopSocketReestablishmentInput,
+        ) -> ClientHeartbeatLoopSocketReestablishmentHookResult {
+            self.calls.set(self.calls.get() + 1);
+            ClientHeartbeatLoopSocketReestablishmentHookResult::Deferred
+        }
+    }
+
+    #[derive(Clone)]
+    struct CleanupTestAppliedSocketReestablishmentHook {
+        calls: std::rc::Rc<std::cell::Cell<usize>>,
+    }
+
+    impl ClientHeartbeatLoopSocketReestablishmentHook for CleanupTestAppliedSocketReestablishmentHook {
+        fn reestablish_socket(
+            &self,
+            _input: ClientHeartbeatLoopOuterWhileLoopSocketReestablishmentInput,
+        ) -> ClientHeartbeatLoopSocketReestablishmentHookResult {
+            self.calls.set(self.calls.get() + 1);
+            ClientHeartbeatLoopSocketReestablishmentHookResult::Applied
+        }
+    }
+
+    #[derive(Clone)]
+    struct CleanupTestFailedSocketReestablishmentHook {
+        calls: std::rc::Rc<std::cell::Cell<usize>>,
+    }
+
+    impl ClientHeartbeatLoopSocketReestablishmentHook for CleanupTestFailedSocketReestablishmentHook {
+        fn reestablish_socket(
+            &self,
+            _input: ClientHeartbeatLoopOuterWhileLoopSocketReestablishmentInput,
+        ) -> ClientHeartbeatLoopSocketReestablishmentHookResult {
+            self.calls.set(self.calls.get() + 1);
+            ClientHeartbeatLoopSocketReestablishmentHookResult::Failed {
+                error: ClientHeartbeatLoopSocketReestablishmentError {
+                    kind: ClientHeartbeatLoopSocketReestablishmentFailureKind::HookRejected,
+                    detail: "test hook rejected socket re-establishment".to_string(),
+                },
+            }
+        }
+    }
+
     #[test]
     fn client_heartbeat_loop_cleanup_outer_while_loop_connection_preserves_continue_path_and_wakeup_timer_retry_reconnect_separation(
     ) {
@@ -12380,9 +12560,13 @@ mod tests {
     #[test]
     fn client_heartbeat_loop_cleanup_outer_while_loop_reconnect_policy_no_reconnect_path_remains_explicit(
     ) {
+        let calls = std::rc::Rc::new(std::cell::Cell::new(0));
+        let hook = CleanupTestDeferredSocketReestablishmentHook {
+            calls: calls.clone(),
+        };
         let actual_execution = cleanup_test_outer_actual_execution_continue_no_reconnect();
-        let result =
-            ClientHeartbeatLoopOuterWhileLoopReconnectBoundary::default().apply(actual_execution);
+        let result = ClientHeartbeatLoopOuterWhileLoopReconnectBoundary::default()
+            .apply_with_hook(actual_execution, &hook);
 
         let ClientHeartbeatLoopOuterWhileLoopReconnectResult::ContinueWithoutReconnect { output } =
             result
@@ -12394,16 +12578,26 @@ mod tests {
             output.reconnect_execution,
             ClientHeartbeatLoopOuterWhileLoopActualReconnectExecutionApplyResult::NoReconnectExecutionApplied
         );
+        assert_eq!(calls.get(), 0);
     }
 
     #[test]
-    fn client_heartbeat_loop_cleanup_outer_while_loop_reconnect_policy_creates_reconnect_handoff_and_result_when_needed(
+    fn client_heartbeat_loop_cleanup_outer_while_loop_reconnect_policy_creates_actual_socket_reestablishment_input_and_result_when_needed(
     ) {
+        let calls = std::rc::Rc::new(std::cell::Cell::new(0));
+        let hook = CleanupTestAppliedSocketReestablishmentHook {
+            calls: calls.clone(),
+        };
         let actual_execution = cleanup_test_outer_actual_execution_continue_with_reconnect_needed();
         let policy = ClientHeartbeatLoopOuterWhileLoopReconnectPolicyBoundary::default()
             .plan_next(actual_execution.clone());
-        let result =
-            ClientHeartbeatLoopOuterWhileLoopReconnectBoundary::default().apply(actual_execution);
+        let input =
+            ClientHeartbeatLoopOuterWhileLoopSocketReestablishmentInput::from_reconnect_policy(
+                policy.clone(),
+            )
+            .expect("reconnect-planned policy should produce actual socket re-establishment input");
+        let result = ClientHeartbeatLoopOuterWhileLoopReconnectBoundary::default()
+            .apply_with_hook(actual_execution, &hook);
 
         assert_eq!(
             policy,
@@ -12426,18 +12620,106 @@ mod tests {
                 },
             }
         );
-        assert!(matches!(
+        assert_eq!(
+            input.handoff.reconnect_plan,
+            ClientHeartbeatLoopFutureSocketReestablishmentPlan::ReestablishSocket {
+                reason: ClientHeartbeatLoopReconnectReason::SocketReestablishmentRequested,
+            }
+        );
+        assert_eq!(
             result,
-            ClientHeartbeatLoopOuterWhileLoopReconnectResult::ContinueWithReconnectDeferred { .. }
-        ));
+            ClientHeartbeatLoopOuterWhileLoopReconnectResult::ContinueWithReconnectApplied {
+                output: ClientHeartbeatLoopOuterWhileLoopSocketReestablishmentOutput {
+                    output: match cleanup_test_outer_actual_execution_continue_with_reconnect_needed() {
+                        ClientHeartbeatLoopOuterWhileLoopActualExecutionResult::Continue { output } => output,
+                        ClientHeartbeatLoopOuterWhileLoopActualExecutionResult::Stop { .. } => {
+                            panic!("crafted reconnect-needed execution should continue")
+                        }
+                    },
+                    reconnect_plan:
+                        ClientHeartbeatLoopFutureSocketReestablishmentPlan::ReestablishSocket {
+                            reason:
+                                ClientHeartbeatLoopReconnectReason::SocketReestablishmentRequested,
+                        },
+                    socket_reestablishment:
+                        ClientHeartbeatLoopOuterWhileLoopSocketReestablishmentApplyResult::SocketReestablishmentAttemptedApplied {
+                            reason:
+                                ClientHeartbeatLoopReconnectReason::SocketReestablishmentRequested,
+                        },
+                },
+            }
+        );
+        assert_eq!(calls.get(), 1);
     }
 
     #[test]
-    fn client_heartbeat_loop_cleanup_outer_while_loop_reconnect_policy_does_not_reinterpret_timer_wait_or_retry_execution(
+    fn client_heartbeat_loop_cleanup_outer_while_loop_actual_socket_reestablishment_deferred_path_remains_explicit(
     ) {
+        let calls = std::rc::Rc::new(std::cell::Cell::new(0));
+        let hook = CleanupTestDeferredSocketReestablishmentHook {
+            calls: calls.clone(),
+        };
         let actual_execution = cleanup_test_outer_actual_execution_continue_with_reconnect_needed();
-        let result =
-            ClientHeartbeatLoopOuterWhileLoopReconnectBoundary::default().apply(actual_execution);
+        let result = ClientHeartbeatLoopOuterWhileLoopReconnectBoundary::default()
+            .apply_with_hook(actual_execution, &hook);
+
+        let ClientHeartbeatLoopOuterWhileLoopReconnectResult::ContinueWithReconnectDeferred {
+            output,
+        } = result
+        else {
+            panic!("reconnect-needed execution should produce deferred reconnect output");
+        };
+
+        assert_eq!(
+            output.socket_reestablishment,
+            ClientHeartbeatLoopOuterWhileLoopSocketReestablishmentApplyResult::SocketReestablishmentAttemptedDeferred {
+                reason: ClientHeartbeatLoopReconnectReason::SocketReestablishmentRequested,
+            }
+        );
+        assert_eq!(calls.get(), 1);
+    }
+
+    #[test]
+    fn client_heartbeat_loop_cleanup_outer_while_loop_actual_socket_reestablishment_failed_path_preserves_explicit_error_information(
+    ) {
+        let calls = std::rc::Rc::new(std::cell::Cell::new(0));
+        let hook = CleanupTestFailedSocketReestablishmentHook {
+            calls: calls.clone(),
+        };
+        let actual_execution = cleanup_test_outer_actual_execution_continue_with_reconnect_needed();
+        let result = ClientHeartbeatLoopOuterWhileLoopReconnectBoundary::default()
+            .apply_with_hook(actual_execution, &hook);
+
+        let ClientHeartbeatLoopOuterWhileLoopReconnectResult::ContinueWithReconnectFailed {
+            output,
+        } = result
+        else {
+            panic!("failed socket re-establishment should remain explicit");
+        };
+
+        assert_eq!(
+            output.socket_reestablishment,
+            ClientHeartbeatLoopOuterWhileLoopSocketReestablishmentApplyResult::SocketReestablishmentAttemptedFailed {
+                reason: ClientHeartbeatLoopReconnectReason::SocketReestablishmentRequested,
+                error: ClientHeartbeatLoopSocketReestablishmentError {
+                    kind: ClientHeartbeatLoopSocketReestablishmentFailureKind::HookRejected,
+                    detail: "test hook rejected socket re-establishment".to_string(),
+                },
+            }
+        );
+        assert_eq!(calls.get(), 1);
+    }
+
+    #[test]
+    fn client_heartbeat_loop_cleanup_outer_while_loop_actual_socket_reestablishment_does_not_reinterpret_timer_wait_or_retry_execution(
+    ) {
+        let calls = std::rc::Rc::new(std::cell::Cell::new(0));
+        let hook = CleanupTestDeferredSocketReestablishmentHook {
+            calls: calls.clone(),
+        };
+        let actual_execution = cleanup_test_outer_actual_execution_continue_with_reconnect_needed();
+        let result = ClientHeartbeatLoopOuterWhileLoopReconnectBoundary::default()
+            .apply_with_hook(actual_execution, &hook);
 
         let ClientHeartbeatLoopOuterWhileLoopReconnectResult::ContinueWithReconnectDeferred {
             output,
@@ -12454,12 +12736,17 @@ mod tests {
             output.output.retry_execution,
             ClientHeartbeatLoopOuterWhileLoopActualRetryExecutionApplyResult::NoRetryExecutionApplied
         );
+        assert_eq!(calls.get(), 1);
     }
 
     #[test]
-    fn client_heartbeat_loop_cleanup_outer_while_loop_reconnect_policy_preserves_stop_passthrough()
-    {
-        let result = ClientHeartbeatLoopOuterWhileLoopReconnectBoundary::default().apply(
+    fn client_heartbeat_loop_cleanup_outer_while_loop_actual_socket_reestablishment_preserves_stop_passthrough(
+    ) {
+        let calls = std::rc::Rc::new(std::cell::Cell::new(0));
+        let hook = CleanupTestDeferredSocketReestablishmentHook {
+            calls: calls.clone(),
+        };
+        let result = ClientHeartbeatLoopOuterWhileLoopReconnectBoundary::default().apply_with_hook(
             ClientHeartbeatLoopOuterWhileLoopActualExecutionResult::Stop {
                 output: ClientHeartbeatLoopCompletedBodyTerminalOutput {
                     stop_reason:
@@ -12475,6 +12762,7 @@ mod tests {
                     ],
                 },
             },
+            &hook,
         );
 
         assert_eq!(
@@ -12495,13 +12783,20 @@ mod tests {
                 },
             }
         );
+        assert_eq!(calls.get(), 0);
     }
 
     #[test]
-    fn client_heartbeat_loop_cleanup_outer_while_loop_reconnect_result_can_be_carried_without_losing_separation(
+    fn client_heartbeat_loop_cleanup_outer_while_loop_actual_socket_reestablishment_result_can_be_carried_without_losing_separation(
     ) {
-        let result = ClientHeartbeatLoopOuterWhileLoopReconnectBoundary::default()
-            .apply(cleanup_test_outer_actual_execution_continue_with_reconnect_needed());
+        let calls = std::rc::Rc::new(std::cell::Cell::new(0));
+        let hook = CleanupTestDeferredSocketReestablishmentHook {
+            calls: calls.clone(),
+        };
+        let result = ClientHeartbeatLoopOuterWhileLoopReconnectBoundary::default().apply_with_hook(
+            cleanup_test_outer_actual_execution_continue_with_reconnect_needed(),
+            &hook,
+        );
 
         let ClientHeartbeatLoopOuterWhileLoopReconnectResult::ContinueWithReconnectDeferred {
             output,
@@ -12536,11 +12831,12 @@ mod tests {
                         reason: ClientHeartbeatLoopReconnectReason::SocketReestablishmentRequested,
                     },
                 socket_reestablishment:
-                    ClientHeartbeatLoopOuterWhileLoopSocketReestablishmentApplyResult::SocketReestablishmentDeferred {
+                    ClientHeartbeatLoopOuterWhileLoopSocketReestablishmentApplyResult::SocketReestablishmentAttemptedDeferred {
                         reason: ClientHeartbeatLoopReconnectReason::SocketReestablishmentRequested,
                     },
             }
         );
+        assert_eq!(calls.get(), 1);
     }
 
     #[test]

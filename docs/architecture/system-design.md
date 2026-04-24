@@ -5717,14 +5717,14 @@ Current code reflects this with
 `ClientHeartbeatLoopOuterWhileLoopRepeatedBodyResult`, and
 `ClientHeartbeatLoopOuterWhileLoopRepeatedBodyBoundary`.
 
-### Client Outer While-Loop Reconnect Policy / Socket Re-Establishment Minimal Scope
+### Client Outer While-Loop Reconnect Policy / Actual Socket Re-Establishment Minimal Scope
 
 After repeated outer while-loop body exists, reconnect still must remain a
 separate concern from timer wait and retry execution. The next minimal step is
 not a broad recovery system. Instead, one explicit reconnect policy boundary
-and one minimal socket re-establishment placeholder boundary can consume only
-the reconnect execution result that already exists in the outer while-loop
-path.
+and one actual socket re-establishment boundary with a caller-owned hook can
+consume only the reconnect execution result that already exists in the outer
+while-loop path.
 
 Current minimal scope:
 
@@ -5745,11 +5745,13 @@ Current minimal scope:
      - original actual execution output
      - explicit reconnect plan for future socket re-establishment
 5. `ClientHeartbeatLoopOuterWhileLoopSocketReestablishmentBoundary` consumes
-   reconnect policy result only.
+   reconnect policy result only and delegates socket replacement to a
+   caller-owned hook.
 6. If reconnect policy returns `ContinueWithReconnectPlanned { handoff }`:
-   - socket re-establishment returns an explicit deferred or applied placeholder
-     result
-   - current minimal implementation keeps this deferred
+   - actual socket re-establishment returns an explicit applied, deferred, or
+     failed result
+   - current default path keeps this deferred until a caller-owned hook is
+     provided
 7. If reconnect policy returns `ContinueWithoutReconnect { output }`:
    - socket re-establishment returns `ContinueWithoutReconnect { output }`
 8. If reconnect policy returns `Stop { output }`:
@@ -5757,12 +5759,14 @@ Current minimal scope:
    - stop path preserves `stop_reason`, `cleanup_completed`, and
      `applied_actions` unchanged
 9. `ClientHeartbeatLoopOuterWhileLoopReconnectBoundary` keeps outer while-loop
-   integration thin by composing reconnect policy and socket re-establishment
-   placeholder boundaries only
+   integration thin by composing reconnect policy and actual socket
+   re-establishment boundaries only
 10. Minimal safe reconnect scope:
    - reconnect policy consumes only explicit reconnect execution state/result
    - timer wait and retry execution are not reinterpreted by reconnect policy
-   - socket re-establishment can remain a minimal placeholder handoff
+   - actual socket re-establishment consumes only explicit reconnect/socket
+     plan state
+   - if real UDP socket replacement is too broad, a caller-owned hook owns it
    - no metrics cadence, dashboard refresh, video, switcher, OBS, or broad
      generic error recovery is introduced here
 
@@ -5776,20 +5780,26 @@ continuation state:
 - reconnect policy
   - Decides only whether socket re-establishment should be planned.
   - Does not reinterpret timer wait or retry execution.
-- future socket re-establishment
+- actual socket re-establishment
   - Receives explicit reconnect plan only.
-  - Can stay deferred until real socket re-establishment behavior is added.
+  - Delegates the concrete socket replacement attempt to a caller-owned hook.
+  - Returns applied, deferred, or failed explicit output.
 - outer while-loop repeated body continuation state
   - Can carry explicit reconnect result separately from last execution output.
   - Keeps next carry visible without hiding reconnect state inside it.
 
 Current code reflects this with
 `ClientHeartbeatLoopReconnectReason`,
+`ClientHeartbeatLoopSocketReestablishmentFailureKind`,
+`ClientHeartbeatLoopSocketReestablishmentError`,
 `ClientHeartbeatLoopOuterWhileLoopReconnectPolicyInput`,
 `ClientHeartbeatLoopFutureSocketReestablishmentPlan`,
 `ClientHeartbeatLoopOuterWhileLoopReconnectPolicyHandoff`,
 `ClientHeartbeatLoopOuterWhileLoopReconnectPolicyResult`,
 `ClientHeartbeatLoopOuterWhileLoopSocketReestablishmentInput`,
+`ClientHeartbeatLoopSocketReestablishmentHookResult`,
+`ClientHeartbeatLoopSocketReestablishmentHook`,
+`ClientHeartbeatLoopDeferredSocketReestablishmentHook`,
 `ClientHeartbeatLoopOuterWhileLoopSocketReestablishmentApplyResult`,
 `ClientHeartbeatLoopOuterWhileLoopSocketReestablishmentOutput`,
 `ClientHeartbeatLoopOuterWhileLoopReconnectResult`,

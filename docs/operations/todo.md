@@ -26,8 +26,8 @@
 - `crates/protocol` / `crates/config` / `crates/net-core` の最小実装は揃っており、主要 message 型、timestamp 型、fixed header decode / encode、server auth 設定読み込み、`shared_token_env` 解決、UDP 1 datagram receive / send adapter までは完了している
 - server 側は auth one-shot、accepted auth registry 登録、heartbeat ack / liveness / timeout action plan / timeout apply / notice queue storage、RTT / offset state commit と metrics snapshot handoff までの最小境界が揃っている
 - client 側は auth one-shot、heartbeat one-shot、`HeartbeatAckObservation` 付き `ClientStats` one-shot、one-tick runtime、accepted path 手動確認まで完了している
-- client continuous heartbeat loop は thin composition の completed body まで実装済みで、heartbeat timeout notice wakeup planning 境界、wakeup execution 境界、wakeup actual side-effect 境界、outer while-loop connection 境界、outer while-loop one-turn execution body 境界、actual timer wait / retry execution / reconnect 実行境界、outer while-loop 反復実行本体、reconnect policy / socket 再確立 placeholder 境界も完了している
-- 未完了の中心は actual socket 再確立の本実装、server 側 heartbeat timeout loop tick の複数 client 継続実行、RTT / offset metrics state commit と export cadence / dashboard refresh の具体化
+- client continuous heartbeat loop は thin composition の completed body まで実装済みで、heartbeat timeout notice wakeup planning 境界、wakeup execution 境界、wakeup actual side-effect 境界、outer while-loop connection 境界、outer while-loop one-turn execution body 境界、actual timer wait / retry execution / reconnect 実行境界、outer while-loop 反復実行本体、reconnect policy 境界、caller-owned hook 付き actual socket 再確立境界も完了している
+- 未完了の中心は caller-owned hook を実 UDP socket 差し替えへ接続する本実装、server 側 heartbeat timeout loop tick の複数 client 継続実行、RTT / offset metrics state commit と export cadence / dashboard refresh の具体化
 - outbound queue 実キュー、continuous receive/send loop 本体、send / receive の継続ログ出力、file sink open、process-wide logger、`ServerNotice` 実送信は未実装
 - video path / switcher / OBS 連携はまだ PoC 前段で、映像受信・復号・表示は未着手に近い
 
@@ -59,7 +59,7 @@
 ---
 
 ## 直近でやること
-1. actual socket 再確立の最小本実装を reconnect policy handoff へ接続する
+1. caller-owned socket 再確立 hook を実 UDP socket 差し替えへ接続する
 2. RTT / offset metrics state commit を client continuous heartbeat loop へ接続する
 3. metrics snapshot export cadence / dashboard refresh 方針を確定する
 
@@ -384,8 +384,9 @@
 - [x] outer while-loop actual timer wait / retry execution / reconnect 実行境界を追加する
 - [x] client 側 continuous heartbeat loop の outer while-loop 反復本体を実装する
 - [x] outer while-loop 反復本体から actual timer wait / retry execution / reconnect 実行境界を呼ぶ
-- [x] outer while-loop reconnect policy / socket 再確立 placeholder 境界を追加する
-- [ ] actual socket 再確立の本実装を追加する
+- [x] outer while-loop reconnect policy 境界を追加する
+- [x] outer while-loop actual socket 再確立 boundary / caller-owned hook を追加する
+- [ ] caller-owned socket 再確立 hook を実 UDP socket 差し替えへ接続する
 - [ ] server 側 heartbeat timeout loop tick を複数 client に対して継続実行する loop 本体を実装する
 - [x] RTT 計測 candidate を server 側 state に commit する
 - [x] clock offset 推定 candidate を server 側 state に commit する
@@ -565,7 +566,7 @@
 - [x] client outer while-loop one-turn execution body 境界の単体テストを追加する
 - [x] client outer while-loop actual timer wait / retry execution / reconnect 実行境界の単体テストを追加する
 - [x] client outer while-loop 反復実行本体の単体テストを追加する
-- [x] client outer while-loop reconnect policy / socket 再確立 placeholder 境界の単体テストを追加する
+- [x] client outer while-loop reconnect policy / actual socket 再確立 boundary の単体テストを追加する
 - [ ] fixed header encode / decode roundtrip test を追加する
 - [ ] protocol error の単体テストを拡充する
 - [ ] net-core inbound / outbound 境界の単体テストを追加する
