@@ -148,6 +148,85 @@ impl SwitcherSingleViewPlaceholderPathBoundary {
     }
 }
 
+/// Input for manual queue-to-switcher placeholder verification.
+///
+/// The queue state is caller-owned and borrowed read-only. This is intentionally
+/// not a cross-process bridge to a running server queue.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SwitcherPlaceholderManualVerificationInput<'a> {
+    pub queue_state: &'a ServerVideoFrameQueueState,
+    pub client_id: &'a ClientId,
+}
+
+/// Compact summary for manual placeholder verification output.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SwitcherPlaceholderManualVerificationSummary {
+    pub selected_client_id: ClientId,
+    pub frame_id: Option<u64>,
+    pub encoded_payload_len: Option<usize>,
+    pub decode_status: Option<SwitcherSingleViewDecodeStatus>,
+    pub no_frame: bool,
+}
+
+/// Result of the manual queue-to-switcher placeholder helper.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SwitcherPlaceholderManualVerificationResult {
+    PlaceholderReady {
+        summary: SwitcherPlaceholderManualVerificationSummary,
+        handoff: SwitcherSingleViewDisplayPlaceholderHandoff,
+    },
+    NoFrame {
+        summary: SwitcherPlaceholderManualVerificationSummary,
+    },
+}
+
+/// Runtime helper for the manual placeholder PoC.
+///
+/// This composes the existing latest-frame selection and placeholder display
+/// handoff boundaries, then surfaces a CLI/test-friendly summary. It does not
+/// mutate queue state, decode H.264, render a window, share state with a server
+/// process, run sync scheduling, or touch OBS.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct SwitcherPlaceholderManualVerificationBoundary {
+    path: SwitcherSingleViewPlaceholderPathBoundary,
+}
+
+impl SwitcherPlaceholderManualVerificationBoundary {
+    pub fn verify_latest_placeholder(
+        &self,
+        input: SwitcherPlaceholderManualVerificationInput<'_>,
+    ) -> SwitcherPlaceholderManualVerificationResult {
+        match self
+            .path
+            .prepare_latest_display_handoff(SwitcherSingleViewFrameSelectionInput {
+                queue_state: input.queue_state,
+                client_id: input.client_id,
+            }) {
+            SwitcherSingleViewDisplayHandoffResult::DisplayReadyPlaceholder(handoff) => {
+                let summary = SwitcherPlaceholderManualVerificationSummary {
+                    selected_client_id: handoff.selected.client_id.clone(),
+                    frame_id: Some(handoff.selected.frame_id),
+                    encoded_payload_len: Some(handoff.selected.encoded_payload_len),
+                    decode_status: Some(handoff.decode_status),
+                    no_frame: false,
+                };
+                SwitcherPlaceholderManualVerificationResult::PlaceholderReady { summary, handoff }
+            }
+            SwitcherSingleViewDisplayHandoffResult::NoFrameAvailable { client_id } => {
+                SwitcherPlaceholderManualVerificationResult::NoFrame {
+                    summary: SwitcherPlaceholderManualVerificationSummary {
+                        selected_client_id: client_id,
+                        frame_id: None,
+                        encoded_payload_len: None,
+                        decode_status: None,
+                        no_frame: true,
+                    },
+                }
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -287,6 +366,131 @@ mod tests {
                 }
             )
         );
+    }
+
+    #[test]
+    fn manual_verification_helper_selects_latest_frame_from_caller_owned_queue() {
+        let mut state = ServerVideoFrameQueueState::default();
+        store_frame(&mut state, "client-1", 10, TimestampMicros(2_400_000));
+        store_frame(&mut state, "client-1", 11, TimestampMicros(2_400_100));
+        let client_id = ClientId("client-1".to_string());
+
+        let result = SwitcherPlaceholderManualVerificationBoundary::default()
+            .verify_latest_placeholder(SwitcherPlaceholderManualVerificationInput {
+                queue_state: &state,
+                client_id: &client_id,
+            });
+
+        let SwitcherPlaceholderManualVerificationResult::PlaceholderReady { summary, handoff } =
+            result
+        else {
+            panic!("fixture queue should produce a placeholder handoff");
+        };
+        assert_eq!(summary.selected_client_id, client_id);
+        assert_eq!(summary.frame_id, Some(11));
+        assert_eq!(handoff.selected.frame_id, 11);
+    }
+
+    #[test]
+    fn manual_verification_helper_reports_no_frame_for_empty_queue() {
+        let state = ServerVideoFrameQueueState::default();
+        let client_id = ClientId("client-1".to_string());
+
+        let result = SwitcherPlaceholderManualVerificationBoundary::default()
+            .verify_latest_placeholder(SwitcherPlaceholderManualVerificationInput {
+                queue_state: &state,
+                client_id: &client_id,
+            });
+
+        assert_eq!(
+            result,
+            SwitcherPlaceholderManualVerificationResult::NoFrame {
+                summary: SwitcherPlaceholderManualVerificationSummary {
+                    selected_client_id: client_id,
+                    frame_id: None,
+                    encoded_payload_len: None,
+                    decode_status: None,
+                    no_frame: true,
+                }
+            }
+        );
+    }
+
+    #[test]
+    fn manual_verification_helper_preserves_metadata_and_payload_length() {
+        let mut state = ServerVideoFrameQueueState::default();
+        store_frame(&mut state, "client-1", 12, TimestampMicros(2_500_000));
+        let client_id = ClientId("client-1".to_string());
+
+        let result = SwitcherPlaceholderManualVerificationBoundary::default()
+            .verify_latest_placeholder(SwitcherPlaceholderManualVerificationInput {
+                queue_state: &state,
+                client_id: &client_id,
+            });
+
+        let SwitcherPlaceholderManualVerificationResult::PlaceholderReady { summary, handoff } =
+            result
+        else {
+            panic!("fixture queue should produce a placeholder handoff");
+        };
+        assert_eq!(summary.frame_id, Some(12));
+        assert_eq!(summary.encoded_payload_len, Some(3));
+        assert_eq!(
+            handoff.selected.capture_timestamp,
+            TimestampMicros(1_000_012)
+        );
+        assert_eq!(handoff.selected.send_timestamp, TimestampMicros(1_000_112));
+        assert_eq!(handoff.selected.encoded_payload_len, 3);
+        assert_eq!(handoff.selected.encoded_payload, vec![0x0c, 0xbb, 0xcc]);
+    }
+
+    #[test]
+    fn manual_verification_helper_reports_decode_deferred_placeholder() {
+        let mut state = ServerVideoFrameQueueState::default();
+        store_frame(&mut state, "client-1", 13, TimestampMicros(2_600_000));
+        let client_id = ClientId("client-1".to_string());
+
+        let result = SwitcherPlaceholderManualVerificationBoundary::default()
+            .verify_latest_placeholder(SwitcherPlaceholderManualVerificationInput {
+                queue_state: &state,
+                client_id: &client_id,
+            });
+
+        let SwitcherPlaceholderManualVerificationResult::PlaceholderReady { summary, handoff } =
+            result
+        else {
+            panic!("fixture queue should produce a placeholder handoff");
+        };
+        assert_eq!(
+            summary.decode_status,
+            Some(SwitcherSingleViewDecodeStatus::DeferredPlaceholder)
+        );
+        assert_eq!(
+            handoff.decode_status,
+            SwitcherSingleViewDecodeStatus::DeferredPlaceholder
+        );
+    }
+
+    #[test]
+    fn manual_verification_helper_does_not_mutate_queue() {
+        let mut state = ServerVideoFrameQueueState::default();
+        store_frame(&mut state, "client-1", 14, TimestampMicros(2_700_000));
+        store_frame(&mut state, "client-1", 15, TimestampMicros(2_700_100));
+        let client_id = ClientId("client-1".to_string());
+        let before_len = state.client_queue_len(&client_id);
+
+        let _result = SwitcherPlaceholderManualVerificationBoundary::default()
+            .verify_latest_placeholder(SwitcherPlaceholderManualVerificationInput {
+                queue_state: &state,
+                client_id: &client_id,
+            });
+
+        assert_eq!(state.client_queue_len(&client_id), before_len);
+        let frame_ids: Vec<u64> = state
+            .frames_for_client(&client_id)
+            .map(|queued| queued.frame.frame_id)
+            .collect();
+        assert_eq!(frame_ids, vec![14, 15]);
     }
 
     fn store_frame(

@@ -41,6 +41,9 @@ video queue for one auth packet followed by one video packet.
 - Switcher can borrow `ServerVideoFrameQueueState`, select one client's latest
   queued encoded frame, and create a decode-deferred placeholder display
   handoff.
+- Switcher can run a fixture-backed manual helper that feeds a caller-owned
+  `ServerVideoFrameQueueState` into the same selection / placeholder handoff
+  boundary and prints a compact summary.
 
 ## Manual Command Sequence
 
@@ -143,26 +146,61 @@ payload length, `same_source=true`, and `placeholder_payload=true`.
 
 ## Switcher Placeholder Verification Available Now
 
-Use the switcher unit tests to verify latest-frame selection and the
-decode-deferred display handoff:
+Use the switcher unit tests to verify latest-frame selection, queue-to-switcher
+placeholder helper behavior, and the decode-deferred display handoff:
 
 ```powershell
 cargo test -p stream-sync-switcher
 ```
 
-There is no switcher CLI or shared runtime state bridge yet. The switcher path
-is currently a callable library boundary over an in-process
-`ServerVideoFrameQueueState`.
+Use the fixture-backed switcher CLI helper to verify the current
+queue-to-switcher placeholder handoff without a running server process:
+
+```powershell
+cargo run -p stream-sync-switcher -- --placeholder-fixture-once client-1
+```
+
+Expected stdout includes:
+
+- `fixture_queue=true`
+- `cross_process_queue=false`
+- `no_frame=false`
+- `selected_client_id=client-1`
+- `frame_id=42`
+- `payload_len=3`
+- `decode_status=DeferredPlaceholder`
+
+Use the empty-queue helper to verify the no-frame summary path:
+
+```powershell
+cargo run -p stream-sync-switcher -- --placeholder-empty-once client-1
+```
+
+Expected stdout includes:
+
+- `fixture_queue=true`
+- `cross_process_queue=false`
+- `no_frame=true`
+- `selected_client_id=client-1`
+- `frame_id=none`
+- `payload_len=none`
+- `decode_status=none`
+
+The switcher helper consumes a caller-owned / fixture
+`ServerVideoFrameQueueState`. It does not read the server manual launcher's
+in-memory queue across process boundaries.
 
 ## Minimal Missing Manual Wiring
 
 The smallest useful next wiring after this step is:
 
-1. An optional switcher-side helper or test fixture that reads that in-process
-   queue state and runs the placeholder selection boundary.
+1. An explicit bridge if a live switcher process must consume a running
+   server's in-memory queue. That bridge is not implemented and should not be
+   assumed by manual tests.
 2. Later replacement of the explicit placeholder payload source with real
    capture / H.264 encode.
 
 The manual client-to-server queue path is now runnable as a two-command PoC.
-Decode, rendering, switcher window output, OBS capture, and 4-view sync remain
-outside this manual launcher.
+The switcher fixture helper verifies queue-to-switcher placeholder handoff only.
+Decode, rendering, switcher window output, OBS capture, cross-process queue
+sharing, and 4-view sync remain outside this manual launcher.

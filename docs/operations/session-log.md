@@ -9283,3 +9283,54 @@
 - `cargo fmt`
 - `cargo fmt --check`
 - `cargo test -p stream-sync-server receive_auth_video_queue_once`
+
+---
+
+## 2026-04-25
+### Type
+- Codex
+
+### Work
+- Added the smallest switcher-side manual placeholder verification helper over caller-owned `ServerVideoFrameQueueState`.
+- Added `SwitcherPlaceholderManualVerificationBoundary` and summary/result types that compose the existing latest-frame selection and decode-deferred placeholder display handoff boundaries.
+- Added switcher fixture CLI paths: `--placeholder-fixture-once [client-id]` and `--placeholder-empty-once [client-id]`.
+- The helper reports selected client id, frame id, payload length, decode-deferred placeholder status, and no-frame state.
+- Added focused switcher tests for latest selection through the helper, empty queue, metadata/payload length preservation, decode-deferred status, and read-only queue behavior.
+- Documented that this verifies queue-to-switcher placeholder handoff only and does not share the server manual launcher's in-memory queue across processes.
+
+### Changed Files
+- `apps/switcher/src/lib.rs`
+- `apps/switcher/src/main.rs`
+- `docs/operations/manual-placeholder-video-poc.md`
+- `docs/architecture/system-design.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### Decisions
+- Kept the helper in-process and caller-owned because no cross-process queue bridge exists yet.
+- Used a fixture CLI for manual switcher verification instead of pretending the switcher can read a running server process's queue.
+- Kept decode status explicit as `DeferredPlaceholder`.
+- Did not implement H.264 decode, rendering, OBS integration, or 4-view sync.
+
+### Unresolved
+- explicit server-to-switcher runtime bridge if live cross-process queue consumption becomes necessary
+- real capture / real H.264 encode
+- real H.264 decode / switcher window rendering
+- sync scheduling, 4-view sync, and OBS integration
+
+### Next
+- Decide whether a real cross-process queue bridge is needed for the next manual workflow.
+- Add real capture / H.264 encode boundary later.
+- Add real H.264 decode and switcher window rendering boundaries separately.
+
+### TODO Update
+- Updated Current Focus with the completed switcher manual placeholder helper and fixture CLI.
+- Updated Next Items to replace the helper task with an explicit bridge decision, followed by real capture/encode and real decode/rendering.
+
+### Validation
+- `cargo fmt`
+- `cargo fmt --check`
+- `cargo test -p stream-sync-switcher`
+- `cargo check --workspace`
+- `cargo run -p stream-sync-switcher -- --placeholder-empty-once client-1`
+- `cargo run -p stream-sync-switcher -- --placeholder-fixture-once client-1`

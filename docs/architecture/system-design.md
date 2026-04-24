@@ -7332,3 +7332,30 @@ AuthRequest -> AuthResponse / accepted registry -> VideoFrame acceptance gate ->
 
 This launcher does not decode H.264, select target time, render switcher UI,
 run a continuous loop, implement 4-view sync, or touch OBS.
+
+## Switcher Manual Placeholder Verification Helper Boundary
+
+The one-client placeholder video PoC now has a switcher-side helper for
+verifying the in-process queue-to-placeholder handoff:
+
+```text
+caller-owned ServerVideoFrameQueueState -> latest-frame selection -> decode-deferred placeholder handoff
+```
+
+- Library entry point:
+  `SwitcherPlaceholderManualVerificationBoundary::verify_latest_placeholder`.
+- CLI fixture entry points:
+  `--placeholder-fixture-once [client-id]` and
+  `--placeholder-empty-once [client-id]`.
+- The helper borrows caller-owned `ServerVideoFrameQueueState` read-only and
+  composes the existing latest-frame selection and placeholder display handoff
+  boundaries.
+- The summary surfaces selected client id, frame id, encoded payload length,
+  `decode_status=DeferredPlaceholder`, and the explicit no-frame state.
+- The fixture CLI creates local queue state only for manual verification. It is
+  not a bridge into a running server process.
+- Server-owned in-memory queue state is not shared across processes unless a
+  later explicit runtime bridge is designed.
+
+This helper does not decode H.264, render a switcher window, select target time,
+mutate queue storage, implement 4-view sync, or touch OBS.

@@ -676,13 +676,14 @@
 - client video path now has a one-shot CLI/config launcher: `--placeholder-video-frame-poc-once [config-path]` sends one explicit placeholder `VideoFrame` and prints a compact stdout summary.
 - client video path now has a same-socket manual E2E sender launcher: `--auth-placeholder-video-frame-poc-once [config-path]` sends `AuthRequest`, requires accepted `AuthResponse`, then sends one placeholder `VideoFrame` from the same UDP source.
 - switcher video path now has a first placeholder slice: one client's latest queued encoded frame can be selected read-only and converted into an explicit decode-deferred display handoff.
-- manual placeholder VideoFrame PoC status is now documented in `docs/operations/manual-placeholder-video-poc.md`: the client same-socket auth-then-video sender and server queue-owning auth-then-video receiver can be run as a two-command manual client-to-server queue PoC; switcher placeholder selection still exists only as an in-process library boundary.
+- switcher video path now has a manual placeholder verification helper and fixture CLI path over caller-owned `ServerVideoFrameQueueState`; it verifies queue-to-switcher placeholder handoff without pretending to share a server process's in-memory queue.
+- manual placeholder VideoFrame PoC status is now documented in `docs/operations/manual-placeholder-video-poc.md`: the client same-socket auth-then-video sender and server queue-owning auth-then-video receiver can be run as a two-command manual client-to-server queue PoC, and the switcher fixture helper can verify the queue-to-placeholder handoff separately.
 - metrics commit, snapshot export cadence, dashboard refresh consumer policy, and dashboard refresh runtime wiring remain separate from timer wait, retry, reconnect, socket ownership, cleanup, UI rendering, video, switcher, and OBS.
 - server notice queue storage remains separate from notice send wakeup execution.
 - actual dashboard UI rendering remains unimplemented.
 
 ## Next Items
-1. add an optional switcher placeholder selection helper after server queue state can be surfaced
+1. decide whether a real cross-process server-to-switcher queue bridge is needed, or keep the current helper/test fixture path until the runtime handoff is designed
 2. real capture / real H.264 encode boundary replacing the placeholder payload source
 3. real H.264 decode / switcher window rendering boundary
 4. targetTime / jitter-buffer selection design for the next 2-view sync PoC
