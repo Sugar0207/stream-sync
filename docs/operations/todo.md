@@ -22,40 +22,14 @@
 ---
 
 ## 現在位置
-- 仕様固定と土台作りは概ね完了
-- Cargo workspace と `apps/*` / `crates/*` の初期 scaffold は完了
-- `crates/protocol` の基本型、主要 message 型、timestamp 型、fixed header decode、`AuthRequest` / `AuthResponse` / `Heartbeat` / `HeartbeatAck` / `VideoFrame` / `ClientStats` / `ServerNotice` payload decode / encode は完了
-- `crates/config` の server auth 設定 TOML 読み込み最小実装は完了
-- `crates/config` の `shared_token` / `shared_token_env` token reference 読み分けと inline secret debug redaction は完了
-- `crates/net-core` の inbound decode 境界、outbound packet / queue 境界、outbound queue lifecycle 境界、protocol encoder 呼び出し境界、send error / log event 分類 placeholder、UDP socket 1 datagram receive / send adapter は完了
-- `apps/server` の inbound router、UDP receive loop step、UDP socket adapter 接続、auth response PoC one-shot 起動接続、auth response PoC 起動設定接続、receive loop から packet acceptance gate への接続境界、registered packet handler handoff 境界、heartbeat handler ack handoff 境界、heartbeat state / timebase input 境界、heartbeat liveness state commit 境界、heartbeat timeout policy evaluation 境界、heartbeat timeout action plan 境界、heartbeat timeout apply 境界、heartbeat timeout notice queue storage / send wakeup plan 境界、heartbeat timeout one-client loop tick 境界、heartbeat continuous loop policy 境界、heartbeat continuous loop ownership / socket receive timeout / retry 境界、heartbeat continuous loop one-iteration body 境界、heartbeat timeout log event / caller-owned writer 境界、heartbeat timebase plan、heartbeat RTT / offset stateless calculator、heartbeat RTT / offset state commit 境界、heartbeat RTT / offset candidate policy 境界、heartbeat RTT / offset policy commit 境界、heartbeat RTT / offset rejected candidate log / metrics handoff 境界、heartbeat RTT / offset rejected candidate metrics state / snapshot export 境界、heartbeat RTT / offset metrics snapshot loop / dashboard handoff 境界、heartbeat ack observation flow、heartbeat observation carrier、packet acceptance rejection の drop / log handoff 境界、receive rejection JSON Lines event schema 境界、receive rejection stderr JSON Lines 最小出力、auth handler boundary、auth config input boundary、server auth decision 最小実装、`shared_token_env` secret resolver 最小実装、auth success / failure log handoff 境界、auth JSON Lines event schema 境界、auth result stderr JSON Lines 最小出力、auth flow step、認証済み送信元 registry 境界、明示 invalidation による認証済み送信元 registry entry 削除境界、packet acceptance gate 境界、AuthResponse response boundary、HeartbeatAck ack boundary、outbound queue handoff、`--receive-send-twice` による auth-then-heartbeat 2 iteration 入口、`--receive-send-three` による heartbeat observation return / RTT offset policy commit 入口は完了
-- accepted auth path で `AuthenticatedSenderRegistry` へ in-memory 登録する実処理は完了
-- `apps/client` の client 設定読み込み、AuthRequest 構築、protocol encoder、UDP one-shot send、AuthResponse one-shot receive / stdout 表示、accepted auth 後の Heartbeat one-shot send / HeartbeatAck receive stdout 表示、HeartbeatAckObservation を載せた ClientStats one-shot send の PoC 入口、heartbeat continuous loop policy 境界、heartbeat loop ownership / ack receive timeout / retry 境界、heartbeat loop one-iteration body 境界、heartbeat encode/send handoff 境界、ack receive / observation return handoff 境界、client stats return send handoff 境界、client loop iteration result / counters 境界、client loop controller / retry apply / sleep decision 境界、client loop logging / shutdown integration 境界、client one-tick minimal runtime 境界、client one-tick heartbeat runtime CLI / config 入口、launcher / repeated-loop ownership 境界、future repeated loop body の最小境界、outer repeated loop controller / shutdown apply の最小境界、future completed loop lifecycle の最小境界、actual timer / retry / cleanup sequencing の最小境界、future completed loop body の実行順序境界、completed-loop 相当 1 step runtime 境界、eventual while-loop ownership / caller contract の最小境界、eventual while-loop repeated invocation skeleton / stop flag refresh の最小境界、future actual timer / retry / cleanup apply call order の最小境界、completed continuous heartbeat loop outer shell の最小境界、caller-facing shell runner の最小境界、eventual repeated invocation の最小境界、future actual while-loop の最小境界、cleanup responsibility の最小境界、cleanup ordering の最小境界、cleanup execution planning の最小境界、cleanup actual side-effect apply の最小境界、cleanup actual side-effect result から future completed continuous heartbeat loop stop path への最小境界、completed-loop terminal stop-path output から future actual while-loop termination への最小境界、actual while-loop termination result から future completed continuous heartbeat loop body への最小境界、completed loop body result から future timer / retry / reconnect integration への最小境界、future timer / retry / reconnect planning handoff から future actual timer wait / retry execution / reconnect integration への最小境界、future actual timer wait / retry execution / reconnect actions から completed continuous heartbeat loop body への最小境界、completed continuous heartbeat loop body の最小実装、completed continuous heartbeat loop body result から heartbeat timeout notice wakeup planning への最小境界、heartbeat timeout notice wakeup planning から wakeup execution への最小境界は完了
-- server / client one-shot auth round trip の手動確認手順と accepted path 用 helper config は完了
-- `shared_token_env` を使う one-shot auth round trip 手順と server helper config は完了
-- accepted path の手動確認は成功し、`configs/examples/server.example.toml` と `configs/examples/client.accepted.example.toml` の組み合わせで `accepted=true`, `reason_code=Ok` を観測済み
-- `shared_token_env` accepted path の手動確認は成功し、`configs/examples/server.env-token.example.toml` と `configs/examples/client.accepted.example.toml` の組み合わせで `accepted=true`, `reason_code=Ok` を観測済み
-- `--receive-send-once` accepted path の手動通し確認は成功し、`configs/examples/server.example.toml` と `configs/examples/client.accepted.example.toml` の組み合わせで server 側 `sent_bytes=55`, `accepted=true`, `reason_code=Ok` を観測済み
-- `--auth-request-poc-once` は accepted path で client 側 `AuthResponse` を 1 回受信して stdout に表示できる。`accepted=true`, `reason_code=Ok` を client stdout で観測済み
-- `--auth-heartbeat-poc-once` は accepted auth 後に同じ UDP socket で `Heartbeat` を 1 回送り、`HeartbeatAck` を 1 回受信して stdout に表示する入口として追加済み。`--receive-send-twice` と組み合わせる手順は docs に反映済み
-- `--auth-heartbeat-stats-poc-once` は `HeartbeatAck` 受信後に `HeartbeatAckObservation` を `ClientStats` optional block へ載せて 1 回送信できる。`--receive-send-three` はそれを受信して既存 timebase plan / stateless calculator へ渡す入口として追加済み
-- `--auth-heartbeat-one-tick-runtime` の accepted path 手動確認は成功し、`configs/examples/server.example.toml` と `configs/examples/client.accepted.example.toml` の組み合わせで client 側 `controller_action=SendHeartbeat`, `shutdown=Continue`, `sent_heartbeats=1`, `received_acks=1` と server 側 `first_sent_bytes=55`, `second_sent_bytes=73`, `heartbeat_liveness_entries=1` を観測済み
-- `--auth-heartbeat-stats-one-tick-runtime` の accepted path 手動確認は成功し、`configs/examples/server.example.toml` と `configs/examples/client.accepted.example.toml` の組み合わせで client 側 `stats_returns_sent=1` と server 側 `third_sent_bytes=0`, `heartbeat_rtt_offset_entries=1`, `heartbeat_rtt_offset_samples=1` を観測済み
-- `--receive-send-three` は stateless RTT / offset candidate を default candidate policy に通してから `ServerHeartbeatRttOffsetState` へ 1 回 commit し、stdout に `heartbeat_rtt_offset_entries` / `heartbeat_rtt_offset_samples` を表示できる。rejected candidate は policy commit 境界で state commit されず、後段の log / metrics handoff 境界で可視化入力へ変換できる
-- `ServerHeartbeatLivenessCommitBoundary` は registered heartbeat から作られた `ServerHeartbeatStateInput` を `ServerHeartbeatLivenessState` へ 1 回 commit できる。`--receive-send-twice` / `--receive-send-three` は preserved heartbeat handoff から liveness state を 1 回更新し、stdout に entry 数を表示できる
-- heartbeat timeout は `ServerHeartbeatTimeoutPolicy` と `evaluate_timeout` で 1 client 分を `Alive` / `TimedOut` / `NoHeartbeat` に分類できる。`TimedOut` 結果から auth registry invalidation command、timeout log event input、`AuthExpired` notice plan を作る最小 action boundary と、registry invalidation / caller-owned timeout log writer / notice queue item handoff までを適用する最小 apply boundary、notice queue storage / send wakeup plan 境界も追加済み
-- `ServerHeartbeatTimeoutLoopTickBoundary` は future continuous loop が選んだ 1 client について timeout evaluation -> action plan -> apply を 1 回だけ呼べる。timeout notice は `ServerHeartbeatTimeoutNoticeQueueStorageBoundary` で caller-owned queue collection へ保存し、保存成功時だけ send wakeup placeholder を返せる。client iteration、cadence、stop condition、wakeup 実行本体は未実装
-- `ClientStats` payload encode/decode と heartbeat observation optional block の最小 wire 変換は完了
-- secret store provider 連携、token hashing、rotation 実行、heartbeat timeout loop tick を複数 client に対して継続実行する loop 本体、再認証、実際の packet 破棄、時刻同期本体、映像受信・復号・表示、switcher UI は未実装
-- `ClientStats` receive route / gate / registered handler bridge と、`HeartbeatAckObservation` を既存 timebase plan / stateless calculator へ渡す最小接続、RTT / offset latest estimate state commit、same-run delta threshold の最小 candidate policy 境界、rejected candidate log / metrics handoff 境界、rejected candidate metrics state / snapshot export placeholder、metrics snapshot loop / dashboard handoff 境界、continuous heartbeat loop preflight policy 境界、state ownership / socket receive timeout / retry 境界、one-iteration body 境界、client heartbeat encode/send handoff 境界、ack receive / observation return handoff 境界、client stats return send handoff 境界、client loop iteration result / counters 境界、client loop controller / retry apply / sleep decision 境界、client loop logging / shutdown integration 境界、client one-tick minimal runtime 境界、launcher / repeated-loop ownership 境界、future repeated loop body の最小境界、outer repeated loop controller / shutdown apply の最小境界、future completed loop lifecycle の最小境界、actual timer / retry / cleanup sequencing の最小境界、future completed loop body の実行順序境界、completed-loop 相当 1 step runtime 境界、eventual while-loop ownership / caller contract の最小境界、eventual while-loop repeated invocation skeleton / stop flag refresh の最小境界、future actual timer / retry / cleanup apply call order の最小境界、completed continuous heartbeat loop outer shell の最小境界、caller-facing shell runner の最小境界、eventual repeated invocation の最小境界、future actual while-loop の最小境界、cleanup responsibility の最小境界、cleanup ordering の最小境界、cleanup execution planning の最小境界、cleanup actual side-effect apply の最小境界、cleanup actual side-effect result から future completed continuous heartbeat loop stop path への最小境界、completed-loop terminal stop-path output から future actual while-loop termination への最小境界、actual while-loop termination result から future completed continuous heartbeat loop body への最小境界、completed loop body result から future timer / retry / reconnect integration への最小境界、future timer / retry / reconnect planning handoff から future actual timer wait / retry execution / reconnect integration への最小境界、future actual timer wait / retry execution / reconnect actions から completed continuous heartbeat loop body への最小境界、completed continuous heartbeat loop body の最小実装、completed continuous heartbeat loop body result から heartbeat timeout notice wakeup planning への最小境界、heartbeat timeout notice wakeup planning から wakeup execution への最小境界は完了。completed continuous loop、heartbeat timeout notice wakeup の実 side effect、stats metrics state commit、completed smoothing / outlier model、dashboard 本体は未実装
-- outbound queue の実処理範囲、backpressure / capacity 方針、送信継続 loop 前の bounded storage / encoder handoff 範囲、packet 送信継続 loop の最小接続範囲と loop 本体の実装範囲は整理済み。実キュー collection、送信継続 loop 本実装、retry 実行 / requeue は未実装
-- `ServerNotice` payload layout、decode / encode 最小実装、notice trigger policy の実装範囲整理は完了。state transition 検知、重複抑制、rate limit、送信継続 loop、socket send 接続は未実装
-- auth / receive JSON Lines file sink 方針は整理済み。実 file open、rotation、retention、async logging、process-wide logger は未実装
-- send JSON Lines writer の実接続範囲は整理済み。failure-only の `server.send_error` event schema / caller-owned writer / sink plan placeholder と、one-iteration receive/send runtime から `server.send` success/failure observation を caller-owned writer へ書く最小接続は追加済みだが、continuous send loop からの実接続、file sink open、process-wide logger は未実装
-- receive loop の継続運用向けログ範囲は整理済み。`server.receive_loop` の event schema / caller-owned writer / sink plan placeholder は追加済みだが、continuous receive loop からの実接続、file sink open、process-wide logger は未実装
-- continuous receive loop 本体の実装範囲、1 tick 実接続範囲、operational / rejection writer への handoff 範囲、caller-owned writer 呼び出し範囲、handler handoff 実接続範囲、最小 1 tick 実行接続範囲、継続 loop controller の外枠範囲、handler dispatch への最小 handoff 範囲、handler dispatch 本体の最小分類範囲、auth dispatch の最小実接続範囲、registered packet handler の最小実接続範囲、video / stats handler の最小 input 接続範囲、continuous receive loop body から dispatch runtime を呼ぶ最小範囲、dispatch runtime 結果の side effect 適用範囲、accepted auth の outbound queue storage / auth log writer 最小接続範囲、send loop / queue collection の最小接続範囲、send JSON Lines writer の one-iteration 最小実接続範囲、continuous receive loop と one-item send runtime の最小結合範囲、controller が one-iteration receive/send runtime を呼ぶ最小範囲、completed one-iteration runtime の CLI / config 接続範囲は整理済み。loop lifecycle / tick / writer handoff / writer runtime / handler handoff runtime / one-tick runtime / controller / handler dispatch bridge / handler dispatch result / auth dispatch runtime / registered packet dispatch runtime / video stats handler runtime / body dispatch runtime / side effect apply / output apply / queue collection / send one runtime / send log output / receive-send one iteration runtime / controller receive-send runtime placeholder、one-iteration launcher、1 iteration だけの最小 loop body は追加済みだが、完成した継続 receive/send loop、retry / requeue、rejection response 送信 policy、video buffer / sync handoff 本体、stats state commit 本体、packet drop 本体、file sink open、process-wide logger は未実装
-- secret store / token rotation 方針は整理済み。SecretStore 参照と rotation policy placeholder は追加済みだが、provider 連携、rotation 実行、hot reload は未実装
-- 次の中心は heartbeat timeout notice wakeup 実行本体、RTT / offset metrics snapshot の具体的な export cadence / dashboard refresh 方針、actual timer wait / retry / reconnect の実行本体に進む前の境界整理
+- 仕様固定、Cargo workspace 初期化、`apps/*` / `crates/*` の scaffold は完了している
+- `crates/protocol` / `crates/config` / `crates/net-core` の最小実装は揃っており、主要 message 型、timestamp 型、fixed header decode / encode、server auth 設定読み込み、`shared_token_env` 解決、UDP 1 datagram receive / send adapter までは完了している
+- server 側は auth one-shot、accepted auth registry 登録、heartbeat ack / liveness / timeout action plan / timeout apply / notice queue storage、RTT / offset state commit と metrics snapshot handoff までの最小境界が揃っている
+- client 側は auth one-shot、heartbeat one-shot、`HeartbeatAckObservation` 付き `ClientStats` one-shot、one-tick runtime、accepted path 手動確認まで完了している
+- client continuous heartbeat loop は thin composition の completed body まで実装済みで、heartbeat timeout notice wakeup planning 境界、wakeup execution 境界、wakeup actual side-effect 境界も完了している
+- 未完了の中心は outer while-loop 本体、actual timer wait / retry execution / reconnect の実処理、server 側 heartbeat timeout loop tick の複数 client 継続実行、RTT / offset metrics state commit と export cadence / dashboard refresh の具体化
+- outbound queue 実キュー、continuous receive/send loop 本体、send / receive の継続ログ出力、file sink open、process-wide logger、`ServerNotice` 実送信は未実装
+- video path / switcher / OBS 連携はまだ PoC 前段で、映像受信・復号・表示は未着手に近い
 
 ---
 
@@ -85,9 +59,9 @@
 ---
 
 ## 直近でやること
-1. heartbeat timeout notice wakeup の実 side effect 最小範囲整理を行う
-2. RTT / offset metrics snapshot の具体的な export cadence / dashboard refresh 方針を整理する
-3. actual timer wait / retry / reconnect の実行本体に進む前の境界整理を続ける
+1. client 側 continuous heartbeat loop の outer while-loop と wakeup / timer / retry / reconnect の接続方針を固める
+2. actual timer wait / retry execution / reconnect の実処理を最小単位に分ける
+3. RTT / offset metrics state commit と metrics snapshot export cadence / dashboard refresh 方針を確定する
 
 ---
 
@@ -401,13 +375,19 @@
 - [x] client 側 `ClientHeartbeatLoopControllerResultBoundary` / log handoff / shutdown decision を追加する
 - [x] client 側 continuous heartbeat loop 本体の最小実装範囲を整理する
 - [x] client 側 `ClientHeartbeatLoopOneTickRuntimeBoundary` を追加する
-- [ ] continuous heartbeat loop を client 側に実装する
-- [ ] heartbeat timeout loop tick を複数 client に対して継続実行する loop 本体を整理する
+- [x] completed continuous heartbeat loop body の thin composition 実装を追加する
+- [x] heartbeat timeout notice wakeup planning 境界を追加する
+- [x] heartbeat timeout notice wakeup execution 境界を追加する
+- [x] heartbeat timeout notice wakeup actual side-effect 境界を追加する
+- [ ] client 側 continuous heartbeat loop の outer while-loop 本体を実装する
+- [ ] actual timer wait / retry execution / reconnect の実処理を実装する
+- [ ] server 側 heartbeat timeout loop tick を複数 client に対して継続実行する loop 本体を実装する
 - [x] RTT 計測 candidate を server 側 state に commit する
 - [x] clock offset 推定 candidate を server 側 state に commit する
 - [x] RTT / offset rejected candidate log / metrics 方針を整理する
 - [x] RTT / offset rejected candidate metrics storage / export 方針を整理する
 - [x] RTT / offset metrics snapshot の future loop / dashboard 連携方針を整理する
+- [ ] RTT / offset metrics state commit を継続 loop へ接続する
 - [ ] RTT / offset metrics snapshot の具体的な export cadence / dashboard refresh 方針を整理する
 - [ ] offset 平滑化を実装する
 - [ ] 補正後 timestamp へ変換する処理を実装する
@@ -437,58 +417,8 @@
 ---
 
 ## client 側
-- [x] AuthRequest one-shot PoC 用のクライアント起動処理を作る
-- [x] AuthRequest one-shot PoC 用の TOML 設定読み込み処理を作る
-- [x] `client_id` / `shared_token` を設定から読み込む
-- [x] `run_id` を設定から受け取る
-- [x] `app_version` / `protocol_version` を `AuthRequest` に入れて送信する
-- [x] 認証メッセージを 1 回だけ送信する PoC 処理を作る
-- [x] `--auth-request-poc-once` で `AuthResponse` を 1 回だけ受信して stdout に表示する
-- [x] `--auth-heartbeat-poc-once` で accepted auth 後に `Heartbeat` を 1 回だけ送信し、`HeartbeatAck` を stdout に表示する
-- [x] `--auth-heartbeat-stats-poc-once` で `HeartbeatAckObservation` を `ClientStats` に載せて 1 回だけ送信する
-- [x] `--auth-heartbeat-one-tick-runtime` / `--auth-heartbeat-stats-one-tick-runtime` を client 側に追加する
-- [x] server / client one-shot auth round trip の手動確認手順を追加する
-- [x] accepted path 用の one-shot client example config を追加する
-- [x] heartbeat one-shot 送信処理を作る
-- [x] continuous heartbeat loop policy 境界を追加する
-- [x] heartbeat loop ownership / ack receive timeout / retry placeholder を追加する
-- [x] heartbeat loop one-iteration body handoff を追加する
-- [x] heartbeat loop encode/send handoff を追加する
-- [x] heartbeat loop ack receive / observation return handoff を追加する
-- [x] heartbeat loop client stats return send handoff を追加する
-- [x] heartbeat loop iteration result / counters boundary を追加する
-- [x] heartbeat loop controller / retry apply / sleep decision boundary を追加する
-- [x] heartbeat loop logging / shutdown integration boundary を追加する
-- [x] heartbeat loop one-tick minimal runtime boundary を追加する
-- [x] one-tick heartbeat runtime launcher で client config から auth bootstrap / one-tick runtime 呼び出しを接続する
-- [x] client one-tick runtime の launcher / repeated-loop ownership 境界を追加する
-- [x] future repeated loop body から one-tick runtime を呼ぶ最小境界を追加する
-- [x] outer repeated loop controller / shutdown apply の最小境界を追加する
-- [x] future completed loop lifecycle の最小境界を追加する
-- [x] actual timer / retry / cleanup sequencing の最小境界を追加する
-- [x] future completed loop body の実行順序境界を追加する
-- [x] completed-loop 相当 1 step runtime 境界を追加する
-- [x] eventual while-loop ownership / caller contract の最小境界を追加する
-- [x] eventual while-loop repeated invocation skeleton / stop flag refresh の最小境界を追加する
-- [x] future actual timer / retry / cleanup apply call order の最小境界を追加する
-- [x] completed continuous heartbeat loop outer shell の最小境界を追加する
-- [x] caller-facing shell runner の最小境界を追加する
-- [x] eventual repeated invocation の最小境界を追加する
-- [x] future actual while-loop の最小境界を追加する
-- [x] cleanup responsibility の最小境界を追加する
-- [x] cleanup ordering の最小境界を追加する
-- [x] cleanup execution planning の最小境界を追加する
-- [x] cleanup actual side-effect apply の最小境界を追加する
-- [x] cleanup actual side-effect result から future completed continuous heartbeat loop stop path への最小境界を追加する
-- [x] completed-loop terminal stop-path output から future actual while-loop termination への最小境界を追加する
-- [x] actual while-loop termination result から future completed continuous heartbeat loop body への最小境界を追加する
-- [x] completed loop body result から future timer / retry / reconnect integration への最小境界を追加する
-- [x] future timer / retry / reconnect planning handoff から future actual timer wait / retry execution / reconnect integration への最小境界を追加する
-- [x] future actual timer wait / retry execution / reconnect actions から completed continuous heartbeat loop body への最小境界を追加する
-- [x] completed continuous heartbeat loop body の最小実装を追加する
-- [x] completed continuous heartbeat loop body result から heartbeat timeout notice wakeup planning への最小境界を追加する
-- [x] heartbeat timeout notice wakeup planning から wakeup execution への最小境界を追加する
-- [ ] continuous heartbeat loop を作る
+- [x] auth one-shot / heartbeat one-shot / stats one-shot / one-tick runtime までの client 起動経路を追加する
+- [x] accepted path 用の one-shot client example config と手動確認手順を追加する
 - [ ] 画面キャプチャに成功する
 - [ ] Minecraft ウィンドウの取得確認をする
 - [ ] frame id / captureTimestamp / sendTimestamp を付与する
@@ -498,8 +428,7 @@
 - [ ] 720p / 30fps を初期値にする
 - [ ] 1080p / 60fps を将来有効化できる構造にする
 - [ ] UDP 送信処理を実装する
-- [ ] stats 送信処理を実装する
-- [ ] 切断 / 再接続処理を実装する
+- [ ] `ClientStats` 送信処理を継続 heartbeat loop に接続する
 
 ---
 
@@ -626,6 +555,7 @@
 - [x] client completed continuous heartbeat loop body 境界の単体テストを追加する
 - [x] client heartbeat timeout notice wakeup planning 境界の単体テストを追加する
 - [x] client heartbeat timeout notice wakeup execution 境界の単体テストを追加する
+- [x] client heartbeat timeout notice wakeup actual side-effect 境界の単体テストを追加する
 - [ ] fixed header encode / decode roundtrip test を追加する
 - [ ] protocol error の単体テストを拡充する
 - [ ] net-core inbound / outbound 境界の単体テストを追加する
@@ -695,7 +625,8 @@
 - [ ] 30 分連続確認
 
 ### フェーズ4: 2 人 / 4 人同期 PoC
-- [ ] RTT / offset 推定
+- [x] RTT / offset 観測 return と最小 state commit
+- [ ] RTT / offset 平滑化と targetTime 接続
 - [ ] ジッターバッファ
 - [ ] targetTime frame selection
 - [ ] 2 人同期表示

@@ -5332,6 +5332,89 @@ Current code reflects this with
 `ClientHeartbeatLoopHeartbeatTimeoutNoticeWakeupExecutionResult`, and
 `ClientHeartbeatLoopHeartbeatTimeoutNoticeWakeupExecutionBoundary`.
 
+### Client Heartbeat Timeout Notice Wakeup Actual Side-Effect Minimal Scope
+
+The next minimal step keeps wakeup responsibility separate from timer wait,
+retry execution, reconnect execution, and the actual while-loop. This scope
+adds only an explicit actual-side-effect boundary after wakeup execution; it
+does not add timer/retry/reconnect runtime behavior, metrics cadence, or
+dashboard refresh logic.
+
+Current minimal scope:
+
+1. `ClientHeartbeatLoopHeartbeatTimeoutNoticeWakeupActualSideEffectInput::from_wakeup_execution(...)`
+   converts `ClientHeartbeatLoopHeartbeatTimeoutNoticeWakeupExecutionResult`
+   into:
+   - `Ok(input)` for `ContinueWithWakeupExecutionApplied { output }`
+   - `Err(execution)` for `ContinueWithoutWakeupExecution { output }`
+   - `Err(execution)` for `Stop { output }`
+2. `ClientHeartbeatLoopHeartbeatTimeoutNoticeWakeupActualSideEffectBoundary`
+   receives one wakeup execution result only.
+3. If wakeup execution returns `ContinueWithoutWakeupExecution { output }`:
+   - actual side effect returns `ContinueWithoutWakeupSideEffect { output }`
+   - continue path remains explicit and no actual-side-effect input is created
+4. If wakeup execution returns `ContinueWithWakeupExecutionApplied { output }`:
+   - actual side effect returns
+     `ContinueWithWakeupSideEffectApplied { output }`
+   - the result preserves:
+     - the original continue output
+     - the explicit wakeup execution apply result
+     - the explicit wakeup actual-side-effect apply result
+5. If wakeup execution returns `Stop { output }`:
+   - actual side effect returns `Stop { output }`
+   - stop path remains explicit and unchanged
+6. Minimal safe actual-side-effect scope:
+   - wakeup execution result is the only source for actual-side-effect input
+   - `ContinueWithoutWakeupExecution` does not create actual-side-effect input
+   - `ContinueWithWakeupExecutionApplied` is the only source that creates
+     actual-side-effect input
+   - actual side effect remains separate from timer / retry / reconnect
+     concerns
+   - no metrics cadence, dashboard refresh, video, switcher, or OBS logic is
+     introduced here
+
+Relationship between `ContinueWithoutWakeupExecution`,
+`ContinueWithWakeupExecutionApplied`, wakeup actual-side-effect input, wakeup
+actual-side-effect result, and stop passthrough:
+
+- `ContinueWithoutWakeupExecution`
+  - Does not create wakeup actual-side-effect input.
+  - Passes through as explicit continue without wakeup side effect.
+- `ContinueWithWakeupExecutionApplied`
+  - Is the only source that creates wakeup actual-side-effect input.
+  - Preserves explicit wakeup execution output into actual side-effect apply.
+- wakeup actual-side-effect input
+  - Wraps only execution-applied wakeup output.
+  - Is not created for continue-without-wakeup execution or stop.
+- wakeup actual-side-effect result
+  - Returns either explicit continue without wakeup side effect, explicit
+    continue with wakeup side effect applied, or explicit stop passthrough.
+  - Keeps timer wait / retry / reconnect state visible and unchanged.
+- stop passthrough
+  - Remains outside wakeup actual-side-effect input and is not collapsed into
+    continue.
+
+Responsibility split:
+
+- wakeup execution boundary
+  - Converts wakeup planning result into explicit execution result only.
+  - Does not own runtime side effects.
+- wakeup actual-side-effect boundary
+  - Converts wakeup execution result into explicit actual-side-effect result
+    only.
+  - Does not own timer wait, retry execution, reconnect execution, or stop
+    path reinterpretation.
+- future timer / retry / reconnect execution
+  - Remains outside wakeup actual-side-effect apply.
+  - Will continue to own its separate execution concerns later.
+
+Current code reflects this with
+`ClientHeartbeatLoopHeartbeatTimeoutNoticeWakeupActualSideEffectInput`,
+`ClientHeartbeatLoopHeartbeatTimeoutNoticeWakeupActualSideEffectApplyResult`,
+`ClientHeartbeatLoopHeartbeatTimeoutNoticeWakeupActualSideEffectOutput`,
+`ClientHeartbeatLoopHeartbeatTimeoutNoticeWakeupActualSideEffectResult`, and
+`ClientHeartbeatLoopHeartbeatTimeoutNoticeWakeupActualSideEffectBoundary`.
+
 ### Heartbeat Client Ack Observation Flow
 
 The client ack observation flow returns the missing `client_received_at`

@@ -4,6 +4,88 @@
 ### 担当 - Codex
 
 ### 今回の作業
+- client continuous heartbeat loop execution path に戻り、heartbeat timeout notice wakeup actual side effect の最小実装形を追加した。
+- wakeup execution result だけを入力源にし、continue without wakeup / continue with wakeup / stop を崩さない actual side-effect boundary を追加した。
+- timer / retry / reconnect execution には触れず、wakeup responsibility だけを 1 段分離した。
+
+### 変更ファイル
+- `apps/client/src/lib.rs`
+- `docs/architecture/system-design.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### 実装したこと
+- `ClientHeartbeatLoopHeartbeatTimeoutNoticeWakeupActualSideEffectInput`
+- `ClientHeartbeatLoopHeartbeatTimeoutNoticeWakeupActualSideEffectApplyResult`
+- `ClientHeartbeatLoopHeartbeatTimeoutNoticeWakeupActualSideEffectOutput`
+- `ClientHeartbeatLoopHeartbeatTimeoutNoticeWakeupActualSideEffectResult`
+- `ClientHeartbeatLoopHeartbeatTimeoutNoticeWakeupActualSideEffectBoundary`
+- wakeup execution result だけから continue-with-wakeup actual side-effect input を作る最小変換
+- continue without wakeup execution / continue with wakeup execution applied / stop passthrough を分離した単体テスト
+- wakeup actual side-effect result が timer / retry / reconnect concern と混ざらないことの単体テスト
+
+### 未実装 / 保留
+- client continuous heartbeat loop の outer while-loop 本体
+- actual timer wait / retry execution / reconnect の実処理
+- RTT / offset metrics state commit の継続 loop 接続
+- metrics snapshot export cadence / dashboard refresh 方針
+- video path / switcher / OBS の本実装
+
+### 次にやる候補
+- client continuous heartbeat loop の outer while-loop と wakeup / timer / retry / reconnect の接続整理
+- actual timer wait / retry execution / reconnect の実処理を最小単位へ分解
+- RTT / offset metrics state commit / cadence / dashboard refresh 方針整理
+
+### TODO更新内容
+- 現在位置に wakeup actual side-effect 境界の完了を反映した。
+- 直近でやることを outer while-loop と actual timer / retry / reconnect 側へ更新した。
+- heartbeat / 検証タスクに wakeup actual side-effect 境界と関連単体テスト完了を追加した。
+
+### 検証
+- `cargo fmt`
+- `cargo fmt --check`
+- `cargo test -p stream-sync-client client_heartbeat_loop_cleanup`
+- `cargo check --workspace`
+
+## 2026-04-24
+### 担当 - Codex
+
+### 今回の作業
+- `docs/operations/todo.md` を session-log と突き合わせて監査し、誤解しやすい重複と古い現在位置を整理した。
+- client continuous heartbeat loop まわりの完了済み最小境界と、未完了の実 side effect / actual timer wait / retry / reconnect / metrics cadence を TODO 上で分離した。
+
+### 変更ファイル
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### 実装したこと
+- `現在位置` を直近の session-log ベースに要約し直した
+- `直近でやること` を wakeup 実 side effect / outer while-loop と実処理接続 / metrics cadence に更新した
+- heartbeat / client セクションの重複タスクを統合し、heartbeat timeout notice wakeup 実 side effect と actual timer wait / retry execution / reconnect 実処理を明示 TODO に追加した
+- ロードマップの `RTT / offset 推定` を最小 state commit 完了と残課題に分けた
+
+### 未実装 / 保留
+- heartbeat timeout notice wakeup の実 side effect
+- actual timer wait / retry execution / reconnect の実処理
+- RTT / offset metrics state commit の継続 loop 接続と export cadence / dashboard refresh 方針
+- video path / switcher / OBS の本実装
+
+### 次にやる候補
+- heartbeat timeout notice wakeup の実 side effect 範囲確定
+- client continuous heartbeat loop の outer while-loop と actual timer / retry / reconnect 実処理接続整理
+- RTT / offset metrics state commit / cadence / dashboard refresh 方針整理
+
+### TODO更新内容
+- TODO の `現在位置` と `直近でやること` を更新した。
+- heartbeat / client / ロードマップの重複と古い表現を整理した。
+
+### 検証
+- docs のみ更新のためビルド / テストは未実施
+
+## 2026-04-24
+### 担当 - Codex
+
+### 今回の作業
 - heartbeat timeout notice wakeup planning から wakeup execution へ進む最小境界を追加した。
 - `ContinueWithoutWakeup` / `ContinueWithWakeup` / `Stop` を維持したまま、execution 側で `ContinueWithoutWakeupExecution` / `ContinueWithWakeupExecutionApplied` / `Stop` に分離した。
 - wakeup execution は timer wait / retry / reconnect execution とは別責務のまま、real wakeup side effect なしで explicit result shape だけを定義した。
