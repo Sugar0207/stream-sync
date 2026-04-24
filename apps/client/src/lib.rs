@@ -1278,6 +1278,94 @@ pub enum ClientHeartbeatRttOffsetMetricsDashboardRefreshConsumerResult {
     RefreshDeferred(ClientHeartbeatRttOffsetMetricsDashboardRefreshDeferredReason),
 }
 
+/// Caller-owned sink result for future dashboard refresh runtime wiring.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ClientHeartbeatRttOffsetMetricsDashboardRefreshSinkResult {
+    Applied,
+    Deferred { detail: String },
+}
+
+/// Caller-owned sink used by runtime wiring without implementing dashboard UI.
+pub trait ClientHeartbeatRttOffsetMetricsDashboardRefreshRuntimeSink {
+    fn apply_refresh(
+        &self,
+        request: &ClientHeartbeatRttOffsetMetricsDashboardRefreshRequest,
+    ) -> ClientHeartbeatRttOffsetMetricsDashboardRefreshSinkResult;
+}
+
+/// Why dashboard refresh runtime was deferred.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ClientHeartbeatRttOffsetMetricsDashboardRefreshRuntimeDeferredReason {
+    PolicyDeferred(ClientHeartbeatRttOffsetMetricsDashboardRefreshDeferredReason),
+    SinkUnavailable,
+    SinkDeferred { detail: String },
+}
+
+/// Result of applying dashboard refresh runtime wiring.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ClientHeartbeatRttOffsetMetricsDashboardRefreshRuntimeResult {
+    RefreshApplied(ClientHeartbeatRttOffsetMetricsDashboardRefreshRequest),
+    RefreshSkipped(ClientHeartbeatRttOffsetMetricsDashboardRefreshSkippedReason),
+    RefreshDeferred(ClientHeartbeatRttOffsetMetricsDashboardRefreshRuntimeDeferredReason),
+}
+
+/// Boundary that invokes a caller-owned dashboard refresh sink.
+///
+/// This boundary consumes dashboard refresh policy result only. It does not
+/// evaluate snapshot cadence, commit metrics, render UI, store dashboard state,
+/// or touch video/switcher/OBS paths.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct ClientHeartbeatRttOffsetMetricsDashboardRefreshRuntimeBoundary;
+
+impl ClientHeartbeatRttOffsetMetricsDashboardRefreshRuntimeBoundary {
+    pub fn apply<S: ClientHeartbeatRttOffsetMetricsDashboardRefreshRuntimeSink>(
+        &self,
+        policy_result: ClientHeartbeatRttOffsetMetricsDashboardRefreshConsumerResult,
+        sink: Option<&S>,
+    ) -> ClientHeartbeatRttOffsetMetricsDashboardRefreshRuntimeResult {
+        match policy_result {
+            ClientHeartbeatRttOffsetMetricsDashboardRefreshConsumerResult::RefreshRequested(
+                request,
+            ) => {
+                let Some(sink) = sink else {
+                    return ClientHeartbeatRttOffsetMetricsDashboardRefreshRuntimeResult::RefreshDeferred(
+                        ClientHeartbeatRttOffsetMetricsDashboardRefreshRuntimeDeferredReason::SinkUnavailable,
+                    );
+                };
+
+                match sink.apply_refresh(&request) {
+                    ClientHeartbeatRttOffsetMetricsDashboardRefreshSinkResult::Applied => {
+                        ClientHeartbeatRttOffsetMetricsDashboardRefreshRuntimeResult::RefreshApplied(
+                            request,
+                        )
+                    }
+                    ClientHeartbeatRttOffsetMetricsDashboardRefreshSinkResult::Deferred {
+                        detail,
+                    } => {
+                        ClientHeartbeatRttOffsetMetricsDashboardRefreshRuntimeResult::RefreshDeferred(
+                            ClientHeartbeatRttOffsetMetricsDashboardRefreshRuntimeDeferredReason::SinkDeferred {
+                                detail,
+                            },
+                        )
+                    }
+                }
+            }
+            ClientHeartbeatRttOffsetMetricsDashboardRefreshConsumerResult::RefreshSkipped(
+                reason,
+            ) => ClientHeartbeatRttOffsetMetricsDashboardRefreshRuntimeResult::RefreshSkipped(
+                reason,
+            ),
+            ClientHeartbeatRttOffsetMetricsDashboardRefreshConsumerResult::RefreshDeferred(
+                reason,
+            ) => ClientHeartbeatRttOffsetMetricsDashboardRefreshRuntimeResult::RefreshDeferred(
+                ClientHeartbeatRttOffsetMetricsDashboardRefreshRuntimeDeferredReason::PolicyDeferred(
+                    reason,
+                ),
+            ),
+        }
+    }
+}
+
 /// Boundary that derives dashboard refresh input from explicit snapshot handoff only.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
 pub struct ClientHeartbeatRttOffsetMetricsDashboardRefreshConsumerInputBoundary;
@@ -4516,20 +4604,38 @@ pub struct ClientHeartbeatLoopRunnerMetricsSnapshotCadenceRuntimeResult {
     pub snapshot_export: ClientHeartbeatRttOffsetMetricsSnapshotExportCadenceResult,
 }
 
+/// Runner input for dashboard refresh runtime wiring.
+#[derive(Debug, Clone, Copy)]
+pub struct ClientHeartbeatLoopRunnerDashboardRefreshRuntimeInput<'a> {
+    pub cadence: ClientHeartbeatLoopRunnerMetricsSnapshotCadenceRuntimeInput<'a>,
+    pub refresh_policy: Option<ClientHeartbeatRttOffsetMetricsDashboardRefreshConsumerPolicy>,
+}
+
+/// Runner observation that keeps cadence and dashboard refresh runtime separate.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClientHeartbeatLoopRunnerDashboardRefreshRuntimeResult {
+    pub cadence: ClientHeartbeatLoopRunnerMetricsSnapshotCadenceRuntimeResult,
+    pub dashboard_refresh: ClientHeartbeatRttOffsetMetricsDashboardRefreshRuntimeResult,
+}
+
 /// Minimal future continuous heartbeat loop runner wiring boundary.
 ///
 /// This runner owns the live UDP socket slot, constructs the real socket
 /// re-establishment hook, and drives the existing repeated body through
 /// `run_with_hook(...)`. Metrics snapshot cadence can be evaluated from
 /// caller-owned metrics/cadence state after the repeated body runs, but metrics
-/// commit and dashboard refresh remain separate boundaries. It does not move
-/// socket or metrics ownership into the repeated body and it does not add
-/// dashboard refresh, video, switcher, or OBS behavior.
+/// commit, dashboard refresh policy, and dashboard refresh runtime remain
+/// separate boundaries. It does not move socket, metrics, or dashboard
+/// ownership into the repeated body and it does not add dashboard UI rendering,
+/// video, switcher, or OBS behavior.
 #[derive(Debug, Clone)]
 pub struct ClientHeartbeatLoopRunner {
     socket_slot: Arc<Mutex<Option<UdpSocket>>>,
     repeated_body: ClientHeartbeatLoopOuterWhileLoopRepeatedBodyBoundary,
     metrics_snapshot_cadence: ClientHeartbeatRttOffsetMetricsSnapshotExportCadenceBoundary,
+    dashboard_refresh_input: ClientHeartbeatRttOffsetMetricsDashboardRefreshConsumerInputBoundary,
+    dashboard_refresh_policy: ClientHeartbeatRttOffsetMetricsDashboardRefreshConsumerPolicyBoundary,
+    dashboard_refresh_runtime: ClientHeartbeatRttOffsetMetricsDashboardRefreshRuntimeBoundary,
 }
 
 impl ClientHeartbeatLoopRunner {
@@ -4539,6 +4645,12 @@ impl ClientHeartbeatLoopRunner {
             repeated_body: ClientHeartbeatLoopOuterWhileLoopRepeatedBodyBoundary::default(),
             metrics_snapshot_cadence:
                 ClientHeartbeatRttOffsetMetricsSnapshotExportCadenceBoundary::default(),
+            dashboard_refresh_input:
+                ClientHeartbeatRttOffsetMetricsDashboardRefreshConsumerInputBoundary,
+            dashboard_refresh_policy:
+                ClientHeartbeatRttOffsetMetricsDashboardRefreshConsumerPolicyBoundary,
+            dashboard_refresh_runtime:
+                ClientHeartbeatRttOffsetMetricsDashboardRefreshRuntimeBoundary,
         }
     }
 
@@ -4610,6 +4722,27 @@ impl ClientHeartbeatLoopRunner {
         ClientHeartbeatLoopRunnerMetricsSnapshotCadenceRuntimeResult {
             loop_result,
             snapshot_export,
+        }
+    }
+
+    pub fn run_with_dashboard_refresh_runtime<
+        S: ClientHeartbeatRttOffsetMetricsDashboardRefreshRuntimeSink,
+    >(
+        &self,
+        input: ClientHeartbeatLoopOuterWhileLoopRepeatedBodyInput,
+        refresh: ClientHeartbeatLoopRunnerDashboardRefreshRuntimeInput<'_>,
+        sink: Option<&S>,
+    ) -> ClientHeartbeatLoopRunnerDashboardRefreshRuntimeResult {
+        let cadence = self.run_with_metrics_snapshot_cadence(input, refresh.cadence);
+        let refresh_input = self
+            .dashboard_refresh_input
+            .from_snapshot_export_result(refresh.refresh_policy, cadence.snapshot_export.clone());
+        let policy_result = self.dashboard_refresh_policy.evaluate(refresh_input);
+        let dashboard_refresh = self.dashboard_refresh_runtime.apply(policy_result, sink);
+
+        ClientHeartbeatLoopRunnerDashboardRefreshRuntimeResult {
+            cadence,
+            dashboard_refresh,
         }
     }
 }
@@ -14559,6 +14692,273 @@ mod tests {
             socket,
             ClientHeartbeatLoopRunnerSocketOwnershipState { has_socket: true }
         );
+    }
+
+    #[derive(Clone)]
+    struct CleanupTestDashboardRefreshSink {
+        calls: std::rc::Rc<std::cell::Cell<usize>>,
+        result: ClientHeartbeatRttOffsetMetricsDashboardRefreshSinkResult,
+    }
+
+    impl ClientHeartbeatRttOffsetMetricsDashboardRefreshRuntimeSink
+        for CleanupTestDashboardRefreshSink
+    {
+        fn apply_refresh(
+            &self,
+            _request: &ClientHeartbeatRttOffsetMetricsDashboardRefreshRequest,
+        ) -> ClientHeartbeatRttOffsetMetricsDashboardRefreshSinkResult {
+            self.calls.set(self.calls.get() + 1);
+            self.result.clone()
+        }
+    }
+
+    #[test]
+    fn client_heartbeat_loop_cleanup_runner_invokes_dashboard_refresh_runtime_when_handoff_available(
+    ) {
+        let runner = ClientHeartbeatLoopRunner::new(None);
+        let metrics_state = cleanup_test_metrics_state_with_one_sample();
+        let cadence_state =
+            ClientHeartbeatRttOffsetMetricsSnapshotCadenceState::new(TimestampMicros(10_000));
+        let calls = std::rc::Rc::new(std::cell::Cell::new(0));
+        let sink = CleanupTestDashboardRefreshSink {
+            calls: calls.clone(),
+            result: ClientHeartbeatRttOffsetMetricsDashboardRefreshSinkResult::Applied,
+        };
+
+        let result = runner.run_with_dashboard_refresh_runtime(
+            ClientHeartbeatLoopOuterWhileLoopRepeatedBodyInput {
+                current: cleanup_test_repeated_apply_timer_continue(),
+                max_turns: std::num::NonZeroUsize::new(1).unwrap(),
+            },
+            ClientHeartbeatLoopRunnerDashboardRefreshRuntimeInput {
+                cadence: ClientHeartbeatLoopRunnerMetricsSnapshotCadenceRuntimeInput {
+                    metrics_state: Some(&metrics_state),
+                    cadence_state: Some(cadence_state),
+                    now: TimestampMicros(11_000),
+                    export_interval_micros: 1_000,
+                    consumer:
+                        ClientHeartbeatRttOffsetMetricsSnapshotConsumer::FutureDashboardRefresh,
+                },
+                refresh_policy: Some(
+                    ClientHeartbeatRttOffsetMetricsDashboardRefreshConsumerPolicy::default(),
+                ),
+            },
+            Some(&sink),
+        );
+
+        assert_eq!(calls.get(), 1);
+        assert!(matches!(
+            result.dashboard_refresh,
+            ClientHeartbeatRttOffsetMetricsDashboardRefreshRuntimeResult::RefreshApplied(_)
+        ));
+    }
+
+    #[test]
+    fn client_heartbeat_loop_cleanup_runner_preserves_dashboard_refresh_applied_result() {
+        let runner = ClientHeartbeatLoopRunner::new(None);
+        let metrics_state = cleanup_test_metrics_state_with_one_sample();
+        let cadence_state =
+            ClientHeartbeatRttOffsetMetricsSnapshotCadenceState::new(TimestampMicros(10_000));
+        let sink = CleanupTestDashboardRefreshSink {
+            calls: std::rc::Rc::new(std::cell::Cell::new(0)),
+            result: ClientHeartbeatRttOffsetMetricsDashboardRefreshSinkResult::Applied,
+        };
+
+        let result = runner.run_with_dashboard_refresh_runtime(
+            ClientHeartbeatLoopOuterWhileLoopRepeatedBodyInput {
+                current: cleanup_test_repeated_apply_timer_continue(),
+                max_turns: std::num::NonZeroUsize::new(1).unwrap(),
+            },
+            ClientHeartbeatLoopRunnerDashboardRefreshRuntimeInput {
+                cadence: ClientHeartbeatLoopRunnerMetricsSnapshotCadenceRuntimeInput {
+                    metrics_state: Some(&metrics_state),
+                    cadence_state: Some(cadence_state),
+                    now: TimestampMicros(11_000),
+                    export_interval_micros: 1_000,
+                    consumer:
+                        ClientHeartbeatRttOffsetMetricsSnapshotConsumer::FutureDashboardRefresh,
+                },
+                refresh_policy: Some(
+                    ClientHeartbeatRttOffsetMetricsDashboardRefreshConsumerPolicy::default(),
+                ),
+            },
+            Some(&sink),
+        );
+
+        let ClientHeartbeatRttOffsetMetricsDashboardRefreshRuntimeResult::RefreshApplied(request) =
+            result.dashboard_refresh
+        else {
+            panic!("dashboard refresh runtime should preserve applied request");
+        };
+        assert_eq!(request.snapshot.exported_at, TimestampMicros(11_000));
+        assert_eq!(request.snapshot.records.len(), 1);
+    }
+
+    #[test]
+    fn client_heartbeat_loop_cleanup_runner_preserves_dashboard_refresh_skipped_result() {
+        let runner = ClientHeartbeatLoopRunner::new(None);
+        let metrics_state = cleanup_test_metrics_state_with_one_sample();
+        let cadence_state =
+            ClientHeartbeatRttOffsetMetricsSnapshotCadenceState::new(TimestampMicros(10_000));
+        let calls = std::rc::Rc::new(std::cell::Cell::new(0));
+        let sink = CleanupTestDashboardRefreshSink {
+            calls: calls.clone(),
+            result: ClientHeartbeatRttOffsetMetricsDashboardRefreshSinkResult::Applied,
+        };
+
+        let result = runner.run_with_dashboard_refresh_runtime(
+            ClientHeartbeatLoopOuterWhileLoopRepeatedBodyInput {
+                current: cleanup_test_repeated_apply_timer_continue(),
+                max_turns: std::num::NonZeroUsize::new(1).unwrap(),
+            },
+            ClientHeartbeatLoopRunnerDashboardRefreshRuntimeInput {
+                cadence: ClientHeartbeatLoopRunnerMetricsSnapshotCadenceRuntimeInput {
+                    metrics_state: Some(&metrics_state),
+                    cadence_state: Some(cadence_state),
+                    now: TimestampMicros(10_999),
+                    export_interval_micros: 1_000,
+                    consumer:
+                        ClientHeartbeatRttOffsetMetricsSnapshotConsumer::FutureDashboardRefresh,
+                },
+                refresh_policy: Some(
+                    ClientHeartbeatRttOffsetMetricsDashboardRefreshConsumerPolicy::default(),
+                ),
+            },
+            Some(&sink),
+        );
+
+        assert_eq!(
+            result.dashboard_refresh,
+            ClientHeartbeatRttOffsetMetricsDashboardRefreshRuntimeResult::RefreshSkipped(
+                ClientHeartbeatRttOffsetMetricsDashboardRefreshSkippedReason::NoDashboardHandoff
+            )
+        );
+        assert_eq!(calls.get(), 0);
+    }
+
+    #[test]
+    fn client_heartbeat_loop_cleanup_runner_preserves_dashboard_refresh_deferred_result() {
+        let runner = ClientHeartbeatLoopRunner::new(None);
+        let cadence_state =
+            ClientHeartbeatRttOffsetMetricsSnapshotCadenceState::new(TimestampMicros(10_000));
+
+        let result = runner.run_with_dashboard_refresh_runtime::<CleanupTestDashboardRefreshSink>(
+            ClientHeartbeatLoopOuterWhileLoopRepeatedBodyInput {
+                current: cleanup_test_repeated_apply_timer_continue(),
+                max_turns: std::num::NonZeroUsize::new(1).unwrap(),
+            },
+            ClientHeartbeatLoopRunnerDashboardRefreshRuntimeInput {
+                cadence: ClientHeartbeatLoopRunnerMetricsSnapshotCadenceRuntimeInput {
+                    metrics_state: None,
+                    cadence_state: Some(cadence_state),
+                    now: TimestampMicros(11_000),
+                    export_interval_micros: 1_000,
+                    consumer:
+                        ClientHeartbeatRttOffsetMetricsSnapshotConsumer::FutureDashboardRefresh,
+                },
+                refresh_policy: Some(
+                    ClientHeartbeatRttOffsetMetricsDashboardRefreshConsumerPolicy::default(),
+                ),
+            },
+            None,
+        );
+
+        assert_eq!(
+            result.dashboard_refresh,
+            ClientHeartbeatRttOffsetMetricsDashboardRefreshRuntimeResult::RefreshDeferred(
+                ClientHeartbeatRttOffsetMetricsDashboardRefreshRuntimeDeferredReason::PolicyDeferred(
+                    ClientHeartbeatRttOffsetMetricsDashboardRefreshDeferredReason::SnapshotExportDeferred(
+                        ClientHeartbeatRttOffsetMetricsSnapshotExportDeferredReason::MetricsStateUnavailable,
+                    ),
+                ),
+            )
+        );
+    }
+
+    #[test]
+    fn client_heartbeat_loop_cleanup_dashboard_refresh_runtime_does_not_reinterpret_snapshot_cadence(
+    ) {
+        let runner = ClientHeartbeatLoopRunner::new(None);
+        let metrics_state = cleanup_test_metrics_state_with_one_sample();
+        let cadence_state =
+            ClientHeartbeatRttOffsetMetricsSnapshotCadenceState::new(TimestampMicros(10_000));
+        let sink = CleanupTestDashboardRefreshSink {
+            calls: std::rc::Rc::new(std::cell::Cell::new(0)),
+            result: ClientHeartbeatRttOffsetMetricsDashboardRefreshSinkResult::Applied,
+        };
+
+        let result = runner.run_with_dashboard_refresh_runtime(
+            ClientHeartbeatLoopOuterWhileLoopRepeatedBodyInput {
+                current: cleanup_test_repeated_apply_timer_continue(),
+                max_turns: std::num::NonZeroUsize::new(1).unwrap(),
+            },
+            ClientHeartbeatLoopRunnerDashboardRefreshRuntimeInput {
+                cadence: ClientHeartbeatLoopRunnerMetricsSnapshotCadenceRuntimeInput {
+                    metrics_state: Some(&metrics_state),
+                    cadence_state: Some(cadence_state),
+                    now: TimestampMicros(11_000),
+                    export_interval_micros: 1_000,
+                    consumer:
+                        ClientHeartbeatRttOffsetMetricsSnapshotConsumer::FutureDashboardRefresh,
+                },
+                refresh_policy: Some(
+                    ClientHeartbeatRttOffsetMetricsDashboardRefreshConsumerPolicy::default(),
+                ),
+            },
+            Some(&sink),
+        );
+
+        assert!(matches!(
+            result.cadence.snapshot_export,
+            ClientHeartbeatRttOffsetMetricsSnapshotExportCadenceResult::SnapshotExportDue { .. }
+        ));
+        assert!(matches!(
+            result.dashboard_refresh,
+            ClientHeartbeatRttOffsetMetricsDashboardRefreshRuntimeResult::RefreshApplied(_)
+        ));
+    }
+
+    #[test]
+    fn client_heartbeat_loop_cleanup_runner_keeps_repeated_body_unaware_of_dashboard_refresh_runtime_wiring(
+    ) {
+        let runner = ClientHeartbeatLoopRunner::new(None);
+        let dashboard_runner = ClientHeartbeatLoopRunner::new(None);
+        let metrics_state = cleanup_test_metrics_state_with_one_sample();
+        let cadence_state =
+            ClientHeartbeatRttOffsetMetricsSnapshotCadenceState::new(TimestampMicros(10_000));
+        let sink = CleanupTestDashboardRefreshSink {
+            calls: std::rc::Rc::new(std::cell::Cell::new(0)),
+            result: ClientHeartbeatRttOffsetMetricsDashboardRefreshSinkResult::Applied,
+        };
+        let repeated_input = ClientHeartbeatLoopOuterWhileLoopRepeatedBodyInput {
+            current: cleanup_test_repeated_apply_timer_continue(),
+            max_turns: std::num::NonZeroUsize::new(1).unwrap(),
+        };
+
+        let plain = runner.run(repeated_input.clone());
+        let with_dashboard = dashboard_runner.run_with_dashboard_refresh_runtime(
+            repeated_input,
+            ClientHeartbeatLoopRunnerDashboardRefreshRuntimeInput {
+                cadence: ClientHeartbeatLoopRunnerMetricsSnapshotCadenceRuntimeInput {
+                    metrics_state: Some(&metrics_state),
+                    cadence_state: Some(cadence_state),
+                    now: TimestampMicros(11_000),
+                    export_interval_micros: 1_000,
+                    consumer:
+                        ClientHeartbeatRttOffsetMetricsSnapshotConsumer::FutureDashboardRefresh,
+                },
+                refresh_policy: Some(
+                    ClientHeartbeatRttOffsetMetricsDashboardRefreshConsumerPolicy::default(),
+                ),
+            },
+            Some(&sink),
+        );
+
+        assert_eq!(with_dashboard.cadence.loop_result, plain);
+        assert!(matches!(
+            with_dashboard.dashboard_refresh,
+            ClientHeartbeatRttOffsetMetricsDashboardRefreshRuntimeResult::RefreshApplied(_)
+        ));
     }
 
     #[test]

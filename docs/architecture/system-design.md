@@ -5956,6 +5956,80 @@ Current code reflects this with
 `ClientHeartbeatLoopRunnerMetricsSnapshotCadenceRuntimeResult`, and
 `ClientHeartbeatLoopRunner::run_with_metrics_snapshot_cadence(...)`.
 
+### Client Runner Dashboard Refresh Runtime Wiring
+
+The client continuous heartbeat loop runner now has a minimal runtime wiring
+point for dashboard refresh. This wiring consumes only the explicit snapshot
+cadence result and dashboard refresh policy result. The repeated body remains
+unaware of dashboard refresh, and no dashboard UI rendering is implemented.
+
+Minimal scope:
+
+1. `ClientHeartbeatRttOffsetMetricsDashboardRefreshConsumerInputBoundary`
+   derives refresh input only from:
+   - optional dashboard refresh policy
+   - explicit `ClientHeartbeatRttOffsetMetricsSnapshotExportCadenceResult`
+2. `ClientHeartbeatRttOffsetMetricsDashboardRefreshConsumerPolicyBoundary`
+   evaluates that input into:
+   - refresh requested
+   - refresh skipped
+   - refresh deferred
+3. `ClientHeartbeatRttOffsetMetricsDashboardRefreshRuntimeBoundary` consumes
+   only the policy result and an optional caller-owned sink.
+4. If refresh is requested and a sink is available, the runtime boundary calls
+   `ClientHeartbeatRttOffsetMetricsDashboardRefreshRuntimeSink`.
+5. If refresh is requested and no sink is available, the runtime result is an
+   explicit sink-unavailable deferred result.
+6. If policy skipped or deferred refresh, the runtime boundary preserves that
+   result without invoking the sink.
+7. `ClientHeartbeatLoopRunner::run_with_dashboard_refresh_runtime(...)`
+   returns `ClientHeartbeatLoopRunnerDashboardRefreshRuntimeResult` containing:
+   - the existing runner + snapshot cadence observation
+   - explicit dashboard refresh runtime result
+
+Runtime result shape:
+
+- `RefreshApplied(request)`
+  - Caller-owned sink accepted the refresh request.
+  - The request contains the snapshot that a future dashboard UI may render.
+- `RefreshSkipped(reason)`
+  - No dashboard handoff was available, usually because snapshot export was not
+    due.
+- `RefreshDeferred(reason)`
+  - Refresh policy deferred, sink was unavailable, or the sink explicitly
+    deferred handling.
+
+Relationship between runner, snapshot cadence, refresh policy, refresh sink,
+and future dashboard UI:
+
+- `ClientHeartbeatLoopRunner`
+  - Coordinates repeated-body execution, snapshot cadence observation, refresh
+    policy evaluation, and refresh sink invocation.
+  - Does not render UI or store dashboard state.
+- metrics snapshot cadence result
+  - Remains the only source for dashboard refresh handoff.
+  - Is preserved beside refresh runtime result.
+- dashboard refresh policy
+  - Consumes only explicit handoff / export result state.
+  - Does not reinterpret metrics commit or cadence decisions.
+- dashboard refresh runtime sink
+  - Is caller-owned.
+  - Receives a refresh request only after policy returns requested.
+  - May apply or defer refresh without changing runner loop output.
+- future dashboard UI implementation
+  - May later sit behind the sink.
+  - Must consume only explicit refresh requests and not reach into runner,
+    cadence, metrics commit, video, switcher, or OBS state.
+
+Current code reflects this with
+`ClientHeartbeatRttOffsetMetricsDashboardRefreshRuntimeSink`,
+`ClientHeartbeatRttOffsetMetricsDashboardRefreshSinkResult`,
+`ClientHeartbeatRttOffsetMetricsDashboardRefreshRuntimeResult`,
+`ClientHeartbeatRttOffsetMetricsDashboardRefreshRuntimeBoundary`,
+`ClientHeartbeatLoopRunnerDashboardRefreshRuntimeInput`,
+`ClientHeartbeatLoopRunnerDashboardRefreshRuntimeResult`, and
+`ClientHeartbeatLoopRunner::run_with_dashboard_refresh_runtime(...)`.
+
 ### Heartbeat Client Ack Observation Flow
 
 The client ack observation flow returns the missing `client_received_at`

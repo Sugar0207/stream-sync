@@ -8863,3 +8863,40 @@
 ### TODO Update
 - Current focus updated to include completed metrics snapshot export cadence runtime wiring in the runner.
 - Next items reordered around dashboard refresh runtime wiring, server timeout loop, and later video/switcher/OBS work.
+
+---
+
+## 2026-04-24
+### Type
+- Codex
+
+### Work
+- Wired dashboard refresh runtime handling into the client continuous heartbeat loop runner.
+- Added a caller-owned dashboard refresh runtime sink abstraction.
+- Added runtime result states for refresh applied, skipped, and deferred.
+- Kept dashboard refresh runtime outside the repeated body and separate from metrics commit and snapshot cadence.
+
+### Changed Files
+- `apps/client/src/lib.rs`
+- `docs/architecture/system-design.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### Decisions
+- Dashboard refresh runtime consumes only dashboard refresh policy result.
+- Snapshot cadence result is preserved beside dashboard refresh runtime result and is not reinterpreted by the sink boundary.
+- The runner invokes the caller-owned sink only when refresh policy returns requested.
+- Missing sink and sink-side deferral are explicit deferred runtime results.
+- No dashboard UI rendering, dashboard storage, video, switcher, or OBS behavior is implemented.
+
+### Unresolved
+- server heartbeat timeout loop tick multi-client continuous execution
+- video path / switcher / OBS integration
+
+### Next
+- Return to server heartbeat timeout loop tick multi-client continuous execution.
+- Keep video / switcher / OBS integration for a later phase.
+
+### TODO Update
+- Current focus updated to include completed dashboard refresh runtime wiring in the runner.
+- Next items reordered around server timeout loop and later video/switcher/OBS work.
