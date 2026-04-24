@@ -8713,3 +8713,40 @@
 ### TODO Update
 - Current focus updated to reflect completed metrics commit boundary.
 - Next items reordered around live socket ownership, metrics snapshot cadence, dashboard refresh, server timeout loop, and later video/switcher/OBS work.
+---
+
+## 2026-04-24
+### Type
+- Codex
+
+### Work
+- Defined the minimal client-side RTT / offset metrics snapshot export cadence boundary.
+- Added caller-owned cadence state with start time, last export time, export count, and last exported sample count.
+- Added snapshot records and snapshot export handoff for a future dashboard refresh consumer.
+- Kept metrics commit, snapshot cadence, and dashboard refresh as separate boundaries.
+
+### Changed Files
+- `apps/client/src/lib.rs`
+- `docs/architecture/system-design.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### Decisions
+- Snapshot cadence consumes only explicit metrics state, cadence state, current time, and configured export interval.
+- Snapshot cadence does not calculate or commit RTT / offset samples.
+- Snapshot cadence does not execute dashboard refresh. It only emits an explicit future dashboard refresh handoff when export is due.
+- Missing metrics state, missing cadence state, zero interval, and empty metrics state are explicit deferred results.
+
+### Unresolved
+- dashboard refresh consumer policy
+- live socket ownership wiring for the future continuous loop runner
+- runtime wiring of snapshot cadence into the future loop owner
+- video path / switcher / OBS integration
+
+### Next
+- Define dashboard refresh consumer policy as a separate boundary.
+- Wire live socket ownership into the future client continuous heartbeat loop runner.
+
+### TODO Update
+- Current focus updated to include completed snapshot export cadence boundary.
+- Next items reordered around dashboard refresh consumer policy, live socket ownership, and future loop runtime wiring.

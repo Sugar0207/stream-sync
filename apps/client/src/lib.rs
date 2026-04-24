@@ -1092,6 +1092,13 @@ impl ClientHeartbeatRttOffsetMetricsState {
         self.entries_by_client_run.values()
     }
 
+    pub fn total_samples_committed(&self) -> u64 {
+        self.entries_by_client_run
+            .values()
+            .map(|entry| entry.samples_committed)
+            .sum()
+    }
+
     pub fn get(
         &self,
         client_id: &ClientId,
@@ -1140,6 +1147,246 @@ pub enum ClientHeartbeatRttOffsetMetricsSnapshotExportCadenceDecision {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ClientHeartbeatRttOffsetMetricsDashboardRefreshDecision {
     NotImplemented,
+}
+
+/// Export record for one client RTT / offset metrics snapshot.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClientHeartbeatRttOffsetMetricsSnapshotRecord {
+    pub client_id: ClientId,
+    pub run_id: RunId,
+    pub latest_observation: HeartbeatAckObservation,
+    pub latest_estimate: HeartbeatRttOffsetEstimate,
+    pub samples_committed: u64,
+}
+
+/// Point-in-time snapshot of caller-owned client RTT / offset metrics state.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClientHeartbeatRttOffsetMetricsSnapshot {
+    pub exported_at: TimestampMicros,
+    pub records: Vec<ClientHeartbeatRttOffsetMetricsSnapshotRecord>,
+    pub total_samples_committed: u64,
+}
+
+/// Caller-owned cadence state for snapshot export.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct ClientHeartbeatRttOffsetMetricsSnapshotCadenceState {
+    pub started_at: TimestampMicros,
+    pub last_exported_at: Option<TimestampMicros>,
+    pub exported_snapshots: u64,
+    pub last_exported_total_samples: u64,
+}
+
+impl ClientHeartbeatRttOffsetMetricsSnapshotCadenceState {
+    pub fn new(started_at: TimestampMicros) -> Self {
+        Self {
+            started_at,
+            last_exported_at: None,
+            exported_snapshots: 0,
+            last_exported_total_samples: 0,
+        }
+    }
+
+    fn next_due_at(&self, interval_micros: u64) -> TimestampMicros {
+        let basis = self.last_exported_at.unwrap_or(self.started_at);
+        TimestampMicros(basis.0.saturating_add(interval_micros))
+    }
+}
+
+/// Minimal input to evaluate client metrics snapshot export cadence.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClientHeartbeatRttOffsetMetricsSnapshotCadenceInput {
+    pub now: TimestampMicros,
+    pub export_interval_micros: u64,
+    pub metrics_total_samples_committed: u64,
+    pub cadence_state: ClientHeartbeatRttOffsetMetricsSnapshotCadenceState,
+}
+
+/// Future consumer named by snapshot cadence without executing refresh.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ClientHeartbeatRttOffsetMetricsSnapshotConsumer {
+    FutureDashboardRefresh,
+}
+
+/// Explicit handoff for a later dashboard refresh consumer.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClientHeartbeatRttOffsetMetricsFutureDashboardRefreshHandoff {
+    pub snapshot: ClientHeartbeatRttOffsetMetricsSnapshot,
+}
+
+/// Snapshot export handoff emitted by cadence when export is due.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClientHeartbeatRttOffsetMetricsSnapshotExportHandoff {
+    pub consumer: ClientHeartbeatRttOffsetMetricsSnapshotConsumer,
+    pub snapshot: ClientHeartbeatRttOffsetMetricsSnapshot,
+    pub future_dashboard_refresh:
+        Option<ClientHeartbeatRttOffsetMetricsFutureDashboardRefreshHandoff>,
+}
+
+/// Why snapshot cadence could not evaluate or export yet.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ClientHeartbeatRttOffsetMetricsSnapshotExportDeferredReason {
+    MetricsStateUnavailable,
+    CadenceStateUnavailable,
+    ExportIntervalNotConfigured,
+    EmptyMetricsState,
+}
+
+/// Result of evaluating metrics snapshot export cadence.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ClientHeartbeatRttOffsetMetricsSnapshotExportCadenceResult {
+    SnapshotExportDue {
+        handoff: ClientHeartbeatRttOffsetMetricsSnapshotExportHandoff,
+        next_cadence_state: ClientHeartbeatRttOffsetMetricsSnapshotCadenceState,
+    },
+    SnapshotExportNotDue {
+        next_due_at: TimestampMicros,
+        cadence_state: ClientHeartbeatRttOffsetMetricsSnapshotCadenceState,
+    },
+    SnapshotExportDeferred {
+        reason: ClientHeartbeatRttOffsetMetricsSnapshotExportDeferredReason,
+    },
+}
+
+/// Boundary that creates a snapshot from metrics state without choosing cadence.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct ClientHeartbeatRttOffsetMetricsSnapshotBoundary;
+
+impl ClientHeartbeatRttOffsetMetricsSnapshotBoundary {
+    pub fn snapshot(
+        &self,
+        state: &ClientHeartbeatRttOffsetMetricsState,
+        exported_at: TimestampMicros,
+    ) -> ClientHeartbeatRttOffsetMetricsSnapshot {
+        let records = state
+            .entries()
+            .map(|entry| ClientHeartbeatRttOffsetMetricsSnapshotRecord {
+                client_id: entry.client_id.clone(),
+                run_id: entry.run_id.clone(),
+                latest_observation: entry.latest_observation.clone(),
+                latest_estimate: entry.latest_estimate,
+                samples_committed: entry.samples_committed,
+            })
+            .collect();
+
+        ClientHeartbeatRttOffsetMetricsSnapshot {
+            exported_at,
+            records,
+            total_samples_committed: state.total_samples_committed(),
+        }
+    }
+}
+
+/// Boundary that evaluates snapshot export cadence from explicit state only.
+///
+/// It does not commit RTT / offset samples, recalculate estimates, trigger
+/// dashboard refresh, inspect retry/reconnect/timer state, or own metrics
+/// storage.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct ClientHeartbeatRttOffsetMetricsSnapshotExportCadenceBoundary {
+    snapshot: ClientHeartbeatRttOffsetMetricsSnapshotBoundary,
+}
+
+impl ClientHeartbeatRttOffsetMetricsSnapshotExportCadenceBoundary {
+    pub fn build_input(
+        &self,
+        metrics_state: Option<&ClientHeartbeatRttOffsetMetricsState>,
+        cadence_state: Option<ClientHeartbeatRttOffsetMetricsSnapshotCadenceState>,
+        now: TimestampMicros,
+        export_interval_micros: u64,
+    ) -> Result<
+        ClientHeartbeatRttOffsetMetricsSnapshotCadenceInput,
+        ClientHeartbeatRttOffsetMetricsSnapshotExportDeferredReason,
+    > {
+        let metrics_state = metrics_state.ok_or(
+            ClientHeartbeatRttOffsetMetricsSnapshotExportDeferredReason::MetricsStateUnavailable,
+        )?;
+        let cadence_state = cadence_state.ok_or(
+            ClientHeartbeatRttOffsetMetricsSnapshotExportDeferredReason::CadenceStateUnavailable,
+        )?;
+
+        Ok(ClientHeartbeatRttOffsetMetricsSnapshotCadenceInput {
+            now,
+            export_interval_micros,
+            metrics_total_samples_committed: metrics_state.total_samples_committed(),
+            cadence_state,
+        })
+    }
+
+    pub fn evaluate(
+        &self,
+        metrics_state: Option<&ClientHeartbeatRttOffsetMetricsState>,
+        input: Result<
+            ClientHeartbeatRttOffsetMetricsSnapshotCadenceInput,
+            ClientHeartbeatRttOffsetMetricsSnapshotExportDeferredReason,
+        >,
+        consumer: ClientHeartbeatRttOffsetMetricsSnapshotConsumer,
+    ) -> ClientHeartbeatRttOffsetMetricsSnapshotExportCadenceResult {
+        let input = match input {
+            Ok(input) => input,
+            Err(reason) => {
+                return ClientHeartbeatRttOffsetMetricsSnapshotExportCadenceResult::SnapshotExportDeferred {
+                    reason,
+                };
+            }
+        };
+
+        if input.export_interval_micros == 0 {
+            return ClientHeartbeatRttOffsetMetricsSnapshotExportCadenceResult::SnapshotExportDeferred {
+                reason: ClientHeartbeatRttOffsetMetricsSnapshotExportDeferredReason::ExportIntervalNotConfigured,
+            };
+        }
+
+        if input.metrics_total_samples_committed == 0 {
+            return ClientHeartbeatRttOffsetMetricsSnapshotExportCadenceResult::SnapshotExportDeferred {
+                reason: ClientHeartbeatRttOffsetMetricsSnapshotExportDeferredReason::EmptyMetricsState,
+            };
+        }
+
+        let next_due_at = input
+            .cadence_state
+            .next_due_at(input.export_interval_micros);
+        if input.now.0 < next_due_at.0 {
+            return ClientHeartbeatRttOffsetMetricsSnapshotExportCadenceResult::SnapshotExportNotDue {
+                next_due_at,
+                cadence_state: input.cadence_state,
+            };
+        }
+
+        let Some(metrics_state) = metrics_state else {
+            return ClientHeartbeatRttOffsetMetricsSnapshotExportCadenceResult::SnapshotExportDeferred {
+                reason: ClientHeartbeatRttOffsetMetricsSnapshotExportDeferredReason::MetricsStateUnavailable,
+            };
+        };
+        let snapshot = self.snapshot.snapshot(metrics_state, input.now);
+        if snapshot.records.is_empty() {
+            return ClientHeartbeatRttOffsetMetricsSnapshotExportCadenceResult::SnapshotExportDeferred {
+                reason: ClientHeartbeatRttOffsetMetricsSnapshotExportDeferredReason::EmptyMetricsState,
+            };
+        }
+
+        let future_dashboard_refresh = match consumer {
+            ClientHeartbeatRttOffsetMetricsSnapshotConsumer::FutureDashboardRefresh => Some(
+                ClientHeartbeatRttOffsetMetricsFutureDashboardRefreshHandoff {
+                    snapshot: snapshot.clone(),
+                },
+            ),
+        };
+        let handoff = ClientHeartbeatRttOffsetMetricsSnapshotExportHandoff {
+            consumer,
+            snapshot,
+            future_dashboard_refresh,
+        };
+        let mut next_cadence_state = input.cadence_state;
+        next_cadence_state.last_exported_at = Some(input.now);
+        next_cadence_state.exported_snapshots =
+            next_cadence_state.exported_snapshots.saturating_add(1);
+        next_cadence_state.last_exported_total_samples = input.metrics_total_samples_committed;
+
+        ClientHeartbeatRttOffsetMetricsSnapshotExportCadenceResult::SnapshotExportDue {
+            handoff,
+            next_cadence_state,
+        }
+    }
 }
 
 /// Boundary that derives metrics commit input only from explicit observation paths.
@@ -12406,6 +12653,29 @@ mod tests {
         }
     }
 
+    fn cleanup_test_metrics_state_with_one_sample() -> ClientHeartbeatRttOffsetMetricsState {
+        let mut state = ClientHeartbeatRttOffsetMetricsState::default();
+        let result = ClientHeartbeatRttOffsetMetricsCommitBoundary::default().commit(
+            &mut state,
+            ClientHeartbeatRttOffsetMetricsCommitInput {
+                source: ClientHeartbeatRttOffsetMetricsCommitInputSource::AckObservationReturn,
+                observation: HeartbeatAckObservation {
+                    client_id: ClientId("client-1".to_string()),
+                    run_id: RunId("run-1".to_string()),
+                    echoed_sent_at: TimestampMicros(10_000),
+                    server_received_at: TimestampMicros(10_500),
+                    server_sent_at: TimestampMicros(10_600),
+                    client_received_at: TimestampMicros(10_900),
+                },
+            },
+        );
+        assert!(matches!(
+            result,
+            ClientHeartbeatRttOffsetMetricsCommitResult::Applied(_)
+        ));
+        state
+    }
+
     fn cleanup_test_runtime_handoff() -> ClientHeartbeatLoopRepeatedRuntimeHandoff {
         ClientHeartbeatLoopRepeatedRuntimeHandoff {
             mode: ClientHeartbeatOneTickRuntimeMode::HeartbeatOnly,
@@ -14532,6 +14802,212 @@ mod tests {
         assert_eq!(
             result,
             ClientHeartbeatRttOffsetMetricsCommitResult::StopPassthrough { reason }
+        );
+    }
+
+    #[test]
+    fn client_heartbeat_loop_cleanup_metrics_snapshot_export_is_due_when_cadence_threshold_is_reached(
+    ) {
+        let mut metrics_state = cleanup_test_metrics_state_with_one_sample();
+        let cadence_state =
+            ClientHeartbeatRttOffsetMetricsSnapshotCadenceState::new(TimestampMicros(10_000));
+        let boundary = ClientHeartbeatRttOffsetMetricsSnapshotExportCadenceBoundary::default();
+        let input = boundary.build_input(
+            Some(&metrics_state),
+            Some(cadence_state),
+            TimestampMicros(11_000),
+            1_000,
+        );
+
+        let result = boundary.evaluate(
+            Some(&metrics_state),
+            input,
+            ClientHeartbeatRttOffsetMetricsSnapshotConsumer::FutureDashboardRefresh,
+        );
+
+        let ClientHeartbeatRttOffsetMetricsSnapshotExportCadenceResult::SnapshotExportDue {
+            handoff,
+            next_cadence_state,
+        } = result
+        else {
+            panic!("snapshot export should be due");
+        };
+        assert_eq!(handoff.snapshot.exported_at, TimestampMicros(11_000));
+        assert_eq!(handoff.snapshot.records.len(), 1);
+        assert_eq!(handoff.snapshot.total_samples_committed, 1);
+        assert_eq!(
+            handoff.consumer,
+            ClientHeartbeatRttOffsetMetricsSnapshotConsumer::FutureDashboardRefresh
+        );
+        assert!(handoff.future_dashboard_refresh.is_some());
+        assert_eq!(
+            next_cadence_state.last_exported_at,
+            Some(TimestampMicros(11_000))
+        );
+        assert_eq!(next_cadence_state.exported_snapshots, 1);
+        assert_eq!(next_cadence_state.last_exported_total_samples, 1);
+
+        let second_commit = ClientHeartbeatRttOffsetMetricsCommitBoundary::default().commit(
+            &mut metrics_state,
+            ClientHeartbeatRttOffsetMetricsCommitInput {
+                source: ClientHeartbeatRttOffsetMetricsCommitInputSource::AckObservationReturn,
+                observation: HeartbeatAckObservation {
+                    client_id: ClientId("client-1".to_string()),
+                    run_id: RunId("run-1".to_string()),
+                    echoed_sent_at: TimestampMicros(20_000),
+                    server_received_at: TimestampMicros(20_500),
+                    server_sent_at: TimestampMicros(20_600),
+                    client_received_at: TimestampMicros(20_900),
+                },
+            },
+        );
+        assert!(matches!(
+            second_commit,
+            ClientHeartbeatRttOffsetMetricsCommitResult::Applied(_)
+        ));
+    }
+
+    #[test]
+    fn client_heartbeat_loop_cleanup_metrics_snapshot_export_is_not_due_before_threshold() {
+        let metrics_state = cleanup_test_metrics_state_with_one_sample();
+        let cadence_state =
+            ClientHeartbeatRttOffsetMetricsSnapshotCadenceState::new(TimestampMicros(10_000));
+        let boundary = ClientHeartbeatRttOffsetMetricsSnapshotExportCadenceBoundary::default();
+        let input = boundary.build_input(
+            Some(&metrics_state),
+            Some(cadence_state),
+            TimestampMicros(10_999),
+            1_000,
+        );
+
+        let result = boundary.evaluate(
+            Some(&metrics_state),
+            input,
+            ClientHeartbeatRttOffsetMetricsSnapshotConsumer::FutureDashboardRefresh,
+        );
+
+        assert_eq!(
+            result,
+            ClientHeartbeatRttOffsetMetricsSnapshotExportCadenceResult::SnapshotExportNotDue {
+                next_due_at: TimestampMicros(11_000),
+                cadence_state
+            }
+        );
+    }
+
+    #[test]
+    fn client_heartbeat_loop_cleanup_metrics_snapshot_export_can_be_deferred_explicitly() {
+        let metrics_state = cleanup_test_metrics_state_with_one_sample();
+        let cadence_state =
+            ClientHeartbeatRttOffsetMetricsSnapshotCadenceState::new(TimestampMicros(10_000));
+        let boundary = ClientHeartbeatRttOffsetMetricsSnapshotExportCadenceBoundary::default();
+
+        let missing_metrics = boundary.evaluate(
+            None,
+            boundary.build_input(None, Some(cadence_state), TimestampMicros(11_000), 1_000),
+            ClientHeartbeatRttOffsetMetricsSnapshotConsumer::FutureDashboardRefresh,
+        );
+        assert_eq!(
+            missing_metrics,
+            ClientHeartbeatRttOffsetMetricsSnapshotExportCadenceResult::SnapshotExportDeferred {
+                reason:
+                    ClientHeartbeatRttOffsetMetricsSnapshotExportDeferredReason::MetricsStateUnavailable
+            }
+        );
+
+        let missing_cadence = boundary.evaluate(
+            Some(&metrics_state),
+            boundary.build_input(Some(&metrics_state), None, TimestampMicros(11_000), 1_000),
+            ClientHeartbeatRttOffsetMetricsSnapshotConsumer::FutureDashboardRefresh,
+        );
+        assert_eq!(
+            missing_cadence,
+            ClientHeartbeatRttOffsetMetricsSnapshotExportCadenceResult::SnapshotExportDeferred {
+                reason:
+                    ClientHeartbeatRttOffsetMetricsSnapshotExportDeferredReason::CadenceStateUnavailable
+            }
+        );
+
+        let no_interval = boundary.evaluate(
+            Some(&metrics_state),
+            boundary.build_input(
+                Some(&metrics_state),
+                Some(cadence_state),
+                TimestampMicros(11_000),
+                0,
+            ),
+            ClientHeartbeatRttOffsetMetricsSnapshotConsumer::FutureDashboardRefresh,
+        );
+        assert_eq!(
+            no_interval,
+            ClientHeartbeatRttOffsetMetricsSnapshotExportCadenceResult::SnapshotExportDeferred {
+                reason:
+                    ClientHeartbeatRttOffsetMetricsSnapshotExportDeferredReason::ExportIntervalNotConfigured
+            }
+        );
+    }
+
+    #[test]
+    fn client_heartbeat_loop_cleanup_metrics_snapshot_cadence_stays_separate_from_dashboard_refresh(
+    ) {
+        let metrics_state = cleanup_test_metrics_state_with_one_sample();
+        let cadence_state =
+            ClientHeartbeatRttOffsetMetricsSnapshotCadenceState::new(TimestampMicros(10_000));
+        let boundary = ClientHeartbeatRttOffsetMetricsSnapshotExportCadenceBoundary::default();
+        let result = boundary.evaluate(
+            Some(&metrics_state),
+            boundary.build_input(
+                Some(&metrics_state),
+                Some(cadence_state),
+                TimestampMicros(11_000),
+                1_000,
+            ),
+            ClientHeartbeatRttOffsetMetricsSnapshotConsumer::FutureDashboardRefresh,
+        );
+
+        let ClientHeartbeatRttOffsetMetricsSnapshotExportCadenceResult::SnapshotExportDue {
+            handoff,
+            ..
+        } = result
+        else {
+            panic!("snapshot export should be due");
+        };
+        let dashboard_handoff = handoff
+            .future_dashboard_refresh
+            .expect("future dashboard handoff should be explicit");
+        assert_eq!(dashboard_handoff.snapshot, handoff.snapshot);
+        assert_eq!(
+            ClientHeartbeatRttOffsetMetricsDashboardRefreshDecision::NotImplemented,
+            ClientHeartbeatRttOffsetMetricsDashboardRefreshDecision::NotImplemented
+        );
+    }
+
+    #[test]
+    fn client_heartbeat_loop_cleanup_metrics_snapshot_cadence_does_not_reinterpret_commit_logic() {
+        let metrics_state = cleanup_test_metrics_state_with_one_sample();
+        let cadence_state =
+            ClientHeartbeatRttOffsetMetricsSnapshotCadenceState::new(TimestampMicros(10_000));
+        let boundary = ClientHeartbeatRttOffsetMetricsSnapshotExportCadenceBoundary::default();
+        let result = boundary.evaluate(
+            Some(&metrics_state),
+            boundary.build_input(
+                Some(&metrics_state),
+                Some(cadence_state),
+                TimestampMicros(11_000),
+                1_000,
+            ),
+            ClientHeartbeatRttOffsetMetricsSnapshotConsumer::FutureDashboardRefresh,
+        );
+
+        assert!(matches!(
+            result,
+            ClientHeartbeatRttOffsetMetricsSnapshotExportCadenceResult::SnapshotExportDue { .. }
+        ));
+        assert_eq!(
+            ClientHeartbeatRttOffsetMetricsCommitInputResult::NoCommitNeeded(
+                ClientHeartbeatRttOffsetMetricsNoCommitReason::NoAckObservation
+            ),
+            ClientHeartbeatRttOffsetMetricsCommitInputBoundary.from_ack_return(None)
         );
     }
 

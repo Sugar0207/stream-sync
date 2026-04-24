@@ -6786,3 +6786,22 @@ The client continuous heartbeat loop keeps RTT / offset metrics state commit as 
 - Missing caller-owned metrics state or invalid RTT / offset calculation remains an explicit deferred commit result.
 
 Metrics snapshot export cadence is a later policy boundary. Dashboard refresh is a later consumer/refresh boundary. Neither is implemented as part of per-sample metrics state commit.
+
+## Client Heartbeat RTT / Offset Metrics Snapshot Export Cadence Boundary
+
+The client heartbeat metrics snapshot export cadence is separate from per-sample metrics commit and separate from dashboard refresh.
+
+- Cadence input is derived from:
+  - caller-owned `ClientHeartbeatRttOffsetMetricsState`
+  - caller-owned `ClientHeartbeatRttOffsetMetricsSnapshotCadenceState`
+  - current loop time
+  - configured export interval
+- The cadence boundary decides only whether a snapshot export is due.
+- The cadence boundary can return:
+  - snapshot export due with a typed snapshot export handoff
+  - snapshot export not due with the next due time
+  - snapshot export deferred with an explicit reason
+- Deferred reasons cover missing metrics state, missing cadence state, missing interval, and empty metrics state.
+- The snapshot handoff can name a future dashboard refresh consumer, but cadence does not execute dashboard refresh.
+- Dashboard refresh receives only an explicit future handoff. UI rendering, dashboard storage, transport, and refresh policy remain out of scope.
+- Cadence does not recalculate RTT / offset, commit metrics samples, inspect timer / retry / reconnect state, or own metrics state.
