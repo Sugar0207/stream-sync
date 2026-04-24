@@ -3237,6 +3237,171 @@ pub enum ClientHeartbeatLoopOuterWhileLoopOneTurnExecutionResult {
     },
 }
 
+/// Explicit input handed into actual timer-wait execution from one outer while-loop turn.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClientHeartbeatLoopOuterWhileLoopActualTimerWaitExecutionInput {
+    pub output: ClientHeartbeatLoopOuterWhileLoopOneTurnExecutionOutput,
+}
+
+impl ClientHeartbeatLoopOuterWhileLoopActualTimerWaitExecutionInput {
+    pub fn from_one_turn_execution(
+        execution: ClientHeartbeatLoopOuterWhileLoopOneTurnExecutionResult,
+    ) -> Result<Self, ClientHeartbeatLoopCompletedBodyTerminalOutput> {
+        match execution {
+            ClientHeartbeatLoopOuterWhileLoopOneTurnExecutionResult::Continue { output } => {
+                Ok(Self { output })
+            }
+            ClientHeartbeatLoopOuterWhileLoopOneTurnExecutionResult::Stop { output } => Err(output),
+        }
+    }
+}
+
+/// Explicit result of applying actual timer-wait execution for one turn.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ClientHeartbeatLoopOuterWhileLoopActualTimerWaitExecutionApplyResult {
+    NoTimerWaitApplied,
+    TimerWaitApplied {
+        sleep: ClientHeartbeatLoopSleepDecision,
+    },
+}
+
+/// Continue-path output surfaced after actual timer-wait execution remains explicit.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClientHeartbeatLoopOuterWhileLoopActualTimerWaitExecutionOutput {
+    pub wakeup: ClientHeartbeatLoopOuterWhileLoopWakeupState,
+    pub timer_wait: ClientHeartbeatLoopOuterWhileLoopActualTimerWaitExecutionApplyResult,
+    pub retry_execution: ClientHeartbeatLoopFutureActualRetryExecutionAction,
+    pub reconnect_execution: ClientHeartbeatLoopFutureActualReconnectExecutionAction,
+    pub next: ClientHeartbeatLoopOuterWhileLoopOneTurnNextStepState,
+}
+
+/// Result of applying actual timer-wait execution from one turn.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ClientHeartbeatLoopOuterWhileLoopActualTimerWaitExecutionResult {
+    Continue {
+        output: ClientHeartbeatLoopOuterWhileLoopActualTimerWaitExecutionOutput,
+    },
+    Stop {
+        output: ClientHeartbeatLoopCompletedBodyTerminalOutput,
+    },
+}
+
+/// Explicit input handed into actual retry execution from one outer while-loop turn.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClientHeartbeatLoopOuterWhileLoopActualRetryExecutionInput {
+    pub output: ClientHeartbeatLoopOuterWhileLoopOneTurnExecutionOutput,
+}
+
+impl ClientHeartbeatLoopOuterWhileLoopActualRetryExecutionInput {
+    pub fn from_one_turn_execution(
+        execution: ClientHeartbeatLoopOuterWhileLoopOneTurnExecutionResult,
+    ) -> Result<Self, ClientHeartbeatLoopCompletedBodyTerminalOutput> {
+        match execution {
+            ClientHeartbeatLoopOuterWhileLoopOneTurnExecutionResult::Continue { output } => {
+                Ok(Self { output })
+            }
+            ClientHeartbeatLoopOuterWhileLoopOneTurnExecutionResult::Stop { output } => Err(output),
+        }
+    }
+}
+
+/// Explicit result of applying actual retry execution for one turn.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ClientHeartbeatLoopOuterWhileLoopActualRetryExecutionApplyResult {
+    NoRetryExecutionApplied,
+    RetryExecutionApplied {
+        retry: ClientHeartbeatLoopRetryApplyResult,
+    },
+}
+
+/// Continue-path output surfaced after actual retry execution remains explicit.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClientHeartbeatLoopOuterWhileLoopActualRetryExecutionOutput {
+    pub wakeup: ClientHeartbeatLoopOuterWhileLoopWakeupState,
+    pub timer_wait: ClientHeartbeatLoopFutureActualTimerWaitAction,
+    pub retry_execution: ClientHeartbeatLoopOuterWhileLoopActualRetryExecutionApplyResult,
+    pub reconnect_execution: ClientHeartbeatLoopFutureActualReconnectExecutionAction,
+    pub next: ClientHeartbeatLoopOuterWhileLoopOneTurnNextStepState,
+}
+
+/// Result of applying actual retry execution from one turn.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ClientHeartbeatLoopOuterWhileLoopActualRetryExecutionResult {
+    Continue {
+        output: ClientHeartbeatLoopOuterWhileLoopActualRetryExecutionOutput,
+    },
+    Stop {
+        output: ClientHeartbeatLoopCompletedBodyTerminalOutput,
+    },
+}
+
+/// Explicit input handed into actual reconnect execution from one outer while-loop turn.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClientHeartbeatLoopOuterWhileLoopActualReconnectExecutionInput {
+    pub output: ClientHeartbeatLoopOuterWhileLoopOneTurnExecutionOutput,
+}
+
+impl ClientHeartbeatLoopOuterWhileLoopActualReconnectExecutionInput {
+    pub fn from_one_turn_execution(
+        execution: ClientHeartbeatLoopOuterWhileLoopOneTurnExecutionResult,
+    ) -> Result<Self, ClientHeartbeatLoopCompletedBodyTerminalOutput> {
+        match execution {
+            ClientHeartbeatLoopOuterWhileLoopOneTurnExecutionResult::Continue { output } => {
+                Ok(Self { output })
+            }
+            ClientHeartbeatLoopOuterWhileLoopOneTurnExecutionResult::Stop { output } => Err(output),
+        }
+    }
+}
+
+/// Explicit result of applying actual reconnect execution for one turn.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ClientHeartbeatLoopOuterWhileLoopActualReconnectExecutionApplyResult {
+    NoReconnectExecutionApplied,
+}
+
+/// Continue-path output surfaced after actual reconnect execution remains explicit.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClientHeartbeatLoopOuterWhileLoopActualReconnectExecutionOutput {
+    pub wakeup: ClientHeartbeatLoopOuterWhileLoopWakeupState,
+    pub timer_wait: ClientHeartbeatLoopFutureActualTimerWaitAction,
+    pub retry_execution: ClientHeartbeatLoopFutureActualRetryExecutionAction,
+    pub reconnect_execution: ClientHeartbeatLoopOuterWhileLoopActualReconnectExecutionApplyResult,
+    pub next: ClientHeartbeatLoopOuterWhileLoopOneTurnNextStepState,
+}
+
+/// Result of applying actual reconnect execution from one turn.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ClientHeartbeatLoopOuterWhileLoopActualReconnectExecutionResult {
+    Continue {
+        output: ClientHeartbeatLoopOuterWhileLoopActualReconnectExecutionOutput,
+    },
+    Stop {
+        output: ClientHeartbeatLoopCompletedBodyTerminalOutput,
+    },
+}
+
+/// Continue-path output surfaced after actual timer/retry/reconnect execution order remains explicit.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClientHeartbeatLoopOuterWhileLoopActualExecutionOutput {
+    pub wakeup: ClientHeartbeatLoopOuterWhileLoopWakeupState,
+    pub timer_wait: ClientHeartbeatLoopOuterWhileLoopActualTimerWaitExecutionApplyResult,
+    pub retry_execution: ClientHeartbeatLoopOuterWhileLoopActualRetryExecutionApplyResult,
+    pub reconnect_execution: ClientHeartbeatLoopOuterWhileLoopActualReconnectExecutionApplyResult,
+    pub next: ClientHeartbeatLoopOuterWhileLoopOneTurnNextStepState,
+}
+
+/// Result of applying actual timer/retry/reconnect execution after one turn.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ClientHeartbeatLoopOuterWhileLoopActualExecutionResult {
+    Continue {
+        output: ClientHeartbeatLoopOuterWhileLoopActualExecutionOutput,
+    },
+    Stop {
+        output: ClientHeartbeatLoopCompletedBodyTerminalOutput,
+    },
+}
+
 /// Boundary that connects one step result to future completed-loop lifecycle flow.
 ///
 /// This does not run a while-loop, sleep, reconnect, flush logs, close
@@ -4348,6 +4513,204 @@ impl ClientHeartbeatLoopOuterWhileLoopOneTurnExecutionBoundary {
                 },
             },
             Err(output) => ClientHeartbeatLoopOuterWhileLoopOneTurnExecutionResult::Stop { output },
+        }
+    }
+}
+
+/// Boundary that applies only the actual timer-wait execution shape for one turn.
+///
+/// This boundary consumes one-turn execution result only. It keeps wakeup,
+/// retry, reconnect, and next carry explicit, and it does not execute retry
+/// work, reconnect policy, metrics cadence, or a repeated while-loop.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct ClientHeartbeatLoopOuterWhileLoopActualTimerWaitExecutionBoundary;
+
+impl ClientHeartbeatLoopOuterWhileLoopActualTimerWaitExecutionBoundary {
+    pub fn apply(
+        &self,
+        execution: ClientHeartbeatLoopOuterWhileLoopOneTurnExecutionResult,
+    ) -> ClientHeartbeatLoopOuterWhileLoopActualTimerWaitExecutionResult {
+        match ClientHeartbeatLoopOuterWhileLoopActualTimerWaitExecutionInput::from_one_turn_execution(
+            execution,
+        ) {
+            Ok(input) => {
+                let timer_wait = match input.output.timer_wait {
+                    ClientHeartbeatLoopFutureActualTimerWaitAction::NoTimerWait => {
+                        ClientHeartbeatLoopOuterWhileLoopActualTimerWaitExecutionApplyResult::NoTimerWaitApplied
+                    }
+                    ClientHeartbeatLoopFutureActualTimerWaitAction::TimerWait { sleep } => {
+                        ClientHeartbeatLoopOuterWhileLoopActualTimerWaitExecutionApplyResult::TimerWaitApplied {
+                            sleep,
+                        }
+                    }
+                };
+
+                ClientHeartbeatLoopOuterWhileLoopActualTimerWaitExecutionResult::Continue {
+                    output: ClientHeartbeatLoopOuterWhileLoopActualTimerWaitExecutionOutput {
+                        wakeup: input.output.wakeup,
+                        timer_wait,
+                        retry_execution: input.output.retry_execution,
+                        reconnect_execution: input.output.reconnect_execution,
+                        next: input.output.next,
+                    },
+                }
+            }
+            Err(output) => ClientHeartbeatLoopOuterWhileLoopActualTimerWaitExecutionResult::Stop {
+                output,
+            },
+        }
+    }
+}
+
+/// Boundary that applies only the actual retry execution shape for one turn.
+///
+/// This boundary consumes one-turn execution result only. It keeps wakeup,
+/// timer wait, reconnect, and next carry explicit, and it does not execute
+/// timer wait, reconnect policy, metrics cadence, or a repeated while-loop.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct ClientHeartbeatLoopOuterWhileLoopActualRetryExecutionBoundary;
+
+impl ClientHeartbeatLoopOuterWhileLoopActualRetryExecutionBoundary {
+    pub fn apply(
+        &self,
+        execution: ClientHeartbeatLoopOuterWhileLoopOneTurnExecutionResult,
+    ) -> ClientHeartbeatLoopOuterWhileLoopActualRetryExecutionResult {
+        match ClientHeartbeatLoopOuterWhileLoopActualRetryExecutionInput::from_one_turn_execution(
+            execution,
+        ) {
+            Ok(input) => {
+                let retry_execution = match input.output.retry_execution {
+                    ClientHeartbeatLoopFutureActualRetryExecutionAction::NoRetryExecution => {
+                        ClientHeartbeatLoopOuterWhileLoopActualRetryExecutionApplyResult::NoRetryExecutionApplied
+                    }
+                    ClientHeartbeatLoopFutureActualRetryExecutionAction::RetryExecution { retry } => {
+                        ClientHeartbeatLoopOuterWhileLoopActualRetryExecutionApplyResult::RetryExecutionApplied {
+                            retry,
+                        }
+                    }
+                };
+
+                ClientHeartbeatLoopOuterWhileLoopActualRetryExecutionResult::Continue {
+                    output: ClientHeartbeatLoopOuterWhileLoopActualRetryExecutionOutput {
+                        wakeup: input.output.wakeup,
+                        timer_wait: input.output.timer_wait,
+                        retry_execution,
+                        reconnect_execution: input.output.reconnect_execution,
+                        next: input.output.next,
+                    },
+                }
+            }
+            Err(output) => {
+                ClientHeartbeatLoopOuterWhileLoopActualRetryExecutionResult::Stop { output }
+            }
+        }
+    }
+}
+
+/// Boundary that applies only the actual reconnect execution shape for one turn.
+///
+/// This boundary consumes one-turn execution result only. It keeps wakeup,
+/// timer wait, retry, and next carry explicit, and it does not execute a broad
+/// reconnect policy, metrics cadence, or a repeated while-loop.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct ClientHeartbeatLoopOuterWhileLoopActualReconnectExecutionBoundary;
+
+impl ClientHeartbeatLoopOuterWhileLoopActualReconnectExecutionBoundary {
+    pub fn apply(
+        &self,
+        execution: ClientHeartbeatLoopOuterWhileLoopOneTurnExecutionResult,
+    ) -> ClientHeartbeatLoopOuterWhileLoopActualReconnectExecutionResult {
+        match ClientHeartbeatLoopOuterWhileLoopActualReconnectExecutionInput::from_one_turn_execution(
+            execution,
+        ) {
+            Ok(input) => {
+                let reconnect_execution = match input.output.reconnect_execution {
+                    ClientHeartbeatLoopFutureActualReconnectExecutionAction::NoReconnectExecution => {
+                        ClientHeartbeatLoopOuterWhileLoopActualReconnectExecutionApplyResult::NoReconnectExecutionApplied
+                    }
+                };
+
+                ClientHeartbeatLoopOuterWhileLoopActualReconnectExecutionResult::Continue {
+                    output: ClientHeartbeatLoopOuterWhileLoopActualReconnectExecutionOutput {
+                        wakeup: input.output.wakeup,
+                        timer_wait: input.output.timer_wait,
+                        retry_execution: input.output.retry_execution,
+                        reconnect_execution,
+                        next: input.output.next,
+                    },
+                }
+            }
+            Err(output) => {
+                ClientHeartbeatLoopOuterWhileLoopActualReconnectExecutionResult::Stop { output }
+            }
+        }
+    }
+}
+
+/// Boundary that keeps actual timer/retry/reconnect execution order explicit for one turn.
+///
+/// This boundary keeps the actual while-loop dumb: it consumes one-turn
+/// execution result, applies timer wait, retry execution, and reconnect
+/// execution boundaries in order, and returns explicit continue output or stop
+/// passthrough. It does not repeat, perform metrics cadence, or own wakeup.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct ClientHeartbeatLoopOuterWhileLoopActualExecutionBoundary {
+    timer_wait: ClientHeartbeatLoopOuterWhileLoopActualTimerWaitExecutionBoundary,
+    retry_execution: ClientHeartbeatLoopOuterWhileLoopActualRetryExecutionBoundary,
+    reconnect_execution: ClientHeartbeatLoopOuterWhileLoopActualReconnectExecutionBoundary,
+}
+
+impl ClientHeartbeatLoopOuterWhileLoopActualExecutionBoundary {
+    pub fn apply(
+        &self,
+        execution: ClientHeartbeatLoopOuterWhileLoopOneTurnExecutionResult,
+    ) -> ClientHeartbeatLoopOuterWhileLoopActualExecutionResult {
+        let timer_wait = self.timer_wait.apply(execution.clone());
+        let retry_execution = self.retry_execution.apply(execution.clone());
+        let reconnect_execution = self.reconnect_execution.apply(execution);
+
+        match (timer_wait, retry_execution, reconnect_execution) {
+            (
+                ClientHeartbeatLoopOuterWhileLoopActualTimerWaitExecutionResult::Continue {
+                    output: timer_wait,
+                },
+                ClientHeartbeatLoopOuterWhileLoopActualRetryExecutionResult::Continue {
+                    output: retry_execution,
+                },
+                ClientHeartbeatLoopOuterWhileLoopActualReconnectExecutionResult::Continue {
+                    output: reconnect_execution,
+                },
+            ) => {
+                debug_assert_eq!(timer_wait.wakeup, retry_execution.wakeup);
+                debug_assert_eq!(timer_wait.wakeup, reconnect_execution.wakeup);
+                debug_assert_eq!(timer_wait.next, retry_execution.next);
+                debug_assert_eq!(timer_wait.next, reconnect_execution.next);
+
+                ClientHeartbeatLoopOuterWhileLoopActualExecutionResult::Continue {
+                    output: ClientHeartbeatLoopOuterWhileLoopActualExecutionOutput {
+                        wakeup: timer_wait.wakeup,
+                        timer_wait: timer_wait.timer_wait,
+                        retry_execution: retry_execution.retry_execution,
+                        reconnect_execution: reconnect_execution.reconnect_execution,
+                        next: timer_wait.next,
+                    },
+                }
+            }
+            (
+                ClientHeartbeatLoopOuterWhileLoopActualTimerWaitExecutionResult::Stop { output },
+                _,
+                _,
+            )
+            | (
+                _,
+                ClientHeartbeatLoopOuterWhileLoopActualRetryExecutionResult::Stop { output },
+                _,
+            )
+            | (
+                _,
+                _,
+                ClientHeartbeatLoopOuterWhileLoopActualReconnectExecutionResult::Stop { output },
+            ) => ClientHeartbeatLoopOuterWhileLoopActualExecutionResult::Stop { output },
         }
     }
 }
@@ -11200,6 +11563,30 @@ mod tests {
         }
     }
 
+    fn cleanup_test_outer_one_turn_apply_timer_continue(
+    ) -> ClientHeartbeatLoopOuterWhileLoopOneTurnExecutionResult {
+        let connection = ClientHeartbeatLoopOuterWhileLoopConnectionBoundary::default()
+            .plan_next(cleanup_test_repeated_apply_timer_continue());
+
+        ClientHeartbeatLoopOuterWhileLoopOneTurnExecutionBoundary::default().run_turn(connection)
+    }
+
+    fn cleanup_test_outer_one_turn_apply_retry_continue(
+    ) -> ClientHeartbeatLoopOuterWhileLoopOneTurnExecutionResult {
+        let connection = ClientHeartbeatLoopOuterWhileLoopConnectionBoundary::default()
+            .plan_next(cleanup_test_repeated_apply_retry_continue());
+
+        ClientHeartbeatLoopOuterWhileLoopOneTurnExecutionBoundary::default().run_turn(connection)
+    }
+
+    fn cleanup_test_outer_one_turn_stop() -> ClientHeartbeatLoopOuterWhileLoopOneTurnExecutionResult
+    {
+        let connection = ClientHeartbeatLoopOuterWhileLoopConnectionBoundary::default()
+            .plan_next(cleanup_test_repeated_stop());
+
+        ClientHeartbeatLoopOuterWhileLoopOneTurnExecutionBoundary::default().run_turn(connection)
+    }
+
     #[test]
     fn client_heartbeat_loop_cleanup_outer_while_loop_connection_preserves_continue_path_and_wakeup_timer_retry_reconnect_separation(
     ) {
@@ -11463,6 +11850,193 @@ mod tests {
         };
 
         assert_eq!(output, connection_output);
+    }
+
+    #[test]
+    fn client_heartbeat_loop_cleanup_outer_while_loop_actual_timer_wait_execution_input_and_result_follow_continue_with_timer_wait(
+    ) {
+        let one_turn = cleanup_test_outer_one_turn_apply_timer_continue();
+        let input =
+            ClientHeartbeatLoopOuterWhileLoopActualTimerWaitExecutionInput::from_one_turn_execution(
+                one_turn.clone(),
+            )
+            .expect("timer-wait continue one-turn result should produce timer-wait input");
+        let result = ClientHeartbeatLoopOuterWhileLoopActualTimerWaitExecutionBoundary::default()
+            .apply(one_turn);
+
+        assert_eq!(
+            input.output.timer_wait,
+            ClientHeartbeatLoopFutureActualTimerWaitAction::TimerWait {
+                sleep: cleanup_test_timer_sleep(),
+            }
+        );
+        assert_eq!(
+            result,
+            ClientHeartbeatLoopOuterWhileLoopActualTimerWaitExecutionResult::Continue {
+                output: ClientHeartbeatLoopOuterWhileLoopActualTimerWaitExecutionOutput {
+                    wakeup: input.output.wakeup,
+                    timer_wait:
+                        ClientHeartbeatLoopOuterWhileLoopActualTimerWaitExecutionApplyResult::TimerWaitApplied {
+                            sleep: cleanup_test_timer_sleep(),
+                        },
+                    retry_execution: input.output.retry_execution,
+                    reconnect_execution: input.output.reconnect_execution,
+                    next: input.output.next,
+                },
+            }
+        );
+    }
+
+    #[test]
+    fn client_heartbeat_loop_cleanup_outer_while_loop_actual_retry_execution_input_and_result_follow_continue_with_retry(
+    ) {
+        let retry = cleanup_test_retry_apply();
+        let one_turn = cleanup_test_outer_one_turn_apply_retry_continue();
+        let input =
+            ClientHeartbeatLoopOuterWhileLoopActualRetryExecutionInput::from_one_turn_execution(
+                one_turn.clone(),
+            )
+            .expect("retry continue one-turn result should produce retry input");
+        let result = ClientHeartbeatLoopOuterWhileLoopActualRetryExecutionBoundary::default()
+            .apply(one_turn);
+
+        assert_eq!(
+            input.output.retry_execution,
+            ClientHeartbeatLoopFutureActualRetryExecutionAction::RetryExecution {
+                retry: retry.clone(),
+            }
+        );
+        assert_eq!(
+            result,
+            ClientHeartbeatLoopOuterWhileLoopActualRetryExecutionResult::Continue {
+                output: ClientHeartbeatLoopOuterWhileLoopActualRetryExecutionOutput {
+                    wakeup: input.output.wakeup,
+                    timer_wait: input.output.timer_wait,
+                    retry_execution:
+                        ClientHeartbeatLoopOuterWhileLoopActualRetryExecutionApplyResult::RetryExecutionApplied {
+                            retry,
+                        },
+                    reconnect_execution: input.output.reconnect_execution,
+                    next: input.output.next,
+                },
+            }
+        );
+    }
+
+    #[test]
+    fn client_heartbeat_loop_cleanup_outer_while_loop_actual_reconnect_execution_keeps_reconnect_explicit(
+    ) {
+        let one_turn = cleanup_test_outer_one_turn_apply_timer_continue();
+        let input = ClientHeartbeatLoopOuterWhileLoopActualReconnectExecutionInput::from_one_turn_execution(
+            one_turn.clone(),
+        )
+        .expect("continue one-turn result should produce reconnect input");
+        let result = ClientHeartbeatLoopOuterWhileLoopActualReconnectExecutionBoundary::default()
+            .apply(one_turn);
+
+        assert_eq!(
+            input.output.reconnect_execution,
+            ClientHeartbeatLoopFutureActualReconnectExecutionAction::NoReconnectExecution
+        );
+        assert_eq!(
+            result,
+            ClientHeartbeatLoopOuterWhileLoopActualReconnectExecutionResult::Continue {
+                output: ClientHeartbeatLoopOuterWhileLoopActualReconnectExecutionOutput {
+                    wakeup: input.output.wakeup,
+                    timer_wait: input.output.timer_wait,
+                    retry_execution: input.output.retry_execution,
+                    reconnect_execution:
+                        ClientHeartbeatLoopOuterWhileLoopActualReconnectExecutionApplyResult::NoReconnectExecutionApplied,
+                    next: input.output.next,
+                },
+            }
+        );
+    }
+
+    #[test]
+    fn client_heartbeat_loop_cleanup_outer_while_loop_actual_execution_inputs_skip_stop_path() {
+        let stop = cleanup_test_outer_one_turn_stop();
+        let stop_output = ClientHeartbeatLoopCompletedBodyTerminalOutput {
+            stop_reason: ClientHeartbeatLoopRepeatedInvocationStopReason::CleanupRequested {
+                stop_reason: ClientHeartbeatLoopLifecycleStopReason::CallerRequestedStop,
+            },
+            cleanup_completed: true,
+            applied_actions: [
+                ClientHeartbeatLoopCleanupAppliedAction::FinalFlush,
+                ClientHeartbeatLoopCleanupAppliedAction::LogWriterInvocation,
+                ClientHeartbeatLoopCleanupAppliedAction::ResourceRelease,
+            ],
+        };
+
+        assert_eq!(
+            ClientHeartbeatLoopOuterWhileLoopActualTimerWaitExecutionInput::from_one_turn_execution(
+                stop.clone(),
+            ),
+            Err(stop_output.clone())
+        );
+        assert_eq!(
+            ClientHeartbeatLoopOuterWhileLoopActualRetryExecutionInput::from_one_turn_execution(
+                stop.clone(),
+            ),
+            Err(stop_output.clone())
+        );
+        assert_eq!(
+            ClientHeartbeatLoopOuterWhileLoopActualReconnectExecutionInput::from_one_turn_execution(
+                stop,
+            ),
+            Err(stop_output)
+        );
+    }
+
+    #[test]
+    fn client_heartbeat_loop_cleanup_outer_while_loop_actual_execution_preserves_wakeup_timer_retry_reconnect_separation(
+    ) {
+        let one_turn = cleanup_test_outer_one_turn_apply_timer_continue();
+        let result =
+            ClientHeartbeatLoopOuterWhileLoopActualExecutionBoundary::default().apply(one_turn);
+
+        assert_eq!(
+            result,
+            ClientHeartbeatLoopOuterWhileLoopActualExecutionResult::Continue {
+                output: ClientHeartbeatLoopOuterWhileLoopActualExecutionOutput {
+                    wakeup: ClientHeartbeatLoopOuterWhileLoopWakeupState::WakeupSideEffectApplied {
+                        wakeup_apply:
+                            ClientHeartbeatLoopHeartbeatTimeoutNoticeWakeupApplyResult::WakeupApplied {
+                                wakeup:
+                                    ClientHeartbeatLoopFutureHeartbeatTimeoutNoticeWakeupPlan::WakeupDuringTimerWait {
+                                        sleep: cleanup_test_timer_sleep(),
+                                    },
+                            },
+                        wakeup_side_effect:
+                            ClientHeartbeatLoopHeartbeatTimeoutNoticeWakeupActualSideEffectApplyResult::WakeupSideEffectApplied {
+                                wakeup:
+                                    ClientHeartbeatLoopFutureHeartbeatTimeoutNoticeWakeupPlan::WakeupDuringTimerWait {
+                                        sleep: cleanup_test_timer_sleep(),
+                                    },
+                            },
+                    },
+                    timer_wait:
+                        ClientHeartbeatLoopOuterWhileLoopActualTimerWaitExecutionApplyResult::TimerWaitApplied {
+                            sleep: cleanup_test_timer_sleep(),
+                        },
+                    retry_execution:
+                        ClientHeartbeatLoopOuterWhileLoopActualRetryExecutionApplyResult::NoRetryExecutionApplied,
+                    reconnect_execution:
+                        ClientHeartbeatLoopOuterWhileLoopActualReconnectExecutionApplyResult::NoReconnectExecutionApplied,
+                    next: ClientHeartbeatLoopOuterWhileLoopOneTurnNextStepState {
+                        carry: ClientHeartbeatLoopRepeatedInvocationNextStepCarry::ApplyTimerThenContinue {
+                            sleep: cleanup_test_timer_sleep(),
+                            carry: cleanup_test_iteration_carry(
+                                ClientHeartbeatLoopStepOrdering::WaitThenContinue {
+                                    sleep: cleanup_test_timer_sleep(),
+                                },
+                                0,
+                            ),
+                        },
+                    },
+                },
+            }
+        );
     }
 
     #[test]

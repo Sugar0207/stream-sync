@@ -4,6 +4,65 @@
 ### 担当 - Codex
 
 ### 今回の作業
+- client continuous heartbeat loop execution path に戻り、outer while-loop one-turn execution result から actual timer wait / retry execution / reconnect execution を分離して適用する最小実装形を追加した。
+- stop path では timer / retry / reconnect execution input を作らず、`stop_reason` / `cleanup_completed` / `applied_actions` をそのまま passthrough する形を維持した。
+- wakeup を timer / retry / reconnect から分離したまま、future repeated outer while-loop body が順番に呼べる explicit execution result を追加した。
+
+### 変更ファイル
+- `apps/client/src/lib.rs`
+- `docs/architecture/system-design.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### 実装したこと
+- `ClientHeartbeatLoopOuterWhileLoopActualTimerWaitExecutionInput`
+- `ClientHeartbeatLoopOuterWhileLoopActualTimerWaitExecutionApplyResult`
+- `ClientHeartbeatLoopOuterWhileLoopActualTimerWaitExecutionOutput`
+- `ClientHeartbeatLoopOuterWhileLoopActualTimerWaitExecutionResult`
+- `ClientHeartbeatLoopOuterWhileLoopActualTimerWaitExecutionBoundary`
+- `ClientHeartbeatLoopOuterWhileLoopActualRetryExecutionInput`
+- `ClientHeartbeatLoopOuterWhileLoopActualRetryExecutionApplyResult`
+- `ClientHeartbeatLoopOuterWhileLoopActualRetryExecutionOutput`
+- `ClientHeartbeatLoopOuterWhileLoopActualRetryExecutionResult`
+- `ClientHeartbeatLoopOuterWhileLoopActualRetryExecutionBoundary`
+- `ClientHeartbeatLoopOuterWhileLoopActualReconnectExecutionInput`
+- `ClientHeartbeatLoopOuterWhileLoopActualReconnectExecutionApplyResult`
+- `ClientHeartbeatLoopOuterWhileLoopActualReconnectExecutionOutput`
+- `ClientHeartbeatLoopOuterWhileLoopActualReconnectExecutionResult`
+- `ClientHeartbeatLoopOuterWhileLoopActualReconnectExecutionBoundary`
+- `ClientHeartbeatLoopOuterWhileLoopActualExecutionOutput`
+- `ClientHeartbeatLoopOuterWhileLoopActualExecutionResult`
+- `ClientHeartbeatLoopOuterWhileLoopActualExecutionBoundary`
+- one-turn execution result を single source of truth とし、continue では wakeup / timer wait / retry execution / reconnect execution / next carry を分離したまま actual execution result へ変換する実行境界
+- timer wait / retry execution / reconnect explicit / stop passthrough / aggregate separation を固定する単体テスト
+
+### 未実装 / 保留
+- client 側 continuous heartbeat loop の outer while-loop 反復本体
+- actual reconnect policy / socket 再確立の本実装
+- RTT / offset metrics state commit の継続 loop 接続
+- metrics snapshot export cadence / dashboard refresh 方針
+- video path / switcher / OBS の本実装
+
+### 次にやる候補
+- client 側 outer while-loop の反復実行本体を one-turn execution body と actual execution 境界に接続する
+- actual reconnect policy / socket 再確立の最小本実装を outer while-loop 経路へ接続する
+- RTT / offset metrics state commit / cadence / dashboard refresh 方針整理
+
+### TODO更新内容
+- 現在位置に actual timer wait / retry execution / reconnect 実行境界の完了を反映した。
+- 直近でやることを outer while-loop 反復本体と reconnect policy の残作業へ更新した。
+- heartbeat / 検証タスクに actual timer wait / retry execution / reconnect 実行境界と関連単体テスト完了を追加した。
+
+### 検証
+- `cargo fmt`
+- `cargo fmt --check`
+- `cargo test -p stream-sync-client client_heartbeat_loop_cleanup`
+- `cargo check --workspace`
+
+## 2026-04-24
+### 担当 - Codex
+
+### 今回の作業
 - client continuous heartbeat loop execution path に戻り、outer while-loop one-turn execution body の最小実装形を追加した。
 - outer while-loop connection result だけを入力源にし、continue path の wakeup / timer wait / retry execution / reconnect execution 分離を保ったまま next-step carry を返す薄い boundary を追加した。
 - stop path では `stop_reason` / `cleanup_completed` / `applied_actions` を再解釈せず、そのまま passthrough する形に揃えた。

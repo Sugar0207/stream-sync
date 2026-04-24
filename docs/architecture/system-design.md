@@ -5549,6 +5549,102 @@ Current code reflects this with
 `ClientHeartbeatLoopOuterWhileLoopOneTurnExecutionResult`, and
 `ClientHeartbeatLoopOuterWhileLoopOneTurnExecutionBoundary`.
 
+### Client Outer While-Loop Actual Timer / Retry / Reconnect Execution Minimal Scope
+
+After one-turn execution body exists, the next minimal step is still not a full
+repeated outer while-loop. Instead, explicit actual execution boundaries can
+consume only the one-turn execution result and keep timer wait, retry
+execution, reconnect execution, and next carry separated.
+
+Current minimal scope:
+
+1. `ClientHeartbeatLoopOuterWhileLoopActualTimerWaitExecutionInput::from_one_turn_execution(...)`
+   converts `ClientHeartbeatLoopOuterWhileLoopOneTurnExecutionResult` into:
+   - `Ok(input)` for `Continue { output }`
+   - `Err(output)` for `Stop { output }`
+2. `ClientHeartbeatLoopOuterWhileLoopActualRetryExecutionInput::from_one_turn_execution(...)`
+   converts `ClientHeartbeatLoopOuterWhileLoopOneTurnExecutionResult` into:
+   - `Ok(input)` for `Continue { output }`
+   - `Err(output)` for `Stop { output }`
+3. `ClientHeartbeatLoopOuterWhileLoopActualReconnectExecutionInput::from_one_turn_execution(...)`
+   converts `ClientHeartbeatLoopOuterWhileLoopOneTurnExecutionResult` into:
+   - `Ok(input)` for `Continue { output }`
+   - `Err(output)` for `Stop { output }`
+4. The explicit continue-path application order is:
+   - wakeup result already available from one-turn execution
+   - actual timer wait execution
+   - actual retry execution
+   - actual reconnect execution
+   - next carry passthrough
+5. `ClientHeartbeatLoopOuterWhileLoopActualExecutionBoundary` receives one
+   one-turn execution result and applies:
+   - `ClientHeartbeatLoopOuterWhileLoopActualTimerWaitExecutionBoundary`
+   - `ClientHeartbeatLoopOuterWhileLoopActualRetryExecutionBoundary`
+   - `ClientHeartbeatLoopOuterWhileLoopActualReconnectExecutionBoundary`
+6. If one-turn execution returns `Continue { output }`:
+   - timer wait execution returns explicit applied or no-op timer wait result
+   - retry execution returns explicit applied or no-op retry result
+   - reconnect execution returns explicit applied or no-op reconnect result
+   - aggregate actual execution returns explicit continue output with:
+     - wakeup state
+     - timer wait execution result
+     - retry execution result
+     - reconnect execution result
+     - next carry
+7. If one-turn execution returns `Stop { output }`:
+   - timer / retry / reconnect execution inputs are not created
+   - aggregate actual execution returns `Stop { output }`
+   - stop path preserves `stop_reason`, `cleanup_completed`, and
+     `applied_actions` unchanged
+8. Minimal safe actual-execution scope:
+   - one-turn execution result is the only source for timer / retry /
+     reconnect execution inputs
+   - timer wait, retry execution, and reconnect execution remain separate
+   - wakeup remains outside timer / retry / reconnect execution
+   - no metrics cadence, dashboard refresh, video, switcher, OBS, or full
+     repeated outer while-loop logic is introduced here
+   - no broad reconnect policy is introduced here
+
+Relationship between one-turn execution result, timer wait execution, retry
+execution, reconnect execution, and the future repeated outer while-loop body:
+
+- outer while-loop one-turn execution result
+  - Is the only source for actual timer / retry / reconnect execution inputs.
+  - Already contains wakeup state and next carry.
+- actual timer wait execution boundary
+  - Applies only timer wait execution shape.
+  - Preserves wakeup, retry execution, reconnect execution, and next carry.
+- actual retry execution boundary
+  - Applies only retry execution shape.
+  - Preserves wakeup, timer wait, reconnect execution, and next carry.
+- actual reconnect execution boundary
+  - Applies only reconnect execution shape.
+  - Preserves wakeup, timer wait, retry execution, and next carry.
+- future repeated outer while-loop body
+  - Will later own repetition only.
+  - Should stay a thin delegate that consumes one-turn execution result, runs
+    actual execution in order, and then advances with the returned next carry.
+
+Current code reflects this with
+`ClientHeartbeatLoopOuterWhileLoopActualTimerWaitExecutionInput`,
+`ClientHeartbeatLoopOuterWhileLoopActualTimerWaitExecutionApplyResult`,
+`ClientHeartbeatLoopOuterWhileLoopActualTimerWaitExecutionOutput`,
+`ClientHeartbeatLoopOuterWhileLoopActualTimerWaitExecutionResult`,
+`ClientHeartbeatLoopOuterWhileLoopActualTimerWaitExecutionBoundary`,
+`ClientHeartbeatLoopOuterWhileLoopActualRetryExecutionInput`,
+`ClientHeartbeatLoopOuterWhileLoopActualRetryExecutionApplyResult`,
+`ClientHeartbeatLoopOuterWhileLoopActualRetryExecutionOutput`,
+`ClientHeartbeatLoopOuterWhileLoopActualRetryExecutionResult`,
+`ClientHeartbeatLoopOuterWhileLoopActualRetryExecutionBoundary`,
+`ClientHeartbeatLoopOuterWhileLoopActualReconnectExecutionInput`,
+`ClientHeartbeatLoopOuterWhileLoopActualReconnectExecutionApplyResult`,
+`ClientHeartbeatLoopOuterWhileLoopActualReconnectExecutionOutput`,
+`ClientHeartbeatLoopOuterWhileLoopActualReconnectExecutionResult`,
+`ClientHeartbeatLoopOuterWhileLoopActualReconnectExecutionBoundary`,
+`ClientHeartbeatLoopOuterWhileLoopActualExecutionOutput`,
+`ClientHeartbeatLoopOuterWhileLoopActualExecutionResult`, and
+`ClientHeartbeatLoopOuterWhileLoopActualExecutionBoundary`.
+
 ### Heartbeat Client Ack Observation Flow
 
 The client ack observation flow returns the missing `client_received_at`
