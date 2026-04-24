@@ -23,6 +23,11 @@ use stream_sync_timebase::{
 const DEFAULT_AUTH_RESPONSE_TIMEOUT_MS: u64 = 5_000;
 const DEFAULT_HEARTBEAT_INTERVAL_MS: u32 = 1_000;
 const DEFAULT_ONE_TICK_RETRY_ATTEMPTS: u32 = 3;
+const DEFAULT_PLACEHOLDER_VIDEO_FRAME_ID: u64 = 1;
+const DEFAULT_PLACEHOLDER_VIDEO_WIDTH: u32 = 1280;
+const DEFAULT_PLACEHOLDER_VIDEO_HEIGHT: u32 = 720;
+const DEFAULT_PLACEHOLDER_VIDEO_FPS: u32 = 30;
+const DEFAULT_PLACEHOLDER_H264_PAYLOAD: [u8; 4] = [0x00, 0x00, 0x01, 0x65];
 const UDP_PACKET_BUFFER_LEN: usize = 65_507;
 
 /// One-shot client-side AuthRequest send PoC.
@@ -414,6 +419,131 @@ pub fn run_auth_heartbeat_stats_poc_once_from_path(
     path: impl AsRef<Path>,
 ) -> Result<ClientAuthHeartbeatStatsPocOutcome, ClientAuthHeartbeatPocError> {
     ClientAuthHeartbeatStatsPocLauncher::default().run_once_from_path(path)
+}
+
+/// One-shot client-side placeholder `VideoFrame` send PoC.
+///
+/// This launcher reuses the existing client PoC config for client/session and
+/// server destination fields, constructs one explicit placeholder H.264 payload,
+/// builds one `VideoFrame`, and sends it once over UDP. It does not authenticate,
+/// capture the screen, run a real encoder, retry, receive responses, decode
+/// video, render UI, or integrate with OBS.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct ClientPlaceholderVideoFramePocLauncher {
+    payload_source: ClientPlaceholderEncodedH264PayloadSourceBoundary,
+    metadata: ClientVideoFrameMetadataConstructionBoundary,
+    send: ClientVideoFrameEncodeSendBoundary,
+}
+
+impl ClientPlaceholderVideoFramePocLauncher {
+    pub fn load_startup_config_from_path(
+        &self,
+        path: impl AsRef<Path>,
+    ) -> Result<ClientPlaceholderVideoFramePocStartupConfig, ClientPlaceholderVideoFramePocError>
+    {
+        let path = path.as_ref();
+        let content =
+            fs::read_to_string(path).map_err(|error| ClientPlaceholderVideoFramePocError::Io {
+                path: path.to_path_buf(),
+                message: error.to_string(),
+            })?;
+        self.load_startup_config_from_str(&content)
+    }
+
+    pub fn load_startup_config_from_str(
+        &self,
+        input: &str,
+    ) -> Result<ClientPlaceholderVideoFramePocStartupConfig, ClientPlaceholderVideoFramePocError>
+    {
+        let settings =
+            parse_client_poc_settings(input).map_err(ClientPlaceholderVideoFramePocError::from)?;
+        let destination = resolve_destination(&settings.server_host, settings.server_port)
+            .map_err(ClientPlaceholderVideoFramePocError::from)?;
+
+        Ok(ClientPlaceholderVideoFramePocStartupConfig {
+            destination,
+            protocol_version: ProtocolVersion(settings.protocol_version),
+            client_id: ClientId(settings.client_id),
+            run_id: RunId(settings.run_id),
+            frame_id: DEFAULT_PLACEHOLDER_VIDEO_FRAME_ID,
+            is_keyframe: true,
+            width: DEFAULT_PLACEHOLDER_VIDEO_WIDTH,
+            height: DEFAULT_PLACEHOLDER_VIDEO_HEIGHT,
+            fps_nominal: DEFAULT_PLACEHOLDER_VIDEO_FPS,
+            placeholder_payload_bytes: DEFAULT_PLACEHOLDER_H264_PAYLOAD.to_vec(),
+        })
+    }
+
+    pub fn run_once_from_path(
+        &self,
+        path: impl AsRef<Path>,
+    ) -> Result<ClientPlaceholderVideoFramePocOutcome, ClientPlaceholderVideoFramePocError> {
+        let startup_config = self.load_startup_config_from_path(path)?;
+        self.run_once(startup_config)
+    }
+
+    pub fn run_once(
+        &self,
+        startup_config: ClientPlaceholderVideoFramePocStartupConfig,
+    ) -> Result<ClientPlaceholderVideoFramePocOutcome, ClientPlaceholderVideoFramePocError> {
+        let now = current_timestamp_micros();
+        let frame = self.build_frame(startup_config.clone(), now, now)?;
+        let socket = UdpSocket::bind(ephemeral_bind_address(startup_config.destination))
+            .map_err(|error| ClientPlaceholderVideoFramePocError::Bind(error.kind()))?;
+        let send = self
+            .send
+            .send_one(
+                &socket,
+                ClientVideoFrameEncodeSendInput {
+                    destination: startup_config.destination,
+                    frame,
+                },
+            )
+            .map_err(ClientPlaceholderVideoFramePocError::Send)?;
+
+        Ok(ClientPlaceholderVideoFramePocOutcome {
+            destination: startup_config.destination,
+            frame: send.handoff.frame,
+            encoded_bytes: send.handoff.encoded_bytes,
+            bytes_sent: send.bytes_sent,
+        })
+    }
+
+    pub fn build_frame(
+        &self,
+        startup_config: ClientPlaceholderVideoFramePocStartupConfig,
+        capture_timestamp: TimestampMicros,
+        send_timestamp: TimestampMicros,
+    ) -> Result<VideoFrame, ClientPlaceholderVideoFramePocError> {
+        let payload = self
+            .payload_source
+            .from_bytes(startup_config.placeholder_payload_bytes)
+            .map_err(ClientPlaceholderVideoFramePocError::PlaceholderPayload)?;
+        self.metadata
+            .build_frame(
+                ClientVideoFrameMetadataInput {
+                    protocol_version: startup_config.protocol_version,
+                    client_id: startup_config.client_id,
+                    run_id: startup_config.run_id,
+                    frame_id: startup_config.frame_id,
+                    capture_timestamp,
+                    send_timestamp,
+                    is_keyframe: startup_config.is_keyframe,
+                    width: startup_config.width,
+                    height: startup_config.height,
+                    fps_nominal: startup_config.fps_nominal,
+                },
+                payload,
+            )
+            .map_err(ClientPlaceholderVideoFramePocError::FrameBuild)
+    }
+}
+
+/// Convenience entry point for the client binary and manual placeholder video PoC.
+pub fn run_placeholder_video_frame_poc_once_from_path(
+    path: impl AsRef<Path>,
+) -> Result<ClientPlaceholderVideoFramePocOutcome, ClientPlaceholderVideoFramePocError> {
+    ClientPlaceholderVideoFramePocLauncher::default().run_once_from_path(path)
 }
 
 /// Client boundary for observing one received HeartbeatAck.
@@ -3012,6 +3142,30 @@ pub struct ClientAuthHeartbeatStatsPocOutcome {
     pub client_stats: ClientStats,
     pub client_stats_bytes: Vec<u8>,
     pub client_stats_bytes_sent: usize,
+}
+
+/// Startup config for one placeholder `VideoFrame` send.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClientPlaceholderVideoFramePocStartupConfig {
+    pub destination: SocketAddr,
+    pub protocol_version: ProtocolVersion,
+    pub client_id: ClientId,
+    pub run_id: RunId,
+    pub frame_id: u64,
+    pub is_keyframe: bool,
+    pub width: u32,
+    pub height: u32,
+    pub fps_nominal: u32,
+    pub placeholder_payload_bytes: Vec<u8>,
+}
+
+/// Result of one placeholder `VideoFrame` encode/send step.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClientPlaceholderVideoFramePocOutcome {
+    pub destination: SocketAddr,
+    pub frame: VideoFrame,
+    pub encoded_bytes: Vec<u8>,
+    pub bytes_sent: usize,
 }
 
 /// Return mode used by the one-tick heartbeat runtime launcher.
@@ -6902,6 +7056,43 @@ pub enum ClientAuthHeartbeatPocError {
     HeartbeatAck(ClientResponseReceiveError),
 }
 
+/// Error from the one-shot placeholder `VideoFrame` PoC.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ClientPlaceholderVideoFramePocError {
+    Io { path: PathBuf, message: String },
+    Config(ClientAuthRequestPocConfigError),
+    Destination(ClientAuthRequestPocConfigError),
+    PlaceholderPayload(ClientPlaceholderEncodedH264PayloadError),
+    FrameBuild(ClientPlaceholderEncodedH264PayloadError),
+    Bind(io::ErrorKind),
+    Send(ClientVideoFrameEncodeSendError),
+}
+
+impl From<ClientAuthRequestPocError> for ClientPlaceholderVideoFramePocError {
+    fn from(error: ClientAuthRequestPocError) -> Self {
+        match error {
+            ClientAuthRequestPocError::Io { path, message } => Self::Io { path, message },
+            ClientAuthRequestPocError::Config(error) => Self::Config(error),
+            ClientAuthRequestPocError::Destination(error) => Self::Destination(error),
+            ClientAuthRequestPocError::Encode(error) => {
+                Self::Send(ClientVideoFrameEncodeSendError::Encode(error))
+            }
+            ClientAuthRequestPocError::Bind(error) => Self::Bind(error),
+            ClientAuthRequestPocError::SetReadTimeout(error)
+            | ClientAuthRequestPocError::Send(error)
+            | ClientAuthRequestPocError::Receive(error) => {
+                Self::Send(ClientVideoFrameEncodeSendError::Send(error))
+            }
+            ClientAuthRequestPocError::Decode(error) => {
+                Self::Send(ClientVideoFrameEncodeSendError::Encode(error))
+            }
+            ClientAuthRequestPocError::UnexpectedResponseMessage { actual: _ } => {
+                Self::Send(ClientVideoFrameEncodeSendError::EmptyPayload)
+            }
+        }
+    }
+}
+
 /// Error from one auth round trip plus one client heartbeat loop tick.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ClientHeartbeatOneTickRuntimeError {
@@ -7523,6 +7714,104 @@ mod tests {
         .expect("received video frame payload should decode");
 
         assert_eq!(decoded, ProtocolMessage::VideoFrame(frame));
+    }
+
+    #[test]
+    fn client_video_frame_placeholder_poc_launcher_loads_config_with_defaults() {
+        let config = ClientPlaceholderVideoFramePocLauncher::default()
+            .load_startup_config_from_str(include_str!(
+                "../../../configs/examples/client.accepted.example.toml"
+            ))
+            .expect("accepted example config should load");
+
+        assert_eq!(config.destination, "127.0.0.1:5000".parse().unwrap());
+        assert_eq!(config.protocol_version, ProtocolVersion(1));
+        assert_eq!(config.client_id, ClientId("player1".to_string()));
+        assert_eq!(config.run_id, RunId("streamsync-dev-session".to_string()));
+        assert_eq!(config.frame_id, DEFAULT_PLACEHOLDER_VIDEO_FRAME_ID);
+        assert!(config.is_keyframe);
+        assert_eq!(config.width, DEFAULT_PLACEHOLDER_VIDEO_WIDTH);
+        assert_eq!(config.height, DEFAULT_PLACEHOLDER_VIDEO_HEIGHT);
+        assert_eq!(config.fps_nominal, DEFAULT_PLACEHOLDER_VIDEO_FPS);
+        assert_eq!(
+            config.placeholder_payload_bytes,
+            DEFAULT_PLACEHOLDER_H264_PAYLOAD.to_vec()
+        );
+    }
+
+    #[test]
+    fn client_video_frame_placeholder_poc_launcher_builds_frame_with_explicit_placeholder_payload()
+    {
+        let config = ClientPlaceholderVideoFramePocLauncher::default()
+            .load_startup_config_from_str(include_str!(
+                "../../../configs/examples/client.accepted.example.toml"
+            ))
+            .expect("accepted example config should load");
+
+        let frame = ClientPlaceholderVideoFramePocLauncher::default()
+            .build_frame(
+                config,
+                TimestampMicros(3_000_000),
+                TimestampMicros(3_000_123),
+            )
+            .expect("placeholder frame should build");
+
+        assert_eq!(frame.message_type, MessageType::VideoFrame);
+        assert_eq!(frame.client_id, ClientId("player1".to_string()));
+        assert_eq!(frame.run_id, RunId("streamsync-dev-session".to_string()));
+        assert_eq!(frame.frame_id, DEFAULT_PLACEHOLDER_VIDEO_FRAME_ID);
+        assert_eq!(frame.capture_timestamp, TimestampMicros(3_000_000));
+        assert_eq!(frame.send_timestamp, TimestampMicros(3_000_123));
+        assert_eq!(frame.codec, Codec::H264);
+        assert_eq!(frame.payload, DEFAULT_PLACEHOLDER_H264_PAYLOAD.to_vec());
+        assert_eq!(frame.payload_size, DEFAULT_PLACEHOLDER_H264_PAYLOAD.len());
+    }
+
+    #[test]
+    fn client_video_frame_placeholder_poc_launcher_sends_one_udp_packet() {
+        let receiver = UdpSocket::bind("127.0.0.1:0").expect("receiver should bind");
+        receiver
+            .set_read_timeout(Some(Duration::from_secs(1)))
+            .expect("read timeout should be set");
+        let config = ClientPlaceholderVideoFramePocStartupConfig {
+            destination: receiver.local_addr().expect("receiver addr should exist"),
+            protocol_version: ProtocolVersion(1),
+            client_id: ClientId("client-1".to_string()),
+            run_id: RunId("run-1".to_string()),
+            frame_id: 1,
+            is_keyframe: true,
+            width: 1280,
+            height: 720,
+            fps_nominal: 30,
+            placeholder_payload_bytes: DEFAULT_PLACEHOLDER_H264_PAYLOAD.to_vec(),
+        };
+
+        let outcome = ClientPlaceholderVideoFramePocLauncher::default()
+            .run_once(config)
+            .expect("placeholder video frame should send once");
+
+        assert_eq!(outcome.bytes_sent, outcome.encoded_bytes.len());
+        assert_eq!(
+            outcome.frame.payload,
+            DEFAULT_PLACEHOLDER_H264_PAYLOAD.to_vec()
+        );
+        let mut buffer = [0_u8; 1024];
+        let (len, _source) = receiver
+            .recv_from(&mut buffer)
+            .expect("receiver should get one placeholder video packet");
+        assert_eq!(&buffer[..len], outcome.encoded_bytes.as_slice());
+        let packet =
+            decode_fixed_header(&buffer[..len]).expect("received fixed header should decode");
+        let decoded = decode_payload_by_message_type(
+            DecodeContext {
+                expected_protocol_version: outcome.frame.protocol_version,
+            },
+            packet.header,
+            packet.payload,
+        )
+        .expect("received video frame should decode");
+
+        assert_eq!(decoded, ProtocolMessage::VideoFrame(outcome.frame));
     }
 
     #[test]

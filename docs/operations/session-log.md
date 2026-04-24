@@ -9104,3 +9104,46 @@
 - Marked switcher placeholder decode/display handoff complete.
 - Updated the one-view PoC line to say switcher can select latest queued frame and create a placeholder display handoff.
 - Reordered Next Items around optional video launcher, real capture/encode, and real decode/window rendering.
+
+---
+
+## 2026-04-24
+### Type
+- Codex
+
+### Work
+- Added a one-shot client CLI/config launcher for sending one placeholder `VideoFrame`.
+- Reused the existing client PoC TOML fields for client id, run id, protocol version, and server destination.
+- Constructed the frame through the existing metadata construction boundary.
+- Constructed the placeholder encoded H.264 payload through the existing explicit placeholder payload source boundary.
+- Sent the frame through the existing `ClientVideoFrameEncodeSendBoundary`.
+- Added a compact stdout summary for manual verification.
+
+### Changed Files
+- `apps/client/src/lib.rs`
+- `apps/client/src/main.rs`
+- `docs/architecture/system-design.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### Decisions
+- The CLI path is `--placeholder-video-frame-poc-once [config-path]`.
+- The launcher sends exactly one datagram and does not authenticate, retry, receive responses, capture the screen, or run a real encoder.
+- Placeholder payload remains explicit and uses a small fixed H.264-shaped byte sequence for manual PoC traffic.
+- Frame dimensions default to 1280x720 at 30 fps for this placeholder launcher.
+
+### Unresolved
+- real screen capture / real H.264 encode
+- real H.264 decode
+- real switcher window rendering
+- sync scheduling, 4-view sync, and OBS integration
+
+### Next
+- Add real capture / H.264 encode boundary later.
+- Add real H.264 decode and switcher window rendering boundaries separately.
+- Document or script a manual server / client / switcher placeholder PoC path.
+
+### TODO Update
+- Marked placeholder `VideoFrame` one-shot CLI/config launcher complete.
+- Updated Current Focus with the new client launcher flag.
+- Reordered Next Items around real capture/encode, real decode/window rendering, and manual PoC path documentation.

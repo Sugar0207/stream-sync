@@ -59,9 +59,9 @@
 ---
 
 ## 直近でやること
-1. video send CLI/config launcher が必要か最小判断する
-2. real capture / real H.264 encode 境界を placeholder payload source から差し替えられる形で追加する
-3. real H.264 decode / switcher window rendering の最小境界を分けて設計する
+1. real capture / real H.264 encode 境界を placeholder payload source から差し替えられる形で追加する
+2. real H.264 decode / switcher window rendering の最小境界を分けて設計する
+3. one-client PoC の手動確認手順を server / client / switcher placeholder 経路で整理する
 
 ---
 
@@ -436,6 +436,7 @@
 - [ ] 720p / 30fps を初期値にする
 - [ ] 1080p / 60fps を将来有効化できる構造にする
 - [x] UDP 送信処理を実装する
+- [x] placeholder `VideoFrame` one-shot CLI/config launcher を追加する
 - [ ] `ClientStats` 送信処理を継続 heartbeat loop に接続する
 
 ---
@@ -635,6 +636,7 @@
 - [ ] client capture / encode
 - [x] `VideoFrame` encode
 - [x] `VideoFrame` UDP send with explicit placeholder encoded H.264 payload
+- [x] placeholder `VideoFrame` one-shot CLI/config launcher
 - [x] server frame receive / queue
 - [x] switcher placeholder decode / single view display handoff
 - [ ] switcher real decode / single view display
@@ -669,12 +671,13 @@
 - server heartbeat timeout now has a thin multi-client loop boundary over the existing one-client timeout tick, with caller-owned registry / liveness state / queue / writer kept explicit.
 - server video path now has a receive-side runtime wiring slice: accepted `VideoFrame` side effects can be stored in a caller-owned per-client encoded-frame queue, while rejected frames remain not queued.
 - client video path now has a first send-side PoC slice: metadata construction, explicit placeholder encoded H.264 payload source, existing protocol encode, and one caller-owned UDP `send_to`.
+- client video path now has a one-shot CLI/config launcher: `--placeholder-video-frame-poc-once [config-path]` sends one explicit placeholder `VideoFrame` and prints a compact stdout summary.
 - switcher video path now has a first placeholder slice: one client's latest queued encoded frame can be selected read-only and converted into an explicit decode-deferred display handoff.
 - metrics commit, snapshot export cadence, dashboard refresh consumer policy, and dashboard refresh runtime wiring remain separate from timer wait, retry, reconnect, socket ownership, cleanup, UI rendering, video, switcher, and OBS.
 - server notice queue storage remains separate from notice send wakeup execution.
 - actual dashboard UI rendering remains unimplemented.
 
 ## Next Items
-1. decide whether a video send CLI/config launcher is needed
-2. real capture / real H.264 encode boundary replacing the placeholder payload source
-3. real H.264 decode / switcher window rendering boundary
+1. real capture / real H.264 encode boundary replacing the placeholder payload source
+2. real H.264 decode / switcher window rendering boundary
+3. document or script the manual one-client placeholder PoC path across server / client / switcher

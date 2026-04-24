@@ -2617,6 +2617,13 @@ Current implementation scope:
    sending them.
 5. `ClientVideoFrameEncodeSendBoundary::send_one` performs exactly one UDP
    `send_to` using a caller-owned `UdpSocket` and explicit destination.
+6. `ClientPlaceholderVideoFramePocLauncher` reuses the existing client PoC TOML
+   fields for `client_id`, `run_id`, protocol version, and server destination,
+   then sends one placeholder `VideoFrame` for manual verification.
+7. The client binary exposes this through
+   `--placeholder-video-frame-poc-once [config-path]` and prints a compact
+   stdout summary including destination, frame id, timestamps, dimensions, and
+   payload length.
 
 Responsibility split:
 
@@ -2641,14 +2648,14 @@ Current code reflects this with
 `ClientPlaceholderEncodedH264PayloadSourceBoundary`,
 `ClientVideoFrameMetadataConstructionBoundary`,
 `ClientVideoFrameEncodeSendInput`,
-`ClientVideoFrameEncodedSendHandoff`, and
-`ClientVideoFrameEncodeSendBoundary`.
+`ClientVideoFrameEncodedSendHandoff`,
+`ClientVideoFrameEncodeSendBoundary`, and
+`ClientPlaceholderVideoFramePocLauncher`.
 
 Deferred work:
 
 - real screen capture or frame source
 - real H.264 encoding
-- CLI/config launcher for video send
 - server receive-loop-to-queue runtime wiring
 - H.264 decode and single-view display placeholder
 - 2-view / 4-view sync, switcher UI, and OBS integration
