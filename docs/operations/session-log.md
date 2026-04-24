@@ -1,6 +1,49 @@
 <!-- stream-sync/docs/operations/session-log.md -->
 
 ## 2026-04-24
+### 作業者 - Codex
+
+### 今回の作業
+- client continuous heartbeat loop execution path に戻り、caller-owned socket 再確立 hook を real UDP socket 差し替えへ接続する最小実装を追加した。
+- reconnect policy handoff だけを入力源にし、hook 入力から destination / bind address を導出して `bind -> connect -> caller-owned slot 置換` を行う形にした。
+- outer while-loop repeated body は変更せず、reconnect flow は `actual reconnect execution result -> reconnect policy -> actual socket re-establishment hook -> continuation state` の explicit な分離を維持した。
+
+### 変更ファイル
+- `apps/client/src/lib.rs`
+- `docs/architecture/system-design.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### 実装したこと
+- `ClientHeartbeatLoopRealUdpSocketReplacementInput`
+- `ClientHeartbeatLoopRealUdpSocketReplacementRuntime`
+- `ClientHeartbeatLoopRealUdpSocketReestablishmentHook`
+- `ClientHeartbeatLoopSocketReestablishmentFailureKind` へ bind / connect failure 種別を追加
+- real hook 成功 / slot なし deferred / bind failure / connect failure / continuation state carry の単体テストを追加
+
+### 未実装 / 保留
+- RTT / offset metrics state commit の continuous loop 接続
+- metrics snapshot export cadence / dashboard refresh 方針
+- server 側 heartbeat timeout loop tick の複数 client 継続実行
+- video path / switcher / OBS の本実装
+
+### 次にやる候補
+- RTT / offset metrics state commit を client continuous heartbeat loop へ接続する
+- metrics snapshot export cadence / dashboard refresh 方針を詰める
+- server 側 heartbeat timeout loop tick の複数 client 継続実行へ戻る
+
+### TODO更新内容
+- 現在位置に real UDP socket 差し替え hook 完了を反映した。
+- 直近でやることを metrics 接続 / cadence / server loop 側へ更新した。
+- heartbeat / 検証タスクに real UDP socket 再確立 hook の完了と関連単体テストを追加した。
+
+### 検証
+- `cargo fmt`
+- `cargo fmt --check`
+- `cargo test -p stream-sync-client client_heartbeat_loop_cleanup`
+- `cargo check --workspace`
+
+## 2026-04-24
 ### 担当 - Codex
 
 ### 今回の作業

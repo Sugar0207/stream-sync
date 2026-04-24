@@ -2,6 +2,7 @@ use std::{
     fs, io,
     net::{SocketAddr, ToSocketAddrs, UdpSocket},
     path::{Path, PathBuf},
+    sync::{Arc, Mutex},
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
@@ -2544,6 +2545,16 @@ pub enum ClientHeartbeatLoopRepeatedInvocationNextStepCarry {
     },
 }
 
+impl ClientHeartbeatLoopRepeatedInvocationNextStepCarry {
+    fn iteration_carry(&self) -> &ClientHeartbeatLoopIterationCarryState {
+        match self {
+            Self::ContinueImmediately { carry }
+            | Self::ApplyTimerThenContinue { carry, .. }
+            | Self::ApplyRetryThenContinue { carry, .. } => carry,
+        }
+    }
+}
+
 /// Result of mapping one shell-runner turn into eventual repeated invocation state.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ClientHeartbeatLoopRepeatedInvocationResult {
@@ -3485,6 +3496,8 @@ impl ClientHeartbeatLoopOuterWhileLoopSocketReestablishmentInput {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ClientHeartbeatLoopSocketReestablishmentFailureKind {
     HookRejected,
+    SocketBindFailed,
+    SocketConnectFailed,
 }
 
 /// Minimal explicit error surfaced when actual socket re-establishment fails.
@@ -3492,6 +3505,68 @@ pub enum ClientHeartbeatLoopSocketReestablishmentFailureKind {
 pub struct ClientHeartbeatLoopSocketReestablishmentError {
     pub kind: ClientHeartbeatLoopSocketReestablishmentFailureKind,
     pub detail: String,
+}
+
+/// Minimal real UDP socket replacement input derived from reconnect handoff only.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct ClientHeartbeatLoopRealUdpSocketReplacementInput {
+    pub destination: SocketAddr,
+    pub bind_address: SocketAddr,
+}
+
+impl ClientHeartbeatLoopRealUdpSocketReplacementInput {
+    pub fn from_socket_reestablishment_input(
+        input: &ClientHeartbeatLoopOuterWhileLoopSocketReestablishmentInput,
+    ) -> Self {
+        let destination = input
+            .handoff
+            .output
+            .next
+            .carry
+            .iteration_carry()
+            .next_runtime_input
+            .body
+            .handoff
+            .destination;
+
+        Self {
+            destination,
+            bind_address: ephemeral_bind_address(destination),
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+pub struct ClientHeartbeatLoopRealUdpSocketReplacementRuntime {
+    bind_socket: fn(SocketAddr) -> io::Result<UdpSocket>,
+    connect_socket: fn(&UdpSocket, SocketAddr) -> io::Result<()>,
+}
+
+impl std::fmt::Debug for ClientHeartbeatLoopRealUdpSocketReplacementRuntime {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("ClientHeartbeatLoopRealUdpSocketReplacementRuntime")
+            .finish_non_exhaustive()
+    }
+}
+
+impl Default for ClientHeartbeatLoopRealUdpSocketReplacementRuntime {
+    fn default() -> Self {
+        Self {
+            bind_socket: UdpSocket::bind,
+            connect_socket: UdpSocket::connect,
+        }
+    }
+}
+
+impl ClientHeartbeatLoopRealUdpSocketReplacementRuntime {
+    fn bind(&self, bind_address: SocketAddr) -> io::Result<UdpSocket> {
+        (self.bind_socket)(bind_address)
+    }
+
+    fn connect(&self, socket: &UdpSocket, destination: SocketAddr) -> io::Result<()> {
+        (self.connect_socket)(socket, destination)
+    }
 }
 
 /// Caller-owned result returned by actual socket re-establishment hook.
@@ -3510,6 +3585,94 @@ pub trait ClientHeartbeatLoopSocketReestablishmentHook {
         &self,
         input: ClientHeartbeatLoopOuterWhileLoopSocketReestablishmentInput,
     ) -> ClientHeartbeatLoopSocketReestablishmentHookResult;
+}
+
+/// Real caller-owned hook that binds, connects, and replaces a UDP socket.
+///
+/// The caller keeps ownership of the replacement slot and passes it into this
+/// hook. When no replacement slot is available, the hook stays explicit by
+/// returning `Deferred`.
+#[derive(Debug, Clone)]
+pub struct ClientHeartbeatLoopRealUdpSocketReestablishmentHook {
+    socket_slot: Option<Arc<Mutex<Option<UdpSocket>>>>,
+    runtime: ClientHeartbeatLoopRealUdpSocketReplacementRuntime,
+}
+
+impl ClientHeartbeatLoopRealUdpSocketReestablishmentHook {
+    pub fn new(socket_slot: Option<Arc<Mutex<Option<UdpSocket>>>>) -> Self {
+        Self {
+            socket_slot,
+            runtime: ClientHeartbeatLoopRealUdpSocketReplacementRuntime::default(),
+        }
+    }
+
+    #[cfg(test)]
+    fn with_runtime(
+        socket_slot: Option<Arc<Mutex<Option<UdpSocket>>>>,
+        runtime: ClientHeartbeatLoopRealUdpSocketReplacementRuntime,
+    ) -> Self {
+        Self {
+            socket_slot,
+            runtime,
+        }
+    }
+}
+
+impl ClientHeartbeatLoopSocketReestablishmentHook
+    for ClientHeartbeatLoopRealUdpSocketReestablishmentHook
+{
+    fn reestablish_socket(
+        &self,
+        input: ClientHeartbeatLoopOuterWhileLoopSocketReestablishmentInput,
+    ) -> ClientHeartbeatLoopSocketReestablishmentHookResult {
+        let Some(socket_slot) = &self.socket_slot else {
+            return ClientHeartbeatLoopSocketReestablishmentHookResult::Deferred;
+        };
+
+        let replacement =
+            ClientHeartbeatLoopRealUdpSocketReplacementInput::from_socket_reestablishment_input(
+                &input,
+            );
+        let socket = match self.runtime.bind(replacement.bind_address) {
+            Ok(socket) => socket,
+            Err(error) => {
+                return ClientHeartbeatLoopSocketReestablishmentHookResult::Failed {
+                    error: ClientHeartbeatLoopSocketReestablishmentError {
+                        kind: ClientHeartbeatLoopSocketReestablishmentFailureKind::SocketBindFailed,
+                        detail: format!(
+                            "failed to bind replacement UDP socket at {}: {}",
+                            replacement.bind_address, error
+                        ),
+                    },
+                };
+            }
+        };
+
+        if let Err(error) = self.runtime.connect(&socket, replacement.destination) {
+            return ClientHeartbeatLoopSocketReestablishmentHookResult::Failed {
+                error: ClientHeartbeatLoopSocketReestablishmentError {
+                    kind: ClientHeartbeatLoopSocketReestablishmentFailureKind::SocketConnectFailed,
+                    detail: format!(
+                        "failed to connect replacement UDP socket to {}: {}",
+                        replacement.destination, error
+                    ),
+                },
+            };
+        }
+
+        match socket_slot.lock() {
+            Ok(mut slot) => {
+                *slot = Some(socket);
+                ClientHeartbeatLoopSocketReestablishmentHookResult::Applied
+            }
+            Err(error) => ClientHeartbeatLoopSocketReestablishmentHookResult::Failed {
+                error: ClientHeartbeatLoopSocketReestablishmentError {
+                    kind: ClientHeartbeatLoopSocketReestablishmentFailureKind::HookRejected,
+                    detail: format!("failed to replace caller-owned UDP socket slot: {}", error),
+                },
+            },
+        }
+    }
 }
 
 /// Default caller-owned hook that keeps socket re-establishment deferred.
@@ -12191,6 +12354,32 @@ mod tests {
         }
     }
 
+    fn cleanup_test_socket_reestablishment_input(
+    ) -> ClientHeartbeatLoopOuterWhileLoopSocketReestablishmentInput {
+        ClientHeartbeatLoopOuterWhileLoopSocketReestablishmentInput::from_reconnect_policy(
+            ClientHeartbeatLoopOuterWhileLoopReconnectPolicyBoundary::default()
+                .plan_next(cleanup_test_outer_actual_execution_continue_with_reconnect_needed()),
+        )
+        .expect("reconnect-needed execution should produce actual socket re-establishment input")
+    }
+
+    fn cleanup_test_bind_socket_fails(_bind_address: SocketAddr) -> io::Result<UdpSocket> {
+        Err(io::Error::new(
+            io::ErrorKind::AddrInUse,
+            "test bind failure",
+        ))
+    }
+
+    fn cleanup_test_connect_socket_fails(
+        _socket: &UdpSocket,
+        _destination: SocketAddr,
+    ) -> io::Result<()> {
+        Err(io::Error::new(
+            io::ErrorKind::ConnectionRefused,
+            "test connect failure",
+        ))
+    }
+
     #[test]
     fn client_heartbeat_loop_cleanup_outer_while_loop_connection_preserves_continue_path_and_wakeup_timer_retry_reconnect_separation(
     ) {
@@ -12582,6 +12771,112 @@ mod tests {
     }
 
     #[test]
+    fn client_heartbeat_loop_cleanup_real_socket_reestablishment_hook_maps_successful_replacement_to_applied_result(
+    ) {
+        let input = cleanup_test_socket_reestablishment_input();
+        let replacement =
+            ClientHeartbeatLoopRealUdpSocketReplacementInput::from_socket_reestablishment_input(
+                &input,
+            );
+        let socket_slot = Arc::new(Mutex::new(None));
+        let hook =
+            ClientHeartbeatLoopRealUdpSocketReestablishmentHook::new(Some(socket_slot.clone()));
+
+        let result = hook.reestablish_socket(input);
+
+        assert_eq!(
+            result,
+            ClientHeartbeatLoopSocketReestablishmentHookResult::Applied
+        );
+
+        let socket_guard = socket_slot
+            .lock()
+            .expect("successful replacement should leave slot accessible");
+        let socket = socket_guard
+            .as_ref()
+            .expect("successful replacement should store a real UDP socket");
+
+        assert_eq!(
+            socket
+                .peer_addr()
+                .expect("replacement socket should be connected"),
+            replacement.destination
+        );
+    }
+
+    #[test]
+    fn client_heartbeat_loop_cleanup_real_socket_reestablishment_hook_maps_missing_slot_to_deferred_result(
+    ) {
+        let input = cleanup_test_socket_reestablishment_input();
+        let hook = ClientHeartbeatLoopRealUdpSocketReestablishmentHook::new(None);
+
+        let result = hook.reestablish_socket(input);
+
+        assert_eq!(
+            result,
+            ClientHeartbeatLoopSocketReestablishmentHookResult::Deferred
+        );
+    }
+
+    #[test]
+    fn client_heartbeat_loop_cleanup_real_socket_reestablishment_hook_maps_bind_errors_to_failed_result(
+    ) {
+        let input = cleanup_test_socket_reestablishment_input();
+        let hook = ClientHeartbeatLoopRealUdpSocketReestablishmentHook::with_runtime(
+            Some(Arc::new(Mutex::new(None))),
+            ClientHeartbeatLoopRealUdpSocketReplacementRuntime {
+                bind_socket: cleanup_test_bind_socket_fails,
+                connect_socket: UdpSocket::connect,
+            },
+        );
+
+        let result = hook.reestablish_socket(input);
+
+        assert_eq!(
+            result,
+            ClientHeartbeatLoopSocketReestablishmentHookResult::Failed {
+                error: ClientHeartbeatLoopSocketReestablishmentError {
+                    kind: ClientHeartbeatLoopSocketReestablishmentFailureKind::SocketBindFailed,
+                    detail: "failed to bind replacement UDP socket at 0.0.0.0:0: test bind failure"
+                        .to_string(),
+                },
+            }
+        );
+    }
+
+    #[test]
+    fn client_heartbeat_loop_cleanup_real_socket_reestablishment_hook_maps_connect_errors_to_failed_result(
+    ) {
+        let input = cleanup_test_socket_reestablishment_input();
+        let replacement =
+            ClientHeartbeatLoopRealUdpSocketReplacementInput::from_socket_reestablishment_input(
+                &input,
+            );
+        let hook = ClientHeartbeatLoopRealUdpSocketReestablishmentHook::with_runtime(
+            Some(Arc::new(Mutex::new(None))),
+            ClientHeartbeatLoopRealUdpSocketReplacementRuntime {
+                bind_socket: UdpSocket::bind,
+                connect_socket: cleanup_test_connect_socket_fails,
+            },
+        );
+
+        let result = hook.reestablish_socket(input);
+
+        assert_eq!(
+            result,
+            ClientHeartbeatLoopSocketReestablishmentHookResult::Failed {
+                error: ClientHeartbeatLoopSocketReestablishmentError {
+                    kind: ClientHeartbeatLoopSocketReestablishmentFailureKind::SocketConnectFailed,
+                    detail: format!(
+                        "failed to connect replacement UDP socket to {}: test connect failure",
+                        replacement.destination
+                    ),
+                },
+            }
+        );
+    }
+
+    #[test]
     fn client_heartbeat_loop_cleanup_outer_while_loop_reconnect_policy_creates_actual_socket_reestablishment_input_and_result_when_needed(
     ) {
         let calls = std::rc::Rc::new(std::cell::Cell::new(0));
@@ -12837,6 +13132,70 @@ mod tests {
             }
         );
         assert_eq!(calls.get(), 1);
+    }
+
+    #[test]
+    fn client_heartbeat_loop_cleanup_outer_while_loop_real_socket_reestablishment_result_can_be_carried_by_continuation_state(
+    ) {
+        let socket_slot = Arc::new(Mutex::new(None));
+        let hook =
+            ClientHeartbeatLoopRealUdpSocketReestablishmentHook::new(Some(socket_slot.clone()));
+        let result = ClientHeartbeatLoopOuterWhileLoopReconnectBoundary::default().apply_with_hook(
+            cleanup_test_outer_actual_execution_continue_with_reconnect_needed(),
+            &hook,
+        );
+
+        let ClientHeartbeatLoopOuterWhileLoopReconnectResult::ContinueWithReconnectApplied {
+            output,
+        } = result
+        else {
+            panic!("real socket replacement should produce applied reconnect output");
+        };
+
+        let state = ClientHeartbeatLoopOuterWhileLoopRepeatedBodyContinuationState {
+            turns_completed: 1,
+            next: output.output.next.clone(),
+            last_execution: output.output.clone(),
+            last_reconnect: ClientHeartbeatLoopOuterWhileLoopReconnectState::ReconnectApplied {
+                reconnect_plan: output.reconnect_plan,
+                socket_reestablishment: output.socket_reestablishment.clone(),
+            },
+        };
+
+        assert_eq!(
+            state.last_execution.timer_wait,
+            ClientHeartbeatLoopOuterWhileLoopActualTimerWaitExecutionApplyResult::NoTimerWaitApplied
+        );
+        assert_eq!(
+            state.last_execution.retry_execution,
+            ClientHeartbeatLoopOuterWhileLoopActualRetryExecutionApplyResult::NoRetryExecutionApplied
+        );
+        assert_eq!(
+            state.last_execution.reconnect_execution,
+            ClientHeartbeatLoopOuterWhileLoopActualReconnectExecutionApplyResult::ReconnectExecutionApplied {
+                reason: ClientHeartbeatLoopReconnectReason::SocketReestablishmentRequested,
+            }
+        );
+        assert_eq!(
+            state.last_reconnect,
+            ClientHeartbeatLoopOuterWhileLoopReconnectState::ReconnectApplied {
+                reconnect_plan:
+                    ClientHeartbeatLoopFutureSocketReestablishmentPlan::ReestablishSocket {
+                        reason: ClientHeartbeatLoopReconnectReason::SocketReestablishmentRequested,
+                    },
+                socket_reestablishment:
+                    ClientHeartbeatLoopOuterWhileLoopSocketReestablishmentApplyResult::SocketReestablishmentAttemptedApplied {
+                        reason: ClientHeartbeatLoopReconnectReason::SocketReestablishmentRequested,
+                    },
+            }
+        );
+        assert!(
+            socket_slot
+                .lock()
+                .expect("successful replacement should leave socket slot accessible")
+                .is_some(),
+            "successful real socket replacement should be preserved in caller-owned slot"
+        );
     }
 
     #[test]

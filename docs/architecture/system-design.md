@@ -5750,8 +5750,9 @@ Current minimal scope:
 6. If reconnect policy returns `ContinueWithReconnectPlanned { handoff }`:
    - actual socket re-establishment returns an explicit applied, deferred, or
      failed result
-   - current default path keeps this deferred until a caller-owned hook is
-     provided
+   - the default path stays deferred
+   - a real caller-owned hook can bind a fresh UDP socket, connect it to the
+     next destination, and replace the caller-owned socket slot explicitly
 7. If reconnect policy returns `ContinueWithoutReconnect { output }`:
    - socket re-establishment returns `ContinueWithoutReconnect { output }`
 8. If reconnect policy returns `Stop { output }`:
@@ -5766,7 +5767,9 @@ Current minimal scope:
    - timer wait and retry execution are not reinterpreted by reconnect policy
    - actual socket re-establishment consumes only explicit reconnect/socket
      plan state
-   - if real UDP socket replacement is too broad, a caller-owned hook owns it
+   - real UDP socket replacement stays inside the caller-owned hook
+   - the outer while-loop repeated body does not directly own bind/connect or
+     socket slot replacement logic
    - no metrics cadence, dashboard refresh, video, switcher, OBS, or broad
      generic error recovery is introduced here
 
@@ -5782,8 +5785,11 @@ continuation state:
   - Does not reinterpret timer wait or retry execution.
 - actual socket re-establishment
   - Receives explicit reconnect plan only.
+  - Derives minimal real replacement input from the reconnect handoff only.
   - Delegates the concrete socket replacement attempt to a caller-owned hook.
   - Returns applied, deferred, or failed explicit output.
+  - Can map real UDP bind/connect failure into explicit socket
+    re-establishment error kinds without reinterpreting timer/retry concerns.
 - outer while-loop repeated body continuation state
   - Can carry explicit reconnect result separately from last execution output.
   - Keeps next carry visible without hiding reconnect state inside it.
@@ -5800,6 +5806,9 @@ Current code reflects this with
 `ClientHeartbeatLoopSocketReestablishmentHookResult`,
 `ClientHeartbeatLoopSocketReestablishmentHook`,
 `ClientHeartbeatLoopDeferredSocketReestablishmentHook`,
+`ClientHeartbeatLoopRealUdpSocketReplacementInput`,
+`ClientHeartbeatLoopRealUdpSocketReplacementRuntime`,
+`ClientHeartbeatLoopRealUdpSocketReestablishmentHook`,
 `ClientHeartbeatLoopOuterWhileLoopSocketReestablishmentApplyResult`,
 `ClientHeartbeatLoopOuterWhileLoopSocketReestablishmentOutput`,
 `ClientHeartbeatLoopOuterWhileLoopReconnectResult`,
