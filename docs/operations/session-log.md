@@ -9061,3 +9061,46 @@
 - Marked the server one-view receive / accept-drop / queue PoC line complete.
 - Updated Current Focus to say receive-side runtime wiring now stores accepted `VideoFrame` side effects in caller-owned queues.
 - Reordered Next Items around switcher display placeholder, real capture/encode, and optional video launcher work.
+
+---
+
+## 2026-04-24
+### Type
+- Codex
+
+### Work
+- Added the smallest switcher-side single-view placeholder path.
+- Added read-only latest-frame selection from `ServerVideoFrameQueueState` for one `ClientId`.
+- Added a selected encoded-frame handoff that preserves frame metadata, encoded payload length, and encoded payload bytes.
+- Added an explicit placeholder display handoff with decode status `DeferredPlaceholder`.
+- Kept real H.264 decode, real window rendering, sync scheduling, full switcher UI, 4-view sync, and OBS out of scope.
+
+### Changed Files
+- `apps/switcher/Cargo.toml`
+- `apps/switcher/src/lib.rs`
+- `docs/architecture/system-design.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### Decisions
+- The switcher placeholder path reads the server queue state without mutating it.
+- Decode remains explicit placeholder behavior, not hidden fake decode.
+- The display handoff carries encoded frame data and metadata only; it does not represent decoded pixels.
+- The switcher crate depends on existing server queue types for this PoC slice rather than moving queue types to a shared crate in this task.
+
+### Unresolved
+- video send CLI/config launcher decision
+- real screen capture / real H.264 encode
+- real H.264 decode
+- real switcher window rendering
+- sync scheduling, 4-view sync, and OBS integration
+
+### Next
+- Decide whether a video send CLI/config launcher is needed for manual one-client PoC runs.
+- Add real capture / H.264 encode boundary later.
+- Add real H.264 decode and switcher window rendering boundaries separately.
+
+### TODO Update
+- Marked switcher placeholder decode/display handoff complete.
+- Updated the one-view PoC line to say switcher can select latest queued frame and create a placeholder display handoff.
+- Reordered Next Items around optional video launcher, real capture/encode, and real decode/window rendering.

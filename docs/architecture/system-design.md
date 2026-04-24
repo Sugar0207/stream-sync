@@ -2717,6 +2717,63 @@ Deferred work:
 - H.264 decode and single-view display placeholder
 - 2-view / 4-view sync, switcher UI, and OBS integration
 
+### Single-View Video PoC: Switcher Placeholder Handoff
+
+The first switcher-side video slice is a read-only placeholder path from the
+server's per-client encoded-frame queue to a display handoff. It selects one
+client's newest queued frame and preserves the encoded payload plus metadata
+while explicitly marking H.264 decode as deferred.
+
+Current implementation scope:
+
+1. `SwitcherSingleViewLatestFrameSelectionBoundary::select_latest` borrows
+   `ServerVideoFrameQueueState` and a `ClientId`.
+2. It reads the requested client's queue without mutating it and selects the
+   newest queued frame.
+3. If no frame exists, it returns `NoFrameAvailable` with the requested
+   `ClientId`.
+4. If a frame exists, it returns `SwitcherSingleViewSelectedEncodedFrame` with
+   frame id, timestamps, dimensions, fps, keyframe flag, encoded payload length,
+   and encoded payload bytes.
+5. `SwitcherSingleViewPlaceholderDisplayBoundary::prepare_handoff` wraps the
+   selected encoded frame in `SwitcherSingleViewDisplayPlaceholderHandoff` with
+   `SwitcherSingleViewDecodeStatus::DeferredPlaceholder`.
+6. `SwitcherSingleViewPlaceholderPathBoundary` composes selection and
+   placeholder display handoff for the current one-client PoC path.
+
+Responsibility split:
+
+- per-client video frame queue
+  - Remains owned and mutated by server-side queue storage/runtime boundaries.
+- switcher queue read
+  - Borrows queue state and selects a latest encoded frame for one client.
+  - Does not pop, drain, reorder, or mutate queues.
+- placeholder decode/display handoff
+  - Preserves encoded frame metadata and payload bytes.
+  - Marks real H.264 decode as deferred.
+  - Does not allocate decoded pixel buffers, render a window, run sync
+    scheduling, or integrate with OBS.
+- future H.264 decode / display owner
+  - Will replace the placeholder status with real decode output and renderable
+    frame data.
+- future sync scheduling
+  - Will decide target time and multi-client frame selection before display.
+
+Current code reflects this with
+`SwitcherSingleViewLatestFrameSelectionBoundary`,
+`SwitcherSingleViewSelectedEncodedFrame`,
+`SwitcherSingleViewPlaceholderDisplayBoundary`,
+`SwitcherSingleViewDisplayHandoffResult`, and
+`SwitcherSingleViewPlaceholderPathBoundary`.
+
+Deferred work:
+
+- real H.264 decode
+- real switcher window / UI rendering
+- target-time sync scheduling
+- 2-view / 4-view selection and layout
+- OBS integration
+
 ### Heartbeat Timeout Notice Queue Storage / Send Wakeup
 
 Timeout notice queue storage is the narrow boundary after timeout apply. It is

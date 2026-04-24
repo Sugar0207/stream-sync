@@ -43,6 +43,11 @@ dependencies = [
 [[package]]
 name = "stream-sync-switcher"
 version = "0.1.0"
+dependencies = [
+ "stream-sync-net-core",
+ "stream-sync-protocol",
+ "stream-sync-server",
+]
 
 [[package]]
 name = "stream-sync-sync-core"

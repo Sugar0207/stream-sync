@@ -27,7 +27,7 @@
 - server 側は auth one-shot、accepted auth registry 登録、heartbeat ack / liveness / timeout action plan / timeout apply / notice queue storage、RTT / offset state commit と metrics snapshot handoff までの最小境界が揃っている
 - client 側は auth one-shot、heartbeat one-shot、`HeartbeatAckObservation` 付き `ClientStats` one-shot、one-tick runtime、accepted path 手動確認まで完了している
 - client continuous heartbeat loop は thin composition の completed body まで実装済みで、heartbeat timeout notice wakeup planning 境界、wakeup execution 境界、wakeup actual side-effect 境界、outer while-loop connection 境界、outer while-loop one-turn execution body 境界、actual timer wait / retry execution / reconnect 実行境界、outer while-loop 反復実行本体、reconnect policy 境界、caller-owned hook 付き actual socket 再確立境界、real UDP socket 差し替え hook、repeated body からの hook 注入経路まで完了している
-- 未完了の中心は single-view decode/display placeholder、dashboard UI rendering、continuous receive/send loop 本体、実キュー / 実送信 / 継続ログ出力
+- 未完了の中心は real H.264 decode、dashboard UI rendering、continuous receive/send loop 本体、実キュー / 実送信 / 継続ログ出力
 - outbound queue 実キュー、continuous receive/send loop 本体、send / receive の継続ログ出力、file sink open、process-wide logger、`ServerNotice` 実送信は未実装
 - video path は server 側 accepted `VideoFrame` receive side-effect を caller-owned per-client queue へ保存し、client 側で placeholder encoded H.264 payload 付き `VideoFrame` を構築・encode・UDP 送信する PoC slice まで完了。real capture / real H.264 encode、decode、display、OBS は未着手
 
@@ -59,9 +59,9 @@
 ---
 
 ## 直近でやること
-1. single-view decode/display placeholder を switcher 側に追加する
+1. video send CLI/config launcher が必要か最小判断する
 2. real capture / real H.264 encode 境界を placeholder payload source から差し替えられる形で追加する
-3. video send CLI/config launcher が必要か最小判断する
+3. real H.264 decode / switcher window rendering の最小境界を分けて設計する
 
 ---
 
@@ -444,8 +444,9 @@
 - [x] OBS 連携方法を Window Capture に決定する
 - [x] switcher は表示専用とする方針を決定する
 - [x] 4 分割表示と単独表示の切り替えを MVP 対象にする
-- [ ] 1 視点の復号に成功する
-- [ ] 1 視点の表示に成功する
+- [x] 1 視点の placeholder decode/display handoff を作る
+- [ ] 1 視点の real H.264 復号に成功する
+- [ ] 1 視点の real window 表示に成功する
 - [ ] 2x2 の 4 分割レイアウトを作る
 - [ ] 単独表示モードを作る
 - [ ] クリック / ダブルクリック / ホットキー切り替えを実装する
@@ -495,7 +496,7 @@
 4. [x] client が `Heartbeat` を送り、server が RTT / offset 推定に使える時刻情報を返せる
 5. [x] client が 1 視点の placeholder encoded H.264 payload 付き `VideoFrame` を送れる
 6. [x] server が 1 視点の frame を受信し、破棄 / 受理を判定し、accepted frame を queue に保存できる
-7. [ ] switcher が 1 視点を復号・表示できる
+7. [x] switcher が 1 視点の latest queued frame を選択し、placeholder display handoff を作れる
 8. [ ] 2 視点で targetTime による簡易同期表示を確認できる
 9. [ ] 4 視点で 2x2 表示を確認できる
 10. [ ] OBS Window Capture で switcher 表示を取り込める
@@ -635,7 +636,8 @@
 - [x] `VideoFrame` encode
 - [x] `VideoFrame` UDP send with explicit placeholder encoded H.264 payload
 - [x] server frame receive / queue
-- [ ] switcher decode / single view display
+- [x] switcher placeholder decode / single view display handoff
+- [ ] switcher real decode / single view display
 - [ ] 30 分連続確認
 
 ### フェーズ4: 2 人 / 4 人同期 PoC
@@ -667,11 +669,12 @@
 - server heartbeat timeout now has a thin multi-client loop boundary over the existing one-client timeout tick, with caller-owned registry / liveness state / queue / writer kept explicit.
 - server video path now has a receive-side runtime wiring slice: accepted `VideoFrame` side effects can be stored in a caller-owned per-client encoded-frame queue, while rejected frames remain not queued.
 - client video path now has a first send-side PoC slice: metadata construction, explicit placeholder encoded H.264 payload source, existing protocol encode, and one caller-owned UDP `send_to`.
+- switcher video path now has a first placeholder slice: one client's latest queued encoded frame can be selected read-only and converted into an explicit decode-deferred display handoff.
 - metrics commit, snapshot export cadence, dashboard refresh consumer policy, and dashboard refresh runtime wiring remain separate from timer wait, retry, reconnect, socket ownership, cleanup, UI rendering, video, switcher, and OBS.
 - server notice queue storage remains separate from notice send wakeup execution.
 - actual dashboard UI rendering remains unimplemented.
 
 ## Next Items
-1. switcher single-view decode/display placeholder
+1. decide whether a video send CLI/config launcher is needed
 2. real capture / real H.264 encode boundary replacing the placeholder payload source
-3. decide whether a video send CLI/config launcher is needed
+3. real H.264 decode / switcher window rendering boundary
