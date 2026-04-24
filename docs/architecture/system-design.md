@@ -5489,6 +5489,66 @@ Current code reflects this with
 `ClientHeartbeatLoopOuterWhileLoopConnectionResult`, and
 `ClientHeartbeatLoopOuterWhileLoopConnectionBoundary`.
 
+### Client Outer While-Loop One-Turn Execution Body Minimal Scope
+
+After the outer while-loop connection boundary exists, the next minimal step is
+still not a real repeated while-loop. Instead, one thin one-turn execution body
+can consume only the connection result and surface an explicit continue-or-stop
+shape for a future outer runner.
+
+Current minimal scope:
+
+1. `ClientHeartbeatLoopOuterWhileLoopOneTurnExecutionInput::from_connection(...)`
+   converts `ClientHeartbeatLoopOuterWhileLoopConnectionResult` into:
+   - `Ok(input)` for `Continue { output }`
+   - `Err(output)` for `Stop { output }`
+2. `ClientHeartbeatLoopOuterWhileLoopOneTurnExecutionBoundary` receives one
+   outer while-loop connection result only.
+3. If connection returns `Continue { output }`:
+   - one-turn execution returns `Continue { output }`
+   - continue output keeps, in explicit order:
+     - wakeup passthrough or applied marker
+     - timer wait action
+     - retry execution action
+     - reconnect execution action
+     - next-step carry
+4. If connection returns `Stop { output }`:
+   - one-turn execution returns `Stop { output }`
+   - stop path preserves:
+     - `stop_reason`
+     - `cleanup_completed`
+     - `applied_actions`
+5. Minimal safe one-turn scope:
+   - outer while-loop connection result is the single source of truth
+   - continue path stays explicit and keeps wakeup / timer / retry /
+     reconnect separation
+   - stop path is passthrough and is not collapsed into continue execution
+   - no timer wait runtime, retry runtime, reconnect runtime, metrics cadence,
+     dashboard refresh, video, switcher, or OBS logic is introduced here
+
+Relationship between completed continuous heartbeat loop body, wakeup actual
+side-effect boundary, timer / retry / reconnect actions, and the future actual
+while-loop runner:
+
+- outer while-loop connection boundary
+  - Produces the only input that one-turn execution consumes.
+  - Preserves explicit wakeup / timer / retry / reconnect actions.
+- outer while-loop one-turn execution boundary
+  - Re-exposes the connection result as explicit continue next-step state or
+    explicit stop terminal output.
+  - Does not reinterpret cleanup or stop semantics.
+- future actual while-loop runner
+  - Will later own repetition only.
+  - Should stay a thin delegate that calls connection, then one-turn
+    execution, then applies the returned actions in order.
+
+Current code reflects this with
+`ClientHeartbeatLoopOuterWhileLoopOneTurnExecutionInput`,
+`ClientHeartbeatLoopOuterWhileLoopOneTurnNextStepState`,
+`ClientHeartbeatLoopOuterWhileLoopOneTurnExecutionOutput`,
+`ClientHeartbeatLoopOuterWhileLoopOneTurnExecutionResult`, and
+`ClientHeartbeatLoopOuterWhileLoopOneTurnExecutionBoundary`.
+
 ### Heartbeat Client Ack Observation Flow
 
 The client ack observation flow returns the missing `client_received_at`

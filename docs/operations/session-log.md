@@ -4,6 +4,52 @@
 ### 担当 - Codex
 
 ### 今回の作業
+- client continuous heartbeat loop execution path に戻り、outer while-loop one-turn execution body の最小実装形を追加した。
+- outer while-loop connection result だけを入力源にし、continue path の wakeup / timer wait / retry execution / reconnect execution 分離を保ったまま next-step carry を返す薄い boundary を追加した。
+- stop path では `stop_reason` / `cleanup_completed` / `applied_actions` を再解釈せず、そのまま passthrough する形に揃えた。
+
+### 変更ファイル
+- `apps/client/src/lib.rs`
+- `docs/architecture/system-design.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### 実装したこと
+- `ClientHeartbeatLoopOuterWhileLoopOneTurnExecutionInput`
+- `ClientHeartbeatLoopOuterWhileLoopOneTurnNextStepState`
+- `ClientHeartbeatLoopOuterWhileLoopOneTurnExecutionOutput`
+- `ClientHeartbeatLoopOuterWhileLoopOneTurnExecutionResult`
+- `ClientHeartbeatLoopOuterWhileLoopOneTurnExecutionBoundary`
+- outer while-loop connection result を single source of truth として consume し、continue では wakeup / timer wait / retry execution / reconnect execution / next carry を explicit なまま返す one-turn execution body
+- continue path と stop path の意味を崩さない単体テスト
+
+### 未実装 / 保留
+- client 側 continuous heartbeat loop の outer while-loop 反復本体
+- actual timer wait / retry execution / reconnect の実処理
+- RTT / offset metrics state commit の継続 loop 接続
+- metrics snapshot export cadence / dashboard refresh 方針
+- video path / switcher / OBS の本実装
+
+### 次にやる候補
+- actual timer wait / retry execution / reconnect の実処理を最小単位へ分解する
+- client 側 outer while-loop の反復実行本体を one-turn execution body に接続する
+- RTT / offset metrics state commit / cadence / dashboard refresh 方針整理
+
+### TODO更新内容
+- 現在位置に outer while-loop one-turn execution body 境界の完了を反映した。
+- 直近でやることを actual timer / retry / reconnect 実処理と outer while-loop 反復本体へ更新した。
+- heartbeat / 検証タスクに outer while-loop one-turn execution body 境界と関連単体テスト完了を追加した。
+
+### 検証
+- `cargo fmt`
+- `cargo fmt --check`
+- `cargo test -p stream-sync-client client_heartbeat_loop_cleanup`
+- `cargo check --workspace`
+
+## 2026-04-24
+### 担当 - Codex
+
+### 今回の作業
 - client continuous heartbeat loop execution path に戻り、outer while-loop connection の最小実装形を追加した。
 - completed continuous heartbeat loop body から wakeup planning / execution / actual side effect を順に配線し、continue path と stop path を崩さない接続 boundary を追加した。
 - wakeup state を timer / retry / reconnect から分離したまま、future outer while-loop runner が受け取る explicit continue output だけを整えた。

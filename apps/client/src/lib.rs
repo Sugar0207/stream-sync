@@ -3191,6 +3191,52 @@ pub enum ClientHeartbeatLoopOuterWhileLoopConnectionResult {
     },
 }
 
+/// Explicit input handed into one outer while-loop turn execution body.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClientHeartbeatLoopOuterWhileLoopOneTurnExecutionInput {
+    pub output: ClientHeartbeatLoopOuterWhileLoopConnectionOutput,
+}
+
+impl ClientHeartbeatLoopOuterWhileLoopOneTurnExecutionInput {
+    pub fn from_connection(
+        connection: ClientHeartbeatLoopOuterWhileLoopConnectionResult,
+    ) -> Result<Self, ClientHeartbeatLoopCompletedBodyTerminalOutput> {
+        match connection {
+            ClientHeartbeatLoopOuterWhileLoopConnectionResult::Continue { output } => {
+                Ok(Self { output })
+            }
+            ClientHeartbeatLoopOuterWhileLoopConnectionResult::Stop { output } => Err(output),
+        }
+    }
+}
+
+/// Minimal next-step state preserved by one outer while-loop turn execution.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClientHeartbeatLoopOuterWhileLoopOneTurnNextStepState {
+    pub carry: ClientHeartbeatLoopRepeatedInvocationNextStepCarry,
+}
+
+/// Continue-path output surfaced after one outer while-loop turn stays explicit.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClientHeartbeatLoopOuterWhileLoopOneTurnExecutionOutput {
+    pub wakeup: ClientHeartbeatLoopOuterWhileLoopWakeupState,
+    pub timer_wait: ClientHeartbeatLoopFutureActualTimerWaitAction,
+    pub retry_execution: ClientHeartbeatLoopFutureActualRetryExecutionAction,
+    pub reconnect_execution: ClientHeartbeatLoopFutureActualReconnectExecutionAction,
+    pub next: ClientHeartbeatLoopOuterWhileLoopOneTurnNextStepState,
+}
+
+/// Result of consuming one outer while-loop connection result as one turn.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ClientHeartbeatLoopOuterWhileLoopOneTurnExecutionResult {
+    Continue {
+        output: ClientHeartbeatLoopOuterWhileLoopOneTurnExecutionOutput,
+    },
+    Stop {
+        output: ClientHeartbeatLoopCompletedBodyTerminalOutput,
+    },
+}
+
 /// Boundary that connects one step result to future completed-loop lifecycle flow.
 ///
 /// This does not run a while-loop, sleep, reconnect, flush logs, close
@@ -4270,6 +4316,38 @@ impl ClientHeartbeatLoopOuterWhileLoopConnectionBoundary {
             ClientHeartbeatLoopHeartbeatTimeoutNoticeWakeupActualSideEffectResult::Stop {
                 output,
             } => ClientHeartbeatLoopOuterWhileLoopConnectionResult::Stop { output },
+        }
+    }
+}
+
+/// Boundary that consumes one connection result as the minimal outer while-loop turn body.
+///
+/// This keeps the actual while-loop dumb: it accepts only the already-shaped
+/// outer while-loop connection result, preserves explicit wakeup / timer wait /
+/// retry execution / reconnect execution separation, and forwards stop output
+/// unchanged. It does not repeat, sleep, retry, reconnect, or reinterpret
+/// cleanup semantics.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct ClientHeartbeatLoopOuterWhileLoopOneTurnExecutionBoundary;
+
+impl ClientHeartbeatLoopOuterWhileLoopOneTurnExecutionBoundary {
+    pub fn run_turn(
+        &self,
+        connection: ClientHeartbeatLoopOuterWhileLoopConnectionResult,
+    ) -> ClientHeartbeatLoopOuterWhileLoopOneTurnExecutionResult {
+        match ClientHeartbeatLoopOuterWhileLoopOneTurnExecutionInput::from_connection(connection) {
+            Ok(input) => ClientHeartbeatLoopOuterWhileLoopOneTurnExecutionResult::Continue {
+                output: ClientHeartbeatLoopOuterWhileLoopOneTurnExecutionOutput {
+                    wakeup: input.output.wakeup,
+                    timer_wait: input.output.timer_wait,
+                    retry_execution: input.output.retry_execution,
+                    reconnect_execution: input.output.reconnect_execution,
+                    next: ClientHeartbeatLoopOuterWhileLoopOneTurnNextStepState {
+                        carry: input.output.carry,
+                    },
+                },
+            },
+            Err(output) => ClientHeartbeatLoopOuterWhileLoopOneTurnExecutionResult::Stop { output },
         }
     }
 }
@@ -11255,6 +11333,136 @@ mod tests {
         };
 
         assert_eq!(outer_stop, completed_stop);
+    }
+
+    #[test]
+    fn client_heartbeat_loop_cleanup_outer_while_loop_one_turn_execution_preserves_continue_path_and_action_separation(
+    ) {
+        let connection = ClientHeartbeatLoopOuterWhileLoopConnectionBoundary::default()
+            .plan_next(cleanup_test_repeated_apply_timer_continue());
+        let input = ClientHeartbeatLoopOuterWhileLoopOneTurnExecutionInput::from_connection(
+            connection.clone(),
+        )
+        .expect("continue connection result should become one-turn input");
+        let result = ClientHeartbeatLoopOuterWhileLoopOneTurnExecutionBoundary::default()
+            .run_turn(connection);
+
+        assert_eq!(
+            input.output.wakeup,
+            ClientHeartbeatLoopOuterWhileLoopWakeupState::WakeupSideEffectApplied {
+                wakeup_apply:
+                    ClientHeartbeatLoopHeartbeatTimeoutNoticeWakeupApplyResult::WakeupApplied {
+                        wakeup:
+                            ClientHeartbeatLoopFutureHeartbeatTimeoutNoticeWakeupPlan::WakeupDuringTimerWait {
+                                sleep: cleanup_test_timer_sleep(),
+                            },
+                    },
+                wakeup_side_effect:
+                    ClientHeartbeatLoopHeartbeatTimeoutNoticeWakeupActualSideEffectApplyResult::WakeupSideEffectApplied {
+                        wakeup:
+                            ClientHeartbeatLoopFutureHeartbeatTimeoutNoticeWakeupPlan::WakeupDuringTimerWait {
+                                sleep: cleanup_test_timer_sleep(),
+                            },
+                    },
+            }
+        );
+        assert_eq!(
+            result,
+            ClientHeartbeatLoopOuterWhileLoopOneTurnExecutionResult::Continue {
+                output: ClientHeartbeatLoopOuterWhileLoopOneTurnExecutionOutput {
+                    wakeup: input.output.wakeup,
+                    timer_wait: input.output.timer_wait,
+                    retry_execution: input.output.retry_execution,
+                    reconnect_execution: input.output.reconnect_execution,
+                    next: ClientHeartbeatLoopOuterWhileLoopOneTurnNextStepState {
+                        carry: input.output.carry,
+                    },
+                },
+            }
+        );
+    }
+
+    #[test]
+    fn client_heartbeat_loop_cleanup_outer_while_loop_one_turn_execution_preserves_retry_without_collapsing_into_wakeup(
+    ) {
+        let retry = cleanup_test_retry_apply();
+        let connection = ClientHeartbeatLoopOuterWhileLoopConnectionBoundary::default()
+            .plan_next(cleanup_test_repeated_apply_retry_continue());
+        let result = ClientHeartbeatLoopOuterWhileLoopOneTurnExecutionBoundary::default()
+            .run_turn(connection);
+
+        let ClientHeartbeatLoopOuterWhileLoopOneTurnExecutionResult::Continue { output } = result
+        else {
+            panic!("retry continue connection should remain a continue one-turn output");
+        };
+
+        assert_eq!(
+            output.wakeup,
+            ClientHeartbeatLoopOuterWhileLoopWakeupState::NoWakeupSideEffect
+        );
+        assert_eq!(
+            output.timer_wait,
+            ClientHeartbeatLoopFutureActualTimerWaitAction::NoTimerWait
+        );
+        assert_eq!(
+            output.retry_execution,
+            ClientHeartbeatLoopFutureActualRetryExecutionAction::RetryExecution { retry }
+        );
+        assert_eq!(
+            output.reconnect_execution,
+            ClientHeartbeatLoopFutureActualReconnectExecutionAction::NoReconnectExecution
+        );
+    }
+
+    #[test]
+    fn client_heartbeat_loop_cleanup_outer_while_loop_one_turn_execution_preserves_stop_passthrough(
+    ) {
+        let connection = ClientHeartbeatLoopOuterWhileLoopConnectionBoundary::default()
+            .plan_next(cleanup_test_repeated_stop());
+        let result = ClientHeartbeatLoopOuterWhileLoopOneTurnExecutionBoundary::default()
+            .run_turn(connection);
+
+        assert_eq!(
+            result,
+            ClientHeartbeatLoopOuterWhileLoopOneTurnExecutionResult::Stop {
+                output: ClientHeartbeatLoopCompletedBodyTerminalOutput {
+                    stop_reason:
+                        ClientHeartbeatLoopRepeatedInvocationStopReason::CleanupRequested {
+                            stop_reason:
+                                ClientHeartbeatLoopLifecycleStopReason::CallerRequestedStop,
+                        },
+                    cleanup_completed: true,
+                    applied_actions: [
+                        ClientHeartbeatLoopCleanupAppliedAction::FinalFlush,
+                        ClientHeartbeatLoopCleanupAppliedAction::LogWriterInvocation,
+                        ClientHeartbeatLoopCleanupAppliedAction::ResourceRelease,
+                    ],
+                },
+            }
+        );
+    }
+
+    #[test]
+    fn client_heartbeat_loop_cleanup_outer_while_loop_one_turn_execution_does_not_reinterpret_cleanup_or_stop_semantics(
+    ) {
+        let connection = ClientHeartbeatLoopOuterWhileLoopConnectionBoundary::default()
+            .plan_next(cleanup_test_repeated_stop());
+        let connection_stop = connection.clone();
+        let result = ClientHeartbeatLoopOuterWhileLoopOneTurnExecutionBoundary::default()
+            .run_turn(connection);
+
+        let ClientHeartbeatLoopOuterWhileLoopConnectionResult::Stop {
+            output: connection_output,
+        } = connection_stop
+        else {
+            panic!("stop connection should remain stop before one-turn execution");
+        };
+        let ClientHeartbeatLoopOuterWhileLoopOneTurnExecutionResult::Stop { output } = result
+        else {
+            panic!("stop connection should remain stop through one-turn execution");
+        };
+
+        assert_eq!(output, connection_output);
     }
 
     #[test]
