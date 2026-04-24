@@ -2773,6 +2773,24 @@ Current code reflects this with
 `SwitcherSingleViewDisplayHandoffResult`, and
 `SwitcherSingleViewPlaceholderPathBoundary`.
 
+Manual verification status:
+
+- `--placeholder-video-frame-poc-once [config-path]` sends one placeholder
+  `VideoFrame` only. It does not authenticate, wait for `AuthResponse`, or
+  reuse a socket from another client PoC command.
+- The server's authenticated receive path still requires `VideoFrame` packets
+  to come from a source already registered by an accepted `AuthRequest`.
+- Running the existing auth CLI and then running the placeholder video CLI does
+  not establish that condition, because each command owns a separate UDP socket
+  and normally uses a different source port.
+- The server queue runtime boundary and switcher placeholder selection boundary
+  can be verified through focused tests, but a complete manual
+  client-to-server-to-switcher command sequence still needs a same-socket
+  auth-then-placeholder-video client launcher and a queue-owning server manual
+  launcher.
+- The current manual verification notes live in
+  `docs/operations/manual-placeholder-video-poc.md`.
+
 Deferred work:
 
 - real H.264 decode

@@ -9147,3 +9147,46 @@
 - Marked placeholder `VideoFrame` one-shot CLI/config launcher complete.
 - Updated Current Focus with the new client launcher flag.
 - Reordered Next Items around real capture/encode, real decode/window rendering, and manual PoC path documentation.
+
+---
+
+## 2026-04-24
+### Type
+- Codex
+
+### Work
+- Audited the current manual one-client placeholder `VideoFrame` PoC path across client, server, and switcher.
+- Documented that the implemented slices exist separately: client placeholder frame send, server accepted-frame queue storage, and switcher latest-frame placeholder handoff.
+- Confirmed that the current client `--placeholder-video-frame-poc-once` command sends a `VideoFrame` only and does not authenticate first.
+- Confirmed that running a separate auth command first does not satisfy server `VideoFrame` acceptance, because the existing commands own separate UDP sockets/source ports.
+- Added a manual verification note with the exact current limitation and the smallest missing wiring for full manual end-to-end verification.
+- Kept real capture, real H.264 encode/decode, switcher rendering, 4-view sync, and OBS out of scope.
+
+### Changed Files
+- `docs/operations/manual-placeholder-video-poc.md`
+- `docs/architecture/system-design.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### Decisions
+- Did not weaken or bypass the server authenticated packet acceptance rule for manual convenience.
+- Did not hide authentication inside the existing placeholder video CLI.
+- Treated the next full manual verification step as explicit same-socket auth-then-video client wiring plus a queue-owning server launcher.
+- Kept switcher placeholder selection as a library boundary until there is a shared runtime state handoff or a dedicated helper.
+
+### Unresolved
+- same-socket client auth-then-placeholder-`VideoFrame` one-shot launcher
+- queue-owning server auth-then-video manual launcher with queued/rejected stdout
+- switcher helper or runtime bridge for selecting from a server-owned queue after a manual receive
+- real capture / real H.264 encode
+- real H.264 decode / switcher window rendering
+- sync scheduling, 4-view sync, and OBS integration
+
+### Next
+- Add a same-socket client auth-then-placeholder-video one-shot launcher.
+- Add a server auth-then-video queue launcher that owns registry and queue state for the manual PoC.
+- Add optional switcher placeholder selection helper after server queue state can be surfaced.
+
+### TODO Update
+- Updated Current Focus with the documented manual placeholder PoC status and limitation.
+- Replaced the generic manual path item with the concrete missing client and server launcher steps.

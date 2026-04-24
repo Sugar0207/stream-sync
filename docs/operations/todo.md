@@ -673,11 +673,13 @@
 - client video path now has a first send-side PoC slice: metadata construction, explicit placeholder encoded H.264 payload source, existing protocol encode, and one caller-owned UDP `send_to`.
 - client video path now has a one-shot CLI/config launcher: `--placeholder-video-frame-poc-once [config-path]` sends one explicit placeholder `VideoFrame` and prints a compact stdout summary.
 - switcher video path now has a first placeholder slice: one client's latest queued encoded frame can be selected read-only and converted into an explicit decode-deferred display handoff.
+- manual placeholder VideoFrame PoC status is now documented in `docs/operations/manual-placeholder-video-poc.md`: the client send, server queue runtime, and switcher placeholder selection slices exist, but a complete manual end-to-end command path is still blocked by missing same-socket auth-then-video client wiring and a queue-owning server manual launcher.
 - metrics commit, snapshot export cadence, dashboard refresh consumer policy, and dashboard refresh runtime wiring remain separate from timer wait, retry, reconnect, socket ownership, cleanup, UI rendering, video, switcher, and OBS.
 - server notice queue storage remains separate from notice send wakeup execution.
 - actual dashboard UI rendering remains unimplemented.
 
 ## Next Items
-1. real capture / real H.264 encode boundary replacing the placeholder payload source
-2. real H.264 decode / switcher window rendering boundary
-3. document or script the manual one-client placeholder PoC path across server / client / switcher
+1. add a same-socket client auth-then-placeholder-VideoFrame one-shot launcher for full manual queue verification
+2. add a queue-owning server auth-then-video manual launcher that prints accepted/queued/rejected result
+3. real capture / real H.264 encode boundary replacing the placeholder payload source
+4. real H.264 decode / switcher window rendering boundary
