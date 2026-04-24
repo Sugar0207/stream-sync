@@ -8750,3 +8750,40 @@
 ### TODO Update
 - Current focus updated to include completed snapshot export cadence boundary.
 - Next items reordered around dashboard refresh consumer policy, live socket ownership, and future loop runtime wiring.
+---
+
+## 2026-04-24
+### Type
+- Codex
+
+### Work
+- Defined the minimal client-side dashboard refresh consumer policy boundary for heartbeat RTT / offset metrics snapshots.
+- Added dashboard refresh consumer input derivation from explicit future dashboard handoff / snapshot export result.
+- Added explicit refresh requested, refresh skipped, and refresh deferred results.
+- Kept snapshot export, refresh policy, and actual dashboard UI rendering separate.
+
+### Changed Files
+- `apps/client/src/lib.rs`
+- `docs/architecture/system-design.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### Decisions
+- Refresh consumer policy consumes only explicit dashboard refresh handoff or snapshot export output.
+- Snapshot export not due maps to refresh skipped, not to cadence re-evaluation.
+- Snapshot export deferred maps to refresh deferred with the original reason preserved.
+- Actual dashboard UI rendering remains out of scope; the policy only emits a typed refresh request.
+
+### Unresolved
+- live socket ownership wiring for the future continuous loop runner
+- runtime wiring of snapshot cadence into the future loop owner
+- runtime wiring of dashboard refresh into the future metrics consumer owner
+- video path / switcher / OBS integration
+
+### Next
+- Wire live socket ownership into the future client continuous heartbeat loop runner.
+- Connect snapshot cadence and dashboard refresh policy to future caller-owned runtime state.
+
+### TODO Update
+- Current focus updated to include completed dashboard refresh consumer policy boundary.
+- Next items reordered around live socket ownership and future runtime wiring.

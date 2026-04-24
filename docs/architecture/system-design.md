@@ -6805,3 +6805,19 @@ The client heartbeat metrics snapshot export cadence is separate from per-sample
 - The snapshot handoff can name a future dashboard refresh consumer, but cadence does not execute dashboard refresh.
 - Dashboard refresh receives only an explicit future handoff. UI rendering, dashboard storage, transport, and refresh policy remain out of scope.
 - Cadence does not recalculate RTT / offset, commit metrics samples, inspect timer / retry / reconnect state, or own metrics state.
+
+## Client Heartbeat RTT / Offset Dashboard Refresh Consumer Policy Boundary
+
+The client dashboard refresh consumer policy is separate from snapshot export cadence and separate from actual dashboard UI rendering.
+
+- Consumer input is derived only from:
+  - `ClientHeartbeatRttOffsetMetricsFutureDashboardRefreshHandoff`
+  - or `ClientHeartbeatRttOffsetMetricsSnapshotExportCadenceResult`
+- The policy boundary can return:
+  - refresh requested with a typed snapshot refresh request
+  - refresh skipped when no dashboard handoff is available
+  - refresh deferred when policy or upstream export state requires deferral
+- Snapshot export not due becomes refresh skipped.
+- Snapshot export deferred becomes refresh deferred with the upstream reason preserved.
+- The refresh policy does not recalculate RTT / offset, commit metrics samples, evaluate snapshot cadence, render UI, write dashboard state, send network updates, or touch video / switcher / OBS paths.
+- Actual dashboard UI rendering remains a later implementation that consumes only the explicit refresh request.

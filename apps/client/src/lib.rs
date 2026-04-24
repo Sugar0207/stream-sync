@@ -1149,6 +1149,20 @@ pub enum ClientHeartbeatRttOffsetMetricsDashboardRefreshDecision {
     NotImplemented,
 }
 
+/// Caller-owned dashboard refresh consumer policy.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct ClientHeartbeatRttOffsetMetricsDashboardRefreshConsumerPolicy {
+    pub refresh_enabled: bool,
+}
+
+impl Default for ClientHeartbeatRttOffsetMetricsDashboardRefreshConsumerPolicy {
+    fn default() -> Self {
+        Self {
+            refresh_enabled: true,
+        }
+    }
+}
+
 /// Export record for one client RTT / offset metrics snapshot.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ClientHeartbeatRttOffsetMetricsSnapshotRecord {
@@ -1211,6 +1225,160 @@ pub enum ClientHeartbeatRttOffsetMetricsSnapshotConsumer {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ClientHeartbeatRttOffsetMetricsFutureDashboardRefreshHandoff {
     pub snapshot: ClientHeartbeatRttOffsetMetricsSnapshot,
+}
+
+/// Minimal dashboard refresh consumer input derived from an explicit handoff.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClientHeartbeatRttOffsetMetricsDashboardRefreshConsumerInput {
+    pub policy: ClientHeartbeatRttOffsetMetricsDashboardRefreshConsumerPolicy,
+    pub handoff: ClientHeartbeatRttOffsetMetricsFutureDashboardRefreshHandoff,
+}
+
+/// Why dashboard refresh consumer input is unavailable or deferred.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ClientHeartbeatRttOffsetMetricsDashboardRefreshConsumerInputDeferredReason {
+    PolicyUnavailable,
+    SnapshotExportDeferred(ClientHeartbeatRttOffsetMetricsSnapshotExportDeferredReason),
+}
+
+/// Result of deriving dashboard refresh consumer input.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ClientHeartbeatRttOffsetMetricsDashboardRefreshConsumerInputResult {
+    Input(ClientHeartbeatRttOffsetMetricsDashboardRefreshConsumerInput),
+    NoHandoff,
+    Deferred(ClientHeartbeatRttOffsetMetricsDashboardRefreshConsumerInputDeferredReason),
+}
+
+/// Explicit request for a later dashboard refresh implementation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClientHeartbeatRttOffsetMetricsDashboardRefreshRequest {
+    pub snapshot: ClientHeartbeatRttOffsetMetricsSnapshot,
+}
+
+/// Why dashboard refresh was skipped by consumer policy.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ClientHeartbeatRttOffsetMetricsDashboardRefreshSkippedReason {
+    NoDashboardHandoff,
+}
+
+/// Why dashboard refresh was deferred by consumer policy.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ClientHeartbeatRttOffsetMetricsDashboardRefreshDeferredReason {
+    PolicyUnavailable,
+    RefreshDisabled,
+    EmptySnapshot,
+    SnapshotExportDeferred(ClientHeartbeatRttOffsetMetricsSnapshotExportDeferredReason),
+}
+
+/// Result of applying dashboard refresh consumer policy.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ClientHeartbeatRttOffsetMetricsDashboardRefreshConsumerResult {
+    RefreshRequested(ClientHeartbeatRttOffsetMetricsDashboardRefreshRequest),
+    RefreshSkipped(ClientHeartbeatRttOffsetMetricsDashboardRefreshSkippedReason),
+    RefreshDeferred(ClientHeartbeatRttOffsetMetricsDashboardRefreshDeferredReason),
+}
+
+/// Boundary that derives dashboard refresh input from explicit snapshot handoff only.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct ClientHeartbeatRttOffsetMetricsDashboardRefreshConsumerInputBoundary;
+
+impl ClientHeartbeatRttOffsetMetricsDashboardRefreshConsumerInputBoundary {
+    pub fn from_dashboard_handoff(
+        &self,
+        policy: Option<ClientHeartbeatRttOffsetMetricsDashboardRefreshConsumerPolicy>,
+        handoff: Option<ClientHeartbeatRttOffsetMetricsFutureDashboardRefreshHandoff>,
+    ) -> ClientHeartbeatRttOffsetMetricsDashboardRefreshConsumerInputResult {
+        let Some(handoff) = handoff else {
+            return ClientHeartbeatRttOffsetMetricsDashboardRefreshConsumerInputResult::NoHandoff;
+        };
+        let Some(policy) = policy else {
+            return ClientHeartbeatRttOffsetMetricsDashboardRefreshConsumerInputResult::Deferred(
+                ClientHeartbeatRttOffsetMetricsDashboardRefreshConsumerInputDeferredReason::PolicyUnavailable,
+            );
+        };
+
+        ClientHeartbeatRttOffsetMetricsDashboardRefreshConsumerInputResult::Input(
+            ClientHeartbeatRttOffsetMetricsDashboardRefreshConsumerInput { policy, handoff },
+        )
+    }
+
+    pub fn from_snapshot_export_result(
+        &self,
+        policy: Option<ClientHeartbeatRttOffsetMetricsDashboardRefreshConsumerPolicy>,
+        export: ClientHeartbeatRttOffsetMetricsSnapshotExportCadenceResult,
+    ) -> ClientHeartbeatRttOffsetMetricsDashboardRefreshConsumerInputResult {
+        match export {
+            ClientHeartbeatRttOffsetMetricsSnapshotExportCadenceResult::SnapshotExportDue {
+                handoff,
+                ..
+            } => self.from_dashboard_handoff(policy, handoff.future_dashboard_refresh),
+            ClientHeartbeatRttOffsetMetricsSnapshotExportCadenceResult::SnapshotExportNotDue {
+                ..
+            } => ClientHeartbeatRttOffsetMetricsDashboardRefreshConsumerInputResult::NoHandoff,
+            ClientHeartbeatRttOffsetMetricsSnapshotExportCadenceResult::SnapshotExportDeferred {
+                reason,
+            } => ClientHeartbeatRttOffsetMetricsDashboardRefreshConsumerInputResult::Deferred(
+                ClientHeartbeatRttOffsetMetricsDashboardRefreshConsumerInputDeferredReason::SnapshotExportDeferred(reason),
+            ),
+        }
+    }
+}
+
+/// Boundary that applies dashboard refresh consumer policy without rendering UI.
+///
+/// It consumes only explicit dashboard refresh handoff state. It does not
+/// recalculate metrics, evaluate snapshot cadence, render UI, send network
+/// updates, or touch video/switcher/OBS paths.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct ClientHeartbeatRttOffsetMetricsDashboardRefreshConsumerPolicyBoundary;
+
+impl ClientHeartbeatRttOffsetMetricsDashboardRefreshConsumerPolicyBoundary {
+    pub fn evaluate(
+        &self,
+        input: ClientHeartbeatRttOffsetMetricsDashboardRefreshConsumerInputResult,
+    ) -> ClientHeartbeatRttOffsetMetricsDashboardRefreshConsumerResult {
+        match input {
+            ClientHeartbeatRttOffsetMetricsDashboardRefreshConsumerInputResult::Input(input) => {
+                if !input.policy.refresh_enabled {
+                    return ClientHeartbeatRttOffsetMetricsDashboardRefreshConsumerResult::RefreshDeferred(
+                        ClientHeartbeatRttOffsetMetricsDashboardRefreshDeferredReason::RefreshDisabled,
+                    );
+                }
+                if input.handoff.snapshot.records.is_empty() {
+                    return ClientHeartbeatRttOffsetMetricsDashboardRefreshConsumerResult::RefreshDeferred(
+                        ClientHeartbeatRttOffsetMetricsDashboardRefreshDeferredReason::EmptySnapshot,
+                    );
+                }
+
+                ClientHeartbeatRttOffsetMetricsDashboardRefreshConsumerResult::RefreshRequested(
+                    ClientHeartbeatRttOffsetMetricsDashboardRefreshRequest {
+                        snapshot: input.handoff.snapshot,
+                    },
+                )
+            }
+            ClientHeartbeatRttOffsetMetricsDashboardRefreshConsumerInputResult::NoHandoff => {
+                ClientHeartbeatRttOffsetMetricsDashboardRefreshConsumerResult::RefreshSkipped(
+                    ClientHeartbeatRttOffsetMetricsDashboardRefreshSkippedReason::NoDashboardHandoff,
+                )
+            }
+            ClientHeartbeatRttOffsetMetricsDashboardRefreshConsumerInputResult::Deferred(
+                reason,
+            ) => match reason {
+                ClientHeartbeatRttOffsetMetricsDashboardRefreshConsumerInputDeferredReason::PolicyUnavailable => {
+                    ClientHeartbeatRttOffsetMetricsDashboardRefreshConsumerResult::RefreshDeferred(
+                        ClientHeartbeatRttOffsetMetricsDashboardRefreshDeferredReason::PolicyUnavailable,
+                    )
+                }
+                ClientHeartbeatRttOffsetMetricsDashboardRefreshConsumerInputDeferredReason::SnapshotExportDeferred(
+                    reason,
+                ) => ClientHeartbeatRttOffsetMetricsDashboardRefreshConsumerResult::RefreshDeferred(
+                    ClientHeartbeatRttOffsetMetricsDashboardRefreshDeferredReason::SnapshotExportDeferred(
+                        reason,
+                    ),
+                ),
+            },
+        }
+    }
 }
 
 /// Snapshot export handoff emitted by cadence when export is due.
@@ -12676,6 +12844,25 @@ mod tests {
         state
     }
 
+    fn cleanup_test_due_snapshot_export(
+    ) -> ClientHeartbeatRttOffsetMetricsSnapshotExportCadenceResult {
+        let metrics_state = cleanup_test_metrics_state_with_one_sample();
+        let cadence_state =
+            ClientHeartbeatRttOffsetMetricsSnapshotCadenceState::new(TimestampMicros(10_000));
+        let boundary = ClientHeartbeatRttOffsetMetricsSnapshotExportCadenceBoundary::default();
+
+        boundary.evaluate(
+            Some(&metrics_state),
+            boundary.build_input(
+                Some(&metrics_state),
+                Some(cadence_state),
+                TimestampMicros(11_000),
+                1_000,
+            ),
+            ClientHeartbeatRttOffsetMetricsSnapshotConsumer::FutureDashboardRefresh,
+        )
+    }
+
     fn cleanup_test_runtime_handoff() -> ClientHeartbeatLoopRepeatedRuntimeHandoff {
         ClientHeartbeatLoopRepeatedRuntimeHandoff {
             mode: ClientHeartbeatOneTickRuntimeMode::HeartbeatOnly,
@@ -15002,6 +15189,158 @@ mod tests {
         assert!(matches!(
             result,
             ClientHeartbeatRttOffsetMetricsSnapshotExportCadenceResult::SnapshotExportDue { .. }
+        ));
+        assert_eq!(
+            ClientHeartbeatRttOffsetMetricsCommitInputResult::NoCommitNeeded(
+                ClientHeartbeatRttOffsetMetricsNoCommitReason::NoAckObservation
+            ),
+            ClientHeartbeatRttOffsetMetricsCommitInputBoundary.from_ack_return(None)
+        );
+    }
+
+    #[test]
+    fn client_heartbeat_loop_cleanup_dashboard_refresh_requested_when_handoff_available() {
+        let export = cleanup_test_due_snapshot_export();
+        let input = ClientHeartbeatRttOffsetMetricsDashboardRefreshConsumerInputBoundary
+            .from_snapshot_export_result(
+                Some(ClientHeartbeatRttOffsetMetricsDashboardRefreshConsumerPolicy::default()),
+                export,
+            );
+
+        let result =
+            ClientHeartbeatRttOffsetMetricsDashboardRefreshConsumerPolicyBoundary.evaluate(input);
+
+        let ClientHeartbeatRttOffsetMetricsDashboardRefreshConsumerResult::RefreshRequested(
+            request,
+        ) = result
+        else {
+            panic!("dashboard refresh should be requested");
+        };
+        assert_eq!(request.snapshot.records.len(), 1);
+        assert_eq!(request.snapshot.exported_at, TimestampMicros(11_000));
+    }
+
+    #[test]
+    fn client_heartbeat_loop_cleanup_dashboard_refresh_skipped_when_no_handoff_available() {
+        let result = ClientHeartbeatRttOffsetMetricsDashboardRefreshConsumerPolicyBoundary
+            .evaluate(
+                ClientHeartbeatRttOffsetMetricsDashboardRefreshConsumerInputBoundary
+                    .from_dashboard_handoff(
+                        Some(
+                            ClientHeartbeatRttOffsetMetricsDashboardRefreshConsumerPolicy::default(
+                            ),
+                        ),
+                        None,
+                    ),
+            );
+
+        assert_eq!(
+            result,
+            ClientHeartbeatRttOffsetMetricsDashboardRefreshConsumerResult::RefreshSkipped(
+                ClientHeartbeatRttOffsetMetricsDashboardRefreshSkippedReason::NoDashboardHandoff
+            )
+        );
+    }
+
+    #[test]
+    fn client_heartbeat_loop_cleanup_dashboard_refresh_deferred_remains_explicit() {
+        let export_deferred =
+            ClientHeartbeatRttOffsetMetricsSnapshotExportCadenceResult::SnapshotExportDeferred {
+                reason:
+                    ClientHeartbeatRttOffsetMetricsSnapshotExportDeferredReason::MetricsStateUnavailable,
+            };
+
+        let from_export = ClientHeartbeatRttOffsetMetricsDashboardRefreshConsumerPolicyBoundary
+            .evaluate(
+                ClientHeartbeatRttOffsetMetricsDashboardRefreshConsumerInputBoundary
+                    .from_snapshot_export_result(
+                        Some(
+                            ClientHeartbeatRttOffsetMetricsDashboardRefreshConsumerPolicy::default(
+                            ),
+                        ),
+                        export_deferred,
+                    ),
+            );
+        assert_eq!(
+            from_export,
+            ClientHeartbeatRttOffsetMetricsDashboardRefreshConsumerResult::RefreshDeferred(
+                ClientHeartbeatRttOffsetMetricsDashboardRefreshDeferredReason::SnapshotExportDeferred(
+                    ClientHeartbeatRttOffsetMetricsSnapshotExportDeferredReason::MetricsStateUnavailable
+                )
+            )
+        );
+
+        let disabled = ClientHeartbeatRttOffsetMetricsDashboardRefreshConsumerPolicyBoundary
+            .evaluate(
+                ClientHeartbeatRttOffsetMetricsDashboardRefreshConsumerInputBoundary
+                    .from_snapshot_export_result(
+                        Some(
+                            ClientHeartbeatRttOffsetMetricsDashboardRefreshConsumerPolicy {
+                                refresh_enabled: false,
+                            },
+                        ),
+                        cleanup_test_due_snapshot_export(),
+                    ),
+            );
+        assert_eq!(
+            disabled,
+            ClientHeartbeatRttOffsetMetricsDashboardRefreshConsumerResult::RefreshDeferred(
+                ClientHeartbeatRttOffsetMetricsDashboardRefreshDeferredReason::RefreshDisabled
+            )
+        );
+    }
+
+    #[test]
+    fn client_heartbeat_loop_cleanup_dashboard_refresh_policy_stays_separate_from_snapshot_cadence()
+    {
+        let not_due =
+            ClientHeartbeatRttOffsetMetricsSnapshotExportCadenceResult::SnapshotExportNotDue {
+                next_due_at: TimestampMicros(12_000),
+                cadence_state: ClientHeartbeatRttOffsetMetricsSnapshotCadenceState::new(
+                    TimestampMicros(10_000),
+                ),
+            };
+        let result = ClientHeartbeatRttOffsetMetricsDashboardRefreshConsumerPolicyBoundary
+            .evaluate(
+                ClientHeartbeatRttOffsetMetricsDashboardRefreshConsumerInputBoundary
+                    .from_snapshot_export_result(
+                        Some(
+                            ClientHeartbeatRttOffsetMetricsDashboardRefreshConsumerPolicy::default(
+                            ),
+                        ),
+                        not_due,
+                    ),
+            );
+
+        assert_eq!(
+            result,
+            ClientHeartbeatRttOffsetMetricsDashboardRefreshConsumerResult::RefreshSkipped(
+                ClientHeartbeatRttOffsetMetricsDashboardRefreshSkippedReason::NoDashboardHandoff
+            )
+        );
+        assert_eq!(
+            ClientHeartbeatRttOffsetMetricsSnapshotExportCadenceDecision::NotEvaluated,
+            ClientHeartbeatRttOffsetMetricsSnapshotExportCadenceDecision::NotEvaluated
+        );
+    }
+
+    #[test]
+    fn client_heartbeat_loop_cleanup_dashboard_refresh_policy_does_not_reinterpret_commit_logic() {
+        let result = ClientHeartbeatRttOffsetMetricsDashboardRefreshConsumerPolicyBoundary
+            .evaluate(
+                ClientHeartbeatRttOffsetMetricsDashboardRefreshConsumerInputBoundary
+                    .from_snapshot_export_result(
+                        Some(
+                            ClientHeartbeatRttOffsetMetricsDashboardRefreshConsumerPolicy::default(
+                            ),
+                        ),
+                        cleanup_test_due_snapshot_export(),
+                    ),
+            );
+
+        assert!(matches!(
+            result,
+            ClientHeartbeatRttOffsetMetricsDashboardRefreshConsumerResult::RefreshRequested(_)
         ));
         assert_eq!(
             ClientHeartbeatRttOffsetMetricsCommitInputResult::NoCommitNeeded(
