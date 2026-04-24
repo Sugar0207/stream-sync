@@ -9,11 +9,11 @@ use std::{
 
 use stream_sync_protocol::{
     decode_fixed_header, decode_payload_by_message_type, validate_protocol_version, AppVersion,
-    AuthRequest, AuthResponse, ClientId, ClientStats, DecodeContext, EncodeContext, Heartbeat,
-    HeartbeatAck, HeartbeatAckObservation, HeartbeatAckObservationBoundary,
+    AuthRequest, AuthResponse, ClientId, ClientStats, Codec, DecodeContext, EncodeContext,
+    Heartbeat, HeartbeatAck, HeartbeatAckObservation, HeartbeatAckObservationBoundary,
     HeartbeatObservationCarrier, HeartbeatObservationCarrierBoundary, MessageEncoder, MessageType,
     ProtocolError, ProtocolMessage, ProtocolMessageEncoderBoundary, ProtocolVersion, RunId,
-    TimestampMicros,
+    TimestampMicros, VideoFrame,
 };
 use stream_sync_timebase::{
     HeartbeatExchangeObservation, HeartbeatRttOffsetCalculationError, HeartbeatRttOffsetCalculator,
@@ -1000,6 +1000,175 @@ impl ClientHeartbeatLoopEncodeSendBoundary {
             .map_err(|error| ClientHeartbeatLoopEncodeSendError::Send(error.kind()))?;
 
         Ok(ClientHeartbeatLoopEncodeSendRuntimeResult {
+            handoff,
+            bytes_sent,
+        })
+    }
+}
+
+/// Metadata-only input for constructing one client `VideoFrame`.
+///
+/// This boundary input intentionally excludes capture and encoding ownership:
+/// callers provide timestamps, frame id, dimensions, and an already encoded
+/// payload source.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClientVideoFrameMetadataInput {
+    pub protocol_version: ProtocolVersion,
+    pub client_id: ClientId,
+    pub run_id: RunId,
+    pub frame_id: u64,
+    pub capture_timestamp: TimestampMicros,
+    pub send_timestamp: TimestampMicros,
+    pub is_keyframe: bool,
+    pub width: u32,
+    pub height: u32,
+    pub fps_nominal: u32,
+}
+
+/// Explicit placeholder for bytes shaped as an encoded H.264 payload.
+///
+/// This is not a screen capture or encoder. It only carries caller-provided
+/// bytes until a real capture/encode boundary exists.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClientPlaceholderEncodedH264Payload {
+    pub bytes: Vec<u8>,
+}
+
+/// Error from the placeholder encoded H.264 payload source boundary.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ClientPlaceholderEncodedH264PayloadError {
+    EmptyPayload,
+}
+
+/// Boundary for producing an explicit placeholder encoded H.264 payload.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct ClientPlaceholderEncodedH264PayloadSourceBoundary;
+
+impl ClientPlaceholderEncodedH264PayloadSourceBoundary {
+    pub fn from_bytes(
+        &self,
+        bytes: Vec<u8>,
+    ) -> Result<ClientPlaceholderEncodedH264Payload, ClientPlaceholderEncodedH264PayloadError> {
+        if bytes.is_empty() {
+            return Err(ClientPlaceholderEncodedH264PayloadError::EmptyPayload);
+        }
+
+        Ok(ClientPlaceholderEncodedH264Payload { bytes })
+    }
+}
+
+/// Boundary for constructing one `VideoFrame` from metadata plus encoded bytes.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct ClientVideoFrameMetadataConstructionBoundary;
+
+impl ClientVideoFrameMetadataConstructionBoundary {
+    pub fn build_frame(
+        &self,
+        input: ClientVideoFrameMetadataInput,
+        payload: ClientPlaceholderEncodedH264Payload,
+    ) -> Result<VideoFrame, ClientPlaceholderEncodedH264PayloadError> {
+        if payload.bytes.is_empty() {
+            return Err(ClientPlaceholderEncodedH264PayloadError::EmptyPayload);
+        }
+
+        Ok(VideoFrame {
+            message_type: MessageType::VideoFrame,
+            protocol_version: input.protocol_version,
+            client_id: input.client_id,
+            run_id: input.run_id,
+            frame_id: input.frame_id,
+            capture_timestamp: input.capture_timestamp,
+            send_timestamp: input.send_timestamp,
+            is_keyframe: input.is_keyframe,
+            metadata_reserved: [0; 3],
+            width: input.width,
+            height: input.height,
+            fps_nominal: input.fps_nominal,
+            codec: Codec::H264,
+            payload_size: payload.bytes.len(),
+            payload: payload.bytes,
+        })
+    }
+}
+
+/// Input for encoding and sending one client `VideoFrame`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClientVideoFrameEncodeSendInput {
+    pub destination: SocketAddr,
+    pub frame: VideoFrame,
+}
+
+/// Encoded `VideoFrame` handoff produced before the UDP send attempt.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClientVideoFrameEncodedSendHandoff {
+    pub destination: SocketAddr,
+    pub frame: VideoFrame,
+    pub encoded_bytes: Vec<u8>,
+}
+
+/// Runtime-shaped result after one `VideoFrame` send attempt.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClientVideoFrameEncodeSendRuntimeResult {
+    pub handoff: ClientVideoFrameEncodedSendHandoff,
+    pub bytes_sent: usize,
+}
+
+/// Error from the client `VideoFrame` encode/send boundary.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ClientVideoFrameEncodeSendError {
+    EmptyPayload,
+    Encode(ProtocolError),
+    Send(io::ErrorKind),
+}
+
+/// Boundary that prepares and optionally sends one client `VideoFrame`.
+///
+/// This uses the existing protocol encoder and a caller-owned UDP socket. It
+/// does not perform capture, H.264 encoding, authentication, retry, receive
+/// loop wiring, sync scheduling, display, or OBS integration.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct ClientVideoFrameEncodeSendBoundary {
+    encoder: ProtocolMessageEncoderBoundary,
+}
+
+impl ClientVideoFrameEncodeSendBoundary {
+    pub fn encode_handoff(
+        &self,
+        input: ClientVideoFrameEncodeSendInput,
+    ) -> Result<ClientVideoFrameEncodedSendHandoff, ClientVideoFrameEncodeSendError> {
+        if input.frame.payload.is_empty() {
+            return Err(ClientVideoFrameEncodeSendError::EmptyPayload);
+        }
+
+        let mut encoded_bytes = Vec::new();
+        self.encoder
+            .encode_message(
+                EncodeContext {
+                    protocol_version: input.frame.protocol_version,
+                },
+                &ProtocolMessage::VideoFrame(input.frame.clone()),
+                &mut encoded_bytes,
+            )
+            .map_err(ClientVideoFrameEncodeSendError::Encode)?;
+
+        Ok(ClientVideoFrameEncodedSendHandoff {
+            destination: input.destination,
+            frame: input.frame,
+            encoded_bytes,
+        })
+    }
+
+    pub fn send_one(
+        &self,
+        socket: &UdpSocket,
+        input: ClientVideoFrameEncodeSendInput,
+    ) -> Result<ClientVideoFrameEncodeSendRuntimeResult, ClientVideoFrameEncodeSendError> {
+        let handoff = self.encode_handoff(input)?;
+        let bytes_sent = socket
+            .send_to(&handoff.encoded_bytes, handoff.destination)
+            .map_err(|error| ClientVideoFrameEncodeSendError::Send(error.kind()))?;
+
+        Ok(ClientVideoFrameEncodeSendRuntimeResult {
             handoff,
             bytes_sent,
         })
@@ -7113,6 +7282,26 @@ mod tests {
         decode_heartbeat_payload, AuthResponseReasonCode,
     };
 
+    fn client_video_frame_for_tests(payload: Vec<u8>) -> VideoFrame {
+        VideoFrame {
+            message_type: MessageType::VideoFrame,
+            protocol_version: ProtocolVersion(1),
+            client_id: ClientId("client-1".to_string()),
+            run_id: RunId("run-1".to_string()),
+            frame_id: 7,
+            capture_timestamp: TimestampMicros(1_000_000),
+            send_timestamp: TimestampMicros(1_000_333),
+            is_keyframe: true,
+            metadata_reserved: [0; 3],
+            width: 1280,
+            height: 720,
+            fps_nominal: 30,
+            codec: Codec::H264,
+            payload_size: payload.len(),
+            payload,
+        }
+    }
+
     #[test]
     fn client_auth_request_poc_launcher_loads_example_config() {
         let launcher = ClientAuthRequestPocLauncher::default();
@@ -7173,6 +7362,167 @@ mod tests {
             config.short_status,
             Some("one-tick-runtime-stats".to_string())
         );
+    }
+
+    #[test]
+    fn client_video_frame_metadata_boundary_builds_expected_fields() {
+        let payload = ClientPlaceholderEncodedH264PayloadSourceBoundary
+            .from_bytes(vec![0x00, 0x00, 0x01, 0x65])
+            .expect("placeholder payload should be accepted");
+        let frame = ClientVideoFrameMetadataConstructionBoundary
+            .build_frame(
+                ClientVideoFrameMetadataInput {
+                    protocol_version: ProtocolVersion(1),
+                    client_id: ClientId("client-1".to_string()),
+                    run_id: RunId("run-1".to_string()),
+                    frame_id: 42,
+                    capture_timestamp: TimestampMicros(1_000_000),
+                    send_timestamp: TimestampMicros(1_000_500),
+                    is_keyframe: true,
+                    width: 1280,
+                    height: 720,
+                    fps_nominal: 30,
+                },
+                payload.clone(),
+            )
+            .expect("frame should build from metadata and payload");
+
+        assert_eq!(frame.message_type, MessageType::VideoFrame);
+        assert_eq!(frame.protocol_version, ProtocolVersion(1));
+        assert_eq!(frame.client_id, ClientId("client-1".to_string()));
+        assert_eq!(frame.run_id, RunId("run-1".to_string()));
+        assert_eq!(frame.frame_id, 42);
+        assert_eq!(frame.capture_timestamp, TimestampMicros(1_000_000));
+        assert_eq!(frame.send_timestamp, TimestampMicros(1_000_500));
+        assert!(frame.is_keyframe);
+        assert_eq!(frame.metadata_reserved, [0; 3]);
+        assert_eq!(frame.width, 1280);
+        assert_eq!(frame.height, 720);
+        assert_eq!(frame.fps_nominal, 30);
+        assert_eq!(frame.codec, Codec::H264);
+        assert_eq!(frame.payload_size, payload.bytes.len());
+        assert_eq!(frame.payload, payload.bytes);
+    }
+
+    #[test]
+    fn client_video_frame_placeholder_payload_source_is_explicit() {
+        let payload = ClientPlaceholderEncodedH264PayloadSourceBoundary
+            .from_bytes(vec![0x00, 0x00, 0x01, 0x41])
+            .expect("caller-provided placeholder bytes should be accepted");
+
+        assert_eq!(
+            payload,
+            ClientPlaceholderEncodedH264Payload {
+                bytes: vec![0x00, 0x00, 0x01, 0x41]
+            }
+        );
+    }
+
+    #[test]
+    fn client_video_frame_placeholder_payload_source_rejects_empty_payload() {
+        let error = ClientPlaceholderEncodedH264PayloadSourceBoundary
+            .from_bytes(Vec::new())
+            .expect_err("empty placeholder payload should be explicit");
+
+        assert_eq!(
+            error,
+            ClientPlaceholderEncodedH264PayloadError::EmptyPayload
+        );
+    }
+
+    #[test]
+    fn client_video_frame_encode_send_boundary_prepares_packet_with_protocol_encoder() {
+        let destination: SocketAddr = "127.0.0.1:5000".parse().unwrap();
+        let frame = client_video_frame_for_tests(vec![0x00, 0x00, 0x01, 0x65]);
+        let handoff = ClientVideoFrameEncodeSendBoundary::default()
+            .encode_handoff(ClientVideoFrameEncodeSendInput {
+                destination,
+                frame: frame.clone(),
+            })
+            .expect("video frame should encode");
+
+        assert_eq!(handoff.destination, destination);
+        assert_eq!(handoff.frame, frame);
+        let packet = decode_fixed_header(&handoff.encoded_bytes)
+            .expect("encoded video frame fixed header should decode");
+        assert_eq!(packet.header.message_type, MessageType::VideoFrame);
+        validate_protocol_version(
+            DecodeContext {
+                expected_protocol_version: frame.protocol_version,
+            },
+            packet.header,
+        )
+        .expect("protocol version should match");
+        let decoded = decode_payload_by_message_type(
+            DecodeContext {
+                expected_protocol_version: frame.protocol_version,
+            },
+            packet.header,
+            packet.payload,
+        )
+        .expect("video frame payload should decode");
+
+        assert_eq!(decoded, ProtocolMessage::VideoFrame(frame));
+    }
+
+    #[test]
+    fn client_video_frame_encode_send_boundary_rejects_empty_payload() {
+        let mut frame = client_video_frame_for_tests(vec![0x00, 0x00, 0x01, 0x65]);
+        frame.payload.clear();
+        frame.payload_size = 0;
+        let error = ClientVideoFrameEncodeSendBoundary::default()
+            .encode_handoff(ClientVideoFrameEncodeSendInput {
+                destination: "127.0.0.1:5000".parse().unwrap(),
+                frame,
+            })
+            .expect_err("empty payload should be rejected before protocol encode");
+
+        assert_eq!(error, ClientVideoFrameEncodeSendError::EmptyPayload);
+    }
+
+    #[test]
+    fn client_video_frame_encode_send_boundary_sends_udp_datagram() {
+        let receiver = UdpSocket::bind("127.0.0.1:0").expect("receiver should bind");
+        receiver
+            .set_read_timeout(Some(Duration::from_secs(1)))
+            .expect("read timeout should be set");
+        let sender = UdpSocket::bind("127.0.0.1:0").expect("sender should bind");
+        let destination = receiver.local_addr().expect("receiver addr should exist");
+        let frame = client_video_frame_for_tests(vec![0x00, 0x00, 0x01, 0x65]);
+
+        let result = ClientVideoFrameEncodeSendBoundary::default()
+            .send_one(
+                &sender,
+                ClientVideoFrameEncodeSendInput {
+                    destination,
+                    frame: frame.clone(),
+                },
+            )
+            .expect("video frame datagram should send");
+
+        assert_eq!(result.handoff.destination, destination);
+        assert_eq!(result.bytes_sent, result.handoff.encoded_bytes.len());
+        let mut buffer = [0_u8; 1024];
+        let (len, source) = receiver
+            .recv_from(&mut buffer)
+            .expect("receiver should get one frame packet");
+        assert_eq!(
+            source,
+            sender.local_addr().expect("sender addr should exist")
+        );
+        assert_eq!(&buffer[..len], result.handoff.encoded_bytes.as_slice());
+        let packet =
+            decode_fixed_header(&buffer[..len]).expect("received fixed header should decode");
+        let decoded = decode_payload_by_message_type(
+            DecodeContext {
+                expected_protocol_version: frame.protocol_version,
+            },
+            packet.header,
+            packet.payload,
+        )
+        .expect("received video frame payload should decode");
+
+        assert_eq!(decoded, ProtocolMessage::VideoFrame(frame));
     }
 
     #[test]

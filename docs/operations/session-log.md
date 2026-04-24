@@ -8978,3 +8978,45 @@
 ### TODO Update
 - Marked server authenticated frame acceptance and per-client receive queue tasks complete.
 - Updated Current Focus and Next Items to the next one-client video PoC steps.
+
+---
+
+## 2026-04-24
+### Type
+- Codex
+
+### Work
+- Added the smallest client-side one-client video send PoC slice.
+- Added explicit placeholder encoded H.264 payload source handling.
+- Added `VideoFrame` metadata construction from caller-owned ids, timestamps, dimensions, fps, and frame id.
+- Added a protocol encode handoff and one-shot UDP send boundary using a caller-owned socket.
+- Kept real capture, real H.264 encoding, server receive-loop queue wiring, switcher display, 4-view sync, and OBS out of scope.
+
+### Changed Files
+- `apps/client/src/lib.rs`
+- `docs/architecture/system-design.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### Decisions
+- The placeholder payload source is named explicitly and rejects empty payloads instead of hiding fake capture/encode behavior.
+- Metadata construction remains separate from UDP send.
+- The encode/send boundary uses the existing `ProtocolMessageEncoderBoundary` and preserves caller-owned socket and destination ownership.
+- No CLI/config launcher was added in this slice; the boundary is library-level until the next runtime wiring step.
+
+### Unresolved
+- real screen capture / real H.264 encode
+- server receive-loop-to-video-queue runtime wiring
+- switcher single-view decode/display placeholder
+- 2-view / 4-view sync and OBS integration
+
+### Next
+- Wire accepted server receive-loop video side effects into `ServerVideoFrameQueueStorageBoundary`.
+- Add switcher-side single-view decode/display placeholder.
+- Later replace the placeholder encoded payload source with a real capture/encode boundary.
+
+### TODO Update
+- Marked client-side `VideoFrame` metadata construction complete.
+- Marked explicit placeholder encoded H.264 payload source complete.
+- Marked client-side `VideoFrame` UDP send complete for the placeholder-payload PoC.
+- Reordered Next Items around server receive-loop-to-queue wiring, switcher placeholder display, and later real capture/encode.

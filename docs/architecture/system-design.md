@@ -2596,6 +2596,63 @@ Current code reflects this with
 `ServerHeartbeatTimeoutMultiClientLoopResult`, and
 `ServerHeartbeatTimeoutMultiClientLoopBoundary`.
 
+### Single-View Video PoC: Client Placeholder Frame Send
+
+The first client-side video send slice is intentionally narrow. It proves that
+one client can build a `VideoFrame`, wrap caller-provided bytes as an explicit
+placeholder encoded H.264 payload, encode the frame through the existing
+protocol encoder, and send one UDP datagram through a caller-owned socket.
+
+Current implementation scope:
+
+1. `ClientPlaceholderEncodedH264PayloadSourceBoundary` accepts caller-provided
+   non-empty bytes as placeholder encoded H.264 payload.
+2. `ClientVideoFrameMetadataConstructionBoundary` combines explicit
+   `client_id`, `run_id`, `frame_id`, capture timestamp, send timestamp,
+   dimensions, fps, keyframe flag, and payload into one `VideoFrame`.
+3. The constructed frame uses `Codec::H264`, `metadata_reserved = [0; 3]`, and
+   `payload_size = payload.len()`.
+4. `ClientVideoFrameEncodeSendBoundary::encode_handoff` uses the existing
+   `ProtocolMessageEncoderBoundary` and produces encoded packet bytes without
+   sending them.
+5. `ClientVideoFrameEncodeSendBoundary::send_one` performs exactly one UDP
+   `send_to` using a caller-owned `UdpSocket` and explicit destination.
+
+Responsibility split:
+
+- placeholder payload source
+  - Names the fake input as placeholder encoded H.264 bytes.
+  - Rejects empty payloads explicitly.
+  - Does not capture the screen, call FFmpeg, encode real H.264, or inspect NAL
+    units.
+- metadata construction
+  - Owns only `VideoFrame` field assembly.
+  - Does not send UDP or own runtime/socket state.
+- encode/send boundary
+  - Owns protocol encode handoff and optional one-shot UDP send.
+  - Does not authenticate, retry, run a receive loop, update queues, decode
+    H.264, schedule sync, display frames, or touch OBS.
+- caller / future continuous client loop owner
+  - Will own real capture source, real encoder, frame cadence, socket lifetime,
+    destination selection, retry policy, and integration with auth/heartbeat
+    state.
+
+Current code reflects this with
+`ClientPlaceholderEncodedH264PayloadSourceBoundary`,
+`ClientVideoFrameMetadataConstructionBoundary`,
+`ClientVideoFrameEncodeSendInput`,
+`ClientVideoFrameEncodedSendHandoff`, and
+`ClientVideoFrameEncodeSendBoundary`.
+
+Deferred work:
+
+- real screen capture or frame source
+- real H.264 encoding
+- CLI/config launcher for video send
+- server receive-loop-to-queue runtime wiring
+- H.264 decode and single-view display placeholder
+- 2-view / 4-view sync, switcher UI, and OBS integration
+
 ### Single-View Video PoC: Server Frame Queue Storage
 
 The first video-path PoC slice is intentionally server-side and narrow. The
@@ -2639,8 +2696,9 @@ Responsibility split:
 
 Deferred work:
 
-- client-side capture placeholder or frame source
-- client-side `VideoFrame` metadata construction and UDP send
+- real client-side capture or frame source
+- real client-side H.264 encoding
+- video send CLI/config launcher
 - server receive-loop-to-queue runtime wiring
 - H.264 decode and single-view display placeholder
 - 2-view / 4-view sync, switcher UI, and OBS integration

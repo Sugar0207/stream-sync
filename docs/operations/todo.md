@@ -27,9 +27,9 @@
 - server 側は auth one-shot、accepted auth registry 登録、heartbeat ack / liveness / timeout action plan / timeout apply / notice queue storage、RTT / offset state commit と metrics snapshot handoff までの最小境界が揃っている
 - client 側は auth one-shot、heartbeat one-shot、`HeartbeatAckObservation` 付き `ClientStats` one-shot、one-tick runtime、accepted path 手動確認まで完了している
 - client continuous heartbeat loop は thin composition の completed body まで実装済みで、heartbeat timeout notice wakeup planning 境界、wakeup execution 境界、wakeup actual side-effect 境界、outer while-loop connection 境界、outer while-loop one-turn execution body 境界、actual timer wait / retry execution / reconnect 実行境界、outer while-loop 反復実行本体、reconnect policy 境界、caller-owned hook 付き actual socket 再確立境界、real UDP socket 差し替え hook、repeated body からの hook 注入経路まで完了している
-- 未完了の中心は client 側 `VideoFrame` UDP send、server receive loop から video queue storage への実接続、single-view decode/display placeholder、dashboard UI rendering、continuous receive/send loop 本体、実キュー / 実送信 / 継続ログ出力
+- 未完了の中心は server receive loop から video queue storage への実接続、single-view decode/display placeholder、dashboard UI rendering、continuous receive/send loop 本体、実キュー / 実送信 / 継続ログ出力
 - outbound queue 実キュー、continuous receive/send loop 本体、send / receive の継続ログ出力、file sink open、process-wide logger、`ServerNotice` 実送信は未実装
-- video path は server 側 accepted `VideoFrame` handler input を caller-owned per-client queue へ保存する最初の PoC slice まで完了。client 側送信、decode、display、OBS は未着手
+- video path は server 側 accepted `VideoFrame` handler input を caller-owned per-client queue へ保存し、client 側で placeholder encoded H.264 payload 付き `VideoFrame` を構築・encode・UDP 送信する PoC slice まで完了。real capture / real H.264 encode、decode、display、OBS は未着手
 
 ---
 
@@ -59,9 +59,9 @@
 ---
 
 ## 直近でやること
-1. client 側 `VideoFrame` metadata / placeholder H.264 payload / UDP send 境界を追加する
-2. server receive loop 実行結果から video queue storage へ接続する
-3. single-view decode/display placeholder を switcher 側に追加する
+1. server receive loop 実行結果から video queue storage へ接続する
+2. single-view decode/display placeholder を switcher 側に追加する
+3. real capture / real H.264 encode 境界を placeholder payload source から差し替えられる形で追加する
 
 ---
 
@@ -411,9 +411,10 @@
 - [x] 不正 bool / reserved / codec / payload 長の最小 error を実装する
 - [x] `VideoFrame` encode 方針と最小実装範囲を整理する
 - [x] `VideoFrame` encode を実装する
-- [ ] client 側で frame metadata を付与する
+- [x] client 側で frame metadata を付与する
 - [ ] client 側で H.264 encode を行う
-- [ ] UDP で frame を送信する
+- [x] client 側で placeholder encoded H.264 payload source を追加する
+- [x] UDP で frame を送信する
 - [x] server 側で認証済み client の frame だけ受理する
 - [x] server 側で client ごとの受信キューを作る
 - [ ] 不正 frame 破棄を実装する
@@ -428,13 +429,13 @@
 - [x] accepted path 用の one-shot client example config と手動確認手順を追加する
 - [ ] 画面キャプチャに成功する
 - [ ] Minecraft ウィンドウの取得確認をする
-- [ ] frame id / captureTimestamp / sendTimestamp を付与する
+- [x] frame id / captureTimestamp / sendTimestamp を付与する
 - [ ] H.264 encode 処理を実装する
 - [ ] ハードウェア encode 優先処理を実装する
 - [ ] ソフトウェア encode fallback を実装する
 - [ ] 720p / 30fps を初期値にする
 - [ ] 1080p / 60fps を将来有効化できる構造にする
-- [ ] UDP 送信処理を実装する
+- [x] UDP 送信処理を実装する
 - [ ] `ClientStats` 送信処理を継続 heartbeat loop に接続する
 
 ---
@@ -492,7 +493,7 @@
 2. [x] UDP socket の receive / send が最小で動く
 3. [x] client が `AuthRequest` を送り、server が `AuthResponse` を返せる
 4. [x] client が `Heartbeat` を送り、server が RTT / offset 推定に使える時刻情報を返せる
-5. [ ] client が 1 視点の H.264 `VideoFrame` を送れる
+5. [x] client が 1 視点の placeholder encoded H.264 payload 付き `VideoFrame` を送れる
 6. [ ] server が 1 視点の frame を受信し、破棄 / 受理を判定できる
 7. [ ] switcher が 1 視点を復号・表示できる
 8. [ ] 2 視点で targetTime による簡易同期表示を確認できる
@@ -632,7 +633,7 @@
 ### フェーズ3: 1 人送信・受信・表示 PoC
 - [ ] client capture / encode
 - [x] `VideoFrame` encode
-- [ ] `VideoFrame` UDP send
+- [x] `VideoFrame` UDP send with explicit placeholder encoded H.264 payload
 - [x] server frame receive / queue
 - [ ] switcher decode / single view display
 - [ ] 30 分連続確認
@@ -665,11 +666,12 @@
 - the loop runner can now derive dashboard refresh policy input from snapshot cadence output and invoke a caller-owned dashboard refresh sink without rendering UI.
 - server heartbeat timeout now has a thin multi-client loop boundary over the existing one-client timeout tick, with caller-owned registry / liveness state / queue / writer kept explicit.
 - server video path now has a first single-view PoC slice: accepted `VideoFrame` handler input can be stored in a caller-owned per-client encoded-frame queue.
+- client video path now has a first send-side PoC slice: metadata construction, explicit placeholder encoded H.264 payload source, existing protocol encode, and one caller-owned UDP `send_to`.
 - metrics commit, snapshot export cadence, dashboard refresh consumer policy, and dashboard refresh runtime wiring remain separate from timer wait, retry, reconnect, socket ownership, cleanup, UI rendering, video, switcher, and OBS.
 - server notice queue storage remains separate from notice send wakeup execution.
 - actual dashboard UI rendering remains unimplemented.
 
 ## Next Items
-1. client-side `VideoFrame` metadata / placeholder H.264 payload / UDP send boundary
-2. server receive-loop-to-video-queue runtime wiring
-3. switcher single-view decode/display placeholder
+1. server receive-loop-to-video-queue runtime wiring
+2. switcher single-view decode/display placeholder
+3. real capture / real H.264 encode boundary replacing the placeholder payload source
