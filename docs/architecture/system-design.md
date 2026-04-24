@@ -2669,7 +2669,6 @@ Deferred work:
 
 - real screen capture or frame source
 - real H.264 encoding
-- queue-owning server auth-then-video manual launcher
 - H.264 decode and real single-view display
 - 2-view / 4-view sync, switcher UI, and OBS integration
 
@@ -2800,9 +2799,11 @@ Manual verification status:
   not establish that condition, because each command owns a separate UDP socket
   and normally uses a different source port.
 - The server queue runtime boundary and switcher placeholder selection boundary
-  can be verified through focused tests, but a complete manual
-  client-to-server-to-switcher command sequence still needs a queue-owning
-  server manual launcher.
+  can be verified through focused tests.
+- `--receive-auth-video-queue-once [config-path]` owns the server registry and
+  queue state for the manual client-to-server queue PoC. A complete
+  client-to-server-to-switcher command sequence still needs a switcher helper
+  or shared runtime queue bridge.
 - The current manual verification notes live in
   `docs/operations/manual-placeholder-video-poc.md`.
 
@@ -7301,3 +7302,33 @@ The client dashboard refresh consumer policy is separate from snapshot export ca
 - Snapshot export deferred becomes refresh deferred with the upstream reason preserved.
 - The refresh policy does not recalculate RTT / offset, commit metrics samples, evaluate snapshot cadence, render UI, write dashboard state, send network updates, or touch video / switcher / OBS paths.
 - Actual dashboard UI rendering remains a later implementation that consumes only the explicit refresh request.
+
+## Server Manual Auth-Then-Video Queue Launcher Boundary
+
+The one-client placeholder video PoC now has a server-side manual launcher for
+auth followed by one video packet:
+
+```text
+AuthRequest -> AuthResponse / accepted registry -> VideoFrame acceptance gate -> ServerVideoFrameQueueState
+```
+
+- CLI entry point: `--receive-auth-video-queue-once [config-path]`.
+- The launcher owns one UDP socket, one authenticated sender registry, one
+  outbound queue collection for the existing receive/send runtime, and one
+  caller-owned `ServerVideoFrameQueueState`.
+- The first packet is handled by the existing auth response PoC step so
+  accepted and rejected auth decisions both produce an explicit `AuthResponse`.
+- Only accepted auth decisions register a sender. Rejected auth does not
+  register a sender and the CLI does not wait for a second packet.
+- The second packet, when auth is accepted, is received through the existing
+  controller receive/send runtime and packet acceptance gate.
+- Queue insertion happens only by passing the resulting side effect to
+  `ServerVideoFrameQueueRuntimeBoundary::store_from_receive_side_effect`.
+- Accepted `VideoFrame` side effects store encoded frame metadata/payload into
+  `ServerVideoFrameQueueState`; rejected, unauthenticated, or unexpected second
+  packets are surfaced as not queued.
+- Queue capacity uses the existing `ServerVideoFrameQueuePolicy`; when full,
+  drop-oldest remains explicit in the storage result.
+
+This launcher does not decode H.264, select target time, render switcher UI,
+run a continuous loop, implement 4-view sync, or touch OBS.

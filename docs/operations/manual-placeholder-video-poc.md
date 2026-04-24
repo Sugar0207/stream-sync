@@ -9,8 +9,8 @@ client placeholder VideoFrame -> server receive/auth gate -> server video queue 
 
 The current implementation has the library boundaries for each step, plus a
 client launcher that authenticates and sends the placeholder frame from the
-same UDP source. A queue-owning server manual launcher is still needed before
-the full end-to-end command sequence can be run with only project CLIs.
+same UDP source, and a server launcher that owns the authenticated registry and
+video queue for one auth packet followed by one video packet.
 
 ## Implemented Boundaries
 
@@ -27,6 +27,14 @@ the full end-to-end command sequence can be run with only project CLIs.
   cargo run -p stream-sync-client -- --auth-placeholder-video-frame-poc-once configs/examples/client.accepted.example.toml
   ```
 
+- Server can authenticate one client, keep the accepted sender registry alive,
+  receive one following packet through the normal acceptance gate, and queue an
+  accepted `VideoFrame` with:
+
+  ```powershell
+  cargo run -p stream-sync-server -- --receive-auth-video-queue-once configs/examples/server.example.toml
+  ```
+
 - Server can store an accepted authenticated `VideoFrame` side effect into
   caller-owned `ServerVideoFrameQueueState` through
   `ServerVideoFrameQueueRuntimeBoundary::store_from_receive_side_effect`.
@@ -34,7 +42,34 @@ the full end-to-end command sequence can be run with only project CLIs.
   queued encoded frame, and create a decode-deferred placeholder display
   handoff.
 
-## Current Manual Limitation
+## Manual Command Sequence
+
+Terminal 1:
+
+```powershell
+cargo run -p stream-sync-server -- --receive-auth-video-queue-once configs/examples/server.example.toml
+```
+
+Terminal 2:
+
+```powershell
+cargo run -p stream-sync-client -- --auth-placeholder-video-frame-poc-once configs/examples/client.accepted.example.toml
+```
+
+Expected server stdout includes:
+
+- `auth_accepted=true`
+- `video=received`
+- `queued=queued`
+- `queue_len=1`
+- `dropped_oldest=false`
+- `registered_clients=1`
+
+Expected client stdout includes the `AuthRequest` byte count, accepted
+`AuthResponse`, `VideoFrame` byte count, `same_source=true`, and
+`placeholder_payload=true`.
+
+## Remaining Manual Limitation
 
 `--placeholder-video-frame-poc-once` sends a `VideoFrame` only. It does not
 authenticate first and it does not reuse a socket from an earlier auth command.
@@ -52,9 +87,9 @@ Result:
 - It should be treated as rejected/not queued by the authenticated server path
   unless the same UDP source has already been registered.
 - Full manual client-to-server queue verification now has the required client
-  sender shape, but it still needs a server launcher that keeps one
-  authenticated registry and one `ServerVideoFrameQueueState` alive while it
-  receives `AuthRequest` followed by `VideoFrame`.
+  sender shape and server queue-owning receiver shape.
+- There is still no switcher CLI or shared runtime state bridge that reads the
+  server-owned in-process queue after this manual launcher exits.
 
 ## Server-Side Verification Available Now
 
@@ -62,6 +97,7 @@ Use the server unit tests to verify the receive side-effect to queue boundary:
 
 ```powershell
 cargo test -p stream-sync-server video_frame_queue
+cargo test -p stream-sync-server receive_auth_video_queue_once
 ```
 
 This covers:
@@ -70,6 +106,8 @@ This covers:
   per-client queue
 - rejected / unauthenticated `VideoFrame` side effects staying out of the queue
 - drop-oldest behavior when the per-client queue is full
+- the manual auth-then-video receiver preserving the auth registry and packet
+  acceptance gate before queue insertion
 
 ## Client Send Verification Available Now
 
@@ -92,8 +130,8 @@ Expected stdout includes:
 
 This does not prove server queue insertion by itself.
 
-Run the same-socket auth + placeholder video launcher when paired with a server
-path that expects `AuthRequest` followed by `VideoFrame`:
+Run the same-socket auth + placeholder video launcher with the server
+`--receive-auth-video-queue-once` path:
 
 ```powershell
 cargo run -p stream-sync-client -- --auth-placeholder-video-frame-poc-once configs/examples/client.accepted.example.toml
@@ -118,13 +156,13 @@ is currently a callable library boundary over an in-process
 
 ## Minimal Missing Manual Wiring
 
-The smallest useful next wiring for full manual verification is:
+The smallest useful next wiring after this step is:
 
-1. A server one-shot receiver/queue launcher that owns the authenticated
-   registry and `ServerVideoFrameQueueState` for an auth packet followed by one
-   video packet, then prints whether the frame was queued.
-2. An optional switcher-side helper or test fixture that reads that in-process
+1. An optional switcher-side helper or test fixture that reads that in-process
    queue state and runs the placeholder selection boundary.
+2. Later replacement of the explicit placeholder payload source with real
+   capture / H.264 encode.
 
-Until those pieces exist, the manual PoC is documented as verified
-library/CLI slices rather than one complete end-to-end command sequence.
+The manual client-to-server queue path is now runnable as a two-command PoC.
+Decode, rendering, switcher window output, OBS capture, and 4-view sync remain
+outside this manual launcher.

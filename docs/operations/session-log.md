@@ -9234,3 +9234,52 @@
 - Marked the same-socket auth-then-placeholder-video client launcher complete.
 - Updated Current Focus to say only the queue-owning server manual launcher blocks a full CLI-driven manual E2E path.
 - Reordered Next Items around the server manual queue launcher, optional switcher helper, and later real capture/decode work.
+
+---
+
+## 2026-04-25
+### Type
+- Codex
+
+### Work
+- Added the smallest server-side queue-owning auth-then-video manual launcher.
+- Added `--receive-auth-video-queue-once [config-path]`.
+- The launcher receives one `AuthRequest`, sends `AuthResponse` through the existing auth response PoC path, keeps the authenticated sender registry alive when auth is accepted, receives the next packet through the existing controller receive/send runtime and packet acceptance gate, then stores only an accepted `VideoFrame` side effect into caller-owned `ServerVideoFrameQueueState`.
+- Added stdout summary fields for auth accepted/rejected, video received/not received, queued/not queued, queue length, drop-oldest, and registered client count.
+- Added focused server tests for accepted auth then video queueing, rejected auth keeping later video out of the queue, and unexpected second packet staying not queued.
+- Kept server authentication, packet acceptance gate, placeholder payload behavior, queue caller ownership, and H.264 decode/display/OBS separation unchanged.
+
+### Changed Files
+- `apps/server/src/lib.rs`
+- `apps/server/src/main.rs`
+- `docs/operations/manual-placeholder-video-poc.md`
+- `docs/architecture/system-design.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### Decisions
+- Auth response send remains owned by the existing auth response PoC step so rejected auth can still receive an explicit `AuthResponse`.
+- The server does not receive a second packet after rejected auth in the new CLI launcher; rejected-auth follow-up video behavior remains covered by the receive/gate test path and stays not queued.
+- Queue insertion is performed only from `ServerVideoFrameQueueRuntimeBoundary::store_from_receive_side_effect`.
+- Queue capacity uses the existing default `ServerVideoFrameQueuePolicy`; full queues surface the existing drop-oldest storage result.
+- Receive timeout behavior was not added because the existing launcher/runtime patterns use blocking `UdpSocket` receives unless the caller configures a socket timeout.
+
+### Unresolved
+- switcher CLI or shared runtime bridge that can select from the server-owned queue after a manual receive
+- real capture / real H.264 encode
+- real H.264 decode / switcher window rendering
+- sync scheduling, 4-view sync, and OBS integration
+
+### Next
+- Add an optional switcher placeholder selection helper or runtime bridge.
+- Add real capture / H.264 encode boundary later.
+- Add real H.264 decode and switcher window rendering boundaries separately.
+
+### TODO Update
+- Updated Current Focus with the completed server queue-owning auth-then-video launcher.
+- Updated Next Items so the switcher placeholder helper is next, followed by real capture/encode and real decode/rendering.
+
+### Validation
+- `cargo fmt`
+- `cargo fmt --check`
+- `cargo test -p stream-sync-server receive_auth_video_queue_once`

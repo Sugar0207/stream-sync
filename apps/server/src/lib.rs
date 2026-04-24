@@ -857,6 +857,185 @@ pub struct ServerReceiveSendTwoIterationStartupOutcome {
     pub heartbeat_liveness_commit: Option<ServerHeartbeatLivenessCommitOutcome>,
 }
 
+/// Launcher for manual auth-then-video receive and queue verification.
+///
+/// This owns the authenticated sender registry and video frame queue state for
+/// one accepted/rejected auth packet followed by at most one video packet. Auth
+/// response sending uses the existing auth response PoC step. The second packet
+/// uses the existing receive/send controller runtime and packet acceptance gate,
+/// then stores only accepted `VideoFrame` side effects into caller-owned queue
+/// state. It does not decode H.264, render, sync 4 views, retry, or loop.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ServerReceiveAuthVideoQueueOnceLauncher {
+    socket_io: UdpSocketIoBoundary,
+    auth: ServerAuthResponsePocStep,
+    runtime: ServerControllerReceiveSendRuntimeBoundary,
+    video_queue: ServerVideoFrameQueueRuntimeBoundary,
+}
+
+impl ServerReceiveAuthVideoQueueOnceLauncher {
+    pub fn load_startup_config_from_path(
+        &self,
+        path: impl AsRef<Path>,
+    ) -> Result<ServerAuthResponsePocStartupConfig, ServerReceiveSendOneIterationStartupError> {
+        ServerReceiveSendOneIterationLauncher::default().load_startup_config_from_path(path)
+    }
+
+    pub fn run_once_from_path_with_writers<
+        OW: io::Write,
+        RW: io::Write,
+        AW: io::Write,
+        SW: io::Write,
+    >(
+        &self,
+        path: impl AsRef<Path>,
+        operational_writer: OW,
+        rejection_writer: RW,
+        auth_log_writer: AW,
+        send_log_writer: SW,
+    ) -> Result<
+        ServerReceiveAuthVideoQueueOnceStartupOutcome,
+        ServerReceiveAuthVideoQueueOnceStartupError,
+    > {
+        let startup_config = self
+            .load_startup_config_from_path(path)
+            .map_err(ServerReceiveAuthVideoQueueOnceStartupError::OneIterationStartup)?;
+        self.run_once_with_writers(
+            startup_config,
+            operational_writer,
+            rejection_writer,
+            auth_log_writer,
+            send_log_writer,
+        )
+    }
+
+    pub fn run_once_with_writers<OW: io::Write, RW: io::Write, AW: io::Write, SW: io::Write>(
+        &self,
+        startup_config: ServerAuthResponsePocStartupConfig,
+        operational_writer: OW,
+        rejection_writer: RW,
+        auth_log_writer: AW,
+        send_log_writer: SW,
+    ) -> Result<
+        ServerReceiveAuthVideoQueueOnceStartupOutcome,
+        ServerReceiveAuthVideoQueueOnceStartupError,
+    > {
+        let socket = self
+            .socket_io
+            .bind(startup_config.bind_address)
+            .map_err(|error| ServerReceiveAuthVideoQueueOnceStartupError::Bind {
+                address: startup_config.bind_address,
+                kind: error.kind(),
+            })?;
+        let mut buffer = vec![0_u8; DEFAULT_UDP_PACKET_BUFFER_LEN];
+        let mut registry = AuthenticatedSenderRegistry::default();
+        let mut queue_collection = ServerOutboundQueueCollection::default();
+        let mut video_queue_state = ServerVideoFrameQueueState::default();
+
+        let first_auth = self
+            .auth
+            .run_one(
+                &socket,
+                &mut buffer,
+                startup_config.expected_protocol_version,
+                &startup_config.auth_config,
+                &mut registry,
+            )
+            .map_err(ServerReceiveAuthVideoQueueOnceStartupError::Auth)?;
+
+        let video = if first_auth.auth_flow.decision.accepted {
+            let timestamp = current_system_timestamp_micros();
+            let second = self
+                .runtime
+                .run_once(
+                    &socket,
+                    &mut buffer,
+                    &mut registry,
+                    &mut queue_collection,
+                    &startup_config.auth_config,
+                    ServerControllerReceiveSendRuntimeInput {
+                        controller: ServerContinuousReceiveLoopControllerInput {
+                            expected_protocol_version: startup_config.expected_protocol_version,
+                            timestamp,
+                            continue_requested: true,
+                        },
+                        heartbeat_timing: ServerHeartbeatAckTiming {
+                            server_received_at: timestamp,
+                            server_sent_at: timestamp,
+                        },
+                        encode_context: EncodeContext {
+                            protocol_version: startup_config.expected_protocol_version,
+                        },
+                        auth_log_timestamp: timestamp,
+                        send_log_timestamp: timestamp,
+                    },
+                    operational_writer,
+                    rejection_writer,
+                    auth_log_writer,
+                    send_log_writer,
+                )
+                .map_err(ServerReceiveAuthVideoQueueOnceStartupError::Runtime)?;
+            let queue = match &second {
+                ServerControllerReceiveSendRuntimeResult::Iteration { iteration, .. } => {
+                    Some(self.video_queue.store_from_receive_side_effect(
+                        &mut video_queue_state,
+                        &iteration.body,
+                        iteration.side_effect.clone(),
+                        timestamp,
+                        ServerVideoFrameQueuePolicy::default(),
+                    ))
+                }
+                ServerControllerReceiveSendRuntimeResult::Stopped { .. } => None,
+            };
+            ServerReceiveAuthVideoQueueOnceVideoOutcome::Received { second, queue }
+        } else {
+            ServerReceiveAuthVideoQueueOnceVideoOutcome::NotReceivedAuthRejected
+        };
+
+        Ok(ServerReceiveAuthVideoQueueOnceStartupOutcome {
+            bind_address: startup_config.bind_address,
+            registry,
+            queue_collection,
+            video_queue_state,
+            first_auth,
+            video,
+        })
+    }
+}
+
+/// Result of launching one manual auth-then-video queue verification.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ServerReceiveAuthVideoQueueOnceStartupOutcome {
+    pub bind_address: SocketAddr,
+    pub registry: AuthenticatedSenderRegistry,
+    pub queue_collection: ServerOutboundQueueCollection,
+    pub video_queue_state: ServerVideoFrameQueueState,
+    pub first_auth: ServerAuthResponsePocOutcome,
+    pub video: ServerReceiveAuthVideoQueueOnceVideoOutcome,
+}
+
+/// Second-packet result for the manual auth-then-video queue launcher.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ServerReceiveAuthVideoQueueOnceVideoOutcome {
+    Received {
+        second: ServerControllerReceiveSendRuntimeResult,
+        queue: Option<ServerVideoFrameQueueRuntimeResult>,
+    },
+    NotReceivedAuthRejected,
+}
+
+/// Startup error for the manual auth-then-video queue launcher.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ServerReceiveAuthVideoQueueOnceStartupError {
+    OneIterationStartup(ServerReceiveSendOneIterationStartupError),
+    Bind {
+        address: SocketAddr,
+        kind: io::ErrorKind,
+    },
+    Auth(ServerAuthResponsePocError),
+    Runtime(ServerControllerReceiveSendRuntimeError),
+}
+
 /// Launcher for exactly three controller receive/send iterations from server config.
 ///
 /// This is a manual auth -> heartbeat -> stats-observation check entry point.
@@ -10534,6 +10713,170 @@ shared_token = "secret"
     }
 
     #[test]
+    fn receive_auth_video_queue_once_accepts_auth_then_queues_video_frame() {
+        let server_socket = UdpSocket::bind("127.0.0.1:0").expect("server socket should bind");
+        let client_socket = UdpSocket::bind("127.0.0.1:0").expect("client socket should bind");
+        client_socket
+            .set_read_timeout(Some(std::time::Duration::from_secs(1)))
+            .expect("client read timeout should be set");
+        let server_address = server_socket
+            .local_addr()
+            .expect("server socket should have address");
+        client_socket
+            .send_to(
+                auth_request_packet("client-1", "presented-secret").as_slice(),
+                server_address,
+            )
+            .expect("auth request should send");
+        let mut receive_buffer = vec![0_u8; DEFAULT_UDP_PACKET_BUFFER_LEN];
+        let mut registry = AuthenticatedSenderRegistry::default();
+        let auth = ServerAuthResponsePocStep::default()
+            .run_one(
+                &server_socket,
+                &mut receive_buffer,
+                ProtocolVersion(2),
+                &auth_config(Some("presented-secret")),
+                &mut registry,
+            )
+            .expect("auth step should complete");
+        assert!(auth.auth_flow.decision.accepted);
+        let mut response_buffer = vec![0_u8; 1024];
+        let _response = client_socket
+            .recv_from(&mut response_buffer)
+            .expect("auth response should receive");
+
+        client_socket
+            .send_to(
+                video_frame_packet("client-1", 42).as_slice(),
+                server_address,
+            )
+            .expect("video frame should send");
+        let second = run_controller_once_for_test(
+            &server_socket,
+            &mut receive_buffer,
+            &mut registry,
+            &auth_config(Some("presented-secret")),
+        );
+        let mut queue_state = ServerVideoFrameQueueState::default();
+        let queue = queue_from_controller_result_for_test(&second, &mut queue_state);
+
+        let ServerVideoFrameQueueRuntimeResult::Queued(
+            ServerVideoFrameQueueStorageResult::Stored {
+                queued,
+                current_client_queue_len,
+                dropped_oldest,
+                ..
+            },
+        ) = queue
+        else {
+            panic!("accepted auth then video should queue a frame");
+        };
+        assert_eq!(queued.frame.client_id, ClientId("client-1".to_string()));
+        assert_eq!(queued.frame.frame_id, 42);
+        assert_eq!(current_client_queue_len, 1);
+        assert_eq!(dropped_oldest, None);
+        assert_eq!(queue_state.total_len(), 1);
+    }
+
+    #[test]
+    fn receive_auth_video_queue_once_rejected_auth_does_not_queue_later_video() {
+        let server_socket = UdpSocket::bind("127.0.0.1:0").expect("server socket should bind");
+        let client_socket = UdpSocket::bind("127.0.0.1:0").expect("client socket should bind");
+        let server_address = server_socket
+            .local_addr()
+            .expect("server socket should have address");
+        client_socket
+            .send_to(
+                auth_request_packet("client-1", "wrong-secret").as_slice(),
+                server_address,
+            )
+            .expect("auth request should send");
+        let mut receive_buffer = vec![0_u8; DEFAULT_UDP_PACKET_BUFFER_LEN];
+        let mut registry = AuthenticatedSenderRegistry::default();
+        let auth = ServerAuthResponsePocStep::default()
+            .run_one(
+                &server_socket,
+                &mut receive_buffer,
+                ProtocolVersion(2),
+                &auth_config(Some("presented-secret")),
+                &mut registry,
+            )
+            .expect("auth step should complete");
+        assert!(!auth.auth_flow.decision.accepted);
+        assert_eq!(registry.entries().count(), 0);
+
+        client_socket
+            .send_to(
+                video_frame_packet("client-1", 42).as_slice(),
+                server_address,
+            )
+            .expect("video frame should send");
+        let second = run_controller_once_for_test(
+            &server_socket,
+            &mut receive_buffer,
+            &mut registry,
+            &auth_config(Some("presented-secret")),
+        );
+        let mut queue_state = ServerVideoFrameQueueState::default();
+        let queue = queue_from_controller_result_for_test(&second, &mut queue_state);
+
+        assert_eq!(queue_state.total_len(), 0);
+        let ServerVideoFrameQueueRuntimeResult::NotQueued {
+            reason:
+                ServerVideoFrameQueueRuntimeSkipReason::RejectedVideoFrame(
+                    ServerReceiveLoopGateRejection::Acceptance(rejection),
+                ),
+            ..
+        } = queue
+        else {
+            panic!("video from rejected auth source should stay out of the queue");
+        };
+        assert_eq!(
+            rejection.reason,
+            PacketAcceptanceRejectReason::UnauthenticatedSource
+        );
+    }
+
+    #[test]
+    fn receive_auth_video_queue_once_unexpected_second_packet_is_not_queued() {
+        let source = packet_source();
+        let registry = registry_with_client("client-1", source);
+        let registered = ServerRegisteredPacketBoundary::default()
+            .prepare_for_handler(&registry, heartbeat_route("client-1", source))
+            .expect("heartbeat should be accepted");
+        let body = body_result_with_handler_handoff(
+            72,
+            ServerContinuousReceiveLoopHandlerHandoffRuntimePlan::RegisteredClient(registered),
+        );
+        let dispatch = ServerContinuousReceiveLoopBodyDispatchRuntimeBoundary::default()
+            .dispatch_body_result(
+                &body,
+                &auth_config(Some("presented-secret")),
+                body_dispatch_timing(),
+            );
+        let side_effect = ServerDispatchRuntimeSideEffectApplyBoundary::default()
+            .apply_body_dispatch_outcome(&mut AuthenticatedSenderRegistry::default(), dispatch);
+        let mut queue_state = ServerVideoFrameQueueState::default();
+
+        let queue = ServerVideoFrameQueueRuntimeBoundary::default().store_from_receive_side_effect(
+            &mut queue_state,
+            &body,
+            side_effect,
+            TimestampMicros(3_000_100),
+            ServerVideoFrameQueuePolicy::default(),
+        );
+
+        assert_eq!(queue_state.total_len(), 0);
+        assert!(matches!(
+            queue,
+            ServerVideoFrameQueueRuntimeResult::NotQueued {
+                reason: ServerVideoFrameQueueRuntimeSkipReason::NoAcceptedVideoFrame,
+                ..
+            }
+        ));
+    }
+
+    #[test]
     fn video_stats_handler_runtime_prepares_stats_input_without_commit() {
         let source = packet_source();
         let registry = registry_with_client("client-1", source);
@@ -16169,6 +16512,26 @@ shared_token = "secret"
         }
     }
 
+    fn video_frame_packet(client_id: &str, frame_id: u64) -> Vec<u8> {
+        let ServerInboundRoute::VideoFrame { mut frame, .. } =
+            video_frame_route(client_id, packet_source())
+        else {
+            panic!("expected video frame route");
+        };
+        frame.frame_id = frame_id;
+        let mut output = Vec::new();
+        ProtocolMessageEncoderBoundary
+            .encode_message(
+                EncodeContext {
+                    protocol_version: ProtocolVersion(2),
+                },
+                &ProtocolMessage::VideoFrame(frame),
+                &mut output,
+            )
+            .expect("video frame should encode");
+        output
+    }
+
     fn video_handler_input(client_id: &str, source: PacketSource) -> ServerVideoFrameHandlerInput {
         let registry = registry_with_client(client_id, source);
         let registered = ServerRegisteredPacketBoundary::default()
@@ -16178,6 +16541,57 @@ shared_token = "secret"
             panic!("expected registered video frame packet");
         };
         ServerVideoFrameHandlerBoundary.prepare_input(packet)
+    }
+
+    fn run_controller_once_for_test(
+        socket: &UdpSocket,
+        receive_buffer: &mut [u8],
+        registry: &mut AuthenticatedSenderRegistry,
+        auth_config: &ServerAuthConfig,
+    ) -> ServerControllerReceiveSendRuntimeResult {
+        let mut queue_collection = ServerOutboundQueueCollection::default();
+        ServerControllerReceiveSendRuntimeBoundary::default()
+            .run_once(
+                socket,
+                receive_buffer,
+                registry,
+                &mut queue_collection,
+                auth_config,
+                ServerControllerReceiveSendRuntimeInput {
+                    controller: ServerContinuousReceiveLoopControllerInput {
+                        expected_protocol_version: ProtocolVersion(2),
+                        timestamp: TimestampMicros(3_000_000),
+                        continue_requested: true,
+                    },
+                    heartbeat_timing: body_dispatch_timing(),
+                    encode_context: EncodeContext {
+                        protocol_version: ProtocolVersion(2),
+                    },
+                    auth_log_timestamp: TimestampMicros(3_000_000),
+                    send_log_timestamp: TimestampMicros(3_000_000),
+                },
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+            )
+            .expect("controller runtime should complete")
+    }
+
+    fn queue_from_controller_result_for_test(
+        result: &ServerControllerReceiveSendRuntimeResult,
+        queue_state: &mut ServerVideoFrameQueueState,
+    ) -> ServerVideoFrameQueueRuntimeResult {
+        let ServerControllerReceiveSendRuntimeResult::Iteration { iteration, .. } = result else {
+            panic!("controller should run one iteration");
+        };
+        ServerVideoFrameQueueRuntimeBoundary::default().store_from_receive_side_effect(
+            queue_state,
+            &iteration.body,
+            iteration.side_effect.clone(),
+            TimestampMicros(3_000_100),
+            ServerVideoFrameQueuePolicy::default(),
+        )
     }
 
     fn client_stats_route(client_id: &str, source: PacketSource) -> ServerInboundRoute {

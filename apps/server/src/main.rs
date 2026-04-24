@@ -167,9 +167,45 @@ fn main() {
                 }
             }
         }
+        Some("--receive-auth-video-queue-once") => {
+            let config_path = args
+                .next()
+                .unwrap_or_else(|| "configs/examples/server.example.toml".to_string());
+            let launcher = stream_sync_server::ServerReceiveAuthVideoQueueOnceLauncher::default();
+            match launcher.run_once_from_path_with_writers(
+                &config_path,
+                std::io::stderr(),
+                std::io::stderr(),
+                std::io::stderr(),
+                std::io::stderr(),
+            ) {
+                Ok(outcome) => {
+                    let decision = &outcome.first_auth.auth_flow.decision;
+                    let (video_status, queued_status, queue_len, dropped_oldest) =
+                        auth_video_queue_summary(&outcome);
+                    println!(
+                        "receive auth/video queue runtime handled auth on {}; auth_accepted={} auth_reason={:?} client_id={} run_id={} video={} queued={} queue_len={} dropped_oldest={} registered_clients={}",
+                        outcome.bind_address,
+                        decision.accepted,
+                        decision.reason_code,
+                        decision.client_id.0,
+                        decision.run_id.0,
+                        video_status,
+                        queued_status,
+                        queue_len,
+                        dropped_oldest,
+                        outcome.registry.entries().count()
+                    );
+                }
+                Err(error) => {
+                    eprintln!("receive auth/video queue runtime failed: {error:?}");
+                    std::process::exit(1);
+                }
+            }
+        }
         _ => {
             println!(
-                "stream-sync-server scaffold; use --auth-response-poc-once [config-path], --receive-send-once [config-path], --receive-send-twice [config-path], or --receive-send-three [config-path]"
+                "stream-sync-server scaffold; use --auth-response-poc-once [config-path], --receive-send-once [config-path], --receive-send-twice [config-path], --receive-send-three [config-path], or --receive-auth-video-queue-once [config-path]"
             );
         }
     }
@@ -195,4 +231,50 @@ fn current_timestamp_micros() -> stream_sync_protocol::TimestampMicros {
         .map(|duration| duration.as_micros())
         .unwrap_or(0);
     stream_sync_protocol::TimestampMicros(u64::try_from(micros).unwrap_or(u64::MAX))
+}
+
+fn auth_video_queue_summary(
+    outcome: &stream_sync_server::ServerReceiveAuthVideoQueueOnceStartupOutcome,
+) -> (&'static str, &'static str, usize, bool) {
+    match &outcome.video {
+        stream_sync_server::ServerReceiveAuthVideoQueueOnceVideoOutcome::NotReceivedAuthRejected => {
+            ("not_received_auth_rejected", "not_queued", outcome.video_queue_state.total_len(), false)
+        }
+        stream_sync_server::ServerReceiveAuthVideoQueueOnceVideoOutcome::Received {
+            queue,
+            ..
+        } => match queue {
+            Some(stream_sync_server::ServerVideoFrameQueueRuntimeResult::Queued(
+                stream_sync_server::ServerVideoFrameQueueStorageResult::Stored {
+                    dropped_oldest,
+                    ..
+                },
+            )) => (
+                "received",
+                "queued",
+                outcome.video_queue_state.total_len(),
+                dropped_oldest.is_some(),
+            ),
+            Some(stream_sync_server::ServerVideoFrameQueueRuntimeResult::Queued(
+                stream_sync_server::ServerVideoFrameQueueStorageResult::Dropped { .. },
+            )) => (
+                "received",
+                "not_queued_storage_dropped",
+                outcome.video_queue_state.total_len(),
+                false,
+            ),
+            Some(stream_sync_server::ServerVideoFrameQueueRuntimeResult::NotQueued { .. }) => (
+                "received",
+                "not_queued_rejected_or_unexpected",
+                outcome.video_queue_state.total_len(),
+                false,
+            ),
+            None => (
+                "not_received_controller_stopped",
+                "not_queued",
+                outcome.video_queue_state.total_len(),
+                false,
+            ),
+        },
+    }
 }

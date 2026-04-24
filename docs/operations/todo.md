@@ -671,17 +671,18 @@
 - the loop runner can now derive dashboard refresh policy input from snapshot cadence output and invoke a caller-owned dashboard refresh sink without rendering UI.
 - server heartbeat timeout now has a thin multi-client loop boundary over the existing one-client timeout tick, with caller-owned registry / liveness state / queue / writer kept explicit.
 - server video path now has a receive-side runtime wiring slice: accepted `VideoFrame` side effects can be stored in a caller-owned per-client encoded-frame queue, while rejected frames remain not queued.
+- server video path now has a queue-owning manual auth-then-video launcher: `--receive-auth-video-queue-once [config-path]` receives `AuthRequest`, sends `AuthResponse`, keeps the authenticated sender registry alive, receives the next packet through the packet acceptance gate, and queues an accepted `VideoFrame` into caller-owned `ServerVideoFrameQueueState`.
 - client video path now has a first send-side PoC slice: metadata construction, explicit placeholder encoded H.264 payload source, existing protocol encode, and one caller-owned UDP `send_to`.
 - client video path now has a one-shot CLI/config launcher: `--placeholder-video-frame-poc-once [config-path]` sends one explicit placeholder `VideoFrame` and prints a compact stdout summary.
 - client video path now has a same-socket manual E2E sender launcher: `--auth-placeholder-video-frame-poc-once [config-path]` sends `AuthRequest`, requires accepted `AuthResponse`, then sends one placeholder `VideoFrame` from the same UDP source.
 - switcher video path now has a first placeholder slice: one client's latest queued encoded frame can be selected read-only and converted into an explicit decode-deferred display handoff.
-- manual placeholder VideoFrame PoC status is now documented in `docs/operations/manual-placeholder-video-poc.md`: the client same-socket auth-then-video sender, server queue runtime, and switcher placeholder selection slices exist, but a complete manual end-to-end command path is still blocked by a missing queue-owning server manual launcher.
+- manual placeholder VideoFrame PoC status is now documented in `docs/operations/manual-placeholder-video-poc.md`: the client same-socket auth-then-video sender and server queue-owning auth-then-video receiver can be run as a two-command manual client-to-server queue PoC; switcher placeholder selection still exists only as an in-process library boundary.
 - metrics commit, snapshot export cadence, dashboard refresh consumer policy, and dashboard refresh runtime wiring remain separate from timer wait, retry, reconnect, socket ownership, cleanup, UI rendering, video, switcher, and OBS.
 - server notice queue storage remains separate from notice send wakeup execution.
 - actual dashboard UI rendering remains unimplemented.
 
 ## Next Items
-1. add a queue-owning server auth-then-video manual launcher that prints accepted/queued/rejected result
-2. add an optional switcher placeholder selection helper after server queue state can be surfaced
-3. real capture / real H.264 encode boundary replacing the placeholder payload source
-4. real H.264 decode / switcher window rendering boundary
+1. add an optional switcher placeholder selection helper after server queue state can be surfaced
+2. real capture / real H.264 encode boundary replacing the placeholder payload source
+3. real H.264 decode / switcher window rendering boundary
+4. targetTime / jitter-buffer selection design for the next 2-view sync PoC
