@@ -7410,3 +7410,52 @@ selected client id, frame id, payload length, and
 
 This bridge still must not decode H.264, render a window, integrate OBS, add
 4-view sync, or claim cross-process queue sharing.
+
+## Client Real Capture / H.264 Encode Boundary
+
+The client video path now has an explicit first boundary for replacing the
+placeholder payload source later:
+
+```text
+capture source -> raw captured frame -> H.264 encoder -> encoded frame source -> VideoFrame metadata/send
+```
+
+Current implementation:
+
+- `ClientCaptureSourceBoundary::capture_once` returns
+  `Unavailable(RealCaptureDeferred)`.
+- `ClientH264EncoderBoundary::encode_once` returns
+  `Deferred(RealH264EncodeDeferred)` for the current supported raw handoff, or
+  `Deferred(UnsupportedCaptureFormat)` when a caller supplies an unsupported
+  raw format.
+- `ClientEncodedVideoFrameSource` carries capture timestamp, dimensions,
+  nominal FPS, codec, payload bytes, and source kind.
+- Source kind is explicit:
+  - `PlaceholderH264` for caller-provided placeholder bytes.
+  - `RealCaptureH264` for future real capture + H.264 encoder output.
+- `ClientVideoFrameMetadataConstructionBoundary::build_frame_from_encoded_source`
+  can construct an existing protocol `VideoFrame` from an encoded source without
+  changing the UDP send boundary.
+- The existing placeholder PoC remains available and continues to use explicit
+  placeholder payload behavior.
+
+Responsibility split:
+
+- capture source
+  - Future owner of OS/window/game capture and raw pixel frame production.
+  - Does not encode H.264, construct protocol messages, or send UDP packets.
+- H.264 encoder
+  - Future owner of converting raw captured frames into encoded H.264 payloads.
+  - Does not capture pixels, choose frame ids, or send packets.
+- encoded frame source / metadata boundary
+  - Preserves capture timestamp, frame id relationship, dimensions, payload
+    length, codec, and existing `VideoFrame` metadata construction.
+  - Does not claim placeholder bytes are real capture output.
+- send boundary
+  - Continues to encode and send `VideoFrame` over caller-owned UDP sockets.
+  - Does not know whether payload bytes came from placeholder or future real
+    capture/encode.
+
+Real capture backend selection, real H.264 encoder integration, encoder
+configuration, packet fragmentation, decode, switcher rendering, 4-view sync,
+and OBS integration remain future work.

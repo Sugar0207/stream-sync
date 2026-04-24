@@ -1308,6 +1308,146 @@ pub struct ClientVideoFrameMetadataInput {
     pub fps_nominal: u32,
 }
 
+/// Caller request for one raw client-side capture attempt.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct ClientCaptureSourceInput {
+    pub capture_timestamp: TimestampMicros,
+    pub requested_width: u32,
+    pub requested_height: u32,
+    pub fps_nominal: u32,
+}
+
+/// Raw pixel format produced by a future real capture backend.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ClientRawVideoPixelFormat {
+    Bgra8,
+    Unsupported,
+}
+
+/// Raw captured frame handoff before H.264 encoding.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClientRawCapturedVideoFrame {
+    pub capture_timestamp: TimestampMicros,
+    pub width: u32,
+    pub height: u32,
+    pub fps_nominal: u32,
+    pub pixel_format: ClientRawVideoPixelFormat,
+    pub pixels: Vec<u8>,
+}
+
+/// Explicit reason why real capture did not produce a frame.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ClientCaptureUnavailableReason {
+    RealCaptureDeferred,
+}
+
+/// Result from the client capture source boundary.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ClientCaptureSourceResult {
+    Captured(ClientRawCapturedVideoFrame),
+    Unavailable {
+        reason: ClientCaptureUnavailableReason,
+    },
+}
+
+/// Boundary for obtaining one raw frame from a capture source.
+///
+/// The current implementation intentionally does not call OS capture APIs. It
+/// makes the deferred state explicit so later work can replace only this source
+/// without changing `VideoFrame` metadata or UDP send wiring.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct ClientCaptureSourceBoundary;
+
+impl ClientCaptureSourceBoundary {
+    pub fn capture_once(&self, _input: ClientCaptureSourceInput) -> ClientCaptureSourceResult {
+        ClientCaptureSourceResult::Unavailable {
+            reason: ClientCaptureUnavailableReason::RealCaptureDeferred,
+        }
+    }
+}
+
+/// Encoded video source carried into `VideoFrame` metadata construction.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ClientEncodedVideoFrameSourceKind {
+    PlaceholderH264,
+    RealCaptureH264,
+}
+
+/// Encoded frame handoff after capture/encode or explicit placeholder source.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClientEncodedVideoFrameSource {
+    pub capture_timestamp: TimestampMicros,
+    pub width: u32,
+    pub height: u32,
+    pub fps_nominal: u32,
+    pub codec: Codec,
+    pub payload: Vec<u8>,
+    pub source_kind: ClientEncodedVideoFrameSourceKind,
+}
+
+/// Input for encoding one raw captured frame as H.264.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClientH264EncoderInput {
+    pub frame: ClientRawCapturedVideoFrame,
+}
+
+/// Explicit reason why the H.264 encoder did not produce bytes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ClientH264EncoderDeferredReason {
+    RealH264EncodeDeferred,
+    UnsupportedCaptureFormat,
+}
+
+/// Result from the client H.264 encoder boundary.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ClientH264EncoderResult {
+    Encoded(ClientEncodedVideoFrameSource),
+    Deferred {
+        reason: ClientH264EncoderDeferredReason,
+    },
+}
+
+/// Boundary for turning a raw captured frame into encoded H.264 bytes.
+///
+/// Real H.264 encoding is not implemented here. The boundary exists so a later
+/// encoder can return `Encoded(RealCaptureH264)` without rewriting metadata or
+/// UDP send code, while this step cannot accidentally label placeholder bytes
+/// as real capture output.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct ClientH264EncoderBoundary;
+
+impl ClientH264EncoderBoundary {
+    pub fn encode_once(&self, input: ClientH264EncoderInput) -> ClientH264EncoderResult {
+        match input.frame.pixel_format {
+            ClientRawVideoPixelFormat::Bgra8 => ClientH264EncoderResult::Deferred {
+                reason: ClientH264EncoderDeferredReason::RealH264EncodeDeferred,
+            },
+            ClientRawVideoPixelFormat::Unsupported => ClientH264EncoderResult::Deferred {
+                reason: ClientH264EncoderDeferredReason::UnsupportedCaptureFormat,
+            },
+        }
+    }
+}
+
+/// Metadata input for constructing `VideoFrame` from an encoded source.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClientVideoFrameEncodedSourceInput {
+    pub protocol_version: ProtocolVersion,
+    pub client_id: ClientId,
+    pub run_id: RunId,
+    pub frame_id: u64,
+    pub send_timestamp: TimestampMicros,
+    pub is_keyframe: bool,
+    pub encoded: ClientEncodedVideoFrameSource,
+}
+
+/// Error from constructing `VideoFrame` from a generic encoded source.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ClientEncodedVideoFrameSourceError {
+    EmptyPayload,
+    UnsupportedCodec,
+}
+
 /// Explicit placeholder for bytes shaped as an encoded H.264 payload.
 ///
 /// This is not a screen capture or encoder. It only carries caller-provided
@@ -1337,6 +1477,29 @@ impl ClientPlaceholderEncodedH264PayloadSourceBoundary {
         }
 
         Ok(ClientPlaceholderEncodedH264Payload { bytes })
+    }
+
+    pub fn into_encoded_source(
+        &self,
+        payload: ClientPlaceholderEncodedH264Payload,
+        capture_timestamp: TimestampMicros,
+        width: u32,
+        height: u32,
+        fps_nominal: u32,
+    ) -> Result<ClientEncodedVideoFrameSource, ClientPlaceholderEncodedH264PayloadError> {
+        if payload.bytes.is_empty() {
+            return Err(ClientPlaceholderEncodedH264PayloadError::EmptyPayload);
+        }
+
+        Ok(ClientEncodedVideoFrameSource {
+            capture_timestamp,
+            width,
+            height,
+            fps_nominal,
+            codec: Codec::H264,
+            payload: payload.bytes,
+            source_kind: ClientEncodedVideoFrameSourceKind::PlaceholderH264,
+        })
     }
 }
 
@@ -1370,6 +1533,36 @@ impl ClientVideoFrameMetadataConstructionBoundary {
             codec: Codec::H264,
             payload_size: payload.bytes.len(),
             payload: payload.bytes,
+        })
+    }
+
+    pub fn build_frame_from_encoded_source(
+        &self,
+        input: ClientVideoFrameEncodedSourceInput,
+    ) -> Result<VideoFrame, ClientEncodedVideoFrameSourceError> {
+        if input.encoded.payload.is_empty() {
+            return Err(ClientEncodedVideoFrameSourceError::EmptyPayload);
+        }
+        if input.encoded.codec != Codec::H264 {
+            return Err(ClientEncodedVideoFrameSourceError::UnsupportedCodec);
+        }
+
+        Ok(VideoFrame {
+            message_type: MessageType::VideoFrame,
+            protocol_version: input.protocol_version,
+            client_id: input.client_id,
+            run_id: input.run_id,
+            frame_id: input.frame_id,
+            capture_timestamp: input.encoded.capture_timestamp,
+            send_timestamp: input.send_timestamp,
+            is_keyframe: input.is_keyframe,
+            metadata_reserved: [0; 3],
+            width: input.encoded.width,
+            height: input.encoded.height,
+            fps_nominal: input.encoded.fps_nominal,
+            codec: input.encoded.codec,
+            payload_size: input.encoded.payload.len(),
+            payload: input.encoded.payload,
         })
     }
 }
@@ -7865,6 +8058,157 @@ mod tests {
             error,
             ClientPlaceholderEncodedH264PayloadError::EmptyPayload
         );
+    }
+
+    #[test]
+    fn client_video_frame_capture_boundary_reports_real_capture_deferred() {
+        let result = ClientCaptureSourceBoundary.capture_once(ClientCaptureSourceInput {
+            capture_timestamp: TimestampMicros(1_000_000),
+            requested_width: 1280,
+            requested_height: 720,
+            fps_nominal: 30,
+        });
+
+        assert_eq!(
+            result,
+            ClientCaptureSourceResult::Unavailable {
+                reason: ClientCaptureUnavailableReason::RealCaptureDeferred
+            }
+        );
+    }
+
+    #[test]
+    fn client_video_frame_h264_encoder_boundary_reports_encode_deferred() {
+        let result = ClientH264EncoderBoundary.encode_once(ClientH264EncoderInput {
+            frame: ClientRawCapturedVideoFrame {
+                capture_timestamp: TimestampMicros(1_000_000),
+                width: 1280,
+                height: 720,
+                fps_nominal: 30,
+                pixel_format: ClientRawVideoPixelFormat::Bgra8,
+                pixels: vec![0; 1280 * 720 * 4],
+            },
+        });
+
+        assert_eq!(
+            result,
+            ClientH264EncoderResult::Deferred {
+                reason: ClientH264EncoderDeferredReason::RealH264EncodeDeferred
+            }
+        );
+    }
+
+    #[test]
+    fn client_video_frame_h264_encoder_boundary_reports_unsupported_capture_format() {
+        let result = ClientH264EncoderBoundary.encode_once(ClientH264EncoderInput {
+            frame: ClientRawCapturedVideoFrame {
+                capture_timestamp: TimestampMicros(1_000_000),
+                width: 1280,
+                height: 720,
+                fps_nominal: 30,
+                pixel_format: ClientRawVideoPixelFormat::Unsupported,
+                pixels: vec![0; 16],
+            },
+        });
+
+        assert_eq!(
+            result,
+            ClientH264EncoderResult::Deferred {
+                reason: ClientH264EncoderDeferredReason::UnsupportedCaptureFormat
+            }
+        );
+    }
+
+    #[test]
+    fn client_video_frame_metadata_boundary_builds_from_encoded_source() {
+        let placeholder = ClientPlaceholderEncodedH264PayloadSourceBoundary
+            .from_bytes(vec![0x00, 0x00, 0x01, 0x65])
+            .expect("placeholder bytes should be accepted");
+        let encoded = ClientPlaceholderEncodedH264PayloadSourceBoundary
+            .into_encoded_source(placeholder, TimestampMicros(2_000_000), 1280, 720, 30)
+            .expect("placeholder encoded source should build");
+
+        let frame = ClientVideoFrameMetadataConstructionBoundary
+            .build_frame_from_encoded_source(ClientVideoFrameEncodedSourceInput {
+                protocol_version: ProtocolVersion(2),
+                client_id: ClientId("client-1".to_string()),
+                run_id: RunId("run-1".to_string()),
+                frame_id: 7,
+                send_timestamp: TimestampMicros(2_000_500),
+                is_keyframe: true,
+                encoded: encoded.clone(),
+            })
+            .expect("frame should build from encoded source");
+
+        assert_eq!(
+            encoded.source_kind,
+            ClientEncodedVideoFrameSourceKind::PlaceholderH264
+        );
+        assert_eq!(frame.protocol_version, ProtocolVersion(2));
+        assert_eq!(frame.client_id, ClientId("client-1".to_string()));
+        assert_eq!(frame.run_id, RunId("run-1".to_string()));
+        assert_eq!(frame.frame_id, 7);
+        assert_eq!(frame.capture_timestamp, encoded.capture_timestamp);
+        assert_eq!(frame.send_timestamp, TimestampMicros(2_000_500));
+        assert_eq!(frame.width, encoded.width);
+        assert_eq!(frame.height, encoded.height);
+        assert_eq!(frame.fps_nominal, encoded.fps_nominal);
+        assert_eq!(frame.codec, Codec::H264);
+        assert_eq!(frame.payload_size, encoded.payload.len());
+        assert_eq!(frame.payload, encoded.payload);
+    }
+
+    #[test]
+    fn client_video_frame_placeholder_path_remains_separate_from_real_capture_source() {
+        let payload = ClientPlaceholderEncodedH264PayloadSourceBoundary
+            .from_bytes(DEFAULT_PLACEHOLDER_H264_PAYLOAD.to_vec())
+            .expect("placeholder payload should be accepted");
+        let encoded = ClientPlaceholderEncodedH264PayloadSourceBoundary
+            .into_encoded_source(payload, TimestampMicros(3_000_000), 1280, 720, 30)
+            .expect("placeholder encoded source should build");
+
+        assert_eq!(
+            encoded.source_kind,
+            ClientEncodedVideoFrameSourceKind::PlaceholderH264
+        );
+        assert_ne!(
+            encoded.source_kind,
+            ClientEncodedVideoFrameSourceKind::RealCaptureH264
+        );
+        assert_eq!(encoded.payload, DEFAULT_PLACEHOLDER_H264_PAYLOAD.to_vec());
+    }
+
+    #[test]
+    fn client_video_frame_real_capture_encoder_does_not_fake_h264_payload() {
+        let capture_result = ClientCaptureSourceBoundary.capture_once(ClientCaptureSourceInput {
+            capture_timestamp: TimestampMicros(4_000_000),
+            requested_width: 1280,
+            requested_height: 720,
+            fps_nominal: 30,
+        });
+
+        let ClientCaptureSourceResult::Unavailable { reason } = capture_result else {
+            panic!("real capture should not produce a fake frame");
+        };
+        assert_eq!(reason, ClientCaptureUnavailableReason::RealCaptureDeferred);
+
+        let encode_result = ClientH264EncoderBoundary.encode_once(ClientH264EncoderInput {
+            frame: ClientRawCapturedVideoFrame {
+                capture_timestamp: TimestampMicros(4_000_000),
+                width: 1280,
+                height: 720,
+                fps_nominal: 30,
+                pixel_format: ClientRawVideoPixelFormat::Bgra8,
+                pixels: vec![0; 1280 * 720 * 4],
+            },
+        });
+
+        assert!(matches!(
+            encode_result,
+            ClientH264EncoderResult::Deferred {
+                reason: ClientH264EncoderDeferredReason::RealH264EncodeDeferred
+            }
+        ));
     }
 
     #[test]

@@ -9332,6 +9332,66 @@
 - `cargo fmt --check`
 - `cargo test -p stream-sync-switcher`
 - `cargo check --workspace`
+
+---
+
+## 2026-04-25
+### Type
+- Codex
+
+### Work
+- Added the first client-side boundary for moving from placeholder `VideoFrame`
+  payloads toward real capture and real H.264 encode.
+- Added explicit capture source result types; current capture returns
+  `RealCaptureDeferred` and does not call OS/window/game capture APIs.
+- Added explicit H.264 encoder result types; current encode returns
+  `RealH264EncodeDeferred` for the supported raw handoff or
+  `UnsupportedCaptureFormat` for unsupported raw formats, and does not produce
+  fake real H.264 bytes.
+- Added `ClientEncodedVideoFrameSource` so future real encoded frames can feed
+  existing `VideoFrame` metadata construction and UDP send wiring without
+  rewriting the send boundary.
+- Kept the placeholder path available and explicitly marked placeholder bytes
+  with `PlaceholderH264`.
+
+### Changed Files
+- `apps/client/src/lib.rs`
+- `docs/architecture/system-design.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### Decisions
+- Implemented capture and encode boundaries first, not real capture/encode
+  backends.
+- Preserved the existing placeholder PoC path and UDP send boundary.
+- Kept capture, encode, metadata construction, and send responsibilities
+  separate.
+- Did not label placeholder payload bytes as real capture output.
+
+### Unresolved
+- actual capture backend
+- actual H.264 encoder implementation and configuration
+- real H.264 decode
+- switcher window rendering
+- targetTime / jitter-buffer selection, 4-view sync, and OBS integration
+
+### Next
+- Add an actual capture backend behind `ClientCaptureSourceBoundary`.
+- Add an actual H.264 encoder behind `ClientH264EncoderBoundary`.
+- Then connect real encoded output to the existing auth/video send PoC path.
+
+### TODO Update
+- Marked the client capture/encode boundary as complete.
+- Replaced the next capture/encode task with actual capture backend and actual
+  H.264 encoder implementation behind the new boundaries.
+- Kept real decode/rendering, targetTime/jitter, and later cross-process bridge
+  work as separate future items.
+
+### Validation
+- `cargo fmt`
+- `cargo fmt --check`
+- `cargo test -p stream-sync-client client_video_frame`
+- `cargo check --workspace`
 - `cargo run -p stream-sync-switcher -- --placeholder-empty-once client-1`
 - `cargo run -p stream-sync-switcher -- --placeholder-fixture-once client-1`
 
