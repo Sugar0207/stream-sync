@@ -5831,6 +5831,68 @@ Current code reflects this with
 `ClientHeartbeatLoopOuterWhileLoopRepeatedBodyBoundary::run_with_hook(...)`
 for future caller-owned runner wiring.
 
+### Client Continuous Heartbeat Loop Runner Live Socket Ownership Boundary
+
+The client continuous heartbeat loop runner now has a minimal ownership
+boundary for live UDP socket wiring. The runner owns the socket slot and drives
+the existing repeated outer while-loop body, while concrete socket replacement
+still happens only through the injected socket re-establishment hook.
+
+Minimal scope:
+
+1. `ClientHeartbeatLoopRunner` owns an
+   `Arc<Mutex<Option<UdpSocket>>>` live socket slot.
+2. The runner constructs
+   `ClientHeartbeatLoopRealUdpSocketReestablishmentHook` from that slot.
+3. The runner calls
+   `ClientHeartbeatLoopOuterWhileLoopRepeatedBodyBoundary::run_with_hook(...)`
+   with the real hook.
+4. If the repeated body reaches its caller-owned turn guard, the runner returns
+   `ClientHeartbeatLoopRunnerResult::Completed { state, socket }`.
+5. If the repeated body stops, the runner returns
+   `ClientHeartbeatLoopRunnerResult::Stopped { output, socket }` without
+   changing stop reason, cleanup completion, or applied cleanup actions.
+6. If the runner cannot read its caller-owned socket slot, it returns
+   `ClientHeartbeatLoopRunnerResult::Error { error }`.
+7. Socket replacement remains hook-owned:
+   - the runner exposes the hook for the slot it owns
+   - the hook binds, connects, and replaces the slot
+   - the repeated body never owns the socket and never mutates the slot
+8. The runner does not reinterpret timer wait, retry execution, reconnect
+   policy output, metrics commit, snapshot cadence, dashboard refresh, video,
+   switcher, or OBS behavior.
+
+Relationship between runner, socket ownership, reconnect hook, repeated body,
+and future metrics cadence wiring:
+
+- loop runner
+  - Owns the live UDP socket slot.
+  - Coordinates one repeated-body run through `run_with_hook(...)`.
+  - Surfaces completed, stopped, or error results explicitly.
+- socket ownership
+  - Lives in the runner-owned slot.
+  - Is observed by the runner only as `has_socket` in the runner result.
+  - Is not embedded in repeated-body continuation state.
+- reconnect hook
+  - Is constructed from the runner-owned socket slot.
+  - Performs the actual bind/connect/replace operation.
+  - Returns applied, deferred, or failed output through the existing reconnect
+    path.
+- repeated loop execution
+  - Remains unchanged.
+  - Receives only the hook abstraction.
+  - Continues to keep timer, retry, reconnect, and stop concerns explicit.
+- future metrics cadence wiring
+  - Remains a later caller-owned runtime concern.
+  - Can be driven after runner output is available.
+  - Must consume only explicit metrics state/cadence state and not socket
+    ownership internals.
+
+Current code reflects this with
+`ClientHeartbeatLoopRunnerSocketOwnershipState`,
+`ClientHeartbeatLoopRunnerErrorKind`, `ClientHeartbeatLoopRunnerError`,
+`ClientHeartbeatLoopRunnerResult`, and `ClientHeartbeatLoopRunner`.
+
 ### Heartbeat Client Ack Observation Flow
 
 The client ack observation flow returns the missing `client_received_at`

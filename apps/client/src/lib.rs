@@ -4456,6 +4456,114 @@ pub enum ClientHeartbeatLoopOuterWhileLoopRepeatedBodyResult {
     },
 }
 
+/// Caller-owned socket state surfaced by the future continuous loop runner.
+///
+/// The runner owns only whether a live UDP socket is currently present. The
+/// socket itself remains inside the runner-owned slot and is replaced only by
+/// the socket re-establishment hook.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct ClientHeartbeatLoopRunnerSocketOwnershipState {
+    pub has_socket: bool,
+}
+
+/// Minimal runner error classification for caller-owned wiring failures.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ClientHeartbeatLoopRunnerErrorKind {
+    SocketSlotUnavailable,
+}
+
+/// Minimal runner error returned without reinterpreting loop execution output.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClientHeartbeatLoopRunnerError {
+    pub kind: ClientHeartbeatLoopRunnerErrorKind,
+    pub detail: String,
+}
+
+/// Result of driving the repeated heartbeat loop body from the future runner.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ClientHeartbeatLoopRunnerResult {
+    Completed {
+        state: ClientHeartbeatLoopOuterWhileLoopRepeatedBodyContinuationState,
+        socket: ClientHeartbeatLoopRunnerSocketOwnershipState,
+    },
+    Stopped {
+        output: ClientHeartbeatLoopCompletedBodyTerminalOutput,
+        socket: ClientHeartbeatLoopRunnerSocketOwnershipState,
+    },
+    Error {
+        error: ClientHeartbeatLoopRunnerError,
+    },
+}
+
+/// Minimal future continuous heartbeat loop runner wiring boundary.
+///
+/// This runner owns the live UDP socket slot, constructs the real socket
+/// re-establishment hook, and drives the existing repeated body through
+/// `run_with_hook(...)`. It does not move socket ownership into the repeated
+/// body and it does not add metrics cadence, dashboard refresh, video,
+/// switcher, or OBS behavior.
+#[derive(Debug, Clone)]
+pub struct ClientHeartbeatLoopRunner {
+    socket_slot: Arc<Mutex<Option<UdpSocket>>>,
+    repeated_body: ClientHeartbeatLoopOuterWhileLoopRepeatedBodyBoundary,
+}
+
+impl ClientHeartbeatLoopRunner {
+    pub fn new(initial_socket: Option<UdpSocket>) -> Self {
+        Self {
+            socket_slot: Arc::new(Mutex::new(initial_socket)),
+            repeated_body: ClientHeartbeatLoopOuterWhileLoopRepeatedBodyBoundary::default(),
+        }
+    }
+
+    pub fn socket_slot(&self) -> Arc<Mutex<Option<UdpSocket>>> {
+        self.socket_slot.clone()
+    }
+
+    pub fn socket_reestablishment_hook(
+        &self,
+    ) -> ClientHeartbeatLoopRealUdpSocketReestablishmentHook {
+        ClientHeartbeatLoopRealUdpSocketReestablishmentHook::new(Some(self.socket_slot()))
+    }
+
+    pub fn socket_ownership_state(
+        &self,
+    ) -> Result<ClientHeartbeatLoopRunnerSocketOwnershipState, ClientHeartbeatLoopRunnerError> {
+        self.socket_slot
+            .lock()
+            .map(|slot| ClientHeartbeatLoopRunnerSocketOwnershipState {
+                has_socket: slot.is_some(),
+            })
+            .map_err(|error| ClientHeartbeatLoopRunnerError {
+                kind: ClientHeartbeatLoopRunnerErrorKind::SocketSlotUnavailable,
+                detail: format!("failed to read runner-owned UDP socket slot: {}", error),
+            })
+    }
+
+    pub fn run(
+        &self,
+        input: ClientHeartbeatLoopOuterWhileLoopRepeatedBodyInput,
+    ) -> ClientHeartbeatLoopRunnerResult {
+        let hook = self.socket_reestablishment_hook();
+        let result = self.repeated_body.run_with_hook(input, &hook);
+
+        match result {
+            ClientHeartbeatLoopOuterWhileLoopRepeatedBodyResult::ReachedTurnGuard { state } => {
+                match self.socket_ownership_state() {
+                    Ok(socket) => ClientHeartbeatLoopRunnerResult::Completed { state, socket },
+                    Err(error) => ClientHeartbeatLoopRunnerResult::Error { error },
+                }
+            }
+            ClientHeartbeatLoopOuterWhileLoopRepeatedBodyResult::Stopped { output } => {
+                match self.socket_ownership_state() {
+                    Ok(socket) => ClientHeartbeatLoopRunnerResult::Stopped { output, socket },
+                    Err(error) => ClientHeartbeatLoopRunnerResult::Error { error },
+                }
+            }
+        }
+    }
+}
+
 /// Boundary that connects one step result to future completed-loop lifecycle flow.
 ///
 /// This does not run a while-loop, sleep, reconnect, flush logs, close
@@ -14262,6 +14370,144 @@ mod tests {
         assert_eq!(
             state.last_reconnect,
             ClientHeartbeatLoopOuterWhileLoopReconnectState::NoReconnectNeeded
+        );
+    }
+
+    #[test]
+    fn client_heartbeat_loop_cleanup_runner_executes_repeated_loop_with_injected_hook() {
+        let runner = ClientHeartbeatLoopRunner::new(None);
+        let result = runner.run(ClientHeartbeatLoopOuterWhileLoopRepeatedBodyInput {
+            current: cleanup_test_repeated_apply_timer_continue(),
+            max_turns: std::num::NonZeroUsize::new(1).unwrap(),
+        });
+
+        let ClientHeartbeatLoopRunnerResult::Completed { state, socket } = result else {
+            panic!("runner should surface repeated-body guard completion");
+        };
+
+        assert_eq!(state.turns_completed, 1);
+        assert_eq!(
+            state.last_reconnect,
+            ClientHeartbeatLoopOuterWhileLoopReconnectState::NoReconnectNeeded
+        );
+        assert_eq!(
+            socket,
+            ClientHeartbeatLoopRunnerSocketOwnershipState { has_socket: false }
+        );
+    }
+
+    #[test]
+    fn client_heartbeat_loop_cleanup_runner_preserves_stop_path_output() {
+        let runner = ClientHeartbeatLoopRunner::new(None);
+        let result = runner.run(ClientHeartbeatLoopOuterWhileLoopRepeatedBodyInput {
+            current: cleanup_test_repeated_stop(),
+            max_turns: std::num::NonZeroUsize::new(1).unwrap(),
+        });
+
+        assert_eq!(
+            result,
+            ClientHeartbeatLoopRunnerResult::Stopped {
+                output: ClientHeartbeatLoopCompletedBodyTerminalOutput {
+                    stop_reason:
+                        ClientHeartbeatLoopRepeatedInvocationStopReason::CleanupRequested {
+                            stop_reason:
+                                ClientHeartbeatLoopLifecycleStopReason::CallerRequestedStop,
+                        },
+                    cleanup_completed: true,
+                    applied_actions: [
+                        ClientHeartbeatLoopCleanupAppliedAction::FinalFlush,
+                        ClientHeartbeatLoopCleanupAppliedAction::LogWriterInvocation,
+                        ClientHeartbeatLoopCleanupAppliedAction::ResourceRelease,
+                    ],
+                },
+                socket: ClientHeartbeatLoopRunnerSocketOwnershipState { has_socket: false },
+            }
+        );
+    }
+
+    #[test]
+    fn client_heartbeat_loop_cleanup_runner_updates_socket_only_through_hook_replacement() {
+        let runner = ClientHeartbeatLoopRunner::new(None);
+        let hook = runner.socket_reestablishment_hook();
+
+        let result = hook.reestablish_socket(cleanup_test_socket_reestablishment_input());
+
+        assert_eq!(
+            result,
+            ClientHeartbeatLoopSocketReestablishmentHookResult::Applied
+        );
+        assert_eq!(
+            runner
+                .socket_ownership_state()
+                .expect("runner-owned socket slot should remain readable"),
+            ClientHeartbeatLoopRunnerSocketOwnershipState { has_socket: true }
+        );
+    }
+
+    #[test]
+    fn client_heartbeat_loop_cleanup_runner_does_not_collapse_reconnect_timer_or_retry_concerns() {
+        let runner = ClientHeartbeatLoopRunner::new(None);
+        let result = runner.run(ClientHeartbeatLoopOuterWhileLoopRepeatedBodyInput {
+            current: cleanup_test_repeated_apply_timer_continue(),
+            max_turns: std::num::NonZeroUsize::new(1).unwrap(),
+        });
+
+        let ClientHeartbeatLoopRunnerResult::Completed { state, socket } = result else {
+            panic!("runner should surface completed repeated-body state");
+        };
+
+        assert_eq!(
+            state.last_execution.timer_wait,
+            ClientHeartbeatLoopOuterWhileLoopActualTimerWaitExecutionApplyResult::TimerWaitApplied {
+                sleep: cleanup_test_timer_sleep(),
+            }
+        );
+        assert_eq!(
+            state.last_execution.retry_execution,
+            ClientHeartbeatLoopOuterWhileLoopActualRetryExecutionApplyResult::NoRetryExecutionApplied
+        );
+        assert_eq!(
+            state.last_execution.reconnect_execution,
+            ClientHeartbeatLoopOuterWhileLoopActualReconnectExecutionApplyResult::NoReconnectExecutionApplied
+        );
+        assert_eq!(
+            state.last_reconnect,
+            ClientHeartbeatLoopOuterWhileLoopReconnectState::NoReconnectNeeded
+        );
+        assert_eq!(
+            socket,
+            ClientHeartbeatLoopRunnerSocketOwnershipState { has_socket: false }
+        );
+    }
+
+    #[test]
+    fn client_heartbeat_loop_cleanup_runner_keeps_socket_ownership_outside_repeated_body() {
+        let initial_socket =
+            UdpSocket::bind("127.0.0.1:0").expect("test should bind initial runner-owned socket");
+        let runner = ClientHeartbeatLoopRunner::new(Some(initial_socket));
+
+        let result = runner.run(ClientHeartbeatLoopOuterWhileLoopRepeatedBodyInput {
+            current: cleanup_test_repeated_apply_retry_continue(),
+            max_turns: std::num::NonZeroUsize::new(1).unwrap(),
+        });
+
+        let ClientHeartbeatLoopRunnerResult::Completed { state, socket } = result else {
+            panic!("runner should complete one retry turn");
+        };
+
+        assert_eq!(
+            state.last_execution.retry_execution,
+            ClientHeartbeatLoopOuterWhileLoopActualRetryExecutionApplyResult::RetryExecutionApplied {
+                retry: cleanup_test_retry_apply(),
+            }
+        );
+        assert_eq!(
+            state.last_reconnect,
+            ClientHeartbeatLoopOuterWhileLoopReconnectState::NoReconnectNeeded
+        );
+        assert_eq!(
+            socket,
+            ClientHeartbeatLoopRunnerSocketOwnershipState { has_socket: true }
         );
     }
 

@@ -8787,3 +8787,42 @@
 ### TODO Update
 - Current focus updated to include completed dashboard refresh consumer policy boundary.
 - Next items reordered around live socket ownership and future runtime wiring.
+
+---
+
+## 2026-04-24
+### Type
+- Codex
+
+### Work
+- Defined the minimal future client continuous heartbeat loop runner with live UDP socket slot ownership.
+- Added runner output for completed repeated-body execution, stop passthrough, and runner-owned error.
+- Wired the runner to inject `ClientHeartbeatLoopRealUdpSocketReestablishmentHook` into `run_with_hook(...)`.
+- Kept socket replacement in the hook and outside the repeated heartbeat loop body.
+
+### Changed Files
+- `apps/client/src/lib.rs`
+- `docs/architecture/system-design.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### Decisions
+- The runner owns an `Arc<Mutex<Option<UdpSocket>>>` socket slot.
+- The repeated body receives only the existing socket re-establishment hook abstraction.
+- Runner output reports socket ownership state as `has_socket` without exposing or moving the socket.
+- Stop output remains an explicit passthrough from repeated body to runner result.
+- Metrics cadence, dashboard refresh, video, switcher, and OBS remain out of this runner boundary.
+
+### Unresolved
+- runtime wiring of snapshot cadence into the future loop owner
+- runtime wiring of dashboard refresh into the future metrics consumer owner
+- server heartbeat timeout loop tick multi-client continuous execution
+- video path / switcher / OBS integration
+
+### Next
+- Connect snapshot cadence and dashboard refresh policy to future caller-owned runtime state.
+- Return to server heartbeat timeout loop tick multi-client continuous execution.
+
+### TODO Update
+- Current focus updated to include completed minimal runner live socket ownership wiring.
+- Next items reordered around metrics snapshot cadence runtime wiring, dashboard refresh runtime wiring, server timeout loop, and later video/switcher/OBS work.

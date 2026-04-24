@@ -656,16 +656,16 @@
 ---
 
 ## Current Focus
-- client continuous heartbeat loop is complete through repeated body execution and caller-owned socket re-establishment hook injection.
+- client continuous heartbeat loop is complete through repeated body execution, caller-owned socket re-establishment hook injection, and a minimal runner that owns the live UDP socket slot.
 - RTT / offset metrics state commit now has a minimal client loop boundary based only on explicit heartbeat ack observation / ClientStats observation / one-tick runtime result state.
 - metrics snapshot export cadence now has a minimal client loop boundary based only on caller-owned metrics state, caller-owned cadence state, current time, and configured export interval.
 - dashboard refresh consumer policy now has a minimal client loop boundary based only on explicit future dashboard refresh handoff / snapshot export output.
+- the loop runner owns only socket-slot wiring and repeated-body execution coordination; socket replacement still happens through the injected hook and not inside the repeated body.
 - metrics commit, snapshot export cadence, and dashboard refresh consumer policy remain separate from timer wait, retry, reconnect, socket ownership, cleanup, UI rendering, video, switcher, and OBS.
 - actual dashboard UI rendering remains unimplemented.
 
 ## Next Items
-1. future client continuous heartbeat loop runner live socket ownership wiring
-2. metrics snapshot export cadence runtime wiring into the future loop owner
-3. dashboard refresh runtime wiring into the future metrics consumer owner
-4. server heartbeat timeout loop tick multi-client continuous execution
-5. video path / switcher / OBS integration later
+1. metrics snapshot export cadence runtime wiring into the future loop owner
+2. dashboard refresh runtime wiring into the future metrics consumer owner
+3. server heartbeat timeout loop tick multi-client continuous execution
+4. video path / switcher / OBS integration later
