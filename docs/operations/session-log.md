@@ -9334,3 +9334,47 @@
 - `cargo check --workspace`
 - `cargo run -p stream-sync-switcher -- --placeholder-empty-once client-1`
 - `cargo run -p stream-sync-switcher -- --placeholder-fixture-once client-1`
+
+---
+
+## 2026-04-25
+### Type
+- Codex
+
+### Work
+- Audited the current server queue and switcher placeholder helper boundaries for the next one-client placeholder PoC bridge.
+- Decided that the next bridge should be a switcher-owned in-process integration launcher.
+- Documented that the bridge should call the existing server auth-then-video queue launcher/boundary in-process, then pass the returned caller-owned `ServerVideoFrameQueueState` to `SwitcherPlaceholderManualVerificationBoundary`.
+- Documented that file/socket/shared-memory queue sharing and server-side export endpoints are deferred for this PoC step.
+- Kept the decision scoped to bridge design; no real H.264 decode, rendering, OBS, or 4-view sync was added.
+
+### Changed Files
+- `docs/architecture/system-design.md`
+- `docs/operations/manual-placeholder-video-poc.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### Decisions
+- Chosen bridge: in-process integration helper owned by switcher.
+- Rejected for this step: fake cross-process queue sharing, shared memory, file/socket queue bridge, and server-owned export/log fixture.
+- Dependency direction should remain `switcher -> server`; `apps/server` should not depend on `apps/switcher`.
+- The bridge should verify encoded queue-to-placeholder handoff only.
+
+### Unresolved
+- actual switcher-owned manual bridge launcher command
+- real capture / real H.264 encode
+- real H.264 decode / switcher window rendering
+- sync scheduling, 4-view sync, and OBS integration
+
+### Next
+- Add a switcher-owned manual bridge launcher, shaped like `--receive-auth-video-placeholder-bridge-once [config-path] [client-id]`.
+- Keep file/socket/shared-memory queue sharing deferred until a continuous runtime or real renderer needs it.
+
+### TODO Update
+- Replaced the bridge decision item with the chosen next implementation: a switcher-owned in-process manual bridge launcher.
+- Preserved real capture/encode, real decode/rendering, and targetTime/jitter work as later items.
+
+### Validation
+- `cargo fmt`
+- `cargo fmt --check`
+- `cargo check --workspace`

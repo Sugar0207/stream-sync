@@ -192,13 +192,33 @@ in-memory queue across process boundaries.
 
 ## Minimal Missing Manual Wiring
 
-The smallest useful next wiring after this step is:
+Bridge decision for the next PoC step:
 
-1. An explicit bridge if a live switcher process must consume a running
-   server's in-memory queue. That bridge is not implemented and should not be
-   assumed by manual tests.
-2. Later replacement of the explicit placeholder payload source with real
-   capture / H.264 encode.
+- Use a switcher-owned in-process integration launcher as the next bridge.
+- The launcher should call the existing server auth-then-video queue launcher
+  in-process, then pass the returned caller-owned `video_queue_state` to
+  `SwitcherPlaceholderManualVerificationBoundary`.
+- Do not add file, socket, or shared-memory queue sharing for this PoC step.
+- Do not make the server process expose its private in-memory queue yet.
+- Do not make `apps/server` depend on `apps/switcher`; the current workable
+  dependency direction is `switcher -> server`.
+
+A future command can be shaped like:
+
+```powershell
+cargo run -p stream-sync-switcher -- --receive-auth-video-placeholder-bridge-once configs/examples/server.example.toml client-1
+```
+
+Expected output should combine the server queue summary and switcher placeholder
+summary:
+
+- auth accepted / rejected
+- video queued / not queued
+- selected client id
+- frame id
+- payload length
+- `decode_status=DeferredPlaceholder`
+- no-frame state when the queue is empty or no accepted frame was queued
 
 The manual client-to-server queue path is now runnable as a two-command PoC.
 The switcher fixture helper verifies queue-to-switcher placeholder handoff only.

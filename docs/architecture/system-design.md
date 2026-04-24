@@ -7359,3 +7359,54 @@ caller-owned ServerVideoFrameQueueState -> latest-frame selection -> decode-defe
 
 This helper does not decode H.264, render a switcher window, select target time,
 mutate queue storage, implement 4-view sync, or touch OBS.
+
+## Server-To-Switcher Placeholder Bridge Decision
+
+The next one-client placeholder PoC bridge should be an in-process integration
+launcher owned from the switcher side.
+
+Chosen shape:
+
+```text
+switcher manual bridge launcher
+  -> calls server auth-then-video queue launcher/boundary in-process
+  -> receives caller-owned ServerVideoFrameQueueState
+  -> calls SwitcherPlaceholderManualVerificationBoundary
+  -> prints auth / queue / placeholder handoff summary
+```
+
+Decision:
+
+- Prefer an in-process integration helper for the next PoC step.
+- Do not add file, socket, or shared-memory queue sharing for this step.
+- Do not make the running server process expose its private in-memory queue yet.
+- Do not make `apps/server` depend on `apps/switcher`; current dependency
+  direction is `switcher -> server`, so the bridge owner should be switcher or
+  a later shared runtime crate.
+- Do not defer the bridge until real decode/rendering, because the next useful
+  manual proof is still encoded-frame queue to placeholder handoff.
+
+Reasoning:
+
+- The server queue state is intentionally caller-owned. A switcher-owned
+  in-process launcher can own the server launcher outcome and pass that queue
+  state directly to the existing switcher helper without pretending to share
+  state across processes.
+- File/socket/shared-memory export would introduce a new serialization or
+  transport contract before there is a real renderer or continuous runtime that
+  needs it.
+- A server-side export endpoint/log fixture would verify serialization or log
+  output, not the real in-memory queue-to-switcher placeholder boundary.
+- This preserves the existing packet acceptance gate, server queue storage, and
+  switcher placeholder boundaries.
+
+The minimal next implementation is a switcher-side manual bridge launcher such
+as `--receive-auth-video-placeholder-bridge-once [config-path] [client-id]`.
+It should reuse `ServerReceiveAuthVideoQueueOnceLauncher` and then call
+`SwitcherPlaceholderManualVerificationBoundary` on the returned
+`video_queue_state`. It should print auth accepted/rejected, video queued/not
+queued, selected client id, frame id, payload length, and
+`decode_status=DeferredPlaceholder` or no-frame.
+
+This bridge still must not decode H.264, render a window, integrate OBS, add
+4-view sync, or claim cross-process queue sharing.
