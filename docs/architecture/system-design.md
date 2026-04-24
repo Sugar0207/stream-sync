@@ -5415,6 +5415,80 @@ Current code reflects this with
 `ClientHeartbeatLoopHeartbeatTimeoutNoticeWakeupActualSideEffectResult`, and
 `ClientHeartbeatLoopHeartbeatTimeoutNoticeWakeupActualSideEffectBoundary`.
 
+### Client Outer While-Loop Connection Minimal Scope
+
+After completed body composition and the wakeup chain exist, the next minimal
+step is not a real while-loop body yet. Instead, one thin connection boundary
+can wire:
+
+1. completed continuous heartbeat loop body result
+2. wakeup planning
+3. wakeup execution
+4. wakeup actual side effect
+5. explicit timer wait / retry execution / reconnect execution actions
+6. stop passthrough
+
+This keeps the future outer while-loop dumb: it can delegate one turn to the
+existing boundaries, receive one explicit continue or stop result, and avoid
+merging wakeup / timer / retry / reconnect into one vague side effect.
+
+Current minimal scope:
+
+1. `ClientHeartbeatLoopOuterWhileLoopConnectionBoundary` receives one
+   `ClientHeartbeatLoopRepeatedInvocationResult`.
+2. It calls, in order:
+   - `ClientHeartbeatLoopCompletedContinuousBodyBoundary`
+   - `ClientHeartbeatLoopHeartbeatTimeoutNoticeWakeupBoundary`
+   - `ClientHeartbeatLoopHeartbeatTimeoutNoticeWakeupExecutionBoundary`
+   - `ClientHeartbeatLoopHeartbeatTimeoutNoticeWakeupActualSideEffectBoundary`
+3. If the final result is `ContinueWithoutWakeupSideEffect { output }`:
+   - outer connection returns `Continue { output }`
+   - continue output keeps:
+     - `carry`
+     - `NoWakeupSideEffect`
+     - explicit `timer_wait`
+     - explicit `retry_execution`
+     - explicit `reconnect_execution`
+4. If the final result is `ContinueWithWakeupSideEffectApplied { output }`:
+   - outer connection returns `Continue { output }`
+   - continue output keeps:
+     - `carry`
+     - explicit wakeup state
+     - explicit `timer_wait`
+     - explicit `retry_execution`
+     - explicit `reconnect_execution`
+5. If the final result is `Stop { output }`:
+   - outer connection returns `Stop { output }`
+   - stop path remains explicit and unchanged
+
+Relationship between completed body, wakeup actual-side-effect boundary,
+timer/retry/reconnect actions, and the future actual while-loop runner:
+
+- completed continuous heartbeat loop body boundary
+  - Produces explicit continue or stop only.
+  - Does not own wakeup follow-up.
+- wakeup actual-side-effect boundary
+  - Finalizes wakeup-related shaping only.
+  - Does not own timer wait, retry execution, reconnect execution, or stop
+    semantics.
+- outer while-loop connection boundary
+  - Wires completed body and wakeup boundaries in order.
+  - Re-exposes continue output as separate wakeup / timer / retry / reconnect
+    fields.
+  - Does not run real timer wait, retry execution, reconnect execution, or a
+    real while-loop.
+- future actual while-loop runner
+  - Will later consume the explicit continue output from the connection
+    boundary.
+  - Should remain a thin delegate that applies returned actions in order
+    without reinterpreting cleanup or stop output.
+
+Current code reflects this with
+`ClientHeartbeatLoopOuterWhileLoopWakeupState`,
+`ClientHeartbeatLoopOuterWhileLoopConnectionOutput`,
+`ClientHeartbeatLoopOuterWhileLoopConnectionResult`, and
+`ClientHeartbeatLoopOuterWhileLoopConnectionBoundary`.
+
 ### Heartbeat Client Ack Observation Flow
 
 The client ack observation flow returns the missing `client_received_at`

@@ -4,6 +4,52 @@
 ### 担当 - Codex
 
 ### 今回の作業
+- client continuous heartbeat loop execution path に戻り、outer while-loop connection の最小実装形を追加した。
+- completed continuous heartbeat loop body から wakeup planning / execution / actual side effect を順に配線し、continue path と stop path を崩さない接続 boundary を追加した。
+- wakeup state を timer / retry / reconnect から分離したまま、future outer while-loop runner が受け取る explicit continue output だけを整えた。
+
+### 変更ファイル
+- `apps/client/src/lib.rs`
+- `docs/architecture/system-design.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### 実装したこと
+- `ClientHeartbeatLoopOuterWhileLoopWakeupState`
+- `ClientHeartbeatLoopOuterWhileLoopConnectionOutput`
+- `ClientHeartbeatLoopOuterWhileLoopConnectionResult`
+- `ClientHeartbeatLoopOuterWhileLoopConnectionBoundary`
+- completed body -> wakeup planning -> wakeup execution -> wakeup actual side effect の固定順配線
+- continue path が wakeup / timer wait / retry execution / reconnect execution を別 field のまま保持する単体テスト
+- stop path が completed body の terminal output を再解釈しない単体テスト
+
+### 未実装 / 保留
+- client 側 continuous heartbeat loop の outer while-loop 本体
+- actual timer wait / retry execution / reconnect の実処理
+- RTT / offset metrics state commit の継続 loop 接続
+- metrics snapshot export cadence / dashboard refresh 方針
+- video path / switcher / OBS の本実装
+
+### 次にやる候補
+- client 側 outer while-loop 本体の最小 turn 実行形を整理する
+- actual timer wait / retry execution / reconnect の実処理を最小単位へ分解する
+- RTT / offset metrics state commit / cadence / dashboard refresh 方針整理
+
+### TODO更新内容
+- 現在位置に outer while-loop connection 境界の完了を反映した。
+- 直近でやることを outer while-loop 本体の最小 turn 実行形へ更新した。
+- heartbeat / 検証タスクに outer while-loop connection 境界と関連単体テスト完了を追加した。
+
+### 検証
+- `cargo fmt`
+- `cargo fmt --check`
+- `cargo test -p stream-sync-client client_heartbeat_loop_cleanup`
+- `cargo check --workspace`
+
+## 2026-04-24
+### 担当 - Codex
+
+### 今回の作業
 - client continuous heartbeat loop execution path に戻り、heartbeat timeout notice wakeup actual side effect の最小実装形を追加した。
 - wakeup execution result だけを入力源にし、continue without wakeup / continue with wakeup / stop を崩さない actual side-effect boundary を追加した。
 - timer / retry / reconnect execution には触れず、wakeup responsibility だけを 1 段分離した。
