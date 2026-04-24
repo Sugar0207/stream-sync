@@ -2533,6 +2533,69 @@ Responsibility split:
 This keeps the completed continuous heartbeat loop out of scope while fixing
 the call shape that the future loop should use.
 
+### Heartbeat Timeout Multi-Client Loop Boundary
+
+The multi-client heartbeat timeout loop is now a thin caller over the existing
+one-client timeout tick. It snapshots authenticated client ids from the
+caller-owned registry, calls the one-client tick once per registered client,
+then stores any timeout notice handoff into caller-owned outbound queue
+storage. It does not execute notice send wakeups or become the completed
+continuous server loop.
+
+Current implementation scope:
+
+1. The caller supplies:
+   - immutable `ServerHeartbeatLivenessState`
+   - mutable `AuthenticatedSenderRegistry`
+   - mutable `ServerOutboundQueueCollection`
+   - `ServerHeartbeatTimeoutMultiClientLoopInput`
+   - caller-owned timeout log writer
+2. `ServerHeartbeatTimeoutMultiClientLoopBoundary::run_all_registered`
+   snapshots `client_id` values from the authenticated registry before
+   mutation.
+3. For each registered client, it calls
+   `ServerHeartbeatTimeoutLoopTickBoundary::run_one_client`.
+4. It preserves each one-client tick result in
+   `ServerHeartbeatTimeoutMultiClientLoopClientResult`.
+5. It passes each tick apply result to
+   `ServerHeartbeatTimeoutNoticeQueueStorageBoundary::store_notice`.
+6. It returns:
+   - `NoClientsAvailable` when the authenticated registry has no clients
+   - `AllClientsProcessed` with per-client results and timeout action count
+7. Notice queue storage remains separate from wakeup execution:
+   - the boundary may store timeout notice items
+   - it returns storage results that include wakeup plans
+   - it does not signal, spawn, encode, send, retry, or run a send loop
+
+Responsibility split:
+
+- authenticated sender registry
+  - Provides the client ids to scan.
+  - Receives explicit invalidation through the existing one-client apply path.
+  - Remains caller-owned.
+- heartbeat liveness state
+  - Is read by one-client timeout evaluation.
+  - Is not mutated by the multi-client loop.
+- timeout policy
+  - Is supplied once for the loop pass and reused for each one-client tick.
+  - Is not reinterpreted by the multi-client loop.
+- timeout action plan/apply
+  - Remains owned by the existing one-client tick boundary.
+  - Produces invalidation/log/notice handoff exactly as before.
+- notice queue storage
+  - Stores optional notice handoffs into caller-owned queue collection.
+  - Keeps send wakeup as a typed plan only.
+- future continuous server loop owner
+  - Still owns cadence, sleeping, stop condition, writer lifetime, queue
+    lifetime, wakeup execution, receive/send loop coordination, retry policy,
+    and metrics.
+
+Current code reflects this with
+`ServerHeartbeatTimeoutMultiClientLoopInput`,
+`ServerHeartbeatTimeoutMultiClientLoopClientResult`,
+`ServerHeartbeatTimeoutMultiClientLoopResult`, and
+`ServerHeartbeatTimeoutMultiClientLoopBoundary`.
+
 ### Heartbeat Timeout Notice Queue Storage / Send Wakeup
 
 Timeout notice queue storage is the narrow boundary after timeout apply. It is

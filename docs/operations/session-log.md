@@ -8900,3 +8900,41 @@
 ### TODO Update
 - Current focus updated to include completed dashboard refresh runtime wiring in the runner.
 - Next items reordered around server timeout loop and later video/switcher/OBS work.
+
+---
+
+## 2026-04-24
+### Type
+- Codex
+
+### Work
+- Added a thin server heartbeat timeout multi-client loop boundary over the existing one-client timeout tick.
+- The multi-client loop snapshots authenticated client ids, runs one-client timeout tick per client, and stores timeout notice handoffs into caller-owned queue storage.
+- Added explicit no-client and all-clients-processed results with per-client tick and notice queue storage details.
+- Kept notice queue storage separate from notice send wakeup execution and continuous receive/send loop ownership.
+
+### Changed Files
+- `apps/server/src/lib.rs`
+- `docs/architecture/system-design.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### Decisions
+- Authenticated sender registry, liveness state, outbound notice queue, and timeout log writer remain caller-owned.
+- The multi-client loop does not reinterpret timeout evaluation, action planning, or apply semantics from the one-client tick.
+- Notice queue storage may request a future send wakeup, but the loop does not execute that wakeup.
+- Video, switcher, OBS, and dashboard UI remain out of scope.
+
+### Unresolved
+- video path / switcher / OBS integration
+- dashboard UI rendering
+- real continuous server loop cadence / sleep / stop ownership beyond this timeout pass
+
+### Next
+- Move toward video path / switcher / OBS integration planning or implementation.
+- Keep dashboard UI rendering for a later phase.
+
+### TODO Update
+- Marked server heartbeat timeout multi-client loop body complete.
+- Current focus updated with the completed multi-client timeout loop boundary.
+- Next items reduced to later video/switcher/OBS integration.

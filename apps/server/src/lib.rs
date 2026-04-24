@@ -6448,6 +6448,106 @@ impl ServerHeartbeatTimeoutLoopTickBoundary {
     }
 }
 
+/// Input for one multi-client heartbeat timeout loop pass.
+///
+/// The caller owns the clock sample and policy. This input does not imply
+/// sleeping, receiving packets, sending notices, or owning registry/state.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ServerHeartbeatTimeoutMultiClientLoopInput {
+    pub evaluated_at: TimestampMicros,
+    pub policy: ServerHeartbeatTimeoutPolicy,
+}
+
+/// Result for one registered client processed by the multi-client timeout loop.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ServerHeartbeatTimeoutMultiClientLoopClientResult {
+    pub client_id: ClientId,
+    pub tick: ServerHeartbeatTimeoutLoopTickResult,
+    pub notice_queue_storage: ServerHeartbeatTimeoutNoticeQueueStorageResult,
+}
+
+/// Result of one multi-client heartbeat timeout loop pass.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ServerHeartbeatTimeoutMultiClientLoopResult {
+    NoClientsAvailable {
+        input: ServerHeartbeatTimeoutMultiClientLoopInput,
+    },
+    AllClientsProcessed {
+        input: ServerHeartbeatTimeoutMultiClientLoopInput,
+        processed: Vec<ServerHeartbeatTimeoutMultiClientLoopClientResult>,
+        timeout_actions_applied: usize,
+    },
+}
+
+/// Thin multi-client heartbeat timeout loop over the existing one-client tick.
+///
+/// This boundary snapshots authenticated client ids from the caller-owned
+/// registry, invokes `ServerHeartbeatTimeoutLoopTickBoundary` once per client,
+/// and stores timeout notice handoffs into caller-owned queue storage. It does
+/// not reinterpret one-client tick semantics, execute send wakeups, send UDP,
+/// receive packets, sleep, or own registry/liveness/queue/writer state.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct ServerHeartbeatTimeoutMultiClientLoopBoundary {
+    one_client: ServerHeartbeatTimeoutLoopTickBoundary,
+    notice_queue: ServerHeartbeatTimeoutNoticeQueueStorageBoundary,
+}
+
+impl ServerHeartbeatTimeoutMultiClientLoopBoundary {
+    pub fn run_all_registered<W: io::Write>(
+        &self,
+        liveness_state: &ServerHeartbeatLivenessState,
+        registry: &mut AuthenticatedSenderRegistry,
+        notice_queue: &mut ServerOutboundQueueCollection,
+        input: ServerHeartbeatTimeoutMultiClientLoopInput,
+        mut timeout_log_writer: W,
+    ) -> io::Result<ServerHeartbeatTimeoutMultiClientLoopResult> {
+        let client_ids: Vec<ClientId> = registry
+            .entries()
+            .map(|entry| entry.client_id.clone())
+            .collect();
+
+        if client_ids.is_empty() {
+            return Ok(ServerHeartbeatTimeoutMultiClientLoopResult::NoClientsAvailable { input });
+        }
+
+        let mut processed = Vec::with_capacity(client_ids.len());
+        let mut timeout_actions_applied = 0usize;
+
+        for client_id in client_ids {
+            let tick = self.one_client.run_one_client(
+                liveness_state,
+                registry,
+                ServerHeartbeatTimeoutLoopTickInput {
+                    client_id: client_id.clone(),
+                    evaluated_at: input.evaluated_at,
+                    policy: input.policy,
+                },
+                &mut timeout_log_writer,
+            )?;
+            if tick.apply.registry_invalidation.is_some()
+                || tick.apply.timeout_log_event.is_some()
+                || tick.apply.notice_handoff.is_some()
+            {
+                timeout_actions_applied = timeout_actions_applied.saturating_add(1);
+            }
+            let notice_queue_storage = self.notice_queue.store_notice(notice_queue, &tick.apply);
+            processed.push(ServerHeartbeatTimeoutMultiClientLoopClientResult {
+                client_id,
+                tick,
+                notice_queue_storage,
+            });
+        }
+
+        Ok(
+            ServerHeartbeatTimeoutMultiClientLoopResult::AllClientsProcessed {
+                input,
+                processed,
+                timeout_actions_applied,
+            },
+        )
+    }
+}
+
 /// Boundary that commits heartbeat liveness state and evaluates timeout policy.
 ///
 /// This boundary consumes `ServerHeartbeatStateInput` produced by the heartbeat
@@ -13576,6 +13676,291 @@ shared_token = "secret"
     }
 
     #[test]
+    fn heartbeat_timeout_multi_client_loop_processes_multiple_registered_clients() {
+        let source_1 = packet_source();
+        let source_2 = packet_source_at(5001);
+        let mut registry = AuthenticatedSenderRegistry::default();
+        register_test_client(&mut registry, "client-1", source_1);
+        register_test_client(&mut registry, "client-2", source_2);
+        let mut state = ServerHeartbeatLivenessState::default();
+        commit_liveness_for_test(
+            &mut state,
+            "client-1",
+            source_1,
+            TimestampMicros(10_000_100),
+        );
+        commit_liveness_for_test(
+            &mut state,
+            "client-2",
+            source_2,
+            TimestampMicros(10_000_550),
+        );
+        let mut notices = ServerOutboundQueueCollection::default();
+        let mut output = Vec::new();
+
+        let result = ServerHeartbeatTimeoutMultiClientLoopBoundary::default()
+            .run_all_registered(
+                &state,
+                &mut registry,
+                &mut notices,
+                ServerHeartbeatTimeoutMultiClientLoopInput {
+                    evaluated_at: TimestampMicros(10_000_700),
+                    policy: ServerHeartbeatTimeoutPolicy::new(500),
+                },
+                &mut output,
+            )
+            .expect("multi-client timeout loop should run");
+
+        let ServerHeartbeatTimeoutMultiClientLoopResult::AllClientsProcessed {
+            processed,
+            timeout_actions_applied,
+            ..
+        } = result
+        else {
+            panic!("registered clients should be processed");
+        };
+        assert_eq!(processed.len(), 2);
+        assert_eq!(timeout_actions_applied, 1);
+        assert!(matches!(
+            processed[0].tick.apply.evaluation,
+            ServerHeartbeatTimeoutEvaluation::TimedOut { .. }
+        ));
+        assert!(matches!(
+            processed[1].tick.apply.evaluation,
+            ServerHeartbeatTimeoutEvaluation::Alive { .. }
+        ));
+        assert_eq!(notices.len(), 1);
+        assert!(String::from_utf8(output)
+            .expect("timeout log should be utf-8")
+            .contains("\"client_id\":\"client-1\""));
+    }
+
+    #[test]
+    fn heartbeat_timeout_multi_client_loop_no_client_path_remains_explicit() {
+        let state = ServerHeartbeatLivenessState::default();
+        let mut registry = AuthenticatedSenderRegistry::default();
+        let mut notices = ServerOutboundQueueCollection::default();
+        let input = ServerHeartbeatTimeoutMultiClientLoopInput {
+            evaluated_at: TimestampMicros(11_000_000),
+            policy: ServerHeartbeatTimeoutPolicy::new(500),
+        };
+        let mut output = Vec::new();
+
+        let result = ServerHeartbeatTimeoutMultiClientLoopBoundary::default()
+            .run_all_registered(
+                &state,
+                &mut registry,
+                &mut notices,
+                input.clone(),
+                &mut output,
+            )
+            .expect("empty registry should not fail");
+
+        assert_eq!(
+            result,
+            ServerHeartbeatTimeoutMultiClientLoopResult::NoClientsAvailable { input }
+        );
+        assert!(notices.is_empty());
+        assert!(output.is_empty());
+    }
+
+    #[test]
+    fn heartbeat_timeout_multi_client_loop_preserves_timeout_action_application_per_client() {
+        let source_1 = packet_source();
+        let source_2 = packet_source_at(5002);
+        let mut registry = AuthenticatedSenderRegistry::default();
+        register_test_client(&mut registry, "client-1", source_1);
+        register_test_client(&mut registry, "client-2", source_2);
+        let mut state = ServerHeartbeatLivenessState::default();
+        commit_liveness_for_test(
+            &mut state,
+            "client-1",
+            source_1,
+            TimestampMicros(12_000_100),
+        );
+        commit_liveness_for_test(
+            &mut state,
+            "client-2",
+            source_2,
+            TimestampMicros(12_000_100),
+        );
+        let mut notices = ServerOutboundQueueCollection::default();
+        let mut output = Vec::new();
+
+        let result = ServerHeartbeatTimeoutMultiClientLoopBoundary::default()
+            .run_all_registered(
+                &state,
+                &mut registry,
+                &mut notices,
+                ServerHeartbeatTimeoutMultiClientLoopInput {
+                    evaluated_at: TimestampMicros(12_000_700),
+                    policy: ServerHeartbeatTimeoutPolicy::new(500),
+                },
+                &mut output,
+            )
+            .expect("multi-client timeout loop should apply timeout actions");
+
+        let ServerHeartbeatTimeoutMultiClientLoopResult::AllClientsProcessed {
+            processed,
+            timeout_actions_applied,
+            ..
+        } = result
+        else {
+            panic!("registered clients should be processed");
+        };
+        assert_eq!(processed.len(), 2);
+        assert_eq!(timeout_actions_applied, 2);
+        assert!(processed
+            .iter()
+            .all(|client| client.tick.apply.registry_invalidation.is_some()));
+        assert_eq!(notices.len(), 2);
+        assert_eq!(
+            AuthenticatedSenderRegistryBoundary.check_source(
+                &registry,
+                &ClientId("client-1".to_string()),
+                source_1,
+            ),
+            AuthenticatedSenderCheck::Rejected(AuthenticatedSenderRejectReason::UnknownClient)
+        );
+        assert_eq!(
+            AuthenticatedSenderRegistryBoundary.check_source(
+                &registry,
+                &ClientId("client-2".to_string()),
+                source_2,
+            ),
+            AuthenticatedSenderCheck::Rejected(AuthenticatedSenderRejectReason::UnknownClient)
+        );
+    }
+
+    #[test]
+    fn heartbeat_timeout_multi_client_loop_keeps_notice_queue_storage_separate_from_wakeup_execution(
+    ) {
+        let source = packet_source();
+        let mut registry = registry_with_client("client-1", source);
+        let mut state = ServerHeartbeatLivenessState::default();
+        commit_liveness_for_test(&mut state, "client-1", source, TimestampMicros(13_000_100));
+        let mut notices = ServerOutboundQueueCollection::default();
+        let mut output = Vec::new();
+
+        let result = ServerHeartbeatTimeoutMultiClientLoopBoundary::default()
+            .run_all_registered(
+                &state,
+                &mut registry,
+                &mut notices,
+                ServerHeartbeatTimeoutMultiClientLoopInput {
+                    evaluated_at: TimestampMicros(13_000_700),
+                    policy: ServerHeartbeatTimeoutPolicy::new(500),
+                },
+                &mut output,
+            )
+            .expect("timeout loop should store notice");
+
+        let ServerHeartbeatTimeoutMultiClientLoopResult::AllClientsProcessed { processed, .. } =
+            result
+        else {
+            panic!("registered client should be processed");
+        };
+        assert_eq!(notices.len(), 1);
+        assert_eq!(
+            processed[0].notice_queue_storage.wakeup(),
+            ServerHeartbeatTimeoutNoticeSendWakeupPlan::RequestSendLoopWakeup {
+                reason: ServerHeartbeatTimeoutNoticeSendWakeupReason::TimeoutNoticeQueued
+            }
+        );
+        let queued = ServerOutboundQueueCollectionBoundary.dequeue_one(&mut notices);
+        assert!(matches!(
+            queued,
+            ServerOutboundQueueDequeueRuntimeResult::Ready(_)
+        ));
+    }
+
+    #[test]
+    fn heartbeat_timeout_multi_client_loop_does_not_reinterpret_one_client_tick_semantics() {
+        let source = packet_source();
+        let mut multi_registry = registry_with_client("client-1", source);
+        let mut single_registry = registry_with_client("client-1", source);
+        let mut state = ServerHeartbeatLivenessState::default();
+        commit_liveness_for_test(&mut state, "client-1", source, TimestampMicros(14_000_100));
+        let input = ServerHeartbeatTimeoutLoopTickInput {
+            client_id: ClientId("client-1".to_string()),
+            evaluated_at: TimestampMicros(14_000_700),
+            policy: ServerHeartbeatTimeoutPolicy::new(500),
+        };
+        let mut single_output = Vec::new();
+        let single = ServerHeartbeatTimeoutLoopTickBoundary::default()
+            .run_one_client(
+                &state,
+                &mut single_registry,
+                input.clone(),
+                &mut single_output,
+            )
+            .expect("single-client tick should run");
+        let mut notices = ServerOutboundQueueCollection::default();
+        let mut multi_output = Vec::new();
+
+        let multi = ServerHeartbeatTimeoutMultiClientLoopBoundary::default()
+            .run_all_registered(
+                &state,
+                &mut multi_registry,
+                &mut notices,
+                ServerHeartbeatTimeoutMultiClientLoopInput {
+                    evaluated_at: input.evaluated_at,
+                    policy: input.policy,
+                },
+                &mut multi_output,
+            )
+            .expect("multi-client loop should run");
+
+        let ServerHeartbeatTimeoutMultiClientLoopResult::AllClientsProcessed { processed, .. } =
+            multi
+        else {
+            panic!("registered client should be processed");
+        };
+        assert_eq!(processed.len(), 1);
+        assert_eq!(processed[0].tick.action_plan, single.action_plan);
+        assert_eq!(processed[0].tick.apply.evaluation, single.apply.evaluation);
+        assert_eq!(
+            processed[0].tick.apply.registry_invalidation,
+            single.apply.registry_invalidation
+        );
+    }
+
+    #[test]
+    fn heartbeat_timeout_multi_client_loop_keeps_caller_owned_state_outside_loop_body() {
+        let source = packet_source();
+        let mut registry = registry_with_client("client-1", source);
+        let mut state = ServerHeartbeatLivenessState::default();
+        commit_liveness_for_test(&mut state, "client-1", source, TimestampMicros(15_000_100));
+        let mut notices = ServerOutboundQueueCollection::default();
+        let mut output = Vec::new();
+
+        let _result = ServerHeartbeatTimeoutMultiClientLoopBoundary::default()
+            .run_all_registered(
+                &state,
+                &mut registry,
+                &mut notices,
+                ServerHeartbeatTimeoutMultiClientLoopInput {
+                    evaluated_at: TimestampMicros(15_000_700),
+                    policy: ServerHeartbeatTimeoutPolicy::new(500),
+                },
+                &mut output,
+            )
+            .expect("multi-client loop should run against caller-owned state");
+
+        assert_eq!(state.len(), 1, "liveness state remains caller-owned");
+        assert_eq!(notices.len(), 1, "notice queue remains caller-owned");
+        assert_eq!(
+            AuthenticatedSenderRegistryBoundary.check_source(
+                &registry,
+                &ClientId("client-1".to_string()),
+                source,
+            ),
+            AuthenticatedSenderCheck::Rejected(AuthenticatedSenderRejectReason::UnknownClient),
+            "caller-owned registry receives explicit timeout invalidation"
+        );
+    }
+
+    #[test]
     fn heartbeat_timebase_plan_boundary_preserves_ids_and_timestamp_sample() {
         let input = ServerHeartbeatTimebaseInput {
             client_id: ClientId("client-1".to_string()),
@@ -14976,6 +15361,10 @@ shared_token = "secret"
             .into()
     }
 
+    fn packet_source_at(port: u16) -> PacketSource {
+        SocketAddr::from(([127, 0, 0, 1], port)).into()
+    }
+
     fn send_log_context() -> OutboundSendLogContext {
         OutboundSendLogContext {
             destination: packet_source().into(),
@@ -15048,8 +15437,17 @@ shared_token = "secret"
 
     fn registry_with_client(client_id: &str, source: PacketSource) -> AuthenticatedSenderRegistry {
         let mut registry = AuthenticatedSenderRegistry::default();
+        register_test_client(&mut registry, client_id, source);
+        registry
+    }
+
+    fn register_test_client(
+        registry: &mut AuthenticatedSenderRegistry,
+        client_id: &str,
+        source: PacketSource,
+    ) {
         AuthenticatedSenderRegistryBoundary.register(
-            &mut registry,
+            registry,
             AuthenticatedSenderRegistration {
                 client_id: ClientId(client_id.to_string()),
                 source,
@@ -15058,7 +15456,33 @@ shared_token = "secret"
                 registered_at: None,
             },
         );
-        registry
+    }
+
+    fn commit_liveness_for_test(
+        state: &mut ServerHeartbeatLivenessState,
+        client_id: &str,
+        source: PacketSource,
+        server_received_at: TimestampMicros,
+    ) {
+        ServerHeartbeatLivenessCommitBoundary.commit(
+            state,
+            ServerHeartbeatStateInput {
+                source,
+                authenticated_sender: AuthenticatedSenderEntry {
+                    client_id: ClientId(client_id.to_string()),
+                    source,
+                    run_id: RunId("run-1".to_string()),
+                    protocol_version: ProtocolVersion(2),
+                    registered_at: None,
+                },
+                client_id: ClientId(client_id.to_string()),
+                run_id: RunId("run-1".to_string()),
+                protocol_version: ProtocolVersion(2),
+                heartbeat_sent_at: TimestampMicros(server_received_at.0.saturating_sub(100)),
+                server_received_at,
+                short_status: None,
+            },
+        );
     }
 
     fn body_result_with_handler_handoff(
