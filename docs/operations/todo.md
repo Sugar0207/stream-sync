@@ -661,11 +661,11 @@
 - metrics snapshot export cadence now has a minimal client loop boundary based only on caller-owned metrics state, caller-owned cadence state, current time, and configured export interval.
 - dashboard refresh consumer policy now has a minimal client loop boundary based only on explicit future dashboard refresh handoff / snapshot export output.
 - the loop runner owns only socket-slot wiring and repeated-body execution coordination; socket replacement still happens through the injected hook and not inside the repeated body.
+- the loop runner can now evaluate metrics snapshot export cadence from caller-owned metrics/cadence state after repeated-body execution while keeping metrics commit and dashboard refresh separate.
 - metrics commit, snapshot export cadence, and dashboard refresh consumer policy remain separate from timer wait, retry, reconnect, socket ownership, cleanup, UI rendering, video, switcher, and OBS.
 - actual dashboard UI rendering remains unimplemented.
 
 ## Next Items
-1. metrics snapshot export cadence runtime wiring into the future loop owner
-2. dashboard refresh runtime wiring into the future metrics consumer owner
-3. server heartbeat timeout loop tick multi-client continuous execution
-4. video path / switcher / OBS integration later
+1. dashboard refresh runtime wiring into the future metrics consumer owner
+2. server heartbeat timeout loop tick multi-client continuous execution
+3. video path / switcher / OBS integration later

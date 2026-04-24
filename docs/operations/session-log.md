@@ -8826,3 +8826,40 @@
 ### TODO Update
 - Current focus updated to include completed minimal runner live socket ownership wiring.
 - Next items reordered around metrics snapshot cadence runtime wiring, dashboard refresh runtime wiring, server timeout loop, and later video/switcher/OBS work.
+
+---
+
+## 2026-04-24
+### Type
+- Codex
+
+### Work
+- Wired metrics snapshot export cadence into the client continuous heartbeat loop runner.
+- Added caller-owned metrics/cadence runtime input for runner cadence evaluation.
+- Added runner cadence runtime result that keeps loop output and snapshot export result side by side.
+- Kept metrics commit, snapshot cadence, dashboard refresh policy, and repeated body responsibilities separate.
+
+### Changed Files
+- `apps/client/src/lib.rs`
+- `docs/architecture/system-design.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### Decisions
+- The runner borrows metrics state and receives cadence state explicitly from the caller.
+- Snapshot cadence is evaluated after normal runner execution and does not alter repeated-body continuation or stop output.
+- Snapshot cadence result remains the existing due / not-due / deferred enum.
+- Future dashboard refresh remains an explicit handoff from snapshot export; the runner does not evaluate refresh policy or render UI.
+
+### Unresolved
+- runtime wiring of dashboard refresh into the future metrics consumer owner
+- server heartbeat timeout loop tick multi-client continuous execution
+- video path / switcher / OBS integration
+
+### Next
+- Wire dashboard refresh runtime handling from explicit snapshot export handoff.
+- Return to server heartbeat timeout loop tick multi-client continuous execution.
+
+### TODO Update
+- Current focus updated to include completed metrics snapshot export cadence runtime wiring in the runner.
+- Next items reordered around dashboard refresh runtime wiring, server timeout loop, and later video/switcher/OBS work.

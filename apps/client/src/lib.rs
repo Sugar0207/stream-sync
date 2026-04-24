@@ -4495,17 +4495,41 @@ pub enum ClientHeartbeatLoopRunnerResult {
     },
 }
 
+/// Caller-owned metrics snapshot cadence state injected into the loop runner.
+///
+/// The runner borrows metrics state and receives cadence state explicitly. It
+/// does not own metrics commit state and does not move cadence logic into the
+/// repeated body.
+#[derive(Debug, Clone, Copy)]
+pub struct ClientHeartbeatLoopRunnerMetricsSnapshotCadenceRuntimeInput<'a> {
+    pub metrics_state: Option<&'a ClientHeartbeatRttOffsetMetricsState>,
+    pub cadence_state: Option<ClientHeartbeatRttOffsetMetricsSnapshotCadenceState>,
+    pub now: TimestampMicros,
+    pub export_interval_micros: u64,
+    pub consumer: ClientHeartbeatRttOffsetMetricsSnapshotConsumer,
+}
+
+/// Runner observation that keeps loop execution and snapshot cadence separate.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClientHeartbeatLoopRunnerMetricsSnapshotCadenceRuntimeResult {
+    pub loop_result: ClientHeartbeatLoopRunnerResult,
+    pub snapshot_export: ClientHeartbeatRttOffsetMetricsSnapshotExportCadenceResult,
+}
+
 /// Minimal future continuous heartbeat loop runner wiring boundary.
 ///
 /// This runner owns the live UDP socket slot, constructs the real socket
 /// re-establishment hook, and drives the existing repeated body through
-/// `run_with_hook(...)`. It does not move socket ownership into the repeated
-/// body and it does not add metrics cadence, dashboard refresh, video,
-/// switcher, or OBS behavior.
+/// `run_with_hook(...)`. Metrics snapshot cadence can be evaluated from
+/// caller-owned metrics/cadence state after the repeated body runs, but metrics
+/// commit and dashboard refresh remain separate boundaries. It does not move
+/// socket or metrics ownership into the repeated body and it does not add
+/// dashboard refresh, video, switcher, or OBS behavior.
 #[derive(Debug, Clone)]
 pub struct ClientHeartbeatLoopRunner {
     socket_slot: Arc<Mutex<Option<UdpSocket>>>,
     repeated_body: ClientHeartbeatLoopOuterWhileLoopRepeatedBodyBoundary,
+    metrics_snapshot_cadence: ClientHeartbeatRttOffsetMetricsSnapshotExportCadenceBoundary,
 }
 
 impl ClientHeartbeatLoopRunner {
@@ -4513,6 +4537,8 @@ impl ClientHeartbeatLoopRunner {
         Self {
             socket_slot: Arc::new(Mutex::new(initial_socket)),
             repeated_body: ClientHeartbeatLoopOuterWhileLoopRepeatedBodyBoundary::default(),
+            metrics_snapshot_cadence:
+                ClientHeartbeatRttOffsetMetricsSnapshotExportCadenceBoundary::default(),
         }
     }
 
@@ -4560,6 +4586,30 @@ impl ClientHeartbeatLoopRunner {
                     Err(error) => ClientHeartbeatLoopRunnerResult::Error { error },
                 }
             }
+        }
+    }
+
+    pub fn run_with_metrics_snapshot_cadence(
+        &self,
+        input: ClientHeartbeatLoopOuterWhileLoopRepeatedBodyInput,
+        cadence: ClientHeartbeatLoopRunnerMetricsSnapshotCadenceRuntimeInput<'_>,
+    ) -> ClientHeartbeatLoopRunnerMetricsSnapshotCadenceRuntimeResult {
+        let loop_result = self.run(input);
+        let snapshot_input = self.metrics_snapshot_cadence.build_input(
+            cadence.metrics_state,
+            cadence.cadence_state,
+            cadence.now,
+            cadence.export_interval_micros,
+        );
+        let snapshot_export = self.metrics_snapshot_cadence.evaluate(
+            cadence.metrics_state,
+            snapshot_input,
+            cadence.consumer,
+        );
+
+        ClientHeartbeatLoopRunnerMetricsSnapshotCadenceRuntimeResult {
+            loop_result,
+            snapshot_export,
         }
     }
 }
@@ -14509,6 +14559,204 @@ mod tests {
             socket,
             ClientHeartbeatLoopRunnerSocketOwnershipState { has_socket: true }
         );
+    }
+
+    #[test]
+    fn client_heartbeat_loop_cleanup_runner_invokes_snapshot_cadence_when_metrics_state_available()
+    {
+        let runner = ClientHeartbeatLoopRunner::new(None);
+        let metrics_state = cleanup_test_metrics_state_with_one_sample();
+        let cadence_state =
+            ClientHeartbeatRttOffsetMetricsSnapshotCadenceState::new(TimestampMicros(10_000));
+
+        let result = runner.run_with_metrics_snapshot_cadence(
+            ClientHeartbeatLoopOuterWhileLoopRepeatedBodyInput {
+                current: cleanup_test_repeated_apply_timer_continue(),
+                max_turns: std::num::NonZeroUsize::new(1).unwrap(),
+            },
+            ClientHeartbeatLoopRunnerMetricsSnapshotCadenceRuntimeInput {
+                metrics_state: Some(&metrics_state),
+                cadence_state: Some(cadence_state),
+                now: TimestampMicros(11_000),
+                export_interval_micros: 1_000,
+                consumer: ClientHeartbeatRttOffsetMetricsSnapshotConsumer::FutureDashboardRefresh,
+            },
+        );
+
+        assert!(matches!(
+            result.loop_result,
+            ClientHeartbeatLoopRunnerResult::Completed { .. }
+        ));
+        assert!(matches!(
+            result.snapshot_export,
+            ClientHeartbeatRttOffsetMetricsSnapshotExportCadenceResult::SnapshotExportDue { .. }
+        ));
+    }
+
+    #[test]
+    fn client_heartbeat_loop_cleanup_runner_preserves_snapshot_due_result() {
+        let runner = ClientHeartbeatLoopRunner::new(None);
+        let metrics_state = cleanup_test_metrics_state_with_one_sample();
+        let cadence_state =
+            ClientHeartbeatRttOffsetMetricsSnapshotCadenceState::new(TimestampMicros(10_000));
+
+        let result = runner.run_with_metrics_snapshot_cadence(
+            ClientHeartbeatLoopOuterWhileLoopRepeatedBodyInput {
+                current: cleanup_test_repeated_apply_timer_continue(),
+                max_turns: std::num::NonZeroUsize::new(1).unwrap(),
+            },
+            ClientHeartbeatLoopRunnerMetricsSnapshotCadenceRuntimeInput {
+                metrics_state: Some(&metrics_state),
+                cadence_state: Some(cadence_state),
+                now: TimestampMicros(11_000),
+                export_interval_micros: 1_000,
+                consumer: ClientHeartbeatRttOffsetMetricsSnapshotConsumer::FutureDashboardRefresh,
+            },
+        );
+
+        let ClientHeartbeatRttOffsetMetricsSnapshotExportCadenceResult::SnapshotExportDue {
+            handoff,
+            next_cadence_state,
+        } = result.snapshot_export
+        else {
+            panic!("runner cadence wiring should preserve due export result");
+        };
+        assert_eq!(handoff.snapshot.exported_at, TimestampMicros(11_000));
+        assert_eq!(handoff.snapshot.records.len(), 1);
+        assert!(handoff.future_dashboard_refresh.is_some());
+        assert_eq!(
+            next_cadence_state.last_exported_at,
+            Some(TimestampMicros(11_000))
+        );
+    }
+
+    #[test]
+    fn client_heartbeat_loop_cleanup_runner_preserves_snapshot_not_due_result() {
+        let runner = ClientHeartbeatLoopRunner::new(None);
+        let metrics_state = cleanup_test_metrics_state_with_one_sample();
+        let cadence_state =
+            ClientHeartbeatRttOffsetMetricsSnapshotCadenceState::new(TimestampMicros(10_000));
+
+        let result = runner.run_with_metrics_snapshot_cadence(
+            ClientHeartbeatLoopOuterWhileLoopRepeatedBodyInput {
+                current: cleanup_test_repeated_apply_timer_continue(),
+                max_turns: std::num::NonZeroUsize::new(1).unwrap(),
+            },
+            ClientHeartbeatLoopRunnerMetricsSnapshotCadenceRuntimeInput {
+                metrics_state: Some(&metrics_state),
+                cadence_state: Some(cadence_state),
+                now: TimestampMicros(10_999),
+                export_interval_micros: 1_000,
+                consumer: ClientHeartbeatRttOffsetMetricsSnapshotConsumer::FutureDashboardRefresh,
+            },
+        );
+
+        assert_eq!(
+            result.snapshot_export,
+            ClientHeartbeatRttOffsetMetricsSnapshotExportCadenceResult::SnapshotExportNotDue {
+                next_due_at: TimestampMicros(11_000),
+                cadence_state,
+            }
+        );
+    }
+
+    #[test]
+    fn client_heartbeat_loop_cleanup_runner_preserves_snapshot_deferred_result() {
+        let runner = ClientHeartbeatLoopRunner::new(None);
+        let cadence_state =
+            ClientHeartbeatRttOffsetMetricsSnapshotCadenceState::new(TimestampMicros(10_000));
+
+        let result = runner.run_with_metrics_snapshot_cadence(
+            ClientHeartbeatLoopOuterWhileLoopRepeatedBodyInput {
+                current: cleanup_test_repeated_apply_timer_continue(),
+                max_turns: std::num::NonZeroUsize::new(1).unwrap(),
+            },
+            ClientHeartbeatLoopRunnerMetricsSnapshotCadenceRuntimeInput {
+                metrics_state: None,
+                cadence_state: Some(cadence_state),
+                now: TimestampMicros(11_000),
+                export_interval_micros: 1_000,
+                consumer: ClientHeartbeatRttOffsetMetricsSnapshotConsumer::FutureDashboardRefresh,
+            },
+        );
+
+        assert_eq!(
+            result.snapshot_export,
+            ClientHeartbeatRttOffsetMetricsSnapshotExportCadenceResult::SnapshotExportDeferred {
+                reason:
+                    ClientHeartbeatRttOffsetMetricsSnapshotExportDeferredReason::MetricsStateUnavailable,
+            }
+        );
+    }
+
+    #[test]
+    fn client_heartbeat_loop_cleanup_runner_cadence_wiring_does_not_reinterpret_commit_logic() {
+        let runner = ClientHeartbeatLoopRunner::new(None);
+        let metrics_state = cleanup_test_metrics_state_with_one_sample();
+        let cadence_state =
+            ClientHeartbeatRttOffsetMetricsSnapshotCadenceState::new(TimestampMicros(10_000));
+
+        let result = runner.run_with_metrics_snapshot_cadence(
+            ClientHeartbeatLoopOuterWhileLoopRepeatedBodyInput {
+                current: cleanup_test_repeated_apply_timer_continue(),
+                max_turns: std::num::NonZeroUsize::new(1).unwrap(),
+            },
+            ClientHeartbeatLoopRunnerMetricsSnapshotCadenceRuntimeInput {
+                metrics_state: Some(&metrics_state),
+                cadence_state: Some(cadence_state),
+                now: TimestampMicros(11_000),
+                export_interval_micros: 1_000,
+                consumer: ClientHeartbeatRttOffsetMetricsSnapshotConsumer::FutureDashboardRefresh,
+            },
+        );
+
+        assert!(matches!(
+            result.snapshot_export,
+            ClientHeartbeatRttOffsetMetricsSnapshotExportCadenceResult::SnapshotExportDue { .. }
+        ));
+        assert_eq!(
+            metrics_state.total_samples_committed(),
+            1,
+            "snapshot cadence wiring must not commit or recalculate samples"
+        );
+        assert_eq!(
+            ClientHeartbeatRttOffsetMetricsCommitInputResult::NoCommitNeeded(
+                ClientHeartbeatRttOffsetMetricsNoCommitReason::NoAckObservation
+            ),
+            ClientHeartbeatRttOffsetMetricsCommitInputBoundary.from_ack_return(None)
+        );
+    }
+
+    #[test]
+    fn client_heartbeat_loop_cleanup_runner_keeps_repeated_body_unaware_of_metrics_cadence_runtime_wiring(
+    ) {
+        let runner = ClientHeartbeatLoopRunner::new(None);
+        let metrics_runner = ClientHeartbeatLoopRunner::new(None);
+        let metrics_state = cleanup_test_metrics_state_with_one_sample();
+        let cadence_state =
+            ClientHeartbeatRttOffsetMetricsSnapshotCadenceState::new(TimestampMicros(10_000));
+        let repeated_input = ClientHeartbeatLoopOuterWhileLoopRepeatedBodyInput {
+            current: cleanup_test_repeated_apply_timer_continue(),
+            max_turns: std::num::NonZeroUsize::new(1).unwrap(),
+        };
+
+        let plain = runner.run(repeated_input.clone());
+        let with_metrics = metrics_runner.run_with_metrics_snapshot_cadence(
+            repeated_input,
+            ClientHeartbeatLoopRunnerMetricsSnapshotCadenceRuntimeInput {
+                metrics_state: Some(&metrics_state),
+                cadence_state: Some(cadence_state),
+                now: TimestampMicros(11_000),
+                export_interval_micros: 1_000,
+                consumer: ClientHeartbeatRttOffsetMetricsSnapshotConsumer::FutureDashboardRefresh,
+            },
+        );
+
+        assert_eq!(with_metrics.loop_result, plain);
+        assert!(matches!(
+            with_metrics.snapshot_export,
+            ClientHeartbeatRttOffsetMetricsSnapshotExportCadenceResult::SnapshotExportDue { .. }
+        ));
     }
 
     #[test]

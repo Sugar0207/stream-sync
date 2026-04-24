@@ -5893,6 +5893,69 @@ Current code reflects this with
 `ClientHeartbeatLoopRunnerErrorKind`, `ClientHeartbeatLoopRunnerError`,
 `ClientHeartbeatLoopRunnerResult`, and `ClientHeartbeatLoopRunner`.
 
+### Client Runner Metrics Snapshot Cadence Runtime Wiring
+
+The client continuous heartbeat loop runner now has a minimal runtime wiring
+point for metrics snapshot export cadence. The repeated body remains unaware
+of metrics cadence. The runner evaluates cadence only from caller-owned
+metrics state, caller-owned cadence state, current time, export interval, and
+selected snapshot consumer.
+
+Minimal scope:
+
+1. `ClientHeartbeatLoopRunnerMetricsSnapshotCadenceRuntimeInput` carries:
+   - optional borrowed `ClientHeartbeatRttOffsetMetricsState`
+   - optional `ClientHeartbeatRttOffsetMetricsSnapshotCadenceState`
+   - current time
+   - export interval
+   - selected `ClientHeartbeatRttOffsetMetricsSnapshotConsumer`
+2. `ClientHeartbeatLoopRunner::run_with_metrics_snapshot_cadence(...)` first
+   drives normal runner execution through the existing runner path.
+3. After runner execution, it calls
+   `ClientHeartbeatRttOffsetMetricsSnapshotExportCadenceBoundary::build_input`
+   and `evaluate`.
+4. It returns `ClientHeartbeatLoopRunnerMetricsSnapshotCadenceRuntimeResult`
+   containing:
+   - unchanged `ClientHeartbeatLoopRunnerResult`
+   - explicit `ClientHeartbeatRttOffsetMetricsSnapshotExportCadenceResult`
+5. Snapshot export cadence result remains one of:
+   - `SnapshotExportDue`
+   - `SnapshotExportNotDue`
+   - `SnapshotExportDeferred`
+6. Dashboard refresh remains a future owner concern:
+   - cadence may emit `future_dashboard_refresh` handoff
+   - the runner does not evaluate dashboard refresh policy
+   - no UI rendering, dashboard storage, or transport is introduced
+7. Metrics commit remains separate:
+   - runner cadence wiring does not derive commit input
+   - runner cadence wiring does not calculate RTT / offset estimates
+   - runner cadence wiring does not mutate metrics state
+
+Relationship between runner, metrics state, cadence state, snapshot export,
+and future dashboard refresh owner:
+
+- `ClientHeartbeatLoopRunner`
+  - Owns socket slot and repeated-body execution coordination.
+  - Borrows metrics state only for snapshot cadence evaluation.
+  - Does not own metrics commit state.
+- metrics state
+  - Remains caller-owned.
+  - Is read only by snapshot creation/cadence.
+- cadence state
+  - Remains caller-owned and is passed explicitly.
+  - Advances only through `SnapshotExportDue` result's next cadence state.
+- snapshot export result
+  - Is returned beside runner output.
+  - Does not alter stop passthrough or repeated-body continuation state.
+- future dashboard refresh owner
+  - May later consume the explicit dashboard handoff from snapshot export.
+  - Remains separate from runner cadence wiring.
+
+Current code reflects this with
+`ClientHeartbeatLoopRunnerMetricsSnapshotCadenceRuntimeInput`,
+`ClientHeartbeatLoopRunnerMetricsSnapshotCadenceRuntimeResult`, and
+`ClientHeartbeatLoopRunner::run_with_metrics_snapshot_cadence(...)`.
+
 ### Heartbeat Client Ack Observation Flow
 
 The client ack observation flow returns the missing `client_received_at`
