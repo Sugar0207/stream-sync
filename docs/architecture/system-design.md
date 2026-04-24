@@ -2624,6 +2624,13 @@ Current implementation scope:
    `--placeholder-video-frame-poc-once [config-path]` and prints a compact
    stdout summary including destination, frame id, timestamps, dimensions, and
    payload length.
+8. `ClientAuthPlaceholderVideoFramePocLauncher` keeps one UDP socket, sends
+   `AuthRequest`, waits for an accepted `AuthResponse`, then sends one
+   placeholder `VideoFrame` from the same local source.
+9. The client binary exposes this through
+   `--auth-placeholder-video-frame-poc-once [config-path]` and prints a compact
+   stdout summary including local source, auth response status, frame metadata,
+   payload length, `same_source=true`, and `placeholder_payload=true`.
 
 Responsibility split:
 
@@ -2643,6 +2650,11 @@ Responsibility split:
   - Will own real capture source, real encoder, frame cadence, socket lifetime,
     destination selection, retry policy, and integration with auth/heartbeat
     state.
+- same-socket auth + placeholder launcher
+  - Owns only the short manual verification sequence for authentication
+    followed by one placeholder frame send from the same UDP source.
+  - Does not weaken server authentication, retry, run a continuous loop, decode
+    H.264, schedule sync, display frames, or touch OBS.
 
 Current code reflects this with
 `ClientPlaceholderEncodedH264PayloadSourceBoundary`,
@@ -2650,14 +2662,15 @@ Current code reflects this with
 `ClientVideoFrameEncodeSendInput`,
 `ClientVideoFrameEncodedSendHandoff`,
 `ClientVideoFrameEncodeSendBoundary`, and
-`ClientPlaceholderVideoFramePocLauncher`.
+`ClientPlaceholderVideoFramePocLauncher`. The same-socket manual sender is
+`ClientAuthPlaceholderVideoFramePocLauncher`.
 
 Deferred work:
 
 - real screen capture or frame source
 - real H.264 encoding
-- server receive-loop-to-queue runtime wiring
-- H.264 decode and single-view display placeholder
+- queue-owning server auth-then-video manual launcher
+- H.264 decode and real single-view display
 - 2-view / 4-view sync, switcher UI, and OBS integration
 
 ### Single-View Video PoC: Server Frame Queue Storage
@@ -2778,6 +2791,9 @@ Manual verification status:
 - `--placeholder-video-frame-poc-once [config-path]` sends one placeholder
   `VideoFrame` only. It does not authenticate, wait for `AuthResponse`, or
   reuse a socket from another client PoC command.
+- `--auth-placeholder-video-frame-poc-once [config-path]` keeps one UDP socket,
+  sends `AuthRequest`, requires an accepted `AuthResponse`, and then sends one
+  placeholder `VideoFrame` from the same source.
 - The server's authenticated receive path still requires `VideoFrame` packets
   to come from a source already registered by an accepted `AuthRequest`.
 - Running the existing auth CLI and then running the placeholder video CLI does
@@ -2785,9 +2801,8 @@ Manual verification status:
   and normally uses a different source port.
 - The server queue runtime boundary and switcher placeholder selection boundary
   can be verified through focused tests, but a complete manual
-  client-to-server-to-switcher command sequence still needs a same-socket
-  auth-then-placeholder-video client launcher and a queue-owning server manual
-  launcher.
+  client-to-server-to-switcher command sequence still needs a queue-owning
+  server manual launcher.
 - The current manual verification notes live in
   `docs/operations/manual-placeholder-video-poc.md`.
 

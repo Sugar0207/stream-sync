@@ -129,6 +129,42 @@ fn main() {
                 }
             }
         }
+        Some("--auth-placeholder-video-frame-poc-once") => {
+            let config_path = args
+                .next()
+                .unwrap_or_else(|| "configs/examples/client.accepted.example.toml".to_string());
+            match stream_sync_client::run_auth_placeholder_video_frame_poc_once_from_path(
+                &config_path,
+            ) {
+                Ok(outcome) => {
+                    println!(
+                        "auth placeholder video frame PoC sent AuthRequest {} bytes from {} to {} and received AuthResponse {} bytes from {}; accepted={} reason_code={:?}; sent VideoFrame {} bytes from same_source=true; client_id={} run_id={} protocol_version={} frame_id={} capture_timestamp={} send_timestamp={} width={} height={} fps_nominal={} payload_len={} placeholder_payload=true",
+                        outcome.auth_request_bytes_sent,
+                        outcome.local_source,
+                        outcome.destination,
+                        outcome.auth_response_bytes.len(),
+                        outcome.auth_response_source,
+                        outcome.auth_response.accepted,
+                        outcome.auth_response.reason_code,
+                        outcome.video_frame_bytes_sent,
+                        outcome.frame.client_id.0,
+                        outcome.frame.run_id.0,
+                        outcome.frame.protocol_version.0,
+                        outcome.frame.frame_id,
+                        outcome.frame.capture_timestamp.0,
+                        outcome.frame.send_timestamp.0,
+                        outcome.frame.width,
+                        outcome.frame.height,
+                        outcome.frame.fps_nominal,
+                        outcome.frame.payload_size
+                    );
+                }
+                Err(error) => {
+                    eprintln!("auth placeholder video frame PoC failed: {error:?}");
+                    std::process::exit(1);
+                }
+            }
+        }
         Some("--auth-heartbeat-one-tick-runtime") => {
             let config_path = args
                 .next()
@@ -237,7 +273,7 @@ fn main() {
         }
         _ => {
             println!(
-                "stream-sync-client scaffold; use --auth-request-poc-once [config-path], --auth-heartbeat-poc-once [config-path], --auth-heartbeat-stats-poc-once [config-path], --placeholder-video-frame-poc-once [config-path], --auth-heartbeat-one-tick-runtime [config-path], or --auth-heartbeat-stats-one-tick-runtime [config-path]"
+                "stream-sync-client scaffold; use --auth-request-poc-once [config-path], --auth-heartbeat-poc-once [config-path], --auth-heartbeat-stats-poc-once [config-path], --placeholder-video-frame-poc-once [config-path], --auth-placeholder-video-frame-poc-once [config-path], --auth-heartbeat-one-tick-runtime [config-path], or --auth-heartbeat-stats-one-tick-runtime [config-path]"
             );
         }
     }

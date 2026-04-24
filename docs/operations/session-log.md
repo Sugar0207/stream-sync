@@ -9190,3 +9190,47 @@
 ### TODO Update
 - Updated Current Focus with the documented manual placeholder PoC status and limitation.
 - Replaced the generic manual path item with the concrete missing client and server launcher steps.
+
+---
+
+## 2026-04-24
+### Type
+- Codex
+
+### Work
+- Added the smallest client-side same-socket auth-then-placeholder-video launcher.
+- Added `--auth-placeholder-video-frame-poc-once [config-path]`.
+- The launcher binds one UDP socket, sends `AuthRequest`, receives `AuthResponse`, requires `accepted=true`, then sends one explicit placeholder `VideoFrame` from the same socket/source.
+- Reused the existing auth config loading and placeholder `VideoFrame` metadata/payload/send boundaries.
+- Added focused client tests for config wiring, accepted auth sending video from the same source, and rejected auth stopping before video send.
+- Kept server authentication unchanged and did not implement real capture, real H.264 encode/decode, switcher rendering, or OBS.
+
+### Changed Files
+- `apps/client/src/lib.rs`
+- `apps/client/src/main.rs`
+- `docs/operations/manual-placeholder-video-poc.md`
+- `docs/architecture/system-design.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### Decisions
+- The existing `--placeholder-video-frame-poc-once` remains as a low-level video-only send test.
+- Same-source auth is explicit in the new launcher and stdout summary instead of being hidden in the video-only path.
+- Rejected auth returns before frame construction/send, preserving server packet acceptance assumptions.
+- Placeholder payload remains explicit and uses the existing placeholder payload boundary.
+
+### Unresolved
+- queue-owning server auth-then-video manual launcher with queued/rejected stdout
+- switcher helper or runtime bridge for selecting from a server-owned queue after a manual receive
+- real capture / real H.264 encode
+- real H.264 decode / switcher window rendering
+- sync scheduling, 4-view sync, and OBS integration
+
+### Next
+- Add a server auth-then-video queue launcher that owns registry and queue state for the manual PoC.
+- Add optional switcher placeholder selection helper after server queue state can be surfaced.
+
+### TODO Update
+- Marked the same-socket auth-then-placeholder-video client launcher complete.
+- Updated Current Focus to say only the queue-owning server manual launcher blocks a full CLI-driven manual E2E path.
+- Reordered Next Items around the server manual queue launcher, optional switcher helper, and later real capture/decode work.

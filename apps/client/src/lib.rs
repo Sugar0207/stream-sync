@@ -546,6 +546,159 @@ pub fn run_placeholder_video_frame_poc_once_from_path(
     ClientPlaceholderVideoFramePocLauncher::default().run_once_from_path(path)
 }
 
+/// One-shot client-side auth + placeholder `VideoFrame` send PoC.
+///
+/// This keeps a single UDP socket, sends one `AuthRequest`, waits for an
+/// accepted `AuthResponse`, then sends one explicit placeholder `VideoFrame`
+/// from the same local source. It does not capture the screen, run a real
+/// encoder, decode video, render UI, retry, or integrate with OBS.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct ClientAuthPlaceholderVideoFramePocLauncher {
+    encoder: ProtocolMessageEncoderBoundary,
+    placeholder_video: ClientPlaceholderVideoFramePocLauncher,
+}
+
+impl ClientAuthPlaceholderVideoFramePocLauncher {
+    pub fn load_startup_config_from_path(
+        &self,
+        path: impl AsRef<Path>,
+    ) -> Result<
+        ClientAuthPlaceholderVideoFramePocStartupConfig,
+        ClientAuthPlaceholderVideoFramePocError,
+    > {
+        let auth_config = ClientAuthRequestPocLauncher::default()
+            .load_startup_config_from_path(path)
+            .map_err(ClientAuthPlaceholderVideoFramePocError::from_auth_request_error)?;
+        Ok(self.load_startup_config_from_auth_config(auth_config))
+    }
+
+    pub fn load_startup_config_from_str(
+        &self,
+        input: &str,
+    ) -> Result<
+        ClientAuthPlaceholderVideoFramePocStartupConfig,
+        ClientAuthPlaceholderVideoFramePocError,
+    > {
+        let auth_config = ClientAuthRequestPocLauncher::default()
+            .load_startup_config_from_str(input)
+            .map_err(ClientAuthPlaceholderVideoFramePocError::from_auth_request_error)?;
+        Ok(self.load_startup_config_from_auth_config(auth_config))
+    }
+
+    fn load_startup_config_from_auth_config(
+        &self,
+        auth_config: ClientAuthRequestPocStartupConfig,
+    ) -> ClientAuthPlaceholderVideoFramePocStartupConfig {
+        ClientAuthPlaceholderVideoFramePocStartupConfig {
+            destination: auth_config.destination,
+            response_timeout_ms: auth_config.response_timeout_ms,
+            request: auth_config.request.clone(),
+            video: ClientPlaceholderVideoFramePocStartupConfig {
+                destination: auth_config.destination,
+                protocol_version: auth_config.request.protocol_version,
+                client_id: auth_config.request.client_id,
+                run_id: auth_config.request.run_id,
+                frame_id: DEFAULT_PLACEHOLDER_VIDEO_FRAME_ID,
+                is_keyframe: true,
+                width: DEFAULT_PLACEHOLDER_VIDEO_WIDTH,
+                height: DEFAULT_PLACEHOLDER_VIDEO_HEIGHT,
+                fps_nominal: DEFAULT_PLACEHOLDER_VIDEO_FPS,
+                placeholder_payload_bytes: DEFAULT_PLACEHOLDER_H264_PAYLOAD.to_vec(),
+            },
+        }
+    }
+
+    pub fn run_once_from_path(
+        &self,
+        path: impl AsRef<Path>,
+    ) -> Result<ClientAuthPlaceholderVideoFramePocOutcome, ClientAuthPlaceholderVideoFramePocError>
+    {
+        let startup_config = self.load_startup_config_from_path(path)?;
+        self.run_once(startup_config)
+    }
+
+    pub fn run_once(
+        &self,
+        startup_config: ClientAuthPlaceholderVideoFramePocStartupConfig,
+    ) -> Result<ClientAuthPlaceholderVideoFramePocOutcome, ClientAuthPlaceholderVideoFramePocError>
+    {
+        let socket = UdpSocket::bind(ephemeral_bind_address(startup_config.destination))
+            .map_err(|error| ClientAuthPlaceholderVideoFramePocError::Bind(error.kind()))?;
+        socket
+            .set_read_timeout(Some(Duration::from_millis(
+                startup_config.response_timeout_ms,
+            )))
+            .map_err(|error| {
+                ClientAuthPlaceholderVideoFramePocError::SetReadTimeout(error.kind())
+            })?;
+        let local_source = socket
+            .local_addr()
+            .map_err(|error| ClientAuthPlaceholderVideoFramePocError::Bind(error.kind()))?;
+
+        let context = EncodeContext {
+            protocol_version: startup_config.request.protocol_version,
+        };
+        let mut auth_request_bytes = Vec::new();
+        self.encoder
+            .encode_message(
+                context,
+                &ProtocolMessage::AuthRequest(startup_config.request.clone()),
+                &mut auth_request_bytes,
+            )
+            .map_err(ClientAuthPlaceholderVideoFramePocError::Encode)?;
+        let auth_request_bytes_sent = socket
+            .send_to(&auth_request_bytes, startup_config.destination)
+            .map_err(|error| ClientAuthPlaceholderVideoFramePocError::Send(error.kind()))?;
+
+        let (auth_response_source, auth_response_bytes, auth_response) =
+            receive_auth_response(&socket, startup_config.request.protocol_version)
+                .map_err(ClientAuthPlaceholderVideoFramePocError::AuthResponse)?;
+        if !auth_response.accepted {
+            return Err(ClientAuthPlaceholderVideoFramePocError::AuthRejected(
+                auth_response,
+            ));
+        }
+
+        let now = current_timestamp_micros();
+        let frame = self
+            .placeholder_video
+            .build_frame(startup_config.video.clone(), now, now)
+            .map_err(ClientAuthPlaceholderVideoFramePocError::from_placeholder_video_error)?;
+        let video_send = self
+            .placeholder_video
+            .send
+            .send_one(
+                &socket,
+                ClientVideoFrameEncodeSendInput {
+                    destination: startup_config.destination,
+                    frame,
+                },
+            )
+            .map_err(ClientAuthPlaceholderVideoFramePocError::VideoSend)?;
+
+        Ok(ClientAuthPlaceholderVideoFramePocOutcome {
+            destination: startup_config.destination,
+            local_source,
+            request: startup_config.request,
+            auth_request_bytes,
+            auth_request_bytes_sent,
+            auth_response_source,
+            auth_response_bytes,
+            auth_response,
+            frame: video_send.handoff.frame,
+            video_frame_bytes: video_send.handoff.encoded_bytes,
+            video_frame_bytes_sent: video_send.bytes_sent,
+        })
+    }
+}
+
+/// Convenience entry point for the same-socket manual placeholder video PoC.
+pub fn run_auth_placeholder_video_frame_poc_once_from_path(
+    path: impl AsRef<Path>,
+) -> Result<ClientAuthPlaceholderVideoFramePocOutcome, ClientAuthPlaceholderVideoFramePocError> {
+    ClientAuthPlaceholderVideoFramePocLauncher::default().run_once_from_path(path)
+}
+
 /// Client boundary for observing one received HeartbeatAck.
 ///
 /// This captures the client-side receive timestamp and creates a typed
@@ -3166,6 +3319,31 @@ pub struct ClientPlaceholderVideoFramePocOutcome {
     pub frame: VideoFrame,
     pub encoded_bytes: Vec<u8>,
     pub bytes_sent: usize,
+}
+
+/// Startup config for auth followed by one placeholder `VideoFrame` send.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClientAuthPlaceholderVideoFramePocStartupConfig {
+    pub destination: SocketAddr,
+    pub response_timeout_ms: u64,
+    pub request: AuthRequest,
+    pub video: ClientPlaceholderVideoFramePocStartupConfig,
+}
+
+/// Result of one same-socket auth round trip followed by one placeholder frame send.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClientAuthPlaceholderVideoFramePocOutcome {
+    pub destination: SocketAddr,
+    pub local_source: SocketAddr,
+    pub request: AuthRequest,
+    pub auth_request_bytes: Vec<u8>,
+    pub auth_request_bytes_sent: usize,
+    pub auth_response_source: SocketAddr,
+    pub auth_response_bytes: Vec<u8>,
+    pub auth_response: AuthResponse,
+    pub frame: VideoFrame,
+    pub video_frame_bytes: Vec<u8>,
+    pub video_frame_bytes_sent: usize,
 }
 
 /// Return mode used by the one-tick heartbeat runtime launcher.
@@ -7093,6 +7271,60 @@ impl From<ClientAuthRequestPocError> for ClientPlaceholderVideoFramePocError {
     }
 }
 
+/// Error from the same-socket auth + placeholder `VideoFrame` PoC.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ClientAuthPlaceholderVideoFramePocError {
+    Io { path: PathBuf, message: String },
+    Config(ClientAuthRequestPocConfigError),
+    Destination(ClientAuthRequestPocConfigError),
+    Encode(ProtocolError),
+    Bind(io::ErrorKind),
+    SetReadTimeout(io::ErrorKind),
+    Send(io::ErrorKind),
+    AuthResponse(ClientResponseReceiveError),
+    AuthRejected(AuthResponse),
+    PlaceholderPayload(ClientPlaceholderEncodedH264PayloadError),
+    FrameBuild(ClientPlaceholderEncodedH264PayloadError),
+    VideoSend(ClientVideoFrameEncodeSendError),
+}
+
+impl ClientAuthPlaceholderVideoFramePocError {
+    fn from_auth_request_error(error: ClientAuthRequestPocError) -> Self {
+        match error {
+            ClientAuthRequestPocError::Io { path, message } => Self::Io { path, message },
+            ClientAuthRequestPocError::Config(error) => Self::Config(error),
+            ClientAuthRequestPocError::Destination(error) => Self::Destination(error),
+            ClientAuthRequestPocError::Encode(error) => Self::Encode(error),
+            ClientAuthRequestPocError::Bind(error) => Self::Bind(error),
+            ClientAuthRequestPocError::SetReadTimeout(error) => Self::SetReadTimeout(error),
+            ClientAuthRequestPocError::Send(error) => Self::Send(error),
+            ClientAuthRequestPocError::Receive(error) => {
+                Self::AuthResponse(ClientResponseReceiveError::Receive(error))
+            }
+            ClientAuthRequestPocError::Decode(error) => {
+                Self::AuthResponse(ClientResponseReceiveError::Decode(error))
+            }
+            ClientAuthRequestPocError::UnexpectedResponseMessage { actual } => {
+                Self::AuthResponse(ClientResponseReceiveError::UnexpectedResponseMessage { actual })
+            }
+        }
+    }
+
+    fn from_placeholder_video_error(error: ClientPlaceholderVideoFramePocError) -> Self {
+        match error {
+            ClientPlaceholderVideoFramePocError::Io { path, message } => Self::Io { path, message },
+            ClientPlaceholderVideoFramePocError::Config(error) => Self::Config(error),
+            ClientPlaceholderVideoFramePocError::Destination(error) => Self::Destination(error),
+            ClientPlaceholderVideoFramePocError::PlaceholderPayload(error) => {
+                Self::PlaceholderPayload(error)
+            }
+            ClientPlaceholderVideoFramePocError::FrameBuild(error) => Self::FrameBuild(error),
+            ClientPlaceholderVideoFramePocError::Bind(error) => Self::Bind(error),
+            ClientPlaceholderVideoFramePocError::Send(error) => Self::VideoSend(error),
+        }
+    }
+}
+
 /// Error from one auth round trip plus one client heartbeat loop tick.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ClientHeartbeatOneTickRuntimeError {
@@ -7493,6 +7725,20 @@ mod tests {
         }
     }
 
+    fn auth_request_for_video_frame_tests() -> AuthRequest {
+        AuthRequest {
+            message_type: MessageType::AuthRequest,
+            protocol_version: ProtocolVersion(2),
+            client_id: ClientId("client-1".to_string()),
+            run_id: RunId("run-1".to_string()),
+            app_version: AppVersion("0.1.0".to_string()),
+            shared_token: "shared-secret".to_string(),
+            display_name: Some("Alice".to_string()),
+            capabilities: Vec::new(),
+            requested_video_profile: None,
+        }
+    }
+
     #[test]
     fn client_auth_request_poc_launcher_loads_example_config() {
         let launcher = ClientAuthRequestPocLauncher::default();
@@ -7812,6 +8058,210 @@ mod tests {
         .expect("received video frame should decode");
 
         assert_eq!(decoded, ProtocolMessage::VideoFrame(outcome.frame));
+    }
+
+    #[test]
+    fn client_video_frame_auth_placeholder_poc_launcher_loads_config_with_same_source_contract() {
+        let config = ClientAuthPlaceholderVideoFramePocLauncher::default()
+            .load_startup_config_from_str(include_str!(
+                "../../../configs/examples/client.accepted.example.toml"
+            ))
+            .expect("accepted example config should load");
+
+        assert_eq!(config.destination, "127.0.0.1:5000".parse().unwrap());
+        assert_eq!(config.response_timeout_ms, 5_000);
+        assert_eq!(config.request.client_id, ClientId("player1".to_string()));
+        assert_eq!(config.video.destination, config.destination);
+        assert_eq!(
+            config.video.protocol_version,
+            config.request.protocol_version
+        );
+        assert_eq!(config.video.client_id, config.request.client_id);
+        assert_eq!(config.video.run_id, config.request.run_id);
+        assert_eq!(
+            config.video.placeholder_payload_bytes,
+            DEFAULT_PLACEHOLDER_H264_PAYLOAD.to_vec()
+        );
+    }
+
+    #[test]
+    fn client_video_frame_auth_placeholder_poc_accepted_auth_sends_video_from_same_source() {
+        let receiver = UdpSocket::bind("127.0.0.1:0").expect("receiver should bind");
+        receiver
+            .set_read_timeout(Some(Duration::from_secs(1)))
+            .expect("read timeout should be set");
+        let destination = receiver.local_addr().expect("receiver addr should exist");
+        let request = auth_request_for_video_frame_tests();
+        let config = ClientAuthPlaceholderVideoFramePocStartupConfig {
+            destination,
+            response_timeout_ms: 1_000,
+            request: request.clone(),
+            video: ClientPlaceholderVideoFramePocStartupConfig {
+                destination,
+                protocol_version: request.protocol_version,
+                client_id: request.client_id.clone(),
+                run_id: request.run_id.clone(),
+                frame_id: 11,
+                is_keyframe: true,
+                width: 1280,
+                height: 720,
+                fps_nominal: 30,
+                placeholder_payload_bytes: DEFAULT_PLACEHOLDER_H264_PAYLOAD.to_vec(),
+            },
+        };
+        let response = AuthResponse {
+            message_type: MessageType::AuthResponse,
+            protocol_version: request.protocol_version,
+            client_id: request.client_id.clone(),
+            run_id: request.run_id.clone(),
+            accepted: true,
+            reason_code: AuthResponseReasonCode::Ok,
+            message: None,
+            server_time: Some(TimestampMicros(2_000_000)),
+            expected_protocol_version: None,
+        };
+        let response_for_thread = response.clone();
+        let server = std::thread::spawn(move || {
+            let mut buffer = [0_u8; 2048];
+            let (auth_len, source) = receiver
+                .recv_from(&mut buffer)
+                .expect("receiver should get auth request");
+            let auth_packet =
+                decode_fixed_header(&buffer[..auth_len]).expect("auth header should decode");
+            let decoded_request =
+                decode_auth_request_payload(auth_packet.header, auth_packet.payload)
+                    .expect("auth request should decode");
+            assert_eq!(decoded_request, request);
+
+            let mut response_bytes = Vec::new();
+            ProtocolMessageEncoderBoundary
+                .encode_message(
+                    EncodeContext {
+                        protocol_version: response_for_thread.protocol_version,
+                    },
+                    &ProtocolMessage::AuthResponse(response_for_thread),
+                    &mut response_bytes,
+                )
+                .expect("auth response should encode");
+            receiver
+                .send_to(&response_bytes, source)
+                .expect("auth response should send");
+
+            let (video_len, video_source) = receiver
+                .recv_from(&mut buffer)
+                .expect("receiver should get video frame");
+            assert_eq!(video_source, source);
+            let video_packet =
+                decode_fixed_header(&buffer[..video_len]).expect("video header should decode");
+            let decoded = decode_payload_by_message_type(
+                DecodeContext {
+                    expected_protocol_version: ProtocolVersion(2),
+                },
+                video_packet.header,
+                video_packet.payload,
+            )
+            .expect("video frame should decode");
+            (source, video_source, video_len, decoded)
+        });
+
+        let outcome = ClientAuthPlaceholderVideoFramePocLauncher::default()
+            .run_once(config)
+            .expect("auth placeholder video should complete");
+
+        let (auth_source, video_source, video_len, decoded) =
+            server.join().expect("server thread should finish");
+        assert_eq!(outcome.local_source.port(), auth_source.port());
+        assert_eq!(video_source, auth_source);
+        assert_eq!(outcome.video_frame_bytes_sent, video_len);
+        assert_eq!(outcome.auth_response, response);
+        assert_eq!(decoded, ProtocolMessage::VideoFrame(outcome.frame.clone()));
+        assert_eq!(outcome.frame.frame_id, 11);
+        assert_eq!(
+            outcome.frame.payload,
+            DEFAULT_PLACEHOLDER_H264_PAYLOAD.to_vec()
+        );
+    }
+
+    #[test]
+    fn client_video_frame_auth_placeholder_poc_rejected_auth_does_not_send_video() {
+        let receiver = UdpSocket::bind("127.0.0.1:0").expect("receiver should bind");
+        receiver
+            .set_read_timeout(Some(Duration::from_millis(250)))
+            .expect("read timeout should be set");
+        let destination = receiver.local_addr().expect("receiver addr should exist");
+        let request = auth_request_for_video_frame_tests();
+        let config = ClientAuthPlaceholderVideoFramePocStartupConfig {
+            destination,
+            response_timeout_ms: 1_000,
+            request: request.clone(),
+            video: ClientPlaceholderVideoFramePocStartupConfig {
+                destination,
+                protocol_version: request.protocol_version,
+                client_id: request.client_id.clone(),
+                run_id: request.run_id.clone(),
+                frame_id: 12,
+                is_keyframe: true,
+                width: 1280,
+                height: 720,
+                fps_nominal: 30,
+                placeholder_payload_bytes: DEFAULT_PLACEHOLDER_H264_PAYLOAD.to_vec(),
+            },
+        };
+        let response = AuthResponse {
+            message_type: MessageType::AuthResponse,
+            protocol_version: request.protocol_version,
+            client_id: request.client_id.clone(),
+            run_id: request.run_id.clone(),
+            accepted: false,
+            reason_code: AuthResponseReasonCode::InvalidToken,
+            message: Some("rejected".to_string()),
+            server_time: Some(TimestampMicros(2_000_000)),
+            expected_protocol_version: None,
+        };
+        let response_for_thread = response.clone();
+        let server = std::thread::spawn(move || {
+            let mut buffer = [0_u8; 2048];
+            let (auth_len, source) = receiver
+                .recv_from(&mut buffer)
+                .expect("receiver should get auth request");
+            let auth_packet =
+                decode_fixed_header(&buffer[..auth_len]).expect("auth header should decode");
+            let decoded_request =
+                decode_auth_request_payload(auth_packet.header, auth_packet.payload)
+                    .expect("auth request should decode");
+            assert_eq!(decoded_request, request);
+
+            let mut response_bytes = Vec::new();
+            ProtocolMessageEncoderBoundary
+                .encode_message(
+                    EncodeContext {
+                        protocol_version: response_for_thread.protocol_version,
+                    },
+                    &ProtocolMessage::AuthResponse(response_for_thread),
+                    &mut response_bytes,
+                )
+                .expect("auth response should encode");
+            receiver
+                .send_to(&response_bytes, source)
+                .expect("auth response should send");
+
+            let no_video = receiver.recv_from(&mut buffer);
+            let error = no_video.expect_err("rejected auth should not be followed by video");
+            assert!(matches!(
+                error.kind(),
+                io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
+            ));
+        });
+
+        let error = ClientAuthPlaceholderVideoFramePocLauncher::default()
+            .run_once(config)
+            .expect_err("rejected auth should stop before video send");
+
+        assert_eq!(
+            error,
+            ClientAuthPlaceholderVideoFramePocError::AuthRejected(response)
+        );
+        server.join().expect("server thread should finish");
     }
 
     #[test]
