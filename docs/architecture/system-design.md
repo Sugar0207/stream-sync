@@ -7509,8 +7509,24 @@ Current decode/display substitute behavior:
 - The 2-view orchestration is read-only over caller-owned
   `ServerVideoFrameQueueState`. It does not drop late frames, mutate queues,
   decode H.264, render windows, compose a 2-view layout, or integrate OBS.
+- `SwitcherTwoViewDecodeRenderBoundary` is the first connection from 2-view
+  targetTime selection to decode/render. It consumes
+  `SwitcherTwoViewTargetTimeSelectionResult`, decodes only sides whose
+  selection status is `Selected`, and sends each decoded BGRA frame to the
+  existing one-frame window render boundary through caller-owned runtime hooks.
+- The 2-view decode/render result keeps per-side outcomes explicit:
+  both rendered, left rendered / right skipped, right rendered / left skipped,
+  or both skipped. Skipped sides preserve the reason as selection unavailable,
+  decode deferred, decode failed, render deferred, backend unavailable, invalid
+  frame, or render failed.
+- The 2-view decode/render connection still does not read or mutate queues,
+  drop late frames, create fake placeholder frames, compose a 2-view layout,
+  schedule a continuous loop, perform 4-view orchestration, or integrate OBS.
+- Future 2-view runtime/manual verification should feed live or fixture
+  `ServerVideoFrameQueueState` through:
+  2-view targetTime selection -> 2-view decode/render connection.
 - Future 4-view sync should build on the same shared-targetTime pattern after
-  the 2-view selected-frame -> decode/render connection is isolated.
+  the 2-view runtime/manual verification is isolated.
 
 This decode PoC does not add a continuous loop, targetTime selection,
 multi-view sync, OBS integration, decode acceleration, or packet fragmentation.
@@ -7520,7 +7536,10 @@ The continuous loop still does not add targetTime / jitter-buffer selection,
 2-view / 4-view layout, OBS-specific control, or production scheduling; those
 remain separate future boundaries.
 The targetTime selectors still do not decode, render, own queues, drop late
-frames, perform 4-view orchestration, or integrate OBS.
+frames, perform 4-view orchestration, or integrate OBS. The 2-view decode/render
+connection does decode and render selected sides, but remains separate from
+selection, queue ownership, layout/composition, continuous scheduling, 4-view,
+and OBS.
 
 ## Client Real Capture / H.264 Encode Boundary
 

@@ -1011,6 +1011,302 @@ impl SwitcherWindowRenderBoundary {
     }
 }
 
+/// Side identifier for the first 2-view switcher composition boundary.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum SwitcherTwoViewSide {
+    Left,
+    Right,
+}
+
+/// Input for connecting 2-view targetTime selection to decode/render.
+///
+/// This owns a completed selection result. It does not read or mutate queues.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SwitcherTwoViewDecodeRenderInput {
+    pub selection: SwitcherTwoViewTargetTimeSelectionResult,
+    pub left_window_title: String,
+    pub right_window_title: String,
+    pub render_hold_millis: u64,
+}
+
+/// Successful render for one side of the 2-view connection.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SwitcherTwoViewRenderedSide {
+    pub side: SwitcherTwoViewSide,
+    pub selected: SwitcherJitterBufferSelectedFrame,
+    pub render: SwitcherWindowRenderSuccess,
+}
+
+/// Explicit skipped state for one side of the 2-view connection.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SwitcherTwoViewSkippedSide {
+    SelectionUnavailable {
+        side: SwitcherTwoViewSide,
+        selection: SwitcherJitterBufferSelectionResult,
+    },
+    DecodeDeferred {
+        side: SwitcherTwoViewSide,
+        selected: SwitcherJitterBufferSelectedFrame,
+        reason: SwitcherH264DecodeDeferredReason,
+    },
+    DecodeFailed {
+        side: SwitcherTwoViewSide,
+        selected: SwitcherJitterBufferSelectedFrame,
+        failure: SwitcherH264DecodeFailure,
+    },
+    RenderDeferred {
+        side: SwitcherTwoViewSide,
+        selected: SwitcherJitterBufferSelectedFrame,
+        reason: SwitcherWindowRenderDeferredReason,
+    },
+    WindowBackendUnavailable {
+        side: SwitcherTwoViewSide,
+        selected: SwitcherJitterBufferSelectedFrame,
+        reason: SwitcherWindowBackendUnavailableReason,
+        message: Option<String>,
+    },
+    InvalidFrame {
+        side: SwitcherTwoViewSide,
+        selected: SwitcherJitterBufferSelectedFrame,
+        error: SwitcherDecodedFrameRenderInputError,
+    },
+    RenderFailed {
+        side: SwitcherTwoViewSide,
+        selected: SwitcherJitterBufferSelectedFrame,
+        message: String,
+    },
+}
+
+/// Result of connecting selected 2-view encoded frames to decode/render.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SwitcherTwoViewDecodeRenderResult {
+    BothRendered {
+        shared_target_time: TimestampMicros,
+        left: SwitcherTwoViewRenderedSide,
+        right: SwitcherTwoViewRenderedSide,
+    },
+    LeftRenderedRightSkipped {
+        shared_target_time: TimestampMicros,
+        left: SwitcherTwoViewRenderedSide,
+        right: SwitcherTwoViewSkippedSide,
+    },
+    RightRenderedLeftSkipped {
+        shared_target_time: TimestampMicros,
+        left: SwitcherTwoViewSkippedSide,
+        right: SwitcherTwoViewRenderedSide,
+    },
+    BothSkipped {
+        shared_target_time: TimestampMicros,
+        left: SwitcherTwoViewSkippedSide,
+        right: SwitcherTwoViewSkippedSide,
+    },
+}
+
+enum SwitcherTwoViewSideDecodeRenderOutcome {
+    Rendered(SwitcherTwoViewRenderedSide),
+    Skipped(SwitcherTwoViewSkippedSide),
+}
+
+/// Thin 2-view composition from targetTime selection to decode/render.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct SwitcherTwoViewDecodeRenderBoundary {
+    decoder: SwitcherH264DecodeBoundary,
+    renderer: SwitcherWindowRenderBoundary,
+}
+
+impl SwitcherTwoViewDecodeRenderBoundary {
+    pub fn render_selected_pair_with_runtimes(
+        &self,
+        input: SwitcherTwoViewDecodeRenderInput,
+        decode_runtime: &impl SwitcherH264DecodeRuntimeHook,
+        render_runtime: &impl SwitcherWindowRenderRuntimeHook,
+    ) -> SwitcherTwoViewDecodeRenderResult {
+        let (shared_target_time, left_selection, right_selection) =
+            split_two_view_selection(input.selection);
+        let left = self.render_side_with_runtimes(
+            SwitcherTwoViewSide::Left,
+            left_selection,
+            input.left_window_title,
+            input.render_hold_millis,
+            decode_runtime,
+            render_runtime,
+        );
+        let right = self.render_side_with_runtimes(
+            SwitcherTwoViewSide::Right,
+            right_selection,
+            input.right_window_title,
+            input.render_hold_millis,
+            decode_runtime,
+            render_runtime,
+        );
+
+        match (left, right) {
+            (
+                SwitcherTwoViewSideDecodeRenderOutcome::Rendered(left),
+                SwitcherTwoViewSideDecodeRenderOutcome::Rendered(right),
+            ) => SwitcherTwoViewDecodeRenderResult::BothRendered {
+                shared_target_time,
+                left,
+                right,
+            },
+            (
+                SwitcherTwoViewSideDecodeRenderOutcome::Rendered(left),
+                SwitcherTwoViewSideDecodeRenderOutcome::Skipped(right),
+            ) => SwitcherTwoViewDecodeRenderResult::LeftRenderedRightSkipped {
+                shared_target_time,
+                left,
+                right,
+            },
+            (
+                SwitcherTwoViewSideDecodeRenderOutcome::Skipped(left),
+                SwitcherTwoViewSideDecodeRenderOutcome::Rendered(right),
+            ) => SwitcherTwoViewDecodeRenderResult::RightRenderedLeftSkipped {
+                shared_target_time,
+                left,
+                right,
+            },
+            (
+                SwitcherTwoViewSideDecodeRenderOutcome::Skipped(left),
+                SwitcherTwoViewSideDecodeRenderOutcome::Skipped(right),
+            ) => SwitcherTwoViewDecodeRenderResult::BothSkipped {
+                shared_target_time,
+                left,
+                right,
+            },
+        }
+    }
+
+    fn render_side_with_runtimes(
+        &self,
+        side: SwitcherTwoViewSide,
+        selection: SwitcherJitterBufferSelectionResult,
+        title: String,
+        hold_millis: u64,
+        decode_runtime: &impl SwitcherH264DecodeRuntimeHook,
+        render_runtime: &impl SwitcherWindowRenderRuntimeHook,
+    ) -> SwitcherTwoViewSideDecodeRenderOutcome {
+        let selected = match selection {
+            SwitcherJitterBufferSelectionResult::Selected(selected) => selected,
+            selection => {
+                return SwitcherTwoViewSideDecodeRenderOutcome::Skipped(
+                    SwitcherTwoViewSkippedSide::SelectionUnavailable { side, selection },
+                );
+            }
+        };
+
+        let decoded = match self.decoder.decode_with_runtime(
+            SwitcherH264DecodeInput {
+                encoded_payload: selected.frame.encoded_payload.clone(),
+                width: selected.frame.width,
+                height: selected.frame.height,
+            },
+            decode_runtime,
+        ) {
+            SwitcherH264DecodeResult::Decoded(decoded) => decoded,
+            SwitcherH264DecodeResult::Deferred { reason } => {
+                return SwitcherTwoViewSideDecodeRenderOutcome::Skipped(
+                    SwitcherTwoViewSkippedSide::DecodeDeferred {
+                        side,
+                        selected,
+                        reason,
+                    },
+                );
+            }
+            SwitcherH264DecodeResult::Failed(failure) => {
+                return SwitcherTwoViewSideDecodeRenderOutcome::Skipped(
+                    SwitcherTwoViewSkippedSide::DecodeFailed {
+                        side,
+                        selected,
+                        failure,
+                    },
+                );
+            }
+        };
+
+        match self.renderer.render_decoded_frame_with_runtime(
+            &decoded,
+            title,
+            hold_millis,
+            render_runtime,
+        ) {
+            SwitcherWindowRenderResult::Rendered(render) => {
+                SwitcherTwoViewSideDecodeRenderOutcome::Rendered(SwitcherTwoViewRenderedSide {
+                    side,
+                    selected,
+                    render,
+                })
+            }
+            SwitcherWindowRenderResult::RenderDeferred { reason } => {
+                SwitcherTwoViewSideDecodeRenderOutcome::Skipped(
+                    SwitcherTwoViewSkippedSide::RenderDeferred {
+                        side,
+                        selected,
+                        reason,
+                    },
+                )
+            }
+            SwitcherWindowRenderResult::BackendUnavailable { reason, message } => {
+                SwitcherTwoViewSideDecodeRenderOutcome::Skipped(
+                    SwitcherTwoViewSkippedSide::WindowBackendUnavailable {
+                        side,
+                        selected,
+                        reason,
+                        message,
+                    },
+                )
+            }
+            SwitcherWindowRenderResult::InvalidFrame { error } => {
+                SwitcherTwoViewSideDecodeRenderOutcome::Skipped(
+                    SwitcherTwoViewSkippedSide::InvalidFrame {
+                        side,
+                        selected,
+                        error,
+                    },
+                )
+            }
+            SwitcherWindowRenderResult::RenderFailed { message } => {
+                SwitcherTwoViewSideDecodeRenderOutcome::Skipped(
+                    SwitcherTwoViewSkippedSide::RenderFailed {
+                        side,
+                        selected,
+                        message,
+                    },
+                )
+            }
+        }
+    }
+}
+
+fn split_two_view_selection(
+    selection: SwitcherTwoViewTargetTimeSelectionResult,
+) -> (
+    TimestampMicros,
+    SwitcherJitterBufferSelectionResult,
+    SwitcherJitterBufferSelectionResult,
+) {
+    match selection {
+        SwitcherTwoViewTargetTimeSelectionResult::BothSelected {
+            shared_target_time,
+            left,
+            right,
+        } => (
+            shared_target_time,
+            SwitcherJitterBufferSelectionResult::Selected(left),
+            SwitcherJitterBufferSelectionResult::Selected(right),
+        ),
+        SwitcherTwoViewTargetTimeSelectionResult::Partial {
+            shared_target_time,
+            left,
+            right,
+        }
+        | SwitcherTwoViewTargetTimeSelectionResult::BothUnavailable {
+            shared_target_time,
+            left,
+            right,
+        } => (shared_target_time, left, right),
+    }
+}
+
 /// Stop policy for the first continuous single-client render loop.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct SwitcherContinuousRenderLoopPolicy {
@@ -2350,6 +2646,245 @@ mod tests {
     }
 
     #[test]
+    fn two_view_decode_render_renders_both_selected_frames() {
+        let (state, selection) =
+            selected_two_view_fixture(vec![0, 0, 1, 0x65, 0x10], vec![0, 0, 1, 0x65, 0x12]);
+        let left_client_id = ClientId("client-left".to_string());
+        let right_client_id = ClientId("client-right".to_string());
+        let before_left_len = state.client_queue_len(&left_client_id);
+        let before_right_len = state.client_queue_len(&right_client_id);
+        let decode = RecordingTwoViewDecode::default();
+        let render = RecordingTwoViewRender::default();
+
+        let result = SwitcherTwoViewDecodeRenderBoundary::default()
+            .render_selected_pair_with_runtimes(
+                SwitcherTwoViewDecodeRenderInput {
+                    selection,
+                    left_window_title: "StreamSync Left".to_string(),
+                    right_window_title: "StreamSync Right".to_string(),
+                    render_hold_millis: 7,
+                },
+                &decode,
+                &render,
+            );
+
+        let SwitcherTwoViewDecodeRenderResult::BothRendered {
+            shared_target_time,
+            left,
+            right,
+        } = result
+        else {
+            panic!("both selected sides should render");
+        };
+        assert_eq!(shared_target_time, TimestampMicros(1_000_011));
+        assert_eq!(left.side, SwitcherTwoViewSide::Left);
+        assert_eq!(right.side, SwitcherTwoViewSide::Right);
+        assert_eq!(left.selected.frame.frame_id, 10);
+        assert_eq!(right.selected.frame.frame_id, 12);
+        assert_eq!(left.render.title, "StreamSync Left");
+        assert_eq!(right.render.title, "StreamSync Right");
+        assert_eq!(left.render.hold_millis, 7);
+        assert_eq!(right.render.hold_millis, 7);
+
+        let inputs = decode.inputs.borrow();
+        assert_eq!(inputs.len(), 2);
+        assert_eq!(inputs[0].encoded_payload, vec![0, 0, 1, 0x65, 0x10]);
+        assert_eq!(inputs[0].width, 2);
+        assert_eq!(inputs[0].height, 1);
+        assert_eq!(inputs[1].encoded_payload, vec![0, 0, 1, 0x65, 0x12]);
+        assert_eq!(state.client_queue_len(&left_client_id), before_left_len);
+        assert_eq!(state.client_queue_len(&right_client_id), before_right_len);
+    }
+
+    #[test]
+    fn two_view_decode_render_renders_selected_side_and_skips_partial_side() {
+        let (state, selection) = selected_two_view_fixture(vec![0, 0, 1, 0x65, 0x10], vec![]);
+        let right_client_id = ClientId("client-right".to_string());
+        let selection = match selection {
+            SwitcherTwoViewTargetTimeSelectionResult::BothSelected {
+                shared_target_time,
+                left,
+                ..
+            } => SwitcherTwoViewTargetTimeSelectionResult::Partial {
+                shared_target_time,
+                left: SwitcherJitterBufferSelectionResult::Selected(left),
+                right: SwitcherJitterBufferSelectionResult::NoFrame {
+                    client_id: right_client_id.clone(),
+                    target_time: shared_target_time,
+                },
+            },
+            other => panic!("fixture should create both-selected selection: {other:?}"),
+        };
+        let decode = RecordingTwoViewDecode::default();
+        let render = RecordingTwoViewRender::default();
+
+        let result = SwitcherTwoViewDecodeRenderBoundary::default()
+            .render_selected_pair_with_runtimes(
+                SwitcherTwoViewDecodeRenderInput {
+                    selection,
+                    left_window_title: "left".to_string(),
+                    right_window_title: "right".to_string(),
+                    render_hold_millis: 1,
+                },
+                &decode,
+                &render,
+            );
+
+        let SwitcherTwoViewDecodeRenderResult::LeftRenderedRightSkipped { left, right, .. } =
+            result
+        else {
+            panic!("partial selection should render only selected side");
+        };
+        assert_eq!(left.selected.frame.frame_id, 10);
+        assert_eq!(
+            right,
+            SwitcherTwoViewSkippedSide::SelectionUnavailable {
+                side: SwitcherTwoViewSide::Right,
+                selection: SwitcherJitterBufferSelectionResult::NoFrame {
+                    client_id: right_client_id,
+                    target_time: TimestampMicros(1_000_011)
+                }
+            }
+        );
+        assert_eq!(decode.inputs.borrow().len(), 1);
+        assert_eq!(render.requests.borrow().len(), 1);
+        assert_eq!(
+            state.client_queue_len(&ClientId("client-left".to_string())),
+            1
+        );
+    }
+
+    #[test]
+    fn two_view_decode_render_reports_decode_failure_per_side() {
+        let (_state, selection) =
+            selected_two_view_fixture(vec![0, 0, 1, 0x65, 0x10], vec![0, 0, 1, 0x65, 0x12]);
+        let decode = RecordingTwoViewDecode::failing_on_last_byte(0x12);
+        let render = RecordingTwoViewRender::default();
+
+        let result = SwitcherTwoViewDecodeRenderBoundary::default()
+            .render_selected_pair_with_runtimes(
+                SwitcherTwoViewDecodeRenderInput {
+                    selection,
+                    left_window_title: "left".to_string(),
+                    right_window_title: "right".to_string(),
+                    render_hold_millis: 1,
+                },
+                &decode,
+                &render,
+            );
+
+        let SwitcherTwoViewDecodeRenderResult::LeftRenderedRightSkipped { left, right, .. } =
+            result
+        else {
+            panic!("right decode failure should skip right only");
+        };
+        assert_eq!(left.selected.frame.frame_id, 10);
+        let SwitcherTwoViewSkippedSide::DecodeFailed {
+            side,
+            selected,
+            failure,
+        } = right
+        else {
+            panic!("right side should carry decode failure");
+        };
+        assert_eq!(side, SwitcherTwoViewSide::Right);
+        assert_eq!(selected.frame.frame_id, 12);
+        assert_eq!(failure.message, "fixture decode failed for 0x12");
+        assert_eq!(decode.inputs.borrow().len(), 2);
+        assert_eq!(render.requests.borrow().len(), 1);
+    }
+
+    #[test]
+    fn two_view_decode_render_reports_render_failure_per_side() {
+        let (_state, selection) =
+            selected_two_view_fixture(vec![0, 0, 1, 0x65, 0x10], vec![0, 0, 1, 0x65, 0x12]);
+        let decode = RecordingTwoViewDecode::default();
+        let render = RecordingTwoViewRender::failing_when_title_contains("right");
+
+        let result = SwitcherTwoViewDecodeRenderBoundary::default()
+            .render_selected_pair_with_runtimes(
+                SwitcherTwoViewDecodeRenderInput {
+                    selection,
+                    left_window_title: "left".to_string(),
+                    right_window_title: "right".to_string(),
+                    render_hold_millis: 1,
+                },
+                &decode,
+                &render,
+            );
+
+        let SwitcherTwoViewDecodeRenderResult::LeftRenderedRightSkipped { left, right, .. } =
+            result
+        else {
+            panic!("right render failure should skip right only");
+        };
+        assert_eq!(left.selected.frame.frame_id, 10);
+        let SwitcherTwoViewSkippedSide::RenderFailed {
+            side,
+            selected,
+            message,
+        } = right
+        else {
+            panic!("right side should carry render failure");
+        };
+        assert_eq!(side, SwitcherTwoViewSide::Right);
+        assert_eq!(selected.frame.frame_id, 12);
+        assert_eq!(message, "fixture render failed for right");
+        assert_eq!(decode.inputs.borrow().len(), 2);
+        assert_eq!(render.requests.borrow().len(), 2);
+    }
+
+    #[test]
+    fn two_view_decode_render_reports_both_unavailable_without_decode_or_render() {
+        let left_client_id = ClientId("client-left".to_string());
+        let right_client_id = ClientId("client-right".to_string());
+        let selection = SwitcherTwoViewTargetTimeSelectionResult::BothUnavailable {
+            shared_target_time: TimestampMicros(1_000_000),
+            left: SwitcherJitterBufferSelectionResult::NoFrame {
+                client_id: left_client_id.clone(),
+                target_time: TimestampMicros(1_000_000),
+            },
+            right: SwitcherJitterBufferSelectionResult::NoFrame {
+                client_id: right_client_id.clone(),
+                target_time: TimestampMicros(1_000_000),
+            },
+        };
+
+        let result = SwitcherTwoViewDecodeRenderBoundary::default()
+            .render_selected_pair_with_runtimes(
+                SwitcherTwoViewDecodeRenderInput {
+                    selection,
+                    left_window_title: "left".to_string(),
+                    right_window_title: "right".to_string(),
+                    render_hold_millis: 1,
+                },
+                &PanicDecode,
+                &PanicRender,
+            );
+
+        assert_eq!(
+            result,
+            SwitcherTwoViewDecodeRenderResult::BothSkipped {
+                shared_target_time: TimestampMicros(1_000_000),
+                left: SwitcherTwoViewSkippedSide::SelectionUnavailable {
+                    side: SwitcherTwoViewSide::Left,
+                    selection: SwitcherJitterBufferSelectionResult::NoFrame {
+                        client_id: left_client_id,
+                        target_time: TimestampMicros(1_000_000)
+                    }
+                },
+                right: SwitcherTwoViewSkippedSide::SelectionUnavailable {
+                    side: SwitcherTwoViewSide::Right,
+                    selection: SwitcherJitterBufferSelectionResult::NoFrame {
+                        client_id: right_client_id,
+                        target_time: TimestampMicros(1_000_000)
+                    }
+                }
+            }
+        );
+    }
+
+    #[test]
     fn placeholder_display_boundary_does_not_perform_real_decode_or_display() {
         let selected = SwitcherSingleViewSelectedEncodedFrame {
             client_id: ClientId("client-1".to_string()),
@@ -3315,6 +3850,136 @@ mod tests {
 
     fn current_test_suffix() -> String {
         format!("{}-{:?}", std::process::id(), std::thread::current().id())
+    }
+
+    fn selected_two_view_fixture(
+        left_payload: Vec<u8>,
+        right_payload: Vec<u8>,
+    ) -> (
+        ServerVideoFrameQueueState,
+        SwitcherTwoViewTargetTimeSelectionResult,
+    ) {
+        let mut state = ServerVideoFrameQueueState::default();
+        store_frame_with_payload(
+            &mut state,
+            "client-left",
+            10,
+            TimestampMicros(2_310_000),
+            2,
+            1,
+            left_payload,
+        );
+        store_frame_with_payload(
+            &mut state,
+            "client-right",
+            12,
+            TimestampMicros(2_310_010),
+            2,
+            1,
+            right_payload,
+        );
+        let left_client_id = ClientId("client-left".to_string());
+        let right_client_id = ClientId("client-right".to_string());
+        let selection = SwitcherTwoViewTargetTimeSelectionBoundary::default().select_pair(
+            SwitcherTwoViewTargetTimeSelectionInput {
+                queue_state: &state,
+                left_client_id: &left_client_id,
+                right_client_id: &right_client_id,
+                current_switcher_time: TimestampMicros(1_600_011),
+                policy: SwitcherTwoViewTargetTimeSelectionPolicy {
+                    playout_delay_micros: 600_000,
+                    max_late_micros: 50,
+                    max_early_micros: 50,
+                    ..SwitcherTwoViewTargetTimeSelectionPolicy::default()
+                },
+            },
+        );
+        (state, selection)
+    }
+
+    #[derive(Default)]
+    struct RecordingTwoViewDecode {
+        inputs: std::cell::RefCell<Vec<SwitcherH264DecodeInput>>,
+        fail_on_last_byte: Option<u8>,
+    }
+
+    impl RecordingTwoViewDecode {
+        fn failing_on_last_byte(value: u8) -> Self {
+            Self {
+                inputs: std::cell::RefCell::new(Vec::new()),
+                fail_on_last_byte: Some(value),
+            }
+        }
+    }
+
+    impl SwitcherH264DecodeRuntimeHook for RecordingTwoViewDecode {
+        fn decode_annex_b_h264(&self, input: SwitcherH264DecodeInput) -> SwitcherH264DecodeResult {
+            self.inputs.borrow_mut().push(input.clone());
+            if self.fail_on_last_byte == input.encoded_payload.last().copied() {
+                return SwitcherH264DecodeResult::Failed(SwitcherH264DecodeFailure {
+                    message: format!(
+                        "fixture decode failed for 0x{:02x}",
+                        input.encoded_payload.last().copied().unwrap_or_default()
+                    ),
+                });
+            }
+            SwitcherH264DecodeResult::Decoded(SwitcherDecodedFrame {
+                width: input.width,
+                height: input.height,
+                pixel_format: SwitcherDecodedFramePixelFormat::Bgra8,
+                pixels: vec![0; input.width as usize * input.height as usize * 4],
+            })
+        }
+    }
+
+    #[derive(Default)]
+    struct RecordingTwoViewRender {
+        requests: std::cell::RefCell<Vec<SwitcherWindowRenderRequest>>,
+        fail_title_contains: Option<String>,
+    }
+
+    impl RecordingTwoViewRender {
+        fn failing_when_title_contains(value: &str) -> Self {
+            Self {
+                requests: std::cell::RefCell::new(Vec::new()),
+                fail_title_contains: Some(value.to_string()),
+            }
+        }
+    }
+
+    impl SwitcherWindowRenderRuntimeHook for RecordingTwoViewRender {
+        fn render_once(&self, request: SwitcherWindowRenderRequest) -> SwitcherWindowRenderResult {
+            self.requests.borrow_mut().push(request.clone());
+            if let Some(value) = &self.fail_title_contains {
+                if request.title.contains(value) {
+                    return SwitcherWindowRenderResult::RenderFailed {
+                        message: format!("fixture render failed for {value}"),
+                    };
+                }
+            }
+            SwitcherWindowRenderResult::Rendered(SwitcherWindowRenderSuccess {
+                width: request.frame.width,
+                height: request.frame.height,
+                title: request.title,
+                hold_millis: request.hold_millis,
+            })
+        }
+    }
+
+    struct PanicDecode;
+
+    impl SwitcherH264DecodeRuntimeHook for PanicDecode {
+        fn decode_annex_b_h264(&self, _input: SwitcherH264DecodeInput) -> SwitcherH264DecodeResult {
+            panic!("decode should not be called for unavailable 2-view selection");
+        }
+    }
+
+    struct PanicRender;
+
+    impl SwitcherWindowRenderRuntimeHook for PanicRender {
+        fn render_once(&self, _request: SwitcherWindowRenderRequest) -> SwitcherWindowRenderResult {
+            panic!("render should not be called for unavailable 2-view selection");
+        }
     }
 
     struct ScriptedFrameSource {

@@ -1,5 +1,57 @@
 <!-- stream-sync/docs/operations/session-log.md -->
 
+## 2026-04-26
+### Type
+- Codex
+
+### Work
+- Added the smallest 2-view targetTime-selected decode/render connection boundary.
+- Added `SwitcherTwoViewDecodeRenderInput`, `SwitcherTwoViewDecodeRenderBoundary`, `SwitcherTwoViewDecodeRenderResult`, `SwitcherTwoViewRenderedSide`, `SwitcherTwoViewSkippedSide`, and `SwitcherTwoViewSide`.
+- The boundary consumes `SwitcherTwoViewTargetTimeSelectionResult`, decodes only selected sides through `SwitcherH264DecodeBoundary`, and renders decoded BGRA frames through `SwitcherWindowRenderBoundary`.
+- Result variants distinguish both-rendered, left-rendered/right-skipped, right-rendered/left-skipped, and both-skipped outcomes.
+- Per-side skipped results preserve selection unavailable, decode deferred, decode failed, render deferred, backend unavailable, invalid frame, and render failed states explicitly.
+- Added deterministic mock-hook tests for both rendered, partial selection, decode failure, render failure, both unavailable, queue non-mutation, and decode-input metadata/payload preservation.
+- Kept selection, decode, render, queue ownership, layout/composition, 4-view orchestration, and OBS integration separate.
+
+### Changed Files
+- `apps/switcher/src/lib.rs`
+- `docs/architecture/system-design.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### Decisions
+- Partial selection does not synthesize frames. Only `Selected` sides are decoded/rendered.
+- Decode/render runtime hooks remain caller-owned so tests can run without FFmpeg or a real window.
+- The boundary can render two selected sides as two one-frame render requests, but it does not define a 2-view layout or continuous scheduling.
+- Queue mutation and late-frame dropping remain owned by a future queue/runtime boundary.
+
+### Unresolved
+- 2-view sync PoC runtime/manual verification using live or fixture queue state
+- queue mutation / actual late-frame drop policy
+- 4-view orchestration
+- live receive/socket integration
+- OBS Window Capture verification
+- production timing/decode/render policy and structured logging
+
+### Next
+- Add a 2-view runtime/manual verification path that runs selection -> decode/render over caller-owned queue state.
+- Define queue-owner late-drop policy separately.
+- Add 4-view orchestration after the 2-view runtime/manual path is stable.
+
+### TODO Update
+- Marked targetTime-selected frame -> decode/render connection complete.
+- Updated the next switcher sync/display task to 2-view runtime/manual verification.
+- Kept 4-view, OBS, continuous scheduling, and queue mutation deferred.
+
+### Validation
+- `cargo fmt`
+- `cargo test -p stream-sync-switcher`
+- `cargo fmt --check`
+- `cargo check --workspace`
+- `git diff --check`
+
+---
+
 ## 2026-04-25
 ### Type
 - Codex
