@@ -27,9 +27,9 @@
 - server 側は auth one-shot、accepted auth registry 登録、heartbeat ack / liveness / timeout action plan / timeout apply / notice queue storage、RTT / offset state commit と metrics snapshot handoff までの最小境界が揃っている
 - client 側は auth one-shot、heartbeat one-shot、`HeartbeatAckObservation` 付き `ClientStats` one-shot、one-tick runtime、accepted path 手動確認まで完了している
 - client continuous heartbeat loop は thin composition の completed body まで実装済みで、heartbeat timeout notice wakeup planning 境界、wakeup execution 境界、wakeup actual side-effect 境界、outer while-loop connection 境界、outer while-loop one-turn execution body 境界、actual timer wait / retry execution / reconnect 実行境界、outer while-loop 反復実行本体、reconnect policy 境界、caller-owned hook 付き actual socket 再確立境界、real UDP socket 差し替え hook、repeated body からの hook 注入経路まで完了している
-- 未完了の中心は 2-view sync PoC runtime/manual verification、4-view sync orchestration、dashboard UI rendering、continuous receive/send loop 本体、実キュー / 実送信 / 継続ログ出力
+- 未完了の中心は 2-view layout/composition、4-view sync orchestration、dashboard UI rendering、continuous receive/send loop 本体、実キュー / 実送信 / 継続ログ出力
 - outbound queue 実キュー、continuous receive/send loop 本体、send / receive の継続ログ出力、file sink open、process-wide logger、`ServerNotice` 実送信は未実装
-- video path は server 側 accepted `VideoFrame` receive side-effect を caller-owned per-client queue へ保存し、client 側で placeholder encoded H.264 payload 付き `VideoFrame` と、Windows Graphics Capture + FFmpeg による one-shot `RealCaptureH264` `VideoFrame` を UDP 送信する PoC slice まで完了。switcher 側は latest frame を FFmpeg で H.264 decode して 1 frame BMP dump し、Windows では decoded BGRA を normal window に one-shot 描画し、single-client latest-frame の bounded continuous decode/render loop 境界、one-client targetTime / jitter-buffer selection 境界、2-view targetTime selection orchestration 境界、2-view targetTime-selected decode/render connection 境界まで完了。2-view sync PoC runtime/manual verification、4-view sync、OBS は未着手
+- video path は server 側 accepted `VideoFrame` receive side-effect を caller-owned per-client queue へ保存し、client 側で placeholder encoded H.264 payload 付き `VideoFrame` と、Windows Graphics Capture + FFmpeg による one-shot `RealCaptureH264` `VideoFrame` を UDP 送信する PoC slice まで完了。switcher 側は latest frame を FFmpeg で H.264 decode して 1 frame BMP dump し、Windows では decoded BGRA を normal window に one-shot 描画し、single-client latest-frame の bounded continuous decode/render loop 境界、one-client targetTime / jitter-buffer selection 境界、2-view targetTime selection orchestration 境界、2-view targetTime-selected decode/render connection 境界、2-view sync fixture/manual verification CLI まで完了。2-view layout/composition、4-view sync、OBS は未着手
 
 ---
 
@@ -60,7 +60,7 @@
 
 ## 直近でやること
 1. production H.264 encoder configuration / error logging policy
-2. 2-view targetTime-selected decode/render を runtime/manual verification へ接続する
+2. 2-view layout/composition の最小境界を分けて設計する
 3. continuous acquisition / frame arrived wait の最小境界を分けて設計する
 
 ---
@@ -659,7 +659,7 @@
 - [x] targetTime / jitter-buffer frame selection
 - [x] 2-view targetTime selection orchestration
 - [x] targetTime-selected frame -> decode/render connection
-- [ ] 2-view sync PoC runtime/manual verification
+- [x] 2-view sync PoC runtime/manual verification
 - [ ] 30 分連続確認
 
 ### フェーズ4: 2 人 / 4 人同期 PoC
@@ -706,6 +706,7 @@
 - switcher now has a deterministic targetTime / jitter-buffer selection boundary: `SwitcherTargetTimeBoundary` calculates targetTime from current switcher time, playout delay, and optional clock offset, while `SwitcherJitterBufferSelectionBoundary` reads one client's caller-owned queue and returns selected/no-frame/waiting/too-early/too-late states without decode/render.
 - switcher now has a deterministic 2-view targetTime selection orchestration boundary: `SwitcherTwoViewTargetTimeSelectionBoundary` calculates one shared targetTime, applies per-client offset estimates independently during per-client jitter-buffer selection, and returns both-selected / partial / both-unavailable states without queue mutation, decode, render, 4-view layout, or OBS integration.
 - switcher now has a 2-view targetTime-selected decode/render connection boundary: `SwitcherTwoViewDecodeRenderBoundary` consumes `SwitcherTwoViewTargetTimeSelectionResult`, decodes only selected encoded frames, renders decoded frames through caller-owned hooks, and returns both-rendered / one-rendered-one-skipped / both-skipped with per-side selection/decode/render reasons.
+- switcher now has a 2-view sync fixture/manual verification path: `SwitcherTwoViewManualVerificationBoundary` runs targetTime selection -> decode/render over caller-owned queue state, and CLI `--two-view-sync-fixture-once [left-client-id] [right-client-id] [hold-ms]` prints targetTime and per-side selection/decode/render status without live networking, queue mutation, 4-view layout, or OBS work.
 - client video path now has an explicit real-capture / H.264-encode replacement boundary: capture returns `RealCaptureDeferred`, encode returns `RealH264EncodeDeferred`, and `ClientEncodedVideoFrameSource` can feed existing `VideoFrame` metadata/send wiring without pretending placeholder bytes are real capture output.
 - client capture backend direction is now Windows Graphics Capture for MVP; the client can select/probe that backend and surface not-configured, unsupported, or unavailable results without producing fake pixels or coupling capture to UDP send.
 - client capture target discovery now has a pre-session boundary: display/window target descriptors can be represented and converted to `ClientCaptureTargetConfig`, while real Windows enumeration remains deferred and explicit as runtime unavailable.
@@ -724,6 +725,6 @@
 
 ## Next Items
 1. production H.264 encoder configuration / error logging policy
-2. 2-view sync PoC runtime/manual verification over targetTime-selected decode/render
+2. 2-view layout/composition boundary
 3. continuous acquisition / frame arrived wait boundary
-4. 4-view orchestration after 2-view runtime/manual verification is isolated
+4. 4-view orchestration after 2-view layout/composition is isolated

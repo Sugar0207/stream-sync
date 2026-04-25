@@ -5,6 +5,58 @@
 - Codex
 
 ### Work
+- Added the smallest 2-view sync runtime/manual verification path.
+- Added `SwitcherTwoViewManualVerificationBoundary`, input/result/summary types, and compact per-side selection/decode-render status enums.
+- The boundary reads caller-owned `ServerVideoFrameQueueState`, runs `SwitcherTwoViewTargetTimeSelectionBoundary`, then runs `SwitcherTwoViewDecodeRenderBoundary` with caller-owned decode/render hooks.
+- Added switcher CLI `--two-view-sync-fixture-once [left-client-id] [right-client-id] [hold-ms]`.
+- The fixture CLI builds a deterministic two-client queue, runs one selection -> decode/render verification, and prints targetTime plus per-side selection/decode-render status, frame id, payload length, dimensions, and adjusted capture timestamp.
+- Kept live two-client networking, queue mutation / late drop, continuous scheduling, 2-view layout/composition, 4-view orchestration, and OBS integration out of scope.
+- Added deterministic tests for both sides selected/rendered, one side missing, decode failure, render failure, offset-influenced selection, and metadata/status preservation through the manual/runtime boundary.
+
+### Changed Files
+- `apps/switcher/src/lib.rs`
+- `apps/switcher/src/main.rs`
+- `docs/architecture/system-design.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### Decisions
+- Use a fixture CLI now because live two-client networking and queue sharing are broader than this slice.
+- The fixture CLI uses the real FFmpeg/window hooks; invalid fixture payloads are reported as explicit decode/render states rather than fake rendered frames.
+- Keep the reusable runtime boundary hook-based so tests can use mock decode/render hooks.
+
+### Unresolved
+- 2-view layout/composition
+- live two-client receive/socket integration
+- queue mutation / actual late-frame drop policy
+- 4-view orchestration
+- OBS Window Capture verification
+- production timing/decode/render policy and structured logging
+
+### Next
+- Define 2-view layout/composition over selected/rendered sides.
+- Add live two-client queue/runtime integration after fixture verification is stable.
+- Add 4-view orchestration after the 2-view layout boundary is isolated.
+
+### TODO Update
+- Marked 2-view sync PoC runtime/manual verification complete.
+- Updated the next switcher sync task to 2-view layout/composition.
+- Kept live networking, continuous scheduling, queue mutation, 4-view, and OBS deferred.
+
+### Validation
+- `cargo fmt`
+- `cargo test -p stream-sync-switcher`
+- `cargo fmt --check`
+- `cargo check --workspace`
+- `git diff --check`
+
+---
+
+## 2026-04-26
+### Type
+- Codex
+
+### Work
 - Added the smallest 2-view targetTime-selected decode/render connection boundary.
 - Added `SwitcherTwoViewDecodeRenderInput`, `SwitcherTwoViewDecodeRenderBoundary`, `SwitcherTwoViewDecodeRenderResult`, `SwitcherTwoViewRenderedSide`, `SwitcherTwoViewSkippedSide`, and `SwitcherTwoViewSide`.
 - The boundary consumes `SwitcherTwoViewTargetTimeSelectionResult`, decodes only selected sides through `SwitcherH264DecodeBoundary`, and renders decoded BGRA frames through `SwitcherWindowRenderBoundary`.

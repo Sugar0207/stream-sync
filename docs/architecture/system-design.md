@@ -7522,11 +7522,22 @@ Current decode/display substitute behavior:
 - The 2-view decode/render connection still does not read or mutate queues,
   drop late frames, create fake placeholder frames, compose a 2-view layout,
   schedule a continuous loop, perform 4-view orchestration, or integrate OBS.
-- Future 2-view runtime/manual verification should feed live or fixture
-  `ServerVideoFrameQueueState` through:
-  2-view targetTime selection -> 2-view decode/render connection.
+- `SwitcherTwoViewManualVerificationBoundary` is the first 2-view
+  runtime/manual verification wrapper. It reads a caller-owned
+  `ServerVideoFrameQueueState`, runs 2-view targetTime selection, then runs the
+  2-view decode/render connection, and returns a compact per-side summary.
+- CLI `--two-view-sync-fixture-once [left-client-id] [right-client-id]
+  [hold-ms]` builds a deterministic two-client fixture queue and runs that
+  wrapper once. It prints targetTime, left/right selection status, left/right
+  decode/render status, frame id, payload length, dimensions, and adjusted
+  capture timestamp. The fixture uses the real decode/render hooks, so invalid
+  fixture payloads remain explicit decode failures instead of becoming fake
+  rendered frames.
+- The manual verification wrapper and fixture CLI still do not use live
+  two-client networking, mutate queues, drop late frames, define a 2-view
+  layout, schedule continuously, perform 4-view orchestration, or integrate OBS.
 - Future 4-view sync should build on the same shared-targetTime pattern after
-  the 2-view runtime/manual verification is isolated.
+  2-view layout/composition is isolated.
 
 This decode PoC does not add a continuous loop, targetTime selection,
 multi-view sync, OBS integration, decode acceleration, or packet fragmentation.
@@ -7539,7 +7550,8 @@ The targetTime selectors still do not decode, render, own queues, drop late
 frames, perform 4-view orchestration, or integrate OBS. The 2-view decode/render
 connection does decode and render selected sides, but remains separate from
 selection, queue ownership, layout/composition, continuous scheduling, 4-view,
-and OBS.
+and OBS. The 2-view fixture/manual verification wrapper only composes existing
+boundaries once; it is not live networking or continuous display scheduling.
 
 ## Client Real Capture / H.264 Encode Boundary
 

@@ -12,8 +12,10 @@ use stream_sync_switcher::{
     SwitcherDecodeLatestFrameOnceBoundary, SwitcherDecodeLatestFrameOnceInput,
     SwitcherDecodeLatestFrameOnceResult, SwitcherFfmpegH264DecodeRuntimeHook,
     SwitcherPlaceholderManualVerificationBoundary, SwitcherPlaceholderManualVerificationInput,
-    SwitcherPlaceholderManualVerificationResult, SwitcherWindowRenderBoundary,
-    SwitcherWindowRenderResult,
+    SwitcherPlaceholderManualVerificationResult, SwitcherTwoViewManualVerificationBoundary,
+    SwitcherTwoViewManualVerificationInput, SwitcherTwoViewManualVerificationResult,
+    SwitcherTwoViewManualVerificationSideSummary, SwitcherTwoViewTargetTimeSelectionPolicy,
+    SwitcherWindowRenderBoundary, SwitcherWindowRenderResult,
 };
 
 #[cfg(not(target_os = "windows"))]
@@ -166,9 +168,26 @@ fn main() {
                 }
             }
         }
+        Some("--two-view-sync-fixture-once") => {
+            let left_client_id = ClientId(args.next().unwrap_or_else(|| "client-left".to_string()));
+            let right_client_id =
+                ClientId(args.next().unwrap_or_else(|| "client-right".to_string()));
+            let hold_millis = args
+                .next()
+                .and_then(|value| value.parse::<u64>().ok())
+                .unwrap_or(2_000);
+            let queue_state = fixture_two_view_queue_state(&left_client_id, &right_client_id);
+            let result = verify_two_view_fixture_once(
+                &queue_state,
+                &left_client_id,
+                &right_client_id,
+                hold_millis,
+            );
+            print_two_view_sync_summary(result);
+        }
         _ => {
             println!(
-                "stream-sync-switcher scaffold; use --placeholder-fixture-once [client-id], --placeholder-empty-once [client-id], --decode-latest-frame-once [client-id] [output-path], --receive-auth-video-placeholder-bridge-once [config-path] [client-id], --receive-auth-video-decode-latest-once [config-path] [client-id] [output-path], or --receive-auth-video-render-decoded-once [config-path] [client-id] [hold-ms]"
+                "stream-sync-switcher scaffold; use --placeholder-fixture-once [client-id], --placeholder-empty-once [client-id], --decode-latest-frame-once [client-id] [output-path], --receive-auth-video-placeholder-bridge-once [config-path] [client-id], --receive-auth-video-decode-latest-once [config-path] [client-id] [output-path], --receive-auth-video-render-decoded-once [config-path] [client-id] [hold-ms], or --two-view-sync-fixture-once [left-client-id] [right-client-id] [hold-ms]"
             );
         }
     }
@@ -360,8 +379,133 @@ fn print_render_summary(
     }
 }
 
+fn verify_two_view_fixture_once(
+    queue_state: &ServerVideoFrameQueueState,
+    left_client_id: &ClientId,
+    right_client_id: &ClientId,
+    hold_millis: u64,
+) -> SwitcherTwoViewManualVerificationResult {
+    let input = SwitcherTwoViewManualVerificationInput {
+        queue_state,
+        left_client_id,
+        right_client_id,
+        current_switcher_time: TimestampMicros(1_600_011),
+        policy: SwitcherTwoViewTargetTimeSelectionPolicy {
+            playout_delay_micros: 600_000,
+            max_late_micros: 50,
+            max_early_micros: 50,
+            ..SwitcherTwoViewTargetTimeSelectionPolicy::default()
+        },
+        render_hold_millis: hold_millis,
+    };
+
+    #[cfg(target_os = "windows")]
+    {
+        SwitcherTwoViewManualVerificationBoundary::default().verify_with_runtimes(
+            input,
+            &SwitcherFfmpegH264DecodeRuntimeHook::default(),
+            &SwitcherWindowsGdiWindowRenderRuntimeHook,
+        )
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        SwitcherTwoViewManualVerificationBoundary::default().verify_with_runtimes(
+            input,
+            &SwitcherFfmpegH264DecodeRuntimeHook::default(),
+            &SwitcherUnavailableWindowRenderRuntimeHook,
+        )
+    }
+}
+
+fn print_two_view_sync_summary(result: SwitcherTwoViewManualVerificationResult) {
+    println!(
+        "switcher two-view sync fixture cross_process_queue=false continuous=false target_time={} left={} right={}",
+        result.summary.shared_target_time.0,
+        format_two_view_side_summary(&result.summary.left),
+        format_two_view_side_summary(&result.summary.right)
+    );
+}
+
+fn format_two_view_side_summary(summary: &SwitcherTwoViewManualVerificationSideSummary) -> String {
+    format!(
+        "side={:?},client_id={},selection={:?},decode_render={:?},frame_id={},payload_len={},width={},height={},adjusted_capture_timestamp={}",
+        summary.side,
+        summary.client_id.0,
+        summary.selection_status,
+        summary.decode_render_status,
+        summary
+            .frame_id
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| "none".to_string()),
+        summary
+            .encoded_payload_len
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| "none".to_string()),
+        summary
+            .width
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| "none".to_string()),
+        summary
+            .height
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| "none".to_string()),
+        summary
+            .adjusted_capture_timestamp
+            .map(|value| value.0.to_string())
+            .unwrap_or_else(|| "none".to_string())
+    )
+}
+
 fn fixture_queue_state(client_id: &ClientId) -> ServerVideoFrameQueueState {
     let mut state = ServerVideoFrameQueueState::default();
+    store_fixture_frame(
+        &mut state,
+        client_id,
+        42,
+        1280,
+        720,
+        vec![0x42, 0xbb, 0xcc],
+        TimestampMicros(2_000_042),
+    );
+    state
+}
+
+fn fixture_two_view_queue_state(
+    left_client_id: &ClientId,
+    right_client_id: &ClientId,
+) -> ServerVideoFrameQueueState {
+    let mut state = ServerVideoFrameQueueState::default();
+    store_fixture_frame(
+        &mut state,
+        left_client_id,
+        10,
+        2,
+        1,
+        vec![0, 0, 1, 0x65, 0x10],
+        TimestampMicros(2_000_010),
+    );
+    store_fixture_frame(
+        &mut state,
+        right_client_id,
+        12,
+        2,
+        1,
+        vec![0, 0, 1, 0x65, 0x12],
+        TimestampMicros(2_000_012),
+    );
+    state
+}
+
+fn store_fixture_frame(
+    state: &mut ServerVideoFrameQueueState,
+    client_id: &ClientId,
+    frame_id: u64,
+    width: u32,
+    height: u32,
+    payload: Vec<u8>,
+    queued_at: TimestampMicros,
+) {
     let source = PacketSource {
         address: "127.0.0.1:5001"
             .parse()
@@ -381,25 +525,24 @@ fn fixture_queue_state(client_id: &ClientId) -> ServerVideoFrameQueueState {
             protocol_version: ProtocolVersion(1),
             client_id: client_id.clone(),
             run_id: RunId("run-1".to_string()),
-            frame_id: 42,
-            capture_timestamp: TimestampMicros(1_000_042),
-            send_timestamp: TimestampMicros(1_000_142),
+            frame_id,
+            capture_timestamp: TimestampMicros(1_000_000 + frame_id),
+            send_timestamp: TimestampMicros(1_000_100 + frame_id),
             is_keyframe: true,
             metadata_reserved: [0; 3],
-            width: 1280,
-            height: 720,
+            width,
+            height,
             fps_nominal: 30,
             codec: Codec::H264,
-            payload_size: 3,
-            payload: vec![0x42, 0xbb, 0xcc],
+            payload_size: payload.len(),
+            payload,
         },
     };
     let input = ServerVideoFrameHandlerBoundary.prepare_input(packet);
     let _result = ServerVideoFrameQueueStorageBoundary.store_frame(
-        &mut state,
+        state,
         input,
-        TimestampMicros(2_000_042),
+        queued_at,
         ServerVideoFrameQueuePolicy::default(),
     );
-    state
 }

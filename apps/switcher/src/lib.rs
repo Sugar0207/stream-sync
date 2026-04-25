@@ -1307,6 +1307,277 @@ fn split_two_view_selection(
     }
 }
 
+/// Manual/runtime input for one 2-view targetTime sync verification.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SwitcherTwoViewManualVerificationInput<'a> {
+    pub queue_state: &'a ServerVideoFrameQueueState,
+    pub left_client_id: &'a ClientId,
+    pub right_client_id: &'a ClientId,
+    pub current_switcher_time: TimestampMicros,
+    pub policy: SwitcherTwoViewTargetTimeSelectionPolicy,
+    pub render_hold_millis: u64,
+}
+
+/// Compact per-side selection status for manual/runtime output.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum SwitcherTwoViewManualSelectionStatus {
+    Selected,
+    NoFrame,
+    WaitingForBuffer,
+    FrameTooEarly,
+    FrameTooLateDropped,
+}
+
+/// Compact per-side decode/render status for manual/runtime output.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum SwitcherTwoViewManualDecodeRenderStatus {
+    Rendered,
+    SkippedSelectionUnavailable,
+    DecodeDeferred,
+    DecodeFailed,
+    RenderDeferred,
+    WindowBackendUnavailable,
+    InvalidFrame,
+    RenderFailed,
+}
+
+/// Compact per-side summary for manual/runtime output.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SwitcherTwoViewManualVerificationSideSummary {
+    pub side: SwitcherTwoViewSide,
+    pub client_id: ClientId,
+    pub selection_status: SwitcherTwoViewManualSelectionStatus,
+    pub decode_render_status: SwitcherTwoViewManualDecodeRenderStatus,
+    pub frame_id: Option<u64>,
+    pub encoded_payload_len: Option<usize>,
+    pub width: Option<u32>,
+    pub height: Option<u32>,
+    pub adjusted_capture_timestamp: Option<TimestampMicros>,
+}
+
+/// Compact summary for one 2-view sync manual/runtime verification.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SwitcherTwoViewManualVerificationSummary {
+    pub shared_target_time: TimestampMicros,
+    pub left: SwitcherTwoViewManualVerificationSideSummary,
+    pub right: SwitcherTwoViewManualVerificationSideSummary,
+}
+
+/// Result of one 2-view sync manual/runtime verification.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SwitcherTwoViewManualVerificationResult {
+    pub selection: SwitcherTwoViewTargetTimeSelectionResult,
+    pub render: SwitcherTwoViewDecodeRenderResult,
+    pub summary: SwitcherTwoViewManualVerificationSummary,
+}
+
+/// Runtime/manual verification for 2-view targetTime selection -> decode/render.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct SwitcherTwoViewManualVerificationBoundary {
+    selection: SwitcherTwoViewTargetTimeSelectionBoundary,
+    decode_render: SwitcherTwoViewDecodeRenderBoundary,
+}
+
+impl SwitcherTwoViewManualVerificationBoundary {
+    pub fn verify_with_runtimes(
+        &self,
+        input: SwitcherTwoViewManualVerificationInput<'_>,
+        decode_runtime: &impl SwitcherH264DecodeRuntimeHook,
+        render_runtime: &impl SwitcherWindowRenderRuntimeHook,
+    ) -> SwitcherTwoViewManualVerificationResult {
+        let selection = self
+            .selection
+            .select_pair(SwitcherTwoViewTargetTimeSelectionInput {
+                queue_state: input.queue_state,
+                left_client_id: input.left_client_id,
+                right_client_id: input.right_client_id,
+                current_switcher_time: input.current_switcher_time,
+                policy: input.policy,
+            });
+        let render = self.decode_render.render_selected_pair_with_runtimes(
+            SwitcherTwoViewDecodeRenderInput {
+                selection: selection.clone(),
+                left_window_title: format!("StreamSync {}", input.left_client_id.0),
+                right_window_title: format!("StreamSync {}", input.right_client_id.0),
+                render_hold_millis: input.render_hold_millis,
+            },
+            decode_runtime,
+            render_runtime,
+        );
+        let summary = two_view_manual_summary(
+            &selection,
+            &render,
+            input.left_client_id,
+            input.right_client_id,
+        );
+        SwitcherTwoViewManualVerificationResult {
+            selection,
+            render,
+            summary,
+        }
+    }
+}
+
+fn two_view_manual_summary(
+    selection: &SwitcherTwoViewTargetTimeSelectionResult,
+    render: &SwitcherTwoViewDecodeRenderResult,
+    left_client_id: &ClientId,
+    right_client_id: &ClientId,
+) -> SwitcherTwoViewManualVerificationSummary {
+    let (shared_target_time, left_selection, right_selection) =
+        clone_two_view_selection_sides(selection);
+    SwitcherTwoViewManualVerificationSummary {
+        shared_target_time,
+        left: two_view_manual_side_summary(
+            SwitcherTwoViewSide::Left,
+            left_client_id,
+            left_selection,
+            two_view_decode_render_status_for_side(render, SwitcherTwoViewSide::Left),
+        ),
+        right: two_view_manual_side_summary(
+            SwitcherTwoViewSide::Right,
+            right_client_id,
+            right_selection,
+            two_view_decode_render_status_for_side(render, SwitcherTwoViewSide::Right),
+        ),
+    }
+}
+
+fn clone_two_view_selection_sides(
+    selection: &SwitcherTwoViewTargetTimeSelectionResult,
+) -> (
+    TimestampMicros,
+    SwitcherJitterBufferSelectionResult,
+    SwitcherJitterBufferSelectionResult,
+) {
+    match selection {
+        SwitcherTwoViewTargetTimeSelectionResult::BothSelected {
+            shared_target_time,
+            left,
+            right,
+        } => (
+            *shared_target_time,
+            SwitcherJitterBufferSelectionResult::Selected(left.clone()),
+            SwitcherJitterBufferSelectionResult::Selected(right.clone()),
+        ),
+        SwitcherTwoViewTargetTimeSelectionResult::Partial {
+            shared_target_time,
+            left,
+            right,
+        }
+        | SwitcherTwoViewTargetTimeSelectionResult::BothUnavailable {
+            shared_target_time,
+            left,
+            right,
+        } => (*shared_target_time, left.clone(), right.clone()),
+    }
+}
+
+fn two_view_manual_side_summary(
+    side: SwitcherTwoViewSide,
+    client_id: &ClientId,
+    selection: SwitcherJitterBufferSelectionResult,
+    decode_render_status: SwitcherTwoViewManualDecodeRenderStatus,
+) -> SwitcherTwoViewManualVerificationSideSummary {
+    let selection_status = two_view_manual_selection_status(&selection);
+    let selected = match &selection {
+        SwitcherJitterBufferSelectionResult::Selected(selected) => Some(selected),
+        _ => None,
+    };
+    SwitcherTwoViewManualVerificationSideSummary {
+        side,
+        client_id: client_id.clone(),
+        selection_status,
+        decode_render_status,
+        frame_id: selected.map(|selected| selected.frame.frame_id),
+        encoded_payload_len: selected.map(|selected| selected.frame.encoded_payload_len),
+        width: selected.map(|selected| selected.frame.width),
+        height: selected.map(|selected| selected.frame.height),
+        adjusted_capture_timestamp: selected.map(|selected| selected.adjusted_capture_timestamp),
+    }
+}
+
+fn two_view_manual_selection_status(
+    selection: &SwitcherJitterBufferSelectionResult,
+) -> SwitcherTwoViewManualSelectionStatus {
+    match selection {
+        SwitcherJitterBufferSelectionResult::Selected(_) => {
+            SwitcherTwoViewManualSelectionStatus::Selected
+        }
+        SwitcherJitterBufferSelectionResult::NoFrame { .. } => {
+            SwitcherTwoViewManualSelectionStatus::NoFrame
+        }
+        SwitcherJitterBufferSelectionResult::WaitingForBuffer { .. } => {
+            SwitcherTwoViewManualSelectionStatus::WaitingForBuffer
+        }
+        SwitcherJitterBufferSelectionResult::FrameTooEarly { .. } => {
+            SwitcherTwoViewManualSelectionStatus::FrameTooEarly
+        }
+        SwitcherJitterBufferSelectionResult::FrameTooLateDropped { .. } => {
+            SwitcherTwoViewManualSelectionStatus::FrameTooLateDropped
+        }
+    }
+}
+
+fn two_view_decode_render_status_for_side(
+    render: &SwitcherTwoViewDecodeRenderResult,
+    side: SwitcherTwoViewSide,
+) -> SwitcherTwoViewManualDecodeRenderStatus {
+    match render {
+        SwitcherTwoViewDecodeRenderResult::BothRendered { .. } => {
+            SwitcherTwoViewManualDecodeRenderStatus::Rendered
+        }
+        SwitcherTwoViewDecodeRenderResult::LeftRenderedRightSkipped { right, .. }
+            if side == SwitcherTwoViewSide::Left =>
+        {
+            SwitcherTwoViewManualDecodeRenderStatus::Rendered
+        }
+        SwitcherTwoViewDecodeRenderResult::LeftRenderedRightSkipped { right, .. } => {
+            two_view_skipped_status(right)
+        }
+        SwitcherTwoViewDecodeRenderResult::RightRenderedLeftSkipped { left, .. }
+            if side == SwitcherTwoViewSide::Right =>
+        {
+            SwitcherTwoViewManualDecodeRenderStatus::Rendered
+        }
+        SwitcherTwoViewDecodeRenderResult::RightRenderedLeftSkipped { left, .. } => {
+            two_view_skipped_status(left)
+        }
+        SwitcherTwoViewDecodeRenderResult::BothSkipped { left, right, .. } => match side {
+            SwitcherTwoViewSide::Left => two_view_skipped_status(left),
+            SwitcherTwoViewSide::Right => two_view_skipped_status(right),
+        },
+    }
+}
+
+fn two_view_skipped_status(
+    skipped: &SwitcherTwoViewSkippedSide,
+) -> SwitcherTwoViewManualDecodeRenderStatus {
+    match skipped {
+        SwitcherTwoViewSkippedSide::SelectionUnavailable { .. } => {
+            SwitcherTwoViewManualDecodeRenderStatus::SkippedSelectionUnavailable
+        }
+        SwitcherTwoViewSkippedSide::DecodeDeferred { .. } => {
+            SwitcherTwoViewManualDecodeRenderStatus::DecodeDeferred
+        }
+        SwitcherTwoViewSkippedSide::DecodeFailed { .. } => {
+            SwitcherTwoViewManualDecodeRenderStatus::DecodeFailed
+        }
+        SwitcherTwoViewSkippedSide::RenderDeferred { .. } => {
+            SwitcherTwoViewManualDecodeRenderStatus::RenderDeferred
+        }
+        SwitcherTwoViewSkippedSide::WindowBackendUnavailable { .. } => {
+            SwitcherTwoViewManualDecodeRenderStatus::WindowBackendUnavailable
+        }
+        SwitcherTwoViewSkippedSide::InvalidFrame { .. } => {
+            SwitcherTwoViewManualDecodeRenderStatus::InvalidFrame
+        }
+        SwitcherTwoViewSkippedSide::RenderFailed { .. } => {
+            SwitcherTwoViewManualDecodeRenderStatus::RenderFailed
+        }
+    }
+}
+
 /// Stop policy for the first continuous single-client render loop.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct SwitcherContinuousRenderLoopPolicy {
@@ -2881,6 +3152,222 @@ mod tests {
                     }
                 }
             }
+        );
+    }
+
+    #[test]
+    fn two_view_manual_verification_fixture_selects_and_renders_both_sides() {
+        let (state, _selection) =
+            selected_two_view_fixture(vec![0, 0, 1, 0x65, 0x10], vec![0, 0, 1, 0x65, 0x12]);
+        let left_client_id = ClientId("client-left".to_string());
+        let right_client_id = ClientId("client-right".to_string());
+
+        let result = SwitcherTwoViewManualVerificationBoundary::default().verify_with_runtimes(
+            SwitcherTwoViewManualVerificationInput {
+                queue_state: &state,
+                left_client_id: &left_client_id,
+                right_client_id: &right_client_id,
+                current_switcher_time: TimestampMicros(1_600_011),
+                policy: SwitcherTwoViewTargetTimeSelectionPolicy {
+                    playout_delay_micros: 600_000,
+                    max_late_micros: 50,
+                    max_early_micros: 50,
+                    ..SwitcherTwoViewTargetTimeSelectionPolicy::default()
+                },
+                render_hold_millis: 5,
+            },
+            &RecordingTwoViewDecode::default(),
+            &RecordingTwoViewRender::default(),
+        );
+
+        assert_eq!(
+            result.summary.shared_target_time,
+            TimestampMicros(1_000_011)
+        );
+        assert_eq!(
+            result.summary.left.selection_status,
+            SwitcherTwoViewManualSelectionStatus::Selected
+        );
+        assert_eq!(
+            result.summary.right.selection_status,
+            SwitcherTwoViewManualSelectionStatus::Selected
+        );
+        assert_eq!(
+            result.summary.left.decode_render_status,
+            SwitcherTwoViewManualDecodeRenderStatus::Rendered
+        );
+        assert_eq!(
+            result.summary.right.decode_render_status,
+            SwitcherTwoViewManualDecodeRenderStatus::Rendered
+        );
+        assert_eq!(result.summary.left.frame_id, Some(10));
+        assert_eq!(result.summary.right.frame_id, Some(12));
+        assert_eq!(result.summary.left.encoded_payload_len, Some(5));
+        assert_eq!(result.summary.right.encoded_payload_len, Some(5));
+    }
+
+    #[test]
+    fn two_view_manual_verification_keeps_one_missing_side_explicit() {
+        let mut state = ServerVideoFrameQueueState::default();
+        store_frame_with_payload(
+            &mut state,
+            "client-left",
+            10,
+            TimestampMicros(2_320_000),
+            2,
+            1,
+            vec![0, 0, 1, 0x65, 0x10],
+        );
+        let left_client_id = ClientId("client-left".to_string());
+        let right_client_id = ClientId("client-right".to_string());
+
+        let result = SwitcherTwoViewManualVerificationBoundary::default().verify_with_runtimes(
+            SwitcherTwoViewManualVerificationInput {
+                queue_state: &state,
+                left_client_id: &left_client_id,
+                right_client_id: &right_client_id,
+                current_switcher_time: TimestampMicros(1_600_010),
+                policy: SwitcherTwoViewTargetTimeSelectionPolicy {
+                    playout_delay_micros: 600_000,
+                    max_late_micros: 50,
+                    max_early_micros: 50,
+                    ..SwitcherTwoViewTargetTimeSelectionPolicy::default()
+                },
+                render_hold_millis: 5,
+            },
+            &RecordingTwoViewDecode::default(),
+            &RecordingTwoViewRender::default(),
+        );
+
+        assert_eq!(
+            result.summary.left.decode_render_status,
+            SwitcherTwoViewManualDecodeRenderStatus::Rendered
+        );
+        assert_eq!(
+            result.summary.right.selection_status,
+            SwitcherTwoViewManualSelectionStatus::NoFrame
+        );
+        assert_eq!(
+            result.summary.right.decode_render_status,
+            SwitcherTwoViewManualDecodeRenderStatus::SkippedSelectionUnavailable
+        );
+        assert_eq!(result.summary.right.frame_id, None);
+    }
+
+    #[test]
+    fn two_view_manual_verification_surfaces_decode_failure_per_side() {
+        let (state, _selection) =
+            selected_two_view_fixture(vec![0, 0, 1, 0x65, 0x10], vec![0, 0, 1, 0x65, 0x12]);
+        let left_client_id = ClientId("client-left".to_string());
+        let right_client_id = ClientId("client-right".to_string());
+
+        let result = SwitcherTwoViewManualVerificationBoundary::default().verify_with_runtimes(
+            SwitcherTwoViewManualVerificationInput {
+                queue_state: &state,
+                left_client_id: &left_client_id,
+                right_client_id: &right_client_id,
+                current_switcher_time: TimestampMicros(1_600_011),
+                policy: SwitcherTwoViewTargetTimeSelectionPolicy {
+                    playout_delay_micros: 600_000,
+                    max_late_micros: 50,
+                    max_early_micros: 50,
+                    ..SwitcherTwoViewTargetTimeSelectionPolicy::default()
+                },
+                render_hold_millis: 5,
+            },
+            &RecordingTwoViewDecode::failing_on_last_byte(0x12),
+            &RecordingTwoViewRender::default(),
+        );
+
+        assert_eq!(
+            result.summary.left.decode_render_status,
+            SwitcherTwoViewManualDecodeRenderStatus::Rendered
+        );
+        assert_eq!(
+            result.summary.right.decode_render_status,
+            SwitcherTwoViewManualDecodeRenderStatus::DecodeFailed
+        );
+        assert_eq!(result.summary.right.frame_id, Some(12));
+    }
+
+    #[test]
+    fn two_view_manual_verification_surfaces_render_failure_per_side() {
+        let (state, _selection) =
+            selected_two_view_fixture(vec![0, 0, 1, 0x65, 0x10], vec![0, 0, 1, 0x65, 0x12]);
+        let left_client_id = ClientId("client-left".to_string());
+        let right_client_id = ClientId("client-right".to_string());
+
+        let result = SwitcherTwoViewManualVerificationBoundary::default().verify_with_runtimes(
+            SwitcherTwoViewManualVerificationInput {
+                queue_state: &state,
+                left_client_id: &left_client_id,
+                right_client_id: &right_client_id,
+                current_switcher_time: TimestampMicros(1_600_011),
+                policy: SwitcherTwoViewTargetTimeSelectionPolicy {
+                    playout_delay_micros: 600_000,
+                    max_late_micros: 50,
+                    max_early_micros: 50,
+                    ..SwitcherTwoViewTargetTimeSelectionPolicy::default()
+                },
+                render_hold_millis: 5,
+            },
+            &RecordingTwoViewDecode::default(),
+            &RecordingTwoViewRender::failing_when_title_contains("client-right"),
+        );
+
+        assert_eq!(
+            result.summary.left.decode_render_status,
+            SwitcherTwoViewManualDecodeRenderStatus::Rendered
+        );
+        assert_eq!(
+            result.summary.right.decode_render_status,
+            SwitcherTwoViewManualDecodeRenderStatus::RenderFailed
+        );
+        assert_eq!(result.summary.right.frame_id, Some(12));
+    }
+
+    #[test]
+    fn two_view_manual_verification_offset_affects_one_side_selection() {
+        let mut state = ServerVideoFrameQueueState::default();
+        store_frame(&mut state, "client-left", 100, TimestampMicros(2_330_000));
+        store_frame(&mut state, "client-right", 0, TimestampMicros(2_330_010));
+        let left_client_id = ClientId("client-left".to_string());
+        let right_client_id = ClientId("client-right".to_string());
+
+        let result = SwitcherTwoViewManualVerificationBoundary::default().verify_with_runtimes(
+            SwitcherTwoViewManualVerificationInput {
+                queue_state: &state,
+                left_client_id: &left_client_id,
+                right_client_id: &right_client_id,
+                current_switcher_time: TimestampMicros(1_600_100),
+                policy: SwitcherTwoViewTargetTimeSelectionPolicy {
+                    playout_delay_micros: 600_000,
+                    right_clock_offset_micros: Some(100),
+                    max_late_micros: 10,
+                    max_early_micros: 10,
+                    ..SwitcherTwoViewTargetTimeSelectionPolicy::default()
+                },
+                render_hold_millis: 5,
+            },
+            &RecordingTwoViewDecode::default(),
+            &RecordingTwoViewRender::default(),
+        );
+
+        assert_eq!(
+            result.summary.left.adjusted_capture_timestamp,
+            Some(TimestampMicros(1_000_100))
+        );
+        assert_eq!(
+            result.summary.right.adjusted_capture_timestamp,
+            Some(TimestampMicros(1_000_100))
+        );
+        assert_eq!(
+            result.summary.right.selection_status,
+            SwitcherTwoViewManualSelectionStatus::Selected
+        );
+        assert_eq!(
+            result.summary.right.decode_render_status,
+            SwitcherTwoViewManualDecodeRenderStatus::Rendered
         );
     }
 
