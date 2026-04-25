@@ -60,7 +60,7 @@
 
 ## 直近でやること
 1. production H.264 encoder configuration / error logging policy
-2. real encoded one-shot client path の手動検証手順 / 必要なら CLI wiring
+2. auth + real encoded video same-source launcher の要否を判断する
 3. real H.264 decode / switcher window rendering の最小境界を分けて設計する
 
 ---
@@ -644,6 +644,7 @@
 - [x] H.264 encoder hook boundary from `ClientRawCapturedVideoFrame` to `RealCaptureH264` encoded source
 - [x] minimal FFmpeg CLI software H.264 encoder runtime hook
 - [x] one-shot real encoded `VideoFrame` path from ready capture runtime to UDP send
+- [x] manual CLI/doc path for one-shot real encoded `VideoFrame` send
 - [ ] production H.264 encoder configuration / hardware encoder integration
 - [x] `VideoFrame` encode
 - [x] `VideoFrame` UDP send with explicit placeholder encoded H.264 payload
@@ -701,12 +702,13 @@
 - client raw BGRA frames now have a separate H.264 encoder hook boundary: `ClientH264EncoderInput::from_raw_frame` carries `ClientRawCapturedVideoFrame`, `ClientH264EncoderRuntimeHook` can provide real H.264 payload bytes, and the boundary produces `RealCaptureH264` only from non-empty hook output. The default hook remains explicit encode-deferred.
 - client H.264 encoding now has a first real software runtime hook: `ClientFfmpegSoftwareH264EncoderRuntimeHook` invokes `ffmpeg` / `libx264` for one BGRA frame and returns an Annex B H.264 elementary stream, while missing FFmpeg and encode failures remain explicit.
 - client real encoded video now has a one-shot send boundary: `ClientRealEncodedVideoFrameOneShotBoundary` composes a ready capture session runtime, one BGRA acquisition, H.264 encode, `RealCaptureH264` metadata construction, and one existing UDP `VideoFrame` send while preserving explicit capture/no-frame/encode/send failure states.
+- client real encoded video now has manual verification wiring: `--real-encoded-video-frame-poc-once [config-path]` attempts a primary-display WGC frame, FFmpeg H.264 encode, and one `RealCaptureH264` `VideoFrame` UDP send, with explicit not-sent output for session/capture/encode/send failures.
 - metrics commit, snapshot export cadence, dashboard refresh consumer policy, and dashboard refresh runtime wiring remain separate from timer wait, retry, reconnect, socket ownership, cleanup, UI rendering, video, switcher, and OBS.
 - server notice queue storage remains separate from notice send wakeup execution.
 - actual dashboard UI rendering remains unimplemented.
 
 ## Next Items
 1. production H.264 encoder configuration / error logging policy
-2. real encoded one-shot client path manual verification / optional CLI wiring
+2. auth + real encoded video same-source launcher decision
 3. real H.264 decode / switcher window rendering boundary
 4. targetTime / jitter-buffer selection design for the next 2-view sync PoC

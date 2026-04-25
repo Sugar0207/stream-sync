@@ -229,3 +229,13 @@ returned caller-owned `ServerVideoFrameQueueState`.
 The manual client-to-server queue path is now runnable as a two-command PoC.
 Decode, rendering, switcher window output, OBS capture, cross-process queue
 sharing, and 4-view sync remain outside this manual launcher.
+
+## Related Real Encoded One-Shot PoC
+
+The real capture / FFmpeg encode / `RealCaptureH264` one-shot sender is tracked
+separately in `docs/operations/manual-real-encoded-video-poc.md`.
+
+That path verifies client-side real capture, H.264 encode, metadata, and UDP
+send when Windows Graphics Capture and FFmpeg are available. It currently does
+not authenticate first, so it should not be treated as server queue insertion
+verification by itself.

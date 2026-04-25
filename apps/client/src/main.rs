@@ -165,6 +165,67 @@ fn main() {
                 }
             }
         }
+        Some("--real-encoded-video-frame-poc-once") => {
+            let config_path = args
+                .next()
+                .unwrap_or_else(|| "configs/examples/client.accepted.example.toml".to_string());
+            match stream_sync_client::run_real_encoded_video_frame_poc_once_from_path(&config_path)
+            {
+                Ok(stream_sync_client::ClientRealEncodedVideoFramePocOutcome::Sent(sent)) => {
+                    println!(
+                        "real encoded video frame PoC sent {} bytes to {}; frame_id={} capture_timestamp={} width={} height={} fps_nominal={} payload_len={} source_kind={:?}",
+                        sent.bytes_sent,
+                        sent.destination,
+                        sent.frame.frame_id,
+                        sent.frame.capture_timestamp.0,
+                        sent.frame.width,
+                        sent.frame.height,
+                        sent.frame.fps_nominal,
+                        sent.frame.payload_size,
+                        sent.source_kind
+                    );
+                }
+                Ok(
+                    stream_sync_client::ClientRealEncodedVideoFramePocOutcome::SessionConfigNotPrepared {
+                        destination,
+                        backend,
+                        reason,
+                    },
+                ) => {
+                    eprintln!(
+                        "real encoded video frame PoC did not send to {destination}: capture session config not prepared backend={backend:?} reason={reason:?}"
+                    );
+                    std::process::exit(1);
+                }
+                Ok(
+                    stream_sync_client::ClientRealEncodedVideoFramePocOutcome::SessionNotCreated {
+                        destination,
+                        backend,
+                        reason,
+                        message,
+                    },
+                ) => {
+                    eprintln!(
+                        "real encoded video frame PoC did not send to {destination}: capture session not created backend={backend:?} reason={reason:?} message={}",
+                        message.as_deref().unwrap_or("none")
+                    );
+                    std::process::exit(1);
+                }
+                Ok(stream_sync_client::ClientRealEncodedVideoFramePocOutcome::NotSent {
+                    destination,
+                    result,
+                }) => {
+                    eprintln!(
+                        "real encoded video frame PoC did not send to {destination}: result={result:?}"
+                    );
+                    std::process::exit(1);
+                }
+                Err(error) => {
+                    eprintln!("real encoded video frame PoC failed: {error:?}");
+                    std::process::exit(1);
+                }
+            }
+        }
         Some("--auth-heartbeat-one-tick-runtime") => {
             let config_path = args
                 .next()
@@ -273,7 +334,7 @@ fn main() {
         }
         _ => {
             println!(
-                "stream-sync-client scaffold; use --auth-request-poc-once [config-path], --auth-heartbeat-poc-once [config-path], --auth-heartbeat-stats-poc-once [config-path], --placeholder-video-frame-poc-once [config-path], --auth-placeholder-video-frame-poc-once [config-path], --auth-heartbeat-one-tick-runtime [config-path], or --auth-heartbeat-stats-one-tick-runtime [config-path]"
+                "stream-sync-client scaffold; use --auth-request-poc-once [config-path], --auth-heartbeat-poc-once [config-path], --auth-heartbeat-stats-poc-once [config-path], --placeholder-video-frame-poc-once [config-path], --auth-placeholder-video-frame-poc-once [config-path], --real-encoded-video-frame-poc-once [config-path], --auth-heartbeat-one-tick-runtime [config-path], or --auth-heartbeat-stats-one-tick-runtime [config-path]"
             );
         }
     }

@@ -7557,6 +7557,12 @@ Current implementation:
 - This path is not a continuous streaming loop and does not create capture
   sessions, enumerate targets, retry, decode, render, integrate OBS, or run
   4-view sync.
+- The manual CLI entry point
+  `--real-encoded-video-frame-poc-once [config-path]` wires this path for
+  primary-display verification. It prints sent frame id, capture timestamp,
+  dimensions, encoded payload length, destination, and
+  `source_kind=RealCaptureH264` on success, and explicit not-sent reasons on
+  failure.
 - The existing placeholder PoC remains available and continues to use explicit
   placeholder payload behavior.
 

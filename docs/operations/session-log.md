@@ -5,6 +5,61 @@
 - Codex
 
 ### Work
+- Added manual verification wiring for the one-shot real encoded client `VideoFrame` path.
+- Added `ClientRealEncodedVideoFramePocLauncher`, startup config, outcome, and error types.
+- Added the client CLI entry point `--real-encoded-video-frame-poc-once [config-path]`.
+- The CLI uses the existing client config for destination/client/run/protocol metadata, targets Windows Graphics Capture primary display, uses FFmpeg software H.264 encode, and sends one `RealCaptureH264` `VideoFrame`.
+- Success output includes frame id, capture timestamp, dimensions, encoded payload length, destination, and `source_kind=RealCaptureH264`.
+- Failure output remains explicit for session config/session creation, capture unavailable/no frame, encode unavailable/failed, frame build failure, and send failure.
+- Added manual docs for the real encoded one-shot PoC and linked them from the placeholder manual PoC note.
+
+### Changed Files
+- `apps/client/src/lib.rs`
+- `apps/client/src/main.rs`
+- `docs/architecture/system-design.md`
+- `docs/operations/manual-placeholder-video-poc.md`
+- `docs/operations/manual-real-encoded-video-poc.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### Decisions
+- Add CLI wiring now because it can reuse existing config parsing and the one-shot boundary without changing placeholder behavior.
+- Keep the initial real encoded manual target fixed to Windows Graphics Capture primary display.
+- Do not authenticate in this launcher yet; it verifies client-side real capture/encode/metadata/send, not server queue insertion.
+- Keep same-source auth + real video as a later decision.
+
+### Unresolved
+- auth + real encoded video same-source launcher
+- production H.264 encoder configuration and error logging policy
+- continuous acquisition / frame arrived wait
+- real target enumeration
+- UDP send loop using real encoded frames
+- real H.264 decode, switcher rendering, targetTime / jitter-buffer, 4-view sync, and OBS integration
+
+### Next
+- Decide whether to add an auth + real encoded video same-source launcher.
+- Add production encoder configuration and structured encode/send failure logging.
+- Add real H.264 decode / switcher rendering boundary.
+
+### TODO Update
+- Marked manual CLI/doc path for one-shot real encoded `VideoFrame` send complete in Phase 3.
+- Updated Current Focus with `--real-encoded-video-frame-poc-once`.
+- Updated Next Items to put auth + real encoded video same-source launcher decision next.
+
+### Validation
+- `cargo fmt`
+- `cargo test -p stream-sync-client client_video_frame`
+- `cargo fmt --check`
+- `cargo check --workspace`
+- `git diff --check`
+
+---
+
+## 2026-04-25
+### Type
+- Codex
+
+### Work
 - Added the smallest one-shot client path for sending a real encoded `VideoFrame`.
 - Implemented `ClientRealEncodedVideoFrameOneShotBoundary`.
 - The boundary composes a caller-owned ready `ClientCaptureSessionRuntime`, one BGRA frame acquisition hook, one H.264 encoder hook, existing encoded-source metadata construction, and existing UDP `VideoFrame` send.
