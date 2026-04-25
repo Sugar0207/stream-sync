@@ -66,6 +66,7 @@ dependencies = [
  "stream-sync-net-core",
  "stream-sync-protocol",
  "stream-sync-server",
+ "windows",
 ]
 
 [[package]]

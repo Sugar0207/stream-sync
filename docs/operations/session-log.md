@@ -5,6 +5,59 @@
 - Codex
 
 ### Work
+- Added the smallest switcher window rendering boundary for one decoded BGRA frame.
+- Added `SwitcherDecodedFrameRenderInput`, render input validation errors, `SwitcherWindowRenderBoundary`, render runtime hook types, and explicit render result states.
+- Added `SwitcherUnavailableWindowRenderRuntimeHook` for explicit backend-unavailable behavior.
+- Added Windows-only `SwitcherWindowsGdiWindowRenderRuntimeHook`, which opens a normal window, paints one BGRA frame through GDI, keeps it visible for a bounded hold duration, and closes it.
+- Added switcher CLI entry point `--receive-auth-video-render-decoded-once [config-path] [client-id] [hold-ms]`.
+- Kept H.264 decode and BMP dump separate and unchanged; rendering consumes `SwitcherDecodedFrame` after decode.
+- Added tests for render input validation, invalid frame result, unavailable backend result, caller-owned render success, and BMP dump separation.
+
+### Changed Files
+- `apps/switcher/Cargo.toml`
+- `apps/switcher/src/lib.rs`
+- `apps/switcher/src/main.rs`
+- `docs/architecture/system-design.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### Decisions
+- Use the already-present `windows` crate for the first Windows renderer instead of adding a new windowing dependency.
+- Keep the renderer one-shot and bounded by `hold-ms`; no continuous display loop or frame scheduling is introduced.
+- Treat the normal switcher window as the future OBS Window Capture target, without adding OBS-specific API integration.
+- Keep non-Windows behavior explicit as backend unavailable.
+
+### Unresolved
+- continuous receive/decode/render loop
+- targetTime / jitter-buffer frame selection
+- 2-view / 4-view sync and layout
+- OBS Window Capture operational verification
+- production decode/render configuration and structured logging
+
+### Next
+- Define switcher continuous receive/decode/render loop boundary.
+- Define targetTime / jitter-buffer selection after one-shot render is stable.
+- Add production decode/render configuration and structured failure logging.
+
+### TODO Update
+- Marked switcher decoded frame one-shot window rendering boundary complete.
+- Added switcher continuous decoded frame window display as the remaining display task.
+- Updated Current Focus and Next Items from one-shot rendering to continuous rendering/sync paths.
+
+### Validation
+- `cargo fmt`
+- `cargo test -p stream-sync-switcher`
+- `cargo fmt --check`
+- `cargo check --workspace`
+- `git diff --check`
+
+---
+
+## 2026-04-25
+### Type
+- Codex
+
+### Work
 - Added the first switcher-side H.264 decode boundary for one latest queued `VideoFrame`.
 - Added `SwitcherH264DecodeBoundary`, `SwitcherDecodedFrame`, `SwitcherH264DecodeResult`, decode runtime hook types, and `SwitcherFfmpegH264DecodeRuntimeHook`.
 - The FFmpeg decode runtime reads Annex B H.264 from stdin and emits one BGRA rawvideo frame on stdout.

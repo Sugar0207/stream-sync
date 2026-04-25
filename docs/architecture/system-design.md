@@ -7442,6 +7442,14 @@ Current decode/display substitute behavior:
 - `SwitcherDecodedFrameDumpBoundary` writes a single decoded BGRA frame as a
   32-bit BMP. This is the current minimal display substitute and does not open a
   window.
+- `SwitcherWindowRenderBoundary` is separate from decode and BMP dump. It
+  validates one `SwitcherDecodedFrame` into render input and delegates the
+  actual one-shot window operation to a caller-owned render runtime hook.
+- `SwitcherWindowsGdiWindowRenderRuntimeHook` is the first platform renderer. On
+  Windows it opens a normal switcher window, paints one BGRA frame through GDI,
+  keeps it visible for a bounded hold duration, and closes it. On non-Windows
+  the default unavailable runtime returns an explicit backend-unavailable
+  result.
 - `SwitcherDecodeLatestFrameOnceBoundary` composes latest-frame selection,
   decode, and BMP dump for exactly one selected client frame.
 - CLI `--decode-latest-frame-once [client-id] [output-path]` runs the decode
@@ -7450,10 +7458,17 @@ Current decode/display substitute behavior:
   [output-path]` runs the existing in-process server auth/video queue launcher,
   then decodes and dumps the selected latest frame from the returned
   caller-owned queue state.
+- CLI `--receive-auth-video-render-decoded-once [config-path] [client-id]
+  [hold-ms]` runs the same in-process queue and decode path, then attempts to
+  render the decoded frame in a normal switcher window. This is only a one-shot
+  window rendering PoC and not a continuous display loop.
+- The normal switcher window produced by the renderer is the future OBS Window
+  Capture target. No OBS API integration is introduced here.
 
 This decode PoC does not add a continuous loop, targetTime selection,
-multi-view sync, switcher window rendering, OBS integration, decode
-acceleration, or packet fragmentation.
+multi-view sync, OBS integration, decode acceleration, or packet fragmentation.
+The one-shot renderer does not add continuous repaint, frame scheduling, 2-view
+or 4-view layout, or OBS-specific control.
 
 ## Client Real Capture / H.264 Encode Boundary
 

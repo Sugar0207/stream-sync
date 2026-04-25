@@ -494,6 +494,302 @@ impl SwitcherDecodedFrameDumpBoundary {
     }
 }
 
+/// Validated render input derived from one decoded BGRA frame.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SwitcherDecodedFrameRenderInput {
+    pub width: u32,
+    pub height: u32,
+    pub pixel_format: SwitcherDecodedFramePixelFormat,
+    pub pixels: Vec<u8>,
+}
+
+/// Invalid decoded frame reason for rendering.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SwitcherDecodedFrameRenderInputError {
+    UnsupportedPixelFormat {
+        actual: SwitcherDecodedFramePixelFormat,
+    },
+    InvalidDimensions,
+    InvalidBufferLength {
+        expected: usize,
+        actual: usize,
+    },
+}
+
+impl SwitcherDecodedFrameRenderInput {
+    pub fn from_decoded_frame(
+        frame: &SwitcherDecodedFrame,
+    ) -> Result<Self, SwitcherDecodedFrameRenderInputError> {
+        if frame.pixel_format != SwitcherDecodedFramePixelFormat::Bgra8 {
+            return Err(
+                SwitcherDecodedFrameRenderInputError::UnsupportedPixelFormat {
+                    actual: frame.pixel_format,
+                },
+            );
+        }
+        if frame.width == 0 || frame.height == 0 {
+            return Err(SwitcherDecodedFrameRenderInputError::InvalidDimensions);
+        }
+        let expected = frame.width as usize * frame.height as usize * 4;
+        if frame.pixels.len() != expected {
+            return Err(SwitcherDecodedFrameRenderInputError::InvalidBufferLength {
+                expected,
+                actual: frame.pixels.len(),
+            });
+        }
+
+        Ok(Self {
+            width: frame.width,
+            height: frame.height,
+            pixel_format: frame.pixel_format,
+            pixels: frame.pixels.clone(),
+        })
+    }
+}
+
+/// Request for rendering one decoded frame to a switcher window.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SwitcherWindowRenderRequest {
+    pub frame: SwitcherDecodedFrameRenderInput,
+    pub title: String,
+    pub hold_millis: u64,
+}
+
+/// Successful one-shot window render summary.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SwitcherWindowRenderSuccess {
+    pub width: u32,
+    pub height: u32,
+    pub title: String,
+    pub hold_millis: u64,
+}
+
+/// Explicit window-render deferred reason.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum SwitcherWindowRenderDeferredReason {
+    NotImplemented,
+}
+
+/// Explicit window-render unavailable reason.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum SwitcherWindowBackendUnavailableReason {
+    UnsupportedPlatform,
+}
+
+/// Result of rendering one decoded frame to a window.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SwitcherWindowRenderResult {
+    Rendered(SwitcherWindowRenderSuccess),
+    RenderDeferred {
+        reason: SwitcherWindowRenderDeferredReason,
+    },
+    BackendUnavailable {
+        reason: SwitcherWindowBackendUnavailableReason,
+        message: Option<String>,
+    },
+    InvalidFrame {
+        error: SwitcherDecodedFrameRenderInputError,
+    },
+    RenderFailed {
+        message: String,
+    },
+}
+
+/// Caller-owned runtime hook for one-shot window rendering.
+pub trait SwitcherWindowRenderRuntimeHook {
+    fn render_once(&self, request: SwitcherWindowRenderRequest) -> SwitcherWindowRenderResult;
+}
+
+/// Placeholder-safe renderer used when no platform window backend is supplied.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct SwitcherUnavailableWindowRenderRuntimeHook;
+
+impl SwitcherWindowRenderRuntimeHook for SwitcherUnavailableWindowRenderRuntimeHook {
+    fn render_once(&self, _request: SwitcherWindowRenderRequest) -> SwitcherWindowRenderResult {
+        SwitcherWindowRenderResult::BackendUnavailable {
+            reason: SwitcherWindowBackendUnavailableReason::UnsupportedPlatform,
+            message: Some("switcher window rendering backend is unavailable".to_string()),
+        }
+    }
+}
+
+#[cfg(target_os = "windows")]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct SwitcherWindowsGdiWindowRenderRuntimeHook;
+
+#[cfg(target_os = "windows")]
+impl SwitcherWindowRenderRuntimeHook for SwitcherWindowsGdiWindowRenderRuntimeHook {
+    fn render_once(&self, request: SwitcherWindowRenderRequest) -> SwitcherWindowRenderResult {
+        windows_render_once(request)
+    }
+}
+
+/// Boundary for rendering one decoded frame to a switcher window.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct SwitcherWindowRenderBoundary;
+
+impl SwitcherWindowRenderBoundary {
+    pub fn render_decoded_frame_with_runtime(
+        &self,
+        frame: &SwitcherDecodedFrame,
+        title: impl Into<String>,
+        hold_millis: u64,
+        runtime: &impl SwitcherWindowRenderRuntimeHook,
+    ) -> SwitcherWindowRenderResult {
+        let render_input = match SwitcherDecodedFrameRenderInput::from_decoded_frame(frame) {
+            Ok(input) => input,
+            Err(error) => return SwitcherWindowRenderResult::InvalidFrame { error },
+        };
+        runtime.render_once(SwitcherWindowRenderRequest {
+            frame: render_input,
+            title: title.into(),
+            hold_millis,
+        })
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn windows_render_once(request: SwitcherWindowRenderRequest) -> SwitcherWindowRenderResult {
+    use std::{ptr::null_mut, thread, time::Duration};
+    use windows::core::{w, PCWSTR};
+    use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
+    use windows::Win32::Graphics::Gdi::{
+        BeginPaint, EndPaint, StretchDIBits, BITMAPINFO, BITMAPINFOHEADER, BI_RGB, DIB_RGB_COLORS,
+        PAINTSTRUCT, SRCCOPY,
+    };
+    use windows::Win32::System::LibraryLoader::GetModuleHandleW;
+    use windows::Win32::UI::WindowsAndMessaging::{
+        CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, PeekMessageW,
+        RegisterClassW, ShowWindow, TranslateMessage, CS_HREDRAW, CS_VREDRAW, CW_USEDEFAULT, MSG,
+        PM_REMOVE, SW_SHOW, WINDOW_EX_STYLE, WINDOW_STYLE, WM_DESTROY, WM_PAINT, WNDCLASSW,
+        WS_OVERLAPPEDWINDOW,
+    };
+
+    static mut PAINT_FRAME: Option<SwitcherDecodedFrameRenderInput> = None;
+
+    #[allow(static_mut_refs)]
+    unsafe extern "system" fn wnd_proc(
+        hwnd: HWND,
+        msg: u32,
+        wparam: WPARAM,
+        lparam: LPARAM,
+    ) -> LRESULT {
+        match msg {
+            WM_PAINT => {
+                let mut paint = PAINTSTRUCT::default();
+                let hdc = BeginPaint(hwnd, &mut paint);
+                if let Some(frame) = PAINT_FRAME.as_ref() {
+                    let mut info = BITMAPINFO {
+                        bmiHeader: BITMAPINFOHEADER {
+                            biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
+                            biWidth: frame.width as i32,
+                            biHeight: -(frame.height as i32),
+                            biPlanes: 1,
+                            biBitCount: 32,
+                            biCompression: BI_RGB.0,
+                            biSizeImage: frame.pixels.len() as u32,
+                            ..Default::default()
+                        },
+                        ..Default::default()
+                    };
+                    let _ = StretchDIBits(
+                        hdc,
+                        0,
+                        0,
+                        frame.width as i32,
+                        frame.height as i32,
+                        0,
+                        0,
+                        frame.width as i32,
+                        frame.height as i32,
+                        Some(frame.pixels.as_ptr().cast()),
+                        &mut info,
+                        DIB_RGB_COLORS,
+                        SRCCOPY,
+                    );
+                }
+                let _ = EndPaint(hwnd, &paint);
+                LRESULT(0)
+            }
+            WM_DESTROY => LRESULT(0),
+            _ => DefWindowProcW(hwnd, msg, wparam, lparam),
+        }
+    }
+
+    unsafe {
+        PAINT_FRAME = Some(request.frame.clone());
+    }
+
+    let instance = match unsafe { GetModuleHandleW(None) } {
+        Ok(instance) => instance,
+        Err(error) => {
+            return SwitcherWindowRenderResult::RenderFailed {
+                message: format!("GetModuleHandleW failed: {error:?}"),
+            };
+        }
+    };
+    let class_name = w!("StreamSyncSwitcherOneShotWindow");
+    let wnd_class = WNDCLASSW {
+        style: CS_HREDRAW | CS_VREDRAW,
+        lpfnWndProc: Some(wnd_proc),
+        hInstance: instance.into(),
+        lpszClassName: class_name,
+        ..Default::default()
+    };
+    let _ = unsafe { RegisterClassW(&wnd_class) };
+    let title: Vec<u16> = request.title.encode_utf16().chain(Some(0)).collect();
+    let hwnd = match unsafe {
+        CreateWindowExW(
+            WINDOW_EX_STYLE::default(),
+            class_name,
+            PCWSTR(title.as_ptr()),
+            WINDOW_STYLE(WS_OVERLAPPEDWINDOW.0),
+            CW_USEDEFAULT,
+            CW_USEDEFAULT,
+            request.frame.width as i32,
+            request.frame.height as i32,
+            None,
+            None,
+            Some(instance.into()),
+            Some(null_mut()),
+        )
+    } {
+        Ok(hwnd) => hwnd,
+        Err(error) => {
+            return SwitcherWindowRenderResult::RenderFailed {
+                message: format!("CreateWindowExW failed: {error:?}"),
+            };
+        }
+    };
+
+    unsafe {
+        let _ = ShowWindow(hwnd, SW_SHOW);
+    }
+    let started = std::time::Instant::now();
+    let hold = Duration::from_millis(request.hold_millis);
+    while started.elapsed() < hold {
+        let mut msg = MSG::default();
+        while unsafe { PeekMessageW(&mut msg, Some(hwnd), 0, 0, PM_REMOVE) }.as_bool() {
+            unsafe {
+                let _ = TranslateMessage(&msg);
+                DispatchMessageW(&msg);
+            }
+        }
+        thread::sleep(Duration::from_millis(16));
+    }
+    unsafe {
+        let _ = DestroyWindow(hwnd);
+        PAINT_FRAME = None;
+    }
+
+    SwitcherWindowRenderResult::Rendered(SwitcherWindowRenderSuccess {
+        width: request.frame.width,
+        height: request.frame.height,
+        title: request.title,
+        hold_millis: request.hold_millis,
+    })
+}
+
 /// Input for manual queue-to-switcher placeholder verification.
 ///
 /// The queue state is caller-owned and borrowed read-only. This is intentionally
@@ -1217,6 +1513,188 @@ mod tests {
             handoff.decode_status,
             SwitcherSingleViewDecodeStatus::DecodeFailed
         );
+    }
+
+    #[test]
+    fn decoded_frame_render_input_validates_dimensions_and_buffer_length() {
+        let frame = SwitcherDecodedFrame {
+            width: 2,
+            height: 1,
+            pixel_format: SwitcherDecodedFramePixelFormat::Bgra8,
+            pixels: vec![0; 8],
+        };
+
+        let input = SwitcherDecodedFrameRenderInput::from_decoded_frame(&frame)
+            .expect("valid BGRA frame should produce render input");
+
+        assert_eq!(input.width, 2);
+        assert_eq!(input.height, 1);
+        assert_eq!(input.pixel_format, SwitcherDecodedFramePixelFormat::Bgra8);
+        assert_eq!(input.pixels.len(), 8);
+
+        let invalid_dimensions = SwitcherDecodedFrame {
+            width: 0,
+            height: 1,
+            pixel_format: SwitcherDecodedFramePixelFormat::Bgra8,
+            pixels: Vec::new(),
+        };
+        assert_eq!(
+            SwitcherDecodedFrameRenderInput::from_decoded_frame(&invalid_dimensions),
+            Err(SwitcherDecodedFrameRenderInputError::InvalidDimensions)
+        );
+
+        let invalid_len = SwitcherDecodedFrame {
+            width: 2,
+            height: 1,
+            pixel_format: SwitcherDecodedFramePixelFormat::Bgra8,
+            pixels: vec![0; 7],
+        };
+        assert_eq!(
+            SwitcherDecodedFrameRenderInput::from_decoded_frame(&invalid_len),
+            Err(SwitcherDecodedFrameRenderInputError::InvalidBufferLength {
+                expected: 8,
+                actual: 7
+            })
+        );
+    }
+
+    #[test]
+    fn window_render_boundary_invalid_frame_is_explicit() {
+        let frame = SwitcherDecodedFrame {
+            width: 2,
+            height: 1,
+            pixel_format: SwitcherDecodedFramePixelFormat::Bgra8,
+            pixels: vec![0; 7],
+        };
+
+        let result = SwitcherWindowRenderBoundary.render_decoded_frame_with_runtime(
+            &frame,
+            "StreamSync Test",
+            1,
+            &SwitcherUnavailableWindowRenderRuntimeHook,
+        );
+
+        assert_eq!(
+            result,
+            SwitcherWindowRenderResult::InvalidFrame {
+                error: SwitcherDecodedFrameRenderInputError::InvalidBufferLength {
+                    expected: 8,
+                    actual: 7
+                }
+            }
+        );
+    }
+
+    #[test]
+    fn window_render_boundary_unavailable_backend_is_explicit() {
+        let frame = SwitcherDecodedFrame {
+            width: 2,
+            height: 1,
+            pixel_format: SwitcherDecodedFramePixelFormat::Bgra8,
+            pixels: vec![0; 8],
+        };
+
+        let result = SwitcherWindowRenderBoundary.render_decoded_frame_with_runtime(
+            &frame,
+            "StreamSync Test",
+            1,
+            &SwitcherUnavailableWindowRenderRuntimeHook,
+        );
+
+        assert_eq!(
+            result,
+            SwitcherWindowRenderResult::BackendUnavailable {
+                reason: SwitcherWindowBackendUnavailableReason::UnsupportedPlatform,
+                message: Some("switcher window rendering backend is unavailable".to_string())
+            }
+        );
+    }
+
+    #[test]
+    fn window_render_boundary_can_render_with_caller_owned_runtime() {
+        struct FixtureRender;
+        impl SwitcherWindowRenderRuntimeHook for FixtureRender {
+            fn render_once(
+                &self,
+                request: SwitcherWindowRenderRequest,
+            ) -> SwitcherWindowRenderResult {
+                assert_eq!(request.frame.width, 2);
+                assert_eq!(request.frame.height, 1);
+                assert_eq!(request.frame.pixels.len(), 8);
+                SwitcherWindowRenderResult::Rendered(SwitcherWindowRenderSuccess {
+                    width: request.frame.width,
+                    height: request.frame.height,
+                    title: request.title,
+                    hold_millis: request.hold_millis,
+                })
+            }
+        }
+        let frame = SwitcherDecodedFrame {
+            width: 2,
+            height: 1,
+            pixel_format: SwitcherDecodedFramePixelFormat::Bgra8,
+            pixels: vec![0; 8],
+        };
+
+        let result = SwitcherWindowRenderBoundary.render_decoded_frame_with_runtime(
+            &frame,
+            "StreamSync Test",
+            123,
+            &FixtureRender,
+        );
+
+        assert_eq!(
+            result,
+            SwitcherWindowRenderResult::Rendered(SwitcherWindowRenderSuccess {
+                width: 2,
+                height: 1,
+                title: "StreamSync Test".to_string(),
+                hold_millis: 123
+            })
+        );
+    }
+
+    #[test]
+    fn window_render_boundary_stays_separate_from_bmp_dump() {
+        struct FixtureRender;
+        impl SwitcherWindowRenderRuntimeHook for FixtureRender {
+            fn render_once(
+                &self,
+                request: SwitcherWindowRenderRequest,
+            ) -> SwitcherWindowRenderResult {
+                SwitcherWindowRenderResult::Rendered(SwitcherWindowRenderSuccess {
+                    width: request.frame.width,
+                    height: request.frame.height,
+                    title: request.title,
+                    hold_millis: request.hold_millis,
+                })
+            }
+        }
+        let frame = SwitcherDecodedFrame {
+            width: 1,
+            height: 1,
+            pixel_format: SwitcherDecodedFramePixelFormat::Bgra8,
+            pixels: vec![0, 0, 255, 255],
+        };
+        let output_path = std::env::temp_dir().join(format!(
+            "stream-sync-switcher-render-separate-{}.bmp",
+            current_test_suffix()
+        ));
+
+        let render = SwitcherWindowRenderBoundary.render_decoded_frame_with_runtime(
+            &frame,
+            "StreamSync Test",
+            1,
+            &FixtureRender,
+        );
+        let dump = SwitcherDecodedFrameDumpBoundary
+            .write_bmp(&frame, &output_path)
+            .expect("bmp dump should remain independently available");
+
+        assert!(matches!(render, SwitcherWindowRenderResult::Rendered(_)));
+        assert_eq!(dump.path, output_path);
+        assert!(dump.bytes_written > 54);
+        let _ = std::fs::remove_file(dump.path);
     }
 
     #[test]

@@ -12,8 +12,14 @@ use stream_sync_switcher::{
     SwitcherDecodeLatestFrameOnceBoundary, SwitcherDecodeLatestFrameOnceInput,
     SwitcherDecodeLatestFrameOnceResult, SwitcherFfmpegH264DecodeRuntimeHook,
     SwitcherPlaceholderManualVerificationBoundary, SwitcherPlaceholderManualVerificationInput,
-    SwitcherPlaceholderManualVerificationResult,
+    SwitcherPlaceholderManualVerificationResult, SwitcherWindowRenderBoundary,
+    SwitcherWindowRenderResult,
 };
+
+#[cfg(not(target_os = "windows"))]
+use stream_sync_switcher::SwitcherUnavailableWindowRenderRuntimeHook;
+#[cfg(target_os = "windows")]
+use stream_sync_switcher::SwitcherWindowsGdiWindowRenderRuntimeHook;
 
 fn main() {
     let mut args = std::env::args().skip(1);
@@ -109,9 +115,60 @@ fn main() {
                 }
             }
         }
+        Some("--receive-auth-video-render-decoded-once") => {
+            let config_path = args
+                .next()
+                .unwrap_or_else(|| "configs/examples/server.example.toml".to_string());
+            let client_id = ClientId(args.next().unwrap_or_else(|| "client-1".to_string()));
+            let hold_millis = args
+                .next()
+                .and_then(|value| value.parse::<u64>().ok())
+                .unwrap_or(2_000);
+            let launcher = ServerReceiveAuthVideoQueueOnceLauncher::default();
+            match launcher.run_once_from_path_with_writers(
+                &config_path,
+                std::io::stderr(),
+                std::io::stderr(),
+                std::io::stderr(),
+                std::io::stderr(),
+            ) {
+                Ok(server_outcome) => {
+                    let decode = SwitcherDecodeLatestFrameOnceBoundary::default()
+                        .decode_latest_with_runtime(
+                            SwitcherDecodeLatestFrameOnceInput {
+                                queue_state: &server_outcome.video_queue_state,
+                                client_id: &client_id,
+                                output_path: "frame_dump.bmp".into(),
+                            },
+                            &SwitcherFfmpegH264DecodeRuntimeHook::default(),
+                        );
+                    match decode {
+                        SwitcherDecodeLatestFrameOnceResult::Decoded { handoff, .. } => {
+                            let render = render_decoded_frame_once(
+                                &handoff.decoded,
+                                "StreamSync Switcher",
+                                hold_millis,
+                            );
+                            print_render_summary(
+                                render,
+                                &client_id,
+                                Some(handoff.selected.frame_id),
+                            );
+                        }
+                        other => {
+                            print_decode_summary(other, false);
+                        }
+                    }
+                }
+                Err(error) => {
+                    eprintln!("switcher auth/video render decoded failed: {error:?}");
+                    std::process::exit(1);
+                }
+            }
+        }
         _ => {
             println!(
-                "stream-sync-switcher scaffold; use --placeholder-fixture-once [client-id], --placeholder-empty-once [client-id], --decode-latest-frame-once [client-id] [output-path], --receive-auth-video-placeholder-bridge-once [config-path] [client-id], or --receive-auth-video-decode-latest-once [config-path] [client-id] [output-path]"
+                "stream-sync-switcher scaffold; use --placeholder-fixture-once [client-id], --placeholder-empty-once [client-id], --decode-latest-frame-once [client-id] [output-path], --receive-auth-video-placeholder-bridge-once [config-path] [client-id], --receive-auth-video-decode-latest-once [config-path] [client-id] [output-path], or --receive-auth-video-render-decoded-once [config-path] [client-id] [hold-ms]"
             );
         }
     }
@@ -218,6 +275,85 @@ fn print_decode_summary(result: SwitcherDecodeLatestFrameOnceResult, fixture_que
                 summary.frame_id.unwrap_or(0),
                 summary.output_path,
                 error
+            );
+            std::process::exit(1);
+        }
+    }
+}
+
+fn render_decoded_frame_once(
+    frame: &stream_sync_switcher::SwitcherDecodedFrame,
+    title: &str,
+    hold_millis: u64,
+) -> SwitcherWindowRenderResult {
+    #[cfg(target_os = "windows")]
+    {
+        SwitcherWindowRenderBoundary.render_decoded_frame_with_runtime(
+            frame,
+            title,
+            hold_millis,
+            &SwitcherWindowsGdiWindowRenderRuntimeHook,
+        )
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        SwitcherWindowRenderBoundary.render_decoded_frame_with_runtime(
+            frame,
+            title,
+            hold_millis,
+            &SwitcherUnavailableWindowRenderRuntimeHook,
+        )
+    }
+}
+
+fn print_render_summary(
+    result: SwitcherWindowRenderResult,
+    client_id: &ClientId,
+    frame_id: Option<u64>,
+) {
+    match result {
+        SwitcherWindowRenderResult::Rendered(rendered) => {
+            println!(
+                "switcher render decoded frame rendered=true selected_client_id={} frame_id={} width={} height={} hold_millis={} title={}",
+                client_id.0,
+                frame_id.unwrap_or(0),
+                rendered.width,
+                rendered.height,
+                rendered.hold_millis,
+                rendered.title
+            );
+        }
+        SwitcherWindowRenderResult::RenderDeferred { reason } => {
+            eprintln!(
+                "switcher render decoded frame deferred selected_client_id={} frame_id={} reason={reason:?}",
+                client_id.0,
+                frame_id.unwrap_or(0)
+            );
+            std::process::exit(1);
+        }
+        SwitcherWindowRenderResult::BackendUnavailable { reason, message } => {
+            eprintln!(
+                "switcher render decoded frame backend unavailable selected_client_id={} frame_id={} reason={reason:?} message={}",
+                client_id.0,
+                frame_id.unwrap_or(0),
+                message.as_deref().unwrap_or("none")
+            );
+            std::process::exit(1);
+        }
+        SwitcherWindowRenderResult::InvalidFrame { error } => {
+            eprintln!(
+                "switcher render decoded frame invalid selected_client_id={} frame_id={} error={error:?}",
+                client_id.0,
+                frame_id.unwrap_or(0)
+            );
+            std::process::exit(1);
+        }
+        SwitcherWindowRenderResult::RenderFailed { message } => {
+            eprintln!(
+                "switcher render decoded frame failed selected_client_id={} frame_id={} message={message}",
+                client_id.0,
+                frame_id.unwrap_or(0)
             );
             std::process::exit(1);
         }
