@@ -9486,3 +9486,58 @@
 - `cargo fmt --check`
 - `cargo test -p stream-sync-switcher`
 - `cargo check --workspace`
+
+---
+
+## 2026-04-25
+### Type
+- Codex
+
+### Work
+- Audited the client crate dependencies and kept the first Windows capture slice
+  dependency-free.
+- Chose Windows Graphics Capture as the Windows MVP capture backend direction.
+- Added client capture backend selection/config types for backend and target.
+- Added a capture backend probe boundary that surfaces not configured,
+  unsupported, unavailable, and future available states explicitly.
+- Routed configured capture attempts through the backend probe while still
+  refusing to produce fake raw pixels.
+- Kept capture, encode, metadata, and UDP send boundaries separate.
+
+### Changed Files
+- `apps/client/src/lib.rs`
+- `docs/architecture/system-design.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### Decisions
+- Windows MVP capture direction: Windows Graphics Capture.
+- No new Windows API or capture dependency was added in this slice.
+- On Windows, a configured Windows Graphics Capture probe currently reports
+  `BackendUnavailable` until runtime integration is wired.
+- On non-Windows targets, the Windows backend reports `BackendUnsupported`.
+- Missing backend or target configuration reports `BackendNotConfigured`.
+
+### Unresolved
+- actual Windows Graphics Capture frame acquisition
+- capture permission/session/runtime wiring
+- window/display enumeration
+- real H.264 encoder implementation and configuration
+- real decode, switcher rendering, targetTime / jitter-buffer, 4-view sync, and OBS
+
+### Next
+- Add the actual Windows Graphics Capture runtime behind the probe boundary.
+- Add a target discovery/config path for display/window selection.
+- Keep H.264 encode as a separate next boundary after real raw frame capture.
+
+### TODO Update
+- Marked the Windows capture backend selection/probe boundary as complete.
+- Replaced generic actual capture work with actual Windows Graphics Capture
+  frame acquisition behind the new boundary.
+- Kept actual H.264 encode, decode/rendering, and sync work separate.
+
+### Validation
+- `cargo fmt`
+- `cargo fmt --check`
+- `cargo test -p stream-sync-client client_video_frame`
+- `cargo check --workspace`

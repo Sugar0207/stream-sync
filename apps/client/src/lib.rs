@@ -1317,6 +1317,42 @@ pub struct ClientCaptureSourceInput {
     pub fps_nominal: u32,
 }
 
+/// Capture backend selected for a real client capture attempt.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ClientCaptureBackendKind {
+    WindowsGraphicsCapture,
+}
+
+/// Capture target selected for a real client capture attempt.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ClientCaptureTargetConfig {
+    PrimaryDisplay,
+    WindowTitle(String),
+}
+
+/// Caller-provided real capture backend configuration.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct ClientCaptureBackendConfig {
+    pub backend: Option<ClientCaptureBackendKind>,
+    pub target: Option<ClientCaptureTargetConfig>,
+}
+
+impl ClientCaptureBackendConfig {
+    pub fn windows_graphics_capture_primary_display() -> Self {
+        Self {
+            backend: Some(ClientCaptureBackendKind::WindowsGraphicsCapture),
+            target: Some(ClientCaptureTargetConfig::PrimaryDisplay),
+        }
+    }
+}
+
+/// Caller request for one configured capture attempt.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClientConfiguredCaptureSourceInput {
+    pub frame: ClientCaptureSourceInput,
+    pub backend_config: ClientCaptureBackendConfig,
+}
+
 /// Raw pixel format produced by a future real capture backend.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ClientRawVideoPixelFormat {
@@ -1339,6 +1375,9 @@ pub struct ClientRawCapturedVideoFrame {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ClientCaptureUnavailableReason {
     RealCaptureDeferred,
+    BackendNotConfigured,
+    BackendUnsupported,
+    BackendUnavailable,
 }
 
 /// Result from the client capture source boundary.
@@ -1350,11 +1389,25 @@ pub enum ClientCaptureSourceResult {
     },
 }
 
+/// Result from probing a selected capture backend before frame capture.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ClientCaptureBackendProbeResult {
+    Available {
+        backend: ClientCaptureBackendKind,
+    },
+    Unavailable {
+        backend: Option<ClientCaptureBackendKind>,
+        reason: ClientCaptureUnavailableReason,
+    },
+}
+
 /// Boundary for obtaining one raw frame from a capture source.
 ///
-/// The current implementation intentionally does not call OS capture APIs. It
-/// makes the deferred state explicit so later work can replace only this source
-/// without changing `VideoFrame` metadata or UDP send wiring.
+/// Windows MVP capture is planned around Windows Graphics Capture. The current
+/// implementation intentionally does not call OS capture APIs yet; it probes
+/// selection/configuration and returns explicit unavailable states so later
+/// work can replace only this source without changing `VideoFrame` metadata or
+/// UDP send wiring.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
 pub struct ClientCaptureSourceBoundary;
 
@@ -1362,6 +1415,56 @@ impl ClientCaptureSourceBoundary {
     pub fn capture_once(&self, _input: ClientCaptureSourceInput) -> ClientCaptureSourceResult {
         ClientCaptureSourceResult::Unavailable {
             reason: ClientCaptureUnavailableReason::RealCaptureDeferred,
+        }
+    }
+
+    pub fn probe_backend(
+        &self,
+        config: &ClientCaptureBackendConfig,
+    ) -> ClientCaptureBackendProbeResult {
+        let Some(backend) = config.backend else {
+            return ClientCaptureBackendProbeResult::Unavailable {
+                backend: None,
+                reason: ClientCaptureUnavailableReason::BackendNotConfigured,
+            };
+        };
+        if config.target.is_none() {
+            return ClientCaptureBackendProbeResult::Unavailable {
+                backend: Some(backend),
+                reason: ClientCaptureUnavailableReason::BackendNotConfigured,
+            };
+        }
+
+        match backend {
+            ClientCaptureBackendKind::WindowsGraphicsCapture => {
+                if cfg!(target_os = "windows") {
+                    ClientCaptureBackendProbeResult::Unavailable {
+                        backend: Some(backend),
+                        reason: ClientCaptureUnavailableReason::BackendUnavailable,
+                    }
+                } else {
+                    ClientCaptureBackendProbeResult::Unavailable {
+                        backend: Some(backend),
+                        reason: ClientCaptureUnavailableReason::BackendUnsupported,
+                    }
+                }
+            }
+        }
+    }
+
+    pub fn capture_once_with_backend(
+        &self,
+        input: ClientConfiguredCaptureSourceInput,
+    ) -> ClientCaptureSourceResult {
+        match self.probe_backend(&input.backend_config) {
+            ClientCaptureBackendProbeResult::Available { .. } => {
+                ClientCaptureSourceResult::Unavailable {
+                    reason: ClientCaptureUnavailableReason::RealCaptureDeferred,
+                }
+            }
+            ClientCaptureBackendProbeResult::Unavailable { reason, .. } => {
+                ClientCaptureSourceResult::Unavailable { reason }
+            }
         }
     }
 }
@@ -8073,6 +8176,105 @@ mod tests {
             result,
             ClientCaptureSourceResult::Unavailable {
                 reason: ClientCaptureUnavailableReason::RealCaptureDeferred
+            }
+        );
+    }
+
+    #[test]
+    fn client_video_frame_capture_backend_probe_reports_not_configured() {
+        let result =
+            ClientCaptureSourceBoundary.probe_backend(&ClientCaptureBackendConfig::default());
+
+        assert_eq!(
+            result,
+            ClientCaptureBackendProbeResult::Unavailable {
+                backend: None,
+                reason: ClientCaptureUnavailableReason::BackendNotConfigured
+            }
+        );
+    }
+
+    #[test]
+    fn client_video_frame_capture_backend_probe_requires_target_config() {
+        let result = ClientCaptureSourceBoundary.probe_backend(&ClientCaptureBackendConfig {
+            backend: Some(ClientCaptureBackendKind::WindowsGraphicsCapture),
+            target: None,
+        });
+
+        assert_eq!(
+            result,
+            ClientCaptureBackendProbeResult::Unavailable {
+                backend: Some(ClientCaptureBackendKind::WindowsGraphicsCapture),
+                reason: ClientCaptureUnavailableReason::BackendNotConfigured
+            }
+        );
+    }
+
+    #[test]
+    fn client_video_frame_capture_backend_probe_reports_windows_backend_state() {
+        let result = ClientCaptureSourceBoundary
+            .probe_backend(&ClientCaptureBackendConfig::windows_graphics_capture_primary_display());
+        let expected_reason = if cfg!(target_os = "windows") {
+            ClientCaptureUnavailableReason::BackendUnavailable
+        } else {
+            ClientCaptureUnavailableReason::BackendUnsupported
+        };
+
+        assert_eq!(
+            result,
+            ClientCaptureBackendProbeResult::Unavailable {
+                backend: Some(ClientCaptureBackendKind::WindowsGraphicsCapture),
+                reason: expected_reason
+            }
+        );
+    }
+
+    #[test]
+    fn client_video_frame_capture_with_backend_routes_not_configured() {
+        let result = ClientCaptureSourceBoundary.capture_once_with_backend(
+            ClientConfiguredCaptureSourceInput {
+                frame: ClientCaptureSourceInput {
+                    capture_timestamp: TimestampMicros(1_000_000),
+                    requested_width: 1280,
+                    requested_height: 720,
+                    fps_nominal: 30,
+                },
+                backend_config: ClientCaptureBackendConfig::default(),
+            },
+        );
+
+        assert_eq!(
+            result,
+            ClientCaptureSourceResult::Unavailable {
+                reason: ClientCaptureUnavailableReason::BackendNotConfigured
+            }
+        );
+    }
+
+    #[test]
+    fn client_video_frame_capture_with_windows_backend_does_not_fake_pixels() {
+        let result = ClientCaptureSourceBoundary.capture_once_with_backend(
+            ClientConfiguredCaptureSourceInput {
+                frame: ClientCaptureSourceInput {
+                    capture_timestamp: TimestampMicros(1_000_000),
+                    requested_width: 1280,
+                    requested_height: 720,
+                    fps_nominal: 30,
+                },
+                backend_config:
+                    ClientCaptureBackendConfig::windows_graphics_capture_primary_display(),
+            },
+        );
+        let expected_reason = if cfg!(target_os = "windows") {
+            ClientCaptureUnavailableReason::BackendUnavailable
+        } else {
+            ClientCaptureUnavailableReason::BackendUnsupported
+        };
+
+        assert_eq!(
+            result,
+            ClientCaptureSourceResult::Unavailable {
+                reason: expected_reason
             }
         );
     }

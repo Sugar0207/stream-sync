@@ -7424,6 +7424,18 @@ Current implementation:
 
 - `ClientCaptureSourceBoundary::capture_once` returns
   `Unavailable(RealCaptureDeferred)`.
+- Windows MVP capture backend direction is `WindowsGraphicsCapture`.
+- `ClientCaptureBackendConfig` and `ClientCaptureTargetConfig` describe the
+  selected backend and target before any pixels are captured.
+- `ClientCaptureSourceBoundary::probe_backend` reports:
+  - capture backend not configured,
+  - backend unsupported on non-Windows targets,
+  - backend unavailable on Windows while the Windows Graphics Capture runtime
+    integration is not wired yet,
+  - or a future capture-available state.
+- `ClientCaptureSourceBoundary::capture_once_with_backend` routes through the
+  backend probe and returns explicit unavailable reasons; it still does not
+  produce raw pixels or fake capture output.
 - `ClientH264EncoderBoundary::encode_once` returns
   `Deferred(RealH264EncodeDeferred)` for the current supported raw handoff, or
   `Deferred(UnsupportedCaptureFormat)` when a caller supplies an unsupported
@@ -7442,7 +7454,8 @@ Current implementation:
 Responsibility split:
 
 - capture source
-  - Future owner of OS/window/game capture and raw pixel frame production.
+  - Owns backend selection/probe and is the future owner of OS/window/game
+    capture and raw pixel frame production.
   - Does not encode H.264, construct protocol messages, or send UDP packets.
 - H.264 encoder
   - Future owner of converting raw captured frames into encoded H.264 payloads.
