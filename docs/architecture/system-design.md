@@ -7427,6 +7427,13 @@ Current implementation:
 - Windows MVP capture backend direction is `WindowsGraphicsCapture`.
 - `ClientCaptureBackendConfig` and `ClientCaptureTargetConfig` describe the
   selected backend and target before any pixels are captured.
+- `ClientCaptureTargetDiscoveryBoundary::discover_targets` is the pre-session
+  target discovery boundary. It currently does not call Windows APIs or
+  enumerate real targets; it returns explicit not-configured, unsupported, or
+  runtime-unavailable results for the selected backend.
+- `ClientCaptureTargetDescriptor` can represent future display and window
+  targets and convert them into `ClientCaptureTargetConfig` for later capture
+  session creation.
 - `ClientCaptureSourceBoundary::probe_backend` reports:
   - capture backend not configured,
   - backend unsupported on non-Windows targets,
@@ -7457,6 +7464,12 @@ Responsibility split:
   - Owns backend selection/probe and is the future owner of OS/window/game
     capture and raw pixel frame production.
   - Does not encode H.264, construct protocol messages, or send UDP packets.
+- target discovery
+  - Future owner of enumerating display/window targets for
+    WindowsGraphicsCapture.
+  - Produces descriptors/config references only.
+  - Does not create capture sessions, acquire frames, encode video, construct
+    protocol messages, or send UDP packets.
 - H.264 encoder
   - Future owner of converting raw captured frames into encoded H.264 payloads.
   - Does not capture pixels, choose frame ids, or send packets.

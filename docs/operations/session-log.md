@@ -9392,6 +9392,64 @@
 - `cargo fmt --check`
 - `cargo test -p stream-sync-client client_video_frame`
 - `cargo check --workspace`
+
+---
+
+## 2026-04-25
+### Type
+- Codex
+
+### Work
+- Added the smallest client Windows capture target discovery boundary.
+- Added metadata-only target descriptors for display and window targets.
+- Added conversion from discovered target descriptors to
+  `ClientCaptureTargetConfig`.
+- Added discovery input and result types for targets found, no targets found,
+  backend unsupported, discovery unavailable, permission unavailable, runtime
+  unavailable, and backend not configured states.
+- Kept Windows Graphics Capture target enumeration deferred; discovery currently
+  reports runtime unavailable on Windows and backend unsupported on non-Windows.
+- Kept discovery separate from capture session creation, frame acquisition,
+  H.264 encode/decode, UDP send, switcher rendering, and OBS.
+
+### Changed Files
+- `apps/client/src/lib.rs`
+- `docs/architecture/system-design.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### Decisions
+- Target discovery is a pre-session boundary.
+- Real Windows display/window enumeration is deferred until the Windows runtime
+  dependency/API wiring is added.
+- Target descriptors are metadata-only and cannot produce capture frames.
+- Placeholder payload behavior remains independent from discovery.
+
+### Unresolved
+- actual Windows Graphics Capture display/window enumeration
+- capture permission/session/runtime wiring
+- real frame acquisition
+- real H.264 encode/decode
+- switcher rendering, targetTime / jitter-buffer, 4-view sync, and OBS
+
+### Next
+- Add real Windows display/window enumeration behind
+  `ClientCaptureTargetDiscoveryBoundary`.
+- Use selected descriptors to build `ClientCaptureTargetConfig` for future
+  capture session creation.
+- Keep frame acquisition and H.264 encode as separate follow-up slices.
+
+### TODO Update
+- Marked Windows capture target discovery boundary as complete.
+- Updated Next Items to start with real Windows display/window enumeration,
+  then frame acquisition.
+- Kept actual capture frames, encode/decode, rendering, sync, and OBS deferred.
+
+### Validation
+- `cargo fmt`
+- `cargo fmt --check`
+- `cargo test -p stream-sync-client client_video_frame`
+- `cargo check --workspace`
 - `cargo run -p stream-sync-switcher -- --placeholder-empty-once client-1`
 - `cargo run -p stream-sync-switcher -- --placeholder-fixture-once client-1`
 

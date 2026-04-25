@@ -1327,7 +1327,79 @@ pub enum ClientCaptureBackendKind {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ClientCaptureTargetConfig {
     PrimaryDisplay,
+    DisplayId(String),
     WindowTitle(String),
+}
+
+/// Capture target kind reported by discovery before a capture session exists.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ClientCaptureTargetDescriptorKind {
+    Display { stable_id: String, is_primary: bool },
+    Window { title: String },
+}
+
+/// Discovered capture target descriptor.
+///
+/// This descriptor is intentionally metadata-only. It does not own or create a
+/// Windows Graphics Capture session and cannot produce frames.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClientCaptureTargetDescriptor {
+    pub backend: ClientCaptureBackendKind,
+    pub kind: ClientCaptureTargetDescriptorKind,
+    pub label: String,
+}
+
+impl ClientCaptureTargetDescriptor {
+    pub fn primary_display(stable_id: impl Into<String>, label: impl Into<String>) -> Self {
+        Self {
+            backend: ClientCaptureBackendKind::WindowsGraphicsCapture,
+            kind: ClientCaptureTargetDescriptorKind::Display {
+                stable_id: stable_id.into(),
+                is_primary: true,
+            },
+            label: label.into(),
+        }
+    }
+
+    pub fn display(stable_id: impl Into<String>, label: impl Into<String>) -> Self {
+        Self {
+            backend: ClientCaptureBackendKind::WindowsGraphicsCapture,
+            kind: ClientCaptureTargetDescriptorKind::Display {
+                stable_id: stable_id.into(),
+                is_primary: false,
+            },
+            label: label.into(),
+        }
+    }
+
+    pub fn window(title: impl Into<String>) -> Self {
+        let title = title.into();
+        Self {
+            backend: ClientCaptureBackendKind::WindowsGraphicsCapture,
+            kind: ClientCaptureTargetDescriptorKind::Window {
+                title: title.clone(),
+            },
+            label: title,
+        }
+    }
+
+    pub fn to_target_config(&self) -> ClientCaptureTargetConfig {
+        match &self.kind {
+            ClientCaptureTargetDescriptorKind::Display {
+                stable_id,
+                is_primary,
+            } => {
+                if *is_primary {
+                    ClientCaptureTargetConfig::PrimaryDisplay
+                } else {
+                    ClientCaptureTargetConfig::DisplayId(stable_id.clone())
+                }
+            }
+            ClientCaptureTargetDescriptorKind::Window { title } => {
+                ClientCaptureTargetConfig::WindowTitle(title.clone())
+            }
+        }
+    }
 }
 
 /// Caller-provided real capture backend configuration.
@@ -1351,6 +1423,26 @@ impl ClientCaptureBackendConfig {
 pub struct ClientConfiguredCaptureSourceInput {
     pub frame: ClientCaptureSourceInput,
     pub backend_config: ClientCaptureBackendConfig,
+}
+
+/// Input for capture target discovery before session creation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub struct ClientCaptureTargetDiscoveryInput {
+    pub backend: Option<ClientCaptureBackendKind>,
+}
+
+impl ClientCaptureTargetDiscoveryInput {
+    pub fn windows_graphics_capture() -> Self {
+        Self {
+            backend: Some(ClientCaptureBackendKind::WindowsGraphicsCapture),
+        }
+    }
+
+    pub fn from_backend_config(config: &ClientCaptureBackendConfig) -> Self {
+        Self {
+            backend: config.backend,
+        }
+    }
 }
 
 /// Raw pixel format produced by a future real capture backend.
@@ -1380,6 +1472,16 @@ pub enum ClientCaptureUnavailableReason {
     BackendUnavailable,
 }
 
+/// Explicit reason why capture target discovery could not enumerate targets.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ClientCaptureTargetDiscoveryUnavailableReason {
+    BackendNotConfigured,
+    BackendUnsupported,
+    DiscoveryUnavailable,
+    PermissionUnavailable,
+    RuntimeUnavailable,
+}
+
 /// Result from the client capture source boundary.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ClientCaptureSourceResult {
@@ -1399,6 +1501,60 @@ pub enum ClientCaptureBackendProbeResult {
         backend: Option<ClientCaptureBackendKind>,
         reason: ClientCaptureUnavailableReason,
     },
+}
+
+/// Result from capture target discovery before capture session creation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ClientCaptureTargetDiscoveryResult {
+    TargetsFound {
+        backend: ClientCaptureBackendKind,
+        targets: Vec<ClientCaptureTargetDescriptor>,
+    },
+    NoTargetsFound {
+        backend: ClientCaptureBackendKind,
+    },
+    Unavailable {
+        backend: Option<ClientCaptureBackendKind>,
+        reason: ClientCaptureTargetDiscoveryUnavailableReason,
+    },
+}
+
+/// Boundary for discovering capture targets before frame acquisition.
+///
+/// The Windows Graphics Capture direction is selected, but real enumeration is
+/// still deferred. This boundary does not request frames, open capture sessions,
+/// encode video, or touch UDP send state.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct ClientCaptureTargetDiscoveryBoundary;
+
+impl ClientCaptureTargetDiscoveryBoundary {
+    pub fn discover_targets(
+        &self,
+        input: ClientCaptureTargetDiscoveryInput,
+    ) -> ClientCaptureTargetDiscoveryResult {
+        let Some(backend) = input.backend else {
+            return ClientCaptureTargetDiscoveryResult::Unavailable {
+                backend: None,
+                reason: ClientCaptureTargetDiscoveryUnavailableReason::BackendNotConfigured,
+            };
+        };
+
+        match backend {
+            ClientCaptureBackendKind::WindowsGraphicsCapture => {
+                if cfg!(target_os = "windows") {
+                    ClientCaptureTargetDiscoveryResult::Unavailable {
+                        backend: Some(backend),
+                        reason: ClientCaptureTargetDiscoveryUnavailableReason::RuntimeUnavailable,
+                    }
+                } else {
+                    ClientCaptureTargetDiscoveryResult::Unavailable {
+                        backend: Some(backend),
+                        reason: ClientCaptureTargetDiscoveryUnavailableReason::BackendUnsupported,
+                    }
+                }
+            }
+        }
+    }
 }
 
 /// Boundary for obtaining one raw frame from a capture source.
@@ -8192,6 +8348,108 @@ mod tests {
                 reason: ClientCaptureUnavailableReason::BackendNotConfigured
             }
         );
+    }
+
+    #[test]
+    fn client_video_frame_capture_target_discovery_reports_not_configured() {
+        let result = ClientCaptureTargetDiscoveryBoundary
+            .discover_targets(ClientCaptureTargetDiscoveryInput::default());
+
+        assert_eq!(
+            result,
+            ClientCaptureTargetDiscoveryResult::Unavailable {
+                backend: None,
+                reason: ClientCaptureTargetDiscoveryUnavailableReason::BackendNotConfigured
+            }
+        );
+    }
+
+    #[test]
+    fn client_video_frame_capture_target_discovery_reports_windows_backend_state() {
+        let result = ClientCaptureTargetDiscoveryBoundary
+            .discover_targets(ClientCaptureTargetDiscoveryInput::windows_graphics_capture());
+        let expected_reason = if cfg!(target_os = "windows") {
+            ClientCaptureTargetDiscoveryUnavailableReason::RuntimeUnavailable
+        } else {
+            ClientCaptureTargetDiscoveryUnavailableReason::BackendUnsupported
+        };
+
+        assert_eq!(
+            result,
+            ClientCaptureTargetDiscoveryResult::Unavailable {
+                backend: Some(ClientCaptureBackendKind::WindowsGraphicsCapture),
+                reason: expected_reason
+            }
+        );
+    }
+
+    #[test]
+    fn client_video_frame_capture_target_discovery_input_can_use_backend_config() {
+        let backend_config = ClientCaptureBackendConfig::windows_graphics_capture_primary_display();
+        let input = ClientCaptureTargetDiscoveryInput::from_backend_config(&backend_config);
+
+        assert_eq!(
+            input,
+            ClientCaptureTargetDiscoveryInput {
+                backend: Some(ClientCaptureBackendKind::WindowsGraphicsCapture)
+            }
+        );
+    }
+
+    #[test]
+    fn client_video_frame_capture_target_descriptors_convert_to_target_config() {
+        let primary =
+            ClientCaptureTargetDescriptor::primary_display("display-primary", "Primary display");
+        let secondary = ClientCaptureTargetDescriptor::display("display-2", "Display 2");
+        let window = ClientCaptureTargetDescriptor::window("Minecraft");
+
+        assert_eq!(
+            primary.to_target_config(),
+            ClientCaptureTargetConfig::PrimaryDisplay
+        );
+        assert_eq!(
+            secondary.to_target_config(),
+            ClientCaptureTargetConfig::DisplayId("display-2".to_string())
+        );
+        assert_eq!(
+            window.to_target_config(),
+            ClientCaptureTargetConfig::WindowTitle("Minecraft".to_string())
+        );
+    }
+
+    #[test]
+    fn client_video_frame_capture_target_discovery_result_can_represent_targets() {
+        let targets = vec![
+            ClientCaptureTargetDescriptor::primary_display("display-primary", "Primary display"),
+            ClientCaptureTargetDescriptor::window("Minecraft"),
+        ];
+        let result = ClientCaptureTargetDiscoveryResult::TargetsFound {
+            backend: ClientCaptureBackendKind::WindowsGraphicsCapture,
+            targets: targets.clone(),
+        };
+
+        assert_eq!(
+            result,
+            ClientCaptureTargetDiscoveryResult::TargetsFound {
+                backend: ClientCaptureBackendKind::WindowsGraphicsCapture,
+                targets
+            }
+        );
+    }
+
+    #[test]
+    fn client_video_frame_capture_target_discovery_does_not_affect_placeholder_payload() {
+        let discovery = ClientCaptureTargetDiscoveryBoundary
+            .discover_targets(ClientCaptureTargetDiscoveryInput::windows_graphics_capture());
+        let payload = ClientPlaceholderEncodedH264PayloadSourceBoundary
+            .from_bytes(DEFAULT_PLACEHOLDER_H264_PAYLOAD.to_vec())
+            .expect("placeholder payload should remain independent from discovery");
+
+        assert!(matches!(
+            discovery,
+            ClientCaptureTargetDiscoveryResult::Unavailable { .. }
+        ));
+        assert_eq!(payload.bytes, DEFAULT_PLACEHOLDER_H264_PAYLOAD.to_vec());
     }
 
     #[test]
