@@ -1571,6 +1571,144 @@ impl ClientCaptureSessionConfigBoundary {
     }
 }
 
+/// Input for creating a future capture session runtime.
+///
+/// This input is derived only from an already prepared session config. Frame
+/// acquisition, encoding, and UDP send state are intentionally absent.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClientCaptureSessionRuntimeInput {
+    pub config: ClientCaptureSessionConfig,
+}
+
+impl ClientCaptureSessionRuntimeInput {
+    pub fn from_config(config: ClientCaptureSessionConfig) -> Self {
+        Self { config }
+    }
+}
+
+/// Opaque handoff for a future capture session runtime.
+///
+/// The default runtime hook never creates this. Tests or a later Windows API
+/// implementation can provide it without changing frame acquisition.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClientCaptureSessionRuntime {
+    pub backend: ClientCaptureBackendKind,
+    pub target: ClientWindowsGraphicsCaptureSessionTargetConfig,
+    pub runtime_id: String,
+}
+
+/// Explicit reason why capture session runtime creation did not happen.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ClientCaptureSessionRuntimeCreationFailure {
+    CreationDeferred,
+    PermissionUnavailable,
+    RuntimeUnavailable,
+    BackendUnsupported,
+    UnsupportedTarget,
+    CreationFailed,
+}
+
+/// Result from attempting to create a future capture session runtime.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ClientCaptureSessionRuntimeCreationResult {
+    Created {
+        runtime: ClientCaptureSessionRuntime,
+    },
+    NotCreated {
+        backend: Option<ClientCaptureBackendKind>,
+        reason: ClientCaptureSessionRuntimeCreationFailure,
+        message: Option<String>,
+    },
+}
+
+/// Caller-owned hook for platform-specific capture session creation.
+///
+/// The hook is the only place a later Windows API implementation should open a
+/// real Windows Graphics Capture session. It must not acquire frames.
+pub trait ClientCaptureSessionRuntimeHook {
+    fn create_windows_graphics_capture_session(
+        &self,
+        input: &ClientCaptureSessionRuntimeInput,
+    ) -> ClientCaptureSessionRuntimeCreationResult;
+}
+
+/// Default runtime hook used until Windows API session creation is wired.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct ClientUnavailableCaptureSessionRuntimeHook;
+
+impl ClientCaptureSessionRuntimeHook for ClientUnavailableCaptureSessionRuntimeHook {
+    fn create_windows_graphics_capture_session(
+        &self,
+        _input: &ClientCaptureSessionRuntimeInput,
+    ) -> ClientCaptureSessionRuntimeCreationResult {
+        if cfg!(target_os = "windows") {
+            ClientCaptureSessionRuntimeCreationResult::NotCreated {
+                backend: Some(ClientCaptureBackendKind::WindowsGraphicsCapture),
+                reason: ClientCaptureSessionRuntimeCreationFailure::RuntimeUnavailable,
+                message: Some("Windows Graphics Capture session runtime is not wired".to_string()),
+            }
+        } else {
+            ClientCaptureSessionRuntimeCreationResult::NotCreated {
+                backend: Some(ClientCaptureBackendKind::WindowsGraphicsCapture),
+                reason: ClientCaptureSessionRuntimeCreationFailure::BackendUnsupported,
+                message: Some(
+                    "Windows Graphics Capture session runtime is unsupported on this platform"
+                        .to_string(),
+                ),
+            }
+        }
+    }
+}
+
+/// Boundary for creating a future capture session runtime.
+///
+/// This consumes prepared session config and delegates OS-specific work to a
+/// caller-owned runtime hook. It does not acquire frames, encode video, build
+/// protocol messages, or send UDP packets.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct ClientCaptureSessionRuntimeBoundary;
+
+impl ClientCaptureSessionRuntimeBoundary {
+    pub fn create_session(
+        &self,
+        input: ClientCaptureSessionRuntimeInput,
+    ) -> ClientCaptureSessionRuntimeCreationResult {
+        self.create_session_with_runtime(input, &ClientUnavailableCaptureSessionRuntimeHook)
+    }
+
+    pub fn create_session_with_runtime(
+        &self,
+        input: ClientCaptureSessionRuntimeInput,
+        runtime: &impl ClientCaptureSessionRuntimeHook,
+    ) -> ClientCaptureSessionRuntimeCreationResult {
+        if !Self::target_is_supported(&input.config.target) {
+            return ClientCaptureSessionRuntimeCreationResult::NotCreated {
+                backend: Some(input.config.backend),
+                reason: ClientCaptureSessionRuntimeCreationFailure::UnsupportedTarget,
+                message: Some("capture session target details are not usable".to_string()),
+            };
+        }
+
+        match input.config.backend {
+            ClientCaptureBackendKind::WindowsGraphicsCapture => {
+                runtime.create_windows_graphics_capture_session(&input)
+            }
+        }
+    }
+
+    fn target_is_supported(target: &ClientWindowsGraphicsCaptureSessionTargetConfig) -> bool {
+        match target {
+            ClientWindowsGraphicsCaptureSessionTargetConfig::PrimaryDisplay => true,
+            ClientWindowsGraphicsCaptureSessionTargetConfig::Display { stable_id } => {
+                !stable_id.trim().is_empty()
+            }
+            ClientWindowsGraphicsCaptureSessionTargetConfig::Window { title } => {
+                !title.trim().is_empty()
+            }
+        }
+    }
+}
+
 /// Caller-provided real capture backend configuration.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct ClientCaptureBackendConfig {
@@ -8847,6 +8985,246 @@ mod tests {
         assert!(matches!(
             session_config,
             ClientCaptureSessionConfigPrepareResult::Prepared { .. }
+        ));
+        assert_eq!(payload.bytes, DEFAULT_PLACEHOLDER_H264_PAYLOAD.to_vec());
+    }
+
+    #[test]
+    fn client_video_frame_capture_session_config_can_produce_runtime_input() {
+        let config = ClientCaptureSessionConfig {
+            backend: ClientCaptureBackendKind::WindowsGraphicsCapture,
+            target: ClientWindowsGraphicsCaptureSessionTargetConfig::PrimaryDisplay,
+        };
+
+        let input = ClientCaptureSessionRuntimeInput::from_config(config.clone());
+
+        assert_eq!(input.config, config);
+    }
+
+    #[test]
+    fn client_video_frame_capture_session_runtime_default_hook_reports_unavailable() {
+        let input = ClientCaptureSessionRuntimeInput::from_config(ClientCaptureSessionConfig {
+            backend: ClientCaptureBackendKind::WindowsGraphicsCapture,
+            target: ClientWindowsGraphicsCaptureSessionTargetConfig::PrimaryDisplay,
+        });
+        let expected_reason = if cfg!(target_os = "windows") {
+            ClientCaptureSessionRuntimeCreationFailure::RuntimeUnavailable
+        } else {
+            ClientCaptureSessionRuntimeCreationFailure::BackendUnsupported
+        };
+
+        let result = ClientCaptureSessionRuntimeBoundary.create_session(input);
+
+        assert_eq!(
+            result,
+            ClientCaptureSessionRuntimeCreationResult::NotCreated {
+                backend: Some(ClientCaptureBackendKind::WindowsGraphicsCapture),
+                reason: expected_reason,
+                message: Some(if cfg!(target_os = "windows") {
+                    "Windows Graphics Capture session runtime is not wired".to_string()
+                } else {
+                    "Windows Graphics Capture session runtime is unsupported on this platform"
+                        .to_string()
+                })
+            }
+        );
+    }
+
+    #[test]
+    fn client_video_frame_capture_session_runtime_hook_can_create_session() {
+        struct FixtureSessionRuntime;
+
+        impl ClientCaptureSessionRuntimeHook for FixtureSessionRuntime {
+            fn create_windows_graphics_capture_session(
+                &self,
+                input: &ClientCaptureSessionRuntimeInput,
+            ) -> ClientCaptureSessionRuntimeCreationResult {
+                ClientCaptureSessionRuntimeCreationResult::Created {
+                    runtime: ClientCaptureSessionRuntime {
+                        backend: input.config.backend,
+                        target: input.config.target.clone(),
+                        runtime_id: "fixture-session".to_string(),
+                    },
+                }
+            }
+        }
+
+        let input = ClientCaptureSessionRuntimeInput::from_config(ClientCaptureSessionConfig {
+            backend: ClientCaptureBackendKind::WindowsGraphicsCapture,
+            target: ClientWindowsGraphicsCaptureSessionTargetConfig::Window {
+                title: "Minecraft".to_string(),
+            },
+        });
+
+        let result = ClientCaptureSessionRuntimeBoundary
+            .create_session_with_runtime(input, &FixtureSessionRuntime);
+
+        assert_eq!(
+            result,
+            ClientCaptureSessionRuntimeCreationResult::Created {
+                runtime: ClientCaptureSessionRuntime {
+                    backend: ClientCaptureBackendKind::WindowsGraphicsCapture,
+                    target: ClientWindowsGraphicsCaptureSessionTargetConfig::Window {
+                        title: "Minecraft".to_string()
+                    },
+                    runtime_id: "fixture-session".to_string()
+                }
+            }
+        );
+    }
+
+    #[test]
+    fn client_video_frame_capture_session_runtime_hook_keeps_deferred_explicit() {
+        struct DeferredSessionRuntime;
+
+        impl ClientCaptureSessionRuntimeHook for DeferredSessionRuntime {
+            fn create_windows_graphics_capture_session(
+                &self,
+                _input: &ClientCaptureSessionRuntimeInput,
+            ) -> ClientCaptureSessionRuntimeCreationResult {
+                ClientCaptureSessionRuntimeCreationResult::NotCreated {
+                    backend: Some(ClientCaptureBackendKind::WindowsGraphicsCapture),
+                    reason: ClientCaptureSessionRuntimeCreationFailure::CreationDeferred,
+                    message: Some("fixture deferred".to_string()),
+                }
+            }
+        }
+
+        let input = ClientCaptureSessionRuntimeInput::from_config(ClientCaptureSessionConfig {
+            backend: ClientCaptureBackendKind::WindowsGraphicsCapture,
+            target: ClientWindowsGraphicsCaptureSessionTargetConfig::PrimaryDisplay,
+        });
+
+        let result = ClientCaptureSessionRuntimeBoundary
+            .create_session_with_runtime(input, &DeferredSessionRuntime);
+
+        assert_eq!(
+            result,
+            ClientCaptureSessionRuntimeCreationResult::NotCreated {
+                backend: Some(ClientCaptureBackendKind::WindowsGraphicsCapture),
+                reason: ClientCaptureSessionRuntimeCreationFailure::CreationDeferred,
+                message: Some("fixture deferred".to_string())
+            }
+        );
+    }
+
+    #[test]
+    fn client_video_frame_capture_session_runtime_hook_keeps_permission_unavailable_explicit() {
+        struct PermissionUnavailableSessionRuntime;
+
+        impl ClientCaptureSessionRuntimeHook for PermissionUnavailableSessionRuntime {
+            fn create_windows_graphics_capture_session(
+                &self,
+                _input: &ClientCaptureSessionRuntimeInput,
+            ) -> ClientCaptureSessionRuntimeCreationResult {
+                ClientCaptureSessionRuntimeCreationResult::NotCreated {
+                    backend: Some(ClientCaptureBackendKind::WindowsGraphicsCapture),
+                    reason: ClientCaptureSessionRuntimeCreationFailure::PermissionUnavailable,
+                    message: Some("fixture permission unavailable".to_string()),
+                }
+            }
+        }
+
+        let input = ClientCaptureSessionRuntimeInput::from_config(ClientCaptureSessionConfig {
+            backend: ClientCaptureBackendKind::WindowsGraphicsCapture,
+            target: ClientWindowsGraphicsCaptureSessionTargetConfig::PrimaryDisplay,
+        });
+
+        let result = ClientCaptureSessionRuntimeBoundary
+            .create_session_with_runtime(input, &PermissionUnavailableSessionRuntime);
+
+        assert_eq!(
+            result,
+            ClientCaptureSessionRuntimeCreationResult::NotCreated {
+                backend: Some(ClientCaptureBackendKind::WindowsGraphicsCapture),
+                reason: ClientCaptureSessionRuntimeCreationFailure::PermissionUnavailable,
+                message: Some("fixture permission unavailable".to_string())
+            }
+        );
+    }
+
+    #[test]
+    fn client_video_frame_capture_session_runtime_reports_unsupported_target() {
+        struct ShouldNotRunSessionRuntime;
+
+        impl ClientCaptureSessionRuntimeHook for ShouldNotRunSessionRuntime {
+            fn create_windows_graphics_capture_session(
+                &self,
+                _input: &ClientCaptureSessionRuntimeInput,
+            ) -> ClientCaptureSessionRuntimeCreationResult {
+                panic!("unsupported target should be rejected before runtime hook");
+            }
+        }
+
+        let input = ClientCaptureSessionRuntimeInput::from_config(ClientCaptureSessionConfig {
+            backend: ClientCaptureBackendKind::WindowsGraphicsCapture,
+            target: ClientWindowsGraphicsCaptureSessionTargetConfig::Display {
+                stable_id: " ".to_string(),
+            },
+        });
+
+        let result = ClientCaptureSessionRuntimeBoundary
+            .create_session_with_runtime(input, &ShouldNotRunSessionRuntime);
+
+        assert_eq!(
+            result,
+            ClientCaptureSessionRuntimeCreationResult::NotCreated {
+                backend: Some(ClientCaptureBackendKind::WindowsGraphicsCapture),
+                reason: ClientCaptureSessionRuntimeCreationFailure::UnsupportedTarget,
+                message: Some("capture session target details are not usable".to_string())
+            }
+        );
+    }
+
+    #[test]
+    fn client_video_frame_capture_session_runtime_maps_creation_failure() {
+        struct FailingSessionRuntime;
+
+        impl ClientCaptureSessionRuntimeHook for FailingSessionRuntime {
+            fn create_windows_graphics_capture_session(
+                &self,
+                _input: &ClientCaptureSessionRuntimeInput,
+            ) -> ClientCaptureSessionRuntimeCreationResult {
+                ClientCaptureSessionRuntimeCreationResult::NotCreated {
+                    backend: Some(ClientCaptureBackendKind::WindowsGraphicsCapture),
+                    reason: ClientCaptureSessionRuntimeCreationFailure::CreationFailed,
+                    message: Some("fixture creation failed".to_string()),
+                }
+            }
+        }
+
+        let input = ClientCaptureSessionRuntimeInput::from_config(ClientCaptureSessionConfig {
+            backend: ClientCaptureBackendKind::WindowsGraphicsCapture,
+            target: ClientWindowsGraphicsCaptureSessionTargetConfig::PrimaryDisplay,
+        });
+
+        let result = ClientCaptureSessionRuntimeBoundary
+            .create_session_with_runtime(input, &FailingSessionRuntime);
+
+        assert_eq!(
+            result,
+            ClientCaptureSessionRuntimeCreationResult::NotCreated {
+                backend: Some(ClientCaptureBackendKind::WindowsGraphicsCapture),
+                reason: ClientCaptureSessionRuntimeCreationFailure::CreationFailed,
+                message: Some("fixture creation failed".to_string())
+            }
+        );
+    }
+
+    #[test]
+    fn client_video_frame_capture_session_runtime_does_not_affect_placeholder_payload() {
+        let input = ClientCaptureSessionRuntimeInput::from_config(ClientCaptureSessionConfig {
+            backend: ClientCaptureBackendKind::WindowsGraphicsCapture,
+            target: ClientWindowsGraphicsCaptureSessionTargetConfig::PrimaryDisplay,
+        });
+        let runtime = ClientCaptureSessionRuntimeBoundary.create_session(input);
+        let payload = ClientPlaceholderEncodedH264PayloadSourceBoundary
+            .from_bytes(DEFAULT_PLACEHOLDER_H264_PAYLOAD.to_vec())
+            .expect("placeholder payload should remain independent from session runtime");
+
+        assert!(matches!(
+            runtime,
+            ClientCaptureSessionRuntimeCreationResult::NotCreated { .. }
         ));
         assert_eq!(payload.bytes, DEFAULT_PLACEHOLDER_H264_PAYLOAD.to_vec());
     }

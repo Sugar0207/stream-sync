@@ -7446,6 +7446,17 @@ Current implementation:
   backend-not-configured, unsupported-target-kind, backend-unsupported, or
   missing-target-details states explicitly. It does not require a Windows
   runtime and does not open a session.
+- `ClientCaptureSessionRuntimeInput` is derived only from
+  `ClientCaptureSessionConfig`.
+- `ClientCaptureSessionRuntimeBoundary` consumes that input and delegates future
+  WindowsGraphicsCapture session creation to a caller-owned
+  `ClientCaptureSessionRuntimeHook`.
+- The default session runtime hook does not call Windows APIs yet. It returns
+  runtime-unavailable on Windows and backend-unsupported on non-Windows.
+- Session runtime creation can surface created, creation-deferred,
+  permission-unavailable, runtime-unavailable, backend-unsupported,
+  unsupported-target, and creation-failed states explicitly. It still does not
+  acquire frames.
 - `ClientCaptureSourceBoundary::probe_backend` reports:
   - capture backend not configured,
   - backend unsupported on non-Windows targets,
@@ -7489,6 +7500,14 @@ Responsibility split:
   - Keeps missing display/window details explicit before runtime creation.
   - Does not create sessions, request permissions, acquire frames, encode
     video, construct protocol messages, or send UDP packets.
+- capture session runtime
+  - Consumes only prepared `ClientCaptureSessionConfig` through
+    `ClientCaptureSessionRuntimeInput`.
+  - Delegates OS-specific session creation to a caller-owned runtime hook.
+  - Produces an opaque future session runtime handoff or an explicit
+    not-created reason.
+  - Does not enumerate targets, acquire frames, encode video, construct
+    protocol messages, or send UDP packets.
 - H.264 encoder
   - Future owner of converting raw captured frames into encoded H.264 payloads.
   - Does not capture pixels, choose frame ids, or send packets.
@@ -7501,7 +7520,7 @@ Responsibility split:
   - Does not know whether payload bytes came from placeholder or future real
     capture/encode.
 
-Windows API-backed target enumeration, capture session creation, frame
-acquisition, real H.264 encoder integration, encoder configuration, packet
-fragmentation, decode, switcher rendering, 4-view sync, and OBS integration
-remain future work.
+Windows API-backed target enumeration, real capture session creation inside the
+runtime hook, frame acquisition, real H.264 encoder integration, encoder
+configuration, packet fragmentation, decode, switcher rendering, 4-view sync,
+and OBS integration remain future work.

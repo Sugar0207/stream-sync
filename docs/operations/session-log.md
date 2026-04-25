@@ -9395,6 +9395,8 @@
 
 
 
+
+
 ---
 
 ## 2026-04-25
@@ -9720,3 +9722,69 @@
 - `cargo fmt --check`
 - `cargo test -p stream-sync-client client_video_frame`
 - `cargo check --workspace`
+
+---
+
+## 2026-04-25
+### Type
+- Codex
+
+### Work
+- Added the smallest client capture session runtime creation boundary.
+- Added `ClientCaptureSessionRuntimeInput` derived only from
+  `ClientCaptureSessionConfig`.
+- Added `ClientCaptureSessionRuntimeBoundary` and caller-owned
+  `ClientCaptureSessionRuntimeHook`.
+- Added a default unavailable runtime hook that keeps real Windows API session
+  creation deferred: runtime-unavailable on Windows and backend-unsupported on
+  non-Windows.
+- Added explicit runtime creation results for created, creation deferred,
+  permission unavailable, runtime unavailable, backend unsupported,
+  unsupported target, and creation failed.
+- Added focused `client_video_frame` tests for runtime input construction,
+  default unavailable behavior, hook-created runtime handoff, deferred /
+  permission-unavailable / failed hook results, unsupported target rejection,
+  and placeholder payload independence.
+
+### Changed Files
+- `apps/client/src/lib.rs`
+- `docs/architecture/system-design.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### Decisions
+- Runtime creation consumes only prepared `ClientCaptureSessionConfig`.
+- The boundary delegates OS-specific creation to a caller-owned hook so real
+  Windows API wiring can be added later without changing discovery, session
+  config, frame acquisition, encode, or UDP send boundaries.
+- The default hook does not create a real session or fake one.
+- Frame acquisition remains a later boundary that will consume a created
+  runtime handoff.
+
+### Unresolved
+- Windows API-backed display/window enumeration
+- real Windows Graphics Capture session creation inside the runtime hook
+- capture permission/runtime wiring details
+- frame acquisition
+- real H.264 encode/decode
+- switcher rendering, targetTime / jitter-buffer, 4-view sync, and OBS
+
+### Next
+- Add actual Windows Graphics Capture display/window enumeration behind the
+  discovery hook, or wire real session creation into the runtime hook if a
+  selected target is already available.
+- Keep frame acquisition separate from session creation.
+- Keep H.264 encode as a separate follow-up after raw frame acquisition.
+
+### TODO Update
+- Marked capture session runtime creation boundary as complete in Phase 3.
+- Added runtime creation to Current Focus.
+- Updated Next Items to distinguish real session creation inside the hook from
+  frame acquisition.
+
+### Validation
+- `cargo fmt`
+- `cargo fmt --check`
+- `cargo test -p stream-sync-client client_video_frame`
+- `cargo check --workspace`
+- `git diff --check`
