@@ -7464,11 +7464,27 @@ Current decode/display substitute behavior:
   window rendering PoC and not a continuous display loop.
 - The normal switcher window produced by the renderer is the future OBS Window
   Capture target. No OBS API integration is introduced here.
+- `SwitcherContinuousRenderLoopBoundary` is the first bounded single-client
+  continuous render loop boundary. It accepts a caller-owned latest-frame source,
+  decode runtime hook, render runtime hook, and loop policy.
+- The continuous render loop repeats only:
+  latest-frame selection -> H.264 decode -> decoded-frame render. It records
+  rendered frames, no-frame iterations, decode deferred/failed states, and
+  render-not-completed states explicitly.
+- The loop stops deterministically by caller-owned policy:
+  `max_iterations` or `max_rendered_frames`. It does not sleep, own sockets,
+  mutate queues, or keep rendering forever.
+- `SwitcherQueueLatestFrameSource` is a read-only adapter over caller-owned
+  `ServerVideoFrameQueueState`. Future live queue providers can implement the
+  same source trait without changing decode or render boundaries.
 
 This decode PoC does not add a continuous loop, targetTime selection,
 multi-view sync, OBS integration, decode acceleration, or packet fragmentation.
 The one-shot renderer does not add continuous repaint, frame scheduling, 2-view
 or 4-view layout, or OBS-specific control.
+The continuous loop still does not add targetTime / jitter-buffer selection,
+2-view / 4-view layout, OBS-specific control, or production scheduling; those
+remain separate future boundaries.
 
 ## Client Real Capture / H.264 Encode Boundary
 

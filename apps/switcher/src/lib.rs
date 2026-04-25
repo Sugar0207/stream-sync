@@ -648,6 +648,229 @@ impl SwitcherWindowRenderBoundary {
     }
 }
 
+/// Stop policy for the first continuous single-client render loop.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct SwitcherContinuousRenderLoopPolicy {
+    pub max_iterations: usize,
+    pub max_rendered_frames: usize,
+    pub render_hold_millis: u64,
+}
+
+impl Default for SwitcherContinuousRenderLoopPolicy {
+    fn default() -> Self {
+        Self {
+            max_iterations: 1,
+            max_rendered_frames: 1,
+            render_hold_millis: 16,
+        }
+    }
+}
+
+/// Input for one continuous single-client decode/render loop run.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SwitcherContinuousRenderLoopInput {
+    pub client_id: ClientId,
+    pub window_title: String,
+    pub policy: SwitcherContinuousRenderLoopPolicy,
+}
+
+/// Caller-owned provider of latest encoded frames for the continuous loop.
+///
+/// A later runtime can pull from a live server/switcher queue. Tests can supply
+/// deterministic scripted sources without creating windows.
+pub trait SwitcherContinuousFrameSource {
+    fn select_latest(&mut self, client_id: &ClientId) -> SwitcherSingleViewFrameSelectionResult;
+}
+
+/// Read-only queue-backed source for the continuous render loop.
+pub struct SwitcherQueueLatestFrameSource<'a> {
+    pub queue_state: &'a ServerVideoFrameQueueState,
+    selection: SwitcherSingleViewLatestFrameSelectionBoundary,
+}
+
+impl<'a> SwitcherQueueLatestFrameSource<'a> {
+    pub fn new(queue_state: &'a ServerVideoFrameQueueState) -> Self {
+        Self {
+            queue_state,
+            selection: SwitcherSingleViewLatestFrameSelectionBoundary,
+        }
+    }
+}
+
+impl SwitcherContinuousFrameSource for SwitcherQueueLatestFrameSource<'_> {
+    fn select_latest(&mut self, client_id: &ClientId) -> SwitcherSingleViewFrameSelectionResult {
+        self.selection
+            .select_latest(SwitcherSingleViewFrameSelectionInput {
+                queue_state: self.queue_state,
+                client_id,
+            })
+    }
+}
+
+/// Reason the continuous render loop stopped.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum SwitcherContinuousRenderLoopStopReason {
+    MaxIterationsReached,
+    MaxRenderedFramesReached,
+}
+
+/// One continuous render loop event.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SwitcherContinuousRenderLoopEvent {
+    Rendered {
+        iteration: usize,
+        frame_id: u64,
+        render: SwitcherWindowRenderSuccess,
+    },
+    NoFrame {
+        iteration: usize,
+        client_id: ClientId,
+    },
+    DecodeDeferred {
+        iteration: usize,
+        frame_id: u64,
+        reason: SwitcherH264DecodeDeferredReason,
+    },
+    DecodeFailed {
+        iteration: usize,
+        frame_id: u64,
+        failure: SwitcherH264DecodeFailure,
+    },
+    RenderNotCompleted {
+        iteration: usize,
+        frame_id: u64,
+        result: SwitcherWindowRenderResult,
+    },
+}
+
+/// Summary counters for one continuous render loop run.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SwitcherContinuousRenderLoopSummary {
+    pub iterations: usize,
+    pub rendered_frames: usize,
+    pub no_frame_count: usize,
+    pub decode_deferred_count: usize,
+    pub decode_failed_count: usize,
+    pub render_not_completed_count: usize,
+}
+
+/// Result of one bounded continuous render loop run.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SwitcherContinuousRenderLoopResult {
+    pub events: Vec<SwitcherContinuousRenderLoopEvent>,
+    pub summary: SwitcherContinuousRenderLoopSummary,
+    pub stop_reason: SwitcherContinuousRenderLoopStopReason,
+}
+
+/// Minimal continuous single-client decode/render loop.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct SwitcherContinuousRenderLoopBoundary {
+    decoder: SwitcherH264DecodeBoundary,
+    renderer: SwitcherWindowRenderBoundary,
+}
+
+impl SwitcherContinuousRenderLoopBoundary {
+    pub fn run_with_runtimes(
+        &self,
+        input: SwitcherContinuousRenderLoopInput,
+        source: &mut impl SwitcherContinuousFrameSource,
+        decode_runtime: &impl SwitcherH264DecodeRuntimeHook,
+        render_runtime: &impl SwitcherWindowRenderRuntimeHook,
+    ) -> SwitcherContinuousRenderLoopResult {
+        let mut events = Vec::new();
+        let mut summary = SwitcherContinuousRenderLoopSummary::default();
+
+        for iteration in 0..input.policy.max_iterations {
+            if summary.rendered_frames >= input.policy.max_rendered_frames {
+                return SwitcherContinuousRenderLoopResult {
+                    events,
+                    summary,
+                    stop_reason: SwitcherContinuousRenderLoopStopReason::MaxRenderedFramesReached,
+                };
+            }
+
+            summary.iterations += 1;
+            let selected = match source.select_latest(&input.client_id) {
+                SwitcherSingleViewFrameSelectionResult::FrameAvailable(selected) => selected,
+                SwitcherSingleViewFrameSelectionResult::NoFrameAvailable { client_id } => {
+                    summary.no_frame_count += 1;
+                    events.push(SwitcherContinuousRenderLoopEvent::NoFrame {
+                        iteration,
+                        client_id,
+                    });
+                    continue;
+                }
+            };
+
+            let decode = self.decoder.decode_with_runtime(
+                SwitcherH264DecodeInput {
+                    encoded_payload: selected.encoded_payload.clone(),
+                    width: selected.width,
+                    height: selected.height,
+                },
+                decode_runtime,
+            );
+            let decoded = match decode {
+                SwitcherH264DecodeResult::Decoded(decoded) => decoded,
+                SwitcherH264DecodeResult::Deferred { reason } => {
+                    summary.decode_deferred_count += 1;
+                    events.push(SwitcherContinuousRenderLoopEvent::DecodeDeferred {
+                        iteration,
+                        frame_id: selected.frame_id,
+                        reason,
+                    });
+                    continue;
+                }
+                SwitcherH264DecodeResult::Failed(failure) => {
+                    summary.decode_failed_count += 1;
+                    events.push(SwitcherContinuousRenderLoopEvent::DecodeFailed {
+                        iteration,
+                        frame_id: selected.frame_id,
+                        failure,
+                    });
+                    continue;
+                }
+            };
+
+            match self.renderer.render_decoded_frame_with_runtime(
+                &decoded,
+                input.window_title.clone(),
+                input.policy.render_hold_millis,
+                render_runtime,
+            ) {
+                SwitcherWindowRenderResult::Rendered(render) => {
+                    summary.rendered_frames += 1;
+                    events.push(SwitcherContinuousRenderLoopEvent::Rendered {
+                        iteration,
+                        frame_id: selected.frame_id,
+                        render,
+                    });
+                }
+                result => {
+                    summary.render_not_completed_count += 1;
+                    events.push(SwitcherContinuousRenderLoopEvent::RenderNotCompleted {
+                        iteration,
+                        frame_id: selected.frame_id,
+                        result,
+                    });
+                }
+            }
+        }
+
+        let stop_reason = if summary.rendered_frames >= input.policy.max_rendered_frames {
+            SwitcherContinuousRenderLoopStopReason::MaxRenderedFramesReached
+        } else {
+            SwitcherContinuousRenderLoopStopReason::MaxIterationsReached
+        };
+
+        SwitcherContinuousRenderLoopResult {
+            events,
+            summary,
+            stop_reason,
+        }
+    }
+}
+
 #[cfg(target_os = "windows")]
 fn windows_render_once(request: SwitcherWindowRenderRequest) -> SwitcherWindowRenderResult {
     use std::{ptr::null_mut, thread, time::Duration};
@@ -1698,6 +1921,201 @@ mod tests {
     }
 
     #[test]
+    fn continuous_render_loop_renders_available_decoded_frames() {
+        let client_id = ClientId("client-1".to_string());
+        let mut source = ScriptedFrameSource::new(vec![scripted_selected_frame(&client_id, 1)]);
+
+        let result = SwitcherContinuousRenderLoopBoundary::default().run_with_runtimes(
+            SwitcherContinuousRenderLoopInput {
+                client_id: client_id.clone(),
+                window_title: "StreamSync Test".to_string(),
+                policy: SwitcherContinuousRenderLoopPolicy {
+                    max_iterations: 3,
+                    max_rendered_frames: 1,
+                    render_hold_millis: 5,
+                },
+            },
+            &mut source,
+            &SuccessfulLoopDecode,
+            &SuccessfulLoopRender,
+        );
+
+        assert_eq!(result.summary.iterations, 1);
+        assert_eq!(result.summary.rendered_frames, 1);
+        assert_eq!(
+            result.stop_reason,
+            SwitcherContinuousRenderLoopStopReason::MaxRenderedFramesReached
+        );
+        assert!(matches!(
+            result.events.as_slice(),
+            [SwitcherContinuousRenderLoopEvent::Rendered {
+                iteration: 0,
+                frame_id: 1,
+                ..
+            }]
+        ));
+    }
+
+    #[test]
+    fn continuous_render_loop_handles_no_frame_explicitly() {
+        let client_id = ClientId("client-1".to_string());
+        let mut source = ScriptedFrameSource::new(vec![
+            SwitcherSingleViewFrameSelectionResult::NoFrameAvailable {
+                client_id: client_id.clone(),
+            },
+            scripted_selected_frame(&client_id, 2),
+        ]);
+
+        let result = SwitcherContinuousRenderLoopBoundary::default().run_with_runtimes(
+            SwitcherContinuousRenderLoopInput {
+                client_id: client_id.clone(),
+                window_title: "StreamSync Test".to_string(),
+                policy: SwitcherContinuousRenderLoopPolicy {
+                    max_iterations: 2,
+                    max_rendered_frames: 1,
+                    render_hold_millis: 5,
+                },
+            },
+            &mut source,
+            &SuccessfulLoopDecode,
+            &SuccessfulLoopRender,
+        );
+
+        assert_eq!(result.summary.iterations, 2);
+        assert_eq!(result.summary.no_frame_count, 1);
+        assert_eq!(result.summary.rendered_frames, 1);
+        assert!(matches!(
+            result.events.as_slice(),
+            [
+                SwitcherContinuousRenderLoopEvent::NoFrame { iteration: 0, .. },
+                SwitcherContinuousRenderLoopEvent::Rendered {
+                    iteration: 1,
+                    frame_id: 2,
+                    ..
+                }
+            ]
+        ));
+    }
+
+    #[test]
+    fn continuous_render_loop_handles_decode_failure_explicitly() {
+        let client_id = ClientId("client-1".to_string());
+        let mut source = ScriptedFrameSource::new(vec![scripted_selected_frame(&client_id, 3)]);
+
+        let result = SwitcherContinuousRenderLoopBoundary::default().run_with_runtimes(
+            SwitcherContinuousRenderLoopInput {
+                client_id,
+                window_title: "StreamSync Test".to_string(),
+                policy: SwitcherContinuousRenderLoopPolicy {
+                    max_iterations: 1,
+                    max_rendered_frames: 1,
+                    render_hold_millis: 5,
+                },
+            },
+            &mut source,
+            &FailingLoopDecode,
+            &SuccessfulLoopRender,
+        );
+
+        assert_eq!(result.summary.decode_failed_count, 1);
+        assert_eq!(result.summary.rendered_frames, 0);
+        assert!(matches!(
+            result.events.as_slice(),
+            [SwitcherContinuousRenderLoopEvent::DecodeFailed {
+                iteration: 0,
+                frame_id: 3,
+                ..
+            }]
+        ));
+    }
+
+    #[test]
+    fn continuous_render_loop_handles_render_failure_explicitly() {
+        let client_id = ClientId("client-1".to_string());
+        let mut source = ScriptedFrameSource::new(vec![scripted_selected_frame(&client_id, 4)]);
+
+        let result = SwitcherContinuousRenderLoopBoundary::default().run_with_runtimes(
+            SwitcherContinuousRenderLoopInput {
+                client_id,
+                window_title: "StreamSync Test".to_string(),
+                policy: SwitcherContinuousRenderLoopPolicy {
+                    max_iterations: 1,
+                    max_rendered_frames: 1,
+                    render_hold_millis: 5,
+                },
+            },
+            &mut source,
+            &SuccessfulLoopDecode,
+            &FailingLoopRender,
+        );
+
+        assert_eq!(result.summary.render_not_completed_count, 1);
+        assert_eq!(result.summary.rendered_frames, 0);
+        assert!(matches!(
+            result.events.as_slice(),
+            [SwitcherContinuousRenderLoopEvent::RenderNotCompleted {
+                iteration: 0,
+                frame_id: 4,
+                result: SwitcherWindowRenderResult::RenderFailed { .. }
+            }]
+        ));
+    }
+
+    #[test]
+    fn continuous_render_loop_max_iteration_guard_stops_deterministically() {
+        let client_id = ClientId("client-1".to_string());
+        let mut source = ScriptedFrameSource::new(vec![
+            SwitcherSingleViewFrameSelectionResult::NoFrameAvailable {
+                client_id: client_id.clone(),
+            },
+            SwitcherSingleViewFrameSelectionResult::NoFrameAvailable {
+                client_id: client_id.clone(),
+            },
+        ]);
+
+        let result = SwitcherContinuousRenderLoopBoundary::default().run_with_runtimes(
+            SwitcherContinuousRenderLoopInput {
+                client_id,
+                window_title: "StreamSync Test".to_string(),
+                policy: SwitcherContinuousRenderLoopPolicy {
+                    max_iterations: 2,
+                    max_rendered_frames: 1,
+                    render_hold_millis: 5,
+                },
+            },
+            &mut source,
+            &SuccessfulLoopDecode,
+            &SuccessfulLoopRender,
+        );
+
+        assert_eq!(result.summary.iterations, 2);
+        assert_eq!(result.summary.no_frame_count, 2);
+        assert_eq!(
+            result.stop_reason,
+            SwitcherContinuousRenderLoopStopReason::MaxIterationsReached
+        );
+    }
+
+    #[test]
+    fn continuous_render_loop_does_not_break_one_shot_render_boundary() {
+        let frame = SwitcherDecodedFrame {
+            width: 2,
+            height: 1,
+            pixel_format: SwitcherDecodedFramePixelFormat::Bgra8,
+            pixels: vec![0; 8],
+        };
+
+        let result = SwitcherWindowRenderBoundary.render_decoded_frame_with_runtime(
+            &frame,
+            "StreamSync One Shot",
+            10,
+            &SuccessfulLoopRender,
+        );
+
+        assert!(matches!(result, SwitcherWindowRenderResult::Rendered(_)));
+    }
+
+    #[test]
     fn manual_verification_helper_selects_latest_frame_from_caller_owned_queue() {
         let mut state = ServerVideoFrameQueueState::default();
         store_frame(&mut state, "client-1", 10, TimestampMicros(2_400_000));
@@ -2059,5 +2477,96 @@ mod tests {
 
     fn current_test_suffix() -> String {
         format!("{}-{:?}", std::process::id(), std::thread::current().id())
+    }
+
+    struct ScriptedFrameSource {
+        results: Vec<SwitcherSingleViewFrameSelectionResult>,
+    }
+
+    impl ScriptedFrameSource {
+        fn new(results: Vec<SwitcherSingleViewFrameSelectionResult>) -> Self {
+            Self { results }
+        }
+    }
+
+    impl SwitcherContinuousFrameSource for ScriptedFrameSource {
+        fn select_latest(
+            &mut self,
+            client_id: &ClientId,
+        ) -> SwitcherSingleViewFrameSelectionResult {
+            if self.results.is_empty() {
+                return SwitcherSingleViewFrameSelectionResult::NoFrameAvailable {
+                    client_id: client_id.clone(),
+                };
+            }
+            self.results.remove(0)
+        }
+    }
+
+    fn scripted_selected_frame(
+        client_id: &ClientId,
+        frame_id: u64,
+    ) -> SwitcherSingleViewFrameSelectionResult {
+        SwitcherSingleViewFrameSelectionResult::FrameAvailable(
+            SwitcherSingleViewSelectedEncodedFrame {
+                client_id: client_id.clone(),
+                frame_id,
+                capture_timestamp: TimestampMicros(1_000_000 + frame_id),
+                send_timestamp: TimestampMicros(1_000_100 + frame_id),
+                queued_at: TimestampMicros(2_000_000 + frame_id),
+                is_keyframe: true,
+                width: 2,
+                height: 1,
+                fps_nominal: 30,
+                encoded_payload_len: 4,
+                encoded_payload: vec![0, 0, 1, frame_id as u8],
+            },
+        )
+    }
+
+    struct SuccessfulLoopDecode;
+
+    impl SwitcherH264DecodeRuntimeHook for SuccessfulLoopDecode {
+        fn decode_annex_b_h264(&self, input: SwitcherH264DecodeInput) -> SwitcherH264DecodeResult {
+            SwitcherH264DecodeResult::Decoded(SwitcherDecodedFrame {
+                width: input.width,
+                height: input.height,
+                pixel_format: SwitcherDecodedFramePixelFormat::Bgra8,
+                pixels: vec![0; input.width as usize * input.height as usize * 4],
+            })
+        }
+    }
+
+    struct FailingLoopDecode;
+
+    impl SwitcherH264DecodeRuntimeHook for FailingLoopDecode {
+        fn decode_annex_b_h264(&self, _input: SwitcherH264DecodeInput) -> SwitcherH264DecodeResult {
+            SwitcherH264DecodeResult::Failed(SwitcherH264DecodeFailure {
+                message: "fixture decode failed".to_string(),
+            })
+        }
+    }
+
+    struct SuccessfulLoopRender;
+
+    impl SwitcherWindowRenderRuntimeHook for SuccessfulLoopRender {
+        fn render_once(&self, request: SwitcherWindowRenderRequest) -> SwitcherWindowRenderResult {
+            SwitcherWindowRenderResult::Rendered(SwitcherWindowRenderSuccess {
+                width: request.frame.width,
+                height: request.frame.height,
+                title: request.title,
+                hold_millis: request.hold_millis,
+            })
+        }
+    }
+
+    struct FailingLoopRender;
+
+    impl SwitcherWindowRenderRuntimeHook for FailingLoopRender {
+        fn render_once(&self, _request: SwitcherWindowRenderRequest) -> SwitcherWindowRenderResult {
+            SwitcherWindowRenderResult::RenderFailed {
+                message: "fixture render failed".to_string(),
+            }
+        }
     }
 }

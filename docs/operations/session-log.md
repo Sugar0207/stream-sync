@@ -5,6 +5,56 @@
 - Codex
 
 ### Work
+- Added the smallest bounded continuous switcher decode/render loop boundary.
+- Added `SwitcherContinuousRenderLoopPolicy`, `SwitcherContinuousRenderLoopInput`, `SwitcherContinuousFrameSource`, `SwitcherQueueLatestFrameSource`, loop events, loop summary, stop reasons, and `SwitcherContinuousRenderLoopBoundary`.
+- The loop repeatedly performs latest-frame selection, H.264 decode through a caller-owned decode hook, and decoded-frame render through a caller-owned render hook.
+- The loop records rendered frames, no-frame iterations, decode deferred/failed states, and render-not-completed states explicitly.
+- The loop stops deterministically by `max_iterations` or `max_rendered_frames`.
+- Added deterministic tests using scripted frame sources and mock decode/render hooks, without requiring a real window backend.
+- Preserved one-shot decode, BMP dump, and one-shot render paths.
+
+### Changed Files
+- `apps/switcher/src/lib.rs`
+- `docs/architecture/system-design.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### Decisions
+- Keep the continuous loop single-client and latest-frame based only.
+- Keep queue/source, decode, and render responsibilities separate through caller-owned traits/hooks.
+- Do not add sleep/cadence timing, socket ownership, queue mutation, targetTime, jitter-buffer selection, 2-view/4-view layout, or OBS-specific behavior in this step.
+
+### Unresolved
+- targetTime / jitter-buffer frame selection
+- 2-view / 4-view sync and layout
+- live queue/runtime ownership beyond caller-owned source hooks
+- OBS Window Capture verification
+- production decode/render configuration and structured logging
+
+### Next
+- Define targetTime / jitter-buffer selection boundary.
+- Define live receive/queue ownership around the bounded loop.
+- Add production decode/render configuration and structured failure logging.
+
+### TODO Update
+- Marked switcher single-client bounded continuous decode/render loop boundary complete.
+- Updated Current Focus from continuous rendering to targetTime / jitter-buffer selection.
+- Kept OBS integration and multi-view sync deferred.
+
+### Validation
+- `cargo fmt`
+- `cargo test -p stream-sync-switcher`
+- `cargo fmt --check`
+- `cargo check --workspace`
+- `git diff --check`
+
+---
+
+## 2026-04-25
+### Type
+- Codex
+
+### Work
 - Added the smallest switcher window rendering boundary for one decoded BGRA frame.
 - Added `SwitcherDecodedFrameRenderInput`, render input validation errors, `SwitcherWindowRenderBoundary`, render runtime hook types, and explicit render result states.
 - Added `SwitcherUnavailableWindowRenderRuntimeHook` for explicit backend-unavailable behavior.
