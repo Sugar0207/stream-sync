@@ -7536,22 +7536,39 @@ Current decode/display substitute behavior:
 - The manual verification wrapper and fixture CLI still do not use live
   two-client networking, mutate queues, drop late frames, define a 2-view
   layout, schedule continuously, perform 4-view orchestration, or integrate OBS.
-- Future 4-view sync should build on the same shared-targetTime pattern after
-  2-view layout/composition is isolated.
+- `SwitcherTwoViewCompositionBoundary` is the first pure 2-view layout boundary.
+  It consumes decoded/renderable left and right side inputs, not queues or H.264
+  payloads, and composes BGRA frames into one side-by-side BGRA canvas.
+- `SwitcherTwoViewCompositionInput::from_decode_render_result` is the adapter
+  from the existing 2-view decode/render result to the composition boundary.
+  Rendered sides carry their decoded BGRA frame forward; skipped sides remain
+  explicit placeholder regions.
+- The 2-view composition result is explicit: both composed, left only, right
+  only, empty placeholder, or invalid dimensions. The composed frame preserves
+  per-side selected-frame metadata when available so a future render step can
+  trace the canvas back to targetTime-selected inputs.
+- The 2-view composition boundary does not select targetTime frames, decode
+  H.264, render a window, read or mutate queues, schedule a loop, perform
+  4-view orchestration, or integrate OBS.
+- Future 4-view sync should build on the same shared-targetTime pattern and
+  extend the isolated layout/composition responsibility after live 2-view
+  integration is stable.
 
 This decode PoC does not add a continuous loop, targetTime selection,
 multi-view sync, OBS integration, decode acceleration, or packet fragmentation.
-The one-shot renderer does not add continuous repaint, frame scheduling, 2-view
-or 4-view layout, or OBS-specific control.
+The one-shot renderer does not add continuous repaint, frame scheduling, 4-view
+layout, or OBS-specific control.
 The continuous loop still does not add targetTime / jitter-buffer selection,
 2-view / 4-view layout, OBS-specific control, or production scheduling; those
 remain separate future boundaries.
 The targetTime selectors still do not decode, render, own queues, drop late
 frames, perform 4-view orchestration, or integrate OBS. The 2-view decode/render
 connection does decode and render selected sides, but remains separate from
-selection, queue ownership, layout/composition, continuous scheduling, 4-view,
+selection, queue ownership, 2-view composition, continuous scheduling, 4-view,
 and OBS. The 2-view fixture/manual verification wrapper only composes existing
 boundaries once; it is not live networking or continuous display scheduling.
+The 2-view composition boundary produces one canvas, but still remains separate
+from live networking, queue mutation, continuous rendering, 4-view sync, and OBS.
 
 ## Client Real Capture / H.264 Encode Boundary
 

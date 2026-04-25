@@ -1034,6 +1034,7 @@ pub struct SwitcherTwoViewDecodeRenderInput {
 pub struct SwitcherTwoViewRenderedSide {
     pub side: SwitcherTwoViewSide,
     pub selected: SwitcherJitterBufferSelectedFrame,
+    pub decoded: SwitcherDecodedFrame,
     pub render: SwitcherWindowRenderSuccess,
 }
 
@@ -1233,6 +1234,7 @@ impl SwitcherTwoViewDecodeRenderBoundary {
                 SwitcherTwoViewSideDecodeRenderOutcome::Rendered(SwitcherTwoViewRenderedSide {
                     side,
                     selected,
+                    decoded,
                     render,
                 })
             }
@@ -1304,6 +1306,422 @@ fn split_two_view_selection(
             left,
             right,
         } => (shared_target_time, left, right),
+    }
+}
+
+/// Side state consumed by the first 2-view layout/composition boundary.
+///
+/// This accepts decoded frames only. Selection, H.264 decode, and window
+/// rendering remain upstream responsibilities.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SwitcherTwoViewLayoutSideInput {
+    Decoded {
+        side: SwitcherTwoViewSide,
+        selected: Option<SwitcherJitterBufferSelectedFrame>,
+        frame: SwitcherDecodedFrame,
+    },
+    Skipped {
+        side: SwitcherTwoViewSide,
+        reason: SwitcherTwoViewManualDecodeRenderStatus,
+    },
+}
+
+impl SwitcherTwoViewLayoutSideInput {
+    pub fn from_rendered_side(rendered: SwitcherTwoViewRenderedSide) -> Self {
+        Self::Decoded {
+            side: rendered.side,
+            selected: Some(rendered.selected),
+            frame: rendered.decoded,
+        }
+    }
+
+    pub fn skipped(
+        side: SwitcherTwoViewSide,
+        reason: SwitcherTwoViewManualDecodeRenderStatus,
+    ) -> Self {
+        Self::Skipped { side, reason }
+    }
+}
+
+/// MVP 2-view layout policy.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct SwitcherTwoViewLayoutPolicy {
+    pub placeholder_bgra: [u8; 4],
+}
+
+impl Default for SwitcherTwoViewLayoutPolicy {
+    fn default() -> Self {
+        Self {
+            placeholder_bgra: [16, 16, 16, 255],
+        }
+    }
+}
+
+/// Input for composing two decoded/renderable sides into one BGRA canvas.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SwitcherTwoViewCompositionInput {
+    pub left: SwitcherTwoViewLayoutSideInput,
+    pub right: SwitcherTwoViewLayoutSideInput,
+    pub policy: SwitcherTwoViewLayoutPolicy,
+}
+
+impl SwitcherTwoViewCompositionInput {
+    pub fn from_decode_render_result(
+        result: SwitcherTwoViewDecodeRenderResult,
+        policy: SwitcherTwoViewLayoutPolicy,
+    ) -> Self {
+        match result {
+            SwitcherTwoViewDecodeRenderResult::BothRendered { left, right, .. } => Self {
+                left: SwitcherTwoViewLayoutSideInput::from_rendered_side(left),
+                right: SwitcherTwoViewLayoutSideInput::from_rendered_side(right),
+                policy,
+            },
+            SwitcherTwoViewDecodeRenderResult::LeftRenderedRightSkipped { left, right, .. } => {
+                Self {
+                    left: SwitcherTwoViewLayoutSideInput::from_rendered_side(left),
+                    right: SwitcherTwoViewLayoutSideInput::skipped(
+                        SwitcherTwoViewSide::Right,
+                        two_view_skipped_status(&right),
+                    ),
+                    policy,
+                }
+            }
+            SwitcherTwoViewDecodeRenderResult::RightRenderedLeftSkipped { left, right, .. } => {
+                Self {
+                    left: SwitcherTwoViewLayoutSideInput::skipped(
+                        SwitcherTwoViewSide::Left,
+                        two_view_skipped_status(&left),
+                    ),
+                    right: SwitcherTwoViewLayoutSideInput::from_rendered_side(right),
+                    policy,
+                }
+            }
+            SwitcherTwoViewDecodeRenderResult::BothSkipped { left, right, .. } => Self {
+                left: SwitcherTwoViewLayoutSideInput::skipped(
+                    SwitcherTwoViewSide::Left,
+                    two_view_skipped_status(&left),
+                ),
+                right: SwitcherTwoViewLayoutSideInput::skipped(
+                    SwitcherTwoViewSide::Right,
+                    two_view_skipped_status(&right),
+                ),
+                policy,
+            },
+        }
+    }
+}
+
+/// Metadata preserved for a composed side.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SwitcherTwoViewComposedSideMetadata {
+    pub side: SwitcherTwoViewSide,
+    pub selected: Option<SwitcherJitterBufferSelectedFrame>,
+    pub x: u32,
+    pub y: u32,
+    pub width: u32,
+    pub height: u32,
+}
+
+/// One composed 2-view BGRA canvas.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SwitcherTwoViewComposedFrame {
+    pub width: u32,
+    pub height: u32,
+    pub pixel_format: SwitcherDecodedFramePixelFormat,
+    pub pixels: Vec<u8>,
+    pub left: Option<SwitcherTwoViewComposedSideMetadata>,
+    pub right: Option<SwitcherTwoViewComposedSideMetadata>,
+}
+
+/// Invalid input details for 2-view composition.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SwitcherTwoViewCompositionInvalidReason {
+    WrongSide {
+        expected: SwitcherTwoViewSide,
+        actual: SwitcherTwoViewSide,
+    },
+    UnsupportedPixelFormat {
+        side: SwitcherTwoViewSide,
+        actual: SwitcherDecodedFramePixelFormat,
+    },
+    InvalidDimensions {
+        side: SwitcherTwoViewSide,
+    },
+    InvalidBufferLength {
+        side: SwitcherTwoViewSide,
+        expected: usize,
+        actual: usize,
+    },
+    CanvasTooLarge,
+}
+
+/// Result of composing two decoded sides.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SwitcherTwoViewCompositionResult {
+    BothComposed {
+        frame: SwitcherTwoViewComposedFrame,
+    },
+    LeftOnly {
+        frame: SwitcherTwoViewComposedFrame,
+        right_placeholder_reason: SwitcherTwoViewManualDecodeRenderStatus,
+    },
+    RightOnly {
+        frame: SwitcherTwoViewComposedFrame,
+        left_placeholder_reason: SwitcherTwoViewManualDecodeRenderStatus,
+    },
+    EmptyPlaceholder {
+        left_reason: SwitcherTwoViewManualDecodeRenderStatus,
+        right_reason: SwitcherTwoViewManualDecodeRenderStatus,
+    },
+    InvalidDimensions {
+        reason: SwitcherTwoViewCompositionInvalidReason,
+    },
+}
+
+/// Pure 2-view side-by-side BGRA composition boundary.
+///
+/// This does not select, decode, render to a window, mutate queues, schedule a
+/// loop, compose 4-view, or integrate OBS.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct SwitcherTwoViewCompositionBoundary;
+
+impl SwitcherTwoViewCompositionBoundary {
+    pub fn compose_side_by_side(
+        &self,
+        input: SwitcherTwoViewCompositionInput,
+    ) -> SwitcherTwoViewCompositionResult {
+        let left_side = match validate_two_view_layout_side(SwitcherTwoViewSide::Left, input.left) {
+            Ok(side) => side,
+            Err(reason) => return SwitcherTwoViewCompositionResult::InvalidDimensions { reason },
+        };
+        let right_side =
+            match validate_two_view_layout_side(SwitcherTwoViewSide::Right, input.right) {
+                Ok(side) => side,
+                Err(reason) => {
+                    return SwitcherTwoViewCompositionResult::InvalidDimensions { reason };
+                }
+            };
+
+        match (left_side, right_side) {
+            (
+                ValidatedTwoViewLayoutSide::Decoded(left),
+                ValidatedTwoViewLayoutSide::Decoded(right),
+            ) => match compose_two_view_canvas(Some(left), Some(right), input.policy) {
+                Ok(frame) => SwitcherTwoViewCompositionResult::BothComposed { frame },
+                Err(reason) => SwitcherTwoViewCompositionResult::InvalidDimensions { reason },
+            },
+            (
+                ValidatedTwoViewLayoutSide::Decoded(left),
+                ValidatedTwoViewLayoutSide::Skipped(right_reason),
+            ) => match compose_two_view_canvas(Some(left), None, input.policy) {
+                Ok(frame) => SwitcherTwoViewCompositionResult::LeftOnly {
+                    frame,
+                    right_placeholder_reason: right_reason,
+                },
+                Err(reason) => SwitcherTwoViewCompositionResult::InvalidDimensions { reason },
+            },
+            (
+                ValidatedTwoViewLayoutSide::Skipped(left_reason),
+                ValidatedTwoViewLayoutSide::Decoded(right),
+            ) => match compose_two_view_canvas(None, Some(right), input.policy) {
+                Ok(frame) => SwitcherTwoViewCompositionResult::RightOnly {
+                    frame,
+                    left_placeholder_reason: left_reason,
+                },
+                Err(reason) => SwitcherTwoViewCompositionResult::InvalidDimensions { reason },
+            },
+            (
+                ValidatedTwoViewLayoutSide::Skipped(left_reason),
+                ValidatedTwoViewLayoutSide::Skipped(right_reason),
+            ) => SwitcherTwoViewCompositionResult::EmptyPlaceholder {
+                left_reason,
+                right_reason,
+            },
+        }
+    }
+}
+
+struct DecodedTwoViewLayoutSide {
+    selected: Option<SwitcherJitterBufferSelectedFrame>,
+    frame: SwitcherDecodedFrame,
+}
+
+enum ValidatedTwoViewLayoutSide {
+    Decoded(DecodedTwoViewLayoutSide),
+    Skipped(SwitcherTwoViewManualDecodeRenderStatus),
+}
+
+fn validate_two_view_layout_side(
+    expected_side: SwitcherTwoViewSide,
+    input: SwitcherTwoViewLayoutSideInput,
+) -> Result<ValidatedTwoViewLayoutSide, SwitcherTwoViewCompositionInvalidReason> {
+    match input {
+        SwitcherTwoViewLayoutSideInput::Decoded {
+            side,
+            selected,
+            frame,
+        } => {
+            if side != expected_side {
+                return Err(SwitcherTwoViewCompositionInvalidReason::WrongSide {
+                    expected: expected_side,
+                    actual: side,
+                });
+            }
+            validate_two_view_decoded_frame(side, &frame)?;
+            Ok(ValidatedTwoViewLayoutSide::Decoded(
+                DecodedTwoViewLayoutSide { selected, frame },
+            ))
+        }
+        SwitcherTwoViewLayoutSideInput::Skipped { side, reason } => {
+            if side != expected_side {
+                return Err(SwitcherTwoViewCompositionInvalidReason::WrongSide {
+                    expected: expected_side,
+                    actual: side,
+                });
+            }
+            Ok(ValidatedTwoViewLayoutSide::Skipped(reason))
+        }
+    }
+}
+
+fn validate_two_view_decoded_frame(
+    side: SwitcherTwoViewSide,
+    frame: &SwitcherDecodedFrame,
+) -> Result<(), SwitcherTwoViewCompositionInvalidReason> {
+    if frame.pixel_format != SwitcherDecodedFramePixelFormat::Bgra8 {
+        return Err(
+            SwitcherTwoViewCompositionInvalidReason::UnsupportedPixelFormat {
+                side,
+                actual: frame.pixel_format,
+            },
+        );
+    }
+    if frame.width == 0 || frame.height == 0 {
+        return Err(SwitcherTwoViewCompositionInvalidReason::InvalidDimensions { side });
+    }
+    let Some(expected) = frame
+        .width
+        .checked_mul(frame.height)
+        .and_then(|pixels| pixels.checked_mul(4))
+        .map(|len| len as usize)
+    else {
+        return Err(SwitcherTwoViewCompositionInvalidReason::CanvasTooLarge);
+    };
+    if frame.pixels.len() != expected {
+        return Err(
+            SwitcherTwoViewCompositionInvalidReason::InvalidBufferLength {
+                side,
+                expected,
+                actual: frame.pixels.len(),
+            },
+        );
+    }
+    Ok(())
+}
+
+fn compose_two_view_canvas(
+    left: Option<DecodedTwoViewLayoutSide>,
+    right: Option<DecodedTwoViewLayoutSide>,
+    policy: SwitcherTwoViewLayoutPolicy,
+) -> Result<SwitcherTwoViewComposedFrame, SwitcherTwoViewCompositionInvalidReason> {
+    let Some((slot_width, slot_height)) = two_view_slot_size(left.as_ref(), right.as_ref()) else {
+        return Ok(SwitcherTwoViewComposedFrame {
+            width: 0,
+            height: 0,
+            pixel_format: SwitcherDecodedFramePixelFormat::Bgra8,
+            pixels: Vec::new(),
+            left: None,
+            right: None,
+        });
+    };
+    let canvas_width = slot_width
+        .checked_mul(2)
+        .ok_or(SwitcherTwoViewCompositionInvalidReason::CanvasTooLarge)?;
+    let canvas_len = canvas_width
+        .checked_mul(slot_height)
+        .and_then(|pixels| pixels.checked_mul(4))
+        .map(|len| len as usize)
+        .ok_or(SwitcherTwoViewCompositionInvalidReason::CanvasTooLarge)?;
+    let mut pixels = vec![0; canvas_len];
+    fill_bgra(&mut pixels, policy.placeholder_bgra);
+
+    let left_metadata = match left {
+        Some(side) => {
+            copy_bgra_frame_into_canvas(&mut pixels, canvas_width, &side.frame, 0, 0);
+            Some(SwitcherTwoViewComposedSideMetadata {
+                side: SwitcherTwoViewSide::Left,
+                selected: side.selected,
+                x: 0,
+                y: 0,
+                width: side.frame.width,
+                height: side.frame.height,
+            })
+        }
+        None => None,
+    };
+    let right_metadata = match right {
+        Some(side) => {
+            copy_bgra_frame_into_canvas(&mut pixels, canvas_width, &side.frame, slot_width, 0);
+            Some(SwitcherTwoViewComposedSideMetadata {
+                side: SwitcherTwoViewSide::Right,
+                selected: side.selected,
+                x: slot_width,
+                y: 0,
+                width: side.frame.width,
+                height: side.frame.height,
+            })
+        }
+        None => None,
+    };
+
+    Ok(SwitcherTwoViewComposedFrame {
+        width: canvas_width,
+        height: slot_height,
+        pixel_format: SwitcherDecodedFramePixelFormat::Bgra8,
+        pixels,
+        left: left_metadata,
+        right: right_metadata,
+    })
+}
+
+fn two_view_slot_size(
+    left: Option<&DecodedTwoViewLayoutSide>,
+    right: Option<&DecodedTwoViewLayoutSide>,
+) -> Option<(u32, u32)> {
+    let width = left
+        .map(|side| side.frame.width)
+        .into_iter()
+        .chain(right.map(|side| side.frame.width))
+        .max()?;
+    let height = left
+        .map(|side| side.frame.height)
+        .into_iter()
+        .chain(right.map(|side| side.frame.height))
+        .max()?;
+    Some((width, height))
+}
+
+fn fill_bgra(pixels: &mut [u8], color: [u8; 4]) {
+    for pixel in pixels.chunks_exact_mut(4) {
+        pixel.copy_from_slice(&color);
+    }
+}
+
+fn copy_bgra_frame_into_canvas(
+    canvas: &mut [u8],
+    canvas_width: u32,
+    frame: &SwitcherDecodedFrame,
+    dst_x: u32,
+    dst_y: u32,
+) {
+    let src_stride = frame.width as usize * 4;
+    let canvas_stride = canvas_width as usize * 4;
+    for row in 0..frame.height as usize {
+        let src_start = row * src_stride;
+        let dst_start = (dst_y as usize + row) * canvas_stride + dst_x as usize * 4;
+        let dst_end = dst_start + src_stride;
+        canvas[dst_start..dst_end]
+            .copy_from_slice(&frame.pixels[src_start..src_start + src_stride]);
     }
 }
 
@@ -4466,6 +4884,227 @@ mod tests {
     impl SwitcherWindowRenderRuntimeHook for PanicRender {
         fn render_once(&self, _request: SwitcherWindowRenderRequest) -> SwitcherWindowRenderResult {
             panic!("render should not be called for unavailable 2-view selection");
+        }
+    }
+
+    #[test]
+    fn two_view_composition_composes_both_sides_side_by_side() {
+        let result = SwitcherTwoViewCompositionBoundary.compose_side_by_side(
+            SwitcherTwoViewCompositionInput {
+                left: SwitcherTwoViewLayoutSideInput::Decoded {
+                    side: SwitcherTwoViewSide::Left,
+                    selected: None,
+                    frame: decoded_bgra_frame(2, 1, [1, 2, 3, 255]),
+                },
+                right: SwitcherTwoViewLayoutSideInput::Decoded {
+                    side: SwitcherTwoViewSide::Right,
+                    selected: None,
+                    frame: decoded_bgra_frame(2, 1, [4, 5, 6, 255]),
+                },
+                policy: SwitcherTwoViewLayoutPolicy::default(),
+            },
+        );
+
+        let SwitcherTwoViewCompositionResult::BothComposed { frame } = result else {
+            panic!("expected both-composed result");
+        };
+        assert_eq!(frame.width, 4);
+        assert_eq!(frame.height, 1);
+        assert_eq!(frame.left.as_ref().map(|left| left.x), Some(0));
+        assert_eq!(frame.right.as_ref().map(|right| right.x), Some(2));
+        assert_eq!(&frame.pixels[0..8], &[1, 2, 3, 255, 1, 2, 3, 255]);
+        assert_eq!(&frame.pixels[8..16], &[4, 5, 6, 255, 4, 5, 6, 255]);
+    }
+
+    #[test]
+    fn two_view_composition_left_only_keeps_right_placeholder_explicit() {
+        let result = SwitcherTwoViewCompositionBoundary.compose_side_by_side(
+            SwitcherTwoViewCompositionInput {
+                left: SwitcherTwoViewLayoutSideInput::Decoded {
+                    side: SwitcherTwoViewSide::Left,
+                    selected: None,
+                    frame: decoded_bgra_frame(1, 1, [8, 9, 10, 255]),
+                },
+                right: SwitcherTwoViewLayoutSideInput::skipped(
+                    SwitcherTwoViewSide::Right,
+                    SwitcherTwoViewManualDecodeRenderStatus::SkippedSelectionUnavailable,
+                ),
+                policy: SwitcherTwoViewLayoutPolicy {
+                    placeholder_bgra: [20, 21, 22, 255],
+                },
+            },
+        );
+
+        let SwitcherTwoViewCompositionResult::LeftOnly {
+            frame,
+            right_placeholder_reason,
+        } = result
+        else {
+            panic!("expected left-only result");
+        };
+        assert_eq!(
+            right_placeholder_reason,
+            SwitcherTwoViewManualDecodeRenderStatus::SkippedSelectionUnavailable
+        );
+        assert_eq!(frame.width, 2);
+        assert_eq!(frame.height, 1);
+        assert_eq!(&frame.pixels[0..4], &[8, 9, 10, 255]);
+        assert_eq!(&frame.pixels[4..8], &[20, 21, 22, 255]);
+        assert!(frame.right.is_none());
+    }
+
+    #[test]
+    fn two_view_composition_right_only_keeps_left_placeholder_explicit() {
+        let result = SwitcherTwoViewCompositionBoundary.compose_side_by_side(
+            SwitcherTwoViewCompositionInput {
+                left: SwitcherTwoViewLayoutSideInput::skipped(
+                    SwitcherTwoViewSide::Left,
+                    SwitcherTwoViewManualDecodeRenderStatus::DecodeFailed,
+                ),
+                right: SwitcherTwoViewLayoutSideInput::Decoded {
+                    side: SwitcherTwoViewSide::Right,
+                    selected: None,
+                    frame: decoded_bgra_frame(1, 1, [30, 31, 32, 255]),
+                },
+                policy: SwitcherTwoViewLayoutPolicy {
+                    placeholder_bgra: [40, 41, 42, 255],
+                },
+            },
+        );
+
+        let SwitcherTwoViewCompositionResult::RightOnly {
+            frame,
+            left_placeholder_reason,
+        } = result
+        else {
+            panic!("expected right-only result");
+        };
+        assert_eq!(
+            left_placeholder_reason,
+            SwitcherTwoViewManualDecodeRenderStatus::DecodeFailed
+        );
+        assert_eq!(frame.width, 2);
+        assert_eq!(frame.height, 1);
+        assert_eq!(&frame.pixels[0..4], &[40, 41, 42, 255]);
+        assert_eq!(&frame.pixels[4..8], &[30, 31, 32, 255]);
+        assert!(frame.left.is_none());
+    }
+
+    #[test]
+    fn two_view_composition_both_missing_remains_empty_placeholder() {
+        let result = SwitcherTwoViewCompositionBoundary.compose_side_by_side(
+            SwitcherTwoViewCompositionInput {
+                left: SwitcherTwoViewLayoutSideInput::skipped(
+                    SwitcherTwoViewSide::Left,
+                    SwitcherTwoViewManualDecodeRenderStatus::SkippedSelectionUnavailable,
+                ),
+                right: SwitcherTwoViewLayoutSideInput::skipped(
+                    SwitcherTwoViewSide::Right,
+                    SwitcherTwoViewManualDecodeRenderStatus::RenderDeferred,
+                ),
+                policy: SwitcherTwoViewLayoutPolicy::default(),
+            },
+        );
+
+        assert_eq!(
+            result,
+            SwitcherTwoViewCompositionResult::EmptyPlaceholder {
+                left_reason: SwitcherTwoViewManualDecodeRenderStatus::SkippedSelectionUnavailable,
+                right_reason: SwitcherTwoViewManualDecodeRenderStatus::RenderDeferred,
+            }
+        );
+    }
+
+    #[test]
+    fn two_view_composition_rejects_invalid_dimensions() {
+        let result = SwitcherTwoViewCompositionBoundary.compose_side_by_side(
+            SwitcherTwoViewCompositionInput {
+                left: SwitcherTwoViewLayoutSideInput::Decoded {
+                    side: SwitcherTwoViewSide::Left,
+                    selected: None,
+                    frame: SwitcherDecodedFrame {
+                        width: 0,
+                        height: 1,
+                        pixel_format: SwitcherDecodedFramePixelFormat::Bgra8,
+                        pixels: Vec::new(),
+                    },
+                },
+                right: SwitcherTwoViewLayoutSideInput::skipped(
+                    SwitcherTwoViewSide::Right,
+                    SwitcherTwoViewManualDecodeRenderStatus::SkippedSelectionUnavailable,
+                ),
+                policy: SwitcherTwoViewLayoutPolicy::default(),
+            },
+        );
+
+        assert_eq!(
+            result,
+            SwitcherTwoViewCompositionResult::InvalidDimensions {
+                reason: SwitcherTwoViewCompositionInvalidReason::InvalidDimensions {
+                    side: SwitcherTwoViewSide::Left,
+                }
+            }
+        );
+    }
+
+    #[test]
+    fn two_view_composition_preserves_selected_metadata() {
+        let (_state, selection) = selected_two_view_fixture(vec![1], vec![2]);
+        let SwitcherTwoViewTargetTimeSelectionResult::BothSelected { left, right, .. } = selection
+        else {
+            panic!("expected both-selected fixture");
+        };
+        let result = SwitcherTwoViewCompositionBoundary.compose_side_by_side(
+            SwitcherTwoViewCompositionInput {
+                left: SwitcherTwoViewLayoutSideInput::Decoded {
+                    side: SwitcherTwoViewSide::Left,
+                    selected: Some(left.clone()),
+                    frame: decoded_bgra_frame(left.frame.width, left.frame.height, [1, 1, 1, 255]),
+                },
+                right: SwitcherTwoViewLayoutSideInput::Decoded {
+                    side: SwitcherTwoViewSide::Right,
+                    selected: Some(right.clone()),
+                    frame: decoded_bgra_frame(
+                        right.frame.width,
+                        right.frame.height,
+                        [2, 2, 2, 255],
+                    ),
+                },
+                policy: SwitcherTwoViewLayoutPolicy::default(),
+            },
+        );
+
+        let SwitcherTwoViewCompositionResult::BothComposed { frame } = result else {
+            panic!("expected both-composed result");
+        };
+        assert_eq!(
+            frame
+                .left
+                .as_ref()
+                .and_then(|metadata| metadata.selected.as_ref())
+                .map(|selected| selected.frame.frame_id),
+            Some(left.frame.frame_id)
+        );
+        assert_eq!(
+            frame
+                .right
+                .as_ref()
+                .and_then(|metadata| metadata.selected.as_ref())
+                .map(|selected| selected.frame.frame_id),
+            Some(right.frame.frame_id)
+        );
+    }
+
+    fn decoded_bgra_frame(width: u32, height: u32, pixel: [u8; 4]) -> SwitcherDecodedFrame {
+        let mut pixels = Vec::new();
+        for _ in 0..width as usize * height as usize {
+            pixels.extend_from_slice(&pixel);
+        }
+        SwitcherDecodedFrame {
+            width,
+            height,
+            pixel_format: SwitcherDecodedFramePixelFormat::Bgra8,
+            pixels,
         }
     }
 

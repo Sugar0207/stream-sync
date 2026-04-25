@@ -5,6 +5,56 @@
 - Codex
 
 ### Work
+- Added the smallest 2-view layout/composition boundary for switcher.
+- Added `SwitcherTwoViewLayoutSideInput`, `SwitcherTwoViewLayoutPolicy`, `SwitcherTwoViewCompositionInput`, `SwitcherTwoViewComposedFrame`, `SwitcherTwoViewCompositionResult`, and `SwitcherTwoViewCompositionBoundary`.
+- The boundary composes decoded BGRA left/right sides into one side-by-side BGRA canvas and keeps left-only, right-only, empty placeholder, and invalid-dimensions states explicit.
+- Added `SwitcherTwoViewCompositionInput::from_decode_render_result` so targetTime-selected decode/render output can feed composition without coupling composition to selection or H.264 decode.
+- Extended `SwitcherTwoViewRenderedSide` to carry the decoded BGRA frame forward for downstream layout/composition.
+- Added deterministic tests for both-side composition, left-only, right-only, both-missing placeholder, invalid dimensions, and selected-frame metadata preservation.
+- Kept live socket receive integration, queue mutation / late drop, continuous scheduling, 4-view orchestration, window rendering of the composed canvas, and OBS integration out of scope.
+
+### Changed Files
+- `apps/switcher/src/lib.rs`
+- `docs/architecture/system-design.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### Decisions
+- Use side-by-side horizontal layout for the first 2-view canvas.
+- Partial composition produces a real canvas with an explicit placeholder-colored region for the missing side.
+- Both-missing remains an explicit empty placeholder result instead of creating a fake frame.
+- Composition consumes decoded BGRA frames only; it does not select frames, decode H.264, render windows, or own queues.
+
+### Unresolved
+- live 2-client receive/socket integration
+- composed-canvas window render path
+- queue mutation / actual late-frame drop policy
+- 4-view orchestration and 2x2 layout
+- OBS Window Capture verification
+- production timing/decode/render policy and structured logging
+
+### Next
+- Add live 2-client queue/runtime integration after fixture and layout boundaries are stable.
+- Add a render path for composed 2-view canvas.
+- Extend composition to 4-view after 2-view live path is isolated.
+
+### TODO Update
+- Marked 2-view layout/composition complete.
+- Updated the next switcher sync task to live 2-client socket receive integration.
+- Kept continuous scheduling, queue mutation, 4-view, and OBS deferred.
+
+### Validation
+- `cargo fmt`
+- `cargo fmt --check`
+- `cargo test -p stream-sync-switcher`
+
+---
+
+## 2026-04-26
+### Type
+- Codex
+
+### Work
 - Added the smallest 2-view sync runtime/manual verification path.
 - Added `SwitcherTwoViewManualVerificationBoundary`, input/result/summary types, and compact per-side selection/decode-render status enums.
 - The boundary reads caller-owned `ServerVideoFrameQueueState`, runs `SwitcherTwoViewTargetTimeSelectionBoundary`, then runs `SwitcherTwoViewDecodeRenderBoundary` with caller-owned decode/render hooks.
