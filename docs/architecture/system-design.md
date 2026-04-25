@@ -7438,6 +7438,14 @@ Current implementation:
 - `ClientCaptureTargetDescriptor` can represent future display and window
   targets and convert them into `ClientCaptureTargetConfig` for later capture
   session creation.
+- `ClientCaptureSessionConfigBoundary` converts a selected
+  `ClientCaptureTargetDescriptor` or `ClientCaptureTargetConfig` into a
+  metadata-only `ClientCaptureSessionConfig` for a future
+  WindowsGraphicsCapture session runtime.
+- Capture session config preparation can return prepared,
+  backend-not-configured, unsupported-target-kind, backend-unsupported, or
+  missing-target-details states explicitly. It does not require a Windows
+  runtime and does not open a session.
 - `ClientCaptureSourceBoundary::probe_backend` reports:
   - capture backend not configured,
   - backend unsupported on non-Windows targets,
@@ -7475,6 +7483,12 @@ Responsibility split:
   - Uses an injectable runtime hook for future Windows API-backed enumeration.
   - Does not create capture sessions, acquire frames, encode video, construct
     protocol messages, or send UDP packets.
+- capture session config
+  - Converts the selected descriptor or target config into future
+    WindowsGraphicsCapture session metadata.
+  - Keeps missing display/window details explicit before runtime creation.
+  - Does not create sessions, request permissions, acquire frames, encode
+    video, construct protocol messages, or send UDP packets.
 - H.264 encoder
   - Future owner of converting raw captured frames into encoded H.264 payloads.
   - Does not capture pixels, choose frame ids, or send packets.
@@ -7487,6 +7501,7 @@ Responsibility split:
   - Does not know whether payload bytes came from placeholder or future real
     capture/encode.
 
-Real capture backend selection, real H.264 encoder integration, encoder
-configuration, packet fragmentation, decode, switcher rendering, 4-view sync,
-and OBS integration remain future work.
+Windows API-backed target enumeration, capture session creation, frame
+acquisition, real H.264 encoder integration, encoder configuration, packet
+fragmentation, decode, switcher rendering, 4-view sync, and OBS integration
+remain future work.

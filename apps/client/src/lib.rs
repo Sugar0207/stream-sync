@@ -1402,6 +1402,175 @@ impl ClientCaptureTargetDescriptor {
     }
 }
 
+/// Future Windows Graphics Capture session target metadata.
+///
+/// This is a prepared configuration only. It does not open a capture session,
+/// request permission, or acquire frames.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ClientWindowsGraphicsCaptureSessionTargetConfig {
+    PrimaryDisplay,
+    Display { stable_id: String },
+    Window { title: String },
+}
+
+/// Future capture session configuration prepared from a selected target.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClientCaptureSessionConfig {
+    pub backend: ClientCaptureBackendKind,
+    pub target: ClientWindowsGraphicsCaptureSessionTargetConfig,
+}
+
+/// Explicit reason why a future capture session config was not prepared.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ClientCaptureSessionConfigPrepareFailure {
+    BackendNotConfigured,
+    BackendUnsupported,
+    UnsupportedTargetKind,
+    MissingTargetDetails,
+}
+
+/// Result from preparing metadata for a future capture session.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ClientCaptureSessionConfigPrepareResult {
+    Prepared {
+        config: ClientCaptureSessionConfig,
+    },
+    NotPrepared {
+        backend: Option<ClientCaptureBackendKind>,
+        reason: ClientCaptureSessionConfigPrepareFailure,
+    },
+}
+
+/// Boundary for preparing future capture session metadata.
+///
+/// The boundary converts a selected discovery descriptor or target config into
+/// the data a later Windows Graphics Capture session runtime will need. It
+/// does not enumerate targets, create sessions, acquire frames, encode video,
+/// or send UDP packets.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct ClientCaptureSessionConfigBoundary;
+
+impl ClientCaptureSessionConfigBoundary {
+    pub fn prepare_from_descriptor(
+        &self,
+        descriptor: &ClientCaptureTargetDescriptor,
+    ) -> ClientCaptureSessionConfigPrepareResult {
+        match descriptor.backend {
+            ClientCaptureBackendKind::WindowsGraphicsCapture => {
+                self.prepare_windows_graphics_capture_target(&descriptor.kind)
+            }
+        }
+    }
+
+    pub fn prepare_from_target_config(
+        &self,
+        backend: Option<ClientCaptureBackendKind>,
+        target: Option<&ClientCaptureTargetConfig>,
+    ) -> ClientCaptureSessionConfigPrepareResult {
+        let Some(backend) = backend else {
+            return ClientCaptureSessionConfigPrepareResult::NotPrepared {
+                backend: None,
+                reason: ClientCaptureSessionConfigPrepareFailure::BackendNotConfigured,
+            };
+        };
+        let Some(target) = target else {
+            return ClientCaptureSessionConfigPrepareResult::NotPrepared {
+                backend: Some(backend),
+                reason: ClientCaptureSessionConfigPrepareFailure::MissingTargetDetails,
+            };
+        };
+
+        match backend {
+            ClientCaptureBackendKind::WindowsGraphicsCapture => {
+                self.prepare_windows_graphics_capture_target_config(target)
+            }
+        }
+    }
+
+    fn prepare_windows_graphics_capture_target(
+        &self,
+        target: &ClientCaptureTargetDescriptorKind,
+    ) -> ClientCaptureSessionConfigPrepareResult {
+        let session_target = match target {
+            ClientCaptureTargetDescriptorKind::Display {
+                stable_id,
+                is_primary,
+            } => {
+                if *is_primary {
+                    ClientWindowsGraphicsCaptureSessionTargetConfig::PrimaryDisplay
+                } else if stable_id.trim().is_empty() {
+                    return ClientCaptureSessionConfigPrepareResult::NotPrepared {
+                        backend: Some(ClientCaptureBackendKind::WindowsGraphicsCapture),
+                        reason: ClientCaptureSessionConfigPrepareFailure::MissingTargetDetails,
+                    };
+                } else {
+                    ClientWindowsGraphicsCaptureSessionTargetConfig::Display {
+                        stable_id: stable_id.clone(),
+                    }
+                }
+            }
+            ClientCaptureTargetDescriptorKind::Window { title } => {
+                if title.trim().is_empty() {
+                    return ClientCaptureSessionConfigPrepareResult::NotPrepared {
+                        backend: Some(ClientCaptureBackendKind::WindowsGraphicsCapture),
+                        reason: ClientCaptureSessionConfigPrepareFailure::MissingTargetDetails,
+                    };
+                }
+                ClientWindowsGraphicsCaptureSessionTargetConfig::Window {
+                    title: title.clone(),
+                }
+            }
+        };
+
+        ClientCaptureSessionConfigPrepareResult::Prepared {
+            config: ClientCaptureSessionConfig {
+                backend: ClientCaptureBackendKind::WindowsGraphicsCapture,
+                target: session_target,
+            },
+        }
+    }
+
+    fn prepare_windows_graphics_capture_target_config(
+        &self,
+        target: &ClientCaptureTargetConfig,
+    ) -> ClientCaptureSessionConfigPrepareResult {
+        let session_target = match target {
+            ClientCaptureTargetConfig::PrimaryDisplay => {
+                ClientWindowsGraphicsCaptureSessionTargetConfig::PrimaryDisplay
+            }
+            ClientCaptureTargetConfig::DisplayId(stable_id) => {
+                if stable_id.trim().is_empty() {
+                    return ClientCaptureSessionConfigPrepareResult::NotPrepared {
+                        backend: Some(ClientCaptureBackendKind::WindowsGraphicsCapture),
+                        reason: ClientCaptureSessionConfigPrepareFailure::MissingTargetDetails,
+                    };
+                }
+                ClientWindowsGraphicsCaptureSessionTargetConfig::Display {
+                    stable_id: stable_id.clone(),
+                }
+            }
+            ClientCaptureTargetConfig::WindowTitle(title) => {
+                if title.trim().is_empty() {
+                    return ClientCaptureSessionConfigPrepareResult::NotPrepared {
+                        backend: Some(ClientCaptureBackendKind::WindowsGraphicsCapture),
+                        reason: ClientCaptureSessionConfigPrepareFailure::MissingTargetDetails,
+                    };
+                }
+                ClientWindowsGraphicsCaptureSessionTargetConfig::Window {
+                    title: title.clone(),
+                }
+            }
+        };
+
+        ClientCaptureSessionConfigPrepareResult::Prepared {
+            config: ClientCaptureSessionConfig {
+                backend: ClientCaptureBackendKind::WindowsGraphicsCapture,
+                target: session_target,
+            },
+        }
+    }
+}
+
 /// Caller-provided real capture backend configuration.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct ClientCaptureBackendConfig {
@@ -8514,6 +8683,172 @@ mod tests {
             window.to_target_config(),
             ClientCaptureTargetConfig::WindowTitle("Minecraft".to_string())
         );
+    }
+
+    #[test]
+    fn client_video_frame_capture_session_config_prepares_display_descriptor() {
+        let descriptor = ClientCaptureTargetDescriptor::display("display-2", "Display 2");
+
+        let result = ClientCaptureSessionConfigBoundary.prepare_from_descriptor(&descriptor);
+
+        assert_eq!(
+            result,
+            ClientCaptureSessionConfigPrepareResult::Prepared {
+                config: ClientCaptureSessionConfig {
+                    backend: ClientCaptureBackendKind::WindowsGraphicsCapture,
+                    target: ClientWindowsGraphicsCaptureSessionTargetConfig::Display {
+                        stable_id: "display-2".to_string()
+                    }
+                }
+            }
+        );
+    }
+
+    #[test]
+    fn client_video_frame_capture_session_config_prepares_window_descriptor() {
+        let descriptor = ClientCaptureTargetDescriptor::window("Minecraft");
+
+        let result = ClientCaptureSessionConfigBoundary.prepare_from_descriptor(&descriptor);
+
+        assert_eq!(
+            result,
+            ClientCaptureSessionConfigPrepareResult::Prepared {
+                config: ClientCaptureSessionConfig {
+                    backend: ClientCaptureBackendKind::WindowsGraphicsCapture,
+                    target: ClientWindowsGraphicsCaptureSessionTargetConfig::Window {
+                        title: "Minecraft".to_string()
+                    }
+                }
+            }
+        );
+    }
+
+    #[test]
+    fn client_video_frame_capture_session_config_prepares_primary_display_target_config() {
+        let result = ClientCaptureSessionConfigBoundary.prepare_from_target_config(
+            Some(ClientCaptureBackendKind::WindowsGraphicsCapture),
+            Some(&ClientCaptureTargetConfig::PrimaryDisplay),
+        );
+
+        assert_eq!(
+            result,
+            ClientCaptureSessionConfigPrepareResult::Prepared {
+                config: ClientCaptureSessionConfig {
+                    backend: ClientCaptureBackendKind::WindowsGraphicsCapture,
+                    target: ClientWindowsGraphicsCaptureSessionTargetConfig::PrimaryDisplay
+                }
+            }
+        );
+    }
+
+    #[test]
+    fn client_video_frame_capture_session_config_prepares_target_config_without_runtime() {
+        let display = ClientCaptureTargetConfig::DisplayId("display-2".to_string());
+        let window = ClientCaptureTargetConfig::WindowTitle("Minecraft".to_string());
+
+        let display_result = ClientCaptureSessionConfigBoundary.prepare_from_target_config(
+            Some(ClientCaptureBackendKind::WindowsGraphicsCapture),
+            Some(&display),
+        );
+        let window_result = ClientCaptureSessionConfigBoundary.prepare_from_target_config(
+            Some(ClientCaptureBackendKind::WindowsGraphicsCapture),
+            Some(&window),
+        );
+
+        assert_eq!(
+            display_result,
+            ClientCaptureSessionConfigPrepareResult::Prepared {
+                config: ClientCaptureSessionConfig {
+                    backend: ClientCaptureBackendKind::WindowsGraphicsCapture,
+                    target: ClientWindowsGraphicsCaptureSessionTargetConfig::Display {
+                        stable_id: "display-2".to_string()
+                    }
+                }
+            }
+        );
+        assert_eq!(
+            window_result,
+            ClientCaptureSessionConfigPrepareResult::Prepared {
+                config: ClientCaptureSessionConfig {
+                    backend: ClientCaptureBackendKind::WindowsGraphicsCapture,
+                    target: ClientWindowsGraphicsCaptureSessionTargetConfig::Window {
+                        title: "Minecraft".to_string()
+                    }
+                }
+            }
+        );
+    }
+
+    #[test]
+    fn client_video_frame_capture_session_config_reports_missing_target_details() {
+        let blank_display = ClientCaptureTargetDescriptor::display(" ", "Display");
+        let blank_window = ClientCaptureTargetDescriptor::window("");
+        let blank_target_config = ClientCaptureTargetConfig::WindowTitle(" ".to_string());
+
+        assert_eq!(
+            ClientCaptureSessionConfigBoundary.prepare_from_descriptor(&blank_display),
+            ClientCaptureSessionConfigPrepareResult::NotPrepared {
+                backend: Some(ClientCaptureBackendKind::WindowsGraphicsCapture),
+                reason: ClientCaptureSessionConfigPrepareFailure::MissingTargetDetails
+            }
+        );
+        assert_eq!(
+            ClientCaptureSessionConfigBoundary.prepare_from_descriptor(&blank_window),
+            ClientCaptureSessionConfigPrepareResult::NotPrepared {
+                backend: Some(ClientCaptureBackendKind::WindowsGraphicsCapture),
+                reason: ClientCaptureSessionConfigPrepareFailure::MissingTargetDetails
+            }
+        );
+        assert_eq!(
+            ClientCaptureSessionConfigBoundary.prepare_from_target_config(
+                Some(ClientCaptureBackendKind::WindowsGraphicsCapture),
+                Some(&blank_target_config),
+            ),
+            ClientCaptureSessionConfigPrepareResult::NotPrepared {
+                backend: Some(ClientCaptureBackendKind::WindowsGraphicsCapture),
+                reason: ClientCaptureSessionConfigPrepareFailure::MissingTargetDetails
+            }
+        );
+    }
+
+    #[test]
+    fn client_video_frame_capture_session_config_reports_not_configured() {
+        let target = ClientCaptureTargetConfig::PrimaryDisplay;
+
+        assert_eq!(
+            ClientCaptureSessionConfigBoundary.prepare_from_target_config(None, Some(&target)),
+            ClientCaptureSessionConfigPrepareResult::NotPrepared {
+                backend: None,
+                reason: ClientCaptureSessionConfigPrepareFailure::BackendNotConfigured
+            }
+        );
+        assert_eq!(
+            ClientCaptureSessionConfigBoundary.prepare_from_target_config(
+                Some(ClientCaptureBackendKind::WindowsGraphicsCapture),
+                None,
+            ),
+            ClientCaptureSessionConfigPrepareResult::NotPrepared {
+                backend: Some(ClientCaptureBackendKind::WindowsGraphicsCapture),
+                reason: ClientCaptureSessionConfigPrepareFailure::MissingTargetDetails
+            }
+        );
+    }
+
+    #[test]
+    fn client_video_frame_capture_session_config_does_not_affect_placeholder_payload() {
+        let descriptor =
+            ClientCaptureTargetDescriptor::primary_display("display-primary", "Primary display");
+        let session_config =
+            ClientCaptureSessionConfigBoundary.prepare_from_descriptor(&descriptor);
+        let payload = ClientPlaceholderEncodedH264PayloadSourceBoundary
+            .from_bytes(DEFAULT_PLACEHOLDER_H264_PAYLOAD.to_vec())
+            .expect("placeholder payload should remain independent from session config");
+
+        assert!(matches!(
+            session_config,
+            ClientCaptureSessionConfigPrepareResult::Prepared { .. }
+        ));
+        assert_eq!(payload.bytes, DEFAULT_PLACEHOLDER_H264_PAYLOAD.to_vec());
     }
 
     #[test]

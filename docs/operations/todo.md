@@ -637,6 +637,7 @@
 - [x] client Windows capture backend selection/probe boundary with explicit not-configured / unsupported / unavailable results
 - [x] client Windows capture target discovery boundary with descriptor/config conversion and explicit not-configured / unsupported / runtime-unavailable results
 - [x] client capture target discovery runtime hook boundary for future Windows API-backed enumeration
+- [x] client capture session config preparation boundary from selected descriptor / target config
 - [ ] actual Windows Graphics Capture frame acquisition and actual H.264 encoder implementation
 - [x] `VideoFrame` encode
 - [x] `VideoFrame` UDP send with explicit placeholder encoded H.264 payload
@@ -688,12 +689,13 @@
 - client capture backend direction is now Windows Graphics Capture for MVP; the client can select/probe that backend and surface not-configured, unsupported, or unavailable results without producing fake pixels or coupling capture to UDP send.
 - client capture target discovery now has a pre-session boundary: display/window target descriptors can be represented and converted to `ClientCaptureTargetConfig`, while real Windows enumeration remains deferred and explicit as runtime unavailable.
 - client capture target discovery now has an injectable runtime hook, so future real Windows API enumeration can provide descriptors without changing discovery result types or touching frame acquisition.
+- client capture session preparation now converts a selected display/window descriptor or target config into metadata-only `ClientCaptureSessionConfig` for future Windows Graphics Capture session creation without opening a session or acquiring frames.
 - metrics commit, snapshot export cadence, dashboard refresh consumer policy, and dashboard refresh runtime wiring remain separate from timer wait, retry, reconnect, socket ownership, cleanup, UI rendering, video, switcher, and OBS.
 - server notice queue storage remains separate from notice send wakeup execution.
 - actual dashboard UI rendering remains unimplemented.
 
 ## Next Items
-1. actual Windows Graphics Capture display/window enumeration behind the target discovery boundary, then frame acquisition behind the capture backend boundary
+1. actual Windows Graphics Capture display/window enumeration behind the target discovery boundary, then session runtime creation and frame acquisition behind the capture backend boundary
 2. real H.264 decode / switcher window rendering boundary
 3. targetTime / jitter-buffer selection design for the next 2-view sync PoC
 4. decide later whether any cross-process server-to-switcher queue bridge is needed for continuous runtime operation

@@ -9393,6 +9393,8 @@
 - `cargo test -p stream-sync-client client_video_frame`
 - `cargo check --workspace`
 
+
+
 ---
 
 ## 2026-04-25
@@ -9652,6 +9654,66 @@
 - Replaced generic actual capture work with actual Windows Graphics Capture
   frame acquisition behind the new boundary.
 - Kept actual H.264 encode, decode/rendering, and sync work separate.
+
+### Validation
+- `cargo fmt`
+- `cargo fmt --check`
+- `cargo test -p stream-sync-client client_video_frame`
+- `cargo check --workspace`
+
+---
+
+## 2026-04-25
+### Type
+- Codex
+
+### Work
+- Added the smallest client capture session configuration preparation boundary.
+- Added metadata-only `ClientCaptureSessionConfig` and
+  `ClientWindowsGraphicsCaptureSessionTargetConfig` for future
+  WindowsGraphicsCapture session runtime wiring.
+- Added conversion from selected `ClientCaptureTargetDescriptor` and
+  `ClientCaptureTargetConfig` into prepared session config without opening a
+  capture session.
+- Added explicit not-prepared reasons for backend not configured and missing
+  target details.
+- Added focused `client_video_frame` tests for display/window descriptor
+  conversion, target-config conversion, missing details, no-runtime conversion,
+  and placeholder payload independence.
+
+### Changed Files
+- `apps/client/src/lib.rs`
+- `docs/architecture/system-design.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### Decisions
+- Session configuration is metadata-only and remains separate from target
+  discovery, permission handling, session/runtime creation, frame acquisition,
+  encoding, and UDP send.
+- Empty display ids and window titles are treated as explicit missing target
+  details instead of being accepted as usable runtime inputs.
+- No Windows API dependency or fake capture output was added.
+
+### Unresolved
+- Windows API-backed display/window enumeration
+- capture permission/session/runtime wiring
+- capture session creation
+- frame acquisition
+- real H.264 encode/decode
+- switcher rendering, targetTime / jitter-buffer, 4-view sync, and OBS
+
+### Next
+- Add actual Windows Graphics Capture display/window enumeration behind the
+  discovery hook.
+- Add the session runtime creation boundary that consumes
+  `ClientCaptureSessionConfig`.
+- Keep frame acquisition and H.264 encode as separate follow-up slices.
+
+### TODO Update
+- Marked capture session config preparation as complete in Phase 3.
+- Added the session config boundary to Current Focus.
+- Updated Next Items to put session runtime creation before frame acquisition.
 
 ### Validation
 - `cargo fmt`
