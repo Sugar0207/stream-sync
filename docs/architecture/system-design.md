@@ -7411,6 +7411,50 @@ selected client id, frame id, payload length, and
 This bridge still must not decode H.264, render a window, integrate OBS, add
 4-view sync, or claim cross-process queue sharing.
 
+## Switcher H.264 Decode / Single-Frame Dump Boundary
+
+The switcher now has the first real decode PoC boundary for one latest frame:
+
+```text
+caller-owned ServerVideoFrameQueueState
+  -> latest-frame selection
+  -> Annex B H.264 decode
+  -> decoded BGRA frame
+  -> BMP file dump
+```
+
+Current decode/display substitute behavior:
+
+- `SwitcherH264DecodeBoundary` consumes encoded Annex B H.264 bytes plus the
+  frame width/height carried by `VideoFrame` metadata.
+- `SwitcherH264DecodeRuntimeHook` owns the caller-provided decode runtime.
+  `SwitcherFfmpegH264DecodeRuntimeHook` is the first real implementation and
+  shells out to FFmpeg with H.264 on stdin and BGRA rawvideo on stdout.
+- `SwitcherDecodedFrame` carries width, height, pixel format, and raw BGRA
+  pixels. It is the future input shape for real switcher rendering.
+- `SwitcherH264DecodeResult` keeps decoded, deferred, and failed states
+  explicit. Empty payload, invalid dimensions, and missing FFmpeg are deferred;
+  FFmpeg decode failure or invalid output length is failed.
+- `SwitcherSingleViewPlaceholderDisplayBoundary` can now attempt decode when a
+  decode runtime is supplied. Decode success returns a real-frame handoff;
+  decode deferred/failed falls back to the existing placeholder handoff and
+  preserves an explicit decode status.
+- `SwitcherDecodedFrameDumpBoundary` writes a single decoded BGRA frame as a
+  32-bit BMP. This is the current minimal display substitute and does not open a
+  window.
+- `SwitcherDecodeLatestFrameOnceBoundary` composes latest-frame selection,
+  decode, and BMP dump for exactly one selected client frame.
+- CLI `--decode-latest-frame-once [client-id] [output-path]` runs the decode
+  boundary over a fixture queue.
+- CLI `--receive-auth-video-decode-latest-once [config-path] [client-id]
+  [output-path]` runs the existing in-process server auth/video queue launcher,
+  then decodes and dumps the selected latest frame from the returned
+  caller-owned queue state.
+
+This decode PoC does not add a continuous loop, targetTime selection,
+multi-view sync, switcher window rendering, OBS integration, decode
+acceleration, or packet fragmentation.
+
 ## Client Real Capture / H.264 Encode Boundary
 
 The client video path now has an explicit first boundary for replacing the

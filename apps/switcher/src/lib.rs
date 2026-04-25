@@ -1,3 +1,9 @@
+use std::{
+    io::{self, Write},
+    path::{Path, PathBuf},
+    process::{Command, Stdio},
+};
+
 use stream_sync_protocol::{ClientId, TimestampMicros};
 use stream_sync_server::{
     ServerQueuedVideoFrame, ServerReceiveAuthVideoQueueOnceStartupOutcome,
@@ -87,6 +93,9 @@ impl SwitcherSingleViewLatestFrameSelectionBoundary {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum SwitcherSingleViewDecodeStatus {
     DeferredPlaceholder,
+    Decoded,
+    DecodeDeferred,
+    DecodeFailed,
 }
 
 /// Placeholder display handoff for a selected single-view frame.
@@ -99,9 +108,202 @@ pub struct SwitcherSingleViewDisplayPlaceholderHandoff {
     pub decode_status: SwitcherSingleViewDecodeStatus,
 }
 
+/// Pixel format produced by the first switcher decode PoC.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum SwitcherDecodedFramePixelFormat {
+    Bgra8,
+}
+
+/// One decoded video frame ready for a future real display path.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SwitcherDecodedFrame {
+    pub width: u32,
+    pub height: u32,
+    pub pixel_format: SwitcherDecodedFramePixelFormat,
+    pub pixels: Vec<u8>,
+}
+
+/// Input for decoding one Annex B H.264 encoded frame payload.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SwitcherH264DecodeInput {
+    pub encoded_payload: Vec<u8>,
+    pub width: u32,
+    pub height: u32,
+}
+
+/// Deferred reason for switcher-side H.264 decode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum SwitcherH264DecodeDeferredReason {
+    EmptyPayload,
+    InvalidDimensions,
+    FfmpegUnavailable,
+}
+
+/// Failure details for switcher-side H.264 decode.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SwitcherH264DecodeFailure {
+    pub message: String,
+}
+
+/// Result of attempting one H.264 decode.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SwitcherH264DecodeResult {
+    Decoded(SwitcherDecodedFrame),
+    Deferred {
+        reason: SwitcherH264DecodeDeferredReason,
+    },
+    Failed(SwitcherH264DecodeFailure),
+}
+
+/// Runtime hook for H.264 decode.
+///
+/// This keeps the boundary testable and leaves future library/hardware decode
+/// integration caller-owned.
+pub trait SwitcherH264DecodeRuntimeHook {
+    fn decode_annex_b_h264(&self, input: SwitcherH264DecodeInput) -> SwitcherH264DecodeResult;
+}
+
+/// Placeholder-safe default decode runtime.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct SwitcherDeferredH264DecodeRuntimeHook;
+
+impl SwitcherH264DecodeRuntimeHook for SwitcherDeferredH264DecodeRuntimeHook {
+    fn decode_annex_b_h264(&self, _input: SwitcherH264DecodeInput) -> SwitcherH264DecodeResult {
+        SwitcherH264DecodeResult::Deferred {
+            reason: SwitcherH264DecodeDeferredReason::FfmpegUnavailable,
+        }
+    }
+}
+
+/// Minimal FFmpeg CLI H.264 decoder runtime.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SwitcherFfmpegH264DecodeRuntimeHook {
+    pub ffmpeg_path: PathBuf,
+}
+
+impl Default for SwitcherFfmpegH264DecodeRuntimeHook {
+    fn default() -> Self {
+        Self {
+            ffmpeg_path: PathBuf::from("ffmpeg"),
+        }
+    }
+}
+
+impl SwitcherH264DecodeRuntimeHook for SwitcherFfmpegH264DecodeRuntimeHook {
+    fn decode_annex_b_h264(&self, input: SwitcherH264DecodeInput) -> SwitcherH264DecodeResult {
+        if input.encoded_payload.is_empty() {
+            return SwitcherH264DecodeResult::Deferred {
+                reason: SwitcherH264DecodeDeferredReason::EmptyPayload,
+            };
+        }
+        if input.width == 0 || input.height == 0 {
+            return SwitcherH264DecodeResult::Deferred {
+                reason: SwitcherH264DecodeDeferredReason::InvalidDimensions,
+            };
+        }
+
+        let mut child = match Command::new(&self.ffmpeg_path)
+            .arg("-hide_banner")
+            .arg("-loglevel")
+            .arg("error")
+            .arg("-f")
+            .arg("h264")
+            .arg("-i")
+            .arg("pipe:0")
+            .arg("-frames:v")
+            .arg("1")
+            .arg("-f")
+            .arg("rawvideo")
+            .arg("-pix_fmt")
+            .arg("bgra")
+            .arg("pipe:1")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+        {
+            Ok(child) => child,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                return SwitcherH264DecodeResult::Deferred {
+                    reason: SwitcherH264DecodeDeferredReason::FfmpegUnavailable,
+                };
+            }
+            Err(error) => {
+                return SwitcherH264DecodeResult::Failed(SwitcherH264DecodeFailure {
+                    message: error.to_string(),
+                });
+            }
+        };
+
+        if let Some(mut stdin) = child.stdin.take() {
+            if let Err(error) = stdin.write_all(&input.encoded_payload) {
+                return SwitcherH264DecodeResult::Failed(SwitcherH264DecodeFailure {
+                    message: error.to_string(),
+                });
+            }
+        }
+
+        let output = match child.wait_with_output() {
+            Ok(output) => output,
+            Err(error) => {
+                return SwitcherH264DecodeResult::Failed(SwitcherH264DecodeFailure {
+                    message: error.to_string(),
+                });
+            }
+        };
+
+        if !output.status.success() {
+            return SwitcherH264DecodeResult::Failed(SwitcherH264DecodeFailure {
+                message: String::from_utf8_lossy(&output.stderr).trim().to_string(),
+            });
+        }
+
+        let expected_len = input.width as usize * input.height as usize * 4;
+        if output.stdout.len() != expected_len {
+            return SwitcherH264DecodeResult::Failed(SwitcherH264DecodeFailure {
+                message: format!(
+                    "decoded rawvideo length mismatch expected={} actual={}",
+                    expected_len,
+                    output.stdout.len()
+                ),
+            });
+        }
+
+        SwitcherH264DecodeResult::Decoded(SwitcherDecodedFrame {
+            width: input.width,
+            height: input.height,
+            pixel_format: SwitcherDecodedFramePixelFormat::Bgra8,
+            pixels: output.stdout,
+        })
+    }
+}
+
+/// Boundary for decoding one selected H.264 frame payload.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct SwitcherH264DecodeBoundary;
+
+impl SwitcherH264DecodeBoundary {
+    pub fn decode_with_runtime(
+        &self,
+        input: SwitcherH264DecodeInput,
+        runtime: &impl SwitcherH264DecodeRuntimeHook,
+    ) -> SwitcherH264DecodeResult {
+        runtime.decode_annex_b_h264(input)
+    }
+}
+
+/// Real decoded display handoff for a selected single-view frame.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SwitcherSingleViewDisplayRealFrameHandoff {
+    pub selected: SwitcherSingleViewSelectedEncodedFrame,
+    pub decoded: SwitcherDecodedFrame,
+    pub decode_status: SwitcherSingleViewDecodeStatus,
+}
+
 /// Result of preparing a single-view display handoff.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SwitcherSingleViewDisplayHandoffResult {
+    DisplayReadyRealFrame(SwitcherSingleViewDisplayRealFrameHandoff),
     DisplayReadyPlaceholder(SwitcherSingleViewDisplayPlaceholderHandoff),
     NoFrameAvailable { client_id: ClientId },
 }
@@ -133,6 +335,56 @@ impl SwitcherSingleViewPlaceholderDisplayBoundary {
             }
         }
     }
+
+    pub fn prepare_handoff_with_decode(
+        &self,
+        selection: SwitcherSingleViewFrameSelectionResult,
+        decoder: &SwitcherH264DecodeBoundary,
+        runtime: &impl SwitcherH264DecodeRuntimeHook,
+    ) -> SwitcherSingleViewDisplayHandoffResult {
+        match selection {
+            SwitcherSingleViewFrameSelectionResult::FrameAvailable(selected) => {
+                let decode = decoder.decode_with_runtime(
+                    SwitcherH264DecodeInput {
+                        encoded_payload: selected.encoded_payload.clone(),
+                        width: selected.width,
+                        height: selected.height,
+                    },
+                    runtime,
+                );
+                match decode {
+                    SwitcherH264DecodeResult::Decoded(decoded) => {
+                        SwitcherSingleViewDisplayHandoffResult::DisplayReadyRealFrame(
+                            SwitcherSingleViewDisplayRealFrameHandoff {
+                                selected,
+                                decoded,
+                                decode_status: SwitcherSingleViewDecodeStatus::Decoded,
+                            },
+                        )
+                    }
+                    SwitcherH264DecodeResult::Deferred { .. } => {
+                        SwitcherSingleViewDisplayHandoffResult::DisplayReadyPlaceholder(
+                            SwitcherSingleViewDisplayPlaceholderHandoff {
+                                selected,
+                                decode_status: SwitcherSingleViewDecodeStatus::DecodeDeferred,
+                            },
+                        )
+                    }
+                    SwitcherH264DecodeResult::Failed(_) => {
+                        SwitcherSingleViewDisplayHandoffResult::DisplayReadyPlaceholder(
+                            SwitcherSingleViewDisplayPlaceholderHandoff {
+                                selected,
+                                decode_status: SwitcherSingleViewDecodeStatus::DecodeFailed,
+                            },
+                        )
+                    }
+                }
+            }
+            SwitcherSingleViewFrameSelectionResult::NoFrameAvailable { client_id } => {
+                SwitcherSingleViewDisplayHandoffResult::NoFrameAvailable { client_id }
+            }
+        }
+    }
 }
 
 /// Thin composition for the current single-view placeholder path.
@@ -149,6 +401,96 @@ impl SwitcherSingleViewPlaceholderPathBoundary {
     ) -> SwitcherSingleViewDisplayHandoffResult {
         let selected = self.selection.select_latest(input);
         self.display.prepare_handoff(selected)
+    }
+
+    pub fn prepare_latest_display_handoff_with_decode(
+        &self,
+        input: SwitcherSingleViewFrameSelectionInput<'_>,
+        decoder: &SwitcherH264DecodeBoundary,
+        runtime: &impl SwitcherH264DecodeRuntimeHook,
+    ) -> SwitcherSingleViewDisplayHandoffResult {
+        let selected = self.selection.select_latest(input);
+        self.display
+            .prepare_handoff_with_decode(selected, decoder, runtime)
+    }
+}
+
+/// Result of dumping one decoded frame to a simple file.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SwitcherDecodedFrameDump {
+    pub path: PathBuf,
+    pub bytes_written: usize,
+}
+
+/// Error from decoded frame dump output.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SwitcherDecodedFrameDumpError {
+    InvalidDimensions,
+    InvalidBufferLength { expected: usize, actual: usize },
+    Io { path: PathBuf, kind: io::ErrorKind },
+}
+
+/// Minimal frame dump writer for the first real display PoC.
+///
+/// It writes a 32-bit BMP from BGRA pixels. This is intentionally a file-output
+/// display substitute and does not open a window or integrate with OBS.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct SwitcherDecodedFrameDumpBoundary;
+
+impl SwitcherDecodedFrameDumpBoundary {
+    pub fn write_bmp(
+        &self,
+        frame: &SwitcherDecodedFrame,
+        path: impl AsRef<Path>,
+    ) -> Result<SwitcherDecodedFrameDump, SwitcherDecodedFrameDumpError> {
+        let path = path.as_ref();
+        if frame.width == 0 || frame.height == 0 {
+            return Err(SwitcherDecodedFrameDumpError::InvalidDimensions);
+        }
+        let expected = frame.width as usize * frame.height as usize * 4;
+        if frame.pixels.len() != expected {
+            return Err(SwitcherDecodedFrameDumpError::InvalidBufferLength {
+                expected,
+                actual: frame.pixels.len(),
+            });
+        }
+
+        let width = frame.width as usize;
+        let height = frame.height as usize;
+        let pixel_bytes_len = expected;
+        let file_size = 14 + 40 + pixel_bytes_len;
+        let mut output = Vec::with_capacity(file_size);
+        output.extend_from_slice(b"BM");
+        output.extend_from_slice(&(file_size as u32).to_le_bytes());
+        output.extend_from_slice(&[0, 0, 0, 0]);
+        output.extend_from_slice(&(54_u32).to_le_bytes());
+        output.extend_from_slice(&(40_u32).to_le_bytes());
+        output.extend_from_slice(&(frame.width as i32).to_le_bytes());
+        output.extend_from_slice(&(frame.height as i32).to_le_bytes());
+        output.extend_from_slice(&(1_u16).to_le_bytes());
+        output.extend_from_slice(&(32_u16).to_le_bytes());
+        output.extend_from_slice(&(0_u32).to_le_bytes());
+        output.extend_from_slice(&(pixel_bytes_len as u32).to_le_bytes());
+        output.extend_from_slice(&(2_835_i32).to_le_bytes());
+        output.extend_from_slice(&(2_835_i32).to_le_bytes());
+        output.extend_from_slice(&(0_u32).to_le_bytes());
+        output.extend_from_slice(&(0_u32).to_le_bytes());
+
+        for row in (0..height).rev() {
+            let start = row * width * 4;
+            let end = start + width * 4;
+            output.extend_from_slice(&frame.pixels[start..end]);
+        }
+
+        std::fs::write(path, &output).map_err(|error| SwitcherDecodedFrameDumpError::Io {
+            path: path.to_path_buf(),
+            kind: error.kind(),
+        })?;
+
+        Ok(SwitcherDecodedFrameDump {
+            path: path.to_path_buf(),
+            bytes_written: output.len(),
+        })
     }
 }
 
@@ -184,6 +526,135 @@ pub enum SwitcherPlaceholderManualVerificationResult {
     },
 }
 
+/// Input for manual decode-and-dump verification.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SwitcherDecodeLatestFrameOnceInput<'a> {
+    pub queue_state: &'a ServerVideoFrameQueueState,
+    pub client_id: &'a ClientId,
+    pub output_path: PathBuf,
+}
+
+/// Compact summary for manual decode-and-dump verification.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SwitcherDecodeLatestFrameOnceSummary {
+    pub selected_client_id: ClientId,
+    pub frame_id: Option<u64>,
+    pub encoded_payload_len: Option<usize>,
+    pub decode_status: Option<SwitcherSingleViewDecodeStatus>,
+    pub width: Option<u32>,
+    pub height: Option<u32>,
+    pub output_path: Option<PathBuf>,
+    pub output_bytes: Option<usize>,
+    pub no_frame: bool,
+}
+
+/// Result of one latest-frame decode and file dump attempt.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SwitcherDecodeLatestFrameOnceResult {
+    Decoded {
+        summary: SwitcherDecodeLatestFrameOnceSummary,
+        handoff: SwitcherSingleViewDisplayRealFrameHandoff,
+        dump: SwitcherDecodedFrameDump,
+    },
+    PlaceholderFallback {
+        summary: SwitcherDecodeLatestFrameOnceSummary,
+        handoff: SwitcherSingleViewDisplayPlaceholderHandoff,
+    },
+    NoFrame {
+        summary: SwitcherDecodeLatestFrameOnceSummary,
+    },
+    DumpFailed {
+        summary: SwitcherDecodeLatestFrameOnceSummary,
+        handoff: SwitcherSingleViewDisplayRealFrameHandoff,
+        error: SwitcherDecodedFrameDumpError,
+    },
+}
+
+/// Manual single-frame decode/display substitute.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct SwitcherDecodeLatestFrameOnceBoundary {
+    path: SwitcherSingleViewPlaceholderPathBoundary,
+    decoder: SwitcherH264DecodeBoundary,
+    dump: SwitcherDecodedFrameDumpBoundary,
+}
+
+impl SwitcherDecodeLatestFrameOnceBoundary {
+    pub fn decode_latest_with_runtime(
+        &self,
+        input: SwitcherDecodeLatestFrameOnceInput<'_>,
+        runtime: &impl SwitcherH264DecodeRuntimeHook,
+    ) -> SwitcherDecodeLatestFrameOnceResult {
+        match self.path.prepare_latest_display_handoff_with_decode(
+            SwitcherSingleViewFrameSelectionInput {
+                queue_state: input.queue_state,
+                client_id: input.client_id,
+            },
+            &self.decoder,
+            runtime,
+        ) {
+            SwitcherSingleViewDisplayHandoffResult::DisplayReadyRealFrame(handoff) => {
+                let summary = SwitcherDecodeLatestFrameOnceSummary {
+                    selected_client_id: handoff.selected.client_id.clone(),
+                    frame_id: Some(handoff.selected.frame_id),
+                    encoded_payload_len: Some(handoff.selected.encoded_payload_len),
+                    decode_status: Some(handoff.decode_status),
+                    width: Some(handoff.decoded.width),
+                    height: Some(handoff.decoded.height),
+                    output_path: Some(input.output_path.clone()),
+                    output_bytes: None,
+                    no_frame: false,
+                };
+                match self.dump.write_bmp(&handoff.decoded, &input.output_path) {
+                    Ok(dump) => SwitcherDecodeLatestFrameOnceResult::Decoded {
+                        summary: SwitcherDecodeLatestFrameOnceSummary {
+                            output_bytes: Some(dump.bytes_written),
+                            ..summary
+                        },
+                        handoff,
+                        dump,
+                    },
+                    Err(error) => SwitcherDecodeLatestFrameOnceResult::DumpFailed {
+                        summary,
+                        handoff,
+                        error,
+                    },
+                }
+            }
+            SwitcherSingleViewDisplayHandoffResult::DisplayReadyPlaceholder(handoff) => {
+                SwitcherDecodeLatestFrameOnceResult::PlaceholderFallback {
+                    summary: SwitcherDecodeLatestFrameOnceSummary {
+                        selected_client_id: handoff.selected.client_id.clone(),
+                        frame_id: Some(handoff.selected.frame_id),
+                        encoded_payload_len: Some(handoff.selected.encoded_payload_len),
+                        decode_status: Some(handoff.decode_status),
+                        width: None,
+                        height: None,
+                        output_path: None,
+                        output_bytes: None,
+                        no_frame: false,
+                    },
+                    handoff,
+                }
+            }
+            SwitcherSingleViewDisplayHandoffResult::NoFrameAvailable { client_id } => {
+                SwitcherDecodeLatestFrameOnceResult::NoFrame {
+                    summary: SwitcherDecodeLatestFrameOnceSummary {
+                        selected_client_id: client_id,
+                        frame_id: None,
+                        encoded_payload_len: None,
+                        decode_status: None,
+                        width: None,
+                        height: None,
+                        output_path: None,
+                        output_bytes: None,
+                        no_frame: true,
+                    },
+                }
+            }
+        }
+    }
+}
+
 /// Runtime helper for the manual placeholder PoC.
 ///
 /// This composes the existing latest-frame selection and placeholder display
@@ -206,6 +677,22 @@ impl SwitcherPlaceholderManualVerificationBoundary {
                 queue_state: input.queue_state,
                 client_id: input.client_id,
             }) {
+            SwitcherSingleViewDisplayHandoffResult::DisplayReadyRealFrame(handoff) => {
+                let summary = SwitcherPlaceholderManualVerificationSummary {
+                    selected_client_id: handoff.selected.client_id.clone(),
+                    frame_id: Some(handoff.selected.frame_id),
+                    encoded_payload_len: Some(handoff.selected.encoded_payload_len),
+                    decode_status: Some(handoff.decode_status),
+                    no_frame: false,
+                };
+                SwitcherPlaceholderManualVerificationResult::PlaceholderReady {
+                    summary,
+                    handoff: SwitcherSingleViewDisplayPlaceholderHandoff {
+                        selected: handoff.selected,
+                        decode_status: SwitcherSingleViewDecodeStatus::DeferredPlaceholder,
+                    },
+                }
+            }
             SwitcherSingleViewDisplayHandoffResult::DisplayReadyPlaceholder(handoff) => {
                 let summary = SwitcherPlaceholderManualVerificationSummary {
                     selected_client_id: handoff.selected.client_id.clone(),
@@ -537,6 +1024,202 @@ mod tests {
     }
 
     #[test]
+    fn h264_decode_boundary_success_with_runtime_hook_returns_decoded_bgra() {
+        struct SuccessfulDecode;
+        impl SwitcherH264DecodeRuntimeHook for SuccessfulDecode {
+            fn decode_annex_b_h264(
+                &self,
+                input: SwitcherH264DecodeInput,
+            ) -> SwitcherH264DecodeResult {
+                assert_eq!(input.encoded_payload, vec![0x00, 0x00, 0x01, 0x65]);
+                SwitcherH264DecodeResult::Decoded(SwitcherDecodedFrame {
+                    width: input.width,
+                    height: input.height,
+                    pixel_format: SwitcherDecodedFramePixelFormat::Bgra8,
+                    pixels: vec![0, 1, 2, 255, 3, 4, 5, 255],
+                })
+            }
+        }
+
+        let result = SwitcherH264DecodeBoundary.decode_with_runtime(
+            SwitcherH264DecodeInput {
+                encoded_payload: vec![0x00, 0x00, 0x01, 0x65],
+                width: 2,
+                height: 1,
+            },
+            &SuccessfulDecode,
+        );
+
+        assert_eq!(
+            result,
+            SwitcherH264DecodeResult::Decoded(SwitcherDecodedFrame {
+                width: 2,
+                height: 1,
+                pixel_format: SwitcherDecodedFramePixelFormat::Bgra8,
+                pixels: vec![0, 1, 2, 255, 3, 4, 5, 255],
+            })
+        );
+    }
+
+    #[test]
+    fn h264_decode_boundary_empty_payload_is_deferred() {
+        let result = SwitcherH264DecodeBoundary.decode_with_runtime(
+            SwitcherH264DecodeInput {
+                encoded_payload: Vec::new(),
+                width: 2,
+                height: 1,
+            },
+            &SwitcherFfmpegH264DecodeRuntimeHook::default(),
+        );
+
+        assert_eq!(
+            result,
+            SwitcherH264DecodeResult::Deferred {
+                reason: SwitcherH264DecodeDeferredReason::EmptyPayload
+            }
+        );
+    }
+
+    #[test]
+    fn h264_decode_boundary_failure_is_explicit() {
+        struct FailingDecode;
+        impl SwitcherH264DecodeRuntimeHook for FailingDecode {
+            fn decode_annex_b_h264(
+                &self,
+                _input: SwitcherH264DecodeInput,
+            ) -> SwitcherH264DecodeResult {
+                SwitcherH264DecodeResult::Failed(SwitcherH264DecodeFailure {
+                    message: "fixture decode failed".to_string(),
+                })
+            }
+        }
+
+        let result = SwitcherH264DecodeBoundary.decode_with_runtime(
+            SwitcherH264DecodeInput {
+                encoded_payload: vec![0x01],
+                width: 2,
+                height: 1,
+            },
+            &FailingDecode,
+        );
+
+        assert_eq!(
+            result,
+            SwitcherH264DecodeResult::Failed(SwitcherH264DecodeFailure {
+                message: "fixture decode failed".to_string()
+            })
+        );
+    }
+
+    #[test]
+    fn real_decode_display_path_writes_bmp_for_decoded_frame() {
+        struct SuccessfulDecode;
+        impl SwitcherH264DecodeRuntimeHook for SuccessfulDecode {
+            fn decode_annex_b_h264(
+                &self,
+                input: SwitcherH264DecodeInput,
+            ) -> SwitcherH264DecodeResult {
+                SwitcherH264DecodeResult::Decoded(SwitcherDecodedFrame {
+                    width: input.width,
+                    height: input.height,
+                    pixel_format: SwitcherDecodedFramePixelFormat::Bgra8,
+                    pixels: vec![0, 0, 255, 255, 0, 255, 0, 255],
+                })
+            }
+        }
+
+        let mut state = ServerVideoFrameQueueState::default();
+        store_frame_with_payload(
+            &mut state,
+            "client-1",
+            20,
+            TimestampMicros(3_100_000),
+            2,
+            1,
+            vec![0x00, 0x00, 0x01, 0x65],
+        );
+        let client_id = ClientId("client-1".to_string());
+        let output_path = std::env::temp_dir().join(format!(
+            "stream-sync-switcher-decode-{}.bmp",
+            current_test_suffix()
+        ));
+
+        let result = SwitcherDecodeLatestFrameOnceBoundary::default().decode_latest_with_runtime(
+            SwitcherDecodeLatestFrameOnceInput {
+                queue_state: &state,
+                client_id: &client_id,
+                output_path: output_path.clone(),
+            },
+            &SuccessfulDecode,
+        );
+
+        let SwitcherDecodeLatestFrameOnceResult::Decoded {
+            summary,
+            handoff,
+            dump,
+        } = result
+        else {
+            panic!("successful decode should dump one BMP");
+        };
+        assert_eq!(summary.selected_client_id, client_id);
+        assert_eq!(summary.frame_id, Some(20));
+        assert_eq!(
+            summary.decode_status,
+            Some(SwitcherSingleViewDecodeStatus::Decoded)
+        );
+        assert_eq!(handoff.decoded.width, 2);
+        assert_eq!(handoff.decoded.height, 1);
+        assert_eq!(dump.path, output_path);
+        assert!(dump.bytes_written > 54);
+        let bytes = std::fs::read(&dump.path).expect("bmp should be readable");
+        assert_eq!(&bytes[0..2], b"BM");
+        let _ = std::fs::remove_file(dump.path);
+    }
+
+    #[test]
+    fn real_decode_display_path_falls_back_to_placeholder_on_decode_failure() {
+        struct FailingDecode;
+        impl SwitcherH264DecodeRuntimeHook for FailingDecode {
+            fn decode_annex_b_h264(
+                &self,
+                _input: SwitcherH264DecodeInput,
+            ) -> SwitcherH264DecodeResult {
+                SwitcherH264DecodeResult::Failed(SwitcherH264DecodeFailure {
+                    message: "fixture decode failed".to_string(),
+                })
+            }
+        }
+
+        let mut state = ServerVideoFrameQueueState::default();
+        store_frame(&mut state, "client-1", 21, TimestampMicros(3_200_000));
+        let client_id = ClientId("client-1".to_string());
+
+        let result = SwitcherDecodeLatestFrameOnceBoundary::default().decode_latest_with_runtime(
+            SwitcherDecodeLatestFrameOnceInput {
+                queue_state: &state,
+                client_id: &client_id,
+                output_path: PathBuf::from("should-not-write.bmp"),
+            },
+            &FailingDecode,
+        );
+
+        let SwitcherDecodeLatestFrameOnceResult::PlaceholderFallback { summary, handoff } = result
+        else {
+            panic!("decode failure should fall back to placeholder");
+        };
+        assert_eq!(summary.selected_client_id, client_id);
+        assert_eq!(summary.frame_id, Some(21));
+        assert_eq!(
+            summary.decode_status,
+            Some(SwitcherSingleViewDecodeStatus::DecodeFailed)
+        );
+        assert_eq!(
+            handoff.decode_status,
+            SwitcherSingleViewDecodeStatus::DecodeFailed
+        );
+    }
+
+    #[test]
     fn manual_verification_helper_selects_latest_frame_from_caller_owned_queue() {
         let mut state = ServerVideoFrameQueueState::default();
         store_frame(&mut state, "client-1", 10, TimestampMicros(2_400_000));
@@ -836,9 +1519,30 @@ mod tests {
         frame_id: u64,
         queued_at: TimestampMicros,
     ) -> ServerVideoFrameQueueStorageResult {
+        store_frame_with_payload(
+            state,
+            client_id,
+            frame_id,
+            queued_at,
+            1280,
+            720,
+            vec![frame_id as u8, 0xbb, 0xcc],
+        )
+    }
+
+    fn store_frame_with_payload(
+        state: &mut ServerVideoFrameQueueState,
+        client_id: &str,
+        frame_id: u64,
+        queued_at: TimestampMicros,
+        width: u32,
+        height: u32,
+        payload: Vec<u8>,
+    ) -> ServerVideoFrameQueueStorageResult {
         let source = PacketSource {
             address: "127.0.0.1:5001".parse().unwrap(),
         };
+        let payload_size = payload.len();
         let packet = ServerRegisteredVideoFramePacket {
             source,
             authenticated_sender: AuthenticatedSenderEntry {
@@ -858,12 +1562,12 @@ mod tests {
                 send_timestamp: TimestampMicros(1_000_100 + frame_id),
                 is_keyframe: frame_id == 1,
                 metadata_reserved: [0; 3],
-                width: 1280,
-                height: 720,
+                width,
+                height,
                 fps_nominal: 30,
                 codec: Codec::H264,
-                payload_size: 3,
-                payload: vec![frame_id as u8, 0xbb, 0xcc],
+                payload_size,
+                payload,
             },
         };
         let input = ServerVideoFrameHandlerBoundary.prepare_input(packet);
@@ -873,5 +1577,9 @@ mod tests {
             queued_at,
             ServerVideoFrameQueuePolicy::default(),
         )
+    }
+
+    fn current_test_suffix() -> String {
+        format!("{}-{:?}", std::process::id(), std::thread::current().id())
     }
 }

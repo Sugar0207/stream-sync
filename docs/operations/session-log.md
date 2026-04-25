@@ -5,6 +5,62 @@
 - Codex
 
 ### Work
+- Added the first switcher-side H.264 decode boundary for one latest queued `VideoFrame`.
+- Added `SwitcherH264DecodeBoundary`, `SwitcherDecodedFrame`, `SwitcherH264DecodeResult`, decode runtime hook types, and `SwitcherFfmpegH264DecodeRuntimeHook`.
+- The FFmpeg decode runtime reads Annex B H.264 from stdin and emits one BGRA rawvideo frame on stdout.
+- Extended `SwitcherSingleViewPlaceholderDisplayBoundary` with a decode-attempt path: decode success returns a real-frame handoff, while decode deferred/failed falls back to the existing placeholder handoff with an explicit decode status.
+- Added `SwitcherDecodedFrameDumpBoundary` for writing one decoded BGRA frame as a 32-bit BMP file.
+- Added `SwitcherDecodeLatestFrameOnceBoundary` for latest-frame selection -> decode -> BMP dump.
+- Added switcher CLI entries:
+  - `--decode-latest-frame-once [client-id] [output-path]`
+  - `--receive-auth-video-decode-latest-once [config-path] [client-id] [output-path]`
+- Added tests for decode success via hook, empty payload deferred, decode failure, BMP dump on decoded frame, and placeholder fallback.
+
+### Changed Files
+- `apps/switcher/src/lib.rs`
+- `apps/switcher/src/main.rs`
+- `docs/architecture/system-design.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### Decisions
+- Use FFmpeg CLI first for switcher H.264 decode, matching the current client-side FFmpeg encode direction.
+- Use BMP file output as the first display substitute instead of adding GUI/window dependencies in this step.
+- Keep the existing placeholder path intact and use it as fallback when decode is deferred or failed.
+- Add an in-process receive/auth/video/decode CLI because the live server queue is still caller-owned and not shared cross-process.
+
+### Unresolved
+- real switcher window rendering from `SwitcherDecodedFrame`
+- continuous receive/decode/display loop
+- targetTime / jitter-buffer frame selection
+- 2-view / 4-view sync
+- OBS integration
+- production decode configuration and structured decode logging
+
+### Next
+- Define decoded frame -> switcher window rendering boundary.
+- Define continuous acquisition / receive / decode display loops separately from this one-shot path.
+- Add targetTime / jitter-buffer selection after one-frame decode is stable.
+
+### TODO Update
+- Marked switcher real H.264 decode / single-frame BMP dump complete.
+- Added decoded frame window display as the next switcher display task.
+- Updated Current Focus and Next Items to move from decode to rendering/continuous paths.
+
+### Validation
+- `cargo fmt`
+- `cargo test -p stream-sync-switcher`
+- `cargo fmt --check`
+- `cargo check --workspace`
+- `git diff --check`
+
+---
+
+## 2026-04-25
+### Type
+- Codex
+
+### Work
 - Decided the auth + real encoded same-source launcher is needed now for manual server queue E2E verification.
 - Added `ClientAuthRealEncodedVideoFramePocLauncher`, startup config, outcome, and error types.
 - Added the client CLI entry point `--auth-real-encoded-video-frame-poc-once [config-path]`.

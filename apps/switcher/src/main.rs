@@ -9,6 +9,8 @@ use stream_sync_server::{
 };
 use stream_sync_switcher::{
     SwitcherAuthVideoPlaceholderBridgeBoundary, SwitcherAuthVideoPlaceholderBridgeResult,
+    SwitcherDecodeLatestFrameOnceBoundary, SwitcherDecodeLatestFrameOnceInput,
+    SwitcherDecodeLatestFrameOnceResult, SwitcherFfmpegH264DecodeRuntimeHook,
     SwitcherPlaceholderManualVerificationBoundary, SwitcherPlaceholderManualVerificationInput,
     SwitcherPlaceholderManualVerificationResult,
 };
@@ -36,6 +38,21 @@ fn main() {
                 });
             print_summary(result, true);
         }
+        Some("--decode-latest-frame-once") => {
+            let client_id = ClientId(args.next().unwrap_or_else(|| "client-1".to_string()));
+            let output_path = args.next().unwrap_or_else(|| "frame_dump.bmp".to_string());
+            let queue_state = fixture_queue_state(&client_id);
+            let result = SwitcherDecodeLatestFrameOnceBoundary::default()
+                .decode_latest_with_runtime(
+                    SwitcherDecodeLatestFrameOnceInput {
+                        queue_state: &queue_state,
+                        client_id: &client_id,
+                        output_path: output_path.into(),
+                    },
+                    &SwitcherFfmpegH264DecodeRuntimeHook::default(),
+                );
+            print_decode_summary(result, true);
+        }
         Some("--receive-auth-video-placeholder-bridge-once") => {
             let config_path = args
                 .next()
@@ -60,9 +77,41 @@ fn main() {
                 }
             }
         }
+        Some("--receive-auth-video-decode-latest-once") => {
+            let config_path = args
+                .next()
+                .unwrap_or_else(|| "configs/examples/server.example.toml".to_string());
+            let client_id = ClientId(args.next().unwrap_or_else(|| "client-1".to_string()));
+            let output_path = args.next().unwrap_or_else(|| "frame_dump.bmp".to_string());
+            let launcher = ServerReceiveAuthVideoQueueOnceLauncher::default();
+            match launcher.run_once_from_path_with_writers(
+                &config_path,
+                std::io::stderr(),
+                std::io::stderr(),
+                std::io::stderr(),
+                std::io::stderr(),
+            ) {
+                Ok(server_outcome) => {
+                    let result = SwitcherDecodeLatestFrameOnceBoundary::default()
+                        .decode_latest_with_runtime(
+                            SwitcherDecodeLatestFrameOnceInput {
+                                queue_state: &server_outcome.video_queue_state,
+                                client_id: &client_id,
+                                output_path: output_path.into(),
+                            },
+                            &SwitcherFfmpegH264DecodeRuntimeHook::default(),
+                        );
+                    print_decode_summary(result, false);
+                }
+                Err(error) => {
+                    eprintln!("switcher auth/video decode latest failed: {error:?}");
+                    std::process::exit(1);
+                }
+            }
+        }
         _ => {
             println!(
-                "stream-sync-switcher scaffold; use --placeholder-fixture-once [client-id], --placeholder-empty-once [client-id], or --receive-auth-video-placeholder-bridge-once [config-path] [client-id]"
+                "stream-sync-switcher scaffold; use --placeholder-fixture-once [client-id], --placeholder-empty-once [client-id], --decode-latest-frame-once [client-id] [output-path], --receive-auth-video-placeholder-bridge-once [config-path] [client-id], or --receive-auth-video-decode-latest-once [config-path] [client-id] [output-path]"
             );
         }
     }
@@ -122,6 +171,55 @@ fn print_bridge_summary(result: SwitcherAuthVideoPlaceholderBridgeResult) {
                 summary.no_frame,
                 summary.selected_client_id.0
             );
+        }
+    }
+}
+
+fn print_decode_summary(result: SwitcherDecodeLatestFrameOnceResult, fixture_queue: bool) {
+    match result {
+        SwitcherDecodeLatestFrameOnceResult::Decoded { summary, dump, .. } => {
+            println!(
+                "switcher decode latest frame fixture_queue={} cross_process_queue=false decoded=true no_frame={} selected_client_id={} frame_id={} payload_len={} width={} height={} output_path={} output_bytes={} decode_status={:?}",
+                fixture_queue,
+                summary.no_frame,
+                summary.selected_client_id.0,
+                summary.frame_id.unwrap_or(0),
+                summary.encoded_payload_len.unwrap_or(0),
+                summary.width.unwrap_or(0),
+                summary.height.unwrap_or(0),
+                dump.path.display(),
+                dump.bytes_written,
+                summary.decode_status
+            );
+        }
+        SwitcherDecodeLatestFrameOnceResult::PlaceholderFallback { summary, .. } => {
+            println!(
+                "switcher decode latest frame fixture_queue={} cross_process_queue=false decoded=false fallback=placeholder no_frame={} selected_client_id={} frame_id={} payload_len={} decode_status={:?}",
+                fixture_queue,
+                summary.no_frame,
+                summary.selected_client_id.0,
+                summary.frame_id.unwrap_or(0),
+                summary.encoded_payload_len.unwrap_or(0),
+                summary.decode_status
+            );
+            std::process::exit(1);
+        }
+        SwitcherDecodeLatestFrameOnceResult::NoFrame { summary } => {
+            println!(
+                "switcher decode latest frame fixture_queue={} cross_process_queue=false decoded=false no_frame={} selected_client_id={} frame_id=none payload_len=none decode_status=none",
+                fixture_queue, summary.no_frame, summary.selected_client_id.0
+            );
+            std::process::exit(1);
+        }
+        SwitcherDecodeLatestFrameOnceResult::DumpFailed { summary, error, .. } => {
+            eprintln!(
+                "switcher decode latest frame dump failed selected_client_id={} frame_id={} output_path={:?} error={:?}",
+                summary.selected_client_id.0,
+                summary.frame_id.unwrap_or(0),
+                summary.output_path,
+                error
+            );
+            std::process::exit(1);
         }
     }
 }
