@@ -2578,11 +2578,37 @@ pub struct ClientH264EncoderInput {
     pub frame: ClientRawCapturedVideoFrame,
 }
 
+impl ClientH264EncoderInput {
+    pub fn from_raw_frame(frame: ClientRawCapturedVideoFrame) -> Self {
+        Self { frame }
+    }
+}
+
+/// H.264 payload produced by a caller-owned real encoder.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClientH264EncodedPayload {
+    pub bytes: Vec<u8>,
+}
+
 /// Explicit reason why the H.264 encoder did not produce bytes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ClientH264EncoderDeferredReason {
     RealH264EncodeDeferred,
     UnsupportedCaptureFormat,
+    EncoderUnavailable,
+    EncodeFailed,
+}
+
+/// Result returned by a caller-owned encoder hook before it is converted into
+/// the common encoded frame source.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ClientH264EncoderHookResult {
+    Encoded {
+        payload: ClientH264EncodedPayload,
+    },
+    Deferred {
+        reason: ClientH264EncoderDeferredReason,
+    },
 }
 
 /// Result from the client H.264 encoder boundary.
@@ -2594,24 +2620,76 @@ pub enum ClientH264EncoderResult {
     },
 }
 
+/// Caller-owned hook for real H.264 encoding.
+///
+/// Hooks return raw encoded H.264 bytes only. The boundary wraps those bytes as
+/// `RealCaptureH264`, so hook implementations cannot accidentally label
+/// placeholder payloads as real capture output.
+pub trait ClientH264EncoderRuntimeHook {
+    fn encode_bgra_frame(&self, input: &ClientH264EncoderInput) -> ClientH264EncoderHookResult;
+}
+
+/// Default encoder hook used until FFmpeg or hardware encoder integration is
+/// wired.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct ClientDeferredH264EncoderRuntimeHook;
+
+impl ClientH264EncoderRuntimeHook for ClientDeferredH264EncoderRuntimeHook {
+    fn encode_bgra_frame(&self, _input: &ClientH264EncoderInput) -> ClientH264EncoderHookResult {
+        ClientH264EncoderHookResult::Deferred {
+            reason: ClientH264EncoderDeferredReason::RealH264EncodeDeferred,
+        }
+    }
+}
+
 /// Boundary for turning a raw captured frame into encoded H.264 bytes.
 ///
-/// Real H.264 encoding is not implemented here. The boundary exists so a later
-/// encoder can return `Encoded(RealCaptureH264)` without rewriting metadata or
-/// UDP send code, while this step cannot accidentally label placeholder bytes
-/// as real capture output.
+/// Real encoder ownership stays in an injected runtime hook. The boundary
+/// validates the raw captured frame and converts hook-produced H.264 bytes into
+/// `ClientEncodedVideoFrameSourceKind::RealCaptureH264` without touching UDP
+/// send code.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
 pub struct ClientH264EncoderBoundary;
 
 impl ClientH264EncoderBoundary {
     pub fn encode_once(&self, input: ClientH264EncoderInput) -> ClientH264EncoderResult {
+        self.encode_once_with_runtime(input, &ClientDeferredH264EncoderRuntimeHook)
+    }
+
+    pub fn encode_once_with_runtime(
+        &self,
+        input: ClientH264EncoderInput,
+        runtime: &impl ClientH264EncoderRuntimeHook,
+    ) -> ClientH264EncoderResult {
         match input.frame.pixel_format {
-            ClientRawVideoPixelFormat::Bgra8 => ClientH264EncoderResult::Deferred {
-                reason: ClientH264EncoderDeferredReason::RealH264EncodeDeferred,
-            },
-            ClientRawVideoPixelFormat::Unsupported => ClientH264EncoderResult::Deferred {
-                reason: ClientH264EncoderDeferredReason::UnsupportedCaptureFormat,
-            },
+            ClientRawVideoPixelFormat::Bgra8 => {}
+            ClientRawVideoPixelFormat::Unsupported => {
+                return ClientH264EncoderResult::Deferred {
+                    reason: ClientH264EncoderDeferredReason::UnsupportedCaptureFormat,
+                };
+            }
+        }
+
+        match runtime.encode_bgra_frame(&input) {
+            ClientH264EncoderHookResult::Encoded { payload } => {
+                if payload.bytes.is_empty() {
+                    return ClientH264EncoderResult::Deferred {
+                        reason: ClientH264EncoderDeferredReason::EncodeFailed,
+                    };
+                }
+                ClientH264EncoderResult::Encoded(ClientEncodedVideoFrameSource {
+                    capture_timestamp: input.frame.capture_timestamp,
+                    width: input.frame.width,
+                    height: input.frame.height,
+                    fps_nominal: input.frame.fps_nominal,
+                    codec: Codec::H264,
+                    payload: payload.bytes,
+                    source_kind: ClientEncodedVideoFrameSourceKind::RealCaptureH264,
+                })
+            }
+            ClientH264EncoderHookResult::Deferred { reason } => {
+                ClientH264EncoderResult::Deferred { reason }
+            }
         }
     }
 }
@@ -10212,6 +10290,22 @@ mod tests {
     }
 
     #[test]
+    fn client_video_frame_raw_bgra_frame_creates_h264_encoder_input() {
+        let frame = ClientRawCapturedVideoFrame {
+            capture_timestamp: TimestampMicros(1_000_000),
+            width: 2,
+            height: 1,
+            fps_nominal: 30,
+            pixel_format: ClientRawVideoPixelFormat::Bgra8,
+            pixels: vec![0, 1, 2, 255, 3, 4, 5, 255],
+        };
+
+        let input = ClientH264EncoderInput::from_raw_frame(frame.clone());
+
+        assert_eq!(input.frame, frame);
+    }
+
+    #[test]
     fn client_video_frame_h264_encoder_boundary_reports_unsupported_capture_format() {
         let result = ClientH264EncoderBoundary.encode_once(ClientH264EncoderInput {
             frame: ClientRawCapturedVideoFrame {
@@ -10229,6 +10323,155 @@ mod tests {
             ClientH264EncoderResult::Deferred {
                 reason: ClientH264EncoderDeferredReason::UnsupportedCaptureFormat
             }
+        );
+    }
+
+    #[test]
+    fn client_video_frame_h264_encoder_runtime_hook_can_report_unavailable() {
+        struct UnavailableEncoder;
+
+        impl ClientH264EncoderRuntimeHook for UnavailableEncoder {
+            fn encode_bgra_frame(
+                &self,
+                _input: &ClientH264EncoderInput,
+            ) -> ClientH264EncoderHookResult {
+                ClientH264EncoderHookResult::Deferred {
+                    reason: ClientH264EncoderDeferredReason::EncoderUnavailable,
+                }
+            }
+        }
+
+        let result = ClientH264EncoderBoundary.encode_once_with_runtime(
+            ClientH264EncoderInput::from_raw_frame(ClientRawCapturedVideoFrame {
+                capture_timestamp: TimestampMicros(1_000_000),
+                width: 2,
+                height: 1,
+                fps_nominal: 30,
+                pixel_format: ClientRawVideoPixelFormat::Bgra8,
+                pixels: vec![0, 1, 2, 255, 3, 4, 5, 255],
+            }),
+            &UnavailableEncoder,
+        );
+
+        assert_eq!(
+            result,
+            ClientH264EncoderResult::Deferred {
+                reason: ClientH264EncoderDeferredReason::EncoderUnavailable
+            }
+        );
+    }
+
+    #[test]
+    fn client_video_frame_h264_encoder_runtime_hook_can_report_encode_failed() {
+        struct FailingEncoder;
+
+        impl ClientH264EncoderRuntimeHook for FailingEncoder {
+            fn encode_bgra_frame(
+                &self,
+                _input: &ClientH264EncoderInput,
+            ) -> ClientH264EncoderHookResult {
+                ClientH264EncoderHookResult::Deferred {
+                    reason: ClientH264EncoderDeferredReason::EncodeFailed,
+                }
+            }
+        }
+
+        let result = ClientH264EncoderBoundary.encode_once_with_runtime(
+            ClientH264EncoderInput::from_raw_frame(ClientRawCapturedVideoFrame {
+                capture_timestamp: TimestampMicros(1_000_000),
+                width: 2,
+                height: 1,
+                fps_nominal: 30,
+                pixel_format: ClientRawVideoPixelFormat::Bgra8,
+                pixels: vec![0, 1, 2, 255, 3, 4, 5, 255],
+            }),
+            &FailingEncoder,
+        );
+
+        assert_eq!(
+            result,
+            ClientH264EncoderResult::Deferred {
+                reason: ClientH264EncoderDeferredReason::EncodeFailed
+            }
+        );
+    }
+
+    #[test]
+    fn client_video_frame_h264_encoder_empty_hook_payload_is_encode_failed() {
+        struct EmptyPayloadEncoder;
+
+        impl ClientH264EncoderRuntimeHook for EmptyPayloadEncoder {
+            fn encode_bgra_frame(
+                &self,
+                _input: &ClientH264EncoderInput,
+            ) -> ClientH264EncoderHookResult {
+                ClientH264EncoderHookResult::Encoded {
+                    payload: ClientH264EncodedPayload { bytes: Vec::new() },
+                }
+            }
+        }
+
+        let result = ClientH264EncoderBoundary.encode_once_with_runtime(
+            ClientH264EncoderInput::from_raw_frame(ClientRawCapturedVideoFrame {
+                capture_timestamp: TimestampMicros(1_000_000),
+                width: 2,
+                height: 1,
+                fps_nominal: 30,
+                pixel_format: ClientRawVideoPixelFormat::Bgra8,
+                pixels: vec![0, 1, 2, 255, 3, 4, 5, 255],
+            }),
+            &EmptyPayloadEncoder,
+        );
+
+        assert_eq!(
+            result,
+            ClientH264EncoderResult::Deferred {
+                reason: ClientH264EncoderDeferredReason::EncodeFailed
+            }
+        );
+    }
+
+    #[test]
+    fn client_video_frame_h264_encoder_successful_hook_produces_real_capture_source() {
+        struct SuccessfulEncoder;
+
+        impl ClientH264EncoderRuntimeHook for SuccessfulEncoder {
+            fn encode_bgra_frame(
+                &self,
+                input: &ClientH264EncoderInput,
+            ) -> ClientH264EncoderHookResult {
+                assert_eq!(input.frame.pixel_format, ClientRawVideoPixelFormat::Bgra8);
+                ClientH264EncoderHookResult::Encoded {
+                    payload: ClientH264EncodedPayload {
+                        bytes: vec![0x00, 0x00, 0x01, 0x65],
+                    },
+                }
+            }
+        }
+
+        let result = ClientH264EncoderBoundary.encode_once_with_runtime(
+            ClientH264EncoderInput::from_raw_frame(ClientRawCapturedVideoFrame {
+                capture_timestamp: TimestampMicros(1_000_000),
+                width: 2,
+                height: 1,
+                fps_nominal: 30,
+                pixel_format: ClientRawVideoPixelFormat::Bgra8,
+                pixels: vec![0, 1, 2, 255, 3, 4, 5, 255],
+            }),
+            &SuccessfulEncoder,
+        );
+
+        assert_eq!(
+            result,
+            ClientH264EncoderResult::Encoded(ClientEncodedVideoFrameSource {
+                capture_timestamp: TimestampMicros(1_000_000),
+                width: 2,
+                height: 1,
+                fps_nominal: 30,
+                codec: Codec::H264,
+                payload: vec![0x00, 0x00, 0x01, 0x65],
+                source_kind: ClientEncodedVideoFrameSourceKind::RealCaptureH264
+            })
         );
     }
 

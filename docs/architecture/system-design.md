@@ -7504,9 +7504,25 @@ Current implementation:
   backend probe and returns explicit unavailable reasons; it still does not
   produce raw pixels or fake capture output.
 - `ClientH264EncoderBoundary::encode_once` returns
-  `Deferred(RealH264EncodeDeferred)` for the current supported raw handoff, or
-  `Deferred(UnsupportedCaptureFormat)` when a caller supplies an unsupported
-  raw format.
+  `Deferred(RealH264EncodeDeferred)` through the default hook for the current
+  supported raw handoff, or `Deferred(UnsupportedCaptureFormat)` when a caller
+  supplies an unsupported raw format.
+- `ClientH264EncoderInput::from_raw_frame` converts
+  `ClientRawCapturedVideoFrame` into the encoder input shape without changing
+  capture ownership.
+- `ClientH264EncoderRuntimeHook` is the caller-owned hook for future FFmpeg or
+  hardware encoder integration. The hook returns only encoded H.264 payload
+  bytes or an explicit deferred reason.
+- `ClientH264EncoderBoundary::encode_once_with_runtime` wraps successful hook
+  output into `ClientEncodedVideoFrameSource` with
+  `source_kind=RealCaptureH264`. Empty hook payloads become explicit
+  `EncodeFailed`.
+- H.264 encoder states are explicit:
+  - encoded,
+  - real encode deferred,
+  - unsupported pixel format,
+  - encoder unavailable,
+  - encode failed.
 - `ClientEncodedVideoFrameSource` carries capture timestamp, dimensions,
   nominal FPS, codec, payload bytes, and source kind.
 - Source kind is explicit:
@@ -7546,7 +7562,12 @@ Responsibility split:
   - Does not enumerate targets, acquire frames, encode video, construct
     protocol messages, or send UDP packets.
 - H.264 encoder
-  - Future owner of converting raw captured frames into encoded H.264 payloads.
+  - Owns the boundary and hook contract for converting raw captured frames into
+    encoded H.264 payloads.
+  - Current default hook is deferred; future FFmpeg/hardware integration should
+    sit behind `ClientH264EncoderRuntimeHook`.
+  - Converts successful hook output to `RealCaptureH264` only after non-empty
+    encoded bytes are returned.
   - Does not capture pixels, choose frame ids, or send packets.
 - encoded frame source / metadata boundary
   - Preserves capture timestamp, frame id relationship, dimensions, payload

@@ -5,6 +5,57 @@
 - Codex
 
 ### Work
+- Added the smallest H.264 encoder boundary shape that consumes `ClientRawCapturedVideoFrame`.
+- Added `ClientH264EncoderInput::from_raw_frame`, `ClientH264EncodedPayload`, `ClientH264EncoderHookResult`, and `ClientH264EncoderRuntimeHook`.
+- Kept the default encoder behavior explicit as `RealH264EncodeDeferred`.
+- Added `encode_once_with_runtime` so a caller-owned FFmpeg or hardware encoder can provide real H.264 bytes later.
+- The boundary converts successful non-empty hook output into `ClientEncodedVideoFrameSource` with `source_kind=RealCaptureH264`.
+- Kept unsupported pixel format, encoder unavailable, encode failed, and empty hook payload as explicit non-encoded results.
+- Preserved placeholder H.264 payload source behavior and did not change UDP send, switcher decode/rendering, OBS, or continuous acquisition.
+
+### Changed Files
+- `apps/client/src/lib.rs`
+- `docs/architecture/system-design.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### Decisions
+- Hooks return encoded H.264 payload bytes only; the boundary owns conversion to `RealCaptureH264`.
+- Empty encoded payload from a hook is treated as `EncodeFailed`.
+- Placeholder H.264 bytes remain separate and cannot be labeled as real capture output by this boundary.
+- Real FFmpeg/hardware encoder implementation remains a later hook implementation.
+
+### Unresolved
+- actual FFmpeg or hardware H.264 encoder implementation
+- UDP send path using real encoded frame source
+- continuous acquisition / frame arrived wait
+- real target enumeration
+- real H.264 decode, switcher rendering, targetTime / jitter-buffer, 4-view sync, and OBS integration
+
+### Next
+- Implement a concrete FFmpeg or hardware encoder behind `ClientH264EncoderRuntimeHook`.
+- Add an explicit client one-shot path that uses real encoded source while preserving placeholder send behavior.
+- Add real H.264 decode / switcher rendering boundary.
+
+### TODO Update
+- Marked the H.264 encoder hook boundary complete in Phase 3.
+- Updated Current Focus with the raw BGRA frame -> H.264 hook boundary.
+- Updated Next Items to put concrete FFmpeg/hardware encoder runtime implementation next.
+
+### Validation
+- `cargo fmt`
+- `cargo test -p stream-sync-client client_video_frame`
+- `cargo fmt --check`
+- `cargo check --workspace`
+- `git diff --check`
+
+---
+
+## 2026-04-25
+### Type
+- Codex
+
+### Work
 - Added the smallest client-side Windows Graphics Capture frame acquisition boundary after ready session runtime creation.
 - Added `ClientCaptureFrameAcquisitionBoundary`, `ClientCaptureFrameAcquisitionInput`, `ClientCaptureFrameAcquisitionResult`, and explicit unavailable reasons.
 - Added `ClientWindowsGraphicsCaptureFrameAcquisitionRuntimeHook` behind `cfg(target_os = "windows")`.
