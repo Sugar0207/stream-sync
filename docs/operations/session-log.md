@@ -5,6 +5,61 @@
 - Codex
 
 ### Work
+- Decided the auth + real encoded same-source launcher is needed now for manual server queue E2E verification.
+- Added `ClientAuthRealEncodedVideoFramePocLauncher`, startup config, outcome, and error types.
+- Added the client CLI entry point `--auth-real-encoded-video-frame-poc-once [config-path]`.
+- Refactored `ClientRealEncodedVideoFramePocLauncher` so the existing real encoded one-shot path can send through a caller-provided UDP socket.
+- The new launcher binds one UDP socket, sends `AuthRequest`, receives `AuthResponse`, requires `accepted=true`, then reuses `ClientRealEncodedVideoFrameOneShotBoundary` to capture, FFmpeg-encode, build `RealCaptureH264`, and send one `VideoFrame` from the same source.
+- Added tests for config wiring, accepted auth reaching real encoded send from the same source, rejected auth stopping before capture/encode/send, capture unavailable, and encode failure.
+- Updated manual real encoded PoC docs with the authenticated same-source command pair.
+
+### Changed Files
+- `apps/client/src/lib.rs`
+- `apps/client/src/main.rs`
+- `docs/architecture/system-design.md`
+- `docs/operations/manual-real-encoded-video-poc.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### Decisions
+- Add `--auth-real-encoded-video-frame-poc-once` because the server packet acceptance gate is keyed by the authenticated UDP source; the existing video-only real encoded CLI cannot prove accepted queue insertion.
+- Do not weaken server authentication or bypass the packet acceptance gate.
+- Keep the video-only real encoded CLI as the low-level capture/encode/send check.
+- Keep continuous capture, decode/rendering, OBS integration, and 4-view sync out of this task.
+
+### Unresolved
+- production H.264 encoder configuration and structured error logging
+- continuous acquisition / frame-arrived wait
+- real target enumeration
+- real H.264 decode and switcher rendering
+- targetTime / jitter-buffer 2-view and 4-view sync
+- OBS integration
+
+### Next
+- Add production encoder configuration / structured encode error logging.
+- Define the real H.264 decode / switcher rendering boundary.
+- Define continuous acquisition / frame-arrived wait separately from one-shot send.
+
+### TODO Update
+- Marked same-socket auth then real encoded `VideoFrame` one-shot CLI/config launcher complete.
+- Updated Current Focus with `--auth-real-encoded-video-frame-poc-once`.
+- Removed the auth + real encoded launcher decision from Next Items.
+
+### Validation
+- `cargo fmt`
+- `cargo fmt --check`
+- `cargo test -p stream-sync-client client_video_frame -- --nocapture`
+- `cargo test -p stream-sync-client client_video_frame`
+- `cargo check --workspace`
+- `git diff --check`
+
+---
+
+## 2026-04-25
+### Type
+- Codex
+
+### Work
 - Added manual verification wiring for the one-shot real encoded client `VideoFrame` path.
 - Added `ClientRealEncodedVideoFramePocLauncher`, startup config, outcome, and error types.
 - Added the client CLI entry point `--real-encoded-video-frame-poc-once [config-path]`.

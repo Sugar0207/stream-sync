@@ -794,6 +794,25 @@ impl ClientRealEncodedVideoFramePocLauncher {
         capture_runtime_hook: &impl ClientCaptureFrameAcquisitionRuntimeHook,
         encoder_runtime_hook: &impl ClientH264EncoderRuntimeHook,
     ) -> Result<ClientRealEncodedVideoFramePocOutcome, ClientRealEncodedVideoFramePocError> {
+        let socket = UdpSocket::bind(ephemeral_bind_address(startup_config.destination))
+            .map_err(|error| ClientRealEncodedVideoFramePocError::Bind(error.kind()))?;
+        self.send_with_socket_and_runtimes(
+            &socket,
+            startup_config,
+            session_runtime_hook,
+            capture_runtime_hook,
+            encoder_runtime_hook,
+        )
+    }
+
+    pub fn send_with_socket_and_runtimes(
+        &self,
+        socket: &UdpSocket,
+        startup_config: ClientRealEncodedVideoFramePocStartupConfig,
+        session_runtime_hook: &impl ClientCaptureSessionRuntimeHook,
+        capture_runtime_hook: &impl ClientCaptureFrameAcquisitionRuntimeHook,
+        encoder_runtime_hook: &impl ClientH264EncoderRuntimeHook,
+    ) -> Result<ClientRealEncodedVideoFramePocOutcome, ClientRealEncodedVideoFramePocError> {
         let session_config = match self.session_config.prepare_from_target_config(
             startup_config.backend_config.backend,
             startup_config.backend_config.target.as_ref(),
@@ -829,12 +848,10 @@ impl ClientRealEncodedVideoFramePocLauncher {
             }
         };
 
-        let socket = UdpSocket::bind(ephemeral_bind_address(startup_config.destination))
-            .map_err(|error| ClientRealEncodedVideoFramePocError::Bind(error.kind()))?;
         let capture_timestamp = current_timestamp_micros();
         let send_timestamp = current_timestamp_micros();
         let mut one_shot_input = ClientRealEncodedVideoFrameOneShotInput {
-            socket: &socket,
+            socket,
             destination: startup_config.destination,
             capture_runtime: &mut capture_runtime,
             protocol_version: startup_config.protocol_version,
@@ -869,6 +886,181 @@ pub fn run_real_encoded_video_frame_poc_once_from_path(
     path: impl AsRef<Path>,
 ) -> Result<ClientRealEncodedVideoFramePocOutcome, ClientRealEncodedVideoFramePocError> {
     ClientRealEncodedVideoFramePocLauncher::default().run_once_from_path(path)
+}
+
+/// One-shot client-side auth + real encoded `VideoFrame` send PoC.
+///
+/// This keeps a single UDP socket, sends one `AuthRequest`, requires an
+/// accepted `AuthResponse`, then uses the real encoded one-shot boundary to
+/// capture, encode, and send one `RealCaptureH264` `VideoFrame` from the same
+/// local source. It does not loop, weaken auth, decode, render, or integrate
+/// with OBS.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct ClientAuthRealEncodedVideoFramePocLauncher {
+    encoder: ProtocolMessageEncoderBoundary,
+    real_video: ClientRealEncodedVideoFramePocLauncher,
+}
+
+impl ClientAuthRealEncodedVideoFramePocLauncher {
+    pub fn load_startup_config_from_path(
+        &self,
+        path: impl AsRef<Path>,
+    ) -> Result<
+        ClientAuthRealEncodedVideoFramePocStartupConfig,
+        ClientAuthRealEncodedVideoFramePocError,
+    > {
+        let auth_config = ClientAuthRequestPocLauncher::default()
+            .load_startup_config_from_path(path)
+            .map_err(ClientAuthRealEncodedVideoFramePocError::from_auth_request_error)?;
+        Ok(self.load_startup_config_from_auth_config(auth_config))
+    }
+
+    pub fn load_startup_config_from_str(
+        &self,
+        input: &str,
+    ) -> Result<
+        ClientAuthRealEncodedVideoFramePocStartupConfig,
+        ClientAuthRealEncodedVideoFramePocError,
+    > {
+        let auth_config = ClientAuthRequestPocLauncher::default()
+            .load_startup_config_from_str(input)
+            .map_err(ClientAuthRealEncodedVideoFramePocError::from_auth_request_error)?;
+        Ok(self.load_startup_config_from_auth_config(auth_config))
+    }
+
+    fn load_startup_config_from_auth_config(
+        &self,
+        auth_config: ClientAuthRequestPocStartupConfig,
+    ) -> ClientAuthRealEncodedVideoFramePocStartupConfig {
+        ClientAuthRealEncodedVideoFramePocStartupConfig {
+            destination: auth_config.destination,
+            response_timeout_ms: auth_config.response_timeout_ms,
+            request: auth_config.request.clone(),
+            video: ClientRealEncodedVideoFramePocStartupConfig {
+                destination: auth_config.destination,
+                protocol_version: auth_config.request.protocol_version,
+                client_id: auth_config.request.client_id,
+                run_id: auth_config.request.run_id,
+                frame_id: DEFAULT_PLACEHOLDER_VIDEO_FRAME_ID,
+                is_keyframe: true,
+                fps_nominal: DEFAULT_PLACEHOLDER_VIDEO_FPS,
+                start_capture_if_needed: true,
+                backend_config:
+                    ClientCaptureBackendConfig::windows_graphics_capture_primary_display(),
+            },
+        }
+    }
+
+    pub fn run_once_from_path(
+        &self,
+        path: impl AsRef<Path>,
+    ) -> Result<ClientAuthRealEncodedVideoFramePocOutcome, ClientAuthRealEncodedVideoFramePocError>
+    {
+        let startup_config = self.load_startup_config_from_path(path)?;
+        self.run_once(startup_config)
+    }
+
+    pub fn run_once(
+        &self,
+        startup_config: ClientAuthRealEncodedVideoFramePocStartupConfig,
+    ) -> Result<ClientAuthRealEncodedVideoFramePocOutcome, ClientAuthRealEncodedVideoFramePocError>
+    {
+        #[cfg(target_os = "windows")]
+        {
+            self.run_once_with_runtimes(
+                startup_config,
+                &ClientWindowsGraphicsCaptureSessionRuntimeHook,
+                &ClientWindowsGraphicsCaptureFrameAcquisitionRuntimeHook,
+                &ClientFfmpegSoftwareH264EncoderRuntimeHook::default(),
+            )
+        }
+
+        #[cfg(not(target_os = "windows"))]
+        {
+            self.run_once_with_runtimes(
+                startup_config,
+                &ClientUnavailableCaptureSessionRuntimeHook,
+                &ClientUnavailableCaptureFrameAcquisitionRuntimeHook,
+                &ClientFfmpegSoftwareH264EncoderRuntimeHook::default(),
+            )
+        }
+    }
+
+    pub fn run_once_with_runtimes(
+        &self,
+        startup_config: ClientAuthRealEncodedVideoFramePocStartupConfig,
+        session_runtime_hook: &impl ClientCaptureSessionRuntimeHook,
+        capture_runtime_hook: &impl ClientCaptureFrameAcquisitionRuntimeHook,
+        encoder_runtime_hook: &impl ClientH264EncoderRuntimeHook,
+    ) -> Result<ClientAuthRealEncodedVideoFramePocOutcome, ClientAuthRealEncodedVideoFramePocError>
+    {
+        let socket = UdpSocket::bind(ephemeral_bind_address(startup_config.destination))
+            .map_err(|error| ClientAuthRealEncodedVideoFramePocError::Bind(error.kind()))?;
+        socket
+            .set_read_timeout(Some(Duration::from_millis(
+                startup_config.response_timeout_ms,
+            )))
+            .map_err(|error| {
+                ClientAuthRealEncodedVideoFramePocError::SetReadTimeout(error.kind())
+            })?;
+        let local_source = socket
+            .local_addr()
+            .map_err(|error| ClientAuthRealEncodedVideoFramePocError::Bind(error.kind()))?;
+
+        let context = EncodeContext {
+            protocol_version: startup_config.request.protocol_version,
+        };
+        let mut auth_request_bytes = Vec::new();
+        self.encoder
+            .encode_message(
+                context,
+                &ProtocolMessage::AuthRequest(startup_config.request.clone()),
+                &mut auth_request_bytes,
+            )
+            .map_err(ClientAuthRealEncodedVideoFramePocError::Encode)?;
+        let auth_request_bytes_sent = socket
+            .send_to(&auth_request_bytes, startup_config.destination)
+            .map_err(|error| ClientAuthRealEncodedVideoFramePocError::Send(error.kind()))?;
+
+        let (auth_response_source, auth_response_bytes, auth_response) =
+            receive_auth_response(&socket, startup_config.request.protocol_version)
+                .map_err(ClientAuthRealEncodedVideoFramePocError::AuthResponse)?;
+        if !auth_response.accepted {
+            return Err(ClientAuthRealEncodedVideoFramePocError::AuthRejected(
+                auth_response,
+            ));
+        }
+
+        let video = self
+            .real_video
+            .send_with_socket_and_runtimes(
+                &socket,
+                startup_config.video.clone(),
+                session_runtime_hook,
+                capture_runtime_hook,
+                encoder_runtime_hook,
+            )
+            .map_err(ClientAuthRealEncodedVideoFramePocError::RealVideo)?;
+
+        Ok(ClientAuthRealEncodedVideoFramePocOutcome {
+            destination: startup_config.destination,
+            local_source,
+            request: startup_config.request,
+            auth_request_bytes,
+            auth_request_bytes_sent,
+            auth_response_source,
+            auth_response_bytes,
+            auth_response,
+            video,
+        })
+    }
+}
+
+/// Convenience entry point for the same-socket manual real encoded video PoC.
+pub fn run_auth_real_encoded_video_frame_poc_once_from_path(
+    path: impl AsRef<Path>,
+) -> Result<ClientAuthRealEncodedVideoFramePocOutcome, ClientAuthRealEncodedVideoFramePocError> {
+    ClientAuthRealEncodedVideoFramePocLauncher::default().run_once_from_path(path)
 }
 
 /// Client boundary for observing one received HeartbeatAck.
@@ -5318,6 +5510,29 @@ pub enum ClientRealEncodedVideoFramePocOutcome {
     },
 }
 
+/// Startup config for auth followed by one real encoded `VideoFrame` send.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClientAuthRealEncodedVideoFramePocStartupConfig {
+    pub destination: SocketAddr,
+    pub response_timeout_ms: u64,
+    pub request: AuthRequest,
+    pub video: ClientRealEncodedVideoFramePocStartupConfig,
+}
+
+/// Result of one same-socket auth round trip followed by one real encoded frame send.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClientAuthRealEncodedVideoFramePocOutcome {
+    pub destination: SocketAddr,
+    pub local_source: SocketAddr,
+    pub request: AuthRequest,
+    pub auth_request_bytes: Vec<u8>,
+    pub auth_request_bytes_sent: usize,
+    pub auth_response_source: SocketAddr,
+    pub auth_response_bytes: Vec<u8>,
+    pub auth_response: AuthResponse,
+    pub video: ClientRealEncodedVideoFramePocOutcome,
+}
+
 /// Return mode used by the one-tick heartbeat runtime launcher.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ClientHeartbeatOneTickRuntimeMode {
@@ -9333,6 +9548,44 @@ impl ClientRealEncodedVideoFramePocError {
     }
 }
 
+/// Error from the same-socket auth + real encoded `VideoFrame` PoC.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ClientAuthRealEncodedVideoFramePocError {
+    Io { path: PathBuf, message: String },
+    Config(ClientAuthRequestPocConfigError),
+    Destination(ClientAuthRequestPocConfigError),
+    Encode(ProtocolError),
+    Bind(io::ErrorKind),
+    SetReadTimeout(io::ErrorKind),
+    Send(io::ErrorKind),
+    AuthResponse(ClientResponseReceiveError),
+    AuthRejected(AuthResponse),
+    RealVideo(ClientRealEncodedVideoFramePocError),
+}
+
+impl ClientAuthRealEncodedVideoFramePocError {
+    fn from_auth_request_error(error: ClientAuthRequestPocError) -> Self {
+        match error {
+            ClientAuthRequestPocError::Io { path, message } => Self::Io { path, message },
+            ClientAuthRequestPocError::Config(error) => Self::Config(error),
+            ClientAuthRequestPocError::Destination(error) => Self::Destination(error),
+            ClientAuthRequestPocError::Encode(error) => Self::Encode(error),
+            ClientAuthRequestPocError::Bind(error) => Self::Bind(error),
+            ClientAuthRequestPocError::SetReadTimeout(error) => Self::SetReadTimeout(error),
+            ClientAuthRequestPocError::Send(error) => Self::Send(error),
+            ClientAuthRequestPocError::Receive(error) => {
+                Self::AuthResponse(ClientResponseReceiveError::Receive(error))
+            }
+            ClientAuthRequestPocError::Decode(error) => {
+                Self::AuthResponse(ClientResponseReceiveError::Decode(error))
+            }
+            ClientAuthRequestPocError::UnexpectedResponseMessage { actual } => {
+                Self::AuthResponse(ClientResponseReceiveError::UnexpectedResponseMessage { actual })
+            }
+        }
+    }
+}
+
 /// Error from one auth round trip plus one client heartbeat loop tick.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ClientHeartbeatOneTickRuntimeError {
@@ -9756,6 +10009,82 @@ mod tests {
             capabilities: Vec::new(),
             requested_video_profile: None,
         }
+    }
+
+    fn run_auth_real_encoded_fixture_with_response(
+        accepted: bool,
+        session_runtime_hook: &impl ClientCaptureSessionRuntimeHook,
+        capture_runtime_hook: &impl ClientCaptureFrameAcquisitionRuntimeHook,
+        encoder_runtime_hook: &impl ClientH264EncoderRuntimeHook,
+    ) -> Result<ClientAuthRealEncodedVideoFramePocOutcome, ClientAuthRealEncodedVideoFramePocError>
+    {
+        let receiver = UdpSocket::bind("127.0.0.1:0").expect("receiver should bind");
+        receiver
+            .set_read_timeout(Some(Duration::from_secs(1)))
+            .expect("read timeout should be set");
+        let destination = receiver.local_addr().expect("receiver addr should exist");
+        let request = auth_request_for_video_frame_tests();
+        let config = ClientAuthRealEncodedVideoFramePocStartupConfig {
+            destination,
+            response_timeout_ms: 1_000,
+            request: request.clone(),
+            video: ClientRealEncodedVideoFramePocStartupConfig {
+                destination,
+                protocol_version: request.protocol_version,
+                client_id: request.client_id.clone(),
+                run_id: request.run_id.clone(),
+                frame_id: 31,
+                is_keyframe: true,
+                fps_nominal: 30,
+                start_capture_if_needed: true,
+                backend_config:
+                    ClientCaptureBackendConfig::windows_graphics_capture_primary_display(),
+            },
+        };
+        let response = AuthResponse {
+            message_type: MessageType::AuthResponse,
+            protocol_version: request.protocol_version,
+            client_id: request.client_id.clone(),
+            run_id: request.run_id.clone(),
+            accepted,
+            reason_code: if accepted {
+                AuthResponseReasonCode::Ok
+            } else {
+                AuthResponseReasonCode::InvalidToken
+            },
+            message: None,
+            server_time: Some(TimestampMicros(2_000_000)),
+            expected_protocol_version: None,
+        };
+        let response_for_thread = response.clone();
+        let server = std::thread::spawn(move || {
+            let mut buffer = [0_u8; 2048];
+            let (_auth_len, source) = receiver
+                .recv_from(&mut buffer)
+                .expect("receiver should get auth request");
+            let mut response_bytes = Vec::new();
+            ProtocolMessageEncoderBoundary
+                .encode_message(
+                    EncodeContext {
+                        protocol_version: response_for_thread.protocol_version,
+                    },
+                    &ProtocolMessage::AuthResponse(response_for_thread),
+                    &mut response_bytes,
+                )
+                .expect("auth response should encode");
+            receiver
+                .send_to(&response_bytes, source)
+                .expect("auth response should send");
+        });
+
+        let outcome = ClientAuthRealEncodedVideoFramePocLauncher::default().run_once_with_runtimes(
+            config,
+            session_runtime_hook,
+            capture_runtime_hook,
+            encoder_runtime_hook,
+        );
+        server.join().expect("server thread should finish");
+        outcome
     }
 
     #[test]
@@ -11899,6 +12228,400 @@ mod tests {
             ClientRealEncodedVideoFramePocOutcome::NotSent {
                 result: ClientRealEncodedVideoFrameOneShotResult::SendFailed {
                     error: ClientVideoFrameEncodeSendError::Send(_)
+                },
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn client_video_frame_auth_real_encoded_poc_launcher_loads_config_with_same_source_contract() {
+        let config = ClientAuthRealEncodedVideoFramePocLauncher::default()
+            .load_startup_config_from_str(include_str!(
+                "../../../configs/examples/client.accepted.example.toml"
+            ))
+            .expect("accepted example config should load");
+
+        assert_eq!(config.destination, "127.0.0.1:5000".parse().unwrap());
+        assert_eq!(config.response_timeout_ms, 5_000);
+        assert_eq!(config.request.client_id, ClientId("player1".to_string()));
+        assert_eq!(config.video.destination, config.destination);
+        assert_eq!(
+            config.video.protocol_version,
+            config.request.protocol_version
+        );
+        assert_eq!(config.video.client_id, config.request.client_id);
+        assert_eq!(config.video.run_id, config.request.run_id);
+        assert!(config.video.start_capture_if_needed);
+        assert_eq!(
+            config.video.backend_config,
+            ClientCaptureBackendConfig::windows_graphics_capture_primary_display()
+        );
+    }
+
+    #[test]
+    fn client_video_frame_auth_real_encoded_poc_accepted_auth_sends_video_from_same_source() {
+        struct FixtureSession;
+        impl ClientCaptureSessionRuntimeHook for FixtureSession {
+            fn create_windows_graphics_capture_session(
+                &self,
+                _input: &ClientCaptureSessionRuntimeInput,
+            ) -> ClientCaptureSessionRuntimeCreationResult {
+                ClientCaptureSessionRuntimeCreationResult::Created {
+                    runtime: client_capture_session_runtime_for_tests(),
+                }
+            }
+        }
+        struct FixtureCapture;
+        impl ClientCaptureFrameAcquisitionRuntimeHook for FixtureCapture {
+            fn acquire_one_bgra_frame(
+                &self,
+                input: &mut ClientCaptureFrameAcquisitionInput<'_>,
+            ) -> ClientCaptureFrameAcquisitionResult {
+                ClientCaptureFrameAcquisitionResult::FrameAcquired {
+                    frame: ClientRawCapturedVideoFrame {
+                        capture_timestamp: input.capture_timestamp,
+                        width: 2,
+                        height: 2,
+                        fps_nominal: input.fps_nominal,
+                        pixel_format: ClientRawVideoPixelFormat::Bgra8,
+                        pixels: vec![0; 2 * 2 * 4],
+                    },
+                }
+            }
+        }
+        struct FixtureEncoder;
+        impl ClientH264EncoderRuntimeHook for FixtureEncoder {
+            fn encode_bgra_frame(
+                &self,
+                _input: &ClientH264EncoderInput,
+            ) -> ClientH264EncoderHookResult {
+                ClientH264EncoderHookResult::Encoded {
+                    payload: ClientH264EncodedPayload {
+                        bytes: vec![0x00, 0x00, 0x01, 0x65],
+                    },
+                }
+            }
+        }
+
+        let receiver = UdpSocket::bind("127.0.0.1:0").expect("receiver should bind");
+        receiver
+            .set_read_timeout(Some(Duration::from_secs(1)))
+            .expect("read timeout should be set");
+        let destination = receiver.local_addr().expect("receiver addr should exist");
+        let request = auth_request_for_video_frame_tests();
+        let config = ClientAuthRealEncodedVideoFramePocStartupConfig {
+            destination,
+            response_timeout_ms: 1_000,
+            request: request.clone(),
+            video: ClientRealEncodedVideoFramePocStartupConfig {
+                destination,
+                protocol_version: request.protocol_version,
+                client_id: request.client_id.clone(),
+                run_id: request.run_id.clone(),
+                frame_id: 21,
+                is_keyframe: true,
+                fps_nominal: 30,
+                start_capture_if_needed: true,
+                backend_config:
+                    ClientCaptureBackendConfig::windows_graphics_capture_primary_display(),
+            },
+        };
+        let response = AuthResponse {
+            message_type: MessageType::AuthResponse,
+            protocol_version: request.protocol_version,
+            client_id: request.client_id.clone(),
+            run_id: request.run_id.clone(),
+            accepted: true,
+            reason_code: AuthResponseReasonCode::Ok,
+            message: None,
+            server_time: Some(TimestampMicros(2_000_000)),
+            expected_protocol_version: None,
+        };
+        let response_for_thread = response.clone();
+        let server = std::thread::spawn(move || {
+            let mut buffer = [0_u8; 2048];
+            let (auth_len, source) = receiver
+                .recv_from(&mut buffer)
+                .expect("receiver should get auth request");
+            let auth_packet =
+                decode_fixed_header(&buffer[..auth_len]).expect("auth header should decode");
+            let decoded_request =
+                decode_auth_request_payload(auth_packet.header, auth_packet.payload)
+                    .expect("auth request should decode");
+            assert_eq!(decoded_request, request);
+
+            let mut response_bytes = Vec::new();
+            ProtocolMessageEncoderBoundary
+                .encode_message(
+                    EncodeContext {
+                        protocol_version: response_for_thread.protocol_version,
+                    },
+                    &ProtocolMessage::AuthResponse(response_for_thread),
+                    &mut response_bytes,
+                )
+                .expect("auth response should encode");
+            receiver
+                .send_to(&response_bytes, source)
+                .expect("auth response should send");
+
+            let (video_len, video_source) = receiver
+                .recv_from(&mut buffer)
+                .expect("receiver should get video frame");
+            assert_eq!(video_source, source);
+            let video_packet =
+                decode_fixed_header(&buffer[..video_len]).expect("video header should decode");
+            let decoded = decode_payload_by_message_type(
+                DecodeContext {
+                    expected_protocol_version: ProtocolVersion(2),
+                },
+                video_packet.header,
+                video_packet.payload,
+            )
+            .expect("video frame should decode");
+            (source, video_source, video_len, decoded)
+        });
+
+        let outcome = ClientAuthRealEncodedVideoFramePocLauncher::default()
+            .run_once_with_runtimes(config, &FixtureSession, &FixtureCapture, &FixtureEncoder)
+            .expect("auth real encoded video should complete");
+
+        let (auth_source, video_source, video_len, decoded) =
+            server.join().expect("server thread should finish");
+        assert_eq!(outcome.local_source.port(), auth_source.port());
+        assert_eq!(video_source, auth_source);
+        assert_eq!(outcome.auth_response, response);
+        let ClientRealEncodedVideoFramePocOutcome::Sent(sent) = outcome.video else {
+            panic!("accepted fixture should send real encoded video");
+        };
+        assert_eq!(sent.bytes_sent, video_len);
+        assert_eq!(
+            sent.source_kind,
+            ClientEncodedVideoFrameSourceKind::RealCaptureH264
+        );
+        assert_eq!(sent.frame.frame_id, 21);
+        assert_eq!(sent.frame.payload, vec![0x00, 0x00, 0x01, 0x65]);
+        assert_eq!(decoded, ProtocolMessage::VideoFrame(sent.frame));
+    }
+
+    #[test]
+    fn client_video_frame_auth_real_encoded_poc_rejected_auth_does_not_capture_encode_send() {
+        struct ShouldNotCreateSession;
+        impl ClientCaptureSessionRuntimeHook for ShouldNotCreateSession {
+            fn create_windows_graphics_capture_session(
+                &self,
+                _input: &ClientCaptureSessionRuntimeInput,
+            ) -> ClientCaptureSessionRuntimeCreationResult {
+                panic!("session should not be created when auth is rejected");
+            }
+        }
+        struct ShouldNotCapture;
+        impl ClientCaptureFrameAcquisitionRuntimeHook for ShouldNotCapture {
+            fn acquire_one_bgra_frame(
+                &self,
+                _input: &mut ClientCaptureFrameAcquisitionInput<'_>,
+            ) -> ClientCaptureFrameAcquisitionResult {
+                panic!("capture should not run when auth is rejected");
+            }
+        }
+        struct ShouldNotEncode;
+        impl ClientH264EncoderRuntimeHook for ShouldNotEncode {
+            fn encode_bgra_frame(
+                &self,
+                _input: &ClientH264EncoderInput,
+            ) -> ClientH264EncoderHookResult {
+                panic!("encoder should not run when auth is rejected");
+            }
+        }
+
+        let receiver = UdpSocket::bind("127.0.0.1:0").expect("receiver should bind");
+        receiver
+            .set_read_timeout(Some(Duration::from_millis(250)))
+            .expect("read timeout should be set");
+        let destination = receiver.local_addr().expect("receiver addr should exist");
+        let request = auth_request_for_video_frame_tests();
+        let config = ClientAuthRealEncodedVideoFramePocStartupConfig {
+            destination,
+            response_timeout_ms: 1_000,
+            request: request.clone(),
+            video: ClientRealEncodedVideoFramePocStartupConfig {
+                destination,
+                protocol_version: request.protocol_version,
+                client_id: request.client_id.clone(),
+                run_id: request.run_id.clone(),
+                frame_id: 22,
+                is_keyframe: true,
+                fps_nominal: 30,
+                start_capture_if_needed: true,
+                backend_config:
+                    ClientCaptureBackendConfig::windows_graphics_capture_primary_display(),
+            },
+        };
+        let response = AuthResponse {
+            message_type: MessageType::AuthResponse,
+            protocol_version: request.protocol_version,
+            client_id: request.client_id.clone(),
+            run_id: request.run_id.clone(),
+            accepted: false,
+            reason_code: AuthResponseReasonCode::InvalidToken,
+            message: Some("rejected".to_string()),
+            server_time: Some(TimestampMicros(2_000_000)),
+            expected_protocol_version: None,
+        };
+        let response_for_thread = response.clone();
+        let server = std::thread::spawn(move || {
+            let mut buffer = [0_u8; 2048];
+            let (_auth_len, source) = receiver
+                .recv_from(&mut buffer)
+                .expect("receiver should get auth request");
+            let mut response_bytes = Vec::new();
+            ProtocolMessageEncoderBoundary
+                .encode_message(
+                    EncodeContext {
+                        protocol_version: response_for_thread.protocol_version,
+                    },
+                    &ProtocolMessage::AuthResponse(response_for_thread),
+                    &mut response_bytes,
+                )
+                .expect("auth response should encode");
+            receiver
+                .send_to(&response_bytes, source)
+                .expect("auth response should send");
+            let no_video = receiver.recv_from(&mut buffer);
+            let error = no_video.expect_err("rejected auth should not send video");
+            assert!(matches!(
+                error.kind(),
+                io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
+            ));
+        });
+
+        let error = ClientAuthRealEncodedVideoFramePocLauncher::default()
+            .run_once_with_runtimes(
+                config,
+                &ShouldNotCreateSession,
+                &ShouldNotCapture,
+                &ShouldNotEncode,
+            )
+            .expect_err("rejected auth should stop before video");
+
+        assert_eq!(
+            error,
+            ClientAuthRealEncodedVideoFramePocError::AuthRejected(response)
+        );
+        server.join().expect("server thread should finish");
+    }
+
+    #[test]
+    fn client_video_frame_auth_real_encoded_poc_surfaces_capture_unavailable() {
+        struct FixtureSession;
+        impl ClientCaptureSessionRuntimeHook for FixtureSession {
+            fn create_windows_graphics_capture_session(
+                &self,
+                _input: &ClientCaptureSessionRuntimeInput,
+            ) -> ClientCaptureSessionRuntimeCreationResult {
+                ClientCaptureSessionRuntimeCreationResult::Created {
+                    runtime: client_capture_session_runtime_for_tests(),
+                }
+            }
+        }
+        struct UnavailableCapture;
+        impl ClientCaptureFrameAcquisitionRuntimeHook for UnavailableCapture {
+            fn acquire_one_bgra_frame(
+                &self,
+                _input: &mut ClientCaptureFrameAcquisitionInput<'_>,
+            ) -> ClientCaptureFrameAcquisitionResult {
+                ClientCaptureFrameAcquisitionResult::Unavailable {
+                    reason: ClientCaptureFrameAcquisitionUnavailableReason::RuntimeUnavailable,
+                    message: Some("fixture capture unavailable".to_string()),
+                }
+            }
+        }
+        struct ShouldNotEncode;
+        impl ClientH264EncoderRuntimeHook for ShouldNotEncode {
+            fn encode_bgra_frame(
+                &self,
+                _input: &ClientH264EncoderInput,
+            ) -> ClientH264EncoderHookResult {
+                panic!("encoder should not run when capture is unavailable");
+            }
+        }
+
+        let outcome = run_auth_real_encoded_fixture_with_response(
+            true,
+            &FixtureSession,
+            &UnavailableCapture,
+            &ShouldNotEncode,
+        )
+        .expect("auth should succeed and video should return explicit outcome");
+
+        assert!(matches!(
+            outcome.video,
+            ClientRealEncodedVideoFramePocOutcome::NotSent {
+                result: ClientRealEncodedVideoFrameOneShotResult::CaptureUnavailable {
+                    reason: ClientCaptureFrameAcquisitionUnavailableReason::RuntimeUnavailable,
+                    ..
+                },
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn client_video_frame_auth_real_encoded_poc_surfaces_encode_failure() {
+        struct FixtureSession;
+        impl ClientCaptureSessionRuntimeHook for FixtureSession {
+            fn create_windows_graphics_capture_session(
+                &self,
+                _input: &ClientCaptureSessionRuntimeInput,
+            ) -> ClientCaptureSessionRuntimeCreationResult {
+                ClientCaptureSessionRuntimeCreationResult::Created {
+                    runtime: client_capture_session_runtime_for_tests(),
+                }
+            }
+        }
+        struct FixtureCapture;
+        impl ClientCaptureFrameAcquisitionRuntimeHook for FixtureCapture {
+            fn acquire_one_bgra_frame(
+                &self,
+                input: &mut ClientCaptureFrameAcquisitionInput<'_>,
+            ) -> ClientCaptureFrameAcquisitionResult {
+                ClientCaptureFrameAcquisitionResult::FrameAcquired {
+                    frame: ClientRawCapturedVideoFrame {
+                        capture_timestamp: input.capture_timestamp,
+                        width: 2,
+                        height: 2,
+                        fps_nominal: input.fps_nominal,
+                        pixel_format: ClientRawVideoPixelFormat::Bgra8,
+                        pixels: vec![0; 2 * 2 * 4],
+                    },
+                }
+            }
+        }
+        struct FailingEncoder;
+        impl ClientH264EncoderRuntimeHook for FailingEncoder {
+            fn encode_bgra_frame(
+                &self,
+                _input: &ClientH264EncoderInput,
+            ) -> ClientH264EncoderHookResult {
+                ClientH264EncoderHookResult::Deferred {
+                    reason: ClientH264EncoderDeferredReason::EncodeFailed,
+                }
+            }
+        }
+
+        let outcome = run_auth_real_encoded_fixture_with_response(
+            true,
+            &FixtureSession,
+            &FixtureCapture,
+            &FailingEncoder,
+        )
+        .expect("auth should succeed and video should return explicit outcome");
+
+        assert!(matches!(
+            outcome.video,
+            ClientRealEncodedVideoFramePocOutcome::NotSent {
+                result: ClientRealEncodedVideoFrameOneShotResult::EncodeUnavailable {
+                    reason: ClientH264EncoderDeferredReason::EncodeFailed
                 },
                 ..
             }

@@ -7563,6 +7563,15 @@ Current implementation:
   dimensions, encoded payload length, destination, and
   `source_kind=RealCaptureH264` on success, and explicit not-sent reasons on
   failure.
+- The authenticated manual CLI entry point
+  `--auth-real-encoded-video-frame-poc-once [config-path]` is the queue-E2E
+  verification shape for real encoded frames. It binds one UDP socket, sends
+  `AuthRequest`, requires `AuthResponse.accepted=true`, then creates the
+  capture session and sends one `RealCaptureH264` `VideoFrame` through the same
+  socket/source. It does not bypass or weaken the server packet acceptance gate.
+- The video-only real encoded CLI remains a low-level capture/encode/send check.
+  The authenticated CLI is required when the goal is to prove accepted server
+  queue insertion, because the server registry is keyed by authenticated source.
 - The existing placeholder PoC remains available and continues to use explicit
   placeholder payload behavior.
 
@@ -7616,6 +7625,14 @@ Responsibility split:
   - Stops before send when encode is unavailable or failed.
   - Does not own session creation, target enumeration, continuous acquisition,
     retry, decode, rendering, sync, or OBS.
+- auth + real encoded one-shot launcher
+  - Owns only the manual same-source composition: one UDP socket, auth request /
+    accepted auth response, then the existing real encoded one-shot sender on
+    the same socket.
+  - Reuses the real encoded one-shot boundary; it does not implement its own
+    capture, encode, metadata, or send behavior.
+  - Stops before session creation, capture, encode, and video send when auth is
+    rejected or times out.
 - send boundary
   - Continues to encode and send `VideoFrame` over caller-owned UDP sockets.
   - Does not know whether payload bytes came from placeholder or future real

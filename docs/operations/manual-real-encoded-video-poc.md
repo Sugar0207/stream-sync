@@ -84,19 +84,63 @@ Common expected early failures:
 For low-level client send verification, a UDP receiver or the existing server
 manual receiver can observe the packet.
 
-The authenticated server queue path still requires an accepted `AuthRequest`
-from the same UDP source before it accepts `VideoFrame` packets. This real
-encoded standalone launcher currently sends only the video packet, so it proves
-client-side capture/encode/metadata/send behavior but does not by itself prove
-server queue insertion.
+The authenticated server queue path requires an accepted `AuthRequest` from the
+same UDP source before it accepts `VideoFrame` packets. The video-only launcher
+proves client-side capture/encode/metadata/send behavior, but does not by itself
+prove server queue insertion.
 
-Use the placeholder same-socket auth + video path when the current goal is to
-verify server auth gate and queue insertion.
+Use the authenticated same-source real encoded launcher when the current goal is
+to verify the server auth gate and real encoded queue insertion together:
+
+Terminal 1:
+
+```powershell
+cargo run -p stream-sync-server -- --receive-auth-video-queue-once configs/examples/server.example.toml
+```
+
+Terminal 2:
+
+```powershell
+cargo run -p stream-sync-client -- --auth-real-encoded-video-frame-poc-once configs/examples/client.accepted.example.toml
+```
+
+The authenticated launcher:
+
+- binds one UDP socket
+- sends `AuthRequest`
+- receives `AuthResponse`
+- requires `accepted=true`
+- creates the capture session after auth succeeds
+- acquires one BGRA frame
+- encodes it with FFmpeg H.264
+- sends one `RealCaptureH264` `VideoFrame` from the same UDP source
+
+Successful client stdout includes:
+
+- auth request byte count
+- local source address
+- destination
+- auth response byte count and source
+- `same_source=true`
+- frame id
+- capture timestamp
+- width / height / nominal FPS
+- encoded payload length
+- `source_kind=RealCaptureH264`
+
+Example shape:
+
+```text
+auth real encoded video frame PoC sent AuthRequest <bytes> bytes from 127.0.0.1:<port> to 127.0.0.1:5000 and received AuthResponse <bytes> bytes from 127.0.0.1:5000; accepted=true reason_code=Ok; sent VideoFrame <bytes> bytes from same_source=true; frame_id=1 capture_timestamp=<micros> width=<w> height=<h> fps_nominal=30 payload_len=<h264-bytes> source_kind=RealCaptureH264
+```
+
+The command exits non-zero and prints an explicit reason for auth rejection,
+auth timeout/receive failure, capture/session failure, no frame available,
+encode unavailable/failed, or UDP send failure.
 
 ## Current Limitations
 
 - primary display only
-- no auth + real video same-socket launcher yet
 - no continuous acquisition or frame-arrived wait
 - no packet fragmentation; large H.264 payloads may fail UDP send
 - no real decode/rendering in switcher
