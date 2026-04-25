@@ -1,5 +1,56 @@
 <!-- stream-sync/docs/operations/session-log.md -->
 
+## 2026-04-25
+### Type
+- Codex
+
+### Work
+- Added the smallest client-side Windows Graphics Capture frame acquisition boundary after ready session runtime creation.
+- Added `ClientCaptureFrameAcquisitionBoundary`, `ClientCaptureFrameAcquisitionInput`, `ClientCaptureFrameAcquisitionResult`, and explicit unavailable reasons.
+- Added `ClientWindowsGraphicsCaptureFrameAcquisitionRuntimeHook` behind `cfg(target_os = "windows")`.
+- The Windows hook can explicitly call `StartCapture` when requested, attempt one `Direct3D11CaptureFramePool::TryGetNextFrame`, and copy a BGRA8 D3D11 frame surface into `ClientRawCapturedVideoFrame`.
+- Added `capture_started` to `ClientCaptureSessionRuntime` so session readiness and capture-start state remain explicit.
+- Kept H.264 encode, UDP send changes, switcher rendering, OBS, continuous frame events/waiting, and fake frame generation out of scope.
+
+### Changed Files
+- `apps/client/Cargo.toml`
+- `apps/client/src/lib.rs`
+- `docs/architecture/system-design.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### Decisions
+- Frame acquisition is a separate boundary after session runtime creation.
+- A call that is not allowed to start capture returns `CaptureNotStarted` instead of implicitly mutating the runtime.
+- A call that is allowed to start capture starts once, records `capture_started`, then attempts exactly one frame.
+- `NoFrameAvailable` is distinct from acquisition failure.
+- The raw frame handoff remains `ClientRawCapturedVideoFrame` with BGRA8 pixels for future H.264 encoder input.
+
+### Unresolved
+- real H.264 encoder implementation and configuration
+- event/wait based continuous Windows Graphics Capture acquisition
+- Windows API-backed target enumeration for non-primary display ids
+- UDP send using real encoded frames
+- real H.264 decode, switcher rendering, targetTime / jitter-buffer, 4-view sync, and OBS integration
+
+### Next
+- Implement the H.264 encoder boundary over `ClientRawCapturedVideoFrame` without changing UDP send yet.
+- Add a continuous acquisition loop later that waits for frame availability instead of relying only on one immediate `TryGetNextFrame`.
+- Add Windows target enumeration for display/window handles.
+
+### TODO Update
+- Added the one-frame acquisition boundary to Current Focus.
+- Marked first minimal Windows Graphics Capture one-frame acquisition boundary complete in Phase 3.
+- Split remaining capture/encode work so actual H.264 encoder implementation is the next video task.
+
+### Validation
+- `cargo fmt`
+- `cargo fmt --check`
+- `cargo test -p stream-sync-client client_video_frame`
+- `cargo check --workspace`
+
+---
+
 ## 2026-04-24
 ### 作業者 - Codex
 

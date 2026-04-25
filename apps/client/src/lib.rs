@@ -2233,7 +2233,7 @@ mod windows_capture_frame_acquisition {
         unsafe { context.CopyResource(&staging_resource, &source_resource) };
 
         let mut mapped = D3D11_MAPPED_SUBRESOURCE::default();
-        unsafe { context.Map(&staging_resource, 0, D3D11_MAP_READ, 0, &mut mapped) }
+        unsafe { context.Map(&staging_resource, 0, D3D11_MAP_READ, 0, Some(&mut mapped)) }
             .map_err(|error| FrameAcquisitionError::from_windows("map staging texture", error))?;
         let pixels = copy_mapped_bgra_pixels(&mapped, desc.Width, desc.Height);
         unsafe { context.Unmap(&staging_resource, 0) };

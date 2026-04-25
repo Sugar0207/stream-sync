@@ -7457,13 +7457,35 @@ Current implementation:
   session-creation hook. It creates a `GraphicsCaptureItem`, a
   `Direct3D11CaptureFramePool`, and a `GraphicsCaptureSession`, then returns a
   `ClientCaptureSessionRuntime` that only means "session is ready".
-- The Windows hook does not call `StartCapture`, register frame callbacks, call
-  `TryGetNextFrame`, encode H.264, or send UDP packets.
+- The Windows session hook does not call `StartCapture`, register frame
+  callbacks, call `TryGetNextFrame`, encode H.264, or send UDP packets.
+- `ClientCaptureFrameAcquisitionBoundary` is the next boundary after a ready
+  session runtime. It consumes a mutable `ClientCaptureSessionRuntime` and can
+  attempt exactly one BGRA frame acquisition.
+- `ClientCaptureFrameAcquisitionInput` carries:
+  - the ready session runtime,
+  - caller-provided capture timestamp,
+  - nominal FPS,
+  - and whether this call may start capture if the session is not started yet.
+- `ClientCaptureFrameAcquisitionResult` can return:
+  - one `ClientRawCapturedVideoFrame`,
+  - no frame available,
+  - capture not started,
+  - runtime unavailable,
+  - backend unsupported,
+  - or acquisition failed.
+- The Windows acquisition hook owns the minimal live acquisition step:
+  `StartCapture` when explicitly allowed, then one `TryGetNextFrame` attempt,
+  then GPU surface copy into a tightly packed BGRA8 pixel buffer. It does not
+  loop, wait for frame events, encode, send, render, or touch OBS.
+- `ClientRawCapturedVideoFrame` remains the raw encoder input shape: capture
+  timestamp, width, height, nominal FPS, pixel format, and pixel buffer.
+- Future H.264 encoder work must consume `ClientRawCapturedVideoFrame` from the
+  acquisition boundary. It must not reach back into the Windows session runtime
+  or frame pool directly.
 - WindowsGraphicsCapture lifecycle positioning is now:
-  discovery descriptor -> session config -> session runtime creation -> future
-  frame acquisition. Frame acquisition is intentionally the next boundary and
-  must consume an existing ready runtime instead of being hidden inside session
-  creation.
+  discovery descriptor -> session config -> session runtime creation -> frame
+  acquisition -> future H.264 encode.
 - Primary display session creation can create a monitor capture item directly.
   Window session creation resolves the configured title to an HWND first.
   Non-primary display stable ids still require real Windows display enumeration,
@@ -7535,6 +7557,7 @@ Responsibility split:
   - Does not know whether payload bytes came from placeholder or future real
     capture/encode.
 
-Windows API-backed target enumeration, frame acquisition, real H.264 encoder
-integration, encoder configuration, packet fragmentation, decode, switcher
-rendering, 4-view sync, and OBS integration remain future work.
+Windows API-backed target enumeration, event/wait based continuous frame
+acquisition, real H.264 encoder integration, encoder configuration, packet
+fragmentation, decode, switcher rendering, 4-view sync, and OBS integration
+remain future work.
