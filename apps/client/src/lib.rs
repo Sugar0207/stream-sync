@@ -1522,15 +1522,57 @@ pub enum ClientCaptureTargetDiscoveryResult {
 /// Boundary for discovering capture targets before frame acquisition.
 ///
 /// The Windows Graphics Capture direction is selected, but real enumeration is
-/// still deferred. This boundary does not request frames, open capture sessions,
-/// encode video, or touch UDP send state.
+/// still deferred behind an injectable runtime hook. This boundary does not
+/// request frames, open capture sessions, encode video, or touch UDP send state.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
 pub struct ClientCaptureTargetDiscoveryBoundary;
+
+/// Runtime hook for platform-specific capture target enumeration.
+///
+/// The default hook does not enumerate real Windows targets yet. A later
+/// Windows implementation can provide descriptors here without changing the
+/// caller-facing discovery result shape.
+pub trait ClientCaptureTargetDiscoveryRuntimeHook {
+    fn discover_windows_graphics_capture_targets(&self) -> ClientCaptureTargetDiscoveryResult;
+}
+
+/// Default discovery runtime hook used until Windows API wiring is added.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct ClientUnavailableCaptureTargetDiscoveryRuntimeHook;
+
+impl ClientCaptureTargetDiscoveryRuntimeHook
+    for ClientUnavailableCaptureTargetDiscoveryRuntimeHook
+{
+    fn discover_windows_graphics_capture_targets(&self) -> ClientCaptureTargetDiscoveryResult {
+        if cfg!(target_os = "windows") {
+            ClientCaptureTargetDiscoveryResult::Unavailable {
+                backend: Some(ClientCaptureBackendKind::WindowsGraphicsCapture),
+                reason: ClientCaptureTargetDiscoveryUnavailableReason::RuntimeUnavailable,
+            }
+        } else {
+            ClientCaptureTargetDiscoveryResult::Unavailable {
+                backend: Some(ClientCaptureBackendKind::WindowsGraphicsCapture),
+                reason: ClientCaptureTargetDiscoveryUnavailableReason::BackendUnsupported,
+            }
+        }
+    }
+}
 
 impl ClientCaptureTargetDiscoveryBoundary {
     pub fn discover_targets(
         &self,
         input: ClientCaptureTargetDiscoveryInput,
+    ) -> ClientCaptureTargetDiscoveryResult {
+        self.discover_targets_with_runtime(
+            input,
+            &ClientUnavailableCaptureTargetDiscoveryRuntimeHook,
+        )
+    }
+
+    pub fn discover_targets_with_runtime(
+        &self,
+        input: ClientCaptureTargetDiscoveryInput,
+        runtime: &impl ClientCaptureTargetDiscoveryRuntimeHook,
     ) -> ClientCaptureTargetDiscoveryResult {
         let Some(backend) = input.backend else {
             return ClientCaptureTargetDiscoveryResult::Unavailable {
@@ -1541,17 +1583,7 @@ impl ClientCaptureTargetDiscoveryBoundary {
 
         match backend {
             ClientCaptureBackendKind::WindowsGraphicsCapture => {
-                if cfg!(target_os = "windows") {
-                    ClientCaptureTargetDiscoveryResult::Unavailable {
-                        backend: Some(backend),
-                        reason: ClientCaptureTargetDiscoveryUnavailableReason::RuntimeUnavailable,
-                    }
-                } else {
-                    ClientCaptureTargetDiscoveryResult::Unavailable {
-                        backend: Some(backend),
-                        reason: ClientCaptureTargetDiscoveryUnavailableReason::BackendUnsupported,
-                    }
-                }
+                runtime.discover_windows_graphics_capture_targets()
             }
         }
     }
@@ -8379,6 +8411,73 @@ mod tests {
             ClientCaptureTargetDiscoveryResult::Unavailable {
                 backend: Some(ClientCaptureBackendKind::WindowsGraphicsCapture),
                 reason: expected_reason
+            }
+        );
+    }
+
+    #[test]
+    fn client_video_frame_capture_target_discovery_runtime_hook_can_return_descriptors() {
+        struct FixtureDiscoveryRuntime;
+
+        impl ClientCaptureTargetDiscoveryRuntimeHook for FixtureDiscoveryRuntime {
+            fn discover_windows_graphics_capture_targets(
+                &self,
+            ) -> ClientCaptureTargetDiscoveryResult {
+                ClientCaptureTargetDiscoveryResult::TargetsFound {
+                    backend: ClientCaptureBackendKind::WindowsGraphicsCapture,
+                    targets: vec![
+                        ClientCaptureTargetDescriptor::primary_display(
+                            "display-primary",
+                            "Primary display",
+                        ),
+                        ClientCaptureTargetDescriptor::window("Minecraft"),
+                    ],
+                }
+            }
+        }
+
+        let result = ClientCaptureTargetDiscoveryBoundary.discover_targets_with_runtime(
+            ClientCaptureTargetDiscoveryInput::windows_graphics_capture(),
+            &FixtureDiscoveryRuntime,
+        );
+
+        let ClientCaptureTargetDiscoveryResult::TargetsFound { targets, .. } = result else {
+            panic!("fixture runtime should provide discovered descriptors");
+        };
+        assert_eq!(targets.len(), 2);
+        assert_eq!(
+            targets[0].to_target_config(),
+            ClientCaptureTargetConfig::PrimaryDisplay
+        );
+        assert_eq!(
+            targets[1].to_target_config(),
+            ClientCaptureTargetConfig::WindowTitle("Minecraft".to_string())
+        );
+    }
+
+    #[test]
+    fn client_video_frame_capture_target_discovery_runtime_hook_keeps_no_targets_explicit() {
+        struct EmptyDiscoveryRuntime;
+
+        impl ClientCaptureTargetDiscoveryRuntimeHook for EmptyDiscoveryRuntime {
+            fn discover_windows_graphics_capture_targets(
+                &self,
+            ) -> ClientCaptureTargetDiscoveryResult {
+                ClientCaptureTargetDiscoveryResult::NoTargetsFound {
+                    backend: ClientCaptureBackendKind::WindowsGraphicsCapture,
+                }
+            }
+        }
+
+        let result = ClientCaptureTargetDiscoveryBoundary.discover_targets_with_runtime(
+            ClientCaptureTargetDiscoveryInput::windows_graphics_capture(),
+            &EmptyDiscoveryRuntime,
+        );
+
+        assert_eq!(
+            result,
+            ClientCaptureTargetDiscoveryResult::NoTargetsFound {
+                backend: ClientCaptureBackendKind::WindowsGraphicsCapture
             }
         );
     }

@@ -636,6 +636,7 @@
 - [x] client capture / encode boundary with explicit real-capture and H.264-encode deferred results
 - [x] client Windows capture backend selection/probe boundary with explicit not-configured / unsupported / unavailable results
 - [x] client Windows capture target discovery boundary with descriptor/config conversion and explicit not-configured / unsupported / runtime-unavailable results
+- [x] client capture target discovery runtime hook boundary for future Windows API-backed enumeration
 - [ ] actual Windows Graphics Capture frame acquisition and actual H.264 encoder implementation
 - [x] `VideoFrame` encode
 - [x] `VideoFrame` UDP send with explicit placeholder encoded H.264 payload
@@ -686,6 +687,7 @@
 - client video path now has an explicit real-capture / H.264-encode replacement boundary: capture returns `RealCaptureDeferred`, encode returns `RealH264EncodeDeferred`, and `ClientEncodedVideoFrameSource` can feed existing `VideoFrame` metadata/send wiring without pretending placeholder bytes are real capture output.
 - client capture backend direction is now Windows Graphics Capture for MVP; the client can select/probe that backend and surface not-configured, unsupported, or unavailable results without producing fake pixels or coupling capture to UDP send.
 - client capture target discovery now has a pre-session boundary: display/window target descriptors can be represented and converted to `ClientCaptureTargetConfig`, while real Windows enumeration remains deferred and explicit as runtime unavailable.
+- client capture target discovery now has an injectable runtime hook, so future real Windows API enumeration can provide descriptors without changing discovery result types or touching frame acquisition.
 - metrics commit, snapshot export cadence, dashboard refresh consumer policy, and dashboard refresh runtime wiring remain separate from timer wait, retry, reconnect, socket ownership, cleanup, UI rendering, video, switcher, and OBS.
 - server notice queue storage remains separate from notice send wakeup execution.
 - actual dashboard UI rendering remains unimplemented.

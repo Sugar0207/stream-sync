@@ -7431,6 +7431,10 @@ Current implementation:
   target discovery boundary. It currently does not call Windows APIs or
   enumerate real targets; it returns explicit not-configured, unsupported, or
   runtime-unavailable results for the selected backend.
+- `ClientCaptureTargetDiscoveryBoundary::discover_targets_with_runtime` accepts
+  a `ClientCaptureTargetDiscoveryRuntimeHook`. The default hook preserves the
+  current explicit unavailable behavior; a later Windows implementation can
+  provide real display/window descriptors through the same result type.
 - `ClientCaptureTargetDescriptor` can represent future display and window
   targets and convert them into `ClientCaptureTargetConfig` for later capture
   session creation.
@@ -7468,6 +7472,7 @@ Responsibility split:
   - Future owner of enumerating display/window targets for
     WindowsGraphicsCapture.
   - Produces descriptors/config references only.
+  - Uses an injectable runtime hook for future Windows API-backed enumeration.
   - Does not create capture sessions, acquire frames, encode video, construct
     protocol messages, or send UDP packets.
 - H.264 encoder

@@ -9400,6 +9400,65 @@
 - Codex
 
 ### Work
+- Audited the client dependencies and confirmed the client crate still has no
+  Windows API binding dependency for safe real enumeration.
+- Kept default Windows Graphics Capture discovery explicit as runtime
+  unavailable on Windows and backend unsupported on non-Windows.
+- Added `ClientCaptureTargetDiscoveryRuntimeHook` so a future Windows
+  implementation can provide real display/window descriptors behind the
+  existing discovery boundary.
+- Added `ClientUnavailableCaptureTargetDiscoveryRuntimeHook` as the default
+  runtime hook.
+- Added `discover_targets_with_runtime` for hook-backed discovery without
+  changing existing `discover_targets` behavior.
+- Added tests for hook-provided descriptors, no-targets results, descriptor to
+  config conversion, unsupported/unavailable paths, and placeholder independence.
+
+### Changed Files
+- `apps/client/src/lib.rs`
+- `docs/architecture/system-design.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### Decisions
+- Real Windows enumeration is still deferred because adding Windows API binding
+  and runtime permission/session behavior is broader than this slice.
+- The hook boundary is the smallest safe step: real descriptors can only appear
+  from a runtime hook that actually enumerates them later.
+- Default discovery does not fake display/window targets.
+
+### Unresolved
+- actual Windows Graphics Capture display/window enumeration
+- capture permission/session/runtime wiring
+- real frame acquisition
+- real H.264 encode/decode
+- switcher rendering, targetTime / jitter-buffer, 4-view sync, and OBS
+
+### Next
+- Add a Windows API-backed implementation of
+  `ClientCaptureTargetDiscoveryRuntimeHook`.
+- Keep capture session creation and frame acquisition as separate follow-up
+  slices.
+
+### TODO Update
+- Marked the capture target discovery runtime hook boundary as complete.
+- Kept actual Windows display/window enumeration and frame acquisition as future
+  work.
+- Kept encode/decode, rendering, sync, and OBS deferred.
+
+### Validation
+- `cargo fmt`
+- `cargo fmt --check`
+- `cargo test -p stream-sync-client client_video_frame`
+- `cargo check --workspace`
+
+---
+
+## 2026-04-25
+### Type
+- Codex
+
+### Work
 - Added the smallest client Windows capture target discovery boundary.
 - Added metadata-only target descriptors for display and window targets.
 - Added conversion from discovered target descriptors to
