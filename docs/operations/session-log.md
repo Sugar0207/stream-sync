@@ -5,6 +5,57 @@
 - Codex
 
 ### Work
+- Added the smallest 2-view targetTime selection orchestration boundary for switcher.
+- Added `SwitcherTwoViewTargetTimeSelectionPolicy`, `SwitcherTwoViewTargetTimeSelectionInput`, `SwitcherTwoViewTargetTimeSelectionResult`, and `SwitcherTwoViewTargetTimeSelectionBoundary`.
+- Added `SwitcherJitterBufferSelectionBoundary::select_frame_at_target_time` so callers can reuse one-client jitter-buffer selection against an already-calculated shared targetTime.
+- The 2-view selector calculates one shared targetTime, applies left/right clock offset estimates independently during per-client timestamp comparison, and returns both-selected / partial / both-unavailable outcomes explicitly.
+- Kept queue ownership caller-side and read-only; the new boundary does not mutate queues, drop late frames, decode, render, compose 4-view, or integrate OBS.
+- Added deterministic tests for both-selected, one-side waiting, one-side too early, one-side too late, per-client offset behavior, both-unavailable, and metadata/payload preservation.
+
+### Changed Files
+- `apps/switcher/src/lib.rs`
+- `docs/architecture/system-design.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### Decisions
+- The shared targetTime is calculated once for the pair. Per-client offsets adjust capture timestamps, not the pair's shared targetTime.
+- Partial selection preserves each side's full one-client selection status instead of collapsing reasons into a lossy summary.
+- Late frames remain reported as drop candidates only; actual queue mutation stays with a future queue owner.
+- Decode/render connection remains a separate downstream boundary.
+
+### Unresolved
+- targetTime-selected frame -> decode/render connection
+- queue mutation / actual late-frame drop policy
+- 4-view orchestration
+- live receive/socket integration
+- OBS Window Capture verification
+- production timing policy and structured selection/drop logging
+
+### Next
+- Connect selected encoded frames from targetTime selection into decode/render through a separate adapter.
+- Define 4-view orchestration after 2-view selected-frame decode/render is isolated.
+- Add queue-owner late-drop policy and structured timing logs.
+
+### TODO Update
+- Marked 2-view targetTime selection orchestration complete.
+- Added targetTime-selected frame -> decode/render connection as the next switcher sync/display boundary.
+- Kept 4-view, OBS, and queue mutation deferred.
+
+### Validation
+- `cargo fmt`
+- `cargo test -p stream-sync-switcher`
+- `cargo fmt --check`
+- `cargo check --workspace`
+- `git diff --check`
+
+---
+
+## 2026-04-25
+### Type
+- Codex
+
+### Work
 - Added the smallest targetTime / jitter-buffer selection boundary for one switcher client.
 - Added `SwitcherTargetTimeBoundary`, `SwitcherTargetTimeInput`, `SwitcherTargetTime`, `SwitcherJitterBufferSelectionPolicy`, `SwitcherJitterBufferSelectionInput`, `SwitcherJitterBufferSelectedFrame`, and `SwitcherJitterBufferSelectionResult`.
 - The selector reads one client's frames from caller-owned `ServerVideoFrameQueueState` without mutation.

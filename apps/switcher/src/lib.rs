@@ -137,6 +137,60 @@ pub struct SwitcherJitterBufferSelectionInput<'a> {
     pub policy: SwitcherJitterBufferSelectionPolicy,
 }
 
+/// Shared 2-view targetTime selection policy.
+///
+/// The shared targetTime is calculated once from switcher time and playout
+/// delay. Per-client offsets are applied only when each client's capture
+/// timestamps are compared with that shared target.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct SwitcherTwoViewTargetTimeSelectionPolicy {
+    pub playout_delay_micros: u64,
+    pub left_clock_offset_micros: Option<i64>,
+    pub right_clock_offset_micros: Option<i64>,
+    pub max_late_micros: u64,
+    pub max_early_micros: u64,
+    pub min_buffer_frames: usize,
+}
+
+impl Default for SwitcherTwoViewTargetTimeSelectionPolicy {
+    fn default() -> Self {
+        let single = SwitcherJitterBufferSelectionPolicy::default();
+        Self {
+            playout_delay_micros: single.playout_delay_micros,
+            left_clock_offset_micros: None,
+            right_clock_offset_micros: None,
+            max_late_micros: single.max_late_micros,
+            max_early_micros: single.max_early_micros,
+            min_buffer_frames: single.min_buffer_frames,
+        }
+    }
+}
+
+impl SwitcherTwoViewTargetTimeSelectionPolicy {
+    fn per_client_policy(
+        &self,
+        clock_offset_micros: Option<i64>,
+    ) -> SwitcherJitterBufferSelectionPolicy {
+        SwitcherJitterBufferSelectionPolicy {
+            playout_delay_micros: self.playout_delay_micros,
+            clock_offset_micros,
+            max_late_micros: self.max_late_micros,
+            max_early_micros: self.max_early_micros,
+            min_buffer_frames: self.min_buffer_frames,
+        }
+    }
+}
+
+/// Input for pure 2-view targetTime selection.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SwitcherTwoViewTargetTimeSelectionInput<'a> {
+    pub queue_state: &'a ServerVideoFrameQueueState,
+    pub left_client_id: &'a ClientId,
+    pub right_client_id: &'a ClientId,
+    pub current_switcher_time: TimestampMicros,
+    pub policy: SwitcherTwoViewTargetTimeSelectionPolicy,
+}
+
 /// Details for a selected frame's timing relationship to targetTime.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SwitcherJitterBufferSelectedFrame {
@@ -171,6 +225,29 @@ pub enum SwitcherJitterBufferSelectionResult {
         target_time: TimestampMicros,
         latest_frame_time: TimestampMicros,
         late_frames: Vec<SwitcherSingleViewSelectedEncodedFrame>,
+    },
+}
+
+/// Result of selecting two clients against one shared targetTime.
+///
+/// This result remains encoded-frame selection only. It does not decode,
+/// render, mutate queues, or perform multi-view composition.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SwitcherTwoViewTargetTimeSelectionResult {
+    BothSelected {
+        shared_target_time: TimestampMicros,
+        left: SwitcherJitterBufferSelectedFrame,
+        right: SwitcherJitterBufferSelectedFrame,
+    },
+    Partial {
+        shared_target_time: TimestampMicros,
+        left: SwitcherJitterBufferSelectionResult,
+        right: SwitcherJitterBufferSelectionResult,
+    },
+    BothUnavailable {
+        shared_target_time: TimestampMicros,
+        left: SwitcherJitterBufferSelectionResult,
+        right: SwitcherJitterBufferSelectionResult,
     },
 }
 
@@ -209,6 +286,14 @@ impl SwitcherJitterBufferSelectionBoundary {
                 clock_offset_micros: input.policy.clock_offset_micros,
             })
             .value;
+        self.select_frame_at_target_time(input, target_time)
+    }
+
+    pub fn select_frame_at_target_time(
+        &self,
+        input: SwitcherJitterBufferSelectionInput<'_>,
+        target_time: TimestampMicros,
+    ) -> SwitcherJitterBufferSelectionResult {
         let frames: Vec<SwitcherSingleViewSelectedEncodedFrame> = input
             .queue_state
             .frames_for_client(input.client_id)
@@ -286,6 +371,75 @@ impl SwitcherJitterBufferSelectionBoundary {
             target_time,
             latest_frame_time: latest.1,
             late_frames,
+        }
+    }
+}
+
+/// Pure 2-view targetTime selector.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct SwitcherTwoViewTargetTimeSelectionBoundary {
+    target_time: SwitcherTargetTimeBoundary,
+    per_client_selector: SwitcherJitterBufferSelectionBoundary,
+}
+
+impl SwitcherTwoViewTargetTimeSelectionBoundary {
+    pub fn select_pair(
+        &self,
+        input: SwitcherTwoViewTargetTimeSelectionInput<'_>,
+    ) -> SwitcherTwoViewTargetTimeSelectionResult {
+        let shared_target_time = self
+            .target_time
+            .calculate(SwitcherTargetTimeInput {
+                current_switcher_time: input.current_switcher_time,
+                playout_delay_micros: input.policy.playout_delay_micros,
+                clock_offset_micros: None,
+            })
+            .value;
+        let left = self.per_client_selector.select_frame_at_target_time(
+            SwitcherJitterBufferSelectionInput {
+                queue_state: input.queue_state,
+                client_id: input.left_client_id,
+                current_switcher_time: input.current_switcher_time,
+                policy: input
+                    .policy
+                    .per_client_policy(input.policy.left_clock_offset_micros),
+            },
+            shared_target_time,
+        );
+        let right = self.per_client_selector.select_frame_at_target_time(
+            SwitcherJitterBufferSelectionInput {
+                queue_state: input.queue_state,
+                client_id: input.right_client_id,
+                current_switcher_time: input.current_switcher_time,
+                policy: input
+                    .policy
+                    .per_client_policy(input.policy.right_clock_offset_micros),
+            },
+            shared_target_time,
+        );
+
+        match (&left, &right) {
+            (
+                SwitcherJitterBufferSelectionResult::Selected(left_selected),
+                SwitcherJitterBufferSelectionResult::Selected(right_selected),
+            ) => SwitcherTwoViewTargetTimeSelectionResult::BothSelected {
+                shared_target_time,
+                left: left_selected.clone(),
+                right: right_selected.clone(),
+            },
+            (SwitcherJitterBufferSelectionResult::Selected(_), _)
+            | (_, SwitcherJitterBufferSelectionResult::Selected(_)) => {
+                SwitcherTwoViewTargetTimeSelectionResult::Partial {
+                    shared_target_time,
+                    left,
+                    right,
+                }
+            }
+            _ => SwitcherTwoViewTargetTimeSelectionResult::BothUnavailable {
+                shared_target_time,
+                left,
+                right,
+            },
         }
     }
 }
@@ -1920,6 +2074,279 @@ mod tests {
         assert_eq!(selected.frame.height, 360);
         assert_eq!(selected.frame.encoded_payload_len, 5);
         assert_eq!(selected.frame.encoded_payload, vec![0, 0, 1, 0x65, 0xaa]);
+    }
+
+    #[test]
+    fn two_view_target_time_selects_both_clients_against_shared_target() {
+        let mut state = ServerVideoFrameQueueState::default();
+        store_frame_with_payload(
+            &mut state,
+            "client-left",
+            10,
+            TimestampMicros(2_260_000),
+            640,
+            360,
+            vec![0, 0, 1, 0x65, 0x10],
+        );
+        store_frame_with_payload(
+            &mut state,
+            "client-right",
+            12,
+            TimestampMicros(2_260_010),
+            640,
+            360,
+            vec![0, 0, 1, 0x65, 0x12],
+        );
+        let left_client_id = ClientId("client-left".to_string());
+        let right_client_id = ClientId("client-right".to_string());
+
+        let result = SwitcherTwoViewTargetTimeSelectionBoundary::default().select_pair(
+            SwitcherTwoViewTargetTimeSelectionInput {
+                queue_state: &state,
+                left_client_id: &left_client_id,
+                right_client_id: &right_client_id,
+                current_switcher_time: TimestampMicros(1_600_011),
+                policy: SwitcherTwoViewTargetTimeSelectionPolicy {
+                    playout_delay_micros: 600_000,
+                    max_late_micros: 50,
+                    max_early_micros: 50,
+                    ..SwitcherTwoViewTargetTimeSelectionPolicy::default()
+                },
+            },
+        );
+
+        let SwitcherTwoViewTargetTimeSelectionResult::BothSelected {
+            shared_target_time,
+            left,
+            right,
+        } = result
+        else {
+            panic!("both clients should select frames against the shared targetTime");
+        };
+        assert_eq!(shared_target_time, TimestampMicros(1_000_011));
+        assert_eq!(left.target_time, shared_target_time);
+        assert_eq!(right.target_time, shared_target_time);
+        assert_eq!(left.frame.frame_id, 10);
+        assert_eq!(right.frame.frame_id, 12);
+        assert_eq!(left.frame.encoded_payload, vec![0, 0, 1, 0x65, 0x10]);
+        assert_eq!(right.frame.encoded_payload, vec![0, 0, 1, 0x65, 0x12]);
+    }
+
+    #[test]
+    fn two_view_target_time_reports_partial_when_one_client_is_waiting() {
+        let mut state = ServerVideoFrameQueueState::default();
+        store_frame(&mut state, "client-left", 20, TimestampMicros(2_270_000));
+        store_frame(&mut state, "client-left", 21, TimestampMicros(2_270_010));
+        store_frame(&mut state, "client-right", 20, TimestampMicros(2_270_020));
+        let left_client_id = ClientId("client-left".to_string());
+        let right_client_id = ClientId("client-right".to_string());
+
+        let result = SwitcherTwoViewTargetTimeSelectionBoundary::default().select_pair(
+            SwitcherTwoViewTargetTimeSelectionInput {
+                queue_state: &state,
+                left_client_id: &left_client_id,
+                right_client_id: &right_client_id,
+                current_switcher_time: TimestampMicros(1_600_020),
+                policy: SwitcherTwoViewTargetTimeSelectionPolicy {
+                    playout_delay_micros: 600_000,
+                    max_late_micros: 50,
+                    max_early_micros: 50,
+                    min_buffer_frames: 2,
+                    ..SwitcherTwoViewTargetTimeSelectionPolicy::default()
+                },
+            },
+        );
+
+        let SwitcherTwoViewTargetTimeSelectionResult::Partial {
+            shared_target_time,
+            left,
+            right,
+        } = result
+        else {
+            panic!("one selected side and one waiting side should be partial");
+        };
+        assert_eq!(shared_target_time, TimestampMicros(1_000_020));
+        assert!(matches!(
+            left,
+            SwitcherJitterBufferSelectionResult::Selected(_)
+        ));
+        assert_eq!(
+            right,
+            SwitcherJitterBufferSelectionResult::WaitingForBuffer {
+                client_id: right_client_id,
+                target_time: shared_target_time,
+                available_frames: 1,
+                min_buffer_frames: 2
+            }
+        );
+    }
+
+    #[test]
+    fn two_view_target_time_reports_partial_when_one_client_is_too_early() {
+        let mut state = ServerVideoFrameQueueState::default();
+        store_frame(&mut state, "client-left", 20, TimestampMicros(2_280_000));
+        store_frame(&mut state, "client-right", 220, TimestampMicros(2_280_010));
+        let left_client_id = ClientId("client-left".to_string());
+        let right_client_id = ClientId("client-right".to_string());
+
+        let result = SwitcherTwoViewTargetTimeSelectionBoundary::default().select_pair(
+            SwitcherTwoViewTargetTimeSelectionInput {
+                queue_state: &state,
+                left_client_id: &left_client_id,
+                right_client_id: &right_client_id,
+                current_switcher_time: TimestampMicros(1_600_020),
+                policy: SwitcherTwoViewTargetTimeSelectionPolicy {
+                    playout_delay_micros: 600_000,
+                    max_late_micros: 50,
+                    max_early_micros: 50,
+                    ..SwitcherTwoViewTargetTimeSelectionPolicy::default()
+                },
+            },
+        );
+
+        let SwitcherTwoViewTargetTimeSelectionResult::Partial {
+            shared_target_time,
+            left,
+            right,
+        } = result
+        else {
+            panic!("one selected side and one too-early side should be partial");
+        };
+        assert_eq!(shared_target_time, TimestampMicros(1_000_020));
+        assert!(matches!(
+            left,
+            SwitcherJitterBufferSelectionResult::Selected(_)
+        ));
+        assert_eq!(
+            right,
+            SwitcherJitterBufferSelectionResult::FrameTooEarly {
+                client_id: right_client_id,
+                target_time: shared_target_time,
+                earliest_frame_time: TimestampMicros(1_000_220),
+                frames_available: 1
+            }
+        );
+    }
+
+    #[test]
+    fn two_view_target_time_reports_partial_when_one_client_is_too_late() {
+        let mut state = ServerVideoFrameQueueState::default();
+        store_frame(
+            &mut state,
+            "client-left",
+            100_020,
+            TimestampMicros(2_290_000),
+        );
+        store_frame(&mut state, "client-right", 1, TimestampMicros(2_290_010));
+        let left_client_id = ClientId("client-left".to_string());
+        let right_client_id = ClientId("client-right".to_string());
+
+        let result = SwitcherTwoViewTargetTimeSelectionBoundary::default().select_pair(
+            SwitcherTwoViewTargetTimeSelectionInput {
+                queue_state: &state,
+                left_client_id: &left_client_id,
+                right_client_id: &right_client_id,
+                current_switcher_time: TimestampMicros(1_700_020),
+                policy: SwitcherTwoViewTargetTimeSelectionPolicy {
+                    playout_delay_micros: 600_000,
+                    max_late_micros: 50,
+                    max_early_micros: 50,
+                    ..SwitcherTwoViewTargetTimeSelectionPolicy::default()
+                },
+            },
+        );
+
+        let SwitcherTwoViewTargetTimeSelectionResult::Partial { right, .. } = result else {
+            panic!("one selected side and one too-late side should be partial");
+        };
+        let SwitcherJitterBufferSelectionResult::FrameTooLateDropped {
+            client_id,
+            target_time,
+            latest_frame_time,
+            late_frames,
+        } = right
+        else {
+            panic!("right side should be too late");
+        };
+        assert_eq!(client_id, right_client_id);
+        assert_eq!(target_time, TimestampMicros(1_100_020));
+        assert_eq!(latest_frame_time, TimestampMicros(1_000_001));
+        assert_eq!(late_frames.len(), 1);
+        assert_eq!(late_frames[0].frame_id, 1);
+    }
+
+    #[test]
+    fn two_view_target_time_applies_per_client_offsets_independently() {
+        let mut state = ServerVideoFrameQueueState::default();
+        store_frame(&mut state, "client-left", 100, TimestampMicros(2_300_000));
+        store_frame(&mut state, "client-right", 0, TimestampMicros(2_300_010));
+        let left_client_id = ClientId("client-left".to_string());
+        let right_client_id = ClientId("client-right".to_string());
+
+        let result = SwitcherTwoViewTargetTimeSelectionBoundary::default().select_pair(
+            SwitcherTwoViewTargetTimeSelectionInput {
+                queue_state: &state,
+                left_client_id: &left_client_id,
+                right_client_id: &right_client_id,
+                current_switcher_time: TimestampMicros(1_600_100),
+                policy: SwitcherTwoViewTargetTimeSelectionPolicy {
+                    playout_delay_micros: 600_000,
+                    right_clock_offset_micros: Some(100),
+                    max_late_micros: 10,
+                    max_early_micros: 10,
+                    ..SwitcherTwoViewTargetTimeSelectionPolicy::default()
+                },
+            },
+        );
+
+        let SwitcherTwoViewTargetTimeSelectionResult::BothSelected {
+            shared_target_time,
+            left,
+            right,
+        } = result
+        else {
+            panic!("right client offset should align both frames to targetTime");
+        };
+        assert_eq!(shared_target_time, TimestampMicros(1_000_100));
+        assert_eq!(left.adjusted_capture_timestamp, TimestampMicros(1_000_100));
+        assert_eq!(right.adjusted_capture_timestamp, TimestampMicros(1_000_100));
+        assert_eq!(left.frame.frame_id, 100);
+        assert_eq!(right.frame.frame_id, 0);
+    }
+
+    #[test]
+    fn two_view_target_time_reports_both_unavailable_explicitly() {
+        let state = ServerVideoFrameQueueState::default();
+        let left_client_id = ClientId("client-left".to_string());
+        let right_client_id = ClientId("client-right".to_string());
+
+        let result = SwitcherTwoViewTargetTimeSelectionBoundary::default().select_pair(
+            SwitcherTwoViewTargetTimeSelectionInput {
+                queue_state: &state,
+                left_client_id: &left_client_id,
+                right_client_id: &right_client_id,
+                current_switcher_time: TimestampMicros(1_600_000),
+                policy: SwitcherTwoViewTargetTimeSelectionPolicy {
+                    playout_delay_micros: 600_000,
+                    ..SwitcherTwoViewTargetTimeSelectionPolicy::default()
+                },
+            },
+        );
+
+        assert_eq!(
+            result,
+            SwitcherTwoViewTargetTimeSelectionResult::BothUnavailable {
+                shared_target_time: TimestampMicros(1_000_000),
+                left: SwitcherJitterBufferSelectionResult::NoFrame {
+                    client_id: left_client_id,
+                    target_time: TimestampMicros(1_000_000)
+                },
+                right: SwitcherJitterBufferSelectionResult::NoFrame {
+                    client_id: right_client_id,
+                    target_time: TimestampMicros(1_000_000)
+                }
+            }
+        );
     }
 
     #[test]

@@ -7490,9 +7490,27 @@ Current decode/display substitute behavior:
   candidates for a future queue owner.
 - The selected frame is still encoded H.264 plus metadata. Decode and render
   remain separate downstream boundaries.
-- Future 2-view / 4-view sync should call the selector per client for the same
-  targetTime policy, then pass selected encoded frames into decode/render. That
-  orchestration is not implemented in this step.
+- `SwitcherJitterBufferSelectionBoundary::select_frame_at_target_time` is a
+  small adapter for callers that have already calculated a shared targetTime.
+  The original one-client `select_frame` path still calculates its own
+  targetTime and remains available.
+- `SwitcherTwoViewTargetTimeSelectionBoundary` is the first pure 2-view
+  orchestration boundary. It calculates one shared targetTime from switcher time
+  and playout delay, then runs per-client jitter-buffer selection for left and
+  right clients against that same targetTime.
+- `SwitcherTwoViewTargetTimeSelectionPolicy` carries shared timing windows and
+  independent left/right clock offset estimates. Offsets are applied to each
+  client's capture timestamps during selection; they do not create different
+  targetTimes for each side.
+- The 2-view result is explicit:
+  both selected, partial selected/unavailable, or both unavailable. Each side
+  preserves the underlying one-client selected/no-frame/waiting/too-early/
+  too-late status plus encoded payload and metadata.
+- The 2-view orchestration is read-only over caller-owned
+  `ServerVideoFrameQueueState`. It does not drop late frames, mutate queues,
+  decode H.264, render windows, compose a 2-view layout, or integrate OBS.
+- Future 4-view sync should build on the same shared-targetTime pattern after
+  the 2-view selected-frame -> decode/render connection is isolated.
 
 This decode PoC does not add a continuous loop, targetTime selection,
 multi-view sync, OBS integration, decode acceleration, or packet fragmentation.
@@ -7501,8 +7519,8 @@ or 4-view layout, or OBS-specific control.
 The continuous loop still does not add targetTime / jitter-buffer selection,
 2-view / 4-view layout, OBS-specific control, or production scheduling; those
 remain separate future boundaries.
-The targetTime selector itself still does not decode, render, own queues,
-schedule multiple clients, or perform OBS integration.
+The targetTime selectors still do not decode, render, own queues, drop late
+frames, perform 4-view orchestration, or integrate OBS.
 
 ## Client Real Capture / H.264 Encode Boundary
 
