@@ -7477,6 +7477,22 @@ Current decode/display substitute behavior:
 - `SwitcherQueueLatestFrameSource` is a read-only adapter over caller-owned
   `ServerVideoFrameQueueState`. Future live queue providers can implement the
   same source trait without changing decode or render boundaries.
+- `SwitcherTargetTimeBoundary` calculates one targetTime from current switcher
+  time, configured playout delay, and an optional clock offset estimate.
+- `SwitcherJitterBufferSelectionBoundary` is the first read-only targetTime /
+  jitter-buffer selector for one client. It reads that client's caller-owned
+  queued encoded frames, adjusts capture timestamps by the optional offset, and
+  selects the encoded frame closest to targetTime inside the configured
+  early/late window.
+- The jitter-buffer selector can return selected frame, no frame, waiting for
+  buffer, frame too early, or frame too late/dropped states explicitly. It does
+  not mutate `ServerVideoFrameQueueState`; late frames are reported as drop
+  candidates for a future queue owner.
+- The selected frame is still encoded H.264 plus metadata. Decode and render
+  remain separate downstream boundaries.
+- Future 2-view / 4-view sync should call the selector per client for the same
+  targetTime policy, then pass selected encoded frames into decode/render. That
+  orchestration is not implemented in this step.
 
 This decode PoC does not add a continuous loop, targetTime selection,
 multi-view sync, OBS integration, decode acceleration, or packet fragmentation.
@@ -7485,6 +7501,8 @@ or 4-view layout, or OBS-specific control.
 The continuous loop still does not add targetTime / jitter-buffer selection,
 2-view / 4-view layout, OBS-specific control, or production scheduling; those
 remain separate future boundaries.
+The targetTime selector itself still does not decode, render, own queues,
+schedule multiple clients, or perform OBS integration.
 
 ## Client Real Capture / H.264 Encode Boundary
 

@@ -89,6 +89,215 @@ impl SwitcherSingleViewLatestFrameSelectionBoundary {
     }
 }
 
+/// Deterministic targetTime calculation input for one switcher selection.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct SwitcherTargetTimeInput {
+    pub current_switcher_time: TimestampMicros,
+    pub playout_delay_micros: u64,
+    pub clock_offset_micros: Option<i64>,
+}
+
+/// Calculated targetTime in the switcher/server time domain.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct SwitcherTargetTime {
+    pub value: TimestampMicros,
+}
+
+/// Minimal targetTime policy.
+///
+/// The selector looks for frames whose adjusted capture timestamp is inside:
+/// `targetTime - max_late_micros ..= targetTime + max_early_micros`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct SwitcherJitterBufferSelectionPolicy {
+    pub playout_delay_micros: u64,
+    pub clock_offset_micros: Option<i64>,
+    pub max_late_micros: u64,
+    pub max_early_micros: u64,
+    pub min_buffer_frames: usize,
+}
+
+impl Default for SwitcherJitterBufferSelectionPolicy {
+    fn default() -> Self {
+        Self {
+            playout_delay_micros: 500_000,
+            clock_offset_micros: None,
+            max_late_micros: 250_000,
+            max_early_micros: 33_334,
+            min_buffer_frames: 1,
+        }
+    }
+}
+
+/// Input for one targetTime / jitter-buffer selection.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SwitcherJitterBufferSelectionInput<'a> {
+    pub queue_state: &'a ServerVideoFrameQueueState,
+    pub client_id: &'a ClientId,
+    pub current_switcher_time: TimestampMicros,
+    pub policy: SwitcherJitterBufferSelectionPolicy,
+}
+
+/// Details for a selected frame's timing relationship to targetTime.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SwitcherJitterBufferSelectedFrame {
+    pub frame: SwitcherSingleViewSelectedEncodedFrame,
+    pub target_time: TimestampMicros,
+    pub adjusted_capture_timestamp: TimestampMicros,
+    pub delta_from_target_micros: i64,
+}
+
+/// Result of one targetTime / jitter-buffer frame selection.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SwitcherJitterBufferSelectionResult {
+    Selected(SwitcherJitterBufferSelectedFrame),
+    NoFrame {
+        client_id: ClientId,
+        target_time: TimestampMicros,
+    },
+    WaitingForBuffer {
+        client_id: ClientId,
+        target_time: TimestampMicros,
+        available_frames: usize,
+        min_buffer_frames: usize,
+    },
+    FrameTooEarly {
+        client_id: ClientId,
+        target_time: TimestampMicros,
+        earliest_frame_time: TimestampMicros,
+        frames_available: usize,
+    },
+    FrameTooLateDropped {
+        client_id: ClientId,
+        target_time: TimestampMicros,
+        latest_frame_time: TimestampMicros,
+        late_frames: Vec<SwitcherSingleViewSelectedEncodedFrame>,
+    },
+}
+
+/// Pure targetTime calculator.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct SwitcherTargetTimeBoundary;
+
+impl SwitcherTargetTimeBoundary {
+    pub fn calculate(&self, input: SwitcherTargetTimeInput) -> SwitcherTargetTime {
+        let base = input
+            .current_switcher_time
+            .0
+            .saturating_sub(input.playout_delay_micros);
+        SwitcherTargetTime {
+            value: TimestampMicros(apply_offset_micros(base, input.clock_offset_micros)),
+        }
+    }
+}
+
+/// Read-only targetTime / jitter-buffer selector for one client.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct SwitcherJitterBufferSelectionBoundary {
+    target_time: SwitcherTargetTimeBoundary,
+}
+
+impl SwitcherJitterBufferSelectionBoundary {
+    pub fn select_frame(
+        &self,
+        input: SwitcherJitterBufferSelectionInput<'_>,
+    ) -> SwitcherJitterBufferSelectionResult {
+        let target_time = self
+            .target_time
+            .calculate(SwitcherTargetTimeInput {
+                current_switcher_time: input.current_switcher_time,
+                playout_delay_micros: input.policy.playout_delay_micros,
+                clock_offset_micros: input.policy.clock_offset_micros,
+            })
+            .value;
+        let frames: Vec<SwitcherSingleViewSelectedEncodedFrame> = input
+            .queue_state
+            .frames_for_client(input.client_id)
+            .map(SwitcherSingleViewSelectedEncodedFrame::from)
+            .collect();
+
+        if frames.is_empty() {
+            return SwitcherJitterBufferSelectionResult::NoFrame {
+                client_id: input.client_id.clone(),
+                target_time,
+            };
+        }
+        if frames.len() < input.policy.min_buffer_frames {
+            return SwitcherJitterBufferSelectionResult::WaitingForBuffer {
+                client_id: input.client_id.clone(),
+                target_time,
+                available_frames: frames.len(),
+                min_buffer_frames: input.policy.min_buffer_frames,
+            };
+        }
+
+        let lower = target_time.0.saturating_sub(input.policy.max_late_micros);
+        let upper = target_time.0.saturating_add(input.policy.max_early_micros);
+        let mut timed_frames: Vec<(SwitcherSingleViewSelectedEncodedFrame, TimestampMicros)> =
+            frames
+                .into_iter()
+                .map(|frame| {
+                    let adjusted = TimestampMicros(apply_offset_micros(
+                        frame.capture_timestamp.0,
+                        input.policy.clock_offset_micros,
+                    ));
+                    (frame, adjusted)
+                })
+                .collect();
+        timed_frames.sort_by_key(|(_, adjusted)| adjusted.0);
+
+        let selected = timed_frames
+            .iter()
+            .filter(|(_, adjusted)| adjusted.0 >= lower && adjusted.0 <= upper)
+            .min_by_key(|(_, adjusted)| adjusted.0.abs_diff(target_time.0));
+
+        if let Some((frame, adjusted)) = selected {
+            return SwitcherJitterBufferSelectionResult::Selected(
+                SwitcherJitterBufferSelectedFrame {
+                    frame: frame.clone(),
+                    target_time,
+                    adjusted_capture_timestamp: *adjusted,
+                    delta_from_target_micros: adjusted.0 as i64 - target_time.0 as i64,
+                },
+            );
+        }
+
+        let earliest = timed_frames
+            .first()
+            .expect("non-empty timed frames should have first");
+        let latest = timed_frames
+            .last()
+            .expect("non-empty timed frames should have last");
+        if earliest.1 .0 > upper {
+            return SwitcherJitterBufferSelectionResult::FrameTooEarly {
+                client_id: input.client_id.clone(),
+                target_time,
+                earliest_frame_time: earliest.1,
+                frames_available: timed_frames.len(),
+            };
+        }
+
+        let late_frames = timed_frames
+            .iter()
+            .filter(|(_, adjusted)| adjusted.0 < lower)
+            .map(|(frame, _)| frame.clone())
+            .collect();
+        SwitcherJitterBufferSelectionResult::FrameTooLateDropped {
+            client_id: input.client_id.clone(),
+            target_time,
+            latest_frame_time: latest.1,
+            late_frames,
+        }
+    }
+}
+
+fn apply_offset_micros(value: u64, offset: Option<i64>) -> u64 {
+    match offset {
+        Some(offset) if offset < 0 => value.saturating_sub(offset.unsigned_abs()),
+        Some(offset) => value.saturating_add(offset as u64),
+        None => value,
+    }
+}
+
 /// Explicit placeholder status for the future H.264 decode step.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum SwitcherSingleViewDecodeStatus {
@@ -1509,6 +1718,208 @@ mod tests {
             .map(|queued| queued.frame.frame_id)
             .collect();
         assert_eq!(frame_ids, vec![1, 2]);
+    }
+
+    #[test]
+    fn jitter_buffer_selects_frame_closest_to_target_time_within_policy() {
+        let mut state = ServerVideoFrameQueueState::default();
+        store_frame(&mut state, "client-1", 1, TimestampMicros(2_210_000));
+        store_frame(&mut state, "client-1", 10, TimestampMicros(2_210_010));
+        store_frame(&mut state, "client-1", 30, TimestampMicros(2_210_030));
+        let client_id = ClientId("client-1".to_string());
+
+        let result = SwitcherJitterBufferSelectionBoundary::default().select_frame(
+            SwitcherJitterBufferSelectionInput {
+                queue_state: &state,
+                client_id: &client_id,
+                current_switcher_time: TimestampMicros(1_600_012),
+                policy: SwitcherJitterBufferSelectionPolicy {
+                    playout_delay_micros: 600_000,
+                    clock_offset_micros: None,
+                    max_late_micros: 50,
+                    max_early_micros: 50,
+                    min_buffer_frames: 1,
+                },
+            },
+        );
+
+        let SwitcherJitterBufferSelectionResult::Selected(selected) = result else {
+            panic!("frame near targetTime should be selected");
+        };
+        assert_eq!(selected.target_time, TimestampMicros(1_000_012));
+        assert_eq!(selected.frame.frame_id, 10);
+        assert_eq!(
+            selected.adjusted_capture_timestamp,
+            TimestampMicros(1_000_010)
+        );
+        assert_eq!(selected.delta_from_target_micros, -2);
+    }
+
+    #[test]
+    fn jitter_buffer_waits_when_buffer_is_insufficient() {
+        let mut state = ServerVideoFrameQueueState::default();
+        store_frame(&mut state, "client-1", 1, TimestampMicros(2_220_000));
+        let client_id = ClientId("client-1".to_string());
+
+        let result = SwitcherJitterBufferSelectionBoundary::default().select_frame(
+            SwitcherJitterBufferSelectionInput {
+                queue_state: &state,
+                client_id: &client_id,
+                current_switcher_time: TimestampMicros(1_600_000),
+                policy: SwitcherJitterBufferSelectionPolicy {
+                    min_buffer_frames: 2,
+                    ..SwitcherJitterBufferSelectionPolicy::default()
+                },
+            },
+        );
+
+        assert_eq!(
+            result,
+            SwitcherJitterBufferSelectionResult::WaitingForBuffer {
+                client_id,
+                target_time: TimestampMicros(1_100_000),
+                available_frames: 1,
+                min_buffer_frames: 2
+            }
+        );
+    }
+
+    #[test]
+    fn jitter_buffer_reports_no_frame_explicitly() {
+        let state = ServerVideoFrameQueueState::default();
+        let client_id = ClientId("client-1".to_string());
+
+        let result = SwitcherJitterBufferSelectionBoundary::default().select_frame(
+            SwitcherJitterBufferSelectionInput {
+                queue_state: &state,
+                client_id: &client_id,
+                current_switcher_time: TimestampMicros(1_600_000),
+                policy: SwitcherJitterBufferSelectionPolicy::default(),
+            },
+        );
+
+        assert_eq!(
+            result,
+            SwitcherJitterBufferSelectionResult::NoFrame {
+                client_id,
+                target_time: TimestampMicros(1_100_000)
+            }
+        );
+    }
+
+    #[test]
+    fn jitter_buffer_reports_too_early_frame_explicitly() {
+        let mut state = ServerVideoFrameQueueState::default();
+        store_frame(&mut state, "client-1", 20, TimestampMicros(2_230_000));
+        store_frame(&mut state, "client-1", 21, TimestampMicros(2_230_010));
+        let client_id = ClientId("client-1".to_string());
+
+        let result = SwitcherJitterBufferSelectionBoundary::default().select_frame(
+            SwitcherJitterBufferSelectionInput {
+                queue_state: &state,
+                client_id: &client_id,
+                current_switcher_time: TimestampMicros(1_500_000),
+                policy: SwitcherJitterBufferSelectionPolicy {
+                    playout_delay_micros: 600_000,
+                    clock_offset_micros: None,
+                    max_late_micros: 50,
+                    max_early_micros: 50,
+                    min_buffer_frames: 1,
+                },
+            },
+        );
+
+        assert_eq!(
+            result,
+            SwitcherJitterBufferSelectionResult::FrameTooEarly {
+                client_id,
+                target_time: TimestampMicros(900_000),
+                earliest_frame_time: TimestampMicros(1_000_020),
+                frames_available: 2
+            }
+        );
+    }
+
+    #[test]
+    fn jitter_buffer_reports_late_frames_to_drop_explicitly() {
+        let mut state = ServerVideoFrameQueueState::default();
+        store_frame(&mut state, "client-1", 1, TimestampMicros(2_240_000));
+        store_frame(&mut state, "client-1", 2, TimestampMicros(2_240_010));
+        let client_id = ClientId("client-1".to_string());
+
+        let result = SwitcherJitterBufferSelectionBoundary::default().select_frame(
+            SwitcherJitterBufferSelectionInput {
+                queue_state: &state,
+                client_id: &client_id,
+                current_switcher_time: TimestampMicros(2_000_000),
+                policy: SwitcherJitterBufferSelectionPolicy {
+                    playout_delay_micros: 500_000,
+                    clock_offset_micros: None,
+                    max_late_micros: 100,
+                    max_early_micros: 0,
+                    min_buffer_frames: 1,
+                },
+            },
+        );
+
+        let SwitcherJitterBufferSelectionResult::FrameTooLateDropped {
+            target_time,
+            latest_frame_time,
+            late_frames,
+            ..
+        } = result
+        else {
+            panic!("old frames should be reported late");
+        };
+        assert_eq!(target_time, TimestampMicros(1_500_000));
+        assert_eq!(latest_frame_time, TimestampMicros(1_000_002));
+        assert_eq!(
+            late_frames
+                .iter()
+                .map(|frame| frame.frame_id)
+                .collect::<Vec<_>>(),
+            vec![1, 2]
+        );
+    }
+
+    #[test]
+    fn jitter_buffer_preserves_encoded_payload_and_metadata_without_decode_or_render() {
+        let mut state = ServerVideoFrameQueueState::default();
+        store_frame_with_payload(
+            &mut state,
+            "client-1",
+            77,
+            TimestampMicros(2_250_000),
+            640,
+            360,
+            vec![0, 0, 1, 0x65, 0xaa],
+        );
+        let client_id = ClientId("client-1".to_string());
+
+        let result = SwitcherJitterBufferSelectionBoundary::default().select_frame(
+            SwitcherJitterBufferSelectionInput {
+                queue_state: &state,
+                client_id: &client_id,
+                current_switcher_time: TimestampMicros(1_600_077),
+                policy: SwitcherJitterBufferSelectionPolicy {
+                    playout_delay_micros: 600_000,
+                    clock_offset_micros: None,
+                    max_late_micros: 50,
+                    max_early_micros: 50,
+                    min_buffer_frames: 1,
+                },
+            },
+        );
+
+        let SwitcherJitterBufferSelectionResult::Selected(selected) = result else {
+            panic!("fixture frame should be selected");
+        };
+        assert_eq!(selected.frame.client_id, client_id);
+        assert_eq!(selected.frame.frame_id, 77);
+        assert_eq!(selected.frame.width, 640);
+        assert_eq!(selected.frame.height, 360);
+        assert_eq!(selected.frame.encoded_payload_len, 5);
+        assert_eq!(selected.frame.encoded_payload, vec![0, 0, 1, 0x65, 0xaa]);
     }
 
     #[test]

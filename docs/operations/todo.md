@@ -27,9 +27,9 @@
 - server 側は auth one-shot、accepted auth registry 登録、heartbeat ack / liveness / timeout action plan / timeout apply / notice queue storage、RTT / offset state commit と metrics snapshot handoff までの最小境界が揃っている
 - client 側は auth one-shot、heartbeat one-shot、`HeartbeatAckObservation` 付き `ClientStats` one-shot、one-tick runtime、accepted path 手動確認まで完了している
 - client continuous heartbeat loop は thin composition の completed body まで実装済みで、heartbeat timeout notice wakeup planning 境界、wakeup execution 境界、wakeup actual side-effect 境界、outer while-loop connection 境界、outer while-loop one-turn execution body 境界、actual timer wait / retry execution / reconnect 実行境界、outer while-loop 反復実行本体、reconnect policy 境界、caller-owned hook 付き actual socket 再確立境界、real UDP socket 差し替え hook、repeated body からの hook 注入経路まで完了している
-- 未完了の中心は targetTime / jitter-buffer selection、dashboard UI rendering、continuous receive/send loop 本体、実キュー / 実送信 / 継続ログ出力
+- 未完了の中心は 2-view / 4-view sync orchestration、dashboard UI rendering、continuous receive/send loop 本体、実キュー / 実送信 / 継続ログ出力
 - outbound queue 実キュー、continuous receive/send loop 本体、send / receive の継続ログ出力、file sink open、process-wide logger、`ServerNotice` 実送信は未実装
-- video path は server 側 accepted `VideoFrame` receive side-effect を caller-owned per-client queue へ保存し、client 側で placeholder encoded H.264 payload 付き `VideoFrame` と、Windows Graphics Capture + FFmpeg による one-shot `RealCaptureH264` `VideoFrame` を UDP 送信する PoC slice まで完了。switcher 側は latest frame を FFmpeg で H.264 decode して 1 frame BMP dump し、Windows では decoded BGRA を normal window に one-shot 描画し、single-client latest-frame の bounded continuous decode/render loop 境界まで完了。targetTime sync、OBS は未着手
+- video path は server 側 accepted `VideoFrame` receive side-effect を caller-owned per-client queue へ保存し、client 側で placeholder encoded H.264 payload 付き `VideoFrame` と、Windows Graphics Capture + FFmpeg による one-shot `RealCaptureH264` `VideoFrame` を UDP 送信する PoC slice まで完了。switcher 側は latest frame を FFmpeg で H.264 decode して 1 frame BMP dump し、Windows では decoded BGRA を normal window に one-shot 描画し、single-client latest-frame の bounded continuous decode/render loop 境界と targetTime / jitter-buffer selection 境界まで完了。2-view sync、OBS は未着手
 
 ---
 
@@ -60,7 +60,7 @@
 
 ## 直近でやること
 1. production H.264 encoder configuration / error logging policy
-2. targetTime / jitter-buffer selection の最小境界を分けて設計する
+2. 2-view sync orchestration の最小境界を分けて設計する
 3. continuous acquisition / frame arrived wait の最小境界を分けて設計する
 
 ---
@@ -656,7 +656,8 @@
 - [x] switcher real H.264 decode / single-frame BMP dump
 - [x] switcher decoded frame one-shot window rendering boundary
 - [x] switcher single-client bounded continuous decode/render loop boundary
-- [ ] targetTime / jitter-buffer frame selection
+- [x] targetTime / jitter-buffer frame selection
+- [ ] 2-view targetTime selection orchestration
 - [ ] 30 分連続確認
 
 ### フェーズ4: 2 人 / 4 人同期 PoC
@@ -699,6 +700,7 @@
 - switcher now has a first real decode/display-substitute PoC: `SwitcherH264DecodeBoundary` can decode one Annex B H.264 payload with FFmpeg into BGRA, `SwitcherDecodeLatestFrameOnceBoundary` can select one latest queued frame and dump a decoded BMP, and `--receive-auth-video-decode-latest-once [config-path] [client-id] [output-path]` connects the in-process server queue result to that one-frame dump path.
 - switcher now has a first real one-shot window rendering boundary: `SwitcherWindowRenderBoundary` validates `SwitcherDecodedFrame` BGRA input, the Windows GDI runtime can paint one frame in a normal window for a bounded hold duration, and `--receive-auth-video-render-decoded-once [config-path] [client-id] [hold-ms]` connects server queue -> decode -> one-shot render while leaving BMP dump intact.
 - switcher now has a bounded single-client continuous render loop boundary: `SwitcherContinuousRenderLoopBoundary` repeatedly selects latest encoded frames from a caller-owned source, decodes through a caller-owned decode hook, renders through a caller-owned render hook, records no-frame/decode/render states explicitly, and stops by `max_iterations` or `max_rendered_frames`.
+- switcher now has a deterministic targetTime / jitter-buffer selection boundary: `SwitcherTargetTimeBoundary` calculates targetTime from current switcher time, playout delay, and optional clock offset, while `SwitcherJitterBufferSelectionBoundary` reads one client's caller-owned queue and returns selected/no-frame/waiting/too-early/too-late states without decode/render.
 - client video path now has an explicit real-capture / H.264-encode replacement boundary: capture returns `RealCaptureDeferred`, encode returns `RealH264EncodeDeferred`, and `ClientEncodedVideoFrameSource` can feed existing `VideoFrame` metadata/send wiring without pretending placeholder bytes are real capture output.
 - client capture backend direction is now Windows Graphics Capture for MVP; the client can select/probe that backend and surface not-configured, unsupported, or unavailable results without producing fake pixels or coupling capture to UDP send.
 - client capture target discovery now has a pre-session boundary: display/window target descriptors can be represented and converted to `ClientCaptureTargetConfig`, while real Windows enumeration remains deferred and explicit as runtime unavailable.
@@ -717,6 +719,6 @@
 
 ## Next Items
 1. production H.264 encoder configuration / error logging policy
-2. targetTime / jitter-buffer selection boundary
+2. 2-view targetTime selection orchestration boundary
 3. continuous acquisition / frame arrived wait boundary
 4. 2-view sync PoC after targetTime selection is isolated

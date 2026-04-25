@@ -5,6 +5,57 @@
 - Codex
 
 ### Work
+- Added the smallest targetTime / jitter-buffer selection boundary for one switcher client.
+- Added `SwitcherTargetTimeBoundary`, `SwitcherTargetTimeInput`, `SwitcherTargetTime`, `SwitcherJitterBufferSelectionPolicy`, `SwitcherJitterBufferSelectionInput`, `SwitcherJitterBufferSelectedFrame`, and `SwitcherJitterBufferSelectionResult`.
+- The selector reads one client's frames from caller-owned `ServerVideoFrameQueueState` without mutation.
+- Selection calculates targetTime from current switcher time, playout delay, and optional clock offset, then chooses the encoded frame closest to targetTime inside the configured early/late window.
+- Explicit outcomes cover selected frame, no frame, waiting for buffer, frame too early, and frame too late/drop candidates.
+- Added deterministic tests for closest-frame selection, insufficient buffer, no-frame, too-early, too-late/drop candidates, and metadata/payload preservation.
+- Kept decode, render, continuous loop, multi-view sync orchestration, and OBS integration separate.
+
+### Changed Files
+- `apps/switcher/src/lib.rs`
+- `docs/architecture/system-design.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### Decisions
+- Keep the first targetTime selector pure and read-only.
+- Report late frames as drop candidates instead of mutating the server queue from the selector.
+- Keep selected output encoded so future decode/render loop integration can remain a downstream step.
+- Leave 2-view / 4-view orchestration for the next boundary.
+
+### Unresolved
+- 2-view / 4-view targetTime orchestration
+- targetTime-selected decode/render loop integration
+- live queue ownership / socket receive loop integration
+- OBS Window Capture verification
+- production timing policy and structured selection/drop logging
+
+### Next
+- Define 2-view targetTime selection orchestration.
+- Connect targetTime-selected frames into decode/render after the selection contract is stable.
+- Add production timing policy and structured drop/wait logging.
+
+### TODO Update
+- Marked targetTime / jitter-buffer frame selection complete.
+- Updated Current Focus from targetTime selection to 2-view sync orchestration.
+- Kept decode/render and OBS work separate from this selector.
+
+### Validation
+- `cargo fmt`
+- `cargo test -p stream-sync-switcher`
+- `cargo fmt --check`
+- `cargo check --workspace`
+- `git diff --check`
+
+---
+
+## 2026-04-25
+### Type
+- Codex
+
+### Work
 - Added the smallest bounded continuous switcher decode/render loop boundary.
 - Added `SwitcherContinuousRenderLoopPolicy`, `SwitcherContinuousRenderLoopInput`, `SwitcherContinuousFrameSource`, `SwitcherQueueLatestFrameSource`, loop events, loop summary, stop reasons, and `SwitcherContinuousRenderLoopBoundary`.
 - The loop repeatedly performs latest-frame selection, H.264 decode through a caller-owned decode hook, and decoded-frame render through a caller-owned render hook.
