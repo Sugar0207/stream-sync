@@ -7451,12 +7451,27 @@ Current implementation:
 - `ClientCaptureSessionRuntimeBoundary` consumes that input and delegates future
   WindowsGraphicsCapture session creation to a caller-owned
   `ClientCaptureSessionRuntimeHook`.
-- The default session runtime hook does not call Windows APIs yet. It returns
+- The default session runtime hook remains the placeholder-safe path. It returns
   runtime-unavailable on Windows and backend-unsupported on non-Windows.
+- `ClientWindowsGraphicsCaptureSessionRuntimeHook` is the Windows-only real
+  session-creation hook. It creates a `GraphicsCaptureItem`, a
+  `Direct3D11CaptureFramePool`, and a `GraphicsCaptureSession`, then returns a
+  `ClientCaptureSessionRuntime` that only means "session is ready".
+- The Windows hook does not call `StartCapture`, register frame callbacks, call
+  `TryGetNextFrame`, encode H.264, or send UDP packets.
+- WindowsGraphicsCapture lifecycle positioning is now:
+  discovery descriptor -> session config -> session runtime creation -> future
+  frame acquisition. Frame acquisition is intentionally the next boundary and
+  must consume an existing ready runtime instead of being hidden inside session
+  creation.
+- Primary display session creation can create a monitor capture item directly.
+  Window session creation resolves the configured title to an HWND first.
+  Non-primary display stable ids still require real Windows display enumeration,
+  so the runtime hook returns explicit creation-deferred for that path.
 - Session runtime creation can surface created, creation-deferred,
   permission-unavailable, runtime-unavailable, backend-unsupported,
-  unsupported-target, and creation-failed states explicitly. It still does not
-  acquire frames.
+  unsupported-target, invalid-target, and creation-failed states explicitly. It
+  still does not acquire frames.
 - `ClientCaptureSourceBoundary::probe_backend` reports:
   - capture backend not configured,
   - backend unsupported on non-Windows targets,
@@ -7520,7 +7535,6 @@ Responsibility split:
   - Does not know whether payload bytes came from placeholder or future real
     capture/encode.
 
-Windows API-backed target enumeration, real capture session creation inside the
-runtime hook, frame acquisition, real H.264 encoder integration, encoder
-configuration, packet fragmentation, decode, switcher rendering, 4-view sync,
-and OBS integration remain future work.
+Windows API-backed target enumeration, frame acquisition, real H.264 encoder
+integration, encoder configuration, packet fragmentation, decode, switcher
+rendering, 4-view sync, and OBS integration remain future work.

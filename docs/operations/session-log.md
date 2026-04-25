@@ -9788,3 +9788,51 @@
 - `cargo test -p stream-sync-client client_video_frame`
 - `cargo check --workspace`
 - `git diff --check`
+---
+
+## 2026-04-25
+### Type
+- Codex
+
+### Work
+- Added the first Windows-only real `ClientCaptureSessionRuntimeHook` for Windows Graphics Capture session creation.
+- Added `ClientWindowsGraphicsCaptureSessionRuntimeHook`, which creates a `GraphicsCaptureItem`, `Direct3D11CaptureFramePool`, and `GraphicsCaptureSession` for a ready session runtime without starting capture or acquiring frames.
+- Kept `ClientUnavailableCaptureSessionRuntimeHook` as the default placeholder-safe path, so existing callers still get explicit runtime-unavailable on Windows or backend-unsupported on non-Windows unless they inject the real hook.
+- Added Windows-only runtime storage on `ClientCaptureSessionRuntime` so the created item/frame-pool/session/device stay alive while the runtime handoff exists.
+- Mapped Windows setup errors into explicit session creation reasons, including permission-unavailable, runtime-unavailable, invalid-target, creation-deferred, and creation-failed.
+- Kept frame acquisition, H.264 encode, UDP send changes, and placeholder path changes out of scope.
+
+### Changed Files
+- `apps/client/Cargo.toml`
+- `apps/client/src/lib.rs`
+- `docs/architecture/system-design.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### Decisions
+- The real Windows hook is caller-owned and injected explicitly; the default boundary path remains unavailable/unsupported for compatibility.
+- Primary display can create a monitor item now. Window title targets resolve through HWND lookup. Non-primary display stable ids remain creation-deferred until real Windows display enumeration provides a handle-backed descriptor path.
+- Session creation owns only readiness objects. It does not call `StartCapture`, read frames, encode, or send.
+- The client crate now allows unsafe code locally because Windows Graphics Capture desktop interop and D3D device creation require unsafe Windows FFI calls.
+
+### Unresolved
+- actual Windows Graphics Capture frame acquisition from a ready runtime
+- Windows API-backed target enumeration for display/window descriptors beyond the current metadata placeholders
+- real H.264 encoder implementation and configuration
+- real H.264 decode, switcher rendering, targetTime / jitter-buffer, 4-view sync, and OBS integration
+
+### Next
+- Add a frame acquisition boundary that consumes `ClientCaptureSessionRuntime` and returns raw BGRA frames without touching encode/send.
+- Add Windows target enumeration for display/window handles so non-primary display ids are not deferred.
+- Add the H.264 encoder behind the existing encoder boundary after raw frame acquisition exists.
+
+### TODO Update
+- Updated Current Focus to record that the Windows-only real session hook can create a ready session runtime while the default placeholder path remains unchanged.
+- Added a completed Phase 3 item for first minimal Windows Graphics Capture session creation.
+- Updated Next Items so frame acquisition from a ready runtime is the next capture task.
+
+### Validation
+- `cargo fmt`
+- `cargo fmt --check`
+- `cargo test -p stream-sync-client client_video_frame`
+- `cargo check --workspace`

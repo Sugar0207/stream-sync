@@ -1595,6 +1595,22 @@ pub struct ClientCaptureSessionRuntime {
     pub backend: ClientCaptureBackendKind,
     pub target: ClientWindowsGraphicsCaptureSessionTargetConfig,
     pub runtime_id: String,
+    pub capture_started: bool,
+    #[cfg(target_os = "windows")]
+    pub windows_runtime: Option<ClientWindowsGraphicsCaptureSessionPlatformRuntime>,
+}
+
+/// Windows-only handles that keep a created Graphics Capture session alive.
+///
+/// This owns the session setup objects only. Frame acquisition stays out of
+/// this runtime handoff and will be added behind a later boundary.
+#[cfg(target_os = "windows")]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClientWindowsGraphicsCaptureSessionPlatformRuntime {
+    pub item: windows::Graphics::Capture::GraphicsCaptureItem,
+    pub frame_pool: windows::Graphics::Capture::Direct3D11CaptureFramePool,
+    pub session: windows::Graphics::Capture::GraphicsCaptureSession,
+    pub device: windows::Graphics::DirectX::Direct3D11::IDirect3DDevice,
 }
 
 /// Explicit reason why capture session runtime creation did not happen.
@@ -1605,6 +1621,7 @@ pub enum ClientCaptureSessionRuntimeCreationFailure {
     RuntimeUnavailable,
     BackendUnsupported,
     UnsupportedTarget,
+    InvalidTarget,
     CreationFailed,
 }
 
@@ -1660,6 +1677,244 @@ impl ClientCaptureSessionRuntimeHook for ClientUnavailableCaptureSessionRuntimeH
     }
 }
 
+/// Windows API-backed capture session runtime hook.
+///
+/// This hook creates the Windows Graphics Capture item, frame pool, and capture
+/// session, but deliberately does not start capture or read frames.
+#[cfg(target_os = "windows")]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct ClientWindowsGraphicsCaptureSessionRuntimeHook;
+
+#[cfg(target_os = "windows")]
+impl ClientCaptureSessionRuntimeHook for ClientWindowsGraphicsCaptureSessionRuntimeHook {
+    fn create_windows_graphics_capture_session(
+        &self,
+        input: &ClientCaptureSessionRuntimeInput,
+    ) -> ClientCaptureSessionRuntimeCreationResult {
+        windows_capture_session::create_session(input)
+    }
+}
+
+#[cfg(target_os = "windows")]
+mod windows_capture_session {
+    use super::*;
+    use windows::core::{factory, Error, Interface, HRESULT, PCWSTR};
+    use windows::Graphics::Capture::{
+        Direct3D11CaptureFramePool, GraphicsCaptureItem, GraphicsCaptureSession,
+    };
+    use windows::Graphics::DirectX::Direct3D11::IDirect3DDevice;
+    use windows::Graphics::DirectX::DirectXPixelFormat;
+    use windows::Win32::Foundation::{E_ACCESSDENIED, E_INVALIDARG, E_POINTER, HMODULE, HWND};
+    use windows::Win32::Graphics::Direct3D::{D3D_DRIVER_TYPE_HARDWARE, D3D_FEATURE_LEVEL_11_0};
+    use windows::Win32::Graphics::Direct3D11::{
+        D3D11CreateDevice, ID3D11Device, D3D11_CREATE_DEVICE_BGRA_SUPPORT, D3D11_SDK_VERSION,
+    };
+    use windows::Win32::Graphics::Dxgi::IDXGIDevice;
+    use windows::Win32::Graphics::Gdi::{MonitorFromWindow, MONITOR_DEFAULTTOPRIMARY};
+    use windows::Win32::System::WinRT::Direct3D11::CreateDirect3D11DeviceFromDXGIDevice;
+    use windows::Win32::System::WinRT::Graphics::Capture::IGraphicsCaptureItemInterop;
+    use windows::Win32::UI::WindowsAndMessaging::{FindWindowW, GetDesktopWindow};
+
+    pub fn create_session(
+        input: &ClientCaptureSessionRuntimeInput,
+    ) -> ClientCaptureSessionRuntimeCreationResult {
+        match try_create_session(input) {
+            Ok(runtime) => ClientCaptureSessionRuntimeCreationResult::Created { runtime },
+            Err(error) => ClientCaptureSessionRuntimeCreationResult::NotCreated {
+                backend: Some(ClientCaptureBackendKind::WindowsGraphicsCapture),
+                reason: error.reason,
+                message: Some(error.message),
+            },
+        }
+    }
+
+    struct SessionCreationError {
+        reason: ClientCaptureSessionRuntimeCreationFailure,
+        message: String,
+    }
+
+    impl SessionCreationError {
+        fn new(
+            reason: ClientCaptureSessionRuntimeCreationFailure,
+            message: impl Into<String>,
+        ) -> Self {
+            Self {
+                reason,
+                message: message.into(),
+            }
+        }
+
+        fn from_windows(stage: &str, error: Error) -> Self {
+            Self {
+                reason: map_windows_error(&error),
+                message: format!("{stage}: {}", error.message()),
+            }
+        }
+    }
+
+    fn try_create_session(
+        input: &ClientCaptureSessionRuntimeInput,
+    ) -> Result<ClientCaptureSessionRuntime, SessionCreationError> {
+        let item = create_capture_item(&input.config.target)?;
+        let is_supported = GraphicsCaptureSession::IsSupported()
+            .map_err(|error| SessionCreationError::from_windows("query capture support", error))?;
+        if !is_supported {
+            return Err(SessionCreationError::new(
+                ClientCaptureSessionRuntimeCreationFailure::RuntimeUnavailable,
+                "Windows Graphics Capture is not supported by this Windows runtime",
+            ));
+        }
+
+        let size = item
+            .Size()
+            .map_err(|error| SessionCreationError::from_windows("read capture item size", error))?;
+        if size.Width <= 0 || size.Height <= 0 {
+            return Err(SessionCreationError::new(
+                ClientCaptureSessionRuntimeCreationFailure::InvalidTarget,
+                "Windows Graphics Capture target has an invalid size",
+            ));
+        }
+
+        let device = create_direct3d_device()?;
+        let frame_pool = Direct3D11CaptureFramePool::CreateFreeThreaded(
+            &device,
+            DirectXPixelFormat::B8G8R8A8UIntNormalized,
+            2,
+            size,
+        )
+        .map_err(|error| SessionCreationError::from_windows("create capture frame pool", error))?;
+        let session = frame_pool
+            .CreateCaptureSession(&item)
+            .map_err(|error| SessionCreationError::from_windows("create capture session", error))?;
+
+        let runtime_id = match &input.config.target {
+            ClientWindowsGraphicsCaptureSessionTargetConfig::PrimaryDisplay => {
+                "wgc:display:primary".to_string()
+            }
+            ClientWindowsGraphicsCaptureSessionTargetConfig::Display { stable_id } => {
+                format!("wgc:display:{stable_id}")
+            }
+            ClientWindowsGraphicsCaptureSessionTargetConfig::Window { title } => {
+                format!("wgc:window:{title}")
+            }
+        };
+
+        Ok(ClientCaptureSessionRuntime {
+            backend: input.config.backend,
+            target: input.config.target.clone(),
+            runtime_id,
+            capture_started: false,
+            windows_runtime: Some(ClientWindowsGraphicsCaptureSessionPlatformRuntime {
+                item,
+                frame_pool,
+                session,
+                device,
+            }),
+        })
+    }
+
+    fn create_capture_item(
+        target: &ClientWindowsGraphicsCaptureSessionTargetConfig,
+    ) -> Result<GraphicsCaptureItem, SessionCreationError> {
+        let interop =
+            factory::<GraphicsCaptureItem, IGraphicsCaptureItemInterop>().map_err(|error| {
+                SessionCreationError::from_windows("load capture item interop", error)
+            })?;
+
+        match target {
+            ClientWindowsGraphicsCaptureSessionTargetConfig::PrimaryDisplay => {
+                let desktop = unsafe { GetDesktopWindow() };
+                let monitor = unsafe { MonitorFromWindow(desktop, MONITOR_DEFAULTTOPRIMARY) };
+                if monitor.is_invalid() {
+                    return Err(SessionCreationError::new(
+                        ClientCaptureSessionRuntimeCreationFailure::InvalidTarget,
+                        "primary display monitor handle was not available",
+                    ));
+                }
+                unsafe { interop.CreateForMonitor::<GraphicsCaptureItem>(monitor) }
+                    .map_err(|error| SessionCreationError::from_windows("create capture item for monitor", error))
+            }
+            ClientWindowsGraphicsCaptureSessionTargetConfig::Display { stable_id } => Err(
+                SessionCreationError::new(
+                    ClientCaptureSessionRuntimeCreationFailure::CreationDeferred,
+                    format!(
+                        "display stable_id '{stable_id}' requires Windows display enumeration before session creation"
+                    ),
+                ),
+            ),
+            ClientWindowsGraphicsCaptureSessionTargetConfig::Window { title } => {
+                let title_wide = null_terminated_wide(title);
+                let hwnd = unsafe { FindWindowW(None, PCWSTR(title_wide.as_ptr())) }.map_err(
+                    |error| {
+                        SessionCreationError::new(
+                            ClientCaptureSessionRuntimeCreationFailure::InvalidTarget,
+                            format!("find window '{title}': {}", error.message()),
+                        )
+                    },
+                )?;
+                if hwnd == HWND::default() {
+                    return Err(SessionCreationError::new(
+                        ClientCaptureSessionRuntimeCreationFailure::InvalidTarget,
+                        format!("window target '{title}' was not found"),
+                    ));
+                }
+                unsafe { interop.CreateForWindow::<GraphicsCaptureItem>(hwnd) }
+                    .map_err(|error| SessionCreationError::from_windows("create capture item for window", error))
+            }
+        }
+    }
+
+    fn create_direct3d_device() -> Result<IDirect3DDevice, SessionCreationError> {
+        let mut d3d_device: Option<ID3D11Device> = None;
+        unsafe {
+            D3D11CreateDevice(
+                None,
+                D3D_DRIVER_TYPE_HARDWARE,
+                HMODULE::default(),
+                D3D11_CREATE_DEVICE_BGRA_SUPPORT,
+                Some(&[D3D_FEATURE_LEVEL_11_0]),
+                D3D11_SDK_VERSION,
+                Some(&mut d3d_device),
+                None,
+                None,
+            )
+        }
+        .map_err(|error| SessionCreationError::from_windows("create D3D11 device", error))?;
+
+        let d3d_device = d3d_device.ok_or_else(|| {
+            SessionCreationError::new(
+                ClientCaptureSessionRuntimeCreationFailure::CreationFailed,
+                "D3D11 device creation returned no device",
+            )
+        })?;
+        let dxgi_device: IDXGIDevice = d3d_device.cast().map_err(|error| {
+            SessionCreationError::from_windows("cast D3D11 device to DXGI", error)
+        })?;
+        let inspectable =
+            unsafe { CreateDirect3D11DeviceFromDXGIDevice(&dxgi_device) }.map_err(|error| {
+                SessionCreationError::from_windows("create WinRT Direct3D device", error)
+            })?;
+        inspectable.cast::<IDirect3DDevice>().map_err(|error| {
+            SessionCreationError::from_windows("cast WinRT Direct3D device", error)
+        })
+    }
+
+    fn null_terminated_wide(value: &str) -> Vec<u16> {
+        value.encode_utf16().chain(std::iter::once(0)).collect()
+    }
+
+    fn map_windows_error(error: &Error) -> ClientCaptureSessionRuntimeCreationFailure {
+        match error.code() {
+            E_ACCESSDENIED => ClientCaptureSessionRuntimeCreationFailure::PermissionUnavailable,
+            E_INVALIDARG | E_POINTER => ClientCaptureSessionRuntimeCreationFailure::InvalidTarget,
+            HRESULT(code) if code == 0x80040154u32 as i32 => {
+                ClientCaptureSessionRuntimeCreationFailure::RuntimeUnavailable
+            }
+            _ => ClientCaptureSessionRuntimeCreationFailure::CreationFailed,
+        }
+    }
+}
+
 /// Boundary for creating a future capture session runtime.
 ///
 /// This consumes prepared session config and delegates OS-specific work to a
@@ -1706,6 +1961,340 @@ impl ClientCaptureSessionRuntimeBoundary {
                 !title.trim().is_empty()
             }
         }
+    }
+}
+
+/// Input for acquiring one raw BGRA frame from a ready capture session runtime.
+///
+/// This boundary consumes a session runtime only. It does not discover targets,
+/// create sessions, encode H.264, build protocol messages, or send UDP.
+pub struct ClientCaptureFrameAcquisitionInput<'a> {
+    pub runtime: &'a mut ClientCaptureSessionRuntime,
+    pub capture_timestamp: TimestampMicros,
+    pub fps_nominal: u32,
+    pub start_capture_if_needed: bool,
+}
+
+/// Explicit reason why one-frame acquisition could not run.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ClientCaptureFrameAcquisitionUnavailableReason {
+    RuntimeUnavailable,
+    BackendUnsupported,
+    CaptureNotStarted,
+    AcquisitionFailed,
+}
+
+/// Result from attempting to acquire one raw BGRA frame.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ClientCaptureFrameAcquisitionResult {
+    FrameAcquired {
+        frame: ClientRawCapturedVideoFrame,
+    },
+    NoFrameAvailable {
+        message: Option<String>,
+    },
+    Unavailable {
+        reason: ClientCaptureFrameAcquisitionUnavailableReason,
+        message: Option<String>,
+    },
+}
+
+/// Runtime hook for platform-specific frame acquisition from an existing
+/// capture session runtime.
+pub trait ClientCaptureFrameAcquisitionRuntimeHook {
+    fn acquire_one_bgra_frame(
+        &self,
+        input: &mut ClientCaptureFrameAcquisitionInput<'_>,
+    ) -> ClientCaptureFrameAcquisitionResult;
+}
+
+/// Default acquisition hook used until a real platform hook is injected.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct ClientUnavailableCaptureFrameAcquisitionRuntimeHook;
+
+impl ClientCaptureFrameAcquisitionRuntimeHook
+    for ClientUnavailableCaptureFrameAcquisitionRuntimeHook
+{
+    fn acquire_one_bgra_frame(
+        &self,
+        _input: &mut ClientCaptureFrameAcquisitionInput<'_>,
+    ) -> ClientCaptureFrameAcquisitionResult {
+        if cfg!(target_os = "windows") {
+            ClientCaptureFrameAcquisitionResult::Unavailable {
+                reason: ClientCaptureFrameAcquisitionUnavailableReason::RuntimeUnavailable,
+                message: Some(
+                    "Windows Graphics Capture frame acquisition runtime is not wired".to_string(),
+                ),
+            }
+        } else {
+            ClientCaptureFrameAcquisitionResult::Unavailable {
+                reason: ClientCaptureFrameAcquisitionUnavailableReason::BackendUnsupported,
+                message: Some(
+                    "Windows Graphics Capture frame acquisition is unsupported on this platform"
+                        .to_string(),
+                ),
+            }
+        }
+    }
+}
+
+/// Windows API-backed one-frame acquisition hook.
+#[cfg(target_os = "windows")]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct ClientWindowsGraphicsCaptureFrameAcquisitionRuntimeHook;
+
+#[cfg(target_os = "windows")]
+impl ClientCaptureFrameAcquisitionRuntimeHook
+    for ClientWindowsGraphicsCaptureFrameAcquisitionRuntimeHook
+{
+    fn acquire_one_bgra_frame(
+        &self,
+        input: &mut ClientCaptureFrameAcquisitionInput<'_>,
+    ) -> ClientCaptureFrameAcquisitionResult {
+        windows_capture_frame_acquisition::acquire_one_bgra_frame(input)
+    }
+}
+
+#[cfg(target_os = "windows")]
+mod windows_capture_frame_acquisition {
+    use super::*;
+    use std::slice;
+    use windows::core::{Error, Interface, HRESULT};
+    use windows::Win32::Foundation::E_POINTER;
+    use windows::Win32::Graphics::Direct3D11::{
+        ID3D11Device, ID3D11Resource, ID3D11Texture2D, D3D11_CPU_ACCESS_READ,
+        D3D11_MAPPED_SUBRESOURCE, D3D11_MAP_READ, D3D11_TEXTURE2D_DESC, D3D11_USAGE_STAGING,
+    };
+    use windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_B8G8R8A8_UNORM;
+    use windows::Win32::System::WinRT::Direct3D11::IDirect3DDxgiInterfaceAccess;
+
+    pub fn acquire_one_bgra_frame(
+        input: &mut ClientCaptureFrameAcquisitionInput<'_>,
+    ) -> ClientCaptureFrameAcquisitionResult {
+        match try_acquire_one_bgra_frame(input) {
+            Ok(Some(frame)) => ClientCaptureFrameAcquisitionResult::FrameAcquired { frame },
+            Ok(None) => ClientCaptureFrameAcquisitionResult::NoFrameAvailable {
+                message: Some(
+                    "Windows Graphics Capture frame pool had no queued frame".to_string(),
+                ),
+            },
+            Err(error) => ClientCaptureFrameAcquisitionResult::Unavailable {
+                reason: error.reason,
+                message: Some(error.message),
+            },
+        }
+    }
+
+    struct FrameAcquisitionError {
+        reason: ClientCaptureFrameAcquisitionUnavailableReason,
+        message: String,
+    }
+
+    impl FrameAcquisitionError {
+        fn new(
+            reason: ClientCaptureFrameAcquisitionUnavailableReason,
+            message: impl Into<String>,
+        ) -> Self {
+            Self {
+                reason,
+                message: message.into(),
+            }
+        }
+
+        fn from_windows(stage: &str, error: Error) -> Self {
+            Self {
+                reason: ClientCaptureFrameAcquisitionUnavailableReason::AcquisitionFailed,
+                message: format!("{stage}: {}", error.message()),
+            }
+        }
+    }
+
+    fn try_acquire_one_bgra_frame(
+        input: &mut ClientCaptureFrameAcquisitionInput<'_>,
+    ) -> Result<Option<ClientRawCapturedVideoFrame>, FrameAcquisitionError> {
+        let Some(platform_runtime) = input.runtime.windows_runtime.as_ref() else {
+            return Err(FrameAcquisitionError::new(
+                ClientCaptureFrameAcquisitionUnavailableReason::RuntimeUnavailable,
+                "Windows Graphics Capture runtime handles are not available",
+            ));
+        };
+
+        if !input.runtime.capture_started {
+            if !input.start_capture_if_needed {
+                return Err(FrameAcquisitionError::new(
+                    ClientCaptureFrameAcquisitionUnavailableReason::CaptureNotStarted,
+                    "capture session has not been started",
+                ));
+            }
+            platform_runtime.session.StartCapture().map_err(|error| {
+                FrameAcquisitionError::from_windows("start Windows Graphics Capture session", error)
+            })?;
+            input.runtime.capture_started = true;
+        }
+
+        let capture_frame = match platform_runtime.frame_pool.TryGetNextFrame() {
+            Ok(frame) => frame,
+            Err(error) if error.code() == E_POINTER || error.code() == HRESULT(0) => {
+                return Ok(None);
+            }
+            Err(error) => {
+                return Err(FrameAcquisitionError::from_windows(
+                    "get next capture frame",
+                    error,
+                ));
+            }
+        };
+
+        let frame = copy_capture_frame_to_bgra(
+            platform_runtime,
+            &capture_frame,
+            input.capture_timestamp,
+            input.fps_nominal,
+        );
+        let close_result = capture_frame.Close();
+        match (frame, close_result) {
+            (Ok(frame), Ok(())) => Ok(Some(frame)),
+            (Ok(frame), Err(_)) => Ok(Some(frame)),
+            (Err(error), _) => Err(error),
+        }
+    }
+
+    fn copy_capture_frame_to_bgra(
+        platform_runtime: &ClientWindowsGraphicsCaptureSessionPlatformRuntime,
+        capture_frame: &windows::Graphics::Capture::Direct3D11CaptureFrame,
+        capture_timestamp: TimestampMicros,
+        fps_nominal: u32,
+    ) -> Result<ClientRawCapturedVideoFrame, FrameAcquisitionError> {
+        let size = capture_frame.ContentSize().map_err(|error| {
+            FrameAcquisitionError::from_windows("read frame content size", error)
+        })?;
+        if size.Width <= 0 || size.Height <= 0 {
+            return Err(FrameAcquisitionError::new(
+                ClientCaptureFrameAcquisitionUnavailableReason::AcquisitionFailed,
+                "capture frame content size is invalid",
+            ));
+        }
+
+        let surface = capture_frame
+            .Surface()
+            .map_err(|error| FrameAcquisitionError::from_windows("read frame surface", error))?;
+        let surface_access: IDirect3DDxgiInterfaceAccess = surface.cast().map_err(|error| {
+            FrameAcquisitionError::from_windows("access frame DXGI surface", error)
+        })?;
+        let source_texture: ID3D11Texture2D =
+            unsafe { surface_access.GetInterface() }.map_err(|error| {
+                FrameAcquisitionError::from_windows("get frame D3D11 texture", error)
+            })?;
+        let mut desc = D3D11_TEXTURE2D_DESC::default();
+        unsafe { source_texture.GetDesc(&mut desc) };
+        if desc.Format != DXGI_FORMAT_B8G8R8A8_UNORM {
+            return Err(FrameAcquisitionError::new(
+                ClientCaptureFrameAcquisitionUnavailableReason::AcquisitionFailed,
+                "capture frame is not BGRA8 UNORM",
+            ));
+        }
+
+        let device_access: IDirect3DDxgiInterfaceAccess =
+            platform_runtime.device.cast().map_err(|error| {
+                FrameAcquisitionError::from_windows("access capture D3D11 device", error)
+            })?;
+        let d3d_device: ID3D11Device =
+            unsafe { device_access.GetInterface() }.map_err(|error| {
+                FrameAcquisitionError::from_windows("get capture D3D11 device", error)
+            })?;
+        let context = unsafe { d3d_device.GetImmediateContext() }
+            .map_err(|error| FrameAcquisitionError::from_windows("get D3D11 context", error))?;
+
+        let staging_desc = D3D11_TEXTURE2D_DESC {
+            Usage: D3D11_USAGE_STAGING,
+            BindFlags: 0,
+            CPUAccessFlags: D3D11_CPU_ACCESS_READ.0 as u32,
+            MiscFlags: 0,
+            ..desc
+        };
+        let mut staging_texture: Option<ID3D11Texture2D> = None;
+        unsafe { d3d_device.CreateTexture2D(&staging_desc, None, Some(&mut staging_texture)) }
+            .map_err(|error| {
+                FrameAcquisitionError::from_windows("create staging texture", error)
+            })?;
+        let staging_texture = staging_texture.ok_or_else(|| {
+            FrameAcquisitionError::new(
+                ClientCaptureFrameAcquisitionUnavailableReason::AcquisitionFailed,
+                "D3D11 staging texture creation returned no texture",
+            )
+        })?;
+
+        let source_resource: ID3D11Resource = source_texture.cast().map_err(|error| {
+            FrameAcquisitionError::from_windows("cast source texture to resource", error)
+        })?;
+        let staging_resource: ID3D11Resource = staging_texture.cast().map_err(|error| {
+            FrameAcquisitionError::from_windows("cast staging texture to resource", error)
+        })?;
+        unsafe { context.CopyResource(&staging_resource, &source_resource) };
+
+        let mut mapped = D3D11_MAPPED_SUBRESOURCE::default();
+        unsafe { context.Map(&staging_resource, 0, D3D11_MAP_READ, 0, &mut mapped) }
+            .map_err(|error| FrameAcquisitionError::from_windows("map staging texture", error))?;
+        let pixels = copy_mapped_bgra_pixels(&mapped, desc.Width, desc.Height);
+        unsafe { context.Unmap(&staging_resource, 0) };
+
+        Ok(ClientRawCapturedVideoFrame {
+            capture_timestamp,
+            width: desc.Width,
+            height: desc.Height,
+            fps_nominal,
+            pixel_format: ClientRawVideoPixelFormat::Bgra8,
+            pixels,
+        })
+    }
+
+    fn copy_mapped_bgra_pixels(
+        mapped: &D3D11_MAPPED_SUBRESOURCE,
+        width: u32,
+        height: u32,
+    ) -> Vec<u8> {
+        let row_bytes = width as usize * 4;
+        let mut pixels = vec![0_u8; row_bytes * height as usize];
+        for row in 0..height as usize {
+            let source_offset = row * mapped.RowPitch as usize;
+            let destination_offset = row * row_bytes;
+            let source = unsafe {
+                slice::from_raw_parts((mapped.pData as *const u8).add(source_offset), row_bytes)
+            };
+            pixels[destination_offset..destination_offset + row_bytes].copy_from_slice(source);
+        }
+        pixels
+    }
+}
+
+/// Boundary for acquiring one raw BGRA frame from a ready capture session.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct ClientCaptureFrameAcquisitionBoundary;
+
+impl ClientCaptureFrameAcquisitionBoundary {
+    pub fn acquire_one_frame(
+        &self,
+        mut input: ClientCaptureFrameAcquisitionInput<'_>,
+    ) -> ClientCaptureFrameAcquisitionResult {
+        self.acquire_one_frame_with_runtime(
+            &mut input,
+            &ClientUnavailableCaptureFrameAcquisitionRuntimeHook,
+        )
+    }
+
+    pub fn acquire_one_frame_with_runtime(
+        &self,
+        input: &mut ClientCaptureFrameAcquisitionInput<'_>,
+        runtime: &impl ClientCaptureFrameAcquisitionRuntimeHook,
+    ) -> ClientCaptureFrameAcquisitionResult {
+        if input.runtime.backend != ClientCaptureBackendKind::WindowsGraphicsCapture {
+            return ClientCaptureFrameAcquisitionResult::Unavailable {
+                reason: ClientCaptureFrameAcquisitionUnavailableReason::BackendUnsupported,
+                message: Some("capture frame acquisition backend is unsupported".to_string()),
+            };
+        }
+
+        runtime.acquire_one_bgra_frame(input)
     }
 }
 
@@ -8516,6 +9105,17 @@ mod tests {
         }
     }
 
+    fn client_capture_session_runtime_for_tests() -> ClientCaptureSessionRuntime {
+        ClientCaptureSessionRuntime {
+            backend: ClientCaptureBackendKind::WindowsGraphicsCapture,
+            target: ClientWindowsGraphicsCaptureSessionTargetConfig::PrimaryDisplay,
+            runtime_id: "fixture-session".to_string(),
+            capture_started: false,
+            #[cfg(target_os = "windows")]
+            windows_runtime: None,
+        }
+    }
+
     fn auth_request_for_video_frame_tests() -> AuthRequest {
         AuthRequest {
             message_type: MessageType::AuthRequest,
@@ -9044,6 +9644,9 @@ mod tests {
                         backend: input.config.backend,
                         target: input.config.target.clone(),
                         runtime_id: "fixture-session".to_string(),
+                        capture_started: false,
+                        #[cfg(target_os = "windows")]
+                        windows_runtime: None,
                     },
                 }
             }
@@ -9067,7 +9670,10 @@ mod tests {
                     target: ClientWindowsGraphicsCaptureSessionTargetConfig::Window {
                         title: "Minecraft".to_string()
                     },
-                    runtime_id: "fixture-session".to_string()
+                    runtime_id: "fixture-session".to_string(),
+                    capture_started: false,
+                    #[cfg(target_os = "windows")]
+                    windows_runtime: None
                 }
             }
         );
@@ -9211,6 +9817,29 @@ mod tests {
         );
     }
 
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn client_video_frame_windows_capture_session_runtime_reports_invalid_window_target() {
+        let input = ClientCaptureSessionRuntimeInput::from_config(ClientCaptureSessionConfig {
+            backend: ClientCaptureBackendKind::WindowsGraphicsCapture,
+            target: ClientWindowsGraphicsCaptureSessionTargetConfig::Window {
+                title: "__stream_sync_missing_window_for_capture_session_test__".to_string(),
+            },
+        });
+
+        let result = ClientCaptureSessionRuntimeBoundary
+            .create_session_with_runtime(input, &ClientWindowsGraphicsCaptureSessionRuntimeHook);
+
+        assert!(matches!(
+            result,
+            ClientCaptureSessionRuntimeCreationResult::NotCreated {
+                backend: Some(ClientCaptureBackendKind::WindowsGraphicsCapture),
+                reason: ClientCaptureSessionRuntimeCreationFailure::InvalidTarget,
+                ..
+            }
+        ));
+    }
+
     #[test]
     fn client_video_frame_capture_session_runtime_does_not_affect_placeholder_payload() {
         let input = ClientCaptureSessionRuntimeInput::from_config(ClientCaptureSessionConfig {
@@ -9225,6 +9854,218 @@ mod tests {
         assert!(matches!(
             runtime,
             ClientCaptureSessionRuntimeCreationResult::NotCreated { .. }
+        ));
+        assert_eq!(payload.bytes, DEFAULT_PLACEHOLDER_H264_PAYLOAD.to_vec());
+    }
+
+    #[test]
+    fn client_video_frame_capture_frame_acquisition_default_reports_unavailable() {
+        let mut runtime = client_capture_session_runtime_for_tests();
+        let expected_reason = if cfg!(target_os = "windows") {
+            ClientCaptureFrameAcquisitionUnavailableReason::RuntimeUnavailable
+        } else {
+            ClientCaptureFrameAcquisitionUnavailableReason::BackendUnsupported
+        };
+
+        let result = ClientCaptureFrameAcquisitionBoundary.acquire_one_frame(
+            ClientCaptureFrameAcquisitionInput {
+                runtime: &mut runtime,
+                capture_timestamp: TimestampMicros(5_000_000),
+                fps_nominal: 30,
+                start_capture_if_needed: true,
+            },
+        );
+
+        assert_eq!(
+            result,
+            ClientCaptureFrameAcquisitionResult::Unavailable {
+                reason: expected_reason,
+                message: Some(if cfg!(target_os = "windows") {
+                    "Windows Graphics Capture frame acquisition runtime is not wired".to_string()
+                } else {
+                    "Windows Graphics Capture frame acquisition is unsupported on this platform"
+                        .to_string()
+                })
+            }
+        );
+    }
+
+    #[test]
+    fn client_video_frame_capture_frame_acquisition_can_report_capture_not_started() {
+        struct CaptureNotStartedRuntime;
+
+        impl ClientCaptureFrameAcquisitionRuntimeHook for CaptureNotStartedRuntime {
+            fn acquire_one_bgra_frame(
+                &self,
+                _input: &mut ClientCaptureFrameAcquisitionInput<'_>,
+            ) -> ClientCaptureFrameAcquisitionResult {
+                ClientCaptureFrameAcquisitionResult::Unavailable {
+                    reason: ClientCaptureFrameAcquisitionUnavailableReason::CaptureNotStarted,
+                    message: Some("fixture capture not started".to_string()),
+                }
+            }
+        }
+
+        let mut runtime = client_capture_session_runtime_for_tests();
+        let mut input = ClientCaptureFrameAcquisitionInput {
+            runtime: &mut runtime,
+            capture_timestamp: TimestampMicros(5_000_000),
+            fps_nominal: 30,
+            start_capture_if_needed: false,
+        };
+
+        let result = ClientCaptureFrameAcquisitionBoundary
+            .acquire_one_frame_with_runtime(&mut input, &CaptureNotStartedRuntime);
+
+        assert_eq!(
+            result,
+            ClientCaptureFrameAcquisitionResult::Unavailable {
+                reason: ClientCaptureFrameAcquisitionUnavailableReason::CaptureNotStarted,
+                message: Some("fixture capture not started".to_string())
+            }
+        );
+    }
+
+    #[test]
+    fn client_video_frame_capture_frame_acquisition_can_report_no_frame_available() {
+        struct NoFrameRuntime;
+
+        impl ClientCaptureFrameAcquisitionRuntimeHook for NoFrameRuntime {
+            fn acquire_one_bgra_frame(
+                &self,
+                input: &mut ClientCaptureFrameAcquisitionInput<'_>,
+            ) -> ClientCaptureFrameAcquisitionResult {
+                input.runtime.capture_started = true;
+                ClientCaptureFrameAcquisitionResult::NoFrameAvailable {
+                    message: Some("fixture no frame".to_string()),
+                }
+            }
+        }
+
+        let mut runtime = client_capture_session_runtime_for_tests();
+        let mut input = ClientCaptureFrameAcquisitionInput {
+            runtime: &mut runtime,
+            capture_timestamp: TimestampMicros(5_000_000),
+            fps_nominal: 30,
+            start_capture_if_needed: true,
+        };
+
+        let result = ClientCaptureFrameAcquisitionBoundary
+            .acquire_one_frame_with_runtime(&mut input, &NoFrameRuntime);
+
+        assert_eq!(
+            result,
+            ClientCaptureFrameAcquisitionResult::NoFrameAvailable {
+                message: Some("fixture no frame".to_string())
+            }
+        );
+        assert!(runtime.capture_started);
+    }
+
+    #[test]
+    fn client_video_frame_capture_frame_acquisition_maps_failure() {
+        struct FailingAcquisitionRuntime;
+
+        impl ClientCaptureFrameAcquisitionRuntimeHook for FailingAcquisitionRuntime {
+            fn acquire_one_bgra_frame(
+                &self,
+                _input: &mut ClientCaptureFrameAcquisitionInput<'_>,
+            ) -> ClientCaptureFrameAcquisitionResult {
+                ClientCaptureFrameAcquisitionResult::Unavailable {
+                    reason: ClientCaptureFrameAcquisitionUnavailableReason::AcquisitionFailed,
+                    message: Some("fixture acquisition failed".to_string()),
+                }
+            }
+        }
+
+        let mut runtime = client_capture_session_runtime_for_tests();
+        let mut input = ClientCaptureFrameAcquisitionInput {
+            runtime: &mut runtime,
+            capture_timestamp: TimestampMicros(5_000_000),
+            fps_nominal: 30,
+            start_capture_if_needed: true,
+        };
+
+        let result = ClientCaptureFrameAcquisitionBoundary
+            .acquire_one_frame_with_runtime(&mut input, &FailingAcquisitionRuntime);
+
+        assert_eq!(
+            result,
+            ClientCaptureFrameAcquisitionResult::Unavailable {
+                reason: ClientCaptureFrameAcquisitionUnavailableReason::AcquisitionFailed,
+                message: Some("fixture acquisition failed".to_string())
+            }
+        );
+    }
+
+    #[test]
+    fn client_video_frame_capture_frame_acquisition_can_return_raw_bgra_frame() {
+        struct FixtureFrameRuntime;
+
+        impl ClientCaptureFrameAcquisitionRuntimeHook for FixtureFrameRuntime {
+            fn acquire_one_bgra_frame(
+                &self,
+                input: &mut ClientCaptureFrameAcquisitionInput<'_>,
+            ) -> ClientCaptureFrameAcquisitionResult {
+                input.runtime.capture_started = true;
+                ClientCaptureFrameAcquisitionResult::FrameAcquired {
+                    frame: ClientRawCapturedVideoFrame {
+                        capture_timestamp: input.capture_timestamp,
+                        width: 2,
+                        height: 1,
+                        fps_nominal: input.fps_nominal,
+                        pixel_format: ClientRawVideoPixelFormat::Bgra8,
+                        pixels: vec![0, 1, 2, 255, 3, 4, 5, 255],
+                    },
+                }
+            }
+        }
+
+        let mut runtime = client_capture_session_runtime_for_tests();
+        let mut input = ClientCaptureFrameAcquisitionInput {
+            runtime: &mut runtime,
+            capture_timestamp: TimestampMicros(5_000_000),
+            fps_nominal: 30,
+            start_capture_if_needed: true,
+        };
+
+        let result = ClientCaptureFrameAcquisitionBoundary
+            .acquire_one_frame_with_runtime(&mut input, &FixtureFrameRuntime);
+
+        assert_eq!(
+            result,
+            ClientCaptureFrameAcquisitionResult::FrameAcquired {
+                frame: ClientRawCapturedVideoFrame {
+                    capture_timestamp: TimestampMicros(5_000_000),
+                    width: 2,
+                    height: 1,
+                    fps_nominal: 30,
+                    pixel_format: ClientRawVideoPixelFormat::Bgra8,
+                    pixels: vec![0, 1, 2, 255, 3, 4, 5, 255]
+                }
+            }
+        );
+        assert!(runtime.capture_started);
+    }
+
+    #[test]
+    fn client_video_frame_capture_frame_acquisition_does_not_affect_placeholder_payload() {
+        let mut runtime = client_capture_session_runtime_for_tests();
+        let acquisition = ClientCaptureFrameAcquisitionBoundary.acquire_one_frame(
+            ClientCaptureFrameAcquisitionInput {
+                runtime: &mut runtime,
+                capture_timestamp: TimestampMicros(5_000_000),
+                fps_nominal: 30,
+                start_capture_if_needed: true,
+            },
+        );
+        let payload = ClientPlaceholderEncodedH264PayloadSourceBoundary
+            .from_bytes(DEFAULT_PLACEHOLDER_H264_PAYLOAD.to_vec())
+            .expect("placeholder payload should remain independent from frame acquisition");
+
+        assert!(matches!(
+            acquisition,
+            ClientCaptureFrameAcquisitionResult::Unavailable { .. }
         ));
         assert_eq!(payload.bytes, DEFAULT_PLACEHOLDER_H264_PAYLOAD.to_vec());
     }
