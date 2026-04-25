@@ -1,8 +1,10 @@
 use std::{
     collections::BTreeMap,
-    fs, io,
+    fs,
+    io::{self, Write},
     net::{SocketAddr, ToSocketAddrs, UdpSocket},
     path::{Path, PathBuf},
+    process::{Command, Stdio},
     sync::{Arc, Mutex},
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
@@ -2638,6 +2640,162 @@ impl ClientH264EncoderRuntimeHook for ClientDeferredH264EncoderRuntimeHook {
     fn encode_bgra_frame(&self, _input: &ClientH264EncoderInput) -> ClientH264EncoderHookResult {
         ClientH264EncoderHookResult::Deferred {
             reason: ClientH264EncoderDeferredReason::RealH264EncodeDeferred,
+        }
+    }
+}
+
+/// Configuration for the minimal software H.264 encoder runtime.
+///
+/// The output format is an H.264 elementary stream in Annex B form as produced
+/// by `ffmpeg -f h264`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClientFfmpegSoftwareH264EncoderConfig {
+    pub ffmpeg_path: PathBuf,
+    pub preset: String,
+    pub tune: String,
+}
+
+impl Default for ClientFfmpegSoftwareH264EncoderConfig {
+    fn default() -> Self {
+        Self {
+            ffmpeg_path: PathBuf::from("ffmpeg"),
+            preset: "ultrafast".to_string(),
+            tune: "zerolatency".to_string(),
+        }
+    }
+}
+
+/// Minimal FFmpeg CLI-backed software encoder hook.
+///
+/// This hook keeps FFmpeg ownership outside the generic encode boundary. It
+/// performs a one-frame BGRA -> H.264 encode when the configured `ffmpeg`
+/// executable and libx264 are available, and otherwise reports an explicit
+/// unavailable or failed state.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClientFfmpegSoftwareH264EncoderRuntimeHook {
+    config: ClientFfmpegSoftwareH264EncoderConfig,
+}
+
+impl ClientFfmpegSoftwareH264EncoderRuntimeHook {
+    pub fn new(config: ClientFfmpegSoftwareH264EncoderConfig) -> Self {
+        Self { config }
+    }
+
+    pub fn with_default_ffmpeg_path() -> Self {
+        Self::default()
+    }
+
+    fn expected_bgra_len(input: &ClientH264EncoderInput) -> Option<usize> {
+        let width = usize::try_from(input.frame.width).ok()?;
+        let height = usize::try_from(input.frame.height).ok()?;
+        width.checked_mul(height)?.checked_mul(4)
+    }
+}
+
+impl Default for ClientFfmpegSoftwareH264EncoderRuntimeHook {
+    fn default() -> Self {
+        Self::new(ClientFfmpegSoftwareH264EncoderConfig::default())
+    }
+}
+
+impl ClientH264EncoderRuntimeHook for ClientFfmpegSoftwareH264EncoderRuntimeHook {
+    fn encode_bgra_frame(&self, input: &ClientH264EncoderInput) -> ClientH264EncoderHookResult {
+        if input.frame.width == 0 || input.frame.height == 0 || input.frame.fps_nominal == 0 {
+            return ClientH264EncoderHookResult::Deferred {
+                reason: ClientH264EncoderDeferredReason::EncodeFailed,
+            };
+        }
+
+        let Some(expected_len) = Self::expected_bgra_len(input) else {
+            return ClientH264EncoderHookResult::Deferred {
+                reason: ClientH264EncoderDeferredReason::EncodeFailed,
+            };
+        };
+        if input.frame.pixels.len() != expected_len {
+            return ClientH264EncoderHookResult::Deferred {
+                reason: ClientH264EncoderDeferredReason::EncodeFailed,
+            };
+        }
+
+        let video_size = format!("{}x{}", input.frame.width, input.frame.height);
+        let fps = input.frame.fps_nominal.to_string();
+        let mut child = match Command::new(&self.config.ffmpeg_path)
+            .arg("-hide_banner")
+            .arg("-loglevel")
+            .arg("error")
+            .arg("-f")
+            .arg("rawvideo")
+            .arg("-pixel_format")
+            .arg("bgra")
+            .arg("-video_size")
+            .arg(video_size)
+            .arg("-framerate")
+            .arg(fps)
+            .arg("-i")
+            .arg("pipe:0")
+            .arg("-frames:v")
+            .arg("1")
+            .arg("-an")
+            .arg("-c:v")
+            .arg("libx264")
+            .arg("-preset")
+            .arg(&self.config.preset)
+            .arg("-tune")
+            .arg(&self.config.tune)
+            .arg("-pix_fmt")
+            .arg("yuv420p")
+            .arg("-f")
+            .arg("h264")
+            .arg("pipe:1")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+        {
+            Ok(child) => child,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                return ClientH264EncoderHookResult::Deferred {
+                    reason: ClientH264EncoderDeferredReason::EncoderUnavailable,
+                };
+            }
+            Err(_) => {
+                return ClientH264EncoderHookResult::Deferred {
+                    reason: ClientH264EncoderDeferredReason::EncodeFailed,
+                };
+            }
+        };
+
+        let Some(mut stdin) = child.stdin.take() else {
+            return ClientH264EncoderHookResult::Deferred {
+                reason: ClientH264EncoderDeferredReason::EncodeFailed,
+            };
+        };
+        if stdin.write_all(&input.frame.pixels).is_err() {
+            return ClientH264EncoderHookResult::Deferred {
+                reason: ClientH264EncoderDeferredReason::EncodeFailed,
+            };
+        }
+        drop(stdin);
+
+        let output = match child.wait_with_output() {
+            Ok(output) => output,
+            Err(_) => {
+                return ClientH264EncoderHookResult::Deferred {
+                    reason: ClientH264EncoderDeferredReason::EncodeFailed,
+                };
+            }
+        };
+
+        if !output.status.success() || output.stdout.is_empty() {
+            return ClientH264EncoderHookResult::Deferred {
+                reason: ClientH264EncoderDeferredReason::EncodeFailed,
+            };
+        }
+
+        ClientH264EncoderHookResult::Encoded {
+            payload: ClientH264EncodedPayload {
+                bytes: output.stdout,
+            },
         }
     }
 }
@@ -10362,6 +10520,36 @@ mod tests {
     }
 
     #[test]
+    fn client_video_frame_ffmpeg_h264_encoder_reports_missing_binary_unavailable() {
+        let encoder = ClientFfmpegSoftwareH264EncoderRuntimeHook::new(
+            ClientFfmpegSoftwareH264EncoderConfig {
+                ffmpeg_path: PathBuf::from("stream-sync-missing-ffmpeg-binary"),
+                preset: "ultrafast".to_string(),
+                tune: "zerolatency".to_string(),
+            },
+        );
+
+        let result = ClientH264EncoderBoundary.encode_once_with_runtime(
+            ClientH264EncoderInput::from_raw_frame(ClientRawCapturedVideoFrame {
+                capture_timestamp: TimestampMicros(1_000_000),
+                width: 2,
+                height: 2,
+                fps_nominal: 30,
+                pixel_format: ClientRawVideoPixelFormat::Bgra8,
+                pixels: vec![0; 2 * 2 * 4],
+            }),
+            &encoder,
+        );
+
+        assert_eq!(
+            result,
+            ClientH264EncoderResult::Deferred {
+                reason: ClientH264EncoderDeferredReason::EncoderUnavailable
+            }
+        );
+    }
+
+    #[test]
     fn client_video_frame_h264_encoder_runtime_hook_can_report_encode_failed() {
         struct FailingEncoder;
 
@@ -10386,6 +10574,30 @@ mod tests {
                 pixels: vec![0, 1, 2, 255, 3, 4, 5, 255],
             }),
             &FailingEncoder,
+        );
+
+        assert_eq!(
+            result,
+            ClientH264EncoderResult::Deferred {
+                reason: ClientH264EncoderDeferredReason::EncodeFailed
+            }
+        );
+    }
+
+    #[test]
+    fn client_video_frame_ffmpeg_h264_encoder_rejects_invalid_bgra_buffer() {
+        let encoder = ClientFfmpegSoftwareH264EncoderRuntimeHook::default();
+
+        let result = ClientH264EncoderBoundary.encode_once_with_runtime(
+            ClientH264EncoderInput::from_raw_frame(ClientRawCapturedVideoFrame {
+                capture_timestamp: TimestampMicros(1_000_000),
+                width: 2,
+                height: 2,
+                fps_nominal: 30,
+                pixel_format: ClientRawVideoPixelFormat::Bgra8,
+                pixels: vec![0; 15],
+            }),
+            &encoder,
         );
 
         assert_eq!(
@@ -10472,6 +10684,47 @@ mod tests {
                 payload: vec![0x00, 0x00, 0x01, 0x65],
                 source_kind: ClientEncodedVideoFrameSourceKind::RealCaptureH264
             })
+        );
+    }
+
+    #[test]
+    fn client_video_frame_ffmpeg_h264_encoder_smoke_encodes_when_available() {
+        let Ok(encoders) = Command::new("ffmpeg")
+            .arg("-hide_banner")
+            .arg("-encoders")
+            .output()
+        else {
+            return;
+        };
+        let encoder_list = String::from_utf8_lossy(&encoders.stdout);
+        if !encoders.status.success() || !encoder_list.contains("libx264") {
+            return;
+        }
+
+        let result = ClientH264EncoderBoundary.encode_once_with_runtime(
+            ClientH264EncoderInput::from_raw_frame(ClientRawCapturedVideoFrame {
+                capture_timestamp: TimestampMicros(1_000_000),
+                width: 16,
+                height: 16,
+                fps_nominal: 30,
+                pixel_format: ClientRawVideoPixelFormat::Bgra8,
+                pixels: vec![0; 16 * 16 * 4],
+            }),
+            &ClientFfmpegSoftwareH264EncoderRuntimeHook::default(),
+        );
+
+        let ClientH264EncoderResult::Encoded(encoded) = result else {
+            panic!("available ffmpeg should encode one BGRA frame");
+        };
+        assert_eq!(
+            encoded.source_kind,
+            ClientEncodedVideoFrameSourceKind::RealCaptureH264
+        );
+        assert_eq!(encoded.codec, Codec::H264);
+        assert!(!encoded.payload.is_empty());
+        assert!(
+            encoded.payload.starts_with(&[0x00, 0x00, 0x00, 0x01])
+                || encoded.payload.starts_with(&[0x00, 0x00, 0x01])
         );
     }
 

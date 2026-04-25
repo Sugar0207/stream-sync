@@ -5,6 +5,57 @@
 - Codex
 
 ### Work
+- Added the first minimal real client H.264 software encoder runtime hook.
+- Implemented `ClientFfmpegSoftwareH264EncoderRuntimeHook` behind the existing `ClientH264EncoderRuntimeHook` contract.
+- The hook invokes a caller-configured `ffmpeg` executable, feeds one BGRA rawvideo frame through stdin, and reads one Annex B H.264 elementary stream from stdout.
+- Kept `ClientH264EncoderBoundary` responsible for converting only non-empty hook output into `RealCaptureH264`.
+- Mapped missing `ffmpeg` to `EncoderUnavailable`; invalid dimensions, invalid BGRA buffer length, FFmpeg/libx264 failure, and empty output to `EncodeFailed`.
+- Kept placeholder H.264 source behavior unchanged and did not change UDP send, switcher decode/rendering, OBS integration, continuous acquisition, or sync.
+
+### Changed Files
+- `apps/client/src/lib.rs`
+- `docs/architecture/system-design.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### Decisions
+- Use FFmpeg CLI first instead of adding a Rust FFmpeg binding dependency in this step.
+- Default FFmpeg settings are `libx264`, `ultrafast`, `zerolatency`, and `yuv420p`.
+- The expected encoded output is an H.264 Annex B elementary stream from `ffmpeg -f h264`.
+- Hardware encoder support remains deferred behind the same hook boundary.
+
+### Unresolved
+- production encoder configuration and error logging policy
+- real encoded-frame one-shot client path
+- UDP send path using real encoded frames
+- continuous acquisition / frame arrived wait
+- real target enumeration
+- real H.264 decode, switcher rendering, targetTime / jitter-buffer, 4-view sync, and OBS integration
+
+### Next
+- Connect `RealCaptureH264` encoded sources to an explicit one-shot client path without changing placeholder send semantics.
+- Add production encoder configuration and structured encode failure logging.
+- Add real H.264 decode / switcher rendering boundary.
+
+### TODO Update
+- Marked the minimal FFmpeg CLI software H.264 encoder runtime hook complete in Phase 3.
+- Updated Current Focus with the FFmpeg software encoder hook and Annex B H.264 output format.
+- Updated Next Items to make the real encoded one-shot client path the next video task.
+
+### Validation
+- `cargo fmt`
+- `cargo test -p stream-sync-client client_video_frame`
+- `cargo fmt --check`
+- `cargo check --workspace`
+- `git diff --check`
+
+---
+
+## 2026-04-25
+### Type
+- Codex
+
+### Work
 - Added the smallest H.264 encoder boundary shape that consumes `ClientRawCapturedVideoFrame`.
 - Added `ClientH264EncoderInput::from_raw_frame`, `ClientH264EncodedPayload`, `ClientH264EncoderHookResult`, and `ClientH264EncoderRuntimeHook`.
 - Kept the default encoder behavior explicit as `RealH264EncodeDeferred`.

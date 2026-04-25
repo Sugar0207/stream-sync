@@ -1,4 +1,4 @@
-<!-- stream-sync/docs/operations/todo.md -->
+﻿<!-- stream-sync/docs/operations/todo.md -->
 
 # StreamSync TODO
 
@@ -59,8 +59,8 @@
 ---
 
 ## 直近でやること
-1. FFmpeg or hardware H.264 encoder runtime implementation behind `ClientH264EncoderRuntimeHook`
-2. real encoded `ClientEncodedVideoFrameSource` を使う明示 one-shot client path を placeholder send semantics と分けて追加する
+1. real encoded `ClientEncodedVideoFrameSource` を使う明示 one-shot client path を placeholder send semantics と分けて追加する
+2. production H.264 encoder configuration / error logging policy
 3. real H.264 decode / switcher window rendering の最小境界を分けて設計する
 
 ---
@@ -642,7 +642,8 @@
 - [x] first minimal Windows Graphics Capture session creation hook for ready session runtime without frame acquisition
 - [x] first minimal Windows Graphics Capture one-frame acquisition boundary from ready session runtime
 - [x] H.264 encoder hook boundary from `ClientRawCapturedVideoFrame` to `RealCaptureH264` encoded source
-- [ ] actual H.264 encoder implementation
+- [x] minimal FFmpeg CLI software H.264 encoder runtime hook
+- [ ] production H.264 encoder configuration / hardware encoder integration
 - [x] `VideoFrame` encode
 - [x] `VideoFrame` UDP send with explicit placeholder encoded H.264 payload
 - [x] placeholder `VideoFrame` one-shot CLI/config launcher
@@ -696,13 +697,14 @@
 - client capture session preparation now converts a selected display/window descriptor or target config into metadata-only `ClientCaptureSessionConfig` for future Windows Graphics Capture session creation without opening a session or acquiring frames.
 - client capture session runtime creation now consumes `ClientCaptureSessionConfig` through `ClientCaptureSessionRuntimeInput` and a caller-owned runtime hook. The default placeholder-safe hook still reports unavailable/unsupported, while the Windows-only `ClientWindowsGraphicsCaptureSessionRuntimeHook` creates a ready Windows Graphics Capture item/frame-pool/session.
 - client Windows Graphics Capture frame acquisition now has a separate one-frame boundary: `ClientCaptureFrameAcquisitionBoundary` consumes a ready `ClientCaptureSessionRuntime`, can explicitly start capture when requested, attempts one `TryGetNextFrame`, and returns a raw BGRA frame / no-frame / not-started / unavailable / failed result without encoding or UDP send.
-- client raw BGRA frames now have a separate H.264 encoder hook boundary: `ClientH264EncoderInput::from_raw_frame` carries `ClientRawCapturedVideoFrame`, `ClientH264EncoderRuntimeHook` can provide real H.264 payload bytes later, and the boundary produces `RealCaptureH264` only from non-empty hook output. The default hook remains explicit encode-deferred.
+- client raw BGRA frames now have a separate H.264 encoder hook boundary: `ClientH264EncoderInput::from_raw_frame` carries `ClientRawCapturedVideoFrame`, `ClientH264EncoderRuntimeHook` can provide real H.264 payload bytes, and the boundary produces `RealCaptureH264` only from non-empty hook output. The default hook remains explicit encode-deferred.
+- client H.264 encoding now has a first real software runtime hook: `ClientFfmpegSoftwareH264EncoderRuntimeHook` invokes `ffmpeg` / `libx264` for one BGRA frame and returns an Annex B H.264 elementary stream, while missing FFmpeg and encode failures remain explicit.
 - metrics commit, snapshot export cadence, dashboard refresh consumer policy, and dashboard refresh runtime wiring remain separate from timer wait, retry, reconnect, socket ownership, cleanup, UI rendering, video, switcher, and OBS.
 - server notice queue storage remains separate from notice send wakeup execution.
 - actual dashboard UI rendering remains unimplemented.
 
 ## Next Items
-1. FFmpeg or hardware H.264 encoder runtime implementation behind `ClientH264EncoderRuntimeHook`
-2. connect real encoded `ClientEncodedVideoFrameSource` to an explicit client one-shot path without changing placeholder send semantics
+1. connect real encoded `ClientEncodedVideoFrameSource` to an explicit client one-shot path without changing placeholder send semantics
+2. production H.264 encoder configuration / error logging policy
 3. real H.264 decode / switcher window rendering boundary
 4. targetTime / jitter-buffer selection design for the next 2-view sync PoC

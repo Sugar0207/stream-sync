@@ -7513,6 +7513,19 @@ Current implementation:
 - `ClientH264EncoderRuntimeHook` is the caller-owned hook for future FFmpeg or
   hardware encoder integration. The hook returns only encoded H.264 payload
   bytes or an explicit deferred reason.
+- `ClientFfmpegSoftwareH264EncoderRuntimeHook` is the first minimal real
+  software encoder runtime. It invokes a caller-configured `ffmpeg` executable,
+  feeds one BGRA rawvideo frame on stdin, and reads one H.264 elementary stream
+  from stdout.
+- The FFmpeg software hook uses `libx264`, `ultrafast`, `zerolatency`, and
+  `yuv420p` by default. Its output is an Annex B H.264 elementary stream as
+  produced by `ffmpeg -f h264`.
+- If `ffmpeg` is not available, the hook returns `EncoderUnavailable`. Invalid
+  dimensions, invalid BGRA buffer length, FFmpeg process failure, unavailable
+  `libx264`, or empty stdout return `EncodeFailed`.
+- Hardware encoder integration remains deferred. It should use the same
+  `ClientH264EncoderRuntimeHook` contract or a compatible caller-owned runtime
+  hook without changing capture or UDP send boundaries.
 - `ClientH264EncoderBoundary::encode_once_with_runtime` wraps successful hook
   output into `ClientEncodedVideoFrameSource` with
   `source_kind=RealCaptureH264`. Empty hook payloads become explicit
@@ -7564,8 +7577,12 @@ Responsibility split:
 - H.264 encoder
   - Owns the boundary and hook contract for converting raw captured frames into
     encoded H.264 payloads.
-  - Current default hook is deferred; future FFmpeg/hardware integration should
-    sit behind `ClientH264EncoderRuntimeHook`.
+  - The default hook remains deferred for placeholder-safe behavior.
+  - The first real software implementation is
+    `ClientFfmpegSoftwareH264EncoderRuntimeHook`, which shells out to FFmpeg for
+    one BGRA frame -> Annex B H.264 elementary stream encode.
+  - Future hardware integration should sit behind
+    `ClientH264EncoderRuntimeHook`.
   - Converts successful hook output to `RealCaptureH264` only after non-empty
     encoded bytes are returned.
   - Does not capture pixels, choose frame ids, or send packets.
@@ -7579,6 +7596,6 @@ Responsibility split:
     capture/encode.
 
 Windows API-backed target enumeration, event/wait based continuous frame
-acquisition, real H.264 encoder integration, encoder configuration, packet
-fragmentation, decode, switcher rendering, 4-view sync, and OBS integration
-remain future work.
+acquisition, production encoder configuration, hardware encoder integration,
+packet fragmentation, decode, switcher rendering, 4-view sync, and OBS
+integration remain future work.
