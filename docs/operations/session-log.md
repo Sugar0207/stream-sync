@@ -5,6 +5,57 @@
 - Codex
 
 ### Work
+- Added the smallest one-shot client path for sending a real encoded `VideoFrame`.
+- Implemented `ClientRealEncodedVideoFrameOneShotBoundary`.
+- The boundary composes a caller-owned ready `ClientCaptureSessionRuntime`, one BGRA frame acquisition hook, one H.264 encoder hook, existing encoded-source metadata construction, and existing UDP `VideoFrame` send.
+- Kept stopped states explicit: capture unavailable, no frame available, encode unavailable/failed, frame build failure, and send failure.
+- Kept placeholder H.264 send path unchanged and did not add continuous acquisition, switcher decode/rendering, OBS integration, or 4-view sync.
+- Did not add CLI wiring in this step; the new path is a tested library boundary over caller-owned runtime/socket objects.
+
+### Changed Files
+- `apps/client/src/lib.rs`
+- `docs/architecture/system-design.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### Decisions
+- The one-shot real encoded path starts from a ready capture session runtime. Session creation and target discovery remain separate.
+- Existing `ClientCaptureFrameAcquisitionBoundary`, `ClientH264EncoderBoundary`, `ClientVideoFrameMetadataConstructionBoundary`, and `ClientVideoFrameEncodeSendBoundary` are reused instead of duplicating send or metadata logic.
+- `RealCaptureH264` is still produced only by the encoder boundary from non-empty H.264 payload bytes.
+- CLI wiring is deferred until a manual verification flow is worth exposing.
+
+### Unresolved
+- production H.264 encoder configuration and error logging policy
+- manual real encoded one-shot verification wiring / optional CLI
+- continuous acquisition / frame arrived wait
+- real target enumeration
+- UDP send loop using real encoded frames
+- real H.264 decode, switcher rendering, targetTime / jitter-buffer, 4-view sync, and OBS integration
+
+### Next
+- Add production encoder configuration and structured encode/send failure logging.
+- Decide whether to add a manual CLI for the real encoded one-shot path.
+- Add real H.264 decode / switcher rendering boundary.
+
+### TODO Update
+- Marked the one-shot real encoded `VideoFrame` path complete in Phase 3.
+- Updated Current Focus with `ClientRealEncodedVideoFrameOneShotBoundary`.
+- Updated Next Items to put production encoder configuration / logging and optional manual verification next.
+
+### Validation
+- `cargo fmt`
+- `cargo test -p stream-sync-client client_video_frame`
+- `cargo fmt --check`
+- `cargo check --workspace`
+- `git diff --check`
+
+---
+
+## 2026-04-25
+### Type
+- Codex
+
+### Work
 - Added the first minimal real client H.264 software encoder runtime hook.
 - Implemented `ClientFfmpegSoftwareH264EncoderRuntimeHook` behind the existing `ClientH264EncoderRuntimeHook` contract.
 - The hook invokes a caller-configured `ffmpeg` executable, feeds one BGRA rawvideo frame through stdin, and reads one Annex B H.264 elementary stream from stdout.

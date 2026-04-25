@@ -3074,6 +3074,157 @@ impl ClientVideoFrameEncodeSendBoundary {
     }
 }
 
+/// Input for sending one real-capture encoded `VideoFrame`.
+pub struct ClientRealEncodedVideoFrameOneShotInput<'a> {
+    pub socket: &'a UdpSocket,
+    pub destination: SocketAddr,
+    pub capture_runtime: &'a mut ClientCaptureSessionRuntime,
+    pub protocol_version: ProtocolVersion,
+    pub client_id: ClientId,
+    pub run_id: RunId,
+    pub frame_id: u64,
+    pub capture_timestamp: TimestampMicros,
+    pub send_timestamp: TimestampMicros,
+    pub fps_nominal: u32,
+    pub is_keyframe: bool,
+    pub start_capture_if_needed: bool,
+}
+
+/// Successful one-shot real encoded `VideoFrame` send result.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClientRealEncodedVideoFrameOneShotSent {
+    pub destination: SocketAddr,
+    pub frame: VideoFrame,
+    pub encoded_bytes: Vec<u8>,
+    pub bytes_sent: usize,
+    pub source_kind: ClientEncodedVideoFrameSourceKind,
+}
+
+/// Result of composing one ready capture runtime, one encode, and one UDP send.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ClientRealEncodedVideoFrameOneShotResult {
+    Sent(ClientRealEncodedVideoFrameOneShotSent),
+    CaptureUnavailable {
+        reason: ClientCaptureFrameAcquisitionUnavailableReason,
+        message: Option<String>,
+    },
+    NoFrameAvailable {
+        message: Option<String>,
+    },
+    EncodeUnavailable {
+        reason: ClientH264EncoderDeferredReason,
+    },
+    FrameBuildFailed {
+        error: ClientEncodedVideoFrameSourceError,
+    },
+    SendFailed {
+        error: ClientVideoFrameEncodeSendError,
+    },
+}
+
+/// One-shot path for a real-capture H.264 `VideoFrame`.
+///
+/// This composes existing boundaries only once:
+/// ready capture session runtime -> one BGRA frame -> H.264 encode ->
+/// `VideoFrame` metadata construction -> one UDP send. It does not own target
+/// discovery, create sessions, loop, retry, decode, render, or integrate OBS.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct ClientRealEncodedVideoFrameOneShotBoundary {
+    capture: ClientCaptureFrameAcquisitionBoundary,
+    encoder: ClientH264EncoderBoundary,
+    metadata: ClientVideoFrameMetadataConstructionBoundary,
+    send: ClientVideoFrameEncodeSendBoundary,
+}
+
+impl ClientRealEncodedVideoFrameOneShotBoundary {
+    pub fn send_once(
+        &self,
+        mut input: ClientRealEncodedVideoFrameOneShotInput<'_>,
+    ) -> ClientRealEncodedVideoFrameOneShotResult {
+        self.send_once_with_runtimes(
+            &mut input,
+            &ClientUnavailableCaptureFrameAcquisitionRuntimeHook,
+            &ClientDeferredH264EncoderRuntimeHook,
+        )
+    }
+
+    pub fn send_once_with_runtimes(
+        &self,
+        input: &mut ClientRealEncodedVideoFrameOneShotInput<'_>,
+        capture_runtime: &impl ClientCaptureFrameAcquisitionRuntimeHook,
+        encoder_runtime: &impl ClientH264EncoderRuntimeHook,
+    ) -> ClientRealEncodedVideoFrameOneShotResult {
+        let mut acquisition_input = ClientCaptureFrameAcquisitionInput {
+            runtime: &mut *input.capture_runtime,
+            capture_timestamp: input.capture_timestamp,
+            fps_nominal: input.fps_nominal,
+            start_capture_if_needed: input.start_capture_if_needed,
+        };
+        let raw_frame = match self
+            .capture
+            .acquire_one_frame_with_runtime(&mut acquisition_input, capture_runtime)
+        {
+            ClientCaptureFrameAcquisitionResult::FrameAcquired { frame } => frame,
+            ClientCaptureFrameAcquisitionResult::NoFrameAvailable { message } => {
+                return ClientRealEncodedVideoFrameOneShotResult::NoFrameAvailable { message };
+            }
+            ClientCaptureFrameAcquisitionResult::Unavailable { reason, message } => {
+                return ClientRealEncodedVideoFrameOneShotResult::CaptureUnavailable {
+                    reason,
+                    message,
+                };
+            }
+        };
+
+        let encoded = match self.encoder.encode_once_with_runtime(
+            ClientH264EncoderInput::from_raw_frame(raw_frame),
+            encoder_runtime,
+        ) {
+            ClientH264EncoderResult::Encoded(encoded) => encoded,
+            ClientH264EncoderResult::Deferred { reason } => {
+                return ClientRealEncodedVideoFrameOneShotResult::EncodeUnavailable { reason };
+            }
+        };
+        let source_kind = encoded.source_kind;
+
+        let frame = match self.metadata.build_frame_from_encoded_source(
+            ClientVideoFrameEncodedSourceInput {
+                protocol_version: input.protocol_version,
+                client_id: input.client_id.clone(),
+                run_id: input.run_id.clone(),
+                frame_id: input.frame_id,
+                send_timestamp: input.send_timestamp,
+                is_keyframe: input.is_keyframe,
+                encoded,
+            },
+        ) {
+            Ok(frame) => frame,
+            Err(error) => {
+                return ClientRealEncodedVideoFrameOneShotResult::FrameBuildFailed { error };
+            }
+        };
+
+        match self.send.send_one(
+            input.socket,
+            ClientVideoFrameEncodeSendInput {
+                destination: input.destination,
+                frame,
+            },
+        ) {
+            Ok(send) => ClientRealEncodedVideoFrameOneShotResult::Sent(
+                ClientRealEncodedVideoFrameOneShotSent {
+                    destination: input.destination,
+                    frame: send.handoff.frame,
+                    encoded_bytes: send.handoff.encoded_bytes,
+                    bytes_sent: send.bytes_sent,
+                    source_kind,
+                },
+            ),
+            Err(error) => ClientRealEncodedVideoFrameOneShotResult::SendFailed { error },
+        }
+    }
+}
+
 /// Input for preparing ack observation return from a decoded HeartbeatAck.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ClientHeartbeatLoopAckObservationReturnInput {
@@ -10768,6 +10919,47 @@ mod tests {
     }
 
     #[test]
+    fn client_video_frame_real_encoded_source_builds_video_frame() {
+        let encoded = ClientEncodedVideoFrameSource {
+            capture_timestamp: TimestampMicros(5_000_000),
+            width: 16,
+            height: 16,
+            fps_nominal: 30,
+            codec: Codec::H264,
+            payload: vec![0x00, 0x00, 0x01, 0x65],
+            source_kind: ClientEncodedVideoFrameSourceKind::RealCaptureH264,
+        };
+
+        let frame = ClientVideoFrameMetadataConstructionBoundary
+            .build_frame_from_encoded_source(ClientVideoFrameEncodedSourceInput {
+                protocol_version: ProtocolVersion(2),
+                client_id: ClientId("client-1".to_string()),
+                run_id: RunId("run-1".to_string()),
+                frame_id: 8,
+                send_timestamp: TimestampMicros(5_000_333),
+                is_keyframe: true,
+                encoded: encoded.clone(),
+            })
+            .expect("real encoded source should build a VideoFrame");
+
+        assert_eq!(
+            encoded.source_kind,
+            ClientEncodedVideoFrameSourceKind::RealCaptureH264
+        );
+        assert_eq!(frame.protocol_version, ProtocolVersion(2));
+        assert_eq!(frame.client_id, ClientId("client-1".to_string()));
+        assert_eq!(frame.run_id, RunId("run-1".to_string()));
+        assert_eq!(frame.frame_id, 8);
+        assert_eq!(frame.capture_timestamp, encoded.capture_timestamp);
+        assert_eq!(frame.send_timestamp, TimestampMicros(5_000_333));
+        assert_eq!(frame.width, encoded.width);
+        assert_eq!(frame.height, encoded.height);
+        assert_eq!(frame.fps_nominal, encoded.fps_nominal);
+        assert_eq!(frame.codec, Codec::H264);
+        assert_eq!(frame.payload, encoded.payload);
+    }
+
+    #[test]
     fn client_video_frame_placeholder_path_remains_separate_from_real_capture_source() {
         let payload = ClientPlaceholderEncodedH264PayloadSourceBoundary
             .from_bytes(DEFAULT_PLACEHOLDER_H264_PAYLOAD.to_vec())
@@ -10913,6 +11105,342 @@ mod tests {
         .expect("received video frame payload should decode");
 
         assert_eq!(decoded, ProtocolMessage::VideoFrame(frame));
+    }
+
+    #[test]
+    fn client_video_frame_real_encoded_one_shot_sends_datagram() {
+        struct FixtureCapture;
+        impl ClientCaptureFrameAcquisitionRuntimeHook for FixtureCapture {
+            fn acquire_one_bgra_frame(
+                &self,
+                input: &mut ClientCaptureFrameAcquisitionInput<'_>,
+            ) -> ClientCaptureFrameAcquisitionResult {
+                assert!(input.start_capture_if_needed);
+                input.runtime.capture_started = true;
+                ClientCaptureFrameAcquisitionResult::FrameAcquired {
+                    frame: ClientRawCapturedVideoFrame {
+                        capture_timestamp: input.capture_timestamp,
+                        width: 2,
+                        height: 2,
+                        fps_nominal: input.fps_nominal,
+                        pixel_format: ClientRawVideoPixelFormat::Bgra8,
+                        pixels: vec![0; 2 * 2 * 4],
+                    },
+                }
+            }
+        }
+        struct FixtureEncoder;
+        impl ClientH264EncoderRuntimeHook for FixtureEncoder {
+            fn encode_bgra_frame(
+                &self,
+                input: &ClientH264EncoderInput,
+            ) -> ClientH264EncoderHookResult {
+                assert_eq!(input.frame.pixel_format, ClientRawVideoPixelFormat::Bgra8);
+                ClientH264EncoderHookResult::Encoded {
+                    payload: ClientH264EncodedPayload {
+                        bytes: vec![0x00, 0x00, 0x01, 0x65],
+                    },
+                }
+            }
+        }
+
+        let receiver = UdpSocket::bind("127.0.0.1:0").expect("receiver should bind");
+        receiver
+            .set_read_timeout(Some(Duration::from_secs(1)))
+            .expect("read timeout should be set");
+        let sender = UdpSocket::bind("127.0.0.1:0").expect("sender should bind");
+        let destination = receiver.local_addr().expect("receiver addr should exist");
+        let mut capture_runtime = client_capture_session_runtime_for_tests();
+        let mut input = ClientRealEncodedVideoFrameOneShotInput {
+            socket: &sender,
+            destination,
+            capture_runtime: &mut capture_runtime,
+            protocol_version: ProtocolVersion(2),
+            client_id: ClientId("client-1".to_string()),
+            run_id: RunId("run-1".to_string()),
+            frame_id: 9,
+            capture_timestamp: TimestampMicros(6_000_000),
+            send_timestamp: TimestampMicros(6_000_333),
+            fps_nominal: 30,
+            is_keyframe: true,
+            start_capture_if_needed: true,
+        };
+
+        let result = ClientRealEncodedVideoFrameOneShotBoundary::default().send_once_with_runtimes(
+            &mut input,
+            &FixtureCapture,
+            &FixtureEncoder,
+        );
+
+        let ClientRealEncodedVideoFrameOneShotResult::Sent(sent) = result else {
+            panic!("real encoded one-shot should send");
+        };
+        assert_eq!(
+            sent.source_kind,
+            ClientEncodedVideoFrameSourceKind::RealCaptureH264
+        );
+        assert_eq!(sent.destination, destination);
+        assert_eq!(sent.frame.frame_id, 9);
+        assert_eq!(sent.frame.capture_timestamp, TimestampMicros(6_000_000));
+        assert_eq!(sent.frame.send_timestamp, TimestampMicros(6_000_333));
+        assert_eq!(sent.frame.width, 2);
+        assert_eq!(sent.frame.height, 2);
+        assert_eq!(sent.frame.payload, vec![0x00, 0x00, 0x01, 0x65]);
+        assert_eq!(sent.bytes_sent, sent.encoded_bytes.len());
+
+        let mut buffer = [0_u8; 1024];
+        let (len, source) = receiver
+            .recv_from(&mut buffer)
+            .expect("receiver should get one real encoded frame packet");
+        assert_eq!(
+            source,
+            sender.local_addr().expect("sender addr should exist")
+        );
+        assert_eq!(&buffer[..len], sent.encoded_bytes.as_slice());
+    }
+
+    #[test]
+    fn client_video_frame_real_encoded_one_shot_capture_unavailable_stops_before_encode_send() {
+        struct UnavailableCapture;
+        impl ClientCaptureFrameAcquisitionRuntimeHook for UnavailableCapture {
+            fn acquire_one_bgra_frame(
+                &self,
+                _input: &mut ClientCaptureFrameAcquisitionInput<'_>,
+            ) -> ClientCaptureFrameAcquisitionResult {
+                ClientCaptureFrameAcquisitionResult::Unavailable {
+                    reason: ClientCaptureFrameAcquisitionUnavailableReason::RuntimeUnavailable,
+                    message: Some("fixture unavailable".to_string()),
+                }
+            }
+        }
+        struct ShouldNotEncode;
+        impl ClientH264EncoderRuntimeHook for ShouldNotEncode {
+            fn encode_bgra_frame(
+                &self,
+                _input: &ClientH264EncoderInput,
+            ) -> ClientH264EncoderHookResult {
+                panic!("encode should not run after capture unavailable");
+            }
+        }
+
+        let sender = UdpSocket::bind("127.0.0.1:0").expect("sender should bind");
+        let mut capture_runtime = client_capture_session_runtime_for_tests();
+        let mut input = ClientRealEncodedVideoFrameOneShotInput {
+            socket: &sender,
+            destination: "127.0.0.1:5000".parse().unwrap(),
+            capture_runtime: &mut capture_runtime,
+            protocol_version: ProtocolVersion(2),
+            client_id: ClientId("client-1".to_string()),
+            run_id: RunId("run-1".to_string()),
+            frame_id: 10,
+            capture_timestamp: TimestampMicros(7_000_000),
+            send_timestamp: TimestampMicros(7_000_333),
+            fps_nominal: 30,
+            is_keyframe: true,
+            start_capture_if_needed: true,
+        };
+
+        let result = ClientRealEncodedVideoFrameOneShotBoundary::default().send_once_with_runtimes(
+            &mut input,
+            &UnavailableCapture,
+            &ShouldNotEncode,
+        );
+
+        assert_eq!(
+            result,
+            ClientRealEncodedVideoFrameOneShotResult::CaptureUnavailable {
+                reason: ClientCaptureFrameAcquisitionUnavailableReason::RuntimeUnavailable,
+                message: Some("fixture unavailable".to_string())
+            }
+        );
+    }
+
+    #[test]
+    fn client_video_frame_real_encoded_one_shot_no_frame_stops_before_encode_send() {
+        struct NoFrameCapture;
+        impl ClientCaptureFrameAcquisitionRuntimeHook for NoFrameCapture {
+            fn acquire_one_bgra_frame(
+                &self,
+                _input: &mut ClientCaptureFrameAcquisitionInput<'_>,
+            ) -> ClientCaptureFrameAcquisitionResult {
+                ClientCaptureFrameAcquisitionResult::NoFrameAvailable {
+                    message: Some("fixture no frame".to_string()),
+                }
+            }
+        }
+        struct ShouldNotEncode;
+        impl ClientH264EncoderRuntimeHook for ShouldNotEncode {
+            fn encode_bgra_frame(
+                &self,
+                _input: &ClientH264EncoderInput,
+            ) -> ClientH264EncoderHookResult {
+                panic!("encode should not run when no frame is available");
+            }
+        }
+
+        let sender = UdpSocket::bind("127.0.0.1:0").expect("sender should bind");
+        let mut capture_runtime = client_capture_session_runtime_for_tests();
+        let mut input = ClientRealEncodedVideoFrameOneShotInput {
+            socket: &sender,
+            destination: "127.0.0.1:5000".parse().unwrap(),
+            capture_runtime: &mut capture_runtime,
+            protocol_version: ProtocolVersion(2),
+            client_id: ClientId("client-1".to_string()),
+            run_id: RunId("run-1".to_string()),
+            frame_id: 11,
+            capture_timestamp: TimestampMicros(8_000_000),
+            send_timestamp: TimestampMicros(8_000_333),
+            fps_nominal: 30,
+            is_keyframe: true,
+            start_capture_if_needed: true,
+        };
+
+        let result = ClientRealEncodedVideoFrameOneShotBoundary::default().send_once_with_runtimes(
+            &mut input,
+            &NoFrameCapture,
+            &ShouldNotEncode,
+        );
+
+        assert_eq!(
+            result,
+            ClientRealEncodedVideoFrameOneShotResult::NoFrameAvailable {
+                message: Some("fixture no frame".to_string())
+            }
+        );
+    }
+
+    #[test]
+    fn client_video_frame_real_encoded_one_shot_encode_failure_stops_before_send() {
+        struct FixtureCapture;
+        impl ClientCaptureFrameAcquisitionRuntimeHook for FixtureCapture {
+            fn acquire_one_bgra_frame(
+                &self,
+                input: &mut ClientCaptureFrameAcquisitionInput<'_>,
+            ) -> ClientCaptureFrameAcquisitionResult {
+                ClientCaptureFrameAcquisitionResult::FrameAcquired {
+                    frame: ClientRawCapturedVideoFrame {
+                        capture_timestamp: input.capture_timestamp,
+                        width: 2,
+                        height: 2,
+                        fps_nominal: input.fps_nominal,
+                        pixel_format: ClientRawVideoPixelFormat::Bgra8,
+                        pixels: vec![0; 2 * 2 * 4],
+                    },
+                }
+            }
+        }
+        struct FailingEncoder;
+        impl ClientH264EncoderRuntimeHook for FailingEncoder {
+            fn encode_bgra_frame(
+                &self,
+                _input: &ClientH264EncoderInput,
+            ) -> ClientH264EncoderHookResult {
+                ClientH264EncoderHookResult::Deferred {
+                    reason: ClientH264EncoderDeferredReason::EncodeFailed,
+                }
+            }
+        }
+
+        let receiver = UdpSocket::bind("127.0.0.1:0").expect("receiver should bind");
+        receiver
+            .set_read_timeout(Some(Duration::from_millis(50)))
+            .expect("read timeout should be set");
+        let sender = UdpSocket::bind("127.0.0.1:0").expect("sender should bind");
+        let mut capture_runtime = client_capture_session_runtime_for_tests();
+        let mut input = ClientRealEncodedVideoFrameOneShotInput {
+            socket: &sender,
+            destination: receiver.local_addr().expect("receiver addr should exist"),
+            capture_runtime: &mut capture_runtime,
+            protocol_version: ProtocolVersion(2),
+            client_id: ClientId("client-1".to_string()),
+            run_id: RunId("run-1".to_string()),
+            frame_id: 12,
+            capture_timestamp: TimestampMicros(9_000_000),
+            send_timestamp: TimestampMicros(9_000_333),
+            fps_nominal: 30,
+            is_keyframe: true,
+            start_capture_if_needed: true,
+        };
+
+        let result = ClientRealEncodedVideoFrameOneShotBoundary::default().send_once_with_runtimes(
+            &mut input,
+            &FixtureCapture,
+            &FailingEncoder,
+        );
+
+        assert_eq!(
+            result,
+            ClientRealEncodedVideoFrameOneShotResult::EncodeUnavailable {
+                reason: ClientH264EncoderDeferredReason::EncodeFailed
+            }
+        );
+        let mut buffer = [0_u8; 1024];
+        assert!(receiver.recv_from(&mut buffer).is_err());
+    }
+
+    #[test]
+    fn client_video_frame_real_encoded_one_shot_send_failure_is_explicit() {
+        struct FixtureCapture;
+        impl ClientCaptureFrameAcquisitionRuntimeHook for FixtureCapture {
+            fn acquire_one_bgra_frame(
+                &self,
+                input: &mut ClientCaptureFrameAcquisitionInput<'_>,
+            ) -> ClientCaptureFrameAcquisitionResult {
+                ClientCaptureFrameAcquisitionResult::FrameAcquired {
+                    frame: ClientRawCapturedVideoFrame {
+                        capture_timestamp: input.capture_timestamp,
+                        width: 2,
+                        height: 2,
+                        fps_nominal: input.fps_nominal,
+                        pixel_format: ClientRawVideoPixelFormat::Bgra8,
+                        pixels: vec![0; 2 * 2 * 4],
+                    },
+                }
+            }
+        }
+        struct OversizedEncoder;
+        impl ClientH264EncoderRuntimeHook for OversizedEncoder {
+            fn encode_bgra_frame(
+                &self,
+                _input: &ClientH264EncoderInput,
+            ) -> ClientH264EncoderHookResult {
+                ClientH264EncoderHookResult::Encoded {
+                    payload: ClientH264EncodedPayload {
+                        bytes: vec![0x65; 70_000],
+                    },
+                }
+            }
+        }
+
+        let sender = UdpSocket::bind("127.0.0.1:0").expect("sender should bind");
+        let mut capture_runtime = client_capture_session_runtime_for_tests();
+        let mut input = ClientRealEncodedVideoFrameOneShotInput {
+            socket: &sender,
+            destination: "127.0.0.1:5000".parse().unwrap(),
+            capture_runtime: &mut capture_runtime,
+            protocol_version: ProtocolVersion(2),
+            client_id: ClientId("client-1".to_string()),
+            run_id: RunId("run-1".to_string()),
+            frame_id: 13,
+            capture_timestamp: TimestampMicros(10_000_000),
+            send_timestamp: TimestampMicros(10_000_333),
+            fps_nominal: 30,
+            is_keyframe: true,
+            start_capture_if_needed: true,
+        };
+
+        let result = ClientRealEncodedVideoFrameOneShotBoundary::default().send_once_with_runtimes(
+            &mut input,
+            &FixtureCapture,
+            &OversizedEncoder,
+        );
+
+        assert!(matches!(
+            result,
+            ClientRealEncodedVideoFrameOneShotResult::SendFailed {
+                error: ClientVideoFrameEncodeSendError::Send(_)
+            }
+        ));
     }
 
     #[test]

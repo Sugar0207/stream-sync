@@ -7544,6 +7544,19 @@ Current implementation:
 - `ClientVideoFrameMetadataConstructionBoundary::build_frame_from_encoded_source`
   can construct an existing protocol `VideoFrame` from an encoded source without
   changing the UDP send boundary.
+- `ClientRealEncodedVideoFrameOneShotBoundary` is the first one-shot send path
+  for real encoded capture output. It consumes a caller-owned ready
+  `ClientCaptureSessionRuntime`, a caller-owned UDP socket, one frame
+  acquisition runtime hook, and one H.264 encoder runtime hook.
+- The real encoded one-shot path composes existing boundaries only once:
+  capture session runtime -> one BGRA frame acquisition -> H.264 encode ->
+  `RealCaptureH264` encoded source -> `VideoFrame` metadata construction -> one
+  UDP send.
+- Its result keeps stopped states explicit: sent, capture unavailable, no frame
+  available, encode unavailable/failed, frame build failed, or send failed.
+- This path is not a continuous streaming loop and does not create capture
+  sessions, enumerate targets, retry, decode, render, integrate OBS, or run
+  4-view sync.
 - The existing placeholder PoC remains available and continues to use explicit
   placeholder payload behavior.
 
@@ -7590,6 +7603,13 @@ Responsibility split:
   - Preserves capture timestamp, frame id relationship, dimensions, payload
     length, codec, and existing `VideoFrame` metadata construction.
   - Does not claim placeholder bytes are real capture output.
+- real encoded one-shot send
+  - Composes the ready capture runtime, acquisition hook, H.264 encoder hook,
+    metadata boundary, and existing send boundary for exactly one frame.
+  - Stops before encode/send when capture is unavailable or no frame exists.
+  - Stops before send when encode is unavailable or failed.
+  - Does not own session creation, target enumeration, continuous acquisition,
+    retry, decode, rendering, sync, or OBS.
 - send boundary
   - Continues to encode and send `VideoFrame` over caller-owned UDP sockets.
   - Does not know whether payload bytes came from placeholder or future real

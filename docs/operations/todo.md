@@ -59,8 +59,8 @@
 ---
 
 ## 直近でやること
-1. real encoded `ClientEncodedVideoFrameSource` を使う明示 one-shot client path を placeholder send semantics と分けて追加する
-2. production H.264 encoder configuration / error logging policy
+1. production H.264 encoder configuration / error logging policy
+2. real encoded one-shot client path の手動検証手順 / 必要なら CLI wiring
 3. real H.264 decode / switcher window rendering の最小境界を分けて設計する
 
 ---
@@ -643,6 +643,7 @@
 - [x] first minimal Windows Graphics Capture one-frame acquisition boundary from ready session runtime
 - [x] H.264 encoder hook boundary from `ClientRawCapturedVideoFrame` to `RealCaptureH264` encoded source
 - [x] minimal FFmpeg CLI software H.264 encoder runtime hook
+- [x] one-shot real encoded `VideoFrame` path from ready capture runtime to UDP send
 - [ ] production H.264 encoder configuration / hardware encoder integration
 - [x] `VideoFrame` encode
 - [x] `VideoFrame` UDP send with explicit placeholder encoded H.264 payload
@@ -699,12 +700,13 @@
 - client Windows Graphics Capture frame acquisition now has a separate one-frame boundary: `ClientCaptureFrameAcquisitionBoundary` consumes a ready `ClientCaptureSessionRuntime`, can explicitly start capture when requested, attempts one `TryGetNextFrame`, and returns a raw BGRA frame / no-frame / not-started / unavailable / failed result without encoding or UDP send.
 - client raw BGRA frames now have a separate H.264 encoder hook boundary: `ClientH264EncoderInput::from_raw_frame` carries `ClientRawCapturedVideoFrame`, `ClientH264EncoderRuntimeHook` can provide real H.264 payload bytes, and the boundary produces `RealCaptureH264` only from non-empty hook output. The default hook remains explicit encode-deferred.
 - client H.264 encoding now has a first real software runtime hook: `ClientFfmpegSoftwareH264EncoderRuntimeHook` invokes `ffmpeg` / `libx264` for one BGRA frame and returns an Annex B H.264 elementary stream, while missing FFmpeg and encode failures remain explicit.
+- client real encoded video now has a one-shot send boundary: `ClientRealEncodedVideoFrameOneShotBoundary` composes a ready capture session runtime, one BGRA acquisition, H.264 encode, `RealCaptureH264` metadata construction, and one existing UDP `VideoFrame` send while preserving explicit capture/no-frame/encode/send failure states.
 - metrics commit, snapshot export cadence, dashboard refresh consumer policy, and dashboard refresh runtime wiring remain separate from timer wait, retry, reconnect, socket ownership, cleanup, UI rendering, video, switcher, and OBS.
 - server notice queue storage remains separate from notice send wakeup execution.
 - actual dashboard UI rendering remains unimplemented.
 
 ## Next Items
-1. connect real encoded `ClientEncodedVideoFrameSource` to an explicit client one-shot path without changing placeholder send semantics
-2. production H.264 encoder configuration / error logging policy
+1. production H.264 encoder configuration / error logging policy
+2. real encoded one-shot client path manual verification / optional CLI wiring
 3. real H.264 decode / switcher window rendering boundary
 4. targetTime / jitter-buffer selection design for the next 2-view sync PoC
