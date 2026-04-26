@@ -5,6 +5,57 @@
 - Codex
 
 ### Work
+- Added the smallest composed 2-view canvas window render connection.
+- Added `SwitcherTwoViewComposedFrameRenderInput`, `SwitcherTwoViewComposedFrameRenderInputError`, `SwitcherTwoViewComposedCanvasRenderResult`, and `SwitcherTwoViewComposedCanvasRenderBoundary`.
+- The boundary validates `SwitcherTwoViewComposedFrame`, converts it to the existing decoded-frame window render input, and reuses caller-owned `SwitcherWindowRenderRuntimeHook`.
+- Added switcher CLI `--render-two-view-composed-fixture-once [hold-ms]`.
+- The fixture CLI composes two decoded BGRA fixture frames, then renders the composed canvas once through the platform render hook.
+- Added deterministic tests for composed-frame render input conversion, invalid dimensions, backend unavailable, render hook payload/dimension handoff, and render/composition separation.
+- Kept live 2-client socket receive integration, continuous scheduling, queue mutation / late drop, 4-view orchestration, and OBS-specific API integration out of scope.
+
+### Changed Files
+- `apps/switcher/src/lib.rs`
+- `apps/switcher/src/main.rs`
+- `docs/architecture/system-design.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### Decisions
+- Reuse the existing one-frame window render hook instead of adding another renderer.
+- Treat composed canvas rendering as a separate boundary after composition.
+- Non-Windows remains an explicit backend-unavailable result through the existing unavailable render hook.
+
+### Unresolved
+- live 2-client receive/socket integration
+- continuous 2-view scheduling
+- queue mutation / actual late-frame drop policy
+- 4-view orchestration and 2x2 layout
+- OBS Window Capture verification
+- production timing/decode/render policy and structured logging
+
+### Next
+- Add live 2-client queue/runtime integration.
+- Add continuous scheduling after live 2-view source ownership is isolated.
+- Extend to 4-view orchestration after the 2-view live path is stable.
+
+### TODO Update
+- Marked composed 2-view canvas window render connection complete.
+- Kept the next switcher sync task on live 2-client socket receive integration.
+- Kept continuous scheduling, queue mutation, 4-view, and OBS deferred.
+
+### Validation
+- `cargo fmt`
+- `cargo fmt --check`
+- `cargo test -p stream-sync-switcher`
+- `cargo check -p stream-sync-switcher`
+
+---
+
+## 2026-04-26
+### Type
+- Codex
+
+### Work
 - Added the smallest 2-view layout/composition boundary for switcher.
 - Added `SwitcherTwoViewLayoutSideInput`, `SwitcherTwoViewLayoutPolicy`, `SwitcherTwoViewCompositionInput`, `SwitcherTwoViewComposedFrame`, `SwitcherTwoViewCompositionResult`, and `SwitcherTwoViewCompositionBoundary`.
 - The boundary composes decoded BGRA left/right sides into one side-by-side BGRA canvas and keeps left-only, right-only, empty placeholder, and invalid-dimensions states explicit.

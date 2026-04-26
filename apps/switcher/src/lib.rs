@@ -1478,6 +1478,114 @@ pub enum SwitcherTwoViewCompositionResult {
     },
 }
 
+/// Validated render input derived from one composed 2-view BGRA canvas.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SwitcherTwoViewComposedFrameRenderInput {
+    pub frame: SwitcherDecodedFrameRenderInput,
+    pub left: Option<SwitcherTwoViewComposedSideMetadata>,
+    pub right: Option<SwitcherTwoViewComposedSideMetadata>,
+}
+
+/// Invalid composed-frame reason for window rendering.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SwitcherTwoViewComposedFrameRenderInputError {
+    InvalidFrame(SwitcherDecodedFrameRenderInputError),
+    MissingComposedSideMetadata,
+}
+
+impl SwitcherTwoViewComposedFrameRenderInput {
+    pub fn from_composed_frame(
+        frame: &SwitcherTwoViewComposedFrame,
+    ) -> Result<Self, SwitcherTwoViewComposedFrameRenderInputError> {
+        if frame.left.is_none() && frame.right.is_none() {
+            return Err(SwitcherTwoViewComposedFrameRenderInputError::MissingComposedSideMetadata);
+        }
+        let decoded = SwitcherDecodedFrame {
+            width: frame.width,
+            height: frame.height,
+            pixel_format: frame.pixel_format,
+            pixels: frame.pixels.clone(),
+        };
+        let render_input = SwitcherDecodedFrameRenderInput::from_decoded_frame(&decoded)
+            .map_err(SwitcherTwoViewComposedFrameRenderInputError::InvalidFrame)?;
+
+        Ok(Self {
+            frame: render_input,
+            left: frame.left.clone(),
+            right: frame.right.clone(),
+        })
+    }
+}
+
+/// Result of rendering one composed 2-view canvas to a switcher window.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SwitcherTwoViewComposedCanvasRenderResult {
+    Rendered {
+        render: SwitcherWindowRenderSuccess,
+    },
+    RenderDeferred {
+        reason: SwitcherWindowRenderDeferredReason,
+    },
+    BackendUnavailable {
+        reason: SwitcherWindowBackendUnavailableReason,
+        message: Option<String>,
+    },
+    InvalidComposedFrame {
+        error: SwitcherTwoViewComposedFrameRenderInputError,
+    },
+    RenderFailed {
+        message: String,
+    },
+}
+
+/// Thin render boundary for a composed 2-view canvas.
+///
+/// Composition stays upstream; this boundary only validates the composed canvas
+/// and hands it to the existing one-frame window render runtime.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct SwitcherTwoViewComposedCanvasRenderBoundary;
+
+impl SwitcherTwoViewComposedCanvasRenderBoundary {
+    pub fn render_composed_frame_with_runtime(
+        &self,
+        frame: &SwitcherTwoViewComposedFrame,
+        title: impl Into<String>,
+        hold_millis: u64,
+        runtime: &impl SwitcherWindowRenderRuntimeHook,
+    ) -> SwitcherTwoViewComposedCanvasRenderResult {
+        let input = match SwitcherTwoViewComposedFrameRenderInput::from_composed_frame(frame) {
+            Ok(input) => input,
+            Err(error) => {
+                return SwitcherTwoViewComposedCanvasRenderResult::InvalidComposedFrame { error };
+            }
+        };
+
+        match runtime.render_once(SwitcherWindowRenderRequest {
+            frame: input.frame,
+            title: title.into(),
+            hold_millis,
+        }) {
+            SwitcherWindowRenderResult::Rendered(render) => {
+                SwitcherTwoViewComposedCanvasRenderResult::Rendered { render }
+            }
+            SwitcherWindowRenderResult::RenderDeferred { reason } => {
+                SwitcherTwoViewComposedCanvasRenderResult::RenderDeferred { reason }
+            }
+            SwitcherWindowRenderResult::BackendUnavailable { reason, message } => {
+                SwitcherTwoViewComposedCanvasRenderResult::BackendUnavailable { reason, message }
+            }
+            SwitcherWindowRenderResult::InvalidFrame { error } => {
+                SwitcherTwoViewComposedCanvasRenderResult::InvalidComposedFrame {
+                    error: SwitcherTwoViewComposedFrameRenderInputError::InvalidFrame(error),
+                }
+            }
+            SwitcherWindowRenderResult::RenderFailed { message } => {
+                SwitcherTwoViewComposedCanvasRenderResult::RenderFailed { message }
+            }
+        }
+    }
+}
+
 /// Pure 2-view side-by-side BGRA composition boundary.
 ///
 /// This does not select, decode, render to a window, mutate queues, schedule a
@@ -5095,6 +5203,134 @@ mod tests {
         );
     }
 
+    #[test]
+    fn two_view_composed_frame_converts_into_render_input() {
+        let frame = composed_two_view_fixture_frame();
+        let input = SwitcherTwoViewComposedFrameRenderInput::from_composed_frame(&frame)
+            .expect("composed frame should become render input");
+
+        assert_eq!(input.frame.width, frame.width);
+        assert_eq!(input.frame.height, frame.height);
+        assert_eq!(
+            input.frame.pixel_format,
+            SwitcherDecodedFramePixelFormat::Bgra8
+        );
+        assert_eq!(input.frame.pixels, frame.pixels);
+        assert_eq!(input.left.as_ref().map(|metadata| metadata.x), Some(0));
+        assert_eq!(input.right.as_ref().map(|metadata| metadata.x), Some(2));
+    }
+
+    #[test]
+    fn two_view_composed_frame_render_rejects_invalid_dimensions() {
+        let mut frame = composed_two_view_fixture_frame();
+        frame.width = 0;
+        frame.pixels.clear();
+
+        let result = SwitcherTwoViewComposedCanvasRenderBoundary
+            .render_composed_frame_with_runtime(
+                &frame,
+                "StreamSync 2-view",
+                16,
+                &SwitcherUnavailableWindowRenderRuntimeHook,
+            );
+
+        assert_eq!(
+            result,
+            SwitcherTwoViewComposedCanvasRenderResult::InvalidComposedFrame {
+                error: SwitcherTwoViewComposedFrameRenderInputError::InvalidFrame(
+                    SwitcherDecodedFrameRenderInputError::InvalidDimensions
+                ),
+            }
+        );
+    }
+
+    #[test]
+    fn two_view_composed_canvas_render_backend_unavailable_is_explicit() {
+        let frame = composed_two_view_fixture_frame();
+        let result = SwitcherTwoViewComposedCanvasRenderBoundary
+            .render_composed_frame_with_runtime(
+                &frame,
+                "StreamSync 2-view",
+                16,
+                &SwitcherUnavailableWindowRenderRuntimeHook,
+            );
+
+        assert!(matches!(
+            result,
+            SwitcherTwoViewComposedCanvasRenderResult::BackendUnavailable {
+                reason: SwitcherWindowBackendUnavailableReason::UnsupportedPlatform,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn two_view_composed_canvas_render_hook_receives_dimensions_and_pixels() {
+        #[derive(Default)]
+        struct RecordingComposedRender {
+            requests: std::cell::RefCell<Vec<SwitcherWindowRenderRequest>>,
+        }
+
+        impl SwitcherWindowRenderRuntimeHook for RecordingComposedRender {
+            fn render_once(
+                &self,
+                request: SwitcherWindowRenderRequest,
+            ) -> SwitcherWindowRenderResult {
+                self.requests.borrow_mut().push(request.clone());
+                SwitcherWindowRenderResult::Rendered(SwitcherWindowRenderSuccess {
+                    width: request.frame.width,
+                    height: request.frame.height,
+                    title: request.title,
+                    hold_millis: request.hold_millis,
+                })
+            }
+        }
+
+        let frame = composed_two_view_fixture_frame();
+        let runtime = RecordingComposedRender::default();
+        let result = SwitcherTwoViewComposedCanvasRenderBoundary
+            .render_composed_frame_with_runtime(&frame, "StreamSync 2-view", 25, &runtime);
+
+        let SwitcherTwoViewComposedCanvasRenderResult::Rendered { render } = result else {
+            panic!("expected rendered composed canvas");
+        };
+        assert_eq!(render.width, frame.width);
+        assert_eq!(render.height, frame.height);
+        let requests = runtime.requests.borrow();
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0].frame.width, frame.width);
+        assert_eq!(requests[0].frame.height, frame.height);
+        assert_eq!(requests[0].frame.pixels, frame.pixels);
+    }
+
+    #[test]
+    fn two_view_composed_canvas_render_stays_separate_from_composition() {
+        let frame = SwitcherTwoViewComposedFrame {
+            width: 1,
+            height: 1,
+            pixel_format: SwitcherDecodedFramePixelFormat::Bgra8,
+            pixels: vec![7, 8, 9, 255],
+            left: Some(SwitcherTwoViewComposedSideMetadata {
+                side: SwitcherTwoViewSide::Left,
+                selected: None,
+                x: 0,
+                y: 0,
+                width: 1,
+                height: 1,
+            }),
+            right: None,
+        };
+        let runtime = RecordingTwoViewRender::default();
+        let result = SwitcherTwoViewComposedCanvasRenderBoundary
+            .render_composed_frame_with_runtime(&frame, "precomposed", 10, &runtime);
+
+        assert!(matches!(
+            result,
+            SwitcherTwoViewComposedCanvasRenderResult::Rendered { .. }
+        ));
+        assert_eq!(runtime.requests.borrow().len(), 1);
+    }
+
     fn decoded_bgra_frame(width: u32, height: u32, pixel: [u8; 4]) -> SwitcherDecodedFrame {
         let mut pixels = Vec::new();
         for _ in 0..width as usize * height as usize {
@@ -5106,6 +5342,28 @@ mod tests {
             pixel_format: SwitcherDecodedFramePixelFormat::Bgra8,
             pixels,
         }
+    }
+
+    fn composed_two_view_fixture_frame() -> SwitcherTwoViewComposedFrame {
+        let result = SwitcherTwoViewCompositionBoundary.compose_side_by_side(
+            SwitcherTwoViewCompositionInput {
+                left: SwitcherTwoViewLayoutSideInput::Decoded {
+                    side: SwitcherTwoViewSide::Left,
+                    selected: None,
+                    frame: decoded_bgra_frame(2, 1, [1, 2, 3, 255]),
+                },
+                right: SwitcherTwoViewLayoutSideInput::Decoded {
+                    side: SwitcherTwoViewSide::Right,
+                    selected: None,
+                    frame: decoded_bgra_frame(2, 1, [4, 5, 6, 255]),
+                },
+                policy: SwitcherTwoViewLayoutPolicy::default(),
+            },
+        );
+        let SwitcherTwoViewCompositionResult::BothComposed { frame } = result else {
+            panic!("expected both-composed fixture");
+        };
+        frame
     }
 
     struct ScriptedFrameSource {

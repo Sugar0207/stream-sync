@@ -10,12 +10,16 @@ use stream_sync_server::{
 use stream_sync_switcher::{
     SwitcherAuthVideoPlaceholderBridgeBoundary, SwitcherAuthVideoPlaceholderBridgeResult,
     SwitcherDecodeLatestFrameOnceBoundary, SwitcherDecodeLatestFrameOnceInput,
-    SwitcherDecodeLatestFrameOnceResult, SwitcherFfmpegH264DecodeRuntimeHook,
-    SwitcherPlaceholderManualVerificationBoundary, SwitcherPlaceholderManualVerificationInput,
-    SwitcherPlaceholderManualVerificationResult, SwitcherTwoViewManualVerificationBoundary,
-    SwitcherTwoViewManualVerificationInput, SwitcherTwoViewManualVerificationResult,
-    SwitcherTwoViewManualVerificationSideSummary, SwitcherTwoViewTargetTimeSelectionPolicy,
-    SwitcherWindowRenderBoundary, SwitcherWindowRenderResult,
+    SwitcherDecodeLatestFrameOnceResult, SwitcherDecodedFrame, SwitcherDecodedFramePixelFormat,
+    SwitcherFfmpegH264DecodeRuntimeHook, SwitcherPlaceholderManualVerificationBoundary,
+    SwitcherPlaceholderManualVerificationInput, SwitcherPlaceholderManualVerificationResult,
+    SwitcherTwoViewComposedCanvasRenderBoundary, SwitcherTwoViewComposedCanvasRenderResult,
+    SwitcherTwoViewCompositionBoundary, SwitcherTwoViewCompositionInput,
+    SwitcherTwoViewCompositionResult, SwitcherTwoViewLayoutPolicy, SwitcherTwoViewLayoutSideInput,
+    SwitcherTwoViewManualVerificationBoundary, SwitcherTwoViewManualVerificationInput,
+    SwitcherTwoViewManualVerificationResult, SwitcherTwoViewManualVerificationSideSummary,
+    SwitcherTwoViewSide, SwitcherTwoViewTargetTimeSelectionPolicy, SwitcherWindowRenderBoundary,
+    SwitcherWindowRenderResult,
 };
 
 #[cfg(not(target_os = "windows"))]
@@ -185,9 +189,29 @@ fn main() {
             );
             print_two_view_sync_summary(result);
         }
+        Some("--render-two-view-composed-fixture-once") => {
+            let hold_millis = args
+                .next()
+                .and_then(|value| value.parse::<u64>().ok())
+                .unwrap_or(2_000);
+            match fixture_two_view_composed_frame() {
+                SwitcherTwoViewCompositionResult::BothComposed { frame } => {
+                    let result = render_two_view_composed_frame_once(
+                        &frame,
+                        "StreamSync Switcher 2-view",
+                        hold_millis,
+                    );
+                    print_two_view_composed_render_summary(result);
+                }
+                other => {
+                    eprintln!("switcher render two-view composed fixture compose_failed={other:?}");
+                    std::process::exit(1);
+                }
+            }
+        }
         _ => {
             println!(
-                "stream-sync-switcher scaffold; use --placeholder-fixture-once [client-id], --placeholder-empty-once [client-id], --decode-latest-frame-once [client-id] [output-path], --receive-auth-video-placeholder-bridge-once [config-path] [client-id], --receive-auth-video-decode-latest-once [config-path] [client-id] [output-path], --receive-auth-video-render-decoded-once [config-path] [client-id] [hold-ms], or --two-view-sync-fixture-once [left-client-id] [right-client-id] [hold-ms]"
+                "stream-sync-switcher scaffold; use --placeholder-fixture-once [client-id], --placeholder-empty-once [client-id], --decode-latest-frame-once [client-id] [output-path], --receive-auth-video-placeholder-bridge-once [config-path] [client-id], --receive-auth-video-decode-latest-once [config-path] [client-id] [output-path], --receive-auth-video-render-decoded-once [config-path] [client-id] [hold-ms], --two-view-sync-fixture-once [left-client-id] [right-client-id] [hold-ms], or --render-two-view-composed-fixture-once [hold-ms]"
             );
         }
     }
@@ -379,6 +403,62 @@ fn print_render_summary(
     }
 }
 
+fn render_two_view_composed_frame_once(
+    frame: &stream_sync_switcher::SwitcherTwoViewComposedFrame,
+    title: &str,
+    hold_millis: u64,
+) -> SwitcherTwoViewComposedCanvasRenderResult {
+    #[cfg(target_os = "windows")]
+    {
+        SwitcherTwoViewComposedCanvasRenderBoundary.render_composed_frame_with_runtime(
+            frame,
+            title,
+            hold_millis,
+            &SwitcherWindowsGdiWindowRenderRuntimeHook,
+        )
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        SwitcherTwoViewComposedCanvasRenderBoundary.render_composed_frame_with_runtime(
+            frame,
+            title,
+            hold_millis,
+            &SwitcherUnavailableWindowRenderRuntimeHook,
+        )
+    }
+}
+
+fn print_two_view_composed_render_summary(result: SwitcherTwoViewComposedCanvasRenderResult) {
+    match result {
+        SwitcherTwoViewComposedCanvasRenderResult::Rendered { render } => {
+            println!(
+                "switcher render two-view composed fixture rendered=true width={} height={} hold_millis={} title={} source=fixture",
+                render.width, render.height, render.hold_millis, render.title
+            );
+        }
+        SwitcherTwoViewComposedCanvasRenderResult::RenderDeferred { reason } => {
+            eprintln!("switcher render two-view composed fixture deferred reason={reason:?}");
+            std::process::exit(1);
+        }
+        SwitcherTwoViewComposedCanvasRenderResult::BackendUnavailable { reason, message } => {
+            eprintln!(
+                "switcher render two-view composed fixture backend_unavailable reason={reason:?} message={}",
+                message.as_deref().unwrap_or("none")
+            );
+            std::process::exit(1);
+        }
+        SwitcherTwoViewComposedCanvasRenderResult::InvalidComposedFrame { error } => {
+            eprintln!("switcher render two-view composed fixture invalid_frame error={error:?}");
+            std::process::exit(1);
+        }
+        SwitcherTwoViewComposedCanvasRenderResult::RenderFailed { message } => {
+            eprintln!("switcher render two-view composed fixture failed message={message}");
+            std::process::exit(1);
+        }
+    }
+}
+
 fn verify_two_view_fixture_once(
     queue_state: &ServerVideoFrameQueueState,
     left_client_id: &ClientId,
@@ -495,6 +575,35 @@ fn fixture_two_view_queue_state(
         TimestampMicros(2_000_012),
     );
     state
+}
+
+fn fixture_two_view_composed_frame() -> SwitcherTwoViewCompositionResult {
+    SwitcherTwoViewCompositionBoundary.compose_side_by_side(SwitcherTwoViewCompositionInput {
+        left: SwitcherTwoViewLayoutSideInput::Decoded {
+            side: SwitcherTwoViewSide::Left,
+            selected: None,
+            frame: fixture_decoded_frame(2, 2, [32, 96, 180, 255]),
+        },
+        right: SwitcherTwoViewLayoutSideInput::Decoded {
+            side: SwitcherTwoViewSide::Right,
+            selected: None,
+            frame: fixture_decoded_frame(2, 2, [180, 96, 32, 255]),
+        },
+        policy: SwitcherTwoViewLayoutPolicy::default(),
+    })
+}
+
+fn fixture_decoded_frame(width: u32, height: u32, pixel: [u8; 4]) -> SwitcherDecodedFrame {
+    let mut pixels = Vec::new();
+    for _ in 0..width as usize * height as usize {
+        pixels.extend_from_slice(&pixel);
+    }
+    SwitcherDecodedFrame {
+        width,
+        height,
+        pixel_format: SwitcherDecodedFramePixelFormat::Bgra8,
+        pixels,
+    }
 }
 
 fn store_fixture_frame(

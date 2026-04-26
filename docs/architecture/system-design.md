@@ -7550,6 +7550,18 @@ Current decode/display substitute behavior:
 - The 2-view composition boundary does not select targetTime frames, decode
   H.264, render a window, read or mutate queues, schedule a loop, perform
   4-view orchestration, or integrate OBS.
+- `SwitcherTwoViewComposedCanvasRenderBoundary` is the first render connection
+  for a composed 2-view canvas. It validates `SwitcherTwoViewComposedFrame`,
+  converts the canvas to the existing one-frame window render input, and uses
+  the caller-owned `SwitcherWindowRenderRuntimeHook`.
+- The composed-canvas render result is explicit: rendered, render deferred,
+  backend unavailable, invalid composed frame, or render failed. It reuses the
+  existing Windows GDI renderer behind `cfg(target_os = "windows")` and keeps
+  non-Windows as an explicit backend-unavailable result.
+- CLI `--render-two-view-composed-fixture-once [hold-ms]` composes two decoded
+  fixture BGRA frames and renders the resulting canvas once. It does not use
+  live two-client sockets, H.264 decode, queue mutation, 4-view orchestration,
+  or OBS APIs.
 - Future 4-view sync should build on the same shared-targetTime pattern and
   extend the isolated layout/composition responsibility after live 2-view
   integration is stable.
@@ -7569,6 +7581,9 @@ and OBS. The 2-view fixture/manual verification wrapper only composes existing
 boundaries once; it is not live networking or continuous display scheduling.
 The 2-view composition boundary produces one canvas, but still remains separate
 from live networking, queue mutation, continuous rendering, 4-view sync, and OBS.
+The composed-canvas render boundary can display that canvas once in a normal
+window, but does not own composition, scheduling, synchronization, OBS control,
+or live queue integration.
 
 ## Client Real Capture / H.264 Encode Boundary
 
