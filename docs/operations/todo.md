@@ -2,7 +2,7 @@
 
 # StreamSync TODO
 
-最終更新: 2026-04-26
+最終更新: 2026-04-27
 
 このファイルは「現在どこまで終わっていて、次に何をやるか」を確認するための TODO です。  
 時系列の作業履歴、判断理由、各回の作業メモは `docs/operations/session-log.md` を正とします。
@@ -27,9 +27,9 @@
 - server 側は auth one-shot、accepted auth registry 登録、heartbeat ack / liveness / timeout action plan / timeout apply / notice queue storage、RTT / offset state commit と metrics snapshot handoff までの最小境界が揃っている
 - client 側は auth one-shot、heartbeat one-shot、`HeartbeatAckObservation` 付き `ClientStats` one-shot、one-tick runtime、accepted path 手動確認まで完了している
 - client continuous heartbeat loop は thin composition の completed body まで実装済みで、heartbeat timeout notice wakeup planning 境界、wakeup execution 境界、wakeup actual side-effect 境界、outer while-loop connection 境界、outer while-loop one-turn execution body 境界、actual timer wait / retry execution / reconnect 実行境界、outer while-loop 反復実行本体、reconnect policy 境界、caller-owned hook 付き actual socket 再確立境界、real UDP socket 差し替え hook、repeated body からの hook 注入経路まで完了している
-- 未完了の中心は live 2-client socket receive integration、4-view sync orchestration、dashboard UI rendering、continuous receive/send loop 本体、実キュー / 実送信 / 継続ログ出力
+- 未完了の中心は continuous 2-view scheduling、4-view sync orchestration、dashboard UI rendering、continuous receive/send loop 本体、実キュー / 実送信 / 継続ログ出力
 - outbound queue 実キュー、continuous receive/send loop 本体、send / receive の継続ログ出力、file sink open、process-wide logger、`ServerNotice` 実送信は未実装
-- video path は server 側 accepted `VideoFrame` receive side-effect を caller-owned per-client queue へ保存し、client 側で placeholder encoded H.264 payload 付き `VideoFrame` と、Windows Graphics Capture + FFmpeg による one-shot `RealCaptureH264` `VideoFrame` を UDP 送信する PoC slice まで完了。switcher 側は latest frame を FFmpeg で H.264 decode して 1 frame BMP dump し、Windows では decoded BGRA を normal window に one-shot 描画し、single-client latest-frame の bounded continuous decode/render loop 境界、one-client targetTime / jitter-buffer selection 境界、2-view targetTime selection orchestration 境界、2-view targetTime-selected decode/render connection 境界、2-view sync fixture/manual verification CLI、2-view side-by-side BGRA layout/composition 境界、composed 2-view canvas window render 境界まで完了。live 2-client integration、4-view sync、OBS は未着手
+- video path は server 側 accepted `VideoFrame` receive side-effect を caller-owned per-client queue へ保存し、client 側で placeholder encoded H.264 payload 付き `VideoFrame` と、Windows Graphics Capture + FFmpeg による one-shot `RealCaptureH264` `VideoFrame` を UDP 送信する PoC slice まで完了。switcher 側は latest frame を FFmpeg で H.264 decode して 1 frame BMP dump し、Windows では decoded BGRA を normal window に one-shot 描画し、single-client latest-frame の bounded continuous decode/render loop 境界、one-client targetTime / jitter-buffer selection 境界、2-view targetTime selection orchestration 境界、2-view targetTime-selected decode/render connection 境界、2-view sync fixture/manual verification CLI、2-view side-by-side BGRA layout/composition 境界、composed 2-view canvas window render 境界、live-like 2-client queue/runtime integration 境界まで完了。continuous 2-view scheduling、4-view sync、OBS は未着手
 
 ---
 
@@ -60,7 +60,7 @@
 
 ## 直近でやること
 1. production H.264 encoder configuration / error logging policy
-2. live 2-client socket receive integration の最小境界を分けて設計する
+2. continuous 2-view scheduling の最小境界を分けて設計する
 3. continuous acquisition / frame arrived wait の最小境界を分けて設計する
 
 ---
@@ -670,6 +670,7 @@
 - [x] 2-view targetTime-selected frame decode/render connection
 - [x] 2-view layout/composition
 - [x] composed 2-view canvas window render connection
+- [x] live-like 2-client queue/runtime integration
 - [ ] 2 人同期表示
 - [ ] 4 人 2x2 表示
 - [ ] OBS 取り込み確認
@@ -711,6 +712,7 @@
 - switcher now has a 2-view sync fixture/manual verification path: `SwitcherTwoViewManualVerificationBoundary` runs targetTime selection -> decode/render over caller-owned queue state, and CLI `--two-view-sync-fixture-once [left-client-id] [right-client-id] [hold-ms]` prints targetTime and per-side selection/decode/render status without live networking, queue mutation, 4-view layout, or OBS work.
 - switcher now has a pure 2-view layout/composition boundary: `SwitcherTwoViewCompositionBoundary` composes decoded BGRA left/right inputs into one side-by-side BGRA canvas, preserves per-side selected metadata when available, and keeps left-only / right-only / empty placeholder / invalid-dimensions states explicit without selecting, decoding, rendering, queue mutation, 4-view, or OBS work.
 - switcher now has a composed 2-view canvas render boundary: `SwitcherTwoViewComposedCanvasRenderBoundary` validates `SwitcherTwoViewComposedFrame` and reuses the existing window render runtime hook to draw one composed canvas in a normal switcher window. CLI `--render-two-view-composed-fixture-once [hold-ms]` composes decoded fixture frames and renders once without live networking, 4-view, or OBS API work.
+- switcher now has a bounded live-like 2-client queue/runtime integration boundary: `SwitcherLiveTwoViewRuntimeBoundary` consumes a caller-owned live queue source, stores accepted frames into `ServerVideoFrameQueueState`, then runs targetTime selection -> H.264 decode -> 2-view composition -> composed-canvas render once. Rejected frames are not queued, guard stops are explicit, and queue mutation for late drops remains deferred.
 - client video path now has an explicit real-capture / H.264-encode replacement boundary: capture returns `RealCaptureDeferred`, encode returns `RealH264EncodeDeferred`, and `ClientEncodedVideoFrameSource` can feed existing `VideoFrame` metadata/send wiring without pretending placeholder bytes are real capture output.
 - client capture backend direction is now Windows Graphics Capture for MVP; the client can select/probe that backend and surface not-configured, unsupported, or unavailable results without producing fake pixels or coupling capture to UDP send.
 - client capture target discovery now has a pre-session boundary: display/window target descriptors can be represented and converted to `ClientCaptureTargetConfig`, while real Windows enumeration remains deferred and explicit as runtime unavailable.
@@ -729,6 +731,6 @@
 
 ## Next Items
 1. production H.264 encoder configuration / error logging policy
-2. live 2-client socket receive integration boundary
+2. continuous 2-view scheduling boundary
 3. continuous acquisition / frame arrived wait boundary
-4. 4-view orchestration after live 2-view integration is isolated
+4. 4-view orchestration after continuous 2-view scheduling is isolated

@@ -6,9 +6,11 @@ use std::{
 
 use stream_sync_protocol::{ClientId, TimestampMicros};
 use stream_sync_server::{
-    ServerQueuedVideoFrame, ServerReceiveAuthVideoQueueOnceStartupOutcome,
-    ServerReceiveAuthVideoQueueOnceVideoOutcome, ServerVideoFrameQueueRuntimeResult,
-    ServerVideoFrameQueueState, ServerVideoFrameQueueStorageResult,
+    PacketAcceptanceRejectReason, ServerQueuedVideoFrame,
+    ServerReceiveAuthVideoQueueOnceStartupOutcome, ServerReceiveAuthVideoQueueOnceVideoOutcome,
+    ServerRegisteredVideoFramePacket, ServerVideoFrameHandlerBoundary, ServerVideoFrameQueuePolicy,
+    ServerVideoFrameQueueRuntimeResult, ServerVideoFrameQueueState,
+    ServerVideoFrameQueueStorageBoundary, ServerVideoFrameQueueStorageResult,
 };
 
 pub const CRATE_NAME: &str = "stream-sync-switcher";
@@ -1830,6 +1832,446 @@ fn copy_bgra_frame_into_canvas(
         let dst_end = dst_start + src_stride;
         canvas[dst_start..dst_end]
             .copy_from_slice(&frame.pixels[src_start..src_start + src_stride]);
+    }
+}
+
+/// Bounded policy for one live-like 2-client queue/runtime integration run.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct SwitcherLiveTwoViewRuntimePolicy {
+    pub max_packets: usize,
+    pub current_switcher_time: TimestampMicros,
+    pub selection: SwitcherTwoViewTargetTimeSelectionPolicy,
+    pub queue: ServerVideoFrameQueuePolicy,
+    pub render_hold_millis: u64,
+    pub composition: SwitcherTwoViewLayoutPolicy,
+}
+
+impl Default for SwitcherLiveTwoViewRuntimePolicy {
+    fn default() -> Self {
+        Self {
+            max_packets: 2,
+            current_switcher_time: TimestampMicros(0),
+            selection: SwitcherTwoViewTargetTimeSelectionPolicy::default(),
+            queue: ServerVideoFrameQueuePolicy::default(),
+            render_hold_millis: 16,
+            composition: SwitcherTwoViewLayoutPolicy::default(),
+        }
+    }
+}
+
+/// Input for one bounded live-like 2-client switcher runtime run.
+pub struct SwitcherLiveTwoViewRuntimeInput<'a, S> {
+    pub source: &'a mut S,
+    pub left_client_id: &'a ClientId,
+    pub right_client_id: &'a ClientId,
+    pub policy: SwitcherLiveTwoViewRuntimePolicy,
+}
+
+/// One item emitted by a live queue owner or test source.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SwitcherLiveTwoViewQueueSourceItem {
+    AcceptedVideoFrame {
+        packet: ServerRegisteredVideoFramePacket,
+        queued_at: TimestampMicros,
+    },
+    RejectedVideoFrame {
+        client_id: ClientId,
+        reason: PacketAcceptanceRejectReason,
+    },
+    Timeout,
+    EndOfInput,
+}
+
+/// Caller-owned source for bounded live-like 2-client queue ingestion.
+pub trait SwitcherLiveTwoViewQueueSource {
+    fn receive_next(&mut self) -> SwitcherLiveTwoViewQueueSourceItem;
+}
+
+/// Summary of the queue-owner phase before selection/decode/composition/render.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SwitcherLiveTwoViewQueueSummary {
+    pub packets_observed: usize,
+    pub accepted_frames: usize,
+    pub rejected_frames: usize,
+    pub timeouts: usize,
+    pub ended: bool,
+    pub stopped_by_guard: bool,
+    pub queued_left: usize,
+    pub queued_right: usize,
+    pub total_queued: usize,
+}
+
+/// Per-side live pipeline status after targetTime selection and decode.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SwitcherLiveTwoViewSidePipelineStatus {
+    Decoded {
+        selected: SwitcherJitterBufferSelectedFrame,
+        frame: SwitcherDecodedFrame,
+    },
+    SelectionUnavailable {
+        selection: SwitcherJitterBufferSelectionResult,
+    },
+    DecodeDeferred {
+        selected: SwitcherJitterBufferSelectedFrame,
+        reason: SwitcherH264DecodeDeferredReason,
+    },
+    DecodeFailed {
+        selected: SwitcherJitterBufferSelectedFrame,
+        failure: SwitcherH264DecodeFailure,
+    },
+}
+
+/// Compact composition shape for a live 2-view pipeline attempt.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum SwitcherLiveTwoViewCompositionKind {
+    Both,
+    LeftOnly,
+    RightOnly,
+    Empty,
+}
+
+/// Rendered scope for one live 2-view pipeline attempt.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum SwitcherLiveTwoViewRenderedKind {
+    Both,
+    LeftOnly,
+    RightOnly,
+}
+
+/// Summary of the selection/decode/composition phase.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SwitcherLiveTwoViewPipelineSummary {
+    pub shared_target_time: TimestampMicros,
+    pub left: SwitcherLiveTwoViewSidePipelineStatus,
+    pub right: SwitcherLiveTwoViewSidePipelineStatus,
+    pub composition_kind: SwitcherLiveTwoViewCompositionKind,
+}
+
+/// Pipeline result after live queue ingestion.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SwitcherLiveTwoViewPipelineResult {
+    Rendered {
+        kind: SwitcherLiveTwoViewRenderedKind,
+        summary: SwitcherLiveTwoViewPipelineSummary,
+        render: SwitcherWindowRenderSuccess,
+    },
+    NoFrames {
+        summary: SwitcherLiveTwoViewPipelineSummary,
+    },
+    CompositionInvalid {
+        summary: SwitcherLiveTwoViewPipelineSummary,
+        reason: SwitcherTwoViewCompositionInvalidReason,
+    },
+    RenderDeferred {
+        summary: SwitcherLiveTwoViewPipelineSummary,
+        reason: SwitcherWindowRenderDeferredReason,
+    },
+    BackendUnavailable {
+        summary: SwitcherLiveTwoViewPipelineSummary,
+        reason: SwitcherWindowBackendUnavailableReason,
+        message: Option<String>,
+    },
+    InvalidComposedFrame {
+        summary: SwitcherLiveTwoViewPipelineSummary,
+        error: SwitcherTwoViewComposedFrameRenderInputError,
+    },
+    RenderFailed {
+        summary: SwitcherLiveTwoViewPipelineSummary,
+        message: String,
+    },
+}
+
+/// Full result of one bounded live-like 2-client switcher runtime run.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SwitcherLiveTwoViewRuntimeResult {
+    pub queue_state: ServerVideoFrameQueueState,
+    pub queue: SwitcherLiveTwoViewQueueSummary,
+    pub pipeline: SwitcherLiveTwoViewPipelineResult,
+}
+
+/// Bounded live-like 2-client queue owner -> 2-view pipeline integration.
+///
+/// The source owns packet reception. This boundary only stores accepted frames
+/// into caller-owned queue state and then composes existing switcher boundaries
+/// once. It does not mutate jitter-buffer queues for late drops, schedule a
+/// continuous loop, integrate OBS, or implement 4-view orchestration.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct SwitcherLiveTwoViewRuntimeBoundary {
+    video_input: ServerVideoFrameHandlerBoundary,
+    queue_storage: ServerVideoFrameQueueStorageBoundary,
+    selector: SwitcherTwoViewTargetTimeSelectionBoundary,
+    decoder: SwitcherH264DecodeBoundary,
+    composer: SwitcherTwoViewCompositionBoundary,
+    renderer: SwitcherTwoViewComposedCanvasRenderBoundary,
+}
+
+impl SwitcherLiveTwoViewRuntimeBoundary {
+    pub fn run_once<S: SwitcherLiveTwoViewQueueSource>(
+        &self,
+        input: SwitcherLiveTwoViewRuntimeInput<'_, S>,
+        decode_runtime: &impl SwitcherH264DecodeRuntimeHook,
+        render_runtime: &impl SwitcherWindowRenderRuntimeHook,
+    ) -> SwitcherLiveTwoViewRuntimeResult {
+        let mut queue_state = ServerVideoFrameQueueState::default();
+        let mut packets_observed = 0;
+        let mut accepted_frames = 0;
+        let mut rejected_frames = 0;
+        let mut timeouts = 0;
+        let mut ended = false;
+
+        for _ in 0..input.policy.max_packets {
+            match input.source.receive_next() {
+                SwitcherLiveTwoViewQueueSourceItem::AcceptedVideoFrame { packet, queued_at } => {
+                    packets_observed += 1;
+                    let handler_input = self.video_input.prepare_input(packet);
+                    if matches!(
+                        self.queue_storage.store_frame(
+                            &mut queue_state,
+                            handler_input,
+                            queued_at,
+                            input.policy.queue,
+                        ),
+                        ServerVideoFrameQueueStorageResult::Stored { .. }
+                    ) {
+                        accepted_frames += 1;
+                    }
+                }
+                SwitcherLiveTwoViewQueueSourceItem::RejectedVideoFrame { .. } => {
+                    packets_observed += 1;
+                    rejected_frames += 1;
+                }
+                SwitcherLiveTwoViewQueueSourceItem::Timeout => {
+                    packets_observed += 1;
+                    timeouts += 1;
+                }
+                SwitcherLiveTwoViewQueueSourceItem::EndOfInput => {
+                    ended = true;
+                    break;
+                }
+            }
+        }
+
+        let queue = SwitcherLiveTwoViewQueueSummary {
+            packets_observed,
+            accepted_frames,
+            rejected_frames,
+            timeouts,
+            ended,
+            stopped_by_guard: !ended && packets_observed >= input.policy.max_packets,
+            queued_left: queue_state.client_queue_len(input.left_client_id),
+            queued_right: queue_state.client_queue_len(input.right_client_id),
+            total_queued: queue_state.total_len(),
+        };
+        let pipeline = self.run_pipeline_once(
+            &queue_state,
+            input.left_client_id,
+            input.right_client_id,
+            input.policy,
+            decode_runtime,
+            render_runtime,
+        );
+
+        SwitcherLiveTwoViewRuntimeResult {
+            queue_state,
+            queue,
+            pipeline,
+        }
+    }
+
+    fn run_pipeline_once(
+        &self,
+        queue_state: &ServerVideoFrameQueueState,
+        left_client_id: &ClientId,
+        right_client_id: &ClientId,
+        policy: SwitcherLiveTwoViewRuntimePolicy,
+        decode_runtime: &impl SwitcherH264DecodeRuntimeHook,
+        render_runtime: &impl SwitcherWindowRenderRuntimeHook,
+    ) -> SwitcherLiveTwoViewPipelineResult {
+        let selection = self
+            .selector
+            .select_pair(SwitcherTwoViewTargetTimeSelectionInput {
+                queue_state,
+                left_client_id,
+                right_client_id,
+                current_switcher_time: policy.current_switcher_time,
+                policy: policy.selection,
+            });
+        let (shared_target_time, left_selection, right_selection) =
+            clone_two_view_selection_sides(&selection);
+        let left = self.decode_live_side(SwitcherTwoViewSide::Left, left_selection, decode_runtime);
+        let right =
+            self.decode_live_side(SwitcherTwoViewSide::Right, right_selection, decode_runtime);
+        let composition_input = SwitcherTwoViewCompositionInput {
+            left: live_side_to_layout_input(SwitcherTwoViewSide::Left, &left),
+            right: live_side_to_layout_input(SwitcherTwoViewSide::Right, &right),
+            policy: policy.composition,
+        };
+        let composition = self.composer.compose_side_by_side(composition_input);
+        let composition_kind = live_composition_kind(&composition);
+        let summary = SwitcherLiveTwoViewPipelineSummary {
+            shared_target_time,
+            left,
+            right,
+            composition_kind,
+        };
+
+        match composition {
+            SwitcherTwoViewCompositionResult::BothComposed { frame } => self
+                .render_live_composition(
+                    frame,
+                    SwitcherLiveTwoViewRenderedKind::Both,
+                    summary,
+                    policy.render_hold_millis,
+                    render_runtime,
+                ),
+            SwitcherTwoViewCompositionResult::LeftOnly { frame, .. } => self
+                .render_live_composition(
+                    frame,
+                    SwitcherLiveTwoViewRenderedKind::LeftOnly,
+                    summary,
+                    policy.render_hold_millis,
+                    render_runtime,
+                ),
+            SwitcherTwoViewCompositionResult::RightOnly { frame, .. } => self
+                .render_live_composition(
+                    frame,
+                    SwitcherLiveTwoViewRenderedKind::RightOnly,
+                    summary,
+                    policy.render_hold_millis,
+                    render_runtime,
+                ),
+            SwitcherTwoViewCompositionResult::EmptyPlaceholder { .. } => {
+                SwitcherLiveTwoViewPipelineResult::NoFrames { summary }
+            }
+            SwitcherTwoViewCompositionResult::InvalidDimensions { reason } => {
+                SwitcherLiveTwoViewPipelineResult::CompositionInvalid { summary, reason }
+            }
+        }
+    }
+
+    fn decode_live_side(
+        &self,
+        _side: SwitcherTwoViewSide,
+        selection: SwitcherJitterBufferSelectionResult,
+        decode_runtime: &impl SwitcherH264DecodeRuntimeHook,
+    ) -> SwitcherLiveTwoViewSidePipelineStatus {
+        let selected = match selection {
+            SwitcherJitterBufferSelectionResult::Selected(selected) => selected,
+            selection => {
+                return SwitcherLiveTwoViewSidePipelineStatus::SelectionUnavailable { selection };
+            }
+        };
+        match self.decoder.decode_with_runtime(
+            SwitcherH264DecodeInput {
+                encoded_payload: selected.frame.encoded_payload.clone(),
+                width: selected.frame.width,
+                height: selected.frame.height,
+            },
+            decode_runtime,
+        ) {
+            SwitcherH264DecodeResult::Decoded(frame) => {
+                SwitcherLiveTwoViewSidePipelineStatus::Decoded { selected, frame }
+            }
+            SwitcherH264DecodeResult::Deferred { reason } => {
+                SwitcherLiveTwoViewSidePipelineStatus::DecodeDeferred { selected, reason }
+            }
+            SwitcherH264DecodeResult::Failed(failure) => {
+                SwitcherLiveTwoViewSidePipelineStatus::DecodeFailed { selected, failure }
+            }
+        }
+    }
+
+    fn render_live_composition(
+        &self,
+        frame: SwitcherTwoViewComposedFrame,
+        kind: SwitcherLiveTwoViewRenderedKind,
+        summary: SwitcherLiveTwoViewPipelineSummary,
+        hold_millis: u64,
+        render_runtime: &impl SwitcherWindowRenderRuntimeHook,
+    ) -> SwitcherLiveTwoViewPipelineResult {
+        match self.renderer.render_composed_frame_with_runtime(
+            &frame,
+            "StreamSync Switcher 2-view",
+            hold_millis,
+            render_runtime,
+        ) {
+            SwitcherTwoViewComposedCanvasRenderResult::Rendered { render } => {
+                SwitcherLiveTwoViewPipelineResult::Rendered {
+                    kind,
+                    summary,
+                    render,
+                }
+            }
+            SwitcherTwoViewComposedCanvasRenderResult::RenderDeferred { reason } => {
+                SwitcherLiveTwoViewPipelineResult::RenderDeferred { summary, reason }
+            }
+            SwitcherTwoViewComposedCanvasRenderResult::BackendUnavailable { reason, message } => {
+                SwitcherLiveTwoViewPipelineResult::BackendUnavailable {
+                    summary,
+                    reason,
+                    message,
+                }
+            }
+            SwitcherTwoViewComposedCanvasRenderResult::InvalidComposedFrame { error } => {
+                SwitcherLiveTwoViewPipelineResult::InvalidComposedFrame { summary, error }
+            }
+            SwitcherTwoViewComposedCanvasRenderResult::RenderFailed { message } => {
+                SwitcherLiveTwoViewPipelineResult::RenderFailed { summary, message }
+            }
+        }
+    }
+}
+
+fn live_side_to_layout_input(
+    side: SwitcherTwoViewSide,
+    status: &SwitcherLiveTwoViewSidePipelineStatus,
+) -> SwitcherTwoViewLayoutSideInput {
+    match status {
+        SwitcherLiveTwoViewSidePipelineStatus::Decoded { selected, frame } => {
+            SwitcherTwoViewLayoutSideInput::Decoded {
+                side,
+                selected: Some(selected.clone()),
+                frame: frame.clone(),
+            }
+        }
+        SwitcherLiveTwoViewSidePipelineStatus::SelectionUnavailable { .. } => {
+            SwitcherTwoViewLayoutSideInput::skipped(
+                side,
+                SwitcherTwoViewManualDecodeRenderStatus::SkippedSelectionUnavailable,
+            )
+        }
+        SwitcherLiveTwoViewSidePipelineStatus::DecodeDeferred { .. } => {
+            SwitcherTwoViewLayoutSideInput::skipped(
+                side,
+                SwitcherTwoViewManualDecodeRenderStatus::DecodeDeferred,
+            )
+        }
+        SwitcherLiveTwoViewSidePipelineStatus::DecodeFailed { .. } => {
+            SwitcherTwoViewLayoutSideInput::skipped(
+                side,
+                SwitcherTwoViewManualDecodeRenderStatus::DecodeFailed,
+            )
+        }
+    }
+}
+
+fn live_composition_kind(
+    result: &SwitcherTwoViewCompositionResult,
+) -> SwitcherLiveTwoViewCompositionKind {
+    match result {
+        SwitcherTwoViewCompositionResult::BothComposed { .. } => {
+            SwitcherLiveTwoViewCompositionKind::Both
+        }
+        SwitcherTwoViewCompositionResult::LeftOnly { .. } => {
+            SwitcherLiveTwoViewCompositionKind::LeftOnly
+        }
+        SwitcherTwoViewCompositionResult::RightOnly { .. } => {
+            SwitcherLiveTwoViewCompositionKind::RightOnly
+        }
+        SwitcherTwoViewCompositionResult::EmptyPlaceholder { .. }
+        | SwitcherTwoViewCompositionResult::InvalidDimensions { .. } => {
+            SwitcherLiveTwoViewCompositionKind::Empty
+        }
     }
 }
 
@@ -4821,11 +5263,28 @@ mod tests {
         height: u32,
         payload: Vec<u8>,
     ) -> ServerVideoFrameQueueStorageResult {
+        let packet = registered_video_packet(client_id, frame_id, width, height, payload);
+        let input = ServerVideoFrameHandlerBoundary.prepare_input(packet);
+        ServerVideoFrameQueueStorageBoundary.store_frame(
+            state,
+            input,
+            queued_at,
+            ServerVideoFrameQueuePolicy::default(),
+        )
+    }
+
+    fn registered_video_packet(
+        client_id: &str,
+        frame_id: u64,
+        width: u32,
+        height: u32,
+        payload: Vec<u8>,
+    ) -> ServerRegisteredVideoFramePacket {
         let source = PacketSource {
             address: "127.0.0.1:5001".parse().unwrap(),
         };
         let payload_size = payload.len();
-        let packet = ServerRegisteredVideoFramePacket {
+        ServerRegisteredVideoFramePacket {
             source,
             authenticated_sender: AuthenticatedSenderEntry {
                 client_id: ClientId(client_id.to_string()),
@@ -4851,14 +5310,7 @@ mod tests {
                 payload_size,
                 payload,
             },
-        };
-        let input = ServerVideoFrameHandlerBoundary.prepare_input(packet);
-        ServerVideoFrameQueueStorageBoundary.store_frame(
-            state,
-            input,
-            queued_at,
-            ServerVideoFrameQueuePolicy::default(),
-        )
+        }
     }
 
     fn current_test_suffix() -> String {
@@ -5331,6 +5783,171 @@ mod tests {
         assert_eq!(runtime.requests.borrow().len(), 1);
     }
 
+    #[test]
+    fn live_two_view_runtime_queues_two_accepted_frames_and_renders_both() {
+        let left_client_id = ClientId("client-left".to_string());
+        let right_client_id = ClientId("client-right".to_string());
+        let mut source = ScriptedLiveTwoViewSource::new(vec![
+            live_accepted_item("client-left", 10, vec![0, 0, 1, 0x65, 0x10]),
+            live_accepted_item("client-right", 12, vec![0, 0, 1, 0x65, 0x12]),
+            SwitcherLiveTwoViewQueueSourceItem::EndOfInput,
+        ]);
+
+        let result = SwitcherLiveTwoViewRuntimeBoundary::default().run_once(
+            SwitcherLiveTwoViewRuntimeInput {
+                source: &mut source,
+                left_client_id: &left_client_id,
+                right_client_id: &right_client_id,
+                policy: live_two_view_test_policy(3),
+            },
+            &RecordingTwoViewDecode::default(),
+            &RecordingTwoViewRender::default(),
+        );
+
+        assert_eq!(result.queue.accepted_frames, 2);
+        assert_eq!(result.queue.rejected_frames, 0);
+        assert_eq!(result.queue.queued_left, 1);
+        assert_eq!(result.queue.queued_right, 1);
+        assert_eq!(result.queue_state.client_queue_len(&left_client_id), 1);
+        assert_eq!(result.queue_state.client_queue_len(&right_client_id), 1);
+        let SwitcherLiveTwoViewPipelineResult::Rendered { kind, summary, .. } = result.pipeline
+        else {
+            panic!("both live frames should render");
+        };
+        assert_eq!(kind, SwitcherLiveTwoViewRenderedKind::Both);
+        assert_eq!(
+            summary.composition_kind,
+            SwitcherLiveTwoViewCompositionKind::Both
+        );
+    }
+
+    #[test]
+    fn live_two_view_runtime_keeps_missing_client_partial_explicit() {
+        let left_client_id = ClientId("client-left".to_string());
+        let right_client_id = ClientId("client-right".to_string());
+        let mut source = ScriptedLiveTwoViewSource::new(vec![
+            live_accepted_item("client-left", 10, vec![0, 0, 1, 0x65, 0x10]),
+            SwitcherLiveTwoViewQueueSourceItem::EndOfInput,
+        ]);
+
+        let result = SwitcherLiveTwoViewRuntimeBoundary::default().run_once(
+            SwitcherLiveTwoViewRuntimeInput {
+                source: &mut source,
+                left_client_id: &left_client_id,
+                right_client_id: &right_client_id,
+                policy: live_two_view_test_policy(2),
+            },
+            &RecordingTwoViewDecode::default(),
+            &RecordingTwoViewRender::default(),
+        );
+
+        let SwitcherLiveTwoViewPipelineResult::Rendered { kind, summary, .. } = result.pipeline
+        else {
+            panic!("one live frame should render as partial");
+        };
+        assert_eq!(kind, SwitcherLiveTwoViewRenderedKind::LeftOnly);
+        assert!(matches!(
+            summary.right,
+            SwitcherLiveTwoViewSidePipelineStatus::SelectionUnavailable { .. }
+        ));
+    }
+
+    #[test]
+    fn live_two_view_runtime_rejected_frame_is_not_queued() {
+        let left_client_id = ClientId("client-left".to_string());
+        let right_client_id = ClientId("client-right".to_string());
+        let mut source = ScriptedLiveTwoViewSource::new(vec![
+            SwitcherLiveTwoViewQueueSourceItem::RejectedVideoFrame {
+                client_id: left_client_id.clone(),
+                reason: PacketAcceptanceRejectReason::UnauthenticatedSource,
+            },
+            live_accepted_item("client-right", 12, vec![0, 0, 1, 0x65, 0x12]),
+            SwitcherLiveTwoViewQueueSourceItem::EndOfInput,
+        ]);
+
+        let result = SwitcherLiveTwoViewRuntimeBoundary::default().run_once(
+            SwitcherLiveTwoViewRuntimeInput {
+                source: &mut source,
+                left_client_id: &left_client_id,
+                right_client_id: &right_client_id,
+                policy: live_two_view_test_policy(3),
+            },
+            &RecordingTwoViewDecode::default(),
+            &RecordingTwoViewRender::default(),
+        );
+
+        assert_eq!(result.queue.rejected_frames, 1);
+        assert_eq!(result.queue.queued_left, 0);
+        assert_eq!(result.queue.queued_right, 1);
+        let SwitcherLiveTwoViewPipelineResult::Rendered { kind, summary, .. } = result.pipeline
+        else {
+            panic!("right live frame should still render as partial");
+        };
+        assert_eq!(kind, SwitcherLiveTwoViewRenderedKind::RightOnly);
+        assert!(matches!(
+            summary.left,
+            SwitcherLiveTwoViewSidePipelineStatus::SelectionUnavailable { .. }
+        ));
+    }
+
+    #[test]
+    fn live_two_view_runtime_guard_stops_deterministically() {
+        let left_client_id = ClientId("client-left".to_string());
+        let right_client_id = ClientId("client-right".to_string());
+        let mut source = ScriptedLiveTwoViewSource::new(vec![
+            live_accepted_item("client-left", 10, vec![0, 0, 1, 0x65, 0x10]),
+            live_accepted_item("client-right", 12, vec![0, 0, 1, 0x65, 0x12]),
+        ]);
+
+        let result = SwitcherLiveTwoViewRuntimeBoundary::default().run_once(
+            SwitcherLiveTwoViewRuntimeInput {
+                source: &mut source,
+                left_client_id: &left_client_id,
+                right_client_id: &right_client_id,
+                policy: live_two_view_test_policy(1),
+            },
+            &RecordingTwoViewDecode::default(),
+            &RecordingTwoViewRender::default(),
+        );
+
+        assert_eq!(result.queue.packets_observed, 1);
+        assert!(result.queue.stopped_by_guard);
+        assert_eq!(result.queue.queued_left, 1);
+        assert_eq!(result.queue.queued_right, 0);
+    }
+
+    #[test]
+    fn live_two_view_runtime_decode_failure_stays_per_side_and_partial() {
+        let left_client_id = ClientId("client-left".to_string());
+        let right_client_id = ClientId("client-right".to_string());
+        let mut source = ScriptedLiveTwoViewSource::new(vec![
+            live_accepted_item("client-left", 10, vec![0, 0, 1, 0x65, 0x10]),
+            live_accepted_item("client-right", 12, vec![0, 0, 1, 0x65, 0x12]),
+            SwitcherLiveTwoViewQueueSourceItem::EndOfInput,
+        ]);
+
+        let result = SwitcherLiveTwoViewRuntimeBoundary::default().run_once(
+            SwitcherLiveTwoViewRuntimeInput {
+                source: &mut source,
+                left_client_id: &left_client_id,
+                right_client_id: &right_client_id,
+                policy: live_two_view_test_policy(3),
+            },
+            &RecordingTwoViewDecode::failing_on_last_byte(0x12),
+            &RecordingTwoViewRender::default(),
+        );
+
+        let SwitcherLiveTwoViewPipelineResult::Rendered { kind, summary, .. } = result.pipeline
+        else {
+            panic!("left side should render when right decode fails");
+        };
+        assert_eq!(kind, SwitcherLiveTwoViewRenderedKind::LeftOnly);
+        assert!(matches!(
+            summary.right,
+            SwitcherLiveTwoViewSidePipelineStatus::DecodeFailed { .. }
+        ));
+    }
+
     fn decoded_bgra_frame(width: u32, height: u32, pixel: [u8; 4]) -> SwitcherDecodedFrame {
         let mut pixels = Vec::new();
         for _ in 0..width as usize * height as usize {
@@ -5364,6 +5981,52 @@ mod tests {
             panic!("expected both-composed fixture");
         };
         frame
+    }
+
+    fn live_two_view_test_policy(max_packets: usize) -> SwitcherLiveTwoViewRuntimePolicy {
+        SwitcherLiveTwoViewRuntimePolicy {
+            max_packets,
+            current_switcher_time: TimestampMicros(1_600_011),
+            selection: SwitcherTwoViewTargetTimeSelectionPolicy {
+                playout_delay_micros: 600_000,
+                max_late_micros: 50,
+                max_early_micros: 50,
+                ..SwitcherTwoViewTargetTimeSelectionPolicy::default()
+            },
+            queue: ServerVideoFrameQueuePolicy::default(),
+            render_hold_millis: 5,
+            composition: SwitcherTwoViewLayoutPolicy::default(),
+        }
+    }
+
+    fn live_accepted_item(
+        client_id: &str,
+        frame_id: u64,
+        payload: Vec<u8>,
+    ) -> SwitcherLiveTwoViewQueueSourceItem {
+        SwitcherLiveTwoViewQueueSourceItem::AcceptedVideoFrame {
+            packet: registered_video_packet(client_id, frame_id, 2, 1, payload),
+            queued_at: TimestampMicros(2_400_000 + frame_id),
+        }
+    }
+
+    struct ScriptedLiveTwoViewSource {
+        items: Vec<SwitcherLiveTwoViewQueueSourceItem>,
+    }
+
+    impl ScriptedLiveTwoViewSource {
+        fn new(items: Vec<SwitcherLiveTwoViewQueueSourceItem>) -> Self {
+            Self { items }
+        }
+    }
+
+    impl SwitcherLiveTwoViewQueueSource for ScriptedLiveTwoViewSource {
+        fn receive_next(&mut self) -> SwitcherLiveTwoViewQueueSourceItem {
+            if self.items.is_empty() {
+                return SwitcherLiveTwoViewQueueSourceItem::EndOfInput;
+            }
+            self.items.remove(0)
+        }
     }
 
     struct ScriptedFrameSource {

@@ -1,5 +1,55 @@
 <!-- stream-sync/docs/operations/session-log.md -->
 
+## 2026-04-27
+### Type
+- Codex
+
+### Work
+- Added the smallest live-like 2-client switcher queue/runtime integration boundary.
+- Added `SwitcherLiveTwoViewRuntimeBoundary`, `SwitcherLiveTwoViewQueueSource`, source item/result/status types, queue summary, and pipeline result types.
+- The boundary consumes a caller-owned live queue source, stores accepted video frames into a fresh `ServerVideoFrameQueueState`, and then runs one existing pipeline pass: 2-view targetTime selection -> H.264 decode -> 2-view composition -> composed-canvas render.
+- Rejected frames are counted and are not queued.
+- Runtime guard / end-of-input states are explicit in the queue summary.
+- Per-side pipeline status preserves selection unavailable, decoded, decode deferred, and decode failed states.
+- Added deterministic tests for accepted two-client frames reaching queue state, partial/missing client behavior, rejected unauthenticated frame not queued, max-packet guard stop, and per-side decode failure with partial render.
+- Kept real socket loop ownership, continuous 2-view scheduling, queue mutation / late drop, 4-view orchestration, and OBS-specific API integration out of scope.
+
+### Changed Files
+- `apps/switcher/src/lib.rs`
+- `docs/architecture/system-design.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### Decisions
+- Use a caller-owned source trait for the first live integration boundary rather than adding real socket receive ownership to switcher.
+- Store only accepted video frames through the existing server queue storage boundary.
+- Run the existing selection/decode/composition/render boundaries once after bounded ingestion.
+- Keep late-frame queue mutation deferred; selection remains read-only.
+
+### Unresolved
+- real socket-backed 2-client source implementation
+- continuous 2-view scheduling
+- queue mutation / actual late-frame drop policy
+- 4-view orchestration and 2x2 layout
+- OBS Window Capture verification
+- production timing/decode/render policy and structured logging
+
+### Next
+- Add continuous 2-view scheduling over the live queue/source boundary.
+- Add a real socket-backed source after scheduling and ownership contracts are fixed.
+- Extend to 4-view orchestration after 2-view scheduling is stable.
+
+### TODO Update
+- Marked live-like 2-client queue/runtime integration complete.
+- Updated the next switcher sync task to continuous 2-view scheduling.
+- Kept real socket loop ownership, queue mutation, 4-view, and OBS deferred.
+
+### Validation
+- `cargo fmt`
+- `cargo test -p stream-sync-switcher`
+
+---
+
 ## 2026-04-26
 ### Type
 - Codex

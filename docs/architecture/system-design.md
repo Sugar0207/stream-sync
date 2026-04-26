@@ -7562,9 +7562,24 @@ Current decode/display substitute behavior:
   fixture BGRA frames and renders the resulting canvas once. It does not use
   live two-client sockets, H.264 decode, queue mutation, 4-view orchestration,
   or OBS APIs.
+- `SwitcherLiveTwoViewRuntimeBoundary` is the first bounded live-like
+  2-client queue/runtime integration boundary. It consumes a caller-owned
+  `SwitcherLiveTwoViewQueueSource`, stores only accepted video frames into a
+  fresh caller-owned `ServerVideoFrameQueueState`, and then runs one existing
+  pipeline pass: 2-view targetTime selection -> H.264 decode -> 2-view
+  composition -> composed-canvas render.
+- The live-like queue source can be backed later by real socket receive/auth
+  ownership. For this boundary, source ownership stays outside switcher
+  selection/decode/render logic, and tests use deterministic scripted source
+  items.
+- The live 2-view runtime result keeps queue and pipeline outcomes separate:
+  observed/accepted/rejected/timeout/guard counts, final queue state, per-side
+  selection/decode status, composition kind, and render/deferred/failure state.
+- Rejected or unauthenticated frames are not queued. Late-frame mutation/drop is
+  not performed; targetTime selection still reports late candidates read-only.
 - Future 4-view sync should build on the same shared-targetTime pattern and
-  extend the isolated layout/composition responsibility after live 2-view
-  integration is stable.
+  extend the isolated layout/composition responsibility after continuous
+  2-view scheduling is stable.
 
 This decode PoC does not add a continuous loop, targetTime selection,
 multi-view sync, OBS integration, decode acceleration, or packet fragmentation.
@@ -7584,6 +7599,9 @@ from live networking, queue mutation, continuous rendering, 4-view sync, and OBS
 The composed-canvas render boundary can display that canvas once in a normal
 window, but does not own composition, scheduling, synchronization, OBS control,
 or live queue integration.
+The bounded live 2-view runtime composes queue ingestion and one pipeline pass,
+but it still does not own real socket loops, late-frame queue mutation,
+continuous scheduling, 4-view sync, or OBS control.
 
 ## Client Real Capture / H.264 Encode Boundary
 
