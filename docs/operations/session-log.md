@@ -5,6 +5,53 @@
 - Codex
 
 ### Work
+- Added the smallest bounded continuous 2-view scheduling boundary over the existing live-like one-pass runtime.
+- Added `SwitcherContinuousTwoViewSchedulingBoundary`, scheduling policy/input/result/tick/outcome/summary types, and stop reasons.
+- The scheduler repeatedly invokes `SwitcherLiveTwoViewRuntimeBoundary` by logical tick, advances `current_switcher_time` using a caller-owned tick interval, and preserves the full per-tick live runtime result.
+- Scheduler-level outcomes now distinguish rendered-both, rendered-partial, no frames, decode failed, render not completed, source ended, max ticks, and max rendered frames.
+- Added deterministic tests for multiple ticks over a scripted live source, max-rendered-frame guard stop, partial/no-frame accounting, explicit source end, and preserving one-pass runtime detail when one side decode fails.
+- Kept real UDP socket-backed source ownership, late-frame queue mutation/drop, 4-view orchestration, and OBS-specific API integration out of scope.
+
+### Changed Files
+- `apps/switcher/src/lib.rs`
+- `docs/architecture/system-design.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### Decisions
+- Implement scheduling as a thin loop over `SwitcherLiveTwoViewRuntimeBoundary` instead of moving queue, selection, decode, composition, or render logic into the scheduler.
+- Use logical cadence only; tests do not sleep or require a real window/backend.
+- Preserve per-tick runtime output so scheduler summaries do not replace detailed queue and per-side pipeline status.
+- Stop deterministically by max ticks, max rendered frames, or source end.
+
+### Unresolved
+- real UDP socket-backed `SwitcherLiveTwoViewQueueSource`
+- late frame queue mutation / actual drop policy
+- 4-view orchestration and 2x2 layout
+- OBS Window Capture verification
+- production timing/decode/render policy and structured logging
+
+### Next
+- Add a real UDP socket-backed source adapter for `SwitcherLiveTwoViewQueueSource`.
+- Define late-frame queue mutation/drop policy separately.
+- Extend from 2-view scheduler to 4-view orchestration after live source ownership is stable.
+
+### TODO Update
+- Marked bounded continuous 2-view scheduling complete.
+- Moved the next switcher sync task to real UDP socket-backed live source ownership.
+- Kept late-drop mutation, 4-view, and OBS deferred.
+
+### Validation
+- `cargo fmt`
+- `cargo test -p stream-sync-switcher`
+
+---
+
+## 2026-04-27
+### Type
+- Codex
+
+### Work
 - Added the smallest live-like 2-client switcher queue/runtime integration boundary.
 - Added `SwitcherLiveTwoViewRuntimeBoundary`, `SwitcherLiveTwoViewQueueSource`, source item/result/status types, queue summary, and pipeline result types.
 - The boundary consumes a caller-owned live queue source, stores accepted video frames into a fresh `ServerVideoFrameQueueState`, and then runs one existing pipeline pass: 2-view targetTime selection -> H.264 decode -> 2-view composition -> composed-canvas render.

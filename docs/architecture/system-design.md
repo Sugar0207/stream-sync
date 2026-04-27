@@ -7577,9 +7577,23 @@ Current decode/display substitute behavior:
   selection/decode status, composition kind, and render/deferred/failure state.
 - Rejected or unauthenticated frames are not queued. Late-frame mutation/drop is
   not performed; targetTime selection still reports late candidates read-only.
+- `SwitcherContinuousTwoViewSchedulingBoundary` is the first bounded
+  continuous 2-view scheduler over that live-like one-pass runtime. It owns only
+  logical tick cadence and guard policy, then repeatedly invokes
+  `SwitcherLiveTwoViewRuntimeBoundary`.
+- The continuous 2-view scheduler advances `current_switcher_time` by a
+  caller-owned tick interval and records scheduler-level outcomes:
+  rendered-both, rendered-partial, no frames, decode failed, render not
+  completed, source ended, max ticks, and max rendered frames. The full
+  per-tick live runtime result is preserved for callers that need queue and
+  per-side details.
+- The scheduler does not reinterpret targetTime selection, decode, composition,
+  or render semantics. It does not own real UDP sockets, share queues with a
+  server process, mutate late frames, drop queue entries, perform 4-view
+  orchestration, or integrate OBS APIs.
 - Future 4-view sync should build on the same shared-targetTime pattern and
-  extend the isolated layout/composition responsibility after continuous
-  2-view scheduling is stable.
+  extend the isolated layout/composition responsibility after real 2-client
+  source ownership and bounded scheduling are stable.
 
 This decode PoC does not add a continuous loop, targetTime selection,
 multi-view sync, OBS integration, decode acceleration, or packet fragmentation.
@@ -7602,6 +7616,9 @@ or live queue integration.
 The bounded live 2-view runtime composes queue ingestion and one pipeline pass,
 but it still does not own real socket loops, late-frame queue mutation,
 continuous scheduling, 4-view sync, or OBS control.
+The continuous 2-view scheduler repeats that one-pass runtime by logical tick,
+but it still does not own real socket loops, late-frame queue mutation, 4-view
+sync, or OBS control.
 
 ## Client Real Capture / H.264 Encode Boundary
 

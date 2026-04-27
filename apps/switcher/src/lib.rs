@@ -2275,6 +2275,245 @@ fn live_composition_kind(
     }
 }
 
+/// Caller-owned policy for a bounded continuous 2-view scheduling run.
+///
+/// The scheduler owns only logical cadence and guard policy. Each tick still
+/// delegates queue ingestion, targetTime selection, decode, composition, and
+/// render to `SwitcherLiveTwoViewRuntimeBoundary`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SwitcherContinuousTwoViewSchedulingPolicy {
+    pub max_ticks: usize,
+    pub max_rendered_frames: usize,
+    pub tick_interval_micros: u64,
+    pub live_runtime: SwitcherLiveTwoViewRuntimePolicy,
+}
+
+impl Default for SwitcherContinuousTwoViewSchedulingPolicy {
+    fn default() -> Self {
+        Self {
+            max_ticks: 1,
+            max_rendered_frames: 1,
+            tick_interval_micros: 33_333,
+            live_runtime: SwitcherLiveTwoViewRuntimePolicy::default(),
+        }
+    }
+}
+
+/// Input for the first bounded continuous 2-view scheduler.
+pub struct SwitcherContinuousTwoViewSchedulingInput<'a, S> {
+    pub source: &'a mut S,
+    pub left_client_id: &'a ClientId,
+    pub right_client_id: &'a ClientId,
+    pub policy: SwitcherContinuousTwoViewSchedulingPolicy,
+}
+
+/// Compact per-tick outcome for scheduler-level accounting.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum SwitcherContinuousTwoViewTickOutcome {
+    RenderedBoth,
+    RenderedPartial,
+    NoFrames,
+    DecodeFailed,
+    RenderNotCompleted,
+}
+
+/// One scheduler tick result. The live runtime result is preserved verbatim so
+/// callers can inspect queue and per-side pipeline details without the
+/// scheduler reinterpreting them.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SwitcherContinuousTwoViewSchedulingTick {
+    pub tick: usize,
+    pub current_switcher_time: TimestampMicros,
+    pub outcome: SwitcherContinuousTwoViewTickOutcome,
+    pub source_ended: bool,
+    pub runtime: SwitcherLiveTwoViewRuntimeResult,
+}
+
+/// Summary counters for one bounded continuous 2-view scheduling run.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SwitcherContinuousTwoViewSchedulingSummary {
+    pub ticks_processed: usize,
+    pub rendered_frames: usize,
+    pub rendered_both: usize,
+    pub rendered_partial: usize,
+    pub no_frame_ticks: usize,
+    pub decode_failed_ticks: usize,
+    pub render_not_completed_ticks: usize,
+    pub source_end_tick: Option<usize>,
+    pub live_guard_stop_ticks: usize,
+}
+
+/// Reason the bounded continuous 2-view scheduler stopped.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum SwitcherContinuousTwoViewSchedulingStopReason {
+    MaxTicksReached,
+    MaxRenderedFramesReached,
+    SourceEnded,
+}
+
+/// Result of one bounded continuous 2-view scheduling run.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SwitcherContinuousTwoViewSchedulingResult {
+    pub ticks: Vec<SwitcherContinuousTwoViewSchedulingTick>,
+    pub summary: SwitcherContinuousTwoViewSchedulingSummary,
+    pub stop_reason: SwitcherContinuousTwoViewSchedulingStopReason,
+}
+
+/// Minimal continuous 2-view scheduler over the live-like one-pass runtime.
+///
+/// This boundary does not own sockets, queue storage semantics, targetTime
+/// selection, decode, composition, render, late-frame mutation, 4-view layout,
+/// or OBS integration.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct SwitcherContinuousTwoViewSchedulingBoundary {
+    live_runtime: SwitcherLiveTwoViewRuntimeBoundary,
+}
+
+impl SwitcherContinuousTwoViewSchedulingBoundary {
+    pub fn run_with_runtimes<S: SwitcherLiveTwoViewQueueSource>(
+        &self,
+        input: SwitcherContinuousTwoViewSchedulingInput<'_, S>,
+        decode_runtime: &impl SwitcherH264DecodeRuntimeHook,
+        render_runtime: &impl SwitcherWindowRenderRuntimeHook,
+    ) -> SwitcherContinuousTwoViewSchedulingResult {
+        let mut ticks = Vec::new();
+        let mut summary = SwitcherContinuousTwoViewSchedulingSummary::default();
+
+        for tick in 0..input.policy.max_ticks {
+            if summary.rendered_frames >= input.policy.max_rendered_frames {
+                return SwitcherContinuousTwoViewSchedulingResult {
+                    ticks,
+                    summary,
+                    stop_reason:
+                        SwitcherContinuousTwoViewSchedulingStopReason::MaxRenderedFramesReached,
+                };
+            }
+
+            let current_switcher_time = TimestampMicros(
+                input.policy.live_runtime.current_switcher_time.0
+                    + input.policy.tick_interval_micros * tick as u64,
+            );
+            let mut live_policy = input.policy.live_runtime;
+            live_policy.current_switcher_time = current_switcher_time;
+            let runtime = self.live_runtime.run_once(
+                SwitcherLiveTwoViewRuntimeInput {
+                    source: input.source,
+                    left_client_id: input.left_client_id,
+                    right_client_id: input.right_client_id,
+                    policy: live_policy,
+                },
+                decode_runtime,
+                render_runtime,
+            );
+            let outcome = continuous_two_view_tick_outcome(&runtime.pipeline);
+
+            summary.ticks_processed += 1;
+            if runtime.queue.stopped_by_guard {
+                summary.live_guard_stop_ticks += 1;
+            }
+            match outcome {
+                SwitcherContinuousTwoViewTickOutcome::RenderedBoth => {
+                    summary.rendered_frames += 1;
+                    summary.rendered_both += 1;
+                }
+                SwitcherContinuousTwoViewTickOutcome::RenderedPartial => {
+                    summary.rendered_frames += 1;
+                    summary.rendered_partial += 1;
+                }
+                SwitcherContinuousTwoViewTickOutcome::NoFrames => {
+                    summary.no_frame_ticks += 1;
+                }
+                SwitcherContinuousTwoViewTickOutcome::DecodeFailed => {
+                    summary.decode_failed_ticks += 1;
+                }
+                SwitcherContinuousTwoViewTickOutcome::RenderNotCompleted => {
+                    summary.render_not_completed_ticks += 1;
+                }
+            }
+            let source_ended = runtime.queue.ended;
+            if source_ended && summary.source_end_tick.is_none() {
+                summary.source_end_tick = Some(tick);
+            }
+            ticks.push(SwitcherContinuousTwoViewSchedulingTick {
+                tick,
+                current_switcher_time,
+                outcome,
+                source_ended,
+                runtime,
+            });
+
+            if source_ended {
+                return SwitcherContinuousTwoViewSchedulingResult {
+                    ticks,
+                    summary,
+                    stop_reason: SwitcherContinuousTwoViewSchedulingStopReason::SourceEnded,
+                };
+            }
+        }
+
+        let stop_reason = if summary.rendered_frames >= input.policy.max_rendered_frames {
+            SwitcherContinuousTwoViewSchedulingStopReason::MaxRenderedFramesReached
+        } else {
+            SwitcherContinuousTwoViewSchedulingStopReason::MaxTicksReached
+        };
+
+        SwitcherContinuousTwoViewSchedulingResult {
+            ticks,
+            summary,
+            stop_reason,
+        }
+    }
+}
+
+fn continuous_two_view_tick_outcome(
+    pipeline: &SwitcherLiveTwoViewPipelineResult,
+) -> SwitcherContinuousTwoViewTickOutcome {
+    match pipeline {
+        SwitcherLiveTwoViewPipelineResult::Rendered { kind, summary, .. } => {
+            if live_summary_has_decode_failure(summary) {
+                return SwitcherContinuousTwoViewTickOutcome::DecodeFailed;
+            }
+            match kind {
+                SwitcherLiveTwoViewRenderedKind::Both => {
+                    SwitcherContinuousTwoViewTickOutcome::RenderedBoth
+                }
+                SwitcherLiveTwoViewRenderedKind::LeftOnly
+                | SwitcherLiveTwoViewRenderedKind::RightOnly => {
+                    SwitcherContinuousTwoViewTickOutcome::RenderedPartial
+                }
+            }
+        }
+        SwitcherLiveTwoViewPipelineResult::NoFrames { summary }
+        | SwitcherLiveTwoViewPipelineResult::CompositionInvalid { summary, .. } => {
+            if live_summary_has_decode_failure(summary) {
+                SwitcherContinuousTwoViewTickOutcome::DecodeFailed
+            } else {
+                SwitcherContinuousTwoViewTickOutcome::NoFrames
+            }
+        }
+        SwitcherLiveTwoViewPipelineResult::RenderDeferred { summary, .. }
+        | SwitcherLiveTwoViewPipelineResult::BackendUnavailable { summary, .. }
+        | SwitcherLiveTwoViewPipelineResult::InvalidComposedFrame { summary, .. }
+        | SwitcherLiveTwoViewPipelineResult::RenderFailed { summary, .. } => {
+            if live_summary_has_decode_failure(summary) {
+                SwitcherContinuousTwoViewTickOutcome::DecodeFailed
+            } else {
+                SwitcherContinuousTwoViewTickOutcome::RenderNotCompleted
+            }
+        }
+    }
+}
+
+fn live_summary_has_decode_failure(summary: &SwitcherLiveTwoViewPipelineSummary) -> bool {
+    matches!(
+        summary.left,
+        SwitcherLiveTwoViewSidePipelineStatus::DecodeFailed { .. }
+    ) || matches!(
+        summary.right,
+        SwitcherLiveTwoViewSidePipelineStatus::DecodeFailed { .. }
+    )
+}
+
 /// Manual/runtime input for one 2-view targetTime sync verification.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SwitcherTwoViewManualVerificationInput<'a> {
@@ -5948,6 +6187,177 @@ mod tests {
         ));
     }
 
+    #[test]
+    fn continuous_two_view_scheduler_runs_multiple_ticks_over_live_source() {
+        let left_client_id = ClientId("client-left".to_string());
+        let right_client_id = ClientId("client-right".to_string());
+        let mut source = ScriptedLiveTwoViewSource::new(vec![
+            live_accepted_item("client-left", 10, vec![0, 0, 1, 0x65, 0x10]),
+            live_accepted_item("client-right", 12, vec![0, 0, 1, 0x65, 0x12]),
+            live_accepted_item("client-left", 33_344, vec![0, 0, 1, 0x65, 0x20]),
+            live_accepted_item("client-right", 33_346, vec![0, 0, 1, 0x65, 0x22]),
+        ]);
+
+        let result = SwitcherContinuousTwoViewSchedulingBoundary::default().run_with_runtimes(
+            SwitcherContinuousTwoViewSchedulingInput {
+                source: &mut source,
+                left_client_id: &left_client_id,
+                right_client_id: &right_client_id,
+                policy: continuous_two_view_test_policy(2, 10),
+            },
+            &RecordingTwoViewDecode::default(),
+            &RecordingTwoViewRender::default(),
+        );
+
+        assert_eq!(result.summary.ticks_processed, 2);
+        assert_eq!(result.summary.rendered_both, 2);
+        assert_eq!(result.summary.rendered_frames, 2);
+        assert_eq!(
+            result.stop_reason,
+            SwitcherContinuousTwoViewSchedulingStopReason::MaxTicksReached
+        );
+        assert_eq!(
+            result.ticks[0].outcome,
+            SwitcherContinuousTwoViewTickOutcome::RenderedBoth
+        );
+        assert_eq!(
+            result.ticks[1].current_switcher_time,
+            TimestampMicros(1_633_344)
+        );
+    }
+
+    #[test]
+    fn continuous_two_view_scheduler_stops_at_max_rendered_frames() {
+        let left_client_id = ClientId("client-left".to_string());
+        let right_client_id = ClientId("client-right".to_string());
+        let mut source = ScriptedLiveTwoViewSource::new(vec![
+            live_accepted_item("client-left", 10, vec![0, 0, 1, 0x65, 0x10]),
+            live_accepted_item("client-right", 12, vec![0, 0, 1, 0x65, 0x12]),
+            live_accepted_item("client-left", 33_344, vec![0, 0, 1, 0x65, 0x20]),
+            live_accepted_item("client-right", 33_346, vec![0, 0, 1, 0x65, 0x22]),
+        ]);
+
+        let result = SwitcherContinuousTwoViewSchedulingBoundary::default().run_with_runtimes(
+            SwitcherContinuousTwoViewSchedulingInput {
+                source: &mut source,
+                left_client_id: &left_client_id,
+                right_client_id: &right_client_id,
+                policy: continuous_two_view_test_policy(4, 1),
+            },
+            &RecordingTwoViewDecode::default(),
+            &RecordingTwoViewRender::default(),
+        );
+
+        assert_eq!(result.summary.ticks_processed, 1);
+        assert_eq!(result.summary.rendered_frames, 1);
+        assert_eq!(
+            result.stop_reason,
+            SwitcherContinuousTwoViewSchedulingStopReason::MaxRenderedFramesReached
+        );
+    }
+
+    #[test]
+    fn continuous_two_view_scheduler_records_partial_and_no_frame_ticks() {
+        let left_client_id = ClientId("client-left".to_string());
+        let right_client_id = ClientId("client-right".to_string());
+        let mut source = ScriptedLiveTwoViewSource::new(vec![
+            SwitcherLiveTwoViewQueueSourceItem::Timeout,
+            live_accepted_item("client-left", 33_344, vec![0, 0, 1, 0x65, 0x10]),
+        ]);
+
+        let mut policy = continuous_two_view_test_policy(2, 10);
+        policy.live_runtime.max_packets = 1;
+        let result = SwitcherContinuousTwoViewSchedulingBoundary::default().run_with_runtimes(
+            SwitcherContinuousTwoViewSchedulingInput {
+                source: &mut source,
+                left_client_id: &left_client_id,
+                right_client_id: &right_client_id,
+                policy,
+            },
+            &RecordingTwoViewDecode::default(),
+            &RecordingTwoViewRender::default(),
+        );
+
+        assert_eq!(result.summary.no_frame_ticks, 1);
+        assert_eq!(result.summary.rendered_partial, 1);
+        assert_eq!(
+            result.ticks[0].outcome,
+            SwitcherContinuousTwoViewTickOutcome::NoFrames
+        );
+        assert_eq!(
+            result.ticks[1].outcome,
+            SwitcherContinuousTwoViewTickOutcome::RenderedPartial
+        );
+    }
+
+    #[test]
+    fn continuous_two_view_scheduler_handles_source_end_explicitly() {
+        let left_client_id = ClientId("client-left".to_string());
+        let right_client_id = ClientId("client-right".to_string());
+        let mut source =
+            ScriptedLiveTwoViewSource::new(vec![SwitcherLiveTwoViewQueueSourceItem::EndOfInput]);
+
+        let result = SwitcherContinuousTwoViewSchedulingBoundary::default().run_with_runtimes(
+            SwitcherContinuousTwoViewSchedulingInput {
+                source: &mut source,
+                left_client_id: &left_client_id,
+                right_client_id: &right_client_id,
+                policy: continuous_two_view_test_policy(4, 10),
+            },
+            &PanicDecode,
+            &PanicRender,
+        );
+
+        assert_eq!(result.summary.ticks_processed, 1);
+        assert_eq!(result.summary.source_end_tick, Some(0));
+        assert_eq!(
+            result.stop_reason,
+            SwitcherContinuousTwoViewSchedulingStopReason::SourceEnded
+        );
+        assert!(result.ticks[0].source_ended);
+        assert_eq!(
+            result.ticks[0].outcome,
+            SwitcherContinuousTwoViewTickOutcome::NoFrames
+        );
+    }
+
+    #[test]
+    fn continuous_two_view_scheduler_records_decode_failure_without_reinterpreting_runtime() {
+        let left_client_id = ClientId("client-left".to_string());
+        let right_client_id = ClientId("client-right".to_string());
+        let mut source = ScriptedLiveTwoViewSource::new(vec![
+            live_accepted_item("client-left", 10, vec![0, 0, 1, 0x65, 0x10]),
+            live_accepted_item("client-right", 12, vec![0, 0, 1, 0x65, 0x12]),
+        ]);
+
+        let result = SwitcherContinuousTwoViewSchedulingBoundary::default().run_with_runtimes(
+            SwitcherContinuousTwoViewSchedulingInput {
+                source: &mut source,
+                left_client_id: &left_client_id,
+                right_client_id: &right_client_id,
+                policy: continuous_two_view_test_policy(1, 10),
+            },
+            &RecordingTwoViewDecode::failing_on_last_byte(0x12),
+            &RecordingTwoViewRender::default(),
+        );
+
+        assert_eq!(result.summary.decode_failed_ticks, 1);
+        assert_eq!(
+            result.ticks[0].outcome,
+            SwitcherContinuousTwoViewTickOutcome::DecodeFailed
+        );
+        let SwitcherLiveTwoViewPipelineResult::Rendered { kind, summary, .. } =
+            &result.ticks[0].runtime.pipeline
+        else {
+            panic!("one-pass runtime should still preserve partial render detail");
+        };
+        assert_eq!(*kind, SwitcherLiveTwoViewRenderedKind::LeftOnly);
+        assert!(matches!(
+            summary.right,
+            SwitcherLiveTwoViewSidePipelineStatus::DecodeFailed { .. }
+        ));
+    }
+
     fn decoded_bgra_frame(width: u32, height: u32, pixel: [u8; 4]) -> SwitcherDecodedFrame {
         let mut pixels = Vec::new();
         for _ in 0..width as usize * height as usize {
@@ -5996,6 +6406,18 @@ mod tests {
             queue: ServerVideoFrameQueuePolicy::default(),
             render_hold_millis: 5,
             composition: SwitcherTwoViewLayoutPolicy::default(),
+        }
+    }
+
+    fn continuous_two_view_test_policy(
+        max_ticks: usize,
+        max_rendered_frames: usize,
+    ) -> SwitcherContinuousTwoViewSchedulingPolicy {
+        SwitcherContinuousTwoViewSchedulingPolicy {
+            max_ticks,
+            max_rendered_frames,
+            tick_interval_micros: 33_333,
+            live_runtime: live_two_view_test_policy(2),
         }
     }
 
