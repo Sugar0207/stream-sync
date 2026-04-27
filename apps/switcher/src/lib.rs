@@ -1,14 +1,20 @@
 use std::{
     io::{self, Write},
+    net::{SocketAddr, UdpSocket},
     path::{Path, PathBuf},
     process::{Command, Stdio},
+    time::Duration,
 };
 
-use stream_sync_protocol::{ClientId, TimestampMicros};
+use stream_sync_net_core::{PacketSource, DEFAULT_UDP_PACKET_BUFFER_LEN};
+use stream_sync_protocol::{ClientId, MessageType, ProtocolVersion, TimestampMicros};
 use stream_sync_server::{
-    PacketAcceptanceRejectReason, ServerQueuedVideoFrame,
-    ServerReceiveAuthVideoQueueOnceStartupOutcome, ServerReceiveAuthVideoQueueOnceVideoOutcome,
-    ServerRegisteredVideoFramePacket, ServerVideoFrameHandlerBoundary, ServerVideoFrameQueuePolicy,
+    AuthenticatedSenderRegistry, PacketAcceptanceRejectReason, ServerInboundRoute,
+    ServerQueuedVideoFrame, ServerReceiveAuthVideoQueueOnceStartupOutcome,
+    ServerReceiveAuthVideoQueueOnceVideoOutcome, ServerReceiveLoopGateOutcome,
+    ServerReceiveLoopGateRejection, ServerReceiveLoopStep, ServerRegisteredClientPacket,
+    ServerRegisteredPacketBoundary, ServerRegisteredVideoFramePacket,
+    ServerVideoFrameHandlerBoundary, ServerVideoFrameQueuePolicy,
     ServerVideoFrameQueueRuntimeResult, ServerVideoFrameQueueState,
     ServerVideoFrameQueueStorageBoundary, ServerVideoFrameQueueStorageResult,
 };
@@ -1878,6 +1884,16 @@ pub enum SwitcherLiveTwoViewQueueSourceItem {
         client_id: ClientId,
         reason: PacketAcceptanceRejectReason,
     },
+    ProtocolDecodeFailed {
+        source: Option<PacketSource>,
+        message: String,
+    },
+    ReceiveFailed {
+        message: String,
+    },
+    NonVideoPacket {
+        message_type: MessageType,
+    },
     Timeout,
     EndOfInput,
 }
@@ -1887,12 +1903,217 @@ pub trait SwitcherLiveTwoViewQueueSource {
     fn receive_next(&mut self) -> SwitcherLiveTwoViewQueueSourceItem;
 }
 
+/// UDP socket-backed source configuration for the two-view live queue adapter.
+///
+/// The authenticated sender registry is still caller-owned. This adapter only
+/// receives, decodes, applies the existing server acceptance gate, and maps the
+/// result into `SwitcherLiveTwoViewQueueSourceItem`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SwitcherUdpLiveTwoViewSourceConfig {
+    pub bind_address: SocketAddr,
+    pub expected_protocol_version: ProtocolVersion,
+    pub left_client_id: ClientId,
+    pub right_client_id: ClientId,
+    pub max_packets: usize,
+    pub receive_timeout: Option<Duration>,
+    pub queued_at_base: TimestampMicros,
+    pub buffer_len: usize,
+}
+
+impl SwitcherUdpLiveTwoViewSourceConfig {
+    pub fn for_clients(
+        bind_address: SocketAddr,
+        expected_protocol_version: ProtocolVersion,
+        left_client_id: ClientId,
+        right_client_id: ClientId,
+    ) -> Self {
+        Self {
+            bind_address,
+            expected_protocol_version,
+            left_client_id,
+            right_client_id,
+            max_packets: 1,
+            receive_timeout: Some(Duration::from_millis(1)),
+            queued_at_base: TimestampMicros(0),
+            buffer_len: DEFAULT_UDP_PACKET_BUFFER_LEN,
+        }
+    }
+}
+
+/// Error from constructing the UDP-backed source adapter.
+#[derive(Debug)]
+pub enum SwitcherUdpLiveTwoViewSourceBindError {
+    BindFailed(io::Error),
+    ConfigureTimeoutFailed(io::Error),
+}
+
+/// Minimal real UDP socket-backed source for live two-view scheduling.
+///
+/// This adapter does not authenticate by itself and does not create registry
+/// entries. Callers must pass a registry that was populated by the existing
+/// server/auth path.
+pub struct SwitcherUdpLiveTwoViewQueueSource {
+    socket: UdpSocket,
+    config: SwitcherUdpLiveTwoViewSourceConfig,
+    registry: AuthenticatedSenderRegistry,
+    receive_loop: ServerReceiveLoopStep,
+    registered_packet: ServerRegisteredPacketBoundary,
+    buffer: Vec<u8>,
+    packets_read: usize,
+}
+
+impl SwitcherUdpLiveTwoViewQueueSource {
+    pub fn bind(
+        config: SwitcherUdpLiveTwoViewSourceConfig,
+        registry: AuthenticatedSenderRegistry,
+    ) -> Result<Self, SwitcherUdpLiveTwoViewSourceBindError> {
+        let socket = UdpSocket::bind(config.bind_address)
+            .map_err(SwitcherUdpLiveTwoViewSourceBindError::BindFailed)?;
+        Self::from_socket(socket, config, registry)
+    }
+
+    pub fn from_socket(
+        socket: UdpSocket,
+        config: SwitcherUdpLiveTwoViewSourceConfig,
+        registry: AuthenticatedSenderRegistry,
+    ) -> Result<Self, SwitcherUdpLiveTwoViewSourceBindError> {
+        socket
+            .set_read_timeout(config.receive_timeout)
+            .map_err(SwitcherUdpLiveTwoViewSourceBindError::ConfigureTimeoutFailed)?;
+        Ok(Self {
+            socket,
+            buffer: vec![0; config.buffer_len],
+            config,
+            registry,
+            receive_loop: ServerReceiveLoopStep::default(),
+            registered_packet: ServerRegisteredPacketBoundary::default(),
+            packets_read: 0,
+        })
+    }
+
+    fn map_gate_outcome(
+        &self,
+        outcome: ServerReceiveLoopGateOutcome,
+        queued_at: TimestampMicros,
+    ) -> SwitcherLiveTwoViewQueueSourceItem {
+        match outcome {
+            ServerReceiveLoopGateOutcome::Accepted(route) => {
+                self.map_accepted_route(route, queued_at)
+            }
+            ServerReceiveLoopGateOutcome::Rejected(ServerReceiveLoopGateRejection::Acceptance(
+                rejection,
+            )) => SwitcherLiveTwoViewQueueSourceItem::RejectedVideoFrame {
+                client_id: rejection
+                    .client_id
+                    .unwrap_or_else(|| ClientId("unknown".to_string())),
+                reason: rejection.reason,
+            },
+            ServerReceiveLoopGateOutcome::Rejected(ServerReceiveLoopGateRejection::Decode(
+                rejection,
+            )) => SwitcherLiveTwoViewQueueSourceItem::ProtocolDecodeFailed {
+                source: Some(rejection.source),
+                message: format!("{:?}", rejection.error),
+            },
+        }
+    }
+
+    fn map_accepted_route(
+        &self,
+        route: ServerInboundRoute,
+        queued_at: TimestampMicros,
+    ) -> SwitcherLiveTwoViewQueueSourceItem {
+        let message_type = server_route_message_type(&route);
+        let client_id = match &route {
+            ServerInboundRoute::VideoFrame { frame, .. } => frame.client_id.clone(),
+            _ => {
+                return SwitcherLiveTwoViewQueueSourceItem::NonVideoPacket { message_type };
+            }
+        };
+
+        if client_id != self.config.left_client_id && client_id != self.config.right_client_id {
+            return SwitcherLiveTwoViewQueueSourceItem::RejectedVideoFrame {
+                client_id,
+                reason: PacketAcceptanceRejectReason::UnknownClient,
+            };
+        }
+
+        match self
+            .registered_packet
+            .prepare_for_handler(&self.registry, route)
+        {
+            Ok(ServerRegisteredClientPacket::VideoFrame(packet)) => {
+                SwitcherLiveTwoViewQueueSourceItem::AcceptedVideoFrame { packet, queued_at }
+            }
+            Ok(ServerRegisteredClientPacket::Heartbeat(_))
+            | Ok(ServerRegisteredClientPacket::ClientStats(_)) => {
+                SwitcherLiveTwoViewQueueSourceItem::NonVideoPacket { message_type }
+            }
+            Err(_) => SwitcherLiveTwoViewQueueSourceItem::RejectedVideoFrame {
+                client_id,
+                reason: PacketAcceptanceRejectReason::UnauthenticatedSource,
+            },
+        }
+    }
+
+    fn queued_at_for_next_packet(&self) -> TimestampMicros {
+        TimestampMicros(self.config.queued_at_base.0 + self.packets_read as u64)
+    }
+}
+
+impl SwitcherLiveTwoViewQueueSource for SwitcherUdpLiveTwoViewQueueSource {
+    fn receive_next(&mut self) -> SwitcherLiveTwoViewQueueSourceItem {
+        if self.packets_read >= self.config.max_packets {
+            return SwitcherLiveTwoViewQueueSourceItem::EndOfInput;
+        }
+
+        match self.socket.recv_from(self.buffer.as_mut_slice()) {
+            Ok((len, source)) => {
+                let queued_at = self.queued_at_for_next_packet();
+                self.packets_read += 1;
+                let packet_source = PacketSource { address: source };
+                let outcome = self.receive_loop.handle_received_packet_with_gate(
+                    self.config.expected_protocol_version,
+                    &self.registry,
+                    packet_source,
+                    &self.buffer[..len],
+                );
+                self.map_gate_outcome(outcome, queued_at)
+            }
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
+                ) =>
+            {
+                self.packets_read += 1;
+                SwitcherLiveTwoViewQueueSourceItem::Timeout
+            }
+            Err(error) => SwitcherLiveTwoViewQueueSourceItem::ReceiveFailed {
+                message: error.to_string(),
+            },
+        }
+    }
+}
+
+fn server_route_message_type(route: &ServerInboundRoute) -> MessageType {
+    match route {
+        ServerInboundRoute::AuthRequest { .. } => MessageType::AuthRequest,
+        ServerInboundRoute::Heartbeat { .. } => MessageType::Heartbeat,
+        ServerInboundRoute::VideoFrame { .. } => MessageType::VideoFrame,
+        ServerInboundRoute::ClientStats { .. } => MessageType::ClientStats,
+        ServerInboundRoute::UnsupportedForServer { message_type, .. } => *message_type,
+    }
+}
+
 /// Summary of the queue-owner phase before selection/decode/composition/render.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SwitcherLiveTwoViewQueueSummary {
     pub packets_observed: usize,
     pub accepted_frames: usize,
     pub rejected_frames: usize,
+    pub protocol_decode_failures: usize,
+    pub receive_failures: usize,
+    pub non_video_packets: usize,
     pub timeouts: usize,
     pub ended: bool,
     pub stopped_by_guard: bool,
@@ -2016,6 +2237,9 @@ impl SwitcherLiveTwoViewRuntimeBoundary {
         let mut packets_observed = 0;
         let mut accepted_frames = 0;
         let mut rejected_frames = 0;
+        let mut protocol_decode_failures = 0;
+        let mut receive_failures = 0;
+        let mut non_video_packets = 0;
         let mut timeouts = 0;
         let mut ended = false;
 
@@ -2040,6 +2264,17 @@ impl SwitcherLiveTwoViewRuntimeBoundary {
                     packets_observed += 1;
                     rejected_frames += 1;
                 }
+                SwitcherLiveTwoViewQueueSourceItem::ProtocolDecodeFailed { .. } => {
+                    packets_observed += 1;
+                    protocol_decode_failures += 1;
+                }
+                SwitcherLiveTwoViewQueueSourceItem::ReceiveFailed { .. } => {
+                    receive_failures += 1;
+                }
+                SwitcherLiveTwoViewQueueSourceItem::NonVideoPacket { .. } => {
+                    packets_observed += 1;
+                    non_video_packets += 1;
+                }
                 SwitcherLiveTwoViewQueueSourceItem::Timeout => {
                     packets_observed += 1;
                     timeouts += 1;
@@ -2055,6 +2290,9 @@ impl SwitcherLiveTwoViewRuntimeBoundary {
             packets_observed,
             accepted_frames,
             rejected_frames,
+            protocol_decode_failures,
+            receive_failures,
+            non_video_packets,
             timeouts,
             ended,
             stopped_by_guard: !ended && packets_observed >= input.policy.max_packets,
@@ -3539,10 +3777,13 @@ fn queue_result_summary(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use stream_sync_net_core::PacketSource;
-    use stream_sync_protocol::{Codec, MessageType, ProtocolVersion, RunId, VideoFrame};
+    use stream_sync_protocol::{
+        Codec, EncodeContext, MessageEncoder, MessageType, ProtocolMessage,
+        ProtocolMessageEncoderBoundary, ProtocolVersion, RunId, VideoFrame,
+    };
     use stream_sync_server::{
-        AuthenticatedSenderEntry, ServerDispatchRuntimeSideEffectApplyResult,
+        AuthenticatedSenderEntry, AuthenticatedSenderRegistration,
+        AuthenticatedSenderRegistryBoundary, ServerDispatchRuntimeSideEffectApplyResult,
         ServerHandlerDispatchOutcome, ServerHandlerDispatchResult,
         ServerRegisteredVideoFramePacket, ServerVideoFrameHandlerBoundary,
         ServerVideoFrameQueuePolicy, ServerVideoFrameQueueRuntimeSkipReason,
@@ -6358,6 +6599,178 @@ mod tests {
         ));
     }
 
+    #[test]
+    fn udp_live_two_view_source_maps_accepted_video_frame() {
+        let (receiver, sender) = udp_source_socket_pair();
+        let registry = registry_with_clients(
+            &["client-left"],
+            PacketSource {
+                address: sender.local_addr().expect("sender should have address"),
+            },
+        );
+        let mut config = udp_source_test_config(
+            receiver.local_addr().expect("receiver should have address"),
+            1,
+        );
+        config.queued_at_base = TimestampMicros(9_000);
+        let mut source = SwitcherUdpLiveTwoViewQueueSource::from_socket(receiver, config, registry)
+            .expect("source should configure");
+
+        sender
+            .send_to(
+                &encoded_video_packet("client-left", 10, vec![0, 0, 1, 0x65]),
+                source.config.bind_address,
+            )
+            .expect("video packet should send");
+
+        let item = source.receive_next();
+
+        let SwitcherLiveTwoViewQueueSourceItem::AcceptedVideoFrame { packet, queued_at } = item
+        else {
+            panic!("accepted video should become source item");
+        };
+        assert_eq!(packet.frame.client_id, ClientId("client-left".to_string()));
+        assert_eq!(packet.frame.frame_id, 10);
+        assert_eq!(queued_at, TimestampMicros(9_000));
+    }
+
+    #[test]
+    fn udp_live_two_view_source_keeps_unauthenticated_video_explicit() {
+        let (receiver, sender) = udp_source_socket_pair();
+        let config = udp_source_test_config(
+            receiver.local_addr().expect("receiver should have address"),
+            1,
+        );
+        let mut source = SwitcherUdpLiveTwoViewQueueSource::from_socket(
+            receiver,
+            config,
+            AuthenticatedSenderRegistry::default(),
+        )
+        .expect("source should configure");
+
+        sender
+            .send_to(
+                &encoded_video_packet("client-left", 10, vec![0, 0, 1, 0x65]),
+                source.config.bind_address,
+            )
+            .expect("video packet should send");
+
+        let item = source.receive_next();
+
+        assert_eq!(
+            item,
+            SwitcherLiveTwoViewQueueSourceItem::RejectedVideoFrame {
+                client_id: ClientId("client-left".to_string()),
+                reason: PacketAcceptanceRejectReason::UnauthenticatedSource,
+            }
+        );
+    }
+
+    #[test]
+    fn udp_live_two_view_source_keeps_protocol_decode_failure_explicit() {
+        let (receiver, sender) = udp_source_socket_pair();
+        let config = udp_source_test_config(
+            receiver.local_addr().expect("receiver should have address"),
+            1,
+        );
+        let mut source = SwitcherUdpLiveTwoViewQueueSource::from_socket(
+            receiver,
+            config,
+            AuthenticatedSenderRegistry::default(),
+        )
+        .expect("source should configure");
+
+        sender
+            .send_to(&[0xaa, 0xbb], source.config.bind_address)
+            .expect("malformed packet should send");
+
+        let item = source.receive_next();
+
+        let SwitcherLiveTwoViewQueueSourceItem::ProtocolDecodeFailed {
+            source: Some(packet_source),
+            message,
+        } = item
+        else {
+            panic!("malformed packet should stay explicit");
+        };
+        assert_eq!(
+            packet_source.address,
+            sender.local_addr().expect("sender should have address")
+        );
+        assert!(message.contains("BufferTooShort"));
+    }
+
+    #[test]
+    fn udp_live_two_view_source_timeout_is_explicit() {
+        let receiver = UdpSocket::bind("127.0.0.1:0").expect("receiver should bind");
+        let config = udp_source_test_config(
+            receiver.local_addr().expect("receiver should have address"),
+            1,
+        );
+        let mut source = SwitcherUdpLiveTwoViewQueueSource::from_socket(
+            receiver,
+            config,
+            AuthenticatedSenderRegistry::default(),
+        )
+        .expect("source should configure");
+
+        assert_eq!(
+            source.receive_next(),
+            SwitcherLiveTwoViewQueueSourceItem::Timeout
+        );
+    }
+
+    #[test]
+    fn continuous_two_view_scheduler_can_consume_udp_live_source() {
+        let left_client_id = ClientId("client-left".to_string());
+        let right_client_id = ClientId("client-right".to_string());
+        let (receiver, sender) = udp_source_socket_pair();
+        let sender_source = PacketSource {
+            address: sender.local_addr().expect("sender should have address"),
+        };
+        let registry = registry_with_clients(&["client-left", "client-right"], sender_source);
+        let mut config = udp_source_test_config(
+            receiver.local_addr().expect("receiver should have address"),
+            2,
+        );
+        config.queued_at_base = TimestampMicros(10_000);
+        let mut source = SwitcherUdpLiveTwoViewQueueSource::from_socket(receiver, config, registry)
+            .expect("source should configure");
+
+        sender
+            .send_to(
+                &encoded_video_packet("client-left", 10, vec![0, 0, 1, 0x65, 0x10]),
+                source.config.bind_address,
+            )
+            .expect("left video should send");
+        sender
+            .send_to(
+                &encoded_video_packet("client-right", 12, vec![0, 0, 1, 0x65, 0x12]),
+                source.config.bind_address,
+            )
+            .expect("right video should send");
+
+        let result = SwitcherContinuousTwoViewSchedulingBoundary::default().run_with_runtimes(
+            SwitcherContinuousTwoViewSchedulingInput {
+                source: &mut source,
+                left_client_id: &left_client_id,
+                right_client_id: &right_client_id,
+                policy: continuous_two_view_test_policy(1, 10),
+            },
+            &RecordingTwoViewDecode::default(),
+            &RecordingTwoViewRender::default(),
+        );
+
+        assert_eq!(result.summary.rendered_both, 1);
+        let SwitcherLiveTwoViewPipelineResult::Rendered { kind, .. } =
+            &result.ticks[0].runtime.pipeline
+        else {
+            panic!("udp source should feed existing two-view runtime");
+        };
+        assert_eq!(*kind, SwitcherLiveTwoViewRenderedKind::Both);
+        assert_eq!(result.ticks[0].runtime.queue.accepted_frames, 2);
+    }
+
     fn decoded_bgra_frame(width: u32, height: u32, pixel: [u8; 4]) -> SwitcherDecodedFrame {
         let mut pixels = Vec::new();
         for _ in 0..width as usize * height as usize {
@@ -6419,6 +6832,79 @@ mod tests {
             tick_interval_micros: 33_333,
             live_runtime: live_two_view_test_policy(2),
         }
+    }
+
+    fn udp_source_socket_pair() -> (UdpSocket, UdpSocket) {
+        let receiver = UdpSocket::bind("127.0.0.1:0").expect("receiver should bind");
+        let sender = UdpSocket::bind("127.0.0.1:0").expect("sender should bind");
+        (receiver, sender)
+    }
+
+    fn udp_source_test_config(
+        bind_address: SocketAddr,
+        max_packets: usize,
+    ) -> SwitcherUdpLiveTwoViewSourceConfig {
+        let mut config = SwitcherUdpLiveTwoViewSourceConfig::for_clients(
+            bind_address,
+            ProtocolVersion(1),
+            ClientId("client-left".to_string()),
+            ClientId("client-right".to_string()),
+        );
+        config.max_packets = max_packets;
+        config.receive_timeout = Some(Duration::from_millis(20));
+        config.buffer_len = 2048;
+        config
+    }
+
+    fn registry_with_clients(
+        client_ids: &[&str],
+        source: PacketSource,
+    ) -> AuthenticatedSenderRegistry {
+        let mut registry = AuthenticatedSenderRegistry::default();
+        for client_id in client_ids {
+            AuthenticatedSenderRegistryBoundary.register(
+                &mut registry,
+                AuthenticatedSenderRegistration {
+                    client_id: ClientId((*client_id).to_string()),
+                    source,
+                    run_id: RunId("run-1".to_string()),
+                    protocol_version: ProtocolVersion(1),
+                    registered_at: Some(TimestampMicros(1_000)),
+                },
+            );
+        }
+        registry
+    }
+
+    fn encoded_video_packet(client_id: &str, frame_id: u64, payload: Vec<u8>) -> Vec<u8> {
+        let frame = VideoFrame {
+            message_type: MessageType::VideoFrame,
+            protocol_version: ProtocolVersion(1),
+            client_id: ClientId(client_id.to_string()),
+            run_id: RunId("run-1".to_string()),
+            frame_id,
+            capture_timestamp: TimestampMicros(1_000_000 + frame_id),
+            send_timestamp: TimestampMicros(1_000_100 + frame_id),
+            is_keyframe: true,
+            metadata_reserved: [0; 3],
+            width: 2,
+            height: 1,
+            fps_nominal: 30,
+            codec: Codec::H264,
+            payload_size: payload.len(),
+            payload,
+        };
+        let mut output = Vec::new();
+        ProtocolMessageEncoderBoundary
+            .encode_message(
+                EncodeContext {
+                    protocol_version: ProtocolVersion(1),
+                },
+                &ProtocolMessage::VideoFrame(frame),
+                &mut output,
+            )
+            .expect("video frame should encode");
+        output
     }
 
     fn live_accepted_item(

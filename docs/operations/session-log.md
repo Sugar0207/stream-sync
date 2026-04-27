@@ -5,6 +5,59 @@
 - Codex
 
 ### Work
+- Added the smallest real UDP socket-backed source adapter for switcher two-view scheduling.
+- Added `SwitcherUdpLiveTwoViewSourceConfig`, `SwitcherUdpLiveTwoViewQueueSource`, and bind/config error types.
+- Extended `SwitcherLiveTwoViewQueueSourceItem` and queue summary accounting so protocol decode failure, socket receive failure, and non-video packets remain explicit alongside accepted video, rejected video, timeout, and source end.
+- The UDP adapter binds or wraps a caller-owned UDP socket, applies bounded max-packet / read-timeout behavior, reuses `ServerReceiveLoopStep` and the server packet acceptance gate, then maps accepted authenticated `VideoFrame` packets into the existing live queue source interface.
+- The adapter requires a caller-owned `AuthenticatedSenderRegistry`; it does not create authenticated entries or fake authenticated frames.
+- Added UDP-backed tests for accepted `VideoFrame`, unauthenticated rejection, protocol decode failure, timeout/no packet, and scheduler consumption through the existing source trait.
+- Kept auth registry creation launcher, late-frame queue mutation/drop, 4-view orchestration, and OBS-specific API integration out of scope.
+
+### Changed Files
+- `apps/switcher/src/lib.rs`
+- `docs/architecture/system-design.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### Decisions
+- Reuse server receive/decode/gate boundaries instead of adding switcher-specific auth or protocol parsing.
+- Keep auth registry population outside the UDP source adapter.
+- Treat allowed clients as the configured left/right client ids; authenticated frames from other clients are rejected as an explicit source item.
+- Keep scheduler and live runtime unchanged; the adapter only implements `SwitcherLiveTwoViewQueueSource`.
+
+### Unresolved
+- auth registry generation / live launcher wiring for a complete manual runtime
+- late frame queue mutation / actual drop policy
+- 4-view orchestration and 2x2 layout
+- OBS Window Capture verification
+- production timing/decode/render policy and structured logging
+
+### Next
+- Add a live switcher launcher/manual runtime that creates or receives the authenticated sender registry and wires it to the UDP source adapter.
+- Define late-frame queue mutation/drop policy separately.
+- Extend to 4-view orchestration after live 2-client source ownership is stable.
+
+### TODO Update
+- Marked real UDP socket-backed source adapter complete.
+- Moved the next switcher sync task to auth registry generation / live launcher wiring.
+- Kept late-drop mutation, 4-view, and OBS deferred.
+
+### Validation
+- `cargo fmt`
+- `cargo fmt --check`
+- `cargo test -p stream-sync-switcher udp_live_two_view_source -- --test-threads=1`
+- `cargo test -p stream-sync-switcher -- --test-threads=1`
+- `cargo check --workspace`
+- `git diff --check`
+- `cargo test -p stream-sync-server video_frame_queue` was not run because no shared/server code was changed.
+
+---
+
+## 2026-04-27
+### Type
+- Codex
+
+### Work
 - Added the smallest bounded continuous 2-view scheduling boundary over the existing live-like one-pass runtime.
 - Added `SwitcherContinuousTwoViewSchedulingBoundary`, scheduling policy/input/result/tick/outcome/summary types, and stop reasons.
 - The scheduler repeatedly invokes `SwitcherLiveTwoViewRuntimeBoundary` by logical tick, advances `current_switcher_time` using a caller-owned tick interval, and preserves the full per-tick live runtime result.

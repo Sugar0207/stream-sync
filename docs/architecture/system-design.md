@@ -7591,6 +7591,24 @@ Current decode/display substitute behavior:
   or render semantics. It does not own real UDP sockets, share queues with a
   server process, mutate late frames, drop queue entries, perform 4-view
   orchestration, or integrate OBS APIs.
+- `SwitcherUdpLiveTwoViewQueueSource` is the first real UDP socket-backed
+  source adapter for the live 2-view path. It can bind a UDP socket or wrap a
+  caller-owned socket, receive bounded packets with timeout behavior, and emit
+  `SwitcherLiveTwoViewQueueSourceItem` values for the existing live runtime and
+  scheduler.
+- The UDP source adapter reuses `ServerReceiveLoopStep` and the existing server
+  packet acceptance gate. It does not define a new authentication policy or
+  weaken server authentication. Instead, callers provide the
+  `AuthenticatedSenderRegistry` that was populated by the existing auth path.
+- Adapter outcomes remain explicit: accepted authenticated `VideoFrame`,
+  rejected/unauthenticated video, protocol decode failure, receive failure,
+  non-video packet, timeout, or source end. Accepted frames are additionally
+  checked against the configured left/right client ids before they are handed
+  to the queue runtime.
+- The adapter owns only UDP receive/decode/gate mapping. It does not select
+  targetTime frames, decode H.264, compose layouts, render windows, mutate
+  queues, create authenticated registry entries, schedule ticks, perform
+  4-view orchestration, or integrate OBS APIs.
 - Future 4-view sync should build on the same shared-targetTime pattern and
   extend the isolated layout/composition responsibility after real 2-client
   source ownership and bounded scheduling are stable.
@@ -7619,6 +7637,9 @@ continuous scheduling, 4-view sync, or OBS control.
 The continuous 2-view scheduler repeats that one-pass runtime by logical tick,
 but it still does not own real socket loops, late-frame queue mutation, 4-view
 sync, or OBS control.
+The UDP-backed source adapter owns one-packet socket receive and server gate
+mapping, but it still does not own auth registry creation, scheduling, decode,
+render, queue mutation, 4-view sync, or OBS control.
 
 ## Client Real Capture / H.264 Encode Boundary
 
