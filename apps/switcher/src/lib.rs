@@ -2047,6 +2047,7 @@ impl SwitcherUdpLiveTwoViewQueueSource {
                 SwitcherLiveTwoViewQueueSourceItem::AcceptedVideoFrame { packet, queued_at }
             }
             Ok(ServerRegisteredClientPacket::Heartbeat(_))
+            | Ok(ServerRegisteredClientPacket::VideoFrameFragment(_))
             | Ok(ServerRegisteredClientPacket::ClientStats(_)) => {
                 SwitcherLiveTwoViewQueueSourceItem::NonVideoPacket { message_type }
             }
@@ -2346,6 +2347,7 @@ fn server_route_message_type(route: &ServerInboundRoute) -> MessageType {
         ServerInboundRoute::AuthRequest { .. } => MessageType::AuthRequest,
         ServerInboundRoute::Heartbeat { .. } => MessageType::Heartbeat,
         ServerInboundRoute::VideoFrame { .. } => MessageType::VideoFrame,
+        ServerInboundRoute::VideoFrameFragment { .. } => MessageType::VideoFrameFragment,
         ServerInboundRoute::ClientStats { .. } => MessageType::ClientStats,
         ServerInboundRoute::UnsupportedForServer { message_type, .. } => *message_type,
     }

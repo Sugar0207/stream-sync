@@ -21,10 +21,10 @@ use stream_sync_net_core::{
     UdpSocketIoBoundary, DEFAULT_UDP_PACKET_BUFFER_LEN,
 };
 use stream_sync_protocol::{
-    AppVersion, AuthRequest, AuthResponse, AuthResponseReasonCode, ClientId, ClientStats,
+    AppVersion, AuthRequest, AuthResponse, AuthResponseReasonCode, ClientId, ClientStats, Codec,
     EncodeContext, Heartbeat, HeartbeatAck, HeartbeatAckObservation, HeartbeatObservationCarrier,
     MessageType, NoticeType, ProtocolError, ProtocolMessage, ProtocolMessageEncoderBoundary,
-    ProtocolVersion, RunId, ServerNotice, TimestampMicros, VideoFrame,
+    ProtocolVersion, RunId, ServerNotice, TimestampMicros, VideoFrame, VideoFrameFragment,
 };
 use stream_sync_timebase::{
     HeartbeatExchangeObservation, HeartbeatRttOffsetCalculationError, HeartbeatRttOffsetCalculator,
@@ -1949,6 +1949,7 @@ impl ServerContinuousReceiveLoopHandlerHandoffRuntimeBoundary {
                 .unwrap_or_else(ServerContinuousReceiveLoopHandlerHandoffRuntimePlan::AuthError),
             ServerInboundRoute::Heartbeat { .. }
             | ServerInboundRoute::VideoFrame { .. }
+            | ServerInboundRoute::VideoFrameFragment { .. }
             | ServerInboundRoute::ClientStats { .. } => self
                 .registered_handler
                 .prepare_for_handler(registry, route)
@@ -2380,6 +2381,7 @@ pub enum ServerHandlerDispatchResult {
     Auth(ServerAuthCheck),
     RegisteredHeartbeat(ServerRegisteredHeartbeatPacket),
     RegisteredVideoFrame(ServerRegisteredVideoFramePacket),
+    RegisteredVideoFrameFragment(ServerRegisteredVideoFrameFragmentPacket),
     RegisteredClientStats(ServerRegisteredClientStatsPacket),
     Unsupported {
         source: PacketSource,
@@ -2431,6 +2433,9 @@ impl ServerHandlerDispatchBoundary {
                     }
                     ServerRegisteredClientPacket::VideoFrame(packet) => {
                         ServerHandlerDispatchResult::RegisteredVideoFrame(packet)
+                    }
+                    ServerRegisteredClientPacket::VideoFrameFragment(packet) => {
+                        ServerHandlerDispatchResult::RegisteredVideoFrameFragment(packet)
                     }
                     ServerRegisteredClientPacket::ClientStats(packet) => {
                         ServerHandlerDispatchResult::RegisteredClientStats(packet)
@@ -2512,6 +2517,7 @@ impl ServerAuthDispatchRuntimeBoundary {
 pub enum ServerRegisteredPacketDispatchRuntimeResult {
     HeartbeatAck(ServerHeartbeatAckHandoff),
     FutureVideoFrame(ServerRegisteredVideoFramePacket),
+    FutureVideoFrameFragment(ServerRegisteredVideoFrameFragmentPacket),
     FutureClientStats(ServerRegisteredClientStatsPacket),
     NotRegistered(ServerHandlerDispatchResult),
 }
@@ -2549,6 +2555,9 @@ impl ServerRegisteredPacketDispatchRuntimeBoundary {
             }
             ServerHandlerDispatchResult::RegisteredVideoFrame(packet) => {
                 ServerRegisteredPacketDispatchRuntimeResult::FutureVideoFrame(packet)
+            }
+            ServerHandlerDispatchResult::RegisteredVideoFrameFragment(packet) => {
+                ServerRegisteredPacketDispatchRuntimeResult::FutureVideoFrameFragment(packet)
             }
             ServerHandlerDispatchResult::RegisteredClientStats(packet) => {
                 ServerRegisteredPacketDispatchRuntimeResult::FutureClientStats(packet)
@@ -2728,6 +2737,306 @@ impl ServerVideoFrameQueueStorageBoundary {
             current_client_queue_len: queue.len(),
             dropped_oldest,
         }
+    }
+}
+
+/// Key for caller-owned server-side fragment reassembly state.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct ServerVideoFrameReassemblyKey {
+    pub client_id: String,
+    pub run_id: String,
+    pub frame_id: u64,
+}
+
+impl ServerVideoFrameReassemblyKey {
+    fn from_fragment(fragment: &VideoFrameFragment) -> Self {
+        Self {
+            client_id: fragment.client_id.0.clone(),
+            run_id: fragment.run_id.0.clone(),
+            frame_id: fragment.frame_id,
+        }
+    }
+}
+
+/// Caller-owned state for incomplete server-side `VideoFrameFragment` frames.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ServerVideoFrameReassemblyState {
+    frames: BTreeMap<ServerVideoFrameReassemblyKey, ServerVideoFrameReassemblyFrameState>,
+}
+
+impl ServerVideoFrameReassemblyState {
+    pub fn tracked_frame_count(&self) -> usize {
+        self.frames.len()
+    }
+
+    pub fn contains_frame(&self, key: &ServerVideoFrameReassemblyKey) -> bool {
+        self.frames.contains_key(key)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ServerVideoFrameReassemblyFrameState {
+    protocol_version: ProtocolVersion,
+    capture_timestamp: TimestampMicros,
+    width: u32,
+    height: u32,
+    fps_nominal: u32,
+    total_payload_len: u32,
+    chunk_count: u32,
+    chunks: Vec<Option<Vec<u8>>>,
+    duplicate_count: usize,
+}
+
+impl ServerVideoFrameReassemblyFrameState {
+    fn new(fragment: &VideoFrameFragment) -> Self {
+        Self {
+            protocol_version: fragment.protocol_version,
+            capture_timestamp: fragment.capture_timestamp,
+            width: fragment.width,
+            height: fragment.height,
+            fps_nominal: fragment.fps_nominal,
+            total_payload_len: fragment.total_payload_len,
+            chunk_count: fragment.chunk_count,
+            chunks: vec![None; fragment.chunk_count as usize],
+            duplicate_count: 0,
+        }
+    }
+
+    fn fragments_received(&self) -> usize {
+        self.chunks.iter().filter(|chunk| chunk.is_some()).count()
+    }
+
+    fn missing_chunks(&self) -> Vec<u32> {
+        self.chunks
+            .iter()
+            .enumerate()
+            .filter_map(|(index, chunk)| chunk.is_none().then_some(index as u32))
+            .collect()
+    }
+
+    fn is_complete(&self) -> bool {
+        self.fragments_received() == self.chunk_count as usize
+    }
+
+    fn reassemble_payload(&self) -> Vec<u8> {
+        let mut payload = Vec::with_capacity(self.total_payload_len as usize);
+        for chunk in &self.chunks {
+            if let Some(chunk) = chunk {
+                payload.extend_from_slice(chunk);
+            }
+        }
+        payload
+    }
+}
+
+/// Reassembly result summary intended for logs / CLI diagnostics.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ServerVideoFrameReassemblySummary {
+    pub key: ServerVideoFrameReassemblyKey,
+    pub fragments_received: usize,
+    pub fragments_missing: Vec<u32>,
+    pub completed_frame_queued: bool,
+    pub rejected_fragment_reason: Option<ServerVideoFrameFragmentRejectReason>,
+    pub duplicate_count: usize,
+}
+
+/// Reason an accepted/authenticated fragment was rejected by reassembly.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ServerVideoFrameFragmentRejectReason {
+    ChunkCountZero,
+    ChunkIndexOutOfRange,
+    ChunkPayloadLenMismatch,
+    MetadataMismatch,
+    ReassembledPayloadLenMismatch,
+}
+
+/// Result of applying one authenticated fragment to caller-owned reassembly state.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ServerVideoFrameReassemblyApplyResult {
+    FragmentStored {
+        summary: ServerVideoFrameReassemblySummary,
+    },
+    DuplicateFragmentIgnored {
+        summary: ServerVideoFrameReassemblySummary,
+    },
+    RejectedFragment {
+        summary: ServerVideoFrameReassemblySummary,
+    },
+    FrameComplete {
+        summary: ServerVideoFrameReassemblySummary,
+        reassembled_frame: VideoFrame,
+        queue_result: ServerVideoFrameQueueStorageResult,
+    },
+}
+
+/// Boundary that reassembles authenticated `VideoFrameFragment` packets.
+///
+/// The caller owns the reassembly state and queue state. This boundary does
+/// not authenticate packets, decode H.264, retry fragments, expire frames,
+/// mutate late-frame queues, run 4-view sync, notify switcher, or touch OBS.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct ServerVideoFrameFragmentReassemblyBoundary {
+    storage: ServerVideoFrameQueueStorageBoundary,
+}
+
+impl ServerVideoFrameFragmentReassemblyBoundary {
+    pub fn apply_fragment_and_queue_if_complete(
+        &self,
+        reassembly_state: &mut ServerVideoFrameReassemblyState,
+        queue_state: &mut ServerVideoFrameQueueState,
+        packet: ServerRegisteredVideoFrameFragmentPacket,
+        queued_at: TimestampMicros,
+        policy: ServerVideoFrameQueuePolicy,
+    ) -> ServerVideoFrameReassemblyApplyResult {
+        let key = ServerVideoFrameReassemblyKey::from_fragment(&packet.fragment);
+
+        if let Some(reason) = validate_fragment_shape(&packet.fragment) {
+            return ServerVideoFrameReassemblyApplyResult::RejectedFragment {
+                summary: rejected_fragment_summary(key, reason),
+            };
+        }
+
+        let frame_state = reassembly_state
+            .frames
+            .entry(key.clone())
+            .or_insert_with(|| ServerVideoFrameReassemblyFrameState::new(&packet.fragment));
+
+        if !metadata_matches(frame_state, &packet.fragment) {
+            return ServerVideoFrameReassemblyApplyResult::RejectedFragment {
+                summary: summary_for_state(
+                    key,
+                    frame_state,
+                    false,
+                    Some(ServerVideoFrameFragmentRejectReason::MetadataMismatch),
+                ),
+            };
+        }
+
+        let chunk_index = packet.fragment.chunk_index as usize;
+        if frame_state.chunks[chunk_index].is_some() {
+            frame_state.duplicate_count += 1;
+            return ServerVideoFrameReassemblyApplyResult::DuplicateFragmentIgnored {
+                summary: summary_for_state(key, frame_state, false, None),
+            };
+        }
+
+        frame_state.chunks[chunk_index] = Some(packet.fragment.chunk_payload.clone());
+
+        if !frame_state.is_complete() {
+            return ServerVideoFrameReassemblyApplyResult::FragmentStored {
+                summary: summary_for_state(key, frame_state, false, None),
+            };
+        }
+
+        let payload = frame_state.reassemble_payload();
+        if payload.len() != frame_state.total_payload_len as usize {
+            let summary = summary_for_state(
+                key,
+                frame_state,
+                false,
+                Some(ServerVideoFrameFragmentRejectReason::ReassembledPayloadLenMismatch),
+            );
+            return ServerVideoFrameReassemblyApplyResult::RejectedFragment { summary };
+        }
+
+        let frame = VideoFrame {
+            message_type: MessageType::VideoFrame,
+            protocol_version: frame_state.protocol_version,
+            client_id: packet.fragment.client_id.clone(),
+            run_id: packet.fragment.run_id.clone(),
+            frame_id: packet.fragment.frame_id,
+            capture_timestamp: frame_state.capture_timestamp,
+            send_timestamp: frame_state.capture_timestamp,
+            is_keyframe: false,
+            metadata_reserved: [0; 3],
+            width: frame_state.width,
+            height: frame_state.height,
+            fps_nominal: frame_state.fps_nominal,
+            codec: Codec::H264,
+            payload_size: payload.len(),
+            payload,
+        };
+        let payload_len = frame.payload.len();
+        let handler_input = ServerVideoFrameHandlerInput {
+            registered_packet: ServerRegisteredVideoFramePacket {
+                source: packet.source,
+                authenticated_sender: packet.authenticated_sender,
+                frame: frame.clone(),
+            },
+            payload_len,
+        };
+        let queue_result = self
+            .storage
+            .store_frame(queue_state, handler_input, queued_at, policy);
+        let removed = reassembly_state
+            .frames
+            .remove(&key)
+            .expect("complete frame state should still be present");
+        let summary = summary_for_state(key, &removed, true, None);
+
+        ServerVideoFrameReassemblyApplyResult::FrameComplete {
+            summary,
+            reassembled_frame: frame,
+            queue_result,
+        }
+    }
+}
+
+fn validate_fragment_shape(
+    fragment: &VideoFrameFragment,
+) -> Option<ServerVideoFrameFragmentRejectReason> {
+    if fragment.chunk_count == 0 {
+        return Some(ServerVideoFrameFragmentRejectReason::ChunkCountZero);
+    }
+    if fragment.chunk_index >= fragment.chunk_count {
+        return Some(ServerVideoFrameFragmentRejectReason::ChunkIndexOutOfRange);
+    }
+    if fragment.chunk_payload_len != fragment.chunk_payload.len() {
+        return Some(ServerVideoFrameFragmentRejectReason::ChunkPayloadLenMismatch);
+    }
+    None
+}
+
+fn metadata_matches(
+    state: &ServerVideoFrameReassemblyFrameState,
+    fragment: &VideoFrameFragment,
+) -> bool {
+    state.protocol_version == fragment.protocol_version
+        && state.capture_timestamp == fragment.capture_timestamp
+        && state.width == fragment.width
+        && state.height == fragment.height
+        && state.fps_nominal == fragment.fps_nominal
+        && state.total_payload_len == fragment.total_payload_len
+        && state.chunk_count == fragment.chunk_count
+}
+
+fn rejected_fragment_summary(
+    key: ServerVideoFrameReassemblyKey,
+    reason: ServerVideoFrameFragmentRejectReason,
+) -> ServerVideoFrameReassemblySummary {
+    ServerVideoFrameReassemblySummary {
+        key,
+        fragments_received: 0,
+        fragments_missing: Vec::new(),
+        completed_frame_queued: false,
+        rejected_fragment_reason: Some(reason),
+        duplicate_count: 0,
+    }
+}
+
+fn summary_for_state(
+    key: ServerVideoFrameReassemblyKey,
+    state: &ServerVideoFrameReassemblyFrameState,
+    completed_frame_queued: bool,
+    rejected_fragment_reason: Option<ServerVideoFrameFragmentRejectReason>,
+) -> ServerVideoFrameReassemblySummary {
+    ServerVideoFrameReassemblySummary {
+        key,
+        fragments_received: state.fragments_received(),
+        fragments_missing: state.missing_chunks(),
+        completed_frame_queued,
+        rejected_fragment_reason,
+        duplicate_count: state.duplicate_count,
     }
 }
 
@@ -4434,6 +4743,7 @@ fn receive_rejection_message_type_name(message_type: MessageType) -> &'static st
         MessageType::VideoFrame => "VideoFrame",
         MessageType::ClientStats => "ClientStats",
         MessageType::ServerNotice => "ServerNotice",
+        MessageType::VideoFrameFragment => "VideoFrameFragment",
     }
 }
 
@@ -4505,6 +4815,11 @@ fn inbound_route_log_metadata(route: &ServerInboundRoute) -> InboundRouteLogMeta
             source: *source,
             message_type: MessageType::VideoFrame,
             client_id: Some(frame.client_id.clone()),
+        },
+        ServerInboundRoute::VideoFrameFragment { source, fragment } => InboundRouteLogMetadata {
+            source: *source,
+            message_type: MessageType::VideoFrameFragment,
+            client_id: Some(fragment.client_id.clone()),
         },
         ServerInboundRoute::ClientStats { source, stats } => InboundRouteLogMetadata {
             source: *source,
@@ -4605,6 +4920,12 @@ impl ServerInboundRouter {
                 source: packet.source,
                 frame,
             },
+            ProtocolMessage::VideoFrameFragment(fragment) => {
+                ServerInboundRoute::VideoFrameFragment {
+                    source: packet.source,
+                    fragment,
+                }
+            }
             ProtocolMessage::ClientStats(stats) => ServerInboundRoute::ClientStats {
                 source: packet.source,
                 stats,
@@ -4632,6 +4953,10 @@ pub enum ServerInboundRoute {
     VideoFrame {
         source: PacketSource,
         frame: VideoFrame,
+    },
+    VideoFrameFragment {
+        source: PacketSource,
+        fragment: VideoFrameFragment,
     },
     ClientStats {
         source: PacketSource,
@@ -4667,6 +4992,11 @@ impl ServerAuthHandlerBoundary {
             ServerInboundRoute::VideoFrame { .. } => {
                 Err(ServerAuthBoundaryError::UnexpectedRoute {
                     message_type: MessageType::VideoFrame,
+                })
+            }
+            ServerInboundRoute::VideoFrameFragment { .. } => {
+                Err(ServerAuthBoundaryError::UnexpectedRoute {
+                    message_type: MessageType::VideoFrameFragment,
                 })
             }
             ServerInboundRoute::ClientStats { .. } => {
@@ -5512,6 +5842,13 @@ impl PacketAcceptanceGateBoundary {
                 &frame.client_id,
                 MessageType::VideoFrame,
             ),
+            ServerInboundRoute::VideoFrameFragment { source, fragment } => self
+                .evaluate_client_packet(
+                    registry,
+                    *source,
+                    &fragment.client_id,
+                    MessageType::VideoFrameFragment,
+                ),
             ServerInboundRoute::ClientStats { source, stats } => self.evaluate_client_packet(
                 registry,
                 *source,
@@ -5575,6 +5912,7 @@ impl PacketAcceptanceGateBoundary {
 pub enum ServerRegisteredClientPacket {
     Heartbeat(ServerRegisteredHeartbeatPacket),
     VideoFrame(ServerRegisteredVideoFramePacket),
+    VideoFrameFragment(ServerRegisteredVideoFrameFragmentPacket),
     ClientStats(ServerRegisteredClientStatsPacket),
 }
 
@@ -5592,6 +5930,14 @@ pub struct ServerRegisteredVideoFramePacket {
     pub source: PacketSource,
     pub authenticated_sender: AuthenticatedSenderEntry,
     pub frame: VideoFrame,
+}
+
+/// Handler input for an accepted video frame fragment packet.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ServerRegisteredVideoFrameFragmentPacket {
+    pub source: PacketSource,
+    pub authenticated_sender: AuthenticatedSenderEntry,
+    pub fragment: VideoFrameFragment,
 }
 
 /// Handler input for an accepted client stats packet.
@@ -5668,6 +6014,21 @@ impl ServerRegisteredPacketBoundary {
                         source,
                         authenticated_sender,
                         frame,
+                    },
+                ))
+            }
+            ServerInboundRoute::VideoFrameFragment { source, fragment } => {
+                let authenticated_sender = self.require_sender(
+                    registry,
+                    &fragment.client_id,
+                    source,
+                    MessageType::VideoFrameFragment,
+                )?;
+                Ok(ServerRegisteredClientPacket::VideoFrameFragment(
+                    ServerRegisteredVideoFrameFragmentPacket {
+                        source,
+                        authenticated_sender,
+                        fragment,
                     },
                 ))
             }
@@ -8801,6 +9162,7 @@ fn message_type(message: &ProtocolMessage) -> MessageType {
         ProtocolMessage::Heartbeat(_) => MessageType::Heartbeat,
         ProtocolMessage::HeartbeatAck(_) => MessageType::HeartbeatAck,
         ProtocolMessage::VideoFrame(_) => MessageType::VideoFrame,
+        ProtocolMessage::VideoFrameFragment(_) => MessageType::VideoFrameFragment,
         ProtocolMessage::ClientStats(_) => MessageType::ClientStats,
         ProtocolMessage::ServerNotice(_) => MessageType::ServerNotice,
     }
@@ -10710,6 +11072,271 @@ shared_token = "secret"
         assert_eq!(queued.frame.payload, vec![0xaa, 0xbb, 0xcc]);
         assert_eq!(queued.payload_len, queued.frame.payload.len());
         assert_eq!(state.total_len(), 1);
+    }
+
+    #[test]
+    fn video_frame_fragment_reassembly_completes_in_order() {
+        let source = packet_source();
+        let mut reassembly_state = ServerVideoFrameReassemblyState::default();
+        let mut queue_state = ServerVideoFrameQueueState::default();
+        let boundary = ServerVideoFrameFragmentReassemblyBoundary::default();
+
+        let first = boundary.apply_fragment_and_queue_if_complete(
+            &mut reassembly_state,
+            &mut queue_state,
+            registered_video_frame_fragment(source, 0, 3, vec![0xaa, 0xbb]),
+            TimestampMicros(3_100_000),
+            ServerVideoFrameQueuePolicy::default(),
+        );
+        assert!(matches!(
+            first,
+            ServerVideoFrameReassemblyApplyResult::FragmentStored { .. }
+        ));
+        let second = boundary.apply_fragment_and_queue_if_complete(
+            &mut reassembly_state,
+            &mut queue_state,
+            registered_video_frame_fragment(source, 1, 3, vec![0xcc, 0xdd]),
+            TimestampMicros(3_100_100),
+            ServerVideoFrameQueuePolicy::default(),
+        );
+        assert!(matches!(
+            second,
+            ServerVideoFrameReassemblyApplyResult::FragmentStored { .. }
+        ));
+        let complete = boundary.apply_fragment_and_queue_if_complete(
+            &mut reassembly_state,
+            &mut queue_state,
+            registered_video_frame_fragment(source, 2, 3, vec![0xee]),
+            TimestampMicros(3_100_200),
+            ServerVideoFrameQueuePolicy::default(),
+        );
+
+        let ServerVideoFrameReassemblyApplyResult::FrameComplete {
+            summary,
+            reassembled_frame,
+            queue_result,
+        } = complete
+        else {
+            panic!("third fragment should complete the frame");
+        };
+        assert_eq!(
+            reassembled_frame.payload,
+            vec![0xaa, 0xbb, 0xcc, 0xdd, 0xee]
+        );
+        assert_eq!(reassembled_frame.payload_size, 5);
+        assert_eq!(
+            reassembled_frame.client_id,
+            ClientId("client-1".to_string())
+        );
+        assert_eq!(reassembled_frame.run_id, RunId("run-1".to_string()));
+        assert_eq!(reassembled_frame.frame_id, 42);
+        assert_eq!(
+            reassembled_frame.capture_timestamp,
+            TimestampMicros(1_000_000)
+        );
+        assert_eq!(reassembled_frame.width, 1280);
+        assert_eq!(reassembled_frame.height, 720);
+        assert_eq!(reassembled_frame.fps_nominal, 30);
+        assert_eq!(summary.fragments_received, 3);
+        assert_eq!(summary.fragments_missing, Vec::<u32>::new());
+        assert!(summary.completed_frame_queued);
+        assert_eq!(summary.rejected_fragment_reason, None);
+        assert!(matches!(
+            queue_result,
+            ServerVideoFrameQueueStorageResult::Stored { .. }
+        ));
+        assert_eq!(queue_state.total_len(), 1);
+        assert_eq!(reassembly_state.tracked_frame_count(), 0);
+    }
+
+    #[test]
+    fn video_frame_fragment_reassembly_completes_out_of_order() {
+        let source = packet_source();
+        let mut reassembly_state = ServerVideoFrameReassemblyState::default();
+        let mut queue_state = ServerVideoFrameQueueState::default();
+        let boundary = ServerVideoFrameFragmentReassemblyBoundary::default();
+
+        for (index, payload) in [(2, vec![0xee]), (0, vec![0xaa, 0xbb])] {
+            let result = boundary.apply_fragment_and_queue_if_complete(
+                &mut reassembly_state,
+                &mut queue_state,
+                registered_video_frame_fragment(source, index, 3, payload),
+                TimestampMicros(3_101_000 + u64::from(index)),
+                ServerVideoFrameQueuePolicy::default(),
+            );
+            assert!(matches!(
+                result,
+                ServerVideoFrameReassemblyApplyResult::FragmentStored { .. }
+            ));
+        }
+
+        let complete = boundary.apply_fragment_and_queue_if_complete(
+            &mut reassembly_state,
+            &mut queue_state,
+            registered_video_frame_fragment(source, 1, 3, vec![0xcc, 0xdd]),
+            TimestampMicros(3_101_100),
+            ServerVideoFrameQueuePolicy::default(),
+        );
+
+        let ServerVideoFrameReassemblyApplyResult::FrameComplete {
+            reassembled_frame, ..
+        } = complete
+        else {
+            panic!("missing middle fragment should complete the frame");
+        };
+        assert_eq!(
+            reassembled_frame.payload,
+            vec![0xaa, 0xbb, 0xcc, 0xdd, 0xee]
+        );
+        assert_eq!(queue_state.total_len(), 1);
+    }
+
+    #[test]
+    fn video_frame_fragment_reassembly_ignores_duplicate_without_corrupting_payload() {
+        let source = packet_source();
+        let mut reassembly_state = ServerVideoFrameReassemblyState::default();
+        let mut queue_state = ServerVideoFrameQueueState::default();
+        let boundary = ServerVideoFrameFragmentReassemblyBoundary::default();
+
+        let _first = boundary.apply_fragment_and_queue_if_complete(
+            &mut reassembly_state,
+            &mut queue_state,
+            registered_video_frame_fragment(source, 0, 2, vec![0xaa, 0xbb]),
+            TimestampMicros(3_102_000),
+            ServerVideoFrameQueuePolicy::default(),
+        );
+        let duplicate = boundary.apply_fragment_and_queue_if_complete(
+            &mut reassembly_state,
+            &mut queue_state,
+            registered_video_frame_fragment(source, 0, 2, vec![0xaa, 0xbb]),
+            TimestampMicros(3_102_010),
+            ServerVideoFrameQueuePolicy::default(),
+        );
+
+        let ServerVideoFrameReassemblyApplyResult::DuplicateFragmentIgnored { summary } = duplicate
+        else {
+            panic!("duplicate fragment should be explicit");
+        };
+        assert_eq!(summary.fragments_received, 1);
+        assert_eq!(summary.fragments_missing, vec![1]);
+        assert_eq!(summary.duplicate_count, 1);
+
+        let complete = boundary.apply_fragment_and_queue_if_complete(
+            &mut reassembly_state,
+            &mut queue_state,
+            registered_video_frame_fragment(source, 1, 2, vec![0xcc, 0xdd, 0xee]),
+            TimestampMicros(3_102_100),
+            ServerVideoFrameQueuePolicy::default(),
+        );
+        let ServerVideoFrameReassemblyApplyResult::FrameComplete {
+            reassembled_frame, ..
+        } = complete
+        else {
+            panic!("second unique fragment should complete");
+        };
+        assert_eq!(
+            reassembled_frame.payload,
+            vec![0xaa, 0xbb, 0xcc, 0xdd, 0xee]
+        );
+    }
+
+    #[test]
+    fn video_frame_fragment_reassembly_rejects_inconsistent_metadata() {
+        let source = packet_source();
+        let mut reassembly_state = ServerVideoFrameReassemblyState::default();
+        let mut queue_state = ServerVideoFrameQueueState::default();
+        let boundary = ServerVideoFrameFragmentReassemblyBoundary::default();
+
+        let _stored = boundary.apply_fragment_and_queue_if_complete(
+            &mut reassembly_state,
+            &mut queue_state,
+            registered_video_frame_fragment(source, 0, 2, vec![0xaa, 0xbb]),
+            TimestampMicros(3_103_000),
+            ServerVideoFrameQueuePolicy::default(),
+        );
+        let mut inconsistent =
+            registered_video_frame_fragment(source, 1, 2, vec![0xcc, 0xdd, 0xee]);
+        inconsistent.fragment.width = 1920;
+
+        let rejected = boundary.apply_fragment_and_queue_if_complete(
+            &mut reassembly_state,
+            &mut queue_state,
+            inconsistent,
+            TimestampMicros(3_103_100),
+            ServerVideoFrameQueuePolicy::default(),
+        );
+
+        let ServerVideoFrameReassemblyApplyResult::RejectedFragment { summary } = rejected else {
+            panic!("inconsistent metadata should be rejected");
+        };
+        assert_eq!(
+            summary.rejected_fragment_reason,
+            Some(ServerVideoFrameFragmentRejectReason::MetadataMismatch)
+        );
+        assert_eq!(summary.fragments_received, 1);
+        assert_eq!(queue_state.total_len(), 0);
+        assert_eq!(reassembly_state.tracked_frame_count(), 1);
+    }
+
+    #[test]
+    fn video_frame_fragment_reassembly_keeps_missing_fragment_incomplete() {
+        let source = packet_source();
+        let mut reassembly_state = ServerVideoFrameReassemblyState::default();
+        let mut queue_state = ServerVideoFrameQueueState::default();
+
+        let result = ServerVideoFrameFragmentReassemblyBoundary::default()
+            .apply_fragment_and_queue_if_complete(
+                &mut reassembly_state,
+                &mut queue_state,
+                registered_video_frame_fragment(source, 0, 2, vec![0xaa, 0xbb]),
+                TimestampMicros(3_104_000),
+                ServerVideoFrameQueuePolicy::default(),
+            );
+
+        let ServerVideoFrameReassemblyApplyResult::FragmentStored { summary } = result else {
+            panic!("one of two fragments should remain incomplete");
+        };
+        assert_eq!(summary.fragments_received, 1);
+        assert_eq!(summary.fragments_missing, vec![1]);
+        assert!(!summary.completed_frame_queued);
+        assert_eq!(queue_state.total_len(), 0);
+        assert_eq!(reassembly_state.tracked_frame_count(), 1);
+    }
+
+    #[test]
+    fn video_frame_fragment_reassembly_passes_completed_frame_to_queue() {
+        let source = packet_source();
+        let mut reassembly_state = ServerVideoFrameReassemblyState::default();
+        let mut queue_state = ServerVideoFrameQueueState::default();
+        let boundary = ServerVideoFrameFragmentReassemblyBoundary::default();
+
+        let _first = boundary.apply_fragment_and_queue_if_complete(
+            &mut reassembly_state,
+            &mut queue_state,
+            registered_video_frame_fragment(source, 0, 2, vec![0xaa, 0xbb]),
+            TimestampMicros(3_105_000),
+            ServerVideoFrameQueuePolicy::default(),
+        );
+        let complete = boundary.apply_fragment_and_queue_if_complete(
+            &mut reassembly_state,
+            &mut queue_state,
+            registered_video_frame_fragment(source, 1, 2, vec![0xcc, 0xdd, 0xee]),
+            TimestampMicros(3_105_100),
+            ServerVideoFrameQueuePolicy::default(),
+        );
+
+        assert!(matches!(
+            complete,
+            ServerVideoFrameReassemblyApplyResult::FrameComplete {
+                queue_result: ServerVideoFrameQueueStorageResult::Stored { .. },
+                ..
+            }
+        ));
+        let queued: Vec<Vec<u8>> = queue_state
+            .frames_for_client(&ClientId("client-1".to_string()))
+            .map(|queued| queued.frame.payload.clone())
+            .collect();
+        assert_eq!(queued, vec![vec![0xaa, 0xbb, 0xcc, 0xdd, 0xee]]);
     }
 
     #[test]
@@ -16139,6 +16766,23 @@ shared_token = "secret"
     }
 
     #[test]
+    fn routes_video_frame_fragment_to_fragment_boundary() {
+        let source = packet_source();
+        let fragment = video_frame_fragment("client-1", 0, 1, vec![0xaa]);
+        let router = ServerInboundRouter;
+
+        let route = router.route(DecodedInboundPacket {
+            source,
+            message: ProtocolMessage::VideoFrameFragment(fragment.clone()),
+        });
+
+        assert_eq!(
+            route,
+            ServerInboundRoute::VideoFrameFragment { source, fragment }
+        );
+    }
+
+    #[test]
     fn routes_client_stats_to_stats_boundary() {
         let source = packet_source();
         let stats = client_stats("client-1");
@@ -16158,6 +16802,21 @@ shared_token = "secret"
         let registry = registry_with_client("client-1", source);
         let gate = PacketAcceptanceGateBoundary::default();
         let route = client_stats_route("client-1", source);
+
+        let decision = gate.evaluate_route(&registry, &route);
+
+        assert_eq!(decision, PacketAcceptanceDecision::Accepted);
+    }
+
+    #[test]
+    fn packet_acceptance_gate_checks_video_frame_fragment_sender() {
+        let source = packet_source();
+        let registry = registry_with_client("client-1", source);
+        let gate = PacketAcceptanceGateBoundary::default();
+        let route = ServerInboundRoute::VideoFrameFragment {
+            source,
+            fragment: video_frame_fragment("client-1", 0, 1, vec![0xaa]),
+        };
 
         let decision = gate.evaluate_route(&registry, &route);
 
@@ -16509,6 +17168,49 @@ shared_token = "secret"
                 payload_size: 3,
                 payload: vec![0xaa, 0xbb, 0xcc],
             },
+        }
+    }
+
+    fn video_frame_fragment(
+        client_id: &str,
+        chunk_index: u32,
+        chunk_count: u32,
+        chunk_payload: Vec<u8>,
+    ) -> VideoFrameFragment {
+        VideoFrameFragment {
+            message_type: MessageType::VideoFrameFragment,
+            protocol_version: ProtocolVersion(2),
+            client_id: ClientId(client_id.to_string()),
+            run_id: RunId("run-1".to_string()),
+            frame_id: 42,
+            capture_timestamp: TimestampMicros(1_000_000),
+            width: 1280,
+            height: 720,
+            fps_nominal: 30,
+            total_payload_len: 5,
+            chunk_index,
+            chunk_count,
+            chunk_payload_len: chunk_payload.len(),
+            chunk_payload,
+        }
+    }
+
+    fn registered_video_frame_fragment(
+        source: PacketSource,
+        chunk_index: u32,
+        chunk_count: u32,
+        chunk_payload: Vec<u8>,
+    ) -> ServerRegisteredVideoFrameFragmentPacket {
+        ServerRegisteredVideoFrameFragmentPacket {
+            source,
+            authenticated_sender: AuthenticatedSenderEntry {
+                client_id: ClientId("client-1".to_string()),
+                source,
+                run_id: RunId("run-1".to_string()),
+                protocol_version: ProtocolVersion(2),
+                registered_at: None,
+            },
+            fragment: video_frame_fragment("client-1", chunk_index, chunk_count, chunk_payload),
         }
     }
 

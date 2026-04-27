@@ -174,7 +174,7 @@ fn main() {
                 Ok(stream_sync_client::ClientRealEncodedVideoFramePocOutcome::Sent(sent)) => {
                     println!(
                         "real encoded video frame PoC sent {} bytes to {}; frame_id={} capture_timestamp={} width={} height={} fps_nominal={} payload_len={} source_kind={:?}",
-                        sent.bytes_sent,
+                        sent.send.bytes_sent,
                         sent.destination,
                         sent.frame.frame_id,
                         sent.frame.capture_timestamp.0,
@@ -244,7 +244,7 @@ fn main() {
                             outcome.auth_response_source,
                             outcome.auth_response.accepted,
                             outcome.auth_response.reason_code,
-                            sent.bytes_sent,
+                            sent.send.bytes_sent,
                             sent.frame.frame_id,
                             sent.frame.capture_timestamp.0,
                             sent.frame.width,

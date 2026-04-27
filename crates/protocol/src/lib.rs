@@ -68,6 +68,12 @@ pub const CODEC_H264_WIRE_VALUE: u16 = 1;
 /// the variable H.264 payload bytes.
 pub const VIDEO_FRAME_NUMERIC_METADATA_LEN: u16 = 46;
 
+/// Byte length of the fixed numeric part of the initial VideoFrameFragment payload.
+///
+/// This excludes length-prefixed `client_id`, length-prefixed `run_id`, and
+/// the variable fragment payload bytes.
+pub const VIDEO_FRAME_FRAGMENT_NUMERIC_METADATA_LEN: u16 = 44;
+
 /// Byte length of the fixed numeric part of the planned ClientStats payload.
 ///
 /// This excludes length-prefixed `client_id`, length-prefixed `run_id`, and
@@ -478,6 +484,61 @@ pub fn decode_video_frame_payload(
     })
 }
 
+/// Decode a `VideoFrameFragment` payload after fixed header and protocol version checks.
+///
+/// This parses fragment metadata and copies the fragment payload bytes as-is.
+/// It does not reassemble fragments into a full `VideoFrame`.
+pub fn decode_video_frame_fragment_payload(
+    header: FixedHeader,
+    payload: &[u8],
+) -> Result<VideoFrameFragment, ProtocolError> {
+    if header.message_type != MessageType::VideoFrameFragment {
+        return Err(ProtocolError::UnexpectedMessageType {
+            expected: MessageType::VideoFrameFragment,
+            actual: header.message_type,
+        });
+    }
+
+    if payload.len() != header.payload_length as usize {
+        return Err(ProtocolError::InvalidPayloadLength {
+            expected: header.payload_length,
+            actual: payload.len(),
+        });
+    }
+
+    let mut reader = PayloadReader::new(payload);
+    let client_id = ClientId(reader.read_string()?);
+    let run_id = RunId(reader.read_string()?);
+    let frame_id = reader.read_u64()?;
+    let capture_timestamp = TimestampMicros(reader.read_u64()?);
+    let width = reader.read_u32()?;
+    let height = reader.read_u32()?;
+    let fps_nominal = reader.read_u32()?;
+    let total_payload_len = reader.read_u32()?;
+    let chunk_index = reader.read_u32()?;
+    let chunk_count = reader.read_u32()?;
+    let chunk_payload_len = reader.read_u32()? as usize;
+    let chunk_payload = reader.read_exact_bytes(chunk_payload_len)?;
+    reader.finish()?;
+
+    Ok(VideoFrameFragment {
+        message_type: MessageType::VideoFrameFragment,
+        protocol_version: header.protocol_version,
+        client_id,
+        run_id,
+        frame_id,
+        capture_timestamp,
+        width,
+        height,
+        fps_nominal,
+        total_payload_len,
+        chunk_index,
+        chunk_count,
+        chunk_payload_len,
+        chunk_payload,
+    })
+}
+
 /// Decode a `ClientStats` payload after fixed header and protocol version checks.
 ///
 /// This parses the MVP-minimal stats fields and the optional heartbeat
@@ -583,6 +644,9 @@ pub fn decode_payload_by_message_type(
         }
         MessageType::VideoFrame => {
             VideoFramePayloadDecoder.decode_payload(context, header, payload)
+        }
+        MessageType::VideoFrameFragment => {
+            VideoFrameFragmentPayloadDecoder.decode_payload(context, header, payload)
         }
         MessageType::ClientStats => {
             ClientStatsPayloadDecoder.decode_payload(context, header, payload)
@@ -954,6 +1018,34 @@ pub fn encode_video_frame(
     Ok(())
 }
 
+/// Encode one `VideoFrameFragment` packet as fixed header plus payload bytes.
+///
+/// The payload follows the documented order: frame fragment metadata first,
+/// then the chunk payload bytes. This function does not reassemble fragments,
+/// retry, or send the bytes.
+pub fn encode_video_frame_fragment(
+    context: EncodeContext,
+    fragment: &VideoFrameFragment,
+    output: &mut Vec<u8>,
+) -> Result<(), ProtocolError> {
+    let mut payload = Vec::new();
+    encode_video_frame_fragment_payload(fragment, &mut payload)?;
+    let payload_length =
+        u32::try_from(payload.len()).map_err(|_| ProtocolError::InvalidPayloadLength {
+            expected: u32::MAX,
+            actual: payload.len(),
+        })?;
+
+    encode_fixed_header(
+        MessageType::VideoFrameFragment,
+        context.protocol_version,
+        payload_length,
+        output,
+    );
+    output.extend_from_slice(&payload);
+    Ok(())
+}
+
 /// Encode one `ClientStats` packet as fixed header plus payload bytes.
 ///
 /// The payload follows the MVP-minimal stats layout plus the optional heartbeat
@@ -1103,6 +1195,39 @@ pub fn encode_video_frame_payload(
     Ok(())
 }
 
+/// Encode only the `VideoFrameFragment` payload body.
+pub fn encode_video_frame_fragment_payload(
+    fragment: &VideoFrameFragment,
+    output: &mut Vec<u8>,
+) -> Result<(), ProtocolError> {
+    let chunk_payload_len = u32::try_from(fragment.chunk_payload.len()).map_err(|_| {
+        ProtocolError::InvalidPayloadLength {
+            expected: u32::MAX,
+            actual: fragment.chunk_payload.len(),
+        }
+    })?;
+    if fragment.chunk_payload_len != fragment.chunk_payload.len() {
+        return Err(ProtocolError::InvalidPayloadLength {
+            expected: chunk_payload_len,
+            actual: fragment.chunk_payload_len,
+        });
+    }
+
+    write_string(output, &fragment.client_id.0)?;
+    write_string(output, &fragment.run_id.0)?;
+    output.extend_from_slice(&fragment.frame_id.to_le_bytes());
+    output.extend_from_slice(&fragment.capture_timestamp.0.to_le_bytes());
+    output.extend_from_slice(&fragment.width.to_le_bytes());
+    output.extend_from_slice(&fragment.height.to_le_bytes());
+    output.extend_from_slice(&fragment.fps_nominal.to_le_bytes());
+    output.extend_from_slice(&fragment.total_payload_len.to_le_bytes());
+    output.extend_from_slice(&fragment.chunk_index.to_le_bytes());
+    output.extend_from_slice(&fragment.chunk_count.to_le_bytes());
+    output.extend_from_slice(&chunk_payload_len.to_le_bytes());
+    output.extend_from_slice(&fragment.chunk_payload);
+    Ok(())
+}
+
 /// Encode only the `ClientStats` payload body.
 pub fn encode_client_stats_payload(
     stats: &ClientStats,
@@ -1149,6 +1274,7 @@ pub enum ProtocolMessage {
     Heartbeat(Heartbeat),
     HeartbeatAck(HeartbeatAck),
     VideoFrame(VideoFrame),
+    VideoFrameFragment(VideoFrameFragment),
     ClientStats(ClientStats),
     ServerNotice(ServerNotice),
 }
@@ -1161,6 +1287,7 @@ impl ProtocolMessage {
             Self::Heartbeat(_) => MessageType::Heartbeat,
             Self::HeartbeatAck(_) => MessageType::HeartbeatAck,
             Self::VideoFrame(_) => MessageType::VideoFrame,
+            Self::VideoFrameFragment(_) => MessageType::VideoFrameFragment,
             Self::ClientStats(_) => MessageType::ClientStats,
             Self::ServerNotice(_) => MessageType::ServerNotice,
         }
@@ -1312,6 +1439,22 @@ impl PayloadDecoder for VideoFramePayloadDecoder {
     }
 }
 
+/// Minimal payload decoder for `VideoFrameFragment`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct VideoFrameFragmentPayloadDecoder;
+
+impl PayloadDecoder for VideoFrameFragmentPayloadDecoder {
+    fn decode_payload(
+        &self,
+        _context: DecodeContext,
+        header: FixedHeader,
+        payload: &[u8],
+    ) -> Result<ProtocolMessage, ProtocolError> {
+        decode_video_frame_fragment_payload(header, payload)
+            .map(ProtocolMessage::VideoFrameFragment)
+    }
+}
+
 /// Minimal payload decoder for `ClientStats`.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
 pub struct ClientStatsPayloadDecoder;
@@ -1375,6 +1518,9 @@ impl MessageEncoder for ProtocolMessageEncoderBoundary {
             ProtocolMessage::Heartbeat(heartbeat) => encode_heartbeat(context, heartbeat, output),
             ProtocolMessage::HeartbeatAck(ack) => encode_heartbeat_ack(context, ack, output),
             ProtocolMessage::VideoFrame(frame) => encode_video_frame(context, frame, output),
+            ProtocolMessage::VideoFrameFragment(fragment) => {
+                encode_video_frame_fragment(context, fragment, output)
+            }
             ProtocolMessage::ClientStats(stats) => encode_client_stats(context, stats, output),
             ProtocolMessage::ServerNotice(notice) => encode_server_notice(context, notice, output),
         }
@@ -1392,6 +1538,7 @@ pub enum MessageType {
     VideoFrame = 5,
     ClientStats = 6,
     ServerNotice = 7,
+    VideoFrameFragment = 8,
 }
 
 impl TryFrom<u16> for MessageType {
@@ -1406,6 +1553,7 @@ impl TryFrom<u16> for MessageType {
             5 => Ok(Self::VideoFrame),
             6 => Ok(Self::ClientStats),
             7 => Ok(Self::ServerNotice),
+            8 => Ok(Self::VideoFrameFragment),
             value => Err(ProtocolError::UnknownMessageType(value)),
         }
     }
@@ -1580,6 +1728,25 @@ pub struct VideoFrame {
     pub codec: Codec,
     pub payload_size: usize,
     pub payload: Vec<u8>,
+}
+
+/// Fragment of an encoded video frame sent from a client to the server.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VideoFrameFragment {
+    pub message_type: MessageType,
+    pub protocol_version: ProtocolVersion,
+    pub client_id: ClientId,
+    pub run_id: RunId,
+    pub frame_id: u64,
+    pub capture_timestamp: TimestampMicros,
+    pub width: u32,
+    pub height: u32,
+    pub fps_nominal: u32,
+    pub total_payload_len: u32,
+    pub chunk_index: u32,
+    pub chunk_count: u32,
+    pub chunk_payload_len: usize,
+    pub chunk_payload: Vec<u8>,
 }
 
 /// Video codec identifier for encoded frame payloads.
@@ -2652,6 +2819,33 @@ mod tests {
     }
 
     #[test]
+    fn protocol_message_encoder_encodes_video_frame_fragment_packet() {
+        let fragment = test_video_frame_fragment(vec![0xaa, 0xbb, 0xcc, 0xdd]);
+        let message = ProtocolMessage::VideoFrameFragment(fragment.clone());
+        let encoder = ProtocolMessageEncoderBoundary;
+        let mut output = Vec::new();
+
+        encoder
+            .encode_message(
+                EncodeContext {
+                    protocol_version: ProtocolVersion(2),
+                },
+                &message,
+                &mut output,
+            )
+            .expect("video frame fragment packet should encode");
+
+        let decoded = decode_fixed_header(&output).expect("encoded fixed header should decode");
+        assert_eq!(decoded.header.message_type, MessageType::VideoFrameFragment);
+        assert_eq!(decoded.header.header_length, FIXED_HEADER_LEN);
+        assert_eq!(decoded.header.protocol_version, ProtocolVersion(2));
+
+        let decoded_fragment = decode_video_frame_fragment_payload(decoded.header, decoded.payload)
+            .expect("encoded fragment should decode");
+        assert_eq!(decoded_fragment, fragment);
+    }
+
+    #[test]
     fn rejects_video_frame_encode_payload_size_mismatch() {
         let mut frame = test_video_frame(vec![0xaa, 0xbb, 0xcc]);
         frame.payload_size = 999;
@@ -3257,6 +3451,25 @@ mod tests {
             codec: Codec::H264,
             payload_size: payload.len(),
             payload,
+        }
+    }
+
+    fn test_video_frame_fragment(chunk_payload: Vec<u8>) -> VideoFrameFragment {
+        VideoFrameFragment {
+            message_type: MessageType::VideoFrameFragment,
+            protocol_version: ProtocolVersion(2),
+            client_id: ClientId("client-1".to_string()),
+            run_id: RunId("run-1".to_string()),
+            frame_id: 42,
+            capture_timestamp: TimestampMicros(1_000_000),
+            width: 1280,
+            height: 720,
+            fps_nominal: 30,
+            total_payload_len: 9_001,
+            chunk_index: 2,
+            chunk_count: 8,
+            chunk_payload_len: chunk_payload.len(),
+            chunk_payload,
         }
     }
 

@@ -7914,5 +7914,69 @@ Responsibility split:
 
 Windows API-backed target enumeration, OS event-driven continuous frame
 acquisition, production encoder configuration, hardware encoder integration,
-packet fragmentation, decode, switcher rendering, late-frame drop mutation,
-4-view sync, and OBS integration remain future work.
+decode, switcher rendering, late-frame drop mutation, 4-view sync, and OBS
+integration remain future work. Sender-side packet fragmentation is now
+implemented; server-side fragment reassembly remains future work.
+
+## Client VideoFrame Fragmentation Boundary
+
+The client send path now includes the smallest sender-side UDP fragmentation
+boundary for real encoded `VideoFrame` traffic.
+
+- `ClientVideoFrameEncodeSendBoundary` first encodes the existing `VideoFrame`
+  packet and keeps the direct path when the encoded datagram fits within a
+  conservative safe UDP limit.
+- When the encoded datagram would exceed that safe limit, the boundary does not
+  change capture or H.264 encode behavior. Instead it fragments only the
+  already encoded H.264 payload bytes into `VideoFrameFragment` packets.
+- Fragmentation remains separate from capture session ownership, frame
+  acquisition, H.264 encode, auth, retry, server queueing, switcher decode, and
+  OBS integration.
+- Send results are now explicit about:
+  - direct sent
+  - fragmented sent
+  - fragments attempted
+  - fragments sent
+  - failed fragment index
+  - underlying send error
+
+Current non-goals for this slice:
+
+- no server-side fragment reassembly yet
+- no fragment retry/retransmit policy
+- no queue mutation or switcher consumption of fragment packets
+- no H.264-aware packetization beyond opaque payload slicing
+
+This means the sender can avoid oversized UDP datagrams for large encoded
+frames. Server-side reassembly now provides the first receive-side counterpart:
+
+- `ServerInboundRouter` routes decoded `VideoFrameFragment` packets separately
+  from non-fragmented `VideoFrame` packets.
+- The existing packet acceptance gate is reused. Fragment packets are accepted
+  only for the authenticated `client_id` / source endpoint binding, the same as
+  non-fragmented video.
+- `ServerVideoFrameReassemblyState` is caller-owned and separate from
+  `ServerVideoFrameQueueState`.
+- Reassembly state is keyed by `client_id + run_id + frame_id`.
+- Stored frame state records expected `chunk_count`, `total_payload_len`,
+  metadata, received chunks, and duplicate count.
+- `ServerVideoFrameFragmentReassemblyBoundary` applies one accepted fragment at
+  a time and can return fragment stored, duplicate ignored, rejected fragment,
+  or frame complete.
+- Metadata consistency is checked for protocol version, capture timestamp,
+  dimensions, nominal FPS, total payload length, and chunk count.
+- Completed payloads are reconstructed by `chunk_index` order and converted
+  back to a `VideoFrame`.
+- The reconstructed frame preserves `client_id`, `run_id`, `frame_id`,
+  `capture_timestamp`, dimensions, nominal FPS, and H.264 payload bytes from
+  the fragments.
+- Because the current fragment wire shape does not carry `send_timestamp`,
+  `is_keyframe`, or `codec`, the server reconstruction uses H.264 and neutral
+  local values for the fields not present in fragment metadata.
+- When complete, the boundary passes the reconstructed `VideoFrame` into the
+  existing `ServerVideoFrameQueueStorageBoundary`; incomplete frames remain in
+  the caller-owned reassembly state.
+
+This slice still does not add fragment retry/retransmit, expiration policy,
+late-frame queue mutation, switcher-specific fragment handling, 4-view
+orchestration, or OBS integration.

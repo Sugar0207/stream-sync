@@ -15,7 +15,8 @@ use stream_sync_protocol::{
     Heartbeat, HeartbeatAck, HeartbeatAckObservation, HeartbeatAckObservationBoundary,
     HeartbeatObservationCarrier, HeartbeatObservationCarrierBoundary, MessageEncoder, MessageType,
     ProtocolError, ProtocolMessage, ProtocolMessageEncoderBoundary, ProtocolVersion, RunId,
-    TimestampMicros, VideoFrame,
+    TimestampMicros, VideoFrame, VideoFrameFragment, FIXED_HEADER_LEN,
+    VIDEO_FRAME_FRAGMENT_NUMERIC_METADATA_LEN,
 };
 use stream_sync_timebase::{
     HeartbeatExchangeObservation, HeartbeatRttOffsetCalculationError, HeartbeatRttOffsetCalculator,
@@ -31,6 +32,8 @@ const DEFAULT_PLACEHOLDER_VIDEO_HEIGHT: u32 = 720;
 const DEFAULT_PLACEHOLDER_VIDEO_FPS: u32 = 30;
 const DEFAULT_PLACEHOLDER_H264_PAYLOAD: [u8; 4] = [0x00, 0x00, 0x01, 0x65];
 const UDP_PACKET_BUFFER_LEN: usize = 65_507;
+const CLIENT_VIDEO_FRAME_SAFE_MAX_DATAGRAM_LEN: usize = 1_200;
+const CLIENT_VIDEO_FRAME_FRAGMENT_TARGET_CHUNK_PAYLOAD_LEN: usize = 1_024;
 
 /// One-shot client-side AuthRequest send PoC.
 ///
@@ -502,11 +505,14 @@ impl ClientPlaceholderVideoFramePocLauncher {
                 },
             )
             .map_err(ClientPlaceholderVideoFramePocError::Send)?;
+        let handoff = send
+            .handoff
+            .expect("placeholder video frame should use direct send path");
 
         Ok(ClientPlaceholderVideoFramePocOutcome {
             destination: startup_config.destination,
-            frame: send.handoff.frame,
-            encoded_bytes: send.handoff.encoded_bytes,
+            frame: handoff.frame,
+            encoded_bytes: handoff.encoded_bytes,
             bytes_sent: send.bytes_sent,
         })
     }
@@ -677,6 +683,9 @@ impl ClientAuthPlaceholderVideoFramePocLauncher {
                 },
             )
             .map_err(ClientAuthPlaceholderVideoFramePocError::VideoSend)?;
+        let video_handoff = video_send
+            .handoff
+            .expect("placeholder video frame should use direct send path");
 
         Ok(ClientAuthPlaceholderVideoFramePocOutcome {
             destination: startup_config.destination,
@@ -687,8 +696,8 @@ impl ClientAuthPlaceholderVideoFramePocLauncher {
             auth_response_source,
             auth_response_bytes,
             auth_response,
-            frame: video_send.handoff.frame,
-            video_frame_bytes: video_send.handoff.encoded_bytes,
+            frame: video_handoff.frame,
+            video_frame_bytes: video_handoff.encoded_bytes,
             video_frame_bytes_sent: video_send.bytes_sent,
         })
     }
@@ -3625,10 +3634,30 @@ pub struct ClientVideoFrameEncodedSendHandoff {
     pub encoded_bytes: Vec<u8>,
 }
 
+/// Encoded `VideoFrameFragment` handoff produced before one UDP send attempt.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClientVideoFrameFragmentEncodedSendHandoff {
+    pub destination: SocketAddr,
+    pub fragment: VideoFrameFragment,
+    pub encoded_bytes: Vec<u8>,
+}
+
+/// Summary of how one client frame send completed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ClientVideoFrameSendSummary {
+    DirectSent,
+    FragmentedSent {
+        fragments_attempted: u32,
+        fragments_sent: u32,
+    },
+}
+
 /// Runtime-shaped result after one `VideoFrame` send attempt.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ClientVideoFrameEncodeSendRuntimeResult {
-    pub handoff: ClientVideoFrameEncodedSendHandoff,
+    pub summary: ClientVideoFrameSendSummary,
+    pub handoff: Option<ClientVideoFrameEncodedSendHandoff>,
+    pub fragment_handoffs: Vec<ClientVideoFrameFragmentEncodedSendHandoff>,
     pub bytes_sent: usize,
 }
 
@@ -3637,6 +3666,10 @@ pub struct ClientVideoFrameEncodeSendRuntimeResult {
 pub enum ClientVideoFrameEncodeSendError {
     EmptyPayload,
     Encode(ProtocolError),
+    FragmentPayloadCapacityTooSmall {
+        safe_max_datagram_len: usize,
+        fragment_overhead_len: usize,
+    },
     PacketTooLarge {
         encoded_packet_len: usize,
         max_udp_packet_len: usize,
@@ -3655,7 +3688,129 @@ pub struct ClientVideoFrameEncodeSendFailure {
     pub frame_id: u64,
     pub payload_len: usize,
     pub encoded_packet_len: Option<usize>,
+    pub fragments_attempted: u32,
+    pub fragments_sent: u32,
+    pub failed_fragment_index: Option<u32>,
     pub error: ClientVideoFrameEncodeSendError,
+}
+
+/// Fixed policy for sender-side `VideoFrame` UDP fragmentation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct ClientVideoFrameFragmentationPolicy {
+    pub safe_max_datagram_len: usize,
+    pub target_chunk_payload_len: usize,
+}
+
+impl Default for ClientVideoFrameFragmentationPolicy {
+    fn default() -> Self {
+        Self {
+            safe_max_datagram_len: CLIENT_VIDEO_FRAME_SAFE_MAX_DATAGRAM_LEN,
+            target_chunk_payload_len: CLIENT_VIDEO_FRAME_FRAGMENT_TARGET_CHUNK_PAYLOAD_LEN,
+        }
+    }
+}
+
+/// Fragmentation plan computed from one encoded source `VideoFrame`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClientVideoFrameFragmentationPlan {
+    pub total_payload_len: usize,
+    pub chunk_payload_len: usize,
+    pub chunk_count: u32,
+}
+
+/// Boundary that splits one large encoded `VideoFrame` payload into fragments.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct ClientVideoFrameFragmentationBoundary {
+    policy: ClientVideoFrameFragmentationPolicy,
+}
+
+impl ClientVideoFrameFragmentationBoundary {
+    fn fragment_overhead_len(&self, frame: &VideoFrame) -> usize {
+        usize::from(FIXED_HEADER_LEN)
+            + usize::from(2_u16)
+            + frame.client_id.0.len()
+            + usize::from(2_u16)
+            + frame.run_id.0.len()
+            + usize::from(VIDEO_FRAME_FRAGMENT_NUMERIC_METADATA_LEN)
+    }
+
+    pub fn plan(
+        &self,
+        frame: &VideoFrame,
+    ) -> Result<ClientVideoFrameFragmentationPlan, ClientVideoFrameEncodeSendError> {
+        let fragment_overhead_len = self.fragment_overhead_len(frame);
+        if fragment_overhead_len >= self.policy.safe_max_datagram_len {
+            return Err(
+                ClientVideoFrameEncodeSendError::FragmentPayloadCapacityTooSmall {
+                    safe_max_datagram_len: self.policy.safe_max_datagram_len,
+                    fragment_overhead_len,
+                },
+            );
+        }
+
+        let max_chunk_payload_len = self
+            .policy
+            .target_chunk_payload_len
+            .min(self.policy.safe_max_datagram_len - fragment_overhead_len);
+        let chunk_count = if frame.payload.is_empty() {
+            0
+        } else {
+            frame.payload.len().div_ceil(max_chunk_payload_len)
+        };
+        let chunk_count = u32::try_from(chunk_count).map_err(|_| {
+            ClientVideoFrameEncodeSendError::FragmentPayloadCapacityTooSmall {
+                safe_max_datagram_len: self.policy.safe_max_datagram_len,
+                fragment_overhead_len,
+            }
+        })?;
+
+        Ok(ClientVideoFrameFragmentationPlan {
+            total_payload_len: frame.payload.len(),
+            chunk_payload_len: max_chunk_payload_len,
+            chunk_count,
+        })
+    }
+
+    pub fn fragment(
+        &self,
+        frame: &VideoFrame,
+    ) -> Result<Vec<VideoFrameFragment>, ClientVideoFrameEncodeSendError> {
+        let plan = self.plan(frame)?;
+        let total_payload_len = u32::try_from(plan.total_payload_len).map_err(|_| {
+            ClientVideoFrameEncodeSendError::Encode(ProtocolError::InvalidPayloadLength {
+                expected: u32::MAX,
+                actual: plan.total_payload_len,
+            })
+        })?;
+        let mut fragments = Vec::with_capacity(plan.chunk_count as usize);
+
+        for (chunk_index, chunk) in frame.payload.chunks(plan.chunk_payload_len).enumerate() {
+            let chunk_index = u32::try_from(chunk_index).map_err(|_| {
+                ClientVideoFrameEncodeSendError::FragmentPayloadCapacityTooSmall {
+                    safe_max_datagram_len: self.policy.safe_max_datagram_len,
+                    fragment_overhead_len: self.fragment_overhead_len(frame),
+                }
+            })?;
+            fragments.push(VideoFrameFragment {
+                message_type: MessageType::VideoFrameFragment,
+                protocol_version: frame.protocol_version,
+                client_id: frame.client_id.clone(),
+                run_id: frame.run_id.clone(),
+                frame_id: frame.frame_id,
+                capture_timestamp: frame.capture_timestamp,
+                width: frame.width,
+                height: frame.height,
+                fps_nominal: frame.fps_nominal,
+                total_payload_len,
+                chunk_index,
+                chunk_count: plan.chunk_count,
+                chunk_payload_len: chunk.len(),
+                chunk_payload: chunk.to_vec(),
+            });
+        }
+
+        Ok(fragments)
+    }
 }
 
 /// Boundary that prepares and optionally sends one client `VideoFrame`.
@@ -3666,6 +3821,7 @@ pub struct ClientVideoFrameEncodeSendFailure {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
 pub struct ClientVideoFrameEncodeSendBoundary {
     encoder: ProtocolMessageEncoderBoundary,
+    fragmentation: ClientVideoFrameFragmentationBoundary,
 }
 
 impl ClientVideoFrameEncodeSendBoundary {
@@ -3691,6 +3847,29 @@ impl ClientVideoFrameEncodeSendBoundary {
         Ok(ClientVideoFrameEncodedSendHandoff {
             destination: input.destination,
             frame: input.frame,
+            encoded_bytes,
+        })
+    }
+
+    fn encode_fragment_handoff(
+        &self,
+        destination: SocketAddr,
+        fragment: VideoFrameFragment,
+    ) -> Result<ClientVideoFrameFragmentEncodedSendHandoff, ClientVideoFrameEncodeSendError> {
+        let mut encoded_bytes = Vec::new();
+        self.encoder
+            .encode_message(
+                EncodeContext {
+                    protocol_version: fragment.protocol_version,
+                },
+                &ProtocolMessage::VideoFrameFragment(fragment.clone()),
+                &mut encoded_bytes,
+            )
+            .map_err(ClientVideoFrameEncodeSendError::Encode)?;
+
+        Ok(ClientVideoFrameFragmentEncodedSendHandoff {
+            destination,
+            fragment,
             encoded_bytes,
         })
     }
@@ -3721,39 +3900,115 @@ impl ClientVideoFrameEncodeSendBoundary {
                     frame_id,
                     payload_len,
                     encoded_packet_len: None,
+                    fragments_attempted: 0,
+                    fragments_sent: 0,
+                    failed_fragment_index: None,
                     error,
                 })?;
         let encoded_packet_len = handoff.encoded_bytes.len();
-        if encoded_packet_len > UDP_PACKET_BUFFER_LEN {
-            return Err(ClientVideoFrameEncodeSendFailure {
-                destination,
-                local_source,
-                frame_id,
-                payload_len,
-                encoded_packet_len: Some(encoded_packet_len),
-                error: ClientVideoFrameEncodeSendError::PacketTooLarge {
-                    encoded_packet_len,
-                    max_udp_packet_len: UDP_PACKET_BUFFER_LEN,
-                },
+        if encoded_packet_len <= self.fragmentation.policy.safe_max_datagram_len {
+            let bytes_sent = socket
+                .send_to(&handoff.encoded_bytes, handoff.destination)
+                .map_err(|error| ClientVideoFrameEncodeSendFailure {
+                    destination,
+                    local_source,
+                    frame_id,
+                    payload_len,
+                    encoded_packet_len: Some(encoded_packet_len),
+                    fragments_attempted: 0,
+                    fragments_sent: 0,
+                    failed_fragment_index: None,
+                    error: ClientVideoFrameEncodeSendError::Send {
+                        kind: error.kind(),
+                        message: error.to_string(),
+                    },
+                })?;
+
+            return Ok(ClientVideoFrameEncodeSendRuntimeResult {
+                summary: ClientVideoFrameSendSummary::DirectSent,
+                handoff: Some(handoff),
+                fragment_handoffs: Vec::new(),
+                bytes_sent,
             });
         }
 
-        let bytes_sent = socket
-            .send_to(&handoff.encoded_bytes, handoff.destination)
+        let fragments = self
+            .fragmentation
+            .fragment(&handoff.frame)
             .map_err(|error| ClientVideoFrameEncodeSendFailure {
                 destination,
                 local_source,
                 frame_id,
                 payload_len,
                 encoded_packet_len: Some(encoded_packet_len),
-                error: ClientVideoFrameEncodeSendError::Send {
-                    kind: error.kind(),
-                    message: error.to_string(),
-                },
+                fragments_attempted: 0,
+                fragments_sent: 0,
+                failed_fragment_index: None,
+                error,
             })?;
+        let mut fragment_handoffs = Vec::with_capacity(fragments.len());
+        let mut bytes_sent = 0_usize;
+
+        for fragment in fragments {
+            let chunk_index = fragment.chunk_index;
+            let fragment_handoff = self
+                .encode_fragment_handoff(destination, fragment)
+                .map_err(|error| ClientVideoFrameEncodeSendFailure {
+                    destination,
+                    local_source,
+                    frame_id,
+                    payload_len,
+                    encoded_packet_len: Some(encoded_packet_len),
+                    fragments_attempted: fragment_handoffs.len() as u32 + 1,
+                    fragments_sent: fragment_handoffs.len() as u32,
+                    failed_fragment_index: Some(chunk_index),
+                    error,
+                })?;
+            let fragment_packet_len = fragment_handoff.encoded_bytes.len();
+            if fragment_packet_len > self.fragmentation.policy.safe_max_datagram_len {
+                return Err(ClientVideoFrameEncodeSendFailure {
+                    destination,
+                    local_source,
+                    frame_id,
+                    payload_len,
+                    encoded_packet_len: Some(encoded_packet_len),
+                    fragments_attempted: fragment_handoffs.len() as u32 + 1,
+                    fragments_sent: fragment_handoffs.len() as u32,
+                    failed_fragment_index: Some(chunk_index),
+                    error: ClientVideoFrameEncodeSendError::PacketTooLarge {
+                        encoded_packet_len: fragment_packet_len,
+                        max_udp_packet_len: self.fragmentation.policy.safe_max_datagram_len,
+                    },
+                });
+            }
+
+            let sent = socket
+                .send_to(&fragment_handoff.encoded_bytes, destination)
+                .map_err(|error| ClientVideoFrameEncodeSendFailure {
+                    destination,
+                    local_source,
+                    frame_id,
+                    payload_len,
+                    encoded_packet_len: Some(encoded_packet_len),
+                    fragments_attempted: fragment_handoffs.len() as u32 + 1,
+                    fragments_sent: fragment_handoffs.len() as u32,
+                    failed_fragment_index: Some(chunk_index),
+                    error: ClientVideoFrameEncodeSendError::Send {
+                        kind: error.kind(),
+                        message: error.to_string(),
+                    },
+                })?;
+            bytes_sent = bytes_sent.saturating_add(sent);
+            fragment_handoffs.push(fragment_handoff);
+        }
 
         Ok(ClientVideoFrameEncodeSendRuntimeResult {
-            handoff,
+            summary: ClientVideoFrameSendSummary::FragmentedSent {
+                fragments_attempted: fragment_handoffs.len() as u32,
+                fragments_sent: fragment_handoffs.len() as u32,
+            },
+            handoff: None,
+            fragment_handoffs,
             bytes_sent,
         })
     }
@@ -3780,8 +4035,7 @@ pub struct ClientRealEncodedVideoFrameOneShotInput<'a> {
 pub struct ClientRealEncodedVideoFrameOneShotSent {
     pub destination: SocketAddr,
     pub frame: VideoFrame,
-    pub encoded_bytes: Vec<u8>,
-    pub bytes_sent: usize,
+    pub send: ClientVideoFrameEncodeSendRuntimeResult,
     pub source_kind: ClientEncodedVideoFrameSourceKind,
 }
 
@@ -3889,6 +4143,7 @@ impl ClientRealEncodedVideoFrameOneShotBoundary {
             }
         };
 
+        let sent_frame = frame.clone();
         match self.send.send_one_detailed(
             input.socket,
             ClientVideoFrameEncodeSendInput {
@@ -3899,9 +4154,12 @@ impl ClientRealEncodedVideoFrameOneShotBoundary {
             Ok(send) => ClientRealEncodedVideoFrameOneShotResult::Sent(
                 ClientRealEncodedVideoFrameOneShotSent {
                     destination: input.destination,
-                    frame: send.handoff.frame,
-                    encoded_bytes: send.handoff.encoded_bytes,
-                    bytes_sent: send.bytes_sent,
+                    frame: send
+                        .handoff
+                        .as_ref()
+                        .map(|handoff| handoff.frame.clone())
+                        .unwrap_or(sent_frame),
+                    send,
                     source_kind,
                 },
             ),
@@ -12206,7 +12464,7 @@ mod tests {
 
     #[test]
     fn client_video_frame_encode_send_boundary_prepares_packet_with_protocol_encoder() {
-        let destination: SocketAddr = "127.0.0.1:5000".parse().unwrap();
+        let destination: SocketAddr = "[::1]:5000".parse().unwrap();
         let frame = client_video_frame_for_tests(vec![0x00, 0x00, 0x01, 0x65]);
         let handoff = ClientVideoFrameEncodeSendBoundary::default()
             .encode_handoff(ClientVideoFrameEncodeSendInput {
@@ -12273,9 +12531,13 @@ mod tests {
                 },
             )
             .expect("video frame datagram should send");
-
-        assert_eq!(result.handoff.destination, destination);
-        assert_eq!(result.bytes_sent, result.handoff.encoded_bytes.len());
+        let handoff = result
+            .handoff
+            .as_ref()
+            .expect("small frame should use direct send path");
+        assert_eq!(result.summary, ClientVideoFrameSendSummary::DirectSent);
+        assert_eq!(handoff.destination, destination);
+        assert_eq!(result.bytes_sent, handoff.encoded_bytes.len());
         let mut buffer = [0_u8; 1024];
         let (len, source) = receiver
             .recv_from(&mut buffer)
@@ -12284,7 +12546,7 @@ mod tests {
             source,
             sender.local_addr().expect("sender addr should exist")
         );
-        assert_eq!(&buffer[..len], result.handoff.encoded_bytes.as_slice());
+        assert_eq!(&buffer[..len], handoff.encoded_bytes.as_slice());
         let packet =
             decode_fixed_header(&buffer[..len]).expect("received fixed header should decode");
         let decoded = decode_payload_by_message_type(
@@ -12297,6 +12559,102 @@ mod tests {
         .expect("received video frame payload should decode");
 
         assert_eq!(decoded, ProtocolMessage::VideoFrame(frame));
+    }
+
+    #[test]
+    fn client_video_frame_encode_send_boundary_fragments_large_payload() {
+        let receiver = UdpSocket::bind("127.0.0.1:0").expect("receiver should bind");
+        receiver
+            .set_read_timeout(Some(Duration::from_secs(1)))
+            .expect("read timeout should be set");
+        let sender = UdpSocket::bind("127.0.0.1:0").expect("sender should bind");
+        let destination = receiver.local_addr().expect("receiver addr should exist");
+        let payload: Vec<u8> = (0..2_500).map(|index| (index % 251) as u8).collect();
+        let frame = client_video_frame_for_tests(payload.clone());
+
+        let result = ClientVideoFrameEncodeSendBoundary::default()
+            .send_one(
+                &sender,
+                ClientVideoFrameEncodeSendInput {
+                    destination,
+                    frame: frame.clone(),
+                },
+            )
+            .expect("large frame should fragment and send");
+
+        assert!(result.handoff.is_none());
+        assert_eq!(result.fragment_handoffs.len(), 3);
+        assert_eq!(
+            result.summary,
+            ClientVideoFrameSendSummary::FragmentedSent {
+                fragments_attempted: 3,
+                fragments_sent: 3,
+            }
+        );
+
+        let mut reconstructed = Vec::new();
+        for expected_index in 0..3_u32 {
+            let mut buffer = [0_u8; 1400];
+            let (len, source) = receiver
+                .recv_from(&mut buffer)
+                .expect("receiver should get one fragment packet");
+            assert_eq!(
+                source,
+                sender.local_addr().expect("sender addr should exist")
+            );
+            let packet =
+                decode_fixed_header(&buffer[..len]).expect("received fixed header should decode");
+            let decoded = decode_payload_by_message_type(
+                DecodeContext {
+                    expected_protocol_version: frame.protocol_version,
+                },
+                packet.header,
+                packet.payload,
+            )
+            .expect("received fragment payload should decode");
+            let ProtocolMessage::VideoFrameFragment(fragment) = decoded else {
+                panic!("expected VideoFrameFragment");
+            };
+            assert_eq!(fragment.frame_id, frame.frame_id);
+            assert_eq!(fragment.capture_timestamp, frame.capture_timestamp);
+            assert_eq!(fragment.width, frame.width);
+            assert_eq!(fragment.height, frame.height);
+            assert_eq!(fragment.fps_nominal, frame.fps_nominal);
+            assert_eq!(fragment.total_payload_len, payload.len() as u32);
+            assert_eq!(fragment.chunk_index, expected_index);
+            assert_eq!(fragment.chunk_count, 3);
+            assert_eq!(fragment.chunk_payload_len, fragment.chunk_payload.len());
+            reconstructed.extend_from_slice(&fragment.chunk_payload);
+        }
+
+        assert_eq!(reconstructed, payload);
+    }
+
+    #[test]
+    fn client_video_frame_encode_send_boundary_preserves_failed_fragment_index_and_error() {
+        let sender = UdpSocket::bind("127.0.0.1:0").expect("sender should bind");
+        let destination: SocketAddr = "[::1]:5000".parse().unwrap();
+        let payload = vec![0x65; 2_500];
+        let frame = client_video_frame_for_tests(payload.clone());
+
+        let failure = ClientVideoFrameEncodeSendBoundary::default()
+            .send_one_detailed(
+                &sender,
+                ClientVideoFrameEncodeSendInput { destination, frame },
+            )
+            .expect_err("mixed address families should fail during fragment send");
+
+        assert_eq!(failure.destination, destination);
+        assert_eq!(failure.frame_id, 7);
+        assert_eq!(failure.payload_len, payload.len());
+        assert!(failure.encoded_packet_len.unwrap() > CLIENT_VIDEO_FRAME_SAFE_MAX_DATAGRAM_LEN);
+        assert_eq!(failure.fragments_attempted, 1);
+        assert_eq!(failure.fragments_sent, 0);
+        assert_eq!(failure.failed_fragment_index, Some(0));
+        assert!(matches!(
+            failure.error,
+            ClientVideoFrameEncodeSendError::Send { .. }
+        ));
     }
 
     #[test]
@@ -12378,7 +12736,13 @@ mod tests {
         assert_eq!(sent.frame.width, 2);
         assert_eq!(sent.frame.height, 2);
         assert_eq!(sent.frame.payload, vec![0x00, 0x00, 0x01, 0x65]);
-        assert_eq!(sent.bytes_sent, sent.encoded_bytes.len());
+        let handoff = sent
+            .send
+            .handoff
+            .as_ref()
+            .expect("small real encoded frame should use direct path");
+        assert_eq!(sent.send.summary, ClientVideoFrameSendSummary::DirectSent);
+        assert_eq!(sent.send.bytes_sent, handoff.encoded_bytes.len());
 
         let mut buffer = [0_u8; 1024];
         let (len, source) = receiver
@@ -12388,7 +12752,7 @@ mod tests {
             source,
             sender.local_addr().expect("sender addr should exist")
         );
-        assert_eq!(&buffer[..len], sent.encoded_bytes.as_slice());
+        assert_eq!(&buffer[..len], handoff.encoded_bytes.as_slice());
     }
 
     #[test]
@@ -12571,7 +12935,7 @@ mod tests {
     }
 
     #[test]
-    fn client_video_frame_real_encoded_one_shot_send_failure_is_explicit() {
+    fn client_video_frame_real_encoded_one_shot_fragments_large_payload() {
         struct FixtureCapture;
         impl ClientCaptureFrameAcquisitionRuntimeHook for FixtureCapture {
             fn acquire_one_bgra_frame(
@@ -12627,20 +12991,25 @@ mod tests {
             &OversizedEncoder,
         );
 
-        let ClientRealEncodedVideoFrameOneShotResult::SendFailed { failure } = result else {
-            panic!("oversized packet should fail with send diagnostics");
+        let ClientRealEncodedVideoFrameOneShotResult::Sent(sent) = result else {
+            panic!("oversized payload should fragment and send");
         };
-        assert_eq!(failure.destination, "127.0.0.1:5000".parse().unwrap());
-        assert_eq!(failure.frame_id, 13);
-        assert_eq!(failure.payload_len, 70_000);
-        assert!(failure.encoded_packet_len.unwrap() > UDP_PACKET_BUFFER_LEN);
         assert_eq!(
-            failure.error,
-            ClientVideoFrameEncodeSendError::PacketTooLarge {
-                encoded_packet_len: failure.encoded_packet_len.unwrap(),
-                max_udp_packet_len: UDP_PACKET_BUFFER_LEN
+            sent.send.summary,
+            ClientVideoFrameSendSummary::FragmentedSent {
+                fragments_attempted: sent.send.fragment_handoffs.len() as u32,
+                fragments_sent: sent.send.fragment_handoffs.len() as u32,
             }
         );
+        assert!(sent.send.handoff.is_none());
+        assert!(sent.send.fragment_handoffs.len() > 1);
+        let reconstructed: Vec<u8> = sent
+            .send
+            .fragment_handoffs
+            .iter()
+            .flat_map(|handoff| handoff.fragment.chunk_payload.iter().copied())
+            .collect();
+        assert_eq!(reconstructed, vec![0x65; 70_000]);
     }
 
     #[test]
@@ -12795,7 +13164,7 @@ mod tests {
     }
 
     #[test]
-    fn client_video_frame_real_encoded_poc_launcher_surfaces_send_failure() {
+    fn client_video_frame_real_encoded_poc_launcher_surfaces_fragmented_send() {
         struct FixtureSession;
         impl ClientCaptureSessionRuntimeHook for FixtureSession {
             fn create_windows_graphics_capture_session(
@@ -12853,17 +13222,14 @@ mod tests {
             )
             .expect("launcher should return an explicit outcome");
 
-        let ClientRealEncodedVideoFramePocOutcome::NotSent { result, .. } = outcome else {
-            panic!("launcher should return not-sent for oversized packet");
+        let ClientRealEncodedVideoFramePocOutcome::Sent(sent) = outcome else {
+            panic!("launcher should send oversized payload via fragments");
         };
-        let ClientRealEncodedVideoFrameOneShotResult::SendFailed { failure } = result else {
-            panic!("oversized packet should surface send failure diagnostics");
-        };
-        assert_eq!(failure.payload_len, 70_000);
-        assert!(failure.encoded_packet_len.unwrap() > UDP_PACKET_BUFFER_LEN);
+        assert_eq!(sent.frame.payload.len(), 70_000);
+        assert!(sent.send.handoff.is_none());
         assert!(matches!(
-            failure.error,
-            ClientVideoFrameEncodeSendError::PacketTooLarge { .. }
+            sent.send.summary,
+            ClientVideoFrameSendSummary::FragmentedSent { .. }
         ));
     }
 
@@ -13189,7 +13555,7 @@ mod tests {
 
         let sender = UdpSocket::bind("127.0.0.1:0").expect("sender should bind");
         let local_source = sender.local_addr().expect("sender addr should exist");
-        let destination: SocketAddr = "127.0.0.1:5000".parse().unwrap();
+        let destination: SocketAddr = "255.255.255.255:5000".parse().unwrap();
         let mut capture_runtime = client_capture_session_runtime_for_tests();
 
         let result = ClientContinuousRealEncodedVideoFrameBoundary::default().run_with_runtimes(
@@ -13234,10 +13600,13 @@ mod tests {
         assert_eq!(failure.local_source, Some(local_source));
         assert_eq!(failure.frame_id, 71);
         assert_eq!(failure.payload_len, 70_000);
-        assert!(failure.encoded_packet_len.unwrap() > UDP_PACKET_BUFFER_LEN);
+        assert!(failure.encoded_packet_len.unwrap() > CLIENT_VIDEO_FRAME_SAFE_MAX_DATAGRAM_LEN);
+        assert_eq!(failure.fragments_attempted, 1);
+        assert_eq!(failure.fragments_sent, 0);
+        assert_eq!(failure.failed_fragment_index, Some(0));
         assert!(matches!(
             failure.error,
-            ClientVideoFrameEncodeSendError::PacketTooLarge { .. }
+            ClientVideoFrameEncodeSendError::Send { .. }
         ));
     }
 
@@ -13401,7 +13770,7 @@ mod tests {
         let ClientRealEncodedVideoFramePocOutcome::Sent(sent) = outcome.video else {
             panic!("accepted fixture should send real encoded video");
         };
-        assert_eq!(sent.bytes_sent, video_len);
+        assert_eq!(sent.send.bytes_sent, video_len);
         assert_eq!(
             sent.source_kind,
             ClientEncodedVideoFrameSourceKind::RealCaptureH264

@@ -794,6 +794,10 @@ fn outbound_message_ids(message: &ProtocolMessage) -> (Option<RunId>, Option<Cli
             Some(message.run_id.clone()),
             Some(message.client_id.clone()),
         ),
+        ProtocolMessage::VideoFrameFragment(message) => (
+            Some(message.run_id.clone()),
+            Some(message.client_id.clone()),
+        ),
         ProtocolMessage::ClientStats(message) => (
             Some(message.run_id.clone()),
             Some(message.client_id.clone()),
@@ -804,7 +808,9 @@ fn outbound_message_ids(message: &ProtocolMessage) -> (Option<RunId>, Option<Cli
 
 fn outbound_queue_item_class(message: &ProtocolMessage) -> OutboundQueueItemClass {
     match message {
-        ProtocolMessage::VideoFrame(_) => OutboundQueueItemClass::TimeSensitiveVideo,
+        ProtocolMessage::VideoFrame(_) | ProtocolMessage::VideoFrameFragment(_) => {
+            OutboundQueueItemClass::TimeSensitiveVideo
+        }
         ProtocolMessage::ClientStats(_) => OutboundQueueItemClass::Telemetry,
         ProtocolMessage::AuthRequest(_)
         | ProtocolMessage::AuthResponse(_)

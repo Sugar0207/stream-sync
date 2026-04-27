@@ -2867,3 +2867,54 @@ payload. Server-side route/handler wiring now preserves it as
 `ServerHeartbeatClientAckObservation`, but RTT/offset calculation, estimator
 state commit, smoothing, and continuous client send loops are still out of
 scope.
+
+---
+
+## Sender-Side VideoFrame Fragmentation
+
+The client send path now has the smallest sender-side fragmentation slice for
+large encoded `VideoFrame` payloads.
+
+- Small encoded frames still use the existing `VideoFrame` message and one UDP
+  datagram.
+- Large encoded frames are split after H.264 encode, before UDP send.
+- Fragmentation is driven by a conservative safe UDP datagram limit rather than
+  the theoretical 65 KB maximum.
+- The protocol now includes `MessageType::VideoFrameFragment`.
+
+`VideoFrameFragment` payload shape:
+
+| Field | Type | Notes |
+| --- | --- | --- |
+| `client_id` | string | Same source client as the original frame. |
+| `run_id` | string | Same run as the original frame. |
+| `frame_id` | `u64` | Original frame id. |
+| `capture_timestamp` | `u64` micros | Original capture timestamp. |
+| `width` | `u32` | Original frame width. |
+| `height` | `u32` | Original frame height. |
+| `fps_nominal` | `u32` | Original nominal FPS. |
+| `total_payload_len` | `u32` | Full encoded H.264 payload length before fragmentation. |
+| `chunk_index` | `u32` | Zero-based fragment index. |
+| `chunk_count` | `u32` | Total fragment count for the frame. |
+| `chunk_payload_len` | `u32` | This fragment's payload length. |
+| `chunk_payload` | bytes | Slice of the original encoded H.264 payload. |
+
+Current scope:
+
+- `crates/protocol` can encode and decode `VideoFrameFragment`.
+- `apps/client` can choose direct send vs fragmented send and keeps explicit
+  send summaries plus failed-fragment diagnostics.
+- `apps/server` can route and authenticate `VideoFrameFragment` packets through
+  the existing packet acceptance gate.
+- `apps/server` keeps caller-owned fragment reassembly state keyed by
+  `client_id + run_id + frame_id`.
+- The server reassembly boundary stores new chunks, ignores duplicate chunks
+  explicitly, rejects inconsistent metadata, and reports received / missing /
+  duplicate / rejected summary fields.
+- When all chunks are present, the server reconstructs the original encoded
+  payload by `chunk_index` order and creates a `VideoFrame` for existing queue
+  storage.
+- accepted queued `VideoFrame` insertion now applies both to original
+  non-fragmented `VideoFrame` packets and to completed reassembled fragments.
+- fragment retry/retransmit, expiration/drop policy, encryption, and
+  switcher-specific fragment handling remain out of scope.

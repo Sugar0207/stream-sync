@@ -1,5 +1,116 @@
 <!-- stream-sync/docs/operations/session-log.md -->
 
+## 2026-04-28
+### Type
+- Codex
+
+### Work
+- Added the smallest server-side `VideoFrameFragment` reassembly slice.
+- Routed decoded `VideoFrameFragment` packets through server inbound routing and the existing authenticated packet acceptance gate.
+- Added registered handler input for accepted/authenticated video frame fragments without changing auth policy.
+- Added caller-owned `ServerVideoFrameReassemblyState` keyed by client id, run id, and frame id.
+- Added fragment apply/reassembly results for stored fragment, duplicate ignored, rejected fragment, and completed frame.
+- Added metadata consistency checks, duplicate accounting, missing-fragment summary, and chunk-index ordered payload reconstruction.
+- Connected completed reassembled frames to the existing `ServerVideoFrameQueueStorageBoundary`.
+- Added unit tests for in-order completion, out-of-order completion, duplicate handling, metadata rejection, incomplete missing-fragment state, completed queue insertion, fragment routing, and fragment acceptance.
+
+### Changed Files
+- `apps/server/src/lib.rs`
+- `apps/switcher/src/lib.rs`
+- `docs/architecture/protocol.md`
+- `docs/architecture/system-design.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### Decisions
+- Kept packet authentication and endpoint acceptance unchanged by reusing the existing gate for `VideoFrameFragment`.
+- Kept reassembly state separate from queue storage and caller-owned.
+- Reassembled frames use the fragment-carried metadata and H.264 payload bytes; fragment metadata does not currently carry original `send_timestamp` or keyframe flag.
+- Completed frames are queued through the existing storage boundary instead of adding a separate queue path.
+
+### Unresolved
+- fragment retry/retransmit and expiration policy
+- late frame queue mutation / drop policy
+- switcher-specific fragmented frame direct handling
+- production H.264 encoder configuration / rate control
+- live manual verification of fragmented real encoded sender into server queue
+
+### Next
+- Manually verify bounded real encoded fragmented sender -> server reassembly -> queue.
+- Continue production H.264 encoder configuration / error logging policy.
+- Keep late-drop mutation and 4-view orchestration separate.
+
+### TODO Update
+- Marked server-side `VideoFrameFragment` reassembly as complete.
+- Updated current focus to show server reassembly / queue insertion is done and fragmented manual verification is next.
+- Kept production encoder config, late-drop policy, 4-view, and OBS deferred.
+
+### Validation
+- `cargo fmt`
+- `cargo fmt --check`
+- `cargo test -p stream-sync-server video_frame -- --test-threads=1`
+- `cargo test -p stream-sync-server video_frame_queue -- --test-threads=1`
+- `cargo check --workspace`
+- `git diff --check`
+
+---
+
+## 2026-04-28
+### Type
+- Codex
+
+### Work
+- Added the smallest sender-side `VideoFrame` UDP fragmentation slice.
+- Extended `crates/protocol` with `VideoFrameFragment`, encode/decode support, and `MessageType::VideoFrameFragment`.
+- Kept the existing direct `VideoFrame` UDP send path for packets within a conservative safe datagram limit.
+- Added client-side fragmentation planning and chunking over encoded H.264 payload bytes without changing capture or encode boundaries.
+- Added direct/fragmented send summaries plus fragment-attempt / fragment-sent / failed-fragment-index diagnostics.
+- Updated real encoded one-shot and bounded sender flows to preserve the new send summary and failure context.
+- Added unit tests for direct send, large-payload fragmentation, fragment metadata preservation, payload reconstruction, fragmented summary reporting, and failed fragment index/error reporting.
+- Updated architecture and protocol docs to state that sender-side fragmentation is implemented while server-side reassembly is still pending.
+
+### Changed Files
+- `apps/client/src/lib.rs`
+- `apps/client/src/main.rs`
+- `apps/server/src/lib.rs`
+- `crates/net-core/src/lib.rs`
+- `crates/protocol/src/lib.rs`
+- `docs/architecture/protocol.md`
+- `docs/architecture/system-design.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### Decisions
+- Used a conservative safe UDP datagram limit instead of targeting the 65 KB maximum.
+- Fragmentation is applied after H.264 encode and remains separate from capture/encode logic.
+- `VideoFrameFragment` carries explicit frame/chunk metadata and chunk payload bytes; full server-side reassembly is deferred.
+- Server auth and packet acceptance behavior remain unchanged; fragmented packets currently decode but are not reassembled into queued frames.
+
+### Unresolved
+- server-side `VideoFrameFragment` reassembly
+- queue insertion / switcher consumption of reassembled frames
+- production H.264 encoder configuration / rate control
+- late frame queue mutation / drop policy
+
+### Next
+- Add the smallest server-side `VideoFrameFragment` reassembly slice.
+- Decide the first queue/runtime handoff for reassembled frames without redesigning the rest of the protocol.
+- Re-run the manual real encoded bounded sender against the future reassembly path.
+
+### TODO Update
+- Marked payload fragmentation design/implementation complete on the sender side.
+- Added server-side fragment reassembly as the next explicit video-path task.
+- Updated Current Focus to distinguish sender-side fragmentation complete vs. server-side reassembly pending.
+
+### Validation
+- `cargo fmt`
+- `cargo fmt --check`
+- `cargo test -p stream-sync-client client_video_frame`
+- `cargo check --workspace`
+- `git diff --check`
+
+---
+
 ## 2026-04-27
 ### Type
 - Codex
