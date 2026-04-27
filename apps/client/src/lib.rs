@@ -3637,7 +3637,25 @@ pub struct ClientVideoFrameEncodeSendRuntimeResult {
 pub enum ClientVideoFrameEncodeSendError {
     EmptyPayload,
     Encode(ProtocolError),
-    Send(io::ErrorKind),
+    PacketTooLarge {
+        encoded_packet_len: usize,
+        max_udp_packet_len: usize,
+    },
+    Send {
+        kind: io::ErrorKind,
+        message: String,
+    },
+}
+
+/// Detailed failure context from one `VideoFrame` send attempt.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClientVideoFrameEncodeSendFailure {
+    pub destination: SocketAddr,
+    pub local_source: Option<SocketAddr>,
+    pub frame_id: u64,
+    pub payload_len: usize,
+    pub encoded_packet_len: Option<usize>,
+    pub error: ClientVideoFrameEncodeSendError,
 }
 
 /// Boundary that prepares and optionally sends one client `VideoFrame`.
@@ -3682,10 +3700,57 @@ impl ClientVideoFrameEncodeSendBoundary {
         socket: &UdpSocket,
         input: ClientVideoFrameEncodeSendInput,
     ) -> Result<ClientVideoFrameEncodeSendRuntimeResult, ClientVideoFrameEncodeSendError> {
-        let handoff = self.encode_handoff(input)?;
+        self.send_one_detailed(socket, input)
+            .map_err(|failure| failure.error)
+    }
+
+    pub fn send_one_detailed(
+        &self,
+        socket: &UdpSocket,
+        input: ClientVideoFrameEncodeSendInput,
+    ) -> Result<ClientVideoFrameEncodeSendRuntimeResult, ClientVideoFrameEncodeSendFailure> {
+        let destination = input.destination;
+        let frame_id = input.frame.frame_id;
+        let payload_len = input.frame.payload.len();
+        let local_source = socket.local_addr().ok();
+        let handoff =
+            self.encode_handoff(input)
+                .map_err(|error| ClientVideoFrameEncodeSendFailure {
+                    destination,
+                    local_source,
+                    frame_id,
+                    payload_len,
+                    encoded_packet_len: None,
+                    error,
+                })?;
+        let encoded_packet_len = handoff.encoded_bytes.len();
+        if encoded_packet_len > UDP_PACKET_BUFFER_LEN {
+            return Err(ClientVideoFrameEncodeSendFailure {
+                destination,
+                local_source,
+                frame_id,
+                payload_len,
+                encoded_packet_len: Some(encoded_packet_len),
+                error: ClientVideoFrameEncodeSendError::PacketTooLarge {
+                    encoded_packet_len,
+                    max_udp_packet_len: UDP_PACKET_BUFFER_LEN,
+                },
+            });
+        }
+
         let bytes_sent = socket
             .send_to(&handoff.encoded_bytes, handoff.destination)
-            .map_err(|error| ClientVideoFrameEncodeSendError::Send(error.kind()))?;
+            .map_err(|error| ClientVideoFrameEncodeSendFailure {
+                destination,
+                local_source,
+                frame_id,
+                payload_len,
+                encoded_packet_len: Some(encoded_packet_len),
+                error: ClientVideoFrameEncodeSendError::Send {
+                    kind: error.kind(),
+                    message: error.to_string(),
+                },
+            })?;
 
         Ok(ClientVideoFrameEncodeSendRuntimeResult {
             handoff,
@@ -3738,7 +3803,7 @@ pub enum ClientRealEncodedVideoFrameOneShotResult {
         error: ClientEncodedVideoFrameSourceError,
     },
     SendFailed {
-        error: ClientVideoFrameEncodeSendError,
+        failure: ClientVideoFrameEncodeSendFailure,
     },
 }
 
@@ -3824,7 +3889,7 @@ impl ClientRealEncodedVideoFrameOneShotBoundary {
             }
         };
 
-        match self.send.send_one(
+        match self.send.send_one_detailed(
             input.socket,
             ClientVideoFrameEncodeSendInput {
                 destination: input.destination,
@@ -3840,7 +3905,7 @@ impl ClientRealEncodedVideoFrameOneShotBoundary {
                     source_kind,
                 },
             ),
-            Err(error) => ClientRealEncodedVideoFrameOneShotResult::SendFailed { error },
+            Err(failure) => ClientRealEncodedVideoFrameOneShotResult::SendFailed { failure },
         }
     }
 }
@@ -3907,6 +3972,7 @@ pub struct ClientContinuousRealEncodedVideoFrameSummary {
     pub frame_build_failures: u64,
     pub send_failures: u64,
     pub stop_reason: Option<ClientContinuousRealEncodedVideoFrameStopReason>,
+    pub last_send_failure: Option<ClientVideoFrameEncodeSendFailure>,
 }
 
 /// Bounded runtime result for repeated real encoded sends.
@@ -4066,10 +4132,11 @@ fn update_continuous_real_encoded_summary(
             summary.frames_encoded = summary.frames_encoded.saturating_add(1);
             summary.frame_build_failures = summary.frame_build_failures.saturating_add(1);
         }
-        ClientRealEncodedVideoFrameOneShotResult::SendFailed { .. } => {
+        ClientRealEncodedVideoFrameOneShotResult::SendFailed { failure } => {
             summary.frames_captured = summary.frames_captured.saturating_add(1);
             summary.frames_encoded = summary.frames_encoded.saturating_add(1);
             summary.send_failures = summary.send_failures.saturating_add(1);
+            summary.last_send_failure = Some(failure.clone());
         }
     }
 }
@@ -9998,7 +10065,10 @@ impl From<ClientAuthRequestPocError> for ClientPlaceholderVideoFramePocError {
             ClientAuthRequestPocError::SetReadTimeout(error)
             | ClientAuthRequestPocError::Send(error)
             | ClientAuthRequestPocError::Receive(error) => {
-                Self::Send(ClientVideoFrameEncodeSendError::Send(error))
+                Self::Send(ClientVideoFrameEncodeSendError::Send {
+                    kind: error,
+                    message: error.to_string(),
+                })
             }
             ClientAuthRequestPocError::Decode(error) => {
                 Self::Send(ClientVideoFrameEncodeSendError::Encode(error))
@@ -12557,12 +12627,20 @@ mod tests {
             &OversizedEncoder,
         );
 
-        assert!(matches!(
-            result,
-            ClientRealEncodedVideoFrameOneShotResult::SendFailed {
-                error: ClientVideoFrameEncodeSendError::Send(_)
+        let ClientRealEncodedVideoFrameOneShotResult::SendFailed { failure } = result else {
+            panic!("oversized packet should fail with send diagnostics");
+        };
+        assert_eq!(failure.destination, "127.0.0.1:5000".parse().unwrap());
+        assert_eq!(failure.frame_id, 13);
+        assert_eq!(failure.payload_len, 70_000);
+        assert!(failure.encoded_packet_len.unwrap() > UDP_PACKET_BUFFER_LEN);
+        assert_eq!(
+            failure.error,
+            ClientVideoFrameEncodeSendError::PacketTooLarge {
+                encoded_packet_len: failure.encoded_packet_len.unwrap(),
+                max_udp_packet_len: UDP_PACKET_BUFFER_LEN
             }
-        ));
+        );
     }
 
     #[test]
@@ -12775,14 +12853,17 @@ mod tests {
             )
             .expect("launcher should return an explicit outcome");
 
+        let ClientRealEncodedVideoFramePocOutcome::NotSent { result, .. } = outcome else {
+            panic!("launcher should return not-sent for oversized packet");
+        };
+        let ClientRealEncodedVideoFrameOneShotResult::SendFailed { failure } = result else {
+            panic!("oversized packet should surface send failure diagnostics");
+        };
+        assert_eq!(failure.payload_len, 70_000);
+        assert!(failure.encoded_packet_len.unwrap() > UDP_PACKET_BUFFER_LEN);
         assert!(matches!(
-            outcome,
-            ClientRealEncodedVideoFramePocOutcome::NotSent {
-                result: ClientRealEncodedVideoFrameOneShotResult::SendFailed {
-                    error: ClientVideoFrameEncodeSendError::Send(_)
-                },
-                ..
-            }
+            failure.error,
+            ClientVideoFrameEncodeSendError::PacketTooLarge { .. }
         ));
     }
 
@@ -13070,6 +13151,94 @@ mod tests {
             result.summary.stop_reason,
             Some(ClientContinuousRealEncodedVideoFrameStopReason::MaxTicksReached)
         );
+    }
+
+    #[test]
+    fn client_video_frame_continuous_real_encoded_summary_preserves_send_failure_context() {
+        struct FixtureCapture;
+        impl ClientCaptureFrameAcquisitionRuntimeHook for FixtureCapture {
+            fn acquire_one_bgra_frame(
+                &self,
+                input: &mut ClientCaptureFrameAcquisitionInput<'_>,
+            ) -> ClientCaptureFrameAcquisitionResult {
+                ClientCaptureFrameAcquisitionResult::FrameAcquired {
+                    frame: ClientRawCapturedVideoFrame {
+                        capture_timestamp: input.capture_timestamp,
+                        width: 2,
+                        height: 2,
+                        fps_nominal: input.fps_nominal,
+                        pixel_format: ClientRawVideoPixelFormat::Bgra8,
+                        pixels: vec![0; 2 * 2 * 4],
+                    },
+                }
+            }
+        }
+        struct OversizedEncoder;
+        impl ClientH264EncoderRuntimeHook for OversizedEncoder {
+            fn encode_bgra_frame(
+                &self,
+                _input: &ClientH264EncoderInput,
+            ) -> ClientH264EncoderHookResult {
+                ClientH264EncoderHookResult::Encoded {
+                    payload: ClientH264EncodedPayload {
+                        bytes: vec![0x65; 70_000],
+                    },
+                }
+            }
+        }
+
+        let sender = UdpSocket::bind("127.0.0.1:0").expect("sender should bind");
+        let local_source = sender.local_addr().expect("sender addr should exist");
+        let destination: SocketAddr = "127.0.0.1:5000".parse().unwrap();
+        let mut capture_runtime = client_capture_session_runtime_for_tests();
+
+        let result = ClientContinuousRealEncodedVideoFrameBoundary::default().run_with_runtimes(
+            ClientContinuousRealEncodedVideoFrameInput {
+                socket: &sender,
+                destination,
+                capture_runtime: &mut capture_runtime,
+                protocol_version: ProtocolVersion(2),
+                client_id: ClientId("client-1".to_string()),
+                run_id: RunId("run-1".to_string()),
+                first_frame_id: 71,
+                fps_nominal: 30,
+                is_keyframe: true,
+                start_capture_if_needed: true,
+                policy: ClientContinuousRealEncodedVideoFramePolicy {
+                    max_frames: 1,
+                    max_ticks: 1,
+                    frame_wait_timeout_micros: 0,
+                    frame_interval_micros: 0,
+                    stop_on_capture_failure: true,
+                    stop_on_send_failure: true,
+                },
+            },
+            &FixtureCapture,
+            &OversizedEncoder,
+        );
+
+        assert_eq!(result.summary.frames_captured, 1);
+        assert_eq!(result.summary.frames_encoded, 1);
+        assert_eq!(result.summary.frames_sent, 0);
+        assert_eq!(result.summary.send_failures, 1);
+        assert_eq!(
+            result.summary.stop_reason,
+            Some(ClientContinuousRealEncodedVideoFrameStopReason::SendFailure)
+        );
+        let failure = result
+            .summary
+            .last_send_failure
+            .as_ref()
+            .expect("summary should keep send failure diagnostics");
+        assert_eq!(failure.destination, destination);
+        assert_eq!(failure.local_source, Some(local_source));
+        assert_eq!(failure.frame_id, 71);
+        assert_eq!(failure.payload_len, 70_000);
+        assert!(failure.encoded_packet_len.unwrap() > UDP_PACKET_BUFFER_LEN);
+        assert!(matches!(
+            failure.error,
+            ClientVideoFrameEncodeSendError::PacketTooLarge { .. }
+        ));
     }
 
     #[test]

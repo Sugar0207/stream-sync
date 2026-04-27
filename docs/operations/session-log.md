@@ -5,6 +5,53 @@
 - Codex
 
 ### Work
+- Improved diagnostics for bounded authenticated real encoded client UDP send failures.
+- Added detailed send failure context with destination, local socket address, frame id, encoded payload length, encoded packet length, and underlying send error.
+- Preserved OS `send_to` error kind and message for non-size send failures.
+- Added explicit `PacketTooLarge` error when the encoded protocol packet exceeds the current UDP datagram limit.
+- Added the last send failure details to `ClientContinuousRealEncodedVideoFrameSummary`.
+- Extended bounded sender CLI stdout with last send destination/source/frame/payload/packet/error fields.
+- Added/updated tests for packet-too-large send failure and bounded summary diagnostics.
+
+### Changed Files
+- `apps/client/src/lib.rs`
+- `apps/client/src/main.rs`
+- `docs/operations/manual-real-encoded-video-poc.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### Decisions
+- Kept capture/encode/send sequencing unchanged.
+- Kept successful send behavior unchanged.
+- Classified oversized encoded protocol packets before calling `send_to`, so the manual output is deterministic instead of platform-dependent.
+
+### Unresolved
+- packet fragmentation remains unimplemented.
+- production encoder configuration is still needed to control H.264 packet size.
+- manual E2E rerun is still needed with the new diagnostics.
+
+### Next
+- Re-run the bounded sender and inspect `last_send_error`, `last_send_payload_len`, and `last_send_packet_len`.
+- If `PacketTooLarge`, reduce encoder output in a future production encoder config task or implement fragmentation.
+
+### TODO Update
+- Marked detailed UDP send failure diagnostics complete.
+- Kept production H.264 encoder configuration / packet fragmentation as next unresolved work.
+
+### Validation
+- `cargo fmt`
+- `cargo fmt --check`
+- `cargo test -p stream-sync-client client_video_frame`
+- `cargo check --workspace`
+- `git diff --check` (passed; Git warned that LF will be replaced by CRLF for edited files)
+
+---
+
+## 2026-04-27
+### Type
+- Codex
+
+### Work
 - Reworked `docs/operations/manual-real-encoded-video-poc.md` into a step-by-step human E2E checklist.
 - Added prerequisite checks for FFmpeg, `cargo check --workspace`, config file existence, and UDP/firewall setup.
 - Added ordered command flows for one-client server queue verification and two-client live switcher verification using the bounded authenticated real encoded sender.

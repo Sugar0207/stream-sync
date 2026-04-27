@@ -272,6 +272,12 @@ encode_failures=<n>
 frame_build_failures=<n>
 send_failures=<n>
 stop_reason=<reason>
+last_send_destination=<addr|none>
+last_send_local_source=<addr|none>
+last_send_frame_id=<id|none>
+last_send_payload_len=<bytes|none>
+last_send_packet_len=<bytes|none>
+last_send_error=<error|none>
 ```
 
 Interpretation:
@@ -280,6 +286,8 @@ Interpretation:
 - `no_frame_count > 0` is acceptable if `frames_sent >= 1`.
 - `frames_captured > frames_encoded` points to encoder failure.
 - `frames_encoded > frames_sent` points to frame build or UDP send failure.
+- `last_send_error=PacketTooLarge { ... }` means the encoded protocol packet exceeded the UDP datagram limit.
+- `last_send_error=Send { kind: ..., message: ... }` preserves the OS `send_to` error kind and message.
 
 ### Switcher
 
@@ -435,6 +443,25 @@ Checks:
 - no other process owns the port
 - Windows Firewall allows UDP for the process/port
 - same-machine test uses `127.0.0.1`
+
+### Packet Too Large
+
+Symptoms:
+
+- client reports `send_failures > 0`
+- `last_send_error` contains `PacketTooLarge`
+- `last_send_payload_len` / `last_send_packet_len` are large
+
+Meaning:
+
+- capture and encode succeeded, but the encoded protocol packet exceeded the
+  current single-UDP-datagram limit.
+
+Fix:
+
+- lower capture/encoder output size once production encoder config exists
+- use shorter manual runs only as a diagnostic, not as a fix
+- implement packet fragmentation before relying on large frames
 
 ### Decode / Render Failed
 

@@ -314,8 +314,29 @@ fn main() {
                 Ok(outcome) => match outcome.video {
                     stream_sync_client::ClientContinuousRealEncodedVideoFramePocOutcome::Completed(runtime) => {
                         let summary = runtime.summary;
+                        let last_send_failure = summary.last_send_failure.as_ref();
+                        let last_send_destination = last_send_failure
+                            .map(|failure| failure.destination.to_string())
+                            .unwrap_or_else(|| "none".to_string());
+                        let last_send_local_source = last_send_failure
+                            .and_then(|failure| failure.local_source)
+                            .map(|source| source.to_string())
+                            .unwrap_or_else(|| "none".to_string());
+                        let last_send_frame_id = last_send_failure
+                            .map(|failure| failure.frame_id.to_string())
+                            .unwrap_or_else(|| "none".to_string());
+                        let last_send_payload_len = last_send_failure
+                            .map(|failure| failure.payload_len.to_string())
+                            .unwrap_or_else(|| "none".to_string());
+                        let last_send_packet_len = last_send_failure
+                            .and_then(|failure| failure.encoded_packet_len)
+                            .map(|len| len.to_string())
+                            .unwrap_or_else(|| "none".to_string());
+                        let last_send_error = last_send_failure
+                            .map(|failure| format!("{:?}", failure.error))
+                            .unwrap_or_else(|| "none".to_string());
                         println!(
-                            "auth real encoded video frame bounded PoC sent AuthRequest {} bytes from {} to {} and received AuthResponse {} bytes from {}; accepted={} reason_code={:?}; bounded_manual_runtime=true; frames_attempted={} frames_captured={} frames_encoded={} frames_sent={} no_frame_count={} capture_failures={} encode_failures={} frame_build_failures={} send_failures={} stop_reason={:?}",
+                            "auth real encoded video frame bounded PoC sent AuthRequest {} bytes from {} to {} and received AuthResponse {} bytes from {}; accepted={} reason_code={:?}; bounded_manual_runtime=true; frames_attempted={} frames_captured={} frames_encoded={} frames_sent={} no_frame_count={} capture_failures={} encode_failures={} frame_build_failures={} send_failures={} stop_reason={:?} last_send_destination={} last_send_local_source={} last_send_frame_id={} last_send_payload_len={} last_send_packet_len={} last_send_error={}",
                             outcome.auth_request_bytes_sent,
                             outcome.local_source,
                             outcome.destination,
@@ -332,7 +353,13 @@ fn main() {
                             summary.encode_failures,
                             summary.frame_build_failures,
                             summary.send_failures,
-                            summary.stop_reason
+                            summary.stop_reason,
+                            last_send_destination,
+                            last_send_local_source,
+                            last_send_frame_id,
+                            last_send_payload_len,
+                            last_send_packet_len,
+                            last_send_error
                         );
                     }
                     stream_sync_client::ClientContinuousRealEncodedVideoFramePocOutcome::SessionConfigNotPrepared {
