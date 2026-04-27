@@ -7976,6 +7976,18 @@ frames. Server-side reassembly now provides the first receive-side counterpart:
 - When complete, the boundary passes the reconstructed `VideoFrame` into the
   existing `ServerVideoFrameQueueStorageBoundary`; incomplete frames remain in
   the caller-owned reassembly state.
+- The manual `--receive-auth-video-queue-once` launcher has a bounded receive
+  policy for fragmented real encoded verification: max post-auth video packets,
+  idle receive timeout, expected reassembled frame count, and whether to stop
+  after that expected count. Its defaults are tuned for manual PoC completion
+  rather than production scheduling.
+- The manual launcher reports incomplete reassembly progress per tracked frame
+  as received / expected / missing fragment counts, so a human can distinguish
+  timeout, max-packet guard, and queue insertion failure.
+- The bounded authenticated real encoded client sender has optional manual
+  fragment pacing. The manual default sleeps briefly after every small batch of
+  fragments to reduce local UDP receive-buffer pressure; retransmit/retry is
+  still not implemented.
 
 This slice still does not add fragment retry/retransmit, expiration policy,
 late-frame queue mutation, switcher-specific fragment handling, 4-view

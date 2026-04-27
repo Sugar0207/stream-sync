@@ -307,9 +307,20 @@ fn main() {
                     std::process::exit(1);
                 })
                 .unwrap_or(5);
-            match stream_sync_client::run_auth_real_encoded_video_frame_poc_bounded_from_path(
+            let fragment_pacing_every =
+                parse_optional_arg_or_exit::<u32>(args.next(), "fragment-pacing-every")
+                    .unwrap_or(16);
+            let fragment_pacing_delay_ms =
+                parse_optional_arg_or_exit::<u64>(args.next(), "fragment-pacing-delay-ms")
+                    .unwrap_or(1);
+            let fragment_pacing = stream_sync_client::ClientVideoFrameFragmentPacingPolicy {
+                delay_every_fragments: fragment_pacing_every,
+                delay_micros: fragment_pacing_delay_ms.saturating_mul(1_000),
+            };
+            match stream_sync_client::run_auth_real_encoded_video_frame_poc_bounded_from_path_with_fragment_pacing(
                 &config_path,
                 max_frames,
+                fragment_pacing,
             ) {
                 Ok(outcome) => match outcome.video {
                     stream_sync_client::ClientContinuousRealEncodedVideoFramePocOutcome::Completed(runtime) => {
@@ -336,7 +347,7 @@ fn main() {
                             .map(|failure| format!("{:?}", failure.error))
                             .unwrap_or_else(|| "none".to_string());
                         println!(
-                            "auth real encoded video frame bounded PoC sent AuthRequest {} bytes from {} to {} and received AuthResponse {} bytes from {}; accepted={} reason_code={:?}; bounded_manual_runtime=true; frames_attempted={} frames_captured={} frames_encoded={} frames_sent={} direct_sends={} fragmented_sends={} fragments_attempted={} fragments_sent={} no_frame_count={} capture_failures={} encode_failures={} frame_build_failures={} send_failures={} stop_reason={:?} last_send_destination={} last_send_local_source={} last_send_frame_id={} last_send_payload_len={} last_send_packet_len={} last_send_error={}",
+                            "auth real encoded video frame bounded PoC sent AuthRequest {} bytes from {} to {} and received AuthResponse {} bytes from {}; accepted={} reason_code={:?}; bounded_manual_runtime=true; fragment_pacing_every={} fragment_pacing_delay_ms={} frames_attempted={} frames_captured={} frames_encoded={} frames_sent={} direct_sends={} fragmented_sends={} fragments_attempted={} fragments_sent={} no_frame_count={} capture_failures={} encode_failures={} frame_build_failures={} send_failures={} stop_reason={:?} last_send_destination={} last_send_local_source={} last_send_frame_id={} last_send_payload_len={} last_send_packet_len={} last_send_error={}",
                             outcome.auth_request_bytes_sent,
                             outcome.local_source,
                             outcome.destination,
@@ -344,6 +355,8 @@ fn main() {
                             outcome.auth_response_source,
                             outcome.auth_response.accepted,
                             outcome.auth_response.reason_code,
+                            fragment_pacing_every,
+                            fragment_pacing_delay_ms,
                             summary.frames_attempted,
                             summary.frames_captured,
                             summary.frames_encoded,
@@ -503,8 +516,20 @@ fn main() {
         }
         _ => {
             println!(
-                "stream-sync-client scaffold; use --auth-request-poc-once [config-path], --auth-heartbeat-poc-once [config-path], --auth-heartbeat-stats-poc-once [config-path], --placeholder-video-frame-poc-once [config-path], --auth-placeholder-video-frame-poc-once [config-path], --real-encoded-video-frame-poc-once [config-path], --auth-real-encoded-video-frame-poc-once [config-path], --auth-real-encoded-video-frame-poc-bounded [config-path] [max-frames], --auth-heartbeat-one-tick-runtime [config-path], or --auth-heartbeat-stats-one-tick-runtime [config-path]"
+                "stream-sync-client scaffold; use --auth-request-poc-once [config-path], --auth-heartbeat-poc-once [config-path], --auth-heartbeat-stats-poc-once [config-path], --placeholder-video-frame-poc-once [config-path], --auth-placeholder-video-frame-poc-once [config-path], --real-encoded-video-frame-poc-once [config-path], --auth-real-encoded-video-frame-poc-once [config-path], --auth-real-encoded-video-frame-poc-bounded [config-path] [max-frames] [fragment-pacing-every] [fragment-pacing-delay-ms], --auth-heartbeat-one-tick-runtime [config-path], or --auth-heartbeat-stats-one-tick-runtime [config-path]"
             );
         }
     }
+}
+
+fn parse_optional_arg_or_exit<T: std::str::FromStr>(value: Option<String>, name: &str) -> Option<T>
+where
+    T::Err: std::fmt::Display,
+{
+    value.map(|value| {
+        value.parse::<T>().unwrap_or_else(|error| {
+            eprintln!("invalid {name}: {error}");
+            std::process::exit(1);
+        })
+    })
 }

@@ -171,20 +171,42 @@ fn main() {
             let config_path = args
                 .next()
                 .unwrap_or_else(|| "configs/examples/server.example.toml".to_string());
+            let max_video_packets =
+                parse_optional_arg_or_exit::<usize>(args.next(), "max-video-packets")
+                    .unwrap_or(4_096);
+            let receive_timeout_ms =
+                parse_optional_arg_or_exit::<u64>(args.next(), "receive-timeout-ms")
+                    .unwrap_or(15_000);
+            let expected_frames =
+                parse_optional_arg_or_exit::<u64>(args.next(), "expected-reassembled-frames")
+                    .unwrap_or(1);
+            let stop_after_expected =
+                parse_optional_bool_or_exit(args.next(), "stop-after-expected-reassembled-frames")
+                    .unwrap_or(true);
+            let policy = stream_sync_server::ServerReceiveAuthVideoQueueOnceManualPolicy {
+                max_video_packets,
+                receive_timeout: std::time::Duration::from_millis(receive_timeout_ms),
+                expected_reassembled_frames: expected_frames,
+                stop_after_expected_reassembled_frames: stop_after_expected,
+            };
             let launcher = stream_sync_server::ServerReceiveAuthVideoQueueOnceLauncher::default();
-            match launcher.run_once_from_path_with_writers(
+            match launcher.run_once_from_path_with_writers_and_policy(
                 &config_path,
                 std::io::stderr(),
                 std::io::stderr(),
                 std::io::stderr(),
                 std::io::stderr(),
+                policy,
             ) {
                 Ok(outcome) => {
                     let decision = &outcome.first_auth.auth_flow.decision;
                     let (video_status, queued_status, queue_len, dropped_oldest, video_summary) =
                         auth_video_queue_summary(&outcome);
+                    let incomplete_progress = video_summary
+                        .map(format_incomplete_frame_progress)
+                        .unwrap_or_else(|| "none".to_string());
                     println!(
-                        "receive auth/video queue runtime handled auth on {}; auth_accepted={} auth_reason={:?} client_id={} run_id={} video={} queued={} queue_len={} dropped_oldest={} registered_clients={} packets_received={} fragments_received={} frames_reassembled={} frames_queued={} direct_frames_queued={} rejected_packets={} rejected_fragments={} duplicate_fragments={} non_video_packets={} incomplete_reassembly_frames={} receive_timed_out={} max_packets_reached={}",
+                        "receive auth/video queue runtime handled auth on {}; auth_accepted={} auth_reason={:?} client_id={} run_id={} video={} queued={} queue_len={} dropped_oldest={} registered_clients={} manual_max_video_packets={} manual_receive_timeout_ms={} manual_expected_reassembled_frames={} manual_stop_after_expected_reassembled_frames={} packets_received={} fragments_received={} frames_reassembled={} frames_queued={} direct_frames_queued={} rejected_packets={} rejected_fragments={} duplicate_fragments={} non_video_packets={} incomplete_reassembly_frames={} incomplete_frame_progress={} receive_timed_out={} max_packets_reached={}",
                         outcome.bind_address,
                         decision.accepted,
                         decision.reason_code,
@@ -195,6 +217,10 @@ fn main() {
                         queue_len,
                         dropped_oldest,
                         outcome.registry.entries().count(),
+                        max_video_packets,
+                        receive_timeout_ms,
+                        expected_frames,
+                        stop_after_expected,
                         video_summary
                             .map(|summary| summary.packets_received.to_string())
                             .unwrap_or_else(|| "none".to_string()),
@@ -225,6 +251,7 @@ fn main() {
                         video_summary
                             .map(|summary| summary.incomplete_reassembly_frames.to_string())
                             .unwrap_or_else(|| "none".to_string()),
+                        incomplete_progress,
                         video_summary
                             .map(|summary| summary.receive_timed_out.to_string())
                             .unwrap_or_else(|| "none".to_string()),
@@ -241,10 +268,58 @@ fn main() {
         }
         _ => {
             println!(
-                "stream-sync-server scaffold; use --auth-response-poc-once [config-path], --receive-send-once [config-path], --receive-send-twice [config-path], --receive-send-three [config-path], or --receive-auth-video-queue-once [config-path]"
+                "stream-sync-server scaffold; use --auth-response-poc-once [config-path], --receive-send-once [config-path], --receive-send-twice [config-path], --receive-send-three [config-path], or --receive-auth-video-queue-once [config-path] [max-video-packets] [receive-timeout-ms] [expected-reassembled-frames] [stop-after-expected-reassembled-frames]"
             );
         }
     }
+}
+
+fn parse_optional_arg_or_exit<T: std::str::FromStr>(value: Option<String>, name: &str) -> Option<T>
+where
+    T::Err: std::fmt::Display,
+{
+    value.map(|value| {
+        value.parse::<T>().unwrap_or_else(|error| {
+            eprintln!("invalid {name}: {error}");
+            std::process::exit(1);
+        })
+    })
+}
+
+fn parse_optional_bool_or_exit(value: Option<String>, name: &str) -> Option<bool> {
+    value.map(|value| match value.as_str() {
+        "true" | "1" | "yes" => true,
+        "false" | "0" | "no" => false,
+        _ => {
+            eprintln!("invalid {name}: expected true/false");
+            std::process::exit(1);
+        }
+    })
+}
+
+fn format_incomplete_frame_progress(
+    summary: &stream_sync_server::ServerReceiveAuthVideoQueueOnceVideoSummary,
+) -> String {
+    if summary.incomplete_frame_progress.is_empty() {
+        return "none".to_string();
+    }
+
+    summary
+        .incomplete_frame_progress
+        .iter()
+        .map(|progress| {
+            format!(
+                "{}/{}/{}:{}/{}:missing={}",
+                progress.key.client_id,
+                progress.key.run_id,
+                progress.key.frame_id,
+                progress.fragments_received,
+                progress.fragments_expected,
+                progress.fragments_missing
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(";")
 }
 
 fn sent_bytes(result: &stream_sync_server::ServerControllerReceiveSendRuntimeResult) -> usize {

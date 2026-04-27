@@ -872,6 +872,7 @@ impl ClientRealEncodedVideoFramePocLauncher {
             fps_nominal: startup_config.fps_nominal,
             is_keyframe: startup_config.is_keyframe,
             start_capture_if_needed: startup_config.start_capture_if_needed,
+            fragment_pacing: ClientVideoFrameFragmentPacingPolicy::default(),
         };
 
         match self.one_shot.send_once_with_runtimes(
@@ -1143,6 +1144,10 @@ impl ClientAuthRealEncodedVideoFrameBoundedPocLauncher {
                 frame_interval_micros: 1_000_000 / u64::from(DEFAULT_PLACEHOLDER_VIDEO_FPS),
                 stop_on_capture_failure: true,
                 stop_on_send_failure: true,
+                fragment_pacing: ClientVideoFrameFragmentPacingPolicy {
+                    delay_every_fragments: 16,
+                    delay_micros: 1_000,
+                },
             },
         }
     }
@@ -1328,6 +1333,18 @@ pub fn run_auth_real_encoded_video_frame_poc_bounded_from_path(
 {
     ClientAuthRealEncodedVideoFrameBoundedPocLauncher::default()
         .run_once_from_path(path, max_frames)
+}
+
+pub fn run_auth_real_encoded_video_frame_poc_bounded_from_path_with_fragment_pacing(
+    path: impl AsRef<Path>,
+    max_frames: u64,
+    fragment_pacing: ClientVideoFrameFragmentPacingPolicy,
+) -> Result<ClientAuthRealEncodedVideoFrameBoundedPocOutcome, ClientAuthRealEncodedVideoFramePocError>
+{
+    let launcher = ClientAuthRealEncodedVideoFrameBoundedPocLauncher::default();
+    let mut startup_config = launcher.load_startup_config_from_path(path, max_frames)?;
+    startup_config.policy.fragment_pacing = fragment_pacing;
+    launcher.run_once(startup_config)
 }
 
 /// Client boundary for observing one received HeartbeatAck.
@@ -3626,6 +3643,13 @@ pub struct ClientVideoFrameEncodeSendInput {
     pub frame: VideoFrame,
 }
 
+/// Optional pacing applied between fragment datagram sends.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct ClientVideoFrameFragmentPacingPolicy {
+    pub delay_every_fragments: u32,
+    pub delay_micros: u64,
+}
+
 /// Encoded `VideoFrame` handoff produced before the UDP send attempt.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ClientVideoFrameEncodedSendHandoff {
@@ -3888,6 +3912,19 @@ impl ClientVideoFrameEncodeSendBoundary {
         socket: &UdpSocket,
         input: ClientVideoFrameEncodeSendInput,
     ) -> Result<ClientVideoFrameEncodeSendRuntimeResult, ClientVideoFrameEncodeSendFailure> {
+        self.send_one_detailed_with_fragment_pacing(
+            socket,
+            input,
+            ClientVideoFrameFragmentPacingPolicy::default(),
+        )
+    }
+
+    pub fn send_one_detailed_with_fragment_pacing(
+        &self,
+        socket: &UdpSocket,
+        input: ClientVideoFrameEncodeSendInput,
+        fragment_pacing: ClientVideoFrameFragmentPacingPolicy,
+    ) -> Result<ClientVideoFrameEncodeSendRuntimeResult, ClientVideoFrameEncodeSendFailure> {
         let destination = input.destination;
         let frame_id = input.frame.frame_id;
         let payload_len = input.frame.payload.len();
@@ -4000,6 +4037,7 @@ impl ClientVideoFrameEncodeSendBoundary {
                 })?;
             bytes_sent = bytes_sent.saturating_add(sent);
             fragment_handoffs.push(fragment_handoff);
+            maybe_sleep_after_fragment_send(fragment_pacing, fragment_handoffs.len());
         }
 
         Ok(ClientVideoFrameEncodeSendRuntimeResult {
@@ -4011,6 +4049,18 @@ impl ClientVideoFrameEncodeSendBoundary {
             fragment_handoffs,
             bytes_sent,
         })
+    }
+}
+
+fn maybe_sleep_after_fragment_send(
+    pacing: ClientVideoFrameFragmentPacingPolicy,
+    fragments_sent: usize,
+) {
+    if pacing.delay_every_fragments == 0 || pacing.delay_micros == 0 {
+        return;
+    }
+    if (fragments_sent as u32) % pacing.delay_every_fragments == 0 {
+        std::thread::sleep(Duration::from_micros(pacing.delay_micros));
     }
 }
 
@@ -4028,6 +4078,7 @@ pub struct ClientRealEncodedVideoFrameOneShotInput<'a> {
     pub fps_nominal: u32,
     pub is_keyframe: bool,
     pub start_capture_if_needed: bool,
+    pub fragment_pacing: ClientVideoFrameFragmentPacingPolicy,
 }
 
 /// Successful one-shot real encoded `VideoFrame` send result.
@@ -4144,12 +4195,13 @@ impl ClientRealEncodedVideoFrameOneShotBoundary {
         };
 
         let sent_frame = frame.clone();
-        match self.send.send_one_detailed(
+        match self.send.send_one_detailed_with_fragment_pacing(
             input.socket,
             ClientVideoFrameEncodeSendInput {
                 destination: input.destination,
                 frame,
             },
+            input.fragment_pacing,
         ) {
             Ok(send) => ClientRealEncodedVideoFrameOneShotResult::Sent(
                 ClientRealEncodedVideoFrameOneShotSent {
@@ -4177,6 +4229,7 @@ pub struct ClientContinuousRealEncodedVideoFramePolicy {
     pub frame_interval_micros: u64,
     pub stop_on_capture_failure: bool,
     pub stop_on_send_failure: bool,
+    pub fragment_pacing: ClientVideoFrameFragmentPacingPolicy,
 }
 
 impl Default for ClientContinuousRealEncodedVideoFramePolicy {
@@ -4188,6 +4241,7 @@ impl Default for ClientContinuousRealEncodedVideoFramePolicy {
             frame_interval_micros: 1_000_000 / u64::from(DEFAULT_PLACEHOLDER_VIDEO_FPS),
             stop_on_capture_failure: true,
             stop_on_send_failure: true,
+            fragment_pacing: ClientVideoFrameFragmentPacingPolicy::default(),
         }
     }
 }
@@ -4311,6 +4365,7 @@ impl ClientContinuousRealEncodedVideoFrameBoundary {
                 fps_nominal: input.fps_nominal,
                 is_keyframe: input.is_keyframe,
                 start_capture_if_needed: input.start_capture_if_needed,
+                fragment_pacing: policy.fragment_pacing,
             };
 
             let result = self.one_shot.send_once_with_runtimes(
@@ -12737,6 +12792,7 @@ mod tests {
             fps_nominal: 30,
             is_keyframe: true,
             start_capture_if_needed: true,
+            fragment_pacing: ClientVideoFrameFragmentPacingPolicy::default(),
         };
 
         let result = ClientRealEncodedVideoFrameOneShotBoundary::default().send_once_with_runtimes(
@@ -12817,6 +12873,7 @@ mod tests {
             fps_nominal: 30,
             is_keyframe: true,
             start_capture_if_needed: true,
+            fragment_pacing: ClientVideoFrameFragmentPacingPolicy::default(),
         };
 
         let result = ClientRealEncodedVideoFrameOneShotBoundary::default().send_once_with_runtimes(
@@ -12872,6 +12929,7 @@ mod tests {
             fps_nominal: 30,
             is_keyframe: true,
             start_capture_if_needed: true,
+            fragment_pacing: ClientVideoFrameFragmentPacingPolicy::default(),
         };
 
         let result = ClientRealEncodedVideoFrameOneShotBoundary::default().send_once_with_runtimes(
@@ -12939,6 +12997,7 @@ mod tests {
             fps_nominal: 30,
             is_keyframe: true,
             start_capture_if_needed: true,
+            fragment_pacing: ClientVideoFrameFragmentPacingPolicy::default(),
         };
 
         let result = ClientRealEncodedVideoFrameOneShotBoundary::default().send_once_with_runtimes(
@@ -13006,6 +13065,7 @@ mod tests {
             fps_nominal: 30,
             is_keyframe: true,
             start_capture_if_needed: true,
+            fragment_pacing: ClientVideoFrameFragmentPacingPolicy::default(),
         };
 
         let result = ClientRealEncodedVideoFrameOneShotBoundary::default().send_once_with_runtimes(
@@ -13318,6 +13378,7 @@ mod tests {
                     frame_interval_micros: 0,
                     stop_on_capture_failure: true,
                     stop_on_send_failure: true,
+                    fragment_pacing: ClientVideoFrameFragmentPacingPolicy::default(),
                 },
             },
             &FixtureCapture,
@@ -13398,6 +13459,7 @@ mod tests {
                     frame_interval_micros: 0,
                     stop_on_capture_failure: true,
                     stop_on_send_failure: true,
+                    fragment_pacing: ClientVideoFrameFragmentPacingPolicy::default(),
                 },
             },
             &NoFrameCapture,
@@ -13459,6 +13521,7 @@ mod tests {
                     frame_interval_micros: 0,
                     stop_on_capture_failure: true,
                     stop_on_send_failure: true,
+                    fragment_pacing: ClientVideoFrameFragmentPacingPolicy::default(),
                 },
             },
             &FailingCapture,
@@ -13527,6 +13590,7 @@ mod tests {
                     frame_interval_micros: 0,
                     stop_on_capture_failure: true,
                     stop_on_send_failure: true,
+                    fragment_pacing: ClientVideoFrameFragmentPacingPolicy::default(),
                 },
             },
             &FixtureCapture,
@@ -13600,6 +13664,7 @@ mod tests {
                     frame_interval_micros: 0,
                     stop_on_capture_failure: true,
                     stop_on_send_failure: true,
+                    fragment_pacing: ClientVideoFrameFragmentPacingPolicy::default(),
                 },
             },
             &FixtureCapture,
@@ -13878,6 +13943,7 @@ mod tests {
                 frame_interval_micros: 0,
                 stop_on_capture_failure: true,
                 stop_on_send_failure: true,
+                fragment_pacing: ClientVideoFrameFragmentPacingPolicy::default(),
             },
         };
         let response = AuthResponse {
@@ -14014,6 +14080,7 @@ mod tests {
                 frame_interval_micros: 0,
                 stop_on_capture_failure: true,
                 stop_on_send_failure: true,
+                fragment_pacing: ClientVideoFrameFragmentPacingPolicy::default(),
             },
         };
         let response = AuthResponse {

@@ -5,6 +5,61 @@
 - Codex
 
 ### Work
+- Improved the fragmented real encoded manual PoC after a real run showed the client sent all fragments but the server timed out before completing a frame.
+- Raised the server auth/video queue manual launcher defaults from a small fixed receive window to a manual policy tuned for fragmented PoC completion.
+- Added CLI-overridable server manual policy values for max post-auth video packets, receive timeout, expected reassembled frames, and stop-after-expected behavior.
+- Added a stop condition based on `frames_reassembled >= expected_reassembled_frames`.
+- Added incomplete per-frame reassembly progress diagnostics showing received / expected / missing fragment counts.
+- Added optional client-side fragment pacing for the bounded authenticated real encoded sender and exposed it on the manual CLI.
+- Updated the manual verification checklist with the new recommended commands, defaults, and diagnosis steps.
+
+### Changed Files
+- `apps/client/src/lib.rs`
+- `apps/client/src/main.rs`
+- `apps/server/src/lib.rs`
+- `apps/server/src/main.rs`
+- `docs/architecture/system-design.md`
+- `docs/operations/manual-real-encoded-video-poc.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### Decisions
+- Kept protocol wire format unchanged.
+- Kept retransmit/retry and fragment expiration out of scope.
+- Used bounded manual policy and sender pacing instead of redesigning fragmentation/reassembly.
+- Kept the normal low-level send path default pacing-disabled; the bounded manual sender defaults to conservative pacing.
+
+### Unresolved
+- Actual rerun of the fragmented real encoded manual PoC with the new settings.
+- Fragment retransmit/retry.
+- Fragment expiration policy.
+- UDP receive buffer sizing remains documented/operational rather than implemented in this slice.
+- Production H.264 encoder configuration / rate control.
+
+### Next
+- Run the one-client manual queue check with `max_frames=1` or `2`, server policy `4096 15000 1 true`, and client pacing `16 1`.
+- If still incomplete, compare `incomplete_frame_progress` against client `fragments_attempted` and then consider OS receive buffer tuning or larger safe fragment payload sizing in a separate slice.
+
+### TODO Update
+- Updated current position to include manual receive policy, incomplete frame progress diagnostics, and client fragment pacing.
+- Kept the next item as re-running the fragmented sender -> server reassembly -> queue manual verification with the new conservative settings.
+
+### Validation
+- `cargo fmt`
+- `cargo fmt --check`
+- `cargo test -p stream-sync-client client_video_frame -- --test-threads=1`
+- `cargo test -p stream-sync-server video_frame -- --test-threads=1`
+- `cargo test -p stream-sync-server video_frame_queue -- --test-threads=1`
+- `cargo check --workspace`
+- `git diff --check`
+
+---
+
+## 2026-04-28
+### Type
+- Codex
+
+### Work
 - Audited the manual fragmented real encoded `VideoFrame` verification path.
 - Confirmed the bounded client sender had fragment send state internally but did not print successful fragment counters.
 - Confirmed the server auth/video queue launcher only exposed queue status and needed manual diagnostics for fragmented receive/reassembly.

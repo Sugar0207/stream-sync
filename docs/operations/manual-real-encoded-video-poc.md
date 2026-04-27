@@ -110,8 +110,19 @@ queued as one `VideoFrame`.
 ### Terminal 1: Server Queue Launcher
 
 ```powershell
-cargo run -p stream-sync-server -- --receive-auth-video-queue-once configs/examples/server.example.toml
+cargo run -p stream-sync-server -- --receive-auth-video-queue-once configs/examples/server.example.toml 4096 15000 1 true
 ```
+
+Arguments after the config path are manual receive policy values:
+
+- `4096`: max post-auth video packets to receive
+- `15000`: idle receive timeout in milliseconds
+- `1`: expected reassembled frame count
+- `true`: stop after the expected reassembled frame count is reached
+
+If these arguments are omitted, the launcher uses the same defaults. For the
+fragmented real encoded PoC, use `max_frames=1` or `2` on the client first so
+the server can finish one frame before later frames add more incomplete state.
 
 Expected server stdout shape:
 
@@ -131,6 +142,10 @@ video=received
 queued=queued
 queue_len=1
 registered_clients=1
+manual_max_video_packets=4096
+manual_receive_timeout_ms=15000
+manual_expected_reassembled_frames=1
+manual_stop_after_expected_reassembled_frames=true
 packets_received=<n>
 fragments_received=<n>
 frames_reassembled=<n>
@@ -140,6 +155,7 @@ rejected_packets=0
 rejected_fragments=0
 duplicate_fragments=0
 incomplete_reassembly_frames=0
+incomplete_frame_progress=none
 receive_timed_out=false
 max_packets_reached=false
 ```
@@ -165,8 +181,18 @@ receive loop, does not retransmit, and does not implement fragment expiration.
 ### Terminal 2: Bounded Authenticated Client Sender
 
 ```powershell
-cargo run -p stream-sync-client -- --auth-real-encoded-video-frame-poc-bounded configs/examples/client.accepted.example.toml 5
+cargo run -p stream-sync-client -- --auth-real-encoded-video-frame-poc-bounded configs/examples/client.accepted.example.toml 1 16 1
 ```
+
+Arguments after the config path are:
+
+- `1`: max frames to send
+- `16`: fragment pacing interval; sleep after every 16 fragments
+- `1`: fragment pacing delay in milliseconds
+
+The bounded manual sender defaults to this conservative pacing. Use
+`fragment-pacing-every=0` or `fragment-pacing-delay-ms=0` only when testing the
+unpaced burst behavior.
 
 Expected client stdout includes:
 
@@ -174,6 +200,8 @@ Expected client stdout includes:
 accepted=true
 reason_code=Ok
 bounded_manual_runtime=true
+fragment_pacing_every=16
+fragment_pacing_delay_ms=1
 frames_attempted=<n>
 frames_captured=<n>
 frames_encoded=<n>
@@ -324,6 +352,8 @@ bounded_manual_runtime=true
 Useful counters:
 
 ```text
+fragment_pacing_every=<n>
+fragment_pacing_delay_ms=<n>
 frames_attempted=<n>
 frames_captured=<n>
 frames_encoded=<n>
@@ -370,6 +400,7 @@ rejected_packets=<n>
 rejected_fragments=<n>
 duplicate_fragments=<n>
 incomplete_reassembly_frames=<n>
+incomplete_frame_progress=<none|client/run/frame:received/expected:missing=n;...>
 receive_timed_out=<bool>
 max_packets_reached=<bool>
 ```
@@ -379,6 +410,8 @@ Interpretation:
 - `fragments_received > 1` means the server received fragmented UDP packets.
 - `frames_reassembled >= 1` means the server reconstructed one original encoded payload.
 - `frames_queued >= 1` and `queue_len >= 1` mean the reassembled frame reached existing queue storage.
+- `incomplete_frame_progress` lists caller-owned incomplete frames with
+  received / expected / missing fragment counts.
 - `receive_timed_out=true` with `incomplete_reassembly_frames > 0` means at least one fragment was missing and the manual launcher stopped waiting.
 - `max_packets_reached=true` means the manual bounded receiver hit its packet guard before completion.
 
@@ -592,6 +625,14 @@ Meaning:
 Fix / retry:
 
 - rerun the manual check on localhost first
+- keep the client bounded to `max_frames=1` or `2` while proving reassembly
+- use the server manual policy defaults or raise them explicitly, for example
+  `--receive-auth-video-queue-once configs/examples/server.example.toml 8192 30000 1 true`
+- use client fragment pacing, for example
+  `--auth-real-encoded-video-frame-poc-bounded configs/examples/client.accepted.example.toml 1 16 1`
+- inspect `incomplete_frame_progress`; values like
+  `player1/streamsync-dev-session/1:180/289:missing=109` indicate the nearest
+  tracked frame's received / expected fragment count and missing count
 - reduce network loss/firewall interference
 - increase sender stability before testing across machines
 - keep retransmit/retry as a future task, not a manual workaround

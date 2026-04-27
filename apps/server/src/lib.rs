@@ -877,8 +877,28 @@ pub struct ServerReceiveAuthVideoQueueOnceLauncher {
     reassembly: ServerVideoFrameFragmentReassemblyBoundary,
 }
 
-const SERVER_AUTH_VIDEO_QUEUE_MAX_VIDEO_PACKETS: usize = 512;
-const SERVER_AUTH_VIDEO_QUEUE_FRAGMENT_IDLE_TIMEOUT: Duration = Duration::from_secs(5);
+const SERVER_AUTH_VIDEO_QUEUE_DEFAULT_MAX_VIDEO_PACKETS: usize = 4_096;
+const SERVER_AUTH_VIDEO_QUEUE_DEFAULT_FRAGMENT_IDLE_TIMEOUT: Duration = Duration::from_secs(15);
+
+/// Manual receive policy for auth-then-video queue verification.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct ServerReceiveAuthVideoQueueOnceManualPolicy {
+    pub max_video_packets: usize,
+    pub receive_timeout: Duration,
+    pub expected_reassembled_frames: u64,
+    pub stop_after_expected_reassembled_frames: bool,
+}
+
+impl Default for ServerReceiveAuthVideoQueueOnceManualPolicy {
+    fn default() -> Self {
+        Self {
+            max_video_packets: SERVER_AUTH_VIDEO_QUEUE_DEFAULT_MAX_VIDEO_PACKETS,
+            receive_timeout: SERVER_AUTH_VIDEO_QUEUE_DEFAULT_FRAGMENT_IDLE_TIMEOUT,
+            expected_reassembled_frames: 1,
+            stop_after_expected_reassembled_frames: true,
+        }
+    }
+}
 
 impl ServerReceiveAuthVideoQueueOnceLauncher {
     pub fn load_startup_config_from_path(
@@ -907,22 +927,80 @@ impl ServerReceiveAuthVideoQueueOnceLauncher {
         let startup_config = self
             .load_startup_config_from_path(path)
             .map_err(ServerReceiveAuthVideoQueueOnceStartupError::OneIterationStartup)?;
-        self.run_once_with_writers(
+        self.run_once_with_writers_and_policy(
             startup_config,
             operational_writer,
             rejection_writer,
             auth_log_writer,
             send_log_writer,
+            ServerReceiveAuthVideoQueueOnceManualPolicy::default(),
         )
     }
 
     pub fn run_once_with_writers<OW: io::Write, RW: io::Write, AW: io::Write, SW: io::Write>(
         &self,
         startup_config: ServerAuthResponsePocStartupConfig,
+        operational_writer: OW,
+        rejection_writer: RW,
+        auth_log_writer: AW,
+        send_log_writer: SW,
+    ) -> Result<
+        ServerReceiveAuthVideoQueueOnceStartupOutcome,
+        ServerReceiveAuthVideoQueueOnceStartupError,
+    > {
+        self.run_once_with_writers_and_policy(
+            startup_config,
+            operational_writer,
+            rejection_writer,
+            auth_log_writer,
+            send_log_writer,
+            ServerReceiveAuthVideoQueueOnceManualPolicy::default(),
+        )
+    }
+
+    pub fn run_once_from_path_with_writers_and_policy<
+        OW: io::Write,
+        RW: io::Write,
+        AW: io::Write,
+        SW: io::Write,
+    >(
+        &self,
+        path: impl AsRef<Path>,
+        operational_writer: OW,
+        rejection_writer: RW,
+        auth_log_writer: AW,
+        send_log_writer: SW,
+        policy: ServerReceiveAuthVideoQueueOnceManualPolicy,
+    ) -> Result<
+        ServerReceiveAuthVideoQueueOnceStartupOutcome,
+        ServerReceiveAuthVideoQueueOnceStartupError,
+    > {
+        let startup_config = self
+            .load_startup_config_from_path(path)
+            .map_err(ServerReceiveAuthVideoQueueOnceStartupError::OneIterationStartup)?;
+        self.run_once_with_writers_and_policy(
+            startup_config,
+            operational_writer,
+            rejection_writer,
+            auth_log_writer,
+            send_log_writer,
+            policy,
+        )
+    }
+
+    pub fn run_once_with_writers_and_policy<
+        OW: io::Write,
+        RW: io::Write,
+        AW: io::Write,
+        SW: io::Write,
+    >(
+        &self,
+        startup_config: ServerAuthResponsePocStartupConfig,
         _operational_writer: OW,
         _rejection_writer: RW,
         _auth_log_writer: AW,
         _send_log_writer: SW,
+        policy: ServerReceiveAuthVideoQueueOnceManualPolicy,
     ) -> Result<
         ServerReceiveAuthVideoQueueOnceStartupOutcome,
         ServerReceiveAuthVideoQueueOnceStartupError,
@@ -953,7 +1031,7 @@ impl ServerReceiveAuthVideoQueueOnceLauncher {
 
         let video = if first_auth.auth_flow.decision.accepted {
             socket
-                .set_read_timeout(Some(SERVER_AUTH_VIDEO_QUEUE_FRAGMENT_IDLE_TIMEOUT))
+                .set_read_timeout(Some(policy.receive_timeout))
                 .map_err(
                     |error| ServerReceiveAuthVideoQueueOnceStartupError::VideoReceive {
                         kind: error.kind(),
@@ -966,6 +1044,7 @@ impl ServerReceiveAuthVideoQueueOnceLauncher {
                 &mut video_queue_state,
                 &mut reassembly_state,
                 startup_config.expected_protocol_version,
+                policy,
             )?
         } else {
             ServerReceiveAuthVideoQueueOnceVideoOutcome::NotReceivedAuthRejected
@@ -990,6 +1069,7 @@ impl ServerReceiveAuthVideoQueueOnceLauncher {
         video_queue_state: &mut ServerVideoFrameQueueState,
         reassembly_state: &mut ServerVideoFrameReassemblyState,
         expected_protocol_version: ProtocolVersion,
+        policy: ServerReceiveAuthVideoQueueOnceManualPolicy,
     ) -> Result<
         ServerReceiveAuthVideoQueueOnceVideoOutcome,
         ServerReceiveAuthVideoQueueOnceStartupError,
@@ -997,7 +1077,7 @@ impl ServerReceiveAuthVideoQueueOnceLauncher {
         let mut summary = ServerReceiveAuthVideoQueueOnceVideoSummary::default();
         let mut last_queue = None;
 
-        for _ in 0..SERVER_AUTH_VIDEO_QUEUE_MAX_VIDEO_PACKETS {
+        for _ in 0..policy.max_video_packets {
             let received = match self.socket_io.receive_one(socket, buffer) {
                 Ok(received) => received,
                 Err(error)
@@ -1007,8 +1087,11 @@ impl ServerReceiveAuthVideoQueueOnceLauncher {
                     ) =>
                 {
                     summary.receive_timed_out = true;
-                    summary.incomplete_reassembly_frames = reassembly_state.tracked_frame_count();
-                    summary.queue_len = video_queue_state.total_len();
+                    finalize_auth_video_queue_summary(
+                        &mut summary,
+                        reassembly_state,
+                        video_queue_state,
+                    );
                     return Ok(ServerReceiveAuthVideoQueueOnceVideoOutcome::Received {
                         summary,
                         queue: last_queue,
@@ -1099,13 +1182,24 @@ impl ServerReceiveAuthVideoQueueOnceLauncher {
                                 ) {
                                     summary.frames_queued = summary.frames_queued.saturating_add(1);
                                 }
-                                summary.queue_len = video_queue_state.total_len();
                                 last_queue =
                                     Some(ServerVideoFrameQueueRuntimeResult::Queued(queue_result));
-                                return Ok(ServerReceiveAuthVideoQueueOnceVideoOutcome::Received {
-                                    summary,
-                                    queue: last_queue,
-                                });
+                                if policy.stop_after_expected_reassembled_frames
+                                    && summary.frames_reassembled
+                                        >= policy.expected_reassembled_frames.max(1)
+                                {
+                                    finalize_auth_video_queue_summary(
+                                        &mut summary,
+                                        reassembly_state,
+                                        video_queue_state,
+                                    );
+                                    return Ok(
+                                        ServerReceiveAuthVideoQueueOnceVideoOutcome::Received {
+                                            summary,
+                                            queue: last_queue,
+                                        },
+                                    );
+                                }
                             }
                         }
                     }
@@ -1129,8 +1223,7 @@ impl ServerReceiveAuthVideoQueueOnceLauncher {
         }
 
         summary.max_packets_reached = true;
-        summary.incomplete_reassembly_frames = reassembly_state.tracked_frame_count();
-        summary.queue_len = video_queue_state.total_len();
+        finalize_auth_video_queue_summary(&mut summary, reassembly_state, video_queue_state);
         Ok(ServerReceiveAuthVideoQueueOnceVideoOutcome::Received {
             summary,
             queue: last_queue,
@@ -1174,8 +1267,27 @@ pub struct ServerReceiveAuthVideoQueueOnceVideoSummary {
     pub non_video_packets: u64,
     pub incomplete_reassembly_frames: usize,
     pub queue_len: usize,
+    pub incomplete_frame_progress: Vec<ServerVideoFrameReassemblyFrameProgress>,
     pub receive_timed_out: bool,
     pub max_packets_reached: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ServerVideoFrameReassemblyFrameProgress {
+    pub key: ServerVideoFrameReassemblyKey,
+    pub fragments_received: usize,
+    pub fragments_expected: usize,
+    pub fragments_missing: usize,
+}
+
+fn finalize_auth_video_queue_summary(
+    summary: &mut ServerReceiveAuthVideoQueueOnceVideoSummary,
+    reassembly_state: &ServerVideoFrameReassemblyState,
+    video_queue_state: &ServerVideoFrameQueueState,
+) {
+    summary.incomplete_reassembly_frames = reassembly_state.tracked_frame_count();
+    summary.incomplete_frame_progress = reassembly_state.frame_progress();
+    summary.queue_len = video_queue_state.total_len();
 }
 
 /// Startup error for the manual auth-then-video queue launcher.
@@ -2929,6 +3041,18 @@ impl ServerVideoFrameReassemblyState {
 
     pub fn contains_frame(&self, key: &ServerVideoFrameReassemblyKey) -> bool {
         self.frames.contains_key(key)
+    }
+
+    pub fn frame_progress(&self) -> Vec<ServerVideoFrameReassemblyFrameProgress> {
+        self.frames
+            .iter()
+            .map(|(key, state)| ServerVideoFrameReassemblyFrameProgress {
+                key: key.clone(),
+                fragments_received: state.fragments_received(),
+                fragments_expected: state.chunk_count as usize,
+                fragments_missing: state.missing_chunks().len(),
+            })
+            .collect()
     }
 }
 
