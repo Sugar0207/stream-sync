@@ -3,17 +3,19 @@ use std::{
     net::{SocketAddr, UdpSocket},
     path::{Path, PathBuf},
     process::{Command, Stdio},
-    time::Duration,
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 use stream_sync_net_core::{PacketSource, DEFAULT_UDP_PACKET_BUFFER_LEN};
 use stream_sync_protocol::{ClientId, MessageType, ProtocolVersion, TimestampMicros};
 use stream_sync_server::{
-    AuthenticatedSenderRegistry, PacketAcceptanceRejectReason, ServerInboundRoute,
-    ServerQueuedVideoFrame, ServerReceiveAuthVideoQueueOnceStartupOutcome,
-    ServerReceiveAuthVideoQueueOnceVideoOutcome, ServerReceiveLoopGateOutcome,
-    ServerReceiveLoopGateRejection, ServerReceiveLoopStep, ServerRegisteredClientPacket,
-    ServerRegisteredPacketBoundary, ServerRegisteredVideoFramePacket,
+    AuthenticatedSenderRegistry, PacketAcceptanceRejectReason, ServerAuthResponsePocError,
+    ServerAuthResponsePocLauncher, ServerAuthResponsePocOutcome,
+    ServerAuthResponsePocStartupConfig, ServerAuthResponsePocStartupError,
+    ServerAuthResponsePocStep, ServerInboundRoute, ServerQueuedVideoFrame,
+    ServerReceiveAuthVideoQueueOnceStartupOutcome, ServerReceiveAuthVideoQueueOnceVideoOutcome,
+    ServerReceiveLoopGateOutcome, ServerReceiveLoopGateRejection, ServerReceiveLoopStep,
+    ServerRegisteredClientPacket, ServerRegisteredPacketBoundary, ServerRegisteredVideoFramePacket,
     ServerVideoFrameHandlerBoundary, ServerVideoFrameQueuePolicy,
     ServerVideoFrameQueueRuntimeResult, ServerVideoFrameQueueState,
     ServerVideoFrameQueueStorageBoundary, ServerVideoFrameQueueStorageResult,
@@ -2095,6 +2097,250 @@ impl SwitcherLiveTwoViewQueueSource for SwitcherUdpLiveTwoViewQueueSource {
     }
 }
 
+/// Config for the bounded live two-view switcher manual runtime.
+///
+/// This owns only startup/manual policy. Auth remains handled by the existing
+/// server auth response step, and video packets still flow through the UDP
+/// source adapter and scheduler.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SwitcherLiveTwoViewManualRuntimeConfig {
+    pub server_startup: ServerAuthResponsePocStartupConfig,
+    pub left_client_id: ClientId,
+    pub right_client_id: ClientId,
+    pub auth_setup_packets: usize,
+    pub receive_timeout: Option<Duration>,
+    pub udp_source_max_packets: usize,
+    pub source_buffer_len: usize,
+    pub scheduling: SwitcherContinuousTwoViewSchedulingPolicy,
+}
+
+impl SwitcherLiveTwoViewManualRuntimeConfig {
+    pub fn from_server_startup(
+        server_startup: ServerAuthResponsePocStartupConfig,
+        left_client_id: ClientId,
+        right_client_id: ClientId,
+    ) -> Self {
+        let mut scheduling = SwitcherContinuousTwoViewSchedulingPolicy::default();
+        scheduling.max_ticks = 4;
+        scheduling.max_rendered_frames = 4;
+        scheduling.tick_interval_micros = 33_333;
+        scheduling.live_runtime.max_packets = 8;
+        scheduling.live_runtime.current_switcher_time = TimestampMicros(1_600_011);
+        scheduling.live_runtime.selection = SwitcherTwoViewTargetTimeSelectionPolicy {
+            playout_delay_micros: 600_000,
+            max_late_micros: 50_000,
+            max_early_micros: 50_000,
+            ..SwitcherTwoViewTargetTimeSelectionPolicy::default()
+        };
+        scheduling.live_runtime.render_hold_millis = 16;
+
+        Self {
+            server_startup,
+            left_client_id,
+            right_client_id,
+            auth_setup_packets: 2,
+            receive_timeout: Some(Duration::from_millis(500)),
+            udp_source_max_packets: 8,
+            source_buffer_len: DEFAULT_UDP_PACKET_BUFFER_LEN,
+            scheduling,
+        }
+    }
+
+    pub fn udp_source_config(&self) -> SwitcherUdpLiveTwoViewSourceConfig {
+        let mut config = SwitcherUdpLiveTwoViewSourceConfig::for_clients(
+            self.server_startup.bind_address,
+            self.server_startup.expected_protocol_version,
+            self.left_client_id.clone(),
+            self.right_client_id.clone(),
+        );
+        config.max_packets = self.udp_source_max_packets;
+        config.receive_timeout = self.receive_timeout;
+        config.queued_at_base = current_system_timestamp_micros_for_switcher();
+        config.buffer_len = self.source_buffer_len;
+        config
+    }
+}
+
+/// Auth setup summary for the manual live two-view runtime.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SwitcherLiveTwoViewManualAuthSummary {
+    pub packets_expected: usize,
+    pub packets_processed: usize,
+    pub accepted: usize,
+    pub rejected: usize,
+    pub registered_clients: usize,
+    pub receive_failures: usize,
+    pub auth_errors: usize,
+    pub encode_failures: usize,
+    pub send_failures: usize,
+    pub rejected_by_gate: usize,
+}
+
+impl SwitcherLiveTwoViewManualAuthSummary {
+    fn observe_outcome(&mut self, outcome: &ServerAuthResponsePocOutcome) {
+        self.packets_processed += 1;
+        if outcome.auth_flow.decision.accepted {
+            self.accepted += 1;
+        } else {
+            self.rejected += 1;
+        }
+        if outcome.registered_sender.is_some() {
+            self.registered_clients += 1;
+        }
+    }
+
+    fn observe_error(&mut self, error: &ServerAuthResponsePocError) {
+        self.packets_processed += 1;
+        match error {
+            ServerAuthResponsePocError::Receive(_) => self.receive_failures += 1,
+            ServerAuthResponsePocError::Rejected(_) => self.rejected_by_gate += 1,
+            ServerAuthResponsePocError::Auth(_) => self.auth_errors += 1,
+            ServerAuthResponsePocError::Encode(_) => self.encode_failures += 1,
+            ServerAuthResponsePocError::Send(_) => self.send_failures += 1,
+        }
+    }
+}
+
+/// Result from the bounded live two-view switcher manual runtime.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SwitcherLiveTwoViewManualRuntimeResult {
+    pub bind_address: SocketAddr,
+    pub left_client_id: ClientId,
+    pub right_client_id: ClientId,
+    pub bounded_manual_runtime: bool,
+    pub auth: SwitcherLiveTwoViewManualAuthSummary,
+    pub scheduler: SwitcherContinuousTwoViewSchedulingResult,
+}
+
+/// Errors from launching the live two-view manual runtime.
+#[derive(Debug)]
+pub enum SwitcherLiveTwoViewManualRuntimeError {
+    Startup(ServerAuthResponsePocStartupError),
+    Bind {
+        address: SocketAddr,
+        error: io::Error,
+    },
+    ConfigureTimeout(io::Error),
+    UdpSource(SwitcherUdpLiveTwoViewSourceBindError),
+}
+
+/// Bounded manual launcher/runtime for live two-view switcher verification.
+///
+/// It performs only three steps: receive bounded auth packets through the
+/// existing server auth response path, hand the resulting caller-owned registry
+/// to `SwitcherUdpLiveTwoViewQueueSource`, then run the existing continuous
+/// two-view scheduler.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct SwitcherLiveTwoViewManualRuntimeBoundary {
+    auth_step: ServerAuthResponsePocStep,
+    scheduler: SwitcherContinuousTwoViewSchedulingBoundary,
+}
+
+impl SwitcherLiveTwoViewManualRuntimeBoundary {
+    pub fn load_config_from_path(
+        &self,
+        path: impl AsRef<Path>,
+        left_client_id: ClientId,
+        right_client_id: ClientId,
+    ) -> Result<SwitcherLiveTwoViewManualRuntimeConfig, SwitcherLiveTwoViewManualRuntimeError> {
+        let server_startup = ServerAuthResponsePocLauncher::default()
+            .load_startup_config_from_path(path)
+            .map_err(SwitcherLiveTwoViewManualRuntimeError::Startup)?;
+        Ok(SwitcherLiveTwoViewManualRuntimeConfig::from_server_startup(
+            server_startup,
+            left_client_id,
+            right_client_id,
+        ))
+    }
+
+    pub fn run_from_path_with_runtimes(
+        &self,
+        path: impl AsRef<Path>,
+        left_client_id: ClientId,
+        right_client_id: ClientId,
+        decode_runtime: &impl SwitcherH264DecodeRuntimeHook,
+        render_runtime: &impl SwitcherWindowRenderRuntimeHook,
+    ) -> Result<SwitcherLiveTwoViewManualRuntimeResult, SwitcherLiveTwoViewManualRuntimeError> {
+        let config = self.load_config_from_path(path, left_client_id, right_client_id)?;
+        self.run_with_runtimes(config, decode_runtime, render_runtime)
+    }
+
+    pub fn run_with_runtimes(
+        &self,
+        config: SwitcherLiveTwoViewManualRuntimeConfig,
+        decode_runtime: &impl SwitcherH264DecodeRuntimeHook,
+        render_runtime: &impl SwitcherWindowRenderRuntimeHook,
+    ) -> Result<SwitcherLiveTwoViewManualRuntimeResult, SwitcherLiveTwoViewManualRuntimeError> {
+        let socket = UdpSocket::bind(config.server_startup.bind_address).map_err(|error| {
+            SwitcherLiveTwoViewManualRuntimeError::Bind {
+                address: config.server_startup.bind_address,
+                error,
+            }
+        })?;
+        self.run_from_socket_with_runtimes(socket, config, decode_runtime, render_runtime)
+    }
+
+    pub fn run_from_socket_with_runtimes(
+        &self,
+        socket: UdpSocket,
+        config: SwitcherLiveTwoViewManualRuntimeConfig,
+        decode_runtime: &impl SwitcherH264DecodeRuntimeHook,
+        render_runtime: &impl SwitcherWindowRenderRuntimeHook,
+    ) -> Result<SwitcherLiveTwoViewManualRuntimeResult, SwitcherLiveTwoViewManualRuntimeError> {
+        socket
+            .set_read_timeout(config.receive_timeout)
+            .map_err(SwitcherLiveTwoViewManualRuntimeError::ConfigureTimeout)?;
+
+        let mut registry = AuthenticatedSenderRegistry::default();
+        let mut buffer = vec![0_u8; config.source_buffer_len];
+        let mut auth = SwitcherLiveTwoViewManualAuthSummary {
+            packets_expected: config.auth_setup_packets,
+            ..SwitcherLiveTwoViewManualAuthSummary::default()
+        };
+
+        for _ in 0..config.auth_setup_packets {
+            match self.auth_step.run_one(
+                &socket,
+                &mut buffer,
+                config.server_startup.expected_protocol_version,
+                &config.server_startup.auth_config,
+                &mut registry,
+            ) {
+                Ok(outcome) => auth.observe_outcome(&outcome),
+                Err(error @ ServerAuthResponsePocError::Receive(_)) => {
+                    auth.observe_error(&error);
+                    break;
+                }
+                Err(error) => auth.observe_error(&error),
+            }
+        }
+
+        let source_config = config.udp_source_config();
+        let mut source =
+            SwitcherUdpLiveTwoViewQueueSource::from_socket(socket, source_config, registry)
+                .map_err(SwitcherLiveTwoViewManualRuntimeError::UdpSource)?;
+        let scheduler = self.scheduler.run_with_runtimes(
+            SwitcherContinuousTwoViewSchedulingInput {
+                source: &mut source,
+                left_client_id: &config.left_client_id,
+                right_client_id: &config.right_client_id,
+                policy: config.scheduling,
+            },
+            decode_runtime,
+            render_runtime,
+        );
+
+        Ok(SwitcherLiveTwoViewManualRuntimeResult {
+            bind_address: config.server_startup.bind_address,
+            left_client_id: config.left_client_id,
+            right_client_id: config.right_client_id,
+            bounded_manual_runtime: true,
+            auth,
+            scheduler,
+        })
+    }
+}
+
 fn server_route_message_type(route: &ServerInboundRoute) -> MessageType {
     match route {
         ServerInboundRoute::AuthRequest { .. } => MessageType::AuthRequest,
@@ -2103,6 +2349,14 @@ fn server_route_message_type(route: &ServerInboundRoute) -> MessageType {
         ServerInboundRoute::ClientStats { .. } => MessageType::ClientStats,
         ServerInboundRoute::UnsupportedForServer { message_type, .. } => *message_type,
     }
+}
+
+fn current_system_timestamp_micros_for_switcher() -> TimestampMicros {
+    let micros = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_micros())
+        .unwrap_or(0);
+    TimestampMicros(u64::try_from(micros).unwrap_or(u64::MAX))
 }
 
 /// Summary of the queue-owner phase before selection/decode/composition/render.
@@ -3778,8 +4032,8 @@ fn queue_result_summary(
 mod tests {
     use super::*;
     use stream_sync_protocol::{
-        Codec, EncodeContext, MessageEncoder, MessageType, ProtocolMessage,
-        ProtocolMessageEncoderBoundary, ProtocolVersion, RunId, VideoFrame,
+        AppVersion, AuthRequest, Codec, EncodeContext, MessageEncoder, MessageType,
+        ProtocolMessage, ProtocolMessageEncoderBoundary, ProtocolVersion, RunId, VideoFrame,
     };
     use stream_sync_server::{
         AuthenticatedSenderEntry, AuthenticatedSenderRegistration,
@@ -6771,6 +7025,132 @@ mod tests {
         assert_eq!(result.ticks[0].runtime.queue.accepted_frames, 2);
     }
 
+    #[test]
+    fn live_two_view_manual_runtime_initializes_registry_and_preserves_scheduler_summary() {
+        let left_client_id = ClientId("player1".to_string());
+        let right_client_id = ClientId("player2".to_string());
+        let receiver = UdpSocket::bind("127.0.0.1:0").expect("receiver should bind");
+        let bind_address = receiver.local_addr().expect("receiver should have address");
+        let left_sender = UdpSocket::bind("127.0.0.1:0").expect("left sender should bind");
+        let right_sender = UdpSocket::bind("127.0.0.1:0").expect("right sender should bind");
+
+        left_sender
+            .send_to(
+                &encoded_auth_packet("player1", "replace-with-shared-token-1"),
+                bind_address,
+            )
+            .expect("left auth should send");
+        right_sender
+            .send_to(
+                &encoded_auth_packet("player2", "replace-with-shared-token-2"),
+                bind_address,
+            )
+            .expect("right auth should send");
+        left_sender
+            .send_to(
+                &encoded_video_packet("player1", 10, vec![0, 0, 1, 0x65, 0x10]),
+                bind_address,
+            )
+            .expect("left video should send");
+        right_sender
+            .send_to(
+                &encoded_video_packet("player2", 12, vec![0, 0, 1, 0x65, 0x12]),
+                bind_address,
+            )
+            .expect("right video should send");
+
+        let result = SwitcherLiveTwoViewManualRuntimeBoundary::default()
+            .run_from_socket_with_runtimes(
+                receiver,
+                manual_runtime_test_config(bind_address, &left_client_id, &right_client_id),
+                &RecordingTwoViewDecode::default(),
+                &RecordingTwoViewRender::default(),
+            )
+            .expect("manual runtime should run");
+
+        assert!(result.bounded_manual_runtime);
+        assert_eq!(result.auth.packets_expected, 2);
+        assert_eq!(result.auth.packets_processed, 2);
+        assert_eq!(result.auth.accepted, 2);
+        assert_eq!(result.auth.registered_clients, 2);
+        assert_eq!(result.scheduler.summary.ticks_processed, 1);
+        assert_eq!(result.scheduler.summary.rendered_both, 1);
+        assert_eq!(
+            result.scheduler.stop_reason,
+            SwitcherContinuousTwoViewSchedulingStopReason::MaxTicksReached
+        );
+        assert_eq!(result.scheduler.ticks[0].runtime.queue.accepted_frames, 2);
+    }
+
+    #[test]
+    fn live_two_view_manual_runtime_keeps_rejected_auth_and_unauthenticated_video_explicit() {
+        let left_client_id = ClientId("player1".to_string());
+        let right_client_id = ClientId("player2".to_string());
+        let receiver = UdpSocket::bind("127.0.0.1:0").expect("receiver should bind");
+        let bind_address = receiver.local_addr().expect("receiver should have address");
+        let sender = UdpSocket::bind("127.0.0.1:0").expect("sender should bind");
+
+        sender
+            .send_to(&encoded_auth_packet("player1", "wrong-token"), bind_address)
+            .expect("bad auth should send");
+        sender
+            .send_to(
+                &encoded_video_packet("player1", 10, vec![0, 0, 1, 0x65, 0x10]),
+                bind_address,
+            )
+            .expect("video should send");
+
+        let mut config =
+            manual_runtime_test_config(bind_address, &left_client_id, &right_client_id);
+        config.auth_setup_packets = 1;
+        config.udp_source_max_packets = 1;
+        config.scheduling.max_ticks = 1;
+        config.scheduling.live_runtime.max_packets = 1;
+        let result = SwitcherLiveTwoViewManualRuntimeBoundary::default()
+            .run_from_socket_with_runtimes(
+                receiver,
+                config,
+                &RecordingTwoViewDecode::default(),
+                &RecordingTwoViewRender::default(),
+            )
+            .expect("manual runtime should run with rejected auth");
+
+        assert_eq!(result.auth.rejected, 1);
+        assert_eq!(result.auth.registered_clients, 0);
+        assert_eq!(result.scheduler.ticks[0].runtime.queue.rejected_frames, 1);
+        assert_eq!(result.scheduler.ticks[0].runtime.queue.accepted_frames, 0);
+        assert_eq!(result.scheduler.summary.no_frame_ticks, 1);
+    }
+
+    #[test]
+    fn live_two_view_manual_runtime_surfaces_source_end_stop_reason() {
+        let left_client_id = ClientId("player1".to_string());
+        let right_client_id = ClientId("player2".to_string());
+        let receiver = UdpSocket::bind("127.0.0.1:0").expect("receiver should bind");
+        let bind_address = receiver.local_addr().expect("receiver should have address");
+        let mut config =
+            manual_runtime_test_config(bind_address, &left_client_id, &right_client_id);
+        config.auth_setup_packets = 0;
+        config.udp_source_max_packets = 0;
+        config.scheduling.max_ticks = 2;
+        config.scheduling.live_runtime.max_packets = 1;
+
+        let result = SwitcherLiveTwoViewManualRuntimeBoundary::default()
+            .run_from_socket_with_runtimes(
+                receiver,
+                config,
+                &RecordingTwoViewDecode::default(),
+                &RecordingTwoViewRender::default(),
+            )
+            .expect("manual runtime should run");
+
+        assert_eq!(
+            result.scheduler.stop_reason,
+            SwitcherContinuousTwoViewSchedulingStopReason::SourceEnded
+        );
+        assert!(result.scheduler.ticks[0].runtime.queue.ended);
+    }
+
     fn decoded_bgra_frame(width: u32, height: u32, pixel: [u8; 4]) -> SwitcherDecodedFrame {
         let mut pixels = Vec::new();
         for _ in 0..width as usize * height as usize {
@@ -6856,6 +7236,49 @@ mod tests {
         config
     }
 
+    fn manual_runtime_test_config(
+        bind_address: SocketAddr,
+        left_client_id: &ClientId,
+        right_client_id: &ClientId,
+    ) -> SwitcherLiveTwoViewManualRuntimeConfig {
+        let server_config = ServerAuthResponsePocLauncher::default()
+            .load_startup_config_from_str(
+                r#"
+[server]
+bind_host = "127.0.0.1"
+bind_port = 0
+
+[session]
+protocol_version = 1
+
+[auth]
+enabled = true
+require_known_clients = true
+
+[auth.clients.player1]
+shared_token = "replace-with-shared-token-1"
+
+[auth.clients.player2]
+shared_token = "replace-with-shared-token-2"
+"#,
+            )
+            .expect("server config should load");
+        let mut config = SwitcherLiveTwoViewManualRuntimeConfig::from_server_startup(
+            ServerAuthResponsePocStartupConfig {
+                bind_address,
+                ..server_config
+            },
+            left_client_id.clone(),
+            right_client_id.clone(),
+        );
+        config.auth_setup_packets = 2;
+        config.receive_timeout = Some(Duration::from_millis(20));
+        config.udp_source_max_packets = 2;
+        config.source_buffer_len = 2048;
+        config.scheduling = continuous_two_view_test_policy(1, 10);
+        config
+    }
+
     fn registry_with_clients(
         client_ids: &[&str],
         source: PacketSource,
@@ -6904,6 +7327,31 @@ mod tests {
                 &mut output,
             )
             .expect("video frame should encode");
+        output
+    }
+
+    fn encoded_auth_packet(client_id: &str, shared_token: &str) -> Vec<u8> {
+        let request = AuthRequest {
+            message_type: MessageType::AuthRequest,
+            protocol_version: ProtocolVersion(1),
+            client_id: ClientId(client_id.to_string()),
+            run_id: RunId("run-1".to_string()),
+            app_version: AppVersion("0.1.0".to_string()),
+            shared_token: shared_token.to_string(),
+            display_name: None,
+            capabilities: Vec::new(),
+            requested_video_profile: None,
+        };
+        let mut output = Vec::new();
+        ProtocolMessageEncoderBoundary
+            .encode_message(
+                EncodeContext {
+                    protocol_version: ProtocolVersion(1),
+                },
+                &ProtocolMessage::AuthRequest(request),
+                &mut output,
+            )
+            .expect("auth request should encode");
         output
     }
 

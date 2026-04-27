@@ -230,6 +230,24 @@ The manual client-to-server queue path is now runnable as a two-command PoC.
 Decode, rendering, switcher window output, OBS capture, cross-process queue
 sharing, and 4-view sync remain outside this manual launcher.
 
+## Live Two-View Switcher Manual Runtime
+
+For two-client live switcher verification, use:
+
+```powershell
+cargo run -p stream-sync-switcher -- --live-two-view-switcher-once configs/examples/server.example.toml player1 player2
+```
+
+Then run two same-socket authenticated client senders, one for `player1` and
+one for `player2`, using matching server config tokens. The switcher runtime
+handles bounded auth setup in-process, owns the resulting authenticated sender
+registry, passes it to the UDP-backed two-view source, and runs the existing
+continuous two-view scheduler. Its stdout reports auth counts, accepted/rejected
+frames, tick outcomes, render outcomes, and stop reason.
+
+This path is still bounded/manual. It does not add continuous client
+acquisition, late-frame queue mutation, 4-view layout, or OBS API integration.
+
 ## Related Real Encoded One-Shot PoC
 
 The real capture / FFmpeg encode / `RealCaptureH264` one-shot sender is tracked

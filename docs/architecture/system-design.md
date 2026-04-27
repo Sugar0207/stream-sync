@@ -7609,6 +7609,22 @@ Current decode/display substitute behavior:
   targetTime frames, decode H.264, compose layouts, render windows, mutate
   queues, create authenticated registry entries, schedule ticks, perform
   4-view orchestration, or integrate OBS APIs.
+- `SwitcherLiveTwoViewManualRuntimeBoundary` is the first runnable live
+  two-view switcher launcher. It owns one bounded manual runtime: load the
+  existing server auth config, bind or receive a caller-provided UDP socket,
+  run the existing server auth response step for a bounded number of auth
+  packets, keep the resulting caller-owned `AuthenticatedSenderRegistry`, pass
+  that registry into `SwitcherUdpLiveTwoViewQueueSource`, and then run
+  `SwitcherContinuousTwoViewSchedulingBoundary`.
+- CLI `--live-two-view-switcher-once [config-path] [left-client-id]
+  [right-client-id]` is the manual verification entry point for this path. It
+  prints bind/client ids, auth accepted/rejected/registered counts, packet and
+  queue counts, tick/render outcome counts, stop reason, and
+  `bounded_manual_runtime=true`.
+- The manual launcher connects existing pieces only. It does not weaken auth,
+  bypass packet acceptance, hide registry state globally, redesign the UDP
+  source adapter, move selection/decode/render into auth handling, implement
+  late-frame queue mutation, add 4-view orchestration, or integrate OBS APIs.
 - Future 4-view sync should build on the same shared-targetTime pattern and
   extend the isolated layout/composition responsibility after real 2-client
   source ownership and bounded scheduling are stable.
@@ -7640,6 +7656,9 @@ sync, or OBS control.
 The UDP-backed source adapter owns one-packet socket receive and server gate
 mapping, but it still does not own auth registry creation, scheduling, decode,
 render, queue mutation, 4-view sync, or OBS control.
+The live two-view manual runtime owns bounded auth registry setup and launcher
+wiring, but it still does not own continuous client acquisition, late-frame
+queue mutation, 4-view sync, structured production logging, or OBS control.
 
 ## Client Real Capture / H.264 Encode Boundary
 

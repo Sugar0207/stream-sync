@@ -138,11 +138,56 @@ The command exits non-zero and prints an explicit reason for auth rejection,
 auth timeout/receive failure, capture/session failure, no frame available,
 encode unavailable/failed, or UDP send failure.
 
+## Live Two-View Switcher Manual Runtime
+
+The switcher can now own the bounded auth registry setup and then run the
+existing live two-view scheduling path:
+
+```text
+client AuthRequest -> switcher/server auth response step -> registry
+client VideoFrame -> UDP-backed source -> scheduler -> targetTime selection -> decode -> composition -> window render
+```
+
+Terminal 1:
+
+```powershell
+cargo run -p stream-sync-switcher -- --live-two-view-switcher-once configs/examples/server.example.toml player1 player2
+```
+
+Terminal 2:
+
+```powershell
+cargo run -p stream-sync-client -- --auth-real-encoded-video-frame-poc-once configs/examples/client.accepted.example.toml
+```
+
+Terminal 3 should use a second client config with `client_id = "player2"` and
+the matching `shared_token = "replace-with-shared-token-2"`, then run:
+
+```powershell
+cargo run -p stream-sync-client -- --auth-real-encoded-video-frame-poc-once <player2-client-config.toml>
+```
+
+Expected switcher stdout includes:
+
+- `bounded_manual_runtime=true`
+- bind address and left/right client ids
+- auth packets processed / accepted / rejected / registered client counts
+- packets processed, accepted frames, rejected frames, decode failures, and timeouts
+- ticks processed
+- rendered-both / rendered-partial / no-frame / decode-failed / render-not-completed counts
+- stop reason
+
+This proves the switcher process can create the auth registry, keep packet
+acceptance active, feed accepted `VideoFrame` packets through the UDP-backed
+source adapter, and run the existing two-view scheduler. It is still bounded:
+the default manual runtime expects two auth setup packets, then consumes a
+small bounded number of video/source packets and scheduler ticks.
+
 ## Current Limitations
 
 - primary display only
 - no continuous acquisition or frame-arrived wait
 - no packet fragmentation; large H.264 payloads may fail UDP send
-- no real decode/rendering in switcher
+- live two-view switcher runtime is bounded/manual, not a production loop
 - no OBS integration
 - no 4-view sync

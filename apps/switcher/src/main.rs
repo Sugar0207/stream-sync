@@ -9,16 +9,18 @@ use stream_sync_server::{
 };
 use stream_sync_switcher::{
     SwitcherAuthVideoPlaceholderBridgeBoundary, SwitcherAuthVideoPlaceholderBridgeResult,
-    SwitcherDecodeLatestFrameOnceBoundary, SwitcherDecodeLatestFrameOnceInput,
-    SwitcherDecodeLatestFrameOnceResult, SwitcherDecodedFrame, SwitcherDecodedFramePixelFormat,
-    SwitcherFfmpegH264DecodeRuntimeHook, SwitcherPlaceholderManualVerificationBoundary,
-    SwitcherPlaceholderManualVerificationInput, SwitcherPlaceholderManualVerificationResult,
-    SwitcherTwoViewComposedCanvasRenderBoundary, SwitcherTwoViewComposedCanvasRenderResult,
-    SwitcherTwoViewCompositionBoundary, SwitcherTwoViewCompositionInput,
-    SwitcherTwoViewCompositionResult, SwitcherTwoViewLayoutPolicy, SwitcherTwoViewLayoutSideInput,
-    SwitcherTwoViewManualVerificationBoundary, SwitcherTwoViewManualVerificationInput,
-    SwitcherTwoViewManualVerificationResult, SwitcherTwoViewManualVerificationSideSummary,
-    SwitcherTwoViewSide, SwitcherTwoViewTargetTimeSelectionPolicy, SwitcherWindowRenderBoundary,
+    SwitcherContinuousTwoViewSchedulingStopReason, SwitcherDecodeLatestFrameOnceBoundary,
+    SwitcherDecodeLatestFrameOnceInput, SwitcherDecodeLatestFrameOnceResult, SwitcherDecodedFrame,
+    SwitcherDecodedFramePixelFormat, SwitcherFfmpegH264DecodeRuntimeHook,
+    SwitcherLiveTwoViewManualRuntimeBoundary, SwitcherLiveTwoViewManualRuntimeResult,
+    SwitcherPlaceholderManualVerificationBoundary, SwitcherPlaceholderManualVerificationInput,
+    SwitcherPlaceholderManualVerificationResult, SwitcherTwoViewComposedCanvasRenderBoundary,
+    SwitcherTwoViewComposedCanvasRenderResult, SwitcherTwoViewCompositionBoundary,
+    SwitcherTwoViewCompositionInput, SwitcherTwoViewCompositionResult, SwitcherTwoViewLayoutPolicy,
+    SwitcherTwoViewLayoutSideInput, SwitcherTwoViewManualVerificationBoundary,
+    SwitcherTwoViewManualVerificationInput, SwitcherTwoViewManualVerificationResult,
+    SwitcherTwoViewManualVerificationSideSummary, SwitcherTwoViewSide,
+    SwitcherTwoViewTargetTimeSelectionPolicy, SwitcherWindowRenderBoundary,
     SwitcherWindowRenderResult,
 };
 
@@ -209,9 +211,23 @@ fn main() {
                 }
             }
         }
+        Some("--live-two-view-switcher-once") => {
+            let config_path = args
+                .next()
+                .unwrap_or_else(|| "configs/examples/server.example.toml".to_string());
+            let left_client_id = ClientId(args.next().unwrap_or_else(|| "player1".to_string()));
+            let right_client_id = ClientId(args.next().unwrap_or_else(|| "player2".to_string()));
+            match run_live_two_view_switcher_once(&config_path, left_client_id, right_client_id) {
+                Ok(result) => print_live_two_view_switcher_summary(result),
+                Err(error) => {
+                    eprintln!("switcher live two-view manual runtime failed: {error:?}");
+                    std::process::exit(1);
+                }
+            }
+        }
         _ => {
             println!(
-                "stream-sync-switcher scaffold; use --placeholder-fixture-once [client-id], --placeholder-empty-once [client-id], --decode-latest-frame-once [client-id] [output-path], --receive-auth-video-placeholder-bridge-once [config-path] [client-id], --receive-auth-video-decode-latest-once [config-path] [client-id] [output-path], --receive-auth-video-render-decoded-once [config-path] [client-id] [hold-ms], --two-view-sync-fixture-once [left-client-id] [right-client-id] [hold-ms], or --render-two-view-composed-fixture-once [hold-ms]"
+                "stream-sync-switcher scaffold; use --placeholder-fixture-once [client-id], --placeholder-empty-once [client-id], --decode-latest-frame-once [client-id] [output-path], --receive-auth-video-placeholder-bridge-once [config-path] [client-id], --receive-auth-video-decode-latest-once [config-path] [client-id] [output-path], --receive-auth-video-render-decoded-once [config-path] [client-id] [hold-ms], --two-view-sync-fixture-once [left-client-id] [right-client-id] [hold-ms], --render-two-view-composed-fixture-once [hold-ms], or --live-two-view-switcher-once [config-path] [left-client-id] [right-client-id]"
             );
         }
     }
@@ -456,6 +472,97 @@ fn print_two_view_composed_render_summary(result: SwitcherTwoViewComposedCanvasR
             eprintln!("switcher render two-view composed fixture failed message={message}");
             std::process::exit(1);
         }
+    }
+}
+
+fn run_live_two_view_switcher_once(
+    config_path: &str,
+    left_client_id: ClientId,
+    right_client_id: ClientId,
+) -> Result<
+    SwitcherLiveTwoViewManualRuntimeResult,
+    stream_sync_switcher::SwitcherLiveTwoViewManualRuntimeError,
+> {
+    #[cfg(target_os = "windows")]
+    {
+        SwitcherLiveTwoViewManualRuntimeBoundary::default().run_from_path_with_runtimes(
+            config_path,
+            left_client_id,
+            right_client_id,
+            &SwitcherFfmpegH264DecodeRuntimeHook::default(),
+            &SwitcherWindowsGdiWindowRenderRuntimeHook,
+        )
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        SwitcherLiveTwoViewManualRuntimeBoundary::default().run_from_path_with_runtimes(
+            config_path,
+            left_client_id,
+            right_client_id,
+            &SwitcherFfmpegH264DecodeRuntimeHook::default(),
+            &SwitcherUnavailableWindowRenderRuntimeHook,
+        )
+    }
+}
+
+fn print_live_two_view_switcher_summary(result: SwitcherLiveTwoViewManualRuntimeResult) {
+    let queue_totals = result.scheduler.ticks.iter().fold(
+        (0usize, 0usize, 0usize, 0usize, 0usize, 0usize, 0usize),
+        |acc, tick| {
+            (
+                acc.0 + tick.runtime.queue.packets_observed,
+                acc.1 + tick.runtime.queue.accepted_frames,
+                acc.2 + tick.runtime.queue.rejected_frames,
+                acc.3 + tick.runtime.queue.protocol_decode_failures,
+                acc.4 + tick.runtime.queue.receive_failures,
+                acc.5 + tick.runtime.queue.non_video_packets,
+                acc.6 + tick.runtime.queue.timeouts,
+            )
+        },
+    );
+    println!(
+        "switcher live two-view manual runtime bounded_manual_runtime={} bind_address={} left_client_id={} right_client_id={} auth_packets_processed={} auth_accepted={} auth_rejected={} auth_registered_clients={} auth_receive_failures={} auth_gate_rejections={} packets_processed={} accepted_frames={} rejected_frames={} protocol_decode_failures={} receive_failures={} non_video_packets={} timeouts={} ticks_processed={} rendered_both={} rendered_partial={} no_frame={} decode_failed={} render_not_completed={} stop_reason={} source_ended={}",
+        result.bounded_manual_runtime,
+        result.bind_address,
+        result.left_client_id.0,
+        result.right_client_id.0,
+        result.auth.packets_processed,
+        result.auth.accepted,
+        result.auth.rejected,
+        result.auth.registered_clients,
+        result.auth.receive_failures,
+        result.auth.rejected_by_gate,
+        queue_totals.0,
+        queue_totals.1,
+        queue_totals.2,
+        queue_totals.3,
+        queue_totals.4,
+        queue_totals.5,
+        queue_totals.6,
+        result.scheduler.summary.ticks_processed,
+        result.scheduler.summary.rendered_both,
+        result.scheduler.summary.rendered_partial,
+        result.scheduler.summary.no_frame_ticks,
+        result.scheduler.summary.decode_failed_ticks,
+        result.scheduler.summary.render_not_completed_ticks,
+        format_live_two_view_stop_reason(result.scheduler.stop_reason),
+        matches!(
+            result.scheduler.stop_reason,
+            SwitcherContinuousTwoViewSchedulingStopReason::SourceEnded
+        )
+    );
+}
+
+fn format_live_two_view_stop_reason(
+    reason: SwitcherContinuousTwoViewSchedulingStopReason,
+) -> &'static str {
+    match reason {
+        SwitcherContinuousTwoViewSchedulingStopReason::MaxTicksReached => "MaxTicksReached",
+        SwitcherContinuousTwoViewSchedulingStopReason::MaxRenderedFramesReached => {
+            "MaxRenderedFramesReached"
+        }
+        SwitcherContinuousTwoViewSchedulingStopReason::SourceEnded => "SourceEnded",
     }
 }
 

@@ -5,6 +5,62 @@
 - Codex
 
 ### Work
+- Added the smallest bounded live two-view switcher manual runtime.
+- Added `SwitcherLiveTwoViewManualRuntimeConfig`, `SwitcherLiveTwoViewManualRuntimeBoundary`, auth summary/result/error types, and runtime wiring from server auth setup to UDP source to continuous two-view scheduler.
+- The runtime binds or accepts one UDP socket, runs the existing `ServerAuthResponsePocStep` for bounded auth setup, keeps the resulting caller-owned `AuthenticatedSenderRegistry`, passes it to `SwitcherUdpLiveTwoViewQueueSource`, and runs `SwitcherContinuousTwoViewSchedulingBoundary`.
+- Added switcher CLI `--live-two-view-switcher-once [config-path] [left-client-id] [right-client-id]`.
+- CLI stdout reports bind/client ids, auth processed/accepted/rejected/registered counts, packet and queue counts, tick/render outcome counts, stop reason, and `bounded_manual_runtime=true`.
+- Added tests for accepted auth/video reaching scheduler summary, rejected auth plus unauthenticated video remaining explicit, and source-end stop reason surfacing.
+- Kept UDP source adapter, continuous scheduler, selection/decode/render, late-drop mutation, 4-view orchestration, and OBS API integration separate.
+
+### Changed Files
+- `apps/switcher/src/lib.rs`
+- `apps/switcher/src/main.rs`
+- `docs/architecture/system-design.md`
+- `docs/operations/manual-placeholder-video-poc.md`
+- `docs/operations/manual-real-encoded-video-poc.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### Decisions
+- Reused `ServerAuthResponsePocStep` for auth setup so the launcher does not implement a new auth policy.
+- Kept auth registry ownership inside the manual runtime and passed the finished registry into the existing UDP source adapter.
+- Kept the launcher bounded by auth packet count, UDP source packet count, receive timeout, max ticks, and max rendered frames.
+- Added the runnable CLI now instead of another placeholder-only boundary.
+
+### Unresolved
+- continuous client acquisition / frame-arrived wait
+- production H.264 encoder configuration and error logging policy
+- late frame queue mutation / actual drop policy
+- 4-view orchestration and 2x2 layout
+- OBS Window Capture verification
+- structured production logging
+
+### Next
+- Add continuous acquisition / frame-arrived wait on the client side.
+- Define production encoder configuration and failure logging.
+- Define late-frame queue mutation/drop policy separately from the read-only selector.
+
+### TODO Update
+- Marked live two-view switcher manual runtime complete.
+- Moved next priority to continuous acquisition / frame-arrived wait.
+- Kept production encoder config, late-drop mutation, 4-view, and OBS deferred.
+
+### Validation
+- `cargo fmt`
+- `cargo fmt --check`
+- `cargo test -p stream-sync-switcher live_two_view_manual_runtime -- --test-threads=1`
+- `cargo test -p stream-sync-switcher -- --test-threads=1`
+- `cargo check --workspace`
+- `git diff --check`
+
+---
+
+## 2026-04-27
+### Type
+- Codex
+
+### Work
 - Added the smallest real UDP socket-backed source adapter for switcher two-view scheduling.
 - Added `SwitcherUdpLiveTwoViewSourceConfig`, `SwitcherUdpLiveTwoViewQueueSource`, and bind/config error types.
 - Extended `SwitcherLiveTwoViewQueueSourceItem` and queue summary accounting so protocol decode failure, socket receive failure, and non-video packets remain explicit alongside accepted video, rejected video, timeout, and source end.
