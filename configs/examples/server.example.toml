@@ -22,7 +22,7 @@ require_known_clients = true
 
 [auth.clients.player1]
 display_name = "Player 1"
-shared_token = "replace-with-shared-token"
+shared_token = "replace-with-shared-token-1"
 
 [auth.clients.player2]
 display_name = "Player 2"

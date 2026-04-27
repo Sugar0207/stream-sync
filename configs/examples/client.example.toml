@@ -5,7 +5,7 @@ client_id = "player1"
 display_name = "Player 1"
 server_host = "127.0.0.1"
 server_port = 5000
-shared_token = "replace-with-shared-token"
+shared_token = "replace-with-shared-token-1"
 
 [session]
 run_id = "streamsync-dev-session"
