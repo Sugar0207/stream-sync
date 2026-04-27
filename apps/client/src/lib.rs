@@ -4224,6 +4224,10 @@ pub struct ClientContinuousRealEncodedVideoFrameSummary {
     pub frames_captured: u64,
     pub frames_encoded: u64,
     pub frames_sent: u64,
+    pub direct_sends: u64,
+    pub fragmented_sends: u64,
+    pub fragments_attempted: u64,
+    pub fragments_sent: u64,
     pub no_frame_count: u64,
     pub capture_failures: u64,
     pub encode_failures: u64,
@@ -4374,6 +4378,25 @@ fn update_continuous_real_encoded_summary(
             summary.frames_captured = summary.frames_captured.saturating_add(1);
             summary.frames_encoded = summary.frames_encoded.saturating_add(1);
             summary.frames_sent = summary.frames_sent.saturating_add(1);
+            if let ClientRealEncodedVideoFrameOneShotResult::Sent(sent) = result {
+                match sent.send.summary {
+                    ClientVideoFrameSendSummary::DirectSent => {
+                        summary.direct_sends = summary.direct_sends.saturating_add(1);
+                    }
+                    ClientVideoFrameSendSummary::FragmentedSent {
+                        fragments_attempted,
+                        fragments_sent,
+                    } => {
+                        summary.fragmented_sends = summary.fragmented_sends.saturating_add(1);
+                        summary.fragments_attempted = summary
+                            .fragments_attempted
+                            .saturating_add(u64::from(fragments_attempted));
+                        summary.fragments_sent = summary
+                            .fragments_sent
+                            .saturating_add(u64::from(fragments_sent));
+                    }
+                }
+            }
         }
         ClientRealEncodedVideoFrameOneShotResult::NoFrameAvailable { .. } => {
             summary.no_frame_count = summary.no_frame_count.saturating_add(1);

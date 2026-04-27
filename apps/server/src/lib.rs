@@ -3,6 +3,7 @@ use std::{
     env, fs, io,
     net::{SocketAddr, ToSocketAddrs, UdpSocket},
     path::{Path, PathBuf},
+    time::Duration,
 };
 use stream_sync_config::{
     ConfigLoadError, SecretStoreSecretRef, ServerAuthConfig, ServerAuthConfigBoundary,
@@ -869,9 +870,15 @@ pub struct ServerReceiveSendTwoIterationStartupOutcome {
 pub struct ServerReceiveAuthVideoQueueOnceLauncher {
     socket_io: UdpSocketIoBoundary,
     auth: ServerAuthResponsePocStep,
-    runtime: ServerControllerReceiveSendRuntimeBoundary,
-    video_queue: ServerVideoFrameQueueRuntimeBoundary,
+    receive_loop: ServerReceiveLoopStep,
+    registered: ServerRegisteredPacketBoundary,
+    video_handler: ServerVideoFrameHandlerBoundary,
+    video_queue_storage: ServerVideoFrameQueueStorageBoundary,
+    reassembly: ServerVideoFrameFragmentReassemblyBoundary,
 }
+
+const SERVER_AUTH_VIDEO_QUEUE_MAX_VIDEO_PACKETS: usize = 512;
+const SERVER_AUTH_VIDEO_QUEUE_FRAGMENT_IDLE_TIMEOUT: Duration = Duration::from_secs(5);
 
 impl ServerReceiveAuthVideoQueueOnceLauncher {
     pub fn load_startup_config_from_path(
@@ -912,10 +919,10 @@ impl ServerReceiveAuthVideoQueueOnceLauncher {
     pub fn run_once_with_writers<OW: io::Write, RW: io::Write, AW: io::Write, SW: io::Write>(
         &self,
         startup_config: ServerAuthResponsePocStartupConfig,
-        operational_writer: OW,
-        rejection_writer: RW,
-        auth_log_writer: AW,
-        send_log_writer: SW,
+        _operational_writer: OW,
+        _rejection_writer: RW,
+        _auth_log_writer: AW,
+        _send_log_writer: SW,
     ) -> Result<
         ServerReceiveAuthVideoQueueOnceStartupOutcome,
         ServerReceiveAuthVideoQueueOnceStartupError,
@@ -929,8 +936,9 @@ impl ServerReceiveAuthVideoQueueOnceLauncher {
             })?;
         let mut buffer = vec![0_u8; DEFAULT_UDP_PACKET_BUFFER_LEN];
         let mut registry = AuthenticatedSenderRegistry::default();
-        let mut queue_collection = ServerOutboundQueueCollection::default();
+        let queue_collection = ServerOutboundQueueCollection::default();
         let mut video_queue_state = ServerVideoFrameQueueState::default();
+        let mut reassembly_state = ServerVideoFrameReassemblyState::default();
 
         let first_auth = self
             .auth
@@ -944,50 +952,21 @@ impl ServerReceiveAuthVideoQueueOnceLauncher {
             .map_err(ServerReceiveAuthVideoQueueOnceStartupError::Auth)?;
 
         let video = if first_auth.auth_flow.decision.accepted {
-            let timestamp = current_system_timestamp_micros();
-            let second = self
-                .runtime
-                .run_once(
-                    &socket,
-                    &mut buffer,
-                    &mut registry,
-                    &mut queue_collection,
-                    &startup_config.auth_config,
-                    ServerControllerReceiveSendRuntimeInput {
-                        controller: ServerContinuousReceiveLoopControllerInput {
-                            expected_protocol_version: startup_config.expected_protocol_version,
-                            timestamp,
-                            continue_requested: true,
-                        },
-                        heartbeat_timing: ServerHeartbeatAckTiming {
-                            server_received_at: timestamp,
-                            server_sent_at: timestamp,
-                        },
-                        encode_context: EncodeContext {
-                            protocol_version: startup_config.expected_protocol_version,
-                        },
-                        auth_log_timestamp: timestamp,
-                        send_log_timestamp: timestamp,
+            socket
+                .set_read_timeout(Some(SERVER_AUTH_VIDEO_QUEUE_FRAGMENT_IDLE_TIMEOUT))
+                .map_err(
+                    |error| ServerReceiveAuthVideoQueueOnceStartupError::VideoReceive {
+                        kind: error.kind(),
                     },
-                    operational_writer,
-                    rejection_writer,
-                    auth_log_writer,
-                    send_log_writer,
-                )
-                .map_err(ServerReceiveAuthVideoQueueOnceStartupError::Runtime)?;
-            let queue = match &second {
-                ServerControllerReceiveSendRuntimeResult::Iteration { iteration, .. } => {
-                    Some(self.video_queue.store_from_receive_side_effect(
-                        &mut video_queue_state,
-                        &iteration.body,
-                        iteration.side_effect.clone(),
-                        timestamp,
-                        ServerVideoFrameQueuePolicy::default(),
-                    ))
-                }
-                ServerControllerReceiveSendRuntimeResult::Stopped { .. } => None,
-            };
-            ServerReceiveAuthVideoQueueOnceVideoOutcome::Received { second, queue }
+                )?;
+            self.receive_video_packets_until_queued(
+                &socket,
+                &mut buffer,
+                &registry,
+                &mut video_queue_state,
+                &mut reassembly_state,
+                startup_config.expected_protocol_version,
+            )?
         } else {
             ServerReceiveAuthVideoQueueOnceVideoOutcome::NotReceivedAuthRejected
         };
@@ -997,8 +976,164 @@ impl ServerReceiveAuthVideoQueueOnceLauncher {
             registry,
             queue_collection,
             video_queue_state,
+            reassembly_state,
             first_auth,
             video,
+        })
+    }
+
+    fn receive_video_packets_until_queued(
+        &self,
+        socket: &UdpSocket,
+        buffer: &mut [u8],
+        registry: &AuthenticatedSenderRegistry,
+        video_queue_state: &mut ServerVideoFrameQueueState,
+        reassembly_state: &mut ServerVideoFrameReassemblyState,
+        expected_protocol_version: ProtocolVersion,
+    ) -> Result<
+        ServerReceiveAuthVideoQueueOnceVideoOutcome,
+        ServerReceiveAuthVideoQueueOnceStartupError,
+    > {
+        let mut summary = ServerReceiveAuthVideoQueueOnceVideoSummary::default();
+        let mut last_queue = None;
+
+        for _ in 0..SERVER_AUTH_VIDEO_QUEUE_MAX_VIDEO_PACKETS {
+            let received = match self.socket_io.receive_one(socket, buffer) {
+                Ok(received) => received,
+                Err(error)
+                    if matches!(
+                        error.kind(),
+                        io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
+                    ) =>
+                {
+                    summary.receive_timed_out = true;
+                    summary.incomplete_reassembly_frames = reassembly_state.tracked_frame_count();
+                    summary.queue_len = video_queue_state.total_len();
+                    return Ok(ServerReceiveAuthVideoQueueOnceVideoOutcome::Received {
+                        summary,
+                        queue: last_queue,
+                    });
+                }
+                Err(error) => {
+                    return Err(ServerReceiveAuthVideoQueueOnceStartupError::VideoReceive {
+                        kind: error.kind(),
+                    });
+                }
+            };
+            summary.packets_received = summary.packets_received.saturating_add(1);
+            let queued_at = current_system_timestamp_micros();
+
+            match self.receive_loop.handle_received_packet_with_gate(
+                expected_protocol_version,
+                registry,
+                received.source,
+                received.bytes,
+            ) {
+                ServerReceiveLoopGateOutcome::Accepted(route) => match route {
+                    ServerInboundRoute::VideoFrame { .. } => {
+                        let registered = self
+                            .registered
+                            .prepare_for_handler(registry, route)
+                            .map_err(ServerReceiveAuthVideoQueueOnceStartupError::Registered)?;
+                        let ServerRegisteredClientPacket::VideoFrame(packet) = registered else {
+                            summary.non_video_packets = summary.non_video_packets.saturating_add(1);
+                            continue;
+                        };
+                        let input = self.video_handler.prepare_input(packet);
+                        let queue = self.video_queue_storage.store_frame(
+                            video_queue_state,
+                            input,
+                            queued_at,
+                            ServerVideoFrameQueuePolicy::default(),
+                        );
+                        if matches!(queue, ServerVideoFrameQueueStorageResult::Stored { .. }) {
+                            summary.direct_frames_queued =
+                                summary.direct_frames_queued.saturating_add(1);
+                            summary.frames_queued = summary.frames_queued.saturating_add(1);
+                        }
+                        summary.queue_len = video_queue_state.total_len();
+                        last_queue = Some(ServerVideoFrameQueueRuntimeResult::Queued(queue));
+                        return Ok(ServerReceiveAuthVideoQueueOnceVideoOutcome::Received {
+                            summary,
+                            queue: last_queue,
+                        });
+                    }
+                    ServerInboundRoute::VideoFrameFragment { .. } => {
+                        let registered = self
+                            .registered
+                            .prepare_for_handler(registry, route)
+                            .map_err(ServerReceiveAuthVideoQueueOnceStartupError::Registered)?;
+                        let ServerRegisteredClientPacket::VideoFrameFragment(packet) = registered
+                        else {
+                            summary.non_video_packets = summary.non_video_packets.saturating_add(1);
+                            continue;
+                        };
+                        summary.fragments_received = summary.fragments_received.saturating_add(1);
+                        match self.reassembly.apply_fragment_and_queue_if_complete(
+                            reassembly_state,
+                            video_queue_state,
+                            packet,
+                            queued_at,
+                            ServerVideoFrameQueuePolicy::default(),
+                        ) {
+                            ServerVideoFrameReassemblyApplyResult::FragmentStored { .. } => {}
+                            ServerVideoFrameReassemblyApplyResult::DuplicateFragmentIgnored {
+                                ..
+                            } => {
+                                summary.duplicate_fragments =
+                                    summary.duplicate_fragments.saturating_add(1);
+                            }
+                            ServerVideoFrameReassemblyApplyResult::RejectedFragment { .. } => {
+                                summary.rejected_fragments =
+                                    summary.rejected_fragments.saturating_add(1);
+                            }
+                            ServerVideoFrameReassemblyApplyResult::FrameComplete {
+                                queue_result,
+                                ..
+                            } => {
+                                summary.frames_reassembled =
+                                    summary.frames_reassembled.saturating_add(1);
+                                if matches!(
+                                    queue_result,
+                                    ServerVideoFrameQueueStorageResult::Stored { .. }
+                                ) {
+                                    summary.frames_queued = summary.frames_queued.saturating_add(1);
+                                }
+                                summary.queue_len = video_queue_state.total_len();
+                                last_queue =
+                                    Some(ServerVideoFrameQueueRuntimeResult::Queued(queue_result));
+                                return Ok(ServerReceiveAuthVideoQueueOnceVideoOutcome::Received {
+                                    summary,
+                                    queue: last_queue,
+                                });
+                            }
+                        }
+                    }
+                    _ => {
+                        summary.non_video_packets = summary.non_video_packets.saturating_add(1);
+                    }
+                },
+                ServerReceiveLoopGateOutcome::Rejected(rejection) => {
+                    summary.rejected_packets = summary.rejected_packets.saturating_add(1);
+                    if matches!(
+                        rejection,
+                        ServerReceiveLoopGateRejection::Acceptance(PacketAcceptanceRejection {
+                            message_type: MessageType::VideoFrameFragment,
+                            ..
+                        })
+                    ) {
+                        summary.rejected_fragments = summary.rejected_fragments.saturating_add(1);
+                    }
+                }
+            }
+        }
+
+        summary.max_packets_reached = true;
+        summary.incomplete_reassembly_frames = reassembly_state.tracked_frame_count();
+        summary.queue_len = video_queue_state.total_len();
+        Ok(ServerReceiveAuthVideoQueueOnceVideoOutcome::Received {
+            summary,
+            queue: last_queue,
         })
     }
 }
@@ -1010,6 +1145,7 @@ pub struct ServerReceiveAuthVideoQueueOnceStartupOutcome {
     pub registry: AuthenticatedSenderRegistry,
     pub queue_collection: ServerOutboundQueueCollection,
     pub video_queue_state: ServerVideoFrameQueueState,
+    pub reassembly_state: ServerVideoFrameReassemblyState,
     pub first_auth: ServerAuthResponsePocOutcome,
     pub video: ServerReceiveAuthVideoQueueOnceVideoOutcome,
 }
@@ -1018,10 +1154,28 @@ pub struct ServerReceiveAuthVideoQueueOnceStartupOutcome {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ServerReceiveAuthVideoQueueOnceVideoOutcome {
     Received {
-        second: ServerControllerReceiveSendRuntimeResult,
+        summary: ServerReceiveAuthVideoQueueOnceVideoSummary,
         queue: Option<ServerVideoFrameQueueRuntimeResult>,
     },
     NotReceivedAuthRejected,
+}
+
+/// Manual auth/video queue diagnostics for non-fragmented and fragmented frames.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ServerReceiveAuthVideoQueueOnceVideoSummary {
+    pub packets_received: u64,
+    pub fragments_received: u64,
+    pub frames_reassembled: u64,
+    pub frames_queued: u64,
+    pub direct_frames_queued: u64,
+    pub rejected_packets: u64,
+    pub rejected_fragments: u64,
+    pub duplicate_fragments: u64,
+    pub non_video_packets: u64,
+    pub incomplete_reassembly_frames: usize,
+    pub queue_len: usize,
+    pub receive_timed_out: bool,
+    pub max_packets_reached: bool,
 }
 
 /// Startup error for the manual auth-then-video queue launcher.
@@ -1034,6 +1188,10 @@ pub enum ServerReceiveAuthVideoQueueOnceStartupError {
     },
     Auth(ServerAuthResponsePocError),
     Runtime(ServerControllerReceiveSendRuntimeError),
+    Registered(ServerRegisteredPacketBoundaryError),
+    VideoReceive {
+        kind: io::ErrorKind,
+    },
 }
 
 /// Launcher for exactly three controller receive/send iterations from server config.

@@ -7137,7 +7137,7 @@ Error classification:
 | --- | --- | --- | --- |
 | encode | `EncodeFailed` | drop candidate | Message cannot be represented by current protocol encoder. This is a code / compatibility issue, not a UDP retry issue. |
 | before socket send | `DestinationUnavailable` | drop candidate | Required destination metadata is absent or unusable before socket call. |
-| before socket send | `PacketTooLarge` | drop candidate | Encoded datagram violates current size policy. Fragmentation is not implemented yet. |
+| before socket send | `PacketTooLarge` | drop candidate | Encoded datagram violates current size policy. Large `VideoFrame` payloads should normally use sender-side fragmentation; a remaining `PacketTooLarge` means a direct packet or fragment packet still exceeded the safe datagram limit. |
 | socket send | `SocketWouldBlock` | retry candidate | Future nonblocking socket path may retry or requeue later. |
 | socket send | `SocketInterrupted` | retry candidate | Future socket path may retry immediately or requeue. |
 | socket send | `ConnectionRefused` | warning candidate | UDP may surface ICMP/refused depending on platform; log with context and let higher-level state decide later. |
@@ -7915,8 +7915,8 @@ Responsibility split:
 Windows API-backed target enumeration, OS event-driven continuous frame
 acquisition, production encoder configuration, hardware encoder integration,
 decode, switcher rendering, late-frame drop mutation, 4-view sync, and OBS
-integration remain future work. Sender-side packet fragmentation is now
-implemented; server-side fragment reassembly remains future work.
+integration remain future work. Sender-side packet fragmentation and the first
+server-side fragment reassembly / queue insertion boundary are implemented.
 
 ## Client VideoFrame Fragmentation Boundary
 
@@ -7942,9 +7942,9 @@ boundary for real encoded `VideoFrame` traffic.
 
 Current non-goals for this slice:
 
-- no server-side fragment reassembly yet
 - no fragment retry/retransmit policy
-- no queue mutation or switcher consumption of fragment packets
+- no fragment expiration policy
+- no late-frame queue mutation or switcher consumption of fragment packets
 - no H.264-aware packetization beyond opaque payload slicing
 
 This means the sender can avoid oversized UDP datagrams for large encoded

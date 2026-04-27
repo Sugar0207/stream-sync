@@ -181,10 +181,10 @@ fn main() {
             ) {
                 Ok(outcome) => {
                     let decision = &outcome.first_auth.auth_flow.decision;
-                    let (video_status, queued_status, queue_len, dropped_oldest) =
+                    let (video_status, queued_status, queue_len, dropped_oldest, video_summary) =
                         auth_video_queue_summary(&outcome);
                     println!(
-                        "receive auth/video queue runtime handled auth on {}; auth_accepted={} auth_reason={:?} client_id={} run_id={} video={} queued={} queue_len={} dropped_oldest={} registered_clients={}",
+                        "receive auth/video queue runtime handled auth on {}; auth_accepted={} auth_reason={:?} client_id={} run_id={} video={} queued={} queue_len={} dropped_oldest={} registered_clients={} packets_received={} fragments_received={} frames_reassembled={} frames_queued={} direct_frames_queued={} rejected_packets={} rejected_fragments={} duplicate_fragments={} non_video_packets={} incomplete_reassembly_frames={} receive_timed_out={} max_packets_reached={}",
                         outcome.bind_address,
                         decision.accepted,
                         decision.reason_code,
@@ -194,7 +194,43 @@ fn main() {
                         queued_status,
                         queue_len,
                         dropped_oldest,
-                        outcome.registry.entries().count()
+                        outcome.registry.entries().count(),
+                        video_summary
+                            .map(|summary| summary.packets_received.to_string())
+                            .unwrap_or_else(|| "none".to_string()),
+                        video_summary
+                            .map(|summary| summary.fragments_received.to_string())
+                            .unwrap_or_else(|| "none".to_string()),
+                        video_summary
+                            .map(|summary| summary.frames_reassembled.to_string())
+                            .unwrap_or_else(|| "none".to_string()),
+                        video_summary
+                            .map(|summary| summary.frames_queued.to_string())
+                            .unwrap_or_else(|| "none".to_string()),
+                        video_summary
+                            .map(|summary| summary.direct_frames_queued.to_string())
+                            .unwrap_or_else(|| "none".to_string()),
+                        video_summary
+                            .map(|summary| summary.rejected_packets.to_string())
+                            .unwrap_or_else(|| "none".to_string()),
+                        video_summary
+                            .map(|summary| summary.rejected_fragments.to_string())
+                            .unwrap_or_else(|| "none".to_string()),
+                        video_summary
+                            .map(|summary| summary.duplicate_fragments.to_string())
+                            .unwrap_or_else(|| "none".to_string()),
+                        video_summary
+                            .map(|summary| summary.non_video_packets.to_string())
+                            .unwrap_or_else(|| "none".to_string()),
+                        video_summary
+                            .map(|summary| summary.incomplete_reassembly_frames.to_string())
+                            .unwrap_or_else(|| "none".to_string()),
+                        video_summary
+                            .map(|summary| summary.receive_timed_out.to_string())
+                            .unwrap_or_else(|| "none".to_string()),
+                        video_summary
+                            .map(|summary| summary.max_packets_reached.to_string())
+                            .unwrap_or_else(|| "none".to_string())
                     );
                 }
                 Err(error) => {
@@ -235,12 +271,25 @@ fn current_timestamp_micros() -> stream_sync_protocol::TimestampMicros {
 
 fn auth_video_queue_summary(
     outcome: &stream_sync_server::ServerReceiveAuthVideoQueueOnceStartupOutcome,
-) -> (&'static str, &'static str, usize, bool) {
+) -> (
+    &'static str,
+    &'static str,
+    usize,
+    bool,
+    Option<&stream_sync_server::ServerReceiveAuthVideoQueueOnceVideoSummary>,
+) {
     match &outcome.video {
         stream_sync_server::ServerReceiveAuthVideoQueueOnceVideoOutcome::NotReceivedAuthRejected => {
-            ("not_received_auth_rejected", "not_queued", outcome.video_queue_state.total_len(), false)
+            (
+                "not_received_auth_rejected",
+                "not_queued",
+                outcome.video_queue_state.total_len(),
+                false,
+                None,
+            )
         }
         stream_sync_server::ServerReceiveAuthVideoQueueOnceVideoOutcome::Received {
+            summary,
             queue,
             ..
         } => match queue {
@@ -254,6 +303,7 @@ fn auth_video_queue_summary(
                 "queued",
                 outcome.video_queue_state.total_len(),
                 dropped_oldest.is_some(),
+                Some(summary),
             ),
             Some(stream_sync_server::ServerVideoFrameQueueRuntimeResult::Queued(
                 stream_sync_server::ServerVideoFrameQueueStorageResult::Dropped { .. },
@@ -262,18 +312,21 @@ fn auth_video_queue_summary(
                 "not_queued_storage_dropped",
                 outcome.video_queue_state.total_len(),
                 false,
+                Some(summary),
             ),
             Some(stream_sync_server::ServerVideoFrameQueueRuntimeResult::NotQueued { .. }) => (
                 "received",
                 "not_queued_rejected_or_unexpected",
                 outcome.video_queue_state.total_len(),
                 false,
+                Some(summary),
             ),
             None => (
-                "not_received_controller_stopped",
+                "received_no_completed_frame",
                 "not_queued",
                 outcome.video_queue_state.total_len(),
                 false,
+                Some(summary),
             ),
         },
     }

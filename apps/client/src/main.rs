@@ -336,7 +336,7 @@ fn main() {
                             .map(|failure| format!("{:?}", failure.error))
                             .unwrap_or_else(|| "none".to_string());
                         println!(
-                            "auth real encoded video frame bounded PoC sent AuthRequest {} bytes from {} to {} and received AuthResponse {} bytes from {}; accepted={} reason_code={:?}; bounded_manual_runtime=true; frames_attempted={} frames_captured={} frames_encoded={} frames_sent={} no_frame_count={} capture_failures={} encode_failures={} frame_build_failures={} send_failures={} stop_reason={:?} last_send_destination={} last_send_local_source={} last_send_frame_id={} last_send_payload_len={} last_send_packet_len={} last_send_error={}",
+                            "auth real encoded video frame bounded PoC sent AuthRequest {} bytes from {} to {} and received AuthResponse {} bytes from {}; accepted={} reason_code={:?}; bounded_manual_runtime=true; frames_attempted={} frames_captured={} frames_encoded={} frames_sent={} direct_sends={} fragmented_sends={} fragments_attempted={} fragments_sent={} no_frame_count={} capture_failures={} encode_failures={} frame_build_failures={} send_failures={} stop_reason={:?} last_send_destination={} last_send_local_source={} last_send_frame_id={} last_send_payload_len={} last_send_packet_len={} last_send_error={}",
                             outcome.auth_request_bytes_sent,
                             outcome.local_source,
                             outcome.destination,
@@ -348,6 +348,10 @@ fn main() {
                             summary.frames_captured,
                             summary.frames_encoded,
                             summary.frames_sent,
+                            summary.direct_sends,
+                            summary.fragmented_sends,
+                            summary.fragments_attempted,
+                            summary.fragments_sent,
                             summary.no_frame_count,
                             summary.capture_failures,
                             summary.encode_failures,

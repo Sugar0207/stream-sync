@@ -5,6 +5,62 @@
 - Codex
 
 ### Work
+- Audited the manual fragmented real encoded `VideoFrame` verification path.
+- Confirmed the bounded client sender had fragment send state internally but did not print successful fragment counters.
+- Confirmed the server auth/video queue launcher only exposed queue status and needed manual diagnostics for fragmented receive/reassembly.
+- Added bounded client stdout counters for `direct_sends`, `fragmented_sends`, `fragments_attempted`, and `fragments_sent`.
+- Extended the server `--receive-auth-video-queue-once` path to receive a bounded sequence of post-auth video packets, apply `VideoFrameFragment` reassembly, and queue the completed frame.
+- Added server stdout diagnostics for packets received, fragments received, frames reassembled, frames queued, rejected fragments, duplicate fragments, incomplete reassembly frames, queue length, receive timeout, and max-packet guard.
+- Updated the real encoded manual checklist with exact two-command verification, expected client/server output, fragmented pass criteria, and failure diagnosis.
+
+### Changed Files
+- `apps/client/src/lib.rs`
+- `apps/client/src/main.rs`
+- `apps/server/src/lib.rs`
+- `apps/server/src/main.rs`
+- `docs/architecture/system-design.md`
+- `docs/operations/manual-real-encoded-video-poc.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### Decisions
+- Reused the existing server queue launcher command instead of adding a new command.
+- Kept the server receive extension bounded and diagnostic-only; it is not a production continuous receive loop.
+- Used an idle receive timeout for the manual launcher to surface incomplete reassembly without implementing fragment expiration.
+- Kept retransmit/retry, fragment expiration policy, late-frame queue mutation, 4-view orchestration, and OBS out of scope.
+
+### Unresolved
+- actual human run of the fragmented real encoded sender against the server queue launcher
+- fragment retransmit/retry
+- fragment expiration policy
+- production H.264 encoder configuration / rate control
+- late frame queue mutation / drop policy
+
+### Next
+- Run the documented two-command manual check on Windows with FFmpeg available.
+- Record observed stdout if field names or counts differ from the checklist.
+- Continue production H.264 encoder configuration / error logging policy after the fragmented path is manually confirmed.
+
+### TODO Update
+- Updated current focus to show manual stdout diagnostics are available.
+- Kept the next item as executing the documented fragmented sender -> server reassembly -> queue manual verification.
+
+### Validation
+- `cargo fmt`
+- `cargo fmt --check`
+- `cargo test -p stream-sync-client client_video_frame -- --test-threads=1`
+- `cargo test -p stream-sync-server video_frame -- --test-threads=1`
+- `cargo test -p stream-sync-server video_frame_queue -- --test-threads=1`
+- `cargo check --workspace`
+- `git diff --check`
+
+---
+
+## 2026-04-28
+### Type
+- Codex
+
+### Work
 - Added the smallest server-side `VideoFrameFragment` reassembly slice.
 - Routed decoded `VideoFrameFragment` packets through server inbound routing and the existing authenticated packet acceptance gate.
 - Added registered handler input for accepted/authenticated video frame fragments without changing auth policy.
