@@ -1,3 +1,4 @@
+use socket2::SockRef;
 use std::{
     collections::{BTreeMap, VecDeque},
     env, fs, io,
@@ -879,6 +880,7 @@ pub struct ServerReceiveAuthVideoQueueOnceLauncher {
 
 const SERVER_AUTH_VIDEO_QUEUE_DEFAULT_MAX_VIDEO_PACKETS: usize = 4_096;
 const SERVER_AUTH_VIDEO_QUEUE_DEFAULT_FRAGMENT_IDLE_TIMEOUT: Duration = Duration::from_secs(15);
+const SERVER_AUTH_VIDEO_QUEUE_DEFAULT_RECEIVE_BUFFER_BYTES: usize = 8_388_608;
 
 /// Manual receive policy for auth-then-video queue verification.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -887,6 +889,7 @@ pub struct ServerReceiveAuthVideoQueueOnceManualPolicy {
     pub receive_timeout: Duration,
     pub expected_reassembled_frames: u64,
     pub stop_after_expected_reassembled_frames: bool,
+    pub receive_buffer_bytes: usize,
 }
 
 impl Default for ServerReceiveAuthVideoQueueOnceManualPolicy {
@@ -896,6 +899,7 @@ impl Default for ServerReceiveAuthVideoQueueOnceManualPolicy {
             receive_timeout: SERVER_AUTH_VIDEO_QUEUE_DEFAULT_FRAGMENT_IDLE_TIMEOUT,
             expected_reassembled_frames: 1,
             stop_after_expected_reassembled_frames: true,
+            receive_buffer_bytes: SERVER_AUTH_VIDEO_QUEUE_DEFAULT_RECEIVE_BUFFER_BYTES,
         }
     }
 }
@@ -1017,6 +1021,7 @@ impl ServerReceiveAuthVideoQueueOnceLauncher {
         let queue_collection = ServerOutboundQueueCollection::default();
         let mut video_queue_state = ServerVideoFrameQueueState::default();
         let mut reassembly_state = ServerVideoFrameReassemblyState::default();
+        let receive_buffer = apply_manual_receive_buffer_policy(&socket, policy);
 
         let first_auth = self
             .auth
@@ -1056,6 +1061,7 @@ impl ServerReceiveAuthVideoQueueOnceLauncher {
             queue_collection,
             video_queue_state,
             reassembly_state,
+            receive_buffer,
             first_auth,
             video,
         })
@@ -1239,6 +1245,7 @@ pub struct ServerReceiveAuthVideoQueueOnceStartupOutcome {
     pub queue_collection: ServerOutboundQueueCollection,
     pub video_queue_state: ServerVideoFrameQueueState,
     pub reassembly_state: ServerVideoFrameReassemblyState,
+    pub receive_buffer: ServerUdpReceiveBufferTuningResult,
     pub first_auth: ServerAuthResponsePocOutcome,
     pub video: ServerReceiveAuthVideoQueueOnceVideoOutcome,
 }
@@ -1278,6 +1285,36 @@ pub struct ServerVideoFrameReassemblyFrameProgress {
     pub fragments_received: usize,
     pub fragments_expected: usize,
     pub fragments_missing: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ServerUdpReceiveBufferTuningResult {
+    pub requested_bytes: usize,
+    pub effective_bytes: Option<usize>,
+    pub set_error: Option<String>,
+    pub read_error: Option<String>,
+}
+
+fn apply_manual_receive_buffer_policy(
+    socket: &UdpSocket,
+    policy: ServerReceiveAuthVideoQueueOnceManualPolicy,
+) -> ServerUdpReceiveBufferTuningResult {
+    let sock_ref = SockRef::from(socket);
+    let set_error = sock_ref
+        .set_recv_buffer_size(policy.receive_buffer_bytes)
+        .err()
+        .map(|error| format!("{:?}: {}", error.kind(), error));
+    let (effective_bytes, read_error) = match sock_ref.recv_buffer_size() {
+        Ok(size) => (Some(size), None),
+        Err(error) => (None, Some(format!("{:?}: {}", error.kind(), error))),
+    };
+
+    ServerUdpReceiveBufferTuningResult {
+        requested_bytes: policy.receive_buffer_bytes,
+        effective_bytes,
+        set_error,
+        read_error,
+    }
 }
 
 fn finalize_auth_video_queue_summary(

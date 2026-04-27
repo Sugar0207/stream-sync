@@ -5,6 +5,60 @@
 - Codex
 
 ### Work
+- Followed up on the manual fragmented real encoded PoC where the client sent all fragments but the server received only part of the frame.
+- Recorded the observed result: client `fragments_attempted=411`, `fragments_sent=411`, `send_failures=0`; server `fragments_received=375`, `incomplete_frame_progress=player1/streamsync-dev-session/2:375/411:missing=36`, `frames_reassembled=0`, with no rejected or duplicate fragments.
+- Added UDP socket receive buffer tuning to the server `--receive-auth-video-queue-once` manual path.
+- Added one optional positional CLI arg, `receive_buffer_bytes`, after the existing manual policy args.
+- Defaulted the manual receive buffer request to `8388608` bytes.
+- Applied the receive buffer request immediately after socket bind, before auth/video receive on the manual path.
+- Added stdout diagnostics for requested receive buffer bytes, effective receive buffer bytes, set error, and read error.
+- Kept buffer set/read failures non-fatal for the manual PoC.
+
+### Changed Files
+- `apps/server/Cargo.toml`
+- `Cargo.lock`
+- `apps/server/src/lib.rs`
+- `apps/server/src/main.rs`
+- `docs/architecture/system-design.md`
+- `docs/operations/manual-real-encoded-video-poc.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### Decisions
+- Used `socket2` for portable receive buffer set/read access.
+- Kept CLI compatibility by appending only one optional positional argument.
+- Kept protocol wire format, `VideoFrameFragment`, reassembly behavior, and client behavior unchanged.
+- Treated receive buffer tuning as manual PoC reliability support, not as production continuous receive-loop design.
+
+### Unresolved
+- Manual rerun with `receive_buffer_bytes=8388608`.
+- Retransmit/retry.
+- Fragment expiration policy.
+- 4-view orchestration and OBS integration.
+
+### Next
+- Run `cargo run -p stream-sync-server -- --receive-auth-video-queue-once configs/examples/server.example.toml 4096 15000 1 true 8388608`.
+- Confirm `manual_receive_buffer_effective_bytes` and then rerun the bounded client with `max_frames=1`.
+
+### TODO Update
+- Updated current position and next item to include UDP receive buffer tuning as the next validation focus.
+
+### Validation
+- `cargo fmt`
+- `cargo fmt --check`
+- `cargo test -p stream-sync-server video_frame -- --test-threads=1`
+- `cargo test -p stream-sync-server video_frame_queue -- --test-threads=1`
+- `cargo check -p stream-sync-server`
+- `cargo check --workspace`
+- `git diff --check`
+
+---
+
+## 2026-04-28
+### Type
+- Codex
+
+### Work
 - Improved the fragmented real encoded manual PoC after a real run showed the client sent all fragments but the server timed out before completing a frame.
 - Raised the server auth/video queue manual launcher defaults from a small fixed receive window to a manual policy tuned for fragmented PoC completion.
 - Added CLI-overridable server manual policy values for max post-auth video packets, receive timeout, expected reassembled frames, and stop-after-expected behavior.

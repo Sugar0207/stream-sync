@@ -7981,6 +7981,11 @@ frames. Server-side reassembly now provides the first receive-side counterpart:
   idle receive timeout, expected reassembled frame count, and whether to stop
   after that expected count. Its defaults are tuned for manual PoC completion
   rather than production scheduling.
+- The same manual launcher can request a larger UDP socket receive buffer after
+  bind and before auth/video receive. It reports both requested and effective
+  receive buffer sizes when the platform allows it, but buffer tuning failure
+  is diagnostic-only for the manual PoC and does not change packet acceptance
+  or protocol behavior.
 - The manual launcher reports incomplete reassembly progress per tracked frame
   as received / expected / missing fragment counts, so a human can distinguish
   timeout, max-packet guard, and queue insertion failure.

@@ -183,11 +183,15 @@ fn main() {
             let stop_after_expected =
                 parse_optional_bool_or_exit(args.next(), "stop-after-expected-reassembled-frames")
                     .unwrap_or(true);
+            let receive_buffer_bytes =
+                parse_optional_arg_or_exit::<usize>(args.next(), "receive-buffer-bytes")
+                    .unwrap_or(8_388_608);
             let policy = stream_sync_server::ServerReceiveAuthVideoQueueOnceManualPolicy {
                 max_video_packets,
                 receive_timeout: std::time::Duration::from_millis(receive_timeout_ms),
                 expected_reassembled_frames: expected_frames,
                 stop_after_expected_reassembled_frames: stop_after_expected,
+                receive_buffer_bytes,
             };
             let launcher = stream_sync_server::ServerReceiveAuthVideoQueueOnceLauncher::default();
             match launcher.run_once_from_path_with_writers_and_policy(
@@ -205,8 +209,23 @@ fn main() {
                     let incomplete_progress = video_summary
                         .map(format_incomplete_frame_progress)
                         .unwrap_or_else(|| "none".to_string());
+                    let effective_receive_buffer = outcome
+                        .receive_buffer
+                        .effective_bytes
+                        .map(|bytes| bytes.to_string())
+                        .unwrap_or_else(|| "unknown".to_string());
+                    let receive_buffer_set_error = outcome
+                        .receive_buffer
+                        .set_error
+                        .as_deref()
+                        .unwrap_or("none");
+                    let receive_buffer_read_error = outcome
+                        .receive_buffer
+                        .read_error
+                        .as_deref()
+                        .unwrap_or("none");
                     println!(
-                        "receive auth/video queue runtime handled auth on {}; auth_accepted={} auth_reason={:?} client_id={} run_id={} video={} queued={} queue_len={} dropped_oldest={} registered_clients={} manual_max_video_packets={} manual_receive_timeout_ms={} manual_expected_reassembled_frames={} manual_stop_after_expected_reassembled_frames={} packets_received={} fragments_received={} frames_reassembled={} frames_queued={} direct_frames_queued={} rejected_packets={} rejected_fragments={} duplicate_fragments={} non_video_packets={} incomplete_reassembly_frames={} incomplete_frame_progress={} receive_timed_out={} max_packets_reached={}",
+                        "receive auth/video queue runtime handled auth on {}; auth_accepted={} auth_reason={:?} client_id={} run_id={} video={} queued={} queue_len={} dropped_oldest={} registered_clients={} manual_max_video_packets={} manual_receive_timeout_ms={} manual_expected_reassembled_frames={} manual_stop_after_expected_reassembled_frames={} manual_receive_buffer_requested_bytes={} manual_receive_buffer_effective_bytes={} manual_receive_buffer_set_error={} manual_receive_buffer_read_error={} packets_received={} fragments_received={} frames_reassembled={} frames_queued={} direct_frames_queued={} rejected_packets={} rejected_fragments={} duplicate_fragments={} non_video_packets={} incomplete_reassembly_frames={} incomplete_frame_progress={} receive_timed_out={} max_packets_reached={}",
                         outcome.bind_address,
                         decision.accepted,
                         decision.reason_code,
@@ -221,6 +240,10 @@ fn main() {
                         receive_timeout_ms,
                         expected_frames,
                         stop_after_expected,
+                        outcome.receive_buffer.requested_bytes,
+                        effective_receive_buffer,
+                        receive_buffer_set_error,
+                        receive_buffer_read_error,
                         video_summary
                             .map(|summary| summary.packets_received.to_string())
                             .unwrap_or_else(|| "none".to_string()),
@@ -268,7 +291,7 @@ fn main() {
         }
         _ => {
             println!(
-                "stream-sync-server scaffold; use --auth-response-poc-once [config-path], --receive-send-once [config-path], --receive-send-twice [config-path], --receive-send-three [config-path], or --receive-auth-video-queue-once [config-path] [max-video-packets] [receive-timeout-ms] [expected-reassembled-frames] [stop-after-expected-reassembled-frames]"
+                "stream-sync-server scaffold; use --auth-response-poc-once [config-path], --receive-send-once [config-path], --receive-send-twice [config-path], --receive-send-three [config-path], or --receive-auth-video-queue-once [config-path] [max-video-packets] [receive-timeout-ms] [expected-reassembled-frames] [stop-after-expected-reassembled-frames] [receive-buffer-bytes]"
             );
         }
     }

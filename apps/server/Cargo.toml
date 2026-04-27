@@ -12,6 +12,7 @@ stream-sync-logging = { path = "../../crates/logging" }
 stream-sync-net-core = { path = "../../crates/net-core" }
 stream-sync-protocol = { path = "../../crates/protocol" }
 stream-sync-timebase = { path = "../../crates/timebase" }
+socket2 = "0.5"
 
 [lints]
 workspace = true

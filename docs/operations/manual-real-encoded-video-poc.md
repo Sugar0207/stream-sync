@@ -110,7 +110,7 @@ queued as one `VideoFrame`.
 ### Terminal 1: Server Queue Launcher
 
 ```powershell
-cargo run -p stream-sync-server -- --receive-auth-video-queue-once configs/examples/server.example.toml 4096 15000 1 true
+cargo run -p stream-sync-server -- --receive-auth-video-queue-once configs/examples/server.example.toml 4096 15000 1 true 8388608
 ```
 
 Arguments after the config path are manual receive policy values:
@@ -119,10 +119,13 @@ Arguments after the config path are manual receive policy values:
 - `15000`: idle receive timeout in milliseconds
 - `1`: expected reassembled frame count
 - `true`: stop after the expected reassembled frame count is reached
+- `8388608`: requested UDP socket receive buffer size in bytes
 
 If these arguments are omitted, the launcher uses the same defaults. For the
 fragmented real encoded PoC, use `max_frames=1` or `2` on the client first so
 the server can finish one frame before later frames add more incomplete state.
+The OS may clamp the effective receive buffer; compare the requested and
+effective stdout fields.
 
 Expected server stdout shape:
 
@@ -146,6 +149,10 @@ manual_max_video_packets=4096
 manual_receive_timeout_ms=15000
 manual_expected_reassembled_frames=1
 manual_stop_after_expected_reassembled_frames=true
+manual_receive_buffer_requested_bytes=8388608
+manual_receive_buffer_effective_bytes=<bytes|unknown>
+manual_receive_buffer_set_error=none
+manual_receive_buffer_read_error=none
 packets_received=<n>
 fragments_received=<n>
 frames_reassembled=<n>
@@ -627,7 +634,10 @@ Fix / retry:
 - rerun the manual check on localhost first
 - keep the client bounded to `max_frames=1` or `2` while proving reassembly
 - use the server manual policy defaults or raise them explicitly, for example
-  `--receive-auth-video-queue-once configs/examples/server.example.toml 8192 30000 1 true`
+  `--receive-auth-video-queue-once configs/examples/server.example.toml 8192 30000 1 true 8388608`
+- compare `manual_receive_buffer_requested_bytes` and
+  `manual_receive_buffer_effective_bytes`; if `set_error` or `read_error` is
+  not `none`, the server continued without confirmed socket buffer tuning
 - use client fragment pacing, for example
   `--auth-real-encoded-video-frame-poc-bounded configs/examples/client.accepted.example.toml 1 16 1`
 - inspect `incomplete_frame_progress`; values like
