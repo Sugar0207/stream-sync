@@ -5,6 +5,54 @@
 - Codex
 
 ### Work
+- Reworked `docs/operations/manual-real-encoded-video-poc.md` into a step-by-step human E2E checklist.
+- Added prerequisite checks for FFmpeg, `cargo check --workspace`, config file existence, and UDP/firewall setup.
+- Added ordered command flows for one-client server queue verification and two-client live switcher verification using the bounded authenticated real encoded sender.
+- Documented expected stdout counters for auth acceptance, frames attempted/captured/encoded/sent, no-frame count, accepted/queued source frames, scheduler ticks, and render outcomes.
+- Added failure diagnosis for missing config, missing FFmpeg, auth rejection, `NoFrameAvailable`, encode failure, UDP/firewall problems, and decode/render failures.
+- Added clear pass/fail criteria for one-client real encoded send and two-client live switcher manual verification.
+- No runtime behavior was changed.
+
+### Changed Files
+- `docs/operations/manual-real-encoded-video-poc.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### Decisions
+- Kept bounded authenticated sender as the preferred manual path for the prior no-frame issue.
+- Kept one-shot commands documented as lower-level checks, not the primary E2E path.
+- Treated `rendered_partial` as an acceptable manual partial pass while `rendered_both` remains the strict two-client pass condition.
+
+### Unresolved
+- manual two-client live switcher run still needs to be performed and recorded.
+- production H.264 encoder configuration and structured encoder stderr logging.
+- OS event-driven frame-arrived wait.
+- late frame queue mutation / actual drop policy.
+- 4-view orchestration and OBS verification.
+
+### Next
+- Run the checklist manually on Windows with FFmpeg available.
+- Capture the observed client/switcher stdout and update the manual notes if any field names differ.
+- Continue with production encoder configuration / error logging policy.
+
+### TODO Update
+- Marked the manual E2E checklist as complete.
+- Kept actual manual two-client run as a next item.
+- Kept production encoder config, late-drop mutation, 4-view, and OBS deferred.
+
+### Validation
+- `cargo fmt`
+- `cargo fmt --check`
+- `cargo check --workspace`
+- `git diff --check` (passed; Git warned that LF will be replaced by CRLF for edited docs)
+
+---
+
+## 2026-04-27
+### Type
+- Codex
+
+### Work
 - Added the smallest bounded client-side continuous acquisition / frame-arrived wait path for real encoded video.
 - Added `ClientContinuousRealEncodedVideoFrameBoundary`, bounded policy/input/result/summary/stop-reason types, and repeated execution over the existing `ClientRealEncodedVideoFrameOneShotBoundary`.
 - The bounded sender consumes a caller-owned ready capture session runtime and caller-owned UDP socket, then repeats acquisition -> FFmpeg H.264 encode hook -> `RealCaptureH264` metadata construction -> existing UDP send.
