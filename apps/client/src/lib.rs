@@ -6,7 +6,7 @@ use std::{
     path::{Path, PathBuf},
     process::{Command, Stdio},
     sync::{Arc, Mutex},
-    time::{Duration, SystemTime, UNIX_EPOCH},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 use stream_sync_protocol::{
@@ -1061,6 +1061,264 @@ pub fn run_auth_real_encoded_video_frame_poc_once_from_path(
     path: impl AsRef<Path>,
 ) -> Result<ClientAuthRealEncodedVideoFramePocOutcome, ClientAuthRealEncodedVideoFramePocError> {
     ClientAuthRealEncodedVideoFramePocLauncher::default().run_once_from_path(path)
+}
+
+/// Bounded manual launcher for auth plus multiple real encoded `VideoFrame`s.
+///
+/// This keeps auth/socket ownership in the launcher, then hands a ready capture
+/// session runtime to the continuous real encoded frame boundary. It does not
+/// alter one-shot send behavior, retry auth, decode, render, or integrate OBS.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct ClientAuthRealEncodedVideoFrameBoundedPocLauncher {
+    encoder: ProtocolMessageEncoderBoundary,
+    session_config: ClientCaptureSessionConfigBoundary,
+    session_runtime: ClientCaptureSessionRuntimeBoundary,
+    continuous_video: ClientContinuousRealEncodedVideoFrameBoundary,
+}
+
+impl ClientAuthRealEncodedVideoFrameBoundedPocLauncher {
+    pub fn load_startup_config_from_path(
+        &self,
+        path: impl AsRef<Path>,
+        max_frames: u64,
+    ) -> Result<
+        ClientAuthRealEncodedVideoFrameBoundedPocStartupConfig,
+        ClientAuthRealEncodedVideoFramePocError,
+    > {
+        let auth_config = ClientAuthRequestPocLauncher::default()
+            .load_startup_config_from_path(path)
+            .map_err(ClientAuthRealEncodedVideoFramePocError::from_auth_request_error)?;
+        Ok(self.load_startup_config_from_auth_config(auth_config, max_frames))
+    }
+
+    pub fn load_startup_config_from_str(
+        &self,
+        input: &str,
+        max_frames: u64,
+    ) -> Result<
+        ClientAuthRealEncodedVideoFrameBoundedPocStartupConfig,
+        ClientAuthRealEncodedVideoFramePocError,
+    > {
+        let auth_config = ClientAuthRequestPocLauncher::default()
+            .load_startup_config_from_str(input)
+            .map_err(ClientAuthRealEncodedVideoFramePocError::from_auth_request_error)?;
+        Ok(self.load_startup_config_from_auth_config(auth_config, max_frames))
+    }
+
+    fn load_startup_config_from_auth_config(
+        &self,
+        auth_config: ClientAuthRequestPocStartupConfig,
+        max_frames: u64,
+    ) -> ClientAuthRealEncodedVideoFrameBoundedPocStartupConfig {
+        let max_ticks = max_frames.saturating_mul(10).max(max_frames);
+        ClientAuthRealEncodedVideoFrameBoundedPocStartupConfig {
+            destination: auth_config.destination,
+            response_timeout_ms: auth_config.response_timeout_ms,
+            request: auth_config.request.clone(),
+            video: ClientRealEncodedVideoFramePocStartupConfig {
+                destination: auth_config.destination,
+                protocol_version: auth_config.request.protocol_version,
+                client_id: auth_config.request.client_id,
+                run_id: auth_config.request.run_id,
+                frame_id: DEFAULT_PLACEHOLDER_VIDEO_FRAME_ID,
+                is_keyframe: true,
+                fps_nominal: DEFAULT_PLACEHOLDER_VIDEO_FPS,
+                start_capture_if_needed: true,
+                backend_config:
+                    ClientCaptureBackendConfig::windows_graphics_capture_primary_display(),
+            },
+            policy: ClientContinuousRealEncodedVideoFramePolicy {
+                max_frames,
+                max_ticks,
+                frame_wait_timeout_micros: auth_config.response_timeout_ms.saturating_mul(1_000),
+                frame_interval_micros: 1_000_000 / u64::from(DEFAULT_PLACEHOLDER_VIDEO_FPS),
+                stop_on_capture_failure: true,
+                stop_on_send_failure: true,
+            },
+        }
+    }
+
+    pub fn run_once_from_path(
+        &self,
+        path: impl AsRef<Path>,
+        max_frames: u64,
+    ) -> Result<
+        ClientAuthRealEncodedVideoFrameBoundedPocOutcome,
+        ClientAuthRealEncodedVideoFramePocError,
+    > {
+        let startup_config = self.load_startup_config_from_path(path, max_frames)?;
+        self.run_once(startup_config)
+    }
+
+    pub fn run_once(
+        &self,
+        startup_config: ClientAuthRealEncodedVideoFrameBoundedPocStartupConfig,
+    ) -> Result<
+        ClientAuthRealEncodedVideoFrameBoundedPocOutcome,
+        ClientAuthRealEncodedVideoFramePocError,
+    > {
+        #[cfg(target_os = "windows")]
+        {
+            self.run_once_with_runtimes(
+                startup_config,
+                &ClientWindowsGraphicsCaptureSessionRuntimeHook,
+                &ClientWindowsGraphicsCaptureFrameAcquisitionRuntimeHook,
+                &ClientFfmpegSoftwareH264EncoderRuntimeHook::default(),
+            )
+        }
+
+        #[cfg(not(target_os = "windows"))]
+        {
+            self.run_once_with_runtimes(
+                startup_config,
+                &ClientUnavailableCaptureSessionRuntimeHook,
+                &ClientUnavailableCaptureFrameAcquisitionRuntimeHook,
+                &ClientFfmpegSoftwareH264EncoderRuntimeHook::default(),
+            )
+        }
+    }
+
+    pub fn run_once_with_runtimes(
+        &self,
+        startup_config: ClientAuthRealEncodedVideoFrameBoundedPocStartupConfig,
+        session_runtime_hook: &impl ClientCaptureSessionRuntimeHook,
+        capture_runtime_hook: &impl ClientCaptureFrameAcquisitionRuntimeHook,
+        encoder_runtime_hook: &impl ClientH264EncoderRuntimeHook,
+    ) -> Result<
+        ClientAuthRealEncodedVideoFrameBoundedPocOutcome,
+        ClientAuthRealEncodedVideoFramePocError,
+    > {
+        let socket = UdpSocket::bind(ephemeral_bind_address(startup_config.destination))
+            .map_err(|error| ClientAuthRealEncodedVideoFramePocError::Bind(error.kind()))?;
+        socket
+            .set_read_timeout(Some(Duration::from_millis(
+                startup_config.response_timeout_ms,
+            )))
+            .map_err(|error| {
+                ClientAuthRealEncodedVideoFramePocError::SetReadTimeout(error.kind())
+            })?;
+        let local_source = socket
+            .local_addr()
+            .map_err(|error| ClientAuthRealEncodedVideoFramePocError::Bind(error.kind()))?;
+
+        let context = EncodeContext {
+            protocol_version: startup_config.request.protocol_version,
+        };
+        let mut auth_request_bytes = Vec::new();
+        self.encoder
+            .encode_message(
+                context,
+                &ProtocolMessage::AuthRequest(startup_config.request.clone()),
+                &mut auth_request_bytes,
+            )
+            .map_err(ClientAuthRealEncodedVideoFramePocError::Encode)?;
+        let auth_request_bytes_sent = socket
+            .send_to(&auth_request_bytes, startup_config.destination)
+            .map_err(|error| ClientAuthRealEncodedVideoFramePocError::Send(error.kind()))?;
+
+        let (auth_response_source, auth_response_bytes, auth_response) =
+            receive_auth_response(&socket, startup_config.request.protocol_version)
+                .map_err(ClientAuthRealEncodedVideoFramePocError::AuthResponse)?;
+        if !auth_response.accepted {
+            return Err(ClientAuthRealEncodedVideoFramePocError::AuthRejected(
+                auth_response,
+            ));
+        }
+
+        let video = self.run_video_after_auth_with_socket_and_runtimes(
+            &socket,
+            startup_config.video.clone(),
+            startup_config.policy,
+            session_runtime_hook,
+            capture_runtime_hook,
+            encoder_runtime_hook,
+        );
+
+        Ok(ClientAuthRealEncodedVideoFrameBoundedPocOutcome {
+            destination: startup_config.destination,
+            local_source,
+            request: startup_config.request,
+            auth_request_bytes,
+            auth_request_bytes_sent,
+            auth_response_source,
+            auth_response_bytes,
+            auth_response,
+            video,
+        })
+    }
+
+    fn run_video_after_auth_with_socket_and_runtimes(
+        &self,
+        socket: &UdpSocket,
+        video_config: ClientRealEncodedVideoFramePocStartupConfig,
+        policy: ClientContinuousRealEncodedVideoFramePolicy,
+        session_runtime_hook: &impl ClientCaptureSessionRuntimeHook,
+        capture_runtime_hook: &impl ClientCaptureFrameAcquisitionRuntimeHook,
+        encoder_runtime_hook: &impl ClientH264EncoderRuntimeHook,
+    ) -> ClientContinuousRealEncodedVideoFramePocOutcome {
+        let session_config = match self.session_config.prepare_from_target_config(
+            video_config.backend_config.backend,
+            video_config.backend_config.target.as_ref(),
+        ) {
+            ClientCaptureSessionConfigPrepareResult::Prepared { config } => config,
+            ClientCaptureSessionConfigPrepareResult::NotPrepared { backend, reason } => {
+                return ClientContinuousRealEncodedVideoFramePocOutcome::SessionConfigNotPrepared {
+                    destination: video_config.destination,
+                    backend,
+                    reason,
+                };
+            }
+        };
+
+        let mut capture_runtime = match self.session_runtime.create_session_with_runtime(
+            ClientCaptureSessionRuntimeInput::from_config(session_config),
+            session_runtime_hook,
+        ) {
+            ClientCaptureSessionRuntimeCreationResult::Created { runtime } => runtime,
+            ClientCaptureSessionRuntimeCreationResult::NotCreated {
+                backend,
+                reason,
+                message,
+            } => {
+                return ClientContinuousRealEncodedVideoFramePocOutcome::SessionNotCreated {
+                    destination: video_config.destination,
+                    backend,
+                    reason,
+                    message,
+                };
+            }
+        };
+
+        ClientContinuousRealEncodedVideoFramePocOutcome::Completed(
+            self.continuous_video.run_with_runtimes(
+                ClientContinuousRealEncodedVideoFrameInput {
+                    socket,
+                    destination: video_config.destination,
+                    capture_runtime: &mut capture_runtime,
+                    protocol_version: video_config.protocol_version,
+                    client_id: video_config.client_id,
+                    run_id: video_config.run_id,
+                    first_frame_id: video_config.frame_id,
+                    fps_nominal: video_config.fps_nominal,
+                    is_keyframe: video_config.is_keyframe,
+                    start_capture_if_needed: video_config.start_capture_if_needed,
+                    policy,
+                },
+                capture_runtime_hook,
+                encoder_runtime_hook,
+            ),
+        )
+    }
+}
+
+/// Convenience entry point for the same-socket bounded real encoded video PoC.
+pub fn run_auth_real_encoded_video_frame_poc_bounded_from_path(
+    path: impl AsRef<Path>,
+    max_frames: u64,
+) -> Result<ClientAuthRealEncodedVideoFrameBoundedPocOutcome, ClientAuthRealEncodedVideoFramePocError>
+{
+    ClientAuthRealEncodedVideoFrameBoundedPocLauncher::default()
+        .run_once_from_path(path, max_frames)
 }
 
 /// Client boundary for observing one received HeartbeatAck.
@@ -3587,6 +3845,259 @@ impl ClientRealEncodedVideoFrameOneShotBoundary {
     }
 }
 
+/// Bounded stop/cadence policy for repeated real-capture VideoFrame sends.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct ClientContinuousRealEncodedVideoFramePolicy {
+    pub max_frames: u64,
+    pub max_ticks: u64,
+    pub frame_wait_timeout_micros: u64,
+    pub frame_interval_micros: u64,
+    pub stop_on_capture_failure: bool,
+    pub stop_on_send_failure: bool,
+}
+
+impl Default for ClientContinuousRealEncodedVideoFramePolicy {
+    fn default() -> Self {
+        Self {
+            max_frames: 1,
+            max_ticks: 10,
+            frame_wait_timeout_micros: 1_000_000,
+            frame_interval_micros: 1_000_000 / u64::from(DEFAULT_PLACEHOLDER_VIDEO_FPS),
+            stop_on_capture_failure: true,
+            stop_on_send_failure: true,
+        }
+    }
+}
+
+/// Input for a bounded continuous real encoded send loop.
+pub struct ClientContinuousRealEncodedVideoFrameInput<'a> {
+    pub socket: &'a UdpSocket,
+    pub destination: SocketAddr,
+    pub capture_runtime: &'a mut ClientCaptureSessionRuntime,
+    pub protocol_version: ProtocolVersion,
+    pub client_id: ClientId,
+    pub run_id: RunId,
+    pub first_frame_id: u64,
+    pub fps_nominal: u32,
+    pub is_keyframe: bool,
+    pub start_capture_if_needed: bool,
+    pub policy: ClientContinuousRealEncodedVideoFramePolicy,
+}
+
+/// Why the bounded real encoded sender stopped.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ClientContinuousRealEncodedVideoFrameStopReason {
+    MaxFramesReached,
+    MaxTicksReached,
+    FrameWaitTimeout,
+    CaptureFailure,
+    SendFailure,
+}
+
+/// Per-run counters for the bounded real encoded sender.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct ClientContinuousRealEncodedVideoFrameSummary {
+    pub frames_attempted: u64,
+    pub frames_captured: u64,
+    pub frames_encoded: u64,
+    pub frames_sent: u64,
+    pub no_frame_count: u64,
+    pub capture_failures: u64,
+    pub encode_failures: u64,
+    pub frame_build_failures: u64,
+    pub send_failures: u64,
+    pub stop_reason: Option<ClientContinuousRealEncodedVideoFrameStopReason>,
+}
+
+/// Bounded runtime result for repeated real encoded sends.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClientContinuousRealEncodedVideoFrameRuntimeResult {
+    pub destination: SocketAddr,
+    pub results: Vec<ClientRealEncodedVideoFrameOneShotResult>,
+    pub summary: ClientContinuousRealEncodedVideoFrameSummary,
+}
+
+/// Bounded loop over the existing one-shot real encoded VideoFrame boundary.
+///
+/// This owns no socket and creates no capture session. It only repeats the
+/// already separated acquisition -> encode -> metadata -> UDP send boundary
+/// with explicit stop limits and per-tick results.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct ClientContinuousRealEncodedVideoFrameBoundary {
+    one_shot: ClientRealEncodedVideoFrameOneShotBoundary,
+}
+
+impl ClientContinuousRealEncodedVideoFrameBoundary {
+    pub fn run(
+        &self,
+        input: ClientContinuousRealEncodedVideoFrameInput<'_>,
+    ) -> ClientContinuousRealEncodedVideoFrameRuntimeResult {
+        self.run_with_runtimes(
+            input,
+            &ClientUnavailableCaptureFrameAcquisitionRuntimeHook,
+            &ClientDeferredH264EncoderRuntimeHook,
+        )
+    }
+
+    pub fn run_with_runtimes(
+        &self,
+        input: ClientContinuousRealEncodedVideoFrameInput<'_>,
+        capture_runtime_hook: &impl ClientCaptureFrameAcquisitionRuntimeHook,
+        encoder_runtime_hook: &impl ClientH264EncoderRuntimeHook,
+    ) -> ClientContinuousRealEncodedVideoFrameRuntimeResult {
+        let destination = input.destination;
+        let policy = input.policy;
+        let capture_runtime = input.capture_runtime;
+        let mut summary = ClientContinuousRealEncodedVideoFrameSummary::default();
+        let mut results = Vec::new();
+        let mut frame_wait_started_at: Option<Instant> = None;
+
+        loop {
+            if summary.frames_sent >= policy.max_frames {
+                summary.stop_reason =
+                    Some(ClientContinuousRealEncodedVideoFrameStopReason::MaxFramesReached);
+                break;
+            }
+            if summary.frames_attempted >= policy.max_ticks {
+                summary.stop_reason =
+                    Some(ClientContinuousRealEncodedVideoFrameStopReason::MaxTicksReached);
+                break;
+            }
+
+            let frame_id = input
+                .first_frame_id
+                .saturating_add(summary.frames_attempted);
+            summary.frames_attempted = summary.frames_attempted.saturating_add(1);
+            let capture_timestamp = current_timestamp_micros();
+            let send_timestamp = current_timestamp_micros();
+            let mut one_shot_input = ClientRealEncodedVideoFrameOneShotInput {
+                socket: input.socket,
+                destination,
+                capture_runtime: &mut *capture_runtime,
+                protocol_version: input.protocol_version,
+                client_id: input.client_id.clone(),
+                run_id: input.run_id.clone(),
+                frame_id,
+                capture_timestamp,
+                send_timestamp,
+                fps_nominal: input.fps_nominal,
+                is_keyframe: input.is_keyframe,
+                start_capture_if_needed: input.start_capture_if_needed,
+            };
+
+            let result = self.one_shot.send_once_with_runtimes(
+                &mut one_shot_input,
+                capture_runtime_hook,
+                encoder_runtime_hook,
+            );
+            update_continuous_real_encoded_summary(&mut summary, &result);
+
+            match &result {
+                ClientRealEncodedVideoFrameOneShotResult::Sent(_) => {
+                    frame_wait_started_at = None;
+                }
+                ClientRealEncodedVideoFrameOneShotResult::NoFrameAvailable { .. } => {
+                    let wait_start = frame_wait_started_at.get_or_insert_with(Instant::now);
+                    if policy.frame_wait_timeout_micros > 0
+                        && wait_start.elapsed()
+                            >= Duration::from_micros(policy.frame_wait_timeout_micros)
+                    {
+                        summary.stop_reason =
+                            Some(ClientContinuousRealEncodedVideoFrameStopReason::FrameWaitTimeout);
+                    }
+                }
+                ClientRealEncodedVideoFrameOneShotResult::CaptureUnavailable { .. } => {
+                    frame_wait_started_at = None;
+                    if policy.stop_on_capture_failure {
+                        summary.stop_reason =
+                            Some(ClientContinuousRealEncodedVideoFrameStopReason::CaptureFailure);
+                    }
+                }
+                ClientRealEncodedVideoFrameOneShotResult::SendFailed { .. } => {
+                    frame_wait_started_at = None;
+                    if policy.stop_on_send_failure {
+                        summary.stop_reason =
+                            Some(ClientContinuousRealEncodedVideoFrameStopReason::SendFailure);
+                    }
+                }
+                ClientRealEncodedVideoFrameOneShotResult::EncodeUnavailable { .. }
+                | ClientRealEncodedVideoFrameOneShotResult::FrameBuildFailed { .. } => {
+                    frame_wait_started_at = None;
+                }
+            }
+
+            results.push(result);
+            if summary.stop_reason.is_some() {
+                break;
+            }
+            sleep_for_continuous_real_encoded_frame_policy(policy, frame_wait_started_at);
+        }
+
+        ClientContinuousRealEncodedVideoFrameRuntimeResult {
+            destination,
+            results,
+            summary,
+        }
+    }
+}
+
+fn update_continuous_real_encoded_summary(
+    summary: &mut ClientContinuousRealEncodedVideoFrameSummary,
+    result: &ClientRealEncodedVideoFrameOneShotResult,
+) {
+    match result {
+        ClientRealEncodedVideoFrameOneShotResult::Sent(_) => {
+            summary.frames_captured = summary.frames_captured.saturating_add(1);
+            summary.frames_encoded = summary.frames_encoded.saturating_add(1);
+            summary.frames_sent = summary.frames_sent.saturating_add(1);
+        }
+        ClientRealEncodedVideoFrameOneShotResult::NoFrameAvailable { .. } => {
+            summary.no_frame_count = summary.no_frame_count.saturating_add(1);
+        }
+        ClientRealEncodedVideoFrameOneShotResult::CaptureUnavailable { .. } => {
+            summary.capture_failures = summary.capture_failures.saturating_add(1);
+        }
+        ClientRealEncodedVideoFrameOneShotResult::EncodeUnavailable { .. } => {
+            summary.frames_captured = summary.frames_captured.saturating_add(1);
+            summary.encode_failures = summary.encode_failures.saturating_add(1);
+        }
+        ClientRealEncodedVideoFrameOneShotResult::FrameBuildFailed { .. } => {
+            summary.frames_captured = summary.frames_captured.saturating_add(1);
+            summary.frames_encoded = summary.frames_encoded.saturating_add(1);
+            summary.frame_build_failures = summary.frame_build_failures.saturating_add(1);
+        }
+        ClientRealEncodedVideoFrameOneShotResult::SendFailed { .. } => {
+            summary.frames_captured = summary.frames_captured.saturating_add(1);
+            summary.frames_encoded = summary.frames_encoded.saturating_add(1);
+            summary.send_failures = summary.send_failures.saturating_add(1);
+        }
+    }
+}
+
+fn sleep_for_continuous_real_encoded_frame_policy(
+    policy: ClientContinuousRealEncodedVideoFramePolicy,
+    frame_wait_started_at: Option<Instant>,
+) {
+    if policy.frame_interval_micros == 0 {
+        return;
+    }
+
+    let mut sleep_micros = policy.frame_interval_micros;
+    if let Some(wait_start) = frame_wait_started_at {
+        if policy.frame_wait_timeout_micros > 0 {
+            let elapsed_micros = wait_start.elapsed().as_micros() as u64;
+            if elapsed_micros >= policy.frame_wait_timeout_micros {
+                return;
+            }
+            sleep_micros = sleep_micros.min(policy.frame_wait_timeout_micros - elapsed_micros);
+        }
+    }
+
+    if sleep_micros > 0 {
+        std::thread::sleep(Duration::from_micros(sleep_micros));
+    }
+}
+
 /// Input for preparing ack observation return from a decoded HeartbeatAck.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ClientHeartbeatLoopAckObservationReturnInput {
@@ -5531,6 +6042,47 @@ pub struct ClientAuthRealEncodedVideoFramePocOutcome {
     pub auth_response_bytes: Vec<u8>,
     pub auth_response: AuthResponse,
     pub video: ClientRealEncodedVideoFramePocOutcome,
+}
+
+/// Startup config for auth followed by bounded real encoded `VideoFrame` sends.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClientAuthRealEncodedVideoFrameBoundedPocStartupConfig {
+    pub destination: SocketAddr,
+    pub response_timeout_ms: u64,
+    pub request: AuthRequest,
+    pub video: ClientRealEncodedVideoFramePocStartupConfig,
+    pub policy: ClientContinuousRealEncodedVideoFramePolicy,
+}
+
+/// Result of bounded real encoded video after auth and session setup.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ClientContinuousRealEncodedVideoFramePocOutcome {
+    SessionConfigNotPrepared {
+        destination: SocketAddr,
+        backend: Option<ClientCaptureBackendKind>,
+        reason: ClientCaptureSessionConfigPrepareFailure,
+    },
+    SessionNotCreated {
+        destination: SocketAddr,
+        backend: Option<ClientCaptureBackendKind>,
+        reason: ClientCaptureSessionRuntimeCreationFailure,
+        message: Option<String>,
+    },
+    Completed(ClientContinuousRealEncodedVideoFrameRuntimeResult),
+}
+
+/// Result of one same-socket auth round trip followed by bounded real encoded sends.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClientAuthRealEncodedVideoFrameBoundedPocOutcome {
+    pub destination: SocketAddr,
+    pub local_source: SocketAddr,
+    pub request: AuthRequest,
+    pub auth_request_bytes: Vec<u8>,
+    pub auth_request_bytes_sent: usize,
+    pub auth_response_source: SocketAddr,
+    pub auth_response_bytes: Vec<u8>,
+    pub auth_response: AuthResponse,
+    pub video: ClientContinuousRealEncodedVideoFramePocOutcome,
 }
 
 /// Return mode used by the one-tick heartbeat runtime launcher.
@@ -12235,6 +12787,292 @@ mod tests {
     }
 
     #[test]
+    fn client_video_frame_continuous_real_encoded_stops_at_max_frames() {
+        struct FixtureCapture;
+        impl ClientCaptureFrameAcquisitionRuntimeHook for FixtureCapture {
+            fn acquire_one_bgra_frame(
+                &self,
+                input: &mut ClientCaptureFrameAcquisitionInput<'_>,
+            ) -> ClientCaptureFrameAcquisitionResult {
+                input.runtime.capture_started = true;
+                ClientCaptureFrameAcquisitionResult::FrameAcquired {
+                    frame: ClientRawCapturedVideoFrame {
+                        capture_timestamp: input.capture_timestamp,
+                        width: 2,
+                        height: 2,
+                        fps_nominal: input.fps_nominal,
+                        pixel_format: ClientRawVideoPixelFormat::Bgra8,
+                        pixels: vec![0; 2 * 2 * 4],
+                    },
+                }
+            }
+        }
+        struct FixtureEncoder;
+        impl ClientH264EncoderRuntimeHook for FixtureEncoder {
+            fn encode_bgra_frame(
+                &self,
+                _input: &ClientH264EncoderInput,
+            ) -> ClientH264EncoderHookResult {
+                ClientH264EncoderHookResult::Encoded {
+                    payload: ClientH264EncodedPayload {
+                        bytes: vec![0x00, 0x00, 0x01, 0x65],
+                    },
+                }
+            }
+        }
+
+        let receiver = UdpSocket::bind("127.0.0.1:0").expect("receiver should bind");
+        receiver
+            .set_read_timeout(Some(Duration::from_secs(1)))
+            .expect("read timeout should be set");
+        let sender = UdpSocket::bind("127.0.0.1:0").expect("sender should bind");
+        let destination = receiver.local_addr().expect("receiver addr should exist");
+        let mut capture_runtime = client_capture_session_runtime_for_tests();
+
+        let result = ClientContinuousRealEncodedVideoFrameBoundary::default().run_with_runtimes(
+            ClientContinuousRealEncodedVideoFrameInput {
+                socket: &sender,
+                destination,
+                capture_runtime: &mut capture_runtime,
+                protocol_version: ProtocolVersion(2),
+                client_id: ClientId("client-1".to_string()),
+                run_id: RunId("run-1".to_string()),
+                first_frame_id: 40,
+                fps_nominal: 30,
+                is_keyframe: true,
+                start_capture_if_needed: true,
+                policy: ClientContinuousRealEncodedVideoFramePolicy {
+                    max_frames: 3,
+                    max_ticks: 10,
+                    frame_wait_timeout_micros: 0,
+                    frame_interval_micros: 0,
+                    stop_on_capture_failure: true,
+                    stop_on_send_failure: true,
+                },
+            },
+            &FixtureCapture,
+            &FixtureEncoder,
+        );
+
+        assert_eq!(result.summary.frames_attempted, 3);
+        assert_eq!(result.summary.frames_captured, 3);
+        assert_eq!(result.summary.frames_encoded, 3);
+        assert_eq!(result.summary.frames_sent, 3);
+        assert_eq!(
+            result.summary.stop_reason,
+            Some(ClientContinuousRealEncodedVideoFrameStopReason::MaxFramesReached)
+        );
+        for expected_frame_id in 40..43 {
+            let mut buffer = [0_u8; 1024];
+            let (len, _source) = receiver
+                .recv_from(&mut buffer)
+                .expect("receiver should get a video frame");
+            let packet = decode_fixed_header(&buffer[..len]).expect("video header should decode");
+            let decoded = decode_payload_by_message_type(
+                DecodeContext {
+                    expected_protocol_version: ProtocolVersion(2),
+                },
+                packet.header,
+                packet.payload,
+            )
+            .expect("video frame should decode");
+            let ProtocolMessage::VideoFrame(frame) = decoded else {
+                panic!("expected VideoFrame");
+            };
+            assert_eq!(frame.frame_id, expected_frame_id);
+        }
+    }
+
+    #[test]
+    fn client_video_frame_continuous_real_encoded_counts_no_frame_explicitly() {
+        struct NoFrameCapture;
+        impl ClientCaptureFrameAcquisitionRuntimeHook for NoFrameCapture {
+            fn acquire_one_bgra_frame(
+                &self,
+                _input: &mut ClientCaptureFrameAcquisitionInput<'_>,
+            ) -> ClientCaptureFrameAcquisitionResult {
+                ClientCaptureFrameAcquisitionResult::NoFrameAvailable {
+                    message: Some("fixture no frame".to_string()),
+                }
+            }
+        }
+        struct ShouldNotEncode;
+        impl ClientH264EncoderRuntimeHook for ShouldNotEncode {
+            fn encode_bgra_frame(
+                &self,
+                _input: &ClientH264EncoderInput,
+            ) -> ClientH264EncoderHookResult {
+                panic!("encoder should not run when no frame is available");
+            }
+        }
+
+        let sender = UdpSocket::bind("127.0.0.1:0").expect("sender should bind");
+        let mut capture_runtime = client_capture_session_runtime_for_tests();
+
+        let result = ClientContinuousRealEncodedVideoFrameBoundary::default().run_with_runtimes(
+            ClientContinuousRealEncodedVideoFrameInput {
+                socket: &sender,
+                destination: "127.0.0.1:9".parse().unwrap(),
+                capture_runtime: &mut capture_runtime,
+                protocol_version: ProtocolVersion(2),
+                client_id: ClientId("client-1".to_string()),
+                run_id: RunId("run-1".to_string()),
+                first_frame_id: 50,
+                fps_nominal: 30,
+                is_keyframe: true,
+                start_capture_if_needed: true,
+                policy: ClientContinuousRealEncodedVideoFramePolicy {
+                    max_frames: 1,
+                    max_ticks: 2,
+                    frame_wait_timeout_micros: 0,
+                    frame_interval_micros: 0,
+                    stop_on_capture_failure: true,
+                    stop_on_send_failure: true,
+                },
+            },
+            &NoFrameCapture,
+            &ShouldNotEncode,
+        );
+
+        assert_eq!(result.summary.frames_attempted, 2);
+        assert_eq!(result.summary.no_frame_count, 2);
+        assert_eq!(result.summary.frames_sent, 0);
+        assert_eq!(
+            result.summary.stop_reason,
+            Some(ClientContinuousRealEncodedVideoFrameStopReason::MaxTicksReached)
+        );
+    }
+
+    #[test]
+    fn client_video_frame_continuous_real_encoded_capture_failure_stops_when_policy_says_so() {
+        struct FailingCapture;
+        impl ClientCaptureFrameAcquisitionRuntimeHook for FailingCapture {
+            fn acquire_one_bgra_frame(
+                &self,
+                _input: &mut ClientCaptureFrameAcquisitionInput<'_>,
+            ) -> ClientCaptureFrameAcquisitionResult {
+                ClientCaptureFrameAcquisitionResult::Unavailable {
+                    reason: ClientCaptureFrameAcquisitionUnavailableReason::AcquisitionFailed,
+                    message: Some("fixture acquisition failed".to_string()),
+                }
+            }
+        }
+        struct ShouldNotEncode;
+        impl ClientH264EncoderRuntimeHook for ShouldNotEncode {
+            fn encode_bgra_frame(
+                &self,
+                _input: &ClientH264EncoderInput,
+            ) -> ClientH264EncoderHookResult {
+                panic!("encoder should not run when capture failed");
+            }
+        }
+
+        let sender = UdpSocket::bind("127.0.0.1:0").expect("sender should bind");
+        let mut capture_runtime = client_capture_session_runtime_for_tests();
+
+        let result = ClientContinuousRealEncodedVideoFrameBoundary::default().run_with_runtimes(
+            ClientContinuousRealEncodedVideoFrameInput {
+                socket: &sender,
+                destination: "127.0.0.1:9".parse().unwrap(),
+                capture_runtime: &mut capture_runtime,
+                protocol_version: ProtocolVersion(2),
+                client_id: ClientId("client-1".to_string()),
+                run_id: RunId("run-1".to_string()),
+                first_frame_id: 60,
+                fps_nominal: 30,
+                is_keyframe: true,
+                start_capture_if_needed: true,
+                policy: ClientContinuousRealEncodedVideoFramePolicy {
+                    max_frames: 1,
+                    max_ticks: 5,
+                    frame_wait_timeout_micros: 0,
+                    frame_interval_micros: 0,
+                    stop_on_capture_failure: true,
+                    stop_on_send_failure: true,
+                },
+            },
+            &FailingCapture,
+            &ShouldNotEncode,
+        );
+
+        assert_eq!(result.summary.frames_attempted, 1);
+        assert_eq!(result.summary.capture_failures, 1);
+        assert_eq!(
+            result.summary.stop_reason,
+            Some(ClientContinuousRealEncodedVideoFrameStopReason::CaptureFailure)
+        );
+    }
+
+    #[test]
+    fn client_video_frame_continuous_real_encoded_encode_failure_does_not_send() {
+        struct FixtureCapture;
+        impl ClientCaptureFrameAcquisitionRuntimeHook for FixtureCapture {
+            fn acquire_one_bgra_frame(
+                &self,
+                input: &mut ClientCaptureFrameAcquisitionInput<'_>,
+            ) -> ClientCaptureFrameAcquisitionResult {
+                ClientCaptureFrameAcquisitionResult::FrameAcquired {
+                    frame: ClientRawCapturedVideoFrame {
+                        capture_timestamp: input.capture_timestamp,
+                        width: 2,
+                        height: 2,
+                        fps_nominal: input.fps_nominal,
+                        pixel_format: ClientRawVideoPixelFormat::Bgra8,
+                        pixels: vec![0; 2 * 2 * 4],
+                    },
+                }
+            }
+        }
+        struct FailingEncoder;
+        impl ClientH264EncoderRuntimeHook for FailingEncoder {
+            fn encode_bgra_frame(
+                &self,
+                _input: &ClientH264EncoderInput,
+            ) -> ClientH264EncoderHookResult {
+                ClientH264EncoderHookResult::Deferred {
+                    reason: ClientH264EncoderDeferredReason::EncodeFailed,
+                }
+            }
+        }
+
+        let sender = UdpSocket::bind("127.0.0.1:0").expect("sender should bind");
+        let mut capture_runtime = client_capture_session_runtime_for_tests();
+
+        let result = ClientContinuousRealEncodedVideoFrameBoundary::default().run_with_runtimes(
+            ClientContinuousRealEncodedVideoFrameInput {
+                socket: &sender,
+                destination: "127.0.0.1:9".parse().unwrap(),
+                capture_runtime: &mut capture_runtime,
+                protocol_version: ProtocolVersion(2),
+                client_id: ClientId("client-1".to_string()),
+                run_id: RunId("run-1".to_string()),
+                first_frame_id: 70,
+                fps_nominal: 30,
+                is_keyframe: true,
+                start_capture_if_needed: true,
+                policy: ClientContinuousRealEncodedVideoFramePolicy {
+                    max_frames: 1,
+                    max_ticks: 1,
+                    frame_wait_timeout_micros: 0,
+                    frame_interval_micros: 0,
+                    stop_on_capture_failure: true,
+                    stop_on_send_failure: true,
+                },
+            },
+            &FixtureCapture,
+            &FailingEncoder,
+        );
+
+        assert_eq!(result.summary.frames_captured, 1);
+        assert_eq!(result.summary.encode_failures, 1);
+        assert_eq!(result.summary.frames_sent, 0);
+        assert_eq!(
+            result.summary.stop_reason,
+            Some(ClientContinuousRealEncodedVideoFrameStopReason::MaxTicksReached)
+        );
+    }
+
+    #[test]
     fn client_video_frame_auth_real_encoded_poc_launcher_loads_config_with_same_source_contract() {
         let config = ClientAuthRealEncodedVideoFramePocLauncher::default()
             .load_startup_config_from_str(include_str!(
@@ -12402,6 +13240,273 @@ mod tests {
         assert_eq!(sent.frame.frame_id, 21);
         assert_eq!(sent.frame.payload, vec![0x00, 0x00, 0x01, 0x65]);
         assert_eq!(decoded, ProtocolMessage::VideoFrame(sent.frame));
+    }
+
+    #[test]
+    fn client_video_frame_auth_real_encoded_bounded_poc_accepted_auth_sends_multiple_from_same_source(
+    ) {
+        struct FixtureSession;
+        impl ClientCaptureSessionRuntimeHook for FixtureSession {
+            fn create_windows_graphics_capture_session(
+                &self,
+                _input: &ClientCaptureSessionRuntimeInput,
+            ) -> ClientCaptureSessionRuntimeCreationResult {
+                ClientCaptureSessionRuntimeCreationResult::Created {
+                    runtime: client_capture_session_runtime_for_tests(),
+                }
+            }
+        }
+        struct FixtureCapture;
+        impl ClientCaptureFrameAcquisitionRuntimeHook for FixtureCapture {
+            fn acquire_one_bgra_frame(
+                &self,
+                input: &mut ClientCaptureFrameAcquisitionInput<'_>,
+            ) -> ClientCaptureFrameAcquisitionResult {
+                ClientCaptureFrameAcquisitionResult::FrameAcquired {
+                    frame: ClientRawCapturedVideoFrame {
+                        capture_timestamp: input.capture_timestamp,
+                        width: 2,
+                        height: 2,
+                        fps_nominal: input.fps_nominal,
+                        pixel_format: ClientRawVideoPixelFormat::Bgra8,
+                        pixels: vec![0; 2 * 2 * 4],
+                    },
+                }
+            }
+        }
+        struct FixtureEncoder;
+        impl ClientH264EncoderRuntimeHook for FixtureEncoder {
+            fn encode_bgra_frame(
+                &self,
+                _input: &ClientH264EncoderInput,
+            ) -> ClientH264EncoderHookResult {
+                ClientH264EncoderHookResult::Encoded {
+                    payload: ClientH264EncodedPayload {
+                        bytes: vec![0x00, 0x00, 0x01, 0x65],
+                    },
+                }
+            }
+        }
+
+        let receiver = UdpSocket::bind("127.0.0.1:0").expect("receiver should bind");
+        receiver
+            .set_read_timeout(Some(Duration::from_secs(1)))
+            .expect("read timeout should be set");
+        let destination = receiver.local_addr().expect("receiver addr should exist");
+        let request = auth_request_for_video_frame_tests();
+        let config = ClientAuthRealEncodedVideoFrameBoundedPocStartupConfig {
+            destination,
+            response_timeout_ms: 1_000,
+            request: request.clone(),
+            video: ClientRealEncodedVideoFramePocStartupConfig {
+                destination,
+                protocol_version: request.protocol_version,
+                client_id: request.client_id.clone(),
+                run_id: request.run_id.clone(),
+                frame_id: 80,
+                is_keyframe: true,
+                fps_nominal: 30,
+                start_capture_if_needed: true,
+                backend_config:
+                    ClientCaptureBackendConfig::windows_graphics_capture_primary_display(),
+            },
+            policy: ClientContinuousRealEncodedVideoFramePolicy {
+                max_frames: 2,
+                max_ticks: 5,
+                frame_wait_timeout_micros: 0,
+                frame_interval_micros: 0,
+                stop_on_capture_failure: true,
+                stop_on_send_failure: true,
+            },
+        };
+        let response = AuthResponse {
+            message_type: MessageType::AuthResponse,
+            protocol_version: request.protocol_version,
+            client_id: request.client_id.clone(),
+            run_id: request.run_id.clone(),
+            accepted: true,
+            reason_code: AuthResponseReasonCode::Ok,
+            message: None,
+            server_time: Some(TimestampMicros(2_000_000)),
+            expected_protocol_version: None,
+        };
+        let response_for_thread = response.clone();
+        let server = std::thread::spawn(move || {
+            let mut buffer = [0_u8; 2048];
+            let (_auth_len, source) = receiver
+                .recv_from(&mut buffer)
+                .expect("receiver should get auth request");
+            let mut response_bytes = Vec::new();
+            ProtocolMessageEncoderBoundary
+                .encode_message(
+                    EncodeContext {
+                        protocol_version: response_for_thread.protocol_version,
+                    },
+                    &ProtocolMessage::AuthResponse(response_for_thread),
+                    &mut response_bytes,
+                )
+                .expect("auth response should encode");
+            receiver
+                .send_to(&response_bytes, source)
+                .expect("auth response should send");
+
+            let mut frame_ids = Vec::new();
+            for _ in 0..2 {
+                let (video_len, video_source) = receiver
+                    .recv_from(&mut buffer)
+                    .expect("receiver should get video frame");
+                assert_eq!(video_source, source);
+                let video_packet =
+                    decode_fixed_header(&buffer[..video_len]).expect("video header should decode");
+                let decoded = decode_payload_by_message_type(
+                    DecodeContext {
+                        expected_protocol_version: ProtocolVersion(2),
+                    },
+                    video_packet.header,
+                    video_packet.payload,
+                )
+                .expect("video frame should decode");
+                let ProtocolMessage::VideoFrame(frame) = decoded else {
+                    panic!("expected VideoFrame");
+                };
+                frame_ids.push(frame.frame_id);
+            }
+            (source, frame_ids)
+        });
+
+        let outcome = ClientAuthRealEncodedVideoFrameBoundedPocLauncher::default()
+            .run_once_with_runtimes(config, &FixtureSession, &FixtureCapture, &FixtureEncoder)
+            .expect("bounded auth real encoded video should complete");
+
+        let (auth_source, frame_ids) = server.join().expect("server thread should finish");
+        assert_eq!(outcome.local_source.port(), auth_source.port());
+        assert_eq!(outcome.auth_response, response);
+        assert_eq!(frame_ids, vec![80, 81]);
+        let ClientContinuousRealEncodedVideoFramePocOutcome::Completed(runtime) = outcome.video
+        else {
+            panic!("accepted fixture should run bounded video");
+        };
+        assert_eq!(runtime.summary.frames_sent, 2);
+        assert_eq!(
+            runtime.summary.stop_reason,
+            Some(ClientContinuousRealEncodedVideoFrameStopReason::MaxFramesReached)
+        );
+    }
+
+    #[test]
+    fn client_video_frame_auth_real_encoded_bounded_poc_rejected_auth_does_not_capture_encode_send()
+    {
+        struct ShouldNotCreateSession;
+        impl ClientCaptureSessionRuntimeHook for ShouldNotCreateSession {
+            fn create_windows_graphics_capture_session(
+                &self,
+                _input: &ClientCaptureSessionRuntimeInput,
+            ) -> ClientCaptureSessionRuntimeCreationResult {
+                panic!("session should not be created when auth is rejected");
+            }
+        }
+        struct ShouldNotCapture;
+        impl ClientCaptureFrameAcquisitionRuntimeHook for ShouldNotCapture {
+            fn acquire_one_bgra_frame(
+                &self,
+                _input: &mut ClientCaptureFrameAcquisitionInput<'_>,
+            ) -> ClientCaptureFrameAcquisitionResult {
+                panic!("capture should not run when auth is rejected");
+            }
+        }
+        struct ShouldNotEncode;
+        impl ClientH264EncoderRuntimeHook for ShouldNotEncode {
+            fn encode_bgra_frame(
+                &self,
+                _input: &ClientH264EncoderInput,
+            ) -> ClientH264EncoderHookResult {
+                panic!("encoder should not run when auth is rejected");
+            }
+        }
+
+        let receiver = UdpSocket::bind("127.0.0.1:0").expect("receiver should bind");
+        receiver
+            .set_read_timeout(Some(Duration::from_millis(250)))
+            .expect("read timeout should be set");
+        let destination = receiver.local_addr().expect("receiver addr should exist");
+        let request = auth_request_for_video_frame_tests();
+        let config = ClientAuthRealEncodedVideoFrameBoundedPocStartupConfig {
+            destination,
+            response_timeout_ms: 1_000,
+            request: request.clone(),
+            video: ClientRealEncodedVideoFramePocStartupConfig {
+                destination,
+                protocol_version: request.protocol_version,
+                client_id: request.client_id.clone(),
+                run_id: request.run_id.clone(),
+                frame_id: 90,
+                is_keyframe: true,
+                fps_nominal: 30,
+                start_capture_if_needed: true,
+                backend_config:
+                    ClientCaptureBackendConfig::windows_graphics_capture_primary_display(),
+            },
+            policy: ClientContinuousRealEncodedVideoFramePolicy {
+                max_frames: 2,
+                max_ticks: 5,
+                frame_wait_timeout_micros: 0,
+                frame_interval_micros: 0,
+                stop_on_capture_failure: true,
+                stop_on_send_failure: true,
+            },
+        };
+        let response = AuthResponse {
+            message_type: MessageType::AuthResponse,
+            protocol_version: request.protocol_version,
+            client_id: request.client_id.clone(),
+            run_id: request.run_id.clone(),
+            accepted: false,
+            reason_code: AuthResponseReasonCode::InvalidToken,
+            message: Some("rejected".to_string()),
+            server_time: Some(TimestampMicros(2_000_000)),
+            expected_protocol_version: None,
+        };
+        let response_for_thread = response.clone();
+        let server = std::thread::spawn(move || {
+            let mut buffer = [0_u8; 2048];
+            let (_auth_len, source) = receiver
+                .recv_from(&mut buffer)
+                .expect("receiver should get auth request");
+            let mut response_bytes = Vec::new();
+            ProtocolMessageEncoderBoundary
+                .encode_message(
+                    EncodeContext {
+                        protocol_version: response_for_thread.protocol_version,
+                    },
+                    &ProtocolMessage::AuthResponse(response_for_thread),
+                    &mut response_bytes,
+                )
+                .expect("auth response should encode");
+            receiver
+                .send_to(&response_bytes, source)
+                .expect("auth response should send");
+            let no_video = receiver.recv_from(&mut buffer);
+            let error = no_video.expect_err("rejected auth should not send video");
+            assert!(matches!(
+                error.kind(),
+                io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
+            ));
+        });
+
+        let error = ClientAuthRealEncodedVideoFrameBoundedPocLauncher::default()
+            .run_once_with_runtimes(
+                config,
+                &ShouldNotCreateSession,
+                &ShouldNotCapture,
+                &ShouldNotEncode,
+            )
+            .expect_err("rejected auth should stop before video");
+
+        assert_eq!(
+            error,
+            ClientAuthRealEncodedVideoFramePocError::AuthRejected(response)
+        );
+        server.join().expect("server thread should finish");
     }
 
     #[test]

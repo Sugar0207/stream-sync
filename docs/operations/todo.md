@@ -27,9 +27,9 @@
 - server 側は auth one-shot、accepted auth registry 登録、heartbeat ack / liveness / timeout action plan / timeout apply / notice queue storage、RTT / offset state commit と metrics snapshot handoff までの最小境界が揃っている
 - client 側は auth one-shot、heartbeat one-shot、`HeartbeatAckObservation` 付き `ClientStats` one-shot、one-tick runtime、accepted path 手動確認まで完了している
 - client continuous heartbeat loop は thin composition の completed body まで実装済みで、heartbeat timeout notice wakeup planning 境界、wakeup execution 境界、wakeup actual side-effect 境界、outer while-loop connection 境界、outer while-loop one-turn execution body 境界、actual timer wait / retry execution / reconnect 実行境界、outer while-loop 反復実行本体、reconnect policy 境界、caller-owned hook 付き actual socket 再確立境界、real UDP socket 差し替え hook、repeated body からの hook 注入経路まで完了している
-- 未完了の中心は continuous acquisition / frame arrived wait、late frame queue mutation / drop policy、4-view sync orchestration、dashboard UI rendering、continuous receive/send loop 本体、実キュー / 実送信 / 継続ログ出力
+- 未完了の中心は production H.264 encoder configuration / error logging policy、late frame queue mutation / drop policy、4-view sync orchestration、dashboard UI rendering、continuous receive/send loop 本体、実キュー / 実送信 / 継続ログ出力
 - outbound queue 実キュー、continuous receive/send loop 本体、send / receive の継続ログ出力、file sink open、process-wide logger、`ServerNotice` 実送信は未実装
-- video path は server 側 accepted `VideoFrame` receive side-effect を caller-owned per-client queue へ保存し、client 側で placeholder encoded H.264 payload 付き `VideoFrame` と、Windows Graphics Capture + FFmpeg による one-shot `RealCaptureH264` `VideoFrame` を UDP 送信する PoC slice まで完了。switcher 側は latest frame を FFmpeg で H.264 decode して 1 frame BMP dump し、Windows では decoded BGRA を normal window に one-shot 描画し、single-client latest-frame の bounded continuous decode/render loop 境界、one-client targetTime / jitter-buffer selection 境界、2-view targetTime selection orchestration 境界、2-view targetTime-selected decode/render connection 境界、2-view sync fixture/manual verification CLI、2-view side-by-side BGRA layout/composition 境界、composed 2-view canvas window render 境界、live-like 2-client queue/runtime integration 境界、bounded continuous 2-view scheduling 境界、real UDP socket-backed source adapter 境界、auth registry 生成込み live two-view switcher manual runtime まで完了。late-drop mutation、4-view sync、OBS は未着手
+- video path は server 側 accepted `VideoFrame` receive side-effect を caller-owned per-client queue へ保存し、client 側で placeholder encoded H.264 payload 付き `VideoFrame`、Windows Graphics Capture + FFmpeg による one-shot `RealCaptureH264` `VideoFrame`、認証済み same-source の bounded multi-frame `RealCaptureH264` sender まで完了。switcher 側は latest frame を FFmpeg で H.264 decode して 1 frame BMP dump し、Windows では decoded BGRA を normal window に one-shot 描画し、single-client latest-frame の bounded continuous decode/render loop 境界、one-client targetTime / jitter-buffer selection 境界、2-view targetTime selection orchestration 境界、2-view targetTime-selected decode/render connection 境界、2-view sync fixture/manual verification CLI、2-view side-by-side BGRA layout/composition 境界、composed 2-view canvas window render 境界、live-like 2-client queue/runtime integration 境界、bounded continuous 2-view scheduling 境界、real UDP socket-backed source adapter 境界、auth registry 生成込み live two-view switcher manual runtime まで完了。late-drop mutation、4-view sync、OBS は未着手
 
 ---
 
@@ -59,9 +59,9 @@
 ---
 
 ## 直近でやること
-1. continuous acquisition / frame arrived wait の最小境界を分けて設計する
-2. production H.264 encoder configuration / error logging policy
-3. late frame queue mutation / drop policy を最小実装単位に分ける
+1. production H.264 encoder configuration / error logging policy
+2. late frame queue mutation / drop policy を最小実装単位に分ける
+3. live two-view switcher と bounded multi-frame client sender の手動通し確認
 
 ---
 
@@ -646,6 +646,7 @@
 - [x] one-shot real encoded `VideoFrame` path from ready capture runtime to UDP send
 - [x] manual CLI/doc path for one-shot real encoded `VideoFrame` send
 - [x] same-socket auth then real encoded `VideoFrame` one-shot CLI/config launcher
+- [x] bounded continuous real encoded `VideoFrame` sender with frame-arrived wait/no-frame accounting
 - [ ] production H.264 encoder configuration / hardware encoder integration
 - [x] `VideoFrame` encode
 - [x] `VideoFrame` UDP send with explicit placeholder encoded H.264 payload
@@ -731,12 +732,13 @@
 - client real encoded video now has a one-shot send boundary: `ClientRealEncodedVideoFrameOneShotBoundary` composes a ready capture session runtime, one BGRA acquisition, H.264 encode, `RealCaptureH264` metadata construction, and one existing UDP `VideoFrame` send while preserving explicit capture/no-frame/encode/send failure states.
 - client real encoded video now has manual verification wiring: `--real-encoded-video-frame-poc-once [config-path]` attempts a primary-display WGC frame, FFmpeg H.264 encode, and one `RealCaptureH264` `VideoFrame` UDP send, with explicit not-sent output for session/capture/encode/send failures.
 - client real encoded video now has authenticated same-source manual E2E wiring: `--auth-real-encoded-video-frame-poc-once [config-path]` sends `AuthRequest`, requires accepted `AuthResponse`, then creates/captures/encodes/sends one `RealCaptureH264` `VideoFrame` from the same UDP source for server queue verification.
+- client real encoded video now has bounded multi-frame manual sender wiring: `--auth-real-encoded-video-frame-poc-bounded [config-path] [max-frames]` sends `AuthRequest`, requires accepted `AuthResponse`, creates one capture session, repeatedly runs the existing one-shot capture/encode/send boundary on the same UDP socket, and reports attempted/captured/encoded/sent/no-frame/failure counters plus stop reason.
 - metrics commit, snapshot export cadence, dashboard refresh consumer policy, and dashboard refresh runtime wiring remain separate from timer wait, retry, reconnect, socket ownership, cleanup, UI rendering, video, switcher, and OBS.
 - server notice queue storage remains separate from notice send wakeup execution.
 - actual dashboard UI rendering remains unimplemented.
 
 ## Next Items
-1. continuous acquisition / frame arrived wait boundary
-2. production H.264 encoder configuration / error logging policy
-3. late frame queue mutation / drop policy
+1. production H.264 encoder configuration / error logging policy
+2. late frame queue mutation / drop policy
+3. manual two-client run: bounded client senders into live two-view switcher
 4. 4-view orchestration after live 2-client manual runtime is stable

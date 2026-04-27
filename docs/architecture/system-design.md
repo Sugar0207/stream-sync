@@ -7803,9 +7803,9 @@ Current implementation:
   UDP send.
 - Its result keeps stopped states explicit: sent, capture unavailable, no frame
   available, encode unavailable/failed, frame build failed, or send failed.
-- This path is not a continuous streaming loop and does not create capture
-  sessions, enumerate targets, retry, decode, render, integrate OBS, or run
-  4-view sync.
+- This one-shot path is not a continuous streaming loop and does not create
+  capture sessions, enumerate targets, retry, decode, render, integrate OBS, or
+  run 4-view sync.
 - The manual CLI entry point
   `--real-encoded-video-frame-poc-once [config-path]` wires this path for
   primary-display verification. It prints sent frame id, capture timestamp,
@@ -7818,6 +7818,21 @@ Current implementation:
   `AuthRequest`, requires `AuthResponse.accepted=true`, then creates the
   capture session and sends one `RealCaptureH264` `VideoFrame` through the same
   socket/source. It does not bypass or weaken the server packet acceptance gate.
+- `ClientContinuousRealEncodedVideoFrameBoundary` is the smallest bounded
+  repeated sender over the existing one-shot real encoded boundary. It consumes
+  a caller-owned ready `ClientCaptureSessionRuntime`, caller-owned UDP socket,
+  frame acquisition hook, and H.264 encoder hook, then repeats acquisition,
+  encode, metadata construction, and send until max frames, max ticks, frame
+  wait timeout, capture failure, or send failure.
+- Its per-run summary keeps attempted, captured, encoded, sent, no-frame,
+  capture-failure, encode-failure, frame-build-failure, send-failure, and stop
+  reason values explicit. It does not implement selection, decode, render,
+  switcher scheduling, late-drop mutation, OBS, or 4-view logic.
+- The authenticated bounded manual CLI entry point
+  `--auth-real-encoded-video-frame-poc-bounded [config-path] [max-frames]`
+  owns one same-source auth round trip, creates one capture session after auth
+  acceptance, then runs the bounded repeated sender on the same UDP socket. Auth
+  rejection stops before session creation, capture, encode, and video send.
 - The video-only real encoded CLI remains a low-level capture/encode/send check.
   The authenticated CLI is required when the goal is to prove accepted server
   queue insertion, because the server registry is keyed by authenticated source.
@@ -7882,12 +7897,22 @@ Responsibility split:
     capture, encode, metadata, or send behavior.
   - Stops before session creation, capture, encode, and video send when auth is
     rejected or times out.
+- bounded real encoded sender
+  - Reuses the existing real encoded one-shot boundary for each tick.
+  - Owns only bounded loop policy and summary accounting: max frames, max ticks,
+    frame wait timeout, optional cadence sleep, and explicit stop reason.
+  - Does not reinterpret capture, encode, metadata, or send failures.
+- auth + bounded real encoded launcher
+  - Owns only same-source auth, one capture-session creation, and bounded sender
+    startup.
+  - Keeps auth failure before capture/encode/send and preserves the one-shot
+    auth CLI.
 - send boundary
   - Continues to encode and send `VideoFrame` over caller-owned UDP sockets.
   - Does not know whether payload bytes came from placeholder or future real
     capture/encode.
 
-Windows API-backed target enumeration, event/wait based continuous frame
+Windows API-backed target enumeration, OS event-driven continuous frame
 acquisition, production encoder configuration, hardware encoder integration,
-packet fragmentation, decode, switcher rendering, 4-view sync, and OBS
-integration remain future work.
+packet fragmentation, decode, switcher rendering, late-frame drop mutation,
+4-view sync, and OBS integration remain future work.

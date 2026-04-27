@@ -292,6 +292,78 @@ fn main() {
                 }
             }
         }
+        Some("--auth-real-encoded-video-frame-poc-bounded") => {
+            let config_path = args
+                .next()
+                .unwrap_or_else(|| "configs/examples/client.accepted.example.toml".to_string());
+            let max_frames = args
+                .next()
+                .map(|value| value.parse::<u64>())
+                .transpose()
+                .unwrap_or_else(|error| {
+                    eprintln!(
+                        "invalid max-frames for bounded auth real encoded video PoC: {error}"
+                    );
+                    std::process::exit(1);
+                })
+                .unwrap_or(5);
+            match stream_sync_client::run_auth_real_encoded_video_frame_poc_bounded_from_path(
+                &config_path,
+                max_frames,
+            ) {
+                Ok(outcome) => match outcome.video {
+                    stream_sync_client::ClientContinuousRealEncodedVideoFramePocOutcome::Completed(runtime) => {
+                        let summary = runtime.summary;
+                        println!(
+                            "auth real encoded video frame bounded PoC sent AuthRequest {} bytes from {} to {} and received AuthResponse {} bytes from {}; accepted={} reason_code={:?}; bounded_manual_runtime=true; frames_attempted={} frames_captured={} frames_encoded={} frames_sent={} no_frame_count={} capture_failures={} encode_failures={} frame_build_failures={} send_failures={} stop_reason={:?}",
+                            outcome.auth_request_bytes_sent,
+                            outcome.local_source,
+                            outcome.destination,
+                            outcome.auth_response_bytes.len(),
+                            outcome.auth_response_source,
+                            outcome.auth_response.accepted,
+                            outcome.auth_response.reason_code,
+                            summary.frames_attempted,
+                            summary.frames_captured,
+                            summary.frames_encoded,
+                            summary.frames_sent,
+                            summary.no_frame_count,
+                            summary.capture_failures,
+                            summary.encode_failures,
+                            summary.frame_build_failures,
+                            summary.send_failures,
+                            summary.stop_reason
+                        );
+                    }
+                    stream_sync_client::ClientContinuousRealEncodedVideoFramePocOutcome::SessionConfigNotPrepared {
+                        destination,
+                        backend,
+                        reason,
+                    } => {
+                        eprintln!(
+                            "auth real encoded video frame bounded PoC did not send to {destination}: capture session config not prepared backend={backend:?} reason={reason:?}"
+                        );
+                        std::process::exit(1);
+                    }
+                    stream_sync_client::ClientContinuousRealEncodedVideoFramePocOutcome::SessionNotCreated {
+                        destination,
+                        backend,
+                        reason,
+                        message,
+                    } => {
+                        eprintln!(
+                            "auth real encoded video frame bounded PoC did not send to {destination}: capture session not created backend={backend:?} reason={reason:?} message={}",
+                            message.as_deref().unwrap_or("none")
+                        );
+                        std::process::exit(1);
+                    }
+                },
+                Err(error) => {
+                    eprintln!("auth real encoded video frame bounded PoC failed: {error:?}");
+                    std::process::exit(1);
+                }
+            }
+        }
         Some("--auth-heartbeat-one-tick-runtime") => {
             let config_path = args
                 .next()
@@ -400,7 +472,7 @@ fn main() {
         }
         _ => {
             println!(
-                "stream-sync-client scaffold; use --auth-request-poc-once [config-path], --auth-heartbeat-poc-once [config-path], --auth-heartbeat-stats-poc-once [config-path], --placeholder-video-frame-poc-once [config-path], --auth-placeholder-video-frame-poc-once [config-path], --real-encoded-video-frame-poc-once [config-path], --auth-real-encoded-video-frame-poc-once [config-path], --auth-heartbeat-one-tick-runtime [config-path], or --auth-heartbeat-stats-one-tick-runtime [config-path]"
+                "stream-sync-client scaffold; use --auth-request-poc-once [config-path], --auth-heartbeat-poc-once [config-path], --auth-heartbeat-stats-poc-once [config-path], --placeholder-video-frame-poc-once [config-path], --auth-placeholder-video-frame-poc-once [config-path], --real-encoded-video-frame-poc-once [config-path], --auth-real-encoded-video-frame-poc-once [config-path], --auth-real-encoded-video-frame-poc-bounded [config-path] [max-frames], --auth-heartbeat-one-tick-runtime [config-path], or --auth-heartbeat-stats-one-tick-runtime [config-path]"
             );
         }
     }

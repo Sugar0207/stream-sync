@@ -7,8 +7,9 @@ encoded `VideoFrame` path:
 ready capture session -> one BGRA frame -> FFmpeg H.264 encode -> RealCaptureH264 VideoFrame -> UDP send
 ```
 
-This is a one-shot sender only. It is not continuous streaming, switcher
-decode/rendering, OBS integration, or 4-view sync.
+The one-shot sender remains available. A bounded multi-frame manual sender is
+also available for frame-arrived/no-frame behavior; it is still not production
+continuous streaming, OBS integration, or 4-view sync.
 
 ## Implemented Boundary
 
@@ -138,6 +139,43 @@ The command exits non-zero and prints an explicit reason for auth rejection,
 auth timeout/receive failure, capture/session failure, no frame available,
 encode unavailable/failed, or UDP send failure.
 
+## Bounded Multi-Frame Authenticated Sender
+
+Use this when the goal is to send multiple real encoded frames from one
+authenticated UDP source:
+
+```powershell
+cargo run -p stream-sync-client -- --auth-real-encoded-video-frame-poc-bounded configs/examples/client.accepted.example.toml 5
+```
+
+The bounded launcher:
+
+- binds one UDP socket
+- sends `AuthRequest`
+- requires accepted `AuthResponse`
+- creates one capture session after auth succeeds
+- repeatedly runs the existing one-shot frame path:
+  ready session -> frame acquisition -> FFmpeg H.264 encode -> `VideoFrame` send
+- stops by `max_frames`, bounded ticks, frame wait timeout, capture failure, or
+  send failure
+- keeps no-frame, capture failure, encode failure, frame build failure, and send
+  failure counters explicit
+
+Successful stdout includes:
+
+- auth request / response details
+- `bounded_manual_runtime=true`
+- frames attempted / captured / encoded / sent
+- no-frame count
+- capture / encode / frame-build / send failure counts
+- stop reason
+
+Example shape:
+
+```text
+auth real encoded video frame bounded PoC sent AuthRequest <bytes> bytes from 127.0.0.1:<port> to 127.0.0.1:5000 and received AuthResponse <bytes> bytes from 127.0.0.1:5000; accepted=true reason_code=Ok; bounded_manual_runtime=true; frames_attempted=<n> frames_captured=<n> frames_encoded=<n> frames_sent=<n> no_frame_count=<n> capture_failures=<n> encode_failures=<n> frame_build_failures=<n> send_failures=<n> stop_reason=<reason>
+```
+
 ## Live Two-View Switcher Manual Runtime
 
 The switcher can now own the bounded auth registry setup and then run the
@@ -157,14 +195,14 @@ cargo run -p stream-sync-switcher -- --live-two-view-switcher-once configs/examp
 Terminal 2:
 
 ```powershell
-cargo run -p stream-sync-client -- --auth-real-encoded-video-frame-poc-once configs/examples/client.accepted.example.toml
+cargo run -p stream-sync-client -- --auth-real-encoded-video-frame-poc-bounded configs/examples/client.accepted.example.toml 5
 ```
 
 Terminal 3 should use a second client config with `client_id = "player2"` and
 the matching `shared_token = "replace-with-shared-token-2"`, then run:
 
 ```powershell
-cargo run -p stream-sync-client -- --auth-real-encoded-video-frame-poc-once <player2-client-config.toml>
+cargo run -p stream-sync-client -- --auth-real-encoded-video-frame-poc-bounded <player2-client-config.toml> 5
 ```
 
 Expected switcher stdout includes:
@@ -186,7 +224,7 @@ small bounded number of video/source packets and scheduler ticks.
 ## Current Limitations
 
 - primary display only
-- no continuous acquisition or frame-arrived wait
+- frame-arrived wait is bounded and polling-style; no OS event-driven continuous acquisition loop yet
 - no packet fragmentation; large H.264 payloads may fail UDP send
 - live two-view switcher runtime is bounded/manual, not a production loop
 - no OBS integration

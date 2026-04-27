@@ -5,6 +5,62 @@
 - Codex
 
 ### Work
+- Added the smallest bounded client-side continuous acquisition / frame-arrived wait path for real encoded video.
+- Added `ClientContinuousRealEncodedVideoFrameBoundary`, bounded policy/input/result/summary/stop-reason types, and repeated execution over the existing `ClientRealEncodedVideoFrameOneShotBoundary`.
+- The bounded sender consumes a caller-owned ready capture session runtime and caller-owned UDP socket, then repeats acquisition -> FFmpeg H.264 encode hook -> `RealCaptureH264` metadata construction -> existing UDP send.
+- Added `ClientAuthRealEncodedVideoFrameBoundedPocLauncher`, which sends `AuthRequest`, requires accepted `AuthResponse`, creates one capture session, and sends multiple `RealCaptureH264` `VideoFrame`s from the same UDP source.
+- Added CLI `--auth-real-encoded-video-frame-poc-bounded [config-path] [max-frames]`.
+- CLI stdout reports auth result, attempted/captured/encoded/sent counts, no-frame count, capture/encode/frame-build/send failure counts, stop reason, and `bounded_manual_runtime=true`.
+- Added tests for max-frame stop, explicit no-frame counting, capture failure stop, encode failure not sending, accepted auth multi-frame same-source send, and rejected auth stopping before capture/encode/send.
+- Kept one-shot real encoded sender, placeholder sender, switcher scheduling, 4-view, OBS, and late-frame mutation unchanged.
+
+### Changed Files
+- `apps/client/src/lib.rs`
+- `apps/client/src/main.rs`
+- `docs/architecture/system-design.md`
+- `docs/operations/manual-real-encoded-video-poc.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### Decisions
+- Reused the existing real encoded one-shot boundary per loop tick instead of moving capture/encode/send logic into the loop.
+- Kept auth and same-source socket ownership in the bounded launcher.
+- Used bounded max frames, max ticks, frame wait timeout, and optional cadence sleep for manual runtime safety.
+- Treated auth rejection as an error that stops before capture session creation, capture, encode, or send.
+
+### Unresolved
+- production H.264 encoder configuration and error logging policy
+- OS event-driven frame-arrived wait / production continuous acquisition loop
+- packet fragmentation for large encoded frames
+- late frame queue mutation / actual drop policy
+- 4-view orchestration and 2x2 layout
+- OBS Window Capture verification
+- structured production logging
+
+### Next
+- Define production encoder configuration and failure logging.
+- Manually run two bounded client senders into the live two-view switcher runtime.
+- Define late-frame queue mutation/drop policy separately from read-only selection.
+
+### TODO Update
+- Marked bounded continuous real encoded client sender / frame-arrived wait slice complete.
+- Moved next priority to production H.264 encoder configuration / error logging policy.
+- Kept late-drop mutation, 4-view, OBS, and production logging deferred.
+
+### Validation
+- `cargo fmt`
+- `cargo fmt --check`
+- `cargo test -p stream-sync-client client_video_frame`
+- `cargo check --workspace`
+- `git diff --check` (passed; Git warned that LF will be replaced by CRLF for edited files)
+
+---
+
+## 2026-04-27
+### Type
+- Codex
+
+### Work
 - Added the smallest bounded live two-view switcher manual runtime.
 - Added `SwitcherLiveTwoViewManualRuntimeConfig`, `SwitcherLiveTwoViewManualRuntimeBoundary`, auth summary/result/error types, and runtime wiring from server auth setup to UDP source to continuous two-view scheduler.
 - The runtime binds or accepts one UDP socket, runs the existing `ServerAuthResponsePocStep` for bounded auth setup, keeps the resulting caller-owned `AuthenticatedSenderRegistry`, passes it to `SwitcherUdpLiveTwoViewQueueSource`, and runs `SwitcherContinuousTwoViewSchedulingBoundary`.
