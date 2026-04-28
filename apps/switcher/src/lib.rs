@@ -4717,6 +4717,113 @@ mod tests {
     }
 
     #[test]
+    fn target_time_single_client_empty_queue_reports_no_frame() {
+        let mut state = ServerVideoFrameQueueState::default();
+
+        let result = SwitcherSingleClientTargetTimeSourceBoundary::default().select(
+            &mut state,
+            SwitcherSingleClientTargetTimeSourceInput {
+                client_id: ClientId("client-empty".to_string()),
+                run_id: RunId("run-1".to_string()),
+                target_timestamp: TimestampMicros(1_000_001),
+                mode: SwitcherSingleClientTargetTimeSourceMode::PreviewLatestIfAtOrBefore,
+            },
+        );
+
+        assert_eq!(
+            result,
+            SwitcherSingleClientTargetTimeSourceResult::NoFrameAvailable {
+                client_id: ClientId("client-empty".to_string()),
+                run_id: RunId("run-1".to_string()),
+                target_timestamp: TimestampMicros(1_000_001),
+                mode: SwitcherSingleClientTargetTimeSourceMode::PreviewLatestIfAtOrBefore,
+                client_queue_len: 0,
+            }
+        );
+        assert_eq!(state.total_len(), 0);
+    }
+
+    #[test]
+    fn target_time_single_client_live_like_queue_progression_is_explicit() {
+        let mut state = ServerVideoFrameQueueState::default();
+        store_frame_for_run(
+            &mut state,
+            "client-1",
+            "run-1",
+            1,
+            TimestampMicros(2_090_000),
+        );
+        store_frame_for_run(
+            &mut state,
+            "client-1",
+            "run-1",
+            2,
+            TimestampMicros(2_090_100),
+        );
+        let client_id = ClientId("client-1".to_string());
+        let boundary = SwitcherSingleClientTargetTimeSourceBoundary::default();
+
+        let preview = boundary.select(
+            &mut state,
+            SwitcherSingleClientTargetTimeSourceInput {
+                client_id: client_id.clone(),
+                run_id: RunId("run-1".to_string()),
+                target_timestamp: TimestampMicros(1_000_002),
+                mode: SwitcherSingleClientTargetTimeSourceMode::PreviewLatestIfAtOrBefore,
+            },
+        );
+        let SwitcherSingleClientTargetTimeSourceResult::Selected(previewed) = preview else {
+            panic!("latest preview should select frame 2");
+        };
+        assert_eq!(previewed.frame.frame_id, 2);
+        assert!(!previewed.consumed);
+        assert_eq!(state.client_queue_len(&client_id), 2);
+
+        let first_consume = boundary.select(
+            &mut state,
+            SwitcherSingleClientTargetTimeSourceInput {
+                client_id: client_id.clone(),
+                run_id: RunId("run-1".to_string()),
+                target_timestamp: TimestampMicros(1_000_001),
+                mode: SwitcherSingleClientTargetTimeSourceMode::ConsumeOldestAtOrBefore,
+            },
+        );
+        let SwitcherSingleClientTargetTimeSourceResult::Selected(consumed) = first_consume else {
+            panic!("oldest consume should select frame 1");
+        };
+        assert_eq!(consumed.frame.frame_id, 1);
+        assert!(consumed.consumed);
+        let remaining: Vec<u64> = state
+            .frames_for_client(&client_id)
+            .map(|queued| queued.frame.frame_id)
+            .collect();
+        assert_eq!(remaining, vec![2]);
+
+        let waiting = boundary.select(
+            &mut state,
+            SwitcherSingleClientTargetTimeSourceInput {
+                client_id: client_id.clone(),
+                run_id: RunId("run-1".to_string()),
+                target_timestamp: TimestampMicros(1_000_001),
+                mode: SwitcherSingleClientTargetTimeSourceMode::ConsumeOldestAtOrBefore,
+            },
+        );
+        assert_eq!(
+            waiting,
+            SwitcherSingleClientTargetTimeSourceResult::WaitingForFrameAtOrBeforeTarget {
+                client_id,
+                run_id: RunId("run-1".to_string()),
+                target_timestamp: TimestampMicros(1_000_001),
+                mode: SwitcherSingleClientTargetTimeSourceMode::ConsumeOldestAtOrBefore,
+                candidate_frame_id: 2,
+                candidate_capture_timestamp: TimestampMicros(1_000_002),
+                client_queue_len: 1,
+            }
+        );
+        assert_eq!(state.total_len(), 1);
+    }
+
+    #[test]
     fn placeholder_display_handoff_preserves_metadata_and_payload_length() {
         let mut state = ServerVideoFrameQueueState::default();
         store_frame(&mut state, "client-1", 7, TimestampMicros(2_100_000));

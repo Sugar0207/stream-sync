@@ -5,6 +5,52 @@
 - Codex
 
 ### Work
+- Added focused queue-like validation tests for the single-client targetTime source boundary.
+- Added an empty-queue `NoFrameAvailable` test.
+- Added a live-like progression test that previews latest without mutation, consumes the oldest eligible frame, then verifies the remaining newer frame returns waiting without dequeue.
+- Kept the validation tests in-process and did not add a CLI launcher.
+- Updated TODO to mark targetTime source validation complete and move the next task toward multi-client sync planning.
+
+### Changed Files
+- `apps/switcher/src/lib.rs`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### Decisions
+- Used focused tests instead of a manual launcher because the existing in-process boundary is directly testable.
+- Did not connect UDP live receive directly to switcher.
+- Did not change protocol wire format.
+- Did not add 4-view orchestration, OBS output, H.264 decode/render changes, or late-drop mutation.
+
+### Unresolved
+- How the single-client targetTime source should feed the existing two-view scheduler without late-drop mutation.
+- Smallest multi-client sync validation path over queued encoded frames.
+- production H.264 encoder configuration / error logging policy
+- manual two-client bounded real encoded run into the live two-view switcher
+
+### Next
+- Plan or implement the smallest multi-client sync validation path over queued encoded frames.
+
+### TODO Update
+- Marked single-client targetTime source queue-like validation tests complete.
+- Updated next items toward two-view / multi-client sync planning.
+
+### Validation
+- `cargo fmt`
+- `cargo fmt --check`
+- `cargo test -p stream-sync-switcher target_time -- --test-threads=1`
+- `cargo test -p stream-sync-switcher single_client_queue_source -- --test-threads=1`
+- `cargo test -p stream-sync-server video_frame_queue -- --test-threads=1`
+- `cargo check --workspace`
+- `git diff --check`
+
+---
+
+## 2026-04-29
+### Type
+- Codex
+
+### Work
 - Added the smallest single-client targetTime-aware source boundary over the switcher queue source.
 - Added `SwitcherSingleClientTargetTimeSourceBoundary`, scoped by `client_id + run_id`.
 - Added explicit targetTime source modes:
