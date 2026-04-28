@@ -29,7 +29,7 @@
 - client continuous heartbeat loop は thin composition の completed body まで実装済みで、heartbeat timeout notice wakeup planning 境界、wakeup execution 境界、wakeup actual side-effect 境界、outer while-loop connection 境界、outer while-loop one-turn execution body 境界、actual timer wait / retry execution / reconnect 実行境界、outer while-loop 反復実行本体、reconnect policy 境界、caller-owned hook 付き actual socket 再確立境界、real UDP socket 差し替え hook、repeated body からの hook 注入経路まで完了している
 - 未完了の中心は production H.264 encoder configuration / error logging policy、late frame queue mutation / drop policy、4-view sync orchestration、dashboard UI rendering、continuous receive/send loop 本体、実キュー / 実送信 / 継続ログ出力
 - outbound queue 実キュー、continuous receive/send loop 本体、send / receive の継続ログ出力、file sink open、process-wide logger、`ServerNotice` 実送信は未実装
-- video path は server 側 accepted `VideoFrame` receive side-effect を caller-owned per-client queue へ保存し、client 側で placeholder encoded H.264 payload 付き `VideoFrame`、Windows Graphics Capture + FFmpeg による one-shot `RealCaptureH264` `VideoFrame`、認証済み same-source の bounded multi-frame `RealCaptureH264` sender、送信失敗時の detailed diagnostics、safe UDP datagram 前提の sender-side `VideoFrame` fragmentation、手動PoC向け fragment pacing まで完了し、manual E2E checklist も整備済み。server 側は accepted `VideoFrameFragment` の caller-owned reassembly state、duplicate / metadata rejection、完成 frame の既存 queue storage への接続、手動確認用の fragment / reassembly / queue stdout diagnostics、max packet / timeout / expected frame / stop condition の手動 policy、incomplete frame progress diagnostics、手動 receive path の UDP socket receive buffer tuning と requested/effective stdout diagnostics まで完了。switcher 側の fragmented frame direct consumption は未実装。switcher 側は latest frame を FFmpeg で H.264 decode して 1 frame BMP dump し、Windows では decoded BGRA を normal window に one-shot 描画し、single-client latest-frame の bounded continuous decode/render loop 境界、one-client targetTime / jitter-buffer selection 境界、2-view targetTime selection orchestration 境界、2-view targetTime-selected decode/render connection 境界、2-view sync fixture/manual verification CLI、2-view side-by-side BGRA layout/composition 境界、composed 2-view canvas window render 境界、live-like 2-client queue/runtime integration 境界、bounded continuous 2-view scheduling 境界、real UDP socket-backed source adapter 境界、auth registry 生成込み live two-view switcher manual runtime まで完了。late-drop mutation、4-view sync、OBS は未着手
+- video path は server 側 accepted `VideoFrame` receive side-effect を caller-owned per-client queue へ保存し、client 側で placeholder encoded H.264 payload 付き `VideoFrame`、Windows Graphics Capture + FFmpeg による one-shot `RealCaptureH264` `VideoFrame`、認証済み same-source の bounded multi-frame `RealCaptureH264` sender、送信失敗時の detailed diagnostics、safe UDP datagram 前提の sender-side `VideoFrame` fragmentation、手動PoC向け fragment pacing まで完了し、manual E2E checklist も整備済み。server 側は accepted `VideoFrameFragment` の caller-owned reassembly state、duplicate / metadata rejection、完成 frame の既存 queue storage への接続、手動確認用の fragment / reassembly / queue stdout diagnostics、max packet / timeout / expected frame / stop condition の手動 policy、incomplete frame progress diagnostics、手動 receive path の UDP socket receive buffer tuning と requested/effective stdout diagnostics まで完了している。fragmented real encoded queue PoC は `8388608` byte effective receive buffer で manual 1-frame / 2-frame とも成功し、最新の `max_frames=2` run では client `fragments_sent=854/854`、server `fragments_received=854`、`frames_reassembled=2`、`frames_queued=2`、`incomplete_reassembly_frames=0`、`receive_timed_out=false` を確認済み。switcher 側の fragmented frame direct consumption は未実装。switcher 側は latest frame を FFmpeg で H.264 decode して 1 frame BMP dump し、Windows では decoded BGRA を normal window に one-shot 描画し、single-client latest-frame の bounded continuous decode/render loop 境界、one-client targetTime / jitter-buffer selection 境界、2-view targetTime selection orchestration 境界、2-view targetTime-selected decode/render connection 境界、2-view sync fixture/manual verification CLI、2-view side-by-side BGRA layout/composition 境界、composed 2-view canvas window render 境界、live-like 2-client queue/runtime integration 境界、bounded continuous 2-view scheduling 境界、real UDP socket-backed source adapter 境界、auth registry 生成込み live two-view switcher manual runtime まで完了。late-drop mutation、4-view sync、OBS は未着手
 
 ---
 
@@ -59,7 +59,7 @@
 ---
 
 ## 直近でやること
-1. docs/operations/manual-real-encoded-video-poc.md に沿って `8388608` byte receive buffer + `max_frames=1` or `2` + fragment pacing 付き fragmented real encoded sender -> server reassembly queue path を再実機確認
+1. queued fragmented / direct real encoded frame を switcher / sync 側が read-only に消費する最小 read boundary を整理して実装する
 2. production H.264 encoder configuration / error logging policy
 3. live two-view switcher と bounded multi-frame client sender の手動通し確認
 
@@ -650,6 +650,8 @@
 - [x] bounded continuous real encoded `VideoFrame` sender with frame-arrived wait/no-frame accounting
 - [x] detailed UDP send failure diagnostics for bounded real encoded sender
 - [x] manual E2E checklist for bounded authenticated real encoded sender and live two-view switcher
+- [x] manual fragmented real encoded 1-frame queue path with server receive buffer tuning
+- [x] manual fragmented real encoded 2-frame queue path with server receive buffer tuning
 - [ ] production H.264 encoder configuration / hardware encoder integration
 - [x] `VideoFrame` encode
 - [x] `VideoFrame` UDP send with explicit placeholder encoded H.264 payload
@@ -739,13 +741,14 @@
 - bounded real encoded sender diagnostics now preserve destination, local socket address, frame id, encoded payload length, encoded packet length, and send error details; oversized packets are surfaced as `PacketTooLarge`.
 - client send path now has a sender-side UDP fragmentation slice: direct `VideoFrame` send remains for packets within a conservative safe datagram limit, while larger encoded payloads are split into `VideoFrameFragment` packets carrying frame metadata plus explicit chunk metadata.
 - server-side `VideoFrameFragment` reassembly now accepts authenticated fragments into caller-owned state keyed by client / run / frame, rejects inconsistent metadata, ignores duplicates explicitly, reconstructs complete payloads in chunk order, queues completed frames through the existing server video frame queue storage, and exposes manual stdout diagnostics for fragments received / frames reassembled / frames queued / incomplete per-frame progress. The manual server queue launcher now has CLI-overridable max packet, receive timeout, expected frame, stop-after-expected policy, and UDP receive buffer request with requested/effective diagnostics.
-- `docs/operations/manual-real-encoded-video-poc.md` is now the step-by-step human E2E checklist for the bounded authenticated real encoded sender, one-client server queue verification, and two-client live switcher verification, including prerequisites, commands, expected stdout counters, diagnosis, and pass/fail criteria.
+- `docs/operations/manual-real-encoded-video-poc.md` is now the step-by-step human E2E checklist for the bounded authenticated real encoded sender, one-client server queue verification, and two-client live switcher verification, including prerequisites, commands, expected stdout counters, diagnosis, pass/fail criteria, and recorded successful fragmented 1-frame / 2-frame queue runs.
+- manual fragmented real encoded queue verification is now recorded as successful for both `max_frames=1` and `max_frames=2` when using the recommended `8388608` byte server receive buffer request and client fragment pacing. The latest `max_frames=2` localhost run observed `fragments_sent=854/854`, `fragments_received=854`, `frames_reassembled=2`, `frames_queued=2`, `incomplete_reassembly_frames=0`, and `receive_timed_out=false`.
 - metrics commit, snapshot export cadence, dashboard refresh consumer policy, and dashboard refresh runtime wiring remain separate from timer wait, retry, reconnect, socket ownership, cleanup, UI rendering, video, switcher, and OBS.
 - server notice queue storage remains separate from notice send wakeup execution.
 - actual dashboard UI rendering remains unimplemented.
 
 ## Next Items
-1. Re-run fragmented real encoded sender -> server reassembly queue path manual verification from `docs/operations/manual-real-encoded-video-poc.md` using `max_frames=1` or `2` and fragment pacing
-2. production H.264 encoder configuration / error logging policy
-3. late frame queue mutation / drop policy
+1. Add the next switcher/sync-facing read boundary over queued encoded frames without changing protocol or client behavior.
+2. Decide the first read-only handoff shape from queued encoded frames into switcher/sync consumption without adding late-drop mutation yet.
+3. production H.264 encoder configuration / error logging policy
 4. manual two-client run: bounded client senders into live two-view switcher

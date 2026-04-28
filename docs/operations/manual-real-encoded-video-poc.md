@@ -246,6 +246,53 @@ and `fragmented_sends = 0` is still a valid non-fragmented queue check.
 Bounded sender can still pass with `no_frame_count > 0` as long as at least one
 frame is captured/encoded/sent before the bounded runtime stops.
 
+### Observed Successful Fragmented Queue Runs
+
+The recommended server receive-buffer command remains:
+
+```powershell
+cargo run -p stream-sync-server -- --receive-auth-video-queue-once configs/examples/server.example.toml 4096 15000 1 true 8388608
+```
+
+Observed successful manual results on localhost:
+
+- Fragmented real encoded queue PoC succeeded for both `max_frames=1` and
+  `max_frames=2` after adding server UDP receive buffer tuning.
+- The effective server receive buffer for the successful runs was
+  `manual_receive_buffer_effective_bytes=8388608`.
+- The latest recorded successful `max_frames=2` run used client fragment pacing
+  `16 1` and produced the following observed summaries.
+
+Server:
+
+```text
+receive auth/video queue runtime handled auth on 0.0.0.0:5000; auth_accepted=true auth_reason=Ok client_id=player1 run_id=streamsync-dev-session video=received queued=queued queue_len=2 dropped_oldest=false registered_clients=1 manual_max_video_packets=4096 manual_receive_timeout_ms=15000 manual_expected_reassembled_frames=2 manual_stop_after_expected_reassembled_frames=true manual_receive_buffer_requested_bytes=8388608 manual_receive_buffer_effective_bytes=8388608 manual_receive_buffer_set_error=none manual_receive_buffer_read_error=none packets_received=854 fragments_received=854 frames_reassembled=2 frames_queued=2 direct_frames_queued=0 rejected_packets=0 rejected_fragments=0 duplicate_fragments=0 non_video_packets=0 incomplete_reassembly_frames=0 incomplete_frame_progress=none receive_timed_out=false max_packets_reached=false
+```
+
+Client:
+
+```text
+auth real encoded video frame bounded PoC sent AuthRequest 96 bytes from 0.0.0.0:50542 to 127.0.0.1:5000 and received AuthResponse 55 bytes from 127.0.0.1:5000; accepted=true reason_code=Ok; bounded_manual_runtime=true; fragment_pacing_every=16 fragment_pacing_delay_ms=1 frames_attempted=18 frames_captured=2 frames_encoded=2 frames_sent=2 direct_sends=0 fragmented_sends=2 fragments_attempted=854 fragments_sent=854 no_frame_count=16 capture_failures=0 encode_failures=0 frame_build_failures=0 send_failures=0 stop_reason=Some(MaxFramesReached) last_send_destination=none last_send_local_source=none last_send_frame_id=none last_send_payload_len=none last_send_packet_len=none last_send_error=none
+```
+
+Recorded conclusion from the successful `max_frames=2` run:
+
+- auth succeeded
+- client sent `854/854` fragments
+- server received `854/854` fragments
+- server reassembled `2` frames
+- server queued `2` frames
+- no incomplete reassembly remained
+- receive timeout did not occur
+- `8388608` effective UDP receive buffer was sufficient for the current
+  localhost manual 1-frame and 2-frame fragmented real encoded queue PoC
+- `frames_attempted=18` and `no_frame_count=16` remain capture-cadence
+  diagnostics, not blockers for this PoC
+
+For future reruns, treat the command/result pair above as the current known-good
+fragmented queue baseline before moving on to switcher/sync-side queue
+consumption.
+
 ---
 
 ## 3. Two-Client Live Switcher E2E

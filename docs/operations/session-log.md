@@ -5,6 +5,50 @@
 - Codex
 
 ### Work
+- Recorded the successful manual fragmented real encoded queue PoC results after the server UDP receive buffer tuning was added.
+- Documented that both `max_frames=1` and `max_frames=2` fragmented real encoded queue runs succeeded with the recommended manual server receive buffer request.
+- Added the latest successful `max_frames=2` observed stdout summaries to the manual checklist, including `fragments_sent=854/854`, `fragments_received=854`, `frames_reassembled=2`, `frames_queued=2`, `incomplete_reassembly_frames=0`, and `receive_timed_out=false`.
+- Updated TODO current position and Current Focus to reflect that the fragmented real encoded 1-frame / 2-frame queue path is now manually confirmed.
+- Changed the next task from re-running the queue PoC to moving queued encoded frames toward a switcher/sync-facing read boundary.
+
+### Changed Files
+- `docs/operations/manual-real-encoded-video-poc.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### Decisions
+- Kept this slice docs-only and did not change protocol wire format, client behavior, retransmit/retry policy, 4-view orchestration, or OBS integration.
+- Treated the `8388608` requested/effective server UDP receive buffer plus client fragment pacing `16 1` as the current known-good localhost baseline for fragmented real encoded queue verification.
+- Kept `frames_attempted=18` and `no_frame_count=16` recorded as capture-cadence diagnostics, not blockers, because the run still captured/encoded/sent 2 frames and the server reassembled/queued both frames.
+
+### Unresolved
+- switcher/sync-facing read boundary over queued encoded frames
+- production H.264 encoder configuration / error logging policy
+- late frame queue mutation / drop policy
+- manual two-client bounded real encoded run into the live two-view switcher
+- retransmit/retry, 4-view orchestration, and OBS integration
+
+### Next
+- Add the next read-only switcher/sync-facing boundary that consumes queued encoded frames without changing protocol or client behavior.
+- Keep production H.264 encoder configuration / error logging policy as the next video-path policy task after the queue-to-reader bridge direction is fixed.
+
+### TODO Update
+- Updated current position with the successful manual fragmented 1-frame / 2-frame queue verification result.
+- Marked the manual fragmented real encoded 1-frame / 2-frame queue path as completed in the Phase 3 checklist.
+- Replaced the previous rerun task with the next switcher/sync-facing read-boundary task.
+
+### Validation
+- `cargo fmt --check`
+- `cargo check --workspace`
+- `git diff --check`
+
+---
+
+## 2026-04-28
+### Type
+- Codex
+
+### Work
 - Followed up on the manual fragmented real encoded PoC where the client sent all fragments but the server received only part of the frame.
 - Recorded the observed result: client `fragments_attempted=411`, `fragments_sent=411`, `send_failures=0`; server `fragments_received=375`, `incomplete_frame_progress=player1/streamsync-dev-session/2:375/411:missing=36`, `frames_reassembled=0`, with no rejected or duplicate fragments.
 - Added UDP socket receive buffer tuning to the server `--receive-auth-video-queue-once` manual path.
