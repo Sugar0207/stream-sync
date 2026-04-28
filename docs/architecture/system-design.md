@@ -8048,6 +8048,8 @@ Current implementation:
   `ServerVideoFrameQueueState`.
 - Reads are scoped by `client_id + run_id`.
 - The source mode is explicit:
+  - `PreviewOldest` maps to server queue `InspectOldest` and does not mutate
+    the queue.
   - `PreviewLatest` maps to server queue `InspectLatest` and does not mutate
     the queue.
   - `ConsumeOldest` maps to server queue `DequeueOldest` and removes one
@@ -8064,5 +8066,43 @@ Responsibility split:
   conversion into switcher-facing encoded-frame metadata.
 - targetTime selection, late-drop mutation, H.264 decode, rendering, 2-view /
   4-view orchestration, socket transport, and OBS output remain out of scope.
+
+No protocol wire format changed for this slice.
+
+## Switcher Single-Client TargetTime Source Boundary
+
+The first targetTime-aware source remains single-client and in-process:
+
+```text
+ServerVideoFrameQueueState -> SwitcherSingleClientQueueSourceBoundary -> SwitcherSingleClientTargetTimeSourceBoundary
+```
+
+Current implementation:
+
+- `SwitcherSingleClientTargetTimeSourceBoundary` receives caller-owned
+  `ServerVideoFrameQueueState`.
+- Reads are scoped by `client_id + run_id`.
+- The caller supplies an explicit `target_timestamp`.
+- Selection behavior is explicit:
+  - `PreviewLatestIfAtOrBefore` inspects the latest queued frame for that
+    client/run and selects it only when its capture timestamp is at or before
+    the target timestamp. It does not mutate the queue.
+  - `ConsumeOldestAtOrBefore` first inspects the oldest queued frame for that
+    client/run. It dequeues that frame only when its capture timestamp is at or
+    before the target timestamp.
+- If no queued frame exists, the boundary returns no-frame with diagnostic
+  client/run/mode/queue length data.
+- If the inspected candidate is newer than the target timestamp, the boundary
+  returns waiting and does not mutate the queue.
+- Selected results carry the encoded frame, target timestamp, delta from target,
+  and whether the frame was consumed.
+
+Responsibility split:
+
+- single-client queue source owns mapping to server queue read modes.
+- targetTime source owns only timestamp comparison and explicit preview/consume
+  behavior.
+- It does not scan multi-client state, run 2-view or 4-view orchestration,
+  decode H.264, render, mutate late frames, or touch OBS.
 
 No protocol wire format changed for this slice.

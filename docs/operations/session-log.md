@@ -1,5 +1,59 @@
 <!-- stream-sync/docs/operations/session-log.md -->
 
+## 2026-04-29
+### Type
+- Codex
+
+### Work
+- Added the smallest single-client targetTime-aware source boundary over the switcher queue source.
+- Added `SwitcherSingleClientTargetTimeSourceBoundary`, scoped by `client_id + run_id`.
+- Added explicit targetTime source modes:
+  - `PreviewLatestIfAtOrBefore`
+  - `ConsumeOldestAtOrBefore`
+- Added `PreviewOldest` to `SwitcherSingleClientQueueSourceMode` so consume mode can inspect oldest before dequeue and avoid unexpected mutation.
+- Added selected / no-frame / waiting result types with target timestamp, candidate diagnostics, queue length, and consumed flag.
+- Added focused targetTime tests for preview selection, preview waiting, consume selection/dequeue, consume waiting without dequeue, and missing-run no-frame.
+- Updated architecture and TODO docs to move the next task toward manual/live-like validation.
+
+### Changed Files
+- `apps/switcher/src/lib.rs`
+- `docs/architecture/system-design.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### Decisions
+- Kept this slice single-client, in-process, and diagnostic/manual.
+- `PreviewLatestIfAtOrBefore` does not mutate the queue.
+- `ConsumeOldestAtOrBefore` mutates only after the oldest candidate is confirmed to be at or before the target timestamp.
+- Waiting results do not mutate the queue.
+- Did not change protocol wire format.
+- Did not add H.264 decode/render changes, late-drop mutation, 4-view orchestration, or OBS output.
+
+### Unresolved
+- Manual fixture / live-like validation for the single-client targetTime source.
+- Deciding how this source should feed the existing two-view scheduler without late-drop mutation.
+- production H.264 encoder configuration / error logging policy
+- manual two-client bounded real encoded run into the live two-view switcher
+
+### Next
+- Add manual fixture or live-like validation for the single-client targetTime source boundary.
+
+### TODO Update
+- Marked the switcher single-client targetTime source boundary as complete.
+- Updated current position with queue-source-backed targetTime selection.
+- Updated next items toward validation and future two-view scheduler integration.
+
+### Validation
+- `cargo fmt`
+- `cargo fmt --check`
+- `cargo test -p stream-sync-switcher single_client_queue_source -- --test-threads=1`
+- `cargo test -p stream-sync-switcher target_time -- --test-threads=1`
+- `cargo test -p stream-sync-server video_frame_queue -- --test-threads=1`
+- `cargo check --workspace`
+- `git diff --check`
+
+---
+
 ## 2026-04-28
 ### Type
 - Codex
