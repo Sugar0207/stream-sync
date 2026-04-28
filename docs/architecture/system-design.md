@@ -7997,3 +7997,38 @@ frames. Server-side reassembly now provides the first receive-side counterpart:
 This slice still does not add fragment retry/retransmit, expiration policy,
 late-frame queue mutation, switcher-specific fragment handling, 4-view
 orchestration, or OBS integration.
+
+## Server Queued Encoded Frame Read Boundary
+
+The server-side encoded frame queue now has a smallest caller-facing read
+boundary for the next sync/switcher handoff:
+
+```text
+server receive/reassembly -> ServerVideoFrameQueueState -> queue read boundary -> future sync/switcher source
+```
+
+Current implementation:
+
+- `ServerVideoFrameQueueState` remains caller-owned and in-process.
+- Queued frames can be filtered by `client_id + run_id`.
+- `ServerVideoFrameQueueReadBoundary` can:
+  - inspect the oldest queued frame for a client/run without mutation,
+  - inspect the latest queued frame for a client/run without mutation,
+  - or dequeue the oldest queued frame for a client/run.
+- The boundary returns the cloned queued encoded `VideoFrame` metadata/payload
+  plus the remaining per-client queue length, or an explicit no-frame result.
+- Direct `VideoFrame` packets and reassembled `VideoFrameFragment` packets use
+  the same queue storage path before this read boundary.
+
+Responsibility split:
+
+- queue storage owns accepted encoded-frame insertion and bounded per-client
+  capacity behavior.
+- queue read owns only in-process inspect/dequeue of already queued encoded
+  frames by client/run.
+- fragment reassembly remains upstream of queue storage.
+- sync/switcher targetTime selection, late-frame mutation, H.264 decode,
+  rendering, 4-view orchestration, and OBS integration remain downstream and
+  out of scope for this boundary.
+
+No protocol wire format changed for this slice.

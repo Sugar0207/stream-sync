@@ -5,6 +5,52 @@
 - Codex
 
 ### Work
+- Added the smallest server-side queued encoded frame read/dequeue boundary for the next sync/switcher handoff.
+- Added `ServerVideoFrameQueueReadBoundary`, keyed by `client_id + run_id`, with inspect-oldest, inspect-latest, and dequeue-oldest modes.
+- Added queue-state helpers for read-only client/run iteration and oldest matching client/run dequeue.
+- Added focused `video_frame_queue` tests for read-only oldest inspection, latest inspection, run-filtered dequeue, and no-frame reporting.
+- Updated architecture and operations docs to mark the queue read boundary complete and move the next task to switcher/sync integration.
+
+### Changed Files
+- `apps/server/src/lib.rs`
+- `docs/architecture/system-design.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### Decisions
+- Kept the boundary in-process and diagnostic/manual.
+- Kept received/reassembled queue insertion behavior unchanged.
+- Did not change protocol wire format.
+- Did not add OBS output, 4-view orchestration, targetTime integration, late-frame mutation, H.264 decode, or rendering in this slice.
+
+### Unresolved
+- Connecting the server queue read boundary to the next switcher/sync source path.
+- Deciding whether the first targetTime integration should inspect or dequeue queued frames.
+- production H.264 encoder configuration / error logging policy
+- manual two-client bounded real encoded run into the live two-view switcher
+
+### Next
+- Connect the queue read boundary to the switcher/sync targetTime source path without adding late-drop mutation.
+
+### TODO Update
+- Marked the server queued encoded frame inspect/dequeue boundary as complete.
+- Updated the current position to include client/run keyed queue consumption.
+- Updated next items toward switcher/sync integration over this read boundary.
+
+### Validation
+- `cargo fmt`
+- `cargo fmt --check`
+- `cargo test -p stream-sync-server video_frame_queue -- --test-threads=1`
+- `cargo check --workspace`
+- `git diff --check`
+
+---
+
+## 2026-04-28
+### Type
+- Codex
+
+### Work
 - Recorded the successful manual fragmented real encoded queue PoC results after the server UDP receive buffer tuning was added.
 - Documented that both `max_frames=1` and `max_frames=2` fragmented real encoded queue runs succeeded with the recommended manual server receive buffer request.
 - Added the latest successful `max_frames=2` observed stdout summaries to the manual checklist, including `fragments_sent=854/854`, `fragments_received=854`, `frames_reassembled=2`, `frames_queued=2`, `incomplete_reassembly_frames=0`, and `receive_timed_out=false`.

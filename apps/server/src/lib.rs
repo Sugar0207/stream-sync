@@ -2966,6 +2966,15 @@ impl ServerVideoFrameQueueState {
             .flat_map(|frames| frames.iter())
     }
 
+    pub fn frames_for_client_run<'a>(
+        &'a self,
+        client_id: &'a ClientId,
+        run_id: &'a RunId,
+    ) -> impl Iterator<Item = &'a ServerQueuedVideoFrame> + 'a {
+        self.frames_for_client(client_id)
+            .filter(move |queued| queued.frame.run_id == *run_id)
+    }
+
     pub fn pop_front(&mut self, client_id: &ClientId) -> Option<ServerQueuedVideoFrame> {
         let queue = self.frames_by_client_id.get_mut(&client_id.0)?;
         let frame = queue.pop_front();
@@ -2973,6 +2982,101 @@ impl ServerVideoFrameQueueState {
             self.frames_by_client_id.remove(&client_id.0);
         }
         frame
+    }
+
+    pub fn pop_front_for_client_run(
+        &mut self,
+        client_id: &ClientId,
+        run_id: &RunId,
+    ) -> Option<ServerQueuedVideoFrame> {
+        let queue = self.frames_by_client_id.get_mut(&client_id.0)?;
+        let frame_index = queue
+            .iter()
+            .position(|queued| queued.frame.run_id == *run_id)?;
+        let frame = queue.remove(frame_index);
+        if queue.is_empty() {
+            self.frames_by_client_id.remove(&client_id.0);
+        }
+        frame
+    }
+}
+
+/// Read mode for the first server-side queue consumption boundary.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ServerVideoFrameQueueReadMode {
+    InspectOldest,
+    InspectLatest,
+    DequeueOldest,
+}
+
+/// Input for inspecting or dequeuing queued encoded video frames.
+///
+/// This boundary is intentionally keyed by client and run so future sync /
+/// switcher callers do not accidentally consume frames from a previous manual
+/// run that used the same client id.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ServerVideoFrameQueueReadInput {
+    pub client_id: ClientId,
+    pub run_id: RunId,
+    pub mode: ServerVideoFrameQueueReadMode,
+}
+
+/// Result of reading a queued encoded video frame.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ServerVideoFrameQueueReadResult {
+    FrameAvailable {
+        frame: ServerQueuedVideoFrame,
+        mode: ServerVideoFrameQueueReadMode,
+        remaining_client_queue_len: usize,
+    },
+    NoFrameAvailable {
+        client_id: ClientId,
+        run_id: RunId,
+        client_queue_len: usize,
+    },
+}
+
+/// Minimal server queue read/dequeue boundary for sync/switcher handoff.
+///
+/// This is in-process and diagnostic/manual for now. It reads encoded
+/// `VideoFrame`s already accepted into caller-owned queue state. It does not
+/// receive packets, reassemble fragments, decode H.264, choose targetTime,
+/// mutate late frames, orchestrate four views, render UI, or touch OBS.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct ServerVideoFrameQueueReadBoundary;
+
+impl ServerVideoFrameQueueReadBoundary {
+    pub fn read(
+        &self,
+        state: &mut ServerVideoFrameQueueState,
+        input: ServerVideoFrameQueueReadInput,
+    ) -> ServerVideoFrameQueueReadResult {
+        let frame = match input.mode {
+            ServerVideoFrameQueueReadMode::InspectOldest => state
+                .frames_for_client_run(&input.client_id, &input.run_id)
+                .next()
+                .cloned(),
+            ServerVideoFrameQueueReadMode::InspectLatest => state
+                .frames_for_client_run(&input.client_id, &input.run_id)
+                .last()
+                .cloned(),
+            ServerVideoFrameQueueReadMode::DequeueOldest => {
+                state.pop_front_for_client_run(&input.client_id, &input.run_id)
+            }
+        };
+
+        match frame {
+            Some(frame) => ServerVideoFrameQueueReadResult::FrameAvailable {
+                frame,
+                mode: input.mode,
+                remaining_client_queue_len: state.client_queue_len(&input.client_id),
+            },
+            None => ServerVideoFrameQueueReadResult::NoFrameAvailable {
+                client_queue_len: state.client_queue_len(&input.client_id),
+                client_id: input.client_id,
+                run_id: input.run_id,
+            },
+        }
     }
 }
 
@@ -11394,6 +11498,125 @@ shared_token = "secret"
     }
 
     #[test]
+    fn video_frame_queue_read_boundary_inspects_oldest_for_client_run_without_mutation() {
+        let source = packet_source();
+        let mut state = ServerVideoFrameQueueState::default();
+        store_video_frame_for_read_test(&mut state, "client-1", "run-1", 1);
+        store_video_frame_for_read_test(&mut state, "client-1", "run-1", 2);
+        store_video_frame_for_read_test(&mut state, "client-1", "run-2", 3);
+
+        let result = ServerVideoFrameQueueReadBoundary.read(
+            &mut state,
+            ServerVideoFrameQueueReadInput {
+                client_id: ClientId("client-1".to_string()),
+                run_id: RunId("run-1".to_string()),
+                mode: ServerVideoFrameQueueReadMode::InspectOldest,
+            },
+        );
+
+        let ServerVideoFrameQueueReadResult::FrameAvailable {
+            frame,
+            mode,
+            remaining_client_queue_len,
+        } = result
+        else {
+            panic!("oldest run frame should be readable");
+        };
+        assert_eq!(frame.source, source);
+        assert_eq!(frame.frame.frame_id, 1);
+        assert_eq!(mode, ServerVideoFrameQueueReadMode::InspectOldest);
+        assert_eq!(remaining_client_queue_len, 3);
+        assert_eq!(state.client_queue_len(&ClientId("client-1".to_string())), 3);
+    }
+
+    #[test]
+    fn video_frame_queue_read_boundary_inspects_latest_for_client_run() {
+        let mut state = ServerVideoFrameQueueState::default();
+        store_video_frame_for_read_test(&mut state, "client-1", "run-1", 1);
+        store_video_frame_for_read_test(&mut state, "client-1", "run-2", 2);
+        store_video_frame_for_read_test(&mut state, "client-1", "run-1", 3);
+
+        let result = ServerVideoFrameQueueReadBoundary.read(
+            &mut state,
+            ServerVideoFrameQueueReadInput {
+                client_id: ClientId("client-1".to_string()),
+                run_id: RunId("run-1".to_string()),
+                mode: ServerVideoFrameQueueReadMode::InspectLatest,
+            },
+        );
+
+        let ServerVideoFrameQueueReadResult::FrameAvailable { frame, .. } = result else {
+            panic!("latest run frame should be readable");
+        };
+        assert_eq!(frame.frame.frame_id, 3);
+        assert_eq!(state.total_len(), 3);
+    }
+
+    #[test]
+    fn video_frame_queue_read_boundary_dequeues_oldest_for_client_run_only() {
+        let mut state = ServerVideoFrameQueueState::default();
+        store_video_frame_for_read_test(&mut state, "client-1", "run-1", 1);
+        store_video_frame_for_read_test(&mut state, "client-1", "run-2", 2);
+        store_video_frame_for_read_test(&mut state, "client-1", "run-1", 3);
+        store_video_frame_for_read_test(&mut state, "client-2", "run-1", 4);
+
+        let result = ServerVideoFrameQueueReadBoundary.read(
+            &mut state,
+            ServerVideoFrameQueueReadInput {
+                client_id: ClientId("client-1".to_string()),
+                run_id: RunId("run-1".to_string()),
+                mode: ServerVideoFrameQueueReadMode::DequeueOldest,
+            },
+        );
+
+        let ServerVideoFrameQueueReadResult::FrameAvailable {
+            frame,
+            mode,
+            remaining_client_queue_len,
+        } = result
+        else {
+            panic!("oldest matching run frame should be dequeued");
+        };
+        assert_eq!(frame.frame.frame_id, 1);
+        assert_eq!(mode, ServerVideoFrameQueueReadMode::DequeueOldest);
+        assert_eq!(remaining_client_queue_len, 2);
+        let client_1_remaining: Vec<(String, u64)> = state
+            .frames_for_client(&ClientId("client-1".to_string()))
+            .map(|queued| (queued.frame.run_id.0.clone(), queued.frame.frame_id))
+            .collect();
+        assert_eq!(
+            client_1_remaining,
+            vec![("run-2".to_string(), 2), ("run-1".to_string(), 3)]
+        );
+        assert_eq!(state.client_queue_len(&ClientId("client-2".to_string())), 1);
+    }
+
+    #[test]
+    fn video_frame_queue_read_boundary_reports_no_frame_for_missing_run() {
+        let mut state = ServerVideoFrameQueueState::default();
+        store_video_frame_for_read_test(&mut state, "client-1", "run-1", 1);
+
+        let result = ServerVideoFrameQueueReadBoundary.read(
+            &mut state,
+            ServerVideoFrameQueueReadInput {
+                client_id: ClientId("client-1".to_string()),
+                run_id: RunId("run-missing".to_string()),
+                mode: ServerVideoFrameQueueReadMode::DequeueOldest,
+            },
+        );
+
+        assert_eq!(
+            result,
+            ServerVideoFrameQueueReadResult::NoFrameAvailable {
+                client_id: ClientId("client-1".to_string()),
+                run_id: RunId("run-missing".to_string()),
+                client_queue_len: 1,
+            }
+        );
+        assert_eq!(state.total_len(), 1);
+    }
+
+    #[test]
     fn video_frame_fragment_reassembly_completes_in_order() {
         let source = packet_source();
         let mut reassembly_state = ServerVideoFrameReassemblyState::default();
@@ -17562,6 +17785,30 @@ shared_token = "secret"
             panic!("expected registered video frame packet");
         };
         ServerVideoFrameHandlerBoundary.prepare_input(packet)
+    }
+
+    fn store_video_frame_for_read_test(
+        queue_state: &mut ServerVideoFrameQueueState,
+        client_id: &str,
+        run_id: &str,
+        frame_id: u64,
+    ) {
+        let source = packet_source();
+        let mut input = video_handler_input(client_id, source);
+        input.registered_packet.frame.run_id = RunId(run_id.to_string());
+        input.registered_packet.frame.frame_id = frame_id;
+        input.registered_packet.authenticated_sender.run_id = RunId(run_id.to_string());
+
+        let result = ServerVideoFrameQueueStorageBoundary.store_frame(
+            queue_state,
+            input,
+            TimestampMicros(3_000_000 + frame_id),
+            ServerVideoFrameQueuePolicy::default(),
+        );
+        assert!(matches!(
+            result,
+            ServerVideoFrameQueueStorageResult::Stored { .. }
+        ));
     }
 
     fn run_controller_once_for_test(
