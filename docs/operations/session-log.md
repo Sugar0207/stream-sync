@@ -5,6 +5,55 @@
 - Codex
 
 ### Work
+- Added the smallest in-process switcher/sync-facing source boundary over the server video frame queue read boundary.
+- Added `SwitcherSingleClientQueueSourceBoundary`, scoped by `client_id + run_id`.
+- Added explicit source modes: `PreviewLatest` maps to server `InspectLatest`, and `ConsumeOldest` maps to server `DequeueOldest`.
+- Mapped successful queue reads into the existing `SwitcherSingleViewSelectedEncodedFrame` handoff shape.
+- Added focused switcher tests for non-mutating latest preview, run-scoped oldest consume, and missing-run no-frame reporting.
+- Updated architecture and TODO docs to move the next task toward targetTime / jitter-buffer integration.
+
+### Changed Files
+- `apps/switcher/src/lib.rs`
+- `docs/architecture/system-design.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### Decisions
+- Kept the first source boundary single-client and manual/diagnostic.
+- Made preview vs consume behavior explicit in `SwitcherSingleClientQueueSourceMode`.
+- Reused `ServerVideoFrameQueueReadBoundary` instead of duplicating queue access behavior in switcher code.
+- Did not change protocol wire format.
+- Did not add late-drop mutation, 4-view orchestration, OBS output, targetTime integration, H.264 decode, or rendering in this slice.
+
+### Unresolved
+- Connecting the single-client queue source boundary to targetTime / jitter-buffer selection.
+- Deciding whether the first targetTime integration should use `PreviewLatest` or `ConsumeOldest`.
+- production H.264 encoder configuration / error logging policy
+- manual two-client bounded real encoded run into the live two-view switcher
+
+### Next
+- Connect the single-client queue source boundary to targetTime / jitter-buffer selection without adding late-drop mutation.
+
+### TODO Update
+- Marked the switcher single-client queue source boundary as complete.
+- Updated current position with client/run scoped switcher source support.
+- Updated next items toward targetTime / jitter-buffer integration over this source.
+
+### Validation
+- `cargo fmt`
+- `cargo fmt --check`
+- `cargo test -p stream-sync-switcher single_client_queue_source -- --test-threads=1`
+- `cargo test -p stream-sync-server video_frame_queue -- --test-threads=1`
+- `cargo check --workspace`
+- `git diff --check`
+
+---
+
+## 2026-04-28
+### Type
+- Codex
+
+### Work
 - Added the smallest server-side queued encoded frame read/dequeue boundary for the next sync/switcher handoff.
 - Added `ServerVideoFrameQueueReadBoundary`, keyed by `client_id + run_id`, with inspect-oldest, inspect-latest, and dequeue-oldest modes.
 - Added queue-state helpers for read-only client/run iteration and oldest matching client/run dequeue.

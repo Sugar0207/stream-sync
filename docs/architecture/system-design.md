@@ -8032,3 +8032,37 @@ Responsibility split:
   out of scope for this boundary.
 
 No protocol wire format changed for this slice.
+
+## Switcher Single-Client Queue Source Boundary
+
+The first switcher/sync-facing source over the server queue is now an
+in-process single-client boundary:
+
+```text
+ServerVideoFrameQueueState -> ServerVideoFrameQueueReadBoundary -> SwitcherSingleClientQueueSourceBoundary
+```
+
+Current implementation:
+
+- `SwitcherSingleClientQueueSourceBoundary` receives caller-owned
+  `ServerVideoFrameQueueState`.
+- Reads are scoped by `client_id + run_id`.
+- The source mode is explicit:
+  - `PreviewLatest` maps to server queue `InspectLatest` and does not mutate
+    the queue.
+  - `ConsumeOldest` maps to server queue `DequeueOldest` and removes one
+    oldest matching frame.
+- Successful reads are mapped into the existing
+  `SwitcherSingleViewSelectedEncodedFrame` handoff shape.
+- No-frame results preserve `client_id`, `run_id`, selected source mode, and
+  current per-client queue length for diagnostics.
+
+Responsibility split:
+
+- server queue read remains the owner of actual queue inspect/dequeue behavior.
+- switcher single-client source owns only explicit source-mode selection and
+  conversion into switcher-facing encoded-frame metadata.
+- targetTime selection, late-drop mutation, H.264 decode, rendering, 2-view /
+  4-view orchestration, socket transport, and OBS output remain out of scope.
+
+No protocol wire format changed for this slice.

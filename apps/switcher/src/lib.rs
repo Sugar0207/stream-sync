@@ -7,7 +7,7 @@ use std::{
 };
 
 use stream_sync_net_core::{PacketSource, DEFAULT_UDP_PACKET_BUFFER_LEN};
-use stream_sync_protocol::{ClientId, MessageType, ProtocolVersion, TimestampMicros};
+use stream_sync_protocol::{ClientId, MessageType, ProtocolVersion, RunId, TimestampMicros};
 use stream_sync_server::{
     AuthenticatedSenderRegistry, PacketAcceptanceRejectReason, ServerAuthResponsePocError,
     ServerAuthResponsePocLauncher, ServerAuthResponsePocOutcome,
@@ -17,6 +17,8 @@ use stream_sync_server::{
     ServerReceiveLoopGateOutcome, ServerReceiveLoopGateRejection, ServerReceiveLoopStep,
     ServerRegisteredClientPacket, ServerRegisteredPacketBoundary, ServerRegisteredVideoFramePacket,
     ServerVideoFrameHandlerBoundary, ServerVideoFrameQueuePolicy,
+    ServerVideoFrameQueueReadBoundary, ServerVideoFrameQueueReadInput,
+    ServerVideoFrameQueueReadMode, ServerVideoFrameQueueReadResult,
     ServerVideoFrameQueueRuntimeResult, ServerVideoFrameQueueState,
     ServerVideoFrameQueueStorageBoundary, ServerVideoFrameQueueStorageResult,
 };
@@ -96,6 +98,98 @@ impl SwitcherSingleViewLatestFrameSelectionBoundary {
                     client_id: input.client_id.clone(),
                 },
             )
+    }
+}
+
+/// Single-client source mode for the first queue-read-backed switcher/sync path.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum SwitcherSingleClientQueueSourceMode {
+    PreviewLatest,
+    ConsumeOldest,
+}
+
+impl SwitcherSingleClientQueueSourceMode {
+    fn queue_read_mode(self) -> ServerVideoFrameQueueReadMode {
+        match self {
+            Self::PreviewLatest => ServerVideoFrameQueueReadMode::InspectLatest,
+            Self::ConsumeOldest => ServerVideoFrameQueueReadMode::DequeueOldest,
+        }
+    }
+}
+
+/// Input for reading one selected client/run from the server queue.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SwitcherSingleClientQueueSourceInput {
+    pub client_id: ClientId,
+    pub run_id: RunId,
+    pub mode: SwitcherSingleClientQueueSourceMode,
+}
+
+/// Result of the first switcher/sync-facing queue source boundary.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SwitcherSingleClientQueueSourceResult {
+    FrameAvailable {
+        frame: SwitcherSingleViewSelectedEncodedFrame,
+        mode: SwitcherSingleClientQueueSourceMode,
+        remaining_client_queue_len: usize,
+    },
+    NoFrameAvailable {
+        client_id: ClientId,
+        run_id: RunId,
+        mode: SwitcherSingleClientQueueSourceMode,
+        client_queue_len: usize,
+    },
+}
+
+/// Minimal in-process source from the server encoded-frame queue to switcher/sync.
+///
+/// This boundary delegates queue access to `ServerVideoFrameQueueReadBoundary`
+/// and only maps the result into the existing switcher encoded-frame handoff
+/// shape. It is single-client and manual/diagnostic for now. It does not
+/// perform targetTime selection, late-drop mutation, decode, render, 4-view
+/// orchestration, socket I/O, or OBS output.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct SwitcherSingleClientQueueSourceBoundary {
+    queue_reader: ServerVideoFrameQueueReadBoundary,
+}
+
+impl SwitcherSingleClientQueueSourceBoundary {
+    pub fn read(
+        &self,
+        queue_state: &mut ServerVideoFrameQueueState,
+        input: SwitcherSingleClientQueueSourceInput,
+    ) -> SwitcherSingleClientQueueSourceResult {
+        let mode = input.mode;
+        let result = self.queue_reader.read(
+            queue_state,
+            ServerVideoFrameQueueReadInput {
+                client_id: input.client_id,
+                run_id: input.run_id,
+                mode: mode.queue_read_mode(),
+            },
+        );
+
+        match result {
+            ServerVideoFrameQueueReadResult::FrameAvailable {
+                frame,
+                remaining_client_queue_len,
+                ..
+            } => SwitcherSingleClientQueueSourceResult::FrameAvailable {
+                frame: SwitcherSingleViewSelectedEncodedFrame::from(&frame),
+                mode,
+                remaining_client_queue_len,
+            },
+            ServerVideoFrameQueueReadResult::NoFrameAvailable {
+                client_id,
+                run_id,
+                client_queue_len,
+            } => SwitcherSingleClientQueueSourceResult::NoFrameAvailable {
+                client_id,
+                run_id,
+                mode,
+                client_queue_len,
+            },
+        }
     }
 }
 
@@ -4090,6 +4184,146 @@ mod tests {
     }
 
     #[test]
+    fn single_client_queue_source_preview_latest_uses_run_scope_without_mutation() {
+        let mut state = ServerVideoFrameQueueState::default();
+        store_frame_for_run(
+            &mut state,
+            "client-1",
+            "run-1",
+            1,
+            TimestampMicros(2_010_000),
+        );
+        store_frame_for_run(
+            &mut state,
+            "client-1",
+            "run-2",
+            2,
+            TimestampMicros(2_010_100),
+        );
+        store_frame_for_run(
+            &mut state,
+            "client-1",
+            "run-1",
+            3,
+            TimestampMicros(2_010_200),
+        );
+        let client_id = ClientId("client-1".to_string());
+        let before_len = state.client_queue_len(&client_id);
+
+        let result = SwitcherSingleClientQueueSourceBoundary::default().read(
+            &mut state,
+            SwitcherSingleClientQueueSourceInput {
+                client_id: client_id.clone(),
+                run_id: RunId("run-1".to_string()),
+                mode: SwitcherSingleClientQueueSourceMode::PreviewLatest,
+            },
+        );
+
+        let SwitcherSingleClientQueueSourceResult::FrameAvailable {
+            frame,
+            mode,
+            remaining_client_queue_len,
+        } = result
+        else {
+            panic!("latest frame for run should be available");
+        };
+        assert_eq!(frame.client_id, client_id);
+        assert_eq!(frame.frame_id, 3);
+        assert_eq!(mode, SwitcherSingleClientQueueSourceMode::PreviewLatest);
+        assert_eq!(remaining_client_queue_len, before_len);
+        assert_eq!(state.client_queue_len(&client_id), before_len);
+    }
+
+    #[test]
+    fn single_client_queue_source_consume_oldest_dequeues_one_run_scoped_frame() {
+        let mut state = ServerVideoFrameQueueState::default();
+        store_frame_for_run(
+            &mut state,
+            "client-1",
+            "run-1",
+            1,
+            TimestampMicros(2_020_000),
+        );
+        store_frame_for_run(
+            &mut state,
+            "client-1",
+            "run-2",
+            2,
+            TimestampMicros(2_020_100),
+        );
+        store_frame_for_run(
+            &mut state,
+            "client-1",
+            "run-1",
+            3,
+            TimestampMicros(2_020_200),
+        );
+        let client_id = ClientId("client-1".to_string());
+
+        let result = SwitcherSingleClientQueueSourceBoundary::default().read(
+            &mut state,
+            SwitcherSingleClientQueueSourceInput {
+                client_id: client_id.clone(),
+                run_id: RunId("run-1".to_string()),
+                mode: SwitcherSingleClientQueueSourceMode::ConsumeOldest,
+            },
+        );
+
+        let SwitcherSingleClientQueueSourceResult::FrameAvailable {
+            frame,
+            mode,
+            remaining_client_queue_len,
+        } = result
+        else {
+            panic!("oldest run frame should be consumed");
+        };
+        assert_eq!(frame.frame_id, 1);
+        assert_eq!(mode, SwitcherSingleClientQueueSourceMode::ConsumeOldest);
+        assert_eq!(remaining_client_queue_len, 2);
+        let remaining: Vec<(String, u64)> = state
+            .frames_for_client(&client_id)
+            .map(|queued| (queued.frame.run_id.0.clone(), queued.frame.frame_id))
+            .collect();
+        assert_eq!(
+            remaining,
+            vec![("run-2".to_string(), 2), ("run-1".to_string(), 3)]
+        );
+    }
+
+    #[test]
+    fn single_client_queue_source_missing_run_reports_no_frame_without_mutation() {
+        let mut state = ServerVideoFrameQueueState::default();
+        store_frame_for_run(
+            &mut state,
+            "client-1",
+            "run-1",
+            1,
+            TimestampMicros(2_030_000),
+        );
+        let client_id = ClientId("client-1".to_string());
+
+        let result = SwitcherSingleClientQueueSourceBoundary::default().read(
+            &mut state,
+            SwitcherSingleClientQueueSourceInput {
+                client_id: client_id.clone(),
+                run_id: RunId("run-missing".to_string()),
+                mode: SwitcherSingleClientQueueSourceMode::ConsumeOldest,
+            },
+        );
+
+        assert_eq!(
+            result,
+            SwitcherSingleClientQueueSourceResult::NoFrameAvailable {
+                client_id,
+                run_id: RunId("run-missing".to_string()),
+                mode: SwitcherSingleClientQueueSourceMode::ConsumeOldest,
+                client_queue_len: 1,
+            }
+        );
+        assert_eq!(state.total_len(), 1);
+    }
+
+    #[test]
     fn placeholder_display_handoff_preserves_metadata_and_payload_length() {
         let mut state = ServerVideoFrameQueueState::default();
         store_frame(&mut state, "client-1", 7, TimestampMicros(2_100_000));
@@ -5990,6 +6224,25 @@ mod tests {
         )
     }
 
+    fn store_frame_for_run(
+        state: &mut ServerVideoFrameQueueState,
+        client_id: &str,
+        run_id: &str,
+        frame_id: u64,
+        queued_at: TimestampMicros,
+    ) -> ServerVideoFrameQueueStorageResult {
+        store_frame_with_run_payload(
+            state,
+            client_id,
+            run_id,
+            frame_id,
+            queued_at,
+            1280,
+            720,
+            vec![frame_id as u8, 0xbb, 0xcc],
+        )
+    }
+
     fn store_frame_with_payload(
         state: &mut ServerVideoFrameQueueState,
         client_id: &str,
@@ -5999,7 +6252,23 @@ mod tests {
         height: u32,
         payload: Vec<u8>,
     ) -> ServerVideoFrameQueueStorageResult {
-        let packet = registered_video_packet(client_id, frame_id, width, height, payload);
+        store_frame_with_run_payload(
+            state, client_id, "run-1", frame_id, queued_at, width, height, payload,
+        )
+    }
+
+    fn store_frame_with_run_payload(
+        state: &mut ServerVideoFrameQueueState,
+        client_id: &str,
+        run_id: &str,
+        frame_id: u64,
+        queued_at: TimestampMicros,
+        width: u32,
+        height: u32,
+        payload: Vec<u8>,
+    ) -> ServerVideoFrameQueueStorageResult {
+        let packet =
+            registered_video_packet_for_run(client_id, run_id, frame_id, width, height, payload);
         let input = ServerVideoFrameHandlerBoundary.prepare_input(packet);
         ServerVideoFrameQueueStorageBoundary.store_frame(
             state,
@@ -6016,6 +6285,17 @@ mod tests {
         height: u32,
         payload: Vec<u8>,
     ) -> ServerRegisteredVideoFramePacket {
+        registered_video_packet_for_run(client_id, "run-1", frame_id, width, height, payload)
+    }
+
+    fn registered_video_packet_for_run(
+        client_id: &str,
+        run_id: &str,
+        frame_id: u64,
+        width: u32,
+        height: u32,
+        payload: Vec<u8>,
+    ) -> ServerRegisteredVideoFramePacket {
         let source = PacketSource {
             address: "127.0.0.1:5001".parse().unwrap(),
         };
@@ -6025,7 +6305,7 @@ mod tests {
             authenticated_sender: AuthenticatedSenderEntry {
                 client_id: ClientId(client_id.to_string()),
                 source,
-                run_id: RunId("run-1".to_string()),
+                run_id: RunId(run_id.to_string()),
                 protocol_version: ProtocolVersion(1),
                 registered_at: None,
             },
@@ -6033,7 +6313,7 @@ mod tests {
                 message_type: MessageType::VideoFrame,
                 protocol_version: ProtocolVersion(1),
                 client_id: ClientId(client_id.to_string()),
-                run_id: RunId("run-1".to_string()),
+                run_id: RunId(run_id.to_string()),
                 frame_id,
                 capture_timestamp: TimestampMicros(1_000_000 + frame_id),
                 send_timestamp: TimestampMicros(1_000_100 + frame_id),
