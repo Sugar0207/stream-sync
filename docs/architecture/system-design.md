@@ -8285,3 +8285,44 @@ Responsibility split:
   H.264 decode-render behavior.
 
 No protocol wire format changed for this slice.
+
+## Switcher 2-View Display Policy to Composition Adapter
+
+The display policy to composition adapter sits after display policy and before
+the existing 2-view layout/composition boundary:
+
+```text
+SwitcherTwoViewDisplayPolicyOutput
+  -> SwitcherTwoViewDisplayCompositionAdapterBoundary
+  -> SwitcherTwoViewCompositionInput
+```
+
+Current implementation:
+
+- `SwitcherTwoViewDisplayCompositionAdapterBoundary` consumes display policy
+  output and a caller-selected `SwitcherTwoViewLayoutPolicy`.
+- It produces explicit per-side composition instructions:
+  - `UseUpdatedFrame` for a newly rendered frame.
+  - `UseHeldPreviousFrame` for a non-stale previous displayed frame.
+  - `UseStalePlaceholder` for a previous displayed frame that exceeded
+    `max_hold_duration_micros`.
+  - `UseNoDisplayPlaceholder` when no previous displayed frame exists.
+- Update and hold decisions enter `SwitcherTwoViewCompositionInput` as decoded
+  side inputs using real decoded frames.
+- Stale and no-display placeholder decisions enter
+  `SwitcherTwoViewCompositionInput` as skipped side inputs while the adapter
+  output keeps the stale / placeholder decision and original skip reason
+  visible.
+- Waiting and no-frame skip reasons are not hidden by fake frames.
+
+Responsibility split:
+
+- display policy owns update / hold / stale / placeholder decisions.
+- this adapter owns only translating those decisions to the current
+  composition-facing input shape.
+- composition remains responsible only for creating a side-by-side BGRA canvas
+  from decoded or skipped sides.
+- It does not implement OBS output, 4-view orchestration, late-drop mutation,
+  protocol changes, or H.264 decode/render behavior changes.
+
+No protocol wire format changed for this slice.

@@ -1917,6 +1917,49 @@ pub struct SwitcherTwoViewDisplayPolicyOutput {
     pub right: SwitcherTwoViewDisplayDecision,
 }
 
+/// Input for adapting display policy decisions into 2-view composition input.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SwitcherTwoViewDisplayCompositionAdapterInput {
+    pub display: SwitcherTwoViewDisplayPolicyOutput,
+    pub layout_policy: SwitcherTwoViewLayoutPolicy,
+}
+
+/// Explicit per-side composition instruction after display policy.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SwitcherTwoViewDisplayCompositionSideInstruction {
+    UseUpdatedFrame {
+        side: SwitcherTwoViewSide,
+        frame: SwitcherTwoViewDisplayedFrame,
+        rendered: SwitcherTwoViewRenderedSide,
+    },
+    UseHeldPreviousFrame {
+        side: SwitcherTwoViewSide,
+        frame: SwitcherTwoViewDisplayedFrame,
+        skipped: SwitcherTwoViewSkippedSide,
+        hold_duration_micros: u64,
+    },
+    UseStalePlaceholder {
+        side: SwitcherTwoViewSide,
+        frame: SwitcherTwoViewDisplayedFrame,
+        skipped: SwitcherTwoViewSkippedSide,
+        hold_duration_micros: u64,
+        max_hold_duration_micros: u64,
+    },
+    UseNoDisplayPlaceholder {
+        side: SwitcherTwoViewSide,
+        skipped: SwitcherTwoViewSkippedSide,
+    },
+}
+
+/// Output from adapting display decisions for the existing composition path.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SwitcherTwoViewDisplayCompositionAdapterOutput {
+    pub shared_target_time: TimestampMicros,
+    pub left: SwitcherTwoViewDisplayCompositionSideInstruction,
+    pub right: SwitcherTwoViewDisplayCompositionSideInstruction,
+    pub composition_input: SwitcherTwoViewCompositionInput,
+}
+
 enum SwitcherTwoViewDisplayPolicySideInput {
     Rendered(SwitcherTwoViewRenderedSide),
     Skipped(SwitcherTwoViewSkippedSide),
@@ -2048,6 +2091,115 @@ fn display_policy_decision_for_side(
                 hold_duration_micros,
             }
         }
+    }
+}
+
+/// Minimal adapter from display policy decisions to the existing 2-view
+/// composition input.
+///
+/// Update and hold decisions carry real decoded frames. Stale and no-display
+/// decisions stay explicit and enter composition as skipped sides, so this
+/// boundary does not create fallback frames.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct SwitcherTwoViewDisplayCompositionAdapterBoundary;
+
+impl SwitcherTwoViewDisplayCompositionAdapterBoundary {
+    pub fn adapt(
+        &self,
+        input: SwitcherTwoViewDisplayCompositionAdapterInput,
+    ) -> SwitcherTwoViewDisplayCompositionAdapterOutput {
+        let shared_target_time = input.display.shared_target_time;
+        let left = display_composition_instruction_for_decision(input.display.left);
+        let right = display_composition_instruction_for_decision(input.display.right);
+        let composition_input = SwitcherTwoViewCompositionInput {
+            left: display_composition_side_input(&left),
+            right: display_composition_side_input(&right),
+            policy: input.layout_policy,
+        };
+
+        SwitcherTwoViewDisplayCompositionAdapterOutput {
+            shared_target_time,
+            left,
+            right,
+            composition_input,
+        }
+    }
+}
+
+fn display_composition_instruction_for_decision(
+    decision: SwitcherTwoViewDisplayDecision,
+) -> SwitcherTwoViewDisplayCompositionSideInstruction {
+    match decision {
+        SwitcherTwoViewDisplayDecision::Update {
+            side,
+            frame,
+            rendered,
+        } => SwitcherTwoViewDisplayCompositionSideInstruction::UseUpdatedFrame {
+            side,
+            frame,
+            rendered,
+        },
+        SwitcherTwoViewDisplayDecision::HoldPrevious {
+            side,
+            frame,
+            skipped,
+            hold_duration_micros,
+        } => SwitcherTwoViewDisplayCompositionSideInstruction::UseHeldPreviousFrame {
+            side,
+            frame,
+            skipped,
+            hold_duration_micros,
+        },
+        SwitcherTwoViewDisplayDecision::PreviousFrameStale {
+            side,
+            frame,
+            skipped,
+            hold_duration_micros,
+            max_hold_duration_micros,
+        } => SwitcherTwoViewDisplayCompositionSideInstruction::UseStalePlaceholder {
+            side,
+            frame,
+            skipped,
+            hold_duration_micros,
+            max_hold_duration_micros,
+        },
+        SwitcherTwoViewDisplayDecision::NoDisplayPlaceholder { side, skipped } => {
+            SwitcherTwoViewDisplayCompositionSideInstruction::UseNoDisplayPlaceholder {
+                side,
+                skipped,
+            }
+        }
+    }
+}
+
+fn display_composition_side_input(
+    instruction: &SwitcherTwoViewDisplayCompositionSideInstruction,
+) -> SwitcherTwoViewLayoutSideInput {
+    match instruction {
+        SwitcherTwoViewDisplayCompositionSideInstruction::UseUpdatedFrame {
+            side, frame, ..
+        }
+        | SwitcherTwoViewDisplayCompositionSideInstruction::UseHeldPreviousFrame {
+            side,
+            frame,
+            ..
+        } => SwitcherTwoViewLayoutSideInput::Decoded {
+            side: *side,
+            selected: frame.selected.clone(),
+            frame: frame.decoded.clone(),
+        },
+        SwitcherTwoViewDisplayCompositionSideInstruction::UseStalePlaceholder {
+            side,
+            skipped,
+            ..
+        }
+        | SwitcherTwoViewDisplayCompositionSideInstruction::UseNoDisplayPlaceholder {
+            side,
+            skipped,
+        } => SwitcherTwoViewLayoutSideInput::Skipped {
+            side: *side,
+            reason: two_view_skipped_status(skipped),
+        },
     }
 }
 
@@ -7075,6 +7227,276 @@ mod tests {
     }
 
     #[test]
+    fn two_view_display_composition_adapter_maps_both_updates_to_decoded_inputs() {
+        let mut state = ServerVideoFrameQueueState::default();
+        store_frame_with_run_payload(
+            &mut state,
+            "client-left",
+            "run-left",
+            1,
+            TimestampMicros(2_115_000),
+            2,
+            1,
+            vec![0, 0, 1, 0x65, 0x11],
+        );
+        store_frame_with_run_payload(
+            &mut state,
+            "client-right",
+            "run-right",
+            2,
+            TimestampMicros(2_115_100),
+            2,
+            1,
+            vec![0, 0, 1, 0x65, 0x12],
+        );
+        let display = display_policy_output_for_test(
+            two_view_scheduler_result(&mut state, TimestampMicros(1_000_002)),
+            None,
+            None,
+            TimestampMicros(2_000_000),
+            Some(500_000),
+        );
+
+        let output = SwitcherTwoViewDisplayCompositionAdapterBoundary.adapt(
+            SwitcherTwoViewDisplayCompositionAdapterInput {
+                display,
+                layout_policy: SwitcherTwoViewLayoutPolicy::default(),
+            },
+        );
+
+        assert!(matches!(
+            output.left,
+            SwitcherTwoViewDisplayCompositionSideInstruction::UseUpdatedFrame { .. }
+        ));
+        assert!(matches!(
+            output.right,
+            SwitcherTwoViewDisplayCompositionSideInstruction::UseUpdatedFrame { .. }
+        ));
+        let SwitcherTwoViewLayoutSideInput::Decoded {
+            side: left_side,
+            selected: Some(left_selected),
+            ..
+        } = output.composition_input.left
+        else {
+            panic!("left update should become decoded composition input");
+        };
+        let SwitcherTwoViewLayoutSideInput::Decoded {
+            side: right_side,
+            selected: Some(right_selected),
+            ..
+        } = output.composition_input.right
+        else {
+            panic!("right update should become decoded composition input");
+        };
+        assert_eq!(left_side, SwitcherTwoViewSide::Left);
+        assert_eq!(right_side, SwitcherTwoViewSide::Right);
+        assert_eq!(left_selected.frame.frame_id, 1);
+        assert_eq!(right_selected.frame.frame_id, 2);
+    }
+
+    #[test]
+    fn two_view_display_composition_adapter_maps_update_and_hold_previous() {
+        let mut state = ServerVideoFrameQueueState::default();
+        store_frame_with_run_payload(
+            &mut state,
+            "client-left",
+            "run-left",
+            1,
+            TimestampMicros(2_116_000),
+            2,
+            1,
+            vec![0, 0, 1, 0x65, 0x11],
+        );
+        store_frame_with_run_payload(
+            &mut state,
+            "client-right",
+            "run-right",
+            3,
+            TimestampMicros(2_116_100),
+            2,
+            1,
+            vec![0, 0, 1, 0x65, 0x13],
+        );
+        let display = display_policy_output_for_test(
+            two_view_scheduler_result(&mut state, TimestampMicros(1_000_001)),
+            None,
+            Some(previous_displayed_frame(
+                SwitcherTwoViewSide::Right,
+                TimestampMicros(1_900_000),
+            )),
+            TimestampMicros(2_000_000),
+            Some(500_000),
+        );
+
+        let output = SwitcherTwoViewDisplayCompositionAdapterBoundary.adapt(
+            SwitcherTwoViewDisplayCompositionAdapterInput {
+                display,
+                layout_policy: SwitcherTwoViewLayoutPolicy::default(),
+            },
+        );
+
+        assert!(matches!(
+            output.left,
+            SwitcherTwoViewDisplayCompositionSideInstruction::UseUpdatedFrame { .. }
+        ));
+        let SwitcherTwoViewDisplayCompositionSideInstruction::UseHeldPreviousFrame {
+            skipped,
+            hold_duration_micros,
+            ..
+        } = &output.right
+        else {
+            panic!("right waiting side should use held previous frame");
+        };
+        assert_eq!(*hold_duration_micros, 100_000);
+        assert!(matches!(
+            skipped,
+            SwitcherTwoViewSkippedSide::SelectionUnavailable {
+                selection: SwitcherJitterBufferSelectionResult::FrameTooEarly { .. },
+                ..
+            }
+        ));
+        assert!(matches!(
+            output.composition_input.left,
+            SwitcherTwoViewLayoutSideInput::Decoded { .. }
+        ));
+        let SwitcherTwoViewLayoutSideInput::Decoded {
+            side,
+            selected,
+            frame,
+        } = output.composition_input.right
+        else {
+            panic!("held previous frame should become decoded composition input");
+        };
+        assert_eq!(side, SwitcherTwoViewSide::Right);
+        assert!(selected.is_none());
+        assert_eq!(frame.pixels.len(), 8);
+    }
+
+    #[test]
+    fn two_view_display_composition_adapter_maps_stale_previous_to_skipped_placeholder() {
+        let mut state = ServerVideoFrameQueueState::default();
+        store_frame_with_run_payload(
+            &mut state,
+            "client-left",
+            "run-left",
+            1,
+            TimestampMicros(2_117_000),
+            2,
+            1,
+            vec![0, 0, 1, 0x65, 0x11],
+        );
+        let display = display_policy_output_for_test(
+            two_view_scheduler_result(&mut state, TimestampMicros(1_000_001)),
+            None,
+            Some(previous_displayed_frame(
+                SwitcherTwoViewSide::Right,
+                TimestampMicros(1_800_000),
+            )),
+            TimestampMicros(2_000_000),
+            Some(100_000),
+        );
+
+        let output = SwitcherTwoViewDisplayCompositionAdapterBoundary.adapt(
+            SwitcherTwoViewDisplayCompositionAdapterInput {
+                display,
+                layout_policy: SwitcherTwoViewLayoutPolicy::default(),
+            },
+        );
+
+        let SwitcherTwoViewDisplayCompositionSideInstruction::UseStalePlaceholder {
+            skipped,
+            hold_duration_micros,
+            max_hold_duration_micros,
+            ..
+        } = &output.right
+        else {
+            panic!("stale previous frame should stay explicit");
+        };
+        assert_eq!(*hold_duration_micros, 200_000);
+        assert_eq!(*max_hold_duration_micros, 100_000);
+        assert!(matches!(
+            skipped,
+            SwitcherTwoViewSkippedSide::SelectionUnavailable {
+                selection: SwitcherJitterBufferSelectionResult::NoFrame { .. },
+                ..
+            }
+        ));
+        assert_eq!(
+            output.composition_input.right,
+            SwitcherTwoViewLayoutSideInput::Skipped {
+                side: SwitcherTwoViewSide::Right,
+                reason: SwitcherTwoViewManualDecodeRenderStatus::SkippedSelectionUnavailable,
+            }
+        );
+    }
+
+    #[test]
+    fn two_view_display_composition_adapter_maps_no_display_placeholder_to_skipped() {
+        let mut state = ServerVideoFrameQueueState::default();
+        store_frame_with_run_payload(
+            &mut state,
+            "client-left",
+            "run-left",
+            3,
+            TimestampMicros(2_118_000),
+            2,
+            1,
+            vec![0, 0, 1, 0x65, 0x13],
+        );
+        let display = display_policy_output_for_test(
+            two_view_scheduler_result(&mut state, TimestampMicros(1_000_001)),
+            None,
+            None,
+            TimestampMicros(2_000_000),
+            Some(500_000),
+        );
+
+        let output = SwitcherTwoViewDisplayCompositionAdapterBoundary.adapt(
+            SwitcherTwoViewDisplayCompositionAdapterInput {
+                display,
+                layout_policy: SwitcherTwoViewLayoutPolicy::default(),
+            },
+        );
+
+        let SwitcherTwoViewDisplayCompositionSideInstruction::UseNoDisplayPlaceholder {
+            skipped: left_skipped,
+            ..
+        } = &output.left
+        else {
+            panic!("waiting left without previous should stay placeholder");
+        };
+        let SwitcherTwoViewDisplayCompositionSideInstruction::UseNoDisplayPlaceholder {
+            skipped: right_skipped,
+            ..
+        } = &output.right
+        else {
+            panic!("no-frame right without previous should stay placeholder");
+        };
+        assert!(matches!(
+            left_skipped,
+            SwitcherTwoViewSkippedSide::SelectionUnavailable {
+                selection: SwitcherJitterBufferSelectionResult::FrameTooEarly { .. },
+                ..
+            }
+        ));
+        assert!(matches!(
+            right_skipped,
+            SwitcherTwoViewSkippedSide::SelectionUnavailable {
+                selection: SwitcherJitterBufferSelectionResult::NoFrame { .. },
+                ..
+            }
+        ));
+        assert!(matches!(
+            output.composition_input.left,
+            SwitcherTwoViewLayoutSideInput::Skipped { .. }
+        ));
+        assert!(matches!(
+            output.composition_input.right,
+            SwitcherTwoViewLayoutSideInput::Skipped { .. }
+        ));
+    }
+
+    #[test]
     fn placeholder_display_handoff_preserves_metadata_and_payload_length() {
         let mut state = ServerVideoFrameQueueState::default();
         store_frame(&mut state, "client-1", 7, TimestampMicros(2_100_000));
@@ -9179,6 +9601,28 @@ mod tests {
                 decode,
                 render,
             )
+    }
+
+    fn display_policy_output_for_test(
+        scheduler_result: SwitcherTwoViewTargetTimeSourceSchedulerResult,
+        previous_left: Option<SwitcherTwoViewDisplayedFrame>,
+        previous_right: Option<SwitcherTwoViewDisplayedFrame>,
+        current_time: TimestampMicros,
+        max_hold_duration_micros: Option<u64>,
+    ) -> SwitcherTwoViewDisplayPolicyOutput {
+        let connection = render_scheduler_result_for_test(
+            scheduler_result,
+            &RecordingTwoViewDecode::default(),
+            &RecordingTwoViewRender::default(),
+        );
+
+        SwitcherTwoViewDisplayPolicyBoundary.decide(SwitcherTwoViewDisplayPolicyInput {
+            connection,
+            previous_left,
+            previous_right,
+            current_time,
+            max_hold_duration_micros,
+        })
     }
 
     fn previous_displayed_frame(

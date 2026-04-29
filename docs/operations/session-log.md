@@ -5,6 +5,58 @@
 - Codex
 
 ### Work
+- Added the minimal display policy -> 2-view composition adapter.
+- Added `SwitcherTwoViewDisplayCompositionAdapterBoundary`.
+- Added explicit adapter-side composition instructions:
+  - `UseUpdatedFrame`
+  - `UseHeldPreviousFrame`
+  - `UseStalePlaceholder`
+  - `UseNoDisplayPlaceholder`
+- Mapped update and hold decisions to decoded `SwitcherTwoViewCompositionInput` sides using real decoded frames.
+- Mapped stale and no-display placeholder decisions to skipped composition sides while keeping the original skip reason visible in the adapter output.
+- Added focused tests for both updates, update + hold previous, stale previous placeholder, no-display placeholder, and skip reason preservation.
+- Updated architecture and TODO docs with the display policy -> composition adapter boundary and next validation task.
+
+### Changed Files
+- `apps/switcher/src/lib.rs`
+- `docs/architecture/system-design.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### Decisions
+- Kept the adapter in-process and testable.
+- Kept final composition/render behavior separate from display policy decisions.
+- Did not create fake frames for stale or no-display placeholder decisions.
+- Did not implement OBS output, 4-view orchestration, late-drop mutation, protocol wire-format changes, or H.264 decode/render behavior changes.
+
+### Unresolved
+- Running the display policy -> composition adapter through the composed canvas render boundary.
+- Deciding whether 4-view expansion should happen before or after composed render validation.
+- production H.264 encoder configuration / error logging policy
+- manual two-client bounded real encoded run into the live two-view switcher
+
+### Next
+- Validate the display policy -> composition adapter through the composed canvas render path, or plan 4-view expansion.
+
+### TODO Update
+- Marked the display policy -> 2-view composition input adapter complete.
+- Set next task to composed canvas render validation or 4-view expansion planning.
+
+### Validation
+- `cargo fmt`
+- `cargo fmt --check`
+- `cargo test -p stream-sync-switcher two_view -- --test-threads=1`
+- `cargo test -p stream-sync-switcher target_time -- --test-threads=1`
+- `cargo test -p stream-sync-switcher single_client_queue_source -- --test-threads=1`
+- `cargo test -p stream-sync-server video_frame_queue -- --test-threads=1`
+- `cargo check --workspace`
+- `git diff --check` (passed with existing LF-to-CRLF conversion warnings)
+
+## 2026-04-29
+### Type
+- Codex
+
+### Work
 - Added the first minimal 2-view display policy boundary after scheduler/adapter/decode-render connection.
 - Added `SwitcherTwoViewDisplayPolicyBoundary`.
 - Added caller-owned previous displayed frame state with `SwitcherTwoViewDisplayedFrame`.
