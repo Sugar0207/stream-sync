@@ -8106,3 +8106,47 @@ Responsibility split:
   decode H.264, render, mutate late frames, or touch OBS.
 
 No protocol wire format changed for this slice.
+
+## Switcher 2-View TargetTime Source Scheduler Boundary
+
+The first queue-backed multi-client sync boundary is a minimal 2-view scheduler
+over the single-client targetTime source:
+
+```text
+ServerVideoFrameQueueState
+  -> SwitcherSingleClientQueueSourceBoundary
+  -> SwitcherSingleClientTargetTimeSourceBoundary per view
+  -> SwitcherTwoViewTargetTimeSourceSchedulerBoundary
+```
+
+Current implementation:
+
+- `SwitcherTwoViewTargetTimeSourceSchedulerBoundary` receives caller-owned
+  `ServerVideoFrameQueueState`.
+- The input contains exactly two view configs, each scoped by
+  `client_id + run_id`.
+- The caller supplies one shared `target_timestamp`.
+- The caller also supplies one explicit
+  `SwitcherSingleClientTargetTimeSourceMode` for both views:
+  - preview mode remains non-mutating for both views.
+  - consume mode can dequeue only through the existing single-client
+    `ConsumeOldestAtOrBefore` behavior, and only for eligible frames.
+- Each side returns the original single-client targetTime source result:
+  selected frame, no frame available, or waiting for a frame at or before the
+  target timestamp.
+- The scheduler also returns an aggregate status:
+  - `AllSelected`
+  - `PartialSelected`
+  - `Waiting`
+  - `NoFrames`
+
+Responsibility split:
+
+- single-client targetTime source remains responsible for per-client/run queue
+  reads, timestamp eligibility, and explicit preview/consume mutation behavior.
+- the 2-view scheduler owns only applying one shared target timestamp to two
+  configured views and classifying the pair result.
+- It does not implement 4-view orchestration, OBS output, H.264 decode/render,
+  late-drop mutation, socket transport, or protocol changes.
+
+No protocol wire format changed for this slice.

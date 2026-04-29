@@ -5,6 +5,55 @@
 - Codex
 
 ### Work
+- Added the minimal queue-backed 2-view targetTime source scheduler boundary.
+- Added `SwitcherTwoViewTargetTimeSourceSchedulerBoundary`, which calls `SwitcherSingleClientTargetTimeSourceBoundary` once per configured view.
+- Kept the scheduler scoped to two explicit `client_id + run_id` view configs and one shared `target_timestamp`.
+- Reused explicit single-client source modes so preview remains non-mutating and consume behavior is only available through `ConsumeOldestAtOrBefore`.
+- Added per-view result preservation and aggregate scheduler status: all selected, partial selected, waiting, or no frames.
+- Added focused tests for both-selected, selected+waiting, selected+no-frame, preview no-mutation, consume-only-eligible, and both-empty no-frames behavior.
+- Updated architecture and TODO docs for the new boundary and next validation path.
+
+### Changed Files
+- `apps/switcher/src/lib.rs`
+- `docs/architecture/system-design.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### Decisions
+- Built the 2-view scheduler on the queue-backed single-client targetTime source instead of changing the older direct jitter-buffer selector.
+- Kept this slice in-process and diagnostic.
+- Did not add UDP live receive connection, 4-view orchestration, OBS output, H.264 decode/render changes, late-drop mutation, or protocol wire-format changes.
+
+### Unresolved
+- Live-like validation or fixture path for the queue-backed 2-view scheduler.
+- How the queue-backed scheduler should feed the existing 2-view decode/render path without late-drop mutation.
+- production H.264 encoder configuration / error logging policy
+- manual two-client bounded real encoded run into the live two-view switcher
+
+### Next
+- Validate or connect the queue-backed 2-view targetTime source scheduler with a live-like queued-frame fixture.
+
+### TODO Update
+- Marked the queue-backed 2-view targetTime source scheduler boundary complete.
+- Updated current focus and next items toward scheduler validation / connection to the existing 2-view path.
+
+### Validation
+- `cargo fmt`
+- `cargo fmt --check`
+- `cargo test -p stream-sync-switcher target_time -- --test-threads=1`
+- `cargo test -p stream-sync-switcher single_client_queue_source -- --test-threads=1`
+- `cargo test -p stream-sync-switcher two_view -- --test-threads=1`
+- `cargo test -p stream-sync-server video_frame_queue -- --test-threads=1`
+- `cargo check --workspace`
+- `git diff --check` (passed with existing LF-to-CRLF conversion warnings)
+
+---
+
+## 2026-04-29
+### Type
+- Codex
+
+### Work
 - Added focused queue-like validation tests for the single-client targetTime source boundary.
 - Added an empty-queue `NoFrameAvailable` test.
 - Added a live-like progression test that previews latest without mutation, consumes the oldest eligible frame, then verifies the remaining newer frame returns waiting without dequeue.
