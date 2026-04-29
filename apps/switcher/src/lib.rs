@@ -458,6 +458,208 @@ pub struct SwitcherTwoViewTargetTimeSourceSchedulerResult {
     pub status: SwitcherTwoViewTargetTimeSourceSchedulerStatus,
 }
 
+/// Per-side instruction produced by adapting queue-backed scheduler output for
+/// the existing decode/render input path.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SwitcherTwoViewSchedulerDecodeRenderSideInstruction {
+    RenderFrame {
+        side: SwitcherTwoViewSide,
+        selected: SwitcherJitterBufferSelectedFrame,
+        consumed: bool,
+    },
+    SkipNoFrameAvailable {
+        side: SwitcherTwoViewSide,
+        client_id: ClientId,
+        run_id: RunId,
+        target_timestamp: TimestampMicros,
+        client_queue_len: usize,
+    },
+    SkipWaitingForFrameAtOrBeforeTarget {
+        side: SwitcherTwoViewSide,
+        client_id: ClientId,
+        run_id: RunId,
+        target_timestamp: TimestampMicros,
+        candidate_frame_id: u64,
+        candidate_capture_timestamp: TimestampMicros,
+        client_queue_len: usize,
+    },
+}
+
+/// Input for translating scheduler output into the existing decode/render path.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SwitcherTwoViewSchedulerDecodeRenderAdapterInput {
+    pub scheduler_result: SwitcherTwoViewTargetTimeSourceSchedulerResult,
+    pub left_window_title: String,
+    pub right_window_title: String,
+    pub render_hold_millis: u64,
+}
+
+/// Adapter output keeps explicit scheduler-side skip reasons while also
+/// carrying the already-supported decode/render input shape.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SwitcherTwoViewSchedulerDecodeRenderAdapterOutput {
+    pub scheduler_status: SwitcherTwoViewTargetTimeSourceSchedulerStatus,
+    pub left: SwitcherTwoViewSchedulerDecodeRenderSideInstruction,
+    pub right: SwitcherTwoViewSchedulerDecodeRenderSideInstruction,
+    pub decode_render_input: SwitcherTwoViewDecodeRenderInput,
+}
+
+/// Minimal adapter from queue-backed scheduler results to the existing
+/// 2-view decode/render boundary input.
+///
+/// It performs no scheduling, queue mutation, decoding, rendering, display
+/// policy, late-drop mutation, 4-view orchestration, or OBS work.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct SwitcherTwoViewSchedulerDecodeRenderAdapterBoundary;
+
+impl SwitcherTwoViewSchedulerDecodeRenderAdapterBoundary {
+    pub fn adapt(
+        &self,
+        input: SwitcherTwoViewSchedulerDecodeRenderAdapterInput,
+    ) -> SwitcherTwoViewSchedulerDecodeRenderAdapterOutput {
+        let scheduler_result = input.scheduler_result;
+        let left = scheduler_decode_render_instruction_for_side(
+            SwitcherTwoViewSide::Left,
+            &scheduler_result.left,
+        );
+        let right = scheduler_decode_render_instruction_for_side(
+            SwitcherTwoViewSide::Right,
+            &scheduler_result.right,
+        );
+        let left_selection = scheduler_decode_render_instruction_to_selection(&left);
+        let right_selection = scheduler_decode_render_instruction_to_selection(&right);
+        let selection = scheduler_decode_render_selection_from_sides(
+            scheduler_result.target_timestamp,
+            left_selection,
+            right_selection,
+        );
+
+        SwitcherTwoViewSchedulerDecodeRenderAdapterOutput {
+            scheduler_status: scheduler_result.status,
+            left,
+            right,
+            decode_render_input: SwitcherTwoViewDecodeRenderInput {
+                selection,
+                left_window_title: input.left_window_title,
+                right_window_title: input.right_window_title,
+                render_hold_millis: input.render_hold_millis,
+            },
+        }
+    }
+}
+
+fn scheduler_decode_render_instruction_for_side(
+    side: SwitcherTwoViewSide,
+    result: &SwitcherSingleClientTargetTimeSourceResult,
+) -> SwitcherTwoViewSchedulerDecodeRenderSideInstruction {
+    match result {
+        SwitcherSingleClientTargetTimeSourceResult::Selected(selected) => {
+            SwitcherTwoViewSchedulerDecodeRenderSideInstruction::RenderFrame {
+                side,
+                selected: SwitcherJitterBufferSelectedFrame {
+                    frame: selected.frame.clone(),
+                    target_time: selected.target_timestamp,
+                    adjusted_capture_timestamp: selected.frame.capture_timestamp,
+                    delta_from_target_micros: selected.delta_from_target_micros,
+                },
+                consumed: selected.consumed,
+            }
+        }
+        SwitcherSingleClientTargetTimeSourceResult::NoFrameAvailable {
+            client_id,
+            run_id,
+            target_timestamp,
+            client_queue_len,
+            ..
+        } => SwitcherTwoViewSchedulerDecodeRenderSideInstruction::SkipNoFrameAvailable {
+            side,
+            client_id: client_id.clone(),
+            run_id: run_id.clone(),
+            target_timestamp: *target_timestamp,
+            client_queue_len: *client_queue_len,
+        },
+        SwitcherSingleClientTargetTimeSourceResult::WaitingForFrameAtOrBeforeTarget {
+            client_id,
+            run_id,
+            target_timestamp,
+            candidate_frame_id,
+            candidate_capture_timestamp,
+            client_queue_len,
+            ..
+        } => {
+            SwitcherTwoViewSchedulerDecodeRenderSideInstruction::SkipWaitingForFrameAtOrBeforeTarget {
+                side,
+                client_id: client_id.clone(),
+                run_id: run_id.clone(),
+                target_timestamp: *target_timestamp,
+                candidate_frame_id: *candidate_frame_id,
+                candidate_capture_timestamp: *candidate_capture_timestamp,
+                client_queue_len: *client_queue_len,
+            }
+        }
+    }
+}
+
+fn scheduler_decode_render_instruction_to_selection(
+    instruction: &SwitcherTwoViewSchedulerDecodeRenderSideInstruction,
+) -> SwitcherJitterBufferSelectionResult {
+    match instruction {
+        SwitcherTwoViewSchedulerDecodeRenderSideInstruction::RenderFrame { selected, .. } => {
+            SwitcherJitterBufferSelectionResult::Selected(selected.clone())
+        }
+        SwitcherTwoViewSchedulerDecodeRenderSideInstruction::SkipNoFrameAvailable {
+            client_id,
+            target_timestamp,
+            ..
+        } => SwitcherJitterBufferSelectionResult::NoFrame {
+            client_id: client_id.clone(),
+            target_time: *target_timestamp,
+        },
+        SwitcherTwoViewSchedulerDecodeRenderSideInstruction::SkipWaitingForFrameAtOrBeforeTarget {
+            client_id,
+            target_timestamp,
+            candidate_capture_timestamp,
+            client_queue_len,
+            ..
+        } => SwitcherJitterBufferSelectionResult::FrameTooEarly {
+            client_id: client_id.clone(),
+            target_time: *target_timestamp,
+            earliest_frame_time: *candidate_capture_timestamp,
+            frames_available: *client_queue_len,
+        },
+    }
+}
+
+fn scheduler_decode_render_selection_from_sides(
+    shared_target_time: TimestampMicros,
+    left: SwitcherJitterBufferSelectionResult,
+    right: SwitcherJitterBufferSelectionResult,
+) -> SwitcherTwoViewTargetTimeSelectionResult {
+    match (&left, &right) {
+        (
+            SwitcherJitterBufferSelectionResult::Selected(left_selected),
+            SwitcherJitterBufferSelectionResult::Selected(right_selected),
+        ) => SwitcherTwoViewTargetTimeSelectionResult::BothSelected {
+            shared_target_time,
+            left: left_selected.clone(),
+            right: right_selected.clone(),
+        },
+        (SwitcherJitterBufferSelectionResult::Selected(_), _)
+        | (_, SwitcherJitterBufferSelectionResult::Selected(_)) => {
+            SwitcherTwoViewTargetTimeSelectionResult::Partial {
+                shared_target_time,
+                left,
+                right,
+            }
+        }
+        _ => SwitcherTwoViewTargetTimeSelectionResult::BothUnavailable {
+            shared_target_time,
+            left,
+            right,
+        },
+    }
+}
+
 /// Minimal diagnostic 2-view scheduler over the single-client targetTime source.
 ///
 /// This boundary calls `SwitcherSingleClientTargetTimeSourceBoundary` once for
@@ -5568,6 +5770,227 @@ mod tests {
     }
 
     #[test]
+    fn two_view_scheduler_decode_render_adapter_maps_both_selected_to_renderable_inputs() {
+        let mut state = ServerVideoFrameQueueState::default();
+        store_frame_for_run(
+            &mut state,
+            "client-left",
+            "run-left",
+            1,
+            TimestampMicros(2_098_000),
+        );
+        store_frame_for_run(
+            &mut state,
+            "client-right",
+            "run-right",
+            2,
+            TimestampMicros(2_098_100),
+        );
+        let scheduler_result = two_view_scheduler_result(&mut state, TimestampMicros(1_000_002));
+
+        let output = SwitcherTwoViewSchedulerDecodeRenderAdapterBoundary.adapt(
+            SwitcherTwoViewSchedulerDecodeRenderAdapterInput {
+                scheduler_result,
+                left_window_title: "left".to_string(),
+                right_window_title: "right".to_string(),
+                render_hold_millis: 5,
+            },
+        );
+
+        assert_eq!(
+            output.scheduler_status,
+            SwitcherTwoViewTargetTimeSourceSchedulerStatus::AllSelected
+        );
+        let SwitcherTwoViewSchedulerDecodeRenderSideInstruction::RenderFrame {
+            selected: left, ..
+        } = output.left
+        else {
+            panic!("left side should be renderable");
+        };
+        let SwitcherTwoViewSchedulerDecodeRenderSideInstruction::RenderFrame {
+            selected: right,
+            ..
+        } = output.right
+        else {
+            panic!("right side should be renderable");
+        };
+        assert_eq!(left.frame.frame_id, 1);
+        assert_eq!(right.frame.frame_id, 2);
+        let SwitcherTwoViewTargetTimeSelectionResult::BothSelected {
+            shared_target_time,
+            left,
+            right,
+        } = output.decode_render_input.selection
+        else {
+            panic!("decode/render input should receive both selected frames");
+        };
+        assert_eq!(shared_target_time, TimestampMicros(1_000_002));
+        assert_eq!(left.frame.frame_id, 1);
+        assert_eq!(right.frame.frame_id, 2);
+    }
+
+    #[test]
+    fn two_view_scheduler_decode_render_adapter_maps_selected_and_waiting() {
+        let mut state = ServerVideoFrameQueueState::default();
+        store_frame_for_run(
+            &mut state,
+            "client-left",
+            "run-left",
+            1,
+            TimestampMicros(2_099_000),
+        );
+        store_frame_for_run(
+            &mut state,
+            "client-right",
+            "run-right",
+            3,
+            TimestampMicros(2_099_100),
+        );
+        let scheduler_result = two_view_scheduler_result(&mut state, TimestampMicros(1_000_001));
+
+        let output = SwitcherTwoViewSchedulerDecodeRenderAdapterBoundary.adapt(
+            SwitcherTwoViewSchedulerDecodeRenderAdapterInput {
+                scheduler_result,
+                left_window_title: "left".to_string(),
+                right_window_title: "right".to_string(),
+                render_hold_millis: 5,
+            },
+        );
+
+        assert!(matches!(
+            output.left,
+            SwitcherTwoViewSchedulerDecodeRenderSideInstruction::RenderFrame { .. }
+        ));
+        assert_eq!(
+            output.right,
+            SwitcherTwoViewSchedulerDecodeRenderSideInstruction::SkipWaitingForFrameAtOrBeforeTarget {
+                side: SwitcherTwoViewSide::Right,
+                client_id: ClientId("client-right".to_string()),
+                run_id: RunId("run-right".to_string()),
+                target_timestamp: TimestampMicros(1_000_001),
+                candidate_frame_id: 3,
+                candidate_capture_timestamp: TimestampMicros(1_000_003),
+                client_queue_len: 1,
+            }
+        );
+        let SwitcherTwoViewTargetTimeSelectionResult::Partial { left, right, .. } =
+            output.decode_render_input.selection
+        else {
+            panic!("decode/render input should receive partial selection");
+        };
+        assert!(matches!(
+            left,
+            SwitcherJitterBufferSelectionResult::Selected(_)
+        ));
+        assert_eq!(
+            right,
+            SwitcherJitterBufferSelectionResult::FrameTooEarly {
+                client_id: ClientId("client-right".to_string()),
+                target_time: TimestampMicros(1_000_001),
+                earliest_frame_time: TimestampMicros(1_000_003),
+                frames_available: 1,
+            }
+        );
+    }
+
+    #[test]
+    fn two_view_scheduler_decode_render_adapter_maps_selected_and_no_frame() {
+        let mut state = ServerVideoFrameQueueState::default();
+        store_frame_for_run(
+            &mut state,
+            "client-left",
+            "run-left",
+            1,
+            TimestampMicros(2_100_000),
+        );
+        let scheduler_result = two_view_scheduler_result(&mut state, TimestampMicros(1_000_001));
+
+        let output = SwitcherTwoViewSchedulerDecodeRenderAdapterBoundary.adapt(
+            SwitcherTwoViewSchedulerDecodeRenderAdapterInput {
+                scheduler_result,
+                left_window_title: "left".to_string(),
+                right_window_title: "right".to_string(),
+                render_hold_millis: 5,
+            },
+        );
+
+        assert!(matches!(
+            output.left,
+            SwitcherTwoViewSchedulerDecodeRenderSideInstruction::RenderFrame { .. }
+        ));
+        assert_eq!(
+            output.right,
+            SwitcherTwoViewSchedulerDecodeRenderSideInstruction::SkipNoFrameAvailable {
+                side: SwitcherTwoViewSide::Right,
+                client_id: ClientId("client-right".to_string()),
+                run_id: RunId("run-right".to_string()),
+                target_timestamp: TimestampMicros(1_000_001),
+                client_queue_len: 0,
+            }
+        );
+        let SwitcherTwoViewTargetTimeSelectionResult::Partial { left, right, .. } =
+            output.decode_render_input.selection
+        else {
+            panic!("decode/render input should receive partial selection");
+        };
+        assert!(matches!(
+            left,
+            SwitcherJitterBufferSelectionResult::Selected(_)
+        ));
+        assert_eq!(
+            right,
+            SwitcherJitterBufferSelectionResult::NoFrame {
+                client_id: ClientId("client-right".to_string()),
+                target_time: TimestampMicros(1_000_001),
+            }
+        );
+    }
+
+    #[test]
+    fn two_view_scheduler_decode_render_adapter_does_not_create_fake_frames() {
+        let mut state = ServerVideoFrameQueueState::default();
+        store_frame_for_run(
+            &mut state,
+            "client-left",
+            "run-left",
+            3,
+            TimestampMicros(2_101_000),
+        );
+        let scheduler_result = two_view_scheduler_result(&mut state, TimestampMicros(1_000_001));
+
+        let output = SwitcherTwoViewSchedulerDecodeRenderAdapterBoundary.adapt(
+            SwitcherTwoViewSchedulerDecodeRenderAdapterInput {
+                scheduler_result,
+                left_window_title: "left".to_string(),
+                right_window_title: "right".to_string(),
+                render_hold_millis: 5,
+            },
+        );
+
+        assert!(matches!(
+            output.left,
+            SwitcherTwoViewSchedulerDecodeRenderSideInstruction::SkipWaitingForFrameAtOrBeforeTarget { .. }
+        ));
+        assert!(matches!(
+            output.right,
+            SwitcherTwoViewSchedulerDecodeRenderSideInstruction::SkipNoFrameAvailable { .. }
+        ));
+        let SwitcherTwoViewTargetTimeSelectionResult::BothUnavailable { left, right, .. } =
+            output.decode_render_input.selection
+        else {
+            panic!("waiting/no-frame should not become a partial render selection");
+        };
+        assert!(matches!(
+            left,
+            SwitcherJitterBufferSelectionResult::FrameTooEarly { .. }
+        ));
+        assert!(matches!(
+            right,
+            SwitcherJitterBufferSelectionResult::NoFrame { .. }
+        ));
+    }
+
+    #[test]
     fn placeholder_display_handoff_preserves_metadata_and_payload_length() {
         let mut state = ServerVideoFrameQueueState::default();
         store_frame(&mut state, "client-1", 7, TimestampMicros(2_100_000));
@@ -7621,6 +8044,27 @@ mod tests {
             },
         );
         (state, selection)
+    }
+
+    fn two_view_scheduler_result(
+        state: &mut ServerVideoFrameQueueState,
+        target_timestamp: TimestampMicros,
+    ) -> SwitcherTwoViewTargetTimeSourceSchedulerResult {
+        SwitcherTwoViewTargetTimeSourceSchedulerBoundary::default().select_pair(
+            state,
+            SwitcherTwoViewTargetTimeSourceSchedulerInput {
+                left: SwitcherTwoViewTargetTimeSourceViewConfig {
+                    client_id: ClientId("client-left".to_string()),
+                    run_id: RunId("run-left".to_string()),
+                },
+                right: SwitcherTwoViewTargetTimeSourceViewConfig {
+                    client_id: ClientId("client-right".to_string()),
+                    run_id: RunId("run-right".to_string()),
+                },
+                target_timestamp,
+                mode: SwitcherTwoViewTargetTimeSourceSchedulerMode::PreviewLatestIfAtOrBefore,
+            },
+        )
     }
 
     #[derive(Default)]

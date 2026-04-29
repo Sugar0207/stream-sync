@@ -5,6 +5,58 @@
 - Codex
 
 ### Work
+- Added the minimal adapter from queue-backed 2-view scheduler results to the existing 2-view decode/render input path.
+- Added `SwitcherTwoViewSchedulerDecodeRenderAdapterBoundary`.
+- Added per-side adapter instructions that preserve explicit scheduler status mapping:
+  - selected frames become renderable frame instructions
+  - no-frame results become no-frame skip instructions
+  - waiting-for-target results become waiting skip instructions
+- Mapped adapter output into `SwitcherTwoViewDecodeRenderInput` without changing the existing decode/render boundary.
+- Added focused tests for both-selected, selected+waiting, selected+no-frame, and waiting/no-frame no-fake-frame cases.
+- Updated architecture and TODO docs with the new adapter boundary and next validation task.
+
+### Changed Files
+- `apps/switcher/src/lib.rs`
+- `docs/architecture/system-design.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### Decisions
+- Kept the adapter in-process and testable.
+- Preserved the existing `SwitcherTwoViewDecodeRenderBoundary` input contract.
+- Kept waiting/no-frame reasons explicit in adapter output because the existing decode/render selection type has no scheduler-specific waiting variant.
+- Did not implement OBS output, 4-view orchestration, late-drop mutation, protocol wire-format changes, or H.264 decode/render behavior changes.
+
+### Unresolved
+- Minimal validation/connection slice that runs adapter output through the existing decode/render boundary.
+- production H.264 encoder configuration / error logging policy
+- manual two-client bounded real encoded run into the live two-view switcher
+
+### Next
+- Add a minimal adapter-to-decode/render validation or connection slice without late-drop mutation.
+
+### TODO Update
+- Marked the scheduler-result to 2-view decode/render input adapter complete.
+- Updated next items toward adapter validation / minimal decode/render connection.
+
+### Validation
+- `cargo fmt`
+- `cargo fmt --check`
+- `cargo test -p stream-sync-switcher two_view_scheduler_decode_render_adapter -- --test-threads=1`
+- `cargo test -p stream-sync-switcher two_view -- --test-threads=1`
+- `cargo test -p stream-sync-switcher target_time -- --test-threads=1`
+- `cargo test -p stream-sync-switcher single_client_queue_source -- --test-threads=1`
+- `cargo test -p stream-sync-server video_frame_queue -- --test-threads=1`
+- `cargo check --workspace`
+- `git diff --check` (passed with existing LF-to-CRLF conversion warnings)
+
+---
+
+## 2026-04-29
+### Type
+- Codex
+
+### Work
 - Added live-like queued-frame validation for the queue-backed 2-view targetTime source scheduler.
 - Added scheduler-level mode `SwitcherTwoViewTargetTimeSourceSchedulerMode`.
 - Chose all-or-nothing synchronized consumption for two-view consume mode through `ConsumeOldestAtOrBeforeAllSelected`.

@@ -8159,3 +8159,46 @@ Responsibility split:
   late-drop mutation, socket transport, or protocol changes.
 
 No protocol wire format changed for this slice.
+
+## Switcher 2-View Scheduler Decode/Render Adapter Boundary
+
+The queue-backed scheduler now has a minimal in-process adapter into the
+existing 2-view decode/render input path:
+
+```text
+SwitcherTwoViewTargetTimeSourceSchedulerResult
+  -> SwitcherTwoViewSchedulerDecodeRenderAdapterBoundary
+  -> SwitcherTwoViewDecodeRenderInput
+  -> SwitcherTwoViewDecodeRenderBoundary
+```
+
+Current implementation:
+
+- `SwitcherTwoViewSchedulerDecodeRenderAdapterBoundary` consumes a completed
+  scheduler result and produces the existing `SwitcherTwoViewDecodeRenderInput`.
+- It also returns per-side adapter instructions so scheduler statuses remain
+  explicit before decode/render:
+  - `Selected` becomes `RenderFrame`.
+  - `NoFrameAvailable` becomes `SkipNoFrameAvailable`.
+  - `WaitingForFrameAtOrBeforeTarget` becomes
+    `SkipWaitingForFrameAtOrBeforeTarget`.
+- For the existing decode/render selection type, selected frames are mapped to
+  `SwitcherJitterBufferSelectionResult::Selected`, no-frame states are mapped
+  to `NoFrame`, and waiting-for-target states are mapped to `FrameTooEarly`
+  while the adapter output keeps the original waiting reason explicit.
+- The adapter does not decide final display policy such as holding a previous
+  frame, black fallback, or partial render behavior. It only translates the
+  scheduler result into decode/render-facing instructions.
+
+Responsibility split:
+
+- the scheduler remains responsible for target timestamp eligibility and
+  all-or-nothing queue consumption policy.
+- the adapter owns only type translation from scheduler results to the existing
+  decode/render input and explicit skip/render instructions.
+- decode/render remains responsible for H.264 decode attempts and render hook
+  invocation for selected frames only.
+- It does not implement OBS output, 4-view orchestration, late-drop mutation,
+  protocol changes, or H.264 decode/render behavior changes.
+
+No protocol wire format changed for this slice.
