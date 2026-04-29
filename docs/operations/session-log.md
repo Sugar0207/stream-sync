@@ -5,6 +5,62 @@
 - Codex
 
 ### Work
+- Added the first minimal 2-view display policy boundary after scheduler/adapter/decode-render connection.
+- Added `SwitcherTwoViewDisplayPolicyBoundary`.
+- Added caller-owned previous displayed frame state with `SwitcherTwoViewDisplayedFrame`.
+- Added explicit display decisions:
+  - `Update`
+  - `HoldPrevious`
+  - `PreviousFrameStale`
+  - `NoDisplayPlaceholder`
+- Added optional `max_hold_duration_micros` handling for stale previous-frame decisions.
+- Added tests for both newly rendered frames, selected + waiting with previous frame, selected + no-frame with previous frame, waiting/no-frame without previous frame, and stale previous frame past max hold duration.
+- Updated architecture and TODO docs with the display policy boundary and next connection/4-view planning task.
+
+### Changed Files
+- `apps/switcher/src/lib.rs`
+- `docs/architecture/system-design.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### Decisions
+- Kept display policy in-process and testable.
+- Kept previous displayed frame state caller-owned.
+- Preserved waiting/no-frame/skip reasons inside display decisions.
+- Did not create fake frames for skipped views.
+- Did not implement OBS output, 4-view orchestration, late-drop mutation, protocol wire-format changes, or H.264 decode/render behavior changes.
+
+### Unresolved
+- Connecting display policy decisions to existing 2-view composition/render.
+- Deciding whether 4-view expansion should happen before or after display policy connection validation.
+- production H.264 encoder configuration / error logging policy
+- manual two-client bounded real encoded run into the live two-view switcher
+
+### Next
+- Validate display policy decisions against the 2-view composition/render path, or plan 4-view expansion.
+
+### TODO Update
+- Marked the two-view display policy boundary complete.
+- Set next task to display policy connection validation or 4-view expansion planning.
+
+### Validation
+- `cargo fmt`
+- `cargo fmt --check`
+- `cargo test -p stream-sync-switcher two_view_display_policy -- --test-threads=1`
+- `cargo test -p stream-sync-switcher two_view -- --test-threads=1`
+- `cargo test -p stream-sync-switcher target_time -- --test-threads=1`
+- `cargo test -p stream-sync-switcher single_client_queue_source -- --test-threads=1`
+- `cargo test -p stream-sync-server video_frame_queue -- --test-threads=1`
+- `cargo check --workspace`
+- `git diff --check` (passed with existing LF-to-CRLF conversion warnings)
+
+---
+
+## 2026-04-29
+### Type
+- Codex
+
+### Work
 - Added live-like in-process validation for the queue-backed scheduler -> adapter -> decode/render connection.
 - Built two queue-backed views with multiple timestamps and ran them through:
   - `SwitcherTwoViewTargetTimeSourceSchedulerBoundary`

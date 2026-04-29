@@ -8243,3 +8243,45 @@ Responsibility split:
   changes, OBS integration, or H.264 decode/render behavior changes.
 
 No protocol wire format changed for this slice.
+
+## Switcher 2-View Display Policy Boundary
+
+The first display policy boundary sits after scheduler/adapter/decode-render
+connection and before any future composition or OBS-facing output:
+
+```text
+SwitcherTwoViewSchedulerDecodeRenderConnectionOutput
+  -> SwitcherTwoViewDisplayPolicyBoundary
+  -> per-view display decisions
+```
+
+Current implementation:
+
+- `SwitcherTwoViewDisplayPolicyBoundary` consumes the connection output from
+  scheduler -> adapter -> decode/render.
+- It receives caller-owned previous displayed frame state per side.
+- It produces explicit per-view decisions:
+  - `Update` when a side has a newly rendered frame.
+  - `HoldPrevious` when a side is skipped and a non-stale previous displayed
+    frame exists.
+  - `PreviousFrameStale` when a previous frame exists but exceeds the optional
+    `max_hold_duration_micros`.
+  - `NoDisplayPlaceholder` when a skipped side has no previous displayed frame.
+- Skip reasons remain visible inside the decision. Waiting and no-frame states
+  are not converted into fake frames.
+- `max_hold_duration_micros` is optional for the first slice. When omitted,
+  previous frames can be held indefinitely by this policy; a caller can set a
+  bound to force stale decisions.
+
+Responsibility split:
+
+- scheduler / adapter / decode-render remain responsible for selecting frames,
+  translating scheduler statuses, decoding, and rendering selected sides.
+- display policy owns only choosing update, hold, stale, or placeholder after
+  decode/render results are known.
+- previous displayed frame state remains caller-owned.
+- It does not compose frames, render windows, output to OBS, mutate queues,
+  perform late-drop cleanup, expand to 4 views, or change protocol /
+  H.264 decode-render behavior.
+
+No protocol wire format changed for this slice.

@@ -1862,6 +1862,195 @@ pub enum SwitcherTwoViewDecodeRenderResult {
     },
 }
 
+/// Previously displayed frame state owned by the future display policy caller.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SwitcherTwoViewDisplayedFrame {
+    pub side: SwitcherTwoViewSide,
+    pub selected: Option<SwitcherJitterBufferSelectedFrame>,
+    pub decoded: SwitcherDecodedFrame,
+    pub displayed_at: TimestampMicros,
+}
+
+/// Input for deciding what each 2-view display slot should show after
+/// decode/render has either rendered or skipped each side.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SwitcherTwoViewDisplayPolicyInput {
+    pub connection: SwitcherTwoViewSchedulerDecodeRenderConnectionOutput,
+    pub previous_left: Option<SwitcherTwoViewDisplayedFrame>,
+    pub previous_right: Option<SwitcherTwoViewDisplayedFrame>,
+    pub current_time: TimestampMicros,
+    pub max_hold_duration_micros: Option<u64>,
+}
+
+/// Explicit per-side display decision after decode/render.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SwitcherTwoViewDisplayDecision {
+    Update {
+        side: SwitcherTwoViewSide,
+        frame: SwitcherTwoViewDisplayedFrame,
+        rendered: SwitcherTwoViewRenderedSide,
+    },
+    HoldPrevious {
+        side: SwitcherTwoViewSide,
+        frame: SwitcherTwoViewDisplayedFrame,
+        skipped: SwitcherTwoViewSkippedSide,
+        hold_duration_micros: u64,
+    },
+    PreviousFrameStale {
+        side: SwitcherTwoViewSide,
+        frame: SwitcherTwoViewDisplayedFrame,
+        skipped: SwitcherTwoViewSkippedSide,
+        hold_duration_micros: u64,
+        max_hold_duration_micros: u64,
+    },
+    NoDisplayPlaceholder {
+        side: SwitcherTwoViewSide,
+        skipped: SwitcherTwoViewSkippedSide,
+    },
+}
+
+/// Output of applying display policy to both 2-view slots.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SwitcherTwoViewDisplayPolicyOutput {
+    pub shared_target_time: TimestampMicros,
+    pub left: SwitcherTwoViewDisplayDecision,
+    pub right: SwitcherTwoViewDisplayDecision,
+}
+
+enum SwitcherTwoViewDisplayPolicySideInput {
+    Rendered(SwitcherTwoViewRenderedSide),
+    Skipped(SwitcherTwoViewSkippedSide),
+}
+
+/// Minimal display policy boundary for 2-view decode/render results.
+///
+/// This boundary decides update / hold previous / stale / placeholder only. It
+/// does not render, compose, output to OBS, mutate queues, or create fallback
+/// frames.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct SwitcherTwoViewDisplayPolicyBoundary;
+
+impl SwitcherTwoViewDisplayPolicyBoundary {
+    pub fn decide(
+        &self,
+        input: SwitcherTwoViewDisplayPolicyInput,
+    ) -> SwitcherTwoViewDisplayPolicyOutput {
+        let (shared_target_time, left, right) =
+            split_decode_render_result_for_display_policy(input.connection.render);
+        SwitcherTwoViewDisplayPolicyOutput {
+            shared_target_time,
+            left: display_policy_decision_for_side(
+                SwitcherTwoViewSide::Left,
+                left,
+                input.previous_left,
+                input.current_time,
+                input.max_hold_duration_micros,
+            ),
+            right: display_policy_decision_for_side(
+                SwitcherTwoViewSide::Right,
+                right,
+                input.previous_right,
+                input.current_time,
+                input.max_hold_duration_micros,
+            ),
+        }
+    }
+}
+
+fn split_decode_render_result_for_display_policy(
+    result: SwitcherTwoViewDecodeRenderResult,
+) -> (
+    TimestampMicros,
+    SwitcherTwoViewDisplayPolicySideInput,
+    SwitcherTwoViewDisplayPolicySideInput,
+) {
+    match result {
+        SwitcherTwoViewDecodeRenderResult::BothRendered {
+            shared_target_time,
+            left,
+            right,
+        } => (
+            shared_target_time,
+            SwitcherTwoViewDisplayPolicySideInput::Rendered(left),
+            SwitcherTwoViewDisplayPolicySideInput::Rendered(right),
+        ),
+        SwitcherTwoViewDecodeRenderResult::LeftRenderedRightSkipped {
+            shared_target_time,
+            left,
+            right,
+        } => (
+            shared_target_time,
+            SwitcherTwoViewDisplayPolicySideInput::Rendered(left),
+            SwitcherTwoViewDisplayPolicySideInput::Skipped(right),
+        ),
+        SwitcherTwoViewDecodeRenderResult::RightRenderedLeftSkipped {
+            shared_target_time,
+            left,
+            right,
+        } => (
+            shared_target_time,
+            SwitcherTwoViewDisplayPolicySideInput::Skipped(left),
+            SwitcherTwoViewDisplayPolicySideInput::Rendered(right),
+        ),
+        SwitcherTwoViewDecodeRenderResult::BothSkipped {
+            shared_target_time,
+            left,
+            right,
+        } => (
+            shared_target_time,
+            SwitcherTwoViewDisplayPolicySideInput::Skipped(left),
+            SwitcherTwoViewDisplayPolicySideInput::Skipped(right),
+        ),
+    }
+}
+
+fn display_policy_decision_for_side(
+    side: SwitcherTwoViewSide,
+    input: SwitcherTwoViewDisplayPolicySideInput,
+    previous: Option<SwitcherTwoViewDisplayedFrame>,
+    current_time: TimestampMicros,
+    max_hold_duration_micros: Option<u64>,
+) -> SwitcherTwoViewDisplayDecision {
+    match input {
+        SwitcherTwoViewDisplayPolicySideInput::Rendered(rendered) => {
+            let frame = SwitcherTwoViewDisplayedFrame {
+                side,
+                selected: Some(rendered.selected.clone()),
+                decoded: rendered.decoded.clone(),
+                displayed_at: current_time,
+            };
+            SwitcherTwoViewDisplayDecision::Update {
+                side,
+                frame,
+                rendered,
+            }
+        }
+        SwitcherTwoViewDisplayPolicySideInput::Skipped(skipped) => {
+            let Some(frame) = previous else {
+                return SwitcherTwoViewDisplayDecision::NoDisplayPlaceholder { side, skipped };
+            };
+            let hold_duration_micros = current_time.0.saturating_sub(frame.displayed_at.0);
+            if let Some(max_hold_duration_micros) = max_hold_duration_micros {
+                if hold_duration_micros > max_hold_duration_micros {
+                    return SwitcherTwoViewDisplayDecision::PreviousFrameStale {
+                        side,
+                        frame,
+                        skipped,
+                        hold_duration_micros,
+                        max_hold_duration_micros,
+                    };
+                }
+            }
+            SwitcherTwoViewDisplayDecision::HoldPrevious {
+                side,
+                frame,
+                skipped,
+                hold_duration_micros,
+            }
+        }
+    }
+}
+
 enum SwitcherTwoViewSideDecodeRenderOutcome {
     Rendered(SwitcherTwoViewRenderedSide),
     Skipped(SwitcherTwoViewSkippedSide),
@@ -6590,6 +6779,302 @@ mod tests {
     }
 
     #[test]
+    fn two_view_display_policy_updates_both_newly_rendered_frames() {
+        let mut state = ServerVideoFrameQueueState::default();
+        store_frame_with_run_payload(
+            &mut state,
+            "client-left",
+            "run-left",
+            1,
+            TimestampMicros(2_110_000),
+            2,
+            1,
+            vec![0, 0, 1, 0x65, 0x11],
+        );
+        store_frame_with_run_payload(
+            &mut state,
+            "client-right",
+            "run-right",
+            2,
+            TimestampMicros(2_110_100),
+            2,
+            1,
+            vec![0, 0, 1, 0x65, 0x12],
+        );
+        let connection = render_scheduler_result_for_test(
+            two_view_scheduler_result(&mut state, TimestampMicros(1_000_002)),
+            &RecordingTwoViewDecode::default(),
+            &RecordingTwoViewRender::default(),
+        );
+
+        let output =
+            SwitcherTwoViewDisplayPolicyBoundary.decide(SwitcherTwoViewDisplayPolicyInput {
+                connection,
+                previous_left: None,
+                previous_right: None,
+                current_time: TimestampMicros(2_000_000),
+                max_hold_duration_micros: Some(500_000),
+            });
+
+        let SwitcherTwoViewDisplayDecision::Update {
+            side: left_side,
+            frame: left_frame,
+            rendered: left_rendered,
+        } = output.left
+        else {
+            panic!("left should update from newly rendered frame");
+        };
+        let SwitcherTwoViewDisplayDecision::Update {
+            side: right_side,
+            frame: right_frame,
+            rendered: right_rendered,
+        } = output.right
+        else {
+            panic!("right should update from newly rendered frame");
+        };
+        assert_eq!(left_side, SwitcherTwoViewSide::Left);
+        assert_eq!(right_side, SwitcherTwoViewSide::Right);
+        assert_eq!(left_frame.displayed_at, TimestampMicros(2_000_000));
+        assert_eq!(right_frame.displayed_at, TimestampMicros(2_000_000));
+        assert_eq!(left_rendered.selected.frame.frame_id, 1);
+        assert_eq!(right_rendered.selected.frame.frame_id, 2);
+    }
+
+    #[test]
+    fn two_view_display_policy_holds_previous_for_waiting_view() {
+        let mut state = ServerVideoFrameQueueState::default();
+        store_frame_with_run_payload(
+            &mut state,
+            "client-left",
+            "run-left",
+            1,
+            TimestampMicros(2_111_000),
+            2,
+            1,
+            vec![0, 0, 1, 0x65, 0x11],
+        );
+        store_frame_with_run_payload(
+            &mut state,
+            "client-right",
+            "run-right",
+            3,
+            TimestampMicros(2_111_100),
+            2,
+            1,
+            vec![0, 0, 1, 0x65, 0x13],
+        );
+        let connection = render_scheduler_result_for_test(
+            two_view_scheduler_result(&mut state, TimestampMicros(1_000_001)),
+            &RecordingTwoViewDecode::default(),
+            &RecordingTwoViewRender::default(),
+        );
+
+        let output =
+            SwitcherTwoViewDisplayPolicyBoundary.decide(SwitcherTwoViewDisplayPolicyInput {
+                connection,
+                previous_left: None,
+                previous_right: Some(previous_displayed_frame(
+                    SwitcherTwoViewSide::Right,
+                    TimestampMicros(1_900_000),
+                )),
+                current_time: TimestampMicros(2_000_000),
+                max_hold_duration_micros: Some(500_000),
+            });
+
+        assert!(matches!(
+            output.left,
+            SwitcherTwoViewDisplayDecision::Update { .. }
+        ));
+        let SwitcherTwoViewDisplayDecision::HoldPrevious {
+            side,
+            frame,
+            skipped,
+            hold_duration_micros,
+        } = output.right
+        else {
+            panic!("waiting right side should hold previous frame");
+        };
+        assert_eq!(side, SwitcherTwoViewSide::Right);
+        assert_eq!(frame.displayed_at, TimestampMicros(1_900_000));
+        assert_eq!(hold_duration_micros, 100_000);
+        assert!(matches!(
+            skipped,
+            SwitcherTwoViewSkippedSide::SelectionUnavailable {
+                selection: SwitcherJitterBufferSelectionResult::FrameTooEarly { .. },
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn two_view_display_policy_holds_previous_for_no_frame_view() {
+        let mut state = ServerVideoFrameQueueState::default();
+        store_frame_with_run_payload(
+            &mut state,
+            "client-left",
+            "run-left",
+            1,
+            TimestampMicros(2_112_000),
+            2,
+            1,
+            vec![0, 0, 1, 0x65, 0x11],
+        );
+        let connection = render_scheduler_result_for_test(
+            two_view_scheduler_result(&mut state, TimestampMicros(1_000_001)),
+            &RecordingTwoViewDecode::default(),
+            &RecordingTwoViewRender::default(),
+        );
+
+        let output =
+            SwitcherTwoViewDisplayPolicyBoundary.decide(SwitcherTwoViewDisplayPolicyInput {
+                connection,
+                previous_left: None,
+                previous_right: Some(previous_displayed_frame(
+                    SwitcherTwoViewSide::Right,
+                    TimestampMicros(1_950_000),
+                )),
+                current_time: TimestampMicros(2_000_000),
+                max_hold_duration_micros: Some(500_000),
+            });
+
+        assert!(matches!(
+            output.left,
+            SwitcherTwoViewDisplayDecision::Update { .. }
+        ));
+        let SwitcherTwoViewDisplayDecision::HoldPrevious {
+            side,
+            skipped,
+            hold_duration_micros,
+            ..
+        } = output.right
+        else {
+            panic!("no-frame right side should hold previous frame");
+        };
+        assert_eq!(side, SwitcherTwoViewSide::Right);
+        assert_eq!(hold_duration_micros, 50_000);
+        assert!(matches!(
+            skipped,
+            SwitcherTwoViewSkippedSide::SelectionUnavailable {
+                selection: SwitcherJitterBufferSelectionResult::NoFrame { .. },
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn two_view_display_policy_uses_placeholder_without_previous_frame() {
+        let mut state = ServerVideoFrameQueueState::default();
+        store_frame_with_run_payload(
+            &mut state,
+            "client-left",
+            "run-left",
+            3,
+            TimestampMicros(2_113_000),
+            2,
+            1,
+            vec![0, 0, 1, 0x65, 0x13],
+        );
+        let connection = render_scheduler_result_for_test(
+            two_view_scheduler_result(&mut state, TimestampMicros(1_000_001)),
+            &PanicDecode,
+            &PanicRender,
+        );
+
+        let output =
+            SwitcherTwoViewDisplayPolicyBoundary.decide(SwitcherTwoViewDisplayPolicyInput {
+                connection,
+                previous_left: None,
+                previous_right: None,
+                current_time: TimestampMicros(2_000_000),
+                max_hold_duration_micros: Some(500_000),
+            });
+
+        let SwitcherTwoViewDisplayDecision::NoDisplayPlaceholder {
+            side: left_side,
+            skipped: left_skipped,
+        } = output.left
+        else {
+            panic!("waiting left side without previous frame should be placeholder");
+        };
+        let SwitcherTwoViewDisplayDecision::NoDisplayPlaceholder {
+            side: right_side,
+            skipped: right_skipped,
+        } = output.right
+        else {
+            panic!("no-frame right side without previous frame should be placeholder");
+        };
+        assert_eq!(left_side, SwitcherTwoViewSide::Left);
+        assert_eq!(right_side, SwitcherTwoViewSide::Right);
+        assert!(matches!(
+            left_skipped,
+            SwitcherTwoViewSkippedSide::SelectionUnavailable {
+                selection: SwitcherJitterBufferSelectionResult::FrameTooEarly { .. },
+                ..
+            }
+        ));
+        assert!(matches!(
+            right_skipped,
+            SwitcherTwoViewSkippedSide::SelectionUnavailable {
+                selection: SwitcherJitterBufferSelectionResult::NoFrame { .. },
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn two_view_display_policy_marks_stale_previous_frame_past_max_hold() {
+        let mut state = ServerVideoFrameQueueState::default();
+        store_frame_with_run_payload(
+            &mut state,
+            "client-left",
+            "run-left",
+            1,
+            TimestampMicros(2_114_000),
+            2,
+            1,
+            vec![0, 0, 1, 0x65, 0x11],
+        );
+        let connection = render_scheduler_result_for_test(
+            two_view_scheduler_result(&mut state, TimestampMicros(1_000_001)),
+            &RecordingTwoViewDecode::default(),
+            &RecordingTwoViewRender::default(),
+        );
+
+        let output =
+            SwitcherTwoViewDisplayPolicyBoundary.decide(SwitcherTwoViewDisplayPolicyInput {
+                connection,
+                previous_left: None,
+                previous_right: Some(previous_displayed_frame(
+                    SwitcherTwoViewSide::Right,
+                    TimestampMicros(1_800_000),
+                )),
+                current_time: TimestampMicros(2_000_000),
+                max_hold_duration_micros: Some(100_000),
+            });
+
+        let SwitcherTwoViewDisplayDecision::PreviousFrameStale {
+            side,
+            skipped,
+            hold_duration_micros,
+            max_hold_duration_micros,
+            ..
+        } = output.right
+        else {
+            panic!("previous right frame should be stale past max hold duration");
+        };
+        assert_eq!(side, SwitcherTwoViewSide::Right);
+        assert_eq!(hold_duration_micros, 200_000);
+        assert_eq!(max_hold_duration_micros, 100_000);
+        assert!(matches!(
+            skipped,
+            SwitcherTwoViewSkippedSide::SelectionUnavailable {
+                selection: SwitcherJitterBufferSelectionResult::NoFrame { .. },
+                ..
+            }
+        ));
+    }
+
+    #[test]
     fn placeholder_display_handoff_preserves_metadata_and_payload_length() {
         let mut state = ServerVideoFrameQueueState::default();
         store_frame(&mut state, "client-1", 7, TimestampMicros(2_100_000));
@@ -8694,6 +9179,23 @@ mod tests {
                 decode,
                 render,
             )
+    }
+
+    fn previous_displayed_frame(
+        side: SwitcherTwoViewSide,
+        displayed_at: TimestampMicros,
+    ) -> SwitcherTwoViewDisplayedFrame {
+        SwitcherTwoViewDisplayedFrame {
+            side,
+            selected: None,
+            decoded: SwitcherDecodedFrame {
+                width: 2,
+                height: 1,
+                pixel_format: SwitcherDecodedFramePixelFormat::Bgra8,
+                pixels: vec![0; 8],
+            },
+            displayed_at,
+        }
     }
 
     #[derive(Default)]
