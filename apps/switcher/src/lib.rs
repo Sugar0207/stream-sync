@@ -200,6 +200,7 @@ impl SwitcherSingleClientQueueSourceBoundary {
 /// Selection behavior for the first single-client targetTime queue source.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum SwitcherSingleClientTargetTimeSourceMode {
+    PreviewOldestIfAtOrBefore,
     PreviewLatestIfAtOrBefore,
     ConsumeOldestAtOrBefore,
 }
@@ -263,6 +264,9 @@ impl SwitcherSingleClientTargetTimeSourceBoundary {
         input: SwitcherSingleClientTargetTimeSourceInput,
     ) -> SwitcherSingleClientTargetTimeSourceResult {
         match input.mode {
+            SwitcherSingleClientTargetTimeSourceMode::PreviewOldestIfAtOrBefore => {
+                self.preview_oldest_at_or_before(queue_state, input)
+            }
             SwitcherSingleClientTargetTimeSourceMode::PreviewLatestIfAtOrBefore => {
                 self.preview_latest_at_or_before(queue_state, input)
             }
@@ -287,6 +291,26 @@ impl SwitcherSingleClientTargetTimeSourceBoundary {
                 client_id,
                 run_id,
                 mode: SwitcherSingleClientQueueSourceMode::PreviewLatest,
+            },
+        );
+        result_for_candidate(source_result, target_timestamp, mode, false)
+    }
+
+    fn preview_oldest_at_or_before(
+        &self,
+        queue_state: &mut ServerVideoFrameQueueState,
+        input: SwitcherSingleClientTargetTimeSourceInput,
+    ) -> SwitcherSingleClientTargetTimeSourceResult {
+        let client_id = input.client_id;
+        let run_id = input.run_id;
+        let mode = input.mode;
+        let target_timestamp = input.target_timestamp;
+        let source_result = self.source.read(
+            queue_state,
+            SwitcherSingleClientQueueSourceInput {
+                client_id,
+                run_id,
+                mode: SwitcherSingleClientQueueSourceMode::PreviewOldest,
             },
         );
         result_for_candidate(source_result, target_timestamp, mode, false)
@@ -399,13 +423,20 @@ pub struct SwitcherTwoViewTargetTimeSourceViewConfig {
     pub run_id: RunId,
 }
 
+/// Scheduler-level behavior for two-view targetTime selection.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum SwitcherTwoViewTargetTimeSourceSchedulerMode {
+    PreviewLatestIfAtOrBefore,
+    ConsumeOldestAtOrBeforeAllSelected,
+}
+
 /// Input for selecting two client/run views against one shared target timestamp.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SwitcherTwoViewTargetTimeSourceSchedulerInput {
     pub left: SwitcherTwoViewTargetTimeSourceViewConfig,
     pub right: SwitcherTwoViewTargetTimeSourceViewConfig,
     pub target_timestamp: TimestampMicros,
-    pub mode: SwitcherSingleClientTargetTimeSourceMode,
+    pub mode: SwitcherTwoViewTargetTimeSourceSchedulerMode,
 }
 
 /// Aggregate scheduler status for the two per-view source results.
@@ -421,7 +452,7 @@ pub enum SwitcherTwoViewTargetTimeSourceSchedulerStatus {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SwitcherTwoViewTargetTimeSourceSchedulerResult {
     pub target_timestamp: TimestampMicros,
-    pub mode: SwitcherSingleClientTargetTimeSourceMode,
+    pub mode: SwitcherTwoViewTargetTimeSourceSchedulerMode,
     pub left: SwitcherSingleClientTargetTimeSourceResult,
     pub right: SwitcherSingleClientTargetTimeSourceResult,
     pub status: SwitcherTwoViewTargetTimeSourceSchedulerStatus,
@@ -431,9 +462,10 @@ pub struct SwitcherTwoViewTargetTimeSourceSchedulerResult {
 ///
 /// This boundary calls `SwitcherSingleClientTargetTimeSourceBoundary` once for
 /// each configured view with the same target timestamp and explicit source mode.
-/// Preview modes remain non-mutating; consume behavior occurs only when the
-/// supplied single-client mode consumes. It does not decode, render, perform
-/// 4-view orchestration, mutate late frames, or integrate OBS.
+/// Preview mode remains non-mutating. Consume mode is scheduler-level
+/// all-or-nothing: both oldest candidates are previewed first, and no queue is
+/// mutated unless both views have eligible frames. It does not decode, render,
+/// perform 4-view orchestration, mutate late frames, or integrate OBS.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
 pub struct SwitcherTwoViewTargetTimeSourceSchedulerBoundary {
     single_client: SwitcherSingleClientTargetTimeSourceBoundary,
@@ -445,6 +477,56 @@ impl SwitcherTwoViewTargetTimeSourceSchedulerBoundary {
         queue_state: &mut ServerVideoFrameQueueState,
         input: SwitcherTwoViewTargetTimeSourceSchedulerInput,
     ) -> SwitcherTwoViewTargetTimeSourceSchedulerResult {
+        match input.mode {
+            SwitcherTwoViewTargetTimeSourceSchedulerMode::PreviewLatestIfAtOrBefore => {
+                self.preview_latest_pair(queue_state, input)
+            }
+            SwitcherTwoViewTargetTimeSourceSchedulerMode::ConsumeOldestAtOrBeforeAllSelected => {
+                self.consume_oldest_pair_all_selected(queue_state, input)
+            }
+        }
+    }
+
+    fn preview_latest_pair(
+        &self,
+        queue_state: &mut ServerVideoFrameQueueState,
+        input: SwitcherTwoViewTargetTimeSourceSchedulerInput,
+    ) -> SwitcherTwoViewTargetTimeSourceSchedulerResult {
+        self.select_pair_with_single_client_mode(
+            queue_state,
+            input,
+            SwitcherSingleClientTargetTimeSourceMode::PreviewLatestIfAtOrBefore,
+        )
+    }
+
+    fn consume_oldest_pair_all_selected(
+        &self,
+        queue_state: &mut ServerVideoFrameQueueState,
+        input: SwitcherTwoViewTargetTimeSourceSchedulerInput,
+    ) -> SwitcherTwoViewTargetTimeSourceSchedulerResult {
+        let preview = self.select_pair_with_single_client_mode(
+            queue_state,
+            input.clone(),
+            SwitcherSingleClientTargetTimeSourceMode::PreviewOldestIfAtOrBefore,
+        );
+
+        if preview.status != SwitcherTwoViewTargetTimeSourceSchedulerStatus::AllSelected {
+            return preview;
+        }
+
+        self.select_pair_with_single_client_mode(
+            queue_state,
+            input,
+            SwitcherSingleClientTargetTimeSourceMode::ConsumeOldestAtOrBefore,
+        )
+    }
+
+    fn select_pair_with_single_client_mode(
+        &self,
+        queue_state: &mut ServerVideoFrameQueueState,
+        input: SwitcherTwoViewTargetTimeSourceSchedulerInput,
+        single_client_mode: SwitcherSingleClientTargetTimeSourceMode,
+    ) -> SwitcherTwoViewTargetTimeSourceSchedulerResult {
         let target_timestamp = input.target_timestamp;
         let mode = input.mode;
         let left = self.single_client.select(
@@ -453,7 +535,7 @@ impl SwitcherTwoViewTargetTimeSourceSchedulerBoundary {
                 client_id: input.left.client_id,
                 run_id: input.left.run_id,
                 target_timestamp,
-                mode,
+                mode: single_client_mode,
             },
         );
         let right = self.single_client.select(
@@ -462,7 +544,7 @@ impl SwitcherTwoViewTargetTimeSourceSchedulerBoundary {
                 client_id: input.right.client_id,
                 run_id: input.right.run_id,
                 target_timestamp,
-                mode,
+                mode: single_client_mode,
             },
         );
         let status = two_view_target_time_source_scheduler_status(&left, &right);
@@ -4971,7 +5053,7 @@ mod tests {
                     run_id: RunId("run-right".to_string()),
                 },
                 target_timestamp: TimestampMicros(1_000_002),
-                mode: SwitcherSingleClientTargetTimeSourceMode::PreviewLatestIfAtOrBefore,
+                mode: SwitcherTwoViewTargetTimeSourceSchedulerMode::PreviewLatestIfAtOrBefore,
             },
         );
 
@@ -5024,7 +5106,7 @@ mod tests {
                     run_id: RunId("run-right".to_string()),
                 },
                 target_timestamp: TimestampMicros(1_000_001),
-                mode: SwitcherSingleClientTargetTimeSourceMode::PreviewLatestIfAtOrBefore,
+                mode: SwitcherTwoViewTargetTimeSourceSchedulerMode::PreviewLatestIfAtOrBefore,
             },
         );
 
@@ -5073,7 +5155,7 @@ mod tests {
                     run_id: RunId("run-right".to_string()),
                 },
                 target_timestamp: TimestampMicros(1_000_001),
-                mode: SwitcherSingleClientTargetTimeSourceMode::PreviewLatestIfAtOrBefore,
+                mode: SwitcherTwoViewTargetTimeSourceSchedulerMode::PreviewLatestIfAtOrBefore,
             },
         );
 
@@ -5138,7 +5220,7 @@ mod tests {
                     run_id: RunId("run-right".to_string()),
                 },
                 target_timestamp: TimestampMicros(1_000_003),
-                mode: SwitcherSingleClientTargetTimeSourceMode::PreviewLatestIfAtOrBefore,
+                mode: SwitcherTwoViewTargetTimeSourceSchedulerMode::PreviewLatestIfAtOrBefore,
             },
         );
 
@@ -5161,7 +5243,7 @@ mod tests {
     }
 
     #[test]
-    fn two_view_target_time_source_scheduler_consume_consumes_only_eligible_frames() {
+    fn two_view_target_time_source_scheduler_consume_waits_without_partial_mutation() {
         let mut state = ServerVideoFrameQueueState::default();
         let left_client_id = ClientId("client-left".to_string());
         let right_client_id = ClientId("client-right".to_string());
@@ -5192,7 +5274,7 @@ mod tests {
                     run_id: RunId("run-right".to_string()),
                 },
                 target_timestamp: TimestampMicros(1_000_001),
-                mode: SwitcherSingleClientTargetTimeSourceMode::ConsumeOldestAtOrBefore,
+                mode: SwitcherTwoViewTargetTimeSourceSchedulerMode::ConsumeOldestAtOrBeforeAllSelected,
             },
         );
 
@@ -5201,23 +5283,23 @@ mod tests {
             SwitcherTwoViewTargetTimeSourceSchedulerStatus::PartialSelected
         );
         let SwitcherSingleClientTargetTimeSourceResult::Selected(left) = result.left else {
-            panic!("left eligible frame should be consumed");
+            panic!("left eligible frame should be previewed");
         };
         assert_eq!(left.frame.frame_id, 1);
-        assert!(left.consumed);
+        assert!(!left.consumed);
         assert_eq!(
             result.right,
             SwitcherSingleClientTargetTimeSourceResult::WaitingForFrameAtOrBeforeTarget {
                 client_id: right_client_id.clone(),
                 run_id: RunId("run-right".to_string()),
                 target_timestamp: TimestampMicros(1_000_001),
-                mode: SwitcherSingleClientTargetTimeSourceMode::ConsumeOldestAtOrBefore,
+                mode: SwitcherSingleClientTargetTimeSourceMode::PreviewOldestIfAtOrBefore,
                 candidate_frame_id: 3,
                 candidate_capture_timestamp: TimestampMicros(1_000_003),
                 client_queue_len: 1,
             }
         );
-        assert_eq!(state.client_queue_len(&left_client_id), 0);
+        assert_eq!(state.client_queue_len(&left_client_id), 1);
         assert_eq!(state.client_queue_len(&right_client_id), 1);
     }
 
@@ -5237,7 +5319,7 @@ mod tests {
                     run_id: RunId("run-right".to_string()),
                 },
                 target_timestamp: TimestampMicros(1_000_001),
-                mode: SwitcherSingleClientTargetTimeSourceMode::PreviewLatestIfAtOrBefore,
+                mode: SwitcherTwoViewTargetTimeSourceSchedulerMode::PreviewLatestIfAtOrBefore,
             },
         );
 
@@ -5253,6 +5335,236 @@ mod tests {
             result.right,
             SwitcherSingleClientTargetTimeSourceResult::NoFrameAvailable { .. }
         ));
+    }
+
+    #[test]
+    fn two_view_target_time_source_scheduler_live_like_preview_progression_does_not_mutate() {
+        let mut state = ServerVideoFrameQueueState::default();
+        let left_client_id = ClientId("client-left".to_string());
+        let right_client_id = ClientId("client-right".to_string());
+        store_frame_for_run(
+            &mut state,
+            "client-left",
+            "run-left",
+            1,
+            TimestampMicros(2_096_000),
+        );
+        store_frame_for_run(
+            &mut state,
+            "client-left",
+            "run-left",
+            2,
+            TimestampMicros(2_096_100),
+        );
+        store_frame_for_run(
+            &mut state,
+            "client-right",
+            "run-right",
+            1,
+            TimestampMicros(2_096_200),
+        );
+        store_frame_for_run(
+            &mut state,
+            "client-right",
+            "run-right",
+            3,
+            TimestampMicros(2_096_300),
+        );
+        let boundary = SwitcherTwoViewTargetTimeSourceSchedulerBoundary::default();
+        let left = SwitcherTwoViewTargetTimeSourceViewConfig {
+            client_id: left_client_id.clone(),
+            run_id: RunId("run-left".to_string()),
+        };
+        let right = SwitcherTwoViewTargetTimeSourceViewConfig {
+            client_id: right_client_id.clone(),
+            run_id: RunId("run-right".to_string()),
+        };
+
+        let early = boundary.select_pair(
+            &mut state,
+            SwitcherTwoViewTargetTimeSourceSchedulerInput {
+                left: left.clone(),
+                right: right.clone(),
+                target_timestamp: TimestampMicros(1_000_001),
+                mode: SwitcherTwoViewTargetTimeSourceSchedulerMode::PreviewLatestIfAtOrBefore,
+            },
+        );
+        assert_eq!(
+            early.status,
+            SwitcherTwoViewTargetTimeSourceSchedulerStatus::Waiting
+        );
+
+        let middle = boundary.select_pair(
+            &mut state,
+            SwitcherTwoViewTargetTimeSourceSchedulerInput {
+                left: left.clone(),
+                right: right.clone(),
+                target_timestamp: TimestampMicros(1_000_002),
+                mode: SwitcherTwoViewTargetTimeSourceSchedulerMode::PreviewLatestIfAtOrBefore,
+            },
+        );
+        assert_eq!(
+            middle.status,
+            SwitcherTwoViewTargetTimeSourceSchedulerStatus::PartialSelected
+        );
+        assert!(matches!(
+            middle.left,
+            SwitcherSingleClientTargetTimeSourceResult::Selected(_)
+        ));
+        assert!(matches!(
+            middle.right,
+            SwitcherSingleClientTargetTimeSourceResult::WaitingForFrameAtOrBeforeTarget { .. }
+        ));
+
+        let ready = boundary.select_pair(
+            &mut state,
+            SwitcherTwoViewTargetTimeSourceSchedulerInput {
+                left,
+                right,
+                target_timestamp: TimestampMicros(1_000_003),
+                mode: SwitcherTwoViewTargetTimeSourceSchedulerMode::PreviewLatestIfAtOrBefore,
+            },
+        );
+        assert_eq!(
+            ready.status,
+            SwitcherTwoViewTargetTimeSourceSchedulerStatus::AllSelected
+        );
+        let SwitcherSingleClientTargetTimeSourceResult::Selected(left_ready) = ready.left else {
+            panic!("left latest frame should be selected at the final target");
+        };
+        let SwitcherSingleClientTargetTimeSourceResult::Selected(right_ready) = ready.right else {
+            panic!("right latest frame should be selected at the final target");
+        };
+        assert_eq!(left_ready.frame.frame_id, 2);
+        assert_eq!(right_ready.frame.frame_id, 3);
+        assert!(!left_ready.consumed);
+        assert!(!right_ready.consumed);
+        assert_eq!(state.client_queue_len(&left_client_id), 2);
+        assert_eq!(state.client_queue_len(&right_client_id), 2);
+    }
+
+    #[test]
+    fn two_view_target_time_source_scheduler_live_like_consume_is_all_or_nothing() {
+        let mut state = ServerVideoFrameQueueState::default();
+        let left_client_id = ClientId("client-left".to_string());
+        let right_client_id = ClientId("client-right".to_string());
+        store_frame_for_run(
+            &mut state,
+            "client-left",
+            "run-left",
+            1,
+            TimestampMicros(2_097_000),
+        );
+        store_frame_for_run(
+            &mut state,
+            "client-left",
+            "run-left",
+            2,
+            TimestampMicros(2_097_100),
+        );
+        store_frame_for_run(
+            &mut state,
+            "client-right",
+            "run-right",
+            1,
+            TimestampMicros(2_097_200),
+        );
+        store_frame_for_run(
+            &mut state,
+            "client-right",
+            "run-right",
+            3,
+            TimestampMicros(2_097_300),
+        );
+        let boundary = SwitcherTwoViewTargetTimeSourceSchedulerBoundary::default();
+        let left = SwitcherTwoViewTargetTimeSourceViewConfig {
+            client_id: left_client_id.clone(),
+            run_id: RunId("run-left".to_string()),
+        };
+        let right = SwitcherTwoViewTargetTimeSourceViewConfig {
+            client_id: right_client_id.clone(),
+            run_id: RunId("run-right".to_string()),
+        };
+
+        let first = boundary.select_pair(
+            &mut state,
+            SwitcherTwoViewTargetTimeSourceSchedulerInput {
+                left: left.clone(),
+                right: right.clone(),
+                target_timestamp: TimestampMicros(1_000_001),
+                mode: SwitcherTwoViewTargetTimeSourceSchedulerMode::ConsumeOldestAtOrBeforeAllSelected,
+            },
+        );
+        assert_eq!(
+            first.status,
+            SwitcherTwoViewTargetTimeSourceSchedulerStatus::AllSelected
+        );
+        let SwitcherSingleClientTargetTimeSourceResult::Selected(first_left) = first.left else {
+            panic!("left first frame should be consumed");
+        };
+        let SwitcherSingleClientTargetTimeSourceResult::Selected(first_right) = first.right else {
+            panic!("right first frame should be consumed");
+        };
+        assert_eq!(first_left.frame.frame_id, 1);
+        assert_eq!(first_right.frame.frame_id, 1);
+        assert!(first_left.consumed);
+        assert!(first_right.consumed);
+        assert_eq!(state.client_queue_len(&left_client_id), 1);
+        assert_eq!(state.client_queue_len(&right_client_id), 1);
+
+        let waiting = boundary.select_pair(
+            &mut state,
+            SwitcherTwoViewTargetTimeSourceSchedulerInput {
+                left: left.clone(),
+                right: right.clone(),
+                target_timestamp: TimestampMicros(1_000_002),
+                mode: SwitcherTwoViewTargetTimeSourceSchedulerMode::ConsumeOldestAtOrBeforeAllSelected,
+            },
+        );
+        assert_eq!(
+            waiting.status,
+            SwitcherTwoViewTargetTimeSourceSchedulerStatus::PartialSelected
+        );
+        let SwitcherSingleClientTargetTimeSourceResult::Selected(waiting_left) = waiting.left
+        else {
+            panic!("left second frame should be preview-selected while right waits");
+        };
+        assert_eq!(waiting_left.frame.frame_id, 2);
+        assert!(!waiting_left.consumed);
+        assert!(matches!(
+            waiting.right,
+            SwitcherSingleClientTargetTimeSourceResult::WaitingForFrameAtOrBeforeTarget { .. }
+        ));
+        assert_eq!(state.client_queue_len(&left_client_id), 1);
+        assert_eq!(state.client_queue_len(&right_client_id), 1);
+
+        let final_ready = boundary.select_pair(
+            &mut state,
+            SwitcherTwoViewTargetTimeSourceSchedulerInput {
+                left,
+                right,
+                target_timestamp: TimestampMicros(1_000_003),
+                mode: SwitcherTwoViewTargetTimeSourceSchedulerMode::ConsumeOldestAtOrBeforeAllSelected,
+            },
+        );
+        assert_eq!(
+            final_ready.status,
+            SwitcherTwoViewTargetTimeSourceSchedulerStatus::AllSelected
+        );
+        let SwitcherSingleClientTargetTimeSourceResult::Selected(final_left) = final_ready.left
+        else {
+            panic!("left second frame should be consumed once both views are ready");
+        };
+        let SwitcherSingleClientTargetTimeSourceResult::Selected(final_right) = final_ready.right
+        else {
+            panic!("right future frame should be consumed once the target reaches it");
+        };
+        assert_eq!(final_left.frame.frame_id, 2);
+        assert_eq!(final_right.frame.frame_id, 3);
+        assert!(final_left.consumed);
+        assert!(final_right.consumed);
+        assert_eq!(state.client_queue_len(&left_client_id), 0);
+        assert_eq!(state.client_queue_len(&right_client_id), 0);
     }
 
     #[test]

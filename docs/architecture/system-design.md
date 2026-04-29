@@ -8084,6 +8084,9 @@ Current implementation:
 - Reads are scoped by `client_id + run_id`.
 - The caller supplies an explicit `target_timestamp`.
 - Selection behavior is explicit:
+  - `PreviewOldestIfAtOrBefore` inspects the oldest queued frame for that
+    client/run and selects it only when its capture timestamp is at or before
+    the target timestamp. It does not mutate the queue.
   - `PreviewLatestIfAtOrBefore` inspects the latest queued frame for that
     client/run and selects it only when its capture timestamp is at or before
     the target timestamp. It does not mutate the queue.
@@ -8126,14 +8129,19 @@ Current implementation:
 - The input contains exactly two view configs, each scoped by
   `client_id + run_id`.
 - The caller supplies one shared `target_timestamp`.
-- The caller also supplies one explicit
-  `SwitcherSingleClientTargetTimeSourceMode` for both views:
-  - preview mode remains non-mutating for both views.
-  - consume mode can dequeue only through the existing single-client
-    `ConsumeOldestAtOrBefore` behavior, and only for eligible frames.
+- The caller also supplies one explicit scheduler mode:
+  - `PreviewLatestIfAtOrBefore` runs non-mutating latest preview for both
+    views.
+  - `ConsumeOldestAtOrBeforeAllSelected` uses all-or-nothing synchronized
+    consumption. It first previews the oldest candidate for both views without
+    mutation. It only dequeues when both views are selected for the shared
+    target timestamp.
 - Each side returns the original single-client targetTime source result:
   selected frame, no frame available, or waiting for a frame at or before the
   target timestamp.
+- If consume mode finds only one eligible view while the other view is waiting
+  or empty, the scheduler returns the preview results and does not mutate either
+  queue.
 - The scheduler also returns an aggregate status:
   - `AllSelected`
   - `PartialSelected`
@@ -8145,7 +8153,8 @@ Responsibility split:
 - single-client targetTime source remains responsible for per-client/run queue
   reads, timestamp eligibility, and explicit preview/consume mutation behavior.
 - the 2-view scheduler owns only applying one shared target timestamp to two
-  configured views and classifying the pair result.
+  configured views, classifying the pair result, and enforcing all-or-nothing
+  synchronized consumption for scheduler-level consume mode.
 - It does not implement 4-view orchestration, OBS output, H.264 decode/render,
   late-drop mutation, socket transport, or protocol changes.
 

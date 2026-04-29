@@ -5,6 +5,56 @@
 - Codex
 
 ### Work
+- Added live-like queued-frame validation for the queue-backed 2-view targetTime source scheduler.
+- Added scheduler-level mode `SwitcherTwoViewTargetTimeSourceSchedulerMode`.
+- Chose all-or-nothing synchronized consumption for two-view consume mode through `ConsumeOldestAtOrBeforeAllSelected`.
+- Added single-client `PreviewOldestIfAtOrBefore` so the scheduler can preview both oldest candidates before mutating queues.
+- Updated consume behavior so no queue is mutated unless both views are selected for the shared target timestamp.
+- Added tests for progressing preview target timestamps and progressing all-or-nothing consume target timestamps.
+- Updated existing consume scheduler test to verify one eligible side plus one waiting side does not partially consume.
+- Updated architecture and TODO docs with the consume policy decision and next adapter-planning task.
+
+### Changed Files
+- `apps/switcher/src/lib.rs`
+- `docs/architecture/system-design.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### Decisions
+- Selected Option B for two-view consume mode: all-or-nothing synchronized consumption.
+- Kept preview mode non-mutating.
+- Kept this slice in-process and test-only; no UDP live receive connection was added.
+- Did not add 4-view orchestration, OBS output, H.264 decode/render changes, late-drop mutation, or protocol wire-format changes.
+
+### Unresolved
+- Adapter from queue-backed scheduler per-view results to the existing 2-view decode/render path.
+- production H.264 encoder configuration / error logging policy
+- manual two-client bounded real encoded run into the live two-view switcher
+
+### Next
+- Plan the smallest adapter from queue-backed scheduler results into the existing 2-view decode/render path without late-drop mutation.
+
+### TODO Update
+- Marked queue-backed 2-view targetTime source scheduler live-like validation complete.
+- Updated next items toward adapter planning for the existing 2-view decode/render path.
+
+### Validation
+- `cargo fmt`
+- `cargo fmt --check`
+- `cargo test -p stream-sync-switcher two_view -- --test-threads=1`
+- `cargo test -p stream-sync-switcher target_time -- --test-threads=1`
+- `cargo test -p stream-sync-switcher single_client_queue_source -- --test-threads=1`
+- `cargo test -p stream-sync-server video_frame_queue -- --test-threads=1`
+- `cargo check --workspace`
+- `git diff --check` (passed with existing LF-to-CRLF conversion warnings)
+
+---
+
+## 2026-04-29
+### Type
+- Codex
+
+### Work
 - Added the minimal queue-backed 2-view targetTime source scheduler boundary.
 - Added `SwitcherTwoViewTargetTimeSourceSchedulerBoundary`, which calls `SwitcherSingleClientTargetTimeSourceBoundary` once per configured view.
 - Kept the scheduler scoped to two explicit `client_id + run_id` view configs and one shared `target_timestamp`.
