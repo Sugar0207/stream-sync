@@ -1,5 +1,112 @@
 <!-- stream-sync/docs/operations/session-log.md -->
 
+## 2026-04-30
+### Type
+- Codex
+
+### Work
+- Inspected the existing manual client/server/switcher runtime hooks for the next 2-client validation step.
+- Confirmed the current clean manual command is `--live-two-view-switcher-once` plus two bounded authenticated real encoded client senders.
+- Confirmed that current manual runtime validates:
+  - two clients authenticating against the switcher-owned manual runtime
+  - accepted UDP video frames entering switcher-owned caller-local queues
+  - shared targetTime selection
+  - H.264 decode
+  - 2-view composition
+  - composed canvas render
+- Confirmed the current manual runtime does not yet route live traffic through the newer queue-backed scheduler decode/render adapter -> display policy -> display-composition adapter -> display-composition render connection chain.
+- Updated the manual real encoded video checklist with the smallest 2-client manual validation path and pass/fail criteria.
+- Documented the smallest future diagnostic command shape if the display-policy chain needs manual live validation before 4-view expansion.
+
+### Changed Files
+- `docs/operations/manual-real-encoded-video-poc.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### Decisions
+- Kept this as a planning/docs slice.
+- Did not add a new diagnostic command because the existing command already covers the next two-client manual queue/source/selection/decode/composition/render validation.
+- Deferred a new display-policy-chain manual diagnostic command until after the documented 2-client manual run records a result.
+- Did not update architecture because no new boundary was introduced.
+- Did not implement OBS output, 4-view orchestration, late-drop mutation, protocol wire-format changes, or H.264 decode/render behavior changes.
+
+### Unresolved
+- Run and record the 2-client manual validation.
+- Decide whether to add a minimal display-policy-chain manual diagnostic command after the manual run.
+- production H.264 encoder configuration / error logging policy
+- 4-view expansion planning
+
+### Next
+- Run `--live-two-view-switcher-once` with two bounded real encoded clients and record accepted frame / targetTime selection / composed render counters.
+
+### TODO Update
+- Marked the display composition render connection as completed in the current focus.
+- Set the next task to 2-client manual validation and recording.
+
+### Validation
+- `cargo fmt` passed.
+- `cargo fmt --check` passed.
+- `cargo test -p stream-sync-switcher two_view -- --test-threads=1` passed: 79 passed, 0 failed.
+- `cargo test -p stream-sync-switcher target_time -- --test-threads=1` passed: 22 passed, 0 failed.
+- `cargo test -p stream-sync-switcher single_client_queue_source -- --test-threads=1` passed: 3 passed, 0 failed.
+- `cargo test -p stream-sync-server video_frame_queue -- --test-threads=1` passed: 12 passed, 0 failed.
+- `cargo check --workspace` passed.
+- `git diff --check` passed with line-ending warnings for changed files.
+
+## 2026-04-29
+### Type
+- Codex
+
+### Work
+- Added the minimal display-composition adapter -> composed canvas render connection.
+- Added `SwitcherTwoViewDisplayCompositionRenderConnectionBoundary`.
+- Added connection input/output types that keep adapter output, composition result, and render connection result visible together.
+- Reused `SwitcherTwoViewCompositionBoundary` and `SwitcherTwoViewComposedCanvasRenderBoundary`.
+- Rendered only when composition produced a real composed frame.
+- Kept both-placeholder output explicit as `NoRenderableCanvas` without calling the render runtime.
+- Kept invalid composition explicit as `CompositionInvalid`.
+- Added focused tests for:
+  - both updated sides rendering through the composed canvas path
+  - updated + held previous sides rendering with source distinction preserved
+  - stale placeholder remaining explicit without fake decoded input
+  - no-display placeholders remaining explicit without render runtime calls
+  - mixed renderable + placeholder preserving render result and placeholder detail
+
+### Changed Files
+- `apps/switcher/src/lib.rs`
+- `docs/architecture/system-design.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### Decisions
+- Kept the connection in-process and testable.
+- Reused the existing composition and composed-canvas render boundaries.
+- Did not create fake decoded frames for stale or no-display placeholders.
+- Did not implement OBS output, 4-view orchestration, late-drop mutation, protocol wire-format changes, or H.264 decode/render behavior changes.
+
+### Unresolved
+- 4-view expansion planning.
+- 2-client manual validation with bounded real encoded senders into live two-view switcher.
+- production H.264 encoder configuration / error logging policy
+
+### Next
+- Plan 4-view expansion or run the next 2-client manual validation now that the 2-view display/composition/render path is validated.
+
+### TODO Update
+- Marked display policy -> composition adapter as completed and added the composed canvas render connection validation as completed.
+- Updated the next task toward 4-view expansion planning or 2-client manual validation.
+
+### Validation
+- `cargo fmt`
+- `cargo fmt --check`
+- `cargo test -p stream-sync-switcher two_view -- --test-threads=1`
+- `cargo test -p stream-sync-switcher target_time -- --test-threads=1`
+- `cargo test -p stream-sync-switcher single_client_queue_source -- --test-threads=1`
+  - first run timed out after compilation; rerun with longer timeout passed
+- `cargo test -p stream-sync-server video_frame_queue -- --test-threads=1`
+- `cargo check --workspace`
+- `git diff --check` (passed with existing LF-to-CRLF conversion warnings)
+
 ## 2026-04-29
 ### Type
 - Codex

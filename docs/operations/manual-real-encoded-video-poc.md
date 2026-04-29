@@ -299,6 +299,64 @@ consumption.
 
 Use this after one-client server queue E2E passes.
 
+This is the smallest current 2-client manual validation path before 4-view
+expansion:
+
+```text
+client 1 bounded real capture/encode/send
+client 2 bounded real capture/encode/send
+  -> live two-view switcher auth setup
+  -> UDP source adapter
+  -> server-style accepted frame queue storage
+  -> shared targetTime selection
+  -> H.264 decode
+  -> 2-view composition
+  -> composed canvas render
+```
+
+Current scope:
+
+- proves two clients can authenticate against the switcher-owned manual runtime
+- proves accepted client frames can enter switcher-owned caller-local queues
+- proves the live two-view scheduler can select against one shared target time
+- proves at least partial or full composed-canvas rendering can happen from
+  queued real encoded frames
+
+Current limitation:
+
+- the existing `--live-two-view-switcher-once` runtime still uses the older
+  live path: selection -> decode -> composition -> composed-canvas render.
+- it does not yet route live manual traffic through the newer queue-backed
+  scheduler decode/render adapter -> display policy -> display-composition
+  adapter -> display-composition render connection chain.
+- stale / held-previous display behavior remains covered by focused in-process
+  tests, not by this manual two-client command.
+
+The smallest next diagnostic command, if code is added later, should reuse the
+same auth and UDP source setup but replace only the per-tick render pipeline
+after queue storage:
+
+```text
+queue state
+  -> SwitcherTwoViewTargetTimeSourceSchedulerBoundary
+  -> SwitcherTwoViewSchedulerDecodeRenderConnectionBoundary
+  -> SwitcherTwoViewDisplayPolicyBoundary
+  -> SwitcherTwoViewDisplayCompositionAdapterBoundary
+  -> SwitcherTwoViewDisplayCompositionRenderConnectionBoundary
+```
+
+That future diagnostic command should print, per side:
+
+- scheduler status: selected / waiting / no-frame
+- display decision: update / hold previous / stale placeholder / no-display
+- composition instruction: updated / held previous / stale placeholder /
+  no-display placeholder
+- composition result: both / left-only / right-only / empty / invalid
+- render result: rendered / deferred / backend unavailable / failed
+
+Do not expand this manual path to 4-view or OBS until the 2-client path above
+has a recorded pass.
+
 ### Terminal 1: Live Two-View Switcher Runtime
 
 ```powershell
@@ -366,6 +424,7 @@ Two-client live switcher pass:
 - switcher reports two accepted auth registrations
 - switcher reports `accepted_frames >= 2` across both clients
 - switcher reports queued frames for both configured client ids
+- switcher reports `ticks_processed >= 1`
 - switcher reports at least one of:
   - `rendered_both >= 1`
   - `rendered_partial >= 1` with accepted/queued frames present
@@ -377,6 +436,8 @@ Partial pass:
 - switcher queues frames
 - switcher reaches `rendered_partial >= 1`
 - one side may be missing because of timing/no-frame behavior
+- this is enough to prove the queue/source/decode/composition/render path, but
+  not enough to claim tight two-client sync
 
 Fail:
 

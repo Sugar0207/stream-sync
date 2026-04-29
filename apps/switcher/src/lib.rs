@@ -1960,6 +1960,39 @@ pub struct SwitcherTwoViewDisplayCompositionAdapterOutput {
     pub composition_input: SwitcherTwoViewCompositionInput,
 }
 
+/// Input for connecting display-composition adapter output to the existing
+/// composed-canvas render path.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SwitcherTwoViewDisplayCompositionRenderConnectionInput {
+    pub adapter_output: SwitcherTwoViewDisplayCompositionAdapterOutput,
+    pub window_title: String,
+    pub render_hold_millis: u64,
+}
+
+/// Result of attempting to render after display-composition adaptation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SwitcherTwoViewDisplayCompositionRenderConnectionRenderResult {
+    RenderedCanvas {
+        render: SwitcherTwoViewComposedCanvasRenderResult,
+    },
+    NoRenderableCanvas {
+        left_reason: SwitcherTwoViewManualDecodeRenderStatus,
+        right_reason: SwitcherTwoViewManualDecodeRenderStatus,
+    },
+    CompositionInvalid {
+        reason: SwitcherTwoViewCompositionInvalidReason,
+    },
+}
+
+/// Output from the display-composition adapter -> composition -> render
+/// connection.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SwitcherTwoViewDisplayCompositionRenderConnectionOutput {
+    pub adapter: SwitcherTwoViewDisplayCompositionAdapterOutput,
+    pub composition: SwitcherTwoViewCompositionResult,
+    pub render: SwitcherTwoViewDisplayCompositionRenderConnectionRenderResult,
+}
+
 enum SwitcherTwoViewDisplayPolicySideInput {
     Rendered(SwitcherTwoViewRenderedSide),
     Skipped(SwitcherTwoViewSkippedSide),
@@ -2200,6 +2233,64 @@ fn display_composition_side_input(
             side: *side,
             reason: two_view_skipped_status(skipped),
         },
+    }
+}
+
+/// Minimal in-process connection from display-composition adapter output to the
+/// existing 2-view composition and composed-canvas render boundaries.
+///
+/// It renders only composed frames produced from real decoded update/held
+/// inputs. Stale and no-display placeholder instructions remain skipped sides
+/// in the composition result and are not converted into fake decoded frames.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct SwitcherTwoViewDisplayCompositionRenderConnectionBoundary {
+    composer: SwitcherTwoViewCompositionBoundary,
+    renderer: SwitcherTwoViewComposedCanvasRenderBoundary,
+}
+
+impl SwitcherTwoViewDisplayCompositionRenderConnectionBoundary {
+    pub fn render_adapter_output_with_runtime(
+        &self,
+        input: SwitcherTwoViewDisplayCompositionRenderConnectionInput,
+        runtime: &impl SwitcherWindowRenderRuntimeHook,
+    ) -> SwitcherTwoViewDisplayCompositionRenderConnectionOutput {
+        let composition = self
+            .composer
+            .compose_side_by_side(input.adapter_output.composition_input.clone());
+        let render = match &composition {
+            SwitcherTwoViewCompositionResult::BothComposed { frame }
+            | SwitcherTwoViewCompositionResult::LeftOnly { frame, .. }
+            | SwitcherTwoViewCompositionResult::RightOnly { frame, .. } => {
+                SwitcherTwoViewDisplayCompositionRenderConnectionRenderResult::RenderedCanvas {
+                    render: self.renderer.render_composed_frame_with_runtime(
+                        frame,
+                        input.window_title,
+                        input.render_hold_millis,
+                        runtime,
+                    ),
+                }
+            }
+            SwitcherTwoViewCompositionResult::EmptyPlaceholder {
+                left_reason,
+                right_reason,
+            } => {
+                SwitcherTwoViewDisplayCompositionRenderConnectionRenderResult::NoRenderableCanvas {
+                    left_reason: left_reason.clone(),
+                    right_reason: right_reason.clone(),
+                }
+            }
+            SwitcherTwoViewCompositionResult::InvalidDimensions { reason } => {
+                SwitcherTwoViewDisplayCompositionRenderConnectionRenderResult::CompositionInvalid {
+                    reason: reason.clone(),
+                }
+            }
+        };
+
+        SwitcherTwoViewDisplayCompositionRenderConnectionOutput {
+            adapter: input.adapter_output,
+            composition,
+            render,
+        }
     }
 }
 
@@ -7497,6 +7588,346 @@ mod tests {
     }
 
     #[test]
+    fn two_view_display_composition_render_connection_renders_both_updated_sides() {
+        let mut state = ServerVideoFrameQueueState::default();
+        store_frame_with_run_payload(
+            &mut state,
+            "client-left",
+            "run-left",
+            1,
+            TimestampMicros(2_119_000),
+            2,
+            1,
+            vec![0, 0, 1, 0x65, 0x11],
+        );
+        store_frame_with_run_payload(
+            &mut state,
+            "client-right",
+            "run-right",
+            2,
+            TimestampMicros(2_119_100),
+            2,
+            1,
+            vec![0, 0, 1, 0x65, 0x12],
+        );
+        let adapter_output =
+            display_composition_adapter_output_for_test(display_policy_output_for_test(
+                two_view_scheduler_result(&mut state, TimestampMicros(1_000_002)),
+                None,
+                None,
+                TimestampMicros(2_000_000),
+                Some(500_000),
+            ));
+        let runtime = RecordingTwoViewRender::default();
+
+        let output = SwitcherTwoViewDisplayCompositionRenderConnectionBoundary::default()
+            .render_adapter_output_with_runtime(
+                SwitcherTwoViewDisplayCompositionRenderConnectionInput {
+                    adapter_output,
+                    window_title: "composed".to_string(),
+                    render_hold_millis: 25,
+                },
+                &runtime,
+            );
+
+        assert!(matches!(
+            output.adapter.left,
+            SwitcherTwoViewDisplayCompositionSideInstruction::UseUpdatedFrame { .. }
+        ));
+        assert!(matches!(
+            output.adapter.right,
+            SwitcherTwoViewDisplayCompositionSideInstruction::UseUpdatedFrame { .. }
+        ));
+        let SwitcherTwoViewCompositionResult::BothComposed { frame } = &output.composition else {
+            panic!("both updated sides should compose");
+        };
+        assert!(frame.left.is_some());
+        assert!(frame.right.is_some());
+        assert!(matches!(
+            output.render,
+            SwitcherTwoViewDisplayCompositionRenderConnectionRenderResult::RenderedCanvas {
+                render: SwitcherTwoViewComposedCanvasRenderResult::Rendered { .. }
+            }
+        ));
+        assert_eq!(runtime.requests.borrow().len(), 1);
+    }
+
+    #[test]
+    fn two_view_display_composition_render_connection_renders_update_and_held_previous() {
+        let mut state = ServerVideoFrameQueueState::default();
+        store_frame_with_run_payload(
+            &mut state,
+            "client-left",
+            "run-left",
+            1,
+            TimestampMicros(2_120_000),
+            2,
+            1,
+            vec![0, 0, 1, 0x65, 0x11],
+        );
+        store_frame_with_run_payload(
+            &mut state,
+            "client-right",
+            "run-right",
+            3,
+            TimestampMicros(2_120_100),
+            2,
+            1,
+            vec![0, 0, 1, 0x65, 0x13],
+        );
+        let adapter_output =
+            display_composition_adapter_output_for_test(display_policy_output_for_test(
+                two_view_scheduler_result(&mut state, TimestampMicros(1_000_001)),
+                None,
+                Some(previous_displayed_frame(
+                    SwitcherTwoViewSide::Right,
+                    TimestampMicros(1_900_000),
+                )),
+                TimestampMicros(2_000_000),
+                Some(500_000),
+            ));
+        let runtime = RecordingTwoViewRender::default();
+
+        let output = SwitcherTwoViewDisplayCompositionRenderConnectionBoundary::default()
+            .render_adapter_output_with_runtime(
+                SwitcherTwoViewDisplayCompositionRenderConnectionInput {
+                    adapter_output,
+                    window_title: "composed".to_string(),
+                    render_hold_millis: 25,
+                },
+                &runtime,
+            );
+
+        assert!(matches!(
+            output.adapter.left,
+            SwitcherTwoViewDisplayCompositionSideInstruction::UseUpdatedFrame { .. }
+        ));
+        let SwitcherTwoViewDisplayCompositionSideInstruction::UseHeldPreviousFrame { .. } =
+            output.adapter.right
+        else {
+            panic!("right side should use held previous frame");
+        };
+        let SwitcherTwoViewCompositionResult::BothComposed { frame } = &output.composition else {
+            panic!("updated + held previous should both compose");
+        };
+        assert_eq!(
+            frame
+                .left
+                .as_ref()
+                .and_then(|metadata| metadata.selected.as_ref())
+                .map(|selected| selected.frame.frame_id),
+            Some(1)
+        );
+        assert!(frame
+            .right
+            .as_ref()
+            .and_then(|metadata| metadata.selected.as_ref())
+            .is_none());
+        assert!(matches!(
+            output.render,
+            SwitcherTwoViewDisplayCompositionRenderConnectionRenderResult::RenderedCanvas {
+                render: SwitcherTwoViewComposedCanvasRenderResult::Rendered { .. }
+            }
+        ));
+    }
+
+    #[test]
+    fn two_view_display_composition_render_connection_keeps_stale_placeholder_explicit() {
+        let mut state = ServerVideoFrameQueueState::default();
+        store_frame_with_run_payload(
+            &mut state,
+            "client-left",
+            "run-left",
+            1,
+            TimestampMicros(2_121_000),
+            2,
+            1,
+            vec![0, 0, 1, 0x65, 0x11],
+        );
+        let adapter_output =
+            display_composition_adapter_output_for_test(display_policy_output_for_test(
+                two_view_scheduler_result(&mut state, TimestampMicros(1_000_001)),
+                None,
+                Some(previous_displayed_frame(
+                    SwitcherTwoViewSide::Right,
+                    TimestampMicros(1_800_000),
+                )),
+                TimestampMicros(2_000_000),
+                Some(100_000),
+            ));
+        let runtime = RecordingTwoViewRender::default();
+
+        let output = SwitcherTwoViewDisplayCompositionRenderConnectionBoundary::default()
+            .render_adapter_output_with_runtime(
+                SwitcherTwoViewDisplayCompositionRenderConnectionInput {
+                    adapter_output,
+                    window_title: "composed".to_string(),
+                    render_hold_millis: 25,
+                },
+                &runtime,
+            );
+
+        assert!(matches!(
+            output.adapter.right,
+            SwitcherTwoViewDisplayCompositionSideInstruction::UseStalePlaceholder { .. }
+        ));
+        assert_eq!(
+            output.adapter.composition_input.right,
+            SwitcherTwoViewLayoutSideInput::Skipped {
+                side: SwitcherTwoViewSide::Right,
+                reason: SwitcherTwoViewManualDecodeRenderStatus::SkippedSelectionUnavailable,
+            }
+        );
+        let SwitcherTwoViewCompositionResult::LeftOnly {
+            right_placeholder_reason,
+            frame,
+        } = &output.composition
+        else {
+            panic!("left renderable + right stale placeholder should compose left only");
+        };
+        assert_eq!(
+            *right_placeholder_reason,
+            SwitcherTwoViewManualDecodeRenderStatus::SkippedSelectionUnavailable
+        );
+        assert!(frame.right.is_none());
+        assert!(matches!(
+            output.render,
+            SwitcherTwoViewDisplayCompositionRenderConnectionRenderResult::RenderedCanvas {
+                render: SwitcherTwoViewComposedCanvasRenderResult::Rendered { .. }
+            }
+        ));
+        assert_eq!(runtime.requests.borrow().len(), 1);
+    }
+
+    #[test]
+    fn two_view_display_composition_render_connection_keeps_no_display_placeholder_explicit() {
+        let mut state = ServerVideoFrameQueueState::default();
+        store_frame_with_run_payload(
+            &mut state,
+            "client-left",
+            "run-left",
+            3,
+            TimestampMicros(2_122_000),
+            2,
+            1,
+            vec![0, 0, 1, 0x65, 0x13],
+        );
+        let adapter_output =
+            display_composition_adapter_output_for_test(display_policy_output_for_test(
+                two_view_scheduler_result(&mut state, TimestampMicros(1_000_001)),
+                None,
+                None,
+                TimestampMicros(2_000_000),
+                Some(500_000),
+            ));
+        let runtime = RecordingTwoViewRender::default();
+
+        let output = SwitcherTwoViewDisplayCompositionRenderConnectionBoundary::default()
+            .render_adapter_output_with_runtime(
+                SwitcherTwoViewDisplayCompositionRenderConnectionInput {
+                    adapter_output,
+                    window_title: "composed".to_string(),
+                    render_hold_millis: 25,
+                },
+                &runtime,
+            );
+
+        assert!(matches!(
+            output.adapter.left,
+            SwitcherTwoViewDisplayCompositionSideInstruction::UseNoDisplayPlaceholder { .. }
+        ));
+        assert!(matches!(
+            output.adapter.right,
+            SwitcherTwoViewDisplayCompositionSideInstruction::UseNoDisplayPlaceholder { .. }
+        ));
+        assert!(matches!(
+            output.composition,
+            SwitcherTwoViewCompositionResult::EmptyPlaceholder { .. }
+        ));
+        assert_eq!(
+            output.render,
+            SwitcherTwoViewDisplayCompositionRenderConnectionRenderResult::NoRenderableCanvas {
+                left_reason: SwitcherTwoViewManualDecodeRenderStatus::SkippedSelectionUnavailable,
+                right_reason: SwitcherTwoViewManualDecodeRenderStatus::SkippedSelectionUnavailable,
+            }
+        );
+        assert!(runtime.requests.borrow().is_empty());
+    }
+
+    #[test]
+    fn two_view_display_composition_render_connection_preserves_mixed_render_and_placeholder_detail(
+    ) {
+        let mut state = ServerVideoFrameQueueState::default();
+        store_frame_with_run_payload(
+            &mut state,
+            "client-left",
+            "run-left",
+            1,
+            TimestampMicros(2_123_000),
+            2,
+            1,
+            vec![0, 0, 1, 0x65, 0x11],
+        );
+        let adapter_output =
+            display_composition_adapter_output_for_test(display_policy_output_for_test(
+                two_view_scheduler_result(&mut state, TimestampMicros(1_000_001)),
+                None,
+                None,
+                TimestampMicros(2_000_000),
+                Some(500_000),
+            ));
+        let runtime = RecordingTwoViewRender::default();
+
+        let output = SwitcherTwoViewDisplayCompositionRenderConnectionBoundary::default()
+            .render_adapter_output_with_runtime(
+                SwitcherTwoViewDisplayCompositionRenderConnectionInput {
+                    adapter_output,
+                    window_title: "composed".to_string(),
+                    render_hold_millis: 25,
+                },
+                &runtime,
+            );
+
+        assert!(matches!(
+            output.adapter.left,
+            SwitcherTwoViewDisplayCompositionSideInstruction::UseUpdatedFrame { .. }
+        ));
+        let SwitcherTwoViewDisplayCompositionSideInstruction::UseNoDisplayPlaceholder {
+            skipped,
+            ..
+        } = &output.adapter.right
+        else {
+            panic!("right side should keep no-display placeholder detail");
+        };
+        assert!(matches!(
+            skipped,
+            SwitcherTwoViewSkippedSide::SelectionUnavailable {
+                selection: SwitcherJitterBufferSelectionResult::NoFrame { .. },
+                ..
+            }
+        ));
+        let SwitcherTwoViewCompositionResult::LeftOnly {
+            frame,
+            right_placeholder_reason,
+        } = &output.composition
+        else {
+            panic!("left renderable + right placeholder should compose left only");
+        };
+        assert!(frame.left.is_some());
+        assert!(frame.right.is_none());
+        assert_eq!(
+            *right_placeholder_reason,
+            SwitcherTwoViewManualDecodeRenderStatus::SkippedSelectionUnavailable
+        );
+        assert!(matches!(
+            output.render,
+            SwitcherTwoViewDisplayCompositionRenderConnectionRenderResult::RenderedCanvas {
+                render: SwitcherTwoViewComposedCanvasRenderResult::Rendered { .. }
+            }
+        ));
+    }
+
+    #[test]
     fn placeholder_display_handoff_preserves_metadata_and_payload_length() {
         let mut state = ServerVideoFrameQueueState::default();
         store_frame(&mut state, "client-1", 7, TimestampMicros(2_100_000));
@@ -9623,6 +10054,17 @@ mod tests {
             current_time,
             max_hold_duration_micros,
         })
+    }
+
+    fn display_composition_adapter_output_for_test(
+        display: SwitcherTwoViewDisplayPolicyOutput,
+    ) -> SwitcherTwoViewDisplayCompositionAdapterOutput {
+        SwitcherTwoViewDisplayCompositionAdapterBoundary.adapt(
+            SwitcherTwoViewDisplayCompositionAdapterInput {
+                display,
+                layout_policy: SwitcherTwoViewLayoutPolicy::default(),
+            },
+        )
     }
 
     fn previous_displayed_frame(

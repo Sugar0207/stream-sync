@@ -2,7 +2,7 @@
 
 # StreamSync TODO
 
-最終更新: 2026-04-29
+最終更新: 2026-04-30
 
 このファイルは「現在どこまで終わっていて、次に何をやるか」を確認するための TODO です。  
 時系列の作業履歴、判断理由、各回の作業メモは `docs/operations/session-log.md` を正とします。
@@ -29,7 +29,7 @@
 - client continuous heartbeat loop は thin composition の completed body まで実装済みで、heartbeat timeout notice wakeup planning 境界、wakeup execution 境界、wakeup actual side-effect 境界、outer while-loop connection 境界、outer while-loop one-turn execution body 境界、actual timer wait / retry execution / reconnect 実行境界、outer while-loop 反復実行本体、reconnect policy 境界、caller-owned hook 付き actual socket 再確立境界、real UDP socket 差し替え hook、repeated body からの hook 注入経路まで完了している
 - 未完了の中心は production H.264 encoder configuration / error logging policy、late frame queue mutation / drop policy、4-view sync orchestration、dashboard UI rendering、continuous receive/send loop 本体、実キュー / 実送信 / 継続ログ出力
 - outbound queue 実キュー、continuous receive/send loop 本体、send / receive の継続ログ出力、file sink open、process-wide logger、`ServerNotice` 実送信は未実装
-- video path は server 側 accepted `VideoFrame` receive side-effect を caller-owned per-client queue へ保存し、client 側で placeholder encoded H.264 payload 付き `VideoFrame`、Windows Graphics Capture + FFmpeg による one-shot `RealCaptureH264` `VideoFrame`、認証済み same-source の bounded multi-frame `RealCaptureH264` sender、送信失敗時の detailed diagnostics、safe UDP datagram 前提の sender-side `VideoFrame` fragmentation、手動PoC向け fragment pacing まで完了し、manual E2E checklist も整備済み。server 側は accepted `VideoFrameFragment` の caller-owned reassembly state、duplicate / metadata rejection、完成 frame の既存 queue storage への接続、手動確認用の fragment / reassembly / queue stdout diagnostics、max packet / timeout / expected frame / stop condition の手動 policy、incomplete frame progress diagnostics、手動 receive path の UDP socket receive buffer tuning と requested/effective stdout diagnostics、client/run 指定の queued encoded frame inspect/dequeue 境界まで完了している。fragmented real encoded queue PoC は `8388608` byte effective receive buffer で manual 1-frame / 2-frame とも成功し、最新の `max_frames=2` run では client `fragments_sent=854/854`、server `fragments_received=854`、`frames_reassembled=2`、`frames_queued=2`、`incomplete_reassembly_frames=0`、`receive_timed_out=false` を確認済み。switcher 側の fragmented frame direct consumption は未実装。switcher 側は latest frame を FFmpeg で H.264 decode して 1 frame BMP dump し、Windows では decoded BGRA を normal window に one-shot 描画し、single-client latest-frame の bounded continuous decode/render loop 境界、client/run 指定の single-client queue source 境界、single-client queue-source-backed targetTime selection 境界と queue-like validation、queue-backed 2-view targetTime source scheduler 境界と live-like validation、scheduler result から既存 2-view decode/render input への adapter 境界、adapter output から既存 `SwitcherTwoViewDecodeRenderBoundary` へ渡す in-process connection 境界と live-like validation、2-view display policy 境界、display policy から既存 2-view composition input への adapter 境界、one-client targetTime / jitter-buffer selection 境界、2-view targetTime selection orchestration 境界、2-view targetTime-selected decode/render connection 境界、2-view sync fixture/manual verification CLI、2-view side-by-side BGRA layout/composition 境界、composed 2-view canvas window render 境界、live-like 2-client queue/runtime integration 境界、bounded continuous 2-view scheduling 境界、real UDP socket-backed source adapter 境界、auth registry 生成込み live two-view switcher manual runtime まで完了。late-drop mutation、4-view sync、OBS は未着手
+- video path は server 側 accepted `VideoFrame` receive side-effect を caller-owned per-client queue へ保存し、client 側で placeholder encoded H.264 payload 付き `VideoFrame`、Windows Graphics Capture + FFmpeg による one-shot `RealCaptureH264` `VideoFrame`、認証済み same-source の bounded multi-frame `RealCaptureH264` sender、送信失敗時の detailed diagnostics、safe UDP datagram 前提の sender-side `VideoFrame` fragmentation、手動PoC向け fragment pacing まで完了し、manual E2E checklist も整備済み。server 側は accepted `VideoFrameFragment` の caller-owned reassembly state、duplicate / metadata rejection、完成 frame の既存 queue storage への接続、手動確認用の fragment / reassembly / queue stdout diagnostics、max packet / timeout / expected frame / stop condition の手動 policy、incomplete frame progress diagnostics、手動 receive path の UDP socket receive buffer tuning と requested/effective stdout diagnostics、client/run 指定の queued encoded frame inspect/dequeue 境界まで完了している。fragmented real encoded queue PoC は `8388608` byte effective receive buffer で manual 1-frame / 2-frame とも成功し、最新の `max_frames=2` run では client `fragments_sent=854/854`、server `fragments_received=854`、`frames_reassembled=2`、`frames_queued=2`、`incomplete_reassembly_frames=0`、`receive_timed_out=false` を確認済み。switcher 側の fragmented frame direct consumption は未実装。switcher 側は latest frame を FFmpeg で H.264 decode して 1 frame BMP dump し、Windows では decoded BGRA を normal window に one-shot 描画し、single-client latest-frame の bounded continuous decode/render loop 境界、client/run 指定の single-client queue source 境界、single-client queue-source-backed targetTime selection 境界と queue-like validation、queue-backed 2-view targetTime source scheduler 境界と live-like validation、scheduler result から既存 2-view decode/render input への adapter 境界、adapter output から既存 `SwitcherTwoViewDecodeRenderBoundary` へ渡す in-process connection 境界と live-like validation、2-view display policy 境界、display policy から既存 2-view composition input への adapter 境界、その adapter output を既存 composed canvas render path へ通す in-process validation 境界、one-client targetTime / jitter-buffer selection 境界、2-view targetTime selection orchestration 境界、2-view targetTime-selected decode/render connection 境界、2-view sync fixture/manual verification CLI、2-view side-by-side BGRA layout/composition 境界、composed 2-view canvas window render 境界、live-like 2-client queue/runtime integration 境界、bounded continuous 2-view scheduling 境界、real UDP socket-backed source adapter 境界、auth registry 生成込み live two-view switcher manual runtime まで完了。late-drop mutation、4-view sync、OBS は未着手
 
 ---
 
@@ -59,9 +59,9 @@
 ---
 
 ## 直近でやること
-1. display policy -> 2-view composition adapter を composed canvas render path へ通す最小 validation を検討する
+1. 2-client manual validation を実行し、live two-view switcher の accepted frames / shared targetTime selection / composed render 結果を記録する
 2. production H.264 encoder configuration / error logging policy
-3. live two-view switcher と bounded multi-frame client sender の手動通し確認
+3. 2-client manual validation 後に display-policy chain 用の最小 diagnostic command を追加するか判断する
 
 ---
 
@@ -663,6 +663,7 @@
 - [x] switcher scheduler adapter -> decode/render live-like queue validation
 - [x] switcher two-view display policy boundary
 - [x] switcher display policy -> 2-view composition input adapter
+- [x] switcher display-composition adapter -> composed canvas render connection validation
 - [ ] production H.264 encoder configuration / hardware encoder integration
 - [x] `VideoFrame` encode
 - [x] `VideoFrame` UDP send with explicit placeholder encoded H.264 payload
@@ -762,6 +763,8 @@
 - switcher scheduler adapter -> decode/render connection now has live-like queue validation over multiple timestamps, covering both-selected render, waiting skip, no-frame skip, all-or-nothing consume, and non-mutating preview behavior.
 - switcher now has a minimal 2-view display policy boundary: `SwitcherTwoViewDisplayPolicyBoundary` maps decode/render connection results to update, hold previous, stale previous, or no-display placeholder decisions while preserving skip reasons and avoiding fake frames.
 - switcher now has a minimal display policy -> 2-view composition adapter: `SwitcherTwoViewDisplayCompositionAdapterBoundary` maps update and hold decisions to decoded composition inputs, maps stale / no-display placeholder decisions to skipped composition sides, and keeps skip reasons visible without creating fake frames.
+- switcher now has a minimal display-composition adapter -> composed canvas render connection: `SwitcherTwoViewDisplayCompositionRenderConnectionBoundary` runs adapter output through the existing 2-view composition boundary and composed-canvas render boundary, keeps adapter output / composition result / render result visible, renders only when composition produces a real composed frame, and keeps stale / no-display placeholders explicit without fake decoded frames.
+- 2-client manual validation planning is now documented in `docs/operations/manual-real-encoded-video-poc.md`: the current manual command validates two bounded real encoded clients through live switcher auth, UDP source intake, queue storage, shared targetTime selection, decode, 2-view composition, and composed canvas render. It also records that the current manual command does not yet exercise the newer display policy -> display-composition adapter chain, and identifies the smallest future diagnostic hook if needed.
 - `docs/operations/manual-real-encoded-video-poc.md` is now the step-by-step human E2E checklist for the bounded authenticated real encoded sender, one-client server queue verification, and two-client live switcher verification, including prerequisites, commands, expected stdout counters, diagnosis, pass/fail criteria, and recorded successful fragmented 1-frame / 2-frame queue runs.
 - manual fragmented real encoded queue verification is now recorded as successful for both `max_frames=1` and `max_frames=2` when using the recommended `8388608` byte server receive buffer request and client fragment pacing. The latest `max_frames=2` localhost run observed `fragments_sent=854/854`, `fragments_received=854`, `frames_reassembled=2`, `frames_queued=2`, `incomplete_reassembly_frames=0`, and `receive_timed_out=false`.
 - metrics commit, snapshot export cadence, dashboard refresh consumer policy, and dashboard refresh runtime wiring remain separate from timer wait, retry, reconnect, socket ownership, cleanup, UI rendering, video, switcher, and OBS.
@@ -769,6 +772,6 @@
 - actual dashboard UI rendering remains unimplemented.
 
 ## Next Items
-1. Validate display policy -> 2-view composition adapter through the composed canvas render path, or plan 4-view expansion once the 2-view display/composition path is validated.
+1. Run the documented 2-client manual validation and record pass/fail counters.
 2. production H.264 encoder configuration / error logging policy
-3. manual two-client run: bounded client senders into live two-view switcher
+3. Decide whether to add the minimal display-policy-chain manual diagnostic command before 4-view expansion

@@ -8326,3 +8326,45 @@ Responsibility split:
   protocol changes, or H.264 decode/render behavior changes.
 
 No protocol wire format changed for this slice.
+
+## Switcher 2-View Display Composition to Composed Canvas Render Connection
+
+The display-composition adapter now has a minimal in-process validation
+connection into the existing composed-canvas render path:
+
+```text
+SwitcherTwoViewDisplayCompositionAdapterOutput
+  -> SwitcherTwoViewCompositionBoundary
+  -> SwitcherTwoViewComposedCanvasRenderBoundary
+```
+
+Current implementation:
+
+- `SwitcherTwoViewDisplayCompositionRenderConnectionBoundary` consumes an
+  already adapted display-composition output.
+- The connection output keeps the adapter output, the composition result, and
+  the render connection result visible together.
+- Update and held-previous instructions can produce decoded composition sides
+  and enter the existing side-by-side composed canvas path.
+- Stale and no-display placeholder instructions remain skipped composition
+  sides. They are not converted into fake decoded frames.
+- If at least one side is renderable, the existing composition boundary can
+  produce a composed canvas with the other side represented by the existing
+  placeholder fill, then the existing composed-canvas render boundary is called.
+- If both sides are placeholders, the connection returns an explicit
+  `NoRenderableCanvas` result and does not call the render runtime.
+- Invalid composition remains explicit as `CompositionInvalid`.
+
+Responsibility split:
+
+- display policy still owns update / hold / stale / placeholder decisions.
+- the display-composition adapter still owns only translation to composition
+  input and explicit composition instructions.
+- this connection boundary owns only the call sequence from adapter output to
+  composition and then to composed-canvas rendering when a composed frame exists.
+- composed-canvas rendering still owns only validating and rendering an already
+  composed BGRA canvas through the existing window render hook.
+- It does not implement OBS output, 4-view orchestration, late-drop mutation,
+  protocol changes, or H.264 decode/render behavior changes.
+
+No protocol wire format changed for this slice.
