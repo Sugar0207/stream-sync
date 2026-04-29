@@ -5,6 +5,58 @@
 - Codex
 
 ### Work
+- Added the smallest in-process connection from queue-backed scheduler result through the scheduler decode/render adapter into `SwitcherTwoViewDecodeRenderBoundary`.
+- Added `SwitcherTwoViewSchedulerDecodeRenderConnectionBoundary`.
+- Added connection output that keeps both adapter output and decode/render result visible for diagnostics.
+- Added focused connection tests for:
+  - both selected reaching the decode/render runtime hooks
+  - selected + waiting preserving the waiting skip
+  - selected + no-frame preserving the no-frame skip
+  - waiting/no-frame not triggering decode or render fake input
+- Updated architecture and TODO docs with the connection boundary and next display-policy planning task.
+
+### Changed Files
+- `apps/switcher/src/lib.rs`
+- `docs/architecture/system-design.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### Decisions
+- Kept this slice diagnostic and in-process.
+- Reused the existing `SwitcherTwoViewDecodeRenderBoundary` unchanged.
+- Kept selected/no-frame/waiting behavior explicit through adapter output and decode/render skip results.
+- Did not implement OBS output, 4-view orchestration, late-drop mutation, protocol wire-format changes, final display fallback policy, or H.264 decode/render behavior changes.
+
+### Unresolved
+- Final display policy after decode/render skips: hold previous frame, black fallback, and partial render behavior remain undecided.
+- production H.264 encoder configuration / error logging policy
+- manual two-client bounded real encoded run into the live two-view switcher
+
+### Next
+- Plan the next display policy slice or run manual live two-view verification with bounded clients.
+
+### TODO Update
+- Marked scheduler adapter -> existing decode/render connection validation complete.
+- Updated next items toward display policy planning or manual live two-view verification.
+
+### Validation
+- `cargo fmt`
+- `cargo fmt --check`
+- `cargo test -p stream-sync-switcher two_view_scheduler_decode_render_connection -- --test-threads=1`
+- `cargo test -p stream-sync-switcher two_view -- --test-threads=1`
+- `cargo test -p stream-sync-switcher target_time -- --test-threads=1`
+- `cargo test -p stream-sync-switcher single_client_queue_source -- --test-threads=1`
+- `cargo test -p stream-sync-server video_frame_queue -- --test-threads=1`
+- `cargo check --workspace`
+- `git diff --check` (passed with existing LF-to-CRLF conversion warnings)
+
+---
+
+## 2026-04-29
+### Type
+- Codex
+
+### Work
 - Added the minimal adapter from queue-backed 2-view scheduler results to the existing 2-view decode/render input path.
 - Added `SwitcherTwoViewSchedulerDecodeRenderAdapterBoundary`.
 - Added per-side adapter instructions that preserve explicit scheduler status mapping:

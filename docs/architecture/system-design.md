@@ -8202,3 +8202,44 @@ Responsibility split:
   protocol changes, or H.264 decode/render behavior changes.
 
 No protocol wire format changed for this slice.
+
+## Switcher 2-View Scheduler Decode/Render Connection Boundary
+
+The scheduler adapter now has a smallest in-process connection boundary that
+passes adapted output into the existing decode/render boundary:
+
+```text
+SwitcherTwoViewTargetTimeSourceSchedulerResult
+  -> SwitcherTwoViewSchedulerDecodeRenderAdapterBoundary
+  -> SwitcherTwoViewDecodeRenderInput
+  -> SwitcherTwoViewDecodeRenderBoundary
+```
+
+Current implementation:
+
+- `SwitcherTwoViewSchedulerDecodeRenderConnectionBoundary` consumes a completed
+  scheduler result, invokes `SwitcherTwoViewSchedulerDecodeRenderAdapterBoundary`,
+  and passes the resulting `SwitcherTwoViewDecodeRenderInput` into
+  `SwitcherTwoViewDecodeRenderBoundary`.
+- The connection output keeps both the adapter output and the decode/render
+  result so selected/no-frame/waiting mapping remains inspectable after the
+  render attempt.
+- Selected sides are the only sides that can reach decode/render runtime hooks.
+  No-frame and waiting sides remain `SelectionUnavailable` skip results in the
+  existing decode/render result shape.
+- The connection is diagnostic and in-process. It validates wiring; it does not
+  decide hold-previous-frame, black-frame fallback, partial display policy, or
+  OBS output.
+
+Responsibility split:
+
+- the scheduler remains responsible for targetTime eligibility and queue
+  consumption policy.
+- the adapter remains responsible for translating scheduler per-side results
+  into decode/render-facing input and explicit skip/render instructions.
+- the connection boundary owns only the call sequence from adapter output into
+  `SwitcherTwoViewDecodeRenderBoundary`.
+- It does not implement 4-view orchestration, late-drop mutation, protocol
+  changes, OBS integration, or H.264 decode/render behavior changes.
+
+No protocol wire format changed for this slice.
