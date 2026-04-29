@@ -6278,6 +6278,318 @@ mod tests {
     }
 
     #[test]
+    fn two_view_scheduler_decode_render_connection_live_like_preview_keeps_queues() {
+        let mut state = ServerVideoFrameQueueState::default();
+        let left_client_id = ClientId("client-left".to_string());
+        let right_client_id = ClientId("client-right".to_string());
+        store_frame_with_run_payload(
+            &mut state,
+            "client-left",
+            "run-left",
+            1,
+            TimestampMicros(2_106_000),
+            2,
+            1,
+            vec![0, 0, 1, 0x65, 0x11],
+        );
+        store_frame_with_run_payload(
+            &mut state,
+            "client-left",
+            "run-left",
+            2,
+            TimestampMicros(2_106_100),
+            2,
+            1,
+            vec![0, 0, 1, 0x65, 0x12],
+        );
+        store_frame_with_run_payload(
+            &mut state,
+            "client-right",
+            "run-right",
+            1,
+            TimestampMicros(2_106_200),
+            2,
+            1,
+            vec![0, 0, 1, 0x65, 0x21],
+        );
+        store_frame_with_run_payload(
+            &mut state,
+            "client-right",
+            "run-right",
+            3,
+            TimestampMicros(2_106_300),
+            2,
+            1,
+            vec![0, 0, 1, 0x65, 0x23],
+        );
+        let before_left_len = state.client_queue_len(&left_client_id);
+        let before_right_len = state.client_queue_len(&right_client_id);
+
+        let scheduler_result = two_view_scheduler_result_with_mode(
+            &mut state,
+            TimestampMicros(1_000_003),
+            SwitcherTwoViewTargetTimeSourceSchedulerMode::PreviewLatestIfAtOrBefore,
+        );
+        let decode = RecordingTwoViewDecode::default();
+        let render_runtime = RecordingTwoViewRender::default();
+        let output = render_scheduler_result_for_test(scheduler_result, &decode, &render_runtime);
+
+        let SwitcherTwoViewDecodeRenderResult::BothRendered { left, right, .. } = output.render
+        else {
+            panic!("both latest preview-selected views should render");
+        };
+        assert_eq!(left.selected.frame.frame_id, 2);
+        assert_eq!(right.selected.frame.frame_id, 3);
+        assert_eq!(decode.inputs.borrow().len(), 2);
+        assert_eq!(render_runtime.requests.borrow().len(), 2);
+        assert_eq!(state.client_queue_len(&left_client_id), before_left_len);
+        assert_eq!(state.client_queue_len(&right_client_id), before_right_len);
+    }
+
+    #[test]
+    fn two_view_scheduler_decode_render_connection_live_like_waiting_skip_is_explicit() {
+        let mut state = ServerVideoFrameQueueState::default();
+        store_frame_with_run_payload(
+            &mut state,
+            "client-left",
+            "run-left",
+            1,
+            TimestampMicros(2_107_000),
+            2,
+            1,
+            vec![0, 0, 1, 0x65, 0x11],
+        );
+        store_frame_with_run_payload(
+            &mut state,
+            "client-left",
+            "run-left",
+            2,
+            TimestampMicros(2_107_100),
+            2,
+            1,
+            vec![0, 0, 1, 0x65, 0x12],
+        );
+        store_frame_with_run_payload(
+            &mut state,
+            "client-right",
+            "run-right",
+            1,
+            TimestampMicros(2_107_200),
+            2,
+            1,
+            vec![0, 0, 1, 0x65, 0x21],
+        );
+        store_frame_with_run_payload(
+            &mut state,
+            "client-right",
+            "run-right",
+            3,
+            TimestampMicros(2_107_300),
+            2,
+            1,
+            vec![0, 0, 1, 0x65, 0x23],
+        );
+
+        let scheduler_result = two_view_scheduler_result_with_mode(
+            &mut state,
+            TimestampMicros(1_000_002),
+            SwitcherTwoViewTargetTimeSourceSchedulerMode::PreviewLatestIfAtOrBefore,
+        );
+        let decode = RecordingTwoViewDecode::default();
+        let render_runtime = RecordingTwoViewRender::default();
+        let output = render_scheduler_result_for_test(scheduler_result, &decode, &render_runtime);
+
+        assert!(matches!(
+            output.adapter.right,
+            SwitcherTwoViewSchedulerDecodeRenderSideInstruction::SkipWaitingForFrameAtOrBeforeTarget {
+                candidate_frame_id: 3,
+                ..
+            }
+        ));
+        let SwitcherTwoViewDecodeRenderResult::LeftRenderedRightSkipped { right, .. } =
+            output.render
+        else {
+            panic!("waiting right side should be skipped without a fake frame");
+        };
+        assert!(matches!(
+            right,
+            SwitcherTwoViewSkippedSide::SelectionUnavailable {
+                selection: SwitcherJitterBufferSelectionResult::FrameTooEarly {
+                    earliest_frame_time: TimestampMicros(1_000_003),
+                    ..
+                },
+                ..
+            }
+        ));
+        assert_eq!(decode.inputs.borrow().len(), 1);
+        assert_eq!(render_runtime.requests.borrow().len(), 1);
+    }
+
+    #[test]
+    fn two_view_scheduler_decode_render_connection_live_like_no_frame_skip_is_explicit() {
+        let mut state = ServerVideoFrameQueueState::default();
+        store_frame_with_run_payload(
+            &mut state,
+            "client-left",
+            "run-left",
+            1,
+            TimestampMicros(2_108_000),
+            2,
+            1,
+            vec![0, 0, 1, 0x65, 0x11],
+        );
+        store_frame_with_run_payload(
+            &mut state,
+            "client-left",
+            "run-left",
+            2,
+            TimestampMicros(2_108_100),
+            2,
+            1,
+            vec![0, 0, 1, 0x65, 0x12],
+        );
+
+        let scheduler_result = two_view_scheduler_result_with_mode(
+            &mut state,
+            TimestampMicros(1_000_002),
+            SwitcherTwoViewTargetTimeSourceSchedulerMode::PreviewLatestIfAtOrBefore,
+        );
+        let decode = RecordingTwoViewDecode::default();
+        let render_runtime = RecordingTwoViewRender::default();
+        let output = render_scheduler_result_for_test(scheduler_result, &decode, &render_runtime);
+
+        assert!(matches!(
+            output.adapter.right,
+            SwitcherTwoViewSchedulerDecodeRenderSideInstruction::SkipNoFrameAvailable { .. }
+        ));
+        let SwitcherTwoViewDecodeRenderResult::LeftRenderedRightSkipped { right, .. } =
+            output.render
+        else {
+            panic!("no-frame right side should be skipped without a fake frame");
+        };
+        assert!(matches!(
+            right,
+            SwitcherTwoViewSkippedSide::SelectionUnavailable {
+                selection: SwitcherJitterBufferSelectionResult::NoFrame { .. },
+                ..
+            }
+        ));
+        assert_eq!(decode.inputs.borrow().len(), 1);
+        assert_eq!(render_runtime.requests.borrow().len(), 1);
+    }
+
+    #[test]
+    fn two_view_scheduler_decode_render_connection_live_like_consume_stays_all_or_nothing() {
+        let mut state = ServerVideoFrameQueueState::default();
+        let left_client_id = ClientId("client-left".to_string());
+        let right_client_id = ClientId("client-right".to_string());
+        store_frame_with_run_payload(
+            &mut state,
+            "client-left",
+            "run-left",
+            1,
+            TimestampMicros(2_109_000),
+            2,
+            1,
+            vec![0, 0, 1, 0x65, 0x11],
+        );
+        store_frame_with_run_payload(
+            &mut state,
+            "client-left",
+            "run-left",
+            2,
+            TimestampMicros(2_109_100),
+            2,
+            1,
+            vec![0, 0, 1, 0x65, 0x12],
+        );
+        store_frame_with_run_payload(
+            &mut state,
+            "client-right",
+            "run-right",
+            1,
+            TimestampMicros(2_109_200),
+            2,
+            1,
+            vec![0, 0, 1, 0x65, 0x21],
+        );
+        store_frame_with_run_payload(
+            &mut state,
+            "client-right",
+            "run-right",
+            3,
+            TimestampMicros(2_109_300),
+            2,
+            1,
+            vec![0, 0, 1, 0x65, 0x23],
+        );
+
+        let first = two_view_scheduler_result_with_mode(
+            &mut state,
+            TimestampMicros(1_000_001),
+            SwitcherTwoViewTargetTimeSourceSchedulerMode::ConsumeOldestAtOrBeforeAllSelected,
+        );
+        let first_decode = RecordingTwoViewDecode::default();
+        let first_render = RecordingTwoViewRender::default();
+        let first_output = render_scheduler_result_for_test(first, &first_decode, &first_render);
+        assert!(matches!(
+            first_output.render,
+            SwitcherTwoViewDecodeRenderResult::BothRendered { .. }
+        ));
+        assert_eq!(state.client_queue_len(&left_client_id), 1);
+        assert_eq!(state.client_queue_len(&right_client_id), 1);
+
+        let waiting = two_view_scheduler_result_with_mode(
+            &mut state,
+            TimestampMicros(1_000_002),
+            SwitcherTwoViewTargetTimeSourceSchedulerMode::ConsumeOldestAtOrBeforeAllSelected,
+        );
+        let waiting_decode = RecordingTwoViewDecode::default();
+        let waiting_render = RecordingTwoViewRender::default();
+        let waiting_output =
+            render_scheduler_result_for_test(waiting, &waiting_decode, &waiting_render);
+        assert!(matches!(
+            waiting_output.adapter.left,
+            SwitcherTwoViewSchedulerDecodeRenderSideInstruction::RenderFrame {
+                consumed: false,
+                ..
+            }
+        ));
+        assert!(matches!(
+            waiting_output.adapter.right,
+            SwitcherTwoViewSchedulerDecodeRenderSideInstruction::SkipWaitingForFrameAtOrBeforeTarget { .. }
+        ));
+        assert_eq!(waiting_decode.inputs.borrow().len(), 1);
+        assert_eq!(waiting_render.requests.borrow().len(), 1);
+        assert_eq!(state.client_queue_len(&left_client_id), 1);
+        assert_eq!(state.client_queue_len(&right_client_id), 1);
+
+        let final_ready = two_view_scheduler_result_with_mode(
+            &mut state,
+            TimestampMicros(1_000_003),
+            SwitcherTwoViewTargetTimeSourceSchedulerMode::ConsumeOldestAtOrBeforeAllSelected,
+        );
+        let final_decode = RecordingTwoViewDecode::default();
+        let final_render = RecordingTwoViewRender::default();
+        let final_output =
+            render_scheduler_result_for_test(final_ready, &final_decode, &final_render);
+        assert!(matches!(
+            final_output.adapter.left,
+            SwitcherTwoViewSchedulerDecodeRenderSideInstruction::RenderFrame { consumed: true, .. }
+        ));
+        assert!(matches!(
+            final_output.adapter.right,
+            SwitcherTwoViewSchedulerDecodeRenderSideInstruction::RenderFrame { consumed: true, .. }
+        ));
+        assert!(matches!(
+            final_output.render,
+            SwitcherTwoViewDecodeRenderResult::BothRendered { .. }
+        ));
+        assert_eq!(state.client_queue_len(&left_client_id), 0);
+        assert_eq!(state.client_queue_len(&right_client_id), 0);
+    }
+
+    #[test]
     fn placeholder_display_handoff_preserves_metadata_and_payload_length() {
         let mut state = ServerVideoFrameQueueState::default();
         store_frame(&mut state, "client-1", 7, TimestampMicros(2_100_000));
@@ -8337,6 +8649,18 @@ mod tests {
         state: &mut ServerVideoFrameQueueState,
         target_timestamp: TimestampMicros,
     ) -> SwitcherTwoViewTargetTimeSourceSchedulerResult {
+        two_view_scheduler_result_with_mode(
+            state,
+            target_timestamp,
+            SwitcherTwoViewTargetTimeSourceSchedulerMode::PreviewLatestIfAtOrBefore,
+        )
+    }
+
+    fn two_view_scheduler_result_with_mode(
+        state: &mut ServerVideoFrameQueueState,
+        target_timestamp: TimestampMicros,
+        mode: SwitcherTwoViewTargetTimeSourceSchedulerMode,
+    ) -> SwitcherTwoViewTargetTimeSourceSchedulerResult {
         SwitcherTwoViewTargetTimeSourceSchedulerBoundary::default().select_pair(
             state,
             SwitcherTwoViewTargetTimeSourceSchedulerInput {
@@ -8349,9 +8673,27 @@ mod tests {
                     run_id: RunId("run-right".to_string()),
                 },
                 target_timestamp,
-                mode: SwitcherTwoViewTargetTimeSourceSchedulerMode::PreviewLatestIfAtOrBefore,
+                mode,
             },
         )
+    }
+
+    fn render_scheduler_result_for_test(
+        scheduler_result: SwitcherTwoViewTargetTimeSourceSchedulerResult,
+        decode: &impl SwitcherH264DecodeRuntimeHook,
+        render: &impl SwitcherWindowRenderRuntimeHook,
+    ) -> SwitcherTwoViewSchedulerDecodeRenderConnectionOutput {
+        SwitcherTwoViewSchedulerDecodeRenderConnectionBoundary::default()
+            .render_scheduler_result_with_runtimes(
+                SwitcherTwoViewSchedulerDecodeRenderConnectionInput {
+                    scheduler_result,
+                    left_window_title: "left".to_string(),
+                    right_window_title: "right".to_string(),
+                    render_hold_millis: 5,
+                },
+                decode,
+                render,
+            )
     }
 
     #[derive(Default)]
