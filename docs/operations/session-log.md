@@ -1,5 +1,46 @@
 <!-- stream-sync/docs/operations/session-log.md -->
 
+## 2026-05-01
+### Type
+- Codex
+
+### Work
+- Verified the requested fallible 2-view targetTime handoff scheduler slice is already present in the working tree.
+- Confirmed `SwitcherTwoViewTargetTimeHandoffSourceSchedulerBoundary` uses the fallible single-client targetTime handoff source per view.
+- Confirmed per-view selected / no-frame / waiting / handoff-error outcomes remain visible.
+- Confirmed aggregate `HandoffError` remains distinct from partial selected, no-frame, and waiting.
+- Confirmed consume mode previews both sides first and does not mutate either side when one side has a handoff error.
+
+### Changed Files
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### Decisions
+- No duplicate implementation was added because the requested boundary, result type, status, docs, and tests already exist.
+- Keep next task focused on the decode/render adapter path for fallible 2-view scheduler results.
+
+### Unresolved
+- Plan or implement the decode/render adapter path for `SwitcherTwoViewTargetTimeHandoffSourceSchedulerResult`.
+- Decide how handoff errors should surface through display policy without creating fake decoded frames.
+- production H.264 encoder configuration / error logging policy
+
+### Next
+- Plan the smallest decode/render adapter path for fallible 2-view scheduler results.
+
+### TODO Update
+- Refreshed `docs/operations/todo.md` timestamp for the May 1 verification.
+- Kept the next item as the fallible scheduler -> decode/render adapter planning slice.
+
+### Validation
+- `cargo fmt` passed.
+- `cargo fmt --check` passed.
+- `cargo test -p stream-sync-switcher two_view -- --test-threads=1` passed.
+- `cargo test -p stream-sync-switcher target_time -- --test-threads=1` passed.
+- `cargo test -p stream-sync-switcher single_client_queue_source -- --test-threads=1` passed.
+- `cargo test -p stream-sync-server video_frame_queue -- --test-threads=1` passed.
+- `cargo check --workspace` passed.
+- `git diff --check` passed.
+
 ## 2026-04-30
 ### Type
 - Codex
