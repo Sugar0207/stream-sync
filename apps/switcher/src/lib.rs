@@ -1118,10 +1118,92 @@ pub struct SwitcherTwoViewHandoffSchedulerDecodeRenderAdapterInput {
 /// represented without hiding a handoff/source error.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SwitcherTwoViewHandoffSchedulerDecodeRenderAdapterOutput {
+    pub target_timestamp: TimestampMicros,
     pub scheduler_status: SwitcherTwoViewTargetTimeHandoffSourceSchedulerStatus,
     pub left: SwitcherTwoViewHandoffSchedulerDecodeRenderSideInstruction,
     pub right: SwitcherTwoViewHandoffSchedulerDecodeRenderSideInstruction,
     pub decode_render_input: Option<SwitcherTwoViewDecodeRenderInput>,
+}
+
+/// Skipped state produced by the fallible handoff scheduler decode/render
+/// connection. This keeps source errors separate from ordinary no-frame and
+/// waiting skips.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SwitcherTwoViewHandoffDecodeRenderSkippedSide {
+    NoFrameAvailable {
+        side: SwitcherTwoViewSide,
+        client_id: ClientId,
+        run_id: RunId,
+        target_timestamp: TimestampMicros,
+        client_queue_len: usize,
+    },
+    WaitingForFrameAtOrBeforeTarget {
+        side: SwitcherTwoViewSide,
+        client_id: ClientId,
+        run_id: RunId,
+        target_timestamp: TimestampMicros,
+        candidate_frame_id: u64,
+        candidate_capture_timestamp: TimestampMicros,
+        client_queue_len: usize,
+    },
+    HandoffError {
+        side: SwitcherTwoViewSide,
+        client_id: ClientId,
+        run_id: RunId,
+        target_timestamp: TimestampMicros,
+        mode: SwitcherSingleClientTargetTimeSourceMode,
+        handoff_mode: SwitcherSingleClientQueueSourceMode,
+        error: SwitcherQueuedFrameHandoffError,
+    },
+    DecodeRenderSkipped {
+        side: SwitcherTwoViewSide,
+        skipped: SwitcherTwoViewSkippedSide,
+    },
+}
+
+/// Display-policy-facing result from fallible scheduler decode/render
+/// connection.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SwitcherTwoViewHandoffDecodeRenderConnectionResult {
+    BothRendered {
+        shared_target_time: TimestampMicros,
+        left: SwitcherTwoViewRenderedSide,
+        right: SwitcherTwoViewRenderedSide,
+    },
+    LeftRenderedRightSkipped {
+        shared_target_time: TimestampMicros,
+        left: SwitcherTwoViewRenderedSide,
+        right: SwitcherTwoViewHandoffDecodeRenderSkippedSide,
+    },
+    RightRenderedLeftSkipped {
+        shared_target_time: TimestampMicros,
+        left: SwitcherTwoViewHandoffDecodeRenderSkippedSide,
+        right: SwitcherTwoViewRenderedSide,
+    },
+    BothSkipped {
+        shared_target_time: TimestampMicros,
+        left: SwitcherTwoViewHandoffDecodeRenderSkippedSide,
+        right: SwitcherTwoViewHandoffDecodeRenderSkippedSide,
+    },
+}
+
+/// Input for running fallible adapter output through per-side decode/render
+/// without hiding source-error skips.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SwitcherTwoViewHandoffSchedulerDecodeRenderConnectionInput {
+    pub adapter_output: SwitcherTwoViewHandoffSchedulerDecodeRenderAdapterOutput,
+    pub left_window_title: String,
+    pub right_window_title: String,
+    pub render_hold_millis: u64,
+}
+
+/// Output from fallible adapter output to display-policy-facing decode/render
+/// result.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SwitcherTwoViewHandoffSchedulerDecodeRenderConnectionOutput {
+    pub scheduler_status: SwitcherTwoViewTargetTimeHandoffSourceSchedulerStatus,
+    pub adapter: SwitcherTwoViewHandoffSchedulerDecodeRenderAdapterOutput,
+    pub render: SwitcherTwoViewHandoffDecodeRenderConnectionResult,
 }
 
 /// Input for the smallest scheduler-result -> adapter -> decode/render
@@ -1223,10 +1305,147 @@ impl SwitcherTwoViewHandoffSchedulerDecodeRenderAdapterBoundary {
         });
 
         SwitcherTwoViewHandoffSchedulerDecodeRenderAdapterOutput {
+            target_timestamp: scheduler_result.target_timestamp,
             scheduler_status: scheduler_result.status,
             left,
             right,
             decode_render_input,
+        }
+    }
+}
+
+/// Minimal fallible connection from handoff scheduler adapter output to
+/// per-side decode/render.
+///
+/// Only `RenderFrame` instructions reach decode/render hooks. No-frame,
+/// waiting, and handoff/source-error instructions become explicit skipped
+/// display-policy-facing results without creating fake frame inputs.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct SwitcherTwoViewHandoffSchedulerDecodeRenderConnectionBoundary {
+    decode_render: SwitcherTwoViewDecodeRenderBoundary,
+}
+
+impl SwitcherTwoViewHandoffSchedulerDecodeRenderConnectionBoundary {
+    pub fn render_adapter_output_with_runtimes(
+        &self,
+        input: SwitcherTwoViewHandoffSchedulerDecodeRenderConnectionInput,
+        decode_runtime: &impl SwitcherH264DecodeRuntimeHook,
+        render_runtime: &impl SwitcherWindowRenderRuntimeHook,
+    ) -> SwitcherTwoViewHandoffSchedulerDecodeRenderConnectionOutput {
+        let shared_target_time = input.adapter_output.target_timestamp;
+        let scheduler_status = input.adapter_output.scheduler_status;
+        let left = self.render_instruction_with_runtimes(
+            input.adapter_output.left.clone(),
+            input.left_window_title,
+            input.render_hold_millis,
+            decode_runtime,
+            render_runtime,
+        );
+        let right = self.render_instruction_with_runtimes(
+            input.adapter_output.right.clone(),
+            input.right_window_title,
+            input.render_hold_millis,
+            decode_runtime,
+            render_runtime,
+        );
+        let render =
+            handoff_decode_render_connection_result_from_sides(shared_target_time, left, right);
+
+        SwitcherTwoViewHandoffSchedulerDecodeRenderConnectionOutput {
+            scheduler_status,
+            adapter: input.adapter_output,
+            render,
+        }
+    }
+
+    fn render_instruction_with_runtimes(
+        &self,
+        instruction: SwitcherTwoViewHandoffSchedulerDecodeRenderSideInstruction,
+        title: String,
+        hold_millis: u64,
+        decode_runtime: &impl SwitcherH264DecodeRuntimeHook,
+        render_runtime: &impl SwitcherWindowRenderRuntimeHook,
+    ) -> SwitcherTwoViewHandoffSideDecodeRenderOutcome {
+        match instruction {
+            SwitcherTwoViewHandoffSchedulerDecodeRenderSideInstruction::RenderFrame {
+                side,
+                selected,
+                ..
+            } => {
+                match self.decode_render.render_side_with_runtimes(
+                    side,
+                    SwitcherJitterBufferSelectionResult::Selected(selected),
+                    title,
+                    hold_millis,
+                    decode_runtime,
+                    render_runtime,
+                ) {
+                    SwitcherTwoViewSideDecodeRenderOutcome::Rendered(rendered) => {
+                        SwitcherTwoViewHandoffSideDecodeRenderOutcome::Rendered(rendered)
+                    }
+                    SwitcherTwoViewSideDecodeRenderOutcome::Skipped(skipped) => {
+                        SwitcherTwoViewHandoffSideDecodeRenderOutcome::Skipped(
+                            SwitcherTwoViewHandoffDecodeRenderSkippedSide::DecodeRenderSkipped {
+                                side,
+                                skipped,
+                            },
+                        )
+                    }
+                }
+            }
+            SwitcherTwoViewHandoffSchedulerDecodeRenderSideInstruction::SkipNoFrameAvailable {
+                side,
+                client_id,
+                run_id,
+                target_timestamp,
+                client_queue_len,
+            } => SwitcherTwoViewHandoffSideDecodeRenderOutcome::Skipped(
+                SwitcherTwoViewHandoffDecodeRenderSkippedSide::NoFrameAvailable {
+                    side,
+                    client_id,
+                    run_id,
+                    target_timestamp,
+                    client_queue_len,
+                },
+            ),
+            SwitcherTwoViewHandoffSchedulerDecodeRenderSideInstruction::SkipWaitingForFrameAtOrBeforeTarget {
+                side,
+                client_id,
+                run_id,
+                target_timestamp,
+                candidate_frame_id,
+                candidate_capture_timestamp,
+                client_queue_len,
+            } => SwitcherTwoViewHandoffSideDecodeRenderOutcome::Skipped(
+                SwitcherTwoViewHandoffDecodeRenderSkippedSide::WaitingForFrameAtOrBeforeTarget {
+                    side,
+                    client_id,
+                    run_id,
+                    target_timestamp,
+                    candidate_frame_id,
+                    candidate_capture_timestamp,
+                    client_queue_len,
+                },
+            ),
+            SwitcherTwoViewHandoffSchedulerDecodeRenderSideInstruction::SkipHandoffError {
+                side,
+                client_id,
+                run_id,
+                target_timestamp,
+                mode,
+                handoff_mode,
+                error,
+            } => SwitcherTwoViewHandoffSideDecodeRenderOutcome::Skipped(
+                SwitcherTwoViewHandoffDecodeRenderSkippedSide::HandoffError {
+                    side,
+                    client_id,
+                    run_id,
+                    target_timestamp,
+                    mode,
+                    handoff_mode,
+                    error,
+                },
+            ),
         }
     }
 }
@@ -1491,6 +1710,52 @@ fn handoff_scheduler_decode_render_selection_from_sides(
         left,
         right,
     ))
+}
+
+enum SwitcherTwoViewHandoffSideDecodeRenderOutcome {
+    Rendered(SwitcherTwoViewRenderedSide),
+    Skipped(SwitcherTwoViewHandoffDecodeRenderSkippedSide),
+}
+
+fn handoff_decode_render_connection_result_from_sides(
+    shared_target_time: TimestampMicros,
+    left: SwitcherTwoViewHandoffSideDecodeRenderOutcome,
+    right: SwitcherTwoViewHandoffSideDecodeRenderOutcome,
+) -> SwitcherTwoViewHandoffDecodeRenderConnectionResult {
+    match (left, right) {
+        (
+            SwitcherTwoViewHandoffSideDecodeRenderOutcome::Rendered(left),
+            SwitcherTwoViewHandoffSideDecodeRenderOutcome::Rendered(right),
+        ) => SwitcherTwoViewHandoffDecodeRenderConnectionResult::BothRendered {
+            shared_target_time,
+            left,
+            right,
+        },
+        (
+            SwitcherTwoViewHandoffSideDecodeRenderOutcome::Rendered(left),
+            SwitcherTwoViewHandoffSideDecodeRenderOutcome::Skipped(right),
+        ) => SwitcherTwoViewHandoffDecodeRenderConnectionResult::LeftRenderedRightSkipped {
+            shared_target_time,
+            left,
+            right,
+        },
+        (
+            SwitcherTwoViewHandoffSideDecodeRenderOutcome::Skipped(left),
+            SwitcherTwoViewHandoffSideDecodeRenderOutcome::Rendered(right),
+        ) => SwitcherTwoViewHandoffDecodeRenderConnectionResult::RightRenderedLeftSkipped {
+            shared_target_time,
+            left,
+            right,
+        },
+        (
+            SwitcherTwoViewHandoffSideDecodeRenderOutcome::Skipped(left),
+            SwitcherTwoViewHandoffSideDecodeRenderOutcome::Skipped(right),
+        ) => SwitcherTwoViewHandoffDecodeRenderConnectionResult::BothSkipped {
+            shared_target_time,
+            left,
+            right,
+        },
+    }
 }
 
 /// Minimal diagnostic 2-view scheduler over the single-client targetTime source.
@@ -7785,6 +8050,37 @@ mod tests {
         )
     }
 
+    fn fallible_two_view_adapter_output(
+        scheduler_result: SwitcherTwoViewTargetTimeHandoffSourceSchedulerResult,
+    ) -> SwitcherTwoViewHandoffSchedulerDecodeRenderAdapterOutput {
+        SwitcherTwoViewHandoffSchedulerDecodeRenderAdapterBoundary.adapt(
+            SwitcherTwoViewHandoffSchedulerDecodeRenderAdapterInput {
+                scheduler_result,
+                left_window_title: "left".to_string(),
+                right_window_title: "right".to_string(),
+                render_hold_millis: 5,
+            },
+        )
+    }
+
+    fn render_fallible_two_view_adapter_output(
+        adapter_output: SwitcherTwoViewHandoffSchedulerDecodeRenderAdapterOutput,
+        decode: &impl SwitcherH264DecodeRuntimeHook,
+        render: &impl SwitcherWindowRenderRuntimeHook,
+    ) -> SwitcherTwoViewHandoffSchedulerDecodeRenderConnectionOutput {
+        SwitcherTwoViewHandoffSchedulerDecodeRenderConnectionBoundary::default()
+            .render_adapter_output_with_runtimes(
+                SwitcherTwoViewHandoffSchedulerDecodeRenderConnectionInput {
+                    adapter_output,
+                    left_window_title: "left".to_string(),
+                    right_window_title: "right".to_string(),
+                    render_hold_millis: 5,
+                },
+                decode,
+                render,
+            )
+    }
+
     #[test]
     fn two_view_target_time_handoff_source_scheduler_selects_both_views() {
         let mut state = ServerVideoFrameQueueState::default();
@@ -9268,6 +9564,325 @@ mod tests {
         assert!(
             output.decode_render_input.is_none(),
             "no fallback decode/render selection should be created for source errors"
+        );
+    }
+
+    #[test]
+    fn two_view_handoff_scheduler_decode_render_connection_renders_both_frames() {
+        let mut state = ServerVideoFrameQueueState::default();
+        store_frame_with_run_payload(
+            &mut state,
+            "client-left",
+            "run-left",
+            1,
+            TimestampMicros(2_101_800),
+            2,
+            1,
+            vec![0, 0, 1, 0x65, 0x11],
+        );
+        store_frame_with_run_payload(
+            &mut state,
+            "client-right",
+            "run-right",
+            2,
+            TimestampMicros(2_101_900),
+            2,
+            1,
+            vec![0, 0, 1, 0x65, 0x12],
+        );
+        let scheduler_result =
+            fallible_two_view_scheduler_result(&mut state, TimestampMicros(1_000_002));
+        let adapter_output = fallible_two_view_adapter_output(scheduler_result);
+        let decode = RecordingTwoViewDecode::default();
+        let render_runtime = RecordingTwoViewRender::default();
+
+        let output =
+            render_fallible_two_view_adapter_output(adapter_output, &decode, &render_runtime);
+
+        assert_eq!(
+            output.scheduler_status,
+            SwitcherTwoViewTargetTimeHandoffSourceSchedulerStatus::AllSelected
+        );
+        let SwitcherTwoViewHandoffDecodeRenderConnectionResult::BothRendered {
+            shared_target_time,
+            left,
+            right,
+        } = output.render
+        else {
+            panic!("both render frame instructions should decode/render");
+        };
+        assert_eq!(shared_target_time, TimestampMicros(1_000_002));
+        assert_eq!(left.selected.frame.frame_id, 1);
+        assert_eq!(right.selected.frame.frame_id, 2);
+        let decode_inputs = decode.inputs.borrow();
+        assert_eq!(decode_inputs.len(), 2);
+        assert_eq!(decode_inputs[0].encoded_payload, vec![0, 0, 1, 0x65, 0x11]);
+        assert_eq!(decode_inputs[1].encoded_payload, vec![0, 0, 1, 0x65, 0x12]);
+        assert_eq!(render_runtime.requests.borrow().len(), 2);
+    }
+
+    #[test]
+    fn two_view_handoff_scheduler_decode_render_connection_preserves_render_and_no_frame_skip() {
+        let mut state = ServerVideoFrameQueueState::default();
+        store_frame_with_run_payload(
+            &mut state,
+            "client-left",
+            "run-left",
+            1,
+            TimestampMicros(2_102_000),
+            2,
+            1,
+            vec![0, 0, 1, 0x65, 0x11],
+        );
+        let scheduler_result =
+            fallible_two_view_scheduler_result(&mut state, TimestampMicros(1_000_001));
+        let adapter_output = fallible_two_view_adapter_output(scheduler_result);
+        let decode = RecordingTwoViewDecode::default();
+        let render_runtime = RecordingTwoViewRender::default();
+
+        let output =
+            render_fallible_two_view_adapter_output(adapter_output, &decode, &render_runtime);
+
+        let SwitcherTwoViewHandoffDecodeRenderConnectionResult::LeftRenderedRightSkipped {
+            left,
+            right,
+            ..
+        } = output.render
+        else {
+            panic!("left render and right no-frame skip should stay explicit");
+        };
+        assert_eq!(left.selected.frame.frame_id, 1);
+        assert!(matches!(
+            right,
+            SwitcherTwoViewHandoffDecodeRenderSkippedSide::NoFrameAvailable {
+                side: SwitcherTwoViewSide::Right,
+                client_id,
+                run_id,
+                target_timestamp: TimestampMicros(1_000_001),
+                client_queue_len: 0,
+            } if client_id == ClientId("client-right".to_string())
+                && run_id == RunId("run-right".to_string())
+        ));
+        assert_eq!(decode.inputs.borrow().len(), 1);
+        assert_eq!(render_runtime.requests.borrow().len(), 1);
+    }
+
+    #[test]
+    fn two_view_handoff_scheduler_decode_render_connection_preserves_render_and_waiting_skip() {
+        let mut state = ServerVideoFrameQueueState::default();
+        store_frame_with_run_payload(
+            &mut state,
+            "client-left",
+            "run-left",
+            1,
+            TimestampMicros(2_102_100),
+            2,
+            1,
+            vec![0, 0, 1, 0x65, 0x11],
+        );
+        store_frame_for_run(
+            &mut state,
+            "client-right",
+            "run-right",
+            3,
+            TimestampMicros(2_102_200),
+        );
+        let scheduler_result =
+            fallible_two_view_scheduler_result(&mut state, TimestampMicros(1_000_001));
+        let adapter_output = fallible_two_view_adapter_output(scheduler_result);
+        let decode = RecordingTwoViewDecode::default();
+        let render_runtime = RecordingTwoViewRender::default();
+
+        let output =
+            render_fallible_two_view_adapter_output(adapter_output, &decode, &render_runtime);
+
+        let SwitcherTwoViewHandoffDecodeRenderConnectionResult::LeftRenderedRightSkipped {
+            left,
+            right,
+            ..
+        } = output.render
+        else {
+            panic!("left render and right waiting skip should stay explicit");
+        };
+        assert_eq!(left.selected.frame.frame_id, 1);
+        assert!(matches!(
+            right,
+            SwitcherTwoViewHandoffDecodeRenderSkippedSide::WaitingForFrameAtOrBeforeTarget {
+                side: SwitcherTwoViewSide::Right,
+                client_id,
+                run_id,
+                target_timestamp: TimestampMicros(1_000_001),
+                candidate_frame_id: 3,
+                candidate_capture_timestamp: TimestampMicros(1_000_003),
+                client_queue_len: 1,
+            } if client_id == ClientId("client-right".to_string())
+                && run_id == RunId("run-right".to_string())
+        ));
+        assert_eq!(decode.inputs.borrow().len(), 1);
+        assert_eq!(render_runtime.requests.borrow().len(), 1);
+    }
+
+    #[test]
+    fn two_view_handoff_scheduler_decode_render_connection_preserves_render_and_source_error_skip()
+    {
+        let mut state = ServerVideoFrameQueueState::default();
+        store_frame_with_run_payload(
+            &mut state,
+            "client-left",
+            "run-left",
+            1,
+            TimestampMicros(2_102_300),
+            2,
+            1,
+            vec![0, 0, 1, 0x65, 0x11],
+        );
+        let scheduler_result = {
+            let mut handoff = SwitcherInProcessQueuedFrameHandoff::new(&mut state);
+            SwitcherTwoViewTargetTimeHandoffSourceSchedulerBoundary::default()
+                .select_pair_from_handoff(
+                    &mut handoff,
+                    SwitcherTwoViewTargetTimeSourceSchedulerInput {
+                        left: SwitcherTwoViewTargetTimeSourceViewConfig {
+                            client_id: ClientId("client-left".to_string()),
+                            run_id: RunId("run-left".to_string()),
+                        },
+                        right: SwitcherTwoViewTargetTimeSourceViewConfig {
+                            client_id: ClientId("".to_string()),
+                            run_id: RunId("run-right".to_string()),
+                        },
+                        target_timestamp: TimestampMicros(1_000_001),
+                        mode:
+                            SwitcherTwoViewTargetTimeSourceSchedulerMode::PreviewLatestIfAtOrBefore,
+                    },
+                )
+        };
+        let adapter_output = fallible_two_view_adapter_output(scheduler_result);
+        let decode = RecordingTwoViewDecode::default();
+        let render_runtime = RecordingTwoViewRender::default();
+
+        let output =
+            render_fallible_two_view_adapter_output(adapter_output, &decode, &render_runtime);
+
+        assert_eq!(
+            output.scheduler_status,
+            SwitcherTwoViewTargetTimeHandoffSourceSchedulerStatus::HandoffError
+        );
+        let SwitcherTwoViewHandoffDecodeRenderConnectionResult::LeftRenderedRightSkipped {
+            right,
+            ..
+        } = output.render
+        else {
+            panic!("left render and right source error skip should stay explicit");
+        };
+        assert!(matches!(
+            right,
+            SwitcherTwoViewHandoffDecodeRenderSkippedSide::HandoffError {
+                side: SwitcherTwoViewSide::Right,
+                error: SwitcherQueuedFrameHandoffError::InvalidScope { .. },
+                ..
+            }
+        ));
+        assert!(!matches!(
+            right,
+            SwitcherTwoViewHandoffDecodeRenderSkippedSide::NoFrameAvailable { .. }
+                | SwitcherTwoViewHandoffDecodeRenderSkippedSide::WaitingForFrameAtOrBeforeTarget { .. }
+        ));
+        assert_eq!(decode.inputs.borrow().len(), 1);
+        assert_eq!(render_runtime.requests.borrow().len(), 1);
+    }
+
+    #[test]
+    fn two_view_handoff_scheduler_decode_render_connection_preserves_both_source_errors() {
+        let mut handoff = FailingQueuedFrameHandoff {
+            error: SwitcherQueuedFrameHandoffError::SourceUnavailable,
+        };
+        let scheduler_result = SwitcherTwoViewTargetTimeHandoffSourceSchedulerBoundary::default()
+            .select_pair_from_handoff(
+                &mut handoff,
+                fallible_two_view_scheduler_input(
+                    TimestampMicros(1_000_001),
+                    SwitcherTwoViewTargetTimeSourceSchedulerMode::PreviewLatestIfAtOrBefore,
+                ),
+            );
+        let adapter_output = fallible_two_view_adapter_output(scheduler_result);
+        let decode = RecordingTwoViewDecode::default();
+        let render_runtime = RecordingTwoViewRender::default();
+
+        let output =
+            render_fallible_two_view_adapter_output(adapter_output, &decode, &render_runtime);
+
+        assert_eq!(
+            output.scheduler_status,
+            SwitcherTwoViewTargetTimeHandoffSourceSchedulerStatus::HandoffError
+        );
+        let SwitcherTwoViewHandoffDecodeRenderConnectionResult::BothSkipped { left, right, .. } =
+            output.render
+        else {
+            panic!("both source errors should produce two source-error skips");
+        };
+        assert!(matches!(
+            left,
+            SwitcherTwoViewHandoffDecodeRenderSkippedSide::HandoffError {
+                side: SwitcherTwoViewSide::Left,
+                error: SwitcherQueuedFrameHandoffError::SourceUnavailable,
+                ..
+            }
+        ));
+        assert!(matches!(
+            right,
+            SwitcherTwoViewHandoffDecodeRenderSkippedSide::HandoffError {
+                side: SwitcherTwoViewSide::Right,
+                error: SwitcherQueuedFrameHandoffError::SourceUnavailable,
+                ..
+            }
+        ));
+        assert!(!matches!(
+            left,
+            SwitcherTwoViewHandoffDecodeRenderSkippedSide::NoFrameAvailable { .. }
+                | SwitcherTwoViewHandoffDecodeRenderSkippedSide::WaitingForFrameAtOrBeforeTarget { .. }
+        ));
+        assert!(!matches!(
+            right,
+            SwitcherTwoViewHandoffDecodeRenderSkippedSide::NoFrameAvailable { .. }
+                | SwitcherTwoViewHandoffDecodeRenderSkippedSide::WaitingForFrameAtOrBeforeTarget { .. }
+        ));
+        assert_eq!(decode.inputs.borrow().len(), 0);
+        assert_eq!(render_runtime.requests.borrow().len(), 0);
+    }
+
+    #[test]
+    fn two_view_handoff_scheduler_decode_render_connection_creates_no_fake_frames_for_skips() {
+        let mut handoff = FailingQueuedFrameHandoff {
+            error: SwitcherQueuedFrameHandoffError::Timeout,
+        };
+        let scheduler_result = SwitcherTwoViewTargetTimeHandoffSourceSchedulerBoundary::default()
+            .select_pair_from_handoff(
+                &mut handoff,
+                fallible_two_view_scheduler_input(
+                    TimestampMicros(1_000_001),
+                    SwitcherTwoViewTargetTimeSourceSchedulerMode::PreviewLatestIfAtOrBefore,
+                ),
+            );
+        let adapter_output = fallible_two_view_adapter_output(scheduler_result);
+        let decode = RecordingTwoViewDecode::default();
+        let render_runtime = RecordingTwoViewRender::default();
+
+        let output =
+            render_fallible_two_view_adapter_output(adapter_output, &decode, &render_runtime);
+
+        assert!(matches!(
+            output.render,
+            SwitcherTwoViewHandoffDecodeRenderConnectionResult::BothSkipped { .. }
+        ));
+        assert_eq!(
+            decode.inputs.borrow().len(),
+            0,
+            "source-error skips must not create decode input"
+        );
+        assert_eq!(
+            render_runtime.requests.borrow().len(),
+            0,
+            "source-error skips must not create render input"
         );
     }
 

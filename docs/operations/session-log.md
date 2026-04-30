@@ -5,6 +5,58 @@
 - Codex
 
 ### Work
+- Added the smallest fallible adapter output -> display-policy-facing decode/render connection.
+- Added `SwitcherTwoViewHandoffDecodeRenderSkippedSide`.
+- Added `SwitcherTwoViewHandoffDecodeRenderConnectionResult`.
+- Added `SwitcherTwoViewHandoffSchedulerDecodeRenderConnectionInput`.
+- Added `SwitcherTwoViewHandoffSchedulerDecodeRenderConnectionOutput`.
+- Added `SwitcherTwoViewHandoffSchedulerDecodeRenderConnectionBoundary`.
+- The connection decodes/renders only `RenderFrame` instructions through existing H.264 decode and window render boundaries.
+- The connection preserves no-frame, waiting, and handoff/source error skips as distinct display-policy-facing results.
+- The connection keeps aggregate `HandoffError` visible and does not force source errors into existing no-frame or waiting selection shapes.
+- Added focused tests for both rendered, render+no-frame, render+waiting, render+source-error, both source errors, source-error not no-frame/waiting, no fake decode/render calls for source-error skips, and aggregate handoff error preservation.
+
+### Changed Files
+- `apps/switcher/src/lib.rs`
+- `docs/architecture/system-design.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### Decisions
+- Keep this path separate from the existing non-fallible scheduler decode/render connection.
+- Do not call decode/render hooks for no-frame, waiting, or handoff/source-error instructions.
+- Do not convert `SkipHandoffError` into `SwitcherTwoViewDecodeRenderInput`.
+- Keep targetTime selection in switcher.
+- Keep server as ingest/reassembly/queue owner.
+- Do not add IPC/TCP/UDP/shared-memory transport, OBS output, 4-view orchestration, protocol wire-format changes, H.264 behavior changes, or switcher-side fragment reassembly.
+
+### Unresolved
+- Connect `SwitcherTwoViewHandoffSchedulerDecodeRenderConnectionOutput` to display policy / placeholder handling without hiding source-error skips.
+- Decide whether display policy should gain a parallel fallible input shape or an adapter from fallible skipped sides into placeholder detail.
+- production H.264 encoder configuration / error logging policy
+
+### Next
+- Plan the smallest display-policy / placeholder connection for fallible decode/render connection output.
+
+### TODO Update
+- Marked the fallible adapter output -> display-policy-facing decode/render connection as complete.
+- Updated the next item to plan the display-policy / placeholder connection for `SwitcherTwoViewHandoffSchedulerDecodeRenderConnectionOutput`.
+
+### Validation
+- `cargo fmt` passed.
+- `cargo fmt --check` passed.
+- `cargo test -p stream-sync-switcher two_view -- --test-threads=1` passed.
+- `cargo test -p stream-sync-switcher target_time -- --test-threads=1` passed.
+- `cargo test -p stream-sync-switcher single_client_queue_source -- --test-threads=1` passed.
+- `cargo test -p stream-sync-server video_frame_queue -- --test-threads=1` passed.
+- `cargo check --workspace` passed.
+- `git diff --check` passed with line-ending warnings for changed files.
+
+## 2026-05-01
+### Type
+- Codex
+
+### Work
 - Added the smallest fallible 2-view scheduler decode/render-facing adapter.
 - Added `SwitcherTwoViewHandoffSchedulerDecodeRenderSideInstruction`.
 - Added `SwitcherTwoViewHandoffSchedulerDecodeRenderAdapterInput`.

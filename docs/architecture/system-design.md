@@ -8519,6 +8519,47 @@ Responsibility split:
 
 No protocol wire format changed for this slice.
 
+## Switcher Fallible 2-View Scheduler Decode/Render Connection Boundary
+
+The fallible adapter output now has a minimal display-policy-facing
+decode/render connection:
+
+```text
+SwitcherTwoViewHandoffSchedulerDecodeRenderAdapterOutput
+  -> SwitcherTwoViewHandoffSchedulerDecodeRenderConnectionBoundary
+  -> SwitcherTwoViewHandoffDecodeRenderConnectionResult
+```
+
+Current implementation:
+
+- `SwitcherTwoViewHandoffSchedulerDecodeRenderConnectionBoundary` consumes a
+  completed fallible adapter output plus window titles / hold duration.
+- It decodes and renders only `RenderFrame` instructions through the existing
+  H.264 decode and window render boundaries.
+- It preserves skipped sides as distinct display-policy-facing states:
+  - no-frame remains `NoFrameAvailable`.
+  - waiting remains `WaitingForFrameAtOrBeforeTarget`.
+  - handoff/source failure remains `HandoffError`.
+  - decode/render failures for selected frames remain wrapped as
+    `DecodeRenderSkipped` with the existing selected-frame skip detail.
+- The connection output keeps the adapter output and aggregate scheduler status,
+  including aggregate `HandoffError`.
+- Handoff/source errors are not forced into `SwitcherTwoViewDecodeRenderInput`,
+  `SwitcherJitterBufferSelectionResult::NoFrame`, or
+  `SwitcherJitterBufferSelectionResult::FrameTooEarly`.
+
+Responsibility split:
+
+- the fallible adapter remains responsible for preserving scheduler-side
+  render/skip/source-error instructions.
+- the fallible connection owns only per-side decode/render execution for real
+  selected frames and display-policy-facing skipped result construction.
+- display policy, hold-previous behavior, placeholder composition, OBS output,
+  4-view orchestration, late-drop mutation, transport, protocol changes, H.264
+  behavior changes, and switcher-side fragment reassembly remain out of scope.
+
+No protocol wire format changed for this slice.
+
 ## Switcher 2-View Scheduler Decode/Render Connection Boundary
 
 The scheduler adapter now has a smallest in-process connection boundary that
