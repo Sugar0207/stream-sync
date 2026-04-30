@@ -446,6 +446,29 @@ Fail:
 - switcher receives no accepted frames
 - all accepted frames fail decode/render
 
+### Latest Manual Result Review
+
+2026-04-30 review status: inconclusive.
+
+The submitted stdout blocks for the switcher, client 1, and client 2 contained
+only `...`, so there were no counters or status lines available to verify.
+
+Current answers:
+
+- both clients auth successfully: not proven
+- both clients send real encoded frames: not proven
+- switcher receive / reassembly / queue for both clients: not proven
+- shared targetTime selection from both clients: not proven
+- H.264 decode for both selected frames: not proven
+- 2-view composition produced a composed frame: not proven
+- composed canvas render succeeded: not proven
+- waiting / no-frame / stale-like cases: not observable from the submitted text
+- next action: rerun the same manual validation and record the real stdout
+  counters before adding a new display-policy-chain diagnostic command
+
+No code fix is indicated by this review because no concrete failure output was
+provided.
+
 ---
 
 ## 4. Expected Stdout Reading Guide

@@ -59,9 +59,9 @@
 ---
 
 ## 直近でやること
-1. 2-client manual validation を実行し、live two-view switcher の accepted frames / shared targetTime selection / composed render 結果を記録する
+1. 2-client manual validation を実行し、live two-view switcher の real stdout counters を記録する。前回提出された stdout は `...` のみで auth / send / queue / targetTime / decode / composition / render 成否を判定できなかったため、同じ command flow を再実行して確認する
 2. production H.264 encoder configuration / error logging policy
-3. 2-client manual validation 後に display-policy chain 用の最小 diagnostic command を追加するか判断する
+3. 実 stdout 付きの 2-client manual validation 後に display-policy chain 用の最小 diagnostic command を追加するか判断する
 
 ---
 
@@ -764,7 +764,7 @@
 - switcher now has a minimal 2-view display policy boundary: `SwitcherTwoViewDisplayPolicyBoundary` maps decode/render connection results to update, hold previous, stale previous, or no-display placeholder decisions while preserving skip reasons and avoiding fake frames.
 - switcher now has a minimal display policy -> 2-view composition adapter: `SwitcherTwoViewDisplayCompositionAdapterBoundary` maps update and hold decisions to decoded composition inputs, maps stale / no-display placeholder decisions to skipped composition sides, and keeps skip reasons visible without creating fake frames.
 - switcher now has a minimal display-composition adapter -> composed canvas render connection: `SwitcherTwoViewDisplayCompositionRenderConnectionBoundary` runs adapter output through the existing 2-view composition boundary and composed-canvas render boundary, keeps adapter output / composition result / render result visible, renders only when composition produces a real composed frame, and keeps stale / no-display placeholders explicit without fake decoded frames.
-- 2-client manual validation planning is now documented in `docs/operations/manual-real-encoded-video-poc.md`: the current manual command validates two bounded real encoded clients through live switcher auth, UDP source intake, queue storage, shared targetTime selection, decode, 2-view composition, and composed canvas render. It also records that the current manual command does not yet exercise the newer display policy -> display-composition adapter chain, and identifies the smallest future diagnostic hook if needed.
+- 2-client manual validation planning is now documented in `docs/operations/manual-real-encoded-video-poc.md`: the current manual command validates two bounded real encoded clients through live switcher auth, UDP source intake, queue storage, shared targetTime selection, decode, 2-view composition, and composed canvas render. It also records that the current manual command does not yet exercise the newer display policy -> display-composition adapter chain, and identifies the smallest future diagnostic hook if needed. A 2026-04-30 submitted stdout review was inconclusive because the provided switcher/client output blocks contained only `...`, so no auth / send / queue / targetTime / decode / composition / render counters could be verified.
 - `docs/operations/manual-real-encoded-video-poc.md` is now the step-by-step human E2E checklist for the bounded authenticated real encoded sender, one-client server queue verification, and two-client live switcher verification, including prerequisites, commands, expected stdout counters, diagnosis, pass/fail criteria, and recorded successful fragmented 1-frame / 2-frame queue runs.
 - manual fragmented real encoded queue verification is now recorded as successful for both `max_frames=1` and `max_frames=2` when using the recommended `8388608` byte server receive buffer request and client fragment pacing. The latest `max_frames=2` localhost run observed `fragments_sent=854/854`, `fragments_received=854`, `frames_reassembled=2`, `frames_queued=2`, `incomplete_reassembly_frames=0`, and `receive_timed_out=false`.
 - metrics commit, snapshot export cadence, dashboard refresh consumer policy, and dashboard refresh runtime wiring remain separate from timer wait, retry, reconnect, socket ownership, cleanup, UI rendering, video, switcher, and OBS.
@@ -772,6 +772,6 @@
 - actual dashboard UI rendering remains unimplemented.
 
 ## Next Items
-1. Run the documented 2-client manual validation and record pass/fail counters.
+1. Rerun the documented 2-client manual validation and record real switcher/client stdout counters.
 2. production H.264 encoder configuration / error logging policy
-3. Decide whether to add the minimal display-policy-chain manual diagnostic command before 4-view expansion
+3. Decide whether to add the minimal display-policy-chain manual diagnostic command before 4-view expansion after real manual stdout is available

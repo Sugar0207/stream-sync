@@ -5,6 +5,58 @@
 - Codex
 
 ### Work
+- Reviewed the submitted 2-client manual validation stdout blocks.
+- Determined the review is inconclusive because the switcher, client 1, and client 2 stdout blocks contained only `...`.
+- Recorded that the following manual validation questions cannot be proven from the submitted text:
+  - both clients authenticated successfully
+  - both clients sent real encoded frames
+  - switcher received / reassembled / queued frames for both clients
+  - shared targetTime selection selected frames from both clients
+  - H.264 decode succeeded for both selected frames
+  - 2-view composition produced a composed frame
+  - composed canvas render succeeded
+  - waiting / no-frame / stale-like cases appeared
+- Updated the manual checklist and TODO to require rerunning the same 2-client command flow with real stdout counters before deciding on a display-policy-chain diagnostic command.
+
+### Changed Files
+- `docs/operations/manual-real-encoded-video-poc.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### Decisions
+- No tiny fix is indicated because no concrete failure output was provided.
+- No new diagnostic command is justified yet because the current manual validation result is not observable from the submitted stdout.
+- Did not update architecture because no architecture changed and no new boundary was introduced.
+- Did not implement OBS output, 4-view orchestration, late-drop mutation, protocol wire-format changes, or H.264 decode/render behavior changes.
+
+### Unresolved
+- Rerun the 2-client manual validation and record real switcher/client stdout counters.
+- Decide whether to add a minimal display-policy-chain manual diagnostic command after real manual stdout is available.
+- production H.264 encoder configuration / error logging policy
+- 4-view expansion planning
+
+### Next
+- Rerun `--live-two-view-switcher-once` with two bounded real encoded clients and record accepted auth, sent frames, accepted / queued frames, targetTime selection, decode, composition, render, and stop counters.
+
+### TODO Update
+- Kept 2-client manual validation as the next task, but clarified that the submitted stdout review was inconclusive and the same validation must be rerun with real counters.
+- Kept display-policy-chain diagnostic command as a decision after real manual stdout is available.
+
+### Validation
+- `cargo fmt` passed.
+- `cargo fmt --check` passed.
+- `cargo test -p stream-sync-switcher two_view -- --test-threads=1` passed: 79 passed, 0 failed.
+- `cargo test -p stream-sync-switcher target_time -- --test-threads=1` passed: 22 passed, 0 failed.
+- `cargo test -p stream-sync-switcher single_client_queue_source -- --test-threads=1` passed: 3 passed, 0 failed.
+- `cargo test -p stream-sync-server video_frame_queue -- --test-threads=1` passed: 12 passed, 0 failed.
+- `cargo check --workspace` passed.
+- `git diff --check` passed with line-ending warnings for changed docs.
+
+## 2026-04-30
+### Type
+- Codex
+
+### Work
 - Inspected the existing manual client/server/switcher runtime hooks for the next 2-client validation step.
 - Confirmed the current clean manual command is `--live-two-view-switcher-once` plus two bounded authenticated real encoded client senders.
 - Confirmed that current manual runtime validates:
