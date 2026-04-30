@@ -5,6 +5,51 @@
 - Codex
 
 ### Work
+- Added the minimal switcher-facing queued-frame source interface.
+- Added `SwitcherQueuedFrameSource` with `read_queued_frame(client_id, run_id, mode)` via the existing `SwitcherSingleClientQueueSourceInput` / `SwitcherSingleClientQueueSourceResult` shape.
+- Added `SwitcherInProcessServerQueueFrameSource`, an in-process adapter over caller-owned `ServerVideoFrameQueueState`.
+- The adapter delegates to `SwitcherSingleClientQueueSourceBoundary`, which continues to delegate to `ServerVideoFrameQueueReadBoundary`.
+- Added focused tests for selected-frame read, missing-run no-frame, preview no-mutation, consume mutating only the requested run, and frame metadata preservation.
+
+### Changed Files
+- `apps/switcher/src/lib.rs`
+- `docs/architecture/system-design.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### Decisions
+- Keep the first production-facing server->switcher handoff in-process and pull/read based.
+- Reuse existing queue input/result shapes so no-frame status, read mode, queue length, and encoded-frame metadata remain visible.
+- Keep IPC/TCP/UDP/shared-memory transport, OBS output, 4-view orchestration, switcher-side fragment reassembly, protocol wire-format changes, late-drop mutation, and H.264 behavior changes out of scope.
+
+### Unresolved
+- Route `SwitcherServerMediatedTwoViewValidationBoundary` through `SwitcherQueuedFrameSource`.
+- Decide cross-process server->switcher transport only after the in-process interface is proven.
+- production H.264 encoder configuration / error logging policy
+- 4-view expansion planning
+
+### Next
+- Use `SwitcherQueuedFrameSource` for the server-mediated 2-view validation path while preserving current scheduler / display / composition / render visibility.
+
+### TODO Update
+- Marked the queued-frame source trait/interface as completed in the current position.
+- Set the next task to routing server-mediated 2-view validation through `SwitcherQueuedFrameSource`.
+
+### Validation
+- `cargo fmt` passed.
+- `cargo fmt --check` passed.
+- `cargo test -p stream-sync-switcher two_view -- --test-threads=1` passed on rerun with a longer timeout. The first run hit the 120s command timeout before returning a result.
+- `cargo test -p stream-sync-switcher target_time -- --test-threads=1` passed.
+- `cargo test -p stream-sync-switcher single_client_queue_source -- --test-threads=1` passed.
+- `cargo test -p stream-sync-server video_frame_queue -- --test-threads=1` passed.
+- `cargo check --workspace` passed.
+- `git diff --check` passed with line-ending warnings for changed files.
+
+## 2026-04-30
+### Type
+- Codex
+
+### Work
 - Planned the production server -> switcher handoff direction after the in-process server-mediated validation boundary.
 - Chose switcher-pull/read as the initial production direction instead of server-push.
 - Defined the smallest handoff interface shape as a switcher-facing queued-frame source over `ServerVideoFrameQueueReadBoundary`.

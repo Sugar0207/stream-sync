@@ -197,6 +197,47 @@ impl SwitcherSingleClientQueueSourceBoundary {
     }
 }
 
+/// Switcher-facing queued encoded-frame source interface.
+///
+/// This is the first production-oriented server->switcher handoff shape. It
+/// keeps `client_id`, `run_id`, and queue read mode in the input, preserves
+/// explicit no-frame results, and intentionally says nothing about transport.
+pub trait SwitcherQueuedFrameSource {
+    fn read_queued_frame(
+        &mut self,
+        input: SwitcherSingleClientQueueSourceInput,
+    ) -> SwitcherSingleClientQueueSourceResult;
+}
+
+/// In-process adapter from caller-owned server queues to the switcher source.
+///
+/// The adapter wraps `SwitcherSingleClientQueueSourceBoundary`, which in turn
+/// wraps `ServerVideoFrameQueueReadBoundary`. It does not add IPC, socket I/O,
+/// decode/render behavior, OBS output, 4-view orchestration, or fragment
+/// reassembly.
+pub struct SwitcherInProcessServerQueueFrameSource<'a> {
+    queue_state: &'a mut ServerVideoFrameQueueState,
+    boundary: SwitcherSingleClientQueueSourceBoundary,
+}
+
+impl<'a> SwitcherInProcessServerQueueFrameSource<'a> {
+    pub fn new(queue_state: &'a mut ServerVideoFrameQueueState) -> Self {
+        Self {
+            queue_state,
+            boundary: SwitcherSingleClientQueueSourceBoundary::default(),
+        }
+    }
+}
+
+impl SwitcherQueuedFrameSource for SwitcherInProcessServerQueueFrameSource<'_> {
+    fn read_queued_frame(
+        &mut self,
+        input: SwitcherSingleClientQueueSourceInput,
+    ) -> SwitcherSingleClientQueueSourceResult {
+        self.boundary.read(self.queue_state, input)
+    }
+}
+
 /// Selection behavior for the first single-client targetTime queue source.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum SwitcherSingleClientTargetTimeSourceMode {
@@ -5521,6 +5562,213 @@ mod tests {
             }
         );
         assert_eq!(state.total_len(), 1);
+    }
+
+    #[test]
+    fn single_client_queue_source_trait_adapter_returns_selected_queued_frame() {
+        let mut state = ServerVideoFrameQueueState::default();
+        store_frame_for_run(
+            &mut state,
+            "client-1",
+            "run-1",
+            1,
+            TimestampMicros(2_031_000),
+        );
+        store_frame_for_run(
+            &mut state,
+            "client-1",
+            "run-2",
+            2,
+            TimestampMicros(2_031_100),
+        );
+        let client_id = ClientId("client-1".to_string());
+
+        let result = {
+            let mut source = SwitcherInProcessServerQueueFrameSource::new(&mut state);
+            source.read_queued_frame(SwitcherSingleClientQueueSourceInput {
+                client_id: client_id.clone(),
+                run_id: RunId("run-1".to_string()),
+                mode: SwitcherSingleClientQueueSourceMode::PreviewOldest,
+            })
+        };
+
+        let SwitcherSingleClientQueueSourceResult::FrameAvailable { frame, mode, .. } = result
+        else {
+            panic!("queued frame should be available through trait adapter");
+        };
+        assert_eq!(frame.client_id, client_id);
+        assert_eq!(frame.run_id, RunId("run-1".to_string()));
+        assert_eq!(frame.frame_id, 1);
+        assert_eq!(mode, SwitcherSingleClientQueueSourceMode::PreviewOldest);
+    }
+
+    #[test]
+    fn single_client_queue_source_trait_adapter_returns_no_frame_for_missing_run() {
+        let mut state = ServerVideoFrameQueueState::default();
+        store_frame_for_run(
+            &mut state,
+            "client-1",
+            "run-1",
+            1,
+            TimestampMicros(2_032_000),
+        );
+        let client_id = ClientId("client-1".to_string());
+
+        let result = {
+            let mut source = SwitcherInProcessServerQueueFrameSource::new(&mut state);
+            source.read_queued_frame(SwitcherSingleClientQueueSourceInput {
+                client_id: client_id.clone(),
+                run_id: RunId("run-missing".to_string()),
+                mode: SwitcherSingleClientQueueSourceMode::PreviewLatest,
+            })
+        };
+
+        assert_eq!(
+            result,
+            SwitcherSingleClientQueueSourceResult::NoFrameAvailable {
+                client_id,
+                run_id: RunId("run-missing".to_string()),
+                mode: SwitcherSingleClientQueueSourceMode::PreviewLatest,
+                client_queue_len: 1,
+            }
+        );
+        assert_eq!(state.total_len(), 1);
+    }
+
+    #[test]
+    fn single_client_queue_source_trait_adapter_preview_does_not_mutate_queue() {
+        let mut state = ServerVideoFrameQueueState::default();
+        store_frame_for_run(
+            &mut state,
+            "client-1",
+            "run-1",
+            1,
+            TimestampMicros(2_033_000),
+        );
+        store_frame_for_run(
+            &mut state,
+            "client-1",
+            "run-1",
+            2,
+            TimestampMicros(2_033_100),
+        );
+        let client_id = ClientId("client-1".to_string());
+        let before_len = state.client_queue_len(&client_id);
+
+        let result = {
+            let mut source = SwitcherInProcessServerQueueFrameSource::new(&mut state);
+            source.read_queued_frame(SwitcherSingleClientQueueSourceInput {
+                client_id: client_id.clone(),
+                run_id: RunId("run-1".to_string()),
+                mode: SwitcherSingleClientQueueSourceMode::PreviewLatest,
+            })
+        };
+
+        let SwitcherSingleClientQueueSourceResult::FrameAvailable { frame, .. } = result else {
+            panic!("latest frame should be inspectable through trait adapter");
+        };
+        assert_eq!(frame.frame_id, 2);
+        assert_eq!(state.client_queue_len(&client_id), before_len);
+        let remaining: Vec<u64> = state
+            .frames_for_client(&client_id)
+            .map(|queued| queued.frame.frame_id)
+            .collect();
+        assert_eq!(remaining, vec![1, 2]);
+    }
+
+    #[test]
+    fn single_client_queue_source_trait_adapter_consume_mutates_only_requested_run() {
+        let mut state = ServerVideoFrameQueueState::default();
+        store_frame_for_run(
+            &mut state,
+            "client-1",
+            "run-1",
+            1,
+            TimestampMicros(2_034_000),
+        );
+        store_frame_for_run(
+            &mut state,
+            "client-1",
+            "run-2",
+            2,
+            TimestampMicros(2_034_100),
+        );
+        store_frame_for_run(
+            &mut state,
+            "client-1",
+            "run-1",
+            3,
+            TimestampMicros(2_034_200),
+        );
+        let client_id = ClientId("client-1".to_string());
+
+        let result = {
+            let mut source = SwitcherInProcessServerQueueFrameSource::new(&mut state);
+            source.read_queued_frame(SwitcherSingleClientQueueSourceInput {
+                client_id: client_id.clone(),
+                run_id: RunId("run-1".to_string()),
+                mode: SwitcherSingleClientQueueSourceMode::ConsumeOldest,
+            })
+        };
+
+        let SwitcherSingleClientQueueSourceResult::FrameAvailable {
+            frame,
+            remaining_client_queue_len,
+            ..
+        } = result
+        else {
+            panic!("oldest requested run frame should be dequeued through trait adapter");
+        };
+        assert_eq!(frame.frame_id, 1);
+        assert_eq!(remaining_client_queue_len, 2);
+        let remaining: Vec<(String, u64)> = state
+            .frames_for_client(&client_id)
+            .map(|queued| (queued.frame.run_id.0.clone(), queued.frame.frame_id))
+            .collect();
+        assert_eq!(
+            remaining,
+            vec![("run-2".to_string(), 2), ("run-1".to_string(), 3)]
+        );
+    }
+
+    #[test]
+    fn single_client_queue_source_trait_adapter_preserves_frame_metadata() {
+        let mut state = ServerVideoFrameQueueState::default();
+        store_frame_with_run_payload(
+            &mut state,
+            "client-1",
+            "run-meta",
+            1,
+            TimestampMicros(2_035_000),
+            640,
+            360,
+            vec![0x01, 0x02, 0x03, 0x04],
+        );
+
+        let result = {
+            let mut source = SwitcherInProcessServerQueueFrameSource::new(&mut state);
+            source.read_queued_frame(SwitcherSingleClientQueueSourceInput {
+                client_id: ClientId("client-1".to_string()),
+                run_id: RunId("run-meta".to_string()),
+                mode: SwitcherSingleClientQueueSourceMode::PreviewOldest,
+            })
+        };
+
+        let SwitcherSingleClientQueueSourceResult::FrameAvailable { frame, .. } = result else {
+            panic!("metadata frame should be available through trait adapter");
+        };
+        assert_eq!(frame.client_id, ClientId("client-1".to_string()));
+        assert_eq!(frame.run_id, RunId("run-meta".to_string()));
+        assert_eq!(frame.frame_id, 1);
+        assert_eq!(frame.capture_timestamp, TimestampMicros(1_000_001));
+        assert_eq!(frame.send_timestamp, TimestampMicros(1_000_101));
+        assert_eq!(frame.queued_at, TimestampMicros(2_035_000));
+        assert!(frame.is_keyframe);
+        assert_eq!(frame.width, 640);
+        assert_eq!(frame.height, 360);
+        assert_eq!(frame.fps_nominal, 30);
+        assert_eq!(frame.encoded_payload_len, 4);
+        assert_eq!(frame.encoded_payload, vec![0x01, 0x02, 0x03, 0x04]);
     }
 
     #[test]

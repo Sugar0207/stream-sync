@@ -63,22 +63,23 @@ server auth / UDP receive / fragment reassembly
 ```
 
 This keeps server ingest and switcher display responsibilities separated while
-remaining in-process and testable. The first production-facing interface should
-be shaped as a small pull/read trait over server queue data; a concrete
+remaining in-process and testable. The first production-facing interface is
+shaped as a small pull/read trait over server queue data; a concrete
 cross-process transport can be decided later without changing protocol wire
-format in this planning step.
+format.
 
 Smallest handoff interface:
 
 ```text
-SwitcherQueuedFrameSource::read(client_id, run_id, mode)
+SwitcherQueuedFrameSource::read_queued_frame(client_id, run_id, mode)
   -> queued encoded frame | no-frame
 ```
 
-The initial implementation should be an in-process trait/interface, not local
-IPC, TCP, UDP, shared memory, or a new wire protocol. It should wrap
-`ServerVideoFrameQueueReadBoundary` first and preserve the same read modes:
-inspect oldest, inspect latest, and dequeue oldest.
+The initial implementation is an in-process trait/interface, not local IPC,
+TCP, UDP, shared memory, or a new wire protocol. It wraps
+`ServerVideoFrameQueueReadBoundary` through the switcher queue-source boundary
+and preserves the same read modes: inspect oldest, inspect latest, and dequeue
+oldest.
 
 Data crossing the server->switcher boundary:
 
@@ -8163,6 +8164,40 @@ Responsibility split:
   4-view orchestration, socket transport, and OBS output remain out of scope.
 
 No protocol wire format changed for this slice.
+
+## Switcher Queued-Frame Source Interface
+
+The first production-facing server->switcher handoff interface is an
+in-process pull/read source:
+
+```text
+SwitcherQueuedFrameSource::read_queued_frame(client_id, run_id, mode)
+  -> queued encoded frame | explicit no-frame
+```
+
+Current implementation:
+
+- `SwitcherQueuedFrameSource` is the switcher-facing trait/interface.
+- `SwitcherInProcessServerQueueFrameSource` is the first adapter.
+- The adapter receives caller-owned `ServerVideoFrameQueueState` and delegates
+  to `SwitcherSingleClientQueueSourceBoundary`, which delegates to
+  `ServerVideoFrameQueueReadBoundary`.
+- Reads keep `client_id`, `run_id`, and queue read mode explicit.
+- Supported modes remain the modes needed by the current switcher path:
+  - preview / inspect oldest,
+  - preview / inspect latest,
+  - consume / dequeue oldest.
+- Successful reads preserve the queued encoded-frame metadata needed by
+  targetTime scheduling and decode/render:
+  `client_id`, `run_id`, `frame_id`, capture/send/queued timestamps,
+  keyframe flag, width, height, nominal FPS, encoded payload length, and
+  encoded H.264 payload.
+- No-frame results stay explicit and preserve current per-client queue length.
+
+This interface is intentionally transport-neutral. The current adapter is
+in-process only; local IPC, TCP, UDP, shared memory, OBS output, 4-view
+orchestration, switcher-side fragment reassembly, protocol wire-format changes,
+and H.264 decode/render behavior changes remain out of scope.
 
 ## Switcher Single-Client TargetTime Source Boundary
 
