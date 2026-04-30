@@ -903,6 +903,124 @@ pub struct SwitcherTwoViewTargetTimeSourceSchedulerResult {
     pub status: SwitcherTwoViewTargetTimeSourceSchedulerStatus,
 }
 
+/// Aggregate scheduler status for fallible handoff-backed 2-view selection.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum SwitcherTwoViewTargetTimeHandoffSourceSchedulerStatus {
+    AllSelected,
+    PartialSelected,
+    Waiting,
+    NoFrames,
+    HandoffError,
+}
+
+/// Result of the fallible 2-view targetTime scheduler.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SwitcherTwoViewTargetTimeHandoffSourceSchedulerResult {
+    pub target_timestamp: TimestampMicros,
+    pub mode: SwitcherTwoViewTargetTimeSourceSchedulerMode,
+    pub left: SwitcherSingleClientTargetTimeHandoffSourceResult,
+    pub right: SwitcherSingleClientTargetTimeHandoffSourceResult,
+    pub status: SwitcherTwoViewTargetTimeHandoffSourceSchedulerStatus,
+}
+
+/// Minimal 2-view scheduler over the fallible single-client handoff source.
+///
+/// This boundary keeps targetTime selection in switcher and preserves handoff
+/// failures as scheduler-level `HandoffError` instead of treating them as
+/// no-frame, waiting, or partial selection.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct SwitcherTwoViewTargetTimeHandoffSourceSchedulerBoundary {
+    single_client: SwitcherSingleClientTargetTimeHandoffSourceBoundary,
+}
+
+impl SwitcherTwoViewTargetTimeHandoffSourceSchedulerBoundary {
+    pub fn select_pair_from_handoff(
+        &self,
+        handoff: &mut impl SwitcherQueuedFrameHandoff,
+        input: SwitcherTwoViewTargetTimeSourceSchedulerInput,
+    ) -> SwitcherTwoViewTargetTimeHandoffSourceSchedulerResult {
+        match input.mode {
+            SwitcherTwoViewTargetTimeSourceSchedulerMode::PreviewLatestIfAtOrBefore => {
+                self.preview_latest_pair(handoff, input)
+            }
+            SwitcherTwoViewTargetTimeSourceSchedulerMode::ConsumeOldestAtOrBeforeAllSelected => {
+                self.consume_oldest_pair_all_selected(handoff, input)
+            }
+        }
+    }
+
+    fn preview_latest_pair(
+        &self,
+        handoff: &mut impl SwitcherQueuedFrameHandoff,
+        input: SwitcherTwoViewTargetTimeSourceSchedulerInput,
+    ) -> SwitcherTwoViewTargetTimeHandoffSourceSchedulerResult {
+        self.select_pair_with_single_client_mode(
+            handoff,
+            input,
+            SwitcherSingleClientTargetTimeSourceMode::PreviewLatestIfAtOrBefore,
+        )
+    }
+
+    fn consume_oldest_pair_all_selected(
+        &self,
+        handoff: &mut impl SwitcherQueuedFrameHandoff,
+        input: SwitcherTwoViewTargetTimeSourceSchedulerInput,
+    ) -> SwitcherTwoViewTargetTimeHandoffSourceSchedulerResult {
+        let preview = self.select_pair_with_single_client_mode(
+            handoff,
+            input.clone(),
+            SwitcherSingleClientTargetTimeSourceMode::PreviewOldestIfAtOrBefore,
+        );
+
+        if preview.status != SwitcherTwoViewTargetTimeHandoffSourceSchedulerStatus::AllSelected {
+            return preview;
+        }
+
+        self.select_pair_with_single_client_mode(
+            handoff,
+            input,
+            SwitcherSingleClientTargetTimeSourceMode::ConsumeOldestAtOrBefore,
+        )
+    }
+
+    fn select_pair_with_single_client_mode(
+        &self,
+        handoff: &mut impl SwitcherQueuedFrameHandoff,
+        input: SwitcherTwoViewTargetTimeSourceSchedulerInput,
+        single_client_mode: SwitcherSingleClientTargetTimeSourceMode,
+    ) -> SwitcherTwoViewTargetTimeHandoffSourceSchedulerResult {
+        let target_timestamp = input.target_timestamp;
+        let mode = input.mode;
+        let left = self.single_client.select_from_handoff(
+            handoff,
+            SwitcherSingleClientTargetTimeSourceInput {
+                client_id: input.left.client_id,
+                run_id: input.left.run_id,
+                target_timestamp,
+                mode: single_client_mode,
+            },
+        );
+        let right = self.single_client.select_from_handoff(
+            handoff,
+            SwitcherSingleClientTargetTimeSourceInput {
+                client_id: input.right.client_id,
+                run_id: input.right.run_id,
+                target_timestamp,
+                mode: single_client_mode,
+            },
+        );
+        let status = two_view_target_time_handoff_source_scheduler_status(&left, &right);
+
+        SwitcherTwoViewTargetTimeHandoffSourceSchedulerResult {
+            target_timestamp,
+            mode,
+            left,
+            right,
+            status,
+        }
+    }
+}
+
 /// Per-side instruction produced by adapting queue-backed scheduler output for
 /// the existing decode/render input path.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1299,6 +1417,53 @@ fn two_view_target_time_source_scheduler_status(
             SwitcherTwoViewTargetTimeSourceSchedulerStatus::Waiting
         }
         (false, false) => SwitcherTwoViewTargetTimeSourceSchedulerStatus::NoFrames,
+    }
+}
+
+fn two_view_target_time_handoff_source_scheduler_status(
+    left: &SwitcherSingleClientTargetTimeHandoffSourceResult,
+    right: &SwitcherSingleClientTargetTimeHandoffSourceResult,
+) -> SwitcherTwoViewTargetTimeHandoffSourceSchedulerStatus {
+    if matches!(
+        left,
+        SwitcherSingleClientTargetTimeHandoffSourceResult::HandoffError { .. }
+    ) || matches!(
+        right,
+        SwitcherSingleClientTargetTimeHandoffSourceResult::HandoffError { .. }
+    ) {
+        return SwitcherTwoViewTargetTimeHandoffSourceSchedulerStatus::HandoffError;
+    }
+
+    let left_selected = matches!(
+        left,
+        SwitcherSingleClientTargetTimeHandoffSourceResult::Selected(_)
+    );
+    let right_selected = matches!(
+        right,
+        SwitcherSingleClientTargetTimeHandoffSourceResult::Selected(_)
+    );
+
+    match (left_selected, right_selected) {
+        (true, true) => SwitcherTwoViewTargetTimeHandoffSourceSchedulerStatus::AllSelected,
+        (true, false) | (false, true) => {
+            SwitcherTwoViewTargetTimeHandoffSourceSchedulerStatus::PartialSelected
+        }
+        (false, false)
+            if matches!(
+                left,
+                SwitcherSingleClientTargetTimeHandoffSourceResult::WaitingForFrameAtOrBeforeTarget {
+                    ..
+                }
+            ) || matches!(
+                right,
+                SwitcherSingleClientTargetTimeHandoffSourceResult::WaitingForFrameAtOrBeforeTarget {
+                    ..
+                }
+            ) =>
+        {
+            SwitcherTwoViewTargetTimeHandoffSourceSchedulerStatus::Waiting
+        }
+        (false, false) => SwitcherTwoViewTargetTimeHandoffSourceSchedulerStatus::NoFrames,
     }
 }
 
@@ -7370,6 +7535,382 @@ mod tests {
             SwitcherSingleClientTargetTimeHandoffSourceResult::WaitingForFrameAtOrBeforeTarget { .. }
         ));
         assert_eq!(state.client_queue_len(&client_id), 1);
+    }
+
+    fn fallible_two_view_scheduler_input(
+        target_timestamp: TimestampMicros,
+        mode: SwitcherTwoViewTargetTimeSourceSchedulerMode,
+    ) -> SwitcherTwoViewTargetTimeSourceSchedulerInput {
+        SwitcherTwoViewTargetTimeSourceSchedulerInput {
+            left: SwitcherTwoViewTargetTimeSourceViewConfig {
+                client_id: ClientId("client-left".to_string()),
+                run_id: RunId("run-left".to_string()),
+            },
+            right: SwitcherTwoViewTargetTimeSourceViewConfig {
+                client_id: ClientId("client-right".to_string()),
+                run_id: RunId("run-right".to_string()),
+            },
+            target_timestamp,
+            mode,
+        }
+    }
+
+    #[test]
+    fn two_view_target_time_handoff_source_scheduler_selects_both_views() {
+        let mut state = ServerVideoFrameQueueState::default();
+        store_frame_for_run(
+            &mut state,
+            "client-left",
+            "run-left",
+            1,
+            TimestampMicros(2_091_200),
+        );
+        store_frame_for_run(
+            &mut state,
+            "client-right",
+            "run-right",
+            2,
+            TimestampMicros(2_091_300),
+        );
+
+        let result = {
+            let mut handoff = SwitcherInProcessQueuedFrameHandoff::new(&mut state);
+            SwitcherTwoViewTargetTimeHandoffSourceSchedulerBoundary::default()
+                .select_pair_from_handoff(
+                    &mut handoff,
+                    fallible_two_view_scheduler_input(
+                        TimestampMicros(1_000_002),
+                        SwitcherTwoViewTargetTimeSourceSchedulerMode::PreviewLatestIfAtOrBefore,
+                    ),
+                )
+        };
+
+        assert_eq!(
+            result.status,
+            SwitcherTwoViewTargetTimeHandoffSourceSchedulerStatus::AllSelected
+        );
+        let SwitcherSingleClientTargetTimeHandoffSourceResult::Selected(left) = result.left else {
+            panic!("left view should be selected");
+        };
+        let SwitcherSingleClientTargetTimeHandoffSourceResult::Selected(right) = result.right
+        else {
+            panic!("right view should be selected");
+        };
+        assert_eq!(left.frame.frame_id, 1);
+        assert_eq!(right.frame.frame_id, 2);
+    }
+
+    #[test]
+    fn two_view_target_time_handoff_source_scheduler_reports_selected_and_waiting_without_mutation()
+    {
+        let mut state = ServerVideoFrameQueueState::default();
+        let left_client_id = ClientId("client-left".to_string());
+        let right_client_id = ClientId("client-right".to_string());
+        store_frame_for_run(
+            &mut state,
+            "client-left",
+            "run-left",
+            1,
+            TimestampMicros(2_091_400),
+        );
+        store_frame_for_run(
+            &mut state,
+            "client-right",
+            "run-right",
+            3,
+            TimestampMicros(2_091_500),
+        );
+
+        let result = {
+            let mut handoff = SwitcherInProcessQueuedFrameHandoff::new(&mut state);
+            SwitcherTwoViewTargetTimeHandoffSourceSchedulerBoundary::default()
+                .select_pair_from_handoff(
+                    &mut handoff,
+                    fallible_two_view_scheduler_input(
+                        TimestampMicros(1_000_001),
+                        SwitcherTwoViewTargetTimeSourceSchedulerMode::PreviewLatestIfAtOrBefore,
+                    ),
+                )
+        };
+
+        assert_eq!(
+            result.status,
+            SwitcherTwoViewTargetTimeHandoffSourceSchedulerStatus::PartialSelected
+        );
+        assert!(matches!(
+            result.left,
+            SwitcherSingleClientTargetTimeHandoffSourceResult::Selected(_)
+        ));
+        assert!(matches!(
+            result.right,
+            SwitcherSingleClientTargetTimeHandoffSourceResult::WaitingForFrameAtOrBeforeTarget { .. }
+        ));
+        assert_eq!(state.client_queue_len(&left_client_id), 1);
+        assert_eq!(state.client_queue_len(&right_client_id), 1);
+    }
+
+    #[test]
+    fn two_view_target_time_handoff_source_scheduler_reports_selected_and_no_frame() {
+        let mut state = ServerVideoFrameQueueState::default();
+        store_frame_for_run(
+            &mut state,
+            "client-left",
+            "run-left",
+            1,
+            TimestampMicros(2_091_600),
+        );
+
+        let result = {
+            let mut handoff = SwitcherInProcessQueuedFrameHandoff::new(&mut state);
+            SwitcherTwoViewTargetTimeHandoffSourceSchedulerBoundary::default()
+                .select_pair_from_handoff(
+                    &mut handoff,
+                    fallible_two_view_scheduler_input(
+                        TimestampMicros(1_000_001),
+                        SwitcherTwoViewTargetTimeSourceSchedulerMode::PreviewLatestIfAtOrBefore,
+                    ),
+                )
+        };
+
+        assert_eq!(
+            result.status,
+            SwitcherTwoViewTargetTimeHandoffSourceSchedulerStatus::PartialSelected
+        );
+        assert!(matches!(
+            result.left,
+            SwitcherSingleClientTargetTimeHandoffSourceResult::Selected(_)
+        ));
+        assert!(matches!(
+            result.right,
+            SwitcherSingleClientTargetTimeHandoffSourceResult::NoFrameAvailable { .. }
+        ));
+    }
+
+    #[test]
+    fn two_view_target_time_handoff_source_scheduler_reports_selected_and_handoff_error() {
+        let mut state = ServerVideoFrameQueueState::default();
+        store_frame_for_run(
+            &mut state,
+            "client-left",
+            "run-left",
+            1,
+            TimestampMicros(2_091_700),
+        );
+
+        let result = {
+            let mut handoff = SwitcherInProcessQueuedFrameHandoff::new(&mut state);
+            SwitcherTwoViewTargetTimeHandoffSourceSchedulerBoundary::default()
+                .select_pair_from_handoff(
+                    &mut handoff,
+                    SwitcherTwoViewTargetTimeSourceSchedulerInput {
+                        left: SwitcherTwoViewTargetTimeSourceViewConfig {
+                            client_id: ClientId("client-left".to_string()),
+                            run_id: RunId("run-left".to_string()),
+                        },
+                        right: SwitcherTwoViewTargetTimeSourceViewConfig {
+                            client_id: ClientId("".to_string()),
+                            run_id: RunId("run-right".to_string()),
+                        },
+                        target_timestamp: TimestampMicros(1_000_001),
+                        mode:
+                            SwitcherTwoViewTargetTimeSourceSchedulerMode::PreviewLatestIfAtOrBefore,
+                    },
+                )
+        };
+
+        assert_eq!(
+            result.status,
+            SwitcherTwoViewTargetTimeHandoffSourceSchedulerStatus::HandoffError
+        );
+        assert!(matches!(
+            result.left,
+            SwitcherSingleClientTargetTimeHandoffSourceResult::Selected(_)
+        ));
+        assert!(matches!(
+            result.right,
+            SwitcherSingleClientTargetTimeHandoffSourceResult::HandoffError { .. }
+        ));
+        assert_ne!(
+            result.status,
+            SwitcherTwoViewTargetTimeHandoffSourceSchedulerStatus::NoFrames
+        );
+        assert_ne!(
+            result.status,
+            SwitcherTwoViewTargetTimeHandoffSourceSchedulerStatus::Waiting
+        );
+    }
+
+    #[test]
+    fn two_view_target_time_handoff_source_scheduler_reports_both_handoff_errors() {
+        let mut handoff = FailingQueuedFrameHandoff {
+            error: SwitcherQueuedFrameHandoffError::SourceUnavailable,
+        };
+
+        let result = SwitcherTwoViewTargetTimeHandoffSourceSchedulerBoundary::default()
+            .select_pair_from_handoff(
+                &mut handoff,
+                fallible_two_view_scheduler_input(
+                    TimestampMicros(1_000_001),
+                    SwitcherTwoViewTargetTimeSourceSchedulerMode::PreviewLatestIfAtOrBefore,
+                ),
+            );
+
+        assert_eq!(
+            result.status,
+            SwitcherTwoViewTargetTimeHandoffSourceSchedulerStatus::HandoffError
+        );
+        assert!(matches!(
+            result.left,
+            SwitcherSingleClientTargetTimeHandoffSourceResult::HandoffError { .. }
+        ));
+        assert!(matches!(
+            result.right,
+            SwitcherSingleClientTargetTimeHandoffSourceResult::HandoffError { .. }
+        ));
+        assert_ne!(
+            result.status,
+            SwitcherTwoViewTargetTimeHandoffSourceSchedulerStatus::NoFrames
+        );
+        assert_ne!(
+            result.status,
+            SwitcherTwoViewTargetTimeHandoffSourceSchedulerStatus::Waiting
+        );
+    }
+
+    #[test]
+    fn two_view_target_time_handoff_source_scheduler_consume_is_all_or_nothing_when_selected() {
+        let mut state = ServerVideoFrameQueueState::default();
+        let left_client_id = ClientId("client-left".to_string());
+        let right_client_id = ClientId("client-right".to_string());
+        store_frame_for_run(
+            &mut state,
+            "client-left",
+            "run-left",
+            1,
+            TimestampMicros(2_091_800),
+        );
+        store_frame_for_run(
+            &mut state,
+            "client-right",
+            "run-right",
+            2,
+            TimestampMicros(2_091_900),
+        );
+
+        let result = {
+            let mut handoff = SwitcherInProcessQueuedFrameHandoff::new(&mut state);
+            SwitcherTwoViewTargetTimeHandoffSourceSchedulerBoundary::default()
+                .select_pair_from_handoff(
+                    &mut handoff,
+                    fallible_two_view_scheduler_input(
+                        TimestampMicros(1_000_002),
+                        SwitcherTwoViewTargetTimeSourceSchedulerMode::ConsumeOldestAtOrBeforeAllSelected,
+                    ),
+                )
+        };
+
+        assert_eq!(
+            result.status,
+            SwitcherTwoViewTargetTimeHandoffSourceSchedulerStatus::AllSelected
+        );
+        let SwitcherSingleClientTargetTimeHandoffSourceResult::Selected(left) = result.left else {
+            panic!("left frame should be consumed");
+        };
+        let SwitcherSingleClientTargetTimeHandoffSourceResult::Selected(right) = result.right
+        else {
+            panic!("right frame should be consumed");
+        };
+        assert!(left.consumed);
+        assert!(right.consumed);
+        assert_eq!(state.client_queue_len(&left_client_id), 0);
+        assert_eq!(state.client_queue_len(&right_client_id), 0);
+    }
+
+    #[test]
+    fn two_view_target_time_handoff_source_scheduler_consume_does_not_mutate_on_handoff_error() {
+        let mut state = ServerVideoFrameQueueState::default();
+        let left_client_id = ClientId("client-left".to_string());
+        store_frame_for_run(
+            &mut state,
+            "client-left",
+            "run-left",
+            1,
+            TimestampMicros(2_092_000),
+        );
+
+        let result = {
+            let mut handoff = SwitcherInProcessQueuedFrameHandoff::new(&mut state);
+            SwitcherTwoViewTargetTimeHandoffSourceSchedulerBoundary::default()
+                .select_pair_from_handoff(
+                    &mut handoff,
+                    SwitcherTwoViewTargetTimeSourceSchedulerInput {
+                        left: SwitcherTwoViewTargetTimeSourceViewConfig {
+                            client_id: left_client_id.clone(),
+                            run_id: RunId("run-left".to_string()),
+                        },
+                        right: SwitcherTwoViewTargetTimeSourceViewConfig {
+                            client_id: ClientId("".to_string()),
+                            run_id: RunId("run-right".to_string()),
+                        },
+                        target_timestamp: TimestampMicros(1_000_001),
+                        mode: SwitcherTwoViewTargetTimeSourceSchedulerMode::ConsumeOldestAtOrBeforeAllSelected,
+                    },
+                )
+        };
+
+        assert_eq!(
+            result.status,
+            SwitcherTwoViewTargetTimeHandoffSourceSchedulerStatus::HandoffError
+        );
+        let SwitcherSingleClientTargetTimeHandoffSourceResult::Selected(left) = result.left else {
+            panic!("left eligible frame should only be previewed");
+        };
+        assert!(!left.consumed);
+        assert_eq!(state.client_queue_len(&left_client_id), 1);
+    }
+
+    #[test]
+    fn two_view_target_time_handoff_source_scheduler_preserves_selected_metadata() {
+        let mut state = ServerVideoFrameQueueState::default();
+        store_frame_with_run_payload(
+            &mut state,
+            "client-left",
+            "run-left",
+            1,
+            TimestampMicros(2_092_100),
+            640,
+            360,
+            vec![0x01, 0x02, 0x03],
+        );
+        store_frame_for_run(
+            &mut state,
+            "client-right",
+            "run-right",
+            2,
+            TimestampMicros(2_092_200),
+        );
+
+        let result = {
+            let mut handoff = SwitcherInProcessQueuedFrameHandoff::new(&mut state);
+            SwitcherTwoViewTargetTimeHandoffSourceSchedulerBoundary::default()
+                .select_pair_from_handoff(
+                    &mut handoff,
+                    fallible_two_view_scheduler_input(
+                        TimestampMicros(1_000_002),
+                        SwitcherTwoViewTargetTimeSourceSchedulerMode::PreviewLatestIfAtOrBefore,
+                    ),
+                )
+        };
+
+        let SwitcherSingleClientTargetTimeHandoffSourceResult::Selected(left) = result.left else {
+            panic!("left metadata frame should be selected");
+        };
+        assert_eq!(left.frame.client_id, ClientId("client-left".to_string()));
+        assert_eq!(left.frame.run_id, RunId("run-left".to_string()));
+        assert_eq!(left.frame.width, 640);
+        assert_eq!(left.frame.height, 360);
+        assert_eq!(left.frame.encoded_payload_len, 3);
+        assert_eq!(left.frame.encoded_payload, vec![0x01, 0x02, 0x03]);
     }
 
     #[test]

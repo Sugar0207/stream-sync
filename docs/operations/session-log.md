@@ -5,6 +5,56 @@
 - Codex
 
 ### Work
+- Added the smallest fallible 2-view targetTime handoff scheduler.
+- Added `SwitcherTwoViewTargetTimeHandoffSourceSchedulerStatus`.
+- Added `SwitcherTwoViewTargetTimeHandoffSourceSchedulerResult`.
+- Added `SwitcherTwoViewTargetTimeHandoffSourceSchedulerBoundary`.
+- The scheduler calls the fallible single-client targetTime handoff source for each view.
+- Per-view outcomes preserve selected, no-frame, waiting, and handoff/source error.
+- Aggregate status adds explicit `HandoffError` and does not collapse handoff errors into partial selected, no-frame, or waiting.
+- Consume mode previews both sides first and only consumes both when both preview results are selected.
+- Added focused tests for both selected, selected+waiting, selected+no-frame, selected+handoff-error, both handoff errors, handoff error not no-frame/waiting, consume all-or-nothing, consume no-mutation on handoff error, and metadata preservation.
+
+### Changed Files
+- `apps/switcher/src/lib.rs`
+- `docs/architecture/system-design.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### Decisions
+- Keep targetTime selection in switcher.
+- Keep server as ingest/reassembly/queue owner.
+- Preserve handoff/source errors through the scheduler instead of mapping them to existing non-error scheduler states.
+- Keep this path separate from the existing non-fallible 2-view scheduler and decode/render adapter for this slice.
+- Do not add IPC/TCP/UDP/shared-memory transport, OBS output, 4-view orchestration, protocol wire-format changes, H.264 behavior changes, or switcher-side fragment reassembly.
+
+### Unresolved
+- Plan or implement the decode/render adapter path for `SwitcherTwoViewTargetTimeHandoffSourceSchedulerResult`.
+- Decide how handoff errors should surface through display policy without creating fake decoded frames.
+- production H.264 encoder configuration / error logging policy
+
+### Next
+- Plan the smallest decode/render adapter path for fallible 2-view scheduler results.
+
+### TODO Update
+- Marked the fallible 2-view targetTime handoff scheduler as implemented.
+- Set the next task to planning the decode/render adapter path for fallible 2-view scheduler results.
+
+### Validation
+- `cargo fmt` passed.
+- `cargo fmt --check` passed.
+- `cargo test -p stream-sync-switcher two_view -- --test-threads=1` passed.
+- `cargo test -p stream-sync-switcher target_time -- --test-threads=1` passed.
+- `cargo test -p stream-sync-switcher single_client_queue_source -- --test-threads=1` passed on rerun with a longer timeout. The first parallel run hit the 10-minute command timeout while waiting/compiling.
+- `cargo test -p stream-sync-server video_frame_queue -- --test-threads=1` passed.
+- `cargo check --workspace` passed.
+- `git diff --check` passed with line-ending warnings for changed files.
+
+## 2026-04-30
+### Type
+- Codex
+
+### Work
 - Added the smallest targetTime-aware path for fallible handoff results.
 - Added `SwitcherSingleClientTargetTimeHandoffSourceResult`.
 - Added `SwitcherSingleClientTargetTimeHandoffSourceBoundary`.

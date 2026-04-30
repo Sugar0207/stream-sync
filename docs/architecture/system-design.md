@@ -8366,12 +8366,17 @@ No protocol wire format changed for this slice.
 ## Switcher 2-View TargetTime Source Scheduler Boundary
 
 The first queue-backed multi-client sync boundary is a minimal 2-view scheduler
-over the single-client targetTime source and queued-frame source abstraction:
+over the single-client targetTime source and queued-frame source abstraction.
+There is also a fallible handoff-backed scheduler that preserves source errors.
 
 ```text
 SwitcherQueuedFrameSource
   -> SwitcherSingleClientTargetTimeSourceBoundary per view
   -> SwitcherTwoViewTargetTimeSourceSchedulerBoundary
+
+SwitcherQueuedFrameHandoff
+  -> SwitcherSingleClientTargetTimeHandoffSourceBoundary per view
+  -> SwitcherTwoViewTargetTimeHandoffSourceSchedulerBoundary
 ```
 
 Current implementation:
@@ -8401,6 +8406,15 @@ Current implementation:
   - `PartialSelected`
   - `Waiting`
   - `NoFrames`
+- `SwitcherTwoViewTargetTimeHandoffSourceSchedulerBoundary` uses the fallible
+  single-client handoff targetTime source for each view.
+- Its result preserves per-view selected / no-frame / waiting / handoff-error
+  outcomes.
+- Its aggregate status adds `HandoffError` and does not collapse handoff errors
+  into partial selected, no-frame, or waiting.
+- Fallible consume mode keeps the existing all-or-nothing policy: preview both
+  oldest candidates first, consume both only when both are selected, and do not
+  mutate either side when one side is waiting, no-frame, or handoff-error.
 
 Responsibility split:
 
@@ -8410,6 +8424,7 @@ Responsibility split:
   configured views, classifying the pair result, and enforcing all-or-nothing
   synchronized consumption for scheduler-level consume mode.
 - concrete queue access remains behind `SwitcherQueuedFrameSource`.
+- fallible handoff access remains behind `SwitcherQueuedFrameHandoff`.
 - It does not implement 4-view orchestration, OBS output, H.264 decode/render,
   late-drop mutation, socket transport, or protocol changes.
 
