@@ -44,9 +44,11 @@ Responsibility split for this path:
 - switcher should not duplicate server fragment reassembly while the server
   queue path already owns it.
 
-For the smallest server-mediated switcher validation, prefer a pull/read
-handoff from the server queue rather than a server push stream. The current
-testable in-process path can reuse:
+For the initial production direction, prefer a switcher-pull/read handoff from
+the server queue rather than a server-push stream. This matches the existing
+queue read boundary, keeps switcher pacing explicit, and avoids making server
+ingest also own display scheduling. The current testable in-process path can
+reuse:
 
 ```text
 server auth / UDP receive / fragment reassembly
@@ -61,9 +63,56 @@ server auth / UDP receive / fragment reassembly
 ```
 
 This keeps server ingest and switcher display responsibilities separated while
-remaining in-process and testable for the next validation slice. A production
-cross-process queue transport can be decided later without changing protocol
-wire format in this planning step.
+remaining in-process and testable. The first production-facing interface should
+be shaped as a small pull/read trait over server queue data; a concrete
+cross-process transport can be decided later without changing protocol wire
+format in this planning step.
+
+Smallest handoff interface:
+
+```text
+SwitcherQueuedFrameSource::read(client_id, run_id, mode)
+  -> queued encoded frame | no-frame
+```
+
+The initial implementation should be an in-process trait/interface, not local
+IPC, TCP, UDP, shared memory, or a new wire protocol. It should wrap
+`ServerVideoFrameQueueReadBoundary` first and preserve the same read modes:
+inspect oldest, inspect latest, and dequeue oldest.
+
+Data crossing the server->switcher boundary:
+
+- `client_id`
+- `run_id`
+- `frame_id`
+- `capture_timestamp`
+- `send_timestamp` when available
+- queued timestamp / queue observation timestamp
+- encoded H.264 payload bytes
+- encoded payload length
+- width / height
+- nominal FPS
+- keyframe flag when available
+- codec
+- queue read mode
+- remaining per-client queue length or current queue length
+- explicit no-frame result
+
+Waiting, late, stale, and display placeholder status should stay downstream of
+the queue handoff. The switcher targetTime source and display policy already
+derive waiting / no-frame / stale / placeholder decisions after reading queue
+state. The server->switcher handoff should not invent those display decisions.
+
+Out of scope for the first production handoff slice:
+
+- OBS output
+- 4-view orchestration
+- retransmit / retry
+- fragment reassembly in switcher
+- a new protocol wire format
+- local IPC / TCP / UDP transport implementation
+- late-frame queue mutation
+- H.264 decode/render behavior changes
 
 ---
 
@@ -8459,5 +8508,18 @@ Responsibility split:
 - it does not define production server->switcher transport, implement OBS
   output, add 4-view orchestration, change protocol wire format, duplicate
   fragment reassembly in switcher, or change H.264 decode/render behavior.
+
+Next production-facing slice:
+
+- Introduce a small switcher-facing queued-frame source trait/interface that
+  mirrors `ServerVideoFrameQueueReadBoundary`.
+- Provide an in-process adapter over `ServerVideoFrameQueueState` and
+  `ServerVideoFrameQueueReadBoundary`.
+- Keep the returned shape close to the current
+  `SwitcherSingleViewSelectedEncodedFrame` / no-frame result so the existing
+  single-client targetTime source can consume it without protocol or decode
+  changes.
+- Do not add a manual runtime command or cross-process transport until this
+  interface is proven.
 
 No protocol wire format changed for this slice.

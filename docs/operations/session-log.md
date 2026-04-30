@@ -5,6 +5,63 @@
 - Codex
 
 ### Work
+- Planned the production server -> switcher handoff direction after the in-process server-mediated validation boundary.
+- Chose switcher-pull/read as the initial production direction instead of server-push.
+- Defined the smallest handoff interface shape as a switcher-facing queued-frame source over `ServerVideoFrameQueueReadBoundary`.
+- Listed the data that should cross the boundary:
+  - `client_id`
+  - `run_id`
+  - `frame_id`
+  - `capture_timestamp`
+  - `send_timestamp` when available
+  - queued / observed timestamp
+  - encoded H.264 payload bytes and length
+  - width / height
+  - nominal FPS
+  - keyframe flag when available
+  - codec
+  - queue read mode
+  - remaining/current per-client queue length
+  - explicit no-frame result
+- Clarified that waiting, late, stale, and placeholder status remain switcher-side downstream decisions, not server->switcher handoff fields.
+- Documented the next implementation slice as an in-process trait/interface and adapter over `ServerVideoFrameQueueReadBoundary`.
+
+### Changed Files
+- `docs/architecture/system-design.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### Decisions
+- Initial production handoff direction: switcher-pull/read.
+- First implementation mechanism: in-process trait/interface plus adapter.
+- Do not implement local IPC, TCP, UDP, shared memory, or a new protocol wire format in the next slice.
+- Do not add another manual runtime command in this planning slice.
+- Keep OBS output, 4-view orchestration, retransmit/retry, switcher-side fragment reassembly, late-frame queue mutation, and H.264 decode/render behavior changes out of scope.
+
+### Unresolved
+- Implement the minimal queued-frame source trait/interface over `ServerVideoFrameQueueReadBoundary`.
+- Decide a concrete cross-process transport only after the in-process interface is proven.
+- production H.264 encoder configuration / error logging policy
+- 4-view expansion planning
+
+### Next
+- Add the minimal switcher queued-frame source trait/interface and in-process server queue adapter.
+
+### TODO Update
+- Set the next task to implementing the minimal switcher-pull/read queued-frame source interface.
+- Kept production transport, OBS output, and 4-view orchestration deferred.
+
+### Validation
+- `cargo fmt` passed.
+- `cargo fmt --check` passed.
+- `cargo check --workspace` passed.
+- `git diff --check` passed with line-ending warnings for changed docs.
+
+## 2026-04-30
+### Type
+- Codex
+
+### Work
 - Added `SwitcherServerMediatedTwoViewValidationBoundary`.
 - The boundary takes caller-owned `ServerVideoFrameQueueState` that may contain direct `VideoFrame` packets or server-reassembled `VideoFrameFragment` output.
 - Connected the existing in-process path:

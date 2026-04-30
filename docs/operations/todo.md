@@ -59,8 +59,8 @@
 ---
 
 ## 直近でやること
-1. server-mediated 2-client validation を manual/runtime へ接続するか、4-view expansion planning へ進む前に production server->switcher transport の最小方針を決める
-2. `--live-two-view-switcher-once` は direct receive 診断用として残すが、fragmented real encoded validation の主経路には使わないことを維持する
+1. switcher-pull/read 型の server->switcher queued-frame source trait/interface を最小実装する。まず in-process adapter として `ServerVideoFrameQueueReadBoundary` を包み、transport / IPC / TCP / UDP は未決定のままにする
+2. server-mediated 2-client validation boundary をその source interface 経由に寄せ、既存の targetTime / display / composition / render 経路を維持する
 3. production H.264 encoder configuration / error logging policy
 
 ---
@@ -769,11 +769,12 @@
 - `docs/operations/manual-real-encoded-video-poc.md` is now the step-by-step human E2E checklist for the bounded authenticated real encoded sender, one-client server queue verification, and two-client live switcher verification, including prerequisites, commands, expected stdout counters, diagnosis, pass/fail criteria, and recorded successful fragmented 1-frame / 2-frame queue runs.
 - manual fragmented real encoded queue verification is now recorded as successful for both `max_frames=1` and `max_frames=2` when using the recommended `8388608` byte server receive buffer request and client fragment pacing. The latest `max_frames=2` localhost run observed `fragments_sent=854/854`, `fragments_received=854`, `frames_reassembled=2`, `frames_queued=2`, `incomplete_reassembly_frames=0`, and `receive_timed_out=false`.
 - topology decision: main real encoded validation should use client -> server -> switcher. Server owns auth, UDP receive, receive-buffer tuning, `VideoFrameFragment` reassembly, and queueing. Switcher owns queue read, shared targetTime scheduling, decode, display policy, composition, and render. The next slice should add the smallest server-mediated switcher source validation instead of duplicating fragment reassembly in switcher.
+- production handoff planning: initial server->switcher direction should be switcher-pull/read, not server-push. The smallest interface should mirror `ServerVideoFrameQueueReadBoundary`, crossing only queued encoded frame metadata/payload plus queue read status. Waiting / no-frame / stale / placeholder decisions remain switcher-side downstream of queue read. The first implementation should be an in-process trait/interface and adapter; local IPC, TCP, UDP, shared memory, and protocol wire-format changes remain out of scope.
 - metrics commit, snapshot export cadence, dashboard refresh consumer policy, and dashboard refresh runtime wiring remain separate from timer wait, retry, reconnect, socket ownership, cleanup, UI rendering, video, switcher, and OBS.
 - server notice queue storage remains separate from notice send wakeup execution.
 - actual dashboard UI rendering remains unimplemented.
 
 ## Next Items
-1. Decide the next server-mediated step: manual/runtime command over the in-process validation boundary, or production server->switcher transport planning.
+1. Implement the minimal in-process switcher queued-frame source trait/interface over `ServerVideoFrameQueueReadBoundary`.
 2. production H.264 encoder configuration / error logging policy
 3. Decide later whether `--live-two-view-switcher-once` should be renamed or deprecated after the server-mediated path exists
