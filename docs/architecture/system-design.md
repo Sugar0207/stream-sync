@@ -8275,6 +8275,28 @@ Current implementation:
   as `InvalidScope`, and otherwise maps selected/no-frame results without
   changing queue behavior.
 
+The first switcher-side consumer is:
+
+```text
+SwitcherQueuedFrameHandoff
+  -> SwitcherQueuedFrameHandoffConsumerBoundary
+  -> SwitcherSingleClientQueueSourceResult | explicit handoff error
+```
+
+Current implementation:
+
+- `SwitcherQueuedFrameHandoffConsumerBoundary` reads one handoff request.
+- `FrameRead` is converted to
+  `SwitcherSingleClientQueueSourceResult::FrameAvailable`.
+- `NoFrameAvailable` is converted to
+  `SwitcherSingleClientQueueSourceResult::NoFrameAvailable`.
+- `HandoffError` remains a separate
+  `SwitcherQueuedFrameHandoffConsumerResult::HandoffError`.
+- The consumer does not run targetTime selection. It only adapts successful
+  handoff reads into the existing queue-source shape so a later targetTime
+  consumer can reuse current switcher logic without treating source failures as
+  empty queues.
+
 This interface is intentionally transport-neutral. The current adapter is
 in-process only; local IPC, TCP, UDP, shared memory, OBS output, 4-view
 orchestration, switcher-side fragment reassembly, protocol wire-format changes,
