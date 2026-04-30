@@ -288,15 +288,13 @@ pub enum SwitcherSingleClientTargetTimeSourceResult {
 
 /// Minimal targetTime-aware source over the single-client queue source.
 ///
-/// This boundary is single-client and in-process. It reads encoded frames from
-/// `SwitcherSingleClientQueueSourceBoundary`, compares capture timestamp to
-/// an explicit target timestamp, and returns a selected/no-frame/waiting
-/// result. It does not decode, render, mutate late frames, orchestrate multiple
-/// views, or touch OBS.
+/// This boundary is single-client and source-driven. It reads encoded frames
+/// through `SwitcherQueuedFrameSource`, compares capture timestamp to an
+/// explicit target timestamp, and returns a selected/no-frame/waiting result.
+/// It does not decode, render, mutate late frames, orchestrate multiple views,
+/// or touch OBS.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
-pub struct SwitcherSingleClientTargetTimeSourceBoundary {
-    source: SwitcherSingleClientQueueSourceBoundary,
-}
+pub struct SwitcherSingleClientTargetTimeSourceBoundary;
 
 impl SwitcherSingleClientTargetTimeSourceBoundary {
     pub fn select(
@@ -304,76 +302,76 @@ impl SwitcherSingleClientTargetTimeSourceBoundary {
         queue_state: &mut ServerVideoFrameQueueState,
         input: SwitcherSingleClientTargetTimeSourceInput,
     ) -> SwitcherSingleClientTargetTimeSourceResult {
+        let mut source = SwitcherInProcessServerQueueFrameSource::new(queue_state);
+        self.select_from_source(&mut source, input)
+    }
+
+    pub fn select_from_source(
+        &self,
+        source: &mut impl SwitcherQueuedFrameSource,
+        input: SwitcherSingleClientTargetTimeSourceInput,
+    ) -> SwitcherSingleClientTargetTimeSourceResult {
         match input.mode {
             SwitcherSingleClientTargetTimeSourceMode::PreviewOldestIfAtOrBefore => {
-                self.preview_oldest_at_or_before(queue_state, input)
+                self.preview_oldest_at_or_before(source, input)
             }
             SwitcherSingleClientTargetTimeSourceMode::PreviewLatestIfAtOrBefore => {
-                self.preview_latest_at_or_before(queue_state, input)
+                self.preview_latest_at_or_before(source, input)
             }
             SwitcherSingleClientTargetTimeSourceMode::ConsumeOldestAtOrBefore => {
-                self.consume_oldest_at_or_before(queue_state, input)
+                self.consume_oldest_at_or_before(source, input)
             }
         }
     }
 
     fn preview_latest_at_or_before(
         &self,
-        queue_state: &mut ServerVideoFrameQueueState,
+        source: &mut impl SwitcherQueuedFrameSource,
         input: SwitcherSingleClientTargetTimeSourceInput,
     ) -> SwitcherSingleClientTargetTimeSourceResult {
         let client_id = input.client_id;
         let run_id = input.run_id;
         let mode = input.mode;
         let target_timestamp = input.target_timestamp;
-        let source_result = self.source.read(
-            queue_state,
-            SwitcherSingleClientQueueSourceInput {
-                client_id,
-                run_id,
-                mode: SwitcherSingleClientQueueSourceMode::PreviewLatest,
-            },
-        );
+        let source_result = source.read_queued_frame(SwitcherSingleClientQueueSourceInput {
+            client_id,
+            run_id,
+            mode: SwitcherSingleClientQueueSourceMode::PreviewLatest,
+        });
         result_for_candidate(source_result, target_timestamp, mode, false)
     }
 
     fn preview_oldest_at_or_before(
         &self,
-        queue_state: &mut ServerVideoFrameQueueState,
+        source: &mut impl SwitcherQueuedFrameSource,
         input: SwitcherSingleClientTargetTimeSourceInput,
     ) -> SwitcherSingleClientTargetTimeSourceResult {
         let client_id = input.client_id;
         let run_id = input.run_id;
         let mode = input.mode;
         let target_timestamp = input.target_timestamp;
-        let source_result = self.source.read(
-            queue_state,
-            SwitcherSingleClientQueueSourceInput {
-                client_id,
-                run_id,
-                mode: SwitcherSingleClientQueueSourceMode::PreviewOldest,
-            },
-        );
+        let source_result = source.read_queued_frame(SwitcherSingleClientQueueSourceInput {
+            client_id,
+            run_id,
+            mode: SwitcherSingleClientQueueSourceMode::PreviewOldest,
+        });
         result_for_candidate(source_result, target_timestamp, mode, false)
     }
 
     fn consume_oldest_at_or_before(
         &self,
-        queue_state: &mut ServerVideoFrameQueueState,
+        source: &mut impl SwitcherQueuedFrameSource,
         input: SwitcherSingleClientTargetTimeSourceInput,
     ) -> SwitcherSingleClientTargetTimeSourceResult {
         let client_id = input.client_id;
         let run_id = input.run_id;
         let mode = input.mode;
         let target_timestamp = input.target_timestamp;
-        let preview = self.source.read(
-            queue_state,
-            SwitcherSingleClientQueueSourceInput {
-                client_id: client_id.clone(),
-                run_id: run_id.clone(),
-                mode: SwitcherSingleClientQueueSourceMode::PreviewOldest,
-            },
-        );
+        let preview = source.read_queued_frame(SwitcherSingleClientQueueSourceInput {
+            client_id: client_id.clone(),
+            run_id: run_id.clone(),
+            mode: SwitcherSingleClientQueueSourceMode::PreviewOldest,
+        });
 
         let SwitcherSingleClientQueueSourceResult::FrameAvailable {
             frame,
@@ -396,14 +394,11 @@ impl SwitcherSingleClientTargetTimeSourceBoundary {
             };
         }
 
-        let consumed = self.source.read(
-            queue_state,
-            SwitcherSingleClientQueueSourceInput {
-                client_id,
-                run_id,
-                mode: SwitcherSingleClientQueueSourceMode::ConsumeOldest,
-            },
-        );
+        let consumed = source.read_queued_frame(SwitcherSingleClientQueueSourceInput {
+            client_id,
+            run_id,
+            mode: SwitcherSingleClientQueueSourceMode::ConsumeOldest,
+        });
         result_for_candidate(consumed, target_timestamp, mode, true)
     }
 }
@@ -774,23 +769,32 @@ impl SwitcherTwoViewTargetTimeSourceSchedulerBoundary {
         queue_state: &mut ServerVideoFrameQueueState,
         input: SwitcherTwoViewTargetTimeSourceSchedulerInput,
     ) -> SwitcherTwoViewTargetTimeSourceSchedulerResult {
+        let mut source = SwitcherInProcessServerQueueFrameSource::new(queue_state);
+        self.select_pair_from_source(&mut source, input)
+    }
+
+    pub fn select_pair_from_source(
+        &self,
+        source: &mut impl SwitcherQueuedFrameSource,
+        input: SwitcherTwoViewTargetTimeSourceSchedulerInput,
+    ) -> SwitcherTwoViewTargetTimeSourceSchedulerResult {
         match input.mode {
             SwitcherTwoViewTargetTimeSourceSchedulerMode::PreviewLatestIfAtOrBefore => {
-                self.preview_latest_pair(queue_state, input)
+                self.preview_latest_pair(source, input)
             }
             SwitcherTwoViewTargetTimeSourceSchedulerMode::ConsumeOldestAtOrBeforeAllSelected => {
-                self.consume_oldest_pair_all_selected(queue_state, input)
+                self.consume_oldest_pair_all_selected(source, input)
             }
         }
     }
 
     fn preview_latest_pair(
         &self,
-        queue_state: &mut ServerVideoFrameQueueState,
+        source: &mut impl SwitcherQueuedFrameSource,
         input: SwitcherTwoViewTargetTimeSourceSchedulerInput,
     ) -> SwitcherTwoViewTargetTimeSourceSchedulerResult {
         self.select_pair_with_single_client_mode(
-            queue_state,
+            source,
             input,
             SwitcherSingleClientTargetTimeSourceMode::PreviewLatestIfAtOrBefore,
         )
@@ -798,11 +802,11 @@ impl SwitcherTwoViewTargetTimeSourceSchedulerBoundary {
 
     fn consume_oldest_pair_all_selected(
         &self,
-        queue_state: &mut ServerVideoFrameQueueState,
+        source: &mut impl SwitcherQueuedFrameSource,
         input: SwitcherTwoViewTargetTimeSourceSchedulerInput,
     ) -> SwitcherTwoViewTargetTimeSourceSchedulerResult {
         let preview = self.select_pair_with_single_client_mode(
-            queue_state,
+            source,
             input.clone(),
             SwitcherSingleClientTargetTimeSourceMode::PreviewOldestIfAtOrBefore,
         );
@@ -812,7 +816,7 @@ impl SwitcherTwoViewTargetTimeSourceSchedulerBoundary {
         }
 
         self.select_pair_with_single_client_mode(
-            queue_state,
+            source,
             input,
             SwitcherSingleClientTargetTimeSourceMode::ConsumeOldestAtOrBefore,
         )
@@ -820,14 +824,14 @@ impl SwitcherTwoViewTargetTimeSourceSchedulerBoundary {
 
     fn select_pair_with_single_client_mode(
         &self,
-        queue_state: &mut ServerVideoFrameQueueState,
+        source: &mut impl SwitcherQueuedFrameSource,
         input: SwitcherTwoViewTargetTimeSourceSchedulerInput,
         single_client_mode: SwitcherSingleClientTargetTimeSourceMode,
     ) -> SwitcherTwoViewTargetTimeSourceSchedulerResult {
         let target_timestamp = input.target_timestamp;
         let mode = input.mode;
-        let left = self.single_client.select(
-            queue_state,
+        let left = self.single_client.select_from_source(
+            source,
             SwitcherSingleClientTargetTimeSourceInput {
                 client_id: input.left.client_id,
                 run_id: input.left.run_id,
@@ -835,8 +839,8 @@ impl SwitcherTwoViewTargetTimeSourceSchedulerBoundary {
                 mode: single_client_mode,
             },
         );
-        let right = self.single_client.select(
-            queue_state,
+        let right = self.single_client.select_from_source(
+            source,
             SwitcherSingleClientTargetTimeSourceInput {
                 client_id: input.right.client_id,
                 run_id: input.right.run_id,
@@ -2094,8 +2098,19 @@ impl SwitcherServerMediatedTwoViewValidationBoundary {
         decode_runtime: &impl SwitcherH264DecodeRuntimeHook,
         render_runtime: &impl SwitcherWindowRenderRuntimeHook,
     ) -> SwitcherServerMediatedTwoViewValidationOutput {
-        let scheduler = self.scheduler.select_pair(
-            queue_state,
+        let mut source = SwitcherInProcessServerQueueFrameSource::new(queue_state);
+        self.run_from_source_with_runtimes(&mut source, input, decode_runtime, render_runtime)
+    }
+
+    pub fn run_from_source_with_runtimes(
+        &self,
+        source: &mut impl SwitcherQueuedFrameSource,
+        input: SwitcherServerMediatedTwoViewValidationInput,
+        decode_runtime: &impl SwitcherH264DecodeRuntimeHook,
+        render_runtime: &impl SwitcherWindowRenderRuntimeHook,
+    ) -> SwitcherServerMediatedTwoViewValidationOutput {
+        let scheduler = self.scheduler.select_pair_from_source(
+            source,
             SwitcherTwoViewTargetTimeSourceSchedulerInput {
                 left: input.left,
                 right: input.right,
@@ -8384,6 +8399,74 @@ mod tests {
         ));
         assert_eq!(decode.inputs.borrow().len(), 2);
         assert_eq!(render.requests.borrow().len(), 3);
+    }
+
+    #[test]
+    fn server_mediated_two_view_validation_runs_over_queued_frame_source_abstraction() {
+        let mut state = ServerVideoFrameQueueState::default();
+        store_frame_with_run_payload(
+            &mut state,
+            "client-left",
+            "run-left",
+            1,
+            TimestampMicros(2_124_200),
+            2,
+            1,
+            vec![0, 0, 1, 0x65, 0x31],
+        );
+        store_frame_with_run_payload(
+            &mut state,
+            "client-right",
+            "run-right",
+            2,
+            TimestampMicros(2_124_300),
+            2,
+            1,
+            vec![0, 0, 1, 0x65, 0x32],
+        );
+        let decode = RecordingTwoViewDecode::default();
+        let render = RecordingTwoViewRender::default();
+        let output = {
+            let mut source = SwitcherInProcessServerQueueFrameSource::new(&mut state);
+            SwitcherServerMediatedTwoViewValidationBoundary::default()
+                .run_from_source_with_runtimes(
+                    &mut source,
+                    server_mediated_validation_input(
+                        TimestampMicros(1_000_002),
+                        SwitcherTwoViewTargetTimeSourceSchedulerMode::PreviewLatestIfAtOrBefore,
+                    ),
+                    &decode,
+                    &render,
+                )
+        };
+
+        assert_eq!(
+            output.scheduler.status,
+            SwitcherTwoViewTargetTimeSourceSchedulerStatus::AllSelected
+        );
+        assert!(matches!(
+            output.decode_render.adapter.left,
+            SwitcherTwoViewSchedulerDecodeRenderSideInstruction::RenderFrame { .. }
+        ));
+        assert!(matches!(
+            output.decode_render.adapter.right,
+            SwitcherTwoViewSchedulerDecodeRenderSideInstruction::RenderFrame { .. }
+        ));
+        assert!(matches!(
+            output.adapter.left,
+            SwitcherTwoViewDisplayCompositionSideInstruction::UseUpdatedFrame { .. }
+        ));
+        assert!(matches!(
+            output.adapter.right,
+            SwitcherTwoViewDisplayCompositionSideInstruction::UseUpdatedFrame { .. }
+        ));
+        assert!(matches!(
+            output.render.render,
+            SwitcherTwoViewDisplayCompositionRenderConnectionRenderResult::RenderedCanvas {
+                render: SwitcherTwoViewComposedCanvasRenderResult::Rendered { .. }
+            }
+        ));
+        assert_eq!(state.total_len(), 2);
     }
 
     #[test]

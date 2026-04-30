@@ -115,6 +115,47 @@ Out of scope for the first production handoff slice:
 - late-frame queue mutation
 - H.264 decode/render behavior changes
 
+Smallest next handoff hook:
+
+- Do not add another manual runtime command yet. The existing in-process
+  validation already proves the switcher pipeline can consume a
+  `SwitcherQueuedFrameSource`; another command would mostly duplicate that
+  without exercising real server->switcher transport.
+- Do not start with a local IPC/TCP pull source prototype. That would force
+  framing, serialization, lifecycle, timeout, and error-shaping decisions
+  before the handoff contract is explicit.
+- Add a transport-neutral, fallible server->switcher handoff contract first.
+  The contract should keep the current read shape:
+  `client_id + run_id + read mode -> queued frame | no-frame`, plus explicit
+  handoff errors. The current in-process source can implement or adapt to that
+  contract for tests.
+
+First production-like `SwitcherQueuedFrameSource` implementation:
+
+- Pull/read oriented.
+- One request reads one client/run using one explicit queue mode:
+  inspect latest, inspect oldest, or dequeue oldest.
+- The source returns one queued encoded frame or explicit no-frame. It does not
+  return a queue snapshot by default.
+- Queue snapshots may be added later for diagnostics, not for the scheduler's
+  hot path.
+- TargetTime-aware selection stays in switcher. The server exposes
+  already-authenticated, already-reassembled, already-queued encoded frames and
+  queue status only.
+
+Data and errors that must cross the handoff:
+
+- request data: `client_id`, `run_id`, and queue read mode.
+- frame data: `frame_id`, capture/send/queued timestamps, H.264 payload bytes
+  and length, width, height, nominal FPS, keyframe flag, codec, and remaining
+  per-client queue length.
+- no-frame data: `client_id`, `run_id`, read mode, and current per-client queue
+  length.
+- error data for the future fallible hook: source unavailable, request timeout,
+  invalid/unknown client or run scope, unsupported read mode, malformed source
+  response, and source shutdown. These are handoff failures, distinct from
+  normal no-frame results.
+
 ---
 
 ## 3. コンポーネントと責務
@@ -8201,16 +8242,19 @@ and H.264 decode/render behavior changes remain out of scope.
 
 ## Switcher Single-Client TargetTime Source Boundary
 
-The first targetTime-aware source remains single-client and in-process:
+The first targetTime-aware source remains single-client and now reads through
+the queued-frame source interface:
 
 ```text
-ServerVideoFrameQueueState -> SwitcherSingleClientQueueSourceBoundary -> SwitcherSingleClientTargetTimeSourceBoundary
+SwitcherQueuedFrameSource -> SwitcherSingleClientTargetTimeSourceBoundary
 ```
 
 Current implementation:
 
-- `SwitcherSingleClientTargetTimeSourceBoundary` receives caller-owned
-  `ServerVideoFrameQueueState`.
+- `SwitcherSingleClientTargetTimeSourceBoundary` can select from any
+  `SwitcherQueuedFrameSource`.
+- The legacy/convenience `ServerVideoFrameQueueState` entry point creates the
+  current `SwitcherInProcessServerQueueFrameSource` adapter.
 - Reads are scoped by `client_id + run_id`.
 - The caller supplies an explicit `target_timestamp`.
 - Selection behavior is explicit:
@@ -8232,7 +8276,8 @@ Current implementation:
 
 Responsibility split:
 
-- single-client queue source owns mapping to server queue read modes.
+- queued-frame source owns mapping to server queue read modes and any concrete
+  server->switcher handoff implementation.
 - targetTime source owns only timestamp comparison and explicit preview/consume
   behavior.
 - It does not scan multi-client state, run 2-view or 4-view orchestration,
@@ -8243,19 +8288,20 @@ No protocol wire format changed for this slice.
 ## Switcher 2-View TargetTime Source Scheduler Boundary
 
 The first queue-backed multi-client sync boundary is a minimal 2-view scheduler
-over the single-client targetTime source:
+over the single-client targetTime source and queued-frame source abstraction:
 
 ```text
-ServerVideoFrameQueueState
-  -> SwitcherSingleClientQueueSourceBoundary
+SwitcherQueuedFrameSource
   -> SwitcherSingleClientTargetTimeSourceBoundary per view
   -> SwitcherTwoViewTargetTimeSourceSchedulerBoundary
 ```
 
 Current implementation:
 
-- `SwitcherTwoViewTargetTimeSourceSchedulerBoundary` receives caller-owned
-  `ServerVideoFrameQueueState`.
+- `SwitcherTwoViewTargetTimeSourceSchedulerBoundary` can select from any
+  `SwitcherQueuedFrameSource`.
+- The legacy/convenience `ServerVideoFrameQueueState` entry point creates the
+  current `SwitcherInProcessServerQueueFrameSource` adapter.
 - The input contains exactly two view configs, each scoped by
   `client_id + run_id`.
 - The caller supplies one shared `target_timestamp`.
@@ -8285,6 +8331,7 @@ Responsibility split:
 - the 2-view scheduler owns only applying one shared target timestamp to two
   configured views, classifying the pair result, and enforcing all-or-nothing
   synchronized consumption for scheduler-level consume mode.
+- concrete queue access remains behind `SwitcherQueuedFrameSource`.
 - It does not implement 4-view orchestration, OBS output, H.264 decode/render,
   late-drop mutation, socket transport, or protocol changes.
 
@@ -8506,7 +8553,7 @@ server frames into the current switcher display pipeline without duplicating
 server ingest logic:
 
 ```text
-ServerVideoFrameQueueState
+SwitcherQueuedFrameSource
   -> SwitcherTwoViewTargetTimeSourceSchedulerBoundary
   -> SwitcherTwoViewSchedulerDecodeRenderConnectionBoundary
   -> SwitcherTwoViewDisplayPolicyBoundary
@@ -8516,10 +8563,13 @@ ServerVideoFrameQueueState
 
 Current implementation:
 
-- `SwitcherServerMediatedTwoViewValidationBoundary` receives caller-owned
-  `ServerVideoFrameQueueState`.
-- The queue state is expected to contain direct `VideoFrame` packets or
-  server-reassembled `VideoFrameFragment` output.
+- `SwitcherServerMediatedTwoViewValidationBoundary` can run from any
+  `SwitcherQueuedFrameSource`.
+- The current concrete entry point still accepts caller-owned
+  `ServerVideoFrameQueueState` and wraps it in
+  `SwitcherInProcessServerQueueFrameSource`.
+- The in-process queue state is expected to contain direct `VideoFrame` packets
+  or server-reassembled `VideoFrameFragment` output.
 - The boundary applies one shared target timestamp to two configured
   `client_id + run_id` views.
 - The output keeps every stage visible:
@@ -8538,23 +8588,22 @@ Responsibility split:
 
 - server remains the owner of auth, UDP receive, receive-buffer tuning,
   `VideoFrameFragment` reassembly, and queue insertion.
-- this boundary owns only in-process diagnostic wiring from server queue state
-  into switcher targetTime/display/composition/render.
+- this boundary owns only in-process diagnostic wiring from
+  `SwitcherQueuedFrameSource` into switcher targetTime/display/composition/render.
 - it does not define production server->switcher transport, implement OBS
   output, add 4-view orchestration, change protocol wire format, duplicate
   fragment reassembly in switcher, or change H.264 decode/render behavior.
 
 Next production-facing slice:
 
-- Introduce a small switcher-facing queued-frame source trait/interface that
-  mirrors `ServerVideoFrameQueueReadBoundary`.
-- Provide an in-process adapter over `ServerVideoFrameQueueState` and
-  `ServerVideoFrameQueueReadBoundary`.
-- Keep the returned shape close to the current
-  `SwitcherSingleViewSelectedEncodedFrame` / no-frame result so the existing
-  single-client targetTime source can consume it without protocol or decode
-  changes.
-- Do not add a manual runtime command or cross-process transport until this
-  interface is proven.
+- Add a transport-neutral, fallible handoff contract around
+  `SwitcherQueuedFrameSource` so normal no-frame results stay separate from
+  source/transport failures.
+- Keep the first implementation backed by the current in-process
+  `SwitcherInProcessServerQueueFrameSource`.
+- Keep OBS output, 4-view orchestration, protocol wire-format changes,
+  switcher-side fragment reassembly, late-drop mutation, and H.264
+  decode/render behavior changes out of scope until the server-mediated source
+  path is validated.
 
 No protocol wire format changed for this slice.

@@ -5,6 +5,92 @@
 - Codex
 
 ### Work
+- Planned the smallest production/manual server->switcher handoff hook over `SwitcherQueuedFrameSource`.
+- Chose a transport-neutral, fallible handoff contract as the next slice.
+- Decided not to add another manual command in the next slice because the current in-process validation already exercises the source-driven switcher pipeline.
+- Decided not to start a local IPC/TCP pull source prototype yet because framing, serialization, lifecycle, timeout, and error-shaping should follow an explicit handoff contract.
+- Confirmed the switcher should request one latest/oldest/dequeue read per `client_id + run_id`; queue snapshots are diagnostic-only and targetTime-aware selection remains switcher-owned.
+- Listed future handoff failures separately from normal no-frame: source unavailable, request timeout, invalid/unknown client or run scope, unsupported read mode, malformed source response, and source shutdown.
+
+### Changed Files
+- `docs/architecture/system-design.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### Decisions
+- Keep server as ingest/auth/UDP receive/buffer tuning/fragment reassembly/per-client queue owner.
+- Keep switcher as queued-frame read, targetTime selection, decode/render, display policy, composition, and output owner.
+- Keep pull/read direction.
+- Do not implement IPC/TCP/UDP/shared-memory transport in the next slice.
+- Keep OBS output, 4-view orchestration, retry/retransmit, protocol wire-format changes, switcher-side fragment reassembly, late-drop mutation, and H.264 behavior changes out of scope.
+
+### Unresolved
+- Implement the minimal transport-neutral / fallible handoff contract around `SwitcherQueuedFrameSource`.
+- Decide concrete production transport only after the fallible handoff contract is tested.
+- production H.264 encoder configuration / error logging policy
+
+### Next
+- Add the minimal fallible handoff contract and test it through `SwitcherInProcessServerQueueFrameSource`.
+
+### TODO Update
+- Set the next task to adding the transport-neutral / fallible server->switcher handoff contract.
+- Kept manual command and transport implementation deferred.
+
+### Validation
+- `cargo fmt` passed.
+- `cargo fmt --check` passed.
+- `cargo check --workspace` passed.
+- `git diff --check` passed with line-ending warnings for changed files.
+
+## 2026-04-30
+### Type
+- Codex
+
+### Work
+- Routed the single-client targetTime source through `SwitcherQueuedFrameSource`.
+- Added source-based selection to `SwitcherTwoViewTargetTimeSourceSchedulerBoundary`.
+- Updated `SwitcherServerMediatedTwoViewValidationBoundary` with `run_from_source_with_runtimes`.
+- Kept the existing `ServerVideoFrameQueueState` validation entry point by wrapping it in `SwitcherInProcessServerQueueFrameSource`.
+- Added a focused server-mediated validation test that calls the queued-frame source abstraction directly.
+
+### Changed Files
+- `apps/switcher/src/lib.rs`
+- `docs/architecture/system-design.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### Decisions
+- Keep `SwitcherInProcessServerQueueFrameSource` as the current concrete source implementation.
+- Keep all downstream stage outputs visible: scheduler, decode/render, display policy, display-composition adapter, and composed-canvas render.
+- Keep IPC/TCP/UDP/shared-memory transport, OBS output, 4-view orchestration, protocol wire-format changes, H.264 behavior changes, switcher-side fragment reassembly, and late-drop mutation out of scope.
+
+### Unresolved
+- Plan the smallest production/manual server->switcher handoff hook over `SwitcherQueuedFrameSource`.
+- Decide whether the next validation should be a manual runtime command or 4-view expansion planning.
+- production H.264 encoder configuration / error logging policy
+
+### Next
+- Plan the next server->switcher handoff hook now that the in-process validation path depends on `SwitcherQueuedFrameSource`.
+
+### TODO Update
+- Marked the server-mediated 2-view validation path as routed through `SwitcherQueuedFrameSource`.
+- Set the next task to planning the smallest production/manual server->switcher handoff hook.
+
+### Validation
+- `cargo fmt` passed.
+- `cargo fmt --check` passed.
+- `cargo test -p stream-sync-switcher two_view -- --test-threads=1` passed.
+- `cargo test -p stream-sync-switcher target_time -- --test-threads=1` passed.
+- `cargo test -p stream-sync-switcher single_client_queue_source -- --test-threads=1` passed.
+- `cargo test -p stream-sync-server video_frame_queue -- --test-threads=1` passed.
+- `cargo check --workspace` passed.
+- `git diff --check` passed with line-ending warnings for changed files.
+
+## 2026-04-30
+### Type
+- Codex
+
+### Work
 - Added the minimal switcher-facing queued-frame source interface.
 - Added `SwitcherQueuedFrameSource` with `read_queued_frame(client_id, run_id, mode)` via the existing `SwitcherSingleClientQueueSourceInput` / `SwitcherSingleClientQueueSourceResult` shape.
 - Added `SwitcherInProcessServerQueueFrameSource`, an in-process adapter over caller-owned `ServerVideoFrameQueueState`.
