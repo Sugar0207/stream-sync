@@ -238,6 +238,131 @@ impl SwitcherQueuedFrameSource for SwitcherInProcessServerQueueFrameSource<'_> {
     }
 }
 
+/// Transport-neutral queued-frame handoff input.
+///
+/// This is intentionally the same read shape the switcher already uses:
+/// one client/run and one explicit queue read mode.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SwitcherQueuedFrameHandoffInput {
+    pub client_id: ClientId,
+    pub run_id: RunId,
+    pub mode: SwitcherSingleClientQueueSourceMode,
+}
+
+/// Source/handoff failures are distinct from a normal empty queue.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SwitcherQueuedFrameHandoffError {
+    SourceUnavailable,
+    Timeout,
+    InvalidScope {
+        client_id: ClientId,
+        run_id: RunId,
+    },
+    UnsupportedMode {
+        mode: SwitcherSingleClientQueueSourceMode,
+    },
+    MalformedResponse,
+    SourceShutdown,
+}
+
+/// Fallible handoff result for future server->switcher sources.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SwitcherQueuedFrameHandoffResult {
+    FrameRead {
+        frame: SwitcherSingleViewSelectedEncodedFrame,
+        mode: SwitcherSingleClientQueueSourceMode,
+        remaining_client_queue_len: usize,
+    },
+    NoFrameAvailable {
+        client_id: ClientId,
+        run_id: RunId,
+        mode: SwitcherSingleClientQueueSourceMode,
+        client_queue_len: usize,
+    },
+    HandoffError {
+        client_id: ClientId,
+        run_id: RunId,
+        mode: SwitcherSingleClientQueueSourceMode,
+        error: SwitcherQueuedFrameHandoffError,
+    },
+}
+
+/// Transport-neutral, fallible server->switcher queued-frame handoff.
+///
+/// Implementations must keep targetTime selection out of the handoff. The
+/// handoff only reads queued encoded frames, reports explicit no-frame, or
+/// reports source/handoff failure.
+pub trait SwitcherQueuedFrameHandoff {
+    fn read_handoff_frame(
+        &mut self,
+        input: SwitcherQueuedFrameHandoffInput,
+    ) -> SwitcherQueuedFrameHandoffResult;
+}
+
+/// In-process fallible handoff backed by the current server queue source.
+///
+/// This adapter adds handoff-level error shape without adding transport. It
+/// delegates successful reads/no-frame to `SwitcherInProcessServerQueueFrameSource`.
+pub struct SwitcherInProcessQueuedFrameHandoff<'a> {
+    source: SwitcherInProcessServerQueueFrameSource<'a>,
+}
+
+impl<'a> SwitcherInProcessQueuedFrameHandoff<'a> {
+    pub fn new(queue_state: &'a mut ServerVideoFrameQueueState) -> Self {
+        Self {
+            source: SwitcherInProcessServerQueueFrameSource::new(queue_state),
+        }
+    }
+}
+
+impl SwitcherQueuedFrameHandoff for SwitcherInProcessQueuedFrameHandoff<'_> {
+    fn read_handoff_frame(
+        &mut self,
+        input: SwitcherQueuedFrameHandoffInput,
+    ) -> SwitcherQueuedFrameHandoffResult {
+        if input.client_id.0.trim().is_empty() || input.run_id.0.trim().is_empty() {
+            return SwitcherQueuedFrameHandoffResult::HandoffError {
+                client_id: input.client_id.clone(),
+                run_id: input.run_id.clone(),
+                mode: input.mode,
+                error: SwitcherQueuedFrameHandoffError::InvalidScope {
+                    client_id: input.client_id,
+                    run_id: input.run_id,
+                },
+            };
+        }
+
+        match self
+            .source
+            .read_queued_frame(SwitcherSingleClientQueueSourceInput {
+                client_id: input.client_id,
+                run_id: input.run_id,
+                mode: input.mode,
+            }) {
+            SwitcherSingleClientQueueSourceResult::FrameAvailable {
+                frame,
+                mode,
+                remaining_client_queue_len,
+            } => SwitcherQueuedFrameHandoffResult::FrameRead {
+                frame,
+                mode,
+                remaining_client_queue_len,
+            },
+            SwitcherSingleClientQueueSourceResult::NoFrameAvailable {
+                client_id,
+                run_id,
+                mode,
+                client_queue_len,
+            } => SwitcherQueuedFrameHandoffResult::NoFrameAvailable {
+                client_id,
+                run_id,
+                mode,
+                client_queue_len,
+            },
+        }
+    }
+}
+
 /// Selection behavior for the first single-client targetTime queue source.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum SwitcherSingleClientTargetTimeSourceMode {
@@ -5784,6 +5909,277 @@ mod tests {
         assert_eq!(frame.fps_nominal, 30);
         assert_eq!(frame.encoded_payload_len, 4);
         assert_eq!(frame.encoded_payload, vec![0x01, 0x02, 0x03, 0x04]);
+    }
+
+    #[test]
+    fn single_client_queue_source_handoff_returns_selected_frame() {
+        let mut state = ServerVideoFrameQueueState::default();
+        store_frame_for_run(
+            &mut state,
+            "client-1",
+            "run-1",
+            1,
+            TimestampMicros(2_036_000),
+        );
+        let client_id = ClientId("client-1".to_string());
+
+        let result = {
+            let mut handoff = SwitcherInProcessQueuedFrameHandoff::new(&mut state);
+            handoff.read_handoff_frame(SwitcherQueuedFrameHandoffInput {
+                client_id: client_id.clone(),
+                run_id: RunId("run-1".to_string()),
+                mode: SwitcherSingleClientQueueSourceMode::PreviewOldest,
+            })
+        };
+
+        let SwitcherQueuedFrameHandoffResult::FrameRead { frame, mode, .. } = result else {
+            panic!("handoff should read selected queued frame");
+        };
+        assert_eq!(frame.client_id, client_id);
+        assert_eq!(frame.run_id, RunId("run-1".to_string()));
+        assert_eq!(frame.frame_id, 1);
+        assert_eq!(mode, SwitcherSingleClientQueueSourceMode::PreviewOldest);
+    }
+
+    #[test]
+    fn single_client_queue_source_handoff_returns_no_frame_result() {
+        let mut state = ServerVideoFrameQueueState::default();
+        store_frame_for_run(
+            &mut state,
+            "client-1",
+            "run-1",
+            1,
+            TimestampMicros(2_037_000),
+        );
+        let client_id = ClientId("client-1".to_string());
+
+        let result = {
+            let mut handoff = SwitcherInProcessQueuedFrameHandoff::new(&mut state);
+            handoff.read_handoff_frame(SwitcherQueuedFrameHandoffInput {
+                client_id: client_id.clone(),
+                run_id: RunId("run-missing".to_string()),
+                mode: SwitcherSingleClientQueueSourceMode::PreviewLatest,
+            })
+        };
+
+        assert_eq!(
+            result,
+            SwitcherQueuedFrameHandoffResult::NoFrameAvailable {
+                client_id,
+                run_id: RunId("run-missing".to_string()),
+                mode: SwitcherSingleClientQueueSourceMode::PreviewLatest,
+                client_queue_len: 1,
+            }
+        );
+        assert_eq!(state.total_len(), 1);
+    }
+
+    #[test]
+    fn single_client_queue_source_handoff_invalid_scope_reports_error_without_mutation() {
+        let mut state = ServerVideoFrameQueueState::default();
+        store_frame_for_run(
+            &mut state,
+            "client-1",
+            "run-1",
+            1,
+            TimestampMicros(2_038_000),
+        );
+
+        let result = {
+            let mut handoff = SwitcherInProcessQueuedFrameHandoff::new(&mut state);
+            handoff.read_handoff_frame(SwitcherQueuedFrameHandoffInput {
+                client_id: ClientId("".to_string()),
+                run_id: RunId("run-1".to_string()),
+                mode: SwitcherSingleClientQueueSourceMode::PreviewLatest,
+            })
+        };
+
+        assert_eq!(
+            result,
+            SwitcherQueuedFrameHandoffResult::HandoffError {
+                client_id: ClientId("".to_string()),
+                run_id: RunId("run-1".to_string()),
+                mode: SwitcherSingleClientQueueSourceMode::PreviewLatest,
+                error: SwitcherQueuedFrameHandoffError::InvalidScope {
+                    client_id: ClientId("".to_string()),
+                    run_id: RunId("run-1".to_string()),
+                },
+            }
+        );
+        assert_eq!(state.total_len(), 1);
+    }
+
+    #[derive(Debug, Clone)]
+    struct FailingQueuedFrameHandoff {
+        error: SwitcherQueuedFrameHandoffError,
+    }
+
+    impl SwitcherQueuedFrameHandoff for FailingQueuedFrameHandoff {
+        fn read_handoff_frame(
+            &mut self,
+            input: SwitcherQueuedFrameHandoffInput,
+        ) -> SwitcherQueuedFrameHandoffResult {
+            SwitcherQueuedFrameHandoffResult::HandoffError {
+                client_id: input.client_id,
+                run_id: input.run_id,
+                mode: input.mode,
+                error: self.error.clone(),
+            }
+        }
+    }
+
+    #[test]
+    fn single_client_queue_source_handoff_propagates_source_error_from_fake() {
+        let mut handoff = FailingQueuedFrameHandoff {
+            error: SwitcherQueuedFrameHandoffError::Timeout,
+        };
+
+        let result = handoff.read_handoff_frame(SwitcherQueuedFrameHandoffInput {
+            client_id: ClientId("client-1".to_string()),
+            run_id: RunId("run-1".to_string()),
+            mode: SwitcherSingleClientQueueSourceMode::ConsumeOldest,
+        });
+
+        assert_eq!(
+            result,
+            SwitcherQueuedFrameHandoffResult::HandoffError {
+                client_id: ClientId("client-1".to_string()),
+                run_id: RunId("run-1".to_string()),
+                mode: SwitcherSingleClientQueueSourceMode::ConsumeOldest,
+                error: SwitcherQueuedFrameHandoffError::Timeout,
+            }
+        );
+    }
+
+    #[test]
+    fn single_client_queue_source_handoff_preserves_frame_metadata() {
+        let mut state = ServerVideoFrameQueueState::default();
+        store_frame_with_run_payload(
+            &mut state,
+            "client-1",
+            "run-meta",
+            1,
+            TimestampMicros(2_039_000),
+            800,
+            450,
+            vec![0x10, 0x20, 0x30, 0x40, 0x50],
+        );
+
+        let result = {
+            let mut handoff = SwitcherInProcessQueuedFrameHandoff::new(&mut state);
+            handoff.read_handoff_frame(SwitcherQueuedFrameHandoffInput {
+                client_id: ClientId("client-1".to_string()),
+                run_id: RunId("run-meta".to_string()),
+                mode: SwitcherSingleClientQueueSourceMode::PreviewOldest,
+            })
+        };
+
+        let SwitcherQueuedFrameHandoffResult::FrameRead { frame, .. } = result else {
+            panic!("handoff should preserve metadata frame");
+        };
+        assert_eq!(frame.client_id, ClientId("client-1".to_string()));
+        assert_eq!(frame.run_id, RunId("run-meta".to_string()));
+        assert_eq!(frame.frame_id, 1);
+        assert_eq!(frame.capture_timestamp, TimestampMicros(1_000_001));
+        assert_eq!(frame.send_timestamp, TimestampMicros(1_000_101));
+        assert_eq!(frame.queued_at, TimestampMicros(2_039_000));
+        assert!(frame.is_keyframe);
+        assert_eq!(frame.width, 800);
+        assert_eq!(frame.height, 450);
+        assert_eq!(frame.fps_nominal, 30);
+        assert_eq!(frame.encoded_payload_len, 5);
+        assert_eq!(frame.encoded_payload, vec![0x10, 0x20, 0x30, 0x40, 0x50]);
+    }
+
+    #[test]
+    fn single_client_queue_source_handoff_preview_does_not_mutate_queue() {
+        let mut state = ServerVideoFrameQueueState::default();
+        store_frame_for_run(
+            &mut state,
+            "client-1",
+            "run-1",
+            1,
+            TimestampMicros(2_040_000),
+        );
+        store_frame_for_run(
+            &mut state,
+            "client-1",
+            "run-1",
+            2,
+            TimestampMicros(2_040_100),
+        );
+        let client_id = ClientId("client-1".to_string());
+        let before_len = state.client_queue_len(&client_id);
+
+        let result = {
+            let mut handoff = SwitcherInProcessQueuedFrameHandoff::new(&mut state);
+            handoff.read_handoff_frame(SwitcherQueuedFrameHandoffInput {
+                client_id: client_id.clone(),
+                run_id: RunId("run-1".to_string()),
+                mode: SwitcherSingleClientQueueSourceMode::PreviewLatest,
+            })
+        };
+
+        let SwitcherQueuedFrameHandoffResult::FrameRead { frame, .. } = result else {
+            panic!("handoff should inspect latest frame");
+        };
+        assert_eq!(frame.frame_id, 2);
+        assert_eq!(state.client_queue_len(&client_id), before_len);
+    }
+
+    #[test]
+    fn single_client_queue_source_handoff_consume_mutates_only_requested_run() {
+        let mut state = ServerVideoFrameQueueState::default();
+        store_frame_for_run(
+            &mut state,
+            "client-1",
+            "run-1",
+            1,
+            TimestampMicros(2_041_000),
+        );
+        store_frame_for_run(
+            &mut state,
+            "client-1",
+            "run-2",
+            2,
+            TimestampMicros(2_041_100),
+        );
+        store_frame_for_run(
+            &mut state,
+            "client-1",
+            "run-1",
+            3,
+            TimestampMicros(2_041_200),
+        );
+        let client_id = ClientId("client-1".to_string());
+
+        let result = {
+            let mut handoff = SwitcherInProcessQueuedFrameHandoff::new(&mut state);
+            handoff.read_handoff_frame(SwitcherQueuedFrameHandoffInput {
+                client_id: client_id.clone(),
+                run_id: RunId("run-1".to_string()),
+                mode: SwitcherSingleClientQueueSourceMode::ConsumeOldest,
+            })
+        };
+
+        let SwitcherQueuedFrameHandoffResult::FrameRead {
+            frame,
+            remaining_client_queue_len,
+            ..
+        } = result
+        else {
+            panic!("handoff should dequeue oldest requested run frame");
+        };
+        assert_eq!(frame.frame_id, 1);
+        assert_eq!(remaining_client_queue_len, 2);
+        let remaining: Vec<(String, u64)> = state
+            .frames_for_client(&client_id)
+            .map(|queued| (queued.frame.run_id.0.clone(), queued.frame.frame_id))
+            .collect();
+        assert_eq!(
+            remaining,
+            vec![("run-2".to_string(), 2), ("run-1".to_string(), 3)]
+        );
     }
 
     #[test]

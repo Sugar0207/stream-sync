@@ -71,15 +71,15 @@ format.
 Smallest handoff interface:
 
 ```text
-SwitcherQueuedFrameSource::read_queued_frame(client_id, run_id, mode)
-  -> queued encoded frame | no-frame
+SwitcherQueuedFrameHandoff::read_handoff_frame(client_id, run_id, mode)
+  -> queued encoded frame | no-frame | handoff error
 ```
 
 The initial implementation is an in-process trait/interface, not local IPC,
-TCP, UDP, shared memory, or a new wire protocol. It wraps
-`ServerVideoFrameQueueReadBoundary` through the switcher queue-source boundary
-and preserves the same read modes: inspect oldest, inspect latest, and dequeue
-oldest.
+TCP, UDP, shared memory, or a new wire protocol. It wraps the existing
+`SwitcherQueuedFrameSource`, which wraps `ServerVideoFrameQueueReadBoundary`
+through the switcher queue-source boundary, and preserves the same read modes:
+inspect oldest, inspect latest, and dequeue oldest.
 
 Data crossing the server->switcher boundary:
 
@@ -98,11 +98,22 @@ Data crossing the server->switcher boundary:
 - queue read mode
 - remaining per-client queue length or current queue length
 - explicit no-frame result
+- explicit handoff/source error, separate from no-frame
 
 Waiting, late, stale, and display placeholder status should stay downstream of
 the queue handoff. The switcher targetTime source and display policy already
 derive waiting / no-frame / stale / placeholder decisions after reading queue
 state. The server->switcher handoff should not invent those display decisions.
+
+Handoff/source errors are transport/source failures and are not normal empty
+queue results. The minimal error set is:
+
+- source unavailable
+- request timeout
+- invalid client/run scope
+- unsupported read mode
+- malformed source response
+- source shutdown
 
 Out of scope for the first production handoff slice:
 
@@ -8208,8 +8219,10 @@ No protocol wire format changed for this slice.
 
 ## Switcher Queued-Frame Source Interface
 
-The first production-facing server->switcher handoff interface is an
-in-process pull/read source:
+The first production-facing server->switcher handoff is split into a
+non-fallible source and a fallible transport-neutral handoff layer.
+
+The source shape remains:
 
 ```text
 SwitcherQueuedFrameSource::read_queued_frame(client_id, run_id, mode)
@@ -8234,6 +8247,33 @@ Current implementation:
   keyframe flag, width, height, nominal FPS, encoded payload length, and
   encoded H.264 payload.
 - No-frame results stay explicit and preserve current per-client queue length.
+
+The fallible handoff shape is:
+
+```text
+SwitcherQueuedFrameHandoff::read_handoff_frame(client_id, run_id, mode)
+  -> queued encoded frame | explicit no-frame | handoff error
+```
+
+Current implementation:
+
+- `SwitcherQueuedFrameHandoff` is transport-neutral and keeps targetTime
+  selection out of the handoff.
+- `SwitcherQueuedFrameHandoffResult` distinguishes:
+  - `FrameRead`
+  - `NoFrameAvailable`
+  - `HandoffError`
+- `SwitcherQueuedFrameHandoffError` currently covers:
+  - `SourceUnavailable`
+  - `Timeout`
+  - `InvalidScope`
+  - `UnsupportedMode`
+  - `MalformedResponse`
+  - `SourceShutdown`
+- `SwitcherInProcessQueuedFrameHandoff` is the first implementation. It wraps
+  `SwitcherInProcessServerQueueFrameSource`, validates empty client/run scope
+  as `InvalidScope`, and otherwise maps selected/no-frame results without
+  changing queue behavior.
 
 This interface is intentionally transport-neutral. The current adapter is
 in-process only; local IPC, TCP, UDP, shared memory, OBS output, 4-view
@@ -8596,11 +8636,10 @@ Responsibility split:
 
 Next production-facing slice:
 
-- Add a transport-neutral, fallible handoff contract around
-  `SwitcherQueuedFrameSource` so normal no-frame results stay separate from
-  source/transport failures.
-- Keep the first implementation backed by the current in-process
-  `SwitcherInProcessServerQueueFrameSource`.
+- Decide where the fallible handoff should first be consumed in the switcher
+  path, without moving targetTime selection to the server.
+- Keep the current implementation backed by
+  `SwitcherInProcessServerQueueFrameSource` until a real transport is chosen.
 - Keep OBS output, 4-view orchestration, protocol wire-format changes,
   switcher-side fragment reassembly, late-drop mutation, and H.264
   decode/render behavior changes out of scope until the server-mediated source
