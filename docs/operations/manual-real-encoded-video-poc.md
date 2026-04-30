@@ -413,6 +413,16 @@ server queue output
 Use a pull/read handoff from server queue state for the next in-process
 validation. Do not decide a production push transport yet.
 
+Implemented diagnostic validation:
+
+- `SwitcherServerMediatedTwoViewValidationBoundary` now performs this
+  in-process wiring over caller-owned `ServerVideoFrameQueueState`.
+- The boundary is covered by focused tests for both-selected render, waiting
+  placeholder, no-frame placeholder, all-or-nothing consume, and preview
+  no-mutation behavior.
+- No manual command was added in this slice; command flow is unchanged.
+- Production server->switcher transport is still undecided.
+
 ### Terminal 1: Live Two-View Switcher Runtime
 
 Start the switcher first. It binds `0.0.0.0:5000` when using

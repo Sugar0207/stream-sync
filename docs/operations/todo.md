@@ -59,7 +59,7 @@
 ---
 
 ## 直近でやること
-1. server-mediated 2-client switcher source の最小 in-process validation を設計・実装する。client -> server が auth / UDP receive / `VideoFrameFragment` reassembly / queue を担当し、switcher は server queue read 以降の targetTime / display policy / composition / render を担当する
+1. server-mediated 2-client validation を manual/runtime へ接続するか、4-view expansion planning へ進む前に production server->switcher transport の最小方針を決める
 2. `--live-two-view-switcher-once` は direct receive 診断用として残すが、fragmented real encoded validation の主経路には使わないことを維持する
 3. production H.264 encoder configuration / error logging policy
 
@@ -764,6 +764,7 @@
 - switcher now has a minimal 2-view display policy boundary: `SwitcherTwoViewDisplayPolicyBoundary` maps decode/render connection results to update, hold previous, stale previous, or no-display placeholder decisions while preserving skip reasons and avoiding fake frames.
 - switcher now has a minimal display policy -> 2-view composition adapter: `SwitcherTwoViewDisplayCompositionAdapterBoundary` maps update and hold decisions to decoded composition inputs, maps stale / no-display placeholder decisions to skipped composition sides, and keeps skip reasons visible without creating fake frames.
 - switcher now has a minimal display-composition adapter -> composed canvas render connection: `SwitcherTwoViewDisplayCompositionRenderConnectionBoundary` runs adapter output through the existing 2-view composition boundary and composed-canvas render boundary, keeps adapter output / composition result / render result visible, renders only when composition produces a real composed frame, and keeps stale / no-display placeholders explicit without fake decoded frames.
+- switcher now has a minimal server-mediated 2-view validation boundary: `SwitcherServerMediatedTwoViewValidationBoundary` takes caller-owned `ServerVideoFrameQueueState` containing direct or server-reassembled frames and runs queue-backed targetTime scheduler -> scheduler decode/render connection -> display policy -> display-composition adapter -> composed canvas render connection while keeping each stage visible. Focused tests cover both-selected render, waiting placeholder, no-frame placeholder, all-or-nothing consume, and preview no-mutation behavior.
 - 2-client manual validation planning is now documented in `docs/operations/manual-real-encoded-video-poc.md`: `--live-two-view-switcher-once` is clarified as a direct receive diagnostic path that uses a server-style config and does not use `configs/examples/switcher.example.toml` or a separate `stream-sync-server` process. Because this path treats `VideoFrameFragment` packets as non-video, it is not suitable as the main fragmented real encoded validation path. The main path is now client -> server -> switcher, with the next slice focused on server-mediated queue read into switcher targetTime / display / composition / render.
 - `docs/operations/manual-real-encoded-video-poc.md` is now the step-by-step human E2E checklist for the bounded authenticated real encoded sender, one-client server queue verification, and two-client live switcher verification, including prerequisites, commands, expected stdout counters, diagnosis, pass/fail criteria, and recorded successful fragmented 1-frame / 2-frame queue runs.
 - manual fragmented real encoded queue verification is now recorded as successful for both `max_frames=1` and `max_frames=2` when using the recommended `8388608` byte server receive buffer request and client fragment pacing. The latest `max_frames=2` localhost run observed `fragments_sent=854/854`, `fragments_received=854`, `frames_reassembled=2`, `frames_queued=2`, `incomplete_reassembly_frames=0`, and `receive_timed_out=false`.
@@ -773,6 +774,6 @@
 - actual dashboard UI rendering remains unimplemented.
 
 ## Next Items
-1. Design/implement the smallest server-mediated 2-client switcher source validation over reassembled queued frames.
+1. Decide the next server-mediated step: manual/runtime command over the in-process validation boundary, or production server->switcher transport planning.
 2. production H.264 encoder configuration / error logging policy
 3. Decide later whether `--live-two-view-switcher-once` should be renamed or deprecated after the server-mediated path exists

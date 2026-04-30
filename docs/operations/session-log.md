@@ -5,6 +5,64 @@
 - Codex
 
 ### Work
+- Added `SwitcherServerMediatedTwoViewValidationBoundary`.
+- The boundary takes caller-owned `ServerVideoFrameQueueState` that may contain direct `VideoFrame` packets or server-reassembled `VideoFrameFragment` output.
+- Connected the existing in-process path:
+  - `SwitcherTwoViewTargetTimeSourceSchedulerBoundary`
+  - `SwitcherTwoViewSchedulerDecodeRenderConnectionBoundary`
+  - `SwitcherTwoViewDisplayPolicyBoundary`
+  - `SwitcherTwoViewDisplayCompositionAdapterBoundary`
+  - `SwitcherTwoViewDisplayCompositionRenderConnectionBoundary`
+- Kept scheduler result, decode/render connection output, display policy output, display-composition adapter output, and composed render connection output visible in the boundary result.
+- Added focused tests for:
+  - two eligible server queue frames rendering through the composed canvas path
+  - one eligible frame plus one future frame preserving waiting/no-display placeholder without a fake decoded frame
+  - one eligible frame plus one empty queue preserving no-frame/no-display placeholder
+  - consume mode remaining all-or-nothing when one side is waiting
+  - preview mode not mutating server queues
+- Updated architecture and operations docs.
+
+### Changed Files
+- `apps/switcher/src/lib.rs`
+- `docs/architecture/system-design.md`
+- `docs/operations/manual-real-encoded-video-poc.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### Decisions
+- Kept the slice in-process and test-oriented.
+- Reused the existing server queue-backed scheduler and display/composition/render boundaries.
+- Did not add a manual command in this slice.
+- Did not define production server->switcher transport.
+- Did not implement OBS output, 4-view orchestration, protocol wire-format changes, switcher-side fragment reassembly, late-drop mutation, or H.264 decode/render behavior changes.
+
+### Unresolved
+- Decide whether the next server-mediated step is a manual/runtime command over this boundary or production transport planning.
+- production H.264 encoder configuration / error logging policy
+- 4-view expansion planning
+
+### Next
+- Decide and implement the next server-mediated validation step before expanding to 4-view.
+
+### TODO Update
+- Marked the server-mediated in-process validation boundary as completed.
+- Set the next task to either manual/runtime command wiring over this boundary or production server->switcher transport planning.
+
+### Validation
+- `cargo fmt` passed.
+- `cargo fmt --check` passed.
+- `cargo test -p stream-sync-switcher two_view -- --test-threads=1` passed: 84 passed, 0 failed.
+- `cargo test -p stream-sync-switcher target_time -- --test-threads=1` passed: 22 passed, 0 failed.
+- `cargo test -p stream-sync-switcher single_client_queue_source -- --test-threads=1` passed: 3 passed, 0 failed.
+- `cargo test -p stream-sync-server video_frame_queue -- --test-threads=1` passed: 12 passed, 0 failed.
+- `cargo check --workspace` passed.
+- `git diff --check` passed with line-ending warnings for changed files.
+
+## 2026-04-30
+### Type
+- Codex
+
+### Work
 - Recorded the topology decision that the main real encoded video path is client -> server -> switcher.
 - Clarified that server owns ingest concerns: auth, UDP receive, receive-buffer tuning, `VideoFrameFragment` reassembly, queue insertion, and queue read boundaries.
 - Clarified that switcher owns sync/display/output concerns: server queue consumption, shared targetTime selection, H.264 decode, display policy, composition, composed-canvas rendering, and later OBS-window presentation.

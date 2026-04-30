@@ -1993,6 +1993,119 @@ pub struct SwitcherTwoViewDisplayCompositionRenderConnectionOutput {
     pub render: SwitcherTwoViewDisplayCompositionRenderConnectionRenderResult,
 }
 
+/// Input for the smallest server-mediated 2-view switcher validation.
+///
+/// The caller supplies server-owned queue state that already contains direct
+/// `VideoFrame` packets or server-reassembled `VideoFrameFragment` output.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SwitcherServerMediatedTwoViewValidationInput {
+    pub left: SwitcherTwoViewTargetTimeSourceViewConfig,
+    pub right: SwitcherTwoViewTargetTimeSourceViewConfig,
+    pub target_timestamp: TimestampMicros,
+    pub scheduler_mode: SwitcherTwoViewTargetTimeSourceSchedulerMode,
+    pub left_window_title: String,
+    pub right_window_title: String,
+    pub decode_render_hold_millis: u64,
+    pub previous_left: Option<SwitcherTwoViewDisplayedFrame>,
+    pub previous_right: Option<SwitcherTwoViewDisplayedFrame>,
+    pub display_current_time: TimestampMicros,
+    pub max_hold_duration_micros: Option<u64>,
+    pub layout_policy: SwitcherTwoViewLayoutPolicy,
+    pub composed_window_title: String,
+    pub composed_render_hold_millis: u64,
+}
+
+/// Output from the server-mediated diagnostic path.
+///
+/// Each stage is kept visible so selected / waiting / no-frame / stale /
+/// placeholder decisions can be inspected without collapsing them into a final
+/// render-only status.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SwitcherServerMediatedTwoViewValidationOutput {
+    pub scheduler: SwitcherTwoViewTargetTimeSourceSchedulerResult,
+    pub decode_render: SwitcherTwoViewSchedulerDecodeRenderConnectionOutput,
+    pub display: SwitcherTwoViewDisplayPolicyOutput,
+    pub adapter: SwitcherTwoViewDisplayCompositionAdapterOutput,
+    pub render: SwitcherTwoViewDisplayCompositionRenderConnectionOutput,
+}
+
+/// Minimal in-process connection from server-owned reassembled queue state into
+/// the current 2-view switcher display pipeline.
+///
+/// This boundary does not receive UDP, authenticate clients, reassemble
+/// fragments, define cross-process server->switcher transport, alter H.264
+/// decode/render behavior, mutate late frames, implement 4-view orchestration,
+/// or output to OBS.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct SwitcherServerMediatedTwoViewValidationBoundary {
+    scheduler: SwitcherTwoViewTargetTimeSourceSchedulerBoundary,
+    decode_render: SwitcherTwoViewSchedulerDecodeRenderConnectionBoundary,
+    display_policy: SwitcherTwoViewDisplayPolicyBoundary,
+    adapter: SwitcherTwoViewDisplayCompositionAdapterBoundary,
+    render: SwitcherTwoViewDisplayCompositionRenderConnectionBoundary,
+}
+
+impl SwitcherServerMediatedTwoViewValidationBoundary {
+    pub fn run_with_runtimes(
+        &self,
+        queue_state: &mut ServerVideoFrameQueueState,
+        input: SwitcherServerMediatedTwoViewValidationInput,
+        decode_runtime: &impl SwitcherH264DecodeRuntimeHook,
+        render_runtime: &impl SwitcherWindowRenderRuntimeHook,
+    ) -> SwitcherServerMediatedTwoViewValidationOutput {
+        let scheduler = self.scheduler.select_pair(
+            queue_state,
+            SwitcherTwoViewTargetTimeSourceSchedulerInput {
+                left: input.left,
+                right: input.right,
+                target_timestamp: input.target_timestamp,
+                mode: input.scheduler_mode,
+            },
+        );
+        let decode_render = self.decode_render.render_scheduler_result_with_runtimes(
+            SwitcherTwoViewSchedulerDecodeRenderConnectionInput {
+                scheduler_result: scheduler.clone(),
+                left_window_title: input.left_window_title,
+                right_window_title: input.right_window_title,
+                render_hold_millis: input.decode_render_hold_millis,
+            },
+            decode_runtime,
+            render_runtime,
+        );
+        let display = self
+            .display_policy
+            .decide(SwitcherTwoViewDisplayPolicyInput {
+                connection: decode_render.clone(),
+                previous_left: input.previous_left,
+                previous_right: input.previous_right,
+                current_time: input.display_current_time,
+                max_hold_duration_micros: input.max_hold_duration_micros,
+            });
+        let adapter = self
+            .adapter
+            .adapt(SwitcherTwoViewDisplayCompositionAdapterInput {
+                display: display.clone(),
+                layout_policy: input.layout_policy,
+            });
+        let render = self.render.render_adapter_output_with_runtime(
+            SwitcherTwoViewDisplayCompositionRenderConnectionInput {
+                adapter_output: adapter.clone(),
+                window_title: input.composed_window_title,
+                render_hold_millis: input.composed_render_hold_millis,
+            },
+            render_runtime,
+        );
+
+        SwitcherServerMediatedTwoViewValidationOutput {
+            scheduler,
+            decode_render,
+            display,
+            adapter,
+            render,
+        }
+    }
+}
+
 enum SwitcherTwoViewDisplayPolicySideInput {
     Rendered(SwitcherTwoViewRenderedSide),
     Skipped(SwitcherTwoViewSkippedSide),
@@ -7925,6 +8038,327 @@ mod tests {
                 render: SwitcherTwoViewComposedCanvasRenderResult::Rendered { .. }
             }
         ));
+    }
+
+    fn server_mediated_validation_input(
+        target_timestamp: TimestampMicros,
+        scheduler_mode: SwitcherTwoViewTargetTimeSourceSchedulerMode,
+    ) -> SwitcherServerMediatedTwoViewValidationInput {
+        SwitcherServerMediatedTwoViewValidationInput {
+            left: SwitcherTwoViewTargetTimeSourceViewConfig {
+                client_id: ClientId("client-left".to_string()),
+                run_id: RunId("run-left".to_string()),
+            },
+            right: SwitcherTwoViewTargetTimeSourceViewConfig {
+                client_id: ClientId("client-right".to_string()),
+                run_id: RunId("run-right".to_string()),
+            },
+            target_timestamp,
+            scheduler_mode,
+            left_window_title: "left decoded".to_string(),
+            right_window_title: "right decoded".to_string(),
+            decode_render_hold_millis: 5,
+            previous_left: None,
+            previous_right: None,
+            display_current_time: TimestampMicros(2_000_000),
+            max_hold_duration_micros: Some(500_000),
+            layout_policy: SwitcherTwoViewLayoutPolicy::default(),
+            composed_window_title: "composed server mediated".to_string(),
+            composed_render_hold_millis: 25,
+        }
+    }
+
+    #[test]
+    fn server_mediated_two_view_validation_renders_two_eligible_server_queue_frames() {
+        let mut state = ServerVideoFrameQueueState::default();
+        store_frame_with_run_payload(
+            &mut state,
+            "client-left",
+            "run-left",
+            1,
+            TimestampMicros(2_124_000),
+            2,
+            1,
+            vec![0, 0, 1, 0x65, 0x21],
+        );
+        store_frame_with_run_payload(
+            &mut state,
+            "client-right",
+            "run-right",
+            2,
+            TimestampMicros(2_124_100),
+            2,
+            1,
+            vec![0, 0, 1, 0x65, 0x22],
+        );
+        let decode = RecordingTwoViewDecode::default();
+        let render = RecordingTwoViewRender::default();
+
+        let output = SwitcherServerMediatedTwoViewValidationBoundary::default().run_with_runtimes(
+            &mut state,
+            server_mediated_validation_input(
+                TimestampMicros(1_000_002),
+                SwitcherTwoViewTargetTimeSourceSchedulerMode::PreviewLatestIfAtOrBefore,
+            ),
+            &decode,
+            &render,
+        );
+
+        assert_eq!(
+            output.scheduler.status,
+            SwitcherTwoViewTargetTimeSourceSchedulerStatus::AllSelected
+        );
+        assert!(matches!(
+            output.display.left,
+            SwitcherTwoViewDisplayDecision::Update { .. }
+        ));
+        assert!(matches!(
+            output.display.right,
+            SwitcherTwoViewDisplayDecision::Update { .. }
+        ));
+        assert!(matches!(
+            output.adapter.left,
+            SwitcherTwoViewDisplayCompositionSideInstruction::UseUpdatedFrame { .. }
+        ));
+        assert!(matches!(
+            output.adapter.right,
+            SwitcherTwoViewDisplayCompositionSideInstruction::UseUpdatedFrame { .. }
+        ));
+        assert!(matches!(
+            output.render.composition,
+            SwitcherTwoViewCompositionResult::BothComposed { .. }
+        ));
+        assert!(matches!(
+            output.render.render,
+            SwitcherTwoViewDisplayCompositionRenderConnectionRenderResult::RenderedCanvas {
+                render: SwitcherTwoViewComposedCanvasRenderResult::Rendered { .. }
+            }
+        ));
+        assert_eq!(decode.inputs.borrow().len(), 2);
+        assert_eq!(render.requests.borrow().len(), 3);
+    }
+
+    #[test]
+    fn server_mediated_two_view_validation_preserves_waiting_without_fake_frame() {
+        let mut state = ServerVideoFrameQueueState::default();
+        store_frame_with_run_payload(
+            &mut state,
+            "client-left",
+            "run-left",
+            1,
+            TimestampMicros(2_125_000),
+            2,
+            1,
+            vec![0, 0, 1, 0x65, 0x21],
+        );
+        store_frame_with_run_payload(
+            &mut state,
+            "client-right",
+            "run-right",
+            10,
+            TimestampMicros(2_125_100),
+            2,
+            1,
+            vec![0, 0, 1, 0x65, 0x2a],
+        );
+        let decode = RecordingTwoViewDecode::default();
+        let render = RecordingTwoViewRender::default();
+
+        let output = SwitcherServerMediatedTwoViewValidationBoundary::default().run_with_runtimes(
+            &mut state,
+            server_mediated_validation_input(
+                TimestampMicros(1_000_005),
+                SwitcherTwoViewTargetTimeSourceSchedulerMode::PreviewLatestIfAtOrBefore,
+            ),
+            &decode,
+            &render,
+        );
+
+        assert_eq!(
+            output.scheduler.status,
+            SwitcherTwoViewTargetTimeSourceSchedulerStatus::PartialSelected
+        );
+        assert!(matches!(
+            output.scheduler.right,
+            SwitcherSingleClientTargetTimeSourceResult::WaitingForFrameAtOrBeforeTarget { .. }
+        ));
+        let SwitcherTwoViewDisplayCompositionSideInstruction::UseNoDisplayPlaceholder {
+            skipped,
+            ..
+        } = &output.adapter.right
+        else {
+            panic!("waiting side should remain an explicit no-display placeholder");
+        };
+        assert!(matches!(
+            skipped,
+            SwitcherTwoViewSkippedSide::SelectionUnavailable {
+                selection: SwitcherJitterBufferSelectionResult::FrameTooEarly { .. },
+                ..
+            }
+        ));
+        assert!(matches!(
+            output.render.composition,
+            SwitcherTwoViewCompositionResult::LeftOnly { .. }
+        ));
+        assert_eq!(decode.inputs.borrow().len(), 1);
+        assert_eq!(render.requests.borrow().len(), 2);
+    }
+
+    #[test]
+    fn server_mediated_two_view_validation_preserves_no_frame_placeholder() {
+        let mut state = ServerVideoFrameQueueState::default();
+        store_frame_with_run_payload(
+            &mut state,
+            "client-left",
+            "run-left",
+            1,
+            TimestampMicros(2_126_000),
+            2,
+            1,
+            vec![0, 0, 1, 0x65, 0x21],
+        );
+        let decode = RecordingTwoViewDecode::default();
+        let render = RecordingTwoViewRender::default();
+
+        let output = SwitcherServerMediatedTwoViewValidationBoundary::default().run_with_runtimes(
+            &mut state,
+            server_mediated_validation_input(
+                TimestampMicros(1_000_005),
+                SwitcherTwoViewTargetTimeSourceSchedulerMode::PreviewLatestIfAtOrBefore,
+            ),
+            &decode,
+            &render,
+        );
+
+        assert!(matches!(
+            output.scheduler.right,
+            SwitcherSingleClientTargetTimeSourceResult::NoFrameAvailable { .. }
+        ));
+        let SwitcherTwoViewDisplayCompositionSideInstruction::UseNoDisplayPlaceholder {
+            skipped,
+            ..
+        } = &output.adapter.right
+        else {
+            panic!("empty queue side should remain a no-display placeholder");
+        };
+        assert!(matches!(
+            skipped,
+            SwitcherTwoViewSkippedSide::SelectionUnavailable {
+                selection: SwitcherJitterBufferSelectionResult::NoFrame { .. },
+                ..
+            }
+        ));
+        assert!(matches!(
+            output.render.composition,
+            SwitcherTwoViewCompositionResult::LeftOnly { .. }
+        ));
+        assert_eq!(decode.inputs.borrow().len(), 1);
+        assert_eq!(render.requests.borrow().len(), 2);
+    }
+
+    #[test]
+    fn server_mediated_two_view_validation_consume_mode_is_all_or_nothing() {
+        let mut state = ServerVideoFrameQueueState::default();
+        store_frame_with_run_payload(
+            &mut state,
+            "client-left",
+            "run-left",
+            1,
+            TimestampMicros(2_127_000),
+            2,
+            1,
+            vec![0, 0, 1, 0x65, 0x21],
+        );
+        store_frame_with_run_payload(
+            &mut state,
+            "client-right",
+            "run-right",
+            10,
+            TimestampMicros(2_127_100),
+            2,
+            1,
+            vec![0, 0, 1, 0x65, 0x2a],
+        );
+        let left_client = ClientId("client-left".to_string());
+        let right_client = ClientId("client-right".to_string());
+        let before_left = state.client_queue_len(&left_client);
+        let before_right = state.client_queue_len(&right_client);
+        let decode = RecordingTwoViewDecode::default();
+        let render = RecordingTwoViewRender::default();
+
+        let output = SwitcherServerMediatedTwoViewValidationBoundary::default().run_with_runtimes(
+            &mut state,
+            server_mediated_validation_input(
+                TimestampMicros(1_000_005),
+                SwitcherTwoViewTargetTimeSourceSchedulerMode::ConsumeOldestAtOrBeforeAllSelected,
+            ),
+            &decode,
+            &render,
+        );
+
+        assert_eq!(
+            output.scheduler.status,
+            SwitcherTwoViewTargetTimeSourceSchedulerStatus::PartialSelected
+        );
+        let SwitcherSingleClientTargetTimeSourceResult::Selected(left) = &output.scheduler.left
+        else {
+            panic!("left should be selected from preview");
+        };
+        assert!(!left.consumed);
+        assert!(matches!(
+            output.scheduler.right,
+            SwitcherSingleClientTargetTimeSourceResult::WaitingForFrameAtOrBeforeTarget { .. }
+        ));
+        assert_eq!(state.client_queue_len(&left_client), before_left);
+        assert_eq!(state.client_queue_len(&right_client), before_right);
+    }
+
+    #[test]
+    fn server_mediated_two_view_validation_preview_mode_does_not_mutate_server_queues() {
+        let mut state = ServerVideoFrameQueueState::default();
+        store_frame_with_run_payload(
+            &mut state,
+            "client-left",
+            "run-left",
+            1,
+            TimestampMicros(2_128_000),
+            2,
+            1,
+            vec![0, 0, 1, 0x65, 0x21],
+        );
+        store_frame_with_run_payload(
+            &mut state,
+            "client-right",
+            "run-right",
+            2,
+            TimestampMicros(2_128_100),
+            2,
+            1,
+            vec![0, 0, 1, 0x65, 0x22],
+        );
+        let left_client = ClientId("client-left".to_string());
+        let right_client = ClientId("client-right".to_string());
+        let before_left = state.client_queue_len(&left_client);
+        let before_right = state.client_queue_len(&right_client);
+        let decode = RecordingTwoViewDecode::default();
+        let render = RecordingTwoViewRender::default();
+
+        let output = SwitcherServerMediatedTwoViewValidationBoundary::default().run_with_runtimes(
+            &mut state,
+            server_mediated_validation_input(
+                TimestampMicros(1_000_005),
+                SwitcherTwoViewTargetTimeSourceSchedulerMode::PreviewLatestIfAtOrBefore,
+            ),
+            &decode,
+            &render,
+        );
+
+        assert_eq!(
+            output.scheduler.status,
+            SwitcherTwoViewTargetTimeSourceSchedulerStatus::AllSelected
+        );
+        assert_eq!(state.client_queue_len(&left_client), before_left);
+        assert_eq!(state.client_queue_len(&right_client), before_right);
     }
 
     #[test]

@@ -8414,3 +8414,50 @@ Responsibility split:
   protocol changes, or H.264 decode/render behavior changes.
 
 No protocol wire format changed for this slice.
+
+## Switcher Server-Mediated 2-View Validation Boundary
+
+The first server-mediated 2-view validation boundary connects already queued
+server frames into the current switcher display pipeline without duplicating
+server ingest logic:
+
+```text
+ServerVideoFrameQueueState
+  -> SwitcherTwoViewTargetTimeSourceSchedulerBoundary
+  -> SwitcherTwoViewSchedulerDecodeRenderConnectionBoundary
+  -> SwitcherTwoViewDisplayPolicyBoundary
+  -> SwitcherTwoViewDisplayCompositionAdapterBoundary
+  -> SwitcherTwoViewDisplayCompositionRenderConnectionBoundary
+```
+
+Current implementation:
+
+- `SwitcherServerMediatedTwoViewValidationBoundary` receives caller-owned
+  `ServerVideoFrameQueueState`.
+- The queue state is expected to contain direct `VideoFrame` packets or
+  server-reassembled `VideoFrameFragment` output.
+- The boundary applies one shared target timestamp to two configured
+  `client_id + run_id` views.
+- The output keeps every stage visible:
+  - scheduler result
+  - scheduler decode/render connection output
+  - display policy output
+  - display-composition adapter output
+  - composed canvas render connection output
+- Waiting, no-frame, stale, and no-display placeholder decisions remain
+  explicit and are not converted into fake decoded frames.
+- Preview mode remains non-mutating.
+- Consume mode remains scheduler-level all-or-nothing through the existing
+  queue-backed 2-view scheduler.
+
+Responsibility split:
+
+- server remains the owner of auth, UDP receive, receive-buffer tuning,
+  `VideoFrameFragment` reassembly, and queue insertion.
+- this boundary owns only in-process diagnostic wiring from server queue state
+  into switcher targetTime/display/composition/render.
+- it does not define production server->switcher transport, implement OBS
+  output, add 4-view orchestration, change protocol wire format, duplicate
+  fragment reassembly in switcher, or change H.264 decode/render behavior.
+
+No protocol wire format changed for this slice.
