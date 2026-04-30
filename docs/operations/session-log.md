@@ -5,6 +5,99 @@
 - Codex
 
 ### Work
+- Recorded the topology decision that the main real encoded video path is client -> server -> switcher.
+- Clarified that server owns ingest concerns: auth, UDP receive, receive-buffer tuning, `VideoFrameFragment` reassembly, queue insertion, and queue read boundaries.
+- Clarified that switcher owns sync/display/output concerns: server queue consumption, shared targetTime selection, H.264 decode, display policy, composition, composed-canvas rendering, and later OBS-window presentation.
+- Documented that `--live-two-view-switcher-once` remains a diagnostic / legacy direct receive path for complete `VideoFrame` packets and is not suitable for fragmented real encoded validation.
+- Documented that fragment reassembly should not be duplicated in switcher while server already owns it.
+- Identified the smallest next implementation slice as an in-process server-mediated two-view validation over reassembled queued frames:
+  - server receive / reassembly / queue output
+  - `ServerVideoFrameQueueReadBoundary`
+  - `SwitcherSingleClientTargetTimeSourceBoundary`
+  - `SwitcherTwoViewTargetTimeSourceSchedulerBoundary`
+  - `SwitcherTwoViewSchedulerDecodeRenderConnectionBoundary`
+  - `SwitcherTwoViewDisplayPolicyBoundary`
+  - `SwitcherTwoViewDisplayCompositionAdapterBoundary`
+  - `SwitcherTwoViewDisplayCompositionRenderConnectionBoundary`
+
+### Changed Files
+- `docs/architecture/system-design.md`
+- `docs/operations/manual-real-encoded-video-poc.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### Decisions
+- Prefer server queue pull/read for the next minimal validation slice.
+- Do not decide a production server push transport yet.
+- Keep `--live-two-view-switcher-once` as diagnostic direct receive for now; consider rename/deprecation after server-mediated validation exists.
+- Do not implement OBS output, 4-view orchestration, protocol wire-format changes, or switcher-side fragment reassembly.
+
+### Unresolved
+- Implement the smallest server-mediated two-view switcher source validation.
+- Decide later whether the server-to-switcher production handoff is push, pull, or another transport after the in-process boundary is proven.
+- production H.264 encoder configuration / error logging policy
+- 4-view expansion planning
+
+### Next
+- Add a minimal in-process command or boundary that takes reassembled server queue output and drives switcher targetTime -> display policy -> composition -> composed render for two clients.
+
+### TODO Update
+- Set the next task to server-mediated 2-client switcher source validation.
+- Marked direct switcher receive as diagnostic / legacy for complete `VideoFrame` packets, not the fragmented real encoded path.
+
+### Validation
+- `cargo fmt` passed.
+- `cargo fmt --check` passed.
+- `cargo check --workspace` passed.
+- `git diff --check` passed with line-ending warnings for changed docs.
+
+## 2026-04-30
+### Type
+- Codex
+
+### Work
+- Inspected `--live-two-view-switcher-once` implementation and example configs to clarify the real manual process topology.
+- Confirmed the command loads a server-style config through `ServerAuthResponsePocLauncher`, not `configs/examples/switcher.example.toml`.
+- Confirmed the switcher process binds `server.bind_host` / `server.bind_port` from that config, so with `configs/examples/server.example.toml` it owns `0.0.0.0:5000`.
+- Confirmed the switcher validates `AuthRequest.shared_token` using the loaded `[auth.clients.*]` entries from the server-style config.
+- Confirmed a separate `stream-sync-server` process is not required for this command and would conflict if it binds the same address.
+- Confirmed clients must send to the switcher-owned manual socket, usually `127.0.0.1:5000`, using matching client ids and shared tokens from `configs/examples/server.example.toml`.
+- Confirmed the direct switcher UDP source accepts complete authenticated `VideoFrame` packets; `VideoFrameFragment` packets remain non-video in this path, so server-side fragment reassembly is not part of `--live-two-view-switcher-once`.
+- Updated the manual real encoded video PoC docs and TODO to clarify topology, ports, configs, and current limitation.
+
+### Changed Files
+- `docs/operations/manual-real-encoded-video-poc.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### Decisions
+- Docs/tracking updates only.
+- Did not update architecture because the architecture docs already describe the switcher live manual runtime as switcher-owned and no new boundary was introduced.
+- Did not implement OBS output, 4-view orchestration, late-drop mutation, protocol wire-format changes, or H.264 decode/render behavior changes.
+
+### Unresolved
+- Run the corrected 2-client manual validation topology and record real stdout counters.
+- If real captured frames are sent as `VideoFrameFragment`, decide whether the next minimal fix is switcher-side fragment reassembly or a client/manual setting that forces complete `VideoFrame` packets for this validation.
+- Decide whether to add a minimal display-policy-chain manual diagnostic command after the corrected manual topology is validated.
+
+### Next
+- Start only the switcher manual runtime with `configs/examples/server.example.toml`, then start two clients targeting `127.0.0.1:5000` with matching `player1` / `player2` tokens, and record auth / packet / render counters.
+
+### TODO Update
+- Clarified the manual validation topology: no separate server process, server-style config is used by switcher, clients connect to the switcher-owned server bind port.
+- Kept real-counter 2-client manual validation as the next task.
+
+### Validation
+- `cargo fmt` passed.
+- `cargo fmt --check` passed.
+- `cargo check --workspace` passed.
+- `git diff --check` passed with line-ending warnings for changed docs.
+
+## 2026-04-30
+### Type
+- Codex
+
+### Work
 - Reviewed the submitted 2-client manual validation stdout blocks.
 - Determined the review is inconclusive because the switcher, client 1, and client 2 stdout blocks contained only `...`.
 - Recorded that the following manual validation questions cannot be proven from the submitted text:

@@ -25,6 +25,46 @@ MVP では、以下の構成を採用します。
 - OBS は switcher の表示ウィンドウを Window Capture で取り込む
 - MVP では server と switcher は同一 PC 上で動作してよい
 
+### Main video topology decision
+
+The main real encoded video path is:
+
+```text
+client -> server -> switcher -> OBS Window Capture
+```
+
+Responsibility split for this path:
+
+- server owns ingest: client auth, UDP receive, socket receive-buffer tuning,
+  `VideoFrameFragment` reassembly, accepted frame queue insertion, and queue
+  read boundaries.
+- switcher owns sync/display/output: reading already queued encoded frames,
+  shared targetTime selection, H.264 decode, display policy, composition,
+  composed-canvas rendering, and later OBS-window presentation.
+- switcher should not duplicate server fragment reassembly while the server
+  queue path already owns it.
+
+For the smallest server-mediated switcher validation, prefer a pull/read
+handoff from the server queue rather than a server push stream. The current
+testable in-process path can reuse:
+
+```text
+server auth / UDP receive / fragment reassembly
+  -> ServerVideoFrameQueueState
+  -> ServerVideoFrameQueueReadBoundary
+  -> SwitcherSingleClientTargetTimeSourceBoundary
+  -> SwitcherTwoViewTargetTimeSourceSchedulerBoundary
+  -> SwitcherTwoViewSchedulerDecodeRenderConnectionBoundary
+  -> SwitcherTwoViewDisplayPolicyBoundary
+  -> SwitcherTwoViewDisplayCompositionAdapterBoundary
+  -> SwitcherTwoViewDisplayCompositionRenderConnectionBoundary
+```
+
+This keeps server ingest and switcher display responsibilities separated while
+remaining in-process and testable for the next validation slice. A production
+cross-process queue transport can be decided later without changing protocol
+wire format in this planning step.
+
 ---
 
 ## 3. コンポーネントと責務
@@ -7621,6 +7661,12 @@ Current decode/display substitute behavior:
   prints bind/client ids, auth accepted/rejected/registered counts, packet and
   queue counts, tick/render outcome counts, stop reason, and
   `bounded_manual_runtime=true`.
+- This direct-client receive launcher is now considered diagnostic / legacy for
+  topology validation. It is not the main real encoded validation path because
+  real encoded frames normally require `VideoFrameFragment` packets and server
+  fragment reassembly. The switcher direct UDP source treats fragments as
+  non-video and should not grow duplicate fragment reassembly logic while the
+  server owns ingest.
 - The manual launcher connects existing pieces only. It does not weaken auth,
   bypass packet acceptance, hide registry state globally, redesign the UDP
   source adapter, move selection/decode/render into auth handling, implement

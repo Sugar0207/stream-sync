@@ -299,13 +299,31 @@ consumption.
 
 Use this after one-client server queue E2E passes.
 
-This is the smallest current 2-client manual validation path before 4-view
-expansion:
+The real encoded path should be validated through the server-mediated topology:
 
 ```text
 client 1 bounded real capture/encode/send
 client 2 bounded real capture/encode/send
-  -> live two-view switcher auth setup
+  -> server auth / UDP receive / receive-buffer tuning
+  -> server VideoFrameFragment reassembly
+  -> server queue storage
+  -> switcher queue read / targetTime scheduler
+  -> H.264 decode
+  -> display policy
+  -> 2-view composition
+  -> composed canvas render
+```
+
+This is the main path because real encoded H.264 frames normally require
+fragmentation, and fragment reassembly is a server responsibility.
+
+The older direct switcher receive command remains useful as a diagnostic path
+for complete `VideoFrame` packets only:
+
+```text
+client 1 bounded real capture/encode/send
+client 2 bounded real capture/encode/send
+  -> live two-view switcher in-process server auth setup
   -> UDP source adapter
   -> server-style accepted frame queue storage
   -> shared targetTime selection
@@ -324,6 +342,28 @@ Current scope:
 
 Current limitation:
 
+- `--live-two-view-switcher-once` is diagnostic / legacy for direct client
+  receive. It is not suitable for fragmented real encoded validation because it
+  does not reassemble `VideoFrameFragment` packets.
+- this command does not use `configs/examples/switcher.example.toml`.
+- this command loads a server-style config such as
+  `configs/examples/server.example.toml`, binds its `[server] bind_host` /
+  `bind_port`, and uses its `[auth.clients.*] shared_token` values for
+  AuthRequest validation.
+- do not start `stream-sync-server` for this command. The switcher owns the UDP
+  socket for this manual run; a separate server on the same address will
+  conflict.
+- `configs/examples/switcher.example.toml` contains switcher UI/server routing
+  settings and no auth token material, so it is not valid input for
+  `--live-two-view-switcher-once`.
+- the current switcher UDP source accepts already complete authenticated
+  `VideoFrame` packets. `VideoFrameFragment` packets are currently classified
+  as non-video packets in this direct switcher path; fragment reassembly is
+  available in the server queue PoC path, not in this manual live switcher
+  source.
+- do not add switcher-side fragment reassembly just for this command. The next
+  minimal implementation slice should connect the server queue/reassembly path
+  to the switcher targetTime/display/composition/render path.
 - the existing `--live-two-view-switcher-once` runtime still uses the older
   live path: selection -> decode -> composition -> composed-canvas render.
 - it does not yet route live manual traffic through the newer queue-backed
@@ -357,7 +397,28 @@ That future diagnostic command should print, per side:
 Do not expand this manual path to 4-view or OBS until the 2-client path above
 has a recorded pass.
 
+Smallest next server-mediated validation slice:
+
+```text
+server queue output
+  -> ServerVideoFrameQueueReadBoundary
+  -> SwitcherSingleClientTargetTimeSourceBoundary
+  -> SwitcherTwoViewTargetTimeSourceSchedulerBoundary
+  -> SwitcherTwoViewSchedulerDecodeRenderConnectionBoundary
+  -> SwitcherTwoViewDisplayPolicyBoundary
+  -> SwitcherTwoViewDisplayCompositionAdapterBoundary
+  -> SwitcherTwoViewDisplayCompositionRenderConnectionBoundary
+```
+
+Use a pull/read handoff from server queue state for the next in-process
+validation. Do not decide a production push transport yet.
+
 ### Terminal 1: Live Two-View Switcher Runtime
+
+Start the switcher first. It binds `0.0.0.0:5000` when using
+`configs/examples/server.example.toml`, receives client AuthRequest packets
+directly, sends AuthResponse packets directly, then receives video packets from
+the same authenticated client UDP sources. No separate server process is used.
 
 ```powershell
 cargo run -p stream-sync-switcher -- --live-two-view-switcher-once configs/examples/server.example.toml player1 player2
@@ -367,22 +428,22 @@ Expected switcher stdout includes:
 
 ```text
 bounded_manual_runtime=true
+bind_address=0.0.0.0:5000
 left_client_id=player1
 right_client_id=player2
-auth_processed=<n>
+auth_packets_processed=<n>
 auth_accepted=<n>
 auth_rejected=0
-registered_clients=<n>
+auth_registered_clients=<n>
 packets_processed=<n>
 accepted_frames=<n>
 rejected_frames=<n>
-queued_frames=<n>
 ticks_processed=<n>
 rendered_both=<n>
 rendered_partial=<n>
 no_frame=<n>
 decode_failed=<n>
-render_failed=<n>
+render_not_completed=<n>
 stop_reason=<reason>
 ```
 
@@ -390,6 +451,11 @@ The exact field names may vary slightly with the CLI summary, but these are the
 counts to inspect.
 
 ### Terminal 2: Player 1 Client
+
+The client config must target the switcher-owned manual socket. With the
+default server example that means `server_host = "127.0.0.1"` and
+`server_port = 5000`. The token must match
+`[auth.clients.player1].shared_token` in `configs/examples/server.example.toml`.
 
 ```powershell
 cargo run -p stream-sync-client -- --auth-real-encoded-video-frame-poc-bounded configs/examples/client.accepted.example.toml 5
@@ -405,7 +471,10 @@ Expected client proof:
 
 ### Terminal 3: Player 2 Client
 
-Use a second client config with `client_id = "player2"` and matching token.
+Use a second client config with `client_id = "player2"`,
+`server_host = "127.0.0.1"`, `server_port = 5000`, and
+`shared_token = "replace-with-shared-token-2"` to match
+`[auth.clients.player2]` in `configs/examples/server.example.toml`.
 
 ```powershell
 cargo run -p stream-sync-client -- --auth-real-encoded-video-frame-poc-bounded <player2-client-config.toml> 5
