@@ -8304,11 +8304,13 @@ and H.264 decode/render behavior changes remain out of scope.
 
 ## Switcher Single-Client TargetTime Source Boundary
 
-The first targetTime-aware source remains single-client and now reads through
-the queued-frame source interface:
+The first targetTime-aware source remains single-client. It has both the
+existing non-fallible queued-frame source path and the new fallible handoff
+consumer path:
 
 ```text
 SwitcherQueuedFrameSource -> SwitcherSingleClientTargetTimeSourceBoundary
+SwitcherQueuedFrameHandoffConsumerResult -> SwitcherSingleClientTargetTimeHandoffSourceBoundary
 ```
 
 Current implementation:
@@ -8335,6 +8337,18 @@ Current implementation:
   returns waiting and does not mutate the queue.
 - Selected results carry the encoded frame, target timestamp, delta from target,
   and whether the frame was consumed.
+- `SwitcherSingleClientTargetTimeHandoffSourceBoundary` consumes fallible
+  handoff results through `SwitcherQueuedFrameHandoffConsumerBoundary`.
+- The fallible result type,
+  `SwitcherSingleClientTargetTimeHandoffSourceResult`, preserves four distinct
+  outcomes:
+  - selected frame,
+  - no frame available,
+  - waiting for a frame at or before target,
+  - handoff/source error.
+- Handoff/source errors are not collapsed into no-frame or waiting.
+- Consume mode still previews oldest first and only dequeues after the candidate
+  is eligible for the target timestamp.
 
 Responsibility split:
 
@@ -8342,6 +8356,8 @@ Responsibility split:
   server->switcher handoff implementation.
 - targetTime source owns only timestamp comparison and explicit preview/consume
   behavior.
+- fallible handoff targetTime source additionally owns preserving handoff
+  failures separately from normal targetTime source states.
 - It does not scan multi-client state, run 2-view or 4-view orchestration,
   decode H.264, render, mutate late frames, or touch OBS.
 

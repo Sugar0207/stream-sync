@@ -487,6 +487,142 @@ pub enum SwitcherSingleClientTargetTimeSourceResult {
     },
 }
 
+/// Fallible targetTime-aware result over the queued-frame handoff consumer.
+///
+/// Handoff errors are source/transport failures and stay distinct from normal
+/// no-frame or waiting targetTime states.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SwitcherSingleClientTargetTimeHandoffSourceResult {
+    Selected(SwitcherSingleClientTargetTimeSelectedFrame),
+    NoFrameAvailable {
+        client_id: ClientId,
+        run_id: RunId,
+        target_timestamp: TimestampMicros,
+        mode: SwitcherSingleClientTargetTimeSourceMode,
+        client_queue_len: usize,
+    },
+    WaitingForFrameAtOrBeforeTarget {
+        client_id: ClientId,
+        run_id: RunId,
+        target_timestamp: TimestampMicros,
+        mode: SwitcherSingleClientTargetTimeSourceMode,
+        candidate_frame_id: u64,
+        candidate_capture_timestamp: TimestampMicros,
+        client_queue_len: usize,
+    },
+    HandoffError {
+        client_id: ClientId,
+        run_id: RunId,
+        target_timestamp: TimestampMicros,
+        mode: SwitcherSingleClientTargetTimeSourceMode,
+        handoff_mode: SwitcherSingleClientQueueSourceMode,
+        error: SwitcherQueuedFrameHandoffError,
+    },
+}
+
+/// TargetTime-aware source over fallible queued-frame handoff.
+///
+/// This boundary keeps targetTime selection in the switcher while allowing
+/// source/handoff failures to be surfaced separately from no-frame/waiting.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct SwitcherSingleClientTargetTimeHandoffSourceBoundary {
+    consumer: SwitcherQueuedFrameHandoffConsumerBoundary,
+}
+
+impl SwitcherSingleClientTargetTimeHandoffSourceBoundary {
+    pub fn select_from_handoff(
+        &self,
+        handoff: &mut impl SwitcherQueuedFrameHandoff,
+        input: SwitcherSingleClientTargetTimeSourceInput,
+    ) -> SwitcherSingleClientTargetTimeHandoffSourceResult {
+        match input.mode {
+            SwitcherSingleClientTargetTimeSourceMode::PreviewOldestIfAtOrBefore => {
+                self.preview_oldest_at_or_before(handoff, input)
+            }
+            SwitcherSingleClientTargetTimeSourceMode::PreviewLatestIfAtOrBefore => {
+                self.preview_latest_at_or_before(handoff, input)
+            }
+            SwitcherSingleClientTargetTimeSourceMode::ConsumeOldestAtOrBefore => {
+                self.consume_oldest_at_or_before(handoff, input)
+            }
+        }
+    }
+
+    fn preview_latest_at_or_before(
+        &self,
+        handoff: &mut impl SwitcherQueuedFrameHandoff,
+        input: SwitcherSingleClientTargetTimeSourceInput,
+    ) -> SwitcherSingleClientTargetTimeHandoffSourceResult {
+        let mode = input.mode;
+        let target_timestamp = input.target_timestamp;
+        let consumer_result = self.consumer.read_source_result(
+            handoff,
+            SwitcherQueuedFrameHandoffInput {
+                client_id: input.client_id,
+                run_id: input.run_id,
+                mode: SwitcherSingleClientQueueSourceMode::PreviewLatest,
+            },
+        );
+        handoff_consumer_result_for_candidate(consumer_result, target_timestamp, mode, false)
+    }
+
+    fn preview_oldest_at_or_before(
+        &self,
+        handoff: &mut impl SwitcherQueuedFrameHandoff,
+        input: SwitcherSingleClientTargetTimeSourceInput,
+    ) -> SwitcherSingleClientTargetTimeHandoffSourceResult {
+        let mode = input.mode;
+        let target_timestamp = input.target_timestamp;
+        let consumer_result = self.consumer.read_source_result(
+            handoff,
+            SwitcherQueuedFrameHandoffInput {
+                client_id: input.client_id,
+                run_id: input.run_id,
+                mode: SwitcherSingleClientQueueSourceMode::PreviewOldest,
+            },
+        );
+        handoff_consumer_result_for_candidate(consumer_result, target_timestamp, mode, false)
+    }
+
+    fn consume_oldest_at_or_before(
+        &self,
+        handoff: &mut impl SwitcherQueuedFrameHandoff,
+        input: SwitcherSingleClientTargetTimeSourceInput,
+    ) -> SwitcherSingleClientTargetTimeHandoffSourceResult {
+        let client_id = input.client_id;
+        let run_id = input.run_id;
+        let mode = input.mode;
+        let target_timestamp = input.target_timestamp;
+        let preview = self.consumer.read_source_result(
+            handoff,
+            SwitcherQueuedFrameHandoffInput {
+                client_id: client_id.clone(),
+                run_id: run_id.clone(),
+                mode: SwitcherSingleClientQueueSourceMode::PreviewOldest,
+            },
+        );
+        let preview_result =
+            handoff_consumer_result_for_candidate(preview, target_timestamp, mode, false);
+
+        if !matches!(
+            preview_result,
+            SwitcherSingleClientTargetTimeHandoffSourceResult::Selected(_)
+        ) {
+            return preview_result;
+        }
+
+        let consumed = self.consumer.read_source_result(
+            handoff,
+            SwitcherQueuedFrameHandoffInput {
+                client_id,
+                run_id,
+                mode: SwitcherSingleClientQueueSourceMode::ConsumeOldest,
+            },
+        );
+        handoff_consumer_result_for_candidate(consumed, target_timestamp, mode, true)
+    }
+}
+
 /// Minimal targetTime-aware source over the single-client queue source.
 ///
 /// This boundary is single-client and source-driven. It reads encoded frames
@@ -648,6 +784,78 @@ fn result_for_candidate(
             run_id,
             target_timestamp,
             mode,
+            client_queue_len,
+        },
+    }
+}
+
+fn handoff_consumer_result_for_candidate(
+    consumer_result: SwitcherQueuedFrameHandoffConsumerResult,
+    target_timestamp: TimestampMicros,
+    mode: SwitcherSingleClientTargetTimeSourceMode,
+    consumed: bool,
+) -> SwitcherSingleClientTargetTimeHandoffSourceResult {
+    match consumer_result {
+        SwitcherQueuedFrameHandoffConsumerResult::FrameAvailable { source_result }
+        | SwitcherQueuedFrameHandoffConsumerResult::NoFrameAvailable { source_result } => {
+            target_time_handoff_result_from_source_result(result_for_candidate(
+                source_result,
+                target_timestamp,
+                mode,
+                consumed,
+            ))
+        }
+        SwitcherQueuedFrameHandoffConsumerResult::HandoffError {
+            client_id,
+            run_id,
+            mode: handoff_mode,
+            error,
+        } => SwitcherSingleClientTargetTimeHandoffSourceResult::HandoffError {
+            client_id,
+            run_id,
+            target_timestamp,
+            mode,
+            handoff_mode,
+            error,
+        },
+    }
+}
+
+fn target_time_handoff_result_from_source_result(
+    result: SwitcherSingleClientTargetTimeSourceResult,
+) -> SwitcherSingleClientTargetTimeHandoffSourceResult {
+    match result {
+        SwitcherSingleClientTargetTimeSourceResult::Selected(selected) => {
+            SwitcherSingleClientTargetTimeHandoffSourceResult::Selected(selected)
+        }
+        SwitcherSingleClientTargetTimeSourceResult::NoFrameAvailable {
+            client_id,
+            run_id,
+            target_timestamp,
+            mode,
+            client_queue_len,
+        } => SwitcherSingleClientTargetTimeHandoffSourceResult::NoFrameAvailable {
+            client_id,
+            run_id,
+            target_timestamp,
+            mode,
+            client_queue_len,
+        },
+        SwitcherSingleClientTargetTimeSourceResult::WaitingForFrameAtOrBeforeTarget {
+            client_id,
+            run_id,
+            target_timestamp,
+            mode,
+            candidate_frame_id,
+            candidate_capture_timestamp,
+            client_queue_len,
+        } => SwitcherSingleClientTargetTimeHandoffSourceResult::WaitingForFrameAtOrBeforeTarget {
+            client_id,
+            run_id,
+            target_timestamp,
+            mode,
+            candidate_frame_id,
+            candidate_capture_timestamp,
             client_queue_len,
         },
     }
@@ -6828,6 +7036,340 @@ mod tests {
             }
         );
         assert_eq!(state.total_len(), 1);
+    }
+
+    #[test]
+    fn target_time_handoff_source_selects_frame_at_or_before_target() {
+        let mut state = ServerVideoFrameQueueState::default();
+        store_frame_for_run(
+            &mut state,
+            "client-1",
+            "run-1",
+            1,
+            TimestampMicros(2_090_200),
+        );
+        let client_id = ClientId("client-1".to_string());
+
+        let result = {
+            let mut handoff = SwitcherInProcessQueuedFrameHandoff::new(&mut state);
+            SwitcherSingleClientTargetTimeHandoffSourceBoundary::default().select_from_handoff(
+                &mut handoff,
+                SwitcherSingleClientTargetTimeSourceInput {
+                    client_id: client_id.clone(),
+                    run_id: RunId("run-1".to_string()),
+                    target_timestamp: TimestampMicros(1_000_001),
+                    mode: SwitcherSingleClientTargetTimeSourceMode::PreviewLatestIfAtOrBefore,
+                },
+            )
+        };
+
+        let SwitcherSingleClientTargetTimeHandoffSourceResult::Selected(selected) = result else {
+            panic!("handoff targetTime source should select eligible frame");
+        };
+        assert_eq!(selected.frame.client_id, client_id);
+        assert_eq!(selected.frame.frame_id, 1);
+        assert_eq!(selected.delta_from_target_micros, 0);
+        assert!(!selected.consumed);
+    }
+
+    #[test]
+    fn target_time_handoff_source_waits_when_frame_is_after_target() {
+        let mut state = ServerVideoFrameQueueState::default();
+        store_frame_for_run(
+            &mut state,
+            "client-1",
+            "run-1",
+            3,
+            TimestampMicros(2_090_300),
+        );
+
+        let result = {
+            let mut handoff = SwitcherInProcessQueuedFrameHandoff::new(&mut state);
+            SwitcherSingleClientTargetTimeHandoffSourceBoundary::default().select_from_handoff(
+                &mut handoff,
+                SwitcherSingleClientTargetTimeSourceInput {
+                    client_id: ClientId("client-1".to_string()),
+                    run_id: RunId("run-1".to_string()),
+                    target_timestamp: TimestampMicros(1_000_002),
+                    mode: SwitcherSingleClientTargetTimeSourceMode::PreviewLatestIfAtOrBefore,
+                },
+            )
+        };
+
+        assert_eq!(
+            result,
+            SwitcherSingleClientTargetTimeHandoffSourceResult::WaitingForFrameAtOrBeforeTarget {
+                client_id: ClientId("client-1".to_string()),
+                run_id: RunId("run-1".to_string()),
+                target_timestamp: TimestampMicros(1_000_002),
+                mode: SwitcherSingleClientTargetTimeSourceMode::PreviewLatestIfAtOrBefore,
+                candidate_frame_id: 3,
+                candidate_capture_timestamp: TimestampMicros(1_000_003),
+                client_queue_len: 1,
+            }
+        );
+        assert_eq!(state.total_len(), 1);
+    }
+
+    #[test]
+    fn target_time_handoff_source_preserves_no_frame() {
+        let mut state = ServerVideoFrameQueueState::default();
+        store_frame_for_run(
+            &mut state,
+            "client-1",
+            "run-1",
+            1,
+            TimestampMicros(2_090_400),
+        );
+
+        let result = {
+            let mut handoff = SwitcherInProcessQueuedFrameHandoff::new(&mut state);
+            SwitcherSingleClientTargetTimeHandoffSourceBoundary::default().select_from_handoff(
+                &mut handoff,
+                SwitcherSingleClientTargetTimeSourceInput {
+                    client_id: ClientId("client-1".to_string()),
+                    run_id: RunId("run-missing".to_string()),
+                    target_timestamp: TimestampMicros(1_000_001),
+                    mode: SwitcherSingleClientTargetTimeSourceMode::PreviewLatestIfAtOrBefore,
+                },
+            )
+        };
+
+        assert_eq!(
+            result,
+            SwitcherSingleClientTargetTimeHandoffSourceResult::NoFrameAvailable {
+                client_id: ClientId("client-1".to_string()),
+                run_id: RunId("run-missing".to_string()),
+                target_timestamp: TimestampMicros(1_000_001),
+                mode: SwitcherSingleClientTargetTimeSourceMode::PreviewLatestIfAtOrBefore,
+                client_queue_len: 1,
+            }
+        );
+    }
+
+    #[test]
+    fn target_time_handoff_source_keeps_each_error_explicit() {
+        let errors = vec![
+            SwitcherQueuedFrameHandoffError::SourceUnavailable,
+            SwitcherQueuedFrameHandoffError::Timeout,
+            SwitcherQueuedFrameHandoffError::InvalidScope {
+                client_id: ClientId("client-1".to_string()),
+                run_id: RunId("run-1".to_string()),
+            },
+            SwitcherQueuedFrameHandoffError::UnsupportedMode {
+                mode: SwitcherSingleClientQueueSourceMode::PreviewLatest,
+            },
+            SwitcherQueuedFrameHandoffError::MalformedResponse,
+            SwitcherQueuedFrameHandoffError::SourceShutdown,
+        ];
+
+        for error in errors {
+            let mut handoff = FailingQueuedFrameHandoff {
+                error: error.clone(),
+            };
+            let result = SwitcherSingleClientTargetTimeHandoffSourceBoundary::default()
+                .select_from_handoff(
+                    &mut handoff,
+                    SwitcherSingleClientTargetTimeSourceInput {
+                        client_id: ClientId("client-1".to_string()),
+                        run_id: RunId("run-1".to_string()),
+                        target_timestamp: TimestampMicros(1_000_001),
+                        mode: SwitcherSingleClientTargetTimeSourceMode::PreviewLatestIfAtOrBefore,
+                    },
+                );
+
+            assert_eq!(
+                result,
+                SwitcherSingleClientTargetTimeHandoffSourceResult::HandoffError {
+                    client_id: ClientId("client-1".to_string()),
+                    run_id: RunId("run-1".to_string()),
+                    target_timestamp: TimestampMicros(1_000_001),
+                    mode: SwitcherSingleClientTargetTimeSourceMode::PreviewLatestIfAtOrBefore,
+                    handoff_mode: SwitcherSingleClientQueueSourceMode::PreviewLatest,
+                    error,
+                }
+            );
+            assert!(!matches!(
+                &result,
+                SwitcherSingleClientTargetTimeHandoffSourceResult::NoFrameAvailable { .. }
+            ));
+            assert!(!matches!(
+                &result,
+                SwitcherSingleClientTargetTimeHandoffSourceResult::WaitingForFrameAtOrBeforeTarget {
+                    ..
+                }
+            ));
+        }
+    }
+
+    #[test]
+    fn target_time_handoff_source_preserves_selected_metadata() {
+        let mut state = ServerVideoFrameQueueState::default();
+        store_frame_with_run_payload(
+            &mut state,
+            "client-1",
+            "run-meta",
+            1,
+            TimestampMicros(2_090_500),
+            960,
+            540,
+            vec![0x01, 0x23, 0x45, 0x67],
+        );
+
+        let result = {
+            let mut handoff = SwitcherInProcessQueuedFrameHandoff::new(&mut state);
+            SwitcherSingleClientTargetTimeHandoffSourceBoundary::default().select_from_handoff(
+                &mut handoff,
+                SwitcherSingleClientTargetTimeSourceInput {
+                    client_id: ClientId("client-1".to_string()),
+                    run_id: RunId("run-meta".to_string()),
+                    target_timestamp: TimestampMicros(1_000_001),
+                    mode: SwitcherSingleClientTargetTimeSourceMode::PreviewLatestIfAtOrBefore,
+                },
+            )
+        };
+
+        let SwitcherSingleClientTargetTimeHandoffSourceResult::Selected(selected) = result else {
+            panic!("metadata frame should be selected");
+        };
+        assert_eq!(selected.frame.client_id, ClientId("client-1".to_string()));
+        assert_eq!(selected.frame.run_id, RunId("run-meta".to_string()));
+        assert_eq!(selected.frame.frame_id, 1);
+        assert_eq!(selected.frame.capture_timestamp, TimestampMicros(1_000_001));
+        assert_eq!(selected.frame.send_timestamp, TimestampMicros(1_000_101));
+        assert_eq!(selected.frame.queued_at, TimestampMicros(2_090_500));
+        assert!(selected.frame.is_keyframe);
+        assert_eq!(selected.frame.width, 960);
+        assert_eq!(selected.frame.height, 540);
+        assert_eq!(selected.frame.fps_nominal, 30);
+        assert_eq!(selected.frame.encoded_payload_len, 4);
+        assert_eq!(selected.frame.encoded_payload, vec![0x01, 0x23, 0x45, 0x67]);
+    }
+
+    #[test]
+    fn target_time_handoff_source_preview_does_not_mutate() {
+        let mut state = ServerVideoFrameQueueState::default();
+        store_frame_for_run(
+            &mut state,
+            "client-1",
+            "run-1",
+            1,
+            TimestampMicros(2_090_600),
+        );
+        store_frame_for_run(
+            &mut state,
+            "client-1",
+            "run-1",
+            2,
+            TimestampMicros(2_090_700),
+        );
+        let client_id = ClientId("client-1".to_string());
+        let before_len = state.client_queue_len(&client_id);
+
+        let result = {
+            let mut handoff = SwitcherInProcessQueuedFrameHandoff::new(&mut state);
+            SwitcherSingleClientTargetTimeHandoffSourceBoundary::default().select_from_handoff(
+                &mut handoff,
+                SwitcherSingleClientTargetTimeSourceInput {
+                    client_id: client_id.clone(),
+                    run_id: RunId("run-1".to_string()),
+                    target_timestamp: TimestampMicros(1_000_002),
+                    mode: SwitcherSingleClientTargetTimeSourceMode::PreviewLatestIfAtOrBefore,
+                },
+            )
+        };
+
+        assert!(matches!(
+            result,
+            SwitcherSingleClientTargetTimeHandoffSourceResult::Selected(_)
+        ));
+        assert_eq!(state.client_queue_len(&client_id), before_len);
+    }
+
+    #[test]
+    fn target_time_handoff_source_consume_mutates_only_when_selected() {
+        let mut state = ServerVideoFrameQueueState::default();
+        store_frame_for_run(
+            &mut state,
+            "client-1",
+            "run-1",
+            1,
+            TimestampMicros(2_090_800),
+        );
+        store_frame_for_run(
+            &mut state,
+            "client-1",
+            "run-2",
+            2,
+            TimestampMicros(2_090_900),
+        );
+        store_frame_for_run(
+            &mut state,
+            "client-1",
+            "run-1",
+            3,
+            TimestampMicros(2_091_000),
+        );
+        let client_id = ClientId("client-1".to_string());
+
+        let result = {
+            let mut handoff = SwitcherInProcessQueuedFrameHandoff::new(&mut state);
+            SwitcherSingleClientTargetTimeHandoffSourceBoundary::default().select_from_handoff(
+                &mut handoff,
+                SwitcherSingleClientTargetTimeSourceInput {
+                    client_id: client_id.clone(),
+                    run_id: RunId("run-1".to_string()),
+                    target_timestamp: TimestampMicros(1_000_001),
+                    mode: SwitcherSingleClientTargetTimeSourceMode::ConsumeOldestAtOrBefore,
+                },
+            )
+        };
+
+        let SwitcherSingleClientTargetTimeHandoffSourceResult::Selected(selected) = result else {
+            panic!("eligible oldest frame should be consumed");
+        };
+        assert_eq!(selected.frame.frame_id, 1);
+        assert!(selected.consumed);
+        let remaining: Vec<(String, u64)> = state
+            .frames_for_client(&client_id)
+            .map(|queued| (queued.frame.run_id.0.clone(), queued.frame.frame_id))
+            .collect();
+        assert_eq!(
+            remaining,
+            vec![("run-2".to_string(), 2), ("run-1".to_string(), 3)]
+        );
+    }
+
+    #[test]
+    fn target_time_handoff_source_consume_waits_without_mutation() {
+        let mut state = ServerVideoFrameQueueState::default();
+        store_frame_for_run(
+            &mut state,
+            "client-1",
+            "run-1",
+            3,
+            TimestampMicros(2_091_100),
+        );
+        let client_id = ClientId("client-1".to_string());
+
+        let result = {
+            let mut handoff = SwitcherInProcessQueuedFrameHandoff::new(&mut state);
+            SwitcherSingleClientTargetTimeHandoffSourceBoundary::default().select_from_handoff(
+                &mut handoff,
+                SwitcherSingleClientTargetTimeSourceInput {
+                    client_id: client_id.clone(),
+                    run_id: RunId("run-1".to_string()),
+                    target_timestamp: TimestampMicros(1_000_002),
+                    mode: SwitcherSingleClientTargetTimeSourceMode::ConsumeOldestAtOrBefore,
+                },
+            )
+        };
+
+        assert!(matches!(
+            result,
+            SwitcherSingleClientTargetTimeHandoffSourceResult::WaitingForFrameAtOrBeforeTarget { .. }
+        ));
+        assert_eq!(state.client_queue_len(&client_id), 1);
     }
 
     #[test]

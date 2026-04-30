@@ -5,6 +5,55 @@
 - Codex
 
 ### Work
+- Added the smallest targetTime-aware path for fallible handoff results.
+- Added `SwitcherSingleClientTargetTimeHandoffSourceResult`.
+- Added `SwitcherSingleClientTargetTimeHandoffSourceBoundary`.
+- The boundary consumes `SwitcherQueuedFrameHandoffConsumerResult` through `SwitcherQueuedFrameHandoffConsumerBoundary`.
+- Frame/no-frame outcomes reuse existing targetTime selection behavior.
+- Handoff/source errors remain explicit and are not collapsed into no-frame or waiting.
+- Consume mode previews oldest first and only dequeues when the candidate is eligible at or before target.
+- Added focused tests for eligible selection, waiting, no-frame, every handoff error variant remaining explicit, metadata preservation, preview no-mutation, consume mutation only when selected, and consume waiting without mutation.
+
+### Changed Files
+- `apps/switcher/src/lib.rs`
+- `docs/architecture/system-design.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### Decisions
+- Keep targetTime selection in switcher.
+- Keep server as ingest/reassembly/queue owner.
+- Keep handoff/source errors separate from no-frame and waiting.
+- Keep the new fallible targetTime path single-client for this slice.
+- Do not add IPC/TCP/UDP/shared-memory transport, OBS output, 4-view orchestration, protocol wire-format changes, H.264 behavior changes, or switcher-side fragment reassembly.
+
+### Unresolved
+- Plan or implement the 2-view scheduler path for `SwitcherSingleClientTargetTimeHandoffSourceResult`.
+- Decide how handoff errors should surface through scheduler decode/render adapter and display policy without becoming partial/no-frame/waiting.
+- production H.264 encoder configuration / error logging policy
+
+### Next
+- Plan the smallest 2-view scheduler consumer for fallible targetTime handoff results.
+
+### TODO Update
+- Marked the fallible single-client targetTime handoff source as implemented.
+- Set the next task to planning the 2-view scheduler path for fallible targetTime handoff results.
+
+### Validation
+- `cargo fmt` passed.
+- `cargo fmt --check` passed.
+- `cargo test -p stream-sync-switcher two_view -- --test-threads=1` passed.
+- `cargo test -p stream-sync-switcher target_time -- --test-threads=1` passed.
+- `cargo test -p stream-sync-switcher single_client_queue_source -- --test-threads=1` passed.
+- `cargo test -p stream-sync-server video_frame_queue -- --test-threads=1` passed.
+- `cargo check --workspace` passed.
+- `git diff --check` passed with line-ending warnings for changed files.
+
+## 2026-04-30
+### Type
+- Codex
+
+### Work
 - Added the smallest switcher-side consumer for `SwitcherQueuedFrameHandoff` results.
 - Added `SwitcherQueuedFrameHandoffConsumerResult`.
 - Added `SwitcherQueuedFrameHandoffConsumerBoundary`.
