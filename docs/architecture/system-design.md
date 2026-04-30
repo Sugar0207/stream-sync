@@ -8473,6 +8473,52 @@ Responsibility split:
 
 No protocol wire format changed for this slice.
 
+## Switcher Fallible 2-View Scheduler Decode/Render Adapter Boundary
+
+The fallible handoff-backed 2-view scheduler now has a minimal adapter into
+decode/render-facing instructions:
+
+```text
+SwitcherTwoViewTargetTimeHandoffSourceSchedulerResult
+  -> SwitcherTwoViewHandoffSchedulerDecodeRenderAdapterBoundary
+  -> per-side decode/render-facing instructions
+  -> optional SwitcherTwoViewDecodeRenderInput
+```
+
+Current implementation:
+
+- `SwitcherTwoViewHandoffSchedulerDecodeRenderAdapterBoundary` consumes a
+  completed fallible scheduler result.
+- It preserves per-side outcomes before any decode/render call:
+  - `Selected` becomes `RenderFrame`.
+  - `NoFrameAvailable` becomes `SkipNoFrameAvailable`.
+  - `WaitingForFrameAtOrBeforeTarget` becomes
+    `SkipWaitingForFrameAtOrBeforeTarget`.
+  - `HandoffError` becomes `SkipHandoffError`.
+- The adapter output keeps the aggregate
+  `SwitcherTwoViewTargetTimeHandoffSourceSchedulerStatus`, including
+  aggregate `HandoffError`.
+- The existing `SwitcherTwoViewDecodeRenderInput` is produced only when the
+  selected/skipped sides can be represented without hiding a source error. If
+  either side has `SkipHandoffError`, the decode/render input is `None` so the
+  error is not collapsed into no-frame, waiting, partial selection, or a fake
+  decoded frame.
+
+Responsibility split:
+
+- the fallible scheduler remains responsible for targetTime eligibility,
+  queue read mode, and all-or-nothing consume behavior.
+- the adapter owns only translation into render/skip/source-error
+  instructions and the optional existing decode/render input when representable.
+- decode/render behavior remains unchanged; selected frames are the only frames
+  that can become decode inputs, and skipped/error sides never create fake
+  encoded or decoded frames.
+- It does not implement IPC, TCP, UDP, shared memory, OBS output, 4-view
+  orchestration, late-drop mutation, protocol changes, H.264 behavior changes,
+  or switcher-side fragment reassembly.
+
+No protocol wire format changed for this slice.
+
 ## Switcher 2-View Scheduler Decode/Render Connection Boundary
 
 The scheduler adapter now has a smallest in-process connection boundary that
