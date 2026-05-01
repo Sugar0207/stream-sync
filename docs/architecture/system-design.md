@@ -9004,9 +9004,160 @@ Next production-facing slice:
   around the existing fallible handoff contract.
 - Keep direct switcher receive diagnostic/legacy, but do not treat it as the
   main validation path.
-- Keep IPC/TCP/UDP/shared-memory transport implementation, OBS output, 4-view
-  orchestration, protocol wire-format changes, H.264 decode/render behavior
-  changes, and switcher-side fragment reassembly out of scope for this
-  planning slice.
+
+First real transport decision:
+
+- The first real production-like server->switcher handoff should use local IPC
+  with a byte-stream request/response shape.
+- On Windows, the first concrete transport should be a named pipe.
+- Keep a transport-neutral boundary so a future Unix-domain socket or localhost
+  TCP adapter can be added later without changing switcher scheduling or queue
+  ownership.
+- Do not start with UDP request/response:
+  - same-host reliability is required,
+  - request/response framing and timeout handling are simpler on a stream, and
+  - UDP adds duplicate/loss semantics that do not help a local queue read path.
+- Do not start with shared memory:
+  - it complicates lifetime, ownership, synchronization, and partial-read
+    failure handling,
+  - while the first slice only needs one request -> one response over already
+    queued encoded frames.
+- Do not start with localhost TCP as the first concrete implementation:
+  - it is an acceptable fallback later,
+  - but the initial MVP topology already assumes same-PC server/switcher, so a
+    local-only IPC transport fits better and avoids adding another
+    network-visible listener first.
+
+Production handoff shape:
+
+- The first production-like path should remain switcher-pull/read.
+- TargetTime selection stays fully in switcher.
+- The server remains the owner of auth, UDP ingest, fragment reassembly, queue
+  insertion, and queue read semantics.
+- The request should stay minimal and should not carry target timestamps. The
+  first exact request shape is:
+
+```text
+handoff_version
+request_id
+client_id
+run_id
+read_mode
+```
+
+- `read_mode` remains the current queue contract:
+  - inspect latest,
+  - inspect oldest,
+  - dequeue oldest.
+- Do not include target/request timestamp in the first request. The server is
+  not choosing eligibility against targetTime; it is only reading queue state.
+- The first exact response shape is:
+
+```text
+handoff_version
+request_id
+result_kind
+```
+
+- `FrameRead` response data:
+  - `client_id`
+  - `run_id`
+  - `frame_id`
+  - `capture_timestamp`
+  - `send_timestamp` when present
+  - `queued_at`
+  - `is_keyframe`
+  - `width`
+  - `height`
+  - `fps_nominal`
+  - `codec`
+  - `encoded_payload_len`
+  - `encoded_payload`
+  - `remaining_client_queue_len`
+- `NoFrame` response data:
+  - `client_id`
+  - `run_id`
+  - `read_mode`
+  - `client_queue_len`
+- `HandoffError` response data:
+  - one error code matching the existing `SwitcherQueuedFrameHandoffError`
+  - optional short diagnostic text is acceptable for logs, but should not be
+    required by the switcher state machine.
+
+Error mapping:
+
+- transport open/connect/listen unavailable -> `SourceUnavailable`
+- write timeout or read timeout waiting for one response -> `RequestTimeout`
+- rejected empty/invalid client or run scope -> `InvalidScope`
+- unsupported request mode -> `UnsupportedReadMode`
+- bad length prefix, decode failure, wrong response kind, mismatched
+  `request_id`, or unsupported handoff-version payload shape ->
+  `MalformedResponse`
+- EOF / broken pipe / server closed while a request is in flight ->
+  `SourceShutdown`
+
+Initial serialization choice:
+
+- Use a small length-prefixed binary message format over the byte stream.
+- Keep it separate from the existing client/server UDP wire protocol.
+- Reuse the same little-endian and explicit length-prefix conventions where
+  useful, but do not reuse the 16-byte UDP fixed header or `ProtocolMessage`
+  envelope directly.
+- Do not start with JSON:
+  - encoded frame payloads are large binary blobs,
+  - base64/string overhead is unnecessary,
+  - the first handoff is local and performance-sensitive.
+- Do not start with implicit schema serialization such as bincode:
+  - the project has already chosen explicit wire/layout documentation for the
+    main protocol,
+  - the internal handoff should stay equally explicit.
+
+Relation to current crates and `VideoFrame`:
+
+- Do not change the client UDP ingest protocol for this slice.
+- Do not add the server->switcher handoff messages to the existing
+  client/server `ProtocolMessage` wire protocol.
+- `crates/protocol` remains the owner of client/server UDP message layout such
+  as `VideoFrame` and `VideoFrameFragment`.
+- The server->switcher handoff should be a separate internal codec and request
+  / response boundary.
+- The response payload bytes for `FrameRead` are the already queued H.264 bytes
+  stored by the server. They are not re-encoded into a fresh
+  `ProtocolMessage::VideoFrame`.
+- Byte-stream framing/runtime helpers belong in `crates/net-core`; queue-read
+  mapping remains server-owned, and `SwitcherQueuedFrameHandoff` adaptation
+  remains switcher-owned.
+
+Smallest implementation slice after this planning step:
+
+- Add typed handoff request/response/error-code DTOs and the explicit binary
+  codec.
+- Add a server-owned single-request handler that:
+  - decodes one handoff request,
+  - delegates to the existing `ServerVideoFrameQueueReadBoundary`,
+  - returns `FrameRead`, `NoFrame`, or `HandoffError`.
+- Add a Windows named-pipe runtime hook and a switcher-owned named-pipe client
+  adapter that implements `SwitcherQueuedFrameHandoff`.
+- Keep the first runtime synchronous and one-request-at-a-time. One request
+  should map to one queue read and one response.
+- Validate the next slice with focused integration tests over caller-owned
+  queue state plus a named-pipe/client adapter boundary. Continuous accept
+  loops, reconnect policy, and service orchestration can follow later.
+
+Out of scope for this planning slice and the first transport slice:
+
+- OBS output
+- 4-view orchestration
+- moving targetTime selection to the server
+- switcher-side fragment reassembly
+- client UDP ingest protocol changes
+- H.264 decode/render behavior changes
+- server push streaming
+- cross-machine server->switcher transport
+- shared memory transport
+- UDP request/response transport
+- batching, queue snapshots on the hot path, or multi-read requests
+- transport-layer retry/retransmit, compression, or encryption
+- process-wide service management or production auth for the local IPC channel
 
 No protocol wire format changed for this slice.

@@ -5,6 +5,70 @@
 - Codex
 
 ### Work
+- Implemented the requested planning/docs slice for the first real
+  server->switcher transport over the existing fallible queued-frame handoff
+  contract.
+- Reviewed the existing switcher-pull/read queue handoff contract, the current
+  fallible validation boundary, and the current protocol documentation.
+- Documented the first concrete transport choice as local IPC with a byte-
+  stream request/response shape, using a Windows named pipe as the first
+  production-like implementation.
+- Documented that the first production-like path remains switcher-pull/read and
+  does not move targetTime selection to the server.
+- Documented the exact first request/response shape for server->switcher
+  handoff and the mapping to `SwitcherQueuedFrameHandoffError`.
+- Documented that the initial serialization should be a small length-prefixed
+  binary codec, separate from the existing client/server UDP wire protocol.
+- Documented the relation to `crates/protocol`, `VideoFrame`, and `net-core`.
+- Documented the smallest implementation slice after planning: DTO/codec,
+  server single-request handler, and switcher named-pipe client adapter.
+
+### Changed Files
+- `docs/architecture/system-design.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### Decisions
+- First real server->switcher transport: local IPC byte stream.
+- First concrete implementation on Windows: named pipe.
+- Keep switcher-pull/read as the first production-like direction.
+- Do not include target timestamps in the first server->switcher request.
+- Do not reuse the existing client/server UDP `ProtocolMessage` wire format for
+  internal server->switcher handoff.
+- Keep `crates/protocol` unchanged; use a separate internal handoff codec and
+  put byte-stream runtime/framing helpers in `net-core`.
+- Keep `--live-two-view-switcher-once` as direct receive diagnostic/legacy
+  only.
+
+### Unresolved
+- exact code placement for the first handoff DTO/codec and byte-stream helpers
+- first named-pipe service lifecycle boundaries beyond one request -> one
+  response
+- production H.264 encoder configuration / error logging policy
+- Decide later whether `--live-two-view-switcher-once` should be renamed or
+  deprecated after the transport-backed server-mediated path exists.
+
+### Next
+- Define the server->switcher handoff DTO/error types and binary codec.
+- Add the server single-request handoff handler and the switcher client
+  adapter.
+
+### TODO Update
+- Replaced the generic transport-planning item with the concrete next code
+  slice: DTO/codec plus server/client transport adapters.
+- Recorded the local IPC / named-pipe decision in the current position.
+
+### Validation
+- `cargo fmt` passed.
+- `cargo fmt --check` passed.
+- `cargo check --workspace` passed.
+- `git diff --check` passed with line-ending warnings for changed docs files.
+
+## 2026-05-01
+### Type
+- Codex
+
+### Work
 - Implemented the requested planning/docs slice for the fallible
   server-mediated 2-view validation path.
 - Reviewed the current `run_fallible_with_runtimes` /
