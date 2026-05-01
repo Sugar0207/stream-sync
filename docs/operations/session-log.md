@@ -5,6 +5,73 @@
 - Codex
 
 ### Work
+- Implemented a planning/docs-only slice to decide whether the current
+  switcher-side named-pipe lifecycle should stay classification-only or grow a
+  bounded retry wrapper.
+- Kept the result at classification-only for now and did not add retry
+  execution.
+- Moved the next task from retry consideration back to service lifecycle
+  planning.
+
+### Changed Files
+- `docs/architecture/system-design.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### Decisions
+- Classification-only is enough for the current MVP.
+- Keep `1 scheduler read = 1 logical request = 1 transport attempt`.
+- Do not add bounded retry just because retry classification exists.
+- Future retry candidates remain:
+  - `SourceUnavailable`
+  - `Timeout`
+- Future non-retryable errors remain:
+  - `SourceShutdown`
+  - `MalformedResponse`
+  - `InvalidScope`
+  - `UnsupportedMode`
+- Immediate retry stays risky for future consume/dequeue modes because the
+  current error shape cannot prove whether the server already processed the
+  request before transport failure.
+
+### Rationale
+- The latest localhost rerun already proved the success path with
+  `attempt_count=1`, `final_result=FrameRead`, `last_error=none`, and
+  `retry_classification=none`.
+- Repeated `inspect-latest` reads already preserved preview semantics without
+  queue mutation.
+- No manual evidence currently shows a transient transport failure that would
+  justify immediate or bounded retry inside one scheduler read.
+
+### Evidence Required For Future Retry
+- repeated transient `SourceUnavailable` while the server process is otherwise
+  healthy
+- repeated transient `Timeout` during otherwise healthy manual or scheduler
+  reads
+- measured evidence that a second immediate transport attempt regularly
+  succeeds without harming queue semantics
+- for future consume/dequeue modes, stronger request/response evidence that can
+  distinguish unprocessed versus already-processed failed attempts
+
+### Next
+- Return to the smallest service lifecycle planning for the current named-pipe
+  handoff runtime instead of adding retry first.
+
+### TODO Update
+- Marked the classification-only versus bounded-retry decision complete.
+- Moved the next task to service lifecycle planning.
+
+### Validation
+- `cargo fmt` passed.
+- `cargo fmt --check` passed.
+- `cargo check --workspace` passed.
+- `git diff --check` passed with line-ending warnings for changed files.
+
+## 2026-05-02
+### Type
+- Codex
+
+### Work
 - Recorded the successful lifecycle-summary bounded localhost rerun for the
   named-pipe handoff manual path.
 - Updated the manual guide and TODO tracking to treat the rerun as complete.

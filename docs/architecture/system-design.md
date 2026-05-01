@@ -362,12 +362,37 @@ rather than retry-first:
   - retryable on a later scheduler tick
   - non-retryable for the current state/configuration
 
+After the successful lifecycle-summary localhost rerun, classification-only is
+now the preferred MVP position. The current manual evidence shows:
+
+- success-path named-pipe reads complete without retry
+- `attempt_count=1`, `final_result=FrameRead`, `last_error=none`, and
+  `retry_classification=none` are already visible in the summary
+- repeated `inspect-latest` reads preserve preview semantics without queue
+  mutation
+
+That is enough for the current MVP slice. Retry should not be added only
+because classification exists.
+
 The smallest useful retry classification for that first lifecycle slice is:
 
 - `SourceUnavailable`: retryable on a later scheduler tick
 - `Timeout`: retryable on a later scheduler tick
 - `SourceShutdown`: non-retryable in the first slice
 - `MalformedResponse`: non-retryable
+- `InvalidScope`: non-retryable
+- `UnsupportedMode`: non-retryable
+
+Evidence that would justify adding a bounded retry wrapper later:
+
+- repeated manual or scheduler-observed transient `SourceUnavailable` while the
+  server process remains healthy
+- repeated transient `Timeout` on otherwise healthy bounded/manual or
+  scheduler-driven reads
+- a measured improvement need where one failed transport attempt regularly
+  recovers on an immediately following attempt without harming queue semantics
+- a future consume/dequeue mode with enough request/response evidence to prove
+  whether a failed attempt was processed or not
 
 `SourceShutdown` stays non-retryable in the first slice because the current
 error shape does not prove whether the server processed the request before the
@@ -430,14 +455,26 @@ Out of scope for the first bounded loop slice:
 - retry storms, backoff policy, or cross-process health management
 - automatic retry inside one scheduler read
 
-Smallest implementation slice after this planning step:
+Next project task after this decision:
 
-- Add a bounded server runtime such as
-  `serve_many(queue_state, pipe_name, max_requests)` that repeatedly calls the
-  existing one-shot server runtime with a fresh pipe instance.
-- Add a small output summary that keeps per-request correlation visible.
-- Add only the smallest switcher-side per-request timeout/runtime summary
-  plumbing needed by the bounded-loop validation path.
+- return to service lifecycle planning before 4-view or OBS work
+- keep the focus on the smallest server/switcher runtime/service boundary that
+  can wrap the current bounded pieces without introducing daemon mode,
+  backoff, or multi-client concurrency
+
+Still out of scope after this decision:
+
+- actual retry execution
+- reconnect/backoff manager
+- indefinite daemon mode
+- Ctrl+C lifecycle
+- server service lifecycle implementation
+- multi-client concurrency
+- OBS output
+- 4-view orchestration
+- protocol wire format changes
+- H.264 behavior changes
+- switcher-side fragment reassembly
 - Add focused tests for bounded loop counting and early termination without
   touching the existing ignored pipe smoke tests.
 
