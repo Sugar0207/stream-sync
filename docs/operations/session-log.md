@@ -5,6 +5,78 @@
 - Codex
 
 ### Work
+- Implemented the smallest server-side single-request handoff handler and the
+  smallest switcher-side DTO request/response adapter shape over the new
+  server->switcher handoff DTO/codec.
+- Added a transport-neutral server handoff handler in `apps/server` that
+  consumes `ServerSwitcherQueuedFrameHandoffRequest`, delegates queue reads to
+  `ServerVideoFrameQueueReadBoundary`, and returns one
+  `ServerSwitcherQueuedFrameHandoffResponse`.
+- Added a transport-neutral switcher client-adapter boundary in
+  `apps/switcher` that builds DTO requests from the existing switcher handoff
+  input shape and maps DTO responses back into the existing
+  `SwitcherQueuedFrameHandoffResult` / `SwitcherQueuedFrameHandoffError`
+  shape.
+- Extended `SwitcherSingleViewSelectedEncodedFrame` to preserve codec metadata
+  so the new server->switcher DTO path does not drop `codec`.
+- Added focused handler/adapter tests for frame-read, no-frame, invalid scope,
+  request-id echo preservation on the server side, and full handoff-error-code
+  mapping on the switcher side.
+- Updated architecture and operations docs to record the new handler/adapter
+  responsibilities and move the next task to runtime/service connection.
+
+### Changed Files
+- `apps/server/src/lib.rs`
+- `apps/switcher/src/lib.rs`
+- `docs/architecture/system-design.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### Decisions
+- Keep the server handoff handler as a thin mapping boundary over
+  `ServerVideoFrameQueueReadBoundary`; do not let it own named-pipe runtime,
+  service lifecycle, or switcher scheduling.
+- Keep the switcher client side as a DTO request builder / response mapper for
+  now; do not implement named-pipe I/O in this slice.
+- Preserve codec metadata in the existing switcher encoded-frame handoff shape
+  rather than dropping it at the DTO-response mapping boundary.
+
+### Unresolved
+- Windows named-pipe one-request / one-response service runtime
+- switcher named-pipe client runtime
+- request-id generation / correlation policy in the eventual runtime layer
+- production H.264 encoder configuration / error logging policy
+- Decide later whether `--live-two-view-switcher-once` should be renamed or
+  deprecated after the transport-backed server-mediated path exists.
+
+### Next
+- Connect the transport-neutral codec / server handler / switcher client
+  adapter to a Windows named-pipe one-request / one-response runtime.
+- Define the minimum service/client lifecycle around that first named-pipe
+  runtime.
+
+### TODO Update
+- Marked the server single-request handoff handler and switcher DTO
+  request/response adapter complete in the current position.
+- Replaced the old next-item code slice with the next runtime/service
+  connection slice.
+
+### Validation
+- `cargo fmt` passed.
+- `cargo fmt --check` passed.
+- `cargo test -p stream-sync-net-core handoff -- --test-threads=1` passed.
+- `cargo test -p stream-sync-server handoff -- --test-threads=1` passed.
+- `cargo test -p stream-sync-switcher handoff -- --test-threads=1` passed.
+- `cargo test -p stream-sync-server video_frame_queue -- --test-threads=1`
+  passed.
+- `cargo check --workspace` passed.
+- `git diff --check` passed with line-ending warnings for changed files.
+
+## 2026-05-01
+### Type
+- Codex
+
+### Work
 - Implemented the smallest focused code slice for the planned real
   server->switcher handoff: transport-neutral DTOs plus an explicit
   length-prefixed binary codec.

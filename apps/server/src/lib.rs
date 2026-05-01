@@ -20,7 +20,9 @@ use stream_sync_net_core::{
     OutboundQueueStorageDecision, OutboundSendLogContext, OutboundSendLoopEvent,
     OutboundSendLoopTickBoundary, OutboundSendLoopTickPlan, PacketDestination, PacketSource,
     QueuedOutboundItem, SendFailureDisposition, SendFailureKind, SendLogEvent, SendLogStage,
-    UdpSocketIoBoundary, DEFAULT_UDP_PACKET_BUFFER_LEN,
+    ServerSwitcherQueuedFrameHandoffErrorCode, ServerSwitcherQueuedFrameHandoffFrame,
+    ServerSwitcherQueuedFrameHandoffRequest, ServerSwitcherQueuedFrameHandoffResponse,
+    ServerSwitcherQueuedFrameReadMode, UdpSocketIoBoundary, DEFAULT_UDP_PACKET_BUFFER_LEN,
 };
 use stream_sync_protocol::{
     AppVersion, AuthRequest, AuthResponse, AuthResponseReasonCode, ClientId, ClientStats, Codec,
@@ -3078,6 +3080,103 @@ impl ServerVideoFrameQueueReadBoundary {
             },
         }
     }
+}
+
+/// Single-request server-side handler for the first real server->switcher handoff.
+///
+/// This boundary stays transport-neutral. It consumes one decoded handoff
+/// request, delegates the queue read to `ServerVideoFrameQueueReadBoundary`,
+/// and returns one transport-neutral response DTO. It does not own named-pipe
+/// runtime/service lifecycle, socket I/O, decode/render behavior, OBS output,
+/// 4-view orchestration, or fragment reassembly.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct ServerSwitcherQueuedFrameHandoffHandlerBoundary {
+    queue_reader: ServerVideoFrameQueueReadBoundary,
+}
+
+impl ServerSwitcherQueuedFrameHandoffHandlerBoundary {
+    pub fn handle_request(
+        &self,
+        queue_state: &mut ServerVideoFrameQueueState,
+        request: ServerSwitcherQueuedFrameHandoffRequest,
+    ) -> ServerSwitcherQueuedFrameHandoffResponse {
+        if request.client_id.0.trim().is_empty() || request.run_id.0.trim().is_empty() {
+            return ServerSwitcherQueuedFrameHandoffResponse::HandoffError {
+                request_id: request.request_id,
+                error: ServerSwitcherQueuedFrameHandoffErrorCode::InvalidScope,
+            };
+        }
+
+        let result = self.queue_reader.read(
+            queue_state,
+            ServerVideoFrameQueueReadInput {
+                client_id: request.client_id.clone(),
+                run_id: request.run_id.clone(),
+                mode: queue_read_mode_from_handoff(request.read_mode),
+            },
+        );
+
+        match result {
+            ServerVideoFrameQueueReadResult::FrameAvailable {
+                frame,
+                remaining_client_queue_len,
+                ..
+            } => ServerSwitcherQueuedFrameHandoffResponse::FrameRead {
+                request_id: request.request_id,
+                remaining_client_queue_len: queue_len_to_u32(remaining_client_queue_len),
+                frame: ServerSwitcherQueuedFrameHandoffFrame {
+                    client_id: frame.frame.client_id,
+                    run_id: frame.frame.run_id,
+                    frame_id: frame.frame.frame_id,
+                    capture_timestamp: frame.frame.capture_timestamp,
+                    send_timestamp: frame.frame.send_timestamp,
+                    queued_at: frame.queued_at,
+                    width: frame.frame.width,
+                    height: frame.frame.height,
+                    fps_nominal: frame.frame.fps_nominal,
+                    is_keyframe: frame.frame.is_keyframe,
+                    codec: frame.frame.codec,
+                    encoded_payload_len: payload_len_to_u32(frame.payload_len),
+                    encoded_payload: frame.frame.payload,
+                },
+            },
+            ServerVideoFrameQueueReadResult::NoFrameAvailable {
+                client_id,
+                run_id,
+                client_queue_len,
+            } => ServerSwitcherQueuedFrameHandoffResponse::NoFrame {
+                request_id: request.request_id,
+                client_id,
+                run_id,
+                read_mode: request.read_mode,
+                client_queue_len: queue_len_to_u32(client_queue_len),
+            },
+        }
+    }
+}
+
+fn queue_read_mode_from_handoff(
+    mode: ServerSwitcherQueuedFrameReadMode,
+) -> ServerVideoFrameQueueReadMode {
+    match mode {
+        ServerSwitcherQueuedFrameReadMode::InspectOldest => {
+            ServerVideoFrameQueueReadMode::InspectOldest
+        }
+        ServerSwitcherQueuedFrameReadMode::InspectLatest => {
+            ServerVideoFrameQueueReadMode::InspectLatest
+        }
+        ServerSwitcherQueuedFrameReadMode::DequeueOldest => {
+            ServerVideoFrameQueueReadMode::DequeueOldest
+        }
+    }
+}
+
+fn queue_len_to_u32(len: usize) -> u32 {
+    u32::try_from(len).expect("server->switcher queue length must fit into u32")
+}
+
+fn payload_len_to_u32(len: usize) -> u32 {
+    u32::try_from(len).expect("server->switcher payload length must fit into u32")
 }
 
 /// Reason a video frame was not stored.
@@ -11617,6 +11716,112 @@ shared_token = "secret"
     }
 
     #[test]
+    fn server_switcher_handoff_handler_returns_frame_read_for_eligible_queued_frame() {
+        let mut state = ServerVideoFrameQueueState::default();
+        store_video_frame_for_handoff_test(
+            &mut state,
+            "client-1",
+            "run-meta",
+            7,
+            TimestampMicros(9_000_007),
+            854,
+            480,
+            vec![0xaa, 0xbb, 0xcc, 0xdd],
+        );
+
+        let response = ServerSwitcherQueuedFrameHandoffHandlerBoundary::default().handle_request(
+            &mut state,
+            ServerSwitcherQueuedFrameHandoffRequest {
+                handoff_version: 1,
+                request_id: 44,
+                client_id: ClientId("client-1".to_string()),
+                run_id: RunId("run-meta".to_string()),
+                read_mode: ServerSwitcherQueuedFrameReadMode::InspectLatest,
+            },
+        );
+
+        let ServerSwitcherQueuedFrameHandoffResponse::FrameRead {
+            request_id,
+            remaining_client_queue_len,
+            frame,
+        } = response
+        else {
+            panic!("eligible queued frame should produce FrameRead");
+        };
+        assert_eq!(request_id, 44);
+        assert_eq!(remaining_client_queue_len, 1);
+        assert_eq!(frame.client_id, ClientId("client-1".to_string()));
+        assert_eq!(frame.run_id, RunId("run-meta".to_string()));
+        assert_eq!(frame.frame_id, 7);
+        assert_eq!(frame.capture_timestamp, TimestampMicros(1_000_007));
+        assert_eq!(frame.send_timestamp, TimestampMicros(1_000_107));
+        assert_eq!(frame.queued_at, TimestampMicros(9_000_007));
+        assert_eq!(frame.width, 854);
+        assert_eq!(frame.height, 480);
+        assert_eq!(frame.fps_nominal, 30);
+        assert!(frame.is_keyframe);
+        assert_eq!(frame.codec, Codec::H264);
+        assert_eq!(frame.encoded_payload_len, 4);
+        assert_eq!(frame.encoded_payload, vec![0xaa, 0xbb, 0xcc, 0xdd]);
+        assert_eq!(state.total_len(), 1);
+    }
+
+    #[test]
+    fn server_switcher_handoff_handler_returns_no_frame_for_missing_client_run_queue() {
+        let mut state = ServerVideoFrameQueueState::default();
+        store_video_frame_for_read_test(&mut state, "client-1", "run-1", 1);
+
+        let response = ServerSwitcherQueuedFrameHandoffHandlerBoundary::default().handle_request(
+            &mut state,
+            ServerSwitcherQueuedFrameHandoffRequest {
+                handoff_version: 1,
+                request_id: 45,
+                client_id: ClientId("client-1".to_string()),
+                run_id: RunId("run-missing".to_string()),
+                read_mode: ServerSwitcherQueuedFrameReadMode::DequeueOldest,
+            },
+        );
+
+        assert_eq!(
+            response,
+            ServerSwitcherQueuedFrameHandoffResponse::NoFrame {
+                request_id: 45,
+                client_id: ClientId("client-1".to_string()),
+                run_id: RunId("run-missing".to_string()),
+                read_mode: ServerSwitcherQueuedFrameReadMode::DequeueOldest,
+                client_queue_len: 1,
+            }
+        );
+        assert_eq!(state.total_len(), 1);
+    }
+
+    #[test]
+    fn server_switcher_handoff_handler_preserves_request_id_in_invalid_scope_error() {
+        let mut state = ServerVideoFrameQueueState::default();
+        store_video_frame_for_read_test(&mut state, "client-1", "run-1", 1);
+
+        let response = ServerSwitcherQueuedFrameHandoffHandlerBoundary::default().handle_request(
+            &mut state,
+            ServerSwitcherQueuedFrameHandoffRequest {
+                handoff_version: 1,
+                request_id: 99,
+                client_id: ClientId("".to_string()),
+                run_id: RunId("run-1".to_string()),
+                read_mode: ServerSwitcherQueuedFrameReadMode::InspectOldest,
+            },
+        );
+
+        assert_eq!(
+            response,
+            ServerSwitcherQueuedFrameHandoffResponse::HandoffError {
+                request_id: 99,
+                error: ServerSwitcherQueuedFrameHandoffErrorCode::InvalidScope,
+            }
+        );
+        assert_eq!(state.total_len(), 1);
+    }
+
+    #[test]
     fn video_frame_fragment_reassembly_completes_in_order() {
         let source = packet_source();
         let mut reassembly_state = ServerVideoFrameReassemblyState::default();
@@ -17803,6 +18008,41 @@ shared_token = "secret"
             queue_state,
             input,
             TimestampMicros(3_000_000 + frame_id),
+            ServerVideoFrameQueuePolicy::default(),
+        );
+        assert!(matches!(
+            result,
+            ServerVideoFrameQueueStorageResult::Stored { .. }
+        ));
+    }
+
+    fn store_video_frame_for_handoff_test(
+        queue_state: &mut ServerVideoFrameQueueState,
+        client_id: &str,
+        run_id: &str,
+        frame_id: u64,
+        queued_at: TimestampMicros,
+        width: u32,
+        height: u32,
+        payload: Vec<u8>,
+    ) {
+        let source = packet_source();
+        let mut input = video_handler_input(client_id, source);
+        input.registered_packet.frame.run_id = RunId(run_id.to_string());
+        input.registered_packet.frame.frame_id = frame_id;
+        input.registered_packet.frame.capture_timestamp = TimestampMicros(1_000_000 + frame_id);
+        input.registered_packet.frame.send_timestamp = TimestampMicros(1_000_100 + frame_id);
+        input.registered_packet.frame.width = width;
+        input.registered_packet.frame.height = height;
+        input.registered_packet.frame.payload = payload;
+        input.registered_packet.frame.codec = Codec::H264;
+        input.registered_packet.authenticated_sender.run_id = RunId(run_id.to_string());
+        input.payload_len = input.registered_packet.frame.payload.len();
+
+        let result = ServerVideoFrameQueueStorageBoundary.store_frame(
+            queue_state,
+            input,
+            queued_at,
             ServerVideoFrameQueuePolicy::default(),
         );
         assert!(matches!(

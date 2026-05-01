@@ -6,8 +6,13 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
-use stream_sync_net_core::{PacketSource, DEFAULT_UDP_PACKET_BUFFER_LEN};
-use stream_sync_protocol::{ClientId, MessageType, ProtocolVersion, RunId, TimestampMicros};
+use stream_sync_net_core::{
+    PacketSource, ServerSwitcherQueuedFrameHandoffErrorCode, ServerSwitcherQueuedFrameHandoffFrame,
+    ServerSwitcherQueuedFrameHandoffRequest, ServerSwitcherQueuedFrameHandoffResponse,
+    ServerSwitcherQueuedFrameReadMode, DEFAULT_UDP_PACKET_BUFFER_LEN,
+    SERVER_SWITCHER_HANDOFF_VERSION,
+};
+use stream_sync_protocol::{ClientId, Codec, MessageType, ProtocolVersion, RunId, TimestampMicros};
 use stream_sync_server::{
     AuthenticatedSenderRegistry, PacketAcceptanceRejectReason, ServerAuthResponsePocError,
     ServerAuthResponsePocLauncher, ServerAuthResponsePocOutcome,
@@ -50,6 +55,7 @@ pub struct SwitcherSingleViewSelectedEncodedFrame {
     pub width: u32,
     pub height: u32,
     pub fps_nominal: u32,
+    pub codec: Codec,
     pub encoded_payload_len: usize,
     pub encoded_payload: Vec<u8>,
 }
@@ -67,6 +73,7 @@ impl From<&ServerQueuedVideoFrame> for SwitcherSingleViewSelectedEncodedFrame {
             width: queued.frame.width,
             height: queued.frame.height,
             fps_nominal: queued.frame.fps_nominal,
+            codec: queued.frame.codec,
             encoded_payload_len: queued.payload_len,
             encoded_payload: queued.frame.payload.clone(),
         }
@@ -117,6 +124,22 @@ impl SwitcherSingleClientQueueSourceMode {
             Self::PreviewOldest => ServerVideoFrameQueueReadMode::InspectOldest,
             Self::PreviewLatest => ServerVideoFrameQueueReadMode::InspectLatest,
             Self::ConsumeOldest => ServerVideoFrameQueueReadMode::DequeueOldest,
+        }
+    }
+
+    fn handoff_read_mode(self) -> ServerSwitcherQueuedFrameReadMode {
+        match self {
+            Self::PreviewOldest => ServerSwitcherQueuedFrameReadMode::InspectOldest,
+            Self::PreviewLatest => ServerSwitcherQueuedFrameReadMode::InspectLatest,
+            Self::ConsumeOldest => ServerSwitcherQueuedFrameReadMode::DequeueOldest,
+        }
+    }
+
+    fn from_handoff_read_mode(mode: ServerSwitcherQueuedFrameReadMode) -> Self {
+        match mode {
+            ServerSwitcherQueuedFrameReadMode::InspectOldest => Self::PreviewOldest,
+            ServerSwitcherQueuedFrameReadMode::InspectLatest => Self::PreviewLatest,
+            ServerSwitcherQueuedFrameReadMode::DequeueOldest => Self::ConsumeOldest,
         }
     }
 }
@@ -297,6 +320,118 @@ pub trait SwitcherQueuedFrameHandoff {
         &mut self,
         input: SwitcherQueuedFrameHandoffInput,
     ) -> SwitcherQueuedFrameHandoffResult;
+}
+
+impl From<ServerSwitcherQueuedFrameHandoffFrame> for SwitcherSingleViewSelectedEncodedFrame {
+    fn from(frame: ServerSwitcherQueuedFrameHandoffFrame) -> Self {
+        Self {
+            client_id: frame.client_id,
+            run_id: frame.run_id,
+            frame_id: frame.frame_id,
+            capture_timestamp: frame.capture_timestamp,
+            send_timestamp: frame.send_timestamp,
+            queued_at: frame.queued_at,
+            is_keyframe: frame.is_keyframe,
+            width: frame.width,
+            height: frame.height,
+            fps_nominal: frame.fps_nominal,
+            codec: frame.codec,
+            encoded_payload_len: frame.encoded_payload_len as usize,
+            encoded_payload: frame.encoded_payload,
+        }
+    }
+}
+
+/// Transport-neutral request/response adapter for the future switcher client runtime.
+///
+/// This boundary builds a DTO request from the existing switcher handoff input
+/// and maps a DTO response back into the existing switcher handoff result. It
+/// does not open pipes/sockets, block on I/O, own request-id generation, or
+/// implement named-pipe/TCP/UDP/shared-memory transport.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct SwitcherServerQueuedFrameHandoffClientAdapterBoundary;
+
+impl SwitcherServerQueuedFrameHandoffClientAdapterBoundary {
+    pub fn build_request(
+        &self,
+        request_id: u64,
+        input: &SwitcherQueuedFrameHandoffInput,
+    ) -> ServerSwitcherQueuedFrameHandoffRequest {
+        ServerSwitcherQueuedFrameHandoffRequest {
+            handoff_version: SERVER_SWITCHER_HANDOFF_VERSION,
+            request_id,
+            client_id: input.client_id.clone(),
+            run_id: input.run_id.clone(),
+            read_mode: input.mode.handoff_read_mode(),
+        }
+    }
+
+    pub fn map_response(
+        &self,
+        input: &SwitcherQueuedFrameHandoffInput,
+        response: ServerSwitcherQueuedFrameHandoffResponse,
+    ) -> SwitcherQueuedFrameHandoffResult {
+        match response {
+            ServerSwitcherQueuedFrameHandoffResponse::FrameRead {
+                frame,
+                remaining_client_queue_len,
+                ..
+            } => SwitcherQueuedFrameHandoffResult::FrameRead {
+                frame: frame.into(),
+                mode: input.mode,
+                remaining_client_queue_len: remaining_client_queue_len as usize,
+            },
+            ServerSwitcherQueuedFrameHandoffResponse::NoFrame {
+                client_id,
+                run_id,
+                read_mode,
+                client_queue_len,
+                ..
+            } => SwitcherQueuedFrameHandoffResult::NoFrameAvailable {
+                client_id,
+                run_id,
+                mode: SwitcherSingleClientQueueSourceMode::from_handoff_read_mode(read_mode),
+                client_queue_len: client_queue_len as usize,
+            },
+            ServerSwitcherQueuedFrameHandoffResponse::HandoffError { error, .. } => {
+                SwitcherQueuedFrameHandoffResult::HandoffError {
+                    client_id: input.client_id.clone(),
+                    run_id: input.run_id.clone(),
+                    mode: input.mode,
+                    error: map_handoff_error_code_to_switcher(input, error),
+                }
+            }
+        }
+    }
+}
+
+fn map_handoff_error_code_to_switcher(
+    input: &SwitcherQueuedFrameHandoffInput,
+    error: ServerSwitcherQueuedFrameHandoffErrorCode,
+) -> SwitcherQueuedFrameHandoffError {
+    match error {
+        ServerSwitcherQueuedFrameHandoffErrorCode::SourceUnavailable => {
+            SwitcherQueuedFrameHandoffError::SourceUnavailable
+        }
+        ServerSwitcherQueuedFrameHandoffErrorCode::RequestTimeout => {
+            SwitcherQueuedFrameHandoffError::Timeout
+        }
+        ServerSwitcherQueuedFrameHandoffErrorCode::InvalidScope => {
+            SwitcherQueuedFrameHandoffError::InvalidScope {
+                client_id: input.client_id.clone(),
+                run_id: input.run_id.clone(),
+            }
+        }
+        ServerSwitcherQueuedFrameHandoffErrorCode::UnsupportedReadMode => {
+            SwitcherQueuedFrameHandoffError::UnsupportedMode { mode: input.mode }
+        }
+        ServerSwitcherQueuedFrameHandoffErrorCode::MalformedResponse => {
+            SwitcherQueuedFrameHandoffError::MalformedResponse
+        }
+        ServerSwitcherQueuedFrameHandoffErrorCode::SourceShutdown => {
+            SwitcherQueuedFrameHandoffError::SourceShutdown
+        }
+    }
 }
 
 /// In-process fallible handoff backed by the current server queue source.
@@ -7464,6 +7599,7 @@ mod tests {
         assert_eq!(frame.width, 640);
         assert_eq!(frame.height, 360);
         assert_eq!(frame.fps_nominal, 30);
+        assert_eq!(frame.codec, Codec::H264);
         assert_eq!(frame.encoded_payload_len, 4);
         assert_eq!(frame.encoded_payload, vec![0x01, 0x02, 0x03, 0x04]);
     }
@@ -7566,6 +7702,175 @@ mod tests {
         assert_eq!(state.total_len(), 1);
     }
 
+    #[test]
+    fn server_switcher_handoff_client_adapter_builds_request_from_handoff_input() {
+        let adapter = SwitcherServerQueuedFrameHandoffClientAdapterBoundary;
+        let input = SwitcherQueuedFrameHandoffInput {
+            client_id: ClientId("client-1".to_string()),
+            run_id: RunId("run-1".to_string()),
+            mode: SwitcherSingleClientQueueSourceMode::ConsumeOldest,
+        };
+
+        let request = adapter.build_request(123, &input);
+
+        assert_eq!(request.handoff_version, SERVER_SWITCHER_HANDOFF_VERSION);
+        assert_eq!(request.request_id, 123);
+        assert_eq!(request.client_id, ClientId("client-1".to_string()));
+        assert_eq!(request.run_id, RunId("run-1".to_string()));
+        assert_eq!(
+            request.read_mode,
+            ServerSwitcherQueuedFrameReadMode::DequeueOldest
+        );
+    }
+
+    #[test]
+    fn server_switcher_handoff_client_adapter_maps_frame_read_response_to_handoff_result() {
+        let adapter = SwitcherServerQueuedFrameHandoffClientAdapterBoundary;
+        let input = SwitcherQueuedFrameHandoffInput {
+            client_id: ClientId("client-request".to_string()),
+            run_id: RunId("run-request".to_string()),
+            mode: SwitcherSingleClientQueueSourceMode::PreviewLatest,
+        };
+
+        let result = adapter.map_response(
+            &input,
+            ServerSwitcherQueuedFrameHandoffResponse::FrameRead {
+                request_id: 700,
+                remaining_client_queue_len: 2,
+                frame: ServerSwitcherQueuedFrameHandoffFrame {
+                    client_id: ClientId("client-actual".to_string()),
+                    run_id: RunId("run-actual".to_string()),
+                    frame_id: 41,
+                    capture_timestamp: TimestampMicros(5_000_041),
+                    send_timestamp: TimestampMicros(5_000_141),
+                    queued_at: TimestampMicros(6_000_041),
+                    width: 1280,
+                    height: 720,
+                    fps_nominal: 30,
+                    is_keyframe: true,
+                    codec: Codec::H264,
+                    encoded_payload_len: 4,
+                    encoded_payload: vec![0xaa, 0xbb, 0xcc, 0xdd],
+                },
+            },
+        );
+
+        let SwitcherQueuedFrameHandoffResult::FrameRead {
+            frame,
+            mode,
+            remaining_client_queue_len,
+        } = result
+        else {
+            panic!("FrameRead response should map to handoff frame result");
+        };
+        assert_eq!(mode, SwitcherSingleClientQueueSourceMode::PreviewLatest);
+        assert_eq!(remaining_client_queue_len, 2);
+        assert_eq!(frame.client_id, ClientId("client-actual".to_string()));
+        assert_eq!(frame.run_id, RunId("run-actual".to_string()));
+        assert_eq!(frame.frame_id, 41);
+        assert_eq!(frame.capture_timestamp, TimestampMicros(5_000_041));
+        assert_eq!(frame.send_timestamp, TimestampMicros(5_000_141));
+        assert_eq!(frame.queued_at, TimestampMicros(6_000_041));
+        assert_eq!(frame.width, 1280);
+        assert_eq!(frame.height, 720);
+        assert_eq!(frame.fps_nominal, 30);
+        assert_eq!(frame.codec, Codec::H264);
+        assert_eq!(frame.encoded_payload_len, 4);
+        assert_eq!(frame.encoded_payload, vec![0xaa, 0xbb, 0xcc, 0xdd]);
+    }
+
+    #[test]
+    fn server_switcher_handoff_client_adapter_maps_no_frame_to_no_frame_available() {
+        let adapter = SwitcherServerQueuedFrameHandoffClientAdapterBoundary;
+        let input = SwitcherQueuedFrameHandoffInput {
+            client_id: ClientId("client-1".to_string()),
+            run_id: RunId("run-1".to_string()),
+            mode: SwitcherSingleClientQueueSourceMode::PreviewOldest,
+        };
+
+        let result = adapter.map_response(
+            &input,
+            ServerSwitcherQueuedFrameHandoffResponse::NoFrame {
+                request_id: 701,
+                client_id: ClientId("client-1".to_string()),
+                run_id: RunId("run-1".to_string()),
+                read_mode: ServerSwitcherQueuedFrameReadMode::InspectOldest,
+                client_queue_len: 0,
+            },
+        );
+
+        assert_eq!(
+            result,
+            SwitcherQueuedFrameHandoffResult::NoFrameAvailable {
+                client_id: ClientId("client-1".to_string()),
+                run_id: RunId("run-1".to_string()),
+                mode: SwitcherSingleClientQueueSourceMode::PreviewOldest,
+                client_queue_len: 0,
+            }
+        );
+    }
+
+    #[test]
+    fn server_switcher_handoff_client_adapter_maps_all_handoff_error_codes() {
+        let adapter = SwitcherServerQueuedFrameHandoffClientAdapterBoundary;
+        let input = SwitcherQueuedFrameHandoffInput {
+            client_id: ClientId("client-1".to_string()),
+            run_id: RunId("run-1".to_string()),
+            mode: SwitcherSingleClientQueueSourceMode::ConsumeOldest,
+        };
+        let cases = vec![
+            (
+                ServerSwitcherQueuedFrameHandoffErrorCode::SourceUnavailable,
+                SwitcherQueuedFrameHandoffError::SourceUnavailable,
+            ),
+            (
+                ServerSwitcherQueuedFrameHandoffErrorCode::RequestTimeout,
+                SwitcherQueuedFrameHandoffError::Timeout,
+            ),
+            (
+                ServerSwitcherQueuedFrameHandoffErrorCode::InvalidScope,
+                SwitcherQueuedFrameHandoffError::InvalidScope {
+                    client_id: ClientId("client-1".to_string()),
+                    run_id: RunId("run-1".to_string()),
+                },
+            ),
+            (
+                ServerSwitcherQueuedFrameHandoffErrorCode::UnsupportedReadMode,
+                SwitcherQueuedFrameHandoffError::UnsupportedMode {
+                    mode: SwitcherSingleClientQueueSourceMode::ConsumeOldest,
+                },
+            ),
+            (
+                ServerSwitcherQueuedFrameHandoffErrorCode::MalformedResponse,
+                SwitcherQueuedFrameHandoffError::MalformedResponse,
+            ),
+            (
+                ServerSwitcherQueuedFrameHandoffErrorCode::SourceShutdown,
+                SwitcherQueuedFrameHandoffError::SourceShutdown,
+            ),
+        ];
+
+        for (code, expected_error) in cases {
+            let result = adapter.map_response(
+                &input,
+                ServerSwitcherQueuedFrameHandoffResponse::HandoffError {
+                    request_id: 702,
+                    error: code,
+                },
+            );
+
+            assert_eq!(
+                result,
+                SwitcherQueuedFrameHandoffResult::HandoffError {
+                    client_id: ClientId("client-1".to_string()),
+                    run_id: RunId("run-1".to_string()),
+                    mode: SwitcherSingleClientQueueSourceMode::ConsumeOldest,
+                    error: expected_error,
+                }
+            );
+        }
+    }
+
     #[derive(Debug, Clone)]
     struct FailingQueuedFrameHandoff {
         error: SwitcherQueuedFrameHandoffError,
@@ -7644,6 +7949,7 @@ mod tests {
         assert_eq!(frame.width, 800);
         assert_eq!(frame.height, 450);
         assert_eq!(frame.fps_nominal, 30);
+        assert_eq!(frame.codec, Codec::H264);
         assert_eq!(frame.encoded_payload_len, 5);
         assert_eq!(frame.encoded_payload, vec![0x10, 0x20, 0x30, 0x40, 0x50]);
     }
@@ -15094,6 +15400,7 @@ mod tests {
             width: 1280,
             height: 720,
             fps_nominal: 30,
+            codec: Codec::H264,
             encoded_payload_len: 3,
             encoded_payload: vec![0x03, 0xbb, 0xcc],
         };
@@ -17592,6 +17899,7 @@ shared_token = "replace-with-shared-token-2"
                 width: 2,
                 height: 1,
                 fps_nominal: 30,
+                codec: Codec::H264,
                 encoded_payload_len: 4,
                 encoded_payload: vec![0, 0, 1, frame_id as u8],
             },

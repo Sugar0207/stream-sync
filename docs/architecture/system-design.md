@@ -175,6 +175,14 @@ stream framing is transport-neutral and test-only for now; it does not add
 named-pipe I/O, TCP I/O, or any change to the existing `VideoFrame` wire
 format.
 
+The next layer above that codec is split intentionally. On the server side, a
+single-request handoff handler wraps `ServerVideoFrameQueueReadBoundary` and
+maps one DTO request to one DTO response over caller-owned queue state. On the
+switcher side, a client-adapter boundary builds DTO requests from the existing
+handoff input shape and maps DTO responses back into the existing
+`SwitcherQueuedFrameHandoffResult` / `SwitcherQueuedFrameHandoffError` shape.
+Neither layer owns named-pipe I/O or process lifecycle yet.
+
 ---
 
 ## 3. コンポーネントと責務
