@@ -275,6 +275,82 @@ small:
 and `--live-two-view-switcher-once` remains the direct-receive
 diagnostic/legacy path rather than becoming the main server-mediated path.
 
+After the successful one-shot localhost handoff, the smallest next lifecycle
+slice should still stay bounded rather than becoming a full daemon.
+
+Server-side continuous accept loop plan:
+
+- Add a bounded loop above the existing one-shot named-pipe runtime rather than
+  replacing it.
+- The first loop should serve `max_requests` and then return.
+- Do not start with `until Ctrl+C` or idle-timeout shutdown as the primary
+  control flow. Those add process-lifecycle policy before the bounded
+  request/response path is fully validated.
+- Keep one client connection at a time.
+- Create a fresh named-pipe instance per request. This matches the existing
+  one-shot runtime, keeps request boundaries explicit, and avoids introducing
+  persistent connection state, half-open pipe handling, or per-connection
+  multiplexing.
+- Keep the caller-owned `ServerVideoFrameQueueState` alive across the bounded
+  loop so repeated switcher reads observe one shared queue owner. Queue
+  ownership does not move into the pipe service.
+- Keep request logging/correlation per request:
+  - log `pipe_name`
+  - log loop request index
+  - log `request_id`
+  - log `client_id`
+  - log `run_id`
+  - log `read_mode`
+  - log request status / response status / result kind
+- `request_id` remains switcher-owned. The server only echoes and logs it; the
+  server loop does not allocate request ids.
+
+Switcher-side lifecycle plan:
+
+- Keep one request per scheduler read.
+- Keep each read as connect -> write one request -> read one response ->
+  disconnect.
+- Start with one bounded timeout per request, not a background reconnect
+  manager.
+- Start with no automatic retry inside the handoff adapter. If a request times
+  out or the source is unavailable, surface the explicit handoff error and let
+  the caller/scheduler decide whether to try again on the next tick.
+- Preserve the existing one-shot command behavior and the existing ignored
+  smoke tests.
+
+Failure mapping in bounded loop mode should stay aligned with the current
+one-shot mapping:
+
+- connect/listen/open failure before an in-flight request: `SourceUnavailable`
+- write/read timeout for one request: `Timeout`
+- EOF / broken pipe / server closed during an in-flight request:
+  `SourceShutdown`
+- decode failure, bad frame prefix, mismatched `request_id`, or other invalid
+  response shape: `MalformedResponse`
+
+Out of scope for the first bounded loop slice:
+
+- OBS output
+- 4-view orchestration
+- protocol wire format changes
+- H.264 behavior changes
+- switcher-side fragment reassembly
+- persistent daemon/service installation
+- multi-client concurrency
+- connection pooling or pipe reuse across requests
+- retry storms, backoff policy, or cross-process health management
+
+Smallest implementation slice after this planning step:
+
+- Add a bounded server runtime such as
+  `serve_many(queue_state, pipe_name, max_requests)` that repeatedly calls the
+  existing one-shot server runtime with a fresh pipe instance.
+- Add a small output summary that keeps per-request correlation visible.
+- Keep the switcher runtime unchanged except for any minimal timeout plumbing
+  needed by the bounded-loop validation path.
+- Add focused tests for bounded loop counting and early termination without
+  touching the existing ignored pipe smoke tests.
+
 ---
 
 ## 3. コンポーネントと責務

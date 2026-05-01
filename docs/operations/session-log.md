@@ -5,6 +5,93 @@
 - Codex
 
 ### Work
+- Implemented the requested planning/docs slice for the continuous
+  named-pipe accept loop / reconnect / lifecycle approach.
+- Reviewed the successful one-shot localhost named-pipe handoff result and
+  used it as the baseline for the next bounded runtime/service slice.
+- Documented the smallest server-side loop as a bounded `max_requests`
+  one-client-at-a-time accept loop over fresh named-pipe instances.
+- Documented the smallest switcher-side lifecycle policy as one request per
+  scheduler read with one bounded timeout per request and no automatic retry
+  manager in the first slice.
+- Documented per-request request-id correlation ownership and logging policy.
+- Documented the out-of-scope items and the smallest next implementation slice.
+
+### Changed Files
+- `docs/architecture/system-design.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### Decisions
+- The first continuous server loop should be bounded by `max_requests`, not
+  indefinite `Ctrl+C` service mode.
+- Keep one client at a time and create a fresh named-pipe instance per
+  request.
+- Keep `ServerVideoFrameQueueState` caller-owned and alive across repeated
+  handoff reads; queue ownership does not move into a daemon/service layer.
+- Keep `request_id` switcher-owned. The server loop echoes and logs it but does
+  not allocate ids.
+- Keep switcher lifecycle minimal: one connect/write/read/disconnect per
+  scheduler read, one timeout per request, and no built-in retry loop in the
+  first slice.
+
+### Planned Answers
+- smallest server continuous loop:
+  bounded `serve_many(queue_state, pipe_name, max_requests)` over the existing
+  one-shot runtime
+- first loop control:
+  fixed number of requests first; not Ctrl+C and not timeout-based shutdown as
+  the primary policy
+- pipe instance policy:
+  fresh named-pipe instance per request
+- request-id correlation:
+  log `pipe_name`, loop request index, `request_id`, `client_id`, `run_id`,
+  `read_mode`, request status, response status, and result kind per request
+- server queue ownership:
+  caller-owned queue state survives across the bounded loop
+- smallest switcher lifecycle:
+  one request per scheduler read, one timeout per request, zero automatic
+  retries in the first slice, reconnect on the next caller/scheduler tick only
+- failure mapping:
+  - `Timeout`: one request write/read timeout
+  - `SourceUnavailable`: connect/listen/open failure before an in-flight
+    request
+  - `SourceShutdown`: EOF / broken pipe / server close during an in-flight
+    request
+  - `MalformedResponse`: decode failure, bad length prefix, mismatched
+    `request_id`, or invalid response shape
+- out of scope:
+  OBS, 4-view, protocol wire-format changes, H.264 behavior changes,
+  switcher-side fragment reassembly, multi-client concurrency, persistent
+  daemon/service installation
+- smallest next implementation slice:
+  bounded server `max_requests` loop + per-request summary/logging while
+  keeping the switcher runtime essentially unchanged apart from minimal timeout
+  plumbing if needed
+
+### Next
+- Implement the bounded `max_requests` server accept loop and per-request
+  correlation logging.
+- Then add only the smallest switcher-side timeout/lifecycle plumbing needed
+  to exercise that bounded loop.
+
+### TODO Update
+- Replaced the generic lifecycle planning item with the concrete next bounded
+  loop implementation slice.
+- Recorded the bounded loop, fresh pipe instance policy, and switcher-owned
+  request-id correlation policy in current position.
+
+### Validation
+- `cargo fmt` passed.
+- `cargo fmt --check` passed.
+- `cargo check --workspace` passed.
+- `git diff --check` passed with line-ending warnings for changed files.
+
+## 2026-05-01
+### Type
+- Codex
+
+### Work
 - Recorded the first successful localhost one-shot named-pipe handoff manual
   pass.
 - Reviewed the provided server and switcher stdout lines and confirmed that the
