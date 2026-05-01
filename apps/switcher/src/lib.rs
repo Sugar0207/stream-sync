@@ -3262,6 +3262,21 @@ pub struct SwitcherServerMediatedTwoViewValidationOutput {
     pub render: SwitcherTwoViewDisplayCompositionRenderConnectionOutput,
 }
 
+/// Output from the fallible server-mediated diagnostic path.
+///
+/// Each fallible stage is kept visible so selected, waiting, no-frame,
+/// handoff/source-error, stale, no-display placeholder, and source-error
+/// placeholder states remain inspectable.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SwitcherServerMediatedTwoViewHandoffValidationOutput {
+    pub scheduler: SwitcherTwoViewTargetTimeHandoffSourceSchedulerResult,
+    pub decode_render_adapter: SwitcherTwoViewHandoffSchedulerDecodeRenderAdapterOutput,
+    pub decode_render: SwitcherTwoViewHandoffSchedulerDecodeRenderConnectionOutput,
+    pub display: SwitcherTwoViewHandoffDisplayPolicyOutput,
+    pub adapter: SwitcherTwoViewHandoffDisplayCompositionAdapterOutput,
+    pub render: SwitcherTwoViewHandoffDisplayCompositionRenderConnectionOutput,
+}
+
 /// Minimal in-process connection from server-owned reassembled queue state into
 /// the current 2-view switcher display pipeline.
 ///
@@ -3276,6 +3291,12 @@ pub struct SwitcherServerMediatedTwoViewValidationBoundary {
     display_policy: SwitcherTwoViewDisplayPolicyBoundary,
     adapter: SwitcherTwoViewDisplayCompositionAdapterBoundary,
     render: SwitcherTwoViewDisplayCompositionRenderConnectionBoundary,
+    handoff_scheduler: SwitcherTwoViewTargetTimeHandoffSourceSchedulerBoundary,
+    handoff_decode_render_adapter: SwitcherTwoViewHandoffSchedulerDecodeRenderAdapterBoundary,
+    handoff_decode_render: SwitcherTwoViewHandoffSchedulerDecodeRenderConnectionBoundary,
+    handoff_display_policy: SwitcherTwoViewHandoffDisplayPolicyBoundary,
+    handoff_adapter: SwitcherTwoViewHandoffDisplayCompositionAdapterBoundary,
+    handoff_render: SwitcherTwoViewHandoffDisplayCompositionRenderConnectionBoundary,
 }
 
 impl SwitcherServerMediatedTwoViewValidationBoundary {
@@ -3342,6 +3363,92 @@ impl SwitcherServerMediatedTwoViewValidationBoundary {
 
         SwitcherServerMediatedTwoViewValidationOutput {
             scheduler,
+            decode_render,
+            display,
+            adapter,
+            render,
+        }
+    }
+
+    pub fn run_fallible_with_runtimes(
+        &self,
+        queue_state: &mut ServerVideoFrameQueueState,
+        input: SwitcherServerMediatedTwoViewValidationInput,
+        decode_runtime: &impl SwitcherH264DecodeRuntimeHook,
+        render_runtime: &impl SwitcherWindowRenderRuntimeHook,
+    ) -> SwitcherServerMediatedTwoViewHandoffValidationOutput {
+        let mut handoff = SwitcherInProcessQueuedFrameHandoff::new(queue_state);
+        self.run_fallible_from_handoff_with_runtimes(
+            &mut handoff,
+            input,
+            decode_runtime,
+            render_runtime,
+        )
+    }
+
+    pub fn run_fallible_from_handoff_with_runtimes(
+        &self,
+        handoff: &mut impl SwitcherQueuedFrameHandoff,
+        input: SwitcherServerMediatedTwoViewValidationInput,
+        decode_runtime: &impl SwitcherH264DecodeRuntimeHook,
+        render_runtime: &impl SwitcherWindowRenderRuntimeHook,
+    ) -> SwitcherServerMediatedTwoViewHandoffValidationOutput {
+        let scheduler = self.handoff_scheduler.select_pair_from_handoff(
+            handoff,
+            SwitcherTwoViewTargetTimeSourceSchedulerInput {
+                left: input.left,
+                right: input.right,
+                target_timestamp: input.target_timestamp,
+                mode: input.scheduler_mode,
+            },
+        );
+        let decode_render_adapter = self.handoff_decode_render_adapter.adapt(
+            SwitcherTwoViewHandoffSchedulerDecodeRenderAdapterInput {
+                scheduler_result: scheduler.clone(),
+                left_window_title: input.left_window_title.clone(),
+                right_window_title: input.right_window_title.clone(),
+                render_hold_millis: input.decode_render_hold_millis,
+            },
+        );
+        let decode_render = self
+            .handoff_decode_render
+            .render_adapter_output_with_runtimes(
+                SwitcherTwoViewHandoffSchedulerDecodeRenderConnectionInput {
+                    adapter_output: decode_render_adapter.clone(),
+                    left_window_title: input.left_window_title,
+                    right_window_title: input.right_window_title,
+                    render_hold_millis: input.decode_render_hold_millis,
+                },
+                decode_runtime,
+                render_runtime,
+            );
+        let display =
+            self.handoff_display_policy
+                .decide(SwitcherTwoViewHandoffDisplayPolicyInput {
+                    connection: decode_render.clone(),
+                    previous_left: input.previous_left,
+                    previous_right: input.previous_right,
+                    current_time: input.display_current_time,
+                    max_hold_duration_micros: input.max_hold_duration_micros,
+                });
+        let adapter =
+            self.handoff_adapter
+                .adapt(SwitcherTwoViewHandoffDisplayCompositionAdapterInput {
+                    display: display.clone(),
+                    layout_policy: input.layout_policy,
+                });
+        let render = self.handoff_render.render_adapter_output_with_runtime(
+            SwitcherTwoViewHandoffDisplayCompositionRenderConnectionInput {
+                adapter_output: adapter.clone(),
+                window_title: input.composed_window_title,
+                render_hold_millis: input.composed_render_hold_millis,
+            },
+            render_runtime,
+        );
+
+        SwitcherServerMediatedTwoViewHandoffValidationOutput {
+            scheduler,
+            decode_render_adapter,
             decode_render,
             display,
             adapter,
@@ -13576,6 +13683,413 @@ mod tests {
         assert_eq!(
             output.scheduler.status,
             SwitcherTwoViewTargetTimeSourceSchedulerStatus::AllSelected
+        );
+        assert_eq!(state.client_queue_len(&left_client), before_left);
+        assert_eq!(state.client_queue_len(&right_client), before_right);
+    }
+
+    #[test]
+    fn server_mediated_two_view_handoff_validation_renders_two_eligible_server_queue_frames() {
+        let mut state = ServerVideoFrameQueueState::default();
+        store_frame_with_run_payload(
+            &mut state,
+            "client-left",
+            "run-left",
+            1,
+            TimestampMicros(2_129_000),
+            2,
+            1,
+            vec![0, 0, 1, 0x65, 0x41],
+        );
+        store_frame_with_run_payload(
+            &mut state,
+            "client-right",
+            "run-right",
+            2,
+            TimestampMicros(2_129_100),
+            2,
+            1,
+            vec![0, 0, 1, 0x65, 0x42],
+        );
+        let decode = RecordingTwoViewDecode::default();
+        let render = RecordingTwoViewRender::default();
+
+        let output = SwitcherServerMediatedTwoViewValidationBoundary::default()
+            .run_fallible_with_runtimes(
+                &mut state,
+                server_mediated_validation_input(
+                    TimestampMicros(1_000_002),
+                    SwitcherTwoViewTargetTimeSourceSchedulerMode::PreviewLatestIfAtOrBefore,
+                ),
+                &decode,
+                &render,
+            );
+
+        assert_eq!(
+            output.scheduler.status,
+            SwitcherTwoViewTargetTimeHandoffSourceSchedulerStatus::AllSelected
+        );
+        assert!(matches!(
+            output.decode_render_adapter.left,
+            SwitcherTwoViewHandoffSchedulerDecodeRenderSideInstruction::RenderFrame { .. }
+        ));
+        assert!(matches!(
+            output.decode_render.render,
+            SwitcherTwoViewHandoffDecodeRenderConnectionResult::BothRendered { .. }
+        ));
+        assert!(matches!(
+            output.display.left,
+            SwitcherTwoViewHandoffDisplayDecision::Update { .. }
+        ));
+        assert!(matches!(
+            output.adapter.left,
+            SwitcherTwoViewHandoffDisplayCompositionSideInstruction::UseUpdatedFrame { .. }
+        ));
+        assert!(matches!(
+            output.render.composition,
+            SwitcherTwoViewCompositionResult::BothComposed { .. }
+        ));
+        assert!(matches!(
+            output.render.render,
+            SwitcherTwoViewHandoffDisplayCompositionRenderConnectionRenderResult::RenderedCanvas {
+                render: SwitcherTwoViewComposedCanvasRenderResult::Rendered { .. }
+            }
+        ));
+        assert_eq!(decode.inputs.borrow().len(), 2);
+        assert_eq!(render.requests.borrow().len(), 3);
+    }
+
+    #[test]
+    fn server_mediated_two_view_handoff_validation_preserves_waiting_without_fake_frame() {
+        let mut state = ServerVideoFrameQueueState::default();
+        store_frame_with_run_payload(
+            &mut state,
+            "client-left",
+            "run-left",
+            1,
+            TimestampMicros(2_130_000),
+            2,
+            1,
+            vec![0, 0, 1, 0x65, 0x41],
+        );
+        store_frame_with_run_payload(
+            &mut state,
+            "client-right",
+            "run-right",
+            10,
+            TimestampMicros(2_130_100),
+            2,
+            1,
+            vec![0, 0, 1, 0x65, 0x4a],
+        );
+        let decode = RecordingTwoViewDecode::default();
+        let render = RecordingTwoViewRender::default();
+
+        let output = SwitcherServerMediatedTwoViewValidationBoundary::default()
+            .run_fallible_with_runtimes(
+                &mut state,
+                server_mediated_validation_input(
+                    TimestampMicros(1_000_005),
+                    SwitcherTwoViewTargetTimeSourceSchedulerMode::PreviewLatestIfAtOrBefore,
+                ),
+                &decode,
+                &render,
+            );
+
+        assert_eq!(
+            output.scheduler.status,
+            SwitcherTwoViewTargetTimeHandoffSourceSchedulerStatus::PartialSelected
+        );
+        assert!(matches!(
+            output.scheduler.right,
+            SwitcherSingleClientTargetTimeHandoffSourceResult::WaitingForFrameAtOrBeforeTarget { .. }
+        ));
+        assert!(matches!(
+            output.decode_render_adapter.right,
+            SwitcherTwoViewHandoffSchedulerDecodeRenderSideInstruction::SkipWaitingForFrameAtOrBeforeTarget { .. }
+        ));
+        assert!(matches!(
+            output.display.right,
+            SwitcherTwoViewHandoffDisplayDecision::NoDisplayPlaceholder { .. }
+        ));
+        assert!(matches!(
+            output.adapter.right,
+            SwitcherTwoViewHandoffDisplayCompositionSideInstruction::UseNoDisplayPlaceholder { .. }
+        ));
+        assert!(matches!(
+            output.render.composition,
+            SwitcherTwoViewCompositionResult::LeftOnly { .. }
+        ));
+        assert_eq!(decode.inputs.borrow().len(), 1);
+        assert_eq!(render.requests.borrow().len(), 2);
+    }
+
+    #[test]
+    fn server_mediated_two_view_handoff_validation_preserves_no_frame_placeholder() {
+        let mut state = ServerVideoFrameQueueState::default();
+        store_frame_with_run_payload(
+            &mut state,
+            "client-left",
+            "run-left",
+            1,
+            TimestampMicros(2_131_000),
+            2,
+            1,
+            vec![0, 0, 1, 0x65, 0x41],
+        );
+        let decode = RecordingTwoViewDecode::default();
+        let render = RecordingTwoViewRender::default();
+
+        let output = SwitcherServerMediatedTwoViewValidationBoundary::default()
+            .run_fallible_with_runtimes(
+                &mut state,
+                server_mediated_validation_input(
+                    TimestampMicros(1_000_005),
+                    SwitcherTwoViewTargetTimeSourceSchedulerMode::PreviewLatestIfAtOrBefore,
+                ),
+                &decode,
+                &render,
+            );
+
+        assert!(matches!(
+            output.scheduler.right,
+            SwitcherSingleClientTargetTimeHandoffSourceResult::NoFrameAvailable { .. }
+        ));
+        assert!(matches!(
+            output.decode_render_adapter.right,
+            SwitcherTwoViewHandoffSchedulerDecodeRenderSideInstruction::SkipNoFrameAvailable { .. }
+        ));
+        assert!(matches!(
+            output.adapter.right,
+            SwitcherTwoViewHandoffDisplayCompositionSideInstruction::UseNoDisplayPlaceholder { .. }
+        ));
+        assert!(matches!(
+            output.render.composition,
+            SwitcherTwoViewCompositionResult::LeftOnly { .. }
+        ));
+        assert_eq!(decode.inputs.borrow().len(), 1);
+        assert_eq!(render.requests.borrow().len(), 2);
+    }
+
+    #[test]
+    fn server_mediated_two_view_handoff_validation_preserves_source_error_placeholder() {
+        let mut state = ServerVideoFrameQueueState::default();
+        store_frame_with_run_payload(
+            &mut state,
+            "client-left",
+            "run-left",
+            1,
+            TimestampMicros(2_132_000),
+            2,
+            1,
+            vec![0, 0, 1, 0x65, 0x41],
+        );
+        let mut input = server_mediated_validation_input(
+            TimestampMicros(1_000_005),
+            SwitcherTwoViewTargetTimeSourceSchedulerMode::PreviewLatestIfAtOrBefore,
+        );
+        input.right.client_id = ClientId("".to_string());
+        let decode = RecordingTwoViewDecode::default();
+        let render = RecordingTwoViewRender::default();
+
+        let output = SwitcherServerMediatedTwoViewValidationBoundary::default()
+            .run_fallible_with_runtimes(&mut state, input, &decode, &render);
+
+        assert_eq!(
+            output.scheduler.status,
+            SwitcherTwoViewTargetTimeHandoffSourceSchedulerStatus::HandoffError
+        );
+        assert!(matches!(
+            output.scheduler.right,
+            SwitcherSingleClientTargetTimeHandoffSourceResult::HandoffError { .. }
+        ));
+        assert!(matches!(
+            output.decode_render_adapter.right,
+            SwitcherTwoViewHandoffSchedulerDecodeRenderSideInstruction::SkipHandoffError {
+                error: SwitcherQueuedFrameHandoffError::InvalidScope { .. },
+                ..
+            }
+        ));
+        assert!(matches!(
+            output.display.right,
+            SwitcherTwoViewHandoffDisplayDecision::NoDisplayPlaceholder { .. }
+        ));
+        let SwitcherTwoViewHandoffDisplayCompositionSideInstruction::UseSourceErrorPlaceholder {
+            skipped,
+            ..
+        } = &output.adapter.right
+        else {
+            panic!("handoff error should remain source-error placeholder");
+        };
+        assert!(matches!(
+            skipped,
+            SwitcherTwoViewHandoffDecodeRenderSkippedSide::HandoffError { .. }
+        ));
+        assert_eq!(
+            output.render.scheduler_status,
+            SwitcherTwoViewTargetTimeHandoffSourceSchedulerStatus::HandoffError
+        );
+        assert!(matches!(
+            output.render.composition,
+            SwitcherTwoViewCompositionResult::LeftOnly { .. }
+        ));
+        assert_eq!(decode.inputs.borrow().len(), 1);
+        assert_eq!(render.requests.borrow().len(), 2);
+    }
+
+    #[test]
+    fn server_mediated_two_view_handoff_validation_does_not_render_both_handoff_errors() {
+        let mut handoff = FailingQueuedFrameHandoff {
+            error: SwitcherQueuedFrameHandoffError::SourceUnavailable,
+        };
+        let decode = RecordingTwoViewDecode::default();
+        let render = RecordingTwoViewRender::default();
+
+        let output = SwitcherServerMediatedTwoViewValidationBoundary::default()
+            .run_fallible_from_handoff_with_runtimes(
+                &mut handoff,
+                server_mediated_validation_input(
+                    TimestampMicros(1_000_005),
+                    SwitcherTwoViewTargetTimeSourceSchedulerMode::PreviewLatestIfAtOrBefore,
+                ),
+                &decode,
+                &render,
+            );
+
+        assert_eq!(
+            output.scheduler.status,
+            SwitcherTwoViewTargetTimeHandoffSourceSchedulerStatus::HandoffError
+        );
+        assert!(matches!(
+            output.decode_render.render,
+            SwitcherTwoViewHandoffDecodeRenderConnectionResult::BothSkipped { .. }
+        ));
+        assert!(matches!(
+            output.adapter.left,
+            SwitcherTwoViewHandoffDisplayCompositionSideInstruction::UseSourceErrorPlaceholder { .. }
+        ));
+        assert!(matches!(
+            output.adapter.right,
+            SwitcherTwoViewHandoffDisplayCompositionSideInstruction::UseSourceErrorPlaceholder { .. }
+        ));
+        assert!(matches!(
+            output.render.composition,
+            SwitcherTwoViewCompositionResult::EmptyPlaceholder { .. }
+        ));
+        assert_eq!(
+            output.render.render,
+            SwitcherTwoViewHandoffDisplayCompositionRenderConnectionRenderResult::NoRenderableCanvas {
+                left_reason: SwitcherTwoViewManualDecodeRenderStatus::SkippedSelectionUnavailable,
+                right_reason: SwitcherTwoViewManualDecodeRenderStatus::SkippedSelectionUnavailable,
+            }
+        );
+        assert!(decode.inputs.borrow().is_empty());
+        assert!(render.requests.borrow().is_empty());
+    }
+
+    #[test]
+    fn server_mediated_two_view_handoff_validation_consume_mode_is_all_or_nothing() {
+        let mut state = ServerVideoFrameQueueState::default();
+        store_frame_with_run_payload(
+            &mut state,
+            "client-left",
+            "run-left",
+            1,
+            TimestampMicros(2_133_000),
+            2,
+            1,
+            vec![0, 0, 1, 0x65, 0x41],
+        );
+        store_frame_with_run_payload(
+            &mut state,
+            "client-right",
+            "run-right",
+            10,
+            TimestampMicros(2_133_100),
+            2,
+            1,
+            vec![0, 0, 1, 0x65, 0x4a],
+        );
+        let left_client = ClientId("client-left".to_string());
+        let right_client = ClientId("client-right".to_string());
+        let before_left = state.client_queue_len(&left_client);
+        let before_right = state.client_queue_len(&right_client);
+        let decode = RecordingTwoViewDecode::default();
+        let render = RecordingTwoViewRender::default();
+
+        let output = SwitcherServerMediatedTwoViewValidationBoundary::default()
+            .run_fallible_with_runtimes(
+            &mut state,
+            server_mediated_validation_input(
+                TimestampMicros(1_000_005),
+                SwitcherTwoViewTargetTimeSourceSchedulerMode::ConsumeOldestAtOrBeforeAllSelected,
+            ),
+            &decode,
+            &render,
+        );
+
+        assert_eq!(
+            output.scheduler.status,
+            SwitcherTwoViewTargetTimeHandoffSourceSchedulerStatus::PartialSelected
+        );
+        let SwitcherSingleClientTargetTimeHandoffSourceResult::Selected(left) =
+            &output.scheduler.left
+        else {
+            panic!("left should be selected from preview");
+        };
+        assert!(!left.consumed);
+        assert!(matches!(
+            output.scheduler.right,
+            SwitcherSingleClientTargetTimeHandoffSourceResult::WaitingForFrameAtOrBeforeTarget { .. }
+        ));
+        assert_eq!(state.client_queue_len(&left_client), before_left);
+        assert_eq!(state.client_queue_len(&right_client), before_right);
+    }
+
+    #[test]
+    fn server_mediated_two_view_handoff_validation_preview_mode_does_not_mutate_server_queues() {
+        let mut state = ServerVideoFrameQueueState::default();
+        store_frame_with_run_payload(
+            &mut state,
+            "client-left",
+            "run-left",
+            1,
+            TimestampMicros(2_134_000),
+            2,
+            1,
+            vec![0, 0, 1, 0x65, 0x41],
+        );
+        store_frame_with_run_payload(
+            &mut state,
+            "client-right",
+            "run-right",
+            2,
+            TimestampMicros(2_134_100),
+            2,
+            1,
+            vec![0, 0, 1, 0x65, 0x42],
+        );
+        let left_client = ClientId("client-left".to_string());
+        let right_client = ClientId("client-right".to_string());
+        let before_left = state.client_queue_len(&left_client);
+        let before_right = state.client_queue_len(&right_client);
+        let decode = RecordingTwoViewDecode::default();
+        let render = RecordingTwoViewRender::default();
+
+        let output = SwitcherServerMediatedTwoViewValidationBoundary::default()
+            .run_fallible_with_runtimes(
+                &mut state,
+                server_mediated_validation_input(
+                    TimestampMicros(1_000_005),
+                    SwitcherTwoViewTargetTimeSourceSchedulerMode::PreviewLatestIfAtOrBefore,
+                ),
+                &decode,
+                &render,
+            );
+
+        assert_eq!(
+            output.scheduler.status,
+            SwitcherTwoViewTargetTimeHandoffSourceSchedulerStatus::AllSelected
         );
         assert_eq!(state.client_queue_len(&left_client), before_left);
         assert_eq!(state.client_queue_len(&right_client), before_right);

@@ -5,6 +5,59 @@
 - Codex
 
 ### Work
+- Added the smallest fallible server-mediated 2-view validation path.
+- Added `SwitcherServerMediatedTwoViewHandoffValidationOutput`.
+- Added `run_fallible_with_runtimes` to `SwitcherServerMediatedTwoViewValidationBoundary`.
+- Added `run_fallible_from_handoff_with_runtimes` to the same boundary.
+- The queue-state entry point wraps caller-owned `ServerVideoFrameQueueState` in the existing `SwitcherInProcessQueuedFrameHandoff`.
+- The generic handoff entry point accepts any `SwitcherQueuedFrameHandoff` for source-error validation and future transport adapters.
+- The path runs fallible scheduler, fallible scheduler decode/render adapter, fallible decode/render connection, fallible display policy, fallible display-composition adapter, and fallible composed-canvas render connection.
+- The output keeps every stage visible.
+- Selected/rendered, no-frame, waiting, handoff/source error, stale, no-display placeholder, and source-error placeholder states remain distinct.
+- Handoff/source errors are not collapsed into no-frame, waiting, partial selection, or generic placeholders.
+- Skipped, error, stale, and placeholder sides do not create fake decoded frames.
+- Added focused tests for both eligible queues rendering, eligible + future frame waiting, eligible + empty queue no-frame, eligible + handoff error source-error placeholder, both handoff errors with no render, consume all-or-nothing, preview no-mutation, aggregate `HandoffError` preservation, and visible stage outputs.
+
+### Changed Files
+- `apps/switcher/src/lib.rs`
+- `docs/architecture/system-design.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### Decisions
+- Keep the fallible path on the existing server-mediated validation boundary instead of replacing the non-fallible `SwitcherQueuedFrameSource` path.
+- Use the existing in-process handoff implementation for queue-state tests.
+- Keep targetTime selection in switcher.
+- Keep server as ingest/reassembly/queue owner.
+- Do not add IPC/TCP/UDP/shared-memory transport, OBS output, 4-view orchestration, protocol wire-format changes, H.264 behavior changes, or switcher-side fragment reassembly.
+
+### Unresolved
+- Decide whether the fallible server-mediated validation path needs a manual/runtime entry point before real transport planning.
+- production H.264 encoder configuration / error logging policy
+- Decide later whether `--live-two-view-switcher-once` should be renamed or deprecated after the server-mediated path exists.
+
+### Next
+- Decide whether to add a manual/runtime entry point for the fallible server-mediated validation path.
+
+### TODO Update
+- Marked the fallible server-mediated validation path as complete.
+- Updated the next item to decide whether a manual/runtime entry point is needed before real transport planning.
+
+### Validation
+- `cargo fmt` passed.
+- `cargo fmt --check` passed.
+- `cargo test -p stream-sync-switcher two_view -- --test-threads=1` passed.
+- `cargo test -p stream-sync-switcher target_time -- --test-threads=1` passed.
+- `cargo test -p stream-sync-switcher single_client_queue_source -- --test-threads=1` passed.
+- `cargo test -p stream-sync-server video_frame_queue -- --test-threads=1` passed.
+- `cargo check --workspace` passed.
+- `git diff --check` passed with line-ending warnings for changed files.
+
+## 2026-05-01
+### Type
+- Codex
+
+### Work
 - Added the smallest fallible display-composition adapter -> composed-canvas render connection.
 - Added `SwitcherTwoViewHandoffDisplayCompositionRenderConnectionInput`.
 - Added `SwitcherTwoViewHandoffDisplayCompositionRenderConnectionRenderResult`.

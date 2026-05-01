@@ -8915,3 +8915,65 @@ Next production-facing slice:
   path is validated.
 
 No protocol wire format changed for this slice.
+
+## Switcher Fallible Server-Mediated 2-View Validation Boundary
+
+The server-mediated validation boundary now has a fallible handoff-backed path
+that keeps handoff/source errors visible through the same switcher-owned
+targetTime, decode, display, composition, and composed-canvas render stages:
+
+```text
+SwitcherQueuedFrameHandoff
+  -> SwitcherTwoViewTargetTimeHandoffSourceSchedulerBoundary
+  -> SwitcherTwoViewHandoffSchedulerDecodeRenderAdapterBoundary
+  -> SwitcherTwoViewHandoffSchedulerDecodeRenderConnectionBoundary
+  -> SwitcherTwoViewHandoffDisplayPolicyBoundary
+  -> SwitcherTwoViewHandoffDisplayCompositionAdapterBoundary
+  -> SwitcherTwoViewHandoffDisplayCompositionRenderConnectionBoundary
+```
+
+Current implementation:
+
+- `SwitcherServerMediatedTwoViewValidationBoundary::run_fallible_with_runtimes`
+  accepts caller-owned `ServerVideoFrameQueueState` and wraps it in the existing
+  `SwitcherInProcessQueuedFrameHandoff`.
+- `run_fallible_from_handoff_with_runtimes` accepts any
+  `SwitcherQueuedFrameHandoff` so tests and future transport adapters can
+  surface source errors without changing downstream switcher stages.
+- The fallible validation output keeps every stage visible:
+  - fallible scheduler result
+  - fallible scheduler decode/render adapter output
+  - fallible decode/render connection output
+  - fallible display policy output
+  - fallible display-composition adapter output
+  - fallible composed-canvas render connection output
+- Selected/rendered, no-frame, waiting, handoff/source error, stale,
+  no-display placeholder, and source-error placeholder states remain distinct.
+- Handoff/source errors are not collapsed into no-frame, waiting, partial
+  selection, or generic no-display placeholders.
+- Skipped, error, stale, and placeholder sides do not create fake decoded
+  frames.
+- Preview mode remains non-mutating.
+- Consume mode remains all-or-nothing through the fallible 2-view scheduler.
+
+Responsibility split:
+
+- server remains the owner of auth, UDP receive, receive-buffer tuning,
+  `VideoFrameFragment` reassembly, and queue insertion.
+- switcher remains the owner of targetTime selection, decode, display policy,
+  composition, and render validation.
+- the fallible validation path only wires existing in-process handoff and
+  fallible switcher stages together for diagnostics.
+- it does not implement IPC/TCP/UDP/shared-memory transport, OBS output,
+  4-view orchestration, protocol wire-format changes, H.264 decode/render
+  behavior changes, or switcher-side fragment reassembly.
+
+Next production-facing slice:
+
+- Decide whether the next useful step is a manual/runtime entry point for this
+  fallible server-mediated path or production H.264 encoder configuration /
+  error logging policy.
+- Keep real transport selection deferred until the in-process handoff path is
+  fully validated.
+
+No protocol wire format changed for this slice.
