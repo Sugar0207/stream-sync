@@ -401,6 +401,12 @@ With the no-auto-retry policy, `attempt_count` is always `1`, `final_result`
 is the existing mapped handoff result, and `last_error` is populated only for
 `HandoffError`.
 
+That classifier/summarizer now belongs on the existing switcher named-pipe
+handoff wrapper output rather than on the server runtime or the scheduler
+itself. The server still only serves requests and echoes `request_id`; the
+scheduler still decides when to issue the next read; the wrapper owns the
+single-attempt lifecycle summary for one transport call.
+
 Failure mapping in bounded loop mode should stay aligned with the current
 one-shot mapping:
 

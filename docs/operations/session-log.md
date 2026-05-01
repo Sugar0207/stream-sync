@@ -5,6 +5,68 @@
 - Codex
 
 ### Work
+- Implemented the smallest switcher-side lifecycle classifier and summary
+  extension above the existing one-request named-pipe handoff wrapper.
+- Kept `attempt_count=1`, preserved the existing `request_id`, and did not add
+  retry execution.
+- Extended the one-shot switcher stdout contract with final-result / last-error
+  / retry-classification visibility.
+
+### Changed Files
+- `apps/switcher/src/lib.rs`
+- `apps/switcher/src/main.rs`
+- `docs/architecture/system-design.md`
+- `docs/operations/manual-real-encoded-video-poc.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### Decisions
+- Keep lifecycle classification on the switcher wrapper output, not on the
+  server runtime and not on the scheduler.
+- Keep `FrameRead` and `NoFrame` unclassified for retry purposes.
+- Classify explicit handoff errors as:
+  - `SourceUnavailable`: retryable on later scheduler tick
+  - `Timeout`: retryable on later scheduler tick
+  - `SourceShutdown`: non-retryable
+  - `MalformedResponse`: non-retryable
+- Keep `attempt_count=1` and preserve the existing request-id behavior.
+
+### Unresolved
+- whether the updated lifecycle summary should be re-recorded through a fresh
+  localhost manual pass
+- whether a bounded retry wrapper is actually needed after classification-only
+  behavior
+- production H.264 encoder configuration / error logging policy
+- Decide later whether `--live-two-view-switcher-once` should be renamed or
+  deprecated after the transport-backed server-mediated path exists
+
+### Next
+- Take a localhost manual rerun with the updated switcher lifecycle summary
+  fields and record the stdout contract.
+- Decide whether classification-only behavior is sufficient or whether a later
+  bounded retry wrapper is justified.
+
+### TODO Update
+- Marked the lifecycle classifier / summary extension slice complete.
+- Moved the next step to a summary-aware manual rerun plus bounded-retry
+  necessity check.
+
+### Validation
+- `cargo fmt` passed.
+- `cargo fmt --check` passed.
+- `cargo test -p stream-sync-net-core handoff -- --test-threads=1` passed.
+- `cargo test -p stream-sync-server handoff -- --test-threads=1` passed.
+- `cargo test -p stream-sync-switcher handoff -- --test-threads=1` passed.
+- `cargo test -p stream-sync-server video_frame_queue -- --test-threads=1`
+  passed.
+- `cargo check --workspace` passed.
+- `git diff --check` passed with line-ending warnings for changed files.
+
+## 2026-05-02
+### Type
+- Codex
+
+### Work
 - Planned the smallest switcher-side reconnect/lifecycle policy after the
   successful bounded named-pipe localhost validation.
 - Chose a no-auto-retry / classification-first first slice instead of adding

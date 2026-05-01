@@ -499,16 +499,26 @@ pub enum SwitcherNamedPipeQueuedFrameHandoffResultKind {
     HandoffError,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum SwitcherNamedPipeQueuedFrameHandoffRetryClassification {
+    RetryableLaterSchedulerTick,
+    NonRetryable,
+}
+
 /// Summary for one switcher-side named-pipe handoff request lifecycle.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SwitcherNamedPipeQueuedFrameHandoffRequestSummary {
     pub pipe_name: String,
     pub request_id: u64,
     pub read_mode: SwitcherSingleClientQueueSourceMode,
+    pub attempt_count: u32,
     pub timeout_millis: u32,
     pub request_status: SwitcherNamedPipeQueuedFrameHandoffRequestStatus,
     pub response_status: SwitcherNamedPipeQueuedFrameHandoffResponseStatus,
     pub result_kind: SwitcherNamedPipeQueuedFrameHandoffResultKind,
+    pub final_result: SwitcherNamedPipeQueuedFrameHandoffResultKind,
+    pub last_error: Option<SwitcherQueuedFrameHandoffError>,
+    pub retry_classification: Option<SwitcherNamedPipeQueuedFrameHandoffRetryClassification>,
     pub elapsed_millis: u64,
 }
 
@@ -668,10 +678,13 @@ where
 
         match runtime_result {
             Ok(output) => {
+                let final_result = named_pipe_handoff_result_kind(&output.result);
+                let last_error = named_pipe_handoff_last_error(&output.result);
                 let summary = SwitcherNamedPipeQueuedFrameHandoffRequestSummary {
                     pipe_name: self.pipe_name.clone(),
                     request_id,
                     read_mode: input.mode,
+                    attempt_count: 1,
                     timeout_millis: config.connect_timeout_millis,
                     request_status: if output.response.is_some() {
                         SwitcherNamedPipeQueuedFrameHandoffRequestStatus::Sent
@@ -683,7 +696,12 @@ where
                     } else {
                         SwitcherNamedPipeQueuedFrameHandoffResponseStatus::None
                     },
-                    result_kind: named_pipe_handoff_result_kind(&output.result),
+                    result_kind: final_result,
+                    final_result,
+                    retry_classification: last_error
+                        .as_ref()
+                        .map(classify_named_pipe_handoff_error),
+                    last_error,
                     elapsed_millis,
                 };
                 let result = output.result.clone();
@@ -704,10 +722,16 @@ where
                     pipe_name: self.pipe_name.clone(),
                     request_id,
                     read_mode: input.mode,
+                    attempt_count: 1,
                     timeout_millis: config.connect_timeout_millis,
                     request_status: SwitcherNamedPipeQueuedFrameHandoffRequestStatus::EncodeFailed,
                     response_status: SwitcherNamedPipeQueuedFrameHandoffResponseStatus::None,
                     result_kind: SwitcherNamedPipeQueuedFrameHandoffResultKind::HandoffError,
+                    final_result: SwitcherNamedPipeQueuedFrameHandoffResultKind::HandoffError,
+                    last_error: Some(SwitcherQueuedFrameHandoffError::MalformedResponse),
+                    retry_classification: Some(
+                        SwitcherNamedPipeQueuedFrameHandoffRetryClassification::NonRetryable,
+                    ),
                     elapsed_millis,
                 };
                 SwitcherNamedPipeQueuedFrameHandoffRequestOutput {
@@ -896,6 +920,34 @@ fn named_pipe_handoff_result_kind(
         }
         SwitcherQueuedFrameHandoffResult::HandoffError { .. } => {
             SwitcherNamedPipeQueuedFrameHandoffResultKind::HandoffError
+        }
+    }
+}
+
+fn named_pipe_handoff_last_error(
+    result: &SwitcherQueuedFrameHandoffResult,
+) -> Option<SwitcherQueuedFrameHandoffError> {
+    match result {
+        SwitcherQueuedFrameHandoffResult::HandoffError { error, .. } => Some(error.clone()),
+        _ => None,
+    }
+}
+
+fn classify_named_pipe_handoff_error(
+    error: &SwitcherQueuedFrameHandoffError,
+) -> SwitcherNamedPipeQueuedFrameHandoffRetryClassification {
+    match error {
+        SwitcherQueuedFrameHandoffError::SourceUnavailable
+        | SwitcherQueuedFrameHandoffError::Timeout => {
+            SwitcherNamedPipeQueuedFrameHandoffRetryClassification::RetryableLaterSchedulerTick
+        }
+        SwitcherQueuedFrameHandoffError::SourceShutdown
+        | SwitcherQueuedFrameHandoffError::MalformedResponse => {
+            SwitcherNamedPipeQueuedFrameHandoffRetryClassification::NonRetryable
+        }
+        SwitcherQueuedFrameHandoffError::InvalidScope { .. }
+        | SwitcherQueuedFrameHandoffError::UnsupportedMode { .. } => {
+            SwitcherNamedPipeQueuedFrameHandoffRetryClassification::NonRetryable
         }
     }
 }
@@ -8831,6 +8883,7 @@ mod tests {
         assert_eq!(output.summary.pipe_name, "summary-pipe");
         assert_eq!(output.summary.request_id, 55);
         assert_eq!(output.summary.read_mode, input.mode);
+        assert_eq!(output.summary.attempt_count, 1);
         assert_eq!(output.summary.timeout_millis, 321);
         assert_eq!(
             output.summary.request_status,
@@ -8844,6 +8897,12 @@ mod tests {
             output.summary.result_kind,
             SwitcherNamedPipeQueuedFrameHandoffResultKind::FrameRead
         );
+        assert_eq!(
+            output.summary.final_result,
+            SwitcherNamedPipeQueuedFrameHandoffResultKind::FrameRead
+        );
+        assert_eq!(output.summary.last_error, None);
+        assert_eq!(output.summary.retry_classification, None);
         assert_eq!(output.summary.elapsed_millis, 8);
         assert!(output.runtime.is_some());
         assert_eq!(handoff.runtime.calls[0].config, config);
@@ -8894,10 +8953,17 @@ mod tests {
 
         assert_eq!(output.result, expected);
         assert_eq!(output.summary.request_id, 3);
+        assert_eq!(output.summary.attempt_count, 1);
         assert_eq!(
             output.summary.result_kind,
             SwitcherNamedPipeQueuedFrameHandoffResultKind::NoFrameAvailable
         );
+        assert_eq!(
+            output.summary.final_result,
+            SwitcherNamedPipeQueuedFrameHandoffResultKind::NoFrameAvailable
+        );
+        assert_eq!(output.summary.last_error, None);
+        assert_eq!(output.summary.retry_classification, None);
         assert_eq!(output.summary.elapsed_millis, 0);
         assert!(!matches!(
             output.result,
@@ -8958,6 +9024,7 @@ mod tests {
         );
 
         assert_eq!(output.summary.request_id, 77);
+        assert_eq!(output.summary.attempt_count, 1);
         assert_eq!(
             output.summary.request_status,
             SwitcherNamedPipeQueuedFrameHandoffRequestStatus::EncodeFailed
@@ -8969,6 +9036,18 @@ mod tests {
         assert_eq!(
             output.summary.result_kind,
             SwitcherNamedPipeQueuedFrameHandoffResultKind::HandoffError
+        );
+        assert_eq!(
+            output.summary.final_result,
+            SwitcherNamedPipeQueuedFrameHandoffResultKind::HandoffError
+        );
+        assert_eq!(
+            output.summary.last_error,
+            Some(SwitcherQueuedFrameHandoffError::MalformedResponse)
+        );
+        assert_eq!(
+            output.summary.retry_classification,
+            Some(SwitcherNamedPipeQueuedFrameHandoffRetryClassification::NonRetryable)
         );
         assert_eq!(output.summary.elapsed_millis, 3);
         assert!(output.runtime.is_none());
@@ -9028,11 +9107,21 @@ mod tests {
         );
 
         assert_eq!(output.summary.request_id, 41);
+        assert_eq!(output.summary.attempt_count, 1);
         assert_eq!(output.summary.request_status, request_status);
         assert_eq!(output.summary.response_status, response_status);
         assert_eq!(
             output.summary.result_kind,
             SwitcherNamedPipeQueuedFrameHandoffResultKind::HandoffError
+        );
+        assert_eq!(
+            output.summary.final_result,
+            SwitcherNamedPipeQueuedFrameHandoffResultKind::HandoffError
+        );
+        assert_eq!(output.summary.last_error, Some(error.clone()));
+        assert_eq!(
+            output.summary.retry_classification,
+            Some(expected_retry_classification_for_error(&error))
         );
         assert_eq!(output.summary.elapsed_millis, 6);
         assert_eq!(output.result, expected);
@@ -9040,6 +9129,23 @@ mod tests {
             output.result,
             SwitcherQueuedFrameHandoffResult::NoFrameAvailable { .. }
         ));
+    }
+
+    fn expected_retry_classification_for_error(
+        error: &SwitcherQueuedFrameHandoffError,
+    ) -> SwitcherNamedPipeQueuedFrameHandoffRetryClassification {
+        match error {
+            SwitcherQueuedFrameHandoffError::SourceUnavailable
+            | SwitcherQueuedFrameHandoffError::Timeout => {
+                SwitcherNamedPipeQueuedFrameHandoffRetryClassification::RetryableLaterSchedulerTick
+            }
+            SwitcherQueuedFrameHandoffError::SourceShutdown
+            | SwitcherQueuedFrameHandoffError::MalformedResponse
+            | SwitcherQueuedFrameHandoffError::InvalidScope { .. }
+            | SwitcherQueuedFrameHandoffError::UnsupportedMode { .. } => {
+                SwitcherNamedPipeQueuedFrameHandoffRetryClassification::NonRetryable
+            }
+        }
     }
 
     #[cfg(windows)]

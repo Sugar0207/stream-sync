@@ -267,11 +267,15 @@ request_id=1
 client_id=player1
 run_id=streamsync-dev-session
 read_mode=inspect-latest
+attempt_count=1
 timeout_millis=<ms>
 elapsed_millis=<ms>
 request_status=sent
 response_status=decoded
 result_kind=FrameRead|NoFrame|HandoffError
+final_result=FrameRead|NoFrame|HandoffError
+last_error=<error|none>
+retry_classification=RetryableLaterSchedulerTick|NonRetryable|none
 queue_len=<n|none>
 ```
 

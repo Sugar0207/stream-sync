@@ -30,6 +30,7 @@ use stream_sync_switcher::{
     SwitcherNamedPipeQueuedFrameHandoffRequestOutput,
     SwitcherNamedPipeQueuedFrameHandoffRequestStatus,
     SwitcherNamedPipeQueuedFrameHandoffResponseStatus,
+    SwitcherNamedPipeQueuedFrameHandoffRetryClassification,
 };
 
 #[cfg(not(target_os = "windows"))]
@@ -680,6 +681,7 @@ fn handoff_read_mode_from_switcher_mode(
 fn format_named_pipe_handoff_switcher_summary(
     output: &SwitcherNamedPipeQueuedFrameHandoffRequestOutput,
 ) -> String {
+    let last_error = format_named_pipe_last_error(output.summary.last_error.as_ref());
     format_named_pipe_handoff_switcher_result_summary(
         &output.summary.pipe_name,
         output.summary.request_id,
@@ -688,8 +690,12 @@ fn format_named_pipe_handoff_switcher_summary(
         handoff_read_mode_from_switcher_mode(output.summary.read_mode),
         format_named_pipe_request_status(output.summary.request_status),
         format_named_pipe_response_status(output.summary.response_status),
+        output.summary.attempt_count,
         output.summary.timeout_millis,
         output.summary.elapsed_millis,
+        format_named_pipe_final_result(output.summary.final_result),
+        &last_error,
+        format_named_pipe_retry_classification(output.summary.retry_classification),
         &output.result,
     )
 }
@@ -702,8 +708,12 @@ fn format_named_pipe_handoff_switcher_result_summary(
     read_mode: stream_sync_net_core::ServerSwitcherQueuedFrameReadMode,
     request_status: &str,
     response_status: &str,
+    attempt_count: u32,
     timeout_millis: u32,
     elapsed_millis: u64,
+    final_result: &str,
+    last_error: &str,
+    retry_classification: &str,
     result: &SwitcherQueuedFrameHandoffResult,
 ) -> String {
     match result {
@@ -712,16 +722,20 @@ fn format_named_pipe_handoff_switcher_result_summary(
             remaining_client_queue_len,
             ..
         } => format!(
-            "switcher named-pipe handoff once pipe_name={} request_id={} client_id={} run_id={} read_mode={} timeout_millis={} elapsed_millis={} request_status={} response_status={} result_kind=FrameRead queue_len={} frame_id={} capture_timestamp={} send_timestamp={} queued_at={} width={} height={} fps_nominal={} codec={:?} is_keyframe={} encoded_payload_len={}",
+            "switcher named-pipe handoff once pipe_name={} request_id={} client_id={} run_id={} read_mode={} attempt_count={} timeout_millis={} elapsed_millis={} request_status={} response_status={} result_kind=FrameRead final_result={} last_error={} retry_classification={} queue_len={} frame_id={} capture_timestamp={} send_timestamp={} queued_at={} width={} height={} fps_nominal={} codec={:?} is_keyframe={} encoded_payload_len={}",
             pipe_name,
             request_id,
             client_id.0,
             run_id.0,
             format_handoff_read_mode(read_mode),
+            attempt_count,
             timeout_millis,
             elapsed_millis,
             request_status,
             response_status,
+            final_result,
+            last_error,
+            retry_classification,
             remaining_client_queue_len,
             frame.frame_id,
             frame.capture_timestamp.0,
@@ -737,29 +751,37 @@ fn format_named_pipe_handoff_switcher_result_summary(
         SwitcherQueuedFrameHandoffResult::NoFrameAvailable {
             client_queue_len, ..
         } => format!(
-            "switcher named-pipe handoff once pipe_name={} request_id={} client_id={} run_id={} read_mode={} timeout_millis={} elapsed_millis={} request_status={} response_status={} result_kind=NoFrame queue_len={}",
+            "switcher named-pipe handoff once pipe_name={} request_id={} client_id={} run_id={} read_mode={} attempt_count={} timeout_millis={} elapsed_millis={} request_status={} response_status={} result_kind=NoFrame final_result={} last_error={} retry_classification={} queue_len={}",
             pipe_name,
             request_id,
             client_id.0,
             run_id.0,
             format_handoff_read_mode(read_mode),
+            attempt_count,
             timeout_millis,
             elapsed_millis,
             request_status,
             response_status,
+            final_result,
+            last_error,
+            retry_classification,
             client_queue_len
         ),
         SwitcherQueuedFrameHandoffResult::HandoffError { error, .. } => format!(
-            "switcher named-pipe handoff once pipe_name={} request_id={} client_id={} run_id={} read_mode={} timeout_millis={} elapsed_millis={} request_status={} response_status={} result_kind=HandoffError queue_len=none handoff_error={:?}",
+            "switcher named-pipe handoff once pipe_name={} request_id={} client_id={} run_id={} read_mode={} attempt_count={} timeout_millis={} elapsed_millis={} request_status={} response_status={} result_kind=HandoffError final_result={} last_error={} retry_classification={} queue_len=none handoff_error={:?}",
             pipe_name,
             request_id,
             client_id.0,
             run_id.0,
             format_handoff_read_mode(read_mode),
+            attempt_count,
             timeout_millis,
             elapsed_millis,
             request_status,
             response_status,
+            final_result,
+            last_error,
+            retry_classification,
             error
         ),
     }
@@ -801,6 +823,47 @@ fn format_named_pipe_response_status(
     match status {
         SwitcherNamedPipeQueuedFrameHandoffResponseStatus::Decoded => "decoded",
         SwitcherNamedPipeQueuedFrameHandoffResponseStatus::None => "none",
+    }
+}
+
+#[cfg(windows)]
+fn format_named_pipe_final_result(
+    result: stream_sync_switcher::SwitcherNamedPipeQueuedFrameHandoffResultKind,
+) -> &'static str {
+    match result {
+        stream_sync_switcher::SwitcherNamedPipeQueuedFrameHandoffResultKind::FrameRead => {
+            "FrameRead"
+        }
+        stream_sync_switcher::SwitcherNamedPipeQueuedFrameHandoffResultKind::NoFrameAvailable => {
+            "NoFrame"
+        }
+        stream_sync_switcher::SwitcherNamedPipeQueuedFrameHandoffResultKind::HandoffError => {
+            "HandoffError"
+        }
+    }
+}
+
+#[cfg(windows)]
+fn format_named_pipe_last_error(
+    error: Option<&stream_sync_switcher::SwitcherQueuedFrameHandoffError>,
+) -> String {
+    error
+        .map(|error| format!("{error:?}"))
+        .unwrap_or_else(|| "none".to_string())
+}
+
+#[cfg(windows)]
+fn format_named_pipe_retry_classification(
+    classification: Option<SwitcherNamedPipeQueuedFrameHandoffRetryClassification>,
+) -> &'static str {
+    match classification {
+        Some(
+            SwitcherNamedPipeQueuedFrameHandoffRetryClassification::RetryableLaterSchedulerTick,
+        ) => "RetryableLaterSchedulerTick",
+        Some(SwitcherNamedPipeQueuedFrameHandoffRetryClassification::NonRetryable) => {
+            "NonRetryable"
+        }
+        None => "none",
     }
 }
 
@@ -1031,7 +1094,8 @@ mod tests {
         SwitcherNamedPipeQueuedFrameHandoffRequestStatus,
         SwitcherNamedPipeQueuedFrameHandoffRequestSummary,
         SwitcherNamedPipeQueuedFrameHandoffResponseStatus,
-        SwitcherNamedPipeQueuedFrameHandoffResultKind, SwitcherQueuedFrameHandoffError,
+        SwitcherNamedPipeQueuedFrameHandoffResultKind,
+        SwitcherNamedPipeQueuedFrameHandoffRetryClassification, SwitcherQueuedFrameHandoffError,
         SwitcherSingleViewSelectedEncodedFrame,
     };
 
@@ -1102,15 +1166,23 @@ mod tests {
             stream_sync_net_core::ServerSwitcherQueuedFrameReadMode::InspectLatest,
             "sent",
             "decoded",
+            1,
             5000,
             17,
+            "FrameRead",
+            "none",
+            "none",
             &result,
         );
 
         assert!(summary.contains("request_id=88"));
+        assert!(summary.contains("attempt_count=1"));
         assert!(summary.contains("timeout_millis=5000"));
         assert!(summary.contains("elapsed_millis=17"));
         assert!(summary.contains("result_kind=FrameRead"));
+        assert!(summary.contains("final_result=FrameRead"));
+        assert!(summary.contains("last_error=none"));
+        assert!(summary.contains("retry_classification=none"));
         assert!(summary.contains("queue_len=4"));
         assert!(summary.contains("frame_id=7"));
         assert!(summary.contains("codec=H264"));
@@ -1129,10 +1201,16 @@ mod tests {
                 pipe_name: "pipe-b".to_string(),
                 request_id: 9,
                 read_mode: SwitcherSingleClientQueueSourceMode::ConsumeOldest,
+                attempt_count: 1,
                 timeout_millis: 2500,
                 request_status: SwitcherNamedPipeQueuedFrameHandoffRequestStatus::EncodeFailed,
                 response_status: SwitcherNamedPipeQueuedFrameHandoffResponseStatus::None,
                 result_kind: SwitcherNamedPipeQueuedFrameHandoffResultKind::HandoffError,
+                final_result: SwitcherNamedPipeQueuedFrameHandoffResultKind::HandoffError,
+                last_error: Some(SwitcherQueuedFrameHandoffError::MalformedResponse),
+                retry_classification: Some(
+                    SwitcherNamedPipeQueuedFrameHandoffRetryClassification::NonRetryable,
+                ),
                 elapsed_millis: 4,
             },
             runtime: None,
@@ -1144,6 +1222,10 @@ mod tests {
         assert!(summary.contains("request_status=encode_failed"));
         assert!(summary.contains("response_status=none"));
         assert!(summary.contains("result_kind=HandoffError"));
+        assert!(summary.contains("attempt_count=1"));
+        assert!(summary.contains("final_result=HandoffError"));
+        assert!(summary.contains("last_error=MalformedResponse"));
+        assert!(summary.contains("retry_classification=NonRetryable"));
         assert!(summary.contains("handoff_error=MalformedResponse"));
         assert!(summary.contains("timeout_millis=2500"));
         assert!(summary.contains("elapsed_millis=4"));
