@@ -28,6 +28,25 @@ use stream_sync_server::{
     ServerVideoFrameQueueStorageBoundary, ServerVideoFrameQueueStorageResult,
 };
 
+#[cfg(windows)]
+use std::{
+    fs::File,
+    io::Read,
+    os::windows::io::{FromRawHandle, OwnedHandle},
+};
+#[cfg(windows)]
+use windows::{
+    core::PCWSTR,
+    Win32::{
+        Foundation::INVALID_HANDLE_VALUE,
+        Storage::FileSystem::{
+            CreateFileW, FILE_ATTRIBUTE_NORMAL, FILE_GENERIC_READ, FILE_GENERIC_WRITE,
+            FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING,
+        },
+        System::Pipes::WaitNamedPipeW,
+    },
+};
+
 pub const CRATE_NAME: &str = "stream-sync-switcher";
 
 /// Input for selecting one client's latest encoded frame for single-view PoC.
@@ -432,6 +451,193 @@ fn map_handoff_error_code_to_switcher(
             SwitcherQueuedFrameHandoffError::SourceShutdown
         }
     }
+}
+
+/// Output of one named-pipe client request/response handoff on the switcher side.
+#[cfg(windows)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SwitcherNamedPipeQueuedFrameHandoffRuntimeOutput {
+    pub request: ServerSwitcherQueuedFrameHandoffRequest,
+    pub response: Option<ServerSwitcherQueuedFrameHandoffResponse>,
+    pub result: SwitcherQueuedFrameHandoffResult,
+}
+
+/// Fatal local failure while preparing one named-pipe handoff request.
+#[cfg(windows)]
+#[derive(Debug)]
+pub enum SwitcherNamedPipeQueuedFrameHandoffRuntimeError {
+    EncodeRequest(stream_sync_net_core::ServerSwitcherQueuedFrameHandoffCodecError),
+}
+
+/// Windows-only one-request / one-response named-pipe client runtime for the
+/// first real server->switcher handoff transport slice.
+///
+/// This runtime builds one DTO request, connects to one named pipe, writes one
+/// framed request, reads one framed response, maps it through the existing
+/// switcher DTO adapter, and returns. It does not implement retries,
+/// reconnects, lifecycle orchestration, service loops, OBS output, or 4-view
+/// orchestration.
+#[cfg(windows)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct SwitcherNamedPipeQueuedFrameHandoffRuntimeBoundary {
+    codec: stream_sync_net_core::ServerSwitcherQueuedFrameHandoffCodecBoundary,
+    adapter: SwitcherServerQueuedFrameHandoffClientAdapterBoundary,
+}
+
+#[cfg(windows)]
+impl SwitcherNamedPipeQueuedFrameHandoffRuntimeBoundary {
+    pub fn run_once(
+        &self,
+        pipe_name: &str,
+        request_id: u64,
+        input: SwitcherQueuedFrameHandoffInput,
+    ) -> Result<
+        SwitcherNamedPipeQueuedFrameHandoffRuntimeOutput,
+        SwitcherNamedPipeQueuedFrameHandoffRuntimeError,
+    > {
+        let request = self.adapter.build_request(request_id, &input);
+        let request_frame = self
+            .codec
+            .encode_request_frame(&request)
+            .map_err(SwitcherNamedPipeQueuedFrameHandoffRuntimeError::EncodeRequest)?;
+
+        let mut pipe = match open_named_pipe_client(pipe_name) {
+            Ok(pipe) => pipe,
+            Err(error) => {
+                return Ok(SwitcherNamedPipeQueuedFrameHandoffRuntimeOutput {
+                    request,
+                    response: None,
+                    result: handoff_error_result_from_io(&input, error),
+                });
+            }
+        };
+
+        if let Err(error) = pipe.write_all(&request_frame) {
+            return Ok(SwitcherNamedPipeQueuedFrameHandoffRuntimeOutput {
+                request,
+                response: None,
+                result: handoff_error_result_from_io(&input, error),
+            });
+        }
+        if let Err(error) = pipe.flush() {
+            return Ok(SwitcherNamedPipeQueuedFrameHandoffRuntimeOutput {
+                request,
+                response: None,
+                result: handoff_error_result_from_io(&input, error),
+            });
+        }
+
+        let response_frame = match read_length_prefixed_frame_from_pipe(&mut pipe) {
+            Ok(frame) => frame,
+            Err(error) => {
+                return Ok(SwitcherNamedPipeQueuedFrameHandoffRuntimeOutput {
+                    request,
+                    response: None,
+                    result: handoff_error_result_from_io(&input, error),
+                });
+            }
+        };
+        let response = match self.codec.decode_response_frame(&response_frame) {
+            Ok(response) => response,
+            Err(_) => {
+                return Ok(SwitcherNamedPipeQueuedFrameHandoffRuntimeOutput {
+                    request,
+                    response: None,
+                    result: SwitcherQueuedFrameHandoffResult::HandoffError {
+                        client_id: input.client_id.clone(),
+                        run_id: input.run_id.clone(),
+                        mode: input.mode,
+                        error: SwitcherQueuedFrameHandoffError::MalformedResponse,
+                    },
+                });
+            }
+        };
+        let result = self.adapter.map_response(&input, response.clone());
+
+        Ok(SwitcherNamedPipeQueuedFrameHandoffRuntimeOutput {
+            request,
+            response: Some(response),
+            result,
+        })
+    }
+}
+
+#[cfg(windows)]
+fn handoff_error_result_from_io(
+    input: &SwitcherQueuedFrameHandoffInput,
+    error: io::Error,
+) -> SwitcherQueuedFrameHandoffResult {
+    let handoff_error = match error.kind() {
+        io::ErrorKind::TimedOut | io::ErrorKind::WouldBlock => {
+            SwitcherQueuedFrameHandoffError::Timeout
+        }
+        io::ErrorKind::BrokenPipe
+        | io::ErrorKind::ConnectionAborted
+        | io::ErrorKind::UnexpectedEof => SwitcherQueuedFrameHandoffError::SourceShutdown,
+        _ => SwitcherQueuedFrameHandoffError::SourceUnavailable,
+    };
+
+    SwitcherQueuedFrameHandoffResult::HandoffError {
+        client_id: input.client_id.clone(),
+        run_id: input.run_id.clone(),
+        mode: input.mode,
+        error: handoff_error,
+    }
+}
+
+#[cfg(windows)]
+fn open_named_pipe_client(pipe_name: &str) -> io::Result<File> {
+    let pipe_path = named_pipe_path(pipe_name)?;
+    let wide_name: Vec<u16> = pipe_path.encode_utf16().chain(Some(0)).collect();
+
+    let waited = unsafe { WaitNamedPipeW(PCWSTR(wide_name.as_ptr()), 5_000) };
+    if !waited.as_bool() {
+        return Err(io::Error::last_os_error());
+    }
+
+    let handle = unsafe {
+        CreateFileW(
+            PCWSTR(wide_name.as_ptr()),
+            FILE_GENERIC_READ.0 | FILE_GENERIC_WRITE.0,
+            FILE_SHARE_READ | FILE_SHARE_WRITE,
+            None,
+            OPEN_EXISTING,
+            FILE_ATTRIBUTE_NORMAL,
+            None,
+        )
+    }
+    .map_err(|_| io::Error::last_os_error())?;
+    if handle == INVALID_HANDLE_VALUE {
+        return Err(io::Error::last_os_error());
+    }
+
+    let owned = unsafe { OwnedHandle::from_raw_handle(handle.0 as *mut _) };
+    Ok(File::from(owned))
+}
+
+#[cfg(windows)]
+fn read_length_prefixed_frame_from_pipe(reader: &mut impl Read) -> io::Result<Vec<u8>> {
+    let mut prefix = [0u8; 4];
+    reader.read_exact(&mut prefix)?;
+    let body_len = u32::from_le_bytes(prefix) as usize;
+    let mut frame = Vec::with_capacity(4 + body_len);
+    frame.extend_from_slice(&prefix);
+    let mut body = vec![0u8; body_len];
+    reader.read_exact(&mut body)?;
+    frame.extend_from_slice(&body);
+    Ok(frame)
+}
+
+#[cfg(windows)]
+fn named_pipe_path(pipe_name: &str) -> io::Result<String> {
+    if pipe_name.trim().is_empty() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "named pipe name must not be empty",
+        ));
+    }
+
+    Ok(format!(r"\\.\pipe\{pipe_name}"))
 }
 
 /// In-process fallible handoff backed by the current server queue source.
@@ -7869,6 +8075,150 @@ mod tests {
                 }
             );
         }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    #[ignore = "local Windows named-pipe smoke test"]
+    fn named_pipe_handoff_runtime_round_trips_one_request_and_one_response() {
+        let mut state = ServerVideoFrameQueueState::default();
+        store_frame_with_run_payload(
+            &mut state,
+            "client-1",
+            "run-1",
+            21,
+            TimestampMicros(2_500_021),
+            960,
+            540,
+            vec![0xaa, 0xbb, 0xcc, 0xdd],
+        );
+        let pipe_name = format!("stream-sync-switcher-handoff-{}", current_test_suffix());
+        let pipe_name_for_server = pipe_name.clone();
+        let server = std::thread::spawn(move || {
+            let mut queue_state = state;
+            stream_sync_server::ServerSwitcherNamedPipeOneRequestRuntimeBoundary::default()
+                .serve_once(&mut queue_state, &pipe_name_for_server)
+                .expect("server runtime should serve one request")
+        });
+
+        let output = SwitcherNamedPipeQueuedFrameHandoffRuntimeBoundary::default()
+            .run_once(
+                &pipe_name,
+                800,
+                SwitcherQueuedFrameHandoffInput {
+                    client_id: ClientId("client-1".to_string()),
+                    run_id: RunId("run-1".to_string()),
+                    mode: SwitcherSingleClientQueueSourceMode::PreviewLatest,
+                },
+            )
+            .expect("client request should encode");
+
+        let server_output = server.join().expect("server thread should join");
+        assert_eq!(output.request.request_id, 800);
+        assert_eq!(server_output.request.request_id, 800);
+        let response = output
+            .response
+            .as_ref()
+            .expect("response should be available after round trip");
+        let ServerSwitcherQueuedFrameHandoffResponse::FrameRead { request_id, .. } = response
+        else {
+            panic!("named-pipe round trip should return FrameRead");
+        };
+        assert_eq!(*request_id, 800);
+        let SwitcherQueuedFrameHandoffResult::FrameRead {
+            frame,
+            mode,
+            remaining_client_queue_len,
+        } = output.result
+        else {
+            panic!("switcher runtime should map FrameRead");
+        };
+        assert_eq!(mode, SwitcherSingleClientQueueSourceMode::PreviewLatest);
+        assert_eq!(remaining_client_queue_len, 1);
+        assert_eq!(frame.frame_id, 21);
+        assert_eq!(frame.codec, Codec::H264);
+        assert_eq!(frame.encoded_payload, vec![0xaa, 0xbb, 0xcc, 0xdd]);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    #[ignore = "local Windows named-pipe smoke test"]
+    fn named_pipe_handoff_runtime_maps_missing_pipe_to_source_unavailable() {
+        let pipe_name = format!("stream-sync-switcher-missing-{}", current_test_suffix());
+
+        let output = SwitcherNamedPipeQueuedFrameHandoffRuntimeBoundary::default()
+            .run_once(
+                &pipe_name,
+                801,
+                SwitcherQueuedFrameHandoffInput {
+                    client_id: ClientId("client-1".to_string()),
+                    run_id: RunId("run-1".to_string()),
+                    mode: SwitcherSingleClientQueueSourceMode::PreviewLatest,
+                },
+            )
+            .expect("missing pipe should map to handoff error output");
+
+        assert_eq!(output.request.request_id, 801);
+        assert!(output.response.is_none());
+        assert_eq!(
+            output.result,
+            SwitcherQueuedFrameHandoffResult::HandoffError {
+                client_id: ClientId("client-1".to_string()),
+                run_id: RunId("run-1".to_string()),
+                mode: SwitcherSingleClientQueueSourceMode::PreviewLatest,
+                error: SwitcherQueuedFrameHandoffError::SourceUnavailable,
+            }
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn named_pipe_handoff_runtime_maps_not_found_io_to_source_unavailable() {
+        let input = SwitcherQueuedFrameHandoffInput {
+            client_id: ClientId("client-1".to_string()),
+            run_id: RunId("run-1".to_string()),
+            mode: SwitcherSingleClientQueueSourceMode::PreviewLatest,
+        };
+
+        let result = handoff_error_result_from_io(
+            &input,
+            io::Error::new(io::ErrorKind::NotFound, "pipe missing"),
+        );
+
+        assert_eq!(
+            result,
+            SwitcherQueuedFrameHandoffResult::HandoffError {
+                client_id: ClientId("client-1".to_string()),
+                run_id: RunId("run-1".to_string()),
+                mode: SwitcherSingleClientQueueSourceMode::PreviewLatest,
+                error: SwitcherQueuedFrameHandoffError::SourceUnavailable,
+            }
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn named_pipe_handoff_runtime_maps_unexpected_eof_io_to_source_shutdown() {
+        let input = SwitcherQueuedFrameHandoffInput {
+            client_id: ClientId("client-1".to_string()),
+            run_id: RunId("run-1".to_string()),
+            mode: SwitcherSingleClientQueueSourceMode::ConsumeOldest,
+        };
+
+        let result = handoff_error_result_from_io(
+            &input,
+            io::Error::new(io::ErrorKind::UnexpectedEof, "server closed"),
+        );
+
+        assert_eq!(
+            result,
+            SwitcherQueuedFrameHandoffResult::HandoffError {
+                client_id: ClientId("client-1".to_string()),
+                run_id: RunId("run-1".to_string()),
+                mode: SwitcherSingleClientQueueSourceMode::ConsumeOldest,
+                error: SwitcherQueuedFrameHandoffError::SourceShutdown,
+            }
+        );
     }
 
     #[derive(Debug, Clone)]

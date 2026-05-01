@@ -36,6 +36,24 @@ use stream_sync_timebase::{
     HeartbeatTimebaseSample,
 };
 
+#[cfg(windows)]
+use std::{
+    fs::File,
+    io::{Read, Write},
+    os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle},
+};
+#[cfg(windows)]
+use windows::{
+    core::PCWSTR,
+    Win32::{
+        Foundation::{ERROR_PIPE_CONNECTED, HANDLE, INVALID_HANDLE_VALUE},
+        Storage::FileSystem::PIPE_ACCESS_DUPLEX,
+        System::Pipes::{
+            ConnectNamedPipe, CreateNamedPipeW, PIPE_READMODE_BYTE, PIPE_TYPE_BYTE, PIPE_WAIT,
+        },
+    },
+};
+
 /// One-packet receive loop boundary for the future UDP server.
 ///
 /// The real UDP socket loop will receive bytes and source metadata, then call
@@ -3177,6 +3195,142 @@ fn queue_len_to_u32(len: usize) -> u32 {
 
 fn payload_len_to_u32(len: usize) -> u32 {
     u32::try_from(len).expect("server->switcher payload length must fit into u32")
+}
+
+/// Output of one named-pipe request/response handoff on the server side.
+#[cfg(windows)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ServerSwitcherNamedPipeOneRequestRuntimeOutput {
+    pub request: ServerSwitcherQueuedFrameHandoffRequest,
+    pub response: ServerSwitcherQueuedFrameHandoffResponse,
+}
+
+/// Failure while serving one named-pipe handoff request.
+#[cfg(windows)]
+#[derive(Debug)]
+pub enum ServerSwitcherNamedPipeOneRequestRuntimeError {
+    InvalidPipeName,
+    CreatePipe(io::Error),
+    Connect(io::Error),
+    ReadRequest(io::Error),
+    DecodeRequest(stream_sync_net_core::ServerSwitcherQueuedFrameHandoffCodecError),
+    EncodeResponse(stream_sync_net_core::ServerSwitcherQueuedFrameHandoffCodecError),
+    WriteResponse(io::Error),
+    FlushResponse(io::Error),
+}
+
+/// Windows-only one-request / one-response named-pipe runtime for the first
+/// real server->switcher handoff transport slice.
+///
+/// This runtime accepts one client connection, reads one framed request, runs
+/// the existing server handoff handler, writes one framed response, and then
+/// returns. It does not implement a service loop, reconnect policy, process
+/// lifecycle, OBS output, 4-view orchestration, or switcher scheduling.
+#[cfg(windows)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct ServerSwitcherNamedPipeOneRequestRuntimeBoundary {
+    codec: stream_sync_net_core::ServerSwitcherQueuedFrameHandoffCodecBoundary,
+    handler: ServerSwitcherQueuedFrameHandoffHandlerBoundary,
+}
+
+#[cfg(windows)]
+impl ServerSwitcherNamedPipeOneRequestRuntimeBoundary {
+    pub fn serve_once(
+        &self,
+        queue_state: &mut ServerVideoFrameQueueState,
+        pipe_name: &str,
+    ) -> Result<
+        ServerSwitcherNamedPipeOneRequestRuntimeOutput,
+        ServerSwitcherNamedPipeOneRequestRuntimeError,
+    > {
+        let mut pipe = create_named_pipe_server_connection(pipe_name)
+            .map_err(ServerSwitcherNamedPipeOneRequestRuntimeError::CreatePipe)?;
+        connect_named_pipe_server(&pipe)
+            .map_err(ServerSwitcherNamedPipeOneRequestRuntimeError::Connect)?;
+
+        let request_frame = read_length_prefixed_frame(&mut pipe)
+            .map_err(ServerSwitcherNamedPipeOneRequestRuntimeError::ReadRequest)?;
+        let request = self
+            .codec
+            .decode_request_frame(&request_frame)
+            .map_err(ServerSwitcherNamedPipeOneRequestRuntimeError::DecodeRequest)?;
+        let response = self.handler.handle_request(queue_state, request.clone());
+        let response_frame = self
+            .codec
+            .encode_response_frame(&response)
+            .map_err(ServerSwitcherNamedPipeOneRequestRuntimeError::EncodeResponse)?;
+        pipe.write_all(&response_frame)
+            .map_err(ServerSwitcherNamedPipeOneRequestRuntimeError::WriteResponse)?;
+        pipe.flush()
+            .map_err(ServerSwitcherNamedPipeOneRequestRuntimeError::FlushResponse)?;
+
+        Ok(ServerSwitcherNamedPipeOneRequestRuntimeOutput { request, response })
+    }
+}
+
+#[cfg(windows)]
+fn create_named_pipe_server_connection(pipe_name: &str) -> io::Result<File> {
+    let pipe_path = named_pipe_path(pipe_name)?;
+    let wide_name: Vec<u16> = pipe_path.encode_utf16().chain(Some(0)).collect();
+    let handle = unsafe {
+        CreateNamedPipeW(
+            PCWSTR(wide_name.as_ptr()),
+            PIPE_ACCESS_DUPLEX,
+            PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT,
+            1,
+            64 * 1024,
+            64 * 1024,
+            0,
+            None,
+        )
+    };
+    if handle == INVALID_HANDLE_VALUE {
+        return Err(io::Error::last_os_error());
+    }
+
+    let owned = unsafe { OwnedHandle::from_raw_handle(handle.0 as *mut _) };
+    Ok(File::from(owned))
+}
+
+#[cfg(windows)]
+fn connect_named_pipe_server(pipe: &File) -> io::Result<()> {
+    let handle = HANDLE(pipe.as_raw_handle() as *mut _);
+    let connected = unsafe { ConnectNamedPipe(handle, None) };
+    if connected.is_ok() {
+        return Ok(());
+    }
+
+    let error = io::Error::last_os_error();
+    if error.raw_os_error() == Some(ERROR_PIPE_CONNECTED.0 as i32) {
+        Ok(())
+    } else {
+        Err(error)
+    }
+}
+
+#[cfg(windows)]
+fn read_length_prefixed_frame(reader: &mut impl Read) -> io::Result<Vec<u8>> {
+    let mut prefix = [0u8; 4];
+    reader.read_exact(&mut prefix)?;
+    let body_len = u32::from_le_bytes(prefix) as usize;
+    let mut frame = Vec::with_capacity(4 + body_len);
+    frame.extend_from_slice(&prefix);
+    let mut body = vec![0u8; body_len];
+    reader.read_exact(&mut body)?;
+    frame.extend_from_slice(&body);
+    Ok(frame)
+}
+
+#[cfg(windows)]
+fn named_pipe_path(pipe_name: &str) -> io::Result<String> {
+    if pipe_name.trim().is_empty() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "named pipe name must not be empty",
+        ));
+    }
+
+    Ok(format!(r"\\.\pipe\{pipe_name}"))
 }
 
 /// Reason a video frame was not stored.
@@ -9698,7 +9852,9 @@ mod tests {
     use stream_sync_logging::JsonLinesSinkDestination;
     use stream_sync_net_core::{
         OutboundQueueDropReason, OutboundQueueItemClass, OutboundQueueStorageState,
-        OutboundSendLoopTickState,
+        OutboundSendLoopTickState, ServerSwitcherQueuedFrameHandoffCodecBoundary,
+        ServerSwitcherQueuedFrameHandoffRequest, ServerSwitcherQueuedFrameHandoffResponse,
+        ServerSwitcherQueuedFrameReadMode, SERVER_SWITCHER_HANDOFF_VERSION,
     };
     use stream_sync_protocol::{
         decode_fixed_header, decode_heartbeat_ack_payload, encode_auth_response_payload,
@@ -11819,6 +11975,66 @@ shared_token = "secret"
             }
         );
         assert_eq!(state.total_len(), 1);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    #[ignore = "local Windows named-pipe smoke test"]
+    fn server_switcher_named_pipe_runtime_serves_one_request_and_one_response() {
+        let mut state = ServerVideoFrameQueueState::default();
+        store_video_frame_for_handoff_test(
+            &mut state,
+            "client-1",
+            "run-1",
+            11,
+            TimestampMicros(9_100_011),
+            640,
+            360,
+            vec![0xaa, 0xbb, 0xcc],
+        );
+        let pipe_name = format!("stream-sync-server-handoff-{}", current_test_suffix());
+        let request = ServerSwitcherQueuedFrameHandoffRequest {
+            handoff_version: SERVER_SWITCHER_HANDOFF_VERSION,
+            request_id: 501,
+            client_id: ClientId("client-1".to_string()),
+            run_id: RunId("run-1".to_string()),
+            read_mode: ServerSwitcherQueuedFrameReadMode::InspectLatest,
+        };
+        let request_for_client = request.clone();
+        let pipe_name_for_server = pipe_name.clone();
+
+        let server = std::thread::spawn(move || {
+            let mut queue_state = state;
+            ServerSwitcherNamedPipeOneRequestRuntimeBoundary::default()
+                .serve_once(&mut queue_state, &pipe_name_for_server)
+                .expect("server named-pipe runtime should serve one request")
+        });
+
+        let response = handoff_named_pipe_test_client_round_trip(&pipe_name, request_for_client);
+        let output = server.join().expect("server thread should join");
+
+        assert_eq!(output.request, request);
+        assert_eq!(output.response, response);
+        let ServerSwitcherQueuedFrameHandoffResponse::FrameRead {
+            request_id,
+            remaining_client_queue_len,
+            frame,
+        } = response
+        else {
+            panic!("server named-pipe runtime should return FrameRead");
+        };
+        assert_eq!(request_id, 501);
+        assert_eq!(remaining_client_queue_len, 1);
+        assert_eq!(frame.frame_id, 11);
+        assert_eq!(frame.codec, Codec::H264);
+        assert_eq!(frame.encoded_payload, vec![0xaa, 0xbb, 0xcc]);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn server_switcher_handoff_named_pipe_path_rejects_empty_name() {
+        let error = named_pipe_path("").expect_err("empty pipe name should be rejected");
+        assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
     }
 
     #[test]
@@ -18084,6 +18300,51 @@ shared_token = "secret"
                 Vec::new(),
             )
             .expect("controller runtime should complete")
+    }
+
+    #[cfg(windows)]
+    fn handoff_named_pipe_test_client_round_trip(
+        pipe_name: &str,
+        request: ServerSwitcherQueuedFrameHandoffRequest,
+    ) -> ServerSwitcherQueuedFrameHandoffResponse {
+        use std::io::Write;
+
+        let codec = ServerSwitcherQueuedFrameHandoffCodecBoundary;
+        let request_frame = codec
+            .encode_request_frame(&request)
+            .expect("request should encode");
+        let mut pipe = open_named_pipe_test_client(pipe_name);
+        pipe.write_all(&request_frame)
+            .expect("request should be written");
+        pipe.flush().expect("request should flush");
+        let response_frame =
+            read_length_prefixed_frame(&mut pipe).expect("response frame should be readable");
+        codec
+            .decode_response_frame(&response_frame)
+            .expect("response should decode")
+    }
+
+    #[cfg(windows)]
+    fn open_named_pipe_test_client(pipe_name: &str) -> std::fs::File {
+        use std::{fs::OpenOptions, time::Duration};
+
+        let pipe_path = named_pipe_path(pipe_name).expect("test pipe name should be valid");
+        for _ in 0..50 {
+            if let Ok(pipe) = OpenOptions::new().read(true).write(true).open(&pipe_path) {
+                return pipe;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+
+        OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(pipe_path)
+            .expect("test client should connect to named pipe")
+    }
+
+    fn current_test_suffix() -> String {
+        format!("{}-{:?}", std::process::id(), std::thread::current().id())
     }
 
     fn queue_from_controller_result_for_test(

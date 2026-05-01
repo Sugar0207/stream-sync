@@ -5,6 +5,86 @@
 - Codex
 
 ### Work
+- Implemented the smallest Windows named-pipe one-request / one-response
+  runtime connection for the server->switcher handoff path.
+- Added a Windows-only server-side named-pipe runtime in `apps/server` that
+  creates one pipe instance, accepts one client, reads one framed handoff
+  request with the existing codec, runs
+  `ServerSwitcherQueuedFrameHandoffHandlerBoundary`, writes one framed
+  response, and returns.
+- Added a Windows-only switcher-side named-pipe runtime in `apps/switcher`
+  that builds one DTO request, connects to the named pipe, writes one framed
+  request, reads one framed response, decodes it with the existing codec, maps
+  it through `SwitcherServerQueuedFrameHandoffClientAdapterBoundary`, and
+  returns the raw request/response plus mapped handoff result.
+- Added IO failure mapping on the switcher runtime so named-pipe connect/read
+  failures become explicit `SwitcherQueuedFrameHandoffError` results where
+  applicable.
+- Kept the runtime slice one-request / one-response only; no service loop,
+  reconnect, lifecycle orchestration, or request-id generator was added.
+- Added focused Windows-only non-I/O tests for named-pipe path validation and
+  IO-error-to-handoff-error mapping. Real named-pipe smoke tests are present
+  but isolated with `#[ignore]` because they are not stable enough for the
+  default handoff validation command.
+- Updated architecture and operations docs to record the new runtime
+  responsibility split and move the next task to wrapper/manual invocation
+  shaping.
+
+### Changed Files
+- `apps/server/Cargo.toml`
+- `apps/server/src/lib.rs`
+- `apps/switcher/Cargo.toml`
+- `apps/switcher/src/lib.rs`
+- `docs/architecture/system-design.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### Decisions
+- Keep named-pipe runtime Windows-only and one-request / one-response for now.
+- Keep smoke tests isolated with `#[ignore]` and rely on focused non-I/O
+  mapping tests in default validation.
+- Keep request/response visibility in runtime outputs so `request_id`
+  correlation remains inspectable without adding a broader lifecycle layer.
+
+### Unresolved
+- thin wrapper from the named-pipe runtime into the existing
+  `SwitcherQueuedFrameHandoff` abstraction
+- request-id generation policy for runtime/manual use
+- manual command shape over the named-pipe runtime
+- continuous named-pipe service/client lifecycle
+- production H.264 encoder configuration / error logging policy
+- Decide later whether `--live-two-view-switcher-once` should be renamed or
+  deprecated after the transport-backed server-mediated path exists.
+
+### Next
+- Add a thin wrapper that lets existing switcher handoff consumers call the
+  named-pipe runtime through the existing `SwitcherQueuedFrameHandoff`
+  abstraction.
+- Decide the smallest manual/runtime invocation shape and request-id policy for
+  the named-pipe one-shot path.
+
+### TODO Update
+- Marked the Windows named-pipe one-request / one-response runtime slice
+  complete in the current position.
+- Replaced the old runtime-connection items with the next wrapper/manual-shape
+  slice.
+
+### Validation
+- `cargo fmt` passed.
+- `cargo fmt --check` passed.
+- `cargo test -p stream-sync-net-core handoff -- --test-threads=1` passed.
+- `cargo test -p stream-sync-server handoff -- --test-threads=1` passed.
+- `cargo test -p stream-sync-switcher handoff -- --test-threads=1` passed.
+- `cargo test -p stream-sync-server video_frame_queue -- --test-threads=1`
+  passed.
+- `cargo check --workspace` passed.
+- `git diff --check` passed with line-ending warnings for changed files.
+
+## 2026-05-01
+### Type
+- Codex
+
+### Work
 - Implemented the smallest server-side single-request handoff handler and the
   smallest switcher-side DTO request/response adapter shape over the new
   server->switcher handoff DTO/codec.

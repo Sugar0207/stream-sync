@@ -183,6 +183,16 @@ handoff input shape and maps DTO responses back into the existing
 `SwitcherQueuedFrameHandoffResult` / `SwitcherQueuedFrameHandoffError` shape.
 Neither layer owns named-pipe I/O or process lifecycle yet.
 
+The first runtime transport slice now exists above those boundaries as a
+Windows-only named-pipe one-request / one-response connection. The server side
+accepts one client, reads one framed request, runs the handoff handler, writes
+one framed response, and returns. The switcher side builds one request,
+connects to the named pipe, writes one framed request, reads one framed
+response, maps it through the existing DTO adapter, and returns. This runtime
+slice is intentionally not a service loop: no continuous accept loop, no
+reconnect policy, no process lifecycle orchestration, and no request-id
+generator are added yet.
+
 ---
 
 ## 3. コンポーネントと責務

@@ -74,6 +74,7 @@ dependencies = [
  "stream-sync-net-core",
  "stream-sync-protocol",
  "stream-sync-timebase",
+ "windows",
 ]
 
 [[package]]
