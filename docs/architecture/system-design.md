@@ -8643,6 +8643,52 @@ Responsibility split:
 
 No protocol wire format changed for this slice.
 
+## Switcher Fallible 2-View Display Composition to Composed Canvas Render Connection
+
+The fallible display-composition adapter output now has a minimal in-process
+connection into the existing composed-canvas render path:
+
+```text
+SwitcherTwoViewHandoffDisplayCompositionAdapterOutput
+  -> SwitcherTwoViewHandoffDisplayCompositionRenderConnectionBoundary
+  -> optional SwitcherTwoViewCompositionBoundary call
+  -> optional SwitcherTwoViewComposedCanvasRenderBoundary call
+```
+
+Current implementation:
+
+- `SwitcherTwoViewHandoffDisplayCompositionRenderConnectionBoundary` consumes an
+  already adapted fallible display-composition output.
+- The connection output keeps the aggregate scheduler status, adapter output,
+  composition result, and render result visible together.
+- Updated and held-previous instructions carry real decoded frames and can
+  enter the existing side-by-side composed canvas path.
+- Stale, generic no-display, and source-error placeholder instructions remain
+  skipped composition sides. They are not converted into fake decoded frames.
+- If at least one side has a real decoded composition input, the connection
+  calls the existing `SwitcherTwoViewCompositionBoundary`. When composition
+  produces a composed frame, it calls
+  `SwitcherTwoViewComposedCanvasRenderBoundary`.
+- If both sides are placeholders, the connection returns an explicit
+  `EmptyPlaceholder` / `NoRenderableCanvas` result and does not call the render
+  runtime.
+- Source-error placeholder detail remains explicit in the adapter output and is
+  not collapsed into generic no-display there.
+
+Responsibility split:
+
+- the fallible display-composition adapter remains responsible for preserving
+  updated / held / stale / no-display / source-error placeholder instructions.
+- this connection boundary owns only the call sequence from fallible adapter
+  output into composition and then composed-canvas rendering when a composed
+  frame exists.
+- the existing composer and composed-canvas renderer remain unchanged.
+- IPC/TCP/UDP/shared-memory transport, OBS output, 4-view orchestration,
+  late-drop mutation, protocol changes, H.264 behavior changes, and
+  switcher-side fragment reassembly remain out of scope.
+
+No protocol wire format changed for this slice.
+
 ## Switcher 2-View Scheduler Decode/Render Connection Boundary
 
 The scheduler adapter now has a smallest in-process connection boundary that

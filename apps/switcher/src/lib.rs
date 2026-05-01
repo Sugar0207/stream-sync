@@ -3167,9 +3167,34 @@ pub struct SwitcherTwoViewDisplayCompositionRenderConnectionInput {
     pub render_hold_millis: u64,
 }
 
+/// Input for connecting fallible display-composition adapter output to the
+/// existing composed-canvas render path.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SwitcherTwoViewHandoffDisplayCompositionRenderConnectionInput {
+    pub adapter_output: SwitcherTwoViewHandoffDisplayCompositionAdapterOutput,
+    pub window_title: String,
+    pub render_hold_millis: u64,
+}
+
 /// Result of attempting to render after display-composition adaptation.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SwitcherTwoViewDisplayCompositionRenderConnectionRenderResult {
+    RenderedCanvas {
+        render: SwitcherTwoViewComposedCanvasRenderResult,
+    },
+    NoRenderableCanvas {
+        left_reason: SwitcherTwoViewManualDecodeRenderStatus,
+        right_reason: SwitcherTwoViewManualDecodeRenderStatus,
+    },
+    CompositionInvalid {
+        reason: SwitcherTwoViewCompositionInvalidReason,
+    },
+}
+
+/// Result of attempting to render after fallible display-composition
+/// adaptation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SwitcherTwoViewHandoffDisplayCompositionRenderConnectionRenderResult {
     RenderedCanvas {
         render: SwitcherTwoViewComposedCanvasRenderResult,
     },
@@ -3189,6 +3214,16 @@ pub struct SwitcherTwoViewDisplayCompositionRenderConnectionOutput {
     pub adapter: SwitcherTwoViewDisplayCompositionAdapterOutput,
     pub composition: SwitcherTwoViewCompositionResult,
     pub render: SwitcherTwoViewDisplayCompositionRenderConnectionRenderResult,
+}
+
+/// Output from the fallible display-composition adapter -> composition ->
+/// render connection.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SwitcherTwoViewHandoffDisplayCompositionRenderConnectionOutput {
+    pub scheduler_status: SwitcherTwoViewTargetTimeHandoffSourceSchedulerStatus,
+    pub adapter: SwitcherTwoViewHandoffDisplayCompositionAdapterOutput,
+    pub composition: SwitcherTwoViewCompositionResult,
+    pub render: SwitcherTwoViewHandoffDisplayCompositionRenderConnectionRenderResult,
 }
 
 /// Input for the smallest server-mediated 2-view switcher validation.
@@ -3878,6 +3913,111 @@ impl SwitcherTwoViewDisplayCompositionRenderConnectionBoundary {
             composition,
             render,
         }
+    }
+}
+
+/// Minimal in-process connection from fallible display-composition adapter
+/// output to the existing 2-view composition and composed-canvas render
+/// boundaries.
+///
+/// The adapter output remains the place where source-error placeholder detail
+/// is visible. This connection renders only when at least one side carries a
+/// real decoded update/held frame, and it never creates decoded frames for
+/// stale, no-display, or source-error placeholder sides.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct SwitcherTwoViewHandoffDisplayCompositionRenderConnectionBoundary {
+    composer: SwitcherTwoViewCompositionBoundary,
+    renderer: SwitcherTwoViewComposedCanvasRenderBoundary,
+}
+
+impl SwitcherTwoViewHandoffDisplayCompositionRenderConnectionBoundary {
+    pub fn render_adapter_output_with_runtime(
+        &self,
+        input: SwitcherTwoViewHandoffDisplayCompositionRenderConnectionInput,
+        runtime: &impl SwitcherWindowRenderRuntimeHook,
+    ) -> SwitcherTwoViewHandoffDisplayCompositionRenderConnectionOutput {
+        let scheduler_status = input.adapter_output.scheduler_status;
+        let composition =
+            match handoff_display_composition_placeholder_reasons(&input.adapter_output) {
+                Some((left_reason, right_reason)) => {
+                    SwitcherTwoViewCompositionResult::EmptyPlaceholder {
+                        left_reason,
+                        right_reason,
+                    }
+                }
+                None => self
+                    .composer
+                    .compose_side_by_side(input.adapter_output.composition_input.clone()),
+            };
+        let render = match &composition {
+            SwitcherTwoViewCompositionResult::BothComposed { frame }
+            | SwitcherTwoViewCompositionResult::LeftOnly { frame, .. }
+            | SwitcherTwoViewCompositionResult::RightOnly { frame, .. } => {
+                SwitcherTwoViewHandoffDisplayCompositionRenderConnectionRenderResult::RenderedCanvas {
+                    render: self.renderer.render_composed_frame_with_runtime(
+                        frame,
+                        input.window_title,
+                        input.render_hold_millis,
+                        runtime,
+                    ),
+                }
+            }
+            SwitcherTwoViewCompositionResult::EmptyPlaceholder {
+                left_reason,
+                right_reason,
+            } => {
+                SwitcherTwoViewHandoffDisplayCompositionRenderConnectionRenderResult::NoRenderableCanvas {
+                    left_reason: left_reason.clone(),
+                    right_reason: right_reason.clone(),
+                }
+            }
+            SwitcherTwoViewCompositionResult::InvalidDimensions { reason } => {
+                SwitcherTwoViewHandoffDisplayCompositionRenderConnectionRenderResult::CompositionInvalid {
+                    reason: reason.clone(),
+                }
+            }
+        };
+
+        SwitcherTwoViewHandoffDisplayCompositionRenderConnectionOutput {
+            scheduler_status,
+            adapter: input.adapter_output,
+            composition,
+            render,
+        }
+    }
+}
+
+fn handoff_display_composition_placeholder_reasons(
+    output: &SwitcherTwoViewHandoffDisplayCompositionAdapterOutput,
+) -> Option<(
+    SwitcherTwoViewManualDecodeRenderStatus,
+    SwitcherTwoViewManualDecodeRenderStatus,
+)> {
+    let left = handoff_placeholder_reason_for_instruction(&output.left)?;
+    let right = handoff_placeholder_reason_for_instruction(&output.right)?;
+    Some((left, right))
+}
+
+fn handoff_placeholder_reason_for_instruction(
+    instruction: &SwitcherTwoViewHandoffDisplayCompositionSideInstruction,
+) -> Option<SwitcherTwoViewManualDecodeRenderStatus> {
+    match instruction {
+        SwitcherTwoViewHandoffDisplayCompositionSideInstruction::UseUpdatedFrame { .. }
+        | SwitcherTwoViewHandoffDisplayCompositionSideInstruction::UseHeldPreviousFrame {
+            ..
+        } => None,
+        SwitcherTwoViewHandoffDisplayCompositionSideInstruction::UseStalePlaceholder {
+            skipped,
+            ..
+        }
+        | SwitcherTwoViewHandoffDisplayCompositionSideInstruction::UseNoDisplayPlaceholder {
+            skipped,
+            ..
+        }
+        | SwitcherTwoViewHandoffDisplayCompositionSideInstruction::UseSourceErrorPlaceholder {
+            skipped,
+            ..
+        } => Some(handoff_display_composition_skipped_status(skipped)),
     }
 }
 
@@ -12616,6 +12756,440 @@ mod tests {
                 render: SwitcherTwoViewComposedCanvasRenderResult::Rendered { .. }
             }
         ));
+    }
+
+    #[test]
+    fn two_view_handoff_display_composition_render_connection_renders_both_updated_sides() {
+        let mut state = ServerVideoFrameQueueState::default();
+        store_frame_with_run_payload(
+            &mut state,
+            "client-left",
+            "run-left",
+            1,
+            TimestampMicros(2_125_000),
+            2,
+            1,
+            vec![0, 0, 1, 0x65, 0x11],
+        );
+        store_frame_with_run_payload(
+            &mut state,
+            "client-right",
+            "run-right",
+            2,
+            TimestampMicros(2_125_100),
+            2,
+            1,
+            vec![0, 0, 1, 0x65, 0x12],
+        );
+        let adapter_output = handoff_display_composition_adapter_output_for_test(
+            fallible_display_policy_output_for_test(
+                render_fallible_two_view_adapter_output(
+                    fallible_two_view_adapter_output(fallible_two_view_scheduler_result(
+                        &mut state,
+                        TimestampMicros(1_000_002),
+                    )),
+                    &RecordingTwoViewDecode::default(),
+                    &RecordingTwoViewRender::default(),
+                ),
+                None,
+                None,
+                TimestampMicros(2_000_000),
+                Some(500_000),
+            ),
+        );
+        let runtime = RecordingTwoViewRender::default();
+
+        let output = SwitcherTwoViewHandoffDisplayCompositionRenderConnectionBoundary::default()
+            .render_adapter_output_with_runtime(
+                SwitcherTwoViewHandoffDisplayCompositionRenderConnectionInput {
+                    adapter_output,
+                    window_title: "fallible composed".to_string(),
+                    render_hold_millis: 25,
+                },
+                &runtime,
+            );
+
+        assert_eq!(
+            output.scheduler_status,
+            SwitcherTwoViewTargetTimeHandoffSourceSchedulerStatus::AllSelected
+        );
+        assert!(matches!(
+            output.adapter.left,
+            SwitcherTwoViewHandoffDisplayCompositionSideInstruction::UseUpdatedFrame { .. }
+        ));
+        assert!(matches!(
+            output.adapter.right,
+            SwitcherTwoViewHandoffDisplayCompositionSideInstruction::UseUpdatedFrame { .. }
+        ));
+        assert!(matches!(
+            output.composition,
+            SwitcherTwoViewCompositionResult::BothComposed { .. }
+        ));
+        assert!(matches!(
+            output.render,
+            SwitcherTwoViewHandoffDisplayCompositionRenderConnectionRenderResult::RenderedCanvas {
+                render: SwitcherTwoViewComposedCanvasRenderResult::Rendered { .. }
+            }
+        ));
+        assert_eq!(runtime.requests.borrow().len(), 1);
+    }
+
+    #[test]
+    fn two_view_handoff_display_composition_render_connection_renders_update_and_held_previous() {
+        let mut state = ServerVideoFrameQueueState::default();
+        store_frame_with_run_payload(
+            &mut state,
+            "client-left",
+            "run-left",
+            1,
+            TimestampMicros(2_126_000),
+            2,
+            1,
+            vec![0, 0, 1, 0x65, 0x11],
+        );
+        let adapter_output = handoff_display_composition_adapter_output_for_test(
+            fallible_display_policy_output_for_test(
+                render_fallible_two_view_adapter_output(
+                    fallible_two_view_adapter_output(fallible_two_view_scheduler_result(
+                        &mut state,
+                        TimestampMicros(1_000_001),
+                    )),
+                    &RecordingTwoViewDecode::default(),
+                    &RecordingTwoViewRender::default(),
+                ),
+                None,
+                Some(previous_displayed_frame(
+                    SwitcherTwoViewSide::Right,
+                    TimestampMicros(1_950_000),
+                )),
+                TimestampMicros(2_000_000),
+                Some(500_000),
+            ),
+        );
+        let runtime = RecordingTwoViewRender::default();
+
+        let output = SwitcherTwoViewHandoffDisplayCompositionRenderConnectionBoundary::default()
+            .render_adapter_output_with_runtime(
+                SwitcherTwoViewHandoffDisplayCompositionRenderConnectionInput {
+                    adapter_output,
+                    window_title: "fallible composed".to_string(),
+                    render_hold_millis: 25,
+                },
+                &runtime,
+            );
+
+        assert!(matches!(
+            output.adapter.left,
+            SwitcherTwoViewHandoffDisplayCompositionSideInstruction::UseUpdatedFrame { .. }
+        ));
+        assert!(matches!(
+            output.adapter.right,
+            SwitcherTwoViewHandoffDisplayCompositionSideInstruction::UseHeldPreviousFrame { .. }
+        ));
+        let SwitcherTwoViewCompositionResult::BothComposed { frame } = &output.composition else {
+            panic!("updated + held previous should compose both sides");
+        };
+        assert!(frame.left.is_some());
+        assert!(frame.right.is_some());
+        assert!(matches!(
+            output.render,
+            SwitcherTwoViewHandoffDisplayCompositionRenderConnectionRenderResult::RenderedCanvas {
+                render: SwitcherTwoViewComposedCanvasRenderResult::Rendered { .. }
+            }
+        ));
+    }
+
+    #[test]
+    fn two_view_handoff_display_composition_render_connection_preserves_stale_placeholder() {
+        let mut state = ServerVideoFrameQueueState::default();
+        store_frame_with_run_payload(
+            &mut state,
+            "client-left",
+            "run-left",
+            1,
+            TimestampMicros(2_127_000),
+            2,
+            1,
+            vec![0, 0, 1, 0x65, 0x11],
+        );
+        let adapter_output = handoff_display_composition_adapter_output_for_test(
+            fallible_display_policy_output_for_test(
+                render_fallible_two_view_adapter_output(
+                    fallible_two_view_adapter_output(fallible_two_view_scheduler_result(
+                        &mut state,
+                        TimestampMicros(1_000_001),
+                    )),
+                    &RecordingTwoViewDecode::default(),
+                    &RecordingTwoViewRender::default(),
+                ),
+                None,
+                Some(previous_displayed_frame(
+                    SwitcherTwoViewSide::Right,
+                    TimestampMicros(1_800_000),
+                )),
+                TimestampMicros(2_000_000),
+                Some(100_000),
+            ),
+        );
+        let runtime = RecordingTwoViewRender::default();
+
+        let output = SwitcherTwoViewHandoffDisplayCompositionRenderConnectionBoundary::default()
+            .render_adapter_output_with_runtime(
+                SwitcherTwoViewHandoffDisplayCompositionRenderConnectionInput {
+                    adapter_output,
+                    window_title: "fallible composed".to_string(),
+                    render_hold_millis: 25,
+                },
+                &runtime,
+            );
+
+        assert!(matches!(
+            output.adapter.right,
+            SwitcherTwoViewHandoffDisplayCompositionSideInstruction::UseStalePlaceholder { .. }
+        ));
+        let SwitcherTwoViewCompositionResult::LeftOnly {
+            frame,
+            right_placeholder_reason,
+        } = &output.composition
+        else {
+            panic!("left update + stale right should compose left only");
+        };
+        assert!(frame.right.is_none());
+        assert_eq!(
+            *right_placeholder_reason,
+            SwitcherTwoViewManualDecodeRenderStatus::SkippedSelectionUnavailable
+        );
+        assert!(matches!(
+            output.render,
+            SwitcherTwoViewHandoffDisplayCompositionRenderConnectionRenderResult::RenderedCanvas {
+                render: SwitcherTwoViewComposedCanvasRenderResult::Rendered { .. }
+            }
+        ));
+    }
+
+    #[test]
+    fn two_view_handoff_display_composition_render_connection_preserves_no_display_placeholder() {
+        let mut state = ServerVideoFrameQueueState::default();
+        store_frame_with_run_payload(
+            &mut state,
+            "client-left",
+            "run-left",
+            1,
+            TimestampMicros(2_128_000),
+            2,
+            1,
+            vec![0, 0, 1, 0x65, 0x11],
+        );
+        let adapter_output = handoff_display_composition_adapter_output_for_test(
+            fallible_display_policy_output_for_test(
+                render_fallible_two_view_adapter_output(
+                    fallible_two_view_adapter_output(fallible_two_view_scheduler_result(
+                        &mut state,
+                        TimestampMicros(1_000_001),
+                    )),
+                    &RecordingTwoViewDecode::default(),
+                    &RecordingTwoViewRender::default(),
+                ),
+                None,
+                None,
+                TimestampMicros(2_000_000),
+                Some(500_000),
+            ),
+        );
+        let runtime = RecordingTwoViewRender::default();
+
+        let output = SwitcherTwoViewHandoffDisplayCompositionRenderConnectionBoundary::default()
+            .render_adapter_output_with_runtime(
+                SwitcherTwoViewHandoffDisplayCompositionRenderConnectionInput {
+                    adapter_output,
+                    window_title: "fallible composed".to_string(),
+                    render_hold_millis: 25,
+                },
+                &runtime,
+            );
+
+        assert!(matches!(
+            output.adapter.right,
+            SwitcherTwoViewHandoffDisplayCompositionSideInstruction::UseNoDisplayPlaceholder { .. }
+        ));
+        let SwitcherTwoViewCompositionResult::LeftOnly {
+            frame,
+            right_placeholder_reason,
+        } = &output.composition
+        else {
+            panic!("left update + no-display right should compose left only");
+        };
+        assert!(frame.right.is_none());
+        assert_eq!(
+            *right_placeholder_reason,
+            SwitcherTwoViewManualDecodeRenderStatus::SkippedSelectionUnavailable
+        );
+        assert!(matches!(
+            output.render,
+            SwitcherTwoViewHandoffDisplayCompositionRenderConnectionRenderResult::RenderedCanvas {
+                render: SwitcherTwoViewComposedCanvasRenderResult::Rendered { .. }
+            }
+        ));
+    }
+
+    #[test]
+    fn two_view_handoff_display_composition_render_connection_preserves_source_error_placeholder() {
+        let mut state = ServerVideoFrameQueueState::default();
+        store_frame_with_run_payload(
+            &mut state,
+            "client-left",
+            "run-left",
+            1,
+            TimestampMicros(2_129_000),
+            2,
+            1,
+            vec![0, 0, 1, 0x65, 0x11],
+        );
+        let scheduler_result = {
+            let mut handoff = SwitcherInProcessQueuedFrameHandoff::new(&mut state);
+            SwitcherTwoViewTargetTimeHandoffSourceSchedulerBoundary::default()
+                .select_pair_from_handoff(
+                    &mut handoff,
+                    SwitcherTwoViewTargetTimeSourceSchedulerInput {
+                        left: SwitcherTwoViewTargetTimeSourceViewConfig {
+                            client_id: ClientId("client-left".to_string()),
+                            run_id: RunId("run-left".to_string()),
+                        },
+                        right: SwitcherTwoViewTargetTimeSourceViewConfig {
+                            client_id: ClientId("".to_string()),
+                            run_id: RunId("run-right".to_string()),
+                        },
+                        target_timestamp: TimestampMicros(1_000_001),
+                        mode:
+                            SwitcherTwoViewTargetTimeSourceSchedulerMode::PreviewLatestIfAtOrBefore,
+                    },
+                )
+        };
+        let adapter_output = handoff_display_composition_adapter_output_for_test(
+            fallible_display_policy_output_for_test(
+                render_fallible_two_view_adapter_output(
+                    fallible_two_view_adapter_output(scheduler_result),
+                    &RecordingTwoViewDecode::default(),
+                    &RecordingTwoViewRender::default(),
+                ),
+                None,
+                None,
+                TimestampMicros(2_000_000),
+                Some(500_000),
+            ),
+        );
+        let runtime = RecordingTwoViewRender::default();
+
+        let output = SwitcherTwoViewHandoffDisplayCompositionRenderConnectionBoundary::default()
+            .render_adapter_output_with_runtime(
+                SwitcherTwoViewHandoffDisplayCompositionRenderConnectionInput {
+                    adapter_output,
+                    window_title: "fallible composed".to_string(),
+                    render_hold_millis: 25,
+                },
+                &runtime,
+            );
+
+        assert_eq!(
+            output.scheduler_status,
+            SwitcherTwoViewTargetTimeHandoffSourceSchedulerStatus::HandoffError
+        );
+        let SwitcherTwoViewHandoffDisplayCompositionSideInstruction::UseSourceErrorPlaceholder {
+            skipped,
+            ..
+        } = &output.adapter.right
+        else {
+            panic!("right source error should remain a source-error placeholder");
+        };
+        assert!(matches!(
+            skipped,
+            SwitcherTwoViewHandoffDecodeRenderSkippedSide::HandoffError {
+                error: SwitcherQueuedFrameHandoffError::InvalidScope { .. },
+                ..
+            }
+        ));
+        let SwitcherTwoViewCompositionResult::LeftOnly {
+            frame,
+            right_placeholder_reason,
+        } = &output.composition
+        else {
+            panic!("left update + source-error right should compose left only");
+        };
+        assert!(frame.right.is_none());
+        assert_eq!(
+            *right_placeholder_reason,
+            SwitcherTwoViewManualDecodeRenderStatus::SkippedSelectionUnavailable
+        );
+        assert!(matches!(
+            output.render,
+            SwitcherTwoViewHandoffDisplayCompositionRenderConnectionRenderResult::RenderedCanvas {
+                render: SwitcherTwoViewComposedCanvasRenderResult::Rendered { .. }
+            }
+        ));
+    }
+
+    #[test]
+    fn two_view_handoff_display_composition_render_connection_does_not_render_both_source_errors() {
+        let mut handoff = FailingQueuedFrameHandoff {
+            error: SwitcherQueuedFrameHandoffError::SourceUnavailable,
+        };
+        let adapter_output =
+            handoff_display_composition_adapter_output_for_test(fallible_display_policy_output_for_test(
+                render_fallible_two_view_adapter_output(
+                    fallible_two_view_adapter_output(
+                        SwitcherTwoViewTargetTimeHandoffSourceSchedulerBoundary::default()
+                            .select_pair_from_handoff(
+                                &mut handoff,
+                                fallible_two_view_scheduler_input(
+                                    TimestampMicros(1_000_001),
+                                    SwitcherTwoViewTargetTimeSourceSchedulerMode::PreviewLatestIfAtOrBefore,
+                                ),
+                            ),
+                    ),
+                    &RecordingTwoViewDecode::default(),
+                    &RecordingTwoViewRender::default(),
+                ),
+                None,
+                None,
+                TimestampMicros(2_000_000),
+                Some(500_000),
+            ));
+        let runtime = RecordingTwoViewRender::default();
+
+        let output = SwitcherTwoViewHandoffDisplayCompositionRenderConnectionBoundary::default()
+            .render_adapter_output_with_runtime(
+                SwitcherTwoViewHandoffDisplayCompositionRenderConnectionInput {
+                    adapter_output,
+                    window_title: "fallible composed".to_string(),
+                    render_hold_millis: 25,
+                },
+                &runtime,
+            );
+
+        assert_eq!(
+            output.scheduler_status,
+            SwitcherTwoViewTargetTimeHandoffSourceSchedulerStatus::HandoffError
+        );
+        assert!(matches!(
+            output.adapter.left,
+            SwitcherTwoViewHandoffDisplayCompositionSideInstruction::UseSourceErrorPlaceholder { .. }
+        ));
+        assert!(matches!(
+            output.adapter.right,
+            SwitcherTwoViewHandoffDisplayCompositionSideInstruction::UseSourceErrorPlaceholder { .. }
+        ));
+        assert!(matches!(
+            output.composition,
+            SwitcherTwoViewCompositionResult::EmptyPlaceholder { .. }
+        ));
+        assert_eq!(
+            output.render,
+            SwitcherTwoViewHandoffDisplayCompositionRenderConnectionRenderResult::NoRenderableCanvas {
+                left_reason: SwitcherTwoViewManualDecodeRenderStatus::SkippedSelectionUnavailable,
+                right_reason: SwitcherTwoViewManualDecodeRenderStatus::SkippedSelectionUnavailable,
+            }
+        );
+        assert!(runtime.requests.borrow().is_empty());
     }
 
     fn server_mediated_validation_input(
