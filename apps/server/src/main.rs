@@ -346,9 +346,69 @@ fn main() {
                 }
             }
         }
+        Some("--receive-auth-video-queue-and-serve-handoff-many") => {
+            let config_path = args
+                .next()
+                .unwrap_or_else(|| "configs/examples/server.example.toml".to_string());
+            let pipe_name = args.next().unwrap_or_else(|| {
+                eprintln!("missing pipe-name");
+                std::process::exit(1);
+            });
+            let max_requests =
+                parse_optional_arg_or_exit::<usize>(args.next(), "max-requests").unwrap_or(2);
+            let max_video_packets =
+                parse_optional_arg_or_exit::<usize>(args.next(), "max-video-packets")
+                    .unwrap_or(4_096);
+            let receive_timeout_ms =
+                parse_optional_arg_or_exit::<u64>(args.next(), "receive-timeout-ms")
+                    .unwrap_or(15_000);
+            let expected_frames =
+                parse_optional_arg_or_exit::<u64>(args.next(), "expected-reassembled-frames")
+                    .unwrap_or(1);
+            let stop_after_expected =
+                parse_optional_bool_or_exit(args.next(), "stop-after-expected-reassembled-frames")
+                    .unwrap_or(true);
+            let receive_buffer_bytes =
+                parse_optional_arg_or_exit::<usize>(args.next(), "receive-buffer-bytes")
+                    .unwrap_or(8_388_608);
+            let policy = stream_sync_server::ServerReceiveAuthVideoQueueOnceManualPolicy {
+                max_video_packets,
+                receive_timeout: std::time::Duration::from_millis(receive_timeout_ms),
+                expected_reassembled_frames: expected_frames,
+                stop_after_expected_reassembled_frames: stop_after_expected,
+                receive_buffer_bytes,
+            };
+            let launcher = stream_sync_server::ServerReceiveAuthVideoQueueOnceLauncher::default();
+            match launcher.run_once_from_path_with_writers_and_policy(
+                &config_path,
+                std::io::stderr(),
+                std::io::stderr(),
+                std::io::stderr(),
+                std::io::stderr(),
+                policy,
+            ) {
+                Ok(mut outcome) => match serve_named_pipe_handoff_many(
+                    &mut outcome.video_queue_state,
+                    &pipe_name,
+                    max_requests,
+                ) {
+                    Ok(summary) => println!("{summary}"),
+                    Err(error) => {
+                        eprintln!(
+                            "receive auth/video queue and serve handoff many failed: {error}"
+                        );
+                        std::process::exit(1);
+                    }
+                },
+                Err(error) => {
+                    eprintln!("receive auth/video queue and serve handoff many failed: {error:?}");
+                    std::process::exit(1);
+                }
+            }
+        }
         _ => {
             println!(
-                "stream-sync-server scaffold; use --auth-response-poc-once [config-path], --receive-send-once [config-path], --receive-send-twice [config-path], --receive-send-three [config-path], --receive-auth-video-queue-once [config-path] [max-video-packets] [receive-timeout-ms] [expected-reassembled-frames] [stop-after-expected-reassembled-frames] [receive-buffer-bytes], or --receive-auth-video-queue-and-serve-handoff-once [config-path] [pipe-name] [max-video-packets] [receive-timeout-ms] [expected-reassembled-frames] [stop-after-expected-reassembled-frames] [receive-buffer-bytes]"
+                "stream-sync-server scaffold; use --auth-response-poc-once [config-path], --receive-send-once [config-path], --receive-send-twice [config-path], --receive-send-three [config-path], --receive-auth-video-queue-once [config-path] [max-video-packets] [receive-timeout-ms] [expected-reassembled-frames] [stop-after-expected-reassembled-frames] [receive-buffer-bytes], --receive-auth-video-queue-and-serve-handoff-once [config-path] [pipe-name] [max-video-packets] [receive-timeout-ms] [expected-reassembled-frames] [stop-after-expected-reassembled-frames] [receive-buffer-bytes], or --receive-auth-video-queue-and-serve-handoff-many [config-path] [pipe-name] [max-requests] [max-video-packets] [receive-timeout-ms] [expected-reassembled-frames] [stop-after-expected-reassembled-frames] [receive-buffer-bytes]"
             );
         }
     }
@@ -507,6 +567,27 @@ fn serve_named_pipe_handoff_once(
 }
 
 #[cfg(windows)]
+fn serve_named_pipe_handoff_many(
+    queue_state: &mut stream_sync_server::ServerVideoFrameQueueState,
+    pipe_name: &str,
+    max_requests: usize,
+) -> Result<String, String> {
+    stream_sync_server::ServerSwitcherNamedPipeOneRequestRuntimeBoundary::default()
+        .serve_many(queue_state, pipe_name, max_requests)
+        .map(|output| format_named_pipe_handoff_server_many_summary(pipe_name, &output))
+        .map_err(|error| format!("{error:?}"))
+}
+
+#[cfg(not(windows))]
+fn serve_named_pipe_handoff_many(
+    _queue_state: &mut stream_sync_server::ServerVideoFrameQueueState,
+    _pipe_name: &str,
+    _max_requests: usize,
+) -> Result<String, String> {
+    Err("named-pipe handoff command is only available on Windows".to_string())
+}
+
+#[cfg(windows)]
 fn format_named_pipe_handoff_server_summary(
     pipe_name: &str,
     output: &stream_sync_server::ServerSwitcherNamedPipeOneRequestRuntimeOutput,
@@ -559,6 +640,60 @@ fn format_named_pipe_handoff_server_summary(
             format_handoff_read_mode(request.read_mode),
             error
         ),
+    }
+}
+
+#[cfg(windows)]
+fn format_named_pipe_handoff_server_many_summary(
+    pipe_name: &str,
+    output: &stream_sync_server::ServerSwitcherNamedPipeManyRequestRuntimeOutput,
+) -> String {
+    let mut lines = vec![format!(
+        "server named-pipe handoff bounded pipe_name={} max_requests={} requests_served={} successful_responses={} handoff_errors={}",
+        pipe_name,
+        output.max_requests,
+        output.requests_served,
+        output.successful_responses,
+        output.handoff_errors
+    )];
+
+    lines.extend(
+        output
+            .requests
+            .iter()
+            .enumerate()
+            .map(|(index, request)| {
+                format!(
+                    "server named-pipe handoff bounded request pipe_name={} request_index={} request_id={} result_kind={} queue_len={} handoff_error={}",
+                    pipe_name,
+                    index,
+                    request.request_id,
+                    format_server_handoff_result_kind(request.result_kind),
+                    request
+                        .queue_len
+                        .map(|value| value.to_string())
+                        .unwrap_or_else(|| "none".to_string()),
+                    request
+                        .handoff_error
+                        .map(|value| format!("{value:?}"))
+                        .unwrap_or_else(|| "none".to_string())
+                )
+            }),
+    );
+
+    lines.join("\n")
+}
+
+#[cfg(windows)]
+fn format_server_handoff_result_kind(
+    kind: stream_sync_server::ServerSwitcherNamedPipeRequestResultKind,
+) -> &'static str {
+    match kind {
+        stream_sync_server::ServerSwitcherNamedPipeRequestResultKind::FrameRead => "FrameRead",
+        stream_sync_server::ServerSwitcherNamedPipeRequestResultKind::NoFrame => "NoFrame",
+        stream_sync_server::ServerSwitcherNamedPipeRequestResultKind::HandoffError => {
+            "HandoffError"
+        }
     }
 }
 
@@ -640,5 +775,49 @@ mod tests {
         assert!(summary.contains("frame_id=77"));
         assert!(summary.contains("codec=H264"));
         assert!(summary.contains("encoded_payload_len=3"));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn server_handoff_bounded_summary_includes_aggregate_and_request_fields() {
+        let output = stream_sync_server::ServerSwitcherNamedPipeManyRequestRuntimeOutput {
+            max_requests: 3,
+            requests_served: 2,
+            successful_responses: 2,
+            handoff_errors: 1,
+            requests: vec![
+                stream_sync_server::ServerSwitcherNamedPipeRequestServeSummary {
+                    request_id: 44,
+                    result_kind: stream_sync_server::ServerSwitcherNamedPipeRequestResultKind::FrameRead,
+                    queue_len: Some(2),
+                    handoff_error: None,
+                },
+                stream_sync_server::ServerSwitcherNamedPipeRequestServeSummary {
+                    request_id: 45,
+                    result_kind: stream_sync_server::ServerSwitcherNamedPipeRequestResultKind::HandoffError,
+                    queue_len: None,
+                    handoff_error: Some(
+                        stream_sync_net_core::ServerSwitcherQueuedFrameHandoffErrorCode::SourceShutdown,
+                    ),
+                },
+            ],
+        };
+
+        let summary = super::format_named_pipe_handoff_server_many_summary("pipe-b", &output);
+
+        assert!(summary.contains("pipe_name=pipe-b"));
+        assert!(summary.contains("max_requests=3"));
+        assert!(summary.contains("requests_served=2"));
+        assert!(summary.contains("successful_responses=2"));
+        assert!(summary.contains("handoff_errors=1"));
+        assert!(summary.contains("request_index=0"));
+        assert!(summary.contains("request_id=44"));
+        assert!(summary.contains("result_kind=FrameRead"));
+        assert!(summary.contains("queue_len=2"));
+        assert!(summary.contains("request_index=1"));
+        assert!(summary.contains("request_id=45"));
+        assert!(summary.contains("result_kind=HandoffError"));
+        assert!(summary.contains("queue_len=none"));
+        assert!(summary.contains("handoff_error=SourceShutdown"));
     }
 }

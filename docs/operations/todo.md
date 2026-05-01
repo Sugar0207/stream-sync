@@ -59,8 +59,8 @@
 ---
 
 ## 直近でやること
-1. bounded server loop の per-request correlation summary を CLI/manual runtime へどう露出するか決める
-2. switcher 側 per-request timeout の上に載せる minimal reconnect/lifecycle policy を整理して最小実装する
+1. switcher 側 per-request timeout の上に載せる minimal reconnect/lifecycle policy を整理して最小実装する
+2. bounded server loop summary の manual localhost pass を取り、stdout contract を確認して記録する
 3. production H.264 encoder configuration / error logging policy
 4. Decide later whether `--live-two-view-switcher-once` should be renamed or deprecated after the transport-backed server-mediated path exists
 

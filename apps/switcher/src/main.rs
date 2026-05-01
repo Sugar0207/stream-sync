@@ -1031,15 +1031,15 @@ mod tests {
         SwitcherNamedPipeQueuedFrameHandoffRequestStatus,
         SwitcherNamedPipeQueuedFrameHandoffRequestSummary,
         SwitcherNamedPipeQueuedFrameHandoffResponseStatus,
-        SwitcherNamedPipeQueuedFrameHandoffResultKind, SwitcherSingleViewSelectedEncodedFrame,
+        SwitcherNamedPipeQueuedFrameHandoffResultKind, SwitcherQueuedFrameHandoffError,
+        SwitcherSingleViewSelectedEncodedFrame,
     };
 
     use super::{
         format_handoff_mode, format_handoff_read_mode,
         format_named_pipe_handoff_switcher_result_summary,
         format_named_pipe_handoff_switcher_summary, parse_handoff_mode_or_exit,
-        SwitcherQueuedFrameHandoffError, SwitcherQueuedFrameHandoffResult,
-        SwitcherSingleClientQueueSourceMode,
+        SwitcherQueuedFrameHandoffResult, SwitcherSingleClientQueueSourceMode,
     };
 
     #[test]

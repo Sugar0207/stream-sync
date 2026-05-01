@@ -13,6 +13,9 @@ least one frame. The current manual checklist now uses:
 
 - `stream-sync-server --receive-auth-video-queue-and-serve-handoff-once ...`
   for queue-owning server receive plus one named-pipe handoff
+- `stream-sync-server --receive-auth-video-queue-and-serve-handoff-many ...`
+  for queue-owning server receive plus bounded `max_requests` named-pipe
+  handoff serving
 - `stream-sync-switcher --read-queued-frame-handoff-once ...` for one
   switcher-side named-pipe read
 - `stream-sync-server --receive-auth-video-queue-once ...` for the queue-owning
@@ -133,6 +136,13 @@ For queue receive plus one named-pipe handoff in the same process, use:
 cargo run -p stream-sync-server -- --receive-auth-video-queue-and-serve-handoff-once configs/examples/server.example.toml streamsync-handoff 4096 15000 1 true 8388608
 ```
 
+For queue receive plus bounded named-pipe handoff serving in the same process,
+use:
+
+```powershell
+cargo run -p stream-sync-server -- --receive-auth-video-queue-and-serve-handoff-many configs/examples/server.example.toml streamsync-handoff 2 4096 15000 1 true 8388608
+```
+
 For these CLI commands, use a plain pipe name such as
 `streamsync-handoff-dev`. In the latest localhost manual run, the plain name
 succeeded, while a full Windows pipe path such as
@@ -208,6 +218,15 @@ request_status=decoded
 response_status=written
 result_kind=FrameRead|NoFrame|HandoffError
 queue_len=<n|none>
+```
+
+When using `--receive-auth-video-queue-and-serve-handoff-many`, the same
+process later prints one aggregate bounded-loop summary line plus one
+per-request summary line for each served request:
+
+```text
+server named-pipe handoff bounded pipe_name=<pipe> max_requests=<n> requests_served=<n> successful_responses=<n> handoff_errors=<n>
+server named-pipe handoff bounded request pipe_name=<pipe> request_index=<n> request_id=<id> result_kind=FrameRead|NoFrame|HandoffError queue_len=<n|none> handoff_error=<code|none>
 ```
 
 Fragmented pass proof:

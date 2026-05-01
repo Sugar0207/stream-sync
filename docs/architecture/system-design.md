@@ -296,6 +296,13 @@ small:
 - `--read-queued-frame-handoff-once` still owns only one named-pipe read over
   an explicit `client_id + run_id + read_mode` request and exits.
 
+The bounded server loop summary is now exposed separately from that one-shot
+path through a bounded manual command surface. This remains smaller than a
+daemon: it serves at most `max_requests`, prints one aggregate summary line plus
+per-request correlation/result lines, and then exits. It does not add
+indefinite service lifetime, Ctrl+C ownership, reconnect/backoff, or
+multi-client concurrency.
+
 `--receive-auth-video-queue-once` remains the queue-owning server diagnostic,
 and `--live-two-view-switcher-once` remains the direct-receive
 diagnostic/legacy path rather than becoming the main server-mediated path.

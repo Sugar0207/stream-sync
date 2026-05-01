@@ -1,5 +1,67 @@
 <!-- stream-sync/docs/operations/session-log.md -->
 
+## 2026-05-02
+### Type
+- Codex
+
+### Work
+- Exposed the bounded server-side named-pipe handoff loop through a manual CLI
+  command without adding daemon lifecycle behavior.
+- Added `--receive-auth-video-queue-and-serve-handoff-many` on top of the
+  existing queue-owning receive path and bounded `serve_many(..., max_requests)`
+  runtime.
+- Added bounded-loop stdout formatting for one aggregate summary line plus
+  per-request summary lines.
+- Added focused formatter tests instead of expanding real named-pipe test
+  coverage.
+
+### Changed Files
+- `apps/server/src/main.rs`
+- `docs/architecture/system-design.md`
+- `docs/operations/manual-real-encoded-video-poc.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### Decisions
+- Preserve `--receive-auth-video-queue-and-serve-handoff-once` unchanged and
+  add a separate bounded manual command rather than overloading the one-shot
+  surface.
+- Keep bounded manual output transport-focused:
+  aggregate counts plus per-request `request_id`, `result_kind`, `queue_len`,
+  and observable `handoff_error`.
+- Keep the command bounded by `max_requests` only; no Ctrl+C lifecycle,
+  reconnect/backoff, or multi-client concurrency in this slice.
+
+### Unresolved
+- switcher-side minimal reconnect/lifecycle policy above the per-request
+  timeout layer
+- manual localhost pass for the bounded summary command
+- production H.264 encoder configuration / error logging policy
+- Decide later whether `--live-two-view-switcher-once` should be renamed or
+  deprecated after the transport-backed server-mediated path exists
+
+### Next
+- Take a manual localhost pass of the bounded summary command and record the
+  observed stdout contract.
+- Add only the smallest reconnect/lifecycle policy above the current
+  switcher-side per-request timeout layer.
+
+### TODO Update
+- Marked bounded server loop summary CLI/manual exposure complete.
+- Reordered the next items toward bounded localhost validation and minimal
+  reconnect/lifecycle follow-up.
+
+### Validation
+- `cargo fmt` passed.
+- `cargo fmt --check` passed.
+- `cargo test -p stream-sync-net-core handoff -- --test-threads=1` passed.
+- `cargo test -p stream-sync-server handoff -- --test-threads=1` passed.
+- `cargo test -p stream-sync-switcher handoff -- --test-threads=1` passed.
+- `cargo test -p stream-sync-server video_frame_queue -- --test-threads=1`
+  passed.
+- `cargo check --workspace` passed.
+- `git diff --check` passed with line-ending warnings for changed files.
+
 ## 2026-05-01
 ### Type
 - Codex
