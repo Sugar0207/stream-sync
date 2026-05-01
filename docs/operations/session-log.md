@@ -5,6 +5,68 @@
 - Codex
 
 ### Work
+- Implemented the smallest dedicated fallible 4-view preview/read-only
+  scheduler boundary in `apps/switcher`.
+- Reused the existing fallible single-client targetTime handoff source for each
+  of four explicit slots under one shared targetTime.
+- Updated architecture/TODO tracking to move the next 4-view task from
+  scheduler shape to 4-view decode/render/composition planning.
+
+### Changed Files
+- `apps/switcher/src/lib.rs`
+- `docs/architecture/system-design.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### Implemented
+- Added `SwitcherFourViewTargetTimeSourceSlotConfig`.
+- Added `SwitcherFourViewTargetTimeHandoffSourceSchedulerInput`.
+- Added `SwitcherFourViewTargetTimeHandoffSourceSlotResult`.
+- Added `SwitcherFourViewTargetTimeHandoffSourceSchedulerStatus`.
+- Added `SwitcherFourViewTargetTimeHandoffSourceSchedulerResult`.
+- Added `SwitcherFourViewTargetTimeHandoffSourceSchedulerBoundary`.
+- Kept the first 4-view boundary preview/read-only only through
+  `select_quad_preview_from_handoff(...)`.
+- Preserved per-slot outcomes:
+  - `Selected`
+  - `NoFrameAvailable`
+  - `WaitingForFrameAtOrBeforeTarget`
+  - `HandoffError`
+- Added aggregate status precedence:
+  - any handoff/source error -> `HandoffError`
+  - all four selected -> `AllSelected`
+  - any selected but not all four -> `PartialSelected`
+  - otherwise any waiting -> `Waiting`
+  - otherwise -> `NoFrames`
+- Preserved slot order explicitly through fixed four-slot input/output arrays.
+- Kept preview/read-only non-mutation semantics.
+
+### Tests
+- all four selected -> `AllSelected`
+- selected + waiting + selected + selected -> `PartialSelected` with waiting
+  preserved
+- selected + no-frame preserved
+- selected + handoff error -> `HandoffError`
+- all no-frame -> `NoFrames`
+- handoff error from fake source is not treated as no-frame or waiting
+- preview/read-only does not mutate queue state
+- slot order and selected metadata survive
+
+### TODO Update
+- Marked the smallest fallible 4-view preview/read-only scheduler slice
+  complete.
+- Moved the next task to 4-view decode/render/composition planning.
+
+### Validation
+- `cargo fmt` passed.
+- `cargo fmt --check` passed.
+- `cargo test -p stream-sync-switcher four_view -- --test-threads=1` passed.
+
+## 2026-05-02
+### Type
+- Codex
+
+### Work
 - Implemented a planning/docs-only slice for the next major phase and chose
   4-view orchestration planning before OBS/output boundary work.
 - Documented the first 4-view orchestration shape as a separate 4-view boundary

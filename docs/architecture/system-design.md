@@ -9490,6 +9490,22 @@ Smallest implementation slice after this planning step:
 - keep decode/render/composition for 4-view as the next slice after the
   scheduler result shape is proven
 
+That first scheduler slice is now implemented as a dedicated
+`SwitcherFourViewTargetTimeHandoffSourceSchedulerBoundary`. It keeps four
+explicit slots, one shared targetTime, preview/read-only behavior only, and
+per-slot fallible outcomes without mutating queue state. The first aggregate
+status precedence is:
+
+- `HandoffError` if any slot reports a handoff/source error
+- `AllSelected` if all four slots select a frame
+- `PartialSelected` if at least one slot selects a frame and not all four do
+- `Waiting` if no slot selects a frame and at least one slot is waiting
+- `NoFrames` otherwise
+
+This keeps handoff/source errors distinct from waiting or no-frame, preserves
+slot order explicitly, and proves the first shared-targetTime 4-view shape
+without yet adding 4-view decode/render/composition.
+
 Out of scope for the first 4-view slice:
 
 - OBS output
