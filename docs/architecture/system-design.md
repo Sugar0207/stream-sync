@@ -167,6 +167,14 @@ Data and errors that must cross the handoff:
   response, and source shutdown. These are handoff failures, distinct from
   normal no-frame results.
 
+The first transport-neutral request/response DTOs and their explicit
+length-prefixed binary codec live in `crates/net-core`. This keeps the
+server/switcher handoff codec usable from both apps while staying separate from
+the existing client/server UDP protocol code in `crates/protocol`. The byte
+stream framing is transport-neutral and test-only for now; it does not add
+named-pipe I/O, TCP I/O, or any change to the existing `VideoFrame` wire
+format.
+
 ---
 
 ## 3. コンポーネントと責務

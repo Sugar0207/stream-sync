@@ -5,6 +5,69 @@
 - Codex
 
 ### Work
+- Implemented the smallest focused code slice for the planned real
+  server->switcher handoff: transport-neutral DTOs plus an explicit
+  length-prefixed binary codec.
+- Added request/response DTOs for the server->switcher queued-frame handoff in
+  `crates/net-core`, keeping them separate from the existing UDP protocol
+  codec.
+- Added framing-aware request/response encode/decode helpers that preserve
+  `request_id`, frame metadata, payload bytes, and mapped handoff error codes.
+- Added focused round-trip and malformed/truncated-frame tests for the handoff
+  codec.
+- Updated architecture and operations docs to record codec placement in
+  `crates/net-core` and move the next task to the server single-request
+  handler / switcher client adapter slice.
+
+### Changed Files
+- `crates/net-core/src/lib.rs`
+- `docs/architecture/system-design.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### Decisions
+- Keep the first server->switcher handoff DTO/codec transport-neutral and
+  test-only for now.
+- Place the shared DTO/codec in `crates/net-core` so both `apps/server` and
+  `apps/switcher` can depend on one internal handoff codec without changing
+  `crates/protocol`.
+- Use explicit length-prefixed binary framing at the codec boundary, but do not
+  add named-pipe I/O in this slice.
+
+### Unresolved
+- server-side single-request handoff handler implementation
+- switcher-side client adapter implementation
+- concrete Windows named-pipe runtime/service lifecycle
+- production H.264 encoder configuration / error logging policy
+- Decide later whether `--live-two-view-switcher-once` should be renamed or
+  deprecated after the transport-backed server-mediated path exists.
+
+### Next
+- Add the server single-request handoff handler around
+  `ServerVideoFrameQueueReadBoundary`.
+- Add the switcher-side client adapter that implements
+  `SwitcherQueuedFrameHandoff` over the transport-neutral codec.
+
+### TODO Update
+- Marked the handoff DTO/codec slice complete in the current position.
+- Replaced the old next-item planning entry with the concrete next code slice:
+  server single-request handler and switcher client adapter.
+
+### Validation
+- `cargo fmt` passed.
+- `cargo fmt --check` passed.
+- `cargo test -p stream-sync-net-core handoff -- --test-threads=1` passed.
+- `cargo test -p stream-sync-switcher handoff -- --test-threads=1` passed.
+- `cargo test -p stream-sync-server video_frame_queue -- --test-threads=1`
+  passed.
+- `cargo check --workspace` passed.
+- `git diff --check` passed with line-ending warnings for changed files.
+
+## 2026-05-01
+### Type
+- Codex
+
+### Work
 - Implemented the requested planning/docs slice for the first real
   server->switcher transport over the existing fallible queued-frame handoff
   contract.

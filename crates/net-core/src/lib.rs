@@ -5,8 +5,8 @@ use std::{
 
 use stream_sync_protocol::{
     decode_fixed_header, decode_payload_by_message_type, validate_protocol_version, ClientId,
-    DecodeContext, EncodeContext, MessageEncoder, MessageType, ProtocolError, ProtocolMessage,
-    RunId,
+    Codec, DecodeContext, EncodeContext, MessageEncoder, MessageType, ProtocolError,
+    ProtocolMessage, RunId, TimestampMicros,
 };
 
 pub const CRATE_NAME: &str = "stream-sync-net-core";
@@ -48,6 +48,501 @@ impl From<PacketSource> for PacketDestination {
             address: source.address,
         }
     }
+}
+
+pub const SERVER_SWITCHER_HANDOFF_VERSION: u32 = 1;
+const SERVER_SWITCHER_HANDOFF_LENGTH_PREFIX_LEN: usize = 4;
+const SERVER_SWITCHER_HANDOFF_RESPONSE_KIND_FRAME_READ: u8 = 1;
+const SERVER_SWITCHER_HANDOFF_RESPONSE_KIND_NO_FRAME: u8 = 2;
+const SERVER_SWITCHER_HANDOFF_RESPONSE_KIND_ERROR: u8 = 3;
+
+/// Transport-neutral queue read mode for the first real server->switcher handoff.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ServerSwitcherQueuedFrameReadMode {
+    InspectOldest,
+    InspectLatest,
+    DequeueOldest,
+}
+
+impl ServerSwitcherQueuedFrameReadMode {
+    fn wire_code(self) -> u8 {
+        match self {
+            Self::InspectOldest => 1,
+            Self::InspectLatest => 2,
+            Self::DequeueOldest => 3,
+        }
+    }
+}
+
+impl TryFrom<u8> for ServerSwitcherQueuedFrameReadMode {
+    type Error = ServerSwitcherQueuedFrameHandoffCodecError;
+
+    fn try_from(value: u8) -> Result<Self, Self::Error> {
+        match value {
+            1 => Ok(Self::InspectOldest),
+            2 => Ok(Self::InspectLatest),
+            3 => Ok(Self::DequeueOldest),
+            actual => Err(ServerSwitcherQueuedFrameHandoffCodecError::UnknownReadMode { actual }),
+        }
+    }
+}
+
+/// Transport-neutral handoff error code for the first real server->switcher handoff.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ServerSwitcherQueuedFrameHandoffErrorCode {
+    SourceUnavailable,
+    RequestTimeout,
+    InvalidScope,
+    UnsupportedReadMode,
+    MalformedResponse,
+    SourceShutdown,
+}
+
+impl ServerSwitcherQueuedFrameHandoffErrorCode {
+    fn wire_code(self) -> u8 {
+        match self {
+            Self::SourceUnavailable => 1,
+            Self::RequestTimeout => 2,
+            Self::InvalidScope => 3,
+            Self::UnsupportedReadMode => 4,
+            Self::MalformedResponse => 5,
+            Self::SourceShutdown => 6,
+        }
+    }
+}
+
+impl TryFrom<u8> for ServerSwitcherQueuedFrameHandoffErrorCode {
+    type Error = ServerSwitcherQueuedFrameHandoffCodecError;
+
+    fn try_from(value: u8) -> Result<Self, Self::Error> {
+        match value {
+            1 => Ok(Self::SourceUnavailable),
+            2 => Ok(Self::RequestTimeout),
+            3 => Ok(Self::InvalidScope),
+            4 => Ok(Self::UnsupportedReadMode),
+            5 => Ok(Self::MalformedResponse),
+            6 => Ok(Self::SourceShutdown),
+            actual => {
+                Err(ServerSwitcherQueuedFrameHandoffCodecError::UnknownHandoffErrorCode { actual })
+            }
+        }
+    }
+}
+
+/// Transport-neutral request DTO for the first real server->switcher handoff.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ServerSwitcherQueuedFrameHandoffRequest {
+    pub handoff_version: u32,
+    pub request_id: u64,
+    pub client_id: ClientId,
+    pub run_id: RunId,
+    pub read_mode: ServerSwitcherQueuedFrameReadMode,
+}
+
+/// Frame payload and metadata returned by a successful server->switcher handoff read.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ServerSwitcherQueuedFrameHandoffFrame {
+    pub client_id: ClientId,
+    pub run_id: RunId,
+    pub frame_id: u64,
+    pub capture_timestamp: TimestampMicros,
+    pub send_timestamp: TimestampMicros,
+    pub queued_at: TimestampMicros,
+    pub width: u32,
+    pub height: u32,
+    pub fps_nominal: u32,
+    pub is_keyframe: bool,
+    pub codec: Codec,
+    pub encoded_payload_len: u32,
+    pub encoded_payload: Vec<u8>,
+}
+
+/// Transport-neutral response DTO for the first real server->switcher handoff.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ServerSwitcherQueuedFrameHandoffResponse {
+    FrameRead {
+        request_id: u64,
+        remaining_client_queue_len: u32,
+        frame: ServerSwitcherQueuedFrameHandoffFrame,
+    },
+    NoFrame {
+        request_id: u64,
+        client_id: ClientId,
+        run_id: RunId,
+        read_mode: ServerSwitcherQueuedFrameReadMode,
+        client_queue_len: u32,
+    },
+    HandoffError {
+        request_id: u64,
+        error: ServerSwitcherQueuedFrameHandoffErrorCode,
+    },
+}
+
+/// Explicit binary codec errors for framed server->switcher handoff DTOs.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ServerSwitcherQueuedFrameHandoffCodecError {
+    FramePrefixTooShort {
+        actual_len: usize,
+    },
+    TruncatedFrame {
+        declared_body_len: usize,
+        actual_body_len: usize,
+    },
+    TrailingBytes {
+        trailing_len: usize,
+    },
+    UnexpectedEof {
+        needed: usize,
+        remaining: usize,
+    },
+    InvalidUtf8,
+    UnknownReadMode {
+        actual: u8,
+    },
+    UnknownResponseKind {
+        actual: u8,
+    },
+    UnknownHandoffErrorCode {
+        actual: u8,
+    },
+    UnknownCodec {
+        actual: u16,
+    },
+    StringTooLong {
+        field: &'static str,
+        len: usize,
+    },
+    BodyTooLong {
+        len: usize,
+    },
+    PayloadLengthMismatch {
+        declared_len: u32,
+        actual_len: usize,
+    },
+}
+
+/// Length-prefixed explicit binary codec for server->switcher handoff DTOs.
+///
+/// This codec is transport-neutral and test-only for now. It does not open
+/// pipes/sockets, block on I/O, implement named-pipe service/client logic, or
+/// reuse the existing UDP `ProtocolMessage` wire format.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct ServerSwitcherQueuedFrameHandoffCodecBoundary;
+
+impl ServerSwitcherQueuedFrameHandoffCodecBoundary {
+    pub fn encode_request_frame(
+        &self,
+        request: &ServerSwitcherQueuedFrameHandoffRequest,
+    ) -> Result<Vec<u8>, ServerSwitcherQueuedFrameHandoffCodecError> {
+        let mut body = Vec::new();
+        push_u32(&mut body, request.handoff_version);
+        push_u64(&mut body, request.request_id);
+        push_string(&mut body, "client_id", &request.client_id.0)?;
+        push_string(&mut body, "run_id", &request.run_id.0)?;
+        push_u8(&mut body, request.read_mode.wire_code());
+        frame_body(body)
+    }
+
+    pub fn decode_request_frame(
+        &self,
+        frame: &[u8],
+    ) -> Result<ServerSwitcherQueuedFrameHandoffRequest, ServerSwitcherQueuedFrameHandoffCodecError>
+    {
+        let body = decode_framed_body(frame)?;
+        let mut offset = 0;
+        let request = ServerSwitcherQueuedFrameHandoffRequest {
+            handoff_version: read_u32(body, &mut offset)?,
+            request_id: read_u64(body, &mut offset)?,
+            client_id: ClientId(read_string(body, &mut offset)?),
+            run_id: RunId(read_string(body, &mut offset)?),
+            read_mode: ServerSwitcherQueuedFrameReadMode::try_from(read_u8(body, &mut offset)?)?,
+        };
+        ensure_consumed(body, offset)?;
+        Ok(request)
+    }
+
+    pub fn encode_response_frame(
+        &self,
+        response: &ServerSwitcherQueuedFrameHandoffResponse,
+    ) -> Result<Vec<u8>, ServerSwitcherQueuedFrameHandoffCodecError> {
+        let mut body = Vec::new();
+        match response {
+            ServerSwitcherQueuedFrameHandoffResponse::FrameRead {
+                request_id,
+                remaining_client_queue_len,
+                frame,
+            } => {
+                if frame.encoded_payload_len as usize != frame.encoded_payload.len() {
+                    return Err(
+                        ServerSwitcherQueuedFrameHandoffCodecError::PayloadLengthMismatch {
+                            declared_len: frame.encoded_payload_len,
+                            actual_len: frame.encoded_payload.len(),
+                        },
+                    );
+                }
+                push_u64(&mut body, *request_id);
+                push_u8(&mut body, SERVER_SWITCHER_HANDOFF_RESPONSE_KIND_FRAME_READ);
+                push_u32(&mut body, *remaining_client_queue_len);
+                push_string(&mut body, "client_id", &frame.client_id.0)?;
+                push_string(&mut body, "run_id", &frame.run_id.0)?;
+                push_u64(&mut body, frame.frame_id);
+                push_u64(&mut body, frame.capture_timestamp.0);
+                push_u64(&mut body, frame.send_timestamp.0);
+                push_u64(&mut body, frame.queued_at.0);
+                push_u32(&mut body, frame.width);
+                push_u32(&mut body, frame.height);
+                push_u32(&mut body, frame.fps_nominal);
+                push_u8(&mut body, u8::from(frame.is_keyframe));
+                push_u16(&mut body, frame.codec.wire_code());
+                push_u32(&mut body, frame.encoded_payload_len);
+                body.extend_from_slice(&frame.encoded_payload);
+            }
+            ServerSwitcherQueuedFrameHandoffResponse::NoFrame {
+                request_id,
+                client_id,
+                run_id,
+                read_mode,
+                client_queue_len,
+            } => {
+                push_u64(&mut body, *request_id);
+                push_u8(&mut body, SERVER_SWITCHER_HANDOFF_RESPONSE_KIND_NO_FRAME);
+                push_u32(&mut body, *client_queue_len);
+                push_string(&mut body, "client_id", &client_id.0)?;
+                push_string(&mut body, "run_id", &run_id.0)?;
+                push_u8(&mut body, read_mode.wire_code());
+            }
+            ServerSwitcherQueuedFrameHandoffResponse::HandoffError { request_id, error } => {
+                push_u64(&mut body, *request_id);
+                push_u8(&mut body, SERVER_SWITCHER_HANDOFF_RESPONSE_KIND_ERROR);
+                push_u8(&mut body, error.wire_code());
+            }
+        }
+        frame_body(body)
+    }
+
+    pub fn decode_response_frame(
+        &self,
+        frame: &[u8],
+    ) -> Result<ServerSwitcherQueuedFrameHandoffResponse, ServerSwitcherQueuedFrameHandoffCodecError>
+    {
+        let body = decode_framed_body(frame)?;
+        let mut offset = 0;
+        let request_id = read_u64(body, &mut offset)?;
+        let kind = read_u8(body, &mut offset)?;
+        let response = match kind {
+            SERVER_SWITCHER_HANDOFF_RESPONSE_KIND_FRAME_READ => {
+                let remaining_client_queue_len = read_u32(body, &mut offset)?;
+                let client_id = ClientId(read_string(body, &mut offset)?);
+                let run_id = RunId(read_string(body, &mut offset)?);
+                let frame_id = read_u64(body, &mut offset)?;
+                let capture_timestamp = TimestampMicros(read_u64(body, &mut offset)?);
+                let send_timestamp = TimestampMicros(read_u64(body, &mut offset)?);
+                let queued_at = TimestampMicros(read_u64(body, &mut offset)?);
+                let width = read_u32(body, &mut offset)?;
+                let height = read_u32(body, &mut offset)?;
+                let fps_nominal = read_u32(body, &mut offset)?;
+                let is_keyframe = read_u8(body, &mut offset)? != 0;
+                let codec_wire = read_u16(body, &mut offset)?;
+                let codec = Codec::try_from(codec_wire).map_err(|_| {
+                    ServerSwitcherQueuedFrameHandoffCodecError::UnknownCodec { actual: codec_wire }
+                })?;
+                let encoded_payload_len = read_u32(body, &mut offset)?;
+                let encoded_payload = read_bytes(body, &mut offset, encoded_payload_len as usize)?;
+                ServerSwitcherQueuedFrameHandoffResponse::FrameRead {
+                    request_id,
+                    remaining_client_queue_len,
+                    frame: ServerSwitcherQueuedFrameHandoffFrame {
+                        client_id,
+                        run_id,
+                        frame_id,
+                        capture_timestamp,
+                        send_timestamp,
+                        queued_at,
+                        width,
+                        height,
+                        fps_nominal,
+                        is_keyframe,
+                        codec,
+                        encoded_payload_len,
+                        encoded_payload,
+                    },
+                }
+            }
+            SERVER_SWITCHER_HANDOFF_RESPONSE_KIND_NO_FRAME => {
+                let client_queue_len = read_u32(body, &mut offset)?;
+                let client_id = ClientId(read_string(body, &mut offset)?);
+                let run_id = RunId(read_string(body, &mut offset)?);
+                let read_mode =
+                    ServerSwitcherQueuedFrameReadMode::try_from(read_u8(body, &mut offset)?)?;
+                ServerSwitcherQueuedFrameHandoffResponse::NoFrame {
+                    request_id,
+                    client_id,
+                    run_id,
+                    read_mode,
+                    client_queue_len,
+                }
+            }
+            SERVER_SWITCHER_HANDOFF_RESPONSE_KIND_ERROR => {
+                let error = ServerSwitcherQueuedFrameHandoffErrorCode::try_from(read_u8(
+                    body,
+                    &mut offset,
+                )?)?;
+                ServerSwitcherQueuedFrameHandoffResponse::HandoffError { request_id, error }
+            }
+            actual => {
+                return Err(
+                    ServerSwitcherQueuedFrameHandoffCodecError::UnknownResponseKind { actual },
+                );
+            }
+        };
+        ensure_consumed(body, offset)?;
+        Ok(response)
+    }
+}
+
+fn frame_body(body: Vec<u8>) -> Result<Vec<u8>, ServerSwitcherQueuedFrameHandoffCodecError> {
+    let body_len = u32::try_from(body.len())
+        .map_err(|_| ServerSwitcherQueuedFrameHandoffCodecError::BodyTooLong { len: body.len() })?;
+    let mut framed = Vec::with_capacity(SERVER_SWITCHER_HANDOFF_LENGTH_PREFIX_LEN + body.len());
+    framed.extend_from_slice(&body_len.to_le_bytes());
+    framed.extend_from_slice(&body);
+    Ok(framed)
+}
+
+fn decode_framed_body(frame: &[u8]) -> Result<&[u8], ServerSwitcherQueuedFrameHandoffCodecError> {
+    if frame.len() < SERVER_SWITCHER_HANDOFF_LENGTH_PREFIX_LEN {
+        return Err(
+            ServerSwitcherQueuedFrameHandoffCodecError::FramePrefixTooShort {
+                actual_len: frame.len(),
+            },
+        );
+    }
+    let declared_body_len = u32::from_le_bytes([frame[0], frame[1], frame[2], frame[3]]) as usize;
+    let actual_body_len = frame.len() - SERVER_SWITCHER_HANDOFF_LENGTH_PREFIX_LEN;
+    if actual_body_len < declared_body_len {
+        return Err(ServerSwitcherQueuedFrameHandoffCodecError::TruncatedFrame {
+            declared_body_len,
+            actual_body_len,
+        });
+    }
+    if actual_body_len > declared_body_len {
+        return Err(ServerSwitcherQueuedFrameHandoffCodecError::TrailingBytes {
+            trailing_len: actual_body_len - declared_body_len,
+        });
+    }
+    Ok(&frame[SERVER_SWITCHER_HANDOFF_LENGTH_PREFIX_LEN..])
+}
+
+fn ensure_consumed(
+    body: &[u8],
+    offset: usize,
+) -> Result<(), ServerSwitcherQueuedFrameHandoffCodecError> {
+    if offset == body.len() {
+        Ok(())
+    } else {
+        Err(ServerSwitcherQueuedFrameHandoffCodecError::TrailingBytes {
+            trailing_len: body.len() - offset,
+        })
+    }
+}
+
+fn read_u8(
+    input: &[u8],
+    offset: &mut usize,
+) -> Result<u8, ServerSwitcherQueuedFrameHandoffCodecError> {
+    let bytes = read_exact(input, offset, 1)?;
+    Ok(bytes[0])
+}
+
+fn read_u16(
+    input: &[u8],
+    offset: &mut usize,
+) -> Result<u16, ServerSwitcherQueuedFrameHandoffCodecError> {
+    let bytes = read_exact(input, offset, 2)?;
+    Ok(u16::from_le_bytes([bytes[0], bytes[1]]))
+}
+
+fn read_u32(
+    input: &[u8],
+    offset: &mut usize,
+) -> Result<u32, ServerSwitcherQueuedFrameHandoffCodecError> {
+    let bytes = read_exact(input, offset, 4)?;
+    Ok(u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
+}
+
+fn read_u64(
+    input: &[u8],
+    offset: &mut usize,
+) -> Result<u64, ServerSwitcherQueuedFrameHandoffCodecError> {
+    let bytes = read_exact(input, offset, 8)?;
+    Ok(u64::from_le_bytes([
+        bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7],
+    ]))
+}
+
+fn read_string(
+    input: &[u8],
+    offset: &mut usize,
+) -> Result<String, ServerSwitcherQueuedFrameHandoffCodecError> {
+    let len = read_u16(input, offset)? as usize;
+    let bytes = read_exact(input, offset, len)?;
+    String::from_utf8(bytes.to_vec())
+        .map_err(|_| ServerSwitcherQueuedFrameHandoffCodecError::InvalidUtf8)
+}
+
+fn read_bytes(
+    input: &[u8],
+    offset: &mut usize,
+    len: usize,
+) -> Result<Vec<u8>, ServerSwitcherQueuedFrameHandoffCodecError> {
+    Ok(read_exact(input, offset, len)?.to_vec())
+}
+
+fn read_exact<'a>(
+    input: &'a [u8],
+    offset: &mut usize,
+    len: usize,
+) -> Result<&'a [u8], ServerSwitcherQueuedFrameHandoffCodecError> {
+    let remaining = input.len().saturating_sub(*offset);
+    if remaining < len {
+        return Err(ServerSwitcherQueuedFrameHandoffCodecError::UnexpectedEof {
+            needed: len,
+            remaining,
+        });
+    }
+    let start = *offset;
+    let end = start + len;
+    *offset = end;
+    Ok(&input[start..end])
+}
+
+fn push_u8(output: &mut Vec<u8>, value: u8) {
+    output.push(value);
+}
+
+fn push_u16(output: &mut Vec<u8>, value: u16) {
+    output.extend_from_slice(&value.to_le_bytes());
+}
+
+fn push_u32(output: &mut Vec<u8>, value: u32) {
+    output.extend_from_slice(&value.to_le_bytes());
+}
+
+fn push_u64(output: &mut Vec<u8>, value: u64) {
+    output.extend_from_slice(&value.to_le_bytes());
+}
+
+fn push_string(
+    output: &mut Vec<u8>,
+    field: &'static str,
+    value: &str,
+) -> Result<(), ServerSwitcherQueuedFrameHandoffCodecError> {
+    let len = value.len();
+    let len_u16 = u16::try_from(len)
+        .map_err(|_| ServerSwitcherQueuedFrameHandoffCodecError::StringTooLong { field, len })?;
+    push_u16(output, len_u16);
+    output.extend_from_slice(value.as_bytes());
+    Ok(())
 }
 
 /// One received UDP datagram plus source metadata.
@@ -871,6 +1366,249 @@ mod tests {
         HEADER_FLAGS_OFFSET, HEADER_LENGTH_OFFSET, HEADER_MESSAGE_TYPE_OFFSET,
         HEADER_PAYLOAD_LENGTH_OFFSET, HEADER_PROTOCOL_VERSION_OFFSET, HEADER_RESERVED_OFFSET,
     };
+
+    #[test]
+    fn handoff_request_codec_round_trips() {
+        let codec = ServerSwitcherQueuedFrameHandoffCodecBoundary;
+        let request = ServerSwitcherQueuedFrameHandoffRequest {
+            handoff_version: SERVER_SWITCHER_HANDOFF_VERSION,
+            request_id: 42,
+            client_id: ClientId("player1".to_string()),
+            run_id: RunId("streamsync-dev-session".to_string()),
+            read_mode: ServerSwitcherQueuedFrameReadMode::InspectLatest,
+        };
+
+        let encoded = codec
+            .encode_request_frame(&request)
+            .expect("request should encode");
+        let decoded = codec
+            .decode_request_frame(&encoded)
+            .expect("request should decode");
+
+        assert_eq!(decoded, request);
+    }
+
+    #[test]
+    fn handoff_frame_read_response_codec_round_trips() {
+        let codec = ServerSwitcherQueuedFrameHandoffCodecBoundary;
+        let response = ServerSwitcherQueuedFrameHandoffResponse::FrameRead {
+            request_id: 7,
+            remaining_client_queue_len: 3,
+            frame: ServerSwitcherQueuedFrameHandoffFrame {
+                client_id: ClientId("player1".to_string()),
+                run_id: RunId("streamsync-dev-session".to_string()),
+                frame_id: 99,
+                capture_timestamp: TimestampMicros(1_000_001),
+                send_timestamp: TimestampMicros(1_000_101),
+                queued_at: TimestampMicros(1_000_201),
+                width: 1280,
+                height: 720,
+                fps_nominal: 30,
+                is_keyframe: true,
+                codec: Codec::H264,
+                encoded_payload_len: 4,
+                encoded_payload: vec![0xaa, 0xbb, 0xcc, 0xdd],
+            },
+        };
+
+        let encoded = codec
+            .encode_response_frame(&response)
+            .expect("frame-read response should encode");
+        let decoded = codec
+            .decode_response_frame(&encoded)
+            .expect("frame-read response should decode");
+
+        assert_eq!(decoded, response);
+    }
+
+    #[test]
+    fn handoff_no_frame_response_codec_round_trips() {
+        let codec = ServerSwitcherQueuedFrameHandoffCodecBoundary;
+        let response = ServerSwitcherQueuedFrameHandoffResponse::NoFrame {
+            request_id: 8,
+            client_id: ClientId("player2".to_string()),
+            run_id: RunId("streamsync-dev-session".to_string()),
+            read_mode: ServerSwitcherQueuedFrameReadMode::InspectOldest,
+            client_queue_len: 0,
+        };
+
+        let encoded = codec
+            .encode_response_frame(&response)
+            .expect("no-frame response should encode");
+        let decoded = codec
+            .decode_response_frame(&encoded)
+            .expect("no-frame response should decode");
+
+        assert_eq!(decoded, response);
+    }
+
+    #[test]
+    fn handoff_error_response_codec_round_trips_for_all_mapped_errors() {
+        let codec = ServerSwitcherQueuedFrameHandoffCodecBoundary;
+        let errors = [
+            ServerSwitcherQueuedFrameHandoffErrorCode::SourceUnavailable,
+            ServerSwitcherQueuedFrameHandoffErrorCode::RequestTimeout,
+            ServerSwitcherQueuedFrameHandoffErrorCode::InvalidScope,
+            ServerSwitcherQueuedFrameHandoffErrorCode::UnsupportedReadMode,
+            ServerSwitcherQueuedFrameHandoffErrorCode::MalformedResponse,
+            ServerSwitcherQueuedFrameHandoffErrorCode::SourceShutdown,
+        ];
+
+        for error in errors {
+            let response = ServerSwitcherQueuedFrameHandoffResponse::HandoffError {
+                request_id: 1234,
+                error,
+            };
+            let encoded = codec
+                .encode_response_frame(&response)
+                .expect("handoff-error response should encode");
+            let decoded = codec
+                .decode_response_frame(&encoded)
+                .expect("handoff-error response should decode");
+            assert_eq!(decoded, response);
+        }
+    }
+
+    #[test]
+    fn handoff_codec_rejects_truncated_request_frame() {
+        let codec = ServerSwitcherQueuedFrameHandoffCodecBoundary;
+        let request = ServerSwitcherQueuedFrameHandoffRequest {
+            handoff_version: SERVER_SWITCHER_HANDOFF_VERSION,
+            request_id: 55,
+            client_id: ClientId("player1".to_string()),
+            run_id: RunId("run-1".to_string()),
+            read_mode: ServerSwitcherQueuedFrameReadMode::DequeueOldest,
+        };
+        let mut encoded = codec
+            .encode_request_frame(&request)
+            .expect("request should encode");
+        encoded.pop();
+
+        let error = codec
+            .decode_request_frame(&encoded)
+            .expect_err("truncated request should fail");
+
+        assert!(matches!(
+            error,
+            ServerSwitcherQueuedFrameHandoffCodecError::TruncatedFrame { .. }
+        ));
+    }
+
+    #[test]
+    fn handoff_codec_rejects_short_frame_prefix() {
+        let codec = ServerSwitcherQueuedFrameHandoffCodecBoundary;
+
+        let error = codec
+            .decode_response_frame(&[0x01, 0x02, 0x03])
+            .expect_err("short prefix should fail");
+
+        assert_eq!(
+            error,
+            ServerSwitcherQueuedFrameHandoffCodecError::FramePrefixTooShort { actual_len: 3 }
+        );
+    }
+
+    #[test]
+    fn handoff_codec_rejects_malformed_response_kind() {
+        let codec = ServerSwitcherQueuedFrameHandoffCodecBoundary;
+        let response = ServerSwitcherQueuedFrameHandoffResponse::NoFrame {
+            request_id: 77,
+            client_id: ClientId("player2".to_string()),
+            run_id: RunId("run-2".to_string()),
+            read_mode: ServerSwitcherQueuedFrameReadMode::InspectLatest,
+            client_queue_len: 1,
+        };
+        let mut encoded = codec
+            .encode_response_frame(&response)
+            .expect("response should encode");
+        encoded[SERVER_SWITCHER_HANDOFF_LENGTH_PREFIX_LEN + 8] = 0x7f;
+
+        let error = codec
+            .decode_response_frame(&encoded)
+            .expect_err("unknown response kind should fail");
+
+        assert_eq!(
+            error,
+            ServerSwitcherQueuedFrameHandoffCodecError::UnknownResponseKind { actual: 0x7f }
+        );
+    }
+
+    #[test]
+    fn handoff_codec_preserves_request_id_echo_in_response() {
+        let codec = ServerSwitcherQueuedFrameHandoffCodecBoundary;
+        let response = ServerSwitcherQueuedFrameHandoffResponse::HandoffError {
+            request_id: 9_876_543,
+            error: ServerSwitcherQueuedFrameHandoffErrorCode::RequestTimeout,
+        };
+
+        let encoded = codec
+            .encode_response_frame(&response)
+            .expect("response should encode");
+        let decoded = codec
+            .decode_response_frame(&encoded)
+            .expect("response should decode");
+
+        let ServerSwitcherQueuedFrameHandoffResponse::HandoffError { request_id, .. } = decoded
+        else {
+            panic!("expected handoff error response");
+        };
+        assert_eq!(request_id, 9_876_543);
+    }
+
+    #[test]
+    fn handoff_codec_rejects_truncated_frame_payload() {
+        let codec = ServerSwitcherQueuedFrameHandoffCodecBoundary;
+        let response = ServerSwitcherQueuedFrameHandoffResponse::FrameRead {
+            request_id: 91,
+            remaining_client_queue_len: 2,
+            frame: ServerSwitcherQueuedFrameHandoffFrame {
+                client_id: ClientId("player1".to_string()),
+                run_id: RunId("run-1".to_string()),
+                frame_id: 7,
+                capture_timestamp: TimestampMicros(10),
+                send_timestamp: TimestampMicros(20),
+                queued_at: TimestampMicros(30),
+                width: 2,
+                height: 1,
+                fps_nominal: 30,
+                is_keyframe: false,
+                codec: Codec::H264,
+                encoded_payload_len: 3,
+                encoded_payload: vec![0x11, 0x22, 0x33],
+            },
+        };
+        let mut encoded = codec
+            .encode_response_frame(&response)
+            .expect("frame-read response should encode");
+        let payload_len_field_offset = SERVER_SWITCHER_HANDOFF_LENGTH_PREFIX_LEN
+            + 8
+            + 1
+            + 4
+            + 2
+            + "player1".len()
+            + 2
+            + "run-1".len()
+            + 8
+            + 8
+            + 8
+            + 8
+            + 4
+            + 4
+            + 4
+            + 1
+            + 2;
+        encoded[payload_len_field_offset..payload_len_field_offset + 4]
+            .copy_from_slice(&5_u32.to_le_bytes());
+
+        let error = codec
+            .decode_response_frame(&encoded)
+            .expect_err("truncated payload should fail");
+
+        assert!(matches!(
+            error,
+            ServerSwitcherQueuedFrameHandoffCodecError::UnexpectedEof { .. }
+        ));
+    }
 
     #[test]
     fn decodes_received_packet_into_protocol_message() {
