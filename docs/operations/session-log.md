@@ -5,6 +5,75 @@
 - Codex
 
 ### Work
+- Recorded the first successful localhost one-shot named-pipe handoff manual
+  pass.
+- Reviewed the provided server and switcher stdout lines and confirmed that the
+  one-shot named-pipe transport returned `FrameRead` successfully with matching
+  request/response metadata on both sides.
+- Updated the manual checklist to recommend plain pipe names for these CLI
+  commands.
+- Recorded the operational note that the full Windows pipe path
+  `\\.\pipe\streamsync-handoff-dev` produced `SourceUnavailable` in the same
+  manual testing, while the plain name `streamsync-handoff-dev` succeeded.
+- Updated TODO tracking to mark the localhost one-shot handoff pass complete
+  and move the next task to continuous accept-loop / lifecycle planning.
+
+### Changed Files
+- `docs/operations/manual-real-encoded-video-poc.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### Decisions
+- Treat the one-shot named-pipe localhost manual pass as successful.
+- Recommend plain pipe names for the current server/switcher one-shot CLI
+  commands.
+- Keep this as a docs/tracking slice only; no code or architecture change is
+  needed from the successful run.
+
+### Observed Stdout
+- Switcher:
+  `switcher named-pipe handoff once pipe_name=streamsync-handoff-dev request_id=1 client_id=player1 run_id=streamsync-dev-session read_mode=inspect-latest request_status=sent response_status=decoded result_kind=FrameRead queue_len=1 frame_id=2 capture_timestamp=1777641579940665 send_timestamp=1777641579940665 queued_at=1777641580062096 width=1920 height=1080 fps_nominal=30 codec=H264 is_keyframe=false encoded_payload_len=383887`
+- Server:
+  `server named-pipe handoff once pipe_name=streamsync-handoff-dev request_id=1 client_id=player1 run_id=streamsync-dev-session read_mode=inspect-latest request_status=decoded response_status=written result_kind=FrameRead queue_len=1 frame_id=2 capture_timestamp=1777641579940665 send_timestamp=1777641579940665 queued_at=1777641580062096 width=1920 height=1080 fps_nominal=30 codec=H264 is_keyframe=false encoded_payload_len=383887`
+
+### Conclusions
+- named-pipe one-shot handoff succeeded
+- switcher request was sent
+- server decoded the request
+- server returned `FrameRead`
+- switcher decoded the response
+- `request_id` matched
+- `client_id` / `run_id` / `read_mode` matched
+- `frame_id` matched
+- `capture_timestamp` / `send_timestamp` / `queued_at` matched
+- `width` / `height` / `fps_nominal` / `codec` / `is_keyframe` matched
+- `encoded_payload_len` matched
+- `queue_len` matched
+- metadata survived the server->switcher handoff
+- `encoded_payload_len=383887` was non-zero and realistic for a real H.264
+  frame
+- no `NoFrame` or `HandoffError` occurred in the successful run
+
+### Next
+- Plan the smallest continuous accept loop / reconnect / lifecycle slice over
+  the existing successful one-shot named-pipe handoff path.
+
+### TODO Update
+- Marked the localhost one-shot named-pipe manual pass complete.
+- Moved the next task to continuous accept loop / lifecycle planning.
+- Recorded the plain pipe name guidance in operational docs.
+
+### Validation
+- `cargo fmt` passed.
+- `cargo fmt --check` passed.
+- `cargo check --workspace` passed.
+- `git diff --check` passed with line-ending warnings for changed files.
+
+## 2026-05-01
+### Type
+- Codex
+
+### Work
 - Reviewed the submitted localhost one-shot named-pipe manual validation
   result.
 - Confirmed that the pasted `[SERVER STDOUT]`, `[CLIENT STDOUT]`, and

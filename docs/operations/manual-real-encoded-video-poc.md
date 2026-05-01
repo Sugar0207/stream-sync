@@ -133,6 +133,12 @@ For queue receive plus one named-pipe handoff in the same process, use:
 cargo run -p stream-sync-server -- --receive-auth-video-queue-and-serve-handoff-once configs/examples/server.example.toml streamsync-handoff 4096 15000 1 true 8388608
 ```
 
+For these CLI commands, use a plain pipe name such as
+`streamsync-handoff-dev`. In the latest localhost manual run, the plain name
+succeeded, while a full Windows pipe path such as
+`\\.\pipe\streamsync-handoff-dev` produced `SourceUnavailable` on the switcher
+side.
+
 Arguments after the config path are manual receive policy values:
 
 - `4096`: max post-auth video packets to receive
@@ -228,6 +234,9 @@ run one switcher-side pull/read over named pipe:
 ```powershell
 cargo run -p stream-sync-switcher -- --read-queued-frame-handoff-once streamsync-handoff player1 streamsync-dev-session preview-latest 1
 ```
+
+Use the same plain pipe name on both commands. Do not pass the full
+`\\.\pipe\...` path to these CLI arguments in the current slice.
 
 Expected switcher stdout fields:
 
@@ -367,6 +376,49 @@ Recorded conclusion from the successful `max_frames=2` run:
 For future reruns, treat the command/result pair above as the current known-good
 fragmented queue baseline before moving on to switcher/sync-side queue
 consumption.
+
+### Observed Successful One-Shot Named-Pipe Handoff Run
+
+Observed successful localhost results for the one-shot named-pipe handoff CLI:
+
+- plain pipe name `streamsync-handoff-dev` succeeded
+- full pipe path `\\.\pipe\streamsync-handoff-dev` produced
+  `SourceUnavailable` in a separate manual attempt
+- `request_id` matched between switcher request and server response
+- `FrameRead` was returned without `NoFrame` or `HandoffError`
+- frame metadata survived the server->switcher handoff unchanged
+- `encoded_payload_len=383887` was non-zero and realistic for a real H.264
+  frame
+- `queue_len=1` matched on both sides
+
+Switcher:
+
+```text
+switcher named-pipe handoff once pipe_name=streamsync-handoff-dev request_id=1 client_id=player1 run_id=streamsync-dev-session read_mode=inspect-latest request_status=sent response_status=decoded result_kind=FrameRead queue_len=1 frame_id=2 capture_timestamp=1777641579940665 send_timestamp=1777641579940665 queued_at=1777641580062096 width=1920 height=1080 fps_nominal=30 codec=H264 is_keyframe=false encoded_payload_len=383887
+```
+
+Server:
+
+```text
+server named-pipe handoff once pipe_name=streamsync-handoff-dev request_id=1 client_id=player1 run_id=streamsync-dev-session read_mode=inspect-latest request_status=decoded response_status=written result_kind=FrameRead queue_len=1 frame_id=2 capture_timestamp=1777641579940665 send_timestamp=1777641579940665 queued_at=1777641580062096 width=1920 height=1080 fps_nominal=30 codec=H264 is_keyframe=false encoded_payload_len=383887
+```
+
+Recorded conclusion from this successful localhost run:
+
+- named-pipe one-shot handoff succeeded
+- switcher request was sent
+- server decoded the request
+- server returned `FrameRead`
+- switcher decoded the response
+- `request_id` matched
+- `client_id` / `run_id` / `read_mode` matched
+- `frame_id` matched
+- `capture_timestamp` / `send_timestamp` / `queued_at` matched
+- `width` / `height` / `fps_nominal` / `codec` / `is_keyframe` matched
+- `encoded_payload_len` matched
+- `queue_len` matched
+- metadata survived server->switcher handoff
+- no `NoFrame` or `HandoffError` occurred in the successful run
 
 ---
 
@@ -630,30 +682,24 @@ Fail:
 
 ### Latest Manual Result Review
 
-2026-05-01 review status: inconclusive.
-
-The submitted stdout blocks for the server, client, and switcher contained only
-`...`, so there were no counters or status lines available to verify.
+2026-05-01 review status: successful one-shot named-pipe localhost handoff.
 
 Current answers:
 
-- client auth succeeded: not proven
-- client sent fragmented real encoded frames: not proven
-- server received / reassembled / queued frames: not proven
-- server served one named-pipe handoff request: not proven
-- switcher connected and sent one handoff request: not proven
-- `request_id` match between request and response: not proven
-- switcher result kind was `FrameRead`, `NoFrame`, or `HandoffError`: not
-  proven
-- frame metadata survival, encoded payload length, and remaining queue length:
-  not proven
-- no-frame / handoff-error classification: not proven
-- next action: docs/session-log update only for this review, then rerun the
-  same localhost manual validation and paste the real stdout counters before
-  moving to continuous accept loop / lifecycle planning
-
-No code fix is indicated by this review because no concrete failure output was
-provided.
+- client auth succeeded earlier in the same manual flow: consistent with the
+  server queue-owning path, though the handoff stdout itself proves only the
+  queued-frame read
+- server served one named-pipe handoff request: proven
+- switcher connected and sent one handoff request: proven
+- `request_id` matched between request and response: proven
+- switcher received `FrameRead`: proven
+- frame metadata survived the server->switcher handoff: proven
+- encoded payload length was non-zero and realistic: proven
+- remaining queue length matched: proven
+- no `NoFrame` or `HandoffError` occurred in the successful run
+- operational guidance update: use a plain pipe name such as
+  `streamsync-handoff-dev`; avoid passing the full `\\.\pipe\...` path in the
+  current CLI slice
 
 ---
 
