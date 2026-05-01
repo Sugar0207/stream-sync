@@ -462,6 +462,68 @@ Next project task after this decision:
   can wrap the current bounded pieces without introducing daemon mode,
   backoff, or multi-client concurrency
 
+Smallest useful service lifecycle step after the current bounded handoff slice:
+
+- add one bounded server-owned service session rather than jumping to an
+  indefinite daemon
+- the session should keep UDP receive/reassembly/queue ownership and named-pipe
+  handoff serving alive in the same process lifetime
+- the session should still be bounded primarily by `max_requests`
+- one client connection at a time and a fresh pipe instance per request remain
+  unchanged
+- switcher-side lifecycle stays classification-only and single-attempt
+
+The next service mode should therefore be another intermediate shape, not
+`until Ctrl+C` and not idle-timeout service mode:
+
+- bounded session mode
+- one process lifetime
+- one queue owner
+- one bounded handoff-serving loop
+- natural exit when `max_requests` is reached or startup/setup fails
+
+This service-lifecycle step should come before 4-view orchestration or OBS
+planning. Those later slices need a stable server-mediated runtime shape first;
+otherwise they would target bounded diagnostics instead of the intended service
+topology.
+
+Server ownership in that first service slice:
+
+- UDP receive
+- auth gate
+- fragment reassembly
+- queued frame storage
+- named-pipe handoff serving
+- bounded session start/stop and summary output
+
+Server ownership does not yet include:
+
+- retry/backoff manager
+- signal-driven process supervision
+- indefinite service lifetime
+- multi-client handoff concurrency
+- connection pooling or persistent pipe reuse
+
+Shutdown handling for the first service slice:
+
+- do not start with Ctrl+C ownership
+- do not start with a new idle-timeout lifecycle policy
+- stop naturally when `max_requests` is served
+- stop early only on startup/setup failure or explicit bounded receive/session
+  failure
+- return a final bounded-session summary rather than trying to supervise or
+  restart itself
+
+Smallest implementation slice after this planning step:
+
+- add a bounded server session runtime that runs the existing queue-owning UDP
+  receive/reassembly path and the existing named-pipe handoff serving path in
+  one bounded process lifetime
+- keep the stop condition as `max_requests`
+- keep request correlation and per-request handoff summary visible
+- keep switcher behavior unchanged except for consuming the same service shape
+  through the existing classification-only handoff path
+
 Still out of scope after this decision:
 
 - actual retry execution

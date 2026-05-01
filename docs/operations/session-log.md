@@ -5,6 +5,74 @@
 - Codex
 
 ### Work
+- Implemented a planning/docs-only slice for the smallest service lifecycle
+  step after bounded named-pipe handoff success and MVP classification-only
+  acceptance.
+- Chose a bounded service session as the next lifecycle target instead of
+  jumping to a full daemon, Ctrl+C mode, or idle-timeout mode.
+- Moved the next task from generic service-lifecycle planning to the smallest
+  bounded service-session implementation.
+
+### Changed Files
+- `docs/architecture/system-design.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### Decisions
+- The smallest useful service lifecycle step is a bounded server-owned service
+  session.
+- The next service mode should be another intermediate shape:
+  - one process lifetime
+  - one queue owner
+  - one bounded named-pipe handoff-serving loop
+  - primary stop condition `max_requests`
+- Do not jump to long-running `Ctrl+C` service mode yet.
+- Do not jump to idle-timeout service mode yet.
+- Implement server service lifecycle before 4-view orchestration or OBS
+  planning so those later slices target a stable server-mediated runtime.
+- In the first service slice the server owns:
+  - UDP receive/reassembly/queue
+  - named-pipe handoff serving
+  - bounded lifecycle start/stop and summary output
+
+### Shutdown Policy
+- Do not add signal-driven shutdown in the first service slice.
+- Do not add a new service idle-timeout policy in the first service slice.
+- Stop naturally when `max_requests` is served.
+- Stop early only on startup/setup failure or explicit bounded receive/session
+  failure.
+
+### Out Of Scope
+- reconnect/backoff manager
+- multi-client concurrency
+- protocol wire format changes
+- OBS output
+- 4-view orchestration
+- indefinite daemon mode
+- Ctrl+C lifecycle
+- idle-timeout service lifecycle
+- switcher-side fragment reassembly
+
+### Next
+- Implement the smallest bounded service session that keeps UDP
+  receive/reassembly/queue ownership and named-pipe handoff serving alive in
+  one process lifetime while still exiting on `max_requests`.
+
+### TODO Update
+- Marked the service-lifecycle planning decision complete.
+- Moved the next task to the bounded service-session implementation slice.
+
+### Validation
+- `cargo fmt` passed.
+- `cargo fmt --check` passed.
+- `cargo check --workspace` passed.
+- `git diff --check` passed with line-ending warnings for changed files.
+
+## 2026-05-02
+### Type
+- Codex
+
+### Work
 - Implemented a planning/docs-only slice to decide whether the current
   switcher-side named-pipe lifecycle should stay classification-only or grow a
   bounded retry wrapper.
