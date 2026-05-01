@@ -350,6 +350,57 @@ Switcher-side lifecycle plan:
 - Preserve the existing one-shot command behavior and the existing ignored
   smoke tests.
 
+After the successful bounded localhost validation, the smallest next
+switcher-side reconnect/lifecycle policy should stay classification-first
+rather than retry-first:
+
+- one scheduler read remains one logical handoff request
+- the first lifecycle implementation still performs exactly one transport
+  attempt for that logical request
+- no immediate retry, no bounded retry count, and no backoff are added yet
+- the new responsibility is only to classify the final explicit result as:
+  - retryable on a later scheduler tick
+  - non-retryable for the current state/configuration
+
+The smallest useful retry classification for that first lifecycle slice is:
+
+- `SourceUnavailable`: retryable on a later scheduler tick
+- `Timeout`: retryable on a later scheduler tick
+- `SourceShutdown`: non-retryable in the first slice
+- `MalformedResponse`: non-retryable
+
+`SourceShutdown` stays non-retryable in the first slice because the current
+error shape does not prove whether the server processed the request before the
+pipe closed. Retrying immediately would be unsafe for future dequeue/consume
+reads, so the caller should surface the explicit error and wait for the next
+tick or operator action instead.
+
+For the same reason, the first lifecycle slice should not auto-retry any
+explicit `HandoffError`. It should only classify them clearly while preserving
+the explicit result.
+
+Request-id policy for the first lifecycle slice:
+
+- no automatic retry means one logical request has exactly one transport
+  attempt
+- therefore the existing `request_id` remains unchanged and fully sufficient
+- if retries are added later, use a new transport-attempt request id per
+  attempt while preserving a separate logical parent request id in summary only
+  if needed
+
+Minimum lifecycle summary fields for the first slice:
+
+- `request_id`
+- `attempt_count`
+- `final_result`
+- `last_error`
+- `elapsed_millis`
+- retry classification
+
+With the no-auto-retry policy, `attempt_count` is always `1`, `final_result`
+is the existing mapped handoff result, and `last_error` is populated only for
+`HandoffError`.
+
 Failure mapping in bounded loop mode should stay aligned with the current
 one-shot mapping:
 
@@ -371,6 +422,7 @@ Out of scope for the first bounded loop slice:
 - multi-client concurrency
 - connection pooling or pipe reuse across requests
 - retry storms, backoff policy, or cross-process health management
+- automatic retry inside one scheduler read
 
 Smallest implementation slice after this planning step:
 
@@ -382,6 +434,16 @@ Smallest implementation slice after this planning step:
   plumbing needed by the bounded-loop validation path.
 - Add focused tests for bounded loop counting and early termination without
   touching the existing ignored pipe smoke tests.
+
+Smallest implementation slice after the current planning step:
+
+- add a switcher-side lifecycle classifier above the existing per-request
+  timeout summary
+- keep exactly one transport attempt per scheduler read
+- expose `attempt_count=1`, final result, last error, elapsed milliseconds, and
+  retryable/non-retryable classification
+- add fake-runtime tests that verify classification without relying on real
+  named-pipe I/O
 
 ---
 

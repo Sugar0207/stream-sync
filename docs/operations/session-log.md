@@ -5,6 +5,65 @@
 - Codex
 
 ### Work
+- Planned the smallest switcher-side reconnect/lifecycle policy after the
+  successful bounded named-pipe localhost validation.
+- Chose a no-auto-retry / classification-first first slice instead of adding
+  immediate retry, bounded retry count, or backoff.
+- Updated architecture and TODO docs to move the next implementation toward a
+  lifecycle classifier and summary extension rather than a retry manager.
+
+### Changed Files
+- `docs/architecture/system-design.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### Decisions
+- Keep `one scheduler read = one logical handoff request = one transport
+  attempt` in the first reconnect/lifecycle slice.
+- Do not auto-retry `HandoffError` in the first slice.
+- Retry classification for the first slice:
+  - `SourceUnavailable`: retryable on a later scheduler tick
+  - `Timeout`: retryable on a later scheduler tick
+  - `SourceShutdown`: non-retryable in the first slice
+  - `MalformedResponse`: non-retryable
+- Keep the existing `request_id` unchanged because the first lifecycle slice
+  has no retries.
+- If retries are added later, prefer a new transport-attempt request id per
+  retry and only add a separate logical parent request id if summary/debugging
+  truly needs it.
+
+### Unresolved
+- exact enum / type shape for retryable vs. non-retryable lifecycle
+  classification
+- whether the first lifecycle summary should be surfaced only in switcher
+  wrapper output or also in the one-shot CLI text
+- production H.264 encoder configuration / error logging policy
+- Decide later whether `--live-two-view-switcher-once` should be renamed or
+  deprecated after the transport-backed server-mediated path exists
+
+### Next
+- Add the smallest switcher-side lifecycle classifier above the current
+  per-request timeout summary.
+- Expose `attempt_count=1`, final result, last error, elapsed milliseconds, and
+  retryable/non-retryable classification through fake-runtime-testable output.
+
+### TODO Update
+- Replaced the generic reconnect/lifecycle next item with the concrete
+  no-auto-retry / classification-first policy.
+- Moved the next step from retry-manager planning to the smallest lifecycle
+  classifier implementation.
+
+### Validation
+- `cargo fmt` passed.
+- `cargo fmt --check` passed.
+- `cargo check --workspace` passed.
+- `git diff --check` passed with line-ending warnings for changed files.
+
+## 2026-05-02
+### Type
+- Codex
+
+### Work
 - Recorded the successful bounded localhost named-pipe handoff manual pass.
 - Updated manual guidance to keep the bounded server summary command as a
   working localhost validation path.
