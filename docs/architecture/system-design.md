@@ -9506,6 +9506,82 @@ This keeps handoff/source errors distinct from waiting or no-frame, preserves
 slot order explicitly, and proves the first shared-targetTime 4-view shape
 without yet adding 4-view decode/render/composition.
 
+4-view decode/render/composition should follow the same stage ordering as the
+existing 2-view fallible path, but the first implementation should still add
+dedicated 4-view boundaries rather than forcing a generic N-view refactor.
+That means:
+
+- keep the 2-view chain stable
+- add a dedicated 4-view scheduler-result adapter
+- add a dedicated 4-view decode/render-facing connection
+- add a dedicated 4-view display policy
+- add a dedicated `QuadView` composition boundary with a fixed 2x2 layout
+
+The smallest adapter from
+`SwitcherFourViewTargetTimeHandoffSourceSchedulerResult` should produce one
+explicit instruction per slot:
+
+- `Selected` -> render/decode input for that slot
+- `NoFrameAvailable` -> explicit skip/no-frame instruction
+- `WaitingForFrameAtOrBeforeTarget` -> explicit skip/waiting instruction
+- `HandoffError` -> explicit skip/source-error instruction
+
+As in the 2-view fallible path, do not create fake decoded/rendered frames for
+skipped or source-error slots. Placeholder and source-error presentation should
+stay explicit downstream decisions.
+
+The first 4-view display-policy layer should be per-slot and minimal:
+
+- update a slot when decode/render succeeds for that slot
+- hold the previous displayed frame for that slot on no-frame or waiting
+- hold the previous displayed frame for that slot on source-error when one
+  exists
+- produce an explicit no-display placeholder for a slot with no previous frame
+  and no new renderable frame
+- produce an explicit source-error placeholder for a slot with no previous
+  frame and a source/handoff error
+
+The first composition shape should stay fixed:
+
+- `QuadView` only
+- one explicit 2x2 layout
+- four per-slot composition instructions in slot order
+- no focused mode, hotkeys, or final layout polish yet
+
+Placeholder-only slots should stay explicit composition instructions rather
+than being dropped silently. This keeps no-frame, waiting, stale, and
+source-error outcomes visible and avoids implying that an empty quadrant is a
+real decoded frame.
+
+The smallest aggregate render/composition status after the scheduler layer
+should remain explicit and orthogonal to per-slot details. The first useful
+aggregate states are:
+
+- all rendered/updated
+- partial rendered with placeholders or held slots
+- all placeholders/no-display
+- source-error present
+
+The smallest implementation slice after this planning step should therefore be:
+
+- add a dedicated fallible 4-view scheduler-result -> decode/render adapter
+- run per-slot decode/render without fake frames
+- add per-slot hold/placeholder/source-error display policy
+- add fixed `QuadView` 2x2 composition instructions
+- validate with caller-owned queue state and runtime fakes before any OBS work
+
+This keeps 4-view orchestration explicit and testable while deferring the next
+larger questions:
+
+- OBS output
+- full hotkey UI
+- `Focused(slot_index)`
+- final production layout polish
+- generic N-view refactor
+- protocol changes
+- H.264 behavior changes
+- switcher-side fragment reassembly
+
 Out of scope for the first 4-view slice:
 
 - OBS output

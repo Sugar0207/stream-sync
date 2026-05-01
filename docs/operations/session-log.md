@@ -5,6 +5,69 @@
 - Codex
 
 ### Work
+- Implemented a planning/docs-only slice for the smallest 4-view
+  decode/render/composition path after the dedicated 4-view scheduler result.
+- Kept the decision aligned with the existing 2-view stage ordering while still
+  avoiding a generic N-view refactor.
+- Updated the next task from 4-view planning to the first dedicated 4-view
+  adapter/display/composition implementation slice.
+
+### Changed Files
+- `docs/architecture/system-design.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### Decisions
+- Do not force the existing 2-view decode/render/display/composition chain into
+  a generic N-view abstraction first.
+- Add dedicated 4-view boundaries that mirror the current 2-view fallible
+  stage ordering:
+  - scheduler-result adapter
+  - decode/render connection
+  - display policy
+  - `QuadView` composition
+- Keep one instruction per slot:
+  - selected -> decode/render input
+  - no-frame -> explicit no-frame skip
+  - waiting -> explicit waiting skip
+  - handoff/source error -> explicit source-error skip
+- Do not create fake decoded/rendered frames for skipped or error slots.
+- Keep placeholder-only slots as explicit composition instructions rather than
+  silently dropping them.
+- Keep the first composition mode fixed to `QuadView` with one 2x2 layout.
+
+### Smallest Next Slice
+- Add a dedicated fallible 4-view scheduler-result -> decode/render adapter.
+- Add per-slot decode/render execution without fake frames.
+- Add per-slot hold/placeholder/source-error display policy.
+- Add fixed `QuadView` composition instructions in slot order.
+
+### Out Of Scope
+- OBS output
+- full hotkey UI
+- `Focused(slot_index)`
+- final production layout polish
+- generic N-view refactor
+- protocol changes
+- H.264 behavior changes
+- switcher-side fragment reassembly
+
+### TODO Update
+- Recorded the first 4-view decode/render/composition plan.
+- Moved the next task to the dedicated 4-view adapter/display/composition
+  implementation slice.
+
+### Validation
+- `cargo fmt` passed.
+- `cargo fmt --check` passed.
+- `cargo check --workspace` passed.
+- `git diff --check` passed with line-ending warnings for changed files.
+
+## 2026-05-02
+### Type
+- Codex
+
+### Work
 - Implemented the smallest dedicated fallible 4-view preview/read-only
   scheduler boundary in `apps/switcher`.
 - Reused the existing fallible single-client targetTime handoff source for each
