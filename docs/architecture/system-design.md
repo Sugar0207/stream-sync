@@ -193,6 +193,15 @@ slice is intentionally not a service loop: no continuous accept loop, no
 reconnect policy, no process lifecycle orchestration, and no request-id
 generator are added yet.
 
+Above that one-shot runtime, the server now has a smallest bounded loop layer
+for the next lifecycle slice. It serves at most `max_requests`, creates a
+fresh named-pipe instance per request, accepts one client at a time, keeps the
+same caller-owned queue state across the loop, and preserves switcher-owned
+`request_id` correlation in per-request summaries. It is still intentionally
+smaller than a daemon: no indefinite service mode, no Ctrl+C lifecycle, no
+idle-timeout shutdown, no multi-client concurrency, and no reconnect/backoff
+manager.
+
 Above that runtime, the switcher now has a thin handoff wrapper that preserves
 the existing `SwitcherQueuedFrameHandoff` abstraction. The wrapper either uses
 an explicit caller-supplied `request_id` for one read or consumes a simple

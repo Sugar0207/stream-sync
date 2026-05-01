@@ -3205,6 +3205,36 @@ pub struct ServerSwitcherNamedPipeOneRequestRuntimeOutput {
     pub response: ServerSwitcherQueuedFrameHandoffResponse,
 }
 
+/// Result kind summary for one server-side named-pipe handoff response.
+#[cfg(windows)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ServerSwitcherNamedPipeRequestResultKind {
+    FrameRead,
+    NoFrame,
+    HandoffError,
+}
+
+/// Per-request summary for the bounded named-pipe handoff loop.
+#[cfg(windows)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ServerSwitcherNamedPipeRequestServeSummary {
+    pub request_id: u64,
+    pub result_kind: ServerSwitcherNamedPipeRequestResultKind,
+    pub queue_len: Option<u32>,
+    pub handoff_error: Option<stream_sync_net_core::ServerSwitcherQueuedFrameHandoffErrorCode>,
+}
+
+/// Aggregate output for a bounded named-pipe handoff loop.
+#[cfg(windows)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ServerSwitcherNamedPipeManyRequestRuntimeOutput {
+    pub max_requests: usize,
+    pub requests_served: usize,
+    pub successful_responses: usize,
+    pub handoff_errors: usize,
+    pub requests: Vec<ServerSwitcherNamedPipeRequestServeSummary>,
+}
+
 /// Failure while serving one named-pipe handoff request.
 #[cfg(windows)]
 #[derive(Debug)]
@@ -3265,6 +3295,99 @@ impl ServerSwitcherNamedPipeOneRequestRuntimeBoundary {
             .map_err(ServerSwitcherNamedPipeOneRequestRuntimeError::FlushResponse)?;
 
         Ok(ServerSwitcherNamedPipeOneRequestRuntimeOutput { request, response })
+    }
+
+    /// Bounded server-side named-pipe accept loop for the next lifecycle slice.
+    ///
+    /// This reuses the existing one-request runtime and serves at most
+    /// `max_requests`, creating a fresh named-pipe instance per request while
+    /// keeping the caller-owned queue state alive across the loop.
+    pub fn serve_many(
+        &self,
+        queue_state: &mut ServerVideoFrameQueueState,
+        pipe_name: &str,
+        max_requests: usize,
+    ) -> Result<
+        ServerSwitcherNamedPipeManyRequestRuntimeOutput,
+        ServerSwitcherNamedPipeOneRequestRuntimeError,
+    > {
+        self.serve_many_with(queue_state, max_requests, |queue_state| {
+            self.serve_once(queue_state, pipe_name)
+        })
+    }
+
+    fn serve_many_with<ServeFn>(
+        &self,
+        queue_state: &mut ServerVideoFrameQueueState,
+        max_requests: usize,
+        mut serve_one: ServeFn,
+    ) -> Result<
+        ServerSwitcherNamedPipeManyRequestRuntimeOutput,
+        ServerSwitcherNamedPipeOneRequestRuntimeError,
+    >
+    where
+        ServeFn: FnMut(
+            &mut ServerVideoFrameQueueState,
+        ) -> Result<
+            ServerSwitcherNamedPipeOneRequestRuntimeOutput,
+            ServerSwitcherNamedPipeOneRequestRuntimeError,
+        >,
+    {
+        let mut requests = Vec::with_capacity(max_requests);
+        let mut handoff_errors = 0usize;
+
+        for _ in 0..max_requests {
+            let output = serve_one(queue_state)?;
+            let summary = summarize_named_pipe_request_output(&output);
+            if summary.handoff_error.is_some() {
+                handoff_errors = handoff_errors.saturating_add(1);
+            }
+            requests.push(summary);
+        }
+
+        Ok(ServerSwitcherNamedPipeManyRequestRuntimeOutput {
+            max_requests,
+            requests_served: requests.len(),
+            successful_responses: requests.len(),
+            handoff_errors,
+            requests,
+        })
+    }
+}
+
+#[cfg(windows)]
+fn summarize_named_pipe_request_output(
+    output: &ServerSwitcherNamedPipeOneRequestRuntimeOutput,
+) -> ServerSwitcherNamedPipeRequestServeSummary {
+    match &output.response {
+        ServerSwitcherQueuedFrameHandoffResponse::FrameRead {
+            request_id,
+            remaining_client_queue_len,
+            ..
+        } => ServerSwitcherNamedPipeRequestServeSummary {
+            request_id: *request_id,
+            result_kind: ServerSwitcherNamedPipeRequestResultKind::FrameRead,
+            queue_len: Some(*remaining_client_queue_len),
+            handoff_error: None,
+        },
+        ServerSwitcherQueuedFrameHandoffResponse::NoFrame {
+            request_id,
+            client_queue_len,
+            ..
+        } => ServerSwitcherNamedPipeRequestServeSummary {
+            request_id: *request_id,
+            result_kind: ServerSwitcherNamedPipeRequestResultKind::NoFrame,
+            queue_len: Some(*client_queue_len),
+            handoff_error: None,
+        },
+        ServerSwitcherQueuedFrameHandoffResponse::HandoffError { request_id, error } => {
+            ServerSwitcherNamedPipeRequestServeSummary {
+                request_id: *request_id,
+                result_kind: ServerSwitcherNamedPipeRequestResultKind::HandoffError,
+                queue_len: None,
+                handoff_error: Some(*error),
+            }
+        }
     }
 }
 
@@ -12028,6 +12151,112 @@ shared_token = "secret"
         assert_eq!(frame.frame_id, 11);
         assert_eq!(frame.codec, Codec::H264);
         assert_eq!(frame.encoded_payload, vec![0xaa, 0xbb, 0xcc]);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn server_switcher_named_pipe_runtime_serve_many_summarizes_bounded_requests() {
+        let boundary = ServerSwitcherNamedPipeOneRequestRuntimeBoundary::default();
+        let mut queue_state = ServerVideoFrameQueueState::default();
+        let mut calls = 0usize;
+
+        let output = boundary
+            .serve_many_with(&mut queue_state, 3, |_queue_state| {
+                let request_id = 900 + calls as u64;
+                let response = match calls {
+                    0 => ServerSwitcherQueuedFrameHandoffResponse::FrameRead {
+                        request_id,
+                        remaining_client_queue_len: 2,
+                        frame: ServerSwitcherQueuedFrameHandoffFrame {
+                            client_id: ClientId("client-1".to_string()),
+                            run_id: RunId("run-1".to_string()),
+                            frame_id: 11,
+                            capture_timestamp: TimestampMicros(10),
+                            send_timestamp: TimestampMicros(11),
+                            queued_at: TimestampMicros(12),
+                            width: 640,
+                            height: 360,
+                            fps_nominal: 30,
+                            is_keyframe: true,
+                            codec: Codec::H264,
+                            encoded_payload_len: 3,
+                            encoded_payload: vec![1, 2, 3],
+                        },
+                    },
+                    1 => ServerSwitcherQueuedFrameHandoffResponse::NoFrame {
+                        request_id,
+                        client_id: ClientId("client-1".to_string()),
+                        run_id: RunId("run-1".to_string()),
+                        read_mode: ServerSwitcherQueuedFrameReadMode::InspectLatest,
+                        client_queue_len: 0,
+                    },
+                    _ => ServerSwitcherQueuedFrameHandoffResponse::HandoffError {
+                        request_id,
+                        error:
+                            stream_sync_net_core::ServerSwitcherQueuedFrameHandoffErrorCode::SourceShutdown,
+                    },
+                };
+                calls = calls.saturating_add(1);
+                Ok(ServerSwitcherNamedPipeOneRequestRuntimeOutput {
+                    request: ServerSwitcherQueuedFrameHandoffRequest {
+                        handoff_version: SERVER_SWITCHER_HANDOFF_VERSION,
+                        request_id,
+                        client_id: ClientId("client-1".to_string()),
+                        run_id: RunId("run-1".to_string()),
+                        read_mode: ServerSwitcherQueuedFrameReadMode::InspectLatest,
+                    },
+                    response,
+                })
+            })
+            .expect("bounded serve_many should aggregate summaries");
+
+        assert_eq!(output.max_requests, 3);
+        assert_eq!(output.requests_served, 3);
+        assert_eq!(output.successful_responses, 3);
+        assert_eq!(output.handoff_errors, 1);
+        assert_eq!(output.requests.len(), 3);
+        assert_eq!(output.requests[0].request_id, 900);
+        assert_eq!(
+            output.requests[0].result_kind,
+            ServerSwitcherNamedPipeRequestResultKind::FrameRead
+        );
+        assert_eq!(output.requests[0].queue_len, Some(2));
+        assert_eq!(
+            output.requests[1].result_kind,
+            ServerSwitcherNamedPipeRequestResultKind::NoFrame
+        );
+        assert_eq!(output.requests[1].queue_len, Some(0));
+        assert_eq!(
+            output.requests[2].result_kind,
+            ServerSwitcherNamedPipeRequestResultKind::HandoffError
+        );
+        assert_eq!(output.requests[2].queue_len, None);
+        assert_eq!(
+            output.requests[2].handoff_error,
+            Some(stream_sync_net_core::ServerSwitcherQueuedFrameHandoffErrorCode::SourceShutdown)
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn server_switcher_named_pipe_runtime_serve_many_allows_zero_requests() {
+        let boundary = ServerSwitcherNamedPipeOneRequestRuntimeBoundary::default();
+        let mut queue_state = ServerVideoFrameQueueState::default();
+        let mut called = false;
+
+        let output = boundary
+            .serve_many_with(&mut queue_state, 0, |_queue_state| {
+                called = true;
+                Err(ServerSwitcherNamedPipeOneRequestRuntimeError::InvalidPipeName)
+            })
+            .expect("zero-request bounded loop should succeed without serving");
+
+        assert_eq!(output.max_requests, 0);
+        assert_eq!(output.requests_served, 0);
+        assert_eq!(output.successful_responses, 0);
+        assert_eq!(output.handoff_errors, 0);
+        assert!(output.requests.is_empty());
+        assert!(!called);
     }
 
     #[cfg(windows)]

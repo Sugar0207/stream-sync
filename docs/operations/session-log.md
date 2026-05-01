@@ -5,6 +5,73 @@
 - Codex
 
 ### Work
+- Implemented the smallest bounded server-side named-pipe accept loop over the
+  existing one-shot runtime.
+- Added a bounded `serve_many(..., max_requests)` runtime in `apps/server`
+  that reuses the existing one-shot named-pipe runtime internally.
+- Kept the same caller-owned `ServerVideoFrameQueueState` across the loop.
+- Kept one client at a time and a fresh named-pipe instance per request by
+  repeatedly calling the existing one-shot server runtime.
+- Added aggregate loop output with:
+  - `max_requests`
+  - `requests_served`
+  - `successful_responses`
+  - `handoff_errors`
+  - per-request `request_id`
+  - per-request `result_kind`
+  - per-request `queue_len`
+- Added focused non-I/O tests for bounded summary aggregation and zero-request
+  behavior.
+
+### Changed Files
+- `apps/server/src/lib.rs`
+- `docs/architecture/system-design.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### Decisions
+- Reuse the existing one-shot server runtime internally instead of duplicating
+  pipe accept/read/write logic.
+- Keep bounded-loop output as a summary structure rather than storing full
+  frame payload copies for every request.
+- Count a `HandoffError` response as a successful response transport-wise while
+  also counting it in the explicit `handoff_errors` summary.
+
+### Unresolved
+- switcher-side per-request timeout/lifecycle plumbing
+- whether/how the bounded loop summary should be exposed through a CLI/manual
+  runtime command
+- production H.264 encoder configuration / error logging policy
+- Decide later whether `--live-two-view-switcher-once` should be renamed or
+  deprecated after the transport-backed server-mediated path exists
+
+### Next
+- Add the smallest switcher-side per-request timeout/lifecycle policy.
+- Decide how to surface the bounded server loop summary in a manual/runtime
+  command without expanding to a full daemon.
+
+### TODO Update
+- Marked the bounded server `serve_many(..., max_requests)` runtime complete in
+  current position.
+- Replaced the old bounded-loop implementation item with the next switcher
+  timeout/lifecycle item.
+
+### Validation
+- `cargo fmt` passed.
+- `cargo fmt --check` passed.
+- `cargo test -p stream-sync-net-core handoff -- --test-threads=1` passed.
+- `cargo test -p stream-sync-server handoff -- --test-threads=1` passed.
+- `cargo test -p stream-sync-switcher handoff -- --test-threads=1` passed.
+- `cargo test -p stream-sync-server video_frame_queue -- --test-threads=1`
+  passed.
+- `cargo check --workspace` passed.
+- `git diff --check` passed with line-ending warnings for changed files.
+
+## 2026-05-01
+### Type
+- Codex
+
+### Work
 - Implemented the requested planning/docs slice for the continuous
   named-pipe accept loop / reconnect / lifecycle approach.
 - Reviewed the successful one-shot localhost named-pipe handoff result and
