@@ -8600,6 +8600,49 @@ Responsibility split:
 
 No protocol wire format changed for this slice.
 
+## Switcher Fallible 2-View Display Composition Adapter Boundary
+
+The fallible display policy output now has a minimal composition adapter:
+
+```text
+SwitcherTwoViewHandoffDisplayPolicyOutput
+  -> SwitcherTwoViewHandoffDisplayCompositionAdapterBoundary
+  -> explicit composition-facing instructions
+  -> SwitcherTwoViewCompositionInput
+```
+
+Current implementation:
+
+- `SwitcherTwoViewHandoffDisplayCompositionAdapterBoundary` consumes the
+  fallible display policy output.
+- It preserves explicit composition-facing per-side instructions:
+  - `Update` becomes `UseUpdatedFrame`.
+  - `HoldPrevious` becomes `UseHeldPreviousFrame`.
+  - `PreviousFrameStale` becomes `UseStalePlaceholder`.
+  - generic no-display stays `UseNoDisplayPlaceholder`.
+  - source-error no-display becomes `UseSourceErrorPlaceholder`.
+- The adapter output preserves aggregate scheduler status, including aggregate
+  `HandoffError`.
+- The existing `SwitcherTwoViewCompositionInput` still accepts only decoded or
+  skipped sides. Because of that, source-error placeholder detail remains
+  explicit in the adapter output while `composition_input` narrows skipped sides
+  to the current generic skipped-side reason shape for the existing composer.
+- No skipped or source-error side is turned into a fake decoded frame.
+
+Responsibility split:
+
+- the fallible display policy remains responsible for update / hold / stale /
+  no-display decisions and source-error placeholder decisions.
+- the fallible composition adapter owns only type translation into composition-
+  facing instructions and the existing `SwitcherTwoViewCompositionInput`.
+- the existing composer remains unchanged; it sees decoded sides or generic
+  skipped sides only.
+- composed-canvas render connection, OBS output, 4-view orchestration,
+  late-drop mutation, transport, protocol changes, H.264 behavior changes, and
+  switcher-side fragment reassembly remain out of scope.
+
+No protocol wire format changed for this slice.
+
 ## Switcher 2-View Scheduler Decode/Render Connection Boundary
 
 The scheduler adapter now has a smallest in-process connection boundary that

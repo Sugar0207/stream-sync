@@ -5,6 +5,58 @@
 - Codex
 
 ### Work
+- Added the smallest fallible display policy -> composition adapter / placeholder boundary.
+- Added `SwitcherTwoViewHandoffDisplayCompositionAdapterInput`.
+- Added `SwitcherTwoViewHandoffDisplayCompositionSideInstruction`.
+- Added `SwitcherTwoViewHandoffDisplayCompositionAdapterOutput`.
+- Added `SwitcherTwoViewHandoffDisplayCompositionAdapterBoundary`.
+- The adapter consumes `SwitcherTwoViewHandoffDisplayPolicyOutput`.
+- It maps update to updated frame, hold to held previous frame, stale to explicit stale placeholder, generic no-display to explicit no-display placeholder, and source-error no-display to explicit source-error placeholder.
+- Source-error placeholder detail remains explicit in the adapter output and is not collapsed into generic no-display there.
+- The existing `SwitcherTwoViewCompositionInput` still narrows skipped sides to the current generic skipped-side reason shape for the unchanged composer.
+- Added focused tests for both updates, update+held previous, source-error hold detail, source-error placeholder without previous frame, stale placeholder, no-display placeholder, source-error not no-frame/waiting, no fake frames for skipped/error sides, and aggregate `HandoffError` preservation.
+
+### Changed Files
+- `apps/switcher/src/lib.rs`
+- `docs/architecture/system-design.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### Decisions
+- Keep the fallible composition adapter separate from the existing non-fallible display composition adapter because source-error placeholder detail needs its own instruction shape.
+- Preserve source-error placeholder detail in the adapter output even though the current composition input can only express generic skipped sides.
+- Do not create fake decoded frames for skipped or source-error sides.
+- Keep targetTime selection in switcher.
+- Keep server as ingest/reassembly/queue owner.
+- Do not add IPC/TCP/UDP/shared-memory transport, OBS output, 4-view orchestration, protocol wire-format changes, H.264 behavior changes, or switcher-side fragment reassembly.
+
+### Unresolved
+- Connect `SwitcherTwoViewHandoffDisplayCompositionAdapterOutput` to the composed-canvas render connection while keeping source-error placeholder detail visible in the adapter output.
+- Decide whether the fallible render connection should mirror the non-fallible display-composition render connection or whether a more general adapter/render connection shape is warranted.
+- production H.264 encoder configuration / error logging policy
+
+### Next
+- Plan the smallest composed-canvas render connection for fallible display composition adapter output.
+
+### TODO Update
+- Marked the fallible display policy -> composition adapter boundary as complete.
+- Updated the next item to plan composed-canvas render connection for `SwitcherTwoViewHandoffDisplayCompositionAdapterOutput`.
+
+### Validation
+- `cargo fmt` passed.
+- `cargo fmt --check` passed.
+- `cargo test -p stream-sync-switcher two_view -- --test-threads=1` passed.
+- `cargo test -p stream-sync-switcher target_time -- --test-threads=1` passed.
+- `cargo test -p stream-sync-switcher single_client_queue_source -- --test-threads=1` passed.
+- `cargo test -p stream-sync-server video_frame_queue -- --test-threads=1` passed.
+- `cargo check --workspace` passed.
+- `git diff --check` passed with line-ending warnings for changed files.
+
+## 2026-05-01
+### Type
+- Codex
+
+### Work
 - Added the smallest fallible display-policy / placeholder decision boundary.
 - Added `SwitcherTwoViewHandoffDisplayPolicyInput`.
 - Added `SwitcherTwoViewHandoffDisplayDecision`.
