@@ -5,6 +5,73 @@
 - Codex
 
 ### Work
+- Implemented the smallest thin switcher-side handoff wrapper over the
+  one-request / one-response named-pipe runtime.
+- Added a `SwitcherQueuedFrameHandoff` implementation that delegates one read
+  to a named-pipe runtime, preserving the existing handoff abstraction for the
+  downstream switcher pipeline.
+- Added a minimal request-id policy for that wrapper:
+  `read_handoff_frame_with_request_id` preserves a caller-supplied request id,
+  while the trait-based `read_handoff_frame` consumes a wrapper-owned
+  monotonic `u64`.
+- Added a small runtime trait so default tests can use fake/stub runtimes
+  instead of real named-pipe I/O.
+- Added focused fake-runtime tests for request-id preservation, monotonic id
+  generation, `FrameRead`, `NoFrameAvailable`, explicit `HandoffError`, and
+  local runtime encode failure staying explicit rather than degrading into
+  `NoFrame`.
+- Updated architecture and operations docs to record the thin wrapper
+  responsibility and the minimal request-id policy.
+
+### Changed Files
+- `apps/switcher/src/lib.rs`
+- `docs/architecture/system-design.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### Decisions
+- Keep the thin wrapper in `apps/switcher` rather than moving request-id policy
+  into `net-core`.
+- Use a wrapper-owned monotonic `u64` counter as the default policy for the
+  existing handoff trait method.
+- Keep real named-pipe smoke tests ignored and rely on fake-runtime tests for
+  default handoff validation.
+
+### Unresolved
+- manual invocation shape for the one-request / one-response named-pipe path
+- how request-id policy should be exposed in a manual/runtime command
+- continuous named-pipe service/client lifecycle
+- production H.264 encoder configuration / error logging policy
+- Decide later whether `--live-two-view-switcher-once` should be renamed or
+  deprecated after the transport-backed server-mediated path exists.
+
+### Next
+- Define the smallest manual invocation shape for the named-pipe one-shot
+  handoff path.
+- Decide how request-id should be provided or surfaced in that manual/runtime
+  entry point.
+
+### TODO Update
+- Marked the thin named-pipe-backed handoff wrapper complete in the current
+  position.
+- Replaced the wrapper item with the next manual/request-id-shaping item.
+
+### Validation
+- `cargo fmt` passed.
+- `cargo fmt --check` passed.
+- `cargo test -p stream-sync-net-core handoff -- --test-threads=1` passed.
+- `cargo test -p stream-sync-server handoff -- --test-threads=1` passed.
+- `cargo test -p stream-sync-switcher handoff -- --test-threads=1` passed.
+- `cargo test -p stream-sync-server video_frame_queue -- --test-threads=1`
+  passed.
+- `cargo check --workspace` passed.
+- `git diff --check` passed with line-ending warnings for changed files.
+
+## 2026-05-01
+### Type
+- Codex
+
+### Work
 - Implemented the smallest Windows named-pipe one-request / one-response
   runtime connection for the server->switcher handoff path.
 - Added a Windows-only server-side named-pipe runtime in `apps/server` that

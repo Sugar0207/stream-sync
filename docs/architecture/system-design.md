@@ -193,6 +193,13 @@ slice is intentionally not a service loop: no continuous accept loop, no
 reconnect policy, no process lifecycle orchestration, and no request-id
 generator are added yet.
 
+Above that runtime, the switcher now has a thin handoff wrapper that preserves
+the existing `SwitcherQueuedFrameHandoff` abstraction. The wrapper either uses
+an explicit caller-supplied `request_id` for one read or consumes a simple
+wrapper-owned monotonic `u64` counter when the caller uses the existing
+handoff trait method. This keeps request-id correlation visible without adding
+a shared process-wide allocator or lifecycle layer.
+
 ---
 
 ## 3. コンポーネントと責務
