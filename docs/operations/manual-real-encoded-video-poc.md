@@ -573,6 +573,79 @@ rerun:
 - classification-only lifecycle reporting is sufficient for the current
   successful path
 
+### Observed Successful Bounded Service-Session Localhost Run
+
+Observed successful localhost results for the bounded service-session CLI:
+
+- client auth succeeded
+- fragmented real encoded send succeeded
+- server receive/reassembly/queue succeeded
+- bounded service session served `max_requests=2`
+- `requests_served=2`
+- `successful_responses=2`
+- `handoff_errors=0`
+- both switcher reads returned `FrameRead`
+- `attempt_count=1` was visible
+- `final_result=FrameRead` was visible
+- `last_error=none` was visible
+- `retry_classification=none` was visible
+- `request_id=1` and `request_id=2` were preserved end to end
+- metadata survived the server->switcher handoff unchanged
+- `encoded_payload_len=263025` was preserved and non-zero
+- repeated `inspect-latest` returned the same queued frame twice, which again
+  confirms preview/read-only semantics and no queue mutation
+- bounded service-session MVP appears complete enough to close the current
+  transport/lifecycle phase
+
+Server:
+
+```text
+server named-pipe handoff bounded pipe_name=streamsync-handoff-dev max_requests=2 requests_served=2 successful_responses=2 handoff_errors=0
+server named-pipe handoff bounded request pipe_name=streamsync-handoff-dev request_index=0 request_id=1 result_kind=FrameRead queue_len=1 handoff_error=none
+server named-pipe handoff bounded request pipe_name=streamsync-handoff-dev request_index=1 request_id=2 result_kind=FrameRead queue_len=1 handoff_error=none
+```
+
+Client:
+
+```text
+auth real encoded video frame bounded PoC sent AuthRequest 96 bytes from 0.0.0.0:61364 to 127.0.0.1:5000 and received AuthResponse 55 bytes from 127.0.0.1:5000; accepted=true reason_code=Ok; bounded_manual_runtime=true; fragment_pacing_every=16 fragment_pacing_delay_ms=1 frames_attempted=2 frames_captured=1 frames_encoded=1 frames_sent=1 direct_sends=0 fragmented_sends=1 fragments_attempted=257 fragments_sent=257 no_frame_count=1 capture_failures=0 encode_failures=0 frame_build_failures=0 send_failures=0 stop_reason=Some(MaxFramesReached) last_send_destination=none last_send_local_source=none last_send_frame_id=none last_send_payload_len=none last_send_packet_len=none last_send_error=none
+```
+
+Switcher read 1:
+
+```text
+switcher named-pipe handoff once pipe_name=streamsync-handoff-dev request_id=1 client_id=player1 run_id=streamsync-dev-session read_mode=inspect-latest attempt_count=1 timeout_millis=5000 elapsed_millis=2 request_status=sent response_status=decoded result_kind=FrameRead final_result=FrameRead last_error=none retry_classification=none queue_len=1 frame_id=2 capture_timestamp=1777670084106822 send_timestamp=1777670084106822 queued_at=1777670084284955 width=1920 height=1080 fps_nominal=30 codec=H264 is_keyframe=false encoded_payload_len=263025
+```
+
+Switcher read 2:
+
+```text
+switcher named-pipe handoff once pipe_name=streamsync-handoff-dev request_id=2 client_id=player1 run_id=streamsync-dev-session read_mode=inspect-latest attempt_count=1 timeout_millis=5000 elapsed_millis=1 request_status=sent response_status=decoded result_kind=FrameRead final_result=FrameRead last_error=none retry_classification=none queue_len=1 frame_id=2 capture_timestamp=1777670084106822 send_timestamp=1777670084106822 queued_at=1777670084284955 width=1920 height=1080 fps_nominal=30 codec=H264 is_keyframe=false encoded_payload_len=263025
+```
+
+Recorded conclusion from this successful bounded service-session localhost run:
+
+- client auth succeeded
+- client fragmented real encoded send succeeded
+- server receive/reassembly/queue succeeded
+- bounded service session served 2 named-pipe requests
+- `max_requests=2`
+- `requests_served=2`
+- `successful_responses=2`
+- `handoff_errors=0`
+- both switcher reads returned `FrameRead`
+- `attempt_count=1`
+- `final_result=FrameRead`
+- `last_error=none`
+- `retry_classification=none`
+- `request_id` 1 and 2 were preserved
+- metadata survived server->switcher handoff
+- `encoded_payload_len=263025` was preserved and non-zero
+- repeated `inspect-latest` returned the same frame without queue mutation
+- no error collapsed into `NoFrame`
+- bounded service-session MVP appears complete enough to close the current
+  transport/lifecycle phase
+
 ---
 
 ## 3. Two-Client Live Switcher E2E
