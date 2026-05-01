@@ -9399,6 +9399,109 @@ Next production-facing slice:
 - Keep direct switcher receive diagnostic/legacy, but do not treat it as the
   main validation path.
 
+## Switcher Fallible 4-View Orchestration Plan
+
+The next major switcher phase should be 4-view orchestration before OBS/output.
+OBS is only the external output target; the switcher still needs to decide what
+four-view content exists before any output boundary is meaningful.
+
+First design decision:
+
+- do not generalize the current 2-view pipeline into a fully generic N-view
+  abstraction first
+- instead, add a separate 4-view boundary that reuses the same fallible
+  per-view semantics and the same switcher-owned stage ordering
+
+This keeps the current 2-view path stable while allowing the first 4-view slice
+to prove shared-targetTime and per-view fallible outcome preservation without
+an early broad refactor.
+
+Smallest 4-view source input shape:
+
+- four explicit view slots
+- each slot carries:
+  - `client_id`
+  - `run_id`
+- do not require one shared `run_id` for all four slots in the first slice
+- optional user-facing labels may exist later, but they are not required for
+  the first orchestration slice
+
+The smallest useful first 4-view config is therefore one explicit struct with
+four slot descriptors rather than one shared run id or a fully dynamic list.
+
+TargetTime policy:
+
+- use one shared targetTime across all four views
+- keep targetTime ownership in switcher
+- do not move eligibility selection to server
+
+Consume policy for the first 4-view slice:
+
+- start with preview/read-only validation first
+- do not start with dequeue/consume in the first 4-view slice
+- if consume is added later, it should remain all-or-nothing across all four
+  views to avoid partial mutation against a shared synchronized decision
+
+Per-view outcomes that must remain explicit:
+
+- selected
+- rendered
+- no-frame
+- waiting
+- handoff/source error
+- stale
+- no-display placeholder
+- source-error placeholder
+
+As in the 2-view fallible path, source errors must not collapse into no-frame
+or waiting, and placeholder/stale/error sides must not create fake decoded
+frames.
+
+Aggregate 4-view status needed for the first slice:
+
+- all selected
+- partial selected
+- waiting
+- no frames
+- handoff/source error
+
+That aggregate status should stay orthogonal to per-view outcomes so the caller
+can still inspect which of the four views was selected, waiting, missing, or in
+source error.
+
+Active-view / quad-view representation:
+
+- the first 4-view orchestration slice should start with explicit mode only:
+  - `QuadView`
+- plan a later explicit focus mode:
+  - `Focused(slot_index)`
+- do not add hotkey ownership, UI state machines, or final production layout
+  rules in the first orchestration slice
+
+Smallest implementation slice after this planning step:
+
+- add a fallible 4-view preview/read-only scheduler boundary over
+  `SwitcherQueuedFrameHandoff`
+- preserve one shared targetTime and per-view selected/no-frame/waiting/error
+  results
+- add aggregate 4-view status
+- validate over caller-owned `ServerVideoFrameQueueState` and injected
+  handoff fakes first
+- keep decode/render/composition for 4-view as the next slice after the
+  scheduler result shape is proven
+
+Out of scope for the first 4-view slice:
+
+- OBS output
+- final production layout polish
+- full hotkey UI
+- reconnect/backoff
+- protocol wire-format changes
+- H.264 behavior changes
+- switcher-side fragment reassembly
+- daemon/service lifecycle expansion
+- generic N-view refactor
+
 First real transport decision:
 
 - The first real production-like server->switcher handoff should use local IPC

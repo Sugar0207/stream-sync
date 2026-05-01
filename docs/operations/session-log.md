@@ -5,6 +5,71 @@
 - Codex
 
 ### Work
+- Implemented a planning/docs-only slice for the next major phase and chose
+  4-view orchestration planning before OBS/output boundary work.
+- Documented the first 4-view orchestration shape as a separate 4-view boundary
+  rather than an immediate generic N-view refactor.
+- Moved the next task from major-phase selection to the smallest 4-view
+  preview/read-only scheduler implementation.
+
+### Changed Files
+- `docs/architecture/system-design.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### Decisions
+- Proceed with 4-view orchestration before OBS/output boundary.
+- Add a separate 4-view boundary first instead of generalizing the current
+  2-view path immediately.
+- Use one shared targetTime across all four views.
+- Use preview/read-only behavior first.
+- Preserve per-view fallible outcomes:
+  - selected/rendered
+  - no-frame
+  - waiting
+  - handoff/source error
+  - stale
+  - placeholder
+- Keep aggregate 4-view status explicit:
+  - all selected
+  - partial selected
+  - waiting
+  - no frames
+  - handoff/source error
+- Represent view mode minimally as `QuadView` first, with later
+  `Focused(slot_index)` left for a follow-up slice.
+
+### Smallest Next Slice
+- Add a fallible 4-view preview/read-only scheduler boundary over
+  `SwitcherQueuedFrameHandoff`.
+- Keep one shared targetTime and explicit per-view outcomes.
+- Validate first with caller-owned queue state and injected handoff fakes.
+
+### Out Of Scope
+- OBS output
+- full hotkey UI
+- final production layout polish
+- reconnect/backoff
+- protocol wire-format changes
+- H.264 behavior changes
+- switcher-side fragment reassembly
+- generic N-view refactor
+
+### TODO Update
+- Marked the major-phase decision complete.
+- Moved the next task to the smallest 4-view orchestration implementation.
+
+### Validation
+- `cargo fmt` passed.
+- `cargo fmt --check` passed.
+- `cargo check --workspace` passed.
+- `git diff --check` passed with line-ending warnings for changed files.
+
+## 2026-05-02
+### Type
+- Codex
+
+### Work
 - Recorded the successful bounded service-session localhost manual pass.
 - Updated tracking so the bounded service-session validation is complete and
   the next task moves to deciding the next major phase.
