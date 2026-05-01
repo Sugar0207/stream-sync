@@ -5,6 +5,70 @@
 - Codex
 
 ### Work
+- Implemented the requested planning/docs slice for the fallible
+  server-mediated 2-view validation path.
+- Reviewed the current `run_fallible_with_runtimes` /
+  `run_fallible_from_handoff_with_runtimes` path, the existing direct
+  switcher receive diagnostic command, the server queue manual runtime, and the
+  manual real encoded video checklist.
+- Documented that a dedicated manual/runtime entry point is not needed before
+  real server->switcher transport planning.
+- Documented that `--live-two-view-switcher-once` remains a direct receive
+  diagnostic/legacy path and must not be revived as the main validation path.
+- Documented that `--receive-auth-video-queue-once` proves only server
+  auth/reassembly/queue and is not a reusable entry for the fallible switcher
+  path.
+- Recorded the smallest later debug-only command shape only as a fallback
+  option, not as the current next task.
+- Updated the manual checklist to keep command flow unchanged and point the
+  next slice at transport planning.
+
+### Changed Files
+- `docs/architecture/system-design.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+- `docs/operations/manual-real-encoded-video-poc.md`
+
+### Decisions
+- Do not add a dedicated manual/runtime entry point for
+  `SwitcherServerMediatedTwoViewValidationBoundary::run_fallible_*` before
+  production server->switcher transport planning.
+- Keep `--live-two-view-switcher-once` as direct switcher receive
+  diagnostic/legacy only.
+- Do not reuse the direct switcher receive diagnostic as the main
+  server-mediated validation path.
+- If a debug-only command is needed later, make it switcher-owned and feed it
+  from the existing in-process `ServerVideoFrameQueueState`; keep fake/failing
+  handoff sources in focused tests instead of manual runtime flow.
+
+### Unresolved
+- real server->switcher transport planning over the fallible queued-frame
+  handoff contract
+- production H.264 encoder configuration / error logging policy
+- Decide later whether `--live-two-view-switcher-once` should be renamed or
+  deprecated after the transport-backed server-mediated path exists.
+
+### Next
+- Plan the real server->switcher transport around the existing fallible
+  handoff contract.
+
+### TODO Update
+- Replaced the manual/runtime entry-point decision item with real
+  server->switcher transport planning.
+- Recorded that no dedicated fallible manual/runtime command will be added in
+  this step.
+
+### Validation
+- `cargo fmt` passed.
+- `cargo fmt --check` passed.
+- `cargo check --workspace` passed.
+- `git diff --check` passed with line-ending warnings for changed docs files.
+
+## 2026-05-01
+### Type
+- Codex
+
+### Work
 - Added the smallest fallible server-mediated 2-view validation path.
 - Added `SwitcherServerMediatedTwoViewHandoffValidationOutput`.
 - Added `run_fallible_with_runtimes` to `SwitcherServerMediatedTwoViewValidationBoundary`.

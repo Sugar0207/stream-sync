@@ -8970,10 +8970,43 @@ Responsibility split:
 
 Next production-facing slice:
 
-- Decide whether the next useful step is a manual/runtime entry point for this
-  fallible server-mediated path or production H.264 encoder configuration /
-  error logging policy.
-- Keep real transport selection deferred until the in-process handoff path is
-  fully validated.
+- Do not add a dedicated manual/runtime entry point for
+  `SwitcherServerMediatedTwoViewValidationBoundary::run_fallible_*` before
+  production server->switcher transport planning.
+- The current focused tests already validate the fallible path over both
+  caller-owned `ServerVideoFrameQueueState` and injected
+  `SwitcherQueuedFrameHandoff`, including eligible render, waiting, no-frame,
+  handoff/source error, preview no-mutation, and consume all-or-nothing.
+- The existing manual/diagnostic commands are not a reusable entry for this
+  path:
+  - `--live-two-view-switcher-once` is a direct switcher receive
+    diagnostic/legacy path and should not be revived as the main path.
+  - `--receive-auth-video-queue-once` proves server auth/reassembly/queue only
+    and stops before switcher scheduler/display/composition/render.
+- If a debug-only command is needed later, it should be a separate
+  switcher-owned command. The smallest shape would be:
+
+```text
+--receive-auth-video-fallible-two-view-once [config-path] [left-client-id] [right-client-id]
+```
+
+- That later command should consume the existing in-process
+  `ServerVideoFrameQueueState` produced by the server manual queue runtime for
+  happy-path validation. It should not require decoded test frames.
+- Synthetic/failing handoff sources remain better covered by focused tests
+  through injected `SwitcherQueuedFrameHandoff`; they do not justify a primary
+  manual runtime.
+- A new manual command would prove only runtime wiring with real queued H.264
+  decode/render and stdout inspection. It would not prove real
+  server->switcher transport, timeout semantics, malformed responses, source
+  shutdown, or other handoff failures beyond what tests already cover.
+- The next step should therefore be real server->switcher transport planning
+  around the existing fallible handoff contract.
+- Keep direct switcher receive diagnostic/legacy, but do not treat it as the
+  main validation path.
+- Keep IPC/TCP/UDP/shared-memory transport implementation, OBS output, 4-view
+  orchestration, protocol wire-format changes, H.264 decode/render behavior
+  changes, and switcher-side fragment reassembly out of scope for this
+  planning slice.
 
 No protocol wire format changed for this slice.

@@ -372,9 +372,22 @@ Current limitation:
 - stale / held-previous display behavior remains covered by focused in-process
   tests, not by this manual two-client command.
 
-The smallest next diagnostic command, if code is added later, should reuse the
-same auth and UDP source setup but replace only the per-tick render pipeline
-after queue storage:
+Decision for this planning slice:
+
+- Do not add a dedicated manual/runtime command for
+  `SwitcherServerMediatedTwoViewValidationBoundary::run_fallible_*` before
+  production server->switcher transport planning.
+- The current focused tests already cover fallible eligible render, waiting,
+  no-frame, handoff/source error, preview no-mutation, and consume
+  all-or-nothing behavior.
+- Keep `--live-two-view-switcher-once` as a direct receive diagnostic/legacy
+  path only. Do not revive it as the main server-mediated validation path.
+- The next step is transport planning around the existing fallible handoff
+  contract, not a new manual command.
+
+If a debug-only command is needed later, it should reuse the same auth and UDP
+source setup but replace only the per-tick render pipeline after queue
+storage:
 
 ```text
 queue state
@@ -384,6 +397,17 @@ queue state
   -> SwitcherTwoViewDisplayCompositionAdapterBoundary
   -> SwitcherTwoViewDisplayCompositionRenderConnectionBoundary
 ```
+
+The smallest later command shape would be:
+
+```text
+--receive-auth-video-fallible-two-view-once [config-path] [left-client-id] [right-client-id]
+```
+
+That future diagnostic command should use the existing in-process
+`ServerVideoFrameQueueState` produced by the server manual queue runtime for
+happy-path validation. Synthetic/failing handoff sources should remain
+test-only through injected `SwitcherQueuedFrameHandoff`.
 
 That future diagnostic command should print, per side:
 
@@ -420,7 +444,11 @@ Implemented diagnostic validation:
 - The boundary is covered by focused tests for both-selected render, waiting
   placeholder, no-frame placeholder, all-or-nothing consume, and preview
   no-mutation behavior.
-- No manual command was added in this slice; command flow is unchanged.
+- The fallible path is likewise covered by focused tests for eligible render,
+  waiting, no-frame, source-error placeholder, both handoff errors,
+  all-or-nothing consume, and preview no-mutation behavior.
+- No manual command was added in this slice because it would duplicate focused
+  in-process coverage without proving real server->switcher transport.
 - Production server->switcher transport is still undecided.
 
 ### Terminal 1: Live Two-View Switcher Runtime
