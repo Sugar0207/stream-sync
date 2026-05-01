@@ -6,24 +6,19 @@ This checklist verifies the current real encoded video path:
 Windows Graphics Capture -> BGRA frame -> FFmpeg H.264 -> RealCaptureH264 VideoFrame -> direct or fragmented UDP -> server auth gate -> reassembly -> queue/source -> switcher decode/render
 ```
 
-The planned one-shot named-pipe handoff commands are still docs-only in the
-current slice. They are not part of the current manual checklist yet. For now,
-manual validation still uses:
+The one-shot named-pipe handoff commands now exist as bounded manual
+diagnostics. They are still not a continuous service loop, but they can be
+used for one request / one response validation after the server has queued at
+least one frame. The current manual checklist now uses:
 
+- `stream-sync-server --receive-auth-video-queue-and-serve-handoff-once ...`
+  for queue-owning server receive plus one named-pipe handoff
+- `stream-sync-switcher --read-queued-frame-handoff-once ...` for one
+  switcher-side named-pipe read
 - `stream-sync-server --receive-auth-video-queue-once ...` for the queue-owning
-  server path
+  server path when queue-only verification is enough
 - `stream-sync-switcher --live-two-view-switcher-once ...` only as the
   direct-receive diagnostic/legacy path
-
-The future named-pipe one-shot shapes are currently documented as:
-
-```text
-stream-sync-server --receive-auth-video-queue-and-serve-handoff-once ...
-stream-sync-switcher --read-queued-frame-handoff-once ...
-```
-
-Those names and stdout contracts should be treated as planning targets until
-the CLI layer is implemented.
 
 The preferred sender is now the bounded authenticated sender:
 
@@ -132,6 +127,12 @@ queued as one `VideoFrame`.
 cargo run -p stream-sync-server -- --receive-auth-video-queue-once configs/examples/server.example.toml 4096 15000 1 true 8388608
 ```
 
+For queue receive plus one named-pipe handoff in the same process, use:
+
+```powershell
+cargo run -p stream-sync-server -- --receive-auth-video-queue-and-serve-handoff-once configs/examples/server.example.toml streamsync-handoff 4096 15000 1 true 8388608
+```
+
 Arguments after the config path are manual receive policy values:
 
 - `4096`: max post-auth video packets to receive
@@ -186,6 +187,21 @@ receive_timed_out=false
 max_packets_reached=false
 ```
 
+When using `--receive-auth-video-queue-and-serve-handoff-once`, the same
+process later prints one additional named-pipe handoff summary line with:
+
+```text
+pipe_name=<pipe>
+request_id=<id>
+client_id=<client>
+run_id=<run>
+read_mode=<inspect-oldest|inspect-latest|dequeue-oldest>
+request_status=decoded
+response_status=written
+result_kind=FrameRead|NoFrame|HandoffError
+queue_len=<n|none>
+```
+
 Fragmented pass proof:
 
 - `fragments_received > 1`
@@ -203,6 +219,46 @@ Non-fragmented pass proof:
 
 The server launcher is bounded for manual verification. It is not a production
 receive loop, does not retransmit, and does not implement fragment expiration.
+
+### Terminal 3: One-Shot Named-Pipe Handoff Read
+
+After the server has finished queueing and entered its one-shot handoff wait,
+run one switcher-side pull/read over named pipe:
+
+```powershell
+cargo run -p stream-sync-switcher -- --read-queued-frame-handoff-once streamsync-handoff player1 streamsync-dev-session preview-latest 1
+```
+
+Expected switcher stdout fields:
+
+```text
+pipe_name=streamsync-handoff
+request_id=1
+client_id=player1
+run_id=streamsync-dev-session
+read_mode=inspect-latest
+request_status=sent
+response_status=decoded
+result_kind=FrameRead|NoFrame|HandoffError
+queue_len=<n|none>
+```
+
+If `FrameRead` is returned, stdout should also include:
+
+- `frame_id`
+- `capture_timestamp`
+- `send_timestamp`
+- `queued_at`
+- `width`
+- `height`
+- `fps_nominal`
+- `codec`
+- `is_keyframe`
+- `encoded_payload_len`
+
+The command also accepts an omitted `request_id`; in that case the current
+one-shot CLI uses the wrapper's initial monotonic value and consumes one id for
+the process, which is effectively `1` for a fresh invocation.
 
 ### Terminal 2: Bounded Authenticated Client Sender
 

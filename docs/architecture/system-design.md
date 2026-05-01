@@ -261,11 +261,19 @@ run full switcher scheduling. The minimum useful stdout fields are:
 - for `FrameRead`: `frame_id`, capture/send/queued timestamps, width, height,
   nominal FPS, codec, keyframe flag, and encoded payload length
 
-These command shapes should be documented first and implemented only after the
-stdout contract and ownership split are agreed. `--receive-auth-video-queue-once`
-remains the queue-owning server diagnostic, and `--live-two-view-switcher-once`
-remains the direct-receive diagnostic/legacy path rather than becoming the main
-server-mediated path.
+These command shapes are now implemented as one-shot manual diagnostics above
+the existing queue launcher and named-pipe runtimes. They remain intentionally
+small:
+
+- `--receive-auth-video-queue-and-serve-handoff-once` still owns only bounded
+  server auth / UDP receive / fragment reassembly / queueing, then serves one
+  named-pipe request and exits.
+- `--read-queued-frame-handoff-once` still owns only one named-pipe read over
+  an explicit `client_id + run_id + read_mode` request and exits.
+
+`--receive-auth-video-queue-once` remains the queue-owning server diagnostic,
+and `--live-two-view-switcher-once` remains the direct-receive
+diagnostic/legacy path rather than becoming the main server-mediated path.
 
 ---
 

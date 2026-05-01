@@ -14,7 +14,9 @@ use stream_sync_switcher::{
     SwitcherDecodedFramePixelFormat, SwitcherFfmpegH264DecodeRuntimeHook,
     SwitcherLiveTwoViewManualRuntimeBoundary, SwitcherLiveTwoViewManualRuntimeResult,
     SwitcherPlaceholderManualVerificationBoundary, SwitcherPlaceholderManualVerificationInput,
-    SwitcherPlaceholderManualVerificationResult, SwitcherTwoViewComposedCanvasRenderBoundary,
+    SwitcherPlaceholderManualVerificationResult, SwitcherQueuedFrameHandoffError,
+    SwitcherQueuedFrameHandoffInput, SwitcherQueuedFrameHandoffResult,
+    SwitcherSingleClientQueueSourceMode, SwitcherTwoViewComposedCanvasRenderBoundary,
     SwitcherTwoViewComposedCanvasRenderResult, SwitcherTwoViewCompositionBoundary,
     SwitcherTwoViewCompositionInput, SwitcherTwoViewCompositionResult, SwitcherTwoViewLayoutPolicy,
     SwitcherTwoViewLayoutSideInput, SwitcherTwoViewManualVerificationBoundary,
@@ -22,6 +24,12 @@ use stream_sync_switcher::{
     SwitcherTwoViewManualVerificationSideSummary, SwitcherTwoViewSide,
     SwitcherTwoViewTargetTimeSelectionPolicy, SwitcherWindowRenderBoundary,
     SwitcherWindowRenderResult,
+};
+#[cfg(target_os = "windows")]
+use stream_sync_switcher::{
+    SwitcherNamedPipeQueuedFrameHandoffRuntimeBoundary,
+    SwitcherNamedPipeQueuedFrameHandoffRuntimeError,
+    SwitcherNamedPipeQueuedFrameHandoffRuntimeOutput,
 };
 
 #[cfg(not(target_os = "windows"))]
@@ -225,13 +233,43 @@ fn main() {
                 }
             }
         }
+        Some("--read-queued-frame-handoff-once") => {
+            let pipe_name = args.next().unwrap_or_else(|| {
+                eprintln!("missing pipe-name");
+                std::process::exit(1);
+            });
+            let client_id = ClientId(args.next().unwrap_or_else(|| {
+                eprintln!("missing client-id");
+                std::process::exit(1);
+            }));
+            let run_id = RunId(args.next().unwrap_or_else(|| {
+                eprintln!("missing run-id");
+                std::process::exit(1);
+            }));
+            let mode = parse_handoff_mode_or_exit(args.next(), "read-mode");
+            let request_id = parse_optional_arg_or_exit::<u64>(args.next(), "request-id");
+            let input = SwitcherQueuedFrameHandoffInput {
+                client_id,
+                run_id,
+                mode,
+            };
+            match run_named_pipe_handoff_once(&pipe_name, input, request_id) {
+                Ok(summary) => println!("{summary}"),
+                Err(error) => {
+                    eprintln!("switcher queued-frame handoff once failed: {error}");
+                    std::process::exit(1);
+                }
+            }
+        }
         _ => {
             println!(
-                "stream-sync-switcher scaffold; use --placeholder-fixture-once [client-id], --placeholder-empty-once [client-id], --decode-latest-frame-once [client-id] [output-path], --receive-auth-video-placeholder-bridge-once [config-path] [client-id], --receive-auth-video-decode-latest-once [config-path] [client-id] [output-path], --receive-auth-video-render-decoded-once [config-path] [client-id] [hold-ms], --two-view-sync-fixture-once [left-client-id] [right-client-id] [hold-ms], --render-two-view-composed-fixture-once [hold-ms], or --live-two-view-switcher-once [config-path] [left-client-id] [right-client-id]"
+                "stream-sync-switcher scaffold; use --placeholder-fixture-once [client-id], --placeholder-empty-once [client-id], --decode-latest-frame-once [client-id] [output-path], --receive-auth-video-placeholder-bridge-once [config-path] [client-id], --receive-auth-video-decode-latest-once [config-path] [client-id] [output-path], --receive-auth-video-render-decoded-once [config-path] [client-id] [hold-ms], --two-view-sync-fixture-once [left-client-id] [right-client-id] [hold-ms], --render-two-view-composed-fixture-once [hold-ms], --live-two-view-switcher-once [config-path] [left-client-id] [right-client-id], or --read-queued-frame-handoff-once [pipe-name] [client-id] [run-id] [read-mode] [request-id]"
             );
         }
     }
 }
+
+const DEFAULT_ONE_SHOT_REQUEST_ID: u64 = 1;
 
 fn print_summary(result: SwitcherPlaceholderManualVerificationResult, fixture_queue: bool) {
     match result {
@@ -554,6 +592,218 @@ fn print_live_two_view_switcher_summary(result: SwitcherLiveTwoViewManualRuntime
     );
 }
 
+fn parse_optional_arg_or_exit<T: std::str::FromStr>(value: Option<String>, name: &str) -> Option<T>
+where
+    T::Err: std::fmt::Display,
+{
+    value.map(|value| {
+        value.parse::<T>().unwrap_or_else(|error| {
+            eprintln!("invalid {name}: {error}");
+            std::process::exit(1);
+        })
+    })
+}
+
+fn parse_handoff_mode_or_exit(
+    value: Option<String>,
+    name: &str,
+) -> SwitcherSingleClientQueueSourceMode {
+    match value.as_deref() {
+        Some("preview-oldest") => SwitcherSingleClientQueueSourceMode::PreviewOldest,
+        Some("preview-latest") => SwitcherSingleClientQueueSourceMode::PreviewLatest,
+        Some("consume-oldest") => SwitcherSingleClientQueueSourceMode::ConsumeOldest,
+        Some(_) => {
+            eprintln!("invalid {name}: expected preview-oldest, preview-latest, or consume-oldest");
+            std::process::exit(1);
+        }
+        None => {
+            eprintln!("missing {name}");
+            std::process::exit(1);
+        }
+    }
+}
+
+#[cfg(windows)]
+fn run_named_pipe_handoff_once(
+    pipe_name: &str,
+    input: SwitcherQueuedFrameHandoffInput,
+    request_id: Option<u64>,
+) -> Result<String, String> {
+    let request_id = request_id.unwrap_or(DEFAULT_ONE_SHOT_REQUEST_ID);
+    match SwitcherNamedPipeQueuedFrameHandoffRuntimeBoundary::default().run_once(
+        pipe_name,
+        request_id,
+        input.clone(),
+    ) {
+        Ok(output) => Ok(format_named_pipe_handoff_switcher_summary(
+            pipe_name, &output,
+        )),
+        Err(SwitcherNamedPipeQueuedFrameHandoffRuntimeError::EncodeRequest(_)) => {
+            let result = SwitcherQueuedFrameHandoffResult::HandoffError {
+                client_id: input.client_id.clone(),
+                run_id: input.run_id.clone(),
+                mode: input.mode,
+                error: SwitcherQueuedFrameHandoffError::MalformedResponse,
+            };
+            Ok(format_named_pipe_handoff_switcher_error_summary(
+                pipe_name, request_id, &input, &result,
+            ))
+        }
+    }
+}
+
+#[cfg(not(windows))]
+fn run_named_pipe_handoff_once(
+    _pipe_name: &str,
+    _input: SwitcherQueuedFrameHandoffInput,
+    _request_id: Option<u64>,
+) -> Result<String, String> {
+    Err("named-pipe handoff command is only available on Windows".to_string())
+}
+
+#[cfg(test)]
+fn format_handoff_mode(mode: SwitcherSingleClientQueueSourceMode) -> &'static str {
+    match mode {
+        SwitcherSingleClientQueueSourceMode::PreviewOldest => "preview-oldest",
+        SwitcherSingleClientQueueSourceMode::PreviewLatest => "preview-latest",
+        SwitcherSingleClientQueueSourceMode::ConsumeOldest => "consume-oldest",
+    }
+}
+
+fn handoff_read_mode_from_switcher_mode(
+    mode: SwitcherSingleClientQueueSourceMode,
+) -> stream_sync_net_core::ServerSwitcherQueuedFrameReadMode {
+    match mode {
+        SwitcherSingleClientQueueSourceMode::PreviewOldest => {
+            stream_sync_net_core::ServerSwitcherQueuedFrameReadMode::InspectOldest
+        }
+        SwitcherSingleClientQueueSourceMode::PreviewLatest => {
+            stream_sync_net_core::ServerSwitcherQueuedFrameReadMode::InspectLatest
+        }
+        SwitcherSingleClientQueueSourceMode::ConsumeOldest => {
+            stream_sync_net_core::ServerSwitcherQueuedFrameReadMode::DequeueOldest
+        }
+    }
+}
+
+#[cfg(windows)]
+fn format_named_pipe_handoff_switcher_summary(
+    pipe_name: &str,
+    output: &SwitcherNamedPipeQueuedFrameHandoffRuntimeOutput,
+) -> String {
+    let request_status = if output.response.is_some() {
+        "sent"
+    } else {
+        "encoded"
+    };
+    let response_status = if output.response.is_some() {
+        "decoded"
+    } else {
+        "none"
+    };
+    format_named_pipe_handoff_switcher_result_summary(
+        pipe_name,
+        output.request.request_id,
+        &output.request.client_id,
+        &output.request.run_id,
+        output.request.read_mode,
+        request_status,
+        response_status,
+        &output.result,
+    )
+}
+
+fn format_named_pipe_handoff_switcher_error_summary(
+    pipe_name: &str,
+    request_id: u64,
+    input: &SwitcherQueuedFrameHandoffInput,
+    result: &SwitcherQueuedFrameHandoffResult,
+) -> String {
+    format_named_pipe_handoff_switcher_result_summary(
+        pipe_name,
+        request_id,
+        &input.client_id,
+        &input.run_id,
+        handoff_read_mode_from_switcher_mode(input.mode),
+        "encode_failed",
+        "none",
+        result,
+    )
+}
+
+fn format_named_pipe_handoff_switcher_result_summary(
+    pipe_name: &str,
+    request_id: u64,
+    client_id: &ClientId,
+    run_id: &RunId,
+    read_mode: stream_sync_net_core::ServerSwitcherQueuedFrameReadMode,
+    request_status: &str,
+    response_status: &str,
+    result: &SwitcherQueuedFrameHandoffResult,
+) -> String {
+    match result {
+        SwitcherQueuedFrameHandoffResult::FrameRead {
+            frame,
+            remaining_client_queue_len,
+            ..
+        } => format!(
+            "switcher named-pipe handoff once pipe_name={} request_id={} client_id={} run_id={} read_mode={} request_status={} response_status={} result_kind=FrameRead queue_len={} frame_id={} capture_timestamp={} send_timestamp={} queued_at={} width={} height={} fps_nominal={} codec={:?} is_keyframe={} encoded_payload_len={}",
+            pipe_name,
+            request_id,
+            client_id.0,
+            run_id.0,
+            format_handoff_read_mode(read_mode),
+            request_status,
+            response_status,
+            remaining_client_queue_len,
+            frame.frame_id,
+            frame.capture_timestamp.0,
+            frame.send_timestamp.0,
+            frame.queued_at.0,
+            frame.width,
+            frame.height,
+            frame.fps_nominal,
+            frame.codec,
+            frame.is_keyframe,
+            frame.encoded_payload_len
+        ),
+        SwitcherQueuedFrameHandoffResult::NoFrameAvailable {
+            client_queue_len, ..
+        } => format!(
+            "switcher named-pipe handoff once pipe_name={} request_id={} client_id={} run_id={} read_mode={} request_status={} response_status={} result_kind=NoFrame queue_len={}",
+            pipe_name,
+            request_id,
+            client_id.0,
+            run_id.0,
+            format_handoff_read_mode(read_mode),
+            request_status,
+            response_status,
+            client_queue_len
+        ),
+        SwitcherQueuedFrameHandoffResult::HandoffError { error, .. } => format!(
+            "switcher named-pipe handoff once pipe_name={} request_id={} client_id={} run_id={} read_mode={} request_status={} response_status={} result_kind=HandoffError queue_len=none handoff_error={:?}",
+            pipe_name,
+            request_id,
+            client_id.0,
+            run_id.0,
+            format_handoff_read_mode(read_mode),
+            request_status,
+            response_status,
+            error
+        ),
+    }
+}
+
+fn format_handoff_read_mode(
+    mode: stream_sync_net_core::ServerSwitcherQueuedFrameReadMode,
+) -> &'static str {
+    match mode {
+        stream_sync_net_core::ServerSwitcherQueuedFrameReadMode::InspectOldest => "inspect-oldest",
+        stream_sync_net_core::ServerSwitcherQueuedFrameReadMode::InspectLatest => "inspect-latest",
+        stream_sync_net_core::ServerSwitcherQueuedFrameReadMode::DequeueOldest => "dequeue-oldest",
+    }
+}
+
 fn format_live_two_view_stop_reason(
     reason: SwitcherContinuousTwoViewSchedulingStopReason,
 ) -> &'static str {
@@ -761,4 +1011,111 @@ fn store_fixture_frame(
         queued_at,
         ServerVideoFrameQueuePolicy::default(),
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use stream_sync_protocol::{ClientId, Codec, RunId, TimestampMicros};
+    use stream_sync_switcher::SwitcherSingleViewSelectedEncodedFrame;
+
+    use super::{
+        format_handoff_mode, format_handoff_read_mode,
+        format_named_pipe_handoff_switcher_error_summary,
+        format_named_pipe_handoff_switcher_result_summary, parse_handoff_mode_or_exit,
+        SwitcherQueuedFrameHandoffError, SwitcherQueuedFrameHandoffInput,
+        SwitcherQueuedFrameHandoffResult, SwitcherSingleClientQueueSourceMode,
+    };
+
+    #[test]
+    fn switcher_handoff_parses_mode_names() {
+        assert_eq!(
+            parse_handoff_mode_or_exit(Some("preview-oldest".to_string()), "mode"),
+            SwitcherSingleClientQueueSourceMode::PreviewOldest
+        );
+        assert_eq!(
+            parse_handoff_mode_or_exit(Some("preview-latest".to_string()), "mode"),
+            SwitcherSingleClientQueueSourceMode::PreviewLatest
+        );
+        assert_eq!(
+            parse_handoff_mode_or_exit(Some("consume-oldest".to_string()), "mode"),
+            SwitcherSingleClientQueueSourceMode::ConsumeOldest
+        );
+    }
+
+    #[test]
+    fn switcher_handoff_formats_mode_names() {
+        assert_eq!(
+            format_handoff_mode(SwitcherSingleClientQueueSourceMode::PreviewLatest),
+            "preview-latest"
+        );
+        assert_eq!(
+            format_handoff_read_mode(
+                stream_sync_net_core::ServerSwitcherQueuedFrameReadMode::InspectLatest
+            ),
+            "inspect-latest"
+        );
+    }
+
+    #[test]
+    fn switcher_handoff_summary_keeps_frame_read_visible() {
+        let result = SwitcherQueuedFrameHandoffResult::FrameRead {
+            frame: SwitcherSingleViewSelectedEncodedFrame {
+                client_id: ClientId("player1".to_string()),
+                run_id: RunId("run-a".to_string()),
+                frame_id: 7,
+                capture_timestamp: TimestampMicros(10),
+                send_timestamp: TimestampMicros(11),
+                queued_at: TimestampMicros(12),
+                is_keyframe: true,
+                width: 1280,
+                height: 720,
+                fps_nominal: 30,
+                codec: Codec::H264,
+                encoded_payload_len: 3,
+                encoded_payload: vec![1, 2, 3],
+            },
+            mode: SwitcherSingleClientQueueSourceMode::PreviewLatest,
+            remaining_client_queue_len: 4,
+        };
+
+        let summary = format_named_pipe_handoff_switcher_result_summary(
+            "pipe-a",
+            88,
+            &ClientId("player1".to_string()),
+            &RunId("run-a".to_string()),
+            stream_sync_net_core::ServerSwitcherQueuedFrameReadMode::InspectLatest,
+            "sent",
+            "decoded",
+            &result,
+        );
+
+        assert!(summary.contains("request_id=88"));
+        assert!(summary.contains("result_kind=FrameRead"));
+        assert!(summary.contains("queue_len=4"));
+        assert!(summary.contains("frame_id=7"));
+        assert!(summary.contains("codec=H264"));
+    }
+
+    #[test]
+    fn switcher_handoff_encode_failure_stays_explicit() {
+        let input = SwitcherQueuedFrameHandoffInput {
+            client_id: ClientId("player1".to_string()),
+            run_id: RunId("run-a".to_string()),
+            mode: SwitcherSingleClientQueueSourceMode::ConsumeOldest,
+        };
+        let result = SwitcherQueuedFrameHandoffResult::HandoffError {
+            client_id: input.client_id.clone(),
+            run_id: input.run_id.clone(),
+            mode: input.mode,
+            error: SwitcherQueuedFrameHandoffError::MalformedResponse,
+        };
+
+        let summary =
+            format_named_pipe_handoff_switcher_error_summary("pipe-b", 9, &input, &result);
+
+        assert!(summary.contains("request_status=encode_failed"));
+        assert!(summary.contains("response_status=none"));
+        assert!(summary.contains("result_kind=HandoffError"));
+        assert!(summary.contains("handoff_error=MalformedResponse"));
+    }
 }

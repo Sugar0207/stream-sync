@@ -5,6 +5,75 @@
 - Codex
 
 ### Work
+- Implemented the documented one-shot named-pipe manual CLI commands in the
+  smallest possible shape.
+- Added a new server CLI command,
+  `--receive-auth-video-queue-and-serve-handoff-once`, that reuses the
+  existing bounded auth/video queue launcher and then serves exactly one
+  named-pipe handoff request from the resulting caller-owned queue state.
+- Added a new switcher CLI command,
+  `--read-queued-frame-handoff-once`, that builds one handoff input, performs
+  one named-pipe request/response, and prints the manual stdout contract.
+- Kept both commands one-shot only and did not add a continuous accept loop,
+  reconnect policy, or broader lifecycle/service orchestration.
+- Added focused CLI helper tests for handoff mode parsing and summary
+  formatting so default validation does not depend on real pipe I/O.
+- Updated the manual real encoded video checklist to include the new commands
+  and their minimum stdout fields.
+
+### Changed Files
+- `apps/server/src/main.rs`
+- `apps/switcher/src/main.rs`
+- `docs/architecture/system-design.md`
+- `docs/operations/manual-real-encoded-video-poc.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### Decisions
+- Reuse the existing queue-owning server launcher for the server one-shot
+  handoff command instead of creating a standalone named-pipe server command.
+- Keep the switcher one-shot command config-free in the first CLI slice.
+- Keep `request_id` optional on the switcher command. If omitted, use the
+  one-shot wrapper default of `1`, which matches the current wrapper-owned
+  monotonic initial value for a fresh process.
+- Keep real named-pipe smoke tests isolated; default validation should rely on
+  non-I/O handoff tests plus new CLI helper tests.
+
+### Unresolved
+- record a real localhost manual pass for the new one-shot named-pipe CLI pair
+- continuous named-pipe accept loop / reconnect / lifecycle orchestration
+- production H.264 encoder configuration / error logging policy
+- Decide later whether `--live-two-view-switcher-once` should be renamed or
+  deprecated after the transport-backed server-mediated path exists.
+
+### Next
+- Record a real localhost manual pass using the new one-shot named-pipe server
+  and switcher commands.
+- Then move to the smallest continuous named-pipe accept loop / lifecycle
+  slice.
+
+### TODO Update
+- Replaced the old "implement-or-defer one-shot command shape" item with the
+  next manual-pass recording item.
+- Updated current position to record that both one-shot named-pipe CLI commands
+  now exist.
+
+### Validation
+- `cargo fmt` passed.
+- `cargo fmt --check` passed.
+- `cargo test -p stream-sync-net-core handoff -- --test-threads=1` passed.
+- `cargo test -p stream-sync-server handoff -- --test-threads=1` passed.
+- `cargo test -p stream-sync-switcher handoff -- --test-threads=1` passed.
+- `cargo test -p stream-sync-server video_frame_queue -- --test-threads=1`
+  passed.
+- `cargo check --workspace` passed.
+- `git diff --check` passed with line-ending warnings for changed files.
+
+## 2026-05-01
+### Type
+- Codex
+
+### Work
 - Implemented the requested planning/docs slice for the one-shot named-pipe
   manual invocation shape and request-id exposure.
 - Reviewed the current named-pipe runtime/wrapper, existing server queue-owning

@@ -289,9 +289,66 @@ fn main() {
                 }
             }
         }
+        Some("--receive-auth-video-queue-and-serve-handoff-once") => {
+            let config_path = args
+                .next()
+                .unwrap_or_else(|| "configs/examples/server.example.toml".to_string());
+            let pipe_name = args.next().unwrap_or_else(|| {
+                eprintln!("missing pipe-name");
+                std::process::exit(1);
+            });
+            let max_video_packets =
+                parse_optional_arg_or_exit::<usize>(args.next(), "max-video-packets")
+                    .unwrap_or(4_096);
+            let receive_timeout_ms =
+                parse_optional_arg_or_exit::<u64>(args.next(), "receive-timeout-ms")
+                    .unwrap_or(15_000);
+            let expected_frames =
+                parse_optional_arg_or_exit::<u64>(args.next(), "expected-reassembled-frames")
+                    .unwrap_or(1);
+            let stop_after_expected =
+                parse_optional_bool_or_exit(args.next(), "stop-after-expected-reassembled-frames")
+                    .unwrap_or(true);
+            let receive_buffer_bytes =
+                parse_optional_arg_or_exit::<usize>(args.next(), "receive-buffer-bytes")
+                    .unwrap_or(8_388_608);
+            let policy = stream_sync_server::ServerReceiveAuthVideoQueueOnceManualPolicy {
+                max_video_packets,
+                receive_timeout: std::time::Duration::from_millis(receive_timeout_ms),
+                expected_reassembled_frames: expected_frames,
+                stop_after_expected_reassembled_frames: stop_after_expected,
+                receive_buffer_bytes,
+            };
+            let launcher = stream_sync_server::ServerReceiveAuthVideoQueueOnceLauncher::default();
+            match launcher.run_once_from_path_with_writers_and_policy(
+                &config_path,
+                std::io::stderr(),
+                std::io::stderr(),
+                std::io::stderr(),
+                std::io::stderr(),
+                policy,
+            ) {
+                Ok(mut outcome) => {
+                    match serve_named_pipe_handoff_once(&mut outcome.video_queue_state, &pipe_name)
+                    {
+                        Ok(summary) => println!("{summary}"),
+                        Err(error) => {
+                            eprintln!(
+                                "receive auth/video queue and serve handoff once failed: {error}"
+                            );
+                            std::process::exit(1);
+                        }
+                    }
+                }
+                Err(error) => {
+                    eprintln!("receive auth/video queue and serve handoff once failed: {error:?}");
+                    std::process::exit(1);
+                }
+            }
+        }
         _ => {
             println!(
-                "stream-sync-server scaffold; use --auth-response-poc-once [config-path], --receive-send-once [config-path], --receive-send-twice [config-path], --receive-send-three [config-path], or --receive-auth-video-queue-once [config-path] [max-video-packets] [receive-timeout-ms] [expected-reassembled-frames] [stop-after-expected-reassembled-frames] [receive-buffer-bytes]"
+                "stream-sync-server scaffold; use --auth-response-poc-once [config-path], --receive-send-once [config-path], --receive-send-twice [config-path], --receive-send-three [config-path], --receive-auth-video-queue-once [config-path] [max-video-packets] [receive-timeout-ms] [expected-reassembled-frames] [stop-after-expected-reassembled-frames] [receive-buffer-bytes], or --receive-auth-video-queue-and-serve-handoff-once [config-path] [pipe-name] [max-video-packets] [receive-timeout-ms] [expected-reassembled-frames] [stop-after-expected-reassembled-frames] [receive-buffer-bytes]"
             );
         }
     }
@@ -427,5 +484,161 @@ fn auth_video_queue_summary(
                 Some(summary),
             ),
         },
+    }
+}
+
+#[cfg(windows)]
+fn serve_named_pipe_handoff_once(
+    queue_state: &mut stream_sync_server::ServerVideoFrameQueueState,
+    pipe_name: &str,
+) -> Result<String, String> {
+    stream_sync_server::ServerSwitcherNamedPipeOneRequestRuntimeBoundary::default()
+        .serve_once(queue_state, pipe_name)
+        .map(|output| format_named_pipe_handoff_server_summary(pipe_name, &output))
+        .map_err(|error| format!("{error:?}"))
+}
+
+#[cfg(not(windows))]
+fn serve_named_pipe_handoff_once(
+    _queue_state: &mut stream_sync_server::ServerVideoFrameQueueState,
+    _pipe_name: &str,
+) -> Result<String, String> {
+    Err("named-pipe handoff command is only available on Windows".to_string())
+}
+
+#[cfg(windows)]
+fn format_named_pipe_handoff_server_summary(
+    pipe_name: &str,
+    output: &stream_sync_server::ServerSwitcherNamedPipeOneRequestRuntimeOutput,
+) -> String {
+    let request = &output.request;
+    match &output.response {
+        stream_sync_net_core::ServerSwitcherQueuedFrameHandoffResponse::FrameRead {
+            remaining_client_queue_len,
+            frame,
+            ..
+        } => format!(
+            "server named-pipe handoff once pipe_name={} request_id={} client_id={} run_id={} read_mode={} request_status=decoded response_status=written result_kind=FrameRead queue_len={} frame_id={} capture_timestamp={} send_timestamp={} queued_at={} width={} height={} fps_nominal={} codec={:?} is_keyframe={} encoded_payload_len={}",
+            pipe_name,
+            request.request_id,
+            request.client_id.0,
+            request.run_id.0,
+            format_handoff_read_mode(request.read_mode),
+            remaining_client_queue_len,
+            frame.frame_id,
+            frame.capture_timestamp.0,
+            frame.send_timestamp.0,
+            frame.queued_at.0,
+            frame.width,
+            frame.height,
+            frame.fps_nominal,
+            frame.codec,
+            frame.is_keyframe,
+            frame.encoded_payload_len
+        ),
+        stream_sync_net_core::ServerSwitcherQueuedFrameHandoffResponse::NoFrame {
+            client_queue_len, ..
+        } => format!(
+            "server named-pipe handoff once pipe_name={} request_id={} client_id={} run_id={} read_mode={} request_status=decoded response_status=written result_kind=NoFrame queue_len={}",
+            pipe_name,
+            request.request_id,
+            request.client_id.0,
+            request.run_id.0,
+            format_handoff_read_mode(request.read_mode),
+            client_queue_len
+        ),
+        stream_sync_net_core::ServerSwitcherQueuedFrameHandoffResponse::HandoffError {
+            error,
+            ..
+        } => format!(
+            "server named-pipe handoff once pipe_name={} request_id={} client_id={} run_id={} read_mode={} request_status=decoded response_status=written result_kind=HandoffError queue_len=none handoff_error={:?}",
+            pipe_name,
+            request.request_id,
+            request.client_id.0,
+            request.run_id.0,
+            format_handoff_read_mode(request.read_mode),
+            error
+        ),
+    }
+}
+
+fn format_handoff_read_mode(
+    mode: stream_sync_net_core::ServerSwitcherQueuedFrameReadMode,
+) -> &'static str {
+    match mode {
+        stream_sync_net_core::ServerSwitcherQueuedFrameReadMode::InspectOldest => "inspect-oldest",
+        stream_sync_net_core::ServerSwitcherQueuedFrameReadMode::InspectLatest => "inspect-latest",
+        stream_sync_net_core::ServerSwitcherQueuedFrameReadMode::DequeueOldest => "dequeue-oldest",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use stream_sync_net_core::{
+        ServerSwitcherQueuedFrameHandoffFrame, ServerSwitcherQueuedFrameHandoffRequest,
+        ServerSwitcherQueuedFrameHandoffResponse, ServerSwitcherQueuedFrameReadMode,
+        SERVER_SWITCHER_HANDOFF_VERSION,
+    };
+    use stream_sync_protocol::{ClientId, Codec, RunId, TimestampMicros};
+
+    use super::format_handoff_read_mode;
+
+    #[test]
+    fn server_handoff_formats_read_mode_names() {
+        assert_eq!(
+            format_handoff_read_mode(ServerSwitcherQueuedFrameReadMode::InspectOldest),
+            "inspect-oldest"
+        );
+        assert_eq!(
+            format_handoff_read_mode(ServerSwitcherQueuedFrameReadMode::InspectLatest),
+            "inspect-latest"
+        );
+        assert_eq!(
+            format_handoff_read_mode(ServerSwitcherQueuedFrameReadMode::DequeueOldest),
+            "dequeue-oldest"
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn server_handoff_summary_includes_frame_read_fields() {
+        let output = stream_sync_server::ServerSwitcherNamedPipeOneRequestRuntimeOutput {
+            request: ServerSwitcherQueuedFrameHandoffRequest {
+                handoff_version: SERVER_SWITCHER_HANDOFF_VERSION,
+                request_id: 44,
+                client_id: ClientId("player1".to_string()),
+                run_id: RunId("run-a".to_string()),
+                read_mode: ServerSwitcherQueuedFrameReadMode::InspectLatest,
+            },
+            response: ServerSwitcherQueuedFrameHandoffResponse::FrameRead {
+                request_id: 44,
+                remaining_client_queue_len: 2,
+                frame: ServerSwitcherQueuedFrameHandoffFrame {
+                    client_id: ClientId("player1".to_string()),
+                    run_id: RunId("run-a".to_string()),
+                    frame_id: 77,
+                    capture_timestamp: TimestampMicros(10),
+                    send_timestamp: TimestampMicros(11),
+                    queued_at: TimestampMicros(12),
+                    width: 1280,
+                    height: 720,
+                    fps_nominal: 30,
+                    is_keyframe: true,
+                    codec: Codec::H264,
+                    encoded_payload_len: 3,
+                    encoded_payload: vec![1, 2, 3],
+                },
+            },
+        };
+
+        let summary = super::format_named_pipe_handoff_server_summary("pipe-a", &output);
+
+        assert!(summary.contains("pipe_name=pipe-a"));
+        assert!(summary.contains("request_id=44"));
+        assert!(summary.contains("result_kind=FrameRead"));
+        assert!(summary.contains("queue_len=2"));
+        assert!(summary.contains("frame_id=77"));
+        assert!(summary.contains("codec=H264"));
+        assert!(summary.contains("encoded_payload_len=3"));
     }
 }
