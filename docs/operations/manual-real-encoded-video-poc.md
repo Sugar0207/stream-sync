@@ -443,6 +443,60 @@ Recorded conclusion from this successful localhost run:
 - metadata survived server->switcher handoff
 - no `NoFrame` or `HandoffError` occurred in the successful run
 
+### Observed Successful Bounded Named-Pipe Handoff Loop Run
+
+Observed successful localhost results for the bounded named-pipe handoff CLI:
+
+- bounded server handoff loop served `max_requests=2`
+- `requests_served=2`
+- `successful_responses=2`
+- `handoff_errors=0`
+- both switcher reads returned `FrameRead`
+- `request_id=1` and `request_id=2` were preserved end to end
+- `inspect-latest` returned the same queued frame twice, which is expected for
+  preview/read-only mode and confirms no queue mutation on repeated reads
+- metadata survived the server->switcher handoff unchanged
+- `encoded_payload_len=251482` was preserved and non-zero
+- `elapsed_millis=1` remained visible on both switcher reads
+
+Server:
+
+```text
+server named-pipe handoff bounded pipe_name=streamsync-handoff-dev max_requests=2 requests_served=2 successful_responses=2 handoff_errors=0
+server named-pipe handoff bounded request pipe_name=streamsync-handoff-dev request_index=0 request_id=1 result_kind=FrameRead queue_len=1 handoff_error=none
+server named-pipe handoff bounded request pipe_name=streamsync-handoff-dev request_index=1 request_id=2 result_kind=FrameRead queue_len=1 handoff_error=none
+```
+
+Client:
+
+```text
+auth real encoded video frame bounded PoC sent AuthRequest 96 bytes from 0.0.0.0:63648 to 127.0.0.1:5000 and received AuthResponse 55 bytes from 127.0.0.1:5000; accepted=true reason_code=Ok; bounded_manual_runtime=true; fragment_pacing_every=16 fragment_pacing_delay_ms=1 frames_attempted=2 frames_captured=1 frames_encoded=1 frames_sent=1 direct_sends=0 fragmented_sends=1 fragments_attempted=246 fragments_sent=246 no_frame_count=1 capture_failures=0 encode_failures=0 frame_build_failures=0 send_failures=0 stop_reason=Some(MaxFramesReached) last_send_destination=none last_send_local_source=none last_send_frame_id=none last_send_payload_len=none last_send_packet_len=none last_send_error=none
+```
+
+Switcher read 1:
+
+```text
+switcher named-pipe handoff once pipe_name=streamsync-handoff-dev request_id=1 client_id=player1 run_id=streamsync-dev-session read_mode=inspect-latest timeout_millis=5000 elapsed_millis=1 request_status=sent response_status=decoded result_kind=FrameRead queue_len=1 frame_id=2 capture_timestamp=1777650284107351 send_timestamp=1777650284107351 queued_at=1777650284378630 width=1920 height=1080 fps_nominal=30 codec=H264 is_keyframe=false encoded_payload_len=251482
+```
+
+Switcher read 2:
+
+```text
+switcher named-pipe handoff once pipe_name=streamsync-handoff-dev request_id=2 client_id=player1 run_id=streamsync-dev-session read_mode=inspect-latest timeout_millis=5000 elapsed_millis=1 request_status=sent response_status=decoded result_kind=FrameRead queue_len=1 frame_id=2 capture_timestamp=1777650284107351 send_timestamp=1777650284107351 queued_at=1777650284378630 width=1920 height=1080 fps_nominal=30 codec=H264 is_keyframe=false encoded_payload_len=251482
+```
+
+Recorded conclusion from this successful bounded localhost run:
+
+- client auth succeeded
+- fragmented real encoded send succeeded
+- server receive / reassembly / queue succeeded
+- bounded named-pipe loop served two requests and respected `max_requests=2`
+- both switcher reads decoded responses successfully
+- no handoff errors occurred
+- no error was collapsed into `NoFrame`
+- repeated `inspect-latest` preserved preview semantics and returned the same
+  frame twice without queue mutation
+
 ---
 
 ## 3. Two-Client Live Switcher E2E

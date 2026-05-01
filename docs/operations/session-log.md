@@ -5,6 +5,72 @@
 - Codex
 
 ### Work
+- Recorded the successful bounded localhost named-pipe handoff manual pass.
+- Updated manual guidance to keep the bounded server summary command as a
+  working localhost validation path.
+- Updated TODO tracking so the next task moves to switcher-side minimal
+  reconnect/lifecycle policy planning instead of bounded localhost validation.
+
+### Changed Files
+- `docs/operations/manual-real-encoded-video-poc.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### Decisions
+- Treat the bounded localhost named-pipe pass as successful.
+- Keep plain pipe name usage unchanged.
+- Treat repeated `inspect-latest` returning the same frame twice as expected
+  preview semantics rather than a queue-mutation bug.
+
+### Observed Stdout
+- Server aggregate:
+  `server named-pipe handoff bounded pipe_name=streamsync-handoff-dev max_requests=2 requests_served=2 successful_responses=2 handoff_errors=0`
+- Server request 0:
+  `server named-pipe handoff bounded request pipe_name=streamsync-handoff-dev request_index=0 request_id=1 result_kind=FrameRead queue_len=1 handoff_error=none`
+- Server request 1:
+  `server named-pipe handoff bounded request pipe_name=streamsync-handoff-dev request_index=1 request_id=2 result_kind=FrameRead queue_len=1 handoff_error=none`
+- Client:
+  `auth real encoded video frame bounded PoC sent AuthRequest 96 bytes from 0.0.0.0:63648 to 127.0.0.1:5000 and received AuthResponse 55 bytes from 127.0.0.1:5000; accepted=true reason_code=Ok; bounded_manual_runtime=true; fragment_pacing_every=16 fragment_pacing_delay_ms=1 frames_attempted=2 frames_captured=1 frames_encoded=1 frames_sent=1 direct_sends=0 fragmented_sends=1 fragments_attempted=246 fragments_sent=246 no_frame_count=1 capture_failures=0 encode_failures=0 frame_build_failures=0 send_failures=0 stop_reason=Some(MaxFramesReached) last_send_destination=none last_send_local_source=none last_send_frame_id=none last_send_payload_len=none last_send_packet_len=none last_send_error=none`
+- Switcher read 1:
+  `switcher named-pipe handoff once pipe_name=streamsync-handoff-dev request_id=1 client_id=player1 run_id=streamsync-dev-session read_mode=inspect-latest timeout_millis=5000 elapsed_millis=1 request_status=sent response_status=decoded result_kind=FrameRead queue_len=1 frame_id=2 capture_timestamp=1777650284107351 send_timestamp=1777650284107351 queued_at=1777650284378630 width=1920 height=1080 fps_nominal=30 codec=H264 is_keyframe=false encoded_payload_len=251482`
+- Switcher read 2:
+  `switcher named-pipe handoff once pipe_name=streamsync-handoff-dev request_id=2 client_id=player1 run_id=streamsync-dev-session read_mode=inspect-latest timeout_millis=5000 elapsed_millis=1 request_status=sent response_status=decoded result_kind=FrameRead queue_len=1 frame_id=2 capture_timestamp=1777650284107351 send_timestamp=1777650284107351 queued_at=1777650284378630 width=1920 height=1080 fps_nominal=30 codec=H264 is_keyframe=false encoded_payload_len=251482`
+
+### Conclusion
+- client auth succeeded
+- fragmented real encoded send succeeded
+- server receive/reassembly/queue succeeded
+- bounded named-pipe loop served 2 requests and respected `max_requests=2`
+- `requests_served=2`, `successful_responses=2`, `handoff_errors=0`
+- both switcher reads returned `FrameRead`
+- `request_id` 1 and 2 were preserved
+- metadata survived the server->switcher handoff
+- `encoded_payload_len=251482` was preserved and non-zero
+- `elapsed_millis=1` was visible on both reads
+- no handoff errors occurred
+- repeated `inspect-latest` correctly returned the same frame twice without
+  queue mutation
+
+### Next
+- Move to switcher-side minimal reconnect/lifecycle policy planning and the
+  smallest follow-up implementation above the current per-request timeout layer.
+
+### TODO Update
+- Marked bounded localhost named-pipe manual validation complete.
+- Moved the next task away from bounded manual validation and toward
+  reconnect/lifecycle planning.
+
+### Validation
+- `cargo fmt` passed.
+- `cargo fmt --check` passed.
+- `cargo check --workspace` passed.
+- `git diff --check` passed with line-ending warnings for changed files.
+
+## 2026-05-02
+### Type
+- Codex
+
+### Work
 - Exposed the bounded server-side named-pipe handoff loop through a manual CLI
   command without adding daemon lifecycle behavior.
 - Added `--receive-auth-video-queue-and-serve-handoff-many` on top of the
