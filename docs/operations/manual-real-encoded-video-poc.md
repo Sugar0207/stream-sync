@@ -6,6 +6,25 @@ This checklist verifies the current real encoded video path:
 Windows Graphics Capture -> BGRA frame -> FFmpeg H.264 -> RealCaptureH264 VideoFrame -> direct or fragmented UDP -> server auth gate -> reassembly -> queue/source -> switcher decode/render
 ```
 
+The planned one-shot named-pipe handoff commands are still docs-only in the
+current slice. They are not part of the current manual checklist yet. For now,
+manual validation still uses:
+
+- `stream-sync-server --receive-auth-video-queue-once ...` for the queue-owning
+  server path
+- `stream-sync-switcher --live-two-view-switcher-once ...` only as the
+  direct-receive diagnostic/legacy path
+
+The future named-pipe one-shot shapes are currently documented as:
+
+```text
+stream-sync-server --receive-auth-video-queue-and-serve-handoff-once ...
+stream-sync-switcher --read-queued-frame-handoff-once ...
+```
+
+Those names and stdout contracts should be treated as planning targets until
+the CLI layer is implemented.
+
 The preferred sender is now the bounded authenticated sender:
 
 ```powershell

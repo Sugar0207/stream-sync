@@ -5,6 +5,76 @@
 - Codex
 
 ### Work
+- Implemented the requested planning/docs slice for the one-shot named-pipe
+  manual invocation shape and request-id exposure.
+- Reviewed the current named-pipe runtime/wrapper, existing server queue-owning
+  manual command, and the direct-receive switcher diagnostic command.
+- Documented the smallest useful server command shape as an extension of the
+  existing queue-owning manual launcher rather than a standalone pipe server.
+- Documented the smallest useful switcher command shape as a read-only
+  one-shot named-pipe request command with explicit `pipe_name`, `client_id`,
+  `run_id`, `read_mode`, and optional `request_id`.
+- Documented that `request_id` should be optional: preserve it when supplied,
+  and otherwise use the existing wrapper-owned monotonic policy from its
+  initial value.
+- Documented the minimum stdout contract for manual validation: request/response
+  status, request_id, client/run/mode, result kind, queue length, and frame
+  metadata when a frame is returned.
+- Documented that these command shapes should remain docs-only for now, and
+  should not be implemented until the stdout contract and ownership split are
+  accepted.
+
+### Changed Files
+- `docs/architecture/system-design.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+- `docs/operations/manual-real-encoded-video-poc.md`
+
+### Decisions
+- Do not add real one-shot named-pipe manual commands in this slice.
+- The first useful server one-shot handoff command must reuse the existing
+  queue-owning receive launcher rather than pretending pipe service is useful
+  without queued frames.
+- The first useful switcher one-shot handoff command should not take a config
+  path in the initial slice.
+- Keep `--receive-auth-video-queue-once` as the queue-owning server diagnostic.
+- Keep `--live-two-view-switcher-once` as the direct-receive diagnostic/legacy
+  path and do not revive it as the main server-mediated path.
+
+### Unresolved
+- whether to implement the documented one-shot command shapes now or after one
+  more docs/CLI review
+- exact stdout wording and field order for the future commands
+- request-id exposure in the eventual manual/runtime command
+- continuous named-pipe service/client lifecycle
+- production H.264 encoder configuration / error logging policy
+- Decide later whether `--live-two-view-switcher-once` should be renamed or
+  deprecated after the transport-backed server-mediated path exists.
+
+### Next
+- Decide whether the documented one-shot named-pipe command shapes should now
+  become real CLI commands.
+- If yes, implement the smallest queue-owning server launcher extension and
+  read-only switcher one-shot request command with the documented stdout
+  contract.
+
+### TODO Update
+- Replaced the generic manual/request-id planning item with a concrete
+  implement-or-defer decision for the documented command shapes.
+- Recorded the documented command shape and stdout contract in current
+  position.
+
+### Validation
+- `cargo fmt` passed.
+- `cargo fmt --check` passed.
+- `cargo check --workspace` passed.
+- `git diff --check` passed with line-ending warnings for changed files.
+
+## 2026-05-01
+### Type
+- Codex
+
+### Work
 - Implemented the smallest thin switcher-side handoff wrapper over the
   one-request / one-response named-pipe runtime.
 - Added a `SwitcherQueuedFrameHandoff` implementation that delegates one read

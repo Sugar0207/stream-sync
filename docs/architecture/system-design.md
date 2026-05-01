@@ -200,6 +200,73 @@ wrapper-owned monotonic `u64` counter when the caller uses the existing
 handoff trait method. This keeps request-id correlation visible without adding
 a shared process-wide allocator or lifecycle layer.
 
+The next manual-facing layer should still be documented before it becomes a
+real command. The smallest useful server-side manual command is not a
+standalone "serve pipe once" launcher, because the handoff server is only
+useful after the server has already authenticated, reassembled, and queued at
+least one frame. The first useful server manual shape should therefore extend
+the existing queue-owning launcher:
+
+```text
+stream-sync-server --receive-auth-video-queue-and-serve-handoff-once
+  [config-path]
+  [pipe-name]
+  [max-video-packets]
+  [receive-timeout-ms]
+  [expected-reassembled-frames]
+  [stop-after-expected-reassembled-frames]
+  [receive-buffer-bytes]
+```
+
+That command would keep server config ownership exactly where it already is:
+auth/UDP receive/reassembly/queue remain server-owned, then one named-pipe
+handoff request is served from the resulting caller-owned queue state, and the
+process returns.
+
+The smallest useful switcher-side manual command should stay read-only and
+transport-mediated:
+
+```text
+stream-sync-switcher --read-queued-frame-handoff-once
+  [pipe-name]
+  [client-id]
+  [run-id]
+  [read-mode]
+  [request-id]
+```
+
+The switcher one-shot command should not require a config path in the first
+slice. Its work is only named-pipe connect/write/read/decode/map for one
+explicit request. Reusing the server config here would suggest ownership of
+server-side auth/UDP/queue concerns that the switcher command does not have.
+
+For manual use, `request_id` should be optional. If it is supplied, it must be
+preserved exactly. If it is omitted, the existing wrapper-owned monotonic
+policy should be used. For a one-shot CLI process, that effectively means the
+default first request id is the wrapper's initial value, e.g. `1`, and it only
+becomes meaningfully monotonic if a later bounded multi-request manual command
+is added.
+
+These manual commands should print compact stdout for validation, not render or
+run full switcher scheduling. The minimum useful stdout fields are:
+
+- `pipe_name`
+- `request_id`
+- `client_id`
+- `run_id`
+- `read_mode`
+- request/response status
+- result kind: `FrameRead` / `NoFrame` / `HandoffError`
+- queue length field from the response
+- for `FrameRead`: `frame_id`, capture/send/queued timestamps, width, height,
+  nominal FPS, codec, keyframe flag, and encoded payload length
+
+These command shapes should be documented first and implemented only after the
+stdout contract and ownership split are agreed. `--receive-auth-video-queue-once`
+remains the queue-owning server diagnostic, and `--live-two-view-switcher-once`
+remains the direct-receive diagnostic/legacy path rather than becoming the main
+server-mediated path.
+
 ---
 
 ## 3. コンポーネントと責務
