@@ -5,6 +5,73 @@
 - Codex
 
 ### Work
+- Implemented the smallest bounded server-owned service session on top of the
+  existing queue-owning receive launcher and bounded named-pipe handoff loop.
+- Reused the existing `--receive-auth-video-queue-and-serve-handoff-many`
+  command as the bounded service-session CLI instead of adding a new command.
+- Extended the bounded service-session stdout to include both the
+  receive/auth/video queue summary and the bounded handoff summary.
+
+### Changed Files
+- `apps/server/src/lib.rs`
+- `apps/server/src/main.rs`
+- `docs/architecture/system-design.md`
+- `docs/operations/manual-real-encoded-video-poc.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### Decisions
+- Keep the bounded service session on the existing manual CLI surface rather
+  than adding another command.
+- Reuse `ServerReceiveAuthVideoQueueOnceLauncher` for UDP auth/video
+  receive/reassembly/queue ownership.
+- Reuse `ServerSwitcherNamedPipeOneRequestRuntimeBoundary::serve_many(...)` for
+  bounded named-pipe handoff serving.
+- Keep normal exit at `max_requests` and do not add daemon mode, Ctrl+C
+  ownership, idle-timeout shutdown, or reconnect/backoff.
+
+### Implemented
+- Added
+  `ServerReceiveAuthVideoQueueHandoffServiceSessionLauncher` in
+  `apps/server`.
+- Added
+  `ServerReceiveAuthVideoQueueHandoffServiceSessionOutput` and
+  `ServerReceiveAuthVideoQueueHandoffServiceSessionError`.
+- Added focused server tests for:
+  - service-session aggregation
+  - receive-startup error preservation
+- Added server CLI formatting coverage for the combined service-session summary.
+
+### Unresolved
+- bounded service session localhost manual pass
+- production H.264 encoder configuration / error logging policy
+- Decide later whether `--live-two-view-switcher-once` should be renamed or
+  deprecated after the transport-backed server-mediated path exists
+
+### Next
+- Take a localhost manual pass of the bounded service session and record the
+  combined receive/auth/video queue summary plus bounded handoff summary.
+
+### TODO Update
+- Marked the bounded service-session implementation slice complete.
+- Moved the next task to bounded service-session localhost validation.
+
+### Validation
+- `cargo fmt` passed.
+- `cargo fmt --check` passed.
+- `cargo test -p stream-sync-net-core handoff -- --test-threads=1` passed.
+- `cargo test -p stream-sync-server handoff -- --test-threads=1` passed.
+- `cargo test -p stream-sync-switcher handoff -- --test-threads=1` passed.
+- `cargo test -p stream-sync-server video_frame_queue -- --test-threads=1`
+  passed.
+- `cargo check --workspace` passed.
+- `git diff --check` passed with line-ending warnings for changed files.
+
+## 2026-05-02
+### Type
+- Codex
+
+### Work
 - Implemented a planning/docs-only slice for the smallest service lifecycle
   step after bounded named-pipe handoff success and MVP classification-only
   acceptance.

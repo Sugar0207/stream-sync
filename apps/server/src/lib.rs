@@ -3235,6 +3235,115 @@ pub struct ServerSwitcherNamedPipeManyRequestRuntimeOutput {
     pub requests: Vec<ServerSwitcherNamedPipeRequestServeSummary>,
 }
 
+/// Output of one bounded server-owned service session that keeps UDP
+/// receive/reassembly/queue ownership and named-pipe handoff serving alive in
+/// the same process lifetime.
+#[cfg(windows)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ServerReceiveAuthVideoQueueHandoffServiceSessionOutput {
+    pub pipe_name: String,
+    pub receive: ServerReceiveAuthVideoQueueOnceStartupOutcome,
+    pub handoff: ServerSwitcherNamedPipeManyRequestRuntimeOutput,
+}
+
+/// Error while running one bounded server-owned handoff service session.
+#[cfg(windows)]
+#[derive(Debug)]
+pub enum ServerReceiveAuthVideoQueueHandoffServiceSessionError {
+    Receive(ServerReceiveAuthVideoQueueOnceStartupError),
+    Handoff(ServerSwitcherNamedPipeOneRequestRuntimeError),
+}
+
+/// Launcher for the smallest bounded server-owned service session.
+///
+/// This composes the existing auth/video queue launcher with the existing
+/// bounded named-pipe handoff loop so both runtimes stay alive in one process
+/// lifetime and still exit naturally after `max_requests`.
+#[cfg(windows)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ServerReceiveAuthVideoQueueHandoffServiceSessionLauncher {
+    receive: ServerReceiveAuthVideoQueueOnceLauncher,
+    handoff: ServerSwitcherNamedPipeOneRequestRuntimeBoundary,
+}
+
+#[cfg(windows)]
+impl ServerReceiveAuthVideoQueueHandoffServiceSessionLauncher {
+    pub fn run_once_from_path_with_writers_and_policy<
+        OW: io::Write,
+        RW: io::Write,
+        AW: io::Write,
+        SW: io::Write,
+    >(
+        &self,
+        path: impl AsRef<Path>,
+        pipe_name: &str,
+        max_requests: usize,
+        operational_writer: OW,
+        rejection_writer: RW,
+        auth_log_writer: AW,
+        send_log_writer: SW,
+        policy: ServerReceiveAuthVideoQueueOnceManualPolicy,
+    ) -> Result<
+        ServerReceiveAuthVideoQueueHandoffServiceSessionOutput,
+        ServerReceiveAuthVideoQueueHandoffServiceSessionError,
+    > {
+        self.run_with(
+            pipe_name,
+            max_requests,
+            || {
+                self.receive.run_once_from_path_with_writers_and_policy(
+                    path.as_ref(),
+                    operational_writer,
+                    rejection_writer,
+                    auth_log_writer,
+                    send_log_writer,
+                    policy,
+                )
+            },
+            |queue_state, pipe_name, max_requests| {
+                self.handoff
+                    .serve_many(queue_state, pipe_name, max_requests)
+            },
+        )
+    }
+
+    fn run_with<ReceiveFn, ServeFn>(
+        &self,
+        pipe_name: &str,
+        max_requests: usize,
+        receive_once: ReceiveFn,
+        serve_many: ServeFn,
+    ) -> Result<
+        ServerReceiveAuthVideoQueueHandoffServiceSessionOutput,
+        ServerReceiveAuthVideoQueueHandoffServiceSessionError,
+    >
+    where
+        ReceiveFn: FnOnce() -> Result<
+            ServerReceiveAuthVideoQueueOnceStartupOutcome,
+            ServerReceiveAuthVideoQueueOnceStartupError,
+        >,
+        ServeFn: FnOnce(
+            &mut ServerVideoFrameQueueState,
+            &str,
+            usize,
+        ) -> Result<
+            ServerSwitcherNamedPipeManyRequestRuntimeOutput,
+            ServerSwitcherNamedPipeOneRequestRuntimeError,
+        >,
+    {
+        let mut receive = receive_once()
+            .map_err(ServerReceiveAuthVideoQueueHandoffServiceSessionError::Receive)?;
+        let handoff = serve_many(&mut receive.video_queue_state, pipe_name, max_requests)
+            .map_err(ServerReceiveAuthVideoQueueHandoffServiceSessionError::Handoff)?;
+
+        Ok(ServerReceiveAuthVideoQueueHandoffServiceSessionOutput {
+            pipe_name: pipe_name.to_string(),
+            receive,
+            handoff,
+        })
+    }
+}
+
 /// Failure while serving one named-pipe handoff request.
 #[cfg(windows)]
 #[derive(Debug)]
@@ -12261,6 +12370,86 @@ shared_token = "secret"
 
     #[cfg(windows)]
     #[test]
+    fn server_handoff_service_session_aggregates_receive_and_bounded_handoff() {
+        let launcher = ServerReceiveAuthVideoQueueHandoffServiceSessionLauncher::default();
+
+        let output = launcher
+            .run_with(
+                "pipe-session",
+                2,
+                test_service_session_receive_outcome,
+                |queue_state, pipe_name, max_requests| {
+                    assert_eq!(pipe_name, "pipe-session");
+                    assert_eq!(max_requests, 2);
+                    assert_eq!(queue_state.total_len(), 1);
+
+                    Ok(ServerSwitcherNamedPipeManyRequestRuntimeOutput {
+                        max_requests,
+                        requests_served: 2,
+                        successful_responses: 2,
+                        handoff_errors: 0,
+                        requests: vec![
+                            ServerSwitcherNamedPipeRequestServeSummary {
+                                request_id: 1,
+                                result_kind: ServerSwitcherNamedPipeRequestResultKind::FrameRead,
+                                queue_len: Some(1),
+                                handoff_error: None,
+                            },
+                            ServerSwitcherNamedPipeRequestServeSummary {
+                                request_id: 2,
+                                result_kind: ServerSwitcherNamedPipeRequestResultKind::FrameRead,
+                                queue_len: Some(1),
+                                handoff_error: None,
+                            },
+                        ],
+                    })
+                },
+            )
+            .expect("service session should aggregate receive and handoff output");
+
+        assert_eq!(output.pipe_name, "pipe-session");
+        assert_eq!(output.receive.video_queue_state.total_len(), 1);
+        assert_eq!(output.handoff.max_requests, 2);
+        assert_eq!(output.handoff.requests_served, 2);
+        assert_eq!(output.handoff.successful_responses, 2);
+        assert_eq!(output.handoff.handoff_errors, 0);
+        assert_eq!(output.handoff.requests.len(), 2);
+        assert_eq!(output.handoff.requests[0].request_id, 1);
+        assert_eq!(output.handoff.requests[1].request_id, 2);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn server_handoff_service_session_preserves_receive_startup_error() {
+        let launcher = ServerReceiveAuthVideoQueueHandoffServiceSessionLauncher::default();
+
+        let error = launcher
+            .run_with(
+                "pipe-session",
+                1,
+                || {
+                    Err(ServerReceiveAuthVideoQueueOnceStartupError::VideoReceive {
+                        kind: io::ErrorKind::TimedOut,
+                    })
+                },
+                |_queue_state, _pipe_name, _max_requests| {
+                    panic!("handoff should not run when receive startup fails");
+                },
+            )
+            .expect_err("receive startup error should be preserved");
+
+        match error {
+            ServerReceiveAuthVideoQueueHandoffServiceSessionError::Receive(
+                ServerReceiveAuthVideoQueueOnceStartupError::VideoReceive {
+                    kind: io::ErrorKind::TimedOut,
+                },
+            ) => {}
+            other => panic!("unexpected error: {other:?}"),
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
     fn server_switcher_handoff_named_pipe_path_rejects_empty_name() {
         let error = named_pipe_path("").expect_err("empty pipe name should be rejected");
         assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
@@ -18082,6 +18271,105 @@ shared_token = "secret"
 
     fn packet_source_at(port: u16) -> PacketSource {
         SocketAddr::from(([127, 0, 0, 1], port)).into()
+    }
+
+    #[cfg(windows)]
+    fn test_service_session_receive_outcome() -> Result<
+        ServerReceiveAuthVideoQueueOnceStartupOutcome,
+        ServerReceiveAuthVideoQueueOnceStartupError,
+    > {
+        let source = packet_source();
+        let client_id = ClientId("player1".to_string());
+        let run_id = RunId("run-1".to_string());
+        let protocol_version = ProtocolVersion(2);
+        let mut video_queue_state = ServerVideoFrameQueueState::default();
+        store_video_frame_for_read_test(&mut video_queue_state, "player1", "run-1", 7);
+
+        let auth_response = AuthResponse {
+            message_type: MessageType::AuthResponse,
+            protocol_version,
+            client_id: client_id.clone(),
+            run_id: run_id.clone(),
+            accepted: true,
+            reason_code: AuthResponseReasonCode::Ok,
+            message: None,
+            server_time: Some(TimestampMicros(10)),
+            expected_protocol_version: None,
+        };
+        let outbound_response = ServerOutboundAuthResponse {
+            destination: source,
+            message: ProtocolMessage::AuthResponse(auth_response),
+        };
+        let queue_item = OutboundQueueItem {
+            packet: outbound_response.clone().into_outbound_packet(),
+        };
+        let auth_flow = ServerAuthFlowOutcome {
+            decision: ServerAuthDecision::accepted(
+                source,
+                client_id.clone(),
+                run_id.clone(),
+                protocol_version,
+                Some(TimestampMicros(10)),
+            ),
+            auth_log_input: ServerAuthLogInput {
+                source,
+                client_id: client_id.clone(),
+                run_id: run_id.clone(),
+                app_version: None,
+                protocol_version,
+                outcome: ServerAuthLogOutcome::Success,
+                reason_code: AuthResponseReasonCode::Ok,
+                message: None,
+                server_time: Some(TimestampMicros(10)),
+                expected_protocol_version: None,
+            },
+            registry_registration: None,
+            outbound_response,
+            queue_item,
+        };
+        let first_auth = ServerAuthResponsePocOutcome {
+            auth_flow,
+            registered_sender: None,
+            encoded_packet: EncodedOutboundPacket {
+                destination: source.into(),
+                bytes: vec![1, 2, 3],
+            },
+            bytes_sent: 3,
+        };
+
+        Ok(ServerReceiveAuthVideoQueueOnceStartupOutcome {
+            bind_address: SocketAddr::from(([127, 0, 0, 1], 5000)),
+            registry: AuthenticatedSenderRegistry::default(),
+            queue_collection: ServerOutboundQueueCollection::default(),
+            video_queue_state,
+            reassembly_state: ServerVideoFrameReassemblyState::default(),
+            receive_buffer: ServerUdpReceiveBufferTuningResult {
+                requested_bytes: 8_388_608,
+                effective_bytes: Some(8_388_608),
+                set_error: None,
+                read_error: None,
+            },
+            first_auth,
+            video: ServerReceiveAuthVideoQueueOnceVideoOutcome::Received {
+                summary: ServerReceiveAuthVideoQueueOnceVideoSummary {
+                    packets_received: 1,
+                    fragments_received: 0,
+                    frames_reassembled: 0,
+                    frames_queued: 1,
+                    direct_frames_queued: 1,
+                    rejected_packets: 0,
+                    rejected_fragments: 0,
+                    duplicate_fragments: 0,
+                    non_video_packets: 0,
+                    incomplete_reassembly_frames: 0,
+                    queue_len: 1,
+                    incomplete_frame_progress: Vec::new(),
+                    receive_timed_out: false,
+                    max_packets_reached: false,
+                },
+                queue: None,
+            },
+        })
     }
 
     fn send_log_context() -> OutboundSendLogContext {

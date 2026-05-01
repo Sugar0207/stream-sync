@@ -14,8 +14,9 @@ least one frame. The current manual checklist now uses:
 - `stream-sync-server --receive-auth-video-queue-and-serve-handoff-once ...`
   for queue-owning server receive plus one named-pipe handoff
 - `stream-sync-server --receive-auth-video-queue-and-serve-handoff-many ...`
-  for queue-owning server receive plus bounded `max_requests` named-pipe
-  handoff serving
+  for the bounded server-owned service session: queue-owning server receive
+  plus bounded `max_requests` named-pipe handoff serving in the same process
+  lifetime
 - `stream-sync-switcher --read-queued-frame-handoff-once ...` for one
   switcher-side named-pipe read
 - `stream-sync-server --receive-auth-video-queue-once ...` for the queue-owning
@@ -221,8 +222,9 @@ queue_len=<n|none>
 ```
 
 When using `--receive-auth-video-queue-and-serve-handoff-many`, the same
-process later prints one aggregate bounded-loop summary line plus one
-per-request summary line for each served request:
+process first prints the normal receive/auth/video queue summary line, then
+prints one aggregate bounded-loop summary line plus one per-request summary
+line for each served request:
 
 ```text
 server named-pipe handoff bounded pipe_name=<pipe> max_requests=<n> requests_served=<n> successful_responses=<n> handoff_errors=<n>

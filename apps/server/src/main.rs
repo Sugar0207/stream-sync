@@ -203,84 +203,9 @@ fn main() {
                 policy,
             ) {
                 Ok(outcome) => {
-                    let decision = &outcome.first_auth.auth_flow.decision;
-                    let (video_status, queued_status, queue_len, dropped_oldest, video_summary) =
-                        auth_video_queue_summary(&outcome);
-                    let incomplete_progress = video_summary
-                        .map(format_incomplete_frame_progress)
-                        .unwrap_or_else(|| "none".to_string());
-                    let effective_receive_buffer = outcome
-                        .receive_buffer
-                        .effective_bytes
-                        .map(|bytes| bytes.to_string())
-                        .unwrap_or_else(|| "unknown".to_string());
-                    let receive_buffer_set_error = outcome
-                        .receive_buffer
-                        .set_error
-                        .as_deref()
-                        .unwrap_or("none");
-                    let receive_buffer_read_error = outcome
-                        .receive_buffer
-                        .read_error
-                        .as_deref()
-                        .unwrap_or("none");
                     println!(
-                        "receive auth/video queue runtime handled auth on {}; auth_accepted={} auth_reason={:?} client_id={} run_id={} video={} queued={} queue_len={} dropped_oldest={} registered_clients={} manual_max_video_packets={} manual_receive_timeout_ms={} manual_expected_reassembled_frames={} manual_stop_after_expected_reassembled_frames={} manual_receive_buffer_requested_bytes={} manual_receive_buffer_effective_bytes={} manual_receive_buffer_set_error={} manual_receive_buffer_read_error={} packets_received={} fragments_received={} frames_reassembled={} frames_queued={} direct_frames_queued={} rejected_packets={} rejected_fragments={} duplicate_fragments={} non_video_packets={} incomplete_reassembly_frames={} incomplete_frame_progress={} receive_timed_out={} max_packets_reached={}",
-                        outcome.bind_address,
-                        decision.accepted,
-                        decision.reason_code,
-                        decision.client_id.0,
-                        decision.run_id.0,
-                        video_status,
-                        queued_status,
-                        queue_len,
-                        dropped_oldest,
-                        outcome.registry.entries().count(),
-                        max_video_packets,
-                        receive_timeout_ms,
-                        expected_frames,
-                        stop_after_expected,
-                        outcome.receive_buffer.requested_bytes,
-                        effective_receive_buffer,
-                        receive_buffer_set_error,
-                        receive_buffer_read_error,
-                        video_summary
-                            .map(|summary| summary.packets_received.to_string())
-                            .unwrap_or_else(|| "none".to_string()),
-                        video_summary
-                            .map(|summary| summary.fragments_received.to_string())
-                            .unwrap_or_else(|| "none".to_string()),
-                        video_summary
-                            .map(|summary| summary.frames_reassembled.to_string())
-                            .unwrap_or_else(|| "none".to_string()),
-                        video_summary
-                            .map(|summary| summary.frames_queued.to_string())
-                            .unwrap_or_else(|| "none".to_string()),
-                        video_summary
-                            .map(|summary| summary.direct_frames_queued.to_string())
-                            .unwrap_or_else(|| "none".to_string()),
-                        video_summary
-                            .map(|summary| summary.rejected_packets.to_string())
-                            .unwrap_or_else(|| "none".to_string()),
-                        video_summary
-                            .map(|summary| summary.rejected_fragments.to_string())
-                            .unwrap_or_else(|| "none".to_string()),
-                        video_summary
-                            .map(|summary| summary.duplicate_fragments.to_string())
-                            .unwrap_or_else(|| "none".to_string()),
-                        video_summary
-                            .map(|summary| summary.non_video_packets.to_string())
-                            .unwrap_or_else(|| "none".to_string()),
-                        video_summary
-                            .map(|summary| summary.incomplete_reassembly_frames.to_string())
-                            .unwrap_or_else(|| "none".to_string()),
-                        incomplete_progress,
-                        video_summary
-                            .map(|summary| summary.receive_timed_out.to_string())
-                            .unwrap_or_else(|| "none".to_string()),
-                        video_summary
-                            .map(|summary| summary.max_packets_reached.to_string())
-                            .unwrap_or_else(|| "none".to_string())
+                        "{}",
+                        format_receive_auth_video_queue_runtime_summary(&outcome, policy)
                     );
                 }
                 Err(error) => {
@@ -378,32 +303,37 @@ fn main() {
                 stop_after_expected_reassembled_frames: stop_after_expected,
                 receive_buffer_bytes,
             };
-            let launcher = stream_sync_server::ServerReceiveAuthVideoQueueOnceLauncher::default();
-            match launcher.run_once_from_path_with_writers_and_policy(
-                &config_path,
-                std::io::stderr(),
-                std::io::stderr(),
-                std::io::stderr(),
-                std::io::stderr(),
-                policy,
-            ) {
-                Ok(mut outcome) => match serve_named_pipe_handoff_many(
-                    &mut outcome.video_queue_state,
+            #[cfg(windows)]
+            {
+                let launcher =
+                    stream_sync_server::ServerReceiveAuthVideoQueueHandoffServiceSessionLauncher::default();
+                match launcher.run_once_from_path_with_writers_and_policy(
+                    &config_path,
                     &pipe_name,
                     max_requests,
+                    std::io::stderr(),
+                    std::io::stderr(),
+                    std::io::stderr(),
+                    std::io::stderr(),
+                    policy,
                 ) {
-                    Ok(summary) => println!("{summary}"),
+                    Ok(outcome) => println!(
+                        "{}",
+                        format_named_pipe_handoff_service_session_summary(&outcome, policy)
+                    ),
                     Err(error) => {
                         eprintln!(
-                            "receive auth/video queue and serve handoff many failed: {error}"
+                            "receive auth/video queue and serve handoff many failed: {error:?}"
                         );
                         std::process::exit(1);
                     }
-                },
-                Err(error) => {
-                    eprintln!("receive auth/video queue and serve handoff many failed: {error:?}");
-                    std::process::exit(1);
                 }
+            }
+            #[cfg(not(windows))]
+            {
+                let _ = (&config_path, &pipe_name, max_requests, policy);
+                eprintln!("receive auth/video queue and serve handoff many failed: named-pipe handoff command is only available on Windows");
+                std::process::exit(1);
             }
         }
         _ => {
@@ -547,6 +477,92 @@ fn auth_video_queue_summary(
     }
 }
 
+fn format_receive_auth_video_queue_runtime_summary(
+    outcome: &stream_sync_server::ServerReceiveAuthVideoQueueOnceStartupOutcome,
+    policy: stream_sync_server::ServerReceiveAuthVideoQueueOnceManualPolicy,
+) -> String {
+    let decision = &outcome.first_auth.auth_flow.decision;
+    let (video_status, queued_status, queue_len, dropped_oldest, video_summary) =
+        auth_video_queue_summary(outcome);
+    let incomplete_progress = video_summary
+        .map(format_incomplete_frame_progress)
+        .unwrap_or_else(|| "none".to_string());
+    let effective_receive_buffer = outcome
+        .receive_buffer
+        .effective_bytes
+        .map(|bytes| bytes.to_string())
+        .unwrap_or_else(|| "unknown".to_string());
+    let receive_buffer_set_error = outcome
+        .receive_buffer
+        .set_error
+        .as_deref()
+        .unwrap_or("none");
+    let receive_buffer_read_error = outcome
+        .receive_buffer
+        .read_error
+        .as_deref()
+        .unwrap_or("none");
+
+    format!(
+        "receive auth/video queue runtime handled auth on {}; auth_accepted={} auth_reason={:?} client_id={} run_id={} video={} queued={} queue_len={} dropped_oldest={} registered_clients={} manual_max_video_packets={} manual_receive_timeout_ms={} manual_expected_reassembled_frames={} manual_stop_after_expected_reassembled_frames={} manual_receive_buffer_requested_bytes={} manual_receive_buffer_effective_bytes={} manual_receive_buffer_set_error={} manual_receive_buffer_read_error={} packets_received={} fragments_received={} frames_reassembled={} frames_queued={} direct_frames_queued={} rejected_packets={} rejected_fragments={} duplicate_fragments={} non_video_packets={} incomplete_reassembly_frames={} incomplete_frame_progress={} receive_timed_out={} max_packets_reached={}",
+        outcome.bind_address,
+        decision.accepted,
+        decision.reason_code,
+        decision.client_id.0,
+        decision.run_id.0,
+        video_status,
+        queued_status,
+        queue_len,
+        dropped_oldest,
+        outcome.registry.entries().count(),
+        policy.max_video_packets,
+        policy.receive_timeout.as_millis(),
+        policy.expected_reassembled_frames,
+        policy.stop_after_expected_reassembled_frames,
+        outcome.receive_buffer.requested_bytes,
+        effective_receive_buffer,
+        receive_buffer_set_error,
+        receive_buffer_read_error,
+        video_summary
+            .map(|summary| summary.packets_received.to_string())
+            .unwrap_or_else(|| "none".to_string()),
+        video_summary
+            .map(|summary| summary.fragments_received.to_string())
+            .unwrap_or_else(|| "none".to_string()),
+        video_summary
+            .map(|summary| summary.frames_reassembled.to_string())
+            .unwrap_or_else(|| "none".to_string()),
+        video_summary
+            .map(|summary| summary.frames_queued.to_string())
+            .unwrap_or_else(|| "none".to_string()),
+        video_summary
+            .map(|summary| summary.direct_frames_queued.to_string())
+            .unwrap_or_else(|| "none".to_string()),
+        video_summary
+            .map(|summary| summary.rejected_packets.to_string())
+            .unwrap_or_else(|| "none".to_string()),
+        video_summary
+            .map(|summary| summary.rejected_fragments.to_string())
+            .unwrap_or_else(|| "none".to_string()),
+        video_summary
+            .map(|summary| summary.duplicate_fragments.to_string())
+            .unwrap_or_else(|| "none".to_string()),
+        video_summary
+            .map(|summary| summary.non_video_packets.to_string())
+            .unwrap_or_else(|| "none".to_string()),
+        video_summary
+            .map(|summary| summary.incomplete_reassembly_frames.to_string())
+            .unwrap_or_else(|| "none".to_string()),
+        incomplete_progress,
+        video_summary
+            .map(|summary| summary.receive_timed_out.to_string())
+            .unwrap_or_else(|| "none".to_string()),
+        video_summary
+            .map(|summary| summary.max_packets_reached.to_string())
+            .unwrap_or_else(|| "none".to_string())
+    )
+}
+
 #[cfg(windows)]
 fn serve_named_pipe_handoff_once(
     queue_state: &mut stream_sync_server::ServerVideoFrameQueueState,
@@ -562,27 +578,6 @@ fn serve_named_pipe_handoff_once(
 fn serve_named_pipe_handoff_once(
     _queue_state: &mut stream_sync_server::ServerVideoFrameQueueState,
     _pipe_name: &str,
-) -> Result<String, String> {
-    Err("named-pipe handoff command is only available on Windows".to_string())
-}
-
-#[cfg(windows)]
-fn serve_named_pipe_handoff_many(
-    queue_state: &mut stream_sync_server::ServerVideoFrameQueueState,
-    pipe_name: &str,
-    max_requests: usize,
-) -> Result<String, String> {
-    stream_sync_server::ServerSwitcherNamedPipeOneRequestRuntimeBoundary::default()
-        .serve_many(queue_state, pipe_name, max_requests)
-        .map(|output| format_named_pipe_handoff_server_many_summary(pipe_name, &output))
-        .map_err(|error| format!("{error:?}"))
-}
-
-#[cfg(not(windows))]
-fn serve_named_pipe_handoff_many(
-    _queue_state: &mut stream_sync_server::ServerVideoFrameQueueState,
-    _pipe_name: &str,
-    _max_requests: usize,
 ) -> Result<String, String> {
     Err("named-pipe handoff command is only available on Windows".to_string())
 }
@@ -685,6 +680,18 @@ fn format_named_pipe_handoff_server_many_summary(
 }
 
 #[cfg(windows)]
+fn format_named_pipe_handoff_service_session_summary(
+    output: &stream_sync_server::ServerReceiveAuthVideoQueueHandoffServiceSessionOutput,
+    policy: stream_sync_server::ServerReceiveAuthVideoQueueOnceManualPolicy,
+) -> String {
+    let receive_summary = format_receive_auth_video_queue_runtime_summary(&output.receive, policy);
+    let handoff_summary =
+        format_named_pipe_handoff_server_many_summary(&output.pipe_name, &output.handoff);
+
+    format!("{receive_summary}\n{handoff_summary}")
+}
+
+#[cfg(windows)]
 fn format_server_handoff_result_kind(
     kind: stream_sync_server::ServerSwitcherNamedPipeRequestResultKind,
 ) -> &'static str {
@@ -710,11 +717,14 @@ fn format_handoff_read_mode(
 #[cfg(test)]
 mod tests {
     use stream_sync_net_core::{
-        ServerSwitcherQueuedFrameHandoffFrame, ServerSwitcherQueuedFrameHandoffRequest,
-        ServerSwitcherQueuedFrameHandoffResponse, ServerSwitcherQueuedFrameReadMode,
-        SERVER_SWITCHER_HANDOFF_VERSION,
+        EncodedOutboundPacket, OutboundQueueItem, ServerSwitcherQueuedFrameHandoffFrame,
+        ServerSwitcherQueuedFrameHandoffRequest, ServerSwitcherQueuedFrameHandoffResponse,
+        ServerSwitcherQueuedFrameReadMode, SERVER_SWITCHER_HANDOFF_VERSION,
     };
-    use stream_sync_protocol::{ClientId, Codec, RunId, TimestampMicros};
+    use stream_sync_protocol::{
+        AuthResponse, AuthResponseReasonCode, ClientId, Codec, MessageType, ProtocolMessage,
+        ProtocolVersion, RunId, TimestampMicros,
+    };
 
     use super::format_handoff_read_mode;
 
@@ -819,5 +829,149 @@ mod tests {
         assert!(summary.contains("result_kind=HandoffError"));
         assert!(summary.contains("queue_len=none"));
         assert!(summary.contains("handoff_error=SourceShutdown"));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn server_handoff_service_session_summary_includes_receive_and_bounded_lines() {
+        let summary = super::format_named_pipe_handoff_service_session_summary(
+            &test_service_session_output(),
+            stream_sync_server::ServerReceiveAuthVideoQueueOnceManualPolicy {
+                max_video_packets: 4096,
+                receive_timeout: std::time::Duration::from_millis(15_000),
+                expected_reassembled_frames: 1,
+                stop_after_expected_reassembled_frames: true,
+                receive_buffer_bytes: 8_388_608,
+            },
+        );
+
+        assert!(summary.contains("receive auth/video queue runtime handled auth on"));
+        assert!(summary.contains("manual_max_video_packets=4096"));
+        assert!(summary.contains("pipe_name=pipe-session"));
+        assert!(summary.contains("max_requests=2"));
+        assert!(summary.contains("requests_served=2"));
+        assert!(summary.contains("request_index=0"));
+        assert!(summary.contains("request_id=1"));
+        assert!(summary.contains("result_kind=FrameRead"));
+    }
+
+    #[cfg(windows)]
+    fn test_service_session_output(
+    ) -> stream_sync_server::ServerReceiveAuthVideoQueueHandoffServiceSessionOutput {
+        let source: stream_sync_net_core::PacketSource = "127.0.0.1:5000"
+            .parse::<std::net::SocketAddr>()
+            .expect("source should parse")
+            .into();
+        let client_id = ClientId("player1".to_string());
+        let run_id = RunId("run-1".to_string());
+        let protocol_version = ProtocolVersion(2);
+        let auth_response = AuthResponse {
+            message_type: MessageType::AuthResponse,
+            protocol_version,
+            client_id: client_id.clone(),
+            run_id: run_id.clone(),
+            accepted: true,
+            reason_code: AuthResponseReasonCode::Ok,
+            message: None,
+            server_time: Some(TimestampMicros(10)),
+            expected_protocol_version: None,
+        };
+        let outbound_response = stream_sync_server::ServerOutboundAuthResponse {
+            destination: source,
+            message: ProtocolMessage::AuthResponse(auth_response),
+        };
+        let queue_item = OutboundQueueItem {
+            packet: outbound_response.clone().into_outbound_packet(),
+        };
+
+        stream_sync_server::ServerReceiveAuthVideoQueueHandoffServiceSessionOutput {
+            pipe_name: "pipe-session".to_string(),
+            receive: stream_sync_server::ServerReceiveAuthVideoQueueOnceStartupOutcome {
+                bind_address: std::net::SocketAddr::from(([127, 0, 0, 1], 5000)),
+                registry: stream_sync_server::AuthenticatedSenderRegistry::default(),
+                queue_collection: stream_sync_server::ServerOutboundQueueCollection::default(),
+                video_queue_state: stream_sync_server::ServerVideoFrameQueueState::default(),
+                reassembly_state: stream_sync_server::ServerVideoFrameReassemblyState::default(),
+                receive_buffer: stream_sync_server::ServerUdpReceiveBufferTuningResult {
+                    requested_bytes: 8_388_608,
+                    effective_bytes: Some(8_388_608),
+                    set_error: None,
+                    read_error: None,
+                },
+                first_auth: stream_sync_server::ServerAuthResponsePocOutcome {
+                    auth_flow: stream_sync_server::ServerAuthFlowOutcome {
+                        decision: stream_sync_server::ServerAuthDecision::accepted(
+                            source,
+                            client_id.clone(),
+                            run_id.clone(),
+                            protocol_version,
+                            Some(TimestampMicros(10)),
+                        ),
+                        auth_log_input: stream_sync_server::ServerAuthLogInput {
+                            source,
+                            client_id: client_id.clone(),
+                            run_id: run_id.clone(),
+                            app_version: None,
+                            protocol_version,
+                            outcome: stream_sync_server::ServerAuthLogOutcome::Success,
+                            reason_code: AuthResponseReasonCode::Ok,
+                            message: None,
+                            server_time: Some(TimestampMicros(10)),
+                            expected_protocol_version: None,
+                        },
+                        registry_registration: None,
+                        outbound_response,
+                        queue_item,
+                    },
+                    registered_sender: None,
+                    encoded_packet: EncodedOutboundPacket {
+                        destination: source.into(),
+                        bytes: vec![1, 2, 3],
+                    },
+                    bytes_sent: 3,
+                },
+                video: stream_sync_server::ServerReceiveAuthVideoQueueOnceVideoOutcome::Received {
+                    summary: stream_sync_server::ServerReceiveAuthVideoQueueOnceVideoSummary {
+                        packets_received: 1,
+                        fragments_received: 0,
+                        frames_reassembled: 0,
+                        frames_queued: 1,
+                        direct_frames_queued: 1,
+                        rejected_packets: 0,
+                        rejected_fragments: 0,
+                        duplicate_fragments: 0,
+                        non_video_packets: 0,
+                        incomplete_reassembly_frames: 0,
+                        queue_len: 1,
+                        incomplete_frame_progress: Vec::new(),
+                        receive_timed_out: false,
+                        max_packets_reached: false,
+                    },
+                    queue: None,
+                },
+            },
+            handoff: stream_sync_server::ServerSwitcherNamedPipeManyRequestRuntimeOutput {
+                max_requests: 2,
+                requests_served: 2,
+                successful_responses: 2,
+                handoff_errors: 0,
+                requests: vec![
+                    stream_sync_server::ServerSwitcherNamedPipeRequestServeSummary {
+                        request_id: 1,
+                        result_kind:
+                            stream_sync_server::ServerSwitcherNamedPipeRequestResultKind::FrameRead,
+                        queue_len: Some(1),
+                        handoff_error: None,
+                    },
+                    stream_sync_server::ServerSwitcherNamedPipeRequestServeSummary {
+                        request_id: 2,
+                        result_kind:
+                            stream_sync_server::ServerSwitcherNamedPipeRequestResultKind::FrameRead,
+                        queue_len: Some(1),
+                        handoff_error: None,
+                    },
+                ],
+            },
+        }
     }
 }

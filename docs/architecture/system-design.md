@@ -524,6 +524,17 @@ Smallest implementation slice after this planning step:
 - keep switcher behavior unchanged except for consuming the same service shape
   through the existing classification-only handoff path
 
+That bounded service-session slice is now implemented through the existing
+manual CLI surface:
+
+- `--receive-auth-video-queue-and-serve-handoff-many` is now the bounded
+  server-owned service-session command
+- it reuses the existing queue-owning receive/reassembly launcher
+- it reuses the existing named-pipe `serve_many(..., max_requests)` runtime
+- it prints the receive/auth/video queue summary first, then the bounded
+  handoff aggregate/per-request summary, and exits naturally after
+  `max_requests`
+
 Still out of scope after this decision:
 
 - actual retry execution
