@@ -630,23 +630,27 @@ Fail:
 
 ### Latest Manual Result Review
 
-2026-04-30 review status: inconclusive.
+2026-05-01 review status: inconclusive.
 
-The submitted stdout blocks for the switcher, client 1, and client 2 contained
-only `...`, so there were no counters or status lines available to verify.
+The submitted stdout blocks for the server, client, and switcher contained only
+`...`, so there were no counters or status lines available to verify.
 
 Current answers:
 
-- both clients auth successfully: not proven
-- both clients send real encoded frames: not proven
-- switcher receive / reassembly / queue for both clients: not proven
-- shared targetTime selection from both clients: not proven
-- H.264 decode for both selected frames: not proven
-- 2-view composition produced a composed frame: not proven
-- composed canvas render succeeded: not proven
-- waiting / no-frame / stale-like cases: not observable from the submitted text
-- next action: rerun the same manual validation and record the real stdout
-  counters before adding a new display-policy-chain diagnostic command
+- client auth succeeded: not proven
+- client sent fragmented real encoded frames: not proven
+- server received / reassembled / queued frames: not proven
+- server served one named-pipe handoff request: not proven
+- switcher connected and sent one handoff request: not proven
+- `request_id` match between request and response: not proven
+- switcher result kind was `FrameRead`, `NoFrame`, or `HandoffError`: not
+  proven
+- frame metadata survival, encoded payload length, and remaining queue length:
+  not proven
+- no-frame / handoff-error classification: not proven
+- next action: docs/session-log update only for this review, then rerun the
+  same localhost manual validation and paste the real stdout counters before
+  moving to continuous accept loop / lifecycle planning
 
 No code fix is indicated by this review because no concrete failure output was
 provided.

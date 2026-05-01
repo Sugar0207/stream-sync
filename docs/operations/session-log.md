@@ -5,6 +5,70 @@
 - Codex
 
 ### Work
+- Reviewed the submitted localhost one-shot named-pipe manual validation
+  result.
+- Confirmed that the pasted `[SERVER STDOUT]`, `[CLIENT STDOUT]`, and
+  `[SWITCHER STDOUT]` blocks contained only `...`, so there was no observable
+  auth, fragment-send, reassembly, queue, request-id, or handoff-result data
+  to evaluate.
+- Recorded the result as inconclusive in the manual real encoded video
+  checklist.
+- Updated TODO tracking so the next action remains rerunning the localhost
+  manual validation and capturing real stdout before moving to continuous
+  accept-loop / lifecycle planning.
+
+### Changed Files
+- `docs/operations/manual-real-encoded-video-poc.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### Decisions
+- This turn is a docs/session-log update only.
+- No tiny code fix is justified because no concrete failure output was
+  provided.
+- Do not start continuous accept loop / lifecycle implementation or planning
+  from this result alone.
+
+### Review Answers
+- client auth succeeded: not proven
+- client sent fragmented real encoded frames: not proven
+- server received / reassembled / queued frames: not proven
+- server served one named-pipe handoff request: not proven
+- switcher connected and sent the handoff request: not proven
+- request_id matched between request and response: not proven
+- switcher result kind (`FrameRead` / `NoFrame` / `HandoffError`): not proven
+- frame metadata survival / encoded payload length / queue length: not proven
+- no-frame vs handoff-error classification: not proven
+- next step: rerun localhost manual validation and paste real stdout; do not
+  treat this as evidence for a bug or for lifecycle planning
+
+### Next
+- Rerun the localhost server/client/switcher one-shot named-pipe validation and
+  record the actual stdout lines.
+- After that, decide between a tiny fix and continuous accept-loop / lifecycle
+  planning based on concrete evidence.
+
+### TODO Update
+- Kept the first todo item on recording a real localhost stdout-backed result.
+- Updated stale lower-summary todo text that still described the one-shot
+  named-pipe commands as docs-only.
+
+### Validation
+- `cargo fmt` passed.
+- `cargo fmt --check` passed.
+- `cargo test -p stream-sync-net-core handoff -- --test-threads=1` passed.
+- `cargo test -p stream-sync-server handoff -- --test-threads=1` passed.
+- `cargo test -p stream-sync-switcher handoff -- --test-threads=1` passed.
+- `cargo test -p stream-sync-server video_frame_queue -- --test-threads=1`
+  passed.
+- `cargo check --workspace` passed.
+- `git diff --check` passed with line-ending warnings for changed files.
+
+## 2026-05-01
+### Type
+- Codex
+
+### Work
 - Implemented the documented one-shot named-pipe manual CLI commands in the
   smallest possible shape.
 - Added a new server CLI command,

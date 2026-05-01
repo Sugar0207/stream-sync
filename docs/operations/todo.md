@@ -59,8 +59,8 @@
 ---
 
 ## 直近でやること
-1. one-shot named-pipe manual CLI の実 stdout で localhost manual pass を記録する
-2. continuous accept loop / reconnect / lifecycle/service orchestration の最小 slice を切る
+1. one-shot named-pipe localhost manual validation を rerun し、server / client / switcher の実 stdout を記録する
+2. 実 stdout で handoff success か concrete failure を確認した後に、continuous accept loop / reconnect / lifecycle/service orchestration planning へ進む
 3. production H.264 encoder configuration / error logging policy
 4. Decide later whether `--live-two-view-switcher-once` should be renamed or deprecated after the transport-backed server-mediated path exists
 
@@ -791,12 +791,13 @@
 - server->switcher transport-neutral handler/adapter slice is now implemented: `apps/server` has a single-request queue-read handoff handler over `ServerVideoFrameQueueReadBoundary`, and `apps/switcher` has a DTO request builder / response mapper that converts DTO responses back into the existing `SwitcherQueuedFrameHandoffResult` / `SwitcherQueuedFrameHandoffError` shape while preserving frame metadata, payload bytes, and codec metadata.
 - server->switcher Windows named-pipe one-request / one-response runtime slice is now implemented: `apps/server` can create one pipe instance, read one framed request, run the queue-read handoff handler, and write one framed response; `apps/switcher` can build one request, connect, write, read one framed response, and map IO/decode failure into explicit handoff errors. Local Windows smoke tests are isolated with `#[ignore]`, while default handoff validation uses focused non-I/O mapping tests.
 - switcher now has a thin named-pipe-backed `SwitcherQueuedFrameHandoff` wrapper with a minimal request-id policy: callers may supply an explicit request id per read, or the wrapper may consume a caller-owned monotonic `u64` counter. Focused fake-runtime tests cover request-id preservation/generation and result propagation for `FrameRead`, `NoFrameAvailable`, explicit handoff errors, and local runtime encode failures staying explicit instead of becoming `NoFrame`.
-- named-pipe one-shot manual command planning is now documented only, not implemented. The first useful server command should extend `--receive-auth-video-queue-once` into a queue-owning + serve-once launcher, while the first useful switcher command should stay read-only and send one explicit request over named pipe. The switcher one-shot command should not require a config path in the first slice, and `--live-two-view-switcher-once` remains direct receive diagnostic/legacy only.
+- named-pipe one-shot manual CLI is now implemented. `--receive-auth-video-queue-and-serve-handoff-once` reuses the queue-owning server launcher and then serves one named-pipe handoff request, while `--read-queued-frame-handoff-once` issues one explicit switcher pull/read over named pipe. The latest submitted localhost review is still inconclusive because the pasted stdout blocks contained only `...`, so a real pass or concrete failure is not yet recorded.
 - metrics commit, snapshot export cadence, dashboard refresh consumer policy, and dashboard refresh runtime wiring remain separate from timer wait, retry, reconnect, socket ownership, cleanup, UI rendering, video, switcher, and OBS.
 - server notice queue storage remains separate from notice send wakeup execution.
 - actual dashboard UI rendering remains unimplemented.
 
 ## Next Items
-1. documented one-shot named-pipe command shape を real CLI として追加するか決める
-2. production H.264 encoder configuration / error logging policy
-3. Decide later whether `--live-two-view-switcher-once` should be renamed or deprecated after the server-mediated path exists
+1. one-shot named-pipe localhost manual validation を rerun し、real stdout から pass/failure を記録する
+2. continuous accept loop / reconnect / lifecycle/service orchestration planning
+3. production H.264 encoder configuration / error logging policy
+4. Decide later whether `--live-two-view-switcher-once` should be renamed or deprecated after the server-mediated path exists
