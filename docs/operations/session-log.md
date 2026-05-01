@@ -5,6 +5,64 @@
 - Codex
 
 ### Work
+- Implemented the smallest switcher-side per-request timeout/lifecycle
+  plumbing for one named-pipe handoff request.
+- Added one-request timeout config and per-request elapsed/runtime summary on
+  top of the existing named-pipe handoff wrapper in `apps/switcher`.
+- Kept the behavior one-request only, retry-free, and fake-runtime-testable.
+
+### Changed Files
+- `apps/switcher/src/lib.rs`
+- `apps/switcher/src/main.rs`
+- `docs/architecture/system-design.md`
+- `docs/operations/manual-real-encoded-video-poc.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### Decisions
+- Keep timeout scope per request only in this slice and apply it to the
+  named-pipe connect/wait step rather than introducing a reconnect manager.
+- Keep timeout, source unavailable, source shutdown, and malformed response as
+  explicit `HandoffError` results rather than collapsing them into `NoFrame`.
+- Keep elapsed/runtime summary on the switcher wrapper output so fake-runtime
+  tests can verify it without local pipe I/O.
+
+### Unresolved
+- whether/how the bounded server loop summary should be exposed through a
+  CLI/manual runtime command
+- smallest reconnect/lifecycle policy above the new per-request timeout layer
+- production H.264 encoder configuration / error logging policy
+- Decide later whether `--live-two-view-switcher-once` should be renamed or
+  deprecated after the transport-backed server-mediated path exists
+
+### Next
+- Decide how to surface the bounded server loop summary in a manual/runtime
+  command without expanding to a full daemon.
+- Add only the smallest reconnect/lifecycle policy above the per-request
+  timeout layer.
+
+### TODO Update
+- Marked the switcher-side per-request timeout/runtime summary slice complete
+  in current position.
+- Moved the next item from timeout plumbing to bounded-loop summary exposure
+  plus minimal reconnect/lifecycle follow-up.
+
+### Validation
+- `cargo fmt` passed.
+- `cargo fmt --check` passed.
+- `cargo test -p stream-sync-net-core handoff -- --test-threads=1` passed.
+- `cargo test -p stream-sync-server handoff -- --test-threads=1` passed.
+- `cargo test -p stream-sync-switcher handoff -- --test-threads=1` passed.
+- `cargo test -p stream-sync-server video_frame_queue -- --test-threads=1`
+  passed.
+- `cargo check --workspace` passed.
+- `git diff --check` passed with line-ending warnings for changed files.
+
+## 2026-05-01
+### Type
+- Codex
+
+### Work
 - Implemented the smallest bounded server-side named-pipe accept loop over the
   existing one-shot runtime.
 - Added a bounded `serve_many(..., max_requests)` runtime in `apps/server`

@@ -209,6 +209,22 @@ wrapper-owned monotonic `u64` counter when the caller uses the existing
 handoff trait method. This keeps request-id correlation visible without adding
 a shared process-wide allocator or lifecycle layer.
 
+The smallest switcher-side lifecycle layer now sits on that wrapper as a
+per-request timeout/runtime summary. Each handoff request keeps:
+
+- `pipe_name`
+- `request_id`
+- `read_mode`
+- one bounded connect/wait timeout for that request
+- request status / response status
+- result kind
+- measured elapsed milliseconds
+
+This is still intentionally not a reconnect manager or service lifecycle. The
+timeout is per request only, errors remain explicit handoff errors rather than
+being collapsed into `NoFrame`, and the caller still decides whether to issue
+another request on the next scheduler tick.
+
 The next manual-facing layer should still be documented before it becomes a
 real command. The smallest useful server-side manual command is not a
 standalone "serve pipe once" launcher, because the handoff server is only
@@ -355,8 +371,8 @@ Smallest implementation slice after this planning step:
   `serve_many(queue_state, pipe_name, max_requests)` that repeatedly calls the
   existing one-shot server runtime with a fresh pipe instance.
 - Add a small output summary that keeps per-request correlation visible.
-- Keep the switcher runtime unchanged except for any minimal timeout plumbing
-  needed by the bounded-loop validation path.
+- Add only the smallest switcher-side per-request timeout/runtime summary
+  plumbing needed by the bounded-loop validation path.
 - Add focused tests for bounded loop counting and early termination without
   touching the existing ignored pipe smoke tests.
 

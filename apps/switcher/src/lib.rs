@@ -461,6 +461,66 @@ pub struct SwitcherNamedPipeQueuedFrameHandoffRuntimeOutput {
     pub result: SwitcherQueuedFrameHandoffResult,
 }
 
+/// Per-request runtime config for one switcher named-pipe handoff.
+///
+/// This is intentionally small for the first lifecycle slice: only one
+/// connect/wait timeout is configurable per request. It does not add retries,
+/// reconnect/backoff, or a longer-lived service policy.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct SwitcherNamedPipeQueuedFrameHandoffRequestConfig {
+    pub connect_timeout_millis: u32,
+}
+
+impl Default for SwitcherNamedPipeQueuedFrameHandoffRequestConfig {
+    fn default() -> Self {
+        Self {
+            connect_timeout_millis: 5_000,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum SwitcherNamedPipeQueuedFrameHandoffRequestStatus {
+    Sent,
+    EncodedOnly,
+    EncodeFailed,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum SwitcherNamedPipeQueuedFrameHandoffResponseStatus {
+    Decoded,
+    None,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum SwitcherNamedPipeQueuedFrameHandoffResultKind {
+    FrameRead,
+    NoFrameAvailable,
+    HandoffError,
+}
+
+/// Summary for one switcher-side named-pipe handoff request lifecycle.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SwitcherNamedPipeQueuedFrameHandoffRequestSummary {
+    pub pipe_name: String,
+    pub request_id: u64,
+    pub read_mode: SwitcherSingleClientQueueSourceMode,
+    pub timeout_millis: u32,
+    pub request_status: SwitcherNamedPipeQueuedFrameHandoffRequestStatus,
+    pub response_status: SwitcherNamedPipeQueuedFrameHandoffResponseStatus,
+    pub result_kind: SwitcherNamedPipeQueuedFrameHandoffResultKind,
+    pub elapsed_millis: u64,
+}
+
+/// Output for one switcher-side named-pipe handoff request with lifecycle
+/// summary kept visible alongside the mapped result.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SwitcherNamedPipeQueuedFrameHandoffRequestOutput {
+    pub summary: SwitcherNamedPipeQueuedFrameHandoffRequestSummary,
+    pub runtime: Option<SwitcherNamedPipeQueuedFrameHandoffRuntimeOutput>,
+    pub result: SwitcherQueuedFrameHandoffResult,
+}
+
 /// Fatal local failure while preparing one named-pipe handoff request.
 #[derive(Debug)]
 pub enum SwitcherNamedPipeQueuedFrameHandoffRuntimeError {
@@ -473,6 +533,17 @@ pub enum SwitcherNamedPipeQueuedFrameHandoffRuntimeError {
 /// Tests can substitute a fake runtime to verify request-id policy and result
 /// propagation without relying on local pipe I/O.
 pub trait SwitcherNamedPipeQueuedFrameHandoffRuntime {
+    fn run_once_with_config(
+        &mut self,
+        pipe_name: &str,
+        request_id: u64,
+        input: SwitcherQueuedFrameHandoffInput,
+        config: SwitcherNamedPipeQueuedFrameHandoffRequestConfig,
+    ) -> Result<
+        SwitcherNamedPipeQueuedFrameHandoffRuntimeOutput,
+        SwitcherNamedPipeQueuedFrameHandoffRuntimeError,
+    >;
+
     fn run_once(
         &mut self,
         pipe_name: &str,
@@ -481,7 +552,31 @@ pub trait SwitcherNamedPipeQueuedFrameHandoffRuntime {
     ) -> Result<
         SwitcherNamedPipeQueuedFrameHandoffRuntimeOutput,
         SwitcherNamedPipeQueuedFrameHandoffRuntimeError,
-    >;
+    > {
+        self.run_once_with_config(
+            pipe_name,
+            request_id,
+            input,
+            SwitcherNamedPipeQueuedFrameHandoffRequestConfig::default(),
+        )
+    }
+}
+
+/// Clock hook for deterministic lifecycle timing tests.
+pub trait SwitcherNamedPipeQueuedFrameHandoffClock {
+    fn now_millis(&mut self) -> u64;
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct SwitcherNamedPipeQueuedFrameHandoffSystemClock;
+
+impl SwitcherNamedPipeQueuedFrameHandoffClock for SwitcherNamedPipeQueuedFrameHandoffSystemClock {
+    fn now_millis(&mut self) -> u64 {
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as u64
+    }
 }
 
 /// Thin switcher-side handoff wrapper over the one-request / one-response
@@ -490,18 +585,39 @@ pub trait SwitcherNamedPipeQueuedFrameHandoffRuntime {
 /// The wrapper preserves the existing `SwitcherQueuedFrameHandoff`
 /// abstraction. Callers may either provide an explicit request id per call or
 /// use the wrapper-owned monotonic request-id counter.
-pub struct SwitcherNamedPipeQueuedFrameHandoff<R> {
+pub struct SwitcherNamedPipeQueuedFrameHandoff<
+    R,
+    C = SwitcherNamedPipeQueuedFrameHandoffSystemClock,
+> {
     pipe_name: String,
     next_request_id: u64,
     runtime: R,
+    clock: C,
 }
 
-impl<R> SwitcherNamedPipeQueuedFrameHandoff<R> {
+impl<R> SwitcherNamedPipeQueuedFrameHandoff<R, SwitcherNamedPipeQueuedFrameHandoffSystemClock> {
     pub fn from_runtime(pipe_name: impl Into<String>, initial_request_id: u64, runtime: R) -> Self {
+        Self::from_runtime_with_clock(
+            pipe_name,
+            initial_request_id,
+            runtime,
+            SwitcherNamedPipeQueuedFrameHandoffSystemClock,
+        )
+    }
+}
+
+impl<R, C> SwitcherNamedPipeQueuedFrameHandoff<R, C> {
+    pub fn from_runtime_with_clock(
+        pipe_name: impl Into<String>,
+        initial_request_id: u64,
+        runtime: R,
+        clock: C,
+    ) -> Self {
         Self {
             pipe_name: pipe_name.into(),
             next_request_id: initial_request_id,
             runtime,
+            clock,
         }
     }
 
@@ -510,48 +626,124 @@ impl<R> SwitcherNamedPipeQueuedFrameHandoff<R> {
     }
 }
 
-impl<R> SwitcherNamedPipeQueuedFrameHandoff<R>
+impl<R, C> SwitcherNamedPipeQueuedFrameHandoff<R, C>
 where
     R: SwitcherNamedPipeQueuedFrameHandoffRuntime,
+    C: SwitcherNamedPipeQueuedFrameHandoffClock,
 {
     pub fn read_handoff_frame_with_request_id(
         &mut self,
         request_id: u64,
         input: SwitcherQueuedFrameHandoffInput,
     ) -> SwitcherQueuedFrameHandoffResult {
-        match self
-            .runtime
-            .run_once(&self.pipe_name, request_id, input.clone())
-        {
-            Ok(output) => output.result,
+        self.read_handoff_frame_with_request_id_and_config(
+            request_id,
+            input,
+            SwitcherNamedPipeQueuedFrameHandoffRequestConfig::default(),
+        )
+        .result
+    }
+
+    pub fn read_handoff_frame_with_config(
+        &mut self,
+        input: SwitcherQueuedFrameHandoffInput,
+        config: SwitcherNamedPipeQueuedFrameHandoffRequestConfig,
+    ) -> SwitcherNamedPipeQueuedFrameHandoffRequestOutput {
+        let request_id = self.next_request_id;
+        self.next_request_id = self.next_request_id.wrapping_add(1);
+        self.read_handoff_frame_with_request_id_and_config(request_id, input, config)
+    }
+
+    pub fn read_handoff_frame_with_request_id_and_config(
+        &mut self,
+        request_id: u64,
+        input: SwitcherQueuedFrameHandoffInput,
+        config: SwitcherNamedPipeQueuedFrameHandoffRequestConfig,
+    ) -> SwitcherNamedPipeQueuedFrameHandoffRequestOutput {
+        let start_millis = self.clock.now_millis();
+        let runtime_result =
+            self.runtime
+                .run_once_with_config(&self.pipe_name, request_id, input.clone(), config);
+        let elapsed_millis = self.clock.now_millis().saturating_sub(start_millis);
+
+        match runtime_result {
+            Ok(output) => {
+                let summary = SwitcherNamedPipeQueuedFrameHandoffRequestSummary {
+                    pipe_name: self.pipe_name.clone(),
+                    request_id,
+                    read_mode: input.mode,
+                    timeout_millis: config.connect_timeout_millis,
+                    request_status: if output.response.is_some() {
+                        SwitcherNamedPipeQueuedFrameHandoffRequestStatus::Sent
+                    } else {
+                        SwitcherNamedPipeQueuedFrameHandoffRequestStatus::EncodedOnly
+                    },
+                    response_status: if output.response.is_some() {
+                        SwitcherNamedPipeQueuedFrameHandoffResponseStatus::Decoded
+                    } else {
+                        SwitcherNamedPipeQueuedFrameHandoffResponseStatus::None
+                    },
+                    result_kind: named_pipe_handoff_result_kind(&output.result),
+                    elapsed_millis,
+                };
+                let result = output.result.clone();
+                SwitcherNamedPipeQueuedFrameHandoffRequestOutput {
+                    summary,
+                    runtime: Some(output),
+                    result,
+                }
+            }
             Err(SwitcherNamedPipeQueuedFrameHandoffRuntimeError::EncodeRequest(_)) => {
-                SwitcherQueuedFrameHandoffResult::HandoffError {
+                let result = SwitcherQueuedFrameHandoffResult::HandoffError {
                     client_id: input.client_id,
                     run_id: input.run_id,
                     mode: input.mode,
                     error: SwitcherQueuedFrameHandoffError::MalformedResponse,
+                };
+                let summary = SwitcherNamedPipeQueuedFrameHandoffRequestSummary {
+                    pipe_name: self.pipe_name.clone(),
+                    request_id,
+                    read_mode: input.mode,
+                    timeout_millis: config.connect_timeout_millis,
+                    request_status: SwitcherNamedPipeQueuedFrameHandoffRequestStatus::EncodeFailed,
+                    response_status: SwitcherNamedPipeQueuedFrameHandoffResponseStatus::None,
+                    result_kind: SwitcherNamedPipeQueuedFrameHandoffResultKind::HandoffError,
+                    elapsed_millis,
+                };
+                SwitcherNamedPipeQueuedFrameHandoffRequestOutput {
+                    summary,
+                    runtime: None,
+                    result,
                 }
             }
         }
     }
 }
 
-impl<R> SwitcherQueuedFrameHandoff for SwitcherNamedPipeQueuedFrameHandoff<R>
+impl<R, C> SwitcherQueuedFrameHandoff for SwitcherNamedPipeQueuedFrameHandoff<R, C>
 where
     R: SwitcherNamedPipeQueuedFrameHandoffRuntime,
+    C: SwitcherNamedPipeQueuedFrameHandoffClock,
 {
     fn read_handoff_frame(
         &mut self,
         input: SwitcherQueuedFrameHandoffInput,
     ) -> SwitcherQueuedFrameHandoffResult {
-        let request_id = self.next_request_id;
-        self.next_request_id = self.next_request_id.wrapping_add(1);
-        self.read_handoff_frame_with_request_id(request_id, input)
+        self.read_handoff_frame_with_config(
+            input,
+            SwitcherNamedPipeQueuedFrameHandoffRequestConfig::default(),
+        )
+        .result
     }
 }
 
 #[cfg(windows)]
-impl SwitcherNamedPipeQueuedFrameHandoff<SwitcherNamedPipeQueuedFrameHandoffRuntimeBoundary> {
+impl
+    SwitcherNamedPipeQueuedFrameHandoff<
+        SwitcherNamedPipeQueuedFrameHandoffRuntimeBoundary,
+        SwitcherNamedPipeQueuedFrameHandoffSystemClock,
+    >
+{
     pub fn new(pipe_name: impl Into<String>, initial_request_id: u64) -> Self {
         Self::from_runtime(
             pipe_name,
@@ -587,13 +779,31 @@ impl SwitcherNamedPipeQueuedFrameHandoffRuntimeBoundary {
         SwitcherNamedPipeQueuedFrameHandoffRuntimeOutput,
         SwitcherNamedPipeQueuedFrameHandoffRuntimeError,
     > {
+        self.run_once_with_config(
+            pipe_name,
+            request_id,
+            input,
+            SwitcherNamedPipeQueuedFrameHandoffRequestConfig::default(),
+        )
+    }
+
+    pub fn run_once_with_config(
+        &self,
+        pipe_name: &str,
+        request_id: u64,
+        input: SwitcherQueuedFrameHandoffInput,
+        config: SwitcherNamedPipeQueuedFrameHandoffRequestConfig,
+    ) -> Result<
+        SwitcherNamedPipeQueuedFrameHandoffRuntimeOutput,
+        SwitcherNamedPipeQueuedFrameHandoffRuntimeError,
+    > {
         let request = self.adapter.build_request(request_id, &input);
         let request_frame = self
             .codec
             .encode_request_frame(&request)
             .map_err(SwitcherNamedPipeQueuedFrameHandoffRuntimeError::EncodeRequest)?;
 
-        let mut pipe = match open_named_pipe_client(pipe_name) {
+        let mut pipe = match open_named_pipe_client(pipe_name, config.connect_timeout_millis) {
             Ok(pipe) => pipe,
             Err(error) => {
                 return Ok(SwitcherNamedPipeQueuedFrameHandoffRuntimeOutput {
@@ -658,18 +868,35 @@ impl SwitcherNamedPipeQueuedFrameHandoffRuntimeBoundary {
 impl SwitcherNamedPipeQueuedFrameHandoffRuntime
     for SwitcherNamedPipeQueuedFrameHandoffRuntimeBoundary
 {
-    fn run_once(
+    fn run_once_with_config(
         &mut self,
         pipe_name: &str,
         request_id: u64,
         input: SwitcherQueuedFrameHandoffInput,
+        config: SwitcherNamedPipeQueuedFrameHandoffRequestConfig,
     ) -> Result<
         SwitcherNamedPipeQueuedFrameHandoffRuntimeOutput,
         SwitcherNamedPipeQueuedFrameHandoffRuntimeError,
     > {
-        SwitcherNamedPipeQueuedFrameHandoffRuntimeBoundary::run_once(
-            self, pipe_name, request_id, input,
+        SwitcherNamedPipeQueuedFrameHandoffRuntimeBoundary::run_once_with_config(
+            self, pipe_name, request_id, input, config,
         )
+    }
+}
+
+fn named_pipe_handoff_result_kind(
+    result: &SwitcherQueuedFrameHandoffResult,
+) -> SwitcherNamedPipeQueuedFrameHandoffResultKind {
+    match result {
+        SwitcherQueuedFrameHandoffResult::FrameRead { .. } => {
+            SwitcherNamedPipeQueuedFrameHandoffResultKind::FrameRead
+        }
+        SwitcherQueuedFrameHandoffResult::NoFrameAvailable { .. } => {
+            SwitcherNamedPipeQueuedFrameHandoffResultKind::NoFrameAvailable
+        }
+        SwitcherQueuedFrameHandoffResult::HandoffError { .. } => {
+            SwitcherNamedPipeQueuedFrameHandoffResultKind::HandoffError
+        }
     }
 }
 
@@ -697,11 +924,11 @@ fn handoff_error_result_from_io(
 }
 
 #[cfg(windows)]
-fn open_named_pipe_client(pipe_name: &str) -> io::Result<File> {
+fn open_named_pipe_client(pipe_name: &str, timeout_millis: u32) -> io::Result<File> {
     let pipe_path = named_pipe_path(pipe_name)?;
     let wide_name: Vec<u16> = pipe_path.encode_utf16().chain(Some(0)).collect();
 
-    let waited = unsafe { WaitNamedPipeW(PCWSTR(wide_name.as_ptr()), 5_000) };
+    let waited = unsafe { WaitNamedPipeW(PCWSTR(wide_name.as_ptr()), timeout_millis) };
     if !waited.as_bool() {
         return Err(io::Error::last_os_error());
     }
@@ -8193,6 +8420,7 @@ mod tests {
         pipe_name: String,
         request_id: u64,
         input: SwitcherQueuedFrameHandoffInput,
+        config: SwitcherNamedPipeQueuedFrameHandoffRequestConfig,
     }
 
     struct ScriptedNamedPipeRuntime {
@@ -8221,12 +8449,29 @@ mod tests {
         }
     }
 
+    struct ScriptedNamedPipeClock {
+        now_millis_values: Vec<u64>,
+    }
+
+    impl ScriptedNamedPipeClock {
+        fn new(now_millis_values: Vec<u64>) -> Self {
+            Self { now_millis_values }
+        }
+    }
+
+    impl SwitcherNamedPipeQueuedFrameHandoffClock for ScriptedNamedPipeClock {
+        fn now_millis(&mut self) -> u64 {
+            self.now_millis_values.remove(0)
+        }
+    }
+
     impl SwitcherNamedPipeQueuedFrameHandoffRuntime for ScriptedNamedPipeRuntime {
-        fn run_once(
+        fn run_once_with_config(
             &mut self,
             pipe_name: &str,
             request_id: u64,
             input: SwitcherQueuedFrameHandoffInput,
+            config: SwitcherNamedPipeQueuedFrameHandoffRequestConfig,
         ) -> Result<
             SwitcherNamedPipeQueuedFrameHandoffRuntimeOutput,
             SwitcherNamedPipeQueuedFrameHandoffRuntimeError,
@@ -8235,6 +8480,7 @@ mod tests {
                 pipe_name: pipe_name.to_string(),
                 request_id,
                 input,
+                config,
             });
             self.results.remove(0)
         }
@@ -8282,6 +8528,7 @@ mod tests {
                 pipe_name: "test-pipe".to_string(),
                 request_id: 999,
                 input,
+                config: SwitcherNamedPipeQueuedFrameHandoffRequestConfig::default(),
             }]
         );
     }
@@ -8509,6 +8756,290 @@ mod tests {
                 error: SwitcherQueuedFrameHandoffError::MalformedResponse,
             }
         );
+    }
+
+    #[test]
+    fn named_pipe_handoff_wrapper_request_output_preserves_frame_read_summary_fields() {
+        let input = SwitcherQueuedFrameHandoffInput {
+            client_id: ClientId("client-1".to_string()),
+            run_id: RunId("run-frame".to_string()),
+            mode: SwitcherSingleClientQueueSourceMode::PreviewLatest,
+        };
+        let config = SwitcherNamedPipeQueuedFrameHandoffRequestConfig {
+            connect_timeout_millis: 321,
+        };
+        let frame_result = SwitcherQueuedFrameHandoffResult::FrameRead {
+            frame: SwitcherSingleViewSelectedEncodedFrame {
+                client_id: input.client_id.clone(),
+                run_id: input.run_id.clone(),
+                frame_id: 44,
+                capture_timestamp: TimestampMicros(10),
+                send_timestamp: TimestampMicros(11),
+                queued_at: TimestampMicros(12),
+                is_keyframe: false,
+                width: 640,
+                height: 360,
+                fps_nominal: 30,
+                codec: Codec::H264,
+                encoded_payload_len: 3,
+                encoded_payload: vec![1, 2, 3],
+            },
+            mode: input.mode,
+            remaining_client_queue_len: 2,
+        };
+        let mut handoff = SwitcherNamedPipeQueuedFrameHandoff::from_runtime_with_clock(
+            "summary-pipe",
+            7,
+            ScriptedNamedPipeRuntime::new(vec![Ok(
+                SwitcherNamedPipeQueuedFrameHandoffRuntimeOutput {
+                    request: ServerSwitcherQueuedFrameHandoffRequest {
+                        handoff_version: SERVER_SWITCHER_HANDOFF_VERSION,
+                        request_id: 55,
+                        client_id: input.client_id.clone(),
+                        run_id: input.run_id.clone(),
+                        read_mode: ServerSwitcherQueuedFrameReadMode::InspectLatest,
+                    },
+                    response: Some(ServerSwitcherQueuedFrameHandoffResponse::FrameRead {
+                        request_id: 55,
+                        frame: ServerSwitcherQueuedFrameHandoffFrame {
+                            client_id: input.client_id.clone(),
+                            run_id: input.run_id.clone(),
+                            frame_id: 44,
+                            capture_timestamp: TimestampMicros(10),
+                            send_timestamp: TimestampMicros(11),
+                            queued_at: TimestampMicros(12),
+                            is_keyframe: false,
+                            width: 640,
+                            height: 360,
+                            fps_nominal: 30,
+                            codec: Codec::H264,
+                            encoded_payload_len: 3,
+                            encoded_payload: vec![1, 2, 3],
+                        },
+                        remaining_client_queue_len: 2,
+                    }),
+                    result: frame_result.clone(),
+                },
+            )]),
+            ScriptedNamedPipeClock::new(vec![100, 108]),
+        );
+
+        let output =
+            handoff.read_handoff_frame_with_request_id_and_config(55, input.clone(), config);
+
+        assert_eq!(output.result, frame_result);
+        assert_eq!(output.summary.pipe_name, "summary-pipe");
+        assert_eq!(output.summary.request_id, 55);
+        assert_eq!(output.summary.read_mode, input.mode);
+        assert_eq!(output.summary.timeout_millis, 321);
+        assert_eq!(
+            output.summary.request_status,
+            SwitcherNamedPipeQueuedFrameHandoffRequestStatus::Sent
+        );
+        assert_eq!(
+            output.summary.response_status,
+            SwitcherNamedPipeQueuedFrameHandoffResponseStatus::Decoded
+        );
+        assert_eq!(
+            output.summary.result_kind,
+            SwitcherNamedPipeQueuedFrameHandoffResultKind::FrameRead
+        );
+        assert_eq!(output.summary.elapsed_millis, 8);
+        assert!(output.runtime.is_some());
+        assert_eq!(handoff.runtime.calls[0].config, config);
+    }
+
+    #[test]
+    fn named_pipe_handoff_wrapper_request_output_preserves_no_frame_summary_fields() {
+        let input = SwitcherQueuedFrameHandoffInput {
+            client_id: ClientId("client-1".to_string()),
+            run_id: RunId("run-empty".to_string()),
+            mode: SwitcherSingleClientQueueSourceMode::PreviewOldest,
+        };
+        let expected = SwitcherQueuedFrameHandoffResult::NoFrameAvailable {
+            client_id: input.client_id.clone(),
+            run_id: input.run_id.clone(),
+            mode: input.mode,
+            client_queue_len: 0,
+        };
+        let mut handoff = SwitcherNamedPipeQueuedFrameHandoff::from_runtime_with_clock(
+            "no-frame-summary-pipe",
+            3,
+            ScriptedNamedPipeRuntime::new(vec![Ok(
+                SwitcherNamedPipeQueuedFrameHandoffRuntimeOutput {
+                    request: ServerSwitcherQueuedFrameHandoffRequest {
+                        handoff_version: SERVER_SWITCHER_HANDOFF_VERSION,
+                        request_id: 3,
+                        client_id: input.client_id.clone(),
+                        run_id: input.run_id.clone(),
+                        read_mode: ServerSwitcherQueuedFrameReadMode::InspectOldest,
+                    },
+                    response: Some(ServerSwitcherQueuedFrameHandoffResponse::NoFrame {
+                        request_id: 3,
+                        client_id: input.client_id.clone(),
+                        run_id: input.run_id.clone(),
+                        read_mode: ServerSwitcherQueuedFrameReadMode::InspectOldest,
+                        client_queue_len: 0,
+                    }),
+                    result: expected.clone(),
+                },
+            )]),
+            ScriptedNamedPipeClock::new(vec![25, 25]),
+        );
+
+        let output = handoff.read_handoff_frame_with_config(
+            input,
+            SwitcherNamedPipeQueuedFrameHandoffRequestConfig::default(),
+        );
+
+        assert_eq!(output.result, expected);
+        assert_eq!(output.summary.request_id, 3);
+        assert_eq!(
+            output.summary.result_kind,
+            SwitcherNamedPipeQueuedFrameHandoffResultKind::NoFrameAvailable
+        );
+        assert_eq!(output.summary.elapsed_millis, 0);
+        assert!(!matches!(
+            output.result,
+            SwitcherQueuedFrameHandoffResult::HandoffError { .. }
+        ));
+    }
+
+    #[test]
+    fn named_pipe_handoff_wrapper_request_output_preserves_timeout_as_explicit_error() {
+        assert_named_pipe_request_output_error(
+            SwitcherQueuedFrameHandoffError::Timeout,
+            SwitcherNamedPipeQueuedFrameHandoffRequestStatus::EncodedOnly,
+            SwitcherNamedPipeQueuedFrameHandoffResponseStatus::None,
+        );
+    }
+
+    #[test]
+    fn named_pipe_handoff_wrapper_request_output_preserves_source_unavailable_as_explicit_error() {
+        assert_named_pipe_request_output_error(
+            SwitcherQueuedFrameHandoffError::SourceUnavailable,
+            SwitcherNamedPipeQueuedFrameHandoffRequestStatus::EncodedOnly,
+            SwitcherNamedPipeQueuedFrameHandoffResponseStatus::None,
+        );
+    }
+
+    #[test]
+    fn named_pipe_handoff_wrapper_request_output_preserves_source_shutdown_as_explicit_error() {
+        assert_named_pipe_request_output_error(
+            SwitcherQueuedFrameHandoffError::SourceShutdown,
+            SwitcherNamedPipeQueuedFrameHandoffRequestStatus::EncodedOnly,
+            SwitcherNamedPipeQueuedFrameHandoffResponseStatus::None,
+        );
+    }
+
+    #[test]
+    fn named_pipe_handoff_wrapper_request_output_preserves_malformed_response_as_explicit_error() {
+        let input = SwitcherQueuedFrameHandoffInput {
+            client_id: ClientId("client-1".to_string()),
+            run_id: RunId("run-bad".to_string()),
+            mode: SwitcherSingleClientQueueSourceMode::ConsumeOldest,
+        };
+        let mut handoff = SwitcherNamedPipeQueuedFrameHandoff::from_runtime_with_clock(
+            "malformed-runtime-pipe",
+            77,
+            ScriptedNamedPipeRuntime::new(vec![Err(
+                SwitcherNamedPipeQueuedFrameHandoffRuntimeError::EncodeRequest(
+                    stream_sync_net_core::ServerSwitcherQueuedFrameHandoffCodecError::BodyTooLong {
+                        len: usize::MAX,
+                    },
+                ),
+            )]),
+            ScriptedNamedPipeClock::new(vec![400, 403]),
+        );
+
+        let output = handoff.read_handoff_frame_with_config(
+            input.clone(),
+            SwitcherNamedPipeQueuedFrameHandoffRequestConfig::default(),
+        );
+
+        assert_eq!(output.summary.request_id, 77);
+        assert_eq!(
+            output.summary.request_status,
+            SwitcherNamedPipeQueuedFrameHandoffRequestStatus::EncodeFailed
+        );
+        assert_eq!(
+            output.summary.response_status,
+            SwitcherNamedPipeQueuedFrameHandoffResponseStatus::None
+        );
+        assert_eq!(
+            output.summary.result_kind,
+            SwitcherNamedPipeQueuedFrameHandoffResultKind::HandoffError
+        );
+        assert_eq!(output.summary.elapsed_millis, 3);
+        assert!(output.runtime.is_none());
+        assert_eq!(
+            output.result,
+            SwitcherQueuedFrameHandoffResult::HandoffError {
+                client_id: input.client_id,
+                run_id: input.run_id,
+                mode: input.mode,
+                error: SwitcherQueuedFrameHandoffError::MalformedResponse,
+            }
+        );
+        assert!(!matches!(
+            output.result,
+            SwitcherQueuedFrameHandoffResult::NoFrameAvailable { .. }
+        ));
+    }
+
+    fn assert_named_pipe_request_output_error(
+        error: SwitcherQueuedFrameHandoffError,
+        request_status: SwitcherNamedPipeQueuedFrameHandoffRequestStatus,
+        response_status: SwitcherNamedPipeQueuedFrameHandoffResponseStatus,
+    ) {
+        let input = SwitcherQueuedFrameHandoffInput {
+            client_id: ClientId("client-1".to_string()),
+            run_id: RunId("run-1".to_string()),
+            mode: SwitcherSingleClientQueueSourceMode::PreviewLatest,
+        };
+        let expected = SwitcherQueuedFrameHandoffResult::HandoffError {
+            client_id: input.client_id.clone(),
+            run_id: input.run_id.clone(),
+            mode: input.mode,
+            error: error.clone(),
+        };
+        let mut handoff = SwitcherNamedPipeQueuedFrameHandoff::from_runtime_with_clock(
+            "error-summary-pipe",
+            41,
+            ScriptedNamedPipeRuntime::new(vec![Ok(
+                SwitcherNamedPipeQueuedFrameHandoffRuntimeOutput {
+                    request: ServerSwitcherQueuedFrameHandoffRequest {
+                        handoff_version: SERVER_SWITCHER_HANDOFF_VERSION,
+                        request_id: 41,
+                        client_id: input.client_id.clone(),
+                        run_id: input.run_id.clone(),
+                        read_mode: ServerSwitcherQueuedFrameReadMode::InspectLatest,
+                    },
+                    response: None,
+                    result: expected.clone(),
+                },
+            )]),
+            ScriptedNamedPipeClock::new(vec![200, 206]),
+        );
+
+        let output = handoff.read_handoff_frame_with_config(
+            input,
+            SwitcherNamedPipeQueuedFrameHandoffRequestConfig::default(),
+        );
+
+        assert_eq!(output.summary.request_id, 41);
+        assert_eq!(output.summary.request_status, request_status);
+        assert_eq!(output.summary.response_status, response_status);
+        assert_eq!(
+            output.summary.result_kind,
+            SwitcherNamedPipeQueuedFrameHandoffResultKind::HandoffError
+        );
+        assert_eq!(output.summary.elapsed_millis, 6);
+        assert_eq!(output.result, expected);
+        assert!(!matches!(
+            output.result,
+            SwitcherQueuedFrameHandoffResult::NoFrameAvailable { .. }
+        ));
     }
 
     #[cfg(windows)]
