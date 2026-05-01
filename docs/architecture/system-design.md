@@ -9570,6 +9570,24 @@ The smallest implementation slice after this planning step should therefore be:
 - add fixed `QuadView` 2x2 composition instructions
 - validate with caller-owned queue state and runtime fakes before any OBS work
 
+The first implementation step of that path now exists as a dedicated
+`SwitcherFourViewHandoffSchedulerDecodeRenderAdapterBoundary`. This adapter:
+
+- consumes `SwitcherFourViewTargetTimeHandoffSourceSchedulerResult`
+- preserves four explicit slots and slot order
+- maps:
+  - `Selected` -> `RenderFrame`
+  - `NoFrameAvailable` -> `SkipNoFrameAvailable`
+  - `WaitingForFrameAtOrBeforeTarget` -> `SkipWaitingForFrameAtOrBeforeTarget`
+  - `HandoffError` -> `SkipHandoffError`
+- preserves the aggregate 4-view scheduler status
+- does not create fake frames for skipped or error slots
+- does not yet own per-slot display policy or `QuadView` composition
+
+That keeps handoff/source errors explicit and proves the first render-facing
+instruction shape before the next slice adds per-slot display hold/placeholder
+policy and fixed 2x2 composition instructions.
+
 This keeps 4-view orchestration explicit and testable while deferring the next
 larger questions:
 

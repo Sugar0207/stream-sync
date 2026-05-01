@@ -1694,6 +1694,65 @@ pub struct SwitcherFourViewTargetTimeHandoffSourceSchedulerResult {
     pub status: SwitcherFourViewTargetTimeHandoffSourceSchedulerStatus,
 }
 
+/// Per-slot instruction produced by adapting fallible 4-view scheduler output
+/// for decode/render-facing code.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SwitcherFourViewHandoffSchedulerDecodeRenderSlotInstruction {
+    RenderFrame {
+        slot_index: usize,
+        selected: SwitcherJitterBufferSelectedFrame,
+        consumed: bool,
+    },
+    SkipNoFrameAvailable {
+        slot_index: usize,
+        client_id: ClientId,
+        run_id: RunId,
+        target_timestamp: TimestampMicros,
+        client_queue_len: usize,
+    },
+    SkipWaitingForFrameAtOrBeforeTarget {
+        slot_index: usize,
+        client_id: ClientId,
+        run_id: RunId,
+        target_timestamp: TimestampMicros,
+        candidate_frame_id: u64,
+        candidate_capture_timestamp: TimestampMicros,
+        client_queue_len: usize,
+    },
+    SkipHandoffError {
+        slot_index: usize,
+        client_id: ClientId,
+        run_id: RunId,
+        target_timestamp: TimestampMicros,
+        mode: SwitcherSingleClientTargetTimeSourceMode,
+        handoff_mode: SwitcherSingleClientQueueSourceMode,
+        error: SwitcherQueuedFrameHandoffError,
+    },
+}
+
+/// Slot-preserving output of the fallible 4-view scheduler-result adapter.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SwitcherFourViewHandoffSchedulerDecodeRenderSlotOutput {
+    pub slot: SwitcherFourViewTargetTimeSourceSlotConfig,
+    pub instruction: SwitcherFourViewHandoffSchedulerDecodeRenderSlotInstruction,
+}
+
+/// Input for translating fallible 4-view scheduler output into
+/// decode/render-facing instructions.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SwitcherFourViewHandoffSchedulerDecodeRenderAdapterInput {
+    pub scheduler_result: SwitcherFourViewTargetTimeHandoffSourceSchedulerResult,
+}
+
+/// Adapter output keeps four explicit slot instructions and preserves the
+/// aggregate scheduler status without creating fake frames for skipped slots.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SwitcherFourViewHandoffSchedulerDecodeRenderAdapterOutput {
+    pub target_timestamp: TimestampMicros,
+    pub scheduler_status: SwitcherFourViewTargetTimeHandoffSourceSchedulerStatus,
+    pub slots: [SwitcherFourViewHandoffSchedulerDecodeRenderSlotOutput; 4],
+}
+
 /// Minimal 2-view scheduler over the fallible single-client handoff source.
 ///
 /// This boundary keeps targetTime selection in switcher and preserves handoff
@@ -1827,6 +1886,40 @@ impl SwitcherFourViewTargetTimeHandoffSourceSchedulerBoundary {
             target_timestamp,
             slots,
             status,
+        }
+    }
+}
+
+/// Minimal adapter from fallible 4-view scheduler results to explicit
+/// decode/render-facing instructions.
+///
+/// This first slice preserves four explicit slots and slot order, keeps
+/// handoff/source errors separate from no-frame and waiting states, and does
+/// not yet add per-slot display policy or `QuadView` composition.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct SwitcherFourViewHandoffSchedulerDecodeRenderAdapterBoundary;
+
+impl SwitcherFourViewHandoffSchedulerDecodeRenderAdapterBoundary {
+    pub fn adapt(
+        &self,
+        input: SwitcherFourViewHandoffSchedulerDecodeRenderAdapterInput,
+    ) -> SwitcherFourViewHandoffSchedulerDecodeRenderAdapterOutput {
+        let scheduler_result = input.scheduler_result;
+        let slots = scheduler_result.slots.map(|slot_result| {
+            let instruction = four_view_handoff_scheduler_decode_render_instruction_for_slot(
+                slot_result.slot.slot_index,
+                &slot_result.result,
+            );
+            SwitcherFourViewHandoffSchedulerDecodeRenderSlotOutput {
+                slot: slot_result.slot,
+                instruction,
+            }
+        });
+
+        SwitcherFourViewHandoffSchedulerDecodeRenderAdapterOutput {
+            target_timestamp: scheduler_result.target_timestamp,
+            scheduler_status: scheduler_result.status,
+            slots,
         }
     }
 }
@@ -2800,6 +2893,72 @@ fn four_view_target_time_handoff_source_scheduler_status(
     }
 
     SwitcherFourViewTargetTimeHandoffSourceSchedulerStatus::NoFrames
+}
+
+fn four_view_handoff_scheduler_decode_render_instruction_for_slot(
+    slot_index: usize,
+    result: &SwitcherSingleClientTargetTimeHandoffSourceResult,
+) -> SwitcherFourViewHandoffSchedulerDecodeRenderSlotInstruction {
+    match result {
+        SwitcherSingleClientTargetTimeHandoffSourceResult::Selected(selected) => {
+            SwitcherFourViewHandoffSchedulerDecodeRenderSlotInstruction::RenderFrame {
+                slot_index,
+                selected: SwitcherJitterBufferSelectedFrame {
+                    frame: selected.frame.clone(),
+                    target_time: selected.target_timestamp,
+                    adjusted_capture_timestamp: selected.frame.capture_timestamp,
+                    delta_from_target_micros: selected.delta_from_target_micros,
+                },
+                consumed: selected.consumed,
+            }
+        }
+        SwitcherSingleClientTargetTimeHandoffSourceResult::NoFrameAvailable {
+            client_id,
+            run_id,
+            target_timestamp,
+            client_queue_len,
+            ..
+        } => SwitcherFourViewHandoffSchedulerDecodeRenderSlotInstruction::SkipNoFrameAvailable {
+            slot_index,
+            client_id: client_id.clone(),
+            run_id: run_id.clone(),
+            target_timestamp: *target_timestamp,
+            client_queue_len: *client_queue_len,
+        },
+        SwitcherSingleClientTargetTimeHandoffSourceResult::WaitingForFrameAtOrBeforeTarget {
+            client_id,
+            run_id,
+            target_timestamp,
+            candidate_frame_id,
+            candidate_capture_timestamp,
+            client_queue_len,
+            ..
+        } => SwitcherFourViewHandoffSchedulerDecodeRenderSlotInstruction::SkipWaitingForFrameAtOrBeforeTarget {
+            slot_index,
+            client_id: client_id.clone(),
+            run_id: run_id.clone(),
+            target_timestamp: *target_timestamp,
+            candidate_frame_id: *candidate_frame_id,
+            candidate_capture_timestamp: *candidate_capture_timestamp,
+            client_queue_len: *client_queue_len,
+        },
+        SwitcherSingleClientTargetTimeHandoffSourceResult::HandoffError {
+            client_id,
+            run_id,
+            target_timestamp,
+            mode,
+            handoff_mode,
+            error,
+        } => SwitcherFourViewHandoffSchedulerDecodeRenderSlotInstruction::SkipHandoffError {
+            slot_index,
+            client_id: client_id.clone(),
+            run_id: run_id.clone(),
+            target_timestamp: *target_timestamp,
+            mode: *mode,
+            handoff_mode: *handoff_mode,
+            error: error.clone(),
+        },
+    }
 }
 
 /// Deterministic targetTime calculation input for one switcher selection.
@@ -10566,6 +10725,13 @@ mod tests {
         }
     }
 
+    fn fallible_four_view_adapter_output(
+        scheduler_result: SwitcherFourViewTargetTimeHandoffSourceSchedulerResult,
+    ) -> SwitcherFourViewHandoffSchedulerDecodeRenderAdapterOutput {
+        SwitcherFourViewHandoffSchedulerDecodeRenderAdapterBoundary
+            .adapt(SwitcherFourViewHandoffSchedulerDecodeRenderAdapterInput { scheduler_result })
+    }
+
     fn render_fallible_two_view_adapter_output(
         adapter_output: SwitcherTwoViewHandoffSchedulerDecodeRenderAdapterOutput,
         decode: &impl SwitcherH264DecodeRuntimeHook,
@@ -11308,6 +11474,316 @@ mod tests {
             result.status,
             SwitcherFourViewTargetTimeHandoffSourceSchedulerStatus::Waiting
         );
+    }
+
+    #[test]
+    fn four_view_handoff_scheduler_decode_render_adapter_maps_all_selected_to_render_frames() {
+        let mut state = ServerVideoFrameQueueState::default();
+        store_frame_for_run(
+            &mut state,
+            "client-0",
+            "run-0",
+            1,
+            TimestampMicros(2_101_600),
+        );
+        store_frame_for_run(
+            &mut state,
+            "client-1",
+            "run-1",
+            2,
+            TimestampMicros(2_101_700),
+        );
+        store_frame_for_run(
+            &mut state,
+            "client-2",
+            "run-2",
+            3,
+            TimestampMicros(2_101_800),
+        );
+        store_frame_for_run(
+            &mut state,
+            "client-3",
+            "run-3",
+            4,
+            TimestampMicros(2_101_900),
+        );
+        let scheduler_result = {
+            let mut handoff = SwitcherInProcessQueuedFrameHandoff::new(&mut state);
+            SwitcherFourViewTargetTimeHandoffSourceSchedulerBoundary::default()
+                .select_quad_preview_from_handoff(
+                    &mut handoff,
+                    fallible_four_view_scheduler_input(TimestampMicros(1_000_004)),
+                )
+        };
+
+        let output = fallible_four_view_adapter_output(scheduler_result);
+
+        assert_eq!(
+            output.scheduler_status,
+            SwitcherFourViewTargetTimeHandoffSourceSchedulerStatus::AllSelected
+        );
+        for (expected_index, slot) in output.slots.iter().enumerate() {
+            assert_eq!(slot.slot.slot_index, expected_index);
+            assert!(matches!(
+                slot.instruction,
+                SwitcherFourViewHandoffSchedulerDecodeRenderSlotInstruction::RenderFrame {
+                    slot_index,
+                    ..
+                } if slot_index == expected_index
+            ));
+        }
+    }
+
+    #[test]
+    fn four_view_handoff_scheduler_decode_render_adapter_preserves_selected_and_no_frame() {
+        let mut state = ServerVideoFrameQueueState::default();
+        store_frame_for_run(
+            &mut state,
+            "client-0",
+            "run-0",
+            1,
+            TimestampMicros(2_102_000),
+        );
+        store_frame_for_run(
+            &mut state,
+            "client-1",
+            "run-1",
+            2,
+            TimestampMicros(2_102_100),
+        );
+        store_frame_for_run(
+            &mut state,
+            "client-2",
+            "run-2",
+            3,
+            TimestampMicros(2_102_200),
+        );
+        let scheduler_result = {
+            let mut handoff = SwitcherInProcessQueuedFrameHandoff::new(&mut state);
+            SwitcherFourViewTargetTimeHandoffSourceSchedulerBoundary::default()
+                .select_quad_preview_from_handoff(
+                    &mut handoff,
+                    fallible_four_view_scheduler_input(TimestampMicros(1_000_004)),
+                )
+        };
+
+        let output = fallible_four_view_adapter_output(scheduler_result);
+
+        assert_eq!(
+            output.scheduler_status,
+            SwitcherFourViewTargetTimeHandoffSourceSchedulerStatus::PartialSelected
+        );
+        assert!(matches!(
+            output.slots[0].instruction,
+            SwitcherFourViewHandoffSchedulerDecodeRenderSlotInstruction::RenderFrame { .. }
+        ));
+        assert_eq!(
+            output.slots[3].instruction,
+            SwitcherFourViewHandoffSchedulerDecodeRenderSlotInstruction::SkipNoFrameAvailable {
+                slot_index: 3,
+                client_id: ClientId("client-3".to_string()),
+                run_id: RunId("run-3".to_string()),
+                target_timestamp: TimestampMicros(1_000_004),
+                client_queue_len: 0,
+            }
+        );
+    }
+
+    #[test]
+    fn four_view_handoff_scheduler_decode_render_adapter_preserves_selected_and_waiting() {
+        let mut state = ServerVideoFrameQueueState::default();
+        store_frame_for_run(
+            &mut state,
+            "client-0",
+            "run-0",
+            1,
+            TimestampMicros(2_102_300),
+        );
+        store_frame_for_run(
+            &mut state,
+            "client-1",
+            "run-1",
+            5,
+            TimestampMicros(2_102_400),
+        );
+        store_frame_for_run(
+            &mut state,
+            "client-2",
+            "run-2",
+            3,
+            TimestampMicros(2_102_500),
+        );
+        store_frame_for_run(
+            &mut state,
+            "client-3",
+            "run-3",
+            4,
+            TimestampMicros(2_102_600),
+        );
+        let scheduler_result = {
+            let mut handoff = SwitcherInProcessQueuedFrameHandoff::new(&mut state);
+            SwitcherFourViewTargetTimeHandoffSourceSchedulerBoundary::default()
+                .select_quad_preview_from_handoff(
+                    &mut handoff,
+                    fallible_four_view_scheduler_input(TimestampMicros(1_000_004)),
+                )
+        };
+
+        let output = fallible_four_view_adapter_output(scheduler_result);
+
+        assert_eq!(
+            output.scheduler_status,
+            SwitcherFourViewTargetTimeHandoffSourceSchedulerStatus::PartialSelected
+        );
+        assert_eq!(
+            output.slots[1].instruction,
+            SwitcherFourViewHandoffSchedulerDecodeRenderSlotInstruction::SkipWaitingForFrameAtOrBeforeTarget {
+                slot_index: 1,
+                client_id: ClientId("client-1".to_string()),
+                run_id: RunId("run-1".to_string()),
+                target_timestamp: TimestampMicros(1_000_004),
+                candidate_frame_id: 5,
+                candidate_capture_timestamp: TimestampMicros(1_000_005),
+                client_queue_len: 1,
+            }
+        );
+    }
+
+    #[test]
+    fn four_view_handoff_scheduler_decode_render_adapter_preserves_selected_and_source_error() {
+        let mut state = ServerVideoFrameQueueState::default();
+        store_frame_for_run(
+            &mut state,
+            "client-0",
+            "run-0",
+            1,
+            TimestampMicros(2_102_700),
+        );
+        store_frame_for_run(
+            &mut state,
+            "client-1",
+            "run-1",
+            2,
+            TimestampMicros(2_102_800),
+        );
+        store_frame_for_run(
+            &mut state,
+            "client-2",
+            "run-2",
+            3,
+            TimestampMicros(2_102_900),
+        );
+        let scheduler_result = {
+            let mut handoff = SwitcherInProcessQueuedFrameHandoff::new(&mut state);
+            SwitcherFourViewTargetTimeHandoffSourceSchedulerBoundary::default()
+                .select_quad_preview_from_handoff(
+                    &mut handoff,
+                    SwitcherFourViewTargetTimeHandoffSourceSchedulerInput {
+                        slots: [
+                            four_view_slot(0, "client-0", "run-0"),
+                            four_view_slot(1, "client-1", "run-1"),
+                            four_view_slot(2, "client-2", "run-2"),
+                            four_view_slot(3, "", "run-3"),
+                        ],
+                        target_timestamp: TimestampMicros(1_000_004),
+                    },
+                )
+        };
+
+        let output = fallible_four_view_adapter_output(scheduler_result);
+
+        assert_eq!(
+            output.scheduler_status,
+            SwitcherFourViewTargetTimeHandoffSourceSchedulerStatus::HandoffError
+        );
+        assert!(matches!(
+            output.slots[0].instruction,
+            SwitcherFourViewHandoffSchedulerDecodeRenderSlotInstruction::RenderFrame { .. }
+        ));
+        assert!(matches!(
+            output.slots[3].instruction,
+            SwitcherFourViewHandoffSchedulerDecodeRenderSlotInstruction::SkipHandoffError {
+                slot_index: 3,
+                error: SwitcherQueuedFrameHandoffError::InvalidScope { .. },
+                ..
+            }
+        ));
+        assert_ne!(
+            output.scheduler_status,
+            SwitcherFourViewTargetTimeHandoffSourceSchedulerStatus::NoFrames
+        );
+        assert_ne!(
+            output.scheduler_status,
+            SwitcherFourViewTargetTimeHandoffSourceSchedulerStatus::Waiting
+        );
+    }
+
+    #[test]
+    fn four_view_handoff_scheduler_decode_render_adapter_preserves_slot_order_and_metadata() {
+        let mut state = ServerVideoFrameQueueState::default();
+        store_frame_with_run_payload(
+            &mut state,
+            "client-0",
+            "run-0",
+            21,
+            TimestampMicros(2_103_000),
+            640,
+            360,
+            vec![0x0a, 0x0b, 0x0c],
+        );
+        store_frame_for_run(
+            &mut state,
+            "client-1",
+            "run-1",
+            22,
+            TimestampMicros(2_103_100),
+        );
+        store_frame_for_run(
+            &mut state,
+            "client-2",
+            "run-2",
+            23,
+            TimestampMicros(2_103_200),
+        );
+        store_frame_for_run(
+            &mut state,
+            "client-3",
+            "run-3",
+            24,
+            TimestampMicros(2_103_300),
+        );
+        let scheduler_result = {
+            let mut handoff = SwitcherInProcessQueuedFrameHandoff::new(&mut state);
+            SwitcherFourViewTargetTimeHandoffSourceSchedulerBoundary::default()
+                .select_quad_preview_from_handoff(
+                    &mut handoff,
+                    fallible_four_view_scheduler_input(TimestampMicros(1_000_024)),
+                )
+        };
+
+        let output = fallible_four_view_adapter_output(scheduler_result);
+
+        assert_eq!(output.slots[0].slot.slot_index, 0);
+        assert_eq!(output.slots[1].slot.slot_index, 1);
+        assert_eq!(output.slots[2].slot.slot_index, 2);
+        assert_eq!(output.slots[3].slot.slot_index, 3);
+        let SwitcherFourViewHandoffSchedulerDecodeRenderSlotInstruction::RenderFrame {
+            slot_index,
+            selected,
+            consumed,
+        } = &output.slots[0].instruction
+        else {
+            panic!("slot 0 should preserve renderable metadata");
+        };
+        assert_eq!(*slot_index, 0);
+        assert!(!consumed);
+        assert_eq!(selected.frame.client_id, ClientId("client-0".to_string()));
+        assert_eq!(selected.frame.run_id, RunId("run-0".to_string()));
+        assert_eq!(selected.frame.frame_id, 21);
+        assert_eq!(selected.frame.width, 640);
+        assert_eq!(selected.frame.height, 360);
+        assert_eq!(selected.frame.encoded_payload_len, 3);
+        assert_eq!(selected.frame.encoded_payload, vec![0x0a, 0x0b, 0x0c]);
     }
 
     #[test]

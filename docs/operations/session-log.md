@@ -5,6 +5,65 @@
 - Codex
 
 ### Work
+- Implemented the smallest dedicated 4-view render-facing adapter slice after
+  the preview/read-only scheduler.
+- Kept this slice intentionally smaller than full 4-view display policy or
+  composition by stopping at explicit per-slot decode/render instructions.
+- Updated architecture/TODO tracking to move the next task to per-slot display
+  policy and fixed `QuadView` composition instructions.
+
+### Changed Files
+- `apps/switcher/src/lib.rs`
+- `docs/architecture/system-design.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### Implemented
+- Added `SwitcherFourViewHandoffSchedulerDecodeRenderSlotInstruction`.
+- Added `SwitcherFourViewHandoffSchedulerDecodeRenderSlotOutput`.
+- Added `SwitcherFourViewHandoffSchedulerDecodeRenderAdapterInput`.
+- Added `SwitcherFourViewHandoffSchedulerDecodeRenderAdapterOutput`.
+- Added `SwitcherFourViewHandoffSchedulerDecodeRenderAdapterBoundary`.
+- Preserved four explicit slots and slot order.
+- Preserved aggregate `SwitcherFourViewTargetTimeHandoffSourceSchedulerStatus`.
+- Per-slot mapping:
+  - `Selected` -> `RenderFrame`
+  - `NoFrameAvailable` -> `SkipNoFrameAvailable`
+  - `WaitingForFrameAtOrBeforeTarget` -> `SkipWaitingForFrameAtOrBeforeTarget`
+  - `HandoffError` -> `SkipHandoffError`
+- Kept handoff/source error explicit and separate from no-frame or waiting.
+- Did not create fake render/decode frames for skipped or error slots.
+
+### Tests
+- all four selected -> four render instructions
+- selected + no-frame preserves no-frame skip
+- selected + waiting preserves waiting skip
+- selected + handoff error preserves source-error skip
+- handoff error is not treated as no-frame
+- handoff error is not treated as waiting
+- slot order is preserved
+- selected metadata survives adapter output
+
+### TODO Update
+- Marked the smallest dedicated 4-view render-facing adapter slice complete.
+- Moved the next task to dedicated per-slot display policy and fixed `QuadView`
+  composition instructions.
+
+### Validation
+- `cargo fmt` passed.
+- `cargo fmt --check` passed.
+- `cargo test -p stream-sync-switcher four_view -- --test-threads=1` passed.
+- `cargo test -p stream-sync-switcher two_view -- --test-threads=1` passed.
+- `cargo test -p stream-sync-switcher target_time -- --test-threads=1` passed.
+- `cargo test -p stream-sync-switcher handoff -- --test-threads=1` passed.
+- `cargo check --workspace` passed.
+- `git diff --check` passed with line-ending warnings for changed files.
+
+## 2026-05-02
+### Type
+- Codex
+
+### Work
 - Implemented a planning/docs-only slice for the smallest 4-view
   decode/render/composition path after the dedicated 4-view scheduler result.
 - Kept the decision aligned with the existing 2-view stage ordering while still
