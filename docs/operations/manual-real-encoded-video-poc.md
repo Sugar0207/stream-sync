@@ -501,6 +501,76 @@ Recorded conclusion from this successful bounded localhost run:
 - repeated `inspect-latest` preserved preview semantics and returned the same
   frame twice without queue mutation
 
+### Observed Successful Lifecycle-Summary Bounded Named-Pipe Rerun
+
+Observed successful localhost results for the lifecycle-summary bounded rerun:
+
+- bounded server handoff loop again served `max_requests=2`
+- `requests_served=2`
+- `successful_responses=2`
+- `handoff_errors=0`
+- both switcher reads returned `FrameRead`
+- `attempt_count=1` was present on both switcher reads
+- `final_result=FrameRead` was present on both switcher reads
+- `last_error=none` was present on both switcher reads
+- `retry_classification=none` was present on both switcher reads
+- `request_id=1` and `request_id=2` were preserved end to end
+- `inspect-latest` again returned the same queued frame twice, which is
+  expected for preview/read-only mode and confirms no queue mutation on
+  repeated reads
+- metadata survived the server->switcher handoff unchanged
+- `encoded_payload_len=246286` was preserved and non-zero
+- classification-only lifecycle reporting appears sufficient for the successful
+  path
+
+Server:
+
+```text
+server named-pipe handoff bounded pipe_name=streamsync-handoff-dev max_requests=2 requests_served=2 successful_responses=2 handoff_errors=0
+server named-pipe handoff bounded request pipe_name=streamsync-handoff-dev request_index=0 request_id=1 result_kind=FrameRead queue_len=1 handoff_error=none
+server named-pipe handoff bounded request pipe_name=streamsync-handoff-dev request_index=1 request_id=2 result_kind=FrameRead queue_len=1 handoff_error=none
+```
+
+Client:
+
+```text
+auth real encoded video frame bounded PoC sent AuthRequest 96 bytes from 0.0.0.0:54387 to 127.0.0.1:5000 and received AuthResponse 55 bytes from 127.0.0.1:5000; accepted=true reason_code=Ok; bounded_manual_runtime=true; fragment_pacing_every=16 fragment_pacing_delay_ms=1 frames_attempted=2 frames_captured=1 frames_encoded=1 frames_sent=1 direct_sends=0 fragmented_sends=1 fragments_attempted=241 fragments_sent=241 no_frame_count=1 capture_failures=0 encode_failures=0 frame_build_failures=0 send_failures=0 stop_reason=Some(MaxFramesReached) last_send_destination=none last_send_local_source=none last_send_frame_id=none last_send_payload_len=none last_send_packet_len=none last_send_error=none
+```
+
+Switcher read 1:
+
+```text
+switcher named-pipe handoff once pipe_name=streamsync-handoff-dev request_id=1 client_id=player1 run_id=streamsync-dev-session read_mode=inspect-latest attempt_count=1 timeout_millis=5000 elapsed_millis=1 request_status=sent response_status=decoded result_kind=FrameRead final_result=FrameRead last_error=none retry_classification=none queue_len=1 frame_id=2 capture_timestamp=1777652932152093 send_timestamp=1777652932152093 queued_at=1777652932344643 width=1920 height=1080 fps_nominal=30 codec=H264 is_keyframe=false encoded_payload_len=246286
+```
+
+Switcher read 2:
+
+```text
+switcher named-pipe handoff once pipe_name=streamsync-handoff-dev request_id=2 client_id=player1 run_id=streamsync-dev-session read_mode=inspect-latest attempt_count=1 timeout_millis=5000 elapsed_millis=1 request_status=sent response_status=decoded result_kind=FrameRead final_result=FrameRead last_error=none retry_classification=none queue_len=1 frame_id=2 capture_timestamp=1777652932152093 send_timestamp=1777652932152093 queued_at=1777652932344643 width=1920 height=1080 fps_nominal=30 codec=H264 is_keyframe=false encoded_payload_len=246286
+```
+
+Recorded conclusion from this successful lifecycle-summary bounded localhost
+rerun:
+
+- client auth succeeded
+- fragmented real encoded send succeeded
+- server receive / reassembly / queue succeeded
+- bounded named-pipe loop served two requests and respected `max_requests=2`
+- both switcher reads decoded responses successfully
+- both reads returned `FrameRead`
+- `attempt_count=1` was visible
+- `final_result=FrameRead` was visible
+- `last_error=none` was visible
+- `retry_classification=none` was visible
+- `request_id` 1 and 2 were preserved
+- metadata survived the server->switcher handoff
+- `encoded_payload_len=246286` was preserved and non-zero
+- repeated `inspect-latest` preserved preview semantics and returned the same
+  frame twice without queue mutation
+- no error collapsed into `NoFrame`
+- classification-only lifecycle reporting is sufficient for the current
+  successful path
+
 ---
 
 ## 3. Two-Client Live Switcher E2E

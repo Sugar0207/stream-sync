@@ -5,6 +5,76 @@
 - Codex
 
 ### Work
+- Recorded the successful lifecycle-summary bounded localhost rerun for the
+  named-pipe handoff manual path.
+- Updated the manual guide and TODO tracking to treat the rerun as complete.
+- Kept this slice docs-only and did not add retry execution, reconnect/backoff,
+  or lifecycle manager behavior.
+
+### Changed Files
+- `docs/operations/manual-real-encoded-video-poc.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### Decisions
+- Treat the lifecycle-summary bounded localhost rerun as successful.
+- Treat `attempt_count=1`, `final_result=FrameRead`, `last_error=none`, and
+  `retry_classification=none` as confirmed visible success-path summary fields.
+- Keep the next task as deciding whether classification-only is enough or
+  whether a bounded retry wrapper is actually needed.
+
+### Observed Stdout
+- Server aggregate:
+  `server named-pipe handoff bounded pipe_name=streamsync-handoff-dev max_requests=2 requests_served=2 successful_responses=2 handoff_errors=0`
+- Server request 0:
+  `server named-pipe handoff bounded request pipe_name=streamsync-handoff-dev request_index=0 request_id=1 result_kind=FrameRead queue_len=1 handoff_error=none`
+- Server request 1:
+  `server named-pipe handoff bounded request pipe_name=streamsync-handoff-dev request_index=1 request_id=2 result_kind=FrameRead queue_len=1 handoff_error=none`
+- Client:
+  `auth real encoded video frame bounded PoC sent AuthRequest 96 bytes from 0.0.0.0:54387 to 127.0.0.1:5000 and received AuthResponse 55 bytes from 127.0.0.1:5000; accepted=true reason_code=Ok; bounded_manual_runtime=true; fragment_pacing_every=16 fragment_pacing_delay_ms=1 frames_attempted=2 frames_captured=1 frames_encoded=1 frames_sent=1 direct_sends=0 fragmented_sends=1 fragments_attempted=241 fragments_sent=241 no_frame_count=1 capture_failures=0 encode_failures=0 frame_build_failures=0 send_failures=0 stop_reason=Some(MaxFramesReached) last_send_destination=none last_send_local_source=none last_send_frame_id=none last_send_payload_len=none last_send_packet_len=none last_send_error=none`
+- Switcher read 1:
+  `switcher named-pipe handoff once pipe_name=streamsync-handoff-dev request_id=1 client_id=player1 run_id=streamsync-dev-session read_mode=inspect-latest attempt_count=1 timeout_millis=5000 elapsed_millis=1 request_status=sent response_status=decoded result_kind=FrameRead final_result=FrameRead last_error=none retry_classification=none queue_len=1 frame_id=2 capture_timestamp=1777652932152093 send_timestamp=1777652932152093 queued_at=1777652932344643 width=1920 height=1080 fps_nominal=30 codec=H264 is_keyframe=false encoded_payload_len=246286`
+- Switcher read 2:
+  `switcher named-pipe handoff once pipe_name=streamsync-handoff-dev request_id=2 client_id=player1 run_id=streamsync-dev-session read_mode=inspect-latest attempt_count=1 timeout_millis=5000 elapsed_millis=1 request_status=sent response_status=decoded result_kind=FrameRead final_result=FrameRead last_error=none retry_classification=none queue_len=1 frame_id=2 capture_timestamp=1777652932152093 send_timestamp=1777652932152093 queued_at=1777652932344643 width=1920 height=1080 fps_nominal=30 codec=H264 is_keyframe=false encoded_payload_len=246286`
+
+### Conclusion
+- client auth succeeded
+- fragmented real encoded send succeeded
+- server receive/reassembly/queue succeeded
+- bounded named-pipe loop served 2 requests and respected `max_requests=2`
+- `requests_served=2`, `successful_responses=2`, `handoff_errors=0`
+- both switcher reads returned `FrameRead`
+- `attempt_count=1` was visible
+- `final_result=FrameRead` was visible
+- `last_error=none` was visible
+- `retry_classification=none` was visible
+- `request_id` 1 and 2 were preserved
+- metadata survived the server->switcher handoff
+- `encoded_payload_len=246286` was preserved and non-zero
+- repeated `inspect-latest` correctly returned the same frame twice without
+  queue mutation
+- no error collapsed into `NoFrame`
+- classification-only appears sufficient for the successful path
+
+### Next
+- Decide whether classification-only is enough or whether a bounded retry
+  wrapper is actually needed before adding retry behavior.
+
+### TODO Update
+- Marked the lifecycle-summary localhost rerun complete.
+- Moved the next task to the classification-only versus bounded-retry decision.
+
+### Validation
+- `cargo fmt` passed.
+- `cargo fmt --check` passed.
+- `cargo check --workspace` passed.
+- `git diff --check` passed with line-ending warnings for changed files.
+
+## 2026-05-02
+### Type
+- Codex
+
+### Work
 - Implemented the smallest switcher-side lifecycle classifier and summary
   extension above the existing one-request named-pipe handoff wrapper.
 - Kept `attempt_count=1`, preserved the existing `request_id`, and did not add
