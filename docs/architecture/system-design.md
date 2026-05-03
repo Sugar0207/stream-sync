@@ -9588,6 +9588,36 @@ That keeps handoff/source errors explicit and proves the first render-facing
 instruction shape before the next slice adds per-slot display hold/placeholder
 policy and fixed 2x2 composition instructions.
 
+That next minimal slice now exists too. The first 4-view display/composition
+instruction path is:
+
+```text
+4-view scheduler result
+  -> SwitcherFourViewHandoffSchedulerDecodeRenderAdapterBoundary
+  -> SwitcherFourViewHandoffDisplayPolicyBoundary
+  -> SwitcherFourViewHandoffQuadCompositionAdapterBoundary
+```
+
+Current behavior:
+
+- `RenderFrame` -> `Update`
+- `SkipNoFrameAvailable` -> hold previous if available, otherwise explicit
+  `NoDisplayPlaceholder`
+- `SkipWaitingForFrameAtOrBeforeTarget` -> hold previous if available,
+  otherwise explicit `NoDisplayPlaceholder`
+- `SkipHandoffError` -> hold previous if available while preserving
+  source-error detail, otherwise explicit `SourceErrorPlaceholder`
+- composition mode remains fixed `QuadView`
+- slot order remains explicit with fixed 2x2 placement:
+  - slot 0 -> row 0, column 0
+  - slot 1 -> row 0, column 1
+  - slot 2 -> row 1, column 0
+  - slot 3 -> row 1, column 1
+
+This path still does not decode per slot, render per slot, compose a real quad
+canvas, or output to OBS. It is instruction/result shaping only, meant to keep
+placeholder and source-error states explicit before pixel composition is added.
+
 This keeps 4-view orchestration explicit and testable while deferring the next
 larger questions:
 

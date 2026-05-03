@@ -5,6 +5,77 @@
 - Codex
 
 ### Work
+- Implemented the smallest dedicated 4-view display policy and fixed
+  `QuadView` composition-instruction slice.
+- Kept the slice as instruction/result shaping only and did not add actual
+  per-slot decode/render execution or quad-canvas rendering.
+- Updated architecture/TODO tracking so the next step is connecting the 4-view
+  instruction path to a real pixel path.
+
+### Changed Files
+- `apps/switcher/src/lib.rs`
+- `docs/architecture/system-design.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### Implemented
+- Added `SwitcherFourViewDisplayedSlot`.
+- Added `SwitcherFourViewHandoffDisplayPolicyInput`.
+- Added `SwitcherFourViewHandoffDisplayDecision`.
+- Added `SwitcherFourViewHandoffDisplayPolicyOutput`.
+- Added `SwitcherFourViewCompositionMode`.
+- Added `SwitcherFourViewQuadSlotPlacement`.
+- Added `SwitcherFourViewQuadCompositionSlotInstruction`.
+- Added `SwitcherFourViewHandoffQuadCompositionAdapterInput`.
+- Added `SwitcherFourViewHandoffQuadCompositionAdapterOutput`.
+- Added `SwitcherFourViewHandoffDisplayPolicyBoundary`.
+- Added `SwitcherFourViewHandoffQuadCompositionAdapterBoundary`.
+- Per-slot display behavior:
+  - `RenderFrame` -> `Update`
+  - `SkipNoFrameAvailable` -> hold previous when available, otherwise explicit
+    `NoDisplayPlaceholder`
+  - `SkipWaitingForFrameAtOrBeforeTarget` -> hold previous when available,
+    otherwise explicit `NoDisplayPlaceholder`
+  - `SkipHandoffError` -> hold previous when available while preserving
+    source-error detail, otherwise explicit `SourceErrorPlaceholder`
+- Preserved aggregate 4-view scheduler status.
+- Preserved explicit four-slot order and fixed `QuadView` 2x2 placement.
+- Did not create fake frames for skipped/error slots.
+
+### Tests
+- all four render frames -> four update decisions
+- no-frame with previous -> hold previous
+- no-frame without previous -> no-display placeholder
+- waiting with previous -> hold previous
+- source-error with previous -> hold previous while preserving source-error
+  detail
+- source-error without previous -> source-error placeholder
+- source-error is not treated as no-frame/waiting
+- `QuadView` keeps four slots in order
+- `QuadView` preserves placeholders/source-error placeholders
+- aggregate scheduler status is preserved
+
+### TODO Update
+- Marked the smallest dedicated 4-view display policy and `QuadView`
+  composition-instruction slice complete.
+- Moved the next task to connecting the 4-view instruction path to a real
+  decode/render or quad-composition pixel path.
+
+### Validation
+- `cargo fmt` passed.
+- `cargo fmt --check` passed.
+- `cargo test -p stream-sync-switcher four_view -- --test-threads=1` passed.
+- `cargo test -p stream-sync-switcher two_view -- --test-threads=1` passed.
+- `cargo test -p stream-sync-switcher target_time -- --test-threads=1` passed.
+- `cargo test -p stream-sync-switcher handoff -- --test-threads=1` passed.
+- `cargo check --workspace` passed.
+- `git diff --check` passed with line-ending warnings for changed files.
+
+## 2026-05-02
+### Type
+- Codex
+
+### Work
 - Implemented the smallest dedicated 4-view render-facing adapter slice after
   the preview/read-only scheduler.
 - Kept this slice intentionally smaller than full 4-view display policy or
