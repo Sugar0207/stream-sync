@@ -9618,6 +9618,39 @@ This path still does not decode per slot, render per slot, compose a real quad
 canvas, or output to OBS. It is instruction/result shaping only, meant to keep
 placeholder and source-error states explicit before pixel composition is added.
 
+That next smallest render-facing slice now exists too. The current dedicated
+4-view `QuadView` path is:
+
+```text
+4-view scheduler result
+  -> SwitcherFourViewHandoffSchedulerDecodeRenderAdapterBoundary
+  -> SwitcherFourViewHandoffDisplayPolicyBoundary
+  -> SwitcherFourViewHandoffQuadCompositionAdapterBoundary
+  -> SwitcherFourViewHandoffQuadCompositionRenderConnectionBoundary
+```
+
+Current connection behavior:
+
+- consumes the existing fixed `QuadView` composition adapter output
+- decodes only `UseUpdatedFrame` slots into real BGRA decoded frames
+- preserves `UseHeldPreviousFrame` as renderable only when caller-owned
+  previous-slot decoded pixels exist
+- preserves `UseNoDisplayPlaceholder` and `UseSourceErrorPlaceholder` without
+  dropping those slots
+- keeps fixed 2x2 placement and explicit four-slot order
+- keeps aggregate 4-view scheduler status visible
+- reports `CompositionReady { renderable_slot_count }` when one or more slots
+  are renderable
+- reports `NoRenderableQuadView` when every slot is a placeholder or otherwise
+  non-renderable
+- does not create fake decoded frames for no-display, source-error, or
+  placeholder-only slots
+
+This boundary is still intentionally smaller than a real quad-canvas
+composer/window renderer. It stops at composition-ready decoded-slot results so
+the next slice can add fixed `QuadView` actual BGRA composition/render without
+re-deciding targetTime, display hold, or placeholder behavior.
+
 This keeps 4-view orchestration explicit and testable while deferring the next
 larger questions:
 

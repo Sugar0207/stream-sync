@@ -1758,6 +1758,7 @@ pub struct SwitcherFourViewHandoffSchedulerDecodeRenderAdapterOutput {
 pub struct SwitcherFourViewDisplayedSlot {
     pub slot_index: usize,
     pub selected: Option<SwitcherJitterBufferSelectedFrame>,
+    pub decoded: Option<SwitcherDecodedFrame>,
     pub displayed_at: TimestampMicros,
 }
 
@@ -1854,6 +1855,94 @@ pub struct SwitcherFourViewHandoffQuadCompositionAdapterOutput {
     pub target_timestamp: TimestampMicros,
     pub mode: SwitcherFourViewCompositionMode,
     pub slots: [SwitcherFourViewQuadCompositionSlotInstruction; 4],
+}
+
+/// Input for the first 4-view `QuadView` render/composition connection.
+///
+/// This consumes the fixed `QuadView` composition adapter output and converts
+/// only renderable slots into composition-ready decoded-frame inputs while
+/// keeping placeholder-only slots explicit.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SwitcherFourViewHandoffQuadCompositionRenderConnectionInput {
+    pub adapter_output: SwitcherFourViewHandoffQuadCompositionAdapterOutput,
+}
+
+/// Per-slot render/composition-facing result for the first 4-view `QuadView`
+/// connection.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SwitcherFourViewHandoffQuadCompositionRenderSlot {
+    UseUpdatedFrame {
+        placement: SwitcherFourViewQuadSlotPlacement,
+        frame: SwitcherFourViewDisplayedSlot,
+        selected: SwitcherJitterBufferSelectedFrame,
+        consumed: bool,
+    },
+    UseHeldPreviousFrame {
+        placement: SwitcherFourViewQuadSlotPlacement,
+        frame: SwitcherFourViewDisplayedSlot,
+        skipped: SwitcherFourViewHandoffSchedulerDecodeRenderSlotInstruction,
+        hold_duration_micros: u64,
+    },
+    UseHeldPreviousFrameWithoutDecoded {
+        placement: SwitcherFourViewQuadSlotPlacement,
+        frame: SwitcherFourViewDisplayedSlot,
+        skipped: SwitcherFourViewHandoffSchedulerDecodeRenderSlotInstruction,
+        hold_duration_micros: u64,
+    },
+    UseNoDisplayPlaceholder {
+        placement: SwitcherFourViewQuadSlotPlacement,
+        skipped: SwitcherFourViewHandoffSchedulerDecodeRenderSlotInstruction,
+    },
+    UseSourceErrorPlaceholder {
+        placement: SwitcherFourViewQuadSlotPlacement,
+        skipped: SwitcherFourViewHandoffSchedulerDecodeRenderSlotInstruction,
+    },
+    UseDecodeDeferredPlaceholder {
+        placement: SwitcherFourViewQuadSlotPlacement,
+        selected: SwitcherJitterBufferSelectedFrame,
+        consumed: bool,
+        reason: SwitcherH264DecodeDeferredReason,
+    },
+    UseDecodeFailedPlaceholder {
+        placement: SwitcherFourViewQuadSlotPlacement,
+        selected: SwitcherJitterBufferSelectedFrame,
+        consumed: bool,
+        failure: SwitcherH264DecodeFailure,
+    },
+}
+
+/// Composition-facing result from the first 4-view `QuadView` connection.
+///
+/// This is still smaller than a real 4-view BGRA canvas composer. It keeps
+/// slot placement and renderability explicit so a later real composer can
+/// consume it without re-deciding placeholder behavior.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SwitcherFourViewHandoffQuadCompositionRenderConnectionCompositionResult {
+    pub mode: SwitcherFourViewCompositionMode,
+    pub slots: [SwitcherFourViewHandoffQuadCompositionRenderSlot; 4],
+}
+
+/// Top-level render result for the first 4-view `QuadView` connection.
+///
+/// Actual quad-canvas pixel composition/render is still deferred. This result
+/// only records whether at least one slot reached a real decoded composition
+/// input.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SwitcherFourViewHandoffQuadCompositionRenderConnectionRenderResult {
+    CompositionReady { renderable_slot_count: usize },
+    NoRenderableQuadView { non_renderable_slot_count: usize },
+}
+
+/// Output from the first 4-view `QuadView` composition/render connection.
+///
+/// The adapter output, composition-facing slot results, and top-level
+/// renderability result stay visible together for diagnostics.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SwitcherFourViewHandoffQuadCompositionRenderConnectionOutput {
+    pub scheduler_status: SwitcherFourViewTargetTimeHandoffSourceSchedulerStatus,
+    pub adapter: SwitcherFourViewHandoffQuadCompositionAdapterOutput,
+    pub composition: SwitcherFourViewHandoffQuadCompositionRenderConnectionCompositionResult,
+    pub render: SwitcherFourViewHandoffQuadCompositionRenderConnectionRenderResult,
 }
 
 /// Minimal 2-view scheduler over the fallible single-client handoff source.
@@ -2085,6 +2174,140 @@ impl SwitcherFourViewHandoffQuadCompositionAdapterBoundary {
             target_timestamp,
             mode: SwitcherFourViewCompositionMode::QuadView,
             slots,
+        }
+    }
+}
+
+/// Minimal dedicated connection from 4-view `QuadView` composition
+/// instructions to composition/render-facing decoded-slot results.
+///
+/// This is intentionally smaller than a real 4-view BGRA canvas composer. It
+/// decodes only newly updated slots, reuses caller-owned held-previous decoded
+/// slots when available, keeps placeholder-only slots explicit, and records a
+/// top-level no-render result when no real decoded slot exists.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct SwitcherFourViewHandoffQuadCompositionRenderConnectionBoundary {
+    decoder: SwitcherH264DecodeBoundary,
+}
+
+impl SwitcherFourViewHandoffQuadCompositionRenderConnectionBoundary {
+    pub fn connect_adapter_output_with_runtime(
+        &self,
+        input: SwitcherFourViewHandoffQuadCompositionRenderConnectionInput,
+        decode_runtime: &impl SwitcherH264DecodeRuntimeHook,
+    ) -> SwitcherFourViewHandoffQuadCompositionRenderConnectionOutput {
+        let scheduler_status = input.adapter_output.scheduler_status;
+        let mode = input.adapter_output.mode;
+        let slots = input
+            .adapter_output
+            .slots
+            .clone()
+            .map(|slot| self.connect_slot_with_runtime(slot, decode_runtime));
+        let renderable_slot_count = slots
+            .iter()
+            .filter(|slot| four_view_quad_connected_slot_is_renderable(slot))
+            .count();
+        let composition =
+            SwitcherFourViewHandoffQuadCompositionRenderConnectionCompositionResult { mode, slots };
+        let render = if renderable_slot_count == 0 {
+            SwitcherFourViewHandoffQuadCompositionRenderConnectionRenderResult::NoRenderableQuadView {
+                non_renderable_slot_count: composition.slots.len(),
+            }
+        } else {
+            SwitcherFourViewHandoffQuadCompositionRenderConnectionRenderResult::CompositionReady {
+                renderable_slot_count,
+            }
+        };
+
+        SwitcherFourViewHandoffQuadCompositionRenderConnectionOutput {
+            scheduler_status,
+            adapter: input.adapter_output,
+            composition,
+            render,
+        }
+    }
+
+    fn connect_slot_with_runtime(
+        &self,
+        instruction: SwitcherFourViewQuadCompositionSlotInstruction,
+        decode_runtime: &impl SwitcherH264DecodeRuntimeHook,
+    ) -> SwitcherFourViewHandoffQuadCompositionRenderSlot {
+        match instruction {
+            SwitcherFourViewQuadCompositionSlotInstruction::UseUpdatedFrame {
+                placement,
+                mut frame,
+                selected,
+                consumed,
+            } => match self.decoder.decode_with_runtime(
+                SwitcherH264DecodeInput {
+                    encoded_payload: selected.frame.encoded_payload.clone(),
+                    width: selected.frame.width,
+                    height: selected.frame.height,
+                },
+                decode_runtime,
+            ) {
+                SwitcherH264DecodeResult::Decoded(decoded) => {
+                    frame.decoded = Some(decoded);
+                    SwitcherFourViewHandoffQuadCompositionRenderSlot::UseUpdatedFrame {
+                        placement,
+                        frame,
+                        selected,
+                        consumed,
+                    }
+                }
+                SwitcherH264DecodeResult::Deferred { reason } => {
+                    SwitcherFourViewHandoffQuadCompositionRenderSlot::UseDecodeDeferredPlaceholder {
+                        placement,
+                        selected,
+                        consumed,
+                        reason,
+                    }
+                }
+                SwitcherH264DecodeResult::Failed(failure) => {
+                    SwitcherFourViewHandoffQuadCompositionRenderSlot::UseDecodeFailedPlaceholder {
+                        placement,
+                        selected,
+                        consumed,
+                        failure,
+                    }
+                }
+            },
+            SwitcherFourViewQuadCompositionSlotInstruction::UseHeldPreviousFrame {
+                placement,
+                frame,
+                skipped,
+                hold_duration_micros,
+            } => {
+                if frame.decoded.is_some() {
+                    SwitcherFourViewHandoffQuadCompositionRenderSlot::UseHeldPreviousFrame {
+                        placement,
+                        frame,
+                        skipped,
+                        hold_duration_micros,
+                    }
+                } else {
+                    SwitcherFourViewHandoffQuadCompositionRenderSlot::UseHeldPreviousFrameWithoutDecoded {
+                        placement,
+                        frame,
+                        skipped,
+                        hold_duration_micros,
+                    }
+                }
+            }
+            SwitcherFourViewQuadCompositionSlotInstruction::UseNoDisplayPlaceholder {
+                placement,
+                skipped,
+            } => SwitcherFourViewHandoffQuadCompositionRenderSlot::UseNoDisplayPlaceholder {
+                placement,
+                skipped,
+            },
+            SwitcherFourViewQuadCompositionSlotInstruction::UseSourceErrorPlaceholder {
+                placement,
+                skipped,
+            } => SwitcherFourViewHandoffQuadCompositionRenderSlot::UseSourceErrorPlaceholder {
+                placement,
+                skipped,
+            },
         }
     }
 }
@@ -3140,6 +3363,7 @@ fn four_view_handoff_display_decision_for_slot(
             let frame = SwitcherFourViewDisplayedSlot {
                 slot_index,
                 selected: Some(selected.clone()),
+                decoded: None,
                 displayed_at: current_time,
             };
             SwitcherFourViewHandoffDisplayDecision::Update {
@@ -3280,6 +3504,16 @@ impl Default for SwitcherJitterBufferSelectionPolicy {
             min_buffer_frames: 1,
         }
     }
+}
+
+fn four_view_quad_connected_slot_is_renderable(
+    slot: &SwitcherFourViewHandoffQuadCompositionRenderSlot,
+) -> bool {
+    matches!(
+        slot,
+        SwitcherFourViewHandoffQuadCompositionRenderSlot::UseUpdatedFrame { .. }
+            | SwitcherFourViewHandoffQuadCompositionRenderSlot::UseHeldPreviousFrame { .. }
+    )
 }
 
 /// Input for one targetTime / jitter-buffer selection.
@@ -11035,6 +11269,17 @@ mod tests {
             .adapt(SwitcherFourViewHandoffQuadCompositionAdapterInput { display })
     }
 
+    fn four_view_quad_composition_render_connection_output_for_test(
+        adapter_output: SwitcherFourViewHandoffQuadCompositionAdapterOutput,
+        decode: &impl SwitcherH264DecodeRuntimeHook,
+    ) -> SwitcherFourViewHandoffQuadCompositionRenderConnectionOutput {
+        SwitcherFourViewHandoffQuadCompositionRenderConnectionBoundary::default()
+            .connect_adapter_output_with_runtime(
+                SwitcherFourViewHandoffQuadCompositionRenderConnectionInput { adapter_output },
+                decode,
+            )
+    }
+
     fn render_fallible_two_view_adapter_output(
         adapter_output: SwitcherTwoViewHandoffSchedulerDecodeRenderAdapterOutput,
         decode: &impl SwitcherH264DecodeRuntimeHook,
@@ -12528,6 +12773,320 @@ mod tests {
             output.slots[3],
             SwitcherFourViewQuadCompositionSlotInstruction::UseSourceErrorPlaceholder { .. }
         ));
+    }
+
+    #[test]
+    fn four_view_quad_composition_render_connection_preserves_all_renderable_slots() {
+        let mut state = ServerVideoFrameQueueState::default();
+        store_frame_for_run(
+            &mut state,
+            "client-0",
+            "run-0",
+            1,
+            TimestampMicros(2_105_700),
+        );
+        store_frame_for_run(
+            &mut state,
+            "client-1",
+            "run-1",
+            2,
+            TimestampMicros(2_105_800),
+        );
+        store_frame_for_run(
+            &mut state,
+            "client-2",
+            "run-2",
+            3,
+            TimestampMicros(2_105_900),
+        );
+        store_frame_for_run(
+            &mut state,
+            "client-3",
+            "run-3",
+            4,
+            TimestampMicros(2_106_000),
+        );
+
+        let adapter_output = four_view_quad_composition_adapter_output_for_test(
+            four_view_display_policy_output_for_test(
+                fallible_four_view_adapter_output({
+                    let mut handoff = SwitcherInProcessQueuedFrameHandoff::new(&mut state);
+                    SwitcherFourViewTargetTimeHandoffSourceSchedulerBoundary::default()
+                        .select_quad_preview_from_handoff(
+                            &mut handoff,
+                            fallible_four_view_scheduler_input(TimestampMicros(1_000_004)),
+                        )
+                }),
+                [None, None, None, None],
+                TimestampMicros(5_000_000),
+            ),
+        );
+        let decode = RecordingTwoViewDecode::default();
+        let output =
+            four_view_quad_composition_render_connection_output_for_test(adapter_output, &decode);
+
+        assert_eq!(
+            output.scheduler_status,
+            SwitcherFourViewTargetTimeHandoffSourceSchedulerStatus::AllSelected
+        );
+        assert!(matches!(
+            output.render,
+            SwitcherFourViewHandoffQuadCompositionRenderConnectionRenderResult::CompositionReady {
+                renderable_slot_count: 4,
+            }
+        ));
+        assert_eq!(decode.inputs.borrow().len(), 4);
+        for (expected_index, slot) in output.composition.slots.iter().enumerate() {
+            let SwitcherFourViewHandoffQuadCompositionRenderSlot::UseUpdatedFrame {
+                placement,
+                frame,
+                ..
+            } = slot
+            else {
+                panic!("all slots should be renderable updated frames");
+            };
+            assert_eq!(placement.slot_index, expected_index);
+            assert_eq!(placement.row, expected_index / 2);
+            assert_eq!(placement.column, expected_index % 2);
+            assert!(frame.decoded.is_some());
+        }
+    }
+
+    #[test]
+    fn four_view_quad_composition_render_connection_preserves_updated_and_held_previous_forms() {
+        let mut state = ServerVideoFrameQueueState::default();
+        store_frame_for_run(
+            &mut state,
+            "client-0",
+            "run-0",
+            1,
+            TimestampMicros(2_106_100),
+        );
+        store_frame_for_run(
+            &mut state,
+            "client-2",
+            "run-2",
+            3,
+            TimestampMicros(2_106_200),
+        );
+        store_frame_for_run(
+            &mut state,
+            "client-3",
+            "run-3",
+            4,
+            TimestampMicros(2_106_300),
+        );
+
+        let adapter_output = four_view_quad_composition_adapter_output_for_test(
+            four_view_display_policy_output_for_test(
+                fallible_four_view_adapter_output({
+                    let mut handoff = SwitcherInProcessQueuedFrameHandoff::new(&mut state);
+                    SwitcherFourViewTargetTimeHandoffSourceSchedulerBoundary::default()
+                        .select_quad_preview_from_handoff(
+                            &mut handoff,
+                            fallible_four_view_scheduler_input(TimestampMicros(1_000_004)),
+                        )
+                }),
+                [
+                    None,
+                    Some(previous_four_view_displayed_slot(
+                        1,
+                        TimestampMicros(4_999_900),
+                    )),
+                    None,
+                    None,
+                ],
+                TimestampMicros(5_000_000),
+            ),
+        );
+        let decode = RecordingTwoViewDecode::default();
+        let output =
+            four_view_quad_composition_render_connection_output_for_test(adapter_output, &decode);
+
+        assert_eq!(
+            output.scheduler_status,
+            SwitcherFourViewTargetTimeHandoffSourceSchedulerStatus::PartialSelected
+        );
+        assert!(matches!(
+            output.render,
+            SwitcherFourViewHandoffQuadCompositionRenderConnectionRenderResult::CompositionReady {
+                renderable_slot_count: 4,
+            }
+        ));
+        assert_eq!(decode.inputs.borrow().len(), 3);
+        assert!(matches!(
+            output.composition.slots[0],
+            SwitcherFourViewHandoffQuadCompositionRenderSlot::UseUpdatedFrame { .. }
+        ));
+        assert!(matches!(
+            output.composition.slots[1],
+            SwitcherFourViewHandoffQuadCompositionRenderSlot::UseHeldPreviousFrame { .. }
+        ));
+        assert!(matches!(
+            output.composition.slots[2],
+            SwitcherFourViewHandoffQuadCompositionRenderSlot::UseUpdatedFrame { .. }
+        ));
+        assert!(matches!(
+            output.composition.slots[3],
+            SwitcherFourViewHandoffQuadCompositionRenderSlot::UseUpdatedFrame { .. }
+        ));
+    }
+
+    #[test]
+    fn four_view_quad_composition_render_connection_preserves_no_display_placeholder() {
+        let mut state = ServerVideoFrameQueueState::default();
+        store_frame_for_run(
+            &mut state,
+            "client-0",
+            "run-0",
+            1,
+            TimestampMicros(2_106_400),
+        );
+        store_frame_for_run(
+            &mut state,
+            "client-1",
+            "run-1",
+            2,
+            TimestampMicros(2_106_500),
+        );
+        store_frame_for_run(
+            &mut state,
+            "client-2",
+            "run-2",
+            3,
+            TimestampMicros(2_106_600),
+        );
+
+        let adapter_output = four_view_quad_composition_adapter_output_for_test(
+            four_view_display_policy_output_for_test(
+                fallible_four_view_adapter_output({
+                    let mut handoff = SwitcherInProcessQueuedFrameHandoff::new(&mut state);
+                    SwitcherFourViewTargetTimeHandoffSourceSchedulerBoundary::default()
+                        .select_quad_preview_from_handoff(
+                            &mut handoff,
+                            fallible_four_view_scheduler_input(TimestampMicros(1_000_004)),
+                        )
+                }),
+                [None, None, None, None],
+                TimestampMicros(5_000_000),
+            ),
+        );
+        let decode = RecordingTwoViewDecode::default();
+        let output =
+            four_view_quad_composition_render_connection_output_for_test(adapter_output, &decode);
+
+        assert_eq!(decode.inputs.borrow().len(), 3);
+        assert!(matches!(
+            output.composition.slots[3],
+            SwitcherFourViewHandoffQuadCompositionRenderSlot::UseNoDisplayPlaceholder { .. }
+        ));
+        assert!(!matches!(
+            output.render,
+            SwitcherFourViewHandoffQuadCompositionRenderConnectionRenderResult::NoRenderableQuadView { .. }
+        ));
+    }
+
+    #[test]
+    fn four_view_quad_composition_render_connection_preserves_source_error_placeholder() {
+        let mut state = ServerVideoFrameQueueState::default();
+        store_frame_for_run(
+            &mut state,
+            "client-0",
+            "run-0",
+            1,
+            TimestampMicros(2_106_700),
+        );
+        store_frame_for_run(
+            &mut state,
+            "client-1",
+            "run-1",
+            2,
+            TimestampMicros(2_106_800),
+        );
+        store_frame_for_run(
+            &mut state,
+            "client-2",
+            "run-2",
+            3,
+            TimestampMicros(2_106_900),
+        );
+
+        let adapter_output = four_view_quad_composition_adapter_output_for_test(
+            four_view_display_policy_output_for_test(
+                fallible_four_view_adapter_output({
+                    let mut handoff = SwitcherInProcessQueuedFrameHandoff::new(&mut state);
+                    SwitcherFourViewTargetTimeHandoffSourceSchedulerBoundary::default()
+                        .select_quad_preview_from_handoff(
+                            &mut handoff,
+                            SwitcherFourViewTargetTimeHandoffSourceSchedulerInput {
+                                slots: [
+                                    four_view_slot(0, "client-0", "run-0"),
+                                    four_view_slot(1, "client-1", "run-1"),
+                                    four_view_slot(2, "client-2", "run-2"),
+                                    four_view_slot(3, "", "run-3"),
+                                ],
+                                target_timestamp: TimestampMicros(1_000_004),
+                            },
+                        )
+                }),
+                [None, None, None, None],
+                TimestampMicros(5_000_000),
+            ),
+        );
+        let decode = RecordingTwoViewDecode::default();
+        let output =
+            four_view_quad_composition_render_connection_output_for_test(adapter_output, &decode);
+
+        assert_eq!(
+            output.scheduler_status,
+            SwitcherFourViewTargetTimeHandoffSourceSchedulerStatus::HandoffError
+        );
+        assert_eq!(decode.inputs.borrow().len(), 3);
+        assert!(matches!(
+            output.composition.slots[3],
+            SwitcherFourViewHandoffQuadCompositionRenderSlot::UseSourceErrorPlaceholder { .. }
+        ));
+    }
+
+    #[test]
+    fn four_view_quad_composition_render_connection_returns_no_renderable_quad_view_for_placeholders_only(
+    ) {
+        let mut state = ServerVideoFrameQueueState::default();
+        let adapter_output = four_view_quad_composition_adapter_output_for_test(
+            four_view_display_policy_output_for_test(
+                fallible_four_view_adapter_output({
+                    let mut handoff = SwitcherInProcessQueuedFrameHandoff::new(&mut state);
+                    SwitcherFourViewTargetTimeHandoffSourceSchedulerBoundary::default()
+                        .select_quad_preview_from_handoff(
+                            &mut handoff,
+                            fallible_four_view_scheduler_input(TimestampMicros(1_000_004)),
+                        )
+                }),
+                [None, None, None, None],
+                TimestampMicros(5_000_000),
+            ),
+        );
+        let decode = RecordingTwoViewDecode::default();
+        let output =
+            four_view_quad_composition_render_connection_output_for_test(adapter_output, &decode);
+
+        assert_eq!(
+            output.scheduler_status,
+            SwitcherFourViewTargetTimeHandoffSourceSchedulerStatus::NoFrames
+        );
+        assert_eq!(decode.inputs.borrow().len(), 0);
+        assert!(matches!(
+            output.render,
+            SwitcherFourViewHandoffQuadCompositionRenderConnectionRenderResult::NoRenderableQuadView {
+                non_renderable_slot_count: 4,
+            }
+        ));
+        for slot in &output.composition.slots {
+            assert!(matches!(
+                slot,
+                SwitcherFourViewHandoffQuadCompositionRenderSlot::UseNoDisplayPlaceholder { .. }
+            ));
+        }
     }
 
     #[test]
@@ -19717,6 +20276,7 @@ mod tests {
         SwitcherFourViewDisplayedSlot {
             slot_index,
             selected: None,
+            decoded: Some(decoded_bgra_frame(2, 1, [slot_index as u8, 0, 0, 255])),
             displayed_at,
         }
     }

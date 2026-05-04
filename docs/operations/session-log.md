@@ -1,5 +1,80 @@
 <!-- stream-sync/docs/operations/session-log.md -->
 
+## 2026-05-04
+### Type
+- Codex
+
+### Work
+- Implemented the smallest dedicated 4-view `QuadView`
+  composition/render-facing connection after the existing display/composition
+  instruction path.
+- Kept this slice smaller than real quad-canvas composition/render by stopping
+  at composition-ready decoded-slot results plus an explicit top-level
+  renderability result.
+- Updated architecture/TODO tracking so the next 4-view slice is fixed
+  `QuadView` actual BGRA composition/render on top of the new connection
+  output.
+
+### Changed Files
+- `apps/switcher/src/lib.rs`
+- `docs/architecture/system-design.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### Implemented
+- Extended `SwitcherFourViewDisplayedSlot` so caller-owned previous slot state
+  can carry optional decoded pixels for held-previous rendering.
+- Added `SwitcherFourViewHandoffQuadCompositionRenderConnectionInput`.
+- Added `SwitcherFourViewHandoffQuadCompositionRenderSlot`.
+- Added
+  `SwitcherFourViewHandoffQuadCompositionRenderConnectionCompositionResult`.
+- Added
+  `SwitcherFourViewHandoffQuadCompositionRenderConnectionRenderResult`.
+- Added `SwitcherFourViewHandoffQuadCompositionRenderConnectionOutput`.
+- Added `SwitcherFourViewHandoffQuadCompositionRenderConnectionBoundary`.
+- Connection behavior:
+  - consumes existing `SwitcherFourViewHandoffQuadCompositionAdapterOutput`
+  - decodes only `UseUpdatedFrame` slots into real BGRA decoded frames
+  - preserves `UseHeldPreviousFrame` as renderable when previous decoded
+    pixels exist
+  - preserves `UseNoDisplayPlaceholder` and
+    `UseSourceErrorPlaceholder` without dropping those slots
+  - preserves fixed 2x2 placement and explicit four-slot order
+  - preserves aggregate
+    `SwitcherFourViewTargetTimeHandoffSourceSchedulerStatus`
+  - reports `CompositionReady { renderable_slot_count }` when at least one
+    real decoded slot exists
+  - reports `NoRenderableQuadView` for placeholder-only output
+- The boundary does not create fake decoded frames for placeholder/error
+  slots.
+
+### Tests
+- all four update slots -> render/composition connection preserves four
+  renderable updated slots
+- mixed update + held previous -> both renderable forms are preserved
+- no-display placeholder slot is preserved and not dropped
+- source-error placeholder slot is preserved and not collapsed
+- slot placement remains fixed 2x2
+- aggregate scheduler status is preserved
+- no fake decoded frames are created for placeholder/error slots
+- placeholder-only `QuadView` returns explicit `NoRenderableQuadView`
+
+### TODO Update
+- Marked the smallest dedicated 4-view composition/render-facing connection
+  slice complete.
+- Moved the next task to fixed `QuadView` actual BGRA composition/render on
+  top of the new composition-ready decoded-slot output.
+
+### Validation
+- `cargo fmt` passed.
+- `cargo fmt --check` passed.
+- `cargo test -p stream-sync-switcher four_view -- --test-threads=1` passed.
+- `cargo test -p stream-sync-switcher two_view -- --test-threads=1` passed.
+- `cargo test -p stream-sync-switcher target_time -- --test-threads=1` passed.
+- `cargo test -p stream-sync-switcher handoff -- --test-threads=1` passed.
+- `cargo check --workspace` passed.
+- `git diff --check` passed with LF/CRLF conversion warnings for changed files.
+
 ## 2026-05-02
 ### Type
 - Codex
