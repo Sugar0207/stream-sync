@@ -2074,6 +2074,115 @@ pub struct SwitcherFourViewQuadCompositionOutput {
     pub composition: SwitcherFourViewQuadCompositionResult,
 }
 
+/// Validated render-facing metadata derived from one composed 4-view BGRA
+/// canvas.
+///
+/// This intentionally does not own an additional pixel buffer. Future render
+/// consumers should use the composed pixels already preserved in the upstream
+/// composition result.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SwitcherFourViewComposedFrameRenderInput {
+    pub width: u32,
+    pub height: u32,
+    pub pixel_format: SwitcherDecodedFramePixelFormat,
+    pub bgra_payload_len: usize,
+    pub slots: [SwitcherFourViewQuadComposedSlotMetadata; 4],
+}
+
+/// Invalid composed-frame reason for 4-view render-facing adaptation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SwitcherFourViewComposedFrameRenderInputError {
+    UnsupportedPixelFormat {
+        actual: SwitcherDecodedFramePixelFormat,
+    },
+    InvalidDimensions,
+    InvalidBufferLength {
+        expected: usize,
+        actual: usize,
+    },
+}
+
+impl SwitcherFourViewComposedFrameRenderInput {
+    pub fn from_composed_frame(
+        frame: &SwitcherFourViewComposedFrame,
+    ) -> Result<Self, SwitcherFourViewComposedFrameRenderInputError> {
+        if frame.pixel_format != SwitcherDecodedFramePixelFormat::Bgra8 {
+            return Err(
+                SwitcherFourViewComposedFrameRenderInputError::UnsupportedPixelFormat {
+                    actual: frame.pixel_format,
+                },
+            );
+        }
+        if frame.width == 0 || frame.height == 0 {
+            return Err(SwitcherFourViewComposedFrameRenderInputError::InvalidDimensions);
+        }
+
+        let Some(expected) = frame
+            .width
+            .checked_mul(frame.height)
+            .and_then(|pixels| pixels.checked_mul(4))
+            .map(|len| len as usize)
+        else {
+            return Err(
+                SwitcherFourViewComposedFrameRenderInputError::InvalidBufferLength {
+                    expected: usize::MAX,
+                    actual: frame.pixels.len(),
+                },
+            );
+        };
+        if frame.pixels.len() != expected {
+            return Err(
+                SwitcherFourViewComposedFrameRenderInputError::InvalidBufferLength {
+                    expected,
+                    actual: frame.pixels.len(),
+                },
+            );
+        }
+
+        Ok(Self {
+            width: frame.width,
+            height: frame.height,
+            pixel_format: frame.pixel_format,
+            bgra_payload_len: frame.pixels.len(),
+            slots: frame.slots.clone(),
+        })
+    }
+}
+
+/// Invalid reason for the dedicated 4-view render-facing connection.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SwitcherFourViewQuadRenderFacingInvalidReason {
+    Composition(SwitcherFourViewQuadCompositionInvalidReason),
+    RenderInput(SwitcherFourViewComposedFrameRenderInputError),
+}
+
+/// Top-level render-facing result after fixed 4-view BGRA composition.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SwitcherFourViewQuadRenderFacingResult {
+    RenderReady {
+        input: SwitcherFourViewComposedFrameRenderInput,
+    },
+    NoRenderableQuadView {
+        slots: [SwitcherFourViewQuadComposedSlotMetadata; 4],
+    },
+    InvalidQuadView {
+        reason: SwitcherFourViewQuadRenderFacingInvalidReason,
+        slots: [SwitcherFourViewQuadComposedSlotMetadata; 4],
+    },
+}
+
+/// Output from the dedicated 4-view render-facing connection.
+///
+/// The upstream composition output remains visible, while the render-facing
+/// result adds explicit readiness / no-render / invalid states for future
+/// window and OBS consumers.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SwitcherFourViewQuadRenderFacingConnectionOutput {
+    pub scheduler_status: SwitcherFourViewTargetTimeHandoffSourceSchedulerStatus,
+    pub composition: SwitcherFourViewQuadCompositionOutput,
+    pub render: SwitcherFourViewQuadRenderFacingResult,
+}
+
 /// Minimal 2-view scheduler over the fallible single-client handoff source.
 ///
 /// This boundary keeps targetTime selection in switcher and preserves handoff
@@ -3665,6 +3774,54 @@ impl SwitcherFourViewQuadCompositionBoundary {
             scheduler_status,
             connection: input.connection,
             composition,
+        }
+    }
+}
+
+/// Thin render-facing adapter/connection for a composed 4-view BGRA canvas.
+///
+/// Composition stays upstream; this boundary validates the composed BGRA frame
+/// shape, preserves fixed-slot metadata and scheduler status, and keeps
+/// placeholder-only / invalid quad states explicit for future render
+/// backends.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct SwitcherFourViewQuadRenderFacingConnectionBoundary;
+
+impl SwitcherFourViewQuadRenderFacingConnectionBoundary {
+    pub fn connect_composition_output(
+        &self,
+        composition: SwitcherFourViewQuadCompositionOutput,
+    ) -> SwitcherFourViewQuadRenderFacingConnectionOutput {
+        let scheduler_status = composition.scheduler_status;
+        let render = match &composition.composition {
+            SwitcherFourViewQuadCompositionResult::ComposedFrame { frame } => {
+                match SwitcherFourViewComposedFrameRenderInput::from_composed_frame(frame) {
+                    Ok(input) => SwitcherFourViewQuadRenderFacingResult::RenderReady { input },
+                    Err(error) => SwitcherFourViewQuadRenderFacingResult::InvalidQuadView {
+                        reason: SwitcherFourViewQuadRenderFacingInvalidReason::RenderInput(error),
+                        slots: frame.slots.clone(),
+                    },
+                }
+            }
+            SwitcherFourViewQuadCompositionResult::NoRenderableQuadView { slots } => {
+                SwitcherFourViewQuadRenderFacingResult::NoRenderableQuadView {
+                    slots: slots.clone(),
+                }
+            }
+            SwitcherFourViewQuadCompositionResult::InvalidQuadView { reason, slots } => {
+                SwitcherFourViewQuadRenderFacingResult::InvalidQuadView {
+                    reason: SwitcherFourViewQuadRenderFacingInvalidReason::Composition(
+                        reason.clone(),
+                    ),
+                    slots: slots.clone(),
+                }
+            }
+        };
+
+        SwitcherFourViewQuadRenderFacingConnectionOutput {
+            scheduler_status,
+            composition,
+            render,
         }
     }
 }
@@ -11745,6 +11902,13 @@ mod tests {
         )
     }
 
+    fn four_view_quad_render_facing_output_for_test(
+        composition: SwitcherFourViewQuadCompositionOutput,
+    ) -> SwitcherFourViewQuadRenderFacingConnectionOutput {
+        SwitcherFourViewQuadRenderFacingConnectionBoundary::default()
+            .connect_composition_output(composition)
+    }
+
     fn render_fallible_two_view_adapter_output(
         adapter_output: SwitcherTwoViewHandoffSchedulerDecodeRenderAdapterOutput,
         decode: &impl SwitcherH264DecodeRuntimeHook,
@@ -14005,6 +14169,221 @@ mod tests {
         assert!(matches!(
             reason,
             SwitcherFourViewQuadCompositionInvalidReason::MissingDecodedPixels { .. }
+        ));
+        assert!(matches!(
+            slots[1].kind,
+            SwitcherFourViewQuadComposedSlotKind::MissingDecodedPixels { .. }
+        ));
+    }
+
+    #[test]
+    fn four_view_quad_render_facing_connection_returns_render_ready_and_preserves_metadata() {
+        let mut state = ServerVideoFrameQueueState::default();
+        store_frame_with_run_payload(
+            &mut state,
+            "client-0",
+            "run-0",
+            1,
+            TimestampMicros(2_108_600),
+            2,
+            1,
+            vec![10],
+        );
+        store_frame_with_run_payload(
+            &mut state,
+            "client-1",
+            "run-1",
+            2,
+            TimestampMicros(2_108_700),
+            2,
+            1,
+            vec![20],
+        );
+
+        let output = four_view_quad_render_facing_output_for_test(
+            four_view_quad_composition_output_for_test(
+                four_view_quad_composition_render_connection_output_for_test(
+                    four_view_quad_composition_adapter_output_for_test(
+                        four_view_display_policy_output_for_test(
+                            fallible_four_view_adapter_output({
+                                let mut handoff =
+                                    SwitcherInProcessQueuedFrameHandoff::new(&mut state);
+                                SwitcherFourViewTargetTimeHandoffSourceSchedulerBoundary::default()
+                                    .select_quad_preview_from_handoff(
+                                        &mut handoff,
+                                        SwitcherFourViewTargetTimeHandoffSourceSchedulerInput {
+                                            slots: [
+                                                four_view_slot(0, "client-0", "run-0"),
+                                                four_view_slot(1, "client-1", "run-1"),
+                                                four_view_slot(2, "client-2", "run-2"),
+                                                four_view_slot(3, "", "run-3"),
+                                            ],
+                                            target_timestamp: TimestampMicros(1_000_004),
+                                        },
+                                    )
+                            }),
+                            [None, None, None, None],
+                            TimestampMicros(5_000_000),
+                        ),
+                    ),
+                    &ColorByFirstByteDecode::default(),
+                ),
+            ),
+        );
+
+        assert_eq!(
+            output.scheduler_status,
+            SwitcherFourViewTargetTimeHandoffSourceSchedulerStatus::HandoffError
+        );
+        let SwitcherFourViewQuadCompositionResult::ComposedFrame { frame } =
+            &output.composition.composition
+        else {
+            panic!("mixed renderable and placeholder quad should still compose");
+        };
+        let SwitcherFourViewQuadRenderFacingResult::RenderReady { input } = &output.render else {
+            panic!("composed quad view should be render-ready");
+        };
+
+        assert_eq!(input.width, frame.width);
+        assert_eq!(input.height, frame.height);
+        assert_eq!(input.pixel_format, frame.pixel_format);
+        assert_eq!(input.bgra_payload_len, frame.pixels.len());
+        assert_eq!(input.slots, frame.slots);
+        assert!(matches!(
+            input.slots[2].kind,
+            SwitcherFourViewQuadComposedSlotKind::NoDisplayPlaceholder { .. }
+        ));
+        assert!(matches!(
+            input.slots[3].kind,
+            SwitcherFourViewQuadComposedSlotKind::SourceErrorPlaceholder { .. }
+        ));
+    }
+
+    #[test]
+    fn four_view_quad_render_facing_connection_preserves_no_renderable_quad_view() {
+        let mut state = ServerVideoFrameQueueState::default();
+
+        let output = four_view_quad_render_facing_output_for_test(
+            four_view_quad_composition_output_for_test(
+                four_view_quad_composition_render_connection_output_for_test(
+                    four_view_quad_composition_adapter_output_for_test(
+                        four_view_display_policy_output_for_test(
+                            fallible_four_view_adapter_output({
+                                let mut handoff =
+                                    SwitcherInProcessQueuedFrameHandoff::new(&mut state);
+                                SwitcherFourViewTargetTimeHandoffSourceSchedulerBoundary::default()
+                                    .select_quad_preview_from_handoff(
+                                        &mut handoff,
+                                        fallible_four_view_scheduler_input(TimestampMicros(
+                                            1_000_004,
+                                        )),
+                                    )
+                            }),
+                            [None, None, None, None],
+                            TimestampMicros(5_000_000),
+                        ),
+                    ),
+                    &ColorByFirstByteDecode::default(),
+                ),
+            ),
+        );
+
+        assert_eq!(
+            output.scheduler_status,
+            SwitcherFourViewTargetTimeHandoffSourceSchedulerStatus::NoFrames
+        );
+        let SwitcherFourViewQuadRenderFacingResult::NoRenderableQuadView { slots } = &output.render
+        else {
+            panic!("placeholder-only quad should stay an explicit no-render state");
+        };
+        assert_eq!(slots.len(), 4);
+        for slot in slots {
+            assert!(matches!(
+                slot.kind,
+                SwitcherFourViewQuadComposedSlotKind::NoDisplayPlaceholder { .. }
+            ));
+        }
+    }
+
+    #[test]
+    fn four_view_quad_render_facing_connection_preserves_invalid_quad_view() {
+        let mut state = ServerVideoFrameQueueState::default();
+        store_frame_with_run_payload(
+            &mut state,
+            "client-0",
+            "run-0",
+            1,
+            TimestampMicros(2_108_800),
+            2,
+            1,
+            vec![10],
+        );
+        store_frame_with_run_payload(
+            &mut state,
+            "client-2",
+            "run-2",
+            3,
+            TimestampMicros(2_108_900),
+            2,
+            1,
+            vec![30],
+        );
+        store_frame_with_run_payload(
+            &mut state,
+            "client-3",
+            "run-3",
+            4,
+            TimestampMicros(2_109_000),
+            2,
+            1,
+            vec![40],
+        );
+
+        let output = four_view_quad_render_facing_output_for_test(
+            four_view_quad_composition_output_for_test(
+                four_view_quad_composition_render_connection_output_for_test(
+                    four_view_quad_composition_adapter_output_for_test(
+                        four_view_display_policy_output_for_test(
+                            fallible_four_view_adapter_output({
+                                let mut handoff =
+                                    SwitcherInProcessQueuedFrameHandoff::new(&mut state);
+                                SwitcherFourViewTargetTimeHandoffSourceSchedulerBoundary::default()
+                                    .select_quad_preview_from_handoff(
+                                        &mut handoff,
+                                        fallible_four_view_scheduler_input(TimestampMicros(
+                                            1_000_004,
+                                        )),
+                                    )
+                            }),
+                            [
+                                None,
+                                Some(SwitcherFourViewDisplayedSlot {
+                                    slot_index: 1,
+                                    selected: None,
+                                    decoded: None,
+                                    displayed_at: TimestampMicros(4_999_900),
+                                }),
+                                None,
+                                None,
+                            ],
+                            TimestampMicros(5_000_000),
+                        ),
+                    ),
+                    &ColorByFirstByteDecode::default(),
+                ),
+            ),
+        );
+
+        let SwitcherFourViewQuadRenderFacingResult::InvalidQuadView { reason, slots } =
+            &output.render
+        else {
+            panic!("invalid composition should remain explicit in render-facing output");
+        };
+        assert!(matches!(
+            reason,
+            SwitcherFourViewQuadRenderFacingInvalidReason::Composition(
+                SwitcherFourViewQuadCompositionInvalidReason::MissingDecodedPixels { .. }
+            )
         ));
         assert!(matches!(
             slots[1].kind,

@@ -5,6 +5,70 @@
 - Codex
 
 ### Work
+- Implemented the smallest dedicated 4-view render-facing adapter/connection on
+  top of `SwitcherFourViewQuadCompositionBoundary`.
+- Kept this slice smaller than OS-window rendering and OBS output by stopping
+  at render-ready metadata plus explicit no-render / invalid result states.
+- Updated architecture/TODO tracking so the next 4-view slice is an optional
+  isolated window-render boundary on top of the new render-facing output.
+
+### Changed Files
+- `apps/switcher/src/lib.rs`
+- `docs/architecture/system-design.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### Implemented
+- Added `SwitcherFourViewComposedFrameRenderInput`.
+- Added `SwitcherFourViewComposedFrameRenderInputError`.
+- Added `SwitcherFourViewQuadRenderFacingInvalidReason`.
+- Added `SwitcherFourViewQuadRenderFacingResult`.
+- Added `SwitcherFourViewQuadRenderFacingConnectionOutput`.
+- Added `SwitcherFourViewQuadRenderFacingConnectionBoundary`.
+- Render-facing connection behavior:
+  - consumes `SwitcherFourViewQuadCompositionOutput`
+  - preserves upstream composition output visibility
+  - validates composed BGRA frame metadata without creating a second pixel
+    owner
+  - preserves width / height / BGRA payload length
+  - preserves fixed four-slot metadata
+  - preserves aggregate scheduler status
+  - preserves placeholder / source-error slot information
+  - returns explicit `RenderReady`, `NoRenderableQuadView`, and
+    `InvalidQuadView`
+  - forwards composition-level no-render / invalid states explicitly
+
+### Tests
+- `ComposedFrame` -> render-ready result
+- `NoRenderableQuadView` -> explicit no-render result
+- `InvalidQuadView` -> explicit invalid result
+- width/height preserved
+- BGRA payload length preserved
+- four-slot metadata preserved
+- aggregate scheduler status preserved
+- placeholder metadata preserved
+- source-error metadata preserved
+
+### TODO Update
+- Marked the dedicated 4-view render-facing adapter/connection complete.
+- Moved the next 4-view task to an optional isolated OS-window render boundary
+  on top of the explicit render-facing result family.
+
+### Validation
+- `cargo fmt` passed.
+- `cargo fmt --check` passed.
+- `cargo test -p stream-sync-switcher four_view -- --test-threads=1` passed.
+- `cargo test -p stream-sync-switcher two_view -- --test-threads=1` passed.
+- `cargo test -p stream-sync-switcher target_time -- --test-threads=1` passed.
+- `cargo test -p stream-sync-switcher handoff -- --test-threads=1` passed.
+- `cargo check --workspace` passed.
+- `git diff --check` passed with LF/CRLF conversion warnings for changed files.
+
+## 2026-05-04
+### Type
+- Codex
+
+### Work
 - Added a planning/docs-only slice for the next consumer of
   `SwitcherFourViewComposedFrame`.
 - Fixed the next 4-view step as a dedicated render-facing adapter/connection

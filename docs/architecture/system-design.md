@@ -9774,6 +9774,44 @@ Out of scope for that next slice should remain:
 - switcher-side fragment reassembly
 - final production layout polish
 
+That dedicated render-facing adapter/connection now exists too. The current
+4-view path is:
+
+```text
+4-view scheduler result
+  -> SwitcherFourViewHandoffSchedulerDecodeRenderAdapterBoundary
+  -> SwitcherFourViewHandoffDisplayPolicyBoundary
+  -> SwitcherFourViewHandoffQuadCompositionAdapterBoundary
+  -> SwitcherFourViewHandoffQuadCompositionRenderConnectionBoundary
+  -> SwitcherFourViewQuadCompositionBoundary
+  -> SwitcherFourViewQuadRenderFacingConnectionBoundary
+```
+
+Current render-facing connection behavior:
+
+- consumes `SwitcherFourViewQuadCompositionOutput`
+- keeps the upstream composition output visible
+- validates a composed BGRA frame into render-facing metadata without creating
+  a second pixel owner
+- preserves:
+  - frame width
+  - frame height
+  - BGRA payload length
+  - fixed four-slot metadata
+  - aggregate scheduler status
+  - placeholder / source-error slot information
+- returns explicit render-facing result states:
+  - `RenderReady`
+  - `NoRenderableQuadView`
+  - `InvalidQuadView`
+- forwards composition-level `NoRenderableQuadView` and `InvalidQuadView`
+  explicitly rather than collapsing them into generic render failure
+
+This boundary still does not open a window or call OBS. The next isolated slice
+can attach an optional OS-window render boundary on top of the render-facing
+result family, while keeping future OBS work as a downstream consumer of that
+same explicit result shape.
+
 This keeps 4-view orchestration explicit and testable while deferring the next
 larger questions:
 
