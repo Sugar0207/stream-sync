@@ -10112,6 +10112,45 @@ Out of scope for that next manual-proof slice should remain:
 - switcher-side fragment reassembly
 - final production layout polish
 
+That bounded deterministic 4-view manual preview/proof wrapper now exists too.
+The current proof-oriented path is:
+
+```text
+deterministic in-process fixture queue
+  -> SwitcherFourViewManualPreviewProofBoundary
+    -> SwitcherFourViewHandoffValidationBoundary
+      -> 4-view scheduler
+      -> scheduler decode/render adapter
+      -> display policy
+      -> QuadView composition adapter
+      -> composition render connection
+      -> fixed QuadView BGRA composition
+      -> render-facing connection
+      -> composed-canvas window render boundary
+```
+
+Current proof-wrapper behavior:
+
+- uses an in-process fixture queue instead of real named-pipe handoff
+- accepts caller-owned decode and window-render runtimes so default validation
+  can stay fake/backend-unavailable and deterministic
+- keeps the full 8-stage validation output visible
+- adds a compact proof summary containing:
+  - target timestamp
+  - aggregate scheduler status
+  - per-slot scheduler result kinds
+  - per-slot display decision kinds
+  - per-slot composition instruction kinds
+  - BGRA composition result kind
+  - render-facing result kind
+  - window render result kind
+  - placeholder count
+  - source-error count
+
+This wrapper still does not add a human-facing CLI command, real
+server->switcher transport proof, actual OS-window proof, or OBS output. Those
+remain downstream concerns above the now-stable in-process proof wrapper.
+
 This keeps 4-view orchestration explicit and testable while deferring the next
 larger questions:
 

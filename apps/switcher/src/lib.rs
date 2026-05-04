@@ -12,10 +12,12 @@ use stream_sync_net_core::{
     ServerSwitcherQueuedFrameReadMode, DEFAULT_UDP_PACKET_BUFFER_LEN,
     SERVER_SWITCHER_HANDOFF_VERSION,
 };
-use stream_sync_protocol::{ClientId, Codec, MessageType, ProtocolVersion, RunId, TimestampMicros};
+use stream_sync_protocol::{
+    ClientId, Codec, MessageType, ProtocolVersion, RunId, TimestampMicros, VideoFrame,
+};
 use stream_sync_server::{
-    AuthenticatedSenderRegistry, PacketAcceptanceRejectReason, ServerAuthResponsePocError,
-    ServerAuthResponsePocLauncher, ServerAuthResponsePocOutcome,
+    AuthenticatedSenderEntry, AuthenticatedSenderRegistry, PacketAcceptanceRejectReason,
+    ServerAuthResponsePocError, ServerAuthResponsePocLauncher, ServerAuthResponsePocOutcome,
     ServerAuthResponsePocStartupConfig, ServerAuthResponsePocStartupError,
     ServerAuthResponsePocStep, ServerInboundRoute, ServerQueuedVideoFrame,
     ServerReceiveAuthVideoQueueOnceStartupOutcome, ServerReceiveAuthVideoQueueOnceVideoOutcome,
@@ -2290,6 +2292,106 @@ pub struct SwitcherFourViewHandoffValidationOutput {
     pub window_render: SwitcherFourViewComposedCanvasWindowRenderConnectionOutput,
 }
 
+/// Deterministic fixture mode for the first bounded 4-view proof wrapper.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum SwitcherFourViewManualPreviewProofFixtureMode {
+    AllRenderable,
+    MixedPlaceholderAndSourceError,
+    PlaceholderOnly,
+}
+
+/// Input for the bounded one-shot 4-view manual preview/proof wrapper.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SwitcherFourViewManualPreviewProofInput {
+    pub slots: [SwitcherFourViewTargetTimeSourceSlotConfig; 4],
+    pub target_timestamp: TimestampMicros,
+    pub fixture_mode: SwitcherFourViewManualPreviewProofFixtureMode,
+    pub previous_slots: [Option<SwitcherFourViewDisplayedSlot>; 4],
+    pub display_current_time: TimestampMicros,
+    pub layout_policy: SwitcherFourViewQuadLayoutPolicy,
+    pub composed_window_title: String,
+    pub composed_render_hold_millis: u64,
+}
+
+/// Compact scheduler-side slot kind for 4-view manual proof summaries.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum SwitcherFourViewManualPreviewSchedulerSlotKind {
+    Selected,
+    NoFrameAvailable,
+    WaitingForFrameAtOrBeforeTarget,
+    HandoffError,
+}
+
+/// Compact display-decision slot kind for 4-view manual proof summaries.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum SwitcherFourViewManualPreviewDisplaySlotKind {
+    Update,
+    HoldPrevious,
+    NoDisplayPlaceholder,
+    SourceErrorPlaceholder,
+}
+
+/// Compact composition-instruction slot kind for 4-view manual proof
+/// summaries.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum SwitcherFourViewManualPreviewCompositionInstructionKind {
+    UpdatedFrame,
+    HeldPreviousFrame,
+    NoDisplayPlaceholder,
+    SourceErrorPlaceholder,
+}
+
+/// Compact fixed-quad composition result kind for 4-view manual proof
+/// summaries.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum SwitcherFourViewManualPreviewBgraCompositionKind {
+    ComposedFrame,
+    NoRenderableQuadView,
+    InvalidQuadView,
+}
+
+/// Compact render-facing result kind for 4-view manual proof summaries.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum SwitcherFourViewManualPreviewRenderFacingKind {
+    RenderReady,
+    NoRenderableQuadView,
+    InvalidQuadView,
+}
+
+/// Compact window-render result kind for 4-view manual proof summaries.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum SwitcherFourViewManualPreviewWindowRenderKind {
+    Rendered,
+    RenderDeferred,
+    BackendUnavailable,
+    InvalidComposedFrame,
+    RenderFailed,
+    NoRenderableQuadView,
+    InvalidQuadView,
+}
+
+/// Compact summary for one bounded 4-view manual preview/proof run.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SwitcherFourViewManualPreviewProofSummary {
+    pub target_timestamp: TimestampMicros,
+    pub scheduler_status: SwitcherFourViewTargetTimeHandoffSourceSchedulerStatus,
+    pub scheduler_slot_kinds: [SwitcherFourViewManualPreviewSchedulerSlotKind; 4],
+    pub display_slot_kinds: [SwitcherFourViewManualPreviewDisplaySlotKind; 4],
+    pub composition_instruction_kinds: [SwitcherFourViewManualPreviewCompositionInstructionKind; 4],
+    pub bgra_composition_kind: SwitcherFourViewManualPreviewBgraCompositionKind,
+    pub render_facing_kind: SwitcherFourViewManualPreviewRenderFacingKind,
+    pub window_render_kind: SwitcherFourViewManualPreviewWindowRenderKind,
+    pub placeholder_count: usize,
+    pub source_error_count: usize,
+}
+
+/// Result of one bounded deterministic 4-view manual preview/proof run.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SwitcherFourViewManualPreviewProofResult {
+    pub validation: SwitcherFourViewHandoffValidationOutput,
+    pub summary: SwitcherFourViewManualPreviewProofSummary,
+}
+
 /// Minimal 2-view scheduler over the fallible single-client handoff source.
 ///
 /// This boundary keeps targetTime selection in switcher and preserves handoff
@@ -4154,6 +4256,306 @@ impl SwitcherFourViewHandoffValidationBoundary {
             render_facing,
             window_render,
         }
+    }
+}
+
+/// Bounded deterministic 4-view manual preview/proof wrapper.
+///
+/// This stays in-process only. It builds a fixture queue, runs the existing
+/// 4-view validation boundary, and returns a compact summary without opening
+/// real transport or requiring real OS window rendering.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct SwitcherFourViewManualPreviewProofBoundary {
+    validation: SwitcherFourViewHandoffValidationBoundary,
+}
+
+impl SwitcherFourViewManualPreviewProofBoundary {
+    pub fn prove_fixture_with_runtimes(
+        &self,
+        input: SwitcherFourViewManualPreviewProofInput,
+        decode_runtime: &impl SwitcherH264DecodeRuntimeHook,
+        render_runtime: &impl SwitcherWindowRenderRuntimeHook,
+    ) -> SwitcherFourViewManualPreviewProofResult {
+        let mut queue_state = four_view_manual_preview_fixture_queue_state(&input);
+        let validation = self.validation.run_with_runtimes(
+            &mut queue_state,
+            SwitcherFourViewHandoffValidationInput {
+                slots: input.slots.clone(),
+                target_timestamp: input.target_timestamp,
+                previous_slots: input.previous_slots,
+                display_current_time: input.display_current_time,
+                layout_policy: input.layout_policy,
+                composed_window_title: input.composed_window_title,
+                composed_render_hold_millis: input.composed_render_hold_millis,
+            },
+            decode_runtime,
+            render_runtime,
+        );
+        let summary = four_view_manual_preview_proof_summary(&validation);
+
+        SwitcherFourViewManualPreviewProofResult {
+            validation,
+            summary,
+        }
+    }
+}
+
+fn four_view_manual_preview_fixture_queue_state(
+    input: &SwitcherFourViewManualPreviewProofInput,
+) -> ServerVideoFrameQueueState {
+    let mut state = ServerVideoFrameQueueState::default();
+
+    match input.fixture_mode {
+        SwitcherFourViewManualPreviewProofFixtureMode::AllRenderable => {
+            for (slot_index, slot) in input.slots.iter().enumerate() {
+                four_view_manual_preview_store_frame(
+                    &mut state,
+                    slot,
+                    slot_index as u64 + 1,
+                    vec![10 * (slot_index as u8 + 1)],
+                );
+            }
+        }
+        SwitcherFourViewManualPreviewProofFixtureMode::MixedPlaceholderAndSourceError => {
+            four_view_manual_preview_store_frame(&mut state, &input.slots[0], 1, vec![10]);
+            four_view_manual_preview_store_frame(&mut state, &input.slots[1], 5, vec![20]);
+        }
+        SwitcherFourViewManualPreviewProofFixtureMode::PlaceholderOnly => {}
+    }
+
+    state
+}
+
+fn four_view_manual_preview_store_frame(
+    state: &mut ServerVideoFrameQueueState,
+    slot: &SwitcherFourViewTargetTimeSourceSlotConfig,
+    frame_id: u64,
+    payload: Vec<u8>,
+) {
+    let input = ServerVideoFrameHandlerBoundary.prepare_input(
+        four_view_manual_preview_registered_video_packet(slot, frame_id, payload),
+    );
+    let _ = ServerVideoFrameQueueStorageBoundary.store_frame(
+        state,
+        input,
+        TimestampMicros(2_400_000 + frame_id),
+        ServerVideoFrameQueuePolicy::default(),
+    );
+}
+
+fn four_view_manual_preview_registered_video_packet(
+    slot: &SwitcherFourViewTargetTimeSourceSlotConfig,
+    frame_id: u64,
+    payload: Vec<u8>,
+) -> ServerRegisteredVideoFramePacket {
+    let source = PacketSource {
+        address: format!("127.0.0.1:{}", 5900 + slot.slot_index)
+            .parse()
+            .expect("fixture packet source should parse"),
+    };
+    let payload_size = payload.len();
+
+    ServerRegisteredVideoFramePacket {
+        source,
+        authenticated_sender: AuthenticatedSenderEntry {
+            client_id: slot.client_id.clone(),
+            source,
+            run_id: slot.run_id.clone(),
+            protocol_version: ProtocolVersion(1),
+            registered_at: None,
+        },
+        frame: VideoFrame {
+            message_type: MessageType::VideoFrame,
+            protocol_version: ProtocolVersion(1),
+            client_id: slot.client_id.clone(),
+            run_id: slot.run_id.clone(),
+            frame_id,
+            capture_timestamp: TimestampMicros(1_000_000 + frame_id),
+            send_timestamp: TimestampMicros(1_000_100 + frame_id),
+            is_keyframe: frame_id == 1,
+            metadata_reserved: [0; 3],
+            width: 2,
+            height: 1,
+            fps_nominal: 30,
+            codec: Codec::H264,
+            payload_size,
+            payload,
+        },
+    }
+}
+
+fn four_view_manual_preview_proof_summary(
+    validation: &SwitcherFourViewHandoffValidationOutput,
+) -> SwitcherFourViewManualPreviewProofSummary {
+    let scheduler_slot_kinds = validation
+        .scheduler
+        .slots
+        .clone()
+        .map(|slot| four_view_manual_scheduler_slot_kind(&slot.result));
+    let display_slot_kinds = validation
+        .display
+        .slots
+        .clone()
+        .map(|slot| four_view_manual_display_slot_kind(&slot));
+    let composition_instruction_kinds = validation
+        .composition_instruction
+        .slots
+        .clone()
+        .map(|slot| four_view_manual_composition_instruction_kind(&slot));
+
+    let mut placeholder_count = 0;
+    let mut source_error_count = 0;
+    for slot in &validation.composition_instruction.slots {
+        match slot {
+            SwitcherFourViewQuadCompositionSlotInstruction::UseNoDisplayPlaceholder { .. } => {
+                placeholder_count += 1;
+            }
+            SwitcherFourViewQuadCompositionSlotInstruction::UseSourceErrorPlaceholder {
+                ..
+            } => {
+                source_error_count += 1;
+            }
+            _ => {}
+        }
+    }
+
+    SwitcherFourViewManualPreviewProofSummary {
+        target_timestamp: validation.scheduler.target_timestamp,
+        scheduler_status: validation.scheduler.status,
+        scheduler_slot_kinds,
+        display_slot_kinds,
+        composition_instruction_kinds,
+        bgra_composition_kind: four_view_manual_bgra_composition_kind(
+            &validation.bgra_composition.composition,
+        ),
+        render_facing_kind: four_view_manual_render_facing_kind(&validation.render_facing.render),
+        window_render_kind: four_view_manual_window_render_kind(
+            &validation.window_render.window_render,
+        ),
+        placeholder_count,
+        source_error_count,
+    }
+}
+
+fn four_view_manual_scheduler_slot_kind(
+    result: &SwitcherSingleClientTargetTimeHandoffSourceResult,
+) -> SwitcherFourViewManualPreviewSchedulerSlotKind {
+    match result {
+        SwitcherSingleClientTargetTimeHandoffSourceResult::Selected(_) => {
+            SwitcherFourViewManualPreviewSchedulerSlotKind::Selected
+        }
+        SwitcherSingleClientTargetTimeHandoffSourceResult::NoFrameAvailable { .. } => {
+            SwitcherFourViewManualPreviewSchedulerSlotKind::NoFrameAvailable
+        }
+        SwitcherSingleClientTargetTimeHandoffSourceResult::WaitingForFrameAtOrBeforeTarget {
+            ..
+        } => SwitcherFourViewManualPreviewSchedulerSlotKind::WaitingForFrameAtOrBeforeTarget,
+        SwitcherSingleClientTargetTimeHandoffSourceResult::HandoffError { .. } => {
+            SwitcherFourViewManualPreviewSchedulerSlotKind::HandoffError
+        }
+    }
+}
+
+fn four_view_manual_display_slot_kind(
+    slot: &SwitcherFourViewHandoffDisplayDecision,
+) -> SwitcherFourViewManualPreviewDisplaySlotKind {
+    match slot {
+        SwitcherFourViewHandoffDisplayDecision::Update { .. } => {
+            SwitcherFourViewManualPreviewDisplaySlotKind::Update
+        }
+        SwitcherFourViewHandoffDisplayDecision::HoldPrevious { .. } => {
+            SwitcherFourViewManualPreviewDisplaySlotKind::HoldPrevious
+        }
+        SwitcherFourViewHandoffDisplayDecision::NoDisplayPlaceholder { .. } => {
+            SwitcherFourViewManualPreviewDisplaySlotKind::NoDisplayPlaceholder
+        }
+        SwitcherFourViewHandoffDisplayDecision::SourceErrorPlaceholder { .. } => {
+            SwitcherFourViewManualPreviewDisplaySlotKind::SourceErrorPlaceholder
+        }
+    }
+}
+
+fn four_view_manual_composition_instruction_kind(
+    slot: &SwitcherFourViewQuadCompositionSlotInstruction,
+) -> SwitcherFourViewManualPreviewCompositionInstructionKind {
+    match slot {
+        SwitcherFourViewQuadCompositionSlotInstruction::UseUpdatedFrame { .. } => {
+            SwitcherFourViewManualPreviewCompositionInstructionKind::UpdatedFrame
+        }
+        SwitcherFourViewQuadCompositionSlotInstruction::UseHeldPreviousFrame { .. } => {
+            SwitcherFourViewManualPreviewCompositionInstructionKind::HeldPreviousFrame
+        }
+        SwitcherFourViewQuadCompositionSlotInstruction::UseNoDisplayPlaceholder { .. } => {
+            SwitcherFourViewManualPreviewCompositionInstructionKind::NoDisplayPlaceholder
+        }
+        SwitcherFourViewQuadCompositionSlotInstruction::UseSourceErrorPlaceholder { .. } => {
+            SwitcherFourViewManualPreviewCompositionInstructionKind::SourceErrorPlaceholder
+        }
+    }
+}
+
+fn four_view_manual_bgra_composition_kind(
+    result: &SwitcherFourViewQuadCompositionResult,
+) -> SwitcherFourViewManualPreviewBgraCompositionKind {
+    match result {
+        SwitcherFourViewQuadCompositionResult::ComposedFrame { .. } => {
+            SwitcherFourViewManualPreviewBgraCompositionKind::ComposedFrame
+        }
+        SwitcherFourViewQuadCompositionResult::NoRenderableQuadView { .. } => {
+            SwitcherFourViewManualPreviewBgraCompositionKind::NoRenderableQuadView
+        }
+        SwitcherFourViewQuadCompositionResult::InvalidQuadView { .. } => {
+            SwitcherFourViewManualPreviewBgraCompositionKind::InvalidQuadView
+        }
+    }
+}
+
+fn four_view_manual_render_facing_kind(
+    result: &SwitcherFourViewQuadRenderFacingResult,
+) -> SwitcherFourViewManualPreviewRenderFacingKind {
+    match result {
+        SwitcherFourViewQuadRenderFacingResult::RenderReady { .. } => {
+            SwitcherFourViewManualPreviewRenderFacingKind::RenderReady
+        }
+        SwitcherFourViewQuadRenderFacingResult::NoRenderableQuadView { .. } => {
+            SwitcherFourViewManualPreviewRenderFacingKind::NoRenderableQuadView
+        }
+        SwitcherFourViewQuadRenderFacingResult::InvalidQuadView { .. } => {
+            SwitcherFourViewManualPreviewRenderFacingKind::InvalidQuadView
+        }
+    }
+}
+
+fn four_view_manual_window_render_kind(
+    result: &SwitcherFourViewComposedCanvasWindowRenderConnectionRenderResult,
+) -> SwitcherFourViewManualPreviewWindowRenderKind {
+    match result {
+        SwitcherFourViewComposedCanvasWindowRenderConnectionRenderResult::RenderReady {
+            render,
+            ..
+        } => match render {
+            SwitcherFourViewComposedCanvasRenderResult::Rendered { .. } => {
+                SwitcherFourViewManualPreviewWindowRenderKind::Rendered
+            }
+            SwitcherFourViewComposedCanvasRenderResult::RenderDeferred { .. } => {
+                SwitcherFourViewManualPreviewWindowRenderKind::RenderDeferred
+            }
+            SwitcherFourViewComposedCanvasRenderResult::BackendUnavailable { .. } => {
+                SwitcherFourViewManualPreviewWindowRenderKind::BackendUnavailable
+            }
+            SwitcherFourViewComposedCanvasRenderResult::InvalidComposedFrame { .. } => {
+                SwitcherFourViewManualPreviewWindowRenderKind::InvalidComposedFrame
+            }
+            SwitcherFourViewComposedCanvasRenderResult::RenderFailed { .. } => {
+                SwitcherFourViewManualPreviewWindowRenderKind::RenderFailed
+            }
+        },
+        SwitcherFourViewComposedCanvasWindowRenderConnectionRenderResult::NoRenderableQuadView {
+            ..
+        } => SwitcherFourViewManualPreviewWindowRenderKind::NoRenderableQuadView,
+        SwitcherFourViewComposedCanvasWindowRenderConnectionRenderResult::InvalidQuadView {
+            ..
+        } => SwitcherFourViewManualPreviewWindowRenderKind::InvalidQuadView,
     }
 }
 
@@ -12283,6 +12685,27 @@ mod tests {
             .run_from_handoff_with_runtimes(handoff, input, decode, render)
     }
 
+    fn four_view_manual_preview_proof_input(
+        target_timestamp: TimestampMicros,
+        fixture_mode: SwitcherFourViewManualPreviewProofFixtureMode,
+    ) -> SwitcherFourViewManualPreviewProofInput {
+        SwitcherFourViewManualPreviewProofInput {
+            slots: [
+                four_view_slot(0, "client-0", "run-0"),
+                four_view_slot(1, "client-1", "run-1"),
+                four_view_slot(2, "client-2", "run-2"),
+                four_view_slot(3, "client-3", "run-3"),
+            ],
+            target_timestamp,
+            fixture_mode,
+            previous_slots: [None, None, None, None],
+            display_current_time: TimestampMicros(5_000_000),
+            layout_policy: SwitcherFourViewQuadLayoutPolicy::default(),
+            composed_window_title: "StreamSync 4-view".to_string(),
+            composed_render_hold_millis: 25,
+        }
+    }
+
     fn render_fallible_two_view_adapter_output(
         adapter_output: SwitcherTwoViewHandoffSchedulerDecodeRenderAdapterOutput,
         decode: &impl SwitcherH264DecodeRuntimeHook,
@@ -15370,6 +15793,175 @@ mod tests {
             SwitcherFourViewComposedCanvasWindowRenderConnectionRenderResult::InvalidQuadView { .. }
         ));
         assert_eq!(decode.inputs.borrow().len(), 3);
+    }
+
+    #[test]
+    fn four_view_manual_preview_proof_wrapper_runs_all_renderable_fixture_through_all_stages() {
+        let decode = ColorByFirstByteDecode::default();
+        let render = RecordingTwoViewRender::default();
+        let result = SwitcherFourViewManualPreviewProofBoundary::default()
+            .prove_fixture_with_runtimes(
+                four_view_manual_preview_proof_input(
+                    TimestampMicros(1_000_004),
+                    SwitcherFourViewManualPreviewProofFixtureMode::AllRenderable,
+                ),
+                &decode,
+                &render,
+            );
+
+        assert_eq!(
+            result.validation.scheduler.status,
+            SwitcherFourViewTargetTimeHandoffSourceSchedulerStatus::AllSelected
+        );
+        assert_eq!(
+            result.summary.scheduler_status,
+            SwitcherFourViewTargetTimeHandoffSourceSchedulerStatus::AllSelected
+        );
+        assert_eq!(
+            result.summary.scheduler_slot_kinds,
+            [
+                SwitcherFourViewManualPreviewSchedulerSlotKind::Selected,
+                SwitcherFourViewManualPreviewSchedulerSlotKind::Selected,
+                SwitcherFourViewManualPreviewSchedulerSlotKind::Selected,
+                SwitcherFourViewManualPreviewSchedulerSlotKind::Selected,
+            ]
+        );
+        assert_eq!(
+            result.summary.display_slot_kinds,
+            [
+                SwitcherFourViewManualPreviewDisplaySlotKind::Update,
+                SwitcherFourViewManualPreviewDisplaySlotKind::Update,
+                SwitcherFourViewManualPreviewDisplaySlotKind::Update,
+                SwitcherFourViewManualPreviewDisplaySlotKind::Update,
+            ]
+        );
+        assert_eq!(
+            result.summary.composition_instruction_kinds,
+            [
+                SwitcherFourViewManualPreviewCompositionInstructionKind::UpdatedFrame,
+                SwitcherFourViewManualPreviewCompositionInstructionKind::UpdatedFrame,
+                SwitcherFourViewManualPreviewCompositionInstructionKind::UpdatedFrame,
+                SwitcherFourViewManualPreviewCompositionInstructionKind::UpdatedFrame,
+            ]
+        );
+        assert_eq!(
+            result.summary.bgra_composition_kind,
+            SwitcherFourViewManualPreviewBgraCompositionKind::ComposedFrame
+        );
+        assert_eq!(
+            result.summary.render_facing_kind,
+            SwitcherFourViewManualPreviewRenderFacingKind::RenderReady
+        );
+        assert_eq!(
+            result.summary.window_render_kind,
+            SwitcherFourViewManualPreviewWindowRenderKind::Rendered
+        );
+        assert_eq!(result.summary.placeholder_count, 0);
+        assert_eq!(result.summary.source_error_count, 0);
+        assert_eq!(decode.inputs.borrow().len(), 4);
+        assert_eq!(render.requests.borrow().len(), 1);
+    }
+
+    #[test]
+    fn four_view_manual_preview_proof_wrapper_keeps_mixed_placeholder_and_source_error_counts() {
+        let decode = ColorByFirstByteDecode::default();
+        let render = RecordingTwoViewRender::default();
+        let mut input = four_view_manual_preview_proof_input(
+            TimestampMicros(1_000_004),
+            SwitcherFourViewManualPreviewProofFixtureMode::MixedPlaceholderAndSourceError,
+        );
+        input.slots[2] = four_view_slot(2, "client-2", "run-missing");
+        input.slots[3] = four_view_slot(3, "", "run-3");
+
+        let result = SwitcherFourViewManualPreviewProofBoundary::default()
+            .prove_fixture_with_runtimes(input, &decode, &render);
+
+        assert_eq!(
+            result.summary.scheduler_status,
+            SwitcherFourViewTargetTimeHandoffSourceSchedulerStatus::HandoffError
+        );
+        assert_eq!(
+            result.summary.scheduler_slot_kinds,
+            [
+                SwitcherFourViewManualPreviewSchedulerSlotKind::Selected,
+                SwitcherFourViewManualPreviewSchedulerSlotKind::WaitingForFrameAtOrBeforeTarget,
+                SwitcherFourViewManualPreviewSchedulerSlotKind::NoFrameAvailable,
+                SwitcherFourViewManualPreviewSchedulerSlotKind::HandoffError,
+            ]
+        );
+        assert_eq!(
+            result.summary.display_slot_kinds,
+            [
+                SwitcherFourViewManualPreviewDisplaySlotKind::Update,
+                SwitcherFourViewManualPreviewDisplaySlotKind::NoDisplayPlaceholder,
+                SwitcherFourViewManualPreviewDisplaySlotKind::NoDisplayPlaceholder,
+                SwitcherFourViewManualPreviewDisplaySlotKind::SourceErrorPlaceholder,
+            ]
+        );
+        assert_eq!(result.summary.placeholder_count, 2);
+        assert_eq!(result.summary.source_error_count, 1);
+        assert_eq!(
+            result.summary.window_render_kind,
+            SwitcherFourViewManualPreviewWindowRenderKind::Rendered
+        );
+        assert_eq!(decode.inputs.borrow().len(), 1);
+        assert_eq!(render.requests.borrow().len(), 1);
+    }
+
+    #[test]
+    fn four_view_manual_preview_proof_summary_has_expected_stage_and_result_fields() {
+        let result = SwitcherFourViewManualPreviewProofBoundary::default()
+            .prove_fixture_with_runtimes(
+                four_view_manual_preview_proof_input(
+                    TimestampMicros(1_000_004),
+                    SwitcherFourViewManualPreviewProofFixtureMode::AllRenderable,
+                ),
+                &ColorByFirstByteDecode::default(),
+                &SwitcherUnavailableWindowRenderRuntimeHook,
+            );
+
+        assert_eq!(result.summary.target_timestamp, TimestampMicros(1_000_004));
+        assert_eq!(result.summary.scheduler_slot_kinds.len(), 4);
+        assert_eq!(result.summary.display_slot_kinds.len(), 4);
+        assert_eq!(result.summary.composition_instruction_kinds.len(), 4);
+        assert!(matches!(
+            result.validation.bgra_composition.composition,
+            SwitcherFourViewQuadCompositionResult::ComposedFrame { .. }
+        ));
+        assert!(matches!(
+            result.validation.render_facing.render,
+            SwitcherFourViewQuadRenderFacingResult::RenderReady { .. }
+        ));
+        assert!(matches!(
+            result.validation.window_render.window_render,
+            SwitcherFourViewComposedCanvasWindowRenderConnectionRenderResult::RenderReady { .. }
+        ));
+        assert_eq!(
+            result.summary.window_render_kind,
+            SwitcherFourViewManualPreviewWindowRenderKind::BackendUnavailable
+        );
+    }
+
+    #[test]
+    fn four_view_manual_preview_proof_wrapper_does_not_require_actual_os_window_render() {
+        let decode = ColorByFirstByteDecode::default();
+        let result = SwitcherFourViewManualPreviewProofBoundary::default()
+            .prove_fixture_with_runtimes(
+                four_view_manual_preview_proof_input(
+                    TimestampMicros(1_000_004),
+                    SwitcherFourViewManualPreviewProofFixtureMode::PlaceholderOnly,
+                ),
+                &decode,
+                &PanicRender,
+            );
+
+        assert_eq!(
+            result.summary.window_render_kind,
+            SwitcherFourViewManualPreviewWindowRenderKind::NoRenderableQuadView
+        );
+        assert_eq!(result.summary.placeholder_count, 4);
+        assert_eq!(result.summary.source_error_count, 0);
+        assert_eq!(decode.inputs.borrow().len(), 0);
     }
 
     #[test]

@@ -5,6 +5,69 @@
 - Codex
 
 ### Work
+- Implemented the smallest deterministic in-process 4-view preview/proof
+  wrapper on top of `SwitcherFourViewHandoffValidationBoundary`.
+- Kept this slice smaller than a manual CLI, real server->switcher handoff, or
+  actual OS-window proof by stopping at a fixture-backed wrapper plus compact
+  summary.
+- Updated architecture/TODO tracking so the next 4-view slice can be a thin
+  manual entry point above the new wrapper.
+
+### Changed Files
+- `apps/switcher/src/lib.rs`
+- `docs/architecture/system-design.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### Implemented
+- Added `SwitcherFourViewManualPreviewProofFixtureMode`.
+- Added `SwitcherFourViewManualPreviewProofInput`.
+- Added `SwitcherFourViewManualPreviewSchedulerSlotKind`.
+- Added `SwitcherFourViewManualPreviewDisplaySlotKind`.
+- Added `SwitcherFourViewManualPreviewCompositionInstructionKind`.
+- Added `SwitcherFourViewManualPreviewBgraCompositionKind`.
+- Added `SwitcherFourViewManualPreviewRenderFacingKind`.
+- Added `SwitcherFourViewManualPreviewWindowRenderKind`.
+- Added `SwitcherFourViewManualPreviewProofSummary`.
+- Added `SwitcherFourViewManualPreviewProofResult`.
+- Added `SwitcherFourViewManualPreviewProofBoundary`.
+- Proof-wrapper behavior:
+  - builds a deterministic in-process fixture queue
+  - thinly calls `SwitcherFourViewHandoffValidationBoundary`
+  - keeps all 8 stage outputs visible through the validation output
+  - returns a compact summary with target timestamp, scheduler status,
+    per-slot stage kinds, BGRA/render-facing/window-render result kinds, and
+    placeholder/source-error counts
+  - does not require actual OS window rendering
+  - does not use real named-pipe handoff
+
+### Tests
+- all-renderable fixture passes all 8 stages
+- mixed placeholder/source-error fixture keeps counts
+- proof summary has all expected stage/result fields
+- fake window render hook is called only when render-ready
+- no actual OS window render is required
+
+### TODO Update
+- Marked the deterministic in-process 4-view preview/proof wrapper complete.
+- Moved the next 4-view task to a thin manual CLI/entry point above the new
+  wrapper.
+
+### Validation
+- `cargo fmt` passed.
+- `cargo fmt --check` passed.
+- `cargo test -p stream-sync-switcher four_view -- --test-threads=1` passed.
+- `cargo test -p stream-sync-switcher two_view -- --test-threads=1` passed.
+- `cargo test -p stream-sync-switcher target_time -- --test-threads=1` passed.
+- `cargo test -p stream-sync-switcher handoff -- --test-threads=1` passed.
+- `cargo check --workspace` passed.
+- `git diff --check` passed with LF/CRLF conversion warnings for changed files.
+
+## 2026-05-05
+### Type
+- Codex
+
+### Work
 - Added a planning/docs-only slice for the next bounded one-shot manual
   preview/proof wrapper above `SwitcherFourViewHandoffValidationBoundary`.
 - Fixed the first proof path as deterministic in-process handoff/queue fixture
