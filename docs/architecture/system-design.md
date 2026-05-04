@@ -9812,6 +9812,78 @@ can attach an optional OS-window render boundary on top of the render-facing
 result family, while keeping future OBS work as a downstream consumer of that
 same explicit result shape.
 
+The next consumer of `SwitcherFourViewQuadRenderFacingConnectionOutput` for
+isolated preview/window rendering should be a dedicated 4-view composed-canvas
+window render boundary that sits parallel to the existing 2-view composed-canvas
+window render path. The first window-render slice should not jump directly to
+OBS and does not need to prove a full GUI/runtime loop. The smallest useful
+next step is a render command/output boundary only:
+
+```text
+SwitcherFourViewQuadRenderFacingConnectionBoundary
+  -> dedicated 4-view composed-canvas window render boundary
+  -> optional one-shot CLI/manual proof
+  -> future OBS/window-capture-facing consumer
+```
+
+That means the first isolated window-render slice should:
+
+- consume `SwitcherFourViewQuadRenderFacingConnectionOutput`
+- reuse the existing `SwitcherWindowRenderRuntimeHook`,
+  `SwitcherWindowRenderRequest`, and underlying one-shot switcher window render
+  path already used by `SwitcherTwoViewComposedCanvasRenderBoundary`
+- stay thin and one-shot
+- preserve the upstream render-facing output visibly rather than collapsing it
+  into a single render status
+
+Recommended render behavior per render-facing result:
+
+- `RenderReady`
+  - validate/convert the composed BGRA payload into the existing window render
+    request shape
+  - call the caller-owned `SwitcherWindowRenderRuntimeHook`
+  - return an explicit rendered / deferred / backend-unavailable / invalid /
+    render-failed result family
+- `NoRenderableQuadView`
+  - do not call the runtime
+  - return an explicit no-render result that preserves the four-slot metadata
+    and aggregate scheduler status
+- `InvalidQuadView`
+  - do not call the runtime
+  - return an explicit invalid result that preserves invalid reason, slot
+    metadata, and aggregate scheduler status
+
+stdout / logs for that first window-render slice should preserve at least:
+
+- width
+- height
+- BGRA payload length
+- fixed four-slot metadata
+- aggregate scheduler status
+- placeholder / source-error slot information
+- top-level window render outcome when the runtime is actually called
+
+Future OBS output should remain downstream of the same render-facing result
+family or of the later window-render-adjacent result family, not of raw
+composition internals. That keeps:
+
+- 4-view composition responsible only for composed BGRA pixels
+- render-facing connection responsible only for readiness / metadata shaping
+- isolated window rendering responsible only for one-shot preview rendering
+- OBS work responsible only for later presentation/output concerns
+
+Out of scope for that next window-render slice should remain:
+
+- OBS output
+- continuous GUI/window lifecycle ownership
+- full hotkey UI
+- `Focused(slot_index)`
+- generic N-view refactor
+- protocol wire-format changes
+- H.264 behavior changes
+- switcher-side fragment reassembly
+- final production layout polish
+
 This keeps 4-view orchestration explicit and testable while deferring the next
 larger questions:
 

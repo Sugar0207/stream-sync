@@ -5,6 +5,61 @@
 - Codex
 
 ### Work
+- Added a planning/docs-only slice for the next isolated OS window render
+  consumer of `SwitcherFourViewQuadRenderFacingConnectionOutput`.
+- Fixed the next 4-view step as a dedicated composed-canvas window render
+  boundary that reuses the existing one-shot switcher window render hook,
+  before any OBS/output work.
+- Updated architecture/TODO tracking so the next implementation preserves
+  explicit no-render / invalid states and slot metadata through window-render
+  planning too.
+
+### Changed Files
+- `docs/architecture/system-design.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### Implemented
+- Documented that the next consumer for isolated preview/window rendering
+  should be a dedicated 4-view composed-canvas window render boundary.
+- Documented that the first window-render slice should be a render
+  command/output boundary only, not OBS output and not a full GUI/runtime
+  proof.
+- Documented that the existing `SwitcherWindowRenderRuntimeHook`,
+  `SwitcherWindowRenderRequest`, and one-shot switcher window render path
+  should be reused.
+- Documented per-result behavior:
+  - `RenderReady` -> validate/convert and call the window render runtime
+  - `NoRenderableQuadView` -> explicit no-render without runtime call
+  - `InvalidQuadView` -> explicit invalid without runtime call
+- Documented the metadata that stdout/logs should preserve:
+  - width / height
+  - BGRA payload length
+  - slot metadata
+  - aggregate scheduler status
+  - placeholder / source-error slot information
+- Documented that future OBS output stays downstream of the same render-facing
+  or later window-render-adjacent result family rather than consuming
+  composition internals directly.
+
+### TODO Update
+- Replaced the generic "optional isolated OS window render boundary" next step
+  with a dedicated composed-canvas window render boundary that reuses the
+  existing one-shot window render hook.
+- Kept OBS, continuous GUI ownership, and layout polish as later downstream or
+  out-of-scope work.
+
+### Validation
+- `cargo fmt` passed.
+- `cargo fmt --check` passed.
+- `cargo check --workspace` passed.
+- `git diff --check` passed with LF/CRLF conversion warnings for changed files.
+
+## 2026-05-04
+### Type
+- Codex
+
+### Work
 - Implemented the smallest dedicated 4-view render-facing adapter/connection on
   top of `SwitcherFourViewQuadCompositionBoundary`.
 - Kept this slice smaller than OS-window rendering and OBS output by stopping
