@@ -9926,6 +9926,78 @@ runtime, or a generic N-view path. Future OBS work should remain downstream of
 this render-facing/window-render-adjacent result family rather than bypassing
 it and reaching back into 4-view composition internals.
 
+The next smallest step above that window-render boundary should be a thin
+4-view orchestration/validation boundary before adding a manual CLI or trying
+to prove an actual OS window flow. This should follow the same philosophy as
+the existing 2-view server-mediated validation path: keep every stage visible,
+accept caller-owned runtimes/hooks, and avoid collapsing 4-view scheduling,
+display, composition, render-facing, and window-render decisions into one final
+status.
+
+Recommended next shape:
+
+```text
+caller-owned handoff + decode + window-render runtimes
+  -> dedicated 4-view orchestration/validation boundary
+  -> optional bounded one-shot manual preview command
+  -> later actual OS proof / OBS-adjacent consumer
+```
+
+That orchestration boundary should run the completed 4-view chain in order:
+
+- 4-view scheduler
+- scheduler decode/render adapter
+- display policy
+- `QuadView` composition adapter
+- composition render connection
+- fixed `QuadView` BGRA composition
+- render-facing connection
+- composed-canvas window render boundary
+
+Required inputs should stay explicit and caller-owned:
+
+- four `client_id` / `run_id` slot configs
+- shared `target_timestamp`
+- previous displayed slot state for all four slots
+- handoff source/runtime
+- H.264 decode runtime
+- window render hook
+- display current time / hold policy inputs
+- window title / hold duration
+- layout policy if the current 4-view path already keeps it caller-owned
+
+The orchestration output should keep all stage outputs visible for diagnostics:
+
+- scheduler result
+- scheduler decode/render adapter result
+- display policy result
+- `QuadView` composition instruction/adapter result
+- composition render connection result
+- fixed BGRA `QuadView` composition result
+- render-facing result
+- window render result
+
+Manual proof after that boundary should start with fake decoded-frame and fake
+window-render runtimes first, not real server->switcher handoff frames by
+default. That keeps the first proof deterministic and small:
+
+- fake handoff/decode/window-render runtimes for focused tests
+- optional in-process queue/handoff proof after the orchestration boundary is
+  stable
+- real server->switcher handoff/manual preview only after that
+
+Out of scope for that next orchestration step should remain:
+
+- OBS output
+- full hotkey UI
+- `Focused(slot_index)`
+- generic N-view refactor
+- protocol wire-format changes
+- H.264 behavior changes
+- switcher-side fragment reassembly
+- final production layout polish
+- broad continuous GUI/window lifecycle ownership
+
 This keeps 4-view orchestration explicit and testable while deferring the next
 larger questions:
 

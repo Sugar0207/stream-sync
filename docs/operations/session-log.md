@@ -5,6 +5,63 @@
 - Codex
 
 ### Work
+- Added a planning/docs-only slice for the next thin orchestration step above
+  the dedicated 4-view composed-canvas window render boundary.
+- Fixed the next 4-view step as a dedicated orchestration/validation boundary
+  before adding a manual CLI or attempting an actual OS window proof.
+- Updated architecture/TODO tracking so the next implementation keeps every
+  4-view stage visible instead of stitching boundaries together ad hoc.
+
+### Changed Files
+- `docs/architecture/system-design.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### Implemented
+- Documented that the next slice should be a thin 4-view
+  orchestration/validation boundary, not a direct manual preview command and
+  not an actual OS proof yet.
+- Documented that this boundary should run:
+  - 4-view scheduler
+  - scheduler decode/render adapter
+  - display policy
+  - `QuadView` composition adapter
+  - composition render connection
+  - fixed BGRA `QuadView` composition
+  - render-facing connection
+  - composed-canvas window render boundary
+- Documented required caller-owned inputs:
+  - four client/run slots
+  - target timestamp
+  - previous displayed slot state
+  - handoff source/runtime
+  - decode runtime
+  - window render hook
+  - current time / hold policy / title inputs
+- Documented that the orchestration output should keep scheduler / adapter /
+  display / composition instruction / BGRA composition / render-facing /
+  window-render stage outputs visible.
+- Documented that the first manual proof after this boundary should prefer fake
+  runtimes first, then optional in-process queue/handoff proof, and only later
+  real server->switcher handoff/manual preview.
+
+### TODO Update
+- Replaced the ambiguous next step of "manual proof or thin orchestration" with
+  a dedicated 4-view orchestration/validation boundary first.
+- Kept manual CLI and actual OS proof as downstream steps after that boundary
+  exists.
+
+### Validation
+- `cargo fmt` passed.
+- `cargo fmt --check` passed.
+- `cargo check --workspace` passed.
+- `git diff --check` passed with LF/CRLF conversion warnings for changed files.
+
+## 2026-05-04
+### Type
+- Codex
+
+### Work
 - Implemented the smallest dedicated 4-view composed-canvas window render
   boundary on top of `SwitcherFourViewQuadRenderFacingConnectionOutput`.
 - Kept this slice smaller than actual OS proof, continuous GUI/runtime
