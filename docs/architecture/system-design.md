@@ -10147,9 +10147,17 @@ Current proof-wrapper behavior:
   - placeholder count
   - source-error count
 
-This wrapper still does not add a human-facing CLI command, real
-server->switcher transport proof, actual OS-window proof, or OBS output. Those
-remain downstream concerns above the now-stable in-process proof wrapper.
+That wrapper is now exposed through a thin switcher CLI/manual entry point too:
+
+- `stream-sync-switcher --four-view-proof-fixture-once [all-renderable|mixed-placeholder-source-error|placeholder-only]`
+- uses the deterministic in-process fixture queue, not real named-pipe handoff
+- uses a fake decode runtime and backend-unavailable window-render runtime so
+  default validation stays free of actual OS-window dependency
+- prints the compact proof summary only, while the full 8-stage validation
+  output remains available inside `SwitcherFourViewManualPreviewProofResult`
+
+Real server->switcher transport proof, actual OS-window proof, and OBS output
+still remain downstream concerns above the now-stable in-process proof wrapper.
 
 This keeps 4-view orchestration explicit and testable while deferring the next
 larger questions:

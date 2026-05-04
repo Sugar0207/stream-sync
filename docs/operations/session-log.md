@@ -5,6 +5,54 @@
 - Codex
 
 ### Work
+- Added the smallest thin switcher CLI/manual entry point for the deterministic
+  4-view proof wrapper.
+- Kept the command bounded to deterministic in-process fixtures and a compact
+  stdout summary, without real named-pipe handoff or actual OS-window render.
+- Updated architecture/TODO tracking so the next 4-view step can move beyond
+  the CLI wrapper instead of re-stitching the chain by hand.
+
+### Changed Files
+- `apps/switcher/src/main.rs`
+- `docs/architecture/system-design.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### Implemented
+- Added `--four-view-proof-fixture-once` to `stream-sync-switcher`.
+- The command:
+  - uses deterministic fixture mode instead of real named-pipe handoff
+  - calls `SwitcherFourViewManualPreviewProofBoundary`
+  - uses a fake deterministic decode runtime
+  - uses `SwitcherUnavailableWindowRenderRuntimeHook` so default validation
+    stays free of actual OS-window dependency
+  - prints a compact stdout summary with target timestamp, scheduler status,
+    BGRA/render-facing/window-render result kinds, placeholder/source-error
+    counts, and per-slot scheduler/display/composition kinds
+- Added formatter/helper coverage for:
+  - fixture-mode parsing
+  - backend-free proof helper execution
+  - compact stdout summary field presence
+
+### TODO Update
+- Marked the thin manual CLI/entry point above the 4-view proof wrapper
+  complete.
+- Moved the next 4-view task to deciding whether to widen the in-process proof
+  payloads first or move to real server->switcher handoff/manual preview.
+
+### Validation
+- `cargo fmt` passed.
+- `cargo fmt --check` passed.
+- `cargo test -p stream-sync-switcher four_view -- --test-threads=1` passed.
+- `cargo test -p stream-sync-switcher handoff -- --test-threads=1` passed.
+- `cargo check --workspace` passed.
+- `git diff --check` passed with LF/CRLF conversion warnings for changed files.
+
+## 2026-05-05
+### Type
+- Codex
+
+### Work
 - Implemented the smallest deterministic in-process 4-view preview/proof
   wrapper on top of `SwitcherFourViewHandoffValidationBoundary`.
 - Kept this slice smaller than a manual CLI, real server->switcher handoff, or
