@@ -37,6 +37,17 @@ bounded mode is preferred when the previous one-shot result was:
 NoFrameAvailable { message: "Windows Graphics Capture frame pool had no queued frame" }
 ```
 
+Supplemental deterministic 4-view proof utility:
+
+```powershell
+cargo run -p stream-sync-switcher -- --four-view-proof-fixture-once <all-renderable|mixed-placeholder-source-error|placeholder-only>
+```
+
+Use this only as a bounded manual proof utility for the internal 4-view
+switcher chain. It is deterministic, uses in-process fixtures plus fake or
+backend-unavailable window-render behavior, and does not prove actual OS-window
+render, OBS output, or real server->switcher handoff.
+
 ---
 
 ## 1. Prerequisite Checks

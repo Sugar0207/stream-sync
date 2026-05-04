@@ -5,6 +5,71 @@
 - Codex
 
 ### Work
+- Recorded the manual stdout validation result for the deterministic 4-view
+  proof fixture CLI.
+- Confirmed the current 4-view internal proof path is complete enough to close
+  this slice without starting actual OS-window proof, OBS/output work, or real
+  server->switcher handoff/manual preview.
+
+### Changed Files
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+- `docs/operations/manual-real-encoded-video-poc.md`
+
+### Implemented
+- Recorded the three fixture stdout blocks exactly as observed.
+
+`[ALL RENDERABLE]`
+
+```text
+switcher four-view proof fixture deterministic=true real_handoff=false actual_window_render=false target_timestamp=1000004 scheduler_status=AllSelected bgra_composition_result_kind=ComposedFrame render_facing_result_kind=RenderReady window_render_result_kind=BackendUnavailable placeholder_count=0 source_error_count=0 scheduler_slot_kinds=Selected|Selected|Selected|Selected display_slot_kinds=Update|Update|Update|Update composition_instruction_kinds=UpdatedFrame|UpdatedFrame|UpdatedFrame|UpdatedFrame
+```
+
+`[MIXED PLACEHOLDER SOURCE ERROR]`
+
+```text
+switcher four-view proof fixture deterministic=true real_handoff=false actual_window_render=false target_timestamp=1000004 scheduler_status=HandoffError bgra_composition_result_kind=ComposedFrame render_facing_result_kind=RenderReady window_render_result_kind=BackendUnavailable placeholder_count=2 source_error_count=1 scheduler_slot_kinds=Selected|WaitingForFrameAtOrBeforeTarget|NoFrameAvailable|HandoffError display_slot_kinds=Update|NoDisplayPlaceholder|NoDisplayPlaceholder|SourceErrorPlaceholder composition_instruction_kinds=UpdatedFrame|NoDisplayPlaceholder|NoDisplayPlaceholder|SourceErrorPlaceholder
+```
+
+`[PLACEHOLDER ONLY]`
+
+```text
+switcher four-view proof fixture deterministic=true real_handoff=false actual_window_render=false target_timestamp=1000004 scheduler_status=NoFrames bgra_composition_result_kind=NoRenderableQuadView render_facing_result_kind=NoRenderableQuadView window_render_result_kind=NoRenderableQuadView placeholder_count=4 source_error_count=0 scheduler_slot_kinds=NoFrameAvailable|NoFrameAvailable|NoFrameAvailable|NoFrameAvailable display_slot_kinds=NoDisplayPlaceholder|NoDisplayPlaceholder|NoDisplayPlaceholder|NoDisplayPlaceholder composition_instruction_kinds=NoDisplayPlaceholder|NoDisplayPlaceholder|NoDisplayPlaceholder|NoDisplayPlaceholder
+```
+
+- Recorded conclusion:
+  - all-renderable fixture passed the full 4-view proof path
+  - mixed placeholder/source-error fixture preserved
+    `placeholder_count=2` and `source_error_count=1`
+  - source-error remained `SourceErrorPlaceholder` and did not collapse into
+    no-frame/waiting
+  - placeholder-only fixture produced `NoRenderableQuadView` through BGRA,
+    render-facing, and window-render result kinds
+  - all expected summary fields were present
+  - command stayed deterministic
+  - `real_handoff=false`
+  - `actual_window_render=false`
+  - `BackendUnavailable` for all-renderable/mixed is expected because the
+    unavailable/fake window render hook is used
+  - the 4-view internal proof path is successful enough to record as complete
+
+### TODO Update
+- Marked deterministic 4-view proof fixture CLI validation complete in current
+  position.
+- Moved the next 4-view task to deciding between actual OS-window proof and
+  OBS/output boundary planning.
+
+### Validation
+- `cargo fmt` passed.
+- `cargo fmt --check` passed.
+- `cargo check --workspace` passed.
+- `git diff --check` passed.
+
+## 2026-05-05
+### Type
+- Codex
+
+### Work
 - Added the smallest thin switcher CLI/manual entry point for the deterministic
   4-view proof wrapper.
 - Kept the command bounded to deterministic in-process fixtures and a compact
