@@ -5,6 +5,58 @@
 - Codex
 
 ### Work
+- Added a planning/docs-only slice for the next bounded one-shot manual
+  preview/proof wrapper above `SwitcherFourViewHandoffValidationBoundary`.
+- Fixed the first proof path as deterministic in-process handoff/queue fixture
+  plus fake decode/window-render runtimes, ahead of any real
+  server->switcher handoff or actual OS-window proof.
+- Updated architecture/TODO tracking so the next implementation is a thin
+  stdout-summary wrapper rather than another transport/render-policy change.
+
+### Changed Files
+- `docs/architecture/system-design.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### Implemented
+- Documented that the next slice should be a bounded one-shot manual
+  preview/proof wrapper, not real server->switcher handoff first and not an
+  actual OS-window proof.
+- Documented the first proof order:
+  - in-process handoff/queue fixture + fake decode/window-render runtimes
+  - optional in-process proof with more production-like payloads
+  - later real server->switcher handoff/manual preview
+- Documented what the smallest proof wrapper should validate:
+  - all 8 stage outputs present
+  - aggregate scheduler status
+  - per-slot result kinds
+  - BGRA composition result kind
+  - render-facing result kind
+  - window render result kind
+  - placeholder/source-error counts
+- Documented recommended wrapper inputs and stdout summary fields.
+- Documented that actual OS-window proof remains out of scope for the first
+  wrapper and default validation should keep using fake/unavailable window
+  runtimes.
+
+### TODO Update
+- Replaced the generic next step of "manual preview/proof wrapper" with a
+  deterministic in-process fixture wrapper that summarizes the full 4-view
+  orchestration output.
+- Kept real server->switcher handoff preview, actual OS proof, and OBS as
+  later downstream work.
+
+### Validation
+- `cargo fmt` passed.
+- `cargo fmt --check` passed.
+- `cargo check --workspace` passed.
+- `git diff --check` passed with LF/CRLF conversion warnings for changed files.
+
+## 2026-05-05
+### Type
+- Codex
+
+### Work
 - Implemented the smallest dedicated 4-view orchestration/validation boundary
   above the existing render-facing and composed-canvas window render
   boundaries.

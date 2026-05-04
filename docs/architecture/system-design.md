@@ -10043,6 +10043,75 @@ This boundary still does not add a manual CLI, actual OS-window proof, or OBS
 output. Those remain downstream consumers or wrappers on top of the now-stable
 4-view orchestration output.
 
+The next smallest slice above that boundary should be a bounded one-shot manual
+preview/proof wrapper, but still not a real server->switcher transport proof
+and still not an actual OS-window proof. The wrapper should stay thin: it
+should call `SwitcherFourViewHandoffValidationBoundary`, print a compact
+summary, and stop. It should not reopen scheduling, decode, display,
+composition, or render-facing policy decisions.
+
+Recommended first proof order:
+
+1. in-process handoff/queue fixture plus fake decode and fake window-render
+   runtimes
+2. optional in-process queue/handoff proof using more production-like payloads
+3. later real server->switcher handoff/manual preview
+
+This means the first proof path should not take a pipe name or other
+cross-process transport configuration yet. It should prefer deterministic local
+fixture inputs that still exercise the full 4-view orchestration chain through
+the existing handoff-backed boundary.
+
+The smallest proof wrapper should validate:
+
+- that all 8 stage outputs are present in the wrapper result/stdout summary
+- aggregate scheduler status
+- per-slot result kinds across scheduler/display/composition stages
+- fixed `QuadView` BGRA composition result kind
+- render-facing result kind
+- window render result kind
+- placeholder / source-error counts
+
+Recommended first-wrapper inputs:
+
+- four explicit `client_id` / `run_id` slots, with fixture defaults allowed
+- shared `target_timestamp`, with a deterministic fixture default allowed
+- optional fixture mode selector if more than one canned case is added later
+- bounded hold/title parameters only if needed by the existing window-render
+  wrapper path
+
+Recommended stdout summary for the first proof wrapper:
+
+- target timestamp
+- aggregate scheduler status
+- per-slot scheduler result kind
+- per-slot display result kind
+- per-slot composition-slot kind
+- BGRA composition result summary:
+  - composed / no-renderable / invalid
+  - width / height when composed
+- render-facing result summary
+- window render result summary
+- placeholder slot count
+- source-error slot count
+
+Actual OS window proof should still remain out of scope for that first manual
+wrapper. The default path should use fake or unavailable window-render runtimes
+so validation remains deterministic and CI-safe, while still keeping the window
+render stage explicit.
+
+Out of scope for that next manual-proof slice should remain:
+
+- OBS output
+- actual OS-window proof
+- full hotkey UI
+- `Focused(slot_index)`
+- generic N-view refactor
+- protocol wire-format changes
+- H.264 behavior changes
+- switcher-side fragment reassembly
+- final production layout polish
+
 This keeps 4-view orchestration explicit and testable while deferring the next
 larger questions:
 
