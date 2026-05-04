@@ -9696,6 +9696,84 @@ abstraction. The next isolated slice can connect the composed quad BGRA frame
 to a dedicated render-facing output path without changing the 4-view scheduling
 or placeholder policy.
 
+The next consumer of `SwitcherFourViewComposedFrame` should be a dedicated
+4-view render-facing adapter/connection, not OBS and not a full OS-window
+runtime yet. The smallest next slice should answer only one question: can this
+composed BGRA frame be forwarded to a render backend as a valid quad-canvas
+request while keeping all 4-view metadata explicit?
+
+That means the next boundary should stay parallel to the existing 2-view
+composed-canvas render input shaping:
+
+```text
+SwitcherFourViewQuadCompositionBoundary
+  -> dedicated 4-view composed-frame render-facing adapter/connection
+  -> optional isolated OS window render boundary
+  -> future OBS-facing output boundary
+```
+
+Recommended next-slice shape:
+
+- add a dedicated render-facing adapter/connection that consumes
+  `SwitcherFourViewQuadCompositionOutput`
+- keep OS-window rendering isolated behind a later boundary so platform/runtime
+  concerns do not leak back into 4-view composition policy
+- keep OBS downstream of the same render-facing result rather than coupling OBS
+  directly to composition
+
+The smallest render-ready output type should be a validated
+`SwitcherFourViewComposedFrame` wrapper rather than a new pixel buffer owner.
+One plausible shape is a `SwitcherFourViewComposedFrameRenderInput` plus an
+explicit top-level render-facing result enum. That render-facing input should
+carry:
+
+- frame width
+- frame height
+- BGRA payload length
+- validated BGRA render input derived from the composed frame
+- fixed four-slot metadata in slot order
+- aggregate 4-view scheduler status
+- placeholder / source-error slot information
+
+The next render-facing result should keep explicit no-render states rather than
+flattening them into generic failure:
+
+- `RenderReady` when a valid composed BGRA frame plus quad metadata can be
+  forwarded
+- `NoRenderableQuadView` forwarded explicitly when composition already proved
+  the quad is placeholder-only
+- `InvalidQuadView` forwarded explicitly when composition already proved input
+  inconsistency such as missing decoded pixels
+
+Forwarding `NoRenderableQuadView` and `InvalidQuadView` explicitly is important
+because future window rendering and future OBS output will need to distinguish:
+
+- placeholder-only but policy-valid quad states
+- invalid upstream states that should remain visible in diagnostics
+- successful composed frames with mixed rendered/placeholder slots
+
+Future OBS output should consume the same render-facing result family rather
+than reaching back into scheduler/composition stages. That keeps one 4-view
+pixel producer (`SwitcherFourViewQuadCompositionBoundary`), one render-facing
+adapter/connection that validates and preserves metadata, and multiple possible
+downstream consumers:
+
+- isolated switcher window rendering
+- future OBS/window-capture-oriented presentation
+- future output diagnostics
+
+Out of scope for that next slice should remain:
+
+- OBS output implementation
+- actual OS window rendering if the adapter-only slice is enough
+- `Focused(slot_index)`
+- full hotkey UI
+- generic N-view refactor
+- protocol wire-format changes
+- H.264 behavior changes
+- switcher-side fragment reassembly
+- final production layout polish
+
 This keeps 4-view orchestration explicit and testable while deferring the next
 larger questions:
 

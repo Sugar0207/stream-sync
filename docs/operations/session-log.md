@@ -5,6 +5,54 @@
 - Codex
 
 ### Work
+- Added a planning/docs-only slice for the next consumer of
+  `SwitcherFourViewComposedFrame`.
+- Fixed the next 4-view step as a dedicated render-facing adapter/connection
+  before any isolated OS window render or OBS/output work.
+- Updated architecture/TODO tracking so the next implementation preserves
+  explicit no-render states and slot metadata end to end.
+
+### Changed Files
+- `docs/architecture/system-design.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### Implemented
+- Documented that the next consumer of `SwitcherFourViewComposedFrame` should
+  be a dedicated 4-view render-facing adapter/connection.
+- Documented that the next slice should be adapter/connection first, not OBS
+  output and not a full OS-window render boundary yet.
+- Documented the smallest recommended render-ready shape:
+  - validated composed BGRA render input derived from
+    `SwitcherFourViewComposedFrame`
+  - frame width/height
+  - BGRA payload length
+  - fixed four-slot metadata in slot order
+  - aggregate scheduler status
+  - placeholder/source-error slot information
+- Documented that `NoRenderableQuadView` and `InvalidQuadView` should remain
+  explicit downstream no-render states rather than collapsing into generic
+  failure.
+- Documented that future OBS work should consume the same render-facing result
+  family downstream of the render-facing adapter, not bypass composition.
+
+### TODO Update
+- Replaced the ambiguous next step of "render-facing connection or isolated
+  window render path" with a dedicated render-facing adapter/connection first.
+- Kept OS window render and OBS as later downstream steps after the metadata-
+  preserving render-facing adapter is in place.
+
+### Validation
+- `cargo fmt` passed.
+- `cargo fmt --check` passed.
+- `cargo check --workspace` passed.
+- `git diff --check` passed with LF/CRLF conversion warnings for changed files.
+
+## 2026-05-04
+### Type
+- Codex
+
+### Work
 - Implemented the smallest fixed `QuadView` actual BGRA composition slice on
   top of the existing 4-view composition-ready decoded-slot connection.
 - Kept this slice as pure in-memory BGRA composition only and did not add OS
