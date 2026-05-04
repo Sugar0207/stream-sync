@@ -5,6 +5,76 @@
 - Codex
 
 ### Work
+- Implemented the smallest fixed `QuadView` actual BGRA composition slice on
+  top of the existing 4-view composition-ready decoded-slot connection.
+- Kept this slice as pure in-memory BGRA composition only and did not add OS
+  window rendering or OBS output.
+- Updated architecture/TODO tracking so the next 4-view slice can attach a
+  dedicated quad render-facing path to the composed BGRA frame.
+
+### Changed Files
+- `apps/switcher/src/lib.rs`
+- `docs/architecture/system-design.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### Implemented
+- Added `SwitcherFourViewQuadLayoutPolicy`.
+- Added `SwitcherFourViewQuadCompositionInput`.
+- Added `SwitcherFourViewQuadComposedSlotRect`.
+- Added `SwitcherFourViewQuadComposedSlotKind`.
+- Added `SwitcherFourViewQuadComposedSlotMetadata`.
+- Added `SwitcherFourViewComposedFrame`.
+- Added `SwitcherFourViewQuadCompositionInvalidReason`.
+- Added `SwitcherFourViewQuadCompositionResult`.
+- Added `SwitcherFourViewQuadCompositionOutput`.
+- Added `SwitcherFourViewQuadCompositionBoundary`.
+- Composition behavior:
+  - consumes `SwitcherFourViewHandoffQuadCompositionRenderConnectionOutput`
+  - composes one fixed 2x2 in-memory BGRA canvas
+  - uses slot 0/1/2/3 as top-left/top-right/bottom-left/bottom-right
+  - computes one slot size from the max renderable decoded width/height
+  - fills placeholder BGRA first, then copies only real decoded renderable
+    slots
+  - preserves placeholder/source-error/decode-deferred/decode-failed slot
+    metadata in output
+  - preserves aggregate 4-view scheduler status
+  - returns explicit `ComposedFrame`, `NoRenderableQuadView`, and
+    `InvalidQuadView`
+  - treats held-previous without decoded pixels as explicit invalid input
+    instead of fabricating pixels
+
+### Tests
+- four renderable slots -> composed BGRA frame
+- mixed update + held previous -> both appear in composed result
+- placeholder slot metadata is preserved
+- source-error placeholder metadata is preserved
+- placeholder-only `QuadView` -> explicit no-renderable result
+- fixed 2x2 placement is correct
+- output width/height are correct
+- aggregate scheduler status is preserved
+- missing decoded pixels for held-previous slot -> explicit invalid result
+
+### TODO Update
+- Marked the smallest fixed `QuadView` actual BGRA composition slice complete.
+- Moved the next task to a dedicated quad render-facing connection or isolated
+  window-render path for `SwitcherFourViewComposedFrame`.
+
+### Validation
+- `cargo fmt` passed.
+- `cargo fmt --check` passed.
+- `cargo test -p stream-sync-switcher four_view -- --test-threads=1` passed.
+- `cargo test -p stream-sync-switcher two_view -- --test-threads=1` passed.
+- `cargo test -p stream-sync-switcher target_time -- --test-threads=1` passed.
+- `cargo test -p stream-sync-switcher handoff -- --test-threads=1` passed.
+- `cargo check --workspace` passed.
+- `git diff --check` passed with LF/CRLF conversion warnings for changed files.
+
+## 2026-05-04
+### Type
+- Codex
+
+### Work
 - Implemented the smallest dedicated 4-view `QuadView`
   composition/render-facing connection after the existing display/composition
   instruction path.

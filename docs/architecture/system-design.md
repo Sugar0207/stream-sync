@@ -9651,6 +9651,51 @@ composer/window renderer. It stops at composition-ready decoded-slot results so
 the next slice can add fixed `QuadView` actual BGRA composition/render without
 re-deciding targetTime, display hold, or placeholder behavior.
 
+That fixed `QuadView` BGRA composition slice now exists too. The current
+dedicated 4-view path is:
+
+```text
+4-view scheduler result
+  -> SwitcherFourViewHandoffSchedulerDecodeRenderAdapterBoundary
+  -> SwitcherFourViewHandoffDisplayPolicyBoundary
+  -> SwitcherFourViewHandoffQuadCompositionAdapterBoundary
+  -> SwitcherFourViewHandoffQuadCompositionRenderConnectionBoundary
+  -> SwitcherFourViewQuadCompositionBoundary
+```
+
+Current composition behavior:
+
+- consumes the composition-ready output from
+  `SwitcherFourViewHandoffQuadCompositionRenderConnectionBoundary`
+- composes one in-memory BGRA canvas only
+- keeps fixed 2x2 placement:
+  - slot 0 -> top-left
+  - slot 1 -> top-right
+  - slot 2 -> bottom-left
+  - slot 3 -> bottom-right
+- computes one slot size from the max renderable decoded width/height and uses
+  it for the fixed grid
+- fills the composed canvas with placeholder BGRA before copying renderable
+  decoded slots into their fixed rects
+- preserves per-slot metadata for:
+  - updated decoded slots
+  - held-previous decoded slots
+  - no-display placeholders
+  - source-error placeholders
+  - decode-deferred placeholders
+  - decode-failed placeholders
+- returns explicit result states:
+  - `ComposedFrame`
+  - `NoRenderableQuadView`
+  - `InvalidQuadView`
+- treats missing decoded pixels for a held-previous renderable slot as
+  `InvalidQuadView` rather than fabricating pixels
+
+This boundary still does not open a window, call OBS, or add a generic N-view
+abstraction. The next isolated slice can connect the composed quad BGRA frame
+to a dedicated render-facing output path without changing the 4-view scheduling
+or placeholder policy.
+
 This keeps 4-view orchestration explicit and testable while deferring the next
 larger questions:
 
