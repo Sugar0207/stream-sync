@@ -1,5 +1,67 @@
 <!-- stream-sync/docs/operations/session-log.md -->
 
+## 2026-05-05
+### Type
+- Codex
+
+### Work
+- Implemented the smallest dedicated 4-view orchestration/validation boundary
+  above the existing render-facing and composed-canvas window render
+  boundaries.
+- Kept this slice smaller than a manual CLI or actual OS-window proof by
+  stopping at a caller-owned orchestration wrapper that exposes every 4-view
+  stage result.
+- Updated architecture/TODO tracking so the next 4-view slice is a bounded
+  one-shot manual preview/proof wrapper above the new boundary.
+
+### Changed Files
+- `apps/switcher/src/lib.rs`
+- `docs/architecture/system-design.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### Implemented
+- Added `SwitcherFourViewHandoffValidationInput`.
+- Added `SwitcherFourViewHandoffValidationOutput`.
+- Added `SwitcherFourViewHandoffValidationBoundary`.
+- Validation boundary behavior:
+  - runs the planned full 4-view chain in order
+  - accepts caller-owned handoff / decode / window-render runtimes
+  - keeps scheduler / adapter / display / composition instruction /
+    composition render / BGRA composition / render-facing / window-render
+    outputs visible
+  - preserves four explicit slots and slot order
+  - preserves aggregate scheduler status
+  - preserves placeholder / source-error metadata through the full chain
+  - does not collapse source errors into no-frame/waiting
+  - does not create fake frames for skipped/error slots
+
+### Tests
+- all four fake renderable slots pass through the full orchestration chain
+- mixed renderable / waiting / no-frame / source-error preserves per-slot
+  metadata
+- source-error survives through display/composition/render-facing/window-render
+  stages
+- placeholder-only case stays an explicit no-render path
+- invalid quad path stays explicit
+- fake window render hook is called only for render-ready output
+- no actual OS window render is required
+
+### TODO Update
+- Marked the dedicated 4-view orchestration/validation boundary complete.
+- Moved the next 4-view task to a bounded one-shot manual preview/proof wrapper
+  above the new boundary.
+
+### Validation
+- `cargo fmt` passed.
+- `cargo fmt --check` passed.
+- `cargo test -p stream-sync-switcher four_view -- --test-threads=1` passed.
+- `cargo test -p stream-sync-switcher two_view -- --test-threads=1` passed.
+- `cargo test -p stream-sync-switcher target_time -- --test-threads=1` passed.
+- `cargo test -p stream-sync-switcher handoff -- --test-threads=1` passed.
+- `cargo check --workspace` passed.
+- `git diff --check` passed with LF/CRLF conversion warnings for changed files.
+
 ## 2026-05-04
 ### Type
 - Codex

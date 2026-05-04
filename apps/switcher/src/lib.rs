@@ -2260,6 +2260,36 @@ pub struct SwitcherFourViewComposedCanvasWindowRenderConnectionOutput {
     pub window_render: SwitcherFourViewComposedCanvasWindowRenderConnectionRenderResult,
 }
 
+/// Input for the smallest 4-view handoff-backed orchestration/validation
+/// boundary.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SwitcherFourViewHandoffValidationInput {
+    pub slots: [SwitcherFourViewTargetTimeSourceSlotConfig; 4],
+    pub target_timestamp: TimestampMicros,
+    pub previous_slots: [Option<SwitcherFourViewDisplayedSlot>; 4],
+    pub display_current_time: TimestampMicros,
+    pub layout_policy: SwitcherFourViewQuadLayoutPolicy,
+    pub composed_window_title: String,
+    pub composed_render_hold_millis: u64,
+}
+
+/// Output from the thin 4-view handoff-backed orchestration/validation path.
+///
+/// Each stage stays visible so selected / no-frame / waiting / source-error /
+/// placeholder / composed / render-facing / window-render transitions remain
+/// inspectable.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SwitcherFourViewHandoffValidationOutput {
+    pub scheduler: SwitcherFourViewTargetTimeHandoffSourceSchedulerResult,
+    pub decode_render_adapter: SwitcherFourViewHandoffSchedulerDecodeRenderAdapterOutput,
+    pub display: SwitcherFourViewHandoffDisplayPolicyOutput,
+    pub composition_instruction: SwitcherFourViewHandoffQuadCompositionAdapterOutput,
+    pub composition_render: SwitcherFourViewHandoffQuadCompositionRenderConnectionOutput,
+    pub bgra_composition: SwitcherFourViewQuadCompositionOutput,
+    pub render_facing: SwitcherFourViewQuadRenderFacingConnectionOutput,
+    pub window_render: SwitcherFourViewComposedCanvasWindowRenderConnectionOutput,
+}
+
 /// Minimal 2-view scheduler over the fallible single-client handoff source.
 ///
 /// This boundary keeps targetTime selection in switcher and preserves handoff
@@ -4025,6 +4055,104 @@ impl SwitcherFourViewComposedCanvasWindowRenderBoundary {
             bgra_payload_len: render_input.bgra_payload_len,
             slots: render_input.slots.clone(),
             render,
+        }
+    }
+}
+
+/// Thin orchestration/validation boundary for the completed fallible 4-view
+/// path.
+///
+/// This boundary wires together the existing 4-view scheduler, adapter,
+/// display, composition, render-facing, and window-render boundaries while
+/// keeping each stage visible for diagnostics.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct SwitcherFourViewHandoffValidationBoundary {
+    scheduler: SwitcherFourViewTargetTimeHandoffSourceSchedulerBoundary,
+    decode_render_adapter: SwitcherFourViewHandoffSchedulerDecodeRenderAdapterBoundary,
+    display_policy: SwitcherFourViewHandoffDisplayPolicyBoundary,
+    composition_adapter: SwitcherFourViewHandoffQuadCompositionAdapterBoundary,
+    composition_render: SwitcherFourViewHandoffQuadCompositionRenderConnectionBoundary,
+    bgra_composition: SwitcherFourViewQuadCompositionBoundary,
+    render_facing: SwitcherFourViewQuadRenderFacingConnectionBoundary,
+    window_render: SwitcherFourViewComposedCanvasWindowRenderBoundary,
+}
+
+impl SwitcherFourViewHandoffValidationBoundary {
+    pub fn run_with_runtimes(
+        &self,
+        queue_state: &mut ServerVideoFrameQueueState,
+        input: SwitcherFourViewHandoffValidationInput,
+        decode_runtime: &impl SwitcherH264DecodeRuntimeHook,
+        render_runtime: &impl SwitcherWindowRenderRuntimeHook,
+    ) -> SwitcherFourViewHandoffValidationOutput {
+        let mut handoff = SwitcherInProcessQueuedFrameHandoff::new(queue_state);
+        self.run_from_handoff_with_runtimes(&mut handoff, input, decode_runtime, render_runtime)
+    }
+
+    pub fn run_from_handoff_with_runtimes(
+        &self,
+        handoff: &mut impl SwitcherQueuedFrameHandoff,
+        input: SwitcherFourViewHandoffValidationInput,
+        decode_runtime: &impl SwitcherH264DecodeRuntimeHook,
+        render_runtime: &impl SwitcherWindowRenderRuntimeHook,
+    ) -> SwitcherFourViewHandoffValidationOutput {
+        let scheduler = self.scheduler.select_quad_preview_from_handoff(
+            handoff,
+            SwitcherFourViewTargetTimeHandoffSourceSchedulerInput {
+                slots: input.slots,
+                target_timestamp: input.target_timestamp,
+            },
+        );
+        let decode_render_adapter = self.decode_render_adapter.adapt(
+            SwitcherFourViewHandoffSchedulerDecodeRenderAdapterInput {
+                scheduler_result: scheduler.clone(),
+            },
+        );
+        let display = self
+            .display_policy
+            .decide(SwitcherFourViewHandoffDisplayPolicyInput {
+                adapter_output: decode_render_adapter.clone(),
+                previous_slots: input.previous_slots,
+                current_time: input.display_current_time,
+            });
+        let composition_instruction =
+            self.composition_adapter
+                .adapt(SwitcherFourViewHandoffQuadCompositionAdapterInput {
+                    display: display.clone(),
+                });
+        let composition_render = self.composition_render.connect_adapter_output_with_runtime(
+            SwitcherFourViewHandoffQuadCompositionRenderConnectionInput {
+                adapter_output: composition_instruction.clone(),
+            },
+            decode_runtime,
+        );
+        let bgra_composition =
+            self.bgra_composition
+                .compose_fixed_quad_view(SwitcherFourViewQuadCompositionInput {
+                    connection: composition_render.clone(),
+                    layout_policy: input.layout_policy,
+                });
+        let render_facing = self
+            .render_facing
+            .connect_composition_output(bgra_composition.clone());
+        let window_render = self.window_render.render_with_runtime(
+            SwitcherFourViewComposedCanvasWindowRenderInput {
+                render_facing_output: render_facing.clone(),
+                window_title: input.composed_window_title,
+                render_hold_millis: input.composed_render_hold_millis,
+            },
+            render_runtime,
+        );
+
+        SwitcherFourViewHandoffValidationOutput {
+            scheduler,
+            decode_render_adapter,
+            display,
+            composition_instruction,
+            composition_render,
+            bgra_composition,
+            render_facing,
+            window_render,
         }
     }
 }
@@ -12055,6 +12183,25 @@ mod tests {
         }
     }
 
+    fn four_view_validation_input(
+        target_timestamp: TimestampMicros,
+    ) -> SwitcherFourViewHandoffValidationInput {
+        SwitcherFourViewHandoffValidationInput {
+            slots: [
+                four_view_slot(0, "client-0", "run-0"),
+                four_view_slot(1, "client-1", "run-1"),
+                four_view_slot(2, "client-2", "run-2"),
+                four_view_slot(3, "client-3", "run-3"),
+            ],
+            target_timestamp,
+            previous_slots: [None, None, None, None],
+            display_current_time: TimestampMicros(5_000_000),
+            layout_policy: SwitcherFourViewQuadLayoutPolicy::default(),
+            composed_window_title: "StreamSync 4-view".to_string(),
+            composed_render_hold_millis: 25,
+        }
+    }
+
     fn fallible_four_view_adapter_output(
         scheduler_result: SwitcherFourViewTargetTimeHandoffSourceSchedulerResult,
     ) -> SwitcherFourViewHandoffSchedulerDecodeRenderAdapterOutput {
@@ -12124,6 +12271,16 @@ mod tests {
             },
             render,
         )
+    }
+
+    fn four_view_validation_output_for_test(
+        handoff: &mut impl SwitcherQueuedFrameHandoff,
+        input: SwitcherFourViewHandoffValidationInput,
+        decode: &impl SwitcherH264DecodeRuntimeHook,
+        render: &impl SwitcherWindowRenderRuntimeHook,
+    ) -> SwitcherFourViewHandoffValidationOutput {
+        SwitcherFourViewHandoffValidationBoundary::default()
+            .run_from_handoff_with_runtimes(handoff, input, decode, render)
     }
 
     fn render_fallible_two_view_adapter_output(
@@ -14919,6 +15076,300 @@ mod tests {
             slots[1].kind,
             SwitcherFourViewQuadComposedSlotKind::MissingDecodedPixels { .. }
         ));
+    }
+
+    #[test]
+    fn four_view_handoff_validation_boundary_runs_full_chain_for_all_renderable_slots() {
+        let mut state = ServerVideoFrameQueueState::default();
+        store_frame_with_run_payload(
+            &mut state,
+            "client-0",
+            "run-0",
+            1,
+            TimestampMicros(2_110_000),
+            2,
+            1,
+            vec![10],
+        );
+        store_frame_with_run_payload(
+            &mut state,
+            "client-1",
+            "run-1",
+            2,
+            TimestampMicros(2_110_100),
+            2,
+            1,
+            vec![20],
+        );
+        store_frame_with_run_payload(
+            &mut state,
+            "client-2",
+            "run-2",
+            3,
+            TimestampMicros(2_110_200),
+            2,
+            1,
+            vec![30],
+        );
+        store_frame_with_run_payload(
+            &mut state,
+            "client-3",
+            "run-3",
+            4,
+            TimestampMicros(2_110_300),
+            2,
+            1,
+            vec![40],
+        );
+
+        let decode = ColorByFirstByteDecode::default();
+        let render = RecordingTwoViewRender::default();
+        let mut handoff = SwitcherInProcessQueuedFrameHandoff::new(&mut state);
+        let output = four_view_validation_output_for_test(
+            &mut handoff,
+            four_view_validation_input(TimestampMicros(1_000_004)),
+            &decode,
+            &render,
+        );
+
+        assert_eq!(
+            output.scheduler.status,
+            SwitcherFourViewTargetTimeHandoffSourceSchedulerStatus::AllSelected
+        );
+        assert_eq!(
+            output.decode_render_adapter.scheduler_status,
+            SwitcherFourViewTargetTimeHandoffSourceSchedulerStatus::AllSelected
+        );
+        assert_eq!(
+            output.display.scheduler_status,
+            SwitcherFourViewTargetTimeHandoffSourceSchedulerStatus::AllSelected
+        );
+        assert_eq!(
+            output.composition_instruction.scheduler_status,
+            SwitcherFourViewTargetTimeHandoffSourceSchedulerStatus::AllSelected
+        );
+        assert_eq!(
+            output.composition_render.scheduler_status,
+            SwitcherFourViewTargetTimeHandoffSourceSchedulerStatus::AllSelected
+        );
+        assert_eq!(
+            output.bgra_composition.scheduler_status,
+            SwitcherFourViewTargetTimeHandoffSourceSchedulerStatus::AllSelected
+        );
+        assert_eq!(
+            output.render_facing.scheduler_status,
+            SwitcherFourViewTargetTimeHandoffSourceSchedulerStatus::AllSelected
+        );
+        assert_eq!(
+            output.window_render.scheduler_status,
+            SwitcherFourViewTargetTimeHandoffSourceSchedulerStatus::AllSelected
+        );
+        for (expected, slot) in output.scheduler.slots.iter().enumerate() {
+            assert_eq!(slot.slot.slot_index, expected);
+        }
+        for (expected, slot) in output.decode_render_adapter.slots.iter().enumerate() {
+            assert_eq!(slot.slot.slot_index, expected);
+        }
+        let SwitcherFourViewQuadCompositionResult::ComposedFrame { frame } =
+            &output.bgra_composition.composition
+        else {
+            panic!("all renderable slots should compose a BGRA quad");
+        };
+        for (expected, slot) in frame.slots.iter().enumerate() {
+            assert_eq!(slot.placement.slot_index, expected);
+        }
+        assert!(matches!(
+            output.render_facing.render,
+            SwitcherFourViewQuadRenderFacingResult::RenderReady { .. }
+        ));
+        assert!(matches!(
+            output.window_render.window_render,
+            SwitcherFourViewComposedCanvasWindowRenderConnectionRenderResult::RenderReady {
+                render: SwitcherFourViewComposedCanvasRenderResult::Rendered { .. },
+                ..
+            }
+        ));
+        assert_eq!(decode.inputs.borrow().len(), 4);
+        assert_eq!(render.requests.borrow().len(), 1);
+    }
+
+    #[test]
+    fn four_view_handoff_validation_boundary_preserves_mixed_slot_metadata_through_full_chain() {
+        let mut state = ServerVideoFrameQueueState::default();
+        store_frame_with_run_payload(
+            &mut state,
+            "client-0",
+            "run-0",
+            1,
+            TimestampMicros(2_110_400),
+            2,
+            1,
+            vec![10],
+        );
+        store_frame_for_run(
+            &mut state,
+            "client-1",
+            "run-1",
+            5,
+            TimestampMicros(2_100_500),
+        );
+
+        let mut input = four_view_validation_input(TimestampMicros(1_000_004));
+        input.slots[2] = four_view_slot(2, "client-2", "run-missing");
+        input.slots[3] = four_view_slot(3, "", "run-3");
+
+        let decode = ColorByFirstByteDecode::default();
+        let render = RecordingTwoViewRender::default();
+        let mut handoff = SwitcherInProcessQueuedFrameHandoff::new(&mut state);
+        let output = four_view_validation_output_for_test(&mut handoff, input, &decode, &render);
+
+        assert_eq!(
+            output.scheduler.status,
+            SwitcherFourViewTargetTimeHandoffSourceSchedulerStatus::HandoffError
+        );
+        assert!(matches!(
+            output.scheduler.slots[1].result,
+            SwitcherSingleClientTargetTimeHandoffSourceResult::WaitingForFrameAtOrBeforeTarget { .. }
+        ));
+        assert!(matches!(
+            output.scheduler.slots[2].result,
+            SwitcherSingleClientTargetTimeHandoffSourceResult::NoFrameAvailable { .. }
+        ));
+        assert!(matches!(
+            output.scheduler.slots[3].result,
+            SwitcherSingleClientTargetTimeHandoffSourceResult::HandoffError { .. }
+        ));
+        assert!(matches!(
+            output.display.slots[3],
+            SwitcherFourViewHandoffDisplayDecision::SourceErrorPlaceholder { .. }
+        ));
+        assert!(matches!(
+            output.composition_instruction.slots[2],
+            SwitcherFourViewQuadCompositionSlotInstruction::UseNoDisplayPlaceholder { .. }
+        ));
+        assert!(matches!(
+            output.composition_instruction.slots[3],
+            SwitcherFourViewQuadCompositionSlotInstruction::UseSourceErrorPlaceholder { .. }
+        ));
+        let SwitcherFourViewQuadCompositionResult::ComposedFrame { frame } =
+            &output.bgra_composition.composition
+        else {
+            panic!("one renderable slot plus placeholders should still compose");
+        };
+        assert!(matches!(
+            frame.slots[2].kind,
+            SwitcherFourViewQuadComposedSlotKind::NoDisplayPlaceholder { .. }
+        ));
+        assert!(matches!(
+            frame.slots[3].kind,
+            SwitcherFourViewQuadComposedSlotKind::SourceErrorPlaceholder { .. }
+        ));
+        let SwitcherFourViewComposedCanvasWindowRenderConnectionRenderResult::RenderReady {
+            slots,
+            ..
+        } = &output.window_render.window_render
+        else {
+            panic!("mixed renderable and placeholder quad should attempt one window render");
+        };
+        assert!(matches!(
+            slots[2].kind,
+            SwitcherFourViewQuadComposedSlotKind::NoDisplayPlaceholder { .. }
+        ));
+        assert!(matches!(
+            slots[3].kind,
+            SwitcherFourViewQuadComposedSlotKind::SourceErrorPlaceholder { .. }
+        ));
+        assert_eq!(decode.inputs.borrow().len(), 1);
+        assert_eq!(render.requests.borrow().len(), 1);
+    }
+
+    #[test]
+    fn four_view_handoff_validation_boundary_keeps_placeholder_only_no_render_path_explicit() {
+        let mut state = ServerVideoFrameQueueState::default();
+        let decode = ColorByFirstByteDecode::default();
+        let mut handoff = SwitcherInProcessQueuedFrameHandoff::new(&mut state);
+        let output = four_view_validation_output_for_test(
+            &mut handoff,
+            four_view_validation_input(TimestampMicros(1_000_004)),
+            &decode,
+            &PanicRender,
+        );
+
+        assert_eq!(
+            output.scheduler.status,
+            SwitcherFourViewTargetTimeHandoffSourceSchedulerStatus::NoFrames
+        );
+        assert!(matches!(
+            output.render_facing.render,
+            SwitcherFourViewQuadRenderFacingResult::NoRenderableQuadView { .. }
+        ));
+        assert!(matches!(
+            output.window_render.window_render,
+            SwitcherFourViewComposedCanvasWindowRenderConnectionRenderResult::NoRenderableQuadView { .. }
+        ));
+        assert_eq!(decode.inputs.borrow().len(), 0);
+    }
+
+    #[test]
+    fn four_view_handoff_validation_boundary_keeps_invalid_quad_path_explicit() {
+        let mut state = ServerVideoFrameQueueState::default();
+        store_frame_with_run_payload(
+            &mut state,
+            "client-0",
+            "run-0",
+            1,
+            TimestampMicros(2_110_500),
+            2,
+            1,
+            vec![10],
+        );
+        store_frame_with_run_payload(
+            &mut state,
+            "client-2",
+            "run-2",
+            3,
+            TimestampMicros(2_110_600),
+            2,
+            1,
+            vec![30],
+        );
+        store_frame_with_run_payload(
+            &mut state,
+            "client-3",
+            "run-3",
+            4,
+            TimestampMicros(2_110_700),
+            2,
+            1,
+            vec![40],
+        );
+
+        let mut input = four_view_validation_input(TimestampMicros(1_000_004));
+        input.previous_slots[1] = Some(SwitcherFourViewDisplayedSlot {
+            slot_index: 1,
+            selected: None,
+            decoded: None,
+            displayed_at: TimestampMicros(4_999_900),
+        });
+
+        let decode = ColorByFirstByteDecode::default();
+        let mut handoff = SwitcherInProcessQueuedFrameHandoff::new(&mut state);
+        let output =
+            four_view_validation_output_for_test(&mut handoff, input, &decode, &PanicRender);
+
+        assert!(matches!(
+            output.bgra_composition.composition,
+            SwitcherFourViewQuadCompositionResult::InvalidQuadView { .. }
+        ));
+        assert!(matches!(
+            output.render_facing.render,
+            SwitcherFourViewQuadRenderFacingResult::InvalidQuadView { .. }
+        ));
+        assert!(matches!(
+            output.window_render.window_render,
+            SwitcherFourViewComposedCanvasWindowRenderConnectionRenderResult::InvalidQuadView { .. }
+        ));
+        assert_eq!(decode.inputs.borrow().len(), 3);
     }
 
     #[test]

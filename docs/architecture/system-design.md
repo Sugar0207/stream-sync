@@ -9998,6 +9998,51 @@ Out of scope for that next orchestration step should remain:
 - final production layout polish
 - broad continuous GUI/window lifecycle ownership
 
+That dedicated 4-view orchestration/validation boundary now exists too. The
+current 4-view path is:
+
+```text
+caller-owned handoff + decode + window-render runtimes
+  -> SwitcherFourViewHandoffValidationBoundary
+    -> 4-view scheduler
+    -> scheduler decode/render adapter
+    -> display policy
+    -> QuadView composition adapter
+    -> composition render connection
+    -> fixed QuadView BGRA composition
+    -> render-facing connection
+    -> composed-canvas window render boundary
+```
+
+Current orchestration/validation behavior:
+
+- consumes caller-owned:
+  - four slot configs
+  - shared target timestamp
+  - previous displayed slot state
+  - handoff source/runtime
+  - decode runtime
+  - window render hook
+  - display/window policy inputs
+- keeps all stage outputs visible:
+  - scheduler result
+  - scheduler decode/render adapter result
+  - display policy result
+  - QuadView composition instruction result
+  - composition render connection result
+  - fixed BGRA QuadView composition result
+  - render-facing result
+  - window render result
+- preserves four explicit slots and slot order through the full chain
+- preserves aggregate scheduler status
+- preserves placeholder / source-error metadata through the full chain
+- does not collapse source errors into no-frame or waiting
+- does not create fake frames for skipped or source-error slots
+
+This boundary still does not add a manual CLI, actual OS-window proof, or OBS
+output. Those remain downstream consumers or wrappers on top of the now-stable
+4-view orchestration output.
+
 This keeps 4-view orchestration explicit and testable while deferring the next
 larger questions:
 
