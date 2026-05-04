@@ -9884,6 +9884,48 @@ Out of scope for that next window-render slice should remain:
 - switcher-side fragment reassembly
 - final production layout polish
 
+That dedicated 4-view composed-canvas window render boundary now exists too.
+The current 4-view path is:
+
+```text
+4-view scheduler result
+  -> SwitcherFourViewHandoffSchedulerDecodeRenderAdapterBoundary
+  -> SwitcherFourViewHandoffDisplayPolicyBoundary
+  -> SwitcherFourViewHandoffQuadCompositionAdapterBoundary
+  -> SwitcherFourViewHandoffQuadCompositionRenderConnectionBoundary
+  -> SwitcherFourViewQuadCompositionBoundary
+  -> SwitcherFourViewQuadRenderFacingConnectionBoundary
+  -> SwitcherFourViewComposedCanvasWindowRenderBoundary
+```
+
+Current 4-view window-render behavior:
+
+- consumes `SwitcherFourViewQuadRenderFacingConnectionOutput`
+- reuses the existing one-shot switcher window render infrastructure:
+  - `SwitcherWindowRenderRuntimeHook`
+  - `SwitcherWindowRenderRequest`
+  - the existing one-frame decoded BGRA window render path
+- for `RenderReady`
+  - reuses the upstream composed BGRA pixels
+  - validates/builds the existing window render request
+  - calls the injected runtime hook
+  - returns an explicit rendered / deferred / backend-unavailable / invalid /
+    render-failed result
+- for `NoRenderableQuadView`
+  - does not call the runtime hook
+  - returns an explicit no-render result
+- for `InvalidQuadView`
+  - does not call the runtime hook
+  - returns an explicit invalid result
+- keeps width / height / BGRA payload length / fixed four-slot metadata /
+  aggregate scheduler status / placeholder-source-error information visible in
+  the output
+
+This boundary still does not implement OBS output, a continuous GUI/window
+runtime, or a generic N-view path. Future OBS work should remain downstream of
+this render-facing/window-render-adjacent result family rather than bypassing
+it and reaching back into 4-view composition internals.
+
 This keeps 4-view orchestration explicit and testable while deferring the next
 larger questions:
 

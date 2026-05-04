@@ -5,6 +5,69 @@
 - Codex
 
 ### Work
+- Implemented the smallest dedicated 4-view composed-canvas window render
+  boundary on top of `SwitcherFourViewQuadRenderFacingConnectionOutput`.
+- Kept this slice smaller than actual OS proof, continuous GUI/runtime
+  ownership, and OBS output by stopping at an injected one-shot window-render
+  boundary with explicit no-render / invalid states.
+- Updated architecture/TODO tracking so the next 4-view slice can stay above
+  the new boundary instead of reopening composition/render-facing concerns.
+
+### Changed Files
+- `apps/switcher/src/lib.rs`
+- `docs/architecture/system-design.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### Implemented
+- Added `SwitcherFourViewComposedCanvasWindowRenderInput`.
+- Added `SwitcherFourViewComposedCanvasWindowRenderInvalidReason`.
+- Added `SwitcherFourViewComposedCanvasRenderResult`.
+- Added `SwitcherFourViewComposedCanvasWindowRenderConnectionRenderResult`.
+- Added `SwitcherFourViewComposedCanvasWindowRenderConnectionOutput`.
+- Added `SwitcherFourViewComposedCanvasWindowRenderBoundary`.
+- Window-render boundary behavior:
+  - consumes `SwitcherFourViewQuadRenderFacingConnectionOutput`
+  - reuses `SwitcherWindowRenderRuntimeHook` and
+    `SwitcherWindowRenderRequest`
+  - calls the injected runtime only for `RenderReady`
+  - preserves explicit `NoRenderableQuadView` and `InvalidQuadView` without
+    runtime calls
+  - keeps width / height / BGRA payload length / four-slot metadata /
+    aggregate scheduler status / placeholder-source-error information visible
+  - keeps runtime deferred / unavailable / invalid-frame / render-failed
+    results explicit
+
+### Tests
+- render-ready quad calls fake window render hook with correct dimensions and
+  payload length
+- render-ready quad preserves slot metadata and aggregate status
+- placeholder-only quad does not call runtime and stays explicit
+- invalid quad does not call runtime and stays explicit
+- source-error metadata survives
+- placeholder metadata survives
+- runtime hook failure remains explicit
+
+### TODO Update
+- Marked the dedicated 4-view composed-canvas window render boundary complete.
+- Moved the next 4-view task to a higher-level bounded preview/manual proof or
+  thin orchestration step above the new boundary.
+
+### Validation
+- `cargo fmt` passed.
+- `cargo fmt --check` passed.
+- `cargo test -p stream-sync-switcher four_view -- --test-threads=1` passed.
+- `cargo test -p stream-sync-switcher two_view -- --test-threads=1` passed.
+- `cargo test -p stream-sync-switcher target_time -- --test-threads=1` passed.
+- `cargo test -p stream-sync-switcher handoff -- --test-threads=1` passed.
+- `cargo check --workspace` passed.
+- `git diff --check` passed with LF/CRLF conversion warnings for changed files.
+
+## 2026-05-04
+### Type
+- Codex
+
+### Work
 - Added a planning/docs-only slice for the next isolated OS window render
   consumer of `SwitcherFourViewQuadRenderFacingConnectionOutput`.
 - Fixed the next 4-view step as a dedicated composed-canvas window render
