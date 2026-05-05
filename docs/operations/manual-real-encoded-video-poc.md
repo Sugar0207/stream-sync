@@ -443,10 +443,24 @@ Planned next `2`-real-slot preview direction:
 - do not widen the validated `1`-real-slot command with optional extra
   positional arguments first
 - prefer a dedicated next command shape:
+  - that dedicated command now exists:
 
 ```text
 stream-sync-switcher --four-view-two-real-handoff-preview-loop [pipe-name] [slot0-index] [client0-id] [run0-id] [slot1-index] [client1-id] [run1-id] [frames]
 ```
+
+Current first-slice implementation details for that command:
+
+- validates both slot indices in `0..3`
+- validates the two slot indices are distinct
+- validates `frames` as a positive bounded integer
+- uses the existing named-pipe handoff wrapper/client for the two real slots
+- keeps the remaining `2` slots deterministic placeholder / no-frame slots
+- reuses `SwitcherFourViewHandoffValidationBoundary`
+- reuses the dedicated clean output family:
+  - `window_title=StreamSync 4-view Output`
+  - persistent output-loop semantics
+  - fixed `1280x720` OBS-friendly output profile
 
 Planned semantics for missing one real client in that next slice:
 
@@ -471,6 +485,11 @@ Planned stdout summary additions for that next slice:
 - `window_title=StreamSync 4-view Output`
 - `output_width`
 - `output_height`
+
+The `2`-real-slot command is implemented, but manual validation is not yet
+recorded. Treat the `1`-real-slot path as the current validated baseline until
+the new command is exercised against one bounded server handoff session with
+two distinct real `client_id + run_id` scopes.
 
 ---
 

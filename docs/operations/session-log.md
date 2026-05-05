@@ -5,6 +5,84 @@
 - Codex
 
 ### Work
+- Implemented the smallest `2` real slots + `2` deterministic placeholder /
+  no-frame preview loop on the switcher side.
+- Kept the validated `1`-real-slot command unchanged.
+- Reused the existing named-pipe handoff wrapper, 4-view validation boundary,
+  and dedicated clean output family instead of widening scope into `4` real
+  slots or generic N-view work.
+
+### Changed Files
+- `apps/switcher/src/main.rs`
+- `docs/architecture/system-design.md`
+- `docs/operations/manual-real-encoded-video-poc.md`
+- `docs/operations/session-log.md`
+- `docs/operations/todo.md`
+
+### Implemented
+- Added switcher CLI command:
+  - `--four-view-two-real-handoff-preview-loop [pipe-name] [slot0-index] [client0-id] [run0-id] [slot1-index] [client1-id] [run1-id] [frames]`
+- Added validation for:
+  - both slot indices in `0..3`
+  - distinct slot indices
+  - positive bounded `frames`
+- Reused the existing named-pipe handoff wrapper/client for both configured
+  real slots.
+- Kept the remaining `2` slots deterministic `NoFrameAvailable`
+  placeholders.
+- Reused:
+  - `SwitcherFourViewHandoffValidationBoundary`
+  - `StreamSync 4-view Output`
+  - persistent output-loop semantics
+  - fixed `1280x720` OBS-friendly output profile
+- Added compact stdout summary fields for the `2`-real-slot command:
+  - `command_name`
+  - `real_handoff=true`
+  - `real_slot_count=2`
+  - `real_slot0_index`
+  - `real_slot1_index`
+  - `pipe_name`
+  - `client0_id`
+  - `run0_id`
+  - `client1_id`
+  - `run1_id`
+  - `frames_attempted`
+  - `frames_rendered`
+  - `render_failures`
+  - `scheduler_status`
+  - `slot_bindings`
+  - `slot_result_kinds`
+  - `clean_output_render_result_kind`
+  - `window_title`
+  - `output_width`
+  - `output_height`
+
+### Test Coverage
+- Added helper coverage for distinct real-slot validation.
+- Added fake-handoff / fake-render-runtime coverage proving:
+  - 2 real slots can be bound while the other 2 remain placeholders
+  - summary formatting exposes the expected `2`-real-slot fields
+  - default tests remain independent of real named-pipe I/O and real OS
+    window rendering
+
+### TODO Update
+- Marked the `2`-real-slot command as implemented.
+- Moved the immediate next task from `2`-real-slot planning to manual actual
+  validation of that new command.
+
+### Validation
+- `cargo fmt` passed.
+- `cargo fmt --check` passed.
+- `cargo test -p stream-sync-switcher four_view -- --test-threads=1` passed.
+- `cargo test -p stream-sync-switcher handoff -- --test-threads=1` passed.
+- `cargo check --workspace` passed.
+- `git diff --check` passed.
+
+## 2026-05-06
+### Type
+- Codex
+
+### Work
 - Added a planning/docs-only slice for the next `2` real slots + `2`
   deterministic placeholder / no-frame preview path.
 - Kept the validated `1`-real-slot command and transport path unchanged.

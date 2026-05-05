@@ -10687,7 +10687,7 @@ Preferred `2`-real-slot planning decisions:
 - switcher command shape:
   - prefer a new command for the `2`-real-slot slice rather than widening the
     validated `1`-real-slot command with optional extra positional arguments
-  - preferred first shape:
+  - the first dedicated command now exists as:
 
 ```text
 stream-sync-switcher --four-view-two-real-handoff-preview-loop [pipe-name] [slot0-index] [client0-id] [run0-id] [slot1-index] [client1-id] [run1-id] [frames]
@@ -10695,6 +10695,18 @@ stream-sync-switcher --four-view-two-real-handoff-preview-loop [pipe-name] [slot
 
   - this keeps the current `--four-view-real-handoff-preview-loop` baseline
     stable and avoids ambiguous parsing around optional second-slot arguments
+  - first command behavior:
+    - validate both slot indices in `0..3`
+    - validate slot indices are distinct
+    - validate `frames` as a positive bounded integer
+    - use the existing named-pipe handoff wrapper/client for the two real slots
+    - route the remaining two slots to deterministic `NoFrameAvailable`
+      placeholder content
+    - reuse `SwitcherFourViewHandoffValidationBoundary`
+    - reuse the dedicated clean output family with stable title
+      `StreamSync 4-view Output`
+    - reuse persistent output-loop semantics and the fixed `1280x720`
+      OBS-friendly output profile
 - slot binding representation:
   - keep one compact `slot_bindings` field covering all 4 slots in slot order
   - format remains:
@@ -10736,6 +10748,11 @@ stream-sync-switcher --four-view-two-real-handoff-preview-loop [pipe-name] [slot
   - `window_title=StreamSync 4-view Output`
   - `output_width`
   - `output_height`
+- manual validation status:
+  - the `2`-real-slot command is implemented
+  - manual validation is not yet recorded
+  - the validated baseline remains the `1`-real-slot command until that manual
+    pass is captured
 - still out of scope for that next slice:
   - `4` real slots
   - `Focused(slot_index)`
