@@ -1061,6 +1061,10 @@ fn run_four_view_clean_output_window_with_runtime(
     )
 }
 
+const FOUR_VIEW_CLEAN_OUTPUT_LOOP_OBS_OUTPUT_WIDTH: u32 = 1280;
+const FOUR_VIEW_CLEAN_OUTPUT_LOOP_OBS_OUTPUT_HEIGHT: u32 = 720;
+const FOUR_VIEW_CLEAN_OUTPUT_LOOP_SCALE_MODE: &str = "nearest-neighbor";
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct SwitcherFourViewCleanOutputWindowLoopSummary {
     fixture_mode: SwitcherFourViewManualPreviewProofFixtureMode,
@@ -1072,8 +1076,13 @@ struct SwitcherFourViewCleanOutputWindowLoopSummary {
     persistent_window: bool,
     window_updates: u32,
     window_closed: bool,
-    width: Option<u32>,
-    height: Option<u32>,
+    source_width: Option<u32>,
+    source_height: Option<u32>,
+    output_width: Option<u32>,
+    output_height: Option<u32>,
+    scale_mode: &'static str,
+    window_visible: Option<bool>,
+    window_capture_candidate: Option<bool>,
     bgra_payload_len: Option<usize>,
 }
 
@@ -1096,6 +1105,86 @@ struct PersistentWindowLifecycleSnapshot {
     persistent_window: bool,
     window_updates: u32,
     window_closed: bool,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+struct ObsFriendlyFourViewLoopRenderMetadataSnapshot {
+    source_width: Option<u32>,
+    source_height: Option<u32>,
+    output_width: Option<u32>,
+    output_height: Option<u32>,
+    bgra_payload_len: Option<usize>,
+    window_visible: Option<bool>,
+    window_capture_candidate: Option<bool>,
+}
+
+struct ObsFriendlyFourViewLoopWindowRenderRuntime<'a, Runtime> {
+    inner: &'a Runtime,
+    metadata: Mutex<ObsFriendlyFourViewLoopRenderMetadataSnapshot>,
+}
+
+impl<'a, Runtime> ObsFriendlyFourViewLoopWindowRenderRuntime<'a, Runtime> {
+    fn new(inner: &'a Runtime) -> Self {
+        Self {
+            inner,
+            metadata: Mutex::new(ObsFriendlyFourViewLoopRenderMetadataSnapshot::default()),
+        }
+    }
+
+    fn metadata_snapshot(&self) -> ObsFriendlyFourViewLoopRenderMetadataSnapshot {
+        *self
+            .metadata
+            .lock()
+            .expect("obs-friendly loop metadata mutex should not be poisoned")
+    }
+}
+
+impl<Runtime> SwitcherWindowRenderRuntimeHook
+    for ObsFriendlyFourViewLoopWindowRenderRuntime<'_, Runtime>
+where
+    Runtime: SwitcherWindowRenderRuntimeHook,
+{
+    fn render_once(
+        &self,
+        request: stream_sync_switcher::SwitcherWindowRenderRequest,
+    ) -> SwitcherWindowRenderResult {
+        let source_width = request.frame.width;
+        let source_height = request.frame.height;
+        let scaled_frame = scale_four_view_bgra_render_input_to_obs_validation_profile(
+            &request.frame,
+            FOUR_VIEW_CLEAN_OUTPUT_LOOP_OBS_OUTPUT_WIDTH,
+            FOUR_VIEW_CLEAN_OUTPUT_LOOP_OBS_OUTPUT_HEIGHT,
+        );
+        let output_width = scaled_frame.width;
+        let output_height = scaled_frame.height;
+        let bgra_payload_len = scaled_frame.pixels.len();
+
+        let result = self
+            .inner
+            .render_once(stream_sync_switcher::SwitcherWindowRenderRequest {
+                frame: scaled_frame,
+                title: request.title,
+                hold_millis: request.hold_millis,
+            });
+
+        let (window_visible, window_capture_candidate) =
+            four_view_clean_output_window_runtime_visibility_flags(&result);
+        *self
+            .metadata
+            .lock()
+            .expect("obs-friendly loop metadata mutex should not be poisoned") =
+            ObsFriendlyFourViewLoopRenderMetadataSnapshot {
+                source_width: Some(source_width),
+                source_height: Some(source_height),
+                output_width: Some(output_width),
+                output_height: Some(output_height),
+                bgra_payload_len: Some(bgra_payload_len),
+                window_visible,
+                window_capture_candidate,
+            };
+
+        result
+    }
 }
 
 trait SwitcherPersistentWindowLoopRuntimeHook: SwitcherWindowRenderRuntimeHook {
@@ -1208,21 +1297,14 @@ fn run_four_view_clean_output_window_loop_with_runtime_and_sleep(
     let mut frames_attempted = 0u32;
     let mut frames_rendered = 0u32;
     let mut render_failures = 0u32;
-    let mut width = None;
-    let mut height = None;
-    let mut bgra_payload_len = None;
     let mut window_title = String::new();
     let cadence = four_view_clean_output_window_loop_frame_cadence();
+    let obs_runtime = ObsFriendlyFourViewLoopWindowRenderRuntime::new(render_runtime);
 
     for frame_index in 0..frames.get() {
-        let result = run_four_view_clean_output_window_with_runtime(fixture_mode, render_runtime);
+        let result = run_four_view_clean_output_window_with_runtime(fixture_mode, &obs_runtime);
         frames_attempted += 1;
         window_title = result.clean_output.window_identity.title.clone();
-        let dimensions =
-            four_view_clean_output_window_ready_dimensions(&result.clean_output.output_window);
-        width = dimensions.0;
-        height = dimensions.1;
-        bgra_payload_len = dimensions.2;
 
         if let SwitcherFourViewCleanOutputWindowRenderResult::RenderReady { render, .. } =
             &result.clean_output.output_window
@@ -1245,6 +1327,7 @@ fn run_four_view_clean_output_window_loop_with_runtime_and_sleep(
 
     render_runtime.close_persistent_window();
     let lifecycle = render_runtime.lifecycle_snapshot();
+    let render_metadata = obs_runtime.metadata_snapshot();
 
     SwitcherFourViewCleanOutputWindowLoopSummary {
         fixture_mode,
@@ -1256,14 +1339,61 @@ fn run_four_view_clean_output_window_loop_with_runtime_and_sleep(
         persistent_window: lifecycle.persistent_window,
         window_updates: lifecycle.window_updates,
         window_closed: lifecycle.window_closed,
-        width,
-        height,
-        bgra_payload_len,
+        source_width: render_metadata.source_width,
+        source_height: render_metadata.source_height,
+        output_width: render_metadata.output_width,
+        output_height: render_metadata.output_height,
+        scale_mode: FOUR_VIEW_CLEAN_OUTPUT_LOOP_SCALE_MODE,
+        window_visible: render_metadata.window_visible,
+        window_capture_candidate: render_metadata.window_capture_candidate,
+        bgra_payload_len: render_metadata.bgra_payload_len,
     }
 }
 
 fn four_view_clean_output_window_loop_frame_cadence() -> Duration {
     Duration::from_secs_f64(1.0 / 30.0)
+}
+
+fn scale_four_view_bgra_render_input_to_obs_validation_profile(
+    frame: &stream_sync_switcher::SwitcherDecodedFrameRenderInput,
+    output_width: u32,
+    output_height: u32,
+) -> stream_sync_switcher::SwitcherDecodedFrameRenderInput {
+    let expected_len = output_width as usize * output_height as usize * 4;
+    let mut pixels = vec![0u8; expected_len];
+
+    for y in 0..output_height as usize {
+        let source_y = y * frame.height as usize / output_height as usize;
+        for x in 0..output_width as usize {
+            let source_x = x * frame.width as usize / output_width as usize;
+            let source_index = (source_y * frame.width as usize + source_x) * 4;
+            let destination_index = (y * output_width as usize + x) * 4;
+            pixels[destination_index..destination_index + 4]
+                .copy_from_slice(&frame.pixels[source_index..source_index + 4]);
+        }
+    }
+
+    stream_sync_switcher::SwitcherDecodedFrameRenderInput {
+        width: output_width,
+        height: output_height,
+        pixel_format: frame.pixel_format,
+        pixels,
+    }
+}
+
+fn four_view_clean_output_window_runtime_visibility_flags(
+    result: &SwitcherWindowRenderResult,
+) -> (Option<bool>, Option<bool>) {
+    match result {
+        SwitcherWindowRenderResult::Rendered(render) => (
+            Some(true),
+            Some(!render.title.is_empty() && render.width > 0 && render.height > 0),
+        ),
+        SwitcherWindowRenderResult::RenderFailed { .. }
+        | SwitcherWindowRenderResult::InvalidFrame { .. } => (Some(false), Some(false)),
+        SwitcherWindowRenderResult::RenderDeferred { .. }
+        | SwitcherWindowRenderResult::BackendUnavailable { .. } => (None, None),
+    }
 }
 
 #[cfg(target_os = "windows")]
@@ -1558,7 +1688,7 @@ fn format_four_view_clean_output_window_loop_summary(
     summary: &SwitcherFourViewCleanOutputWindowLoopSummary,
 ) -> String {
     format!(
-        "switcher four-view clean output window loop command_name=--four-view-clean-output-window-loop fixture_mode={} clean_output_window=true actual_window_render=true real_handoff=false window_title={} frames_attempted={} frames_rendered={} render_failures={} window_created={} persistent_window={} window_updates={} window_closed={} width={} height={} bgra_payload_len={}",
+        "switcher four-view clean output window loop command_name=--four-view-clean-output-window-loop fixture_mode={} clean_output_window=true actual_window_render=true real_handoff=false window_title={} frames_attempted={} frames_rendered={} render_failures={} window_created={} persistent_window={} window_updates={} window_closed={} source_width={} source_height={} output_width={} output_height={} scale_mode={} window_visible={} window_capture_candidate={} bgra_payload_len={}",
         format_four_view_manual_preview_fixture_mode_name(summary.fixture_mode),
         summary.window_title,
         summary.frames_attempted,
@@ -1568,8 +1698,13 @@ fn format_four_view_clean_output_window_loop_summary(
         summary.persistent_window,
         summary.window_updates,
         summary.window_closed,
-        format_optional_u32(summary.width),
-        format_optional_u32(summary.height),
+        format_optional_u32(summary.source_width),
+        format_optional_u32(summary.source_height),
+        format_optional_u32(summary.output_width),
+        format_optional_u32(summary.output_height),
+        summary.scale_mode,
+        format_optional_bool(summary.window_visible),
+        format_optional_bool(summary.window_capture_candidate),
         format_optional_usize(summary.bgra_payload_len),
     )
 }
@@ -1720,6 +1855,12 @@ fn format_optional_u32(value: Option<u32>) -> String {
 }
 
 fn format_optional_usize(value: Option<usize>) -> String {
+    value
+        .map(|value| value.to_string())
+        .unwrap_or_else(|| "none".to_string())
+}
+
+fn format_optional_bool(value: Option<bool>) -> String {
     value
         .map(|value| value.to_string())
         .unwrap_or_else(|| "none".to_string())
@@ -2029,6 +2170,8 @@ mod tests {
         run_four_view_manual_preview_proof_with_runtime, PersistentWindowLifecycleSnapshot,
         SwitcherFrameCadenceSleepHook, SwitcherPersistentWindowLoopRuntimeHook,
         SwitcherQueuedFrameHandoffResult, SwitcherSingleClientQueueSourceMode,
+        FOUR_VIEW_CLEAN_OUTPUT_LOOP_OBS_OUTPUT_HEIGHT,
+        FOUR_VIEW_CLEAN_OUTPUT_LOOP_OBS_OUTPUT_WIDTH, FOUR_VIEW_CLEAN_OUTPUT_LOOP_SCALE_MODE,
     };
     use stream_sync_switcher::SWITCHER_FOUR_VIEW_CLEAN_OUTPUT_WINDOW_TITLE;
 
@@ -2503,9 +2646,27 @@ mod tests {
             summary.window_title,
             SWITCHER_FOUR_VIEW_CLEAN_OUTPUT_WINDOW_TITLE
         );
-        assert_eq!(summary.width, Some(4));
-        assert_eq!(summary.height, Some(2));
-        assert_eq!(summary.bgra_payload_len, Some(32));
+        assert_eq!(summary.source_width, Some(4));
+        assert_eq!(summary.source_height, Some(2));
+        assert_eq!(
+            summary.output_width,
+            Some(FOUR_VIEW_CLEAN_OUTPUT_LOOP_OBS_OUTPUT_WIDTH)
+        );
+        assert_eq!(
+            summary.output_height,
+            Some(FOUR_VIEW_CLEAN_OUTPUT_LOOP_OBS_OUTPUT_HEIGHT)
+        );
+        assert_eq!(summary.scale_mode, FOUR_VIEW_CLEAN_OUTPUT_LOOP_SCALE_MODE);
+        assert_eq!(summary.window_visible, Some(true));
+        assert_eq!(summary.window_capture_candidate, Some(true));
+        assert_eq!(
+            summary.bgra_payload_len,
+            Some(
+                FOUR_VIEW_CLEAN_OUTPUT_LOOP_OBS_OUTPUT_WIDTH as usize
+                    * FOUR_VIEW_CLEAN_OUTPUT_LOOP_OBS_OUTPUT_HEIGHT as usize
+                    * 4
+            )
+        );
         assert_eq!(*render_runtime.create_calls.borrow(), 1);
         assert_eq!(*render_runtime.close_calls.borrow(), 1);
 
@@ -2533,9 +2694,27 @@ mod tests {
         assert!(summary.persistent_window);
         assert_eq!(summary.window_updates, 2);
         assert!(summary.window_closed);
-        assert_eq!(summary.width, Some(4));
-        assert_eq!(summary.height, Some(2));
-        assert_eq!(summary.bgra_payload_len, Some(32));
+        assert_eq!(summary.source_width, Some(4));
+        assert_eq!(summary.source_height, Some(2));
+        assert_eq!(
+            summary.output_width,
+            Some(FOUR_VIEW_CLEAN_OUTPUT_LOOP_OBS_OUTPUT_WIDTH)
+        );
+        assert_eq!(
+            summary.output_height,
+            Some(FOUR_VIEW_CLEAN_OUTPUT_LOOP_OBS_OUTPUT_HEIGHT)
+        );
+        assert_eq!(summary.scale_mode, FOUR_VIEW_CLEAN_OUTPUT_LOOP_SCALE_MODE);
+        assert_eq!(summary.window_visible, Some(false));
+        assert_eq!(summary.window_capture_candidate, Some(false));
+        assert_eq!(
+            summary.bgra_payload_len,
+            Some(
+                FOUR_VIEW_CLEAN_OUTPUT_LOOP_OBS_OUTPUT_WIDTH as usize
+                    * FOUR_VIEW_CLEAN_OUTPUT_LOOP_OBS_OUTPUT_HEIGHT as usize
+                    * 4
+            )
+        );
         assert_eq!(*render_runtime.create_calls.borrow(), 1);
         assert_eq!(*render_runtime.close_calls.borrow(), 1);
     }
@@ -2567,8 +2746,27 @@ mod tests {
         assert!(formatted.contains("persistent_window=true"));
         assert!(formatted.contains("window_updates=2"));
         assert!(formatted.contains("window_closed=true"));
-        assert!(formatted.contains("width=4"));
-        assert!(formatted.contains("height=2"));
-        assert!(formatted.contains("bgra_payload_len=32"));
+        assert!(formatted.contains("source_width=4"));
+        assert!(formatted.contains("source_height=2"));
+        assert!(formatted.contains(&format!(
+            "output_width={}",
+            FOUR_VIEW_CLEAN_OUTPUT_LOOP_OBS_OUTPUT_WIDTH
+        )));
+        assert!(formatted.contains(&format!(
+            "output_height={}",
+            FOUR_VIEW_CLEAN_OUTPUT_LOOP_OBS_OUTPUT_HEIGHT
+        )));
+        assert!(formatted.contains(&format!(
+            "scale_mode={}",
+            FOUR_VIEW_CLEAN_OUTPUT_LOOP_SCALE_MODE
+        )));
+        assert!(formatted.contains("window_visible=true"));
+        assert!(formatted.contains("window_capture_candidate=true"));
+        assert!(formatted.contains(&format!(
+            "bgra_payload_len={}",
+            FOUR_VIEW_CLEAN_OUTPUT_LOOP_OBS_OUTPUT_WIDTH as usize
+                * FOUR_VIEW_CLEAN_OUTPUT_LOOP_OBS_OUTPUT_HEIGHT as usize
+                * 4
+        )));
     }
 }

@@ -5,6 +5,86 @@
 - Codex
 
 ### Work
+- Implemented the smallest fixed `1280x720` OBS-friendly output profile on the
+  existing bounded clean output loop command.
+- Kept the same CLI shape
+  `--four-view-clean-output-window-loop [all-renderable] [frames]`.
+- Preserved the persistent window lifecycle while scaling the deterministic
+  `all-renderable` source frame into a larger output surface before the window
+  runtime sees it.
+
+### Changed Files
+- `apps/switcher/src/main.rs`
+- `docs/architecture/system-design.md`
+- `docs/operations/manual-real-encoded-video-poc.md`
+- `docs/operations/session-log.md`
+- `docs/operations/todo.md`
+
+### Implemented
+- Fixed OBS validation output profile for the loop command:
+  - `output_width=1280`
+  - `output_height=720`
+  - `scale_mode=nearest-neighbor`
+- The loop still:
+  - accepts only deterministic `all-renderable`
+  - keeps stable title `StreamSync 4-view Output`
+  - uses one create / many updates / one close
+  - stays bounded by `frames`
+  - uses fixed 30 fps cadence
+- Added loop summary fields:
+  - `source_width`
+  - `source_height`
+  - `output_width`
+  - `output_height`
+  - `scale_mode`
+  - `window_visible`
+  - `window_capture_candidate`
+- Preserved existing loop summary fields:
+  - `command_name`
+  - `fixture_mode`
+  - `clean_output_window=true`
+  - `actual_window_render=true`
+  - `real_handoff=false`
+  - `window_title`
+  - `frames_attempted`
+  - `frames_rendered`
+  - `render_failures`
+  - `window_created`
+  - `persistent_window`
+  - `window_updates`
+  - `window_closed`
+  - `bgra_payload_len`
+- Kept default tests independent of real OS window rendering by using the
+  existing fake persistent runtime plus a loop-only scaling wrapper.
+
+### Test Coverage
+- Added focused coverage confirming:
+  - source dimensions remain `4x2`
+  - output dimensions become `1280x720`
+  - `scale_mode=nearest-neighbor` is reported
+  - `bgra_payload_len=1280*720*4`
+  - persistent lifecycle still uses one create / many updates / one close
+  - unsupported fixture modes remain rejected
+
+### TODO Update
+- Moved the next immediate task from profile implementation to rerunning manual
+  actual validation against the new fixed `1280x720` loop profile and retrying
+  OBS Window Capture.
+- Kept render-surface/window-style work deferred until after that rerun.
+
+### Validation
+- `cargo fmt` passed.
+- `cargo fmt --check` passed.
+- `cargo test -p stream-sync-switcher four_view -- --test-threads=1` passed.
+- `cargo test -p stream-sync-switcher handoff -- --test-threads=1` passed.
+- `cargo check --workspace` passed.
+- `git diff --check` passed.
+
+## 2026-05-06
+### Type
+- Codex
+
+### Work
 - Recorded the mixed manual rerun result for the persistent clean output loop:
   the window lifecycle fix held, but OBS Window Capture validation still
   failed.

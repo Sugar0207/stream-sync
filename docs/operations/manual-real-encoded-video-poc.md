@@ -115,6 +115,12 @@ Current behavior for that command:
 - keep one persistent window identity for the whole bounded loop
 - update that same window per frame
 - close the window once after the bounded loop completes
+- apply a fixed OBS validation output profile:
+  - `output_width=1280`
+  - `output_height=720`
+  - `scale_mode=nearest-neighbor`
+- preserve the deterministic source frame dimensions separately from the
+  scaled output surface
 - print:
   - `command_name`
   - `fixture_mode`
@@ -129,8 +135,13 @@ Current behavior for that command:
   - `persistent_window`
   - `window_updates`
   - `window_closed`
-  - `width`
-  - `height`
+  - `source_width`
+  - `source_height`
+  - `output_width`
+  - `output_height`
+  - `scale_mode`
+  - `window_visible`
+  - `window_capture_candidate`
   - `bgra_payload_len`
 
 Use this command, not the one-shot clean output command, when manual OBS Window
@@ -192,6 +203,27 @@ validation. The next preferred slice is:
 
 Do not widen this next slice into OBS WebSocket, real server->switcher
 handoff/manual preview, Focused view, hotkey UI, or generic N-view work.
+
+That fixed `1280x720` profile is now implemented on the existing bounded loop
+command. The next manual check is not another planning pass; rerun:
+
+```powershell
+cargo run -p stream-sync-switcher -- --four-view-clean-output-window-loop all-renderable 300
+```
+
+For the next rerun, confirm the stdout now reports at least:
+
+- `source_width=4`
+- `source_height=2`
+- `output_width=1280`
+- `output_height=720`
+- `scale_mode=nearest-neighbor`
+- `bgra_payload_len=3686400`
+
+Then retry OBS Window Capture selection and preview against the same stable
+title `StreamSync 4-view Output`. If OBS still cannot capture the window after
+this larger profile, treat render-surface/window-style investigation as the
+next narrower slice.
 
 ---
 

@@ -10502,6 +10502,13 @@ stream-sync-switcher --four-view-clean-output-window-loop [all-renderable] [fram
    - the same persistent window is updated per frame and closed once after the
      bounded loop completes
    - it uses a fixed 30 fps cadence between iterations
+   - the loop now applies a fixed OBS validation output profile:
+     - `output_width=1280`
+     - `output_height=720`
+     - `scale_mode=nearest-neighbor`
+   - the deterministic composed/source frame remains `4x2` at this slice, but
+     it is scaled into the larger `1280x720` output surface before the window
+     runtime sees it
    - it prints:
      - `command_name`
      - `fixture_mode`
@@ -10516,8 +10523,13 @@ stream-sync-switcher --four-view-clean-output-window-loop [all-renderable] [fram
       - `persistent_window`
       - `window_updates`
       - `window_closed`
-      - `width`
-      - `height`
+      - `source_width`
+      - `source_height`
+      - `output_width`
+      - `output_height`
+      - `scale_mode`
+      - `window_visible`
+      - `window_capture_candidate`
       - `bgra_payload_len`
 
    - `all-renderable` remains the first and recommended fixture mode
@@ -10539,37 +10551,22 @@ stream-sync-switcher --four-view-clean-output-window-loop [all-renderable] [fram
      current output surface profile rather than window recreation
    - a `4x2` client area is too small to be a meaningful OBS Window Capture
      validation target, even if the runtime can technically render it
-   - the next smallest OBS-facing slice should therefore keep the persistent
-     window lifecycle and add an OBS-friendly output profile first, rather than
-     jumping to OBS WebSocket or daemon/service work
-   - preferred next profile:
-     - fixed output size `1280x720`
-     - deterministic `all-renderable` source remains the only first fixture
-     - scale the existing fixture/composed frame into that output surface
-     - keep stable title `StreamSync 4-view Output`
+   - the next likely blocker after lifecycle was the output surface profile;
+     the bounded loop now addresses that by using a fixed `1280x720`
+     validation surface while keeping the same persistent window identity
    - do not widen the next slice into real handoff preview, Focused view, or a
      generic N-view layout refactor
 8. Next OBS-friendly clean output profile plan:
-   - add an OBS validation profile before adding general-purpose output sizing
-     controls
-   - first preference is a fixed bounded validation profile rather than free
-     `output_width` / `output_height` arguments on the first pass
-   - the initial fixed profile should target `1280x720` at the existing 30 fps
-     loop cadence
-   - scale the deterministic source frame into the larger output surface
-     instead of treating the current `4x2` source size as the final visible
-     output size
-   - if OBS still cannot capture a visible surface after that profile exists,
-     only then investigate render-surface or window-style adjustments as the
-     next narrower slice
-   - next stdout additions should include:
-     - `source_width`
-     - `source_height`
-     - `output_width`
-     - `output_height`
-     - `scale_mode`
-     - `window_visible`
-     - `window_capture_candidate`
+   - the first fixed validation profile is now implemented on the existing
+     bounded loop command rather than as a separate CLI shape
+   - general-purpose `output_width` / `output_height` arguments remain deferred
+   - if OBS still cannot capture a visible surface after rerunning this
+     `1280x720` profile, only then investigate render-surface or window-style
+     adjustments as the next narrower slice
+   - next validation step is manual:
+     - rerun `--four-view-clean-output-window-loop all-renderable [frames]`
+     - verify whether OBS can now select `StreamSync 4-view Output`
+     - verify whether preview receives the larger visible surface
 9. Still out of scope for this runtime slice:
    - OBS output implementation
    - OBS API / OBS WebSocket / advanced OBS control
