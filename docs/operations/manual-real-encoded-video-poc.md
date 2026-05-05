@@ -90,6 +90,14 @@ not be visually confirmed before close; treat the stdout
 `window_title=StreamSync 4-view Output` as the current identity proof for this
 slice.
 
+For the first OBS validation path, use this dedicated clean output identity as
+the intended Window Capture target and keep the proof window path out of OBS.
+The current one-shot close is acceptable for proof logging, but it is a
+practical limitation for manual OBS selection/preview. Plan manual OBS guidance
+first, then add a longer-lived dedicated clean output runtime path before
+attempting stable OBS operator validation. A future `--hold-ms` can remain
+optional polish rather than the primary OBS-facing plan.
+
 ---
 
 ## 1. Prerequisite Checks

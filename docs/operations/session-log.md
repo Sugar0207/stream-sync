@@ -5,6 +5,66 @@
 - Codex
 
 ### Work
+- Added the planning/docs-only slice for OBS Window Capture guidance and
+  validation after the successful dedicated clean output window proof.
+- Fixed the first OBS validation path as manual Window Capture guidance against
+  the dedicated clean output window identity `StreamSync 4-view Output`, not
+  the proof window path and not OBS API control.
+- Chose the next implementation slice as a longer-lived dedicated clean output
+  continuous/runtime path rather than `--hold-ms`, because OBS validation needs
+  a more stable capture target than the current one-shot close behavior.
+
+### Changed Files
+- `docs/architecture/system-design.md`
+- `docs/operations/manual-real-encoded-video-poc.md`
+- `docs/operations/session-log.md`
+- `docs/operations/todo.md`
+
+### Planning Decisions
+- Minimal OBS validation path:
+  - open the dedicated clean output window path
+  - add OBS Window Capture manually
+  - select `StreamSync 4-view Output`
+  - confirm the capture source receives that window
+  - confirm no proof/debug window is used
+- First OBS validation stays manual guidance only.
+- OBS should target the stable dedicated clean output window title/identity:
+  - `StreamSync 4-view Output`
+- The one-shot immediate close is:
+  - not a blocker for planning
+  - a practical limitation for manual OBS validation
+  - not sufficient reason by itself to widen scope into OBS API work
+- `--hold-ms` remains optional polish only.
+- Next implementation slice after planning:
+  - dedicated clean output continuous/runtime path
+- Out of scope remains:
+  - OBS output implementation
+  - OBS WebSocket / advanced OBS control
+  - real server->switcher handoff/manual preview
+  - `Focused(slot_index)`
+  - full hotkey UI
+  - generic N-view refactor
+  - protocol wire-format changes
+  - H.264 behavior changes
+  - switcher-side fragment reassembly
+
+### TODO Update
+- Marked OBS Window Capture guidance / validation planning complete.
+- Moved the next immediate task to a dedicated clean output
+  continuous/runtime path for manual OBS validation.
+- Kept `--hold-ms` as future polish only.
+
+### Validation
+- `cargo fmt` passed.
+- `cargo fmt --check` passed.
+- `cargo check --workspace` passed.
+- `git diff --check` passed.
+
+## 2026-05-05
+### Type
+- Codex
+
+### Work
 - Recorded the successful manual actual proof for the dedicated 4-view clean
   output window command.
 - Captured stdout, observed one-shot window behavior, and the conclusion that

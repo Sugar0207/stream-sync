@@ -10395,6 +10395,54 @@ Window Capture guidance / validation planning, not OBS API work. A future
 `--hold-ms` may still be useful for visual confirmation but remains optional
 polish only.
 
+OBS Window Capture guidance / validation plan:
+
+1. Minimal OBS validation path:
+   - launch the dedicated clean output window path, not the proof window path
+   - in OBS, add a normal Window Capture source manually
+   - select the dedicated switcher output window by its stable identity/title
+     `StreamSync 4-view Output`
+   - verify OBS preview receives that window
+   - verify the proof window path is not being used as the capture target
+2. The first OBS validation should remain manual Window Capture guidance only.
+   - do not start with OBS API control
+   - do not start with OBS WebSocket
+   - keep OBS strictly downstream of the clean output window
+3. OBS should target the dedicated clean output window by stable window
+   identity/title.
+   - current identity proof is stdout
+     `window_title=StreamSync 4-view Output`
+   - this keeps capture selection separate from the transient proof window
+4. The current one-shot immediate close is not a blocker for planning, but it
+   is a practical limitation for manual OBS validation.
+   - keep a docs-only note that title visibility cannot currently be confirmed
+     by eye during the one-shot proof
+   - keep `--hold-ms` as optional polish, not as the primary architectural next
+     step
+   - prefer a longer-lived clean output window path over extending the proof
+     command if actual OBS operator workflow needs a stable capture target
+5. OBS validation should confirm:
+   - OBS can see/select `StreamSync 4-view Output`
+   - the Window Capture source receives the dedicated clean output window
+   - no debug/proof window is used
+   - the clean output path remains separate from the proof window path
+6. OBS WebSocket / advanced OBS control remain out of scope.
+7. Smallest next implementation slice after this planning step:
+   - add a clean output continuous/runtime path that keeps the dedicated output
+     window alive long enough for manual OBS Window Capture validation
+   - this is preferred over adding `--hold-ms` first because a longer-lived
+     output path matches the future OBS-facing workflow more directly
+8. Still out of scope:
+   - OBS output implementation
+   - OBS WebSocket / advanced OBS control
+   - real server->switcher handoff/manual preview
+   - `Focused(slot_index)`
+   - full hotkey UI
+   - generic N-view refactor
+   - protocol wire-format changes
+   - H.264 behavior changes
+   - switcher-side fragment reassembly
+
 Out of scope for the first 4-view slice:
 
 - OBS output
