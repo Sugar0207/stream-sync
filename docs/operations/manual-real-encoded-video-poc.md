@@ -67,6 +67,25 @@ attempt. In the latest recorded manual pass, a window appeared and then closed
 immediately, which is acceptable for this slice. A future `--hold-ms` option
 may be useful for visual confirmation, but it is not implemented yet.
 
+The dedicated clean output window command also now exists:
+
+```powershell
+cargo run -p stream-sync-switcher -- --four-view-clean-output-window-once all-renderable
+```
+
+Use this command when you want the first thin manual/runtime path for the
+dedicated OBS-facing output window identity rather than the proof window path.
+Its stable window title is:
+
+```text
+StreamSync 4-view Output
+```
+
+This command remains deterministic and `real_handoff=false`. It is still not
+OBS output itself, does not prove real server->switcher handoff/manual preview,
+and currently keeps hold duration at `0`, so a future `--hold-ms` remains
+optional polish only.
+
 ---
 
 ## 1. Prerequisite Checks

@@ -5,6 +5,70 @@
 - Codex
 
 ### Work
+- Added the smallest thin manual/runtime entry point for the dedicated 4-view
+  clean output window path.
+- Kept the existing deterministic proof command and actual proof-window command
+  unchanged while adding a separate stable-title output window command for the
+  first manual OBS-facing window path.
+- Reused the dedicated clean output window boundary and fake/injected render
+  runtimes instead of adding OBS API work or real server->switcher
+  handoff/manual preview.
+
+### Changed Files
+- `apps/switcher/src/lib.rs`
+- `apps/switcher/src/main.rs`
+- `docs/architecture/system-design.md`
+- `docs/operations/manual-real-encoded-video-poc.md`
+- `docs/operations/session-log.md`
+- `docs/operations/todo.md`
+
+### Implemented
+- Added `SwitcherFourViewCleanOutputWindowProofBoundary`.
+- Added `SwitcherFourViewCleanOutputWindowProofResult`.
+- Added switcher CLI/manual command:
+  - `--four-view-clean-output-window-once [all-renderable]`
+- Command behavior:
+  - uses deterministic `all-renderable` fixture first
+  - keeps `real_handoff=false`
+  - keeps proof-window render path separate
+  - routes the fixture through the dedicated clean output window boundary
+  - uses stable window title `StreamSync 4-view Output`
+  - prints compact stdout summary with:
+    - command name
+    - fixture mode
+    - `clean_output_window=true`
+    - `actual_window_render=true`
+    - `real_handoff=false`
+    - `window_title`
+    - `scheduler_status`
+    - `render_facing_result_kind`
+    - `output_window_result_kind`
+    - width / height / `bgra_payload_len` when render-ready
+    - `placeholder_count`
+    - `source_error_count`
+- Added formatter/helper coverage for:
+  - stable title/backend-free helper path
+  - rendered clean output summary formatting
+  - explicit `RenderFailed` summary formatting
+
+### TODO Update
+- Marked the thin manual/runtime entry point for clean output complete.
+- Moved the next immediate task to manual actual clean output window proof
+  execution and stdout recording.
+
+### Validation
+- `cargo fmt` passed.
+- `cargo fmt --check` passed.
+- `cargo test -p stream-sync-switcher four_view -- --test-threads=1` passed.
+- `cargo test -p stream-sync-switcher handoff -- --test-threads=1` passed.
+- `cargo check --workspace` passed.
+- `git diff --check` passed.
+
+## 2026-05-05
+### Type
+- Codex
+
+### Work
 - Implemented the smallest dedicated 4-view clean output window boundary for
   the OBS/output plan.
 - Kept it separate from the existing proof-window path so deterministic proof

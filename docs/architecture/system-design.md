@@ -10364,6 +10364,21 @@ entry point that opens the dedicated clean output window without changing the
 existing proof commands. That remains smaller than OBS API control and is the
 first practical step toward manual OBS Window Capture verification.
 
+That thin manual/runtime entry point now exists as:
+
+```text
+stream-sync-switcher --four-view-clean-output-window-once [all-renderable]
+```
+
+Current command position:
+
+- keeps `--four-view-proof-fixture-once` unchanged for backend-free proof
+- keeps `--four-view-proof-window-once` unchanged for the transient proof window
+- adds a separate dedicated clean output window path with stable title
+  `StreamSync 4-view Output`
+- still does not add OBS API control, OBS WebSocket, or real
+  server->switcher handoff/manual preview
+
 Out of scope for the first 4-view slice:
 
 - OBS output

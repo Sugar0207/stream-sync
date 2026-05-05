@@ -12,7 +12,8 @@ use stream_sync_switcher::{
     SwitcherContinuousTwoViewSchedulingStopReason, SwitcherDecodeLatestFrameOnceBoundary,
     SwitcherDecodeLatestFrameOnceInput, SwitcherDecodeLatestFrameOnceResult, SwitcherDecodedFrame,
     SwitcherDecodedFramePixelFormat, SwitcherFfmpegH264DecodeRuntimeHook,
-    SwitcherFourViewComposedCanvasRenderResult,
+    SwitcherFourViewCleanOutputWindowProofBoundary, SwitcherFourViewCleanOutputWindowProofResult,
+    SwitcherFourViewCleanOutputWindowRenderResult, SwitcherFourViewComposedCanvasRenderResult,
     SwitcherFourViewComposedCanvasWindowRenderConnectionRenderResult,
     SwitcherFourViewManualPreviewCompositionInstructionKind,
     SwitcherFourViewManualPreviewDisplaySlotKind, SwitcherFourViewManualPreviewProofBoundary,
@@ -258,6 +259,14 @@ fn main() {
                 format_four_view_manual_preview_window_summary(fixture_mode, &result)
             );
         }
+        Some("--four-view-clean-output-window-once") => {
+            let fixture_mode = parse_four_view_actual_window_fixture_mode_or_exit(args.next());
+            let result = run_four_view_clean_output_window_once(fixture_mode);
+            println!(
+                "{}",
+                format_four_view_clean_output_window_summary(fixture_mode, &result)
+            );
+        }
         Some("--read-queued-frame-handoff-once") => {
             let pipe_name = args.next().unwrap_or_else(|| {
                 eprintln!("missing pipe-name");
@@ -288,7 +297,7 @@ fn main() {
         }
         _ => {
             println!(
-                "stream-sync-switcher scaffold; use --placeholder-fixture-once [client-id], --placeholder-empty-once [client-id], --decode-latest-frame-once [client-id] [output-path], --receive-auth-video-placeholder-bridge-once [config-path] [client-id], --receive-auth-video-decode-latest-once [config-path] [client-id] [output-path], --receive-auth-video-render-decoded-once [config-path] [client-id] [hold-ms], --two-view-sync-fixture-once [left-client-id] [right-client-id] [hold-ms], --render-two-view-composed-fixture-once [hold-ms], --live-two-view-switcher-once [config-path] [left-client-id] [right-client-id], --four-view-proof-fixture-once [all-renderable|mixed-placeholder-source-error|placeholder-only], --four-view-proof-window-once [all-renderable], or --read-queued-frame-handoff-once [pipe-name] [client-id] [run-id] [read-mode] [request-id]"
+                "stream-sync-switcher scaffold; use --placeholder-fixture-once [client-id], --placeholder-empty-once [client-id], --decode-latest-frame-once [client-id] [output-path], --receive-auth-video-placeholder-bridge-once [config-path] [client-id], --receive-auth-video-decode-latest-once [config-path] [client-id] [output-path], --receive-auth-video-render-decoded-once [config-path] [client-id] [hold-ms], --two-view-sync-fixture-once [left-client-id] [right-client-id] [hold-ms], --render-two-view-composed-fixture-once [hold-ms], --live-two-view-switcher-once [config-path] [left-client-id] [right-client-id], --four-view-proof-fixture-once [all-renderable|mixed-placeholder-source-error|placeholder-only], --four-view-proof-window-once [all-renderable], --four-view-clean-output-window-once [all-renderable], or --read-queued-frame-handoff-once [pipe-name] [client-id] [run-id] [read-mode] [request-id]"
             );
         }
     }
@@ -987,6 +996,37 @@ fn run_four_view_manual_preview_window_once(
     }
 }
 
+fn run_four_view_clean_output_window_once(
+    fixture_mode: SwitcherFourViewManualPreviewProofFixtureMode,
+) -> SwitcherFourViewCleanOutputWindowProofResult {
+    #[cfg(target_os = "windows")]
+    {
+        run_four_view_clean_output_window_with_runtime(
+            fixture_mode,
+            &SwitcherWindowsGdiWindowRenderRuntimeHook,
+        )
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        run_four_view_clean_output_window_with_runtime(
+            fixture_mode,
+            &SwitcherUnavailableWindowRenderRuntimeHook,
+        )
+    }
+}
+
+fn run_four_view_clean_output_window_with_runtime(
+    fixture_mode: SwitcherFourViewManualPreviewProofFixtureMode,
+    render_runtime: &impl SwitcherWindowRenderRuntimeHook,
+) -> SwitcherFourViewCleanOutputWindowProofResult {
+    SwitcherFourViewCleanOutputWindowProofBoundary::default().prove_fixture_with_runtimes(
+        default_four_view_manual_preview_proof_input(fixture_mode),
+        &DeterministicFourViewFixtureDecodeRuntime,
+        render_runtime,
+    )
+}
+
 fn default_four_view_manual_preview_proof_input(
     fixture_mode: SwitcherFourViewManualPreviewProofFixtureMode,
 ) -> SwitcherFourViewManualPreviewProofInput {
@@ -1072,6 +1112,33 @@ fn format_four_view_manual_preview_window_summary(
     )
 }
 
+fn format_four_view_clean_output_window_summary(
+    fixture_mode: SwitcherFourViewManualPreviewProofFixtureMode,
+    result: &SwitcherFourViewCleanOutputWindowProofResult,
+) -> String {
+    let render_facing_result_kind =
+        format_four_view_render_facing_result_kind(&result.clean_output.render_facing.render);
+    let output_window_result_kind =
+        format_four_view_clean_output_window_result_kind(&result.clean_output.output_window);
+    let (width, height, bgra_payload_len) =
+        four_view_clean_output_window_ready_dimensions(&result.clean_output.output_window);
+    let (placeholder_count, source_error_count) =
+        four_view_clean_output_placeholder_and_source_error_counts(&result.clean_output);
+    format!(
+        "switcher four-view clean output window command_name=--four-view-clean-output-window-once fixture_mode={} clean_output_window=true actual_window_render=true real_handoff=false window_title={} scheduler_status={:?} render_facing_result_kind={} output_window_result_kind={} width={} height={} bgra_payload_len={} placeholder_count={} source_error_count={}",
+        format_four_view_manual_preview_fixture_mode_name(fixture_mode),
+        result.clean_output.window_identity.title,
+        result.clean_output.scheduler_status,
+        render_facing_result_kind,
+        output_window_result_kind,
+        format_optional_u32(width),
+        format_optional_u32(height),
+        format_optional_usize(bgra_payload_len),
+        placeholder_count,
+        source_error_count,
+    )
+}
+
 fn format_four_view_manual_preview_fixture_mode_name(
     fixture_mode: SwitcherFourViewManualPreviewProofFixtureMode,
 ) -> &'static str {
@@ -1123,6 +1190,92 @@ fn format_four_view_actual_window_render_result_kind(
             ..
         } => "InvalidQuadView",
     }
+}
+
+fn format_four_view_render_facing_result_kind(
+    result: &stream_sync_switcher::SwitcherFourViewQuadRenderFacingResult,
+) -> &'static str {
+    match result {
+        stream_sync_switcher::SwitcherFourViewQuadRenderFacingResult::RenderReady { .. } => {
+            "RenderReady"
+        }
+        stream_sync_switcher::SwitcherFourViewQuadRenderFacingResult::NoRenderableQuadView {
+            ..
+        } => "NoRenderableQuadView",
+        stream_sync_switcher::SwitcherFourViewQuadRenderFacingResult::InvalidQuadView {
+            ..
+        } => "InvalidQuadView",
+    }
+}
+
+fn four_view_clean_output_window_ready_dimensions(
+    result: &SwitcherFourViewCleanOutputWindowRenderResult,
+) -> (Option<u32>, Option<u32>, Option<usize>) {
+    match result {
+        SwitcherFourViewCleanOutputWindowRenderResult::RenderReady {
+            width,
+            height,
+            bgra_payload_len,
+            ..
+        } => (Some(*width), Some(*height), Some(*bgra_payload_len)),
+        _ => (None, None, None),
+    }
+}
+
+fn format_four_view_clean_output_window_result_kind(
+    result: &SwitcherFourViewCleanOutputWindowRenderResult,
+) -> &'static str {
+    match result {
+        SwitcherFourViewCleanOutputWindowRenderResult::RenderReady { render, .. } => match render {
+            SwitcherFourViewComposedCanvasRenderResult::Rendered { .. } => "Rendered",
+            SwitcherFourViewComposedCanvasRenderResult::RenderDeferred { .. } => "RenderDeferred",
+            SwitcherFourViewComposedCanvasRenderResult::BackendUnavailable { .. } => {
+                "BackendUnavailable"
+            }
+            SwitcherFourViewComposedCanvasRenderResult::InvalidComposedFrame { .. } => {
+                "InvalidFrame"
+            }
+            SwitcherFourViewComposedCanvasRenderResult::RenderFailed { .. } => "RenderFailed",
+        },
+        SwitcherFourViewCleanOutputWindowRenderResult::NoRenderableQuadView { .. } => {
+            "NoRenderableQuadView"
+        }
+        SwitcherFourViewCleanOutputWindowRenderResult::InvalidQuadView { .. } => "InvalidQuadView",
+    }
+}
+
+fn four_view_clean_output_placeholder_and_source_error_counts(
+    result: &stream_sync_switcher::SwitcherFourViewCleanOutputWindowOutput,
+) -> (usize, usize) {
+    let slots = match &result.output_window {
+        SwitcherFourViewCleanOutputWindowRenderResult::RenderReady { slots, .. }
+        | SwitcherFourViewCleanOutputWindowRenderResult::NoRenderableQuadView { slots }
+        | SwitcherFourViewCleanOutputWindowRenderResult::InvalidQuadView { slots, .. } => slots,
+    };
+    let placeholder_count =
+        slots
+            .iter()
+            .filter(|slot| {
+                matches!(
+                slot.kind,
+                stream_sync_switcher::SwitcherFourViewQuadComposedSlotKind::NoDisplayPlaceholder {
+                    ..
+                }
+            )
+            })
+            .count();
+    let source_error_count = slots
+        .iter()
+        .filter(|slot| {
+            matches!(
+                slot.kind,
+                stream_sync_switcher::SwitcherFourViewQuadComposedSlotKind::SourceErrorPlaceholder {
+                    ..
+                }
+            )
+        })
+        .count();
+    (placeholder_count, source_error_count)
 }
 
 fn format_optional_u32(value: Option<u32>) -> String {
@@ -1405,6 +1558,7 @@ fn store_fixture_frame(
 mod tests {
     use stream_sync_protocol::{ClientId, Codec, RunId, TimestampMicros};
     use stream_sync_switcher::{
+        SwitcherFourViewCleanOutputWindowRenderResult,
         SwitcherFourViewManualPreviewBgraCompositionKind,
         SwitcherFourViewManualPreviewProofFixtureMode,
         SwitcherFourViewManualPreviewRenderFacingKind,
@@ -1415,20 +1569,24 @@ mod tests {
         SwitcherNamedPipeQueuedFrameHandoffResponseStatus,
         SwitcherNamedPipeQueuedFrameHandoffResultKind,
         SwitcherNamedPipeQueuedFrameHandoffRetryClassification, SwitcherQueuedFrameHandoffError,
-        SwitcherSingleViewSelectedEncodedFrame, SwitcherWindowRenderRequest,
-        SwitcherWindowRenderResult, SwitcherWindowRenderRuntimeHook, SwitcherWindowRenderSuccess,
+        SwitcherSingleViewSelectedEncodedFrame, SwitcherUnavailableWindowRenderRuntimeHook,
+        SwitcherWindowRenderRequest, SwitcherWindowRenderResult, SwitcherWindowRenderRuntimeHook,
+        SwitcherWindowRenderSuccess,
     };
 
     use super::{
+        format_four_view_clean_output_window_summary,
         format_four_view_manual_preview_proof_summary,
         format_four_view_manual_preview_window_summary, format_handoff_mode,
         format_handoff_read_mode, format_named_pipe_handoff_switcher_result_summary,
         format_named_pipe_handoff_switcher_summary,
         parse_four_view_actual_window_fixture_mode_or_exit,
         parse_four_view_manual_preview_fixture_mode_or_exit, parse_handoff_mode_or_exit,
-        run_four_view_manual_preview_proof_once, run_four_view_manual_preview_proof_with_runtime,
-        SwitcherQueuedFrameHandoffResult, SwitcherSingleClientQueueSourceMode,
+        run_four_view_clean_output_window_with_runtime, run_four_view_manual_preview_proof_once,
+        run_four_view_manual_preview_proof_with_runtime, SwitcherQueuedFrameHandoffResult,
+        SwitcherSingleClientQueueSourceMode,
     };
+    use stream_sync_switcher::SWITCHER_FOUR_VIEW_CLEAN_OUTPUT_WINDOW_TITLE;
 
     #[test]
     fn switcher_handoff_parses_mode_names() {
@@ -1701,5 +1859,78 @@ mod tests {
         assert!(summary.contains("window_render_result_kind=RenderFailed"));
         assert!(summary.contains("render_facing_result_kind=RenderReady"));
         assert!(summary.contains("bgra_composition_result_kind=ComposedFrame"));
+    }
+
+    #[test]
+    fn switcher_four_view_clean_output_helper_uses_stable_title_and_backend_free_default() {
+        let result = run_four_view_clean_output_window_with_runtime(
+            SwitcherFourViewManualPreviewProofFixtureMode::AllRenderable,
+            &SwitcherUnavailableWindowRenderRuntimeHook,
+        );
+
+        assert_eq!(
+            result.clean_output.window_identity.title,
+            SWITCHER_FOUR_VIEW_CLEAN_OUTPUT_WINDOW_TITLE
+        );
+        assert!(matches!(
+            result.clean_output.output_window,
+            SwitcherFourViewCleanOutputWindowRenderResult::RenderReady { .. }
+        ));
+        assert!(matches!(
+            result.validation.render_facing.render,
+            stream_sync_switcher::SwitcherFourViewQuadRenderFacingResult::RenderReady { .. }
+        ));
+    }
+
+    #[test]
+    fn switcher_four_view_clean_output_summary_formats_rendered_metadata() {
+        let result = run_four_view_clean_output_window_with_runtime(
+            SwitcherFourViewManualPreviewProofFixtureMode::AllRenderable,
+            &FixtureRenderedWindowRuntime,
+        );
+        let summary = format_four_view_clean_output_window_summary(
+            SwitcherFourViewManualPreviewProofFixtureMode::AllRenderable,
+            &result,
+        );
+
+        assert!(summary.contains("command_name=--four-view-clean-output-window-once"));
+        assert!(summary.contains("fixture_mode=all-renderable"));
+        assert!(summary.contains("clean_output_window=true"));
+        assert!(summary.contains("actual_window_render=true"));
+        assert!(summary.contains("real_handoff=false"));
+        assert!(summary.contains(&format!(
+            "window_title={}",
+            SWITCHER_FOUR_VIEW_CLEAN_OUTPUT_WINDOW_TITLE
+        )));
+        assert!(summary.contains("scheduler_status=AllSelected"));
+        assert!(summary.contains("render_facing_result_kind=RenderReady"));
+        assert!(summary.contains("output_window_result_kind=Rendered"));
+        assert!(summary.contains("width="));
+        assert!(!summary.contains("width=none"));
+        assert!(summary.contains("height="));
+        assert!(!summary.contains("height=none"));
+        assert!(summary.contains("bgra_payload_len="));
+        assert!(!summary.contains("bgra_payload_len=none"));
+        assert!(summary.contains("placeholder_count=0"));
+        assert!(summary.contains("source_error_count=0"));
+    }
+
+    #[test]
+    fn switcher_four_view_clean_output_summary_keeps_render_failed_explicit() {
+        let result = run_four_view_clean_output_window_with_runtime(
+            SwitcherFourViewManualPreviewProofFixtureMode::AllRenderable,
+            &FixtureRenderFailedWindowRuntime,
+        );
+        let summary = format_four_view_clean_output_window_summary(
+            SwitcherFourViewManualPreviewProofFixtureMode::AllRenderable,
+            &result,
+        );
+
+        assert!(summary.contains("render_facing_result_kind=RenderReady"));
+        assert!(summary.contains("output_window_result_kind=RenderFailed"));
+        assert!(summary.contains(&format!(
+            "window_title={}",
+            SWITCHER_FOUR_VIEW_CLEAN_OUTPUT_WINDOW_TITLE
+        )));
     }
 }

@@ -2316,6 +2316,13 @@ pub struct SwitcherFourViewCleanOutputWindowOutput {
     pub output_window: SwitcherFourViewCleanOutputWindowRenderResult,
 }
 
+/// Output from the thin deterministic 4-view clean output window proof path.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SwitcherFourViewCleanOutputWindowProofResult {
+    pub validation: SwitcherFourViewHandoffValidationOutput,
+    pub clean_output: SwitcherFourViewCleanOutputWindowOutput,
+}
+
 /// Input for the smallest 4-view handoff-backed orchestration/validation
 /// boundary.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -4405,6 +4412,53 @@ impl SwitcherFourViewManualPreviewProofBoundary {
         SwitcherFourViewManualPreviewProofResult {
             validation,
             summary,
+        }
+    }
+}
+
+/// Thin deterministic 4-view clean output window proof wrapper.
+///
+/// This reuses the same in-process fixture queue and validation path, but keeps
+/// the actual proof-window render runtime unavailable while invoking the
+/// dedicated clean output window boundary separately.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct SwitcherFourViewCleanOutputWindowProofBoundary {
+    validation: SwitcherFourViewHandoffValidationBoundary,
+    clean_output: SwitcherFourViewCleanOutputWindowBoundary,
+}
+
+impl SwitcherFourViewCleanOutputWindowProofBoundary {
+    pub fn prove_fixture_with_runtimes(
+        &self,
+        input: SwitcherFourViewManualPreviewProofInput,
+        decode_runtime: &impl SwitcherH264DecodeRuntimeHook,
+        clean_output_runtime: &impl SwitcherWindowRenderRuntimeHook,
+    ) -> SwitcherFourViewCleanOutputWindowProofResult {
+        let mut queue_state = four_view_manual_preview_fixture_queue_state(&input);
+        let validation = self.validation.run_with_runtimes(
+            &mut queue_state,
+            SwitcherFourViewHandoffValidationInput {
+                slots: input.slots.clone(),
+                target_timestamp: input.target_timestamp,
+                previous_slots: input.previous_slots,
+                display_current_time: input.display_current_time,
+                layout_policy: input.layout_policy,
+                composed_window_title: input.composed_window_title,
+                composed_render_hold_millis: input.composed_render_hold_millis,
+            },
+            decode_runtime,
+            &SwitcherUnavailableWindowRenderRuntimeHook,
+        );
+        let clean_output = self.clean_output.render_with_runtime(
+            SwitcherFourViewCleanOutputWindowInput {
+                render_facing_output: validation.render_facing.clone(),
+            },
+            clean_output_runtime,
+        );
+
+        SwitcherFourViewCleanOutputWindowProofResult {
+            validation,
+            clean_output,
         }
     }
 }
