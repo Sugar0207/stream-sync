@@ -5,6 +5,67 @@
 - Codex
 
 ### Work
+- Implemented the smallest isolated actual OS window proof command for 4-view.
+- Kept the existing deterministic fixture proof command unchanged and
+  backend-free.
+- Reused the existing 4-view proof boundary and composed-canvas window-render
+  path instead of adding OBS/output work or real server->switcher handoff.
+
+### Changed Files
+- `apps/switcher/src/main.rs`
+- `docs/architecture/system-design.md`
+- `docs/operations/manual-real-encoded-video-poc.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### Implemented
+- Added `--four-view-proof-window-once [all-renderable]` to
+  `stream-sync-switcher`.
+- The command:
+  - uses the deterministic `all-renderable` 4-view fixture only
+  - reuses `SwitcherFourViewManualPreviewProofBoundary`
+  - reuses `SwitcherFourViewHandoffValidationBoundary`
+  - reuses the existing composed-canvas window render boundary
+  - uses the real Windows GDI window render runtime hook when available
+  - keeps `real_handoff=false`
+  - prints a compact stdout summary with:
+    - command name
+    - fixture mode
+    - `actual_window_render=true`
+    - `real_handoff=false`
+    - target timestamp
+    - scheduler status
+    - BGRA composition result kind
+    - render-facing result kind
+    - explicit window render result kind
+    - width / height / BGRA payload length when render-ready
+    - placeholder count
+    - source-error count
+- Kept `--four-view-proof-fixture-once [all-renderable|mixed-placeholder-source-error|placeholder-only]`
+  unchanged as the backend-free deterministic proof command.
+- Added formatter/helper coverage for:
+  - actual-window fixture-mode parsing
+  - rendered actual-window summary formatting with fake runtime
+  - render-failed actual-window summary formatting with fake runtime
+
+### TODO Update
+- Marked the isolated actual OS window proof command implementation complete.
+- Moved the next 4-view task to manual actual-window proof execution and stdout
+  recording before OBS/output boundary planning.
+
+### Validation
+- `cargo fmt` passed.
+- `cargo fmt --check` passed.
+- `cargo test -p stream-sync-switcher four_view -- --test-threads=1` passed.
+- `cargo test -p stream-sync-switcher handoff -- --test-threads=1` passed.
+- `cargo check --workspace` passed.
+- `git diff --check` passed.
+
+## 2026-05-05
+### Type
+- Codex
+
+### Work
 - Added the planning/docs-only slice for the next 4-view actual OS-window
   proof.
 - Fixed the next step order as actual OS window proof first and OBS/output

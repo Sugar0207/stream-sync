@@ -53,6 +53,16 @@ separate from this command. Keep `--four-view-proof-fixture-once` as the
 backend-free deterministic proof utility, and add a later isolated actual-window
 proof command that starts with the `all-renderable` fixture only.
 
+That isolated actual-window proof command now exists:
+
+```powershell
+cargo run -p stream-sync-switcher -- --four-view-proof-window-once all-renderable
+```
+
+Use it only for the first isolated 4-view OS-window proof. It reuses the
+deterministic all-renderable fixture and the existing composed BGRA window path.
+It does not prove OBS output or real server->switcher handoff/manual preview.
+
 ---
 
 ## 1. Prerequisite Checks

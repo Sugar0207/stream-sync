@@ -10211,6 +10211,12 @@ Recommended actual-OS proof command shape:
 - keep any later expansion to mixed/placeholder fixture modes optional and
   explicitly secondary
 
+That separate actual-window proof command now exists with the initial bounded
+shape above. It reuses the deterministic all-renderable fixture and the
+existing composed-canvas window-render path, while leaving
+`--four-view-proof-fixture-once` unchanged as the backend-free deterministic
+proof command.
+
 Recommended stdout summary for the first actual-OS proof:
 
 - `fixture_mode`
