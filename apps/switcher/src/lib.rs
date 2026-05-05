@@ -2262,6 +2262,60 @@ pub struct SwitcherFourViewComposedCanvasWindowRenderConnectionOutput {
     pub window_render: SwitcherFourViewComposedCanvasWindowRenderConnectionRenderResult,
 }
 
+/// Stable clean-output window title reserved for OBS Window Capture.
+pub const SWITCHER_FOUR_VIEW_CLEAN_OUTPUT_WINDOW_TITLE: &str = "StreamSync 4-view Output";
+
+/// Stable identity for the dedicated 4-view clean output window.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct SwitcherFourViewCleanOutputWindowIdentity {
+    pub title: String,
+}
+
+impl Default for SwitcherFourViewCleanOutputWindowIdentity {
+    fn default() -> Self {
+        Self {
+            title: SWITCHER_FOUR_VIEW_CLEAN_OUTPUT_WINDOW_TITLE.to_string(),
+        }
+    }
+}
+
+/// Input for the dedicated 4-view clean output window boundary.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SwitcherFourViewCleanOutputWindowInput {
+    pub render_facing_output: SwitcherFourViewQuadRenderFacingConnectionOutput,
+}
+
+/// Result family for the dedicated 4-view clean output window boundary.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SwitcherFourViewCleanOutputWindowRenderResult {
+    RenderReady {
+        width: u32,
+        height: u32,
+        bgra_payload_len: usize,
+        slots: [SwitcherFourViewQuadComposedSlotMetadata; 4],
+        render: SwitcherFourViewComposedCanvasRenderResult,
+    },
+    NoRenderableQuadView {
+        slots: [SwitcherFourViewQuadComposedSlotMetadata; 4],
+    },
+    InvalidQuadView {
+        reason: SwitcherFourViewComposedCanvasWindowRenderInvalidReason,
+        slots: [SwitcherFourViewQuadComposedSlotMetadata; 4],
+    },
+}
+
+/// Output from the dedicated 4-view clean output window boundary.
+///
+/// The render-facing result stays visible, while the output window attempt keeps
+/// a stable OBS-friendly window identity separate from proof/diagnostic paths.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SwitcherFourViewCleanOutputWindowOutput {
+    pub scheduler_status: SwitcherFourViewTargetTimeHandoffSourceSchedulerStatus,
+    pub window_identity: SwitcherFourViewCleanOutputWindowIdentity,
+    pub render_facing: SwitcherFourViewQuadRenderFacingConnectionOutput,
+    pub output_window: SwitcherFourViewCleanOutputWindowRenderResult,
+}
+
 /// Input for the smallest 4-view handoff-backed orchestration/validation
 /// boundary.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -4157,6 +4211,61 @@ impl SwitcherFourViewComposedCanvasWindowRenderBoundary {
             bgra_payload_len: render_input.bgra_payload_len,
             slots: render_input.slots.clone(),
             render,
+        }
+    }
+}
+
+/// Dedicated 4-view clean output window boundary for future OBS Window Capture.
+///
+/// This keeps the proof window path separate and consumes the same render-facing
+/// family as other downstream window/output consumers.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct SwitcherFourViewCleanOutputWindowBoundary;
+
+impl SwitcherFourViewCleanOutputWindowBoundary {
+    pub fn render_with_runtime(
+        &self,
+        input: SwitcherFourViewCleanOutputWindowInput,
+        runtime: &impl SwitcherWindowRenderRuntimeHook,
+    ) -> SwitcherFourViewCleanOutputWindowOutput {
+        let window_identity = SwitcherFourViewCleanOutputWindowIdentity::default();
+        let output = SwitcherFourViewComposedCanvasWindowRenderBoundary::default()
+            .render_with_runtime(
+                SwitcherFourViewComposedCanvasWindowRenderInput {
+                    render_facing_output: input.render_facing_output,
+                    window_title: window_identity.title.clone(),
+                    render_hold_millis: 0,
+                },
+                runtime,
+            );
+        let output_window = match output.window_render {
+            SwitcherFourViewComposedCanvasWindowRenderConnectionRenderResult::RenderReady {
+                width,
+                height,
+                bgra_payload_len,
+                slots,
+                render,
+            } => SwitcherFourViewCleanOutputWindowRenderResult::RenderReady {
+                width,
+                height,
+                bgra_payload_len,
+                slots,
+                render,
+            },
+            SwitcherFourViewComposedCanvasWindowRenderConnectionRenderResult::NoRenderableQuadView {
+                slots,
+            } => SwitcherFourViewCleanOutputWindowRenderResult::NoRenderableQuadView { slots },
+            SwitcherFourViewComposedCanvasWindowRenderConnectionRenderResult::InvalidQuadView {
+                reason,
+                slots,
+            } => SwitcherFourViewCleanOutputWindowRenderResult::InvalidQuadView { reason, slots },
+        };
+
+        SwitcherFourViewCleanOutputWindowOutput {
+            scheduler_status: output.scheduler_status,
+            window_identity,
+            render_facing: output.render_facing,
+            output_window,
         }
     }
 }
@@ -12675,6 +12784,18 @@ mod tests {
         )
     }
 
+    fn four_view_clean_output_window_output_for_test(
+        render_facing_output: SwitcherFourViewQuadRenderFacingConnectionOutput,
+        render: &impl SwitcherWindowRenderRuntimeHook,
+    ) -> SwitcherFourViewCleanOutputWindowOutput {
+        SwitcherFourViewCleanOutputWindowBoundary::default().render_with_runtime(
+            SwitcherFourViewCleanOutputWindowInput {
+                render_facing_output,
+            },
+            render,
+        )
+    }
+
     fn four_view_validation_output_for_test(
         handoff: &mut impl SwitcherQueuedFrameHandoff,
         input: SwitcherFourViewHandoffValidationInput,
@@ -15498,6 +15619,356 @@ mod tests {
         assert!(matches!(
             slots[1].kind,
             SwitcherFourViewQuadComposedSlotKind::MissingDecodedPixels { .. }
+        ));
+    }
+
+    #[test]
+    fn four_view_clean_output_window_boundary_uses_stable_obs_friendly_title_and_preserves_metadata(
+    ) {
+        let mut state = ServerVideoFrameQueueState::default();
+        store_frame_with_run_payload(
+            &mut state,
+            "client-0",
+            "run-0",
+            1,
+            TimestampMicros(2_110_000),
+            2,
+            1,
+            vec![10],
+        );
+        store_frame_for_run(
+            &mut state,
+            "client-1",
+            "run-1",
+            5,
+            TimestampMicros(2_100_500),
+        );
+
+        let runtime = RecordingTwoViewRender::default();
+        let output = four_view_clean_output_window_output_for_test(
+            four_view_quad_render_facing_output_for_test(
+                four_view_quad_composition_output_for_test(
+                    four_view_quad_composition_render_connection_output_for_test(
+                        four_view_quad_composition_adapter_output_for_test(
+                            four_view_display_policy_output_for_test(
+                                fallible_four_view_adapter_output({
+                                    let mut handoff =
+                                        SwitcherInProcessQueuedFrameHandoff::new(&mut state);
+                                    SwitcherFourViewTargetTimeHandoffSourceSchedulerBoundary::default(
+                                    )
+                                    .select_quad_preview_from_handoff(
+                                        &mut handoff,
+                                        SwitcherFourViewTargetTimeHandoffSourceSchedulerInput {
+                                            slots: [
+                                                four_view_slot(0, "client-0", "run-0"),
+                                                four_view_slot(1, "client-1", "run-1"),
+                                                four_view_slot(2, "client-2", "run-missing"),
+                                                four_view_slot(3, "", "run-3"),
+                                            ],
+                                            target_timestamp: TimestampMicros(1_000_004),
+                                        },
+                                    )
+                                }),
+                                [None, None, None, None],
+                                TimestampMicros(5_000_000),
+                            ),
+                        ),
+                        &ColorByFirstByteDecode::default(),
+                    ),
+                ),
+            ),
+            &runtime,
+        );
+
+        assert_eq!(
+            output.scheduler_status,
+            SwitcherFourViewTargetTimeHandoffSourceSchedulerStatus::HandoffError
+        );
+        assert_eq!(
+            output.window_identity.title,
+            SWITCHER_FOUR_VIEW_CLEAN_OUTPUT_WINDOW_TITLE
+        );
+        let requests = runtime.requests.borrow();
+        assert_eq!(requests.len(), 1);
+        assert_eq!(
+            requests[0].title,
+            SWITCHER_FOUR_VIEW_CLEAN_OUTPUT_WINDOW_TITLE
+        );
+        assert_eq!(requests[0].hold_millis, 0);
+        let SwitcherFourViewCleanOutputWindowRenderResult::RenderReady {
+            width,
+            height,
+            bgra_payload_len,
+            slots,
+            render,
+        } = &output.output_window
+        else {
+            panic!("clean output window should render one composed quad view");
+        };
+        assert_eq!(*width, 4);
+        assert_eq!(*height, 2);
+        assert_eq!(*bgra_payload_len, 32);
+        assert!(matches!(
+            output.render_facing.render,
+            SwitcherFourViewQuadRenderFacingResult::RenderReady { .. }
+        ));
+        assert!(matches!(
+            slots[2].kind,
+            SwitcherFourViewQuadComposedSlotKind::NoDisplayPlaceholder { .. }
+        ));
+        assert!(matches!(
+            slots[3].kind,
+            SwitcherFourViewQuadComposedSlotKind::SourceErrorPlaceholder { .. }
+        ));
+        let placeholder_count = slots
+            .iter()
+            .filter(|slot| {
+                matches!(
+                    slot.kind,
+                    SwitcherFourViewQuadComposedSlotKind::NoDisplayPlaceholder { .. }
+                )
+            })
+            .count();
+        let source_error_count = slots
+            .iter()
+            .filter(|slot| {
+                matches!(
+                    slot.kind,
+                    SwitcherFourViewQuadComposedSlotKind::SourceErrorPlaceholder { .. }
+                )
+            })
+            .count();
+        assert_eq!(placeholder_count, 2);
+        assert_eq!(source_error_count, 1);
+        let SwitcherFourViewComposedCanvasRenderResult::Rendered { render } = render else {
+            panic!("clean output render result should stay explicit");
+        };
+        assert_eq!(render.width, 4);
+        assert_eq!(render.height, 2);
+        assert_eq!(render.title, SWITCHER_FOUR_VIEW_CLEAN_OUTPUT_WINDOW_TITLE);
+        assert_eq!(render.hold_millis, 0);
+    }
+
+    #[test]
+    fn four_view_clean_output_window_boundary_keeps_placeholder_only_explicit_without_runtime() {
+        let mut state = ServerVideoFrameQueueState::default();
+
+        let output = four_view_clean_output_window_output_for_test(
+            four_view_quad_render_facing_output_for_test(
+                four_view_quad_composition_output_for_test(
+                    four_view_quad_composition_render_connection_output_for_test(
+                        four_view_quad_composition_adapter_output_for_test(
+                            four_view_display_policy_output_for_test(
+                                fallible_four_view_adapter_output({
+                                    let mut handoff =
+                                        SwitcherInProcessQueuedFrameHandoff::new(&mut state);
+                                    SwitcherFourViewTargetTimeHandoffSourceSchedulerBoundary::default(
+                                    )
+                                    .select_quad_preview_from_handoff(
+                                        &mut handoff,
+                                        fallible_four_view_scheduler_input(TimestampMicros(
+                                            1_000_004,
+                                        )),
+                                    )
+                                }),
+                                [None, None, None, None],
+                                TimestampMicros(5_000_000),
+                            ),
+                        ),
+                        &ColorByFirstByteDecode::default(),
+                    ),
+                ),
+            ),
+            &PanicRender,
+        );
+
+        assert_eq!(
+            output.window_identity.title,
+            SWITCHER_FOUR_VIEW_CLEAN_OUTPUT_WINDOW_TITLE
+        );
+        assert_eq!(
+            output.scheduler_status,
+            SwitcherFourViewTargetTimeHandoffSourceSchedulerStatus::NoFrames
+        );
+        let SwitcherFourViewCleanOutputWindowRenderResult::NoRenderableQuadView { slots } =
+            &output.output_window
+        else {
+            panic!("placeholder-only clean output should not call the runtime");
+        };
+        for slot in slots {
+            assert!(matches!(
+                slot.kind,
+                SwitcherFourViewQuadComposedSlotKind::NoDisplayPlaceholder { .. }
+            ));
+        }
+    }
+
+    #[test]
+    fn four_view_clean_output_window_boundary_keeps_invalid_quad_explicit_without_runtime() {
+        let mut state = ServerVideoFrameQueueState::default();
+        store_frame_with_run_payload(
+            &mut state,
+            "client-0",
+            "run-0",
+            1,
+            TimestampMicros(2_110_100),
+            2,
+            1,
+            vec![10],
+        );
+        store_frame_with_run_payload(
+            &mut state,
+            "client-2",
+            "run-2",
+            3,
+            TimestampMicros(2_110_200),
+            2,
+            1,
+            vec![30],
+        );
+        store_frame_with_run_payload(
+            &mut state,
+            "client-3",
+            "run-3",
+            4,
+            TimestampMicros(2_110_300),
+            2,
+            1,
+            vec![40],
+        );
+
+        let output = four_view_clean_output_window_output_for_test(
+            four_view_quad_render_facing_output_for_test(
+                four_view_quad_composition_output_for_test(
+                    four_view_quad_composition_render_connection_output_for_test(
+                        four_view_quad_composition_adapter_output_for_test(
+                            four_view_display_policy_output_for_test(
+                                fallible_four_view_adapter_output({
+                                    let mut handoff =
+                                        SwitcherInProcessQueuedFrameHandoff::new(&mut state);
+                                    SwitcherFourViewTargetTimeHandoffSourceSchedulerBoundary::default(
+                                    )
+                                    .select_quad_preview_from_handoff(
+                                        &mut handoff,
+                                        fallible_four_view_scheduler_input(TimestampMicros(
+                                            1_000_004,
+                                        )),
+                                    )
+                                }),
+                                [
+                                    None,
+                                    Some(SwitcherFourViewDisplayedSlot {
+                                        slot_index: 1,
+                                        selected: None,
+                                        decoded: None,
+                                        displayed_at: TimestampMicros(4_999_900),
+                                    }),
+                                    None,
+                                    None,
+                                ],
+                                TimestampMicros(5_000_000),
+                            ),
+                        ),
+                        &ColorByFirstByteDecode::default(),
+                    ),
+                ),
+            ),
+            &PanicRender,
+        );
+
+        assert_eq!(
+            output.window_identity.title,
+            SWITCHER_FOUR_VIEW_CLEAN_OUTPUT_WINDOW_TITLE
+        );
+        let SwitcherFourViewCleanOutputWindowRenderResult::InvalidQuadView { reason, slots } =
+            &output.output_window
+        else {
+            panic!("invalid clean output should stay explicit without runtime");
+        };
+        assert!(matches!(
+            reason,
+            SwitcherFourViewComposedCanvasWindowRenderInvalidReason::Upstream(
+                SwitcherFourViewQuadRenderFacingInvalidReason::Composition(
+                    SwitcherFourViewQuadCompositionInvalidReason::MissingDecodedPixels { .. }
+                )
+            )
+        ));
+        assert!(matches!(
+            slots[1].kind,
+            SwitcherFourViewQuadComposedSlotKind::MissingDecodedPixels { .. }
+        ));
+    }
+
+    #[test]
+    fn four_view_clean_output_window_boundary_keeps_proof_window_path_title_unchanged() {
+        let mut state = ServerVideoFrameQueueState::default();
+        store_frame_with_run_payload(
+            &mut state,
+            "client-0",
+            "run-0",
+            1,
+            TimestampMicros(2_110_400),
+            2,
+            1,
+            vec![10],
+        );
+        store_frame_with_run_payload(
+            &mut state,
+            "client-1",
+            "run-1",
+            2,
+            TimestampMicros(2_110_500),
+            2,
+            1,
+            vec![20],
+        );
+
+        let proof_runtime = RecordingTwoViewRender::default();
+        let proof_output = four_view_window_render_output_for_test(
+            four_view_quad_render_facing_output_for_test(
+                four_view_quad_composition_output_for_test(
+                    four_view_quad_composition_render_connection_output_for_test(
+                        four_view_quad_composition_adapter_output_for_test(
+                            four_view_display_policy_output_for_test(
+                                fallible_four_view_adapter_output({
+                                    let mut handoff =
+                                        SwitcherInProcessQueuedFrameHandoff::new(&mut state);
+                                    SwitcherFourViewTargetTimeHandoffSourceSchedulerBoundary::default(
+                                    )
+                                    .select_quad_preview_from_handoff(
+                                        &mut handoff,
+                                        SwitcherFourViewTargetTimeHandoffSourceSchedulerInput {
+                                            slots: [
+                                                four_view_slot(0, "client-0", "run-0"),
+                                                four_view_slot(1, "client-1", "run-1"),
+                                                four_view_slot(2, "client-2", "run-2"),
+                                                four_view_slot(3, "client-3", "run-3"),
+                                            ],
+                                            target_timestamp: TimestampMicros(1_000_004),
+                                        },
+                                    )
+                                }),
+                                [None, None, None, None],
+                                TimestampMicros(5_000_000),
+                            ),
+                        ),
+                        &ColorByFirstByteDecode::default(),
+                    ),
+                ),
+            ),
+            &proof_runtime,
+        );
+
+        let proof_requests = proof_runtime.requests.borrow();
+        assert_eq!(proof_requests.len(), 1);
+        assert_eq!(proof_requests[0].title, "StreamSync 4-view");
+        assert_ne!(
+            proof_requests[0].title,
+            SWITCHER_FOUR_VIEW_CLEAN_OUTPUT_WINDOW_TITLE
+        );
+        assert!(matches!(
+            proof_output.window_render,
+            SwitcherFourViewComposedCanvasWindowRenderConnectionRenderResult::RenderReady { .. }
         ));
     }
 

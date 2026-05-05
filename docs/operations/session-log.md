@@ -5,6 +5,68 @@
 - Codex
 
 ### Work
+- Implemented the smallest dedicated 4-view clean output window boundary for
+  the OBS/output plan.
+- Kept it separate from the existing proof-window path so deterministic proof
+  commands and actual-window proof behavior remain unchanged.
+- Reused the existing render-facing family and injected window render runtime
+  instead of adding OBS API work or real server->switcher handoff/manual
+  preview.
+
+### Changed Files
+- `apps/switcher/src/lib.rs`
+- `docs/architecture/system-design.md`
+- `docs/operations/session-log.md`
+- `docs/operations/todo.md`
+
+### Implemented
+- Added `SwitcherFourViewCleanOutputWindowIdentity`.
+- Added stable clean output title:
+  - `StreamSync 4-view Output`
+- Added `SwitcherFourViewCleanOutputWindowInput`.
+- Added `SwitcherFourViewCleanOutputWindowRenderResult`.
+- Added `SwitcherFourViewCleanOutputWindowOutput`.
+- Added `SwitcherFourViewCleanOutputWindowBoundary`.
+- Boundary behavior:
+  - consumes `SwitcherFourViewQuadRenderFacingConnectionOutput`
+  - stays downstream of the render-facing / window-output family
+  - uses the existing composed-canvas window render boundary internally
+  - uses a stable dedicated output-window title, separate from the proof title
+  - uses hold `0`, keeping `--hold-ms` out of scope
+  - preserves width / height / `bgra_payload_len`
+  - preserves render-facing result kind
+  - preserves output-window result kind
+  - preserves aggregate scheduler status
+  - preserves four-slot metadata
+  - preserves placeholder/source-error information
+  - does not call the runtime for `NoRenderableQuadView` / `InvalidQuadView`
+- Added focused tests covering:
+  - stable clean output title and window identity
+  - metadata preservation
+  - aggregate scheduler status preservation
+  - slot metadata preservation
+  - placeholder/source-error count preservation
+  - no-runtime behavior for no-render and invalid states
+  - proof-window title/path remaining unchanged
+
+### TODO Update
+- Marked the dedicated 4-view clean output window boundary complete.
+- Moved the next immediate task to a thin manual/runtime entry point above that
+  boundary.
+
+### Validation
+- `cargo fmt` passed.
+- `cargo fmt --check` passed.
+- `cargo test -p stream-sync-switcher four_view -- --test-threads=1` passed.
+- `cargo test -p stream-sync-switcher handoff -- --test-threads=1` passed.
+- `cargo check --workspace` passed.
+- `git diff --check` passed.
+
+## 2026-05-05
+### Type
+- Codex
+
+### Work
 - Added the planning/docs-only slice for the next OBS/output boundary after the
   successful 4-view actual OS-window proof.
 - Fixed the first OBS/output direction as a dedicated clean output window

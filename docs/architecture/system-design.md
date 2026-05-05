@@ -10336,6 +10336,34 @@ OBS/output boundary plan after the successful actual-window proof:
    - OBS WebSocket or advanced OBS control
    - making OBS consume composition internals directly
 
+That smallest implementation slice now exists as
+`SwitcherFourViewCleanOutputWindowBoundary`.
+
+- It consumes `SwitcherFourViewQuadRenderFacingConnectionOutput`.
+- It keeps the proof window path separate from the clean output path.
+- Its stable output-window identity is currently:
+  - `title = "StreamSync 4-view Output"`
+- It uses the existing caller-owned `SwitcherWindowRenderRuntimeHook` and keeps
+  default tests independent of real OS-window rendering.
+- It preserves:
+  - `width`
+  - `height`
+  - `bgra_payload_len`
+  - render-facing result kind
+  - output-window result kind
+  - aggregate scheduler status
+  - four-slot metadata
+  - placeholder count
+  - source-error count
+  - stable window identity/title
+- It currently uses hold `0` so `--hold-ms` remains outside this boundary and
+  stays optional polish.
+
+The smallest next step above this boundary should be a thin manual/runtime
+entry point that opens the dedicated clean output window without changing the
+existing proof commands. That remains smaller than OBS API control and is the
+first practical step toward manual OBS Window Capture verification.
+
 Out of scope for the first 4-view slice:
 
 - OBS output
