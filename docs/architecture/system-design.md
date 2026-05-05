@@ -10274,6 +10274,68 @@ Out of scope for that actual-OS proof slice:
 - switcher-side fragment reassembly
 - default tests that require real OS-window rendering
 
+OBS/output boundary plan after the successful actual-window proof:
+
+1. Start with a separate clean output window, not the existing proof window.
+   - The proof window is intentionally one-shot and closes immediately.
+   - Keeping proof and OBS/output windows separate preserves the current
+     deterministic proof commands unchanged.
+   - OBS needs a stable capture target with a dedicated identity/title, not a
+     transient proof artifact.
+2. OBS should stay downstream of the render-facing / window-output family.
+   - OBS should not consume composition internals directly.
+   - The composition boundary may continue to produce the composed BGRA frame,
+     but the OBS/output boundary should consume the existing render-facing
+     result family: `RenderReady`, `NoRenderableQuadView`, and
+     `InvalidQuadView`.
+   - The OS window render result remains the sink-side result of the output
+     boundary, not the upstream data contract for OBS.
+3. The current slice is planning/docs only. The first implementation slice
+   after planning should not be OBS API work.
+   - First add a dedicated clean output window boundary.
+   - Only after that boundary exists should manual OBS Window Capture guidance
+     or a later OBS-facing runtime slice be widened.
+4. Responsibilities that must remain separate from OBS:
+   - composition internals and slot placement rules
+   - scheduler / targetTime / handoff transport
+   - decode runtime internals
+   - server->switcher handoff transport/runtime
+   - deterministic proof fixtures and actual-window proof commands
+5. Metadata/logging that the OBS/output path should preserve:
+   - `width`
+   - `height`
+   - `bgra_payload_len`
+   - render-facing result kind
+   - output-window result kind
+   - aggregate scheduler status
+   - four-slot metadata
+   - placeholder count
+   - source-error count
+   - output window identity/title when available
+6. `--hold-ms` should remain a polish item, not a prerequisite for OBS/output.
+   - The proof command does not need to change before OBS/output work begins.
+   - If a later dwell/preview duration is useful, add it on the output-side
+     command/window flow, not as a blocker for this boundary plan.
+7. Smallest implementation slice after this planning step:
+   - a dedicated 4-view clean output window boundary that consumes the
+     render-facing result family
+   - `RenderReady` opens or updates the dedicated output window from the
+     composed BGRA payload
+   - `NoRenderableQuadView` / `InvalidQuadView` remain explicit results and do
+     not get collapsed into fake frames
+   - focused tests should prove metadata preservation and that proof commands
+     remain unchanged
+8. Still out of scope for the first OBS/output implementation slice:
+   - real server->switcher handoff/manual preview
+   - `Focused(slot_index)`
+   - full hotkey UI
+   - generic N-view refactor
+   - protocol wire-format changes
+   - H.264 behavior changes
+   - switcher-side fragment reassembly
+   - OBS WebSocket or advanced OBS control
+   - making OBS consume composition internals directly
+
 Out of scope for the first 4-view slice:
 
 - OBS output

@@ -5,6 +5,58 @@
 - Codex
 
 ### Work
+- Added the planning/docs-only slice for the next OBS/output boundary after the
+  successful 4-view actual OS-window proof.
+- Fixed the first OBS/output direction as a dedicated clean output window
+  downstream of the render-facing family, not direct composition-internal
+  consumption and not reuse of the transient proof window.
+- Kept deterministic proof commands, actual-window proof command, and real
+  server->switcher handoff scope unchanged.
+
+### Changed Files
+- `docs/architecture/system-design.md`
+- `docs/operations/session-log.md`
+- `docs/operations/todo.md`
+
+### Implemented
+- Recorded the OBS/output boundary planning decisions:
+  - start with a separate clean output window rather than the existing
+    one-shot proof window
+  - keep OBS downstream of render-facing / window-output results
+  - do not make OBS consume composition internals directly
+  - keep handoff transport, decode runtime internals, and deterministic proof
+    commands separate from OBS
+  - preserve output metadata/logging including width, height,
+    `bgra_payload_len`, render-facing result kind, output-window result kind,
+    aggregate scheduler status, four-slot metadata, placeholder count, and
+    source-error count
+  - keep `--hold-ms` as optional polish instead of making it a prerequisite
+- Fixed the smallest next implementation slice as:
+  - dedicated 4-view clean output window boundary
+  - `RenderReady` updates the dedicated output window from the composed BGRA
+    payload
+  - `NoRenderableQuadView` / `InvalidQuadView` stay explicit and do not become
+    fake renderable frames
+- Updated TODO so OBS/output boundary planning is no longer the immediate next
+  task; the next task is now the dedicated clean output window boundary.
+
+### TODO Update
+- Added the OBS/output planning outcome to `現在位置`.
+- Replaced `直近でやること` from planning to the next implementation slice.
+- Marked the "separate output window vs operation window" decision as fixed in
+  the switcher / 表示 / OBS section.
+
+### Validation
+- `cargo fmt` passed.
+- `cargo fmt --check` passed.
+- `cargo check --workspace` passed.
+- `git diff --check` passed.
+
+## 2026-05-05
+### Type
+- Codex
+
+### Work
 - Recorded the successful manual pass for the isolated 4-view actual OS-window
   proof command.
 - Confirmed the current 4-view path now has both backend-free deterministic
