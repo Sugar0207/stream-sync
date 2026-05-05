@@ -5,6 +5,96 @@
 - Codex
 
 ### Work
+- Recorded the successful manual validation of the first real
+  server->switcher handoff driven 4-view preview path.
+- Kept the scope at `1` real handoff slot plus `3` deterministic placeholder
+  / no-frame slots.
+- Updated tracking so the next task moves from first real-slot validation to
+  2-real-slot preview planning.
+
+### Changed Files
+- `docs/architecture/system-design.md`
+- `docs/operations/manual-real-encoded-video-poc.md`
+- `docs/operations/session-log.md`
+- `docs/operations/todo.md`
+
+### Manual Validation Record
+- Server command behavior succeeded:
+  - auth accepted for `client_id=player1`
+  - one real frame was received, reassembled, and queued
+  - bounded named-pipe service served `5/5` successful requests
+  - all `5` named-pipe responses were `FrameRead`
+- Recorded server stdout:
+
+```text
+receive auth/video queue runtime handled auth on 0.0.0.0:5000; auth_accepted=true auth_reason=Ok client_id=player1 run_id=streamsync-dev-session video=received queued=queued queue_len=1 dropped_oldest=false registered_clients=1 manual_max_video_packets=4096 manual_receive_timeout_ms=15000 manual_expected_reassembled_frames=1 manual_stop_after_expected_reassembled_frames=true manual_receive_buffer_requested_bytes=8388608 manual_receive_buffer_effective_bytes=8388608 manual_receive_buffer_set_error=none manual_receive_buffer_read_error=none packets_received=363 fragments_received=363 frames_reassembled=1 frames_queued=1 direct_frames_queued=0 rejected_packets=0 rejected_fragments=0 duplicate_fragments=0 non_video_packets=0 incomplete_reassembly_frames=0 incomplete_frame_progress=none receive_timed_out=false max_packets_reached=false
+server named-pipe handoff bounded pipe_name=streamsync-handoff-dev max_requests=5 requests_served=5 successful_responses=5 handoff_errors=0
+server named-pipe handoff bounded request pipe_name=streamsync-handoff-dev request_index=0 request_id=1 result_kind=FrameRead queue_len=1 handoff_error=none
+server named-pipe handoff bounded request pipe_name=streamsync-handoff-dev request_index=1 request_id=2 result_kind=FrameRead queue_len=1 handoff_error=none
+server named-pipe handoff bounded request pipe_name=streamsync-handoff-dev request_index=2 request_id=3 result_kind=FrameRead queue_len=1 handoff_error=none
+server named-pipe handoff bounded request pipe_name=streamsync-handoff-dev request_index=3 request_id=4 result_kind=FrameRead queue_len=1 handoff_error=none
+server named-pipe handoff bounded request pipe_name=streamsync-handoff-dev request_index=4 request_id=5 result_kind=FrameRead queue_len=1 handoff_error=none
+```
+
+- Client command behavior succeeded:
+  - auth accepted
+  - bounded sender captured / encoded / sent `5` real frames
+  - all sends used fragmented video packets
+  - `send_failures=0`
+- Recorded client stdout:
+
+```text
+auth real encoded video frame bounded PoC sent AuthRequest 96 bytes from 0.0.0.0:57498 to 127.0.0.1:5000 and received AuthResponse 55 bytes from 127.0.0.1:5000; accepted=true reason_code=Ok; bounded_manual_runtime=true; fragment_pacing_every=16 fragment_pacing_delay_ms=1 frames_attempted=6 frames_captured=5 frames_encoded=5 frames_sent=5 direct_sends=0 fragmented_sends=5 fragments_attempted=1815 fragments_sent=1815 no_frame_count=1 capture_failures=0 encode_failures=0 frame_build_failures=0 send_failures=0 stop_reason=Some(MaxFramesReached) last_send_destination=none last_send_local_source=none last_send_frame_id=none last_send_payload_len=none last_send_packet_len=none last_send_error=none
+```
+
+- Switcher command behavior succeeded:
+  - `real_handoff=true`
+  - configured real slot `0` selected real handoff frames
+  - the other `3` slots stayed deterministic placeholder / no-frame slots
+  - `frames_rendered=5`
+  - `render_failures=0`
+  - `scheduler_status=PartialSelected` was observed as expected for one real
+    selected slot plus three placeholder / no-frame slots
+- Recorded switcher stdout:
+
+```text
+switcher four-view real handoff preview loop command_name=--four-view-real-handoff-preview-loop real_handoff=true real_slot_count=1 real_slot_index=0 pipe_name=streamsync-handoff-dev client_id=player1 run_id=streamsync-dev-session frames_attempted=5 frames_rendered=5 render_failures=0 scheduler_status=PartialSelected slot_bindings=0:player1/streamsync-dev-session|1:fixture-placeholder-slot-1/fixture-placeholder-run-1|2:fixture-placeholder-slot-2/fixture-placeholder-run-2|3:fixture-placeholder-slot-3/fixture-placeholder-run-3 slot_result_kinds=Selected|NoFrameAvailable|NoFrameAvailable|NoFrameAvailable clean_output_render_result_kind=Rendered window_title=StreamSync 4-view Output output_width=1280 output_height=720
+```
+
+- OBS observation succeeded:
+  - OBS Window Capture displayed `StreamSync 4-view Output`
+  - OBS preview showed output
+  - a real-slot-like image was visible
+
+### Conclusion
+- The first real-handoff preview path is now manually validated for:
+  - client auth
+  - real capture / encode / send
+  - server receive / reassembly / queue
+  - bounded named-pipe handoff serving
+  - switcher named-pipe consumption
+  - one real selected slot inside the existing 4-view clean output family
+  - OBS downstream Window Capture of `StreamSync 4-view Output`
+- The validated scope remains exactly:
+  - `1` real handoff slot
+  - `3` deterministic placeholder / no-frame slots
+
+### TODO Update
+- Marked the 1-real-slot mixed preview manual validation complete.
+- Moved the next task to planning the smallest 2-real-slot preview slice rather
+  than re-validating the 1-real-slot path.
+
+### Validation
+- `cargo fmt` passed.
+- `cargo fmt --check` passed.
+- `cargo check --workspace` passed.
+- `git diff --check` passed.
+
+## 2026-05-06
+### Type
+- Codex
+
+### Work
 - Implemented the smallest mixed real 4-view preview runtime on the switcher
   side with one real named-pipe handoff slot and three deterministic non-real
   slots.

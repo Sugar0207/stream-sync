@@ -344,10 +344,92 @@ The expected stdout summary for the switcher command should include at least:
 - `output_width`
 - `output_height`
 
-Do not treat this mixed real preview path as manually validated yet. The
-current successful OBS validation remains deterministic-proof-only until this
-new command is exercised against a real bounded server handoff session and
-recorded separately.
+Recorded successful 1-real-slot manual command sequence:
+
+### Terminal 1: Server
+
+```powershell
+cargo run -p stream-sync-server -- --receive-auth-video-queue-and-serve-handoff-many configs/examples/server.example.toml streamsync-handoff-dev 5 4096 15000 1 true 8388608
+```
+
+Observed server result:
+
+- auth accepted for `client_id=player1`
+- one real frame was received, reassembled, and queued
+- bounded named-pipe service served `5/5` requests successfully
+- all `5` responses were `FrameRead`
+
+### Terminal 2: Client
+
+```powershell
+cargo run -p stream-sync-client -- --auth-real-encoded-video-frame-poc-bounded configs/examples/client.accepted.example.toml 5 16 1
+```
+
+Observed client result:
+
+- auth succeeded
+- `frames_captured=5`
+- `frames_encoded=5`
+- `frames_sent=5`
+- `fragmented_sends=5`
+- `fragments_sent=1815`
+- `send_failures=0`
+
+### Terminal 3: Switcher
+
+```powershell
+cargo run -p stream-sync-switcher -- --four-view-real-handoff-preview-loop streamsync-handoff-dev 0 player1 streamsync-dev-session 5
+```
+
+Observed switcher result:
+
+- `real_handoff=true`
+- `real_slot_count=1`
+- `real_slot_index=0`
+- `frames_attempted=5`
+- `frames_rendered=5`
+- `render_failures=0`
+- `scheduler_status=PartialSelected`
+- `slot_result_kinds=Selected|NoFrameAvailable|NoFrameAvailable|NoFrameAvailable`
+- `clean_output_render_result_kind=Rendered`
+- `window_title=StreamSync 4-view Output`
+- `output_width=1280`
+- `output_height=720`
+
+### OBS Window Capture
+
+Observed result:
+
+- OBS could display `StreamSync 4-view Output`
+- preview showed output
+- a real-slot-like image was visible
+
+What this successful manual pass proves:
+
+- client auth succeeded
+- client captured / encoded / sent real encoded frames
+- server received / reassembled / queued a real frame
+- server served repeated named-pipe `FrameRead` responses successfully
+- switcher consumed the named-pipe handoff successfully
+- configured real slot `0` selected real handoff frames
+- the remaining `3` slots stayed deterministic placeholder / no-frame slots
+- the existing clean output family rendered the mixed preview successfully
+- OBS Window Capture displayed the downstream clean output window
+
+What remains out of scope after this success:
+
+- `2` real slots
+- `4` real slots
+- `Focused(slot_index)`
+- full hotkey UI
+- generic N-view refactor
+- protocol wire-format / H.264 behavior changes
+- switcher-side fragment reassembly
+- OBS WebSocket / advanced OBS control
+
+After this success, the next docs/planning step is no longer first real-slot
+validation. The next step is planning the smallest `2` real slots preview
+slice while keeping the current `1` real slot validated path intact.
 
 ---
 

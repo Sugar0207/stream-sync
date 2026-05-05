@@ -10651,10 +10651,10 @@ stream-sync-switcher --four-view-real-handoff-preview-loop [pipe-name] [real-slo
      - `output_width`
      - `output_height`
 10. Still out of scope for this runtime slice:
-   - OBS output implementation
-   - OBS API / OBS WebSocket / advanced OBS control
-   - `--hold-ms` as the primary solution
-   - real server->switcher handoff/manual preview
+  - OBS output implementation
+  - OBS API / OBS WebSocket / advanced OBS control
+  - `--hold-ms` as the primary solution
+  - expanding the validated path to `2` real slots or `4` real slots
    - `Focused(slot_index)`
    - full hotkey UI
    - generic N-view refactor
