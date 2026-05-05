@@ -10567,7 +10567,75 @@ stream-sync-switcher --four-view-clean-output-window-loop [all-renderable] [fram
    - the next major question is no longer OBS capture viability; it is how the
      real server->switcher handoff path should feed the existing 4-view
      preview/output family while preserving the dedicated clean output window
-9. Still out of scope for this runtime slice:
+9. Next real server->switcher handoff + 4-view preview plan:
+   - the smallest real-handoff-driven preview path should reuse:
+     - the existing server bounded named-pipe service session
+       `--receive-auth-video-queue-and-serve-handoff-many`
+     - the existing switcher named-pipe handoff wrapper/client
+     - the existing `SwitcherFourViewHandoffValidationBoundary`
+     - the existing clean output window family and `StreamSync 4-view Output`
+   - the first mixed preview should use:
+     - `1` real handoff slot
+     - `3` deterministic non-real slots
+   - prefer one real slot first over two or four real slots because it proves
+     the transport-to-preview wiring while keeping missing-client behavior,
+     scheduling, and manual setup narrow
+   - the first non-real slots should remain deterministic fixture-backed
+     placeholders rather than requiring extra real senders
+   - real handoff results should enter the existing 4-view chain through the
+     current `SwitcherQueuedFrameHandoff` abstraction, so
+     `SwitcherFourViewHandoffValidationBoundary` continues to own:
+     - shared target timestamp
+     - per-slot scheduler result
+     - no-frame / waiting / handoff-error preservation
+     - display policy
+     - QuadView composition
+     - clean output rendering
+   - missing-client representation for the first real preview slice:
+     - configured real slot with no eligible queued frame:
+       `NoFrameAvailable`
+     - configured real slot whose newest frame is after target timestamp:
+       `WaitingForFrameAtOrBeforeTarget`
+     - named-pipe/runtime/transport failure:
+       `HandoffError`
+     - intentionally non-real slots in the first mixed preview:
+       deterministic fixture-backed placeholder content, not source error
+   - planned command shape:
+     - server side: keep reusing the existing bounded queue-owning handoff
+       service session rather than adding another server launcher first
+     - switcher side: add one bounded manual preview loop command above the
+       named-pipe handoff wrapper and existing 4-view validation/output family
+     - preferred first switcher shape:
+
+```text
+stream-sync-switcher --four-view-real-handoff-preview-loop [pipe-name] [real-slot-index] [client-id] [run-id] [frames]
+```
+
+   - this first real preview command should keep OBS downstream of
+     `StreamSync 4-view Output` rather than giving OBS direct access to handoff
+     internals
+   - deterministic fixture-only paths should remain:
+     - `--four-view-proof-fixture-once`
+     - `--four-view-proof-window-once`
+     - `--four-view-clean-output-window-once`
+     - `--four-view-clean-output-window-loop`
+     - the three non-real slots in the first mixed real preview slice
+   - recommended stdout summary for the first real preview command:
+     - `real_handoff=true`
+     - `real_slot_count`
+     - `real_slot_index`
+     - per-slot `client_id` / `run_id`
+     - aggregate `scheduler_status`
+     - per-slot scheduler result kind
+     - per-slot display/composition-visible result kind
+     - clean output render result kind
+     - `window_title=StreamSync 4-view Output`
+     - `clean_output_window=true`
+     - `actual_window_render=true`
+     - `frames_attempted`
+     - `frames_rendered`
+     - `render_failures`
+10. Still out of scope for this runtime slice:
    - OBS output implementation
    - OBS API / OBS WebSocket / advanced OBS control
    - `--hold-ms` as the primary solution

@@ -263,6 +263,44 @@ next step is planning how the real server->switcher handoff path should feed
 the existing 4-view preview/output family while preserving the dedicated clean
 output window path.
 
+Planned smallest real handoff-driven 4-view preview path:
+
+- keep the existing server bounded handoff service session:
+
+```powershell
+cargo run -p stream-sync-server -- --receive-auth-video-queue-and-serve-handoff-many <config-path> <pipe-name> <max-requests> <max-video-packets> <receive-timeout-ms> <expected-reassembled-frames> <stop-after-expected-reassembled-frames> <receive-buffer-bytes>
+```
+
+- add one bounded switcher-side real preview loop above the existing named-pipe
+  handoff wrapper and 4-view validation/output family
+- first mixed preview should use:
+  - `1` real handoff slot
+  - `3` deterministic non-real slots
+- preferred first switcher command shape:
+
+```text
+stream-sync-switcher --four-view-real-handoff-preview-loop [pipe-name] [real-slot-index] [client-id] [run-id] [frames]
+```
+
+Planned semantics for that first mixed preview:
+
+- `real_handoff=true`
+- real handoff enters through the existing named-pipe-backed
+  `SwitcherQueuedFrameHandoff`
+- the existing `SwitcherFourViewHandoffValidationBoundary` continues to own
+  scheduler / display / composition / clean-output rendering
+- intentionally non-real slots stay deterministic fixture-backed
+- configured real slot with no eligible queued frame:
+  - `NoFrameAvailable`
+- configured real slot with frame newer than target timestamp:
+  - `WaitingForFrameAtOrBeforeTarget`
+- named-pipe/runtime failure:
+  - `HandoffError`
+
+Do not treat this planned real preview path as implemented yet. The current
+successful OBS validation remains deterministic-proof-only until this mixed real
+preview command exists and is recorded separately.
+
 ---
 
 ## 1. Prerequisite Checks

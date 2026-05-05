@@ -5,6 +5,89 @@
 - Codex
 
 ### Work
+- Added a planning/docs-only slice for the first real server->switcher handoff
+  driven 4-view preview path after deterministic OBS Window Capture validation
+  completed.
+- Fixed the next runtime shape as a bounded mixed preview that reuses the
+  existing named-pipe handoff wrapper, `SwitcherFourViewHandoffValidationBoundary`,
+  and dedicated clean output window family.
+- Chose a one-real-slot-first rollout to keep the first real preview narrow and
+  observable.
+
+### Changed Files
+- `docs/architecture/system-design.md`
+- `docs/operations/manual-real-encoded-video-poc.md`
+- `docs/operations/session-log.md`
+- `docs/operations/todo.md`
+
+### Planning Decisions
+- The smallest real handoff-driven 4-view preview path should:
+  - reuse the existing server bounded named-pipe handoff service session
+  - reuse the existing switcher named-pipe handoff wrapper/client
+  - reuse `SwitcherFourViewHandoffValidationBoundary`
+  - keep OBS downstream of `StreamSync 4-view Output`
+- The first real preview should use:
+  - `1` real handoff slot
+  - `3` deterministic non-real slots
+- Prefer one real slot first over two or four because it proves the real
+  transport-to-preview wiring with the least setup and the clearest per-slot
+  semantics.
+- Real handoff results should feed the existing 4-view chain through the
+  current `SwitcherQueuedFrameHandoff` abstraction; the validation boundary
+  keeps owning scheduler / display / composition / clean-output decisions.
+- Missing-client / missing-frame representation for the first slice:
+  - no eligible queued frame in the configured real slot: `NoFrameAvailable`
+  - frame newer than target timestamp: `WaitingForFrameAtOrBeforeTarget`
+  - named-pipe/runtime failure: `HandoffError`
+  - intentionally non-real slots: deterministic fixture-backed placeholder
+    content
+- Preferred first switcher command shape:
+
+```text
+stream-sync-switcher --four-view-real-handoff-preview-loop [pipe-name] [real-slot-index] [client-id] [run-id] [frames]
+```
+
+- Server side should keep reusing:
+
+```text
+--receive-auth-video-queue-and-serve-handoff-many
+```
+
+- Deterministic fixture-only commands should remain unchanged:
+  - `--four-view-proof-fixture-once`
+  - `--four-view-proof-window-once`
+  - `--four-view-clean-output-window-once`
+  - `--four-view-clean-output-window-loop`
+- Recommended stdout summary for the first real preview command:
+  - `real_handoff=true`
+  - `real_slot_count`
+  - `real_slot_index`
+  - per-slot `client_id` / `run_id`
+  - aggregate `scheduler_status`
+  - per-slot result kind
+  - clean output render result kind
+  - `window_title=StreamSync 4-view Output`
+
+### TODO Update
+- Moved the next immediate task from generic real-handoff planning to
+  implementing the bounded mixed real preview command.
+- Fixed the first implementation target as one real slot plus three
+  deterministic non-real slots.
+- Kept `Focused(slot_index)`, full hotkey UI, generic N-view refactor,
+  protocol/H.264 changes, switcher-side fragment reassembly, and OBS
+  WebSocket/advanced control out of scope.
+
+### Validation
+- `cargo fmt` passed.
+- `cargo fmt --check` passed.
+- `cargo check --workspace` passed.
+- `git diff --check` passed.
+
+## 2026-05-06
+### Type
+- Codex
+
+### Work
 - Recorded the successful manual OBS Window Capture validation for the
   dedicated clean output loop after the fixed `1280x720` profile landed.
 - Updated tracking so OBS Window Capture validation is now complete for the
