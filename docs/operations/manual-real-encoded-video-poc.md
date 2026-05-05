@@ -431,6 +431,47 @@ After this success, the next docs/planning step is no longer first real-slot
 validation. The next step is planning the smallest `2` real slots preview
 slice while keeping the current `1` real slot validated path intact.
 
+Planned next `2`-real-slot preview direction:
+
+- keep one existing bounded server queue/handoff service session
+- keep one named pipe
+- use two distinct real `client_id + run_id` scopes in that one shared
+  queue/service lifetime
+- keep the remaining `2` slots deterministic placeholder / no-frame slots
+- keep OBS downstream of `StreamSync 4-view Output`
+- keep the existing named-pipe handoff and 4-view validation/output family
+- do not widen the validated `1`-real-slot command with optional extra
+  positional arguments first
+- prefer a dedicated next command shape:
+
+```text
+stream-sync-switcher --four-view-two-real-handoff-preview-loop [pipe-name] [slot0-index] [client0-id] [run0-id] [slot1-index] [client1-id] [run1-id] [frames]
+```
+
+Planned semantics for missing one real client in that next slice:
+
+- `Selected + NoFrameAvailable` when one real slot has an eligible frame and
+  the other does not
+- `Selected + WaitingForFrameAtOrBeforeTarget` when one real slot is newer than
+  target timestamp
+- `HandoffError` only for named-pipe/runtime/transport failure
+
+Planned stdout summary additions for that next slice:
+
+- `real_handoff=true`
+- `real_slot_count=2`
+- explicit per-real-slot index / `client_id` / `run_id`
+- `slot_bindings`
+- `slot_result_kinds`
+- `scheduler_status`
+- `frames_attempted`
+- `frames_rendered`
+- `render_failures`
+- `clean_output_render_result_kind`
+- `window_title=StreamSync 4-view Output`
+- `output_width`
+- `output_height`
+
 ---
 
 ## 1. Prerequisite Checks

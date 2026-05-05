@@ -5,6 +5,98 @@
 - Codex
 
 ### Work
+- Added a planning/docs-only slice for the next `2` real slots + `2`
+  deterministic placeholder / no-frame preview path.
+- Kept the validated `1`-real-slot command and transport path unchanged.
+- Fixed the next design baseline before any implementation begins.
+
+### Changed Files
+- `docs/architecture/system-design.md`
+- `docs/operations/manual-real-encoded-video-poc.md`
+- `docs/operations/session-log.md`
+- `docs/operations/todo.md`
+
+### Planning Decisions
+- The first `2`-real-slot preview should reuse:
+  - one existing bounded server queue/handoff service session
+  - one named pipe
+  - two distinct real `client_id + run_id` scopes inside the same shared
+    queue/service lifetime
+- Do not start the `2`-real-slot slice with:
+  - two separate pipe names
+  - two separate server service sessions
+  - optional positional widening of the validated `1`-real-slot command
+- Preferred first switcher command shape:
+
+```text
+stream-sync-switcher --four-view-two-real-handoff-preview-loop [pipe-name] [slot0-index] [client0-id] [run0-id] [slot1-index] [client1-id] [run1-id] [frames]
+```
+
+- Reason for using a new command:
+  - it keeps the validated `--four-view-real-handoff-preview-loop` baseline
+    stable
+  - it avoids ambiguous parsing for optional second-slot arguments
+  - it is the smallest way to add the next real-slot count without generic
+    N-view refactoring
+- Per-slot binding representation for the `2`-real-slot slice:
+  - keep one `slot_bindings` field covering all 4 slots in slot order
+  - keep format `slot_index:client_id/run_id`
+  - also add explicit per-real-slot stdout fields:
+    - `real_slot0_index`
+    - `real_slot0_client_id`
+    - `real_slot0_run_id`
+    - `real_slot1_index`
+    - `real_slot1_client_id`
+    - `real_slot1_run_id`
+- Missing-one-real-client behavior:
+  - preserve `Selected + NoFrameAvailable`
+  - preserve `Selected + WaitingForFrameAtOrBeforeTarget`
+  - use `HandoffError` only for named-pipe/runtime/transport failure
+- The remaining `2` slots should stay deterministic placeholder / no-frame
+  slots in the first `2`-real-slot slice.
+- Recommended stdout summary additions for the first `2`-real-slot command:
+  - `real_handoff=true`
+  - `real_slot_count=2`
+  - `pipe_name`
+  - explicit per-real-slot index/client/run fields
+  - `slot_bindings`
+  - `slot_result_kinds`
+  - `scheduler_status`
+  - `frames_attempted`
+  - `frames_rendered`
+  - `render_failures`
+  - `clean_output_render_result_kind`
+  - `window_title=StreamSync 4-view Output`
+  - `output_width`
+  - `output_height`
+
+### Scope Guardrails
+- Still out of scope for the next slice:
+  - `4` real slots
+  - `Focused(slot_index)`
+  - full hotkey UI
+  - generic N-view refactor
+  - protocol wire-format changes
+  - H.264 behavior changes
+  - switcher-side fragment reassembly
+  - OBS WebSocket / advanced OBS control
+
+### TODO Update
+- Kept the `1`-real-slot path as the validated baseline.
+- Moved the immediate next work to `2`-real-slot preview planning details
+  rather than implementation.
+
+### Validation
+- `cargo fmt` passed.
+- `cargo fmt --check` passed.
+- `cargo check --workspace` passed.
+- `git diff --check` passed.
+
+## 2026-05-06
+### Type
+- Codex
+
+### Work
 - Recorded the successful manual validation of the first real
   server->switcher handoff driven 4-view preview path.
 - Kept the scope at `1` real handoff slot plus `3` deterministic placeholder

@@ -10664,6 +10664,88 @@ stream-sync-switcher --four-view-real-handoff-preview-loop [pipe-name] [real-slo
    - default tests that require real OS-window rendering
    - an indefinite daemon/service mode
 
+After the successful `1`-real-slot manual validation, the next smallest
+preview-planning slice should move to `2` real slots plus `2` deterministic
+placeholder slots, still without jumping to `4` real slots or generic N-view.
+
+Preferred `2`-real-slot planning decisions:
+
+- server side:
+  - keep one existing bounded queue-owning handoff service session
+  - keep one named pipe
+  - serve both real slots from the same server queue/service lifetime
+  - use two distinct real `client_id + run_id` scopes inside that one shared
+    queue/service session
+  - do not start with two separate pipe names or two separate server service
+    sessions
+- reason for that choice:
+  - it is the smallest extension of the already validated `1`-real-slot path
+  - it preserves one shared queue owner and one shared transport endpoint
+  - it keeps switcher-side targetTime coordination within the existing
+    4-view chain rather than splitting real-slot reads across unrelated service
+    lifetimes
+- switcher command shape:
+  - prefer a new command for the `2`-real-slot slice rather than widening the
+    validated `1`-real-slot command with optional extra positional arguments
+  - preferred first shape:
+
+```text
+stream-sync-switcher --four-view-two-real-handoff-preview-loop [pipe-name] [slot0-index] [client0-id] [run0-id] [slot1-index] [client1-id] [run1-id] [frames]
+```
+
+  - this keeps the current `--four-view-real-handoff-preview-loop` baseline
+    stable and avoids ambiguous parsing around optional second-slot arguments
+- slot binding representation:
+  - keep one compact `slot_bindings` field covering all 4 slots in slot order
+  - format remains:
+    `slot_index:client_id/run_id`
+  - also expose explicit per-real-slot identity fields in stdout:
+    - `real_slot0_index`
+    - `real_slot0_client_id`
+    - `real_slot0_run_id`
+    - `real_slot1_index`
+    - `real_slot1_client_id`
+    - `real_slot1_run_id`
+- missing-one-real-client semantics:
+  - if one configured real slot has an eligible frame and the other does not,
+    preserve mixed results explicitly:
+    - `Selected + NoFrameAvailable`
+    - `Selected + WaitingForFrameAtOrBeforeTarget`
+  - use `HandoffError` only for named-pipe/runtime/transport failures
+  - do not collapse missing one real client into generic source error
+- remaining `2` slots should stay deterministic placeholder / no-frame slots in
+  the first `2`-real-slot slice
+- recommended stdout summary for the first `2`-real-slot command:
+  - `command_name`
+  - `real_handoff=true`
+  - `real_slot_count=2`
+  - `pipe_name`
+  - `real_slot0_index`
+  - `real_slot0_client_id`
+  - `real_slot0_run_id`
+  - `real_slot1_index`
+  - `real_slot1_client_id`
+  - `real_slot1_run_id`
+  - `frames_attempted`
+  - `frames_rendered`
+  - `render_failures`
+  - aggregate `scheduler_status`
+  - `slot_bindings`
+  - `slot_result_kinds`
+  - `clean_output_render_result_kind`
+  - `window_title=StreamSync 4-view Output`
+  - `output_width`
+  - `output_height`
+- still out of scope for that next slice:
+  - `4` real slots
+  - `Focused(slot_index)`
+  - full hotkey UI
+  - generic N-view refactor
+  - protocol wire-format changes
+  - H.264 behavior changes
+  - switcher-side fragment reassembly
+  - OBS WebSocket / advanced OBS control
+
 Out of scope for the first 4-view slice:
 
 - OBS output
