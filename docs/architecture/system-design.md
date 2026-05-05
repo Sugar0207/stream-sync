@@ -10530,7 +10530,47 @@ stream-sync-switcher --four-view-clean-output-window-loop [all-renderable] [fram
      receives that window in preview, and does not target `StreamSync 4-view`
    - the runtime remains dedicated-output-only and does not expose scheduler,
      composition, or decode internals to OBS
-8. Still out of scope for this runtime slice:
+   - the current persistent-loop rerun must still be treated as a failed OBS
+     validation because OBS could not select the window and the visible client
+     area stayed black even though runtime summary fields reported
+     `frames_rendered=300`, `render_failures=0`, `window_created=true`,
+     `persistent_window=true`, `window_updates=300`, and `window_closed=true`
+   - the previous lifecycle bug appears fixed; the next likely blocker is the
+     current output surface profile rather than window recreation
+   - a `4x2` client area is too small to be a meaningful OBS Window Capture
+     validation target, even if the runtime can technically render it
+   - the next smallest OBS-facing slice should therefore keep the persistent
+     window lifecycle and add an OBS-friendly output profile first, rather than
+     jumping to OBS WebSocket or daemon/service work
+   - preferred next profile:
+     - fixed output size `1280x720`
+     - deterministic `all-renderable` source remains the only first fixture
+     - scale the existing fixture/composed frame into that output surface
+     - keep stable title `StreamSync 4-view Output`
+   - do not widen the next slice into real handoff preview, Focused view, or a
+     generic N-view layout refactor
+8. Next OBS-friendly clean output profile plan:
+   - add an OBS validation profile before adding general-purpose output sizing
+     controls
+   - first preference is a fixed bounded validation profile rather than free
+     `output_width` / `output_height` arguments on the first pass
+   - the initial fixed profile should target `1280x720` at the existing 30 fps
+     loop cadence
+   - scale the deterministic source frame into the larger output surface
+     instead of treating the current `4x2` source size as the final visible
+     output size
+   - if OBS still cannot capture a visible surface after that profile exists,
+     only then investigate render-surface or window-style adjustments as the
+     next narrower slice
+   - next stdout additions should include:
+     - `source_width`
+     - `source_height`
+     - `output_width`
+     - `output_height`
+     - `scale_mode`
+     - `window_visible`
+     - `window_capture_candidate`
+9. Still out of scope for this runtime slice:
    - OBS output implementation
    - OBS API / OBS WebSocket / advanced OBS control
    - `--hold-ms` as the primary solution

@@ -1,5 +1,91 @@
 <!-- stream-sync/docs/operations/session-log.md -->
 
+## 2026-05-06
+### Type
+- Codex
+
+### Work
+- Recorded the mixed manual rerun result for the persistent clean output loop:
+  the window lifecycle fix held, but OBS Window Capture validation still
+  failed.
+- Added a planning/docs-only slice for the next OBS-friendly clean output
+  window profile rather than widening scope into OBS control APIs or real
+  handoff preview.
+- Fixed the next implementation target as a larger OBS-facing output surface
+  while preserving the current bounded deterministic loop and persistent window
+  identity.
+
+### Changed Files
+- `docs/architecture/system-design.md`
+- `docs/operations/manual-real-encoded-video-poc.md`
+- `docs/operations/session-log.md`
+- `docs/operations/todo.md`
+
+### Manual Validation Record
+- Persistent clean output loop stdout:
+
+```text
+switcher four-view clean output window loop command_name=--four-view-clean-output-window-loop fixture_mode=all-renderable clean_output_window=true actual_window_render=true real_handoff=false window_title=StreamSync 4-view Output frames_attempted=300 frames_rendered=300 render_failures=0 window_created=true persistent_window=true window_updates=300 window_closed=true width=4 height=2 bgra_payload_len=32
+```
+
+- OBS Window Capture retry result:
+  - could not select the window
+  - OBS preview did not show it
+  - the window remained one persistent window
+  - the visible window surface stayed black
+
+### Planning Decisions
+- The persistent window lifecycle fix is now considered successful:
+  - `window_created=true`
+  - `persistent_window=true`
+  - `window_updates=300`
+  - `window_closed=true`
+- This is still not a successful OBS validation.
+- `width=4` / `height=2` is too small to serve as a meaningful OBS Window
+  Capture validation target, even if the runtime reports successful rendering.
+- The next smallest OBS-facing slice should:
+  - keep the persistent clean output window lifecycle
+  - keep stable title `StreamSync 4-view Output`
+  - keep deterministic `all-renderable` as the first fixture
+  - add a fixed OBS validation profile with output size `1280x720`
+  - scale the current deterministic fixture/composed frame into that output
+    surface
+- Prefer a fixed validation profile before general `output_width` /
+  `output_height` arguments.
+- Render-surface or window-style adjustments should stay secondary until after
+  the larger output profile is tested.
+- Next stdout additions should include:
+  - `source_width`
+  - `source_height`
+  - `output_width`
+  - `output_height`
+  - `scale_mode`
+  - `window_visible`
+  - `window_capture_candidate`
+- Out of scope remains:
+  - OBS WebSocket / advanced OBS control
+  - real server->switcher handoff/manual preview
+  - `Focused(slot_index)`
+  - full hotkey UI
+  - generic N-view refactor
+  - protocol wire-format / H.264 behavior changes
+  - switcher-side fragment reassembly
+
+### TODO Update
+- Recorded that the persistent loop rerun fixed the recreate/flicker issue but
+  still failed OBS capture because the visible surface remained black.
+- Updated the next immediate task from lifecycle rerun to implementing an
+  OBS-friendly validation profile on the existing bounded loop.
+- Updated the manual checklist and architecture note so the next slice is now
+  the fixed `1280x720` output-profile path with scaling and extra stdout
+  visibility fields.
+
+### Validation
+- `cargo fmt` passed.
+- `cargo fmt --check` passed.
+- `cargo check --workspace` passed.
+- `git diff --check` passed.
+
 ## 2026-05-05
 ### Type
 - Codex

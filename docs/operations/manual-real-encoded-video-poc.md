@@ -153,6 +153,46 @@ persistent window/session across the bounded run. This is still not recorded as
 a successful OBS validation yet; rerun manual OBS validation against the
 persistent-lifecycle implementation before treating this slice as complete.
 
+Recorded limitation from the persistent-lifecycle rerun:
+
+- stdout reported:
+  - `frames_attempted=300`
+  - `frames_rendered=300`
+  - `render_failures=0`
+  - `window_created=true`
+  - `persistent_window=true`
+  - `window_updates=300`
+  - `window_closed=true`
+  - `width=4`
+  - `height=2`
+- the previous flicker/per-frame recreate behavior appeared fixed
+- but OBS Window Capture still could not select the window and preview stayed
+  empty
+- observed behavior was:
+  - one persistent window remained alive for the bounded run
+  - the visible window surface stayed black
+
+Treat this as an OBS-friendly output profile limitation, not as a completed OBS
+validation. The next preferred slice is:
+
+- keep the same persistent window lifecycle
+- keep the stable title `StreamSync 4-view Output`
+- keep the deterministic `all-renderable` fixture first
+- add a fixed OBS validation profile with output size `1280x720`
+- scale the current deterministic fixture/composed frame into that larger
+  output surface
+- extend stdout with:
+  - `source_width`
+  - `source_height`
+  - `output_width`
+  - `output_height`
+  - `scale_mode`
+  - `window_visible`
+  - `window_capture_candidate`
+
+Do not widen this next slice into OBS WebSocket, real server->switcher
+handoff/manual preview, Focused view, hotkey UI, or generic N-view work.
+
 ---
 
 ## 1. Prerequisite Checks
