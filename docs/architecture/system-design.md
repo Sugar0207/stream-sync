@@ -10443,6 +10443,76 @@ OBS Window Capture guidance / validation plan:
    - H.264 behavior changes
    - switcher-side fragment reassembly
 
+Dedicated clean output continuous/runtime path plan:
+
+1. Smallest behavior:
+   - add one thin switcher-side runtime command above the existing dedicated
+     clean output window boundary
+   - keep using the existing deterministic 4-view pipeline and the dedicated
+     clean output window title
+   - repeatedly render/update only the dedicated clean output window
+     `StreamSync 4-view Output`
+   - do not reopen or reuse the proof/debug window `StreamSync 4-view`
+   - keep OBS downstream of that output window and out of composition internals
+2. First fixture source:
+   - yes, the first continuous/runtime path should repeatedly render the
+     deterministic `all-renderable` fixture
+   - do not widen the first OBS-facing runtime to mixed placeholder/source-error
+     fixtures, real server->switcher handoff, or manual preview transport
+3. Bounded control:
+   - use bounded frames, not bounded duration, for the first runtime shape
+   - frame-count control keeps the command deterministic and easier to test
+   - use a fixed 30 fps render cadence so operator-visible lifetime is
+     approximately `max_frames / 30`
+   - a duration wrapper can remain later polish if needed, but it should not be
+     the first control surface
+4. Stable window identity:
+   - keep the dedicated output title exactly `StreamSync 4-view Output`
+   - do not change the proof/debug title
+5. Recommended stdout summary for this runtime:
+   - `frames_attempted`
+   - `frames_rendered`
+   - `render_failures`
+   - `window_title`
+   - `width`
+   - `height`
+   - `bgra_payload_len`
+   - optional but still useful: `command_name`, `fixture_mode`,
+     `clean_output_window=true`, `actual_window_render=true`,
+     `real_handoff=false`, and `stop_reason`
+6. CLI shape:
+   - add a new command rather than widening the one-shot proof/clean-output
+     commands
+   - preferred first shape:
+
+```text
+stream-sync-switcher --four-view-clean-output-window-loop [all-renderable] [frames]
+```
+
+   - `all-renderable` remains the first and recommended fixture mode
+   - `frames` is the bounded max-frame count for the loop run
+7. OBS Window Capture validation support:
+   - the loop provides a stable manual capture target long enough for an
+     operator to add a Window Capture source and select
+     `StreamSync 4-view Output`
+   - validation should confirm OBS sees the dedicated clean output window,
+     receives that window in preview, and does not target `StreamSync 4-view`
+   - the runtime remains dedicated-output-only and does not expose scheduler,
+     composition, or decode internals to OBS
+8. Still out of scope for this runtime slice:
+   - OBS output implementation
+   - OBS API / OBS WebSocket / advanced OBS control
+   - `--hold-ms` as the primary solution
+   - real server->switcher handoff/manual preview
+   - `Focused(slot_index)`
+   - full hotkey UI
+   - generic N-view refactor
+   - protocol wire-format changes
+   - H.264 behavior changes
+   - switcher-side fragment reassembly
+   - default tests that require real OS-window rendering
+   - an indefinite daemon/service mode
+
 Out of scope for the first 4-view slice:
 
 - OBS output

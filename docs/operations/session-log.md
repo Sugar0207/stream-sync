@@ -5,6 +5,81 @@
 - Codex
 
 ### Work
+- Added the planning/docs-only slice for the smallest dedicated clean output
+  continuous/runtime path that should follow the OBS Window Capture guidance
+  decision.
+- Fixed the next runtime shape as a bounded-frame loop over the dedicated clean
+  output window rather than a duration-first daemon or `--hold-ms` workaround.
+- Recorded the preferred CLI shape, stdout summary, OBS validation goal, and
+  explicit out-of-scope items before runtime implementation starts.
+
+### Changed Files
+- `docs/architecture/system-design.md`
+- `docs/operations/manual-real-encoded-video-poc.md`
+- `docs/operations/session-log.md`
+- `docs/operations/todo.md`
+
+### Planning Decisions
+- The smallest clean output continuous/runtime path should:
+  - stay downstream of the existing dedicated clean output window boundary
+  - repeatedly render only the dedicated clean output window
+  - keep the proof/debug window path separate
+- The first runtime should repeatedly render the deterministic
+  `all-renderable` fixture.
+- The first bounded control surface should be frame-count based, not
+  duration-based.
+  - use bounded `frames`
+  - use a fixed 30 fps cadence
+  - keep operator-visible lifetime roughly predictable without introducing an
+    indefinite service
+- The stable OBS-facing window title remains:
+  - `StreamSync 4-view Output`
+- The preferred next CLI shape is:
+  - `--four-view-clean-output-window-loop [all-renderable] [frames]`
+- The runtime stdout summary should include at least:
+  - `frames_attempted`
+  - `frames_rendered`
+  - `render_failures`
+  - `window_title`
+  - `width`
+  - `height`
+  - `bgra_payload_len`
+- This runtime should support OBS Window Capture validation by:
+  - keeping the dedicated output window alive long enough to select it in OBS
+  - preserving separation from the proof/debug window
+  - keeping OBS downstream of the clean output window only
+- Still out of scope:
+  - OBS output implementation
+  - OBS WebSocket / advanced OBS control
+  - `--hold-ms` as the primary solution
+  - real server->switcher handoff/manual preview
+  - `Focused(slot_index)`
+  - full hotkey UI
+  - generic N-view refactor
+  - protocol wire-format / H.264 behavior changes
+  - switcher-side fragment reassembly
+  - default tests that require real OS-window rendering
+  - indefinite daemon/service mode
+
+### TODO Update
+- Updated the immediate next task from a generic clean output runtime path to a
+  concrete bounded-loop command shape.
+- Added the dedicated clean output continuous/runtime path and loop command as
+  explicit pending TODO items.
+- Updated the manual OBS checklist note so the current one-shot command remains
+  identity proof only until the bounded loop runtime exists.
+
+### Validation
+- `cargo fmt` passed.
+- `cargo fmt --check` passed.
+- `cargo check --workspace` passed.
+- `git diff --check` passed.
+
+## 2026-05-05
+### Type
+- Codex
+
+### Work
 - Added the planning/docs-only slice for OBS Window Capture guidance and
   validation after the successful dedicated clean output window proof.
 - Fixed the first OBS validation path as manual Window Capture guidance against
