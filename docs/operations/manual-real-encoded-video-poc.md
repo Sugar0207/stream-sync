@@ -48,6 +48,11 @@ switcher chain. It is deterministic, uses in-process fixtures plus fake or
 backend-unavailable window-render behavior, and does not prove actual OS-window
 render, OBS output, or real server->switcher handoff.
 
+The next planned manual proof for 4-view actual OS-window rendering should stay
+separate from this command. Keep `--four-view-proof-fixture-once` as the
+backend-free deterministic proof utility, and add a later isolated actual-window
+proof command that starts with the `all-renderable` fixture only.
+
 ---
 
 ## 1. Prerequisite Checks

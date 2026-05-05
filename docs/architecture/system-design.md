@@ -10171,6 +10171,85 @@ larger questions:
 - H.264 behavior changes
 - switcher-side fragment reassembly
 
+With the deterministic fixture CLI now manually validated for all three fixture
+modes, the next proof-oriented slice should be actual OS-window proof before
+OBS/output boundary planning.
+
+Actual OS-window proof plan:
+
+1. Reuse the existing 4-view proof chain and window-render path:
+
+```text
+deterministic in-process fixture queue
+  -> SwitcherFourViewManualPreviewProofBoundary
+    -> SwitcherFourViewHandoffValidationBoundary
+      -> composed-canvas window render boundary
+        -> existing SwitcherWindowRenderRuntimeHook
+```
+
+2. Do not replace the current deterministic CLI behavior. Keep
+   `--four-view-proof-fixture-once` as the backend-free proof command.
+3. Add a separate actual-OS proof command rather than a flag on the existing
+   deterministic command. The goal is to keep the existing fixture CLI stable,
+   deterministic, CI-safe, and explicitly `actual_window_render=false`.
+4. The first actual OS-window proof should use the deterministic
+   `all-renderable` fixture only.
+   - It is the smallest proof that the composed BGRA `QuadView` can reach a
+     real OS window.
+   - It avoids mixing placeholder semantics with first-pass window backend
+     troubleshooting.
+   - `mixed-placeholder-source-error` and `placeholder-only` can remain later
+     targeted diagnostics after one successful all-renderable window proof.
+5. The proof should display one isolated fixed 2x2 `QuadView` window backed by
+   the existing composed BGRA frame output. The proof window remains
+   switcher-local and does not imply OBS ownership.
+
+Recommended actual-OS proof command shape:
+
+- `stream-sync-switcher --four-view-proof-window-once [all-renderable]`
+- allow the initial implementation to default to `all-renderable`
+- keep any later expansion to mixed/placeholder fixture modes optional and
+  explicitly secondary
+
+Recommended stdout summary for the first actual-OS proof:
+
+- `fixture_mode`
+- `deterministic_fixture=true`
+- `real_handoff=false`
+- `actual_window_render=true`
+- `target_timestamp`
+- `scheduler_status`
+- `bgra_composition_result_kind`
+- `render_facing_result_kind`
+- `window_render_result_kind`
+- `placeholder_count`
+- `source_error_count`
+- composed width / height when renderable
+- rendered window title when available
+
+Render failure reporting policy:
+
+- keep upstream `bgra_composition_result_kind` and
+  `render_facing_result_kind` visible even when window render fails
+- report the window result explicitly as its own result kind, for example:
+  `Rendered`, `BackendUnavailable`, `InvalidFrame`, or `RenderFailed`
+- keep backend/runtime failure detail in a dedicated summary field rather than
+  collapsing it into `NoRenderableQuadView`
+- manual proof failure should stay attributable to the window backend layer,
+  not be confused with scheduler/composition failure
+
+Out of scope for that actual-OS proof slice:
+
+- OBS output
+- real server->switcher handoff/manual preview
+- `Focused(slot_index)`
+- full hotkey UI
+- generic N-view refactor
+- protocol wire-format changes
+- H.264 behavior changes
+- switcher-side fragment reassembly
+- default tests that require real OS-window rendering
+
 Out of scope for the first 4-view slice:
 
 - OBS output

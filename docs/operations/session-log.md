@@ -5,6 +5,76 @@
 - Codex
 
 ### Work
+- Added the planning/docs-only slice for the next 4-view actual OS-window
+  proof.
+- Fixed the next step order as actual OS window proof first and OBS/output
+  boundary planning later.
+- Kept the deterministic fixture CLI unchanged and CI-safe while documenting a
+  separate manual command path for real window proof.
+
+### Changed Files
+- `docs/architecture/system-design.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+- `docs/operations/manual-real-encoded-video-poc.md`
+
+### Implemented
+- Documented which existing runtime/path should be reused:
+  - `SwitcherFourViewManualPreviewProofBoundary`
+  - `SwitcherFourViewHandoffValidationBoundary`
+  - existing composed-canvas window render boundary
+  - existing `SwitcherWindowRenderRuntimeHook`
+- Documented that the first actual OS proof should use the deterministic
+  `all-renderable` fixture only.
+- Documented that the actual OS proof should use a separate command rather
+  than adding a flag to `--four-view-proof-fixture-once`, so the current
+  deterministic CLI remains stable and `actual_window_render=false`.
+- Documented that the proof should display one isolated fixed 2x2 `QuadView`
+  window using the existing composed BGRA output.
+- Documented the recommended stdout summary fields:
+  - `fixture_mode`
+  - `deterministic_fixture=true`
+  - `real_handoff=false`
+  - `actual_window_render=true`
+  - `target_timestamp`
+  - `scheduler_status`
+  - `bgra_composition_result_kind`
+  - `render_facing_result_kind`
+  - `window_render_result_kind`
+  - `placeholder_count`
+  - `source_error_count`
+  - composed width / height when renderable
+  - rendered window title when available
+- Documented render failure reporting policy:
+  - keep BGRA/render-facing results visible
+  - report explicit window render result kind
+  - keep backend/runtime error detail separate from `NoRenderableQuadView`
+- Documented out-of-scope items:
+  - OBS output
+  - real server->switcher handoff/manual preview
+  - `Focused(slot_index)`
+  - full hotkey UI
+  - generic N-view refactor
+  - protocol/H.264 changes
+  - switcher-side fragment reassembly
+  - default tests requiring real OS-window rendering
+
+### TODO Update
+- Replaced the undecided next-step question with a fixed next implementation
+  target: isolated actual OS window proof.
+- Recorded that OBS/output boundary planning stays downstream of that proof.
+
+### Validation
+- `cargo fmt` passed.
+- `cargo fmt --check` passed.
+- `cargo check --workspace` passed.
+- `git diff --check` passed.
+
+## 2026-05-05
+### Type
+- Codex
+
+### Work
 - Recorded the manual stdout validation result for the deterministic 4-view
   proof fixture CLI.
 - Confirmed the current 4-view internal proof path is complete enough to close
