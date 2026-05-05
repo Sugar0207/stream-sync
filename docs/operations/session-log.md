@@ -5,6 +5,75 @@
 - Codex
 
 ### Work
+- Implemented the smallest bounded clean output loop runtime and switcher CLI
+  command for stable OBS Window Capture validation.
+- Kept the existing proof-window command and one-shot clean-output command
+  unchanged while adding a separate bounded frame-count runtime above the
+  dedicated clean output window path.
+- Preserved backend-free default tests by using fake render runtimes and a fake
+  cadence-sleep hook instead of requiring real OS window rendering.
+
+### Changed Files
+- `apps/switcher/src/main.rs`
+- `docs/architecture/system-design.md`
+- `docs/operations/manual-real-encoded-video-poc.md`
+- `docs/operations/session-log.md`
+- `docs/operations/todo.md`
+
+### Implemented
+- Added switcher CLI command:
+  - `--four-view-clean-output-window-loop [all-renderable] [frames]`
+- Current command behavior:
+  - accepts only deterministic `all-renderable`
+  - rejects unsupported fixture modes explicitly
+  - validates `frames` as a positive bounded integer
+  - reuses the dedicated clean output window path
+  - preserves window title `StreamSync 4-view Output`
+  - renders the deterministic fixture repeatedly for exactly `frames`
+    iterations
+  - uses a fixed 30 fps cadence between iterations
+  - prints:
+    - `command_name`
+    - `fixture_mode`
+    - `clean_output_window=true`
+    - `actual_window_render=true`
+    - `real_handoff=false`
+    - `window_title`
+    - `frames_attempted`
+    - `frames_rendered`
+    - `render_failures`
+    - `width`
+    - `height`
+    - `bgra_payload_len`
+- Added helper/formatter coverage for:
+  - all-renderable-only fixture parsing
+  - positive `frames` parsing
+  - bounded loop rendered-frame counting
+  - explicit render-failure counting
+  - cadence sleep count / 30 fps interval preservation
+  - loop stdout summary formatting
+
+### TODO Update
+- Marked the dedicated clean output continuous/runtime path and bounded loop
+  command complete.
+- Moved the next immediate task to a manual actual loop pass and OBS Window
+  Capture validation using `StreamSync 4-view Output`.
+- Updated the manual checklist so the bounded loop command is now the preferred
+  stable OBS-facing runtime path.
+
+### Validation
+- `cargo fmt` passed.
+- `cargo fmt --check` passed.
+- `cargo test -p stream-sync-switcher four_view -- --test-threads=1` passed.
+- `cargo test -p stream-sync-switcher handoff -- --test-threads=1` passed.
+- `cargo check --workspace` passed.
+- `git diff --check` passed.
+
+## 2026-05-05
+### Type
+- Codex
+
+### Work
 - Added the planning/docs-only slice for the smallest dedicated clean output
   continuous/runtime path that should follow the OBS Window Capture guidance
   decision.

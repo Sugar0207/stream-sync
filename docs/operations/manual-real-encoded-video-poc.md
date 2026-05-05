@@ -98,31 +98,37 @@ first, then add a longer-lived dedicated clean output runtime path before
 attempting stable OBS operator validation. A future `--hold-ms` can remain
 optional polish rather than the primary OBS-facing plan.
 
-The next planned runtime for that stable manual OBS path is:
+The bounded clean output loop command for that stable manual OBS path now
+exists:
 
 ```text
 stream-sync-switcher --four-view-clean-output-window-loop [all-renderable] [frames]
 ```
 
-Planned behavior for that command:
+Current behavior for that command:
 
 - keep the stable clean output title `StreamSync 4-view Output`
 - repeatedly render the deterministic `all-renderable` fixture first
 - stay bounded by frame count rather than becoming an indefinite daemon
 - use a fixed 30 fps cadence so the visible lifetime is roughly
   `frames / 30`
-- print at least:
+- print:
+  - `command_name`
+  - `fixture_mode`
+  - `clean_output_window=true`
+  - `actual_window_render=true`
+  - `real_handoff=false`
+  - `window_title`
   - `frames_attempted`
   - `frames_rendered`
   - `render_failures`
-  - `window_title`
   - `width`
   - `height`
   - `bgra_payload_len`
 
-Until that bounded loop command exists, treat OBS operator validation as
-planned-only. The current one-shot command is still useful for identity proof,
-but not yet as the stable manual OBS selection target.
+Use this command, not the one-shot clean output command, when manual OBS Window
+Capture validation needs a longer-lived stable capture target. The one-shot
+command remains useful as a thinner identity proof path.
 
 ---
 

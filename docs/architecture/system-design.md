@@ -10489,6 +10489,29 @@ Dedicated clean output continuous/runtime path plan:
 stream-sync-switcher --four-view-clean-output-window-loop [all-renderable] [frames]
 ```
 
+   - this command now exists as the first bounded clean output runtime
+   - it accepts only `all-renderable` in this slice and rejects other fixture
+     modes explicitly
+   - it validates `frames` as a positive bounded integer
+   - it reuses the dedicated clean output window path and stable title
+     `StreamSync 4-view Output`
+   - it repeats deterministic fixture rendering for exactly `frames`
+     iterations
+   - it uses a fixed 30 fps cadence between iterations
+   - it prints:
+     - `command_name`
+     - `fixture_mode`
+     - `clean_output_window=true`
+     - `actual_window_render=true`
+     - `real_handoff=false`
+     - `window_title`
+     - `frames_attempted`
+     - `frames_rendered`
+     - `render_failures`
+     - `width`
+     - `height`
+     - `bgra_payload_len`
+
    - `all-renderable` remains the first and recommended fixture mode
    - `frames` is the bounded max-frame count for the loop run
 7. OBS Window Capture validation support:

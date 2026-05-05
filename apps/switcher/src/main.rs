@@ -1,3 +1,6 @@
+use std::num::NonZeroU32;
+use std::thread;
+use std::time::Duration;
 use stream_sync_net_core::PacketSource;
 use stream_sync_protocol::{
     ClientId, Codec, MessageType, ProtocolVersion, RunId, TimestampMicros, VideoFrame,
@@ -267,6 +270,15 @@ fn main() {
                 format_four_view_clean_output_window_summary(fixture_mode, &result)
             );
         }
+        Some("--four-view-clean-output-window-loop") => {
+            let fixture_mode = parse_four_view_actual_window_fixture_mode_or_exit(args.next());
+            let frames = parse_positive_u32_arg_or_exit(args.next(), "frames");
+            let summary = run_four_view_clean_output_window_loop(fixture_mode, frames);
+            println!(
+                "{}",
+                format_four_view_clean_output_window_loop_summary(&summary)
+            );
+        }
         Some("--read-queued-frame-handoff-once") => {
             let pipe_name = args.next().unwrap_or_else(|| {
                 eprintln!("missing pipe-name");
@@ -297,7 +309,7 @@ fn main() {
         }
         _ => {
             println!(
-                "stream-sync-switcher scaffold; use --placeholder-fixture-once [client-id], --placeholder-empty-once [client-id], --decode-latest-frame-once [client-id] [output-path], --receive-auth-video-placeholder-bridge-once [config-path] [client-id], --receive-auth-video-decode-latest-once [config-path] [client-id] [output-path], --receive-auth-video-render-decoded-once [config-path] [client-id] [hold-ms], --two-view-sync-fixture-once [left-client-id] [right-client-id] [hold-ms], --render-two-view-composed-fixture-once [hold-ms], --live-two-view-switcher-once [config-path] [left-client-id] [right-client-id], --four-view-proof-fixture-once [all-renderable|mixed-placeholder-source-error|placeholder-only], --four-view-proof-window-once [all-renderable], --four-view-clean-output-window-once [all-renderable], or --read-queued-frame-handoff-once [pipe-name] [client-id] [run-id] [read-mode] [request-id]"
+                "stream-sync-switcher scaffold; use --placeholder-fixture-once [client-id], --placeholder-empty-once [client-id], --decode-latest-frame-once [client-id] [output-path], --receive-auth-video-placeholder-bridge-once [config-path] [client-id], --receive-auth-video-decode-latest-once [config-path] [client-id] [output-path], --receive-auth-video-render-decoded-once [config-path] [client-id] [hold-ms], --two-view-sync-fixture-once [left-client-id] [right-client-id] [hold-ms], --render-two-view-composed-fixture-once [hold-ms], --live-two-view-switcher-once [config-path] [left-client-id] [right-client-id], --four-view-proof-fixture-once [all-renderable|mixed-placeholder-source-error|placeholder-only], --four-view-proof-window-once [all-renderable], --four-view-clean-output-window-once [all-renderable], --four-view-clean-output-window-loop [all-renderable] [frames], or --read-queued-frame-handoff-once [pipe-name] [client-id] [run-id] [read-mode] [request-id]"
             );
         }
     }
@@ -638,6 +650,21 @@ where
     })
 }
 
+fn parse_positive_u32_arg(value: Option<String>, name: &str) -> Result<NonZeroU32, String> {
+    let value = value.ok_or_else(|| format!("missing {name}"))?;
+    let parsed = value
+        .parse::<u32>()
+        .map_err(|error| format!("invalid {name}: {error}"))?;
+    NonZeroU32::new(parsed).ok_or_else(|| format!("invalid {name}: expected positive integer"))
+}
+
+fn parse_positive_u32_arg_or_exit(value: Option<String>, name: &str) -> NonZeroU32 {
+    parse_positive_u32_arg(value, name).unwrap_or_else(|error| {
+        eprintln!("{error}");
+        std::process::exit(1);
+    })
+}
+
 fn parse_handoff_mode_or_exit(
     value: Option<String>,
     name: &str,
@@ -945,14 +972,20 @@ fn parse_four_view_manual_preview_fixture_mode_or_exit(
 fn parse_four_view_actual_window_fixture_mode_or_exit(
     value: Option<String>,
 ) -> SwitcherFourViewManualPreviewProofFixtureMode {
+    parse_four_view_all_renderable_fixture_mode(value).unwrap_or_else(|error| {
+        eprintln!("{error}");
+        std::process::exit(1);
+    })
+}
+
+fn parse_four_view_all_renderable_fixture_mode(
+    value: Option<String>,
+) -> Result<SwitcherFourViewManualPreviewProofFixtureMode, String> {
     match value.as_deref() {
         Some("all-renderable") | None => {
-            SwitcherFourViewManualPreviewProofFixtureMode::AllRenderable
+            Ok(SwitcherFourViewManualPreviewProofFixtureMode::AllRenderable)
         }
-        Some(_) => {
-            eprintln!("invalid fixture-mode: expected all-renderable");
-            std::process::exit(1);
-        }
+        Some(_) => Err("invalid fixture-mode: expected all-renderable".to_string()),
     }
 }
 
@@ -1025,6 +1058,116 @@ fn run_four_view_clean_output_window_with_runtime(
         &DeterministicFourViewFixtureDecodeRuntime,
         render_runtime,
     )
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct SwitcherFourViewCleanOutputWindowLoopSummary {
+    fixture_mode: SwitcherFourViewManualPreviewProofFixtureMode,
+    window_title: String,
+    frames_attempted: u32,
+    frames_rendered: u32,
+    render_failures: u32,
+    width: Option<u32>,
+    height: Option<u32>,
+    bgra_payload_len: Option<usize>,
+}
+
+trait SwitcherFrameCadenceSleepHook {
+    fn sleep(&self, duration: Duration);
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+struct RealSwitcherFrameCadenceSleepHook;
+
+impl SwitcherFrameCadenceSleepHook for RealSwitcherFrameCadenceSleepHook {
+    fn sleep(&self, duration: Duration) {
+        thread::sleep(duration);
+    }
+}
+
+fn run_four_view_clean_output_window_loop(
+    fixture_mode: SwitcherFourViewManualPreviewProofFixtureMode,
+    frames: NonZeroU32,
+) -> SwitcherFourViewCleanOutputWindowLoopSummary {
+    #[cfg(target_os = "windows")]
+    {
+        run_four_view_clean_output_window_loop_with_runtime_and_sleep(
+            fixture_mode,
+            frames,
+            &SwitcherWindowsGdiWindowRenderRuntimeHook,
+            &RealSwitcherFrameCadenceSleepHook,
+        )
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        run_four_view_clean_output_window_loop_with_runtime_and_sleep(
+            fixture_mode,
+            frames,
+            &SwitcherUnavailableWindowRenderRuntimeHook,
+            &RealSwitcherFrameCadenceSleepHook,
+        )
+    }
+}
+
+fn run_four_view_clean_output_window_loop_with_runtime_and_sleep(
+    fixture_mode: SwitcherFourViewManualPreviewProofFixtureMode,
+    frames: NonZeroU32,
+    render_runtime: &impl SwitcherWindowRenderRuntimeHook,
+    cadence_sleep: &impl SwitcherFrameCadenceSleepHook,
+) -> SwitcherFourViewCleanOutputWindowLoopSummary {
+    let mut frames_attempted = 0u32;
+    let mut frames_rendered = 0u32;
+    let mut render_failures = 0u32;
+    let mut width = None;
+    let mut height = None;
+    let mut bgra_payload_len = None;
+    let mut window_title = String::new();
+    let cadence = four_view_clean_output_window_loop_frame_cadence();
+
+    for frame_index in 0..frames.get() {
+        let result = run_four_view_clean_output_window_with_runtime(fixture_mode, render_runtime);
+        frames_attempted += 1;
+        window_title = result.clean_output.window_identity.title.clone();
+        let dimensions =
+            four_view_clean_output_window_ready_dimensions(&result.clean_output.output_window);
+        width = dimensions.0;
+        height = dimensions.1;
+        bgra_payload_len = dimensions.2;
+
+        if let SwitcherFourViewCleanOutputWindowRenderResult::RenderReady { render, .. } =
+            &result.clean_output.output_window
+        {
+            match render {
+                SwitcherFourViewComposedCanvasRenderResult::Rendered { .. } => {
+                    frames_rendered += 1;
+                }
+                SwitcherFourViewComposedCanvasRenderResult::RenderFailed { .. } => {
+                    render_failures += 1;
+                }
+                _ => {}
+            }
+        }
+
+        if frame_index + 1 < frames.get() {
+            cadence_sleep.sleep(cadence);
+        }
+    }
+
+    SwitcherFourViewCleanOutputWindowLoopSummary {
+        fixture_mode,
+        window_title,
+        frames_attempted,
+        frames_rendered,
+        render_failures,
+        width,
+        height,
+        bgra_payload_len,
+    }
+}
+
+fn four_view_clean_output_window_loop_frame_cadence() -> Duration {
+    Duration::from_secs_f64(1.0 / 30.0)
 }
 
 fn default_four_view_manual_preview_proof_input(
@@ -1136,6 +1279,22 @@ fn format_four_view_clean_output_window_summary(
         format_optional_usize(bgra_payload_len),
         placeholder_count,
         source_error_count,
+    )
+}
+
+fn format_four_view_clean_output_window_loop_summary(
+    summary: &SwitcherFourViewCleanOutputWindowLoopSummary,
+) -> String {
+    format!(
+        "switcher four-view clean output window loop command_name=--four-view-clean-output-window-loop fixture_mode={} clean_output_window=true actual_window_render=true real_handoff=false window_title={} frames_attempted={} frames_rendered={} render_failures={} width={} height={} bgra_payload_len={}",
+        format_four_view_manual_preview_fixture_mode_name(summary.fixture_mode),
+        summary.window_title,
+        summary.frames_attempted,
+        summary.frames_rendered,
+        summary.render_failures,
+        format_optional_u32(summary.width),
+        format_optional_u32(summary.height),
+        format_optional_usize(summary.bgra_payload_len),
     )
 }
 
@@ -1556,6 +1715,10 @@ fn store_fixture_frame(
 
 #[cfg(test)]
 mod tests {
+    use std::cell::RefCell;
+    use std::num::NonZeroU32;
+    use std::time::Duration;
+
     use stream_sync_protocol::{ClientId, Codec, RunId, TimestampMicros};
     use stream_sync_switcher::{
         SwitcherFourViewCleanOutputWindowRenderResult,
@@ -1575,16 +1738,20 @@ mod tests {
     };
 
     use super::{
+        format_four_view_clean_output_window_loop_summary,
         format_four_view_clean_output_window_summary,
         format_four_view_manual_preview_proof_summary,
         format_four_view_manual_preview_window_summary, format_handoff_mode,
         format_handoff_read_mode, format_named_pipe_handoff_switcher_result_summary,
         format_named_pipe_handoff_switcher_summary,
+        four_view_clean_output_window_loop_frame_cadence,
         parse_four_view_actual_window_fixture_mode_or_exit,
+        parse_four_view_all_renderable_fixture_mode,
         parse_four_view_manual_preview_fixture_mode_or_exit, parse_handoff_mode_or_exit,
+        parse_positive_u32_arg, run_four_view_clean_output_window_loop_with_runtime_and_sleep,
         run_four_view_clean_output_window_with_runtime, run_four_view_manual_preview_proof_once,
-        run_four_view_manual_preview_proof_with_runtime, SwitcherQueuedFrameHandoffResult,
-        SwitcherSingleClientQueueSourceMode,
+        run_four_view_manual_preview_proof_with_runtime, SwitcherFrameCadenceSleepHook,
+        SwitcherQueuedFrameHandoffResult, SwitcherSingleClientQueueSourceMode,
     };
     use stream_sync_switcher::SWITCHER_FOUR_VIEW_CLEAN_OUTPUT_WINDOW_TITLE;
 
@@ -1750,6 +1917,29 @@ mod tests {
     }
 
     #[test]
+    fn switcher_four_view_all_renderable_fixture_mode_rejects_unsupported_modes() {
+        let error = parse_four_view_all_renderable_fixture_mode(Some(
+            "mixed-placeholder-source-error".to_string(),
+        ))
+        .expect_err("unsupported fixture mode should be rejected");
+
+        assert_eq!(error, "invalid fixture-mode: expected all-renderable");
+    }
+
+    #[test]
+    fn switcher_four_view_clean_output_loop_frames_parse_positive_integer() {
+        assert_eq!(
+            parse_positive_u32_arg(Some("3".to_string()), "frames")
+                .expect("positive frames should parse"),
+            NonZeroU32::new(3).expect("3 should be non-zero")
+        );
+
+        let zero_error =
+            parse_positive_u32_arg(Some("0".to_string()), "frames").expect_err("zero is invalid");
+        assert_eq!(zero_error, "invalid frames: expected positive integer");
+    }
+
+    #[test]
     fn switcher_four_view_manual_proof_helper_uses_deterministic_backend_free_runtime() {
         let result = run_four_view_manual_preview_proof_once(
             SwitcherFourViewManualPreviewProofFixtureMode::AllRenderable,
@@ -1813,6 +2003,17 @@ mod tests {
             SwitcherWindowRenderResult::RenderFailed {
                 message: "fixture render failed".to_string(),
             }
+        }
+    }
+
+    #[derive(Debug, Default)]
+    struct RecordingCadenceSleepHook {
+        durations: RefCell<Vec<Duration>>,
+    }
+
+    impl SwitcherFrameCadenceSleepHook for RecordingCadenceSleepHook {
+        fn sleep(&self, duration: Duration) {
+            self.durations.borrow_mut().push(duration);
         }
     }
 
@@ -1932,5 +2133,77 @@ mod tests {
             "window_title={}",
             SWITCHER_FOUR_VIEW_CLEAN_OUTPUT_WINDOW_TITLE
         )));
+    }
+
+    #[test]
+    fn switcher_four_view_clean_output_loop_counts_rendered_frames_and_sleeps_between_frames() {
+        let sleep_hook = RecordingCadenceSleepHook::default();
+        let summary = run_four_view_clean_output_window_loop_with_runtime_and_sleep(
+            SwitcherFourViewManualPreviewProofFixtureMode::AllRenderable,
+            NonZeroU32::new(3).expect("3 should be non-zero"),
+            &FixtureRenderedWindowRuntime,
+            &sleep_hook,
+        );
+
+        assert_eq!(summary.frames_attempted, 3);
+        assert_eq!(summary.frames_rendered, 3);
+        assert_eq!(summary.render_failures, 0);
+        assert_eq!(
+            summary.window_title,
+            SWITCHER_FOUR_VIEW_CLEAN_OUTPUT_WINDOW_TITLE
+        );
+        assert_eq!(summary.width, Some(4));
+        assert_eq!(summary.height, Some(2));
+        assert_eq!(summary.bgra_payload_len, Some(32));
+
+        let durations = sleep_hook.durations.borrow();
+        assert_eq!(durations.len(), 2);
+        assert!(durations
+            .iter()
+            .all(|duration| *duration == four_view_clean_output_window_loop_frame_cadence()));
+    }
+
+    #[test]
+    fn switcher_four_view_clean_output_loop_counts_render_failures_explicitly() {
+        let summary = run_four_view_clean_output_window_loop_with_runtime_and_sleep(
+            SwitcherFourViewManualPreviewProofFixtureMode::AllRenderable,
+            NonZeroU32::new(2).expect("2 should be non-zero"),
+            &FixtureRenderFailedWindowRuntime,
+            &RecordingCadenceSleepHook::default(),
+        );
+
+        assert_eq!(summary.frames_attempted, 2);
+        assert_eq!(summary.frames_rendered, 0);
+        assert_eq!(summary.render_failures, 2);
+        assert_eq!(summary.width, Some(4));
+        assert_eq!(summary.height, Some(2));
+        assert_eq!(summary.bgra_payload_len, Some(32));
+    }
+
+    #[test]
+    fn switcher_four_view_clean_output_loop_summary_formats_expected_fields() {
+        let summary = run_four_view_clean_output_window_loop_with_runtime_and_sleep(
+            SwitcherFourViewManualPreviewProofFixtureMode::AllRenderable,
+            NonZeroU32::new(2).expect("2 should be non-zero"),
+            &FixtureRenderedWindowRuntime,
+            &RecordingCadenceSleepHook::default(),
+        );
+        let formatted = format_four_view_clean_output_window_loop_summary(&summary);
+
+        assert!(formatted.contains("command_name=--four-view-clean-output-window-loop"));
+        assert!(formatted.contains("fixture_mode=all-renderable"));
+        assert!(formatted.contains("clean_output_window=true"));
+        assert!(formatted.contains("actual_window_render=true"));
+        assert!(formatted.contains("real_handoff=false"));
+        assert!(formatted.contains(&format!(
+            "window_title={}",
+            SWITCHER_FOUR_VIEW_CLEAN_OUTPUT_WINDOW_TITLE
+        )));
+        assert!(formatted.contains("frames_attempted=2"));
+        assert!(formatted.contains("frames_rendered=2"));
+        assert!(formatted.contains("render_failures=0"));
+        assert!(formatted.contains("width=4"));
+        assert!(formatted.contains("height=2"));
+        assert!(formatted.contains("bgra_payload_len=32"));
     }
 }
