@@ -84,7 +84,11 @@ StreamSync 4-view Output
 This command remains deterministic and `real_handoff=false`. It is still not
 OBS output itself, does not prove real server->switcher handoff/manual preview,
 and currently keeps hold duration at `0`, so a future `--hold-ms` remains
-optional polish only.
+optional polish only. In the latest recorded manual pass, a window appeared and
+then closed immediately. Because the command is still one-shot, the title could
+not be visually confirmed before close; treat the stdout
+`window_title=StreamSync 4-view Output` as the current identity proof for this
+slice.
 
 ---
 

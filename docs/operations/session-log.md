@@ -5,6 +5,73 @@
 - Codex
 
 ### Work
+- Recorded the successful manual actual proof for the dedicated 4-view clean
+  output window command.
+- Captured stdout, observed one-shot window behavior, and the conclusion that
+  the dedicated clean output path reached actual OS-window rendering while
+  staying isolated from OBS output and real server->switcher handoff.
+- Moved the next task from manual clean-output proof to OBS Window Capture
+  guidance / validation planning.
+
+### Changed Files
+- `docs/architecture/system-design.md`
+- `docs/operations/manual-real-encoded-video-poc.md`
+- `docs/operations/session-log.md`
+- `docs/operations/todo.md`
+
+### Manual Proof
+- Command:
+  - `cargo run -p stream-sync-switcher -- --four-view-clean-output-window-once all-renderable`
+- Stdout:
+
+```text
+switcher four-view clean output window command_name=--four-view-clean-output-window-once fixture_mode=all-renderable clean_output_window=true actual_window_render=true real_handoff=false window_title=StreamSync 4-view Output scheduler_status=AllSelected render_facing_result_kind=RenderReady output_window_result_kind=Rendered width=4 height=2 bgra_payload_len=32 placeholder_count=0 source_error_count=0
+```
+
+- Observed window behavior:
+  - a window appeared
+  - the title could not be visually confirmed because it closed immediately
+  - it closed immediately
+
+### Conclusion
+- clean output command succeeded
+- dedicated clean output path reached actual OS-window render
+- `output_window_result_kind=Rendered`
+- `clean_output_window=true`
+- `actual_window_render=true`
+- `real_handoff=false`
+- stdout carried `window_title=StreamSync 4-view Output`
+- `scheduler_status=AllSelected`
+- `render_facing_result_kind=RenderReady`
+- `width=4`
+- `height=2`
+- `bgra_payload_len=32`
+- `placeholder_count=0`
+- `source_error_count=0`
+- proof window path remains separate
+- one-shot immediate close is expected
+- visual title confirmation is still blocked by the one-shot immediate close,
+  but stdout identity is correct
+- next step should be OBS Window Capture guidance / validation planning
+- future `--hold-ms` remains optional polish only
+
+### TODO Update
+- Marked manual clean output window proof complete.
+- Moved the next immediate task to OBS Window Capture guidance / validation
+  planning.
+- Kept `--hold-ms` as future polish only.
+
+### Validation
+- `cargo fmt` passed.
+- `cargo fmt --check` passed.
+- `cargo check --workspace` passed.
+- `git diff --check` passed.
+
+## 2026-05-05
+### Type
+- Codex
+
+### Work
 - Added the smallest thin manual/runtime entry point for the dedicated 4-view
   clean output window path.
 - Kept the existing deterministic proof command and actual proof-window command

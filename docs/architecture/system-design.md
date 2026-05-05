@@ -10379,6 +10379,22 @@ Current command position:
 - still does not add OBS API control, OBS WebSocket, or real
   server->switcher handoff/manual preview
 
+The dedicated clean output command has now been manually proven to reach actual
+OS-window rendering with:
+
+- `clean_output_window=true`
+- `actual_window_render=true`
+- `real_handoff=false`
+- `window_title=StreamSync 4-view Output`
+- `scheduler_status=AllSelected`
+- `render_facing_result_kind=RenderReady`
+- `output_window_result_kind=Rendered`
+
+The one-shot immediate close remains expected. The next step is manual OBS
+Window Capture guidance / validation planning, not OBS API work. A future
+`--hold-ms` may still be useful for visual confirmation but remains optional
+polish only.
+
 Out of scope for the first 4-view slice:
 
 - OBS output
