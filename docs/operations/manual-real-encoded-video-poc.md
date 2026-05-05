@@ -112,6 +112,9 @@ Current behavior for that command:
 - stay bounded by frame count rather than becoming an indefinite daemon
 - use a fixed 30 fps cadence so the visible lifetime is roughly
   `frames / 30`
+- keep one persistent window identity for the whole bounded loop
+- update that same window per frame
+- close the window once after the bounded loop completes
 - print:
   - `command_name`
   - `fixture_mode`
@@ -122,6 +125,10 @@ Current behavior for that command:
   - `frames_attempted`
   - `frames_rendered`
   - `render_failures`
+  - `window_created`
+  - `persistent_window`
+  - `window_updates`
+  - `window_closed`
   - `width`
   - `height`
   - `bgra_payload_len`
@@ -129,6 +136,22 @@ Current behavior for that command:
 Use this command, not the one-shot clean output command, when manual OBS Window
 Capture validation needs a longer-lived stable capture target. The one-shot
 command remains useful as a thinner identity proof path.
+
+Recorded limitation from the first non-persistent loop attempt:
+
+- stdout reported:
+  - `frames_attempted=300`
+  - `frames_rendered=300`
+  - `render_failures=0`
+- but OBS Window Capture could not select the window and preview stayed empty
+- observed behavior was repeated brief window appearance/disappearance during
+  the loop, which strongly suggested one window was being created and closed per
+  frame
+
+That limitation is the reason the current loop implementation now requires one
+persistent window/session across the bounded run. This is still not recorded as
+a successful OBS validation yet; rerun manual OBS validation against the
+persistent-lifecycle implementation before treating this slice as complete.
 
 ---
 

@@ -5,6 +5,76 @@
 - Codex
 
 ### Work
+- Recorded the mixed manual result for the first bounded clean output loop:
+  rendering succeeded for all 300 frames, but OBS Window Capture validation
+  failed because the loop appeared to recreate the window every frame.
+- Implemented the smallest persistent clean output window lifecycle for the
+  existing `--four-view-clean-output-window-loop` command.
+- Kept the one-shot proof commands unchanged while changing only the bounded
+  loop path to use one persistent window/session per loop.
+
+### Changed Files
+- `apps/switcher/src/main.rs`
+- `docs/architecture/system-design.md`
+- `docs/operations/manual-real-encoded-video-poc.md`
+- `docs/operations/session-log.md`
+- `docs/operations/todo.md`
+
+### Manual Validation Record
+- Previous clean output loop stdout:
+
+```text
+switcher four-view clean output window loop command_name=--four-view-clean-output-window-loop fixture_mode=all-renderable clean_output_window=true actual_window_render=true real_handoff=false window_title=StreamSync 4-view Output frames_attempted=300 frames_rendered=300 render_failures=0 width=4 height=2 bgra_payload_len=32
+```
+
+- OBS Window Capture result:
+  - could not select the window
+  - OBS preview did not show it
+- Observed behavior:
+  - a window appeared briefly
+  - disappeared immediately
+  - another window appeared briefly and disappeared
+  - this repeated during the loop
+
+### Implemented
+- Persistent loop lifecycle change:
+  - keep `--four-view-clean-output-window-loop [all-renderable] [frames]`
+  - create one persistent clean output window for the loop
+  - preserve title `StreamSync 4-view Output`
+  - update the same window for each rendered frame
+  - close the window once after the bounded loop completes
+- Added lifecycle summary fields:
+  - `window_created`
+  - `persistent_window=true`
+  - `window_updates`
+  - `window_closed`
+- Added focused fake-runtime tests proving:
+  - one persistent window/session is created
+  - multiple frame updates occur on that same session
+  - the window/session closes once after the loop
+  - the loop no longer models one-window-per-frame behavior
+
+### TODO Update
+- Recorded the manual 300/300 render success together with the failed OBS
+  Window Capture result.
+- Updated the next immediate task to rerun manual actual validation against the
+  persistent lifecycle implementation.
+- Updated the manual checklist and architecture note so persistent window
+  identity is now a hard requirement for OBS Window Capture validation.
+
+### Validation
+- `cargo fmt` passed.
+- `cargo fmt --check` passed.
+- `cargo test -p stream-sync-switcher four_view -- --test-threads=1` passed.
+- `cargo test -p stream-sync-switcher handoff -- --test-threads=1` passed.
+- `cargo check --workspace` passed.
+- `git diff --check` passed.
+
+## 2026-05-05
+### Type
+- Codex
+
+### Work
 - Implemented the smallest bounded clean output loop runtime and switcher CLI
   command for stable OBS Window Capture validation.
 - Kept the existing proof-window command and one-shot clean-output command

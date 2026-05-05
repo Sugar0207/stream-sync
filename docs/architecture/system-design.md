@@ -10497,6 +10497,10 @@ stream-sync-switcher --four-view-clean-output-window-loop [all-renderable] [fram
      `StreamSync 4-view Output`
    - it repeats deterministic fixture rendering for exactly `frames`
      iterations
+   - the loop must keep one persistent clean output window identity for the
+     whole bounded run rather than creating/closing one window per frame
+   - the same persistent window is updated per frame and closed once after the
+     bounded loop completes
    - it uses a fixed 30 fps cadence between iterations
    - it prints:
      - `command_name`
@@ -10508,9 +10512,13 @@ stream-sync-switcher --four-view-clean-output-window-loop [all-renderable] [fram
      - `frames_attempted`
      - `frames_rendered`
      - `render_failures`
-     - `width`
-     - `height`
-     - `bgra_payload_len`
+      - `window_created`
+      - `persistent_window`
+      - `window_updates`
+      - `window_closed`
+      - `width`
+      - `height`
+      - `bgra_payload_len`
 
    - `all-renderable` remains the first and recommended fixture mode
    - `frames` is the bounded max-frame count for the loop run

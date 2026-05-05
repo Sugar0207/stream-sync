@@ -1,4 +1,5 @@
 use std::num::NonZeroU32;
+use std::sync::Mutex;
 use std::thread;
 use std::time::Duration;
 use stream_sync_net_core::PacketSource;
@@ -1067,6 +1068,10 @@ struct SwitcherFourViewCleanOutputWindowLoopSummary {
     frames_attempted: u32,
     frames_rendered: u32,
     render_failures: u32,
+    window_created: bool,
+    persistent_window: bool,
+    window_updates: u32,
+    window_closed: bool,
     width: Option<u32>,
     height: Option<u32>,
     bgra_payload_len: Option<usize>,
@@ -1085,26 +1090,110 @@ impl SwitcherFrameCadenceSleepHook for RealSwitcherFrameCadenceSleepHook {
     }
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+struct PersistentWindowLifecycleSnapshot {
+    window_created: bool,
+    persistent_window: bool,
+    window_updates: u32,
+    window_closed: bool,
+}
+
+trait SwitcherPersistentWindowLoopRuntimeHook: SwitcherWindowRenderRuntimeHook {
+    fn close_persistent_window(&self);
+    fn lifecycle_snapshot(&self) -> PersistentWindowLifecycleSnapshot;
+}
+
+#[cfg(not(target_os = "windows"))]
+#[derive(Debug, Default)]
+struct UnavailablePersistentWindowRenderRuntime {
+    lifecycle: Mutex<PersistentWindowLifecycleSnapshot>,
+}
+
+#[cfg(not(target_os = "windows"))]
+impl SwitcherWindowRenderRuntimeHook for UnavailablePersistentWindowRenderRuntime {
+    fn render_once(
+        &self,
+        _request: stream_sync_switcher::SwitcherWindowRenderRequest,
+    ) -> SwitcherWindowRenderResult {
+        SwitcherWindowRenderResult::BackendUnavailable {
+            reason:
+                stream_sync_switcher::SwitcherWindowBackendUnavailableReason::UnsupportedPlatform,
+            message: Some("switcher window rendering backend is unavailable".to_string()),
+        }
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+impl SwitcherPersistentWindowLoopRuntimeHook for UnavailablePersistentWindowRenderRuntime {
+    fn close_persistent_window(&self) {}
+
+    fn lifecycle_snapshot(&self) -> PersistentWindowLifecycleSnapshot {
+        *self
+            .lifecycle
+            .lock()
+            .expect("lifecycle mutex should not be poisoned")
+    }
+}
+
+#[cfg(target_os = "windows")]
+#[derive(Debug, Default)]
+struct SwitcherWindowsGdiPersistentWindowRenderRuntime {
+    state: Mutex<WindowsPersistentWindowState>,
+}
+
+#[cfg(target_os = "windows")]
+#[derive(Debug, Default)]
+struct WindowsPersistentWindowState {
+    hwnd: Option<windows::Win32::Foundation::HWND>,
+    lifecycle: PersistentWindowLifecycleSnapshot,
+}
+
+#[cfg(target_os = "windows")]
+impl SwitcherWindowRenderRuntimeHook for SwitcherWindowsGdiPersistentWindowRenderRuntime {
+    fn render_once(
+        &self,
+        request: stream_sync_switcher::SwitcherWindowRenderRequest,
+    ) -> SwitcherWindowRenderResult {
+        windows_persistent_render_update(&self.state, request)
+    }
+}
+
+#[cfg(target_os = "windows")]
+impl SwitcherPersistentWindowLoopRuntimeHook for SwitcherWindowsGdiPersistentWindowRenderRuntime {
+    fn close_persistent_window(&self) {
+        windows_persistent_render_close(&self.state);
+    }
+
+    fn lifecycle_snapshot(&self) -> PersistentWindowLifecycleSnapshot {
+        self.state
+            .lock()
+            .expect("persistent window state mutex should not be poisoned")
+            .lifecycle
+    }
+}
+
 fn run_four_view_clean_output_window_loop(
     fixture_mode: SwitcherFourViewManualPreviewProofFixtureMode,
     frames: NonZeroU32,
 ) -> SwitcherFourViewCleanOutputWindowLoopSummary {
     #[cfg(target_os = "windows")]
     {
+        let render_runtime = SwitcherWindowsGdiPersistentWindowRenderRuntime::default();
         run_four_view_clean_output_window_loop_with_runtime_and_sleep(
             fixture_mode,
             frames,
-            &SwitcherWindowsGdiWindowRenderRuntimeHook,
+            &render_runtime,
             &RealSwitcherFrameCadenceSleepHook,
         )
     }
 
     #[cfg(not(target_os = "windows"))]
     {
+        let render_runtime = UnavailablePersistentWindowRenderRuntime::default();
         run_four_view_clean_output_window_loop_with_runtime_and_sleep(
             fixture_mode,
             frames,
-            &SwitcherUnavailableWindowRenderRuntimeHook,
+            &render_runtime,
             &RealSwitcherFrameCadenceSleepHook,
         )
     }
@@ -1113,7 +1202,7 @@ fn run_four_view_clean_output_window_loop(
 fn run_four_view_clean_output_window_loop_with_runtime_and_sleep(
     fixture_mode: SwitcherFourViewManualPreviewProofFixtureMode,
     frames: NonZeroU32,
-    render_runtime: &impl SwitcherWindowRenderRuntimeHook,
+    render_runtime: &(impl SwitcherWindowRenderRuntimeHook + SwitcherPersistentWindowLoopRuntimeHook),
     cadence_sleep: &impl SwitcherFrameCadenceSleepHook,
 ) -> SwitcherFourViewCleanOutputWindowLoopSummary {
     let mut frames_attempted = 0u32;
@@ -1154,12 +1243,19 @@ fn run_four_view_clean_output_window_loop_with_runtime_and_sleep(
         }
     }
 
+    render_runtime.close_persistent_window();
+    let lifecycle = render_runtime.lifecycle_snapshot();
+
     SwitcherFourViewCleanOutputWindowLoopSummary {
         fixture_mode,
         window_title,
         frames_attempted,
         frames_rendered,
         render_failures,
+        window_created: lifecycle.window_created,
+        persistent_window: lifecycle.persistent_window,
+        window_updates: lifecycle.window_updates,
+        window_closed: lifecycle.window_closed,
         width,
         height,
         bgra_payload_len,
@@ -1168,6 +1264,182 @@ fn run_four_view_clean_output_window_loop_with_runtime_and_sleep(
 
 fn four_view_clean_output_window_loop_frame_cadence() -> Duration {
     Duration::from_secs_f64(1.0 / 30.0)
+}
+
+#[cfg(target_os = "windows")]
+fn windows_persistent_render_update(
+    state: &Mutex<WindowsPersistentWindowState>,
+    request: stream_sync_switcher::SwitcherWindowRenderRequest,
+) -> SwitcherWindowRenderResult {
+    use std::ptr::null_mut;
+    use windows::core::{w, PCWSTR};
+    use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, RECT, WPARAM};
+    use windows::Win32::Graphics::Gdi::{
+        BeginPaint, EndPaint, InvalidateRect, StretchDIBits, BITMAPINFO, BITMAPINFOHEADER, BI_RGB,
+        DIB_RGB_COLORS, PAINTSTRUCT, SRCCOPY,
+    };
+    use windows::Win32::System::LibraryLoader::GetModuleHandleW;
+    use windows::Win32::UI::WindowsAndMessaging::{
+        CreateWindowExW, DefWindowProcW, DispatchMessageW, PeekMessageW, RegisterClassW,
+        ShowWindow, TranslateMessage, CS_HREDRAW, CS_VREDRAW, CW_USEDEFAULT, MSG, PM_REMOVE,
+        SW_SHOW, WINDOW_EX_STYLE, WINDOW_STYLE, WM_DESTROY, WM_PAINT, WNDCLASSW,
+        WS_OVERLAPPEDWINDOW,
+    };
+
+    static mut PERSISTENT_PAINT_FRAME: Option<
+        stream_sync_switcher::SwitcherDecodedFrameRenderInput,
+    > = None;
+
+    #[allow(static_mut_refs)]
+    unsafe extern "system" fn wnd_proc(
+        hwnd: HWND,
+        msg: u32,
+        wparam: WPARAM,
+        lparam: LPARAM,
+    ) -> LRESULT {
+        match msg {
+            WM_PAINT => {
+                let mut paint = PAINTSTRUCT::default();
+                let hdc = BeginPaint(hwnd, &mut paint);
+                if let Some(frame) = PERSISTENT_PAINT_FRAME.as_ref() {
+                    let mut info = BITMAPINFO {
+                        bmiHeader: BITMAPINFOHEADER {
+                            biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
+                            biWidth: frame.width as i32,
+                            biHeight: -(frame.height as i32),
+                            biPlanes: 1,
+                            biBitCount: 32,
+                            biCompression: BI_RGB.0,
+                            biSizeImage: frame.pixels.len() as u32,
+                            ..Default::default()
+                        },
+                        ..Default::default()
+                    };
+                    let _ = StretchDIBits(
+                        hdc,
+                        0,
+                        0,
+                        frame.width as i32,
+                        frame.height as i32,
+                        0,
+                        0,
+                        frame.width as i32,
+                        frame.height as i32,
+                        Some(frame.pixels.as_ptr().cast()),
+                        &mut info,
+                        DIB_RGB_COLORS,
+                        SRCCOPY,
+                    );
+                }
+                let _ = EndPaint(hwnd, &paint);
+                LRESULT(0)
+            }
+            WM_DESTROY => LRESULT(0),
+            _ => DefWindowProcW(hwnd, msg, wparam, lparam),
+        }
+    }
+
+    unsafe {
+        PERSISTENT_PAINT_FRAME = Some(request.frame.clone());
+    }
+
+    let mut state = state
+        .lock()
+        .expect("persistent window state mutex should not be poisoned");
+    let hwnd = if let Some(hwnd) = state.hwnd {
+        hwnd
+    } else {
+        let instance = match unsafe { GetModuleHandleW(None) } {
+            Ok(instance) => instance,
+            Err(error) => {
+                return SwitcherWindowRenderResult::RenderFailed {
+                    message: format!("GetModuleHandleW failed: {error:?}"),
+                };
+            }
+        };
+        let class_name = w!("StreamSyncSwitcherPersistentWindow");
+        let wnd_class = WNDCLASSW {
+            style: CS_HREDRAW | CS_VREDRAW,
+            lpfnWndProc: Some(wnd_proc),
+            hInstance: instance.into(),
+            lpszClassName: class_name,
+            ..Default::default()
+        };
+        let _ = unsafe { RegisterClassW(&wnd_class) };
+        let title: Vec<u16> = request.title.encode_utf16().chain(Some(0)).collect();
+        let hwnd = match unsafe {
+            CreateWindowExW(
+                WINDOW_EX_STYLE::default(),
+                class_name,
+                PCWSTR(title.as_ptr()),
+                WINDOW_STYLE(WS_OVERLAPPEDWINDOW.0),
+                CW_USEDEFAULT,
+                CW_USEDEFAULT,
+                request.frame.width as i32,
+                request.frame.height as i32,
+                None,
+                None,
+                Some(instance.into()),
+                Some(null_mut()),
+            )
+        } {
+            Ok(hwnd) => hwnd,
+            Err(error) => {
+                return SwitcherWindowRenderResult::RenderFailed {
+                    message: format!("CreateWindowExW failed: {error:?}"),
+                };
+            }
+        };
+        unsafe {
+            let _ = ShowWindow(hwnd, SW_SHOW);
+        }
+        state.hwnd = Some(hwnd);
+        state.lifecycle.window_created = true;
+        state.lifecycle.persistent_window = true;
+        hwnd
+    };
+
+    let _ = unsafe { InvalidateRect(Some(hwnd), Some(&RECT::default()), true) };
+    let mut msg = MSG::default();
+    while unsafe { PeekMessageW(&mut msg, Some(hwnd), 0, 0, PM_REMOVE) }.as_bool() {
+        unsafe {
+            let _ = TranslateMessage(&msg);
+            DispatchMessageW(&msg);
+        }
+    }
+
+    state.lifecycle.window_updates += 1;
+
+    SwitcherWindowRenderResult::Rendered(stream_sync_switcher::SwitcherWindowRenderSuccess {
+        width: request.frame.width,
+        height: request.frame.height,
+        title: request.title,
+        hold_millis: request.hold_millis,
+    })
+}
+
+#[cfg(target_os = "windows")]
+fn windows_persistent_render_close(state: &Mutex<WindowsPersistentWindowState>) {
+    use windows::Win32::UI::WindowsAndMessaging::{
+        DestroyWindow, DispatchMessageW, PeekMessageW, TranslateMessage, MSG, PM_REMOVE,
+    };
+
+    let mut state = state
+        .lock()
+        .expect("persistent window state mutex should not be poisoned");
+    if let Some(hwnd) = state.hwnd.take() {
+        unsafe {
+            let _ = DestroyWindow(hwnd);
+        }
+        let mut msg = MSG::default();
+        while unsafe { PeekMessageW(&mut msg, Some(hwnd), 0, 0, PM_REMOVE) }.as_bool() {
+            unsafe {
+                let _ = TranslateMessage(&msg);
+                DispatchMessageW(&msg);
+            }
+        }
+        state.lifecycle.window_closed = true;
+    }
 }
 
 fn default_four_view_manual_preview_proof_input(
@@ -1286,12 +1558,16 @@ fn format_four_view_clean_output_window_loop_summary(
     summary: &SwitcherFourViewCleanOutputWindowLoopSummary,
 ) -> String {
     format!(
-        "switcher four-view clean output window loop command_name=--four-view-clean-output-window-loop fixture_mode={} clean_output_window=true actual_window_render=true real_handoff=false window_title={} frames_attempted={} frames_rendered={} render_failures={} width={} height={} bgra_payload_len={}",
+        "switcher four-view clean output window loop command_name=--four-view-clean-output-window-loop fixture_mode={} clean_output_window=true actual_window_render=true real_handoff=false window_title={} frames_attempted={} frames_rendered={} render_failures={} window_created={} persistent_window={} window_updates={} window_closed={} width={} height={} bgra_payload_len={}",
         format_four_view_manual_preview_fixture_mode_name(summary.fixture_mode),
         summary.window_title,
         summary.frames_attempted,
         summary.frames_rendered,
         summary.render_failures,
+        summary.window_created,
+        summary.persistent_window,
+        summary.window_updates,
+        summary.window_closed,
         format_optional_u32(summary.width),
         format_optional_u32(summary.height),
         format_optional_usize(summary.bgra_payload_len),
@@ -1750,7 +2026,8 @@ mod tests {
         parse_four_view_manual_preview_fixture_mode_or_exit, parse_handoff_mode_or_exit,
         parse_positive_u32_arg, run_four_view_clean_output_window_loop_with_runtime_and_sleep,
         run_four_view_clean_output_window_with_runtime, run_four_view_manual_preview_proof_once,
-        run_four_view_manual_preview_proof_with_runtime, SwitcherFrameCadenceSleepHook,
+        run_four_view_manual_preview_proof_with_runtime, PersistentWindowLifecycleSnapshot,
+        SwitcherFrameCadenceSleepHook, SwitcherPersistentWindowLoopRuntimeHook,
         SwitcherQueuedFrameHandoffResult, SwitcherSingleClientQueueSourceMode,
     };
     use stream_sync_switcher::SWITCHER_FOUR_VIEW_CLEAN_OUTPUT_WINDOW_TITLE;
@@ -2007,6 +2284,75 @@ mod tests {
     }
 
     #[derive(Debug, Default)]
+    struct PersistentFixtureRenderedWindowRuntime {
+        lifecycle: RefCell<PersistentWindowLifecycleSnapshot>,
+        create_calls: RefCell<u32>,
+        close_calls: RefCell<u32>,
+    }
+
+    impl SwitcherWindowRenderRuntimeHook for PersistentFixtureRenderedWindowRuntime {
+        fn render_once(&self, request: SwitcherWindowRenderRequest) -> SwitcherWindowRenderResult {
+            let mut lifecycle = self.lifecycle.borrow_mut();
+            if !lifecycle.window_created {
+                lifecycle.window_created = true;
+                lifecycle.persistent_window = true;
+                *self.create_calls.borrow_mut() += 1;
+            }
+            lifecycle.window_updates += 1;
+            SwitcherWindowRenderResult::Rendered(SwitcherWindowRenderSuccess {
+                width: request.frame.width,
+                height: request.frame.height,
+                title: request.title,
+                hold_millis: request.hold_millis,
+            })
+        }
+    }
+
+    impl SwitcherPersistentWindowLoopRuntimeHook for PersistentFixtureRenderedWindowRuntime {
+        fn close_persistent_window(&self) {
+            self.lifecycle.borrow_mut().window_closed = true;
+            *self.close_calls.borrow_mut() += 1;
+        }
+
+        fn lifecycle_snapshot(&self) -> PersistentWindowLifecycleSnapshot {
+            *self.lifecycle.borrow()
+        }
+    }
+
+    #[derive(Debug, Default)]
+    struct PersistentFixtureRenderFailedWindowRuntime {
+        lifecycle: RefCell<PersistentWindowLifecycleSnapshot>,
+        create_calls: RefCell<u32>,
+        close_calls: RefCell<u32>,
+    }
+
+    impl SwitcherWindowRenderRuntimeHook for PersistentFixtureRenderFailedWindowRuntime {
+        fn render_once(&self, _request: SwitcherWindowRenderRequest) -> SwitcherWindowRenderResult {
+            let mut lifecycle = self.lifecycle.borrow_mut();
+            if !lifecycle.window_created {
+                lifecycle.window_created = true;
+                lifecycle.persistent_window = true;
+                *self.create_calls.borrow_mut() += 1;
+            }
+            lifecycle.window_updates += 1;
+            SwitcherWindowRenderResult::RenderFailed {
+                message: "fixture render failed".to_string(),
+            }
+        }
+    }
+
+    impl SwitcherPersistentWindowLoopRuntimeHook for PersistentFixtureRenderFailedWindowRuntime {
+        fn close_persistent_window(&self) {
+            self.lifecycle.borrow_mut().window_closed = true;
+            *self.close_calls.borrow_mut() += 1;
+        }
+
+        fn lifecycle_snapshot(&self) -> PersistentWindowLifecycleSnapshot {
+            *self.lifecycle.borrow()
+        }
+    }
+
+    #[derive(Debug, Default)]
     struct RecordingCadenceSleepHook {
         durations: RefCell<Vec<Duration>>,
     }
@@ -2138,16 +2484,21 @@ mod tests {
     #[test]
     fn switcher_four_view_clean_output_loop_counts_rendered_frames_and_sleeps_between_frames() {
         let sleep_hook = RecordingCadenceSleepHook::default();
+        let render_runtime = PersistentFixtureRenderedWindowRuntime::default();
         let summary = run_four_view_clean_output_window_loop_with_runtime_and_sleep(
             SwitcherFourViewManualPreviewProofFixtureMode::AllRenderable,
             NonZeroU32::new(3).expect("3 should be non-zero"),
-            &FixtureRenderedWindowRuntime,
+            &render_runtime,
             &sleep_hook,
         );
 
         assert_eq!(summary.frames_attempted, 3);
         assert_eq!(summary.frames_rendered, 3);
         assert_eq!(summary.render_failures, 0);
+        assert!(summary.window_created);
+        assert!(summary.persistent_window);
+        assert_eq!(summary.window_updates, 3);
+        assert!(summary.window_closed);
         assert_eq!(
             summary.window_title,
             SWITCHER_FOUR_VIEW_CLEAN_OUTPUT_WINDOW_TITLE
@@ -2155,6 +2506,8 @@ mod tests {
         assert_eq!(summary.width, Some(4));
         assert_eq!(summary.height, Some(2));
         assert_eq!(summary.bgra_payload_len, Some(32));
+        assert_eq!(*render_runtime.create_calls.borrow(), 1);
+        assert_eq!(*render_runtime.close_calls.borrow(), 1);
 
         let durations = sleep_hook.durations.borrow();
         assert_eq!(durations.len(), 2);
@@ -2165,27 +2518,35 @@ mod tests {
 
     #[test]
     fn switcher_four_view_clean_output_loop_counts_render_failures_explicitly() {
+        let render_runtime = PersistentFixtureRenderFailedWindowRuntime::default();
         let summary = run_four_view_clean_output_window_loop_with_runtime_and_sleep(
             SwitcherFourViewManualPreviewProofFixtureMode::AllRenderable,
             NonZeroU32::new(2).expect("2 should be non-zero"),
-            &FixtureRenderFailedWindowRuntime,
+            &render_runtime,
             &RecordingCadenceSleepHook::default(),
         );
 
         assert_eq!(summary.frames_attempted, 2);
         assert_eq!(summary.frames_rendered, 0);
         assert_eq!(summary.render_failures, 2);
+        assert!(summary.window_created);
+        assert!(summary.persistent_window);
+        assert_eq!(summary.window_updates, 2);
+        assert!(summary.window_closed);
         assert_eq!(summary.width, Some(4));
         assert_eq!(summary.height, Some(2));
         assert_eq!(summary.bgra_payload_len, Some(32));
+        assert_eq!(*render_runtime.create_calls.borrow(), 1);
+        assert_eq!(*render_runtime.close_calls.borrow(), 1);
     }
 
     #[test]
     fn switcher_four_view_clean_output_loop_summary_formats_expected_fields() {
+        let render_runtime = PersistentFixtureRenderedWindowRuntime::default();
         let summary = run_four_view_clean_output_window_loop_with_runtime_and_sleep(
             SwitcherFourViewManualPreviewProofFixtureMode::AllRenderable,
             NonZeroU32::new(2).expect("2 should be non-zero"),
-            &FixtureRenderedWindowRuntime,
+            &render_runtime,
             &RecordingCadenceSleepHook::default(),
         );
         let formatted = format_four_view_clean_output_window_loop_summary(&summary);
@@ -2202,6 +2563,10 @@ mod tests {
         assert!(formatted.contains("frames_attempted=2"));
         assert!(formatted.contains("frames_rendered=2"));
         assert!(formatted.contains("render_failures=0"));
+        assert!(formatted.contains("window_created=true"));
+        assert!(formatted.contains("persistent_window=true"));
+        assert!(formatted.contains("window_updates=2"));
+        assert!(formatted.contains("window_closed=true"));
         assert!(formatted.contains("width=4"));
         assert!(formatted.contains("height=2"));
         assert!(formatted.contains("bgra_payload_len=32"));
