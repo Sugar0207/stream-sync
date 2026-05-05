@@ -5,6 +5,61 @@
 - Codex
 
 ### Work
+- Recorded the successful manual OBS Window Capture validation for the
+  dedicated clean output loop after the fixed `1280x720` profile landed.
+- Updated tracking so OBS Window Capture validation is now complete for the
+  deterministic fixture proof path.
+- Moved the next task from OBS capture troubleshooting to real
+  server->switcher handoff + 4-view preview planning.
+
+### Changed Files
+- `docs/operations/manual-real-encoded-video-poc.md`
+- `docs/operations/session-log.md`
+- `docs/operations/todo.md`
+
+### Manual Validation Record
+- Command:
+
+```text
+stream-sync-switcher --four-view-clean-output-window-loop all-renderable 900
+```
+
+- Observed result:
+  - OBS was already open before running the command
+  - OBS could select `StreamSync 4-view Output`
+  - OBS preview showed the clean output window
+  - the visible output was the deterministic 4-view QuadView clean output
+  - the QuadView slot placement was:
+    - slot 0 = top-left
+    - slot 1 = top-right
+    - slot 2 = bottom-left
+    - slot 3 = bottom-right
+  - `real_handoff=false` remained true
+
+### Clarification
+- This success proves the dedicated clean output window is now OBS-capturable
+  through normal Window Capture.
+- This does not yet prove real server->switcher handoff video.
+- The observed output was still deterministic fixture output, not queued live
+  handoff-driven 4-view video.
+
+### TODO Update
+- Marked OBS Window Capture validation complete.
+- Moved the next immediate task to real server->switcher handoff + 4-view
+  preview planning.
+- Kept OBS API/WebSocket and broader UI/layout work out of scope.
+
+### Validation
+- `cargo fmt` passed.
+- `cargo fmt --check` passed.
+- `cargo check --workspace` passed.
+- `git diff --check` passed.
+
+## 2026-05-06
+### Type
+- Codex
+
+### Work
 - Implemented the smallest fixed `1280x720` OBS-friendly output profile on the
   existing bounded clean output loop command.
 - Kept the same CLI shape

@@ -225,6 +225,44 @@ title `StreamSync 4-view Output`. If OBS still cannot capture the window after
 this larger profile, treat render-surface/window-style investigation as the
 next narrower slice.
 
+Recorded successful OBS Window Capture validation:
+
+```powershell
+stream-sync-switcher --four-view-clean-output-window-loop all-renderable 900
+```
+
+Observed success conditions:
+
+- OBS was already open before running the command
+- OBS could select `StreamSync 4-view Output`
+- OBS preview showed the clean output window content
+- the visible output was the deterministic 4-view QuadView clean output
+- the window remained the dedicated clean output path, not the proof window
+- `real_handoff=false` remained true for this validation path
+
+What this success proves:
+
+- the dedicated clean output window is now a usable downstream OBS Window
+  Capture target
+- the fixed `1280x720` output profile solved the earlier too-small/black-surface
+  validation problem for the deterministic proof path
+- the current clean output semantics remain the fixed QuadView layout:
+  - `slot 0`: top-left
+  - `slot 1`: top-right
+  - `slot 2`: bottom-left
+  - `slot 3`: bottom-right
+
+What this success does not prove:
+
+- real server->switcher handoff video
+- real 4-view preview driven by queued encoded frames
+- OBS API / WebSocket / advanced OBS control
+
+After this success, the next step is not more OBS capture troubleshooting. The
+next step is planning how the real server->switcher handoff path should feed
+the existing 4-view preview/output family while preserving the dedicated clean
+output window path.
+
 ---
 
 ## 1. Prerequisite Checks

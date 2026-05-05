@@ -10538,8 +10538,9 @@ stream-sync-switcher --four-view-clean-output-window-loop [all-renderable] [fram
    - the loop provides a stable manual capture target long enough for an
      operator to add a Window Capture source and select
      `StreamSync 4-view Output`
-   - validation should confirm OBS sees the dedicated clean output window,
-     receives that window in preview, and does not target `StreamSync 4-view`
+   - this validation has now succeeded on the deterministic proof path:
+     OBS can select the dedicated clean output window, receives that window in
+     preview, and does not need to target `StreamSync 4-view`
    - the runtime remains dedicated-output-only and does not expose scheduler,
      composition, or decode internals to OBS
    - the current persistent-loop rerun must still be treated as a failed OBS
@@ -10556,17 +10557,16 @@ stream-sync-switcher --four-view-clean-output-window-loop [all-renderable] [fram
      validation surface while keeping the same persistent window identity
    - do not widen the next slice into real handoff preview, Focused view, or a
      generic N-view layout refactor
-8. Next OBS-friendly clean output profile plan:
+8. Post-validation status:
    - the first fixed validation profile is now implemented on the existing
      bounded loop command rather than as a separate CLI shape
+   - manual OBS Window Capture validation succeeded with:
+     `--four-view-clean-output-window-loop all-renderable 900`
+   - this success applies to the deterministic fixture path only
    - general-purpose `output_width` / `output_height` arguments remain deferred
-   - if OBS still cannot capture a visible surface after rerunning this
-     `1280x720` profile, only then investigate render-surface or window-style
-     adjustments as the next narrower slice
-   - next validation step is manual:
-     - rerun `--four-view-clean-output-window-loop all-renderable [frames]`
-     - verify whether OBS can now select `StreamSync 4-view Output`
-     - verify whether preview receives the larger visible surface
+   - the next major question is no longer OBS capture viability; it is how the
+     real server->switcher handoff path should feed the existing 4-view
+     preview/output family while preserving the dedicated clean output window
 9. Still out of scope for this runtime slice:
    - OBS output implementation
    - OBS API / OBS WebSocket / advanced OBS control
