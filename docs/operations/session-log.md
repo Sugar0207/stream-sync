@@ -5,6 +5,66 @@
 - Codex
 
 ### Work
+- Recorded the successful manual pass for the isolated 4-view actual OS-window
+  proof command.
+- Confirmed the current 4-view path now has both backend-free deterministic
+  proof and actual OS-window proof recorded before OBS/output boundary
+  planning.
+
+### Changed Files
+- `docs/operations/manual-real-encoded-video-poc.md`
+- `docs/operations/session-log.md`
+- `docs/operations/todo.md`
+
+### Implemented
+- Recorded actual OS-window proof stdout exactly as observed.
+
+`[FOUR VIEW ACTUAL WINDOW PROOF]`
+
+```text
+switcher four-view proof window command_name=--four-view-proof-window-once fixture_mode=all-renderable deterministic_fixture=true real_handoff=false actual_window_render=true target_timestamp=1000004 scheduler_status=AllSelected bgra_composition_result_kind=ComposedFrame render_facing_result_kind=RenderReady window_render_result_kind=Rendered width=4 height=2 bgra_payload_len=32 placeholder_count=0 source_error_count=0
+```
+
+`[OBSERVED WINDOW]`
+
+```text
+A window appeared.
+It closed immediately.
+```
+
+- Recorded conclusion:
+  - actual OS window proof succeeded
+  - deterministic all-renderable fixture succeeded
+  - `scheduler_status=AllSelected`
+  - BGRA composition succeeded
+  - render-facing result was `RenderReady`
+  - actual window render returned `Rendered`
+  - `width=4` and `height=2` are consistent with the fixture
+  - `bgra_payload_len=32` is correct for `4x2` BGRA
+  - `placeholder_count=0`
+  - `source_error_count=0`
+  - `real_handoff=false`, so this proof remained isolated from
+    server->switcher transport
+  - OBS output remains unimplemented
+  - immediate close is expected for the current one-shot proof, though a future
+    `--hold-ms` option may be useful for visual confirmation
+
+### TODO Update
+- Marked the actual OS-window proof manual pass complete.
+- Moved the next 4-view task to OBS/output boundary planning.
+- Left future `--hold-ms` / preview hold duration as optional polish only.
+
+### Validation
+- `cargo fmt` passed.
+- `cargo fmt --check` passed.
+- `cargo check --workspace` passed.
+- `git diff --check` passed.
+
+## 2026-05-05
+### Type
+- Codex
+
+### Work
 - Implemented the smallest isolated actual OS window proof command for 4-view.
 - Kept the existing deterministic fixture proof command unchanged and
   backend-free.

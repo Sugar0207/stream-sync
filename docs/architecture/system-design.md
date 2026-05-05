@@ -10172,8 +10172,9 @@ larger questions:
 - switcher-side fragment reassembly
 
 With the deterministic fixture CLI now manually validated for all three fixture
-modes, the next proof-oriented slice should be actual OS-window proof before
-OBS/output boundary planning.
+modes and the isolated actual OS-window proof now manually recorded as
+successful, the next proof-oriented slice should move to OBS/output boundary
+planning.
 
 Actual OS-window proof plan:
 
@@ -10216,6 +10217,23 @@ shape above. It reuses the deterministic all-renderable fixture and the
 existing composed-canvas window-render path, while leaving
 `--four-view-proof-fixture-once` unchanged as the backend-free deterministic
 proof command.
+
+The first manual pass of that command is now recorded as successful with:
+
+- `scheduler_status=AllSelected`
+- `bgra_composition_result_kind=ComposedFrame`
+- `render_facing_result_kind=RenderReady`
+- `window_render_result_kind=Rendered`
+- `width=4`
+- `height=2`
+- `bgra_payload_len=32`
+- `placeholder_count=0`
+- `source_error_count=0`
+
+The observed window behavior was "appeared, then closed immediately." That is
+acceptable for the current one-shot proof and does not imply OBS output or real
+server->switcher handoff. A future visual-confirmation hold duration such as
+`--hold-ms` remains optional polish only.
 
 Recommended stdout summary for the first actual-OS proof:
 

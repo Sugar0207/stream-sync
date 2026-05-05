@@ -62,6 +62,10 @@ cargo run -p stream-sync-switcher -- --four-view-proof-window-once all-renderabl
 Use it only for the first isolated 4-view OS-window proof. It reuses the
 deterministic all-renderable fixture and the existing composed BGRA window path.
 It does not prove OBS output or real server->switcher handoff/manual preview.
+The current one-shot proof is expected to close immediately after the render
+attempt. In the latest recorded manual pass, a window appeared and then closed
+immediately, which is acceptable for this slice. A future `--hold-ms` option
+may be useful for visual confirmation, but it is not implemented yet.
 
 ---
 
