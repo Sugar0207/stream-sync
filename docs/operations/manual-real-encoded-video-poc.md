@@ -277,9 +277,10 @@ cargo run -p stream-sync-server -- --receive-auth-video-queue-and-serve-handoff-
   - `1` real handoff slot
   - `3` deterministic non-real slots
 - preferred first switcher command shape:
+- that first switcher command now exists:
 
-```text
-stream-sync-switcher --four-view-real-handoff-preview-loop [pipe-name] [real-slot-index] [client-id] [run-id] [frames]
+```powershell
+cargo run -p stream-sync-switcher -- --four-view-real-handoff-preview-loop [pipe-name] [real-slot-index] [client-id] [run-id] [frames]
 ```
 
 Planned semantics for that first mixed preview:
@@ -297,9 +298,56 @@ Planned semantics for that first mixed preview:
 - named-pipe/runtime failure:
   - `HandoffError`
 
-Do not treat this planned real preview path as implemented yet. The current
-successful OBS validation remains deterministic-proof-only until this mixed real
-preview command exists and is recorded separately.
+Current first-slice implementation details:
+
+- validates `real-slot-index` as `0..3`
+- validates `frames` as a positive bounded integer
+- uses the configured real slot only for named-pipe handoff
+- routes the other three slots to deterministic `NoFrameAvailable`
+  placeholder content
+- reuses `SwitcherFourViewHandoffValidationBoundary`
+- reuses the dedicated clean output family:
+  - stable title `StreamSync 4-view Output`
+  - persistent output-loop semantics
+  - fixed `1280x720` OBS-friendly output profile
+- suppresses the proof/debug window path for this command
+
+Recommended first manual shape for this slice:
+
+### Terminal 1: Server bounded handoff session
+
+```powershell
+cargo run -p stream-sync-server -- --receive-auth-video-queue-and-serve-handoff-many <config-path> <pipe-name> <max-requests> <max-video-packets> <receive-timeout-ms> <expected-reassembled-frames> <stop-after-expected-reassembled-frames> <receive-buffer-bytes>
+```
+
+### Terminal 2: Switcher mixed real 4-view preview loop
+
+```powershell
+cargo run -p stream-sync-switcher -- --four-view-real-handoff-preview-loop <pipe-name> <real-slot-index> <client-id> <run-id> <frames>
+```
+
+The expected stdout summary for the switcher command should include at least:
+
+- `real_handoff=true`
+- `real_slot_count=1`
+- `real_slot_index`
+- `pipe_name`
+- `client_id`
+- `run_id`
+- `frames_attempted`
+- `frames_rendered`
+- `render_failures`
+- `scheduler_status`
+- per-slot binding / result-kind information
+- `clean_output_render_result_kind`
+- `window_title=StreamSync 4-view Output`
+- `output_width`
+- `output_height`
+
+Do not treat this mixed real preview path as manually validated yet. The
+current successful OBS validation remains deterministic-proof-only until this
+new command is exercised against a real bounded server handoff session and
+recorded separately.
 
 ---
 

@@ -10600,18 +10600,31 @@ stream-sync-switcher --four-view-clean-output-window-loop [all-renderable] [fram
        `HandoffError`
      - intentionally non-real slots in the first mixed preview:
        deterministic fixture-backed placeholder content, not source error
-   - planned command shape:
+   - command shape:
      - server side: keep reusing the existing bounded queue-owning handoff
        service session rather than adding another server launcher first
-     - switcher side: add one bounded manual preview loop command above the
-       named-pipe handoff wrapper and existing 4-view validation/output family
-     - preferred first switcher shape:
+     - switcher side: the first bounded manual preview loop command now exists
+       above the named-pipe handoff wrapper and existing 4-view
+       validation/output family:
 
 ```text
 stream-sync-switcher --four-view-real-handoff-preview-loop [pipe-name] [real-slot-index] [client-id] [run-id] [frames]
 ```
 
-   - this first real preview command should keep OBS downstream of
+   - command behavior for this first slice:
+     - validate `real-slot-index` as `0..3`
+     - validate `frames` as a positive bounded integer
+     - use the existing named-pipe handoff wrapper/client only for the one
+       configured real slot
+     - route the other three slots to deterministic `NoFrameAvailable`
+       placeholder content
+     - reuse `SwitcherFourViewHandoffValidationBoundary`
+     - suppress the proof/debug window path
+     - reuse the dedicated clean output window family with stable title
+       `StreamSync 4-view Output`
+     - reuse persistent output-loop semantics and the fixed `1280x720`
+       OBS-friendly output profile
+   - this first real preview command keeps OBS downstream of
      `StreamSync 4-view Output` rather than giving OBS direct access to handoff
      internals
    - deterministic fixture-only paths should remain:
@@ -10635,6 +10648,8 @@ stream-sync-switcher --four-view-real-handoff-preview-loop [pipe-name] [real-slo
      - `frames_attempted`
      - `frames_rendered`
      - `render_failures`
+     - `output_width`
+     - `output_height`
 10. Still out of scope for this runtime slice:
    - OBS output implementation
    - OBS API / OBS WebSocket / advanced OBS control

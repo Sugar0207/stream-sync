@@ -5,6 +5,86 @@
 - Codex
 
 ### Work
+- Implemented the smallest mixed real 4-view preview runtime on the switcher
+  side with one real named-pipe handoff slot and three deterministic non-real
+  slots.
+- Added the bounded CLI command
+  `--four-view-real-handoff-preview-loop [pipe-name] [real-slot-index] [client-id] [run-id] [frames]`.
+- Reused the existing named-pipe handoff wrapper, `SwitcherFourViewHandoffValidationBoundary`,
+  and dedicated clean output window family instead of widening scope into
+  multi-real-slot orchestration or generic N-view work.
+
+### Changed Files
+- `apps/switcher/src/main.rs`
+- `docs/architecture/system-design.md`
+- `docs/operations/manual-real-encoded-video-poc.md`
+- `docs/operations/session-log.md`
+- `docs/operations/todo.md`
+
+### Implemented
+- Added CLI parsing and validation for:
+  - `real-slot-index` in `0..3`
+  - positive bounded `frames`
+- Added a thin mixed handoff wrapper that:
+  - forwards only the configured real slot to the existing named-pipe handoff
+    client/wrapper
+  - returns deterministic `NoFrameAvailable` for the other three slots
+- Added the bounded real preview loop that:
+  - reuses `SwitcherFourViewHandoffValidationBoundary`
+  - keeps OBS downstream of `StreamSync 4-view Output`
+  - reuses the persistent clean output loop semantics
+  - reuses the fixed `1280x720` OBS-friendly output profile
+- Added compact stdout summary formatting for:
+  - `command_name`
+  - `real_handoff=true`
+  - `real_slot_count=1`
+  - `real_slot_index`
+  - `pipe_name`
+  - `client_id`
+  - `run_id`
+  - `frames_attempted`
+  - `frames_rendered`
+  - `render_failures`
+  - `scheduler_status`
+  - per-slot binding / result kinds
+  - `clean_output_render_result_kind`
+  - `window_title`
+  - `output_width`
+  - `output_height`
+- Kept deterministic fixture commands unchanged:
+  - `--four-view-proof-fixture-once`
+  - `--four-view-proof-window-once`
+  - `--four-view-clean-output-window-once`
+  - `--four-view-clean-output-window-loop`
+
+### Test Coverage
+- Added helper/formatter coverage for the new real-slot index parser and real
+  preview summary formatter.
+- Added fake-handoff / fake-render-runtime coverage proving:
+  - one configured slot is real
+  - the other three slots stay deterministic non-real placeholders
+  - the clean output family still renders through the persistent loop path
+  - default tests remain independent of real named-pipe IO and real OS window
+    rendering
+
+### TODO Update
+- Marked the first mixed real preview command as implemented.
+- Moved the immediate next work from command implementation to manual actual
+  validation against the bounded server handoff session and OBS-downstream path.
+
+### Validation
+- `cargo fmt` passed.
+- `cargo fmt --check` passed.
+- `cargo test -p stream-sync-switcher four_view -- --test-threads=1` passed.
+- `cargo test -p stream-sync-switcher handoff -- --test-threads=1` passed.
+- `cargo check --workspace` passed.
+- `git diff --check` passed.
+
+## 2026-05-06
+### Type
+- Codex
+
+### Work
 - Added a planning/docs-only slice for the first real server->switcher handoff
   driven 4-view preview path after deterministic OBS Window Capture validation
   completed.
