@@ -555,6 +555,41 @@ Observed successful preferred `2`-real-slot command sequence (`2` frames each):
 .\target\debug\stream-sync-switcher.exe --four-view-two-real-handoff-preview-loop streamsync-handoff-dev 0 player1 streamsync-dev-session 1 player2 streamsync-dev-session 5
 ```
 
+Recommended guarded server recipe for repeatable reruns and future `4`-real-slot
+work:
+
+- Keep the existing `expected_reassembled_frames` threshold.
+- Add the optional client-aware thresholds at the end of the server command:
+  - `expected_reassembled_clients`
+  - `expected_reassembled_frames_per_client`
+- All enabled stop conditions must be satisfied before the receive phase ends.
+
+Recommended guarded `2`-real-slot proof (`2` frames each):
+
+### Server
+
+```powershell
+.\target\debug\stream-sync-server.exe --receive-auth-video-queue-and-serve-handoff-many configs/manual/server.two-real-slots.toml streamsync-handoff-dev 10 4096 5000 4 true 8388608 2 2
+```
+
+### Client 1
+
+```powershell
+.\target\debug\stream-sync-client.exe --auth-real-encoded-video-frame-poc-bounded configs/manual/client.player1.toml 2 16 1
+```
+
+### Client 2
+
+```powershell
+.\target\debug\stream-sync-client.exe --auth-real-encoded-video-frame-poc-bounded configs/manual/client.player2.toml 2 16 1
+```
+
+### Switcher
+
+```powershell
+.\target\debug\stream-sync-switcher.exe --four-view-two-real-handoff-preview-loop streamsync-handoff-dev 0 player1 streamsync-dev-session 1 player2 streamsync-dev-session 5
+```
+
 Recommended isolation command when player2 is missing or the 2-real-slot path
 reports unexpected `HandoffError`:
 
@@ -602,6 +637,12 @@ Expected successful `2`-real-slot results:
   - `registered_clients=2`
   - minimal recipe: `frames_reassembled=2` / `frames_queued=2`
   - preferred recipe: `frames_reassembled=4` / `frames_queued=4`
+  - guarded preferred recipe:
+    - `manual_expected_reassembled_clients=2`
+    - `manual_expected_reassembled_frames_per_client=2`
+    - `observed_reassembled_clients=2`
+    - `per_client_reassembled_frames=player1/streamsync-dev-session:2|player2/streamsync-dev-session:2`
+    - `stop_reason=ReassembledFramesAndClientAwareThresholdReached`
 - server bounded handoff request lines:
   - `selected_client_id=player1` -> `result_kind=FrameRead`
   - `selected_client_id=player2` -> `result_kind=FrameRead`
@@ -633,6 +674,30 @@ Important note for `FrameRead / NoFrame` alternation:
   player1 had authenticated and queued before handoff serving began
 - after the receive-phase auth fix and updated manual sequencing, both client
   scopes can be present in the same bounded receive/handoff lifetime
+- before the optional client-aware guard existed, operator sequencing errors
+  could still allow one client to satisfy the total-frame threshold alone
+- the guarded recipe above prevents that by requiring both:
+  - total reassembled frames
+  - client-aware thresholds
+
+Recommended next guarded shape for future `4`-real-slot work:
+
+- minimal proof:
+  - total frames `4`
+  - `expected_reassembled_clients=4`
+  - `expected_reassembled_frames_per_client=1`
+- preferred proof:
+  - total frames `8`
+  - `expected_reassembled_clients=4`
+  - `expected_reassembled_frames_per_client=2`
+- expected receive summary:
+  - `registered_clients=4`
+  - `observed_reassembled_clients=4`
+  - `per_client_reassembled_frames=` for player1..player4
+- expected switcher summary after an all-real 4-slot command exists:
+  - `slot_result_kinds=Selected|Selected|Selected|Selected`
+  - `scheduler_status=AllSelected`
+  - `clean_output_render_result_kind=Rendered`
 
 ---
 

@@ -5,6 +5,132 @@
 - Codex
 
 ### Work
+- Evaluated whether the successful `2`-client manual recipe was enough on its
+  own before `4`-real-slot work.
+- Chose to add a minimal optional client-aware stop condition instead of
+  relying only on operator sequencing and total-frame thresholds.
+- Re-ran the guarded `2`-client manual receive/handoff path and confirmed the
+  stop reason and per-client reassembled-frame counts from stdout.
+
+### Changed Files
+- `apps/server/src/lib.rs`
+- `apps/server/src/main.rs`
+- `docs/operations/manual-real-encoded-video-poc.md`
+- `docs/operations/session-log.md`
+- `docs/operations/todo.md`
+
+### Decision
+- Manual recipe alone is not a strong enough guard before moving toward `4`
+  real slots.
+- The root risk is not transport anymore; it is operator error around a
+  frame-count-only receive stop condition.
+- The smallest sane next step is to keep existing
+  `expected_reassembled_frames` behavior intact and add optional client-aware
+  thresholds that only affect manual receive/handoff commands.
+
+### Implemented
+- Added optional manual receive policy fields:
+  - `expected_reassembled_clients`
+  - `expected_reassembled_frames_per_client`
+- Added CLI support for the optional fields on:
+  - `--receive-auth-video-queue-once`
+  - `--receive-auth-video-queue-and-serve-handoff-once`
+  - `--receive-auth-video-queue-and-serve-handoff-many`
+- Kept existing positional arguments valid by appending the new thresholds at
+  the end.
+- Implemented stop semantics as:
+  - all enabled stop conditions must be satisfied
+  - total-frame threshold still uses existing
+    `expected_reassembled_frames` +
+    `stop_after_expected_reassembled_frames`
+  - client-aware threshold activates only when
+    `expected_reassembled_clients > 0`
+- Added receive summary stdout fields:
+  - `manual_expected_reassembled_clients`
+  - `manual_expected_reassembled_frames_per_client`
+  - `observed_reassembled_clients`
+  - `per_client_reassembled_frames`
+  - `stop_reason`
+- Added focused server tests for distinct-client and per-client threshold
+  behavior.
+
+### Guarded Manual Rerun
+- Server:
+  `.\target\debug\stream-sync-server.exe --receive-auth-video-queue-and-serve-handoff-many configs/manual/server.two-real-slots.toml streamsync-handoff-dev 10 4096 5000 4 true 8388608 2 2`
+- Client1:
+  `.\target\debug\stream-sync-client.exe --auth-real-encoded-video-frame-poc-bounded configs/manual/client.player1.toml 2 16 1`
+- Client2:
+  `.\target\debug\stream-sync-client.exe --auth-real-encoded-video-frame-poc-bounded configs/manual/client.player2.toml 2 16 1`
+- Switcher:
+  `.\target\debug\stream-sync-switcher.exe --four-view-two-real-handoff-preview-loop streamsync-handoff-dev 0 player1 streamsync-dev-session 1 player2 streamsync-dev-session 5`
+
+### Observed Logs
+- Server receive summary:
+  - `registered_clients=2`
+  - `manual_expected_reassembled_frames=4`
+  - `manual_expected_reassembled_clients=2`
+  - `manual_expected_reassembled_frames_per_client=2`
+  - `frames_reassembled=4`
+  - `frames_queued=4`
+  - `observed_reassembled_clients=2`
+  - `per_client_reassembled_frames=player1/streamsync-dev-session:2|player2/streamsync-dev-session:2`
+  - `stop_reason=ReassembledFramesAndClientAwareThresholdReached`
+  - `receive_timed_out=false`
+  - `max_packets_reached=false`
+- Client1 and Client2:
+  - auth accepted
+  - `frames_captured=2`
+  - `frames_encoded=2`
+  - `frames_sent=2`
+  - `send_failures=0`
+- Server bounded handoff requests:
+  - player1 scope -> `FrameRead`
+  - player2 scope -> `FrameRead`
+  - `queue_len_before_read=2`
+  - `queue_len_after_read=2`
+  - `frame_payload_len > 0` on both scopes
+- Switcher summary:
+  - `frames_attempted=5`
+  - `frames_rendered=5`
+  - `render_failures=0`
+  - `slot_result_kinds=Selected|Selected|NoFrameAvailable|NoFrameAvailable`
+  - `scheduler_status=PartialSelected`
+  - `clean_output_render_result_kind=Rendered`
+- Switcher slot diagnostics:
+  - slot0/player1 -> `handoff_response_kind=FrameRead`, `parse_error=none`,
+    `io_error=none`, `decode_error=none`, `final_slot_result_kind=Selected`
+  - slot1/player2 -> `handoff_response_kind=FrameRead`, `parse_error=none`,
+    `io_error=none`, `decode_error=none`, `final_slot_result_kind=Selected`
+
+### Conclusion
+- The optional client-aware stop condition is worth keeping before `4`
+  real-slot work because it materially improves repeatability without changing
+  protocol or transport behavior.
+- The existing successful `2`-real-slot recipe still works and remains useful
+  as a baseline record, but guarded reruns are now the recommended operational
+  path.
+- `scheduler_status=PartialSelected` remains correct for the current two-real
+  command because slots `2` and `3` are still placeholders.
+
+### TODO Update
+- Marked the client-aware stop condition as implemented and manually validated.
+- Shifted the next concrete work from stop-condition evaluation to `4`
+  real-slot preparation:
+  - add player3/player4 manual configs
+  - define guarded `4`-client startup recipes
+  - define expected server/switcher stdout for all-real success
+
+### Validation
+- `cargo fmt`
+- `cargo test -p stream-sync-server client_aware_stop -- --test-threads=1`
+- `cargo test -p stream-sync-server server_handoff_service_session_summary_includes_receive_and_bounded_lines -- --test-threads=1`
+- guarded manual rerun with rebuilt `target/debug` binaries
+
+## 2026-05-06
+### Type
+- Codex
+
+### Work
 - Fixed the minimal server-side blocker that prevented `2` distinct clients
   from joining the same manual receive/handoff session.
 - Re-ran the named-pipe handoff manual pass with the added diagnostics until
