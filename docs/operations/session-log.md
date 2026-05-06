@@ -5,6 +5,109 @@
 - Codex
 
 ### Work
+- Ran nearby-session operator-flow validation for:
+  - `AllView -> Focused(0) -> AllView`
+  - `AllView -> Focused(1) -> AllView`
+  - `AllView -> Focused(2) -> AllView`
+  - `AllView -> Focused(3) -> AllView`
+- Recorded whether the earlier transient wobble reproduced when a short release
+  delay was kept between guarded sessions.
+
+### Changed Files
+- `docs/operations/manual-real-encoded-video-poc.md`
+- `docs/operations/session-log.md`
+- `docs/operations/todo.md`
+
+### Manual Commands
+- repeated guarded server/client recipe per session:
+  - server:
+    `.\target\debug\stream-sync-server.exe --receive-auth-video-queue-and-serve-handoff-many configs/manual/server.two-real-slots.toml streamsync-handoff-dev 20 4096 5000 8 true 8388608 4 2`
+  - clients:
+    `.\target\debug\stream-sync-client.exe --auth-real-encoded-video-frame-poc-bounded configs/manual/client.player1.toml 2 16 1`
+    `.\target\debug\stream-sync-client.exe --auth-real-encoded-video-frame-poc-bounded configs/manual/client.player2.toml 2 16 1`
+    `.\target\debug\stream-sync-client.exe --auth-real-encoded-video-frame-poc-bounded configs/manual/client.player3.toml 2 16 1`
+    `.\target\debug\stream-sync-client.exe --auth-real-encoded-video-frame-poc-bounded configs/manual/client.player4.toml 2 16 1`
+- switcher per flow:
+  - `AllView`:
+    `.\target\debug\stream-sync-switcher.exe --four-view-four-real-handoff-preview-loop streamsync-handoff-dev player1 streamsync-dev-session player2 streamsync-dev-session player3 streamsync-dev-session player4 streamsync-dev-session 5`
+  - `Focused(0)`:
+    `.\target\debug\stream-sync-switcher.exe --four-view-focused-handoff-preview-loop streamsync-handoff-dev 0 player1 streamsync-dev-session player2 streamsync-dev-session player3 streamsync-dev-session player4 streamsync-dev-session 5`
+  - `Focused(1)`:
+    `.\target\debug\stream-sync-switcher.exe --four-view-focused-handoff-preview-loop streamsync-handoff-dev 1 player1 streamsync-dev-session player2 streamsync-dev-session player3 streamsync-dev-session player4 streamsync-dev-session 5`
+  - `Focused(2)`:
+    `.\target\debug\stream-sync-switcher.exe --four-view-focused-handoff-preview-loop streamsync-handoff-dev 2 player1 streamsync-dev-session player2 streamsync-dev-session player3 streamsync-dev-session player4 streamsync-dev-session 5`
+  - `Focused(3)`:
+    `.\target\debug\stream-sync-switcher.exe --four-view-focused-handoff-preview-loop streamsync-handoff-dev 3 player1 streamsync-dev-session player2 streamsync-dev-session player3 streamsync-dev-session player4 streamsync-dev-session 5`
+
+### Operator-Flow Result
+- all `12` nearby sessions succeeded:
+  - `4` pre-`AllView`
+  - `4` focused sessions
+  - `4` post-`AllView`
+- all `AllView` sessions kept:
+  - `slot_result_kinds=Selected|Selected|Selected|Selected`
+  - `scheduler_status=AllSelected`
+  - `clean_output_render_result_kind=Rendered`
+  - `frames_rendered=5`
+  - `render_failures=0`
+- all focused sessions kept:
+  - `view_state=Focused`
+  - requested `focused_slot_index`
+  - slot-aligned `focused_client_id`
+  - `focused_result_kind=Selected`
+  - `clean_output_render_result_kind=Rendered`
+  - `output_width=1280`
+  - `output_height=720`
+  - `frames_rendered=5`
+  - `render_failures=0`
+  - `parse_error=none`
+  - `io_error=none`
+  - `decode_error=none`
+
+### Flow Mapping
+- Flow `0`:
+  - pre `AllView`: pass
+  - `Focused(0)`: `focused_client_id=player1`, pass
+  - post `AllView`: pass
+- Flow `1`:
+  - pre `AllView`: pass
+  - `Focused(1)`: `focused_client_id=player2`, pass
+  - post `AllView`: pass
+- Flow `2`:
+  - pre `AllView`: pass
+  - `Focused(2)`: `focused_client_id=player3`, pass
+  - post `AllView`: pass
+- Flow `3`:
+  - pre `AllView`: pass
+  - `Focused(3)`: `focused_client_id=player4`, pass
+  - post `AllView`: pass
+
+### Transient Wobble Classification
+- `frames_rendered < 5`: not observed in this operator-flow pass
+- server `CreatePipe(os_error_231)`: not observed in this operator-flow pass
+- switcher `HandoffError`: not observed in this operator-flow pass
+- named-pipe release delay:
+  - a short release delay was kept between nearby sessions
+  - with that delay, the earlier pipe-busy wobble did not reproduce
+- client capture / encode / send failure: not observed
+- server receive timeout / incomplete reassembly: not observed
+- switcher parse / io / decode / render error: not observed
+
+### Decision
+- nearby-session `AllView -> Focused(slot_index) -> AllView` operator flow is
+  now validated.
+- the next decision should be whether a same-session long-running control loop
+  is necessary before a hotkey/UI wrapper, or whether the current command
+  family is already a sufficient wrapper target.
+
+### Validation
+- `12` nearby-session stdout summaries recorded
+
+## 2026-05-07
+### Type
+- Codex
+
+### Work
 - Ran actual guarded `4`-client focused-view validation for
   `Focused(0)`, `Focused(1)`, `Focused(2)`, and `Focused(3)`.
 - Reconfirmed `AllView` on the same guarded `4`-client baseline.

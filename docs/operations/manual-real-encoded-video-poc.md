@@ -1034,6 +1034,76 @@ Current conclusion after focused actual validation:
 - observed failures were transient runtime/lifecycle issues, not protocol,
   decode, or scheduler regressions
 
+### Recorded Operator-Flow Validation
+
+The first operator-flow validation was recorded as nearby separate sessions,
+not as one long-running in-process state machine. The validated flow shape was:
+
+- `AllView -> Focused(0) -> AllView`
+- `AllView -> Focused(1) -> AllView`
+- `AllView -> Focused(2) -> AllView`
+- `AllView -> Focused(3) -> AllView`
+
+For this validation pass, a short release delay was kept between nearby
+sessions before starting the next guarded server/client/switcher run.
+
+Observed result:
+
+- all `12` sessions completed successfully
+- all `AllView` sessions reported:
+  - `slot_result_kinds=Selected|Selected|Selected|Selected`
+  - `scheduler_status=AllSelected`
+  - `clean_output_render_result_kind=Rendered`
+  - `frames_rendered=5`
+  - `render_failures=0`
+- all focused sessions reported:
+  - `view_state=Focused`
+  - slot-aligned `focused_slot_index`
+  - slot-aligned `focused_client_id`
+  - `focused_result_kind=Selected`
+  - `clean_output_render_result_kind=Rendered`
+  - `output_width=1280`
+  - `output_height=720`
+  - `frames_rendered=5`
+  - `render_failures=0`
+  - `parse_error=none`
+  - `io_error=none`
+  - `decode_error=none`
+
+Per-flow focused targets confirmed:
+
+- `Focused(0)` -> `focused_client_id=player1`
+- `Focused(1)` -> `focused_client_id=player2`
+- `Focused(2)` -> `focused_client_id=player3`
+- `Focused(3)` -> `focused_client_id=player4`
+
+Transient wobble classification for this operator-flow validation:
+
+- `frames_rendered < 5`: not observed
+- server `CreatePipe(os_error_231)`: not observed
+- switcher `HandoffError`: not observed
+- named-pipe release delay: the nearby-session run stayed stable while keeping
+  a short release delay between sessions, so this remains a practical
+  mitigation note
+- client capture / encode / send failure: not observed
+- server receive timeout / incomplete reassembly: not observed
+- switcher parse / io / decode / render error: not observed
+
+Practical note for repeated nearby-session validation:
+
+- when running many guarded sessions back-to-back, keep a short release delay
+  between sessions before starting the next server-owned handoff session
+- this validation used that approach and avoided the earlier transient
+  `CreatePipe(os_error_231)` wobble
+
+Current conclusion after operator-flow validation:
+
+- nearby-session `AllView -> Focused(slot_index) -> AllView` operator flow is
+  now validated
+- the remaining open question is whether a true same-session long-running
+  control loop is needed before a hotkey/UI wrapper, or whether the existing
+  focused/all-view command family is already sufficient as the wrapper target
+
 ---
 
 ## 1. Prerequisite Checks
