@@ -2622,3 +2622,67 @@ Fail when any are true:
 - No production H.264 encoder configuration or structured encoder stderr logging yet.
 - No OBS integration.
 - No 4-view sync.
+
+## 8. Hotkey/UI Wrapper Planning Note
+
+The current same-session control loop is now the validated operator baseline,
+but it is still a command-driven surface rather than the final operator
+wrapper.
+
+Current control-channel decision:
+
+- keep stdin/scripted control as the validation baseline
+- keep nearby-session commands as a fallback/manual proof path
+- prefer a later thin wrapper that sends the same commands over a separate
+  local control channel rather than forcing the wrapper to own switcher stdin
+- defer direct hotkey capture inside the switcher process
+
+Why stdin is not the preferred long-term wrapper channel:
+
+- it is good for today's scripts and manual proof runs
+- but it is less convenient for a separately restartable wrapper or future GUI
+  on Windows
+
+Preferred MVP wrapper direction:
+
+- the wrapper should target the same command vocabulary:
+  - `all`
+  - `focus 0`
+  - `focus 1`
+  - `focus 2`
+  - `focus 3`
+  - `status`
+  - `quit`
+- the wrapper should forward those commands into a separate local control
+  channel, likely Windows named-pipe based, while the switcher keeps the
+  existing same-session render loop and persistent `StreamSync 4-view Output`
+  window identity
+
+Suggested first operator mapping:
+
+- `1` -> `focus 0`
+- `2` -> `focus 1`
+- `3` -> `focus 2`
+- `4` -> `focus 3`
+- `0` or `A` -> `all`
+- `S` -> `status`
+- `Q` -> guarded `quit`
+
+## 9. Same-Session Bounded Server Lifecycle Note
+
+The current same-session success script should still be read with these
+practical constraints:
+
+- bounded server `max_requests` must cover:
+  - `render_command_count * max_ticks_per_command * real_slot_count`
+- in the recorded success path:
+  - `7 * 5 * 4 = 140`
+- the bounded server summary currently required one extra one-shot flush read
+  after the main success script in this manual setup
+
+Current decision:
+
+- accept that extra flush read as a temporary operator/manual-proof detail
+- document it rather than blocking wrapper planning on server lifecycle polish
+- revisit bounded handoff summary flush/exit behavior later if wrapper
+  automation would otherwise need to encode that workaround

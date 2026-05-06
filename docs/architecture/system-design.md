@@ -8575,6 +8575,140 @@ Responsibility split:
 
 No protocol wire format changed for this slice.
 
+## Hotkey/UI Wrapper Minimal Direction
+
+The fixed `4`-view same-session control loop is now the validated operator
+baseline:
+
+- `AllView`
+- `Focused(0)`
+- `Focused(1)`
+- `Focused(2)`
+- `Focused(3)`
+- `status`
+- `quit`
+
+The next decision is which control channel should drive that existing loop
+before a fuller hotkey/UI layer exists.
+
+### Option A: wrapper -> switcher stdin
+
+Strengths:
+
+- reuses the current stdin parser unchanged
+- easy to script with the existing `--commands "..."` shape
+- keeps one switcher process and one persistent OBS-captured window
+
+Weaknesses:
+
+- Windows stdin ownership becomes awkward for a separately restartable wrapper
+  or future GUI
+- crash/restart recovery is poorer because wrapper control is tightly coupled
+  to the console/session that launched the switcher
+- less clean as a long-running operator transport than an explicit control IPC
+
+Decision:
+
+- keep this as the validation baseline and fallback/manual path
+- do not treat it as the preferred MVP wrapper transport
+
+### Option B: wrapper -> separate local control channel
+
+Preferred MVP direction:
+
+- keep the current same-session render loop inside the switcher
+- add one thin external control channel that forwards:
+  - `all`
+  - `focus 0`
+  - `focus 1`
+  - `focus 2`
+  - `focus 3`
+  - `status`
+  - `quit`
+- on Windows, prefer a local named-pipe control channel first
+
+Why this is preferred:
+
+- preserves one persistent `StreamSync 4-view Output` window lifecycle for OBS
+  Window Capture
+- avoids nearby-session process churn and release-delay dependence during live
+  operation
+- lets a wrapper restart independently from the switcher render loop
+- remains easy to automate and test
+- extends naturally toward a future GUI or hotkey layer without changing the
+  switcher state model
+
+### Option C: direct hotkey capture inside switcher
+
+Strengths:
+
+- potentially lowest operator input latency
+- no external wrapper process required
+
+Weaknesses:
+
+- pulls Windows-specific input handling into the switcher too early
+- harder to script and regression-test than stdin or a small control IPC
+- couples render/runtime lifecycle to input lifecycle before the operator
+  contract is stable
+
+Decision:
+
+- defer this until after the external wrapper contract is stable
+
+## Recommended Wrapper Contract
+
+Short term:
+
+- keep stdin/scripted control as the validation baseline
+- keep nearby-session commands as fallback/manual proof
+
+MVP wrapper:
+
+- add a separate local control channel to the same-session switcher loop
+- keep the command vocabulary identical to the current parser
+- treat the wrapper as a thin keyboard/UI shell, not a render owner
+
+Deferred:
+
+- direct hotkey capture inside switcher
+- full GUI state management
+- OBS WebSocket / advanced OBS control
+
+## Suggested MVP Mapping
+
+The first wrapper can expose the current loop commands with a minimal mapping:
+
+- `1` -> `focus 0`
+- `2` -> `focus 1`
+- `3` -> `focus 2`
+- `4` -> `focus 3`
+- `0` or `A` -> `all`
+- `S` -> `status`
+- `Q` -> guarded `quit`
+
+The wrapper should target the existing switcher states directly:
+
+- `AllView`
+- `Focused(slot_index)` where `slot_index in 0..3`
+
+## Same-Session Bounded Server Lifecycle Note
+
+The current same-session manual proof exposed two bounded-service details:
+
+- request budget must cover
+  `render_command_count * max_ticks_per_command * real_slot_count`
+- the bounded server summary currently needs one extra flush read in the
+  recorded manual setup after the success script completes
+
+Current decision:
+
+- document both behaviors and allow them for the current manual/operator-proof
+  phase
+- do not block wrapper design on bounded server summary polish
+- keep a later narrow polish item open to decide whether bounded handoff
+  summary flush/exit should complete without an extra read
+
 ## Operator-Facing Control Surface After Stable All-Real Baseline
 
 After the guarded `4`-client all-real handoff preview path succeeded in

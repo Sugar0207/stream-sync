@@ -5,6 +5,62 @@
 - Codex
 
 ### Work
+- Added the first docs-only hotkey/UI wrapper comparison and recommendation.
+- Compared three control-channel directions for the validated same-session
+  `4`-view control loop:
+  - wrapper -> switcher stdin
+  - wrapper -> separate local control channel
+  - switcher reads hotkeys directly
+- Fixed the next recommendation as:
+  - keep stdin/scripted control as the validation baseline
+  - keep nearby-session commands as fallback/manual proof
+  - prefer a later thin wrapper over a separate local control channel, likely
+    Windows named-pipe based
+  - defer direct hotkey capture inside switcher
+- Recorded the current same-session bounded server lifecycle decision:
+  - keep the request-budget formula documented
+  - accept the extra flush read in the current manual setup
+  - do not block wrapper planning on bounded-summary polish
+
+### Changed Files
+- `docs/architecture/system-design.md`
+- `docs/operations/manual-real-encoded-video-poc.md`
+- `docs/operations/session-log.md`
+- `docs/operations/todo.md`
+
+### Decision
+- A separate local control channel is now the preferred MVP wrapper direction.
+- The current stdin/scripted parser remains the baseline contract and fallback
+  validation path, not the preferred final wrapper transport.
+- Full hotkey/UI implementation remains out of scope for this slice.
+
+### Notes
+- The preferred wrapper should target the existing command vocabulary without
+  inventing a new state model:
+  - `all`
+  - `focus 0`
+  - `focus 1`
+  - `focus 2`
+  - `focus 3`
+  - `status`
+  - `quit`
+- Suggested first keyboard mapping was recorded:
+  - `1` / `2` / `3` / `4` for `focus 0..3`
+  - `0` or `A` for `all`
+  - `S` for `status`
+  - `Q` for guarded `quit`
+- Same-session bounded server polish remains a later narrow task rather than an
+  immediate blocker for wrapper design.
+
+### Validation
+- docs-only update
+- `git diff --check`
+
+## 2026-05-07
+### Type
+- Codex
+
+### Work
 - Ran guarded real handoff same-session scripted manual validation for the new
   `--four-view-controlled-handoff-preview-loop`.
 - Recorded both:
