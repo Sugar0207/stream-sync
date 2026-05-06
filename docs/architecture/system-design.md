@@ -8575,6 +8575,185 @@ Responsibility split:
 
 No protocol wire format changed for this slice.
 
+## Operator-Facing Control Surface After Stable All-Real Baseline
+
+After the guarded `4`-client all-real handoff preview path succeeded in
+repeated stability observation `3/3`, the next smallest scope is not a full
+hotkey UI. The next scope is an operator-facing control surface design that
+keeps the already validated all-real pipeline intact while adding one explicit
+view-state layer above it.
+
+Validated baseline that must remain intact:
+
+- `4` clients auth/send
+- server receive/reassembly/queue
+- optional client-aware manual stop condition
+- named-pipe handoff
+- switcher `4`-slot render
+- clean output render
+- OBS downstream Window Capture of `StreamSync 4-view Output`
+
+Operator actions that matter in MVP:
+
+- show all `4` slots together
+- show one focused slot
+- switch the focused slot between `0..3`
+- inspect preview/status while rendering continues
+- exit cleanly
+
+Minimal MVP state model:
+
+```text
+ViewMode =
+  AllView
+  | Focused(slot_index)
+```
+
+Rules for this state model:
+
+- `slot_index` is fixed to `0..3`
+- the existing slot/client/run binding remains authoritative
+- the control surface changes presentation state only
+- the control surface does not change handoff protocol, queue ownership,
+  targetTime ownership, or OBS integration shape
+
+Expected `Focused(slot_index)` behavior for the first slice:
+
+- keep reading all `4` real slots through the existing fixed-order all-real
+  handoff path
+- render only the chosen slot as the primary full-window output
+- keep using the dedicated clean output window family
+- keep `window_title = "StreamSync 4-view Output"`
+- keep the fixed `1280x720` OBS-friendly output size
+- do not add picture-in-picture thumbnails, transitions, or animated layout
+  changes in the first focused slice
+
+Focused render expected result by slot:
+
+- `Focused(0)`: render slot0 content full-window
+- `Focused(1)`: render slot1 content full-window
+- `Focused(2)`: render slot2 content full-window
+- `Focused(3)`: render slot3 content full-window
+- if the focused slot has a selected decoded frame, show that frame
+- if the focused slot is `NoFrameAvailable`, show the existing no-frame
+  placeholder full-window
+- if the focused slot is `WaitingForFrameAtOrBeforeTarget`, show the existing
+  waiting/hold behavior full-window
+- if the focused slot is `HandoffError`, show the existing source-error
+  placeholder full-window
+
+Required state transitions:
+
+- initial state may be `AllView`
+- `AllView -> Focused(slot_index)` when the operator explicitly selects slot
+  `0..3`
+- `Focused(slot_index) -> Focused(other_slot_index)` when the operator changes
+  focus
+- `Focused(slot_index) -> AllView` when the operator returns to quad view
+- any state -> exit when the operator requests shutdown
+
+Minimal command/control shape for the next implementation slice:
+
+- keep the current low-level manual commands as internal baselines:
+  - `--four-view-real-handoff-preview-loop`
+  - `--four-view-two-real-handoff-preview-loop`
+  - `--four-view-four-real-handoff-preview-loop`
+- do not mutate those validated commands just to add operator state
+- add the next control layer as a thin wrapper above the existing fixed-order
+  all-real path and the existing clean output family
+- the first control boundary should accept:
+  - current fixed slot bindings
+  - current `ViewMode`
+  - operator action: stay, focus slot `0..3`, return to all-view, exit
+- if a temporary manual CLI wrapper is needed before GUI work, it should remain
+  fixed `4`-view specific and wrap the existing all-real path rather than
+  inventing generic `N`-view control
+
+Minimum stdout/state visibility for that control layer:
+
+- current `view_mode`
+- current slot bindings in slot order
+- current per-slot result kinds
+- current aggregate scheduler status
+- clean output render result kind
+- last handoff / parse / io / decode error visibility per slot
+- explicit exit reason when the loop ends
+
+MVP scope for operator-facing control:
+
+- `AllView`
+- `Focused(slot_index)`
+- explicit switching between those two modes
+- stdout-visible current state and result summary
+- manual validation with the existing guarded all-real recipe
+- continued OBS downstream Window Capture through
+  `StreamSync 4-view Output`
+
+Still out of scope for this design and the next focused implementation slice:
+
+- full hotkey UI
+- general GUI state machine work
+- OBS WebSocket / advanced OBS control
+- generic `N`-view refactor
+- protocol wire-format changes
+- H.264 behavior changes
+- switcher-side fragment reassembly
+- picture-in-picture thumbnails, transitions, or polished production layout
+
+Reason to keep hotkey/UI wrapper later:
+
+- the project already has a stable rendering/data-path baseline
+- `Focused(slot_index)` semantics should be validated first without mixing in
+  keyboard hooks, GUI event dispatch, or window-manager concerns
+- this keeps failures attributable to view-state/rendering logic rather than
+  input plumbing
+- once `AllView <-> Focused(slot_index)` is validated, a later hotkey/UI layer
+  can become a thin adapter that emits the same operator actions
+
+OBS integration policy remains unchanged:
+
+- keep OBS downstream of `StreamSync 4-view Output`
+- keep manual Window Capture as the first and only OBS integration path
+- keep `window_title = "StreamSync 4-view Output"`
+- keep fixed output size `1280x720`
+- do not add OBS WebSocket or advanced OBS control yet
+
+Manual validation plan for the next focused slice:
+
+1. Reuse the guarded `4`-client manual receive/handoff recipe that is already
+   stable.
+2. Confirm `AllView` still returns:
+   - `scheduler_status=AllSelected`
+   - `slot_result_kinds=Selected|Selected|Selected|Selected`
+   - `clean_output_render_result_kind=Rendered`
+3. Confirm `Focused(0)` through `Focused(3)` each render the requested slot as
+   the primary output while preserving:
+   - `frames_rendered > 0`
+   - `render_failures=0`
+   - `parse_error=none`
+   - `io_error=none`
+   - `decode_error=none`
+4. Confirm `AllView -> Focused(slot_index) -> AllView` transitions do not
+   require restarting the whole guarded receive/handoff recipe.
+5. Keep player1-only isolation available through the existing
+   `--four-view-real-handoff-preview-loop ...` baseline when a single-slot
+   transport/render check is needed.
+
+Failure classification for the operator-facing control layer:
+
+- client capture instability
+- client auth/send failure
+- server receive timeout
+- incomplete reassembly
+- handoff transport/runtime error
+- switcher parse error
+- switcher io error
+- switcher decode error
+- view-state transition bug
+- render/output-window failure
+
+No protocol wire format changed for this control-surface planning slice.
+
 ## Switcher Single-Client Queue Source Boundary
 
 The first switcher/sync-facing source over the server queue is now an

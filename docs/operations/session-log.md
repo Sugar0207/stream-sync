@@ -5,6 +5,48 @@
 - Codex
 
 ### Work
+- Documented the next operator-facing control surface scope after the guarded
+  `4`-client all-real preview baseline succeeded in repeated stability
+  observation `3/3`.
+- Fixed the next-task order around design first, then `Focused(slot_index)`
+  implementation, then manual validation, then hotkey/UI wrapper review.
+
+### Changed Files
+- `docs/architecture/system-design.md`
+- `docs/operations/session-log.md`
+- `docs/operations/todo.md`
+
+### Decisions
+- Do not jump into full hotkey UI yet.
+- Keep the already validated all-real preview commands as low-level baselines.
+- Treat the next minimal operator-facing state model as:
+  - `AllView`
+  - `Focused(slot_index)`
+- Define the first focused slice as full-window rendering of one selected slot
+  while preserving the existing `StreamSync 4-view Output` window identity and
+  fixed `1280x720` output profile.
+- Keep OBS downstream of manual Window Capture and keep OBS WebSocket /
+  advanced OBS control out of scope.
+- Keep failure classification explicit across client, server, handoff,
+  switcher parse/io/decode, view-state transition, and render/output-window
+  layers.
+
+### TODO Update
+- Moved the next active task to operator-facing control-surface design.
+- Fixed the next sequence as:
+  1. operator-facing control surface design
+  2. `Focused(slot_index)` minimal implementation
+  3. all-view / focused-view manual validation
+  4. hotkey/UI wrapper review
+
+### Validation
+- `git diff --check`
+
+## 2026-05-06
+### Type
+- Codex
+
+### Work
 - Ran the guarded `4`-client all-real recipe `3` times consecutively to measure
   repeatability instead of relying on one successful pass.
 - Classified the observed variance and updated docs/TODO based on the outcome.
