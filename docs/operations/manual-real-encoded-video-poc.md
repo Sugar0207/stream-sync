@@ -915,6 +915,125 @@ Next manual validation targets:
 - confirm `AllView -> Focused(slot_index) -> AllView` operator flow without
   changing the guarded server/client startup recipe
 
+### Recorded Focused Actual Validation
+
+Guarded startup recipe used for focused actual validation:
+
+- server:
+  `.\target\debug\stream-sync-server.exe --receive-auth-video-queue-and-serve-handoff-many configs/manual/server.two-real-slots.toml streamsync-handoff-dev 20 4096 5000 8 true 8388608 4 2`
+- clients:
+  `.\target\debug\stream-sync-client.exe --auth-real-encoded-video-frame-poc-bounded configs/manual/client.player1.toml 2 16 1`
+  `.\target\debug\stream-sync-client.exe --auth-real-encoded-video-frame-poc-bounded configs/manual/client.player2.toml 2 16 1`
+  `.\target\debug\stream-sync-client.exe --auth-real-encoded-video-frame-poc-bounded configs/manual/client.player3.toml 2 16 1`
+  `.\target\debug\stream-sync-client.exe --auth-real-encoded-video-frame-poc-bounded configs/manual/client.player4.toml 2 16 1`
+
+Recorded successful focused switcher runs:
+
+- `Focused(0)`:
+  `.\target\debug\stream-sync-switcher.exe --four-view-focused-handoff-preview-loop streamsync-handoff-dev 0 player1 streamsync-dev-session player2 streamsync-dev-session player3 streamsync-dev-session player4 streamsync-dev-session 5`
+  - `view_state=Focused`
+  - `focused_slot_index=0`
+  - `focused_client_id=player1`
+  - `focused_result_kind=Selected`
+  - `frames_rendered=5`
+  - `render_failures=0`
+  - `scheduler_status=AllSelected`
+  - `slot_result_kinds=Selected|Selected|Selected|Selected`
+  - `clean_output_render_result_kind=Rendered`
+  - `output_width=1280`
+  - `output_height=720`
+- `Focused(1)`:
+  `.\target\debug\stream-sync-switcher.exe --four-view-focused-handoff-preview-loop streamsync-handoff-dev 1 player1 streamsync-dev-session player2 streamsync-dev-session player3 streamsync-dev-session player4 streamsync-dev-session 5`
+  - `view_state=Focused`
+  - `focused_slot_index=1`
+  - `focused_client_id=player2`
+  - `focused_result_kind=Selected`
+  - `frames_rendered=5`
+  - `render_failures=0`
+  - `scheduler_status=AllSelected`
+  - `slot_result_kinds=Selected|Selected|Selected|Selected`
+  - `clean_output_render_result_kind=Rendered`
+  - `output_width=1280`
+  - `output_height=720`
+- `Focused(2)` successful rerun:
+  `.\target\debug\stream-sync-switcher.exe --four-view-focused-handoff-preview-loop streamsync-handoff-dev 2 player1 streamsync-dev-session player2 streamsync-dev-session player3 streamsync-dev-session player4 streamsync-dev-session 5`
+  - `view_state=Focused`
+  - `focused_slot_index=2`
+  - `focused_client_id=player3`
+  - `focused_result_kind=Selected`
+  - `frames_rendered=5`
+  - `render_failures=0`
+  - `scheduler_status=AllSelected`
+  - `slot_result_kinds=Selected|Selected|Selected|Selected`
+  - `clean_output_render_result_kind=Rendered`
+  - `output_width=1280`
+  - `output_height=720`
+- `Focused(3)` successful rerun:
+  `.\target\debug\stream-sync-switcher.exe --four-view-focused-handoff-preview-loop streamsync-handoff-dev 3 player1 streamsync-dev-session player2 streamsync-dev-session player3 streamsync-dev-session player4 streamsync-dev-session 5`
+  - `view_state=Focused`
+  - `focused_slot_index=3`
+  - `focused_client_id=player4`
+  - `focused_result_kind=Selected`
+  - `frames_rendered=5`
+  - `render_failures=0`
+  - `scheduler_status=AllSelected`
+  - `slot_result_kinds=Selected|Selected|Selected|Selected`
+  - `clean_output_render_result_kind=Rendered`
+  - `output_width=1280`
+  - `output_height=720`
+
+Across the successful focused sessions:
+
+- server summary stayed at:
+  - `registered_clients=4`
+  - `frames_reassembled=8`
+  - `frames_queued=8`
+  - `observed_reassembled_clients=4`
+  - `stop_reason=ReassembledFramesAndClientAwareThresholdReached`
+  - `receive_timed_out=false`
+  - `max_packets_reached=false`
+  - `handoff_errors=0`
+- clients continued to show:
+  - `frames_captured=2`
+  - `frames_encoded=2`
+  - `frames_sent=2`
+  - `capture_failures=0`
+  - `encode_failures=0`
+  - `send_failures=0`
+- slot diagnostics stayed at:
+  - `parse_error=none`
+  - `io_error=none`
+  - `decode_error=none`
+
+Recorded transient issues during focused validation:
+
+- first `Focused(2)` attempt ended with:
+  - `focused_result_kind=Selected`
+  - `clean_output_render_result_kind=Rendered`
+  - but `frames_rendered=4` instead of `5`
+  - rerun succeeded at `5/5`
+- first `Focused(3)` attempt failed before a valid handoff session formed:
+  - server stderr: `Handoff(CreatePipe(os_error_231))`
+  - switcher stdout ended with:
+    - `focused_result_kind=HandoffError`
+    - `scheduler_status=HandoffError`
+    - `clean_output_render_result_kind=NoRenderableFocusedView`
+  - rerun after a short release delay succeeded
+
+Current conclusion after focused actual validation:
+
+- `Focused(0..3)` can be validated on the guarded `4`-client all-real session
+  using the dedicated focused command
+- successful focused sessions preserve:
+  - `view_state=Focused`
+  - slot-aligned `focused_client_id`
+  - `focused_result_kind=Selected`
+  - `clean_output_render_result_kind=Rendered`
+  - `output_width=1280`
+  - `output_height=720`
+- observed failures were transient runtime/lifecycle issues, not protocol,
+  decode, or scheduler regressions
+
 ---
 
 ## 1. Prerequisite Checks

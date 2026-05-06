@@ -1,5 +1,139 @@
 <!-- stream-sync/docs/operations/session-log.md -->
 
+## 2026-05-07
+### Type
+- Codex
+
+### Work
+- Ran actual guarded `4`-client focused-view validation for
+  `Focused(0)`, `Focused(1)`, `Focused(2)`, and `Focused(3)`.
+- Reconfirmed `AllView` on the same guarded `4`-client baseline.
+- Recorded two transient issues, then reran the affected focused sessions.
+
+### Changed Files
+- `docs/operations/manual-real-encoded-video-poc.md`
+- `docs/operations/session-log.md`
+- `docs/operations/todo.md`
+
+### Manual Commands
+- server:
+  `.\target\debug\stream-sync-server.exe --receive-auth-video-queue-and-serve-handoff-many configs/manual/server.two-real-slots.toml streamsync-handoff-dev 20 4096 5000 8 true 8388608 4 2`
+- clients:
+  `.\target\debug\stream-sync-client.exe --auth-real-encoded-video-frame-poc-bounded configs/manual/client.player1.toml 2 16 1`
+  `.\target\debug\stream-sync-client.exe --auth-real-encoded-video-frame-poc-bounded configs/manual/client.player2.toml 2 16 1`
+  `.\target\debug\stream-sync-client.exe --auth-real-encoded-video-frame-poc-bounded configs/manual/client.player3.toml 2 16 1`
+  `.\target\debug\stream-sync-client.exe --auth-real-encoded-video-frame-poc-bounded configs/manual/client.player4.toml 2 16 1`
+- switcher focused:
+  `.\target\debug\stream-sync-switcher.exe --four-view-focused-handoff-preview-loop streamsync-handoff-dev 0 player1 streamsync-dev-session player2 streamsync-dev-session player3 streamsync-dev-session player4 streamsync-dev-session 5`
+  `.\target\debug\stream-sync-switcher.exe --four-view-focused-handoff-preview-loop streamsync-handoff-dev 1 player1 streamsync-dev-session player2 streamsync-dev-session player3 streamsync-dev-session player4 streamsync-dev-session 5`
+  `.\target\debug\stream-sync-switcher.exe --four-view-focused-handoff-preview-loop streamsync-handoff-dev 2 player1 streamsync-dev-session player2 streamsync-dev-session player3 streamsync-dev-session player4 streamsync-dev-session 5`
+  `.\target\debug\stream-sync-switcher.exe --four-view-focused-handoff-preview-loop streamsync-handoff-dev 3 player1 streamsync-dev-session player2 streamsync-dev-session player3 streamsync-dev-session player4 streamsync-dev-session 5`
+- switcher all-view:
+  `.\target\debug\stream-sync-switcher.exe --four-view-four-real-handoff-preview-loop streamsync-handoff-dev player1 streamsync-dev-session player2 streamsync-dev-session player3 streamsync-dev-session player4 streamsync-dev-session 5`
+
+### Successful Focused Results
+- `Focused(0)`:
+  - `view_state=Focused`
+  - `focused_slot_index=0`
+  - `focused_client_id=player1`
+  - `focused_result_kind=Selected`
+  - `frames_rendered=5`
+  - `render_failures=0`
+  - `scheduler_status=AllSelected`
+  - `clean_output_render_result_kind=Rendered`
+  - `output_width=1280`
+  - `output_height=720`
+- `Focused(1)`:
+  - `view_state=Focused`
+  - `focused_slot_index=1`
+  - `focused_client_id=player2`
+  - `focused_result_kind=Selected`
+  - `frames_rendered=5`
+  - `render_failures=0`
+  - `scheduler_status=AllSelected`
+  - `clean_output_render_result_kind=Rendered`
+  - `output_width=1280`
+  - `output_height=720`
+- `Focused(2)` successful rerun:
+  - `view_state=Focused`
+  - `focused_slot_index=2`
+  - `focused_client_id=player3`
+  - `focused_result_kind=Selected`
+  - `frames_rendered=5`
+  - `render_failures=0`
+  - `scheduler_status=AllSelected`
+  - `clean_output_render_result_kind=Rendered`
+  - `output_width=1280`
+  - `output_height=720`
+- `Focused(3)` successful rerun:
+  - `view_state=Focused`
+  - `focused_slot_index=3`
+  - `focused_client_id=player4`
+  - `focused_result_kind=Selected`
+  - `frames_rendered=5`
+  - `render_failures=0`
+  - `scheduler_status=AllSelected`
+  - `clean_output_render_result_kind=Rendered`
+  - `output_width=1280`
+  - `output_height=720`
+
+### AllView Recheck
+- `--four-view-four-real-handoff-preview-loop ...` still returned:
+  - `slot_result_kinds=Selected|Selected|Selected|Selected`
+  - `scheduler_status=AllSelected`
+  - `clean_output_render_result_kind=Rendered`
+  - `frames_rendered=5`
+  - `render_failures=0`
+  - `output_width=1280`
+  - `output_height=720`
+
+### Server And Client Notes
+- successful focused sessions kept:
+  - `registered_clients=4`
+  - `frames_reassembled=8`
+  - `frames_queued=8`
+  - `observed_reassembled_clients=4`
+  - `stop_reason=ReassembledFramesAndClientAwareThresholdReached`
+  - `receive_timed_out=false`
+  - `max_packets_reached=false`
+  - `handoff_errors=0`
+- client summaries across the recorded successful sessions kept:
+  - `frames_captured=2`
+  - `frames_encoded=2`
+  - `frames_sent=2`
+  - `capture_failures=0`
+  - `encode_failures=0`
+  - `send_failures=0`
+- successful focused/all-view switcher summaries kept:
+  - `parse_error=none`
+  - `io_error=none`
+  - `decode_error=none`
+
+### Transient Issues
+- first `Focused(2)` attempt ended with:
+  - `focused_result_kind=Selected`
+  - `clean_output_render_result_kind=Rendered`
+  - but `frames_rendered=4`
+  - rerun succeeded at `5/5`
+- first `Focused(3)` attempt failed before a valid handoff session formed:
+  - server stderr:
+    `receive auth/video queue and serve handoff many failed: Handoff(CreatePipe(os_error_231))`
+  - switcher summary ended with:
+    - `focused_result_kind=HandoffError`
+    - `scheduler_status=HandoffError`
+    - `clean_output_render_result_kind=NoRenderableFocusedView`
+  - rerun after a short delay succeeded
+
+### Decision
+- `Focused(0..3)` actual manual validation is now recorded as successful on the
+  guarded `4`-client baseline.
+- Remaining next work should move from focused feasibility to
+  `AllView -> Focused(slot_index) -> AllView` operator-flow validation and then
+  a hotkey/UI wrapper discussion.
+
+### Validation
+- actual focused/all-view manual stdout summaries recorded
+
 ## 2026-05-06
 ### Type
 - Codex
