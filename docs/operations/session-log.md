@@ -5,6 +5,266 @@
 - Codex
 
 ### Work
+- Ran the guarded `4`-client all-real recipe `3` times consecutively to measure
+  repeatability instead of relying on one successful pass.
+- Classified the observed variance and updated docs/TODO based on the outcome.
+
+### Changed Files
+- `docs/operations/manual-real-encoded-video-poc.md`
+- `docs/operations/session-log.md`
+- `docs/operations/todo.md`
+
+### Manual Commands
+- Repeated `3` times:
+  - server:
+    `.\target\debug\stream-sync-server.exe --receive-auth-video-queue-and-serve-handoff-many configs/manual/server.two-real-slots.toml streamsync-handoff-dev 20 4096 5000 8 true 8388608 4 2`
+  - client1:
+    `.\target\debug\stream-sync-client.exe --auth-real-encoded-video-frame-poc-bounded configs/manual/client.player1.toml 2 16 1`
+  - client2:
+    `.\target\debug\stream-sync-client.exe --auth-real-encoded-video-frame-poc-bounded configs/manual/client.player2.toml 2 16 1`
+  - client3:
+    `.\target\debug\stream-sync-client.exe --auth-real-encoded-video-frame-poc-bounded configs/manual/client.player3.toml 2 16 1`
+  - client4:
+    `.\target\debug\stream-sync-client.exe --auth-real-encoded-video-frame-poc-bounded configs/manual/client.player4.toml 2 16 1`
+  - switcher:
+    `.\target\debug\stream-sync-switcher.exe --four-view-four-real-handoff-preview-loop streamsync-handoff-dev player1 streamsync-dev-session player2 streamsync-dev-session player3 streamsync-dev-session player4 streamsync-dev-session 5`
+
+### Run 1
+- Server summary:
+  - `registered_clients=4`
+  - `frames_reassembled=8`
+  - `frames_queued=8`
+  - `observed_reassembled_clients=4`
+  - `per_client_reassembled_frames=player1/streamsync-dev-session:2|player2/streamsync-dev-session:2|player3/streamsync-dev-session:2|player4/streamsync-dev-session:2`
+  - `stop_reason=ReassembledFramesAndClientAwareThresholdReached`
+  - `receive_timed_out=false`
+  - `max_packets_reached=false`
+  - `handoff_errors=0`
+- Switcher summary:
+  - `frames_attempted=5`
+  - `frames_rendered=5`
+  - `render_failures=0`
+  - `scheduler_status=AllSelected`
+  - `slot_result_kinds=Selected|Selected|Selected|Selected`
+  - `clean_output_render_result_kind=Rendered`
+  - all slot diagnostics kept `parse_error=none`, `io_error=none`,
+    `decode_error=none`
+- Clients:
+  - player1..4 all showed `frames_captured=2`, `frames_encoded=2`,
+    `frames_sent=2`
+  - no capture / encode / send failures
+
+### Run 2
+- Server summary:
+  - `registered_clients=4`
+  - `frames_reassembled=8`
+  - `frames_queued=8`
+  - `observed_reassembled_clients=4`
+  - `per_client_reassembled_frames=player1/streamsync-dev-session:2|player2/streamsync-dev-session:2|player3/streamsync-dev-session:2|player4/streamsync-dev-session:2`
+  - `stop_reason=ReassembledFramesAndClientAwareThresholdReached`
+  - `receive_timed_out=false`
+  - `max_packets_reached=false`
+  - `handoff_errors=0`
+- Switcher summary:
+  - `frames_attempted=5`
+  - `frames_rendered=5`
+  - `render_failures=0`
+  - `scheduler_status=AllSelected`
+  - `slot_result_kinds=Selected|Selected|Selected|Selected`
+  - `clean_output_render_result_kind=Rendered`
+  - all slot diagnostics kept `parse_error=none`, `io_error=none`,
+    `decode_error=none`
+- Clients:
+  - player1..4 all showed `frames_captured=2`, `frames_encoded=2`,
+    `frames_sent=2`
+  - no capture / encode / send failures
+
+### Run 3
+- Server summary:
+  - `registered_clients=4`
+  - `frames_reassembled=8`
+  - `frames_queued=8`
+  - `observed_reassembled_clients=4`
+  - `per_client_reassembled_frames=player1/streamsync-dev-session:2|player2/streamsync-dev-session:2|player3/streamsync-dev-session:2|player4/streamsync-dev-session:2`
+  - `stop_reason=ReassembledFramesAndClientAwareThresholdReached`
+  - `receive_timed_out=false`
+  - `max_packets_reached=false`
+  - `handoff_errors=0`
+- Switcher summary:
+  - `frames_attempted=5`
+  - `frames_rendered=5`
+  - `render_failures=0`
+  - `scheduler_status=AllSelected`
+  - `slot_result_kinds=Selected|Selected|Selected|Selected`
+  - `clean_output_render_result_kind=Rendered`
+  - all slot diagnostics kept `parse_error=none`, `io_error=none`,
+    `decode_error=none`
+- Clients:
+  - player1..4 all showed `frames_captured=2`, `frames_encoded=2`,
+    `frames_sent=2`
+  - no capture / encode / send failures
+
+### Variance Classification
+- No failure classification was needed across the `3` runs.
+- Observed variance existed only in non-failure numeric fields such as:
+  - `packets_received`
+  - `fragments_received`
+  - `frame_payload_len`
+- No instability was observed in:
+  - client capture
+  - client auth / send
+  - server receive timeout
+  - incomplete reassembly
+  - named-pipe handoff
+  - switcher parse / io / decode / render
+
+### Decision
+- The guarded `4`-client all-real path succeeded `3` times consecutively.
+- This is sufficient to move the next work from stability proof to
+  operator-facing control-surface design.
+
+### TODO Update
+- Recorded the repeated stability observation as successful and repeatable.
+- Shifted the next task toward operator-facing control-surface planning instead
+  of additional baseline feasibility runs.
+
+### Validation
+- repeated `4`-client guarded manual pass x `3`
+
+## 2026-05-06
+### Type
+- Codex
+
+### Work
+- Prepared the `4`-real-slot manual pass by adding player3/player4 manual
+  configs and a dedicated fixed-order all-real switcher preview command.
+- Ran the guarded `4`-client receive/handoff path and confirmed an all-real
+  `AllSelected` switcher pass using stdout only.
+
+### Changed Files
+- `configs/manual/client.player3.toml`
+- `configs/manual/client.player4.toml`
+- `apps/switcher/src/main.rs`
+- `docs/operations/manual-real-encoded-video-poc.md`
+- `docs/operations/session-log.md`
+- `docs/operations/todo.md`
+
+### Decision
+- Existing commands could not express `4` real slots without mutating the
+  already-validated `1`-real-slot / `2`-real-slot shapes.
+- Added a dedicated command instead of widening older commands:
+  - `--four-view-four-real-handoff-preview-loop [pipe-name] [client0-id] [run0-id] [client1-id] [run1-id] [client2-id] [run2-id] [client3-id] [run3-id] [frames]`
+- Chose fixed slot order `0..3` instead of extra slot-index args because this
+  slice is still explicitly fixed to a 4-view non-generic setup.
+
+### Implemented
+- Added:
+  - `configs/manual/client.player3.toml`
+  - `configs/manual/client.player4.toml`
+- Kept:
+  - same `run_id = "streamsync-dev-session"`
+  - same localhost server target
+  - distinct `client_id` / `shared_token` only
+- Added the dedicated switcher all-real command and formatter.
+- Reused:
+  - existing named-pipe handoff wrapper/client
+  - `SwitcherFourViewHandoffValidationBoundary`
+  - clean output window family
+  - persistent output loop semantics
+  - fixed `1280x720` OBS-friendly output profile
+- Added focused switcher tests for:
+  - all four slots bound as real
+  - `slot_result_kinds=Selected|Selected|Selected|Selected`
+  - formatted stdout fields for the new command
+
+### Guarded `4`-Client Manual Pass
+- Server:
+  `.\target\debug\stream-sync-server.exe --receive-auth-video-queue-and-serve-handoff-many configs/manual/server.two-real-slots.toml streamsync-handoff-dev 20 4096 5000 8 true 8388608 4 2`
+- Client1:
+  `.\target\debug\stream-sync-client.exe --auth-real-encoded-video-frame-poc-bounded configs/manual/client.player1.toml 2 16 1`
+- Client2:
+  `.\target\debug\stream-sync-client.exe --auth-real-encoded-video-frame-poc-bounded configs/manual/client.player2.toml 2 16 1`
+- Client3:
+  `.\target\debug\stream-sync-client.exe --auth-real-encoded-video-frame-poc-bounded configs/manual/client.player3.toml 2 16 1`
+- Client4:
+  `.\target\debug\stream-sync-client.exe --auth-real-encoded-video-frame-poc-bounded configs/manual/client.player4.toml 2 16 1`
+- Switcher:
+  `.\target\debug\stream-sync-switcher.exe --four-view-four-real-handoff-preview-loop streamsync-handoff-dev player1 streamsync-dev-session player2 streamsync-dev-session player3 streamsync-dev-session player4 streamsync-dev-session 5`
+
+### Observed Logs
+- Server receive summary:
+  - `registered_clients=4`
+  - `manual_expected_reassembled_frames=8`
+  - `manual_expected_reassembled_clients=4`
+  - `manual_expected_reassembled_frames_per_client=2`
+  - `frames_reassembled=8`
+  - `frames_queued=8`
+  - `observed_reassembled_clients=4`
+  - `per_client_reassembled_frames=player1/streamsync-dev-session:2|player2/streamsync-dev-session:2|player3/streamsync-dev-session:2|player4/streamsync-dev-session:2`
+  - `stop_reason=ReassembledFramesAndClientAwareThresholdReached`
+  - `receive_timed_out=false`
+  - `max_packets_reached=false`
+- Server bounded handoff:
+  - `max_requests=20`
+  - `requests_served=20`
+  - `successful_responses=20`
+  - `handoff_errors=0`
+  - player1/player2/player3/player4 scopes all returned `FrameRead`
+  - `queue_len_before_read=2`
+  - `queue_len_after_read=2`
+  - `frame_payload_len > 0` for all four scopes
+- Clients:
+  - all four auth requests accepted
+  - all four clients sent `2` fragmented real encoded frames
+  - all four clients had `send_failures=0`
+- Switcher summary:
+  - `real_handoff=true`
+  - `real_slot_count=4`
+  - `frames_attempted=5`
+  - `frames_rendered=5`
+  - `render_failures=0`
+  - `scheduler_status=AllSelected`
+  - `slot_result_kinds=Selected|Selected|Selected|Selected`
+  - `clean_output_render_result_kind=Rendered`
+  - `window_title=StreamSync 4-view Output`
+  - `output_width=1280`
+  - `output_height=720`
+- Switcher slot diagnostics:
+  - all four slots:
+    - `handoff_response_kind=FrameRead`
+    - `parse_error=none`
+    - `io_error=none`
+    - `decode_error=none`
+    - `final_slot_result_kind=Selected`
+
+### Conclusion
+- The fixed-order all-real command is sufficient for the current fixed 4-view
+  scope and does not require a generic N-view refactor.
+- The guarded all-real baseline is now proven end-to-end:
+  - client auth/send
+  - server receive/reassembly/queue
+  - named-pipe handoff serving
+  - switcher 4-slot render
+  - clean output render summary
+
+### TODO Update
+- Marked `4`-real-slot config prep, command shape, and actual manual pass as
+  complete.
+- Moved the next practical work toward repeated stability observation and the
+  future operator-facing control surface rather than basic all-real feasibility.
+
+### Validation
+- `cargo fmt`
+- `cargo test -p stream-sync-switcher four_view -- --test-threads=1`
+- `cargo test -p stream-sync-server client_aware_stop -- --test-threads=1`
+- `cargo build -p stream-sync-server -p stream-sync-client -p stream-sync-switcher`
+- guarded `4`-client manual rerun with rebuilt binaries
+
+## 2026-05-06
+### Type
+- Codex
+
+### Work
 - Evaluated whether the successful `2`-client manual recipe was enough on its
   own before `4`-real-slot work.
 - Chose to add a minimal optional client-aware stop condition instead of
