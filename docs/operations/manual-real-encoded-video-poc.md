@@ -1157,12 +1157,159 @@ Recommended next same-session control shape:
 Current implementation note:
 
 - the same-session control loop is implemented
-- actual guarded manual pass for this command is not yet recorded
-- next manual target is one persistent session that proves:
-  - `status -> focus 0 -> all -> quit`
-  - `status -> focus 1 -> all -> quit`
-  - `status -> focus 2 -> all -> quit`
-  - `status -> focus 3 -> all -> quit`
+- actual guarded manual pass for this command is now recorded in scripted mode
+- current stdout wording uses:
+  - `transition_result=Transitioned` for accepted view-state changes
+  - `transition_result=Observed` for `status`
+  - `transition_result=ExitRequested` and `exit_reason=QuitRequested` for
+    `quit`
+- practical bounded-session note:
+  - same-session scripted runs need server `max_requests` sized for:
+    `render_commands * max_ticks_per_command * 4 real slots`
+  - the recorded success script below used `7 * 5 * 4 = 140` bounded requests
+  - one extra one-shot read was then used to flush the bounded server summary
+    after the successful scripted loop
+
+### Recorded Same-Session Scripted Validation
+
+Recorded guarded server/client recipe for the main success path:
+
+- server:
+
+```powershell
+.\target\debug\stream-sync-server.exe --receive-auth-video-queue-and-serve-handoff-many configs/manual/server.two-real-slots.toml streamsync-handoff-dev 140 4096 5000 8 true 8388608 4 2
+```
+
+- clients:
+
+```powershell
+.\target\debug\stream-sync-client.exe --auth-real-encoded-video-frame-poc-bounded configs/manual/client.player1.toml 2 16 1
+.\target\debug\stream-sync-client.exe --auth-real-encoded-video-frame-poc-bounded configs/manual/client.player2.toml 2 16 1
+.\target\debug\stream-sync-client.exe --auth-real-encoded-video-frame-poc-bounded configs/manual/client.player3.toml 2 16 1
+.\target\debug\stream-sync-client.exe --auth-real-encoded-video-frame-poc-bounded configs/manual/client.player4.toml 2 16 1
+```
+
+- switcher scripted same-session success path:
+
+```powershell
+.\target\debug\stream-sync-switcher.exe --four-view-controlled-handoff-preview-loop streamsync-handoff-dev player1 streamsync-dev-session player2 streamsync-dev-session player3 streamsync-dev-session player4 streamsync-dev-session 5 --commands "status;focus 0;focus 1;focus 2;focus 3;all;status;quit"
+```
+
+Observed same-session success result:
+
+- command `0` `status`:
+  - `current_view_state=AllView`
+  - `transition_result=Observed`
+  - `frames_rendered=5`
+  - `render_failures=0`
+  - `scheduler_status=AllSelected`
+  - `clean_output_render_result_kind=Rendered`
+- commands `1..4` `focus 0..3`:
+  - `current_view_state=Focused(0..3)`
+  - `transition_result=Transitioned`
+  - `selected_slot_result=Selected`
+  - `frames_rendered=5`
+  - `render_failures=0`
+  - `scheduler_status=AllSelected`
+  - `clean_output_render_result_kind=Rendered`
+- command `5` `all`:
+  - `current_view_state=AllView`
+  - `transition_result=Transitioned`
+  - `frames_rendered=5`
+  - `render_failures=0`
+  - `scheduler_status=AllSelected`
+  - `clean_output_render_result_kind=Rendered`
+- command `6` `status`:
+  - `current_view_state=AllView`
+  - `transition_result=Observed`
+  - `frames_rendered=5`
+  - `render_failures=0`
+  - `scheduler_status=AllSelected`
+  - `clean_output_render_result_kind=Rendered`
+- command `7` `quit`:
+  - `transition_result=ExitRequested`
+  - `exit_reason=QuitRequested`
+- final summary:
+  - `commands_processed=8`
+  - `commands_rejected=0`
+  - `current_view_state=AllView`
+  - `frames_rendered=35`
+  - `render_failures=0`
+  - `scheduler_status=AllSelected`
+  - `slot_result_kinds=Selected|Selected|Selected|Selected`
+  - `clean_output_render_result_kind=Rendered`
+  - `window_title=StreamSync 4-view Output`
+  - `output_width=1280`
+  - `output_height=720`
+  - `exit_reason=QuitRequested`
+
+Observed server/client conditions for the same success session:
+
+- server receive summary kept:
+  - `registered_clients=4`
+  - `frames_reassembled=8`
+  - `frames_queued=8`
+  - `observed_reassembled_clients=4`
+  - `per_client_reassembled_frames=player1/streamsync-dev-session:2|player2/streamsync-dev-session:2|player3/streamsync-dev-session:2|player4/streamsync-dev-session:2`
+  - `stop_reason=ReassembledFramesAndClientAwareThresholdReached`
+  - `receive_timed_out=false`
+  - `max_packets_reached=false`
+- server bounded handoff kept:
+  - `max_requests=140`
+  - `requests_served=140`
+  - `successful_responses=140`
+  - `handoff_errors=0`
+- clients `player1..4` each kept:
+  - `frames_captured=2`
+  - `frames_encoded=2`
+  - `frames_sent=2`
+  - `capture_failures=0`
+  - `encode_failures=0`
+  - `send_failures=0`
+
+Recorded guarded server/client recipe for the rejected-path validation:
+
+- server:
+
+```powershell
+.\target\debug\stream-sync-server.exe --receive-auth-video-queue-and-serve-handoff-many configs/manual/server.two-real-slots.toml streamsync-handoff-dev 20 4096 5000 8 true 8388608 4 2
+```
+
+- clients:
+  - same `player1..player4` commands as above
+
+- switcher scripted rejected path:
+
+```powershell
+.\target\debug\stream-sync-switcher.exe --four-view-controlled-handoff-preview-loop streamsync-handoff-dev player1 streamsync-dev-session player2 streamsync-dev-session player3 streamsync-dev-session player4 streamsync-dev-session 5 --commands "focus 9;status;quit"
+```
+
+Observed rejected-path result:
+
+- command `0` `focus 9`:
+  - `transition_result=Rejected`
+  - `current_view_state=AllView`
+  - `command_parse_error=invalid_focus_index:_expected_integer_0..3`
+- command `1` `status`:
+  - `transition_result=Observed`
+  - `current_view_state=AllView`
+  - `frames_rendered=5`
+  - `render_failures=0`
+  - `scheduler_status=AllSelected`
+  - `clean_output_render_result_kind=Rendered`
+- command `2` `quit`:
+  - `transition_result=ExitRequested`
+  - `exit_reason=QuitRequested`
+- final summary:
+  - `commands_processed=3`
+  - `commands_rejected=1`
+  - `current_view_state=AllView`
+  - `frames_rendered=5`
+  - `render_failures=0`
+  - `scheduler_status=AllSelected`
+  - `slot_result_kinds=Selected|Selected|Selected|Selected`
+  - `clean_output_render_result_kind=Rendered`
+  - `exit_reason=QuitRequested`
 
 ---
 

@@ -5,6 +5,156 @@
 - Codex
 
 ### Work
+- Ran guarded real handoff same-session scripted manual validation for the new
+  `--four-view-controlled-handoff-preview-loop`.
+- Recorded both:
+  - main success script:
+    `status -> focus 0 -> focus 1 -> focus 2 -> focus 3 -> all -> status -> quit`
+  - rejected script:
+    `focus 9 -> status -> quit`
+- Noted one practical server-lifecycle detail: the same-session success path
+  needed a larger bounded `max_requests` budget than the earlier one-shot
+  commands, and one extra one-shot read was used to flush the bounded server
+  summary after the successful scripted loop.
+
+### Changed Files
+- `docs/operations/manual-real-encoded-video-poc.md`
+- `docs/operations/session-log.md`
+- `docs/operations/todo.md`
+
+### Manual Commands
+- success-path server:
+  `.\target\debug\stream-sync-server.exe --receive-auth-video-queue-and-serve-handoff-many configs/manual/server.two-real-slots.toml streamsync-handoff-dev 140 4096 5000 8 true 8388608 4 2`
+- success-path clients:
+  `.\target\debug\stream-sync-client.exe --auth-real-encoded-video-frame-poc-bounded configs/manual/client.player1.toml 2 16 1`
+  `.\target\debug\stream-sync-client.exe --auth-real-encoded-video-frame-poc-bounded configs/manual/client.player2.toml 2 16 1`
+  `.\target\debug\stream-sync-client.exe --auth-real-encoded-video-frame-poc-bounded configs/manual/client.player3.toml 2 16 1`
+  `.\target\debug\stream-sync-client.exe --auth-real-encoded-video-frame-poc-bounded configs/manual/client.player4.toml 2 16 1`
+- success-path switcher:
+  `.\target\debug\stream-sync-switcher.exe --four-view-controlled-handoff-preview-loop streamsync-handoff-dev player1 streamsync-dev-session player2 streamsync-dev-session player3 streamsync-dev-session player4 streamsync-dev-session 5 --commands "status;focus 0;focus 1;focus 2;focus 3;all;status;quit"`
+- practical post-success flush read:
+  `.\target\debug\stream-sync-switcher.exe --read-queued-frame-handoff-once streamsync-handoff-dev player1 streamsync-dev-session preview-latest 141`
+- rejected-path server:
+  `.\target\debug\stream-sync-server.exe --receive-auth-video-queue-and-serve-handoff-many configs/manual/server.two-real-slots.toml streamsync-handoff-dev 20 4096 5000 8 true 8388608 4 2`
+- rejected-path switcher:
+  `.\target\debug\stream-sync-switcher.exe --four-view-controlled-handoff-preview-loop streamsync-handoff-dev player1 streamsync-dev-session player2 streamsync-dev-session player3 streamsync-dev-session player4 streamsync-dev-session 5 --commands "focus 9;status;quit"`
+
+### Main Success Result
+- command `0` `status`:
+  - `current_view_state=AllView`
+  - `transition_result=Observed`
+  - `frames_rendered=5`
+  - `render_failures=0`
+  - `scheduler_status=AllSelected`
+  - `clean_output_render_result_kind=Rendered`
+- commands `1..4` `focus 0..3`:
+  - `current_view_state=Focused(0..3)`
+  - `transition_result=Transitioned`
+  - `selected_slot_result=Selected`
+  - `frames_rendered=5`
+  - `render_failures=0`
+  - `scheduler_status=AllSelected`
+  - `clean_output_render_result_kind=Rendered`
+- command `5` `all`:
+  - `current_view_state=AllView`
+  - `transition_result=Transitioned`
+  - `frames_rendered=5`
+  - `render_failures=0`
+  - `scheduler_status=AllSelected`
+  - `clean_output_render_result_kind=Rendered`
+- command `6` `status`:
+  - `current_view_state=AllView`
+  - `transition_result=Observed`
+  - `frames_rendered=5`
+  - `render_failures=0`
+  - `scheduler_status=AllSelected`
+  - `clean_output_render_result_kind=Rendered`
+- command `7` `quit`:
+  - `transition_result=ExitRequested`
+  - `exit_reason=QuitRequested`
+- final summary:
+  - `commands_processed=8`
+  - `commands_rejected=0`
+  - `current_view_state=AllView`
+  - `frames_rendered=35`
+  - `render_failures=0`
+  - `scheduler_status=AllSelected`
+  - `slot_result_kinds=Selected|Selected|Selected|Selected`
+  - `clean_output_render_result_kind=Rendered`
+  - `window_title=StreamSync 4-view Output`
+  - `output_width=1280`
+  - `output_height=720`
+  - `exit_reason=QuitRequested`
+
+### Rejected-Path Result
+- command `0` `focus 9`:
+  - `transition_result=Rejected`
+  - `current_view_state=AllView`
+  - `command_parse_error=invalid_focus_index:_expected_integer_0..3`
+- command `1` `status`:
+  - `transition_result=Observed`
+  - `current_view_state=AllView`
+  - `frames_rendered=5`
+  - `render_failures=0`
+  - `scheduler_status=AllSelected`
+  - `clean_output_render_result_kind=Rendered`
+- command `2` `quit`:
+  - `transition_result=ExitRequested`
+  - `exit_reason=QuitRequested`
+- final summary:
+  - `commands_processed=3`
+  - `commands_rejected=1`
+  - `current_view_state=AllView`
+  - `frames_rendered=5`
+  - `render_failures=0`
+  - `scheduler_status=AllSelected`
+  - `slot_result_kinds=Selected|Selected|Selected|Selected`
+  - `clean_output_render_result_kind=Rendered`
+  - `exit_reason=QuitRequested`
+
+### Server And Client Notes
+- success-path server receive summary kept:
+  - `registered_clients=4`
+  - `frames_reassembled=8`
+  - `frames_queued=8`
+  - `observed_reassembled_clients=4`
+  - `per_client_reassembled_frames=player1/streamsync-dev-session:2|player2/streamsync-dev-session:2|player3/streamsync-dev-session:2|player4/streamsync-dev-session:2`
+  - `stop_reason=ReassembledFramesAndClientAwareThresholdReached`
+  - `receive_timed_out=false`
+  - `max_packets_reached=false`
+- success-path bounded handoff summary kept:
+  - `max_requests=140`
+  - `requests_served=140`
+  - `successful_responses=140`
+  - `handoff_errors=0`
+- rejected-path bounded handoff summary kept:
+  - `max_requests=20`
+  - `requests_served=20`
+  - `successful_responses=20`
+  - `handoff_errors=0`
+- clients `player1..4` kept:
+  - `frames_captured=2`
+  - `frames_encoded=2`
+  - `frames_sent=2`
+  - `capture_failures=0`
+  - `encode_failures=0`
+  - `send_failures=0`
+
+### Decision
+- same-session scripted control-loop manual validation is now recorded as
+  successful for both the main success path and the rejected path.
+- next work can move from control-loop feasibility/validation to wrapper-level
+  operator ergonomics rather than more transport/view-state proof runs.
+
+### Validation
+- recorded actual same-session success stdout summary
+- recorded actual same-session rejected-path stdout summary
+
+## 2026-05-07
+### Type
+- Codex
+
+### Work
 - Implemented the first same-session fixed `4`-view control loop in
   `stream-sync-switcher`.
 - Kept the validated all-view and focused commands unchanged while adding one
