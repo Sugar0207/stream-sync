@@ -460,6 +460,9 @@ fn map_handoff_error_code_to_switcher(
 pub struct SwitcherNamedPipeQueuedFrameHandoffRuntimeOutput {
     pub request: ServerSwitcherQueuedFrameHandoffRequest,
     pub response: Option<ServerSwitcherQueuedFrameHandoffResponse>,
+    pub response_payload_len: Option<usize>,
+    pub parse_error: Option<String>,
+    pub io_error: Option<String>,
     pub result: SwitcherQueuedFrameHandoffResult,
 }
 
@@ -520,6 +523,7 @@ pub struct SwitcherNamedPipeQueuedFrameHandoffRequestSummary {
     pub result_kind: SwitcherNamedPipeQueuedFrameHandoffResultKind,
     pub final_result: SwitcherNamedPipeQueuedFrameHandoffResultKind,
     pub last_error: Option<SwitcherQueuedFrameHandoffError>,
+    pub local_error: Option<String>,
     pub retry_classification: Option<SwitcherNamedPipeQueuedFrameHandoffRetryClassification>,
     pub elapsed_millis: u64,
 }
@@ -704,6 +708,7 @@ where
                         .as_ref()
                         .map(classify_named_pipe_handoff_error),
                     last_error,
+                    local_error: None,
                     elapsed_millis,
                 };
                 let result = output.result.clone();
@@ -713,7 +718,7 @@ where
                     result,
                 }
             }
-            Err(SwitcherNamedPipeQueuedFrameHandoffRuntimeError::EncodeRequest(_)) => {
+            Err(SwitcherNamedPipeQueuedFrameHandoffRuntimeError::EncodeRequest(error)) => {
                 let result = SwitcherQueuedFrameHandoffResult::HandoffError {
                     client_id: input.client_id,
                     run_id: input.run_id,
@@ -731,6 +736,7 @@ where
                     result_kind: SwitcherNamedPipeQueuedFrameHandoffResultKind::HandoffError,
                     final_result: SwitcherNamedPipeQueuedFrameHandoffResultKind::HandoffError,
                     last_error: Some(SwitcherQueuedFrameHandoffError::MalformedResponse),
+                    local_error: Some(format!("encode_request:{error:?}")),
                     retry_classification: Some(
                         SwitcherNamedPipeQueuedFrameHandoffRetryClassification::NonRetryable,
                     ),
@@ -832,25 +838,37 @@ impl SwitcherNamedPipeQueuedFrameHandoffRuntimeBoundary {
         let mut pipe = match open_named_pipe_client(pipe_name, config.connect_timeout_millis) {
             Ok(pipe) => pipe,
             Err(error) => {
+                let io_error = format_named_pipe_io_error_detail("connect", &error);
                 return Ok(SwitcherNamedPipeQueuedFrameHandoffRuntimeOutput {
                     request,
                     response: None,
+                    response_payload_len: None,
+                    parse_error: None,
+                    io_error: Some(io_error),
                     result: handoff_error_result_from_io(&input, error),
                 });
             }
         };
 
         if let Err(error) = pipe.write_all(&request_frame) {
+            let io_error = format_named_pipe_io_error_detail("write_request", &error);
             return Ok(SwitcherNamedPipeQueuedFrameHandoffRuntimeOutput {
                 request,
                 response: None,
+                response_payload_len: None,
+                parse_error: None,
+                io_error: Some(io_error),
                 result: handoff_error_result_from_io(&input, error),
             });
         }
         if let Err(error) = pipe.flush() {
+            let io_error = format_named_pipe_io_error_detail("flush_request", &error);
             return Ok(SwitcherNamedPipeQueuedFrameHandoffRuntimeOutput {
                 request,
                 response: None,
+                response_payload_len: None,
+                parse_error: None,
+                io_error: Some(io_error),
                 result: handoff_error_result_from_io(&input, error),
             });
         }
@@ -858,19 +876,26 @@ impl SwitcherNamedPipeQueuedFrameHandoffRuntimeBoundary {
         let response_frame = match read_length_prefixed_frame_from_pipe(&mut pipe) {
             Ok(frame) => frame,
             Err(error) => {
+                let io_error = format_named_pipe_io_error_detail("read_response", &error);
                 return Ok(SwitcherNamedPipeQueuedFrameHandoffRuntimeOutput {
                     request,
                     response: None,
+                    response_payload_len: None,
+                    parse_error: None,
+                    io_error: Some(io_error),
                     result: handoff_error_result_from_io(&input, error),
                 });
             }
         };
         let response = match self.codec.decode_response_frame(&response_frame) {
             Ok(response) => response,
-            Err(_) => {
+            Err(error) => {
                 return Ok(SwitcherNamedPipeQueuedFrameHandoffRuntimeOutput {
                     request,
                     response: None,
+                    response_payload_len: Some(named_pipe_response_payload_len(&response_frame)),
+                    parse_error: Some(format!("{error:?}")),
+                    io_error: None,
                     result: SwitcherQueuedFrameHandoffResult::HandoffError {
                         client_id: input.client_id.clone(),
                         run_id: input.run_id.clone(),
@@ -885,6 +910,9 @@ impl SwitcherNamedPipeQueuedFrameHandoffRuntimeBoundary {
         Ok(SwitcherNamedPipeQueuedFrameHandoffRuntimeOutput {
             request,
             response: Some(response),
+            response_payload_len: Some(named_pipe_response_payload_len(&response_frame)),
+            parse_error: None,
+            io_error: None,
             result,
         })
     }
@@ -952,6 +980,16 @@ fn classify_named_pipe_handoff_error(
             SwitcherNamedPipeQueuedFrameHandoffRetryClassification::NonRetryable
         }
     }
+}
+
+#[cfg(windows)]
+fn format_named_pipe_io_error_detail(stage: &str, error: &io::Error) -> String {
+    format!("{stage}:{error}")
+}
+
+#[cfg(windows)]
+fn named_pipe_response_payload_len(frame: &[u8]) -> usize {
+    frame.len().saturating_sub(4)
 }
 
 #[cfg(windows)]
@@ -10870,6 +10908,9 @@ mod tests {
                         read_mode: ServerSwitcherQueuedFrameReadMode::InspectLatest,
                     },
                     response: None,
+                    response_payload_len: None,
+                    parse_error: None,
+                    io_error: None,
                     result: scripted_result.clone(),
                 },
             )]),
@@ -10910,6 +10951,9 @@ mod tests {
                         read_mode: ServerSwitcherQueuedFrameReadMode::DequeueOldest,
                     },
                     response: None,
+                    response_payload_len: None,
+                    parse_error: None,
+                    io_error: None,
                     result: SwitcherQueuedFrameHandoffResult::HandoffError {
                         client_id: input.client_id.clone(),
                         run_id: input.run_id.clone(),
@@ -10926,6 +10970,9 @@ mod tests {
                         read_mode: ServerSwitcherQueuedFrameReadMode::DequeueOldest,
                     },
                     response: None,
+                    response_payload_len: None,
+                    parse_error: None,
+                    io_error: None,
                     result: SwitcherQueuedFrameHandoffResult::HandoffError {
                         client_id: input.client_id.clone(),
                         run_id: input.run_id.clone(),
@@ -10997,6 +11044,9 @@ mod tests {
                         read_mode: ServerSwitcherQueuedFrameReadMode::InspectLatest,
                     },
                     response: None,
+                    response_payload_len: None,
+                    parse_error: None,
+                    io_error: None,
                     result: expected.clone(),
                 },
             )]),
@@ -11033,6 +11083,9 @@ mod tests {
                         read_mode: ServerSwitcherQueuedFrameReadMode::InspectOldest,
                     },
                     response: None,
+                    response_payload_len: None,
+                    parse_error: None,
+                    io_error: None,
                     result: expected.clone(),
                 },
             )]),
@@ -11069,6 +11122,9 @@ mod tests {
                         read_mode: ServerSwitcherQueuedFrameReadMode::DequeueOldest,
                     },
                     response: None,
+                    response_payload_len: None,
+                    parse_error: None,
+                    io_error: None,
                     result: expected.clone(),
                 },
             )]),
@@ -11175,6 +11231,9 @@ mod tests {
                         },
                         remaining_client_queue_len: 2,
                     }),
+                    response_payload_len: Some(3),
+                    parse_error: None,
+                    io_error: None,
                     result: frame_result.clone(),
                 },
             )]),
@@ -11245,6 +11304,9 @@ mod tests {
                         read_mode: ServerSwitcherQueuedFrameReadMode::InspectOldest,
                         client_queue_len: 0,
                     }),
+                    response_payload_len: Some(0),
+                    parse_error: None,
+                    io_error: None,
                     result: expected.clone(),
                 },
             )]),
@@ -11400,6 +11462,9 @@ mod tests {
                         read_mode: ServerSwitcherQueuedFrameReadMode::InspectLatest,
                     },
                     response: None,
+                    response_payload_len: None,
+                    parse_error: None,
+                    io_error: None,
                     result: expected.clone(),
                 },
             )]),

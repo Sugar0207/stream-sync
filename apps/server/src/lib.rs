@@ -3203,6 +3203,7 @@ fn payload_len_to_u32(len: usize) -> u32 {
 pub struct ServerSwitcherNamedPipeOneRequestRuntimeOutput {
     pub request: ServerSwitcherQueuedFrameHandoffRequest,
     pub response: ServerSwitcherQueuedFrameHandoffResponse,
+    pub queue_len_before_read: usize,
 }
 
 /// Result kind summary for one server-side named-pipe handoff response.
@@ -3219,8 +3220,14 @@ pub enum ServerSwitcherNamedPipeRequestResultKind {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ServerSwitcherNamedPipeRequestServeSummary {
     pub request_id: u64,
+    pub queue_len_before_read: u32,
+    pub queue_len_after_read: Option<u32>,
     pub result_kind: ServerSwitcherNamedPipeRequestResultKind,
-    pub queue_len: Option<u32>,
+    pub selected_client_id: ClientId,
+    pub selected_run_id: RunId,
+    pub frame_id: Option<u64>,
+    pub frame_payload_len: Option<u32>,
+    pub no_frame_reason: Option<String>,
     pub handoff_error: Option<stream_sync_net_core::ServerSwitcherQueuedFrameHandoffErrorCode>,
 }
 
@@ -3393,6 +3400,7 @@ impl ServerSwitcherNamedPipeOneRequestRuntimeBoundary {
             .codec
             .decode_request_frame(&request_frame)
             .map_err(ServerSwitcherNamedPipeOneRequestRuntimeError::DecodeRequest)?;
+        let queue_len_before_read = queue_state.client_queue_len(&request.client_id);
         let response = self.handler.handle_request(queue_state, request.clone());
         let response_frame = self
             .codec
@@ -3403,7 +3411,11 @@ impl ServerSwitcherNamedPipeOneRequestRuntimeBoundary {
         pipe.flush()
             .map_err(ServerSwitcherNamedPipeOneRequestRuntimeError::FlushResponse)?;
 
-        Ok(ServerSwitcherNamedPipeOneRequestRuntimeOutput { request, response })
+        Ok(ServerSwitcherNamedPipeOneRequestRuntimeOutput {
+            request,
+            response,
+            queue_len_before_read,
+        })
     }
 
     /// Bounded server-side named-pipe accept loop for the next lifecycle slice.
@@ -3471,29 +3483,54 @@ fn summarize_named_pipe_request_output(
     match &output.response {
         ServerSwitcherQueuedFrameHandoffResponse::FrameRead {
             request_id,
+            frame,
             remaining_client_queue_len,
             ..
         } => ServerSwitcherNamedPipeRequestServeSummary {
             request_id: *request_id,
+            queue_len_before_read: queue_len_to_u32(output.queue_len_before_read),
+            queue_len_after_read: Some(*remaining_client_queue_len),
             result_kind: ServerSwitcherNamedPipeRequestResultKind::FrameRead,
-            queue_len: Some(*remaining_client_queue_len),
+            selected_client_id: frame.client_id.clone(),
+            selected_run_id: frame.run_id.clone(),
+            frame_id: Some(frame.frame_id),
+            frame_payload_len: Some(frame.encoded_payload_len),
+            no_frame_reason: None,
             handoff_error: None,
         },
         ServerSwitcherQueuedFrameHandoffResponse::NoFrame {
             request_id,
+            client_id,
+            run_id,
             client_queue_len,
             ..
         } => ServerSwitcherNamedPipeRequestServeSummary {
             request_id: *request_id,
+            queue_len_before_read: queue_len_to_u32(output.queue_len_before_read),
+            queue_len_after_read: Some(*client_queue_len),
             result_kind: ServerSwitcherNamedPipeRequestResultKind::NoFrame,
-            queue_len: Some(*client_queue_len),
+            selected_client_id: client_id.clone(),
+            selected_run_id: run_id.clone(),
+            frame_id: None,
+            frame_payload_len: None,
+            no_frame_reason: Some(if output.queue_len_before_read == 0 {
+                "NoFramesQueuedForClient".to_string()
+            } else {
+                "NoFramesQueuedForRequestedRun".to_string()
+            }),
             handoff_error: None,
         },
         ServerSwitcherQueuedFrameHandoffResponse::HandoffError { request_id, error } => {
             ServerSwitcherNamedPipeRequestServeSummary {
                 request_id: *request_id,
+                queue_len_before_read: queue_len_to_u32(output.queue_len_before_read),
+                queue_len_after_read: None,
                 result_kind: ServerSwitcherNamedPipeRequestResultKind::HandoffError,
-                queue_len: None,
+                selected_client_id: output.request.client_id.clone(),
+                selected_run_id: output.request.run_id.clone(),
+                frame_id: None,
+                frame_payload_len: None,
+                no_frame_reason: None,
                 handoff_error: Some(*error),
             }
         }

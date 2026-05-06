@@ -528,6 +528,50 @@ Intended manual command sequence using the new configs:
 .\target\debug\stream-sync-switcher.exe --four-view-two-real-handoff-preview-loop streamsync-handoff-dev 0 player1 streamsync-dev-session 1 player2 streamsync-dev-session 5
 ```
 
+Recommended isolation command when player2 is missing or the 2-real-slot path
+reports unexpected `HandoffError`:
+
+```powershell
+.\target\debug\stream-sync-switcher.exe --four-view-real-handoff-preview-loop streamsync-handoff-dev 0 player1 streamsync-dev-session 5
+```
+
+Expected diagnostic interpretation for the next rerun:
+
+- server bounded handoff request lines should be read primarily through:
+  - `queue_len_before_read`
+  - `queue_len_after_read`
+  - `selected_client_id`
+  - `selected_run_id`
+  - `frame_id`
+  - `frame_payload_len`
+  - `no_frame_reason`
+- switcher preview loop lines should be read primarily through:
+  - `slot_result_kinds`
+  - `slot_diagnostics`
+- `slot_diagnostics` now carries per-slot:
+  - `request_id`
+  - `handoff_response_kind`
+  - `parse_error`
+  - `io_error`
+  - `decode_error`
+  - `response_payload_len`
+  - `frame_id`
+  - `frame_payload_len`
+  - `render_input_kind`
+  - `final_slot_result_kind`
+
+Important note for `FrameRead / NoFrame` alternation:
+
+- the old server `queue_len` field did not say whether it was `before` or
+  `after` the queue read
+- the new logs separate `queue_len_before_read` from `queue_len_after_read`
+- in a `2`-real-slot preview run, alternating `FrameRead` and `NoFrame` can be
+  normal if the requests are alternating between:
+  - slot0 `player1`
+  - slot1 `player2`
+- check `selected_client_id` / `selected_run_id` before assuming the queue was
+  reset or recreated between requests
+
 ---
 
 ## 1. Prerequisite Checks
@@ -712,7 +756,13 @@ elapsed_millis=<ms>
 request_status=decoded
 response_status=written
 result_kind=FrameRead|NoFrame|HandoffError
-queue_len=<n|none>
+queue_len_before_read=<n>
+queue_len_after_read=<n|none>
+selected_client_id=<client>
+selected_run_id=<run>
+frame_id=<id|none>
+frame_payload_len=<n|none>
+no_frame_reason=<reason|none>
 ```
 
 When using `--receive-auth-video-queue-and-serve-handoff-many`, the same
@@ -722,7 +772,7 @@ line for each served request:
 
 ```text
 server named-pipe handoff bounded pipe_name=<pipe> max_requests=<n> requests_served=<n> successful_responses=<n> handoff_errors=<n>
-server named-pipe handoff bounded request pipe_name=<pipe> request_index=<n> request_id=<id> result_kind=FrameRead|NoFrame|HandoffError queue_len=<n|none> handoff_error=<code|none>
+server named-pipe handoff bounded request pipe_name=<pipe> request_index=<n> request_id=<id> queue_len_before_read=<n> queue_len_after_read=<n|none> result_kind=FrameRead|NoFrame|HandoffError selected_client_id=<client> selected_run_id=<run> frame_id=<id|none> frame_payload_len=<n|none> no_frame_reason=<reason|none> handoff_error=<code|none>
 ```
 
 Fragmented pass proof:
@@ -772,6 +822,10 @@ result_kind=FrameRead|NoFrame|HandoffError
 final_result=FrameRead|NoFrame|HandoffError
 last_error=<error|none>
 retry_classification=RetryableLaterSchedulerTick|NonRetryable|none
+handoff_response_kind=FrameRead|NoFrame|HandoffError|none
+response_payload_len=<n|none>
+parse_error=<detail|none>
+io_error=<detail|none>
 queue_len=<n|none>
 ```
 

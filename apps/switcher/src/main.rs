@@ -51,6 +51,7 @@ use stream_sync_switcher::{
     SwitcherNamedPipeQueuedFrameHandoffRequestStatus,
     SwitcherNamedPipeQueuedFrameHandoffResponseStatus,
     SwitcherNamedPipeQueuedFrameHandoffRetryClassification,
+    SwitcherNamedPipeQueuedFrameHandoffRuntime,
 };
 
 #[cfg(target_os = "windows")]
@@ -825,6 +826,35 @@ fn format_named_pipe_handoff_switcher_summary(
     output: &SwitcherNamedPipeQueuedFrameHandoffRequestOutput,
 ) -> String {
     let last_error = format_named_pipe_last_error(output.summary.last_error.as_ref());
+    let handoff_response_kind = output
+        .runtime
+        .as_ref()
+        .and_then(|runtime| runtime.response.as_ref())
+        .map(format_handoff_response_kind)
+        .unwrap_or("none");
+    let response_payload_len = output
+        .runtime
+        .as_ref()
+        .and_then(|runtime| runtime.response_payload_len)
+        .map(|value| value.to_string())
+        .unwrap_or_else(|| "none".to_string());
+    let parse_error = sanitize_summary_value(
+        output
+            .runtime
+            .as_ref()
+            .and_then(|runtime| runtime.parse_error.clone())
+            .or_else(|| output.summary.local_error.clone())
+            .as_deref()
+            .unwrap_or("none"),
+    );
+    let io_error = sanitize_summary_value(
+        output
+            .runtime
+            .as_ref()
+            .and_then(|runtime| runtime.io_error.clone())
+            .as_deref()
+            .unwrap_or("none"),
+    );
     format_named_pipe_handoff_switcher_result_summary(
         &output.summary.pipe_name,
         output.summary.request_id,
@@ -839,6 +869,10 @@ fn format_named_pipe_handoff_switcher_summary(
         format_named_pipe_final_result(output.summary.final_result),
         &last_error,
         format_named_pipe_retry_classification(output.summary.retry_classification),
+        handoff_response_kind,
+        &response_payload_len,
+        &parse_error,
+        &io_error,
         &output.result,
     )
 }
@@ -857,6 +891,10 @@ fn format_named_pipe_handoff_switcher_result_summary(
     final_result: &str,
     last_error: &str,
     retry_classification: &str,
+    handoff_response_kind: &str,
+    response_payload_len: &str,
+    parse_error: &str,
+    io_error: &str,
     result: &SwitcherQueuedFrameHandoffResult,
 ) -> String {
     match result {
@@ -865,7 +903,7 @@ fn format_named_pipe_handoff_switcher_result_summary(
             remaining_client_queue_len,
             ..
         } => format!(
-            "switcher named-pipe handoff once pipe_name={} request_id={} client_id={} run_id={} read_mode={} attempt_count={} timeout_millis={} elapsed_millis={} request_status={} response_status={} result_kind=FrameRead final_result={} last_error={} retry_classification={} queue_len={} frame_id={} capture_timestamp={} send_timestamp={} queued_at={} width={} height={} fps_nominal={} codec={:?} is_keyframe={} encoded_payload_len={}",
+            "switcher named-pipe handoff once pipe_name={} request_id={} client_id={} run_id={} read_mode={} attempt_count={} timeout_millis={} elapsed_millis={} request_status={} response_status={} result_kind=FrameRead final_result={} last_error={} retry_classification={} handoff_response_kind={} response_payload_len={} parse_error={} io_error={} queue_len={} frame_id={} capture_timestamp={} send_timestamp={} queued_at={} width={} height={} fps_nominal={} codec={:?} is_keyframe={} encoded_payload_len={}",
             pipe_name,
             request_id,
             client_id.0,
@@ -879,6 +917,10 @@ fn format_named_pipe_handoff_switcher_result_summary(
             final_result,
             last_error,
             retry_classification,
+            handoff_response_kind,
+            response_payload_len,
+            parse_error,
+            io_error,
             remaining_client_queue_len,
             frame.frame_id,
             frame.capture_timestamp.0,
@@ -894,7 +936,7 @@ fn format_named_pipe_handoff_switcher_result_summary(
         SwitcherQueuedFrameHandoffResult::NoFrameAvailable {
             client_queue_len, ..
         } => format!(
-            "switcher named-pipe handoff once pipe_name={} request_id={} client_id={} run_id={} read_mode={} attempt_count={} timeout_millis={} elapsed_millis={} request_status={} response_status={} result_kind=NoFrame final_result={} last_error={} retry_classification={} queue_len={}",
+            "switcher named-pipe handoff once pipe_name={} request_id={} client_id={} run_id={} read_mode={} attempt_count={} timeout_millis={} elapsed_millis={} request_status={} response_status={} result_kind=NoFrame final_result={} last_error={} retry_classification={} handoff_response_kind={} response_payload_len={} parse_error={} io_error={} queue_len={}",
             pipe_name,
             request_id,
             client_id.0,
@@ -908,10 +950,14 @@ fn format_named_pipe_handoff_switcher_result_summary(
             final_result,
             last_error,
             retry_classification,
+            handoff_response_kind,
+            response_payload_len,
+            parse_error,
+            io_error,
             client_queue_len
         ),
         SwitcherQueuedFrameHandoffResult::HandoffError { error, .. } => format!(
-            "switcher named-pipe handoff once pipe_name={} request_id={} client_id={} run_id={} read_mode={} attempt_count={} timeout_millis={} elapsed_millis={} request_status={} response_status={} result_kind=HandoffError final_result={} last_error={} retry_classification={} queue_len=none handoff_error={:?}",
+            "switcher named-pipe handoff once pipe_name={} request_id={} client_id={} run_id={} read_mode={} attempt_count={} timeout_millis={} elapsed_millis={} request_status={} response_status={} result_kind=HandoffError final_result={} last_error={} retry_classification={} handoff_response_kind={} response_payload_len={} parse_error={} io_error={} queue_len=none handoff_error={:?}",
             pipe_name,
             request_id,
             client_id.0,
@@ -925,8 +971,27 @@ fn format_named_pipe_handoff_switcher_result_summary(
             final_result,
             last_error,
             retry_classification,
+            handoff_response_kind,
+            response_payload_len,
+            parse_error,
+            io_error,
             error
         ),
+    }
+}
+
+#[cfg(windows)]
+fn format_handoff_response_kind(
+    response: &stream_sync_net_core::ServerSwitcherQueuedFrameHandoffResponse,
+) -> &'static str {
+    match response {
+        stream_sync_net_core::ServerSwitcherQueuedFrameHandoffResponse::FrameRead { .. } => {
+            "FrameRead"
+        }
+        stream_sync_net_core::ServerSwitcherQueuedFrameHandoffResponse::NoFrame { .. } => "NoFrame",
+        stream_sync_net_core::ServerSwitcherQueuedFrameHandoffResponse::HandoffError { .. } => {
+            "HandoffError"
+        }
     }
 }
 
@@ -1217,6 +1282,7 @@ struct SwitcherFourViewRealHandoffPreviewLoopSummary {
     scheduler_status: stream_sync_switcher::SwitcherFourViewTargetTimeHandoffSourceSchedulerStatus,
     slot_bindings: [String; 4],
     slot_result_kinds: [String; 4],
+    slot_diagnostics: [String; 4],
     clean_output_render_result_kind: &'static str,
     window_title: String,
     output_width: Option<u32>,
@@ -1238,10 +1304,43 @@ struct SwitcherFourViewTwoRealHandoffPreviewLoopSummary {
     scheduler_status: stream_sync_switcher::SwitcherFourViewTargetTimeHandoffSourceSchedulerStatus,
     slot_bindings: [String; 4],
     slot_result_kinds: [String; 4],
+    slot_diagnostics: [String; 4],
     clean_output_render_result_kind: &'static str,
     window_title: String,
     output_width: Option<u32>,
     output_height: Option<u32>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct FourViewPreviewSlotDiagnosticSummary {
+    slot_index: usize,
+    client_id: ClientId,
+    run_id: RunId,
+    request_id: Option<u64>,
+    handoff_response_kind: Option<&'static str>,
+    parse_error: Option<String>,
+    io_error: Option<String>,
+    response_payload_len: Option<usize>,
+    frame_id: Option<u64>,
+    frame_payload_len: Option<usize>,
+    decode_error: Option<String>,
+    render_input_kind: &'static str,
+    final_slot_result_kind: &'static str,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct FourViewPreviewSlotHandoffObservation {
+    slot_index: usize,
+    client_id: ClientId,
+    run_id: RunId,
+    request_output: Option<SwitcherNamedPipeQueuedFrameHandoffRequestOutput>,
+    result: SwitcherQueuedFrameHandoffResult,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PreviewLoopRealHandoffCall {
+    request_output: Option<SwitcherNamedPipeQueuedFrameHandoffRequestOutput>,
+    result: SwitcherQueuedFrameHandoffResult,
 }
 
 trait SwitcherFrameCadenceSleepHook {
@@ -1383,15 +1482,96 @@ impl SwitcherPersistentWindowLoopRuntimeHook for UnavailablePersistentWindowRend
 }
 
 struct MultiRealAndPlaceholderQueuedFrameHandoff<RealHandoff> {
+    slots: [SwitcherFourViewTargetTimeSourceSlotConfig; 4],
     real_slots: Vec<(ClientId, RunId)>,
     real_handoff: RealHandoff,
+    last_frame_slot_observations: [Option<FourViewPreviewSlotHandoffObservation>; 4],
 }
 
 impl<RealHandoff> MultiRealAndPlaceholderQueuedFrameHandoff<RealHandoff> {
-    fn new(real_slots: Vec<(ClientId, RunId)>, real_handoff: RealHandoff) -> Self {
+    fn new(
+        slots: [SwitcherFourViewTargetTimeSourceSlotConfig; 4],
+        real_slots: Vec<(ClientId, RunId)>,
+        real_handoff: RealHandoff,
+    ) -> Self {
         Self {
+            slots,
             real_slots,
             real_handoff,
+            last_frame_slot_observations: std::array::from_fn(|_| None),
+        }
+    }
+
+    fn begin_frame(&mut self) {
+        self.last_frame_slot_observations = std::array::from_fn(|_| None);
+    }
+
+    fn take_last_frame_slot_diagnostics(
+        &self,
+        validation: &SwitcherFourViewHandoffValidationOutput,
+    ) -> [String; 4] {
+        std::array::from_fn(|slot_index| {
+            let slot = &self.slots[slot_index];
+            let observation = self.last_frame_slot_observations[slot_index].as_ref();
+            format_four_view_preview_slot_diagnostic(&build_four_view_preview_slot_diagnostic(
+                slot_index,
+                slot,
+                observation,
+                &validation.scheduler.slots[slot_index].result,
+                &validation.composition_render.composition.slots[slot_index],
+            ))
+        })
+    }
+}
+
+trait PreviewLoopRealHandoff {
+    fn read_handoff_frame_with_observation(
+        &mut self,
+        input: SwitcherQueuedFrameHandoffInput,
+    ) -> PreviewLoopRealHandoffCall;
+}
+
+impl<T> PreviewLoopRealHandoff for T
+where
+    T: SwitcherQueuedFrameHandoff,
+{
+    fn read_handoff_frame_with_observation(
+        &mut self,
+        input: SwitcherQueuedFrameHandoffInput,
+    ) -> PreviewLoopRealHandoffCall {
+        PreviewLoopRealHandoffCall {
+            request_output: None,
+            result: SwitcherQueuedFrameHandoff::read_handoff_frame(self, input),
+        }
+    }
+}
+
+struct ObservedNamedPipePreviewHandoff<R, C> {
+    inner: SwitcherNamedPipeQueuedFrameHandoff<R, C>,
+}
+
+impl<R, C> ObservedNamedPipePreviewHandoff<R, C> {
+    fn new(inner: SwitcherNamedPipeQueuedFrameHandoff<R, C>) -> Self {
+        Self { inner }
+    }
+}
+
+impl<R, C> PreviewLoopRealHandoff for ObservedNamedPipePreviewHandoff<R, C>
+where
+    R: SwitcherNamedPipeQueuedFrameHandoffRuntime,
+    C: stream_sync_switcher::SwitcherNamedPipeQueuedFrameHandoffClock,
+{
+    fn read_handoff_frame_with_observation(
+        &mut self,
+        input: SwitcherQueuedFrameHandoffInput,
+    ) -> PreviewLoopRealHandoffCall {
+        let output = self.inner.read_handoff_frame_with_config(
+            input,
+            SwitcherNamedPipeQueuedFrameHandoffRequestConfig::default(),
+        );
+        PreviewLoopRealHandoffCall {
+            request_output: Some(output.clone()),
+            result: output.result,
         }
     }
 }
@@ -1399,26 +1579,53 @@ impl<RealHandoff> MultiRealAndPlaceholderQueuedFrameHandoff<RealHandoff> {
 impl<RealHandoff> SwitcherQueuedFrameHandoff
     for MultiRealAndPlaceholderQueuedFrameHandoff<RealHandoff>
 where
-    RealHandoff: SwitcherQueuedFrameHandoff,
+    RealHandoff: PreviewLoopRealHandoff,
 {
     fn read_handoff_frame(
         &mut self,
         input: SwitcherQueuedFrameHandoffInput,
     ) -> SwitcherQueuedFrameHandoffResult {
+        let slot_index = self
+            .slots
+            .iter()
+            .position(|slot| slot.client_id == input.client_id && slot.run_id == input.run_id)
+            .unwrap_or(0);
         if self
             .real_slots
             .iter()
             .any(|(client_id, run_id)| input.client_id == *client_id && input.run_id == *run_id)
         {
-            return self.real_handoff.read_handoff_frame(input);
+            let call = self
+                .real_handoff
+                .read_handoff_frame_with_observation(input.clone());
+            self.last_frame_slot_observations[slot_index] =
+                Some(FourViewPreviewSlotHandoffObservation {
+                    slot_index,
+                    client_id: input.client_id,
+                    run_id: input.run_id,
+                    request_output: call.request_output,
+                    result: call.result.clone(),
+                });
+            return call.result;
         }
 
-        SwitcherQueuedFrameHandoffResult::NoFrameAvailable {
+        let client_id = input.client_id.clone();
+        let run_id = input.run_id.clone();
+        let result = SwitcherQueuedFrameHandoffResult::NoFrameAvailable {
             client_id: input.client_id,
             run_id: input.run_id,
             mode: input.mode,
             client_queue_len: 0,
-        }
+        };
+        self.last_frame_slot_observations[slot_index] =
+            Some(FourViewPreviewSlotHandoffObservation {
+                slot_index,
+                client_id,
+                run_id,
+                request_output: None,
+                result: result.clone(),
+            });
+        result
     }
 }
 
@@ -1494,7 +1701,10 @@ fn run_four_view_real_handoff_preview_loop(
     run_id: RunId,
     frames: NonZeroU32,
 ) -> Result<SwitcherFourViewRealHandoffPreviewLoopSummary, String> {
-    let handoff = SwitcherNamedPipeQueuedFrameHandoff::new(pipe_name, DEFAULT_ONE_SHOT_REQUEST_ID);
+    let handoff = ObservedNamedPipePreviewHandoff::new(SwitcherNamedPipeQueuedFrameHandoff::new(
+        pipe_name,
+        DEFAULT_ONE_SHOT_REQUEST_ID,
+    ));
     let render_runtime = SwitcherWindowsGdiPersistentWindowRenderRuntime::default();
     Ok(
         run_four_view_real_handoff_preview_loop_with_handoff_runtime_and_sleep(
@@ -1534,7 +1744,10 @@ fn run_four_view_two_real_handoff_preview_loop(
     run1_id: RunId,
     frames: NonZeroU32,
 ) -> Result<SwitcherFourViewTwoRealHandoffPreviewLoopSummary, String> {
-    let handoff = SwitcherNamedPipeQueuedFrameHandoff::new(pipe_name, DEFAULT_ONE_SHOT_REQUEST_ID);
+    let handoff = ObservedNamedPipePreviewHandoff::new(SwitcherNamedPipeQueuedFrameHandoff::new(
+        pipe_name,
+        DEFAULT_ONE_SHOT_REQUEST_ID,
+    ));
     let render_runtime = SwitcherWindowsGdiPersistentWindowRenderRuntime::default();
     Ok(
         run_four_view_two_real_handoff_preview_loop_with_handoff_runtime_and_sleep(
@@ -1648,7 +1861,7 @@ fn run_four_view_real_handoff_preview_loop_with_handoff_runtime_and_sleep<
     cadence_sleep: &impl SwitcherFrameCadenceSleepHook,
 ) -> SwitcherFourViewRealHandoffPreviewLoopSummary
 where
-    RealHandoff: SwitcherQueuedFrameHandoff,
+    RealHandoff: PreviewLoopRealHandoff,
     DecodeRuntime: SwitcherH264DecodeRuntimeHook,
     RenderRuntime: SwitcherWindowRenderRuntimeHook + SwitcherPersistentWindowLoopRuntimeHook,
 {
@@ -1661,6 +1874,7 @@ where
         .clone()
         .map(|slot| format_four_view_slot_binding(&slot));
     let mut handoff = MultiRealAndPlaceholderQueuedFrameHandoff::new(
+        slots.clone(),
         vec![(client_id.clone(), run_id.clone())],
         real_handoff,
     );
@@ -1675,12 +1889,30 @@ where
         "NoFrameAvailable".to_string(),
         "NoFrameAvailable".to_string(),
     ];
+    let mut slot_diagnostics = std::array::from_fn(|slot_index| {
+        format_four_view_preview_slot_diagnostic(&FourViewPreviewSlotDiagnosticSummary {
+            slot_index,
+            client_id: slots[slot_index].client_id.clone(),
+            run_id: slots[slot_index].run_id.clone(),
+            request_id: None,
+            handoff_response_kind: None,
+            parse_error: None,
+            io_error: None,
+            response_payload_len: None,
+            frame_id: None,
+            frame_payload_len: None,
+            decode_error: None,
+            render_input_kind: "Unobserved",
+            final_slot_result_kind: "NoFrameAvailable",
+        })
+    });
     let mut clean_output_render_result_kind = "NoRenderableQuadView";
     let mut window_title = SWITCHER_FOUR_VIEW_CLEAN_OUTPUT_WINDOW_TITLE.to_string();
     let cadence = four_view_clean_output_window_loop_frame_cadence();
     let obs_runtime = ObsFriendlyFourViewLoopWindowRenderRuntime::new(render_runtime);
 
     for frame_index in 0..frames.get() {
+        handoff.begin_frame();
         let validation = run_four_view_real_handoff_preview_validation_with_runtime_and_handoff(
             &mut handoff,
             slots.clone(),
@@ -1700,6 +1932,7 @@ where
         slot_result_kinds = validation.scheduler.slots.clone().map(|slot| {
             format_four_view_real_handoff_scheduler_slot_kind(&slot.result).to_string()
         });
+        slot_diagnostics = handoff.take_last_frame_slot_diagnostics(&validation);
         clean_output_render_result_kind =
             format_four_view_clean_output_window_result_kind(&clean_output.output_window);
         window_title = clean_output.window_identity.title.clone();
@@ -1737,6 +1970,7 @@ where
         scheduler_status,
         slot_bindings,
         slot_result_kinds,
+        slot_diagnostics,
         clean_output_render_result_kind,
         window_title,
         output_width: render_metadata.output_width,
@@ -1764,7 +1998,7 @@ fn run_four_view_two_real_handoff_preview_loop_with_handoff_runtime_and_sleep<
     cadence_sleep: &impl SwitcherFrameCadenceSleepHook,
 ) -> SwitcherFourViewTwoRealHandoffPreviewLoopSummary
 where
-    RealHandoff: SwitcherQueuedFrameHandoff,
+    RealHandoff: PreviewLoopRealHandoff,
     DecodeRuntime: SwitcherH264DecodeRuntimeHook,
     RenderRuntime: SwitcherWindowRenderRuntimeHook + SwitcherPersistentWindowLoopRuntimeHook,
 {
@@ -1780,6 +2014,7 @@ where
         .clone()
         .map(|slot| format_four_view_slot_binding(&slot));
     let mut handoff = MultiRealAndPlaceholderQueuedFrameHandoff::new(
+        slots.clone(),
         vec![
             (client0_id.clone(), run0_id.clone()),
             (client1_id.clone(), run1_id.clone()),
@@ -1797,12 +2032,30 @@ where
         "NoFrameAvailable".to_string(),
         "NoFrameAvailable".to_string(),
     ];
+    let mut slot_diagnostics = std::array::from_fn(|slot_index| {
+        format_four_view_preview_slot_diagnostic(&FourViewPreviewSlotDiagnosticSummary {
+            slot_index,
+            client_id: slots[slot_index].client_id.clone(),
+            run_id: slots[slot_index].run_id.clone(),
+            request_id: None,
+            handoff_response_kind: None,
+            parse_error: None,
+            io_error: None,
+            response_payload_len: None,
+            frame_id: None,
+            frame_payload_len: None,
+            decode_error: None,
+            render_input_kind: "Unobserved",
+            final_slot_result_kind: "NoFrameAvailable",
+        })
+    });
     let mut clean_output_render_result_kind = "NoRenderableQuadView";
     let mut window_title = SWITCHER_FOUR_VIEW_CLEAN_OUTPUT_WINDOW_TITLE.to_string();
     let cadence = four_view_clean_output_window_loop_frame_cadence();
     let obs_runtime = ObsFriendlyFourViewLoopWindowRenderRuntime::new(render_runtime);
 
     for frame_index in 0..frames.get() {
+        handoff.begin_frame();
         let validation = run_four_view_real_handoff_preview_validation_with_runtime_and_handoff(
             &mut handoff,
             slots.clone(),
@@ -1822,6 +2075,7 @@ where
         slot_result_kinds = validation.scheduler.slots.clone().map(|slot| {
             format_four_view_real_handoff_scheduler_slot_kind(&slot.result).to_string()
         });
+        slot_diagnostics = handoff.take_last_frame_slot_diagnostics(&validation);
         clean_output_render_result_kind =
             format_four_view_clean_output_window_result_kind(&clean_output.output_window);
         window_title = clean_output.window_identity.title.clone();
@@ -1862,6 +2116,7 @@ where
         scheduler_status,
         slot_bindings,
         slot_result_kinds,
+        slot_diagnostics,
         clean_output_render_result_kind,
         window_title,
         output_width: render_metadata.output_width,
@@ -2318,7 +2573,7 @@ fn format_four_view_real_handoff_preview_loop_summary(
     summary: &SwitcherFourViewRealHandoffPreviewLoopSummary,
 ) -> String {
     format!(
-        "switcher four-view real handoff preview loop command_name=--four-view-real-handoff-preview-loop real_handoff=true real_slot_count=1 real_slot_index={} pipe_name={} client_id={} run_id={} frames_attempted={} frames_rendered={} render_failures={} scheduler_status={:?} slot_bindings={} slot_result_kinds={} clean_output_render_result_kind={} window_title={} output_width={} output_height={}",
+        "switcher four-view real handoff preview loop command_name=--four-view-real-handoff-preview-loop real_handoff=true real_slot_count=1 real_slot_index={} pipe_name={} client_id={} run_id={} frames_attempted={} frames_rendered={} render_failures={} scheduler_status={:?} slot_bindings={} slot_result_kinds={} slot_diagnostics={} clean_output_render_result_kind={} window_title={} output_width={} output_height={}",
         summary.real_slot_index,
         summary.pipe_name,
         summary.client_id.0,
@@ -2329,6 +2584,7 @@ fn format_four_view_real_handoff_preview_loop_summary(
         summary.scheduler_status,
         summary.slot_bindings.join("|"),
         summary.slot_result_kinds.join("|"),
+        summary.slot_diagnostics.join("|"),
         summary.clean_output_render_result_kind,
         summary.window_title,
         format_optional_u32(summary.output_width),
@@ -2340,7 +2596,7 @@ fn format_four_view_two_real_handoff_preview_loop_summary(
     summary: &SwitcherFourViewTwoRealHandoffPreviewLoopSummary,
 ) -> String {
     format!(
-        "switcher four-view two-real handoff preview loop command_name=--four-view-two-real-handoff-preview-loop real_handoff=true real_slot_count=2 real_slot0_index={} real_slot1_index={} pipe_name={} client0_id={} run0_id={} client1_id={} run1_id={} frames_attempted={} frames_rendered={} render_failures={} scheduler_status={:?} slot_bindings={} slot_result_kinds={} clean_output_render_result_kind={} window_title={} output_width={} output_height={}",
+        "switcher four-view two-real handoff preview loop command_name=--four-view-two-real-handoff-preview-loop real_handoff=true real_slot_count=2 real_slot0_index={} real_slot1_index={} pipe_name={} client0_id={} run0_id={} client1_id={} run1_id={} frames_attempted={} frames_rendered={} render_failures={} scheduler_status={:?} slot_bindings={} slot_result_kinds={} slot_diagnostics={} clean_output_render_result_kind={} window_title={} output_width={} output_height={}",
         summary.real_slot0_index,
         summary.real_slot1_index,
         summary.pipe_name,
@@ -2354,11 +2610,119 @@ fn format_four_view_two_real_handoff_preview_loop_summary(
         summary.scheduler_status,
         summary.slot_bindings.join("|"),
         summary.slot_result_kinds.join("|"),
+        summary.slot_diagnostics.join("|"),
         summary.clean_output_render_result_kind,
         summary.window_title,
         format_optional_u32(summary.output_width),
         format_optional_u32(summary.output_height),
     )
+}
+
+fn build_four_view_preview_slot_diagnostic(
+    slot_index: usize,
+    slot: &SwitcherFourViewTargetTimeSourceSlotConfig,
+    observation: Option<&FourViewPreviewSlotHandoffObservation>,
+    scheduler_result: &SwitcherSingleClientTargetTimeHandoffSourceResult,
+    render_slot: &stream_sync_switcher::SwitcherFourViewHandoffQuadCompositionRenderSlot,
+) -> FourViewPreviewSlotDiagnosticSummary {
+    let request_output = observation.and_then(|value| value.request_output.as_ref());
+    let runtime = request_output.and_then(|output| output.runtime.as_ref());
+    let response = runtime.and_then(|value| value.response.as_ref());
+    let observation_result = observation.map(|value| &value.result);
+    let (frame_id, frame_payload_len) = match response {
+        Some(stream_sync_net_core::ServerSwitcherQueuedFrameHandoffResponse::FrameRead {
+            frame,
+            ..
+        }) => (
+            Some(frame.frame_id),
+            Some(frame.encoded_payload_len as usize),
+        ),
+        _ => match observation_result {
+            Some(SwitcherQueuedFrameHandoffResult::FrameRead { frame, .. }) => {
+                (Some(frame.frame_id), Some(frame.encoded_payload_len))
+            }
+            _ => (None, None),
+        },
+    };
+
+    FourViewPreviewSlotDiagnosticSummary {
+        slot_index,
+        client_id: slot.client_id.clone(),
+        run_id: slot.run_id.clone(),
+        request_id: request_output.map(|output| output.summary.request_id),
+        handoff_response_kind: response.map(format_handoff_response_kind),
+        parse_error: runtime
+            .and_then(|value| value.parse_error.clone())
+            .or_else(|| request_output.and_then(|output| output.summary.local_error.clone())),
+        io_error: runtime.and_then(|value| value.io_error.clone()),
+        response_payload_len: runtime.and_then(|value| value.response_payload_len),
+        frame_id,
+        frame_payload_len,
+        decode_error: four_view_preview_slot_decode_error(render_slot),
+        render_input_kind: format_four_view_render_input_kind(render_slot),
+        final_slot_result_kind: format_four_view_real_handoff_scheduler_slot_kind(scheduler_result),
+    }
+}
+
+fn format_four_view_preview_slot_diagnostic(
+    diagnostic: &FourViewPreviewSlotDiagnosticSummary,
+) -> String {
+    format!(
+        "{}:client_id={},run_id={},request_id={},handoff_response_kind={},parse_error={},io_error={},response_payload_len={},frame_id={},frame_payload_len={},decode_error={},render_input_kind={},final_slot_result_kind={}",
+        diagnostic.slot_index,
+        diagnostic.client_id.0,
+        diagnostic.run_id.0,
+        format_optional_u64(diagnostic.request_id),
+        diagnostic.handoff_response_kind.unwrap_or("none"),
+        sanitize_summary_value(diagnostic.parse_error.as_deref().unwrap_or("none")),
+        sanitize_summary_value(diagnostic.io_error.as_deref().unwrap_or("none")),
+        format_optional_usize(diagnostic.response_payload_len),
+        format_optional_u64(diagnostic.frame_id),
+        format_optional_usize(diagnostic.frame_payload_len),
+        sanitize_summary_value(diagnostic.decode_error.as_deref().unwrap_or("none")),
+        diagnostic.render_input_kind,
+        diagnostic.final_slot_result_kind,
+    )
+}
+
+fn format_four_view_render_input_kind(
+    slot: &stream_sync_switcher::SwitcherFourViewHandoffQuadCompositionRenderSlot,
+) -> &'static str {
+    match slot {
+        stream_sync_switcher::SwitcherFourViewHandoffQuadCompositionRenderSlot::UseUpdatedFrame {
+            ..
+        } => "UseUpdatedFrame",
+        stream_sync_switcher::SwitcherFourViewHandoffQuadCompositionRenderSlot::UseHeldPreviousFrame {
+            ..
+        } => "UseHeldPreviousFrame",
+        stream_sync_switcher::SwitcherFourViewHandoffQuadCompositionRenderSlot::UseHeldPreviousFrameWithoutDecoded {
+            ..
+        } => "UseHeldPreviousFrameWithoutDecoded",
+        stream_sync_switcher::SwitcherFourViewHandoffQuadCompositionRenderSlot::UseNoDisplayPlaceholder {
+            ..
+        } => "UseNoDisplayPlaceholder",
+        stream_sync_switcher::SwitcherFourViewHandoffQuadCompositionRenderSlot::UseSourceErrorPlaceholder {
+            ..
+        } => "UseSourceErrorPlaceholder",
+        stream_sync_switcher::SwitcherFourViewHandoffQuadCompositionRenderSlot::UseDecodeDeferredPlaceholder {
+            ..
+        } => "UseDecodeDeferredPlaceholder",
+        stream_sync_switcher::SwitcherFourViewHandoffQuadCompositionRenderSlot::UseDecodeFailedPlaceholder {
+            ..
+        } => "UseDecodeFailedPlaceholder",
+    }
+}
+
+fn four_view_preview_slot_decode_error(
+    slot: &stream_sync_switcher::SwitcherFourViewHandoffQuadCompositionRenderSlot,
+) -> Option<String> {
+    match slot {
+        stream_sync_switcher::SwitcherFourViewHandoffQuadCompositionRenderSlot::UseDecodeFailedPlaceholder {
+            failure,
+            ..
+        } => Some(format!("{failure:?}")),
+        _ => None,
+    }
 }
 
 fn format_four_view_manual_preview_fixture_mode_name(
@@ -2525,6 +2889,12 @@ fn format_optional_u32(value: Option<u32>) -> String {
         .unwrap_or_else(|| "none".to_string())
 }
 
+fn format_optional_u64(value: Option<u64>) -> String {
+    value
+        .map(|value| value.to_string())
+        .unwrap_or_else(|| "none".to_string())
+}
+
 fn format_optional_usize(value: Option<usize>) -> String {
     value
         .map(|value| value.to_string())
@@ -2535,6 +2905,16 @@ fn format_optional_bool(value: Option<bool>) -> String {
     value
         .map(|value| value.to_string())
         .unwrap_or_else(|| "none".to_string())
+}
+
+fn sanitize_summary_value(value: &str) -> String {
+    value
+        .chars()
+        .map(|char| match char {
+            ' ' | '\t' | '\r' | '\n' | '|' | ',' => '_',
+            _ => char,
+        })
+        .collect()
 }
 
 fn format_four_view_scheduler_slot_kinds(
@@ -2919,6 +3299,10 @@ mod tests {
             "FrameRead",
             "none",
             "none",
+            "FrameRead",
+            "3",
+            "none",
+            "none",
             &result,
         );
 
@@ -2955,6 +3339,7 @@ mod tests {
                 result_kind: SwitcherNamedPipeQueuedFrameHandoffResultKind::HandoffError,
                 final_result: SwitcherNamedPipeQueuedFrameHandoffResultKind::HandoffError,
                 last_error: Some(SwitcherQueuedFrameHandoffError::MalformedResponse),
+                local_error: Some("encode_request:BodyTooLong".to_string()),
                 retry_classification: Some(
                     SwitcherNamedPipeQueuedFrameHandoffRetryClassification::NonRetryable,
                 ),

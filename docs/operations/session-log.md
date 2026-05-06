@@ -5858,6 +5858,93 @@ switcher four-view proof fixture deterministic=true real_handoff=false actual_wi
 - `cargo fmt --check`
 - `cargo test -p stream-sync-client client_video_frame`
 - `cargo check --workspace`
+
+---
+
+## 2026-05-06
+### Type
+- Codex
+
+### Work
+- Added named-pipe handoff preview-loop diagnostic logging on both server and
+  switcher sides to cut the current `2`-real-slot manual failure.
+- Extended server named-pipe handoff request summaries with
+  `queue_len_before_read`, `queue_len_after_read`, `selected_client_id`,
+  `selected_run_id`, `frame_id`, `frame_payload_len`, and `no_frame_reason`.
+- Extended switcher named-pipe handoff runtime/request summaries with
+  `handoff_response_kind`, `response_payload_len`, `parse_error`, `io_error`,
+  and local encode-stage error detail.
+- Extended `--four-view-real-handoff-preview-loop` and
+  `--four-view-two-real-handoff-preview-loop` stdout with per-slot
+  `slot_diagnostics` carrying:
+  - `slot_index`
+  - `client_id`
+  - `run_id`
+  - `request_id`
+  - `handoff_response_kind`
+  - `parse_error`
+  - `io_error`
+  - `decode_error`
+  - `response_payload_len`
+  - `frame_id`
+  - `frame_payload_len`
+  - `render_input_kind`
+  - `final_slot_result_kind`
+- Kept the existing protocol shape, named-pipe transport shape, `1`-real-slot
+  command, `2`-real-slot command, deterministic fixture commands, and clean
+  output window family unchanged.
+- Updated manual docs so the next rerun uses the new fields explicitly and
+  treats `--four-view-real-handoff-preview-loop streamsync-handoff-dev 0 player1 streamsync-dev-session 5`
+  as the player1-only isolation baseline.
+
+### Decisions
+- The old server `queue_len` field was not explicit enough for manual
+  diagnosis; the meaningful split is `queue_len_before_read` versus
+  `queue_len_after_read`.
+- Apparent `FrameRead / NoFrame` alternation in the `2`-real-slot preview path
+  should now be interpreted with `selected_client_id` / `selected_run_id`
+  before assuming queue reinitialization.
+- Missing-player investigation should prefer the already validated
+  `1`-real-slot command before widening the `2`-real-slot path further.
+- No new `MissingClient` result kind was added in this slice; the focus stayed
+  on making transport/runtime/parse/decode failure modes visible in stdout.
+
+### Unresolved
+- rerun and record the failing `2`-real-slot manual pass with the new server /
+  switcher diagnostics
+- confirm whether the observed switcher `HandoffError` is:
+  - named-pipe transport/runtime failure
+  - framed response parse failure
+  - downstream decode placeholder behavior
+- determine why player2 auth timed out in the reported failing run
+- record a fresh `1`-real-slot isolation rerun if needed
+
+### Next
+- Rerun the bounded `2`-real-slot manual path with:
+  - `configs/manual/server.two-real-slots.toml`
+  - `configs/manual/client.player1.toml`
+  - `configs/manual/client.player2.toml`
+  - `--four-view-two-real-handoff-preview-loop streamsync-handoff-dev 0 player1 streamsync-dev-session 1 player2 streamsync-dev-session 5`
+- If player2 still fails auth or noframes, rerun:
+  - `--four-view-real-handoff-preview-loop streamsync-handoff-dev 0 player1 streamsync-dev-session 5`
+- Compare:
+  - server `queue_len_before_read` / `queue_len_after_read`
+  - server `selected_client_id` / `selected_run_id`
+  - switcher `slot_diagnostics`
+
+### TODO Update
+- Updated `docs/operations/todo.md` to move the next action from generic
+  `2`-real-slot manual validation to diagnostic-log-driven rerun and
+  player1-only isolation.
+- Recorded that `slot_diagnostics` and server before/after queue logging are
+  now the primary stdout-based troubleshooting fields.
+
+### Validation
+- `cargo fmt`
+- `cargo fmt --check`
+- `cargo test -p stream-sync-switcher four_view -- --test-threads=1`
+- `cargo test -p stream-sync-switcher handoff -- --test-threads=1`
+- `cargo check --workspace`
 - `git diff --check`
 
 ---

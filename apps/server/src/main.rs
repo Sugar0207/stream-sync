@@ -594,13 +594,16 @@ fn format_named_pipe_handoff_server_summary(
             frame,
             ..
         } => format!(
-            "server named-pipe handoff once pipe_name={} request_id={} client_id={} run_id={} read_mode={} request_status=decoded response_status=written result_kind=FrameRead queue_len={} frame_id={} capture_timestamp={} send_timestamp={} queued_at={} width={} height={} fps_nominal={} codec={:?} is_keyframe={} encoded_payload_len={}",
+            "server named-pipe handoff once pipe_name={} request_id={} client_id={} run_id={} read_mode={} request_status=decoded response_status=written result_kind=FrameRead queue_len_before_read={} queue_len_after_read={} selected_client_id={} selected_run_id={} frame_id={} capture_timestamp={} send_timestamp={} queued_at={} width={} height={} fps_nominal={} codec={:?} is_keyframe={} frame_payload_len={}",
             pipe_name,
             request.request_id,
             request.client_id.0,
             request.run_id.0,
             format_handoff_read_mode(request.read_mode),
+            output.queue_len_before_read,
             remaining_client_queue_len,
+            frame.client_id.0,
+            frame.run_id.0,
             frame.frame_id,
             frame.capture_timestamp.0,
             frame.send_timestamp.0,
@@ -613,26 +616,40 @@ fn format_named_pipe_handoff_server_summary(
             frame.encoded_payload_len
         ),
         stream_sync_net_core::ServerSwitcherQueuedFrameHandoffResponse::NoFrame {
-            client_queue_len, ..
+            client_id,
+            run_id,
+            client_queue_len,
+            ..
         } => format!(
-            "server named-pipe handoff once pipe_name={} request_id={} client_id={} run_id={} read_mode={} request_status=decoded response_status=written result_kind=NoFrame queue_len={}",
+            "server named-pipe handoff once pipe_name={} request_id={} client_id={} run_id={} read_mode={} request_status=decoded response_status=written result_kind=NoFrame queue_len_before_read={} queue_len_after_read={} selected_client_id={} selected_run_id={} frame_id=none frame_payload_len=none no_frame_reason={}",
             pipe_name,
             request.request_id,
             request.client_id.0,
             request.run_id.0,
             format_handoff_read_mode(request.read_mode),
-            client_queue_len
+            output.queue_len_before_read,
+            client_queue_len,
+            client_id.0,
+            run_id.0,
+            if output.queue_len_before_read == 0 {
+                "NoFramesQueuedForClient"
+            } else {
+                "NoFramesQueuedForRequestedRun"
+            }
         ),
         stream_sync_net_core::ServerSwitcherQueuedFrameHandoffResponse::HandoffError {
             error,
             ..
         } => format!(
-            "server named-pipe handoff once pipe_name={} request_id={} client_id={} run_id={} read_mode={} request_status=decoded response_status=written result_kind=HandoffError queue_len=none handoff_error={:?}",
+            "server named-pipe handoff once pipe_name={} request_id={} client_id={} run_id={} read_mode={} request_status=decoded response_status=written result_kind=HandoffError queue_len_before_read={} queue_len_after_read=none selected_client_id={} selected_run_id={} frame_id=none frame_payload_len=none no_frame_reason=none handoff_error={:?}",
             pipe_name,
             request.request_id,
             request.client_id.0,
             request.run_id.0,
             format_handoff_read_mode(request.read_mode),
+            output.queue_len_before_read,
+            request.client_id.0,
+            request.run_id.0,
             error
         ),
     }
@@ -659,14 +676,29 @@ fn format_named_pipe_handoff_server_many_summary(
             .enumerate()
             .map(|(index, request)| {
                 format!(
-                    "server named-pipe handoff bounded request pipe_name={} request_index={} request_id={} result_kind={} queue_len={} handoff_error={}",
+                    "server named-pipe handoff bounded request pipe_name={} request_index={} request_id={} queue_len_before_read={} queue_len_after_read={} result_kind={} selected_client_id={} selected_run_id={} frame_id={} frame_payload_len={} no_frame_reason={} handoff_error={}",
                     pipe_name,
                     index,
                     request.request_id,
-                    format_server_handoff_result_kind(request.result_kind),
+                    request.queue_len_before_read,
                     request
-                        .queue_len
+                        .queue_len_after_read
                         .map(|value| value.to_string())
+                        .unwrap_or_else(|| "none".to_string()),
+                    format_server_handoff_result_kind(request.result_kind),
+                    request.selected_client_id.0,
+                    request.selected_run_id.0,
+                    request
+                        .frame_id
+                        .map(|value| value.to_string())
+                        .unwrap_or_else(|| "none".to_string()),
+                    request
+                        .frame_payload_len
+                        .map(|value| value.to_string())
+                        .unwrap_or_else(|| "none".to_string()),
+                    request
+                        .no_frame_reason
+                        .clone()
                         .unwrap_or_else(|| "none".to_string()),
                     request
                         .handoff_error
