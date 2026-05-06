@@ -5,6 +5,43 @@
 - Codex
 
 ### Work
+- Implemented the first focused-view control slice as a dedicated switcher
+  command without changing the validated all-real command shape.
+- Reused the existing guarded `4`-real-slot handoff/validation path and kept
+  stdout diagnostics visible while rendering only one selected slot full-window.
+
+### Changed Files
+- `apps/switcher/src/main.rs`
+- `docs/architecture/system-design.md`
+- `docs/operations/manual-real-encoded-video-poc.md`
+- `docs/operations/session-log.md`
+- `docs/operations/todo.md`
+
+### Decisions
+- Added a dedicated command instead of widening the existing all-real command:
+  `--four-view-focused-handoff-preview-loop [pipe-name] [focused-slot-index] [client0-id] [run0-id] [client1-id] [run1-id] [client2-id] [run2-id] [client3-id] [run3-id] [frames]`
+- Kept the existing all-real baseline command unchanged.
+- Chose the smallest no-frame behavior for the first focused slice:
+  - if the focused slot has a renderable decoded frame, render it full-window
+  - if it does not, report `clean_output_render_result_kind=NoRenderableFocusedView`
+    rather than inventing a new full-window placeholder renderer in this slice
+- Kept `view_state=Focused`, `focused_slot_index`, `focused_client_id`,
+  `focused_run_id`, `focused_result_kind`, `scheduler_status`,
+  `slot_result_kinds`, and `slot_diagnostics` visible in stdout.
+
+### Validation
+- `cargo fmt`
+- `cargo test -p stream-sync-switcher four_view -- --test-threads=1`
+
+### TODO Update
+- Marked `Focused(slot_index)` minimal implementation as complete.
+- Moved the next active task to all-view / focused-view manual validation.
+
+## 2026-05-06
+### Type
+- Codex
+
+### Work
 - Documented the next operator-facing control surface scope after the guarded
   `4`-client all-real preview baseline succeeded in repeated stability
   observation `3/3`.

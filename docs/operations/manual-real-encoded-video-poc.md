@@ -866,6 +866,55 @@ Current conclusion after three consecutive guarded passes:
   control-surface planning without revisiting transport or stop-condition
   basics first
 
+### Focused View Minimal Command
+
+The first focused-view manual command is now implemented as:
+
+```powershell
+.\target\debug\stream-sync-switcher.exe --four-view-focused-handoff-preview-loop streamsync-handoff-dev [focused-slot-index] player1 streamsync-dev-session player2 streamsync-dev-session player3 streamsync-dev-session player4 streamsync-dev-session 5
+```
+
+Implemented behavior for this first focused slice:
+
+- `focused-slot-index` is validated as `0..3`
+- the command reuses the existing guarded `4`-real-slot handoff path and keeps
+  per-slot diagnostics visible
+- stdout includes:
+  - `view_state=Focused`
+  - `focused_slot_index`
+  - `focused_client_id`
+  - `focused_run_id`
+  - `focused_result_kind`
+  - `scheduler_status`
+  - `slot_result_kinds`
+  - `slot_diagnostics`
+  - `clean_output_render_result_kind`
+  - `window_title=StreamSync 4-view Output`
+  - `output_width=1280`
+  - `output_height=720`
+
+Chosen minimal no-frame behavior:
+
+- if the focused slot has a renderable decoded frame, expect:
+  - `focused_result_kind=Selected`
+  - `clean_output_render_result_kind=Rendered`
+- if the focused slot does not have a renderable decoded frame, this slice
+  does not yet synthesize a dedicated full-window placeholder
+- instead expect:
+  - `clean_output_render_result_kind=NoRenderableFocusedView`
+- parse / io / decode failures remain visible via `slot_diagnostics`
+
+Next manual validation targets:
+
+- `Focused(0)`
+- `Focused(1)`
+- `Focused(2)`
+- `Focused(3)`
+- confirm `frames_rendered > 0` and `render_failures=0` for renderable focused
+  slots
+- confirm `AllView -> Focused(slot_index) -> AllView` operator flow without
+  changing the guarded server/client startup recipe
+
 ---
 
 ## 1. Prerequisite Checks

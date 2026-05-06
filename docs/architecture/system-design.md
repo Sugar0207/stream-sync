@@ -8668,6 +8668,22 @@ Minimal command/control shape for the next implementation slice:
 - if a temporary manual CLI wrapper is needed before GUI work, it should remain
   fixed `4`-view specific and wrap the existing all-real path rather than
   inventing generic `N`-view control
+- the first focused CLI wrapper is now:
+  - `--four-view-focused-handoff-preview-loop [pipe-name] [focused-slot-index] [client0-id] [run0-id] [client1-id] [run1-id] [client2-id] [run2-id] [client3-id] [run3-id] [frames]`
+- this dedicated command keeps the validated
+  `--four-view-four-real-handoff-preview-loop ...` baseline unchanged while
+  exposing `view_state=Focused`
+- the first implementation keeps the existing all-real validation and
+  diagnostics path intact, then renders only the requested slot as the primary
+  full-window output
+- chosen minimal no-frame behavior:
+  - if the focused slot has a renderable decoded frame, report
+    `clean_output_render_result_kind=Rendered`
+  - if the focused slot does not have a renderable decoded frame, do not invent
+    a new full-window placeholder renderer yet
+  - instead report
+    `clean_output_render_result_kind=NoRenderableFocusedView`
+  - keep parse/io/decode details in the existing `slot_diagnostics`
 
 Minimum stdout/state visibility for that control layer:
 

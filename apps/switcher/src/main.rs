@@ -15,13 +15,14 @@ use stream_sync_switcher::{
     SwitcherAuthVideoPlaceholderBridgeBoundary, SwitcherAuthVideoPlaceholderBridgeResult,
     SwitcherContinuousTwoViewSchedulingStopReason, SwitcherDecodeLatestFrameOnceBoundary,
     SwitcherDecodeLatestFrameOnceInput, SwitcherDecodeLatestFrameOnceResult, SwitcherDecodedFrame,
-    SwitcherDecodedFramePixelFormat, SwitcherFfmpegH264DecodeRuntimeHook,
-    SwitcherFourViewCleanOutputWindowBoundary, SwitcherFourViewCleanOutputWindowInput,
-    SwitcherFourViewCleanOutputWindowProofBoundary, SwitcherFourViewCleanOutputWindowProofResult,
-    SwitcherFourViewCleanOutputWindowRenderResult, SwitcherFourViewComposedCanvasRenderResult,
+    SwitcherDecodedFramePixelFormat, SwitcherDecodedFrameRenderInput,
+    SwitcherFfmpegH264DecodeRuntimeHook, SwitcherFourViewCleanOutputWindowBoundary,
+    SwitcherFourViewCleanOutputWindowInput, SwitcherFourViewCleanOutputWindowProofBoundary,
+    SwitcherFourViewCleanOutputWindowProofResult, SwitcherFourViewCleanOutputWindowRenderResult,
+    SwitcherFourViewComposedCanvasRenderResult,
     SwitcherFourViewComposedCanvasWindowRenderConnectionRenderResult,
-    SwitcherFourViewHandoffValidationBoundary, SwitcherFourViewHandoffValidationInput,
-    SwitcherFourViewHandoffValidationOutput,
+    SwitcherFourViewHandoffQuadCompositionRenderSlot, SwitcherFourViewHandoffValidationBoundary,
+    SwitcherFourViewHandoffValidationInput, SwitcherFourViewHandoffValidationOutput,
     SwitcherFourViewManualPreviewCompositionInstructionKind,
     SwitcherFourViewManualPreviewDisplaySlotKind, SwitcherFourViewManualPreviewProofBoundary,
     SwitcherFourViewManualPreviewProofFixtureMode, SwitcherFourViewManualPreviewProofInput,
@@ -41,7 +42,7 @@ use stream_sync_switcher::{
     SwitcherTwoViewManualVerificationResult, SwitcherTwoViewManualVerificationSideSummary,
     SwitcherTwoViewSide, SwitcherTwoViewTargetTimeSelectionPolicy,
     SwitcherUnavailableWindowRenderRuntimeHook, SwitcherWindowRenderBoundary,
-    SwitcherWindowRenderResult, SwitcherWindowRenderRuntimeHook,
+    SwitcherWindowRenderRequest, SwitcherWindowRenderResult, SwitcherWindowRenderRuntimeHook,
     SWITCHER_FOUR_VIEW_CLEAN_OUTPUT_WINDOW_TITLE,
 };
 #[cfg(target_os = "windows")]
@@ -415,6 +416,68 @@ fn main() {
                 }
             }
         }
+        Some("--four-view-focused-handoff-preview-loop") => {
+            let pipe_name = args.next().unwrap_or_else(|| {
+                eprintln!("missing pipe-name");
+                std::process::exit(1);
+            });
+            let focused_slot_index = parse_four_view_real_slot_index_or_exit(args.next());
+            let client0_id = ClientId(args.next().unwrap_or_else(|| {
+                eprintln!("missing client0-id");
+                std::process::exit(1);
+            }));
+            let run0_id = RunId(args.next().unwrap_or_else(|| {
+                eprintln!("missing run0-id");
+                std::process::exit(1);
+            }));
+            let client1_id = ClientId(args.next().unwrap_or_else(|| {
+                eprintln!("missing client1-id");
+                std::process::exit(1);
+            }));
+            let run1_id = RunId(args.next().unwrap_or_else(|| {
+                eprintln!("missing run1-id");
+                std::process::exit(1);
+            }));
+            let client2_id = ClientId(args.next().unwrap_or_else(|| {
+                eprintln!("missing client2-id");
+                std::process::exit(1);
+            }));
+            let run2_id = RunId(args.next().unwrap_or_else(|| {
+                eprintln!("missing run2-id");
+                std::process::exit(1);
+            }));
+            let client3_id = ClientId(args.next().unwrap_or_else(|| {
+                eprintln!("missing client3-id");
+                std::process::exit(1);
+            }));
+            let run3_id = RunId(args.next().unwrap_or_else(|| {
+                eprintln!("missing run3-id");
+                std::process::exit(1);
+            }));
+            let frames = parse_positive_u32_arg_or_exit(args.next(), "frames");
+            match run_four_view_focused_handoff_preview_loop(
+                &pipe_name,
+                focused_slot_index,
+                client0_id,
+                run0_id,
+                client1_id,
+                run1_id,
+                client2_id,
+                run2_id,
+                client3_id,
+                run3_id,
+                frames,
+            ) {
+                Ok(summary) => println!(
+                    "{}",
+                    format_four_view_focused_handoff_preview_loop_summary(&summary)
+                ),
+                Err(error) => {
+                    eprintln!("switcher four-view focused handoff preview loop failed: {error}");
+                    std::process::exit(1);
+                }
+            }
+        }
         Some("--read-queued-frame-handoff-once") => {
             let pipe_name = args.next().unwrap_or_else(|| {
                 eprintln!("missing pipe-name");
@@ -445,7 +508,7 @@ fn main() {
         }
         _ => {
             println!(
-                "stream-sync-switcher scaffold; use --placeholder-fixture-once [client-id], --placeholder-empty-once [client-id], --decode-latest-frame-once [client-id] [output-path], --receive-auth-video-placeholder-bridge-once [config-path] [client-id], --receive-auth-video-decode-latest-once [config-path] [client-id] [output-path], --receive-auth-video-render-decoded-once [config-path] [client-id] [hold-ms], --two-view-sync-fixture-once [left-client-id] [right-client-id] [hold-ms], --render-two-view-composed-fixture-once [hold-ms], --live-two-view-switcher-once [config-path] [left-client-id] [right-client-id], --four-view-proof-fixture-once [all-renderable|mixed-placeholder-source-error|placeholder-only], --four-view-proof-window-once [all-renderable], --four-view-clean-output-window-once [all-renderable], --four-view-clean-output-window-loop [all-renderable] [frames], --four-view-real-handoff-preview-loop [pipe-name] [real-slot-index] [client-id] [run-id] [frames], --four-view-two-real-handoff-preview-loop [pipe-name] [slot0-index] [client0-id] [run0-id] [slot1-index] [client1-id] [run1-id] [frames], --four-view-four-real-handoff-preview-loop [pipe-name] [client0-id] [run0-id] [client1-id] [run1-id] [client2-id] [run2-id] [client3-id] [run3-id] [frames], or --read-queued-frame-handoff-once [pipe-name] [client-id] [run-id] [read-mode] [request-id]"
+                "stream-sync-switcher scaffold; use --placeholder-fixture-once [client-id], --placeholder-empty-once [client-id], --decode-latest-frame-once [client-id] [output-path], --receive-auth-video-placeholder-bridge-once [config-path] [client-id], --receive-auth-video-decode-latest-once [config-path] [client-id] [output-path], --receive-auth-video-render-decoded-once [config-path] [client-id] [hold-ms], --two-view-sync-fixture-once [left-client-id] [right-client-id] [hold-ms], --render-two-view-composed-fixture-once [hold-ms], --live-two-view-switcher-once [config-path] [left-client-id] [right-client-id], --four-view-proof-fixture-once [all-renderable|mixed-placeholder-source-error|placeholder-only], --four-view-proof-window-once [all-renderable], --four-view-clean-output-window-once [all-renderable], --four-view-clean-output-window-loop [all-renderable] [frames], --four-view-real-handoff-preview-loop [pipe-name] [real-slot-index] [client-id] [run-id] [frames], --four-view-two-real-handoff-preview-loop [pipe-name] [slot0-index] [client0-id] [run0-id] [slot1-index] [client1-id] [run1-id] [frames], --four-view-four-real-handoff-preview-loop [pipe-name] [client0-id] [run0-id] [client1-id] [run1-id] [client2-id] [run2-id] [client3-id] [run3-id] [frames], --four-view-focused-handoff-preview-loop [pipe-name] [focused-slot-index] [client0-id] [run0-id] [client1-id] [run1-id] [client2-id] [run2-id] [client3-id] [run3-id] [frames], or --read-queued-frame-handoff-once [pipe-name] [client-id] [run-id] [read-mode] [request-id]"
             );
         }
     }
@@ -1388,6 +1451,34 @@ struct SwitcherFourViewFourRealHandoffPreviewLoopSummary {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+struct SwitcherFourViewFocusedHandoffPreviewLoopSummary {
+    pipe_name: String,
+    focused_slot_index: usize,
+    client0_id: ClientId,
+    run0_id: RunId,
+    client1_id: ClientId,
+    run1_id: RunId,
+    client2_id: ClientId,
+    run2_id: RunId,
+    client3_id: ClientId,
+    run3_id: RunId,
+    focused_client_id: ClientId,
+    focused_run_id: RunId,
+    focused_result_kind: String,
+    frames_attempted: u32,
+    frames_rendered: u32,
+    render_failures: u32,
+    scheduler_status: stream_sync_switcher::SwitcherFourViewTargetTimeHandoffSourceSchedulerStatus,
+    slot_bindings: [String; 4],
+    slot_result_kinds: [String; 4],
+    slot_diagnostics: [String; 4],
+    clean_output_render_result_kind: &'static str,
+    window_title: String,
+    output_width: Option<u32>,
+    output_height: Option<u32>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct FourViewPreviewSlotDiagnosticSummary {
     slot_index: usize,
     client_id: ClientId,
@@ -1913,6 +2004,64 @@ fn run_four_view_four_real_handoff_preview_loop(
     Err("four-view four-real handoff preview loop is only available on Windows".to_string())
 }
 
+#[cfg(windows)]
+fn run_four_view_focused_handoff_preview_loop(
+    pipe_name: &str,
+    focused_slot_index: usize,
+    client0_id: ClientId,
+    run0_id: RunId,
+    client1_id: ClientId,
+    run1_id: RunId,
+    client2_id: ClientId,
+    run2_id: RunId,
+    client3_id: ClientId,
+    run3_id: RunId,
+    frames: NonZeroU32,
+) -> Result<SwitcherFourViewFocusedHandoffPreviewLoopSummary, String> {
+    let handoff = ObservedNamedPipePreviewHandoff::new(SwitcherNamedPipeQueuedFrameHandoff::new(
+        pipe_name,
+        DEFAULT_ONE_SHOT_REQUEST_ID,
+    ));
+    let render_runtime = SwitcherWindowsGdiPersistentWindowRenderRuntime::default();
+    Ok(
+        run_four_view_focused_handoff_preview_loop_with_handoff_runtime_and_sleep(
+            pipe_name,
+            focused_slot_index,
+            client0_id,
+            run0_id,
+            client1_id,
+            run1_id,
+            client2_id,
+            run2_id,
+            client3_id,
+            run3_id,
+            frames,
+            real_four_view_preview_target_timestamp(),
+            handoff,
+            &SwitcherFfmpegH264DecodeRuntimeHook::default(),
+            &render_runtime,
+            &RealSwitcherFrameCadenceSleepHook,
+        ),
+    )
+}
+
+#[cfg(not(windows))]
+fn run_four_view_focused_handoff_preview_loop(
+    _pipe_name: &str,
+    _focused_slot_index: usize,
+    _client0_id: ClientId,
+    _run0_id: RunId,
+    _client1_id: ClientId,
+    _run1_id: RunId,
+    _client2_id: ClientId,
+    _run2_id: RunId,
+    _client3_id: ClientId,
+    _run3_id: RunId,
+    _frames: NonZeroU32,
+) -> Result<SwitcherFourViewFocusedHandoffPreviewLoopSummary, String> {
+    Err("four-view focused handoff preview loop is only available on Windows".to_string())
+}
+
 fn run_four_view_clean_output_window_loop_with_runtime_and_sleep(
     fixture_mode: SwitcherFourViewManualPreviewProofFixtureMode,
     frames: NonZeroU32,
@@ -2409,8 +2558,197 @@ where
     }
 }
 
+fn run_four_view_focused_handoff_preview_loop_with_handoff_runtime_and_sleep<
+    RealHandoff,
+    DecodeRuntime,
+    RenderRuntime,
+>(
+    pipe_name: &str,
+    focused_slot_index: usize,
+    client0_id: ClientId,
+    run0_id: RunId,
+    client1_id: ClientId,
+    run1_id: RunId,
+    client2_id: ClientId,
+    run2_id: RunId,
+    client3_id: ClientId,
+    run3_id: RunId,
+    frames: NonZeroU32,
+    target_timestamp: TimestampMicros,
+    real_handoff: RealHandoff,
+    decode_runtime: &DecodeRuntime,
+    render_runtime: &RenderRuntime,
+    cadence_sleep: &impl SwitcherFrameCadenceSleepHook,
+) -> SwitcherFourViewFocusedHandoffPreviewLoopSummary
+where
+    RealHandoff: PreviewLoopRealHandoff,
+    DecodeRuntime: SwitcherH264DecodeRuntimeHook,
+    RenderRuntime: SwitcherWindowRenderRuntimeHook + SwitcherPersistentWindowLoopRuntimeHook,
+{
+    let slots = default_four_view_four_real_handoff_preview_slots(
+        client0_id.clone(),
+        run0_id.clone(),
+        client1_id.clone(),
+        run1_id.clone(),
+        client2_id.clone(),
+        run2_id.clone(),
+        client3_id.clone(),
+        run3_id.clone(),
+    );
+    let slot_bindings = slots
+        .clone()
+        .map(|slot| format_four_view_slot_binding(&slot));
+    let focused_client_id = slots[focused_slot_index].client_id.clone();
+    let focused_run_id = slots[focused_slot_index].run_id.clone();
+    let mut handoff = MultiRealAndPlaceholderQueuedFrameHandoff::new(
+        slots.clone(),
+        vec![
+            (client0_id.clone(), run0_id.clone()),
+            (client1_id.clone(), run1_id.clone()),
+            (client2_id.clone(), run2_id.clone()),
+            (client3_id.clone(), run3_id.clone()),
+        ],
+        real_handoff,
+    );
+    let mut frames_attempted = 0u32;
+    let mut frames_rendered = 0u32;
+    let mut render_failures = 0u32;
+    let mut scheduler_status =
+        stream_sync_switcher::SwitcherFourViewTargetTimeHandoffSourceSchedulerStatus::NoFrames;
+    let mut slot_result_kinds = [
+        "NoFrameAvailable".to_string(),
+        "NoFrameAvailable".to_string(),
+        "NoFrameAvailable".to_string(),
+        "NoFrameAvailable".to_string(),
+    ];
+    let mut slot_diagnostics = std::array::from_fn(|slot_index| {
+        format_four_view_preview_slot_diagnostic(&FourViewPreviewSlotDiagnosticSummary {
+            slot_index,
+            client_id: slots[slot_index].client_id.clone(),
+            run_id: slots[slot_index].run_id.clone(),
+            request_id: None,
+            handoff_response_kind: None,
+            parse_error: None,
+            io_error: None,
+            response_payload_len: None,
+            frame_id: None,
+            frame_payload_len: None,
+            decode_error: None,
+            render_input_kind: "Unobserved",
+            final_slot_result_kind: "NoFrameAvailable",
+        })
+    });
+    let mut focused_result_kind = "NoFrameAvailable".to_string();
+    let mut clean_output_render_result_kind = "NoRenderableFocusedView";
+    let window_title = SWITCHER_FOUR_VIEW_CLEAN_OUTPUT_WINDOW_TITLE.to_string();
+    let cadence = four_view_clean_output_window_loop_frame_cadence();
+    let obs_runtime = ObsFriendlyFourViewLoopWindowRenderRuntime::new(render_runtime);
+
+    for frame_index in 0..frames.get() {
+        handoff.begin_frame();
+        let validation = run_four_view_real_handoff_preview_validation_with_runtime_and_handoff(
+            &mut handoff,
+            slots.clone(),
+            target_timestamp,
+            decode_runtime,
+        );
+
+        frames_attempted += 1;
+        scheduler_status = validation.scheduler.status;
+        slot_result_kinds = validation.scheduler.slots.clone().map(|slot| {
+            format_four_view_real_handoff_scheduler_slot_kind(&slot.result).to_string()
+        });
+        slot_diagnostics = handoff.take_last_frame_slot_diagnostics(&validation);
+        focused_result_kind = slot_result_kinds[focused_slot_index].clone();
+        clean_output_render_result_kind = render_four_view_focused_slot_with_runtime(
+            &validation.composition_render.composition.slots[focused_slot_index],
+            &obs_runtime,
+            &window_title,
+        );
+
+        match clean_output_render_result_kind {
+            "Rendered" => {
+                frames_rendered += 1;
+            }
+            "RenderFailed" | "InvalidFrame" => {
+                render_failures += 1;
+            }
+            _ => {}
+        }
+
+        if frame_index + 1 < frames.get() {
+            cadence_sleep.sleep(cadence);
+        }
+    }
+
+    render_runtime.close_persistent_window();
+    let render_metadata = obs_runtime.metadata_snapshot();
+
+    SwitcherFourViewFocusedHandoffPreviewLoopSummary {
+        pipe_name: pipe_name.to_string(),
+        focused_slot_index,
+        client0_id,
+        run0_id,
+        client1_id,
+        run1_id,
+        client2_id,
+        run2_id,
+        client3_id,
+        run3_id,
+        focused_client_id,
+        focused_run_id,
+        focused_result_kind,
+        frames_attempted,
+        frames_rendered,
+        render_failures,
+        scheduler_status,
+        slot_bindings,
+        slot_result_kinds,
+        slot_diagnostics,
+        clean_output_render_result_kind,
+        window_title,
+        output_width: render_metadata.output_width,
+        output_height: render_metadata.output_height,
+    }
+}
+
 fn four_view_clean_output_window_loop_frame_cadence() -> Duration {
     Duration::from_secs_f64(1.0 / 30.0)
+}
+
+fn render_four_view_focused_slot_with_runtime(
+    slot: &SwitcherFourViewHandoffQuadCompositionRenderSlot,
+    render_runtime: &impl SwitcherWindowRenderRuntimeHook,
+    window_title: &str,
+) -> &'static str {
+    let decoded = match slot {
+        SwitcherFourViewHandoffQuadCompositionRenderSlot::UseUpdatedFrame { frame, .. }
+        | SwitcherFourViewHandoffQuadCompositionRenderSlot::UseHeldPreviousFrame {
+            frame, ..
+        } => match frame.decoded.as_ref() {
+            Some(decoded) => decoded,
+            None => return "NoRenderableFocusedView",
+        },
+        _ => return "NoRenderableFocusedView",
+    };
+
+    let render_input = match SwitcherDecodedFrameRenderInput::from_decoded_frame(decoded) {
+        Ok(render_input) => render_input,
+        Err(_) => return "InvalidFrame",
+    };
+    let scaled_input = scale_four_view_bgra_render_input_to_obs_validation_profile(
+        &render_input,
+        FOUR_VIEW_CLEAN_OUTPUT_LOOP_OBS_OUTPUT_WIDTH,
+        FOUR_VIEW_CLEAN_OUTPUT_LOOP_OBS_OUTPUT_HEIGHT,
+    );
+
+    format_focused_window_render_result_kind(&render_runtime.render_once(
+        SwitcherWindowRenderRequest {
+            frame: scaled_input,
+            title: window_title.to_string(),
+            hold_millis: 0,
+        },
+    ))
 }
 
 fn run_four_view_real_handoff_preview_validation_with_runtime_and_handoff(
@@ -2965,6 +3303,38 @@ fn format_four_view_four_real_handoff_preview_loop_summary(
     )
 }
 
+fn format_four_view_focused_handoff_preview_loop_summary(
+    summary: &SwitcherFourViewFocusedHandoffPreviewLoopSummary,
+) -> String {
+    format!(
+        "switcher four-view focused handoff preview loop command_name=--four-view-focused-handoff-preview-loop real_handoff=true real_slot_count=4 view_state=Focused focused_slot_index={} pipe_name={} client0_id={} run0_id={} client1_id={} run1_id={} client2_id={} run2_id={} client3_id={} run3_id={} focused_client_id={} focused_run_id={} focused_result_kind={} frames_attempted={} frames_rendered={} render_failures={} scheduler_status={:?} slot_bindings={} slot_result_kinds={} slot_diagnostics={} clean_output_render_result_kind={} window_title={} output_width={} output_height={}",
+        summary.focused_slot_index,
+        summary.pipe_name,
+        summary.client0_id.0,
+        summary.run0_id.0,
+        summary.client1_id.0,
+        summary.run1_id.0,
+        summary.client2_id.0,
+        summary.run2_id.0,
+        summary.client3_id.0,
+        summary.run3_id.0,
+        summary.focused_client_id.0,
+        summary.focused_run_id.0,
+        summary.focused_result_kind,
+        summary.frames_attempted,
+        summary.frames_rendered,
+        summary.render_failures,
+        summary.scheduler_status,
+        summary.slot_bindings.join("|"),
+        summary.slot_result_kinds.join("|"),
+        summary.slot_diagnostics.join("|"),
+        summary.clean_output_render_result_kind,
+        summary.window_title,
+        format_optional_u32(summary.output_width),
+        format_optional_u32(summary.output_height),
+    )
+}
+
 fn build_four_view_preview_slot_diagnostic(
     slot_index: usize,
     slot: &SwitcherFourViewTargetTimeSourceSlotConfig,
@@ -3193,6 +3563,16 @@ fn format_four_view_clean_output_window_result_kind(
             "NoRenderableQuadView"
         }
         SwitcherFourViewCleanOutputWindowRenderResult::InvalidQuadView { .. } => "InvalidQuadView",
+    }
+}
+
+fn format_focused_window_render_result_kind(result: &SwitcherWindowRenderResult) -> &'static str {
+    match result {
+        SwitcherWindowRenderResult::Rendered(_) => "Rendered",
+        SwitcherWindowRenderResult::RenderDeferred { .. } => "RenderDeferred",
+        SwitcherWindowRenderResult::BackendUnavailable { .. } => "BackendUnavailable",
+        SwitcherWindowRenderResult::InvalidFrame { .. } => "InvalidFrame",
+        SwitcherWindowRenderResult::RenderFailed { .. } => "RenderFailed",
     }
 }
 
@@ -3556,6 +3936,7 @@ mod tests {
     use super::{
         format_four_view_clean_output_window_loop_summary,
         format_four_view_clean_output_window_summary,
+        format_four_view_focused_handoff_preview_loop_summary,
         format_four_view_four_real_handoff_preview_loop_summary,
         format_four_view_manual_preview_proof_summary,
         format_four_view_manual_preview_window_summary,
@@ -3570,6 +3951,7 @@ mod tests {
         parse_four_view_real_slot_index_or_exit, parse_handoff_mode_or_exit,
         parse_positive_u32_arg, run_four_view_clean_output_window_loop_with_runtime_and_sleep,
         run_four_view_clean_output_window_with_runtime,
+        run_four_view_focused_handoff_preview_loop_with_handoff_runtime_and_sleep,
         run_four_view_four_real_handoff_preview_loop_with_handoff_runtime_and_sleep,
         run_four_view_manual_preview_proof_once, run_four_view_manual_preview_proof_with_runtime,
         run_four_view_real_handoff_preview_loop_with_handoff_runtime_and_sleep,
@@ -4632,6 +5014,181 @@ mod tests {
         assert!(formatted.contains("run2_id=real-run-2"));
         assert!(formatted.contains("client3_id=real-client-3"));
         assert!(formatted.contains("run3_id=real-run-3"));
+        assert!(formatted.contains("scheduler_status=AllSelected"));
+        assert!(formatted.contains("slot_result_kinds=Selected|Selected|Selected|Selected"));
+        assert!(formatted.contains("clean_output_render_result_kind=RenderFailed"));
+        assert!(formatted.contains("window_title=StreamSync 4-view Output"));
+        assert!(formatted.contains(&format!(
+            "output_width={}",
+            FOUR_VIEW_CLEAN_OUTPUT_LOOP_OBS_OUTPUT_WIDTH
+        )));
+        assert!(formatted.contains(&format!(
+            "output_height={}",
+            FOUR_VIEW_CLEAN_OUTPUT_LOOP_OBS_OUTPUT_HEIGHT
+        )));
+    }
+
+    #[test]
+    fn switcher_four_view_focused_handoff_preview_loop_renders_focused_slot_full_window() {
+        let render_runtime = PersistentFixtureRenderedWindowRuntime::default();
+        let summary = run_four_view_focused_handoff_preview_loop_with_handoff_runtime_and_sleep(
+            "fixture-pipe",
+            2,
+            ClientId("real-client-0".to_string()),
+            RunId("real-run-0".to_string()),
+            ClientId("real-client-1".to_string()),
+            RunId("real-run-1".to_string()),
+            ClientId("real-client-2".to_string()),
+            RunId("real-run-2".to_string()),
+            ClientId("real-client-3".to_string()),
+            RunId("real-run-3".to_string()),
+            NonZeroU32::new(2).expect("2 should be non-zero"),
+            TimestampMicros(1_000_004),
+            StubRealQueuedFrameHandoff {
+                result: SwitcherQueuedFrameHandoffResult::FrameRead {
+                    frame: SwitcherSingleViewSelectedEncodedFrame {
+                        client_id: ClientId("real-client-2".to_string()),
+                        run_id: RunId("real-run-2".to_string()),
+                        frame_id: 1,
+                        capture_timestamp: TimestampMicros(1_000_001),
+                        send_timestamp: TimestampMicros(1_000_101),
+                        queued_at: TimestampMicros(2_400_001),
+                        is_keyframe: true,
+                        width: 2,
+                        height: 1,
+                        fps_nominal: 30,
+                        codec: Codec::H264,
+                        encoded_payload_len: 1,
+                        encoded_payload: vec![0x88],
+                    },
+                    mode: SwitcherSingleClientQueueSourceMode::PreviewLatest,
+                    remaining_client_queue_len: 0,
+                },
+                calls: RefCell::new(0),
+            },
+            &DeterministicFourViewFixtureDecodeRuntime,
+            &render_runtime,
+            &RecordingCadenceSleepHook::default(),
+        );
+
+        assert_eq!(summary.focused_slot_index, 2);
+        assert_eq!(
+            summary.focused_client_id,
+            ClientId("real-client-2".to_string())
+        );
+        assert_eq!(summary.focused_run_id, RunId("real-run-2".to_string()));
+        assert_eq!(summary.focused_result_kind, "Selected");
+        assert_eq!(summary.frames_attempted, 2);
+        assert_eq!(summary.frames_rendered, 2);
+        assert_eq!(summary.render_failures, 0);
+        assert_eq!(summary.clean_output_render_result_kind, "Rendered");
+        assert_eq!(
+            summary.window_title,
+            SWITCHER_FOUR_VIEW_CLEAN_OUTPUT_WINDOW_TITLE
+        );
+        assert_eq!(
+            summary.output_width,
+            Some(FOUR_VIEW_CLEAN_OUTPUT_LOOP_OBS_OUTPUT_WIDTH)
+        );
+        assert_eq!(
+            summary.output_height,
+            Some(FOUR_VIEW_CLEAN_OUTPUT_LOOP_OBS_OUTPUT_HEIGHT)
+        );
+    }
+
+    #[test]
+    fn switcher_four_view_focused_handoff_preview_loop_reports_no_renderable_focused_view_for_no_frame(
+    ) {
+        let summary = run_four_view_focused_handoff_preview_loop_with_handoff_runtime_and_sleep(
+            "fixture-pipe",
+            0,
+            ClientId("real-client-0".to_string()),
+            RunId("real-run-0".to_string()),
+            ClientId("real-client-1".to_string()),
+            RunId("real-run-1".to_string()),
+            ClientId("real-client-2".to_string()),
+            RunId("real-run-2".to_string()),
+            ClientId("real-client-3".to_string()),
+            RunId("real-run-3".to_string()),
+            NonZeroU32::new(1).expect("1 should be non-zero"),
+            TimestampMicros(1_000_004),
+            StubRealQueuedFrameHandoff {
+                result: SwitcherQueuedFrameHandoffResult::NoFrameAvailable {
+                    client_id: ClientId("real-client-0".to_string()),
+                    run_id: RunId("real-run-0".to_string()),
+                    mode: SwitcherSingleClientQueueSourceMode::PreviewLatest,
+                    client_queue_len: 0,
+                },
+                calls: RefCell::new(0),
+            },
+            &DeterministicFourViewFixtureDecodeRuntime,
+            &PersistentFixtureRenderedWindowRuntime::default(),
+            &RecordingCadenceSleepHook::default(),
+        );
+
+        assert_eq!(summary.focused_result_kind, "NoFrameAvailable");
+        assert_eq!(summary.frames_rendered, 0);
+        assert_eq!(summary.render_failures, 0);
+        assert_eq!(
+            summary.clean_output_render_result_kind,
+            "NoRenderableFocusedView"
+        );
+        assert_eq!(summary.output_width, None);
+        assert_eq!(summary.output_height, None);
+    }
+
+    #[test]
+    fn switcher_four_view_focused_handoff_preview_summary_formats_expected_fields() {
+        let summary = run_four_view_focused_handoff_preview_loop_with_handoff_runtime_and_sleep(
+            "fixture-pipe",
+            3,
+            ClientId("real-client-0".to_string()),
+            RunId("real-run-0".to_string()),
+            ClientId("real-client-1".to_string()),
+            RunId("real-run-1".to_string()),
+            ClientId("real-client-2".to_string()),
+            RunId("real-run-2".to_string()),
+            ClientId("real-client-3".to_string()),
+            RunId("real-run-3".to_string()),
+            NonZeroU32::new(1).expect("1 should be non-zero"),
+            TimestampMicros(1_000_004),
+            StubRealQueuedFrameHandoff {
+                result: SwitcherQueuedFrameHandoffResult::FrameRead {
+                    frame: SwitcherSingleViewSelectedEncodedFrame {
+                        client_id: ClientId("real-client-3".to_string()),
+                        run_id: RunId("real-run-3".to_string()),
+                        frame_id: 1,
+                        capture_timestamp: TimestampMicros(1_000_001),
+                        send_timestamp: TimestampMicros(1_000_101),
+                        queued_at: TimestampMicros(2_400_001),
+                        is_keyframe: true,
+                        width: 2,
+                        height: 1,
+                        fps_nominal: 30,
+                        codec: Codec::H264,
+                        encoded_payload_len: 1,
+                        encoded_payload: vec![0x99],
+                    },
+                    mode: SwitcherSingleClientQueueSourceMode::PreviewLatest,
+                    remaining_client_queue_len: 0,
+                },
+                calls: RefCell::new(0),
+            },
+            &DeterministicFourViewFixtureDecodeRuntime,
+            &PersistentFixtureRenderFailedWindowRuntime::default(),
+            &RecordingCadenceSleepHook::default(),
+        );
+        let formatted = format_four_view_focused_handoff_preview_loop_summary(&summary);
+
+        assert!(formatted.contains("command_name=--four-view-focused-handoff-preview-loop"));
+        assert!(formatted.contains("real_handoff=true"));
+        assert!(formatted.contains("real_slot_count=4"));
+        assert!(formatted.contains("view_state=Focused"));
+        assert!(formatted.contains("focused_slot_index=3"));
+        assert!(formatted.contains("pipe_name=fixture-pipe"));
+        assert!(formatted.contains("focused_client_id=real-client-3"));
+        assert!(formatted.contains("focused_run_id=real-run-3"));
+        assert!(formatted.contains("focused_result_kind=Selected"));
         assert!(formatted.contains("scheduler_status=AllSelected"));
         assert!(formatted.contains("slot_result_kinds=Selected|Selected|Selected|Selected"));
         assert!(formatted.contains("clean_output_render_result_kind=RenderFailed"));
