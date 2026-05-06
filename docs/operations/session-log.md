@@ -5945,6 +5945,163 @@ switcher four-view proof fixture deterministic=true real_handoff=false actual_wi
 - `cargo test -p stream-sync-switcher four_view -- --test-threads=1`
 - `cargo test -p stream-sync-switcher handoff -- --test-threads=1`
 - `cargo check --workspace`
+
+---
+
+## 2026-05-06
+### Type
+- Codex
+
+### Work
+- Ran a fresh manual rerun with the new named-pipe handoff diagnostics.
+- Verified the `1`-real-slot baseline first using:
+  - server:
+    `.\target\debug\stream-sync-server.exe --receive-auth-video-queue-and-serve-handoff-many configs/manual/server.two-real-slots.toml streamsync-handoff-dev 5 4096 15000 1 true 8388608`
+  - client1:
+    `.\target\debug\stream-sync-client.exe --auth-real-encoded-video-frame-poc-bounded configs/manual/client.player1.toml 5 16 1`
+  - switcher:
+    `.\target\debug\stream-sync-switcher.exe --four-view-real-handoff-preview-loop streamsync-handoff-dev 0 player1 streamsync-dev-session 5`
+- Ran the `2`-real-slot rerun only after the baseline passed using:
+  - server:
+    `.\target\debug\stream-sync-server.exe --receive-auth-video-queue-and-serve-handoff-many configs/manual/server.two-real-slots.toml streamsync-handoff-dev 10 4096 15000 2 true 8388608`
+  - client1:
+    `.\target\debug\stream-sync-client.exe --auth-real-encoded-video-frame-poc-bounded configs/manual/client.player1.toml 5 16 1`
+  - client2:
+    `.\target\debug\stream-sync-client.exe --auth-real-encoded-video-frame-poc-bounded configs/manual/client.player2.toml 5 16 1`
+  - switcher:
+    `.\target\debug\stream-sync-switcher.exe --four-view-two-real-handoff-preview-loop streamsync-handoff-dev 0 player1 streamsync-dev-session 1 player2 streamsync-dev-session 5`
+
+### Observed Logs
+- `1`-real-slot baseline server stdout:
+  - `queue_len_before_read=1`
+  - `queue_len_after_read=1`
+  - `result_kind=FrameRead`
+  - `selected_client_id=player1`
+  - `selected_run_id=streamsync-dev-session`
+  - `frame_id=2`
+  - `frame_payload_len=242445`
+  - `no_frame_reason=none`
+- `1`-real-slot baseline switcher stdout:
+  - `scheduler_status=PartialSelected`
+  - `clean_output_render_result_kind=Rendered`
+  - slot0 `slot_diagnostics`:
+    - `client_id=player1`
+    - `run_id=streamsync-dev-session`
+    - `request_id=5`
+    - `handoff_response_kind=FrameRead`
+    - `response_payload_len=242542`
+    - `parse_error=none`
+    - `io_error=none`
+    - `decode_error=none`
+    - `frame_id=2`
+    - `frame_payload_len=242445`
+    - `render_input_kind=UseUpdatedFrame`
+    - `final_slot_result_kind=Selected`
+  - slots1-3 were deterministic placeholders with:
+    - `request_id=none`
+    - `handoff_response_kind=none`
+    - `render_input_kind=UseNoDisplayPlaceholder`
+    - `final_slot_result_kind=NoFrameAvailable`
+- `2`-real-slot rerun server stdout:
+  - receive phase still showed `registered_clients=1`
+  - receive phase completed with `frames_reassembled=2` and `frames_queued=2`
+  - bounded handoff request order alternated exactly:
+    - odd requests:
+      - `selected_client_id=player1`
+      - `result_kind=FrameRead`
+      - `queue_len_before_read=2`
+      - `queue_len_after_read=2`
+      - `frame_id=3`
+      - `frame_payload_len=239261`
+    - even requests:
+      - `selected_client_id=player2`
+      - `result_kind=NoFrame`
+      - `queue_len_before_read=0`
+      - `queue_len_after_read=0`
+      - `frame_id=none`
+      - `frame_payload_len=none`
+      - `no_frame_reason=NoFramesQueuedForClient`
+- `2`-real-slot rerun switcher stdout:
+  - `scheduler_status=PartialSelected`
+  - `slot_result_kinds=Selected|NoFrameAvailable|NoFrameAvailable|NoFrameAvailable`
+  - `clean_output_render_result_kind=Rendered`
+  - slot0 `slot_diagnostics`:
+    - `client_id=player1`
+    - `request_id=9`
+    - `handoff_response_kind=FrameRead`
+    - `parse_error=none`
+    - `io_error=none`
+    - `decode_error=none`
+    - `frame_id=3`
+    - `frame_payload_len=239261`
+    - `render_input_kind=UseUpdatedFrame`
+    - `final_slot_result_kind=Selected`
+  - slot1 `slot_diagnostics`:
+    - `client_id=player2`
+    - `request_id=10`
+    - `handoff_response_kind=NoFrame`
+    - `response_payload_len=47`
+    - `parse_error=none`
+    - `io_error=none`
+    - `decode_error=none`
+    - `frame_id=none`
+    - `frame_payload_len=none`
+    - `render_input_kind=UseNoDisplayPlaceholder`
+    - `final_slot_result_kind=NoFrameAvailable`
+- client2 stderr:
+  - `auth real encoded video frame bounded PoC failed: AuthResponse(Receive(ConnectionReset))`
+
+### Decisions
+- The `1`-real-slot baseline is confirmed good under the rebuilt diagnostic
+  binaries: player1 reaches server queue -> named-pipe handoff -> switcher
+  render without parse/io/decode error.
+- The `FrameRead / NoFrame` alternation in the current `2`-real-slot rerun is
+  confirmed to be request-order-driven:
+  - player1 request -> `FrameRead`
+  - player2 request -> `NoFrame`
+- In the rebuilt diagnostic path, player2 absence is classified as
+  `NoFrameAvailable`, not `HandoffError`.
+- The current manual `2`-client server stop condition is too weak:
+  `expected_reassembled_frames=2` can be satisfied entirely by player1 before
+  player2 authenticates or sends anything.
+
+### Root Cause Found
+- The current `2`-real-slot manual procedure does not guarantee two distinct
+  clients participate in the receive phase.
+- Because the server stop condition is only `expected_reassembled_frames=2`,
+  player1 alone can satisfy it by queueing two frames.
+- After that point, the server leaves receive/auth handling and starts bounded
+  named-pipe service.
+- client2 then hits connection failure during auth receive:
+  - observed as `AuthResponse(Receive(ConnectionReset))`
+- switcher therefore sees:
+  - player1 scope -> `FrameRead`
+  - player2 scope -> `NoFrame`
+  - not `HandoffError`
+
+### Unresolved
+- a real `2`-client manual validation where both player1 and player2 are
+  authenticated and queued before the handoff loop starts
+- whether the older reported switcher `HandoffError` came from an older binary,
+  a different manual sequence, or a transient transport/runtime timing issue
+- whether the next narrow fix should be:
+  - manual sequencing only
+  - or a server manual stop condition keyed to distinct client scopes
+
+### Next
+- Adjust the manual `2`-real-slot procedure so server receive completion cannot
+  be satisfied by player1 alone.
+- Keep using the `1`-real-slot command as the baseline isolation path before
+  any future `2`-real-slot rerun.
+
+### TODO Update
+- Updated `todo.md` to record that the current `2`-real-slot manual command
+  sequence proves request ordering but not two-client participation.
+- Updated the next action to fix the manual gating / sequencing before another
+  `2`-real-slot validation pass.
+
+### Validation
+- manual rerun with rebuilt `target/debug` binaries
 - `git diff --check`
 
 ---

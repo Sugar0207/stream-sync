@@ -571,6 +571,34 @@ Important note for `FrameRead / NoFrame` alternation:
   - slot1 `player2`
 - check `selected_client_id` / `selected_run_id` before assuming the queue was
   reset or recreated between requests
+- a fresh rerun confirmed this alternation can be entirely request-order-driven
+  when:
+  - player1 is the only client that actually reached the queue
+  - player2 never authenticated / queued before handoff serving began
+
+Current manual caveat for the `2`-real-slot sequence above:
+
+- the server command currently uses:
+  - `expected_reassembled_frames=2`
+  - `manual_stop_after_expected_reassembled_frames=true`
+- that stop condition can be satisfied by player1 alone if player1 queues two
+  frames before player2 joins
+- in the latest rerun this happened, and the server moved from receive/auth
+  into bounded named-pipe handoff with:
+  - `registered_clients=1`
+  - `frames_reassembled=2`
+  - `frames_queued=2`
+- client2 then failed with:
+  - `AuthResponse(Receive(ConnectionReset))`
+- the resulting switcher classification was:
+  - slot0/player1 -> `Selected`
+  - slot1/player2 -> `NoFrameAvailable`
+  - not `HandoffError`
+
+So the current `2`-real-slot manual command sequence is valid for proving
+request ordering and no-frame classification, but it is not yet sufficient to
+prove a true two-client queued handoff run until the receive-phase gating is
+tightened or the client start sequencing is adjusted.
 
 ---
 
