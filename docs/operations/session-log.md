@@ -5,6 +5,67 @@
 - Codex
 
 ### Work
+- Fixed the first minimal same-session separate local control channel shape for
+  the `4`-view controlled switcher loop.
+- Implemented the control channel as a Windows local named-pipe option on the
+  existing loop instead of changing the render/handoff path:
+  - loop side:
+    `--four-view-controlled-handoff-preview-loop ... --control-pipe [pipe-name]`
+  - sender side:
+    `--send-control-command [control-pipe-name] [command]`
+- Kept stdin and `--commands` unchanged as validation baseline and fallback.
+- Reused the existing control parser / transition / render logic so the control
+  pipe command contract stays identical to the current manual/scripted
+  contract:
+  - `all`
+  - `focus 0`
+  - `focus 1`
+  - `focus 2`
+  - `focus 3`
+  - `status`
+  - `quit`
+- Kept handoff and control responsibilities separate:
+  - separate pipe name
+  - separate request/response payload shape
+  - no reuse of the queue-read handoff DTO
+
+### Changed Files
+- `apps/switcher/src/main.rs`
+- `docs/architecture/system-design.md`
+- `docs/operations/manual-real-encoded-video-poc.md`
+- `docs/operations/session-log.md`
+- `docs/operations/todo.md`
+
+### Decision
+- Chose implementation path `B`: docs plus minimal implementation.
+- The first control transport is a one-request / one-response Windows named
+  pipe dedicated to control, not the existing handoff pipe.
+- The control response is intentionally small and manual-validation friendly:
+  - `command`
+  - `transition_result`
+  - `current_view_state`
+  - `selected_slot_result`
+  - `clean_output_render_result_kind`
+  - `command_parse_error`
+  - `exit_reason`
+
+### Validation
+- `cargo fmt`
+- `cargo fmt --check`
+- `cargo check --workspace`
+- `cargo test -p stream-sync-switcher four_view -- --test-threads=1`
+- `git diff --check`
+- added code-level tests for:
+  - control source option parsing
+  - control response formatting
+  - manual sender runtime hook usage
+  - length-prefixed UTF-8 control request/response framing
+
+## 2026-05-07
+### Type
+- Codex
+
+### Work
 - Added the first docs-only hotkey/UI wrapper comparison and recommendation.
 - Compared three control-channel directions for the validated same-session
   `4`-view control loop:

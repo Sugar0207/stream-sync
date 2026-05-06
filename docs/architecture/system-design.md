@@ -8668,6 +8668,11 @@ MVP wrapper:
 - add a separate local control channel to the same-session switcher loop
 - keep the command vocabulary identical to the current parser
 - treat the wrapper as a thin keyboard/UI shell, not a render owner
+- on Windows, prefer a local named-pipe control channel first
+- keep the control channel separate from the existing handoff pipe:
+  - separate pipe name
+  - separate request/response payload
+  - no queue-read DTO reuse
 
 Deferred:
 
@@ -8895,12 +8900,13 @@ Current first same-session control shape:
   - `--four-view-four-real-handoff-preview-loop`
   - `--four-view-focused-handoff-preview-loop`
 - one same-session long-running control loop now exists as:
-  - `--four-view-controlled-handoff-preview-loop [pipe-name] [client0-id] [run0-id] [client1-id] [run1-id] [client2-id] [run2-id] [client3-id] [run3-id] [max-ticks-per-command] [--commands "status;focus 0;all;quit"]`
+  - `--four-view-controlled-handoff-preview-loop [pipe-name] [client0-id] [run0-id] [client1-id] [run1-id] [client2-id] [run2-id] [client3-id] [run3-id] [max-ticks-per-command] [--commands "status;focus 0;all;quit" | --control-pipe streamsync-control-dev]`
 - keep it dedicated to fixed `4`-view operation
 - first control source is either:
   - stdin text commands
   - optional bounded scripted `--commands` input for manual automation and
     tests
+  - optional separate local control pipe via `--control-pipe`
 - accepted commands are:
   - `all`
   - `focus 0`
@@ -8910,6 +8916,23 @@ Current first same-session control shape:
   - `status`
   - `quit`
 - invalid commands and invalid focus indices are rejected explicitly in stdout
+- keep handoff and control responsibilities separate:
+  - handoff example pipe: `streamsync-handoff-dev`
+  - control example pipe: `streamsync-control-dev`
+  - the two names must differ
+- minimal control request shape:
+  - one UTF-8 command string using the existing command contract
+- minimal control response shape:
+  - one UTF-8 summary line containing at least:
+    - `command`
+    - `transition_result`
+    - `current_view_state`
+    - `selected_slot_result`
+    - `clean_output_render_result_kind`
+    - `command_parse_error`
+    - `exit_reason`
+- the first manual sender now exists as:
+  - `--send-control-command [control-pipe-name] [command]`
 - keep the existing handoff preview/render loop family underneath:
   - same real-slot bindings
   - same named-pipe handoff source
@@ -8963,7 +8986,11 @@ Manual validation plan after the nearby-session operator-flow success:
    recorded fallback/operator-proof path.
 2. The first same-session control loop is now implemented with stdin plus
    optional scripted `--commands`.
-3. Validate in one persistent session:
+3. The same loop now also supports one separate local control pipe:
+   - `--control-pipe streamsync-control-dev`
+4. The first manual sender now exists too:
+   - `--send-control-command streamsync-control-dev "focus 1"`
+5. Validate in one persistent session:
    - `all`
    - `focus 0`
    - `status`
@@ -8972,11 +8999,11 @@ Manual validation plan after the nearby-session operator-flow success:
    - `focus 2`
    - `focus 3`
    - `quit`
-4. Confirm the persistent session preserves:
+6. Confirm the persistent session preserves:
    - stable output window identity
    - no explicit handoff protocol changes
    - no GUI/hotkey dependency
-5. Only after that should a hotkey/UI wrapper be considered as a thin input
+7. Only after that should a hotkey/UI wrapper be considered as a thin input
    adapter.
 
 Failure classification for the operator-facing control layer:

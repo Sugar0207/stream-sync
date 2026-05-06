@@ -3,6 +3,12 @@ use std::num::NonZeroU32;
 use std::sync::Mutex;
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
+#[cfg(target_os = "windows")]
+use std::{
+    fs::File,
+    io::{Read, Write},
+    os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle},
+};
 use stream_sync_net_core::PacketSource;
 use stream_sync_protocol::{
     ClientId, Codec, MessageType, ProtocolVersion, RunId, TimestampMicros, VideoFrame,
@@ -46,6 +52,23 @@ use stream_sync_switcher::{
     SwitcherWindowRenderRequest, SwitcherWindowRenderResult, SwitcherWindowRenderRuntimeHook,
     SWITCHER_FOUR_VIEW_CLEAN_OUTPUT_WINDOW_TITLE,
 };
+
+#[cfg(target_os = "windows")]
+use windows::{
+    core::PCWSTR,
+    Win32::{
+        Foundation::{ERROR_PIPE_CONNECTED, HANDLE, INVALID_HANDLE_VALUE},
+        Storage::FileSystem::{
+            CreateFileW, FILE_ATTRIBUTE_NORMAL, FILE_GENERIC_READ, FILE_GENERIC_WRITE,
+            FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING, PIPE_ACCESS_DUPLEX,
+        },
+        System::Pipes::{
+            ConnectNamedPipe, CreateNamedPipeW, WaitNamedPipeW, PIPE_READMODE_BYTE, PIPE_TYPE_BYTE,
+            PIPE_WAIT,
+        },
+    },
+};
+
 #[cfg(target_os = "windows")]
 use stream_sync_switcher::{
     SwitcherNamedPipeQueuedFrameHandoff, SwitcherNamedPipeQueuedFrameHandoffRequestConfig,
@@ -518,8 +541,8 @@ fn main() {
             }));
             let max_ticks_per_command =
                 parse_positive_u32_arg_or_exit(args.next(), "max-ticks-per-command");
-            let scripted_commands =
-                parse_optional_four_view_control_script_or_exit(args.collect::<Vec<_>>());
+            let command_source =
+                parse_four_view_control_command_source_or_exit(args.collect::<Vec<_>>());
             match run_four_view_controlled_handoff_preview_loop(
                 &pipe_name,
                 client0_id,
@@ -531,7 +554,7 @@ fn main() {
                 client3_id,
                 run3_id,
                 max_ticks_per_command,
-                scripted_commands,
+                command_source,
             ) {
                 Ok(summary) => {
                     for command_summary in &summary.command_summaries {
@@ -549,6 +572,27 @@ fn main() {
                 }
                 Err(error) => {
                     eprintln!("switcher four-view controlled handoff preview loop failed: {error}");
+                    std::process::exit(1);
+                }
+            }
+        }
+        Some("--send-control-command") => {
+            let control_pipe_name = args.next().unwrap_or_else(|| {
+                eprintln!("missing control-pipe-name");
+                std::process::exit(1);
+            });
+            let command = args.next().unwrap_or_else(|| {
+                eprintln!("missing command");
+                std::process::exit(1);
+            });
+            if args.next().is_some() {
+                eprintln!("unexpected extra arguments");
+                std::process::exit(1);
+            }
+            match run_send_control_command(&control_pipe_name, &command) {
+                Ok(response) => println!("{response}"),
+                Err(error) => {
+                    eprintln!("switcher send-control-command failed: {error}");
                     std::process::exit(1);
                 }
             }
@@ -583,7 +627,7 @@ fn main() {
         }
         _ => {
             println!(
-                "stream-sync-switcher scaffold; use --placeholder-fixture-once [client-id], --placeholder-empty-once [client-id], --decode-latest-frame-once [client-id] [output-path], --receive-auth-video-placeholder-bridge-once [config-path] [client-id], --receive-auth-video-decode-latest-once [config-path] [client-id] [output-path], --receive-auth-video-render-decoded-once [config-path] [client-id] [hold-ms], --two-view-sync-fixture-once [left-client-id] [right-client-id] [hold-ms], --render-two-view-composed-fixture-once [hold-ms], --live-two-view-switcher-once [config-path] [left-client-id] [right-client-id], --four-view-proof-fixture-once [all-renderable|mixed-placeholder-source-error|placeholder-only], --four-view-proof-window-once [all-renderable], --four-view-clean-output-window-once [all-renderable], --four-view-clean-output-window-loop [all-renderable] [frames], --four-view-real-handoff-preview-loop [pipe-name] [real-slot-index] [client-id] [run-id] [frames], --four-view-two-real-handoff-preview-loop [pipe-name] [slot0-index] [client0-id] [run0-id] [slot1-index] [client1-id] [run1-id] [frames], --four-view-four-real-handoff-preview-loop [pipe-name] [client0-id] [run0-id] [client1-id] [run1-id] [client2-id] [run2-id] [client3-id] [run3-id] [frames], --four-view-focused-handoff-preview-loop [pipe-name] [focused-slot-index] [client0-id] [run0-id] [client1-id] [run1-id] [client2-id] [run2-id] [client3-id] [run3-id] [frames], --four-view-controlled-handoff-preview-loop [pipe-name] [client0-id] [run0-id] [client1-id] [run1-id] [client2-id] [run2-id] [client3-id] [run3-id] [max-ticks-per-command] [--commands \"status;focus 0;all;quit\"], or --read-queued-frame-handoff-once [pipe-name] [client-id] [run-id] [read-mode] [request-id]"
+                "stream-sync-switcher scaffold; use --placeholder-fixture-once [client-id], --placeholder-empty-once [client-id], --decode-latest-frame-once [client-id] [output-path], --receive-auth-video-placeholder-bridge-once [config-path] [client-id], --receive-auth-video-decode-latest-once [config-path] [client-id] [output-path], --receive-auth-video-render-decoded-once [config-path] [client-id] [hold-ms], --two-view-sync-fixture-once [left-client-id] [right-client-id] [hold-ms], --render-two-view-composed-fixture-once [hold-ms], --live-two-view-switcher-once [config-path] [left-client-id] [right-client-id], --four-view-proof-fixture-once [all-renderable|mixed-placeholder-source-error|placeholder-only], --four-view-proof-window-once [all-renderable], --four-view-clean-output-window-once [all-renderable], --four-view-clean-output-window-loop [all-renderable] [frames], --four-view-real-handoff-preview-loop [pipe-name] [real-slot-index] [client-id] [run-id] [frames], --four-view-two-real-handoff-preview-loop [pipe-name] [slot0-index] [client0-id] [run0-id] [slot1-index] [client1-id] [run1-id] [frames], --four-view-four-real-handoff-preview-loop [pipe-name] [client0-id] [run0-id] [client1-id] [run1-id] [client2-id] [run2-id] [client3-id] [run3-id] [frames], --four-view-focused-handoff-preview-loop [pipe-name] [focused-slot-index] [client0-id] [run0-id] [client1-id] [run1-id] [client2-id] [run2-id] [client3-id] [run3-id] [frames], --four-view-controlled-handoff-preview-loop [pipe-name] [client0-id] [run0-id] [client1-id] [run1-id] [client2-id] [run2-id] [client3-id] [run3-id] [max-ticks-per-command] [--commands \"status;focus 0;all;quit\"|--control-pipe streamsync-control-dev], --send-control-command [control-pipe-name] [command], or --read-queued-frame-handoff-once [pipe-name] [client-id] [run-id] [read-mode] [request-id]"
             );
         }
     }
@@ -951,8 +995,73 @@ fn parse_optional_four_view_control_script(args: Vec<String>) -> Result<Option<S
     Ok(Some(args[1].clone()))
 }
 
-fn parse_optional_four_view_control_script_or_exit(args: Vec<String>) -> Option<String> {
-    parse_optional_four_view_control_script(args).unwrap_or_else(|error| {
+fn parse_four_view_control_command_source(
+    args: Vec<String>,
+) -> Result<FourViewControlCommandSource, String> {
+    if !args.iter().any(|arg| arg == "--control-pipe") {
+        return parse_optional_four_view_control_script(args).map(|scripted_commands| {
+            scripted_commands
+                .map(FourViewControlCommandSource::Scripted)
+                .unwrap_or(FourViewControlCommandSource::Stdin)
+        });
+    }
+
+    let mut scripted_commands = None;
+    let mut control_pipe_name = None;
+    let mut index = 0usize;
+
+    while index < args.len() {
+        match args[index].as_str() {
+            "--commands" => {
+                if scripted_commands.is_some() || control_pipe_name.is_some() {
+                    return Err(
+                        "use either --commands \"cmd;cmd;quit\" or --control-pipe pipe-name"
+                            .to_string(),
+                    );
+                }
+                let Some(script) = args.get(index + 1) else {
+                    return Err("missing value for --commands".to_string());
+                };
+                scripted_commands = Some(script.clone());
+                index += 2;
+            }
+            "--control-pipe" => {
+                if scripted_commands.is_some() || control_pipe_name.is_some() {
+                    return Err(
+                        "use either --commands \"cmd;cmd;quit\" or --control-pipe pipe-name"
+                            .to_string(),
+                    );
+                }
+                let Some(pipe_name) = args.get(index + 1) else {
+                    return Err("missing value for --control-pipe".to_string());
+                };
+                if pipe_name.trim().is_empty() {
+                    return Err("control pipe name must not be empty".to_string());
+                }
+                control_pipe_name = Some(pipe_name.clone());
+                index += 2;
+            }
+            _ => {
+                return Err(
+                    "unexpected extra arguments: expected optional --commands \"cmd;cmd;quit\" or --control-pipe pipe-name"
+                        .to_string(),
+                )
+            }
+        }
+    }
+
+    Ok(match (scripted_commands, control_pipe_name) {
+        (Some(script), None) => FourViewControlCommandSource::Scripted(script),
+        (None, Some(pipe_name)) => FourViewControlCommandSource::ControlPipe(pipe_name),
+        (None, None) => FourViewControlCommandSource::Stdin,
+        (Some(_), Some(_)) => unreachable!("mutually exclusive control sources are guarded"),
+    })
+}
+
+fn parse_four_view_control_command_source_or_exit(
+    args: Vec<String>,
+) -> FourViewControlCommandSource {
+    parse_four_view_control_command_source(args).unwrap_or_else(|error| {
         eprintln!("{error}");
         std::process::exit(1);
     })
@@ -1587,6 +1696,13 @@ enum SwitcherFourViewControlledPreviewCommand {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+enum FourViewControlCommandSource {
+    Stdin,
+    Scripted(String),
+    ControlPipe(String),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct SwitcherFourViewControlledPreviewCommandSummary {
     command_index: usize,
     control_command_name: String,
@@ -1651,6 +1767,8 @@ struct FourViewControlledCommandIterationOutcome {
     summary: SwitcherFourViewControlledPreviewCommandSummary,
     render_outcome: Option<FourViewControlledPreviewRenderOutcome>,
 }
+
+const DEFAULT_CONTROL_PIPE_CONNECT_TIMEOUT_MILLIS: u32 = 5_000;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct FourViewPreviewSlotDiagnosticSummary {
@@ -2898,8 +3016,14 @@ fn run_four_view_controlled_handoff_preview_loop(
     client3_id: ClientId,
     run3_id: RunId,
     max_ticks_per_command: NonZeroU32,
-    scripted_commands: Option<String>,
+    command_source: FourViewControlCommandSource,
 ) -> Result<SwitcherFourViewControlledHandoffPreviewLoopSummary, String> {
+    if matches!(
+        &command_source,
+        FourViewControlCommandSource::ControlPipe(control_pipe_name) if control_pipe_name == pipe_name
+    ) {
+        return Err("control pipe name must differ from handoff pipe name".to_string());
+    }
     let handoff = ObservedNamedPipePreviewHandoff::new(SwitcherNamedPipeQueuedFrameHandoff::new(
         pipe_name,
         DEFAULT_ONE_SHOT_REQUEST_ID,
@@ -2917,7 +3041,7 @@ fn run_four_view_controlled_handoff_preview_loop(
             client3_id,
             run3_id,
             max_ticks_per_command,
-            scripted_commands,
+            command_source,
             real_four_view_preview_target_timestamp(),
             handoff,
             &SwitcherFfmpegH264DecodeRuntimeHook::default(),
@@ -2939,7 +3063,7 @@ fn run_four_view_controlled_handoff_preview_loop(
     _client3_id: ClientId,
     _run3_id: RunId,
     _max_ticks_per_command: NonZeroU32,
-    _scripted_commands: Option<String>,
+    _command_source: FourViewControlCommandSource,
 ) -> Result<SwitcherFourViewControlledHandoffPreviewLoopSummary, String> {
     Err("four-view controlled handoff preview loop is only available on Windows".to_string())
 }
@@ -2959,7 +3083,7 @@ fn run_four_view_controlled_handoff_preview_loop_with_handoff_runtime_and_sleep<
     client3_id: ClientId,
     run3_id: RunId,
     max_ticks_per_command: NonZeroU32,
-    scripted_commands: Option<String>,
+    command_source: FourViewControlCommandSource,
     target_timestamp: TimestampMicros,
     real_handoff: RealHandoff,
     decode_runtime: &DecodeRuntime,
@@ -2995,9 +3119,14 @@ where
         real_handoff,
     );
     let obs_runtime = ObsFriendlyFourViewLoopWindowRenderRuntime::new(render_runtime);
-    let command_source = match scripted_commands.as_ref() {
-        Some(script) => format!("scripted:{}", sanitize_summary_value(script)),
-        None => "stdin".to_string(),
+    let command_source_summary = match &command_source {
+        FourViewControlCommandSource::Scripted(script) => {
+            format!("scripted:{}", sanitize_summary_value(script))
+        }
+        FourViewControlCommandSource::ControlPipe(pipe_name) => {
+            format!("control-pipe:{}", sanitize_summary_value(pipe_name))
+        }
+        FourViewControlCommandSource::Stdin => "stdin".to_string(),
     };
     let mut final_view_state = SwitcherFourViewControlledPreviewViewState::AllView;
     let mut commands_processed = 0u32;
@@ -3034,8 +3163,8 @@ where
     let mut exit_reason = "CommandSequenceCompleted".to_string();
     let mut command_summaries = Vec::new();
 
-    match scripted_commands {
-        Some(script) => {
+    match command_source {
+        FourViewControlCommandSource::Scripted(script) => {
             let commands = split_scripted_control_commands(&script);
             for (command_index, raw_command) in commands.iter().enumerate() {
                 let command_outcome = run_four_view_control_command_iteration(
@@ -3076,7 +3205,66 @@ where
                 }
             }
         }
-        None => {
+        FourViewControlCommandSource::ControlPipe(control_pipe_name) => {
+            for command_index in 0usize.. {
+                let round_trip =
+                    match run_control_pipe_command_round_trip(&control_pipe_name, |raw_command| {
+                        let trimmed = raw_command.trim().to_string();
+                        let command_outcome = run_four_view_control_command_iteration(
+                            FourViewControlledCommandIterationInput {
+                                command_index,
+                                raw_command: &trimmed,
+                                current_view_state: &mut final_view_state,
+                                handoff: &mut handoff,
+                                slots: slots.clone(),
+                                target_timestamp,
+                                max_ticks_per_command,
+                                decode_runtime,
+                                obs_runtime: &obs_runtime,
+                                cadence_sleep,
+                            },
+                        );
+                        let response = format_four_view_control_pipe_command_response(
+                            &trimmed,
+                            &command_outcome.summary,
+                        );
+                        (trimmed, command_outcome, response)
+                    }) {
+                        Ok(round_trip) => round_trip,
+                        Err(error) => {
+                            exit_reason = format!(
+                                "ControlPipeRuntimeError:{}",
+                                sanitize_summary_value(&error.to_string())
+                            );
+                            break;
+                        }
+                    };
+                let (_, command_outcome) = round_trip;
+                let command_summary = &command_outcome.summary;
+                commands_processed += 1;
+                if command_summary.transition_result == "Rejected" {
+                    commands_rejected += 1;
+                }
+                if command_summary.exit_reason != "none" {
+                    exit_reason = command_summary.exit_reason.clone();
+                }
+                if let Some(render_outcome) = command_outcome.render_outcome {
+                    frames_rendered_total += render_outcome.frames_rendered;
+                    render_failures_total += render_outcome.render_failures;
+                    scheduler_status = render_outcome.scheduler_status;
+                    slot_result_kinds = render_outcome.slot_result_kinds;
+                    slot_diagnostics = render_outcome.slot_diagnostics;
+                    clean_output_render_result_kind =
+                        render_outcome.clean_output_render_result_kind;
+                    window_title = render_outcome.window_title;
+                }
+                command_summaries.push(command_summary.clone());
+                if command_summary.exit_reason == "QuitRequested" {
+                    break;
+                }
+            }
+        }
+        FourViewControlCommandSource::Stdin => {
             let stdin = io::stdin();
             for (command_index, line) in stdin.lock().lines().enumerate() {
                 let line = match line {
@@ -3150,7 +3338,7 @@ where
         client3_id,
         run3_id,
         max_ticks_per_command: max_ticks_per_command.get(),
-        command_source,
+        command_source: command_source_summary,
         command_summaries,
         final_view_state,
         commands_processed,
@@ -3546,6 +3734,210 @@ fn split_scripted_control_commands(script: &str) -> Vec<String> {
         .filter(|command| !command.is_empty())
         .map(ToString::to_string)
         .collect()
+}
+
+trait FourViewControlPipeClientRuntime {
+    fn send_command(
+        &mut self,
+        pipe_name: &str,
+        command: &str,
+        connect_timeout_millis: u32,
+    ) -> io::Result<String>;
+}
+
+#[cfg(target_os = "windows")]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+struct SwitcherFourViewControlNamedPipeClientRuntime;
+
+#[cfg(target_os = "windows")]
+impl FourViewControlPipeClientRuntime for SwitcherFourViewControlNamedPipeClientRuntime {
+    fn send_command(
+        &mut self,
+        pipe_name: &str,
+        command: &str,
+        connect_timeout_millis: u32,
+    ) -> io::Result<String> {
+        let mut pipe = open_control_named_pipe_client(pipe_name, connect_timeout_millis)?;
+        write_length_prefixed_utf8_message(&mut pipe, command)?;
+        read_length_prefixed_utf8_message(&mut pipe)
+    }
+}
+
+fn run_send_control_command_with_runtime(
+    pipe_name: &str,
+    command: &str,
+    runtime: &mut impl FourViewControlPipeClientRuntime,
+) -> Result<String, String> {
+    if pipe_name.trim().is_empty() {
+        return Err("control pipe name must not be empty".to_string());
+    }
+    runtime
+        .send_command(
+            pipe_name,
+            command,
+            DEFAULT_CONTROL_PIPE_CONNECT_TIMEOUT_MILLIS,
+        )
+        .map_err(|error| error.to_string())
+}
+
+#[cfg(target_os = "windows")]
+fn run_send_control_command(pipe_name: &str, command: &str) -> Result<String, String> {
+    run_send_control_command_with_runtime(
+        pipe_name,
+        command,
+        &mut SwitcherFourViewControlNamedPipeClientRuntime,
+    )
+}
+
+#[cfg(not(target_os = "windows"))]
+fn run_send_control_command(_pipe_name: &str, _command: &str) -> Result<String, String> {
+    Err("send-control-command is only available on Windows".to_string())
+}
+
+#[cfg(target_os = "windows")]
+fn run_control_pipe_command_round_trip<T>(
+    pipe_name: &str,
+    handler: impl FnOnce(String) -> (String, T, String),
+) -> io::Result<(String, T)> {
+    let mut pipe = create_control_named_pipe_server_connection(pipe_name)?;
+    connect_control_named_pipe_server(&pipe)?;
+    let command = read_length_prefixed_utf8_message(&mut pipe)?;
+    let (command_text, output, response) = handler(command);
+    write_length_prefixed_utf8_message(&mut pipe, &response)?;
+    Ok((command_text, output))
+}
+
+#[cfg(not(target_os = "windows"))]
+fn run_control_pipe_command_round_trip<T>(
+    _pipe_name: &str,
+    _handler: impl FnOnce(String) -> (String, T, String),
+) -> io::Result<(String, T)> {
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "control pipe is only available on Windows",
+    ))
+}
+
+#[cfg(target_os = "windows")]
+fn create_control_named_pipe_server_connection(pipe_name: &str) -> io::Result<File> {
+    let pipe_path = control_named_pipe_path(pipe_name)?;
+    let wide_name: Vec<u16> = pipe_path.encode_utf16().chain(Some(0)).collect();
+    let handle = unsafe {
+        CreateNamedPipeW(
+            PCWSTR(wide_name.as_ptr()),
+            PIPE_ACCESS_DUPLEX,
+            PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT,
+            1,
+            16 * 1024,
+            16 * 1024,
+            0,
+            None,
+        )
+    };
+    if handle == INVALID_HANDLE_VALUE {
+        return Err(io::Error::last_os_error());
+    }
+
+    let owned = unsafe { OwnedHandle::from_raw_handle(handle.0 as *mut _) };
+    Ok(File::from(owned))
+}
+
+#[cfg(target_os = "windows")]
+fn connect_control_named_pipe_server(pipe: &File) -> io::Result<()> {
+    let handle = HANDLE(pipe.as_raw_handle() as *mut _);
+    let connected = unsafe { ConnectNamedPipe(handle, None) };
+    if connected.is_ok() {
+        return Ok(());
+    }
+
+    let error = io::Error::last_os_error();
+    if error.raw_os_error() == Some(ERROR_PIPE_CONNECTED.0 as i32) {
+        Ok(())
+    } else {
+        Err(error)
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn open_control_named_pipe_client(pipe_name: &str, timeout_millis: u32) -> io::Result<File> {
+    let pipe_path = control_named_pipe_path(pipe_name)?;
+    let wide_name: Vec<u16> = pipe_path.encode_utf16().chain(Some(0)).collect();
+
+    let waited = unsafe { WaitNamedPipeW(PCWSTR(wide_name.as_ptr()), timeout_millis) };
+    if !waited.as_bool() {
+        return Err(io::Error::last_os_error());
+    }
+
+    let handle = unsafe {
+        CreateFileW(
+            PCWSTR(wide_name.as_ptr()),
+            FILE_GENERIC_READ.0 | FILE_GENERIC_WRITE.0,
+            FILE_SHARE_READ | FILE_SHARE_WRITE,
+            None,
+            OPEN_EXISTING,
+            FILE_ATTRIBUTE_NORMAL,
+            None,
+        )
+    }
+    .map_err(|_| io::Error::last_os_error())?;
+    if handle == INVALID_HANDLE_VALUE {
+        return Err(io::Error::last_os_error());
+    }
+
+    let owned = unsafe { OwnedHandle::from_raw_handle(handle.0 as *mut _) };
+    Ok(File::from(owned))
+}
+
+#[cfg(target_os = "windows")]
+fn write_length_prefixed_utf8_message(writer: &mut impl Write, message: &str) -> io::Result<()> {
+    let body = message.as_bytes();
+    let body_len = u32::try_from(body.len()).map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "control pipe message exceeds u32 length prefix",
+        )
+    })?;
+    writer.write_all(&body_len.to_le_bytes())?;
+    writer.write_all(body)?;
+    writer.flush()
+}
+
+#[cfg(target_os = "windows")]
+fn read_length_prefixed_utf8_message(reader: &mut impl Read) -> io::Result<String> {
+    let mut prefix = [0u8; 4];
+    reader.read_exact(&mut prefix)?;
+    let body_len = u32::from_le_bytes(prefix) as usize;
+    let mut body = vec![0u8; body_len];
+    reader.read_exact(&mut body)?;
+    String::from_utf8(body).map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
+}
+
+#[cfg(target_os = "windows")]
+fn control_named_pipe_path(pipe_name: &str) -> io::Result<String> {
+    if pipe_name.trim().is_empty() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "control pipe name must not be empty",
+        ));
+    }
+
+    Ok(format!(r"\\.\pipe\{pipe_name}"))
+}
+
+fn format_four_view_control_pipe_command_response(
+    command: &str,
+    summary: &SwitcherFourViewControlledPreviewCommandSummary,
+) -> String {
+    format!(
+        "switcher four-view control response command={} transition_result={} current_view_state={} selected_slot_result={} clean_output_render_result_kind={} command_parse_error={} exit_reason={}",
+        sanitize_summary_value(command),
+        summary.transition_result,
+        format_four_view_controlled_preview_view_state(&summary.current_view_state),
+        summary.selected_slot_result,
+        summary.clean_output_render_result_kind,
+        sanitize_summary_value(&summary.command_parse_error),
+        summary.exit_reason,
+    )
 }
 
 fn format_four_view_controlled_preview_view_state(
@@ -4811,6 +5203,7 @@ fn store_fixture_frame(
 #[cfg(test)]
 mod tests {
     use std::cell::RefCell;
+    use std::io;
     use std::num::NonZeroU32;
     use std::time::Duration;
 
@@ -4836,6 +5229,7 @@ mod tests {
     use super::{
         format_four_view_clean_output_window_loop_summary,
         format_four_view_clean_output_window_summary,
+        format_four_view_control_pipe_command_response,
         format_four_view_controlled_handoff_preview_command_summary,
         format_four_view_controlled_handoff_preview_loop_summary,
         format_four_view_focused_handoff_preview_loop_summary,
@@ -4849,9 +5243,11 @@ mod tests {
         four_view_clean_output_window_loop_frame_cadence,
         parse_four_view_actual_window_fixture_mode_or_exit,
         parse_four_view_all_renderable_fixture_mode, parse_four_view_control_command,
+        parse_four_view_control_command_source,
         parse_four_view_manual_preview_fixture_mode_or_exit,
         parse_four_view_real_slot_index_or_exit, parse_handoff_mode_or_exit,
         parse_optional_four_view_control_script, parse_positive_u32_arg,
+        read_length_prefixed_utf8_message,
         run_four_view_clean_output_window_loop_with_runtime_and_sleep,
         run_four_view_clean_output_window_with_runtime,
         run_four_view_controlled_handoff_preview_loop_with_handoff_runtime_and_sleep,
@@ -4860,11 +5256,13 @@ mod tests {
         run_four_view_manual_preview_proof_once, run_four_view_manual_preview_proof_with_runtime,
         run_four_view_real_handoff_preview_loop_with_handoff_runtime_and_sleep,
         run_four_view_two_real_handoff_preview_loop_with_handoff_runtime_and_sleep,
-        validate_distinct_four_view_real_slot_indices, DeterministicFourViewFixtureDecodeRuntime,
+        run_send_control_command_with_runtime, validate_distinct_four_view_real_slot_indices,
+        write_length_prefixed_utf8_message, DeterministicFourViewFixtureDecodeRuntime,
+        FourViewControlCommandSource, FourViewControlPipeClientRuntime,
         PersistentWindowLifecycleSnapshot, SwitcherFourViewControlledPreviewCommand,
-        SwitcherFrameCadenceSleepHook, SwitcherPersistentWindowLoopRuntimeHook,
-        SwitcherQueuedFrameHandoffResult, SwitcherSingleClientQueueSourceMode,
-        FOUR_VIEW_CLEAN_OUTPUT_LOOP_OBS_OUTPUT_HEIGHT,
+        SwitcherFourViewControlledPreviewCommandSummary, SwitcherFrameCadenceSleepHook,
+        SwitcherPersistentWindowLoopRuntimeHook, SwitcherQueuedFrameHandoffResult,
+        SwitcherSingleClientQueueSourceMode, FOUR_VIEW_CLEAN_OUTPUT_LOOP_OBS_OUTPUT_HEIGHT,
         FOUR_VIEW_CLEAN_OUTPUT_LOOP_OBS_OUTPUT_WIDTH, FOUR_VIEW_CLEAN_OUTPUT_LOOP_SCALE_MODE,
     };
     use stream_sync_switcher::SWITCHER_FOUR_VIEW_CLEAN_OUTPUT_WINDOW_TITLE;
@@ -5085,6 +5483,44 @@ mod tests {
                 .expect("missing script should stay optional"),
             None
         );
+    }
+
+    #[test]
+    fn switcher_four_view_control_command_source_parses_scripted_and_control_pipe_modes() {
+        assert_eq!(
+            parse_four_view_control_command_source(vec![
+                "--commands".to_string(),
+                "status;quit".to_string(),
+            ])
+            .expect("scripted source should parse"),
+            FourViewControlCommandSource::Scripted("status;quit".to_string())
+        );
+        assert_eq!(
+            parse_four_view_control_command_source(vec![
+                "--control-pipe".to_string(),
+                "streamsync-control-dev".to_string(),
+            ])
+            .expect("control pipe source should parse"),
+            FourViewControlCommandSource::ControlPipe("streamsync-control-dev".to_string())
+        );
+        assert_eq!(
+            parse_four_view_control_command_source(Vec::new())
+                .expect("empty control args should default to stdin"),
+            FourViewControlCommandSource::Stdin
+        );
+    }
+
+    #[test]
+    fn switcher_four_view_control_command_source_rejects_mixed_optional_modes() {
+        let error = parse_four_view_control_command_source(vec![
+            "--commands".to_string(),
+            "status".to_string(),
+            "--control-pipe".to_string(),
+            "streamsync-control-dev".to_string(),
+        ])
+        .expect_err("mixed control sources should be rejected");
+
+        assert!(error.contains("use either --commands"));
     }
 
     #[test]
@@ -6169,7 +6605,7 @@ mod tests {
             ClientId("real-client-3".to_string()),
             RunId("real-run-3".to_string()),
             NonZeroU32::new(1).expect("1 should be non-zero"),
-            Some("status;focus 1;all;quit".to_string()),
+            FourViewControlCommandSource::Scripted("status;focus 1;all;quit".to_string()),
             TimestampMicros(1_000_004),
             StubRealQueuedFrameHandoff {
                 result: SwitcherQueuedFrameHandoffResult::FrameRead {
@@ -6247,7 +6683,7 @@ mod tests {
             ClientId("real-client-3".to_string()),
             RunId("real-run-3".to_string()),
             NonZeroU32::new(1).expect("1 should be non-zero"),
-            Some("focus 9;quit".to_string()),
+            FourViewControlCommandSource::Scripted("focus 9;quit".to_string()),
             TimestampMicros(1_000_004),
             StubRealQueuedFrameHandoff {
                 result: SwitcherQueuedFrameHandoffResult::FrameRead {
@@ -6307,7 +6743,7 @@ mod tests {
             ClientId("real-client-3".to_string()),
             RunId("real-run-3".to_string()),
             NonZeroU32::new(1).expect("1 should be non-zero"),
-            Some("status;focus 2;quit".to_string()),
+            FourViewControlCommandSource::Scripted("status;focus 2;quit".to_string()),
             TimestampMicros(1_000_004),
             StubRealQueuedFrameHandoff {
                 result: SwitcherQueuedFrameHandoffResult::FrameRead {
@@ -6367,5 +6803,87 @@ mod tests {
             FOUR_VIEW_CLEAN_OUTPUT_LOOP_OBS_OUTPUT_HEIGHT
         )));
         assert!(loop_formatted.contains("exit_reason=QuitRequested"));
+    }
+
+    #[test]
+    fn switcher_four_view_control_pipe_response_formats_required_fields() {
+        let response = format_four_view_control_pipe_command_response(
+            "focus 2",
+            &SwitcherFourViewControlledPreviewCommandSummary {
+                command_index: 1,
+                control_command_name: "focus".to_string(),
+                current_view_state: super::SwitcherFourViewControlledPreviewViewState::Focused(2),
+                requested_transition: "Focused(2)".to_string(),
+                transition_result: "Transitioned".to_string(),
+                selected_slot_result: "Selected".to_string(),
+                frames_rendered: 1,
+                render_failures: 0,
+                scheduler_status:
+                    stream_sync_switcher::SwitcherFourViewTargetTimeHandoffSourceSchedulerStatus::AllSelected,
+                clean_output_render_result_kind: "Rendered".to_string(),
+                command_parse_error: "none".to_string(),
+                exit_reason: "none".to_string(),
+            },
+        );
+
+        assert!(response.contains("command=focus_2"));
+        assert!(response.contains("transition_result=Transitioned"));
+        assert!(response.contains("current_view_state=Focused(2)"));
+        assert!(response.contains("selected_slot_result=Selected"));
+        assert!(response.contains("clean_output_render_result_kind=Rendered"));
+        assert!(response.contains("command_parse_error=none"));
+        assert!(response.contains("exit_reason=none"));
+    }
+
+    struct FakeControlPipeClientRuntime {
+        last_pipe_name: Option<String>,
+        last_command: Option<String>,
+        response: String,
+    }
+
+    impl FourViewControlPipeClientRuntime for FakeControlPipeClientRuntime {
+        fn send_command(
+            &mut self,
+            pipe_name: &str,
+            command: &str,
+            _connect_timeout_millis: u32,
+        ) -> io::Result<String> {
+            self.last_pipe_name = Some(pipe_name.to_string());
+            self.last_command = Some(command.to_string());
+            Ok(self.response.clone())
+        }
+    }
+
+    #[test]
+    fn switcher_send_control_command_uses_client_runtime_and_returns_response() {
+        let mut runtime = FakeControlPipeClientRuntime {
+            last_pipe_name: None,
+            last_command: None,
+            response:
+                "switcher four-view control response command=status transition_result=Observed current_view_state=AllView selected_slot_result=Selected clean_output_render_result_kind=Rendered command_parse_error=none exit_reason=none"
+                    .to_string(),
+        };
+
+        let response =
+            run_send_control_command_with_runtime("streamsync-control-dev", "status", &mut runtime)
+                .expect("send-control-command should succeed");
+
+        assert_eq!(
+            runtime.last_pipe_name.as_deref(),
+            Some("streamsync-control-dev")
+        );
+        assert_eq!(runtime.last_command.as_deref(), Some("status"));
+        assert!(response.contains("command=status"));
+    }
+
+    #[test]
+    fn switcher_control_pipe_length_prefixed_utf8_message_round_trips() {
+        let mut buffer = Vec::new();
+        write_length_prefixed_utf8_message(&mut buffer, "focus 3").expect("message should encode");
+        let mut cursor = std::io::Cursor::new(buffer);
+        let decoded =
+            read_length_prefixed_utf8_message(&mut cursor).expect("message should decode");
+
+        assert_eq!(decoded, "focus 3".to_string());
     }
 }

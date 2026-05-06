@@ -1120,6 +1120,12 @@ Recommended next same-session control shape:
 .\target\debug\stream-sync-switcher.exe --four-view-controlled-handoff-preview-loop streamsync-handoff-dev player1 streamsync-dev-session player2 streamsync-dev-session player3 streamsync-dev-session player4 streamsync-dev-session 5 --commands "status;focus 0;status;focus 1;all;quit"
 ```
 
+- the same loop now also accepts an optional separate local control pipe:
+
+```powershell
+.\target\debug\stream-sync-switcher.exe --four-view-controlled-handoff-preview-loop streamsync-handoff-dev player1 streamsync-dev-session player2 streamsync-dev-session player3 streamsync-dev-session player4 streamsync-dev-session 5 --control-pipe streamsync-control-dev
+```
+
 - control commands:
   - `all`
   - `focus 0`
@@ -1133,6 +1139,28 @@ Recommended next same-session control shape:
 - `--commands "..."` is optional:
   - when present, commands are read from the semicolon-delimited script
   - when absent, commands are read from stdin line-by-line
+- `--control-pipe` is optional:
+  - when present, commands are read one-at-a-time from a separate local named
+    pipe instead of stdin
+  - use a different name from the handoff pipe
+  - keep stdin / `--commands` as the validation baseline and fallback
+- the first manual control sender is:
+
+```powershell
+.\target\debug\stream-sync-switcher.exe --send-control-command streamsync-control-dev "status"
+.\target\debug\stream-sync-switcher.exe --send-control-command streamsync-control-dev "focus 1"
+.\target\debug\stream-sync-switcher.exe --send-control-command streamsync-control-dev "all"
+.\target\debug\stream-sync-switcher.exe --send-control-command streamsync-control-dev "quit"
+```
+
+- minimal control response fields now include:
+  - `command`
+  - `transition_result`
+  - `current_view_state`
+  - `selected_slot_result`
+  - `clean_output_render_result_kind`
+  - `command_parse_error`
+  - `exit_reason`
 - keep the underlying handoff/render path unchanged:
   - guarded `4`-client all-real recipe
   - named-pipe handoff
@@ -1157,6 +1185,8 @@ Recommended next same-session control shape:
 Current implementation note:
 
 - the same-session control loop is implemented
+- the separate local control pipe shape is implemented
+- the first manual sender `--send-control-command` is implemented
 - actual guarded manual pass for this command is now recorded in scripted mode
 - current stdout wording uses:
   - `transition_result=Transitioned` for accepted view-state changes
@@ -2657,6 +2687,12 @@ Preferred MVP wrapper direction:
   channel, likely Windows named-pipe based, while the switcher keeps the
   existing same-session render loop and persistent `StreamSync 4-view Output`
   window identity
+- keep the control pipe separate from the handoff pipe:
+  - handoff example: `streamsync-handoff-dev`
+  - control example: `streamsync-control-dev`
+  - do not reuse the same name for both responsibilities
+- the first minimal sender is now:
+  - `.\target\debug\stream-sync-switcher.exe --send-control-command streamsync-control-dev "focus 1"`
 
 Suggested first operator mapping:
 
