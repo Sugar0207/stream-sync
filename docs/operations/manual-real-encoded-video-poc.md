@@ -1114,6 +1114,12 @@ Current conclusion after operator-flow validation:
 
 Recommended next same-session control shape:
 
+- the first same-session command now exists as:
+
+```powershell
+.\target\debug\stream-sync-switcher.exe --four-view-controlled-handoff-preview-loop streamsync-handoff-dev player1 streamsync-dev-session player2 streamsync-dev-session player3 streamsync-dev-session player4 streamsync-dev-session 5 --commands "status;focus 0;status;focus 1;all;quit"
+```
+
 - control commands:
   - `all`
   - `focus 0`
@@ -1122,6 +1128,11 @@ Recommended next same-session control shape:
   - `focus 3`
   - `status`
   - `quit`
+- `max-ticks-per-command` is the bounded manual/scripted render count per
+  accepted command
+- `--commands "..."` is optional:
+  - when present, commands are read from the semicolon-delimited script
+  - when absent, commands are read from stdin line-by-line
 - keep the underlying handoff/render path unchanged:
   - guarded `4`-client all-real recipe
   - named-pipe handoff
@@ -1134,9 +1145,24 @@ Recommended next same-session control shape:
   - `selected_slot_result`
   - `frames_rendered`
   - `render_failures`
+  - `scheduler_status`
+  - `clean_output_render_result_kind`
+  - `command_index`
+  - `command_parse_error`
+  - `exit_reason`
 - hotkey/UI wrapper remains later:
   - a thin wrapper over separate commands would still pay session/window churn
   - a thin wrapper over a same-session loop is the preferred later shape
+
+Current implementation note:
+
+- the same-session control loop is implemented
+- actual guarded manual pass for this command is not yet recorded
+- next manual target is one persistent session that proves:
+  - `status -> focus 0 -> all -> quit`
+  - `status -> focus 1 -> all -> quit`
+  - `status -> focus 2 -> all -> quit`
+  - `status -> focus 3 -> all -> quit`
 
 ---
 

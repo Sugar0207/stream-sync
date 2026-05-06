@@ -8755,15 +8755,19 @@ Decision after nearby-session operator-flow validation:
   - after `B` exists, `C` can become a much thinner adapter over stable
     in-process state transitions
 
-Recommended next control shape:
+Current first same-session control shape:
 
 - keep the current manual command family as validated fallback:
   - `--four-view-four-real-handoff-preview-loop`
   - `--four-view-focused-handoff-preview-loop`
-- add one same-session long-running control loop dedicated to fixed `4`-view
-  operation
-- start with text commands on stdin or an equivalently small internal command
-  parser:
+- one same-session long-running control loop now exists as:
+  - `--four-view-controlled-handoff-preview-loop [pipe-name] [client0-id] [run0-id] [client1-id] [run1-id] [client2-id] [run2-id] [client3-id] [run3-id] [max-ticks-per-command] [--commands "status;focus 0;all;quit"]`
+- keep it dedicated to fixed `4`-view operation
+- first control source is either:
+  - stdin text commands
+  - optional bounded scripted `--commands` input for manual automation and
+    tests
+- accepted commands are:
   - `all`
   - `focus 0`
   - `focus 1`
@@ -8771,6 +8775,7 @@ Recommended next control shape:
   - `focus 3`
   - `status`
   - `quit`
+- invalid commands and invalid focus indices are rejected explicitly in stdout
 - keep the existing handoff preview/render loop family underneath:
   - same real-slot bindings
   - same named-pipe handoff source
@@ -8783,6 +8788,11 @@ Recommended next control shape:
   - `selected_slot_result`
   - `frames_rendered`
   - `render_failures`
+  - `scheduler_status`
+  - `clean_output_render_result_kind`
+  - `command_index`
+  - `command_parse_error`
+  - `exit_reason`
 
 OBS integration policy remains unchanged:
 
@@ -8817,8 +8827,8 @@ Manual validation plan after the nearby-session operator-flow success:
 
 1. Keep nearby-session `AllView -> Focused(slot_index) -> AllView` as the
    recorded fallback/operator-proof path.
-2. Implement the first same-session control loop with stdin/internal text
-   commands only.
+2. The first same-session control loop is now implemented with stdin plus
+   optional scripted `--commands`.
 3. Validate in one persistent session:
    - `all`
    - `focus 0`

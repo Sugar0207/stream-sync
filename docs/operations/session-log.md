@@ -5,6 +5,58 @@
 - Codex
 
 ### Work
+- Implemented the first same-session fixed `4`-view control loop in
+  `stream-sync-switcher`.
+- Kept the validated all-view and focused commands unchanged while adding one
+  dedicated control-loop command above the existing named-pipe handoff /
+  validation / clean-output path.
+- Added bounded scripted command input for manual automation and tests.
+
+### Changed Files
+- `apps/switcher/src/main.rs`
+- `docs/architecture/system-design.md`
+- `docs/operations/manual-real-encoded-video-poc.md`
+- `docs/operations/session-log.md`
+- `docs/operations/todo.md`
+
+### Command Shape
+- new command:
+  - `--four-view-controlled-handoff-preview-loop [pipe-name] [client0-id] [run0-id] [client1-id] [run1-id] [client2-id] [run2-id] [client3-id] [run3-id] [max-ticks-per-command] [--commands "status;focus 0;all;quit"]`
+- accepted control commands:
+  - `all`
+  - `focus 0`
+  - `focus 1`
+  - `focus 2`
+  - `focus 3`
+  - `status`
+  - `quit`
+
+### Decisions
+- Kept the first same-session slice fixed to `4` real slots.
+- Kept `AllView` and `Focused(slot_index)` render semantics by reusing the
+  existing all-real and focused render paths instead of inventing a new layout.
+- Added optional scripted `--commands` input immediately so bounded manual
+  validation and tests do not depend on interactive stdin.
+- Kept full hotkey/UI wrapper out of scope.
+
+### Validation
+- `cargo fmt`
+- `cargo check -p stream-sync-switcher`
+- focused scripted tests added for:
+  - parser happy path
+  - invalid `focus` rejection
+  - `status -> focus -> all -> quit` loop progression
+  - formatter output for command and loop summaries
+
+### Next
+- Run guarded same-session manual validation with scripted `--commands` against
+  the existing `4`-client baseline.
+
+## 2026-05-07
+### Type
+- Codex
+
+### Work
 - Reviewed the validated nearby-session operator-flow baseline against the next
   MVP operator-control need.
 - Compared three options for the next control layer:

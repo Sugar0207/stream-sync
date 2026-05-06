@@ -1,3 +1,4 @@
+use std::io::{self, BufRead};
 use std::num::NonZeroU32;
 use std::sync::Mutex;
 use std::thread;
@@ -478,6 +479,80 @@ fn main() {
                 }
             }
         }
+        Some("--four-view-controlled-handoff-preview-loop") => {
+            let pipe_name = args.next().unwrap_or_else(|| {
+                eprintln!("missing pipe-name");
+                std::process::exit(1);
+            });
+            let client0_id = ClientId(args.next().unwrap_or_else(|| {
+                eprintln!("missing client0-id");
+                std::process::exit(1);
+            }));
+            let run0_id = RunId(args.next().unwrap_or_else(|| {
+                eprintln!("missing run0-id");
+                std::process::exit(1);
+            }));
+            let client1_id = ClientId(args.next().unwrap_or_else(|| {
+                eprintln!("missing client1-id");
+                std::process::exit(1);
+            }));
+            let run1_id = RunId(args.next().unwrap_or_else(|| {
+                eprintln!("missing run1-id");
+                std::process::exit(1);
+            }));
+            let client2_id = ClientId(args.next().unwrap_or_else(|| {
+                eprintln!("missing client2-id");
+                std::process::exit(1);
+            }));
+            let run2_id = RunId(args.next().unwrap_or_else(|| {
+                eprintln!("missing run2-id");
+                std::process::exit(1);
+            }));
+            let client3_id = ClientId(args.next().unwrap_or_else(|| {
+                eprintln!("missing client3-id");
+                std::process::exit(1);
+            }));
+            let run3_id = RunId(args.next().unwrap_or_else(|| {
+                eprintln!("missing run3-id");
+                std::process::exit(1);
+            }));
+            let max_ticks_per_command =
+                parse_positive_u32_arg_or_exit(args.next(), "max-ticks-per-command");
+            let scripted_commands =
+                parse_optional_four_view_control_script_or_exit(args.collect::<Vec<_>>());
+            match run_four_view_controlled_handoff_preview_loop(
+                &pipe_name,
+                client0_id,
+                run0_id,
+                client1_id,
+                run1_id,
+                client2_id,
+                run2_id,
+                client3_id,
+                run3_id,
+                max_ticks_per_command,
+                scripted_commands,
+            ) {
+                Ok(summary) => {
+                    for command_summary in &summary.command_summaries {
+                        println!(
+                            "{}",
+                            format_four_view_controlled_handoff_preview_command_summary(
+                                command_summary
+                            )
+                        );
+                    }
+                    println!(
+                        "{}",
+                        format_four_view_controlled_handoff_preview_loop_summary(&summary)
+                    );
+                }
+                Err(error) => {
+                    eprintln!("switcher four-view controlled handoff preview loop failed: {error}");
+                    std::process::exit(1);
+                }
+            }
+        }
         Some("--read-queued-frame-handoff-once") => {
             let pipe_name = args.next().unwrap_or_else(|| {
                 eprintln!("missing pipe-name");
@@ -508,7 +583,7 @@ fn main() {
         }
         _ => {
             println!(
-                "stream-sync-switcher scaffold; use --placeholder-fixture-once [client-id], --placeholder-empty-once [client-id], --decode-latest-frame-once [client-id] [output-path], --receive-auth-video-placeholder-bridge-once [config-path] [client-id], --receive-auth-video-decode-latest-once [config-path] [client-id] [output-path], --receive-auth-video-render-decoded-once [config-path] [client-id] [hold-ms], --two-view-sync-fixture-once [left-client-id] [right-client-id] [hold-ms], --render-two-view-composed-fixture-once [hold-ms], --live-two-view-switcher-once [config-path] [left-client-id] [right-client-id], --four-view-proof-fixture-once [all-renderable|mixed-placeholder-source-error|placeholder-only], --four-view-proof-window-once [all-renderable], --four-view-clean-output-window-once [all-renderable], --four-view-clean-output-window-loop [all-renderable] [frames], --four-view-real-handoff-preview-loop [pipe-name] [real-slot-index] [client-id] [run-id] [frames], --four-view-two-real-handoff-preview-loop [pipe-name] [slot0-index] [client0-id] [run0-id] [slot1-index] [client1-id] [run1-id] [frames], --four-view-four-real-handoff-preview-loop [pipe-name] [client0-id] [run0-id] [client1-id] [run1-id] [client2-id] [run2-id] [client3-id] [run3-id] [frames], --four-view-focused-handoff-preview-loop [pipe-name] [focused-slot-index] [client0-id] [run0-id] [client1-id] [run1-id] [client2-id] [run2-id] [client3-id] [run3-id] [frames], or --read-queued-frame-handoff-once [pipe-name] [client-id] [run-id] [read-mode] [request-id]"
+                "stream-sync-switcher scaffold; use --placeholder-fixture-once [client-id], --placeholder-empty-once [client-id], --decode-latest-frame-once [client-id] [output-path], --receive-auth-video-placeholder-bridge-once [config-path] [client-id], --receive-auth-video-decode-latest-once [config-path] [client-id] [output-path], --receive-auth-video-render-decoded-once [config-path] [client-id] [hold-ms], --two-view-sync-fixture-once [left-client-id] [right-client-id] [hold-ms], --render-two-view-composed-fixture-once [hold-ms], --live-two-view-switcher-once [config-path] [left-client-id] [right-client-id], --four-view-proof-fixture-once [all-renderable|mixed-placeholder-source-error|placeholder-only], --four-view-proof-window-once [all-renderable], --four-view-clean-output-window-once [all-renderable], --four-view-clean-output-window-loop [all-renderable] [frames], --four-view-real-handoff-preview-loop [pipe-name] [real-slot-index] [client-id] [run-id] [frames], --four-view-two-real-handoff-preview-loop [pipe-name] [slot0-index] [client0-id] [run0-id] [slot1-index] [client1-id] [run1-id] [frames], --four-view-four-real-handoff-preview-loop [pipe-name] [client0-id] [run0-id] [client1-id] [run1-id] [client2-id] [run2-id] [client3-id] [run3-id] [frames], --four-view-focused-handoff-preview-loop [pipe-name] [focused-slot-index] [client0-id] [run0-id] [client1-id] [run1-id] [client2-id] [run2-id] [client3-id] [run3-id] [frames], --four-view-controlled-handoff-preview-loop [pipe-name] [client0-id] [run0-id] [client1-id] [run1-id] [client2-id] [run2-id] [client3-id] [run3-id] [max-ticks-per-command] [--commands \"status;focus 0;all;quit\"], or --read-queued-frame-handoff-once [pipe-name] [client-id] [run-id] [read-mode] [request-id]"
             );
         }
     }
@@ -859,6 +934,25 @@ fn parse_positive_u32_arg(value: Option<String>, name: &str) -> Result<NonZeroU3
 
 fn parse_positive_u32_arg_or_exit(value: Option<String>, name: &str) -> NonZeroU32 {
     parse_positive_u32_arg(value, name).unwrap_or_else(|error| {
+        eprintln!("{error}");
+        std::process::exit(1);
+    })
+}
+
+fn parse_optional_four_view_control_script(args: Vec<String>) -> Result<Option<String>, String> {
+    if args.is_empty() {
+        return Ok(None);
+    }
+    if args.len() != 2 || args[0] != "--commands" {
+        return Err(
+            "unexpected extra arguments: expected optional --commands \"cmd;cmd;quit\"".to_string(),
+        );
+    }
+    Ok(Some(args[1].clone()))
+}
+
+fn parse_optional_four_view_control_script_or_exit(args: Vec<String>) -> Option<String> {
+    parse_optional_four_view_control_script(args).unwrap_or_else(|error| {
         eprintln!("{error}");
         std::process::exit(1);
     })
@@ -1476,6 +1570,86 @@ struct SwitcherFourViewFocusedHandoffPreviewLoopSummary {
     window_title: String,
     output_width: Option<u32>,
     output_height: Option<u32>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum SwitcherFourViewControlledPreviewViewState {
+    AllView,
+    Focused(usize),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum SwitcherFourViewControlledPreviewCommand {
+    All,
+    Focus(usize),
+    Status,
+    Quit,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct SwitcherFourViewControlledPreviewCommandSummary {
+    command_index: usize,
+    control_command_name: String,
+    current_view_state: SwitcherFourViewControlledPreviewViewState,
+    requested_transition: String,
+    transition_result: String,
+    selected_slot_result: String,
+    frames_rendered: u32,
+    render_failures: u32,
+    scheduler_status: stream_sync_switcher::SwitcherFourViewTargetTimeHandoffSourceSchedulerStatus,
+    clean_output_render_result_kind: String,
+    command_parse_error: String,
+    exit_reason: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct SwitcherFourViewControlledHandoffPreviewLoopSummary {
+    pipe_name: String,
+    client0_id: ClientId,
+    run0_id: RunId,
+    client1_id: ClientId,
+    run1_id: RunId,
+    client2_id: ClientId,
+    run2_id: RunId,
+    client3_id: ClientId,
+    run3_id: RunId,
+    max_ticks_per_command: u32,
+    command_source: String,
+    command_summaries: Vec<SwitcherFourViewControlledPreviewCommandSummary>,
+    final_view_state: SwitcherFourViewControlledPreviewViewState,
+    commands_processed: u32,
+    commands_rejected: u32,
+    frames_rendered: u32,
+    render_failures: u32,
+    scheduler_status: stream_sync_switcher::SwitcherFourViewTargetTimeHandoffSourceSchedulerStatus,
+    slot_bindings: [String; 4],
+    slot_result_kinds: [String; 4],
+    slot_diagnostics: [String; 4],
+    clean_output_render_result_kind: String,
+    window_title: String,
+    output_width: Option<u32>,
+    output_height: Option<u32>,
+    exit_reason: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct FourViewControlledPreviewRenderOutcome {
+    selected_slot_result: String,
+    frames_rendered: u32,
+    render_failures: u32,
+    scheduler_status: stream_sync_switcher::SwitcherFourViewTargetTimeHandoffSourceSchedulerStatus,
+    slot_result_kinds: [String; 4],
+    slot_diagnostics: [String; 4],
+    clean_output_render_result_kind: String,
+    window_title: String,
+    output_width: Option<u32>,
+    output_height: Option<u32>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct FourViewControlledCommandIterationOutcome {
+    summary: SwitcherFourViewControlledPreviewCommandSummary,
+    render_outcome: Option<FourViewControlledPreviewRenderOutcome>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -2712,6 +2886,679 @@ where
     }
 }
 
+#[cfg(windows)]
+fn run_four_view_controlled_handoff_preview_loop(
+    pipe_name: &str,
+    client0_id: ClientId,
+    run0_id: RunId,
+    client1_id: ClientId,
+    run1_id: RunId,
+    client2_id: ClientId,
+    run2_id: RunId,
+    client3_id: ClientId,
+    run3_id: RunId,
+    max_ticks_per_command: NonZeroU32,
+    scripted_commands: Option<String>,
+) -> Result<SwitcherFourViewControlledHandoffPreviewLoopSummary, String> {
+    let handoff = ObservedNamedPipePreviewHandoff::new(SwitcherNamedPipeQueuedFrameHandoff::new(
+        pipe_name,
+        DEFAULT_ONE_SHOT_REQUEST_ID,
+    ));
+    let render_runtime = SwitcherWindowsGdiPersistentWindowRenderRuntime::default();
+    Ok(
+        run_four_view_controlled_handoff_preview_loop_with_handoff_runtime_and_sleep(
+            pipe_name,
+            client0_id,
+            run0_id,
+            client1_id,
+            run1_id,
+            client2_id,
+            run2_id,
+            client3_id,
+            run3_id,
+            max_ticks_per_command,
+            scripted_commands,
+            real_four_view_preview_target_timestamp(),
+            handoff,
+            &SwitcherFfmpegH264DecodeRuntimeHook::default(),
+            &render_runtime,
+            &RealSwitcherFrameCadenceSleepHook,
+        ),
+    )
+}
+
+#[cfg(not(windows))]
+fn run_four_view_controlled_handoff_preview_loop(
+    _pipe_name: &str,
+    _client0_id: ClientId,
+    _run0_id: RunId,
+    _client1_id: ClientId,
+    _run1_id: RunId,
+    _client2_id: ClientId,
+    _run2_id: RunId,
+    _client3_id: ClientId,
+    _run3_id: RunId,
+    _max_ticks_per_command: NonZeroU32,
+    _scripted_commands: Option<String>,
+) -> Result<SwitcherFourViewControlledHandoffPreviewLoopSummary, String> {
+    Err("four-view controlled handoff preview loop is only available on Windows".to_string())
+}
+
+fn run_four_view_controlled_handoff_preview_loop_with_handoff_runtime_and_sleep<
+    RealHandoff,
+    DecodeRuntime,
+    RenderRuntime,
+>(
+    pipe_name: &str,
+    client0_id: ClientId,
+    run0_id: RunId,
+    client1_id: ClientId,
+    run1_id: RunId,
+    client2_id: ClientId,
+    run2_id: RunId,
+    client3_id: ClientId,
+    run3_id: RunId,
+    max_ticks_per_command: NonZeroU32,
+    scripted_commands: Option<String>,
+    target_timestamp: TimestampMicros,
+    real_handoff: RealHandoff,
+    decode_runtime: &DecodeRuntime,
+    render_runtime: &RenderRuntime,
+    cadence_sleep: &impl SwitcherFrameCadenceSleepHook,
+) -> SwitcherFourViewControlledHandoffPreviewLoopSummary
+where
+    RealHandoff: PreviewLoopRealHandoff,
+    DecodeRuntime: SwitcherH264DecodeRuntimeHook,
+    RenderRuntime: SwitcherWindowRenderRuntimeHook + SwitcherPersistentWindowLoopRuntimeHook,
+{
+    let slots = default_four_view_four_real_handoff_preview_slots(
+        client0_id.clone(),
+        run0_id.clone(),
+        client1_id.clone(),
+        run1_id.clone(),
+        client2_id.clone(),
+        run2_id.clone(),
+        client3_id.clone(),
+        run3_id.clone(),
+    );
+    let slot_bindings = slots
+        .clone()
+        .map(|slot| format_four_view_slot_binding(&slot));
+    let mut handoff = MultiRealAndPlaceholderQueuedFrameHandoff::new(
+        slots.clone(),
+        vec![
+            (client0_id.clone(), run0_id.clone()),
+            (client1_id.clone(), run1_id.clone()),
+            (client2_id.clone(), run2_id.clone()),
+            (client3_id.clone(), run3_id.clone()),
+        ],
+        real_handoff,
+    );
+    let obs_runtime = ObsFriendlyFourViewLoopWindowRenderRuntime::new(render_runtime);
+    let command_source = match scripted_commands.as_ref() {
+        Some(script) => format!("scripted:{}", sanitize_summary_value(script)),
+        None => "stdin".to_string(),
+    };
+    let mut final_view_state = SwitcherFourViewControlledPreviewViewState::AllView;
+    let mut commands_processed = 0u32;
+    let mut commands_rejected = 0u32;
+    let mut frames_rendered_total = 0u32;
+    let mut render_failures_total = 0u32;
+    let mut scheduler_status =
+        stream_sync_switcher::SwitcherFourViewTargetTimeHandoffSourceSchedulerStatus::NoFrames;
+    let mut slot_result_kinds = [
+        "NoFrameAvailable".to_string(),
+        "NoFrameAvailable".to_string(),
+        "NoFrameAvailable".to_string(),
+        "NoFrameAvailable".to_string(),
+    ];
+    let mut slot_diagnostics = std::array::from_fn(|slot_index| {
+        format_four_view_preview_slot_diagnostic(&FourViewPreviewSlotDiagnosticSummary {
+            slot_index,
+            client_id: slots[slot_index].client_id.clone(),
+            run_id: slots[slot_index].run_id.clone(),
+            request_id: None,
+            handoff_response_kind: None,
+            parse_error: None,
+            io_error: None,
+            response_payload_len: None,
+            frame_id: None,
+            frame_payload_len: None,
+            decode_error: None,
+            render_input_kind: "Unobserved",
+            final_slot_result_kind: "NoFrameAvailable",
+        })
+    });
+    let mut clean_output_render_result_kind = "NoRenderableQuadView".to_string();
+    let mut window_title = SWITCHER_FOUR_VIEW_CLEAN_OUTPUT_WINDOW_TITLE.to_string();
+    let mut exit_reason = "CommandSequenceCompleted".to_string();
+    let mut command_summaries = Vec::new();
+
+    match scripted_commands {
+        Some(script) => {
+            let commands = split_scripted_control_commands(&script);
+            for (command_index, raw_command) in commands.iter().enumerate() {
+                let command_outcome = run_four_view_control_command_iteration(
+                    FourViewControlledCommandIterationInput {
+                        command_index,
+                        raw_command,
+                        current_view_state: &mut final_view_state,
+                        handoff: &mut handoff,
+                        slots: slots.clone(),
+                        target_timestamp,
+                        max_ticks_per_command,
+                        decode_runtime,
+                        obs_runtime: &obs_runtime,
+                        cadence_sleep,
+                    },
+                );
+                let command_summary = &command_outcome.summary;
+                commands_processed += 1;
+                if command_summary.transition_result == "Rejected" {
+                    commands_rejected += 1;
+                }
+                if command_summary.exit_reason != "none" {
+                    exit_reason = command_summary.exit_reason.clone();
+                }
+                if let Some(render_outcome) = command_outcome.render_outcome {
+                    frames_rendered_total += render_outcome.frames_rendered;
+                    render_failures_total += render_outcome.render_failures;
+                    scheduler_status = render_outcome.scheduler_status;
+                    slot_result_kinds = render_outcome.slot_result_kinds;
+                    slot_diagnostics = render_outcome.slot_diagnostics;
+                    clean_output_render_result_kind =
+                        render_outcome.clean_output_render_result_kind;
+                    window_title = render_outcome.window_title;
+                }
+                command_summaries.push(command_summary.clone());
+                if command_summary.exit_reason == "QuitRequested" {
+                    break;
+                }
+            }
+        }
+        None => {
+            let stdin = io::stdin();
+            for (command_index, line) in stdin.lock().lines().enumerate() {
+                let line = match line {
+                    Ok(line) => line,
+                    Err(error) => {
+                        exit_reason = format!(
+                            "StdinReadError:{}",
+                            sanitize_summary_value(&error.to_string())
+                        );
+                        break;
+                    }
+                };
+                let trimmed = line.trim();
+                if trimmed.is_empty() {
+                    continue;
+                }
+                let command_outcome = run_four_view_control_command_iteration(
+                    FourViewControlledCommandIterationInput {
+                        command_index,
+                        raw_command: trimmed,
+                        current_view_state: &mut final_view_state,
+                        handoff: &mut handoff,
+                        slots: slots.clone(),
+                        target_timestamp,
+                        max_ticks_per_command,
+                        decode_runtime,
+                        obs_runtime: &obs_runtime,
+                        cadence_sleep,
+                    },
+                );
+                let command_summary = &command_outcome.summary;
+                commands_processed += 1;
+                if command_summary.transition_result == "Rejected" {
+                    commands_rejected += 1;
+                }
+                if command_summary.exit_reason != "none" {
+                    exit_reason = command_summary.exit_reason.clone();
+                }
+                if let Some(render_outcome) = command_outcome.render_outcome {
+                    frames_rendered_total += render_outcome.frames_rendered;
+                    render_failures_total += render_outcome.render_failures;
+                    scheduler_status = render_outcome.scheduler_status;
+                    slot_result_kinds = render_outcome.slot_result_kinds;
+                    slot_diagnostics = render_outcome.slot_diagnostics;
+                    clean_output_render_result_kind =
+                        render_outcome.clean_output_render_result_kind;
+                    window_title = render_outcome.window_title;
+                }
+                command_summaries.push(command_summary.clone());
+                if command_summary.exit_reason == "QuitRequested" {
+                    break;
+                }
+            }
+            if exit_reason == "CommandSequenceCompleted" {
+                exit_reason = "EndOfInput".to_string();
+            }
+        }
+    }
+
+    render_runtime.close_persistent_window();
+    let render_metadata = obs_runtime.metadata_snapshot();
+
+    SwitcherFourViewControlledHandoffPreviewLoopSummary {
+        pipe_name: pipe_name.to_string(),
+        client0_id,
+        run0_id,
+        client1_id,
+        run1_id,
+        client2_id,
+        run2_id,
+        client3_id,
+        run3_id,
+        max_ticks_per_command: max_ticks_per_command.get(),
+        command_source,
+        command_summaries,
+        final_view_state,
+        commands_processed,
+        commands_rejected,
+        frames_rendered: frames_rendered_total,
+        render_failures: render_failures_total,
+        scheduler_status,
+        slot_bindings,
+        slot_result_kinds,
+        slot_diagnostics,
+        clean_output_render_result_kind,
+        window_title,
+        output_width: render_metadata.output_width,
+        output_height: render_metadata.output_height,
+        exit_reason,
+    }
+}
+
+struct FourViewControlledCommandIterationInput<'a, RealHandoff, DecodeRuntime, RenderRuntime> {
+    command_index: usize,
+    raw_command: &'a str,
+    current_view_state: &'a mut SwitcherFourViewControlledPreviewViewState,
+    handoff: &'a mut MultiRealAndPlaceholderQueuedFrameHandoff<RealHandoff>,
+    slots: [SwitcherFourViewTargetTimeSourceSlotConfig; 4],
+    target_timestamp: TimestampMicros,
+    max_ticks_per_command: NonZeroU32,
+    decode_runtime: &'a DecodeRuntime,
+    obs_runtime: &'a ObsFriendlyFourViewLoopWindowRenderRuntime<'a, RenderRuntime>,
+    cadence_sleep: &'a dyn SwitcherFrameCadenceSleepHook,
+}
+
+fn run_four_view_control_command_iteration<RealHandoff, DecodeRuntime, RenderRuntime>(
+    input: FourViewControlledCommandIterationInput<'_, RealHandoff, DecodeRuntime, RenderRuntime>,
+) -> FourViewControlledCommandIterationOutcome
+where
+    RealHandoff: PreviewLoopRealHandoff,
+    DecodeRuntime: SwitcherH264DecodeRuntimeHook,
+    RenderRuntime: SwitcherWindowRenderRuntimeHook,
+{
+    let parsed = parse_four_view_control_command(input.raw_command);
+    let command_name: String;
+    let requested_transition: String;
+    let transition_result: String;
+    let mut selected_slot_result = "NotApplicable".to_string();
+    let mut frames_rendered = 0u32;
+    let mut render_failures = 0u32;
+    let mut scheduler_status =
+        stream_sync_switcher::SwitcherFourViewTargetTimeHandoffSourceSchedulerStatus::NoFrames;
+    let mut clean_output_render_result_kind = "none".to_string();
+    let mut command_parse_error = "none".to_string();
+    let mut exit_reason = "none".to_string();
+    let mut render_outcome = None;
+
+    match parsed {
+        Ok(SwitcherFourViewControlledPreviewCommand::All) => {
+            command_name = "all".to_string();
+            requested_transition = "AllView".to_string();
+            transition_result = match &*input.current_view_state {
+                SwitcherFourViewControlledPreviewViewState::AllView => "NoChange".to_string(),
+                _ => "Transitioned".to_string(),
+            };
+            *input.current_view_state = SwitcherFourViewControlledPreviewViewState::AllView;
+            let rendered = render_four_view_controlled_state_for_ticks(
+                input.current_view_state,
+                input.handoff,
+                input.slots,
+                input.target_timestamp,
+                input.max_ticks_per_command,
+                input.decode_runtime,
+                input.obs_runtime,
+                input.cadence_sleep,
+            );
+            selected_slot_result = rendered.selected_slot_result.clone();
+            frames_rendered = rendered.frames_rendered;
+            render_failures = rendered.render_failures;
+            scheduler_status = rendered.scheduler_status;
+            clean_output_render_result_kind = rendered.clean_output_render_result_kind.clone();
+            render_outcome = Some(rendered);
+        }
+        Ok(SwitcherFourViewControlledPreviewCommand::Focus(slot_index)) => {
+            command_name = "focus".to_string();
+            requested_transition = format!("Focused({slot_index})");
+            transition_result = match &*input.current_view_state {
+                SwitcherFourViewControlledPreviewViewState::Focused(current)
+                    if *current == slot_index =>
+                {
+                    "NoChange".to_string()
+                }
+                _ => "Transitioned".to_string(),
+            };
+            *input.current_view_state =
+                SwitcherFourViewControlledPreviewViewState::Focused(slot_index);
+            let rendered = render_four_view_controlled_state_for_ticks(
+                input.current_view_state,
+                input.handoff,
+                input.slots,
+                input.target_timestamp,
+                input.max_ticks_per_command,
+                input.decode_runtime,
+                input.obs_runtime,
+                input.cadence_sleep,
+            );
+            selected_slot_result = rendered.selected_slot_result.clone();
+            frames_rendered = rendered.frames_rendered;
+            render_failures = rendered.render_failures;
+            scheduler_status = rendered.scheduler_status;
+            clean_output_render_result_kind = rendered.clean_output_render_result_kind.clone();
+            render_outcome = Some(rendered);
+        }
+        Ok(SwitcherFourViewControlledPreviewCommand::Status) => {
+            command_name = "status".to_string();
+            requested_transition = "Status".to_string();
+            transition_result = "Observed".to_string();
+            let rendered = render_four_view_controlled_state_for_ticks(
+                input.current_view_state,
+                input.handoff,
+                input.slots,
+                input.target_timestamp,
+                input.max_ticks_per_command,
+                input.decode_runtime,
+                input.obs_runtime,
+                input.cadence_sleep,
+            );
+            selected_slot_result = rendered.selected_slot_result.clone();
+            frames_rendered = rendered.frames_rendered;
+            render_failures = rendered.render_failures;
+            scheduler_status = rendered.scheduler_status;
+            clean_output_render_result_kind = rendered.clean_output_render_result_kind.clone();
+            render_outcome = Some(rendered);
+        }
+        Ok(SwitcherFourViewControlledPreviewCommand::Quit) => {
+            command_name = "quit".to_string();
+            requested_transition = "Quit".to_string();
+            transition_result = "ExitRequested".to_string();
+            exit_reason = "QuitRequested".to_string();
+        }
+        Err(error) => {
+            command_name = error.command_name;
+            requested_transition = error.requested_transition;
+            transition_result = "Rejected".to_string();
+            command_parse_error = error.message;
+        }
+    }
+
+    FourViewControlledCommandIterationOutcome {
+        summary: SwitcherFourViewControlledPreviewCommandSummary {
+            command_index: input.command_index,
+            control_command_name: command_name,
+            current_view_state: (*input.current_view_state).clone(),
+            requested_transition,
+            transition_result,
+            selected_slot_result,
+            frames_rendered,
+            render_failures,
+            scheduler_status,
+            clean_output_render_result_kind,
+            command_parse_error,
+            exit_reason,
+        },
+        render_outcome,
+    }
+}
+
+fn render_four_view_controlled_state_for_ticks<RealHandoff, DecodeRuntime, RenderRuntime>(
+    current_view_state: &SwitcherFourViewControlledPreviewViewState,
+    handoff: &mut MultiRealAndPlaceholderQueuedFrameHandoff<RealHandoff>,
+    slots: [SwitcherFourViewTargetTimeSourceSlotConfig; 4],
+    target_timestamp: TimestampMicros,
+    ticks: NonZeroU32,
+    decode_runtime: &DecodeRuntime,
+    obs_runtime: &ObsFriendlyFourViewLoopWindowRenderRuntime<'_, RenderRuntime>,
+    cadence_sleep: &dyn SwitcherFrameCadenceSleepHook,
+) -> FourViewControlledPreviewRenderOutcome
+where
+    RealHandoff: PreviewLoopRealHandoff,
+    DecodeRuntime: SwitcherH264DecodeRuntimeHook,
+    RenderRuntime: SwitcherWindowRenderRuntimeHook,
+{
+    let mut frames_rendered = 0u32;
+    let mut render_failures = 0u32;
+    let mut scheduler_status =
+        stream_sync_switcher::SwitcherFourViewTargetTimeHandoffSourceSchedulerStatus::NoFrames;
+    let mut slot_result_kinds = [
+        "NoFrameAvailable".to_string(),
+        "NoFrameAvailable".to_string(),
+        "NoFrameAvailable".to_string(),
+        "NoFrameAvailable".to_string(),
+    ];
+    let mut slot_diagnostics = std::array::from_fn(|slot_index| {
+        format_four_view_preview_slot_diagnostic(&FourViewPreviewSlotDiagnosticSummary {
+            slot_index,
+            client_id: slots[slot_index].client_id.clone(),
+            run_id: slots[slot_index].run_id.clone(),
+            request_id: None,
+            handoff_response_kind: None,
+            parse_error: None,
+            io_error: None,
+            response_payload_len: None,
+            frame_id: None,
+            frame_payload_len: None,
+            decode_error: None,
+            render_input_kind: "Unobserved",
+            final_slot_result_kind: "NoFrameAvailable",
+        })
+    });
+    let mut clean_output_render_result_kind = match current_view_state {
+        SwitcherFourViewControlledPreviewViewState::AllView => "NoRenderableQuadView".to_string(),
+        SwitcherFourViewControlledPreviewViewState::Focused(_) => {
+            "NoRenderableFocusedView".to_string()
+        }
+    };
+    let mut window_title = SWITCHER_FOUR_VIEW_CLEAN_OUTPUT_WINDOW_TITLE.to_string();
+
+    for frame_index in 0..ticks.get() {
+        handoff.begin_frame();
+        let validation = run_four_view_real_handoff_preview_validation_with_runtime_and_handoff(
+            handoff,
+            slots.clone(),
+            target_timestamp,
+            decode_runtime,
+        );
+
+        scheduler_status = validation.scheduler.status;
+        slot_result_kinds = validation.scheduler.slots.clone().map(|slot| {
+            format_four_view_real_handoff_scheduler_slot_kind(&slot.result).to_string()
+        });
+        slot_diagnostics = handoff.take_last_frame_slot_diagnostics(&validation);
+
+        match current_view_state {
+            SwitcherFourViewControlledPreviewViewState::AllView => {
+                let clean_output = SwitcherFourViewCleanOutputWindowBoundary::default()
+                    .render_with_runtime(
+                        SwitcherFourViewCleanOutputWindowInput {
+                            render_facing_output: validation.render_facing.clone(),
+                        },
+                        obs_runtime,
+                    );
+                clean_output_render_result_kind =
+                    format_four_view_clean_output_window_result_kind(&clean_output.output_window)
+                        .to_string();
+                window_title = clean_output.window_identity.title.clone();
+                if let SwitcherFourViewCleanOutputWindowRenderResult::RenderReady {
+                    render, ..
+                } = &clean_output.output_window
+                {
+                    match render {
+                        SwitcherFourViewComposedCanvasRenderResult::Rendered { .. } => {
+                            frames_rendered += 1;
+                        }
+                        SwitcherFourViewComposedCanvasRenderResult::RenderFailed { .. } => {
+                            render_failures += 1;
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            SwitcherFourViewControlledPreviewViewState::Focused(focused_slot_index) => {
+                clean_output_render_result_kind = render_four_view_focused_slot_with_runtime(
+                    &validation.composition_render.composition.slots[*focused_slot_index],
+                    obs_runtime,
+                    &window_title,
+                )
+                .to_string();
+                match clean_output_render_result_kind.as_str() {
+                    "Rendered" => frames_rendered += 1,
+                    "RenderFailed" | "InvalidFrame" => render_failures += 1,
+                    _ => {}
+                }
+            }
+        }
+
+        if frame_index + 1 < ticks.get() {
+            cadence_sleep.sleep(four_view_clean_output_window_loop_frame_cadence());
+        }
+    }
+
+    let selected_slot_result = match current_view_state {
+        SwitcherFourViewControlledPreviewViewState::AllView => "NotApplicable".to_string(),
+        SwitcherFourViewControlledPreviewViewState::Focused(slot_index) => {
+            slot_result_kinds[*slot_index].clone()
+        }
+    };
+    let render_metadata = obs_runtime.metadata_snapshot();
+
+    FourViewControlledPreviewRenderOutcome {
+        selected_slot_result,
+        frames_rendered,
+        render_failures,
+        scheduler_status,
+        slot_result_kinds,
+        slot_diagnostics,
+        clean_output_render_result_kind,
+        window_title,
+        output_width: render_metadata.output_width,
+        output_height: render_metadata.output_height,
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct FourViewControlCommandParseError {
+    command_name: String,
+    requested_transition: String,
+    message: String,
+}
+
+fn parse_four_view_control_command(
+    raw: &str,
+) -> Result<SwitcherFourViewControlledPreviewCommand, FourViewControlCommandParseError> {
+    let trimmed = raw.trim();
+    let mut tokens = trimmed.split_whitespace();
+    let Some(command_name) = tokens.next() else {
+        return Err(FourViewControlCommandParseError {
+            command_name: "empty".to_string(),
+            requested_transition: "none".to_string(),
+            message: "empty command".to_string(),
+        });
+    };
+    match command_name {
+        "all" => {
+            if tokens.next().is_some() {
+                return Err(FourViewControlCommandParseError {
+                    command_name: "all".to_string(),
+                    requested_transition: "AllView".to_string(),
+                    message: "all does not accept arguments".to_string(),
+                });
+            }
+            Ok(SwitcherFourViewControlledPreviewCommand::All)
+        }
+        "status" => {
+            if tokens.next().is_some() {
+                return Err(FourViewControlCommandParseError {
+                    command_name: "status".to_string(),
+                    requested_transition: "Status".to_string(),
+                    message: "status does not accept arguments".to_string(),
+                });
+            }
+            Ok(SwitcherFourViewControlledPreviewCommand::Status)
+        }
+        "quit" => {
+            if tokens.next().is_some() {
+                return Err(FourViewControlCommandParseError {
+                    command_name: "quit".to_string(),
+                    requested_transition: "Quit".to_string(),
+                    message: "quit does not accept arguments".to_string(),
+                });
+            }
+            Ok(SwitcherFourViewControlledPreviewCommand::Quit)
+        }
+        "focus" => {
+            let Some(slot_index_raw) = tokens.next() else {
+                return Err(FourViewControlCommandParseError {
+                    command_name: "focus".to_string(),
+                    requested_transition: "Focused(?)".to_string(),
+                    message: "missing focus index".to_string(),
+                });
+            };
+            if tokens.next().is_some() {
+                return Err(FourViewControlCommandParseError {
+                    command_name: "focus".to_string(),
+                    requested_transition: format!("Focused({slot_index_raw})"),
+                    message: "focus accepts exactly one slot index".to_string(),
+                });
+            }
+            let slot_index =
+                slot_index_raw
+                    .parse::<usize>()
+                    .map_err(|_| FourViewControlCommandParseError {
+                        command_name: "focus".to_string(),
+                        requested_transition: format!("Focused({slot_index_raw})"),
+                        message: "invalid focus index: expected integer 0..3".to_string(),
+                    })?;
+            if slot_index > 3 {
+                return Err(FourViewControlCommandParseError {
+                    command_name: "focus".to_string(),
+                    requested_transition: format!("Focused({slot_index_raw})"),
+                    message: "invalid focus index: expected integer 0..3".to_string(),
+                });
+            }
+            Ok(SwitcherFourViewControlledPreviewCommand::Focus(slot_index))
+        }
+        _ => Err(FourViewControlCommandParseError {
+            command_name: sanitize_summary_value(command_name),
+            requested_transition: sanitize_summary_value(trimmed),
+            message: "unknown command".to_string(),
+        }),
+    }
+}
+
+fn split_scripted_control_commands(script: &str) -> Vec<String> {
+    script
+        .split(';')
+        .map(str::trim)
+        .filter(|command| !command.is_empty())
+        .map(ToString::to_string)
+        .collect()
+}
+
+fn format_four_view_controlled_preview_view_state(
+    view_state: &SwitcherFourViewControlledPreviewViewState,
+) -> String {
+    match view_state {
+        SwitcherFourViewControlledPreviewViewState::AllView => "AllView".to_string(),
+        SwitcherFourViewControlledPreviewViewState::Focused(slot_index) => {
+            format!("Focused({slot_index})")
+        }
+    }
+}
+
 fn four_view_clean_output_window_loop_frame_cadence() -> Duration {
     Duration::from_secs_f64(1.0 / 30.0)
 }
@@ -3335,6 +4182,59 @@ fn format_four_view_focused_handoff_preview_loop_summary(
     )
 }
 
+fn format_four_view_controlled_handoff_preview_command_summary(
+    summary: &SwitcherFourViewControlledPreviewCommandSummary,
+) -> String {
+    format!(
+        "switcher four-view controlled handoff preview command command_name=--four-view-controlled-handoff-preview-loop command_index={} control_command_name={} current_view_state={} requested_transition={} transition_result={} selected_slot_result={} frames_rendered={} render_failures={} scheduler_status={:?} clean_output_render_result_kind={} command_parse_error={} exit_reason={}",
+        summary.command_index,
+        summary.control_command_name,
+        format_four_view_controlled_preview_view_state(&summary.current_view_state),
+        summary.requested_transition,
+        summary.transition_result,
+        summary.selected_slot_result,
+        summary.frames_rendered,
+        summary.render_failures,
+        summary.scheduler_status,
+        summary.clean_output_render_result_kind,
+        sanitize_summary_value(&summary.command_parse_error),
+        summary.exit_reason,
+    )
+}
+
+fn format_four_view_controlled_handoff_preview_loop_summary(
+    summary: &SwitcherFourViewControlledHandoffPreviewLoopSummary,
+) -> String {
+    format!(
+        "switcher four-view controlled handoff preview loop command_name=--four-view-controlled-handoff-preview-loop real_handoff=true real_slot_count=4 pipe_name={} client0_id={} run0_id={} client1_id={} run1_id={} client2_id={} run2_id={} client3_id={} run3_id={} command_source={} max_ticks_per_command={} commands_processed={} commands_rejected={} current_view_state={} frames_rendered={} render_failures={} scheduler_status={:?} slot_bindings={} slot_result_kinds={} slot_diagnostics={} clean_output_render_result_kind={} window_title={} output_width={} output_height={} exit_reason={}",
+        summary.pipe_name,
+        summary.client0_id.0,
+        summary.run0_id.0,
+        summary.client1_id.0,
+        summary.run1_id.0,
+        summary.client2_id.0,
+        summary.run2_id.0,
+        summary.client3_id.0,
+        summary.run3_id.0,
+        summary.command_source,
+        summary.max_ticks_per_command,
+        summary.commands_processed,
+        summary.commands_rejected,
+        format_four_view_controlled_preview_view_state(&summary.final_view_state),
+        summary.frames_rendered,
+        summary.render_failures,
+        summary.scheduler_status,
+        summary.slot_bindings.join("|"),
+        summary.slot_result_kinds.join("|"),
+        summary.slot_diagnostics.join("|"),
+        summary.clean_output_render_result_kind,
+        summary.window_title,
+        format_optional_u32(summary.output_width),
+        format_optional_u32(summary.output_height),
+        summary.exit_reason,
+    )
+}
+
 fn build_four_view_preview_slot_diagnostic(
     slot_index: usize,
     slot: &SwitcherFourViewTargetTimeSourceSlotConfig,
@@ -3936,6 +4836,8 @@ mod tests {
     use super::{
         format_four_view_clean_output_window_loop_summary,
         format_four_view_clean_output_window_summary,
+        format_four_view_controlled_handoff_preview_command_summary,
+        format_four_view_controlled_handoff_preview_loop_summary,
         format_four_view_focused_handoff_preview_loop_summary,
         format_four_view_four_real_handoff_preview_loop_summary,
         format_four_view_manual_preview_proof_summary,
@@ -3946,20 +4848,23 @@ mod tests {
         format_named_pipe_handoff_switcher_summary,
         four_view_clean_output_window_loop_frame_cadence,
         parse_four_view_actual_window_fixture_mode_or_exit,
-        parse_four_view_all_renderable_fixture_mode,
+        parse_four_view_all_renderable_fixture_mode, parse_four_view_control_command,
         parse_four_view_manual_preview_fixture_mode_or_exit,
         parse_four_view_real_slot_index_or_exit, parse_handoff_mode_or_exit,
-        parse_positive_u32_arg, run_four_view_clean_output_window_loop_with_runtime_and_sleep,
+        parse_optional_four_view_control_script, parse_positive_u32_arg,
+        run_four_view_clean_output_window_loop_with_runtime_and_sleep,
         run_four_view_clean_output_window_with_runtime,
+        run_four_view_controlled_handoff_preview_loop_with_handoff_runtime_and_sleep,
         run_four_view_focused_handoff_preview_loop_with_handoff_runtime_and_sleep,
         run_four_view_four_real_handoff_preview_loop_with_handoff_runtime_and_sleep,
         run_four_view_manual_preview_proof_once, run_four_view_manual_preview_proof_with_runtime,
         run_four_view_real_handoff_preview_loop_with_handoff_runtime_and_sleep,
         run_four_view_two_real_handoff_preview_loop_with_handoff_runtime_and_sleep,
         validate_distinct_four_view_real_slot_indices, DeterministicFourViewFixtureDecodeRuntime,
-        PersistentWindowLifecycleSnapshot, SwitcherFrameCadenceSleepHook,
-        SwitcherPersistentWindowLoopRuntimeHook, SwitcherQueuedFrameHandoffResult,
-        SwitcherSingleClientQueueSourceMode, FOUR_VIEW_CLEAN_OUTPUT_LOOP_OBS_OUTPUT_HEIGHT,
+        PersistentWindowLifecycleSnapshot, SwitcherFourViewControlledPreviewCommand,
+        SwitcherFrameCadenceSleepHook, SwitcherPersistentWindowLoopRuntimeHook,
+        SwitcherQueuedFrameHandoffResult, SwitcherSingleClientQueueSourceMode,
+        FOUR_VIEW_CLEAN_OUTPUT_LOOP_OBS_OUTPUT_HEIGHT,
         FOUR_VIEW_CLEAN_OUTPUT_LOOP_OBS_OUTPUT_WIDTH, FOUR_VIEW_CLEAN_OUTPUT_LOOP_SCALE_MODE,
     };
     use stream_sync_switcher::SWITCHER_FOUR_VIEW_CLEAN_OUTPUT_WINDOW_TITLE;
@@ -4163,6 +5068,53 @@ mod tests {
             error,
             "invalid slot indices: slot0-index and slot1-index must be distinct"
         );
+    }
+
+    #[test]
+    fn switcher_four_view_control_script_parses_optional_commands_flag() {
+        assert_eq!(
+            parse_optional_four_view_control_script(vec![
+                "--commands".to_string(),
+                "status;focus 0;quit".to_string()
+            ])
+            .expect("script flag should parse"),
+            Some("status;focus 0;quit".to_string())
+        );
+        assert_eq!(
+            parse_optional_four_view_control_script(Vec::new())
+                .expect("missing script should stay optional"),
+            None
+        );
+    }
+
+    #[test]
+    fn switcher_four_view_control_command_parser_accepts_expected_commands() {
+        assert_eq!(
+            parse_four_view_control_command("all").expect("all should parse"),
+            SwitcherFourViewControlledPreviewCommand::All
+        );
+        assert_eq!(
+            parse_four_view_control_command("status").expect("status should parse"),
+            SwitcherFourViewControlledPreviewCommand::Status
+        );
+        assert_eq!(
+            parse_four_view_control_command("focus 3").expect("focus 3 should parse"),
+            SwitcherFourViewControlledPreviewCommand::Focus(3)
+        );
+        assert_eq!(
+            parse_four_view_control_command("quit").expect("quit should parse"),
+            SwitcherFourViewControlledPreviewCommand::Quit
+        );
+    }
+
+    #[test]
+    fn switcher_four_view_control_command_parser_rejects_invalid_focus_index() {
+        let error =
+            parse_four_view_control_command("focus 7").expect_err("focus 7 should be rejected");
+
+        assert_eq!(error.command_name, "focus");
+        assert_eq!(error.requested_transition, "Focused(7)");
+        assert_eq!(error.message, "invalid focus index: expected integer 0..3");
     }
 
     #[test]
@@ -5201,5 +6153,219 @@ mod tests {
             "output_height={}",
             FOUR_VIEW_CLEAN_OUTPUT_LOOP_OBS_OUTPUT_HEIGHT
         )));
+    }
+
+    #[test]
+    fn switcher_four_view_controlled_handoff_preview_loop_runs_scripted_all_focus_all_quit() {
+        let render_runtime = PersistentFixtureRenderedWindowRuntime::default();
+        let summary = run_four_view_controlled_handoff_preview_loop_with_handoff_runtime_and_sleep(
+            "fixture-pipe",
+            ClientId("real-client-0".to_string()),
+            RunId("real-run-0".to_string()),
+            ClientId("real-client-1".to_string()),
+            RunId("real-run-1".to_string()),
+            ClientId("real-client-2".to_string()),
+            RunId("real-run-2".to_string()),
+            ClientId("real-client-3".to_string()),
+            RunId("real-run-3".to_string()),
+            NonZeroU32::new(1).expect("1 should be non-zero"),
+            Some("status;focus 1;all;quit".to_string()),
+            TimestampMicros(1_000_004),
+            StubRealQueuedFrameHandoff {
+                result: SwitcherQueuedFrameHandoffResult::FrameRead {
+                    frame: SwitcherSingleViewSelectedEncodedFrame {
+                        client_id: ClientId("real-client-0".to_string()),
+                        run_id: RunId("real-run-0".to_string()),
+                        frame_id: 1,
+                        capture_timestamp: TimestampMicros(1_000_001),
+                        send_timestamp: TimestampMicros(1_000_101),
+                        queued_at: TimestampMicros(2_400_001),
+                        is_keyframe: true,
+                        width: 2,
+                        height: 1,
+                        fps_nominal: 30,
+                        codec: Codec::H264,
+                        encoded_payload_len: 1,
+                        encoded_payload: vec![0xaa],
+                    },
+                    mode: SwitcherSingleClientQueueSourceMode::PreviewLatest,
+                    remaining_client_queue_len: 0,
+                },
+                calls: RefCell::new(0),
+            },
+            &DeterministicFourViewFixtureDecodeRuntime,
+            &render_runtime,
+            &RecordingCadenceSleepHook::default(),
+        );
+
+        assert_eq!(summary.commands_processed, 4);
+        assert_eq!(summary.commands_rejected, 0);
+        assert_eq!(summary.frames_rendered, 3);
+        assert_eq!(summary.render_failures, 0);
+        assert_eq!(summary.exit_reason, "QuitRequested");
+        assert_eq!(
+            summary.clean_output_render_result_kind,
+            "Rendered".to_string()
+        );
+        assert_eq!(summary.command_summaries.len(), 4);
+        assert_eq!(
+            summary.command_summaries[0].current_view_state,
+            super::SwitcherFourViewControlledPreviewViewState::AllView
+        );
+        assert_eq!(
+            summary.command_summaries[1].current_view_state,
+            super::SwitcherFourViewControlledPreviewViewState::Focused(1)
+        );
+        assert_eq!(
+            summary.command_summaries[1].selected_slot_result,
+            "Selected".to_string()
+        );
+        assert_eq!(
+            summary.final_view_state,
+            super::SwitcherFourViewControlledPreviewViewState::AllView
+        );
+        assert_eq!(
+            summary.output_width,
+            Some(FOUR_VIEW_CLEAN_OUTPUT_LOOP_OBS_OUTPUT_WIDTH)
+        );
+        assert_eq!(
+            summary.output_height,
+            Some(FOUR_VIEW_CLEAN_OUTPUT_LOOP_OBS_OUTPUT_HEIGHT)
+        );
+    }
+
+    #[test]
+    fn switcher_four_view_controlled_handoff_preview_loop_keeps_invalid_focus_rejected() {
+        let summary = run_four_view_controlled_handoff_preview_loop_with_handoff_runtime_and_sleep(
+            "fixture-pipe",
+            ClientId("real-client-0".to_string()),
+            RunId("real-run-0".to_string()),
+            ClientId("real-client-1".to_string()),
+            RunId("real-run-1".to_string()),
+            ClientId("real-client-2".to_string()),
+            RunId("real-run-2".to_string()),
+            ClientId("real-client-3".to_string()),
+            RunId("real-run-3".to_string()),
+            NonZeroU32::new(1).expect("1 should be non-zero"),
+            Some("focus 9;quit".to_string()),
+            TimestampMicros(1_000_004),
+            StubRealQueuedFrameHandoff {
+                result: SwitcherQueuedFrameHandoffResult::FrameRead {
+                    frame: SwitcherSingleViewSelectedEncodedFrame {
+                        client_id: ClientId("real-client-0".to_string()),
+                        run_id: RunId("real-run-0".to_string()),
+                        frame_id: 1,
+                        capture_timestamp: TimestampMicros(1_000_001),
+                        send_timestamp: TimestampMicros(1_000_101),
+                        queued_at: TimestampMicros(2_400_001),
+                        is_keyframe: true,
+                        width: 2,
+                        height: 1,
+                        fps_nominal: 30,
+                        codec: Codec::H264,
+                        encoded_payload_len: 1,
+                        encoded_payload: vec![0xbb],
+                    },
+                    mode: SwitcherSingleClientQueueSourceMode::PreviewLatest,
+                    remaining_client_queue_len: 0,
+                },
+                calls: RefCell::new(0),
+            },
+            &DeterministicFourViewFixtureDecodeRuntime,
+            &PersistentFixtureRenderedWindowRuntime::default(),
+            &RecordingCadenceSleepHook::default(),
+        );
+
+        assert_eq!(summary.commands_processed, 2);
+        assert_eq!(summary.commands_rejected, 1);
+        assert_eq!(summary.frames_rendered, 0);
+        assert_eq!(
+            summary.command_summaries[0].transition_result,
+            "Rejected".to_string()
+        );
+        assert_eq!(
+            summary.command_summaries[0].command_parse_error,
+            "invalid focus index: expected integer 0..3".to_string()
+        );
+        assert_eq!(
+            summary.command_summaries[1].exit_reason,
+            "QuitRequested".to_string()
+        );
+    }
+
+    #[test]
+    fn switcher_four_view_controlled_handoff_preview_summary_formats_expected_fields() {
+        let render_runtime = PersistentFixtureRenderFailedWindowRuntime::default();
+        let summary = run_four_view_controlled_handoff_preview_loop_with_handoff_runtime_and_sleep(
+            "fixture-pipe",
+            ClientId("real-client-0".to_string()),
+            RunId("real-run-0".to_string()),
+            ClientId("real-client-1".to_string()),
+            RunId("real-run-1".to_string()),
+            ClientId("real-client-2".to_string()),
+            RunId("real-run-2".to_string()),
+            ClientId("real-client-3".to_string()),
+            RunId("real-run-3".to_string()),
+            NonZeroU32::new(1).expect("1 should be non-zero"),
+            Some("status;focus 2;quit".to_string()),
+            TimestampMicros(1_000_004),
+            StubRealQueuedFrameHandoff {
+                result: SwitcherQueuedFrameHandoffResult::FrameRead {
+                    frame: SwitcherSingleViewSelectedEncodedFrame {
+                        client_id: ClientId("real-client-0".to_string()),
+                        run_id: RunId("real-run-0".to_string()),
+                        frame_id: 1,
+                        capture_timestamp: TimestampMicros(1_000_001),
+                        send_timestamp: TimestampMicros(1_000_101),
+                        queued_at: TimestampMicros(2_400_001),
+                        is_keyframe: true,
+                        width: 2,
+                        height: 1,
+                        fps_nominal: 30,
+                        codec: Codec::H264,
+                        encoded_payload_len: 1,
+                        encoded_payload: vec![0xcc],
+                    },
+                    mode: SwitcherSingleClientQueueSourceMode::PreviewLatest,
+                    remaining_client_queue_len: 0,
+                },
+                calls: RefCell::new(0),
+            },
+            &DeterministicFourViewFixtureDecodeRuntime,
+            &render_runtime,
+            &RecordingCadenceSleepHook::default(),
+        );
+        let command_formatted = format_four_view_controlled_handoff_preview_command_summary(
+            &summary.command_summaries[0],
+        );
+        let loop_formatted = format_four_view_controlled_handoff_preview_loop_summary(&summary);
+
+        assert!(
+            command_formatted.contains("command_name=--four-view-controlled-handoff-preview-loop")
+        );
+        assert!(command_formatted.contains("control_command_name=status"));
+        assert!(command_formatted.contains("current_view_state=AllView"));
+        assert!(command_formatted.contains("requested_transition=Status"));
+        assert!(command_formatted.contains("transition_result=Observed"));
+        assert!(command_formatted.contains("command_parse_error=none"));
+        assert!(loop_formatted.contains("command_name=--four-view-controlled-handoff-preview-loop"));
+        assert!(loop_formatted.contains("real_slot_count=4"));
+        assert!(loop_formatted.contains("command_source=scripted:status;focus_2;quit"));
+        assert!(loop_formatted.contains("max_ticks_per_command=1"));
+        assert!(loop_formatted.contains("commands_processed=3"));
+        assert!(loop_formatted.contains("commands_rejected=0"));
+        assert!(loop_formatted.contains("current_view_state=Focused(2)"));
+        assert!(loop_formatted.contains("render_failures=2"));
+        assert!(loop_formatted.contains("clean_output_render_result_kind=RenderFailed"));
+        assert!(loop_formatted.contains("window_title=StreamSync 4-view Output"));
+        assert!(loop_formatted.contains(&format!(
+            "output_width={}",
+            FOUR_VIEW_CLEAN_OUTPUT_LOOP_OBS_OUTPUT_WIDTH
+        )));
+        assert!(loop_formatted.contains(&format!(
+            "output_height={}",
+            FOUR_VIEW_CLEAN_OUTPUT_LOOP_OBS_OUTPUT_HEIGHT
+        )));
+        assert!(loop_formatted.contains("exit_reason=QuitRequested"));
     }
 }
