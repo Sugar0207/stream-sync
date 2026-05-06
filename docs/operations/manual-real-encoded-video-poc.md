@@ -486,10 +486,10 @@ Planned stdout summary additions for that next slice:
 - `output_width`
 - `output_height`
 
-The `2`-real-slot command is implemented, but manual validation is not yet
-recorded. Treat the `1`-real-slot path as the current validated baseline until
-the new command is exercised against one bounded server handoff session with
-two distinct real `client_id + run_id` scopes.
+The `2`-real-slot command is now manually validated with two distinct real
+`client_id + run_id` scopes in one bounded server handoff session. Keep the
+`1`-real-slot path as an isolation baseline, but the `2`-real-slot path now
+has two known-good manual recipes recorded below.
 
 Dedicated manual test configs now exist for that upcoming validation:
 
@@ -502,24 +502,51 @@ The current switcher commands still do not read a switcher config file for this
 path, so no dedicated `configs/manual/switcher.two-real-slots.toml` was added
 in this slice.
 
-Intended manual command sequence using the new configs:
+Observed successful minimal `2`-real-slot command sequence using the new
+configs (`1` frame each):
 
 ### Server
 
 ```powershell
-.\target\debug\stream-sync-server.exe --receive-auth-video-queue-and-serve-handoff-many configs/manual/server.two-real-slots.toml streamsync-handoff-dev 5 4096 15000 2 true 8388608
+.\target\debug\stream-sync-server.exe --receive-auth-video-queue-and-serve-handoff-many configs/manual/server.two-real-slots.toml streamsync-handoff-dev 10 4096 5000 2 true 8388608
 ```
 
 ### Client 1
 
 ```powershell
-.\target\debug\stream-sync-client.exe --auth-real-encoded-video-frame-poc-bounded configs/manual/client.player1.toml 5 16 1
+.\target\debug\stream-sync-client.exe --auth-real-encoded-video-frame-poc-bounded configs/manual/client.player1.toml 1 16 1
 ```
 
 ### Client 2
 
 ```powershell
-.\target\debug\stream-sync-client.exe --auth-real-encoded-video-frame-poc-bounded configs/manual/client.player2.toml 5 16 1
+.\target\debug\stream-sync-client.exe --auth-real-encoded-video-frame-poc-bounded configs/manual/client.player2.toml 1 16 1
+```
+
+### Switcher
+
+```powershell
+.\target\debug\stream-sync-switcher.exe --four-view-two-real-handoff-preview-loop streamsync-handoff-dev 0 player1 streamsync-dev-session 1 player2 streamsync-dev-session 5
+```
+
+Observed successful preferred `2`-real-slot command sequence (`2` frames each):
+
+### Server
+
+```powershell
+.\target\debug\stream-sync-server.exe --receive-auth-video-queue-and-serve-handoff-many configs/manual/server.two-real-slots.toml streamsync-handoff-dev 10 4096 5000 4 true 8388608
+```
+
+### Client 1
+
+```powershell
+.\target\debug\stream-sync-client.exe --auth-real-encoded-video-frame-poc-bounded configs/manual/client.player1.toml 2 16 1
+```
+
+### Client 2
+
+```powershell
+.\target\debug\stream-sync-client.exe --auth-real-encoded-video-frame-poc-bounded configs/manual/client.player2.toml 2 16 1
 ```
 
 ### Switcher
@@ -535,7 +562,16 @@ reports unexpected `HandoffError`:
 .\target\debug\stream-sync-switcher.exe --four-view-real-handoff-preview-loop streamsync-handoff-dev 0 player1 streamsync-dev-session 5
 ```
 
-Expected diagnostic interpretation for the next rerun:
+Receive-phase sequencing requirement:
+
+- start the server first
+- start player1 and player2 while the server is still in receive/auth phase
+- start the switcher only after both clients have completed auth/send
+- the current server runtime now accepts additional auth requests during the
+  receive phase, so the second client no longer depends on winning the very
+  first auth slot
+
+Expected diagnostic interpretation for the successful `2`-real-slot rerun:
 
 - server bounded handoff request lines should be read primarily through:
   - `queue_len_before_read`
@@ -560,6 +596,28 @@ Expected diagnostic interpretation for the next rerun:
   - `render_input_kind`
   - `final_slot_result_kind`
 
+Expected successful `2`-real-slot results:
+
+- server receive summary:
+  - `registered_clients=2`
+  - minimal recipe: `frames_reassembled=2` / `frames_queued=2`
+  - preferred recipe: `frames_reassembled=4` / `frames_queued=4`
+- server bounded handoff request lines:
+  - `selected_client_id=player1` -> `result_kind=FrameRead`
+  - `selected_client_id=player2` -> `result_kind=FrameRead`
+  - `frame_payload_len > 0` for both clients
+- switcher summary:
+  - `slot_result_kinds=Selected|Selected|NoFrameAvailable|NoFrameAvailable`
+  - `scheduler_status=PartialSelected`
+  - `clean_output_render_result_kind=Rendered`
+- switcher slot diagnostics:
+  - slot0/player1 -> `handoff_response_kind=FrameRead`
+  - slot1/player2 -> `handoff_response_kind=FrameRead`
+  - `parse_error=none`
+  - `io_error=none`
+  - `decode_error=none`
+  - `final_slot_result_kind=Selected`
+
 Important note for `FrameRead / NoFrame` alternation:
 
 - the old server `queue_len` field did not say whether it was `before` or
@@ -571,34 +629,10 @@ Important note for `FrameRead / NoFrame` alternation:
   - slot1 `player2`
 - check `selected_client_id` / `selected_run_id` before assuming the queue was
   reset or recreated between requests
-- a fresh rerun confirmed this alternation can be entirely request-order-driven
-  when:
-  - player1 is the only client that actually reached the queue
-  - player2 never authenticated / queued before handoff serving began
-
-Current manual caveat for the `2`-real-slot sequence above:
-
-- the server command currently uses:
-  - `expected_reassembled_frames=2`
-  - `manual_stop_after_expected_reassembled_frames=true`
-- that stop condition can be satisfied by player1 alone if player1 queues two
-  frames before player2 joins
-- in the latest rerun this happened, and the server moved from receive/auth
-  into bounded named-pipe handoff with:
-  - `registered_clients=1`
-  - `frames_reassembled=2`
-  - `frames_queued=2`
-- client2 then failed with:
-  - `AuthResponse(Receive(ConnectionReset))`
-- the resulting switcher classification was:
-  - slot0/player1 -> `Selected`
-  - slot1/player2 -> `NoFrameAvailable`
-  - not `HandoffError`
-
-So the current `2`-real-slot manual command sequence is valid for proving
-request ordering and no-frame classification, but it is not yet sufficient to
-prove a true two-client queued handoff run until the receive-phase gating is
-tightened or the client start sequencing is adjusted.
+- the earlier `FrameRead / NoFrame` rerun was request-order-driven because only
+  player1 had authenticated and queued before handoff serving began
+- after the receive-phase auth fix and updated manual sequencing, both client
+  scopes can be present in the same bounded receive/handoff lifetime
 
 ---
 

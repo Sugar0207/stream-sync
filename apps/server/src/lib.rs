@@ -376,6 +376,17 @@ impl ServerAuthResponsePocStep {
             }
         };
 
+        self.handle_route(socket, expected_protocol_version, config, registry, route)
+    }
+
+    fn handle_route(
+        &self,
+        socket: &UdpSocket,
+        expected_protocol_version: ProtocolVersion,
+        config: &ServerAuthConfig,
+        registry: &mut AuthenticatedSenderRegistry,
+        route: ServerInboundRoute,
+    ) -> Result<ServerAuthResponsePocOutcome, ServerAuthResponsePocError> {
         let auth_flow = self
             .auth_flow
             .handle_auth_route(route, config)
@@ -1065,7 +1076,8 @@ impl ServerReceiveAuthVideoQueueOnceLauncher {
             self.receive_video_packets_until_queued(
                 &socket,
                 &mut buffer,
-                &registry,
+                &startup_config.auth_config,
+                &mut registry,
                 &mut video_queue_state,
                 &mut reassembly_state,
                 startup_config.expected_protocol_version,
@@ -1091,7 +1103,8 @@ impl ServerReceiveAuthVideoQueueOnceLauncher {
         &self,
         socket: &UdpSocket,
         buffer: &mut [u8],
-        registry: &AuthenticatedSenderRegistry,
+        auth_config: &ServerAuthConfig,
+        registry: &mut AuthenticatedSenderRegistry,
         video_queue_state: &mut ServerVideoFrameQueueState,
         reassembly_state: &mut ServerVideoFrameReassemblyState,
         expected_protocol_version: ProtocolVersion,
@@ -1139,6 +1152,17 @@ impl ServerReceiveAuthVideoQueueOnceLauncher {
                 received.bytes,
             ) {
                 ServerReceiveLoopGateOutcome::Accepted(route) => match route {
+                    ServerInboundRoute::AuthRequest { .. } => {
+                        self.auth
+                            .handle_route(
+                                socket,
+                                expected_protocol_version,
+                                auth_config,
+                                registry,
+                                route,
+                            )
+                            .map_err(ServerReceiveAuthVideoQueueOnceStartupError::Auth)?;
+                    }
                     ServerInboundRoute::VideoFrame { .. } => {
                         let registered = self
                             .registered

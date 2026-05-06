@@ -5,6 +5,128 @@
 - Codex
 
 ### Work
+- Fixed the minimal server-side blocker that prevented `2` distinct clients
+  from joining the same manual receive/handoff session.
+- Re-ran the named-pipe handoff manual pass with the added diagnostics until
+  both player1 and player2 were confirmed in the queue and both real switcher
+  slots rendered successfully.
+
+### Changed Files
+- `apps/server/src/lib.rs`
+- `docs/operations/manual-real-encoded-video-poc.md`
+- `docs/operations/session-log.md`
+- `docs/operations/todo.md`
+
+### Implemented
+- Updated the manual server receive path so additional auth requests are still
+  accepted during the video receive phase instead of only before it.
+- Kept the change scoped to the manual receive/runtime path:
+  - the first accepted auth still gates entry into the receive loop
+  - later auth requests during that loop are now routed through the existing
+    auth response / registry registration path
+  - protocol, H.264 behavior, OBS, and switcher-side handoff protocol were not
+    changed
+
+### Manual Commands
+- Minimal successful distinct-client proof (`1` frame each):
+  - server:
+    `.\target\debug\stream-sync-server.exe --receive-auth-video-queue-and-serve-handoff-many configs/manual/server.two-real-slots.toml streamsync-handoff-dev 10 4096 5000 2 true 8388608`
+  - client1:
+    `.\target\debug\stream-sync-client.exe --auth-real-encoded-video-frame-poc-bounded configs/manual/client.player1.toml 1 16 1`
+  - client2:
+    `.\target\debug\stream-sync-client.exe --auth-real-encoded-video-frame-poc-bounded configs/manual/client.player2.toml 1 16 1`
+  - switcher:
+    `.\target\debug\stream-sync-switcher.exe --four-view-two-real-handoff-preview-loop streamsync-handoff-dev 0 player1 streamsync-dev-session 1 player2 streamsync-dev-session 5`
+- Preferred successful distinct-client proof (`2` frames each):
+  - server:
+    `.\target\debug\stream-sync-server.exe --receive-auth-video-queue-and-serve-handoff-many configs/manual/server.two-real-slots.toml streamsync-handoff-dev 10 4096 5000 4 true 8388608`
+  - client1:
+    `.\target\debug\stream-sync-client.exe --auth-real-encoded-video-frame-poc-bounded configs/manual/client.player1.toml 2 16 1`
+  - client2:
+    `.\target\debug\stream-sync-client.exe --auth-real-encoded-video-frame-poc-bounded configs/manual/client.player2.toml 2 16 1`
+  - switcher:
+    `.\target\debug\stream-sync-switcher.exe --four-view-two-real-handoff-preview-loop streamsync-handoff-dev 0 player1 streamsync-dev-session 1 player2 streamsync-dev-session 5`
+
+### Observed Logs
+- Before the fix, the practical blocker was not switcher transport:
+  - player1-only runs could satisfy `expected_reassembled_frames=2`
+  - the server then left receive/auth handling
+  - client2 later failed with `AuthResponse(Receive(ConnectionReset))`
+- Minimal successful distinct-client proof (`1` frame each):
+  - server receive summary:
+    - `registered_clients=2`
+    - `frames_reassembled=2`
+    - `frames_queued=2`
+    - `receive_timed_out=false`
+  - server bounded handoff requests alternated by client scope and both were
+    `FrameRead`:
+    - player1 request example:
+      `queue_len_before_read=1 queue_len_after_read=1 result_kind=FrameRead selected_client_id=player1 selected_run_id=streamsync-dev-session frame_payload_len=199556`
+    - player2 request example:
+      `queue_len_before_read=1 queue_len_after_read=1 result_kind=FrameRead selected_client_id=player2 selected_run_id=streamsync-dev-session frame_payload_len=199556`
+  - switcher summary:
+    - `frames_attempted=5`
+    - `frames_rendered=5`
+    - `render_failures=0`
+    - `scheduler_status=PartialSelected`
+    - `slot_result_kinds=Selected|Selected|NoFrameAvailable|NoFrameAvailable`
+    - `clean_output_render_result_kind=Rendered`
+  - switcher slot diagnostics:
+    - slot0/player1 -> `handoff_response_kind=FrameRead parse_error=none io_error=none decode_error=none render_input_kind=UseUpdatedFrame final_slot_result_kind=Selected`
+    - slot1/player2 -> `handoff_response_kind=FrameRead parse_error=none io_error=none decode_error=none render_input_kind=UseUpdatedFrame final_slot_result_kind=Selected`
+- Preferred successful distinct-client proof (`2` frames each):
+  - both clients completed auth and sent `2` real encoded frames each
+  - server receive summary:
+    - `registered_clients=2`
+    - `frames_reassembled=4`
+    - `frames_queued=4`
+    - `queue_len=4`
+    - `receive_timed_out=false`
+  - server bounded handoff requests:
+    - player1 request example:
+      `queue_len_before_read=2 queue_len_after_read=2 result_kind=FrameRead selected_client_id=player1 selected_run_id=streamsync-dev-session frame_payload_len=226069`
+    - player2 request example:
+      `queue_len_before_read=2 queue_len_after_read=2 result_kind=FrameRead selected_client_id=player2 selected_run_id=streamsync-dev-session frame_payload_len=226069`
+  - switcher slot diagnostics showed both real slots healthy:
+    - slot0/player1 -> `handoff_response_kind=FrameRead response_payload_len=226166 parse_error=none io_error=none decode_error=none frame_payload_len=226069 final_slot_result_kind=Selected`
+    - slot1/player2 -> `handoff_response_kind=FrameRead response_payload_len=226166 parse_error=none io_error=none decode_error=none frame_payload_len=226069 final_slot_result_kind=Selected`
+
+### Decisions
+- The current manual runtime no longer needs player2 to win the first auth slot
+  in order to join the same bounded receive/handoff lifetime.
+- The minimal `2`-real-slot goal is now proven with two actual client scopes in
+  the queue, not just request-order/no-frame diagnostics.
+- `scheduler_status=PartialSelected` remains expected and healthy for this
+  command because slots `2` and `3` are still deterministic placeholders.
+
+### Unresolved
+- Whether the manual stop condition should eventually become distinct
+  client-aware instead of frame-count-only.
+- Whether an additional manual knob such as
+  `expected_reassembled_clients` or
+  `expected_reassembled_frames_per_client`
+  is worth adding, now that a stable documented recipe already exists.
+- `4` real slots, `Focused(slot_index)`, full hotkey UI, generic N-view,
+  protocol/H.264 changes, switcher-side fragment reassembly, and advanced OBS
+  control remain out of scope.
+
+### TODO Update
+- Marked `2` distinct clients queue participation as validated.
+- Updated the manual guide to use the successful `1`-frame-each and
+  `2`-frames-each recipes.
+- Moved the next decision from "make the pass possible" to "decide whether a
+  client-aware manual stop condition is still needed."
+
+### Validation
+- `cargo fmt`
+- `cargo check --workspace`
+- `cargo build -p stream-sync-server`
+
+## 2026-05-06
+### Type
+- Codex
+
+### Work
 - Added dedicated manual test configs for the upcoming `2`-real-slot
   validation instead of mutating the existing example configs.
 - Kept the config slice limited to server + two client configs; no switcher
