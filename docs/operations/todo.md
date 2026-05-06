@@ -2,7 +2,7 @@
 
 # StreamSync TODO
 
-最終更新: 2026-05-06
+最終更新: 2026-05-07
 
 このファイルは「現在どこまで終わっていて、次に何をやるか」を確認するための TODO です。  
 時系列の作業履歴、判断理由、各回の作業メモは `docs/operations/session-log.md` を正とします。
@@ -101,6 +101,7 @@
 - dedicated `--four-view-focused-handoff-preview-loop [pipe-name] [focused-slot-index] [client0-id] [run0-id] [client1-id] [run1-id] [client2-id] [run2-id] [client3-id] [run3-id] [frames]` も実装済みで、validated な all-real `4`-slot handoff path と per-slot diagnostics を維持したまま `view_state=Focused` の full-window render を出せる。first slice では full-window placeholder renderer は追加せず、focused slot が renderable decoded frame を持たない場合は `clean_output_render_result_kind=NoRenderableFocusedView` として明示する
 - guarded `4`-client all-real session での `Focused(0..3)` actual manual validation も記録済みで、successful runs では `focused_result_kind=Selected`、`clean_output_render_result_kind=Rendered`、`output_width=1280`、`output_height=720` を確認できた。初回 `Focused(2)` の `frames_rendered=4/5` と初回 `Focused(3)` の server-side `CreatePipe(os_error_231)` は transient runtime/lifecycle wobble として記録し、rerun で成功している
 - nearby separate sessions による `AllView -> Focused(0..3) -> AllView` operator-flow validation も成功記録済みで、`12` session すべて `AllSelected` / `Rendered` を維持した。今回の operator-flow pass では short release delay を入れたことで `CreatePipe(os_error_231)` と `HandoffError` は再現していない
+- operator-flow validation 後の設計判断も更新済みで、nearby-session command flow は fallback/manual proof path として残しつつ、MVP の次の最小 operator surface は same-session long-running control loop を優先する。hotkey/UI wrapper はその loop の後段で薄く載せる前提とする
 - upcoming `2`-real-slot manual validation 用の dedicated test configs も追加済みで、`configs/manual/server.two-real-slots.toml`、`configs/manual/client.player1.toml`、`configs/manual/client.player2.toml` を使って existing examples を崩さずに 2-client same-run test を行える。現行 switcher command 群はこの path で switcher config を読まないため、`configs/manual/switcher.two-real-slots.toml` はこの slice では追加していない
 - video path は server 側 accepted `VideoFrame` receive side-effect を caller-owned per-client queue へ保存し、client 側で placeholder encoded H.264 payload 付き `VideoFrame`、Windows Graphics Capture + FFmpeg による one-shot `RealCaptureH264` `VideoFrame`、認証済み same-source の bounded multi-frame `RealCaptureH264` sender、送信失敗時の detailed diagnostics、safe UDP datagram 前提の sender-side `VideoFrame` fragmentation、手動PoC向け fragment pacing まで完了し、manual E2E checklist も整備済み。server 側は accepted `VideoFrameFragment` の caller-owned reassembly state、duplicate / metadata rejection、完成 frame の既存 queue storage への接続、手動確認用の fragment / reassembly / queue stdout diagnostics、max packet / timeout / expected frame / stop condition の手動 policy、incomplete frame progress diagnostics、手動 receive path の UDP socket receive buffer tuning と requested/effective stdout diagnostics、client/run 指定の queued encoded frame inspect/dequeue 境界まで完了している。fragmented real encoded queue PoC は `8388608` byte effective receive buffer で manual 1-frame / 2-frame とも成功し、最新の `max_frames=2` run では client `fragments_sent=854/854`、server `fragments_received=854`、`frames_reassembled=2`、`frames_queued=2`、`incomplete_reassembly_frames=0`、`receive_timed_out=false` を確認済み。switcher 側の fragmented frame direct consumption は未実装。switcher 側は latest frame を FFmpeg で H.264 decode して 1 frame BMP dump し、Windows では decoded BGRA を normal window に one-shot 描画し、single-client latest-frame の bounded continuous decode/render loop 境界、client/run 指定の single-client queue source 境界、server queue を読む switcher-facing queued-frame source trait/interface と in-process adapter、transport-neutral / fallible queued-frame handoff contract と in-process implementation、その handoff result を既存 queue-source result shape へ変換しつつ handoff error を no-frame に潰さない consumer boundary、handoff error を no-frame / waiting に潰さない fallible single-client targetTime handoff source 境界、handoff error を partial/no-frame/waiting に潰さない fallible 2-view targetTime handoff scheduler 境界、fallible scheduler result から decode/render-facing instructions への adapter 境界、その adapter output から display-policy-facing decode/render result への fallible connection 境界、その connection output から update / hold / stale / no-display を決める fallible display policy 境界、その display policy output から composition-facing updated / held / stale / no-display / source-error placeholder instructions への fallible adapter 境界、queued-frame source 経由の single-client targetTime selection と 2-view targetTime source scheduler、scheduler result から既存 2-view decode/render input への adapter 境界、adapter output から既存 `SwitcherTwoViewDecodeRenderBoundary` へ渡す in-process connection 境界と live-like validation、2-view display policy 境界、display policy から既存 2-view composition input への adapter 境界、その adapter output を既存 composed canvas render path へ通す in-process validation 境界、one-client targetTime / jitter-buffer selection 境界、2-view targetTime selection orchestration 境界、2-view targetTime-selected decode/render connection 境界、2-view sync fixture/manual verification CLI、2-view side-by-side BGRA layout/composition 境界、composed 2-view canvas window render 境界、live-like 2-client queue/runtime integration 境界、bounded continuous 2-view scheduling 境界、real UDP socket-backed source adapter 境界、auth registry 生成込み live two-view switcher manual runtime、fallible server-mediated 2-view validation boundary、transport-neutral な server->switcher handoff request/response DTO、length-prefixed explicit binary codec、server 側 single-request handoff handler、switcher 側 DTO request builder / response mapper、Windows named-pipe one-request / one-response server/client runtime、existing `SwitcherQueuedFrameHandoff` に載せる thin wrapper と wrapper-owned monotonic request-id policy、one-shot named-pipe handoff の server/switcher manual CLI、plain pipe name `streamsync-handoff-dev` を使った localhost one-shot handoff 成功確認、bounded `max_requests` を前提にした continuous accept loop / reconnect / lifecycle planning、server 側 bounded named-pipe `serve_many(..., max_requests)` runtime と per-request summary aggregation、switcher 側 one-request handoff の per-request timeout config / elapsed summary / explicit runtime status plumbing まで完了している。`run_fallible_*` 専用の manual/runtime entry point は transport planning 前には追加しない方針とし、`--live-two-view-switcher-once` は direct receive diagnostic/legacy のまま main path へ戻さない。real server->switcher handoff の最初の production-like transport は Windows named pipe を含む local IPC byte-stream request/response とし、switcher-pull/read を維持し、client UDP ingest protocol や `VideoFrame` wire format とは分離した internal handoff codec を使う方針まで確定した。DTO/codec は `crates/net-core` に置き、server handler / named-pipe one-request runtime / bounded `serve_many` runtime は `apps/server`、switcher client adapter / named-pipe one-request runtime / thin handoff wrapper と one-shot CLI は `apps/switcher` に置く。named-pipe smoke test は Windows local test として isolate し、default handoff validation では fake runtime と focused non-I/O mapping test を使う。manual CLI では server が `--receive-auth-video-queue-and-serve-handoff-once` で queue-owning receive 後に one request を serve し、switcher が `--read-queued-frame-handoff-once` で one request を pull/read する。request_id は supplied 時は preserve、omitted 時は one-shot process の initial monotonic value `1` を使う。switcher 側 timeout は現時点では one request ごとの named-pipe connect/wait timeout のみを持ち、retry manager はまだ持たない。現行 CLI 引数では full pipe path `\\.\pipe\...` ではなく plain pipe name を使う。次の runtime/service slice は bounded server loop summary の CLI/manual 露出と、さらに小さい switcher reconnect/lifecycle policy の整理を前提にする。late-drop mutation、4-view sync、OBS は未着手
 
@@ -132,14 +133,25 @@
 ---
 
 ## 直近でやること
-1. same-session long-running control loop が本当に必要か判断する:
-   - nearby-session operator flow は validation 済み
-   - next decision は hotkey/UI wrapper 前に same-session control state machine を足すべきかどうか
+1. same-session long-running control loop の最小実装:
+   - fixed `4`-view 専用のまま `AllView` / `Focused(slot_index)` を 1 process lifetime で切り替える
+   - first control source は stdin text commands か同等に小さい internal parser にとどめる
+   - minimum commands:
+     - `all`
+     - `focus 0`
+     - `focus 1`
+     - `focus 2`
+     - `focus 3`
+     - `status`
+     - `quit`
    - player1 単独 isolation が必要な場合は引き続き `--four-view-real-handoff-preview-loop streamsync-handoff-dev 0 player1 streamsync-dev-session 5` を baseline として使う
-2. hotkey/UI wrapper を検討する:
-   - validated な control state/action を keyboard/UI input に薄く載せるか判断する
-3. production H.264 encoder configuration / error logging policy
-4. Decide later whether `--live-two-view-switcher-once` should be renamed or deprecated after the transport-backed server-mediated path exists
+2. same-session loop の manual validation:
+   - one persistent output-window identity のまま `AllView -> Focused(slot_index) -> AllView` を確認する
+   - `current_view_state` / `requested_transition` / `transition_result` / `selected_slot_result` / `frames_rendered` / `render_failures` を stdout で見えるようにする
+3. hotkey/UI wrapper を検討する:
+   - validated な same-session control state/action を keyboard/UI input に薄く載せる
+4. production H.264 encoder configuration / error logging policy
+5. Decide later whether `--live-two-view-switcher-once` should be renamed or deprecated after the transport-backed server-mediated path exists
 
 ## 将来の polish 候補
 - [ ] `--four-view-proof-window-once` / `--four-view-clean-output-window-once` に visual confirmation 用の `--hold-ms` / preview hold duration を追加するか後で判断する

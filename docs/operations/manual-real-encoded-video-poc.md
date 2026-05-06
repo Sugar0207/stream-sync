@@ -1100,9 +1100,43 @@ Current conclusion after operator-flow validation:
 
 - nearby-session `AllView -> Focused(slot_index) -> AllView` operator flow is
   now validated
-- the remaining open question is whether a true same-session long-running
-  control loop is needed before a hotkey/UI wrapper, or whether the existing
-  focused/all-view command family is already sufficient as the wrapper target
+- keep this nearby-session command flow as the validated fallback/manual proof
+  path
+- keep the short release delay memo when many nearby sessions are run
+  back-to-back
+- do not treat this flow as the intended live operator surface:
+  - it recreates session/window lifecycle per transition
+  - it keeps command orchestration on the operator
+  - it is sufficient for PoC/manual validation, but not a good live-switching
+    shape
+- the recommended next step is now a same-session long-running control loop
+  with a minimal text command parser, before any hotkey/UI wrapper
+
+Recommended next same-session control shape:
+
+- control commands:
+  - `all`
+  - `focus 0`
+  - `focus 1`
+  - `focus 2`
+  - `focus 3`
+  - `status`
+  - `quit`
+- keep the underlying handoff/render path unchanged:
+  - guarded `4`-client all-real recipe
+  - named-pipe handoff
+  - `StreamSync 4-view Output`
+  - fixed `1280x720`
+- expected stdout additions:
+  - `current_view_state`
+  - `requested_transition`
+  - `transition_result`
+  - `selected_slot_result`
+  - `frames_rendered`
+  - `render_failures`
+- hotkey/UI wrapper remains later:
+  - a thin wrapper over separate commands would still pay session/window churn
+  - a thin wrapper over a same-session loop is the preferred later shape
 
 ---
 

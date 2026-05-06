@@ -8726,6 +8726,64 @@ Reason to keep hotkey/UI wrapper later:
 - once `AllView <-> Focused(slot_index)` is validated, a later hotkey/UI layer
   can become a thin adapter that emits the same operator actions
 
+Decision after nearby-session operator-flow validation:
+
+- Option `A` remains useful as a validated fallback/manual proof path:
+  - keep separate bounded sessions for `AllView` and `Focused(slot_index)`
+  - keep the short named-pipe release delay memo when many nearby sessions are
+    run back-to-back
+  - treat this path as good enough for PoC/manual validation and failure
+    isolation
+- Option `A` is not sufficient as the intended MVP operator surface:
+  - it recreates server-owned handoff sessions and switcher window lifecycle per
+    transition
+  - it keeps command orchestration burden on the operator
+  - it is not the right shape for live view switching during a stream
+- Option `B` is the recommended next minimal implementation slice:
+  - add one same-session long-running control loop above the already validated
+    all-real handoff/render path
+  - keep one persistent `StreamSync 4-view Output` window lifecycle while
+    changing only `ViewMode`
+  - avoid repeated named-pipe session bring-up and the practical release-delay
+    mitigation that nearby-session orchestration currently needs
+  - expose the smallest command parser first, not a full GUI or global hotkey
+    layer
+- Option `C` should remain later than `B`:
+  - a thin hotkey/UI wrapper above separate commands would hide command
+    orchestration but would not remove window teardown/recreate or pipe-lifetime
+    churn
+  - after `B` exists, `C` can become a much thinner adapter over stable
+    in-process state transitions
+
+Recommended next control shape:
+
+- keep the current manual command family as validated fallback:
+  - `--four-view-four-real-handoff-preview-loop`
+  - `--four-view-focused-handoff-preview-loop`
+- add one same-session long-running control loop dedicated to fixed `4`-view
+  operation
+- start with text commands on stdin or an equivalently small internal command
+  parser:
+  - `all`
+  - `focus 0`
+  - `focus 1`
+  - `focus 2`
+  - `focus 3`
+  - `status`
+  - `quit`
+- keep the existing handoff preview/render loop family underneath:
+  - same real-slot bindings
+  - same named-pipe handoff source
+  - same `StreamSync 4-view Output` title
+  - same fixed `1280x720` output profile
+- keep stdout diagnostics explicit for operator-visible transitions:
+  - `current_view_state`
+  - `requested_transition`
+  - `transition_result`
+  - `selected_slot_result`
+  - `frames_rendered`
+  - `render_failures`
+
 OBS integration policy remains unchanged:
 
 - keep OBS downstream of `StreamSync 4-view Output`
@@ -8754,6 +8812,28 @@ Manual validation plan for the next focused slice:
 5. Keep player1-only isolation available through the existing
    `--four-view-real-handoff-preview-loop ...` baseline when a single-slot
    transport/render check is needed.
+
+Manual validation plan after the nearby-session operator-flow success:
+
+1. Keep nearby-session `AllView -> Focused(slot_index) -> AllView` as the
+   recorded fallback/operator-proof path.
+2. Implement the first same-session control loop with stdin/internal text
+   commands only.
+3. Validate in one persistent session:
+   - `all`
+   - `focus 0`
+   - `status`
+   - `all`
+   - `focus 1`
+   - `focus 2`
+   - `focus 3`
+   - `quit`
+4. Confirm the persistent session preserves:
+   - stable output window identity
+   - no explicit handoff protocol changes
+   - no GUI/hotkey dependency
+5. Only after that should a hotkey/UI wrapper be considered as a thin input
+   adapter.
 
 Failure classification for the operator-facing control layer:
 

@@ -5,6 +5,62 @@
 - Codex
 
 ### Work
+- Reviewed the validated nearby-session operator-flow baseline against the next
+  MVP operator-control need.
+- Compared three options for the next control layer:
+  - `A`: keep nearby-session command flow as the operational path
+  - `B`: add a same-session long-running control loop
+  - `C`: add a thin hotkey/UI wrapper first while keeping the current command
+    family underneath
+- Recorded the design decision in architecture/operations docs without changing
+  code.
+
+### Changed Files
+- `docs/architecture/system-design.md`
+- `docs/operations/manual-real-encoded-video-poc.md`
+- `docs/operations/session-log.md`
+- `docs/operations/todo.md`
+
+### Decision
+- Keep option `A` as the validated fallback/manual proof path.
+- Do not treat option `A` as the intended live operator surface because it
+  recreates session/window lifecycle per transition and keeps command
+  orchestration on the operator.
+- Recommend option `B` as the next smallest implementation slice:
+  - one same-session long-running control loop
+  - one persistent `StreamSync 4-view Output` window lifecycle
+  - fixed `AllView` / `Focused(slot_index)` state model
+  - first control source = stdin text commands or an equivalently small
+    internal parser
+- Defer option `C` until after `B` exists so the wrapper can become a thin
+  adapter over stable in-process transitions instead of wrapping process churn.
+
+### Next Control Shape
+- Minimum commands:
+  - `all`
+  - `focus 0`
+  - `focus 1`
+  - `focus 2`
+  - `focus 3`
+  - `status`
+  - `quit`
+- Minimum stdout diagnostics:
+  - `current_view_state`
+  - `requested_transition`
+  - `transition_result`
+  - `selected_slot_result`
+  - `frames_rendered`
+  - `render_failures`
+
+### Validation
+- docs-only update
+- `git diff --check`
+
+## 2026-05-07
+### Type
+- Codex
+
+### Work
 - Ran nearby-session operator-flow validation for:
   - `AllView -> Focused(0) -> AllView`
   - `AllView -> Focused(1) -> AllView`
