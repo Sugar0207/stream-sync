@@ -1,0 +1,46 @@
+# stream-sync/configs/manual/client.player1.toml
+# Manual accepted-path config for the 2-real-slot validation.
+# Pair this config with configs/manual/server.two-real-slots.toml.
+
+[client]
+client_id = "player1"
+display_name = "Player 1"
+server_host = "127.0.0.1"
+server_port = 5000
+shared_token = "replace-with-shared-token-1"
+
+[session]
+run_id = "streamsync-dev-session"
+app_version = "0.1.0"
+protocol_version = 1
+
+[capture]
+capture_mode = "window"
+window_title = "Minecraft"
+monitor_index = 0
+allow_fullscreen = true
+
+[video]
+codec = "h264"
+width = 1280
+height = 720
+fps = 30
+bitrate_kbps = 4000
+keyframe_interval = 30
+preset = "low-latency"
+
+[encoder]
+prefer_hardware = true
+hardware_encoder = "auto"
+allow_software_fallback = true
+
+[network]
+heartbeat_interval_ms = 1000
+stats_interval_ms = 1000
+reconnect_interval_ms = 3000
+connect_timeout_ms = 5000
+
+[logging]
+level = "info"
+json_lines = true
+output_dir = "logs/client"

@@ -5,6 +5,55 @@
 - Codex
 
 ### Work
+- Added dedicated manual test configs for the upcoming `2`-real-slot
+  validation instead of mutating the existing example configs.
+- Kept the config slice limited to server + two client configs; no switcher
+  config was added because the current switcher handoff commands still do not
+  consume one for this path.
+
+### Changed Files
+- `configs/manual/server.two-real-slots.toml`
+- `configs/manual/client.player1.toml`
+- `configs/manual/client.player2.toml`
+- `docs/operations/manual-real-encoded-video-poc.md`
+- `docs/operations/session-log.md`
+- `docs/operations/todo.md`
+
+### Implemented
+- Created `configs/manual/` as the dedicated manual-validation config
+  directory.
+- Added:
+  - `configs/manual/server.two-real-slots.toml`
+  - `configs/manual/client.player1.toml`
+  - `configs/manual/client.player2.toml`
+- Config decisions:
+  - server config stays compatible with existing manual tests on port `5000`
+  - both manual client configs use `run_id = "streamsync-dev-session"`
+  - `client.player1.toml` uses `client_id = "player1"`
+  - `client.player2.toml` uses `client_id = "player2"`
+  - no named-pipe field was invented in config because the current schema does
+    not carry it
+  - no `switcher.two-real-slots.toml` was added because the current switcher
+    commands do not read one for this preview path
+- Added the intended manual command sequence using the new configs to
+  `docs/operations/manual-real-encoded-video-poc.md`.
+
+### TODO Update
+- Kept the next task on the `2`-real-slot manual pass itself.
+- Updated the TODO text so that pass explicitly uses the new manual config
+  files.
+
+### Validation
+- `cargo fmt` passed.
+- `cargo fmt --check` passed.
+- `cargo check --workspace` passed.
+- `git diff --check` passed.
+
+## 2026-05-06
+### Type
+- Codex
+
+### Work
 - Implemented the smallest `2` real slots + `2` deterministic placeholder /
   no-frame preview loop on the switcher side.
 - Kept the validated `1`-real-slot command unchanged.

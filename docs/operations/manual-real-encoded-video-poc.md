@@ -491,6 +491,43 @@ recorded. Treat the `1`-real-slot path as the current validated baseline until
 the new command is exercised against one bounded server handoff session with
 two distinct real `client_id + run_id` scopes.
 
+Dedicated manual test configs now exist for that upcoming validation:
+
+- `configs/manual/server.two-real-slots.toml`
+- `configs/manual/client.player1.toml`
+- `configs/manual/client.player2.toml`
+
+These are based on the existing example configs rather than replacing them.
+The current switcher commands still do not read a switcher config file for this
+path, so no dedicated `configs/manual/switcher.two-real-slots.toml` was added
+in this slice.
+
+Intended manual command sequence using the new configs:
+
+### Server
+
+```powershell
+.\target\debug\stream-sync-server.exe --receive-auth-video-queue-and-serve-handoff-many configs/manual/server.two-real-slots.toml streamsync-handoff-dev 5 4096 15000 2 true 8388608
+```
+
+### Client 1
+
+```powershell
+.\target\debug\stream-sync-client.exe --auth-real-encoded-video-frame-poc-bounded configs/manual/client.player1.toml 5 16 1
+```
+
+### Client 2
+
+```powershell
+.\target\debug\stream-sync-client.exe --auth-real-encoded-video-frame-poc-bounded configs/manual/client.player2.toml 5 16 1
+```
+
+### Switcher
+
+```powershell
+.\target\debug\stream-sync-switcher.exe --four-view-two-real-handoff-preview-loop streamsync-handoff-dev 0 player1 streamsync-dev-session 1 player2 streamsync-dev-session 5
+```
+
 ---
 
 ## 1. Prerequisite Checks
@@ -539,6 +576,9 @@ Confirm these files exist:
 ```powershell
 Test-Path configs/examples/server.example.toml
 Test-Path configs/examples/client.accepted.example.toml
+Test-Path configs/manual/server.two-real-slots.toml
+Test-Path configs/manual/client.player1.toml
+Test-Path configs/manual/client.player2.toml
 ```
 
 Pass:
