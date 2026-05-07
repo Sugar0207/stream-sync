@@ -5,6 +5,59 @@
 - Codex
 
 ### Work
+- Added the docs-only thin wrapper / hotkey UI MVP design after the successful
+  separate local control-pipe manual validation.
+- Compared the next implementation forms as:
+  - `A`: add a wrapper command inside `stream-sync-switcher`
+  - `B`: add a separate `apps/operator-wrapper` binary/app
+  - `C`: implement the first wrapper as a CLI/TUI keyboard loop
+  - `D`: defer full GUI until later
+- Fixed the current recommendation as:
+  - use the existing separate local control pipe
+  - keep the wrapper thin and restartable
+  - prefer `A + C` for the MVP
+  - defer `B` and `D`
+- Fixed the guarded quit choice for MVP:
+  - wrapper-local double-`Q`
+  - first `Q` arms only
+  - second `Q` within `2` seconds sends the real `quit` command
+- Added the wrapper MVP manual validation plan:
+  - rebuild before validation
+  - start the switcher controlled loop with `--control-pipe`
+  - start the wrapper
+  - press `1/2/3/4/0-or-A/S`
+  - verify response lines
+  - verify guarded `Q`
+  - verify final switcher summary
+- Narrowed the bounded server lifecycle follow-up:
+  - keep the request-budget formula documented
+  - do not treat extra flush read as part of the wrapper contract
+  - keep flush/exit polish as a later narrow task only
+
+### Changed Files
+- `docs/architecture/system-design.md`
+- `docs/operations/manual-real-encoded-video-poc.md`
+- `docs/operations/session-log.md`
+- `docs/operations/todo.md`
+
+### Decision
+- The wrapper MVP should use the already validated separate local control pipe.
+- The first implementation form should stay in `stream-sync-switcher` as a
+  separate wrapper command/process rather than a new app.
+- The first interaction mode should be a CLI/TUI keyboard loop, not a full
+  GUI.
+- Guarded quit should be wrapper-local double-`Q`, not `q then y` and not
+  disabled.
+
+### Validation
+- docs-only update
+- `git diff --check`
+
+## 2026-05-07
+### Type
+- Codex
+
+### Work
 - Ran actual guarded real `4`-client same-session separate local control-pipe
   validation for the validated switcher control loop.
 - Verified the success path with:

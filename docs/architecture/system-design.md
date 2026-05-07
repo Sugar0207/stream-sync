@@ -8588,73 +8588,104 @@ baseline:
 - `status`
 - `quit`
 
-The next decision is which control channel should drive that existing loop
-before a fuller hotkey/UI layer exists.
+The next decision now splits into two axes:
 
-### Option A: wrapper -> switcher stdin
+- control transport into the already validated same-session switcher loop
+- implementation form of the first thin wrapper
 
-Strengths:
+The transport direction remains a separate local control channel. The open MVP
+question is how thin the first wrapper should be and where it should live.
 
-- reuses the current stdin parser unchanged
-- easy to script with the existing `--commands "..."` shape
-- keeps one switcher process and one persistent OBS-captured window
+### Option A: add wrapper command inside `stream-sync-switcher`
 
-Weaknesses:
+Shape:
 
-- Windows stdin ownership becomes awkward for a separately restartable wrapper
-  or future GUI
-- crash/restart recovery is poorer because wrapper control is tightly coupled
-  to the console/session that launched the switcher
-- less clean as a long-running operator transport than an explicit control IPC
-
-Decision:
-
-- keep this as the validation baseline and fallback/manual path
-- do not treat it as the preferred MVP wrapper transport
-
-### Option B: wrapper -> separate local control channel
-
-Preferred MVP direction:
-
-- keep the current same-session render loop inside the switcher
-- add one thin external control channel that forwards:
-  - `all`
-  - `focus 0`
-  - `focus 1`
-  - `focus 2`
-  - `focus 3`
-  - `status`
-  - `quit`
-- on Windows, prefer a local named-pipe control channel first
-
-Why this is preferred:
-
-- preserves one persistent `StreamSync 4-view Output` window lifecycle for OBS
-  Window Capture
-- avoids nearby-session process churn and release-delay dependence during live
-  operation
-- lets a wrapper restart independently from the switcher render loop
-- remains easy to automate and test
-- extends naturally toward a future GUI or hotkey layer without changing the
-  switcher state model
-
-### Option C: direct hotkey capture inside switcher
+- keep the switcher loop process as it is
+- add one separate operator/wrapper command mode in the same binary
+- run that wrapper as its own process so it can restart independently from the
+  switcher loop
 
 Strengths:
 
-- potentially lowest operator input latency
-- no external wrapper process required
+- smallest implementation scope because the existing control-pipe sender path
+  already lives in `apps/switcher`
+- no new workspace/app scaffolding before the operator contract is stable
+- keeps packaging/distribution simple for the first MVP slice
+- still allows the wrapper process to die and restart without touching the
+  switcher window lifecycle
 
 Weaknesses:
 
-- pulls Windows-specific input handling into the switcher too early
-- harder to script and regression-test than stdin or a small control IPC
-- couples render/runtime lifecycle to input lifecycle before the operator
-  contract is stable
+- wrapper concerns and switcher concerns still share one crate/binary
+- if the wrapper grows into a larger GUI app later, this packaging may become
+  less clean
 
 Decision:
 
-- defer this until after the external wrapper contract is stable
+- preferred MVP packaging direction
+- keep it process-separate at runtime even if it stays in the same binary
+
+### Option B: add separate `apps/operator-wrapper` binary/app
+
+Strengths:
+
+- cleanest long-term separation if the wrapper becomes a larger operator app
+- easier to evolve independently once GUI/stateful operator features exist
+
+Weaknesses:
+
+- extra app/crate scaffolding now would mostly duplicate the already validated
+  thin sender/control-pipe work
+- higher surface area before the wrapper contract, guarded quit, and keyboard
+  mapping are validated
+
+Decision:
+
+- defer for MVP
+- revisit only if the wrapper grows beyond a thin keyboard shell or packaging
+  pressure appears
+
+### Option C: implement the first wrapper as a CLI/TUI keyboard loop
+
+Shape:
+
+- a tiny operator loop reads one key at a time
+- maps the key to the existing command vocabulary
+- sends that command over the control pipe
+- prints the returned one-line response
+
+Strengths:
+
+- smallest operator-facing interaction layer
+- easy to validate manually without committing to full GUI state management
+- keeps switcher window lifecycle and render ownership unchanged
+- naturally restartable because the wrapper owns no render state
+
+Weaknesses:
+
+- not a polished final GUI
+- may still need small console-specific input handling details
+
+Decision:
+
+- preferred first interaction shape for the wrapper MVP
+
+### Option D: full GUI later
+
+Strengths:
+
+- best long-term operator ergonomics once the control contract is stable
+- can surface button labels, current state, and richer status later
+
+Weaknesses:
+
+- too much scope before validating the thin wrapper contract
+- would mix GUI toolkit/state work with a still-new control path
+- would make failures harder to attribute during the current MVP stage
+
+Decision:
+
+- explicitly defer until after the thin wrapper MVP is validated
 
 ## Recommended Wrapper Contract
 
@@ -8663,16 +8694,32 @@ Short term:
 - keep stdin/scripted control as the validation baseline
 - keep nearby-session commands as fallback/manual proof
 
-MVP wrapper:
+MVP wrapper shape:
 
-- add a separate local control channel to the same-session switcher loop
-- keep the command vocabulary identical to the current parser
+- packaging: Option `A`
+- interaction style: Option `C`
+- future direction: Option `D` later, Option `B` only if the wrapper outgrows
+  the same-binary shape
+- transport: separate local control channel to the same-session switcher loop
 - treat the wrapper as a thin keyboard/UI shell, not a render owner
-- on Windows, prefer a local named-pipe control channel first
+- keep the command vocabulary identical to the current parser:
+  - `all`
+  - `focus 0`
+  - `focus 1`
+  - `focus 2`
+  - `focus 3`
+  - `status`
+  - `quit`
 - keep the control channel separate from the existing handoff pipe:
   - separate pipe name
   - separate request/response payload
   - no queue-read DTO reuse
+- keep wrapper restartability explicit:
+  - wrapper exit must not close the switcher window
+  - wrapper restart must only require reconnecting on the next command
+- keep wrapper output minimal:
+  - show the latest response line from the switcher
+  - show local wrapper-only guard/status text when no switcher command is sent
 
 Deferred:
 
@@ -8697,22 +8744,62 @@ The wrapper should target the existing switcher states directly:
 - `AllView`
 - `Focused(slot_index)` where `slot_index in 0..3`
 
+## Guarded Quit Decision
+
+Preferred MVP guarded quit:
+
+- first `Q` does not send `quit`
+- first `Q` only arms a short-lived local wrapper guard
+- second `Q` while the guard is armed sends the real `quit` command
+
+Recommended minimal behavior:
+
+- arm window: `2` seconds
+- local wrapper text after first `Q`:
+  - `quit_armed=true`
+  - `press_q_again_to_send_quit`
+- any non-`Q` key clears the armed state
+- timeout clears the armed state
+- wrapper restart clears the armed state
+
+Why this is preferred for MVP:
+
+- simpler than `q then y` because it does not add a second confirmation key
+  contract or prompt mode
+- safer than plain single-key `Q`
+- better than disabling quit because the validated control loop already has a
+  useful clean-exit path and operators still need a minimal shutdown command
+
+The guard belongs in the wrapper, not in the switcher control parser. The
+switcher keeps `quit` as a normal explicit command. The wrapper decides when
+to emit it.
+
 ## Same-Session Bounded Server Lifecycle Note
 
-The current same-session manual proof exposed two bounded-service details:
+The current same-session manual proof still needs a bounded request-budget
+calculation:
 
 - request budget must cover
   `render_command_count * max_ticks_per_command * real_slot_count`
-- the bounded server summary currently needs one extra flush read in the
-  recorded manual setup after the success script completes
+- in the validated control-pipe success path:
+  - `7 * 5 * 4 = 140`
+
+Current observed status after the rebuilt rerun:
+
+- the bounded server converged at `max_requests=140`
+- `requests_served=140`
+- `handoff_errors=0`
+- the earlier extra flush read was not needed in that rebuilt rerun
 
 Current decision:
 
-- document both behaviors and allow them for the current manual/operator-proof
-  phase
-- do not block wrapper design on bounded server summary polish
-- keep a later narrow polish item open to decide whether bounded handoff
-  summary flush/exit should complete without an extra read
+- keep the request-budget formula documented
+- do not treat an extra flush read as part of the wrapper MVP contract
+- do not block wrapper work on bounded server summary flush/exit polish
+- keep a later narrow polish item open for:
+  - request-budget calculation ergonomics
+  - whether an occasional extra flush read is still needed in any edge case
+  - final summary flush/exit cleanup
 
 ## Operator-Facing Control Surface After Stable All-Real Baseline
 

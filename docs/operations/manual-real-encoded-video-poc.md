@@ -2839,6 +2839,21 @@ Current control-channel decision:
   local control channel rather than forcing the wrapper to own switcher stdin
 - defer direct hotkey capture inside the switcher process
 
+Implementation-form comparison for the wrapper MVP:
+
+- `A`: add a wrapper command inside `stream-sync-switcher`
+  - preferred MVP packaging direction because the current thin sender/control
+    pipe already lives in the switcher app and the wrapper can still run as a
+    separate process
+- `B`: add a separate `apps/operator-wrapper` binary/app
+  - defer until the wrapper grows beyond a thin keyboard shell or needs
+    clearly separate packaging
+- `C`: implement the first wrapper as a CLI/TUI keyboard loop
+  - preferred first interaction shape because it is the smallest operator
+    surface above the validated control pipe
+- `D`: full GUI later
+  - explicitly defer until after the thin wrapper contract is validated
+
 Why stdin is not the preferred long-term wrapper channel:
 
 - it is good for today's scripts and manual proof runs
@@ -2865,6 +2880,12 @@ Preferred MVP wrapper direction:
   - do not reuse the same name for both responsibilities
 - the first minimal sender is now:
   - `.\target\debug\stream-sync-switcher.exe --send-control-command streamsync-control-dev "focus 1"`
+- the wrapper should be restartable:
+  - wrapper exit must not close the switcher loop or clean output window
+  - wrapper restart should only require reconnecting on the next command
+- the wrapper should display:
+  - the latest switcher response line
+  - any wrapper-local guard text when no control command was sent
 
 Suggested first operator mapping:
 
@@ -2876,6 +2897,63 @@ Suggested first operator mapping:
 - `S` -> `status`
 - `Q` -> guarded `quit`
 
+Chosen MVP guarded quit:
+
+- first `Q` arms a local wrapper guard only
+- second `Q` within `2` seconds sends the real `quit` command
+- any non-`Q` key clears the guard
+- timeout clears the guard
+- wrapper restart clears the guard
+
+Why this was chosen:
+
+- simpler than `q then y`
+- safer than single-key immediate quit
+- more useful than disabling quit entirely in MVP because the validated
+  `quit` path already exists and operators still need one minimal clean-exit
+  command
+
+Planned wrapper MVP shape:
+
+- same-binary wrapper command is acceptable for MVP as long as it runs as a
+  separate process from the switcher loop
+- first interaction mode should be a CLI/TUI keyboard loop
+- full GUI stays later
+
+Wrapper MVP manual validation plan after implementation:
+
+1. rebuild before the session:
+   - `cargo build`
+   - reason: one recorded pass saw stale `target/debug` binaries keep the old
+     parser behavior even though source already had the new control-pipe path
+2. start the bounded same-session switcher loop with control pipe:
+   - `.\target\debug\stream-sync-switcher.exe --four-view-controlled-handoff-preview-loop streamsync-handoff-dev player1 streamsync-dev-session player2 streamsync-dev-session player3 streamsync-dev-session player4 streamsync-dev-session 5 --control-pipe streamsync-control-dev`
+3. start the wrapper MVP:
+   - planned shape: a separate wrapper process connected only to
+     `streamsync-control-dev`
+4. press:
+   - `1`
+   - `2`
+   - `3`
+   - `4`
+   - `0` or `A`
+   - `S`
+5. confirm after each key:
+   - one control command was sent
+   - one response line was displayed by the wrapper
+   - switcher window lifecycle stayed alive
+6. confirm guarded `Q` behavior:
+   - first `Q` shows wrapper-local armed text and does not send `quit`
+   - second `Q` within `2` seconds sends `quit`
+7. confirm final switcher summary:
+   - `commands_processed`
+   - `commands_rejected`
+   - `frames_rendered`
+   - `render_failures`
+   - `scheduler_status`
+   - `clean_output_render_result_kind`
+   - `exit_reason`
+
 ## 9. Same-Session Bounded Server Lifecycle Note
 
 The current same-session success script should still be read with these
@@ -2885,12 +2963,20 @@ practical constraints:
   - `render_command_count * max_ticks_per_command * real_slot_count`
 - in the recorded success path:
   - `7 * 5 * 4 = 140`
-- the bounded server summary currently required one extra one-shot flush read
-  after the main success script in this manual setup
+- the rebuilt control-pipe rerun did not need the earlier extra flush read and
+  converged at:
+  - `max_requests=140`
+  - `requests_served=140`
+  - `handoff_errors=0`
 
 Current decision:
 
-- accept that extra flush read as a temporary operator/manual-proof detail
-- document it rather than blocking wrapper planning on server lifecycle polish
-- revisit bounded handoff summary flush/exit behavior later if wrapper
-  automation would otherwise need to encode that workaround
+- keep the request-budget formula documented
+- do not make an extra flush read part of the wrapper MVP contract
+- if a future run needs an extra flush read again, treat it as a temporary
+  diagnostic workaround rather than wrapper behavior
+- wrapper planning should not be blocked on this narrow bounded-service polish
+- later narrow follow-up may still review:
+  - request-budget calculation ergonomics
+  - extra flush read need in edge cases
+  - summary flush/exit polish
