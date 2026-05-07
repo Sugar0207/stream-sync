@@ -7,6 +7,7 @@
 /logs/
 .codex-logs/
 *.log
+.tmp-streamsync-run/
 
 # Editor and OS files
 .DS_Store
