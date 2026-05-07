@@ -5,6 +5,83 @@
 - Codex
 
 ### Work
+- Implemented the first continuous receive/send runtime code slice on the
+  server side only.
+- Added a new command:
+  - `stream-sync-server --receive-send-runtime-bounded [config-path] [max-iterations] [receive-timeout-ms]`
+- Kept the implementation bounded and thin:
+  - one bound UDP socket across loop turns
+  - one `AuthenticatedSenderRegistry` across loop turns
+  - one `ServerOutboundQueueCollection` across loop turns
+  - caller-owned writers across loop turns
+  - repeated reuse of existing
+    `ServerControllerReceiveSendRuntimeBoundary`
+- Added the bounded runtime aggregate summary fields:
+  - `command_name`
+  - `config_path`
+  - `max_iterations`
+  - `receive_timeout_ms`
+  - `iterations_attempted`
+  - `iterations_completed`
+  - `auth_requests_received`
+  - `auth_responses_sent`
+  - `heartbeats_received`
+  - `heartbeat_acks_sent`
+  - `client_stats_received`
+  - `client_stats_returns_sent`
+  - `accepted_packets`
+  - `rejected_packets`
+  - `decode_errors`
+  - `send_failures`
+  - `outbound_queue_len`
+  - `registered_clients`
+  - `stop_reason`
+- Kept scope intentionally narrow:
+  - no protocol change
+  - no switcher change
+  - no client change
+  - no retry/requeue
+  - no file sink open/rotation
+  - no process-wide logger
+  - no continuous video path
+  - no OBS WebSocket
+  - no GUI/operator split
+  - no daemon lifecycle work
+- Added code-level tests for:
+  - command parser
+  - summary formatter
+  - `max_iterations` stop
+  - repeated auth registry persistence
+  - repeated heartbeat existing-registry reuse
+  - `ClientStats` observation path count
+  - one-iteration runtime non-regression
+
+### Changed Files
+- `apps/server/src/lib.rs`
+- `apps/server/src/main.rs`
+- `docs/architecture/system-design.md`
+- `docs/operations/session-log.md`
+- `docs/operations/todo.md`
+
+### Decision
+- Treat the new bounded repeated runtime as the implemented first slice of the
+  continuous receive/send phase.
+- Keep the next step on manual validation of repeated auth / heartbeat /
+  `ClientStats` flow before widening into later service/runtime concerns.
+
+### Validation
+- `cargo fmt`
+- `cargo fmt --check`
+- `cargo check --workspace`
+- `cargo test -p stream-sync-server receive_send -- --test-threads=1`
+- `cargo test --workspace`
+- `git diff --check`
+
+## 2026-05-07
+### Type
+- Codex
+
+### Work
 - Reconfirmed the post-closeout baseline from repo state plus user-provided
   status:
   - `4`-client bounded real encoded video PoC validated

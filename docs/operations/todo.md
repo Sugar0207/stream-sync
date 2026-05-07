@@ -28,7 +28,10 @@
 - client 側は auth one-shot、heartbeat one-shot、`HeartbeatAckObservation` 付き `ClientStats` one-shot、one-tick runtime、accepted path 手動確認まで完了している
 - client continuous heartbeat loop は thin composition の completed body まで実装済みで、heartbeat timeout notice wakeup planning 境界、wakeup execution 境界、wakeup actual side-effect 境界、outer while-loop connection 境界、outer while-loop one-turn execution body 境界、actual timer wait / retry execution / reconnect 実行境界、outer while-loop 反復実行本体、reconnect policy 境界、caller-owned hook 付き actual socket 再確立境界、real UDP socket 差し替え hook、repeated body からの hook 注入経路まで完了している
 - 4-view operator MVP closeout は完了し、final regression も通過、push も完了している。bounded real encoded video / raw-key operator wrapper / `AllView` / `Focused(0..3)` / `AllView` return / raw console restore / `[video.encoder]` profile wiring / production H.264 stdout visibility / short OBS Window Capture validation までは current completed scope とする
-- 未完了の中心は late frame queue mutation / drop policy、4-view sync orchestration、dashboard UI rendering、continuous receive/send loop 本体、実キュー / 実送信 / 継続ログ出力である。next major phase は closeout docs ではなく continuous receive/send runtime の first implementation slice 設計とその後の最小実装へ移る
+- 未完了の中心は late frame queue mutation / drop policy、4-view sync orchestration、dashboard UI rendering、continuous receive/send loop の次 slice、実キュー / 実送信 / 継続ログ出力である。continuous receive/send runtime は first implementation slice として server-owned bounded repeated runtime まで追加済みで、next major phase はその manual validation と後続の narrow expansion へ移る
+- `stream-sync-server --receive-send-runtime-bounded [config-path] [max-iterations] [receive-timeout-ms]` は追加済みで、1 process lifetime で 1 bound UDP socket / 1 `AuthenticatedSenderRegistry` / 1 `ServerOutboundQueueCollection` / caller-owned writers を維持しながら existing `ServerControllerReceiveSendRuntimeBoundary` を outer loop から繰り返し呼べる
+- bounded repeated runtime summary には `command_name` / `config_path` / `max_iterations` / `receive_timeout_ms` / `iterations_attempted` / `iterations_completed` / `auth_requests_received` / `auth_responses_sent` / `heartbeats_received` / `heartbeat_acks_sent` / `client_stats_received` / `client_stats_returns_sent` / `accepted_packets` / `rejected_packets` / `decode_errors` / `send_failures` / `outbound_queue_len` / `registered_clients` / `stop_reason` を出す
+- code-level validation では command parser、summary formatter、`max_iterations` stop、repeated auth registry persistence、repeated heartbeat existing-registry reuse、`ClientStats` observation path count、existing one-iteration runtime non-regression を追加済み
 - outbound queue 実キュー、continuous receive/send loop 本体、send / receive の継続ログ出力、file sink open、process-wide logger、`ServerNotice` 実送信は未実装
 - named-pipe handoff の manual localhost validation は、plain pipe name `streamsync-handoff-dev` を使った one-shot pass と bounded `max_requests=2` pass の両方が成功記録済みで、bounded pass では `inspect-latest` が同じ frame を 2 回返して queue mutation しない preview semantics を確認済み
 - switcher 側 reconnect/lifecycle の次 slice は retry 実行より先に no-auto-retry / classification-first を固定し、1 scheduler read = 1 logical request = 1 transport attempt のまま explicit `HandoffError` を保持する方針で進める
@@ -153,18 +156,17 @@
 ---
 
 ## 直近でやること
-1. continuous receive/send runtime の first implementation slice
-   - server-owned bounded repeated runtime として始める
-   - one process lifetime で socket / auth registry / outbound queue / writers を保持する
-   - existing `ServerControllerReceiveSendRuntimeBoundary` を繰り返し呼ぶ outer loop を追加する
-   - stop policy は first slice では `max_iterations` と `receive-timeout-ms` を優先する
-2. bounded PoC から continuous runtime へ移る差分を implementation task へ落とす
-   - one-iteration launcher 群を repeated runtime へ束ねる
-   - per-command summary から aggregate runtime summary へ拡張する
-   - retry / requeue / daemon lifecycle を first slice へ持ち込まない
-3. first slice の manual validation を小さく保つ
+1. `--receive-send-runtime-bounded` の first-slice manual validation
    - repeated auth / heartbeat / client-stats observation を主対象にする
+   - `max_iterations` stop / `receive_timeout_ms` stop / stdout summary を実確認する
    - switcher continuous runtime や OBS 拡張へは広げない
+2. bounded repeated runtime から次 slice へ広げる差分を整理する
+   - fatal runtime error summary visibility をどう扱うか決める
+   - receive/send 継続ログ出力の ownership を first slice の外側で整理する
+   - retry / requeue / daemon lifecycle をまだ持ち込まない
+3. manual validation 後の narrow expansion を選ぶ
+   - continuous video path ではなく auth / heartbeat / client-stats path のまま進める
+   - service lifecycle / reconnect / retry 拡張は bounded runtime evidence の後段に回す
 
 ## MVP closeout 時点で blocker ではなかった future task
 - [ ] same-session bounded server lifecycle polish
@@ -195,11 +197,11 @@ continuous runtime phase へ移った後の non-blocker:
 
 continuous runtime first slice の blocker:
 
-- repeated outer loop ownership
-- socket / auth registry / outbound queue / writer lifetime persistence
-- bounded stop policy
-- aggregate runtime summary
-- repeated auth / heartbeat / client-stats manual validation path
+- [x] repeated outer loop ownership
+- [x] socket / auth registry / outbound queue / writer lifetime persistence
+- [x] bounded stop policy
+- [x] aggregate runtime summary
+- [ ] repeated auth / heartbeat / client-stats manual validation path
 
 ## 将来の polish 候補
 - [ ] `--four-view-proof-window-once` / `--four-view-clean-output-window-once` に visual confirmation 用の `--hold-ms` / preview hold duration を追加するか後で判断する
@@ -947,6 +949,6 @@ continuous runtime first slice の blocker:
 - actual dashboard UI rendering remains unimplemented.
 
 ## Next Items
-1. bounded continuous receive/send runtime implementation
-2. first-slice manual validation for repeated auth / heartbeat / client-stats flow
+1. first-slice manual validation for `--receive-send-runtime-bounded`
+2. bounded runtime summary / fatal-error visibility follow-up if needed
 3. later service lifecycle / reconnect / retry expansion after the bounded first slice

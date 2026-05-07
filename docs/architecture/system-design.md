@@ -9316,6 +9316,8 @@ Next phase after MVP closeout:
 Continuous receive/send runtime first implementation slice:
 
 - keep the first slice server-owned and bounded
+- the first code slice is now implemented as
+  `stream-sync-server --receive-send-runtime-bounded`
 - do not widen the first slice into:
   - switcher continuous runtime
   - OBS WebSocket / advanced OBS control
@@ -9347,6 +9349,48 @@ First-slice responsibilities:
 - allow accepted auth / heartbeat / client-stats observation flow to persist
   across iterations instead of ending after one launcher run
 - return one final bounded summary after the loop stops
+
+Current implemented behavior:
+
+- CLI:
+  - `stream-sync-server --receive-send-runtime-bounded [config-path] [max-iterations] [receive-timeout-ms]`
+- lifetime ownership:
+  - one bound UDP socket per process lifetime
+  - one `AuthenticatedSenderRegistry` per process lifetime
+  - one `ServerOutboundQueueCollection` per process lifetime
+  - one caller-owned writer set across all loop turns
+- loop body:
+  - existing `ServerControllerReceiveSendRuntimeBoundary` is reused unchanged
+  - the outer loop only supplies timestamps, bounded stop policy, and final
+    aggregation
+- first-slice summary fields:
+  - `command_name`
+  - `config_path`
+  - `max_iterations`
+  - `receive_timeout_ms`
+  - `iterations_attempted`
+  - `iterations_completed`
+  - `auth_requests_received`
+  - `auth_responses_sent`
+  - `heartbeats_received`
+  - `heartbeat_acks_sent`
+  - `client_stats_received`
+  - `client_stats_returns_sent`
+  - `accepted_packets`
+  - `rejected_packets`
+  - `decode_errors`
+  - `send_failures`
+  - `outbound_queue_len`
+  - `registered_clients`
+  - `stop_reason`
+- code-level coverage added for:
+  - command parser
+  - summary formatter
+  - `max_iterations` stop
+  - repeated auth registry persistence
+  - repeated heartbeat reuse of existing registry
+  - `ClientStats` observation path counting
+  - existing one-iteration runtime non-regression
 
 First-slice stop policy:
 
@@ -9396,11 +9440,13 @@ Bounded PoC to continuous-runtime design differences:
 
 Continuous-runtime blockers for the first slice:
 
-- repeated invocation of the existing controller/runtime in one process
-- stable ownership of socket/registry/queue/writers across loop turns
-- bounded stop policy (`max_iterations`, `receive-timeout-ms`, fatal error)
-- final aggregate runtime summary
-- manual validation path for repeated auth/heartbeat/client-stats handling
+- done:
+  - repeated invocation of the existing controller/runtime in one process
+  - stable ownership of socket/registry/queue/writers across loop turns
+  - bounded stop policy (`max_iterations`, `receive-timeout-ms`, fatal error)
+  - final aggregate runtime summary
+- remaining:
+  - manual validation path for repeated auth/heartbeat/client-stats handling
 
 Non-blockers for the first slice:
 

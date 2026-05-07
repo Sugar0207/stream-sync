@@ -167,6 +167,35 @@ fn main() {
                 }
             }
         }
+        Some("--receive-send-runtime-bounded") => {
+            let command = parse_receive_send_runtime_bounded_command_args(args.collect::<Vec<_>>());
+            let launcher = stream_sync_server::ServerReceiveSendRuntimeBoundedLauncher::default();
+            let policy = stream_sync_server::ServerReceiveSendRuntimeBoundedPolicy {
+                max_iterations: command.max_iterations,
+                receive_timeout: std::time::Duration::from_millis(command.receive_timeout_ms),
+            };
+            match launcher.run_bounded_from_path_with_writers_and_policy(
+                &command.config_path,
+                std::io::stderr(),
+                std::io::stderr(),
+                std::io::stderr(),
+                std::io::stderr(),
+                policy,
+            ) {
+                Ok(outcome) => println!(
+                    "{}",
+                    format_receive_send_runtime_bounded_summary(
+                        "--receive-send-runtime-bounded",
+                        &command.config_path,
+                        &outcome,
+                    )
+                ),
+                Err(error) => {
+                    eprintln!("receive/send bounded runtime failed: {error:?}");
+                    std::process::exit(1);
+                }
+            }
+        }
         Some("--receive-auth-video-queue-once") => {
             let config_path = args
                 .next()
@@ -380,9 +409,31 @@ fn main() {
         }
         _ => {
             println!(
-                "stream-sync-server scaffold; use --auth-response-poc-once [config-path], --receive-send-once [config-path], --receive-send-twice [config-path], --receive-send-three [config-path], --receive-auth-video-queue-once [config-path] [max-video-packets] [receive-timeout-ms] [expected-reassembled-frames] [stop-after-expected-reassembled-frames] [receive-buffer-bytes] [expected-reassembled-clients] [expected-reassembled-frames-per-client], --receive-auth-video-queue-and-serve-handoff-once [config-path] [pipe-name] [max-video-packets] [receive-timeout-ms] [expected-reassembled-frames] [stop-after-expected-reassembled-frames] [receive-buffer-bytes] [expected-reassembled-clients] [expected-reassembled-frames-per-client], or --receive-auth-video-queue-and-serve-handoff-many [config-path] [pipe-name] [max-requests] [max-video-packets] [receive-timeout-ms] [expected-reassembled-frames] [stop-after-expected-reassembled-frames] [receive-buffer-bytes] [expected-reassembled-clients] [expected-reassembled-frames-per-client]"
+                "stream-sync-server scaffold; use --auth-response-poc-once [config-path], --receive-send-once [config-path], --receive-send-twice [config-path], --receive-send-three [config-path], --receive-send-runtime-bounded [config-path] [max-iterations] [receive-timeout-ms], --receive-auth-video-queue-once [config-path] [max-video-packets] [receive-timeout-ms] [expected-reassembled-frames] [stop-after-expected-reassembled-frames] [receive-buffer-bytes] [expected-reassembled-clients] [expected-reassembled-frames-per-client], --receive-auth-video-queue-and-serve-handoff-once [config-path] [pipe-name] [max-video-packets] [receive-timeout-ms] [expected-reassembled-frames] [stop-after-expected-reassembled-frames] [receive-buffer-bytes] [expected-reassembled-clients] [expected-reassembled-frames-per-client], or --receive-auth-video-queue-and-serve-handoff-many [config-path] [pipe-name] [max-requests] [max-video-packets] [receive-timeout-ms] [expected-reassembled-frames] [stop-after-expected-reassembled-frames] [receive-buffer-bytes] [expected-reassembled-clients] [expected-reassembled-frames-per-client]"
             );
         }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ReceiveSendRuntimeBoundedCommandArgs {
+    config_path: String,
+    max_iterations: usize,
+    receive_timeout_ms: u64,
+}
+
+fn parse_receive_send_runtime_bounded_command_args(
+    args: Vec<String>,
+) -> ReceiveSendRuntimeBoundedCommandArgs {
+    let mut args = args.into_iter();
+    ReceiveSendRuntimeBoundedCommandArgs {
+        config_path: args
+            .next()
+            .unwrap_or_else(|| "configs/examples/server.example.toml".to_string()),
+        max_iterations: parse_optional_arg_or_exit::<usize>(args.next(), "max-iterations")
+            .unwrap_or(16),
+        receive_timeout_ms: parse_optional_arg_or_exit::<u64>(args.next(), "receive-timeout-ms")
+            .unwrap_or(1_000),
     }
 }
 
@@ -457,6 +508,55 @@ fn sent_bytes(result: &stream_sync_server::ServerControllerReceiveSendRuntimeRes
             .map(|send| send.bytes_sent)
             .unwrap_or(0),
         stream_sync_server::ServerControllerReceiveSendRuntimeResult::Stopped { .. } => 0,
+    }
+}
+
+fn format_receive_send_runtime_bounded_summary(
+    command_name: &str,
+    config_path: &str,
+    outcome: &stream_sync_server::ServerReceiveSendRuntimeBoundedStartupOutcome,
+) -> String {
+    let summary = &outcome.summary;
+    format!(
+        "command_name={} config_path={} max_iterations={} receive_timeout_ms={} iterations_attempted={} iterations_completed={} auth_requests_received={} auth_responses_sent={} heartbeats_received={} heartbeat_acks_sent={} client_stats_received={} client_stats_returns_sent={} accepted_packets={} rejected_packets={} decode_errors={} send_failures={} outbound_queue_len={} registered_clients={} stop_reason={}",
+        command_name,
+        config_path,
+        summary.max_iterations,
+        summary.receive_timeout.as_millis(),
+        summary.iterations_attempted,
+        summary.iterations_completed,
+        summary.auth_requests_received,
+        summary.auth_responses_sent,
+        summary.heartbeats_received,
+        summary.heartbeat_acks_sent,
+        summary.client_stats_received,
+        summary.client_stats_returns_sent,
+        summary.accepted_packets,
+        summary.rejected_packets,
+        summary.decode_errors,
+        summary.send_failures,
+        summary.outbound_queue_len,
+        summary.registered_clients,
+        receive_send_runtime_bounded_stop_reason_name(summary.stop_reason),
+    )
+}
+
+fn receive_send_runtime_bounded_stop_reason_name(
+    reason: stream_sync_server::ServerReceiveSendRuntimeBoundedStopReason,
+) -> String {
+    match reason {
+        stream_sync_server::ServerReceiveSendRuntimeBoundedStopReason::MaxIterationsReached => {
+            "MaxIterationsReached".to_string()
+        }
+        stream_sync_server::ServerReceiveSendRuntimeBoundedStopReason::ReceiveTimedOut => {
+            "ReceiveTimedOut".to_string()
+        }
+        stream_sync_server::ServerReceiveSendRuntimeBoundedStopReason::ControllerStopped => {
+            "ControllerStopped".to_string()
+        }
+        stream_sync_server::ServerReceiveSendRuntimeBoundedStopReason::SocketReceiveFailed(
+            error_kind,
+        ) => format!("SocketReceiveFailed({error_kind:?})"),
     }
 }
 
@@ -853,7 +953,10 @@ mod tests {
         ProtocolVersion, RunId, TimestampMicros,
     };
 
-    use super::format_handoff_read_mode;
+    use super::{
+        format_handoff_read_mode, format_receive_send_runtime_bounded_summary,
+        parse_receive_send_runtime_bounded_command_args,
+    };
 
     #[test]
     fn server_handoff_formats_read_mode_names() {
@@ -869,6 +972,84 @@ mod tests {
             format_handoff_read_mode(ServerSwitcherQueuedFrameReadMode::DequeueOldest),
             "dequeue-oldest"
         );
+    }
+
+    #[test]
+    fn parse_receive_send_runtime_bounded_command_uses_defaults() {
+        let args = parse_receive_send_runtime_bounded_command_args(Vec::new());
+
+        assert_eq!(args.config_path, "configs/examples/server.example.toml");
+        assert_eq!(args.max_iterations, 16);
+        assert_eq!(args.receive_timeout_ms, 1_000);
+    }
+
+    #[test]
+    fn parse_receive_send_runtime_bounded_command_parses_custom_values() {
+        let args = parse_receive_send_runtime_bounded_command_args(vec![
+            "configs/custom/server.toml".to_string(),
+            "24".to_string(),
+            "250".to_string(),
+        ]);
+
+        assert_eq!(args.config_path, "configs/custom/server.toml");
+        assert_eq!(args.max_iterations, 24);
+        assert_eq!(args.receive_timeout_ms, 250);
+    }
+
+    #[test]
+    fn receive_send_runtime_bounded_summary_includes_required_fields() {
+        let summary = format_receive_send_runtime_bounded_summary(
+            "--receive-send-runtime-bounded",
+            "configs/examples/server.example.toml",
+            &stream_sync_server::ServerReceiveSendRuntimeBoundedStartupOutcome {
+                bind_address: "127.0.0.1:5000"
+                    .parse()
+                    .expect("bind address should parse"),
+                registry: stream_sync_server::AuthenticatedSenderRegistry::default(),
+                queue_collection: stream_sync_server::ServerOutboundQueueCollection::default(),
+                iterations: Vec::new(),
+                summary: stream_sync_server::ServerReceiveSendRuntimeBoundedSummary {
+                    max_iterations: 16,
+                    receive_timeout: std::time::Duration::from_millis(1_000),
+                    iterations_attempted: 4,
+                    iterations_completed: 4,
+                    auth_requests_received: 1,
+                    auth_responses_sent: 1,
+                    heartbeats_received: 1,
+                    heartbeat_acks_sent: 1,
+                    client_stats_received: 1,
+                    client_stats_returns_sent: 1,
+                    accepted_packets: 3,
+                    rejected_packets: 0,
+                    decode_errors: 0,
+                    send_failures: 0,
+                    outbound_queue_len: 0,
+                    registered_clients: 1,
+                    stop_reason:
+                        stream_sync_server::ServerReceiveSendRuntimeBoundedStopReason::ReceiveTimedOut,
+                },
+            },
+        );
+
+        assert!(summary.contains("command_name=--receive-send-runtime-bounded"));
+        assert!(summary.contains("config_path=configs/examples/server.example.toml"));
+        assert!(summary.contains("max_iterations=16"));
+        assert!(summary.contains("receive_timeout_ms=1000"));
+        assert!(summary.contains("iterations_attempted=4"));
+        assert!(summary.contains("iterations_completed=4"));
+        assert!(summary.contains("auth_requests_received=1"));
+        assert!(summary.contains("auth_responses_sent=1"));
+        assert!(summary.contains("heartbeats_received=1"));
+        assert!(summary.contains("heartbeat_acks_sent=1"));
+        assert!(summary.contains("client_stats_received=1"));
+        assert!(summary.contains("client_stats_returns_sent=1"));
+        assert!(summary.contains("accepted_packets=3"));
+        assert!(summary.contains("rejected_packets=0"));
+        assert!(summary.contains("decode_errors=0"));
+        assert!(summary.contains("send_failures=0"));
+        assert!(summary.contains("outbound_queue_len=0"));
+        assert!(summary.contains("registered_clients=1"));
+        assert!(summary.contains("stop_reason=ReceiveTimedOut"));
     }
 
     #[cfg(windows)]

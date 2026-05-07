@@ -1697,6 +1697,381 @@ pub enum ServerReceiveSendThreeIterationStartupError {
     ObservationReturn(ServerHeartbeatObservationReturnError),
 }
 
+/// Manual policy for the bounded repeated controller receive/send runtime.
+///
+/// This keeps the first continuous-runtime slice intentionally small: one
+/// socket and one set of in-memory state are preserved across repeated
+/// controller iterations until one bounded stop reason is observed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ServerReceiveSendRuntimeBoundedPolicy {
+    pub max_iterations: usize,
+    pub receive_timeout: Duration,
+}
+
+impl Default for ServerReceiveSendRuntimeBoundedPolicy {
+    fn default() -> Self {
+        Self {
+            max_iterations: 16,
+            receive_timeout: Duration::from_millis(1_000),
+        }
+    }
+}
+
+/// Final stop reason for the bounded repeated controller receive/send runtime.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ServerReceiveSendRuntimeBoundedStopReason {
+    MaxIterationsReached,
+    ReceiveTimedOut,
+    ControllerStopped,
+    SocketReceiveFailed(io::ErrorKind),
+}
+
+/// Aggregate stdout-facing summary for the bounded repeated runtime.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ServerReceiveSendRuntimeBoundedSummary {
+    pub max_iterations: usize,
+    pub receive_timeout: Duration,
+    pub iterations_attempted: usize,
+    pub iterations_completed: usize,
+    pub auth_requests_received: usize,
+    pub auth_responses_sent: usize,
+    pub heartbeats_received: usize,
+    pub heartbeat_acks_sent: usize,
+    pub client_stats_received: usize,
+    pub client_stats_returns_sent: usize,
+    pub accepted_packets: usize,
+    pub rejected_packets: usize,
+    pub decode_errors: usize,
+    pub send_failures: usize,
+    pub outbound_queue_len: usize,
+    pub registered_clients: usize,
+    pub stop_reason: ServerReceiveSendRuntimeBoundedStopReason,
+}
+
+/// Result of launching the bounded repeated controller receive/send runtime.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ServerReceiveSendRuntimeBoundedStartupOutcome {
+    pub bind_address: SocketAddr,
+    pub registry: AuthenticatedSenderRegistry,
+    pub queue_collection: ServerOutboundQueueCollection,
+    pub iterations: Vec<ServerControllerReceiveSendRuntimeResult>,
+    pub summary: ServerReceiveSendRuntimeBoundedSummary,
+}
+
+/// Startup error for the bounded repeated controller receive/send runtime.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ServerReceiveSendRuntimeBoundedStartupError {
+    OneIterationStartup(ServerReceiveSendOneIterationStartupError),
+    Bind {
+        address: SocketAddr,
+        kind: io::ErrorKind,
+    },
+    SetReceiveTimeout {
+        address: SocketAddr,
+        kind: io::ErrorKind,
+    },
+    Runtime {
+        iteration_index: usize,
+        error: ServerControllerReceiveSendRuntimeError,
+    },
+}
+
+/// Launcher for the bounded repeated controller receive/send runtime.
+///
+/// This is the first server-owned repeated runtime slice. It preserves one UDP
+/// socket, one authenticated sender registry, one outbound queue collection,
+/// and caller-owned writers across repeated calls to the existing
+/// `ServerControllerReceiveSendRuntimeBoundary`. It intentionally does not add
+/// retry / requeue, file sink ownership, process-wide logging, switcher
+/// runtime, or daemon lifecycle control.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ServerReceiveSendRuntimeBoundedLauncher {
+    socket_io: UdpSocketIoBoundary,
+    runtime: ServerControllerReceiveSendRuntimeBoundary,
+    observation_return: ServerHeartbeatObservationReturnBoundary,
+}
+
+impl ServerReceiveSendRuntimeBoundedLauncher {
+    pub fn load_startup_config_from_path(
+        &self,
+        path: impl AsRef<Path>,
+    ) -> Result<ServerAuthResponsePocStartupConfig, ServerReceiveSendRuntimeBoundedStartupError>
+    {
+        ServerReceiveSendOneIterationLauncher::default()
+            .load_startup_config_from_path(path)
+            .map_err(ServerReceiveSendRuntimeBoundedStartupError::OneIterationStartup)
+    }
+
+    pub fn load_startup_config_from_str(
+        &self,
+        input: &str,
+    ) -> Result<ServerAuthResponsePocStartupConfig, ServerReceiveSendRuntimeBoundedStartupError>
+    {
+        ServerReceiveSendOneIterationLauncher::default()
+            .load_startup_config_from_str(input)
+            .map_err(ServerReceiveSendRuntimeBoundedStartupError::OneIterationStartup)
+    }
+
+    pub fn run_bounded_from_path_with_writers_and_policy<
+        OW: io::Write,
+        RW: io::Write,
+        AW: io::Write,
+        SW: io::Write,
+    >(
+        &self,
+        path: impl AsRef<Path>,
+        operational_writer: OW,
+        rejection_writer: RW,
+        auth_log_writer: AW,
+        send_log_writer: SW,
+        policy: ServerReceiveSendRuntimeBoundedPolicy,
+    ) -> Result<
+        ServerReceiveSendRuntimeBoundedStartupOutcome,
+        ServerReceiveSendRuntimeBoundedStartupError,
+    > {
+        let startup_config = self.load_startup_config_from_path(path)?;
+        self.run_bounded_with_writers_and_policy(
+            startup_config,
+            operational_writer,
+            rejection_writer,
+            auth_log_writer,
+            send_log_writer,
+            policy,
+        )
+    }
+
+    pub fn run_bounded_with_writers_and_policy<
+        OW: io::Write,
+        RW: io::Write,
+        AW: io::Write,
+        SW: io::Write,
+    >(
+        &self,
+        startup_config: ServerAuthResponsePocStartupConfig,
+        mut operational_writer: OW,
+        mut rejection_writer: RW,
+        mut auth_log_writer: AW,
+        mut send_log_writer: SW,
+        policy: ServerReceiveSendRuntimeBoundedPolicy,
+    ) -> Result<
+        ServerReceiveSendRuntimeBoundedStartupOutcome,
+        ServerReceiveSendRuntimeBoundedStartupError,
+    > {
+        let socket = self
+            .socket_io
+            .bind(startup_config.bind_address)
+            .map_err(|error| ServerReceiveSendRuntimeBoundedStartupError::Bind {
+                address: startup_config.bind_address,
+                kind: error.kind(),
+            })?;
+        socket
+            .set_read_timeout(Some(policy.receive_timeout))
+            .map_err(
+                |error| ServerReceiveSendRuntimeBoundedStartupError::SetReceiveTimeout {
+                    address: startup_config.bind_address,
+                    kind: error.kind(),
+                },
+            )?;
+
+        let mut buffer = vec![0_u8; DEFAULT_UDP_PACKET_BUFFER_LEN];
+        let mut registry = AuthenticatedSenderRegistry::default();
+        let mut queue_collection = ServerOutboundQueueCollection::default();
+        let mut iterations = Vec::new();
+        let mut heartbeat_handoffs_by_client =
+            BTreeMap::<(String, String), ServerHeartbeatAckHandoff>::new();
+        let mut final_stop_reason = None;
+        let mut summary = ServerReceiveSendRuntimeBoundedSummary {
+            max_iterations: policy.max_iterations,
+            receive_timeout: policy.receive_timeout,
+            iterations_attempted: 0,
+            iterations_completed: 0,
+            auth_requests_received: 0,
+            auth_responses_sent: 0,
+            heartbeats_received: 0,
+            heartbeat_acks_sent: 0,
+            client_stats_received: 0,
+            client_stats_returns_sent: 0,
+            accepted_packets: 0,
+            rejected_packets: 0,
+            decode_errors: 0,
+            send_failures: 0,
+            outbound_queue_len: 0,
+            registered_clients: 0,
+            stop_reason: ServerReceiveSendRuntimeBoundedStopReason::MaxIterationsReached,
+        };
+
+        for iteration_index in 0..policy.max_iterations {
+            summary.iterations_attempted = summary.iterations_attempted.saturating_add(1);
+            let timestamp = current_system_timestamp_micros();
+            let result = self
+                .runtime
+                .run_once(
+                    &socket,
+                    &mut buffer,
+                    &mut registry,
+                    &mut queue_collection,
+                    &startup_config.auth_config,
+                    ServerControllerReceiveSendRuntimeInput {
+                        controller: ServerContinuousReceiveLoopControllerInput {
+                            expected_protocol_version: startup_config.expected_protocol_version,
+                            timestamp,
+                            continue_requested: true,
+                        },
+                        heartbeat_timing: ServerHeartbeatAckTiming {
+                            server_received_at: timestamp,
+                            server_sent_at: timestamp,
+                        },
+                        encode_context: EncodeContext {
+                            protocol_version: startup_config.expected_protocol_version,
+                        },
+                        auth_log_timestamp: timestamp,
+                        send_log_timestamp: timestamp,
+                    },
+                    &mut operational_writer,
+                    &mut rejection_writer,
+                    &mut auth_log_writer,
+                    &mut send_log_writer,
+                )
+                .map_err(
+                    |error| ServerReceiveSendRuntimeBoundedStartupError::Runtime {
+                        iteration_index,
+                        error,
+                    },
+                )?;
+
+            summary.iterations_completed = summary.iterations_completed.saturating_add(1);
+            let stop_reason =
+                self.observe_iteration(&result, &mut heartbeat_handoffs_by_client, &mut summary);
+            iterations.push(result);
+            if let Some(stop_reason) = stop_reason {
+                final_stop_reason = Some(stop_reason);
+                break;
+            }
+        }
+
+        summary.stop_reason = final_stop_reason
+            .unwrap_or(ServerReceiveSendRuntimeBoundedStopReason::MaxIterationsReached);
+        summary.outbound_queue_len = queue_collection.len();
+        summary.registered_clients = registry.entries().count();
+
+        Ok(ServerReceiveSendRuntimeBoundedStartupOutcome {
+            bind_address: startup_config.bind_address,
+            registry,
+            queue_collection,
+            iterations,
+            summary,
+        })
+    }
+
+    fn observe_iteration(
+        &self,
+        result: &ServerControllerReceiveSendRuntimeResult,
+        heartbeat_handoffs_by_client: &mut BTreeMap<(String, String), ServerHeartbeatAckHandoff>,
+        summary: &mut ServerReceiveSendRuntimeBoundedSummary,
+    ) -> Option<ServerReceiveSendRuntimeBoundedStopReason> {
+        match result {
+            ServerControllerReceiveSendRuntimeResult::Stopped { .. } => {
+                Some(ServerReceiveSendRuntimeBoundedStopReason::ControllerStopped)
+            }
+            ServerControllerReceiveSendRuntimeResult::Iteration { iteration, .. } => {
+                match &iteration.body.tick.outcome {
+                    ServerContinuousReceiveLoopOneTickRuntimeOutcome::SocketReceiveFailed {
+                        error_kind,
+                        ..
+                    } => {
+                        return Some(match error_kind {
+                            io::ErrorKind::TimedOut | io::ErrorKind::WouldBlock => {
+                                ServerReceiveSendRuntimeBoundedStopReason::ReceiveTimedOut
+                            }
+                            other => {
+                                ServerReceiveSendRuntimeBoundedStopReason::SocketReceiveFailed(
+                                    *other,
+                                )
+                            }
+                        });
+                    }
+                    ServerContinuousReceiveLoopOneTickRuntimeOutcome::Completed {
+                        handler, ..
+                    } => {
+                        if matches!(
+                            handler
+                                .writer
+                                .operational_event
+                                .as_ref()
+                                .map(|event| event.outcome),
+                            Some(ServerReceiveLoopLogOutcome::Accepted)
+                        ) {
+                            summary.accepted_packets = summary.accepted_packets.saturating_add(1);
+                        }
+                        if let Some(rejection) = &handler.writer.rejection_event {
+                            summary.rejected_packets = summary.rejected_packets.saturating_add(1);
+                            if matches!(
+                                rejection.rejection_reason,
+                                ServerReceiveRejectionReason::DecodeError
+                            ) {
+                                summary.decode_errors = summary.decode_errors.saturating_add(1);
+                            }
+                        }
+                    }
+                    ServerContinuousReceiveLoopOneTickRuntimeOutcome::Stopped => {}
+                }
+
+                match &iteration.side_effect.result {
+                    ServerDispatchRuntimeSideEffectApplyResult::Auth { .. } => {
+                        summary.auth_requests_received =
+                            summary.auth_requests_received.saturating_add(1);
+                    }
+                    ServerDispatchRuntimeSideEffectApplyResult::HeartbeatAck(handoff) => {
+                        summary.heartbeats_received = summary.heartbeats_received.saturating_add(1);
+                        heartbeat_handoffs_by_client.insert(
+                            (
+                                handoff.registered_packet.heartbeat.client_id.0.clone(),
+                                handoff.registered_packet.heartbeat.run_id.0.clone(),
+                            ),
+                            handoff.clone(),
+                        );
+                    }
+                    ServerDispatchRuntimeSideEffectApplyResult::ClientStats(input) => {
+                        summary.client_stats_received =
+                            summary.client_stats_received.saturating_add(1);
+                        let key = (
+                            input.state.client_id.0.clone(),
+                            input.state.run_id.0.clone(),
+                        );
+                        if let Some(handoff) = heartbeat_handoffs_by_client.get(&key) {
+                            if self
+                                .observation_return
+                                .calculate_from_client_stats(handoff, input)
+                                .is_ok()
+                            {
+                                summary.client_stats_returns_sent =
+                                    summary.client_stats_returns_sent.saturating_add(1);
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+
+                if let Some(send_log) = &iteration.send_log {
+                    match send_log.message_type {
+                        MessageType::AuthResponse => {
+                            summary.auth_responses_sent =
+                                summary.auth_responses_sent.saturating_add(1);
+                        }
+                        MessageType::HeartbeatAck => {
+                            summary.heartbeat_acks_sent =
+                                summary.heartbeat_acks_sent.saturating_add(1);
+                        }
+                        _ => {}
+                    }
+                }
+
+                None
+            }
+        }
+    }
+}
+
 fn heartbeat_handoff_from_controller_result(
     result: &ServerControllerReceiveSendRuntimeResult,
 ) -> Option<&ServerHeartbeatAckHandoff> {
@@ -10649,6 +11024,330 @@ mod tests {
     }
 
     #[test]
+    fn receive_send_runtime_bounded_launcher_stops_at_max_iterations() {
+        let launcher = ServerReceiveSendRuntimeBoundedLauncher::default();
+        let bind_port = reserve_localhost_udp_port();
+        let startup_config = launcher
+            .load_startup_config_from_str(&receive_send_runtime_test_config(bind_port))
+            .expect("bounded runtime config should load");
+        let server_address = SocketAddr::from(([127, 0, 0, 1], bind_port));
+        let handle = std::thread::spawn(move || {
+            launcher.run_bounded_with_writers_and_policy(
+                startup_config,
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+                ServerReceiveSendRuntimeBoundedPolicy {
+                    max_iterations: 2,
+                    receive_timeout: Duration::from_millis(500),
+                },
+            )
+        });
+        let client_socket = UdpSocket::bind("127.0.0.1:0").expect("client socket should bind");
+        client_socket
+            .set_read_timeout(Some(Duration::from_secs(1)))
+            .expect("client read timeout should be set");
+        std::thread::sleep(Duration::from_millis(50));
+        client_socket
+            .send_to(
+                auth_request_packet("client-1", "presented-secret").as_slice(),
+                server_address,
+            )
+            .expect("first auth request should send");
+        client_socket
+            .send_to(
+                auth_request_packet("client-1", "presented-secret").as_slice(),
+                server_address,
+            )
+            .expect("second auth request should send");
+
+        let outcome = handle
+            .join()
+            .expect("bounded runtime thread should join")
+            .expect("bounded runtime should complete");
+
+        assert_eq!(
+            outcome.summary.stop_reason,
+            ServerReceiveSendRuntimeBoundedStopReason::MaxIterationsReached
+        );
+        assert_eq!(outcome.summary.iterations_attempted, 2);
+        assert_eq!(outcome.summary.iterations_completed, 2);
+        assert_eq!(outcome.summary.auth_requests_received, 2);
+        assert_eq!(outcome.summary.auth_responses_sent, 2);
+        assert_eq!(outcome.summary.accepted_packets, 2);
+        assert_eq!(outcome.summary.registered_clients, 1);
+
+        let mut response_buffer = vec![0_u8; 1024];
+        for _ in 0..2 {
+            let (response_len, _) = client_socket
+                .recv_from(&mut response_buffer)
+                .expect("auth response should receive");
+            let decoded = decode_fixed_header(&response_buffer[..response_len])
+                .expect("auth response should decode");
+            assert_eq!(decoded.header.message_type, MessageType::AuthResponse);
+        }
+    }
+
+    #[test]
+    fn receive_send_runtime_bounded_launcher_keeps_registry_across_auth_iterations() {
+        let launcher = ServerReceiveSendRuntimeBoundedLauncher::default();
+        let bind_port = reserve_localhost_udp_port();
+        let startup_config = launcher
+            .load_startup_config_from_str(&receive_send_runtime_test_config(bind_port))
+            .expect("bounded runtime config should load");
+        let server_address = SocketAddr::from(([127, 0, 0, 1], bind_port));
+        let handle = std::thread::spawn(move || {
+            launcher.run_bounded_with_writers_and_policy(
+                startup_config,
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+                ServerReceiveSendRuntimeBoundedPolicy {
+                    max_iterations: 3,
+                    receive_timeout: Duration::from_millis(150),
+                },
+            )
+        });
+        let client_socket = UdpSocket::bind("127.0.0.1:0").expect("client socket should bind");
+        client_socket
+            .set_read_timeout(Some(Duration::from_secs(1)))
+            .expect("client read timeout should be set");
+        std::thread::sleep(Duration::from_millis(50));
+        client_socket
+            .send_to(
+                auth_request_packet("client-1", "presented-secret").as_slice(),
+                server_address,
+            )
+            .expect("first auth request should send");
+        client_socket
+            .send_to(
+                auth_request_packet("client-1", "presented-secret").as_slice(),
+                server_address,
+            )
+            .expect("second auth request should send");
+
+        let outcome = handle
+            .join()
+            .expect("bounded runtime thread should join")
+            .expect("bounded runtime should complete");
+
+        assert_eq!(
+            outcome.summary.stop_reason,
+            ServerReceiveSendRuntimeBoundedStopReason::ReceiveTimedOut
+        );
+        assert_eq!(outcome.summary.auth_requests_received, 2);
+        assert_eq!(outcome.summary.auth_responses_sent, 2);
+        assert_eq!(outcome.registry.entries().count(), 1);
+        let entry = outcome
+            .registry
+            .get(&ClientId("client-1".to_string()))
+            .expect("client-1 should remain registered");
+        assert_eq!(
+            entry.source,
+            client_socket.local_addr().expect("client address").into()
+        );
+    }
+
+    #[test]
+    fn receive_send_runtime_bounded_launcher_uses_existing_registry_for_heartbeat() {
+        let launcher = ServerReceiveSendRuntimeBoundedLauncher::default();
+        let bind_port = reserve_localhost_udp_port();
+        let startup_config = launcher
+            .load_startup_config_from_str(&receive_send_runtime_test_config(bind_port))
+            .expect("bounded runtime config should load");
+        let server_address = SocketAddr::from(([127, 0, 0, 1], bind_port));
+        let handle = std::thread::spawn(move || {
+            launcher.run_bounded_with_writers_and_policy(
+                startup_config,
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+                ServerReceiveSendRuntimeBoundedPolicy {
+                    max_iterations: 3,
+                    receive_timeout: Duration::from_millis(150),
+                },
+            )
+        });
+        let client_socket = UdpSocket::bind("127.0.0.1:0").expect("client socket should bind");
+        client_socket
+            .set_read_timeout(Some(Duration::from_secs(1)))
+            .expect("client read timeout should be set");
+        std::thread::sleep(Duration::from_millis(50));
+        client_socket
+            .send_to(
+                auth_request_packet("client-1", "presented-secret").as_slice(),
+                server_address,
+            )
+            .expect("auth request should send");
+        let mut response_buffer = vec![0_u8; 1024];
+        client_socket
+            .recv_from(&mut response_buffer)
+            .expect("auth response should receive");
+        client_socket
+            .send_to(
+                test_packet(
+                    MessageType::Heartbeat as u16,
+                    FIXED_HEADER_LEN,
+                    2,
+                    &heartbeat_payload(),
+                )
+                .as_slice(),
+                server_address,
+            )
+            .expect("heartbeat should send");
+
+        let outcome = handle
+            .join()
+            .expect("bounded runtime thread should join")
+            .expect("bounded runtime should complete");
+
+        assert_eq!(outcome.summary.auth_requests_received, 1);
+        assert_eq!(outcome.summary.auth_responses_sent, 1);
+        assert_eq!(outcome.summary.heartbeats_received, 1);
+        assert_eq!(outcome.summary.heartbeat_acks_sent, 1);
+        assert_eq!(outcome.summary.accepted_packets, 2);
+    }
+
+    #[test]
+    fn receive_send_runtime_bounded_launcher_counts_client_stats_observation_path() {
+        let launcher = ServerReceiveSendRuntimeBoundedLauncher::default();
+        let bind_port = reserve_localhost_udp_port();
+        let startup_config = launcher
+            .load_startup_config_from_str(&receive_send_runtime_test_config(bind_port))
+            .expect("bounded runtime config should load");
+        let server_address = SocketAddr::from(([127, 0, 0, 1], bind_port));
+        let handle = std::thread::spawn(move || {
+            launcher.run_bounded_with_writers_and_policy(
+                startup_config,
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+                ServerReceiveSendRuntimeBoundedPolicy {
+                    max_iterations: 4,
+                    receive_timeout: Duration::from_millis(150),
+                },
+            )
+        });
+        let client_socket = UdpSocket::bind("127.0.0.1:0").expect("client socket should bind");
+        client_socket
+            .set_read_timeout(Some(Duration::from_secs(1)))
+            .expect("client read timeout should be set");
+        std::thread::sleep(Duration::from_millis(50));
+        client_socket
+            .send_to(
+                auth_request_packet("client-1", "presented-secret").as_slice(),
+                server_address,
+            )
+            .expect("auth request should send");
+        let mut response_buffer = vec![0_u8; 2048];
+        client_socket
+            .recv_from(&mut response_buffer)
+            .expect("auth response should receive");
+        client_socket
+            .send_to(
+                test_packet(
+                    MessageType::Heartbeat as u16,
+                    FIXED_HEADER_LEN,
+                    2,
+                    &heartbeat_payload(),
+                )
+                .as_slice(),
+                server_address,
+            )
+            .expect("heartbeat should send");
+        let (ack_len, _) = client_socket
+            .recv_from(&mut response_buffer)
+            .expect("heartbeat ack should receive");
+        let decoded_ack =
+            decode_fixed_header(&response_buffer[..ack_len]).expect("heartbeat ack should decode");
+        let ack = decode_heartbeat_ack_payload(decoded_ack.header, decoded_ack.payload)
+            .expect("heartbeat ack payload should decode");
+        let mut stats = client_stats_with_observation("client-1");
+        let Some(observation) = stats.heartbeat_observation.as_mut() else {
+            panic!("client stats helper should attach heartbeat observation");
+        };
+        observation.echoed_sent_at = ack.echoed_sent_at;
+        observation.server_received_at = ack.server_received_at;
+        observation.server_sent_at = ack.server_sent_at;
+        let mut stats_bytes = Vec::new();
+        ProtocolMessageEncoderBoundary
+            .encode_message(
+                EncodeContext {
+                    protocol_version: ProtocolVersion(2),
+                },
+                &ProtocolMessage::ClientStats(stats),
+                &mut stats_bytes,
+            )
+            .expect("client stats should encode");
+        client_socket
+            .send_to(stats_bytes.as_slice(), server_address)
+            .expect("client stats should send");
+
+        let outcome = handle
+            .join()
+            .expect("bounded runtime thread should join")
+            .expect("bounded runtime should complete");
+
+        assert_eq!(outcome.summary.auth_requests_received, 1);
+        assert_eq!(outcome.summary.heartbeats_received, 1);
+        assert_eq!(outcome.summary.client_stats_received, 1);
+        assert_eq!(outcome.summary.client_stats_returns_sent, 1);
+        assert_eq!(outcome.summary.accepted_packets, 3);
+    }
+
+    #[test]
+    fn receive_send_one_iteration_launcher_remains_single_iteration() {
+        let launcher = ServerReceiveSendOneIterationLauncher::default();
+        let bind_port = reserve_localhost_udp_port();
+        let startup_config = launcher
+            .load_startup_config_from_str(&receive_send_runtime_test_config(bind_port))
+            .expect("one iteration config should load");
+        let server_address = SocketAddr::from(([127, 0, 0, 1], bind_port));
+        let handle = std::thread::spawn(move || {
+            launcher.run_once_with_writers(
+                startup_config,
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+            )
+        });
+        let client_socket = UdpSocket::bind("127.0.0.1:0").expect("client socket should bind");
+        client_socket
+            .set_read_timeout(Some(Duration::from_secs(1)))
+            .expect("client read timeout should be set");
+        std::thread::sleep(Duration::from_millis(50));
+        client_socket
+            .send_to(
+                auth_request_packet("client-1", "presented-secret").as_slice(),
+                server_address,
+            )
+            .expect("auth request should send");
+
+        let outcome = handle
+            .join()
+            .expect("one iteration thread should join")
+            .expect("one iteration launcher should complete");
+
+        assert!(matches!(
+            outcome.outcome,
+            ServerControllerReceiveSendRuntimeResult::Iteration { .. }
+        ));
+        assert_eq!(outcome.registry.entries().count(), 1);
+        let mut response_buffer = vec![0_u8; 1024];
+        let (response_len, _) = client_socket
+            .recv_from(&mut response_buffer)
+            .expect("auth response should receive");
+        let decoded = decode_fixed_header(&response_buffer[..response_len])
+            .expect("auth response should decode");
+        assert_eq!(decoded.header.message_type, MessageType::AuthResponse);
+    }
+
+    #[test]
     fn auth_response_poc_launcher_requires_bind_port() {
         let launcher = ServerAuthResponsePocLauncher::default();
         let result = launcher.load_startup_config_from_str(
@@ -18574,6 +19273,33 @@ shared_token = "secret"
             capabilities: Vec::new(),
             requested_video_profile: None,
         }
+    }
+
+    fn reserve_localhost_udp_port() -> u16 {
+        let socket = UdpSocket::bind("127.0.0.1:0").expect("port reservation socket should bind");
+        socket
+            .local_addr()
+            .expect("port reservation socket should have address")
+            .port()
+    }
+
+    fn receive_send_runtime_test_config(bind_port: u16) -> String {
+        format!(
+            r#"
+[server]
+bind_host = "127.0.0.1"
+bind_port = {bind_port}
+
+[session]
+protocol_version = 2
+
+[auth]
+enabled = true
+
+[auth.clients.client-1]
+shared_token = "presented-secret"
+"#
+        )
     }
 
     fn auth_request_packet(client_id: &str, shared_token: &str) -> Vec<u8> {
