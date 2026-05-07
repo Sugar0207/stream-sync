@@ -27,7 +27,8 @@
 - server 側は auth one-shot、accepted auth registry 登録、heartbeat ack / liveness / timeout action plan / timeout apply / notice queue storage、RTT / offset state commit と metrics snapshot handoff までの最小境界が揃っている
 - client 側は auth one-shot、heartbeat one-shot、`HeartbeatAckObservation` 付き `ClientStats` one-shot、one-tick runtime、accepted path 手動確認まで完了している
 - client continuous heartbeat loop は thin composition の completed body まで実装済みで、heartbeat timeout notice wakeup planning 境界、wakeup execution 境界、wakeup actual side-effect 境界、outer while-loop connection 境界、outer while-loop one-turn execution body 境界、actual timer wait / retry execution / reconnect 実行境界、outer while-loop 反復実行本体、reconnect policy 境界、caller-owned hook 付き actual socket 再確立境界、real UDP socket 差し替え hook、repeated body からの hook 注入経路まで完了している
-- 未完了の中心は late frame queue mutation / drop policy、4-view sync orchestration、dashboard UI rendering、continuous receive/send loop 本体、実キュー / 実送信 / 継続ログ出力である。production H.264 encoder configuration / error logging policy の first slice と `[video.encoder]` profile manual evidence は取得済みで、残りは OBS Window Capture 前提の運用整理、final regression、push判断、長時間 continuous runtime validation が中心になっている
+- 4-view operator MVP closeout は完了し、final regression も通過、push も完了している。bounded real encoded video / raw-key operator wrapper / `AllView` / `Focused(0..3)` / `AllView` return / raw console restore / `[video.encoder]` profile wiring / production H.264 stdout visibility / short OBS Window Capture validation までは current completed scope とする
+- 未完了の中心は late frame queue mutation / drop policy、4-view sync orchestration、dashboard UI rendering、continuous receive/send loop 本体、実キュー / 実送信 / 継続ログ出力である。next major phase は closeout docs ではなく continuous receive/send runtime の first implementation slice 設計とその後の最小実装へ移る
 - outbound queue 実キュー、continuous receive/send loop 本体、send / receive の継続ログ出力、file sink open、process-wide logger、`ServerNotice` 実送信は未実装
 - named-pipe handoff の manual localhost validation は、plain pipe name `streamsync-handoff-dev` を使った one-shot pass と bounded `max_requests=2` pass の両方が成功記録済みで、bounded pass では `inspect-latest` が同じ frame を 2 回返して queue mutation しない preview semantics を確認済み
 - switcher 側 reconnect/lifecycle の次 slice は retry 実行より先に no-auto-retry / classification-first を固定し、1 scheduler read = 1 logical request = 1 transport attempt のまま explicit `HandoffError` を保持する方針で進める
@@ -152,29 +153,20 @@
 ---
 
 ## 直近でやること
-1. OBS Window Capture 前提の運用整理 / final regression / push判断
-   - 現在の bounded operator/video manual evidence を前提に運用手順を整理する
-   - current MVP evidence set の最終 regression / closeout check を行う
-   - commit / push 判断をまとめる
-2. same-session bounded server lifecycle polish は later narrow task として扱う:
-   - scripted / interactive とも actual validation は成功記録済み
-   - request-budget formula と headroom guidance を docs に固定済み
-   - bounded server final summary flush は extra one-shot reads を使う現状でも MVP blocker にはしない
-3. wrapper stdin wobble は later narrow task として扱う:
-   - zero-gap piped stdin では second command reconnect wobble を一度観測した
-   - manual-like pacing では success / unknown-key とも actual validation 済み
-   - wrapper-side retry/pacing は現時点では入れない
-4. transient scheduler-status wobble は later narrow task として扱う:
-   - `--raw-keys` actual validation の `Focused(3)` で `command_index=4` に一瞬 `scheduler_status=HandoffError` が見えた
-   - 同じ command line では `selected_slot_result=Selected` / `clean_output_render_result_kind=Rendered` / `frames_rendered=5` を維持し、final summary では `AllSelected` に戻っている
-   - scheduler / render / slot diagnostics の観測だけを増やす narrow polish 候補として残す
-5. 長時間品質評価は future continuous runtime validation として扱う:
-   - 画質悪化
-   - ブロックノイズ
-   - 遅延
-   は今回の short bounded PoC では未評価
+1. continuous receive/send runtime の first implementation slice
+   - server-owned bounded repeated runtime として始める
+   - one process lifetime で socket / auth registry / outbound queue / writers を保持する
+   - existing `ServerControllerReceiveSendRuntimeBoundary` を繰り返し呼ぶ outer loop を追加する
+   - stop policy は first slice では `max_iterations` と `receive-timeout-ms` を優先する
+2. bounded PoC から continuous runtime へ移る差分を implementation task へ落とす
+   - one-iteration launcher 群を repeated runtime へ束ねる
+   - per-command summary から aggregate runtime summary へ拡張する
+   - retry / requeue / daemon lifecycle を first slice へ持ち込まない
+3. first slice の manual validation を小さく保つ
+   - repeated auth / heartbeat / client-stats observation を主対象にする
+   - switcher continuous runtime や OBS 拡張へは広げない
 
-## Closeout Blocker ではない future task
+## MVP closeout 時点で blocker ではなかった future task
 - [ ] same-session bounded server lifecycle polish
 - [ ] transient scheduler-status wobble
 - [ ] wrapper stdin zero-gap wobble
@@ -190,6 +182,24 @@ closeout / push 判断では以下を優先する。
 - final regression green
 - closeout docs updated
 - current MVP scope と future scope の分離
+
+continuous runtime phase へ移った後の non-blocker:
+
+- same-session bounded server lifecycle polish
+- transient scheduler-status wobble
+- wrapper stdin zero-gap wobble
+- long-running quality / block noise / latency evaluation
+- hardware encoder integration
+- full GUI / `apps/operator-wrapper` split
+- OBS WebSocket / advanced OBS control
+
+continuous runtime first slice の blocker:
+
+- repeated outer loop ownership
+- socket / auth registry / outbound queue / writer lifetime persistence
+- bounded stop policy
+- aggregate runtime summary
+- repeated auth / heartbeat / client-stats manual validation path
 
 ## 将来の polish 候補
 - [ ] `--four-view-proof-window-once` / `--four-view-clean-output-window-once` に visual confirmation 用の `--hold-ms` / preview hold duration を追加するか後で判断する
@@ -937,6 +947,6 @@ closeout / push 判断では以下を優先する。
 - actual dashboard UI rendering remains unimplemented.
 
 ## Next Items
-1. OBS Window Capture-oriented operations guidance / closeout
-2. final regression / commit / push judgment
-3. continuous accept loop / reconnect / lifecycle/service orchestration planning remains later than the current closeout pass
+1. bounded continuous receive/send runtime implementation
+2. first-slice manual validation for repeated auth / heartbeat / client-stats flow
+3. later service lifecycle / reconnect / retry expansion after the bounded first slice

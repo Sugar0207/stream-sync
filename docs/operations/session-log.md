@@ -5,6 +5,55 @@
 - Codex
 
 ### Work
+- Reconfirmed the post-closeout baseline from repo state plus user-provided
+  status:
+  - `4`-client bounded real encoded video PoC validated
+  - raw-key operator wrapper validated
+  - `AllView` / `Focused(0..3)` / `AllView` return validated
+  - raw console restore validated
+  - `[video.encoder]` profile wiring validated
+  - production H.264 stdout visibility validated
+  - short OBS Window Capture validation complete
+  - final regression passed
+  - push completed
+- Documented the boundary between current completed scope and future scope.
+- Designed the next-phase continuous receive/send runtime first slice as a
+  bounded server-owned repeated runtime rather than as a full daemon/service.
+- Chose the smallest first runtime shape:
+  - one process lifetime
+  - one bound UDP socket
+  - one authenticated sender registry
+  - one in-memory outbound queue collection
+  - one repeated call site for the existing
+    `ServerControllerReceiveSendRuntimeBoundary`
+  - bounded stop policy using `max_iterations` and `receive-timeout-ms`
+- Documented the bounded-PoC-to-continuous-runtime differences:
+  - repeated lifetime ownership instead of per-launcher reset
+  - bounded outer loop instead of one/few explicit launcher calls
+  - aggregate runtime summary instead of command-only summaries
+  - no retry/requeue/daemon lifecycle in the first slice
+- Separated first-slice blockers from later non-blockers.
+
+### Changed Files
+- `docs/architecture/system-design.md`
+- `docs/operations/session-log.md`
+- `docs/operations/todo.md`
+
+### Decision
+- Start the continuous runtime phase on the server side only.
+- Keep the first slice bounded and small; do not widen immediately into
+  switcher continuous runtime, OBS control, hardware encoder work, or daemon
+  lifecycle.
+
+### Validation
+- docs-only design update
+- `git diff --check`
+
+## 2026-05-07
+### Type
+- Codex
+
+### Work
 - Reorganized closeout docs only, without code changes, around:
   - OBS Window Capture-oriented operations guidance
   - final regression checklist

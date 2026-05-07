@@ -9296,6 +9296,123 @@ Push judgment prerequisites:
 - closeout docs are updated
 - current MVP scope and future scope remain explicitly separated
 
+Next phase after MVP closeout:
+
+- current completed scope to preserve:
+  - `4`-client bounded real encoded video PoC validation
+  - raw-key operator wrapper validation
+  - `AllView` / `Focused(0..3)` / `AllView` return validation
+  - raw console restore validation
+  - `[video.encoder]` profile wiring validation
+  - production H.264 stdout visibility validation
+  - short bounded OBS Window Capture validation
+  - final regression green and push complete
+- future scope after that closeout:
+  - continuous receive/send runtime
+  - long-running quality / latency evaluation
+  - continuous server->switcher operational flow
+  - later runtime/file-sink/logger/service ergonomics
+
+Continuous receive/send runtime first implementation slice:
+
+- keep the first slice server-owned and bounded
+- do not widen the first slice into:
+  - switcher continuous runtime
+  - OBS WebSocket / advanced OBS control
+  - hardware encoder work
+  - GUI/operator split
+  - full daemon/service lifecycle polish
+- first exact goal:
+  - replace manual one-iteration/two-iteration/three-iteration repetition with
+    one bounded repeated server runtime that keeps process/state/socket
+    ownership across iterations
+
+Preferred first slice shape:
+
+```text
+stream-sync-server --receive-send-runtime-bounded
+  [config-path]
+  [max-iterations]
+  [receive-timeout-ms]
+```
+
+First-slice responsibilities:
+
+- keep one bound UDP socket alive across iterations
+- keep one `AuthenticatedSenderRegistry` alive across iterations
+- keep one in-memory outbound queue collection alive across iterations
+- keep caller-owned stderr/log writers alive across iterations
+- repeatedly call the existing
+  `ServerControllerReceiveSendRuntimeBoundary`
+- allow accepted auth / heartbeat / client-stats observation flow to persist
+  across iterations instead of ending after one launcher run
+- return one final bounded summary after the loop stops
+
+First-slice stop policy:
+
+- bounded by `max_iterations`
+- bounded by `receive-timeout-ms`
+- may also stop on explicit fatal socket/runtime error
+- do not start with:
+  - Ctrl+C ownership
+  - idle-timeout daemon semantics
+  - reconnect/backoff manager
+  - process supervisor behavior
+
+First-slice message/runtime scope:
+
+- must support:
+  - repeated `AuthRequest -> AuthResponse`
+  - repeated `Heartbeat -> HeartbeatAck`
+  - repeated `ClientStats` with heartbeat observation return path
+- should keep the existing accepted auth registry and outbound queue semantics
+- should keep one-item send runtime semantics per loop turn
+- should not yet require:
+  - real outbound queue retry/requeue
+  - file sink open/rotation
+  - process-wide logger installation
+  - continuous switcher/view/operator runtime integration
+
+Bounded PoC to continuous-runtime design differences:
+
+- process lifetime:
+  - bounded PoC recreates state per launcher run
+  - continuous first slice keeps socket/registry/queue/writers alive across
+    repeated iterations
+- control flow:
+  - bounded PoC stops after one/few explicit iterations
+  - continuous first slice repeats one existing controller/runtime step until a
+    bounded stop condition is met
+- stop policy:
+  - bounded PoC uses manual frame/request budgets for each command
+  - continuous first slice uses runtime iteration/receive timeout boundaries
+- send path:
+  - bounded PoC proves one-item send runtime in isolation
+  - continuous first slice reuses that one-item send runtime repeatedly without
+    adding retry/requeue yet
+- observability:
+  - bounded PoC relies on per-command summaries
+  - continuous first slice needs loop counters plus final aggregate summary
+
+Continuous-runtime blockers for the first slice:
+
+- repeated invocation of the existing controller/runtime in one process
+- stable ownership of socket/registry/queue/writers across loop turns
+- bounded stop policy (`max_iterations`, `receive-timeout-ms`, fatal error)
+- final aggregate runtime summary
+- manual validation path for repeated auth/heartbeat/client-stats handling
+
+Non-blockers for the first slice:
+
+- same-session bounded server lifecycle polish
+- transient scheduler-status wobble in switcher
+- wrapper stdin zero-gap wobble
+- long-running quality / block-noise / latency evaluation
+- hardware encoder integration
+- full GUI / `apps/operator-wrapper` split
+- OBS WebSocket / advanced OBS control
+- switcher continuous runtime / operator daemonization
+
 ## Operator-Facing Control Surface After Stable All-Real Baseline
 
 After the guarded `4`-client all-real handoff preview path succeeded in
