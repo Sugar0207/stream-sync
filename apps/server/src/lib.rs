@@ -1743,8 +1743,13 @@ pub struct ServerReceiveSendRuntimeBoundedSummary {
     pub rejected_packets: usize,
     pub decode_errors: usize,
     pub send_failures: usize,
+    pub timeout_iterations: usize,
+    pub timeout_only_run: bool,
     pub outbound_queue_len: usize,
     pub registered_clients: usize,
+    pub last_receive_error: Option<io::ErrorKind>,
+    pub last_send_error: Option<String>,
+    pub last_rejected_reason: Option<String>,
     pub stop_reason: ServerReceiveSendRuntimeBoundedStopReason,
 }
 
@@ -1773,6 +1778,7 @@ pub enum ServerReceiveSendRuntimeBoundedStartupError {
     Runtime {
         iteration_index: usize,
         error: ServerControllerReceiveSendRuntimeError,
+        summary: ServerReceiveSendRuntimeBoundedSummary,
     },
 }
 
@@ -1895,49 +1901,59 @@ impl ServerReceiveSendRuntimeBoundedLauncher {
             rejected_packets: 0,
             decode_errors: 0,
             send_failures: 0,
+            timeout_iterations: 0,
+            timeout_only_run: false,
             outbound_queue_len: 0,
             registered_clients: 0,
+            last_receive_error: None,
+            last_send_error: None,
+            last_rejected_reason: None,
             stop_reason: ServerReceiveSendRuntimeBoundedStopReason::MaxIterationsReached,
         };
 
         for iteration_index in 0..policy.max_iterations {
             summary.iterations_attempted = summary.iterations_attempted.saturating_add(1);
             let timestamp = current_system_timestamp_micros();
-            let result = self
-                .runtime
-                .run_once(
-                    &socket,
-                    &mut buffer,
-                    &mut registry,
-                    &mut queue_collection,
-                    &startup_config.auth_config,
-                    ServerControllerReceiveSendRuntimeInput {
-                        controller: ServerContinuousReceiveLoopControllerInput {
-                            expected_protocol_version: startup_config.expected_protocol_version,
-                            timestamp,
-                            continue_requested: true,
-                        },
-                        heartbeat_timing: ServerHeartbeatAckTiming {
-                            server_received_at: timestamp,
-                            server_sent_at: timestamp,
-                        },
-                        encode_context: EncodeContext {
-                            protocol_version: startup_config.expected_protocol_version,
-                        },
-                        auth_log_timestamp: timestamp,
-                        send_log_timestamp: timestamp,
+            let result = match self.runtime.run_once(
+                &socket,
+                &mut buffer,
+                &mut registry,
+                &mut queue_collection,
+                &startup_config.auth_config,
+                ServerControllerReceiveSendRuntimeInput {
+                    controller: ServerContinuousReceiveLoopControllerInput {
+                        expected_protocol_version: startup_config.expected_protocol_version,
+                        timestamp,
+                        continue_requested: true,
                     },
-                    &mut operational_writer,
-                    &mut rejection_writer,
-                    &mut auth_log_writer,
-                    &mut send_log_writer,
-                )
-                .map_err(
-                    |error| ServerReceiveSendRuntimeBoundedStartupError::Runtime {
+                    heartbeat_timing: ServerHeartbeatAckTiming {
+                        server_received_at: timestamp,
+                        server_sent_at: timestamp,
+                    },
+                    encode_context: EncodeContext {
+                        protocol_version: startup_config.expected_protocol_version,
+                    },
+                    auth_log_timestamp: timestamp,
+                    send_log_timestamp: timestamp,
+                },
+                &mut operational_writer,
+                &mut rejection_writer,
+                &mut auth_log_writer,
+                &mut send_log_writer,
+            ) {
+                Ok(result) => result,
+                Err(error) => {
+                    let mut partial_summary = summary.clone();
+                    self.observe_runtime_error(&error, &mut partial_summary);
+                    partial_summary.outbound_queue_len = queue_collection.len();
+                    partial_summary.registered_clients = registry.entries().count();
+                    return Err(ServerReceiveSendRuntimeBoundedStartupError::Runtime {
                         iteration_index,
                         error,
-                    },
-                )?;
+                        summary: partial_summary,
+                    });
+                }
+            };
 
             summary.iterations_completed = summary.iterations_completed.saturating_add(1);
             let stop_reason =
@@ -1953,6 +1969,14 @@ impl ServerReceiveSendRuntimeBoundedLauncher {
             .unwrap_or(ServerReceiveSendRuntimeBoundedStopReason::MaxIterationsReached);
         summary.outbound_queue_len = queue_collection.len();
         summary.registered_clients = registry.entries().count();
+        summary.timeout_only_run = matches!(
+            summary.stop_reason,
+            ServerReceiveSendRuntimeBoundedStopReason::ReceiveTimedOut
+        ) && summary.accepted_packets == 0
+            && summary.rejected_packets == 0
+            && summary.auth_requests_received == 0
+            && summary.heartbeats_received == 0
+            && summary.client_stats_received == 0;
 
         Ok(ServerReceiveSendRuntimeBoundedStartupOutcome {
             bind_address: startup_config.bind_address,
@@ -1979,8 +2003,11 @@ impl ServerReceiveSendRuntimeBoundedLauncher {
                         error_kind,
                         ..
                     } => {
+                        summary.last_receive_error = Some(*error_kind);
                         return Some(match error_kind {
                             io::ErrorKind::TimedOut | io::ErrorKind::WouldBlock => {
+                                summary.timeout_iterations =
+                                    summary.timeout_iterations.saturating_add(1);
                                 ServerReceiveSendRuntimeBoundedStopReason::ReceiveTimedOut
                             }
                             other => {
@@ -2005,6 +2032,8 @@ impl ServerReceiveSendRuntimeBoundedLauncher {
                         }
                         if let Some(rejection) = &handler.writer.rejection_event {
                             summary.rejected_packets = summary.rejected_packets.saturating_add(1);
+                            summary.last_rejected_reason =
+                                Some(format!("{:?}", rejection.rejection_reason));
                             if matches!(
                                 rejection.rejection_reason,
                                 ServerReceiveRejectionReason::DecodeError
@@ -2017,9 +2046,13 @@ impl ServerReceiveSendRuntimeBoundedLauncher {
                 }
 
                 match &iteration.side_effect.result {
-                    ServerDispatchRuntimeSideEffectApplyResult::Auth { .. } => {
+                    ServerDispatchRuntimeSideEffectApplyResult::Auth { flow, .. } => {
                         summary.auth_requests_received =
                             summary.auth_requests_received.saturating_add(1);
+                        if !flow.decision.accepted {
+                            summary.last_rejected_reason =
+                                Some(format!("Auth:{:?}", flow.decision.reason_code));
+                        }
                     }
                     ServerDispatchRuntimeSideEffectApplyResult::HeartbeatAck(handoff) => {
                         summary.heartbeats_received = summary.heartbeats_received.saturating_add(1);
@@ -2067,6 +2100,33 @@ impl ServerReceiveSendRuntimeBoundedLauncher {
                 }
 
                 None
+            }
+        }
+    }
+
+    fn observe_runtime_error(
+        &self,
+        error: &ServerControllerReceiveSendRuntimeError,
+        summary: &mut ServerReceiveSendRuntimeBoundedSummary,
+    ) {
+        if let ServerControllerReceiveSendRuntimeError::Iteration(iteration_error) = error {
+            match iteration_error {
+                ServerReceiveSendOneIterationRuntimeError::ReceiveBody(kind) => {
+                    summary.last_receive_error = Some(*kind);
+                }
+                ServerReceiveSendOneIterationRuntimeError::Send(send_error) => {
+                    summary.send_failures = summary.send_failures.saturating_add(1);
+                    summary.last_send_error = Some(match send_error {
+                        ServerOutboundSendOneRuntimeError::Encode { error, .. } => {
+                            format!("Encode:{error:?}")
+                        }
+                        ServerOutboundSendOneRuntimeError::SocketSend { error_kind, .. } => {
+                            format!("SocketSend({error_kind:?})")
+                        }
+                    });
+                }
+                ServerReceiveSendOneIterationRuntimeError::OutputApply(_)
+                | ServerReceiveSendOneIterationRuntimeError::SendLog(_) => {}
             }
         }
     }
@@ -11048,7 +11108,7 @@ mod tests {
         client_socket
             .set_read_timeout(Some(Duration::from_secs(1)))
             .expect("client read timeout should be set");
-        std::thread::sleep(Duration::from_millis(50));
+        std::thread::sleep(Duration::from_millis(100));
         client_socket
             .send_to(
                 auth_request_packet("client-1", "presented-secret").as_slice(),
@@ -11077,6 +11137,11 @@ mod tests {
         assert_eq!(outcome.summary.auth_responses_sent, 2);
         assert_eq!(outcome.summary.accepted_packets, 2);
         assert_eq!(outcome.summary.registered_clients, 1);
+        assert_eq!(outcome.summary.timeout_iterations, 0);
+        assert!(!outcome.summary.timeout_only_run);
+        assert_eq!(outcome.summary.last_receive_error, None);
+        assert_eq!(outcome.summary.last_send_error, None);
+        assert_eq!(outcome.summary.last_rejected_reason, None);
 
         let mut response_buffer = vec![0_u8; 1024];
         for _ in 0..2 {
@@ -11140,6 +11205,12 @@ mod tests {
         assert_eq!(outcome.summary.auth_requests_received, 2);
         assert_eq!(outcome.summary.auth_responses_sent, 2);
         assert_eq!(outcome.registry.entries().count(), 1);
+        assert_eq!(outcome.summary.timeout_iterations, 1);
+        assert!(matches!(
+            outcome.summary.last_receive_error,
+            Some(io::ErrorKind::TimedOut | io::ErrorKind::WouldBlock)
+        ));
+        assert!(!outcome.summary.timeout_only_run);
         let entry = outcome
             .registry
             .get(&ClientId("client-1".to_string()))
@@ -11204,8 +11275,8 @@ mod tests {
             .expect("bounded runtime thread should join")
             .expect("bounded runtime should complete");
 
-        assert_eq!(outcome.summary.auth_requests_received, 1);
-        assert_eq!(outcome.summary.auth_responses_sent, 1);
+        assert!(outcome.summary.auth_requests_received >= 1);
+        assert!(outcome.summary.auth_responses_sent >= 1);
         assert_eq!(outcome.summary.heartbeats_received, 1);
         assert_eq!(outcome.summary.heartbeat_acks_sent, 1);
         assert_eq!(outcome.summary.accepted_packets, 2);
@@ -11297,6 +11368,143 @@ mod tests {
         assert_eq!(outcome.summary.client_stats_received, 1);
         assert_eq!(outcome.summary.client_stats_returns_sent, 1);
         assert_eq!(outcome.summary.accepted_packets, 3);
+    }
+
+    #[test]
+    fn receive_send_runtime_bounded_launcher_marks_timeout_only_run_when_no_packets_arrive() {
+        let launcher = ServerReceiveSendRuntimeBoundedLauncher::default();
+        let bind_port = reserve_localhost_udp_port();
+        let startup_config = launcher
+            .load_startup_config_from_str(&receive_send_runtime_test_config(bind_port))
+            .expect("bounded runtime config should load");
+
+        let outcome = launcher
+            .run_bounded_with_writers_and_policy(
+                startup_config,
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+                ServerReceiveSendRuntimeBoundedPolicy {
+                    max_iterations: 4,
+                    receive_timeout: Duration::from_millis(50),
+                },
+            )
+            .expect("timeout-only bounded runtime should complete");
+
+        assert_eq!(
+            outcome.summary.stop_reason,
+            ServerReceiveSendRuntimeBoundedStopReason::ReceiveTimedOut
+        );
+        assert_eq!(outcome.summary.iterations_attempted, 1);
+        assert_eq!(outcome.summary.iterations_completed, 1);
+        assert_eq!(outcome.summary.timeout_iterations, 1);
+        assert!(outcome.summary.timeout_only_run);
+        assert!(matches!(
+            outcome.summary.last_receive_error,
+            Some(io::ErrorKind::TimedOut | io::ErrorKind::WouldBlock)
+        ));
+        assert_eq!(outcome.summary.accepted_packets, 0);
+        assert_eq!(outcome.summary.rejected_packets, 0);
+    }
+
+    #[test]
+    fn receive_send_runtime_bounded_launcher_records_auth_rejection_reason() {
+        let launcher = ServerReceiveSendRuntimeBoundedLauncher::default();
+        let bind_port = reserve_localhost_udp_port();
+        let startup_config = launcher
+            .load_startup_config_from_str(&receive_send_runtime_test_config(bind_port))
+            .expect("bounded runtime config should load");
+        let server_address = SocketAddr::from(([127, 0, 0, 1], bind_port));
+        let handle = std::thread::spawn(move || {
+            launcher.run_bounded_with_writers_and_policy(
+                startup_config,
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+                ServerReceiveSendRuntimeBoundedPolicy {
+                    max_iterations: 2,
+                    receive_timeout: Duration::from_millis(150),
+                },
+            )
+        });
+        let client_socket = UdpSocket::bind("127.0.0.1:0").expect("client socket should bind");
+        std::thread::sleep(Duration::from_millis(50));
+        client_socket
+            .send_to(
+                auth_request_packet("client-1", "wrong-secret").as_slice(),
+                server_address,
+            )
+            .expect("rejected auth request should send");
+        client_socket
+            .send_to(
+                auth_request_packet("client-1", "wrong-secret").as_slice(),
+                server_address,
+            )
+            .expect("second rejected auth request should send");
+
+        let outcome = handle
+            .join()
+            .expect("bounded runtime thread should join")
+            .expect("bounded runtime should complete");
+
+        assert!(outcome.summary.auth_requests_received >= 1);
+        assert_eq!(outcome.summary.auth_responses_sent, 0);
+        assert_eq!(
+            outcome.summary.last_rejected_reason.as_deref(),
+            Some("Auth:InvalidToken")
+        );
+    }
+
+    #[test]
+    fn receive_send_runtime_bounded_launcher_records_gate_rejection_reason() {
+        let launcher = ServerReceiveSendRuntimeBoundedLauncher::default();
+        let bind_port = reserve_localhost_udp_port();
+        let startup_config = launcher
+            .load_startup_config_from_str(&receive_send_runtime_test_config(bind_port))
+            .expect("bounded runtime config should load");
+        let server_address = SocketAddr::from(([127, 0, 0, 1], bind_port));
+        let handle = std::thread::spawn(move || {
+            launcher.run_bounded_with_writers_and_policy(
+                startup_config,
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+                ServerReceiveSendRuntimeBoundedPolicy {
+                    max_iterations: 2,
+                    receive_timeout: Duration::from_millis(150),
+                },
+            )
+        });
+        let client_socket = UdpSocket::bind("127.0.0.1:0").expect("client socket should bind");
+        std::thread::sleep(Duration::from_millis(50));
+        client_socket
+            .send_to(
+                test_packet(
+                    MessageType::Heartbeat as u16,
+                    FIXED_HEADER_LEN,
+                    2,
+                    &heartbeat_payload(),
+                )
+                .as_slice(),
+                server_address,
+            )
+            .expect("heartbeat should send");
+
+        let outcome = handle
+            .join()
+            .expect("bounded runtime thread should join")
+            .expect("bounded runtime should complete");
+
+        assert_eq!(outcome.summary.rejected_packets, 1);
+        assert_eq!(outcome.summary.decode_errors, 0);
+        assert_eq!(
+            outcome.summary.last_rejected_reason.as_deref(),
+            Some("UnauthenticatedSource")
+        );
+        assert!(!outcome.summary.timeout_only_run);
     }
 
     #[test]

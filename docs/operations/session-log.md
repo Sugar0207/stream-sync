@@ -5,6 +5,77 @@
 - Codex
 
 ### Work
+- Added a narrow fatal/stop visibility slice for
+  `--receive-send-runtime-bounded`.
+- Kept the change intentionally small:
+  - no retry/requeue
+  - no file sink ownership
+  - no process-wide logger
+  - no switcher/runtime widening
+  - no video-path widening
+  - no daemon lifecycle work
+- Extended the successful bounded summary with the smallest extra stop/error
+  state that avoids silent outcomes:
+  - `timeout_iterations`
+  - `timeout_only_run`
+  - `last_receive_error`
+  - `last_send_error`
+  - `last_rejected_reason`
+- Added one-line fatal/startup failure summary formatting on stderr for the
+  bounded command, preserving:
+  - `command_name`
+  - `config_path`
+  - `max_iterations`
+  - `receive_timeout_ms`
+  - partial iteration counters when available
+  - `stop_reason`
+  - `fatal_error_kind`
+  - `fatal_error_detail`
+- Added/updated code-level coverage for:
+  - `MaxIterationsReached` summary
+  - `ReceiveTimedOut` summary
+  - timeout-only run summary
+  - auth rejection visibility
+  - gate rejection visibility
+  - startup/config failure summary formatting
+  - send-failure summary formatting
+  - existing successful bounded summary formatter non-regression
+- Kept decode visibility intentionally narrow:
+  - `decode_errors` remains an accumulation counter
+  - no dedicated `last_decode_error` field was added in this slice
+- Fixed the docs around one current nuance:
+  - in this first slice, `auth_responses_sent` is effectively the accepted-auth
+    send count
+  - rejected auth is currently surfaced by `last_rejected_reason=Auth:...`
+    rather than by incrementing the send count
+
+### Changed Files
+- `apps/server/src/lib.rs`
+- `apps/server/src/main.rs`
+- `docs/architecture/system-design.md`
+- `docs/operations/session-log.md`
+- `docs/operations/todo.md`
+
+### Decision
+- Keep fatal/startup failure visibility as a formatter/summary concern for the
+  current slice rather than widening the runtime into retry or logging policy.
+- Treat `timeout_only_run` and `last_rejected_reason` as the minimal extra
+  state needed to distinguish "silent timeout" from meaningful bounded
+  progress.
+
+### Validation
+- `cargo fmt`
+- `cargo fmt --check`
+- `cargo check --workspace`
+- `cargo test -p stream-sync-server receive_send -- --test-threads=1`
+- `cargo test --workspace`
+- `git diff --check`
+
+## 2026-05-07
+### Type
+- Codex
+
+### Work
 - Confirmed the server/client CLI command shapes relevant to the bounded
   repeated receive/send runtime smoke:
   - server:

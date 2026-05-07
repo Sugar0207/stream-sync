@@ -31,7 +31,9 @@
 - 未完了の中心は late frame queue mutation / drop policy、4-view sync orchestration、dashboard UI rendering、continuous receive/send loop の次 slice、実キュー / 実送信 / 継続ログ出力である。continuous receive/send runtime は first implementation slice として server-owned bounded repeated runtime まで追加済みで、next major phase はその manual validation と後続の narrow expansion へ移る
 - `stream-sync-server --receive-send-runtime-bounded [config-path] [max-iterations] [receive-timeout-ms]` は追加済みで、1 process lifetime で 1 bound UDP socket / 1 `AuthenticatedSenderRegistry` / 1 `ServerOutboundQueueCollection` / caller-owned writers を維持しながら existing `ServerControllerReceiveSendRuntimeBoundary` を outer loop から繰り返し呼べる
 - bounded repeated runtime summary には `command_name` / `config_path` / `max_iterations` / `receive_timeout_ms` / `iterations_attempted` / `iterations_completed` / `auth_requests_received` / `auth_responses_sent` / `heartbeats_received` / `heartbeat_acks_sent` / `client_stats_received` / `client_stats_returns_sent` / `accepted_packets` / `rejected_packets` / `decode_errors` / `send_failures` / `outbound_queue_len` / `registered_clients` / `stop_reason` を出す
-- code-level validation では command parser、summary formatter、`max_iterations` stop、repeated auth registry persistence、repeated heartbeat existing-registry reuse、`ClientStats` observation path count、existing one-iteration runtime non-regression を追加済み
+- fatal/stop visibility の narrow slice も追加済みで、success summary には `timeout_iterations` / `timeout_only_run` / `last_receive_error` / `last_send_error` / `last_rejected_reason` を追加した。fatal/startup failure 時は same command args を含む one-line failure summary を stderr に出し、`stop_reason` / `fatal_error_kind` / `fatal_error_detail` で silent failure を避ける
+- current rejected-auth note: first slice の `auth_responses_sent` は accepted auth response send count として扱っており、rejected auth は current one-item send pathでは送信 count に入らない。その代わり `last_rejected_reason=Auth:...` で summary visibility を持たせている
+- code-level validation では command parser、summary formatter、`max_iterations` stop、`ReceiveTimedOut` stop、timeout-only run summary、repeated auth registry persistence、repeated heartbeat existing-registry reuse、`ClientStats` observation path count、auth rejection visibility、gate rejection visibility、startup failure summary formatting、send failure summary formatting、existing one-iteration runtime non-regression を追加済み
 - lightweight smoke validation も完了している。CLI shape は client 側 `--auth-request-poc-once`、`--auth-heartbeat-poc-once`、`--auth-heartbeat-stats-poc-once` を確認済みで、direct `ClientStats`-only sender CLI は未追加だが `--auth-heartbeat-stats-poc-once` で `ClientStats` observation path を刺激できる
 - bounded smoke rerun では rebuilt binary を使って `stream-sync-server --receive-send-runtime-bounded configs/examples/server.example.toml 6 5000` と `stream-sync-client --auth-heartbeat-stats-poc-once configs/examples/client.accepted.example.toml` を組み合わせ、`iterations_attempted=4` / `iterations_completed=4` / `auth_requests_received=1` / `auth_responses_sent=1` / `heartbeats_received=1` / `heartbeat_acks_sent=1` / `client_stats_received=1` / `client_stats_returns_sent=1` / `accepted_packets=3` / `send_failures=0` / `registered_clients=1` / `stop_reason=ReceiveTimedOut` を確認済み
 - outbound queue 実キュー、continuous receive/send loop 本体、send / receive の継続ログ出力、file sink open、process-wide logger、`ServerNotice` 実送信は未実装
@@ -158,15 +160,14 @@
 ---
 
 ## 直近でやること
-1. `--receive-send-runtime-bounded` の smoke 以後の次 slice を整理する
-   - fatal runtime error summary visibility をどう扱うか決める
-   - receive/send 継続ログ出力の ownership を first slice の外側で整理する
-   - retry / requeue / daemon lifecycle をまだ持ち込まない
-2. narrow expansion を選ぶ
+1. receive/send 継続ログ出力の ownership を整理する
+   - bounded runtime summary とは別に、継続ログの writer / sink ownership を first slice の外側で固定する
+   - retry / requeue / file sink rotation はまだ持ち込まない
+2. bounded runtime の次 narrow expansion を選ぶ
    - continuous video path ではなく auth / heartbeat / client-stats path のまま進める
    - service lifecycle / reconnect / retry 拡張は bounded runtime evidence の後段に回す
-3. 必要なら追加の human manual rerun を後段で判断する
-   - 現時点では CLI shape と bounded smoke summary は確認済み
+3. failure injection の追加 manual rerun は必要になった時だけ行う
+   - 現時点では CLI shape、bounded smoke、fatal/stop summary visibility は確認済み
    - visual validation は今回 scope 外のまま維持する
 
 ## MVP closeout 時点で blocker ではなかった future task
@@ -177,7 +178,7 @@
 - [ ] hardware encoder integration
 - [ ] full GUI / `apps/operator-wrapper` split
 - [ ] OBS WebSocket / advanced OBS control
-- [ ] continuous receive/send runtime
+- [ ] continuous receive/send runtime later expansion
 
 上記は future task として TODO に残すが、現時点では closeout blocker にしない。
 closeout / push 判断では以下を優先する。
@@ -950,6 +951,6 @@ continuous runtime first slice の blocker:
 - actual dashboard UI rendering remains unimplemented.
 
 ## Next Items
-1. bounded runtime summary / fatal-error visibility follow-up if needed
-2. receive/send continuous logging ownership follow-up
-3. later service lifecycle / reconnect / retry expansion after the bounded first slice
+1. receive/send continuous logging ownership follow-up
+2. later service lifecycle / reconnect / retry expansion after the bounded first slice
+3. bounded runtime failure injection follow-up only if concrete evidence is needed

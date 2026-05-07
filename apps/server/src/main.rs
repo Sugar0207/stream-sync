@@ -191,7 +191,14 @@ fn main() {
                     )
                 ),
                 Err(error) => {
-                    eprintln!("receive/send bounded runtime failed: {error:?}");
+                    eprintln!(
+                        "{}",
+                        format_receive_send_runtime_bounded_failure_summary(
+                            "--receive-send-runtime-bounded",
+                            &command,
+                            &error,
+                        )
+                    );
                     std::process::exit(1);
                 }
             }
@@ -518,7 +525,7 @@ fn format_receive_send_runtime_bounded_summary(
 ) -> String {
     let summary = &outcome.summary;
     format!(
-        "command_name={} config_path={} max_iterations={} receive_timeout_ms={} iterations_attempted={} iterations_completed={} auth_requests_received={} auth_responses_sent={} heartbeats_received={} heartbeat_acks_sent={} client_stats_received={} client_stats_returns_sent={} accepted_packets={} rejected_packets={} decode_errors={} send_failures={} outbound_queue_len={} registered_clients={} stop_reason={}",
+        "command_name={} config_path={} max_iterations={} receive_timeout_ms={} iterations_attempted={} iterations_completed={} auth_requests_received={} auth_responses_sent={} heartbeats_received={} heartbeat_acks_sent={} client_stats_received={} client_stats_returns_sent={} accepted_packets={} rejected_packets={} decode_errors={} send_failures={} timeout_iterations={} timeout_only_run={} outbound_queue_len={} registered_clients={} last_receive_error={} last_send_error={} last_rejected_reason={} stop_reason={}",
         command_name,
         config_path,
         summary.max_iterations,
@@ -535,9 +542,79 @@ fn format_receive_send_runtime_bounded_summary(
         summary.rejected_packets,
         summary.decode_errors,
         summary.send_failures,
+        summary.timeout_iterations,
+        summary.timeout_only_run,
         summary.outbound_queue_len,
         summary.registered_clients,
+        format_optional_error_kind(summary.last_receive_error),
+        format_optional_string(summary.last_send_error.as_deref()),
+        format_optional_string(summary.last_rejected_reason.as_deref()),
         receive_send_runtime_bounded_stop_reason_name(summary.stop_reason),
+    )
+}
+
+fn format_receive_send_runtime_bounded_failure_summary(
+    command_name: &str,
+    command: &ReceiveSendRuntimeBoundedCommandArgs,
+    error: &stream_sync_server::ServerReceiveSendRuntimeBoundedStartupError,
+) -> String {
+    let partial_summary = bounded_runtime_error_partial_summary(error);
+    let iterations_attempted = partial_summary
+        .as_ref()
+        .map(|summary| summary.iterations_attempted)
+        .unwrap_or(0);
+    let iterations_completed = partial_summary
+        .as_ref()
+        .map(|summary| summary.iterations_completed)
+        .unwrap_or(0);
+    let rejected_packets = partial_summary
+        .as_ref()
+        .map(|summary| summary.rejected_packets)
+        .unwrap_or(0);
+    let decode_errors = partial_summary
+        .as_ref()
+        .map(|summary| summary.decode_errors)
+        .unwrap_or(0);
+    let send_failures = partial_summary
+        .as_ref()
+        .map(|summary| summary.send_failures)
+        .unwrap_or(0);
+    let timeout_iterations = partial_summary
+        .as_ref()
+        .map(|summary| summary.timeout_iterations)
+        .unwrap_or(0);
+    let timeout_only_run = partial_summary
+        .as_ref()
+        .map(|summary| summary.timeout_only_run)
+        .unwrap_or(false);
+    let last_receive_error = partial_summary
+        .as_ref()
+        .and_then(|summary| summary.last_receive_error);
+    let last_send_error = partial_summary
+        .as_ref()
+        .and_then(|summary| summary.last_send_error.as_deref());
+    let last_rejected_reason = partial_summary
+        .as_ref()
+        .and_then(|summary| summary.last_rejected_reason.as_deref());
+    format!(
+        "command_name={} config_path={} max_iterations={} receive_timeout_ms={} iterations_attempted={} iterations_completed={} rejected_packets={} decode_errors={} send_failures={} timeout_iterations={} timeout_only_run={} last_receive_error={} last_send_error={} last_rejected_reason={} stop_reason={} fatal_error_kind={} fatal_error_detail={}",
+        command_name,
+        command.config_path,
+        command.max_iterations,
+        command.receive_timeout_ms,
+        iterations_attempted,
+        iterations_completed,
+        rejected_packets,
+        decode_errors,
+        send_failures,
+        timeout_iterations,
+        timeout_only_run,
+        format_optional_error_kind(last_receive_error),
+        format_optional_string(last_send_error),
+        format_optional_string(last_rejected_reason),
+        bounded_runtime_error_stop_reason(error),
+        bounded_runtime_error_kind(error),
+        bounded_runtime_error_detail(error),
     )
 }
 
@@ -558,6 +635,83 @@ fn receive_send_runtime_bounded_stop_reason_name(
             error_kind,
         ) => format!("SocketReceiveFailed({error_kind:?})"),
     }
+}
+
+fn bounded_runtime_error_stop_reason(
+    error: &stream_sync_server::ServerReceiveSendRuntimeBoundedStartupError,
+) -> &'static str {
+    match error {
+        stream_sync_server::ServerReceiveSendRuntimeBoundedStartupError::Runtime { .. } => {
+            "RuntimeFatalError"
+        }
+        stream_sync_server::ServerReceiveSendRuntimeBoundedStartupError::OneIterationStartup(_)
+        | stream_sync_server::ServerReceiveSendRuntimeBoundedStartupError::Bind { .. }
+        | stream_sync_server::ServerReceiveSendRuntimeBoundedStartupError::SetReceiveTimeout {
+            ..
+        } => "StartupFailure",
+    }
+}
+
+fn bounded_runtime_error_kind(
+    error: &stream_sync_server::ServerReceiveSendRuntimeBoundedStartupError,
+) -> &'static str {
+    match error {
+        stream_sync_server::ServerReceiveSendRuntimeBoundedStartupError::OneIterationStartup(_) => {
+            "ConfigLoadFailure"
+        }
+        stream_sync_server::ServerReceiveSendRuntimeBoundedStartupError::Bind { .. } => {
+            "SocketBindFailure"
+        }
+        stream_sync_server::ServerReceiveSendRuntimeBoundedStartupError::SetReceiveTimeout {
+            ..
+        } => "SocketReceiveSetupFailure",
+        stream_sync_server::ServerReceiveSendRuntimeBoundedStartupError::Runtime {
+            error, ..
+        } => match error {
+            stream_sync_server::ServerControllerReceiveSendRuntimeError::Iteration(
+                stream_sync_server::ServerReceiveSendOneIterationRuntimeError::Send(_),
+            ) => "SendFailure",
+            stream_sync_server::ServerControllerReceiveSendRuntimeError::Iteration(
+                stream_sync_server::ServerReceiveSendOneIterationRuntimeError::ReceiveBody(_),
+            ) => "SocketReceiveFailure",
+            _ => "RuntimeFatalError",
+        },
+    }
+}
+
+fn bounded_runtime_error_detail(
+    error: &stream_sync_server::ServerReceiveSendRuntimeBoundedStartupError,
+) -> String {
+    match error {
+        stream_sync_server::ServerReceiveSendRuntimeBoundedStartupError::Runtime {
+            iteration_index,
+            error,
+            ..
+        } => format!("iteration_index={} error={error:?}", iteration_index),
+        other => format!("{other:?}"),
+    }
+}
+
+fn bounded_runtime_error_partial_summary(
+    error: &stream_sync_server::ServerReceiveSendRuntimeBoundedStartupError,
+) -> Option<&stream_sync_server::ServerReceiveSendRuntimeBoundedSummary> {
+    match error {
+        stream_sync_server::ServerReceiveSendRuntimeBoundedStartupError::Runtime {
+            summary,
+            ..
+        } => Some(summary),
+        _ => None,
+    }
+}
+
+fn format_optional_error_kind(error_kind: Option<std::io::ErrorKind>) -> String {
+    error_kind
+        .map(|kind| format!("{kind:?}"))
+        .unwrap_or_else(|| "none".to_string())
+}
+
+fn format_optional_string(value: Option<&str>) -> String {
+    value.unwrap_or("none").to_string()
 }
 
 fn current_timestamp_micros() -> stream_sync_protocol::TimestampMicros {
@@ -954,7 +1108,8 @@ mod tests {
     };
 
     use super::{
-        format_handoff_read_mode, format_receive_send_runtime_bounded_summary,
+        format_handoff_read_mode, format_receive_send_runtime_bounded_failure_summary,
+        format_receive_send_runtime_bounded_summary,
         parse_receive_send_runtime_bounded_command_args,
     };
 
@@ -1023,8 +1178,13 @@ mod tests {
                     rejected_packets: 0,
                     decode_errors: 0,
                     send_failures: 0,
+                    timeout_iterations: 1,
+                    timeout_only_run: false,
                     outbound_queue_len: 0,
                     registered_clients: 1,
+                    last_receive_error: Some(std::io::ErrorKind::TimedOut),
+                    last_send_error: None,
+                    last_rejected_reason: Some("Auth:InvalidToken".to_string()),
                     stop_reason:
                         stream_sync_server::ServerReceiveSendRuntimeBoundedStopReason::ReceiveTimedOut,
                 },
@@ -1047,9 +1207,103 @@ mod tests {
         assert!(summary.contains("rejected_packets=0"));
         assert!(summary.contains("decode_errors=0"));
         assert!(summary.contains("send_failures=0"));
+        assert!(summary.contains("timeout_iterations=1"));
+        assert!(summary.contains("timeout_only_run=false"));
         assert!(summary.contains("outbound_queue_len=0"));
         assert!(summary.contains("registered_clients=1"));
+        assert!(summary.contains("last_receive_error=TimedOut"));
+        assert!(summary.contains("last_send_error=none"));
+        assert!(summary.contains("last_rejected_reason=Auth:InvalidToken"));
         assert!(summary.contains("stop_reason=ReceiveTimedOut"));
+    }
+
+    #[test]
+    fn receive_send_runtime_bounded_failure_summary_includes_startup_failure_fields() {
+        let summary = format_receive_send_runtime_bounded_failure_summary(
+            "--receive-send-runtime-bounded",
+            &super::ReceiveSendRuntimeBoundedCommandArgs {
+                config_path: "configs/examples/server.example.toml".to_string(),
+                max_iterations: 8,
+                receive_timeout_ms: 500,
+            },
+            &stream_sync_server::ServerReceiveSendRuntimeBoundedStartupError::OneIterationStartup(
+                stream_sync_server::ServerReceiveSendOneIterationStartupError::StartupConfig(
+                    stream_sync_server::ServerAuthResponsePocStartupError::Config(
+                        stream_sync_server::ServerAuthResponsePocConfigError::MissingField {
+                            section: "server",
+                            key: "bind_port",
+                        },
+                    ),
+                ),
+            ),
+        );
+
+        assert!(summary.contains("command_name=--receive-send-runtime-bounded"));
+        assert!(summary.contains("config_path=configs/examples/server.example.toml"));
+        assert!(summary.contains("max_iterations=8"));
+        assert!(summary.contains("receive_timeout_ms=500"));
+        assert!(summary.contains("stop_reason=StartupFailure"));
+        assert!(summary.contains("fatal_error_kind=ConfigLoadFailure"));
+        assert!(summary.contains("fatal_error_detail="));
+    }
+
+    #[test]
+    fn receive_send_runtime_bounded_failure_summary_includes_send_failure_visibility() {
+        let summary = format_receive_send_runtime_bounded_failure_summary(
+            "--receive-send-runtime-bounded",
+            &super::ReceiveSendRuntimeBoundedCommandArgs {
+                config_path: "configs/examples/server.example.toml".to_string(),
+                max_iterations: 6,
+                receive_timeout_ms: 1000,
+            },
+            &stream_sync_server::ServerReceiveSendRuntimeBoundedStartupError::Runtime {
+                iteration_index: 2,
+                error: stream_sync_server::ServerControllerReceiveSendRuntimeError::Iteration(
+                        stream_sync_server::ServerReceiveSendOneIterationRuntimeError::Send(
+                            stream_sync_server::ServerOutboundSendOneRuntimeError::SocketSend {
+                                error_kind: std::io::ErrorKind::PermissionDenied,
+                                event: stream_sync_net_core::OutboundSendLoopEvent {
+                                    state: stream_sync_net_core::OutboundSendLoopTickState::Failed,
+                                    log_event: None,
+                                },
+                            },
+                        ),
+                ),
+                summary: stream_sync_server::ServerReceiveSendRuntimeBoundedSummary {
+                    max_iterations: 6,
+                    receive_timeout: std::time::Duration::from_millis(1_000),
+                    iterations_attempted: 3,
+                    iterations_completed: 2,
+                    auth_requests_received: 1,
+                    auth_responses_sent: 1,
+                    heartbeats_received: 1,
+                    heartbeat_acks_sent: 0,
+                    client_stats_received: 0,
+                    client_stats_returns_sent: 0,
+                    accepted_packets: 2,
+                    rejected_packets: 0,
+                    decode_errors: 0,
+                    send_failures: 1,
+                    timeout_iterations: 0,
+                    timeout_only_run: false,
+                    outbound_queue_len: 0,
+                    registered_clients: 1,
+                    last_receive_error: None,
+                    last_send_error: Some("SocketSend(PermissionDenied)".to_string()),
+                    last_rejected_reason: None,
+                    stop_reason:
+                        stream_sync_server::ServerReceiveSendRuntimeBoundedStopReason::MaxIterationsReached,
+                },
+            },
+        );
+
+        assert!(summary.contains("iterations_attempted=3"));
+        assert!(summary.contains("iterations_completed=2"));
+        assert!(summary.contains("send_failures=1"));
+        assert!(summary.contains("last_send_error=SocketSend(PermissionDenied)"));
+        assert!(summary.contains("stop_reason=RuntimeFatalError"));
+        assert!(summary.contains("fatal_error_kind=SendFailure"));
+        assert!(summary.contains("fatal_error_detail=iteration_index=2"));
     }
 
     #[cfg(windows)]

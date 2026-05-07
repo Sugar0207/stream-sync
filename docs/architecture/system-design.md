@@ -9380,9 +9380,31 @@ Current implemented behavior:
   - `rejected_packets`
   - `decode_errors`
   - `send_failures`
+  - `timeout_iterations`
+  - `timeout_only_run`
   - `outbound_queue_len`
   - `registered_clients`
+  - `last_receive_error`
+  - `last_send_error`
+  - `last_rejected_reason`
   - `stop_reason`
+- fatal/startup failure visibility:
+  - the command now emits a one-line failure summary on stderr
+  - it preserves:
+    - `command_name`
+    - `config_path`
+    - `max_iterations`
+    - `receive_timeout_ms`
+    - partial iteration counters when available
+    - `stop_reason`
+    - `fatal_error_kind`
+    - `fatal_error_detail`
+  - intended failure classifications for the current narrow slice are:
+    - config load failure
+    - socket bind failure
+    - socket receive setup failure
+    - runtime fatal error
+    - send failure
 - code-level coverage added for:
   - command parser
   - summary formatter
@@ -9390,6 +9412,11 @@ Current implemented behavior:
   - repeated auth registry persistence
   - repeated heartbeat reuse of existing registry
   - `ClientStats` observation path counting
+  - timeout-only run summary
+  - auth rejection visibility
+  - gate rejection visibility
+  - startup failure summary formatting
+  - send failure summary formatting
   - existing one-iteration runtime non-regression
 
 Lightweight smoke validation result:
@@ -9423,14 +9450,58 @@ Lightweight smoke validation result:
   - `rejected_packets=0`
   - `decode_errors=0`
   - `send_failures=0`
+  - `timeout_iterations=1`
+  - `timeout_only_run=false`
   - `outbound_queue_len=0`
   - `registered_clients=1`
+  - `last_receive_error=TimedOut`
+  - `last_send_error=none`
+  - `last_rejected_reason=none`
   - `stop_reason=ReceiveTimedOut`
 - local execution note:
   - a stale pre-rebuild `target/debug/stream-sync-server.exe` initially did not
     include the new command shape
   - rebuilding the actual binary resolved that local artifact mismatch without
     requiring source changes
+
+Current narrow visibility policy:
+
+- `stop_reason` remains the primary terminal state for successful bounded runs:
+  - `MaxIterationsReached`
+  - `ReceiveTimedOut`
+  - `ControllerStopped`
+  - `SocketReceiveFailed(...)`
+- startup/runtime failures that prevent a normal final bounded summary now emit
+  one stderr line with:
+  - `stop_reason`
+  - `fatal_error_kind`
+  - `fatal_error_detail`
+  - partial counters from the bounded summary when they already exist
+- current failure classification stays intentionally narrow:
+  - config load failure -> `StartupFailure` +
+    `fatal_error_kind=ConfigLoadFailure`
+  - socket bind failure -> `StartupFailure` +
+    `fatal_error_kind=SocketBindFailure`
+  - socket receive timeout setup failure -> `StartupFailure` +
+    `fatal_error_kind=SocketReceiveSetupFailure`
+  - runtime send failure -> `RuntimeFatalError` +
+    `fatal_error_kind=SendFailure`
+  - runtime receive-body failure -> `RuntimeFatalError` +
+    `fatal_error_kind=SocketReceiveFailure`
+  - other runtime fatal errors -> `RuntimeFatalError` +
+    `fatal_error_kind=RuntimeFatalError`
+- `timeout_only_run=true` explicitly distinguishes "started correctly but
+  received nothing before timeout" from successful packet-handling runs that
+  later stop on timeout.
+- `last_rejected_reason` is the smallest shared rejection surface for:
+  - auth rejection, stored as `Auth:<ReasonCode>`
+  - receive/gate rejection, stored as the rejection reason name
+- `auth_responses_sent` in this first slice is intentionally the accepted-auth
+  send count only. Rejected auth currently surfaces through
+  `last_rejected_reason`, not through an outbound send count.
+- `decode_errors` stays count-only in this slice. There is no dedicated
+  `last_decode_error` field yet because the current goal is only to avoid
+  silent stop/fatal states, not to build a full error-history surface.
 
 First-slice stop policy:
 
