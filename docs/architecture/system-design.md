@@ -8904,6 +8904,217 @@ Next task after this implementation:
 - keep transient scheduler-status wobble as later narrow polish only
 - move to production H.264 encoder configuration / error logging policy
 
+## Production H.264 Encoder Configuration / Error Logging Policy
+
+The next production-facing video slice is not a protocol change and not a new
+transport shape. It is a client-owned encoder-profile/configuration layer on
+top of the already validated real-capture path:
+
+```text
+Windows Graphics Capture
+  -> raw BGRA frame
+  -> client-owned H.264 encoder profile/config
+  -> RealCaptureH264 VideoFrame
+  -> existing UDP send / fragmentation
+  -> existing server queue / switcher decode/render path
+```
+
+Current design goals:
+
+- keep the validated `4`-client guarded real-video path intact
+- keep the current protocol `VideoFrame` / `VideoFrameFragment` shapes intact
+- keep the current same-session control loop / wrapper / control-pipe path
+  intact
+- make encoder behavior explicit and reproducible in config rather than keeping
+  it implicit in the current FFmpeg shell-out path
+- improve operations visibility before attempting hardware encoder integration
+
+MVP production target:
+
+- baseline profile: `1280x720` at `30fps`
+- future opt-in profile: `1920x1080` at `60fps`
+- `1080p60` is not the default MVP target; it remains a later opt-in profile
+  after CPU, bandwidth, and fragmentation pressure are re-validated
+
+Recommended first production profile for MVP:
+
+- encoder backend:
+  - `ffmpeg + libx264`
+- input pixel format:
+  - capture/runtime remains `BGRA`
+- output pixel format:
+  - `yuv420p`
+- target bitrate:
+  - default `4500 kbps`
+  - acceptable initial tuning window: roughly `3500..6000 kbps` for `720p30`
+- GOP / keyframe interval:
+  - `30` frames for the `30fps` MVP profile
+  - fixed keyframe cadence is preferred over scene-cut-driven variation in the
+    first production profile
+- preset / tune:
+  - keep `ultrafast` + `zerolatency` as the first production default because
+    the current successful PoC already validated that latency/CPU direction
+  - future quality-oriented profiles may move to `superfast` or `veryfast`,
+    but that should be a deliberate profile change rather than a silent default
+    change
+- profile / level:
+  - default `main` profile
+  - default `level=3.1` for the `720p30` profile
+  - future `1080p60` profile should move to a higher level such as `4.2`
+- latency-oriented settings:
+  - keep `zerolatency`
+  - keep `b_frames=0`
+  - keep `rc_lookahead=0`
+  - keep `repeat_headers=true`
+  - prefer fixed `keyint=min-keyint=gop_frames`
+  - disable scene-cut-driven keyframe drift in the first production profile
+
+Tradeoff decision:
+
+- quality:
+  - lower bitrate and `ultrafast` reduce quality, especially in high-motion
+    gameplay
+- latency:
+  - low-latency settings and shorter GOP help the switcher observe usable
+    frames quickly and reduce recovery cost after loss
+- CPU:
+  - `ultrafast` is intentionally conservative for the first production profile
+    because capture and encode happen on player machines, not on one central
+    host
+- current recommendation:
+  - keep low-latency / lower-CPU behavior as the default MVP profile
+  - treat higher quality as an explicit later profile rather than the default
+
+Difference from the current real-capture PoC:
+
+- current PoC behavior is real and validated, but still narrow:
+  - one FFmpeg process per encode
+  - implicit `libx264` / `ultrafast` / `zerolatency` / `yuv420p`
+  - no client-facing encoder profile block in TOML yet
+  - no explicit bitrate / GOP / profile / level fields in config yet
+  - no structured once-per-run FFmpeg availability/version summary yet
+  - no structured encoder stderr/error classification policy yet
+- production configuration should not replace the successful recipe first:
+  - the current successful manual recipe remains valid until config wiring is
+    added
+  - the first implementation slice should surface the already validated default
+    choices explicitly rather than changing them
+
+Failure and error logging policy:
+
+- keep top-level failure families distinct:
+  - capture failure
+  - encode failure
+  - frame build failure
+  - send failure
+  - fragmentation pressure / oversized payload
+  - FFmpeg availability / version / spawn failure
+- capture failure:
+  - preserve the existing explicit capture result family
+  - include whether the failure was session creation, no frame available, or a
+    concrete runtime failure
+- encode failure:
+  - split at least into:
+    - `EncoderUnavailable`
+    - `FfmpegSpawnFailed`
+    - `FfmpegExitedNonZero`
+    - `Libx264Unavailable`
+    - `InvalidInputFrame`
+    - `EmptyEncodedOutput`
+    - `EncodeFailedOther`
+- frame build failure:
+  - keep separate from encode/send so invalid metadata construction is not
+    misread as encoder failure
+- send failure:
+  - keep UDP send failure explicit and preserve packet length / destination
+    context
+- oversized payload / fragmentation pressure:
+  - treat repeated fragmentation or fragment-level `PacketTooLarge` as a
+    profile/policy signal, not just as generic send failure
+  - operations output should preserve whether the frame sent direct or
+    fragmented, and how large the encoded payload became
+- FFmpeg availability / version / spawn failure:
+  - preflight should report the configured executable path
+  - once available, summary/logging should preserve version/build text or an
+    explicit unavailability reason
+  - spawn failure should remain different from encode failure after a process
+    was successfully created
+- stderr policy:
+  - do not dump full FFmpeg stderr blindly on every successful frame
+  - preserve one compact classified error plus a truncated stderr excerpt on
+    failure
+  - future JSON Lines/file logging can carry the longer diagnostic payload
+
+Stdout / summary policy for the first production-facing encoder slice:
+
+- keep existing bounded-sender summary fields:
+  - attempted
+  - captured
+  - encoded
+  - sent
+  - no-frame
+  - capture-failure
+  - encode-failure
+  - frame-build-failure
+  - send-failure
+  - stop reason
+- add explicit encoder-profile identity fields:
+  - `encoder_backend`
+  - `encoder_profile_name`
+  - `capture_width`
+  - `capture_height`
+  - `nominal_fps`
+  - `bitrate_kbps`
+  - `gop_frames`
+  - `preset`
+  - `tune`
+  - `output_pixel_format`
+  - `profile`
+  - `level`
+- add FFmpeg/runtime observation fields:
+  - `ffmpeg_path`
+  - `ffmpeg_available`
+  - `ffmpeg_version`
+  - `last_encode_error_kind`
+  - `last_encode_exit_code`
+- add payload / fragmentation pressure fields:
+  - `last_encoded_payload_len`
+  - `max_encoded_payload_len`
+  - `fragmented_sends`
+  - `fragments_attempted`
+  - `fragments_sent`
+  - `last_send_packet_len`
+
+Config placement decision:
+
+- encoder settings belong to client config because encode ownership is client
+  side
+- first config location:
+  - `[video.encoder]` inside each client TOML
+- manual validation configs:
+  - `configs/manual/client.player1.toml`
+  - `configs/manual/client.player2.toml`
+  - `configs/manual/client.player3.toml`
+  - `configs/manual/client.player4.toml`
+  - should eventually carry explicit encoder blocks so manual recipes are
+    reproducible
+- example/default config:
+  - the existing client example config should gain a documented encoder block
+- future reusable profiles:
+  - if multiple stable presets appear, add dedicated profile files under a
+    profile-oriented config directory rather than duplicating every value in
+    prose only
+
+Recommended next implementation slice:
+
+1. surface the validated `libx264` low-latency profile as client TOML config
+   without changing the successful default recipe
+2. extend bounded real-encoded sender summary with explicit encoder profile /
+   FFmpeg / error-kind fields
+3. add an explicit FFmpeg availability/version preflight summary path
+4. defer hardware encoder integration until the software-profile/config and
+   logging surface are stable
+
 ## Operator-Facing Control Surface After Stable All-Real Baseline
 
 After the guarded `4`-client all-real handoff preview path succeeded in

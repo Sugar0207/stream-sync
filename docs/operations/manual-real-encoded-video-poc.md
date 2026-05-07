@@ -2821,7 +2821,9 @@ Fail when any are true:
 - No fragment expiration policy yet; incomplete reassembly remains caller-owned state during the manual run.
 - Live two-view switcher runtime is bounded/manual, not a production loop.
 - No late-frame queue mutation/drop policy yet.
-- No production H.264 encoder configuration or structured encoder stderr logging yet.
+- No production H.264 encoder configuration or structured encoder stderr
+  logging implementation yet. The policy is now fixed in docs, but the config
+  surface and structured runtime summaries are still future work.
 - No OBS integration.
 - No 4-view sync.
 
@@ -3460,3 +3462,147 @@ Next task after this decision:
     as an MVP blocker
 - next task:
   - production H.264 encoder configuration / error logging policy
+
+## 10. Production H.264 Encoder Configuration / Error Logging Policy
+
+Design decision:
+
+- keep the currently validated real-capture recipe working as-is until the
+  config slice lands
+- do not change protocol, fragmentation ownership, control pipe, or switcher
+  decode/render behavior as part of encoder-profile work
+- make encoder behavior explicit in client config and runtime summary before
+  considering hardware encoder integration
+
+Recommended MVP production profile:
+
+- target output:
+  - `1280x720`
+  - `30fps`
+- encoder backend:
+  - `ffmpeg`
+  - `libx264`
+- latency-oriented defaults:
+  - `preset=ultrafast`
+  - `tune=zerolatency`
+  - `pixel_format=yuv420p`
+  - `b_frames=0`
+  - `rc_lookahead=0`
+  - `repeat_headers=true`
+- bitrate / GOP defaults:
+  - `bitrate_kbps=4500`
+  - acceptable initial tuning window around `3500..6000`
+  - `gop_frames=30`
+  - `min_keyint_frames=30`
+  - fixed keyframe cadence is preferred in the first production profile
+- compatibility defaults:
+  - `profile=main`
+  - `level=3.1`
+
+Future opt-in profile:
+
+- `1920x1080`
+- `60fps`
+- longer CPU/network validation is required before this becomes anything more
+  than an explicit opt-in profile
+- the future profile should raise bitrate and H.264 level together rather than
+  silently reusing the `720p30` profile
+
+Difference from the current PoC:
+
+- current validated PoC already proves:
+  - Windows Graphics Capture -> FFmpeg -> H.264 -> UDP -> server queue ->
+    switcher decode/render works
+- current PoC still leaves production configuration implicit:
+  - FFmpeg/libx264 defaults are not yet surfaced through client TOML
+  - bitrate/GOP/profile/level are not yet operator-visible in runtime summary
+  - FFmpeg availability/version is checked manually rather than reported by the
+    sender summary
+  - encoder stderr is not yet classified into compact operational error kinds
+
+Failure / error logging policy:
+
+- keep these failure families separate in summaries and future logs:
+  - capture failure
+  - encode failure
+  - frame build failure
+  - send failure
+  - fragmentation pressure / oversized payload
+  - FFmpeg availability / version / spawn failure
+- encode failures should be classified at least into:
+  - `EncoderUnavailable`
+  - `FfmpegSpawnFailed`
+  - `FfmpegExitedNonZero`
+  - `Libx264Unavailable`
+  - `InvalidInputFrame`
+  - `EmptyEncodedOutput`
+  - `EncodeFailedOther`
+- repeated fragment-level `PacketTooLarge` should be treated as encoder-profile
+  pressure or packet-sizing policy pressure, not as a generic transport wobble
+- future stderr handling should preserve:
+  - one compact error kind
+  - optional exit code
+  - a truncated stderr excerpt on failure only
+
+Stdout summary fields:
+
+- keep:
+  - `frames_attempted`
+  - `frames_captured`
+  - `frames_encoded`
+  - `frames_sent`
+  - `no_frame_count`
+  - `capture_failures`
+  - `encode_failures`
+  - `frame_build_failures`
+  - `send_failures`
+  - `stop_reason`
+- add in the next slice:
+  - `encoder_backend`
+  - `encoder_profile_name`
+  - `capture_width`
+  - `capture_height`
+  - `nominal_fps`
+  - `bitrate_kbps`
+  - `gop_frames`
+  - `preset`
+  - `tune`
+  - `output_pixel_format`
+  - `profile`
+  - `level`
+  - `ffmpeg_path`
+  - `ffmpeg_available`
+  - `ffmpeg_version`
+  - `last_encode_error_kind`
+  - `last_encode_exit_code`
+  - `last_encoded_payload_len`
+  - `max_encoded_payload_len`
+  - `fragmented_sends`
+  - `fragments_attempted`
+  - `fragments_sent`
+  - `last_send_packet_len`
+
+Config placement:
+
+- client-owned encoder config belongs in client TOML:
+  - `[video.encoder]`
+- first manual targets:
+  - `configs/manual/client.player1.toml`
+  - `configs/manual/client.player2.toml`
+  - `configs/manual/client.player3.toml`
+  - `configs/manual/client.player4.toml`
+- example/default config should later document the same block in the existing
+  client example file
+- if stable presets accumulate, future reusable profile files can be added as a
+  separate profile layer instead of copying values into every manual config by
+  hand
+
+Recommended next implementation slice:
+
+1. cut the validated low-latency `libx264` profile out into client config while
+   preserving the current implicit defaults
+2. extend bounded real-encoded sender summary with encoder profile / FFmpeg /
+   error-kind fields
+3. add an explicit FFmpeg availability/version summary path
+4. leave hardware encoder integration after the software-profile/config and
+   logging surface are stable

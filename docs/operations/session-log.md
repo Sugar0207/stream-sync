@@ -5,6 +5,63 @@
 - Codex
 
 ### Work
+- Fixed the production H.264 encoder configuration / error logging policy in
+  docs without changing code.
+- Recorded the first production-profile direction as a client-owned
+  `ffmpeg + libx264` low-latency profile rather than as a protocol or
+  transport change.
+- Recorded the recommended MVP profile:
+  - `1280x720`
+  - `30fps`
+  - `bitrate_kbps=4500`
+  - `gop_frames=30`
+  - `preset=ultrafast`
+  - `tune=zerolatency`
+  - `pixel_format=yuv420p`
+  - `profile=main`
+  - `level=3.1`
+- Recorded the future profile direction:
+  - `1920x1080`
+  - `60fps`
+  - opt-in only after CPU/bandwidth/fragmentation re-validation
+- Recorded the difference from the current PoC:
+  - the validated FFmpeg path remains real and successful
+  - encoder settings are still implicit in code today
+  - config surfacing, explicit FFmpeg visibility, and structured encode error
+    classification are the next implementation concerns
+- Recorded the failure/logging policy split:
+  - capture failure
+  - encode failure
+  - frame build failure
+  - send failure
+  - fragmentation pressure / oversized payload
+  - FFmpeg availability / version / spawn failure
+- Updated TODO so the first implementation slice becomes:
+  - client `[video.encoder]` config surfacing
+  - bounded sender summary field extension
+  - FFmpeg availability/version visibility
+
+### Changed Files
+- `docs/architecture/system-design.md`
+- `docs/operations/manual-real-encoded-video-poc.md`
+- `docs/operations/session-log.md`
+- `docs/operations/todo.md`
+
+### Decision
+- production H.264 configuration should be a client-owned profile/config layer
+  on top of the validated real-capture path
+- the successful current recipe should stay valid while config wiring is added
+- hardware encoder integration stays later than config surfacing and error
+  visibility
+
+### Validation
+- `git diff --check`
+
+## 2026-05-07
+### Type
+- Codex
+
+### Work
 - Recorded the successful actual control-pipe validation for
   `--four-view-operator-wrapper --raw-keys`.
 - Captured the confirmed command sequence:
