@@ -33,6 +33,7 @@
 - bounded repeated runtime summary には `command_name` / `config_path` / `max_iterations` / `receive_timeout_ms` / `iterations_attempted` / `iterations_completed` / `auth_requests_received` / `auth_responses_sent` / `heartbeats_received` / `heartbeat_acks_sent` / `client_stats_received` / `client_stats_returns_sent` / `accepted_packets` / `rejected_packets` / `decode_errors` / `send_failures` / `outbound_queue_len` / `registered_clients` / `stop_reason` を出す
 - fatal/stop visibility の narrow slice も追加済みで、success summary には `timeout_iterations` / `timeout_only_run` / `last_receive_error` / `last_send_error` / `last_rejected_reason` を追加した。fatal/startup failure 時は same command args を含む one-line failure summary を stderr に出し、`stop_reason` / `fatal_error_kind` / `fatal_error_detail` で silent failure を避ける
 - receive/send continuous logging ownership の docs 設計も固定済みで、stdout/stderr summary は bounded run closeout 専用、structured operational logs は per-iteration/per-packet event 専用として責務を分離した。caller-owned writers は維持し、file sink open / rotation / process-wide logger / dashboard/exporter transport は future boundary に残す
+- per-iteration receive/send event handoff の narrow implementation も追加済みで、`ServerReceiveSendRuntimeBoundedStartupOutcome` は `iteration_events` を持つ。event fields は `command_name` / `iteration_index` / `receive_outcome_kind` / `accepted_packet_kind` / `auth_outcome_kind` / `rejection_kind` / `send_outcome_kind` / `sent_message_kind` / `receive_error` / `send_error` とし、outer loop の typed observation surface に限定する
 - current rejected-auth note: first slice の `auth_responses_sent` は accepted auth response send count として扱っており、rejected auth は current one-item send pathでは送信 count に入らない。その代わり `last_rejected_reason=Auth:...` で summary visibility を持たせている
 - code-level validation では command parser、summary formatter、`max_iterations` stop、`ReceiveTimedOut` stop、timeout-only run summary、repeated auth registry persistence、repeated heartbeat existing-registry reuse、`ClientStats` observation path count、auth rejection visibility、gate rejection visibility、startup failure summary formatting、send failure summary formatting、existing one-iteration runtime non-regression を追加済み
 - lightweight smoke validation も完了している。CLI shape は client 側 `--auth-request-poc-once`、`--auth-heartbeat-poc-once`、`--auth-heartbeat-stats-poc-once` を確認済みで、direct `ClientStats`-only sender CLI は未追加だが `--auth-heartbeat-stats-poc-once` で `ClientStats` observation path を刺激できる
@@ -162,8 +163,8 @@
 
 ## 直近でやること
 1. logging ownership の next narrow implementation slice を選ぶ
-   - per-iteration receive/send event handoff shape を first candidate にする
-   - JSONL writer ownership の最小接続は考えてよいが file sink open/rotation はまだ持ち込まない
+   - typed `iteration_events` の次は JSONL writer ownership の最小接続候補を整理する
+   - file sink open/rotation はまだ持ち込まない
 2. bounded runtime の次 narrow expansion を選ぶ
    - continuous video path ではなく auth / heartbeat / client-stats path のまま進める
    - service lifecycle / reconnect / retry 拡張は bounded runtime evidence の後段に回す
@@ -952,6 +953,6 @@ continuous runtime first slice の blocker:
 - actual dashboard UI rendering remains unimplemented.
 
 ## Next Items
-1. per-iteration receive/send event handoff ownership follow-up
+1. JSONL writer ownership の最小 follow-up
 2. later service lifecycle / reconnect / retry expansion after the bounded first slice
 3. bounded runtime failure injection follow-up only if concrete evidence is needed

@@ -9577,6 +9577,43 @@ Current role split:
     export
   - must not replace the final bounded summary
 
+Current narrow implementation for bounded per-iteration event handoff:
+
+- `ServerReceiveSendRuntimeBoundedStartupOutcome` now carries typed
+  `iteration_events` in addition to the final bounded summary.
+- each event is a compact outer-loop observation only:
+  - `command_name`
+  - `iteration_index`
+  - `receive_outcome_kind`
+  - `accepted_packet_kind`
+  - `auth_outcome_kind`
+  - `rejection_kind`
+  - `send_outcome_kind`
+  - `sent_message_kind`
+  - `receive_error`
+  - `send_error`
+- the first implementation keeps this as a typed handoff surface, not a new
+  file sink or process-wide logger surface.
+- current field intent:
+  - `receive_outcome_kind` distinguishes accepted packet, rejected packet,
+    timeout, receive failure, and explicit stopped paths
+  - `accepted_packet_kind` records the accepted inbound message type when one
+    packet was accepted during the iteration
+  - `auth_outcome_kind` records accepted / rejected / not-auth
+  - `rejection_kind` records the compact receive rejection reason when the
+    iteration was rejected before dispatch
+  - `send_outcome_kind` records sent / not-sent / failed
+  - `sent_message_kind` records the outbound message type when one send log
+    event exists
+  - `receive_error` records timeout or other receive-side socket error kinds
+  - `send_error` stays available for future failure-carrying event expansion,
+    but the current successful bounded path usually leaves it empty
+- this does not change the role split:
+  - final bounded summary remains the primary human/manual closeout surface
+  - fatal/startup summary remains the compact terminal failure surface
+  - per-iteration event handoff remains the compact structured observation
+    surface for future operational logging
+
 Required separation of concerns:
 
 - bounded runtime aggregate summary:
@@ -9609,6 +9646,8 @@ Next narrow implementation slice for logging ownership:
   - auth outcome when present
   - send outcome when present
   - rejection kind when present
+- this first handoff slice is now implemented as typed `iteration_events`
+  returned from the bounded runtime outcome
 - keep the first logging-ownership implementation slice caller-owned:
   - accept an injected writer set or event sink set
   - do not add file open/rotation

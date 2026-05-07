@@ -1726,6 +1726,52 @@ pub enum ServerReceiveSendRuntimeBoundedStopReason {
     SocketReceiveFailed(io::ErrorKind),
 }
 
+pub const SERVER_RECEIVE_SEND_RUNTIME_BOUNDED_COMMAND_NAME: &str = "--receive-send-runtime-bounded";
+
+/// Compact per-iteration receive outcome for the bounded runtime outer loop.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ServerReceiveSendRuntimeBoundedReceiveOutcomeKind {
+    AcceptedPacket,
+    RejectedPacket,
+    TimedOut,
+    ReceiveFailed,
+    Stopped,
+}
+
+/// Compact auth outcome for one bounded runtime iteration.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ServerReceiveSendRuntimeBoundedAuthOutcomeKind {
+    NotAuth,
+    Accepted,
+    Rejected,
+}
+
+/// Compact send outcome for one bounded runtime iteration.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ServerReceiveSendRuntimeBoundedSendOutcomeKind {
+    NotSent,
+    Sent,
+    Failed,
+}
+
+/// Typed per-iteration receive/send event handoff for the bounded runtime.
+///
+/// This is intentionally compact and caller-observable. It does not replace
+/// the final bounded summary or the schema-specific JSON Lines writer surfaces.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ServerReceiveSendRuntimeBoundedIterationEvent {
+    pub command_name: &'static str,
+    pub iteration_index: usize,
+    pub receive_outcome_kind: ServerReceiveSendRuntimeBoundedReceiveOutcomeKind,
+    pub accepted_packet_kind: Option<MessageType>,
+    pub auth_outcome_kind: ServerReceiveSendRuntimeBoundedAuthOutcomeKind,
+    pub rejection_kind: Option<ServerReceiveRejectionReason>,
+    pub send_outcome_kind: ServerReceiveSendRuntimeBoundedSendOutcomeKind,
+    pub sent_message_kind: Option<MessageType>,
+    pub receive_error: Option<io::ErrorKind>,
+    pub send_error: Option<String>,
+}
+
 /// Aggregate stdout-facing summary for the bounded repeated runtime.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ServerReceiveSendRuntimeBoundedSummary {
@@ -1760,6 +1806,7 @@ pub struct ServerReceiveSendRuntimeBoundedStartupOutcome {
     pub registry: AuthenticatedSenderRegistry,
     pub queue_collection: ServerOutboundQueueCollection,
     pub iterations: Vec<ServerControllerReceiveSendRuntimeResult>,
+    pub iteration_events: Vec<ServerReceiveSendRuntimeBoundedIterationEvent>,
     pub summary: ServerReceiveSendRuntimeBoundedSummary,
 }
 
@@ -1883,6 +1930,7 @@ impl ServerReceiveSendRuntimeBoundedLauncher {
         let mut registry = AuthenticatedSenderRegistry::default();
         let mut queue_collection = ServerOutboundQueueCollection::default();
         let mut iterations = Vec::new();
+        let mut iteration_events = Vec::new();
         let mut heartbeat_handoffs_by_client =
             BTreeMap::<(String, String), ServerHeartbeatAckHandoff>::new();
         let mut final_stop_reason = None;
@@ -1956,6 +2004,7 @@ impl ServerReceiveSendRuntimeBoundedLauncher {
             };
 
             summary.iterations_completed = summary.iterations_completed.saturating_add(1);
+            iteration_events.push(Self::build_iteration_event(iteration_index, &result));
             let stop_reason =
                 self.observe_iteration(&result, &mut heartbeat_handoffs_by_client, &mut summary);
             iterations.push(result);
@@ -1983,8 +2032,107 @@ impl ServerReceiveSendRuntimeBoundedLauncher {
             registry,
             queue_collection,
             iterations,
+            iteration_events,
             summary,
         })
+    }
+
+    fn build_iteration_event(
+        iteration_index: usize,
+        result: &ServerControllerReceiveSendRuntimeResult,
+    ) -> ServerReceiveSendRuntimeBoundedIterationEvent {
+        let mut event = ServerReceiveSendRuntimeBoundedIterationEvent {
+            command_name: SERVER_RECEIVE_SEND_RUNTIME_BOUNDED_COMMAND_NAME,
+            iteration_index,
+            receive_outcome_kind: ServerReceiveSendRuntimeBoundedReceiveOutcomeKind::Stopped,
+            accepted_packet_kind: None,
+            auth_outcome_kind: ServerReceiveSendRuntimeBoundedAuthOutcomeKind::NotAuth,
+            rejection_kind: None,
+            send_outcome_kind: ServerReceiveSendRuntimeBoundedSendOutcomeKind::NotSent,
+            sent_message_kind: None,
+            receive_error: None,
+            send_error: None,
+        };
+
+        match result {
+            ServerControllerReceiveSendRuntimeResult::Stopped { .. } => event,
+            ServerControllerReceiveSendRuntimeResult::Iteration { iteration, .. } => {
+                match &iteration.body.tick.outcome {
+                    ServerContinuousReceiveLoopOneTickRuntimeOutcome::Stopped => {
+                        event.receive_outcome_kind =
+                            ServerReceiveSendRuntimeBoundedReceiveOutcomeKind::Stopped;
+                    }
+                    ServerContinuousReceiveLoopOneTickRuntimeOutcome::SocketReceiveFailed {
+                        error_kind,
+                        ..
+                    } => {
+                        event.receive_error = Some(*error_kind);
+                        event.receive_outcome_kind = match error_kind {
+                            io::ErrorKind::TimedOut | io::ErrorKind::WouldBlock => {
+                                ServerReceiveSendRuntimeBoundedReceiveOutcomeKind::TimedOut
+                            }
+                            _ => ServerReceiveSendRuntimeBoundedReceiveOutcomeKind::ReceiveFailed,
+                        };
+                    }
+                    ServerContinuousReceiveLoopOneTickRuntimeOutcome::Completed {
+                        handler, ..
+                    } => {
+                        if let Some(rejection) = &handler.writer.rejection_event {
+                            event.receive_outcome_kind =
+                                ServerReceiveSendRuntimeBoundedReceiveOutcomeKind::RejectedPacket;
+                            event.rejection_kind = Some(rejection.rejection_reason);
+                        } else if let Some(operational_event) = &handler.writer.operational_event {
+                            event.receive_outcome_kind = match operational_event.outcome {
+                                ServerReceiveLoopLogOutcome::Accepted => {
+                                    ServerReceiveSendRuntimeBoundedReceiveOutcomeKind::AcceptedPacket
+                                }
+                                ServerReceiveLoopLogOutcome::DecodeRejected
+                                | ServerReceiveLoopLogOutcome::AcceptanceRejected => {
+                                    ServerReceiveSendRuntimeBoundedReceiveOutcomeKind::RejectedPacket
+                                }
+                            };
+                            event.accepted_packet_kind = operational_event.message_type;
+                            event.rejection_kind = operational_event.rejection_reason;
+                        }
+                    }
+                }
+
+                event.auth_outcome_kind = match &iteration.side_effect.result {
+                    ServerDispatchRuntimeSideEffectApplyResult::Auth { flow, .. } => {
+                        if flow.decision.accepted {
+                            ServerReceiveSendRuntimeBoundedAuthOutcomeKind::Accepted
+                        } else {
+                            ServerReceiveSendRuntimeBoundedAuthOutcomeKind::Rejected
+                        }
+                    }
+                    _ => ServerReceiveSendRuntimeBoundedAuthOutcomeKind::NotAuth,
+                };
+
+                if let Some(send_log) = &iteration.send_log {
+                    event.send_outcome_kind = match send_log.outcome {
+                        ServerSendLogOutcome::Success => {
+                            ServerReceiveSendRuntimeBoundedSendOutcomeKind::Sent
+                        }
+                        ServerSendLogOutcome::Failure => {
+                            ServerReceiveSendRuntimeBoundedSendOutcomeKind::Failed
+                        }
+                    };
+                    event.sent_message_kind = Some(send_log.message_type);
+                    event.send_error = send_log.failure.map(|failure| {
+                        format!(
+                            "{}:{}",
+                            send_failure_kind_name(failure),
+                            send_log
+                                .disposition
+                                .map(send_failure_disposition_name)
+                                .unwrap_or("none")
+                        )
+                    });
+                }
+
+                event
+            }
+        }
     }
 
     fn observe_iteration(
@@ -11142,6 +11290,27 @@ mod tests {
         assert_eq!(outcome.summary.last_receive_error, None);
         assert_eq!(outcome.summary.last_send_error, None);
         assert_eq!(outcome.summary.last_rejected_reason, None);
+        assert_eq!(outcome.iteration_events.len(), 2);
+        assert_eq!(
+            outcome.iteration_events[0].receive_outcome_kind,
+            ServerReceiveSendRuntimeBoundedReceiveOutcomeKind::AcceptedPacket
+        );
+        assert_eq!(
+            outcome.iteration_events[0].accepted_packet_kind,
+            Some(MessageType::AuthRequest)
+        );
+        assert_eq!(
+            outcome.iteration_events[0].auth_outcome_kind,
+            ServerReceiveSendRuntimeBoundedAuthOutcomeKind::Accepted
+        );
+        assert_eq!(
+            outcome.iteration_events[0].send_outcome_kind,
+            ServerReceiveSendRuntimeBoundedSendOutcomeKind::Sent
+        );
+        assert_eq!(
+            outcome.iteration_events[0].sent_message_kind,
+            Some(MessageType::AuthResponse)
+        );
 
         let mut response_buffer = vec![0_u8; 1024];
         for _ in 0..2 {
@@ -11211,6 +11380,19 @@ mod tests {
             Some(io::ErrorKind::TimedOut | io::ErrorKind::WouldBlock)
         ));
         assert!(!outcome.summary.timeout_only_run);
+        assert_eq!(outcome.iteration_events.len(), 3);
+        assert_eq!(
+            outcome.iteration_events[2].receive_outcome_kind,
+            ServerReceiveSendRuntimeBoundedReceiveOutcomeKind::TimedOut
+        );
+        assert!(matches!(
+            outcome.iteration_events[2].receive_error,
+            Some(io::ErrorKind::TimedOut | io::ErrorKind::WouldBlock)
+        ));
+        assert_eq!(
+            outcome.iteration_events[2].send_outcome_kind,
+            ServerReceiveSendRuntimeBoundedSendOutcomeKind::NotSent
+        );
         let entry = outcome
             .registry
             .get(&ClientId("client-1".to_string()))
@@ -11280,6 +11462,23 @@ mod tests {
         assert_eq!(outcome.summary.heartbeats_received, 1);
         assert_eq!(outcome.summary.heartbeat_acks_sent, 1);
         assert_eq!(outcome.summary.accepted_packets, 2);
+        assert_eq!(outcome.iteration_events.len(), 3);
+        assert_eq!(
+            outcome.iteration_events[1].accepted_packet_kind,
+            Some(MessageType::Heartbeat)
+        );
+        assert_eq!(
+            outcome.iteration_events[1].auth_outcome_kind,
+            ServerReceiveSendRuntimeBoundedAuthOutcomeKind::NotAuth
+        );
+        assert_eq!(
+            outcome.iteration_events[1].send_outcome_kind,
+            ServerReceiveSendRuntimeBoundedSendOutcomeKind::Sent
+        );
+        assert_eq!(
+            outcome.iteration_events[1].sent_message_kind,
+            Some(MessageType::HeartbeatAck)
+        );
     }
 
     #[test]
@@ -11368,6 +11567,19 @@ mod tests {
         assert_eq!(outcome.summary.client_stats_received, 1);
         assert_eq!(outcome.summary.client_stats_returns_sent, 1);
         assert_eq!(outcome.summary.accepted_packets, 3);
+        assert_eq!(outcome.iteration_events.len(), 4);
+        assert_eq!(
+            outcome.iteration_events[2].accepted_packet_kind,
+            Some(MessageType::ClientStats)
+        );
+        assert_eq!(
+            outcome.iteration_events[2].auth_outcome_kind,
+            ServerReceiveSendRuntimeBoundedAuthOutcomeKind::NotAuth
+        );
+        assert_eq!(
+            outcome.iteration_events[2].send_outcome_kind,
+            ServerReceiveSendRuntimeBoundedSendOutcomeKind::NotSent
+        );
     }
 
     #[test]
@@ -11406,6 +11618,15 @@ mod tests {
         ));
         assert_eq!(outcome.summary.accepted_packets, 0);
         assert_eq!(outcome.summary.rejected_packets, 0);
+        assert_eq!(outcome.iteration_events.len(), 1);
+        assert_eq!(
+            outcome.iteration_events[0].receive_outcome_kind,
+            ServerReceiveSendRuntimeBoundedReceiveOutcomeKind::TimedOut
+        );
+        assert!(matches!(
+            outcome.iteration_events[0].receive_error,
+            Some(io::ErrorKind::TimedOut | io::ErrorKind::WouldBlock)
+        ));
     }
 
     #[test]
@@ -11454,6 +11675,19 @@ mod tests {
         assert_eq!(
             outcome.summary.last_rejected_reason.as_deref(),
             Some("Auth:InvalidToken")
+        );
+        assert!(!outcome.iteration_events.is_empty());
+        assert_eq!(
+            outcome.iteration_events[0].auth_outcome_kind,
+            ServerReceiveSendRuntimeBoundedAuthOutcomeKind::Rejected
+        );
+        assert_eq!(
+            outcome.iteration_events[0].accepted_packet_kind,
+            Some(MessageType::AuthRequest)
+        );
+        assert_eq!(
+            outcome.iteration_events[0].send_outcome_kind,
+            ServerReceiveSendRuntimeBoundedSendOutcomeKind::NotSent
         );
     }
 
@@ -11505,6 +11739,86 @@ mod tests {
             Some("UnauthenticatedSource")
         );
         assert!(!outcome.summary.timeout_only_run);
+        assert_eq!(outcome.iteration_events.len(), 2);
+        assert_eq!(
+            outcome.iteration_events[0].receive_outcome_kind,
+            ServerReceiveSendRuntimeBoundedReceiveOutcomeKind::RejectedPacket
+        );
+        assert_eq!(
+            outcome.iteration_events[0].rejection_kind,
+            Some(ServerReceiveRejectionReason::UnauthenticatedSource)
+        );
+    }
+
+    #[derive(Clone, Default)]
+    struct SharedTestWriter(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+
+    impl io::Write for SharedTestWriter {
+        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+            self.0
+                .lock()
+                .expect("shared writer lock should succeed")
+                .extend_from_slice(buf);
+            Ok(buf.len())
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn receive_send_runtime_bounded_launcher_keeps_writers_caller_owned() {
+        let launcher = ServerReceiveSendRuntimeBoundedLauncher::default();
+        let bind_port = reserve_localhost_udp_port();
+        let startup_config = launcher
+            .load_startup_config_from_str(&receive_send_runtime_test_config(bind_port))
+            .expect("bounded runtime config should load");
+        let server_address = SocketAddr::from(([127, 0, 0, 1], bind_port));
+        let operational = SharedTestWriter::default();
+        let rejection = SharedTestWriter::default();
+        let auth = SharedTestWriter::default();
+        let send = SharedTestWriter::default();
+        let operational_bytes = operational.0.clone();
+        let auth_bytes = auth.0.clone();
+        let send_bytes = send.0.clone();
+        let handle = std::thread::spawn(move || {
+            launcher.run_bounded_with_writers_and_policy(
+                startup_config,
+                operational,
+                rejection,
+                auth,
+                send,
+                ServerReceiveSendRuntimeBoundedPolicy {
+                    max_iterations: 2,
+                    receive_timeout: Duration::from_millis(150),
+                },
+            )
+        });
+        let client_socket = UdpSocket::bind("127.0.0.1:0").expect("client socket should bind");
+        client_socket
+            .set_read_timeout(Some(Duration::from_secs(1)))
+            .expect("client read timeout should be set");
+        std::thread::sleep(Duration::from_millis(50));
+        client_socket
+            .send_to(
+                auth_request_packet("client-1", "presented-secret").as_slice(),
+                server_address,
+            )
+            .expect("auth request should send");
+
+        let outcome = handle
+            .join()
+            .expect("bounded runtime thread should join")
+            .expect("bounded runtime should complete");
+
+        assert_eq!(outcome.iteration_events.len(), 2);
+        assert!(!operational_bytes
+            .lock()
+            .expect("operational bytes")
+            .is_empty());
+        assert!(!auth_bytes.lock().expect("auth bytes").is_empty());
+        assert!(!send_bytes.lock().expect("send bytes").is_empty());
     }
 
     #[test]

@@ -5,6 +5,67 @@
 - Codex
 
 ### Work
+- Added the narrow per-iteration receive/send event handoff slice to
+  `--receive-send-runtime-bounded`.
+- Kept the change intentionally small:
+  - no file sink open/rotation
+  - no process-wide logger
+  - no dashboard/exporter transport
+  - no retry/requeue
+  - no continuous video path
+  - no daemon lifecycle work
+- Added typed `iteration_events` to
+  `ServerReceiveSendRuntimeBoundedStartupOutcome`.
+- Fixed the compact event field set as:
+  - `command_name`
+  - `iteration_index`
+  - `receive_outcome_kind`
+  - `accepted_packet_kind`
+  - `auth_outcome_kind`
+  - `rejection_kind`
+  - `send_outcome_kind`
+  - `sent_message_kind`
+  - `receive_error`
+  - `send_error`
+- Reused the existing receive/auth/rejection/send runtime outputs to build the
+  compact per-iteration handoff rather than widening writer ownership.
+- Added/updated tests for:
+  - accepted auth iteration event
+  - heartbeat ack iteration event
+  - client stats iteration event
+  - rejection iteration event
+  - timeout iteration event
+  - caller-owned writer preservation with in-memory writers
+  - final aggregate summary non-regression
+
+### Changed Files
+- `apps/server/src/lib.rs`
+- `apps/server/src/main.rs`
+- `docs/architecture/system-design.md`
+- `docs/operations/session-log.md`
+- `docs/operations/todo.md`
+
+### Decision
+- Keep per-iteration receive/send observation as a typed handoff surface on the
+  bounded runtime outcome rather than a new sink-owning logging layer.
+- Keep final bounded summary and fatal/startup summary unchanged as the human
+  closeout surfaces.
+- Keep writers caller-owned while the next follow-up remains JSONL writer
+  ownership rather than file sink ownership.
+
+### Validation
+- `cargo fmt`
+- `cargo fmt --check`
+- `cargo check --workspace`
+- `cargo test -p stream-sync-server receive_send -- --test-threads=1`
+- `cargo test --workspace`
+- `git diff --check`
+
+## 2026-05-07
+### Type
+- Codex
+
+### Work
 - Fixed the docs design for receive/send continuous logging ownership without
   widening code scope.
 - Kept the design intentionally narrow:

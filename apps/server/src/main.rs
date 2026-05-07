@@ -1163,6 +1163,7 @@ mod tests {
                 registry: stream_sync_server::AuthenticatedSenderRegistry::default(),
                 queue_collection: stream_sync_server::ServerOutboundQueueCollection::default(),
                 iterations: Vec::new(),
+                iteration_events: Vec::new(),
                 summary: stream_sync_server::ServerReceiveSendRuntimeBoundedSummary {
                     max_iterations: 16,
                     receive_timeout: std::time::Duration::from_millis(1_000),
