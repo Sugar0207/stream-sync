@@ -8910,6 +8910,35 @@ Current implementation note:
     surface rather than another focused full-window frame
   - the Windows persistent render path now invalidates the full client area on
     update instead of invalidating a zero-sized rect
+- actual rerun after that fix is now recorded as successful:
+  - `s -> status` returned `current_view_state=AllView`,
+    `view_render_mode=AllView`, `output_layout=QuadView`,
+    `rendered_slot_count=4`, `focused_slot_index=none`, and
+    `all_view_render_result_kind=Rendered`
+  - `1` / `2` / `3` / `4` returned focused states with
+    `view_render_mode=Focused`, `output_layout=FocusedFullWindow`,
+    `rendered_slot_count=1`, and `focused_slot_index=0..3`
+  - `0 -> all` returned `transition_result=Transitioned`,
+    `current_view_state=AllView`, `view_render_mode=AllView`,
+    `output_layout=QuadView`, `rendered_slot_count=4`,
+    `focused_slot_index=none`, and `all_view_render_result_kind=Rendered`
+  - `a -> all` returned `transition_result=NoChange`,
+    `current_view_state=AllView`, `output_layout=QuadView`, and
+    `rendered_slot_count=4`
+  - wrapper final summary returned `input_source=raw_keys`,
+    `raw_console_restore_result=restored`,
+    `raw_console_restore_error=none`, and `exit_reason=QuitRequested`
+  - human confirmation also verified:
+    - `0` visibly returned to the 4-view quad
+    - `a` visibly kept the 4-view quad
+    - OBS / Window Capture showed no black frame
+- treat the `AllView` visual mismatch as closed:
+  - raw-key operator wrapper
+  - `AllView`
+  - `Focused(slot_index)`
+  - `quit`
+  - console restore
+  now form one completed MVP operator-surface slice
 - one transient runtime note remains:
   - at `command_index=4` for `Focused(3)`, the loop still reported
     `selected_slot_result=Selected`,
@@ -8923,7 +8952,7 @@ Next task after this implementation:
 
 - keep Enter-required stdin as the fallback/manual mode
 - keep transient scheduler-status wobble as later narrow polish only
-- move to production H.264 encoder configuration / error logging policy
+- move to encoder profile manual evidence / production H.264 stdout visibility
 
 ## Production H.264 Encoder Configuration / Error Logging Policy
 

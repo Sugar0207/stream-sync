@@ -5,6 +5,73 @@
 - Codex
 
 ### Work
+- Recorded the actual rerun and human visual confirmation after the AllView
+  visual mismatch fix for `--four-view-operator-wrapper --raw-keys`.
+- Captured the rerun control results:
+  - `s -> status` returned:
+    - `current_view_state=AllView`
+    - `view_render_mode=AllView`
+    - `output_layout=QuadView`
+    - `rendered_slot_count=4`
+    - `focused_slot_index=none`
+    - `all_view_render_result_kind=Rendered`
+  - `1` / `2` / `3` / `4` returned focused states with:
+    - `view_render_mode=Focused`
+    - `output_layout=FocusedFullWindow`
+    - `rendered_slot_count=1`
+    - `focused_slot_index=0..3`
+    - `clean_output_render_result_kind=Rendered`
+  - `0 -> all` returned:
+    - `transition_result=Transitioned`
+    - `current_view_state=AllView`
+    - `view_render_mode=AllView`
+    - `output_layout=QuadView`
+    - `rendered_slot_count=4`
+    - `focused_slot_index=none`
+    - `all_view_render_result_kind=Rendered`
+  - `a -> all` returned:
+    - `transition_result=NoChange`
+    - `current_view_state=AllView`
+    - `output_layout=QuadView`
+    - `rendered_slot_count=4`
+  - `q` / `q` still returned `QuitRequested`
+  - wrapper final summary returned:
+    - `input_source=raw_keys`
+    - `raw_console_restore_result=restored`
+    - `raw_console_restore_error=none`
+    - `exit_reason=QuitRequested`
+- Recorded human visual confirmation:
+  - after `0`, the visible output returned to the 4-view quad
+  - after `a`, the visible output stayed on the 4-view quad
+  - OBS / Window Capture showed no black frame on this path
+- Updated docs to treat:
+  - the AllView visual mismatch as fixed
+  - the raw-key operator wrapper / AllView / Focused / quit / console restore
+    slice as complete for the current MVP operator surface
+- Moved the next task back to:
+  - encoder profile manual evidence
+  - production H.264 stdout visibility
+
+### Changed Files
+- `docs/architecture/system-design.md`
+- `docs/operations/manual-real-encoded-video-poc.md`
+- `docs/operations/session-log.md`
+- `docs/operations/todo.md`
+
+### Decision
+- Close the AllView visual mismatch based on both actual rerun evidence and
+  human visual confirmation, not only code-level diagnostics.
+- Treat the current raw-key operator surface as sufficiently validated for the
+  MVP slice and return focus to encoder-profile manual evidence.
+
+### Validation
+- `git diff --check`
+
+## 2026-05-07
+### Type
+- Codex
+
+### Work
 - Investigated the operator-wrapper visual mismatch reported after the successful
   `--four-view-operator-wrapper --raw-keys` validation:
   - `0` / `A` returned `mapped_command=all`

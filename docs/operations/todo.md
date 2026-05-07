@@ -115,7 +115,7 @@
 - wrapper code-level validation も追加済みで、key mapping、unknown key、`Q` once no-send、`Q` twice send、non-`Q` clear、guard timeout clear、scripted keys parser を `stream-sync-switcher` test 群で固定した
 - optional `--raw-keys` も実装・actual manual validation 済みで、actual control pipe 越しに `AllView` / `Focused(0..3)` / `quit` を成功記録できた。controlled loop final では `commands_processed=11` / `commands_rejected=0` / `current_view_state=AllView` / `frames_rendered=50` / `render_failures=0` / `scheduler_status=AllSelected` / `slot_result_kinds=Selected|Selected|Selected|Selected` / `clean_output_render_result_kind=Rendered` / `output_width=1280` / `output_height=720` / `exit_reason=QuitRequested` を確認し、slot diagnostics final でも `player1..4` 全て `FrameRead` / `parse_error=none` / `io_error=none` / `decode_error=none` / `final_slot_result_kind=Selected` を確認済み
 - wrapper raw-key exit freeze 向けの narrow polish も code-level で追加済みで、Windows console mode は raw-key session setup 後に RAII restore guard で必ず原状復帰を試みる。`--keys` / one-line stdin / control-pipe command contract はそのまま維持し、raw-key loop summary には `raw_console_restore_result` / `raw_console_restore_error` を追加した。quit / unknown key / control-pipe send failure / explicit restore failure の focused test を通して restore lifecycle を固定している
-- その後の actual raw-key validation では `0` / `A` がログ上 `mapped_command=all` / `current_view_state=AllView` / `clean_output_render_result_kind=Rendered` を返しつつ、見た目では 4-view に戻らない mismatch が観測された。controlled loop summary / control response / render path に `view_render_mode` / `output_layout` / `rendered_slot_count` / `focused_slot_index` / `all_view_render_result_kind` を追加し、Focused -> AllView で quad-view render request を再度使う focused test を固定した。Windows persistent output path では zero-rect invalidate をやめ、full-client invalidate に更新した
+- AllView visual mismatch の fix 後 actual rerun と human visual confirmation も完了している。`s -> status` では `current_view_state=AllView` / `view_render_mode=AllView` / `output_layout=QuadView` / `rendered_slot_count=4` / `focused_slot_index=none` / `all_view_render_result_kind=Rendered` を確認し、`1..4` では `Focused(0..3)` + `FocusedFullWindow` + `rendered_slot_count=1` を確認、`0 -> all` では `Transitioned` と quad return、`a -> all` では `NoChange` と quad 維持、wrapper final では `input_source=raw_keys` / `raw_console_restore_result=restored` / `raw_console_restore_error=none` / `exit_reason=QuitRequested` を確認した。human visual confirmation でも `0` 後に 4画面へ戻ること、`a` 後に 4画面のまま維持されること、OBS / Window Capture で黒画面が出ないことを確認済みで、AllView visual mismatch は修正完了扱いにする
 - raw-key actual validation 中の `Focused(3)` では `command_index=4` に一瞬 `scheduler_status=HandoffError` が見えたが、同じ command line で `selected_slot_result=Selected` / `clean_output_render_result_kind=Rendered` / `frames_rendered=5` を維持し、final summary では `scheduler_status=AllSelected` に戻っている。これは transient scheduler-status wobble として later narrow polish に留め、MVP blocker にはしない
 - production H.264 encoder configuration / error logging policy の first implementation slice も実装済みで、client real encoded PoC は optional な `[video.encoder]` を読める。manual `client.player1..4.toml` には MVP `ffmpeg_libx264` profile (`1280x720` / `30fps` / `4500kbps` / `gop_frames=30` / `ultrafast` / `zerolatency` / `yuv420p` / `main` / `3.1`) を追加済みで、bounded sender stdout には encoder config visibility、FFmpeg preflight/runtime visibility、`last_encode_error` / `last_ffmpeg_error` / `last_payload_len` / `oversized_payload_count` / `fragmentation_pressure_count` を追加済み。未設定 config では current implicit defaults を維持する
 - client encoder wiring 後の workspace tests も green に戻してあり、server handoff summary tests は current `queue_len_before_read` / `queue_len_after_read` / `frame_payload_len` semantics に揃っている
@@ -151,10 +151,10 @@
 ---
 
 ## 直近でやること
-1. bounded real encoded manual rerun with the new encoder config surface
-   - `configs/manual/client.player1..4.toml` の `[video.encoder]` block を使って localhost/manual rerun を記録する
-   - expanded stdout fields (`encoder_*`, `ffmpeg_*`, `last_*payload*`, fragmentation pressure) を actual run で確認する
-   - same successful 4-client / raw-key baseline を壊していないことを manual evidence で閉じる
+1. encoder profile manual evidence / production H.264 stdout visibility
+   - `configs/manual/client.player1..4.toml` の `[video.encoder]` block を使って bounded localhost/manual rerun を記録する
+   - expanded stdout fields (`encoder_*`, `ffmpeg_*`, `last_payload_len`, `oversized_payload_count`, `fragmentation_pressure_count`) を actual run で確認する
+   - capture / encode / send / fragmentation pressure の evidence を `docs/operations/manual-real-encoded-video-poc.md` に戻して閉じる
 2. same-session bounded server lifecycle polish は later narrow task として扱う:
    - scripted / interactive とも actual validation は成功記録済み
    - request-budget formula と headroom guidance を docs に固定済み
@@ -781,9 +781,9 @@
 - [x] switcher fallible decode/render connection output -> display policy / placeholder decision boundary
 - [x] switcher fallible display policy output -> composition adapter / placeholder detail boundary
 - [x] production H.264 encoder configuration / error logging policy design fixed in docs
-- [ ] client encoder profile config wiring
-- [ ] encoder failure / FFmpeg summary field extension
-- [ ] FFmpeg availability / version preflight visibility
+- [x] client encoder profile config wiring
+- [x] encoder failure / FFmpeg summary field extension
+- [x] FFmpeg availability / version preflight visibility
 - [ ] hardware encoder integration
 - [x] `VideoFrame` encode
 - [x] `VideoFrame` UDP send with explicit placeholder encoded H.264 payload
@@ -912,6 +912,6 @@
 - actual dashboard UI rendering remains unimplemented.
 
 ## Next Items
-1. continuous accept loop / reconnect / lifecycle/service orchestration planning
-2. bounded real encoded manual rerun with the new `[video.encoder]` configs and expanded stdout fields
-3. Decide later whether `--live-two-view-switcher-once` should be renamed or deprecated after the server-mediated path exists
+1. bounded real encoded manual rerun with the manual `[video.encoder]` profiles and expanded stdout fields
+2. decide after that evidence whether production H.264 stdout / error classification needs another narrow polish slice
+3. continuous accept loop / reconnect / lifecycle/service orchestration planning remains later than the current encoder-evidence pass

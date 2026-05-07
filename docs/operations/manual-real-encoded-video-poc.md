@@ -3495,8 +3495,54 @@ Next task after this decision:
     quad-view render path rather than reusing a focused full-window surface
   - the Windows persistent output path now invalidates the full client area on
     each update instead of using a zero-sized rect
+- recorded actual rerun after that fix:
+  - `s -> status` returned:
+    - `current_view_state=AllView`
+    - `view_render_mode=AllView`
+    - `output_layout=QuadView`
+    - `rendered_slot_count=4`
+    - `focused_slot_index=none`
+    - `all_view_render_result_kind=Rendered`
+  - `1` / `2` / `3` / `4` returned focused states with:
+    - `view_render_mode=Focused`
+    - `output_layout=FocusedFullWindow`
+    - `rendered_slot_count=1`
+    - `focused_slot_index=0..3`
+    - `clean_output_render_result_kind=Rendered`
+  - `0 -> all` returned:
+    - `transition_result=Transitioned`
+    - `current_view_state=AllView`
+    - `view_render_mode=AllView`
+    - `output_layout=QuadView`
+    - `rendered_slot_count=4`
+    - `focused_slot_index=none`
+    - `all_view_render_result_kind=Rendered`
+  - `a -> all` returned:
+    - `transition_result=NoChange`
+    - `current_view_state=AllView`
+    - `output_layout=QuadView`
+    - `rendered_slot_count=4`
+  - `q` / `q` still returned `QuitRequested`
+  - wrapper final summary returned:
+    - `input_source=raw_keys`
+    - `raw_console_restore_result=restored`
+    - `raw_console_restore_error=none`
+    - `exit_reason=QuitRequested`
+- human visual confirmation after the rerun:
+  - after `0`, the visible output returned to the 4-view quad
+  - after `a`, the visible output stayed on the 4-view quad
+  - OBS / Window Capture showed no black frame on this path
+- conclusion after the rerun:
+  - treat the `AllView` visual mismatch as fixed
+  - treat the raw-key operator wrapper surface as complete for the current MVP
+    slice:
+    - raw-key operator wrapper
+    - `AllView`
+    - `Focused(slot_index)`
+    - `quit`
+    - console restore
 - next task:
-  - production H.264 encoder configuration / error logging policy
+  - encoder profile manual evidence / production H.264 stdout visibility
 
 ## 10. Production H.264 Encoder Configuration / Error Logging Policy
 
