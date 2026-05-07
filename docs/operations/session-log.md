@@ -5,6 +5,53 @@
 - Codex
 
 ### Work
+- Implemented wrapper-local optional raw key capture for
+  `--four-view-operator-wrapper`.
+- Added optional raw mode flag:
+  - `--raw-keys`
+- Kept existing wrapper boundaries unchanged:
+  - same control-pipe sender logic
+  - same command vocabulary
+  - same wrapper-local double-`Q` guarded quit
+  - same wrapper summary stdout
+  - same `--keys` scripted mode
+  - same one-line stdin fallback mode
+- Added Windows console raw-key setup/read handling with explicit setup failure
+  reporting.
+- Added code-level tests for:
+  - raw input source parser
+  - raw key mapping through the existing wrapper command path
+  - raw `Q` once / `Q` twice guarded quit behavior
+  - raw unknown key local ignore
+  - raw setup failure path
+- Updated docs to mark raw key capture implemented and moved the next task to
+  actual raw-mode manual validation.
+
+### Changed Files
+- `apps/switcher/Cargo.toml`
+- `apps/switcher/src/main.rs`
+- `docs/architecture/system-design.md`
+- `docs/operations/manual-real-encoded-video-poc.md`
+- `docs/operations/session-log.md`
+- `docs/operations/todo.md`
+
+### Decision
+- raw key capture stays wrapper-local and optional
+- `--keys` and Enter-required stdin remain the validation baselines
+- actual manual validation for `--raw-keys` is the next task
+
+### Validation
+- `cargo fmt`
+- `cargo fmt --check`
+- `cargo check --workspace`
+- `cargo test -p stream-sync-switcher four_view -- --test-threads=1`
+- `git diff --check`
+
+## 2026-05-07
+### Type
+- Codex
+
+### Work
 - Fixed the raw key capture decision in docs without adding code changes.
 - Compared two positions:
   - keep Enter-required stdin as the final wrapper MVP input

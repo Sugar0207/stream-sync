@@ -8702,7 +8702,7 @@ MVP wrapper shape:
   the same-binary shape
 - transport: separate local control channel to the same-session switcher loop
 - current implemented command:
-  - `--four-view-operator-wrapper [control-pipe-name] [--keys "s;1;2;3;4;0;q;q"]`
+  - `--four-view-operator-wrapper [control-pipe-name] [--keys "s;1;2;3;4;0;q;q"|--raw-keys]`
 - treat the wrapper as a thin keyboard/UI shell, not a render owner
 - keep the command vocabulary identical to the current parser:
   - `all`
@@ -8754,7 +8754,7 @@ MVP wrapper shape:
   - preserve the current control-pipe command vocabulary and wrapper summary
   - reuse the existing wrapper-local double-`Q` guarded quit logic unchanged
 - smallest next raw-key shape:
-  - add optional wrapper flag `--raw-keys`
+  - optional wrapper flag `--raw-keys` now exists
   - keep the same mappings:
     - `1`, `2`, `3`, `4`
     - `0`, `A`
@@ -8868,10 +8868,22 @@ Current decision:
   - whether an occasional extra flush read is still needed in any edge case
   - final summary flush/exit cleanup
 
-Next task after this decision:
+Current implementation note:
 
-- implement optional wrapper-local raw key capture without changing the
-  validated `--keys` / stdin / control-pipe baseline
+- optional wrapper-local raw key capture is now implemented behind
+  `--four-view-operator-wrapper ... --raw-keys`
+- the existing validated baselines remain intact:
+  - `--keys`
+  - one-line stdin mode
+  - control-pipe command vocabulary and wrapper summary stdout
+- current raw-key validation status is code-level only:
+  - parser and wrapper-loop tests exist
+  - actual manual control-pipe validation for `--raw-keys` remains the next
+    step
+
+Next task after this implementation:
+
+- run actual manual validation for `--four-view-operator-wrapper --raw-keys`
 - keep Enter-required stdin as the fallback/manual mode
 - keep production H.264 encoder configuration / error logging policy after that
 

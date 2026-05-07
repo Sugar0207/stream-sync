@@ -62,6 +62,10 @@ use windows::{
             CreateFileW, FILE_ATTRIBUTE_NORMAL, FILE_GENERIC_READ, FILE_GENERIC_WRITE,
             FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING, PIPE_ACCESS_DUPLEX,
         },
+        System::Console::{
+            GetConsoleMode, GetStdHandle, SetConsoleMode, CONSOLE_MODE, ENABLE_ECHO_INPUT,
+            ENABLE_LINE_INPUT, STD_INPUT_HANDLE,
+        },
         System::Pipes::{
             ConnectNamedPipe, CreateNamedPipeW, WaitNamedPipeW, PIPE_READMODE_BYTE, PIPE_TYPE_BYTE,
             PIPE_WAIT,
@@ -653,7 +657,7 @@ fn main() {
         }
         _ => {
             println!(
-                "stream-sync-switcher scaffold; use --placeholder-fixture-once [client-id], --placeholder-empty-once [client-id], --decode-latest-frame-once [client-id] [output-path], --receive-auth-video-placeholder-bridge-once [config-path] [client-id], --receive-auth-video-decode-latest-once [config-path] [client-id] [output-path], --receive-auth-video-render-decoded-once [config-path] [client-id] [hold-ms], --two-view-sync-fixture-once [left-client-id] [right-client-id] [hold-ms], --render-two-view-composed-fixture-once [hold-ms], --live-two-view-switcher-once [config-path] [left-client-id] [right-client-id], --four-view-proof-fixture-once [all-renderable|mixed-placeholder-source-error|placeholder-only], --four-view-proof-window-once [all-renderable], --four-view-clean-output-window-once [all-renderable], --four-view-clean-output-window-loop [all-renderable] [frames], --four-view-real-handoff-preview-loop [pipe-name] [real-slot-index] [client-id] [run-id] [frames], --four-view-two-real-handoff-preview-loop [pipe-name] [slot0-index] [client0-id] [run0-id] [slot1-index] [client1-id] [run1-id] [frames], --four-view-four-real-handoff-preview-loop [pipe-name] [client0-id] [run0-id] [client1-id] [run1-id] [client2-id] [run2-id] [client3-id] [run3-id] [frames], --four-view-focused-handoff-preview-loop [pipe-name] [focused-slot-index] [client0-id] [run0-id] [client1-id] [run1-id] [client2-id] [run2-id] [client3-id] [run3-id] [frames], --four-view-controlled-handoff-preview-loop [pipe-name] [client0-id] [run0-id] [client1-id] [run1-id] [client2-id] [run2-id] [client3-id] [run3-id] [max-ticks-per-command] [--commands \"status;focus 0;all;quit\"|--control-pipe streamsync-control-dev], --four-view-operator-wrapper [control-pipe-name] [--keys \"s;1;2;3;4;0;q;q\"], --send-control-command [control-pipe-name] [command], or --read-queued-frame-handoff-once [pipe-name] [client-id] [run-id] [read-mode] [request-id]"
+                "stream-sync-switcher scaffold; use --placeholder-fixture-once [client-id], --placeholder-empty-once [client-id], --decode-latest-frame-once [client-id] [output-path], --receive-auth-video-placeholder-bridge-once [config-path] [client-id], --receive-auth-video-decode-latest-once [config-path] [client-id] [output-path], --receive-auth-video-render-decoded-once [config-path] [client-id] [hold-ms], --two-view-sync-fixture-once [left-client-id] [right-client-id] [hold-ms], --render-two-view-composed-fixture-once [hold-ms], --live-two-view-switcher-once [config-path] [left-client-id] [right-client-id], --four-view-proof-fixture-once [all-renderable|mixed-placeholder-source-error|placeholder-only], --four-view-proof-window-once [all-renderable], --four-view-clean-output-window-once [all-renderable], --four-view-clean-output-window-loop [all-renderable] [frames], --four-view-real-handoff-preview-loop [pipe-name] [real-slot-index] [client-id] [run-id] [frames], --four-view-two-real-handoff-preview-loop [pipe-name] [slot0-index] [client0-id] [run0-id] [slot1-index] [client1-id] [run1-id] [frames], --four-view-four-real-handoff-preview-loop [pipe-name] [client0-id] [run0-id] [client1-id] [run1-id] [client2-id] [run2-id] [client3-id] [run3-id] [frames], --four-view-focused-handoff-preview-loop [pipe-name] [focused-slot-index] [client0-id] [run0-id] [client1-id] [run1-id] [client2-id] [run2-id] [client3-id] [run3-id] [frames], --four-view-controlled-handoff-preview-loop [pipe-name] [client0-id] [run0-id] [client1-id] [run1-id] [client2-id] [run2-id] [client3-id] [run3-id] [max-ticks-per-command] [--commands \"status;focus 0;all;quit\"|--control-pipe streamsync-control-dev], --four-view-operator-wrapper [control-pipe-name] [--keys \"s;1;2;3;4;0;q;q\"|--raw-keys], --send-control-command [control-pipe-name] [command], or --read-queued-frame-handoff-once [pipe-name] [client-id] [run-id] [read-mode] [request-id]"
             );
         }
     }
@@ -1101,8 +1105,9 @@ fn parse_four_view_operator_wrapper_input_source(
         [flag, keys] if flag == "--keys" => Ok(FourViewOperatorWrapperInputSource::ScriptedKeys(
             keys.clone(),
         )),
+        [flag] if flag == "--raw-keys" => Ok(FourViewOperatorWrapperInputSource::RawKeys),
         _ => Err(
-            "unexpected extra arguments: expected optional --keys \"s;1;2;3;4;0;q;q\"".to_string(),
+            "unexpected extra arguments: expected optional --keys \"s;1;2;3;4;0;q;q\" or --raw-keys".to_string(),
         ),
     }
 }
@@ -1755,6 +1760,7 @@ enum FourViewControlCommandSource {
 enum FourViewOperatorWrapperInputSource {
     Stdin,
     ScriptedKeys(String),
+    RawKeys,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -3848,16 +3854,93 @@ impl FourViewOperatorWrapperClock for SystemFourViewOperatorWrapperClock {
     }
 }
 
+trait FourViewOperatorWrapperRawKeyReader {
+    fn read_next_key(&mut self) -> Result<Option<String>, String>;
+}
+
+trait FourViewOperatorWrapperRawKeyRuntime {
+    type Reader: FourViewOperatorWrapperRawKeyReader;
+
+    fn open(&mut self) -> Result<Self::Reader, String>;
+}
+
+#[cfg(target_os = "windows")]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+struct WindowsFourViewOperatorWrapperRawKeyRuntime;
+
+#[cfg(target_os = "windows")]
+struct WindowsFourViewOperatorWrapperRawKeyReader {
+    stdin: io::Stdin,
+    handle: HANDLE,
+    original_mode: CONSOLE_MODE,
+}
+
+#[cfg(target_os = "windows")]
+impl FourViewOperatorWrapperRawKeyRuntime for WindowsFourViewOperatorWrapperRawKeyRuntime {
+    type Reader = WindowsFourViewOperatorWrapperRawKeyReader;
+
+    fn open(&mut self) -> Result<Self::Reader, String> {
+        let handle = unsafe { GetStdHandle(STD_INPUT_HANDLE) }.map_err(|_| {
+            format!(
+                "console stdin handle unavailable: {}",
+                io::Error::last_os_error()
+            )
+        })?;
+        let mut original_mode = CONSOLE_MODE(0);
+        unsafe { GetConsoleMode(handle, &mut original_mode) }.map_err(|_| {
+            format!(
+                "raw key capture requires a Windows console stdin handle: {}",
+                io::Error::last_os_error()
+            )
+        })?;
+
+        // Disable line buffering and echo so one key can be read immediately.
+        let raw_mode = CONSOLE_MODE(original_mode.0 & !(ENABLE_LINE_INPUT.0 | ENABLE_ECHO_INPUT.0));
+        unsafe { SetConsoleMode(handle, raw_mode) }.map_err(|_| {
+            format!(
+                "raw key console mode setup failed: {}",
+                io::Error::last_os_error()
+            )
+        })?;
+
+        Ok(WindowsFourViewOperatorWrapperRawKeyReader {
+            stdin: io::stdin(),
+            handle,
+            original_mode,
+        })
+    }
+}
+
+#[cfg(target_os = "windows")]
+impl FourViewOperatorWrapperRawKeyReader for WindowsFourViewOperatorWrapperRawKeyReader {
+    fn read_next_key(&mut self) -> Result<Option<String>, String> {
+        let mut buffer = [0u8; 1];
+        self.stdin
+            .read_exact(&mut buffer)
+            .map_err(|error| format!("raw key read failed: {error}"))?;
+        Ok(Some(String::from_utf8_lossy(&buffer).into_owned()))
+    }
+}
+
+#[cfg(target_os = "windows")]
+impl Drop for WindowsFourViewOperatorWrapperRawKeyReader {
+    fn drop(&mut self) {
+        let _ = unsafe { SetConsoleMode(self.handle, self.original_mode) };
+    }
+}
+
 #[cfg(windows)]
 fn run_four_view_operator_wrapper(
     control_pipe_name: &str,
     input_source: FourViewOperatorWrapperInputSource,
 ) -> Result<FourViewOperatorWrapperLoopSummary, String> {
-    run_four_view_operator_wrapper_with_runtime_and_clock(
+    let mut raw_key_runtime = WindowsFourViewOperatorWrapperRawKeyRuntime;
+    run_four_view_operator_wrapper_with_runtime_and_clock_and_raw_key_runtime(
         control_pipe_name,
         input_source,
         &mut SwitcherFourViewControlNamedPipeClientRuntime,
         &SystemFourViewOperatorWrapperClock,
+        &mut raw_key_runtime,
     )
 }
 
@@ -3869,11 +3952,14 @@ fn run_four_view_operator_wrapper(
     Err("four-view operator wrapper is only available on Windows".to_string())
 }
 
-fn run_four_view_operator_wrapper_with_runtime_and_clock(
+fn run_four_view_operator_wrapper_with_runtime_and_clock_and_raw_key_runtime<
+    TRawKeyRuntime: FourViewOperatorWrapperRawKeyRuntime,
+>(
     control_pipe_name: &str,
     input_source: FourViewOperatorWrapperInputSource,
     runtime: &mut impl FourViewControlPipeClientRuntime,
     clock: &impl FourViewOperatorWrapperClock,
+    raw_key_runtime: &mut TRawKeyRuntime,
 ) -> Result<FourViewOperatorWrapperLoopSummary, String> {
     if control_pipe_name.trim().is_empty() {
         return Err("control pipe name must not be empty".to_string());
@@ -3884,6 +3970,7 @@ fn run_four_view_operator_wrapper_with_runtime_and_clock(
         FourViewOperatorWrapperInputSource::ScriptedKeys(script) => {
             format!("scripted:{}", sanitize_summary_value(script))
         }
+        FourViewOperatorWrapperInputSource::RawKeys => "raw_keys".to_string(),
     };
 
     let mut guard_state = FourViewOperatorWrapperGuardState {
@@ -3955,6 +4042,47 @@ fn run_four_view_operator_wrapper_with_runtime_and_clock(
                 if should_exit {
                     break;
                 }
+            }
+        }
+        FourViewOperatorWrapperInputSource::RawKeys => {
+            let mut raw_key_reader = raw_key_runtime
+                .open()
+                .map_err(|error| format!("raw key setup failed: {error}"))?;
+            loop {
+                let Some(raw_key) = raw_key_reader
+                    .read_next_key()
+                    .map_err(|error| format!("raw key read failed: {error}"))?
+                else {
+                    break;
+                };
+                let key_index = key_summaries.len();
+                let summary = process_four_view_operator_wrapper_key(
+                    key_index,
+                    &raw_key,
+                    &mut guard_state,
+                    control_pipe_name,
+                    runtime,
+                    clock,
+                );
+                if summary.send_result == "Sent" {
+                    commands_sent += 1;
+                }
+                if summary.send_result == "Ignored" {
+                    ignored_keys += 1;
+                }
+                let should_exit = summary.exit_reason != "Continue";
+                if should_exit {
+                    exit_reason = summary.exit_reason.clone();
+                }
+                key_summaries.push(summary);
+                if should_exit {
+                    break;
+                }
+            }
+            if key_summaries.is_empty() {
+                exit_reason = "InputClosed".to_string();
+            } else if exit_reason == "Continue" {
+                exit_reason = "InputClosed".to_string();
             }
         }
     }
@@ -5630,6 +5758,7 @@ fn store_fixture_frame(
 #[cfg(test)]
 mod tests {
     use std::cell::RefCell;
+    use std::collections::VecDeque;
     use std::io;
     use std::num::NonZeroU32;
     use std::time::Duration;
@@ -5682,6 +5811,7 @@ mod tests {
         run_four_view_focused_handoff_preview_loop_with_handoff_runtime_and_sleep,
         run_four_view_four_real_handoff_preview_loop_with_handoff_runtime_and_sleep,
         run_four_view_manual_preview_proof_once, run_four_view_manual_preview_proof_with_runtime,
+        run_four_view_operator_wrapper_with_runtime_and_clock_and_raw_key_runtime,
         run_four_view_real_handoff_preview_loop_with_handoff_runtime_and_sleep,
         run_four_view_two_real_handoff_preview_loop_with_handoff_runtime_and_sleep,
         run_send_control_command_with_runtime, split_scripted_operator_wrapper_keys,
@@ -5689,6 +5819,7 @@ mod tests {
         DeterministicFourViewFixtureDecodeRuntime, FourViewControlCommandSource,
         FourViewControlPipeClientRuntime, FourViewOperatorWrapperClock,
         FourViewOperatorWrapperGuardState, FourViewOperatorWrapperInputSource,
+        FourViewOperatorWrapperRawKeyReader, FourViewOperatorWrapperRawKeyRuntime,
         PersistentWindowLifecycleSnapshot, SwitcherFourViewControlledPreviewCommand,
         SwitcherFourViewControlledPreviewCommandSummary, SwitcherFrameCadenceSleepHook,
         SwitcherPersistentWindowLoopRuntimeHook, SwitcherQueuedFrameHandoffResult,
@@ -5967,6 +6098,15 @@ mod tests {
             parse_four_view_operator_wrapper_input_source(Vec::new())
                 .expect("missing keys should default to stdin"),
             FourViewOperatorWrapperInputSource::Stdin
+        );
+    }
+
+    #[test]
+    fn switcher_four_view_operator_wrapper_input_source_parses_raw_keys_mode() {
+        assert_eq!(
+            parse_four_view_operator_wrapper_input_source(vec!["--raw-keys".to_string()])
+                .expect("raw keys should parse"),
+            FourViewOperatorWrapperInputSource::RawKeys
         );
     }
 
@@ -7363,6 +7503,51 @@ mod tests {
         }
     }
 
+    struct FakeOperatorWrapperRawKeyReader {
+        keys: VecDeque<String>,
+    }
+
+    impl FourViewOperatorWrapperRawKeyReader for FakeOperatorWrapperRawKeyReader {
+        fn read_next_key(&mut self) -> Result<Option<String>, String> {
+            Ok(self.keys.pop_front())
+        }
+    }
+
+    struct FakeOperatorWrapperRawKeyRuntime {
+        keys: VecDeque<String>,
+        open_error: Option<String>,
+    }
+
+    impl FakeOperatorWrapperRawKeyRuntime {
+        fn from_keys(keys: &[&str]) -> Self {
+            Self {
+                keys: keys.iter().map(|value| value.to_string()).collect(),
+                open_error: None,
+            }
+        }
+
+        fn failing(message: &str) -> Self {
+            Self {
+                keys: VecDeque::new(),
+                open_error: Some(message.to_string()),
+            }
+        }
+    }
+
+    impl FourViewOperatorWrapperRawKeyRuntime for FakeOperatorWrapperRawKeyRuntime {
+        type Reader = FakeOperatorWrapperRawKeyReader;
+
+        fn open(&mut self) -> Result<Self::Reader, String> {
+            if let Some(error) = self.open_error.clone() {
+                return Err(error);
+            }
+
+            Ok(FakeOperatorWrapperRawKeyReader {
+                keys: std::mem::take(&mut self.keys),
+            })
+        }
+    }
+
     #[test]
     fn switcher_four_view_operator_wrapper_key_mapping_maps_expected_commands() {
         let clock = FakeOperatorWrapperClock::new(0);
@@ -7587,6 +7772,109 @@ mod tests {
                 "q".to_string()
             ]
         );
+    }
+
+    #[test]
+    fn switcher_four_view_operator_wrapper_raw_keys_mode_reuses_existing_mapping() {
+        let clock = FakeOperatorWrapperClock::new(0);
+        let mut runtime = FakeOperatorWrapperClientRuntime {
+            commands: Vec::new(),
+            responses: vec![
+                "switcher four-view control response command=focus_0 transition_result=Transitioned current_view_state=Focused(0) selected_slot_result=Selected clean_output_render_result_kind=Rendered command_parse_error=none exit_reason=none".to_string(),
+                "switcher four-view control response command=all transition_result=Transitioned current_view_state=AllView selected_slot_result=NotApplicable clean_output_render_result_kind=Rendered command_parse_error=none exit_reason=none".to_string(),
+                "switcher four-view control response command=status transition_result=Observed current_view_state=AllView selected_slot_result=NotApplicable clean_output_render_result_kind=Rendered command_parse_error=none exit_reason=none".to_string(),
+            ],
+        };
+        let mut raw_key_runtime = FakeOperatorWrapperRawKeyRuntime::from_keys(&["1", "A", "s"]);
+
+        let summary = run_four_view_operator_wrapper_with_runtime_and_clock_and_raw_key_runtime(
+            "streamsync-control-dev",
+            FourViewOperatorWrapperInputSource::RawKeys,
+            &mut runtime,
+            &clock,
+            &mut raw_key_runtime,
+        )
+        .expect("raw keys wrapper run should succeed");
+
+        assert_eq!(
+            runtime.commands,
+            vec![
+                "focus 0".to_string(),
+                "all".to_string(),
+                "status".to_string()
+            ]
+        );
+        assert_eq!(summary.input_source, "raw_keys");
+        assert_eq!(summary.commands_sent, 3);
+        assert_eq!(summary.key_summaries[0].mapped_command, "focus_0");
+        assert_eq!(summary.key_summaries[1].mapped_command, "all");
+        assert_eq!(summary.key_summaries[2].mapped_command, "status");
+    }
+
+    #[test]
+    fn switcher_four_view_operator_wrapper_raw_keys_q_once_and_q_twice_reuse_guard_logic() {
+        let clock = FakeOperatorWrapperClock::new(100);
+        let mut runtime = FakeOperatorWrapperClientRuntime {
+            commands: Vec::new(),
+            responses: vec![
+                "switcher four-view control response command=quit transition_result=ExitRequested current_view_state=AllView selected_slot_result=NotApplicable clean_output_render_result_kind=none command_parse_error=none exit_reason=QuitRequested".to_string(),
+            ],
+        };
+        let mut raw_key_runtime = FakeOperatorWrapperRawKeyRuntime::from_keys(&["q", "q"]);
+
+        let summary = run_four_view_operator_wrapper_with_runtime_and_clock_and_raw_key_runtime(
+            "streamsync-control-dev",
+            FourViewOperatorWrapperInputSource::RawKeys,
+            &mut runtime,
+            &clock,
+            &mut raw_key_runtime,
+        )
+        .expect("raw key guarded quit should succeed");
+
+        assert_eq!(runtime.commands, vec!["quit".to_string()]);
+        assert_eq!(summary.key_summaries[0].send_result, "GuardArmed");
+        assert_eq!(summary.key_summaries[1].send_result, "Sent");
+        assert_eq!(summary.exit_reason, "QuitRequested");
+    }
+
+    #[test]
+    fn switcher_four_view_operator_wrapper_raw_keys_unknown_key_is_ignored() {
+        let clock = FakeOperatorWrapperClock::new(0);
+        let mut runtime = FakeOperatorWrapperClientRuntime::default();
+        let mut raw_key_runtime = FakeOperatorWrapperRawKeyRuntime::from_keys(&["x"]);
+
+        let summary = run_four_view_operator_wrapper_with_runtime_and_clock_and_raw_key_runtime(
+            "streamsync-control-dev",
+            FourViewOperatorWrapperInputSource::RawKeys,
+            &mut runtime,
+            &clock,
+            &mut raw_key_runtime,
+        )
+        .expect("raw key unknown-key run should succeed");
+
+        assert!(runtime.commands.is_empty());
+        assert_eq!(summary.ignored_keys, 1);
+        assert_eq!(summary.key_summaries[0].send_result, "Ignored");
+        assert_eq!(summary.key_summaries[0].wrapper_error, "unknown_key");
+    }
+
+    #[test]
+    fn switcher_four_view_operator_wrapper_raw_keys_setup_failure_is_explicit() {
+        let clock = FakeOperatorWrapperClock::new(0);
+        let mut runtime = FakeOperatorWrapperClientRuntime::default();
+        let mut raw_key_runtime =
+            FakeOperatorWrapperRawKeyRuntime::failing("fixture_raw_keys_unavailable");
+
+        let error = run_four_view_operator_wrapper_with_runtime_and_clock_and_raw_key_runtime(
+            "streamsync-control-dev",
+            FourViewOperatorWrapperInputSource::RawKeys,
+            &mut runtime,
+            &clock,
+            &mut raw_key_runtime,
+        )
+        .expect_err("raw key setup failure should be surfaced");
+
+        assert_eq!(error, "raw key setup failed: fixture_raw_keys_unavailable");
     }
 
     #[test]

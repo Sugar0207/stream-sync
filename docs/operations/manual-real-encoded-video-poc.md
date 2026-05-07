@@ -2919,10 +2919,13 @@ Implemented wrapper MVP shape:
   - `.\target\debug\stream-sync-switcher.exe --four-view-operator-wrapper streamsync-control-dev`
 - scripted/manual automation mode also exists:
   - `.\target\debug\stream-sync-switcher.exe --four-view-operator-wrapper streamsync-control-dev --keys "s;1;2;3;4;0;q;q"`
+- optional raw-key mode now also exists:
+  - `.\target\debug\stream-sync-switcher.exe --four-view-operator-wrapper streamsync-control-dev --raw-keys`
 - the wrapper remains a separate process from the switcher loop
 - first interaction mode is still intentionally minimal:
   - stdin mode reads one key token per line
   - scripted/manual automation uses `--keys`
+  - raw terminal key capture is optional and wrapper-local via `--raw-keys`
 - full GUI stays later
 
 Wrapper MVP manual validation plan:
@@ -3402,13 +3405,15 @@ Current decision:
 
 Next task after this decision:
 
-- add optional raw key capture as the next narrow operator UX slice
-  - keep `--keys` as the scripted/automation baseline
-  - keep one-line stdin mode as the fallback/manual baseline
-  - keep the same control-pipe command vocabulary and wrapper summary shape
-  - keep double-`Q` guarded quit unchanged
-  - keep unknown keys local-only ignored
-  - use a wrapper-local flag such as `--raw-keys`
-  - if Windows terminal raw-key capture is unavailable or unstable, fall back
-    to stdin mode
+- raw key capture slice is now implemented:
+  - `--raw-keys`
+  - keeps `--keys` as the scripted/automation baseline
+  - keeps one-line stdin mode as the fallback/manual baseline
+  - keeps the same control-pipe command vocabulary and wrapper summary shape
+  - keeps double-`Q` guarded quit unchanged
+  - keeps unknown keys local-only ignored
+  - returns an explicit setup/read error if Windows console raw-key capture is
+    unavailable
+- next validation step:
+  - run actual manual control-pipe validation for `--raw-keys`
 - keep production H.264 encoder configuration / error logging policy after that
