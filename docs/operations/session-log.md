@@ -5,6 +5,81 @@
 - Codex
 
 ### Work
+- Confirmed the server/client CLI command shapes relevant to the bounded
+  repeated receive/send runtime smoke:
+  - server:
+    - `--receive-send-runtime-bounded [config-path] [max-iterations] [receive-timeout-ms]`
+  - client:
+    - `--auth-request-poc-once [config-path]`
+    - `--auth-heartbeat-poc-once [config-path]`
+    - `--auth-heartbeat-stats-poc-once [config-path]`
+- Recorded that there is no separate direct `ClientStats`-only CLI sender yet.
+  The current smoke path for `ClientStats` is the combined
+  `--auth-heartbeat-stats-poc-once` command.
+- Ran a first local smoke against the stale `target/debug/stream-sync-server.exe`
+  and observed a local artifact mismatch:
+  - server stdout returned the old scaffold usage text without
+    `--receive-send-runtime-bounded`
+  - client failed with `AuthResponse(Receive(ConnectionReset))`
+  - classified as a stale local binary / effective command-parser mismatch,
+    not a source-level runtime bug
+- Rebuilt the actual app binaries with:
+  - `cargo build -p stream-sync-server -p stream-sync-client`
+- Ran a second bounded smoke successfully:
+  - server:
+    - `stream-sync-server --receive-send-runtime-bounded configs/examples/server.example.toml 6 5000`
+  - client:
+    - `stream-sync-client --auth-heartbeat-stats-poc-once configs/examples/client.accepted.example.toml`
+- Captured the successful bounded server stdout summary:
+  - `command_name=--receive-send-runtime-bounded`
+  - `config_path=configs/examples/server.example.toml`
+  - `max_iterations=6`
+  - `receive_timeout_ms=5000`
+  - `iterations_attempted=4`
+  - `iterations_completed=4`
+  - `auth_requests_received=1`
+  - `auth_responses_sent=1`
+  - `heartbeats_received=1`
+  - `heartbeat_acks_sent=1`
+  - `client_stats_received=1`
+  - `client_stats_returns_sent=1`
+  - `accepted_packets=3`
+  - `rejected_packets=0`
+  - `decode_errors=0`
+  - `send_failures=0`
+  - `outbound_queue_len=0`
+  - `registered_clients=1`
+  - `stop_reason=ReceiveTimedOut`
+- Captured the successful client stdout summary:
+  - `AuthRequest` sent and `AuthResponse` received
+  - `Heartbeat` sent and `HeartbeatAck` received
+  - `ClientStats` sent with `HeartbeatAckObservation`
+- Noted that this smoke is bounded and non-visual:
+  - no switcher involvement
+  - no OBS / Window Capture
+  - no continuous video path
+  - no daemon-like long-running execution
+
+### Changed Files
+- `docs/architecture/system-design.md`
+- `docs/operations/session-log.md`
+- `docs/operations/todo.md`
+
+### Decision
+- Treat the first-slice CLI shape and bounded smoke as validated.
+- Do not require a human visual/manual rerun for this server-only runtime
+  slice before moving to the next narrow follow-up.
+
+### Validation
+- bounded local CLI smoke with rebuilt app binaries
+- `cargo build -p stream-sync-server -p stream-sync-client`
+- `git diff --check`
+
+## 2026-05-07
+### Type
+- Codex
+
+### Work
 - Implemented the first continuous receive/send runtime code slice on the
   server side only.
 - Added a new command:

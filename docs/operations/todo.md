@@ -32,6 +32,8 @@
 - `stream-sync-server --receive-send-runtime-bounded [config-path] [max-iterations] [receive-timeout-ms]` は追加済みで、1 process lifetime で 1 bound UDP socket / 1 `AuthenticatedSenderRegistry` / 1 `ServerOutboundQueueCollection` / caller-owned writers を維持しながら existing `ServerControllerReceiveSendRuntimeBoundary` を outer loop から繰り返し呼べる
 - bounded repeated runtime summary には `command_name` / `config_path` / `max_iterations` / `receive_timeout_ms` / `iterations_attempted` / `iterations_completed` / `auth_requests_received` / `auth_responses_sent` / `heartbeats_received` / `heartbeat_acks_sent` / `client_stats_received` / `client_stats_returns_sent` / `accepted_packets` / `rejected_packets` / `decode_errors` / `send_failures` / `outbound_queue_len` / `registered_clients` / `stop_reason` を出す
 - code-level validation では command parser、summary formatter、`max_iterations` stop、repeated auth registry persistence、repeated heartbeat existing-registry reuse、`ClientStats` observation path count、existing one-iteration runtime non-regression を追加済み
+- lightweight smoke validation も完了している。CLI shape は client 側 `--auth-request-poc-once`、`--auth-heartbeat-poc-once`、`--auth-heartbeat-stats-poc-once` を確認済みで、direct `ClientStats`-only sender CLI は未追加だが `--auth-heartbeat-stats-poc-once` で `ClientStats` observation path を刺激できる
+- bounded smoke rerun では rebuilt binary を使って `stream-sync-server --receive-send-runtime-bounded configs/examples/server.example.toml 6 5000` と `stream-sync-client --auth-heartbeat-stats-poc-once configs/examples/client.accepted.example.toml` を組み合わせ、`iterations_attempted=4` / `iterations_completed=4` / `auth_requests_received=1` / `auth_responses_sent=1` / `heartbeats_received=1` / `heartbeat_acks_sent=1` / `client_stats_received=1` / `client_stats_returns_sent=1` / `accepted_packets=3` / `send_failures=0` / `registered_clients=1` / `stop_reason=ReceiveTimedOut` を確認済み
 - outbound queue 実キュー、continuous receive/send loop 本体、send / receive の継続ログ出力、file sink open、process-wide logger、`ServerNotice` 実送信は未実装
 - named-pipe handoff の manual localhost validation は、plain pipe name `streamsync-handoff-dev` を使った one-shot pass と bounded `max_requests=2` pass の両方が成功記録済みで、bounded pass では `inspect-latest` が同じ frame を 2 回返して queue mutation しない preview semantics を確認済み
 - switcher 側 reconnect/lifecycle の次 slice は retry 実行より先に no-auto-retry / classification-first を固定し、1 scheduler read = 1 logical request = 1 transport attempt のまま explicit `HandoffError` を保持する方針で進める
@@ -156,17 +158,16 @@
 ---
 
 ## 直近でやること
-1. `--receive-send-runtime-bounded` の first-slice manual validation
-   - repeated auth / heartbeat / client-stats observation を主対象にする
-   - `max_iterations` stop / `receive_timeout_ms` stop / stdout summary を実確認する
-   - switcher continuous runtime や OBS 拡張へは広げない
-2. bounded repeated runtime から次 slice へ広げる差分を整理する
+1. `--receive-send-runtime-bounded` の smoke 以後の次 slice を整理する
    - fatal runtime error summary visibility をどう扱うか決める
    - receive/send 継続ログ出力の ownership を first slice の外側で整理する
    - retry / requeue / daemon lifecycle をまだ持ち込まない
-3. manual validation 後の narrow expansion を選ぶ
+2. narrow expansion を選ぶ
    - continuous video path ではなく auth / heartbeat / client-stats path のまま進める
    - service lifecycle / reconnect / retry 拡張は bounded runtime evidence の後段に回す
+3. 必要なら追加の human manual rerun を後段で判断する
+   - 現時点では CLI shape と bounded smoke summary は確認済み
+   - visual validation は今回 scope 外のまま維持する
 
 ## MVP closeout 時点で blocker ではなかった future task
 - [ ] same-session bounded server lifecycle polish
@@ -201,7 +202,7 @@ continuous runtime first slice の blocker:
 - [x] socket / auth registry / outbound queue / writer lifetime persistence
 - [x] bounded stop policy
 - [x] aggregate runtime summary
-- [ ] repeated auth / heartbeat / client-stats manual validation path
+- [x] repeated auth / heartbeat / client-stats bounded smoke validation path
 
 ## 将来の polish 候補
 - [ ] `--four-view-proof-window-once` / `--four-view-clean-output-window-once` に visual confirmation 用の `--hold-ms` / preview hold duration を追加するか後で判断する
@@ -949,6 +950,6 @@ continuous runtime first slice の blocker:
 - actual dashboard UI rendering remains unimplemented.
 
 ## Next Items
-1. first-slice manual validation for `--receive-send-runtime-bounded`
-2. bounded runtime summary / fatal-error visibility follow-up if needed
+1. bounded runtime summary / fatal-error visibility follow-up if needed
+2. receive/send continuous logging ownership follow-up
 3. later service lifecycle / reconnect / retry expansion after the bounded first slice

@@ -9392,6 +9392,46 @@ Current implemented behavior:
   - `ClientStats` observation path counting
   - existing one-iteration runtime non-regression
 
+Lightweight smoke validation result:
+
+- confirmed server CLI shape:
+  - `--receive-send-runtime-bounded [config-path] [max-iterations] [receive-timeout-ms]`
+- confirmed client CLI shapes that can stimulate the first slice:
+  - `--auth-request-poc-once [config-path]`
+  - `--auth-heartbeat-poc-once [config-path]`
+  - `--auth-heartbeat-stats-poc-once [config-path]`
+- current note:
+  - there is no separate direct `ClientStats`-only smoke CLI yet
+  - the current bounded smoke uses `--auth-heartbeat-stats-poc-once` to drive
+    the `ClientStats` observation-return path indirectly after auth and
+    heartbeat
+- bounded smoke recipe that succeeded:
+  - server:
+    - `stream-sync-server --receive-send-runtime-bounded configs/examples/server.example.toml 6 5000`
+  - client:
+    - `stream-sync-client --auth-heartbeat-stats-poc-once configs/examples/client.accepted.example.toml`
+- observed bounded summary:
+  - `iterations_attempted=4`
+  - `iterations_completed=4`
+  - `auth_requests_received=1`
+  - `auth_responses_sent=1`
+  - `heartbeats_received=1`
+  - `heartbeat_acks_sent=1`
+  - `client_stats_received=1`
+  - `client_stats_returns_sent=1`
+  - `accepted_packets=3`
+  - `rejected_packets=0`
+  - `decode_errors=0`
+  - `send_failures=0`
+  - `outbound_queue_len=0`
+  - `registered_clients=1`
+  - `stop_reason=ReceiveTimedOut`
+- local execution note:
+  - a stale pre-rebuild `target/debug/stream-sync-server.exe` initially did not
+    include the new command shape
+  - rebuilding the actual binary resolved that local artifact mismatch without
+    requiring source changes
+
 First-slice stop policy:
 
 - bounded by `max_iterations`
