@@ -5,6 +5,68 @@
 - Codex
 
 ### Work
+- Investigated the operator-wrapper visual mismatch reported after the successful
+  `--four-view-operator-wrapper --raw-keys` validation:
+  - `0` / `A` returned `mapped_command=all`
+  - control response returned `current_view_state=AllView`
+  - control response returned `clean_output_render_result_kind=Rendered`
+  - visible output still looked focused instead of returning to the 4-view quad
+- Reviewed the controlled loop path from `all` command parsing through:
+  - `SwitcherFourViewControlledPreviewViewState`
+  - `render_four_view_controlled_state_for_ticks`
+  - `SwitcherFourViewCleanOutputWindowBoundary`
+  - the Windows persistent window runtime
+- Confirmed the code already selected the `AllView` render branch, then added
+  narrower diagnostics so the render mode/layout are visible instead of only
+  the high-level state string.
+- Added controlled-loop diagnostics to command/loop summaries and control-pipe
+  responses:
+  - `view_render_mode`
+  - `output_layout`
+  - `rendered_slot_count`
+  - `focused_slot_index`
+  - `all_view_render_result_kind`
+- Added focused code-level coverage for `Focused(3) -> AllView` using a
+  recording persistent window runtime plus per-client frame colors so the test
+  verifies the second render request is a quad-view surface, not another
+  focused full-window frame.
+- Updated the Windows persistent render path to invalidate the full client area
+  on each repaint request instead of invalidating a zero-sized rect.
+- Kept scope narrow:
+  - no GUI expansion
+  - no wrapper/control-pipe protocol redesign
+  - no OBS control changes
+  - no raw-console-restore rollback
+
+### Changed Files
+- `apps/switcher/src/main.rs`
+- `docs/architecture/system-design.md`
+- `docs/operations/manual-real-encoded-video-poc.md`
+- `docs/operations/session-log.md`
+- `docs/operations/todo.md`
+
+### Decision
+- Treat the observed `AllView` mismatch as a render-surface/update-path issue,
+  not as a raw-key, parser, or control-pipe problem.
+- Make controlled-loop render layout explicit in stdout diagnostics so future
+  operator sessions can distinguish `QuadView` from `FocusedFullWindow`
+  directly from response lines.
+- Use full-client invalidation in the Windows persistent renderer as the
+  smallest redraw-side correction that stays within the existing architecture.
+
+### Validation
+- `cargo fmt`
+- `cargo fmt --check`
+- `cargo check --workspace`
+- `cargo test -p stream-sync-switcher four_view -- --test-threads=1`
+- `cargo test --workspace`
+- `git diff --check`
+
+## 2026-05-07
+### Type
+- Codex
+
+### Work
 - Narrow-polished the switcher operator wrapper raw-key path after the recorded
   successful `--four-view-operator-wrapper --raw-keys` validation still showed
   a post-exit child window hang.

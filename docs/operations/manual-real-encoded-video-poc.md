@@ -3472,6 +3472,29 @@ Next task after this decision:
     - `raw_console_restore_error`
   - current code-level validation covers restore success, setup failure,
     guarded quit, unknown key, send failure, and explicit restore failure
+- next actual raw-key observation after the restore polish:
+  - raw key capture / control pipe / parser / state response still succeeded
+  - `0` and `A` both mapped to `all`
+  - response line still returned:
+    - `transition_result=Transitioned` or `NoChange`
+    - `current_view_state=AllView`
+    - `clean_output_render_result_kind=Rendered`
+    - `command_parse_error=none`
+    - `raw_console_restore_result=restored`
+    - `raw_console_restore_error=none`
+  - but the visible output did not return to 4-view `AllView`; the window kept
+    looking focused even though the control response said `AllView`
+- narrow follow-up fix for that mismatch is now applied:
+  - controlled-loop diagnostics now also expose:
+    - `view_render_mode`
+    - `output_layout`
+    - `rendered_slot_count`
+    - `focused_slot_index`
+    - `all_view_render_result_kind`
+  - code-level transition coverage now asserts `Focused(3) -> AllView` uses the
+    quad-view render path rather than reusing a focused full-window surface
+  - the Windows persistent output path now invalidates the full client area on
+    each update instead of using a zero-sized rect
 - next task:
   - production H.264 encoder configuration / error logging policy
 

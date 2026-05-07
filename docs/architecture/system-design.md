@@ -8897,6 +8897,19 @@ Current implementation note:
   - final slot diagnostics returned `FrameRead` for all four players with
     `parse_error=none`, `io_error=none`, `decode_error=none`, and
     `final_slot_result_kind=Selected`
+- a later actual operator observation found one remaining narrow mismatch:
+  - `all` / `0` / `A` could return `current_view_state=AllView` and
+    `clean_output_render_result_kind=Rendered` in the control response while the
+    visible persistent window still looked focused
+  - the controlled-loop diagnostics now expose
+    `view_render_mode`, `output_layout`, `rendered_slot_count`,
+    `focused_slot_index`, and `all_view_render_result_kind` so the response
+    line can distinguish `QuadView` from `FocusedFullWindow`
+  - focused code-level coverage now checks `Focused(3) -> AllView` by recording
+    the actual render requests and asserting the second request is a quad-view
+    surface rather than another focused full-window frame
+  - the Windows persistent render path now invalidates the full client area on
+    update instead of invalidating a zero-sized rect
 - one transient runtime note remains:
   - at `command_index=4` for `Focused(3)`, the loop still reported
     `selected_slot_result=Selected`,
