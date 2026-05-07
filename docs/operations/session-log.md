@@ -5,6 +5,63 @@
 - Codex
 
 ### Work
+- Narrow-polished the switcher operator wrapper raw-key path after the recorded
+  successful `--four-view-operator-wrapper --raw-keys` validation still showed
+  a post-exit child window hang.
+- Reworked the raw-key runtime so `RawKeys` setup now yields both:
+  - a reader
+  - a restore tracker
+- Added a dedicated Windows RAII console-mode restore guard and moved the
+  actual `SetConsoleMode(original_mode)` restore attempt into `Drop` instead of
+  silently relying on the reader struct alone.
+- Made the wrapper raw-key loop explicitly drop the raw-key reader before
+  returning its final loop summary, then inspect the restore tracker so success
+  summaries can report restore status and restore failures stay explicit.
+- Extended wrapper loop summary output with:
+  - `raw_console_restore_result`
+  - `raw_console_restore_error`
+- Kept scope narrow:
+  - no changes to the switcher controlled loop protocol
+  - no changes to the control-pipe command vocabulary
+  - no changes to `--keys` scripted mode
+  - no changes to one-line stdin mode
+- Expanded focused wrapper tests to cover:
+  - raw-key restore success
+  - raw-key setup failure
+  - guarded quit with restore
+  - unknown key with restore
+  - control-pipe send failure with restore
+  - explicit restore failure surfacing
+
+### Changed Files
+- `apps/switcher/src/main.rs`
+- `docs/architecture/system-design.md`
+- `docs/operations/manual-real-encoded-video-poc.md`
+- `docs/operations/session-log.md`
+- `docs/operations/todo.md`
+
+### Decision
+- Treat Windows console-mode restore as wrapper-local lifecycle ownership for
+  the optional raw-key path rather than as an implicit side effect.
+- Surface raw console restore failure explicitly instead of silently ignoring
+  it, while preserving the validated `--keys` and one-line stdin baselines.
+- Keep the polish bounded to operator-wrapper raw input lifecycle only; do not
+  expand into GUI, control-loop protocol, OBS control, or switcher transport
+  changes.
+
+### Validation
+- `cargo fmt`
+- `cargo fmt --check`
+- `cargo check --workspace`
+- `cargo test -p stream-sync-switcher four_view -- --test-threads=1`
+- `cargo test --workspace`
+- `git diff --check`
+
+## 2026-05-07
+### Type
+- Codex
+
+### Work
 - Investigated the post-encoder-wiring workspace test failure in the server
   handoff summary tests.
 - Confirmed the runtime summary implementation was already using the current

@@ -8876,6 +8876,14 @@ Current implementation note:
   - `--keys`
   - one-line stdin mode
   - control-pipe command vocabulary and wrapper summary stdout
+- the raw-key path now owns console lifecycle cleanup explicitly:
+  - raw console mode setup returns a session-local reader plus a restore tracker
+  - a dedicated RAII restore guard attempts to restore the original Windows
+    console mode when the raw-key reader drops
+  - wrapper summary exposes `raw_console_restore_result` and
+    `raw_console_restore_error` so a successful raw-key run can confirm restore
+    happened before process exit
+  - restore failure is surfaced explicitly instead of being silently ignored
 - actual manual control-pipe validation for `--raw-keys` is now recorded:
   - `AllView`, `Focused(0..3)`, and `quit` all succeeded through the actual
     control-pipe + raw-key path

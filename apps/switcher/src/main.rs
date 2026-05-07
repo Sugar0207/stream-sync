@@ -1,5 +1,7 @@
+use std::cell::RefCell;
 use std::io::{self, BufRead};
 use std::num::NonZeroU32;
+use std::rc::Rc;
 use std::sync::Mutex;
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -1791,6 +1793,8 @@ struct FourViewOperatorWrapperLoopSummary {
     commands_sent: u32,
     ignored_keys: u32,
     final_guard_state: String,
+    raw_console_restore_result: String,
+    raw_console_restore_error: String,
     exit_reason: String,
 }
 
@@ -3861,7 +3865,61 @@ trait FourViewOperatorWrapperRawKeyReader {
 trait FourViewOperatorWrapperRawKeyRuntime {
     type Reader: FourViewOperatorWrapperRawKeyReader;
 
-    fn open(&mut self) -> Result<Self::Reader, String>;
+    fn open(
+        &mut self,
+    ) -> Result<
+        (
+            Self::Reader,
+            FourViewOperatorWrapperRawConsoleRestoreTracker,
+        ),
+        String,
+    >;
+}
+
+#[derive(Debug, Clone)]
+struct FourViewOperatorWrapperRawConsoleRestoreTracker {
+    state: Rc<RefCell<FourViewOperatorWrapperRawConsoleRestoreState>>,
+}
+
+impl Default for FourViewOperatorWrapperRawConsoleRestoreTracker {
+    fn default() -> Self {
+        Self {
+            state: Rc::new(RefCell::new(
+                FourViewOperatorWrapperRawConsoleRestoreState::Pending,
+            )),
+        }
+    }
+}
+
+impl FourViewOperatorWrapperRawConsoleRestoreTracker {
+    fn mark_restored(&self) {
+        *self.state.borrow_mut() = FourViewOperatorWrapperRawConsoleRestoreState::Restored;
+    }
+
+    fn mark_failed(&self, error: String) {
+        *self.state.borrow_mut() = FourViewOperatorWrapperRawConsoleRestoreState::Failed(error);
+    }
+
+    fn summary_fields(&self) -> (String, String) {
+        match &*self.state.borrow() {
+            FourViewOperatorWrapperRawConsoleRestoreState::Pending => {
+                ("pending".to_string(), "none".to_string())
+            }
+            FourViewOperatorWrapperRawConsoleRestoreState::Restored => {
+                ("restored".to_string(), "none".to_string())
+            }
+            FourViewOperatorWrapperRawConsoleRestoreState::Failed(error) => {
+                ("restore_failed".to_string(), sanitize_summary_value(error))
+            }
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum FourViewOperatorWrapperRawConsoleRestoreState {
+    Pending,
+    Restored,
+    Failed(String),
 }
 
 #[cfg(target_os = "windows")]
@@ -3871,15 +3929,67 @@ struct WindowsFourViewOperatorWrapperRawKeyRuntime;
 #[cfg(target_os = "windows")]
 struct WindowsFourViewOperatorWrapperRawKeyReader {
     stdin: io::Stdin,
+    _restore_guard: WindowsConsoleModeRestoreGuard,
+}
+
+#[cfg(target_os = "windows")]
+struct WindowsConsoleModeRestoreGuard {
     handle: HANDLE,
     original_mode: CONSOLE_MODE,
+    restore_tracker: FourViewOperatorWrapperRawConsoleRestoreTracker,
+    restored: bool,
+}
+
+#[cfg(target_os = "windows")]
+impl WindowsConsoleModeRestoreGuard {
+    fn new(
+        handle: HANDLE,
+        original_mode: CONSOLE_MODE,
+        restore_tracker: FourViewOperatorWrapperRawConsoleRestoreTracker,
+    ) -> Self {
+        Self {
+            handle,
+            original_mode,
+            restore_tracker,
+            restored: false,
+        }
+    }
+
+    fn restore_now(&mut self) {
+        if self.restored {
+            return;
+        }
+
+        match unsafe { SetConsoleMode(self.handle, self.original_mode) } {
+            Ok(()) => self.restore_tracker.mark_restored(),
+            Err(_) => self
+                .restore_tracker
+                .mark_failed(format!("{}", io::Error::last_os_error())),
+        }
+        self.restored = true;
+    }
+}
+
+#[cfg(target_os = "windows")]
+impl Drop for WindowsConsoleModeRestoreGuard {
+    fn drop(&mut self) {
+        self.restore_now();
+    }
 }
 
 #[cfg(target_os = "windows")]
 impl FourViewOperatorWrapperRawKeyRuntime for WindowsFourViewOperatorWrapperRawKeyRuntime {
     type Reader = WindowsFourViewOperatorWrapperRawKeyReader;
 
-    fn open(&mut self) -> Result<Self::Reader, String> {
+    fn open(
+        &mut self,
+    ) -> Result<
+        (
+            Self::Reader,
+            FourViewOperatorWrapperRawConsoleRestoreTracker,
+        ),
+        String,
+    > {
         let handle = unsafe { GetStdHandle(STD_INPUT_HANDLE) }.map_err(|_| {
             format!(
                 "console stdin handle unavailable: {}",
@@ -3903,11 +4013,17 @@ impl FourViewOperatorWrapperRawKeyRuntime for WindowsFourViewOperatorWrapperRawK
             )
         })?;
 
-        Ok(WindowsFourViewOperatorWrapperRawKeyReader {
-            stdin: io::stdin(),
-            handle,
-            original_mode,
-        })
+        let restore_tracker = FourViewOperatorWrapperRawConsoleRestoreTracker::default();
+        let restore_guard =
+            WindowsConsoleModeRestoreGuard::new(handle, original_mode, restore_tracker.clone());
+
+        Ok((
+            WindowsFourViewOperatorWrapperRawKeyReader {
+                stdin: io::stdin(),
+                _restore_guard: restore_guard,
+            },
+            restore_tracker,
+        ))
     }
 }
 
@@ -3919,13 +4035,6 @@ impl FourViewOperatorWrapperRawKeyReader for WindowsFourViewOperatorWrapperRawKe
             .read_exact(&mut buffer)
             .map_err(|error| format!("raw key read failed: {error}"))?;
         Ok(Some(String::from_utf8_lossy(&buffer).into_owned()))
-    }
-}
-
-#[cfg(target_os = "windows")]
-impl Drop for WindowsFourViewOperatorWrapperRawKeyReader {
-    fn drop(&mut self) {
-        let _ = unsafe { SetConsoleMode(self.handle, self.original_mode) };
     }
 }
 
@@ -3981,6 +4090,8 @@ fn run_four_view_operator_wrapper_with_runtime_and_clock_and_raw_key_runtime<
     let mut commands_sent = 0u32;
     let mut ignored_keys = 0u32;
     let mut exit_reason = "InputClosed".to_string();
+    let mut raw_console_restore_result = "not_applicable".to_string();
+    let mut raw_console_restore_error = "none".to_string();
 
     match input_source {
         FourViewOperatorWrapperInputSource::Stdin => {
@@ -4045,40 +4156,59 @@ fn run_four_view_operator_wrapper_with_runtime_and_clock_and_raw_key_runtime<
             }
         }
         FourViewOperatorWrapperInputSource::RawKeys => {
-            let mut raw_key_reader = raw_key_runtime
+            let (mut raw_key_reader, restore_tracker) = raw_key_runtime
                 .open()
                 .map_err(|error| format!("raw key setup failed: {error}"))?;
-            loop {
-                let Some(raw_key) = raw_key_reader
-                    .read_next_key()
-                    .map_err(|error| format!("raw key read failed: {error}"))?
-                else {
-                    break;
+            let raw_key_result = (|| -> Result<(), String> {
+                loop {
+                    let Some(raw_key) = raw_key_reader
+                        .read_next_key()
+                        .map_err(|error| format!("raw key read failed: {error}"))?
+                    else {
+                        break;
+                    };
+                    let key_index = key_summaries.len();
+                    let summary = process_four_view_operator_wrapper_key(
+                        key_index,
+                        &raw_key,
+                        &mut guard_state,
+                        control_pipe_name,
+                        runtime,
+                        clock,
+                    );
+                    if summary.send_result == "Sent" {
+                        commands_sent += 1;
+                    }
+                    if summary.send_result == "Ignored" {
+                        ignored_keys += 1;
+                    }
+                    let should_exit = summary.exit_reason != "Continue";
+                    if should_exit {
+                        exit_reason = summary.exit_reason.clone();
+                    }
+                    key_summaries.push(summary);
+                    if should_exit {
+                        break;
+                    }
+                }
+                Ok(())
+            })();
+            drop(raw_key_reader);
+            (raw_console_restore_result, raw_console_restore_error) =
+                restore_tracker.summary_fields();
+            if raw_console_restore_result == "restore_failed" {
+                return match raw_key_result {
+                    Ok(()) => Err(format!(
+                        "raw key console mode restore failed: {}",
+                        raw_console_restore_error
+                    )),
+                    Err(error) => Err(format!(
+                        "{error}; raw key console mode restore failed: {}",
+                        raw_console_restore_error
+                    )),
                 };
-                let key_index = key_summaries.len();
-                let summary = process_four_view_operator_wrapper_key(
-                    key_index,
-                    &raw_key,
-                    &mut guard_state,
-                    control_pipe_name,
-                    runtime,
-                    clock,
-                );
-                if summary.send_result == "Sent" {
-                    commands_sent += 1;
-                }
-                if summary.send_result == "Ignored" {
-                    ignored_keys += 1;
-                }
-                let should_exit = summary.exit_reason != "Continue";
-                if should_exit {
-                    exit_reason = summary.exit_reason.clone();
-                }
-                key_summaries.push(summary);
-                if should_exit {
-                    break;
-                }
             }
+            raw_key_result?;
             if key_summaries.is_empty() {
                 exit_reason = "InputClosed".to_string();
             } else if exit_reason == "Continue" {
@@ -4095,6 +4225,8 @@ fn run_four_view_operator_wrapper_with_runtime_and_clock_and_raw_key_runtime<
         commands_sent,
         ignored_keys,
         final_guard_state: format_four_view_operator_wrapper_guard_state(&guard_state),
+        raw_console_restore_result,
+        raw_console_restore_error,
         exit_reason,
     })
 }
@@ -5171,13 +5303,15 @@ fn format_four_view_operator_wrapper_loop_summary(
     summary: &FourViewOperatorWrapperLoopSummary,
 ) -> String {
     format!(
-        "switcher four-view operator wrapper loop command_name=--four-view-operator-wrapper control_pipe_name={} input_source={} keys_processed={} commands_sent={} ignored_keys={} final_guard_state={} exit_reason={}",
+        "switcher four-view operator wrapper loop command_name=--four-view-operator-wrapper control_pipe_name={} input_source={} keys_processed={} commands_sent={} ignored_keys={} final_guard_state={} raw_console_restore_result={} raw_console_restore_error={} exit_reason={}",
         sanitize_summary_value(&summary.control_pipe_name),
         summary.input_source,
         summary.keys_processed,
         summary.commands_sent,
         summary.ignored_keys,
         summary.final_guard_state,
+        summary.raw_console_restore_result,
+        summary.raw_console_restore_error,
         summary.exit_reason,
     )
 }
@@ -5819,11 +5953,12 @@ mod tests {
         DeterministicFourViewFixtureDecodeRuntime, FourViewControlCommandSource,
         FourViewControlPipeClientRuntime, FourViewOperatorWrapperClock,
         FourViewOperatorWrapperGuardState, FourViewOperatorWrapperInputSource,
-        FourViewOperatorWrapperRawKeyReader, FourViewOperatorWrapperRawKeyRuntime,
-        PersistentWindowLifecycleSnapshot, SwitcherFourViewControlledPreviewCommand,
-        SwitcherFourViewControlledPreviewCommandSummary, SwitcherFrameCadenceSleepHook,
-        SwitcherPersistentWindowLoopRuntimeHook, SwitcherQueuedFrameHandoffResult,
-        SwitcherSingleClientQueueSourceMode, FOUR_VIEW_CLEAN_OUTPUT_LOOP_OBS_OUTPUT_HEIGHT,
+        FourViewOperatorWrapperRawConsoleRestoreTracker, FourViewOperatorWrapperRawKeyReader,
+        FourViewOperatorWrapperRawKeyRuntime, PersistentWindowLifecycleSnapshot,
+        SwitcherFourViewControlledPreviewCommand, SwitcherFourViewControlledPreviewCommandSummary,
+        SwitcherFrameCadenceSleepHook, SwitcherPersistentWindowLoopRuntimeHook,
+        SwitcherQueuedFrameHandoffResult, SwitcherSingleClientQueueSourceMode,
+        FOUR_VIEW_CLEAN_OUTPUT_LOOP_OBS_OUTPUT_HEIGHT,
         FOUR_VIEW_CLEAN_OUTPUT_LOOP_OBS_OUTPUT_WIDTH, FOUR_VIEW_CLEAN_OUTPUT_LOOP_SCALE_MODE,
     };
     use stream_sync_switcher::SWITCHER_FOUR_VIEW_CLEAN_OUTPUT_WINDOW_TITLE;
@@ -7467,6 +7602,17 @@ mod tests {
     struct FakeOperatorWrapperClientRuntime {
         commands: Vec<String>,
         responses: Vec<String>,
+        send_error: Option<String>,
+    }
+
+    impl FakeOperatorWrapperClientRuntime {
+        fn failing(message: &str) -> Self {
+            Self {
+                commands: Vec::new(),
+                responses: Vec::new(),
+                send_error: Some(message.to_string()),
+            }
+        }
     }
 
     impl FourViewControlPipeClientRuntime for FakeOperatorWrapperClientRuntime {
@@ -7477,6 +7623,9 @@ mod tests {
             _connect_timeout_millis: u32,
         ) -> io::Result<String> {
             self.commands.push(command.to_string());
+            if let Some(error) = self.send_error.clone() {
+                return Err(io::Error::other(error));
+            }
             Ok(self.responses.remove(0))
         }
     }
@@ -7505,6 +7654,8 @@ mod tests {
 
     struct FakeOperatorWrapperRawKeyReader {
         keys: VecDeque<String>,
+        restore_tracker: FourViewOperatorWrapperRawConsoleRestoreTracker,
+        restore_error: Option<String>,
     }
 
     impl FourViewOperatorWrapperRawKeyReader for FakeOperatorWrapperRawKeyReader {
@@ -7513,9 +7664,20 @@ mod tests {
         }
     }
 
+    impl Drop for FakeOperatorWrapperRawKeyReader {
+        fn drop(&mut self) {
+            if let Some(error) = self.restore_error.clone() {
+                self.restore_tracker.mark_failed(error);
+            } else {
+                self.restore_tracker.mark_restored();
+            }
+        }
+    }
+
     struct FakeOperatorWrapperRawKeyRuntime {
         keys: VecDeque<String>,
         open_error: Option<String>,
+        restore_error: Option<String>,
     }
 
     impl FakeOperatorWrapperRawKeyRuntime {
@@ -7523,6 +7685,7 @@ mod tests {
             Self {
                 keys: keys.iter().map(|value| value.to_string()).collect(),
                 open_error: None,
+                restore_error: None,
             }
         }
 
@@ -7530,6 +7693,15 @@ mod tests {
             Self {
                 keys: VecDeque::new(),
                 open_error: Some(message.to_string()),
+                restore_error: None,
+            }
+        }
+
+        fn from_keys_with_restore_error(keys: &[&str], restore_error: &str) -> Self {
+            Self {
+                keys: keys.iter().map(|value| value.to_string()).collect(),
+                open_error: None,
+                restore_error: Some(restore_error.to_string()),
             }
         }
     }
@@ -7537,14 +7709,28 @@ mod tests {
     impl FourViewOperatorWrapperRawKeyRuntime for FakeOperatorWrapperRawKeyRuntime {
         type Reader = FakeOperatorWrapperRawKeyReader;
 
-        fn open(&mut self) -> Result<Self::Reader, String> {
+        fn open(
+            &mut self,
+        ) -> Result<
+            (
+                Self::Reader,
+                FourViewOperatorWrapperRawConsoleRestoreTracker,
+            ),
+            String,
+        > {
             if let Some(error) = self.open_error.clone() {
                 return Err(error);
             }
 
-            Ok(FakeOperatorWrapperRawKeyReader {
-                keys: std::mem::take(&mut self.keys),
-            })
+            let restore_tracker = FourViewOperatorWrapperRawConsoleRestoreTracker::default();
+            Ok((
+                FakeOperatorWrapperRawKeyReader {
+                    keys: std::mem::take(&mut self.keys),
+                    restore_tracker: restore_tracker.clone(),
+                    restore_error: self.restore_error.clone(),
+                },
+                restore_tracker,
+            ))
         }
     }
 
@@ -7558,6 +7744,7 @@ mod tests {
                 "switcher four-view control response command=all transition_result=Transitioned current_view_state=AllView selected_slot_result=Selected clean_output_render_result_kind=Rendered command_parse_error=none exit_reason=none".to_string(),
                 "switcher four-view control response command=status transition_result=Observed current_view_state=AllView selected_slot_result=Selected clean_output_render_result_kind=Rendered command_parse_error=none exit_reason=none".to_string(),
             ],
+            send_error: None,
         };
         let mut guard_state = FourViewOperatorWrapperGuardState {
             quit_armed: false,
@@ -7659,6 +7846,7 @@ mod tests {
             responses: vec![
                 "switcher four-view control response command=quit transition_result=ExitRequested current_view_state=AllView selected_slot_result=NotApplicable clean_output_render_result_kind=Rendered command_parse_error=none exit_reason=QuitRequested".to_string(),
             ],
+            send_error: None,
         };
         let mut guard_state = FourViewOperatorWrapperGuardState {
             quit_armed: false,
@@ -7697,6 +7885,7 @@ mod tests {
             responses: vec![
                 "switcher four-view control response command=status transition_result=Observed current_view_state=AllView selected_slot_result=Selected clean_output_render_result_kind=Rendered command_parse_error=none exit_reason=none".to_string(),
             ],
+            send_error: None,
         };
         let mut guard_state = FourViewOperatorWrapperGuardState {
             quit_armed: false,
@@ -7784,6 +7973,7 @@ mod tests {
                 "switcher four-view control response command=all transition_result=Transitioned current_view_state=AllView selected_slot_result=NotApplicable clean_output_render_result_kind=Rendered command_parse_error=none exit_reason=none".to_string(),
                 "switcher four-view control response command=status transition_result=Observed current_view_state=AllView selected_slot_result=NotApplicable clean_output_render_result_kind=Rendered command_parse_error=none exit_reason=none".to_string(),
             ],
+            send_error: None,
         };
         let mut raw_key_runtime = FakeOperatorWrapperRawKeyRuntime::from_keys(&["1", "A", "s"]);
 
@@ -7809,6 +7999,8 @@ mod tests {
         assert_eq!(summary.key_summaries[0].mapped_command, "focus_0");
         assert_eq!(summary.key_summaries[1].mapped_command, "all");
         assert_eq!(summary.key_summaries[2].mapped_command, "status");
+        assert_eq!(summary.raw_console_restore_result, "restored");
+        assert_eq!(summary.raw_console_restore_error, "none");
     }
 
     #[test]
@@ -7819,6 +8011,7 @@ mod tests {
             responses: vec![
                 "switcher four-view control response command=quit transition_result=ExitRequested current_view_state=AllView selected_slot_result=NotApplicable clean_output_render_result_kind=none command_parse_error=none exit_reason=QuitRequested".to_string(),
             ],
+            send_error: None,
         };
         let mut raw_key_runtime = FakeOperatorWrapperRawKeyRuntime::from_keys(&["q", "q"]);
 
@@ -7835,6 +8028,7 @@ mod tests {
         assert_eq!(summary.key_summaries[0].send_result, "GuardArmed");
         assert_eq!(summary.key_summaries[1].send_result, "Sent");
         assert_eq!(summary.exit_reason, "QuitRequested");
+        assert_eq!(summary.raw_console_restore_result, "restored");
     }
 
     #[test]
@@ -7856,6 +8050,7 @@ mod tests {
         assert_eq!(summary.ignored_keys, 1);
         assert_eq!(summary.key_summaries[0].send_result, "Ignored");
         assert_eq!(summary.key_summaries[0].wrapper_error, "unknown_key");
+        assert_eq!(summary.raw_console_restore_result, "restored");
     }
 
     #[test]
@@ -7875,6 +8070,50 @@ mod tests {
         .expect_err("raw key setup failure should be surfaced");
 
         assert_eq!(error, "raw key setup failed: fixture_raw_keys_unavailable");
+    }
+
+    #[test]
+    fn switcher_four_view_operator_wrapper_raw_keys_send_failure_still_restores_console_mode() {
+        let clock = FakeOperatorWrapperClock::new(0);
+        let mut runtime = FakeOperatorWrapperClientRuntime::failing("fixture_send_failed");
+        let mut raw_key_runtime = FakeOperatorWrapperRawKeyRuntime::from_keys(&["s"]);
+
+        let summary = run_four_view_operator_wrapper_with_runtime_and_clock_and_raw_key_runtime(
+            "streamsync-control-dev",
+            FourViewOperatorWrapperInputSource::RawKeys,
+            &mut runtime,
+            &clock,
+            &mut raw_key_runtime,
+        )
+        .expect("raw key send failure should still return wrapper summary");
+
+        assert_eq!(summary.exit_reason, "WrapperSendFailed");
+        assert_eq!(summary.raw_console_restore_result, "restored");
+        assert_eq!(summary.raw_console_restore_error, "none");
+    }
+
+    #[test]
+    fn switcher_four_view_operator_wrapper_raw_keys_restore_failure_is_explicit() {
+        let clock = FakeOperatorWrapperClock::new(0);
+        let mut runtime = FakeOperatorWrapperClientRuntime::default();
+        let mut raw_key_runtime = FakeOperatorWrapperRawKeyRuntime::from_keys_with_restore_error(
+            &["x"],
+            "fixture_restore_failed",
+        );
+
+        let error = run_four_view_operator_wrapper_with_runtime_and_clock_and_raw_key_runtime(
+            "streamsync-control-dev",
+            FourViewOperatorWrapperInputSource::RawKeys,
+            &mut runtime,
+            &clock,
+            &mut raw_key_runtime,
+        )
+        .expect_err("raw key restore failure should be surfaced");
+
+        assert_eq!(
+            error,
+            "raw key console mode restore failed: fixture_restore_failed"
+        );
     }
 
     #[test]

@@ -3460,6 +3460,18 @@ Next task after this decision:
   - the final loop summary returned to `scheduler_status=AllSelected`
   - treat this as transient scheduler-status wobble / later narrow polish, not
     as an MVP blocker
+- later wrapper-local narrow polish after that validation:
+  - the successful raw-key session still exposed a post-exit Windows wrapper
+    window hang, so the raw-key runtime now restores console mode through a
+    dedicated RAII restore guard before wrapper exit
+  - restore is attempted for normal quit, unknown-key ignore, wrapper-side
+    send failure, and explicit raw-key read-error return paths
+  - `--keys` and one-line stdin remain unchanged fallback/baseline inputs
+  - wrapper loop summary now includes:
+    - `raw_console_restore_result`
+    - `raw_console_restore_error`
+  - current code-level validation covers restore success, setup failure,
+    guarded quit, unknown key, send failure, and explicit restore failure
 - next task:
   - production H.264 encoder configuration / error logging policy
 
