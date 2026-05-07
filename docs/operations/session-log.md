@@ -5,6 +5,72 @@
 - Codex
 
 ### Work
+- Implemented the same-binary thin operator wrapper command in
+  `stream-sync-switcher`:
+  - `--four-view-operator-wrapper [control-pipe-name]`
+  - optional scripted mode:
+    `--keys "s;1;2;3;4;0;q;q"`
+- Kept the wrapper thin:
+  - reuses the existing `--send-control-command` sender logic
+  - sends only the existing control-pipe command vocabulary
+  - does not touch switcher render/control-loop/parser internals directly
+- Implemented the wrapper-local key mapping:
+  - `1 -> focus 0`
+  - `2 -> focus 1`
+  - `3 -> focus 2`
+  - `4 -> focus 3`
+  - `0` / `A` / `a -> all`
+  - `S` / `s -> status`
+  - `Q` / `q -> guarded quit`
+- Implemented wrapper-local guarded quit:
+  - first `Q` arms only
+  - second `Q` within `2` seconds sends real `quit`
+  - non-`Q` clears the guard
+  - timeout clears the guard
+- Added wrapper stdout summaries per key with:
+  - `wrapper_key`
+  - `mapped_command`
+  - `guard_state`
+  - `send_result`
+  - `response_line`
+  - `command_parse_error`
+  - `wrapper_error`
+  - `exit_reason`
+- Added code-level tests for:
+  - key mapping
+  - unknown key
+  - `Q` once does not send quit
+  - `Q` twice within guard sends quit
+  - non-`Q` clears quit guard
+  - guard timeout clear
+  - scripted keys parser
+
+### Changed Files
+- `apps/switcher/src/main.rs`
+- `docs/architecture/system-design.md`
+- `docs/operations/manual-real-encoded-video-poc.md`
+- `docs/operations/session-log.md`
+- `docs/operations/todo.md`
+
+### Decision
+- Chose command name `--four-view-operator-wrapper`.
+- Kept the first interaction mode minimal:
+  - stdin mode reads one key token per line
+  - scripted mode uses `--keys`
+- Kept guarded quit fully wrapper-local.
+
+### Validation
+- `cargo fmt`
+- `cargo fmt --check`
+- `cargo check --workspace`
+- `cargo test -p stream-sync-switcher four_view -- --test-threads=1`
+- `git diff --check`
+
+## 2026-05-07
+### Type
+- Codex
+
+### Work
 - Added the docs-only thin wrapper / hotkey UI MVP design after the successful
   separate local control-pipe manual validation.
 - Compared the next implementation forms as:

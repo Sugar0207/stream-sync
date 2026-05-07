@@ -2913,14 +2913,19 @@ Why this was chosen:
   `quit` path already exists and operators still need one minimal clean-exit
   command
 
-Planned wrapper MVP shape:
+Implemented wrapper MVP shape:
 
-- same-binary wrapper command is acceptable for MVP as long as it runs as a
-  separate process from the switcher loop
-- first interaction mode should be a CLI/TUI keyboard loop
+- same-binary wrapper command now exists as:
+  - `.\target\debug\stream-sync-switcher.exe --four-view-operator-wrapper streamsync-control-dev`
+- scripted/manual automation mode also exists:
+  - `.\target\debug\stream-sync-switcher.exe --four-view-operator-wrapper streamsync-control-dev --keys "s;1;2;3;4;0;q;q"`
+- the wrapper remains a separate process from the switcher loop
+- first interaction mode is still intentionally minimal:
+  - stdin mode reads one key token per line
+  - scripted/manual automation uses `--keys`
 - full GUI stays later
 
-Wrapper MVP manual validation plan after implementation:
+Wrapper MVP manual validation plan:
 
 1. rebuild before the session:
    - `cargo build`
@@ -2929,8 +2934,10 @@ Wrapper MVP manual validation plan after implementation:
 2. start the bounded same-session switcher loop with control pipe:
    - `.\target\debug\stream-sync-switcher.exe --four-view-controlled-handoff-preview-loop streamsync-handoff-dev player1 streamsync-dev-session player2 streamsync-dev-session player3 streamsync-dev-session player4 streamsync-dev-session 5 --control-pipe streamsync-control-dev`
 3. start the wrapper MVP:
-   - planned shape: a separate wrapper process connected only to
-     `streamsync-control-dev`
+   - interactive:
+     - `.\target\debug\stream-sync-switcher.exe --four-view-operator-wrapper streamsync-control-dev`
+   - scripted:
+     - `.\target\debug\stream-sync-switcher.exe --four-view-operator-wrapper streamsync-control-dev --keys "s;1;2;3;4;0;q;q"`
 4. press:
    - `1`
    - `2`
@@ -2942,6 +2949,15 @@ Wrapper MVP manual validation plan after implementation:
    - one control command was sent
    - one response line was displayed by the wrapper
    - switcher window lifecycle stayed alive
+   - wrapper stdout includes at least:
+     - `wrapper_key`
+     - `mapped_command`
+     - `guard_state`
+     - `send_result`
+     - `response_line`
+     - `command_parse_error`
+     - `wrapper_error`
+     - `exit_reason`
 6. confirm guarded `Q` behavior:
    - first `Q` shows wrapper-local armed text and does not send `quit`
    - second `Q` within `2` seconds sends `quit`
@@ -2953,6 +2969,19 @@ Wrapper MVP manual validation plan after implementation:
    - `scheduler_status`
    - `clean_output_render_result_kind`
    - `exit_reason`
+
+Current code-level validation status for the wrapper:
+
+- key mapping tests exist for:
+  - `1`
+  - `A/a`
+  - `S/s`
+- unknown key is ignored locally
+- first `Q` does not send `quit`
+- second `Q` within the guard window sends `quit`
+- non-`Q` clears the guard
+- guard timeout clears before a later `Q`
+- scripted keys parser splits `s;1;2;3;4;0;q;q`
 
 ## 9. Same-Session Bounded Server Lifecycle Note
 

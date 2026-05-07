@@ -8701,6 +8701,8 @@ MVP wrapper shape:
 - future direction: Option `D` later, Option `B` only if the wrapper outgrows
   the same-binary shape
 - transport: separate local control channel to the same-session switcher loop
+- current implemented command:
+  - `--four-view-operator-wrapper [control-pipe-name] [--keys "s;1;2;3;4;0;q;q"]`
 - treat the wrapper as a thin keyboard/UI shell, not a render owner
 - keep the command vocabulary identical to the current parser:
   - `all`
@@ -8720,6 +8722,9 @@ MVP wrapper shape:
 - keep wrapper output minimal:
   - show the latest response line from the switcher
   - show local wrapper-only guard/status text when no switcher command is sent
+- current stdin interaction remains intentionally minimal:
+  - one key token per stdin line in interactive mode
+  - scripted/manual automation can use `--keys`
 
 Deferred:
 
@@ -8773,6 +8778,17 @@ Why this is preferred for MVP:
 The guard belongs in the wrapper, not in the switcher control parser. The
 switcher keeps `quit` as a normal explicit command. The wrapper decides when
 to emit it.
+
+Current implemented wrapper-local stdout fields:
+
+- `wrapper_key`
+- `mapped_command`
+- `guard_state`
+- `send_result`
+- `response_line`
+- `command_parse_error`
+- `wrapper_error`
+- `exit_reason`
 
 ## Same-Session Bounded Server Lifecycle Note
 

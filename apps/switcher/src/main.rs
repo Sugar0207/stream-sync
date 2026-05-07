@@ -576,6 +576,32 @@ fn main() {
                 }
             }
         }
+        Some("--four-view-operator-wrapper") => {
+            let control_pipe_name = args.next().unwrap_or_else(|| {
+                eprintln!("missing control-pipe-name");
+                std::process::exit(1);
+            });
+            let input_source =
+                parse_four_view_operator_wrapper_input_source_or_exit(args.collect::<Vec<_>>());
+            match run_four_view_operator_wrapper(&control_pipe_name, input_source) {
+                Ok(summary) => {
+                    for key_summary in &summary.key_summaries {
+                        println!(
+                            "{}",
+                            format_four_view_operator_wrapper_key_summary(key_summary)
+                        );
+                    }
+                    println!(
+                        "{}",
+                        format_four_view_operator_wrapper_loop_summary(&summary)
+                    );
+                }
+                Err(error) => {
+                    eprintln!("switcher four-view operator wrapper failed: {error}");
+                    std::process::exit(1);
+                }
+            }
+        }
         Some("--send-control-command") => {
             let control_pipe_name = args.next().unwrap_or_else(|| {
                 eprintln!("missing control-pipe-name");
@@ -627,7 +653,7 @@ fn main() {
         }
         _ => {
             println!(
-                "stream-sync-switcher scaffold; use --placeholder-fixture-once [client-id], --placeholder-empty-once [client-id], --decode-latest-frame-once [client-id] [output-path], --receive-auth-video-placeholder-bridge-once [config-path] [client-id], --receive-auth-video-decode-latest-once [config-path] [client-id] [output-path], --receive-auth-video-render-decoded-once [config-path] [client-id] [hold-ms], --two-view-sync-fixture-once [left-client-id] [right-client-id] [hold-ms], --render-two-view-composed-fixture-once [hold-ms], --live-two-view-switcher-once [config-path] [left-client-id] [right-client-id], --four-view-proof-fixture-once [all-renderable|mixed-placeholder-source-error|placeholder-only], --four-view-proof-window-once [all-renderable], --four-view-clean-output-window-once [all-renderable], --four-view-clean-output-window-loop [all-renderable] [frames], --four-view-real-handoff-preview-loop [pipe-name] [real-slot-index] [client-id] [run-id] [frames], --four-view-two-real-handoff-preview-loop [pipe-name] [slot0-index] [client0-id] [run0-id] [slot1-index] [client1-id] [run1-id] [frames], --four-view-four-real-handoff-preview-loop [pipe-name] [client0-id] [run0-id] [client1-id] [run1-id] [client2-id] [run2-id] [client3-id] [run3-id] [frames], --four-view-focused-handoff-preview-loop [pipe-name] [focused-slot-index] [client0-id] [run0-id] [client1-id] [run1-id] [client2-id] [run2-id] [client3-id] [run3-id] [frames], --four-view-controlled-handoff-preview-loop [pipe-name] [client0-id] [run0-id] [client1-id] [run1-id] [client2-id] [run2-id] [client3-id] [run3-id] [max-ticks-per-command] [--commands \"status;focus 0;all;quit\"|--control-pipe streamsync-control-dev], --send-control-command [control-pipe-name] [command], or --read-queued-frame-handoff-once [pipe-name] [client-id] [run-id] [read-mode] [request-id]"
+                "stream-sync-switcher scaffold; use --placeholder-fixture-once [client-id], --placeholder-empty-once [client-id], --decode-latest-frame-once [client-id] [output-path], --receive-auth-video-placeholder-bridge-once [config-path] [client-id], --receive-auth-video-decode-latest-once [config-path] [client-id] [output-path], --receive-auth-video-render-decoded-once [config-path] [client-id] [hold-ms], --two-view-sync-fixture-once [left-client-id] [right-client-id] [hold-ms], --render-two-view-composed-fixture-once [hold-ms], --live-two-view-switcher-once [config-path] [left-client-id] [right-client-id], --four-view-proof-fixture-once [all-renderable|mixed-placeholder-source-error|placeholder-only], --four-view-proof-window-once [all-renderable], --four-view-clean-output-window-once [all-renderable], --four-view-clean-output-window-loop [all-renderable] [frames], --four-view-real-handoff-preview-loop [pipe-name] [real-slot-index] [client-id] [run-id] [frames], --four-view-two-real-handoff-preview-loop [pipe-name] [slot0-index] [client0-id] [run0-id] [slot1-index] [client1-id] [run1-id] [frames], --four-view-four-real-handoff-preview-loop [pipe-name] [client0-id] [run0-id] [client1-id] [run1-id] [client2-id] [run2-id] [client3-id] [run3-id] [frames], --four-view-focused-handoff-preview-loop [pipe-name] [focused-slot-index] [client0-id] [run0-id] [client1-id] [run1-id] [client2-id] [run2-id] [client3-id] [run3-id] [frames], --four-view-controlled-handoff-preview-loop [pipe-name] [client0-id] [run0-id] [client1-id] [run1-id] [client2-id] [run2-id] [client3-id] [run3-id] [max-ticks-per-command] [--commands \"status;focus 0;all;quit\"|--control-pipe streamsync-control-dev], --four-view-operator-wrapper [control-pipe-name] [--keys \"s;1;2;3;4;0;q;q\"], --send-control-command [control-pipe-name] [command], or --read-queued-frame-handoff-once [pipe-name] [client-id] [run-id] [read-mode] [request-id]"
             );
         }
     }
@@ -1062,6 +1088,29 @@ fn parse_four_view_control_command_source_or_exit(
     args: Vec<String>,
 ) -> FourViewControlCommandSource {
     parse_four_view_control_command_source(args).unwrap_or_else(|error| {
+        eprintln!("{error}");
+        std::process::exit(1);
+    })
+}
+
+fn parse_four_view_operator_wrapper_input_source(
+    args: Vec<String>,
+) -> Result<FourViewOperatorWrapperInputSource, String> {
+    match args.as_slice() {
+        [] => Ok(FourViewOperatorWrapperInputSource::Stdin),
+        [flag, keys] if flag == "--keys" => Ok(FourViewOperatorWrapperInputSource::ScriptedKeys(
+            keys.clone(),
+        )),
+        _ => Err(
+            "unexpected extra arguments: expected optional --keys \"s;1;2;3;4;0;q;q\"".to_string(),
+        ),
+    }
+}
+
+fn parse_four_view_operator_wrapper_input_source_or_exit(
+    args: Vec<String>,
+) -> FourViewOperatorWrapperInputSource {
+    parse_four_view_operator_wrapper_input_source(args).unwrap_or_else(|error| {
         eprintln!("{error}");
         std::process::exit(1);
     })
@@ -1703,6 +1752,43 @@ enum FourViewControlCommandSource {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+enum FourViewOperatorWrapperInputSource {
+    Stdin,
+    ScriptedKeys(String),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct FourViewOperatorWrapperGuardState {
+    quit_armed: bool,
+    armed_until_millis: Option<u64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct FourViewOperatorWrapperKeySummary {
+    key_index: usize,
+    wrapper_key: String,
+    mapped_command: String,
+    guard_state: String,
+    send_result: String,
+    response_line: String,
+    command_parse_error: String,
+    wrapper_error: String,
+    exit_reason: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct FourViewOperatorWrapperLoopSummary {
+    control_pipe_name: String,
+    input_source: String,
+    key_summaries: Vec<FourViewOperatorWrapperKeySummary>,
+    keys_processed: u32,
+    commands_sent: u32,
+    ignored_keys: u32,
+    final_guard_state: String,
+    exit_reason: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct SwitcherFourViewControlledPreviewCommandSummary {
     command_index: usize,
     control_command_name: String,
@@ -1769,6 +1855,7 @@ struct FourViewControlledCommandIterationOutcome {
 }
 
 const DEFAULT_CONTROL_PIPE_CONNECT_TIMEOUT_MILLIS: u32 = 5_000;
+const DEFAULT_OPERATOR_WRAPPER_QUIT_GUARD_WINDOW_MILLIS: u64 = 2_000;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct FourViewPreviewSlotDiagnosticSummary {
@@ -3736,6 +3823,314 @@ fn split_scripted_control_commands(script: &str) -> Vec<String> {
         .collect()
 }
 
+fn split_scripted_operator_wrapper_keys(script: &str) -> Vec<String> {
+    script
+        .split(';')
+        .map(str::trim)
+        .filter(|key| !key.is_empty())
+        .map(ToString::to_string)
+        .collect()
+}
+
+trait FourViewOperatorWrapperClock {
+    fn now_millis(&self) -> u64;
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+struct SystemFourViewOperatorWrapperClock;
+
+impl FourViewOperatorWrapperClock for SystemFourViewOperatorWrapperClock {
+    fn now_millis(&self) -> u64 {
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_else(|_| Duration::from_millis(0))
+            .as_millis() as u64
+    }
+}
+
+#[cfg(windows)]
+fn run_four_view_operator_wrapper(
+    control_pipe_name: &str,
+    input_source: FourViewOperatorWrapperInputSource,
+) -> Result<FourViewOperatorWrapperLoopSummary, String> {
+    run_four_view_operator_wrapper_with_runtime_and_clock(
+        control_pipe_name,
+        input_source,
+        &mut SwitcherFourViewControlNamedPipeClientRuntime,
+        &SystemFourViewOperatorWrapperClock,
+    )
+}
+
+#[cfg(not(windows))]
+fn run_four_view_operator_wrapper(
+    _control_pipe_name: &str,
+    _input_source: FourViewOperatorWrapperInputSource,
+) -> Result<FourViewOperatorWrapperLoopSummary, String> {
+    Err("four-view operator wrapper is only available on Windows".to_string())
+}
+
+fn run_four_view_operator_wrapper_with_runtime_and_clock(
+    control_pipe_name: &str,
+    input_source: FourViewOperatorWrapperInputSource,
+    runtime: &mut impl FourViewControlPipeClientRuntime,
+    clock: &impl FourViewOperatorWrapperClock,
+) -> Result<FourViewOperatorWrapperLoopSummary, String> {
+    if control_pipe_name.trim().is_empty() {
+        return Err("control pipe name must not be empty".to_string());
+    }
+
+    let input_source_summary = match &input_source {
+        FourViewOperatorWrapperInputSource::Stdin => "stdin".to_string(),
+        FourViewOperatorWrapperInputSource::ScriptedKeys(script) => {
+            format!("scripted:{}", sanitize_summary_value(script))
+        }
+    };
+
+    let mut guard_state = FourViewOperatorWrapperGuardState {
+        quit_armed: false,
+        armed_until_millis: None,
+    };
+    let mut key_summaries = Vec::new();
+    let mut commands_sent = 0u32;
+    let mut ignored_keys = 0u32;
+    let mut exit_reason = "InputClosed".to_string();
+
+    match input_source {
+        FourViewOperatorWrapperInputSource::Stdin => {
+            let stdin = io::stdin();
+            for (key_index, line) in stdin.lock().lines().enumerate() {
+                let line = line.map_err(|error| format!("stdin read failed: {error}"))?;
+                let summary = process_four_view_operator_wrapper_key(
+                    key_index,
+                    &line,
+                    &mut guard_state,
+                    control_pipe_name,
+                    runtime,
+                    clock,
+                );
+                if summary.send_result == "Sent" {
+                    commands_sent += 1;
+                }
+                if summary.send_result == "Ignored" {
+                    ignored_keys += 1;
+                }
+                let should_exit = summary.exit_reason != "Continue";
+                if should_exit {
+                    exit_reason = summary.exit_reason.clone();
+                }
+                key_summaries.push(summary);
+                if should_exit {
+                    break;
+                }
+            }
+            if key_summaries.is_empty() {
+                exit_reason = "InputClosed".to_string();
+            } else if exit_reason == "Continue" {
+                exit_reason = "InputClosed".to_string();
+            }
+        }
+        FourViewOperatorWrapperInputSource::ScriptedKeys(script) => {
+            let keys = split_scripted_operator_wrapper_keys(&script);
+            exit_reason = "ScriptedKeysCompleted".to_string();
+            for (key_index, key) in keys.iter().enumerate() {
+                let summary = process_four_view_operator_wrapper_key(
+                    key_index,
+                    key,
+                    &mut guard_state,
+                    control_pipe_name,
+                    runtime,
+                    clock,
+                );
+                if summary.send_result == "Sent" {
+                    commands_sent += 1;
+                }
+                if summary.send_result == "Ignored" {
+                    ignored_keys += 1;
+                }
+                let should_exit = summary.exit_reason != "Continue";
+                if should_exit {
+                    exit_reason = summary.exit_reason.clone();
+                }
+                key_summaries.push(summary);
+                if should_exit {
+                    break;
+                }
+            }
+        }
+    }
+
+    Ok(FourViewOperatorWrapperLoopSummary {
+        control_pipe_name: control_pipe_name.to_string(),
+        input_source: input_source_summary,
+        keys_processed: key_summaries.len() as u32,
+        key_summaries,
+        commands_sent,
+        ignored_keys,
+        final_guard_state: format_four_view_operator_wrapper_guard_state(&guard_state),
+        exit_reason,
+    })
+}
+
+fn process_four_view_operator_wrapper_key(
+    key_index: usize,
+    raw_key: &str,
+    guard_state: &mut FourViewOperatorWrapperGuardState,
+    control_pipe_name: &str,
+    runtime: &mut impl FourViewControlPipeClientRuntime,
+    clock: &impl FourViewOperatorWrapperClock,
+) -> FourViewOperatorWrapperKeySummary {
+    clear_expired_four_view_operator_wrapper_quit_guard(guard_state, clock.now_millis());
+
+    let wrapper_key = sanitize_summary_value(raw_key.trim());
+    let key_char = parse_four_view_operator_wrapper_key(raw_key);
+    let mut mapped_command = "none".to_string();
+    let send_result;
+    let mut response_line = "none".to_string();
+    let mut command_parse_error = "none".to_string();
+    let mut wrapper_error = "none".to_string();
+    let mut exit_reason = "Continue".to_string();
+
+    match key_char {
+        Some('q') | Some('Q') => {
+            mapped_command = "quit".to_string();
+            if guard_state.quit_armed {
+                guard_state.quit_armed = false;
+                guard_state.armed_until_millis = None;
+                match run_send_control_command_with_runtime(control_pipe_name, "quit", runtime) {
+                    Ok(response) => {
+                        send_result = "Sent".to_string();
+                        command_parse_error =
+                            extract_summary_field(&response, "command_parse_error")
+                                .unwrap_or_else(|| "none".to_string());
+                        exit_reason = normalize_four_view_operator_wrapper_exit_reason(
+                            extract_summary_field(&response, "exit_reason").as_deref(),
+                        );
+                        response_line = sanitize_summary_value(&response);
+                    }
+                    Err(error) => {
+                        send_result = "SendFailed".to_string();
+                        wrapper_error = sanitize_summary_value(&error);
+                        exit_reason = "WrapperSendFailed".to_string();
+                    }
+                }
+            } else {
+                guard_state.quit_armed = true;
+                guard_state.armed_until_millis =
+                    Some(clock.now_millis() + DEFAULT_OPERATOR_WRAPPER_QUIT_GUARD_WINDOW_MILLIS);
+                send_result = "GuardArmed".to_string();
+            }
+        }
+        Some(mapped @ ('1' | '2' | '3' | '4' | '0' | 'a' | 'A' | 's' | 'S')) => {
+            clear_four_view_operator_wrapper_quit_guard(guard_state);
+            let command = match mapped {
+                '1' => "focus 0",
+                '2' => "focus 1",
+                '3' => "focus 2",
+                '4' => "focus 3",
+                '0' | 'a' | 'A' => "all",
+                's' | 'S' => "status",
+                _ => unreachable!("supported mapped keys are handled explicitly"),
+            };
+            mapped_command = sanitize_summary_value(command);
+            match run_send_control_command_with_runtime(control_pipe_name, command, runtime) {
+                Ok(response) => {
+                    send_result = "Sent".to_string();
+                    command_parse_error = extract_summary_field(&response, "command_parse_error")
+                        .unwrap_or_else(|| "none".to_string());
+                    exit_reason = normalize_four_view_operator_wrapper_exit_reason(
+                        extract_summary_field(&response, "exit_reason").as_deref(),
+                    );
+                    response_line = sanitize_summary_value(&response);
+                }
+                Err(error) => {
+                    send_result = "SendFailed".to_string();
+                    wrapper_error = sanitize_summary_value(&error);
+                    exit_reason = "WrapperSendFailed".to_string();
+                }
+            }
+        }
+        Some(_) => {
+            clear_four_view_operator_wrapper_quit_guard(guard_state);
+            send_result = "Ignored".to_string();
+            wrapper_error = "unknown_key".to_string();
+        }
+        None => {
+            clear_four_view_operator_wrapper_quit_guard(guard_state);
+            send_result = "Ignored".to_string();
+            wrapper_error = "unknown_key".to_string();
+        }
+    }
+
+    FourViewOperatorWrapperKeySummary {
+        key_index,
+        wrapper_key: if wrapper_key.is_empty() {
+            "empty".to_string()
+        } else {
+            wrapper_key
+        },
+        mapped_command,
+        guard_state: format_four_view_operator_wrapper_guard_state(guard_state),
+        send_result,
+        response_line,
+        command_parse_error: sanitize_summary_value(&command_parse_error),
+        wrapper_error,
+        exit_reason: sanitize_summary_value(&exit_reason),
+    }
+}
+
+fn parse_four_view_operator_wrapper_key(raw_key: &str) -> Option<char> {
+    let trimmed = raw_key.trim();
+    if trimmed.chars().count() != 1 {
+        return None;
+    }
+    trimmed.chars().next()
+}
+
+fn clear_four_view_operator_wrapper_quit_guard(
+    guard_state: &mut FourViewOperatorWrapperGuardState,
+) {
+    guard_state.quit_armed = false;
+    guard_state.armed_until_millis = None;
+}
+
+fn clear_expired_four_view_operator_wrapper_quit_guard(
+    guard_state: &mut FourViewOperatorWrapperGuardState,
+    now_millis: u64,
+) {
+    if guard_state.quit_armed
+        && guard_state
+            .armed_until_millis
+            .map(|armed_until| now_millis >= armed_until)
+            .unwrap_or(false)
+    {
+        clear_four_view_operator_wrapper_quit_guard(guard_state);
+    }
+}
+
+fn format_four_view_operator_wrapper_guard_state(
+    guard_state: &FourViewOperatorWrapperGuardState,
+) -> String {
+    if guard_state.quit_armed {
+        "quit_armed=true".to_string()
+    } else {
+        "quit_armed=false".to_string()
+    }
+}
+
+fn extract_summary_field(summary: &str, field_name: &str) -> Option<String> {
+    let prefix = format!("{field_name}=");
+    summary
+        .split_whitespace()
+        .find_map(|part| part.strip_prefix(&prefix).map(ToString::to_string))
+}
+
+fn normalize_four_view_operator_wrapper_exit_reason(value: Option<&str>) -> String {
+    match value {
+        Some("none") | None => "Continue".to_string(),
+        Some(value) => value.to_string(),
+    }
+}
+
 trait FourViewControlPipeClientRuntime {
     fn send_command(
         &mut self,
@@ -4627,6 +5022,38 @@ fn format_four_view_controlled_handoff_preview_loop_summary(
     )
 }
 
+fn format_four_view_operator_wrapper_key_summary(
+    summary: &FourViewOperatorWrapperKeySummary,
+) -> String {
+    format!(
+        "switcher four-view operator wrapper key command_name=--four-view-operator-wrapper key_index={} wrapper_key={} mapped_command={} guard_state={} send_result={} response_line={} command_parse_error={} wrapper_error={} exit_reason={}",
+        summary.key_index,
+        summary.wrapper_key,
+        summary.mapped_command,
+        summary.guard_state,
+        summary.send_result,
+        summary.response_line,
+        summary.command_parse_error,
+        summary.wrapper_error,
+        summary.exit_reason,
+    )
+}
+
+fn format_four_view_operator_wrapper_loop_summary(
+    summary: &FourViewOperatorWrapperLoopSummary,
+) -> String {
+    format!(
+        "switcher four-view operator wrapper loop command_name=--four-view-operator-wrapper control_pipe_name={} input_source={} keys_processed={} commands_sent={} ignored_keys={} final_guard_state={} exit_reason={}",
+        sanitize_summary_value(&summary.control_pipe_name),
+        summary.input_source,
+        summary.keys_processed,
+        summary.commands_sent,
+        summary.ignored_keys,
+        summary.final_guard_state,
+        summary.exit_reason,
+    )
+}
+
 fn build_four_view_preview_slot_diagnostic(
     slot_index: usize,
     slot: &SwitcherFourViewTargetTimeSourceSlotConfig,
@@ -5245,8 +5672,9 @@ mod tests {
         parse_four_view_all_renderable_fixture_mode, parse_four_view_control_command,
         parse_four_view_control_command_source,
         parse_four_view_manual_preview_fixture_mode_or_exit,
-        parse_four_view_real_slot_index_or_exit, parse_handoff_mode_or_exit,
-        parse_optional_four_view_control_script, parse_positive_u32_arg,
+        parse_four_view_operator_wrapper_input_source, parse_four_view_real_slot_index_or_exit,
+        parse_handoff_mode_or_exit, parse_optional_four_view_control_script,
+        parse_positive_u32_arg, process_four_view_operator_wrapper_key,
         read_length_prefixed_utf8_message,
         run_four_view_clean_output_window_loop_with_runtime_and_sleep,
         run_four_view_clean_output_window_with_runtime,
@@ -5256,9 +5684,11 @@ mod tests {
         run_four_view_manual_preview_proof_once, run_four_view_manual_preview_proof_with_runtime,
         run_four_view_real_handoff_preview_loop_with_handoff_runtime_and_sleep,
         run_four_view_two_real_handoff_preview_loop_with_handoff_runtime_and_sleep,
-        run_send_control_command_with_runtime, validate_distinct_four_view_real_slot_indices,
-        write_length_prefixed_utf8_message, DeterministicFourViewFixtureDecodeRuntime,
-        FourViewControlCommandSource, FourViewControlPipeClientRuntime,
+        run_send_control_command_with_runtime, split_scripted_operator_wrapper_keys,
+        validate_distinct_four_view_real_slot_indices, write_length_prefixed_utf8_message,
+        DeterministicFourViewFixtureDecodeRuntime, FourViewControlCommandSource,
+        FourViewControlPipeClientRuntime, FourViewOperatorWrapperClock,
+        FourViewOperatorWrapperGuardState, FourViewOperatorWrapperInputSource,
         PersistentWindowLifecycleSnapshot, SwitcherFourViewControlledPreviewCommand,
         SwitcherFourViewControlledPreviewCommandSummary, SwitcherFrameCadenceSleepHook,
         SwitcherPersistentWindowLoopRuntimeHook, SwitcherQueuedFrameHandoffResult,
@@ -5521,6 +5951,23 @@ mod tests {
         .expect_err("mixed control sources should be rejected");
 
         assert!(error.contains("use either --commands"));
+    }
+
+    #[test]
+    fn switcher_four_view_operator_wrapper_input_source_parses_scripted_keys_mode() {
+        assert_eq!(
+            parse_four_view_operator_wrapper_input_source(vec![
+                "--keys".to_string(),
+                "s;1;2;q;q".to_string()
+            ])
+            .expect("scripted keys should parse"),
+            FourViewOperatorWrapperInputSource::ScriptedKeys("s;1;2;q;q".to_string())
+        );
+        assert_eq!(
+            parse_four_view_operator_wrapper_input_source(Vec::new())
+                .expect("missing keys should default to stdin"),
+            FourViewOperatorWrapperInputSource::Stdin
+        );
     }
 
     #[test]
@@ -6874,6 +7321,272 @@ mod tests {
         );
         assert_eq!(runtime.last_command.as_deref(), Some("status"));
         assert!(response.contains("command=status"));
+    }
+
+    #[derive(Default)]
+    struct FakeOperatorWrapperClientRuntime {
+        commands: Vec<String>,
+        responses: Vec<String>,
+    }
+
+    impl FourViewControlPipeClientRuntime for FakeOperatorWrapperClientRuntime {
+        fn send_command(
+            &mut self,
+            _pipe_name: &str,
+            command: &str,
+            _connect_timeout_millis: u32,
+        ) -> io::Result<String> {
+            self.commands.push(command.to_string());
+            Ok(self.responses.remove(0))
+        }
+    }
+
+    struct FakeOperatorWrapperClock {
+        now_millis: std::cell::Cell<u64>,
+    }
+
+    impl FakeOperatorWrapperClock {
+        fn new(now_millis: u64) -> Self {
+            Self {
+                now_millis: std::cell::Cell::new(now_millis),
+            }
+        }
+
+        fn set_now_millis(&self, now_millis: u64) {
+            self.now_millis.set(now_millis);
+        }
+    }
+
+    impl FourViewOperatorWrapperClock for FakeOperatorWrapperClock {
+        fn now_millis(&self) -> u64 {
+            self.now_millis.get()
+        }
+    }
+
+    #[test]
+    fn switcher_four_view_operator_wrapper_key_mapping_maps_expected_commands() {
+        let clock = FakeOperatorWrapperClock::new(0);
+        let mut runtime = FakeOperatorWrapperClientRuntime {
+            commands: Vec::new(),
+            responses: vec![
+                "switcher four-view control response command=focus_0 transition_result=Transitioned current_view_state=Focused(0) selected_slot_result=Selected clean_output_render_result_kind=Rendered command_parse_error=none exit_reason=none".to_string(),
+                "switcher four-view control response command=all transition_result=Transitioned current_view_state=AllView selected_slot_result=Selected clean_output_render_result_kind=Rendered command_parse_error=none exit_reason=none".to_string(),
+                "switcher four-view control response command=status transition_result=Observed current_view_state=AllView selected_slot_result=Selected clean_output_render_result_kind=Rendered command_parse_error=none exit_reason=none".to_string(),
+            ],
+        };
+        let mut guard_state = FourViewOperatorWrapperGuardState {
+            quit_armed: false,
+            armed_until_millis: None,
+        };
+
+        let focus_summary = process_four_view_operator_wrapper_key(
+            0,
+            "1",
+            &mut guard_state,
+            "streamsync-control-dev",
+            &mut runtime,
+            &clock,
+        );
+        let all_summary = process_four_view_operator_wrapper_key(
+            1,
+            "a",
+            &mut guard_state,
+            "streamsync-control-dev",
+            &mut runtime,
+            &clock,
+        );
+        let status_summary = process_four_view_operator_wrapper_key(
+            2,
+            "S",
+            &mut guard_state,
+            "streamsync-control-dev",
+            &mut runtime,
+            &clock,
+        );
+
+        assert_eq!(
+            runtime.commands,
+            vec![
+                "focus 0".to_string(),
+                "all".to_string(),
+                "status".to_string()
+            ]
+        );
+        assert_eq!(focus_summary.mapped_command, "focus_0");
+        assert_eq!(all_summary.mapped_command, "all");
+        assert_eq!(status_summary.mapped_command, "status");
+        assert_eq!(status_summary.send_result, "Sent");
+    }
+
+    #[test]
+    fn switcher_four_view_operator_wrapper_unknown_key_is_ignored_locally() {
+        let clock = FakeOperatorWrapperClock::new(0);
+        let mut runtime = FakeOperatorWrapperClientRuntime::default();
+        let mut guard_state = FourViewOperatorWrapperGuardState {
+            quit_armed: false,
+            armed_until_millis: None,
+        };
+
+        let summary = process_four_view_operator_wrapper_key(
+            0,
+            "x",
+            &mut guard_state,
+            "streamsync-control-dev",
+            &mut runtime,
+            &clock,
+        );
+
+        assert!(runtime.commands.is_empty());
+        assert_eq!(summary.send_result, "Ignored");
+        assert_eq!(summary.wrapper_error, "unknown_key");
+        assert_eq!(summary.mapped_command, "none");
+    }
+
+    #[test]
+    fn switcher_four_view_operator_wrapper_q_once_arms_guard_without_sending_quit() {
+        let clock = FakeOperatorWrapperClock::new(100);
+        let mut runtime = FakeOperatorWrapperClientRuntime::default();
+        let mut guard_state = FourViewOperatorWrapperGuardState {
+            quit_armed: false,
+            armed_until_millis: None,
+        };
+
+        let summary = process_four_view_operator_wrapper_key(
+            0,
+            "q",
+            &mut guard_state,
+            "streamsync-control-dev",
+            &mut runtime,
+            &clock,
+        );
+
+        assert!(runtime.commands.is_empty());
+        assert_eq!(summary.send_result, "GuardArmed");
+        assert_eq!(summary.guard_state, "quit_armed=true");
+        assert_eq!(guard_state.armed_until_millis, Some(2_100));
+    }
+
+    #[test]
+    fn switcher_four_view_operator_wrapper_q_twice_within_guard_sends_quit() {
+        let clock = FakeOperatorWrapperClock::new(100);
+        let mut runtime = FakeOperatorWrapperClientRuntime {
+            commands: Vec::new(),
+            responses: vec![
+                "switcher four-view control response command=quit transition_result=ExitRequested current_view_state=AllView selected_slot_result=NotApplicable clean_output_render_result_kind=Rendered command_parse_error=none exit_reason=QuitRequested".to_string(),
+            ],
+        };
+        let mut guard_state = FourViewOperatorWrapperGuardState {
+            quit_armed: false,
+            armed_until_millis: None,
+        };
+
+        process_four_view_operator_wrapper_key(
+            0,
+            "q",
+            &mut guard_state,
+            "streamsync-control-dev",
+            &mut runtime,
+            &clock,
+        );
+        clock.set_now_millis(500);
+        let summary = process_four_view_operator_wrapper_key(
+            1,
+            "Q",
+            &mut guard_state,
+            "streamsync-control-dev",
+            &mut runtime,
+            &clock,
+        );
+
+        assert_eq!(runtime.commands, vec!["quit".to_string()]);
+        assert_eq!(summary.send_result, "Sent");
+        assert_eq!(summary.exit_reason, "QuitRequested");
+        assert_eq!(summary.guard_state, "quit_armed=false");
+    }
+
+    #[test]
+    fn switcher_four_view_operator_wrapper_non_q_clears_quit_guard() {
+        let clock = FakeOperatorWrapperClock::new(100);
+        let mut runtime = FakeOperatorWrapperClientRuntime {
+            commands: Vec::new(),
+            responses: vec![
+                "switcher four-view control response command=status transition_result=Observed current_view_state=AllView selected_slot_result=Selected clean_output_render_result_kind=Rendered command_parse_error=none exit_reason=none".to_string(),
+            ],
+        };
+        let mut guard_state = FourViewOperatorWrapperGuardState {
+            quit_armed: false,
+            armed_until_millis: None,
+        };
+
+        process_four_view_operator_wrapper_key(
+            0,
+            "q",
+            &mut guard_state,
+            "streamsync-control-dev",
+            &mut runtime,
+            &clock,
+        );
+        let summary = process_four_view_operator_wrapper_key(
+            1,
+            "s",
+            &mut guard_state,
+            "streamsync-control-dev",
+            &mut runtime,
+            &clock,
+        );
+
+        assert_eq!(runtime.commands, vec!["status".to_string()]);
+        assert_eq!(summary.guard_state, "quit_armed=false");
+        assert!(!guard_state.quit_armed);
+    }
+
+    #[test]
+    fn switcher_four_view_operator_wrapper_guard_timeout_clears_before_second_q() {
+        let clock = FakeOperatorWrapperClock::new(100);
+        let mut runtime = FakeOperatorWrapperClientRuntime::default();
+        let mut guard_state = FourViewOperatorWrapperGuardState {
+            quit_armed: false,
+            armed_until_millis: None,
+        };
+
+        process_four_view_operator_wrapper_key(
+            0,
+            "q",
+            &mut guard_state,
+            "streamsync-control-dev",
+            &mut runtime,
+            &clock,
+        );
+        clock.set_now_millis(2_101);
+        let summary = process_four_view_operator_wrapper_key(
+            1,
+            "q",
+            &mut guard_state,
+            "streamsync-control-dev",
+            &mut runtime,
+            &clock,
+        );
+
+        assert!(runtime.commands.is_empty());
+        assert_eq!(summary.send_result, "GuardArmed");
+        assert_eq!(summary.guard_state, "quit_armed=true");
+    }
+
+    #[test]
+    fn switcher_four_view_operator_wrapper_scripted_keys_parser_splits_semicolon_tokens() {
+        assert_eq!(
+            split_scripted_operator_wrapper_keys("s;1;2;3;4;0;q;q"),
+            vec![
+                "s".to_string(),
+                "1".to_string(),
+                "2".to_string(),
+                "3".to_string(),
+                "4".to_string(),
+                "0".to_string(),
+                "q".to_string(),
+                "q".to_string()
+            ]
+        );
     }
 
     #[test]
