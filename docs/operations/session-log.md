@@ -5,6 +5,93 @@
 - Codex
 
 ### Work
+- Ran actual guarded real `4`-client interactive stdin validation for
+  `--four-view-operator-wrapper`.
+- Rebuilt first to avoid stale `target/debug` behavior:
+  - `cargo build -p stream-sync-switcher -p stream-sync-server -p stream-sync-client`
+- Recorded interactive stdin success path with one line per key token:
+  - `s`
+  - `1`
+  - `2`
+  - `3`
+  - `4`
+  - `0`
+  - `q`
+  - `q`
+- Recorded success-path wrapper final summary:
+  - `input_source=stdin`
+  - `keys_processed=8`
+  - `commands_sent=7`
+  - `ignored_keys=0`
+  - `exit_reason=QuitRequested`
+- Recorded success-path switcher final summary:
+  - `commands_processed=7`
+  - `commands_rejected=0`
+  - `frames_rendered=30`
+  - `render_failures=0`
+  - `scheduler_status=AllSelected`
+  - `clean_output_render_result_kind=Rendered`
+  - `exit_reason=QuitRequested`
+- Recorded interactive stdin unknown-key path too:
+  - `x`
+  - `s`
+  - `q`
+  - `q`
+- Recorded unknown-key wrapper final summary:
+  - `input_source=stdin`
+  - `keys_processed=4`
+  - `commands_sent=2`
+  - `ignored_keys=1`
+  - `exit_reason=QuitRequested`
+- Recorded unknown-key switcher final summary:
+  - `commands_processed=2`
+  - `commands_rejected=0`
+  - `frames_rendered=5`
+  - `render_failures=0`
+  - `scheduler_status=AllSelected`
+  - `clean_output_render_result_kind=Rendered`
+  - `exit_reason=QuitRequested`
+- Recorded one interactive stdin wobble:
+  - a zero-gap piped stdin attempt succeeded for `s` but failed on `1` with
+    `wrapper_error=指定されたファイルが見つかりません。_(os_error_2)`
+  - a rerun with manual-like pacing between lines succeeded
+- Recorded bounded handoff summaries:
+  - success path:
+    - `max_requests=160`
+    - `requests_served=160`
+    - `successful_responses=160`
+    - `handoff_errors=0`
+  - unknown-key path:
+    - `max_requests=60`
+    - `requests_served=60`
+    - `successful_responses=60`
+    - `handoff_errors=0`
+
+### Changed Files
+- `docs/architecture/system-design.md`
+- `docs/operations/manual-real-encoded-video-poc.md`
+- `docs/operations/session-log.md`
+- `docs/operations/todo.md`
+
+### Decision
+- Keep interactive stdin mode validated as a minimal manual/operator path.
+- Treat the zero-gap piped stdin failure as a narrow timing/reconnect wobble in
+  the manual harness, not as a parser or mapping regression.
+- Keep raw key capture, retry logic, and larger wrapper changes out of scope.
+
+### Validation
+- actual interactive stdin success-path stdout summary recorded
+- actual interactive stdin unknown-key stdout summary recorded
+- actual controlled-loop final summaries recorded
+- `cargo fmt --check`
+- `cargo check --workspace`
+- `git diff --check`
+
+## 2026-05-07
+### Type
+- Codex
+
+### Work
 - Ran actual guarded real `4`-client manual validation for the same-binary
   wrapper command `--four-view-operator-wrapper` after rebuilding:
   - `cargo build -p stream-sync-switcher -p stream-sync-server -p stream-sync-client`

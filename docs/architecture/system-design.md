@@ -8728,6 +8728,15 @@ MVP wrapper shape:
 - actual scripted wrapper validation is now recorded for:
   - success path `s;1;2;3;4;0;q;q`
   - unknown-key path `x;s;q;q`
+- actual stdin wrapper validation is now recorded too:
+  - success path `s`, `1`, `2`, `3`, `4`, `0`, `q`, `q`
+  - unknown-key path `x`, `s`, `q`, `q`
+- practical stdin note:
+  - manual-like pacing between lines is currently the reliable validation shape
+  - one zero-gap piped stdin attempt hit a transient control-pipe reconnect
+    wobble on the second command
+  - keep stdin mode as a minimal manual/operator path, not as a high-rate input
+    transport
 - request-budget note for bounded real sessions:
   - size `max_requests` for rendered commands first:
     `render_command_count * max_ticks_per_command * 4`

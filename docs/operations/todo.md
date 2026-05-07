@@ -145,16 +145,14 @@
 ---
 
 ## 直近でやること
-1. wrapper MVP の残り manual validation を詰める:
-   - scripted actual validation は成功記録済み:
-     - success path `s;1;2;3;4;0;q;q`
-     - unknown-key path `x;s;q;q`
-   - 次は interactive stdin mode でも `1..4` / `0 or A` / `S` / guarded `Q` を確認する
-   - actual rerun 前には引き続き `cargo build` して stale `target/debug` binary を避ける
-2. same-session bounded server lifecycle の narrow polish が本当に必要か判断する:
-   - wrapper success path では exact render budget `120` に対して recorded `max_requests=140` を使い、server final summary flush に extra `20` reads が要った
-   - wrapper unknown-key path では exact render budget `20` だと guarded `quit` 確認に不十分で、recorded rerun は `max_requests=40` で成功した
+1. same-session bounded server lifecycle の narrow polish が本当に必要か判断する:
+   - scripted / interactive とも actual validation は成功記録済み
+   - ただし bounded server final summary flush には引き続き extra one-shot reads が要る
    - request-budget formula と manual headroom guidance を docs 運用のままで十分とするかを判断する
+2. wrapper stdin mode の current wobble を narrow に扱う:
+   - zero-gap piped stdin では second command reconnect wobble を一度観測した
+   - manual-like pacing では success / unknown-key とも actual validation 済み
+   - retry や raw key capture を入れずに docs note のままで十分かを判断する
 3. production H.264 encoder configuration / error logging policy
 
 ## 将来の polish 候補

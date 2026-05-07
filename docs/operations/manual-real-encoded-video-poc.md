@@ -3152,6 +3152,197 @@ Recorded corrected server summary:
 - `successful_responses=40`
 - `handoff_errors=0`
 
+### Recorded Wrapper Interactive Stdin Validation: Success Path
+
+Recorded guarded real `4`-client interactive stdin success session:
+
+- rebuild first:
+  - `cargo build -p stream-sync-switcher -p stream-sync-server -p stream-sync-client`
+- server:
+  - `.\target\debug\stream-sync-server.exe --receive-auth-video-queue-and-serve-handoff-many configs/manual/server.two-real-slots.toml streamsync-handoff-dev 160 4096 5000 8 true 8388608 4 2`
+- clients:
+  - same `player1..4` bounded client commands as the wrapper scripted success
+    path
+- switcher:
+  - same `--four-view-controlled-handoff-preview-loop ... --control-pipe streamsync-control-dev`
+- wrapper:
+  - `.\target\debug\stream-sync-switcher.exe --four-view-operator-wrapper streamsync-control-dev`
+- stdin sequence, one line per token:
+  - `s`
+  - `1`
+  - `2`
+  - `3`
+  - `4`
+  - `0`
+  - `q`
+  - `q`
+
+Recorded wrapper stdout summary:
+
+- `s`:
+  - `mapped_command=status`
+  - `send_result=Sent`
+  - `response_line` kept:
+    - `transition_result=Observed`
+    - `current_view_state=AllView`
+    - `clean_output_render_result_kind=Rendered`
+- `1`:
+  - `mapped_command=focus_0`
+  - `send_result=Sent`
+  - `response_line` kept:
+    - `current_view_state=Focused(0)`
+    - `clean_output_render_result_kind=Rendered`
+- `2`:
+  - `mapped_command=focus_1`
+  - `send_result=Sent`
+  - `response_line` kept `current_view_state=Focused(1)`
+- `3`:
+  - `mapped_command=focus_2`
+  - `send_result=Sent`
+  - `response_line` kept `current_view_state=Focused(2)`
+- `4`:
+  - `mapped_command=focus_3`
+  - `send_result=Sent`
+  - `response_line` kept `current_view_state=Focused(3)`
+- `0`:
+  - `mapped_command=all`
+  - `send_result=Sent`
+  - `response_line` kept:
+    - `current_view_state=AllView`
+    - `clean_output_render_result_kind=Rendered`
+- first `q`:
+  - `send_result=GuardArmed`
+  - `guard_state=quit_armed=true`
+  - no `quit` command was sent
+- second `q`:
+  - `mapped_command=quit`
+  - `send_result=Sent`
+  - `response_line` kept `exit_reason=QuitRequested`
+- wrapper final summary kept:
+  - `input_source=stdin`
+  - `keys_processed=8`
+  - `commands_sent=7`
+  - `ignored_keys=0`
+  - `final_guard_state=quit_armed=false`
+  - `exit_reason=QuitRequested`
+
+Recorded switcher final summary:
+
+- `commands_processed=7`
+- `commands_rejected=0`
+- `frames_rendered=30`
+- `render_failures=0`
+- `scheduler_status=AllSelected`
+- `clean_output_render_result_kind=Rendered`
+- `exit_reason=QuitRequested`
+
+Recorded server/client summary:
+
+- server bounded handoff kept:
+  - `max_requests=160`
+  - `requests_served=160`
+  - `successful_responses=160`
+  - `handoff_errors=0`
+- clients `player1..4` each kept:
+  - `accepted=true`
+  - `frames_captured=2`
+  - `frames_encoded=2`
+  - `frames_sent=2`
+  - `send_failures=0`
+
+### Recorded Wrapper Interactive Stdin Validation: Unknown-Key Path
+
+Recorded guarded real `4`-client interactive unknown-key session:
+
+- server:
+  - `.\target\debug\stream-sync-server.exe --receive-auth-video-queue-and-serve-handoff-many configs/manual/server.two-real-slots.toml streamsync-handoff-dev 60 4096 5000 8 true 8388608 4 2`
+- clients:
+  - same `player1..4` bounded client commands as above
+- switcher:
+  - same `--four-view-controlled-handoff-preview-loop ... --control-pipe streamsync-control-dev`
+- wrapper:
+  - same `--four-view-operator-wrapper streamsync-control-dev`
+- stdin sequence, one line per token:
+  - `x`
+  - `s`
+  - `q`
+  - `q`
+
+Recorded wrapper stdout summary:
+
+- `x`:
+  - `mapped_command=none`
+  - `send_result=Ignored`
+  - `wrapper_error=unknown_key`
+  - nothing was sent to the control pipe
+- `s`:
+  - `mapped_command=status`
+  - `send_result=Sent`
+  - `response_line` kept:
+    - `transition_result=Observed`
+    - `current_view_state=AllView`
+    - `clean_output_render_result_kind=Rendered`
+- first `q`:
+  - `send_result=GuardArmed`
+  - `guard_state=quit_armed=true`
+- second `q`:
+  - `mapped_command=quit`
+  - `send_result=Sent`
+  - `response_line` kept `exit_reason=QuitRequested`
+- wrapper final summary kept:
+  - `input_source=stdin`
+  - `keys_processed=4`
+  - `commands_sent=2`
+  - `ignored_keys=1`
+  - `final_guard_state=quit_armed=false`
+  - `exit_reason=QuitRequested`
+
+Recorded switcher final summary:
+
+- `commands_processed=2`
+- `commands_rejected=0`
+- `frames_rendered=5`
+- `render_failures=0`
+- `scheduler_status=AllSelected`
+- `clean_output_render_result_kind=Rendered`
+- `exit_reason=QuitRequested`
+
+Recorded server summary:
+
+- `max_requests=60`
+- `requests_served=60`
+- `successful_responses=60`
+- `handoff_errors=0`
+- this run still completed with one mild receive-side wobble:
+  - `player1` contributed `1` reassembled frame instead of `2`
+  - receive summary kept:
+    - `frames_reassembled=7`
+    - `receive_timed_out=true`
+    - `stop_reason=ReceiveTimedOut`
+  - the status command still rendered successfully because each slot had a
+    renderable latest frame at the time of the command
+
+### Interactive Stdin Pacing Note
+
+One interactive stdin attempt failed before the successful rerun:
+
+- sequence source was still stdin, but lines were piped with effectively
+  no operator think-time between them
+- `s` succeeded
+- the next `1` hit:
+  - `send_result=SendFailed`
+  - `wrapper_error=指定されたファイルが見つかりません。_(os_error_2)`
+
+Current read of that wobble:
+
+- treat it as a control-pipe reconnect/timing issue in the manual harness, not
+  as a wrapper key-mapping or parser failure
+- the successful stdin reruns used manual-like pacing between lines and then
+  behaved as expected
+- current MVP contract stays:
+  - stdin mode is valid for one-line interactive/manual input
+  - raw-key capture and wrapper-side retry/pacing logic remain out of scope
+
 ## 9. Same-Session Bounded Server Lifecycle Note
 
 The current same-session success script should still be read with these
@@ -3170,11 +3361,20 @@ practical constraints:
   - `max_requests=20` was not enough to keep the same session healthy through
     the later guarded `q/q` manual check
   - the corrected rerun used `max_requests=40`
+- in the recorded interactive stdin paths:
+  - success path exact render budget was `120`, recorded session used
+    `max_requests=160`
+  - unknown-key exact render budget was `20`, recorded session used
+    `max_requests=60`
 - both recorded wrapper runs still used extra one-shot reads after the switcher
   exit so the bounded server could consume the remaining request budget and emit
   its final summary:
   - success path extra flush reads: `20`
   - corrected unknown-key path extra flush reads: `20`
+- both recorded interactive stdin runs also used extra one-shot reads after the
+  switcher exit:
+  - success path extra flush reads: `40`
+  - unknown-key path extra flush reads: `40`
 
 Current decision:
 
