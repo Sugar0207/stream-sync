@@ -3883,6 +3883,343 @@ fn handoff_scheduler_decode_render_instruction_to_selection(
     }
 }
 
+fn operational_summary_from_source_scheduler_result(
+    scheduler: &SwitcherTwoViewTargetTimeSourceSchedulerResult,
+    left_mutation: Option<&SwitcherSingleClientLateFrameQueueMutationSummary>,
+    right_mutation: Option<&SwitcherSingleClientLateFrameQueueMutationSummary>,
+) -> SwitcherTwoViewOperationalSummary {
+    let left = operational_side_summary_from_source_result(
+        SwitcherTwoViewSide::Left,
+        &scheduler.left,
+        left_mutation,
+    );
+    let right = operational_side_summary_from_source_result(
+        SwitcherTwoViewSide::Right,
+        &scheduler.right,
+        right_mutation,
+    );
+
+    SwitcherTwoViewOperationalSummary {
+        target_timestamp: scheduler.target_timestamp,
+        scheduler_status: operational_status_from_source_scheduler_status(scheduler.status),
+        run_state: aggregate_operational_run_state(left.run_state, right.run_state),
+        left,
+        right,
+    }
+}
+
+fn operational_summary_from_handoff_scheduler_result(
+    scheduler: &SwitcherTwoViewTargetTimeHandoffSourceSchedulerResult,
+    left_mutation: Option<&SwitcherSingleClientLateFrameQueueMutationSummary>,
+    right_mutation: Option<&SwitcherSingleClientLateFrameQueueMutationSummary>,
+) -> SwitcherTwoViewOperationalSummary {
+    let left = operational_side_summary_from_handoff_result(
+        SwitcherTwoViewSide::Left,
+        &scheduler.left,
+        left_mutation,
+    );
+    let right = operational_side_summary_from_handoff_result(
+        SwitcherTwoViewSide::Right,
+        &scheduler.right,
+        right_mutation,
+    );
+
+    SwitcherTwoViewOperationalSummary {
+        target_timestamp: scheduler.target_timestamp,
+        scheduler_status: operational_status_from_handoff_scheduler_status(scheduler.status),
+        run_state: aggregate_operational_run_state(left.run_state, right.run_state),
+        left,
+        right,
+    }
+}
+
+fn operational_side_summary_from_source_result(
+    side: SwitcherTwoViewSide,
+    result: &SwitcherSingleClientTargetTimeSourceResult,
+    mutation: Option<&SwitcherSingleClientLateFrameQueueMutationSummary>,
+) -> SwitcherTwoViewOperationalSideSummary {
+    let dropped_late_frame_count = mutation
+        .map(|summary| summary.dropped_late_frames.len())
+        .unwrap_or(0);
+    let late_frame_head = mutation.map(|summary| summary.head.clone());
+
+    match result {
+        SwitcherSingleClientTargetTimeSourceResult::Selected(selected) => {
+            SwitcherTwoViewOperationalSideSummary {
+                side,
+                client_id: selected.frame.client_id.clone(),
+                run_id: selected.frame.run_id.clone(),
+                result_kind: SwitcherTwoViewOperationalSideResultKind::Selected,
+                run_state: SwitcherOperationalRunState::Continue,
+                reason: SwitcherTwoViewOperationalSideReason::Selected {
+                    frame_id: selected.frame.frame_id,
+                    adjusted_capture_timestamp: selected.adjusted_capture_timestamp,
+                    consumed: selected.consumed,
+                },
+                dropped_late_frame_count,
+                late_frame_head,
+            }
+        }
+        SwitcherSingleClientTargetTimeSourceResult::NoFrameAvailable {
+            client_id,
+            run_id,
+            client_queue_len,
+            ..
+        } => SwitcherTwoViewOperationalSideSummary {
+            side,
+            client_id: client_id.clone(),
+            run_id: run_id.clone(),
+            result_kind: SwitcherTwoViewOperationalSideResultKind::NoFrame,
+            run_state: SwitcherOperationalRunState::Continue,
+            reason: SwitcherTwoViewOperationalSideReason::NoFrame {
+                client_queue_len: *client_queue_len,
+                reason: no_frame_operational_reason(mutation),
+            },
+            dropped_late_frame_count,
+            late_frame_head,
+        },
+        SwitcherSingleClientTargetTimeSourceResult::WaitingForFrameAtOrBeforeTarget {
+            client_id,
+            run_id,
+            candidate_frame_id,
+            candidate_capture_timestamp,
+            client_queue_len,
+            ..
+        } => SwitcherTwoViewOperationalSideSummary {
+            side,
+            client_id: client_id.clone(),
+            run_id: run_id.clone(),
+            result_kind: SwitcherTwoViewOperationalSideResultKind::Waiting,
+            run_state: SwitcherOperationalRunState::Continue,
+            reason: SwitcherTwoViewOperationalSideReason::Waiting {
+                candidate_frame_id: *candidate_frame_id,
+                candidate_capture_timestamp: *candidate_capture_timestamp,
+                client_queue_len: *client_queue_len,
+                reason: waiting_operational_reason(mutation),
+            },
+            dropped_late_frame_count,
+            late_frame_head,
+        },
+    }
+}
+
+fn operational_side_summary_from_handoff_result(
+    side: SwitcherTwoViewSide,
+    result: &SwitcherSingleClientTargetTimeHandoffSourceResult,
+    mutation: Option<&SwitcherSingleClientLateFrameQueueMutationSummary>,
+) -> SwitcherTwoViewOperationalSideSummary {
+    let dropped_late_frame_count = mutation
+        .map(|summary| summary.dropped_late_frames.len())
+        .unwrap_or(0);
+    let late_frame_head = mutation.map(|summary| summary.head.clone());
+
+    match result {
+        SwitcherSingleClientTargetTimeHandoffSourceResult::Selected(selected) => {
+            SwitcherTwoViewOperationalSideSummary {
+                side,
+                client_id: selected.frame.client_id.clone(),
+                run_id: selected.frame.run_id.clone(),
+                result_kind: SwitcherTwoViewOperationalSideResultKind::Selected,
+                run_state: SwitcherOperationalRunState::Continue,
+                reason: SwitcherTwoViewOperationalSideReason::Selected {
+                    frame_id: selected.frame.frame_id,
+                    adjusted_capture_timestamp: selected.adjusted_capture_timestamp,
+                    consumed: selected.consumed,
+                },
+                dropped_late_frame_count,
+                late_frame_head,
+            }
+        }
+        SwitcherSingleClientTargetTimeHandoffSourceResult::NoFrameAvailable {
+            client_id,
+            run_id,
+            client_queue_len,
+            ..
+        } => SwitcherTwoViewOperationalSideSummary {
+            side,
+            client_id: client_id.clone(),
+            run_id: run_id.clone(),
+            result_kind: SwitcherTwoViewOperationalSideResultKind::NoFrame,
+            run_state: SwitcherOperationalRunState::Continue,
+            reason: SwitcherTwoViewOperationalSideReason::NoFrame {
+                client_queue_len: *client_queue_len,
+                reason: no_frame_operational_reason(mutation),
+            },
+            dropped_late_frame_count,
+            late_frame_head,
+        },
+        SwitcherSingleClientTargetTimeHandoffSourceResult::WaitingForFrameAtOrBeforeTarget {
+            client_id,
+            run_id,
+            candidate_frame_id,
+            candidate_capture_timestamp,
+            client_queue_len,
+            ..
+        } => SwitcherTwoViewOperationalSideSummary {
+            side,
+            client_id: client_id.clone(),
+            run_id: run_id.clone(),
+            result_kind: SwitcherTwoViewOperationalSideResultKind::Waiting,
+            run_state: SwitcherOperationalRunState::Continue,
+            reason: SwitcherTwoViewOperationalSideReason::Waiting {
+                candidate_frame_id: *candidate_frame_id,
+                candidate_capture_timestamp: *candidate_capture_timestamp,
+                client_queue_len: *client_queue_len,
+                reason: waiting_operational_reason(mutation),
+            },
+            dropped_late_frame_count,
+            late_frame_head,
+        },
+        SwitcherSingleClientTargetTimeHandoffSourceResult::HandoffError {
+            client_id,
+            run_id,
+            error,
+            ..
+        } => {
+            let run_state = operational_run_state_for_handoff_error(error);
+            SwitcherTwoViewOperationalSideSummary {
+                side,
+                client_id: client_id.clone(),
+                run_id: run_id.clone(),
+                result_kind: SwitcherTwoViewOperationalSideResultKind::HandoffError,
+                run_state,
+                reason: SwitcherTwoViewOperationalSideReason::HandoffError {
+                    error: error.clone(),
+                    reason: operational_reason_for_handoff_error(error),
+                },
+                dropped_late_frame_count,
+                late_frame_head,
+            }
+        }
+    }
+}
+
+fn no_frame_operational_reason(
+    mutation: Option<&SwitcherSingleClientLateFrameQueueMutationSummary>,
+) -> SwitcherTwoViewNoFrameOperationalReason {
+    if let Some(summary) = mutation {
+        if !summary.dropped_late_frames.is_empty()
+            && matches!(
+                summary.head,
+                SwitcherLateFrameQueueHeadStatus::NoFrameAvailable { .. }
+            )
+        {
+            return SwitcherTwoViewNoFrameOperationalReason::NoFrameRemainingAfterLateDrop;
+        }
+    }
+
+    SwitcherTwoViewNoFrameOperationalReason::NoQueuedFrameForClientRun
+}
+
+fn waiting_operational_reason(
+    mutation: Option<&SwitcherSingleClientLateFrameQueueMutationSummary>,
+) -> SwitcherTwoViewWaitingOperationalReason {
+    if mutation
+        .map(|summary| !summary.dropped_late_frames.is_empty())
+        .unwrap_or(false)
+    {
+        SwitcherTwoViewWaitingOperationalReason::HeadFrameAfterTargetFollowingLateDrop
+    } else {
+        SwitcherTwoViewWaitingOperationalReason::HeadFrameAfterTarget
+    }
+}
+
+fn operational_reason_for_handoff_error(
+    error: &SwitcherQueuedFrameHandoffError,
+) -> SwitcherTwoViewHandoffOperationalReason {
+    match error {
+        SwitcherQueuedFrameHandoffError::SourceUnavailable
+        | SwitcherQueuedFrameHandoffError::Timeout => {
+            SwitcherTwoViewHandoffOperationalReason::RetryableSourceGap
+        }
+        SwitcherQueuedFrameHandoffError::SourceShutdown => {
+            SwitcherTwoViewHandoffOperationalReason::ReconnectRequired
+        }
+        SwitcherQueuedFrameHandoffError::InvalidScope { .. }
+        | SwitcherQueuedFrameHandoffError::UnsupportedMode { .. }
+        | SwitcherQueuedFrameHandoffError::MalformedResponse => {
+            SwitcherTwoViewHandoffOperationalReason::InvestigationRequired
+        }
+    }
+}
+
+fn operational_run_state_for_handoff_error(
+    error: &SwitcherQueuedFrameHandoffError,
+) -> SwitcherOperationalRunState {
+    match operational_reason_for_handoff_error(error) {
+        SwitcherTwoViewHandoffOperationalReason::RetryableSourceGap => {
+            SwitcherOperationalRunState::RetryLater
+        }
+        SwitcherTwoViewHandoffOperationalReason::ReconnectRequired => {
+            SwitcherOperationalRunState::ReconnectRequired
+        }
+        SwitcherTwoViewHandoffOperationalReason::InvestigationRequired => {
+            SwitcherOperationalRunState::InvestigationRequired
+        }
+    }
+}
+
+fn operational_status_from_source_scheduler_status(
+    status: SwitcherTwoViewTargetTimeSourceSchedulerStatus,
+) -> SwitcherTwoViewOperationalStatus {
+    match status {
+        SwitcherTwoViewTargetTimeSourceSchedulerStatus::AllSelected => {
+            SwitcherTwoViewOperationalStatus::AllSelected
+        }
+        SwitcherTwoViewTargetTimeSourceSchedulerStatus::PartialSelected => {
+            SwitcherTwoViewOperationalStatus::PartialSelected
+        }
+        SwitcherTwoViewTargetTimeSourceSchedulerStatus::Waiting => {
+            SwitcherTwoViewOperationalStatus::Waiting
+        }
+        SwitcherTwoViewTargetTimeSourceSchedulerStatus::NoFrames => {
+            SwitcherTwoViewOperationalStatus::NoFrames
+        }
+    }
+}
+
+fn operational_status_from_handoff_scheduler_status(
+    status: SwitcherTwoViewTargetTimeHandoffSourceSchedulerStatus,
+) -> SwitcherTwoViewOperationalStatus {
+    match status {
+        SwitcherTwoViewTargetTimeHandoffSourceSchedulerStatus::AllSelected => {
+            SwitcherTwoViewOperationalStatus::AllSelected
+        }
+        SwitcherTwoViewTargetTimeHandoffSourceSchedulerStatus::PartialSelected => {
+            SwitcherTwoViewOperationalStatus::PartialSelected
+        }
+        SwitcherTwoViewTargetTimeHandoffSourceSchedulerStatus::Waiting => {
+            SwitcherTwoViewOperationalStatus::Waiting
+        }
+        SwitcherTwoViewTargetTimeHandoffSourceSchedulerStatus::NoFrames => {
+            SwitcherTwoViewOperationalStatus::NoFrames
+        }
+        SwitcherTwoViewTargetTimeHandoffSourceSchedulerStatus::HandoffError => {
+            SwitcherTwoViewOperationalStatus::HandoffError
+        }
+    }
+}
+
+fn aggregate_operational_run_state(
+    left: SwitcherOperationalRunState,
+    right: SwitcherOperationalRunState,
+) -> SwitcherOperationalRunState {
+    if operational_run_state_rank(left) >= operational_run_state_rank(right) {
+        left
+    } else {
+        right
+    }
+}
+
+fn operational_run_state_rank(state: SwitcherOperationalRunState) -> u8 {
+    match state {
+        SwitcherOperationalRunState::Continue => 0,
+        SwitcherOperationalRunState::RetryLater => 1,
+        SwitcherOperationalRunState::ReconnectRequired => 2,
+        SwitcherOperationalRunState::InvestigationRequired => 3,
+    }
+}
+
 fn scheduler_decode_render_selection_from_sides(
     shared_target_time: TimestampMicros,
     left: SwitcherJitterBufferSelectionResult,
@@ -6909,11 +7246,118 @@ pub struct SwitcherTwoViewLateFrameQueueMutationSummary {
     pub right: SwitcherSingleClientLateFrameQueueMutationSummary,
 }
 
+/// Run-state classification for long-running switcher operation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum SwitcherOperationalRunState {
+    Continue,
+    RetryLater,
+    ReconnectRequired,
+    InvestigationRequired,
+}
+
+/// Aggregate operational status for long-running 2-view source-backed runs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum SwitcherTwoViewOperationalStatus {
+    AllSelected,
+    PartialSelected,
+    Waiting,
+    NoFrames,
+    HandoffError,
+}
+
+/// Per-side operational result kind for long-running 2-view runs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum SwitcherTwoViewOperationalSideResultKind {
+    Selected,
+    NoFrame,
+    Waiting,
+    HandoffError,
+}
+
+/// Typed no-frame reason for long-running source-backed operation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum SwitcherTwoViewNoFrameOperationalReason {
+    NoQueuedFrameForClientRun,
+    NoFrameRemainingAfterLateDrop,
+}
+
+/// Typed waiting reason for long-running source-backed operation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum SwitcherTwoViewWaitingOperationalReason {
+    HeadFrameAfterTarget,
+    HeadFrameAfterTargetFollowingLateDrop,
+}
+
+/// Typed handoff-failure reason for long-running source-backed operation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum SwitcherTwoViewHandoffOperationalReason {
+    RetryableSourceGap,
+    ReconnectRequired,
+    InvestigationRequired,
+}
+
+/// Typed per-side operational reason for long-running 2-view runs.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SwitcherTwoViewOperationalSideReason {
+    Selected {
+        frame_id: u64,
+        adjusted_capture_timestamp: TimestampMicros,
+        consumed: bool,
+    },
+    NoFrame {
+        client_queue_len: usize,
+        reason: SwitcherTwoViewNoFrameOperationalReason,
+    },
+    Waiting {
+        candidate_frame_id: u64,
+        candidate_capture_timestamp: TimestampMicros,
+        client_queue_len: usize,
+        reason: SwitcherTwoViewWaitingOperationalReason,
+    },
+    HandoffError {
+        error: SwitcherQueuedFrameHandoffError,
+        reason: SwitcherTwoViewHandoffOperationalReason,
+    },
+}
+
+/// Compact per-side operational summary for long-running 2-view runs.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SwitcherTwoViewOperationalSideSummary {
+    pub side: SwitcherTwoViewSide,
+    pub client_id: ClientId,
+    pub run_id: RunId,
+    pub result_kind: SwitcherTwoViewOperationalSideResultKind,
+    pub run_state: SwitcherOperationalRunState,
+    pub reason: SwitcherTwoViewOperationalSideReason,
+    pub dropped_late_frame_count: usize,
+    pub late_frame_head: Option<SwitcherLateFrameQueueHeadStatus>,
+}
+
+/// Compact operational summary for long-running source-backed 2-view runs.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SwitcherTwoViewOperationalSummary {
+    pub target_timestamp: TimestampMicros,
+    pub scheduler_status: SwitcherTwoViewOperationalStatus,
+    pub run_state: SwitcherOperationalRunState,
+    pub left: SwitcherTwoViewOperationalSideSummary,
+    pub right: SwitcherTwoViewOperationalSideSummary,
+}
+
 /// Output from the in-process 2-view path after late-frame mutation then normal validation.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SwitcherServerMediatedTwoViewLateFrameManagedValidationOutput {
     pub late_frame_mutation: SwitcherTwoViewLateFrameQueueMutationSummary,
     pub validation: SwitcherServerMediatedTwoViewValidationOutput,
+    pub summary: SwitcherTwoViewOperationalSummary,
+}
+
+/// Output from the in-process 2-view path after late-frame mutation then
+/// fallible handoff-backed validation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SwitcherServerMediatedTwoViewLateFrameManagedHandoffValidationOutput {
+    pub late_frame_mutation: SwitcherTwoViewLateFrameQueueMutationSummary,
+    pub validation: SwitcherServerMediatedTwoViewHandoffValidationOutput,
+    pub summary: SwitcherTwoViewOperationalSummary,
 }
 
 /// Output from the fallible server-mediated diagnostic path.
@@ -6929,6 +7373,7 @@ pub struct SwitcherServerMediatedTwoViewHandoffValidationOutput {
     pub display: SwitcherTwoViewHandoffDisplayPolicyOutput,
     pub adapter: SwitcherTwoViewHandoffDisplayCompositionAdapterOutput,
     pub render: SwitcherTwoViewHandoffDisplayCompositionRenderConnectionOutput,
+    pub summary: SwitcherTwoViewOperationalSummary,
 }
 
 /// Minimal in-process connection from server-owned reassembled queue state into
@@ -7110,10 +7555,69 @@ impl SwitcherServerMediatedTwoViewValidationBoundary {
             decode_runtime,
             render_runtime,
         );
+        let summary = operational_summary_from_source_scheduler_result(
+            &validation.scheduler,
+            Some(&late_frame_mutation.left),
+            Some(&late_frame_mutation.right),
+        );
 
         SwitcherServerMediatedTwoViewLateFrameManagedValidationOutput {
             late_frame_mutation,
             validation,
+            summary,
+        }
+    }
+
+    pub fn run_fallible_with_runtimes_and_late_frame_queue_mutation(
+        &self,
+        queue_state: &mut ServerVideoFrameQueueState,
+        input: SwitcherServerMediatedTwoViewValidationInput,
+        heartbeat_rtt_offset_state: Option<&ServerHeartbeatRttOffsetState>,
+        policy: SwitcherLateFrameQueueMutationPolicy,
+        decode_runtime: &impl SwitcherH264DecodeRuntimeHook,
+        render_runtime: &impl SwitcherWindowRenderRuntimeHook,
+    ) -> SwitcherServerMediatedTwoViewLateFrameManagedHandoffValidationOutput {
+        let (left_clock_offset_micros, right_clock_offset_micros) =
+            self.clock_offsets_for_views(heartbeat_rtt_offset_state, &input.left, &input.right);
+        let late_frame_mutation = SwitcherTwoViewLateFrameQueueMutationSummary {
+            left: self.late_frame_mutation.mutate_queue_state(
+                queue_state,
+                SwitcherSingleClientLateFrameQueueMutationInput {
+                    client_id: input.left.client_id.clone(),
+                    run_id: input.left.run_id.clone(),
+                    target_timestamp: input.target_timestamp,
+                    clock_offset_micros: left_clock_offset_micros,
+                    policy,
+                },
+            ),
+            right: self.late_frame_mutation.mutate_queue_state(
+                queue_state,
+                SwitcherSingleClientLateFrameQueueMutationInput {
+                    client_id: input.right.client_id.clone(),
+                    run_id: input.right.run_id.clone(),
+                    target_timestamp: input.target_timestamp,
+                    clock_offset_micros: right_clock_offset_micros,
+                    policy,
+                },
+            ),
+        };
+        let validation = self.run_fallible_with_runtimes_and_clock_offset_state(
+            queue_state,
+            input,
+            heartbeat_rtt_offset_state,
+            decode_runtime,
+            render_runtime,
+        );
+        let summary = operational_summary_from_handoff_scheduler_result(
+            &validation.scheduler,
+            Some(&late_frame_mutation.left),
+            Some(&late_frame_mutation.right),
+        );
+
+        SwitcherServerMediatedTwoViewLateFrameManagedHandoffValidationOutput {
+            late_frame_mutation,
+            validation,
+            summary,
         }
     }
 
@@ -7233,6 +7737,7 @@ impl SwitcherServerMediatedTwoViewValidationBoundary {
             },
             render_runtime,
         );
+        let summary = operational_summary_from_handoff_scheduler_result(&scheduler, None, None);
 
         SwitcherServerMediatedTwoViewHandoffValidationOutput {
             scheduler,
@@ -7241,6 +7746,7 @@ impl SwitcherServerMediatedTwoViewValidationBoundary {
             display,
             adapter,
             render,
+            summary,
         }
     }
 
@@ -21991,6 +22497,14 @@ mod tests {
                 .frame_id,
             1
         );
+        assert_eq!(
+            output.summary.left.dropped_late_frame_count,
+            output.late_frame_mutation.left.dropped_late_frames.len()
+        );
+        assert_eq!(
+            output.summary.left.run_state,
+            SwitcherOperationalRunState::Continue
+        );
         assert!(output
             .late_frame_mutation
             .right
@@ -22353,6 +22867,14 @@ mod tests {
             output.scheduler.status,
             SwitcherTwoViewTargetTimeHandoffSourceSchedulerStatus::AllSelected
         );
+        assert_eq!(
+            output.summary.scheduler_status,
+            SwitcherTwoViewOperationalStatus::AllSelected
+        );
+        assert_eq!(
+            output.summary.run_state,
+            SwitcherOperationalRunState::Continue
+        );
         assert!(matches!(
             output.decode_render_adapter.left,
             SwitcherTwoViewHandoffSchedulerDecodeRenderSideInstruction::RenderFrame { .. }
@@ -22424,6 +22946,23 @@ mod tests {
             output.scheduler.status,
             SwitcherTwoViewTargetTimeHandoffSourceSchedulerStatus::PartialSelected
         );
+        assert_eq!(
+            output.summary.right.result_kind,
+            SwitcherTwoViewOperationalSideResultKind::Waiting
+        );
+        assert_eq!(
+            output.summary.right.run_state,
+            SwitcherOperationalRunState::Continue
+        );
+        assert_eq!(
+            output.summary.right.reason,
+            SwitcherTwoViewOperationalSideReason::Waiting {
+                candidate_frame_id: 10,
+                candidate_capture_timestamp: TimestampMicros(1_000_010),
+                client_queue_len: 1,
+                reason: SwitcherTwoViewWaitingOperationalReason::HeadFrameAfterTarget,
+            }
+        );
         assert!(matches!(
             output.scheduler.right,
             SwitcherSingleClientTargetTimeHandoffSourceResult::WaitingForFrameAtOrBeforeTarget { .. }
@@ -22475,6 +23014,21 @@ mod tests {
                 &render,
             );
 
+        assert_eq!(
+            output.summary.right.result_kind,
+            SwitcherTwoViewOperationalSideResultKind::NoFrame
+        );
+        assert_eq!(
+            output.summary.right.run_state,
+            SwitcherOperationalRunState::Continue
+        );
+        assert_eq!(
+            output.summary.right.reason,
+            SwitcherTwoViewOperationalSideReason::NoFrame {
+                client_queue_len: 0,
+                reason: SwitcherTwoViewNoFrameOperationalReason::NoQueuedFrameForClientRun,
+            }
+        );
         assert!(matches!(
             output.scheduler.right,
             SwitcherSingleClientTargetTimeHandoffSourceResult::NoFrameAvailable { .. }
@@ -22522,6 +23076,32 @@ mod tests {
         assert_eq!(
             output.scheduler.status,
             SwitcherTwoViewTargetTimeHandoffSourceSchedulerStatus::HandoffError
+        );
+        assert_eq!(
+            output.summary.scheduler_status,
+            SwitcherTwoViewOperationalStatus::HandoffError
+        );
+        assert_eq!(
+            output.summary.run_state,
+            SwitcherOperationalRunState::InvestigationRequired
+        );
+        assert_eq!(
+            output.summary.right.result_kind,
+            SwitcherTwoViewOperationalSideResultKind::HandoffError
+        );
+        assert_eq!(
+            output.summary.right.run_state,
+            SwitcherOperationalRunState::InvestigationRequired
+        );
+        assert_eq!(
+            output.summary.right.reason,
+            SwitcherTwoViewOperationalSideReason::HandoffError {
+                error: SwitcherQueuedFrameHandoffError::InvalidScope {
+                    client_id: ClientId("".to_string()),
+                    run_id: RunId("run-right".to_string()),
+                },
+                reason: SwitcherTwoViewHandoffOperationalReason::InvestigationRequired,
+            }
         );
         assert!(matches!(
             output.scheduler.right,
@@ -22583,6 +23163,26 @@ mod tests {
         assert_eq!(
             output.scheduler.status,
             SwitcherTwoViewTargetTimeHandoffSourceSchedulerStatus::HandoffError
+        );
+        assert_eq!(
+            output.summary.scheduler_status,
+            SwitcherTwoViewOperationalStatus::HandoffError
+        );
+        assert_eq!(
+            output.summary.run_state,
+            SwitcherOperationalRunState::RetryLater
+        );
+        assert_eq!(
+            output.summary.left.result_kind,
+            SwitcherTwoViewOperationalSideResultKind::HandoffError
+        );
+        assert_eq!(
+            output.summary.left.run_state,
+            SwitcherOperationalRunState::RetryLater
+        );
+        assert_eq!(
+            output.summary.right.result_kind,
+            SwitcherTwoViewOperationalSideResultKind::HandoffError
         );
         assert!(matches!(
             output.decode_render.render,
@@ -22668,6 +23268,84 @@ mod tests {
         ));
         assert_eq!(state.client_queue_len(&left_client), before_left);
         assert_eq!(state.client_queue_len(&right_client), before_right);
+    }
+
+    #[test]
+    fn server_mediated_two_view_late_frame_handoff_summary_marks_no_frame_after_drop() {
+        let mut state = ServerVideoFrameQueueState::default();
+        store_frame_with_run_payload(
+            &mut state,
+            "client-left",
+            "run-left",
+            1,
+            TimestampMicros(2_124_300),
+            2,
+            1,
+            vec![0, 0, 1, 0x65, 0x41],
+        );
+        store_frame_with_run_payload(
+            &mut state,
+            "client-left",
+            "run-left",
+            20,
+            TimestampMicros(2_124_360),
+            2,
+            1,
+            vec![0, 0, 1, 0x65, 0x42],
+        );
+        store_frame_with_run_payload(
+            &mut state,
+            "client-right",
+            "run-right",
+            2,
+            TimestampMicros(2_124_390),
+            2,
+            1,
+            vec![0, 0, 1, 0x65, 0x43],
+        );
+        let decode = RecordingTwoViewDecode::default();
+        let render = RecordingTwoViewRender::default();
+
+        let output = SwitcherServerMediatedTwoViewValidationBoundary::default()
+            .run_fallible_with_runtimes_and_late_frame_queue_mutation(
+                &mut state,
+                server_mediated_validation_input(
+                    TimestampMicros(1_000_020),
+                    SwitcherTwoViewTargetTimeSourceSchedulerMode::PreviewLatestIfAtOrBefore,
+                ),
+                None,
+                SwitcherLateFrameQueueMutationPolicy {
+                    max_late_micros: 10,
+                },
+                &decode,
+                &render,
+            );
+
+        assert_eq!(output.late_frame_mutation.left.dropped_late_frames.len(), 1);
+        assert_eq!(
+            output.summary.left.result_kind,
+            SwitcherTwoViewOperationalSideResultKind::Selected
+        );
+        assert_eq!(
+            output.summary.left.reason,
+            SwitcherTwoViewOperationalSideReason::Selected {
+                frame_id: 20,
+                adjusted_capture_timestamp: TimestampMicros(1_000_020),
+                consumed: false,
+            }
+        );
+        assert_eq!(output.summary.left.dropped_late_frame_count, 1);
+        assert_eq!(
+            output.summary.right.result_kind,
+            SwitcherTwoViewOperationalSideResultKind::NoFrame
+        );
+        assert_eq!(
+            output.summary.right.reason,
+            SwitcherTwoViewOperationalSideReason::NoFrame {
+                client_queue_len: 0,
+                reason: SwitcherTwoViewNoFrameOperationalReason::NoFrameRemainingAfterLateDrop,
+            }
+        );
     }
 
     #[test]

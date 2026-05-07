@@ -5,6 +5,60 @@
 - Codex
 
 ### Work
+- Implemented the minimal long-run operational status slice for `NoFrame`,
+  `Waiting`, and `HandoffError`.
+- Added typed source-backed 2-view operational summary types:
+  - per-side result kind
+  - per-side typed reason
+  - per-side run-state
+  - aggregate scheduler status / run-state
+- Added summary attachment to the fallible server-mediated 2-view validation
+  output so tests and future runtime/manual paths can read:
+  - `Selected`
+  - `NoFrame`
+  - `Waiting`
+  - `HandoffError`
+  without collapsing them into string-only diagnostics.
+- Added a late-drop-aware fallible validation path:
+  `run_fallible_with_runtimes_and_late_frame_queue_mutation`.
+- Connected late-frame mutation summary to operational judgment only as summary
+  metadata:
+  - `NoFrameRemainingAfterLateDrop`
+  - `HeadFrameAfterTargetFollowingLateDrop`
+- Kept queue mutation, targetTime selection, handoff/source errors, display
+  policy, and I/O responsibilities separated.
+
+### Changed Files
+- `apps/switcher/src/lib.rs`
+- `docs/architecture/system-design.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### Decision
+- Treat `NoFrame` and `Waiting` as continuable states in the current long-run
+  slice.
+- Classify `HandoffError` operationally instead of collapsing it:
+  - `SourceUnavailable` / `Timeout` => `RetryLater`
+  - `SourceShutdown` => `ReconnectRequired`
+  - `InvalidScope` / `UnsupportedMode` / `MalformedResponse` =>
+    `InvestigationRequired`
+- Keep the late-drop connection summary-only. This slice does not widen retry,
+  daemon lifecycle, dashboard, or exporter ownership.
+
+### Validation
+- `cargo fmt`
+- `cargo check --workspace`
+- `cargo test -p stream-sync-switcher server_mediated_two_view_handoff_validation_preserves_no_frame_placeholder`
+- `cargo test -p stream-sync-switcher server_mediated_two_view_handoff_validation_preserves_waiting_without_fake_frame`
+- `cargo test -p stream-sync-switcher server_mediated_two_view_handoff_validation_preserves_source_error_placeholder`
+- `cargo test -p stream-sync-switcher server_mediated_two_view_handoff_validation_does_not_render_both_handoff_errors`
+- `cargo test -p stream-sync-switcher server_mediated_two_view_late_frame_handoff_summary_marks_no_frame_after_drop`
+
+## 2026-05-08
+### Type
+- Codex
+
+### Work
 - Implemented the minimal late-frame queue mutation / drop-policy slice for the
   source-backed path.
 - Added:

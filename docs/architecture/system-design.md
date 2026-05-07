@@ -11040,6 +11040,26 @@ Current implementation:
   frames.
 - Preview mode remains non-mutating.
 - Consume mode remains all-or-nothing through the fallible 2-view scheduler.
+- The current long-run operational slice adds a compact typed summary above the
+  visible stages:
+  - per-side result kind stays `Selected`, `NoFrame`, `Waiting`, or
+    `HandoffError`
+  - per-side run-state stays one of:
+    - `Continue`
+    - `RetryLater`
+    - `ReconnectRequired`
+    - `InvestigationRequired`
+  - late-drop context is attached only as summary metadata and does not change
+    queue-read or targetTime-selection ownership
+- `NoFrame` and `Waiting` remain continuable states.
+- `HandoffError` is classified for operations:
+  - `SourceUnavailable` / `Timeout` => `RetryLater`
+  - `SourceShutdown` => `ReconnectRequired`
+  - `InvalidScope` / `UnsupportedMode` / `MalformedResponse` =>
+    `InvestigationRequired`
+- The source-backed late-drop path now has a fallible variant so late-drop
+  summary and post-mutation `NoFrame` / `Waiting` / `HandoffError` judgment can
+  be inspected together without widening runtime ownership.
 
 Responsibility split:
 
