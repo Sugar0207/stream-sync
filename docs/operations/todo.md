@@ -145,15 +145,18 @@
 ---
 
 ## 直近でやること
-1. same-session bounded server lifecycle の narrow polish が本当に必要か判断する:
+1. raw key capture を入れるかどうか判断する:
+   - current wrapper MVP は Enter-required stdin でも scripted / interactive validation が通っている
+   - operator UX 改善として raw key capture を足すか、stdin mode のまま MVP とするかを決める
+2. same-session bounded server lifecycle polish は later narrow task として扱う:
    - scripted / interactive とも actual validation は成功記録済み
-   - ただし bounded server final summary flush には引き続き extra one-shot reads が要る
-   - request-budget formula と manual headroom guidance を docs 運用のままで十分とするかを判断する
-2. wrapper stdin mode の current wobble を narrow に扱う:
+   - request-budget formula と headroom guidance を docs に固定済み
+   - bounded server final summary flush は extra one-shot reads を使う現状でも MVP blocker にはしない
+3. wrapper stdin wobble は later narrow task として扱う:
    - zero-gap piped stdin では second command reconnect wobble を一度観測した
    - manual-like pacing では success / unknown-key とも actual validation 済み
-   - retry や raw key capture を入れずに docs note のままで十分かを判断する
-3. production H.264 encoder configuration / error logging policy
+   - wrapper-side retry/pacing は現時点では入れない
+4. production H.264 encoder configuration / error logging policy
 
 ## 将来の polish 候補
 - [ ] `--four-view-proof-window-once` / `--four-view-clean-output-window-once` に visual confirmation 用の `--hold-ms` / preview hold duration を追加するか後で判断する

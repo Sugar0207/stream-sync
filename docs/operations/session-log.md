@@ -5,6 +5,42 @@
 - Codex
 
 ### Work
+- Fixed the post-validation docs decision for the wrapper MVP without adding
+  code changes.
+- Marked the zero-gap stdin wobble as a non-blocking manual-harness issue:
+  - it appeared once under zero-gap piped stdin
+  - it did not reproduce under manual-like pacing
+- Marked bounded server lifecycle flush/exit polish as non-blocking for the
+  current wrapper MVP:
+  - keep request-budget headroom guidance in docs
+  - keep exact-budget-only operation out of the recommended manual recipe
+- Updated the next task ordering:
+  - decide whether raw key capture should be added
+  - keep production H.264 encoder configuration / error logging policy after
+    that
+
+### Changed Files
+- `docs/architecture/system-design.md`
+- `docs/operations/manual-real-encoded-video-poc.md`
+- `docs/operations/session-log.md`
+- `docs/operations/todo.md`
+
+### Decision
+- zero-gap stdin wobble is not an MVP blocker
+- wrapper-side retry/pacing remains later narrow polish
+- bounded lifecycle flush/exit polish is not an MVP blocker
+- next task is the raw key capture decision rather than more lifecycle/wobble
+  implementation
+
+### Validation
+- docs-only update
+- `git diff --check`
+
+## 2026-05-07
+### Type
+- Codex
+
+### Work
 - Ran actual guarded real `4`-client interactive stdin validation for
   `--four-view-operator-wrapper`.
 - Rebuilt first to avoid stale `target/debug` behavior:
@@ -53,7 +89,7 @@
   - `exit_reason=QuitRequested`
 - Recorded one interactive stdin wobble:
   - a zero-gap piped stdin attempt succeeded for `s` but failed on `1` with
-    `wrapper_error=指定されたファイルが見つかりません。_(os_error_2)`
+    `wrapper_error=os_error_2`
   - a rerun with manual-like pacing between lines succeeded
 - Recorded bounded handoff summaries:
   - success path:

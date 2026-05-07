@@ -3342,6 +3342,11 @@ Current read of that wobble:
 - current MVP contract stays:
   - stdin mode is valid for one-line interactive/manual input
   - raw-key capture and wrapper-side retry/pacing logic remain out of scope
+- current decision:
+  - this zero-gap stdin wobble is not an MVP blocker
+  - manual-like pacing is enough for the current wrapper validation/operator
+    path
+  - wrapper-side retry/pacing remains later narrow polish only
 
 ## 9. Same-Session Bounded Server Lifecycle Note
 
@@ -3381,6 +3386,8 @@ Current decision:
 - keep the request-budget formula documented
 - reserve bounded-session headroom when a manual wrapper run still wants to
   issue later non-render commands such as guarded `quit`
+- bounded lifecycle flush/exit polish is not an MVP blocker
+- prefer headroom guidance over exact-budget guidance in manual recipes
 - do not make an extra flush read part of the wrapper MVP contract
 - if a future run needs an extra flush read again, treat it as a temporary
   diagnostic workaround rather than wrapper behavior
@@ -3389,3 +3396,9 @@ Current decision:
   - request-budget calculation ergonomics
   - extra flush read need in edge cases
   - summary flush/exit polish
+
+Next task after this decision:
+
+- decide whether Enter-required stdin is sufficient for the wrapper MVP
+- or whether raw key capture should be added as narrow operator UX polish
+- keep production H.264 encoder configuration / error logging policy after that

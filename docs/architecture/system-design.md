@@ -8737,6 +8737,10 @@ MVP wrapper shape:
     wobble on the second command
   - keep stdin mode as a minimal manual/operator path, not as a high-rate input
     transport
+- decision after interactive validation:
+  - the zero-gap stdin wobble is not an MVP blocker
+  - manual-like pacing is the expected stdin validation/operator shape for MVP
+  - wrapper-side retry/pacing remains later narrow polish
 - request-budget note for bounded real sessions:
   - size `max_requests` for rendered commands first:
     `render_command_count * max_ticks_per_command * 4`
@@ -8832,12 +8836,20 @@ Current observed status after the rebuilt rerun:
 Current decision:
 
 - keep the request-budget formula documented
+- prefer headroom guidance over exact-budget guidance in manual recipes
+- bounded lifecycle flush/exit polish is not an MVP blocker
 - do not treat an extra flush read as part of the wrapper MVP contract
 - do not block wrapper work on bounded server summary flush/exit polish
 - keep a later narrow polish item open for:
   - request-budget calculation ergonomics
   - whether an occasional extra flush read is still needed in any edge case
   - final summary flush/exit cleanup
+
+Next task after this decision:
+
+- decide whether the wrapper should remain Enter-required stdin for MVP
+- or whether raw key capture should be added as narrow operator UX polish
+- keep production H.264 encoder configuration / error logging policy after that
 
 ## Operator-Facing Control Surface After Stable All-Real Baseline
 
