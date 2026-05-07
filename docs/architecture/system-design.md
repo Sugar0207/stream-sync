@@ -9257,6 +9257,45 @@ Recommended next implementation slice:
 3. only then decide whether FFmpeg error classification needs another narrow
    polish slice before hardware encoder work
 
+Closeout position for the current MVP evidence set:
+
+- current closeout scope includes:
+  - raw-key operator wrapper actual validation
+  - double-`Q` guarded quit
+  - raw console restore actual validation
+  - `AllView` / `Focused(0..3)` / `AllView` return validation
+  - `AllView` visual mismatch fix plus human confirmation
+  - `[video.encoder]` profile wiring evidence
+  - production H.264 stdout visibility evidence
+  - short bounded OBS Window Capture confirmation on
+    `StreamSync 4-view Output`
+- current closeout scope does not include:
+  - long-running quality / block-noise / latency evaluation
+  - hardware encoder integration
+  - OBS WebSocket / advanced OBS control
+  - full GUI or `apps/operator-wrapper` split
+  - daemon-like continuous receive/send runtime
+
+Known later polish that should not block closeout:
+
+- same-session bounded server lifecycle polish
+- transient scheduler-status wobble
+- wrapper stdin zero-gap wobble
+- long-running quality / block-noise / latency evaluation
+- hardware encoder integration
+- full GUI / `apps/operator-wrapper` split
+- OBS WebSocket / advanced OBS control
+- continuous receive/send runtime
+
+Push judgment prerequisites:
+
+- `cargo fmt --check` passes
+- `cargo check --workspace` passes
+- `cargo test --workspace` passes
+- `git diff --check` passes
+- closeout docs are updated
+- current MVP scope and future scope remain explicitly separated
+
 ## Operator-Facing Control Surface After Stable All-Real Baseline
 
 After the guarded `4`-client all-real handoff preview path succeeded in

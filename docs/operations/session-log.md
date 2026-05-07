@@ -5,6 +5,66 @@
 - Codex
 
 ### Work
+- Reorganized closeout docs only, without code changes, around:
+  - OBS Window Capture-oriented operations guidance
+  - final regression checklist
+  - non-blocking known later polish
+  - push judgment prerequisites
+- Added concrete OBS-oriented operations guidance for the current bounded path:
+  - `window_title=StreamSync 4-view Output`
+  - `output_width=1280`
+  - `output_height=720`
+  - manual `Window Capture` as the current OBS integration mode
+  - `AllView` / `Focused(0..3)` / `AllView` return checks
+  - issue classification for black screen, placeholder, focused-view stuck,
+    and `AllView` not returning
+  - raw-key wrapper operation notes
+  - double-`Q` guarded quit note
+  - bounded `max_requests` headroom note for lingering server windows/processes
+  - bounded PoC vs future continuous runtime boundary
+- Added a final regression checklist covering:
+  - `cargo fmt --check`
+  - `cargo check --workspace`
+  - `cargo test --workspace`
+  - `git diff --check`
+  - raw-key wrapper smoke summary
+  - encoder-profile stdout evidence
+  - OBS visual checklist
+  - confirmation that known later polish remains non-blocking
+- Reclassified known later polish explicitly as future work rather than
+  closeout blockers:
+  - same-session bounded server lifecycle polish
+  - transient scheduler-status wobble
+  - wrapper stdin zero-gap wobble
+  - long-running quality / block-noise / latency evaluation
+  - hardware encoder integration
+  - full GUI / `apps/operator-wrapper` split
+  - OBS WebSocket / advanced OBS control
+  - continuous receive/send runtime
+- Added push-judgment prerequisites to docs:
+  - final regression green
+  - closeout docs updated
+  - current MVP scope and future scope separated
+
+### Changed Files
+- `docs/architecture/system-design.md`
+- `docs/operations/manual-real-encoded-video-poc.md`
+- `docs/operations/session-log.md`
+- `docs/operations/todo.md`
+
+### Decision
+- Keep the current closeout pass documentation-only.
+- Treat later polish and future runtime expansion as tracked future work, not
+  as blockers for the current closeout decision.
+
+### Validation
+- `git diff --check`
+
+## 2026-05-07
+### Type
+- Codex
+
+### Work
 - Recorded the successful `[video.encoder]` profile manual rerun without code
   changes.
 - Captured that all `4` manual client configs (`client.player1..4`) reflected

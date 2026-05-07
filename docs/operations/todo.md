@@ -174,6 +174,23 @@
    - 遅延
    は今回の short bounded PoC では未評価
 
+## Closeout Blocker ではない future task
+- [ ] same-session bounded server lifecycle polish
+- [ ] transient scheduler-status wobble
+- [ ] wrapper stdin zero-gap wobble
+- [ ] long-running quality / block noise / latency evaluation
+- [ ] hardware encoder integration
+- [ ] full GUI / `apps/operator-wrapper` split
+- [ ] OBS WebSocket / advanced OBS control
+- [ ] continuous receive/send runtime
+
+上記は future task として TODO に残すが、現時点では closeout blocker にしない。
+closeout / push 判断では以下を優先する。
+
+- final regression green
+- closeout docs updated
+- current MVP scope と future scope の分離
+
 ## 将来の polish 候補
 - [ ] `--four-view-proof-window-once` / `--four-view-clean-output-window-once` に visual confirmation 用の `--hold-ms` / preview hold duration を追加するか後で判断する
 

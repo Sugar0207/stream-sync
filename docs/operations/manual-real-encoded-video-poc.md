@@ -3785,3 +3785,137 @@ Updated next task after this successful rerun:
    validated bounded operator/video path
 2. run final regression / closeout checks for the current MVP evidence set
 3. make commit / push judgment after that closeout pass
+
+## OBS Window Capture-Oriented Operations Guidance
+
+Current bounded operations baseline:
+
+- dedicated output window:
+  - `window_title=StreamSync 4-view Output`
+  - `output_width=1280`
+  - `output_height=720`
+- OBS integration mode:
+  - use normal OBS `Window Capture`
+  - keep OBS downstream of the dedicated output window
+  - keep OBS WebSocket / advanced OBS control out of the current closeout scope
+- runtime scope:
+  - current evidence is short bounded PoC evidence
+  - future continuous runtime validation still owns long-running quality,
+    block-noise, latency, and lifecycle evaluation
+
+Manual OBS/operator confirmation points:
+
+1. Confirm OBS is capturing `StreamSync 4-view Output`.
+2. Confirm the visible output surface is `1280x720`.
+3. Confirm `AllView` is visible first.
+4. Press `1` / `2` / `3` / `4` and confirm switching to `player1..4`.
+5. Press `0` and confirm return to `AllView`.
+6. Press `a` while already in `AllView` and confirm the output stays in
+   `AllView`.
+7. Confirm OBS preview stays non-black through
+   `AllView -> Focused -> AllView`.
+
+Issue classification during bounded operations:
+
+- black screen:
+  - OBS preview is black
+  - classify first as output-window capture/output-surface failure
+- placeholder:
+  - a slot renders placeholder/no-source style content
+  - classify first as frame-availability / handoff / scheduler evidence, not as
+    an OBS capture failure by default
+- focused view stuck:
+  - focused output remains after an `all` command
+  - classify as view-state/render-path mismatch first
+- AllView not returning:
+  - control response says `AllView` but visible output does not return to quad
+  - classify separately from generic black-screen or placeholder issues
+
+Raw-key operator wrapper notes:
+
+- use:
+  - `--four-view-operator-wrapper <control-pipe> --raw-keys`
+- current intended command mapping:
+  - `s` -> status
+  - `1` / `2` / `3` / `4` -> `Focused(player1..4)`
+  - `0` / `a` -> `AllView`
+  - `q` / `q` -> guarded quit
+- current wrapper evidence already covers:
+  - raw-key capture
+  - double-`Q` guarded quit
+  - raw console restore
+  - short visual switching with OBS downstream
+
+Guarded quit note:
+
+- one `q` arms the wrapper-local guard only
+- the second `q` sends the real quit command
+- a single `q` with no exit is expected behavior, not a failure
+
+Bounded server headroom note:
+
+- bounded server sessions may remain alive after switcher quit if
+  `max_requests` headroom is intentionally larger than the request count used
+  by the switcher session
+- that remaining server window/process is not failure by itself in the current
+  bounded model
+
+Bounded PoC vs future continuous runtime:
+
+- bounded PoC currently proves:
+  - operator switching
+  - dedicated output window identity
+  - OBS Window Capture viability
+  - encoder-profile stdout visibility
+- bounded PoC does not yet prove:
+  - long-running quality stability
+  - long-running latency
+  - daemon/service ergonomics
+  - continuous receive/send runtime behavior
+
+## Final Regression Checklist
+
+Closeout-oriented regression checklist:
+
+- `cargo fmt --check`
+- `cargo check --workspace`
+- `cargo test --workspace`
+- `git diff --check`
+- raw-key wrapper smoke summary:
+  - `AllView`
+  - `Focused(0..3)`
+  - `0` / `a` back to `AllView`
+  - `q` / `q` guarded quit
+  - `raw_console_restore_result=restored`
+  - `raw_console_restore_error=none`
+- encoder profile stdout evidence:
+  - manual `client.player1..4` rerun still shows configured
+    `[video.encoder]` values
+  - FFmpeg visibility fields remain present
+  - `encode_failures=0`
+  - `frame_build_failures=0`
+  - `send_failures=0`
+- OBS visual checklist:
+  - `window_title=StreamSync 4-view Output`
+  - `output_width=1280`
+  - `output_height=720`
+  - `AllView` visible
+  - `Focused(0..3)` visible on command
+  - `0` returns to `AllView`
+  - `a` keeps `AllView`
+  - no black screen during the short bounded run
+- confirm known later polish is non-blocking:
+  - same-session bounded server lifecycle polish
+  - transient scheduler-status wobble
+  - wrapper stdin zero-gap wobble
+  - long-running quality / block-noise / latency evaluation
+  - hardware encoder integration
+  - full GUI / `apps/operator-wrapper` split
+  - OBS WebSocket / advanced OBS control
+  - continuous receive/send runtime
+
+Push judgment preconditions:
+
+- final regression checklist is green
+- closeout docs are updated
+- current MVP scope and future scope are clearly separated
