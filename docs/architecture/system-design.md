@@ -8741,6 +8741,29 @@ MVP wrapper shape:
   - the zero-gap stdin wobble is not an MVP blocker
   - manual-like pacing is the expected stdin validation/operator shape for MVP
   - wrapper-side retry/pacing remains later narrow polish
+- raw key capture decision:
+  - raw key capture is useful as operator UX improvement during a live session
+  - but it is still not an MVP blocker because the existing Enter-required
+    stdin path and `--keys` path are already validated
+  - the recommended next slice is to add raw key capture as an optional
+    wrapper-local mode rather than changing the switcher loop, control pipe, or
+    command parser
+- if raw key capture is added, keep these boundaries stable:
+  - preserve `--keys` as the scripted/automation baseline
+  - preserve one-line stdin mode as the fallback/manual baseline
+  - preserve the current control-pipe command vocabulary and wrapper summary
+  - reuse the existing wrapper-local double-`Q` guarded quit logic unchanged
+- smallest next raw-key shape:
+  - add optional wrapper flag `--raw-keys`
+  - keep the same mappings:
+    - `1`, `2`, `3`, `4`
+    - `0`, `A`
+    - `S`
+    - `Q`
+  - keep unknown keys local-only ignored
+  - keep stdout summary fields unchanged
+  - if Windows terminal raw-key capture is unavailable or unstable, fall back
+    to the current stdin mode
 - request-budget note for bounded real sessions:
   - size `max_requests` for rendered commands first:
     `render_command_count * max_ticks_per_command * 4`
@@ -8847,8 +8870,9 @@ Current decision:
 
 Next task after this decision:
 
-- decide whether the wrapper should remain Enter-required stdin for MVP
-- or whether raw key capture should be added as narrow operator UX polish
+- implement optional wrapper-local raw key capture without changing the
+  validated `--keys` / stdin / control-pipe baseline
+- keep Enter-required stdin as the fallback/manual mode
 - keep production H.264 encoder configuration / error logging policy after that
 
 ## Operator-Facing Control Surface After Stable All-Real Baseline

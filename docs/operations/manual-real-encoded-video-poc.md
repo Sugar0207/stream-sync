@@ -3347,6 +3347,9 @@ Current read of that wobble:
   - manual-like pacing is enough for the current wrapper validation/operator
     path
   - wrapper-side retry/pacing remains later narrow polish only
+  - raw key capture is still worth adding as the next operator UX slice, but as
+    optional wrapper-local polish rather than as a prerequisite for the current
+    validated wrapper MVP
 
 ## 9. Same-Session Bounded Server Lifecycle Note
 
@@ -3399,6 +3402,13 @@ Current decision:
 
 Next task after this decision:
 
-- decide whether Enter-required stdin is sufficient for the wrapper MVP
-- or whether raw key capture should be added as narrow operator UX polish
+- add optional raw key capture as the next narrow operator UX slice
+  - keep `--keys` as the scripted/automation baseline
+  - keep one-line stdin mode as the fallback/manual baseline
+  - keep the same control-pipe command vocabulary and wrapper summary shape
+  - keep double-`Q` guarded quit unchanged
+  - keep unknown keys local-only ignored
+  - use a wrapper-local flag such as `--raw-keys`
+  - if Windows terminal raw-key capture is unavailable or unstable, fall back
+    to stdin mode
 - keep production H.264 encoder configuration / error logging policy after that

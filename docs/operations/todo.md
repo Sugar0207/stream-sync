@@ -145,9 +145,11 @@
 ---
 
 ## 直近でやること
-1. raw key capture を入れるかどうか判断する:
-   - current wrapper MVP は Enter-required stdin でも scripted / interactive validation が通っている
-   - operator UX 改善として raw key capture を足すか、stdin mode のまま MVP とするかを決める
+1. wrapper-local optional raw key capture を narrow slice として実装する:
+   - raw key capture は operator UX improvement として有用だが MVP blocker ではない
+   - `--keys` scripted baseline と Enter-required stdin fallback は維持する
+   - switcher controlled loop / control pipe / command parser には触れない
+   - double-`Q` guarded quit と wrapper summary stdout は現状を再利用する
 2. same-session bounded server lifecycle polish は later narrow task として扱う:
    - scripted / interactive とも actual validation は成功記録済み
    - request-budget formula と headroom guidance を docs に固定済み

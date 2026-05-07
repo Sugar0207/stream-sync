@@ -5,6 +5,45 @@
 - Codex
 
 ### Work
+- Fixed the raw key capture decision in docs without adding code changes.
+- Compared two positions:
+  - keep Enter-required stdin as the final wrapper MVP input
+  - add raw key capture as optional wrapper-local UX polish
+- Chose the second position while keeping the current validated paths intact:
+  - `--keys` remains the scripted/automation baseline
+  - one-line stdin remains the fallback/manual baseline
+  - switcher loop, control pipe, and command parser remain unchanged
+- Recorded the smallest next raw-key shape:
+  - optional wrapper flag such as `--raw-keys`
+  - same key mappings
+  - same wrapper-local double-`Q` guarded quit
+  - same wrapper summary stdout
+  - local ignore for unknown keys
+  - fallback to stdin mode if Windows terminal raw-key capture is unavailable
+
+### Changed Files
+- `docs/architecture/system-design.md`
+- `docs/operations/manual-real-encoded-video-poc.md`
+- `docs/operations/session-log.md`
+- `docs/operations/todo.md`
+
+### Decision
+- raw key capture is useful and should be the next narrow operator UX slice
+- raw key capture is not an MVP blocker
+- the implementation must stay wrapper-local and preserve the current validated
+  `--keys` / stdin / control-pipe baseline
+- production H.264 encoder configuration / error logging policy remains after
+  that
+
+### Validation
+- docs-only update
+- `git diff --check`
+
+## 2026-05-07
+### Type
+- Codex
+
+### Work
 - Fixed the post-validation docs decision for the wrapper MVP without adding
   code changes.
 - Marked the zero-gap stdin wobble as a non-blocking manual-harness issue:
