@@ -35,7 +35,7 @@
 - receive/send continuous logging ownership の docs 設計も固定済みで、stdout/stderr summary は bounded run closeout 専用、structured operational logs は per-iteration/per-packet event 専用として責務を分離した。caller-owned writers は維持し、file sink open / rotation / process-wide logger / dashboard/exporter transport は future boundary に残す
 - per-iteration receive/send event handoff の narrow implementation も追加済みで、`ServerReceiveSendRuntimeBoundedStartupOutcome` は `iteration_events` を持つ。event fields は `command_name` / `iteration_index` / `receive_outcome_kind` / `accepted_packet_kind` / `auth_outcome_kind` / `rejection_kind` / `send_outcome_kind` / `sent_message_kind` / `receive_error` / `send_error` とし、outer loop の typed observation surface に限定する
 - iteration event の JSONL writer ownership 最小接続も追加済みで、typed `iteration_events` は compact JSONL (`event_type=receive_send_iteration`) として caller-owned writer に書ける。writer failure は runtime stop に直結させず、`iteration_event_log_summary.lines_written` / `write_failures` / `last_writer_error` で outcome 側に可視化する
-- iteration-event JSONL sink plan / optional config wiring の docs 設計も固定済みで、current slice は caller-owned writer + CLI stderr default のまま維持し、next slice は launcher/config layer が `stderr` / `disabled` / `file` を選ぶ方針に分離した。file open は outer boundary、rotation/retention はさらに後段とし、runtime は file path を知らない
+- iteration-event JSONL sink plan / optional config wiring の docs 設計も固定済みで、その first implementation として launcher/config layer に `[logging.receive_send_iteration]` parse と `stderr` / `disabled` selection を追加済み。section absent は current CLI default と同じ stderr、`enabled=false` と `destination="disabled"` は discard sink、`destination="file"` は parse までは通すが current slice では explicit deferred startup error に留める。runtime は引き続き file path を知らない
 - current rejected-auth note: first slice の `auth_responses_sent` は accepted auth response send count として扱っており、rejected auth は current one-item send pathでは送信 count に入らない。その代わり `last_rejected_reason=Auth:...` で summary visibility を持たせている
 - code-level validation では command parser、summary formatter、`max_iterations` stop、`ReceiveTimedOut` stop、timeout-only run summary、repeated auth registry persistence、repeated heartbeat existing-registry reuse、`ClientStats` observation path count、auth rejection visibility、gate rejection visibility、startup failure summary formatting、send failure summary formatting、existing one-iteration runtime non-regression を追加済み
 - lightweight smoke validation も完了している。CLI shape は client 側 `--auth-request-poc-once`、`--auth-heartbeat-poc-once`、`--auth-heartbeat-stats-poc-once` を確認済みで、direct `ClientStats`-only sender CLI は未追加だが `--auth-heartbeat-stats-poc-once` で `ClientStats` observation path を刺激できる
@@ -164,15 +164,36 @@
 ---
 
 ## 直近でやること
-1. logging ownership の次 narrow implementation slice を選ぶ
-   - optional config parse only から入るか、stderr/disabled selection まで入るかを決める
-   - file sink open/rotation はまだ持ち込まない
-2. bounded runtime の次 narrow expansion を選ぶ
-   - continuous video path ではなく auth / heartbeat / client-stats path のまま進める
-   - service lifecycle / reconnect / retry 拡張は bounded runtime evidence の後段に回す
-3. failure injection の追加 manual rerun は必要になった時だけ行う
-   - 現時点では CLI shape、bounded smoke、fatal/stop summary visibility、logging ownership docs は確認済み
-   - visual validation は今回 scope 外のまま維持する
+1. `RTT / offset` 平滑化と補正後 timestamp を targetTime へ接続する
+   - 4-view all-real baseline は成立しているため、次は同期判断を時刻補正込みで安定化する
+   - `heartbeat / 時刻同期` と `フェーズ4` の未完了項目をここに集約して扱う
+2. late frame queue mutation / jitter buffer / drop policy の最小実装を入れる
+   - 現状の preview / validation path を production-like runtime に近づける中心タスクとして扱う
+   - `sync-core` と `video frame / 映像受信` の未完了項目をここに集約して扱う
+3. 認証 / runtime hardening と長時間 validation の順で固める
+   - timeout / 再認証 / version check / secret redaction を先に狭く実装する
+   - その後に 2-client -> 4-client の長時間 run で drop / sync 誤差 / render 安定性を確認する
+
+## 今後の大まかな指針
+- 残り todo は `MVP クリティカルパス`、`安定化 / 運用`、`future task` に分けて扱う
+- `logging sink config` や `failure injection` の follow-up は有用だが、同期安定化・queue policy・長時間 validation より後ろに置く
+- まずは「4人を real handoff で安定表示し続ける」ことを基準に優先度を決める
+
+## 残り todo から見た推定 step
+- 目安は `7-10 step`。1 step は Codex と GPT の 1 往復で数える
+1. `RTT / offset` 平滑化を実装し、補正後 timestamp を targetTime へ接続する
+2. jitter buffer と late frame queue mutation / drop policy を最小実装で入れる
+3. `NoFrame` / `Waiting` / `HandoffError` の運用時挙動を長時間 run 前提で見直す
+4. 認証済み送信元 timeout / 失効 / 再認証、`protocol_version` reject、`app_version` warn、secret redaction を狭く固める
+5. continuous receive / send runtime の不足分を埋める
+   - 実 outbound queue 処理
+   - send error / receive-send event の destination selection
+   - later service lifecycle へつながる最小 runtime 整理
+6. 2-client の長時間 validation を取り、sync 誤差 / drop / render 安定性を確認する
+7. 4-client all-real の長時間 validation を取り、OBS Window Capture を含む実運用寄りの再確認をする
+8. dashboard / status visibility と運用手順を MVP 必要最低限まで揃える
+   - 接続状態、RTT、offset、drop、buffer 状態の表示
+   - manual 手順、互換性ルール、ログ運用の整理
 
 ## MVP closeout 時点で blocker ではなかった future task
 - [ ] same-session bounded server lifecycle polish
@@ -955,6 +976,6 @@ continuous runtime first slice の blocker:
 - actual dashboard UI rendering remains unimplemented.
 
 ## Next Items
-1. iteration-event sink config parse / stderr-disabled selection follow-up
-2. later service lifecycle / reconnect / retry expansion after the bounded first slice
-3. bounded runtime failure injection follow-up only if concrete evidence is needed
+1. `RTT / offset` 平滑化と targetTime 接続の最小 slice を切る
+2. late frame queue mutation / jitter buffer / drop policy の最小 slice を切る
+3. 認証 / runtime hardening の実装順と長時間 validation 条件を先に固定する

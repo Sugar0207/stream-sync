@@ -174,15 +174,83 @@ fn main() {
                 max_iterations: command.max_iterations,
                 receive_timeout: std::time::Duration::from_millis(command.receive_timeout_ms),
             };
-            match launcher.run_bounded_from_path_with_all_writers_and_policy(
-                &command.config_path,
-                std::io::stderr(),
-                std::io::stderr(),
-                std::io::stderr(),
-                std::io::stderr(),
-                std::io::stderr(),
-                policy,
-            ) {
+            let startup_config = match launcher.load_startup_config_from_path(&command.config_path)
+            {
+                Ok(startup_config) => startup_config,
+                Err(error) => {
+                    eprintln!(
+                        "{}",
+                        format_receive_send_runtime_bounded_failure_summary(
+                            "--receive-send-runtime-bounded",
+                            &command,
+                            &error,
+                        )
+                    );
+                    std::process::exit(1);
+                }
+            };
+            let sink_config = match launcher
+                .load_receive_send_iteration_json_lines_sink_config_from_path(&command.config_path)
+            {
+                Ok(config) => config,
+                Err(error) => {
+                    let error = stream_sync_server::ServerReceiveSendRuntimeBoundedStartupError::IterationEventSinkConfig(error);
+                    eprintln!(
+                        "{}",
+                        format_receive_send_runtime_bounded_failure_summary(
+                            "--receive-send-runtime-bounded",
+                            &command,
+                            &error,
+                        )
+                    );
+                    std::process::exit(1);
+                }
+            };
+            let sink_plan =
+                stream_sync_server::ServerReceiveSendIterationJsonLinesSinkBoundary::default()
+                    .plan(sink_config.config, sink_config.disabled);
+            let sink_selection = match stream_sync_server::ServerReceiveSendIterationJsonLinesSinkSelectionBoundary::default()
+                .select(&sink_plan)
+            {
+                Ok(selection) => selection,
+                Err(error) => {
+                    let error = stream_sync_server::ServerReceiveSendRuntimeBoundedStartupError::IterationEventSinkSelection(error);
+                    eprintln!(
+                        "{}",
+                        format_receive_send_runtime_bounded_failure_summary(
+                            "--receive-send-runtime-bounded",
+                            &command,
+                            &error,
+                        )
+                    );
+                    std::process::exit(1);
+                }
+            };
+            let result = match sink_selection {
+                stream_sync_server::ServerReceiveSendIterationJsonLinesSinkSelection::Stderr => {
+                    launcher.run_bounded_with_all_writers_and_policy(
+                        startup_config,
+                        std::io::stderr(),
+                        std::io::stderr(),
+                        std::io::stderr(),
+                        std::io::stderr(),
+                        std::io::stderr(),
+                        policy,
+                    )
+                }
+                stream_sync_server::ServerReceiveSendIterationJsonLinesSinkSelection::Disabled => {
+                    launcher.run_bounded_with_all_writers_and_policy(
+                        startup_config,
+                        std::io::stderr(),
+                        std::io::stderr(),
+                        std::io::stderr(),
+                        std::io::stderr(),
+                        std::io::sink(),
+                        policy,
+                    )
+                }
+            };
+            match result {
                 Ok(outcome) => println!(
                     "{}",
                     format_receive_send_runtime_bounded_summary(
@@ -645,7 +713,13 @@ fn bounded_runtime_error_stop_reason(
         stream_sync_server::ServerReceiveSendRuntimeBoundedStartupError::Runtime { .. } => {
             "RuntimeFatalError"
         }
-        stream_sync_server::ServerReceiveSendRuntimeBoundedStartupError::OneIterationStartup(_)
+        stream_sync_server::ServerReceiveSendRuntimeBoundedStartupError::IterationEventSinkConfig(
+            _,
+        )
+        | stream_sync_server::ServerReceiveSendRuntimeBoundedStartupError::IterationEventSinkSelection(
+            _,
+        )
+        | stream_sync_server::ServerReceiveSendRuntimeBoundedStartupError::OneIterationStartup(_)
         | stream_sync_server::ServerReceiveSendRuntimeBoundedStartupError::Bind { .. }
         | stream_sync_server::ServerReceiveSendRuntimeBoundedStartupError::SetReceiveTimeout {
             ..
@@ -657,6 +731,15 @@ fn bounded_runtime_error_kind(
     error: &stream_sync_server::ServerReceiveSendRuntimeBoundedStartupError,
 ) -> &'static str {
     match error {
+        stream_sync_server::ServerReceiveSendRuntimeBoundedStartupError::IterationEventSinkConfig(
+            stream_sync_server::ServerAuthResponsePocStartupError::Config(_),
+        ) => "ConfigLoadFailure",
+        stream_sync_server::ServerReceiveSendRuntimeBoundedStartupError::IterationEventSinkConfig(
+            _,
+        ) => "StartupFailure",
+        stream_sync_server::ServerReceiveSendRuntimeBoundedStartupError::IterationEventSinkSelection(
+            _,
+        ) => "IterationEventSinkDeferred",
         stream_sync_server::ServerReceiveSendRuntimeBoundedStartupError::OneIterationStartup(_) => {
             "ConfigLoadFailure"
         }
@@ -684,6 +767,14 @@ fn bounded_runtime_error_detail(
     error: &stream_sync_server::ServerReceiveSendRuntimeBoundedStartupError,
 ) -> String {
     match error {
+        stream_sync_server::ServerReceiveSendRuntimeBoundedStartupError::IterationEventSinkConfig(
+            startup_error,
+        ) => format!("{startup_error:?}"),
+        stream_sync_server::ServerReceiveSendRuntimeBoundedStartupError::IterationEventSinkSelection(
+            stream_sync_server::ServerReceiveSendIterationJsonLinesSinkSelectionError::FileDestinationDeferred {
+                path,
+            },
+        ) => format!("file_destination_deferred path={}", path.display()),
         stream_sync_server::ServerReceiveSendRuntimeBoundedStartupError::Runtime {
             iteration_index,
             error,
@@ -1312,6 +1403,29 @@ mod tests {
         assert!(summary.contains("stop_reason=RuntimeFatalError"));
         assert!(summary.contains("fatal_error_kind=SendFailure"));
         assert!(summary.contains("fatal_error_detail=iteration_index=2"));
+    }
+
+    #[test]
+    fn receive_send_runtime_bounded_failure_summary_includes_deferred_iteration_sink_visibility() {
+        let summary = format_receive_send_runtime_bounded_failure_summary(
+            "--receive-send-runtime-bounded",
+            &super::ReceiveSendRuntimeBoundedCommandArgs {
+                config_path: "configs/examples/server.example.toml".to_string(),
+                max_iterations: 6,
+                receive_timeout_ms: 1000,
+            },
+            &stream_sync_server::ServerReceiveSendRuntimeBoundedStartupError::IterationEventSinkSelection(
+                stream_sync_server::ServerReceiveSendIterationJsonLinesSinkSelectionError::FileDestinationDeferred {
+                    path: "logs/receive-send-iteration.jsonl".into(),
+                },
+            ),
+        );
+
+        assert!(summary.contains("stop_reason=StartupFailure"));
+        assert!(summary.contains("fatal_error_kind=IterationEventSinkDeferred"));
+        assert!(summary.contains(
+            "fatal_error_detail=file_destination_deferred path=logs/receive-send-iteration.jsonl"
+        ));
     }
 
     #[cfg(windows)]

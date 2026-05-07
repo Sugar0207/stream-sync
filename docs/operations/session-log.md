@@ -5,6 +5,98 @@
 - Codex
 
 ### Work
+- `docs/operations/todo.md` の残タスクを、未完了チェック一覧ではなく今後の
+  指針として読めるように整理した。
+- 直近優先度を logging follow-up 中心から、MVP クリティカルパス中心へ
+  並べ替えた。
+- 次の優先順を明示した:
+  - `RTT / offset` 平滑化と targetTime 接続
+  - late frame queue mutation / jitter buffer / drop policy
+  - 認証 / runtime hardening
+  - 2-client / 4-client 長時間 validation
+  - dashboard / status visibility と運用手順
+- 残り todo を踏まえた rough な `推定 step` を `7-10 step` として追加した。
+- `logging sink config` や `failure injection` は有用だが、同期安定化と
+  長時間 validation よりは後段に置く方針を TODO に反映した。
+- `Next Items` も同じ優先度軸へ合わせて更新した。
+
+### Changed Files
+- `docs/operations/session-log.md`
+- `docs/operations/todo.md`
+
+### Decision
+- 残り todo は `MVP クリティカルパス`、`安定化 / 運用`、`future task` に
+  分けて読む。
+- 直近の主戦場は logging follow-up ではなく、同期安定化と queue policy、
+  その後の長時間 validation とする。
+
+### Validation
+- `git diff --check`
+
+## 2026-05-07
+### Type
+- Codex
+
+### Work
+- Implemented the narrow `iteration-event` sink config slice for
+  `--receive-send-runtime-bounded`.
+- Added launcher-side parse support for:
+  - `[logging.receive_send_iteration]`
+  - `enabled`
+  - `destination`
+  - `file_path`
+- Fixed current selection behavior as:
+  - section absent => stderr default
+  - `enabled=false` => disabled/discard sink
+  - `destination="disabled"` => disabled/discard sink
+  - `destination="stderr"` => caller-owned stderr
+  - `destination="file"` => parse succeeds, then selection stops with explicit
+    deferred startup error
+- Kept runtime ownership unchanged:
+  - runtime still receives only a caller-owned writer
+  - runtime does not know destination kind
+  - runtime does not know file path
+  - runtime does not open files
+- Added focused tests for:
+  - default stderr behavior
+  - `enabled=false`
+  - `destination="disabled"`
+  - `destination="stderr"`
+  - deferred `destination="file"`
+  - invalid destination parse failure
+  - runtime startup config remaining file-path unaware
+  - deferred sink failure summary visibility
+- Tightened one flaky writer-failure test with bind-collision retry so the
+  workspace suite stays stable under full test load.
+
+### Changed Files
+- `apps/server/src/lib.rs`
+- `apps/server/src/main.rs`
+- `docs/architecture/system-design.md`
+- `docs/operations/session-log.md`
+- `docs/operations/todo.md`
+
+### Decision
+- Treat `destination="file"` as explicit deferred startup error in the current
+  slice rather than silently falling back or widening runtime ownership.
+- Keep launcher/config responsible for sink interpretation while runtime stays
+  writer-only.
+- Leave file-open/rotation/retention/process-wide logger for a later outer
+  boundary slice.
+
+### Validation
+- `cargo fmt`
+- `cargo fmt --check`
+- `cargo check --workspace`
+- `cargo test -p stream-sync-server receive_send -- --test-threads=1`
+- `cargo test --workspace`
+- `git diff --check`
+
+## 2026-05-07
+### Type
+- Codex
+
+### Work
 - Fixed the docs design for iteration-event JSONL sink plan / optional config
   wiring.
 - Kept this step docs-only:

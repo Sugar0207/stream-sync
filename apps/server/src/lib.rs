@@ -212,6 +212,105 @@ impl ServerSendErrorJsonLinesSinkBoundary {
     }
 }
 
+/// Server-side JSON Lines sink config for bounded receive/send iteration events.
+///
+/// This is config/planning only. It does not open files, write records, or own
+/// a process-wide logger.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct ServerReceiveSendIterationJsonLinesSinkConfig {
+    pub receive_send_iteration: JsonLinesSinkConfig,
+}
+
+impl ServerReceiveSendIterationJsonLinesSinkConfig {
+    pub fn stderr_default() -> Self {
+        Self {
+            receive_send_iteration: JsonLinesSinkConfig::stderr(),
+        }
+    }
+
+    pub fn disabled() -> Self {
+        // Disabled remains a launcher-owned sink choice. Planning uses stderr
+        // only for destination normalization; selection converts it to sink().
+        Self {
+            receive_send_iteration: JsonLinesSinkConfig::stderr(),
+        }
+    }
+
+    pub fn file_sink(path: impl Into<PathBuf>) -> Self {
+        Self {
+            receive_send_iteration: JsonLinesSinkConfig::file(path),
+        }
+    }
+}
+
+/// Normalized JSON Lines sink plan for bounded receive/send iteration events.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct ServerReceiveSendIterationJsonLinesSinkPlan {
+    pub receive_send_iteration: JsonLinesSinkPlan,
+    pub disabled: bool,
+}
+
+/// Boundary that maps iteration-event logging config to a sink plan.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct ServerReceiveSendIterationJsonLinesSinkBoundary {
+    sink_plan: JsonLinesSinkPlanBoundary,
+}
+
+impl ServerReceiveSendIterationJsonLinesSinkBoundary {
+    pub fn plan(
+        &self,
+        config: ServerReceiveSendIterationJsonLinesSinkConfig,
+        disabled: bool,
+    ) -> ServerReceiveSendIterationJsonLinesSinkPlan {
+        ServerReceiveSendIterationJsonLinesSinkPlan {
+            receive_send_iteration: self.sink_plan.plan(config.receive_send_iteration),
+            disabled,
+        }
+    }
+}
+
+/// Launcher-visible sink selection for bounded iteration-event JSONL.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ServerReceiveSendIterationJsonLinesSinkSelection {
+    Stderr,
+    Disabled,
+}
+
+/// Selection error for bounded iteration-event JSONL.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum ServerReceiveSendIterationJsonLinesSinkSelectionError {
+    FileDestinationDeferred { path: PathBuf },
+}
+
+/// Boundary that converts a sink plan into the current launcher-owned sink choice.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct ServerReceiveSendIterationJsonLinesSinkSelectionBoundary;
+
+impl ServerReceiveSendIterationJsonLinesSinkSelectionBoundary {
+    pub fn select(
+        &self,
+        plan: &ServerReceiveSendIterationJsonLinesSinkPlan,
+    ) -> Result<
+        ServerReceiveSendIterationJsonLinesSinkSelection,
+        ServerReceiveSendIterationJsonLinesSinkSelectionError,
+    > {
+        if plan.disabled {
+            return Ok(ServerReceiveSendIterationJsonLinesSinkSelection::Disabled);
+        }
+
+        match &plan.receive_send_iteration.destination {
+            stream_sync_logging::JsonLinesSinkDestination::Stderr => {
+                Ok(ServerReceiveSendIterationJsonLinesSinkSelection::Stderr)
+            }
+            stream_sync_logging::JsonLinesSinkDestination::File(file) => Err(
+                ServerReceiveSendIterationJsonLinesSinkSelectionError::FileDestinationDeferred {
+                    path: file.path.clone(),
+                },
+            ),
+        }
+    }
+}
+
 impl ServerReceiveLoopStep {
     pub fn handle_received_packet(
         &self,
@@ -484,6 +583,32 @@ impl ServerAuthResponsePocLauncher {
         })
     }
 
+    pub fn load_receive_send_iteration_json_lines_sink_config_from_path(
+        &self,
+        path: impl AsRef<Path>,
+    ) -> Result<
+        ServerReceiveSendIterationJsonLinesSinkParsedConfig,
+        ServerAuthResponsePocStartupError,
+    > {
+        let path = path.as_ref();
+        let content =
+            fs::read_to_string(path).map_err(|error| ServerAuthResponsePocStartupError::Io {
+                path: path.to_path_buf(),
+                message: error.to_string(),
+            })?;
+        self.load_receive_send_iteration_json_lines_sink_config_from_str(&content)
+    }
+
+    pub fn load_receive_send_iteration_json_lines_sink_config_from_str(
+        &self,
+        input: &str,
+    ) -> Result<
+        ServerReceiveSendIterationJsonLinesSinkParsedConfig,
+        ServerAuthResponsePocStartupError,
+    > {
+        parse_receive_send_iteration_json_lines_sink_config(input)
+    }
+
     pub fn run_once_from_path(
         &self,
         path: impl AsRef<Path>,
@@ -571,6 +696,15 @@ pub enum ServerAuthResponsePocConfigError {
         line: usize,
         key: String,
     },
+    InvalidBoolean {
+        line: usize,
+        key: String,
+    },
+    InvalidValue {
+        line: usize,
+        key: String,
+        value: String,
+    },
     MissingField {
         section: &'static str,
         key: &'static str,
@@ -579,6 +713,12 @@ pub enum ServerAuthResponsePocConfigError {
         value: String,
         message: String,
     },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ServerReceiveSendIterationJsonLinesSinkParsedConfig {
+    pub config: ServerReceiveSendIterationJsonLinesSinkConfig,
+    pub disabled: bool,
 }
 
 /// Convenience entry point for the server binary and manual PoC wiring.
@@ -1956,6 +2096,8 @@ pub struct ServerReceiveSendRuntimeBoundedStartupOutcome {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ServerReceiveSendRuntimeBoundedStartupError {
     OneIterationStartup(ServerReceiveSendOneIterationStartupError),
+    IterationEventSinkConfig(ServerAuthResponsePocStartupError),
+    IterationEventSinkSelection(ServerReceiveSendIterationJsonLinesSinkSelectionError),
     Bind {
         address: SocketAddr,
         kind: io::ErrorKind,
@@ -2005,6 +2147,28 @@ impl ServerReceiveSendRuntimeBoundedLauncher {
         ServerReceiveSendOneIterationLauncher::default()
             .load_startup_config_from_str(input)
             .map_err(ServerReceiveSendRuntimeBoundedStartupError::OneIterationStartup)
+    }
+
+    pub fn load_receive_send_iteration_json_lines_sink_config_from_path(
+        &self,
+        path: impl AsRef<Path>,
+    ) -> Result<
+        ServerReceiveSendIterationJsonLinesSinkParsedConfig,
+        ServerAuthResponsePocStartupError,
+    > {
+        ServerAuthResponsePocLauncher::default()
+            .load_receive_send_iteration_json_lines_sink_config_from_path(path)
+    }
+
+    pub fn load_receive_send_iteration_json_lines_sink_config_from_str(
+        &self,
+        input: &str,
+    ) -> Result<
+        ServerReceiveSendIterationJsonLinesSinkParsedConfig,
+        ServerAuthResponsePocStartupError,
+    > {
+        ServerAuthResponsePocLauncher::default()
+            .load_receive_send_iteration_json_lines_sink_config_from_str(input)
     }
 
     pub fn run_bounded_from_path_with_writers_and_policy<
@@ -2542,6 +2706,13 @@ struct PartialServerPocSettings {
     protocol_version: Option<u32>,
 }
 
+#[derive(Debug, Default)]
+struct PartialReceiveSendIterationJsonLinesSinkSettings {
+    enabled: Option<bool>,
+    destination: Option<String>,
+    file_path: Option<String>,
+}
+
 fn parse_server_poc_settings(
     input: &str,
 ) -> Result<ServerPocSettings, ServerAuthResponsePocStartupError> {
@@ -2623,6 +2794,108 @@ fn parse_server_poc_settings(
     })
 }
 
+fn parse_receive_send_iteration_json_lines_sink_config(
+    input: &str,
+) -> Result<ServerReceiveSendIterationJsonLinesSinkParsedConfig, ServerAuthResponsePocStartupError>
+{
+    let mut current_section: Option<&str> = None;
+    let mut parsed = PartialReceiveSendIterationJsonLinesSinkSettings::default();
+
+    for (index, raw_line) in input.lines().enumerate() {
+        let line_number = index + 1;
+        let line = strip_toml_comment(raw_line).trim();
+        if line.is_empty() {
+            continue;
+        }
+
+        if let Some(section_name) = line
+            .strip_prefix('[')
+            .and_then(|value| value.strip_suffix(']'))
+        {
+            current_section = match section_name {
+                "logging.receive_send_iteration" => Some("logging.receive_send_iteration"),
+                _ => None,
+            };
+            continue;
+        }
+
+        let Some(section) = current_section else {
+            continue;
+        };
+        let Some((key, raw_value)) = line.split_once('=') else {
+            return Err(ServerAuthResponsePocStartupError::Config(
+                ServerAuthResponsePocConfigError::InvalidTomlLine {
+                    line: line_number,
+                    message: "expected key = value".to_string(),
+                },
+            ));
+        };
+        let key = key.trim();
+        let value = raw_value.trim();
+
+        match (section, key) {
+            ("logging.receive_send_iteration", "enabled") => {
+                parsed.enabled = Some(parse_poc_bool(value, line_number, key)?);
+            }
+            ("logging.receive_send_iteration", "destination") => {
+                parsed.destination = Some(parse_poc_toml_string(value, line_number, key)?);
+            }
+            ("logging.receive_send_iteration", "file_path") => {
+                parsed.file_path = Some(parse_poc_toml_string(value, line_number, key)?);
+            }
+            _ => {}
+        }
+    }
+
+    let enabled = parsed.enabled.unwrap_or(true);
+    if !enabled {
+        return Ok(ServerReceiveSendIterationJsonLinesSinkParsedConfig {
+            config: ServerReceiveSendIterationJsonLinesSinkConfig::disabled(),
+            disabled: true,
+        });
+    }
+
+    let destination = parsed.destination.as_deref().unwrap_or("stderr");
+
+    let config = match destination {
+        "stderr" => ServerReceiveSendIterationJsonLinesSinkConfig::stderr_default(),
+        "disabled" => ServerReceiveSendIterationJsonLinesSinkConfig::disabled(),
+        "file" => {
+            let file_path = parsed.file_path.ok_or_else(|| {
+                ServerAuthResponsePocStartupError::Config(
+                    ServerAuthResponsePocConfigError::MissingField {
+                        section: "logging.receive_send_iteration",
+                        key: "file_path",
+                    },
+                )
+            })?;
+            if file_path.trim().is_empty() {
+                return Err(ServerAuthResponsePocStartupError::Config(
+                    ServerAuthResponsePocConfigError::MissingField {
+                        section: "logging.receive_send_iteration",
+                        key: "file_path",
+                    },
+                ));
+            }
+            ServerReceiveSendIterationJsonLinesSinkConfig::file_sink(file_path)
+        }
+        other => {
+            return Err(ServerAuthResponsePocStartupError::Config(
+                ServerAuthResponsePocConfigError::InvalidValue {
+                    line: find_toml_key_line(input, "destination").unwrap_or(0),
+                    key: "destination".to_string(),
+                    value: other.to_string(),
+                },
+            ));
+        }
+    };
+
+    Ok(ServerReceiveSendIterationJsonLinesSinkParsedConfig {
+        config,
+        disabled: destination == "disabled",
+    })
+}
+
 fn resolve_bind_address(
     host: &str,
     port: u16,
@@ -2694,10 +2967,34 @@ fn parse_poc_u32(
     })
 }
 
+fn parse_poc_bool(
+    value: &str,
+    line: usize,
+    key: &str,
+) -> Result<bool, ServerAuthResponsePocStartupError> {
+    match value {
+        "true" => Ok(true),
+        "false" => Ok(false),
+        _ => Err(ServerAuthResponsePocStartupError::Config(
+            ServerAuthResponsePocConfigError::InvalidBoolean {
+                line,
+                key: key.to_string(),
+            },
+        )),
+    }
+}
+
 fn strip_toml_comment(line: &str) -> &str {
     line.split_once('#')
         .map(|(before_comment, _)| before_comment)
         .unwrap_or(line)
+}
+
+fn find_toml_key_line(input: &str, key: &str) -> Option<usize> {
+    input.lines().enumerate().find_map(|(index, raw_line)| {
+        let line = strip_toml_comment(raw_line).trim();
+        line.starts_with(&format!("{key} =")).then_some(index + 1)
+    })
 }
 
 fn current_system_timestamp_micros() -> TimestampMicros {
@@ -11200,6 +11497,202 @@ mod tests {
     }
 
     #[test]
+    fn receive_send_iteration_json_lines_sink_defaults_to_stderr_when_section_is_absent() {
+        let launcher = ServerAuthResponsePocLauncher::default();
+        let parsed = launcher
+            .load_receive_send_iteration_json_lines_sink_config_from_str(include_str!(
+                "../../../configs/examples/server.example.toml"
+            ))
+            .expect("example config should use stderr by default");
+        let plan = ServerReceiveSendIterationJsonLinesSinkBoundary::default()
+            .plan(parsed.config, parsed.disabled);
+        let selection = ServerReceiveSendIterationJsonLinesSinkSelectionBoundary::default()
+            .select(&plan)
+            .expect("stderr selection should succeed");
+
+        assert!(!plan.disabled);
+        assert_eq!(
+            plan.receive_send_iteration.destination,
+            JsonLinesSinkDestination::Stderr
+        );
+        assert_eq!(
+            selection,
+            ServerReceiveSendIterationJsonLinesSinkSelection::Stderr
+        );
+    }
+
+    #[test]
+    fn receive_send_iteration_json_lines_sink_enabled_false_maps_to_disabled() {
+        let launcher = ServerAuthResponsePocLauncher::default();
+        let parsed = launcher
+            .load_receive_send_iteration_json_lines_sink_config_from_str(
+                r#"
+[logging.receive_send_iteration]
+enabled = false
+"#,
+            )
+            .expect("enabled=false should parse");
+        let plan = ServerReceiveSendIterationJsonLinesSinkBoundary::default()
+            .plan(parsed.config, parsed.disabled);
+        let selection = ServerReceiveSendIterationJsonLinesSinkSelectionBoundary::default()
+            .select(&plan)
+            .expect("disabled selection should succeed");
+
+        assert!(plan.disabled);
+        assert_eq!(
+            selection,
+            ServerReceiveSendIterationJsonLinesSinkSelection::Disabled
+        );
+    }
+
+    #[test]
+    fn receive_send_iteration_json_lines_sink_disabled_destination_maps_to_disabled() {
+        let launcher = ServerAuthResponsePocLauncher::default();
+        let parsed = launcher
+            .load_receive_send_iteration_json_lines_sink_config_from_str(
+                r#"
+[logging.receive_send_iteration]
+destination = "disabled"
+"#,
+            )
+            .expect("disabled destination should parse");
+        let plan = ServerReceiveSendIterationJsonLinesSinkBoundary::default()
+            .plan(parsed.config, parsed.disabled);
+        let selection = ServerReceiveSendIterationJsonLinesSinkSelectionBoundary::default()
+            .select(&plan)
+            .expect("disabled selection should succeed");
+
+        assert!(plan.disabled);
+        assert_eq!(
+            selection,
+            ServerReceiveSendIterationJsonLinesSinkSelection::Disabled
+        );
+    }
+
+    #[test]
+    fn receive_send_iteration_json_lines_sink_stderr_destination_maps_to_stderr() {
+        let launcher = ServerAuthResponsePocLauncher::default();
+        let parsed = launcher
+            .load_receive_send_iteration_json_lines_sink_config_from_str(
+                r#"
+[logging.receive_send_iteration]
+destination = "stderr"
+"#,
+            )
+            .expect("stderr destination should parse");
+        let plan = ServerReceiveSendIterationJsonLinesSinkBoundary::default()
+            .plan(parsed.config, parsed.disabled);
+        let selection = ServerReceiveSendIterationJsonLinesSinkSelectionBoundary::default()
+            .select(&plan)
+            .expect("stderr selection should succeed");
+
+        assert!(!plan.disabled);
+        assert_eq!(
+            plan.receive_send_iteration.destination,
+            JsonLinesSinkDestination::Stderr
+        );
+        assert_eq!(
+            selection,
+            ServerReceiveSendIterationJsonLinesSinkSelection::Stderr
+        );
+    }
+
+    #[test]
+    fn receive_send_iteration_json_lines_sink_file_destination_is_deferred_at_selection() {
+        let launcher = ServerAuthResponsePocLauncher::default();
+        let parsed = launcher
+            .load_receive_send_iteration_json_lines_sink_config_from_str(
+                r#"
+[logging.receive_send_iteration]
+destination = "file"
+file_path = "logs/receive-send-iteration.jsonl"
+"#,
+            )
+            .expect("file destination should parse before file-open support exists");
+        let plan = ServerReceiveSendIterationJsonLinesSinkBoundary::default()
+            .plan(parsed.config, parsed.disabled);
+        let selection_error = ServerReceiveSendIterationJsonLinesSinkSelectionBoundary::default()
+            .select(&plan)
+            .expect_err("file destination should remain deferred");
+
+        assert!(!plan.disabled);
+        match &plan.receive_send_iteration.destination {
+            JsonLinesSinkDestination::File(file) => {
+                assert_eq!(
+                    file.path,
+                    PathBuf::from("logs/receive-send-iteration.jsonl")
+                );
+            }
+            other => panic!("expected file sink plan, got {other:?}"),
+        }
+        assert_eq!(
+            selection_error,
+            ServerReceiveSendIterationJsonLinesSinkSelectionError::FileDestinationDeferred {
+                path: PathBuf::from("logs/receive-send-iteration.jsonl"),
+            }
+        );
+    }
+
+    #[test]
+    fn receive_send_iteration_json_lines_sink_rejects_invalid_destination() {
+        let launcher = ServerAuthResponsePocLauncher::default();
+        let error = launcher
+            .load_receive_send_iteration_json_lines_sink_config_from_str(
+                r#"
+[logging.receive_send_iteration]
+destination = "stdout"
+"#,
+            )
+            .expect_err("invalid destination should fail");
+
+        assert_eq!(
+            error,
+            ServerAuthResponsePocStartupError::Config(
+                ServerAuthResponsePocConfigError::InvalidValue {
+                    line: 3,
+                    key: "destination".to_string(),
+                    value: "stdout".to_string(),
+                }
+            )
+        );
+    }
+
+    #[test]
+    fn receive_send_runtime_startup_config_remains_file_path_unaware() {
+        let launcher = ServerReceiveSendRuntimeBoundedLauncher::default();
+        let config = format!(
+            "{}\n[logging.receive_send_iteration]\ndestination = \"file\"\nfile_path = \"logs/receive-send-iteration.jsonl\"\n",
+            receive_send_runtime_test_config(5000)
+        );
+
+        let startup_config = launcher
+            .load_startup_config_from_str(&config)
+            .expect("runtime startup config should ignore iteration sink file path");
+        let parsed_sink_config = ServerAuthResponsePocLauncher::default()
+            .load_receive_send_iteration_json_lines_sink_config_from_str(&config)
+            .expect("sink config should parse");
+        let sink_plan = ServerReceiveSendIterationJsonLinesSinkBoundary::default()
+            .plan(parsed_sink_config.config, parsed_sink_config.disabled);
+        let selection_error = ServerReceiveSendIterationJsonLinesSinkSelectionBoundary::default()
+            .select(&sink_plan)
+            .expect_err("file sink should remain deferred in this slice");
+
+        assert_eq!(
+            startup_config.bind_address,
+            "127.0.0.1:5000"
+                .parse::<SocketAddr>()
+                .expect("address should parse")
+        );
+        assert_eq!(startup_config.expected_protocol_version, ProtocolVersion(2));
+        assert_eq!(
+            selection_error,
+            ServerReceiveSendIterationJsonLinesSinkSelectionError::FileDestinationDeferred {
+                path: PathBuf::from("logs/receive-send-iteration.jsonl"),
+            }
+        );
+    }
+
+    #[test]
     fn receive_loop_routes_decoded_packet() {
         let source = packet_source();
         let payload = heartbeat_payload();
@@ -15890,49 +16383,58 @@ shared_token = "secret"
 
     #[test]
     fn receive_send_runtime_bounded_iteration_writer_failure_is_explicit() {
-        let launcher = ServerReceiveSendRuntimeBoundedLauncher::default();
-        let bind_port = reserve_localhost_udp_port();
-        let startup_config = launcher
-            .load_startup_config_from_str(&receive_send_runtime_test_config(bind_port))
-            .expect("bounded runtime config should load");
-        let server_address = SocketAddr::from(([127, 0, 0, 1], bind_port));
-        let handle = std::thread::spawn(move || {
-            launcher.run_bounded_with_all_writers_and_policy(
-                startup_config,
-                Vec::new(),
-                Vec::new(),
-                Vec::new(),
-                Vec::new(),
-                AlwaysFailWriter,
-                ServerReceiveSendRuntimeBoundedPolicy {
-                    max_iterations: 1,
-                    receive_timeout: Duration::from_millis(500),
-                },
-            )
-        });
-        let client_socket = UdpSocket::bind("127.0.0.1:0").expect("client socket should bind");
-        std::thread::sleep(Duration::from_millis(50));
-        client_socket
-            .send_to(
-                auth_request_packet("client-1", "presented-secret").as_slice(),
-                server_address,
-            )
-            .expect("auth request should send");
+        for _ in 0..8 {
+            let launcher = ServerReceiveSendRuntimeBoundedLauncher::default();
+            let bind_port = reserve_localhost_udp_port();
+            let startup_config = launcher
+                .load_startup_config_from_str(&receive_send_runtime_test_config(bind_port))
+                .expect("bounded runtime config should load");
+            let server_address = SocketAddr::from(([127, 0, 0, 1], bind_port));
+            let handle = std::thread::spawn(move || {
+                launcher.run_bounded_with_all_writers_and_policy(
+                    startup_config,
+                    Vec::new(),
+                    Vec::new(),
+                    Vec::new(),
+                    Vec::new(),
+                    AlwaysFailWriter,
+                    ServerReceiveSendRuntimeBoundedPolicy {
+                        max_iterations: 1,
+                        receive_timeout: Duration::from_millis(500),
+                    },
+                )
+            });
+            let client_socket = UdpSocket::bind("127.0.0.1:0").expect("client socket should bind");
+            std::thread::sleep(Duration::from_millis(50));
+            client_socket
+                .send_to(
+                    auth_request_packet("client-1", "presented-secret").as_slice(),
+                    server_address,
+                )
+                .expect("auth request should send");
 
-        let outcome = handle
-            .join()
-            .expect("bounded runtime thread should join")
-            .expect("bounded runtime should complete");
+            match handle.join().expect("bounded runtime thread should join") {
+                Ok(outcome) => {
+                    assert_eq!(outcome.iteration_events.len(), 1);
+                    assert_eq!(outcome.iteration_event_log_summary.lines_written, 0);
+                    assert_eq!(outcome.iteration_event_log_summary.write_failures, 1);
+                    assert_eq!(
+                        outcome.iteration_event_log_summary.last_writer_error,
+                        Some(io::ErrorKind::BrokenPipe)
+                    );
+                    assert_eq!(outcome.summary.auth_requests_received, 1);
+                    assert_eq!(outcome.summary.auth_responses_sent, 1);
+                    return;
+                }
+                Err(ServerReceiveSendRuntimeBoundedStartupError::Bind {
+                    kind: io::ErrorKind::AddrInUse,
+                    ..
+                }) => continue,
+                Err(error) => panic!("bounded runtime should complete: {error:?}"),
+            }
+        }
 
-        assert_eq!(outcome.iteration_events.len(), 1);
-        assert_eq!(outcome.iteration_event_log_summary.lines_written, 0);
-        assert_eq!(outcome.iteration_event_log_summary.write_failures, 1);
-        assert_eq!(
-            outcome.iteration_event_log_summary.last_writer_error,
-            Some(io::ErrorKind::BrokenPipe)
-        );
-        assert_eq!(outcome.summary.auth_requests_received, 1);
-        assert_eq!(outcome.summary.auth_responses_sent, 1);
+        panic!("bounded runtime bind kept colliding across retries");
     }
 
     #[test]
