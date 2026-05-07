@@ -9528,6 +9528,113 @@ First-slice message/runtime scope:
   - process-wide logger installation
   - continuous switcher/view/operator runtime integration
 
+Continuous logging ownership design for the bounded receive/send runtime:
+
+- keep two output families separate:
+  - final bounded summary
+  - operational event logs
+- final bounded summary responsibility:
+  - one aggregate record per bounded run
+  - human/manual validation visibility
+  - stop/fatal visibility that would otherwise be silent
+  - compact counters and last-known stop/error fields only
+- operational log responsibility:
+  - per-iteration and per-packet event visibility
+  - auth success / auth rejection visibility
+  - receive decode / gate acceptance rejection visibility
+  - send success / send failure visibility
+  - future JSONL / file sink / dashboard/exporter feed
+  - not the primary human closeout summary surface
+
+Current ownership boundary:
+
+- `--receive-send-runtime-bounded` keeps caller-owned writers across the full
+  process lifetime.
+- the bounded runtime may prepare or invoke schema-specific operational writer
+  boundaries, but it does not:
+  - open files
+  - rotate files
+  - install a process-wide logger
+  - own dashboard/exporter transport
+  - own process lifecycle shutdown/flush policy
+- writer ownership remains outside the bounded runtime because the next slice
+  still needs deterministic tests and bounded local execution without a global
+  logging subsystem.
+
+Current role split:
+
+- stdout/stderr summary surface:
+  - stdout:
+    - final bounded aggregate summary for successful runs
+  - stderr:
+    - fatal/startup failure summary for runs that cannot produce a normal final
+      bounded summary
+  - this surface is intentionally compact and human-oriented
+- structured operational log surface:
+  - schema-specific event records such as auth, receive rejection,
+    receive-loop operational, and send operational/failure events
+  - intended for future JSON Lines sinks, file sinks, retention, and dashboard
+    export
+  - must not replace the final bounded summary
+
+Required separation of concerns:
+
+- bounded runtime aggregate summary:
+  - owns final counters and stop/fatal visibility only
+- per-iteration operational logs:
+  - own repeated event emission only
+  - do not decide stop policy or process lifecycle
+- auth success / rejection logs:
+  - stay schema-specific and distinct from receive rejection logs
+- receive decode / acceptance rejection logs:
+  - stay schema-specific and distinct from auth and send logs
+- send success / send failure logs:
+  - stay schema-specific and distinct from final send-failure summary
+- fatal/startup failure summary:
+  - remains one compact terminal summary surface
+  - should not duplicate full per-event operational history
+- future JSONL/file sink:
+  - owns sink open, rotation, buffering, retention, and destination choice
+  - receives already-shaped structured events from server-owned boundaries
+- future dashboard/exporter:
+  - consumes structured event handoff or exported snapshots
+  - does not own runtime stop policy or file sink lifecycle
+
+Next narrow implementation slice for logging ownership:
+
+- add or formalize one per-iteration receive/send event handoff shape that can
+  collect:
+  - iteration index
+  - receive outcome kind
+  - auth outcome when present
+  - send outcome when present
+  - rejection kind when present
+- keep the first logging-ownership implementation slice caller-owned:
+  - accept an injected writer set or event sink set
+  - do not add file open/rotation
+  - do not add a process-wide logger
+- avoid duplication between terminal summary and operational events:
+  - final fatal summary keeps only terminal classification and compact counters
+  - operational logs keep repeated event detail
+  - the same failure should not require both surfaces to carry the same full
+    payload
+
+Blockers for the logging-ownership slice:
+
+- aggregate summary remains visible and unchanged as the primary bounded-run
+  closeout surface
+- fatal failure remains non-silent
+- per-iteration logs do not own process lifecycle or stop policy
+- writers remain caller-owned for now
+
+Non-blockers for the logging-ownership slice:
+
+- file rotation
+- process-wide logger installation
+- dashboard/exporter integration
+- long-running retention policy
+- GUI / OBS / hardware encoder work
+
 Bounded PoC to continuous-runtime design differences:
 
 - process lifetime:

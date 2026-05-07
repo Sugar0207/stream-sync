@@ -5,6 +5,56 @@
 - Codex
 
 ### Work
+- Fixed the docs design for receive/send continuous logging ownership without
+  widening code scope.
+- Kept the design intentionally narrow:
+  - no retry/requeue
+  - no file sink open/rotation
+  - no process-wide logger implementation
+  - no continuous video path
+  - no switcher continuous runtime
+  - no daemon lifecycle work
+- Separated the bounded runtime output into two surfaces:
+  - stdout/stderr summary for bounded-run closeout and fatal visibility
+  - structured operational logs for per-iteration/per-packet event visibility
+- Documented the responsibility split for:
+  - bounded runtime aggregate summary
+  - per-iteration operational logs
+  - auth success / rejection logs
+  - receive decode / acceptance rejection logs
+  - send success / send failure logs
+  - fatal/startup failure summary
+  - future JSONL/file sink
+  - future dashboard/exporter
+- Fixed caller-owned writer ownership as the current rule for the bounded
+  runtime:
+  - the runtime may invoke schema-specific writer boundaries
+  - it does not own file open, rotation, process-wide logger installation, or
+    dashboard/exporter transport
+- Documented the next narrow logging slice as per-iteration receive/send event
+  handoff ownership rather than sink management.
+
+### Changed Files
+- `docs/architecture/system-design.md`
+- `docs/operations/session-log.md`
+- `docs/operations/todo.md`
+
+### Decision
+- Keep final bounded summary and operational structured logs as separate
+  surfaces with different consumers.
+- Keep writers caller-owned until there is a concrete need for file sink or
+  process-wide logger ownership.
+- Treat file sink, rotation, retention, and dashboard/exporter transport as
+  future outer boundaries rather than responsibilities of the bounded runtime.
+
+### Validation
+- `git diff --check`
+
+## 2026-05-07
+### Type
+- Codex
+
+### Work
 - Added a narrow fatal/stop visibility slice for
   `--receive-send-runtime-bounded`.
 - Kept the change intentionally small:
