@@ -1,5 +1,60 @@
 <!-- stream-sync/docs/operations/session-log.md -->
 
+## 2026-05-08
+### Type
+- Codex
+
+### Work
+- Implemented the minimal late-frame queue mutation / drop-policy slice for the
+  source-backed path.
+- Added:
+  - `SwitcherLateFrameQueueMutationPolicy`
+  - `SwitcherSingleClientLateFrameQueueMutationBoundary`
+  - typed drop records / retained-head summary
+- Fixed the first late-frame rule as:
+  - evaluate only the oldest queued frame per `client_id + run_id`
+  - use adjusted capture timestamp when offset exists
+  - fall back to raw capture timestamp when offset is unavailable
+  - drop only while `adjusted_capture_timestamp < targetTime - max_late_micros`
+  - retain boundary-equal frames conservatively
+- Added a thin `mutate_and_select_*` path so tests can verify:
+  - late drop
+  - retain
+  - final consume/selection behavior together
+- Added an opt-in source-backed validation integration:
+  `SwitcherServerMediatedTwoViewValidationBoundary::run_with_runtimes_and_late_frame_queue_mutation`
+- Kept this slice intentionally narrow:
+  - no adaptive jitter buffer
+  - no dynamic RTT-based threshold tuning
+  - no handoff-wide late-drop mutation
+  - no `NoFrame` / `Waiting` / `HandoffError` operational redesign
+
+### Changed Files
+- `apps/switcher/src/lib.rs`
+- `docs/architecture/system-design.md`
+- `docs/operations/session-log.md`
+- `docs/operations/todo.md`
+
+### Decision
+- Keep late-drop ownership separate from pure targetTime selection.
+- Reuse only existing `PreviewOldest` / `ConsumeOldest` queue read modes for the
+  first mutation slice instead of widening queue/runtime responsibilities.
+- Keep the first runtime-facing integration source-backed and opt-in so the
+  current fallible handoff path is not broadened before the later operational
+  behavior review.
+
+### Validation
+- `cargo fmt`
+- `cargo fmt --check`
+- `cargo check --workspace`
+- `cargo test -p stream-sync-switcher late_frame_queue_mutation_drops_oldest_frames_older_than_threshold`
+- `cargo test -p stream-sync-switcher late_frame_queue_mutation_uses_adjusted_timestamp_when_offset_is_available`
+- `cargo test -p stream-sync-switcher late_frame_queue_mutation_falls_back_to_raw_timestamp_without_offset`
+- `cargo test -p stream-sync-switcher late_frame_queue_mutation_can_drop_then_consume_selected_frame`
+- `cargo test -p stream-sync-switcher server_mediated_two_view_validation_can_drop_late_frames_before_selection`
+- `cargo test --workspace`
+- `git diff --check`
+
 ## 2026-05-07
 ### Type
 - Codex

@@ -2,7 +2,7 @@
 
 # StreamSync TODO
 
-最終更新: 2026-05-07
+最終更新: 2026-05-08
 
 このファイルは「現在どこまで終わっていて、次に何をやるか」を確認するための TODO です。  
 時系列の作業履歴、判断理由、各回の作業メモは `docs/operations/session-log.md` を正とします。
@@ -22,6 +22,7 @@
 ---
 
 ## 現在位置
+- late frame queue mutation / jitter buffer / drop policy の最小 slice を source-backed path で実装した。`SwitcherSingleClientLateFrameQueueMutationBoundary` が oldest head を targetTime 基準で評価し、補正後 timestamp が `targetTime - max_late_micros` より古い frame だけを conservative に drop する。drop summary は testable に返し、source-backed 2-view validation では opt-in で接続できる
 - `RTT / offset` 平滑化と補正後 timestamp の targetTime selection 接続は最小 slice を完了した。server 側は latest raw estimate と smoothed estimate を分離保持し、switcher 側は optional な per-client clock offset を targetTime-aware source / scheduler / validation boundary へ薄く配線できる
 - 仕様固定、Cargo workspace 初期化、`apps/*` / `crates/*` の scaffold は完了している
 - `crates/protocol` / `crates/config` / `crates/net-core` の最小実装は揃っており、主要 message 型、timestamp 型、fixed header decode / encode、server auth 設定読み込み、`shared_token_env` 解決、UDP 1 datagram receive / send adapter までは完了している
@@ -29,7 +30,7 @@
 - client 側は auth one-shot、heartbeat one-shot、`HeartbeatAckObservation` 付き `ClientStats` one-shot、one-tick runtime、accepted path 手動確認まで完了している
 - client continuous heartbeat loop は thin composition の completed body まで実装済みで、heartbeat timeout notice wakeup planning 境界、wakeup execution 境界、wakeup actual side-effect 境界、outer while-loop connection 境界、outer while-loop one-turn execution body 境界、actual timer wait / retry execution / reconnect 実行境界、outer while-loop 反復実行本体、reconnect policy 境界、caller-owned hook 付き actual socket 再確立境界、real UDP socket 差し替え hook、repeated body からの hook 注入経路まで完了している
 - 4-view operator MVP closeout は完了し、final regression も通過、push も完了している。bounded real encoded video / raw-key operator wrapper / `AllView` / `Focused(0..3)` / `AllView` return / raw console restore / `[video.encoder]` profile wiring / production H.264 stdout visibility / short OBS Window Capture validation までは current completed scope とする
-- 未完了の中心は late frame queue mutation / drop policy、4-view sync orchestration、dashboard UI rendering、continuous receive/send loop の次 slice、実キュー / 実送信 / 継続ログ出力である。continuous receive/send runtime は first implementation slice として server-owned bounded repeated runtime まで追加済みで、next major phase はその manual validation と後続の narrow expansion へ移る
+- 未完了の中心は `NoFrame` / `Waiting` / `HandoffError` の運用時挙動見直し、4-view sync orchestration、dashboard UI rendering、continuous receive/send loop の次 slice、実キュー / 実送信 / 継続ログ出力である。continuous receive/send runtime は first implementation slice として server-owned bounded repeated runtime まで追加済みで、next major phase はその manual validation と後続の narrow expansion へ移る
 - `stream-sync-server --receive-send-runtime-bounded [config-path] [max-iterations] [receive-timeout-ms]` は追加済みで、1 process lifetime で 1 bound UDP socket / 1 `AuthenticatedSenderRegistry` / 1 `ServerOutboundQueueCollection` / caller-owned writers を維持しながら existing `ServerControllerReceiveSendRuntimeBoundary` を outer loop から繰り返し呼べる
 - bounded repeated runtime summary には `command_name` / `config_path` / `max_iterations` / `receive_timeout_ms` / `iterations_attempted` / `iterations_completed` / `auth_requests_received` / `auth_responses_sent` / `heartbeats_received` / `heartbeat_acks_sent` / `client_stats_received` / `client_stats_returns_sent` / `accepted_packets` / `rejected_packets` / `decode_errors` / `send_failures` / `outbound_queue_len` / `registered_clients` / `stop_reason` を出す
 - fatal/stop visibility の narrow slice も追加済みで、success summary には `timeout_iterations` / `timeout_only_run` / `last_receive_error` / `last_send_error` / `last_rejected_reason` を追加した。fatal/startup failure 時は same command args を含む one-line failure summary を stderr に出し、`stop_reason` / `fatal_error_kind` / `fatal_error_detail` で silent failure を避ける
@@ -165,14 +166,13 @@
 ---
 
 ## 直近でやること
-1. late frame queue mutation / jitter buffer / drop policy の最小実装を入れる
-   - 現状の preview / validation path を production-like runtime に近づける中心タスクとして扱う
-   - `sync-core` と `video frame / 映像受信` の未完了項目をここに集約して扱う
+1. `NoFrame` / `Waiting` / `HandoffError` の運用時挙動を長時間 run 前提で見直す
+   - 今回の slice では source-backed late-drop までに留めたので、placeholder / stale / hold / source-error の実運用判断を次段で詰める
 2. 認証 / runtime hardening と長時間 validation の順で固める
    - timeout / 再認証 / version check / secret redaction を先に狭く実装する
    - その後に 2-client -> 4-client の長時間 run で drop / sync 誤差 / render 安定性を確認する
-3. `NoFrame` / `Waiting` / `HandoffError` の運用時挙動を長時間 run 前提で見直す
-   - 今回の slice では selection 判定までに限定したため、placeholder / stale / hold の運用判断は次段で詰める
+3. continuous receive / send runtime の不足分と長時間 validation 前提の観測面を狭く埋める
+   - 実 outbound queue 処理と event destination selection を先に詰める
 
 ## 今後の大まかな指針
 - 残り todo は `MVP クリティカルパス`、`安定化 / 運用`、`future task` に分けて扱う
@@ -180,17 +180,16 @@
 - まずは「4人を real handoff で安定表示し続ける」ことを基準に優先度を決める
 
 ## 残り todo から見た推定 step
-- 目安は `6-9 step`。1 step は Codex と GPT の 1 往復で数える
-1. jitter buffer と late frame queue mutation / drop policy を最小実装で入れる
-2. `NoFrame` / `Waiting` / `HandoffError` の運用時挙動を長時間 run 前提で見直す
-3. 認証済み送信元 timeout / 失効 / 再認証、`protocol_version` reject、`app_version` warn、secret redaction を狭く固める
-4. continuous receive / send runtime の不足分を埋める
+- 目安は `5-8 step`。1 step は Codex と GPT の 1 往復で数える
+1. `NoFrame` / `Waiting` / `HandoffError` の運用時挙動を長時間 run 前提で見直す
+2. 認証済み送信元 timeout / 失効 / 再認証、`protocol_version` reject、`app_version` warn、secret redaction を狭く固める
+3. continuous receive / send runtime の不足分を埋める
    - 実 outbound queue 処理
    - send error / receive-send event の destination selection
    - later service lifecycle へつながる最小 runtime 整理
-5. 2-client の長時間 validation を取り、sync 誤差 / drop / render 安定性を確認する
-6. 4-client all-real の長時間 validation を取り、OBS Window Capture を含む実運用寄りの再確認をする
-7. dashboard / status visibility と運用手順を MVP 必要最低限まで揃える
+4. 2-client の長時間 validation を取り、sync 誤差 / drop / render 安定性を確認する
+5. 4-client all-real の長時間 validation を取り、OBS Window Capture を含む実運用寄りの再確認をする
+6. dashboard / status visibility と運用手順を MVP 必要最低限まで揃える
    - 接続状態、RTT、offset、drop、buffer 状態の表示
    - manual 手順、互換性ルール、ログ運用の整理
 
@@ -866,6 +865,7 @@ continuous runtime first slice の blocker:
 ### フェーズ4: 2 人 / 4 人同期 PoC
 - [x] RTT / offset 観測 return と最小 state commit
 - [x] RTT / offset 平滑化と targetTime 接続
+- [x] late frame queue mutation / drop policy の最小 slice
 - [ ] ジッターバッファ
 - [x] targetTime frame selection
 - [x] 2-view targetTime-selected frame decode/render connection
@@ -975,6 +975,6 @@ continuous runtime first slice の blocker:
 - actual dashboard UI rendering remains unimplemented.
 
 ## Next Items
-1. late frame queue mutation / jitter buffer / drop policy の最小 slice を切る
-2. `NoFrame` / `Waiting` / `HandoffError` の運用時挙動を長時間 run 前提で見直す
-3. 認証 / runtime hardening の実装順と長時間 validation 条件を先に固定する
+1. `NoFrame` / `Waiting` / `HandoffError` の運用時挙動を長時間 run 前提で見直す
+2. 認証 / runtime hardening の実装順と長時間 validation 条件を先に固定する
+3. continuous receive / send runtime の不足分と validation 観測面を狭く埋める

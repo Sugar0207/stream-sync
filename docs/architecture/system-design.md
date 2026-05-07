@@ -8028,6 +8028,24 @@ Current decode/display substitute behavior:
   buffer, frame too early, or frame too late/dropped states explicitly. It does
   not mutate `ServerVideoFrameQueueState`; late frames are reported as drop
   candidates for a future queue owner.
+- The first queue-owner for those late-frame candidates now exists as a small
+  source-backed mutation boundary:
+  `SwitcherSingleClientLateFrameQueueMutationBoundary`.
+- That boundary reads only the oldest frame for one `client_id + run_id`,
+  applies the same optional clock offset used by targetTime selection, and
+  drops consecutive oldest frames only while
+  `adjusted_capture_timestamp < targetTime - max_late_micros`.
+- The first threshold is intentionally conservative and fixed:
+  `250_000` microseconds, matching the current jitter-buffer default. This
+  avoids introducing a second hidden timing window in the first mutation slice.
+- Frames exactly on the lower bound are retained.
+- The mutation boundary returns a typed summary:
+  dropped late frames, adjusted timestamps, lateness against the shared target,
+  and the retained queue head or explicit no-frame result.
+- The mutation boundary reuses existing queue read modes only:
+  `PreviewOldest` and `ConsumeOldest`.
+- It does not implement adaptive jitter sizing, dynamic threshold tuning, or
+  multi-client scheduling policy.
 - The selected frame is still encoded H.264 plus metadata. Decode and render
   remain separate downstream boundaries.
 - `SwitcherJitterBufferSelectionBoundary::select_frame_at_target_time` is a
@@ -8049,6 +8067,14 @@ Current decode/display substitute behavior:
 - The 2-view orchestration is read-only over caller-owned
   `ServerVideoFrameQueueState`. It does not drop late frames, mutate queues,
   decode H.264, render windows, compose a 2-view layout, or integrate OBS.
+- The first opt-in integration point for queue mutation is now the source-backed
+  validation path:
+  `SwitcherServerMediatedTwoViewValidationBoundary::run_with_runtimes_and_late_frame_queue_mutation`.
+- That path runs one per-view late-frame cleanup pass first, then reuses the
+  existing 2-view targetTime scheduler / decode-render / display / composition
+  boundaries unchanged.
+- Fallible handoff-backed queue mutation, adaptive cleanup policy, and
+  long-running operational behavior review remain out of scope for this slice.
 - `SwitcherTwoViewDecodeRenderBoundary` is the first connection from 2-view
   targetTime selection to decode/render. It consumes
   `SwitcherTwoViewTargetTimeSelectionResult`, decodes only sides whose

@@ -1720,6 +1720,251 @@ fn target_time_handoff_result_from_source_result(
     }
 }
 
+/// Conservative default late-frame drop threshold for the first queue-mutation slice.
+///
+/// This matches the current jitter-buffer default so the first mutation policy
+/// does not introduce a separate hidden timing window.
+pub const SWITCHER_LATE_FRAME_QUEUE_MUTATION_DEFAULT_MAX_LATE_MICROS: u64 = 250_000;
+
+/// Minimal late-frame queue mutation policy.
+///
+/// A frame is considered late only when its adjusted capture timestamp is
+/// strictly older than `target_timestamp - max_late_micros`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct SwitcherLateFrameQueueMutationPolicy {
+    pub max_late_micros: u64,
+}
+
+impl Default for SwitcherLateFrameQueueMutationPolicy {
+    fn default() -> Self {
+        Self {
+            max_late_micros: SWITCHER_LATE_FRAME_QUEUE_MUTATION_DEFAULT_MAX_LATE_MICROS,
+        }
+    }
+}
+
+/// Input for one single-client late-frame queue mutation pass.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SwitcherSingleClientLateFrameQueueMutationInput {
+    pub client_id: ClientId,
+    pub run_id: RunId,
+    pub target_timestamp: TimestampMicros,
+    pub clock_offset_micros: Option<i64>,
+    pub policy: SwitcherLateFrameQueueMutationPolicy,
+}
+
+/// One dropped late frame recorded by the mutation boundary.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SwitcherLateFrameDropRecord {
+    pub frame: SwitcherSingleViewSelectedEncodedFrame,
+    pub adjusted_capture_timestamp: TimestampMicros,
+    pub late_by_micros: u64,
+}
+
+/// Queue-head status after a late-frame mutation pass finishes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SwitcherLateFrameQueueHeadStatus {
+    Retained {
+        frame_id: u64,
+        capture_timestamp: TimestampMicros,
+        adjusted_capture_timestamp: TimestampMicros,
+        remaining_client_queue_len: usize,
+    },
+    NoFrameAvailable {
+        client_queue_len: usize,
+    },
+}
+
+/// Summary returned by the first late-frame queue mutation boundary.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SwitcherSingleClientLateFrameQueueMutationSummary {
+    pub client_id: ClientId,
+    pub run_id: RunId,
+    pub target_timestamp: TimestampMicros,
+    pub late_threshold_timestamp: TimestampMicros,
+    pub clock_offset_micros: Option<i64>,
+    pub dropped_late_frames: Vec<SwitcherLateFrameDropRecord>,
+    pub head: SwitcherLateFrameQueueHeadStatus,
+}
+
+/// Output from a late-frame mutation pass followed by ordinary targetTime selection.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SwitcherSingleClientLateFrameManagedSourceOutput {
+    pub mutation: SwitcherSingleClientLateFrameQueueMutationSummary,
+    pub selection: SwitcherSingleClientTargetTimeSourceResult,
+}
+
+/// Minimal queue-mutation boundary that removes only clearly unrecoverable late frames.
+///
+/// This boundary reuses the existing oldest-preview / oldest-consume queue read
+/// modes. It does not decide multi-client sync, decode, render, or adaptive
+/// jitter-buffer policy.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct SwitcherSingleClientLateFrameQueueMutationBoundary {
+    selector: SwitcherSingleClientTargetTimeSourceBoundary,
+}
+
+impl SwitcherSingleClientLateFrameQueueMutationBoundary {
+    pub fn mutate_queue_state(
+        &self,
+        queue_state: &mut ServerVideoFrameQueueState,
+        input: SwitcherSingleClientLateFrameQueueMutationInput,
+    ) -> SwitcherSingleClientLateFrameQueueMutationSummary {
+        let mut source = SwitcherInProcessServerQueueFrameSource::new(queue_state);
+        self.mutate_from_source(&mut source, input)
+    }
+
+    pub fn mutate_from_source(
+        &self,
+        source: &mut impl SwitcherQueuedFrameSource,
+        input: SwitcherSingleClientLateFrameQueueMutationInput,
+    ) -> SwitcherSingleClientLateFrameQueueMutationSummary {
+        let late_threshold_timestamp = TimestampMicros(
+            input
+                .target_timestamp
+                .0
+                .saturating_sub(input.policy.max_late_micros),
+        );
+        let mut dropped_late_frames = Vec::new();
+
+        loop {
+            let oldest = source.read_queued_frame(SwitcherSingleClientQueueSourceInput {
+                client_id: input.client_id.clone(),
+                run_id: input.run_id.clone(),
+                mode: SwitcherSingleClientQueueSourceMode::PreviewOldest,
+            });
+
+            match oldest {
+                SwitcherSingleClientQueueSourceResult::FrameAvailable {
+                    frame,
+                    remaining_client_queue_len,
+                    ..
+                } => {
+                    let adjusted_capture_timestamp = TimestampMicros(apply_offset_micros(
+                        frame.capture_timestamp.0,
+                        input.clock_offset_micros,
+                    ));
+
+                    if adjusted_capture_timestamp.0 < late_threshold_timestamp.0 {
+                        let dropped =
+                            source.read_queued_frame(SwitcherSingleClientQueueSourceInput {
+                                client_id: input.client_id.clone(),
+                                run_id: input.run_id.clone(),
+                                mode: SwitcherSingleClientQueueSourceMode::ConsumeOldest,
+                            });
+
+                        match dropped {
+                            SwitcherSingleClientQueueSourceResult::FrameAvailable {
+                                frame, ..
+                            } => {
+                                let adjusted_capture_timestamp =
+                                    TimestampMicros(apply_offset_micros(
+                                        frame.capture_timestamp.0,
+                                        input.clock_offset_micros,
+                                    ));
+                                dropped_late_frames.push(SwitcherLateFrameDropRecord {
+                                    late_by_micros: input
+                                        .target_timestamp
+                                        .0
+                                        .saturating_sub(adjusted_capture_timestamp.0),
+                                    frame,
+                                    adjusted_capture_timestamp,
+                                });
+                                continue;
+                            }
+                            SwitcherSingleClientQueueSourceResult::NoFrameAvailable {
+                                client_queue_len,
+                                ..
+                            } => {
+                                return SwitcherSingleClientLateFrameQueueMutationSummary {
+                                    client_id: input.client_id,
+                                    run_id: input.run_id,
+                                    target_timestamp: input.target_timestamp,
+                                    late_threshold_timestamp,
+                                    clock_offset_micros: input.clock_offset_micros,
+                                    dropped_late_frames,
+                                    head: SwitcherLateFrameQueueHeadStatus::NoFrameAvailable {
+                                        client_queue_len,
+                                    },
+                                };
+                            }
+                        }
+                    }
+
+                    return SwitcherSingleClientLateFrameQueueMutationSummary {
+                        client_id: input.client_id,
+                        run_id: input.run_id,
+                        target_timestamp: input.target_timestamp,
+                        late_threshold_timestamp,
+                        clock_offset_micros: input.clock_offset_micros,
+                        dropped_late_frames,
+                        head: SwitcherLateFrameQueueHeadStatus::Retained {
+                            frame_id: frame.frame_id,
+                            capture_timestamp: frame.capture_timestamp,
+                            adjusted_capture_timestamp,
+                            remaining_client_queue_len,
+                        },
+                    };
+                }
+                SwitcherSingleClientQueueSourceResult::NoFrameAvailable {
+                    client_queue_len,
+                    ..
+                } => {
+                    return SwitcherSingleClientLateFrameQueueMutationSummary {
+                        client_id: input.client_id,
+                        run_id: input.run_id,
+                        target_timestamp: input.target_timestamp,
+                        late_threshold_timestamp,
+                        clock_offset_micros: input.clock_offset_micros,
+                        dropped_late_frames,
+                        head: SwitcherLateFrameQueueHeadStatus::NoFrameAvailable {
+                            client_queue_len,
+                        },
+                    };
+                }
+            }
+        }
+    }
+
+    pub fn mutate_and_select_queue_state(
+        &self,
+        queue_state: &mut ServerVideoFrameQueueState,
+        input: SwitcherSingleClientTargetTimeSourceInput,
+        clock_offset_micros: Option<i64>,
+        policy: SwitcherLateFrameQueueMutationPolicy,
+    ) -> SwitcherSingleClientLateFrameManagedSourceOutput {
+        let mut source = SwitcherInProcessServerQueueFrameSource::new(queue_state);
+        self.mutate_and_select_from_source(&mut source, input, clock_offset_micros, policy)
+    }
+
+    pub fn mutate_and_select_from_source(
+        &self,
+        source: &mut impl SwitcherQueuedFrameSource,
+        input: SwitcherSingleClientTargetTimeSourceInput,
+        clock_offset_micros: Option<i64>,
+        policy: SwitcherLateFrameQueueMutationPolicy,
+    ) -> SwitcherSingleClientLateFrameManagedSourceOutput {
+        let mutation = self.mutate_from_source(
+            source,
+            SwitcherSingleClientLateFrameQueueMutationInput {
+                client_id: input.client_id.clone(),
+                run_id: input.run_id.clone(),
+                target_timestamp: input.target_timestamp,
+                clock_offset_micros,
+                policy,
+            },
+        );
+        let selection =
+            self.selector
+                .select_from_source_with_clock_offset(source, input, clock_offset_micros);
+
+        SwitcherSingleClientLateFrameManagedSourceOutput {
+            mutation,
+            selection,
+        }
+    }
+}
+
 /// One configured view for the first queue-backed 2-view targetTime scheduler.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SwitcherTwoViewTargetTimeSourceViewConfig {
@@ -6657,6 +6902,20 @@ pub struct SwitcherServerMediatedTwoViewValidationOutput {
     pub render: SwitcherTwoViewDisplayCompositionRenderConnectionOutput,
 }
 
+/// Per-view late-frame queue mutation summary for the in-process 2-view path.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SwitcherTwoViewLateFrameQueueMutationSummary {
+    pub left: SwitcherSingleClientLateFrameQueueMutationSummary,
+    pub right: SwitcherSingleClientLateFrameQueueMutationSummary,
+}
+
+/// Output from the in-process 2-view path after late-frame mutation then normal validation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SwitcherServerMediatedTwoViewLateFrameManagedValidationOutput {
+    pub late_frame_mutation: SwitcherTwoViewLateFrameQueueMutationSummary,
+    pub validation: SwitcherServerMediatedTwoViewValidationOutput,
+}
+
 /// Output from the fallible server-mediated diagnostic path.
 ///
 /// Each fallible stage is kept visible so selected, waiting, no-frame,
@@ -6683,6 +6942,7 @@ pub struct SwitcherServerMediatedTwoViewHandoffValidationOutput {
 pub struct SwitcherServerMediatedTwoViewValidationBoundary {
     scheduler: SwitcherTwoViewTargetTimeSourceSchedulerBoundary,
     clock_offset_lookup: SwitcherClientClockOffsetLookupBoundary,
+    late_frame_mutation: SwitcherSingleClientLateFrameQueueMutationBoundary,
     decode_render: SwitcherTwoViewSchedulerDecodeRenderConnectionBoundary,
     display_policy: SwitcherTwoViewDisplayPolicyBoundary,
     adapter: SwitcherTwoViewDisplayCompositionAdapterBoundary,
@@ -6807,6 +7067,53 @@ impl SwitcherServerMediatedTwoViewValidationBoundary {
             display,
             adapter,
             render,
+        }
+    }
+
+    pub fn run_with_runtimes_and_late_frame_queue_mutation(
+        &self,
+        queue_state: &mut ServerVideoFrameQueueState,
+        input: SwitcherServerMediatedTwoViewValidationInput,
+        heartbeat_rtt_offset_state: Option<&ServerHeartbeatRttOffsetState>,
+        policy: SwitcherLateFrameQueueMutationPolicy,
+        decode_runtime: &impl SwitcherH264DecodeRuntimeHook,
+        render_runtime: &impl SwitcherWindowRenderRuntimeHook,
+    ) -> SwitcherServerMediatedTwoViewLateFrameManagedValidationOutput {
+        let (left_clock_offset_micros, right_clock_offset_micros) =
+            self.clock_offsets_for_views(heartbeat_rtt_offset_state, &input.left, &input.right);
+        let late_frame_mutation = SwitcherTwoViewLateFrameQueueMutationSummary {
+            left: self.late_frame_mutation.mutate_queue_state(
+                queue_state,
+                SwitcherSingleClientLateFrameQueueMutationInput {
+                    client_id: input.left.client_id.clone(),
+                    run_id: input.left.run_id.clone(),
+                    target_timestamp: input.target_timestamp,
+                    clock_offset_micros: left_clock_offset_micros,
+                    policy,
+                },
+            ),
+            right: self.late_frame_mutation.mutate_queue_state(
+                queue_state,
+                SwitcherSingleClientLateFrameQueueMutationInput {
+                    client_id: input.right.client_id.clone(),
+                    run_id: input.right.run_id.clone(),
+                    target_timestamp: input.target_timestamp,
+                    clock_offset_micros: right_clock_offset_micros,
+                    policy,
+                },
+            ),
+        };
+        let validation = self.run_with_runtimes_and_clock_offset_state(
+            queue_state,
+            input,
+            heartbeat_rtt_offset_state,
+            decode_runtime,
+            render_runtime,
+        );
+
+        SwitcherServerMediatedTwoViewLateFrameManagedValidationOutput {
+            late_frame_mutation,
+            validation,
         }
     }
 
@@ -12666,6 +12973,179 @@ mod tests {
             TimestampMicros(1_000_001)
         );
         assert_eq!(selected.delta_from_target_micros, -1);
+    }
+
+    #[test]
+    fn late_frame_queue_mutation_drops_oldest_frames_older_than_threshold() {
+        let mut state = ServerVideoFrameQueueState::default();
+        store_frame_for_run(
+            &mut state,
+            "client-1",
+            "run-1",
+            1,
+            TimestampMicros(2_040_070),
+        );
+        store_frame_for_run(
+            &mut state,
+            "client-1",
+            "run-1",
+            15,
+            TimestampMicros(2_040_080),
+        );
+
+        let summary = SwitcherSingleClientLateFrameQueueMutationBoundary::default()
+            .mutate_queue_state(
+                &mut state,
+                SwitcherSingleClientLateFrameQueueMutationInput {
+                    client_id: ClientId("client-1".to_string()),
+                    run_id: RunId("run-1".to_string()),
+                    target_timestamp: TimestampMicros(1_000_020),
+                    clock_offset_micros: None,
+                    policy: SwitcherLateFrameQueueMutationPolicy {
+                        max_late_micros: 10,
+                    },
+                },
+            );
+
+        assert_eq!(summary.late_threshold_timestamp, TimestampMicros(1_000_010));
+        assert_eq!(summary.dropped_late_frames.len(), 1);
+        assert_eq!(summary.dropped_late_frames[0].frame.frame_id, 1);
+        assert_eq!(
+            summary.dropped_late_frames[0].adjusted_capture_timestamp,
+            TimestampMicros(1_000_001)
+        );
+        assert!(matches!(
+            summary.head,
+            SwitcherLateFrameQueueHeadStatus::Retained {
+                frame_id: 15,
+                adjusted_capture_timestamp: TimestampMicros(1_000_015),
+                remaining_client_queue_len: 1,
+                ..
+            }
+        ));
+        let remaining: Vec<u64> = state
+            .frames_for_client(&ClientId("client-1".to_string()))
+            .map(|queued| queued.frame.frame_id)
+            .collect();
+        assert_eq!(remaining, vec![15]);
+    }
+
+    #[test]
+    fn late_frame_queue_mutation_uses_adjusted_timestamp_when_offset_is_available() {
+        let mut state = ServerVideoFrameQueueState::default();
+        store_frame_for_run(
+            &mut state,
+            "client-1",
+            "run-1",
+            8,
+            TimestampMicros(2_040_090),
+        );
+
+        let summary = SwitcherSingleClientLateFrameQueueMutationBoundary::default()
+            .mutate_queue_state(
+                &mut state,
+                SwitcherSingleClientLateFrameQueueMutationInput {
+                    client_id: ClientId("client-1".to_string()),
+                    run_id: RunId("run-1".to_string()),
+                    target_timestamp: TimestampMicros(1_000_000),
+                    clock_offset_micros: Some(-10),
+                    policy: SwitcherLateFrameQueueMutationPolicy { max_late_micros: 1 },
+                },
+            );
+
+        assert_eq!(summary.dropped_late_frames.len(), 1);
+        assert_eq!(summary.dropped_late_frames[0].frame.frame_id, 8);
+        assert_eq!(
+            summary.dropped_late_frames[0].adjusted_capture_timestamp,
+            TimestampMicros(999_998)
+        );
+        assert!(matches!(
+            summary.head,
+            SwitcherLateFrameQueueHeadStatus::NoFrameAvailable {
+                client_queue_len: 0
+            }
+        ));
+        assert_eq!(state.total_len(), 0);
+    }
+
+    #[test]
+    fn late_frame_queue_mutation_falls_back_to_raw_timestamp_without_offset() {
+        let mut state = ServerVideoFrameQueueState::default();
+        store_frame_for_run(
+            &mut state,
+            "client-1",
+            "run-1",
+            8,
+            TimestampMicros(2_040_100),
+        );
+
+        let summary = SwitcherSingleClientLateFrameQueueMutationBoundary::default()
+            .mutate_queue_state(
+                &mut state,
+                SwitcherSingleClientLateFrameQueueMutationInput {
+                    client_id: ClientId("client-1".to_string()),
+                    run_id: RunId("run-1".to_string()),
+                    target_timestamp: TimestampMicros(1_000_000),
+                    clock_offset_micros: None,
+                    policy: SwitcherLateFrameQueueMutationPolicy { max_late_micros: 1 },
+                },
+            );
+
+        assert!(summary.dropped_late_frames.is_empty());
+        assert!(matches!(
+            summary.head,
+            SwitcherLateFrameQueueHeadStatus::Retained {
+                frame_id: 8,
+                adjusted_capture_timestamp: TimestampMicros(1_000_008),
+                remaining_client_queue_len: 1,
+                ..
+            }
+        ));
+        assert_eq!(state.total_len(), 1);
+    }
+
+    #[test]
+    fn late_frame_queue_mutation_can_drop_then_consume_selected_frame() {
+        let mut state = ServerVideoFrameQueueState::default();
+        store_frame_for_run(
+            &mut state,
+            "client-1",
+            "run-1",
+            1,
+            TimestampMicros(2_040_110),
+        );
+        store_frame_for_run(
+            &mut state,
+            "client-1",
+            "run-1",
+            15,
+            TimestampMicros(2_040_120),
+        );
+
+        let output = SwitcherSingleClientLateFrameQueueMutationBoundary::default()
+            .mutate_and_select_queue_state(
+                &mut state,
+                SwitcherSingleClientTargetTimeSourceInput {
+                    client_id: ClientId("client-1".to_string()),
+                    run_id: RunId("run-1".to_string()),
+                    target_timestamp: TimestampMicros(1_000_020),
+                    mode: SwitcherSingleClientTargetTimeSourceMode::ConsumeOldestAtOrBefore,
+                },
+                None,
+                SwitcherLateFrameQueueMutationPolicy {
+                    max_late_micros: 10,
+                },
+            );
+
+        assert_eq!(output.mutation.dropped_late_frames.len(), 1);
+        assert_eq!(output.mutation.dropped_late_frames[0].frame.frame_id, 1);
+        let SwitcherSingleClientTargetTimeSourceResult::Selected(selected) = output.selection
+        else {
+            panic!("retained frame should be selected after late-drop cleanup");
+        };
+        assert_eq!(selected.frame.frame_id, 15);
+        assert!(selected.consumed);
+        assert_eq!(state.total_len(), 0);
     }
 
     #[test]
@@ -21451,6 +21931,80 @@ mod tests {
             }
         ));
         assert_eq!(state.total_len(), 2);
+    }
+
+    #[test]
+    fn server_mediated_two_view_validation_can_drop_late_frames_before_selection() {
+        let mut state = ServerVideoFrameQueueState::default();
+        store_frame_with_run_payload(
+            &mut state,
+            "client-left",
+            "run-left",
+            1,
+            TimestampMicros(2_124_350),
+            2,
+            1,
+            vec![0, 0, 1, 0x65, 0x11],
+        );
+        store_frame_with_run_payload(
+            &mut state,
+            "client-left",
+            "run-left",
+            20,
+            TimestampMicros(2_124_360),
+            2,
+            1,
+            vec![0, 0, 1, 0x65, 0x12],
+        );
+        store_frame_with_run_payload(
+            &mut state,
+            "client-right",
+            "run-right",
+            20,
+            TimestampMicros(2_124_370),
+            2,
+            1,
+            vec![0, 0, 1, 0x65, 0x22],
+        );
+        let decode = RecordingTwoViewDecode::default();
+        let render = RecordingTwoViewRender::default();
+
+        let output = SwitcherServerMediatedTwoViewValidationBoundary::default()
+            .run_with_runtimes_and_late_frame_queue_mutation(
+                &mut state,
+                server_mediated_validation_input(
+                    TimestampMicros(1_000_020),
+                    SwitcherTwoViewTargetTimeSourceSchedulerMode::PreviewLatestIfAtOrBefore,
+                ),
+                None,
+                SwitcherLateFrameQueueMutationPolicy {
+                    max_late_micros: 10,
+                },
+                &decode,
+                &render,
+            );
+
+        assert_eq!(output.late_frame_mutation.left.dropped_late_frames.len(), 1);
+        assert_eq!(
+            output.late_frame_mutation.left.dropped_late_frames[0]
+                .frame
+                .frame_id,
+            1
+        );
+        assert!(output
+            .late_frame_mutation
+            .right
+            .dropped_late_frames
+            .is_empty());
+        assert_eq!(
+            output.validation.scheduler.status,
+            SwitcherTwoViewTargetTimeSourceSchedulerStatus::AllSelected
+        );
+        let remaining_left: Vec<u64> = state
+            .frames_for_client(&ClientId("client-left".to_string()))
+            .map(|queued| queued.frame.frame_id)
+            .collect();
+        assert_eq!(remaining_left, vec![20]);
     }
 
     #[test]
