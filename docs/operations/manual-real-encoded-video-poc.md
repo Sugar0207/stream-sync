@@ -2983,6 +2983,175 @@ Current code-level validation status for the wrapper:
 - guard timeout clears before a later `Q`
 - scripted keys parser splits `s;1;2;3;4;0;q;q`
 
+### Recorded Wrapper Scripted Validation: Success Path
+
+Recorded rebuild command before the wrapper session:
+
+```powershell
+cargo build -p stream-sync-switcher -p stream-sync-server -p stream-sync-client
+```
+
+Recorded guarded real `4`-client success session:
+
+- server:
+  - `.\target\debug\stream-sync-server.exe --receive-auth-video-queue-and-serve-handoff-many configs/manual/server.two-real-slots.toml streamsync-handoff-dev 140 4096 5000 8 true 8388608 4 2`
+- clients:
+  - `.\target\debug\stream-sync-client.exe --auth-real-encoded-video-frame-poc-bounded configs/manual/client.player1.toml 2 16 1`
+  - `.\target\debug\stream-sync-client.exe --auth-real-encoded-video-frame-poc-bounded configs/manual/client.player2.toml 2 16 1`
+  - `.\target\debug\stream-sync-client.exe --auth-real-encoded-video-frame-poc-bounded configs/manual/client.player3.toml 2 16 1`
+  - `.\target\debug\stream-sync-client.exe --auth-real-encoded-video-frame-poc-bounded configs/manual/client.player4.toml 2 16 1`
+- switcher:
+  - `.\target\debug\stream-sync-switcher.exe --four-view-controlled-handoff-preview-loop streamsync-handoff-dev player1 streamsync-dev-session player2 streamsync-dev-session player3 streamsync-dev-session player4 streamsync-dev-session 5 --control-pipe streamsync-control-dev`
+- wrapper:
+  - `.\target\debug\stream-sync-switcher.exe --four-view-operator-wrapper streamsync-control-dev --keys "s;1;2;3;4;0;q;q"`
+
+Recorded wrapper stdout summary:
+
+- `s`:
+  - `mapped_command=status`
+  - `send_result=Sent`
+  - `response_line` kept:
+    - `transition_result=Observed`
+    - `current_view_state=AllView`
+    - `clean_output_render_result_kind=Rendered`
+- `1`:
+  - `mapped_command=focus_0`
+  - `send_result=Sent`
+  - `response_line` kept:
+    - `transition_result=Transitioned`
+    - `current_view_state=Focused(0)`
+    - `clean_output_render_result_kind=Rendered`
+- `2`:
+  - `mapped_command=focus_1`
+  - `response_line` kept `current_view_state=Focused(1)`
+- `3`:
+  - `mapped_command=focus_2`
+  - `response_line` kept `current_view_state=Focused(2)`
+- `4`:
+  - `mapped_command=focus_3`
+  - `response_line` kept `current_view_state=Focused(3)`
+- `0`:
+  - `mapped_command=all`
+  - `response_line` kept:
+    - `current_view_state=AllView`
+    - `clean_output_render_result_kind=Rendered`
+- first `q`:
+  - `mapped_command=quit`
+  - `send_result=GuardArmed`
+  - `guard_state=quit_armed=true`
+  - no `quit` command was sent
+- second `q`:
+  - `mapped_command=quit`
+  - `send_result=Sent`
+  - `response_line` kept `exit_reason=QuitRequested`
+- wrapper final summary kept:
+  - `keys_processed=8`
+  - `commands_sent=7`
+  - `ignored_keys=0`
+  - `final_guard_state=quit_armed=false`
+  - `exit_reason=QuitRequested`
+
+Recorded switcher final summary:
+
+- `commands_processed=7`
+- `commands_rejected=0`
+- `frames_rendered=30`
+- `render_failures=0`
+- `scheduler_status=AllSelected`
+- `clean_output_render_result_kind=Rendered`
+- `exit_reason=QuitRequested`
+
+Recorded server/client summary:
+
+- server bounded handoff kept:
+  - `max_requests=140`
+  - `requests_served=140`
+  - `successful_responses=140`
+  - `handoff_errors=0`
+- clients `player1..4` each kept:
+  - `accepted=true`
+  - `frames_captured=2`
+  - `frames_encoded=2`
+  - `frames_sent=2`
+  - `send_failures=0`
+
+### Recorded Wrapper Scripted Validation: Unknown-Key Path
+
+First unknown-key attempt used:
+
+- wrapper:
+  - `.\target\debug\stream-sync-switcher.exe --four-view-operator-wrapper streamsync-control-dev --keys "x;s;q;q"`
+- server `max_requests=20`
+
+Observed first-attempt problem:
+
+- `x` was correctly ignored locally with:
+  - `send_result=Ignored`
+  - `wrapper_error=unknown_key`
+- `s` was sent successfully and rendered
+- but `max_requests=20` exactly matched one rendered `status` command:
+  - `1 render command * 5 ticks * 4 real slots = 20`
+- after that, the second guarded `q` hit:
+  - `wrapper_error=指定されたファイルが見つかりません。_(os_error_2)`
+- treat that as a bounded request-budget issue for this manual recipe, not as a
+  wrapper key-mapping failure
+
+Recorded corrected unknown-key rerun:
+
+- server:
+  - `.\target\debug\stream-sync-server.exe --receive-auth-video-queue-and-serve-handoff-many configs/manual/server.two-real-slots.toml streamsync-handoff-dev 40 4096 5000 8 true 8388608 4 2`
+- clients:
+  - same `player1..4` bounded client commands as the success path
+- switcher:
+  - same `--four-view-controlled-handoff-preview-loop ... --control-pipe streamsync-control-dev`
+- wrapper:
+  - `.\target\debug\stream-sync-switcher.exe --four-view-operator-wrapper streamsync-control-dev --keys "x;s;q;q"`
+
+Recorded corrected wrapper stdout summary:
+
+- `x`:
+  - `mapped_command=none`
+  - `send_result=Ignored`
+  - `wrapper_error=unknown_key`
+  - nothing was sent to the control pipe
+- `s`:
+  - `mapped_command=status`
+  - `send_result=Sent`
+  - `response_line` kept:
+    - `transition_result=Observed`
+    - `current_view_state=AllView`
+    - `clean_output_render_result_kind=Rendered`
+- first `q`:
+  - `send_result=GuardArmed`
+  - `guard_state=quit_armed=true`
+- second `q`:
+  - `mapped_command=quit`
+  - `send_result=Sent`
+  - `response_line` kept `exit_reason=QuitRequested`
+- wrapper final summary kept:
+  - `keys_processed=4`
+  - `commands_sent=2`
+  - `ignored_keys=1`
+  - `final_guard_state=quit_armed=false`
+  - `exit_reason=QuitRequested`
+
+Recorded corrected switcher final summary:
+
+- `commands_processed=2`
+- `commands_rejected=0`
+- `frames_rendered=5`
+- `render_failures=0`
+- `scheduler_status=AllSelected`
+- `clean_output_render_result_kind=Rendered`
+- `exit_reason=QuitRequested`
+
+Recorded corrected server summary:
+
+- `max_requests=40`
+- `requests_served=40`
+- `successful_responses=40`
+- `handoff_errors=0`
+
 ## 9. Same-Session Bounded Server Lifecycle Note
 
 The current same-session success script should still be read with these
@@ -2990,17 +3159,28 @@ practical constraints:
 
 - bounded server `max_requests` must cover:
   - `render_command_count * max_ticks_per_command * real_slot_count`
-- in the recorded success path:
-  - `7 * 5 * 4 = 140`
-- the rebuilt control-pipe rerun did not need the earlier extra flush read and
-  converged at:
-  - `max_requests=140`
-  - `requests_served=140`
-  - `handoff_errors=0`
+- in the recorded wrapper success path:
+  - rendered commands were `s;1;2;3;4;0`
+  - exact render budget was `6 * 5 * 4 = 120`
+  - the manual recipe still used `max_requests=140` so the session had headroom
+    after the last render command
+- in the recorded unknown-key path:
+  - rendered commands were only `s`
+  - exact render budget was `1 * 5 * 4 = 20`
+  - `max_requests=20` was not enough to keep the same session healthy through
+    the later guarded `q/q` manual check
+  - the corrected rerun used `max_requests=40`
+- both recorded wrapper runs still used extra one-shot reads after the switcher
+  exit so the bounded server could consume the remaining request budget and emit
+  its final summary:
+  - success path extra flush reads: `20`
+  - corrected unknown-key path extra flush reads: `20`
 
 Current decision:
 
 - keep the request-budget formula documented
+- reserve bounded-session headroom when a manual wrapper run still wants to
+  issue later non-render commands such as guarded `quit`
 - do not make an extra flush read part of the wrapper MVP contract
 - if a future run needs an extra flush read again, treat it as a temporary
   diagnostic workaround rather than wrapper behavior

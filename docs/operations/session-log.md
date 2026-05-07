@@ -5,6 +5,79 @@
 - Codex
 
 ### Work
+- Ran actual guarded real `4`-client manual validation for the same-binary
+  wrapper command `--four-view-operator-wrapper` after rebuilding:
+  - `cargo build -p stream-sync-switcher -p stream-sync-server -p stream-sync-client`
+- Recorded scripted success-path wrapper validation with:
+  - `s;1;2;3;4;0;q;q`
+  - wrapper final summary:
+    - `keys_processed=8`
+    - `commands_sent=7`
+    - `ignored_keys=0`
+    - `exit_reason=QuitRequested`
+  - switcher final summary:
+    - `commands_processed=7`
+    - `commands_rejected=0`
+    - `frames_rendered=30`
+    - `render_failures=0`
+    - `scheduler_status=AllSelected`
+    - `clean_output_render_result_kind=Rendered`
+    - `exit_reason=QuitRequested`
+- Recorded scripted unknown-key validation with:
+  - `x;s;q;q`
+  - first attempt using `max_requests=20` reproduced a real budget issue:
+    - `x` stayed local with `send_result=Ignored`
+    - `s` rendered successfully
+    - second guarded `q` failed with `os_error_2` after the exact render budget
+      was exhausted
+  - corrected rerun using `max_requests=40` succeeded:
+    - wrapper final summary:
+      - `keys_processed=4`
+      - `commands_sent=2`
+      - `ignored_keys=1`
+      - `exit_reason=QuitRequested`
+    - switcher final summary:
+      - `commands_processed=2`
+      - `commands_rejected=0`
+      - `frames_rendered=5`
+      - `render_failures=0`
+      - `scheduler_status=AllSelected`
+      - `clean_output_render_result_kind=Rendered`
+      - `exit_reason=QuitRequested`
+- Recorded the bounded server summary nuance for wrapper sessions:
+  - success-path exact render budget was `120`, but the recorded session used
+    `max_requests=140`
+  - unknown-key exact render budget was `20`, but the recorded rerun needed
+    `max_requests=40`
+  - both recorded sessions needed extra one-shot reads to consume the remaining
+    bounded request budget and let the server print its final summary
+
+### Changed Files
+- `docs/architecture/system-design.md`
+- `docs/operations/manual-real-encoded-video-poc.md`
+- `docs/operations/session-log.md`
+- `docs/operations/todo.md`
+
+### Decision
+- Treat the unknown-key first-attempt failure as a bounded request-budget issue
+  in the manual recipe, not as a wrapper mapping/send regression.
+- Keep the wrapper thin and unchanged.
+- Keep bounded server lifecycle flush/exit polish as a later narrow task rather
+  than a blocker for the wrapper MVP.
+
+### Validation
+- actual wrapper success-path stdout summary recorded
+- actual wrapper unknown-key stdout summary recorded
+- actual controlled-loop final summaries recorded
+- `cargo fmt --check`
+- `cargo check --workspace`
+- `git diff --check`
+
+## 2026-05-07
+### Type
+- Codex
+
+### Work
 - Implemented the same-binary thin operator wrapper command in
   `stream-sync-switcher`:
   - `--four-view-operator-wrapper [control-pipe-name]`

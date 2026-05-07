@@ -8725,6 +8725,19 @@ MVP wrapper shape:
 - current stdin interaction remains intentionally minimal:
   - one key token per stdin line in interactive mode
   - scripted/manual automation can use `--keys`
+- actual scripted wrapper validation is now recorded for:
+  - success path `s;1;2;3;4;0;q;q`
+  - unknown-key path `x;s;q;q`
+- request-budget note for bounded real sessions:
+  - size `max_requests` for rendered commands first:
+    `render_command_count * max_ticks_per_command * 4`
+  - then leave headroom if the same manual session still wants to validate
+    guarded `quit` and bounded server-summary exit behavior
+  - recorded examples:
+    - success path exact render budget `6 * 5 * 4 = 120`, recorded session used
+      `max_requests=140`
+    - unknown-key path exact render budget `1 * 5 * 4 = 20`, recorded rerun
+      needed `max_requests=40`
 
 Deferred:
 
