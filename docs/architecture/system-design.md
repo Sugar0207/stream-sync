@@ -9647,6 +9647,105 @@ Current narrow implementation for bounded iteration-event JSONL ownership:
   - stderr fatal/startup summary for terminal failure visibility
   - caller-owned JSONL writer for per-iteration structured operational events
 
+Iteration-event JSONL sink plan / optional config wiring direction:
+
+- current slice:
+  - bounded runtime accepts a caller-owned iteration-event writer only
+  - CLI currently passes stderr as the default writer
+  - runtime does not know destination kind or file path
+  - runtime does not open files
+  - runtime does not rotate files
+  - runtime does not own retention or process-wide logging
+- next slice:
+  - config loader / launcher may interpret an optional sink config
+  - destination selection may support:
+    - `stderr`
+    - `disabled`
+    - `file`
+  - file open remains an outer boundary concern
+  - writer ownership remains explicit outside the runtime
+
+Candidate config shape:
+
+```toml
+[logging.receive_send_iteration]
+enabled = true
+destination = "stderr" # "stderr" | "file" | "disabled"
+file_path = "logs/receive-send-iteration.jsonl"
+```
+
+Config interpretation notes:
+
+- `enabled=false` is equivalent to a disabled sink even if `destination` is
+  omitted or still set.
+- `destination="disabled"` means the launcher passes a sink that discards
+  records and the bounded runtime remains unaware of that choice.
+- `destination="stderr"` keeps the current CLI-default style without requiring
+  file-open work.
+- `destination="file"` requires an outer file-open boundary before the runtime
+  starts; the runtime still receives only a caller-owned writer.
+- `file_path` is required only for `destination="file"` and otherwise ignored
+  or rejected by stricter validation policy.
+
+Sink ownership responsibilities:
+
+- bounded runtime:
+  - receives an already prepared writer
+  - writes compact iteration-event JSON Lines best-effort
+  - records writer failure visibility on the bounded outcome
+  - does not know file paths or sink destination policy
+- config loader / launcher:
+  - interprets optional sink config
+  - selects stderr / disabled / file destination
+  - validates config combinations
+  - may call an outer file-open boundary before runtime start
+- outer file-open boundary:
+  - opens the configured file sink when `destination="file"`
+  - returns a writer or an explicit startup/open error
+  - still does not add rotation or retention
+- later outer boundaries:
+  - rotation
+  - retention
+  - buffering policy beyond caller-owned writer semantics
+  - dashboard/exporter transport
+  - process-wide logger installation
+
+Failure handling direction:
+
+- invalid config:
+  - launcher/config layer should reject impossible combinations such as
+    `destination="file"` without `file_path`
+- disabled sink:
+  - launcher should pass a discard sink
+  - runtime should continue with `iteration_event_log_summary.lines_written=0`
+    and no writer failure if the discard sink itself succeeds
+- stderr sink:
+  - launcher passes stderr directly
+  - runtime behavior stays the same as the current slice
+- file open failure:
+  - should remain a launcher/outer-boundary startup error
+  - runtime should not begin with a half-initialized file sink
+- path permission error:
+  - same category as file open failure
+  - surfaced before runtime start when the outer file-open boundary is added
+- write failure after startup:
+  - remains best-effort and non-fatal for the bounded runtime
+  - visible through `iteration_event_log_summary.write_failures` and
+    `last_writer_error`
+- rotation not supported:
+  - must remain explicit in docs/config interpretation
+  - not a runtime responsibility in this phase
+
+Reconfirmed output split:
+
+- stdout final aggregate summary:
+  - human/manual validation closeout
+- stderr fatal/startup summary:
+  - compact terminal failure surface
+- iteration-event JSONL:
+  - per-iteration structured operational event surface
+- these surfaces are complementary and are not replacements for one another
+
 Required separation of concerns:
 
 - bounded runtime aggregate summary:
@@ -9683,6 +9782,12 @@ Next narrow implementation slice for logging ownership:
   returned from the bounded runtime outcome
 - the next JSONL ownership slice is now implemented as a caller-owned
   iteration-event JSON Lines output boundary over `iteration_events`
+- the next planning slice after that should choose the smallest launcher-owned
+  sink selection path:
+  - config shape parse only
+  - stderr/disabled selection
+  - later file-open boundary
+  - later file-sink smoke
 - keep the first logging-ownership implementation slice caller-owned:
   - accept an injected writer set or event sink set
   - do not add file open/rotation

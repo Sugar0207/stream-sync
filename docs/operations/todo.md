@@ -35,6 +35,7 @@
 - receive/send continuous logging ownership の docs 設計も固定済みで、stdout/stderr summary は bounded run closeout 専用、structured operational logs は per-iteration/per-packet event 専用として責務を分離した。caller-owned writers は維持し、file sink open / rotation / process-wide logger / dashboard/exporter transport は future boundary に残す
 - per-iteration receive/send event handoff の narrow implementation も追加済みで、`ServerReceiveSendRuntimeBoundedStartupOutcome` は `iteration_events` を持つ。event fields は `command_name` / `iteration_index` / `receive_outcome_kind` / `accepted_packet_kind` / `auth_outcome_kind` / `rejection_kind` / `send_outcome_kind` / `sent_message_kind` / `receive_error` / `send_error` とし、outer loop の typed observation surface に限定する
 - iteration event の JSONL writer ownership 最小接続も追加済みで、typed `iteration_events` は compact JSONL (`event_type=receive_send_iteration`) として caller-owned writer に書ける。writer failure は runtime stop に直結させず、`iteration_event_log_summary.lines_written` / `write_failures` / `last_writer_error` で outcome 側に可視化する
+- iteration-event JSONL sink plan / optional config wiring の docs 設計も固定済みで、current slice は caller-owned writer + CLI stderr default のまま維持し、next slice は launcher/config layer が `stderr` / `disabled` / `file` を選ぶ方針に分離した。file open は outer boundary、rotation/retention はさらに後段とし、runtime は file path を知らない
 - current rejected-auth note: first slice の `auth_responses_sent` は accepted auth response send count として扱っており、rejected auth は current one-item send pathでは送信 count に入らない。その代わり `last_rejected_reason=Auth:...` で summary visibility を持たせている
 - code-level validation では command parser、summary formatter、`max_iterations` stop、`ReceiveTimedOut` stop、timeout-only run summary、repeated auth registry persistence、repeated heartbeat existing-registry reuse、`ClientStats` observation path count、auth rejection visibility、gate rejection visibility、startup failure summary formatting、send failure summary formatting、existing one-iteration runtime non-regression を追加済み
 - lightweight smoke validation も完了している。CLI shape は client 側 `--auth-request-poc-once`、`--auth-heartbeat-poc-once`、`--auth-heartbeat-stats-poc-once` を確認済みで、direct `ClientStats`-only sender CLI は未追加だが `--auth-heartbeat-stats-poc-once` で `ClientStats` observation path を刺激できる
@@ -164,7 +165,7 @@
 
 ## 直近でやること
 1. logging ownership の次 narrow implementation slice を選ぶ
-   - iteration-event JSONL writer の次は sink plan / stderr-default / optional config wiring のどこまで要るか整理する
+   - optional config parse only から入るか、stderr/disabled selection まで入るかを決める
    - file sink open/rotation はまだ持ち込まない
 2. bounded runtime の次 narrow expansion を選ぶ
    - continuous video path ではなく auth / heartbeat / client-stats path のまま進める
@@ -954,6 +955,6 @@ continuous runtime first slice の blocker:
 - actual dashboard UI rendering remains unimplemented.
 
 ## Next Items
-1. iteration-event JSONL sink plan / optional config wiring follow-up
+1. iteration-event sink config parse / stderr-disabled selection follow-up
 2. later service lifecycle / reconnect / retry expansion after the bounded first slice
 3. bounded runtime failure injection follow-up only if concrete evidence is needed

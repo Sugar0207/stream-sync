@@ -5,6 +5,67 @@
 - Codex
 
 ### Work
+- Fixed the docs design for iteration-event JSONL sink plan / optional config
+  wiring.
+- Kept this step docs-only:
+  - no file sink open/rotation implementation
+  - no process-wide logger
+  - no dashboard/exporter integration
+  - no retry/requeue
+  - no daemon lifecycle work
+- Split current and next slices explicitly:
+  - current:
+    - caller-owned writer
+    - CLI stderr default
+    - no file open
+    - no rotation
+    - no retention
+  - next:
+    - optional config wiring
+    - stderr / disabled / file destination selection
+    - outer file-open boundary
+    - runtime remains file-path unaware
+- Recorded the candidate config shape:
+  - `[logging.receive_send_iteration]`
+  - `enabled`
+  - `destination`
+  - `file_path`
+- Fixed sink ownership responsibilities:
+  - runtime only receives a prepared writer
+  - launcher/config interprets destination
+  - file open belongs to the outer boundary
+  - rotation/retention stay later
+- Fixed failure-handling direction for:
+  - invalid config
+  - disabled sink
+  - stderr sink
+  - file open failure
+  - path permission error
+  - write failure
+  - rotation unsupported
+- Reconfirmed that stdout final aggregate summary and iteration JSONL are not
+  substitutes for each other.
+
+### Changed Files
+- `docs/architecture/system-design.md`
+- `docs/operations/session-log.md`
+- `docs/operations/todo.md`
+
+### Decision
+- Keep the next implementation slice smaller than file-sink work.
+- Prefer either config-shape parse only or stderr/disabled destination
+  selection before any file-open boundary work.
+- Keep runtime ownership unchanged while launcher/outer-boundary responsibilities
+  become explicit in docs first.
+
+### Validation
+- `git diff --check`
+
+## 2026-05-07
+### Type
+- Codex
+
+### Work
 - Added the narrow JSONL writer ownership slice for bounded receive/send
   iteration events.
 - Kept the change intentionally small:
