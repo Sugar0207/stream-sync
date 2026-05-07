@@ -5,6 +5,158 @@
 - Codex
 
 ### Work
+- Ran actual guarded real `4`-client same-session separate local control-pipe
+  validation for the validated switcher control loop.
+- Verified the success path with:
+  - `status`
+  - `focus 0`
+  - `focus 1`
+  - `focus 2`
+  - `focus 3`
+  - `all`
+  - `status`
+  - `quit`
+- Verified the rejected path with:
+  - `focus 9`
+  - `status`
+  - `quit`
+- Recorded sender-side one-request / one-response summary lines,
+  switcher loop summaries, and server bounded handoff summaries.
+- Updated the manual checklist and TODO to treat the separate local control
+  pipe as manually validated rather than still pending.
+
+### Changed Files
+- `docs/operations/manual-real-encoded-video-poc.md`
+- `docs/operations/session-log.md`
+- `docs/operations/todo.md`
+
+### Manual Commands
+- success-path server:
+  `.\target\debug\stream-sync-server.exe --receive-auth-video-queue-and-serve-handoff-many configs/manual/server.two-real-slots.toml streamsync-handoff-dev 140 4096 5000 8 true 8388608 4 2`
+- success-path clients:
+  `.\target\debug\stream-sync-client.exe --auth-real-encoded-video-frame-poc-bounded configs/manual/client.player1.toml 2 16 1`
+  `.\target\debug\stream-sync-client.exe --auth-real-encoded-video-frame-poc-bounded configs/manual/client.player2.toml 2 16 1`
+  `.\target\debug\stream-sync-client.exe --auth-real-encoded-video-frame-poc-bounded configs/manual/client.player3.toml 2 16 1`
+  `.\target\debug\stream-sync-client.exe --auth-real-encoded-video-frame-poc-bounded configs/manual/client.player4.toml 2 16 1`
+- success-path switcher loop:
+  `.\target\debug\stream-sync-switcher.exe --four-view-controlled-handoff-preview-loop streamsync-handoff-dev player1 streamsync-dev-session player2 streamsync-dev-session player3 streamsync-dev-session player4 streamsync-dev-session 5 --control-pipe streamsync-control-dev`
+- success-path sender sequence:
+  `.\target\debug\stream-sync-switcher.exe --send-control-command streamsync-control-dev status`
+  `.\target\debug\stream-sync-switcher.exe --send-control-command streamsync-control-dev "focus 0"`
+  `.\target\debug\stream-sync-switcher.exe --send-control-command streamsync-control-dev "focus 1"`
+  `.\target\debug\stream-sync-switcher.exe --send-control-command streamsync-control-dev "focus 2"`
+  `.\target\debug\stream-sync-switcher.exe --send-control-command streamsync-control-dev "focus 3"`
+  `.\target\debug\stream-sync-switcher.exe --send-control-command streamsync-control-dev all`
+  `.\target\debug\stream-sync-switcher.exe --send-control-command streamsync-control-dev status`
+  `.\target\debug\stream-sync-switcher.exe --send-control-command streamsync-control-dev quit`
+- rejected-path server:
+  `.\target\debug\stream-sync-server.exe --receive-auth-video-queue-and-serve-handoff-many configs/manual/server.two-real-slots.toml streamsync-handoff-dev 20 4096 5000 8 true 8388608 4 2`
+- rejected-path switcher loop:
+  `.\target\debug\stream-sync-switcher.exe --four-view-controlled-handoff-preview-loop streamsync-handoff-dev player1 streamsync-dev-session player2 streamsync-dev-session player3 streamsync-dev-session player4 streamsync-dev-session 5 --control-pipe streamsync-control-dev`
+- rejected-path sender sequence:
+  `.\target\debug\stream-sync-switcher.exe --send-control-command streamsync-control-dev "focus 9"`
+  `.\target\debug\stream-sync-switcher.exe --send-control-command streamsync-control-dev status`
+  `.\target\debug\stream-sync-switcher.exe --send-control-command streamsync-control-dev quit`
+
+### Success Result
+- sender response `status` kept:
+  - `transition_result=Observed`
+  - `current_view_state=AllView`
+  - `clean_output_render_result_kind=Rendered`
+- sender responses `focus 0..3` each kept:
+  - `transition_result=Transitioned`
+  - `current_view_state=Focused(0..3)`
+  - `selected_slot_result=Selected`
+  - `clean_output_render_result_kind=Rendered`
+- sender response `all` kept:
+  - `transition_result=Transitioned`
+  - `current_view_state=AllView`
+  - `clean_output_render_result_kind=Rendered`
+- sender response final `status` kept:
+  - `transition_result=Observed`
+  - `current_view_state=AllView`
+  - `clean_output_render_result_kind=Rendered`
+- sender response `quit` kept:
+  - `transition_result=ExitRequested`
+  - `current_view_state=AllView`
+  - `exit_reason=QuitRequested`
+- switcher final summary kept:
+  - `commands_processed=8`
+  - `commands_rejected=0`
+  - `frames_rendered=35`
+  - `render_failures=0`
+  - `scheduler_status=AllSelected`
+  - `slot_result_kinds=Selected|Selected|Selected|Selected`
+  - `clean_output_render_result_kind=Rendered`
+  - `window_title=StreamSync 4-view Output`
+  - `output_width=1280`
+  - `output_height=720`
+  - `exit_reason=QuitRequested`
+- server receive/handoff summary kept:
+  - `registered_clients=4`
+  - `frames_reassembled=8`
+  - `frames_queued=8`
+  - `observed_reassembled_clients=4`
+  - `per_client_reassembled_frames=player1/streamsync-dev-session:2|player2/streamsync-dev-session:2|player3/streamsync-dev-session:2|player4/streamsync-dev-session:2`
+  - `stop_reason=ReassembledFramesAndClientAwareThresholdReached`
+  - `max_requests=140`
+  - `requests_served=140`
+  - `successful_responses=140`
+  - `handoff_errors=0`
+- clients `player1..4` each kept:
+  - `frames_captured=2`
+  - `frames_encoded=2`
+  - `frames_sent=2`
+  - `capture_failures=0`
+  - `encode_failures=0`
+  - `send_failures=0`
+
+### Rejected Result
+- sender response `focus 9` kept:
+  - `transition_result=Rejected`
+  - `current_view_state=AllView`
+  - `command_parse_error=invalid_focus_index:_expected_integer_0..3`
+- sender response `status` kept:
+  - `transition_result=Observed`
+  - `current_view_state=AllView`
+  - `clean_output_render_result_kind=Rendered`
+- sender response `quit` kept:
+  - `transition_result=ExitRequested`
+  - `exit_reason=QuitRequested`
+- switcher final summary kept:
+  - `commands_processed=3`
+  - `commands_rejected=1`
+  - `frames_rendered=5`
+  - `render_failures=0`
+  - `scheduler_status=AllSelected`
+  - `slot_result_kinds=Selected|Selected|Selected|Selected`
+  - `clean_output_render_result_kind=Rendered`
+  - `exit_reason=QuitRequested`
+- server bounded handoff kept:
+  - `max_requests=20`
+  - `requests_served=20`
+  - `successful_responses=20`
+  - `handoff_errors=0`
+
+### Notes
+- The first local attempt exposed a stale `target/debug/stream-sync-switcher.exe`:
+  source already had `--control-pipe`, but the local binary still rejected it
+  until rebuild.
+- After rebuild, the clean rerun did not need the earlier scripted-mode extra
+  flush read workaround; the bounded handoff session finished at
+  `requests_served=140`.
+
+### Validation
+- actual control-pipe success-path sender responses recorded
+- actual control-pipe rejected-path sender responses recorded
+- actual switcher loop summaries recorded
+- actual server bounded handoff summaries recorded
+
+## 2026-05-07
+### Type
+- Codex
+
+### Work
 - Fixed the first minimal same-session separate local control channel shape for
   the `4`-view controlled switcher loop.
 - Implemented the control channel as a Windows local named-pipe option on the

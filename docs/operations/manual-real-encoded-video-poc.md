@@ -1187,7 +1187,8 @@ Current implementation note:
 - the same-session control loop is implemented
 - the separate local control pipe shape is implemented
 - the first manual sender `--send-control-command` is implemented
-- actual guarded manual pass for this command is now recorded in scripted mode
+- actual guarded manual pass for this command is now recorded in both scripted
+  mode and separate local control-pipe mode
 - current stdout wording uses:
   - `transition_result=Transitioned` for accepted view-state changes
   - `transition_result=Observed` for `status`
@@ -1197,8 +1198,13 @@ Current implementation note:
   - same-session scripted runs need server `max_requests` sized for:
     `render_commands * max_ticks_per_command * 4 real slots`
   - the recorded success script below used `7 * 5 * 4 = 140` bounded requests
-  - one extra one-shot read was then used to flush the bounded server summary
-    after the successful scripted loop
+  - the recorded control-pipe rerun below also used `140` bounded requests
+- practical local-run note:
+  - rebuild `target/debug` before the control-pipe pass if the local binary is
+    stale
+  - in the first pre-rebuild attempt, `stream-sync-switcher.exe` still rejected
+    `--control-pipe` with the older parser behavior even though source already
+    had control-pipe support
 
 ### Recorded Same-Session Scripted Validation
 
@@ -1328,6 +1334,172 @@ Observed rejected-path result:
   - `scheduler_status=AllSelected`
   - `clean_output_render_result_kind=Rendered`
 - command `2` `quit`:
+  - `transition_result=ExitRequested`
+  - `exit_reason=QuitRequested`
+- final summary:
+  - `commands_processed=3`
+  - `commands_rejected=1`
+  - `current_view_state=AllView`
+  - `frames_rendered=5`
+  - `render_failures=0`
+  - `scheduler_status=AllSelected`
+  - `slot_result_kinds=Selected|Selected|Selected|Selected`
+  - `clean_output_render_result_kind=Rendered`
+  - `exit_reason=QuitRequested`
+
+### Recorded Same-Session Separate Local Control Pipe Validation
+
+Recorded guarded server/client recipe for the control-pipe success path:
+
+- server:
+
+```powershell
+.\target\debug\stream-sync-server.exe --receive-auth-video-queue-and-serve-handoff-many configs/manual/server.two-real-slots.toml streamsync-handoff-dev 140 4096 5000 8 true 8388608 4 2
+```
+
+- clients:
+
+```powershell
+.\target\debug\stream-sync-client.exe --auth-real-encoded-video-frame-poc-bounded configs/manual/client.player1.toml 2 16 1
+.\target\debug\stream-sync-client.exe --auth-real-encoded-video-frame-poc-bounded configs/manual/client.player2.toml 2 16 1
+.\target\debug\stream-sync-client.exe --auth-real-encoded-video-frame-poc-bounded configs/manual/client.player3.toml 2 16 1
+.\target\debug\stream-sync-client.exe --auth-real-encoded-video-frame-poc-bounded configs/manual/client.player4.toml 2 16 1
+```
+
+- switcher same-session loop:
+
+```powershell
+.\target\debug\stream-sync-switcher.exe --four-view-controlled-handoff-preview-loop streamsync-handoff-dev player1 streamsync-dev-session player2 streamsync-dev-session player3 streamsync-dev-session player4 streamsync-dev-session 5 --control-pipe streamsync-control-dev
+```
+
+- sender commands:
+
+```powershell
+.\target\debug\stream-sync-switcher.exe --send-control-command streamsync-control-dev status
+.\target\debug\stream-sync-switcher.exe --send-control-command streamsync-control-dev "focus 0"
+.\target\debug\stream-sync-switcher.exe --send-control-command streamsync-control-dev "focus 1"
+.\target\debug\stream-sync-switcher.exe --send-control-command streamsync-control-dev "focus 2"
+.\target\debug\stream-sync-switcher.exe --send-control-command streamsync-control-dev "focus 3"
+.\target\debug\stream-sync-switcher.exe --send-control-command streamsync-control-dev all
+.\target\debug\stream-sync-switcher.exe --send-control-command streamsync-control-dev status
+.\target\debug\stream-sync-switcher.exe --send-control-command streamsync-control-dev quit
+```
+
+Observed control-pipe success responses:
+
+- `status`:
+  - `transition_result=Observed`
+  - `current_view_state=AllView`
+  - `clean_output_render_result_kind=Rendered`
+- `focus 0`:
+  - `transition_result=Transitioned`
+  - `current_view_state=Focused(0)`
+  - `selected_slot_result=Selected`
+  - `clean_output_render_result_kind=Rendered`
+- `focus 1`:
+  - `transition_result=Transitioned`
+  - `current_view_state=Focused(1)`
+  - `selected_slot_result=Selected`
+  - `clean_output_render_result_kind=Rendered`
+- `focus 2`:
+  - `transition_result=Transitioned`
+  - `current_view_state=Focused(2)`
+  - `selected_slot_result=Selected`
+  - `clean_output_render_result_kind=Rendered`
+- `focus 3`:
+  - `transition_result=Transitioned`
+  - `current_view_state=Focused(3)`
+  - `selected_slot_result=Selected`
+  - `clean_output_render_result_kind=Rendered`
+- `all`:
+  - `transition_result=Transitioned`
+  - `current_view_state=AllView`
+  - `clean_output_render_result_kind=Rendered`
+- final `status`:
+  - `transition_result=Observed`
+  - `current_view_state=AllView`
+  - `clean_output_render_result_kind=Rendered`
+- `quit`:
+  - `transition_result=ExitRequested`
+  - `current_view_state=AllView`
+  - `exit_reason=QuitRequested`
+
+Observed control-pipe success loop summary:
+
+- `commands_processed=8`
+- `commands_rejected=0`
+- `current_view_state=AllView`
+- `frames_rendered=35`
+- `render_failures=0`
+- `scheduler_status=AllSelected`
+- `slot_result_kinds=Selected|Selected|Selected|Selected`
+- `clean_output_render_result_kind=Rendered`
+- `window_title=StreamSync 4-view Output`
+- `output_width=1280`
+- `output_height=720`
+- `exit_reason=QuitRequested`
+
+Observed server/client conditions for the same control-pipe success session:
+
+- server receive summary kept:
+  - `registered_clients=4`
+  - `frames_reassembled=8`
+  - `frames_queued=8`
+  - `observed_reassembled_clients=4`
+  - `per_client_reassembled_frames=player1/streamsync-dev-session:2|player2/streamsync-dev-session:2|player3/streamsync-dev-session:2|player4/streamsync-dev-session:2`
+  - `stop_reason=ReassembledFramesAndClientAwareThresholdReached`
+  - `receive_timed_out=false`
+  - `max_packets_reached=false`
+- server bounded handoff kept:
+  - `max_requests=140`
+  - `requests_served=140`
+  - `successful_responses=140`
+  - `handoff_errors=0`
+- clients `player1..4` each kept:
+  - `frames_captured=2`
+  - `frames_encoded=2`
+  - `frames_sent=2`
+  - `capture_failures=0`
+  - `encode_failures=0`
+  - `send_failures=0`
+
+Recorded guarded server/client recipe for the control-pipe rejected path:
+
+- server:
+
+```powershell
+.\target\debug\stream-sync-server.exe --receive-auth-video-queue-and-serve-handoff-many configs/manual/server.two-real-slots.toml streamsync-handoff-dev 20 4096 5000 8 true 8388608 4 2
+```
+
+- clients:
+  - same `player1..player4` commands as above
+
+- switcher same-session loop:
+
+```powershell
+.\target\debug\stream-sync-switcher.exe --four-view-controlled-handoff-preview-loop streamsync-handoff-dev player1 streamsync-dev-session player2 streamsync-dev-session player3 streamsync-dev-session player4 streamsync-dev-session 5 --control-pipe streamsync-control-dev
+```
+
+- sender commands:
+
+```powershell
+.\target\debug\stream-sync-switcher.exe --send-control-command streamsync-control-dev "focus 9"
+.\target\debug\stream-sync-switcher.exe --send-control-command streamsync-control-dev status
+.\target\debug\stream-sync-switcher.exe --send-control-command streamsync-control-dev quit
+```
+
+Observed control-pipe rejected-path result:
+
+- sender response `focus 9`:
+  - `transition_result=Rejected`
+  - `current_view_state=AllView`
+  - `selected_slot_result=NotApplicable`
+  - `command_parse_error=invalid_focus_index:_expected_integer_0..3`
+- sender response `status`:
+  - `transition_result=Observed`
+  - `current_view_state=AllView`
+  - `clean_output_render_result_kind=Rendered`
+- sender response `quit`:
   - `transition_result=ExitRequested`
   - `exit_reason=QuitRequested`
 - final summary:
