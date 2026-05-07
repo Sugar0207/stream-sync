@@ -29,6 +29,19 @@ bitrate_kbps = 4000
 keyframe_interval = 30
 preset = "low-latency"
 
+[video.encoder]
+backend = "ffmpeg_libx264"
+width = 1280
+height = 720
+fps = 30
+bitrate_kbps = 4500
+gop_frames = 30
+preset = "ultrafast"
+tune = "zerolatency"
+pixel_format = "yuv420p"
+profile = "main"
+level = "3.1"
+
 [encoder]
 prefer_hardware = true
 hardware_encoder = "auto"

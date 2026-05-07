@@ -3513,12 +3513,17 @@ Difference from the current PoC:
 - current validated PoC already proves:
   - Windows Graphics Capture -> FFmpeg -> H.264 -> UDP -> server queue ->
     switcher decode/render works
-- current PoC still leaves production configuration implicit:
-  - FFmpeg/libx264 defaults are not yet surfaced through client TOML
-  - bitrate/GOP/profile/level are not yet operator-visible in runtime summary
-  - FFmpeg availability/version is checked manually rather than reported by the
-    sender summary
-  - encoder stderr is not yet classified into compact operational error kinds
+- current implementation now surfaces the first production-facing encoder slice:
+  - client TOML can optionally declare `[video.encoder]`
+  - bounded real-encoded sender stdout exposes encoder config identity,
+    FFmpeg preflight visibility, and compact failure/pressure fields
+  - existing configs without `[video.encoder]` still keep the current implicit
+    defaults and do not force a profile change
+- remaining gap:
+  - encode failures still collapse to the existing runtime reasons such as
+    `EncoderUnavailable` / `EncodeFailed`
+  - full FFmpeg stderr classification is still narrower than the docs-only
+    long-term target
 
 Failure / error logging policy:
 
@@ -3544,9 +3549,9 @@ Failure / error logging policy:
   - optional exit code
   - a truncated stderr excerpt on failure only
 
-Stdout summary fields:
+Stdout summary fields for the current bounded sender path:
 
-- keep:
+- existing counters kept:
   - `frames_attempted`
   - `frames_captured`
   - `frames_encoded`
@@ -3557,30 +3562,33 @@ Stdout summary fields:
   - `frame_build_failures`
   - `send_failures`
   - `stop_reason`
-- add in the next slice:
+- encoder config visibility:
   - `encoder_backend`
-  - `encoder_profile_name`
-  - `capture_width`
-  - `capture_height`
-  - `nominal_fps`
-  - `bitrate_kbps`
-  - `gop_frames`
-  - `preset`
-  - `tune`
-  - `output_pixel_format`
-  - `profile`
-  - `level`
+  - `encoder_width`
+  - `encoder_height`
+  - `encoder_fps`
+  - `encoder_bitrate_kbps`
+  - `encoder_gop_frames`
+  - `encoder_preset`
+  - `encoder_tune`
+  - `encoder_pixel_format`
+  - `encoder_profile`
+  - `encoder_level`
+- FFmpeg visibility:
   - `ffmpeg_path`
-  - `ffmpeg_available`
-  - `ffmpeg_version`
-  - `last_encode_error_kind`
-  - `last_encode_exit_code`
-  - `last_encoded_payload_len`
-  - `max_encoded_payload_len`
-  - `fragmented_sends`
-  - `fragments_attempted`
-  - `fragments_sent`
-  - `last_send_packet_len`
+  - `ffmpeg_version_detected`
+  - `ffmpeg_preflight_error`
+  - `ffmpeg_spawn_error`
+  - `last_ffmpeg_error`
+- compact failure / payload / fragmentation visibility:
+  - `last_encode_error`
+  - `last_payload_len`
+  - `oversized_payload_count`
+  - `fragmentation_pressure_count`
+  - existing `fragmented_sends`
+  - existing `fragments_attempted`
+  - existing `fragments_sent`
+  - existing `last_send_packet_len`
 
 Config placement:
 
@@ -3591,18 +3599,46 @@ Config placement:
   - `configs/manual/client.player2.toml`
   - `configs/manual/client.player3.toml`
   - `configs/manual/client.player4.toml`
-- example/default config should later document the same block in the existing
-  client example file
+- these manual configs now carry the MVP `ffmpeg_libx264` profile block
+- example/default config intentionally still omits the block so fallback
+  behavior remains documented and testable
 - if stable presets accumulate, future reusable profile files can be added as a
   separate profile layer instead of copying values into every manual config by
   hand
 
+Current config shape:
+
+```toml
+[video.encoder]
+backend = "ffmpeg_libx264"
+width = 1280
+height = 720
+fps = 30
+bitrate_kbps = 4500
+gop_frames = 30
+preset = "ultrafast"
+tune = "zerolatency"
+pixel_format = "yuv420p"
+profile = "main"
+level = "3.1"
+```
+
+Current fallback contract:
+
+- if `[video.encoder]` is absent:
+  - keep `ffmpeg` path from PATH
+  - keep `ultrafast` / `zerolatency`
+  - keep `yuv420p`
+  - keep `30fps`
+  - keep capture-size output instead of forcing `1280x720`
+  - keep bitrate / GOP / profile / level implicit
+
 Recommended next implementation slice:
 
-1. cut the validated low-latency `libx264` profile out into client config while
-   preserving the current implicit defaults
-2. extend bounded real-encoded sender summary with encoder profile / FFmpeg /
-   error-kind fields
-3. add an explicit FFmpeg availability/version summary path
-4. leave hardware encoder integration after the software-profile/config and
-   logging surface are stable
+1. rerun the bounded localhost/manual real encoded recipe with the new
+   `[video.encoder]` configs and record the expanded stdout fields
+2. tighten FFmpeg failure classification beyond the current
+   `EncoderUnavailable` / `EncodeFailed` summary surface without widening into
+   hardware encoder work
+3. keep hardware encoder integration after the software-profile/config and
+   logging surface remain stable under manual reruns

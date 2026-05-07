@@ -317,15 +317,56 @@ fn main() {
                 delay_every_fragments: fragment_pacing_every,
                 delay_micros: fragment_pacing_delay_ms.saturating_mul(1_000),
             };
-            match stream_sync_client::run_auth_real_encoded_video_frame_poc_bounded_from_path_with_fragment_pacing(
-                &config_path,
-                max_frames,
-                fragment_pacing,
-            ) {
+            let launcher =
+                stream_sync_client::ClientAuthRealEncodedVideoFrameBoundedPocLauncher::default();
+            let mut startup_config = launcher
+                .load_startup_config_from_path(&config_path, max_frames)
+                .unwrap_or_else(|error| {
+                    eprintln!("auth real encoded video frame bounded PoC failed: {error:?}");
+                    std::process::exit(1);
+                });
+            startup_config.policy.fragment_pacing = fragment_pacing;
+            let encoder_config = startup_config.video.encoder_config.clone();
+            let ffmpeg_preflight =
+                stream_sync_client::probe_client_ffmpeg_preflight(&encoder_config);
+            let encoder_runtime =
+                stream_sync_client::ClientObservedFfmpegSoftwareH264EncoderRuntimeHook::from_video_encoder_config(
+                    encoder_config.clone(),
+                );
+            let outcome = {
+                #[cfg(target_os = "windows")]
+                {
+                    launcher.run_once_with_runtimes(
+                        startup_config,
+                        &stream_sync_client::ClientWindowsGraphicsCaptureSessionRuntimeHook,
+                        &stream_sync_client::ClientWindowsGraphicsCaptureFrameAcquisitionRuntimeHook,
+                        &encoder_runtime,
+                    )
+                }
+
+                #[cfg(not(target_os = "windows"))]
+                {
+                    launcher.run_once_with_runtimes(
+                        startup_config,
+                        &stream_sync_client::ClientUnavailableCaptureSessionRuntimeHook,
+                        &stream_sync_client::ClientUnavailableCaptureFrameAcquisitionRuntimeHook,
+                        &encoder_runtime,
+                    )
+                }
+            };
+            let ffmpeg_visibility = encoder_runtime.snapshot();
+            match outcome {
                 Ok(outcome) => match outcome.video {
                     stream_sync_client::ClientContinuousRealEncodedVideoFramePocOutcome::Completed(runtime) => {
                         let summary = runtime.summary;
                         let last_send_failure = summary.last_send_failure.as_ref();
+                        let last_encode_error =
+                            last_encode_error_from_results(&runtime.results);
+                        let last_payload_len = last_payload_len_from_results(&runtime.results);
+                        let oversized_payload_count =
+                            oversized_payload_count_from_results(&runtime.results);
+                        let fragmentation_pressure_count =
+                            fragmentation_pressure_count_from_results(&runtime.results);
                         let last_send_destination = last_send_failure
                             .map(|failure| failure.destination.to_string())
                             .unwrap_or_else(|| "none".to_string());
@@ -346,8 +387,32 @@ fn main() {
                         let last_send_error = last_send_failure
                             .map(|failure| format!("{:?}", failure.error))
                             .unwrap_or_else(|| "none".to_string());
+                        let encoder_width = encoder_config
+                            .width
+                            .map(|value| value.to_string())
+                            .unwrap_or_else(|| "input".to_string());
+                        let encoder_height = encoder_config
+                            .height
+                            .map(|value| value.to_string())
+                            .unwrap_or_else(|| "input".to_string());
+                        let encoder_bitrate_kbps = encoder_config
+                            .bitrate_kbps
+                            .map(|value| value.to_string())
+                            .unwrap_or_else(|| "none".to_string());
+                        let encoder_gop_frames = encoder_config
+                            .gop_frames
+                            .map(|value| value.to_string())
+                            .unwrap_or_else(|| "none".to_string());
+                        let encoder_profile = encoder_config
+                            .profile
+                            .clone()
+                            .unwrap_or_else(|| "none".to_string());
+                        let encoder_level = encoder_config
+                            .level
+                            .clone()
+                            .unwrap_or_else(|| "none".to_string());
                         println!(
-                            "auth real encoded video frame bounded PoC sent AuthRequest {} bytes from {} to {} and received AuthResponse {} bytes from {}; accepted={} reason_code={:?}; bounded_manual_runtime=true; fragment_pacing_every={} fragment_pacing_delay_ms={} frames_attempted={} frames_captured={} frames_encoded={} frames_sent={} direct_sends={} fragmented_sends={} fragments_attempted={} fragments_sent={} no_frame_count={} capture_failures={} encode_failures={} frame_build_failures={} send_failures={} stop_reason={:?} last_send_destination={} last_send_local_source={} last_send_frame_id={} last_send_payload_len={} last_send_packet_len={} last_send_error={}",
+                            "auth real encoded video frame bounded PoC sent AuthRequest {} bytes from {} to {} and received AuthResponse {} bytes from {}; accepted={} reason_code={:?}; bounded_manual_runtime=true; fragment_pacing_every={} fragment_pacing_delay_ms={} encoder_backend={} encoder_width={} encoder_height={} encoder_fps={} encoder_bitrate_kbps={} encoder_gop_frames={} encoder_preset={} encoder_tune={} encoder_pixel_format={} encoder_profile={} encoder_level={} ffmpeg_path={} ffmpeg_version_detected={} ffmpeg_preflight_error={} ffmpeg_spawn_error={} frames_attempted={} frames_captured={} frames_encoded={} frames_sent={} direct_sends={} fragmented_sends={} fragments_attempted={} fragments_sent={} no_frame_count={} capture_failures={} encode_failures={} frame_build_failures={} send_failures={} last_encode_error={} last_ffmpeg_error={} last_payload_len={} oversized_payload_count={} fragmentation_pressure_count={} stop_reason={:?} last_send_destination={} last_send_local_source={} last_send_frame_id={} last_send_payload_len={} last_send_packet_len={} last_send_error={}",
                             outcome.auth_request_bytes_sent,
                             outcome.local_source,
                             outcome.destination,
@@ -357,6 +422,23 @@ fn main() {
                             outcome.auth_response.reason_code,
                             fragment_pacing_every,
                             fragment_pacing_delay_ms,
+                            encoder_config.backend.as_config_str(),
+                            encoder_width,
+                            encoder_height,
+                            encoder_config.fps,
+                            encoder_bitrate_kbps,
+                            encoder_gop_frames,
+                            encoder_config.preset,
+                            encoder_config.tune,
+                            encoder_config.pixel_format,
+                            encoder_profile,
+                            encoder_level,
+                            ffmpeg_preflight.ffmpeg_path.display(),
+                            ffmpeg_preflight.version_detected.unwrap_or_else(|| "none".to_string()),
+                            ffmpeg_preflight.error.unwrap_or_else(|| "none".to_string()),
+                            ffmpeg_visibility
+                                .ffmpeg_spawn_error
+                                .unwrap_or_else(|| "none".to_string()),
                             summary.frames_attempted,
                             summary.frames_captured,
                             summary.frames_encoded,
@@ -370,6 +452,13 @@ fn main() {
                             summary.encode_failures,
                             summary.frame_build_failures,
                             summary.send_failures,
+                            last_encode_error,
+                            ffmpeg_visibility
+                                .last_ffmpeg_error
+                                .unwrap_or_else(|| "none".to_string()),
+                            last_payload_len,
+                            oversized_payload_count,
+                            fragmentation_pressure_count,
                             summary.stop_reason,
                             last_send_destination,
                             last_send_local_source,
@@ -520,6 +609,80 @@ fn main() {
             );
         }
     }
+}
+
+fn last_encode_error_from_results(
+    results: &[stream_sync_client::ClientRealEncodedVideoFrameOneShotResult],
+) -> String {
+    results
+        .iter()
+        .rev()
+        .find_map(|result| match result {
+            stream_sync_client::ClientRealEncodedVideoFrameOneShotResult::EncodeUnavailable {
+                reason,
+            } => Some(format!("{reason:?}")),
+            _ => None,
+        })
+        .unwrap_or_else(|| "none".to_string())
+}
+
+fn last_payload_len_from_results(
+    results: &[stream_sync_client::ClientRealEncodedVideoFrameOneShotResult],
+) -> String {
+    results
+        .iter()
+        .rev()
+        .find_map(|result| match result {
+            stream_sync_client::ClientRealEncodedVideoFrameOneShotResult::Sent(sent) => {
+                Some(sent.frame.payload.len().to_string())
+            }
+            stream_sync_client::ClientRealEncodedVideoFrameOneShotResult::SendFailed {
+                failure,
+            } => Some(failure.payload_len.to_string()),
+            _ => None,
+        })
+        .unwrap_or_else(|| "none".to_string())
+}
+
+fn oversized_payload_count_from_results(
+    results: &[stream_sync_client::ClientRealEncodedVideoFrameOneShotResult],
+) -> usize {
+    results
+        .iter()
+        .filter(|result| {
+            matches!(
+                result,
+                stream_sync_client::ClientRealEncodedVideoFrameOneShotResult::SendFailed {
+                    failure: stream_sync_client::ClientVideoFrameEncodeSendFailure {
+                        error: stream_sync_client::ClientVideoFrameEncodeSendError::PacketTooLarge {
+                            ..
+                        },
+                        ..
+                    }
+                }
+            )
+        })
+        .count()
+}
+
+fn fragmentation_pressure_count_from_results(
+    results: &[stream_sync_client::ClientRealEncodedVideoFrameOneShotResult],
+) -> usize {
+    results
+        .iter()
+        .filter(|result| match result {
+            stream_sync_client::ClientRealEncodedVideoFrameOneShotResult::Sent(sent) => {
+                matches!(
+                    sent.send.summary,
+                    stream_sync_client::ClientVideoFrameSendSummary::FragmentedSent { .. }
+                )
+            }
+            stream_sync_client::ClientRealEncodedVideoFrameOneShotResult::SendFailed {
+                failure,
+            } => failure.fragments_attempted > 0,
+            _ => false,
+        })
+        .count()
 }
 
 fn parse_optional_arg_or_exit<T: std::str::FromStr>(value: Option<String>, name: &str) -> Option<T>

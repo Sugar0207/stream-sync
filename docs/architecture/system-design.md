@@ -8990,15 +8990,17 @@ Difference from the current real-capture PoC:
 - current PoC behavior is real and validated, but still narrow:
   - one FFmpeg process per encode
   - implicit `libx264` / `ultrafast` / `zerolatency` / `yuv420p`
-  - no client-facing encoder profile block in TOML yet
-  - no explicit bitrate / GOP / profile / level fields in config yet
-  - no structured once-per-run FFmpeg availability/version summary yet
-  - no structured encoder stderr/error classification policy yet
+  - no deeper stderr/exit-code classification yet
+- current implementation now surfaces the first production-facing encoder slice:
+  - client TOML can optionally declare `[video.encoder]`
+  - the bounded sender surfaces encoder profile identity and FFmpeg preflight
+    visibility in stdout
+  - configs without `[video.encoder]` keep the current implicit defaults
 - production configuration should not replace the successful recipe first:
   - the current successful manual recipe remains valid until config wiring is
     added
-  - the first implementation slice should surface the already validated default
-    choices explicitly rather than changing them
+  - the current implementation follows that rule by only making the validated
+    profile explicit when the optional block is present
 
 Failure and error logging policy:
 
@@ -9045,7 +9047,7 @@ Failure and error logging policy:
     failure
   - future JSON Lines/file logging can carry the longer diagnostic payload
 
-Stdout / summary policy for the first production-facing encoder slice:
+Stdout / summary policy for the current production-facing encoder slice:
 
 - keep existing bounded-sender summary fields:
   - attempted
@@ -9058,32 +9060,33 @@ Stdout / summary policy for the first production-facing encoder slice:
   - frame-build-failure
   - send-failure
   - stop reason
-- add explicit encoder-profile identity fields:
+- current encoder-profile identity fields:
   - `encoder_backend`
-  - `encoder_profile_name`
-  - `capture_width`
-  - `capture_height`
-  - `nominal_fps`
-  - `bitrate_kbps`
-  - `gop_frames`
-  - `preset`
-  - `tune`
-  - `output_pixel_format`
-  - `profile`
-  - `level`
-- add FFmpeg/runtime observation fields:
+  - `encoder_width`
+  - `encoder_height`
+  - `encoder_fps`
+  - `encoder_bitrate_kbps`
+  - `encoder_gop_frames`
+  - `encoder_preset`
+  - `encoder_tune`
+  - `encoder_pixel_format`
+  - `encoder_profile`
+  - `encoder_level`
+- current FFmpeg/runtime observation fields:
   - `ffmpeg_path`
-  - `ffmpeg_available`
-  - `ffmpeg_version`
-  - `last_encode_error_kind`
-  - `last_encode_exit_code`
-- add payload / fragmentation pressure fields:
-  - `last_encoded_payload_len`
-  - `max_encoded_payload_len`
-  - `fragmented_sends`
-  - `fragments_attempted`
-  - `fragments_sent`
-  - `last_send_packet_len`
+  - `ffmpeg_version_detected`
+  - `ffmpeg_preflight_error`
+  - `ffmpeg_spawn_error`
+  - `last_ffmpeg_error`
+- current payload / fragmentation pressure fields:
+  - `last_encode_error`
+  - `last_payload_len`
+  - `oversized_payload_count`
+  - `fragmentation_pressure_count`
+  - existing `fragmented_sends`
+  - existing `fragments_attempted`
+  - existing `fragments_sent`
+  - existing `last_send_packet_len`
 
 Config placement decision:
 
@@ -9096,23 +9099,49 @@ Config placement decision:
   - `configs/manual/client.player2.toml`
   - `configs/manual/client.player3.toml`
   - `configs/manual/client.player4.toml`
-  - should eventually carry explicit encoder blocks so manual recipes are
+  - now carry the MVP `ffmpeg_libx264` encoder block so manual recipes are
     reproducible
 - example/default config:
-  - the existing client example config should gain a documented encoder block
+  - the existing client example config intentionally still omits the block so
+    default/fallback behavior remains explicit
 - future reusable profiles:
   - if multiple stable presets appear, add dedicated profile files under a
     profile-oriented config directory rather than duplicating every value in
     prose only
 
+Current config shape:
+
+```toml
+[video.encoder]
+backend = "ffmpeg_libx264"
+width = 1280
+height = 720
+fps = 30
+bitrate_kbps = 4500
+gop_frames = 30
+preset = "ultrafast"
+tune = "zerolatency"
+pixel_format = "yuv420p"
+profile = "main"
+level = "3.1"
+```
+
+Fallback contract when the block is absent:
+
+- keep `ffmpeg` path from PATH
+- keep `ultrafast` / `zerolatency`
+- keep `yuv420p`
+- keep `30fps`
+- keep capture-size output rather than forcing `1280x720`
+- keep bitrate / GOP / profile / level implicit
+
 Recommended next implementation slice:
 
-1. surface the validated `libx264` low-latency profile as client TOML config
-   without changing the successful default recipe
-2. extend bounded real-encoded sender summary with explicit encoder profile /
-   FFmpeg / error-kind fields
-3. add an explicit FFmpeg availability/version preflight summary path
-4. defer hardware encoder integration until the software-profile/config and
+1. rerun the bounded localhost/manual real encoded path with the new manual
+   configs and record the expanded stdout surface
+2. tighten FFmpeg failure classification beyond the current
+   `EncoderUnavailable` / `EncodeFailed` summary surface
+3. defer hardware encoder integration until the software-profile/config and
    logging surface are stable
 
 ## Operator-Facing Control Surface After Stable All-Real Baseline

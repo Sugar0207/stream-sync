@@ -757,9 +757,10 @@ impl ClientRealEncodedVideoFramePocLauncher {
             run_id: RunId(settings.run_id),
             frame_id: DEFAULT_PLACEHOLDER_VIDEO_FRAME_ID,
             is_keyframe: true,
-            fps_nominal: DEFAULT_PLACEHOLDER_VIDEO_FPS,
+            fps_nominal: settings.video_encoder_config.fps,
             start_capture_if_needed: true,
             backend_config: ClientCaptureBackendConfig::windows_graphics_capture_primary_display(),
+            encoder_config: settings.video_encoder_config,
         })
     }
 
@@ -775,13 +776,16 @@ impl ClientRealEncodedVideoFramePocLauncher {
         &self,
         startup_config: ClientRealEncodedVideoFramePocStartupConfig,
     ) -> Result<ClientRealEncodedVideoFramePocOutcome, ClientRealEncodedVideoFramePocError> {
+        let encoder_runtime = ClientFfmpegSoftwareH264EncoderRuntimeHook::from_video_encoder_config(
+            startup_config.encoder_config.clone(),
+        );
         #[cfg(target_os = "windows")]
         {
             self.run_once_with_runtimes(
                 startup_config,
                 &ClientWindowsGraphicsCaptureSessionRuntimeHook,
                 &ClientWindowsGraphicsCaptureFrameAcquisitionRuntimeHook,
-                &ClientFfmpegSoftwareH264EncoderRuntimeHook::default(),
+                &encoder_runtime,
             )
         }
 
@@ -791,7 +795,7 @@ impl ClientRealEncodedVideoFramePocLauncher {
                 startup_config,
                 &ClientUnavailableCaptureSessionRuntimeHook,
                 &ClientUnavailableCaptureFrameAcquisitionRuntimeHook,
-                &ClientFfmpegSoftwareH264EncoderRuntimeHook::default(),
+                &encoder_runtime,
             )
         }
     }
@@ -872,6 +876,7 @@ impl ClientRealEncodedVideoFramePocLauncher {
             fps_nominal: startup_config.fps_nominal,
             is_keyframe: startup_config.is_keyframe,
             start_capture_if_needed: startup_config.start_capture_if_needed,
+            encoder_config: startup_config.encoder_config,
             fragment_pacing: ClientVideoFrameFragmentPacingPolicy::default(),
         };
 
@@ -919,10 +924,14 @@ impl ClientAuthRealEncodedVideoFramePocLauncher {
         ClientAuthRealEncodedVideoFramePocStartupConfig,
         ClientAuthRealEncodedVideoFramePocError,
     > {
+        let path = path.as_ref();
         let auth_config = ClientAuthRequestPocLauncher::default()
             .load_startup_config_from_path(path)
             .map_err(ClientAuthRealEncodedVideoFramePocError::from_auth_request_error)?;
-        Ok(self.load_startup_config_from_auth_config(auth_config))
+        let video_config = ClientRealEncodedVideoFramePocLauncher::default()
+            .load_startup_config_from_path(path)
+            .map_err(ClientAuthRealEncodedVideoFramePocError::RealVideo)?;
+        Ok(self.load_startup_config_from_configs(auth_config, video_config))
     }
 
     pub fn load_startup_config_from_str(
@@ -935,28 +944,32 @@ impl ClientAuthRealEncodedVideoFramePocLauncher {
         let auth_config = ClientAuthRequestPocLauncher::default()
             .load_startup_config_from_str(input)
             .map_err(ClientAuthRealEncodedVideoFramePocError::from_auth_request_error)?;
-        Ok(self.load_startup_config_from_auth_config(auth_config))
+        let video_config = ClientRealEncodedVideoFramePocLauncher::default()
+            .load_startup_config_from_str(input)
+            .map_err(ClientAuthRealEncodedVideoFramePocError::RealVideo)?;
+        Ok(self.load_startup_config_from_configs(auth_config, video_config))
     }
 
-    fn load_startup_config_from_auth_config(
+    fn load_startup_config_from_configs(
         &self,
         auth_config: ClientAuthRequestPocStartupConfig,
+        video_config: ClientRealEncodedVideoFramePocStartupConfig,
     ) -> ClientAuthRealEncodedVideoFramePocStartupConfig {
         ClientAuthRealEncodedVideoFramePocStartupConfig {
             destination: auth_config.destination,
             response_timeout_ms: auth_config.response_timeout_ms,
             request: auth_config.request.clone(),
             video: ClientRealEncodedVideoFramePocStartupConfig {
-                destination: auth_config.destination,
-                protocol_version: auth_config.request.protocol_version,
-                client_id: auth_config.request.client_id,
-                run_id: auth_config.request.run_id,
-                frame_id: DEFAULT_PLACEHOLDER_VIDEO_FRAME_ID,
-                is_keyframe: true,
-                fps_nominal: DEFAULT_PLACEHOLDER_VIDEO_FPS,
-                start_capture_if_needed: true,
-                backend_config:
-                    ClientCaptureBackendConfig::windows_graphics_capture_primary_display(),
+                destination: video_config.destination,
+                protocol_version: video_config.protocol_version,
+                client_id: video_config.client_id,
+                run_id: video_config.run_id,
+                frame_id: video_config.frame_id,
+                is_keyframe: video_config.is_keyframe,
+                fps_nominal: video_config.fps_nominal,
+                start_capture_if_needed: video_config.start_capture_if_needed,
+                backend_config: video_config.backend_config,
+                encoder_config: video_config.encoder_config,
             },
         }
     }
@@ -975,13 +988,16 @@ impl ClientAuthRealEncodedVideoFramePocLauncher {
         startup_config: ClientAuthRealEncodedVideoFramePocStartupConfig,
     ) -> Result<ClientAuthRealEncodedVideoFramePocOutcome, ClientAuthRealEncodedVideoFramePocError>
     {
+        let encoder_runtime = ClientFfmpegSoftwareH264EncoderRuntimeHook::from_video_encoder_config(
+            startup_config.video.encoder_config.clone(),
+        );
         #[cfg(target_os = "windows")]
         {
             self.run_once_with_runtimes(
                 startup_config,
                 &ClientWindowsGraphicsCaptureSessionRuntimeHook,
                 &ClientWindowsGraphicsCaptureFrameAcquisitionRuntimeHook,
-                &ClientFfmpegSoftwareH264EncoderRuntimeHook::default(),
+                &encoder_runtime,
             )
         }
 
@@ -991,7 +1007,7 @@ impl ClientAuthRealEncodedVideoFramePocLauncher {
                 startup_config,
                 &ClientUnavailableCaptureSessionRuntimeHook,
                 &ClientUnavailableCaptureFrameAcquisitionRuntimeHook,
-                &ClientFfmpegSoftwareH264EncoderRuntimeHook::default(),
+                &encoder_runtime,
             )
         }
     }
@@ -1095,10 +1111,14 @@ impl ClientAuthRealEncodedVideoFrameBoundedPocLauncher {
         ClientAuthRealEncodedVideoFrameBoundedPocStartupConfig,
         ClientAuthRealEncodedVideoFramePocError,
     > {
+        let path = path.as_ref();
         let auth_config = ClientAuthRequestPocLauncher::default()
             .load_startup_config_from_path(path)
             .map_err(ClientAuthRealEncodedVideoFramePocError::from_auth_request_error)?;
-        Ok(self.load_startup_config_from_auth_config(auth_config, max_frames))
+        let video_config = ClientRealEncodedVideoFramePocLauncher::default()
+            .load_startup_config_from_path(path)
+            .map_err(ClientAuthRealEncodedVideoFramePocError::RealVideo)?;
+        Ok(self.load_startup_config_from_configs(auth_config, video_config, max_frames))
     }
 
     pub fn load_startup_config_from_str(
@@ -1112,12 +1132,16 @@ impl ClientAuthRealEncodedVideoFrameBoundedPocLauncher {
         let auth_config = ClientAuthRequestPocLauncher::default()
             .load_startup_config_from_str(input)
             .map_err(ClientAuthRealEncodedVideoFramePocError::from_auth_request_error)?;
-        Ok(self.load_startup_config_from_auth_config(auth_config, max_frames))
+        let video_config = ClientRealEncodedVideoFramePocLauncher::default()
+            .load_startup_config_from_str(input)
+            .map_err(ClientAuthRealEncodedVideoFramePocError::RealVideo)?;
+        Ok(self.load_startup_config_from_configs(auth_config, video_config, max_frames))
     }
 
-    fn load_startup_config_from_auth_config(
+    fn load_startup_config_from_configs(
         &self,
         auth_config: ClientAuthRequestPocStartupConfig,
+        video_config: ClientRealEncodedVideoFramePocStartupConfig,
         max_frames: u64,
     ) -> ClientAuthRealEncodedVideoFrameBoundedPocStartupConfig {
         let max_ticks = max_frames.saturating_mul(10).max(max_frames);
@@ -1126,22 +1150,22 @@ impl ClientAuthRealEncodedVideoFrameBoundedPocLauncher {
             response_timeout_ms: auth_config.response_timeout_ms,
             request: auth_config.request.clone(),
             video: ClientRealEncodedVideoFramePocStartupConfig {
-                destination: auth_config.destination,
-                protocol_version: auth_config.request.protocol_version,
-                client_id: auth_config.request.client_id,
-                run_id: auth_config.request.run_id,
-                frame_id: DEFAULT_PLACEHOLDER_VIDEO_FRAME_ID,
-                is_keyframe: true,
-                fps_nominal: DEFAULT_PLACEHOLDER_VIDEO_FPS,
-                start_capture_if_needed: true,
-                backend_config:
-                    ClientCaptureBackendConfig::windows_graphics_capture_primary_display(),
+                destination: video_config.destination,
+                protocol_version: video_config.protocol_version,
+                client_id: video_config.client_id,
+                run_id: video_config.run_id,
+                frame_id: video_config.frame_id,
+                is_keyframe: video_config.is_keyframe,
+                fps_nominal: video_config.fps_nominal,
+                start_capture_if_needed: video_config.start_capture_if_needed,
+                backend_config: video_config.backend_config,
+                encoder_config: video_config.encoder_config,
             },
             policy: ClientContinuousRealEncodedVideoFramePolicy {
                 max_frames,
                 max_ticks,
                 frame_wait_timeout_micros: auth_config.response_timeout_ms.saturating_mul(1_000),
-                frame_interval_micros: 1_000_000 / u64::from(DEFAULT_PLACEHOLDER_VIDEO_FPS),
+                frame_interval_micros: 1_000_000 / u64::from(video_config.fps_nominal),
                 stop_on_capture_failure: true,
                 stop_on_send_failure: true,
                 fragment_pacing: ClientVideoFrameFragmentPacingPolicy {
@@ -1171,13 +1195,16 @@ impl ClientAuthRealEncodedVideoFrameBoundedPocLauncher {
         ClientAuthRealEncodedVideoFrameBoundedPocOutcome,
         ClientAuthRealEncodedVideoFramePocError,
     > {
+        let encoder_runtime = ClientFfmpegSoftwareH264EncoderRuntimeHook::from_video_encoder_config(
+            startup_config.video.encoder_config.clone(),
+        );
         #[cfg(target_os = "windows")]
         {
             self.run_once_with_runtimes(
                 startup_config,
                 &ClientWindowsGraphicsCaptureSessionRuntimeHook,
                 &ClientWindowsGraphicsCaptureFrameAcquisitionRuntimeHook,
-                &ClientFfmpegSoftwareH264EncoderRuntimeHook::default(),
+                &encoder_runtime,
             )
         }
 
@@ -1187,7 +1214,7 @@ impl ClientAuthRealEncodedVideoFrameBoundedPocLauncher {
                 startup_config,
                 &ClientUnavailableCaptureSessionRuntimeHook,
                 &ClientUnavailableCaptureFrameAcquisitionRuntimeHook,
-                &ClientFfmpegSoftwareH264EncoderRuntimeHook::default(),
+                &encoder_runtime,
             )
         }
     }
@@ -1316,6 +1343,7 @@ impl ClientAuthRealEncodedVideoFrameBoundedPocLauncher {
                     fps_nominal: video_config.fps_nominal,
                     is_keyframe: video_config.is_keyframe,
                     start_capture_if_needed: video_config.start_capture_if_needed,
+                    encoder_config: video_config.encoder_config,
                     policy,
                 },
                 capture_runtime_hook,
@@ -3224,11 +3252,19 @@ pub struct ClientEncodedVideoFrameSource {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ClientH264EncoderInput {
     pub frame: ClientRawCapturedVideoFrame,
+    pub config: ClientVideoEncoderConfig,
 }
 
 impl ClientH264EncoderInput {
     pub fn from_raw_frame(frame: ClientRawCapturedVideoFrame) -> Self {
-        Self { frame }
+        Self::from_raw_frame_with_config(frame, ClientVideoEncoderConfig::default())
+    }
+
+    pub fn from_raw_frame_with_config(
+        frame: ClientRawCapturedVideoFrame,
+        config: ClientVideoEncoderConfig,
+    ) -> Self {
+        Self { frame, config }
     }
 }
 
@@ -3327,6 +3363,14 @@ impl ClientFfmpegSoftwareH264EncoderRuntimeHook {
         Self { config }
     }
 
+    pub fn from_video_encoder_config(config: ClientVideoEncoderConfig) -> Self {
+        Self::new(ClientFfmpegSoftwareH264EncoderConfig {
+            ffmpeg_path: config.ffmpeg_path,
+            preset: config.preset,
+            tune: config.tune,
+        })
+    }
+
     pub fn with_default_ffmpeg_path() -> Self {
         Self::default()
     }
@@ -3335,6 +3379,178 @@ impl ClientFfmpegSoftwareH264EncoderRuntimeHook {
         let width = usize::try_from(input.frame.width).ok()?;
         let height = usize::try_from(input.frame.height).ok()?;
         width.checked_mul(height)?.checked_mul(4)
+    }
+
+    fn encode_bgra_frame_with_visibility(
+        &self,
+        input: &ClientH264EncoderInput,
+    ) -> (ClientH264EncoderHookResult, ClientFfmpegEncodeVisibility) {
+        let mut visibility = ClientFfmpegEncodeVisibility::default();
+        if input.frame.width == 0 || input.frame.height == 0 || input.frame.fps_nominal == 0 {
+            return (
+                ClientH264EncoderHookResult::Deferred {
+                    reason: ClientH264EncoderDeferredReason::EncodeFailed,
+                },
+                visibility,
+            );
+        }
+
+        let Some(expected_len) = Self::expected_bgra_len(input) else {
+            return (
+                ClientH264EncoderHookResult::Deferred {
+                    reason: ClientH264EncoderDeferredReason::EncodeFailed,
+                },
+                visibility,
+            );
+        };
+        if input.frame.pixels.len() != expected_len {
+            return (
+                ClientH264EncoderHookResult::Deferred {
+                    reason: ClientH264EncoderDeferredReason::EncodeFailed,
+                },
+                visibility,
+            );
+        }
+
+        let video_size = format!("{}x{}", input.frame.width, input.frame.height);
+        let fps = input
+            .config
+            .effective_fps(input.frame.fps_nominal)
+            .to_string();
+        let mut command = Command::new(&self.config.ffmpeg_path);
+        command
+            .arg("-hide_banner")
+            .arg("-loglevel")
+            .arg("error")
+            .arg("-f")
+            .arg("rawvideo")
+            .arg("-pixel_format")
+            .arg("bgra")
+            .arg("-video_size")
+            .arg(video_size)
+            .arg("-framerate")
+            .arg(&fps)
+            .arg("-i")
+            .arg("pipe:0")
+            .arg("-frames:v")
+            .arg("1")
+            .arg("-an")
+            .arg("-c:v")
+            .arg("libx264")
+            .arg("-preset")
+            .arg(&self.config.preset)
+            .arg("-tune")
+            .arg(&self.config.tune);
+        if let (Some(width), Some(height)) = (input.config.width, input.config.height) {
+            command.arg("-vf").arg(format!("scale={width}:{height}"));
+        }
+        if let Some(bitrate_kbps) = input.config.bitrate_kbps {
+            command.arg("-b:v").arg(format!("{bitrate_kbps}k"));
+        }
+        if let Some(gop_frames) = input.config.gop_frames {
+            let gop_frames = gop_frames.to_string();
+            command
+                .arg("-g")
+                .arg(&gop_frames)
+                .arg("-keyint_min")
+                .arg(&gop_frames)
+                .arg("-sc_threshold")
+                .arg("0");
+        }
+        command.arg("-pix_fmt").arg(&input.config.pixel_format);
+        if let Some(profile) = input.config.profile.as_deref() {
+            command.arg("-profile:v").arg(profile);
+        }
+        if let Some(level) = input.config.level.as_deref() {
+            command.arg("-level:v").arg(level);
+        }
+
+        let mut child = match command
+            .arg("-f")
+            .arg("h264")
+            .arg("pipe:1")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+        {
+            Ok(child) => child,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                visibility.ffmpeg_spawn_error = Some(error.to_string());
+                return (
+                    ClientH264EncoderHookResult::Deferred {
+                        reason: ClientH264EncoderDeferredReason::EncoderUnavailable,
+                    },
+                    visibility,
+                );
+            }
+            Err(error) => {
+                visibility.ffmpeg_spawn_error = Some(error.to_string());
+                return (
+                    ClientH264EncoderHookResult::Deferred {
+                        reason: ClientH264EncoderDeferredReason::EncodeFailed,
+                    },
+                    visibility,
+                );
+            }
+        };
+
+        let Some(mut stdin) = child.stdin.take() else {
+            visibility.last_ffmpeg_error = Some("ffmpeg stdin pipe was not available".to_string());
+            return (
+                ClientH264EncoderHookResult::Deferred {
+                    reason: ClientH264EncoderDeferredReason::EncodeFailed,
+                },
+                visibility,
+            );
+        };
+        if let Err(error) = stdin.write_all(&input.frame.pixels) {
+            visibility.last_ffmpeg_error = Some(error.to_string());
+            return (
+                ClientH264EncoderHookResult::Deferred {
+                    reason: ClientH264EncoderDeferredReason::EncodeFailed,
+                },
+                visibility,
+            );
+        }
+        drop(stdin);
+
+        let output = match child.wait_with_output() {
+            Ok(output) => output,
+            Err(error) => {
+                visibility.last_ffmpeg_error = Some(error.to_string());
+                return (
+                    ClientH264EncoderHookResult::Deferred {
+                        reason: ClientH264EncoderDeferredReason::EncodeFailed,
+                    },
+                    visibility,
+                );
+            }
+        };
+
+        if !output.status.success() || output.stdout.is_empty() {
+            let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+            visibility.last_ffmpeg_error = Some(if stderr.is_empty() {
+                format!("ffmpeg exited with status {}", output.status)
+            } else {
+                stderr
+            });
+            return (
+                ClientH264EncoderHookResult::Deferred {
+                    reason: ClientH264EncoderDeferredReason::EncodeFailed,
+                },
+                visibility,
+            );
+        }
+
+        (
+            ClientH264EncoderHookResult::Encoded {
+                payload: ClientH264EncodedPayload {
+                    bytes: output.stdout,
+                },
+            },
+            visibility,
+        )
     }
 }
 
@@ -3346,103 +3562,94 @@ impl Default for ClientFfmpegSoftwareH264EncoderRuntimeHook {
 
 impl ClientH264EncoderRuntimeHook for ClientFfmpegSoftwareH264EncoderRuntimeHook {
     fn encode_bgra_frame(&self, input: &ClientH264EncoderInput) -> ClientH264EncoderHookResult {
-        if input.frame.width == 0 || input.frame.height == 0 || input.frame.fps_nominal == 0 {
-            return ClientH264EncoderHookResult::Deferred {
-                reason: ClientH264EncoderDeferredReason::EncodeFailed,
-            };
-        }
+        self.encode_bgra_frame_with_visibility(input).0
+    }
+}
 
-        let Some(expected_len) = Self::expected_bgra_len(input) else {
-            return ClientH264EncoderHookResult::Deferred {
-                reason: ClientH264EncoderDeferredReason::EncodeFailed,
-            };
-        };
-        if input.frame.pixels.len() != expected_len {
-            return ClientH264EncoderHookResult::Deferred {
-                reason: ClientH264EncoderDeferredReason::EncodeFailed,
-            };
-        }
+/// FFmpeg preflight visibility for manual real encoded runs.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClientFfmpegPreflightResult {
+    pub ffmpeg_path: PathBuf,
+    pub version_detected: Option<String>,
+    pub error: Option<String>,
+}
 
-        let video_size = format!("{}x{}", input.frame.width, input.frame.height);
-        let fps = input.frame.fps_nominal.to_string();
-        let mut child = match Command::new(&self.config.ffmpeg_path)
-            .arg("-hide_banner")
-            .arg("-loglevel")
-            .arg("error")
-            .arg("-f")
-            .arg("rawvideo")
-            .arg("-pixel_format")
-            .arg("bgra")
-            .arg("-video_size")
-            .arg(video_size)
-            .arg("-framerate")
-            .arg(fps)
-            .arg("-i")
-            .arg("pipe:0")
-            .arg("-frames:v")
-            .arg("1")
-            .arg("-an")
-            .arg("-c:v")
-            .arg("libx264")
-            .arg("-preset")
-            .arg(&self.config.preset)
-            .arg("-tune")
-            .arg(&self.config.tune)
-            .arg("-pix_fmt")
-            .arg("yuv420p")
-            .arg("-f")
-            .arg("h264")
-            .arg("pipe:1")
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-        {
-            Ok(child) => child,
-            Err(error) if error.kind() == io::ErrorKind::NotFound => {
-                return ClientH264EncoderHookResult::Deferred {
-                    reason: ClientH264EncoderDeferredReason::EncoderUnavailable,
-                };
+/// Per-run FFmpeg encode visibility captured from the default software hook.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ClientFfmpegEncodeVisibility {
+    pub ffmpeg_spawn_error: Option<String>,
+    pub last_ffmpeg_error: Option<String>,
+}
+
+/// FFmpeg/libx264 runtime hook with caller-visible per-run diagnostics.
+#[derive(Debug, Clone)]
+pub struct ClientObservedFfmpegSoftwareH264EncoderRuntimeHook {
+    inner: ClientFfmpegSoftwareH264EncoderRuntimeHook,
+    visibility: Arc<Mutex<ClientFfmpegEncodeVisibility>>,
+}
+
+impl ClientObservedFfmpegSoftwareH264EncoderRuntimeHook {
+    pub fn from_video_encoder_config(config: ClientVideoEncoderConfig) -> Self {
+        Self {
+            inner: ClientFfmpegSoftwareH264EncoderRuntimeHook::from_video_encoder_config(config),
+            visibility: Arc::new(Mutex::new(ClientFfmpegEncodeVisibility::default())),
+        }
+    }
+
+    pub fn snapshot(&self) -> ClientFfmpegEncodeVisibility {
+        self.visibility
+            .lock()
+            .expect("ffmpeg visibility mutex should not be poisoned")
+            .clone()
+    }
+}
+
+impl ClientH264EncoderRuntimeHook for ClientObservedFfmpegSoftwareH264EncoderRuntimeHook {
+    fn encode_bgra_frame(&self, input: &ClientH264EncoderInput) -> ClientH264EncoderHookResult {
+        let (result, visibility) = self.inner.encode_bgra_frame_with_visibility(input);
+        *self
+            .visibility
+            .lock()
+            .expect("ffmpeg visibility mutex should not be poisoned") = visibility;
+        result
+    }
+}
+
+pub fn probe_client_ffmpeg_preflight(
+    config: &ClientVideoEncoderConfig,
+) -> ClientFfmpegPreflightResult {
+    match Command::new(&config.ffmpeg_path)
+        .arg("-version")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+    {
+        Ok(output) if output.status.success() => ClientFfmpegPreflightResult {
+            ffmpeg_path: config.ffmpeg_path.clone(),
+            version_detected: String::from_utf8_lossy(&output.stdout)
+                .lines()
+                .next()
+                .map(|line| line.trim().to_string())
+                .filter(|line| !line.is_empty()),
+            error: None,
+        },
+        Ok(output) => {
+            let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+            ClientFfmpegPreflightResult {
+                ffmpeg_path: config.ffmpeg_path.clone(),
+                version_detected: None,
+                error: Some(if stderr.is_empty() {
+                    format!("ffmpeg -version exited with status {}", output.status)
+                } else {
+                    stderr
+                }),
             }
-            Err(_) => {
-                return ClientH264EncoderHookResult::Deferred {
-                    reason: ClientH264EncoderDeferredReason::EncodeFailed,
-                };
-            }
-        };
-
-        let Some(mut stdin) = child.stdin.take() else {
-            return ClientH264EncoderHookResult::Deferred {
-                reason: ClientH264EncoderDeferredReason::EncodeFailed,
-            };
-        };
-        if stdin.write_all(&input.frame.pixels).is_err() {
-            return ClientH264EncoderHookResult::Deferred {
-                reason: ClientH264EncoderDeferredReason::EncodeFailed,
-            };
         }
-        drop(stdin);
-
-        let output = match child.wait_with_output() {
-            Ok(output) => output,
-            Err(_) => {
-                return ClientH264EncoderHookResult::Deferred {
-                    reason: ClientH264EncoderDeferredReason::EncodeFailed,
-                };
-            }
-        };
-
-        if !output.status.success() || output.stdout.is_empty() {
-            return ClientH264EncoderHookResult::Deferred {
-                reason: ClientH264EncoderDeferredReason::EncodeFailed,
-            };
-        }
-
-        ClientH264EncoderHookResult::Encoded {
-            payload: ClientH264EncodedPayload {
-                bytes: output.stdout,
-            },
-        }
+        Err(error) => ClientFfmpegPreflightResult {
+            ffmpeg_path: config.ffmpeg_path.clone(),
+            version_detected: None,
+            error: Some(error.to_string()),
+        },
     }
 }
 
@@ -3483,9 +3690,9 @@ impl ClientH264EncoderBoundary {
                 }
                 ClientH264EncoderResult::Encoded(ClientEncodedVideoFrameSource {
                     capture_timestamp: input.frame.capture_timestamp,
-                    width: input.frame.width,
-                    height: input.frame.height,
-                    fps_nominal: input.frame.fps_nominal,
+                    width: input.config.effective_width(input.frame.width),
+                    height: input.config.effective_height(input.frame.height),
+                    fps_nominal: input.config.effective_fps(input.frame.fps_nominal),
                     codec: Codec::H264,
                     payload: payload.bytes,
                     source_kind: ClientEncodedVideoFrameSourceKind::RealCaptureH264,
@@ -4078,6 +4285,7 @@ pub struct ClientRealEncodedVideoFrameOneShotInput<'a> {
     pub fps_nominal: u32,
     pub is_keyframe: bool,
     pub start_capture_if_needed: bool,
+    pub encoder_config: ClientVideoEncoderConfig,
     pub fragment_pacing: ClientVideoFrameFragmentPacingPolicy,
 }
 
@@ -4167,7 +4375,10 @@ impl ClientRealEncodedVideoFrameOneShotBoundary {
         };
 
         let encoded = match self.encoder.encode_once_with_runtime(
-            ClientH264EncoderInput::from_raw_frame(raw_frame),
+            ClientH264EncoderInput::from_raw_frame_with_config(
+                raw_frame,
+                input.encoder_config.clone(),
+            ),
             encoder_runtime,
         ) {
             ClientH264EncoderResult::Encoded(encoded) => encoded,
@@ -4258,6 +4469,7 @@ pub struct ClientContinuousRealEncodedVideoFrameInput<'a> {
     pub fps_nominal: u32,
     pub is_keyframe: bool,
     pub start_capture_if_needed: bool,
+    pub encoder_config: ClientVideoEncoderConfig,
     pub policy: ClientContinuousRealEncodedVideoFramePolicy,
 }
 
@@ -4365,6 +4577,7 @@ impl ClientContinuousRealEncodedVideoFrameBoundary {
                 fps_nominal: input.fps_nominal,
                 is_keyframe: input.is_keyframe,
                 start_capture_if_needed: input.start_capture_if_needed,
+                encoder_config: input.encoder_config.clone(),
                 fragment_pacing: policy.fragment_pacing,
             };
 
@@ -6401,6 +6614,7 @@ pub struct ClientRealEncodedVideoFramePocStartupConfig {
     pub fps_nominal: u32,
     pub start_capture_if_needed: bool,
     pub backend_config: ClientCaptureBackendConfig,
+    pub encoder_config: ClientVideoEncoderConfig,
 }
 
 /// Result of the manual real encoded one-shot launcher.
@@ -10616,6 +10830,77 @@ pub enum ClientAuthRequestPocConfigError {
     },
 }
 
+/// Supported client-owned real H.264 encoder backends.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ClientVideoEncoderBackend {
+    FfmpegLibx264,
+}
+
+impl ClientVideoEncoderBackend {
+    pub fn as_config_str(self) -> &'static str {
+        match self {
+            Self::FfmpegLibx264 => "ffmpeg_libx264",
+        }
+    }
+}
+
+/// Client-owned encoder profile/config for the real encoded video path.
+///
+/// Missing width/height preserve the current successful PoC behavior: use the
+/// captured frame size instead of forcing a scale step.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClientVideoEncoderConfig {
+    pub backend: ClientVideoEncoderBackend,
+    pub ffmpeg_path: PathBuf,
+    pub width: Option<u32>,
+    pub height: Option<u32>,
+    pub fps: u32,
+    pub bitrate_kbps: Option<u32>,
+    pub gop_frames: Option<u32>,
+    pub preset: String,
+    pub tune: String,
+    pub pixel_format: String,
+    pub profile: Option<String>,
+    pub level: Option<String>,
+}
+
+impl Default for ClientVideoEncoderConfig {
+    fn default() -> Self {
+        Self {
+            backend: ClientVideoEncoderBackend::FfmpegLibx264,
+            ffmpeg_path: PathBuf::from("ffmpeg"),
+            width: None,
+            height: None,
+            fps: DEFAULT_PLACEHOLDER_VIDEO_FPS,
+            bitrate_kbps: None,
+            gop_frames: None,
+            preset: "ultrafast".to_string(),
+            tune: "zerolatency".to_string(),
+            pixel_format: "yuv420p".to_string(),
+            profile: None,
+            level: None,
+        }
+    }
+}
+
+impl ClientVideoEncoderConfig {
+    pub fn effective_width(&self, captured_width: u32) -> u32 {
+        self.width.unwrap_or(captured_width)
+    }
+
+    pub fn effective_height(&self, captured_height: u32) -> u32 {
+        self.height.unwrap_or(captured_height)
+    }
+
+    pub fn effective_fps(&self, captured_fps: u32) -> u32 {
+        if self.fps == 0 {
+            captured_fps
+        } else {
+            self.fps
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct ClientPocSettings {
     client_id: String,
@@ -10628,6 +10913,7 @@ struct ClientPocSettings {
     protocol_version: u32,
     heartbeat_interval_ms: u32,
     connect_timeout_ms: u32,
+    video_encoder_config: ClientVideoEncoderConfig,
 }
 
 #[derive(Debug, Default)]
@@ -10642,6 +10928,18 @@ struct PartialClientPocSettings {
     protocol_version: Option<u32>,
     heartbeat_interval_ms: Option<u32>,
     connect_timeout_ms: Option<u32>,
+    video_encoder_backend: Option<ClientVideoEncoderBackend>,
+    video_encoder_ffmpeg_path: Option<String>,
+    video_encoder_width: Option<u32>,
+    video_encoder_height: Option<u32>,
+    video_encoder_fps: Option<u32>,
+    video_encoder_bitrate_kbps: Option<u32>,
+    video_encoder_gop_frames: Option<u32>,
+    video_encoder_preset: Option<String>,
+    video_encoder_tune: Option<String>,
+    video_encoder_pixel_format: Option<String>,
+    video_encoder_profile: Option<String>,
+    video_encoder_level: Option<String>,
 }
 
 fn parse_client_poc_settings(input: &str) -> Result<ClientPocSettings, ClientAuthRequestPocError> {
@@ -10663,6 +10961,7 @@ fn parse_client_poc_settings(input: &str) -> Result<ClientPocSettings, ClientAut
                 "client" => Some("client"),
                 "session" => Some("session"),
                 "network" => Some("network"),
+                "video.encoder" => Some("video.encoder"),
                 _ => None,
             };
             continue;
@@ -10713,8 +11012,102 @@ fn parse_client_poc_settings(input: &str) -> Result<ClientPocSettings, ClientAut
             ("network", "connect_timeout_ms") => {
                 parsed.connect_timeout_ms = Some(parse_poc_u32(value, line_number, key)?);
             }
+            ("video.encoder", "backend") => {
+                parsed.video_encoder_backend =
+                    Some(parse_video_encoder_backend(value, line_number, key)?);
+            }
+            ("video.encoder", "ffmpeg_path") => {
+                parsed.video_encoder_ffmpeg_path =
+                    Some(parse_poc_toml_string(value, line_number, key)?);
+            }
+            ("video.encoder", "width") => {
+                parsed.video_encoder_width = Some(parse_positive_poc_u32(value, line_number, key)?);
+            }
+            ("video.encoder", "height") => {
+                parsed.video_encoder_height =
+                    Some(parse_positive_poc_u32(value, line_number, key)?);
+            }
+            ("video.encoder", "fps") => {
+                parsed.video_encoder_fps = Some(parse_positive_poc_u32(value, line_number, key)?);
+            }
+            ("video.encoder", "bitrate_kbps") => {
+                parsed.video_encoder_bitrate_kbps =
+                    Some(parse_positive_poc_u32(value, line_number, key)?);
+            }
+            ("video.encoder", "gop_frames") => {
+                parsed.video_encoder_gop_frames =
+                    Some(parse_positive_poc_u32(value, line_number, key)?);
+            }
+            ("video.encoder", "preset") => {
+                parsed.video_encoder_preset = Some(parse_poc_toml_string(value, line_number, key)?);
+            }
+            ("video.encoder", "tune") => {
+                parsed.video_encoder_tune = Some(parse_poc_toml_string(value, line_number, key)?);
+            }
+            ("video.encoder", "pixel_format") => {
+                parsed.video_encoder_pixel_format =
+                    Some(parse_poc_toml_string(value, line_number, key)?);
+            }
+            ("video.encoder", "profile") => {
+                parsed.video_encoder_profile =
+                    Some(parse_poc_toml_string(value, line_number, key)?);
+            }
+            ("video.encoder", "level") => {
+                parsed.video_encoder_level = Some(parse_poc_toml_string(value, line_number, key)?);
+            }
             _ => {}
         }
+    }
+
+    let mut video_encoder_config = ClientVideoEncoderConfig::default();
+    if let Some(backend) = parsed.video_encoder_backend {
+        video_encoder_config.backend = backend;
+    }
+    if let Some(ffmpeg_path) = parsed.video_encoder_ffmpeg_path {
+        video_encoder_config.ffmpeg_path = PathBuf::from(ffmpeg_path);
+    }
+    if let Some(width) = parsed.video_encoder_width {
+        video_encoder_config.width = Some(width);
+    }
+    if let Some(height) = parsed.video_encoder_height {
+        video_encoder_config.height = Some(height);
+    }
+    if let Some(fps) = parsed.video_encoder_fps {
+        video_encoder_config.fps = fps;
+    }
+    if let Some(bitrate_kbps) = parsed.video_encoder_bitrate_kbps {
+        video_encoder_config.bitrate_kbps = Some(bitrate_kbps);
+    }
+    if let Some(gop_frames) = parsed.video_encoder_gop_frames {
+        video_encoder_config.gop_frames = Some(gop_frames);
+    }
+    if let Some(preset) = parsed.video_encoder_preset {
+        video_encoder_config.preset = preset;
+    }
+    if let Some(tune) = parsed.video_encoder_tune {
+        video_encoder_config.tune = tune;
+    }
+    if let Some(pixel_format) = parsed.video_encoder_pixel_format {
+        video_encoder_config.pixel_format = pixel_format;
+    }
+    if let Some(profile) = parsed.video_encoder_profile {
+        video_encoder_config.profile = Some(profile);
+    }
+    if let Some(level) = parsed.video_encoder_level {
+        video_encoder_config.level = Some(level);
+    }
+
+    if video_encoder_config.width.is_some() != video_encoder_config.height.is_some() {
+        return Err(ClientAuthRequestPocError::Config(
+            ClientAuthRequestPocConfigError::MissingField {
+                section: "video.encoder",
+                key: if video_encoder_config.width.is_some() {
+                    "height"
+                } else {
+                    "width"
+                },
+            },
+        ));
     }
 
     Ok(ClientPocSettings {
@@ -10732,7 +11125,42 @@ fn parse_client_poc_settings(input: &str) -> Result<ClientPocSettings, ClientAut
         connect_timeout_ms: parsed
             .connect_timeout_ms
             .unwrap_or(DEFAULT_AUTH_RESPONSE_TIMEOUT_MS as u32),
+        video_encoder_config,
     })
+}
+
+fn parse_video_encoder_backend(
+    value: &str,
+    line: usize,
+    key: &str,
+) -> Result<ClientVideoEncoderBackend, ClientAuthRequestPocError> {
+    let backend = parse_poc_toml_string(value, line, key)?;
+    match backend.as_str() {
+        "ffmpeg_libx264" => Ok(ClientVideoEncoderBackend::FfmpegLibx264),
+        _ => Err(ClientAuthRequestPocError::Config(
+            ClientAuthRequestPocConfigError::InvalidTomlString {
+                line,
+                key: key.to_string(),
+            },
+        )),
+    }
+}
+
+fn parse_positive_poc_u32(
+    value: &str,
+    line: usize,
+    key: &str,
+) -> Result<u32, ClientAuthRequestPocError> {
+    let value = parse_poc_u32(value, line, key)?;
+    if value == 0 {
+        return Err(ClientAuthRequestPocError::Config(
+            ClientAuthRequestPocConfigError::InvalidNumber {
+                line,
+                key: key.to_string(),
+            },
+        ));
+    }
+    Ok(value)
 }
 
 fn require_string(
@@ -10997,6 +11425,7 @@ mod tests {
                 start_capture_if_needed: true,
                 backend_config:
                     ClientCaptureBackendConfig::windows_graphics_capture_primary_display(),
+                encoder_config: ClientVideoEncoderConfig::default(),
             },
         };
         let response = AuthResponse {
@@ -11063,7 +11492,7 @@ mod tests {
             RunId("streamsync-dev-session".to_string())
         );
         assert_eq!(config.request.app_version, AppVersion("0.1.0".to_string()));
-        assert_eq!(config.request.shared_token, "replace-with-shared-token");
+        assert_eq!(config.request.shared_token, "replace-with-shared-token-1");
         assert_eq!(config.request.display_name, Some("Player 1".to_string()));
         assert_eq!(config.response_timeout_ms, 5_000);
     }
@@ -12116,6 +12545,7 @@ mod tests {
                 pixel_format: ClientRawVideoPixelFormat::Bgra8,
                 pixels: vec![0; 1280 * 720 * 4],
             },
+            config: ClientVideoEncoderConfig::default(),
         });
 
         assert_eq!(
@@ -12140,6 +12570,7 @@ mod tests {
         let input = ClientH264EncoderInput::from_raw_frame(frame.clone());
 
         assert_eq!(input.frame, frame);
+        assert_eq!(input.config, ClientVideoEncoderConfig::default());
     }
 
     #[test]
@@ -12153,6 +12584,7 @@ mod tests {
                 pixel_format: ClientRawVideoPixelFormat::Unsupported,
                 pixels: vec![0; 16],
             },
+            config: ClientVideoEncoderConfig::default(),
         });
 
         assert_eq!(
@@ -12161,6 +12593,50 @@ mod tests {
                 reason: ClientH264EncoderDeferredReason::UnsupportedCaptureFormat
             }
         );
+    }
+
+    #[test]
+    fn client_video_frame_h264_encoder_boundary_uses_configured_output_dimensions_and_fps() {
+        struct FixtureEncoder;
+        impl ClientH264EncoderRuntimeHook for FixtureEncoder {
+            fn encode_bgra_frame(
+                &self,
+                _input: &ClientH264EncoderInput,
+            ) -> ClientH264EncoderHookResult {
+                ClientH264EncoderHookResult::Encoded {
+                    payload: ClientH264EncodedPayload {
+                        bytes: vec![0x00, 0x00, 0x01, 0x65],
+                    },
+                }
+            }
+        }
+
+        let result = ClientH264EncoderBoundary.encode_once_with_runtime(
+            ClientH264EncoderInput::from_raw_frame_with_config(
+                ClientRawCapturedVideoFrame {
+                    capture_timestamp: TimestampMicros(1_000_000),
+                    width: 1920,
+                    height: 1080,
+                    fps_nominal: 60,
+                    pixel_format: ClientRawVideoPixelFormat::Bgra8,
+                    pixels: vec![0; 1920 * 1080 * 4],
+                },
+                ClientVideoEncoderConfig {
+                    width: Some(1280),
+                    height: Some(720),
+                    fps: 30,
+                    ..ClientVideoEncoderConfig::default()
+                },
+            ),
+            &FixtureEncoder,
+        );
+
+        let ClientH264EncoderResult::Encoded(encoded) = result else {
+            panic!("configured output profile should still encode");
+        };
+        assert_eq!(encoded.width, 1280);
+        assert_eq!(encoded.height, 720);
+        assert_eq!(encoded.fps_nominal, 30);
     }
 
     #[test]
@@ -12530,6 +13006,7 @@ mod tests {
                 pixel_format: ClientRawVideoPixelFormat::Bgra8,
                 pixels: vec![0; 1280 * 720 * 4],
             },
+            config: ClientVideoEncoderConfig::default(),
         });
 
         assert!(matches!(
@@ -12792,6 +13269,7 @@ mod tests {
             fps_nominal: 30,
             is_keyframe: true,
             start_capture_if_needed: true,
+            encoder_config: ClientVideoEncoderConfig::default(),
             fragment_pacing: ClientVideoFrameFragmentPacingPolicy::default(),
         };
 
@@ -12873,6 +13351,7 @@ mod tests {
             fps_nominal: 30,
             is_keyframe: true,
             start_capture_if_needed: true,
+            encoder_config: ClientVideoEncoderConfig::default(),
             fragment_pacing: ClientVideoFrameFragmentPacingPolicy::default(),
         };
 
@@ -12929,6 +13408,7 @@ mod tests {
             fps_nominal: 30,
             is_keyframe: true,
             start_capture_if_needed: true,
+            encoder_config: ClientVideoEncoderConfig::default(),
             fragment_pacing: ClientVideoFrameFragmentPacingPolicy::default(),
         };
 
@@ -12997,6 +13477,7 @@ mod tests {
             fps_nominal: 30,
             is_keyframe: true,
             start_capture_if_needed: true,
+            encoder_config: ClientVideoEncoderConfig::default(),
             fragment_pacing: ClientVideoFrameFragmentPacingPolicy::default(),
         };
 
@@ -13065,6 +13546,7 @@ mod tests {
             fps_nominal: 30,
             is_keyframe: true,
             start_capture_if_needed: true,
+            encoder_config: ClientVideoEncoderConfig::default(),
             fragment_pacing: ClientVideoFrameFragmentPacingPolicy::default(),
         };
 
@@ -13114,6 +13596,35 @@ mod tests {
         assert_eq!(
             config.backend_config,
             ClientCaptureBackendConfig::windows_graphics_capture_primary_display()
+        );
+        assert_eq!(config.encoder_config, ClientVideoEncoderConfig::default());
+    }
+
+    #[test]
+    fn client_video_frame_real_encoded_poc_launcher_loads_manual_encoder_profile() {
+        let config = ClientRealEncodedVideoFramePocLauncher::default()
+            .load_startup_config_from_str(include_str!(
+                "../../../configs/manual/client.player1.toml"
+            ))
+            .expect("manual player config should load");
+
+        assert_eq!(config.fps_nominal, 30);
+        assert_eq!(
+            config.encoder_config,
+            ClientVideoEncoderConfig {
+                backend: ClientVideoEncoderBackend::FfmpegLibx264,
+                ffmpeg_path: PathBuf::from("ffmpeg"),
+                width: Some(1280),
+                height: Some(720),
+                fps: 30,
+                bitrate_kbps: Some(4500),
+                gop_frames: Some(30),
+                preset: "ultrafast".to_string(),
+                tune: "zerolatency".to_string(),
+                pixel_format: "yuv420p".to_string(),
+                profile: Some("main".to_string()),
+                level: Some("3.1".to_string()),
+            }
         );
     }
 
@@ -13371,6 +13882,7 @@ mod tests {
                 fps_nominal: 30,
                 is_keyframe: true,
                 start_capture_if_needed: true,
+                encoder_config: ClientVideoEncoderConfig::default(),
                 policy: ClientContinuousRealEncodedVideoFramePolicy {
                     max_frames: 3,
                     max_ticks: 10,
@@ -13452,6 +13964,7 @@ mod tests {
                 fps_nominal: 30,
                 is_keyframe: true,
                 start_capture_if_needed: true,
+                encoder_config: ClientVideoEncoderConfig::default(),
                 policy: ClientContinuousRealEncodedVideoFramePolicy {
                     max_frames: 1,
                     max_ticks: 2,
@@ -13514,6 +14027,7 @@ mod tests {
                 fps_nominal: 30,
                 is_keyframe: true,
                 start_capture_if_needed: true,
+                encoder_config: ClientVideoEncoderConfig::default(),
                 policy: ClientContinuousRealEncodedVideoFramePolicy {
                     max_frames: 1,
                     max_ticks: 5,
@@ -13583,6 +14097,7 @@ mod tests {
                 fps_nominal: 30,
                 is_keyframe: true,
                 start_capture_if_needed: true,
+                encoder_config: ClientVideoEncoderConfig::default(),
                 policy: ClientContinuousRealEncodedVideoFramePolicy {
                     max_frames: 1,
                     max_ticks: 1,
@@ -13657,6 +14172,7 @@ mod tests {
                 fps_nominal: 30,
                 is_keyframe: true,
                 start_capture_if_needed: true,
+                encoder_config: ClientVideoEncoderConfig::default(),
                 policy: ClientContinuousRealEncodedVideoFramePolicy {
                     max_frames: 1,
                     max_ticks: 1,
@@ -13789,6 +14305,7 @@ mod tests {
                 start_capture_if_needed: true,
                 backend_config:
                     ClientCaptureBackendConfig::windows_graphics_capture_primary_display(),
+                encoder_config: ClientVideoEncoderConfig::default(),
             },
         };
         let response = AuthResponse {
@@ -13935,6 +14452,7 @@ mod tests {
                 start_capture_if_needed: true,
                 backend_config:
                     ClientCaptureBackendConfig::windows_graphics_capture_primary_display(),
+                encoder_config: ClientVideoEncoderConfig::default(),
             },
             policy: ClientContinuousRealEncodedVideoFramePolicy {
                 max_frames: 2,
@@ -14072,6 +14590,7 @@ mod tests {
                 start_capture_if_needed: true,
                 backend_config:
                     ClientCaptureBackendConfig::windows_graphics_capture_primary_display(),
+                encoder_config: ClientVideoEncoderConfig::default(),
             },
             policy: ClientContinuousRealEncodedVideoFramePolicy {
                 max_frames: 2,
@@ -14188,6 +14707,7 @@ mod tests {
                 start_capture_if_needed: true,
                 backend_config:
                     ClientCaptureBackendConfig::windows_graphics_capture_primary_display(),
+                encoder_config: ClientVideoEncoderConfig::default(),
             },
         };
         let response = AuthResponse {

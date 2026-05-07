@@ -5,6 +5,94 @@
 - Codex
 
 ### Work
+- Implemented the first client encoder profile config wiring slice for the real
+  encoded video path.
+- Added optional client TOML parsing for `[video.encoder]` with:
+  - `backend`
+  - `ffmpeg_path`
+  - `width`
+  - `height`
+  - `fps`
+  - `bitrate_kbps`
+  - `gop_frames`
+  - `preset`
+  - `tune`
+  - `pixel_format`
+  - `profile`
+  - `level`
+- Preserved fallback behavior when `[video.encoder]` is absent:
+  - keep the current implicit `ffmpeg` / `libx264` / `ultrafast` /
+    `zerolatency` / `yuv420p` direction
+  - keep capture-size output instead of forcing `1280x720`
+  - keep bitrate / GOP / profile / level implicit
+- Wired encoder config into the real encoded FFmpeg/libx264 invocation:
+  - optional `scale=width:height`
+  - explicit `fps`
+  - explicit `bitrate_kbps`
+  - explicit `gop_frames` with fixed-keyframe settings
+  - explicit output pixel format / profile / level
+- Updated encoded metadata shaping so configured output width / height / FPS
+  are reflected in `VideoFrame` metadata instead of always reusing raw capture
+  dimensions.
+- Added bounded sender stdout visibility for:
+  - `encoder_backend`
+  - `encoder_width`
+  - `encoder_height`
+  - `encoder_fps`
+  - `encoder_bitrate_kbps`
+  - `encoder_gop_frames`
+  - `encoder_preset`
+  - `encoder_tune`
+  - `encoder_pixel_format`
+  - `encoder_profile`
+  - `encoder_level`
+  - `ffmpeg_path`
+  - `ffmpeg_version_detected`
+  - `ffmpeg_preflight_error`
+  - `ffmpeg_spawn_error`
+  - `last_encode_error`
+  - `last_ffmpeg_error`
+  - `last_payload_len`
+  - `oversized_payload_count`
+  - `fragmentation_pressure_count`
+- Added one-shot FFmpeg preflight probing and per-run FFmpeg runtime
+  visibility capture for the default software encoder path.
+- Updated `configs/manual/client.player1.toml` through
+  `client.player4.toml` with the MVP `ffmpeg_libx264` production profile.
+- Added focused tests for:
+  - fallback config load without `[video.encoder]`
+  - manual config parse with `[video.encoder]`
+  - encoder metadata honoring configured output width / height / FPS
+
+### Changed Files
+- `apps/client/src/lib.rs`
+- `apps/client/src/main.rs`
+- `configs/manual/client.player1.toml`
+- `configs/manual/client.player2.toml`
+- `configs/manual/client.player3.toml`
+- `configs/manual/client.player4.toml`
+- `docs/architecture/system-design.md`
+- `docs/operations/manual-real-encoded-video-poc.md`
+- `docs/operations/session-log.md`
+- `docs/operations/todo.md`
+
+### Decision
+- production encoder settings stay client-owned and optional
+- `[video.encoder]` should make the MVP `ffmpeg_libx264` profile explicit
+  without forcing it onto configs that do not declare the block
+- the first implementation slice stops at software-profile/config wiring and
+  visibility; hardware encoder integration remains later
+
+### Validation
+- `cargo fmt`
+- `cargo check --workspace`
+- `cargo test -p stream-sync-client client_video_frame -- --test-threads=1`
+
+## 2026-05-07
+### Type
+- Codex
+
+### Work
 - Fixed the production H.264 encoder configuration / error logging policy in
   docs without changing code.
 - Recorded the first production-profile direction as a client-owned
