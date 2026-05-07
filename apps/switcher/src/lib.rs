@@ -19,10 +19,11 @@ use stream_sync_server::{
     AuthenticatedSenderEntry, AuthenticatedSenderRegistry, PacketAcceptanceRejectReason,
     ServerAuthResponsePocError, ServerAuthResponsePocLauncher, ServerAuthResponsePocOutcome,
     ServerAuthResponsePocStartupConfig, ServerAuthResponsePocStartupError,
-    ServerAuthResponsePocStep, ServerInboundRoute, ServerQueuedVideoFrame,
-    ServerReceiveAuthVideoQueueOnceStartupOutcome, ServerReceiveAuthVideoQueueOnceVideoOutcome,
-    ServerReceiveLoopGateOutcome, ServerReceiveLoopGateRejection, ServerReceiveLoopStep,
-    ServerRegisteredClientPacket, ServerRegisteredPacketBoundary, ServerRegisteredVideoFramePacket,
+    ServerAuthResponsePocStep, ServerHeartbeatRttOffsetState, ServerInboundRoute,
+    ServerQueuedVideoFrame, ServerReceiveAuthVideoQueueOnceStartupOutcome,
+    ServerReceiveAuthVideoQueueOnceVideoOutcome, ServerReceiveLoopGateOutcome,
+    ServerReceiveLoopGateRejection, ServerReceiveLoopStep, ServerRegisteredClientPacket,
+    ServerRegisteredPacketBoundary, ServerRegisteredVideoFramePacket,
     ServerVideoFrameHandlerBoundary, ServerVideoFrameQueuePolicy,
     ServerVideoFrameQueueReadBoundary, ServerVideoFrameQueueReadInput,
     ServerVideoFrameQueueReadMode, ServerVideoFrameQueueReadResult,
@@ -1232,6 +1233,7 @@ pub struct SwitcherSingleClientTargetTimeSourceInput {
 pub struct SwitcherSingleClientTargetTimeSelectedFrame {
     pub frame: SwitcherSingleViewSelectedEncodedFrame,
     pub target_timestamp: TimestampMicros,
+    pub adjusted_capture_timestamp: TimestampMicros,
     pub delta_from_target_micros: i64,
     pub consumed: bool,
 }
@@ -1306,15 +1308,24 @@ impl SwitcherSingleClientTargetTimeHandoffSourceBoundary {
         handoff: &mut impl SwitcherQueuedFrameHandoff,
         input: SwitcherSingleClientTargetTimeSourceInput,
     ) -> SwitcherSingleClientTargetTimeHandoffSourceResult {
+        self.select_from_handoff_with_clock_offset(handoff, input, None)
+    }
+
+    pub fn select_from_handoff_with_clock_offset(
+        &self,
+        handoff: &mut impl SwitcherQueuedFrameHandoff,
+        input: SwitcherSingleClientTargetTimeSourceInput,
+        clock_offset_micros: Option<i64>,
+    ) -> SwitcherSingleClientTargetTimeHandoffSourceResult {
         match input.mode {
             SwitcherSingleClientTargetTimeSourceMode::PreviewOldestIfAtOrBefore => {
-                self.preview_oldest_at_or_before(handoff, input)
+                self.preview_oldest_at_or_before(handoff, input, clock_offset_micros)
             }
             SwitcherSingleClientTargetTimeSourceMode::PreviewLatestIfAtOrBefore => {
-                self.preview_latest_at_or_before(handoff, input)
+                self.preview_latest_at_or_before(handoff, input, clock_offset_micros)
             }
             SwitcherSingleClientTargetTimeSourceMode::ConsumeOldestAtOrBefore => {
-                self.consume_oldest_at_or_before(handoff, input)
+                self.consume_oldest_at_or_before(handoff, input, clock_offset_micros)
             }
         }
     }
@@ -1323,6 +1334,7 @@ impl SwitcherSingleClientTargetTimeHandoffSourceBoundary {
         &self,
         handoff: &mut impl SwitcherQueuedFrameHandoff,
         input: SwitcherSingleClientTargetTimeSourceInput,
+        clock_offset_micros: Option<i64>,
     ) -> SwitcherSingleClientTargetTimeHandoffSourceResult {
         let mode = input.mode;
         let target_timestamp = input.target_timestamp;
@@ -1334,13 +1346,20 @@ impl SwitcherSingleClientTargetTimeHandoffSourceBoundary {
                 mode: SwitcherSingleClientQueueSourceMode::PreviewLatest,
             },
         );
-        handoff_consumer_result_for_candidate(consumer_result, target_timestamp, mode, false)
+        handoff_consumer_result_for_candidate(
+            consumer_result,
+            target_timestamp,
+            mode,
+            false,
+            clock_offset_micros,
+        )
     }
 
     fn preview_oldest_at_or_before(
         &self,
         handoff: &mut impl SwitcherQueuedFrameHandoff,
         input: SwitcherSingleClientTargetTimeSourceInput,
+        clock_offset_micros: Option<i64>,
     ) -> SwitcherSingleClientTargetTimeHandoffSourceResult {
         let mode = input.mode;
         let target_timestamp = input.target_timestamp;
@@ -1352,13 +1371,20 @@ impl SwitcherSingleClientTargetTimeHandoffSourceBoundary {
                 mode: SwitcherSingleClientQueueSourceMode::PreviewOldest,
             },
         );
-        handoff_consumer_result_for_candidate(consumer_result, target_timestamp, mode, false)
+        handoff_consumer_result_for_candidate(
+            consumer_result,
+            target_timestamp,
+            mode,
+            false,
+            clock_offset_micros,
+        )
     }
 
     fn consume_oldest_at_or_before(
         &self,
         handoff: &mut impl SwitcherQueuedFrameHandoff,
         input: SwitcherSingleClientTargetTimeSourceInput,
+        clock_offset_micros: Option<i64>,
     ) -> SwitcherSingleClientTargetTimeHandoffSourceResult {
         let client_id = input.client_id;
         let run_id = input.run_id;
@@ -1372,8 +1398,13 @@ impl SwitcherSingleClientTargetTimeHandoffSourceBoundary {
                 mode: SwitcherSingleClientQueueSourceMode::PreviewOldest,
             },
         );
-        let preview_result =
-            handoff_consumer_result_for_candidate(preview, target_timestamp, mode, false);
+        let preview_result = handoff_consumer_result_for_candidate(
+            preview,
+            target_timestamp,
+            mode,
+            false,
+            clock_offset_micros,
+        );
 
         if !matches!(
             preview_result,
@@ -1390,7 +1421,13 @@ impl SwitcherSingleClientTargetTimeHandoffSourceBoundary {
                 mode: SwitcherSingleClientQueueSourceMode::ConsumeOldest,
             },
         );
-        handoff_consumer_result_for_candidate(consumed, target_timestamp, mode, true)
+        handoff_consumer_result_for_candidate(
+            consumed,
+            target_timestamp,
+            mode,
+            true,
+            clock_offset_micros,
+        )
     }
 }
 
@@ -1410,8 +1447,17 @@ impl SwitcherSingleClientTargetTimeSourceBoundary {
         queue_state: &mut ServerVideoFrameQueueState,
         input: SwitcherSingleClientTargetTimeSourceInput,
     ) -> SwitcherSingleClientTargetTimeSourceResult {
+        self.select_with_clock_offset(queue_state, input, None)
+    }
+
+    pub fn select_with_clock_offset(
+        &self,
+        queue_state: &mut ServerVideoFrameQueueState,
+        input: SwitcherSingleClientTargetTimeSourceInput,
+        clock_offset_micros: Option<i64>,
+    ) -> SwitcherSingleClientTargetTimeSourceResult {
         let mut source = SwitcherInProcessServerQueueFrameSource::new(queue_state);
-        self.select_from_source(&mut source, input)
+        self.select_from_source_with_clock_offset(&mut source, input, clock_offset_micros)
     }
 
     pub fn select_from_source(
@@ -1419,15 +1465,24 @@ impl SwitcherSingleClientTargetTimeSourceBoundary {
         source: &mut impl SwitcherQueuedFrameSource,
         input: SwitcherSingleClientTargetTimeSourceInput,
     ) -> SwitcherSingleClientTargetTimeSourceResult {
+        self.select_from_source_with_clock_offset(source, input, None)
+    }
+
+    pub fn select_from_source_with_clock_offset(
+        &self,
+        source: &mut impl SwitcherQueuedFrameSource,
+        input: SwitcherSingleClientTargetTimeSourceInput,
+        clock_offset_micros: Option<i64>,
+    ) -> SwitcherSingleClientTargetTimeSourceResult {
         match input.mode {
             SwitcherSingleClientTargetTimeSourceMode::PreviewOldestIfAtOrBefore => {
-                self.preview_oldest_at_or_before(source, input)
+                self.preview_oldest_at_or_before(source, input, clock_offset_micros)
             }
             SwitcherSingleClientTargetTimeSourceMode::PreviewLatestIfAtOrBefore => {
-                self.preview_latest_at_or_before(source, input)
+                self.preview_latest_at_or_before(source, input, clock_offset_micros)
             }
             SwitcherSingleClientTargetTimeSourceMode::ConsumeOldestAtOrBefore => {
-                self.consume_oldest_at_or_before(source, input)
+                self.consume_oldest_at_or_before(source, input, clock_offset_micros)
             }
         }
     }
@@ -1436,6 +1491,7 @@ impl SwitcherSingleClientTargetTimeSourceBoundary {
         &self,
         source: &mut impl SwitcherQueuedFrameSource,
         input: SwitcherSingleClientTargetTimeSourceInput,
+        clock_offset_micros: Option<i64>,
     ) -> SwitcherSingleClientTargetTimeSourceResult {
         let client_id = input.client_id;
         let run_id = input.run_id;
@@ -1446,13 +1502,20 @@ impl SwitcherSingleClientTargetTimeSourceBoundary {
             run_id,
             mode: SwitcherSingleClientQueueSourceMode::PreviewLatest,
         });
-        result_for_candidate(source_result, target_timestamp, mode, false)
+        result_for_candidate(
+            source_result,
+            target_timestamp,
+            mode,
+            false,
+            clock_offset_micros,
+        )
     }
 
     fn preview_oldest_at_or_before(
         &self,
         source: &mut impl SwitcherQueuedFrameSource,
         input: SwitcherSingleClientTargetTimeSourceInput,
+        clock_offset_micros: Option<i64>,
     ) -> SwitcherSingleClientTargetTimeSourceResult {
         let client_id = input.client_id;
         let run_id = input.run_id;
@@ -1463,13 +1526,20 @@ impl SwitcherSingleClientTargetTimeSourceBoundary {
             run_id,
             mode: SwitcherSingleClientQueueSourceMode::PreviewOldest,
         });
-        result_for_candidate(source_result, target_timestamp, mode, false)
+        result_for_candidate(
+            source_result,
+            target_timestamp,
+            mode,
+            false,
+            clock_offset_micros,
+        )
     }
 
     fn consume_oldest_at_or_before(
         &self,
         source: &mut impl SwitcherQueuedFrameSource,
         input: SwitcherSingleClientTargetTimeSourceInput,
+        clock_offset_micros: Option<i64>,
     ) -> SwitcherSingleClientTargetTimeSourceResult {
         let client_id = input.client_id;
         let run_id = input.run_id;
@@ -1487,10 +1557,20 @@ impl SwitcherSingleClientTargetTimeSourceBoundary {
             ..
         } = preview
         else {
-            return result_for_candidate(preview, target_timestamp, mode, false);
+            return result_for_candidate(
+                preview,
+                target_timestamp,
+                mode,
+                false,
+                clock_offset_micros,
+            );
         };
 
-        if frame.capture_timestamp.0 > target_timestamp.0 {
+        let adjusted_capture_timestamp = TimestampMicros(apply_offset_micros(
+            frame.capture_timestamp.0,
+            clock_offset_micros,
+        ));
+        if adjusted_capture_timestamp.0 > target_timestamp.0 {
             return SwitcherSingleClientTargetTimeSourceResult::WaitingForFrameAtOrBeforeTarget {
                 client_id,
                 run_id,
@@ -1507,7 +1587,7 @@ impl SwitcherSingleClientTargetTimeSourceBoundary {
             run_id,
             mode: SwitcherSingleClientQueueSourceMode::ConsumeOldest,
         });
-        result_for_candidate(consumed, target_timestamp, mode, true)
+        result_for_candidate(consumed, target_timestamp, mode, true, clock_offset_micros)
     }
 }
 
@@ -1516,6 +1596,7 @@ fn result_for_candidate(
     target_timestamp: TimestampMicros,
     mode: SwitcherSingleClientTargetTimeSourceMode,
     consumed: bool,
+    clock_offset_micros: Option<i64>,
 ) -> SwitcherSingleClientTargetTimeSourceResult {
     match source_result {
         SwitcherSingleClientQueueSourceResult::FrameAvailable {
@@ -1523,13 +1604,18 @@ fn result_for_candidate(
             remaining_client_queue_len,
             ..
         } => {
-            if frame.capture_timestamp.0 <= target_timestamp.0 {
+            let adjusted_capture_timestamp = TimestampMicros(apply_offset_micros(
+                frame.capture_timestamp.0,
+                clock_offset_micros,
+            ));
+            if adjusted_capture_timestamp.0 <= target_timestamp.0 {
                 SwitcherSingleClientTargetTimeSourceResult::Selected(
                     SwitcherSingleClientTargetTimeSelectedFrame {
-                        delta_from_target_micros: frame.capture_timestamp.0 as i64
+                        delta_from_target_micros: adjusted_capture_timestamp.0 as i64
                             - target_timestamp.0 as i64,
                         frame,
                         target_timestamp,
+                        adjusted_capture_timestamp,
                         consumed,
                     },
                 )
@@ -1565,6 +1651,7 @@ fn handoff_consumer_result_for_candidate(
     target_timestamp: TimestampMicros,
     mode: SwitcherSingleClientTargetTimeSourceMode,
     consumed: bool,
+    clock_offset_micros: Option<i64>,
 ) -> SwitcherSingleClientTargetTimeHandoffSourceResult {
     match consumer_result {
         SwitcherQueuedFrameHandoffConsumerResult::FrameAvailable { source_result }
@@ -1574,6 +1661,7 @@ fn handoff_consumer_result_for_candidate(
                 target_timestamp,
                 mode,
                 consumed,
+                clock_offset_micros,
             ))
         }
         SwitcherQueuedFrameHandoffConsumerResult::HandoffError {
@@ -2507,12 +2595,31 @@ impl SwitcherTwoViewTargetTimeHandoffSourceSchedulerBoundary {
         handoff: &mut impl SwitcherQueuedFrameHandoff,
         input: SwitcherTwoViewTargetTimeSourceSchedulerInput,
     ) -> SwitcherTwoViewTargetTimeHandoffSourceSchedulerResult {
+        self.select_pair_from_handoff_with_clock_offsets(handoff, input, None, None)
+    }
+
+    pub fn select_pair_from_handoff_with_clock_offsets(
+        &self,
+        handoff: &mut impl SwitcherQueuedFrameHandoff,
+        input: SwitcherTwoViewTargetTimeSourceSchedulerInput,
+        left_clock_offset_micros: Option<i64>,
+        right_clock_offset_micros: Option<i64>,
+    ) -> SwitcherTwoViewTargetTimeHandoffSourceSchedulerResult {
         match input.mode {
-            SwitcherTwoViewTargetTimeSourceSchedulerMode::PreviewLatestIfAtOrBefore => {
-                self.preview_latest_pair(handoff, input)
-            }
+            SwitcherTwoViewTargetTimeSourceSchedulerMode::PreviewLatestIfAtOrBefore => self
+                .preview_latest_pair(
+                    handoff,
+                    input,
+                    left_clock_offset_micros,
+                    right_clock_offset_micros,
+                ),
             SwitcherTwoViewTargetTimeSourceSchedulerMode::ConsumeOldestAtOrBeforeAllSelected => {
-                self.consume_oldest_pair_all_selected(handoff, input)
+                self.consume_oldest_pair_all_selected(
+                    handoff,
+                    input,
+                    left_clock_offset_micros,
+                    right_clock_offset_micros,
+                )
             }
         }
     }
@@ -2521,11 +2628,15 @@ impl SwitcherTwoViewTargetTimeHandoffSourceSchedulerBoundary {
         &self,
         handoff: &mut impl SwitcherQueuedFrameHandoff,
         input: SwitcherTwoViewTargetTimeSourceSchedulerInput,
+        left_clock_offset_micros: Option<i64>,
+        right_clock_offset_micros: Option<i64>,
     ) -> SwitcherTwoViewTargetTimeHandoffSourceSchedulerResult {
         self.select_pair_with_single_client_mode(
             handoff,
             input,
             SwitcherSingleClientTargetTimeSourceMode::PreviewLatestIfAtOrBefore,
+            left_clock_offset_micros,
+            right_clock_offset_micros,
         )
     }
 
@@ -2533,11 +2644,15 @@ impl SwitcherTwoViewTargetTimeHandoffSourceSchedulerBoundary {
         &self,
         handoff: &mut impl SwitcherQueuedFrameHandoff,
         input: SwitcherTwoViewTargetTimeSourceSchedulerInput,
+        left_clock_offset_micros: Option<i64>,
+        right_clock_offset_micros: Option<i64>,
     ) -> SwitcherTwoViewTargetTimeHandoffSourceSchedulerResult {
         let preview = self.select_pair_with_single_client_mode(
             handoff,
             input.clone(),
             SwitcherSingleClientTargetTimeSourceMode::PreviewOldestIfAtOrBefore,
+            left_clock_offset_micros,
+            right_clock_offset_micros,
         );
 
         if preview.status != SwitcherTwoViewTargetTimeHandoffSourceSchedulerStatus::AllSelected {
@@ -2548,6 +2663,8 @@ impl SwitcherTwoViewTargetTimeHandoffSourceSchedulerBoundary {
             handoff,
             input,
             SwitcherSingleClientTargetTimeSourceMode::ConsumeOldestAtOrBefore,
+            left_clock_offset_micros,
+            right_clock_offset_micros,
         )
     }
 
@@ -2556,10 +2673,12 @@ impl SwitcherTwoViewTargetTimeHandoffSourceSchedulerBoundary {
         handoff: &mut impl SwitcherQueuedFrameHandoff,
         input: SwitcherTwoViewTargetTimeSourceSchedulerInput,
         single_client_mode: SwitcherSingleClientTargetTimeSourceMode,
+        left_clock_offset_micros: Option<i64>,
+        right_clock_offset_micros: Option<i64>,
     ) -> SwitcherTwoViewTargetTimeHandoffSourceSchedulerResult {
         let target_timestamp = input.target_timestamp;
         let mode = input.mode;
-        let left = self.single_client.select_from_handoff(
+        let left = self.single_client.select_from_handoff_with_clock_offset(
             handoff,
             SwitcherSingleClientTargetTimeSourceInput {
                 client_id: input.left.client_id,
@@ -2567,8 +2686,9 @@ impl SwitcherTwoViewTargetTimeHandoffSourceSchedulerBoundary {
                 target_timestamp,
                 mode: single_client_mode,
             },
+            left_clock_offset_micros,
         );
-        let right = self.single_client.select_from_handoff(
+        let right = self.single_client.select_from_handoff_with_clock_offset(
             handoff,
             SwitcherSingleClientTargetTimeSourceInput {
                 client_id: input.right.client_id,
@@ -2576,6 +2696,7 @@ impl SwitcherTwoViewTargetTimeHandoffSourceSchedulerBoundary {
                 target_timestamp,
                 mode: single_client_mode,
             },
+            right_clock_offset_micros,
         );
         let status = two_view_target_time_handoff_source_scheduler_status(&left, &right);
 
@@ -2605,9 +2726,20 @@ impl SwitcherFourViewTargetTimeHandoffSourceSchedulerBoundary {
         handoff: &mut impl SwitcherQueuedFrameHandoff,
         input: SwitcherFourViewTargetTimeHandoffSourceSchedulerInput,
     ) -> SwitcherFourViewTargetTimeHandoffSourceSchedulerResult {
+        self.select_quad_preview_from_handoff_with_clock_offsets(handoff, input, [None; 4])
+    }
+
+    pub fn select_quad_preview_from_handoff_with_clock_offsets(
+        &self,
+        handoff: &mut impl SwitcherQueuedFrameHandoff,
+        input: SwitcherFourViewTargetTimeHandoffSourceSchedulerInput,
+        clock_offsets_micros: [Option<i64>; 4],
+    ) -> SwitcherFourViewTargetTimeHandoffSourceSchedulerResult {
         let target_timestamp = input.target_timestamp;
-        let slots = input.slots.map(|slot| {
-            let result = self.single_client.select_from_handoff(
+        let slots = input.slots;
+        let slots = std::array::from_fn(|index| {
+            let slot = slots[index].clone();
+            let result = self.single_client.select_from_handoff_with_clock_offset(
                 handoff,
                 SwitcherSingleClientTargetTimeSourceInput {
                     client_id: slot.client_id.clone(),
@@ -2615,6 +2747,7 @@ impl SwitcherFourViewTargetTimeHandoffSourceSchedulerBoundary {
                     target_timestamp,
                     mode: SwitcherSingleClientTargetTimeSourceMode::PreviewLatestIfAtOrBefore,
                 },
+                clock_offsets_micros[index],
             );
             SwitcherFourViewTargetTimeHandoffSourceSlotResult { slot, result }
         });
@@ -3329,16 +3462,16 @@ fn scheduler_decode_render_instruction_for_side(
 ) -> SwitcherTwoViewSchedulerDecodeRenderSideInstruction {
     match result {
         SwitcherSingleClientTargetTimeSourceResult::Selected(selected) => {
-            SwitcherTwoViewSchedulerDecodeRenderSideInstruction::RenderFrame {
-                side,
-                selected: SwitcherJitterBufferSelectedFrame {
-                    frame: selected.frame.clone(),
-                    target_time: selected.target_timestamp,
-                    adjusted_capture_timestamp: selected.frame.capture_timestamp,
-                    delta_from_target_micros: selected.delta_from_target_micros,
-                },
-                consumed: selected.consumed,
-            }
+                SwitcherTwoViewSchedulerDecodeRenderSideInstruction::RenderFrame {
+                    side,
+                    selected: SwitcherJitterBufferSelectedFrame {
+                        frame: selected.frame.clone(),
+                        target_time: selected.target_timestamp,
+                        adjusted_capture_timestamp: selected.adjusted_capture_timestamp,
+                        delta_from_target_micros: selected.delta_from_target_micros,
+                    },
+                    consumed: selected.consumed,
+                }
         }
         SwitcherSingleClientTargetTimeSourceResult::NoFrameAvailable {
             client_id,
@@ -3381,16 +3514,16 @@ fn handoff_scheduler_decode_render_instruction_for_side(
 ) -> SwitcherTwoViewHandoffSchedulerDecodeRenderSideInstruction {
     match result {
         SwitcherSingleClientTargetTimeHandoffSourceResult::Selected(selected) => {
-            SwitcherTwoViewHandoffSchedulerDecodeRenderSideInstruction::RenderFrame {
-                side,
-                selected: SwitcherJitterBufferSelectedFrame {
-                    frame: selected.frame.clone(),
-                    target_time: selected.target_timestamp,
-                    adjusted_capture_timestamp: selected.frame.capture_timestamp,
-                    delta_from_target_micros: selected.delta_from_target_micros,
-                },
-                consumed: selected.consumed,
-            }
+                SwitcherTwoViewHandoffSchedulerDecodeRenderSideInstruction::RenderFrame {
+                    side,
+                    selected: SwitcherJitterBufferSelectedFrame {
+                        frame: selected.frame.clone(),
+                        target_time: selected.target_timestamp,
+                        adjusted_capture_timestamp: selected.adjusted_capture_timestamp,
+                        delta_from_target_micros: selected.delta_from_target_micros,
+                    },
+                    consumed: selected.consumed,
+                }
         }
         SwitcherSingleClientTargetTimeHandoffSourceResult::NoFrameAvailable {
             client_id,
@@ -3614,8 +3747,23 @@ impl SwitcherTwoViewTargetTimeSourceSchedulerBoundary {
         queue_state: &mut ServerVideoFrameQueueState,
         input: SwitcherTwoViewTargetTimeSourceSchedulerInput,
     ) -> SwitcherTwoViewTargetTimeSourceSchedulerResult {
+        self.select_pair_with_clock_offsets(queue_state, input, None, None)
+    }
+
+    pub fn select_pair_with_clock_offsets(
+        &self,
+        queue_state: &mut ServerVideoFrameQueueState,
+        input: SwitcherTwoViewTargetTimeSourceSchedulerInput,
+        left_clock_offset_micros: Option<i64>,
+        right_clock_offset_micros: Option<i64>,
+    ) -> SwitcherTwoViewTargetTimeSourceSchedulerResult {
         let mut source = SwitcherInProcessServerQueueFrameSource::new(queue_state);
-        self.select_pair_from_source(&mut source, input)
+        self.select_pair_from_source_with_clock_offsets(
+            &mut source,
+            input,
+            left_clock_offset_micros,
+            right_clock_offset_micros,
+        )
     }
 
     pub fn select_pair_from_source(
@@ -3623,12 +3771,31 @@ impl SwitcherTwoViewTargetTimeSourceSchedulerBoundary {
         source: &mut impl SwitcherQueuedFrameSource,
         input: SwitcherTwoViewTargetTimeSourceSchedulerInput,
     ) -> SwitcherTwoViewTargetTimeSourceSchedulerResult {
+        self.select_pair_from_source_with_clock_offsets(source, input, None, None)
+    }
+
+    pub fn select_pair_from_source_with_clock_offsets(
+        &self,
+        source: &mut impl SwitcherQueuedFrameSource,
+        input: SwitcherTwoViewTargetTimeSourceSchedulerInput,
+        left_clock_offset_micros: Option<i64>,
+        right_clock_offset_micros: Option<i64>,
+    ) -> SwitcherTwoViewTargetTimeSourceSchedulerResult {
         match input.mode {
-            SwitcherTwoViewTargetTimeSourceSchedulerMode::PreviewLatestIfAtOrBefore => {
-                self.preview_latest_pair(source, input)
-            }
+            SwitcherTwoViewTargetTimeSourceSchedulerMode::PreviewLatestIfAtOrBefore => self
+                .preview_latest_pair(
+                    source,
+                    input,
+                    left_clock_offset_micros,
+                    right_clock_offset_micros,
+                ),
             SwitcherTwoViewTargetTimeSourceSchedulerMode::ConsumeOldestAtOrBeforeAllSelected => {
-                self.consume_oldest_pair_all_selected(source, input)
+                self.consume_oldest_pair_all_selected(
+                    source,
+                    input,
+                    left_clock_offset_micros,
+                    right_clock_offset_micros,
+                )
             }
         }
     }
@@ -3637,11 +3804,15 @@ impl SwitcherTwoViewTargetTimeSourceSchedulerBoundary {
         &self,
         source: &mut impl SwitcherQueuedFrameSource,
         input: SwitcherTwoViewTargetTimeSourceSchedulerInput,
+        left_clock_offset_micros: Option<i64>,
+        right_clock_offset_micros: Option<i64>,
     ) -> SwitcherTwoViewTargetTimeSourceSchedulerResult {
         self.select_pair_with_single_client_mode(
             source,
             input,
             SwitcherSingleClientTargetTimeSourceMode::PreviewLatestIfAtOrBefore,
+            left_clock_offset_micros,
+            right_clock_offset_micros,
         )
     }
 
@@ -3649,11 +3820,15 @@ impl SwitcherTwoViewTargetTimeSourceSchedulerBoundary {
         &self,
         source: &mut impl SwitcherQueuedFrameSource,
         input: SwitcherTwoViewTargetTimeSourceSchedulerInput,
+        left_clock_offset_micros: Option<i64>,
+        right_clock_offset_micros: Option<i64>,
     ) -> SwitcherTwoViewTargetTimeSourceSchedulerResult {
         let preview = self.select_pair_with_single_client_mode(
             source,
             input.clone(),
             SwitcherSingleClientTargetTimeSourceMode::PreviewOldestIfAtOrBefore,
+            left_clock_offset_micros,
+            right_clock_offset_micros,
         );
 
         if preview.status != SwitcherTwoViewTargetTimeSourceSchedulerStatus::AllSelected {
@@ -3664,6 +3839,8 @@ impl SwitcherTwoViewTargetTimeSourceSchedulerBoundary {
             source,
             input,
             SwitcherSingleClientTargetTimeSourceMode::ConsumeOldestAtOrBefore,
+            left_clock_offset_micros,
+            right_clock_offset_micros,
         )
     }
 
@@ -3672,10 +3849,12 @@ impl SwitcherTwoViewTargetTimeSourceSchedulerBoundary {
         source: &mut impl SwitcherQueuedFrameSource,
         input: SwitcherTwoViewTargetTimeSourceSchedulerInput,
         single_client_mode: SwitcherSingleClientTargetTimeSourceMode,
+        left_clock_offset_micros: Option<i64>,
+        right_clock_offset_micros: Option<i64>,
     ) -> SwitcherTwoViewTargetTimeSourceSchedulerResult {
         let target_timestamp = input.target_timestamp;
         let mode = input.mode;
-        let left = self.single_client.select_from_source(
+        let left = self.single_client.select_from_source_with_clock_offset(
             source,
             SwitcherSingleClientTargetTimeSourceInput {
                 client_id: input.left.client_id,
@@ -3683,8 +3862,9 @@ impl SwitcherTwoViewTargetTimeSourceSchedulerBoundary {
                 target_timestamp,
                 mode: single_client_mode,
             },
+            left_clock_offset_micros,
         );
-        let right = self.single_client.select_from_source(
+        let right = self.single_client.select_from_source_with_clock_offset(
             source,
             SwitcherSingleClientTargetTimeSourceInput {
                 client_id: input.right.client_id,
@@ -3692,6 +3872,7 @@ impl SwitcherTwoViewTargetTimeSourceSchedulerBoundary {
                 target_timestamp,
                 mode: single_client_mode,
             },
+            right_clock_offset_micros,
         );
         let status = two_view_target_time_source_scheduler_status(&left, &right);
 
@@ -3835,16 +4016,16 @@ fn four_view_handoff_scheduler_decode_render_instruction_for_slot(
 ) -> SwitcherFourViewHandoffSchedulerDecodeRenderSlotInstruction {
     match result {
         SwitcherSingleClientTargetTimeHandoffSourceResult::Selected(selected) => {
-            SwitcherFourViewHandoffSchedulerDecodeRenderSlotInstruction::RenderFrame {
-                slot_index,
-                selected: SwitcherJitterBufferSelectedFrame {
-                    frame: selected.frame.clone(),
-                    target_time: selected.target_timestamp,
-                    adjusted_capture_timestamp: selected.frame.capture_timestamp,
-                    delta_from_target_micros: selected.delta_from_target_micros,
-                },
-                consumed: selected.consumed,
-            }
+                SwitcherFourViewHandoffSchedulerDecodeRenderSlotInstruction::RenderFrame {
+                    slot_index,
+                    selected: SwitcherJitterBufferSelectedFrame {
+                        frame: selected.frame.clone(),
+                        target_time: selected.target_timestamp,
+                        adjusted_capture_timestamp: selected.adjusted_capture_timestamp,
+                        delta_from_target_micros: selected.delta_from_target_micros,
+                    },
+                    consumed: selected.consumed,
+                }
         }
         SwitcherSingleClientTargetTimeHandoffSourceResult::NoFrameAvailable {
             client_id,
@@ -4025,6 +4206,70 @@ pub struct SwitcherTargetTimeInput {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct SwitcherTargetTime {
     pub value: TimestampMicros,
+}
+
+/// Why a smoothed client clock offset is unavailable for switcher selection.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum SwitcherClientClockOffsetUnavailableReason {
+    UnknownClient,
+    RunMismatch,
+}
+
+/// Result of looking up one selection-facing smoothed client clock offset.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SwitcherClientClockOffsetLookupResult {
+    Available {
+        client_id: ClientId,
+        run_id: RunId,
+        clock_offset_micros: i64,
+        smoothed_samples: u64,
+    },
+    Unavailable {
+        client_id: ClientId,
+        run_id: RunId,
+        reason: SwitcherClientClockOffsetUnavailableReason,
+    },
+}
+
+/// Small boundary that exposes the server-side smoothed clock offset to
+/// switcher selection code.
+///
+/// This boundary only reads caller-owned heartbeat RTT / offset state. It does
+/// not calculate samples, smooth values, mutate runtime state, or choose
+/// targetTime policy.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct SwitcherClientClockOffsetLookupBoundary;
+
+impl SwitcherClientClockOffsetLookupBoundary {
+    pub fn lookup(
+        &self,
+        state: &ServerHeartbeatRttOffsetState,
+        client_id: &ClientId,
+        run_id: &RunId,
+    ) -> SwitcherClientClockOffsetLookupResult {
+        let Some(entry) = state.get(client_id) else {
+            return SwitcherClientClockOffsetLookupResult::Unavailable {
+                client_id: client_id.clone(),
+                run_id: run_id.clone(),
+                reason: SwitcherClientClockOffsetUnavailableReason::UnknownClient,
+            };
+        };
+
+        if entry.run_id != *run_id {
+            return SwitcherClientClockOffsetLookupResult::Unavailable {
+                client_id: client_id.clone(),
+                run_id: run_id.clone(),
+                reason: SwitcherClientClockOffsetUnavailableReason::RunMismatch,
+            };
+        }
+
+        SwitcherClientClockOffsetLookupResult::Available {
+            client_id: client_id.clone(),
+            run_id: run_id.clone(),
+            clock_offset_micros: entry.smoothed_estimate.clock_offset_micros,
+            smoothed_samples: entry.smoothed_estimate.samples_applied,
+        }
+    }
 }
 
 /// Minimal targetTime policy.
@@ -4324,6 +4569,7 @@ impl SwitcherFourViewCleanOutputWindowBoundary {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
 pub struct SwitcherFourViewHandoffValidationBoundary {
     scheduler: SwitcherFourViewTargetTimeHandoffSourceSchedulerBoundary,
+    clock_offset_lookup: SwitcherClientClockOffsetLookupBoundary,
     decode_render_adapter: SwitcherFourViewHandoffSchedulerDecodeRenderAdapterBoundary,
     display_policy: SwitcherFourViewHandoffDisplayPolicyBoundary,
     composition_adapter: SwitcherFourViewHandoffQuadCompositionAdapterBoundary,
@@ -4341,8 +4587,31 @@ impl SwitcherFourViewHandoffValidationBoundary {
         decode_runtime: &impl SwitcherH264DecodeRuntimeHook,
         render_runtime: &impl SwitcherWindowRenderRuntimeHook,
     ) -> SwitcherFourViewHandoffValidationOutput {
+        self.run_with_runtimes_and_clock_offset_state(
+            queue_state,
+            input,
+            None,
+            decode_runtime,
+            render_runtime,
+        )
+    }
+
+    pub fn run_with_runtimes_and_clock_offset_state(
+        &self,
+        queue_state: &mut ServerVideoFrameQueueState,
+        input: SwitcherFourViewHandoffValidationInput,
+        heartbeat_rtt_offset_state: Option<&ServerHeartbeatRttOffsetState>,
+        decode_runtime: &impl SwitcherH264DecodeRuntimeHook,
+        render_runtime: &impl SwitcherWindowRenderRuntimeHook,
+    ) -> SwitcherFourViewHandoffValidationOutput {
         let mut handoff = SwitcherInProcessQueuedFrameHandoff::new(queue_state);
-        self.run_from_handoff_with_runtimes(&mut handoff, input, decode_runtime, render_runtime)
+        self.run_from_handoff_with_runtimes_and_clock_offset_state(
+            &mut handoff,
+            input,
+            heartbeat_rtt_offset_state,
+            decode_runtime,
+            render_runtime,
+        )
     }
 
     pub fn run_from_handoff_with_runtimes(
@@ -4352,13 +4621,35 @@ impl SwitcherFourViewHandoffValidationBoundary {
         decode_runtime: &impl SwitcherH264DecodeRuntimeHook,
         render_runtime: &impl SwitcherWindowRenderRuntimeHook,
     ) -> SwitcherFourViewHandoffValidationOutput {
-        let scheduler = self.scheduler.select_quad_preview_from_handoff(
+        self.run_from_handoff_with_runtimes_and_clock_offset_state(
             handoff,
-            SwitcherFourViewTargetTimeHandoffSourceSchedulerInput {
-                slots: input.slots,
-                target_timestamp: input.target_timestamp,
-            },
-        );
+            input,
+            None,
+            decode_runtime,
+            render_runtime,
+        )
+    }
+
+    pub fn run_from_handoff_with_runtimes_and_clock_offset_state(
+        &self,
+        handoff: &mut impl SwitcherQueuedFrameHandoff,
+        input: SwitcherFourViewHandoffValidationInput,
+        heartbeat_rtt_offset_state: Option<&ServerHeartbeatRttOffsetState>,
+        decode_runtime: &impl SwitcherH264DecodeRuntimeHook,
+        render_runtime: &impl SwitcherWindowRenderRuntimeHook,
+    ) -> SwitcherFourViewHandoffValidationOutput {
+        let clock_offsets_micros =
+            self.clock_offsets_for_slots(heartbeat_rtt_offset_state, &input.slots);
+        let scheduler = self
+            .scheduler
+            .select_quad_preview_from_handoff_with_clock_offsets(
+                handoff,
+                SwitcherFourViewTargetTimeHandoffSourceSchedulerInput {
+                    slots: input.slots,
+                    target_timestamp: input.target_timestamp,
+                },
+                clock_offsets_micros,
+            );
         let decode_render_adapter = self.decode_render_adapter.adapt(
             SwitcherFourViewHandoffSchedulerDecodeRenderAdapterInput {
                 scheduler_result: scheduler.clone(),
@@ -4409,6 +4700,36 @@ impl SwitcherFourViewHandoffValidationBoundary {
             bgra_composition,
             render_facing,
             window_render,
+        }
+    }
+
+    fn clock_offsets_for_slots(
+        &self,
+        heartbeat_rtt_offset_state: Option<&ServerHeartbeatRttOffsetState>,
+        slots: &[SwitcherFourViewTargetTimeSourceSlotConfig; 4],
+    ) -> [Option<i64>; 4] {
+        std::array::from_fn(|index| {
+            self.lookup_clock_offset_micros(
+                heartbeat_rtt_offset_state,
+                &slots[index].client_id,
+                &slots[index].run_id,
+            )
+        })
+    }
+
+    fn lookup_clock_offset_micros(
+        &self,
+        heartbeat_rtt_offset_state: Option<&ServerHeartbeatRttOffsetState>,
+        client_id: &ClientId,
+        run_id: &RunId,
+    ) -> Option<i64> {
+        let state = heartbeat_rtt_offset_state?;
+        match self.clock_offset_lookup.lookup(state, client_id, run_id) {
+            SwitcherClientClockOffsetLookupResult::Available {
+                clock_offset_micros,
+                ..
+            } => Some(clock_offset_micros),
+            SwitcherClientClockOffsetLookupResult::Unavailable { .. } => None,
         }
     }
 }
@@ -6361,6 +6682,7 @@ pub struct SwitcherServerMediatedTwoViewHandoffValidationOutput {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
 pub struct SwitcherServerMediatedTwoViewValidationBoundary {
     scheduler: SwitcherTwoViewTargetTimeSourceSchedulerBoundary,
+    clock_offset_lookup: SwitcherClientClockOffsetLookupBoundary,
     decode_render: SwitcherTwoViewSchedulerDecodeRenderConnectionBoundary,
     display_policy: SwitcherTwoViewDisplayPolicyBoundary,
     adapter: SwitcherTwoViewDisplayCompositionAdapterBoundary,
@@ -6381,8 +6703,31 @@ impl SwitcherServerMediatedTwoViewValidationBoundary {
         decode_runtime: &impl SwitcherH264DecodeRuntimeHook,
         render_runtime: &impl SwitcherWindowRenderRuntimeHook,
     ) -> SwitcherServerMediatedTwoViewValidationOutput {
+        self.run_with_runtimes_and_clock_offset_state(
+            queue_state,
+            input,
+            None,
+            decode_runtime,
+            render_runtime,
+        )
+    }
+
+    pub fn run_with_runtimes_and_clock_offset_state(
+        &self,
+        queue_state: &mut ServerVideoFrameQueueState,
+        input: SwitcherServerMediatedTwoViewValidationInput,
+        heartbeat_rtt_offset_state: Option<&ServerHeartbeatRttOffsetState>,
+        decode_runtime: &impl SwitcherH264DecodeRuntimeHook,
+        render_runtime: &impl SwitcherWindowRenderRuntimeHook,
+    ) -> SwitcherServerMediatedTwoViewValidationOutput {
         let mut source = SwitcherInProcessServerQueueFrameSource::new(queue_state);
-        self.run_from_source_with_runtimes(&mut source, input, decode_runtime, render_runtime)
+        self.run_from_source_with_runtimes_and_clock_offset_state(
+            &mut source,
+            input,
+            heartbeat_rtt_offset_state,
+            decode_runtime,
+            render_runtime,
+        )
     }
 
     pub fn run_from_source_with_runtimes(
@@ -6392,7 +6737,26 @@ impl SwitcherServerMediatedTwoViewValidationBoundary {
         decode_runtime: &impl SwitcherH264DecodeRuntimeHook,
         render_runtime: &impl SwitcherWindowRenderRuntimeHook,
     ) -> SwitcherServerMediatedTwoViewValidationOutput {
-        let scheduler = self.scheduler.select_pair_from_source(
+        self.run_from_source_with_runtimes_and_clock_offset_state(
+            source,
+            input,
+            None,
+            decode_runtime,
+            render_runtime,
+        )
+    }
+
+    pub fn run_from_source_with_runtimes_and_clock_offset_state(
+        &self,
+        source: &mut impl SwitcherQueuedFrameSource,
+        input: SwitcherServerMediatedTwoViewValidationInput,
+        heartbeat_rtt_offset_state: Option<&ServerHeartbeatRttOffsetState>,
+        decode_runtime: &impl SwitcherH264DecodeRuntimeHook,
+        render_runtime: &impl SwitcherWindowRenderRuntimeHook,
+    ) -> SwitcherServerMediatedTwoViewValidationOutput {
+        let (left_clock_offset_micros, right_clock_offset_micros) =
+            self.clock_offsets_for_views(heartbeat_rtt_offset_state, &input.left, &input.right);
+        let scheduler = self.scheduler.select_pair_from_source_with_clock_offsets(
             source,
             SwitcherTwoViewTargetTimeSourceSchedulerInput {
                 left: input.left,
@@ -6400,6 +6764,8 @@ impl SwitcherServerMediatedTwoViewValidationBoundary {
                 target_timestamp: input.target_timestamp,
                 mode: input.scheduler_mode,
             },
+            left_clock_offset_micros,
+            right_clock_offset_micros,
         );
         let decode_render = self.decode_render.render_scheduler_result_with_runtimes(
             SwitcherTwoViewSchedulerDecodeRenderConnectionInput {
@@ -6451,10 +6817,28 @@ impl SwitcherServerMediatedTwoViewValidationBoundary {
         decode_runtime: &impl SwitcherH264DecodeRuntimeHook,
         render_runtime: &impl SwitcherWindowRenderRuntimeHook,
     ) -> SwitcherServerMediatedTwoViewHandoffValidationOutput {
+        self.run_fallible_with_runtimes_and_clock_offset_state(
+            queue_state,
+            input,
+            None,
+            decode_runtime,
+            render_runtime,
+        )
+    }
+
+    pub fn run_fallible_with_runtimes_and_clock_offset_state(
+        &self,
+        queue_state: &mut ServerVideoFrameQueueState,
+        input: SwitcherServerMediatedTwoViewValidationInput,
+        heartbeat_rtt_offset_state: Option<&ServerHeartbeatRttOffsetState>,
+        decode_runtime: &impl SwitcherH264DecodeRuntimeHook,
+        render_runtime: &impl SwitcherWindowRenderRuntimeHook,
+    ) -> SwitcherServerMediatedTwoViewHandoffValidationOutput {
         let mut handoff = SwitcherInProcessQueuedFrameHandoff::new(queue_state);
-        self.run_fallible_from_handoff_with_runtimes(
+        self.run_fallible_from_handoff_with_runtimes_and_clock_offset_state(
             &mut handoff,
             input,
+            heartbeat_rtt_offset_state,
             decode_runtime,
             render_runtime,
         )
@@ -6467,15 +6851,38 @@ impl SwitcherServerMediatedTwoViewValidationBoundary {
         decode_runtime: &impl SwitcherH264DecodeRuntimeHook,
         render_runtime: &impl SwitcherWindowRenderRuntimeHook,
     ) -> SwitcherServerMediatedTwoViewHandoffValidationOutput {
-        let scheduler = self.handoff_scheduler.select_pair_from_handoff(
+        self.run_fallible_from_handoff_with_runtimes_and_clock_offset_state(
             handoff,
-            SwitcherTwoViewTargetTimeSourceSchedulerInput {
-                left: input.left,
-                right: input.right,
-                target_timestamp: input.target_timestamp,
-                mode: input.scheduler_mode,
-            },
-        );
+            input,
+            None,
+            decode_runtime,
+            render_runtime,
+        )
+    }
+
+    pub fn run_fallible_from_handoff_with_runtimes_and_clock_offset_state(
+        &self,
+        handoff: &mut impl SwitcherQueuedFrameHandoff,
+        input: SwitcherServerMediatedTwoViewValidationInput,
+        heartbeat_rtt_offset_state: Option<&ServerHeartbeatRttOffsetState>,
+        decode_runtime: &impl SwitcherH264DecodeRuntimeHook,
+        render_runtime: &impl SwitcherWindowRenderRuntimeHook,
+    ) -> SwitcherServerMediatedTwoViewHandoffValidationOutput {
+        let (left_clock_offset_micros, right_clock_offset_micros) =
+            self.clock_offsets_for_views(heartbeat_rtt_offset_state, &input.left, &input.right);
+        let scheduler = self
+            .handoff_scheduler
+            .select_pair_from_handoff_with_clock_offsets(
+                handoff,
+                SwitcherTwoViewTargetTimeSourceSchedulerInput {
+                    left: input.left,
+                    right: input.right,
+                    target_timestamp: input.target_timestamp,
+                    mode: input.scheduler_mode,
+                },
+                left_clock_offset_micros,
+                right_clock_offset_micros,
+            );
         let decode_render_adapter = self.handoff_decode_render_adapter.adapt(
             SwitcherTwoViewHandoffSchedulerDecodeRenderAdapterInput {
                 scheduler_result: scheduler.clone(),
@@ -6527,6 +6934,42 @@ impl SwitcherServerMediatedTwoViewValidationBoundary {
             display,
             adapter,
             render,
+        }
+    }
+
+    fn clock_offsets_for_views(
+        &self,
+        heartbeat_rtt_offset_state: Option<&ServerHeartbeatRttOffsetState>,
+        left: &SwitcherTwoViewTargetTimeSourceViewConfig,
+        right: &SwitcherTwoViewTargetTimeSourceViewConfig,
+    ) -> (Option<i64>, Option<i64>) {
+        (
+            self.lookup_clock_offset_micros(
+                heartbeat_rtt_offset_state,
+                &left.client_id,
+                &left.run_id,
+            ),
+            self.lookup_clock_offset_micros(
+                heartbeat_rtt_offset_state,
+                &right.client_id,
+                &right.run_id,
+            ),
+        )
+    }
+
+    fn lookup_clock_offset_micros(
+        &self,
+        heartbeat_rtt_offset_state: Option<&ServerHeartbeatRttOffsetState>,
+        client_id: &ClientId,
+        run_id: &RunId,
+    ) -> Option<i64> {
+        let state = heartbeat_rtt_offset_state?;
+        match self.clock_offset_lookup.lookup(state, client_id, run_id) {
+            SwitcherClientClockOffsetLookupResult::Available {
+                clock_offset_micros,
+                ..
+            } => Some(clock_offset_micros),
+            SwitcherClientClockOffsetLookupResult::Unavailable { .. } => None,
         }
     }
 }
@@ -12146,8 +12589,83 @@ mod tests {
         assert_eq!(selected.frame.frame_id, 3);
         assert_eq!(selected.target_timestamp, TimestampMicros(1_000_003));
         assert_eq!(selected.delta_from_target_micros, 0);
+        assert_eq!(
+            selected.adjusted_capture_timestamp,
+            TimestampMicros(1_000_003)
+        );
         assert!(!selected.consumed);
         assert_eq!(state.client_queue_len(&client_id), before_len);
+    }
+
+    #[test]
+    fn target_time_single_client_preview_latest_uses_clock_offset_for_target_comparison() {
+        let mut state = ServerVideoFrameQueueState::default();
+        store_frame_for_run(
+            &mut state,
+            "client-1",
+            "run-1",
+            1,
+            TimestampMicros(2_040_050),
+        );
+
+        let result = SwitcherSingleClientTargetTimeSourceBoundary::default()
+            .select_with_clock_offset(
+                &mut state,
+                SwitcherSingleClientTargetTimeSourceInput {
+                    client_id: ClientId("client-1".to_string()),
+                    run_id: RunId("run-1".to_string()),
+                    target_timestamp: TimestampMicros(1_000_002),
+                    mode: SwitcherSingleClientTargetTimeSourceMode::PreviewLatestIfAtOrBefore,
+                },
+                Some(10),
+            );
+
+        assert_eq!(
+            result,
+            SwitcherSingleClientTargetTimeSourceResult::WaitingForFrameAtOrBeforeTarget {
+                client_id: ClientId("client-1".to_string()),
+                run_id: RunId("run-1".to_string()),
+                target_timestamp: TimestampMicros(1_000_002),
+                mode: SwitcherSingleClientTargetTimeSourceMode::PreviewLatestIfAtOrBefore,
+                candidate_frame_id: 1,
+                candidate_capture_timestamp: TimestampMicros(1_000_001),
+                client_queue_len: 1,
+            }
+        );
+    }
+
+    #[test]
+    fn target_time_single_client_preview_latest_falls_back_when_clock_offset_is_unavailable() {
+        let mut state = ServerVideoFrameQueueState::default();
+        store_frame_for_run(
+            &mut state,
+            "client-1",
+            "run-1",
+            1,
+            TimestampMicros(2_040_060),
+        );
+
+        let result = SwitcherSingleClientTargetTimeSourceBoundary::default()
+            .select_with_clock_offset(
+                &mut state,
+                SwitcherSingleClientTargetTimeSourceInput {
+                    client_id: ClientId("client-1".to_string()),
+                    run_id: RunId("run-1".to_string()),
+                    target_timestamp: TimestampMicros(1_000_002),
+                    mode: SwitcherSingleClientTargetTimeSourceMode::PreviewLatestIfAtOrBefore,
+                },
+                None,
+            );
+
+        let SwitcherSingleClientTargetTimeSourceResult::Selected(selected) = result else {
+            panic!("missing offset should preserve raw timestamp selection");
+        };
+        assert_eq!(selected.frame.frame_id, 1);
+        assert_eq!(
+            selected.adjusted_capture_timestamp,
+            TimestampMicros(1_000_001)
+        );
+        assert_eq!(selected.delta_from_target_micros, -1);
     }
 
     #[test]
@@ -20936,6 +21454,88 @@ mod tests {
     }
 
     #[test]
+    fn client_clock_offset_lookup_returns_smoothed_offset_from_server_state() {
+        let state = heartbeat_rtt_offset_state_for_test(&[
+            ("client-1", "run-1", 100, 100),
+            ("client-1", "run-1", 140, 140),
+        ]);
+
+        assert_eq!(
+            SwitcherClientClockOffsetLookupBoundary.lookup(
+                &state,
+                &ClientId("client-1".to_string()),
+                &RunId("run-1".to_string()),
+            ),
+            SwitcherClientClockOffsetLookupResult::Available {
+                client_id: ClientId("client-1".to_string()),
+                run_id: RunId("run-1".to_string()),
+                clock_offset_micros: 110,
+                smoothed_samples: 2,
+            }
+        );
+    }
+
+    #[test]
+    fn server_mediated_two_view_validation_uses_smoothed_clock_offset_state_for_selection() {
+        let mut state = ServerVideoFrameQueueState::default();
+        store_frame_with_run_payload(
+            &mut state,
+            "client-left",
+            "run-left",
+            2,
+            TimestampMicros(2_124_400),
+            2,
+            1,
+            vec![0, 0, 1, 0x65, 0x41],
+        );
+        store_frame_with_run_payload(
+            &mut state,
+            "client-right",
+            "run-right",
+            1,
+            TimestampMicros(2_124_500),
+            2,
+            1,
+            vec![0, 0, 1, 0x65, 0x42],
+        );
+        let heartbeat_state = heartbeat_rtt_offset_state_for_test(&[
+            ("client-left", "run-left", 100, 8),
+            ("client-left", "run-left", 120, 12),
+        ]);
+        let decode = RecordingTwoViewDecode::default();
+        let render = RecordingTwoViewRender::default();
+
+        let output = SwitcherServerMediatedTwoViewValidationBoundary::default()
+            .run_with_runtimes_and_clock_offset_state(
+                &mut state,
+                server_mediated_validation_input(
+                    TimestampMicros(1_000_002),
+                    SwitcherTwoViewTargetTimeSourceSchedulerMode::PreviewLatestIfAtOrBefore,
+                ),
+                Some(&heartbeat_state),
+                &decode,
+                &render,
+            );
+
+        assert_eq!(
+            output.scheduler.status,
+            SwitcherTwoViewTargetTimeSourceSchedulerStatus::PartialSelected
+        );
+        assert!(matches!(
+            output.scheduler.left,
+            SwitcherSingleClientTargetTimeSourceResult::WaitingForFrameAtOrBeforeTarget {
+                candidate_frame_id: 2,
+                candidate_capture_timestamp: TimestampMicros(1_000_002),
+                ..
+            }
+        ));
+        assert!(matches!(
+            output.scheduler.right,
+            SwitcherSingleClientTargetTimeSourceResult::Selected(_)
+        ));
+    }
+
+    #[test]
     fn server_mediated_two_view_validation_preserves_waiting_without_fake_frame() {
         let mut state = ServerVideoFrameQueueState::default();
         store_frame_with_run_payload(
@@ -23575,6 +24175,34 @@ mod tests {
 
     fn current_test_suffix() -> String {
         format!("{}-{:?}", std::process::id(), std::thread::current().id())
+    }
+
+    fn heartbeat_rtt_offset_state_for_test(
+        samples: &[(&str, &str, u64, i64)],
+    ) -> ServerHeartbeatRttOffsetState {
+        let mut state = ServerHeartbeatRttOffsetState::default();
+
+        for (index, (client_id, run_id, rtt_micros, clock_offset_micros)) in
+            samples.iter().enumerate()
+        {
+            let _ = stream_sync_server::ServerHeartbeatRttOffsetCommitBoundary::default().commit(
+                &mut state,
+                stream_sync_server::ServerHeartbeatRttOffsetCommitInput {
+                    calculation: stream_sync_server::ServerHeartbeatRttOffsetCalculation {
+                        client_id: ClientId((*client_id).to_string()),
+                        run_id: RunId((*run_id).to_string()),
+                        estimate: stream_sync_timebase::HeartbeatRttOffsetEstimate {
+                            rtt_micros: *rtt_micros,
+                            server_processing_micros: 0,
+                            clock_offset_micros: *clock_offset_micros,
+                        },
+                    },
+                    committed_at: Some(TimestampMicros(20_000 + index as u64)),
+                },
+            );
+        }
+
+        state
     }
 
     fn selected_two_view_fixture(

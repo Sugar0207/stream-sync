@@ -11,6 +11,9 @@ stream-sync-net-core = { path = "../../crates/net-core" }
 stream-sync-protocol = { path = "../../crates/protocol" }
 stream-sync-server = { path = "../server" }
 
+[dev-dependencies]
+stream-sync-timebase = { path = "../../crates/timebase" }
+
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.62.2", features = [
     "Win32_Foundation",

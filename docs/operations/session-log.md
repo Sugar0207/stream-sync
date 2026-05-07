@@ -5,6 +5,64 @@
 - Codex
 
 ### Work
+- Implemented the narrow `RTT / offset` smoothing -> corrected timestamp ->
+  targetTime selection slice.
+- Added a simple server-side smoothing state:
+  - `HeartbeatRttOffsetSmoothedEstimate`
+  - `HeartbeatRttOffsetSmoothingBoundary`
+  - conservative EMA with weight `1/4`
+- Updated server RTT / offset commit state so one entry now keeps:
+  - latest raw estimate
+  - smoothed selection-facing estimate
+  - same-run sample count
+- Extended switcher targetTime-aware source / scheduler paths so they can accept
+  optional per-client clock offsets and compare `adjusted_capture_timestamp`
+  against the shared target.
+- Added `SwitcherClientClockOffsetLookupBoundary` and thin
+  `...with_clock_offset_state` entry points on:
+  - `SwitcherServerMediatedTwoViewValidationBoundary`
+  - `SwitcherFourViewHandoffValidationBoundary`
+- Kept this step intentionally narrow:
+  - no jitter buffer mutation
+  - no late-frame drop policy
+  - no `NoFrame` / `Waiting` / `HandoffError` behavior redesign
+  - no dashboard / exporter / process-wide logger work
+
+### Changed Files
+- `apps/server/src/lib.rs`
+- `apps/switcher/Cargo.toml`
+- `apps/switcher/src/lib.rs`
+- `crates/timebase/src/lib.rs`
+- `docs/architecture/system-design.md`
+- `docs/operations/session-log.md`
+- `docs/operations/todo.md`
+
+### Decision
+- Keep smoothing server-owned and selection-facing:
+  switcher reads only an optional smoothed `clock_offset_micros` and does not
+  own RTT / offset calculation state.
+- Keep runtime ownership thin:
+  targetTime-aware source / scheduler boundaries accept optional offsets, while
+  validation boundaries perform the lookup from caller-owned heartbeat state.
+- Use a conservative EMA `1/4` weight for the first slice so one outlier sample
+  does not swing selection timing too aggressively.
+
+### Validation
+- `cargo fmt`
+- `cargo fmt --check`
+- `cargo check --workspace`
+- `cargo test -p stream-sync-timebase heartbeat_rtt_offset_smoothing_boundary_updates_with_multiple_samples`
+- `cargo test -p stream-sync-switcher target_time_single_client_preview_latest_uses_clock_offset_for_target_comparison`
+- `cargo test -p stream-sync-switcher client_clock_offset_lookup_returns_smoothed_offset_from_server_state`
+- `cargo test -p stream-sync-switcher server_mediated_two_view_validation_uses_smoothed_clock_offset_state_for_selection`
+- `cargo test --workspace`
+- `git diff --check`
+
+## 2026-05-07
+### Type
+- Codex
+
+### Work
 - `docs/operations/todo.md` の残タスクを、未完了チェック一覧ではなく今後の
   指針として読めるように整理した。
 - 直近優先度を logging follow-up 中心から、MVP クリティカルパス中心へ

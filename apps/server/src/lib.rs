@@ -32,8 +32,9 @@ use stream_sync_protocol::{
 };
 use stream_sync_timebase::{
     HeartbeatExchangeObservation, HeartbeatRttOffsetCalculationError, HeartbeatRttOffsetCalculator,
-    HeartbeatRttOffsetEstimate, HeartbeatTimebaseEstimatePlan, HeartbeatTimebasePlanBoundary,
-    HeartbeatTimebaseSample,
+    HeartbeatRttOffsetEstimate, HeartbeatRttOffsetSmoothedEstimate,
+    HeartbeatRttOffsetSmoothingBoundary, HeartbeatTimebaseEstimatePlan,
+    HeartbeatTimebasePlanBoundary, HeartbeatTimebaseSample,
 };
 
 #[cfg(windows)]
@@ -9763,15 +9764,16 @@ pub struct ServerHeartbeatRttOffsetStateEntry {
     pub client_id: ClientId,
     pub run_id: RunId,
     pub latest_estimate: HeartbeatRttOffsetEstimate,
+    pub smoothed_estimate: HeartbeatRttOffsetSmoothedEstimate,
     pub committed_samples: u64,
     pub last_committed_at: Option<TimestampMicros>,
 }
 
 /// In-memory server-side RTT / offset state keyed by `client_id`.
 ///
-/// This stores only the latest accepted estimate and sample count. It does not
-/// smooth offset, reject outliers, expose corrected timestamps, or drive
-/// timeout policy.
+/// This stores the latest accepted raw estimate plus a simple smoothed
+/// selection-facing estimate. It does not reject outliers, expose corrected
+/// timestamps directly, or drive timeout policy.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ServerHeartbeatRttOffsetState {
     entries_by_client_id: BTreeMap<String, ServerHeartbeatRttOffsetStateEntry>,
@@ -10011,10 +10013,17 @@ impl ServerHeartbeatRttOffsetCommitBoundary {
             .filter(|entry| entry.run_id == input.calculation.run_id)
             .map(|entry| entry.committed_samples.saturating_add(1))
             .unwrap_or(1);
+        let previous_smoothed = previous
+            .as_ref()
+            .filter(|entry| entry.run_id == input.calculation.run_id)
+            .map(|entry| entry.smoothed_estimate);
+        let smoothed_estimate = HeartbeatRttOffsetSmoothingBoundary
+            .smooth(previous_smoothed, input.calculation.estimate);
         let committed = ServerHeartbeatRttOffsetStateEntry {
             client_id: input.calculation.client_id,
             run_id: input.calculation.run_id,
             latest_estimate: input.calculation.estimate,
+            smoothed_estimate,
             committed_samples,
             last_committed_at: input.committed_at,
         };
@@ -19258,6 +19267,12 @@ shared_token = "secret"
         assert_eq!(outcome.committed.run_id, RunId("run-1".to_string()));
         assert_eq!(outcome.committed.latest_estimate.rtt_micros, 100);
         assert_eq!(outcome.committed.latest_estimate.clock_offset_micros, 1_000);
+        assert_eq!(outcome.committed.smoothed_estimate.rtt_micros, 100);
+        assert_eq!(
+            outcome.committed.smoothed_estimate.clock_offset_micros,
+            1_000
+        );
+        assert_eq!(outcome.committed.smoothed_estimate.samples_applied, 1);
         assert_eq!(outcome.committed.committed_samples, 1);
         assert_eq!(
             outcome.committed.last_committed_at,
@@ -19314,6 +19329,12 @@ shared_token = "secret"
         assert_eq!(outcome.committed.committed_samples, 2);
         assert_eq!(outcome.committed.latest_estimate.rtt_micros, 120);
         assert_eq!(outcome.committed.latest_estimate.clock_offset_micros, 1_010);
+        assert_eq!(outcome.committed.smoothed_estimate.rtt_micros, 105);
+        assert_eq!(
+            outcome.committed.smoothed_estimate.clock_offset_micros,
+            1_002
+        );
+        assert_eq!(outcome.committed.smoothed_estimate.samples_applied, 2);
     }
 
     #[test]
@@ -19357,6 +19378,8 @@ shared_token = "secret"
         assert_eq!(outcome.committed.run_id, RunId("run-2".to_string()));
         assert_eq!(outcome.committed.committed_samples, 1);
         assert_eq!(outcome.committed.latest_estimate.clock_offset_micros, 900);
+        assert_eq!(outcome.committed.smoothed_estimate.clock_offset_micros, 900);
+        assert_eq!(outcome.committed.smoothed_estimate.samples_applied, 1);
     }
 
     #[test]
@@ -19668,6 +19691,9 @@ shared_token = "secret"
             .expect("previous estimate should remain");
         assert_eq!(entry.latest_estimate.rtt_micros, 100);
         assert_eq!(entry.latest_estimate.clock_offset_micros, 1_000);
+        assert_eq!(entry.smoothed_estimate.rtt_micros, 100);
+        assert_eq!(entry.smoothed_estimate.clock_offset_micros, 1_000);
+        assert_eq!(entry.smoothed_estimate.samples_applied, 1);
         assert_eq!(entry.committed_samples, 1);
         assert_eq!(entry.last_committed_at, Some(TimestampMicros(14_000)));
     }

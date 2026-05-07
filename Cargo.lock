@@ -84,6 +84,7 @@ dependencies = [
  "stream-sync-net-core",
  "stream-sync-protocol",
  "stream-sync-server",
+ "stream-sync-timebase",
  "windows",
 ]
 

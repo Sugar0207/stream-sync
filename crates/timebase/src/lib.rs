@@ -114,6 +114,65 @@ pub struct HeartbeatRttOffsetEstimate {
     pub clock_offset_micros: i64,
 }
 
+/// Conservative EMA weight for the next accepted heartbeat sample.
+///
+/// The first slice keeps smoothing intentionally simple and biased toward
+/// stability. A `1/4` weight lets the estimate react within a few samples
+/// without letting one candidate swing selection timing too aggressively.
+pub const HEARTBEAT_RTT_OFFSET_EMA_NUMERATOR: u64 = 1;
+pub const HEARTBEAT_RTT_OFFSET_EMA_DENOMINATOR: u64 = 4;
+
+/// Server-consumable smoothed RTT / offset estimate.
+///
+/// This keeps the smoothed values separate from the latest raw estimate so the
+/// caller can preserve both "latest sample" and "selection-facing timing"
+/// semantics.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct HeartbeatRttOffsetSmoothedEstimate {
+    pub rtt_micros: u64,
+    pub clock_offset_micros: i64,
+    pub samples_applied: u64,
+}
+
+/// Stateless smoothing boundary for successive heartbeat RTT / offset samples.
+///
+/// This boundary applies a fixed exponential moving average to RTT and clock
+/// offset only. It does not calculate samples, validate outliers, persist
+/// state, or publish corrected timestamps.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct HeartbeatRttOffsetSmoothingBoundary;
+
+impl HeartbeatRttOffsetSmoothingBoundary {
+    pub fn smooth(
+        &self,
+        previous: Option<HeartbeatRttOffsetSmoothedEstimate>,
+        latest: HeartbeatRttOffsetEstimate,
+    ) -> HeartbeatRttOffsetSmoothedEstimate {
+        match previous {
+            Some(previous) => HeartbeatRttOffsetSmoothedEstimate {
+                rtt_micros: ema_u64(
+                    previous.rtt_micros,
+                    latest.rtt_micros,
+                    HEARTBEAT_RTT_OFFSET_EMA_NUMERATOR,
+                    HEARTBEAT_RTT_OFFSET_EMA_DENOMINATOR,
+                ),
+                clock_offset_micros: ema_i64(
+                    previous.clock_offset_micros,
+                    latest.clock_offset_micros,
+                    HEARTBEAT_RTT_OFFSET_EMA_NUMERATOR,
+                    HEARTBEAT_RTT_OFFSET_EMA_DENOMINATOR,
+                ),
+                samples_applied: previous.samples_applied.saturating_add(1),
+            },
+            None => HeartbeatRttOffsetSmoothedEstimate {
+                rtt_micros: latest.rtt_micros,
+                clock_offset_micros: latest.clock_offset_micros,
+                samples_applied: 1,
+            },
+        }
+    }
+}
+
 /// Errors for the stateless RTT / offset calculation unit.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum HeartbeatRttOffsetCalculationError {
@@ -158,6 +217,45 @@ impl HeartbeatRttOffsetCalculator {
             clock_offset_micros,
         })
     }
+}
+
+fn ema_u64(previous: u64, latest: u64, numerator: u64, denominator: u64) -> u64 {
+    if numerator == 0 || denominator == 0 || numerator >= denominator {
+        return latest;
+    }
+
+    let previous = previous as i128;
+    let latest = latest as i128;
+    let numerator = numerator as i128;
+    let denominator = denominator as i128;
+    let delta = latest - previous;
+    let next = previous + (delta * numerator) / denominator;
+
+    if next <= 0 {
+        0
+    } else {
+        u64::try_from(next).unwrap_or(u64::MAX)
+    }
+}
+
+fn ema_i64(previous: i64, latest: i64, numerator: u64, denominator: u64) -> i64 {
+    if numerator == 0 || denominator == 0 || numerator >= denominator {
+        return latest;
+    }
+
+    let previous = previous as i128;
+    let latest = latest as i128;
+    let numerator = numerator as i128;
+    let denominator = denominator as i128;
+    let next = previous + ((latest - previous) * numerator) / denominator;
+
+    i64::try_from(next).unwrap_or_else(|_| {
+        if next.is_negative() {
+            i64::MIN
+        } else {
+            i64::MAX
+        }
+    })
 }
 
 #[cfg(test)]
@@ -241,5 +339,51 @@ mod tests {
             error,
             HeartbeatRttOffsetCalculationError::RoundTripShorterThanServerProcessing
         );
+    }
+
+    #[test]
+    fn heartbeat_rtt_offset_smoothing_boundary_uses_first_sample_as_baseline() {
+        let latest = HeartbeatRttOffsetEstimate {
+            rtt_micros: 100,
+            server_processing_micros: 50,
+            clock_offset_micros: 1_000,
+        };
+
+        let smoothed = HeartbeatRttOffsetSmoothingBoundary.smooth(None, latest);
+
+        assert_eq!(
+            smoothed,
+            HeartbeatRttOffsetSmoothedEstimate {
+                rtt_micros: 100,
+                clock_offset_micros: 1_000,
+                samples_applied: 1,
+            }
+        );
+    }
+
+    #[test]
+    fn heartbeat_rtt_offset_smoothing_boundary_updates_with_multiple_samples() {
+        let boundary = HeartbeatRttOffsetSmoothingBoundary;
+        let first = boundary.smooth(
+            None,
+            HeartbeatRttOffsetEstimate {
+                rtt_micros: 100,
+                server_processing_micros: 50,
+                clock_offset_micros: 1_000,
+            },
+        );
+
+        let second = boundary.smooth(
+            Some(first),
+            HeartbeatRttOffsetEstimate {
+                rtt_micros: 140,
+                server_processing_micros: 40,
+                clock_offset_micros: 1_400,
+            },
+        );
+
+        assert_eq!(second.rtt_micros, 110);
+        assert_eq!(second.clock_offset_micros, 1_100);
+        assert_eq!(second.samples_applied, 2);
     }
 }

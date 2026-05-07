@@ -3493,8 +3493,9 @@ run correlation and echoed `sent_at` before calling the stateless calculator.
 ### Heartbeat RTT / Offset State Commit Boundary
 
 The RTT / offset state commit boundary records the latest stateless estimate in
-server memory. It is deliberately smaller than the future estimator state: it
-does not smooth, reject outliers, or expose corrected timestamps.
+server memory and also keeps one small selection-facing smoothed estimate. It
+is still deliberately smaller than a full estimator state: it does not own a
+rich confidence model, warm-up policy, or timeout decisions.
 
 Current implementation scope:
 
@@ -3511,14 +3512,16 @@ Current implementation scope:
 6. Each entry stores:
    - `client_id`
    - `run_id`
-   - latest `HeartbeatRttOffsetEstimate`
+   - latest raw `HeartbeatRttOffsetEstimate`
+   - one smoothed `HeartbeatRttOffsetSmoothedEstimate`
    - committed sample count
    - optional server commit timestamp
-7. A same-run commit overwrites the latest estimate and increments the sample
-   count.
+7. A same-run commit overwrites the latest raw estimate, applies a conservative
+   `1/4` EMA to RTT / clock offset for the smoothed estimate, and increments
+   the sample count.
 8. A new `run_id` for the same `client_id` overwrites the latest estimate and
-   resets the sample count to 1. The outcome records that the previous run was
-   replaced.
+   resets the smoothed baseline and sample count to 1. The outcome records that
+   the previous run was replaced.
 9. `--receive-send-three` runs the default candidate policy before committing
    the one returned observation calculation into this state and reports the
    entry count / sample count in stdout.
@@ -3529,15 +3532,16 @@ Responsibility split:
   - Validates one returned observation and computes one RTT / offset candidate.
   - Does not retain history or mutate server state.
 - state commit boundary
-  - Stores the latest candidate and simple per-run sample count.
-  - Does not calculate, smooth, reject outliers, alter timeout state, log, or
-    notify clients.
+  - Stores the latest raw candidate, simple per-run sample count, and one
+    selection-facing smoothed estimate.
+  - Does not reject outliers, alter timeout state, log, notify clients, or own
+    a richer estimator model.
 - policy commit boundary
   - Connects candidate policy to latest estimate commit.
   - Does not commit rejected candidates.
 - future smoothing / estimator state
-  - Owns smoothing factor, warm-up, outlier policy, confidence, history, and
-    corrected timestamp exposure to sync-core.
+  - Owns richer smoothing policy, confidence, warm-up, estimator history, and
+    any later sync-core publication beyond the current in-memory state.
 - future timeout loop
   - Owns liveness / timeout decisions.
   - Does not depend on RTT / offset smoothing being complete.
@@ -3578,12 +3582,12 @@ Responsibility split:
   - Does not mutate state, smooth values, keep history, calculate confidence,
     or publish corrected timestamps.
 - latest estimate commit
-  - Stores the accepted candidate and sample count.
+  - Stores the accepted candidate and current smoothed state.
   - Does not decide whether a candidate is an outlier.
 - policy commit
   - Calls candidate policy before commit and skips rejected candidates.
-  - Does not smooth, publish corrected timestamps, write logs, or update
-    metrics.
+  - Does not own the smoothing formula, publish corrected timestamps, write
+    logs, or update metrics.
 - rejected candidate log / metrics handoff
   - Runs after policy commit returns `Skipped(RejectedOutlier)`.
   - Builds one typed log input and one metrics counter handoff.
@@ -10293,6 +10297,61 @@ in-process only; local IPC, TCP, UDP, shared memory, OBS output, 4-view
 orchestration, switcher-side fragment reassembly, protocol wire-format changes,
 and H.264 decode/render behavior changes remain out of scope.
 
+## Current Timestamp Ownership For targetTime Slice
+
+The current MVP slice uses timestamps in five places, each with a different
+owner:
+
+- auth
+  - Auth itself does not add selection-facing media timing.
+  - The current auth/manual paths only carry explicit caller-supplied server
+    timestamps for logs and summaries.
+- heartbeat / timebase
+  - `Heartbeat` carries client `sent_at`.
+  - `HeartbeatAck` preserves the echoed client `sent_at` and server
+    receive/send timestamps.
+  - `HeartbeatAckObservation` / `ClientStats` adds client receive time so the
+    server can complete one four-timestamp RTT / offset calculation.
+- video frame metadata
+  - `VideoFrame` carries per-frame `capture_timestamp`.
+  - `send_timestamp` remains separate from capture time and is preserved when
+    available.
+- receive queue / handoff
+  - `ServerQueuedVideoFrame` preserves queue insertion / observation time as
+    `queued_at`.
+  - Queue read and handoff boundaries preserve capture/send/queued timestamps
+    without deciding targetTime eligibility.
+- switcher selection
+  - switcher owns shared `target_timestamp`.
+  - targetTime-aware selection compares `adjusted_capture_timestamp` against the
+    shared target and preserves `delta_from_target_micros`.
+  - when no clock offset is available, selection falls back to raw
+    `capture_timestamp`.
+
+## Switcher Selection-Facing Clock Offset Lookup Boundary
+
+The switcher now has one thin boundary that reads the server-side smoothed
+clock offset without moving RTT / offset calculation into switcher:
+
+```text
+ServerHeartbeatRttOffsetState
+  -> SwitcherClientClockOffsetLookupBoundary
+  -> optional per-client clock_offset_micros
+  -> targetTime-aware source / scheduler selection
+```
+
+Current implementation:
+
+- `SwitcherClientClockOffsetLookupBoundary` reads caller-owned
+  `ServerHeartbeatRttOffsetState`.
+- Lookup is scoped by `client_id + run_id`.
+- If the client is unknown or the run id does not match, the result is
+  explicitly unavailable and selection falls back to raw timestamps.
+- When available, the boundary returns the smoothed clock offset and sample
+  count only.
+- The boundary does not calculate RTT / offset, smooth samples, mutate server
+  state, or choose targetTime policy.
+
 ## Switcher Single-Client TargetTime Source Boundary
 
 The first targetTime-aware source remains single-client. It has both the
@@ -10312,22 +10371,24 @@ Current implementation:
   current `SwitcherInProcessServerQueueFrameSource` adapter.
 - Reads are scoped by `client_id + run_id`.
 - The caller supplies an explicit `target_timestamp`.
+- The caller may also supply an optional per-client `clock_offset_micros`.
 - Selection behavior is explicit:
   - `PreviewOldestIfAtOrBefore` inspects the oldest queued frame for that
-    client/run and selects it only when its capture timestamp is at or before
-    the target timestamp. It does not mutate the queue.
+    client/run and selects it only when its adjusted capture timestamp is at or
+    before the target timestamp. It does not mutate the queue.
   - `PreviewLatestIfAtOrBefore` inspects the latest queued frame for that
-    client/run and selects it only when its capture timestamp is at or before
-    the target timestamp. It does not mutate the queue.
+    client/run and selects it only when its adjusted capture timestamp is at or
+    before the target timestamp. It does not mutate the queue.
   - `ConsumeOldestAtOrBefore` first inspects the oldest queued frame for that
-    client/run. It dequeues that frame only when its capture timestamp is at or
-    before the target timestamp.
+    client/run. It dequeues that frame only when its adjusted capture timestamp
+    is at or before the target timestamp.
 - If no queued frame exists, the boundary returns no-frame with diagnostic
   client/run/mode/queue length data.
-- If the inspected candidate is newer than the target timestamp, the boundary
-  returns waiting and does not mutate the queue.
-- Selected results carry the encoded frame, target timestamp, delta from target,
-  and whether the frame was consumed.
+- If the inspected candidate is newer than the target timestamp after optional
+  offset application, the boundary returns waiting and does not mutate the
+  queue.
+- Selected results carry the encoded frame, target timestamp, adjusted capture
+  timestamp, delta from target, and whether the frame was consumed.
 - `SwitcherSingleClientTargetTimeHandoffSourceBoundary` consumes fallible
   handoff results through `SwitcherQueuedFrameHandoffConsumerBoundary`.
 - The fallible result type,
@@ -10345,8 +10406,8 @@ Responsibility split:
 
 - queued-frame source owns mapping to server queue read modes and any concrete
   server->switcher handoff implementation.
-- targetTime source owns only timestamp comparison and explicit preview/consume
-  behavior.
+- targetTime source owns adjusted timestamp comparison and explicit
+  preview/consume behavior.
 - fallible handoff targetTime source additionally owns preserving handoff
   failures separately from normal targetTime source states.
 - It does not scan multi-client state, run 2-view or 4-view orchestration,
@@ -10379,6 +10440,7 @@ Current implementation:
 - The input contains exactly two view configs, each scoped by
   `client_id + run_id`.
 - The caller supplies one shared `target_timestamp`.
+- The caller may supply per-view optional `clock_offset_micros`.
 - The caller also supplies one explicit scheduler mode:
   - `PreviewLatestIfAtOrBefore` runs non-mutating latest preview for both
     views.
@@ -10406,11 +10468,17 @@ Current implementation:
 - Fallible consume mode keeps the existing all-or-nothing policy: preview both
   oldest candidates first, consume both only when both are selected, and do not
   mutate either side when one side is waiting, no-frame, or handoff-error.
+- `SwitcherServerMediatedTwoViewValidationBoundary` and
+  `SwitcherFourViewHandoffValidationBoundary` now have thin
+  `...with_clock_offset_state` entry points that read optional smoothed offsets
+  from `ServerHeartbeatRttOffsetState` and forward only `Option<i64>` values to
+  the existing scheduler boundaries.
 
 Responsibility split:
 
 - single-client targetTime source remains responsible for per-client/run queue
-  reads, timestamp eligibility, and explicit preview/consume mutation behavior.
+  reads, adjusted timestamp eligibility, and explicit preview/consume mutation
+  behavior.
 - the 2-view scheduler owns only applying one shared target timestamp to two
   configured views, classifying the pair result, and enforcing all-or-nothing
   synchronized consumption for scheduler-level consume mode.

@@ -22,6 +22,7 @@
 ---
 
 ## 現在位置
+- `RTT / offset` 平滑化と補正後 timestamp の targetTime selection 接続は最小 slice を完了した。server 側は latest raw estimate と smoothed estimate を分離保持し、switcher 側は optional な per-client clock offset を targetTime-aware source / scheduler / validation boundary へ薄く配線できる
 - 仕様固定、Cargo workspace 初期化、`apps/*` / `crates/*` の scaffold は完了している
 - `crates/protocol` / `crates/config` / `crates/net-core` の最小実装は揃っており、主要 message 型、timestamp 型、fixed header decode / encode、server auth 設定読み込み、`shared_token_env` 解決、UDP 1 datagram receive / send adapter までは完了している
 - server 側は auth one-shot、accepted auth registry 登録、heartbeat ack / liveness / timeout action plan / timeout apply / notice queue storage、RTT / offset state commit と metrics snapshot handoff までの最小境界が揃っている
@@ -164,15 +165,14 @@
 ---
 
 ## 直近でやること
-1. `RTT / offset` 平滑化と補正後 timestamp を targetTime へ接続する
-   - 4-view all-real baseline は成立しているため、次は同期判断を時刻補正込みで安定化する
-   - `heartbeat / 時刻同期` と `フェーズ4` の未完了項目をここに集約して扱う
-2. late frame queue mutation / jitter buffer / drop policy の最小実装を入れる
+1. late frame queue mutation / jitter buffer / drop policy の最小実装を入れる
    - 現状の preview / validation path を production-like runtime に近づける中心タスクとして扱う
    - `sync-core` と `video frame / 映像受信` の未完了項目をここに集約して扱う
-3. 認証 / runtime hardening と長時間 validation の順で固める
+2. 認証 / runtime hardening と長時間 validation の順で固める
    - timeout / 再認証 / version check / secret redaction を先に狭く実装する
    - その後に 2-client -> 4-client の長時間 run で drop / sync 誤差 / render 安定性を確認する
+3. `NoFrame` / `Waiting` / `HandoffError` の運用時挙動を長時間 run 前提で見直す
+   - 今回の slice では selection 判定までに限定したため、placeholder / stale / hold の運用判断は次段で詰める
 
 ## 今後の大まかな指針
 - 残り todo は `MVP クリティカルパス`、`安定化 / 運用`、`future task` に分けて扱う
@@ -180,18 +180,17 @@
 - まずは「4人を real handoff で安定表示し続ける」ことを基準に優先度を決める
 
 ## 残り todo から見た推定 step
-- 目安は `7-10 step`。1 step は Codex と GPT の 1 往復で数える
-1. `RTT / offset` 平滑化を実装し、補正後 timestamp を targetTime へ接続する
-2. jitter buffer と late frame queue mutation / drop policy を最小実装で入れる
-3. `NoFrame` / `Waiting` / `HandoffError` の運用時挙動を長時間 run 前提で見直す
-4. 認証済み送信元 timeout / 失効 / 再認証、`protocol_version` reject、`app_version` warn、secret redaction を狭く固める
-5. continuous receive / send runtime の不足分を埋める
+- 目安は `6-9 step`。1 step は Codex と GPT の 1 往復で数える
+1. jitter buffer と late frame queue mutation / drop policy を最小実装で入れる
+2. `NoFrame` / `Waiting` / `HandoffError` の運用時挙動を長時間 run 前提で見直す
+3. 認証済み送信元 timeout / 失効 / 再認証、`protocol_version` reject、`app_version` warn、secret redaction を狭く固める
+4. continuous receive / send runtime の不足分を埋める
    - 実 outbound queue 処理
    - send error / receive-send event の destination selection
    - later service lifecycle へつながる最小 runtime 整理
-6. 2-client の長時間 validation を取り、sync 誤差 / drop / render 安定性を確認する
-7. 4-client all-real の長時間 validation を取り、OBS Window Capture を含む実運用寄りの再確認をする
-8. dashboard / status visibility と運用手順を MVP 必要最低限まで揃える
+5. 2-client の長時間 validation を取り、sync 誤差 / drop / render 安定性を確認する
+6. 4-client all-real の長時間 validation を取り、OBS Window Capture を含む実運用寄りの再確認をする
+7. dashboard / status visibility と運用手順を MVP 必要最低限まで揃える
    - 接続状態、RTT、offset、drop、buffer 状態の表示
    - manual 手順、互換性ルール、ログ運用の整理
 
@@ -567,9 +566,9 @@ continuous runtime first slice の blocker:
 - [x] RTT / offset metrics snapshot の future loop / dashboard 連携方針を整理する
 - [x] RTT / offset metrics state commit を継続 loop へ接続する
 - [x] RTT / offset metrics snapshot の具体的な export cadence / dashboard refresh 方針を整理する
-- [ ] offset 平滑化を実装する
-- [ ] 補正後 timestamp へ変換する処理を実装する
-- [ ] targetTime 計算へ接続する
+- [x] offset 平滑化を実装する
+- [x] 補正後 timestamp へ変換する処理を実装する
+- [x] targetTime 計算へ接続する
 - [ ] 同期精度をログに出す
 
 ---
@@ -866,7 +865,7 @@ continuous runtime first slice の blocker:
 
 ### フェーズ4: 2 人 / 4 人同期 PoC
 - [x] RTT / offset 観測 return と最小 state commit
-- [ ] RTT / offset 平滑化と targetTime 接続
+- [x] RTT / offset 平滑化と targetTime 接続
 - [ ] ジッターバッファ
 - [x] targetTime frame selection
 - [x] 2-view targetTime-selected frame decode/render connection
@@ -976,6 +975,6 @@ continuous runtime first slice の blocker:
 - actual dashboard UI rendering remains unimplemented.
 
 ## Next Items
-1. `RTT / offset` 平滑化と targetTime 接続の最小 slice を切る
-2. late frame queue mutation / jitter buffer / drop policy の最小 slice を切る
+1. late frame queue mutation / jitter buffer / drop policy の最小 slice を切る
+2. `NoFrame` / `Waiting` / `HandoffError` の運用時挙動を長時間 run 前提で見直す
 3. 認証 / runtime hardening の実装順と長時間 validation 条件を先に固定する
