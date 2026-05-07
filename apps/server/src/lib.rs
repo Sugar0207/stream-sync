@@ -1772,6 +1772,147 @@ pub struct ServerReceiveSendRuntimeBoundedIterationEvent {
     pub send_error: Option<String>,
 }
 
+pub const SERVER_RECEIVE_SEND_ITERATION_JSON_LOG_EVENT_TYPE: &str = "receive_send_iteration";
+
+/// JSON Lines event input for bounded receive/send per-iteration observations.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ServerReceiveSendRuntimeBoundedIterationJsonLogEventInput {
+    pub event_type: &'static str,
+    pub command_name: &'static str,
+    pub iteration_index: usize,
+    pub receive_outcome_kind: ServerReceiveSendRuntimeBoundedReceiveOutcomeKind,
+    pub accepted_packet_kind: Option<MessageType>,
+    pub auth_outcome_kind: ServerReceiveSendRuntimeBoundedAuthOutcomeKind,
+    pub rejection_kind: Option<ServerReceiveRejectionReason>,
+    pub send_outcome_kind: ServerReceiveSendRuntimeBoundedSendOutcomeKind,
+    pub sent_message_kind: Option<MessageType>,
+    pub receive_error: Option<io::ErrorKind>,
+    pub send_error: Option<String>,
+}
+
+/// Boundary that maps typed bounded iteration events into JSON Lines event input.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct ServerReceiveSendRuntimeBoundedIterationJsonLogEventBoundary;
+
+impl ServerReceiveSendRuntimeBoundedIterationJsonLogEventBoundary {
+    pub fn build_event(
+        &self,
+        input: &ServerReceiveSendRuntimeBoundedIterationEvent,
+    ) -> ServerReceiveSendRuntimeBoundedIterationJsonLogEventInput {
+        ServerReceiveSendRuntimeBoundedIterationJsonLogEventInput {
+            event_type: SERVER_RECEIVE_SEND_ITERATION_JSON_LOG_EVENT_TYPE,
+            command_name: input.command_name,
+            iteration_index: input.iteration_index,
+            receive_outcome_kind: input.receive_outcome_kind,
+            accepted_packet_kind: input.accepted_packet_kind,
+            auth_outcome_kind: input.auth_outcome_kind,
+            rejection_kind: input.rejection_kind,
+            send_outcome_kind: input.send_outcome_kind,
+            sent_message_kind: input.sent_message_kind,
+            receive_error: input.receive_error,
+            send_error: input.send_error.clone(),
+        }
+    }
+}
+
+/// Minimal JSON Lines writer for bounded receive/send iteration events.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct ServerReceiveSendRuntimeBoundedIterationJsonLineWriter;
+
+impl ServerReceiveSendRuntimeBoundedIterationJsonLineWriter {
+    pub fn write_event<W: io::Write>(
+        &self,
+        event: &ServerReceiveSendRuntimeBoundedIterationJsonLogEventInput,
+        mut writer: W,
+    ) -> io::Result<()> {
+        write!(writer, "{{")?;
+        write_json_field(&mut writer, "event_type", event.event_type)?;
+        write!(writer, ",")?;
+        write_json_field(&mut writer, "command_name", event.command_name)?;
+        write!(writer, ",\"iteration_index\":{}", event.iteration_index)?;
+        write!(writer, ",")?;
+        write_json_field(
+            &mut writer,
+            "receive_outcome_kind",
+            receive_send_runtime_bounded_receive_outcome_kind_name(event.receive_outcome_kind),
+        )?;
+        write!(writer, ",")?;
+        write_optional_json_field(
+            &mut writer,
+            "accepted_packet_kind",
+            event
+                .accepted_packet_kind
+                .map(receive_rejection_message_type_name),
+        )?;
+        write!(writer, ",")?;
+        write_json_field(
+            &mut writer,
+            "auth_outcome_kind",
+            receive_send_runtime_bounded_auth_outcome_kind_name(event.auth_outcome_kind),
+        )?;
+        write!(writer, ",")?;
+        write_optional_json_field(
+            &mut writer,
+            "rejection_kind",
+            event.rejection_kind.map(receive_rejection_reason_name),
+        )?;
+        write!(writer, ",")?;
+        write_json_field(
+            &mut writer,
+            "send_outcome_kind",
+            receive_send_runtime_bounded_send_outcome_kind_name(event.send_outcome_kind),
+        )?;
+        write!(writer, ",")?;
+        write_optional_json_field(
+            &mut writer,
+            "sent_message_kind",
+            event
+                .sent_message_kind
+                .map(receive_rejection_message_type_name),
+        )?;
+        write!(writer, ",")?;
+        write_optional_json_field(
+            &mut writer,
+            "receive_error",
+            event.receive_error.map(io_error_kind_name),
+        )?;
+        write!(writer, ",")?;
+        write_optional_json_field(&mut writer, "send_error", event.send_error.as_deref())?;
+        writeln!(writer, "}}")
+    }
+}
+
+/// Minimal output boundary for bounded receive/send iteration JSON Lines.
+///
+/// This writes one structured iteration event to a caller-owned writer. It does
+/// not open files, rotate logs, install a process-wide logger, or own flush or
+/// shutdown policy.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct ServerReceiveSendRuntimeBoundedIterationLogOutputBoundary {
+    event: ServerReceiveSendRuntimeBoundedIterationJsonLogEventBoundary,
+    writer: ServerReceiveSendRuntimeBoundedIterationJsonLineWriter,
+}
+
+impl ServerReceiveSendRuntimeBoundedIterationLogOutputBoundary {
+    pub fn write_iteration_event<W: io::Write>(
+        &self,
+        input: &ServerReceiveSendRuntimeBoundedIterationEvent,
+        writer: W,
+    ) -> io::Result<ServerReceiveSendRuntimeBoundedIterationJsonLogEventInput> {
+        let event = self.event.build_event(input);
+        self.writer.write_event(&event, writer)?;
+        Ok(event)
+    }
+}
+
+/// Compact visibility for bounded iteration-event writer outcomes.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ServerReceiveSendRuntimeBoundedIterationEventLogSummary {
+    pub lines_written: usize,
+    pub write_failures: usize,
+    pub last_writer_error: Option<io::ErrorKind>,
+}
+
 /// Aggregate stdout-facing summary for the bounded repeated runtime.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ServerReceiveSendRuntimeBoundedSummary {
@@ -1807,6 +1948,7 @@ pub struct ServerReceiveSendRuntimeBoundedStartupOutcome {
     pub queue_collection: ServerOutboundQueueCollection,
     pub iterations: Vec<ServerControllerReceiveSendRuntimeResult>,
     pub iteration_events: Vec<ServerReceiveSendRuntimeBoundedIterationEvent>,
+    pub iteration_event_log_summary: ServerReceiveSendRuntimeBoundedIterationEventLogSummary,
     pub summary: ServerReceiveSendRuntimeBoundedSummary,
 }
 
@@ -1883,12 +2025,44 @@ impl ServerReceiveSendRuntimeBoundedLauncher {
         ServerReceiveSendRuntimeBoundedStartupError,
     > {
         let startup_config = self.load_startup_config_from_path(path)?;
-        self.run_bounded_with_writers_and_policy(
+        self.run_bounded_with_all_writers_and_policy(
             startup_config,
             operational_writer,
             rejection_writer,
             auth_log_writer,
             send_log_writer,
+            io::sink(),
+            policy,
+        )
+    }
+
+    pub fn run_bounded_from_path_with_all_writers_and_policy<
+        OW: io::Write,
+        RW: io::Write,
+        AW: io::Write,
+        SW: io::Write,
+        IW: io::Write,
+    >(
+        &self,
+        path: impl AsRef<Path>,
+        operational_writer: OW,
+        rejection_writer: RW,
+        auth_log_writer: AW,
+        send_log_writer: SW,
+        iteration_event_writer: IW,
+        policy: ServerReceiveSendRuntimeBoundedPolicy,
+    ) -> Result<
+        ServerReceiveSendRuntimeBoundedStartupOutcome,
+        ServerReceiveSendRuntimeBoundedStartupError,
+    > {
+        let startup_config = self.load_startup_config_from_path(path)?;
+        self.run_bounded_with_all_writers_and_policy(
+            startup_config,
+            operational_writer,
+            rejection_writer,
+            auth_log_writer,
+            send_log_writer,
+            iteration_event_writer,
             policy,
         )
     }
@@ -1905,6 +2079,36 @@ impl ServerReceiveSendRuntimeBoundedLauncher {
         mut rejection_writer: RW,
         mut auth_log_writer: AW,
         mut send_log_writer: SW,
+        policy: ServerReceiveSendRuntimeBoundedPolicy,
+    ) -> Result<
+        ServerReceiveSendRuntimeBoundedStartupOutcome,
+        ServerReceiveSendRuntimeBoundedStartupError,
+    > {
+        self.run_bounded_with_all_writers_and_policy(
+            startup_config,
+            &mut operational_writer,
+            &mut rejection_writer,
+            &mut auth_log_writer,
+            &mut send_log_writer,
+            io::sink(),
+            policy,
+        )
+    }
+
+    pub fn run_bounded_with_all_writers_and_policy<
+        OW: io::Write,
+        RW: io::Write,
+        AW: io::Write,
+        SW: io::Write,
+        IW: io::Write,
+    >(
+        &self,
+        startup_config: ServerAuthResponsePocStartupConfig,
+        mut operational_writer: OW,
+        mut rejection_writer: RW,
+        mut auth_log_writer: AW,
+        mut send_log_writer: SW,
+        mut iteration_event_writer: IW,
         policy: ServerReceiveSendRuntimeBoundedPolicy,
     ) -> Result<
         ServerReceiveSendRuntimeBoundedStartupOutcome,
@@ -1931,9 +2135,13 @@ impl ServerReceiveSendRuntimeBoundedLauncher {
         let mut queue_collection = ServerOutboundQueueCollection::default();
         let mut iterations = Vec::new();
         let mut iteration_events = Vec::new();
+        let mut iteration_event_log_summary =
+            ServerReceiveSendRuntimeBoundedIterationEventLogSummary::default();
         let mut heartbeat_handoffs_by_client =
             BTreeMap::<(String, String), ServerHeartbeatAckHandoff>::new();
         let mut final_stop_reason = None;
+        let iteration_event_log_output =
+            ServerReceiveSendRuntimeBoundedIterationLogOutputBoundary::default();
         let mut summary = ServerReceiveSendRuntimeBoundedSummary {
             max_iterations: policy.max_iterations,
             receive_timeout: policy.receive_timeout,
@@ -2004,7 +2212,18 @@ impl ServerReceiveSendRuntimeBoundedLauncher {
             };
 
             summary.iterations_completed = summary.iterations_completed.saturating_add(1);
-            iteration_events.push(Self::build_iteration_event(iteration_index, &result));
+            let iteration_event = Self::build_iteration_event(iteration_index, &result);
+            if let Err(error) = iteration_event_log_output
+                .write_iteration_event(&iteration_event, &mut iteration_event_writer)
+            {
+                iteration_event_log_summary.write_failures =
+                    iteration_event_log_summary.write_failures.saturating_add(1);
+                iteration_event_log_summary.last_writer_error = Some(error.kind());
+            } else {
+                iteration_event_log_summary.lines_written =
+                    iteration_event_log_summary.lines_written.saturating_add(1);
+            }
+            iteration_events.push(iteration_event);
             let stop_reason =
                 self.observe_iteration(&result, &mut heartbeat_handoffs_by_client, &mut summary);
             iterations.push(result);
@@ -2033,6 +2252,7 @@ impl ServerReceiveSendRuntimeBoundedLauncher {
             queue_collection,
             iterations,
             iteration_events,
+            iteration_event_log_summary,
             summary,
         })
     }
@@ -6427,6 +6647,61 @@ fn send_failure_disposition_name(disposition: SendFailureDisposition) -> &'stati
         SendFailureDisposition::RetryCandidate => "RetryCandidate",
         SendFailureDisposition::DropCandidate => "DropCandidate",
         SendFailureDisposition::WarningCandidate => "WarningCandidate",
+    }
+}
+
+fn receive_send_runtime_bounded_receive_outcome_kind_name(
+    outcome: ServerReceiveSendRuntimeBoundedReceiveOutcomeKind,
+) -> &'static str {
+    match outcome {
+        ServerReceiveSendRuntimeBoundedReceiveOutcomeKind::AcceptedPacket => "AcceptedPacket",
+        ServerReceiveSendRuntimeBoundedReceiveOutcomeKind::RejectedPacket => "RejectedPacket",
+        ServerReceiveSendRuntimeBoundedReceiveOutcomeKind::TimedOut => "TimedOut",
+        ServerReceiveSendRuntimeBoundedReceiveOutcomeKind::ReceiveFailed => "ReceiveFailed",
+        ServerReceiveSendRuntimeBoundedReceiveOutcomeKind::Stopped => "Stopped",
+    }
+}
+
+fn receive_send_runtime_bounded_auth_outcome_kind_name(
+    outcome: ServerReceiveSendRuntimeBoundedAuthOutcomeKind,
+) -> &'static str {
+    match outcome {
+        ServerReceiveSendRuntimeBoundedAuthOutcomeKind::NotAuth => "NotAuth",
+        ServerReceiveSendRuntimeBoundedAuthOutcomeKind::Accepted => "Accepted",
+        ServerReceiveSendRuntimeBoundedAuthOutcomeKind::Rejected => "Rejected",
+    }
+}
+
+fn receive_send_runtime_bounded_send_outcome_kind_name(
+    outcome: ServerReceiveSendRuntimeBoundedSendOutcomeKind,
+) -> &'static str {
+    match outcome {
+        ServerReceiveSendRuntimeBoundedSendOutcomeKind::NotSent => "NotSent",
+        ServerReceiveSendRuntimeBoundedSendOutcomeKind::Sent => "Sent",
+        ServerReceiveSendRuntimeBoundedSendOutcomeKind::Failed => "Failed",
+    }
+}
+
+fn io_error_kind_name(error_kind: io::ErrorKind) -> &'static str {
+    match error_kind {
+        io::ErrorKind::NotFound => "NotFound",
+        io::ErrorKind::PermissionDenied => "PermissionDenied",
+        io::ErrorKind::ConnectionRefused => "ConnectionRefused",
+        io::ErrorKind::ConnectionReset => "ConnectionReset",
+        io::ErrorKind::ConnectionAborted => "ConnectionAborted",
+        io::ErrorKind::NotConnected => "NotConnected",
+        io::ErrorKind::AddrInUse => "AddrInUse",
+        io::ErrorKind::AddrNotAvailable => "AddrNotAvailable",
+        io::ErrorKind::BrokenPipe => "BrokenPipe",
+        io::ErrorKind::AlreadyExists => "AlreadyExists",
+        io::ErrorKind::WouldBlock => "WouldBlock",
+        io::ErrorKind::InvalidInput => "InvalidInput",
+        io::ErrorKind::InvalidData => "InvalidData",
+        io::ErrorKind::TimedOut => "TimedOut",
+        io::ErrorKind::WriteZero => "WriteZero",
+        io::ErrorKind::Interrupted => "Interrupted",
+        io::ErrorKind::UnexpectedEof => "UnexpectedEof",
+        _ => "Other",
     }
 }
 
@@ -11779,16 +12054,19 @@ mod tests {
         let rejection = SharedTestWriter::default();
         let auth = SharedTestWriter::default();
         let send = SharedTestWriter::default();
+        let iteration = SharedTestWriter::default();
         let operational_bytes = operational.0.clone();
         let auth_bytes = auth.0.clone();
         let send_bytes = send.0.clone();
+        let iteration_bytes = iteration.0.clone();
         let handle = std::thread::spawn(move || {
-            launcher.run_bounded_with_writers_and_policy(
+            launcher.run_bounded_with_all_writers_and_policy(
                 startup_config,
                 operational,
                 rejection,
                 auth,
                 send,
+                iteration,
                 ServerReceiveSendRuntimeBoundedPolicy {
                     max_iterations: 2,
                     receive_timeout: Duration::from_millis(150),
@@ -11813,12 +12091,16 @@ mod tests {
             .expect("bounded runtime should complete");
 
         assert_eq!(outcome.iteration_events.len(), 2);
+        assert_eq!(outcome.iteration_event_log_summary.lines_written, 2);
+        assert_eq!(outcome.iteration_event_log_summary.write_failures, 0);
+        assert_eq!(outcome.iteration_event_log_summary.last_writer_error, None);
         assert!(!operational_bytes
             .lock()
             .expect("operational bytes")
             .is_empty());
         assert!(!auth_bytes.lock().expect("auth bytes").is_empty());
         assert!(!send_bytes.lock().expect("send bytes").is_empty());
+        assert!(!iteration_bytes.lock().expect("iteration bytes").is_empty());
     }
 
     #[test]
@@ -15512,6 +15794,145 @@ shared_token = "secret"
         assert!(output.contains(r#""message_type":"Heartbeat""#));
         assert!(output.contains(r#""rejection_reason":"UnknownClient""#));
         assert!(output.contains(r#""timestamp":678901"#));
+    }
+
+    #[test]
+    fn receive_send_runtime_bounded_iteration_json_line_writer_outputs_expected_line() {
+        let writer = ServerReceiveSendRuntimeBoundedIterationJsonLineWriter;
+        let event = ServerReceiveSendRuntimeBoundedIterationJsonLogEventInput {
+            event_type: SERVER_RECEIVE_SEND_ITERATION_JSON_LOG_EVENT_TYPE,
+            command_name: SERVER_RECEIVE_SEND_RUNTIME_BOUNDED_COMMAND_NAME,
+            iteration_index: 3,
+            receive_outcome_kind: ServerReceiveSendRuntimeBoundedReceiveOutcomeKind::AcceptedPacket,
+            accepted_packet_kind: Some(MessageType::Heartbeat),
+            auth_outcome_kind: ServerReceiveSendRuntimeBoundedAuthOutcomeKind::NotAuth,
+            rejection_kind: None,
+            send_outcome_kind: ServerReceiveSendRuntimeBoundedSendOutcomeKind::Sent,
+            sent_message_kind: Some(MessageType::HeartbeatAck),
+            receive_error: None,
+            send_error: None,
+        };
+        let mut output = Vec::new();
+
+        writer
+            .write_event(&event, &mut output)
+            .expect("iteration json line should write");
+
+        assert_eq!(
+            String::from_utf8(output).expect("json line should be utf8"),
+            r#"{"event_type":"receive_send_iteration","command_name":"--receive-send-runtime-bounded","iteration_index":3,"receive_outcome_kind":"AcceptedPacket","accepted_packet_kind":"Heartbeat","auth_outcome_kind":"NotAuth","rejection_kind":null,"send_outcome_kind":"Sent","sent_message_kind":"HeartbeatAck","receive_error":null,"send_error":null}"#
+                .to_string()
+                + "\n"
+        );
+    }
+
+    #[test]
+    fn receive_send_runtime_bounded_iteration_log_output_writes_multiple_lines() {
+        let boundary = ServerReceiveSendRuntimeBoundedIterationLogOutputBoundary::default();
+        let first = ServerReceiveSendRuntimeBoundedIterationEvent {
+            command_name: SERVER_RECEIVE_SEND_RUNTIME_BOUNDED_COMMAND_NAME,
+            iteration_index: 0,
+            receive_outcome_kind: ServerReceiveSendRuntimeBoundedReceiveOutcomeKind::AcceptedPacket,
+            accepted_packet_kind: Some(MessageType::AuthRequest),
+            auth_outcome_kind: ServerReceiveSendRuntimeBoundedAuthOutcomeKind::Accepted,
+            rejection_kind: None,
+            send_outcome_kind: ServerReceiveSendRuntimeBoundedSendOutcomeKind::Sent,
+            sent_message_kind: Some(MessageType::AuthResponse),
+            receive_error: None,
+            send_error: None,
+        };
+        let second = ServerReceiveSendRuntimeBoundedIterationEvent {
+            command_name: SERVER_RECEIVE_SEND_RUNTIME_BOUNDED_COMMAND_NAME,
+            iteration_index: 1,
+            receive_outcome_kind: ServerReceiveSendRuntimeBoundedReceiveOutcomeKind::TimedOut,
+            accepted_packet_kind: None,
+            auth_outcome_kind: ServerReceiveSendRuntimeBoundedAuthOutcomeKind::NotAuth,
+            rejection_kind: None,
+            send_outcome_kind: ServerReceiveSendRuntimeBoundedSendOutcomeKind::NotSent,
+            sent_message_kind: None,
+            receive_error: Some(io::ErrorKind::TimedOut),
+            send_error: None,
+        };
+        let mut output = Vec::new();
+
+        boundary
+            .write_iteration_event(&first, &mut output)
+            .expect("first iteration line should write");
+        boundary
+            .write_iteration_event(&second, &mut output)
+            .expect("second iteration line should write");
+
+        let output = String::from_utf8(output).expect("json lines should be utf8");
+        let lines: Vec<_> = output.lines().collect();
+        assert_eq!(lines.len(), 2);
+        assert!(lines[0].contains(r#""iteration_index":0"#));
+        assert!(lines[0].contains(r#""accepted_packet_kind":"AuthRequest""#));
+        assert!(lines[1].contains(r#""iteration_index":1"#));
+        assert!(lines[1].contains(r#""receive_outcome_kind":"TimedOut""#));
+        assert!(lines[1].contains(r#""receive_error":"TimedOut""#));
+    }
+
+    #[derive(Default)]
+    struct AlwaysFailWriter;
+
+    impl io::Write for AlwaysFailWriter {
+        fn write(&mut self, _buf: &[u8]) -> io::Result<usize> {
+            Err(io::Error::new(
+                io::ErrorKind::BrokenPipe,
+                "failing test writer",
+            ))
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn receive_send_runtime_bounded_iteration_writer_failure_is_explicit() {
+        let launcher = ServerReceiveSendRuntimeBoundedLauncher::default();
+        let bind_port = reserve_localhost_udp_port();
+        let startup_config = launcher
+            .load_startup_config_from_str(&receive_send_runtime_test_config(bind_port))
+            .expect("bounded runtime config should load");
+        let server_address = SocketAddr::from(([127, 0, 0, 1], bind_port));
+        let handle = std::thread::spawn(move || {
+            launcher.run_bounded_with_all_writers_and_policy(
+                startup_config,
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+                AlwaysFailWriter,
+                ServerReceiveSendRuntimeBoundedPolicy {
+                    max_iterations: 1,
+                    receive_timeout: Duration::from_millis(500),
+                },
+            )
+        });
+        let client_socket = UdpSocket::bind("127.0.0.1:0").expect("client socket should bind");
+        std::thread::sleep(Duration::from_millis(50));
+        client_socket
+            .send_to(
+                auth_request_packet("client-1", "presented-secret").as_slice(),
+                server_address,
+            )
+            .expect("auth request should send");
+
+        let outcome = handle
+            .join()
+            .expect("bounded runtime thread should join")
+            .expect("bounded runtime should complete");
+
+        assert_eq!(outcome.iteration_events.len(), 1);
+        assert_eq!(outcome.iteration_event_log_summary.lines_written, 0);
+        assert_eq!(outcome.iteration_event_log_summary.write_failures, 1);
+        assert_eq!(
+            outcome.iteration_event_log_summary.last_writer_error,
+            Some(io::ErrorKind::BrokenPipe)
+        );
+        assert_eq!(outcome.summary.auth_requests_received, 1);
+        assert_eq!(outcome.summary.auth_responses_sent, 1);
     }
 
     #[test]

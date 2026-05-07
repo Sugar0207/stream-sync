@@ -9614,6 +9614,39 @@ Current narrow implementation for bounded per-iteration event handoff:
   - per-iteration event handoff remains the compact structured observation
     surface for future operational logging
 
+Current narrow implementation for bounded iteration-event JSONL ownership:
+
+- the bounded runtime now has a schema-specific iteration-event JSON Lines
+  output boundary over the typed `iteration_events` surface.
+- compact JSONL schema fields are:
+  - `event_type=receive_send_iteration`
+  - `command_name`
+  - `iteration_index`
+  - `receive_outcome_kind`
+  - `accepted_packet_kind`
+  - `auth_outcome_kind`
+  - `rejection_kind`
+  - `send_outcome_kind`
+  - `sent_message_kind`
+  - `receive_error`
+  - `send_error`
+- writer ownership is still caller-owned:
+  - CLI/runtime may pass a caller-owned writer such as stderr
+  - the boundary does not open files, rotate logs, install a process-wide
+    logger, or own flush/shutdown policy
+- writer failure handling remains intentionally small:
+  - iteration-event write failure does not stop the bounded runtime
+  - it is recorded on the bounded startup outcome as:
+    - `iteration_event_log_summary.lines_written`
+    - `iteration_event_log_summary.write_failures`
+    - `iteration_event_log_summary.last_writer_error`
+  - final stdout aggregate summary remains unchanged
+  - fatal/startup summary remains unchanged
+- this keeps the ownership split explicit:
+  - stdout final aggregate summary for human/manual validation
+  - stderr fatal/startup summary for terminal failure visibility
+  - caller-owned JSONL writer for per-iteration structured operational events
+
 Required separation of concerns:
 
 - bounded runtime aggregate summary:
@@ -9648,6 +9681,8 @@ Next narrow implementation slice for logging ownership:
   - rejection kind when present
 - this first handoff slice is now implemented as typed `iteration_events`
   returned from the bounded runtime outcome
+- the next JSONL ownership slice is now implemented as a caller-owned
+  iteration-event JSON Lines output boundary over `iteration_events`
 - keep the first logging-ownership implementation slice caller-owned:
   - accept an injected writer set or event sink set
   - do not add file open/rotation

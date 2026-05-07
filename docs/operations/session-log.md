@@ -5,6 +5,71 @@
 - Codex
 
 ### Work
+- Added the narrow JSONL writer ownership slice for bounded receive/send
+  iteration events.
+- Kept the change intentionally small:
+  - no file sink open/rotation
+  - no process-wide logger
+  - no dashboard/exporter transport
+  - no retry/requeue
+  - no daemon lifecycle work
+- Added a schema-specific iteration-event JSON Lines output boundary over the
+  existing typed `iteration_events`.
+- Fixed the compact JSONL schema as:
+  - `event_type=receive_send_iteration`
+  - `command_name`
+  - `iteration_index`
+  - `receive_outcome_kind`
+  - `accepted_packet_kind`
+  - `auth_outcome_kind`
+  - `rejection_kind`
+  - `send_outcome_kind`
+  - `sent_message_kind`
+  - `receive_error`
+  - `send_error`
+- Kept writer ownership caller-owned and connected the bounded runtime command
+  path through a caller-owned writer rather than a file sink or global logger.
+- Added compact writer-failure visibility on the bounded outcome:
+  - `iteration_event_log_summary.lines_written`
+  - `iteration_event_log_summary.write_failures`
+  - `iteration_event_log_summary.last_writer_error`
+- Kept final stdout aggregate summary and fatal/startup terminal summary
+  unchanged.
+- Added/updated tests for:
+  - one iteration-event JSONL line
+  - multiple iteration-event JSONL lines
+  - explicit writer failure visibility
+  - caller-owned iteration writer preservation
+  - final aggregate summary non-regression
+
+### Changed Files
+- `apps/server/src/lib.rs`
+- `apps/server/src/main.rs`
+- `docs/architecture/system-design.md`
+- `docs/operations/session-log.md`
+- `docs/operations/todo.md`
+
+### Decision
+- Keep iteration-event JSONL as a schema-specific caller-owned writer boundary
+  over `iteration_events`.
+- Keep writer failure visible through the bounded outcome instead of turning it
+  into a new stop policy.
+- Keep stdout final summary and stderr fatal summary separate from operational
+  iteration JSONL.
+
+### Validation
+- `cargo fmt`
+- `cargo fmt --check`
+- `cargo check --workspace`
+- `cargo test -p stream-sync-server receive_send -- --test-threads=1`
+- `cargo test --workspace`
+- `git diff --check`
+
+## 2026-05-07
+### Type
+- Codex
+
+### Work
 - Added the narrow per-iteration receive/send event handoff slice to
   `--receive-send-runtime-bounded`.
 - Kept the change intentionally small:

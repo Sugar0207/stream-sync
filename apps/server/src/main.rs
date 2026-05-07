@@ -174,8 +174,9 @@ fn main() {
                 max_iterations: command.max_iterations,
                 receive_timeout: std::time::Duration::from_millis(command.receive_timeout_ms),
             };
-            match launcher.run_bounded_from_path_with_writers_and_policy(
+            match launcher.run_bounded_from_path_with_all_writers_and_policy(
                 &command.config_path,
+                std::io::stderr(),
                 std::io::stderr(),
                 std::io::stderr(),
                 std::io::stderr(),
@@ -1164,6 +1165,12 @@ mod tests {
                 queue_collection: stream_sync_server::ServerOutboundQueueCollection::default(),
                 iterations: Vec::new(),
                 iteration_events: Vec::new(),
+                iteration_event_log_summary:
+                    stream_sync_server::ServerReceiveSendRuntimeBoundedIterationEventLogSummary {
+                        lines_written: 0,
+                        write_failures: 0,
+                        last_writer_error: None,
+                    },
                 summary: stream_sync_server::ServerReceiveSendRuntimeBoundedSummary {
                     max_iterations: 16,
                     receive_timeout: std::time::Duration::from_millis(1_000),
