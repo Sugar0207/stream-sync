@@ -8876,16 +8876,33 @@ Current implementation note:
   - `--keys`
   - one-line stdin mode
   - control-pipe command vocabulary and wrapper summary stdout
-- current raw-key validation status is code-level only:
-  - parser and wrapper-loop tests exist
-  - actual manual control-pipe validation for `--raw-keys` remains the next
-    step
+- actual manual control-pipe validation for `--raw-keys` is now recorded:
+  - `AllView`, `Focused(0..3)`, and `quit` all succeeded through the actual
+    control-pipe + raw-key path
+  - the controlled loop final summary returned
+    `commands_processed=11`, `commands_rejected=0`,
+    `current_view_state=AllView`, `frames_rendered=50`,
+    `render_failures=0`, `scheduler_status=AllSelected`,
+    `slot_result_kinds=Selected|Selected|Selected|Selected`,
+    `clean_output_render_result_kind=Rendered`, `output_width=1280`,
+    `output_height=720`, and `exit_reason=QuitRequested`
+  - final slot diagnostics returned `FrameRead` for all four players with
+    `parse_error=none`, `io_error=none`, `decode_error=none`, and
+    `final_slot_result_kind=Selected`
+- one transient runtime note remains:
+  - at `command_index=4` for `Focused(3)`, the loop still reported
+    `selected_slot_result=Selected`,
+    `clean_output_render_result_kind=Rendered`, and `frames_rendered=5`, but
+    `scheduler_status=HandoffError` appeared briefly
+  - the final summary returned to `scheduler_status=AllSelected`
+  - classify this as later narrow scheduler-status wobble polish, not as an
+    MVP blocker
 
 Next task after this implementation:
 
-- run actual manual validation for `--four-view-operator-wrapper --raw-keys`
 - keep Enter-required stdin as the fallback/manual mode
-- keep production H.264 encoder configuration / error logging policy after that
+- keep transient scheduler-status wobble as later narrow polish only
+- move to production H.264 encoder configuration / error logging policy
 
 ## Operator-Facing Control Surface After Stable All-Real Baseline
 

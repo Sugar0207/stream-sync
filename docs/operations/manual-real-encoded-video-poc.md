@@ -2941,6 +2941,8 @@ Wrapper MVP manual validation plan:
      - `.\target\debug\stream-sync-switcher.exe --four-view-operator-wrapper streamsync-control-dev`
    - scripted:
      - `.\target\debug\stream-sync-switcher.exe --four-view-operator-wrapper streamsync-control-dev --keys "s;1;2;3;4;0;q;q"`
+   - raw keys:
+     - `.\target\debug\stream-sync-switcher.exe --four-view-operator-wrapper streamsync-control-dev --raw-keys`
 4. press:
    - `1`
    - `2`
@@ -3414,6 +3416,47 @@ Next task after this decision:
   - keeps unknown keys local-only ignored
   - returns an explicit setup/read error if Windows console raw-key capture is
     unavailable
-- next validation step:
-  - run actual manual control-pipe validation for `--raw-keys`
-- keep production H.264 encoder configuration / error logging policy after that
+- actual manual control-pipe validation for `--raw-keys` is now recorded as
+  successful:
+  - command sequence included:
+    - `status`
+    - `focus 0`
+    - `focus 1`
+    - `focus 2`
+    - `focus 3`
+    - `all`
+    - `focus 0`
+    - `focus 1`
+    - `focus 2`
+    - `all`
+    - `quit`
+  - controlled loop final summary:
+    - `commands_processed=11`
+    - `commands_rejected=0`
+    - `current_view_state=AllView`
+    - `frames_rendered=50`
+    - `render_failures=0`
+    - `scheduler_status=AllSelected`
+    - `slot_result_kinds=Selected|Selected|Selected|Selected`
+    - `clean_output_render_result_kind=Rendered`
+    - `output_width=1280`
+    - `output_height=720`
+    - `exit_reason=QuitRequested`
+  - final slot diagnostics:
+    - `player1..4` all `FrameRead`
+    - `parse_error=none`
+    - `io_error=none`
+    - `decode_error=none`
+    - `final_slot_result_kind=Selected`
+  - `AllView`, `Focused(0..3)`, and `quit` all succeeded through the actual
+    control-pipe + raw-key path
+- observed note from the same raw-key session:
+  - at `command_index=4` for `Focused(3)`, the loop still reported
+    `selected_slot_result=Selected`,
+    `clean_output_render_result_kind=Rendered`, and `frames_rendered=5`, but
+    `scheduler_status=HandoffError` appeared transiently
+  - the final loop summary returned to `scheduler_status=AllSelected`
+  - treat this as transient scheduler-status wobble / later narrow polish, not
+    as an MVP blocker
+- next task:
+  - production H.264 encoder configuration / error logging policy

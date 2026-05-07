@@ -5,6 +5,69 @@
 - Codex
 
 ### Work
+- Recorded the successful actual control-pipe validation for
+  `--four-view-operator-wrapper --raw-keys`.
+- Captured the confirmed command sequence:
+  - `status`
+  - `focus 0`
+  - `focus 1`
+  - `focus 2`
+  - `focus 3`
+  - `all`
+  - `focus 0`
+  - `focus 1`
+  - `focus 2`
+  - `all`
+  - `quit`
+- Recorded the controlled-loop final summary from the raw-key run:
+  - `commands_processed=11`
+  - `commands_rejected=0`
+  - `current_view_state=AllView`
+  - `frames_rendered=50`
+  - `render_failures=0`
+  - `scheduler_status=AllSelected`
+  - `slot_result_kinds=Selected|Selected|Selected|Selected`
+  - `clean_output_render_result_kind=Rendered`
+  - `output_width=1280`
+  - `output_height=720`
+  - `exit_reason=QuitRequested`
+- Recorded the final slot diagnostics:
+  - `player1..4` all `FrameRead`
+  - `parse_error=none`
+  - `io_error=none`
+  - `decode_error=none`
+  - `final_slot_result_kind=Selected`
+- Recorded one observed transient note:
+  - `command_index=4` on `Focused(3)` briefly surfaced
+    `scheduler_status=HandoffError`
+  - the same command still reported `selected_slot_result=Selected`,
+    `clean_output_render_result_kind=Rendered`, and `frames_rendered=5`
+  - the final summary returned to `scheduler_status=AllSelected`
+- Updated docs so the next task moves to production H.264 encoder
+  configuration / error logging policy instead of more wrapper validation.
+
+### Changed Files
+- `docs/architecture/system-design.md`
+- `docs/operations/manual-real-encoded-video-poc.md`
+- `docs/operations/session-log.md`
+- `docs/operations/todo.md`
+
+### Decision
+- actual raw-key validation is complete and successful enough for the current
+  MVP operator surface
+- transient scheduler-status wobble during `Focused(3)` is later narrow polish,
+  not a blocker
+- production H.264 encoder configuration / error logging policy is now the next
+  task
+
+### Validation
+- `git diff --check`
+
+## 2026-05-07
+### Type
+- Codex
+
+### Work
 - Implemented wrapper-local optional raw key capture for
   `--four-view-operator-wrapper`.
 - Added optional raw mode flag:
