@@ -5,6 +5,7 @@
 # Local runtime output
 /tmp/
 /logs/
+.codex-logs/
 *.log
 
 # Editor and OS files
