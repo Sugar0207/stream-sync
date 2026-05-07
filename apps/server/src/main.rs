@@ -909,10 +909,11 @@ mod tests {
         assert!(summary.contains("pipe_name=pipe-a"));
         assert!(summary.contains("request_id=44"));
         assert!(summary.contains("result_kind=FrameRead"));
-        assert!(summary.contains("queue_len=2"));
+        assert!(summary.contains("queue_len_before_read=3"));
+        assert!(summary.contains("queue_len_after_read=2"));
         assert!(summary.contains("frame_id=77"));
         assert!(summary.contains("codec=H264"));
-        assert!(summary.contains("encoded_payload_len=3"));
+        assert!(summary.contains("frame_payload_len=3"));
     }
 
     #[cfg(windows)]
@@ -963,11 +964,13 @@ mod tests {
         assert!(summary.contains("request_index=0"));
         assert!(summary.contains("request_id=44"));
         assert!(summary.contains("result_kind=FrameRead"));
-        assert!(summary.contains("queue_len=2"));
+        assert!(summary.contains("queue_len_before_read=3"));
+        assert!(summary.contains("queue_len_after_read=2"));
         assert!(summary.contains("request_index=1"));
         assert!(summary.contains("request_id=45"));
         assert!(summary.contains("result_kind=HandoffError"));
-        assert!(summary.contains("queue_len=none"));
+        assert!(summary.contains("queue_len_before_read=0"));
+        assert!(summary.contains("queue_len_after_read=none"));
         assert!(summary.contains("handoff_error=SourceShutdown"));
     }
 

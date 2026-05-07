@@ -5,6 +5,47 @@
 - Codex
 
 ### Work
+- Investigated the post-encoder-wiring workspace test failure in the server
+  handoff summary tests.
+- Confirmed the runtime summary implementation was already using the current
+  field semantics:
+  - `queue_len_before_read`
+  - `queue_len_after_read`
+  - `frame_payload_len`
+- Updated the stale test expectations in
+  `server_handoff_summary_includes_frame_read_fields` and
+  `server_handoff_bounded_summary_includes_aggregate_and_request_fields` so
+  they assert the current summary field names instead of the old
+  `queue_len` / `encoded_payload_len` shape.
+- Kept the fix limited to server test expectations; no server runtime,
+  switcher, protocol, or client encoder wiring behavior was changed.
+
+### Changed Files
+- `apps/server/src/main.rs`
+- `docs/operations/session-log.md`
+- `docs/operations/todo.md`
+
+### Decision
+- The current server handoff summary formatter is the source of truth for the
+  queue-length and payload-length field names.
+- The failing tests were stale rather than evidence of a handoff runtime
+  regression.
+- Client encoder profile config wiring remains unchanged by this fix.
+
+### Validation
+- `cargo fmt`
+- `cargo fmt --check`
+- `cargo check --workspace`
+- `cargo test --workspace`
+- `cargo test -p stream-sync-client client_video_frame -- --test-threads=1`
+- `cargo test -p stream-sync-server server_handoff --bin stream-sync-server -- --test-threads=1`
+- `git diff --check`
+
+## 2026-05-07
+### Type
+- Codex
+
+### Work
 - Implemented the first client encoder profile config wiring slice for the real
   encoded video path.
 - Added optional client TOML parsing for `[video.encoder]` with:
