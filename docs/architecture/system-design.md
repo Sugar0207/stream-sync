@@ -9185,14 +9185,77 @@ Fallback contract when the block is absent:
 - keep capture-size output rather than forcing `1280x720`
 - keep bitrate / GOP / profile / level implicit
 
+Recorded successful manual evidence for the current encoder-profile slice:
+
+- all manual client configs `client.player1..4.toml` now proved that the
+  configured `[video.encoder]` profile is reflected in bounded sender stdout:
+  - `ffmpeg_libx264`
+  - `1280x720`
+  - `30fps`
+  - `4500 kbps`
+  - `gop_frames=30`
+  - `ultrafast`
+  - `zerolatency`
+  - `yuv420p`
+  - `profile=main`
+  - `level=3.1`
+- the same rerun also proved the current production-facing stdout visibility:
+  - `ffmpeg_path=ffmpeg`
+  - `ffmpeg_version_detected=ffmpeg version 8.1-full_build-www.gyan.dev`
+  - `ffmpeg_preflight_error=none`
+  - `ffmpeg_spawn_error=none`
+  - `last_encode_error=none`
+  - `last_ffmpeg_error=none`
+  - `last_payload_len=65363`
+  - `oversized_payload_count=0`
+  - `fragmentation_pressure_count=2`
+- bounded send/capture success stayed intact on all `4` clients:
+  - `frames_captured=2`
+  - `frames_encoded=2`
+  - `frames_sent=2`
+  - `encode_failures=0`
+  - `frame_build_failures=0`
+  - `send_failures=0`
+- the same bounded run preserved the validated operator/output path:
+  - switcher final:
+    - `commands_processed=9`
+    - `commands_rejected=0`
+    - `frames_rendered=40`
+    - `render_failures=0`
+    - `scheduler_status=AllSelected`
+    - `slot_result_kinds=Selected|Selected|Selected|Selected`
+    - `clean_output_render_result_kind=Rendered`
+    - `exit_reason=QuitRequested`
+  - wrapper final:
+    - `input_source=raw_keys`
+    - `keys_processed=10`
+    - `commands_sent=9`
+    - `ignored_keys=0`
+    - `raw_console_restore_result=restored`
+    - `raw_console_restore_error=none`
+    - `exit_reason=QuitRequested`
+  - human confirmation:
+    - `AllView`
+    - `Focused(player1..4)`
+    - return to `AllView` on `0`
+    - stay on `AllView` on `a`
+    - OBS / Window Capture without black frame
+- scope note:
+  - this is short bounded PoC evidence for profile wiring, stdout visibility,
+    and short switching behavior
+  - longer-run quality, block noise, and latency remain future continuous
+    runtime validation topics
+  - a lingering server process after switcher quit is not treated as failure
+    when bounded handoff service headroom was intentionally larger than the
+    request count consumed by the switcher session
+
 Recommended next implementation slice:
 
-1. rerun the bounded localhost/manual real encoded path with the new manual
-   configs and record the expanded stdout surface
-2. tighten FFmpeg failure classification beyond the current
-   `EncoderUnavailable` / `EncodeFailed` summary surface
-3. defer hardware encoder integration until the software-profile/config and
-   logging surface are stable
+1. organize OBS Window Capture-oriented operations guidance on top of the
+   validated bounded operator/video path
+2. run final regression / closeout checks for the current MVP evidence set
+3. only then decide whether FFmpeg error classification needs another narrow
+   polish slice before hardware encoder work
 
 ## Operator-Facing Control Surface After Stable All-Real Baseline
 

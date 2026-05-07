@@ -5,6 +5,96 @@
 - Codex
 
 ### Work
+- Recorded the successful `[video.encoder]` profile manual rerun without code
+  changes.
+- Captured that all `4` manual client configs (`client.player1..4`) reflected
+  the configured encoder profile and FFmpeg visibility in stdout:
+  - `encoder_backend=ffmpeg_libx264`
+  - `encoder_width=1280`
+  - `encoder_height=720`
+  - `encoder_fps=30`
+  - `encoder_bitrate_kbps=4500`
+  - `encoder_gop_frames=30`
+  - `encoder_preset=ultrafast`
+  - `encoder_tune=zerolatency`
+  - `encoder_pixel_format=yuv420p`
+  - `encoder_profile=main`
+  - `encoder_level=3.1`
+  - `ffmpeg_path=ffmpeg`
+  - `ffmpeg_version_detected=ffmpeg version 8.1-full_build-www.gyan.dev`
+  - `ffmpeg_preflight_error=none`
+  - `ffmpeg_spawn_error=none`
+  - `frames_captured=2`
+  - `frames_encoded=2`
+  - `frames_sent=2`
+  - `encode_failures=0`
+  - `frame_build_failures=0`
+  - `send_failures=0`
+  - `last_encode_error=none`
+  - `last_ffmpeg_error=none`
+  - `last_payload_len=65363`
+  - `oversized_payload_count=0`
+  - `fragmentation_pressure_count=2`
+- Recorded the same bounded rerun summaries:
+  - switcher final:
+    - `commands_processed=9`
+    - `commands_rejected=0`
+    - `frames_rendered=40`
+    - `render_failures=0`
+    - `scheduler_status=AllSelected`
+    - `slot_result_kinds=Selected|Selected|Selected|Selected`
+    - `clean_output_render_result_kind=Rendered`
+    - `exit_reason=QuitRequested`
+  - wrapper final:
+    - `input_source=raw_keys`
+    - `keys_processed=10`
+    - `commands_sent=9`
+    - `ignored_keys=0`
+    - `raw_console_restore_result=restored`
+    - `raw_console_restore_error=none`
+    - `exit_reason=QuitRequested`
+- Recorded human visual confirmation:
+  - `AllView` was visible
+  - `1` / `2` / `3` / `4` switched to `player1..4`
+  - `0` returned to `AllView`
+  - `a` kept `AllView`
+  - OBS / Window Capture showed no black frame
+- Recorded scope notes:
+  - server used `max_requests=240` headroom, so remaining alive after switcher
+    quit is not failure for this run
+  - switcher final ended around `request_id` `160`, so request-budget headroom
+    explains the remaining server lifetime
+  - this run is evidence for profile wiring, FFmpeg/stdout visibility, and
+    short visual switching only
+  - longer-run quality, block noise, and latency remain future continuous
+    runtime validation topics
+- Updated docs to treat:
+  - `[video.encoder]` profile wiring as manual-evidence complete
+  - production H.264 stdout visibility as MVP-evidence complete
+  - the next task as OBS Window Capture-oriented operations guidance, final
+    regression, and push judgment
+
+### Changed Files
+- `docs/architecture/system-design.md`
+- `docs/operations/manual-real-encoded-video-poc.md`
+- `docs/operations/session-log.md`
+- `docs/operations/todo.md`
+
+### Decision
+- Close the current encoder-profile wiring evidence pass based on successful
+  manual stdout confirmation across all `4` clients plus preserved switcher /
+  wrapper / visual output behavior.
+- Keep long-duration quality/latency evaluation out of this closeout and defer
+  it to future continuous runtime validation.
+
+### Validation
+- `git diff --check`
+
+## 2026-05-07
+### Type
+- Codex
+
+### Work
 - Recorded the actual rerun and human visual confirmation after the AllView
   visual mismatch fix for `--four-view-operator-wrapper --raw-keys`.
 - Captured the rerun control results:

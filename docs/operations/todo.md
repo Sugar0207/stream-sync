@@ -27,7 +27,7 @@
 - server 側は auth one-shot、accepted auth registry 登録、heartbeat ack / liveness / timeout action plan / timeout apply / notice queue storage、RTT / offset state commit と metrics snapshot handoff までの最小境界が揃っている
 - client 側は auth one-shot、heartbeat one-shot、`HeartbeatAckObservation` 付き `ClientStats` one-shot、one-tick runtime、accepted path 手動確認まで完了している
 - client continuous heartbeat loop は thin composition の completed body まで実装済みで、heartbeat timeout notice wakeup planning 境界、wakeup execution 境界、wakeup actual side-effect 境界、outer while-loop connection 境界、outer while-loop one-turn execution body 境界、actual timer wait / retry execution / reconnect 実行境界、outer while-loop 反復実行本体、reconnect policy 境界、caller-owned hook 付き actual socket 再確立境界、real UDP socket 差し替え hook、repeated body からの hook 注入経路まで完了している
-- 未完了の中心は late frame queue mutation / drop policy、4-view sync orchestration、dashboard UI rendering、continuous receive/send loop 本体、実キュー / 実送信 / 継続ログ出力であり、production H.264 encoder configuration / error logging policy は first slice 実装済みのため残りは manual rerun と expanded validation が中心になっている
+- 未完了の中心は late frame queue mutation / drop policy、4-view sync orchestration、dashboard UI rendering、continuous receive/send loop 本体、実キュー / 実送信 / 継続ログ出力である。production H.264 encoder configuration / error logging policy の first slice と `[video.encoder]` profile manual evidence は取得済みで、残りは OBS Window Capture 前提の運用整理、final regression、push判断、長時間 continuous runtime validation が中心になっている
 - outbound queue 実キュー、continuous receive/send loop 本体、send / receive の継続ログ出力、file sink open、process-wide logger、`ServerNotice` 実送信は未実装
 - named-pipe handoff の manual localhost validation は、plain pipe name `streamsync-handoff-dev` を使った one-shot pass と bounded `max_requests=2` pass の両方が成功記録済みで、bounded pass では `inspect-latest` が同じ frame を 2 回返して queue mutation しない preview semantics を確認済み
 - switcher 側 reconnect/lifecycle の次 slice は retry 実行より先に no-auto-retry / classification-first を固定し、1 scheduler read = 1 logical request = 1 transport attempt のまま explicit `HandoffError` を保持する方針で進める
@@ -118,6 +118,7 @@
 - AllView visual mismatch の fix 後 actual rerun と human visual confirmation も完了している。`s -> status` では `current_view_state=AllView` / `view_render_mode=AllView` / `output_layout=QuadView` / `rendered_slot_count=4` / `focused_slot_index=none` / `all_view_render_result_kind=Rendered` を確認し、`1..4` では `Focused(0..3)` + `FocusedFullWindow` + `rendered_slot_count=1` を確認、`0 -> all` では `Transitioned` と quad return、`a -> all` では `NoChange` と quad 維持、wrapper final では `input_source=raw_keys` / `raw_console_restore_result=restored` / `raw_console_restore_error=none` / `exit_reason=QuitRequested` を確認した。human visual confirmation でも `0` 後に 4画面へ戻ること、`a` 後に 4画面のまま維持されること、OBS / Window Capture で黒画面が出ないことを確認済みで、AllView visual mismatch は修正完了扱いにする
 - raw-key actual validation 中の `Focused(3)` では `command_index=4` に一瞬 `scheduler_status=HandoffError` が見えたが、同じ command line で `selected_slot_result=Selected` / `clean_output_render_result_kind=Rendered` / `frames_rendered=5` を維持し、final summary では `scheduler_status=AllSelected` に戻っている。これは transient scheduler-status wobble として later narrow polish に留め、MVP blocker にはしない
 - production H.264 encoder configuration / error logging policy の first implementation slice も実装済みで、client real encoded PoC は optional な `[video.encoder]` を読める。manual `client.player1..4.toml` には MVP `ffmpeg_libx264` profile (`1280x720` / `30fps` / `4500kbps` / `gop_frames=30` / `ultrafast` / `zerolatency` / `yuv420p` / `main` / `3.1`) を追加済みで、bounded sender stdout には encoder config visibility、FFmpeg preflight/runtime visibility、`last_encode_error` / `last_ffmpeg_error` / `last_payload_len` / `oversized_payload_count` / `fragmentation_pressure_count` を追加済み。未設定 config では current implicit defaults を維持する
+- `[video.encoder]` profile manual rerun も成功記録済みで、`client.player1..4` 全てで `ffmpeg_libx264` / `1280x720` / `30fps` / `4500kbps` / `gop_frames=30` / `ultrafast` / `zerolatency` / `yuv420p` / `main` / `3.1`、`ffmpeg_path=ffmpeg`、`ffmpeg_version_detected=ffmpeg version 8.1-full_build-www.gyan.dev`、`ffmpeg_preflight_error=none`、`ffmpeg_spawn_error=none`、`frames_captured=2`、`frames_encoded=2`、`frames_sent=2`、`encode_failures=0`、`frame_build_failures=0`、`send_failures=0`、`last_encode_error=none`、`last_ffmpeg_error=none`、`last_payload_len=65363`、`oversized_payload_count=0`、`fragmentation_pressure_count=2` を確認した。同じ bounded rerun で switcher final `commands_processed=9` / `frames_rendered=40` / `scheduler_status=AllSelected` / `clean_output_render_result_kind=Rendered`、wrapper final `input_source=raw_keys` / `keys_processed=10` / `commands_sent=9` / `raw_console_restore_result=restored` / `exit_reason=QuitRequested`、human visual confirmation では `AllView` / `Focused(player1..4)` / `0` で AllView 復帰 / `a` で AllView 維持 / OBS 黒画面なしも確認済みで、profile wiring と production H.264 stdout visibility は MVP evidence 取得済みとして完了扱いにする
 - client encoder wiring 後の workspace tests も green に戻してあり、server handoff summary tests は current `queue_len_before_read` / `queue_len_after_read` / `frame_payload_len` semantics に揃っている
 - same-session bounded server lifecycle については、request-budget formula `render_command_count * max_ticks_per_command * real_slot_count` は引き続き docs に残すが、今回の rebuilt control-pipe rerun では追加 flush read なしで `140` request に収束した。flush/exit polish は wrapper 設計の blocker ではなく、request-budget calculation / extra flush read edge case / summary flush の later narrow polish 候補として扱う
 - upcoming `2`-real-slot manual validation 用の dedicated test configs も追加済みで、`configs/manual/server.two-real-slots.toml`、`configs/manual/client.player1.toml`、`configs/manual/client.player2.toml` を使って existing examples を崩さずに 2-client same-run test を行える。現行 switcher command 群はこの path で switcher config を読まないため、`configs/manual/switcher.two-real-slots.toml` はこの slice では追加していない
@@ -151,10 +152,10 @@
 ---
 
 ## 直近でやること
-1. encoder profile manual evidence / production H.264 stdout visibility
-   - `configs/manual/client.player1..4.toml` の `[video.encoder]` block を使って bounded localhost/manual rerun を記録する
-   - expanded stdout fields (`encoder_*`, `ffmpeg_*`, `last_payload_len`, `oversized_payload_count`, `fragmentation_pressure_count`) を actual run で確認する
-   - capture / encode / send / fragmentation pressure の evidence を `docs/operations/manual-real-encoded-video-poc.md` に戻して閉じる
+1. OBS Window Capture 前提の運用整理 / final regression / push判断
+   - 現在の bounded operator/video manual evidence を前提に運用手順を整理する
+   - current MVP evidence set の最終 regression / closeout check を行う
+   - commit / push 判断をまとめる
 2. same-session bounded server lifecycle polish は later narrow task として扱う:
    - scripted / interactive とも actual validation は成功記録済み
    - request-budget formula と headroom guidance を docs に固定済み
@@ -167,6 +168,11 @@
    - `--raw-keys` actual validation の `Focused(3)` で `command_index=4` に一瞬 `scheduler_status=HandoffError` が見えた
    - 同じ command line では `selected_slot_result=Selected` / `clean_output_render_result_kind=Rendered` / `frames_rendered=5` を維持し、final summary では `AllSelected` に戻っている
    - scheduler / render / slot diagnostics の観測だけを増やす narrow polish 候補として残す
+5. 長時間品質評価は future continuous runtime validation として扱う:
+   - 画質悪化
+   - ブロックノイズ
+   - 遅延
+   は今回の short bounded PoC では未評価
 
 ## 将来の polish 候補
 - [ ] `--four-view-proof-window-once` / `--four-view-clean-output-window-once` に visual confirmation 用の `--hold-ms` / preview hold duration を追加するか後で判断する
@@ -784,6 +790,8 @@
 - [x] client encoder profile config wiring
 - [x] encoder failure / FFmpeg summary field extension
 - [x] FFmpeg availability / version preflight visibility
+- [x] `[video.encoder]` profile manual evidence
+- [x] production H.264 stdout visibility MVP evidence
 - [ ] hardware encoder integration
 - [x] `VideoFrame` encode
 - [x] `VideoFrame` UDP send with explicit placeholder encoded H.264 payload
@@ -912,6 +920,6 @@
 - actual dashboard UI rendering remains unimplemented.
 
 ## Next Items
-1. bounded real encoded manual rerun with the manual `[video.encoder]` profiles and expanded stdout fields
-2. decide after that evidence whether production H.264 stdout / error classification needs another narrow polish slice
-3. continuous accept loop / reconnect / lifecycle/service orchestration planning remains later than the current encoder-evidence pass
+1. OBS Window Capture-oriented operations guidance / closeout
+2. final regression / commit / push judgment
+3. continuous accept loop / reconnect / lifecycle/service orchestration planning remains later than the current closeout pass

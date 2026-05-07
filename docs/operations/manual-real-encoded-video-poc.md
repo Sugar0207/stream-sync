@@ -3714,12 +3714,74 @@ Current fallback contract:
   - keep capture-size output instead of forcing `1280x720`
   - keep bitrate / GOP / profile / level implicit
 
-Recommended next implementation slice:
+Recorded successful `[video.encoder]` profile manual rerun:
 
-1. rerun the bounded localhost/manual real encoded recipe with the new
-   `[video.encoder]` configs and record the expanded stdout fields
-2. tighten FFmpeg failure classification beyond the current
-   `EncoderUnavailable` / `EncodeFailed` summary surface without widening into
-   hardware encoder work
-3. keep hardware encoder integration after the software-profile/config and
-   logging surface remain stable under manual reruns
+- all `4` clients (`client.player1..4`) reflected the configured
+  `[video.encoder]` block in stdout
+- all `4` clients confirmed:
+  - `encoder_backend=ffmpeg_libx264`
+  - `encoder_width=1280`
+  - `encoder_height=720`
+  - `encoder_fps=30`
+  - `encoder_bitrate_kbps=4500`
+  - `encoder_gop_frames=30`
+  - `encoder_preset=ultrafast`
+  - `encoder_tune=zerolatency`
+  - `encoder_pixel_format=yuv420p`
+  - `encoder_profile=main`
+  - `encoder_level=3.1`
+  - `ffmpeg_path=ffmpeg`
+  - `ffmpeg_version_detected=ffmpeg version 8.1-full_build-www.gyan.dev`
+  - `ffmpeg_preflight_error=none`
+  - `ffmpeg_spawn_error=none`
+  - `frames_captured=2`
+  - `frames_encoded=2`
+  - `frames_sent=2`
+  - `encode_failures=0`
+  - `frame_build_failures=0`
+  - `send_failures=0`
+  - `last_encode_error=none`
+  - `last_ffmpeg_error=none`
+  - `last_payload_len=65363`
+  - `oversized_payload_count=0`
+  - `fragmentation_pressure_count=2`
+- switcher controlled loop final summary confirmed:
+  - `commands_processed=9`
+  - `commands_rejected=0`
+  - `frames_rendered=40`
+  - `render_failures=0`
+  - `scheduler_status=AllSelected`
+  - `slot_result_kinds=Selected|Selected|Selected|Selected`
+  - `clean_output_render_result_kind=Rendered`
+  - `exit_reason=QuitRequested`
+- wrapper final summary confirmed:
+  - `input_source=raw_keys`
+  - `keys_processed=10`
+  - `commands_sent=9`
+  - `ignored_keys=0`
+  - `raw_console_restore_result=restored`
+  - `raw_console_restore_error=none`
+  - `exit_reason=QuitRequested`
+- human visual confirmation for this bounded rerun:
+  - `AllView` was visible
+  - `1` / `2` / `3` / `4` switched to `player1..4`
+  - `0` returned to `AllView`
+  - `a` kept `AllView`
+  - OBS / Window Capture showed no black frame
+- bounded validation scope note:
+  - this run is evidence for encoder profile wiring, production H.264 stdout
+    visibility, and short visual switching only
+  - the server used `max_requests=240` headroom and therefore remained alive
+    after switcher quit while waiting to reach its request budget
+  - switcher final summary ended around `request_id` `160`, so the lingering
+    server process is not a failure for this run
+  - image quality degradation, block noise, and longer-run latency were not
+    evaluated in this short bounded PoC and remain future continuous-runtime
+    validation topics
+
+Updated next task after this successful rerun:
+
+1. organize OBS Window Capture-oriented operations guidance on top of the now
+   validated bounded operator/video path
+2. run final regression / closeout checks for the current MVP evidence set
+3. make commit / push judgment after that closeout pass
