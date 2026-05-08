@@ -11,6 +11,7 @@ use stream_sync_protocol::{
 
 pub const CRATE_NAME: &str = "stream-sync-net-core";
 pub const DEFAULT_UDP_PACKET_BUFFER_LEN: usize = 65_507;
+pub const WINDOWS_LOCAL_NAMED_PIPE_PREFIX: &str = r"\\.\pipe\";
 
 /// Source address attached to a received packet.
 ///
@@ -47,6 +48,43 @@ impl From<PacketSource> for PacketDestination {
         Self {
             address: source.address,
         }
+    }
+}
+
+/// Normalize a local Windows named-pipe CLI argument into the concrete pipe
+/// path used by `CreateNamedPipeW` / `CreateFileW`.
+///
+/// Accepted inputs:
+/// - `streamsync-handoff-dev`
+/// - `\\.\pipe\streamsync-handoff-dev`
+pub fn normalize_windows_local_named_pipe_path(pipe_name: &str) -> io::Result<String> {
+    let trimmed = pipe_name.trim();
+    if trimmed.is_empty() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "named pipe name must not be empty",
+        ));
+    }
+
+    let suffix = strip_windows_local_named_pipe_prefix(trimmed).unwrap_or(trimmed);
+    if suffix.is_empty() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "named pipe name must not be empty",
+        ));
+    }
+
+    Ok(format!(r"{WINDOWS_LOCAL_NAMED_PIPE_PREFIX}{suffix}"))
+}
+
+fn strip_windows_local_named_pipe_prefix(value: &str) -> Option<&str> {
+    if value.len() >= WINDOWS_LOCAL_NAMED_PIPE_PREFIX.len()
+        && value[..WINDOWS_LOCAL_NAMED_PIPE_PREFIX.len()]
+            .eq_ignore_ascii_case(WINDOWS_LOCAL_NAMED_PIPE_PREFIX)
+    {
+        Some(&value[WINDOWS_LOCAL_NAMED_PIPE_PREFIX.len()..])
+    } else {
+        None
     }
 }
 
@@ -1366,6 +1404,30 @@ mod tests {
         HEADER_FLAGS_OFFSET, HEADER_LENGTH_OFFSET, HEADER_MESSAGE_TYPE_OFFSET,
         HEADER_PAYLOAD_LENGTH_OFFSET, HEADER_PROTOCOL_VERSION_OFFSET, HEADER_RESERVED_OFFSET,
     };
+
+    #[test]
+    fn normalize_windows_local_named_pipe_path_accepts_short_name() {
+        let actual = normalize_windows_local_named_pipe_path("streamsync-handoff-dev")
+            .expect("short pipe name should normalize");
+
+        assert_eq!(actual, r"\\.\pipe\streamsync-handoff-dev");
+    }
+
+    #[test]
+    fn normalize_windows_local_named_pipe_path_accepts_full_local_path() {
+        let actual = normalize_windows_local_named_pipe_path(r"\\.\pipe\streamsync-handoff-dev")
+            .expect("full local pipe path should normalize");
+
+        assert_eq!(actual, r"\\.\pipe\streamsync-handoff-dev");
+    }
+
+    #[test]
+    fn normalize_windows_local_named_pipe_path_rejects_empty_name() {
+        let error = normalize_windows_local_named_pipe_path("   ")
+            .expect_err("empty pipe name should be rejected");
+
+        assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+    }
 
     #[test]
     fn handoff_request_codec_round_trips() {

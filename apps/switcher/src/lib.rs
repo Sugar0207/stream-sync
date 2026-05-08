@@ -515,6 +515,7 @@ pub enum SwitcherNamedPipeQueuedFrameHandoffRetryClassification {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SwitcherNamedPipeQueuedFrameHandoffRequestSummary {
     pub pipe_name: String,
+    pub actual_pipe_path: Option<String>,
     pub request_id: u64,
     pub read_mode: SwitcherSingleClientQueueSourceMode,
     pub attempt_count: u32,
@@ -678,6 +679,8 @@ where
         config: SwitcherNamedPipeQueuedFrameHandoffRequestConfig,
     ) -> SwitcherNamedPipeQueuedFrameHandoffRequestOutput {
         let start_millis = self.clock.now_millis();
+        let actual_pipe_path =
+            stream_sync_net_core::normalize_windows_local_named_pipe_path(&self.pipe_name).ok();
         let runtime_result =
             self.runtime
                 .run_once_with_config(&self.pipe_name, request_id, input.clone(), config);
@@ -689,6 +692,7 @@ where
                 let last_error = named_pipe_handoff_last_error(&output.result);
                 let summary = SwitcherNamedPipeQueuedFrameHandoffRequestSummary {
                     pipe_name: self.pipe_name.clone(),
+                    actual_pipe_path,
                     request_id,
                     read_mode: input.mode,
                     attempt_count: 1,
@@ -728,6 +732,7 @@ where
                 };
                 let summary = SwitcherNamedPipeQueuedFrameHandoffRequestSummary {
                     pipe_name: self.pipe_name.clone(),
+                    actual_pipe_path,
                     request_id,
                     read_mode: input.mode,
                     attempt_count: 1,
@@ -1061,14 +1066,7 @@ fn read_length_prefixed_frame_from_pipe(reader: &mut impl Read) -> io::Result<Ve
 
 #[cfg(windows)]
 fn named_pipe_path(pipe_name: &str) -> io::Result<String> {
-    if pipe_name.trim().is_empty() {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "named pipe name must not be empty",
-        ));
-    }
-
-    Ok(format!(r"\\.\pipe\{pipe_name}"))
+    stream_sync_net_core::normalize_windows_local_named_pipe_path(pipe_name)
 }
 
 /// In-process fallible handoff backed by the current server queue source.
@@ -12262,6 +12260,51 @@ mod tests {
     }
 
     #[test]
+    fn named_pipe_handoff_wrapper_summary_normalizes_full_pipe_path() {
+        let input = SwitcherQueuedFrameHandoffInput {
+            client_id: ClientId("client-1".to_string()),
+            run_id: RunId("run-1".to_string()),
+            mode: SwitcherSingleClientQueueSourceMode::PreviewLatest,
+        };
+        let mut handoff = SwitcherNamedPipeQueuedFrameHandoff::from_runtime(
+            r"\\.\pipe\full-path-pipe",
+            1,
+            ScriptedNamedPipeRuntime::new(vec![Ok(
+                SwitcherNamedPipeQueuedFrameHandoffRuntimeOutput {
+                    request: ServerSwitcherQueuedFrameHandoffRequest {
+                        handoff_version: SERVER_SWITCHER_HANDOFF_VERSION,
+                        request_id: 1,
+                        client_id: input.client_id.clone(),
+                        run_id: input.run_id.clone(),
+                        read_mode: ServerSwitcherQueuedFrameReadMode::InspectLatest,
+                    },
+                    response: None,
+                    response_payload_len: None,
+                    parse_error: None,
+                    io_error: None,
+                    result: SwitcherQueuedFrameHandoffResult::NoFrameAvailable {
+                        client_id: input.client_id.clone(),
+                        run_id: input.run_id.clone(),
+                        mode: input.mode,
+                        client_queue_len: 0,
+                    },
+                },
+            )]),
+        );
+
+        let output = handoff.read_handoff_frame_with_config(
+            input,
+            SwitcherNamedPipeQueuedFrameHandoffRequestConfig::default(),
+        );
+
+        assert_eq!(output.summary.pipe_name, r"\\.\pipe\full-path-pipe");
+        assert_eq!(
+            output.summary.actual_pipe_path.as_deref(),
+            Some(r"\\.\pipe\full-path-pipe")
+        );
+    }
+
+    #[test]
     fn named_pipe_handoff_wrapper_preserves_frame_read_result() {
         let input = SwitcherQueuedFrameHandoffInput {
             client_id: ClientId("client-1".to_string()),
@@ -12501,6 +12544,10 @@ mod tests {
 
         assert_eq!(output.result, frame_result);
         assert_eq!(output.summary.pipe_name, "summary-pipe");
+        assert_eq!(
+            output.summary.actual_pipe_path.as_deref(),
+            Some(r"\\.\pipe\summary-pipe")
+        );
         assert_eq!(output.summary.request_id, 55);
         assert_eq!(output.summary.read_mode, input.mode);
         assert_eq!(output.summary.attempt_count, 1);

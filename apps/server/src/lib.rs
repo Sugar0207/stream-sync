@@ -5693,14 +5693,7 @@ fn read_length_prefixed_frame(reader: &mut impl Read) -> io::Result<Vec<u8>> {
 
 #[cfg(windows)]
 fn named_pipe_path(pipe_name: &str) -> io::Result<String> {
-    if pipe_name.trim().is_empty() {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "named pipe name must not be empty",
-        ));
-    }
-
-    Ok(format!(r"\\.\pipe\{pipe_name}"))
+    stream_sync_net_core::normalize_windows_local_named_pipe_path(pipe_name)
 }
 
 /// Reason a video frame was not stored.

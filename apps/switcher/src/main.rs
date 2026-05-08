@@ -1195,6 +1195,11 @@ fn handoff_read_mode_from_switcher_mode(
     }
 }
 
+fn format_actual_handoff_pipe_path(pipe_name: &str) -> String {
+    stream_sync_net_core::normalize_windows_local_named_pipe_path(pipe_name)
+        .unwrap_or_else(|_| "invalid".to_string())
+}
+
 #[cfg(windows)]
 fn format_named_pipe_handoff_switcher_summary(
     output: &SwitcherNamedPipeQueuedFrameHandoffRequestOutput,
@@ -1231,6 +1236,11 @@ fn format_named_pipe_handoff_switcher_summary(
     );
     format_named_pipe_handoff_switcher_result_summary(
         &output.summary.pipe_name,
+        output
+            .summary
+            .actual_pipe_path
+            .as_deref()
+            .unwrap_or("invalid"),
         output.summary.request_id,
         result_client_id(&output.result),
         result_run_id(&output.result),
@@ -1253,6 +1263,7 @@ fn format_named_pipe_handoff_switcher_summary(
 
 fn format_named_pipe_handoff_switcher_result_summary(
     pipe_name: &str,
+    actual_pipe_path: &str,
     request_id: u64,
     client_id: &ClientId,
     run_id: &RunId,
@@ -1277,8 +1288,9 @@ fn format_named_pipe_handoff_switcher_result_summary(
             remaining_client_queue_len,
             ..
         } => format!(
-            "switcher named-pipe handoff once pipe_name={} request_id={} client_id={} run_id={} read_mode={} attempt_count={} timeout_millis={} elapsed_millis={} request_status={} response_status={} result_kind=FrameRead final_result={} last_error={} retry_classification={} handoff_response_kind={} response_payload_len={} parse_error={} io_error={} queue_len={} frame_id={} capture_timestamp={} send_timestamp={} queued_at={} width={} height={} fps_nominal={} codec={:?} is_keyframe={} encoded_payload_len={}",
+            "switcher named-pipe handoff once pipe_name={} actual_pipe_path={} request_id={} client_id={} run_id={} read_mode={} attempt_count={} timeout_millis={} elapsed_millis={} request_status={} response_status={} result_kind=FrameRead final_result={} last_error={} retry_classification={} handoff_response_kind={} response_payload_len={} parse_error={} io_error={} queue_len={} frame_id={} capture_timestamp={} send_timestamp={} queued_at={} width={} height={} fps_nominal={} codec={:?} is_keyframe={} encoded_payload_len={}",
             pipe_name,
+            actual_pipe_path,
             request_id,
             client_id.0,
             run_id.0,
@@ -1310,8 +1322,9 @@ fn format_named_pipe_handoff_switcher_result_summary(
         SwitcherQueuedFrameHandoffResult::NoFrameAvailable {
             client_queue_len, ..
         } => format!(
-            "switcher named-pipe handoff once pipe_name={} request_id={} client_id={} run_id={} read_mode={} attempt_count={} timeout_millis={} elapsed_millis={} request_status={} response_status={} result_kind=NoFrame final_result={} last_error={} retry_classification={} handoff_response_kind={} response_payload_len={} parse_error={} io_error={} queue_len={}",
+            "switcher named-pipe handoff once pipe_name={} actual_pipe_path={} request_id={} client_id={} run_id={} read_mode={} attempt_count={} timeout_millis={} elapsed_millis={} request_status={} response_status={} result_kind=NoFrame final_result={} last_error={} retry_classification={} handoff_response_kind={} response_payload_len={} parse_error={} io_error={} queue_len={}",
             pipe_name,
+            actual_pipe_path,
             request_id,
             client_id.0,
             run_id.0,
@@ -1331,8 +1344,9 @@ fn format_named_pipe_handoff_switcher_result_summary(
             client_queue_len
         ),
         SwitcherQueuedFrameHandoffResult::HandoffError { error, .. } => format!(
-            "switcher named-pipe handoff once pipe_name={} request_id={} client_id={} run_id={} read_mode={} attempt_count={} timeout_millis={} elapsed_millis={} request_status={} response_status={} result_kind=HandoffError final_result={} last_error={} retry_classification={} handoff_response_kind={} response_payload_len={} parse_error={} io_error={} queue_len=none handoff_error={:?}",
+            "switcher named-pipe handoff once pipe_name={} actual_pipe_path={} request_id={} client_id={} run_id={} read_mode={} attempt_count={} timeout_millis={} elapsed_millis={} request_status={} response_status={} result_kind=HandoffError final_result={} last_error={} retry_classification={} handoff_response_kind={} response_payload_len={} parse_error={} io_error={} queue_len=none handoff_error={:?}",
             pipe_name,
+            actual_pipe_path,
             request_id,
             client_id.0,
             run_id.0,
@@ -1648,6 +1662,7 @@ struct SwitcherFourViewCleanOutputWindowLoopSummary {
 struct SwitcherFourViewRealHandoffPreviewLoopSummary {
     real_slot_index: usize,
     pipe_name: String,
+    actual_pipe_path: String,
     client_id: ClientId,
     run_id: RunId,
     frames_attempted: u32,
@@ -1668,6 +1683,7 @@ struct SwitcherFourViewTwoRealHandoffPreviewLoopSummary {
     real_slot0_index: usize,
     real_slot1_index: usize,
     pipe_name: String,
+    actual_pipe_path: String,
     client0_id: ClientId,
     run0_id: RunId,
     client1_id: ClientId,
@@ -1688,6 +1704,7 @@ struct SwitcherFourViewTwoRealHandoffPreviewLoopSummary {
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct SwitcherFourViewFourRealHandoffPreviewLoopSummary {
     pipe_name: String,
+    actual_pipe_path: String,
     client0_id: ClientId,
     run0_id: RunId,
     client1_id: ClientId,
@@ -1712,6 +1729,7 @@ struct SwitcherFourViewFourRealHandoffPreviewLoopSummary {
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct SwitcherFourViewFocusedHandoffPreviewLoopSummary {
     pipe_name: String,
+    actual_pipe_path: String,
     focused_slot_index: usize,
     client0_id: ClientId,
     run0_id: RunId,
@@ -1822,6 +1840,7 @@ struct SwitcherFourViewControlledPreviewCommandSummary {
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct SwitcherFourViewControlledHandoffPreviewLoopSummary {
     pipe_name: String,
+    actual_pipe_path: String,
     client0_id: ClientId,
     run0_id: RunId,
     client1_id: ClientId,
@@ -1888,6 +1907,7 @@ struct FourViewPreviewSlotDiagnosticSummary {
     client_id: ClientId,
     run_id: RunId,
     request_id: Option<u64>,
+    actual_pipe_path: Option<String>,
     handoff_response_kind: Option<&'static str>,
     parse_error: Option<String>,
     io_error: Option<String>,
@@ -2549,6 +2569,7 @@ where
     DecodeRuntime: SwitcherH264DecodeRuntimeHook,
     RenderRuntime: SwitcherWindowRenderRuntimeHook + SwitcherPersistentWindowLoopRuntimeHook,
 {
+    let actual_pipe_path = format_actual_handoff_pipe_path(pipe_name);
     let slots = default_four_view_real_handoff_preview_slots(
         real_slot_index,
         client_id.clone(),
@@ -2579,6 +2600,7 @@ where
             client_id: slots[slot_index].client_id.clone(),
             run_id: slots[slot_index].run_id.clone(),
             request_id: None,
+            actual_pipe_path: None,
             handoff_response_kind: None,
             parse_error: None,
             io_error: None,
@@ -2646,6 +2668,7 @@ where
     SwitcherFourViewRealHandoffPreviewLoopSummary {
         real_slot_index,
         pipe_name: pipe_name.to_string(),
+        actual_pipe_path,
         client_id,
         run_id,
         frames_attempted,
@@ -2686,6 +2709,7 @@ where
     DecodeRuntime: SwitcherH264DecodeRuntimeHook,
     RenderRuntime: SwitcherWindowRenderRuntimeHook + SwitcherPersistentWindowLoopRuntimeHook,
 {
+    let actual_pipe_path = format_actual_handoff_pipe_path(pipe_name);
     let slots = default_four_view_two_real_handoff_preview_slots(
         slot0_index,
         client0_id.clone(),
@@ -2722,6 +2746,7 @@ where
             client_id: slots[slot_index].client_id.clone(),
             run_id: slots[slot_index].run_id.clone(),
             request_id: None,
+            actual_pipe_path: None,
             handoff_response_kind: None,
             parse_error: None,
             io_error: None,
@@ -2790,6 +2815,7 @@ where
         real_slot0_index: slot0_index,
         real_slot1_index: slot1_index,
         pipe_name: pipe_name.to_string(),
+        actual_pipe_path,
         client0_id,
         run0_id,
         client1_id,
@@ -2834,6 +2860,7 @@ where
     DecodeRuntime: SwitcherH264DecodeRuntimeHook,
     RenderRuntime: SwitcherWindowRenderRuntimeHook + SwitcherPersistentWindowLoopRuntimeHook,
 {
+    let actual_pipe_path = format_actual_handoff_pipe_path(pipe_name);
     let slots = default_four_view_four_real_handoff_preview_slots(
         client0_id.clone(),
         run0_id.clone(),
@@ -2874,6 +2901,7 @@ where
             client_id: slots[slot_index].client_id.clone(),
             run_id: slots[slot_index].run_id.clone(),
             request_id: None,
+            actual_pipe_path: None,
             handoff_response_kind: None,
             parse_error: None,
             io_error: None,
@@ -2940,6 +2968,7 @@ where
 
     SwitcherFourViewFourRealHandoffPreviewLoopSummary {
         pipe_name: pipe_name.to_string(),
+        actual_pipe_path,
         client0_id,
         run0_id,
         client1_id,
@@ -2989,6 +3018,7 @@ where
     DecodeRuntime: SwitcherH264DecodeRuntimeHook,
     RenderRuntime: SwitcherWindowRenderRuntimeHook + SwitcherPersistentWindowLoopRuntimeHook,
 {
+    let actual_pipe_path = format_actual_handoff_pipe_path(pipe_name);
     let slots = default_four_view_four_real_handoff_preview_slots(
         client0_id.clone(),
         run0_id.clone(),
@@ -3031,6 +3061,7 @@ where
             client_id: slots[slot_index].client_id.clone(),
             run_id: slots[slot_index].run_id.clone(),
             request_id: None,
+            actual_pipe_path: None,
             handoff_response_kind: None,
             parse_error: None,
             io_error: None,
@@ -3090,6 +3121,7 @@ where
 
     SwitcherFourViewFocusedHandoffPreviewLoopSummary {
         pipe_name: pipe_name.to_string(),
+        actual_pipe_path,
         focused_slot_index,
         client0_id,
         run0_id,
@@ -3207,6 +3239,7 @@ where
     DecodeRuntime: SwitcherH264DecodeRuntimeHook,
     RenderRuntime: SwitcherWindowRenderRuntimeHook + SwitcherPersistentWindowLoopRuntimeHook,
 {
+    let actual_pipe_path = format_actual_handoff_pipe_path(pipe_name);
     let slots = default_four_view_four_real_handoff_preview_slots(
         client0_id.clone(),
         run0_id.clone(),
@@ -3259,6 +3292,7 @@ where
             client_id: slots[slot_index].client_id.clone(),
             run_id: slots[slot_index].run_id.clone(),
             request_id: None,
+            actual_pipe_path: None,
             handoff_response_kind: None,
             parse_error: None,
             io_error: None,
@@ -3461,6 +3495,7 @@ where
 
     SwitcherFourViewControlledHandoffPreviewLoopSummary {
         pipe_name: pipe_name.to_string(),
+        actual_pipe_path,
         client0_id,
         run0_id,
         client1_id,
@@ -3703,6 +3738,7 @@ where
             client_id: slots[slot_index].client_id.clone(),
             run_id: slots[slot_index].run_id.clone(),
             request_id: None,
+            actual_pipe_path: None,
             handoff_response_kind: None,
             parse_error: None,
             io_error: None,
@@ -5240,9 +5276,10 @@ fn format_four_view_real_handoff_preview_loop_summary(
     summary: &SwitcherFourViewRealHandoffPreviewLoopSummary,
 ) -> String {
     format!(
-        "switcher four-view real handoff preview loop command_name=--four-view-real-handoff-preview-loop real_handoff=true real_slot_count=1 real_slot_index={} pipe_name={} client_id={} run_id={} frames_attempted={} frames_rendered={} render_failures={} scheduler_status={:?} slot_bindings={} slot_result_kinds={} slot_diagnostics={} clean_output_render_result_kind={} window_title={} output_width={} output_height={}",
+        "switcher four-view real handoff preview loop command_name=--four-view-real-handoff-preview-loop real_handoff=true real_slot_count=1 real_slot_index={} pipe_name={} actual_pipe_path={} client_id={} run_id={} frames_attempted={} frames_rendered={} render_failures={} scheduler_status={:?} slot_bindings={} slot_result_kinds={} slot_diagnostics={} clean_output_render_result_kind={} window_title={} output_width={} output_height={}",
         summary.real_slot_index,
         summary.pipe_name,
+        summary.actual_pipe_path,
         summary.client_id.0,
         summary.run_id.0,
         summary.frames_attempted,
@@ -5263,10 +5300,11 @@ fn format_four_view_two_real_handoff_preview_loop_summary(
     summary: &SwitcherFourViewTwoRealHandoffPreviewLoopSummary,
 ) -> String {
     format!(
-        "switcher four-view two-real handoff preview loop command_name=--four-view-two-real-handoff-preview-loop real_handoff=true real_slot_count=2 real_slot0_index={} real_slot1_index={} pipe_name={} client0_id={} run0_id={} client1_id={} run1_id={} frames_attempted={} frames_rendered={} render_failures={} scheduler_status={:?} slot_bindings={} slot_result_kinds={} slot_diagnostics={} clean_output_render_result_kind={} window_title={} output_width={} output_height={}",
+        "switcher four-view two-real handoff preview loop command_name=--four-view-two-real-handoff-preview-loop real_handoff=true real_slot_count=2 real_slot0_index={} real_slot1_index={} pipe_name={} actual_pipe_path={} client0_id={} run0_id={} client1_id={} run1_id={} frames_attempted={} frames_rendered={} render_failures={} scheduler_status={:?} slot_bindings={} slot_result_kinds={} slot_diagnostics={} clean_output_render_result_kind={} window_title={} output_width={} output_height={}",
         summary.real_slot0_index,
         summary.real_slot1_index,
         summary.pipe_name,
+        summary.actual_pipe_path,
         summary.client0_id.0,
         summary.run0_id.0,
         summary.client1_id.0,
@@ -5289,8 +5327,9 @@ fn format_four_view_four_real_handoff_preview_loop_summary(
     summary: &SwitcherFourViewFourRealHandoffPreviewLoopSummary,
 ) -> String {
     format!(
-        "switcher four-view four-real handoff preview loop command_name=--four-view-four-real-handoff-preview-loop real_handoff=true real_slot_count=4 pipe_name={} client0_id={} run0_id={} client1_id={} run1_id={} client2_id={} run2_id={} client3_id={} run3_id={} frames_attempted={} frames_rendered={} render_failures={} scheduler_status={:?} slot_bindings={} slot_result_kinds={} slot_diagnostics={} clean_output_render_result_kind={} window_title={} output_width={} output_height={}",
+        "switcher four-view four-real handoff preview loop command_name=--four-view-four-real-handoff-preview-loop real_handoff=true real_slot_count=4 pipe_name={} actual_pipe_path={} client0_id={} run0_id={} client1_id={} run1_id={} client2_id={} run2_id={} client3_id={} run3_id={} frames_attempted={} frames_rendered={} render_failures={} scheduler_status={:?} slot_bindings={} slot_result_kinds={} slot_diagnostics={} clean_output_render_result_kind={} window_title={} output_width={} output_height={}",
         summary.pipe_name,
+        summary.actual_pipe_path,
         summary.client0_id.0,
         summary.run0_id.0,
         summary.client1_id.0,
@@ -5317,9 +5356,10 @@ fn format_four_view_focused_handoff_preview_loop_summary(
     summary: &SwitcherFourViewFocusedHandoffPreviewLoopSummary,
 ) -> String {
     format!(
-        "switcher four-view focused handoff preview loop command_name=--four-view-focused-handoff-preview-loop real_handoff=true real_slot_count=4 view_state=Focused focused_slot_index={} pipe_name={} client0_id={} run0_id={} client1_id={} run1_id={} client2_id={} run2_id={} client3_id={} run3_id={} focused_client_id={} focused_run_id={} focused_result_kind={} frames_attempted={} frames_rendered={} render_failures={} scheduler_status={:?} slot_bindings={} slot_result_kinds={} slot_diagnostics={} clean_output_render_result_kind={} window_title={} output_width={} output_height={}",
+        "switcher four-view focused handoff preview loop command_name=--four-view-focused-handoff-preview-loop real_handoff=true real_slot_count=4 view_state=Focused focused_slot_index={} pipe_name={} actual_pipe_path={} client0_id={} run0_id={} client1_id={} run1_id={} client2_id={} run2_id={} client3_id={} run3_id={} focused_client_id={} focused_run_id={} focused_result_kind={} frames_attempted={} frames_rendered={} render_failures={} scheduler_status={:?} slot_bindings={} slot_result_kinds={} slot_diagnostics={} clean_output_render_result_kind={} window_title={} output_width={} output_height={}",
         summary.focused_slot_index,
         summary.pipe_name,
+        summary.actual_pipe_path,
         summary.client0_id.0,
         summary.run0_id.0,
         summary.client1_id.0,
@@ -5374,8 +5414,9 @@ fn format_four_view_controlled_handoff_preview_loop_summary(
     summary: &SwitcherFourViewControlledHandoffPreviewLoopSummary,
 ) -> String {
     format!(
-        "switcher four-view controlled handoff preview loop command_name=--four-view-controlled-handoff-preview-loop real_handoff=true real_slot_count=4 pipe_name={} client0_id={} run0_id={} client1_id={} run1_id={} client2_id={} run2_id={} client3_id={} run3_id={} command_source={} max_ticks_per_command={} commands_processed={} commands_rejected={} current_view_state={} view_render_mode={} output_layout={} rendered_slot_count={} focused_slot_index={} frames_rendered={} render_failures={} scheduler_status={:?} slot_bindings={} slot_result_kinds={} slot_diagnostics={} clean_output_render_result_kind={} all_view_render_result_kind={} window_title={} output_width={} output_height={} exit_reason={}",
+        "switcher four-view controlled handoff preview loop command_name=--four-view-controlled-handoff-preview-loop real_handoff=true real_slot_count=4 pipe_name={} actual_pipe_path={} client0_id={} run0_id={} client1_id={} run1_id={} client2_id={} run2_id={} client3_id={} run3_id={} command_source={} max_ticks_per_command={} commands_processed={} commands_rejected={} current_view_state={} view_render_mode={} output_layout={} rendered_slot_count={} focused_slot_index={} frames_rendered={} render_failures={} scheduler_status={:?} slot_bindings={} slot_result_kinds={} slot_diagnostics={} clean_output_render_result_kind={} all_view_render_result_kind={} window_title={} output_width={} output_height={} exit_reason={}",
         summary.pipe_name,
+        summary.actual_pipe_path,
         summary.client0_id.0,
         summary.run0_id.0,
         summary.client1_id.0,
@@ -5474,6 +5515,7 @@ fn build_four_view_preview_slot_diagnostic(
         client_id: slot.client_id.clone(),
         run_id: slot.run_id.clone(),
         request_id: request_output.map(|output| output.summary.request_id),
+        actual_pipe_path: request_output.and_then(|output| output.summary.actual_pipe_path.clone()),
         handoff_response_kind: response.map(format_handoff_response_kind),
         parse_error: runtime
             .and_then(|value| value.parse_error.clone())
@@ -5492,11 +5534,12 @@ fn format_four_view_preview_slot_diagnostic(
     diagnostic: &FourViewPreviewSlotDiagnosticSummary,
 ) -> String {
     format!(
-        "{}:client_id={},run_id={},request_id={},handoff_response_kind={},parse_error={},io_error={},response_payload_len={},frame_id={},frame_payload_len={},decode_error={},render_input_kind={},final_slot_result_kind={}",
+        "{}:client_id={},run_id={},request_id={},actual_pipe_path={},handoff_response_kind={},parse_error={},io_error={},response_payload_len={},frame_id={},frame_payload_len={},decode_error={},render_input_kind={},final_slot_result_kind={}",
         diagnostic.slot_index,
         diagnostic.client_id.0,
         diagnostic.run_id.0,
         format_optional_u64(diagnostic.request_id),
+        sanitize_summary_value(diagnostic.actual_pipe_path.as_deref().unwrap_or("none")),
         diagnostic.handoff_response_kind.unwrap_or("none"),
         sanitize_summary_value(diagnostic.parse_error.as_deref().unwrap_or("none")),
         sanitize_summary_value(diagnostic.io_error.as_deref().unwrap_or("none")),
@@ -6143,6 +6186,7 @@ mod tests {
 
         let summary = format_named_pipe_handoff_switcher_result_summary(
             "pipe-a",
+            r"\\.\pipe\pipe-a",
             88,
             &ClientId("player1".to_string()),
             &RunId("run-a".to_string()),
@@ -6163,6 +6207,7 @@ mod tests {
         );
 
         assert!(summary.contains("request_id=88"));
+        assert!(summary.contains(r"actual_pipe_path=\\.\pipe\pipe-a"));
         assert!(summary.contains("attempt_count=1"));
         assert!(summary.contains("timeout_millis=5000"));
         assert!(summary.contains("elapsed_millis=17"));
@@ -6186,6 +6231,7 @@ mod tests {
         let output = SwitcherNamedPipeQueuedFrameHandoffRequestOutput {
             summary: SwitcherNamedPipeQueuedFrameHandoffRequestSummary {
                 pipe_name: "pipe-b".to_string(),
+                actual_pipe_path: Some(r"\\.\pipe\pipe-b".to_string()),
                 request_id: 9,
                 read_mode: SwitcherSingleClientQueueSourceMode::ConsumeOldest,
                 attempt_count: 1,
@@ -7097,6 +7143,7 @@ mod tests {
         assert!(formatted.contains("real_slot_count=1"));
         assert!(formatted.contains("real_slot_index=0"));
         assert!(formatted.contains("pipe_name=fixture-pipe"));
+        assert!(formatted.contains(r"actual_pipe_path=\\.\pipe\fixture-pipe"));
         assert!(formatted.contains("client_id=real-client"));
         assert!(formatted.contains("run_id=real-run"));
         assert!(formatted.contains("scheduler_status=PartialSelected"));
@@ -7157,6 +7204,10 @@ mod tests {
 
         assert_eq!(summary.real_slot0_index, 0);
         assert_eq!(summary.real_slot1_index, 2);
+        assert_eq!(
+            summary.actual_pipe_path,
+            r"\\.\pipe\fixture-pipe".to_string()
+        );
         assert_eq!(summary.frames_attempted, 2);
         assert_eq!(summary.frames_rendered, 2);
         assert_eq!(summary.render_failures, 0);
@@ -7239,6 +7290,7 @@ mod tests {
         assert!(formatted.contains("real_slot0_index=1"));
         assert!(formatted.contains("real_slot1_index=3"));
         assert!(formatted.contains("pipe_name=fixture-pipe"));
+        assert!(formatted.contains(r"actual_pipe_path=\\.\pipe\fixture-pipe"));
         assert!(formatted.contains("client0_id=real-client-0"));
         assert!(formatted.contains("run0_id=real-run-0"));
         assert!(formatted.contains("client1_id=real-client-1"));
@@ -7256,6 +7308,39 @@ mod tests {
             "output_height={}",
             FOUR_VIEW_CLEAN_OUTPUT_LOOP_OBS_OUTPUT_HEIGHT
         )));
+    }
+
+    #[test]
+    fn switcher_four_view_two_real_handoff_preview_summary_normalizes_full_pipe_path() {
+        let summary = run_four_view_two_real_handoff_preview_loop_with_handoff_runtime_and_sleep(
+            r"\\.\pipe\fixture-pipe",
+            0,
+            ClientId("real-client-0".to_string()),
+            RunId("real-run-0".to_string()),
+            1,
+            ClientId("real-client-1".to_string()),
+            RunId("real-run-1".to_string()),
+            NonZeroU32::new(1).expect("1 should be non-zero"),
+            TimestampMicros(1_000_004),
+            StubRealQueuedFrameHandoff {
+                result: SwitcherQueuedFrameHandoffResult::NoFrameAvailable {
+                    client_id: ClientId("real-client-0".to_string()),
+                    run_id: RunId("real-run-0".to_string()),
+                    mode: SwitcherSingleClientQueueSourceMode::PreviewLatest,
+                    client_queue_len: 0,
+                },
+                calls: RefCell::new(0),
+            },
+            &DeterministicFourViewFixtureDecodeRuntime,
+            &PersistentFixtureRenderedWindowRuntime::default(),
+            &RecordingCadenceSleepHook::default(),
+        );
+
+        assert_eq!(summary.pipe_name, r"\\.\pipe\fixture-pipe".to_string());
+        assert_eq!(
+            summary.actual_pipe_path,
+            r"\\.\pipe\fixture-pipe".to_string()
+        );
     }
 
     #[test]

@@ -1694,14 +1694,16 @@ fn format_named_pipe_handoff_server_summary(
     output: &stream_sync_server::ServerSwitcherNamedPipeOneRequestRuntimeOutput,
 ) -> String {
     let request = &output.request;
+    let actual_pipe_path = format_actual_handoff_pipe_path(pipe_name);
     match &output.response {
         stream_sync_net_core::ServerSwitcherQueuedFrameHandoffResponse::FrameRead {
             remaining_client_queue_len,
             frame,
             ..
         } => format!(
-            "server named-pipe handoff once pipe_name={} request_id={} client_id={} run_id={} read_mode={} request_status=decoded response_status=written result_kind=FrameRead queue_len_before_read={} queue_len_after_read={} selected_client_id={} selected_run_id={} frame_id={} capture_timestamp={} send_timestamp={} queued_at={} width={} height={} fps_nominal={} codec={:?} is_keyframe={} frame_payload_len={}",
+            "server named-pipe handoff once handoff_ready=true pipe_name={} actual_pipe_path={} request_id={} client_id={} run_id={} read_mode={} request_status=decoded response_status=written result_kind=FrameRead queue_len_before_read={} queue_len_after_read={} selected_client_id={} selected_run_id={} frame_id={} capture_timestamp={} send_timestamp={} queued_at={} width={} height={} fps_nominal={} codec={:?} is_keyframe={} frame_payload_len={}",
             pipe_name,
+            actual_pipe_path,
             request.request_id,
             request.client_id.0,
             request.run_id.0,
@@ -1727,8 +1729,9 @@ fn format_named_pipe_handoff_server_summary(
             client_queue_len,
             ..
         } => format!(
-            "server named-pipe handoff once pipe_name={} request_id={} client_id={} run_id={} read_mode={} request_status=decoded response_status=written result_kind=NoFrame queue_len_before_read={} queue_len_after_read={} selected_client_id={} selected_run_id={} frame_id=none frame_payload_len=none no_frame_reason={}",
+            "server named-pipe handoff once handoff_ready=true pipe_name={} actual_pipe_path={} request_id={} client_id={} run_id={} read_mode={} request_status=decoded response_status=written result_kind=NoFrame queue_len_before_read={} queue_len_after_read={} selected_client_id={} selected_run_id={} frame_id=none frame_payload_len=none no_frame_reason={}",
             pipe_name,
+            actual_pipe_path,
             request.request_id,
             request.client_id.0,
             request.run_id.0,
@@ -1747,8 +1750,9 @@ fn format_named_pipe_handoff_server_summary(
             error,
             ..
         } => format!(
-            "server named-pipe handoff once pipe_name={} request_id={} client_id={} run_id={} read_mode={} request_status=decoded response_status=written result_kind=HandoffError queue_len_before_read={} queue_len_after_read=none selected_client_id={} selected_run_id={} frame_id=none frame_payload_len=none no_frame_reason=none handoff_error={:?}",
+            "server named-pipe handoff once handoff_ready=true pipe_name={} actual_pipe_path={} request_id={} client_id={} run_id={} read_mode={} request_status=decoded response_status=written result_kind=HandoffError queue_len_before_read={} queue_len_after_read=none selected_client_id={} selected_run_id={} frame_id=none frame_payload_len=none no_frame_reason=none handoff_error={:?}",
             pipe_name,
+            actual_pipe_path,
             request.request_id,
             request.client_id.0,
             request.run_id.0,
@@ -1766,9 +1770,11 @@ fn format_named_pipe_handoff_server_many_summary(
     pipe_name: &str,
     output: &stream_sync_server::ServerSwitcherNamedPipeManyRequestRuntimeOutput,
 ) -> String {
+    let actual_pipe_path = format_actual_handoff_pipe_path(pipe_name);
     let mut lines = vec![format!(
-        "server named-pipe handoff bounded pipe_name={} max_requests={} requests_served={} successful_responses={} handoff_errors={}",
+        "server named-pipe handoff bounded handoff_ready=true pipe_name={} actual_pipe_path={} max_requests={} requests_served={} successful_responses={} handoff_errors={}",
         pipe_name,
+        actual_pipe_path,
         output.max_requests,
         output.requests_served,
         output.successful_responses,
@@ -1840,6 +1846,11 @@ fn format_server_handoff_result_kind(
             "HandoffError"
         }
     }
+}
+
+fn format_actual_handoff_pipe_path(pipe_name: &str) -> String {
+    stream_sync_net_core::normalize_windows_local_named_pipe_path(pipe_name)
+        .unwrap_or_else(|_| "invalid".to_string())
 }
 
 fn format_handoff_read_mode(
@@ -2487,7 +2498,9 @@ mod tests {
 
         let summary = super::format_named_pipe_handoff_server_summary("pipe-a", &output);
 
+        assert!(summary.contains("handoff_ready=true"));
         assert!(summary.contains("pipe_name=pipe-a"));
+        assert!(summary.contains(r"actual_pipe_path=\\.\pipe\pipe-a"));
         assert!(summary.contains("request_id=44"));
         assert!(summary.contains("result_kind=FrameRead"));
         assert!(summary.contains("queue_len_before_read=3"));
@@ -2537,7 +2550,9 @@ mod tests {
 
         let summary = super::format_named_pipe_handoff_server_many_summary("pipe-b", &output);
 
+        assert!(summary.contains("handoff_ready=true"));
         assert!(summary.contains("pipe_name=pipe-b"));
+        assert!(summary.contains(r"actual_pipe_path=\\.\pipe\pipe-b"));
         assert!(summary.contains("max_requests=3"));
         assert!(summary.contains("requests_served=2"));
         assert!(summary.contains("successful_responses=2"));
@@ -2553,6 +2568,34 @@ mod tests {
         assert!(summary.contains("queue_len_before_read=0"));
         assert!(summary.contains("queue_len_after_read=none"));
         assert!(summary.contains("handoff_error=SourceShutdown"));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn server_handoff_summary_normalizes_full_pipe_path() {
+        let output = stream_sync_server::ServerSwitcherNamedPipeOneRequestRuntimeOutput {
+            request: ServerSwitcherQueuedFrameHandoffRequest {
+                handoff_version: SERVER_SWITCHER_HANDOFF_VERSION,
+                request_id: 1,
+                client_id: ClientId("player1".to_string()),
+                run_id: RunId("run-a".to_string()),
+                read_mode: ServerSwitcherQueuedFrameReadMode::InspectLatest,
+            },
+            response: ServerSwitcherQueuedFrameHandoffResponse::NoFrame {
+                request_id: 1,
+                client_id: ClientId("player1".to_string()),
+                run_id: RunId("run-a".to_string()),
+                read_mode: ServerSwitcherQueuedFrameReadMode::InspectLatest,
+                client_queue_len: 0,
+            },
+            queue_len_before_read: 0,
+        };
+
+        let summary =
+            super::format_named_pipe_handoff_server_summary(r"\\.\pipe\pipe-full", &output);
+
+        assert!(summary.contains(r"pipe_name=\\.\pipe\pipe-full"));
+        assert!(summary.contains(r"actual_pipe_path=\\.\pipe\pipe-full"));
     }
 
     #[cfg(windows)]
@@ -2580,6 +2623,7 @@ mod tests {
         assert!(summary.contains("manual_expected_reassembled_clients=0"));
         assert!(summary.contains("manual_expected_reassembled_frames_per_client=0"));
         assert!(summary.contains("pipe_name=pipe-session"));
+        assert!(summary.contains(r"actual_pipe_path=\\.\pipe\pipe-session"));
         assert!(summary.contains("max_requests=2"));
         assert!(summary.contains("requests_served=2"));
         assert!(summary.contains("request_index=0"));

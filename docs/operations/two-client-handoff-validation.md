@@ -109,8 +109,13 @@ What this switcher command owns:
 
 Important current CLI note:
 
-- use plain pipe name such as `streamsync-handoff-dev`
-- do not pass full `\\.\pipe\...` path to current CLI args
+- current handoff CLI now normalizes both:
+  - `streamsync-handoff-dev`
+  - `\\.\pipe\streamsync-handoff-dev`
+- both forms resolve to the same:
+  - `actual_pipe_path=\\.\pipe\streamsync-handoff-dev`
+- plain short name is still the recommended operator-facing input because it is
+  easier to read and compare in PowerShell
 
 ## Current Read Path
 
@@ -175,6 +180,8 @@ Primary receive-side fields:
 
 Primary handoff-side fields:
 
+- `handoff_ready`
+- `actual_pipe_path`
 - `request_id`
 - `result_kind`
 - `selected_client_id`
@@ -190,6 +197,7 @@ successful `FrameRead` request lines at least once.
 
 Primary fields from `--read-queued-frame-handoff-once`:
 
+- `actual_pipe_path`
 - `final_result=FrameRead|NoFrame|HandoffError`
 - `handoff_response_kind`
 - `parse_error`
@@ -205,6 +213,7 @@ loop result is unclear.
 
 Primary fields from `--four-view-two-real-handoff-preview-loop`:
 
+- `actual_pipe_path`
 - `frames_attempted`
 - `frames_rendered`
 - `render_failures`
@@ -220,6 +229,7 @@ Primary fields from `--four-view-two-real-handoff-preview-loop`:
 `slot_diagnostics` is the main per-slot drill-down surface. It already carries:
 
 - `request_id`
+- `actual_pipe_path`
 - `handoff_response_kind`
 - `parse_error`
 - `io_error`
@@ -410,6 +420,44 @@ Expected success shape for the raw rerun:
 - `parse_error=none`
 - `io_error=none`
 - `encoded_payload_len > 0`
+
+## Pipe Troubleshooting
+
+If PowerShell shows a `streamsync-*` pipe in `\\.\pipe\` but switcher still
+reports `connect:(os_error_2)`, read the summaries in this order:
+
+1. server bounded handoff line
+   - confirm:
+     - `handoff_ready=true`
+     - `actual_pipe_path=\\.\pipe\streamsync-handoff-dev`
+2. switcher preview summary
+   - confirm:
+     - `actual_pipe_path=\\.\pipe\streamsync-handoff-dev`
+3. switcher `slot_diagnostics`
+   - confirm real slots show the same `actual_pipe_path`
+   - inspect:
+     - `io_error`
+     - `handoff_response_kind`
+4. optional raw one-shot reads
+   - compare `actual_pipe_path` again on:
+     - `player1`
+     - `player2`
+
+Expected normalization rule:
+
+- input `streamsync-handoff-dev`
+  - `actual_pipe_path=\\.\pipe\streamsync-handoff-dev`
+- input `\\.\pipe\streamsync-handoff-dev`
+  - `actual_pipe_path=\\.\pipe\streamsync-handoff-dev`
+
+If requested `pipe_name` differs but `actual_pipe_path` matches, the issue is
+not short-name vs full-path normalization anymore. In that case, treat the next
+suspects as:
+
+- bounded server session already exited
+- wrong handoff pipe name between windows
+- a different process owns the displayed pipe name
+- stale binary / stale command line
 
 ## Success Conditions
 

@@ -2,6 +2,70 @@
 
 ## 2026-05-08
 ### Type
+- Codex code + docs update
+
+### Work
+- Investigated a same-PC handoff failure where the pipe was visible under
+  `\\.\pipe\` but switcher handoff preview returned:
+  - `scheduler_status=HandoffError`
+  - real-slot `io_error=connect:...(os_error_2)`
+  - `handoff_response_kind=none`
+- Confirmed the root cause candidate in code: both server and switcher handoff
+  runtimes previously formatted the Windows pipe path as
+  `\\.\pipe\{pipe_name}` without stripping a full-path input first, so passing
+  `\\.\pipe\streamsync-handoff-dev` through the CLI could become a doubled path.
+- Added shared handoff pipe normalization in `crates/net-core` so both:
+  - `streamsync-handoff-dev`
+  - `\\.\pipe\streamsync-handoff-dev`
+  normalize to:
+  - `\\.\pipe\streamsync-handoff-dev`
+- Updated server handoff runtime path creation to use the shared normalization.
+- Updated switcher handoff runtime path opening to use the same shared
+  normalization.
+- Extended summaries so requested and normalized values can be compared:
+  - server handoff summaries now include:
+    - `handoff_ready=true`
+    - `pipe_name=...`
+    - `actual_pipe_path=...`
+  - switcher raw one-shot handoff summary now includes:
+    - `pipe_name=...`
+    - `actual_pipe_path=...`
+  - switcher real handoff preview summaries now include:
+    - `pipe_name=...`
+    - `actual_pipe_path=...`
+  - switcher `slot_diagnostics` now include:
+    - `actual_pipe_path=...`
+- Updated the handoff validation doc with a pipe troubleshooting section and
+  explicit normalization expectations.
+
+### Changed Files
+- `crates/net-core/src/lib.rs`
+- `apps/server/src/lib.rs`
+- `apps/server/src/main.rs`
+- `apps/switcher/src/lib.rs`
+- `apps/switcher/src/main.rs`
+- `docs/operations/two-client-handoff-validation.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### Decision
+- Treat handoff pipe normalization as shared transport behavior rather than
+  duplicating separate server/switcher path handling.
+- Keep requested `pipe_name` visible in summaries, but add normalized
+  `actual_pipe_path` so short-name vs full-path ambiguity is explicit during
+  human validation.
+- Do not change receive / reassembly / drain policy in this slice.
+
+### Validation
+- `cargo fmt`
+- `cargo fmt --check`
+- `cargo check --workspace`
+- focused server/switcher handoff tests
+- `cargo test --workspace`
+- `git diff --check`
+
+## 2026-05-08
+### Type
 - Codex docs update
 
 ### Work
