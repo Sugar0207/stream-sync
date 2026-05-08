@@ -5,6 +5,50 @@
 - Codex code + docs update
 
 ### Work
+- Implemented the first experimental client-only connection boundary between
+  persistent FFmpeg stdout reads and the Annex B access-unit reader.
+- Added a stateful session that:
+  - writes BGRA raw frame bytes into persistent encoder `stdin`
+  - reads one stdout chunk at a time
+  - feeds those bytes into the incremental Annex B reader
+  - returns `AccessUnit` or `NoCompleteAccessUnitYet` as typed session results
+- Kept terminal states explicit:
+  - stdin write failure remains typed
+  - stdout close triggers typed reader finish plus typed encoder shutdown result
+  - FFmpeg non-zero exit stays visible through the shutdown result
+  - malformed Annex B stream still propagates as a reader-originated typed
+    result
+- Added focused tests for:
+  - persistent encoder + reader smoke path recovering an access unit
+  - partial stdout read staying `NoCompleteAccessUnitYet`
+  - malformed stream propagation
+  - typed stdout-close / EOF handling
+  - typed stdin write failure preservation
+
+### Changed Files
+- `apps/client/src/lib.rs`
+- `docs/operations/manual-real-encoded-video-poc.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### Decision
+- The persistent encoder path now has a minimal client-only runtime+reader
+  connection and is ready for bounded-sender integration in the next slice.
+- Deadline-based cadence remains untouched in this step.
+
+### Validation
+- `cargo fmt`
+- `cargo fmt --check`
+- `cargo check --workspace`
+- focused client tests
+- `cargo test --workspace`
+- `git diff --check`
+
+## 2026-05-09
+### Type
+- Codex code + docs update
+
+### Work
 - Implemented the first experimental client-only Annex B access-unit reader
   boundary in `apps/client/src/lib.rs`.
 - Added incremental typed reader state/results for:

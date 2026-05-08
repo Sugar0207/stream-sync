@@ -2572,6 +2572,16 @@ Current implementation status:
   - recover one conservative sendable access unit when a next-frame boundary is
     visible
   - keep partial buffer / EOF incomplete / malformed stream outcomes typed
+- an experimental client-only connection boundary now also exists between the
+  persistent FFmpeg runtime and the Annex B reader
+- the current connection boundary can:
+  - write BGRA raw frame bytes into persistent encoder `stdin`
+  - read raw Annex B bytes from persistent encoder `stdout`
+  - feed those bytes into the reader incrementally
+  - return `AccessUnit` or `NoCompleteAccessUnitYet` without changing the
+    bounded sender path
+  - preserve stdout close / EOF / malformed stream / stdin write failure /
+    non-zero exit as typed results
 - this experimental boundary is not yet integrated into the bounded sender
   runtime and does not yet replace the existing per-frame encoder path
 

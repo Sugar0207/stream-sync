@@ -4502,6 +4502,282 @@ fn find_annex_b_start_code(bytes: &[u8], from: usize) -> Option<(usize, usize)> 
     None
 }
 
+/// Typed result from feeding one persistent-encoder stdout read result into the
+/// experimental Annex B access-unit reader.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ClientPersistentFfmpegH264AccessUnitReadStepResult {
+    AccessUnit(ClientAnnexBAccessUnit),
+    NoCompleteAccessUnitYet {
+        buffered_bytes: usize,
+    },
+    StdoutClosed,
+    StdoutReadFailed {
+        kind: io::ErrorKind,
+        message: String,
+    },
+    InvalidReadRequest {
+        requested_len: usize,
+    },
+    MalformedStream {
+        reason: ClientAnnexBAccessUnitReaderMalformedReason,
+        buffered_bytes: usize,
+    },
+}
+
+/// Typed result from the experimental boundary that connects the persistent
+/// FFmpeg runtime stdout read path to the Annex B access-unit reader.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ClientPersistentFfmpegH264AccessUnitSessionStepResult {
+    AccessUnit(ClientAnnexBAccessUnit),
+    NoCompleteAccessUnitYet {
+        buffered_bytes: usize,
+    },
+    InvalidFrameBytes {
+        expected_len: usize,
+        actual_len: usize,
+    },
+    StdinClosed,
+    StdinWriteFailed {
+        kind: io::ErrorKind,
+        message: String,
+    },
+    StdinFlushFailed {
+        kind: io::ErrorKind,
+        message: String,
+    },
+    StdoutReadFailed {
+        kind: io::ErrorKind,
+        message: String,
+    },
+    InvalidReadRequest {
+        requested_len: usize,
+    },
+    MalformedStream {
+        reason: ClientAnnexBAccessUnitReaderMalformedReason,
+        buffered_bytes: usize,
+    },
+    StreamEnded {
+        finish_result: ClientAnnexBAccessUnitReaderFinishResult,
+        shutdown_result: ClientPersistentFfmpegH264EncoderShutdownResult,
+    },
+    RuntimeClosed,
+}
+
+/// Experimental client-only boundary that connects the persistent FFmpeg
+/// encoder runtime stdout read path to the Annex B access-unit reader.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct ClientPersistentFfmpegH264AccessUnitBoundary {
+    reader: ClientAnnexBAccessUnitReaderBoundary,
+}
+
+impl ClientPersistentFfmpegH264AccessUnitBoundary {
+    pub fn new_session(
+        &self,
+        runtime: ClientPersistentFfmpegH264EncoderRuntime,
+        stdout_read_len: usize,
+    ) -> ClientPersistentFfmpegH264AccessUnitSession {
+        ClientPersistentFfmpegH264AccessUnitSession {
+            runtime: Some(runtime),
+            reader_state: ClientAnnexBAccessUnitReaderState::default(),
+            stdout_read_len,
+            boundary: *self,
+        }
+    }
+
+    pub fn feed_stdout_read_result(
+        &self,
+        state: &mut ClientAnnexBAccessUnitReaderState,
+        read_result: ClientPersistentFfmpegH264EncoderReadResult,
+    ) -> ClientPersistentFfmpegH264AccessUnitReadStepResult {
+        match read_result {
+            ClientPersistentFfmpegH264EncoderReadResult::AnnexBBytes { bytes } => {
+                self.reader.append_bytes(state, &bytes);
+                match self.reader.poll_access_unit(state) {
+                    ClientAnnexBAccessUnitReaderPollResult::AccessUnit(access_unit) => {
+                        ClientPersistentFfmpegH264AccessUnitReadStepResult::AccessUnit(access_unit)
+                    }
+                    ClientAnnexBAccessUnitReaderPollResult::NoCompleteAccessUnitYet {
+                        buffered_bytes,
+                    } => ClientPersistentFfmpegH264AccessUnitReadStepResult::NoCompleteAccessUnitYet {
+                        buffered_bytes,
+                    },
+                    ClientAnnexBAccessUnitReaderPollResult::MalformedStream {
+                        reason,
+                        buffered_bytes,
+                    } => ClientPersistentFfmpegH264AccessUnitReadStepResult::MalformedStream {
+                        reason,
+                        buffered_bytes,
+                    },
+                }
+            }
+            ClientPersistentFfmpegH264EncoderReadResult::StdoutClosed => {
+                ClientPersistentFfmpegH264AccessUnitReadStepResult::StdoutClosed
+            }
+            ClientPersistentFfmpegH264EncoderReadResult::StdoutReadFailed { kind, message } => {
+                ClientPersistentFfmpegH264AccessUnitReadStepResult::StdoutReadFailed {
+                    kind,
+                    message,
+                }
+            }
+            ClientPersistentFfmpegH264EncoderReadResult::InvalidReadRequest { requested_len } => {
+                ClientPersistentFfmpegH264AccessUnitReadStepResult::InvalidReadRequest {
+                    requested_len,
+                }
+            }
+        }
+    }
+
+    fn map_read_step_to_session_result(
+        &self,
+        step: ClientPersistentFfmpegH264AccessUnitReadStepResult,
+    ) -> ClientPersistentFfmpegH264AccessUnitSessionStepResult {
+        match step {
+            ClientPersistentFfmpegH264AccessUnitReadStepResult::AccessUnit(access_unit) => {
+                ClientPersistentFfmpegH264AccessUnitSessionStepResult::AccessUnit(access_unit)
+            }
+            ClientPersistentFfmpegH264AccessUnitReadStepResult::NoCompleteAccessUnitYet {
+                buffered_bytes,
+            } => ClientPersistentFfmpegH264AccessUnitSessionStepResult::NoCompleteAccessUnitYet {
+                buffered_bytes,
+            },
+            ClientPersistentFfmpegH264AccessUnitReadStepResult::StdoutClosed => {
+                ClientPersistentFfmpegH264AccessUnitSessionStepResult::RuntimeClosed
+            }
+            ClientPersistentFfmpegH264AccessUnitReadStepResult::StdoutReadFailed {
+                kind,
+                message,
+            } => ClientPersistentFfmpegH264AccessUnitSessionStepResult::StdoutReadFailed {
+                kind,
+                message,
+            },
+            ClientPersistentFfmpegH264AccessUnitReadStepResult::InvalidReadRequest {
+                requested_len,
+            } => ClientPersistentFfmpegH264AccessUnitSessionStepResult::InvalidReadRequest {
+                requested_len,
+            },
+            ClientPersistentFfmpegH264AccessUnitReadStepResult::MalformedStream {
+                reason,
+                buffered_bytes,
+            } => ClientPersistentFfmpegH264AccessUnitSessionStepResult::MalformedStream {
+                reason,
+                buffered_bytes,
+            },
+        }
+    }
+}
+
+/// Experimental client-only stateful session that connects one persistent
+/// FFmpeg runtime to one Annex B access-unit reader state.
+#[derive(Debug)]
+pub struct ClientPersistentFfmpegH264AccessUnitSession {
+    runtime: Option<ClientPersistentFfmpegH264EncoderRuntime>,
+    reader_state: ClientAnnexBAccessUnitReaderState,
+    stdout_read_len: usize,
+    boundary: ClientPersistentFfmpegH264AccessUnitBoundary,
+}
+
+impl ClientPersistentFfmpegH264AccessUnitSession {
+    pub fn submit_frame_and_poll_access_unit(
+        &mut self,
+        frame_bytes: &[u8],
+    ) -> ClientPersistentFfmpegH264AccessUnitSessionStepResult {
+        let Some(runtime) = self.runtime.as_mut() else {
+            return ClientPersistentFfmpegH264AccessUnitSessionStepResult::RuntimeClosed;
+        };
+
+        match runtime.write_bgra_frame_bytes(frame_bytes) {
+            ClientPersistentFfmpegH264EncoderWriteResult::FrameAccepted { .. } => {
+                self.poll_stdout_once()
+            }
+            ClientPersistentFfmpegH264EncoderWriteResult::InvalidFrameBytes {
+                expected_len,
+                actual_len,
+            } => ClientPersistentFfmpegH264AccessUnitSessionStepResult::InvalidFrameBytes {
+                expected_len,
+                actual_len,
+            },
+            ClientPersistentFfmpegH264EncoderWriteResult::StdinClosed => {
+                ClientPersistentFfmpegH264AccessUnitSessionStepResult::StdinClosed
+            }
+            ClientPersistentFfmpegH264EncoderWriteResult::StdinWriteFailed { kind, message } => {
+                ClientPersistentFfmpegH264AccessUnitSessionStepResult::StdinWriteFailed {
+                    kind,
+                    message,
+                }
+            }
+            ClientPersistentFfmpegH264EncoderWriteResult::StdinFlushFailed { kind, message } => {
+                ClientPersistentFfmpegH264AccessUnitSessionStepResult::StdinFlushFailed {
+                    kind,
+                    message,
+                }
+            }
+        }
+    }
+
+    pub fn poll_stdout_once(&mut self) -> ClientPersistentFfmpegH264AccessUnitSessionStepResult {
+        let Some(runtime) = self.runtime.as_mut() else {
+            return ClientPersistentFfmpegH264AccessUnitSessionStepResult::RuntimeClosed;
+        };
+        let read_result = runtime.read_annex_b_bytes(self.stdout_read_len);
+        match self
+            .boundary
+            .feed_stdout_read_result(&mut self.reader_state, read_result)
+        {
+            ClientPersistentFfmpegH264AccessUnitReadStepResult::StdoutClosed => {
+                self.finish_runtime_after_close()
+            }
+            step => self.boundary.map_read_step_to_session_result(step),
+        }
+    }
+
+    pub fn shutdown(mut self) -> ClientPersistentFfmpegH264AccessUnitSessionStepResult {
+        self.finish_runtime_after_close()
+    }
+
+    fn finish_runtime_after_close(
+        &mut self,
+    ) -> ClientPersistentFfmpegH264AccessUnitSessionStepResult {
+        let Some(runtime) = self.runtime.take() else {
+            return ClientPersistentFfmpegH264AccessUnitSessionStepResult::RuntimeClosed;
+        };
+        let shutdown_result = runtime.shutdown();
+        if let Some(remaining_bytes) = shutdown_result_remaining_annex_b_bytes(&shutdown_result) {
+            self.boundary
+                .reader
+                .append_bytes(&mut self.reader_state, remaining_bytes);
+        }
+        let finish_result = self.boundary.reader.finish(&mut self.reader_state);
+        ClientPersistentFfmpegH264AccessUnitSessionStepResult::StreamEnded {
+            finish_result,
+            shutdown_result,
+        }
+    }
+}
+
+fn shutdown_result_remaining_annex_b_bytes(
+    result: &ClientPersistentFfmpegH264EncoderShutdownResult,
+) -> Option<&[u8]> {
+    match result {
+        ClientPersistentFfmpegH264EncoderShutdownResult::ExitedCleanly {
+            remaining_annex_b_bytes,
+            ..
+        }
+        | ClientPersistentFfmpegH264EncoderShutdownResult::ExitedNonZero {
+            remaining_annex_b_bytes,
+            ..
+        }
+        | ClientPersistentFfmpegH264EncoderShutdownResult::StderrDrainFailed {
+            remaining_annex_b_bytes,
+            ..
+        }
+        | ClientPersistentFfmpegH264EncoderShutdownResult::WaitFailed {
+            remaining_annex_b_bytes,
+            ..
+        } => Some(remaining_annex_b_bytes.as_slice()),
+        ClientPersistentFfmpegH264EncoderShutdownResult::StdoutDrainFailed { .. } => None,
+    }
+}
+
 pub fn probe_client_ffmpeg_preflight(
     config: &ClientVideoEncoderConfig,
 ) -> ClientFfmpegPreflightResult {
@@ -13932,15 +14208,7 @@ mod tests {
 
     #[test]
     fn client_video_frame_ffmpeg_h264_encoder_smoke_encodes_when_available() {
-        let Ok(encoders) = Command::new("ffmpeg")
-            .arg("-hide_banner")
-            .arg("-encoders")
-            .output()
-        else {
-            return;
-        };
-        let encoder_list = String::from_utf8_lossy(&encoders.stdout);
-        if !encoders.status.success() || !encoder_list.contains("libx264") {
+        if !ffmpeg_libx264_is_available() {
             return;
         }
 
@@ -13982,6 +14250,18 @@ mod tests {
 
     fn persistent_encoder_test_frame_bytes() -> Vec<u8> {
         vec![0; 16 * 16 * 4]
+    }
+
+    fn ffmpeg_libx264_is_available() -> bool {
+        let Ok(encoders) = Command::new("ffmpeg")
+            .arg("-hide_banner")
+            .arg("-encoders")
+            .output()
+        else {
+            return false;
+        };
+        let encoder_list = String::from_utf8_lossy(&encoders.stdout);
+        encoders.status.success() && encoder_list.contains("libx264")
     }
 
     fn annex_b_test_nal(start_code_len: usize, nal_header: u8, payload: &[u8]) -> Vec<u8> {
@@ -14031,17 +14311,42 @@ mod tests {
         }
     }
 
+    fn test_annex_b_stdout_command(
+        bytes_to_read: usize,
+        stdout_bytes: &[u8],
+    ) -> (PathBuf, Vec<String>) {
+        #[cfg(target_os = "windows")]
+        {
+            let stdout_bytes = stdout_bytes
+                .iter()
+                .map(|byte| byte.to_string())
+                .collect::<Vec<_>>()
+                .join(",");
+            let script = format!(
+                "$in=[Console]::OpenStandardInput(); $buffer=New-Object byte[] {bytes_to_read}; $offset=0; while($offset -lt {bytes_to_read}) {{ $read=$in.Read($buffer,$offset,{bytes_to_read}-$offset); if($read -le 0) {{ break }}; $offset += $read }}; $out=[Console]::OpenStandardOutput(); $bytes=[byte[]]({stdout_bytes}); $out.Write($bytes,0,$bytes.Length)"
+            );
+            (
+                PathBuf::from("powershell"),
+                vec!["-Command".to_string(), script],
+            )
+        }
+
+        #[cfg(not(target_os = "windows"))]
+        {
+            let stdout_bytes = stdout_bytes
+                .iter()
+                .map(|byte| format!("\\{:03o}", byte))
+                .collect::<String>();
+            let script = format!(
+                "dd bs=1 count={bytes_to_read} of=/dev/null 2>/dev/null; printf '{stdout_bytes}'"
+            );
+            (PathBuf::from("sh"), vec!["-c".to_string(), script])
+        }
+    }
+
     #[test]
     fn client_video_frame_persistent_ffmpeg_encoder_spawns_when_available() {
-        let Ok(encoders) = Command::new("ffmpeg")
-            .arg("-hide_banner")
-            .arg("-encoders")
-            .output()
-        else {
-            return;
-        };
-        let encoder_list = String::from_utf8_lossy(&encoders.stdout);
-        if !encoders.status.success() || !encoder_list.contains("libx264") {
+        if !ffmpeg_libx264_is_available() {
             return;
         }
 
@@ -14183,6 +14488,155 @@ mod tests {
                 kind: ClientPersistentFfmpegH264EncoderStartErrorKind::EncoderUnavailable,
                 ..
             }
+        ));
+    }
+
+    #[test]
+    fn client_video_frame_persistent_access_unit_session_smoke_returns_access_unit_when_available()
+    {
+        let scripted_annex_b = [
+            annex_b_test_nal(4, 0x67, &[0x11]),
+            annex_b_test_nal(4, 0x68, &[0x22]),
+            annex_b_test_nal(4, 0x65, &[0x80]),
+            annex_b_test_nal(4, 0x06, &[0x05]),
+            annex_b_test_nal(4, 0x41, &[0x80]),
+            annex_b_test_nal(4, 0x09, &[0xf0]),
+        ]
+        .concat();
+        let (command_path, command_args) =
+            test_annex_b_stdout_command(16 * 16 * 4, &scripted_annex_b);
+        let start_result = ClientPersistentFfmpegH264EncoderBoundary::start_with_command(
+            persistent_encoder_startup_config(),
+            command_path,
+            command_args,
+        );
+        let ClientPersistentFfmpegH264EncoderStartResult::Started(runtime) = start_result else {
+            panic!("scripted encoder command should start");
+        };
+        let mut session =
+            ClientPersistentFfmpegH264AccessUnitBoundary::default().new_session(runtime, 4096);
+
+        let first =
+            session.submit_frame_and_poll_access_unit(&persistent_encoder_test_frame_bytes());
+        match first {
+            ClientPersistentFfmpegH264AccessUnitSessionStepResult::AccessUnit(access_unit) => {
+                assert!(!access_unit.bytes.is_empty());
+                assert_eq!(access_unit.nal_units.len(), 3);
+            }
+            ClientPersistentFfmpegH264AccessUnitSessionStepResult::NoCompleteAccessUnitYet {
+                ..
+            } => match session.poll_stdout_once() {
+                ClientPersistentFfmpegH264AccessUnitSessionStepResult::StreamEnded {
+                    finish_result: ClientAnnexBAccessUnitReaderFinishResult::AccessUnit(access_unit),
+                    ..
+                }
+                | ClientPersistentFfmpegH264AccessUnitSessionStepResult::AccessUnit(access_unit) => {
+                    assert!(!access_unit.bytes.is_empty());
+                }
+                other => {
+                    panic!(
+                        "scripted persistent session should recover an access unit, got {other:?}"
+                    );
+                }
+            },
+            other => {
+                panic!("scripted persistent session should produce access-unit progress, got {other:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn client_video_frame_persistent_access_unit_boundary_partial_stdout_read_is_no_complete() {
+        let boundary = ClientPersistentFfmpegH264AccessUnitBoundary::default();
+        let mut state = ClientAnnexBAccessUnitReaderState::default();
+        let bytes = [
+            annex_b_test_nal(4, 0x67, &[0x11]),
+            annex_b_test_nal(4, 0x68, &[0x22]),
+            annex_b_test_nal(4, 0x65, &[0x80]),
+        ]
+        .concat();
+
+        assert_eq!(
+            boundary.feed_stdout_read_result(
+                &mut state,
+                ClientPersistentFfmpegH264EncoderReadResult::AnnexBBytes {
+                    bytes: bytes.clone()
+                },
+            ),
+            ClientPersistentFfmpegH264AccessUnitReadStepResult::NoCompleteAccessUnitYet {
+                buffered_bytes: bytes.len()
+            }
+        );
+    }
+
+    #[test]
+    fn client_video_frame_persistent_access_unit_boundary_propagates_malformed_stream() {
+        let boundary = ClientPersistentFfmpegH264AccessUnitBoundary::default();
+        let mut state = ClientAnnexBAccessUnitReaderState::default();
+        let bytes = [vec![0x12, 0x34], annex_b_test_nal(4, 0x65, &[0x80])].concat();
+
+        assert_eq!(
+            boundary.feed_stdout_read_result(
+                &mut state,
+                ClientPersistentFfmpegH264EncoderReadResult::AnnexBBytes {
+                    bytes: bytes.clone()
+                },
+            ),
+            ClientPersistentFfmpegH264AccessUnitReadStepResult::MalformedStream {
+                reason: ClientAnnexBAccessUnitReaderMalformedReason::MissingStartCode,
+                buffered_bytes: bytes.len()
+            }
+        );
+    }
+
+    #[test]
+    fn client_video_frame_persistent_access_unit_session_stdout_close_is_typed() {
+        let (command_path, command_args) = test_exit_command(0);
+        let start_result = ClientPersistentFfmpegH264EncoderBoundary::start_with_command(
+            persistent_encoder_startup_config(),
+            command_path,
+            command_args,
+        );
+        let ClientPersistentFfmpegH264EncoderStartResult::Started(runtime) = start_result else {
+            panic!("test shell should start");
+        };
+        let mut session =
+            ClientPersistentFfmpegH264AccessUnitBoundary::default().new_session(runtime, 64);
+
+        assert!(matches!(
+            session.poll_stdout_once(),
+            ClientPersistentFfmpegH264AccessUnitSessionStepResult::StreamEnded {
+                finish_result: ClientAnnexBAccessUnitReaderFinishResult::EofNoBufferedData,
+                shutdown_result: ClientPersistentFfmpegH264EncoderShutdownResult::ExitedCleanly { .. },
+            }
+        ));
+    }
+
+    #[test]
+    fn client_video_frame_persistent_access_unit_session_preserves_stdin_write_failure() {
+        let (command_path, command_args) = test_closed_stdin_command();
+        let start_result = ClientPersistentFfmpegH264EncoderBoundary::start_with_command(
+            ClientPersistentFfmpegH264EncoderStartupConfig {
+                input_width: 1024,
+                input_height: 1024,
+                input_fps_nominal: 30,
+                encoder_config: ClientVideoEncoderConfig::default(),
+            },
+            command_path,
+            command_args,
+        );
+        let ClientPersistentFfmpegH264EncoderStartResult::Started(runtime) = start_result else {
+            panic!("test shell should start");
+        };
+        let mut session =
+            ClientPersistentFfmpegH264AccessUnitBoundary::default().new_session(runtime, 64);
+
+        std::thread::sleep(Duration::from_millis(100));
+
+        assert!(matches!(
+            session.submit_frame_and_poll_access_unit(&vec![0; 1024 * 1024 * 4]),
+            ClientPersistentFfmpegH264AccessUnitSessionStepResult::StdinWriteFailed { .. }
+                | ClientPersistentFfmpegH264AccessUnitSessionStepResult::StdinFlushFailed { .. }
         ));
     }
 
