@@ -2,6 +2,66 @@
 
 ## 2026-05-08
 ### Type
+- Human validation + Codex follow-up
+
+### Work
+- Recorded a successful same-PC 2-client smoke rerun after the summary-only
+  default change.
+- Observed server summary:
+  - `receive_buffer_requested_bytes=268435456`
+  - `receive_buffer_effective_bytes=268435456`
+  - `receive_buffer_set_error=none`
+  - `receive_buffer_read_error=none`
+  - `max_packets_per_drain_cycle=1024`
+  - `packets_received=116418`
+  - `accepted_packets=116418`
+  - `rejected_packets=0`
+  - `auth_requests_received=2`
+  - `auth_responses_sent=2`
+  - `frames_reassembled=600`
+  - `frames_queued=600`
+  - `direct_frames_queued=0`
+  - `video_queue_len=16`
+  - `incomplete_reassembly_frames=0`
+  - `drain_cycles=25378`
+  - `max_packets_drained_in_cycle=248`
+  - `receive_would_block_count=25377`
+  - `registered_clients=2`
+  - `stop_reason=ReceiveTimedOut`
+- Confirmed the same-PC smoke pass conditions:
+  - client total `600` frames sent
+  - server `600` frames reassembled
+  - server `600` frames queued
+  - `incomplete_reassembly_frames=0`
+  - `rejected_packets=0`
+- Confirmed the summary-only default solved the validation blocker where the
+  PowerShell server window kept scrolling long after clients had finished.
+- Confirmed `cap=1024` is sufficient for this profile because
+  `max_packets_drained_in_cycle=248` stayed well below the cap.
+
+### Changed Files
+- `docs/operations/session-log.md`
+- `docs/operations/todo.md`
+- `docs/operations/two-client-long-run-validation.md`
+
+### Decision
+- Mark the current same-PC 2-client smoke profile as PASS.
+- Treat the standard same-PC smoke settings as:
+  - `receive_buffer_bytes=268435456`
+  - `max_packets_per_drain_cycle=1024`
+  - summary-only default output
+- Treat `stop_reason=ReceiveTimedOut` as a normal idle closeout when expected
+  `frames_reassembled` / `frames_queued` have already been reached after client
+  completion.
+- Move the next step to either:
+  - 2-client longer-run validation
+  - handoff-validation preparation before 4-client / OBS
+
+### Validation
+- `git diff --check`
+
+## 2026-05-08
+### Type
 - Codex
 
 ### Work

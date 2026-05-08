@@ -23,10 +23,11 @@
 
 ## 現在位置
 - 2-client human validation 方針は same-PC smoke / stress profile に固定した。今後の 2-client validation は server + client1 + client2 + capture + FFmpeg encode を同一 Windows PC 上で動かす前提とし、distributed-PC validation 用の server IP / firewall 手順は主目的にしない
-- same-PC 2-client baseline は `max_packets_per_drain_cycle=64` で `packets_received=10804` / `frames_reassembled=44` / `incomplete_reassembly_frames=542`。`max_packets_drained_in_cycle=64` に張り付いており、current blocker は same-PC stress での server receive drain throughput と incomplete reassembly accumulation である
+- same-PC 2-client smoke は PASS 済み。標準設定は `receive_buffer_bytes=268435456` + `max_packets_per_drain_cycle=1024` + summary-only とし、client 合計 `600` frames に対して server は `frames_reassembled=600` / `frames_queued=600` / `incomplete_reassembly_frames=0` / `rejected_packets=0` を確認した。`max_packets_drained_in_cycle=248` のため cap `1024` は十分である
 - 2-client validation の human-run recipe を same-PC 前提に更新した。`docs/operations/two-client-long-run-validation.md` と `docs/operations/two-client-long-run-validation.ps1` は same-PC smoke / stress profile、baseline 比較、`256` / `512` / `1024` の drain cap 比較、貼り返し template を source of truth とする
 - continuous receive / send runtime の最小 sliceを拡張し、`stream-sync-server --receive-send-runtime-continuous [config-path] [receive-timeout-ms] [max-iterations-or-0-for-unbounded] [heartbeat-timeout-micros] [receive-buffer-bytes] [max-packets-per-drain-cycle]` で drain cap を CLI 指定できるようにした。summary には `max_packets_per_drain_cycle` / `drain_cycles` / `last_packets_drained_in_cycle` / `max_packets_drained_in_cycle` / `receive_would_block_count` を出し、same-PC rerun で cap 張り付き有無を比較できる
 - server continuous runtime の default 出力は summary-only に固定した。same-PC validation では packet / drain cycle / reassembly の大量ログを通常モードで流さず、final summary 1 行だけを比較する。詳細ログが必要な場合だけ `--verbose` を付ける
+- `stop_reason=ReceiveTimedOut` は same-PC smoke では client 完了後の idle closeout として読む。期待値の `frames_reassembled` / `frames_queued` に達している場合は failure ではない
 - 認証 / runtime hardening の最小 slice を実装した。auth decision、same-client registration、client-scoped gate rejection、heartbeat timeout を雑な文字列に寄せず typed status/reason で読めるようにし、`Reject` と `ReconnectRequired` と `InvestigationRequired` を `Continue` から分離した。manual auth PoC、`--receive-auth-video-queue-once`、`--receive-send-runtime-bounded` summary には typed auth / registration / runtime rejection visibility を追加した
 - `NoFrame` / `Waiting` / `HandoffError` の長時間 run 向け最小 status 整理を実装した。source-backed 2-view fallible validation には typed operational summary を追加し、per-side result kind を `Selected` / `NoFrame` / `Waiting` / `HandoffError` のまま保持しつつ、run-state を `Continue` / `RetryLater` / `ReconnectRequired` / `InvestigationRequired` で読めるようにした。late-drop summary あり path では post-mutation の `NoFrame` / `Waiting` 判断を summary へ接続できる
 - late frame queue mutation / jitter buffer / drop policy の最小 slice を source-backed path で実装した。`SwitcherSingleClientLateFrameQueueMutationBoundary` が oldest head を targetTime 基準で評価し、補正後 timestamp が `targetTime - max_late_micros` より古い frame だけを conservative に drop する。drop summary は testable に返し、source-backed 2-view validation では opt-in で接続できる
@@ -175,17 +176,13 @@
 ---
 
 ## 直近でやること
-1. 人間が same-PC 2-client rerun を `max_packets_per_drain_cycle=256` で実行し、baseline `64` と比較する
-   - `max_packets_drained_in_cycle`
-   - `packets_received`
-   - `frames_reassembled`
-   - `incomplete_reassembly_frames`
-   - `receive_would_block_count`
-   - server summary 1 行
-2. その後に same-PC 2-client rerun を `512` / `1024` で比較し、どこで cap 張り付きが外れるかを見る
+1. same-PC 2-client longer-run validation を、標準設定 `256MiB receive buffer + cap1024 + summary-only` で実行し、長時間でも `frames_reassembled` / `frames_queued` / `incomplete_reassembly_frames` が維持されるか確認する
    - `docs/operations/two-client-long-run-validation.md`
    - `docs/operations/two-client-long-run-validation.ps1`
-3. 実 outbound queue flush / `ServerNotice` 実送信 / lifecycle follow-up は、human-run rerun で不足が見えた範囲だけ narrow に進める
+2. その後に 4-client / OBS へ進む前段として、server->switcher handoff validation の準備を見直す
+   - same-PC handoff validation の前提整理
+   - 2-client longer-run 後に必要な narrow observation の確認
+3. 実 outbound queue flush / `ServerNotice` 実送信 / lifecycle follow-up は、longer-run か handoff 準備で不足が見えた範囲だけ narrow に進める
 
 ## 今後の大まかな指針
 - 残り todo は `MVP クリティカルパス`、`安定化 / 運用`、`future task` に分けて扱う
