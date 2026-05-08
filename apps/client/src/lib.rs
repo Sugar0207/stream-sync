@@ -1168,6 +1168,7 @@ impl ClientAuthRealEncodedVideoFrameBoundedPocLauncher {
                 max_ticks,
                 frame_wait_timeout_micros: auth_config.response_timeout_ms.saturating_mul(1_000),
                 frame_interval_micros: 1_000_000 / u64::from(video_config.fps_nominal),
+                cadence_mode: ClientContinuousRealEncodedVideoFrameCadenceMode::Fixed,
                 stop_on_capture_failure: true,
                 stop_on_send_failure: true,
                 fragment_pacing: ClientVideoFrameFragmentPacingPolicy {
@@ -5747,9 +5748,34 @@ pub struct ClientContinuousRealEncodedVideoFramePolicy {
     pub max_ticks: u64,
     pub frame_wait_timeout_micros: u64,
     pub frame_interval_micros: u64,
+    pub cadence_mode: ClientContinuousRealEncodedVideoFrameCadenceMode,
     pub stop_on_capture_failure: bool,
     pub stop_on_send_failure: bool,
     pub fragment_pacing: ClientVideoFrameFragmentPacingPolicy,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub enum ClientContinuousRealEncodedVideoFrameCadenceMode {
+    #[default]
+    Fixed,
+    Deadline,
+}
+
+impl ClientContinuousRealEncodedVideoFrameCadenceMode {
+    pub fn as_config_str(self) -> &'static str {
+        match self {
+            Self::Fixed => "fixed",
+            Self::Deadline => "deadline",
+        }
+    }
+
+    pub fn parse_config_str(value: &str) -> Option<Self> {
+        match value {
+            "fixed" => Some(Self::Fixed),
+            "deadline" => Some(Self::Deadline),
+            _ => None,
+        }
+    }
 }
 
 impl Default for ClientContinuousRealEncodedVideoFramePolicy {
@@ -5759,6 +5785,7 @@ impl Default for ClientContinuousRealEncodedVideoFramePolicy {
             max_ticks: 10,
             frame_wait_timeout_micros: 1_000_000,
             frame_interval_micros: 1_000_000 / u64::from(DEFAULT_PLACEHOLDER_VIDEO_FPS),
+            cadence_mode: ClientContinuousRealEncodedVideoFrameCadenceMode::Fixed,
             stop_on_capture_failure: true,
             stop_on_send_failure: true,
             fragment_pacing: ClientVideoFrameFragmentPacingPolicy::default(),
@@ -5799,6 +5826,7 @@ pub struct ClientContinuousRealEncodedVideoFrameSummary {
     pub configured_max_frames: u64,
     pub configured_max_ticks: u64,
     pub configured_frame_interval_micros: u64,
+    pub cadence_mode: ClientContinuousRealEncodedVideoFrameCadenceMode,
     pub encoder_runtime: ClientRealEncodedVideoFrameEncoderRuntime,
     pub encoder_process_start_count: u64,
     pub runtime_ticks: u64,
@@ -5827,6 +5855,10 @@ pub struct ClientContinuousRealEncodedVideoFrameSummary {
     pub capture_wait_or_no_frame_elapsed_micros: u64,
     pub send_elapsed_micros: u64,
     pub loop_interval_sleep_micros: u64,
+    pub deadline_sleep_micros: u64,
+    pub deadline_overrun_micros: u64,
+    pub late_tick_count: u64,
+    pub max_deadline_overrun_micros: u64,
     pub total_fragment_pacing_sleep_micros: u64,
     pub ticks_elapsed_while_sending: u64,
     pub stop_reason: Option<ClientContinuousRealEncodedVideoFrameStopReason>,
@@ -5992,6 +6024,7 @@ impl ClientContinuousRealEncodedVideoFrameBoundary {
             configured_max_frames: policy.max_frames,
             configured_max_ticks: policy.max_ticks,
             configured_frame_interval_micros: policy.frame_interval_micros,
+            cadence_mode: policy.cadence_mode,
             encoder_runtime: ClientRealEncodedVideoFrameEncoderRuntime::PerFrame,
             ..ClientContinuousRealEncodedVideoFrameSummary::default()
         };
@@ -6093,11 +6126,18 @@ impl ClientContinuousRealEncodedVideoFrameBoundary {
             }
 
             results.push(result);
+            if summary.frames_sent >= policy.max_frames {
+                summary.stop_reason =
+                    Some(ClientContinuousRealEncodedVideoFrameStopReason::MaxFramesReached);
+            }
             if summary.stop_reason.is_some() {
                 break;
             }
-            summary.loop_interval_sleep_micros = summary.loop_interval_sleep_micros.saturating_add(
-                sleep_for_continuous_real_encoded_frame_policy(policy, frame_wait_started_at),
+            apply_continuous_real_encoded_frame_cadence(
+                &mut summary,
+                policy,
+                started_at,
+                frame_wait_started_at,
             );
         }
 
@@ -6132,6 +6172,7 @@ impl ClientContinuousRealEncodedVideoFrameBoundary {
             configured_max_frames: policy.max_frames,
             configured_max_ticks: policy.max_ticks,
             configured_frame_interval_micros: policy.frame_interval_micros,
+            cadence_mode: policy.cadence_mode,
             encoder_runtime: ClientRealEncodedVideoFrameEncoderRuntime::Persistent,
             ..ClientContinuousRealEncodedVideoFrameSummary::default()
         };
@@ -6301,11 +6342,18 @@ impl ClientContinuousRealEncodedVideoFrameBoundary {
             }
 
             results.push(result);
+            if summary.frames_sent >= policy.max_frames {
+                summary.stop_reason =
+                    Some(ClientContinuousRealEncodedVideoFrameStopReason::MaxFramesReached);
+            }
             if summary.stop_reason.is_some() {
                 break;
             }
-            summary.loop_interval_sleep_micros = summary.loop_interval_sleep_micros.saturating_add(
-                sleep_for_continuous_real_encoded_frame_policy(policy, frame_wait_started_at),
+            apply_continuous_real_encoded_frame_cadence(
+                &mut summary,
+                policy,
+                started_at,
+                frame_wait_started_at,
             );
         }
 
@@ -6639,7 +6687,45 @@ fn update_continuous_real_encoded_summary(
     }
 }
 
-fn sleep_for_continuous_real_encoded_frame_policy(
+fn apply_continuous_real_encoded_frame_cadence(
+    summary: &mut ClientContinuousRealEncodedVideoFrameSummary,
+    policy: ClientContinuousRealEncodedVideoFramePolicy,
+    run_started_at: Instant,
+    frame_wait_started_at: Option<Instant>,
+) {
+    match policy.cadence_mode {
+        ClientContinuousRealEncodedVideoFrameCadenceMode::Fixed => {
+            summary.loop_interval_sleep_micros = summary.loop_interval_sleep_micros.saturating_add(
+                sleep_for_fixed_continuous_real_encoded_frame_policy(policy, frame_wait_started_at),
+            );
+        }
+        ClientContinuousRealEncodedVideoFrameCadenceMode::Deadline => {
+            let observation = observe_deadline_continuous_real_encoded_frame_cadence(
+                policy,
+                run_started_at,
+                summary.frames_sent,
+                frame_wait_started_at,
+            );
+            summary.loop_interval_sleep_micros = summary
+                .loop_interval_sleep_micros
+                .saturating_add(observation.actual_sleep_micros);
+            summary.deadline_sleep_micros = summary
+                .deadline_sleep_micros
+                .saturating_add(observation.actual_sleep_micros);
+            summary.deadline_overrun_micros = summary
+                .deadline_overrun_micros
+                .saturating_add(observation.deadline_overrun_micros);
+            summary.late_tick_count = summary
+                .late_tick_count
+                .saturating_add(observation.late_tick_count);
+            summary.max_deadline_overrun_micros = summary
+                .max_deadline_overrun_micros
+                .max(observation.max_deadline_overrun_micros);
+        }
+    }
+}
+
+fn sleep_for_fixed_continuous_real_encoded_frame_policy(
     policy: ClientContinuousRealEncodedVideoFramePolicy,
     frame_wait_started_at: Option<Instant>,
 ) -> u64 {
@@ -6647,22 +6733,86 @@ fn sleep_for_continuous_real_encoded_frame_policy(
         return 0;
     }
 
-    let mut sleep_micros = policy.frame_interval_micros;
-    if let Some(wait_start) = frame_wait_started_at {
-        if policy.frame_wait_timeout_micros > 0 {
-            let elapsed_micros = wait_start.elapsed().as_micros() as u64;
-            if elapsed_micros >= policy.frame_wait_timeout_micros {
-                return 0;
-            }
-            sleep_micros = sleep_micros.min(policy.frame_wait_timeout_micros - elapsed_micros);
-        }
-    }
-
+    let sleep_micros = clamp_continuous_real_encoded_sleep_to_frame_wait_timeout(
+        policy.frame_interval_micros,
+        policy.frame_wait_timeout_micros,
+        frame_wait_started_at,
+    );
     if sleep_micros > 0 {
         std::thread::sleep(Duration::from_micros(sleep_micros));
         return sleep_micros;
     }
     0
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct ClientContinuousRealEncodedVideoFrameCadenceObservation {
+    actual_sleep_micros: u64,
+    deadline_overrun_micros: u64,
+    late_tick_count: u64,
+    max_deadline_overrun_micros: u64,
+}
+
+fn observe_deadline_continuous_real_encoded_frame_cadence(
+    policy: ClientContinuousRealEncodedVideoFramePolicy,
+    run_started_at: Instant,
+    output_frame_index: u64,
+    frame_wait_started_at: Option<Instant>,
+) -> ClientContinuousRealEncodedVideoFrameCadenceObservation {
+    if policy.frame_interval_micros == 0 || output_frame_index == 0 {
+        return ClientContinuousRealEncodedVideoFrameCadenceObservation::default();
+    }
+
+    let deadline_micros = policy
+        .frame_interval_micros
+        .saturating_mul(output_frame_index);
+    let elapsed_micros = run_started_at.elapsed().as_micros() as u64;
+    if elapsed_micros >= deadline_micros {
+        let overrun_micros = elapsed_micros.saturating_sub(deadline_micros);
+        if overrun_micros == 0 {
+            return ClientContinuousRealEncodedVideoFrameCadenceObservation::default();
+        }
+        return ClientContinuousRealEncodedVideoFrameCadenceObservation {
+            actual_sleep_micros: 0,
+            deadline_overrun_micros: overrun_micros,
+            late_tick_count: 1,
+            max_deadline_overrun_micros: overrun_micros,
+        };
+    }
+
+    let desired_sleep_micros = deadline_micros.saturating_sub(elapsed_micros);
+    let sleep_micros = clamp_continuous_real_encoded_sleep_to_frame_wait_timeout(
+        desired_sleep_micros,
+        policy.frame_wait_timeout_micros,
+        frame_wait_started_at,
+    );
+    if sleep_micros > 0 {
+        std::thread::sleep(Duration::from_micros(sleep_micros));
+    }
+    ClientContinuousRealEncodedVideoFrameCadenceObservation {
+        actual_sleep_micros: sleep_micros,
+        deadline_overrun_micros: 0,
+        late_tick_count: 0,
+        max_deadline_overrun_micros: 0,
+    }
+}
+
+fn clamp_continuous_real_encoded_sleep_to_frame_wait_timeout(
+    requested_sleep_micros: u64,
+    frame_wait_timeout_micros: u64,
+    frame_wait_started_at: Option<Instant>,
+) -> u64 {
+    let mut sleep_micros = requested_sleep_micros;
+    if let Some(wait_start) = frame_wait_started_at {
+        if frame_wait_timeout_micros > 0 {
+            let elapsed_micros = wait_start.elapsed().as_micros() as u64;
+            if elapsed_micros >= frame_wait_timeout_micros {
+                return 0;
+            }
+            sleep_micros = sleep_micros.min(frame_wait_timeout_micros - elapsed_micros);
+        }
+    }
+    sleep_micros
 }
 
 fn frames_per_second(count: u64, duration_micros: u64) -> f64 {
@@ -16426,6 +16576,7 @@ mod tests {
                     max_ticks: 10,
                     frame_wait_timeout_micros: 0,
                     frame_interval_micros: 0,
+                    cadence_mode: ClientContinuousRealEncodedVideoFrameCadenceMode::Fixed,
                     stop_on_capture_failure: true,
                     stop_on_send_failure: true,
                     fragment_pacing: ClientVideoFrameFragmentPacingPolicy::default(),
@@ -16530,6 +16681,7 @@ mod tests {
                     max_ticks: 10,
                     frame_wait_timeout_micros: 0,
                     frame_interval_micros: 0,
+                    cadence_mode: ClientContinuousRealEncodedVideoFrameCadenceMode::Fixed,
                     stop_on_capture_failure: true,
                     stop_on_send_failure: true,
                     fragment_pacing: ClientVideoFrameFragmentPacingPolicy::default(),
@@ -16546,6 +16698,171 @@ mod tests {
         let expected_output_fps = result.summary.frames_sent as f64
             / (result.summary.elapsed_micros as f64 / 1_000_000.0);
         assert!((result.summary.effective_output_fps() - expected_output_fps).abs() < 0.000_001);
+    }
+
+    #[test]
+    fn client_video_frame_continuous_real_encoded_deadline_cadence_sleeps_only_when_ahead() {
+        struct FastCapture;
+        impl ClientCaptureFrameAcquisitionRuntimeHook for FastCapture {
+            fn acquire_one_bgra_frame(
+                &self,
+                input: &mut ClientCaptureFrameAcquisitionInput<'_>,
+            ) -> ClientCaptureFrameAcquisitionResult {
+                ClientCaptureFrameAcquisitionResult::FrameAcquired {
+                    frame: ClientRawCapturedVideoFrame {
+                        capture_timestamp: input.capture_timestamp,
+                        width: 2,
+                        height: 2,
+                        fps_nominal: input.fps_nominal,
+                        pixel_format: ClientRawVideoPixelFormat::Bgra8,
+                        pixels: vec![0; 2 * 2 * 4],
+                    },
+                }
+            }
+        }
+        struct FastEncoder;
+        impl ClientH264EncoderRuntimeHook for FastEncoder {
+            fn encode_bgra_frame(
+                &self,
+                _input: &ClientH264EncoderInput,
+            ) -> ClientH264EncoderHookResult {
+                ClientH264EncoderHookResult::Encoded {
+                    payload: ClientH264EncodedPayload {
+                        bytes: vec![0x00, 0x00, 0x01, 0x65],
+                    },
+                }
+            }
+        }
+
+        let receiver = UdpSocket::bind("127.0.0.1:0").expect("receiver should bind");
+        receiver
+            .set_read_timeout(Some(Duration::from_secs(1)))
+            .expect("read timeout should be set");
+        let sender = UdpSocket::bind("127.0.0.1:0").expect("sender should bind");
+        let destination = receiver.local_addr().expect("receiver addr should exist");
+        let mut capture_runtime = client_capture_session_runtime_for_tests();
+
+        let result = ClientContinuousRealEncodedVideoFrameBoundary::default().run_with_runtimes(
+            ClientContinuousRealEncodedVideoFrameInput {
+                socket: &sender,
+                destination,
+                capture_runtime: &mut capture_runtime,
+                protocol_version: ProtocolVersion(2),
+                client_id: ClientId("client-1".to_string()),
+                run_id: RunId("run-1".to_string()),
+                first_frame_id: 145,
+                fps_nominal: 30,
+                is_keyframe: true,
+                start_capture_if_needed: true,
+                encoder_config: ClientVideoEncoderConfig::default(),
+                policy: ClientContinuousRealEncodedVideoFramePolicy {
+                    max_frames: 2,
+                    max_ticks: 10,
+                    frame_wait_timeout_micros: 0,
+                    frame_interval_micros: 50_000,
+                    cadence_mode: ClientContinuousRealEncodedVideoFrameCadenceMode::Deadline,
+                    stop_on_capture_failure: true,
+                    stop_on_send_failure: true,
+                    fragment_pacing: ClientVideoFrameFragmentPacingPolicy::default(),
+                },
+            },
+            &FastCapture,
+            &FastEncoder,
+        );
+
+        assert_eq!(
+            result.summary.cadence_mode,
+            ClientContinuousRealEncodedVideoFrameCadenceMode::Deadline
+        );
+        assert!(result.summary.deadline_sleep_micros >= 40_000);
+        assert_eq!(
+            result.summary.loop_interval_sleep_micros,
+            result.summary.deadline_sleep_micros
+        );
+        assert_eq!(result.summary.deadline_overrun_micros, 0);
+        assert_eq!(result.summary.late_tick_count, 0);
+    }
+
+    #[test]
+    fn client_video_frame_continuous_real_encoded_deadline_cadence_skips_sleep_when_late() {
+        struct SlowCapture;
+        impl ClientCaptureFrameAcquisitionRuntimeHook for SlowCapture {
+            fn acquire_one_bgra_frame(
+                &self,
+                input: &mut ClientCaptureFrameAcquisitionInput<'_>,
+            ) -> ClientCaptureFrameAcquisitionResult {
+                std::thread::sleep(Duration::from_millis(40));
+                ClientCaptureFrameAcquisitionResult::FrameAcquired {
+                    frame: ClientRawCapturedVideoFrame {
+                        capture_timestamp: input.capture_timestamp,
+                        width: 2,
+                        height: 2,
+                        fps_nominal: input.fps_nominal,
+                        pixel_format: ClientRawVideoPixelFormat::Bgra8,
+                        pixels: vec![0; 2 * 2 * 4],
+                    },
+                }
+            }
+        }
+        struct FastEncoder;
+        impl ClientH264EncoderRuntimeHook for FastEncoder {
+            fn encode_bgra_frame(
+                &self,
+                _input: &ClientH264EncoderInput,
+            ) -> ClientH264EncoderHookResult {
+                ClientH264EncoderHookResult::Encoded {
+                    payload: ClientH264EncodedPayload {
+                        bytes: vec![0x00, 0x00, 0x01, 0x65],
+                    },
+                }
+            }
+        }
+
+        let receiver = UdpSocket::bind("127.0.0.1:0").expect("receiver should bind");
+        receiver
+            .set_read_timeout(Some(Duration::from_secs(1)))
+            .expect("read timeout should be set");
+        let sender = UdpSocket::bind("127.0.0.1:0").expect("sender should bind");
+        let destination = receiver.local_addr().expect("receiver addr should exist");
+        let mut capture_runtime = client_capture_session_runtime_for_tests();
+
+        let result = ClientContinuousRealEncodedVideoFrameBoundary::default().run_with_runtimes(
+            ClientContinuousRealEncodedVideoFrameInput {
+                socket: &sender,
+                destination,
+                capture_runtime: &mut capture_runtime,
+                protocol_version: ProtocolVersion(2),
+                client_id: ClientId("client-1".to_string()),
+                run_id: RunId("run-1".to_string()),
+                first_frame_id: 146,
+                fps_nominal: 30,
+                is_keyframe: true,
+                start_capture_if_needed: true,
+                encoder_config: ClientVideoEncoderConfig::default(),
+                policy: ClientContinuousRealEncodedVideoFramePolicy {
+                    max_frames: 2,
+                    max_ticks: 10,
+                    frame_wait_timeout_micros: 0,
+                    frame_interval_micros: 20_000,
+                    cadence_mode: ClientContinuousRealEncodedVideoFrameCadenceMode::Deadline,
+                    stop_on_capture_failure: true,
+                    stop_on_send_failure: true,
+                    fragment_pacing: ClientVideoFrameFragmentPacingPolicy::default(),
+                },
+            },
+            &SlowCapture,
+            &FastEncoder,
+        );
+
+        assert_eq!(
+            result.summary.cadence_mode,
+            ClientContinuousRealEncodedVideoFrameCadenceMode::Deadline
+        );
+        assert_eq!(result.summary.deadline_sleep_micros, 0);
+        assert_eq!(result.summary.loop_interval_sleep_micros, 0);
+        assert!(result.summary.deadline_overrun_micros >= 15_000);
+        assert_eq!(result.summary.late_tick_count, 1);
+        assert!(result.summary.max_deadline_overrun_micros >= 15_000);
     }
 
     #[test]
@@ -16593,6 +16910,7 @@ mod tests {
                     max_ticks: 2,
                     frame_wait_timeout_micros: 0,
                     frame_interval_micros: 0,
+                    cadence_mode: ClientContinuousRealEncodedVideoFrameCadenceMode::Fixed,
                     stop_on_capture_failure: true,
                     stop_on_send_failure: true,
                     fragment_pacing: ClientVideoFrameFragmentPacingPolicy::default(),
@@ -16651,6 +16969,7 @@ mod tests {
                     max_ticks: 2,
                     frame_wait_timeout_micros: 0,
                     frame_interval_micros: 0,
+                    cadence_mode: ClientContinuousRealEncodedVideoFrameCadenceMode::Fixed,
                     stop_on_capture_failure: true,
                     stop_on_send_failure: true,
                     fragment_pacing: ClientVideoFrameFragmentPacingPolicy::default(),
@@ -16718,6 +17037,7 @@ mod tests {
                     max_ticks: 5,
                     frame_wait_timeout_micros: 0,
                     frame_interval_micros: 0,
+                    cadence_mode: ClientContinuousRealEncodedVideoFrameCadenceMode::Fixed,
                     stop_on_capture_failure: true,
                     stop_on_send_failure: true,
                     fragment_pacing: ClientVideoFrameFragmentPacingPolicy::default(),
@@ -16792,6 +17112,7 @@ mod tests {
                     max_ticks: 1,
                     frame_wait_timeout_micros: 0,
                     frame_interval_micros: 0,
+                    cadence_mode: ClientContinuousRealEncodedVideoFrameCadenceMode::Fixed,
                     stop_on_capture_failure: true,
                     stop_on_send_failure: true,
                     fragment_pacing: ClientVideoFrameFragmentPacingPolicy::default(),
@@ -16867,6 +17188,7 @@ mod tests {
                     max_ticks: 1,
                     frame_wait_timeout_micros: 0,
                     frame_interval_micros: 0,
+                    cadence_mode: ClientContinuousRealEncodedVideoFrameCadenceMode::Fixed,
                     stop_on_capture_failure: true,
                     stop_on_send_failure: true,
                     fragment_pacing: ClientVideoFrameFragmentPacingPolicy::default(),
@@ -17054,6 +17376,7 @@ mod tests {
                         max_ticks: 2,
                         frame_wait_timeout_micros: 0,
                         frame_interval_micros: 0,
+                        cadence_mode: ClientContinuousRealEncodedVideoFrameCadenceMode::Fixed,
                         stop_on_capture_failure: true,
                         stop_on_send_failure: true,
                         fragment_pacing: ClientVideoFrameFragmentPacingPolicy::default(),
@@ -17112,6 +17435,7 @@ mod tests {
                         max_ticks: 2,
                         frame_wait_timeout_micros: 0,
                         frame_interval_micros: 0,
+                        cadence_mode: ClientContinuousRealEncodedVideoFrameCadenceMode::Fixed,
                         stop_on_capture_failure: true,
                         stop_on_send_failure: true,
                         fragment_pacing: ClientVideoFrameFragmentPacingPolicy::default(),
@@ -17190,6 +17514,7 @@ mod tests {
                     max_ticks: 1,
                     frame_wait_timeout_micros: 0,
                     frame_interval_micros: 0,
+                    cadence_mode: ClientContinuousRealEncodedVideoFrameCadenceMode::Fixed,
                     stop_on_capture_failure: true,
                     stop_on_send_failure: true,
                     fragment_pacing: ClientVideoFrameFragmentPacingPolicy::default(),
@@ -17253,6 +17578,7 @@ mod tests {
                         max_ticks: 1,
                         frame_wait_timeout_micros: 0,
                         frame_interval_micros: 0,
+                        cadence_mode: ClientContinuousRealEncodedVideoFrameCadenceMode::Fixed,
                         stop_on_capture_failure: true,
                         stop_on_send_failure: true,
                         fragment_pacing: ClientVideoFrameFragmentPacingPolicy::default(),
@@ -17297,6 +17623,7 @@ mod tests {
                         max_ticks: 1,
                         frame_wait_timeout_micros: 0,
                         frame_interval_micros: 0,
+                        cadence_mode: ClientContinuousRealEncodedVideoFrameCadenceMode::Fixed,
                         stop_on_capture_failure: true,
                         stop_on_send_failure: true,
                         fragment_pacing: ClientVideoFrameFragmentPacingPolicy::default(),
@@ -17584,6 +17911,7 @@ mod tests {
                 max_ticks: 5,
                 frame_wait_timeout_micros: 0,
                 frame_interval_micros: 0,
+                cadence_mode: ClientContinuousRealEncodedVideoFrameCadenceMode::Fixed,
                 stop_on_capture_failure: true,
                 stop_on_send_failure: true,
                 fragment_pacing: ClientVideoFrameFragmentPacingPolicy::default(),
@@ -17723,6 +18051,7 @@ mod tests {
                 max_ticks: 5,
                 frame_wait_timeout_micros: 0,
                 frame_interval_micros: 0,
+                cadence_mode: ClientContinuousRealEncodedVideoFrameCadenceMode::Fixed,
                 stop_on_capture_failure: true,
                 stop_on_send_failure: true,
                 fragment_pacing: ClientVideoFrameFragmentPacingPolicy::default(),

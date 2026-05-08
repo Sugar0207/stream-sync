@@ -5,6 +5,54 @@
 - Codex code + docs update
 
 ### Work
+- Added an opt-in deadline-based cadence mode to the bounded client real
+  encoded video PoC.
+- Added CLI parsing for:
+  - `--cadence-mode fixed`
+  - `--cadence-mode deadline`
+- Kept `fixed` as the default to avoid changing existing runs.
+- Implemented deadline scheduling with the policy:
+  - `run_start + output_frame_index * frame_interval`
+  - sleep only when current elapsed time is earlier than the deadline
+  - otherwise skip sleep and count deadline overrun
+- Extended bounded summary with:
+  - `cadence_mode`
+  - `deadline_sleep_ms`
+  - `deadline_overrun_ms`
+  - `late_tick_count`
+  - `max_deadline_overrun_ms`
+- Added focused tests for:
+  - deadline mode sleeping when the run is ahead of schedule
+  - deadline mode skipping sleep and counting overrun when the run is late
+
+### Changed Files
+- `apps/client/src/lib.rs`
+- `apps/client/src/main.rs`
+- `docs/operations/manual-real-encoded-video-poc.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### Decision
+- Persistent encoder human validation proved that encode cost is no longer the
+  primary blocker: `avg_encode_elapsed_ms` fell from `72.569` to `3.821`.
+- The next blocker is cadence sleep, so the bounded loop now has a dedicated
+  deadline mode for the next human re-measure.
+- Server, switcher, handoff pipe, and multi-client validation remain out of
+  scope for this step.
+
+### Validation
+- `cargo fmt`
+- `cargo fmt --check`
+- `cargo check --workspace`
+- focused client tests
+- `cargo test --workspace`
+- `git diff --check`
+
+## 2026-05-09
+### Type
+- Codex code + docs update
+
+### Work
 - Integrated the experimental persistent FFmpeg access-unit session into
   `--auth-real-encoded-video-frame-poc-bounded` as an opt-in path.
 - Added bounded runtime selection:

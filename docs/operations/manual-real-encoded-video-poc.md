@@ -2599,6 +2599,20 @@ Current implementation status:
 - the default bounded path is still the existing per-frame encoder runtime;
   persistent mode remains experimental until the next human re-measure confirms
   that `avg_encode_elapsed_ms` materially drops from the current `72.569ms`
+- that re-measure now exists for the persistent path:
+  - `encoder_runtime=persistent`
+  - `encoder_process_start_count=1`
+  - `frames_sent=100`
+  - `persistent_access_units_emitted=100`
+  - `persistent_no_complete_access_unit_count=6`
+  - `last_encoder_exit_status=0`
+  - `elapsed_ms=4775.901`
+  - `avg_encode_elapsed_ms=3.821`
+  - `effective_output_fps=20.938`
+  - `loop_interval_sleep_ms=3566.631`
+  - `send_elapsed_ms=186.360`
+- this confirms the persistent encoder runtime removed the main encoder-cost
+  bottleneck. The next bottleneck is cadence sleep, not encode time
 
 Suggested narrow boundary split:
 
@@ -2625,16 +2639,22 @@ Deadline-based cadence redesign note:
 
 - the current bounded loop sleeps by fixed cadence policy even when processing
   is already expensive
-- the next loop policy should calculate a per-tick deadline from:
-  `run_start + tick_index * frame_interval`
+- the new opt-in deadline mode now calculates a per-output deadline from:
+  `run_start + output_frame_index * frame_interval`
 - if current time is earlier than the deadline, sleep only the remaining delta
 - if current time is later than the deadline, sleep `0` and accumulate overrun
   instead of inserting extra delay
-- summary should later separate:
+- bounded PoC CLI surface:
+  - `--cadence-mode fixed`
+  - `--cadence-mode deadline`
+- summary now separates:
+  - `cadence_mode`
   - `deadline_sleep_ms`
   - `deadline_overrun_ms`
   - `late_tick_count`
-  - `dropped_or_late_ticks` if a later policy starts skipping work explicitly
+  - `max_deadline_overrun_ms`
+- `loop_interval_sleep_ms` is still kept as the total actual cadence sleep for
+  backward-compatible human validation reading
 
 Success condition for the next encoder/cadence slice:
 
