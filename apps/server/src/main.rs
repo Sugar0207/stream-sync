@@ -1564,6 +1564,106 @@ fn auth_video_queue_summary(
     }
 }
 
+fn expected_reassembled_frames_met(
+    policy: stream_sync_server::ServerReceiveAuthVideoQueueOnceManualPolicy,
+    summary: Option<&stream_sync_server::ServerReceiveAuthVideoQueueOnceVideoSummary>,
+) -> bool {
+    if !policy.stop_after_expected_reassembled_frames {
+        return true;
+    }
+
+    summary
+        .map(|summary| summary.frames_reassembled >= policy.expected_reassembled_frames.max(1))
+        .unwrap_or(false)
+}
+
+fn expected_reassembled_clients_met(
+    policy: stream_sync_server::ServerReceiveAuthVideoQueueOnceManualPolicy,
+    summary: Option<&stream_sync_server::ServerReceiveAuthVideoQueueOnceVideoSummary>,
+) -> bool {
+    if policy.expected_reassembled_clients == 0 {
+        return true;
+    }
+
+    let Some(summary) = summary else {
+        return false;
+    };
+
+    if summary.observed_reassembled_clients < policy.expected_reassembled_clients as usize {
+        return false;
+    }
+
+    if policy.expected_reassembled_frames_per_client == 0 {
+        return true;
+    }
+
+    summary
+        .per_client_reassembled_frames
+        .values()
+        .filter(|count| **count >= policy.expected_reassembled_frames_per_client)
+        .count()
+        >= policy.expected_reassembled_clients as usize
+}
+
+fn format_receive_auth_video_queue_reason(
+    policy: stream_sync_server::ServerReceiveAuthVideoQueueOnceManualPolicy,
+    stop_reason: Option<stream_sync_server::ServerReceiveAuthVideoQueueStopReason>,
+) -> &'static str {
+    match stop_reason {
+        Some(stream_sync_server::ServerReceiveAuthVideoQueueStopReason::DirectFrameQueued) => {
+            "manual_stop"
+        }
+        Some(
+            stream_sync_server::ServerReceiveAuthVideoQueueStopReason::ReassembledFramesThresholdReached,
+        ) => "expected_frames_reached",
+        Some(
+            stream_sync_server::ServerReceiveAuthVideoQueueStopReason::ClientAwareThresholdReached,
+        ) => "expected_clients_reached",
+        Some(
+            stream_sync_server::ServerReceiveAuthVideoQueueStopReason::ReassembledFramesAndClientAwareThresholdReached,
+        ) => {
+            if policy.expected_reassembled_clients > 0 {
+                "expected_clients_reached"
+            } else {
+                "expected_frames_reached"
+            }
+        }
+        Some(stream_sync_server::ServerReceiveAuthVideoQueueStopReason::ReceiveTimedOut) => {
+            "receive_timeout"
+        }
+        Some(stream_sync_server::ServerReceiveAuthVideoQueueStopReason::MaxVideoPacketsReached) => {
+            "max_packets_reached"
+        }
+        None => "manual_stop",
+    }
+}
+
+fn receive_auth_video_queue_validation_ready(
+    policy: stream_sync_server::ServerReceiveAuthVideoQueueOnceManualPolicy,
+    summary: Option<&stream_sync_server::ServerReceiveAuthVideoQueueOnceVideoSummary>,
+) -> bool {
+    expected_reassembled_frames_met(policy, summary)
+        && expected_reassembled_clients_met(policy, summary)
+}
+
+fn format_receive_auth_video_queue_ready_reason(
+    policy: stream_sync_server::ServerReceiveAuthVideoQueueOnceManualPolicy,
+    summary: Option<&stream_sync_server::ServerReceiveAuthVideoQueueOnceVideoSummary>,
+) -> &'static str {
+    if receive_auth_video_queue_validation_ready(policy, summary) {
+        if policy.expected_reassembled_clients > 0 {
+            "expected_clients_reached"
+        } else {
+            "expected_frames_reached"
+        }
+    } else {
+        format_receive_auth_video_queue_reason(
+            policy,
+            summary.and_then(|summary| summary.stop_reason),
+        )
+    }
+}
+
 fn format_receive_auth_video_queue_runtime_summary(
     outcome: &stream_sync_server::ServerReceiveAuthVideoQueueOnceStartupOutcome,
     policy: stream_sync_server::ServerReceiveAuthVideoQueueOnceManualPolicy,
@@ -1610,9 +1710,15 @@ fn format_receive_auth_video_queue_runtime_summary(
             .map(|reason| format!("{reason:?}"))
             .unwrap_or_else(|| "none".to_string()),
     };
+    let receive_stop_reason = format_receive_auth_video_queue_reason(
+        policy,
+        video_summary.and_then(|summary| summary.stop_reason),
+    );
+    let ready_reason = format_receive_auth_video_queue_ready_reason(policy, video_summary);
+    let validation_ready = receive_auth_video_queue_validation_ready(policy, video_summary);
 
     format!(
-        "receive auth/video queue runtime handled auth on {}; auth_accepted={} auth_reason={:?} auth_status={} auth_operational_reason={} registration_status={} registration_reason={} client_id={} run_id={} video={} queued={} queue_len={} dropped_oldest={} registered_clients={} manual_max_video_packets={} manual_receive_timeout_ms={} manual_expected_reassembled_frames={} manual_stop_after_expected_reassembled_frames={} manual_expected_reassembled_clients={} manual_expected_reassembled_frames_per_client={} manual_receive_buffer_requested_bytes={} manual_receive_buffer_effective_bytes={} manual_receive_buffer_set_error={} manual_receive_buffer_read_error={} packets_received={} fragments_received={} frames_reassembled={} frames_queued={} direct_frames_queued={} rejected_packets={} rejected_fragments={} duplicate_fragments={} non_video_packets={} incomplete_reassembly_frames={} incomplete_frame_progress={} observed_reassembled_clients={} per_client_reassembled_frames={} stop_reason={} receive_timed_out={} max_packets_reached={}",
+        "receive auth/video queue runtime handled auth on {}; auth_accepted={} auth_reason={:?} auth_status={} auth_operational_reason={} registration_status={} registration_reason={} client_id={} run_id={} video={} queued={} queue_len={} dropped_oldest={} registered_clients={} manual_max_video_packets={} manual_receive_timeout_ms={} manual_expected_reassembled_frames={} manual_stop_after_expected_reassembled_frames={} manual_expected_reassembled_clients={} manual_expected_reassembled_frames_per_client={} manual_receive_buffer_requested_bytes={} manual_receive_buffer_effective_bytes={} manual_receive_buffer_set_error={} manual_receive_buffer_read_error={} packets_received={} fragments_received={} frames_reassembled={} frames_queued={} direct_frames_queued={} rejected_packets={} rejected_fragments={} duplicate_fragments={} non_video_packets={} incomplete_reassembly_frames={} incomplete_frame_progress={} observed_reassembled_clients={} per_client_reassembled_frames={} validation_ready={} ready_reason={} receive_stop_reason={} stop_reason={} receive_timed_out={} max_packets_reached={}",
         outcome.bind_address,
         decision.accepted,
         decision.reason_code,
@@ -1672,6 +1778,9 @@ fn format_receive_auth_video_queue_runtime_summary(
             .map(|summary| summary.observed_reassembled_clients.to_string())
             .unwrap_or_else(|| "none".to_string()),
         per_client_reassembled_frames,
+        validation_ready,
+        ready_reason,
+        receive_stop_reason,
         stop_reason,
         video_summary
             .map(|summary| summary.receive_timed_out.to_string())
@@ -1805,15 +1914,26 @@ fn format_named_pipe_handoff_server_ready_line(
     let per_client_reassembled_frames = video_summary
         .map(format_per_client_reassembled_frames)
         .unwrap_or_else(|| "none".to_string());
+    let validation_ready = receive_auth_video_queue_validation_ready(policy, video_summary);
+    let ready_reason = format_receive_auth_video_queue_ready_reason(policy, video_summary);
+    let receive_stop_reason = format_receive_auth_video_queue_reason(
+        policy,
+        video_summary.and_then(|summary| summary.stop_reason),
+    );
 
     format!(
-        "server named-pipe handoff bounded ready handoff_ready=true pipe_name={} actual_pipe_path={} queued_frames={} registered_clients={} expected_handoff_requests={} expected_reassembled_frames={} observed_reassembled_clients={} per_client_reassembled_frames={}",
+        "server named-pipe handoff bounded ready handoff_ready=true validation_ready={} ready_reason={} receive_stop_reason={} pipe_name={} actual_pipe_path={} queued_frames={} registered_clients={} expected_handoff_requests={} expected_reassembled_frames={} expected_clients={} expected_per_client_frames={} observed_reassembled_clients={} per_client_reassembled_frames={}",
+        validation_ready,
+        ready_reason,
+        receive_stop_reason,
         pipe_name,
         actual_pipe_path,
         outcome.video_queue_state.total_len(),
         outcome.registry.entries().count(),
         max_requests,
         policy.expected_reassembled_frames,
+        policy.expected_reassembled_clients,
+        policy.expected_reassembled_frames_per_client,
         video_summary
             .map(|summary| summary.observed_reassembled_clients.to_string())
             .unwrap_or_else(|| "none".to_string()),
@@ -2633,6 +2753,7 @@ mod tests {
         );
 
         assert!(ready_line.contains("handoff_ready=true"));
+        assert!(ready_line.contains("validation_ready=false"));
         assert!(ready_line.contains("pipe_name=pipe-b"));
         assert!(ready_line.contains(r"actual_pipe_path=\\.\pipe\pipe-b"));
         assert!(ready_line.contains("expected_handoff_requests=3"));
@@ -2732,6 +2853,159 @@ mod tests {
 
     #[cfg(windows)]
     #[test]
+    fn server_handoff_ready_line_is_not_validation_ready_before_expected_frames() {
+        let mut per_client_reassembled_frames = std::collections::BTreeMap::new();
+        per_client_reassembled_frames.insert("player1/run-1".to_string(), 2);
+        let ready_line = super::format_named_pipe_handoff_server_ready_line(
+            "pipe-timeout-frames",
+            &test_receive_outcome_with_video_summary(
+                stream_sync_server::ServerReceiveAuthVideoQueueOnceVideoSummary {
+                    packets_received: 10,
+                    fragments_received: 10,
+                    frames_reassembled: 2,
+                    frames_queued: 2,
+                    direct_frames_queued: 0,
+                    rejected_packets: 0,
+                    rejected_fragments: 0,
+                    duplicate_fragments: 0,
+                    non_video_packets: 0,
+                    incomplete_reassembly_frames: 0,
+                    queue_len: 2,
+                    incomplete_frame_progress: Vec::new(),
+                    observed_reassembled_clients: 1,
+                    per_client_reassembled_frames,
+                    receive_timed_out: true,
+                    max_packets_reached: false,
+                    stop_reason: Some(
+                        stream_sync_server::ServerReceiveAuthVideoQueueStopReason::ReceiveTimedOut,
+                    ),
+                },
+            ),
+            360,
+            stream_sync_server::ServerReceiveAuthVideoQueueOnceManualPolicy {
+                max_video_packets: 500_000,
+                receive_timeout: std::time::Duration::from_millis(30_000),
+                expected_reassembled_frames: 1_800,
+                stop_after_expected_reassembled_frames: true,
+                receive_buffer_bytes: 268_435_456,
+                expected_reassembled_clients: 0,
+                expected_reassembled_frames_per_client: 0,
+            },
+        );
+
+        assert!(ready_line.contains("handoff_ready=true"));
+        assert!(ready_line.contains("validation_ready=false"));
+        assert!(ready_line.contains("ready_reason=receive_timeout"));
+        assert!(ready_line.contains("receive_stop_reason=receive_timeout"));
+        assert!(ready_line.contains("expected_reassembled_frames=1800"));
+        assert!(ready_line.contains("expected_clients=0"));
+        assert!(ready_line.contains("per_client_reassembled_frames=player1/run-1:2"));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn server_handoff_ready_line_is_not_validation_ready_before_expected_clients() {
+        let mut per_client_reassembled_frames = std::collections::BTreeMap::new();
+        per_client_reassembled_frames.insert("player1/run-1".to_string(), 1_800);
+        let ready_line = super::format_named_pipe_handoff_server_ready_line(
+            "pipe-timeout-clients",
+            &test_receive_outcome_with_video_summary(
+                stream_sync_server::ServerReceiveAuthVideoQueueOnceVideoSummary {
+                    packets_received: 100,
+                    fragments_received: 100,
+                    frames_reassembled: 1_800,
+                    frames_queued: 1_800,
+                    direct_frames_queued: 0,
+                    rejected_packets: 0,
+                    rejected_fragments: 0,
+                    duplicate_fragments: 0,
+                    non_video_packets: 0,
+                    incomplete_reassembly_frames: 0,
+                    queue_len: 1_800,
+                    incomplete_frame_progress: Vec::new(),
+                    observed_reassembled_clients: 1,
+                    per_client_reassembled_frames,
+                    receive_timed_out: true,
+                    max_packets_reached: false,
+                    stop_reason: Some(
+                        stream_sync_server::ServerReceiveAuthVideoQueueStopReason::ReceiveTimedOut,
+                    ),
+                },
+            ),
+            360,
+            stream_sync_server::ServerReceiveAuthVideoQueueOnceManualPolicy {
+                max_video_packets: 500_000,
+                receive_timeout: std::time::Duration::from_millis(30_000),
+                expected_reassembled_frames: 1_800,
+                stop_after_expected_reassembled_frames: true,
+                receive_buffer_bytes: 268_435_456,
+                expected_reassembled_clients: 2,
+                expected_reassembled_frames_per_client: 900,
+            },
+        );
+
+        assert!(ready_line.contains("handoff_ready=true"));
+        assert!(ready_line.contains("validation_ready=false"));
+        assert!(ready_line.contains("ready_reason=receive_timeout"));
+        assert!(ready_line.contains("receive_stop_reason=receive_timeout"));
+        assert!(ready_line.contains("expected_clients=2"));
+        assert!(ready_line.contains("expected_per_client_frames=900"));
+        assert!(ready_line.contains("observed_reassembled_clients=1"));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn server_handoff_ready_line_becomes_validation_ready_after_expected_conditions() {
+        let mut per_client_reassembled_frames = std::collections::BTreeMap::new();
+        per_client_reassembled_frames.insert("player1/run-1".to_string(), 900);
+        per_client_reassembled_frames.insert("player2/run-1".to_string(), 900);
+        let ready_line = super::format_named_pipe_handoff_server_ready_line(
+            "pipe-expected-ready",
+            &test_receive_outcome_with_video_summary(
+                stream_sync_server::ServerReceiveAuthVideoQueueOnceVideoSummary {
+                    packets_received: 200,
+                    fragments_received: 200,
+                    frames_reassembled: 1_800,
+                    frames_queued: 1_800,
+                    direct_frames_queued: 0,
+                    rejected_packets: 0,
+                    rejected_fragments: 0,
+                    duplicate_fragments: 0,
+                    non_video_packets: 0,
+                    incomplete_reassembly_frames: 0,
+                    queue_len: 1_800,
+                    incomplete_frame_progress: Vec::new(),
+                    observed_reassembled_clients: 2,
+                    per_client_reassembled_frames,
+                    receive_timed_out: false,
+                    max_packets_reached: false,
+                    stop_reason: Some(
+                        stream_sync_server::ServerReceiveAuthVideoQueueStopReason::ReassembledFramesAndClientAwareThresholdReached,
+                    ),
+                },
+            ),
+            360,
+            stream_sync_server::ServerReceiveAuthVideoQueueOnceManualPolicy {
+                max_video_packets: 500_000,
+                receive_timeout: std::time::Duration::from_millis(30_000),
+                expected_reassembled_frames: 1_800,
+                stop_after_expected_reassembled_frames: true,
+                receive_buffer_bytes: 268_435_456,
+                expected_reassembled_clients: 2,
+                expected_reassembled_frames_per_client: 900,
+            },
+        );
+
+        assert!(ready_line.contains("handoff_ready=true"));
+        assert!(ready_line.contains("validation_ready=true"));
+        assert!(ready_line.contains("ready_reason=expected_clients_reached"));
+        assert!(ready_line.contains("receive_stop_reason=expected_clients_reached"));
+        assert!(ready_line
+            .contains("per_client_reassembled_frames=player1/run-1:900|player2/run-1:900"));
+    }
+
+    #[cfg(windows)]
+    #[test]
     fn server_handoff_service_session_summary_includes_receive_and_bounded_lines() {
         let summary = super::format_named_pipe_handoff_service_session_summary(
             "pipe-session",
@@ -2764,6 +3038,68 @@ mod tests {
         assert!(summary.contains("request_index=0"));
         assert!(summary.contains("request_id=1"));
         assert!(summary.contains("result_kind=FrameRead"));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn server_handoff_service_session_summary_reports_timeout_ready_reason() {
+        let summary = super::format_named_pipe_handoff_service_session_summary(
+            "pipe-timeout-summary",
+            &test_receive_outcome_with_video_summary(
+                stream_sync_server::ServerReceiveAuthVideoQueueOnceVideoSummary {
+                    packets_received: 10,
+                    fragments_received: 10,
+                    frames_reassembled: 2,
+                    frames_queued: 2,
+                    direct_frames_queued: 0,
+                    rejected_packets: 0,
+                    rejected_fragments: 0,
+                    duplicate_fragments: 0,
+                    non_video_packets: 0,
+                    incomplete_reassembly_frames: 0,
+                    queue_len: 2,
+                    incomplete_frame_progress: Vec::new(),
+                    observed_reassembled_clients: 1,
+                    per_client_reassembled_frames: {
+                        let mut values = std::collections::BTreeMap::new();
+                        values.insert("player1/run-1".to_string(), 2);
+                        values
+                    },
+                    receive_timed_out: true,
+                    max_packets_reached: false,
+                    stop_reason: Some(
+                        stream_sync_server::ServerReceiveAuthVideoQueueStopReason::ReceiveTimedOut,
+                    ),
+                },
+            ),
+            &test_service_session_output().handoff,
+            stream_sync_server::ServerReceiveAuthVideoQueueOnceManualPolicy {
+                max_video_packets: 500_000,
+                receive_timeout: std::time::Duration::from_millis(30_000),
+                expected_reassembled_frames: 1_800,
+                stop_after_expected_reassembled_frames: true,
+                receive_buffer_bytes: 268_435_456,
+                expected_reassembled_clients: 2,
+                expected_reassembled_frames_per_client: 900,
+            },
+        );
+
+        assert!(summary.contains("validation_ready=false"));
+        assert!(summary.contains("ready_reason=receive_timeout"));
+        assert!(summary.contains("receive_stop_reason=receive_timeout"));
+        assert!(summary.contains("per_client_reassembled_frames=player1/run-1:2"));
+    }
+
+    #[cfg(windows)]
+    fn test_receive_outcome_with_video_summary(
+        summary: stream_sync_server::ServerReceiveAuthVideoQueueOnceVideoSummary,
+    ) -> stream_sync_server::ServerReceiveAuthVideoQueueOnceStartupOutcome {
+        let mut receive = test_service_session_output().receive;
+        receive.video = stream_sync_server::ServerReceiveAuthVideoQueueOnceVideoOutcome::Received {
+            summary,
+            queue: None,
+        };
+        receive
     }
 
     #[cfg(windows)]

@@ -5,6 +5,57 @@
 - Codex code + docs update
 
 ### Work
+- Investigated the premature-looking readiness in
+  `--receive-auth-video-queue-and-serve-handoff-many`.
+- Confirmed the current receive phase already stops on:
+  - expected frame/client thresholds
+  - `ReceiveTimedOut`
+  - `MaxVideoPacketsReached`
+- Confirmed the confusing part was the ready line itself:
+  - the server printed `handoff_ready=true` immediately after receive stopped
+  - the line did not say whether expected receive thresholds were actually met
+  - a timeout fallback therefore looked like a successful validation-ready state
+- Added explicit bounded readiness observability to the receive summary and the
+  handoff ready line:
+  - `validation_ready=true|false`
+  - `ready_reason=expected_clients_reached|expected_frames_reached|receive_timeout|max_packets_reached|manual_stop`
+  - `receive_stop_reason=...`
+  - `expected_clients=...`
+  - `expected_per_client_frames=...`
+  - `observed_reassembled_clients=...`
+  - `per_client_reassembled_frames=...`
+- Added focused server tests that fix the intended interpretation:
+  - expected frames unmet -> not `validation_ready`
+  - expected clients unmet -> not `validation_ready`
+  - expected thresholds reached -> `validation_ready=true`
+  - timeout fallback still exposes `ready_reason` and `receive_stop_reason`
+- Updated the 2-client handoff human-run doc so the operator gate is now:
+  - `handoff_ready=true`
+  - `validation_ready=true`
+  instead of keying only off `handoff_ready=true`.
+
+### Changed Files
+- `apps/server/src/main.rs`
+- `docs/operations/two-client-handoff-validation.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### Decision
+- The narrow fix is not to change switcher/client/encoder behavior.
+- For human validation, timeout/max-packets fallback must stay bounded but must
+  no longer be mistaken for a successful validation-ready state.
+
+### Validation
+- `cargo fmt`
+- focused server handoff tests:
+  - `cargo test -p stream-sync-server server_handoff_ready_line -- --nocapture`
+  - `cargo test -p stream-sync-server server_handoff_service_session_summary -- --nocapture`
+
+## 2026-05-09
+### Type
+- Codex code + docs update
+
+### Work
 - Investigated the current same-PC server -> switcher handoff timing ambiguity:
   - starting switcher too early could still lead to `NoFrame`
   - starting switcher too late could hit `connect:(os_error_2)` after the

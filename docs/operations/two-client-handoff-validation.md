@@ -174,6 +174,9 @@ Primary receive-side fields:
 - `manual_expected_reassembled_frames_per_client`
 - `observed_reassembled_clients`
 - `per_client_reassembled_frames`
+- `validation_ready`
+- `ready_reason`
+- `receive_stop_reason`
 - `stop_reason`
 
 ### Server Bounded Handoff Request Lines
@@ -181,7 +184,17 @@ Primary receive-side fields:
 Primary handoff-side fields:
 
 - `handoff_ready`
+- `validation_ready`
+- `ready_reason`
+- `receive_stop_reason`
 - `actual_pipe_path`
+- `queued_frames`
+- `registered_clients`
+- `expected_reassembled_frames`
+- `expected_clients`
+- `expected_per_client_frames`
+- `observed_reassembled_clients`
+- `per_client_reassembled_frames`
 - `request_id`
 - `result_kind`
 - `selected_client_id`
@@ -371,14 +384,33 @@ What this should guarantee:
 - after the receive phase finishes and the named-pipe server is actually ready,
   server stdout now emits a readiness line such as:
   - `handoff_ready=true`
+  - `validation_ready=true`
+  - `ready_reason=expected_clients_reached`
+  - `receive_stop_reason=expected_clients_reached`
   - `pipe_name=streamsync-handoff-dev`
   - `actual_pipe_path=\\.\pipe\streamsync-handoff-dev`
+  - `queued_frames=1800`
+  - `registered_clients=2`
+  - `expected_reassembled_frames=1800`
+  - `expected_clients=2`
+  - `expected_per_client_frames=900`
+  - `observed_reassembled_clients=2`
+  - `per_client_reassembled_frames=player1/streamsync-dev-session:900|player2/streamsync-dev-session:900`
 
 Human start-order rule:
 
 - do not start Window 4, Window 4a, or Window 4b before server stdout prints
-  `handoff_ready=true`
-- once that line appears, use the printed `actual_pipe_path` as the source of
+  both:
+  - `handoff_ready=true`
+  - `validation_ready=true`
+- if server instead prints:
+  - `handoff_ready=true`
+  - `validation_ready=false`
+  - `ready_reason=receive_timeout`
+  - or `ready_reason=max_packets_reached`
+  stop the run and treat it as a failed validation-ready gate instead of
+  starting switcher
+- once the valid readiness line appears, use the printed `actual_pipe_path` as the source of
   truth and start switcher/raw one-shot reads immediately
 
 ### Window 2: Client 1
@@ -398,7 +430,9 @@ Human start-order rule:
 Start this only after:
 
 - both clients have been started
-- server stdout has printed `handoff_ready=true`
+- server stdout has printed:
+  - `handoff_ready=true`
+  - `validation_ready=true`
 
 ```powershell
 .\target\debug\stream-sync-switcher.exe --four-view-two-real-handoff-preview-loop streamsync-handoff-dev 0 player1 streamsync-dev-session 1 player2 streamsync-dev-session 180
@@ -443,8 +477,11 @@ reports `connect:(os_error_2)`, read the summaries in this order:
 1. server bounded handoff line
    - confirm:
      - `handoff_ready=true`
+     - `validation_ready=true`
      - `pipe_name=streamsync-handoff-dev`
      - `actual_pipe_path=\\.\pipe\streamsync-handoff-dev`
+     - `ready_reason=expected_clients_reached`
+     - `receive_stop_reason=expected_clients_reached`
 2. if server already printed `handoff_stopped=true`
    - treat the bounded session as finished and rerun Window 1 before launching
      switcher
@@ -508,6 +545,11 @@ Also acceptable:
   - `selected_client_id=player1`
   - `selected_client_id=player2`
 - `handoff_error=none`
+- readiness line shows:
+  - `handoff_ready=true`
+  - `validation_ready=true`
+  - `ready_reason=expected_clients_reached`
+  - `receive_stop_reason=expected_clients_reached`
 
 ### Switcher Side
 
@@ -570,6 +612,9 @@ manual_expected_reassembled_clients=
 manual_expected_reassembled_frames_per_client=
 observed_reassembled_clients=
 per_client_reassembled_frames=
+validation_ready=
+ready_reason=
+receive_stop_reason=
 stop_reason=
 
 [server handoff request lines]
