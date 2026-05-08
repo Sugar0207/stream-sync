@@ -2510,6 +2510,96 @@ Interpretation:
 - `last_send_error=PacketTooLarge { ... }` after fragmentation support usually means a fragment packet still exceeded the conservative safe datagram limit, which should be treated as a bug or policy/config issue.
 - `last_send_error=Send { kind: ..., message: ... }` preserves the OS `send_to` error kind and message.
 
+### 30fps Follow-Up Design Note
+
+Latest human validation for
+`--auth-real-encoded-video-frame-poc-bounded configs/manual/client.player1.toml 100 16 1`
+showed:
+
+- `frames_sent=100`
+- `elapsed_ms=12977.898`
+- `capture_elapsed_ms=504.215`
+- `encode_elapsed_ms=7256.936`
+- `avg_capture_elapsed_ms=5.042`
+- `avg_encode_elapsed_ms=72.569`
+- `effective_output_fps=7.705`
+- `loop_interval_sleep_ms=3366.633`
+- `send_elapsed_ms=1706.978`
+
+Current interpretation:
+
+- capture is stable in this run
+- send/pacing is not the main bottleneck in this run
+- the main 30fps blocker is encoder cost because
+  `avg_encode_elapsed_ms=72.569 > 33.3ms/frame`
+- the bounded loop cadence sleep is also materially visible through
+  `loop_interval_sleep_ms=3366.633`
+
+Minimal next slice for a persistent FFmpeg encoder runtime:
+
+1. start one `ffmpeg` process per bounded run or per live session, not per
+   frame
+2. keep one raw-frame input stream open and write BGRA frames to `stdin`
+3. keep one encoded output stream open and read H.264 Annex B bytes from
+   `stdout`
+4. add a small client-owned access-unit reader that groups Annex B NAL units
+   into one encoded frame result per submitted input frame
+5. return typed outcomes instead of string-only failure summaries:
+   - `EncoderStarted`
+   - `EncodedAccessUnit`
+   - `EncoderBackpressure`
+   - `EncoderStdoutClosed`
+   - `EncoderStdinWriteFailed`
+   - `EncoderParseFailed`
+   - `EncoderFlushFailed`
+   - `EncoderExitedNonZero`
+6. keep stderr capture separate so human validation can still read FFmpeg
+   diagnostics without mixing them into H.264 payload parsing
+
+Suggested narrow boundary split:
+
+- `ClientPersistentH264EncoderRuntime`:
+  owns child process, `stdin`, `stdout`, shutdown/flush lifecycle
+- `ClientPersistentH264EncoderBoundary`:
+  accepts one `ClientRawCapturedVideoFrame`, writes bytes, waits for one access
+  unit, returns one typed encoded-frame outcome
+- `ClientAnnexBAccessUnitReader`:
+  accumulates stdout bytes and extracts one frame-sized access unit without
+  changing protocol, server, or switcher behavior
+
+Shutdown / flush expectations for the minimal slice:
+
+- normal bounded completion should close `stdin`, drain remaining encoded bytes,
+  and emit a typed final status
+- abnormal child exit should be surfaced as a typed encoder failure, not hidden
+  inside `last_ffmpeg_error`
+- summary fields should later expose at least:
+  `encoder_process_start_count`, `encoder_process_reuse=true|false`,
+  `encoder_flush_elapsed_ms`, and `last_encoder_exit_status`
+
+Deadline-based cadence redesign note:
+
+- the current bounded loop sleeps by fixed cadence policy even when processing
+  is already expensive
+- the next loop policy should calculate a per-tick deadline from:
+  `run_start + tick_index * frame_interval`
+- if current time is earlier than the deadline, sleep only the remaining delta
+- if current time is later than the deadline, sleep `0` and accumulate overrun
+  instead of inserting extra delay
+- summary should later separate:
+  - `deadline_sleep_ms`
+  - `deadline_overrun_ms`
+  - `late_tick_count`
+  - `dropped_or_late_ticks` if a later policy starts skipping work explicitly
+
+Success condition for the next encoder/cadence slice:
+
+- `avg_encode_elapsed_ms` drops far below the current `72.569ms`
+- `effective_output_fps` moves toward `30fps`
+- deadline-based sleep no longer adds delay on already-late ticks
+- no server, switcher, or handoff changes are required for this client-only
+  validation step
+
 ### Server Queue / Reassembly
 
 Fragment receive/reassembly proof:

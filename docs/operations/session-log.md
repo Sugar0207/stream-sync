@@ -1,5 +1,67 @@
 <!-- stream-sync/docs/operations/session-log.md -->
 
+## 2026-05-09
+### Type
+- Codex docs update
+
+### Work
+- Investigated the latest 30fps-oriented human validation result for
+  `--auth-real-encoded-video-frame-poc-bounded`:
+  - `configured_max_frames=100`
+  - `configured_max_ticks=1000`
+  - `configured_frame_interval_ms=33.333`
+  - `frames_sent=100`
+  - `elapsed_ms=12977.898`
+  - `capture_elapsed_ms=504.215`
+  - `encode_elapsed_ms=7256.936`
+  - `avg_capture_elapsed_ms=5.042`
+  - `avg_encode_elapsed_ms=72.569`
+  - `effective_output_fps=7.705`
+  - `effective_send_fps=58.583`
+  - `loop_interval_sleep_ms=3366.633`
+  - `send_elapsed_ms=1706.978`
+- Fixed the current interpretation in docs:
+  - capture is stable in this run
+  - send/pacing is not the main bottleneck in this run
+  - `avg_encode_elapsed_ms=72.569` is the primary 30fps blocker because it is
+    already over the `33.3ms/frame` budget before adding send or cadence
+    overhead
+  - `loop_interval_sleep_ms=3366.633` is a secondary but still material source
+    of delay
+- Added a client-only design note for the next encoder slice:
+  - replace per-frame FFmpeg process spawn with one persistent FFmpeg child per
+    bounded run or live session
+  - keep raw BGRA `stdin` open across frames
+  - keep H.264 Annex B `stdout` open across frames
+  - add a client-owned access-unit reader to recover one encoded frame result
+    per submitted raw frame
+  - define typed startup / encode / flush / shutdown outcomes instead of
+    relying only on string summaries
+- Added a deadline-based cadence redesign note:
+  - compute each tick deadline from run start plus tick index times frame
+    interval
+  - do not sleep when processing is already late
+  - later summary should expose deadline sleep, deadline overrun, and late-tick
+    counters separately
+- Kept server, switcher, 4-client validation, and handoff behavior out of scope
+  for this slice.
+
+### Changed Files
+- `docs/operations/manual-real-encoded-video-poc.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### Decision
+- Treat the current 30fps gap as primarily an encoder-runtime problem, not a
+  capture-source freshness problem.
+- Use a persistent FFmpeg runtime as the next smallest code slice instead of
+  trying to tune send pacing first.
+- Redesign cadence sleep around per-tick deadlines so the client does not add
+  extra delay after it has already missed the target frame interval.
+
+### Validation
+- `git diff --check`
+
 ## 2026-05-08
 ### Type
 - Codex code + docs update
