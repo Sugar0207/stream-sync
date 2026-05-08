@@ -5,6 +5,63 @@
 - Codex
 
 ### Work
+- Implemented the minimal auth / runtime hardening slice before long-run
+  validation.
+- Added typed operational summaries for:
+  - auth decision outcome
+  - same-client registration / re-registration outcome
+  - client-scoped runtime rejection
+  - heartbeat timeout evaluation
+- Extended server manual/runtime-visible outputs so the same narrow distinction
+  is readable from:
+  - `--auth-response-poc-once`
+  - `--receive-auth-video-queue-once`
+  - `--receive-send-runtime-bounded`
+- Added `run_id` mismatch handling to the authenticated packet gate without
+  widening retry, daemon lifecycle, or queue ownership.
+
+### Changed Files
+- `apps/server/src/lib.rs`
+- `apps/server/src/main.rs`
+- `docs/architecture/system-design.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### Decision
+- Keep auth rejection separate from runtime transient conditions:
+  - accepted auth => `Continue`
+  - `InvalidToken` / `UnknownClient` / `ProtocolMismatch` / `AlreadyConnected`
+    => `Reject`
+  - `InternalError` => `InvestigationRequired`
+- Keep same-client registration replacement continuable for this MVP slice and
+  expose the replacement shape instead of changing policy:
+  - `FreshRegistration`
+  - `IdempotentReregistration`
+  - `RunReplaced`
+  - `SourceReplaced`
+  - `SourceAndRunReplaced`
+- Treat client-scoped `run_id` mismatch as a runtime reject condition, not as
+  auth failure.
+- Treat missing heartbeat as continuable and stale heartbeat timeout as
+  `ReconnectRequired`.
+- Do not widen this slice into retry / requeue / daemon lifecycle.
+
+### Validation
+- `cargo check --workspace`
+- `cargo test -p stream-sync-server authenticated_sender_registry_registration_summary_marks_same_client_reregistration`
+- `cargo test -p stream-sync-server packet_acceptance_gate_rejects_run_id_mismatch_for_registered_source`
+- `cargo test -p stream-sync-server receive_send_runtime_bounded_launcher_records_auth_rejection_reason`
+- `cargo test -p stream-sync-server receive_send_runtime_bounded_launcher_records_gate_rejection_reason`
+- `cargo test -p stream-sync-server heartbeat_timeout_loop_tick_boundary_runs_one_client_timeout_path`
+- `cargo test -p stream-sync-server heartbeat_timeout_loop_tick_boundary_preserves_missing_client_without_side_effects`
+- `cargo test -p stream-sync-server receive_send_runtime_bounded_summary_includes_required_fields`
+- `cargo test -p stream-sync-server server_handoff_service_session_summary_includes_receive_and_bounded_lines`
+
+## 2026-05-08
+### Type
+- Codex
+
+### Work
 - Implemented the minimal long-run operational status slice for `NoFrame`,
   `Waiting`, and `HandoffError`.
 - Added typed source-backed 2-view operational summary types:

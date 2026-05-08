@@ -22,25 +22,26 @@
 ---
 
 ## 現在位置
+- 認証 / runtime hardening の最小 slice を実装した。auth decision、same-client registration、client-scoped gate rejection、heartbeat timeout を雑な文字列に寄せず typed status/reason で読めるようにし、`Reject` と `ReconnectRequired` と `InvestigationRequired` を `Continue` から分離した。manual auth PoC、`--receive-auth-video-queue-once`、`--receive-send-runtime-bounded` summary には typed auth / registration / runtime rejection visibility を追加した
 - `NoFrame` / `Waiting` / `HandoffError` の長時間 run 向け最小 status 整理を実装した。source-backed 2-view fallible validation には typed operational summary を追加し、per-side result kind を `Selected` / `NoFrame` / `Waiting` / `HandoffError` のまま保持しつつ、run-state を `Continue` / `RetryLater` / `ReconnectRequired` / `InvestigationRequired` で読めるようにした。late-drop summary あり path では post-mutation の `NoFrame` / `Waiting` 判断を summary へ接続できる
 - late frame queue mutation / jitter buffer / drop policy の最小 slice を source-backed path で実装した。`SwitcherSingleClientLateFrameQueueMutationBoundary` が oldest head を targetTime 基準で評価し、補正後 timestamp が `targetTime - max_late_micros` より古い frame だけを conservative に drop する。drop summary は testable に返し、source-backed 2-view validation では opt-in で接続できる
 - `RTT / offset` 平滑化と補正後 timestamp の targetTime selection 接続は最小 slice を完了した。server 側は latest raw estimate と smoothed estimate を分離保持し、switcher 側は optional な per-client clock offset を targetTime-aware source / scheduler / validation boundary へ薄く配線できる
 - 仕様固定、Cargo workspace 初期化、`apps/*` / `crates/*` の scaffold は完了している
 - `crates/protocol` / `crates/config` / `crates/net-core` の最小実装は揃っており、主要 message 型、timestamp 型、fixed header decode / encode、server auth 設定読み込み、`shared_token_env` 解決、UDP 1 datagram receive / send adapter までは完了している
-- server 側は auth one-shot、accepted auth registry 登録、heartbeat ack / liveness / timeout action plan / timeout apply / notice queue storage、RTT / offset state commit と metrics snapshot handoff までの最小境界が揃っている
+- server 側は auth one-shot、accepted auth registry 登録、heartbeat ack / liveness / timeout action plan / timeout apply / notice queue storage、RTT / offset state commit と metrics snapshot handoff までの最小境界が揃っている。current hardening slice では auth reject、same-client re-registration、`run_id` mismatch、unregistered/unknown client、stale heartbeat timeout の扱いを typed summary として切り出した
 - client 側は auth one-shot、heartbeat one-shot、`HeartbeatAckObservation` 付き `ClientStats` one-shot、one-tick runtime、accepted path 手動確認まで完了している
 - client continuous heartbeat loop は thin composition の completed body まで実装済みで、heartbeat timeout notice wakeup planning 境界、wakeup execution 境界、wakeup actual side-effect 境界、outer while-loop connection 境界、outer while-loop one-turn execution body 境界、actual timer wait / retry execution / reconnect 実行境界、outer while-loop 反復実行本体、reconnect policy 境界、caller-owned hook 付き actual socket 再確立境界、real UDP socket 差し替え hook、repeated body からの hook 注入経路まで完了している
 - 4-view operator MVP closeout は完了し、final regression も通過、push も完了している。bounded real encoded video / raw-key operator wrapper / `AllView` / `Focused(0..3)` / `AllView` return / raw console restore / `[video.encoder]` profile wiring / production H.264 stdout visibility / short OBS Window Capture validation までは current completed scope とする
-- 未完了の中心は認証 / runtime hardening、4-view sync orchestration の長時間運用 polish、dashboard UI rendering、continuous receive/send loop の次 slice、実キュー / 実送信 / 継続ログ出力である。continuous receive/send runtime は first implementation slice として server-owned bounded repeated runtime まで追加済みで、next major phase はその manual validation と後続の narrow expansion へ移る
+- 未完了の中心は continuous receive/send loop の次 slice、4-view sync orchestration の長時間運用 polish、dashboard UI rendering、実キュー / 実送信 / 継続ログ出力である。auth/runtime hardening は narrow slice を完了し、next major phase は continuous runtime の不足分と 2-client 長時間 validation に移る
 - `stream-sync-server --receive-send-runtime-bounded [config-path] [max-iterations] [receive-timeout-ms]` は追加済みで、1 process lifetime で 1 bound UDP socket / 1 `AuthenticatedSenderRegistry` / 1 `ServerOutboundQueueCollection` / caller-owned writers を維持しながら existing `ServerControllerReceiveSendRuntimeBoundary` を outer loop から繰り返し呼べる
-- bounded repeated runtime summary には `command_name` / `config_path` / `max_iterations` / `receive_timeout_ms` / `iterations_attempted` / `iterations_completed` / `auth_requests_received` / `auth_responses_sent` / `heartbeats_received` / `heartbeat_acks_sent` / `client_stats_received` / `client_stats_returns_sent` / `accepted_packets` / `rejected_packets` / `decode_errors` / `send_failures` / `outbound_queue_len` / `registered_clients` / `stop_reason` を出す
-- fatal/stop visibility の narrow slice も追加済みで、success summary には `timeout_iterations` / `timeout_only_run` / `last_receive_error` / `last_send_error` / `last_rejected_reason` を追加した。fatal/startup failure 時は same command args を含む one-line failure summary を stderr に出し、`stop_reason` / `fatal_error_kind` / `fatal_error_detail` で silent failure を避ける
+- bounded repeated runtime summary には `command_name` / `config_path` / `max_iterations` / `receive_timeout_ms` / `iterations_attempted` / `iterations_completed` / `auth_requests_received` / `auth_responses_sent` / `heartbeats_received` / `heartbeat_acks_sent` / `client_stats_received` / `client_stats_returns_sent` / `accepted_packets` / `rejected_packets` / `decode_errors` / `send_failures` / `outbound_queue_len` / `registered_clients` / `stop_reason` を出す。current hardening slice では追加で `last_auth_status` / `last_auth_reason` / `last_registration_status` / `last_registration_reason` / `last_runtime_rejection_status` / `last_runtime_rejection_reason` を読める
+- fatal/stop visibility の narrow slice も追加済みで、success summary には `timeout_iterations` / `timeout_only_run` / `last_receive_error` / `last_send_error` / `last_rejected_reason` を追加した。fatal/startup failure 時は same command args を含む one-line failure summary を stderr に出し、`stop_reason` / `fatal_error_kind` / `fatal_error_detail` で silent failure を避ける。`last_rejected_reason` は backward-compatible string のまま残しつつ、typed summary を並置する
 - receive/send continuous logging ownership の docs 設計も固定済みで、stdout/stderr summary は bounded run closeout 専用、structured operational logs は per-iteration/per-packet event 専用として責務を分離した。caller-owned writers は維持し、file sink open / rotation / process-wide logger / dashboard/exporter transport は future boundary に残す
-- per-iteration receive/send event handoff の narrow implementation も追加済みで、`ServerReceiveSendRuntimeBoundedStartupOutcome` は `iteration_events` を持つ。event fields は `command_name` / `iteration_index` / `receive_outcome_kind` / `accepted_packet_kind` / `auth_outcome_kind` / `rejection_kind` / `send_outcome_kind` / `sent_message_kind` / `receive_error` / `send_error` とし、outer loop の typed observation surface に限定する
+- per-iteration receive/send event handoff の narrow implementation も追加済みで、`ServerReceiveSendRuntimeBoundedStartupOutcome` は `iteration_events` を持つ。event fields は `command_name` / `iteration_index` / `receive_outcome_kind` / `accepted_packet_kind` / `auth_outcome_kind` / `rejection_kind` / `send_outcome_kind` / `sent_message_kind` / `receive_error` / `send_error` とし、outer loop の typed observation surface に限定する。hardening の詳細は aggregate summary に寄せ、selection/queue/I/O と混ぜない
 - iteration event の JSONL writer ownership 最小接続も追加済みで、typed `iteration_events` は compact JSONL (`event_type=receive_send_iteration`) として caller-owned writer に書ける。writer failure は runtime stop に直結させず、`iteration_event_log_summary.lines_written` / `write_failures` / `last_writer_error` で outcome 側に可視化する
 - iteration-event JSONL sink plan / optional config wiring の docs 設計も固定済みで、その first implementation として launcher/config layer に `[logging.receive_send_iteration]` parse と `stderr` / `disabled` selection を追加済み。section absent は current CLI default と同じ stderr、`enabled=false` と `destination="disabled"` は discard sink、`destination="file"` は parse までは通すが current slice では explicit deferred startup error に留める。runtime は引き続き file path を知らない
-- current rejected-auth note: first slice の `auth_responses_sent` は accepted auth response send count として扱っており、rejected auth は current one-item send pathでは送信 count に入らない。その代わり `last_rejected_reason=Auth:...` で summary visibility を持たせている
-- code-level validation では command parser、summary formatter、`max_iterations` stop、`ReceiveTimedOut` stop、timeout-only run summary、repeated auth registry persistence、repeated heartbeat existing-registry reuse、`ClientStats` observation path count、auth rejection visibility、gate rejection visibility、startup failure summary formatting、send failure summary formatting、existing one-iteration runtime non-regression を追加済み
+- current rejected-auth note: `auth_responses_sent` は accepted auth response send count として扱っており、rejected auth は current one-item send pathでは送信 count に入らない。その代わり `last_rejected_reason=Auth:...` と typed `last_auth_status/last_auth_reason` で visibility を持たせている
+- code-level validation では command parser、summary formatter、`max_iterations` stop、`ReceiveTimedOut` stop、timeout-only run summary、repeated auth registry persistence、repeated heartbeat existing-registry reuse、`ClientStats` observation path count、auth rejection visibility、gate rejection visibility、same-client re-registration summary、`run_id` mismatch rejection、heartbeat timeout status、startup failure summary formatting、send failure summary formatting、existing one-iteration runtime non-regression を追加済み
 - lightweight smoke validation も完了している。CLI shape は client 側 `--auth-request-poc-once`、`--auth-heartbeat-poc-once`、`--auth-heartbeat-stats-poc-once` を確認済みで、direct `ClientStats`-only sender CLI は未追加だが `--auth-heartbeat-stats-poc-once` で `ClientStats` observation path を刺激できる
 - bounded smoke rerun では rebuilt binary を使って `stream-sync-server --receive-send-runtime-bounded configs/examples/server.example.toml 6 5000` と `stream-sync-client --auth-heartbeat-stats-poc-once configs/examples/client.accepted.example.toml` を組み合わせ、`iterations_attempted=4` / `iterations_completed=4` / `auth_requests_received=1` / `auth_responses_sent=1` / `heartbeats_received=1` / `heartbeat_acks_sent=1` / `client_stats_received=1` / `client_stats_returns_sent=1` / `accepted_packets=3` / `send_failures=0` / `registered_clients=1` / `stop_reason=ReceiveTimedOut` を確認済み
 - outbound queue 実キュー、continuous receive/send loop 本体、send / receive の継続ログ出力、file sink open、process-wide logger、`ServerNotice` 実送信は未実装
@@ -168,7 +169,7 @@
 
 ## 直近でやること
 1. 認証 / runtime hardening と長時間 validation の順で固める
-   - timeout / 再認証 / version check / secret redaction を先に狭く実装する
+   - hardening の narrow slice は完了したので、次は continuous runtime の不足分と long-run 前提の観測面へ進む
    - その後に 2-client -> 4-client の長時間 run で drop / sync 誤差 / render 安定性を確認する
 2. continuous receive / send runtime の不足分と長時間 validation 前提の観測面を狭く埋める
    - 実 outbound queue 処理と event destination selection を先に詰める
@@ -180,15 +181,14 @@
 - まずは「4人を real handoff で安定表示し続ける」ことを基準に優先度を決める
 
 ## 残り todo から見た推定 step
-- 目安は `5-8 step`。1 step は Codex と GPT の 1 往復で数える
-1. 認証済み送信元 timeout / 失効 / 再認証、`protocol_version` reject、`app_version` warn、secret redaction を狭く固める
-2. continuous receive / send runtime の不足分を埋める
+- 目安は `4-7 step`。1 step は Codex と GPT の 1 往復で数える
+1. continuous receive / send runtime の不足分を埋める
    - 実 outbound queue 処理
    - send error / receive-send event の destination selection
    - later service lifecycle へつながる最小 runtime 整理
-3. 2-client の長時間 validation を取り、sync 誤差 / drop / render 安定性を確認する
-4. 4-client all-real の長時間 validation を取り、OBS Window Capture を含む実運用寄りの再確認をする
-5. dashboard / status visibility と運用手順を MVP 必要最低限まで揃える
+2. 2-client の長時間 validation を取り、sync 誤差 / drop / render 安定性を確認する
+3. 4-client all-real の長時間 validation を取り、OBS Window Capture を含む実運用寄りの再確認をする
+4. dashboard / status visibility と運用手順を MVP 必要最低限まで揃える
    - 接続状態、RTT、offset、drop、buffer 状態の表示
    - manual 手順、互換性ルール、ログ運用の整理
 
@@ -974,6 +974,6 @@ continuous runtime first slice の blocker:
 - actual dashboard UI rendering remains unimplemented.
 
 ## Next Items
-1. 認証 / runtime hardening の実装順と長時間 validation 条件を先に固定する
-2. continuous receive / send runtime の不足分と validation 観測面を狭く埋める
-3. 2-client 長時間 validation へ進む前に必要な観測面の不足を洗い出す
+1. continuous receive / send runtime の不足分と validation 観測面を狭く埋める
+2. 2-client 長時間 validation へ進む前に必要な観測面の不足を洗い出す
+3. 2-client 長時間 validation の recipe と success/failure judgment を固定する

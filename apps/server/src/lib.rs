@@ -491,10 +491,16 @@ impl ServerAuthResponsePocStep {
             .auth_flow
             .handle_auth_route(route, config)
             .map_err(ServerAuthResponsePocError::Auth)?;
-        let registered_sender = auth_flow
+        let (registered_sender, registration_summary) = auth_flow
             .registry_registration
             .clone()
-            .map(|registration| self.sender_registry.register(registry, registration));
+            .map(|registration| {
+                let summary = self
+                    .sender_registry
+                    .register_with_summary(registry, registration);
+                (Some(summary.entry.clone()), Some(summary))
+            })
+            .unwrap_or((None, None));
 
         let encode_request = self.outbound_encoder.prepare_encode(
             stream_sync_protocol::EncodeContext {
@@ -514,6 +520,7 @@ impl ServerAuthResponsePocStep {
         Ok(ServerAuthResponsePocOutcome {
             auth_flow,
             registered_sender,
+            registration_summary,
             encoded_packet,
             bytes_sent,
         })
@@ -525,6 +532,7 @@ impl ServerAuthResponsePocStep {
 pub struct ServerAuthResponsePocOutcome {
     pub auth_flow: ServerAuthFlowOutcome,
     pub registered_sender: Option<AuthenticatedSenderEntry>,
+    pub registration_summary: Option<AuthenticatedSenderRegistrationSummary>,
     pub encoded_packet: EncodedOutboundPacket,
     pub bytes_sent: usize,
 }
@@ -2078,6 +2086,9 @@ pub struct ServerReceiveSendRuntimeBoundedSummary {
     pub last_receive_error: Option<io::ErrorKind>,
     pub last_send_error: Option<String>,
     pub last_rejected_reason: Option<String>,
+    pub last_auth_summary: Option<ServerAuthOperationalSummary>,
+    pub last_registration_summary: Option<AuthenticatedSenderRegistrationSummary>,
+    pub last_runtime_rejection_summary: Option<ServerRuntimePacketOperationalSummary>,
     pub stop_reason: ServerReceiveSendRuntimeBoundedStopReason,
 }
 
@@ -2329,6 +2340,9 @@ impl ServerReceiveSendRuntimeBoundedLauncher {
             last_receive_error: None,
             last_send_error: None,
             last_rejected_reason: None,
+            last_auth_summary: None,
+            last_registration_summary: None,
+            last_runtime_rejection_summary: None,
             stop_reason: ServerReceiveSendRuntimeBoundedStopReason::MaxIterationsReached,
         };
 
@@ -2574,14 +2588,26 @@ impl ServerReceiveSendRuntimeBoundedLauncher {
                                 summary.decode_errors = summary.decode_errors.saturating_add(1);
                             }
                         }
+                        if let Some(ServerReceiveLoopGateRejection::Acceptance(rejection)) =
+                            handler.writer.handoff.rejection_log.as_ref()
+                        {
+                            summary.last_runtime_rejection_summary =
+                                Some(packet_operational_summary_from_rejection(rejection));
+                        }
                     }
                     ServerContinuousReceiveLoopOneTickRuntimeOutcome::Stopped => {}
                 }
 
                 match &iteration.side_effect.result {
-                    ServerDispatchRuntimeSideEffectApplyResult::Auth { flow, .. } => {
+                    ServerDispatchRuntimeSideEffectApplyResult::Auth {
+                        flow,
+                        registration_summary,
+                        ..
+                    } => {
                         summary.auth_requests_received =
                             summary.auth_requests_received.saturating_add(1);
+                        summary.last_auth_summary = Some(flow.operational_summary.clone());
+                        summary.last_registration_summary = registration_summary.clone();
                         if !flow.decision.accepted {
                             summary.last_rejected_reason =
                                 Some(format!("Auth:{:?}", flow.decision.reason_code));
@@ -5404,6 +5430,7 @@ pub enum ServerDispatchRuntimeSideEffectApplyResult {
     Auth {
         flow: ServerAuthFlowOutcome,
         registered_sender: Option<AuthenticatedSenderEntry>,
+        registration_summary: Option<AuthenticatedSenderRegistrationSummary>,
     },
     HeartbeatAck(ServerHeartbeatAckHandoff),
     VideoFrame(ServerVideoFrameHandlerInput),
@@ -5460,13 +5487,18 @@ impl ServerDispatchRuntimeSideEffectApplyBoundary {
     ) -> ServerDispatchRuntimeSideEffectApplyResult {
         match outcome.result {
             ServerAuthDispatchRuntimeResult::Dispatched(flow) => {
-                let registered_sender = flow
+                let (registered_sender, registration_summary) = flow
                     .registry_registration
                     .clone()
-                    .map(|registration| self.registry.register(registry, registration));
+                    .map(|registration| {
+                        let summary = self.registry.register_with_summary(registry, registration);
+                        (Some(summary.entry.clone()), Some(summary))
+                    })
+                    .unwrap_or((None, None));
                 ServerDispatchRuntimeSideEffectApplyResult::Auth {
                     flow,
                     registered_sender,
+                    registration_summary,
                 }
             }
             ServerAuthDispatchRuntimeResult::NotAuth(result) => {
@@ -5543,6 +5575,7 @@ pub enum ServerDispatchRuntimeOutputApplyResult {
     Auth {
         flow: ServerAuthFlowOutcome,
         registered_sender: Option<AuthenticatedSenderEntry>,
+        registration_summary: Option<AuthenticatedSenderRegistrationSummary>,
         auth_log_event: ServerAuthJsonLogEventInput,
         auth_response_storage: Option<ServerOutboundQueueStorageApplyResult>,
     },
@@ -5581,6 +5614,7 @@ impl ServerDispatchRuntimeOutputApplyBoundary {
             ServerDispatchRuntimeSideEffectApplyResult::Auth {
                 flow,
                 registered_sender,
+                registration_summary,
             } => {
                 let auth_log_event = self.auth_log.write_auth_result(
                     flow.auth_log_input.clone(),
@@ -5596,6 +5630,7 @@ impl ServerDispatchRuntimeOutputApplyBoundary {
                 ServerDispatchRuntimeOutputApplyResult::Auth {
                     flow,
                     registered_sender,
+                    registration_summary,
                     auth_log_event,
                     auth_response_storage,
                 }
@@ -6116,6 +6151,9 @@ impl ServerReceiveLoopLogHandoffBoundary {
                     PacketAcceptanceRejectReason::EndpointMismatch => {
                         ServerReceiveRejectionReason::EndpointMismatch
                     }
+                    PacketAcceptanceRejectReason::RunIdMismatch => {
+                        ServerReceiveRejectionReason::RunIdMismatch
+                    }
                 }),
             },
         }
@@ -6257,6 +6295,7 @@ impl ServerRejectionDropLogHandoffBoundary {
                 ServerRejectionHandoffReason::Acceptance {
                     message_type: rejected.message_type,
                     client_id: rejected.client_id,
+                    run_id: rejected.run_id,
                     reason: rejected.reason,
                 },
             ),
@@ -6309,8 +6348,9 @@ impl ServerReceiveRejectionJsonLogEventBoundary {
         timestamp: TimestampMicros,
     ) -> ServerReceiveRejectionJsonLogEventInput {
         let ServerPacketLogInput { source, reason } = input;
-        let (client_id, message_type, rejection_reason, detail) = match reason {
+        let (client_id, run_id, message_type, rejection_reason, detail) = match reason {
             ServerRejectionHandoffReason::Decode { action, error } => (
+                None,
                 None,
                 None,
                 ServerReceiveRejectionReason::DecodeError,
@@ -6319,6 +6359,7 @@ impl ServerReceiveRejectionJsonLogEventBoundary {
             ServerRejectionHandoffReason::Acceptance {
                 message_type,
                 client_id,
+                run_id,
                 reason,
             } => {
                 let rejection_reason = match &reason {
@@ -6331,10 +6372,14 @@ impl ServerReceiveRejectionJsonLogEventBoundary {
                     PacketAcceptanceRejectReason::EndpointMismatch => {
                         ServerReceiveRejectionReason::EndpointMismatch
                     }
+                    PacketAcceptanceRejectReason::RunIdMismatch => {
+                        ServerReceiveRejectionReason::RunIdMismatch
+                    }
                 };
 
                 (
                     client_id,
+                    run_id,
                     Some(message_type),
                     rejection_reason,
                     ServerReceiveRejectionDetail::Acceptance { reason },
@@ -6344,7 +6389,7 @@ impl ServerReceiveRejectionJsonLogEventBoundary {
 
         ServerReceiveRejectionJsonLogEventInput {
             event_name: SERVER_RECEIVE_REJECTION_JSON_LOG_EVENT_NAME,
-            run_id: None,
+            run_id,
             client_id,
             source,
             message_type,
@@ -6816,6 +6861,7 @@ pub enum ServerReceiveRejectionReason {
     UnauthenticatedSource,
     UnknownClient,
     EndpointMismatch,
+    RunIdMismatch,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -7055,6 +7101,7 @@ fn receive_rejection_reason_name(reason: ServerReceiveRejectionReason) -> &'stat
         ServerReceiveRejectionReason::UnauthenticatedSource => "UnauthenticatedSource",
         ServerReceiveRejectionReason::UnknownClient => "UnknownClient",
         ServerReceiveRejectionReason::EndpointMismatch => "EndpointMismatch",
+        ServerReceiveRejectionReason::RunIdMismatch => "RunIdMismatch",
     }
 }
 
@@ -7063,6 +7110,7 @@ fn packet_acceptance_reject_reason_name(reason: PacketAcceptanceRejectReason) ->
         PacketAcceptanceRejectReason::UnauthenticatedSource => "UnauthenticatedSource",
         PacketAcceptanceRejectReason::UnknownClient => "UnknownClient",
         PacketAcceptanceRejectReason::EndpointMismatch => "EndpointMismatch",
+        PacketAcceptanceRejectReason::RunIdMismatch => "RunIdMismatch",
     }
 }
 
@@ -7076,6 +7124,7 @@ pub enum ServerRejectionHandoffReason {
     Acceptance {
         message_type: MessageType,
         client_id: Option<ClientId>,
+        run_id: Option<RunId>,
         reason: PacketAcceptanceRejectReason,
     },
 }
@@ -7829,6 +7878,7 @@ impl ServerAuthFlowStep {
                 .decision
                 .reject_secret_resolution_error(&auth_input.check, &error),
         };
+        let operational_summary = auth_operational_summary_from_decision(&decision);
         let auth_log_input = self.auth_log.handoff(&decision);
         let registry_registration = self.sender_registry.registration_from_decision(&decision);
         let outbound_response = self.response.build_for_send(decision.clone());
@@ -7836,6 +7886,7 @@ impl ServerAuthFlowStep {
 
         ServerAuthFlowOutcome {
             decision,
+            operational_summary,
             auth_log_input,
             registry_registration,
             outbound_response,
@@ -7848,10 +7899,67 @@ impl ServerAuthFlowStep {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ServerAuthFlowOutcome {
     pub decision: ServerAuthDecision,
+    pub operational_summary: ServerAuthOperationalSummary,
     pub auth_log_input: ServerAuthLogInput,
     pub registry_registration: Option<AuthenticatedSenderRegistration>,
     pub outbound_response: ServerOutboundAuthResponse,
     pub queue_item: OutboundQueueItem,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ServerOperationalConditionStatus {
+    Continue,
+    Reject,
+    ReconnectRequired,
+    InvestigationRequired,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ServerAuthOperationalReason {
+    Accepted,
+    InvalidToken,
+    UnknownClient,
+    ProtocolMismatch,
+    AlreadyConnected,
+    InternalError,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ServerAuthOperationalSummary {
+    pub status: ServerOperationalConditionStatus,
+    pub client_id: ClientId,
+    pub run_id: RunId,
+    pub reason: ServerAuthOperationalReason,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum AuthenticatedSenderRegistrationReason {
+    FreshRegistration,
+    IdempotentReregistration,
+    RunReplaced,
+    SourceReplaced,
+    SourceAndRunReplaced,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AuthenticatedSenderRegistrationSummary {
+    pub status: ServerOperationalConditionStatus,
+    pub client_id: ClientId,
+    pub previous_source: Option<PacketSource>,
+    pub current_source: PacketSource,
+    pub previous_run_id: Option<RunId>,
+    pub current_run_id: RunId,
+    pub reason: AuthenticatedSenderRegistrationReason,
+    pub entry: AuthenticatedSenderEntry,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ServerRuntimePacketOperationalSummary {
+    pub status: ServerOperationalConditionStatus,
+    pub message_type: MessageType,
+    pub client_id: Option<ClientId>,
+    pub run_id: Option<RunId>,
+    pub reason: PacketAcceptanceRejectReason,
 }
 
 /// In-memory authenticated sender registry boundary.
@@ -7925,6 +8033,7 @@ pub enum AuthenticatedSenderCheck {
 pub enum AuthenticatedSenderRejectReason {
     UnknownClient,
     EndpointMismatch,
+    RunIdMismatch,
 }
 
 /// Boundary that registers accepted auth decisions and checks later packets.
@@ -7955,11 +8064,19 @@ impl AuthenticatedSenderRegistryBoundary {
         registry: &mut AuthenticatedSenderRegistry,
         registration: AuthenticatedSenderRegistration,
     ) -> AuthenticatedSenderEntry {
+        self.register_with_summary(registry, registration).entry
+    }
+
+    pub fn register_with_summary(
+        &self,
+        registry: &mut AuthenticatedSenderRegistry,
+        registration: AuthenticatedSenderRegistration,
+    ) -> AuthenticatedSenderRegistrationSummary {
         let entry = registration.into_entry();
-        registry
+        let previous_entry = registry
             .entries_by_client_id
             .insert(entry.client_id.0.clone(), entry.clone());
-        entry
+        registration_summary_from_entries(previous_entry, entry)
     }
 
     pub fn invalidate(
@@ -7983,6 +8100,16 @@ impl AuthenticatedSenderRegistryBoundary {
         client_id: &ClientId,
         source: PacketSource,
     ) -> AuthenticatedSenderCheck {
+        self.check_packet_scope(registry, client_id, None, source)
+    }
+
+    pub fn check_packet_scope(
+        &self,
+        registry: &AuthenticatedSenderRegistry,
+        client_id: &ClientId,
+        run_id: Option<&RunId>,
+        source: PacketSource,
+    ) -> AuthenticatedSenderCheck {
         let Some(entry) = registry.get(client_id) else {
             return AuthenticatedSenderCheck::Rejected(
                 AuthenticatedSenderRejectReason::UnknownClient,
@@ -7993,6 +8120,14 @@ impl AuthenticatedSenderRegistryBoundary {
             return AuthenticatedSenderCheck::Rejected(
                 AuthenticatedSenderRejectReason::EndpointMismatch,
             );
+        }
+
+        if let Some(run_id) = run_id {
+            if entry.run_id != *run_id {
+                return AuthenticatedSenderCheck::Rejected(
+                    AuthenticatedSenderRejectReason::RunIdMismatch,
+                );
+            }
         }
 
         AuthenticatedSenderCheck::Accepted(entry.clone())
@@ -8012,6 +8147,7 @@ pub struct PacketAcceptanceRejection {
     pub source: PacketSource,
     pub message_type: MessageType,
     pub client_id: Option<ClientId>,
+    pub run_id: Option<RunId>,
     pub reason: PacketAcceptanceRejectReason,
 }
 
@@ -8021,6 +8157,7 @@ pub enum PacketAcceptanceRejectReason {
     UnauthenticatedSource,
     UnknownClient,
     EndpointMismatch,
+    RunIdMismatch,
 }
 
 /// Gate between server routing and later packet handlers.
@@ -8045,12 +8182,14 @@ impl PacketAcceptanceGateBoundary {
                 registry,
                 *source,
                 &heartbeat.client_id,
+                &heartbeat.run_id,
                 MessageType::Heartbeat,
             ),
             ServerInboundRoute::VideoFrame { source, frame } => self.evaluate_client_packet(
                 registry,
                 *source,
                 &frame.client_id,
+                &frame.run_id,
                 MessageType::VideoFrame,
             ),
             ServerInboundRoute::VideoFrameFragment { source, fragment } => self
@@ -8058,12 +8197,14 @@ impl PacketAcceptanceGateBoundary {
                     registry,
                     *source,
                     &fragment.client_id,
+                    &fragment.run_id,
                     MessageType::VideoFrameFragment,
                 ),
             ServerInboundRoute::ClientStats { source, stats } => self.evaluate_client_packet(
                 registry,
                 *source,
                 &stats.client_id,
+                &stats.run_id,
                 MessageType::ClientStats,
             ),
             ServerInboundRoute::UnsupportedForServer { .. } => PacketAcceptanceDecision::Accepted,
@@ -8075,9 +8216,13 @@ impl PacketAcceptanceGateBoundary {
         registry: &AuthenticatedSenderRegistry,
         source: PacketSource,
         client_id: &ClientId,
+        run_id: &RunId,
         message_type: MessageType,
     ) -> PacketAcceptanceDecision {
-        match self.registry.check_source(registry, client_id, source) {
+        match self
+            .registry
+            .check_packet_scope(registry, client_id, Some(run_id), source)
+        {
             AuthenticatedSenderCheck::Accepted(_) => PacketAcceptanceDecision::Accepted,
             AuthenticatedSenderCheck::Rejected(
                 AuthenticatedSenderRejectReason::EndpointMismatch,
@@ -8085,15 +8230,31 @@ impl PacketAcceptanceGateBoundary {
                 source,
                 message_type,
                 Some(client_id.clone()),
+                Some(run_id.clone()),
                 PacketAcceptanceRejectReason::EndpointMismatch,
             ),
+            AuthenticatedSenderCheck::Rejected(AuthenticatedSenderRejectReason::RunIdMismatch) => {
+                self.reject(
+                    source,
+                    message_type,
+                    Some(client_id.clone()),
+                    Some(run_id.clone()),
+                    PacketAcceptanceRejectReason::RunIdMismatch,
+                )
+            }
             AuthenticatedSenderCheck::Rejected(AuthenticatedSenderRejectReason::UnknownClient) => {
                 let reason = if registry.contains_source(source) {
                     PacketAcceptanceRejectReason::UnknownClient
                 } else {
                     PacketAcceptanceRejectReason::UnauthenticatedSource
                 };
-                self.reject(source, message_type, Some(client_id.clone()), reason)
+                self.reject(
+                    source,
+                    message_type,
+                    Some(client_id.clone()),
+                    Some(run_id.clone()),
+                    reason,
+                )
             }
         }
     }
@@ -8103,12 +8264,14 @@ impl PacketAcceptanceGateBoundary {
         source: PacketSource,
         message_type: MessageType,
         client_id: Option<ClientId>,
+        run_id: Option<RunId>,
         reason: PacketAcceptanceRejectReason,
     ) -> PacketAcceptanceDecision {
         PacketAcceptanceDecision::Rejected(PacketAcceptanceRejection {
             source,
             message_type,
             client_id,
+            run_id,
             reason,
         })
     }
@@ -8202,6 +8365,7 @@ impl ServerRegisteredPacketBoundary {
                 let authenticated_sender = self.require_sender(
                     registry,
                     &heartbeat.client_id,
+                    &heartbeat.run_id,
                     source,
                     MessageType::Heartbeat,
                 )?;
@@ -8217,6 +8381,7 @@ impl ServerRegisteredPacketBoundary {
                 let authenticated_sender = self.require_sender(
                     registry,
                     &frame.client_id,
+                    &frame.run_id,
                     source,
                     MessageType::VideoFrame,
                 )?;
@@ -8232,6 +8397,7 @@ impl ServerRegisteredPacketBoundary {
                 let authenticated_sender = self.require_sender(
                     registry,
                     &fragment.client_id,
+                    &fragment.run_id,
                     source,
                     MessageType::VideoFrameFragment,
                 )?;
@@ -8247,6 +8413,7 @@ impl ServerRegisteredPacketBoundary {
                 let authenticated_sender = self.require_sender(
                     registry,
                     &stats.client_id,
+                    &stats.run_id,
                     source,
                     MessageType::ClientStats,
                 )?;
@@ -8273,10 +8440,14 @@ impl ServerRegisteredPacketBoundary {
         &self,
         registry: &AuthenticatedSenderRegistry,
         client_id: &ClientId,
+        run_id: &RunId,
         source: PacketSource,
         message_type: MessageType,
     ) -> Result<AuthenticatedSenderEntry, ServerRegisteredPacketBoundaryError> {
-        match self.registry.check_source(registry, client_id, source) {
+        match self
+            .registry
+            .check_packet_scope(registry, client_id, Some(run_id), source)
+        {
             AuthenticatedSenderCheck::Accepted(entry) => Ok(entry),
             AuthenticatedSenderCheck::Rejected(
                 AuthenticatedSenderRejectReason::EndpointMismatch,
@@ -8285,9 +8456,21 @@ impl ServerRegisteredPacketBoundary {
                     source,
                     message_type,
                     client_id: Some(client_id.clone()),
+                    run_id: Some(run_id.clone()),
                     reason: PacketAcceptanceRejectReason::EndpointMismatch,
                 },
             )),
+            AuthenticatedSenderCheck::Rejected(AuthenticatedSenderRejectReason::RunIdMismatch) => {
+                Err(ServerRegisteredPacketBoundaryError::NotAccepted(
+                    PacketAcceptanceRejection {
+                        source,
+                        message_type,
+                        client_id: Some(client_id.clone()),
+                        run_id: Some(run_id.clone()),
+                        reason: PacketAcceptanceRejectReason::RunIdMismatch,
+                    },
+                ))
+            }
             AuthenticatedSenderCheck::Rejected(AuthenticatedSenderRejectReason::UnknownClient) => {
                 let reason = if registry.contains_source(source) {
                     PacketAcceptanceRejectReason::UnknownClient
@@ -8299,6 +8482,7 @@ impl ServerRegisteredPacketBoundary {
                         source,
                         message_type,
                         client_id: Some(client_id.clone()),
+                        run_id: Some(run_id.clone()),
                         reason,
                     },
                 ))
@@ -8379,6 +8563,82 @@ impl ServerAuthDecision {
     pub fn with_app_version(mut self, app_version: AppVersion) -> Self {
         self.app_version = Some(app_version);
         self
+    }
+}
+
+fn auth_operational_summary_from_decision(
+    decision: &ServerAuthDecision,
+) -> ServerAuthOperationalSummary {
+    let reason = match decision.reason_code {
+        AuthResponseReasonCode::Ok => ServerAuthOperationalReason::Accepted,
+        AuthResponseReasonCode::InvalidToken => ServerAuthOperationalReason::InvalidToken,
+        AuthResponseReasonCode::UnknownClient => ServerAuthOperationalReason::UnknownClient,
+        AuthResponseReasonCode::ProtocolMismatch => ServerAuthOperationalReason::ProtocolMismatch,
+        AuthResponseReasonCode::AlreadyConnected => ServerAuthOperationalReason::AlreadyConnected,
+        AuthResponseReasonCode::InternalError => ServerAuthOperationalReason::InternalError,
+    };
+    let status = match decision.reason_code {
+        AuthResponseReasonCode::Ok => ServerOperationalConditionStatus::Continue,
+        AuthResponseReasonCode::InvalidToken
+        | AuthResponseReasonCode::UnknownClient
+        | AuthResponseReasonCode::ProtocolMismatch
+        | AuthResponseReasonCode::AlreadyConnected => ServerOperationalConditionStatus::Reject,
+        AuthResponseReasonCode::InternalError => {
+            ServerOperationalConditionStatus::InvestigationRequired
+        }
+    };
+
+    ServerAuthOperationalSummary {
+        status,
+        client_id: decision.client_id.clone(),
+        run_id: decision.run_id.clone(),
+        reason,
+    }
+}
+
+fn registration_summary_from_entries(
+    previous_entry: Option<AuthenticatedSenderEntry>,
+    entry: AuthenticatedSenderEntry,
+) -> AuthenticatedSenderRegistrationSummary {
+    let previous_source = previous_entry.as_ref().map(|previous| previous.source);
+    let previous_run_id = previous_entry
+        .as_ref()
+        .map(|previous| previous.run_id.clone());
+    let reason = match previous_entry.as_ref() {
+        None => AuthenticatedSenderRegistrationReason::FreshRegistration,
+        Some(previous) if previous.source == entry.source && previous.run_id == entry.run_id => {
+            AuthenticatedSenderRegistrationReason::IdempotentReregistration
+        }
+        Some(previous) if previous.source == entry.source => {
+            AuthenticatedSenderRegistrationReason::RunReplaced
+        }
+        Some(previous) if previous.run_id == entry.run_id => {
+            AuthenticatedSenderRegistrationReason::SourceReplaced
+        }
+        Some(_) => AuthenticatedSenderRegistrationReason::SourceAndRunReplaced,
+    };
+
+    AuthenticatedSenderRegistrationSummary {
+        status: ServerOperationalConditionStatus::Continue,
+        client_id: entry.client_id.clone(),
+        previous_source,
+        current_source: entry.source,
+        previous_run_id,
+        current_run_id: entry.run_id.clone(),
+        reason,
+        entry,
+    }
+}
+
+fn packet_operational_summary_from_rejection(
+    rejection: &PacketAcceptanceRejection,
+) -> ServerRuntimePacketOperationalSummary {
+    ServerRuntimePacketOperationalSummary {
+        status: ServerOperationalConditionStatus::Reject,
+        message_type: rejection.message_type,
+        client_id: rejection.client_id.clone(),
+        run_id: rejection.run_id.clone(),
+        reason: rejection.reason,
     }
 }
 
@@ -8924,6 +9184,23 @@ pub enum ServerHeartbeatTimeoutEvaluation {
     },
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ServerHeartbeatOperationalReason {
+    NoHeartbeatYet,
+    Alive,
+    TimedOut,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ServerHeartbeatOperationalSummary {
+    pub status: ServerOperationalConditionStatus,
+    pub client_id: ClientId,
+    pub reason: ServerHeartbeatOperationalReason,
+    pub last_server_received_at: Option<TimestampMicros>,
+    pub elapsed_micros: Option<u64>,
+    pub timeout_after_micros: Option<u64>,
+}
+
 /// Reason for removing an authenticated sender entry through an explicit policy.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum AuthenticatedSenderInvalidationReason {
@@ -9368,6 +9645,7 @@ pub struct ServerHeartbeatTimeoutLoopTickInput {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ServerHeartbeatTimeoutLoopTickResult {
     pub input: ServerHeartbeatTimeoutLoopTickInput,
+    pub operational_summary: ServerHeartbeatOperationalSummary,
     pub action_plan: ServerHeartbeatTimeoutActionPlan,
     pub apply: ServerHeartbeatTimeoutApplyResult,
 }
@@ -9399,6 +9677,7 @@ impl ServerHeartbeatTimeoutLoopTickBoundary {
             input.evaluated_at,
             input.policy,
         );
+        let operational_summary = heartbeat_operational_summary_from_evaluation(&evaluation);
         let action_plan = self
             .action
             .plan_actions(liveness_state, evaluation, input.evaluated_at);
@@ -9408,6 +9687,7 @@ impl ServerHeartbeatTimeoutLoopTickBoundary {
 
         Ok(ServerHeartbeatTimeoutLoopTickResult {
             input,
+            operational_summary,
             action_plan,
             apply,
         })
@@ -9584,6 +9864,49 @@ impl ServerHeartbeatLivenessCommitBoundary {
                 timeout_after_micros: policy.timeout_after_micros,
             }
         }
+    }
+}
+
+fn heartbeat_operational_summary_from_evaluation(
+    evaluation: &ServerHeartbeatTimeoutEvaluation,
+) -> ServerHeartbeatOperationalSummary {
+    match evaluation {
+        ServerHeartbeatTimeoutEvaluation::NoHeartbeat { client_id } => {
+            ServerHeartbeatOperationalSummary {
+                status: ServerOperationalConditionStatus::Continue,
+                client_id: client_id.clone(),
+                reason: ServerHeartbeatOperationalReason::NoHeartbeatYet,
+                last_server_received_at: None,
+                elapsed_micros: None,
+                timeout_after_micros: None,
+            }
+        }
+        ServerHeartbeatTimeoutEvaluation::Alive {
+            client_id,
+            last_server_received_at,
+            elapsed_micros,
+            timeout_after_micros,
+        } => ServerHeartbeatOperationalSummary {
+            status: ServerOperationalConditionStatus::Continue,
+            client_id: client_id.clone(),
+            reason: ServerHeartbeatOperationalReason::Alive,
+            last_server_received_at: Some(*last_server_received_at),
+            elapsed_micros: Some(*elapsed_micros),
+            timeout_after_micros: Some(*timeout_after_micros),
+        },
+        ServerHeartbeatTimeoutEvaluation::TimedOut {
+            client_id,
+            last_server_received_at,
+            elapsed_micros,
+            timeout_after_micros,
+        } => ServerHeartbeatOperationalSummary {
+            status: ServerOperationalConditionStatus::ReconnectRequired,
+            client_id: client_id.clone(),
+            reason: ServerHeartbeatOperationalReason::TimedOut,
+            last_server_received_at: Some(*last_server_received_at),
+            elapsed_micros: Some(*elapsed_micros),
+            timeout_after_micros: Some(*timeout_after_micros),
+        },
     }
 }
 
@@ -11812,6 +12135,7 @@ destination = "stdout"
                     source,
                     message_type: MessageType::Heartbeat,
                     client_id: Some(ClientId("client-1".to_string())),
+                    run_id: Some(RunId("run-1".to_string())),
                     reason: PacketAcceptanceRejectReason::UnauthenticatedSource,
                 }
             ))
@@ -12453,6 +12777,20 @@ destination = "stdout"
             outcome.summary.last_rejected_reason.as_deref(),
             Some("Auth:InvalidToken")
         );
+        let auth_summary = outcome
+            .summary
+            .last_auth_summary
+            .as_ref()
+            .expect("rejected auth should preserve typed summary");
+        assert_eq!(
+            auth_summary.status,
+            ServerOperationalConditionStatus::Reject
+        );
+        assert_eq!(
+            auth_summary.reason,
+            ServerAuthOperationalReason::InvalidToken
+        );
+        assert_eq!(outcome.summary.last_registration_summary, None);
         assert!(!outcome.iteration_events.is_empty());
         assert_eq!(
             outcome.iteration_events[0].auth_outcome_kind,
@@ -12514,6 +12852,19 @@ destination = "stdout"
         assert_eq!(
             outcome.summary.last_rejected_reason.as_deref(),
             Some("UnauthenticatedSource")
+        );
+        let runtime_summary = outcome
+            .summary
+            .last_runtime_rejection_summary
+            .as_ref()
+            .expect("gate rejection should preserve typed runtime summary");
+        assert_eq!(
+            runtime_summary.status,
+            ServerOperationalConditionStatus::Reject
+        );
+        assert_eq!(
+            runtime_summary.reason,
+            PacketAcceptanceRejectReason::UnauthenticatedSource
         );
         assert!(!outcome.summary.timeout_only_run);
         assert_eq!(outcome.iteration_events.len(), 2);
@@ -12725,6 +13076,7 @@ shared_token = "secret"
             source,
             message_type: MessageType::Heartbeat,
             client_id: Some(ClientId("client-1".to_string())),
+            run_id: Some(RunId("run-1".to_string())),
             reason: PacketAcceptanceRejectReason::UnauthenticatedSource,
         });
 
@@ -12732,6 +13084,7 @@ shared_token = "secret"
         let reason = ServerRejectionHandoffReason::Acceptance {
             message_type: MessageType::Heartbeat,
             client_id: Some(ClientId("client-1".to_string())),
+            run_id: Some(RunId("run-1".to_string())),
             reason: PacketAcceptanceRejectReason::UnauthenticatedSource,
         };
 
@@ -12757,6 +13110,7 @@ shared_token = "secret"
                 source,
                 message_type: MessageType::Heartbeat,
                 client_id: Some(ClientId("client-2".to_string())),
+                run_id: Some(RunId("run-1".to_string())),
                 reason: PacketAcceptanceRejectReason::UnknownClient,
             },
         ));
@@ -12765,6 +13119,7 @@ shared_token = "secret"
             ServerRejectionHandoffReason::Acceptance {
                 message_type: MessageType::Heartbeat,
                 client_id: Some(ClientId("client-2".to_string())),
+                run_id: Some(RunId("run-1".to_string())),
                 reason: PacketAcceptanceRejectReason::UnknownClient,
             }
         );
@@ -12778,6 +13133,7 @@ shared_token = "secret"
                 source,
                 message_type: MessageType::VideoFrame,
                 client_id: Some(ClientId("client-1".to_string())),
+                run_id: Some(RunId("run-1".to_string())),
                 reason: PacketAcceptanceRejectReason::EndpointMismatch,
             },
         ));
@@ -12786,6 +13142,7 @@ shared_token = "secret"
             ServerRejectionHandoffReason::Acceptance {
                 message_type: MessageType::VideoFrame,
                 client_id: Some(ClientId("client-1".to_string())),
+                run_id: Some(RunId("run-1".to_string())),
                 reason: PacketAcceptanceRejectReason::EndpointMismatch,
             }
         );
@@ -12846,6 +13203,7 @@ shared_token = "secret"
                 reason: ServerRejectionHandoffReason::Acceptance {
                     message_type: MessageType::VideoFrame,
                     client_id: Some(ClientId("client-1".to_string())),
+                    run_id: Some(RunId("run-1".to_string())),
                     reason: PacketAcceptanceRejectReason::EndpointMismatch,
                 },
             },
@@ -12856,7 +13214,7 @@ shared_token = "secret"
             event,
             ServerReceiveRejectionJsonLogEventInput {
                 event_name: SERVER_RECEIVE_REJECTION_JSON_LOG_EVENT_NAME,
-                run_id: None,
+                run_id: Some(RunId("run-1".to_string())),
                 client_id: Some(ClientId("client-1".to_string())),
                 source,
                 message_type: Some(MessageType::VideoFrame),
@@ -12875,7 +13233,7 @@ shared_token = "secret"
         let writer = ServerReceiveRejectionJsonLineWriter;
         let event = ServerReceiveRejectionJsonLogEventInput {
             event_name: SERVER_RECEIVE_REJECTION_JSON_LOG_EVENT_NAME,
-            run_id: None,
+            run_id: Some(RunId("run-1".to_string())),
             client_id: Some(ClientId("client-1".to_string())),
             source,
             message_type: Some(MessageType::Heartbeat),
@@ -12893,7 +13251,7 @@ shared_token = "secret"
 
         assert_eq!(
             String::from_utf8(output).expect("json line should be utf8"),
-            r#"{"event_name":"server.receive_rejection","run_id":null,"client_id":"client-1","source":"127.0.0.1:5000","message_type":"Heartbeat","rejection_reason":"UnauthenticatedSource","detail":{"kind":"Acceptance","reason":"UnauthenticatedSource"},"timestamp":345678}"#
+            r#"{"event_name":"server.receive_rejection","run_id":"run-1","client_id":"client-1","source":"127.0.0.1:5000","message_type":"Heartbeat","rejection_reason":"UnauthenticatedSource","detail":{"kind":"Acceptance","reason":"UnauthenticatedSource"},"timestamp":345678}"#
                 .to_string()
                 + "\n"
         );
@@ -12907,6 +13265,7 @@ shared_token = "secret"
             source,
             message_type: MessageType::VideoFrame,
             client_id: Some(ClientId("client-1".to_string())),
+            run_id: Some(RunId("run-1".to_string())),
             reason: PacketAcceptanceRejectReason::EndpointMismatch,
         });
         let mut output = Vec::new();
@@ -12995,6 +13354,7 @@ shared_token = "secret"
                 source,
                 message_type: MessageType::Heartbeat,
                 client_id: Some(ClientId("client-2".to_string())),
+                run_id: Some(RunId("run-1".to_string())),
                 reason: PacketAcceptanceRejectReason::UnknownClient,
             }),
         );
@@ -13092,6 +13452,7 @@ shared_token = "secret"
                 source,
                 message_type: MessageType::VideoFrame,
                 client_id: Some(ClientId("client-1".to_string())),
+                run_id: Some(RunId("run-1".to_string())),
                 reason: PacketAcceptanceRejectReason::EndpointMismatch,
             }),
         );
@@ -13150,6 +13511,7 @@ shared_token = "secret"
             source,
             message_type: MessageType::VideoFrame,
             client_id: Some(ClientId("client-1".to_string())),
+            run_id: Some(RunId("run-1".to_string())),
             reason: PacketAcceptanceRejectReason::EndpointMismatch,
         });
         let outcome = ServerReceiveLoopGateOutcome::Rejected(rejection.clone());
@@ -13214,6 +13576,7 @@ shared_token = "secret"
                 source,
                 message_type: MessageType::VideoFrame,
                 client_id: Some(ClientId("client-1".to_string())),
+                run_id: Some(RunId("run-1".to_string())),
                 reason: PacketAcceptanceRejectReason::EndpointMismatch,
             }),
         );
@@ -13336,6 +13699,7 @@ shared_token = "secret"
                 source,
                 message_type: MessageType::VideoFrame,
                 client_id: Some(ClientId("client-1".to_string())),
+                run_id: Some(RunId("run-1".to_string())),
                 reason: PacketAcceptanceRejectReason::UnauthenticatedSource,
             }),
         );
@@ -14009,6 +14373,7 @@ shared_token = "secret"
             source,
             message_type: MessageType::VideoFrame,
             client_id: Some(ClientId("client-1".to_string())),
+            run_id: Some(RunId("run-1".to_string())),
             reason: PacketAcceptanceRejectReason::UnauthenticatedSource,
         });
         let body = body_result_with_gate_rejection(128, rejection.clone());
@@ -15207,11 +15572,13 @@ shared_token = "secret"
         let ServerDispatchRuntimeSideEffectApplyResult::Auth {
             flow,
             registered_sender,
+            registration_summary,
         } = outcome.result
         else {
             panic!("expected auth side effect result");
         };
         assert!(flow.decision.accepted);
+        assert!(registration_summary.is_some());
         let ProtocolMessage::AuthResponse(response) = flow.queue_item.packet.message else {
             panic!("expected queued AuthResponse");
         };
@@ -15324,6 +15691,7 @@ shared_token = "secret"
         let ServerDispatchRuntimeOutputApplyResult::Auth {
             flow,
             registered_sender,
+            registration_summary,
             auth_log_event,
             auth_response_storage,
         } = outcome.result
@@ -15332,6 +15700,7 @@ shared_token = "secret"
         };
         assert!(flow.decision.accepted);
         assert!(registered_sender.is_some());
+        assert!(registration_summary.is_some());
         assert!(auth_log_event.accepted);
         assert_eq!(auth_log_event.reason_code, AuthResponseReasonCode::Ok);
         let storage = auth_response_storage.expect("accepted auth response should reach storage");
@@ -15375,6 +15744,7 @@ shared_token = "secret"
         let ServerDispatchRuntimeOutputApplyResult::Auth {
             flow,
             registered_sender,
+            registration_summary,
             auth_log_event,
             auth_response_storage,
         } = outcome.result
@@ -15383,6 +15753,7 @@ shared_token = "secret"
         };
         assert!(!flow.decision.accepted);
         assert_eq!(registered_sender, None);
+        assert_eq!(registration_summary, None);
         assert_eq!(registry.entries().count(), 0);
         assert!(!auth_log_event.accepted);
         assert_eq!(
@@ -16273,6 +16644,7 @@ shared_token = "secret"
                 source,
                 message_type: MessageType::Heartbeat,
                 client_id: Some(ClientId("client-2".to_string())),
+                run_id: Some(RunId("run-1".to_string())),
                 reason: PacketAcceptanceRejectReason::UnknownClient,
             }),
         );
@@ -17504,6 +17876,42 @@ shared_token = "secret"
     }
 
     #[test]
+    fn authenticated_sender_registry_registration_summary_marks_same_client_reregistration() {
+        let source = packet_source();
+        let boundary = AuthenticatedSenderRegistryBoundary;
+        let mut registry = AuthenticatedSenderRegistry::default();
+        boundary.register(
+            &mut registry,
+            AuthenticatedSenderRegistration {
+                client_id: ClientId("client-1".to_string()),
+                source,
+                run_id: RunId("run-1".to_string()),
+                protocol_version: ProtocolVersion(2),
+                registered_at: Some(TimestampMicros(1_000_000)),
+            },
+        );
+
+        let summary = boundary.register_with_summary(
+            &mut registry,
+            AuthenticatedSenderRegistration {
+                client_id: ClientId("client-1".to_string()),
+                source,
+                run_id: RunId("run-2".to_string()),
+                protocol_version: ProtocolVersion(2),
+                registered_at: Some(TimestampMicros(2_000_000)),
+            },
+        );
+
+        assert_eq!(summary.status, ServerOperationalConditionStatus::Continue);
+        assert_eq!(
+            summary.reason,
+            AuthenticatedSenderRegistrationReason::RunReplaced
+        );
+        assert_eq!(summary.previous_run_id, Some(RunId("run-1".to_string())));
+        assert_eq!(summary.current_run_id, RunId("run-2".to_string()));
+    }
+
+    #[test]
     fn authenticated_sender_registry_rejects_unknown_or_mismatched_source() {
         let source = packet_source();
         let other_source: PacketSource = "127.0.0.1:5001"
@@ -17575,6 +17983,7 @@ shared_token = "secret"
                 source,
                 message_type: MessageType::Heartbeat,
                 client_id: Some(ClientId("client-1".to_string())),
+                run_id: Some(RunId("run-1".to_string())),
                 reason: PacketAcceptanceRejectReason::UnauthenticatedSource,
             })
         );
@@ -17595,6 +18004,7 @@ shared_token = "secret"
                 source,
                 message_type: MessageType::Heartbeat,
                 client_id: Some(ClientId("client-2".to_string())),
+                run_id: Some(RunId("run-1".to_string())),
                 reason: PacketAcceptanceRejectReason::UnknownClient,
             })
         );
@@ -17619,9 +18029,41 @@ shared_token = "secret"
                 source: packet_source,
                 message_type: MessageType::VideoFrame,
                 client_id: Some(ClientId("client-1".to_string())),
+                run_id: Some(RunId("run-1".to_string())),
                 reason: PacketAcceptanceRejectReason::EndpointMismatch,
             })
         );
+    }
+
+    #[test]
+    fn packet_acceptance_gate_rejects_run_id_mismatch_for_registered_source() {
+        let source = packet_source();
+        let gate = PacketAcceptanceGateBoundary::default();
+        let registry = registry_with_client("client-1", source);
+        let mut route = heartbeat_route("client-1", source);
+        let ServerInboundRoute::Heartbeat { heartbeat, .. } = &mut route else {
+            panic!("expected heartbeat route");
+        };
+        heartbeat.run_id = RunId("run-2".to_string());
+
+        let decision = gate.evaluate_route(&registry, &route);
+
+        assert_eq!(
+            decision,
+            PacketAcceptanceDecision::Rejected(PacketAcceptanceRejection {
+                source,
+                message_type: MessageType::Heartbeat,
+                client_id: Some(ClientId("client-1".to_string())),
+                run_id: Some(RunId("run-2".to_string())),
+                reason: PacketAcceptanceRejectReason::RunIdMismatch,
+            })
+        );
+        let PacketAcceptanceDecision::Rejected(rejection) = decision else {
+            panic!("run_id mismatch should reject");
+        };
+        let summary = packet_operational_summary_from_rejection(&rejection);
+        assert_eq!(summary.status, ServerOperationalConditionStatus::Reject);
+        assert_eq!(summary.reason, PacketAcceptanceRejectReason::RunIdMismatch);
     }
 
     #[test]
@@ -17689,6 +18131,7 @@ shared_token = "secret"
                     source,
                     message_type: MessageType::Heartbeat,
                     client_id: Some(ClientId("client-1".to_string())),
+                    run_id: Some(RunId("run-1".to_string())),
                     reason: PacketAcceptanceRejectReason::UnauthenticatedSource,
                 }
             ))
@@ -18808,6 +19251,17 @@ shared_token = "secret"
             result.action_plan.evaluation,
             ServerHeartbeatTimeoutEvaluation::TimedOut { .. }
         ));
+        assert_eq!(
+            result.operational_summary,
+            ServerHeartbeatOperationalSummary {
+                status: ServerOperationalConditionStatus::ReconnectRequired,
+                client_id: ClientId("client-1".to_string()),
+                reason: ServerHeartbeatOperationalReason::TimedOut,
+                last_server_received_at: Some(TimestampMicros(8_000_100)),
+                elapsed_micros: Some(600),
+                timeout_after_micros: Some(500),
+            }
+        );
         assert!(result
             .apply
             .registry_invalidation
@@ -18853,6 +19307,17 @@ shared_token = "secret"
             result.action_plan.evaluation,
             ServerHeartbeatTimeoutEvaluation::NoHeartbeat { .. }
         ));
+        assert_eq!(
+            result.operational_summary,
+            ServerHeartbeatOperationalSummary {
+                status: ServerOperationalConditionStatus::Continue,
+                client_id: ClientId("client-2".to_string()),
+                reason: ServerHeartbeatOperationalReason::NoHeartbeatYet,
+                last_server_received_at: None,
+                elapsed_micros: None,
+                timeout_after_micros: None,
+            }
+        );
         assert!(result.apply.registry_invalidation.is_none());
         assert!(result.apply.timeout_log_event.is_none());
         assert!(result.apply.notice_handoff.is_none());
@@ -20644,6 +21109,12 @@ shared_token = "secret"
                 protocol_version,
                 Some(TimestampMicros(10)),
             ),
+            operational_summary: ServerAuthOperationalSummary {
+                status: ServerOperationalConditionStatus::Continue,
+                client_id: client_id.clone(),
+                run_id: run_id.clone(),
+                reason: ServerAuthOperationalReason::Accepted,
+            },
             auth_log_input: ServerAuthLogInput {
                 source,
                 client_id: client_id.clone(),
@@ -20663,6 +21134,7 @@ shared_token = "secret"
         let first_auth = ServerAuthResponsePocOutcome {
             auth_flow,
             registered_sender: None,
+            registration_summary: None,
             encoded_packet: EncodedOutboundPacket {
                 destination: source.into(),
                 bytes: vec![1, 2, 3],

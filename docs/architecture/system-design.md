@@ -6994,8 +6994,8 @@ Flow:
 7. `ServerRejectionDropLogInput.log_input` is the future receive log layer
    input.
 8. Both inputs preserve the same reason so `UnauthenticatedSource`,
-   `UnknownClient`, `EndpointMismatch`, and decode error rejections remain
-   distinguishable.
+   `UnknownClient`, `EndpointMismatch`, `RunIdMismatch`, and decode error
+   rejections remain distinguishable.
 
 Responsibility split:
 
@@ -7006,8 +7006,8 @@ Responsibility split:
   - Does not drop packets or emit logs.
 - packet acceptance gate
   - Produces acceptance rejection decisions after registry lookup.
-  - Preserves `message_type`, optional `client_id`, source endpoint, and
-    `PacketAcceptanceRejectReason`.
+  - Preserves `message_type`, optional `client_id`, optional `run_id`, source
+    endpoint, and `PacketAcceptanceRejectReason`.
   - Does not drop packets or emit logs.
 - drop handoff boundary
   - Converts receive / gate rejection decisions into typed drop and log inputs.
@@ -7055,11 +7055,11 @@ Event schema:
 | Field | Type | Notes |
 | --- | --- | --- |
 | `event_name` | string | Always `server.receive_rejection`. |
-| `run_id` | optional `RunId` | Included in the schema for correlation. Current decode / gate rejections do not always know it, so it is `None` until a later boundary carries it. |
+| `run_id` | optional `RunId` | Included in the schema for correlation. Decode failures may still leave it absent, but client-scoped gate rejections now preserve it. |
 | `client_id` | optional `ClientId` | Present when the packet was decoded far enough or the gate extracted it. Decode errors may leave it absent. |
 | `source` | `PacketSource` | UDP source endpoint captured before decode / gate processing. |
 | `message_type` | optional `MessageType` | Present for packet acceptance rejections; absent for decode failures that cannot identify a message type. |
-| `rejection_reason` | enum | `DecodeError`, `UnauthenticatedSource`, `UnknownClient`, or `EndpointMismatch`. |
+| `rejection_reason` | enum | `DecodeError`, `UnauthenticatedSource`, `UnknownClient`, `EndpointMismatch`, or `RunIdMismatch`. |
 | `detail` | enum/object | Decode detail keeps `ServerDecodeErrorAction` and `ProtocolError`; acceptance detail keeps `PacketAcceptanceRejectReason`. |
 | `timestamp` | `TimestampMicros` | Server-side event timestamp supplied by the caller. |
 
@@ -9417,6 +9417,12 @@ Current implemented behavior:
   - `last_receive_error`
   - `last_send_error`
   - `last_rejected_reason`
+  - `last_auth_status`
+  - `last_auth_reason`
+  - `last_registration_status`
+  - `last_registration_reason`
+  - `last_runtime_rejection_status`
+  - `last_runtime_rejection_reason`
   - `stop_reason`
 - fatal/startup failure visibility:
   - the command now emits a one-line failure summary on stderr
@@ -9523,15 +9529,48 @@ Current narrow visibility policy:
 - `timeout_only_run=true` explicitly distinguishes "started correctly but
   received nothing before timeout" from successful packet-handling runs that
   later stop on timeout.
-- `last_rejected_reason` is the smallest shared rejection surface for:
+- `last_rejected_reason` remains the smallest backward-compatible string
+  surface for:
   - auth rejection, stored as `Auth:<ReasonCode>`
   - receive/gate rejection, stored as the rejection reason name
+- The current hardening slice adds typed operational summaries beside that
+  compatibility field:
+  - auth decisions map to:
+    - `Continue` when accepted
+    - `Reject` for `InvalidToken`, `UnknownClient`, `ProtocolMismatch`, and
+      `AlreadyConnected`
+    - `InvestigationRequired` for `InternalError`
+  - accepted registration writes stay separate from auth rejection and are
+    surfaced as:
+    - `FreshRegistration`
+    - `IdempotentReregistration`
+    - `RunReplaced`
+    - `SourceReplaced`
+    - `SourceAndRunReplaced`
+  - gate/runtime rejection stays separate from auth and currently preserves:
+    - `UnauthenticatedSource`
+    - `UnknownClient`
+    - `EndpointMismatch`
+    - `RunIdMismatch`
+  - heartbeat timeout evaluation stays separate from receive/send summary:
+    - `NoHeartbeatYet` => `Continue`
+    - `Alive` => `Continue`
+    - `TimedOut` => `ReconnectRequired`
 - `auth_responses_sent` in this first slice is intentionally the accepted-auth
   send count only. Rejected auth currently surfaces through
-  `last_rejected_reason`, not through an outbound send count.
+  `last_rejected_reason` plus typed auth summary, not through an outbound send
+  count.
 - `decode_errors` stays count-only in this slice. There is no dedicated
   `last_decode_error` field yet because the current goal is only to avoid
   silent stop/fatal states, not to build a full error-history surface.
+- The existing manual/diagnostic summaries now expose the same typed
+  distinction without changing runtime ownership:
+  - `--auth-response-poc-once` prints auth status/reason and registration
+    status/reason
+  - `--receive-auth-video-queue-once` prints auth status/reason and
+    registration status/reason beside the existing queue summary
+  - `--receive-send-runtime-bounded` prints the last typed auth, registration,
+    and runtime rejection summaries beside the backward-compatible string fields
 
 First-slice stop policy:
 

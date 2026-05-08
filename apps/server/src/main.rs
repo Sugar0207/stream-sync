@@ -17,14 +17,24 @@ fn main() {
                     }
 
                     let decision = &outcome.outcome.auth_flow.decision;
+                    let auth_summary = &outcome.outcome.auth_flow.operational_summary;
+                    let registration_summary = outcome.outcome.registration_summary.as_ref();
                     println!(
-                        "auth response PoC handled one packet on {} and sent {} bytes; client_id={} run_id={} accepted={} reason_code={:?}",
+                        "auth response PoC handled one packet on {} and sent {} bytes; client_id={} run_id={} accepted={} reason_code={:?} auth_status={} auth_reason={} registration_status={} registration_reason={}",
                         outcome.bind_address,
                         outcome.outcome.bytes_sent,
                         decision.client_id.0,
                         decision.run_id.0,
                         decision.accepted,
-                        decision.reason_code
+                        decision.reason_code,
+                        operational_status_name(auth_summary.status),
+                        auth_operational_reason_name(auth_summary.reason),
+                        format_optional_operational_status(
+                            registration_summary.map(|value| value.status)
+                        ),
+                        format_optional_registration_reason(
+                            registration_summary.map(|value| value.reason)
+                        )
                     );
                 }
                 Err(error) => {
@@ -594,7 +604,7 @@ fn format_receive_send_runtime_bounded_summary(
 ) -> String {
     let summary = &outcome.summary;
     format!(
-        "command_name={} config_path={} max_iterations={} receive_timeout_ms={} iterations_attempted={} iterations_completed={} auth_requests_received={} auth_responses_sent={} heartbeats_received={} heartbeat_acks_sent={} client_stats_received={} client_stats_returns_sent={} accepted_packets={} rejected_packets={} decode_errors={} send_failures={} timeout_iterations={} timeout_only_run={} outbound_queue_len={} registered_clients={} last_receive_error={} last_send_error={} last_rejected_reason={} stop_reason={}",
+        "command_name={} config_path={} max_iterations={} receive_timeout_ms={} iterations_attempted={} iterations_completed={} auth_requests_received={} auth_responses_sent={} heartbeats_received={} heartbeat_acks_sent={} client_stats_received={} client_stats_returns_sent={} accepted_packets={} rejected_packets={} decode_errors={} send_failures={} timeout_iterations={} timeout_only_run={} outbound_queue_len={} registered_clients={} last_receive_error={} last_send_error={} last_rejected_reason={} last_auth_status={} last_auth_reason={} last_registration_status={} last_registration_reason={} last_runtime_rejection_status={} last_runtime_rejection_reason={} stop_reason={}",
         command_name,
         config_path,
         summary.max_iterations,
@@ -618,6 +628,34 @@ fn format_receive_send_runtime_bounded_summary(
         format_optional_error_kind(summary.last_receive_error),
         format_optional_string(summary.last_send_error.as_deref()),
         format_optional_string(summary.last_rejected_reason.as_deref()),
+        format_optional_operational_status(
+            summary.last_auth_summary.as_ref().map(|value| value.status)
+        ),
+        format_optional_auth_reason(summary.last_auth_summary.as_ref().map(|value| value.reason)),
+        format_optional_operational_status(
+            summary
+                .last_registration_summary
+                .as_ref()
+                .map(|value| value.status)
+        ),
+        format_optional_registration_reason(
+            summary
+                .last_registration_summary
+                .as_ref()
+                .map(|value| value.reason)
+        ),
+        format_optional_operational_status(
+            summary
+                .last_runtime_rejection_summary
+                .as_ref()
+                .map(|value| value.status)
+        ),
+        format_optional_packet_reject_reason(
+            summary
+                .last_runtime_rejection_summary
+                .as_ref()
+                .map(|value| value.reason)
+        ),
         receive_send_runtime_bounded_stop_reason_name(summary.stop_reason),
     )
 }
@@ -665,8 +703,38 @@ fn format_receive_send_runtime_bounded_failure_summary(
     let last_rejected_reason = partial_summary
         .as_ref()
         .and_then(|summary| summary.last_rejected_reason.as_deref());
+    let last_auth_status = partial_summary
+        .as_ref()
+        .and_then(|summary| summary.last_auth_summary.as_ref().map(|value| value.status));
+    let last_auth_reason = partial_summary
+        .as_ref()
+        .and_then(|summary| summary.last_auth_summary.as_ref().map(|value| value.reason));
+    let last_registration_status = partial_summary.as_ref().and_then(|summary| {
+        summary
+            .last_registration_summary
+            .as_ref()
+            .map(|value| value.status)
+    });
+    let last_registration_reason = partial_summary.as_ref().and_then(|summary| {
+        summary
+            .last_registration_summary
+            .as_ref()
+            .map(|value| value.reason)
+    });
+    let last_runtime_rejection_status = partial_summary.as_ref().and_then(|summary| {
+        summary
+            .last_runtime_rejection_summary
+            .as_ref()
+            .map(|value| value.status)
+    });
+    let last_runtime_rejection_reason = partial_summary.as_ref().and_then(|summary| {
+        summary
+            .last_runtime_rejection_summary
+            .as_ref()
+            .map(|value| value.reason)
+    });
     format!(
-        "command_name={} config_path={} max_iterations={} receive_timeout_ms={} iterations_attempted={} iterations_completed={} rejected_packets={} decode_errors={} send_failures={} timeout_iterations={} timeout_only_run={} last_receive_error={} last_send_error={} last_rejected_reason={} stop_reason={} fatal_error_kind={} fatal_error_detail={}",
+        "command_name={} config_path={} max_iterations={} receive_timeout_ms={} iterations_attempted={} iterations_completed={} rejected_packets={} decode_errors={} send_failures={} timeout_iterations={} timeout_only_run={} last_receive_error={} last_send_error={} last_rejected_reason={} last_auth_status={} last_auth_reason={} last_registration_status={} last_registration_reason={} last_runtime_rejection_status={} last_runtime_rejection_reason={} stop_reason={} fatal_error_kind={} fatal_error_detail={}",
         command_name,
         command.config_path,
         command.max_iterations,
@@ -681,6 +749,12 @@ fn format_receive_send_runtime_bounded_failure_summary(
         format_optional_error_kind(last_receive_error),
         format_optional_string(last_send_error),
         format_optional_string(last_rejected_reason),
+        format_optional_operational_status(last_auth_status),
+        format_optional_auth_reason(last_auth_reason),
+        format_optional_operational_status(last_registration_status),
+        format_optional_registration_reason(last_registration_reason),
+        format_optional_operational_status(last_runtime_rejection_status),
+        format_optional_packet_reject_reason(last_runtime_rejection_reason),
         bounded_runtime_error_stop_reason(error),
         bounded_runtime_error_kind(error),
         bounded_runtime_error_detail(error),
@@ -806,6 +880,103 @@ fn format_optional_string(value: Option<&str>) -> String {
     value.unwrap_or("none").to_string()
 }
 
+fn operational_status_name(
+    status: stream_sync_server::ServerOperationalConditionStatus,
+) -> &'static str {
+    match status {
+        stream_sync_server::ServerOperationalConditionStatus::Continue => "Continue",
+        stream_sync_server::ServerOperationalConditionStatus::Reject => "Reject",
+        stream_sync_server::ServerOperationalConditionStatus::ReconnectRequired => {
+            "ReconnectRequired"
+        }
+        stream_sync_server::ServerOperationalConditionStatus::InvestigationRequired => {
+            "InvestigationRequired"
+        }
+    }
+}
+
+fn auth_operational_reason_name(
+    reason: stream_sync_server::ServerAuthOperationalReason,
+) -> &'static str {
+    match reason {
+        stream_sync_server::ServerAuthOperationalReason::Accepted => "Accepted",
+        stream_sync_server::ServerAuthOperationalReason::InvalidToken => "InvalidToken",
+        stream_sync_server::ServerAuthOperationalReason::UnknownClient => "UnknownClient",
+        stream_sync_server::ServerAuthOperationalReason::ProtocolMismatch => "ProtocolMismatch",
+        stream_sync_server::ServerAuthOperationalReason::AlreadyConnected => "AlreadyConnected",
+        stream_sync_server::ServerAuthOperationalReason::InternalError => "InternalError",
+    }
+}
+
+fn registration_operational_reason_name(
+    reason: stream_sync_server::AuthenticatedSenderRegistrationReason,
+) -> &'static str {
+    match reason {
+        stream_sync_server::AuthenticatedSenderRegistrationReason::FreshRegistration => {
+            "FreshRegistration"
+        }
+        stream_sync_server::AuthenticatedSenderRegistrationReason::IdempotentReregistration => {
+            "IdempotentReregistration"
+        }
+        stream_sync_server::AuthenticatedSenderRegistrationReason::RunReplaced => "RunReplaced",
+        stream_sync_server::AuthenticatedSenderRegistrationReason::SourceReplaced => {
+            "SourceReplaced"
+        }
+        stream_sync_server::AuthenticatedSenderRegistrationReason::SourceAndRunReplaced => {
+            "SourceAndRunReplaced"
+        }
+    }
+}
+
+fn packet_reject_reason_name(
+    reason: stream_sync_server::PacketAcceptanceRejectReason,
+) -> &'static str {
+    match reason {
+        stream_sync_server::PacketAcceptanceRejectReason::UnauthenticatedSource => {
+            "UnauthenticatedSource"
+        }
+        stream_sync_server::PacketAcceptanceRejectReason::UnknownClient => "UnknownClient",
+        stream_sync_server::PacketAcceptanceRejectReason::EndpointMismatch => "EndpointMismatch",
+        stream_sync_server::PacketAcceptanceRejectReason::RunIdMismatch => "RunIdMismatch",
+    }
+}
+
+fn format_optional_operational_status(
+    status: Option<stream_sync_server::ServerOperationalConditionStatus>,
+) -> String {
+    status
+        .map(operational_status_name)
+        .unwrap_or("none")
+        .to_string()
+}
+
+fn format_optional_auth_reason(
+    reason: Option<stream_sync_server::ServerAuthOperationalReason>,
+) -> String {
+    reason
+        .map(auth_operational_reason_name)
+        .unwrap_or("none")
+        .to_string()
+}
+
+fn format_optional_registration_reason(
+    reason: Option<stream_sync_server::AuthenticatedSenderRegistrationReason>,
+) -> String {
+    reason
+        .map(registration_operational_reason_name)
+        .unwrap_or("none")
+        .to_string()
+}
+
+fn format_optional_packet_reject_reason(
+    reason: Option<stream_sync_server::PacketAcceptanceRejectReason>,
+) -> String {
+    reason
+        .map(packet_reject_reason_name)
+        .unwrap_or("none")
+        .to_string()
+}
+
 fn current_timestamp_micros() -> stream_sync_protocol::TimestampMicros {
     let micros = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -882,6 +1053,8 @@ fn format_receive_auth_video_queue_runtime_summary(
     policy: stream_sync_server::ServerReceiveAuthVideoQueueOnceManualPolicy,
 ) -> String {
     let decision = &outcome.first_auth.auth_flow.decision;
+    let auth_summary = &outcome.first_auth.auth_flow.operational_summary;
+    let registration_summary = outcome.first_auth.registration_summary.as_ref();
     let (video_status, queued_status, queue_len, dropped_oldest, video_summary) =
         auth_video_queue_summary(outcome);
     let incomplete_progress = video_summary
@@ -923,10 +1096,14 @@ fn format_receive_auth_video_queue_runtime_summary(
     };
 
     format!(
-        "receive auth/video queue runtime handled auth on {}; auth_accepted={} auth_reason={:?} client_id={} run_id={} video={} queued={} queue_len={} dropped_oldest={} registered_clients={} manual_max_video_packets={} manual_receive_timeout_ms={} manual_expected_reassembled_frames={} manual_stop_after_expected_reassembled_frames={} manual_expected_reassembled_clients={} manual_expected_reassembled_frames_per_client={} manual_receive_buffer_requested_bytes={} manual_receive_buffer_effective_bytes={} manual_receive_buffer_set_error={} manual_receive_buffer_read_error={} packets_received={} fragments_received={} frames_reassembled={} frames_queued={} direct_frames_queued={} rejected_packets={} rejected_fragments={} duplicate_fragments={} non_video_packets={} incomplete_reassembly_frames={} incomplete_frame_progress={} observed_reassembled_clients={} per_client_reassembled_frames={} stop_reason={} receive_timed_out={} max_packets_reached={}",
+        "receive auth/video queue runtime handled auth on {}; auth_accepted={} auth_reason={:?} auth_status={} auth_operational_reason={} registration_status={} registration_reason={} client_id={} run_id={} video={} queued={} queue_len={} dropped_oldest={} registered_clients={} manual_max_video_packets={} manual_receive_timeout_ms={} manual_expected_reassembled_frames={} manual_stop_after_expected_reassembled_frames={} manual_expected_reassembled_clients={} manual_expected_reassembled_frames_per_client={} manual_receive_buffer_requested_bytes={} manual_receive_buffer_effective_bytes={} manual_receive_buffer_set_error={} manual_receive_buffer_read_error={} packets_received={} fragments_received={} frames_reassembled={} frames_queued={} direct_frames_queued={} rejected_packets={} rejected_fragments={} duplicate_fragments={} non_video_packets={} incomplete_reassembly_frames={} incomplete_frame_progress={} observed_reassembled_clients={} per_client_reassembled_frames={} stop_reason={} receive_timed_out={} max_packets_reached={}",
         outcome.bind_address,
         decision.accepted,
         decision.reason_code,
+        operational_status_name(auth_summary.status),
+        auth_operational_reason_name(auth_summary.reason),
+        format_optional_operational_status(registration_summary.map(|value| value.status)),
+        format_optional_registration_reason(registration_summary.map(|value| value.reason)),
         decision.client_id.0,
         decision.run_id.0,
         video_status,
@@ -1284,6 +1461,41 @@ mod tests {
                     last_receive_error: Some(std::io::ErrorKind::TimedOut),
                     last_send_error: None,
                     last_rejected_reason: Some("Auth:InvalidToken".to_string()),
+                    last_auth_summary: Some(stream_sync_server::ServerAuthOperationalSummary {
+                        status: stream_sync_server::ServerOperationalConditionStatus::Reject,
+                        client_id: ClientId("client-1".to_string()),
+                        run_id: RunId("run-1".to_string()),
+                        reason: stream_sync_server::ServerAuthOperationalReason::InvalidToken,
+                    }),
+                    last_registration_summary: Some(
+                        stream_sync_server::AuthenticatedSenderRegistrationSummary {
+                            status: stream_sync_server::ServerOperationalConditionStatus::Continue,
+                            client_id: ClientId("client-1".to_string()),
+                            previous_source: None,
+                            current_source: std::net::SocketAddr::from(([127, 0, 0, 1], 5000))
+                                .into(),
+                            previous_run_id: None,
+                            current_run_id: RunId("run-1".to_string()),
+                            reason: stream_sync_server::AuthenticatedSenderRegistrationReason::FreshRegistration,
+                            entry: stream_sync_server::AuthenticatedSenderEntry {
+                                client_id: ClientId("client-1".to_string()),
+                                source: std::net::SocketAddr::from(([127, 0, 0, 1], 5000))
+                                    .into(),
+                                run_id: RunId("run-1".to_string()),
+                                protocol_version: ProtocolVersion(2),
+                                registered_at: Some(TimestampMicros(10)),
+                            },
+                        }
+                    ),
+                    last_runtime_rejection_summary: Some(
+                        stream_sync_server::ServerRuntimePacketOperationalSummary {
+                            status: stream_sync_server::ServerOperationalConditionStatus::Reject,
+                            message_type: MessageType::Heartbeat,
+                            client_id: Some(ClientId("client-1".to_string())),
+                            run_id: Some(RunId("run-1".to_string())),
+                            reason: stream_sync_server::PacketAcceptanceRejectReason::RunIdMismatch,
+                        }
+                    ),
                     stop_reason:
                         stream_sync_server::ServerReceiveSendRuntimeBoundedStopReason::ReceiveTimedOut,
                 },
@@ -1313,6 +1525,12 @@ mod tests {
         assert!(summary.contains("last_receive_error=TimedOut"));
         assert!(summary.contains("last_send_error=none"));
         assert!(summary.contains("last_rejected_reason=Auth:InvalidToken"));
+        assert!(summary.contains("last_auth_status=Reject"));
+        assert!(summary.contains("last_auth_reason=InvalidToken"));
+        assert!(summary.contains("last_registration_status=Continue"));
+        assert!(summary.contains("last_registration_reason=FreshRegistration"));
+        assert!(summary.contains("last_runtime_rejection_status=Reject"));
+        assert!(summary.contains("last_runtime_rejection_reason=RunIdMismatch"));
         assert!(summary.contains("stop_reason=ReceiveTimedOut"));
     }
 
@@ -1390,6 +1608,9 @@ mod tests {
                     last_receive_error: None,
                     last_send_error: Some("SocketSend(PermissionDenied)".to_string()),
                     last_rejected_reason: None,
+                    last_auth_summary: None,
+                    last_registration_summary: None,
+                    last_runtime_rejection_summary: None,
                     stop_reason:
                         stream_sync_server::ServerReceiveSendRuntimeBoundedStopReason::MaxIterationsReached,
                 },
@@ -1548,6 +1769,10 @@ mod tests {
         );
 
         assert!(summary.contains("receive auth/video queue runtime handled auth on"));
+        assert!(summary.contains("auth_status=Continue"));
+        assert!(summary.contains("auth_operational_reason=Accepted"));
+        assert!(summary.contains("registration_status=none"));
+        assert!(summary.contains("registration_reason=none"));
         assert!(summary.contains("manual_max_video_packets=4096"));
         assert!(summary.contains("manual_expected_reassembled_clients=0"));
         assert!(summary.contains("manual_expected_reassembled_frames_per_client=0"));
@@ -1611,6 +1836,12 @@ mod tests {
                             protocol_version,
                             Some(TimestampMicros(10)),
                         ),
+                        operational_summary: stream_sync_server::ServerAuthOperationalSummary {
+                            status: stream_sync_server::ServerOperationalConditionStatus::Continue,
+                            client_id: client_id.clone(),
+                            run_id: run_id.clone(),
+                            reason: stream_sync_server::ServerAuthOperationalReason::Accepted,
+                        },
                         auth_log_input: stream_sync_server::ServerAuthLogInput {
                             source,
                             client_id: client_id.clone(),
@@ -1628,6 +1859,7 @@ mod tests {
                         queue_item,
                     },
                     registered_sender: None,
+                    registration_summary: None,
                     encoded_packet: EncodedOutboundPacket {
                         destination: source.into(),
                         bytes: vec![1, 2, 3],
