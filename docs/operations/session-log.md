@@ -5,6 +5,54 @@
 - Codex
 
 ### Work
+- Fixed the human-run step-6 validation recipe for the current 2-client path.
+- Added a dedicated operations doc:
+  - `docs/operations/two-client-long-run-validation.md`
+- Added a paste-ready PowerShell launcher script:
+  - `docs/operations/two-client-long-run-validation.ps1`
+- Confirmed the current CLI surface used by the recipe:
+  - server:
+    - `--receive-send-runtime-continuous`
+  - client:
+    - `--auth-real-encoded-video-frame-poc-bounded`
+- Fixed the startup order, recommended runtime parameters, success criteria,
+  and paste-back log template for human-run validation.
+- Kept this slice docs/script-focused only:
+  - no Codex-run long-run validation
+  - no 4-client validation
+  - no OBS Window Capture validation
+  - no retry/lifecycle expansion
+
+### Changed Files
+- `docs/architecture/system-design.md`
+- `docs/operations/session-log.md`
+- `docs/operations/todo.md`
+- `docs/operations/two-client-long-run-validation.md`
+- `docs/operations/two-client-long-run-validation.ps1`
+
+### Decision
+- Use the current main ingest path for step 6:
+  - `player1 -> server continuous runtime <- player2`
+- Do not use `--live-two-view-switcher-once` as the main step-6 recipe because
+  it is a direct receive diagnostic / legacy path and not the fragmented real
+  encoded main path.
+- Keep the current client side bounded and choose a large `max_frames` derived
+  from validation duration instead of inventing a new continuous client runtime
+  in this step.
+- Capture stdout/stderr into per-window log files so the same counters and
+  typed summaries can be pasted back without requiring a logger/exporter slice.
+
+### Validation
+- `cargo fmt`
+- `cargo fmt --check`
+- `cargo check --workspace`
+- `git diff --check`
+
+## 2026-05-08
+### Type
+- Codex
+
+### Work
 - Implemented the minimal continuous receive/send runtime slice before
   2-client long-run validation.
 - Added a loop-owned server runtime command:

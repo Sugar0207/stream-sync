@@ -22,6 +22,7 @@
 ---
 
 ## 現在位置
+- 2-client 長時間 validation の human-run recipe を固定した。`docs/operations/two-client-long-run-validation.md` と `docs/operations/two-client-long-run-validation.ps1` に、現行 CLI 前提の起動順、PowerShell 貼り付け用 script、成功条件、失敗時の貼り返しログ template を追加した。current step では Codex による actual long-run 実行は行わず、人間が server continuous runtime + 2 bounded real encoded client sender を実行する前提に整理している
 - continuous receive / send runtime の最小 slice を実装した。`stream-sync-server --receive-send-runtime-continuous [config-path] [receive-timeout-ms] [max-iterations-or-0-for-unbounded] [heartbeat-timeout-micros]` が 1 process lifetime で 1 bound UDP socket / 1 `AuthenticatedSenderRegistry` / 1 `ServerOutboundQueueCollection` / 1 `ServerVideoFrameQueueState` / fragment reassembly state / heartbeat liveness / RTT-offset state を保持しながら loop 継続できる。continuous path からも typed auth / registration / runtime rejection / heartbeat timeout summary を読めるようにし、2-client 長時間 validation 前提の最小観測面を追加した
 - 認証 / runtime hardening の最小 slice を実装した。auth decision、same-client registration、client-scoped gate rejection、heartbeat timeout を雑な文字列に寄せず typed status/reason で読めるようにし、`Reject` と `ReconnectRequired` と `InvestigationRequired` を `Continue` から分離した。manual auth PoC、`--receive-auth-video-queue-once`、`--receive-send-runtime-bounded` summary には typed auth / registration / runtime rejection visibility を追加した
 - `NoFrame` / `Waiting` / `HandoffError` の長時間 run 向け最小 status 整理を実装した。source-backed 2-view fallible validation には typed operational summary を追加し、per-side result kind を `Selected` / `NoFrame` / `Waiting` / `HandoffError` のまま保持しつつ、run-state を `Continue` / `RetryLater` / `ReconnectRequired` / `InvestigationRequired` で読めるようにした。late-drop summary あり path では post-mutation の `NoFrame` / `Waiting` 判断を summary へ接続できる
@@ -171,12 +172,12 @@
 ---
 
 ## 直近でやること
-1. 2-client 長時間 validation の recipe と success/failure judgment を固定する
-   - continuous runtime summary を使って `packets_received` / `frames_queued` / `queue_len` / `heartbeat timeout` / `runtime rejection` の観測項目を先に固める
-   - source-backed 2-view path で `NoFrame` / `Waiting` / `HandoffError` と late-drop summary が読める状態を前提にする
-2. 2-client 長時間 validation を取り、sync 誤差 / drop / render 安定性 / timeout の出方を確認する
-   - continuous runtime と switcher validation の summary を並べて、継続可能状態と停止・再接続が必要な状態を切り分ける
-3. 実 outbound queue flush / `ServerNotice` 実送信 / lifecycle follow-up は、long-run で必要な不足が見えた範囲だけ narrow に進める
+1. 人間が 2-client 長時間 validation を実行し、server / client log を回収する
+   - `docs/operations/two-client-long-run-validation.md`
+   - `docs/operations/two-client-long-run-validation.ps1`
+2. 回収した log から sync 誤差 / drop / render 安定性 / timeout の出方を確認する
+   - continuous runtime summary と switcher 側 typed operational summary を並べて、継続可能状態と停止・再接続が必要な状態を切り分ける
+3. 実 outbound queue flush / `ServerNotice` 実送信 / lifecycle follow-up は、human-run long-run で不足が見えた範囲だけ narrow に進める
 
 ## 今後の大まかな指針
 - 残り todo は `MVP クリティカルパス`、`安定化 / 運用`、`future task` に分けて扱う
@@ -185,7 +186,7 @@
 
 ## 残り todo から見た推定 step
 - 目安は `3-6 step`。1 step は Codex と GPT の 1 往復で数える
-1. 2-client の長時間 validation を取り、sync 誤差 / drop / render 安定性 / timeout の出方を確認する
+1. 人間が 2-client の長時間 validation を取り、sync 誤差 / drop / render 安定性 / timeout の出方を確認する
 2. long-run で不足した continuous runtime の follow-up を narrow に埋める
    - 実 outbound queue 処理
    - notice send / lifecycle への最小接続

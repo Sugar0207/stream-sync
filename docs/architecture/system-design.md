@@ -9666,6 +9666,29 @@ stream-sync-server --receive-send-runtime-continuous
   - file sink open / rotation / retention
   - dashboard/exporter integration
 
+Current step-6 manual validation recipe:
+
+- the fixed human-run 2-client long-run recipe uses:
+  - one server continuous runtime:
+    - `--receive-send-runtime-continuous`
+  - two authenticated bounded real encoded senders:
+    - `--auth-real-encoded-video-frame-poc-bounded`
+- this step intentionally validates the current ingest/queue/runtime summary
+  surface first:
+  - auth accepted
+  - packet / fragment receive
+  - frame reassembly
+  - frame queue growth behavior
+  - runtime rejection summary
+  - heartbeat timeout summary
+- it intentionally does not use `--live-two-view-switcher-once` as the main
+  path because that command is a direct receive diagnostic / legacy path and
+  not the fragmented real encoded client->server main path
+- the fixed human-run instructions, PowerShell launcher, and paste-back log
+  template live in:
+  - `docs/operations/two-client-long-run-validation.md`
+  - `docs/operations/two-client-long-run-validation.ps1`
+
 First-slice stop policy:
 
 - bounded by `max_iterations`
