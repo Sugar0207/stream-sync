@@ -2582,8 +2582,23 @@ Current implementation status:
     bounded sender path
   - preserve stdout close / EOF / malformed stream / stdin write failure /
     non-zero exit as typed results
-- this experimental boundary is not yet integrated into the bounded sender
-  runtime and does not yet replace the existing per-frame encoder path
+- this experimental boundary is now integrated into the bounded sender as an
+  opt-in path
+- `--auth-real-encoded-video-frame-poc-bounded ... --encoder-runtime persistent`
+  keeps one FFmpeg process alive for the whole bounded run, feeds captured BGRA
+  frames into `stdin`, and sends one recovered access unit at a time as the
+  existing encoded `VideoFrame` payload
+- summary now distinguishes:
+  - `encoder_runtime=per_frame|persistent`
+  - `encoder_process_start_count`
+  - `persistent_access_units_emitted`
+  - `persistent_no_complete_access_unit_count`
+  - `persistent_stdout_closed_count`
+  - `persistent_malformed_stream_count`
+  - `last_encoder_exit_status`
+- the default bounded path is still the existing per-frame encoder runtime;
+  persistent mode remains experimental until the next human re-measure confirms
+  that `avg_encode_elapsed_ms` materially drops from the current `72.569ms`
 
 Suggested narrow boundary split:
 

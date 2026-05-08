@@ -313,6 +313,35 @@ fn main() {
             let fragment_pacing_delay_ms =
                 parse_optional_arg_or_exit::<u64>(args.next(), "fragment-pacing-delay-ms")
                     .unwrap_or(1);
+            let mut encoder_runtime =
+                stream_sync_client::ClientRealEncodedVideoFrameEncoderRuntime::PerFrame;
+            while let Some(flag) = args.next() {
+                match flag.as_str() {
+                    "--encoder-runtime" => {
+                        let Some(value) = args.next() else {
+                            eprintln!(
+                                "missing encoder runtime value for bounded auth real encoded video PoC"
+                            );
+                            std::process::exit(1);
+                        };
+                        encoder_runtime = stream_sync_client::ClientRealEncodedVideoFrameEncoderRuntime::parse_config_str(
+                            &value,
+                        )
+                        .unwrap_or_else(|| {
+                            eprintln!(
+                                "invalid encoder runtime for bounded auth real encoded video PoC: {value}"
+                            );
+                            std::process::exit(1);
+                        });
+                    }
+                    other => {
+                        eprintln!(
+                            "unexpected argument for bounded auth real encoded video PoC: {other}"
+                        );
+                        std::process::exit(1);
+                    }
+                }
+            }
             let fragment_pacing = stream_sync_client::ClientVideoFrameFragmentPacingPolicy {
                 delay_every_fragments: fragment_pacing_every,
                 delay_micros: fragment_pacing_delay_ms.saturating_mul(1_000),
@@ -326,6 +355,7 @@ fn main() {
                     std::process::exit(1);
                 });
             startup_config.policy.fragment_pacing = fragment_pacing;
+            startup_config.encoder_runtime = encoder_runtime;
             let encoder_config = startup_config.video.encoder_config.clone();
             let ffmpeg_preflight =
                 stream_sync_client::probe_client_ffmpeg_preflight(&encoder_config);
@@ -336,7 +366,7 @@ fn main() {
             let outcome = {
                 #[cfg(target_os = "windows")]
                 {
-                    launcher.run_once_with_runtimes(
+                    launcher.run_once_with_runtime_selection(
                         startup_config,
                         &stream_sync_client::ClientWindowsGraphicsCaptureSessionRuntimeHook,
                         &stream_sync_client::ClientWindowsGraphicsCaptureFrameAcquisitionRuntimeHook,
@@ -346,7 +376,7 @@ fn main() {
 
                 #[cfg(not(target_os = "windows"))]
                 {
-                    launcher.run_once_with_runtimes(
+                    launcher.run_once_with_runtime_selection(
                         startup_config,
                         &stream_sync_client::ClientUnavailableCaptureSessionRuntimeHook,
                         &stream_sync_client::ClientUnavailableCaptureFrameAcquisitionRuntimeHook,
@@ -439,8 +469,12 @@ fn main() {
                             format_fps(summary.frames_captured, summary.elapsed_micros);
                         let effective_send_fps =
                             format_fps(summary.frames_sent, summary.send_elapsed_micros);
+                        let last_encoder_exit_status = summary
+                            .last_encoder_exit_status
+                            .map(|value| value.to_string())
+                            .unwrap_or_else(|| "none".to_string());
                         println!(
-                            "auth real encoded video frame bounded PoC sent AuthRequest {} bytes from {} to {} and received AuthResponse {} bytes from {}; accepted={} reason_code={:?}; bounded_manual_runtime=true; fragment_pacing_every={} fragment_pacing_delay_ms={} encoder_backend={} encoder_width={} encoder_height={} encoder_fps={} encoder_bitrate_kbps={} encoder_gop_frames={} encoder_preset={} encoder_tune={} encoder_pixel_format={} encoder_profile={} encoder_level={} ffmpeg_path={} ffmpeg_version_detected={} ffmpeg_preflight_error={} ffmpeg_spawn_error={} configured_max_frames={} configured_max_ticks={} configured_frame_interval_ms={} runtime_ticks={} capture_attempts={} frames_captured={} frames_encoded={} frames_sent={} direct_sends={} fragmented_sends={} fragments_attempted={} fragments_sent={} no_frame_count={} capture_failures={} encode_failures={} frame_build_failures={} send_failures={} frames_remaining_to_max={} elapsed_ms={} capture_elapsed_ms={} encode_elapsed_ms={} avg_capture_elapsed_ms={} avg_encode_elapsed_ms={} capture_wait_or_no_frame_elapsed_ms={} effective_output_fps={} effective_fresh_capture_fps={} effective_send_fps={} loop_interval_sleep_ms={} total_fragment_pacing_sleep_ms={} send_elapsed_ms={} ticks_elapsed_while_sending={} last_encode_error={} last_ffmpeg_error={} last_payload_len={} oversized_payload_count={} fragmentation_pressure_count={} stop_reason={:?} last_send_destination={} last_send_local_source={} last_send_frame_id={} last_send_payload_len={} last_send_packet_len={} last_send_error={}",
+                            "auth real encoded video frame bounded PoC sent AuthRequest {} bytes from {} to {} and received AuthResponse {} bytes from {}; accepted={} reason_code={:?}; bounded_manual_runtime=true; fragment_pacing_every={} fragment_pacing_delay_ms={} encoder_backend={} encoder_width={} encoder_height={} encoder_fps={} encoder_bitrate_kbps={} encoder_gop_frames={} encoder_preset={} encoder_tune={} encoder_pixel_format={} encoder_profile={} encoder_level={} ffmpeg_path={} ffmpeg_version_detected={} ffmpeg_preflight_error={} ffmpeg_spawn_error={} configured_max_frames={} configured_max_ticks={} configured_frame_interval_ms={} encoder_runtime={} encoder_process_start_count={} runtime_ticks={} capture_attempts={} frames_captured={} frames_encoded={} frames_sent={} direct_sends={} fragmented_sends={} fragments_attempted={} fragments_sent={} no_frame_count={} capture_failures={} encode_failures={} frame_build_failures={} send_failures={} persistent_access_units_emitted={} persistent_no_complete_access_unit_count={} persistent_stdout_closed_count={} persistent_malformed_stream_count={} last_encoder_exit_status={} frames_remaining_to_max={} elapsed_ms={} capture_elapsed_ms={} encode_elapsed_ms={} avg_capture_elapsed_ms={} avg_encode_elapsed_ms={} capture_wait_or_no_frame_elapsed_ms={} effective_output_fps={} effective_fresh_capture_fps={} effective_send_fps={} loop_interval_sleep_ms={} total_fragment_pacing_sleep_ms={} send_elapsed_ms={} ticks_elapsed_while_sending={} last_encode_error={} last_ffmpeg_error={} last_payload_len={} oversized_payload_count={} fragmentation_pressure_count={} stop_reason={:?} last_send_destination={} last_send_local_source={} last_send_frame_id={} last_send_payload_len={} last_send_packet_len={} last_send_error={}",
                             outcome.auth_request_bytes_sent,
                             outcome.local_source,
                             outcome.destination,
@@ -470,6 +504,8 @@ fn main() {
                             summary.configured_max_frames,
                             summary.configured_max_ticks,
                             configured_frame_interval_ms,
+                            summary.encoder_runtime.as_config_str(),
+                            summary.encoder_process_start_count,
                             summary.runtime_ticks,
                             summary.capture_attempts,
                             summary.frames_captured,
@@ -484,6 +520,11 @@ fn main() {
                             summary.encode_failures,
                             summary.frame_build_failures,
                             summary.send_failures,
+                            summary.persistent_access_units_emitted,
+                            summary.persistent_no_complete_access_unit_count,
+                            summary.persistent_stdout_closed_count,
+                            summary.persistent_malformed_stream_count,
+                            last_encoder_exit_status,
                             summary.frames_remaining_to_max,
                             elapsed_ms,
                             capture_elapsed_ms,
@@ -651,7 +692,7 @@ fn main() {
         }
         _ => {
             println!(
-                "stream-sync-client scaffold; use --auth-request-poc-once [config-path], --auth-heartbeat-poc-once [config-path], --auth-heartbeat-stats-poc-once [config-path], --placeholder-video-frame-poc-once [config-path], --auth-placeholder-video-frame-poc-once [config-path], --real-encoded-video-frame-poc-once [config-path], --auth-real-encoded-video-frame-poc-once [config-path], --auth-real-encoded-video-frame-poc-bounded [config-path] [max-frames] [fragment-pacing-every] [fragment-pacing-delay-ms] (internal bounded guard: configured_max_ticks = max(max_frames, max_frames * 10)), --auth-heartbeat-one-tick-runtime [config-path], or --auth-heartbeat-stats-one-tick-runtime [config-path]"
+                "stream-sync-client scaffold; use --auth-request-poc-once [config-path], --auth-heartbeat-poc-once [config-path], --auth-heartbeat-stats-poc-once [config-path], --placeholder-video-frame-poc-once [config-path], --auth-placeholder-video-frame-poc-once [config-path], --real-encoded-video-frame-poc-once [config-path], --auth-real-encoded-video-frame-poc-once [config-path], --auth-real-encoded-video-frame-poc-bounded [config-path] [max-frames] [fragment-pacing-every] [fragment-pacing-delay-ms] [--encoder-runtime per_frame|persistent] (internal bounded guard: configured_max_ticks = max(max_frames, max_frames * 10)), --auth-heartbeat-one-tick-runtime [config-path], or --auth-heartbeat-stats-one-tick-runtime [config-path]"
             );
         }
     }

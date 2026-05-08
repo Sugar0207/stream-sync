@@ -5,6 +5,62 @@
 - Codex code + docs update
 
 ### Work
+- Integrated the experimental persistent FFmpeg access-unit session into
+  `--auth-real-encoded-video-frame-poc-bounded` as an opt-in path.
+- Added bounded runtime selection:
+  - default remains `per_frame`
+  - opt-in CLI is `--encoder-runtime persistent`
+- Wired the persistent path so that one bounded run can:
+  - start one FFmpeg child
+  - capture BGRA frames as before
+  - write BGRA bytes into persistent encoder `stdin`
+  - read Annex B bytes from `stdout`
+  - recover complete access units through the Annex B reader
+  - send recovered access units through the existing encoded `VideoFrame` UDP
+    payload path
+- Extended bounded summary with persistent-runtime visibility:
+  - `encoder_runtime`
+  - `encoder_process_start_count`
+  - `persistent_access_units_emitted`
+  - `persistent_no_complete_access_unit_count`
+  - `persistent_stdout_closed_count`
+  - `persistent_malformed_stream_count`
+  - `last_encoder_exit_status`
+- Added focused tests for:
+  - default per-frame runtime selection staying on the old path
+  - persistent runtime selection using access-unit payloads
+  - persistent `encoder_process_start_count=1`
+  - persistent no-complete counter tracking
+  - persistent malformed/stdout-close summary tracking
+
+### Changed Files
+- `apps/client/src/lib.rs`
+- `apps/client/src/main.rs`
+- `docs/operations/manual-real-encoded-video-poc.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### Decision
+- The persistent encoder path is now ready for human validation against the
+  existing `100`-frame bounded command.
+- The next validation gate is whether `--encoder-runtime persistent` reduces
+  `avg_encode_elapsed_ms` far enough to move `effective_output_fps` toward
+  `30fps`.
+- Deadline-based cadence remains intentionally out of scope for this step.
+
+### Validation
+- `cargo fmt`
+- `cargo fmt --check`
+- `cargo check --workspace`
+- focused client tests
+- `cargo test --workspace`
+- `git diff --check`
+
+## 2026-05-09
+### Type
+- Codex code + docs update
+
+### Work
 - Implemented the first experimental client-only connection boundary between
   persistent FFmpeg stdout reads and the Annex B access-unit reader.
 - Added a stateful session that:
