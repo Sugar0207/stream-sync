@@ -297,14 +297,27 @@ fn main() {
                 max_packets_per_drain_cycle: command.max_packets_per_drain_cycle,
                 ..stream_sync_server::ServerReceiveSendContinuousRuntimePolicy::default()
             };
-            match launcher.run_from_path_with_writers_and_policy(
-                &command.config_path,
-                std::io::stderr(),
-                std::io::stderr(),
-                std::io::stderr(),
-                std::io::stderr(),
-                policy,
-            ) {
+            let outcome = match continuous_runtime_output_mode(&command) {
+                ContinuousRuntimeOutputMode::SummaryOnly => launcher
+                    .run_from_path_with_writers_and_policy(
+                        &command.config_path,
+                        std::io::sink(),
+                        std::io::sink(),
+                        std::io::sink(),
+                        std::io::sink(),
+                        policy,
+                    ),
+                ContinuousRuntimeOutputMode::Verbose => launcher
+                    .run_from_path_with_writers_and_policy(
+                        &command.config_path,
+                        std::io::stderr(),
+                        std::io::stderr(),
+                        std::io::stderr(),
+                        std::io::stderr(),
+                        policy,
+                    ),
+            };
+            match outcome {
                 Ok(outcome) => println!(
                     "{}",
                     format_receive_send_runtime_continuous_summary(
@@ -539,7 +552,7 @@ fn main() {
         }
         _ => {
             println!(
-                "stream-sync-server scaffold; use --auth-response-poc-once [config-path], --receive-send-once [config-path], --receive-send-twice [config-path], --receive-send-three [config-path], --receive-send-runtime-bounded [config-path] [max-iterations] [receive-timeout-ms], --receive-send-runtime-continuous [config-path] [receive-timeout-ms] [max-iterations-or-0-for-unbounded] [heartbeat-timeout-micros] [receive-buffer-bytes] [max-packets-per-drain-cycle], --receive-auth-video-queue-once [config-path] [max-video-packets] [receive-timeout-ms] [expected-reassembled-frames] [stop-after-expected-reassembled-frames] [receive-buffer-bytes] [expected-reassembled-clients] [expected-reassembled-frames-per-client], --receive-auth-video-queue-and-serve-handoff-once [config-path] [pipe-name] [max-video-packets] [receive-timeout-ms] [expected-reassembled-frames] [stop-after-expected-reassembled-frames] [receive-buffer-bytes] [expected-reassembled-clients] [expected-reassembled-frames-per-client], or --receive-auth-video-queue-and-serve-handoff-many [config-path] [pipe-name] [max-requests] [max-video-packets] [receive-timeout-ms] [expected-reassembled-frames] [stop-after-expected-reassembled-frames] [receive-buffer-bytes] [expected-reassembled-clients] [expected-reassembled-frames-per-client]"
+                "stream-sync-server scaffold; use --auth-response-poc-once [config-path], --receive-send-once [config-path], --receive-send-twice [config-path], --receive-send-three [config-path], --receive-send-runtime-bounded [config-path] [max-iterations] [receive-timeout-ms], --receive-send-runtime-continuous [config-path] [receive-timeout-ms] [max-iterations-or-0-for-unbounded] [heartbeat-timeout-micros] [receive-buffer-bytes] [max-packets-per-drain-cycle] [--verbose], --receive-auth-video-queue-once [config-path] [max-video-packets] [receive-timeout-ms] [expected-reassembled-frames] [stop-after-expected-reassembled-frames] [receive-buffer-bytes] [expected-reassembled-clients] [expected-reassembled-frames-per-client], --receive-auth-video-queue-and-serve-handoff-once [config-path] [pipe-name] [max-video-packets] [receive-timeout-ms] [expected-reassembled-frames] [stop-after-expected-reassembled-frames] [receive-buffer-bytes] [expected-reassembled-clients] [expected-reassembled-frames-per-client], or --receive-auth-video-queue-and-serve-handoff-many [config-path] [pipe-name] [max-requests] [max-video-packets] [receive-timeout-ms] [expected-reassembled-frames] [stop-after-expected-reassembled-frames] [receive-buffer-bytes] [expected-reassembled-clients] [expected-reassembled-frames-per-client]"
             );
         }
     }
@@ -560,6 +573,13 @@ struct ReceiveSendRuntimeContinuousCommandArgs {
     heartbeat_timeout_micros: u64,
     receive_buffer_bytes: usize,
     max_packets_per_drain_cycle: usize,
+    verbose: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ContinuousRuntimeOutputMode {
+    SummaryOnly,
+    Verbose,
 }
 
 fn parse_receive_send_runtime_bounded_command_args(
@@ -581,35 +601,53 @@ fn parse_receive_send_runtime_continuous_command_args(
     args: Vec<String>,
 ) -> ReceiveSendRuntimeContinuousCommandArgs {
     let mut args = args.into_iter();
-    ReceiveSendRuntimeContinuousCommandArgs {
-        config_path: args
-            .next()
-            .unwrap_or_else(|| "configs/examples/server.example.toml".to_string()),
-        receive_timeout_ms: parse_optional_arg_or_exit::<u64>(args.next(), "receive-timeout-ms")
-            .unwrap_or(1_000),
-        max_iterations: parse_optional_arg_or_exit::<usize>(
-            args.next(),
-            "max-iterations-or-0-for-unbounded",
-        )
-        .and_then(|value| (value > 0).then_some(value)),
-        heartbeat_timeout_micros: parse_optional_arg_or_exit::<u64>(
-            args.next(),
-            "heartbeat-timeout-micros",
-        )
-        .unwrap_or(5_000_000),
-        receive_buffer_bytes: parse_optional_arg_or_exit::<usize>(
-            args.next(),
-            "receive-buffer-bytes",
-        )
-        .unwrap_or(stream_sync_server::SERVER_DEFAULT_RECEIVE_BUFFER_BYTES),
-        max_packets_per_drain_cycle: parse_optional_arg_or_exit::<usize>(
-            args.next(),
-            "max-packets-per-drain-cycle",
-        )
-        .unwrap_or(
+    let config_path = args
+        .next()
+        .unwrap_or_else(|| "configs/examples/server.example.toml".to_string());
+    let receive_timeout_ms =
+        parse_optional_arg_or_exit::<u64>(args.next(), "receive-timeout-ms").unwrap_or(1_000);
+    let max_iterations =
+        parse_optional_arg_or_exit::<usize>(args.next(), "max-iterations-or-0-for-unbounded")
+            .and_then(|value| (value > 0).then_some(value));
+    let heartbeat_timeout_micros =
+        parse_optional_arg_or_exit::<u64>(args.next(), "heartbeat-timeout-micros")
+            .unwrap_or(5_000_000);
+    let receive_buffer_bytes =
+        parse_optional_arg_or_exit::<usize>(args.next(), "receive-buffer-bytes")
+            .unwrap_or(stream_sync_server::SERVER_DEFAULT_RECEIVE_BUFFER_BYTES);
+    let max_packets_per_drain_cycle =
+        parse_optional_arg_or_exit::<usize>(args.next(), "max-packets-per-drain-cycle").unwrap_or(
             stream_sync_server::ServerReceiveSendContinuousRuntimePolicy::default()
                 .max_packets_per_drain_cycle,
-        ),
+        );
+    let mut verbose = false;
+    for arg in args {
+        match arg.as_str() {
+            "--verbose" => verbose = true,
+            _ => {
+                eprintln!("unexpected argument for --receive-send-runtime-continuous: {arg}");
+                std::process::exit(1);
+            }
+        }
+    }
+    ReceiveSendRuntimeContinuousCommandArgs {
+        config_path,
+        receive_timeout_ms,
+        max_iterations,
+        heartbeat_timeout_micros,
+        receive_buffer_bytes,
+        max_packets_per_drain_cycle,
+        verbose,
+    }
+}
+
+fn continuous_runtime_output_mode(
+    command: &ReceiveSendRuntimeContinuousCommandArgs,
+) -> ContinuousRuntimeOutputMode {
+    if command.verbose {
+        ContinuousRuntimeOutputMode::Verbose
+    } else {
+        ContinuousRuntimeOutputMode::SummaryOnly
     }
 }
 
@@ -1827,7 +1865,8 @@ mod tests {
     };
 
     use super::{
-        format_handoff_read_mode, format_receive_send_runtime_bounded_failure_summary,
+        continuous_runtime_output_mode, format_handoff_read_mode,
+        format_receive_send_runtime_bounded_failure_summary,
         format_receive_send_runtime_bounded_summary,
         format_receive_send_runtime_continuous_failure_summary,
         format_receive_send_runtime_continuous_summary,
@@ -1886,6 +1925,7 @@ mod tests {
             stream_sync_server::SERVER_DEFAULT_RECEIVE_BUFFER_BYTES
         );
         assert_eq!(args.max_packets_per_drain_cycle, 64);
+        assert!(!args.verbose);
     }
 
     #[test]
@@ -1897,6 +1937,7 @@ mod tests {
             "9000000".to_string(),
             "4194304".to_string(),
             "256".to_string(),
+            "--verbose".to_string(),
         ]);
 
         assert_eq!(args.config_path, "configs/custom/server.toml");
@@ -1905,6 +1946,7 @@ mod tests {
         assert_eq!(args.heartbeat_timeout_micros, 9_000_000);
         assert_eq!(args.receive_buffer_bytes, 4_194_304);
         assert_eq!(args.max_packets_per_drain_cycle, 256);
+        assert!(args.verbose);
     }
 
     #[test]
@@ -1921,6 +1963,35 @@ mod tests {
         assert_eq!(args.max_iterations, None);
         assert_eq!(args.receive_buffer_bytes, 2_097_152);
         assert_eq!(args.max_packets_per_drain_cycle, 512);
+        assert!(!args.verbose);
+    }
+
+    #[test]
+    fn continuous_runtime_output_mode_defaults_to_summary_only() {
+        let command = parse_receive_send_runtime_continuous_command_args(Vec::new());
+
+        assert_eq!(
+            continuous_runtime_output_mode(&command),
+            super::ContinuousRuntimeOutputMode::SummaryOnly
+        );
+    }
+
+    #[test]
+    fn continuous_runtime_output_mode_switches_to_verbose_when_requested() {
+        let command = parse_receive_send_runtime_continuous_command_args(vec![
+            "configs/custom/server.toml".to_string(),
+            "250".to_string(),
+            "0".to_string(),
+            "9000000".to_string(),
+            "2097152".to_string(),
+            "512".to_string(),
+            "--verbose".to_string(),
+        ]);
+
+        assert_eq!(
+            continuous_runtime_output_mode(&command),
+            super::ContinuousRuntimeOutputMode::Verbose
+        );
     }
 
     #[test]
@@ -2190,6 +2261,7 @@ mod tests {
                 heartbeat_timeout_micros: 5_000_000,
                 receive_buffer_bytes: 4_194_304,
                 max_packets_per_drain_cycle: 1_024,
+                verbose: false,
             },
             &stream_sync_server::ServerReceiveSendContinuousRuntimeError::Runtime {
                 iteration_index: 2,

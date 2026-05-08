@@ -5,6 +5,53 @@
 - Codex
 
 ### Work
+- Changed `--receive-send-runtime-continuous` so default human-facing output is
+  summary-only instead of streaming detailed server logs to the PowerShell
+  window.
+- Kept the existing final summary line shape and preserved the requested
+  same-PC validation counters.
+- Added optional `--verbose` parsing for the continuous runtime command so the
+  existing stderr-backed detailed logs remain available only when explicitly
+  requested.
+- Switched the default writer wiring for continuous runtime from stderr to
+  `io::sink()` for:
+  - operational logs
+  - rejection logs
+  - auth logs
+  - send logs
+- Added focused tests covering:
+  - default summary-only output mode
+  - `--verbose` opt-in output mode
+  - continuous summary fields remaining visible
+- Updated the same-PC validation doc so humans compare the server final summary
+  line instead of scrolling packet-level output.
+
+### Changed Files
+- `apps/server/src/main.rs`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+- `docs/operations/two-client-long-run-validation.md`
+
+### Decision
+- For same-PC human validation, server continuous runtime should behave like
+  the client bounded PoC: final summary first, detailed logs only on demand.
+- Do not change receive, reassembly, or drain behavior in this slice.
+- Keep `--verbose` opt-in and leave adaptive jitter buffer, daemon lifecycle,
+  and 4-client / OBS validation out of scope.
+
+### Validation
+- `cargo fmt`
+- `cargo fmt --check`
+- `cargo check --workspace`
+- focused server tests
+- `cargo test --workspace`
+- `git diff --check`
+
+## 2026-05-08
+### Type
+- Codex
+
+### Work
 - Updated the continuous server runtime CLI so
   `--receive-send-runtime-continuous` can accept
   `max-packets-per-drain-cycle`.

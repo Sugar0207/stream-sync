@@ -26,6 +26,7 @@
 - same-PC 2-client baseline は `max_packets_per_drain_cycle=64` で `packets_received=10804` / `frames_reassembled=44` / `incomplete_reassembly_frames=542`。`max_packets_drained_in_cycle=64` に張り付いており、current blocker は same-PC stress での server receive drain throughput と incomplete reassembly accumulation である
 - 2-client validation の human-run recipe を same-PC 前提に更新した。`docs/operations/two-client-long-run-validation.md` と `docs/operations/two-client-long-run-validation.ps1` は same-PC smoke / stress profile、baseline 比較、`256` / `512` / `1024` の drain cap 比較、貼り返し template を source of truth とする
 - continuous receive / send runtime の最小 sliceを拡張し、`stream-sync-server --receive-send-runtime-continuous [config-path] [receive-timeout-ms] [max-iterations-or-0-for-unbounded] [heartbeat-timeout-micros] [receive-buffer-bytes] [max-packets-per-drain-cycle]` で drain cap を CLI 指定できるようにした。summary には `max_packets_per_drain_cycle` / `drain_cycles` / `last_packets_drained_in_cycle` / `max_packets_drained_in_cycle` / `receive_would_block_count` を出し、same-PC rerun で cap 張り付き有無を比較できる
+- server continuous runtime の default 出力は summary-only に固定した。same-PC validation では packet / drain cycle / reassembly の大量ログを通常モードで流さず、final summary 1 行だけを比較する。詳細ログが必要な場合だけ `--verbose` を付ける
 - 認証 / runtime hardening の最小 slice を実装した。auth decision、same-client registration、client-scoped gate rejection、heartbeat timeout を雑な文字列に寄せず typed status/reason で読めるようにし、`Reject` と `ReconnectRequired` と `InvestigationRequired` を `Continue` から分離した。manual auth PoC、`--receive-auth-video-queue-once`、`--receive-send-runtime-bounded` summary には typed auth / registration / runtime rejection visibility を追加した
 - `NoFrame` / `Waiting` / `HandoffError` の長時間 run 向け最小 status 整理を実装した。source-backed 2-view fallible validation には typed operational summary を追加し、per-side result kind を `Selected` / `NoFrame` / `Waiting` / `HandoffError` のまま保持しつつ、run-state を `Continue` / `RetryLater` / `ReconnectRequired` / `InvestigationRequired` で読めるようにした。late-drop summary あり path では post-mutation の `NoFrame` / `Waiting` 判断を summary へ接続できる
 - late frame queue mutation / jitter buffer / drop policy の最小 slice を source-backed path で実装した。`SwitcherSingleClientLateFrameQueueMutationBoundary` が oldest head を targetTime 基準で評価し、補正後 timestamp が `targetTime - max_late_micros` より古い frame だけを conservative に drop する。drop summary は testable に返し、source-backed 2-view validation では opt-in で接続できる
@@ -180,6 +181,7 @@
    - `frames_reassembled`
    - `incomplete_reassembly_frames`
    - `receive_would_block_count`
+   - server summary 1 行
 2. その後に same-PC 2-client rerun を `512` / `1024` で比較し、どこで cap 張り付きが外れるかを見る
    - `docs/operations/two-client-long-run-validation.md`
    - `docs/operations/two-client-long-run-validation.ps1`
