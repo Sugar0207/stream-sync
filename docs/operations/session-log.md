@@ -5,6 +5,48 @@
 - Codex docs update
 
 ### Work
+- Recorded the `900`-frame longer-run human validation for the bounded client
+  real encoded sender with:
+  `--encoder-runtime persistent --cadence-mode deadline`.
+- Captured the measured longer-run result in repo docs:
+  - `frames_sent=900`
+  - `persistent_access_units_emitted=900`
+  - `avg_encode_elapsed_ms=5.517`
+  - `effective_output_fps=29.162`
+  - `elapsed_ms=30861.902`
+  - `deadline_overrun_ms=2813.034`
+  - `late_tick_count=82`
+  - `max_deadline_overrun_ms=183.092`
+  - `encode_failures=0`
+  - `send_failures=0`
+  - `persistent_malformed_stream_count=0`
+- Updated the manual operation note to mark the bounded client persistent +
+  deadline path as PASS for MVP human validation instead of only
+  PASS-leaning.
+- Updated TODO current position so the next step moves away from client-only
+  30fps tuning and back toward server -> switcher handoff reruns or 4-client
+  preparation.
+
+### Changed Files
+- `docs/operations/manual-real-encoded-video-poc.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### Decision
+- The bounded client persistent + deadline path is now a PASS for MVP human
+  validation at `900` frames.
+- Remaining late-tick metrics should be watched during later multi-client or
+  handoff validation, but they do not block treating the client 30fps bounded
+  PoC as complete enough to move on.
+
+### Validation
+- `git diff --check`
+
+## 2026-05-09
+### Type
+- Codex docs update
+
+### Work
 - Recorded the latest human validation for the bounded client real encoded
   sender with:
   `--encoder-runtime persistent --cadence-mode deadline`.

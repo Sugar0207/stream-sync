@@ -2668,6 +2668,65 @@ Current implementation status:
     `900` frames with the same `persistent + deadline` path
   - the current narrow gate is no longer "can the client approach 30fps at
     all" but "does the same path hold near-30fps behavior over a longer run"
+- that longer-run validation now also exists:
+  - command:
+    `.\target\debug\stream-sync-client.exe --auth-real-encoded-video-frame-poc-bounded configs/manual/client.player1.toml 900 16 1 --encoder-runtime persistent --cadence-mode deadline`
+  - `configured_max_frames=900`
+  - `configured_max_ticks=9000`
+  - `cadence_mode=deadline`
+  - `encoder_runtime=persistent`
+  - `encoder_process_start_count=1`
+  - `runtime_ticks=925`
+  - `capture_attempts=925`
+  - `frames_captured=908`
+  - `frames_encoded=900`
+  - `frames_sent=900`
+  - `direct_sends=9`
+  - `fragmented_sends=891`
+  - `fragments_attempted=20434`
+  - `fragments_sent=20434`
+  - `no_frame_count=17`
+  - `capture_failures=0`
+  - `encode_failures=0`
+  - `frame_build_failures=0`
+  - `send_failures=0`
+  - `persistent_access_units_emitted=900`
+  - `persistent_no_complete_access_unit_count=8`
+  - `persistent_stdout_closed_count=0`
+  - `persistent_malformed_stream_count=0`
+  - `last_encoder_exit_status=0`
+  - `frames_remaining_to_max=0`
+  - `elapsed_ms=30861.902`
+  - `capture_elapsed_ms=4312.226`
+  - `encode_elapsed_ms=4964.995`
+  - `avg_capture_elapsed_ms=4.749`
+  - `avg_encode_elapsed_ms=5.517`
+  - `capture_wait_or_no_frame_elapsed_ms=1.700`
+  - `effective_output_fps=29.162`
+  - `effective_fresh_capture_fps=29.421`
+  - `effective_send_fps=430.903`
+  - `loop_interval_sleep_ms=18334.130`
+  - `deadline_sleep_ms=18334.130`
+  - `deadline_overrun_ms=2813.034`
+  - `late_tick_count=82`
+  - `max_deadline_overrun_ms=183.092`
+  - `total_fragment_pacing_sleep_ms=839.000`
+  - `send_elapsed_ms=2088.638`
+  - `stop_reason=Some(MaxFramesReached)`
+- longer-run interpretation:
+  - this `900`-frame persistent + deadline run is a PASS for the bounded
+    client-only 30fps PoC
+  - ideal `900 / 30 = 30.000s` versus observed `30.862s` keeps the run near
+    target at `effective_output_fps=29.162`
+  - `avg_encode_elapsed_ms=5.517` remains well below the `33.3ms/frame`
+    budget, so encode is not the blocker anymore
+  - `frames_sent=900`, `persistent_access_units_emitted=900`,
+    `encode_failures=0`, `send_failures=0`, and
+    `persistent_malformed_stream_count=0` make this good enough to treat the
+    client bounded 30fps PoC as PASS on MVP human validation
+  - `late_tick_count=82` and `max_deadline_overrun_ms=183.092` should be
+    watched again when moving to server->switcher handoff reruns or 4-client
+    preparation
 
 Suggested narrow boundary split:
 
