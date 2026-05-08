@@ -2,6 +2,66 @@
 
 ## 2026-05-08
 ### Type
+- Codex
+
+### Work
+- Updated the continuous server runtime CLI so
+  `--receive-send-runtime-continuous` can accept
+  `max-packets-per-drain-cycle`.
+- Kept the runtime default conservative at `64`, but exposed the drain cap so
+  same-PC validation can compare `256` / `512` / `1024` without touching
+  client code.
+- Added continuous runtime summary visibility for:
+  - `max_packets_per_drain_cycle`
+  - `drain_cycles`
+  - `last_packets_drained_in_cycle`
+  - `max_packets_drained_in_cycle`
+  - `receive_would_block_count`
+- Added focused tests covering:
+  - CLI parsing of `max-packets-per-drain-cycle`
+  - policy application into `ServerReceiveSendContinuousRuntimePolicy`
+  - summary visibility for the configured drain cap
+  - high drain cap preserving idle timeout / stop reason
+- Rewrote `docs/operations/two-client-long-run-validation.md` as a same-PC
+  smoke / stress profile document instead of a distributed-PC-oriented long-run
+  note.
+- Updated `docs/operations/two-client-long-run-validation.ps1` so the server
+  launcher passes `max-packets-per-drain-cycle` and prints the new drain
+  counters to watch.
+- Fixed the operations record so the current main blocker is read as same-PC
+  2-client receive drain throughput, not distributed setup.
+
+### Changed Files
+- `apps/server/src/lib.rs`
+- `apps/server/src/main.rs`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+- `docs/operations/two-client-long-run-validation.md`
+- `docs/operations/two-client-long-run-validation.ps1`
+
+### Decision
+- Fix 2-client human validation to same-PC smoke / stress profile for now.
+- Do not make distributed-PC validation, server IP handling, or firewall setup
+  the main task in this slice.
+- Use drain-cap comparison as the next narrow server-side tuning step:
+  - `256`
+  - `512`
+  - `1024`
+- Keep adaptive jitter buffer, daemon lifecycle, reconnect policy, 4-client
+  validation, and OBS validation out of scope.
+
+### Validation
+- `cargo fmt`
+- `cargo fmt --check`
+- `cargo check --workspace`
+- `cargo test -p stream-sync-server receive_send_continuous_runtime_`
+- `cargo test -p stream-sync-server parse_receive_send_runtime_continuous_command`
+- `cargo test -p stream-sync-server receive_send_runtime_continuous_`
+- `cargo test --workspace`
+- `git diff --check`
+
+## 2026-05-08
+### Type
 - Human validation + Codex follow-up
 
 ### Work

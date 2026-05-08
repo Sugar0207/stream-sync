@@ -2767,6 +2767,7 @@ pub struct ServerReceiveSendContinuousRuntimeIterationSummary {
 pub struct ServerReceiveSendContinuousRuntimeSummary {
     pub receive_timeout: Duration,
     pub max_iterations: Option<usize>,
+    pub max_packets_per_drain_cycle: usize,
     pub receive_buffer: ServerUdpReceiveBufferTuningResult,
     pub drain_cycles: usize,
     pub last_packets_drained_in_cycle: usize,
@@ -2949,6 +2950,7 @@ impl ServerReceiveSendContinuousRuntimeLauncher {
         let mut summary = ServerReceiveSendContinuousRuntimeSummary {
             receive_timeout: policy.receive_timeout,
             max_iterations: policy.max_iterations,
+            max_packets_per_drain_cycle: policy.max_packets_per_drain_cycle.max(1),
             receive_buffer: receive_buffer.clone(),
             drain_cycles: 0,
             last_packets_drained_in_cycle: 0,
@@ -14056,6 +14058,69 @@ destination = "stdout"
             outcome.summary.stop_reason,
             ServerReceiveSendContinuousRuntimeStopReason::MaxIterationsReached
         );
+    }
+
+    #[test]
+    fn receive_send_continuous_runtime_applies_custom_max_packets_per_drain_cycle() {
+        let launcher = ServerReceiveSendContinuousRuntimeLauncher::default();
+        let bind_port = reserve_localhost_udp_port();
+        let startup_config = launcher
+            .load_startup_config_from_str(&receive_send_runtime_test_config(bind_port))
+            .expect("continuous runtime config should load");
+
+        let outcome = launcher
+            .run_with_writers_and_policy(
+                startup_config,
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+                ServerReceiveSendContinuousRuntimePolicy {
+                    max_iterations: Some(0),
+                    max_packets_per_drain_cycle: 512,
+                    ..ServerReceiveSendContinuousRuntimePolicy::default()
+                },
+            )
+            .expect("continuous runtime should complete without packets");
+
+        assert_eq!(outcome.summary.max_packets_per_drain_cycle, 512);
+        assert_eq!(
+            outcome.summary.stop_reason,
+            ServerReceiveSendContinuousRuntimeStopReason::MaxIterationsReached
+        );
+    }
+
+    #[test]
+    fn receive_send_continuous_runtime_high_drain_cap_preserves_idle_timeout_stop_reason() {
+        let launcher = ServerReceiveSendContinuousRuntimeLauncher::default();
+        let bind_port = reserve_localhost_udp_port();
+        let startup_config = launcher
+            .load_startup_config_from_str(&receive_send_runtime_test_config(bind_port))
+            .expect("continuous runtime config should load");
+
+        let outcome = launcher
+            .run_with_writers_and_policy(
+                startup_config,
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+                ServerReceiveSendContinuousRuntimePolicy {
+                    receive_timeout: Duration::from_millis(25),
+                    max_packets_per_drain_cycle: 1_024,
+                    ..ServerReceiveSendContinuousRuntimePolicy::default()
+                },
+            )
+            .expect("continuous runtime should stop on idle timeout");
+
+        assert_eq!(outcome.summary.max_packets_per_drain_cycle, 1_024);
+        assert_eq!(
+            outcome.summary.stop_reason,
+            ServerReceiveSendContinuousRuntimeStopReason::ReceiveTimedOut
+        );
+        assert_eq!(outcome.summary.packets_received, 0);
+        assert_eq!(outcome.summary.last_packets_drained_in_cycle, 0);
+        assert_eq!(outcome.summary.max_packets_drained_in_cycle, 0);
     }
 
     #[test]

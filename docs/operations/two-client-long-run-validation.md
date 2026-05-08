@@ -1,225 +1,133 @@
-<!-- stream-sync/docs/operations/two-client-long-run-validation.md -->
+# 2-client Same-PC Validation
 
-# 2-client Long-run Validation
+このドキュメントは、現行 step 6 の human validation を
+`same-PC smoke / stress profile` として固定するための運用メモです。
 
-このドキュメントは、MVP クリティカルパス step 6 の最小固定手順です。
+当面の 2-client validation は、同一 Windows PC 上で次を同時に動かします。
 
-目的は、`stream-sync-server --receive-send-runtime-continuous` と 2 台の real encoded client sender を使って、人間が Windows 実環境で長時間 validation を実行し、成功条件と失敗時のログ回収項目を同じ形で共有できるようにすることです。
+- `stream-sync-server --receive-send-runtime-continuous`
+- client1 capture / FFmpeg encode / UDP send
+- client2 capture / FFmpeg encode / UDP send
 
-今回の main path は次です。
+つまりこれは distributed-PC validation ではありません。
+CPU / capture / encode / server receive drain が同じ PC で競合する前提で読みます。
+
+主目的は、same-PC 2-client stress 下での server receive drain throughput と
+fragment reassembly 改善確認です。
+
+main path:
 
 ```text
-client(player1) -> server continuous runtime <- client(player2)
+same Windows PC:
+  client(player1) -> server continuous runtime <- client(player2)
 ```
 
-## Current Blocker Note
+## Current Baseline
 
-- 2026-05-08 の human 1-client smoke では auth / registration は成功したが、
-  `1` frame / `113` fragments に対して server continuous runtime は `62`
-  packets しか受信できず、`frames_reassembled=0` /
-  `incomplete_reassembly_frames=1` で止まった
-- current rerun target:
-  - `receive_buffer_requested_bytes`
-  - `receive_buffer_effective_bytes`
-  - `frames_reassembled > 0`
-  - `frames_queued > 0` または `direct_frames_queued > 0`
+直近の human validation baseline は以下です。
 
-この step では switcher / OBS は必須にしません。理由は次です。
+- `player1` / `player2`
+  - `300` frames をそれぞれ capture / encode / send
+  - `send_failures=0`
+- server
+  - `receive_buffer_bytes=8388608`
+  - `max_packets_per_drain_cycle=64`
+  - `max_packets_drained_in_cycle=64`
+  - `receive_would_block_count=2`
+  - `packets_received=10804`
+  - `frames_reassembled=44`
+  - `incomplete_reassembly_frames=542`
+- clients total
+  - `fragments_sent=94797`
 
-- current `--live-two-view-switcher-once` は direct receive diagnostic / legacy path であり、fragmented real encoded main path ではない
-- current long-run validation で先に固定したいのは、auth / heartbeat / fragment reassembly / frame queue / runtime rejection / timeout summary の観測である
-- 4-client all-real + OBS Window Capture は次の step に分離する
+現時点の判断:
+
+- `cap=64` では server receive drain が same-PC stress に追いついていない可能性が高い
+- current blocker は distributed setup ではなく、same-PC 2-client stress での
+  receive drain throughput と incomplete reassembly accumulation
+
+## Validation Positioning
+
+- これは same-PC smoke / stress profile である
+- distributed-PC validation 用の server IP / firewall 手順は主目的にしない
+- distributed-PC の話は後続比較用の補足に留める
+- switcher / OBS / 4-client validation にはまだ進まない
+- adaptive jitter buffer / daemon lifecycle / reconnect policy にも進まない
 
 ## Prerequisites
 
 1. Windows PowerShell を使う
-2. repo を local path または UNC path で開ける
+2. repo を native Windows path で開く
 3. `ffmpeg` が `PATH` にある
 4. `configs/manual/server.two-real-slots.toml`
 5. `configs/manual/client.player1.toml`
 6. `configs/manual/client.player2.toml`
 
-事前に必ず確認すること:
+最低限そろえること:
 
-- `server.two-real-slots.toml` の `shared_token`
-- `client.player1.toml` の `shared_token`
-- `client.player2.toml` の `shared_token`
+- `shared_token`
 - `run_id`
-
-`player1` / `player2` の token は server 側 whitelist と一致させること。`run_id` も 3 ファイルで一致させること。
+- server / client 両方で `run_id` 一致
 
 ## Fixed Recipe
 
-1. 事前 build を current PowerShell で 1 回だけ実行する
-2. server continuous runtime を別 window で起動する
+1. 同一 PC 上で `cargo build -p stream-sync-server -p stream-sync-client`
+2. server continuous runtime を 1 window で起動
 3. `2-3` 秒待つ
-4. client 1 を別 window で起動する
+4. client1 を別 window で起動
 5. `2` 秒待つ
-6. client 2 を別 window で起動する
-7. 30 分以上の run を観測する
-8. 先に client window を止める
-9. 最後に server window を止める
-10. 各 log を回収して成功条件と照合する
+6. client2 を別 window で起動
+7. same-PC load を観測しながら run
+8. client windows を止める
+9. server window を止める
+10. summary と log tail を貼り返す
 
-## Recommended Runtime Settings
+## Runtime Settings
 
-- `RunMinutes=30`
+推奨 start profile:
+
+- `RunMinutes=10`
 - `FrameRate=30`
-- `ClientFrames=54000`
+- `ClientFrames=18000`
 - `ReceiveTimeoutMs=15000`
 - `HeartbeatTimeoutMicros=5000000`
+- `ReceiveBufferBytes=8388608`
 - `FragmentPacingEvery=16`
 - `FragmentPacingDelayMs=1`
+- `MaxPacketsPerDrainCycle=256`
 
-`ClientFrames` は `RunMinutes * 60 * FrameRate` で決める。30 分より長く見たい場合は `RunMinutes` を増やす。
+same-PC rerun candidates:
+
+- `256`
+- `512`
+- `1024`
+
+CLI default は `64` のままでよいですが、same-PC validation では
+`max_packets_per_drain_cycle` を明示指定して比較します。
 
 ## PowerShell Script
 
 Source of truth:
 
 - use [two-client-long-run-validation.ps1](/\\desktop-89uvrhh\d\stream-sync\docs\operations\two-client-long-run-validation.ps1)
-- the script resolves repo/config/log paths with `ProviderPath`
-- the script prints resolved server/client config paths before launching native
-  executables
-- the script passes `receive-buffer-bytes` to
-  `--receive-send-runtime-continuous`
+- script は native path を解決する
+- script は resolved config path を表示する
+- script は `receive-buffer-bytes` と `max-packets-per-drain-cycle` を
+  `--receive-send-runtime-continuous` に渡す
 
-次の script は PowerShell にそのまま貼れる完成形です。repo path を変数化し、server / client1 / client2 を別 window で起動し、各 window の stdout/stderr を log に保存します。
-
-同じ内容は repo 内の [two-client-long-run-validation.ps1](/\\desktop-89uvrhh\d\stream-sync\docs\operations\two-client-long-run-validation.ps1) にも保存してあります。
-
-```powershell
-$RepoPath = "\\desktop-89uvrhh\d\stream-sync"
-$RunMinutes = 30
-$FrameRate = 30
-$ReceiveTimeoutMs = 15000
-$HeartbeatTimeoutMicros = 5000000
-$ReceiveBufferBytes = 8388608
-$FragmentPacingEvery = 16
-$FragmentPacingDelayMs = 1
-
-$ErrorActionPreference = "Stop"
-
-function Quote-Pwsh([string]$Value) {
-    return "'" + $Value.Replace("'", "''") + "'"
-}
-
-function Resolve-NativePath([string]$Path) {
-    return (Resolve-Path -LiteralPath $Path).ProviderPath
-}
-
-$RepoPath = Resolve-NativePath $RepoPath
-Set-Location -LiteralPath $RepoPath
-
-$ServerExe = Join-Path $RepoPath "target\debug\stream-sync-server.exe"
-$ClientExe = Join-Path $RepoPath "target\debug\stream-sync-client.exe"
-
-$ServerConfig = Join-Path $RepoPath "configs\manual\server.two-real-slots.toml"
-$Client1Config = Join-Path $RepoPath "configs\manual\client.player1.toml"
-$Client2Config = Join-Path $RepoPath "configs\manual\client.player2.toml"
-
-$ConfigPaths = @($ServerConfig, $Client1Config, $Client2Config)
-foreach ($Path in $ConfigPaths) {
-    if (-not (Test-Path -LiteralPath $Path)) {
-        throw "Missing config: $Path"
-    }
-}
-
-$PlaceholderTokens = Select-String -Path $ConfigPaths -Pattern "replace-with-shared-token" -SimpleMatch
-if ($PlaceholderTokens) {
-    throw "Replace shared_token placeholders in configs/manual before running the validation."
-}
-
-Get-Command ffmpeg -ErrorAction Stop | Out-Null
-
-cargo build -p stream-sync-server -p stream-sync-client
-
-$Timestamp = Get-Date -Format "yyyyMMdd-HHmmss"
-$LogDir = Join-Path $RepoPath ("artifacts\manual-validation\two-client-long-run\" + $Timestamp)
-New-Item -ItemType Directory -Path $LogDir -Force | Out-Null
-
-$ServerLog = Join-Path $LogDir "server-continuous.log"
-$Client1Log = Join-Path $LogDir "client-player1.log"
-$Client2Log = Join-Path $LogDir "client-player2.log"
-
-$ClientFrames = $RunMinutes * 60 * $FrameRate
-
-$QRepoPath = Quote-Pwsh $RepoPath
-$QServerExe = Quote-Pwsh $ServerExe
-$QClientExe = Quote-Pwsh $ClientExe
-$QServerConfig = Quote-Pwsh $ServerConfig
-$QClient1Config = Quote-Pwsh $Client1Config
-$QClient2Config = Quote-Pwsh $Client2Config
-$QServerLog = Quote-Pwsh $ServerLog
-$QClient1Log = Quote-Pwsh $Client1Log
-$QClient2Log = Quote-Pwsh $Client2Log
-
-$ServerCommand = @"
-Set-Location -LiteralPath $QRepoPath
-`$Host.UI.RawUI.WindowTitle = 'StreamSync Server Continuous'
-& $QServerExe --receive-send-runtime-continuous $QServerConfig $ReceiveTimeoutMs 0 $HeartbeatTimeoutMicros $ReceiveBufferBytes 2>&1 |
-    Tee-Object -FilePath $QServerLog
-"@
-
-$Client1Command = @"
-Set-Location -LiteralPath $QRepoPath
-`$Host.UI.RawUI.WindowTitle = 'StreamSync Client Player1'
-& $QClientExe --auth-real-encoded-video-frame-poc-bounded $QClient1Config $ClientFrames $FragmentPacingEvery $FragmentPacingDelayMs 2>&1 |
-    Tee-Object -FilePath $QClient1Log
-"@
-
-$Client2Command = @"
-Set-Location -LiteralPath $QRepoPath
-`$Host.UI.RawUI.WindowTitle = 'StreamSync Client Player2'
-& $QClientExe --auth-real-encoded-video-frame-poc-bounded $QClient2Config $ClientFrames $FragmentPacingEvery $FragmentPacingDelayMs 2>&1 |
-    Tee-Object -FilePath $QClient2Log
-"@
-
-Start-Process powershell.exe -ArgumentList @("-NoExit", "-Command", $ServerCommand)
-Start-Sleep -Seconds 3
-
-Start-Process powershell.exe -ArgumentList @("-NoExit", "-Command", $Client1Command)
-Start-Sleep -Seconds 2
-
-Start-Process powershell.exe -ArgumentList @("-NoExit", "-Command", $Client2Command)
-Start-Sleep -Seconds 2
-
-Write-Host ""
-Write-Host "2-client long-run validation windows started."
-Write-Host "Log directory: $LogDir"
-Write-Host "Client frames per sender: $ClientFrames"
-Write-Host ""
-Write-Host "Watch these server summary fields:"
-Write-Host "  packets_received"
-Write-Host "  accepted_packets"
-Write-Host "  rejected_packets"
-Write-Host "  frames_reassembled"
-Write-Host "  frames_queued"
-Write-Host "  direct_frames_queued"
-Write-Host "  video_queue_len"
-Write-Host "  incomplete_reassembly_frames"
-Write-Host "  last_runtime_rejection_status"
-Write-Host "  last_runtime_rejection_reason"
-Write-Host "  last_heartbeat_timeout_status"
-Write-Host "  stop_reason"
-Write-Host ""
-Write-Host "After the run, collect tails with:"
-Write-Host "  Get-Content -LiteralPath '$ServerLog' -Tail 80"
-Write-Host "  Get-Content -LiteralPath '$Client1Log' -Tail 40"
-Write-Host "  Get-Content -LiteralPath '$Client2Log' -Tail 40"
-```
+実行時は script 上の `$MaxPacketsPerDrainCycle` を `256` / `512` / `1024` に変えて比較します。
 
 ## Success Conditions
 
-以下を満たせば、step 6 の最小 2-client validation pass とする。
+same-PC validation では、CPU 負荷競合がある前提で baseline 比較を行います。
 
 ### Client side
 
-- `player1` / `player2` ともに auth accepted される
+- `player1` / `player2` とも auth accepted
 - `frames_captured > 0`
 - `frames_encoded > 0`
 - `frames_sent > 0`
-- `send_failures = 0` が望ましい
+- `send_failures = 0`
 - `last_encode_error = none`
 - `last_ffmpeg_error = none`
 
@@ -227,59 +135,81 @@ Write-Host "  Get-Content -LiteralPath '$Client2Log' -Tail 40"
 
 - `packets_received > 0`
 - `accepted_packets > 0`
-- `frames_reassembled > 0` または `direct_frames_queued > 0`
+- `frames_reassembled > 0`
 - `frames_queued > 0` または `direct_frames_queued > 0`
-- `video_queue_len` が単調に破綻しない
-  - current step では exact steady-state upper bound は固定しない
-  - ただし run 中に急増し続ける場合は failure candidate とする
-- `incomplete_reassembly_frames` が run closeout 時に不自然に増え続けていない
-- `last_runtime_rejection_status` が `Reject` になっても想定外 reason で増えない
-  - `UnauthenticatedSource`
-  - `UnknownClient`
-  - `EndpointMismatch`
-  - `RunIdMismatch`
-  が継続的に出る場合は failure
-- `last_heartbeat_timeout_status`
-  - active run 中は `Continue` が期待値
-  - closeout 直後に sender 停止後 timeout で `ReconnectRequired` へ移ること自体は即 failure にしない
+- `max_packets_per_drain_cycle` が summary に出ている
+- `max_packets_drained_in_cycle` が cap に張り付くかを見る
+- `packets_received` が baseline `10804` を上回るかを見る
+- `frames_reassembled` が baseline `44` を上回るかを見る
+- `incomplete_reassembly_frames` が相対的に改善するかを見る
 
-### Failure candidates
+### Reading Rule
+
+- `max_packets_drained_in_cycle == max_packets_per_drain_cycle`
+  - drain cap 到達。server receive drain がまだ頭打ちの可能性が高い
+- `max_packets_drained_in_cycle < max_packets_per_drain_cycle`
+  - 少なくともその run では drain cap 固着が外れた可能性がある
+- `packets_received` / `frames_reassembled` 改善
+  - same-PC stress で receive throughput 改善の有力 signal
+- `incomplete_reassembly_frames` 悪化
+  - receive drain がまだ不足している可能性が高い
+
+## Failure Candidates
 
 - auth rejected
+- `send_failures > 0`
 - `packets_received = 0`
-- `frames_reassembled = 0` かつ `direct_frames_queued = 0`
+- `frames_reassembled = 0`
 - `frames_queued = 0` かつ `direct_frames_queued = 0`
-- `video_queue_len` が run 中ずっと増え続ける
-- `last_runtime_rejection_reason` が同じ unexpected reason で繰り返し出る
-- active run 中に heartbeat timeout が継続発生する
+- `max_packets_drained_in_cycle` が cap に張り付き続け、baseline より
+  `packets_received` / `frames_reassembled` が伸びない
+- `incomplete_reassembly_frames` が baseline より明確に悪化する
+- active run 中に unexpected runtime rejection が出る
+
+## Recommended Comparison Order
+
+同一条件で cap だけ変えて比較する:
+
+1. `256`
+2. `512`
+3. `1024`
+
+最初から `1024` を固定するのではなく、baseline `64` に対して
+どこで張り付きが外れるかを見ます。
 
 ## What To Paste Back
 
-失敗時は、次の 3 つをまとめて貼り返す。
-
 1. 実行条件
-2. server log tail
-3. client1 / client2 log tail
+2. server summary tail
+3. client1 / client2 tail
 
 ### Paste-back Template
 
 ```text
-[2-client long-run validation]
+[2-client same-pc validation]
 repo_path=
 run_datetime=
 run_minutes=
 client_frames=
 receive_timeout_ms=
 heartbeat_timeout_micros=
+receive_buffer_bytes=
+max_packets_per_drain_cycle=
 fragment_pacing_every=
 fragment_pacing_delay_ms=
 
 [result]
 pass_or_fail=
 what_happened=
+same_pc_cpu_note=
 
 [server summary tail]
 command_name=
+max_packets_per_drain_cycle=
+drain_cycles=
+last_packets_drained_in_cycle=
+max_packets_drained_in_cycle=
+receive_would_block_count=
 iterations_attempted=
 iterations_completed=
 packets_received=
@@ -336,20 +266,9 @@ last_encode_error=
 last_ffmpeg_error=
 last_send_error=
 stop_reason=
-
-[raw log tail server]
-<paste last 80 lines>
-
-[raw log tail client1]
-<paste last 40 lines>
-
-[raw log tail client2]
-<paste last 40 lines>
 ```
 
-## Scope Notes
+## Supplement
 
-- これは human-run step 6 recipe 固定であり、Codex が長時間 validation を実行した記録ではない
-- 4-client all-real validation は次 step
-- OBS Window Capture 本格 validation は次 step
-- retry / requeue / daemon lifecycle / reconnect policy は今回含めない
+distributed-PC validation は今の主目的ではありません。
+server IP 固定や firewall 手順が必要になったら、その時点で別ドキュメントか補足として扱います。

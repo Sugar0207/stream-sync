@@ -4,6 +4,7 @@ $FrameRate = 30
 $ReceiveTimeoutMs = 15000
 $HeartbeatTimeoutMicros = 5000000
 $ReceiveBufferBytes = 8388608
+$MaxPacketsPerDrainCycle = 256
 $FragmentPacingEvery = 16
 $FragmentPacingDelayMs = 1
 
@@ -88,7 +89,7 @@ $ServerCommand = @"
 Set-Location -LiteralPath $QRepoPath
 `$Host.UI.RawUI.WindowTitle = 'StreamSync Server Continuous'
 Write-Host 'server config path:' $QServerConfig
-& $QServerExe --receive-send-runtime-continuous $QServerConfig $ReceiveTimeoutMs 0 $HeartbeatTimeoutMicros $ReceiveBufferBytes 2>&1 |
+& $QServerExe --receive-send-runtime-continuous $QServerConfig $ReceiveTimeoutMs 0 $HeartbeatTimeoutMicros $ReceiveBufferBytes $MaxPacketsPerDrainCycle 2>&1 |
     Tee-Object -FilePath $QServerLog
 "@
 
@@ -118,12 +119,18 @@ Start-Process powershell.exe -ArgumentList @("-NoExit", "-Command", $Client2Comm
 Start-Sleep -Seconds 2
 
 Write-Host ""
-Write-Host "2-client long-run validation windows started."
+Write-Host "2-client same-PC validation windows started."
 Write-Host "Log directory: $LogDir"
 Write-Host "Client frames per sender: $ClientFrames"
 Write-Host "Receive buffer bytes: $ReceiveBufferBytes"
+Write-Host "Max packets per drain cycle: $MaxPacketsPerDrainCycle"
 Write-Host ""
 Write-Host "Watch these server summary fields:"
+Write-Host "  max_packets_per_drain_cycle"
+Write-Host "  drain_cycles"
+Write-Host "  last_packets_drained_in_cycle"
+Write-Host "  max_packets_drained_in_cycle"
+Write-Host "  receive_would_block_count"
 Write-Host "  receive_buffer_requested_bytes"
 Write-Host "  receive_buffer_effective_bytes"
 Write-Host "  packets_received"
