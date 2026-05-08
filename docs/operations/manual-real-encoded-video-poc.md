@@ -2613,6 +2613,61 @@ Current implementation status:
   - `send_elapsed_ms=186.360`
 - this confirms the persistent encoder runtime removed the main encoder-cost
   bottleneck. The next bottleneck is cadence sleep, not encode time
+- the next re-measure now exists for persistent + deadline cadence:
+  - command:
+    `.\target\debug\stream-sync-client.exe --auth-real-encoded-video-frame-poc-bounded configs/manual/client.player1.toml 100 16 1 --encoder-runtime persistent --cadence-mode deadline`
+  - `cadence_mode=deadline`
+  - `encoder_runtime=persistent`
+  - `encoder_process_start_count=1`
+  - `runtime_ticks=105`
+  - `capture_attempts=105`
+  - `frames_captured=104`
+  - `frames_encoded=100`
+  - `frames_sent=100`
+  - `direct_sends=10`
+  - `fragmented_sends=90`
+  - `fragments_attempted=1894`
+  - `fragments_sent=1894`
+  - `no_frame_count=1`
+  - `persistent_access_units_emitted=100`
+  - `persistent_no_complete_access_unit_count=4`
+  - `persistent_stdout_closed_count=0`
+  - `persistent_malformed_stream_count=0`
+  - `last_encoder_exit_status=0`
+  - `elapsed_ms=3496.500`
+  - `capture_elapsed_ms=437.256`
+  - `encode_elapsed_ms=324.475`
+  - `avg_capture_elapsed_ms=4.204`
+  - `avg_encode_elapsed_ms=3.245`
+  - `capture_wait_or_no_frame_elapsed_ms=1.547`
+  - `effective_output_fps=28.600`
+  - `effective_fresh_capture_fps=29.744`
+  - `effective_send_fps=488.267`
+  - `loop_interval_sleep_ms=2353.324`
+  - `deadline_sleep_ms=2353.324`
+  - `deadline_overrun_ms=50.367`
+  - `late_tick_count=4`
+  - `max_deadline_overrun_ms=35.345`
+  - `total_fragment_pacing_sleep_ms=75.000`
+  - `send_elapsed_ms=204.806`
+  - `stop_reason=Some(MaxFramesReached)`
+- compared with the original per-frame baseline:
+  - `avg_encode_elapsed_ms` improved from `72.569` to `3.245`
+  - `effective_output_fps` improved from `7.705` to `28.600`
+  - wall-clock runtime for `100` frames improved from `12.978s` to `3.497s`
+- interpretation:
+  - persistent + deadline is now the best current client-only bounded 30fps
+    path
+  - encode cost is no longer the main blocker
+  - the remaining gap to ideal `100 / 30 = 3.333s` is about `163ms`
+  - `late_tick_count=4` and `max_deadline_overrun_ms=35.345` show a small
+    number of late ticks still remain
+  - for MVP human validation this is close enough to treat the client 30fps PoC
+    as pass-leaning
+  - the next validation should be a longer-run stability check, for example
+    `900` frames with the same `persistent + deadline` path
+  - the current narrow gate is no longer "can the client approach 30fps at
+    all" but "does the same path hold near-30fps behavior over a longer run"
 
 Suggested narrow boundary split:
 
@@ -2663,6 +2718,12 @@ Success condition for the next encoder/cadence slice:
 - deadline-based sleep no longer adds delay on already-late ticks
 - no server, switcher, or handoff changes are required for this client-only
   validation step
+
+Next human validation candidate:
+
+```powershell
+.\target\debug\stream-sync-client.exe --auth-real-encoded-video-frame-poc-bounded configs/manual/client.player1.toml 900 16 1 --encoder-runtime persistent --cadence-mode deadline
+```
 
 ### Server Queue / Reassembly
 

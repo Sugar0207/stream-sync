@@ -2,6 +2,46 @@
 
 ## 2026-05-09
 ### Type
+- Codex docs update
+
+### Work
+- Recorded the latest human validation for the bounded client real encoded
+  sender with:
+  `--encoder-runtime persistent --cadence-mode deadline`.
+- Captured the measured command/result shape in repo docs:
+  - `encoder_process_start_count=1`
+  - `frames_sent=100`
+  - `persistent_access_units_emitted=100`
+  - `avg_encode_elapsed_ms=3.245`
+  - `effective_output_fps=28.600`
+  - `elapsed_ms=3496.500`
+  - `deadline_sleep_ms=2353.324`
+  - `deadline_overrun_ms=50.367`
+  - `late_tick_count=4`
+  - `max_deadline_overrun_ms=35.345`
+- Updated the manual operation note so the latest persistent+deadline command
+  and its PASS-leaning interpretation are explicit.
+- Updated TODO current position to treat the client 30fps bounded PoC as
+  ready for a `900`-frame longer-run stability check instead of another
+  short-run tuning pass.
+
+### Changed Files
+- `docs/operations/manual-real-encoded-video-poc.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### Decision
+- Persistent + deadline is now the best current client-only bounded 30fps
+  path.
+- The major encode bottleneck is resolved for this PoC. The remaining gap to
+  ideal `30fps` over `100` frames is small enough to move the next validation
+  gate to longer-run stability rather than more short-run redesign.
+
+### Validation
+- `git diff --check`
+
+## 2026-05-09
+### Type
 - Codex code + docs update
 
 ### Work
