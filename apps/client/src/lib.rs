@@ -3890,6 +3890,8 @@ pub struct ClientVideoFrameEncodeSendRuntimeResult {
     pub handoff: Option<ClientVideoFrameEncodedSendHandoff>,
     pub fragment_handoffs: Vec<ClientVideoFrameFragmentEncodedSendHandoff>,
     pub bytes_sent: usize,
+    pub send_elapsed_micros: u64,
+    pub total_fragment_pacing_sleep_micros: u64,
 }
 
 /// Error from the client `VideoFrame` encode/send boundary.
@@ -3923,6 +3925,8 @@ pub struct ClientVideoFrameEncodeSendFailure {
     pub fragments_sent: u32,
     pub failed_fragment_index: Option<u32>,
     pub error: ClientVideoFrameEncodeSendError,
+    pub send_elapsed_micros: u64,
+    pub total_fragment_pacing_sleep_micros: u64,
 }
 
 /// Fixed policy for sender-side `VideoFrame` UDP fragmentation.
@@ -4132,6 +4136,7 @@ impl ClientVideoFrameEncodeSendBoundary {
         input: ClientVideoFrameEncodeSendInput,
         fragment_pacing: ClientVideoFrameFragmentPacingPolicy,
     ) -> Result<ClientVideoFrameEncodeSendRuntimeResult, ClientVideoFrameEncodeSendFailure> {
+        let send_started_at = Instant::now();
         let destination = input.destination;
         let frame_id = input.frame.frame_id;
         let payload_len = input.frame.payload.len();
@@ -4148,6 +4153,8 @@ impl ClientVideoFrameEncodeSendBoundary {
                     fragments_sent: 0,
                     failed_fragment_index: None,
                     error,
+                    send_elapsed_micros: send_started_at.elapsed().as_micros() as u64,
+                    total_fragment_pacing_sleep_micros: 0,
                 })?;
         let encoded_packet_len = handoff.encoded_bytes.len();
         if encoded_packet_len <= self.fragmentation.policy.safe_max_datagram_len {
@@ -4166,6 +4173,8 @@ impl ClientVideoFrameEncodeSendBoundary {
                         kind: error.kind(),
                         message: error.to_string(),
                     },
+                    send_elapsed_micros: send_started_at.elapsed().as_micros() as u64,
+                    total_fragment_pacing_sleep_micros: 0,
                 })?;
 
             return Ok(ClientVideoFrameEncodeSendRuntimeResult {
@@ -4173,6 +4182,8 @@ impl ClientVideoFrameEncodeSendBoundary {
                 handoff: Some(handoff),
                 fragment_handoffs: Vec::new(),
                 bytes_sent,
+                send_elapsed_micros: send_started_at.elapsed().as_micros() as u64,
+                total_fragment_pacing_sleep_micros: 0,
             });
         }
 
@@ -4189,9 +4200,12 @@ impl ClientVideoFrameEncodeSendBoundary {
                 fragments_sent: 0,
                 failed_fragment_index: None,
                 error,
+                send_elapsed_micros: send_started_at.elapsed().as_micros() as u64,
+                total_fragment_pacing_sleep_micros: 0,
             })?;
         let mut fragment_handoffs = Vec::with_capacity(fragments.len());
         let mut bytes_sent = 0_usize;
+        let mut total_fragment_pacing_sleep_micros = 0_u64;
 
         for fragment in fragments {
             let chunk_index = fragment.chunk_index;
@@ -4207,6 +4221,8 @@ impl ClientVideoFrameEncodeSendBoundary {
                     fragments_sent: fragment_handoffs.len() as u32,
                     failed_fragment_index: Some(chunk_index),
                     error,
+                    send_elapsed_micros: send_started_at.elapsed().as_micros() as u64,
+                    total_fragment_pacing_sleep_micros,
                 })?;
             let fragment_packet_len = fragment_handoff.encoded_bytes.len();
             if fragment_packet_len > self.fragmentation.policy.safe_max_datagram_len {
@@ -4223,6 +4239,8 @@ impl ClientVideoFrameEncodeSendBoundary {
                         encoded_packet_len: fragment_packet_len,
                         max_udp_packet_len: self.fragmentation.policy.safe_max_datagram_len,
                     },
+                    send_elapsed_micros: send_started_at.elapsed().as_micros() as u64,
+                    total_fragment_pacing_sleep_micros,
                 });
             }
 
@@ -4241,10 +4259,14 @@ impl ClientVideoFrameEncodeSendBoundary {
                         kind: error.kind(),
                         message: error.to_string(),
                     },
+                    send_elapsed_micros: send_started_at.elapsed().as_micros() as u64,
+                    total_fragment_pacing_sleep_micros,
                 })?;
             bytes_sent = bytes_sent.saturating_add(sent);
             fragment_handoffs.push(fragment_handoff);
-            maybe_sleep_after_fragment_send(fragment_pacing, fragment_handoffs.len());
+            total_fragment_pacing_sleep_micros = total_fragment_pacing_sleep_micros.saturating_add(
+                maybe_sleep_after_fragment_send(fragment_pacing, fragment_handoffs.len()),
+            );
         }
 
         Ok(ClientVideoFrameEncodeSendRuntimeResult {
@@ -4255,6 +4277,8 @@ impl ClientVideoFrameEncodeSendBoundary {
             handoff: None,
             fragment_handoffs,
             bytes_sent,
+            send_elapsed_micros: send_started_at.elapsed().as_micros() as u64,
+            total_fragment_pacing_sleep_micros,
         })
     }
 }
@@ -4262,13 +4286,15 @@ impl ClientVideoFrameEncodeSendBoundary {
 fn maybe_sleep_after_fragment_send(
     pacing: ClientVideoFrameFragmentPacingPolicy,
     fragments_sent: usize,
-) {
+) -> u64 {
     if pacing.delay_every_fragments == 0 || pacing.delay_micros == 0 {
-        return;
+        return 0;
     }
     if (fragments_sent as u32) % pacing.delay_every_fragments == 0 {
         std::thread::sleep(Duration::from_micros(pacing.delay_micros));
+        return pacing.delay_micros;
     }
+    0
 }
 
 /// Input for sending one real-capture encoded `VideoFrame`.
@@ -4486,7 +4512,10 @@ pub enum ClientContinuousRealEncodedVideoFrameStopReason {
 /// Per-run counters for the bounded real encoded sender.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct ClientContinuousRealEncodedVideoFrameSummary {
-    pub frames_attempted: u64,
+    pub configured_max_frames: u64,
+    pub configured_max_ticks: u64,
+    pub runtime_ticks: u64,
+    pub capture_attempts: u64,
     pub frames_captured: u64,
     pub frames_encoded: u64,
     pub frames_sent: u64,
@@ -4499,6 +4528,11 @@ pub struct ClientContinuousRealEncodedVideoFrameSummary {
     pub encode_failures: u64,
     pub frame_build_failures: u64,
     pub send_failures: u64,
+    pub frames_remaining_to_max: u64,
+    pub elapsed_micros: u64,
+    pub send_elapsed_micros: u64,
+    pub total_fragment_pacing_sleep_micros: u64,
+    pub ticks_elapsed_while_sending: u64,
     pub stop_reason: Option<ClientContinuousRealEncodedVideoFrameStopReason>,
     pub last_send_failure: Option<ClientVideoFrameEncodeSendFailure>,
 }
@@ -4542,7 +4576,12 @@ impl ClientContinuousRealEncodedVideoFrameBoundary {
         let destination = input.destination;
         let policy = input.policy;
         let capture_runtime = input.capture_runtime;
-        let mut summary = ClientContinuousRealEncodedVideoFrameSummary::default();
+        let started_at = Instant::now();
+        let mut summary = ClientContinuousRealEncodedVideoFrameSummary {
+            configured_max_frames: policy.max_frames,
+            configured_max_ticks: policy.max_ticks,
+            ..ClientContinuousRealEncodedVideoFrameSummary::default()
+        };
         let mut results = Vec::new();
         let mut frame_wait_started_at: Option<Instant> = None;
 
@@ -4552,7 +4591,7 @@ impl ClientContinuousRealEncodedVideoFrameBoundary {
                     Some(ClientContinuousRealEncodedVideoFrameStopReason::MaxFramesReached);
                 break;
             }
-            if summary.frames_attempted >= policy.max_ticks {
+            if summary.runtime_ticks >= policy.max_ticks {
                 summary.stop_reason =
                     Some(ClientContinuousRealEncodedVideoFrameStopReason::MaxTicksReached);
                 break;
@@ -4560,8 +4599,9 @@ impl ClientContinuousRealEncodedVideoFrameBoundary {
 
             let frame_id = input
                 .first_frame_id
-                .saturating_add(summary.frames_attempted);
-            summary.frames_attempted = summary.frames_attempted.saturating_add(1);
+                .saturating_add(summary.capture_attempts);
+            summary.runtime_ticks = summary.runtime_ticks.saturating_add(1);
+            summary.capture_attempts = summary.capture_attempts.saturating_add(1);
             let capture_timestamp = current_timestamp_micros();
             let send_timestamp = current_timestamp_micros();
             let mut one_shot_input = ClientRealEncodedVideoFrameOneShotInput {
@@ -4629,6 +4669,13 @@ impl ClientContinuousRealEncodedVideoFrameBoundary {
             sleep_for_continuous_real_encoded_frame_policy(policy, frame_wait_started_at);
         }
 
+        summary.frames_remaining_to_max = policy.max_frames.saturating_sub(summary.frames_sent);
+        summary.elapsed_micros = started_at.elapsed().as_micros() as u64;
+        // This loop is synchronous: fragment pacing and UDP send work happen
+        // inside the current tick, so no additional runtime ticks elapse while
+        // a send attempt is in progress.
+        summary.ticks_elapsed_while_sending = 0;
+
         ClientContinuousRealEncodedVideoFrameRuntimeResult {
             destination,
             results,
@@ -4647,6 +4694,12 @@ fn update_continuous_real_encoded_summary(
             summary.frames_encoded = summary.frames_encoded.saturating_add(1);
             summary.frames_sent = summary.frames_sent.saturating_add(1);
             if let ClientRealEncodedVideoFrameOneShotResult::Sent(sent) = result {
+                summary.send_elapsed_micros = summary
+                    .send_elapsed_micros
+                    .saturating_add(sent.send.send_elapsed_micros);
+                summary.total_fragment_pacing_sleep_micros = summary
+                    .total_fragment_pacing_sleep_micros
+                    .saturating_add(sent.send.total_fragment_pacing_sleep_micros);
                 match sent.send.summary {
                     ClientVideoFrameSendSummary::DirectSent => {
                         summary.direct_sends = summary.direct_sends.saturating_add(1);
@@ -4685,6 +4738,12 @@ fn update_continuous_real_encoded_summary(
             summary.frames_captured = summary.frames_captured.saturating_add(1);
             summary.frames_encoded = summary.frames_encoded.saturating_add(1);
             summary.send_failures = summary.send_failures.saturating_add(1);
+            summary.send_elapsed_micros = summary
+                .send_elapsed_micros
+                .saturating_add(failure.send_elapsed_micros);
+            summary.total_fragment_pacing_sleep_micros = summary
+                .total_fragment_pacing_sleep_micros
+                .saturating_add(failure.total_fragment_pacing_sleep_micros);
             summary.last_send_failure = Some(failure.clone());
         }
     }
@@ -13091,6 +13150,7 @@ mod tests {
             .as_ref()
             .expect("small frame should use direct send path");
         assert_eq!(result.summary, ClientVideoFrameSendSummary::DirectSent);
+        assert_eq!(result.total_fragment_pacing_sleep_micros, 0);
         assert_eq!(handoff.destination, destination);
         assert_eq!(result.bytes_sent, handoff.encoded_bytes.len());
         let mut buffer = [0_u8; 1024];
@@ -13146,6 +13206,7 @@ mod tests {
                 fragments_sent: 3,
             }
         );
+        assert_eq!(result.total_fragment_pacing_sleep_micros, 0);
 
         let mut reconstructed = Vec::new();
         for expected_index in 0..3_u32 {
@@ -13897,10 +13958,14 @@ mod tests {
             &FixtureEncoder,
         );
 
-        assert_eq!(result.summary.frames_attempted, 3);
+        assert_eq!(result.summary.configured_max_frames, 3);
+        assert_eq!(result.summary.configured_max_ticks, 10);
+        assert_eq!(result.summary.runtime_ticks, 3);
+        assert_eq!(result.summary.capture_attempts, 3);
         assert_eq!(result.summary.frames_captured, 3);
         assert_eq!(result.summary.frames_encoded, 3);
         assert_eq!(result.summary.frames_sent, 3);
+        assert_eq!(result.summary.frames_remaining_to_max, 0);
         assert_eq!(
             result.summary.stop_reason,
             Some(ClientContinuousRealEncodedVideoFrameStopReason::MaxFramesReached)
@@ -13979,9 +14044,13 @@ mod tests {
             &ShouldNotEncode,
         );
 
-        assert_eq!(result.summary.frames_attempted, 2);
+        assert_eq!(result.summary.configured_max_frames, 1);
+        assert_eq!(result.summary.configured_max_ticks, 2);
+        assert_eq!(result.summary.runtime_ticks, 2);
+        assert_eq!(result.summary.capture_attempts, 2);
         assert_eq!(result.summary.no_frame_count, 2);
         assert_eq!(result.summary.frames_sent, 0);
+        assert_eq!(result.summary.frames_remaining_to_max, 1);
         assert_eq!(
             result.summary.stop_reason,
             Some(ClientContinuousRealEncodedVideoFrameStopReason::MaxTicksReached)
@@ -14042,8 +14111,12 @@ mod tests {
             &ShouldNotEncode,
         );
 
-        assert_eq!(result.summary.frames_attempted, 1);
+        assert_eq!(result.summary.configured_max_frames, 1);
+        assert_eq!(result.summary.configured_max_ticks, 5);
+        assert_eq!(result.summary.runtime_ticks, 1);
+        assert_eq!(result.summary.capture_attempts, 1);
         assert_eq!(result.summary.capture_failures, 1);
+        assert_eq!(result.summary.frames_remaining_to_max, 1);
         assert_eq!(
             result.summary.stop_reason,
             Some(ClientContinuousRealEncodedVideoFrameStopReason::CaptureFailure)
@@ -14237,6 +14310,19 @@ mod tests {
             config.video.backend_config,
             ClientCaptureBackendConfig::windows_graphics_capture_primary_display()
         );
+    }
+
+    #[test]
+    fn client_video_frame_auth_real_encoded_bounded_poc_launcher_derives_max_tick_guard() {
+        let config = ClientAuthRealEncodedVideoFrameBoundedPocLauncher::default()
+            .load_startup_config_from_str(
+                include_str!("../../../configs/examples/client.accepted.example.toml"),
+                100,
+            )
+            .expect("accepted example config should load");
+
+        assert_eq!(config.policy.max_frames, 100);
+        assert_eq!(config.policy.max_ticks, 1_000);
     }
 
     #[test]

@@ -311,11 +311,20 @@ stop_reason=
 
 [client1 tail]
 client_id=player1
-frames_attempted=
+configured_max_frames=
+configured_max_ticks=
+runtime_ticks=
+capture_attempts=
 frames_captured=
 frames_encoded=
 frames_sent=
 no_frame_count=
+frames_remaining_to_max=
+elapsed_ms=
+effective_capture_fps=
+effective_send_fps=
+total_fragment_pacing_sleep_ms=
+send_elapsed_ms=
 encode_failures=
 send_failures=
 fragments_sent=
@@ -326,11 +335,20 @@ stop_reason=
 
 [client2 tail]
 client_id=player2
-frames_attempted=
+configured_max_frames=
+configured_max_ticks=
+runtime_ticks=
+capture_attempts=
 frames_captured=
 frames_encoded=
 frames_sent=
 no_frame_count=
+frames_remaining_to_max=
+elapsed_ms=
+effective_capture_fps=
+effective_send_fps=
+total_fragment_pacing_sleep_ms=
+send_elapsed_ms=
 encode_failures=
 send_failures=
 fragments_sent=

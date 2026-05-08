@@ -2441,7 +2441,10 @@ Useful counters:
 ```text
 fragment_pacing_every=<n>
 fragment_pacing_delay_ms=<n>
-frames_attempted=<n>
+configured_max_frames=<n>
+configured_max_ticks=<n>
+runtime_ticks=<n>
+capture_attempts=<n>
 frames_captured=<n>
 frames_encoded=<n>
 frames_sent=<n>
@@ -2454,6 +2457,13 @@ capture_failures=<n>
 encode_failures=<n>
 frame_build_failures=<n>
 send_failures=<n>
+frames_remaining_to_max=<n>
+elapsed_ms=<n>
+effective_capture_fps=<n>
+effective_send_fps=<n>
+total_fragment_pacing_sleep_ms=<n>
+send_elapsed_ms=<n>
+ticks_elapsed_while_sending=<n>
 stop_reason=<reason>
 last_send_destination=<addr|none>
 last_send_local_source=<addr|none>
@@ -2465,10 +2475,15 @@ last_send_error=<error|none>
 
 Interpretation:
 
-- `frames_attempted > frames_captured` usually means no-frame polling happened.
+- `runtime_ticks` is the bounded loop counter.
+- `capture_attempts` is currently equal to `runtime_ticks` because one loop tick performs one capture/encode/send attempt.
+- `configured_max_ticks` is the internal guard derived from `max_frames` and may stop the run with `MaxTicksReached` before `frames_sent` reaches `configured_max_frames`.
+- `frames_remaining_to_max > 0` when `stop_reason=Some(MaxTicksReached)` means the bounded guard fired before the requested frame target was reached.
+- `runtime_ticks > frames_captured` usually means no-frame polling happened.
 - `no_frame_count > 0` is acceptable if `frames_sent >= 1`.
 - `frames_captured > frames_encoded` points to encoder failure.
 - `frames_encoded > frames_sent` points to frame build or UDP send failure.
+- `ticks_elapsed_while_sending=0` is expected in the current synchronous client loop because fragment pacing and send work happen inside the active tick rather than advancing a separate runtime tick.
 - `fragmented_sends > 0` proves the sender used `VideoFrameFragment` packets.
 - `fragments_sent = fragments_attempted` proves all planned fragments were sent by the client.
 - `last_send_error=PacketTooLarge { ... }` after fragmentation support usually means a fragment packet still exceeded the conservative safe datagram limit, which should be treated as a bug or policy/config issue.

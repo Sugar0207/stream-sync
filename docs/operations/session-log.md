@@ -5,6 +5,80 @@
 - Codex code + docs update
 
 ### Work
+- Investigated the human-validation confusion around
+  `stream-sync-client --auth-real-encoded-video-frame-poc-bounded` summary
+  fields, especially `frames_attempted`, `max_frames`, and
+  `stop_reason=Some(MaxTicksReached)`.
+- Confirmed in code that the old `frames_attempted` counter was not "frames
+  attempted to send" but the bounded synchronous loop counter:
+  - one loop tick increments once before one capture/encode/send attempt
+  - `max_ticks` is checked against that same counter
+  - fragment pacing and UDP send happen inside the active tick, so ticks do not
+    continue advancing while a send is in progress
+- Kept the runtime behavior unchanged but replaced the human-facing client
+  summary surface so the stop condition is explicit:
+  - removed `frames_attempted` from the bounded client stdout summary
+  - added `configured_max_frames`
+  - added `configured_max_ticks`
+  - added `runtime_ticks`
+  - added `capture_attempts`
+  - added `frames_remaining_to_max`
+  - added `elapsed_ms`
+  - added `effective_capture_fps`
+  - added `effective_send_fps`
+  - added `total_fragment_pacing_sleep_ms`
+  - added `send_elapsed_ms`
+  - added `ticks_elapsed_while_sending`
+- Preserved `stop_reason=Some(MaxTicksReached)` but made the unmet target
+  obvious through:
+  - `configured_max_frames`
+  - `configured_max_ticks`
+  - `frames_sent`
+  - `frames_remaining_to_max`
+- Documented the internal guard in the CLI scaffold help:
+  - `configured_max_ticks = max(max_frames, max_frames * 10)`
+- Added bounded client runtime accounting for:
+  - configured guard values
+  - wall-clock elapsed time
+  - send-path elapsed time
+  - total fragment pacing sleep time
+  - explicit `ticks_elapsed_while_sending=0` for the current synchronous loop
+- Updated the active human-run docs/templates so current bounded client output
+  uses the new field names instead of `frames_attempted`.
+
+### Changed Files
+- `apps/client/src/lib.rs`
+- `apps/client/src/main.rs`
+- `docs/operations/manual-real-encoded-video-poc.md`
+- `docs/operations/two-client-long-run-validation.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### Decision
+- Treat the bounded client loop counter as `runtime_ticks`, not as a frame-send
+  counter.
+- Keep `capture_attempts` alongside `runtime_ticks` even though they are equal
+  in the current implementation, because the name is clearer for human
+  validation.
+- Keep `MaxTicksReached` as the stop-reason enum value for now, but make
+  max-frame shortfall explicit in summary fields instead of forcing humans to
+  infer it from `no_frame_count`.
+- Do not change server, switcher, or handoff behavior in this slice.
+
+### Validation
+- `cargo fmt`
+- `cargo fmt --check`
+- `cargo check --workspace`
+- `cargo test -p stream-sync-client client_video_frame_continuous_real_encoded_`
+- `cargo test -p stream-sync-client client_video_frame_auth_real_encoded_bounded_poc_`
+- `cargo test --workspace`
+- `git diff --check`
+
+## 2026-05-08
+### Type
+- Codex code + docs update
+
+### Work
 - Investigated a same-PC handoff failure where the pipe was visible under
   `\\.\pipe\` but switcher handoff preview returned:
   - `scheduler_status=HandoffError`

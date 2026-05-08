@@ -411,8 +411,16 @@ fn main() {
                             .level
                             .clone()
                             .unwrap_or_else(|| "none".to_string());
+                        let elapsed_ms = format_duration_ms(summary.elapsed_micros);
+                        let send_elapsed_ms = format_duration_ms(summary.send_elapsed_micros);
+                        let total_fragment_pacing_sleep_ms =
+                            format_duration_ms(summary.total_fragment_pacing_sleep_micros);
+                        let effective_capture_fps =
+                            format_fps(summary.frames_captured, summary.elapsed_micros);
+                        let effective_send_fps =
+                            format_fps(summary.frames_sent, summary.send_elapsed_micros);
                         println!(
-                            "auth real encoded video frame bounded PoC sent AuthRequest {} bytes from {} to {} and received AuthResponse {} bytes from {}; accepted={} reason_code={:?}; bounded_manual_runtime=true; fragment_pacing_every={} fragment_pacing_delay_ms={} encoder_backend={} encoder_width={} encoder_height={} encoder_fps={} encoder_bitrate_kbps={} encoder_gop_frames={} encoder_preset={} encoder_tune={} encoder_pixel_format={} encoder_profile={} encoder_level={} ffmpeg_path={} ffmpeg_version_detected={} ffmpeg_preflight_error={} ffmpeg_spawn_error={} frames_attempted={} frames_captured={} frames_encoded={} frames_sent={} direct_sends={} fragmented_sends={} fragments_attempted={} fragments_sent={} no_frame_count={} capture_failures={} encode_failures={} frame_build_failures={} send_failures={} last_encode_error={} last_ffmpeg_error={} last_payload_len={} oversized_payload_count={} fragmentation_pressure_count={} stop_reason={:?} last_send_destination={} last_send_local_source={} last_send_frame_id={} last_send_payload_len={} last_send_packet_len={} last_send_error={}",
+                            "auth real encoded video frame bounded PoC sent AuthRequest {} bytes from {} to {} and received AuthResponse {} bytes from {}; accepted={} reason_code={:?}; bounded_manual_runtime=true; fragment_pacing_every={} fragment_pacing_delay_ms={} encoder_backend={} encoder_width={} encoder_height={} encoder_fps={} encoder_bitrate_kbps={} encoder_gop_frames={} encoder_preset={} encoder_tune={} encoder_pixel_format={} encoder_profile={} encoder_level={} ffmpeg_path={} ffmpeg_version_detected={} ffmpeg_preflight_error={} ffmpeg_spawn_error={} configured_max_frames={} configured_max_ticks={} runtime_ticks={} capture_attempts={} frames_captured={} frames_encoded={} frames_sent={} direct_sends={} fragmented_sends={} fragments_attempted={} fragments_sent={} no_frame_count={} capture_failures={} encode_failures={} frame_build_failures={} send_failures={} frames_remaining_to_max={} elapsed_ms={} effective_capture_fps={} effective_send_fps={} total_fragment_pacing_sleep_ms={} send_elapsed_ms={} ticks_elapsed_while_sending={} last_encode_error={} last_ffmpeg_error={} last_payload_len={} oversized_payload_count={} fragmentation_pressure_count={} stop_reason={:?} last_send_destination={} last_send_local_source={} last_send_frame_id={} last_send_payload_len={} last_send_packet_len={} last_send_error={}",
                             outcome.auth_request_bytes_sent,
                             outcome.local_source,
                             outcome.destination,
@@ -439,7 +447,10 @@ fn main() {
                             ffmpeg_visibility
                                 .ffmpeg_spawn_error
                                 .unwrap_or_else(|| "none".to_string()),
-                            summary.frames_attempted,
+                            summary.configured_max_frames,
+                            summary.configured_max_ticks,
+                            summary.runtime_ticks,
+                            summary.capture_attempts,
                             summary.frames_captured,
                             summary.frames_encoded,
                             summary.frames_sent,
@@ -452,6 +463,13 @@ fn main() {
                             summary.encode_failures,
                             summary.frame_build_failures,
                             summary.send_failures,
+                            summary.frames_remaining_to_max,
+                            elapsed_ms,
+                            effective_capture_fps,
+                            effective_send_fps,
+                            total_fragment_pacing_sleep_ms,
+                            send_elapsed_ms,
+                            summary.ticks_elapsed_while_sending,
                             last_encode_error,
                             ffmpeg_visibility
                                 .last_ffmpeg_error
@@ -605,10 +623,24 @@ fn main() {
         }
         _ => {
             println!(
-                "stream-sync-client scaffold; use --auth-request-poc-once [config-path], --auth-heartbeat-poc-once [config-path], --auth-heartbeat-stats-poc-once [config-path], --placeholder-video-frame-poc-once [config-path], --auth-placeholder-video-frame-poc-once [config-path], --real-encoded-video-frame-poc-once [config-path], --auth-real-encoded-video-frame-poc-once [config-path], --auth-real-encoded-video-frame-poc-bounded [config-path] [max-frames] [fragment-pacing-every] [fragment-pacing-delay-ms], --auth-heartbeat-one-tick-runtime [config-path], or --auth-heartbeat-stats-one-tick-runtime [config-path]"
+                "stream-sync-client scaffold; use --auth-request-poc-once [config-path], --auth-heartbeat-poc-once [config-path], --auth-heartbeat-stats-poc-once [config-path], --placeholder-video-frame-poc-once [config-path], --auth-placeholder-video-frame-poc-once [config-path], --real-encoded-video-frame-poc-once [config-path], --auth-real-encoded-video-frame-poc-once [config-path], --auth-real-encoded-video-frame-poc-bounded [config-path] [max-frames] [fragment-pacing-every] [fragment-pacing-delay-ms] (internal bounded guard: configured_max_ticks = max(max_frames, max_frames * 10)), --auth-heartbeat-one-tick-runtime [config-path], or --auth-heartbeat-stats-one-tick-runtime [config-path]"
             );
         }
     }
+}
+
+fn format_duration_ms(duration_micros: u64) -> String {
+    format!("{:.3}", duration_micros as f64 / 1_000.0)
+}
+
+fn format_fps(count: u64, duration_micros: u64) -> String {
+    if count == 0 || duration_micros == 0 {
+        return "0.000".to_string();
+    }
+    format!(
+        "{:.3}",
+        count as f64 / (duration_micros as f64 / 1_000_000.0)
+    )
 }
 
 fn last_encode_error_from_results(
