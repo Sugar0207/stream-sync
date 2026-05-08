@@ -2709,6 +2709,7 @@ pub struct ServerReceiveSendContinuousRuntimePolicy {
     pub max_iterations: Option<usize>,
     pub heartbeat_timeout: Option<ServerHeartbeatTimeoutPolicy>,
     pub receive_buffer_bytes: usize,
+    pub max_packets_per_drain_cycle: usize,
     pub video_queue_policy: ServerVideoFrameQueuePolicy,
     pub rtt_offset_candidate_policy: ServerHeartbeatRttOffsetCandidatePolicy,
 }
@@ -2720,6 +2721,7 @@ impl Default for ServerReceiveSendContinuousRuntimePolicy {
             max_iterations: None,
             heartbeat_timeout: None,
             receive_buffer_bytes: SERVER_DEFAULT_RECEIVE_BUFFER_BYTES,
+            max_packets_per_drain_cycle: 64,
             video_queue_policy: ServerVideoFrameQueuePolicy::default(),
             rtt_offset_candidate_policy: ServerHeartbeatRttOffsetCandidatePolicy::default(),
         }
@@ -2766,6 +2768,10 @@ pub struct ServerReceiveSendContinuousRuntimeSummary {
     pub receive_timeout: Duration,
     pub max_iterations: Option<usize>,
     pub receive_buffer: ServerUdpReceiveBufferTuningResult,
+    pub drain_cycles: usize,
+    pub last_packets_drained_in_cycle: usize,
+    pub max_packets_drained_in_cycle: usize,
+    pub receive_would_block_count: usize,
     pub iterations_attempted: usize,
     pub iterations_completed: usize,
     pub packets_received: usize,
@@ -2821,6 +2827,11 @@ pub enum ServerReceiveSendContinuousRuntimeError {
     },
     SetReceiveTimeout {
         address: SocketAddr,
+        kind: io::ErrorKind,
+    },
+    SetNonblocking {
+        address: SocketAddr,
+        nonblocking: bool,
         kind: io::ErrorKind,
     },
     Runtime {
@@ -2939,6 +2950,10 @@ impl ServerReceiveSendContinuousRuntimeLauncher {
             receive_timeout: policy.receive_timeout,
             max_iterations: policy.max_iterations,
             receive_buffer: receive_buffer.clone(),
+            drain_cycles: 0,
+            last_packets_drained_in_cycle: 0,
+            max_packets_drained_in_cycle: 0,
+            receive_would_block_count: 0,
             iterations_attempted: 0,
             iterations_completed: 0,
             packets_received: 0,
@@ -2978,77 +2993,163 @@ impl ServerReceiveSendContinuousRuntimeLauncher {
                 break;
             }
 
-            summary.iterations_attempted = summary.iterations_attempted.saturating_add(1);
-            let timestamp = current_system_timestamp_micros();
-            let result = match self.runtime.run_once(
-                &socket,
-                &mut buffer,
-                &mut registry,
-                &mut queue_collection,
-                &startup_config.auth_config,
-                ServerControllerReceiveSendRuntimeInput {
-                    controller: ServerContinuousReceiveLoopControllerInput {
-                        expected_protocol_version: startup_config.expected_protocol_version,
-                        timestamp,
-                        continue_requested: true,
-                    },
-                    heartbeat_timing: ServerHeartbeatAckTiming {
-                        server_received_at: timestamp,
-                        server_sent_at: timestamp,
-                    },
-                    encode_context: EncodeContext {
-                        protocol_version: startup_config.expected_protocol_version,
-                    },
-                    auth_log_timestamp: timestamp,
-                    send_log_timestamp: timestamp,
-                },
-                &mut operational_writer,
-                &mut rejection_writer,
-                &mut auth_log_writer,
-                &mut send_log_writer,
-            ) {
-                Ok(result) => result,
-                Err(error) => {
-                    let mut partial_summary = summary.clone();
-                    Self::observe_continuous_runtime_error(&error, &mut partial_summary);
-                    partial_summary.outbound_queue_len = queue_collection.len();
-                    partial_summary.video_queue_len = video_queue_state.total_len();
-                    partial_summary.incomplete_reassembly_frames =
-                        reassembly_state.tracked_frame_count();
-                    partial_summary.registered_clients = registry.entries().count();
-                    partial_summary.heartbeat_liveness_clients = heartbeat_liveness_state.len();
-                    partial_summary.heartbeat_rtt_offset_clients = heartbeat_rtt_offset_state.len();
-                    return Err(ServerReceiveSendContinuousRuntimeError::Runtime {
-                        iteration_index,
-                        error,
-                        summary: partial_summary,
-                    });
-                }
-            };
+            summary.drain_cycles = summary.drain_cycles.saturating_add(1);
+            let mut packets_drained_in_cycle = 0usize;
+            let mut cycle_stop_reason = None;
 
-            summary.iterations_completed = summary.iterations_completed.saturating_add(1);
-            let stop_reason = Self::observe_continuous_iteration(
-                result.clone(),
-                &mut heartbeat_handoffs_by_client,
-                &mut heartbeat_liveness_state,
-                &mut heartbeat_rtt_offset_state,
-                &mut video_queue_state,
-                &mut reassembly_state,
-                policy,
-                &mut summary,
-                &mut iteration_summaries,
-                iteration_index,
-                self,
-                timestamp,
-                &registry,
-            );
-            iterations.push(result);
-            if let Some(stop_reason) = stop_reason {
+            for drain_index in 0..policy.max_packets_per_drain_cycle.max(1) {
+                if matches!(policy.max_iterations, Some(limit) if iteration_index >= limit) {
+                    cycle_stop_reason =
+                        Some(ServerReceiveSendContinuousRuntimeStopReason::MaxIterationsReached);
+                    break;
+                }
+
+                if drain_index == 1 {
+                    socket.set_nonblocking(true).map_err(|error| {
+                        ServerReceiveSendContinuousRuntimeError::SetNonblocking {
+                            address: startup_config.bind_address,
+                            nonblocking: true,
+                            kind: error.kind(),
+                        }
+                    })?;
+                }
+
+                summary.iterations_attempted = summary.iterations_attempted.saturating_add(1);
+                let timestamp = current_system_timestamp_micros();
+                let result = match self.runtime.run_once(
+                    &socket,
+                    &mut buffer,
+                    &mut registry,
+                    &mut queue_collection,
+                    &startup_config.auth_config,
+                    ServerControllerReceiveSendRuntimeInput {
+                        controller: ServerContinuousReceiveLoopControllerInput {
+                            expected_protocol_version: startup_config.expected_protocol_version,
+                            timestamp,
+                            continue_requested: true,
+                        },
+                        heartbeat_timing: ServerHeartbeatAckTiming {
+                            server_received_at: timestamp,
+                            server_sent_at: timestamp,
+                        },
+                        encode_context: EncodeContext {
+                            protocol_version: startup_config.expected_protocol_version,
+                        },
+                        auth_log_timestamp: timestamp,
+                        send_log_timestamp: timestamp,
+                    },
+                    &mut operational_writer,
+                    &mut rejection_writer,
+                    &mut auth_log_writer,
+                    &mut send_log_writer,
+                ) {
+                    Ok(result) => result,
+                    Err(error) => {
+                        let mut partial_summary = summary.clone();
+                        Self::observe_continuous_runtime_error(&error, &mut partial_summary);
+                        partial_summary.outbound_queue_len = queue_collection.len();
+                        partial_summary.video_queue_len = video_queue_state.total_len();
+                        partial_summary.incomplete_reassembly_frames =
+                            reassembly_state.tracked_frame_count();
+                        partial_summary.registered_clients = registry.entries().count();
+                        partial_summary.heartbeat_liveness_clients = heartbeat_liveness_state.len();
+                        partial_summary.heartbeat_rtt_offset_clients =
+                            heartbeat_rtt_offset_state.len();
+                        return Err(ServerReceiveSendContinuousRuntimeError::Runtime {
+                            iteration_index,
+                            error,
+                            summary: partial_summary,
+                        });
+                    }
+                };
+
+                summary.iterations_completed = summary.iterations_completed.saturating_add(1);
+
+                if drain_index > 0 {
+                    if let ServerControllerReceiveSendRuntimeResult::Iteration {
+                        iteration, ..
+                    } = &result
+                    {
+                        if let ServerContinuousReceiveLoopOneTickRuntimeOutcome::SocketReceiveFailed {
+                            error_kind,
+                            ..
+                        } = iteration.body.tick.outcome
+                        {
+                            if matches!(
+                                error_kind,
+                                io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
+                            ) {
+                                summary.receive_would_block_count =
+                                    summary.receive_would_block_count.saturating_add(1);
+                                break;
+                            }
+                        }
+                    }
+                }
+
+                let stop_reason = Self::observe_continuous_iteration(
+                    result.clone(),
+                    &mut heartbeat_handoffs_by_client,
+                    &mut heartbeat_liveness_state,
+                    &mut heartbeat_rtt_offset_state,
+                    &mut video_queue_state,
+                    &mut reassembly_state,
+                    policy,
+                    &mut summary,
+                    &mut iteration_summaries,
+                    iteration_index,
+                    self,
+                    timestamp,
+                    &registry,
+                );
+                if matches!(
+                    result,
+                    ServerControllerReceiveSendRuntimeResult::Iteration {
+                        iteration: ServerReceiveSendOneIterationRuntimeOutcome {
+                            body: ServerContinuousReceiveLoopBodyResult {
+                                tick: ServerContinuousReceiveLoopOneTickRuntimeResult {
+                                    outcome:
+                                        ServerContinuousReceiveLoopOneTickRuntimeOutcome::Completed {
+                                            ..
+                                        },
+                                    ..
+                                },
+                                ..
+                            },
+                            ..
+                        },
+                        ..
+                    }
+                ) {
+                    packets_drained_in_cycle = packets_drained_in_cycle.saturating_add(1);
+                }
+                iterations.push(result);
+                iteration_index = iteration_index.saturating_add(1);
+                if let Some(stop_reason) = stop_reason {
+                    cycle_stop_reason = Some(stop_reason);
+                    break;
+                }
+            }
+
+            if policy.max_packets_per_drain_cycle > 1 {
+                socket.set_nonblocking(false).map_err(|error| {
+                    ServerReceiveSendContinuousRuntimeError::SetNonblocking {
+                        address: startup_config.bind_address,
+                        nonblocking: false,
+                        kind: error.kind(),
+                    }
+                })?;
+            }
+
+            summary.last_packets_drained_in_cycle = packets_drained_in_cycle;
+            summary.max_packets_drained_in_cycle = summary
+                .max_packets_drained_in_cycle
+                .max(packets_drained_in_cycle);
+
+            if let Some(stop_reason) = cycle_stop_reason {
                 summary.stop_reason = stop_reason;
                 break;
             }
-
-            iteration_index = iteration_index.saturating_add(1);
         }
 
         summary.outbound_queue_len = queue_collection.len();
