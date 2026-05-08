@@ -23,11 +23,11 @@
 
 ## 現在位置
 - 2-client human validation 方針は same-PC smoke / stress profile に固定した。今後の 2-client validation は server + client1 + client2 + capture + FFmpeg encode を同一 Windows PC 上で動かす前提とし、distributed-PC validation 用の server IP / firewall 手順は主目的にしない
-- same-PC 2-client smoke は PASS 済み。標準設定は `receive_buffer_bytes=268435456` + `max_packets_per_drain_cycle=1024` + summary-only とし、client 合計 `600` frames に対して server は `frames_reassembled=600` / `frames_queued=600` / `incomplete_reassembly_frames=0` / `rejected_packets=0` を確認した。`max_packets_drained_in_cycle=248` のため cap `1024` は十分である
+- same-PC 2-client longer-run validation は PASS 済み。標準設定は `receive_buffer_bytes=268435456` + `max_packets_per_drain_cycle=1024` + summary-only + `receive_timeout_ms=30000` + `max_frames=900 per client` + `fragment_pacing_every=4` + `fragment_pacing_delay_ms=2` とし、client 合計 `1800` frames に対して server は `frames_reassembled=1800` / `frames_queued=1800` / `rejected_packets=0` / `decode_errors=0` / `incomplete_reassembly_frames=0` を確認した。`max_packets_drained_in_cycle=578` のため cap `1024` は現状十分である
 - 2-client validation の human-run recipe を same-PC 前提に更新した。`docs/operations/two-client-long-run-validation.md` と `docs/operations/two-client-long-run-validation.ps1` は same-PC smoke / stress profile、baseline 比較、`256` / `512` / `1024` の drain cap 比較、貼り返し template を source of truth とする
 - continuous receive / send runtime の最小 sliceを拡張し、`stream-sync-server --receive-send-runtime-continuous [config-path] [receive-timeout-ms] [max-iterations-or-0-for-unbounded] [heartbeat-timeout-micros] [receive-buffer-bytes] [max-packets-per-drain-cycle]` で drain cap を CLI 指定できるようにした。summary には `max_packets_per_drain_cycle` / `drain_cycles` / `last_packets_drained_in_cycle` / `max_packets_drained_in_cycle` / `receive_would_block_count` を出し、same-PC rerun で cap 張り付き有無を比較できる
 - server continuous runtime の default 出力は summary-only に固定した。same-PC validation では packet / drain cycle / reassembly の大量ログを通常モードで流さず、final summary 1 行だけを比較する。詳細ログが必要な場合だけ `--verbose` を付ける
-- `stop_reason=ReceiveTimedOut` は same-PC smoke では client 完了後の idle closeout として読む。期待値の `frames_reassembled` / `frames_queued` に達している場合は failure ではない
+- `stop_reason=ReceiveTimedOut` は same-PC smoke / longer-run では client 完了後の idle closeout として読む。期待値の `frames_reassembled` / `frames_queued` に達している場合は failure ではない
 - 認証 / runtime hardening の最小 slice を実装した。auth decision、same-client registration、client-scoped gate rejection、heartbeat timeout を雑な文字列に寄せず typed status/reason で読めるようにし、`Reject` と `ReconnectRequired` と `InvestigationRequired` を `Continue` から分離した。manual auth PoC、`--receive-auth-video-queue-once`、`--receive-send-runtime-bounded` summary には typed auth / registration / runtime rejection visibility を追加した
 - `NoFrame` / `Waiting` / `HandoffError` の長時間 run 向け最小 status 整理を実装した。source-backed 2-view fallible validation には typed operational summary を追加し、per-side result kind を `Selected` / `NoFrame` / `Waiting` / `HandoffError` のまま保持しつつ、run-state を `Continue` / `RetryLater` / `ReconnectRequired` / `InvestigationRequired` で読めるようにした。late-drop summary あり path では post-mutation の `NoFrame` / `Waiting` 判断を summary へ接続できる
 - late frame queue mutation / jitter buffer / drop policy の最小 slice を source-backed path で実装した。`SwitcherSingleClientLateFrameQueueMutationBoundary` が oldest head を targetTime 基準で評価し、補正後 timestamp が `targetTime - max_late_micros` より古い frame だけを conservative に drop する。drop summary は testable に返し、source-backed 2-view validation では opt-in で接続できる
@@ -38,7 +38,7 @@
 - client 側は auth one-shot、heartbeat one-shot、`HeartbeatAckObservation` 付き `ClientStats` one-shot、one-tick runtime、accepted path 手動確認まで完了している
 - client continuous heartbeat loop は thin composition の completed body まで実装済みで、heartbeat timeout notice wakeup planning 境界、wakeup execution 境界、wakeup actual side-effect 境界、outer while-loop connection 境界、outer while-loop one-turn execution body 境界、actual timer wait / retry execution / reconnect 実行境界、outer while-loop 反復実行本体、reconnect policy 境界、caller-owned hook 付き actual socket 再確立境界、real UDP socket 差し替え hook、repeated body からの hook 注入経路まで完了している
 - 4-view operator MVP closeout は完了し、final regression も通過、push も完了している。bounded real encoded video / raw-key operator wrapper / `AllView` / `Focused(0..3)` / `AllView` return / raw console restore / `[video.encoder]` profile wiring / production H.264 stdout visibility / short OBS Window Capture validation までは current completed scope とする
-- 未完了の中心は 2-client 長時間 validation、4-view sync orchestration の長時間運用 polish、実 outbound queue flush / `ServerNotice` 実送信 / lifecycle の後続 slice、dashboard UI rendering である。auth/runtime hardening と continuous receive/send runtime の最小 slice は完了し、next major phase は 2-client 長時間 validation に移る
+- 未完了の中心は server -> switcher handoff validation、4-client all-real validation 準備、4-view sync orchestration の長時間運用 polish、実 outbound queue flush / `ServerNotice` 実送信 / lifecycle の後続 slice、dashboard UI rendering である。2-client ingest / reassembly の same-PC smoke / longer-run は通過扱いとし、next major phase は handoff validation 準備へ移る
 - `stream-sync-server --receive-send-runtime-bounded [config-path] [max-iterations] [receive-timeout-ms]` は追加済みで、1 process lifetime で 1 bound UDP socket / 1 `AuthenticatedSenderRegistry` / 1 `ServerOutboundQueueCollection` / caller-owned writers を維持しながら existing `ServerControllerReceiveSendRuntimeBoundary` を outer loop から繰り返し呼べる
 - bounded repeated runtime summary には `command_name` / `config_path` / `max_iterations` / `receive_timeout_ms` / `iterations_attempted` / `iterations_completed` / `auth_requests_received` / `auth_responses_sent` / `heartbeats_received` / `heartbeat_acks_sent` / `client_stats_received` / `client_stats_returns_sent` / `accepted_packets` / `rejected_packets` / `decode_errors` / `send_failures` / `outbound_queue_len` / `registered_clients` / `stop_reason` を出す。current hardening slice では追加で `last_auth_status` / `last_auth_reason` / `last_registration_status` / `last_registration_reason` / `last_runtime_rejection_status` / `last_runtime_rejection_reason` を読める
 - fatal/stop visibility の narrow slice も追加済みで、success summary には `timeout_iterations` / `timeout_only_run` / `last_receive_error` / `last_send_error` / `last_rejected_reason` を追加した。fatal/startup failure 時は same command args を含む one-line failure summary を stderr に出し、`stop_reason` / `fatal_error_kind` / `fatal_error_detail` で silent failure を避ける。`last_rejected_reason` は backward-compatible string のまま残しつつ、typed summary を並置する
@@ -176,13 +176,11 @@
 ---
 
 ## 直近でやること
-1. same-PC 2-client longer-run validation を、標準設定 `256MiB receive buffer + cap1024 + summary-only` で実行し、長時間でも `frames_reassembled` / `frames_queued` / `incomplete_reassembly_frames` が維持されるか確認する
-   - `docs/operations/two-client-long-run-validation.md`
-   - `docs/operations/two-client-long-run-validation.ps1`
-2. その後に 4-client / OBS へ進む前段として、server->switcher handoff validation の準備を見直す
+1. 4-client / OBS へ進む前段として、server->switcher handoff validation の準備を見直す
    - same-PC handoff validation の前提整理
-   - 2-client longer-run 後に必要な narrow observation の確認
-3. 実 outbound queue flush / `ServerNotice` 実送信 / lifecycle follow-up は、longer-run か handoff 準備で不足が見えた範囲だけ narrow に進める
+   - 2-client longer-run PASS 後に必要な narrow observation の確認
+2. その後に 4-client all-real validation 準備へ進み、same-PC から次の validation surface へ広げる
+3. 実 outbound queue flush / `ServerNotice` 実送信 / lifecycle follow-up は、handoff 準備か 4-client 準備で不足が見えた範囲だけ narrow に進める
 
 ## 今後の大まかな指針
 - 残り todo は `MVP クリティカルパス`、`安定化 / 運用`、`future task` に分けて扱う

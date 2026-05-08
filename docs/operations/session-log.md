@@ -5,6 +5,72 @@
 - Human validation + Codex follow-up
 
 ### Work
+- Recorded a successful same-PC 2-client longer-run validation using the
+  current standard profile.
+- Validation settings:
+  - `receive_buffer_bytes=268435456`
+  - `max_packets_per_drain_cycle=1024`
+  - summary-only default
+  - `receive_timeout_ms=30000`
+  - `client1/client2 max_frames=900`
+  - `fragment_pacing_every=4`
+  - `fragment_pacing_delay_ms=2`
+- Observed server summary:
+  - `receive_buffer_requested_bytes=268435456`
+  - `receive_buffer_effective_bytes=268435456`
+  - `receive_buffer_set_error=none`
+  - `receive_buffer_read_error=none`
+  - `max_packets_per_drain_cycle=1024`
+  - `packets_received=356060`
+  - `accepted_packets=356060`
+  - `rejected_packets=0`
+  - `decode_errors=0`
+  - `auth_requests_received=2`
+  - `auth_responses_sent=2`
+  - `frames_reassembled=1800`
+  - `frames_queued=1800`
+  - `direct_frames_queued=0`
+  - `video_queue_len=16`
+  - `incomplete_reassembly_frames=0`
+  - `drain_cycles=76733`
+  - `max_packets_drained_in_cycle=578`
+  - `receive_would_block_count=76732`
+  - `registered_clients=2`
+  - `stop_reason=ReceiveTimedOut`
+- Confirmed the longer-run pass conditions:
+  - client total `1800` frames sent
+  - server `1800` frames reassembled
+  - server `1800` frames queued
+  - `rejected_packets=0`
+  - `decode_errors=0`
+  - `incomplete_reassembly_frames=0`
+- Confirmed `stop_reason=ReceiveTimedOut` remains a normal idle closeout after
+  client completion for this profile.
+- Confirmed `cap1024` remains sufficient because
+  `max_packets_drained_in_cycle=578` stayed below the cap even on the longer
+  run.
+
+### Changed Files
+- `docs/operations/session-log.md`
+- `docs/operations/todo.md`
+- `docs/operations/two-client-long-run-validation.md`
+
+### Decision
+- Mark same-PC 2-client longer-run validation as PASS.
+- Treat the 2-client ingest / reassembly path as passed for MVP smoke and
+  longer-run validation scope.
+- Move the next step to either:
+  - server -> switcher handoff validation preparation
+  - 4-client all-real validation preparation
+
+### Validation
+- `git diff --check`
+
+## 2026-05-08
+### Type
+- Human validation + Codex follow-up
+
+### Work
 - Recorded a successful same-PC 2-client smoke rerun after the summary-only
   default change.
 - Observed server summary:
