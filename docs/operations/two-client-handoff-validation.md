@@ -368,6 +368,18 @@ What this should guarantee:
   - `expected_reassembled_clients=2`
   - `expected_reassembled_frames_per_client=900`
 - bounded handoff request budget matches the planned preview loop
+- after the receive phase finishes and the named-pipe server is actually ready,
+  server stdout now emits a readiness line such as:
+  - `handoff_ready=true`
+  - `pipe_name=streamsync-handoff-dev`
+  - `actual_pipe_path=\\.\pipe\streamsync-handoff-dev`
+
+Human start-order rule:
+
+- do not start Window 4, Window 4a, or Window 4b before server stdout prints
+  `handoff_ready=true`
+- once that line appears, use the printed `actual_pipe_path` as the source of
+  truth and start switcher/raw one-shot reads immediately
 
 ### Window 2: Client 1
 
@@ -383,8 +395,10 @@ What this should guarantee:
 
 ### Window 4: Switcher Main Handoff Preview
 
-Start this after both clients have been started and a few seconds of receive
-time have passed.
+Start this only after:
+
+- both clients have been started
+- server stdout has printed `handoff_ready=true`
 
 ```powershell
 .\target\debug\stream-sync-switcher.exe --four-view-two-real-handoff-preview-loop streamsync-handoff-dev 0 player1 streamsync-dev-session 1 player2 streamsync-dev-session 180
@@ -429,16 +443,20 @@ reports `connect:(os_error_2)`, read the summaries in this order:
 1. server bounded handoff line
    - confirm:
      - `handoff_ready=true`
+     - `pipe_name=streamsync-handoff-dev`
      - `actual_pipe_path=\\.\pipe\streamsync-handoff-dev`
-2. switcher preview summary
+2. if server already printed `handoff_stopped=true`
+   - treat the bounded session as finished and rerun Window 1 before launching
+     switcher
+3. switcher preview summary
    - confirm:
      - `actual_pipe_path=\\.\pipe\streamsync-handoff-dev`
-3. switcher `slot_diagnostics`
+4. switcher `slot_diagnostics`
    - confirm real slots show the same `actual_pipe_path`
    - inspect:
      - `io_error`
      - `handoff_response_kind`
-4. optional raw one-shot reads
+5. optional raw one-shot reads
    - compare `actual_pipe_path` again on:
      - `player1`
      - `player2`

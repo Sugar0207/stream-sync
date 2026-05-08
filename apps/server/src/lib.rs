@@ -5340,7 +5340,27 @@ pub struct ServerSwitcherNamedPipeManyRequestRuntimeOutput {
     pub requests_served: usize,
     pub successful_responses: usize,
     pub handoff_errors: usize,
+    pub frame_read_count: usize,
+    pub no_frame_count: usize,
+    pub parse_error_count: usize,
+    pub io_error_count: usize,
+    pub stop_reason: ServerSwitcherNamedPipeManyRequestStopReason,
     pub requests: Vec<ServerSwitcherNamedPipeRequestServeSummary>,
+}
+
+/// Stop reason for a bounded named-pipe handoff loop.
+#[cfg(windows)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ServerSwitcherNamedPipeManyRequestStopReason {
+    MaxRequestsReached,
+    InvalidPipeName,
+    CreatePipe,
+    Connect,
+    ReadRequest,
+    DecodeRequest,
+    EncodeResponse,
+    WriteResponse,
+    FlushResponse,
 }
 
 /// Output of one bounded server-owned service session that keeps UDP
@@ -5557,14 +5577,48 @@ impl ServerSwitcherNamedPipeOneRequestRuntimeBoundary {
     {
         let mut requests = Vec::with_capacity(max_requests);
         let mut handoff_errors = 0usize;
+        let mut frame_read_count = 0usize;
+        let mut no_frame_count = 0usize;
+        let mut parse_error_count = 0usize;
+        let mut io_error_count = 0usize;
 
         for _ in 0..max_requests {
-            let output = serve_one(queue_state)?;
-            let summary = summarize_named_pipe_request_output(&output);
-            if summary.handoff_error.is_some() {
-                handoff_errors = handoff_errors.saturating_add(1);
+            match serve_one(queue_state) {
+                Ok(output) => {
+                    let summary = summarize_named_pipe_request_output(&output);
+                    match summary.result_kind {
+                        ServerSwitcherNamedPipeRequestResultKind::FrameRead => {
+                            frame_read_count = frame_read_count.saturating_add(1);
+                        }
+                        ServerSwitcherNamedPipeRequestResultKind::NoFrame => {
+                            no_frame_count = no_frame_count.saturating_add(1);
+                        }
+                        ServerSwitcherNamedPipeRequestResultKind::HandoffError => {
+                            handoff_errors = handoff_errors.saturating_add(1);
+                        }
+                    }
+                    requests.push(summary);
+                }
+                Err(error) => {
+                    let stop_reason = summarize_named_pipe_many_stop_reason(
+                        error,
+                        &mut parse_error_count,
+                        &mut io_error_count,
+                    );
+                    return Ok(ServerSwitcherNamedPipeManyRequestRuntimeOutput {
+                        max_requests,
+                        requests_served: requests.len(),
+                        successful_responses: requests.len(),
+                        handoff_errors,
+                        frame_read_count,
+                        no_frame_count,
+                        parse_error_count,
+                        io_error_count,
+                        stop_reason,
+                        requests,
+                    });
+                }
             }
-            requests.push(summary);
         }
 
         Ok(ServerSwitcherNamedPipeManyRequestRuntimeOutput {
@@ -5572,8 +5626,53 @@ impl ServerSwitcherNamedPipeOneRequestRuntimeBoundary {
             requests_served: requests.len(),
             successful_responses: requests.len(),
             handoff_errors,
+            frame_read_count,
+            no_frame_count,
+            parse_error_count,
+            io_error_count,
+            stop_reason: ServerSwitcherNamedPipeManyRequestStopReason::MaxRequestsReached,
             requests,
         })
+    }
+}
+
+#[cfg(windows)]
+fn summarize_named_pipe_many_stop_reason(
+    error: ServerSwitcherNamedPipeOneRequestRuntimeError,
+    parse_error_count: &mut usize,
+    io_error_count: &mut usize,
+) -> ServerSwitcherNamedPipeManyRequestStopReason {
+    match error {
+        ServerSwitcherNamedPipeOneRequestRuntimeError::InvalidPipeName => {
+            ServerSwitcherNamedPipeManyRequestStopReason::InvalidPipeName
+        }
+        ServerSwitcherNamedPipeOneRequestRuntimeError::CreatePipe(_) => {
+            *io_error_count = io_error_count.saturating_add(1);
+            ServerSwitcherNamedPipeManyRequestStopReason::CreatePipe
+        }
+        ServerSwitcherNamedPipeOneRequestRuntimeError::Connect(_) => {
+            *io_error_count = io_error_count.saturating_add(1);
+            ServerSwitcherNamedPipeManyRequestStopReason::Connect
+        }
+        ServerSwitcherNamedPipeOneRequestRuntimeError::ReadRequest(_) => {
+            *io_error_count = io_error_count.saturating_add(1);
+            ServerSwitcherNamedPipeManyRequestStopReason::ReadRequest
+        }
+        ServerSwitcherNamedPipeOneRequestRuntimeError::DecodeRequest(_) => {
+            *parse_error_count = parse_error_count.saturating_add(1);
+            ServerSwitcherNamedPipeManyRequestStopReason::DecodeRequest
+        }
+        ServerSwitcherNamedPipeOneRequestRuntimeError::EncodeResponse(_) => {
+            ServerSwitcherNamedPipeManyRequestStopReason::EncodeResponse
+        }
+        ServerSwitcherNamedPipeOneRequestRuntimeError::WriteResponse(_) => {
+            *io_error_count = io_error_count.saturating_add(1);
+            ServerSwitcherNamedPipeManyRequestStopReason::WriteResponse
+        }
+        ServerSwitcherNamedPipeOneRequestRuntimeError::FlushResponse(_) => {
+            *io_error_count = io_error_count.saturating_add(1);
+            ServerSwitcherNamedPipeManyRequestStopReason::FlushResponse
+        }
     }
 }
 
@@ -16151,8 +16250,66 @@ shared_token = "secret"
         assert_eq!(output.requests_served, 0);
         assert_eq!(output.successful_responses, 0);
         assert_eq!(output.handoff_errors, 0);
+        assert_eq!(output.frame_read_count, 0);
+        assert_eq!(output.no_frame_count, 0);
+        assert_eq!(output.parse_error_count, 0);
+        assert_eq!(output.io_error_count, 0);
+        assert_eq!(
+            output.stop_reason,
+            ServerSwitcherNamedPipeManyRequestStopReason::MaxRequestsReached
+        );
         assert!(output.requests.is_empty());
         assert!(!called);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn server_switcher_handoff_named_pipe_many_counts_no_frame_and_parse_stop() {
+        let boundary = ServerSwitcherNamedPipeOneRequestRuntimeBoundary::default();
+        let mut queue_state = ServerVideoFrameQueueState::default();
+        let mut calls = 0usize;
+
+        let output = boundary
+            .serve_many_with(&mut queue_state, 3, |_queue_state| {
+                calls = calls.saturating_add(1);
+                match calls {
+                    1 => Ok(ServerSwitcherNamedPipeOneRequestRuntimeOutput {
+                        request: ServerSwitcherQueuedFrameHandoffRequest {
+                            handoff_version: SERVER_SWITCHER_HANDOFF_VERSION,
+                            request_id: 1,
+                            client_id: ClientId("player1".to_string()),
+                            run_id: RunId("run-a".to_string()),
+                            read_mode: ServerSwitcherQueuedFrameReadMode::InspectLatest,
+                        },
+                        response: ServerSwitcherQueuedFrameHandoffResponse::NoFrame {
+                            request_id: 1,
+                            client_id: ClientId("player1".to_string()),
+                            run_id: RunId("run-a".to_string()),
+                            read_mode: ServerSwitcherQueuedFrameReadMode::InspectLatest,
+                            client_queue_len: 0,
+                        },
+                        queue_len_before_read: 0,
+                    }),
+                    _ => Err(ServerSwitcherNamedPipeOneRequestRuntimeError::DecodeRequest(
+                        stream_sync_net_core::ServerSwitcherQueuedFrameHandoffCodecError::UnexpectedEof {
+                            needed: 1,
+                            remaining: 0,
+                        },
+                    )),
+                }
+            })
+            .expect("bounded loop should summarize parse stop");
+
+        assert_eq!(output.requests_served, 1);
+        assert_eq!(output.successful_responses, 1);
+        assert_eq!(output.frame_read_count, 0);
+        assert_eq!(output.no_frame_count, 1);
+        assert_eq!(output.parse_error_count, 1);
+        assert_eq!(output.io_error_count, 0);
+        assert_eq!(
+            output.stop_reason,
+            ServerSwitcherNamedPipeManyRequestStopReason::DecodeRequest
+        );
     }
 
     #[cfg(windows)]
@@ -16175,6 +16332,12 @@ shared_token = "secret"
                         requests_served: 2,
                         successful_responses: 2,
                         handoff_errors: 0,
+                        frame_read_count: 2,
+                        no_frame_count: 0,
+                        parse_error_count: 0,
+                        io_error_count: 0,
+                        stop_reason:
+                            ServerSwitcherNamedPipeManyRequestStopReason::MaxRequestsReached,
                         requests: vec![
                             ServerSwitcherNamedPipeRequestServeSummary {
                                 request_id: 1,

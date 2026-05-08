@@ -519,22 +519,50 @@ fn main() {
             };
             #[cfg(windows)]
             {
-                let launcher =
-                    stream_sync_server::ServerReceiveAuthVideoQueueHandoffServiceSessionLauncher::default();
-                match launcher.run_once_from_path_with_writers_and_policy(
+                let receive_launcher =
+                    stream_sync_server::ServerReceiveAuthVideoQueueOnceLauncher::default();
+                let handoff_boundary =
+                    stream_sync_server::ServerSwitcherNamedPipeOneRequestRuntimeBoundary::default();
+                match receive_launcher.run_once_from_path_with_writers_and_policy(
                     &config_path,
-                    &pipe_name,
-                    max_requests,
                     std::io::stderr(),
                     std::io::stderr(),
                     std::io::stderr(),
                     std::io::stderr(),
                     policy,
                 ) {
-                    Ok(outcome) => println!(
-                        "{}",
-                        format_named_pipe_handoff_service_session_summary(&outcome, policy)
-                    ),
+                    Ok(mut receive_outcome) => {
+                        println!(
+                            "{}",
+                            format_named_pipe_handoff_server_ready_line(
+                                &pipe_name,
+                                &receive_outcome,
+                                max_requests,
+                                policy,
+                            )
+                        );
+                        match handoff_boundary.serve_many(
+                            &mut receive_outcome.video_queue_state,
+                            &pipe_name,
+                            max_requests,
+                        ) {
+                            Ok(handoff_output) => println!(
+                                "{}",
+                                format_named_pipe_handoff_service_session_summary(
+                                    &pipe_name,
+                                    &receive_outcome,
+                                    &handoff_output,
+                                    policy,
+                                )
+                            ),
+                            Err(error) => {
+                                eprintln!(
+                                    "receive auth/video queue and serve handoff many failed: {error:?}"
+                                );
+                                std::process::exit(1);
+                            }
+                        }
+                    }
                     Err(error) => {
                         eprintln!(
                             "receive auth/video queue and serve handoff many failed: {error:?}"
@@ -1766,73 +1794,116 @@ fn format_named_pipe_handoff_server_summary(
 }
 
 #[cfg(windows)]
-fn format_named_pipe_handoff_server_many_summary(
+fn format_named_pipe_handoff_server_ready_line(
+    pipe_name: &str,
+    outcome: &stream_sync_server::ServerReceiveAuthVideoQueueOnceStartupOutcome,
+    max_requests: usize,
+    policy: stream_sync_server::ServerReceiveAuthVideoQueueOnceManualPolicy,
+) -> String {
+    let actual_pipe_path = format_actual_handoff_pipe_path(pipe_name);
+    let (_, _, _, _, video_summary) = auth_video_queue_summary(outcome);
+    let per_client_reassembled_frames = video_summary
+        .map(format_per_client_reassembled_frames)
+        .unwrap_or_else(|| "none".to_string());
+
+    format!(
+        "server named-pipe handoff bounded ready handoff_ready=true pipe_name={} actual_pipe_path={} queued_frames={} registered_clients={} expected_handoff_requests={} expected_reassembled_frames={} observed_reassembled_clients={} per_client_reassembled_frames={}",
+        pipe_name,
+        actual_pipe_path,
+        outcome.video_queue_state.total_len(),
+        outcome.registry.entries().count(),
+        max_requests,
+        policy.expected_reassembled_frames,
+        video_summary
+            .map(|summary| summary.observed_reassembled_clients.to_string())
+            .unwrap_or_else(|| "none".to_string()),
+        per_client_reassembled_frames
+    )
+}
+
+#[cfg(windows)]
+fn format_named_pipe_handoff_server_many_stopped_summary(
     pipe_name: &str,
     output: &stream_sync_server::ServerSwitcherNamedPipeManyRequestRuntimeOutput,
 ) -> String {
     let actual_pipe_path = format_actual_handoff_pipe_path(pipe_name);
-    let mut lines = vec![format!(
-        "server named-pipe handoff bounded handoff_ready=true pipe_name={} actual_pipe_path={} max_requests={} requests_served={} successful_responses={} handoff_errors={}",
+    format!(
+        "server named-pipe handoff bounded stopped handoff_stopped=true pipe_name={} actual_pipe_path={} max_requests={} stop_reason={} handoff_requests_completed={} successful_responses={} handoff_errors={} frame_read_count={} no_frame_count={} parse_error_count={} io_error_count={}",
         pipe_name,
         actual_pipe_path,
         output.max_requests,
+        format_server_handoff_stop_reason(output.stop_reason),
         output.requests_served,
         output.successful_responses,
-        output.handoff_errors
-    )];
+        output.handoff_errors,
+        output.frame_read_count,
+        output.no_frame_count,
+        output.parse_error_count,
+        output.io_error_count
+    )
+}
 
-    lines.extend(
-        output
-            .requests
-            .iter()
-            .enumerate()
-            .map(|(index, request)| {
-                format!(
-                    "server named-pipe handoff bounded request pipe_name={} request_index={} request_id={} queue_len_before_read={} queue_len_after_read={} result_kind={} selected_client_id={} selected_run_id={} frame_id={} frame_payload_len={} no_frame_reason={} handoff_error={}",
-                    pipe_name,
-                    index,
-                    request.request_id,
-                    request.queue_len_before_read,
-                    request
-                        .queue_len_after_read
-                        .map(|value| value.to_string())
-                        .unwrap_or_else(|| "none".to_string()),
-                    format_server_handoff_result_kind(request.result_kind),
-                    request.selected_client_id.0,
-                    request.selected_run_id.0,
-                    request
-                        .frame_id
-                        .map(|value| value.to_string())
-                        .unwrap_or_else(|| "none".to_string()),
-                    request
-                        .frame_payload_len
-                        .map(|value| value.to_string())
-                        .unwrap_or_else(|| "none".to_string()),
-                    request
-                        .no_frame_reason
-                        .clone()
-                        .unwrap_or_else(|| "none".to_string()),
-                    request
-                        .handoff_error
-                        .map(|value| format!("{value:?}"))
-                        .unwrap_or_else(|| "none".to_string())
-                )
-            }),
-    );
-
-    lines.join("\n")
+#[cfg(windows)]
+fn format_named_pipe_handoff_server_many_request_lines(
+    pipe_name: &str,
+    output: &stream_sync_server::ServerSwitcherNamedPipeManyRequestRuntimeOutput,
+) -> String {
+    output
+        .requests
+        .iter()
+        .enumerate()
+        .map(|(index, request)| {
+            format!(
+                "server named-pipe handoff bounded request pipe_name={} request_index={} request_id={} queue_len_before_read={} queue_len_after_read={} result_kind={} selected_client_id={} selected_run_id={} frame_id={} frame_payload_len={} no_frame_reason={} handoff_error={}",
+                pipe_name,
+                index,
+                request.request_id,
+                request.queue_len_before_read,
+                request
+                    .queue_len_after_read
+                    .map(|value| value.to_string())
+                    .unwrap_or_else(|| "none".to_string()),
+                format_server_handoff_result_kind(request.result_kind),
+                request.selected_client_id.0,
+                request.selected_run_id.0,
+                request
+                    .frame_id
+                    .map(|value| value.to_string())
+                    .unwrap_or_else(|| "none".to_string()),
+                request
+                    .frame_payload_len
+                    .map(|value| value.to_string())
+                    .unwrap_or_else(|| "none".to_string()),
+                request
+                    .no_frame_reason
+                    .clone()
+                    .unwrap_or_else(|| "none".to_string()),
+                request
+                    .handoff_error
+                    .map(|value| format!("{value:?}"))
+                    .unwrap_or_else(|| "none".to_string())
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 #[cfg(windows)]
 fn format_named_pipe_handoff_service_session_summary(
-    output: &stream_sync_server::ServerReceiveAuthVideoQueueHandoffServiceSessionOutput,
+    pipe_name: &str,
+    receive: &stream_sync_server::ServerReceiveAuthVideoQueueOnceStartupOutcome,
+    handoff: &stream_sync_server::ServerSwitcherNamedPipeManyRequestRuntimeOutput,
     policy: stream_sync_server::ServerReceiveAuthVideoQueueOnceManualPolicy,
 ) -> String {
-    let receive_summary = format_receive_auth_video_queue_runtime_summary(&output.receive, policy);
-    let handoff_summary =
-        format_named_pipe_handoff_server_many_summary(&output.pipe_name, &output.handoff);
+    let receive_summary = format_receive_auth_video_queue_runtime_summary(receive, policy);
+    let stopped_summary = format_named_pipe_handoff_server_many_stopped_summary(pipe_name, handoff);
+    let request_lines = format_named_pipe_handoff_server_many_request_lines(pipe_name, handoff);
 
-    format!("{receive_summary}\n{handoff_summary}")
+    if request_lines.is_empty() {
+        format!("{receive_summary}\n{stopped_summary}")
+    } else {
+        format!("{receive_summary}\n{stopped_summary}\n{request_lines}")
+    }
 }
 
 #[cfg(windows)]
@@ -1844,6 +1915,39 @@ fn format_server_handoff_result_kind(
         stream_sync_server::ServerSwitcherNamedPipeRequestResultKind::NoFrame => "NoFrame",
         stream_sync_server::ServerSwitcherNamedPipeRequestResultKind::HandoffError => {
             "HandoffError"
+        }
+    }
+}
+
+#[cfg(windows)]
+fn format_server_handoff_stop_reason(
+    reason: stream_sync_server::ServerSwitcherNamedPipeManyRequestStopReason,
+) -> &'static str {
+    match reason {
+        stream_sync_server::ServerSwitcherNamedPipeManyRequestStopReason::MaxRequestsReached => {
+            "MaxRequestsReached"
+        }
+        stream_sync_server::ServerSwitcherNamedPipeManyRequestStopReason::InvalidPipeName => {
+            "InvalidPipeName"
+        }
+        stream_sync_server::ServerSwitcherNamedPipeManyRequestStopReason::CreatePipe => {
+            "CreatePipe"
+        }
+        stream_sync_server::ServerSwitcherNamedPipeManyRequestStopReason::Connect => "Connect",
+        stream_sync_server::ServerSwitcherNamedPipeManyRequestStopReason::ReadRequest => {
+            "ReadRequest"
+        }
+        stream_sync_server::ServerSwitcherNamedPipeManyRequestStopReason::DecodeRequest => {
+            "DecodeRequest"
+        }
+        stream_sync_server::ServerSwitcherNamedPipeManyRequestStopReason::EncodeResponse => {
+            "EncodeResponse"
+        }
+        stream_sync_server::ServerSwitcherNamedPipeManyRequestStopReason::WriteResponse => {
+            "WriteResponse"
+        }
+        stream_sync_server::ServerSwitcherNamedPipeManyRequestStopReason::FlushResponse => {
+            "FlushResponse"
         }
     }
 }
@@ -2512,12 +2616,41 @@ mod tests {
 
     #[cfg(windows)]
     #[test]
-    fn server_handoff_bounded_summary_includes_aggregate_and_request_fields() {
+    fn server_handoff_ready_line_includes_ready_and_actual_path() {
+        let ready_line = super::format_named_pipe_handoff_server_ready_line(
+            "pipe-b",
+            &test_service_session_output().receive,
+            3,
+            stream_sync_server::ServerReceiveAuthVideoQueueOnceManualPolicy {
+                max_video_packets: 4096,
+                receive_timeout: std::time::Duration::from_millis(15_000),
+                expected_reassembled_frames: 1,
+                stop_after_expected_reassembled_frames: true,
+                receive_buffer_bytes: 8_388_608,
+                expected_reassembled_clients: 0,
+                expected_reassembled_frames_per_client: 0,
+            },
+        );
+
+        assert!(ready_line.contains("handoff_ready=true"));
+        assert!(ready_line.contains("pipe_name=pipe-b"));
+        assert!(ready_line.contains(r"actual_pipe_path=\\.\pipe\pipe-b"));
+        assert!(ready_line.contains("expected_handoff_requests=3"));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn server_handoff_stopped_summary_includes_aggregate_and_request_fields() {
         let output = stream_sync_server::ServerSwitcherNamedPipeManyRequestRuntimeOutput {
             max_requests: 3,
             requests_served: 2,
             successful_responses: 2,
             handoff_errors: 1,
+            frame_read_count: 1,
+            no_frame_count: 0,
+            parse_error_count: 0,
+            io_error_count: 0,
+            stop_reason: stream_sync_server::ServerSwitcherNamedPipeManyRequestStopReason::MaxRequestsReached,
             requests: vec![
                 stream_sync_server::ServerSwitcherNamedPipeRequestServeSummary {
                     request_id: 44,
@@ -2548,61 +2681,62 @@ mod tests {
             ],
         };
 
-        let summary = super::format_named_pipe_handoff_server_many_summary("pipe-b", &output);
+        let stopped_summary =
+            super::format_named_pipe_handoff_server_many_stopped_summary("pipe-b", &output);
+        let request_lines =
+            super::format_named_pipe_handoff_server_many_request_lines("pipe-b", &output);
 
-        assert!(summary.contains("handoff_ready=true"));
-        assert!(summary.contains("pipe_name=pipe-b"));
-        assert!(summary.contains(r"actual_pipe_path=\\.\pipe\pipe-b"));
-        assert!(summary.contains("max_requests=3"));
-        assert!(summary.contains("requests_served=2"));
-        assert!(summary.contains("successful_responses=2"));
-        assert!(summary.contains("handoff_errors=1"));
-        assert!(summary.contains("request_index=0"));
-        assert!(summary.contains("request_id=44"));
-        assert!(summary.contains("result_kind=FrameRead"));
-        assert!(summary.contains("queue_len_before_read=3"));
-        assert!(summary.contains("queue_len_after_read=2"));
-        assert!(summary.contains("request_index=1"));
-        assert!(summary.contains("request_id=45"));
-        assert!(summary.contains("result_kind=HandoffError"));
-        assert!(summary.contains("queue_len_before_read=0"));
-        assert!(summary.contains("queue_len_after_read=none"));
-        assert!(summary.contains("handoff_error=SourceShutdown"));
+        assert!(stopped_summary.contains("handoff_stopped=true"));
+        assert!(stopped_summary.contains("pipe_name=pipe-b"));
+        assert!(stopped_summary.contains(r"actual_pipe_path=\\.\pipe\pipe-b"));
+        assert!(stopped_summary.contains("max_requests=3"));
+        assert!(stopped_summary.contains("stop_reason=MaxRequestsReached"));
+        assert!(stopped_summary.contains("handoff_requests_completed=2"));
+        assert!(stopped_summary.contains("frame_read_count=1"));
+        assert!(stopped_summary.contains("parse_error_count=0"));
+        assert!(stopped_summary.contains("io_error_count=0"));
+        assert!(request_lines.contains("request_index=0"));
+        assert!(request_lines.contains("request_id=44"));
+        assert!(request_lines.contains("result_kind=FrameRead"));
+        assert!(request_lines.contains("queue_len_before_read=3"));
+        assert!(request_lines.contains("queue_len_after_read=2"));
+        assert!(request_lines.contains("request_index=1"));
+        assert!(request_lines.contains("request_id=45"));
+        assert!(request_lines.contains("result_kind=HandoffError"));
+        assert!(request_lines.contains("queue_len_before_read=0"));
+        assert!(request_lines.contains("queue_len_after_read=none"));
+        assert!(request_lines.contains("handoff_error=SourceShutdown"));
     }
 
     #[cfg(windows)]
     #[test]
-    fn server_handoff_summary_normalizes_full_pipe_path() {
-        let output = stream_sync_server::ServerSwitcherNamedPipeOneRequestRuntimeOutput {
-            request: ServerSwitcherQueuedFrameHandoffRequest {
-                handoff_version: SERVER_SWITCHER_HANDOFF_VERSION,
-                request_id: 1,
-                client_id: ClientId("player1".to_string()),
-                run_id: RunId("run-a".to_string()),
-                read_mode: ServerSwitcherQueuedFrameReadMode::InspectLatest,
+    fn server_handoff_ready_line_normalizes_full_pipe_path() {
+        let ready_line = super::format_named_pipe_handoff_server_ready_line(
+            r"\\.\pipe\pipe-full",
+            &test_service_session_output().receive,
+            2,
+            stream_sync_server::ServerReceiveAuthVideoQueueOnceManualPolicy {
+                max_video_packets: 4096,
+                receive_timeout: std::time::Duration::from_millis(15_000),
+                expected_reassembled_frames: 1,
+                stop_after_expected_reassembled_frames: true,
+                receive_buffer_bytes: 8_388_608,
+                expected_reassembled_clients: 0,
+                expected_reassembled_frames_per_client: 0,
             },
-            response: ServerSwitcherQueuedFrameHandoffResponse::NoFrame {
-                request_id: 1,
-                client_id: ClientId("player1".to_string()),
-                run_id: RunId("run-a".to_string()),
-                read_mode: ServerSwitcherQueuedFrameReadMode::InspectLatest,
-                client_queue_len: 0,
-            },
-            queue_len_before_read: 0,
-        };
+        );
 
-        let summary =
-            super::format_named_pipe_handoff_server_summary(r"\\.\pipe\pipe-full", &output);
-
-        assert!(summary.contains(r"pipe_name=\\.\pipe\pipe-full"));
-        assert!(summary.contains(r"actual_pipe_path=\\.\pipe\pipe-full"));
+        assert!(ready_line.contains(r"pipe_name=\\.\pipe\pipe-full"));
+        assert!(ready_line.contains(r"actual_pipe_path=\\.\pipe\pipe-full"));
     }
 
     #[cfg(windows)]
     #[test]
     fn server_handoff_service_session_summary_includes_receive_and_bounded_lines() {
         let summary = super::format_named_pipe_handoff_service_session_summary(
-            &test_service_session_output(),
+            "pipe-session",
+            &test_service_session_output().receive,
+            &test_service_session_output().handoff,
             stream_sync_server::ServerReceiveAuthVideoQueueOnceManualPolicy {
                 max_video_packets: 4096,
                 receive_timeout: std::time::Duration::from_millis(15_000),
@@ -2625,7 +2759,8 @@ mod tests {
         assert!(summary.contains("pipe_name=pipe-session"));
         assert!(summary.contains(r"actual_pipe_path=\\.\pipe\pipe-session"));
         assert!(summary.contains("max_requests=2"));
-        assert!(summary.contains("requests_served=2"));
+        assert!(summary.contains("handoff_requests_completed=2"));
+        assert!(summary.contains("handoff_stopped=true"));
         assert!(summary.contains("request_index=0"));
         assert!(summary.contains("request_id=1"));
         assert!(summary.contains("result_kind=FrameRead"));
@@ -2743,6 +2878,11 @@ mod tests {
                 requests_served: 2,
                 successful_responses: 2,
                 handoff_errors: 0,
+                frame_read_count: 2,
+                no_frame_count: 0,
+                parse_error_count: 0,
+                io_error_count: 0,
+                stop_reason: stream_sync_server::ServerSwitcherNamedPipeManyRequestStopReason::MaxRequestsReached,
                 requests: vec![
                     stream_sync_server::ServerSwitcherNamedPipeRequestServeSummary {
                         request_id: 1,

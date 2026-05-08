@@ -2,6 +2,65 @@
 
 ## 2026-05-09
 ### Type
+- Codex code + docs update
+
+### Work
+- Investigated the current same-PC server -> switcher handoff timing ambiguity:
+  - starting switcher too early could still lead to `NoFrame`
+  - starting switcher too late could hit `connect:(os_error_2)` after the
+    bounded handoff session had already exited
+- Added an immediate server stdout readiness line for
+  `--receive-auth-video-queue-and-serve-handoff-many` that prints as soon as
+  the named-pipe server is ready:
+  - `handoff_ready=true`
+  - `pipe_name=...`
+  - `actual_pipe_path=...`
+  - `queued_frames=...`
+  - `registered_clients=...`
+  - `expected_handoff_requests=...`
+  - `expected_reassembled_frames=...`
+  - `observed_reassembled_clients=...`
+  - `per_client_reassembled_frames=...`
+- Added a final stopped summary line for the same command:
+  - `handoff_stopped=true`
+  - `stop_reason=...`
+  - `handoff_requests_completed=...`
+  - `frame_read_count=...`
+  - `no_frame_count=...`
+  - `parse_error_count=...`
+  - `io_error_count=...`
+- Extended the bounded handoff aggregate runtime output so it now preserves:
+  - `frame_read_count`
+  - `no_frame_count`
+  - `parse_error_count`
+  - `io_error_count`
+  - `stop_reason`
+- Updated the handoff validation doc so human operators now wait for
+  `handoff_ready=true` before running switcher preview or raw one-shot reads.
+
+### Changed Files
+- `apps/server/src/lib.rs`
+- `apps/server/src/main.rs`
+- `docs/operations/two-client-handoff-validation.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### Decision
+- The immediate blocker was not pipe-name normalization anymore. It was missing
+  readiness visibility for the bounded named-pipe server lifetime.
+- The next human rerun should key off the explicit ready line instead of a
+  guessed timing delay.
+
+### Validation
+- `cargo fmt`
+- `cargo fmt --check`
+- `cargo check --workspace`
+- focused server handoff tests
+- `cargo test --workspace`
+- `git diff --check`
+
+## 2026-05-09
+### Type
 - Codex docs update
 
 ### Work
