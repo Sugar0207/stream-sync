@@ -2565,9 +2565,15 @@ Current implementation status:
   - BGRA frame bytes written to `stdin`
   - raw H.264 Annex B stream bytes read from `stdout`
   - typed shutdown / stdout-close / non-zero-exit outcomes
+- an experimental client-only Annex B access-unit reader boundary now also
+  exists in `apps/client/src/lib.rs`
+- the current reader can:
+  - split `0x000001` / `0x00000001` start-code-prefixed NAL units
+  - recover one conservative sendable access unit when a next-frame boundary is
+    visible
+  - keep partial buffer / EOF incomplete / malformed stream outcomes typed
 - this experimental boundary is not yet integrated into the bounded sender
-  runtime, does not yet recover access-unit/frame boundaries, and does not yet
-  replace the existing per-frame encoder path
+  runtime and does not yet replace the existing per-frame encoder path
 
 Suggested narrow boundary split:
 

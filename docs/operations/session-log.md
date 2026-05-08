@@ -5,6 +5,53 @@
 - Codex code + docs update
 
 ### Work
+- Implemented the first experimental client-only Annex B access-unit reader
+  boundary in `apps/client/src/lib.rs`.
+- Added incremental typed reader state/results for:
+  - `NoCompleteAccessUnitYet`
+  - `AccessUnit`
+  - `MalformedStream`
+  - EOF with incomplete remaining bytes
+- Added conservative boundary logic over persistent FFmpeg `stdout` bytes:
+  - split `0x000001` / `0x00000001` start-code-prefixed NAL units
+  - parse VCL slice `first_mb_in_slice`
+  - treat a new VCL with `first_mb_in_slice=0` as a next-frame boundary
+  - treat SPS/PPS/SEI/AUD after an existing VCL as the next access-unit start
+- Kept the existing per-frame FFmpeg encoder path unchanged.
+- Kept bounded sender integration out of scope for this step.
+- Added focused tests for:
+  - Annex B NAL splitting
+  - multi-NAL access-unit recovery
+  - partial input without complete frame
+  - EOF with typed remaining bytes
+  - malformed stream classification
+
+### Changed Files
+- `apps/client/src/lib.rs`
+- `docs/operations/manual-real-encoded-video-poc.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### Decision
+- The persistent encoder path now has the minimum reader boundary needed before
+  bounded-sender integration.
+- The next step should wire this reader into the persistent runtime flow and
+  then into the bounded sender behind an experimental path switch.
+- Deadline-based cadence remains design-only in this step.
+
+### Validation
+- `cargo fmt`
+- `cargo fmt --check`
+- `cargo check --workspace`
+- focused client tests
+- `cargo test --workspace`
+- `git diff --check`
+
+## 2026-05-09
+### Type
+- Codex code + docs update
+
+### Work
 - Implemented the first experimental client-only persistent FFmpeg encoder
   boundary in `apps/client/src/lib.rs`.
 - Kept the existing per-frame FFmpeg encoder hook unchanged and separate.

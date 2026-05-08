@@ -4048,6 +4048,460 @@ fn drain_child_stderr(child: &mut Child) -> Result<String, (io::ErrorKind, Strin
     }
 }
 
+/// High-level H.264 Annex B NAL unit kind used by the experimental client-only
+/// access-unit reader boundary.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ClientAnnexBNalUnitKind {
+    NonIdrSlice,
+    IdrSlice,
+    Sei,
+    Sps,
+    Pps,
+    Aud,
+    Other(u8),
+}
+
+impl ClientAnnexBNalUnitKind {
+    fn from_nal_unit_type(nal_unit_type: u8) -> Self {
+        match nal_unit_type {
+            1..=4 => Self::NonIdrSlice,
+            5 => Self::IdrSlice,
+            6 => Self::Sei,
+            7 => Self::Sps,
+            8 => Self::Pps,
+            9 => Self::Aud,
+            other => Self::Other(other),
+        }
+    }
+
+    fn is_vcl(self) -> bool {
+        matches!(self, Self::NonIdrSlice | Self::IdrSlice)
+    }
+}
+
+/// One complete H.264 Annex B NAL unit, including its start code bytes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClientAnnexBNalUnit {
+    pub bytes: Vec<u8>,
+    pub start_code_len: usize,
+    pub kind: ClientAnnexBNalUnitKind,
+    pub nal_unit_type: u8,
+    pub first_mb_in_slice: Option<u64>,
+}
+
+/// One sendable H.264 Annex B access unit recovered from the experimental
+/// client-only reader boundary.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClientAnnexBAccessUnit {
+    pub bytes: Vec<u8>,
+    pub nal_units: Vec<ClientAnnexBNalUnit>,
+    pub contains_idr: bool,
+    pub contains_sps: bool,
+    pub contains_pps: bool,
+}
+
+/// Malformed-stream reasons from the experimental Annex B access-unit reader.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ClientAnnexBAccessUnitReaderMalformedReason {
+    MissingStartCode,
+    ZeroLengthNalUnit,
+    InvalidNalHeader,
+    InvalidSliceHeader,
+}
+
+/// Incomplete-stream reasons from the experimental Annex B access-unit reader.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ClientAnnexBAccessUnitReaderIncompleteReason {
+    NoCompleteAccessUnitYet,
+    TrailingStartCodeWithoutNalHeader,
+    AccessUnitMissingVcl,
+}
+
+/// Incremental buffer state for the experimental client-only Annex B access
+/// unit reader boundary.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ClientAnnexBAccessUnitReaderState {
+    buffered_bytes: Vec<u8>,
+}
+
+impl ClientAnnexBAccessUnitReaderState {
+    pub fn buffered_len(&self) -> usize {
+        self.buffered_bytes.len()
+    }
+
+    pub fn append_bytes(&mut self, bytes: &[u8]) -> usize {
+        self.buffered_bytes.extend_from_slice(bytes);
+        bytes.len()
+    }
+}
+
+/// Typed result from polling the experimental client-only Annex B access-unit
+/// reader.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ClientAnnexBAccessUnitReaderPollResult {
+    AccessUnit(ClientAnnexBAccessUnit),
+    NoCompleteAccessUnitYet {
+        buffered_bytes: usize,
+    },
+    MalformedStream {
+        reason: ClientAnnexBAccessUnitReaderMalformedReason,
+        buffered_bytes: usize,
+    },
+}
+
+/// Typed EOF result from the experimental client-only Annex B access-unit
+/// reader.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ClientAnnexBAccessUnitReaderFinishResult {
+    AccessUnit(ClientAnnexBAccessUnit),
+    EofNoBufferedData,
+    EofWithIncompleteData {
+        reason: ClientAnnexBAccessUnitReaderIncompleteReason,
+        remaining_bytes: Vec<u8>,
+    },
+    MalformedStream {
+        reason: ClientAnnexBAccessUnitReaderMalformedReason,
+        remaining_bytes: Vec<u8>,
+    },
+}
+
+/// Experimental client-only boundary for recovering sendable H.264 Annex B
+/// access units from persistent FFmpeg stdout bytes.
+///
+/// This boundary is intentionally separate from the bounded sender runtime. It
+/// accepts arbitrary stdout byte chunks, splits Annex B start-code-prefixed NAL
+/// units conservatively, and returns one access unit at a time when a safe
+/// frame boundary is visible.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct ClientAnnexBAccessUnitReaderBoundary;
+
+impl ClientAnnexBAccessUnitReaderBoundary {
+    pub fn append_bytes(
+        &self,
+        state: &mut ClientAnnexBAccessUnitReaderState,
+        bytes: &[u8],
+    ) -> usize {
+        state.append_bytes(bytes)
+    }
+
+    pub fn poll_access_unit(
+        &self,
+        state: &mut ClientAnnexBAccessUnitReaderState,
+    ) -> ClientAnnexBAccessUnitReaderPollResult {
+        match try_extract_annex_b_access_unit(state, false) {
+            Ok(Some(access_unit)) => {
+                ClientAnnexBAccessUnitReaderPollResult::AccessUnit(access_unit)
+            }
+            Ok(None) => ClientAnnexBAccessUnitReaderPollResult::NoCompleteAccessUnitYet {
+                buffered_bytes: state.buffered_len(),
+            },
+            Err(reason) => ClientAnnexBAccessUnitReaderPollResult::MalformedStream {
+                reason,
+                buffered_bytes: state.buffered_len(),
+            },
+        }
+    }
+
+    pub fn finish(
+        &self,
+        state: &mut ClientAnnexBAccessUnitReaderState,
+    ) -> ClientAnnexBAccessUnitReaderFinishResult {
+        match try_extract_annex_b_access_unit(state, false) {
+            Ok(Some(access_unit)) => {
+                return ClientAnnexBAccessUnitReaderFinishResult::AccessUnit(access_unit)
+            }
+            Err(reason) => {
+                return ClientAnnexBAccessUnitReaderFinishResult::MalformedStream {
+                    reason,
+                    remaining_bytes: std::mem::take(&mut state.buffered_bytes),
+                }
+            }
+            Ok(None) => {}
+        }
+
+        if state.buffered_bytes.is_empty() {
+            return ClientAnnexBAccessUnitReaderFinishResult::EofNoBufferedData;
+        }
+
+        match try_extract_annex_b_access_unit(state, true) {
+            Ok(Some(access_unit)) => {
+                ClientAnnexBAccessUnitReaderFinishResult::AccessUnit(access_unit)
+            }
+            Ok(None) => ClientAnnexBAccessUnitReaderFinishResult::EofWithIncompleteData {
+                reason: detect_annex_b_incomplete_reason(&state.buffered_bytes),
+                remaining_bytes: std::mem::take(&mut state.buffered_bytes),
+            },
+            Err(reason) => ClientAnnexBAccessUnitReaderFinishResult::MalformedStream {
+                reason,
+                remaining_bytes: std::mem::take(&mut state.buffered_bytes),
+            },
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct ClientAnnexBNalDescriptor {
+    start: usize,
+    end: usize,
+    nal_unit: ClientAnnexBNalUnit,
+}
+
+fn try_extract_annex_b_access_unit(
+    state: &mut ClientAnnexBAccessUnitReaderState,
+    eof: bool,
+) -> Result<Option<ClientAnnexBAccessUnit>, ClientAnnexBAccessUnitReaderMalformedReason> {
+    let descriptors = parse_annex_b_nal_descriptors(&state.buffered_bytes, eof)?;
+    if descriptors.is_empty() {
+        return Ok(None);
+    }
+
+    let mut current_has_vcl = false;
+    for (index, descriptor) in descriptors.iter().enumerate() {
+        if index > 0 && current_has_vcl && annex_b_nal_begins_new_access_unit(&descriptor.nal_unit)
+        {
+            let consumed_end = descriptor.start;
+            return Ok(Some(consume_access_unit_from_state(
+                state,
+                &descriptors[..index],
+                consumed_end,
+            )));
+        }
+        current_has_vcl |= descriptor.nal_unit.kind.is_vcl();
+    }
+
+    if eof && current_has_vcl {
+        let consumed_end = descriptors
+            .last()
+            .map(|descriptor| descriptor.end)
+            .unwrap_or(0);
+        return Ok(Some(consume_access_unit_from_state(
+            state,
+            &descriptors,
+            consumed_end,
+        )));
+    }
+
+    Ok(None)
+}
+
+fn consume_access_unit_from_state(
+    state: &mut ClientAnnexBAccessUnitReaderState,
+    descriptors: &[ClientAnnexBNalDescriptor],
+    consumed_end: usize,
+) -> ClientAnnexBAccessUnit {
+    let bytes = state.buffered_bytes[..consumed_end].to_vec();
+    let nal_units: Vec<ClientAnnexBNalUnit> = descriptors
+        .iter()
+        .map(|descriptor| descriptor.nal_unit.clone())
+        .collect();
+    let contains_idr = nal_units
+        .iter()
+        .any(|nal_unit| nal_unit.kind == ClientAnnexBNalUnitKind::IdrSlice);
+    let contains_sps = nal_units
+        .iter()
+        .any(|nal_unit| nal_unit.kind == ClientAnnexBNalUnitKind::Sps);
+    let contains_pps = nal_units
+        .iter()
+        .any(|nal_unit| nal_unit.kind == ClientAnnexBNalUnitKind::Pps);
+    state.buffered_bytes.drain(..consumed_end);
+
+    ClientAnnexBAccessUnit {
+        bytes,
+        nal_units,
+        contains_idr,
+        contains_sps,
+        contains_pps,
+    }
+}
+
+fn detect_annex_b_incomplete_reason(buffer: &[u8]) -> ClientAnnexBAccessUnitReaderIncompleteReason {
+    match find_annex_b_start_code(buffer, 0) {
+        None => ClientAnnexBAccessUnitReaderIncompleteReason::NoCompleteAccessUnitYet,
+        Some((start, _start_code_len)) if start != 0 => {
+            ClientAnnexBAccessUnitReaderIncompleteReason::NoCompleteAccessUnitYet
+        }
+        Some((start, start_code_len)) if start + start_code_len >= buffer.len() => {
+            ClientAnnexBAccessUnitReaderIncompleteReason::TrailingStartCodeWithoutNalHeader
+        }
+        Some(_) => ClientAnnexBAccessUnitReaderIncompleteReason::AccessUnitMissingVcl,
+    }
+}
+
+fn annex_b_nal_begins_new_access_unit(nal_unit: &ClientAnnexBNalUnit) -> bool {
+    match nal_unit.kind {
+        ClientAnnexBNalUnitKind::Aud
+        | ClientAnnexBNalUnitKind::Sei
+        | ClientAnnexBNalUnitKind::Sps
+        | ClientAnnexBNalUnitKind::Pps => true,
+        ClientAnnexBNalUnitKind::NonIdrSlice | ClientAnnexBNalUnitKind::IdrSlice => {
+            nal_unit.first_mb_in_slice == Some(0)
+        }
+        ClientAnnexBNalUnitKind::Other(_) => false,
+    }
+}
+
+fn parse_annex_b_nal_descriptors(
+    buffer: &[u8],
+    eof: bool,
+) -> Result<Vec<ClientAnnexBNalDescriptor>, ClientAnnexBAccessUnitReaderMalformedReason> {
+    if buffer.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let Some((first_start, first_start_code_len)) = find_annex_b_start_code(buffer, 0) else {
+        return Err(ClientAnnexBAccessUnitReaderMalformedReason::MissingStartCode);
+    };
+    if first_start != 0 {
+        return Err(ClientAnnexBAccessUnitReaderMalformedReason::MissingStartCode);
+    }
+
+    let mut descriptors = Vec::new();
+    let mut current_start = first_start;
+    let mut current_start_code_len = first_start_code_len;
+    let mut search_from = current_start + current_start_code_len;
+    while let Some((next_start, next_start_code_len)) = find_annex_b_start_code(buffer, search_from)
+    {
+        descriptors.push(parse_annex_b_nal_descriptor(
+            buffer,
+            current_start,
+            current_start_code_len,
+            next_start,
+        )?);
+        current_start = next_start;
+        current_start_code_len = next_start_code_len;
+        search_from = current_start + current_start_code_len;
+    }
+
+    if eof {
+        if current_start + current_start_code_len >= buffer.len() {
+            return Ok(descriptors);
+        }
+        descriptors.push(parse_annex_b_nal_descriptor(
+            buffer,
+            current_start,
+            current_start_code_len,
+            buffer.len(),
+        )?);
+    }
+
+    Ok(descriptors)
+}
+
+fn parse_annex_b_nal_descriptor(
+    buffer: &[u8],
+    start: usize,
+    start_code_len: usize,
+    end: usize,
+) -> Result<ClientAnnexBNalDescriptor, ClientAnnexBAccessUnitReaderMalformedReason> {
+    if end <= start + start_code_len {
+        return Err(ClientAnnexBAccessUnitReaderMalformedReason::ZeroLengthNalUnit);
+    }
+    let nal_header = buffer[start + start_code_len];
+    if nal_header & 0x80 != 0 || (nal_header & 0x1f) == 0 {
+        return Err(ClientAnnexBAccessUnitReaderMalformedReason::InvalidNalHeader);
+    }
+    let nal_unit_type = nal_header & 0x1f;
+    let kind = ClientAnnexBNalUnitKind::from_nal_unit_type(nal_unit_type);
+    let first_mb_in_slice = if kind.is_vcl() {
+        match parse_h264_first_mb_in_slice(&buffer[start + start_code_len + 1..end]) {
+            Ok(value) => Some(value),
+            Err(_) => {
+                return Err(ClientAnnexBAccessUnitReaderMalformedReason::InvalidSliceHeader);
+            }
+        }
+    } else {
+        None
+    };
+
+    Ok(ClientAnnexBNalDescriptor {
+        start,
+        end,
+        nal_unit: ClientAnnexBNalUnit {
+            bytes: buffer[start..end].to_vec(),
+            start_code_len,
+            kind,
+            nal_unit_type,
+            first_mb_in_slice,
+        },
+    })
+}
+
+fn parse_h264_first_mb_in_slice(
+    payload: &[u8],
+) -> Result<u64, ClientAnnexBAccessUnitReaderMalformedReason> {
+    let rbsp = remove_h264_emulation_prevention_bytes(payload);
+    parse_unsigned_exp_golomb(&rbsp)
+}
+
+fn remove_h264_emulation_prevention_bytes(payload: &[u8]) -> Vec<u8> {
+    let mut rbsp = Vec::with_capacity(payload.len());
+    let mut zero_run = 0_usize;
+    for &byte in payload {
+        if zero_run >= 2 && byte == 0x03 {
+            zero_run = 0;
+            continue;
+        }
+        rbsp.push(byte);
+        zero_run = if byte == 0 { zero_run + 1 } else { 0 };
+    }
+    rbsp
+}
+
+fn parse_unsigned_exp_golomb(
+    bytes: &[u8],
+) -> Result<u64, ClientAnnexBAccessUnitReaderMalformedReason> {
+    let total_bits = bytes.len().saturating_mul(8);
+    let mut bit_index = 0_usize;
+    let mut leading_zero_bits = 0_usize;
+    while bit_index < total_bits && !read_bit(bytes, bit_index) {
+        leading_zero_bits += 1;
+        bit_index += 1;
+    }
+    if bit_index >= total_bits {
+        return Err(ClientAnnexBAccessUnitReaderMalformedReason::InvalidSliceHeader);
+    }
+    bit_index += 1;
+
+    let mut suffix = 0_u64;
+    for _ in 0..leading_zero_bits {
+        if bit_index >= total_bits {
+            return Err(ClientAnnexBAccessUnitReaderMalformedReason::InvalidSliceHeader);
+        }
+        suffix = (suffix << 1) | u64::from(read_bit(bytes, bit_index));
+        bit_index += 1;
+    }
+
+    Ok(((1_u64 << leading_zero_bits) - 1).saturating_add(suffix))
+}
+
+fn read_bit(bytes: &[u8], bit_index: usize) -> bool {
+    let byte = bytes[bit_index / 8];
+    let bit_offset = 7 - (bit_index % 8);
+    ((byte >> bit_offset) & 1) == 1
+}
+
+fn find_annex_b_start_code(bytes: &[u8], from: usize) -> Option<(usize, usize)> {
+    if bytes.len() < 3 || from >= bytes.len() {
+        return None;
+    }
+    let mut index = from;
+    while index + 3 <= bytes.len() {
+        if index + 4 <= bytes.len()
+            && bytes[index] == 0
+            && bytes[index + 1] == 0
+            && bytes[index + 2] == 0
+            && bytes[index + 3] == 1
+        {
+            return Some((index, 4));
+        }
+        if bytes[index] == 0 && bytes[index + 1] == 0 && bytes[index + 2] == 1 {
+            return Some((index, 3));
+        }
+        index += 1;
+    }
+    None
+}
+
 pub fn probe_client_ffmpeg_preflight(
     config: &ClientVideoEncoderConfig,
 ) -> ClientFfmpegPreflightResult {
@@ -13530,6 +13984,17 @@ mod tests {
         vec![0; 16 * 16 * 4]
     }
 
+    fn annex_b_test_nal(start_code_len: usize, nal_header: u8, payload: &[u8]) -> Vec<u8> {
+        let mut bytes = if start_code_len == 4 {
+            vec![0x00, 0x00, 0x00, 0x01]
+        } else {
+            vec![0x00, 0x00, 0x01]
+        };
+        bytes.push(nal_header);
+        bytes.extend_from_slice(payload);
+        bytes
+    }
+
     fn test_exit_command(exit_code: i32) -> (PathBuf, Vec<String>) {
         #[cfg(target_os = "windows")]
         {
@@ -13719,6 +14184,158 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    #[test]
+    fn client_video_frame_annex_b_reader_splits_start_code_prefixed_nal_units() {
+        let boundary = ClientAnnexBAccessUnitReaderBoundary;
+        let mut state = ClientAnnexBAccessUnitReaderState::default();
+        let bytes = [
+            annex_b_test_nal(4, 0x67, &[0x11]),
+            annex_b_test_nal(3, 0x68, &[0x22]),
+            annex_b_test_nal(4, 0x65, &[0x80]),
+            annex_b_test_nal(3, 0x41, &[0x80]),
+            annex_b_test_nal(4, 0x09, &[0xf0]),
+        ]
+        .concat();
+        boundary.append_bytes(&mut state, &bytes);
+
+        let ClientAnnexBAccessUnitReaderPollResult::AccessUnit(access_unit) =
+            boundary.poll_access_unit(&mut state)
+        else {
+            panic!("reader should emit first access unit when next frame begins");
+        };
+
+        assert_eq!(access_unit.nal_units.len(), 3);
+        assert_eq!(access_unit.nal_units[0].start_code_len, 4);
+        assert_eq!(access_unit.nal_units[1].start_code_len, 3);
+        assert_eq!(access_unit.nal_units[2].start_code_len, 4);
+        assert_eq!(access_unit.nal_units[0].kind, ClientAnnexBNalUnitKind::Sps);
+        assert_eq!(access_unit.nal_units[1].kind, ClientAnnexBNalUnitKind::Pps);
+        assert_eq!(
+            access_unit.nal_units[2].kind,
+            ClientAnnexBNalUnitKind::IdrSlice
+        );
+        assert!(access_unit.contains_idr);
+        assert!(access_unit.contains_sps);
+        assert!(access_unit.contains_pps);
+    }
+
+    #[test]
+    fn client_video_frame_annex_b_reader_recovers_access_unit_from_multiple_nals() {
+        let boundary = ClientAnnexBAccessUnitReaderBoundary;
+        let mut state = ClientAnnexBAccessUnitReaderState::default();
+        let bytes = [
+            annex_b_test_nal(4, 0x67, &[0x11]),
+            annex_b_test_nal(4, 0x68, &[0x22]),
+            annex_b_test_nal(4, 0x65, &[0x80]),
+            annex_b_test_nal(4, 0x06, &[0x05]),
+            annex_b_test_nal(4, 0x41, &[0x80]),
+            annex_b_test_nal(4, 0x09, &[0xf0]),
+        ]
+        .concat();
+        boundary.append_bytes(&mut state, &bytes);
+
+        let ClientAnnexBAccessUnitReaderPollResult::AccessUnit(access_unit) =
+            boundary.poll_access_unit(&mut state)
+        else {
+            panic!("reader should recover one complete access unit");
+        };
+
+        assert_eq!(access_unit.nal_units.len(), 3);
+        assert_eq!(access_unit.nal_units[0].kind, ClientAnnexBNalUnitKind::Sps);
+        assert_eq!(access_unit.nal_units[1].kind, ClientAnnexBNalUnitKind::Pps);
+        assert_eq!(
+            access_unit.nal_units[2].kind,
+            ClientAnnexBNalUnitKind::IdrSlice
+        );
+        let ClientAnnexBAccessUnitReaderFinishResult::AccessUnit(second_access_unit) =
+            boundary.finish(&mut state)
+        else {
+            panic!("finish should flush the remaining access unit at EOF");
+        };
+        assert_eq!(second_access_unit.nal_units.len(), 2);
+        assert_eq!(
+            second_access_unit.nal_units[0].kind,
+            ClientAnnexBNalUnitKind::Sei
+        );
+        assert_eq!(
+            second_access_unit.nal_units[1].kind,
+            ClientAnnexBNalUnitKind::NonIdrSlice
+        );
+    }
+
+    #[test]
+    fn client_video_frame_annex_b_reader_partial_input_waits_for_complete_frame() {
+        let boundary = ClientAnnexBAccessUnitReaderBoundary;
+        let mut state = ClientAnnexBAccessUnitReaderState::default();
+        let bytes = [
+            annex_b_test_nal(4, 0x67, &[0x11]),
+            annex_b_test_nal(4, 0x68, &[0x22]),
+            annex_b_test_nal(4, 0x65, &[0x80]),
+        ]
+        .concat();
+        boundary.append_bytes(&mut state, &bytes);
+
+        assert_eq!(
+            boundary.poll_access_unit(&mut state),
+            ClientAnnexBAccessUnitReaderPollResult::NoCompleteAccessUnitYet {
+                buffered_bytes: bytes.len()
+            }
+        );
+    }
+
+    #[test]
+    fn client_video_frame_annex_b_reader_eof_with_remaining_buffer_is_typed() {
+        let boundary = ClientAnnexBAccessUnitReaderBoundary;
+        let mut state = ClientAnnexBAccessUnitReaderState::default();
+        let bytes = [
+            annex_b_test_nal(4, 0x67, &[0x11]),
+            annex_b_test_nal(4, 0x68, &[0x22]),
+        ]
+        .concat();
+        boundary.append_bytes(&mut state, &bytes);
+
+        assert_eq!(
+            boundary.finish(&mut state),
+            ClientAnnexBAccessUnitReaderFinishResult::EofWithIncompleteData {
+                reason: ClientAnnexBAccessUnitReaderIncompleteReason::AccessUnitMissingVcl,
+                remaining_bytes: bytes,
+            }
+        );
+    }
+
+    #[test]
+    fn client_video_frame_annex_b_reader_reports_malformed_stream() {
+        let boundary = ClientAnnexBAccessUnitReaderBoundary;
+        let mut state = ClientAnnexBAccessUnitReaderState::default();
+        let bytes = [vec![0x12, 0x34], annex_b_test_nal(4, 0x65, &[0x80])].concat();
+        boundary.append_bytes(&mut state, &bytes);
+
+        assert_eq!(
+            boundary.poll_access_unit(&mut state),
+            ClientAnnexBAccessUnitReaderPollResult::MalformedStream {
+                reason: ClientAnnexBAccessUnitReaderMalformedReason::MissingStartCode,
+                buffered_bytes: bytes.len(),
+            }
+        );
+    }
+
+    #[test]
+    fn client_video_frame_annex_b_reader_eof_with_trailing_start_code_is_typed() {
+        let boundary = ClientAnnexBAccessUnitReaderBoundary;
+        let mut state = ClientAnnexBAccessUnitReaderState::default();
+        let bytes = vec![0x00, 0x00, 0x01];
+        boundary.append_bytes(&mut state, &bytes);
+
+        assert_eq!(
+            boundary.finish(&mut state),
+            ClientAnnexBAccessUnitReaderFinishResult::EofWithIncompleteData {
+                reason:
+                    ClientAnnexBAccessUnitReaderIncompleteReason::TrailingStartCodeWithoutNalHeader,
+                remaining_bytes: bytes,
+            }
+        );
     }
 
     #[test]
