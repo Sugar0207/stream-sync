@@ -2,6 +2,75 @@
 
 ## 2026-05-08
 ### Type
+- Human validation + Codex follow-up
+
+### Work
+- Recorded the first human 1-client fragmented smoke result before the planned
+  2-client long-run validation.
+- Observed:
+  - client:
+    - auth accepted
+    - `frames_captured=1`
+    - `frames_encoded=1`
+    - `frames_sent=1`
+    - `fragmented_sends=1`
+    - `fragments_attempted=113`
+    - `fragments_sent=113`
+    - `send_failures=0`
+    - `stop_reason=FrameWaitTimeout`
+  - server continuous runtime:
+    - `auth_requests_received=1`
+    - `auth_responses_sent=1`
+    - `registered_clients=1`
+    - `packets_received=62`
+    - `accepted_packets=62`
+    - `rejected_packets=0`
+    - `frames_reassembled=0`
+    - `frames_queued=0`
+    - `direct_frames_queued=0`
+    - `video_queue_len=0`
+    - `incomplete_reassembly_frames=1`
+    - `stop_reason=ReceiveTimedOut`
+- Investigated the server-side difference and confirmed that the manual/bounded
+  fragmented receive path already requested a large UDP receive buffer, while
+  the continuous runtime did not.
+- Added the same receive-buffer tuning direction to the continuous runtime and
+  surfaced requested/effective/error fields in its summary.
+- Confirmed the current client pacing control already exists on the bounded
+  real encoded sender CLI through:
+  - `fragment-pacing-every`
+  - `fragment-pacing-delay-ms`
+
+### Changed Files
+- `apps/server/src/lib.rs`
+- `apps/server/src/main.rs`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+- `docs/operations/two-client-long-run-validation.md`
+- `docs/operations/two-client-long-run-validation.ps1`
+
+### Decision
+- Treat the current blocker as a server continuous ingest problem before
+  attempting 2-client long-run validation.
+- First rerun target:
+  - `1` client
+  - `1` fragmented frame
+  - `frames_reassembled > 0`
+- Reuse the existing manual receive-buffer tuning strategy instead of inventing
+  a new runtime-specific tuning mechanism.
+- Do not widen this step into 2-client scheduling, daemon lifecycle, retry, or
+  reconnect policy.
+
+### Validation
+- `cargo fmt`
+- `cargo fmt --check`
+- `cargo check --workspace`
+- focused server tests
+- `cargo test --workspace`
+- `git diff --check`
+
+## 2026-05-08
+### Type
 - Codex
 
 ### Work

@@ -293,6 +293,7 @@ fn main() {
                 heartbeat_timeout: Some(stream_sync_server::ServerHeartbeatTimeoutPolicy::new(
                     command.heartbeat_timeout_micros,
                 )),
+                receive_buffer_bytes: command.receive_buffer_bytes,
                 ..stream_sync_server::ServerReceiveSendContinuousRuntimePolicy::default()
             };
             match launcher.run_from_path_with_writers_and_policy(
@@ -537,7 +538,7 @@ fn main() {
         }
         _ => {
             println!(
-                "stream-sync-server scaffold; use --auth-response-poc-once [config-path], --receive-send-once [config-path], --receive-send-twice [config-path], --receive-send-three [config-path], --receive-send-runtime-bounded [config-path] [max-iterations] [receive-timeout-ms], --receive-send-runtime-continuous [config-path] [receive-timeout-ms] [max-iterations-or-0-for-unbounded] [heartbeat-timeout-micros], --receive-auth-video-queue-once [config-path] [max-video-packets] [receive-timeout-ms] [expected-reassembled-frames] [stop-after-expected-reassembled-frames] [receive-buffer-bytes] [expected-reassembled-clients] [expected-reassembled-frames-per-client], --receive-auth-video-queue-and-serve-handoff-once [config-path] [pipe-name] [max-video-packets] [receive-timeout-ms] [expected-reassembled-frames] [stop-after-expected-reassembled-frames] [receive-buffer-bytes] [expected-reassembled-clients] [expected-reassembled-frames-per-client], or --receive-auth-video-queue-and-serve-handoff-many [config-path] [pipe-name] [max-requests] [max-video-packets] [receive-timeout-ms] [expected-reassembled-frames] [stop-after-expected-reassembled-frames] [receive-buffer-bytes] [expected-reassembled-clients] [expected-reassembled-frames-per-client]"
+                "stream-sync-server scaffold; use --auth-response-poc-once [config-path], --receive-send-once [config-path], --receive-send-twice [config-path], --receive-send-three [config-path], --receive-send-runtime-bounded [config-path] [max-iterations] [receive-timeout-ms], --receive-send-runtime-continuous [config-path] [receive-timeout-ms] [max-iterations-or-0-for-unbounded] [heartbeat-timeout-micros] [receive-buffer-bytes], --receive-auth-video-queue-once [config-path] [max-video-packets] [receive-timeout-ms] [expected-reassembled-frames] [stop-after-expected-reassembled-frames] [receive-buffer-bytes] [expected-reassembled-clients] [expected-reassembled-frames-per-client], --receive-auth-video-queue-and-serve-handoff-once [config-path] [pipe-name] [max-video-packets] [receive-timeout-ms] [expected-reassembled-frames] [stop-after-expected-reassembled-frames] [receive-buffer-bytes] [expected-reassembled-clients] [expected-reassembled-frames-per-client], or --receive-auth-video-queue-and-serve-handoff-many [config-path] [pipe-name] [max-requests] [max-video-packets] [receive-timeout-ms] [expected-reassembled-frames] [stop-after-expected-reassembled-frames] [receive-buffer-bytes] [expected-reassembled-clients] [expected-reassembled-frames-per-client]"
             );
         }
     }
@@ -556,6 +557,7 @@ struct ReceiveSendRuntimeContinuousCommandArgs {
     receive_timeout_ms: u64,
     max_iterations: Option<usize>,
     heartbeat_timeout_micros: u64,
+    receive_buffer_bytes: usize,
 }
 
 fn parse_receive_send_runtime_bounded_command_args(
@@ -593,6 +595,11 @@ fn parse_receive_send_runtime_continuous_command_args(
             "heartbeat-timeout-micros",
         )
         .unwrap_or(5_000_000),
+        receive_buffer_bytes: parse_optional_arg_or_exit::<usize>(
+            args.next(),
+            "receive-buffer-bytes",
+        )
+        .unwrap_or(stream_sync_server::SERVER_DEFAULT_RECEIVE_BUFFER_BYTES),
     }
 }
 
@@ -740,8 +747,23 @@ fn format_receive_send_runtime_continuous_summary(
 ) -> String {
     let summary = &outcome.summary;
     let last_heartbeat_timeout = summary.last_heartbeat_timeout_summary.as_ref();
+    let effective_receive_buffer = summary
+        .receive_buffer
+        .effective_bytes
+        .map(|value| value.to_string())
+        .unwrap_or_else(|| "none".to_string());
+    let receive_buffer_set_error = summary
+        .receive_buffer
+        .set_error
+        .as_deref()
+        .unwrap_or("none");
+    let receive_buffer_read_error = summary
+        .receive_buffer
+        .read_error
+        .as_deref()
+        .unwrap_or("none");
     format!(
-        "command_name={} config_path={} receive_timeout_ms={} max_iterations={} heartbeat_timeout_micros={} iterations_attempted={} iterations_completed={} packets_received={} accepted_packets={} rejected_packets={} decode_errors={} auth_requests_received={} auth_responses_sent={} heartbeats_received={} heartbeat_acks_sent={} client_stats_received={} heartbeat_observations_committed={} frames_reassembled={} frames_queued={} direct_frames_queued={} video_queue_len={} incomplete_reassembly_frames={} outbound_queue_len={} registered_clients={} heartbeat_liveness_clients={} heartbeat_rtt_offset_clients={} last_receive_error={} last_send_error={} last_rejected_reason={} last_auth_status={} last_auth_reason={} last_registration_status={} last_registration_reason={} last_runtime_rejection_status={} last_runtime_rejection_reason={} last_heartbeat_timeout_status={} last_heartbeat_timeout_clients={} last_heartbeat_timeout_timed_out={} last_heartbeat_timeout_client={} last_heartbeat_timeout_reason={} stop_reason={}",
+        "command_name={} config_path={} receive_timeout_ms={} max_iterations={} heartbeat_timeout_micros={} receive_buffer_requested_bytes={} receive_buffer_effective_bytes={} receive_buffer_set_error={} receive_buffer_read_error={} iterations_attempted={} iterations_completed={} packets_received={} accepted_packets={} rejected_packets={} decode_errors={} auth_requests_received={} auth_responses_sent={} heartbeats_received={} heartbeat_acks_sent={} client_stats_received={} heartbeat_observations_committed={} frames_reassembled={} frames_queued={} direct_frames_queued={} video_queue_len={} incomplete_reassembly_frames={} outbound_queue_len={} registered_clients={} heartbeat_liveness_clients={} heartbeat_rtt_offset_clients={} last_receive_error={} last_send_error={} last_rejected_reason={} last_auth_status={} last_auth_reason={} last_registration_status={} last_registration_reason={} last_runtime_rejection_status={} last_runtime_rejection_reason={} last_heartbeat_timeout_status={} last_heartbeat_timeout_clients={} last_heartbeat_timeout_timed_out={} last_heartbeat_timeout_client={} last_heartbeat_timeout_reason={} stop_reason={}",
         command_name,
         config_path,
         summary.receive_timeout.as_millis(),
@@ -753,6 +775,10 @@ fn format_receive_send_runtime_continuous_summary(
                     .and_then(|client| client.timeout_after_micros)
             })
             .unwrap_or(0),
+        summary.receive_buffer.requested_bytes,
+        effective_receive_buffer,
+        receive_buffer_set_error,
+        receive_buffer_read_error,
         summary.iterations_attempted,
         summary.iterations_completed,
         summary.packets_received,
@@ -933,13 +959,34 @@ fn format_receive_send_runtime_continuous_failure_summary(
     error: &stream_sync_server::ServerReceiveSendContinuousRuntimeError,
 ) -> String {
     let partial_summary = continuous_runtime_error_partial_summary(error);
+    let receive_buffer_requested = partial_summary
+        .as_ref()
+        .map(|summary| summary.receive_buffer.requested_bytes)
+        .unwrap_or(command.receive_buffer_bytes);
+    let receive_buffer_effective = partial_summary
+        .as_ref()
+        .and_then(|summary| summary.receive_buffer.effective_bytes)
+        .map(|value| value.to_string())
+        .unwrap_or_else(|| "none".to_string());
+    let receive_buffer_set_error = partial_summary
+        .as_ref()
+        .and_then(|summary| summary.receive_buffer.set_error.as_deref())
+        .unwrap_or("none");
+    let receive_buffer_read_error = partial_summary
+        .as_ref()
+        .and_then(|summary| summary.receive_buffer.read_error.as_deref())
+        .unwrap_or("none");
     format!(
-        "command_name={} config_path={} receive_timeout_ms={} max_iterations={} heartbeat_timeout_micros={} iterations_attempted={} iterations_completed={} packets_received={} accepted_packets={} rejected_packets={} frames_reassembled={} frames_queued={} video_queue_len={} last_receive_error={} last_send_error={} last_rejected_reason={} last_auth_status={} last_auth_reason={} last_registration_status={} last_registration_reason={} last_runtime_rejection_status={} last_runtime_rejection_reason={} last_heartbeat_timeout_status={} stop_reason={} fatal_error_kind={} fatal_error_detail={}",
+        "command_name={} config_path={} receive_timeout_ms={} max_iterations={} heartbeat_timeout_micros={} receive_buffer_requested_bytes={} receive_buffer_effective_bytes={} receive_buffer_set_error={} receive_buffer_read_error={} iterations_attempted={} iterations_completed={} packets_received={} accepted_packets={} rejected_packets={} frames_reassembled={} frames_queued={} video_queue_len={} last_receive_error={} last_send_error={} last_rejected_reason={} last_auth_status={} last_auth_reason={} last_registration_status={} last_registration_reason={} last_runtime_rejection_status={} last_runtime_rejection_reason={} last_heartbeat_timeout_status={} stop_reason={} fatal_error_kind={} fatal_error_detail={}",
         command_name,
         command.config_path,
         command.receive_timeout_ms,
         format_optional_usize(command.max_iterations),
         command.heartbeat_timeout_micros,
+        receive_buffer_requested,
+        receive_buffer_effective,
+        receive_buffer_set_error,
+        receive_buffer_read_error,
         partial_summary
             .as_ref()
             .map(|summary| summary.iterations_attempted)
@@ -1809,6 +1856,10 @@ mod tests {
         assert_eq!(args.receive_timeout_ms, 1_000);
         assert_eq!(args.max_iterations, None);
         assert_eq!(args.heartbeat_timeout_micros, 5_000_000);
+        assert_eq!(
+            args.receive_buffer_bytes,
+            stream_sync_server::SERVER_DEFAULT_RECEIVE_BUFFER_BYTES
+        );
     }
 
     #[test]
@@ -1818,12 +1869,14 @@ mod tests {
             "250".to_string(),
             "32".to_string(),
             "9000000".to_string(),
+            "4194304".to_string(),
         ]);
 
         assert_eq!(args.config_path, "configs/custom/server.toml");
         assert_eq!(args.receive_timeout_ms, 250);
         assert_eq!(args.max_iterations, Some(32));
         assert_eq!(args.heartbeat_timeout_micros, 9_000_000);
+        assert_eq!(args.receive_buffer_bytes, 4_194_304);
     }
 
     #[test]
@@ -1833,9 +1886,11 @@ mod tests {
             "250".to_string(),
             "0".to_string(),
             "9000000".to_string(),
+            "2097152".to_string(),
         ]);
 
         assert_eq!(args.max_iterations, None);
+        assert_eq!(args.receive_buffer_bytes, 2_097_152);
     }
 
     #[test]
@@ -1961,6 +2016,12 @@ mod tests {
                 bind_address: "127.0.0.1:5000"
                     .parse()
                     .expect("bind address should parse"),
+                receive_buffer: stream_sync_server::ServerUdpReceiveBufferTuningResult {
+                    requested_bytes: 8_388_608,
+                    effective_bytes: Some(8_388_608),
+                    set_error: None,
+                    read_error: None,
+                },
                 registry: stream_sync_server::AuthenticatedSenderRegistry::default(),
                 queue_collection: stream_sync_server::ServerOutboundQueueCollection::default(),
                 video_queue_state: stream_sync_server::ServerVideoFrameQueueState::default(),
@@ -1973,6 +2034,12 @@ mod tests {
                 summary: stream_sync_server::ServerReceiveSendContinuousRuntimeSummary {
                     receive_timeout: std::time::Duration::from_millis(1_000),
                     max_iterations: Some(16),
+                    receive_buffer: stream_sync_server::ServerUdpReceiveBufferTuningResult {
+                        requested_bytes: 8_388_608,
+                        effective_bytes: Some(8_388_608),
+                        set_error: None,
+                        read_error: None,
+                    },
                     iterations_attempted: 4,
                     iterations_completed: 4,
                     packets_received: 3,
@@ -2058,6 +2125,8 @@ mod tests {
         assert!(summary.contains("command_name=--receive-send-runtime-continuous"));
         assert!(summary.contains("receive_timeout_ms=1000"));
         assert!(summary.contains("max_iterations=16"));
+        assert!(summary.contains("receive_buffer_requested_bytes=8388608"));
+        assert!(summary.contains("receive_buffer_effective_bytes=8388608"));
         assert!(summary.contains("packets_received=3"));
         assert!(summary.contains("frames_reassembled=2"));
         assert!(summary.contains("frames_queued=3"));
@@ -2079,6 +2148,7 @@ mod tests {
                 receive_timeout_ms: 500,
                 max_iterations: Some(4),
                 heartbeat_timeout_micros: 5_000_000,
+                receive_buffer_bytes: 4_194_304,
             },
             &stream_sync_server::ServerReceiveSendContinuousRuntimeError::Runtime {
                 iteration_index: 2,
@@ -2096,6 +2166,12 @@ mod tests {
                 summary: stream_sync_server::ServerReceiveSendContinuousRuntimeSummary {
                     receive_timeout: std::time::Duration::from_millis(500),
                     max_iterations: Some(4),
+                    receive_buffer: stream_sync_server::ServerUdpReceiveBufferTuningResult {
+                        requested_bytes: 4_194_304,
+                        effective_bytes: Some(4_194_304),
+                        set_error: None,
+                        read_error: None,
+                    },
                     iterations_attempted: 3,
                     iterations_completed: 2,
                     packets_received: 2,
@@ -2133,6 +2209,8 @@ mod tests {
         assert!(summary.contains("command_name=--receive-send-runtime-continuous"));
         assert!(summary.contains("receive_timeout_ms=500"));
         assert!(summary.contains("max_iterations=4"));
+        assert!(summary.contains("receive_buffer_requested_bytes=4194304"));
+        assert!(summary.contains("receive_buffer_effective_bytes=4194304"));
         assert!(summary.contains("frames_reassembled=0"));
         assert!(summary.contains("last_send_error=SocketSend(ConnectionRefused)"));
         assert!(summary.contains("stop_reason=RuntimeFatalError"));

@@ -9584,6 +9584,7 @@ stream-sync-server --receive-send-runtime-continuous
   [receive-timeout-ms]
   [max-iterations-or-0-for-unbounded]
   [heartbeat-timeout-micros]
+  [receive-buffer-bytes]
 ```
 
 - persistent ownership for this slice:
@@ -9607,6 +9608,11 @@ stream-sync-server --receive-send-runtime-continuous
     - `ControllerStopped`
     - `SocketReceiveFailed(...)`
 - current long-run observation fields:
+  - receive-buffer visibility:
+    - `receive_buffer_requested_bytes`
+    - `receive_buffer_effective_bytes`
+    - `receive_buffer_set_error`
+    - `receive_buffer_read_error`
   - packet counters:
     - `packets_received`
     - `accepted_packets`

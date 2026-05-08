@@ -1060,7 +1060,7 @@ pub struct ServerReceiveAuthVideoQueueOnceLauncher {
 
 const SERVER_AUTH_VIDEO_QUEUE_DEFAULT_MAX_VIDEO_PACKETS: usize = 4_096;
 const SERVER_AUTH_VIDEO_QUEUE_DEFAULT_FRAGMENT_IDLE_TIMEOUT: Duration = Duration::from_secs(15);
-const SERVER_AUTH_VIDEO_QUEUE_DEFAULT_RECEIVE_BUFFER_BYTES: usize = 8_388_608;
+pub const SERVER_DEFAULT_RECEIVE_BUFFER_BYTES: usize = 8_388_608;
 
 /// Manual receive policy for auth-then-video queue verification.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -1081,7 +1081,7 @@ impl Default for ServerReceiveAuthVideoQueueOnceManualPolicy {
             receive_timeout: SERVER_AUTH_VIDEO_QUEUE_DEFAULT_FRAGMENT_IDLE_TIMEOUT,
             expected_reassembled_frames: 1,
             stop_after_expected_reassembled_frames: true,
-            receive_buffer_bytes: SERVER_AUTH_VIDEO_QUEUE_DEFAULT_RECEIVE_BUFFER_BYTES,
+            receive_buffer_bytes: SERVER_DEFAULT_RECEIVE_BUFFER_BYTES,
             expected_reassembled_clients: 0,
             expected_reassembled_frames_per_client: 0,
         }
@@ -1520,9 +1520,16 @@ fn apply_manual_receive_buffer_policy(
     socket: &UdpSocket,
     policy: ServerReceiveAuthVideoQueueOnceManualPolicy,
 ) -> ServerUdpReceiveBufferTuningResult {
+    apply_receive_buffer_bytes(socket, policy.receive_buffer_bytes)
+}
+
+fn apply_receive_buffer_bytes(
+    socket: &UdpSocket,
+    requested_bytes: usize,
+) -> ServerUdpReceiveBufferTuningResult {
     let sock_ref = SockRef::from(socket);
     let set_error = sock_ref
-        .set_recv_buffer_size(policy.receive_buffer_bytes)
+        .set_recv_buffer_size(requested_bytes)
         .err()
         .map(|error| format!("{:?}: {}", error.kind(), error));
     let (effective_bytes, read_error) = match sock_ref.recv_buffer_size() {
@@ -1531,7 +1538,7 @@ fn apply_manual_receive_buffer_policy(
     };
 
     ServerUdpReceiveBufferTuningResult {
-        requested_bytes: policy.receive_buffer_bytes,
+        requested_bytes,
         effective_bytes,
         set_error,
         read_error,
@@ -2701,6 +2708,7 @@ pub struct ServerReceiveSendContinuousRuntimePolicy {
     pub receive_timeout: Duration,
     pub max_iterations: Option<usize>,
     pub heartbeat_timeout: Option<ServerHeartbeatTimeoutPolicy>,
+    pub receive_buffer_bytes: usize,
     pub video_queue_policy: ServerVideoFrameQueuePolicy,
     pub rtt_offset_candidate_policy: ServerHeartbeatRttOffsetCandidatePolicy,
 }
@@ -2711,6 +2719,7 @@ impl Default for ServerReceiveSendContinuousRuntimePolicy {
             receive_timeout: Duration::from_millis(1_000),
             max_iterations: None,
             heartbeat_timeout: None,
+            receive_buffer_bytes: SERVER_DEFAULT_RECEIVE_BUFFER_BYTES,
             video_queue_policy: ServerVideoFrameQueuePolicy::default(),
             rtt_offset_candidate_policy: ServerHeartbeatRttOffsetCandidatePolicy::default(),
         }
@@ -2756,6 +2765,7 @@ pub struct ServerReceiveSendContinuousRuntimeIterationSummary {
 pub struct ServerReceiveSendContinuousRuntimeSummary {
     pub receive_timeout: Duration,
     pub max_iterations: Option<usize>,
+    pub receive_buffer: ServerUdpReceiveBufferTuningResult,
     pub iterations_attempted: usize,
     pub iterations_completed: usize,
     pub packets_received: usize,
@@ -2790,6 +2800,7 @@ pub struct ServerReceiveSendContinuousRuntimeSummary {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ServerReceiveSendContinuousRuntimeOutcome {
     pub bind_address: SocketAddr,
+    pub receive_buffer: ServerUdpReceiveBufferTuningResult,
     pub registry: AuthenticatedSenderRegistry,
     pub queue_collection: ServerOutboundQueueCollection,
     pub video_queue_state: ServerVideoFrameQueueState,
@@ -2903,6 +2914,7 @@ impl ServerReceiveSendContinuousRuntimeLauncher {
                 address: startup_config.bind_address,
                 kind: error.kind(),
             })?;
+        let receive_buffer = apply_receive_buffer_bytes(&socket, policy.receive_buffer_bytes);
         socket
             .set_read_timeout(Some(policy.receive_timeout))
             .map_err(
@@ -2926,6 +2938,7 @@ impl ServerReceiveSendContinuousRuntimeLauncher {
         let mut summary = ServerReceiveSendContinuousRuntimeSummary {
             receive_timeout: policy.receive_timeout,
             max_iterations: policy.max_iterations,
+            receive_buffer: receive_buffer.clone(),
             iterations_attempted: 0,
             iterations_completed: 0,
             packets_received: 0,
@@ -3047,6 +3060,7 @@ impl ServerReceiveSendContinuousRuntimeLauncher {
 
         Ok(ServerReceiveSendContinuousRuntimeOutcome {
             bind_address: startup_config.bind_address,
+            receive_buffer,
             registry,
             queue_collection,
             video_queue_state,
@@ -13905,6 +13919,69 @@ destination = "stdout"
         assert_eq!(
             client_summary.reason,
             ServerHeartbeatOperationalReason::TimedOut
+        );
+    }
+
+    #[test]
+    fn receive_send_continuous_runtime_preserves_receive_buffer_summary() {
+        let launcher = ServerReceiveSendContinuousRuntimeLauncher::default();
+        let bind_port = reserve_localhost_udp_port();
+        let startup_config = launcher
+            .load_startup_config_from_str(&receive_send_runtime_test_config(bind_port))
+            .expect("continuous runtime config should load");
+        let requested_bytes = 4_194_304;
+
+        let outcome = launcher
+            .run_with_writers_and_policy(
+                startup_config,
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+                ServerReceiveSendContinuousRuntimePolicy {
+                    max_iterations: Some(0),
+                    receive_buffer_bytes: requested_bytes,
+                    ..ServerReceiveSendContinuousRuntimePolicy::default()
+                },
+            )
+            .expect("continuous runtime should complete without packets");
+
+        assert_eq!(outcome.receive_buffer.requested_bytes, requested_bytes);
+        assert_eq!(
+            outcome.summary.receive_buffer.requested_bytes,
+            requested_bytes
+        );
+        assert_eq!(
+            outcome.summary.stop_reason,
+            ServerReceiveSendContinuousRuntimeStopReason::MaxIterationsReached
+        );
+    }
+
+    #[test]
+    fn receive_buffer_tuning_is_shared_by_manual_and_continuous_paths() {
+        let socket = UdpSocket::bind("127.0.0.1:0").expect("socket should bind");
+        let requested_bytes = 2_097_152;
+        let manual = apply_manual_receive_buffer_policy(
+            &socket,
+            ServerReceiveAuthVideoQueueOnceManualPolicy {
+                receive_buffer_bytes: requested_bytes,
+                ..ServerReceiveAuthVideoQueueOnceManualPolicy::default()
+            },
+        );
+        let shared = apply_receive_buffer_bytes(&socket, requested_bytes);
+
+        assert_eq!(manual.requested_bytes, requested_bytes);
+        assert_eq!(shared.requested_bytes, requested_bytes);
+        assert_eq!(manual.effective_bytes, shared.effective_bytes);
+        assert_eq!(manual.set_error, shared.set_error);
+        assert_eq!(manual.read_error, shared.read_error);
+        assert_eq!(
+            ServerReceiveSendContinuousRuntimePolicy::default().receive_buffer_bytes,
+            SERVER_DEFAULT_RECEIVE_BUFFER_BYTES
+        );
+        assert_eq!(
+            ServerReceiveAuthVideoQueueOnceManualPolicy::default().receive_buffer_bytes,
+            SERVER_DEFAULT_RECEIVE_BUFFER_BYTES
         );
     }
 

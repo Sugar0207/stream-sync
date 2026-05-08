@@ -22,6 +22,7 @@
 ---
 
 ## 現在位置
+- human 1-client smoke で fragmented reassembly blocker が見えた。client1 は auth accepted / `frames_captured=1` / `frames_encoded=1` / `frames_sent=1` / `fragmented_sends=1` / `fragments_sent=113` まで進んだが、server continuous runtime は `packets_received=62` / `frames_reassembled=0` / `frames_queued=0` / `direct_frames_queued=0` / `video_queue_len=0` / `incomplete_reassembly_frames=1` で止まり、2-client validation 前に continuous path の receive buffer tuning が不足していることが分かった。next rerun target は 1-client / 1-frame で `frames_reassembled > 0` を成立させること
 - 2-client 長時間 validation の human-run recipe を固定した。`docs/operations/two-client-long-run-validation.md` と `docs/operations/two-client-long-run-validation.ps1` に、現行 CLI 前提の起動順、PowerShell 貼り付け用 script、成功条件、失敗時の貼り返しログ template を追加した。current step では Codex による actual long-run 実行は行わず、人間が server continuous runtime + 2 bounded real encoded client sender を実行する前提に整理している
 - continuous receive / send runtime の最小 slice を実装した。`stream-sync-server --receive-send-runtime-continuous [config-path] [receive-timeout-ms] [max-iterations-or-0-for-unbounded] [heartbeat-timeout-micros]` が 1 process lifetime で 1 bound UDP socket / 1 `AuthenticatedSenderRegistry` / 1 `ServerOutboundQueueCollection` / 1 `ServerVideoFrameQueueState` / fragment reassembly state / heartbeat liveness / RTT-offset state を保持しながら loop 継続できる。continuous path からも typed auth / registration / runtime rejection / heartbeat timeout summary を読めるようにし、2-client 長時間 validation 前提の最小観測面を追加した
 - 認証 / runtime hardening の最小 slice を実装した。auth decision、same-client registration、client-scoped gate rejection、heartbeat timeout を雑な文字列に寄せず typed status/reason で読めるようにし、`Reject` と `ReconnectRequired` と `InvestigationRequired` を `Continue` から分離した。manual auth PoC、`--receive-auth-video-queue-once`、`--receive-send-runtime-bounded` summary には typed auth / registration / runtime rejection visibility を追加した
@@ -172,12 +173,16 @@
 ---
 
 ## 直近でやること
-1. 人間が 2-client 長時間 validation を実行し、server / client log を回収する
+1. 人間が 1-client / 1-frame smoke を rerun し、continuous runtime で `frames_reassembled > 0` を確認する
+   - `receive_buffer_requested_bytes`
+   - `receive_buffer_effective_bytes`
+   - `frames_reassembled`
+   - `frames_queued`
+   - `incomplete_reassembly_frames`
+2. その後に 2-client 長時間 validation を実行し、server / client log を回収する
    - `docs/operations/two-client-long-run-validation.md`
    - `docs/operations/two-client-long-run-validation.ps1`
-2. 回収した log から sync 誤差 / drop / render 安定性 / timeout の出方を確認する
-   - continuous runtime summary と switcher 側 typed operational summary を並べて、継続可能状態と停止・再接続が必要な状態を切り分ける
-3. 実 outbound queue flush / `ServerNotice` 実送信 / lifecycle follow-up は、human-run long-run で不足が見えた範囲だけ narrow に進める
+3. 実 outbound queue flush / `ServerNotice` 実送信 / lifecycle follow-up は、human-run rerun で不足が見えた範囲だけ narrow に進める
 
 ## 今後の大まかな指針
 - 残り todo は `MVP クリティカルパス`、`安定化 / 運用`、`future task` に分けて扱う
@@ -187,12 +192,13 @@
 ## 残り todo から見た推定 step
 - 目安は `3-6 step`。1 step は Codex と GPT の 1 往復で数える
 1. 人間が 2-client の長時間 validation を取り、sync 誤差 / drop / render 安定性 / timeout の出方を確認する
-2. long-run で不足した continuous runtime の follow-up を narrow に埋める
+2. 1-client fragmented reassembly blocker が解消した後に 2-client の長時間 validation を取り、sync 誤差 / drop / render 安定性 / timeout の出方を確認する
+3. long-run で不足した continuous runtime の follow-up を narrow に埋める
    - 実 outbound queue 処理
    - notice send / lifecycle への最小接続
    - send error / receive-send event の destination selection follow-up
-3. 4-client all-real の長時間 validation を取り、OBS Window Capture を含む実運用寄りの再確認をする
-4. dashboard / status visibility と運用手順を MVP 必要最低限まで揃える
+4. 4-client all-real の長時間 validation を取り、OBS Window Capture を含む実運用寄りの再確認をする
+5. dashboard / status visibility と運用手順を MVP 必要最低限まで揃える
    - 接続状態、RTT、offset、drop、buffer 状態の表示
    - manual 手順、互換性ルール、ログ運用の整理
 

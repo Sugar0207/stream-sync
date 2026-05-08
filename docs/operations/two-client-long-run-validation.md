@@ -12,6 +12,18 @@
 client(player1) -> server continuous runtime <- client(player2)
 ```
 
+## Current Blocker Note
+
+- 2026-05-08 の human 1-client smoke では auth / registration は成功したが、
+  `1` frame / `113` fragments に対して server continuous runtime は `62`
+  packets しか受信できず、`frames_reassembled=0` /
+  `incomplete_reassembly_frames=1` で止まった
+- current rerun target:
+  - `receive_buffer_requested_bytes`
+  - `receive_buffer_effective_bytes`
+  - `frames_reassembled > 0`
+  - `frames_queued > 0` または `direct_frames_queued > 0`
+
 この step では switcher / OBS は必須にしません。理由は次です。
 
 - current `--live-two-view-switcher-once` は direct receive diagnostic / legacy path であり、fragmented real encoded main path ではない
@@ -63,6 +75,15 @@ client(player1) -> server continuous runtime <- client(player2)
 
 ## PowerShell Script
 
+Source of truth:
+
+- use [two-client-long-run-validation.ps1](/\\desktop-89uvrhh\d\stream-sync\docs\operations\two-client-long-run-validation.ps1)
+- the script resolves repo/config/log paths with `ProviderPath`
+- the script prints resolved server/client config paths before launching native
+  executables
+- the script passes `receive-buffer-bytes` to
+  `--receive-send-runtime-continuous`
+
 次の script は PowerShell にそのまま貼れる完成形です。repo path を変数化し、server / client1 / client2 を別 window で起動し、各 window の stdout/stderr を log に保存します。
 
 同じ内容は repo 内の [two-client-long-run-validation.ps1](/\\desktop-89uvrhh\d\stream-sync\docs\operations\two-client-long-run-validation.ps1) にも保存してあります。
@@ -73,6 +94,7 @@ $RunMinutes = 30
 $FrameRate = 30
 $ReceiveTimeoutMs = 15000
 $HeartbeatTimeoutMicros = 5000000
+$ReceiveBufferBytes = 8388608
 $FragmentPacingEvery = 16
 $FragmentPacingDelayMs = 1
 
@@ -82,7 +104,11 @@ function Quote-Pwsh([string]$Value) {
     return "'" + $Value.Replace("'", "''") + "'"
 }
 
-$RepoPath = (Resolve-Path -LiteralPath $RepoPath).Path
+function Resolve-NativePath([string]$Path) {
+    return (Resolve-Path -LiteralPath $Path).ProviderPath
+}
+
+$RepoPath = Resolve-NativePath $RepoPath
 Set-Location -LiteralPath $RepoPath
 
 $ServerExe = Join-Path $RepoPath "target\debug\stream-sync-server.exe"
@@ -131,7 +157,7 @@ $QClient2Log = Quote-Pwsh $Client2Log
 $ServerCommand = @"
 Set-Location -LiteralPath $QRepoPath
 `$Host.UI.RawUI.WindowTitle = 'StreamSync Server Continuous'
-& $QServerExe --receive-send-runtime-continuous $QServerConfig $ReceiveTimeoutMs 0 $HeartbeatTimeoutMicros 2>&1 |
+& $QServerExe --receive-send-runtime-continuous $QServerConfig $ReceiveTimeoutMs 0 $HeartbeatTimeoutMicros $ReceiveBufferBytes 2>&1 |
     Tee-Object -FilePath $QServerLog
 "@
 
