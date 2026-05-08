@@ -5,6 +5,55 @@
 - Codex code + docs update
 
 ### Work
+- Investigated the first human validation failure for
+  `--encoder-runtime persistent --cadence-mode deadline`.
+- Reproduced the observed failure shape in the repo record:
+  - `elapsed_ms=4.416`
+  - `runtime_ticks=1000`
+  - `capture_attempts=1000`
+  - `frames_captured=0`
+  - `frames_sent=0`
+  - `encoder_process_start_count=0`
+  - `stop_reason=Some(MaxTicksReached)`
+- Fixed two control-flow bugs in the bounded persistent deadline path:
+  - `NoFrameAvailable` / `CaptureUnavailable` results were not updating the
+    bounded summary on the persistent path
+  - deadline progression was tied to `frames_sent`, so the first deadline never
+    advanced before the first successful send and the loop busy-spun
+- Changed deadline cadence progression to use actual `capture_attempts` after a
+  real body attempt, so no-frame attempts still advance cadence.
+- Added focused tests for:
+  - deadline mode executing capture/encode/send body
+  - late deadline mode skipping sleep without skipping body
+  - no-frame deadline mode counting `no_frame_count` and sleeping instead of
+    busy-spinning
+  - persistent deadline mode starting the encoder once
+
+### Changed Files
+- `apps/client/src/lib.rs`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### Decision
+- The deadline-mode failure was a real bounded-loop control-flow bug, not a
+  capture backend regression and not a persistent encoder regression.
+- The next human check should rerun the same persistent+deadline command to
+  confirm that the loop now performs real work instead of racing to
+  `MaxTicksReached`.
+
+### Validation
+- `cargo fmt`
+- `cargo fmt --check`
+- `cargo check --workspace`
+- focused client tests
+- `cargo test --workspace`
+- `git diff --check`
+
+## 2026-05-09
+### Type
+- Codex code + docs update
+
+### Work
 - Added an opt-in deadline-based cadence mode to the bounded client real
   encoded video PoC.
 - Added CLI parsing for:

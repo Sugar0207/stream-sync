@@ -6133,10 +6133,12 @@ impl ClientContinuousRealEncodedVideoFrameBoundary {
             if summary.stop_reason.is_some() {
                 break;
             }
+            let output_frame_index = summary.capture_attempts;
             apply_continuous_real_encoded_frame_cadence(
                 &mut summary,
                 policy,
                 started_at,
+                output_frame_index,
                 frame_wait_started_at,
             );
         }
@@ -6216,6 +6218,11 @@ impl ClientContinuousRealEncodedVideoFrameBoundary {
                 .capture
                 .acquire_one_frame_with_runtime(&mut acquisition_input, &observed_capture_runtime);
 
+            let mut encode_elapsed_micros = 0_u64;
+            let mut no_complete_access_unit_yet = false;
+            let mut force_encode_failure_stop = false;
+            let mut forced_encode_unavailable_reason =
+                ClientH264EncoderDeferredReason::EncodeFailed;
             let result = match acquired {
                 ClientCaptureFrameAcquisitionResult::NoFrameAvailable { message } => {
                     ClientRealEncodedVideoFrameOneShotResult::NoFrameAvailable { message }
@@ -6224,6 +6231,7 @@ impl ClientContinuousRealEncodedVideoFrameBoundary {
                     ClientRealEncodedVideoFrameOneShotResult::CaptureUnavailable { reason, message }
                 }
                 ClientCaptureFrameAcquisitionResult::FrameAcquired { frame } => {
+                    let frame = frame;
                     if session.is_none() {
                         match persistent_session_factory
                             .start_session(&frame, &input.encoder_config)
@@ -6237,75 +6245,66 @@ impl ClientContinuousRealEncodedVideoFrameBoundary {
                             }
                             ClientPersistentFfmpegH264AccessUnitSessionStartResult::Failed {
                                 kind,
-                                message,
+                                message: _message,
                             } => {
-                                let result =
-                                    ClientRealEncodedVideoFrameOneShotResult::EncodeUnavailable {
-                                        reason: persistent_start_error_kind_to_deferred_reason(
-                                            kind,
-                                        ),
-                                    };
-                                let encode_elapsed_micros = 0;
-                                update_continuous_real_encoded_summary(
-                                    &mut summary,
-                                    &result,
-                                    ClientRealEncodedVideoFrameOneShotTimingObservation {
-                                        capture_elapsed_micros: capture_elapsed_micros.get(),
-                                        encode_elapsed_micros,
-                                    },
-                                );
-                                summary.stop_reason = Some(
-                                    ClientContinuousRealEncodedVideoFrameStopReason::EncodeFailure,
-                                );
-                                results.push(result);
-                                let _ = message;
-                                break;
+                                force_encode_failure_stop = true;
+                                forced_encode_unavailable_reason =
+                                    persistent_start_error_kind_to_deferred_reason(kind);
                             }
                         }
                     }
 
-                    let encode_started_at = Instant::now();
-                    let session_result = session
-                        .as_mut()
-                        .expect("persistent session should exist after startup")
-                        .submit_frame_and_poll_access_unit(&frame.pixels);
-                    let no_complete_access_unit_yet = matches!(
-                        session_result,
-                        ClientPersistentFfmpegH264AccessUnitSessionStepResult::NoCompleteAccessUnitYet { .. }
-                    );
-                    let encode_elapsed_micros = encode_started_at.elapsed().as_micros() as u64;
+                    if force_encode_failure_stop {
+                        ClientRealEncodedVideoFrameOneShotResult::EncodeUnavailable {
+                            reason: forced_encode_unavailable_reason,
+                        }
+                    } else {
+                        let encode_started_at = Instant::now();
+                        let session_result = session
+                            .as_mut()
+                            .expect("persistent session should exist after startup")
+                            .submit_frame_and_poll_access_unit(&frame.pixels);
+                        no_complete_access_unit_yet = matches!(
+                            session_result,
+                            ClientPersistentFfmpegH264AccessUnitSessionStepResult::NoCompleteAccessUnitYet { .. }
+                        );
+                        encode_elapsed_micros = encode_started_at.elapsed().as_micros() as u64;
 
-                    let result = self.handle_persistent_access_unit_session_result(
-                        &mut summary,
-                        &mut session,
-                        ClientPersistentRealEncodedFrameContext {
-                            socket: input.socket,
-                            destination,
-                            protocol_version: input.protocol_version,
-                            client_id: &input.client_id,
-                            run_id: &input.run_id,
-                            frame_id,
-                            send_timestamp,
-                            is_keyframe: input.is_keyframe,
-                            fragment_pacing: policy.fragment_pacing,
-                        },
-                        frame,
-                        session_result,
-                    );
-                    update_continuous_real_encoded_summary(
-                        &mut summary,
-                        &result,
-                        ClientRealEncodedVideoFrameOneShotTimingObservation {
-                            capture_elapsed_micros: capture_elapsed_micros.get(),
-                            encode_elapsed_micros,
-                        },
-                    );
-                    if no_complete_access_unit_yet {
-                        summary.encode_failures = summary.encode_failures.saturating_sub(1);
+                        self.handle_persistent_access_unit_session_result(
+                            &mut summary,
+                            &mut session,
+                            ClientPersistentRealEncodedFrameContext {
+                                socket: input.socket,
+                                destination,
+                                protocol_version: input.protocol_version,
+                                client_id: &input.client_id,
+                                run_id: &input.run_id,
+                                frame_id,
+                                send_timestamp,
+                                is_keyframe: input.is_keyframe,
+                                fragment_pacing: policy.fragment_pacing,
+                            },
+                            frame,
+                            session_result,
+                        )
                     }
-                    result
                 }
             };
+            update_continuous_real_encoded_summary(
+                &mut summary,
+                &result,
+                ClientRealEncodedVideoFrameOneShotTimingObservation {
+                    capture_elapsed_micros: capture_elapsed_micros.get(),
+                    encode_elapsed_micros,
+                },
+            );
+            if no_complete_access_unit_yet {
+                summary.encode_failures = summary.encode_failures.saturating_sub(1);
+            }
+            if force_encode_failure_stop {
+                summary.stop_reason =
+                    Some(ClientContinuousRealEncodedVideoFrameStopReason::EncodeFailure);
+            }
 
             match &result {
                 ClientRealEncodedVideoFrameOneShotResult::Sent(_) => {
@@ -6349,10 +6348,12 @@ impl ClientContinuousRealEncodedVideoFrameBoundary {
             if summary.stop_reason.is_some() {
                 break;
             }
+            let output_frame_index = summary.capture_attempts;
             apply_continuous_real_encoded_frame_cadence(
                 &mut summary,
                 policy,
                 started_at,
+                output_frame_index,
                 frame_wait_started_at,
             );
         }
@@ -6691,6 +6692,7 @@ fn apply_continuous_real_encoded_frame_cadence(
     summary: &mut ClientContinuousRealEncodedVideoFrameSummary,
     policy: ClientContinuousRealEncodedVideoFramePolicy,
     run_started_at: Instant,
+    output_frame_index: u64,
     frame_wait_started_at: Option<Instant>,
 ) {
     match policy.cadence_mode {
@@ -6703,7 +6705,7 @@ fn apply_continuous_real_encoded_frame_cadence(
             let observation = observe_deadline_continuous_real_encoded_frame_cadence(
                 policy,
                 run_started_at,
-                summary.frames_sent,
+                output_frame_index,
                 frame_wait_started_at,
             );
             summary.loop_interval_sleep_micros = summary
@@ -16866,6 +16868,67 @@ mod tests {
     }
 
     #[test]
+    fn client_video_frame_continuous_real_encoded_deadline_cadence_no_frame_still_counts_and_sleeps(
+    ) {
+        struct NoFrameCapture;
+        impl ClientCaptureFrameAcquisitionRuntimeHook for NoFrameCapture {
+            fn acquire_one_bgra_frame(
+                &self,
+                _input: &mut ClientCaptureFrameAcquisitionInput<'_>,
+            ) -> ClientCaptureFrameAcquisitionResult {
+                ClientCaptureFrameAcquisitionResult::NoFrameAvailable {
+                    message: Some("fixture no frame".to_string()),
+                }
+            }
+        }
+        struct ShouldNotEncode;
+        impl ClientH264EncoderRuntimeHook for ShouldNotEncode {
+            fn encode_bgra_frame(
+                &self,
+                _input: &ClientH264EncoderInput,
+            ) -> ClientH264EncoderHookResult {
+                panic!("encoder should not run when no frame is available");
+            }
+        }
+
+        let sender = UdpSocket::bind("127.0.0.1:0").expect("sender should bind");
+        let mut capture_runtime = client_capture_session_runtime_for_tests();
+
+        let result = ClientContinuousRealEncodedVideoFrameBoundary::default().run_with_runtimes(
+            ClientContinuousRealEncodedVideoFrameInput {
+                socket: &sender,
+                destination: "127.0.0.1:9".parse().unwrap(),
+                capture_runtime: &mut capture_runtime,
+                protocol_version: ProtocolVersion(2),
+                client_id: ClientId("client-1".to_string()),
+                run_id: RunId("run-1".to_string()),
+                first_frame_id: 147,
+                fps_nominal: 30,
+                is_keyframe: true,
+                start_capture_if_needed: true,
+                encoder_config: ClientVideoEncoderConfig::default(),
+                policy: ClientContinuousRealEncodedVideoFramePolicy {
+                    max_frames: 1,
+                    max_ticks: 2,
+                    frame_wait_timeout_micros: 0,
+                    frame_interval_micros: 20_000,
+                    cadence_mode: ClientContinuousRealEncodedVideoFrameCadenceMode::Deadline,
+                    stop_on_capture_failure: true,
+                    stop_on_send_failure: true,
+                    fragment_pacing: ClientVideoFrameFragmentPacingPolicy::default(),
+                },
+            },
+            &NoFrameCapture,
+            &ShouldNotEncode,
+        );
+
+        assert_eq!(result.summary.capture_attempts, 2);
+        assert_eq!(result.summary.no_frame_count, 2);
+        assert!(result.summary.deadline_sleep_micros >= 15_000);
+        assert_eq!(result.summary.late_tick_count, 0);
+    }
+
+    #[test]
     fn client_video_frame_continuous_real_encoded_tracks_no_frame_wait_elapsed() {
         struct SlowNoFrameCapture;
         impl ClientCaptureFrameAcquisitionRuntimeHook for SlowNoFrameCapture {
@@ -17477,6 +17540,70 @@ mod tests {
         assert_eq!(result.summary.persistent_access_units_emitted, 1);
         assert_eq!(result.summary.frames_sent, 1);
         assert_eq!(frame.payload, fixture_persistent_access_unit_bytes());
+    }
+
+    #[test]
+    fn client_video_frame_continuous_real_encoded_persistent_deadline_mode_starts_encoder_once() {
+        struct UnusedPerFrameEncoder;
+        impl ClientH264EncoderRuntimeHook for UnusedPerFrameEncoder {
+            fn encode_bgra_frame(
+                &self,
+                _input: &ClientH264EncoderInput,
+            ) -> ClientH264EncoderHookResult {
+                panic!("per-frame encoder should not run for persistent runtime");
+            }
+        }
+
+        let receiver = UdpSocket::bind("127.0.0.1:0").expect("receiver should bind");
+        receiver
+            .set_read_timeout(Some(Duration::from_secs(1)))
+            .expect("read timeout should be set");
+        let sender = UdpSocket::bind("127.0.0.1:0").expect("sender should bind");
+        let destination = receiver.local_addr().expect("receiver addr should exist");
+        let mut capture_runtime = client_capture_session_runtime_for_tests();
+
+        let result = ClientContinuousRealEncodedVideoFrameBoundary::default()
+            .run_with_runtime_selection_and_persistent_factory(
+                ClientContinuousRealEncodedVideoFrameInput {
+                    socket: &sender,
+                    destination,
+                    capture_runtime: &mut capture_runtime,
+                    protocol_version: ProtocolVersion(2),
+                    client_id: ClientId("client-1".to_string()),
+                    run_id: RunId("run-1".to_string()),
+                    first_frame_id: 175,
+                    fps_nominal: 30,
+                    is_keyframe: true,
+                    start_capture_if_needed: true,
+                    encoder_config: ClientVideoEncoderConfig::default(),
+                    policy: ClientContinuousRealEncodedVideoFramePolicy {
+                        max_frames: 1,
+                        max_ticks: 2,
+                        frame_wait_timeout_micros: 0,
+                        frame_interval_micros: 20_000,
+                        cadence_mode: ClientContinuousRealEncodedVideoFrameCadenceMode::Deadline,
+                        stop_on_capture_failure: true,
+                        stop_on_send_failure: true,
+                        fragment_pacing: ClientVideoFrameFragmentPacingPolicy::default(),
+                    },
+                },
+                ClientRealEncodedVideoFrameEncoderRuntime::Persistent,
+                &FixturePersistentCapture,
+                &UnusedPerFrameEncoder,
+                &FakePersistentSessionFactory {
+                    next_step: ClientPersistentFfmpegH264AccessUnitSessionStepResult::AccessUnit(
+                        fixture_persistent_access_unit(),
+                    ),
+                    shutdown_result: fixture_persistent_shutdown_step(Some(0)),
+                },
+            );
+
+        assert_eq!(result.summary.encoder_process_start_count, 1);
+        assert_eq!(result.summary.frames_sent, 1);
+        assert_eq!(
+            result.summary.cadence_mode,
+            ClientContinuousRealEncodedVideoFrameCadenceMode::Deadline
+        );
     }
 
     #[test]
