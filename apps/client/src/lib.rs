@@ -2,10 +2,10 @@ use std::{
     cell::Cell,
     collections::BTreeMap,
     fs,
-    io::{self, Write},
+    io::{self, Read, Write},
     net::{SocketAddr, ToSocketAddrs, UdpSocket},
     path::{Path, PathBuf},
-    process::{Command, Stdio},
+    process::{Child, Command, Stdio},
     sync::{Arc, Mutex},
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
@@ -3348,6 +3348,16 @@ impl Default for ClientFfmpegSoftwareH264EncoderConfig {
     }
 }
 
+impl ClientFfmpegSoftwareH264EncoderConfig {
+    pub fn from_video_encoder_config(config: ClientVideoEncoderConfig) -> Self {
+        Self {
+            ffmpeg_path: config.ffmpeg_path,
+            preset: config.preset,
+            tune: config.tune,
+        }
+    }
+}
+
 /// Minimal FFmpeg CLI-backed software encoder hook.
 ///
 /// This hook keeps FFmpeg ownership outside the generic encode boundary. It
@@ -3365,11 +3375,7 @@ impl ClientFfmpegSoftwareH264EncoderRuntimeHook {
     }
 
     pub fn from_video_encoder_config(config: ClientVideoEncoderConfig) -> Self {
-        Self::new(ClientFfmpegSoftwareH264EncoderConfig {
-            ffmpeg_path: config.ffmpeg_path,
-            preset: config.preset,
-            tune: config.tune,
-        })
+        Self::new(ClientFfmpegSoftwareH264EncoderConfig::from_video_encoder_config(config))
     }
 
     pub fn with_default_ffmpeg_path() -> Self {
@@ -3613,6 +3619,432 @@ impl ClientH264EncoderRuntimeHook for ClientObservedFfmpegSoftwareH264EncoderRun
             .lock()
             .expect("ffmpeg visibility mutex should not be poisoned") = visibility;
         result
+    }
+}
+
+/// Fixed startup configuration for the experimental persistent FFmpeg encoder
+/// runtime.
+///
+/// Unlike the existing one-frame hook, this boundary keeps one FFmpeg process
+/// alive and therefore needs stable raw input dimensions/FPS at startup.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClientPersistentFfmpegH264EncoderStartupConfig {
+    pub input_width: u32,
+    pub input_height: u32,
+    pub input_fps_nominal: u32,
+    pub encoder_config: ClientVideoEncoderConfig,
+}
+
+impl ClientPersistentFfmpegH264EncoderStartupConfig {
+    pub fn from_encoder_input(input: &ClientH264EncoderInput) -> Self {
+        Self {
+            input_width: input.frame.width,
+            input_height: input.frame.height,
+            input_fps_nominal: input.frame.fps_nominal,
+            encoder_config: input.config.clone(),
+        }
+    }
+
+    fn expected_bgra_frame_len(&self) -> Option<usize> {
+        let width = usize::try_from(self.input_width).ok()?;
+        let height = usize::try_from(self.input_height).ok()?;
+        width.checked_mul(height)?.checked_mul(4)
+    }
+}
+
+/// Experimental persistent FFmpeg encoder startup failure kind.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ClientPersistentFfmpegH264EncoderStartErrorKind {
+    InvalidStartupConfig,
+    EncoderUnavailable,
+    SpawnFailed,
+    StdinUnavailable,
+    StdoutUnavailable,
+    StderrUnavailable,
+}
+
+/// Outcome from attempting to start the experimental persistent FFmpeg encoder
+/// runtime.
+#[derive(Debug)]
+pub enum ClientPersistentFfmpegH264EncoderStartResult {
+    Started(ClientPersistentFfmpegH264EncoderRuntime),
+    Failed {
+        kind: ClientPersistentFfmpegH264EncoderStartErrorKind,
+        message: String,
+    },
+}
+
+/// Typed result from writing one BGRA frame into the experimental persistent
+/// FFmpeg encoder runtime.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ClientPersistentFfmpegH264EncoderWriteResult {
+    FrameAccepted {
+        bytes_written: usize,
+    },
+    InvalidFrameBytes {
+        expected_len: usize,
+        actual_len: usize,
+    },
+    StdinClosed,
+    StdinWriteFailed {
+        kind: io::ErrorKind,
+        message: String,
+    },
+    StdinFlushFailed {
+        kind: io::ErrorKind,
+        message: String,
+    },
+}
+
+/// Typed result from reading raw H.264 Annex B bytes from the experimental
+/// persistent FFmpeg encoder runtime.
+///
+/// This API is stream-oriented and intentionally does not promise one access
+/// unit per call yet.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ClientPersistentFfmpegH264EncoderReadResult {
+    AnnexBBytes {
+        bytes: Vec<u8>,
+    },
+    StdoutClosed,
+    StdoutReadFailed {
+        kind: io::ErrorKind,
+        message: String,
+    },
+    InvalidReadRequest {
+        requested_len: usize,
+    },
+}
+
+/// Typed shutdown outcome from the experimental persistent FFmpeg encoder
+/// runtime.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ClientPersistentFfmpegH264EncoderShutdownResult {
+    ExitedCleanly {
+        exit_code: Option<i32>,
+        remaining_annex_b_bytes: Vec<u8>,
+        stderr: String,
+    },
+    ExitedNonZero {
+        exit_code: Option<i32>,
+        remaining_annex_b_bytes: Vec<u8>,
+        stderr: String,
+    },
+    StdoutDrainFailed {
+        kind: io::ErrorKind,
+        message: String,
+        stderr: String,
+    },
+    StderrDrainFailed {
+        kind: io::ErrorKind,
+        message: String,
+        remaining_annex_b_bytes: Vec<u8>,
+    },
+    WaitFailed {
+        message: String,
+        remaining_annex_b_bytes: Vec<u8>,
+        stderr: String,
+    },
+}
+
+/// Experimental client-only boundary for a persistent FFmpeg/libx264 encoder
+/// process.
+///
+/// This is intentionally separate from the existing per-frame encoder hook and
+/// is not yet wired into the bounded sender runtime. It exposes raw BGRA stdin,
+/// raw H.264 Annex B stdout, and typed shutdown/exit outcomes for future
+/// integration work.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct ClientPersistentFfmpegH264EncoderBoundary;
+
+impl ClientPersistentFfmpegH264EncoderBoundary {
+    pub fn start(
+        &self,
+        startup_config: ClientPersistentFfmpegH264EncoderStartupConfig,
+        runtime_config: ClientFfmpegSoftwareH264EncoderConfig,
+    ) -> ClientPersistentFfmpegH264EncoderStartResult {
+        let command_args = Self::build_ffmpeg_args(&runtime_config, &startup_config);
+        let command_path = runtime_config.ffmpeg_path.clone();
+        Self::start_with_command(startup_config, command_path, command_args)
+    }
+
+    fn build_ffmpeg_args(
+        runtime_config: &ClientFfmpegSoftwareH264EncoderConfig,
+        startup_config: &ClientPersistentFfmpegH264EncoderStartupConfig,
+    ) -> Vec<String> {
+        let mut args = vec![
+            "-hide_banner".to_string(),
+            "-loglevel".to_string(),
+            "error".to_string(),
+            "-f".to_string(),
+            "rawvideo".to_string(),
+            "-pixel_format".to_string(),
+            "bgra".to_string(),
+            "-video_size".to_string(),
+            format!(
+                "{}x{}",
+                startup_config.input_width, startup_config.input_height
+            ),
+            "-framerate".to_string(),
+            startup_config
+                .encoder_config
+                .effective_fps(startup_config.input_fps_nominal)
+                .to_string(),
+            "-i".to_string(),
+            "pipe:0".to_string(),
+            "-an".to_string(),
+            "-c:v".to_string(),
+            "libx264".to_string(),
+            "-preset".to_string(),
+            runtime_config.preset.clone(),
+            "-tune".to_string(),
+            runtime_config.tune.clone(),
+        ];
+        if let (Some(width), Some(height)) = (
+            startup_config.encoder_config.width,
+            startup_config.encoder_config.height,
+        ) {
+            args.push("-vf".to_string());
+            args.push(format!("scale={width}:{height}"));
+        }
+        if let Some(bitrate_kbps) = startup_config.encoder_config.bitrate_kbps {
+            args.push("-b:v".to_string());
+            args.push(format!("{bitrate_kbps}k"));
+        }
+        if let Some(gop_frames) = startup_config.encoder_config.gop_frames {
+            let gop_frames = gop_frames.to_string();
+            args.push("-g".to_string());
+            args.push(gop_frames.clone());
+            args.push("-keyint_min".to_string());
+            args.push(gop_frames);
+            args.push("-sc_threshold".to_string());
+            args.push("0".to_string());
+        }
+        args.push("-pix_fmt".to_string());
+        args.push(startup_config.encoder_config.pixel_format.clone());
+        if let Some(profile) = startup_config.encoder_config.profile.as_deref() {
+            args.push("-profile:v".to_string());
+            args.push(profile.to_string());
+        }
+        if let Some(level) = startup_config.encoder_config.level.as_deref() {
+            args.push("-level:v".to_string());
+            args.push(level.to_string());
+        }
+        args.push("-f".to_string());
+        args.push("h264".to_string());
+        args.push("pipe:1".to_string());
+        args
+    }
+
+    fn start_with_command(
+        startup_config: ClientPersistentFfmpegH264EncoderStartupConfig,
+        command_path: PathBuf,
+        command_args: Vec<String>,
+    ) -> ClientPersistentFfmpegH264EncoderStartResult {
+        if startup_config.input_width == 0
+            || startup_config.input_height == 0
+            || startup_config.input_fps_nominal == 0
+        {
+            return ClientPersistentFfmpegH264EncoderStartResult::Failed {
+                kind: ClientPersistentFfmpegH264EncoderStartErrorKind::InvalidStartupConfig,
+                message: "persistent encoder requires non-zero width/height/fps".to_string(),
+            };
+        }
+        let Some(expected_frame_len) = startup_config.expected_bgra_frame_len() else {
+            return ClientPersistentFfmpegH264EncoderStartResult::Failed {
+                kind: ClientPersistentFfmpegH264EncoderStartErrorKind::InvalidStartupConfig,
+                message: "persistent encoder could not derive expected BGRA frame length"
+                    .to_string(),
+            };
+        };
+
+        let mut command = Command::new(&command_path);
+        command
+            .args(&command_args)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+
+        let child = match command.spawn() {
+            Ok(child) => child,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                return ClientPersistentFfmpegH264EncoderStartResult::Failed {
+                    kind: ClientPersistentFfmpegH264EncoderStartErrorKind::EncoderUnavailable,
+                    message: error.to_string(),
+                };
+            }
+            Err(error) => {
+                return ClientPersistentFfmpegH264EncoderStartResult::Failed {
+                    kind: ClientPersistentFfmpegH264EncoderStartErrorKind::SpawnFailed,
+                    message: error.to_string(),
+                };
+            }
+        };
+
+        if child.stdin.is_none() {
+            return ClientPersistentFfmpegH264EncoderStartResult::Failed {
+                kind: ClientPersistentFfmpegH264EncoderStartErrorKind::StdinUnavailable,
+                message: "persistent encoder stdin pipe was not available".to_string(),
+            };
+        }
+        if child.stdout.is_none() {
+            return ClientPersistentFfmpegH264EncoderStartResult::Failed {
+                kind: ClientPersistentFfmpegH264EncoderStartErrorKind::StdoutUnavailable,
+                message: "persistent encoder stdout pipe was not available".to_string(),
+            };
+        }
+        if child.stderr.is_none() {
+            return ClientPersistentFfmpegH264EncoderStartResult::Failed {
+                kind: ClientPersistentFfmpegH264EncoderStartErrorKind::StderrUnavailable,
+                message: "persistent encoder stderr pipe was not available".to_string(),
+            };
+        }
+
+        ClientPersistentFfmpegH264EncoderStartResult::Started(
+            ClientPersistentFfmpegH264EncoderRuntime {
+                startup_config,
+                expected_frame_len,
+                child,
+            },
+        )
+    }
+}
+
+/// Live experimental persistent FFmpeg encoder process handle.
+#[derive(Debug)]
+pub struct ClientPersistentFfmpegH264EncoderRuntime {
+    startup_config: ClientPersistentFfmpegH264EncoderStartupConfig,
+    expected_frame_len: usize,
+    child: Child,
+}
+
+impl ClientPersistentFfmpegH264EncoderRuntime {
+    pub fn startup_config(&self) -> &ClientPersistentFfmpegH264EncoderStartupConfig {
+        &self.startup_config
+    }
+
+    pub fn expected_frame_len(&self) -> usize {
+        self.expected_frame_len
+    }
+
+    pub fn write_bgra_frame_bytes(
+        &mut self,
+        frame_bytes: &[u8],
+    ) -> ClientPersistentFfmpegH264EncoderWriteResult {
+        if frame_bytes.len() != self.expected_frame_len {
+            return ClientPersistentFfmpegH264EncoderWriteResult::InvalidFrameBytes {
+                expected_len: self.expected_frame_len,
+                actual_len: frame_bytes.len(),
+            };
+        }
+
+        let Some(stdin) = self.child.stdin.as_mut() else {
+            return ClientPersistentFfmpegH264EncoderWriteResult::StdinClosed;
+        };
+        if let Err(error) = stdin.write_all(frame_bytes) {
+            return ClientPersistentFfmpegH264EncoderWriteResult::StdinWriteFailed {
+                kind: error.kind(),
+                message: error.to_string(),
+            };
+        }
+        if let Err(error) = stdin.flush() {
+            return ClientPersistentFfmpegH264EncoderWriteResult::StdinFlushFailed {
+                kind: error.kind(),
+                message: error.to_string(),
+            };
+        }
+
+        ClientPersistentFfmpegH264EncoderWriteResult::FrameAccepted {
+            bytes_written: frame_bytes.len(),
+        }
+    }
+
+    pub fn read_annex_b_bytes(
+        &mut self,
+        requested_len: usize,
+    ) -> ClientPersistentFfmpegH264EncoderReadResult {
+        if requested_len == 0 {
+            return ClientPersistentFfmpegH264EncoderReadResult::InvalidReadRequest {
+                requested_len,
+            };
+        }
+
+        let Some(stdout) = self.child.stdout.as_mut() else {
+            return ClientPersistentFfmpegH264EncoderReadResult::StdoutClosed;
+        };
+        let mut bytes = vec![0_u8; requested_len];
+        match stdout.read(&mut bytes) {
+            Ok(0) => {
+                self.child.stdout.take();
+                ClientPersistentFfmpegH264EncoderReadResult::StdoutClosed
+            }
+            Ok(len) => {
+                bytes.truncate(len);
+                ClientPersistentFfmpegH264EncoderReadResult::AnnexBBytes { bytes }
+            }
+            Err(error) => ClientPersistentFfmpegH264EncoderReadResult::StdoutReadFailed {
+                kind: error.kind(),
+                message: error.to_string(),
+            },
+        }
+    }
+
+    pub fn shutdown(mut self) -> ClientPersistentFfmpegH264EncoderShutdownResult {
+        self.child.stdin.take();
+
+        let mut remaining_annex_b_bytes = Vec::new();
+        if let Some(mut stdout) = self.child.stdout.take() {
+            if let Err(error) = stdout.read_to_end(&mut remaining_annex_b_bytes) {
+                let stderr = drain_child_stderr(&mut self.child).unwrap_or_default();
+                return ClientPersistentFfmpegH264EncoderShutdownResult::StdoutDrainFailed {
+                    kind: error.kind(),
+                    message: error.to_string(),
+                    stderr,
+                };
+            }
+        }
+
+        let stderr = match drain_child_stderr(&mut self.child) {
+            Ok(stderr) => stderr,
+            Err((kind, message)) => {
+                return ClientPersistentFfmpegH264EncoderShutdownResult::StderrDrainFailed {
+                    kind,
+                    message,
+                    remaining_annex_b_bytes,
+                };
+            }
+        };
+
+        match self.child.wait() {
+            Ok(status) if status.success() => {
+                ClientPersistentFfmpegH264EncoderShutdownResult::ExitedCleanly {
+                    exit_code: status.code(),
+                    remaining_annex_b_bytes,
+                    stderr,
+                }
+            }
+            Ok(status) => ClientPersistentFfmpegH264EncoderShutdownResult::ExitedNonZero {
+                exit_code: status.code(),
+                remaining_annex_b_bytes,
+                stderr,
+            },
+            Err(error) => ClientPersistentFfmpegH264EncoderShutdownResult::WaitFailed {
+                message: error.to_string(),
+                remaining_annex_b_bytes,
+                stderr,
+            },
+        }
+    }
+}
+
+fn drain_child_stderr(child: &mut Child) -> Result<String, (io::ErrorKind, String)> {
+    let Some(mut stderr) = child.stderr.take() else {
+        return Ok(String::new());
+    };
+    let mut stderr_bytes = Vec::new();
+    match stderr.read_to_end(&mut stderr_bytes) {
+        Ok(_) => Ok(String::from_utf8_lossy(&stderr_bytes).trim().to_string()),
+        Err(error) => Err((error.kind(), error.to_string())),
     }
 }
 
@@ -13083,6 +13515,210 @@ mod tests {
             encoded.payload.starts_with(&[0x00, 0x00, 0x00, 0x01])
                 || encoded.payload.starts_with(&[0x00, 0x00, 0x01])
         );
+    }
+
+    fn persistent_encoder_startup_config() -> ClientPersistentFfmpegH264EncoderStartupConfig {
+        ClientPersistentFfmpegH264EncoderStartupConfig {
+            input_width: 16,
+            input_height: 16,
+            input_fps_nominal: 30,
+            encoder_config: ClientVideoEncoderConfig::default(),
+        }
+    }
+
+    fn persistent_encoder_test_frame_bytes() -> Vec<u8> {
+        vec![0; 16 * 16 * 4]
+    }
+
+    fn test_exit_command(exit_code: i32) -> (PathBuf, Vec<String>) {
+        #[cfg(target_os = "windows")]
+        {
+            (
+                PathBuf::from("cmd"),
+                vec!["/C".to_string(), format!("exit {exit_code}")],
+            )
+        }
+
+        #[cfg(not(target_os = "windows"))]
+        {
+            (
+                PathBuf::from("sh"),
+                vec!["-c".to_string(), format!("exit {exit_code}")],
+            )
+        }
+    }
+
+    fn test_closed_stdin_command() -> (PathBuf, Vec<String>) {
+        #[cfg(target_os = "windows")]
+        {
+            (
+                PathBuf::from("cmd"),
+                vec!["/C".to_string(), "timeout /T 1 >NUL <NUL".to_string()],
+            )
+        }
+
+        #[cfg(not(target_os = "windows"))]
+        {
+            (
+                PathBuf::from("sh"),
+                vec!["-c".to_string(), "sleep 1 </dev/null".to_string()],
+            )
+        }
+    }
+
+    #[test]
+    fn client_video_frame_persistent_ffmpeg_encoder_spawns_when_available() {
+        let Ok(encoders) = Command::new("ffmpeg")
+            .arg("-hide_banner")
+            .arg("-encoders")
+            .output()
+        else {
+            return;
+        };
+        let encoder_list = String::from_utf8_lossy(&encoders.stdout);
+        if !encoders.status.success() || !encoder_list.contains("libx264") {
+            return;
+        }
+
+        let start_result = ClientPersistentFfmpegH264EncoderBoundary.start(
+            persistent_encoder_startup_config(),
+            ClientFfmpegSoftwareH264EncoderConfig::default(),
+        );
+        let ClientPersistentFfmpegH264EncoderStartResult::Started(mut runtime) = start_result
+        else {
+            panic!("available ffmpeg should start persistent encoder runtime");
+        };
+
+        assert_eq!(runtime.expected_frame_len(), 16 * 16 * 4);
+        assert_eq!(
+            runtime.write_bgra_frame_bytes(&persistent_encoder_test_frame_bytes()),
+            ClientPersistentFfmpegH264EncoderWriteResult::FrameAccepted {
+                bytes_written: 16 * 16 * 4
+            }
+        );
+
+        let shutdown = runtime.shutdown();
+        let ClientPersistentFfmpegH264EncoderShutdownResult::ExitedCleanly {
+            remaining_annex_b_bytes,
+            ..
+        } = shutdown
+        else {
+            panic!("persistent encoder should exit cleanly after one frame");
+        };
+        assert!(!remaining_annex_b_bytes.is_empty());
+        assert!(
+            remaining_annex_b_bytes.starts_with(&[0x00, 0x00, 0x00, 0x01])
+                || remaining_annex_b_bytes.starts_with(&[0x00, 0x00, 0x01])
+        );
+    }
+
+    #[test]
+    fn client_video_frame_persistent_ffmpeg_encoder_reports_stdin_write_failure() {
+        let (command_path, command_args) = test_closed_stdin_command();
+        let startup_config = ClientPersistentFfmpegH264EncoderStartupConfig {
+            input_width: 1024,
+            input_height: 1024,
+            input_fps_nominal: 30,
+            encoder_config: ClientVideoEncoderConfig::default(),
+        };
+        let start_result = ClientPersistentFfmpegH264EncoderBoundary::start_with_command(
+            startup_config,
+            command_path,
+            command_args,
+        );
+        let ClientPersistentFfmpegH264EncoderStartResult::Started(mut runtime) = start_result
+        else {
+            panic!("test shell should start");
+        };
+
+        std::thread::sleep(Duration::from_millis(100));
+
+        let write_result = runtime.write_bgra_frame_bytes(&vec![0; 1024 * 1024 * 4]);
+        assert!(matches!(
+            write_result,
+            ClientPersistentFfmpegH264EncoderWriteResult::StdinWriteFailed { .. }
+                | ClientPersistentFfmpegH264EncoderWriteResult::StdinFlushFailed { .. }
+        ));
+    }
+
+    #[test]
+    fn client_video_frame_persistent_ffmpeg_encoder_reports_stdout_close() {
+        let (command_path, command_args) = test_exit_command(0);
+        let start_result = ClientPersistentFfmpegH264EncoderBoundary::start_with_command(
+            persistent_encoder_startup_config(),
+            command_path,
+            command_args,
+        );
+        let ClientPersistentFfmpegH264EncoderStartResult::Started(mut runtime) = start_result
+        else {
+            panic!("test shell should start");
+        };
+
+        let read_result = runtime.read_annex_b_bytes(64);
+        assert_eq!(
+            read_result,
+            ClientPersistentFfmpegH264EncoderReadResult::StdoutClosed
+        );
+
+        let shutdown = runtime.shutdown();
+        assert!(matches!(
+            shutdown,
+            ClientPersistentFfmpegH264EncoderShutdownResult::ExitedCleanly { .. }
+        ));
+    }
+
+    #[test]
+    fn client_video_frame_persistent_ffmpeg_encoder_reports_non_zero_exit() {
+        let (command_path, command_args) = test_exit_command(7);
+        let start_result = ClientPersistentFfmpegH264EncoderBoundary::start_with_command(
+            persistent_encoder_startup_config(),
+            command_path,
+            command_args,
+        );
+        let ClientPersistentFfmpegH264EncoderStartResult::Started(runtime) = start_result else {
+            panic!("test shell should start");
+        };
+
+        let shutdown = runtime.shutdown();
+        assert!(matches!(
+            shutdown,
+            ClientPersistentFfmpegH264EncoderShutdownResult::ExitedNonZero {
+                exit_code: Some(7),
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn client_video_frame_persistent_ffmpeg_encoder_missing_binary_matches_preflight() {
+        let encoder_config = ClientVideoEncoderConfig {
+            ffmpeg_path: PathBuf::from("stream-sync-missing-ffmpeg-binary"),
+            ..ClientVideoEncoderConfig::default()
+        };
+        let preflight = probe_client_ffmpeg_preflight(&encoder_config);
+        assert_eq!(
+            preflight.ffmpeg_path,
+            PathBuf::from("stream-sync-missing-ffmpeg-binary")
+        );
+        assert!(preflight.version_detected.is_none());
+        assert!(preflight.error.is_some());
+
+        let start_result = ClientPersistentFfmpegH264EncoderBoundary.start(
+            ClientPersistentFfmpegH264EncoderStartupConfig {
+                input_width: 16,
+                input_height: 16,
+                input_fps_nominal: 30,
+                encoder_config: encoder_config.clone(),
+            },
+            ClientFfmpegSoftwareH264EncoderConfig::from_video_encoder_config(encoder_config),
+        );
+        assert!(matches!(
+            start_result,
+            ClientPersistentFfmpegH264EncoderStartResult::Failed {
+                kind: ClientPersistentFfmpegH264EncoderStartErrorKind::EncoderUnavailable,
+                ..
+            }
+        ));
     }
 
     #[test]

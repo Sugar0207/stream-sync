@@ -2,6 +2,65 @@
 
 ## 2026-05-09
 ### Type
+- Codex code + docs update
+
+### Work
+- Implemented the first experimental client-only persistent FFmpeg encoder
+  boundary in `apps/client/src/lib.rs`.
+- Kept the existing per-frame FFmpeg encoder hook unchanged and separate.
+- Added a startup boundary that:
+  - spawns one FFmpeg process once
+  - fixes raw input width / height / fps for the lifetime of that process
+  - keeps `stdin`, `stdout`, and `stderr` piped
+- Added typed runtime outcomes for:
+  - startup failure
+  - BGRA `stdin` write failure
+  - `stdin` flush failure
+  - raw Annex B `stdout` close
+  - `stdout` read failure
+  - shutdown with clean exit
+  - shutdown with non-zero exit
+  - stdout/stderr drain failure
+  - wait failure
+- Kept the current API intentionally narrow:
+  - write raw BGRA bytes only
+  - read raw H.264 Annex B stream bytes only
+  - no access-unit/frame-boundary recovery yet
+  - no bounded sender integration yet
+  - no deadline-based cadence change yet
+- Added focused tests for:
+  - persistent encoder spawn when FFmpeg/libx264 is available
+  - typed `stdin` write failure handling
+  - typed `stdout` close handling
+  - typed non-zero process exit handling
+  - missing-FFmpeg startup failure staying aligned with existing preflight
+- Updated the manual doc to mark the new runtime as experimental and not yet
+  connected to the bounded sender path.
+
+### Changed Files
+- `apps/client/src/lib.rs`
+- `docs/operations/manual-real-encoded-video-poc.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### Decision
+- The next 30fps improvement step should integrate this persistent runtime into
+  the bounded sender path instead of adding more tuning around the old
+  per-frame process-spawn encoder.
+- Access-unit/frame boundary recovery remains the next missing sub-slice inside
+  the persistent runtime itself.
+- Deadline-based cadence remains design-only in this step.
+
+### Validation
+- `cargo fmt`
+- `cargo fmt --check`
+- `cargo check --workspace`
+- focused client tests
+- `cargo test --workspace`
+- `git diff --check`
+
+## 2026-05-09
+### Type
 - Codex docs update
 
 ### Work

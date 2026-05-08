@@ -2556,6 +2556,19 @@ Minimal next slice for a persistent FFmpeg encoder runtime:
 6. keep stderr capture separate so human validation can still read FFmpeg
    diagnostics without mixing them into H.264 payload parsing
 
+Current implementation status:
+
+- an experimental client-only persistent FFmpeg encoder boundary now exists in
+  `apps/client/src/lib.rs`
+- the current API surface is intentionally raw and blocking:
+  - one process spawn at startup
+  - BGRA frame bytes written to `stdin`
+  - raw H.264 Annex B stream bytes read from `stdout`
+  - typed shutdown / stdout-close / non-zero-exit outcomes
+- this experimental boundary is not yet integrated into the bounded sender
+  runtime, does not yet recover access-unit/frame boundaries, and does not yet
+  replace the existing per-frame encoder path
+
 Suggested narrow boundary split:
 
 - `ClientPersistentH264EncoderRuntime`:
