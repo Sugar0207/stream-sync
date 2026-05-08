@@ -342,5 +342,21 @@ stop_reason=
 
 ## Supplement
 
+## Next Step Pointer
+
+Use this doc as the same-PC ingest / reassembly baseline only.
+
+For the next MVP step, move to:
+
+- [two-client-handoff-validation.md](/\\desktop-89uvrhh\d\stream-sync\docs\operations\two-client-handoff-validation.md)
+
+That handoff doc is now the source of truth for:
+
+- server bounded handoff session
+- switcher preview loop
+- optional raw named-pipe isolation rerun
+- current handoff success conditions
+- paste-back template for the human-run handoff validation
+
 distributed-PC validation は今の主目的ではありません。
 server IP 固定や firewall 手順が必要になったら、その時点で別ドキュメントか補足として扱います。

@@ -2,6 +2,62 @@
 
 ## 2026-05-08
 ### Type
+- Codex docs update
+
+### Work
+- Reviewed the current server -> switcher handoff CLI, boundaries, and existing
+  operations docs after the same-PC 2-client longer-run PASS.
+- Confirmed the current same-PC handoff main path is:
+  - server bounded queue/handoff session via
+    `--receive-auth-video-queue-and-serve-handoff-many`
+  - switcher 2-real-slot preview via
+    `--four-view-two-real-handoff-preview-loop`
+- Confirmed the current raw transport isolation path is:
+  - switcher one-shot named-pipe read via
+    `--read-queued-frame-handoff-once`
+- Added a focused handoff-prep doc:
+  - `docs/operations/two-client-handoff-validation.md`
+- Documented the current same-PC human-run recipe with direct PowerShell
+  commands for:
+  - server bounded handoff session
+  - client1 bounded sender
+  - client2 bounded sender
+  - switcher 2-real-slot preview loop
+  - optional raw named-pipe isolation rerun
+- Documented how to read the current switcher-side state from existing summaries:
+  - `Selected`
+  - `NoFrameAvailable`
+  - `WaitingForFrameAtOrBeforeTarget`
+  - `HandoffError`
+- Recorded the current observability gap for this step:
+  - explicit late-drop aggregate is not printed in the current real handoff
+    preview summary
+  - explicit adjusted timestamp / target timestamp fields are not printed in
+    the current real handoff preview summary
+- Marked those two gaps as non-blocking for the current handoff-prep step and
+  kept the pass/fail gate on existing summary fields instead.
+- Added a pointer from the same-PC longer-run validation doc to the new handoff
+  validation doc.
+
+### Changed Files
+- `docs/operations/session-log.md`
+- `docs/operations/todo.md`
+- `docs/operations/two-client-long-run-validation.md`
+- `docs/operations/two-client-handoff-validation.md`
+
+### Decision
+- Treat `docs/operations/two-client-handoff-validation.md` as the source of
+  truth for the next human-run MVP step.
+- Keep the current step focused on same-PC 2-client handoff validation rather
+  than widening immediately to 4-client all-real or OBS-heavy validation.
+- Do not change Rust code in this step because the current boundaries and
+  summaries are sufficient for the first human handoff pass.
+
+### Validation
+- `git diff --check`
+
+## 2026-05-08
+### Type
 - Human validation + Codex follow-up
 
 ### Work
