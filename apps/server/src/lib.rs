@@ -2691,6 +2691,753 @@ impl ServerReceiveSendRuntimeBoundedLauncher {
     }
 }
 
+/// Policy for the first server-owned continuous receive/send runtime slice.
+///
+/// This keeps one socket and one set of caller-owned runtime state alive across
+/// repeated controller iterations while adding only the minimum loop-owned
+/// state commits needed for 2-client long-run validation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ServerReceiveSendContinuousRuntimePolicy {
+    pub receive_timeout: Duration,
+    pub max_iterations: Option<usize>,
+    pub heartbeat_timeout: Option<ServerHeartbeatTimeoutPolicy>,
+    pub video_queue_policy: ServerVideoFrameQueuePolicy,
+    pub rtt_offset_candidate_policy: ServerHeartbeatRttOffsetCandidatePolicy,
+}
+
+impl Default for ServerReceiveSendContinuousRuntimePolicy {
+    fn default() -> Self {
+        Self {
+            receive_timeout: Duration::from_millis(1_000),
+            max_iterations: None,
+            heartbeat_timeout: None,
+            video_queue_policy: ServerVideoFrameQueuePolicy::default(),
+            rtt_offset_candidate_policy: ServerHeartbeatRttOffsetCandidatePolicy::default(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ServerReceiveSendContinuousRuntimeStopReason {
+    MaxIterationsReached,
+    ReceiveTimedOut,
+    ControllerStopped,
+    SocketReceiveFailed(io::ErrorKind),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ServerReceiveSendContinuousRuntimeContinuationReason {
+    AcceptedPacket,
+    RejectedPacket,
+    PacketProcessedWithoutClassification,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ServerHeartbeatTimeoutSweepSummary {
+    pub status: ServerOperationalConditionStatus,
+    pub clients_evaluated: usize,
+    pub timed_out_clients: usize,
+    pub most_severe_client_summary: Option<ServerHeartbeatOperationalSummary>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ServerReceiveSendContinuousRuntimeIterationSummary {
+    pub iteration_index: usize,
+    pub continuation_reason: ServerReceiveSendContinuousRuntimeContinuationReason,
+    pub auth_summary: Option<ServerAuthOperationalSummary>,
+    pub registration_summary: Option<AuthenticatedSenderRegistrationSummary>,
+    pub runtime_rejection_summary: Option<ServerRuntimePacketOperationalSummary>,
+    pub heartbeat_timeout_summary: Option<ServerHeartbeatTimeoutSweepSummary>,
+    pub outbound_queue_len: usize,
+    pub video_queue_len: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ServerReceiveSendContinuousRuntimeSummary {
+    pub receive_timeout: Duration,
+    pub max_iterations: Option<usize>,
+    pub iterations_attempted: usize,
+    pub iterations_completed: usize,
+    pub packets_received: usize,
+    pub accepted_packets: usize,
+    pub rejected_packets: usize,
+    pub decode_errors: usize,
+    pub auth_requests_received: usize,
+    pub auth_responses_sent: usize,
+    pub heartbeats_received: usize,
+    pub heartbeat_acks_sent: usize,
+    pub client_stats_received: usize,
+    pub heartbeat_observations_committed: usize,
+    pub frames_reassembled: u64,
+    pub frames_queued: u64,
+    pub direct_frames_queued: u64,
+    pub outbound_queue_len: usize,
+    pub video_queue_len: usize,
+    pub incomplete_reassembly_frames: usize,
+    pub registered_clients: usize,
+    pub heartbeat_liveness_clients: usize,
+    pub heartbeat_rtt_offset_clients: usize,
+    pub last_receive_error: Option<io::ErrorKind>,
+    pub last_send_error: Option<String>,
+    pub last_rejected_reason: Option<String>,
+    pub last_auth_summary: Option<ServerAuthOperationalSummary>,
+    pub last_registration_summary: Option<AuthenticatedSenderRegistrationSummary>,
+    pub last_runtime_rejection_summary: Option<ServerRuntimePacketOperationalSummary>,
+    pub last_heartbeat_timeout_summary: Option<ServerHeartbeatTimeoutSweepSummary>,
+    pub stop_reason: ServerReceiveSendContinuousRuntimeStopReason,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ServerReceiveSendContinuousRuntimeOutcome {
+    pub bind_address: SocketAddr,
+    pub registry: AuthenticatedSenderRegistry,
+    pub queue_collection: ServerOutboundQueueCollection,
+    pub video_queue_state: ServerVideoFrameQueueState,
+    pub reassembly_state: ServerVideoFrameReassemblyState,
+    pub heartbeat_liveness_state: ServerHeartbeatLivenessState,
+    pub heartbeat_rtt_offset_state: ServerHeartbeatRttOffsetState,
+    pub iterations: Vec<ServerControllerReceiveSendRuntimeResult>,
+    pub iteration_summaries: Vec<ServerReceiveSendContinuousRuntimeIterationSummary>,
+    pub summary: ServerReceiveSendContinuousRuntimeSummary,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ServerReceiveSendContinuousRuntimeError {
+    OneIterationStartup(ServerReceiveSendOneIterationStartupError),
+    Bind {
+        address: SocketAddr,
+        kind: io::ErrorKind,
+    },
+    SetReceiveTimeout {
+        address: SocketAddr,
+        kind: io::ErrorKind,
+    },
+    Runtime {
+        iteration_index: usize,
+        error: ServerControllerReceiveSendRuntimeError,
+        summary: ServerReceiveSendContinuousRuntimeSummary,
+    },
+}
+
+/// Minimal continuous receive/send runtime launcher for long-run validation.
+///
+/// This keeps one UDP socket and one set of caller-owned registry/queue/state
+/// objects alive across repeated controller iterations. It adds only the
+/// minimum loop-owned commits needed to observe auth/runtime hardening,
+/// heartbeat liveness/timeout state, and server-side video queue growth.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ServerReceiveSendContinuousRuntimeLauncher {
+    socket_io: UdpSocketIoBoundary,
+    runtime: ServerControllerReceiveSendRuntimeBoundary,
+    observation_return: ServerHeartbeatObservationReturnBoundary,
+    liveness_commit: ServerHeartbeatLivenessCommitBoundary,
+    rtt_offset_policy_commit: ServerHeartbeatRttOffsetPolicyCommitBoundary,
+    video_queue_storage: ServerVideoFrameQueueStorageBoundary,
+    fragment_reassembly: ServerVideoFrameFragmentReassemblyBoundary,
+}
+
+impl ServerReceiveSendContinuousRuntimeLauncher {
+    pub fn load_startup_config_from_path(
+        &self,
+        path: impl AsRef<Path>,
+    ) -> Result<ServerAuthResponsePocStartupConfig, ServerReceiveSendContinuousRuntimeError> {
+        ServerReceiveSendOneIterationLauncher::default()
+            .load_startup_config_from_path(path)
+            .map_err(ServerReceiveSendContinuousRuntimeError::OneIterationStartup)
+    }
+
+    pub fn load_startup_config_from_str(
+        &self,
+        input: &str,
+    ) -> Result<ServerAuthResponsePocStartupConfig, ServerReceiveSendContinuousRuntimeError> {
+        ServerReceiveSendOneIterationLauncher::default()
+            .load_startup_config_from_str(input)
+            .map_err(ServerReceiveSendContinuousRuntimeError::OneIterationStartup)
+    }
+
+    pub fn run_from_path_with_writers_and_policy<
+        OW: io::Write,
+        RW: io::Write,
+        AW: io::Write,
+        SW: io::Write,
+    >(
+        &self,
+        path: impl AsRef<Path>,
+        operational_writer: OW,
+        rejection_writer: RW,
+        auth_log_writer: AW,
+        send_log_writer: SW,
+        policy: ServerReceiveSendContinuousRuntimePolicy,
+    ) -> Result<ServerReceiveSendContinuousRuntimeOutcome, ServerReceiveSendContinuousRuntimeError>
+    {
+        let startup_config = self.load_startup_config_from_path(path)?;
+        self.run_with_writers_and_policy(
+            startup_config,
+            operational_writer,
+            rejection_writer,
+            auth_log_writer,
+            send_log_writer,
+            policy,
+        )
+    }
+
+    pub fn run_with_writers_and_policy<
+        OW: io::Write,
+        RW: io::Write,
+        AW: io::Write,
+        SW: io::Write,
+    >(
+        &self,
+        startup_config: ServerAuthResponsePocStartupConfig,
+        mut operational_writer: OW,
+        mut rejection_writer: RW,
+        mut auth_log_writer: AW,
+        mut send_log_writer: SW,
+        policy: ServerReceiveSendContinuousRuntimePolicy,
+    ) -> Result<ServerReceiveSendContinuousRuntimeOutcome, ServerReceiveSendContinuousRuntimeError>
+    {
+        let socket = self
+            .socket_io
+            .bind(startup_config.bind_address)
+            .map_err(|error| ServerReceiveSendContinuousRuntimeError::Bind {
+                address: startup_config.bind_address,
+                kind: error.kind(),
+            })?;
+        socket
+            .set_read_timeout(Some(policy.receive_timeout))
+            .map_err(
+                |error| ServerReceiveSendContinuousRuntimeError::SetReceiveTimeout {
+                    address: startup_config.bind_address,
+                    kind: error.kind(),
+                },
+            )?;
+
+        let mut buffer = vec![0_u8; DEFAULT_UDP_PACKET_BUFFER_LEN];
+        let mut registry = AuthenticatedSenderRegistry::default();
+        let mut queue_collection = ServerOutboundQueueCollection::default();
+        let mut video_queue_state = ServerVideoFrameQueueState::default();
+        let mut reassembly_state = ServerVideoFrameReassemblyState::default();
+        let mut heartbeat_liveness_state = ServerHeartbeatLivenessState::default();
+        let mut heartbeat_rtt_offset_state = ServerHeartbeatRttOffsetState::default();
+        let mut heartbeat_handoffs_by_client =
+            BTreeMap::<(String, String), ServerHeartbeatAckHandoff>::new();
+        let mut iterations = Vec::new();
+        let mut iteration_summaries = Vec::new();
+        let mut summary = ServerReceiveSendContinuousRuntimeSummary {
+            receive_timeout: policy.receive_timeout,
+            max_iterations: policy.max_iterations,
+            iterations_attempted: 0,
+            iterations_completed: 0,
+            packets_received: 0,
+            accepted_packets: 0,
+            rejected_packets: 0,
+            decode_errors: 0,
+            auth_requests_received: 0,
+            auth_responses_sent: 0,
+            heartbeats_received: 0,
+            heartbeat_acks_sent: 0,
+            client_stats_received: 0,
+            heartbeat_observations_committed: 0,
+            frames_reassembled: 0,
+            frames_queued: 0,
+            direct_frames_queued: 0,
+            outbound_queue_len: 0,
+            video_queue_len: 0,
+            incomplete_reassembly_frames: 0,
+            registered_clients: 0,
+            heartbeat_liveness_clients: 0,
+            heartbeat_rtt_offset_clients: 0,
+            last_receive_error: None,
+            last_send_error: None,
+            last_rejected_reason: None,
+            last_auth_summary: None,
+            last_registration_summary: None,
+            last_runtime_rejection_summary: None,
+            last_heartbeat_timeout_summary: None,
+            stop_reason: ServerReceiveSendContinuousRuntimeStopReason::MaxIterationsReached,
+        };
+
+        let mut iteration_index = 0usize;
+        loop {
+            if matches!(policy.max_iterations, Some(limit) if iteration_index >= limit) {
+                summary.stop_reason =
+                    ServerReceiveSendContinuousRuntimeStopReason::MaxIterationsReached;
+                break;
+            }
+
+            summary.iterations_attempted = summary.iterations_attempted.saturating_add(1);
+            let timestamp = current_system_timestamp_micros();
+            let result = match self.runtime.run_once(
+                &socket,
+                &mut buffer,
+                &mut registry,
+                &mut queue_collection,
+                &startup_config.auth_config,
+                ServerControllerReceiveSendRuntimeInput {
+                    controller: ServerContinuousReceiveLoopControllerInput {
+                        expected_protocol_version: startup_config.expected_protocol_version,
+                        timestamp,
+                        continue_requested: true,
+                    },
+                    heartbeat_timing: ServerHeartbeatAckTiming {
+                        server_received_at: timestamp,
+                        server_sent_at: timestamp,
+                    },
+                    encode_context: EncodeContext {
+                        protocol_version: startup_config.expected_protocol_version,
+                    },
+                    auth_log_timestamp: timestamp,
+                    send_log_timestamp: timestamp,
+                },
+                &mut operational_writer,
+                &mut rejection_writer,
+                &mut auth_log_writer,
+                &mut send_log_writer,
+            ) {
+                Ok(result) => result,
+                Err(error) => {
+                    let mut partial_summary = summary.clone();
+                    Self::observe_continuous_runtime_error(&error, &mut partial_summary);
+                    partial_summary.outbound_queue_len = queue_collection.len();
+                    partial_summary.video_queue_len = video_queue_state.total_len();
+                    partial_summary.incomplete_reassembly_frames =
+                        reassembly_state.tracked_frame_count();
+                    partial_summary.registered_clients = registry.entries().count();
+                    partial_summary.heartbeat_liveness_clients = heartbeat_liveness_state.len();
+                    partial_summary.heartbeat_rtt_offset_clients = heartbeat_rtt_offset_state.len();
+                    return Err(ServerReceiveSendContinuousRuntimeError::Runtime {
+                        iteration_index,
+                        error,
+                        summary: partial_summary,
+                    });
+                }
+            };
+
+            summary.iterations_completed = summary.iterations_completed.saturating_add(1);
+            let stop_reason = Self::observe_continuous_iteration(
+                result.clone(),
+                &mut heartbeat_handoffs_by_client,
+                &mut heartbeat_liveness_state,
+                &mut heartbeat_rtt_offset_state,
+                &mut video_queue_state,
+                &mut reassembly_state,
+                policy,
+                &mut summary,
+                &mut iteration_summaries,
+                iteration_index,
+                self,
+                timestamp,
+                &registry,
+            );
+            iterations.push(result);
+            if let Some(stop_reason) = stop_reason {
+                summary.stop_reason = stop_reason;
+                break;
+            }
+
+            iteration_index = iteration_index.saturating_add(1);
+        }
+
+        summary.outbound_queue_len = queue_collection.len();
+        summary.video_queue_len = video_queue_state.total_len();
+        summary.incomplete_reassembly_frames = reassembly_state.tracked_frame_count();
+        summary.registered_clients = registry.entries().count();
+        summary.heartbeat_liveness_clients = heartbeat_liveness_state.len();
+        summary.heartbeat_rtt_offset_clients = heartbeat_rtt_offset_state.len();
+
+        Ok(ServerReceiveSendContinuousRuntimeOutcome {
+            bind_address: startup_config.bind_address,
+            registry,
+            queue_collection,
+            video_queue_state,
+            reassembly_state,
+            heartbeat_liveness_state,
+            heartbeat_rtt_offset_state,
+            iterations,
+            iteration_summaries,
+            summary,
+        })
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn observe_continuous_iteration(
+        result: ServerControllerReceiveSendRuntimeResult,
+        heartbeat_handoffs_by_client: &mut BTreeMap<(String, String), ServerHeartbeatAckHandoff>,
+        heartbeat_liveness_state: &mut ServerHeartbeatLivenessState,
+        heartbeat_rtt_offset_state: &mut ServerHeartbeatRttOffsetState,
+        video_queue_state: &mut ServerVideoFrameQueueState,
+        reassembly_state: &mut ServerVideoFrameReassemblyState,
+        policy: ServerReceiveSendContinuousRuntimePolicy,
+        summary: &mut ServerReceiveSendContinuousRuntimeSummary,
+        iteration_summaries: &mut Vec<ServerReceiveSendContinuousRuntimeIterationSummary>,
+        iteration_index: usize,
+        runtime: &Self,
+        timestamp: TimestampMicros,
+        registry: &AuthenticatedSenderRegistry,
+    ) -> Option<ServerReceiveSendContinuousRuntimeStopReason> {
+        let mut auth_summary = None;
+        let mut registration_summary = None;
+        let mut runtime_rejection_summary = None;
+        let continuation_reason;
+
+        match &result {
+            ServerControllerReceiveSendRuntimeResult::Stopped { .. } => {
+                return Some(ServerReceiveSendContinuousRuntimeStopReason::ControllerStopped);
+            }
+            ServerControllerReceiveSendRuntimeResult::Iteration { iteration, .. } => {
+                match &iteration.body.tick.outcome {
+                    ServerContinuousReceiveLoopOneTickRuntimeOutcome::SocketReceiveFailed {
+                        error_kind,
+                        ..
+                    } => {
+                        summary.last_receive_error = Some(*error_kind);
+                        summary.last_heartbeat_timeout_summary = runtime
+                            .summarize_heartbeat_timeouts(
+                                heartbeat_liveness_state,
+                                registry,
+                                timestamp,
+                                policy.heartbeat_timeout,
+                            );
+                        return Some(match error_kind {
+                            io::ErrorKind::TimedOut | io::ErrorKind::WouldBlock => {
+                                ServerReceiveSendContinuousRuntimeStopReason::ReceiveTimedOut
+                            }
+                            other => {
+                                ServerReceiveSendContinuousRuntimeStopReason::SocketReceiveFailed(
+                                    *other,
+                                )
+                            }
+                        });
+                    }
+                    ServerContinuousReceiveLoopOneTickRuntimeOutcome::Completed {
+                        handler, ..
+                    } => {
+                        summary.packets_received = summary.packets_received.saturating_add(1);
+                        if matches!(
+                            handler
+                                .writer
+                                .operational_event
+                                .as_ref()
+                                .map(|event| event.outcome),
+                            Some(ServerReceiveLoopLogOutcome::Accepted)
+                        ) {
+                            summary.accepted_packets = summary.accepted_packets.saturating_add(1);
+                            continuation_reason = Some(
+                                ServerReceiveSendContinuousRuntimeContinuationReason::AcceptedPacket,
+                            );
+                        } else if handler.writer.rejection_event.is_some()
+                            || matches!(
+                                handler
+                                    .writer
+                                    .operational_event
+                                    .as_ref()
+                                    .map(|event| event.outcome),
+                                Some(ServerReceiveLoopLogOutcome::DecodeRejected)
+                                    | Some(ServerReceiveLoopLogOutcome::AcceptanceRejected)
+                            )
+                        {
+                            summary.rejected_packets = summary.rejected_packets.saturating_add(1);
+                            continuation_reason = Some(
+                                ServerReceiveSendContinuousRuntimeContinuationReason::RejectedPacket,
+                            );
+                        } else {
+                            continuation_reason = Some(
+                                ServerReceiveSendContinuousRuntimeContinuationReason::PacketProcessedWithoutClassification,
+                            );
+                        }
+
+                        if let Some(rejection) = &handler.writer.rejection_event {
+                            summary.last_rejected_reason =
+                                Some(format!("{:?}", rejection.rejection_reason));
+                            if matches!(
+                                rejection.rejection_reason,
+                                ServerReceiveRejectionReason::DecodeError
+                            ) {
+                                summary.decode_errors = summary.decode_errors.saturating_add(1);
+                            }
+                        }
+                        if let Some(ServerReceiveLoopGateRejection::Acceptance(rejection)) =
+                            handler.writer.handoff.rejection_log.as_ref()
+                        {
+                            let packet_summary =
+                                packet_operational_summary_from_rejection(rejection);
+                            summary.last_runtime_rejection_summary = Some(packet_summary.clone());
+                            runtime_rejection_summary = Some(packet_summary);
+                        }
+                    }
+                    ServerContinuousReceiveLoopOneTickRuntimeOutcome::Stopped => {
+                        return Some(
+                            ServerReceiveSendContinuousRuntimeStopReason::ControllerStopped,
+                        );
+                    }
+                }
+
+                match &iteration.side_effect.result {
+                    ServerDispatchRuntimeSideEffectApplyResult::Auth {
+                        flow,
+                        registration_summary: registration,
+                        ..
+                    } => {
+                        summary.auth_requests_received =
+                            summary.auth_requests_received.saturating_add(1);
+                        summary.last_auth_summary = Some(flow.operational_summary.clone());
+                        auth_summary = Some(flow.operational_summary.clone());
+                        summary.last_registration_summary = registration.clone();
+                        registration_summary = registration.clone();
+                        if !flow.decision.accepted {
+                            summary.last_rejected_reason =
+                                Some(format!("Auth:{:?}", flow.decision.reason_code));
+                        }
+                    }
+                    ServerDispatchRuntimeSideEffectApplyResult::HeartbeatAck(handoff) => {
+                        summary.heartbeats_received = summary.heartbeats_received.saturating_add(1);
+                        heartbeat_handoffs_by_client.insert(
+                            (
+                                handoff.registered_packet.heartbeat.client_id.0.clone(),
+                                handoff.registered_packet.heartbeat.run_id.0.clone(),
+                            ),
+                            handoff.clone(),
+                        );
+                        runtime.liveness_commit.commit(
+                            heartbeat_liveness_state,
+                            handoff.processing_inputs.state.clone(),
+                        );
+                    }
+                    ServerDispatchRuntimeSideEffectApplyResult::ClientStats(input) => {
+                        summary.client_stats_received =
+                            summary.client_stats_received.saturating_add(1);
+                        let key = (
+                            input.state.client_id.0.clone(),
+                            input.state.run_id.0.clone(),
+                        );
+                        if let Some(handoff) = heartbeat_handoffs_by_client.get(&key) {
+                            if let Ok(calculation) = runtime
+                                .observation_return
+                                .calculate_from_client_stats(handoff, input)
+                            {
+                                let outcome = runtime.rtt_offset_policy_commit.evaluate_and_commit(
+                                    heartbeat_rtt_offset_state,
+                                    calculation,
+                                    policy.rtt_offset_candidate_policy,
+                                    Some(timestamp),
+                                );
+                                if matches!(
+                                    outcome.result,
+                                    ServerHeartbeatRttOffsetPolicyCommitResult::Committed(_)
+                                ) {
+                                    summary.heartbeat_observations_committed = summary
+                                        .heartbeat_observations_committed
+                                        .saturating_add(1);
+                                }
+                            }
+                        }
+                    }
+                    ServerDispatchRuntimeSideEffectApplyResult::VideoFrame(input) => {
+                        match runtime.video_queue_storage.store_frame(
+                            video_queue_state,
+                            input.clone(),
+                            timestamp,
+                            policy.video_queue_policy,
+                        ) {
+                            ServerVideoFrameQueueStorageResult::Stored { .. } => {
+                                summary.direct_frames_queued =
+                                    summary.direct_frames_queued.saturating_add(1);
+                                summary.frames_queued = summary.frames_queued.saturating_add(1);
+                            }
+                            ServerVideoFrameQueueStorageResult::Dropped { .. } => {}
+                        }
+                    }
+                    ServerDispatchRuntimeSideEffectApplyResult::UnappliedRegistered(registered) => {
+                        if let ServerRegisteredPacketDispatchRuntimeResult::FutureVideoFrameFragment(
+                            packet,
+                        ) = &registered.result
+                        {
+                            match runtime
+                                .fragment_reassembly
+                                .apply_fragment_and_queue_if_complete(
+                                    reassembly_state,
+                                    video_queue_state,
+                                    packet.clone(),
+                                    timestamp,
+                                    policy.video_queue_policy,
+                                ) {
+                                ServerVideoFrameReassemblyApplyResult::FrameComplete {
+                                    queue_result, ..
+                                } => {
+                                    summary.frames_reassembled =
+                                        summary.frames_reassembled.saturating_add(1);
+                                    if matches!(
+                                        queue_result,
+                                        ServerVideoFrameQueueStorageResult::Stored { .. }
+                                    ) {
+                                        summary.frames_queued =
+                                            summary.frames_queued.saturating_add(1);
+                                    }
+                                }
+                                ServerVideoFrameReassemblyApplyResult::FragmentStored { .. }
+                                | ServerVideoFrameReassemblyApplyResult::DuplicateFragmentIgnored {
+                                    ..
+                                }
+                                | ServerVideoFrameReassemblyApplyResult::RejectedFragment { .. } => {}
+                            }
+                        }
+                    }
+                    ServerDispatchRuntimeSideEffectApplyResult::NoDispatch(_)
+                    | ServerDispatchRuntimeSideEffectApplyResult::UnappliedVideoStats(_) => {}
+                }
+
+                if let Some(send_log) = &iteration.send_log {
+                    match send_log.message_type {
+                        MessageType::AuthResponse => {
+                            summary.auth_responses_sent =
+                                summary.auth_responses_sent.saturating_add(1);
+                        }
+                        MessageType::HeartbeatAck => {
+                            summary.heartbeat_acks_sent =
+                                summary.heartbeat_acks_sent.saturating_add(1);
+                        }
+                        _ => {}
+                    }
+                }
+
+                summary.outbound_queue_len = 0;
+                summary.video_queue_len = video_queue_state.total_len();
+                summary.incomplete_reassembly_frames = reassembly_state.tracked_frame_count();
+                summary.registered_clients = registry.entries().count();
+                summary.heartbeat_liveness_clients = heartbeat_liveness_state.len();
+                summary.heartbeat_rtt_offset_clients = heartbeat_rtt_offset_state.len();
+                let heartbeat_timeout_summary = runtime.summarize_heartbeat_timeouts(
+                    heartbeat_liveness_state,
+                    registry,
+                    timestamp,
+                    policy.heartbeat_timeout,
+                );
+                summary.last_heartbeat_timeout_summary = heartbeat_timeout_summary.clone();
+                iteration_summaries.push(ServerReceiveSendContinuousRuntimeIterationSummary {
+                    iteration_index,
+                    continuation_reason: continuation_reason.unwrap_or(
+                        ServerReceiveSendContinuousRuntimeContinuationReason::PacketProcessedWithoutClassification,
+                    ),
+                    auth_summary,
+                    registration_summary,
+                    runtime_rejection_summary,
+                    heartbeat_timeout_summary,
+                    outbound_queue_len: queue_collection_len_from_result(&result),
+                    video_queue_len: video_queue_state.total_len(),
+                });
+            }
+        }
+
+        None
+    }
+
+    fn summarize_heartbeat_timeouts(
+        &self,
+        heartbeat_liveness_state: &ServerHeartbeatLivenessState,
+        registry: &AuthenticatedSenderRegistry,
+        evaluated_at: TimestampMicros,
+        policy: Option<ServerHeartbeatTimeoutPolicy>,
+    ) -> Option<ServerHeartbeatTimeoutSweepSummary> {
+        let policy = policy?;
+        let client_ids: Vec<ClientId> = registry
+            .entries()
+            .map(|entry| entry.client_id.clone())
+            .collect();
+        if client_ids.is_empty() {
+            return Some(ServerHeartbeatTimeoutSweepSummary {
+                status: ServerOperationalConditionStatus::Continue,
+                clients_evaluated: 0,
+                timed_out_clients: 0,
+                most_severe_client_summary: None,
+            });
+        }
+
+        let liveness = ServerHeartbeatLivenessCommitBoundary;
+        let mut timed_out_clients = 0usize;
+        let mut most_severe_client_summary = None;
+        for client_id in client_ids {
+            let evaluation = liveness.evaluate_timeout(
+                heartbeat_liveness_state,
+                &client_id,
+                evaluated_at,
+                policy,
+            );
+            let summary = heartbeat_operational_summary_from_evaluation(&evaluation);
+            if matches!(
+                summary.status,
+                ServerOperationalConditionStatus::ReconnectRequired
+            ) {
+                timed_out_clients = timed_out_clients.saturating_add(1);
+            }
+            if most_severe_client_summary
+                .as_ref()
+                .map(|existing: &ServerHeartbeatOperationalSummary| {
+                    operational_status_rank(summary.status)
+                        > operational_status_rank(existing.status)
+                })
+                .unwrap_or(true)
+            {
+                most_severe_client_summary = Some(summary);
+            }
+        }
+
+        Some(ServerHeartbeatTimeoutSweepSummary {
+            status: if timed_out_clients > 0 {
+                ServerOperationalConditionStatus::ReconnectRequired
+            } else {
+                ServerOperationalConditionStatus::Continue
+            },
+            clients_evaluated: registry.entries().count(),
+            timed_out_clients,
+            most_severe_client_summary,
+        })
+    }
+
+    fn observe_continuous_runtime_error(
+        error: &ServerControllerReceiveSendRuntimeError,
+        summary: &mut ServerReceiveSendContinuousRuntimeSummary,
+    ) {
+        if let ServerControllerReceiveSendRuntimeError::Iteration(iteration_error) = error {
+            match iteration_error {
+                ServerReceiveSendOneIterationRuntimeError::ReceiveBody(kind) => {
+                    summary.last_receive_error = Some(*kind);
+                }
+                ServerReceiveSendOneIterationRuntimeError::Send(send_error) => {
+                    summary.last_send_error = Some(match send_error {
+                        ServerOutboundSendOneRuntimeError::Encode { error, .. } => {
+                            format!("Encode:{error:?}")
+                        }
+                        ServerOutboundSendOneRuntimeError::SocketSend { error_kind, .. } => {
+                            format!("SocketSend({error_kind:?})")
+                        }
+                    });
+                }
+                ServerReceiveSendOneIterationRuntimeError::OutputApply(_)
+                | ServerReceiveSendOneIterationRuntimeError::SendLog(_) => {}
+            }
+        }
+    }
+}
+
+fn operational_status_rank(status: ServerOperationalConditionStatus) -> u8 {
+    match status {
+        ServerOperationalConditionStatus::Continue => 0,
+        ServerOperationalConditionStatus::Reject => 1,
+        ServerOperationalConditionStatus::ReconnectRequired => 2,
+        ServerOperationalConditionStatus::InvestigationRequired => 3,
+    }
+}
+
+fn queue_collection_len_from_result(result: &ServerControllerReceiveSendRuntimeResult) -> usize {
+    let ServerControllerReceiveSendRuntimeResult::Iteration { iteration, .. } = result else {
+        return 0;
+    };
+    match &iteration.dequeue {
+        ServerOutboundQueueDequeueRuntimeResult::Ready(_) => 0,
+        ServerOutboundQueueDequeueRuntimeResult::Empty => iteration.queue_push.queue_len,
+    }
+}
+
 fn heartbeat_handoff_from_controller_result(
     result: &ServerControllerReceiveSendRuntimeResult,
 ) -> Option<&ServerHeartbeatAckHandoff> {
@@ -5399,6 +6146,7 @@ impl ServerContinuousReceiveLoopBodyDispatchRuntimeBoundary {
             }
             ServerHandlerDispatchResult::RegisteredHeartbeat(_)
             | ServerHandlerDispatchResult::RegisteredVideoFrame(_)
+            | ServerHandlerDispatchResult::RegisteredVideoFrameFragment(_)
             | ServerHandlerDispatchResult::RegisteredClientStats(_) => {
                 let registered = self.registered.dispatch_outcome(handler, heartbeat_timing);
                 match &registered.result {
@@ -12875,6 +13623,288 @@ destination = "stdout"
         assert_eq!(
             outcome.iteration_events[0].rejection_kind,
             Some(ServerReceiveRejectionReason::UnauthenticatedSource)
+        );
+    }
+
+    #[test]
+    fn receive_send_continuous_runtime_records_typed_continuation_and_auth_summary() {
+        let launcher = ServerReceiveSendContinuousRuntimeLauncher::default();
+        let bind_port = reserve_localhost_udp_port();
+        let startup_config = launcher
+            .load_startup_config_from_str(&receive_send_runtime_test_config(bind_port))
+            .expect("continuous runtime config should load");
+        let server_address = SocketAddr::from(([127, 0, 0, 1], bind_port));
+        let handle = std::thread::spawn(move || {
+            launcher.run_with_writers_and_policy(
+                startup_config,
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+                ServerReceiveSendContinuousRuntimePolicy {
+                    receive_timeout: Duration::from_millis(150),
+                    max_iterations: Some(1),
+                    heartbeat_timeout: Some(ServerHeartbeatTimeoutPolicy::new(5_000_000)),
+                    ..ServerReceiveSendContinuousRuntimePolicy::default()
+                },
+            )
+        });
+        let client_socket = UdpSocket::bind("127.0.0.1:0").expect("client socket should bind");
+        std::thread::sleep(Duration::from_millis(50));
+        client_socket
+            .send_to(
+                auth_request_packet("client-1", "presented-secret").as_slice(),
+                server_address,
+            )
+            .expect("accepted auth request should send");
+
+        let outcome = handle
+            .join()
+            .expect("continuous runtime thread should join")
+            .expect("continuous runtime should complete");
+
+        assert_eq!(
+            outcome.summary.stop_reason,
+            ServerReceiveSendContinuousRuntimeStopReason::MaxIterationsReached
+        );
+        assert_eq!(outcome.summary.iterations_attempted, 1);
+        assert_eq!(outcome.summary.iterations_completed, 1);
+        assert_eq!(outcome.summary.packets_received, 1);
+        assert_eq!(outcome.iteration_summaries.len(), 1);
+        assert_eq!(
+            outcome.iteration_summaries[0].continuation_reason,
+            ServerReceiveSendContinuousRuntimeContinuationReason::AcceptedPacket
+        );
+        let auth_summary = outcome
+            .summary
+            .last_auth_summary
+            .as_ref()
+            .expect("accepted auth should preserve continuous summary");
+        assert_eq!(
+            auth_summary.status,
+            ServerOperationalConditionStatus::Continue
+        );
+        assert_eq!(auth_summary.reason, ServerAuthOperationalReason::Accepted);
+        assert_eq!(outcome.summary.auth_responses_sent, 1);
+    }
+
+    #[test]
+    fn receive_send_continuous_runtime_preserves_runtime_rejection_summary() {
+        let launcher = ServerReceiveSendContinuousRuntimeLauncher::default();
+        let bind_port = reserve_localhost_udp_port();
+        let startup_config = launcher
+            .load_startup_config_from_str(&receive_send_runtime_test_config(bind_port))
+            .expect("continuous runtime config should load");
+        let server_address = SocketAddr::from(([127, 0, 0, 1], bind_port));
+        let handle = std::thread::spawn(move || {
+            launcher.run_with_writers_and_policy(
+                startup_config,
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+                ServerReceiveSendContinuousRuntimePolicy {
+                    receive_timeout: Duration::from_millis(150),
+                    max_iterations: Some(1),
+                    heartbeat_timeout: Some(ServerHeartbeatTimeoutPolicy::new(5_000_000)),
+                    ..ServerReceiveSendContinuousRuntimePolicy::default()
+                },
+            )
+        });
+        let client_socket = UdpSocket::bind("127.0.0.1:0").expect("client socket should bind");
+        std::thread::sleep(Duration::from_millis(50));
+        client_socket
+            .send_to(
+                test_packet(
+                    MessageType::Heartbeat as u16,
+                    FIXED_HEADER_LEN,
+                    2,
+                    &heartbeat_payload(),
+                )
+                .as_slice(),
+                server_address,
+            )
+            .expect("unauthenticated heartbeat should send");
+
+        let outcome = handle
+            .join()
+            .expect("continuous runtime thread should join")
+            .expect("continuous runtime should complete");
+
+        assert_eq!(outcome.summary.packets_received, 1);
+        assert_eq!(outcome.summary.rejected_packets, 1);
+        assert_eq!(outcome.iteration_summaries.len(), 1);
+        assert_eq!(
+            outcome.iteration_summaries[0].continuation_reason,
+            ServerReceiveSendContinuousRuntimeContinuationReason::RejectedPacket
+        );
+        let runtime_summary = outcome
+            .summary
+            .last_runtime_rejection_summary
+            .as_ref()
+            .expect("continuous runtime rejection summary should be preserved");
+        assert_eq!(
+            runtime_summary.status,
+            ServerOperationalConditionStatus::Reject
+        );
+        assert_eq!(
+            runtime_summary.reason,
+            PacketAcceptanceRejectReason::UnauthenticatedSource
+        );
+    }
+
+    #[test]
+    fn receive_send_continuous_runtime_tracks_fragment_reassembly_and_queue_counters() {
+        let launcher = ServerReceiveSendContinuousRuntimeLauncher::default();
+        let bind_port = reserve_localhost_udp_port();
+        let startup_config = launcher
+            .load_startup_config_from_str(&receive_send_runtime_test_config(bind_port))
+            .expect("continuous runtime config should load");
+        let server_address = SocketAddr::from(([127, 0, 0, 1], bind_port));
+        let handle = std::thread::spawn(move || {
+            launcher.run_with_writers_and_policy(
+                startup_config,
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+                ServerReceiveSendContinuousRuntimePolicy {
+                    receive_timeout: Duration::from_millis(150),
+                    max_iterations: Some(3),
+                    heartbeat_timeout: Some(ServerHeartbeatTimeoutPolicy::new(5_000_000)),
+                    ..ServerReceiveSendContinuousRuntimePolicy::default()
+                },
+            )
+        });
+        let client_socket = UdpSocket::bind("127.0.0.1:0").expect("client socket should bind");
+        std::thread::sleep(Duration::from_millis(50));
+        client_socket
+            .send_to(
+                auth_request_packet("client-1", "presented-secret").as_slice(),
+                server_address,
+            )
+            .expect("accepted auth request should send");
+
+        let mut fragment_zero = Vec::new();
+        ProtocolMessageEncoderBoundary
+            .encode_message(
+                EncodeContext {
+                    protocol_version: ProtocolVersion(2),
+                },
+                &ProtocolMessage::VideoFrameFragment(video_frame_fragment(
+                    "client-1",
+                    0,
+                    2,
+                    vec![0xaa, 0xbb],
+                )),
+                &mut fragment_zero,
+            )
+            .expect("fragment zero should encode");
+        let mut fragment_one = Vec::new();
+        ProtocolMessageEncoderBoundary
+            .encode_message(
+                EncodeContext {
+                    protocol_version: ProtocolVersion(2),
+                },
+                &ProtocolMessage::VideoFrameFragment(video_frame_fragment(
+                    "client-1",
+                    1,
+                    2,
+                    vec![0xcc, 0xdd, 0xee],
+                )),
+                &mut fragment_one,
+            )
+            .expect("fragment one should encode");
+        client_socket
+            .send_to(fragment_zero.as_slice(), server_address)
+            .expect("first fragment should send");
+        client_socket
+            .send_to(fragment_one.as_slice(), server_address)
+            .expect("second fragment should send");
+
+        let outcome = handle
+            .join()
+            .expect("continuous runtime thread should join")
+            .expect("continuous runtime should complete");
+
+        assert_eq!(outcome.summary.frames_reassembled, 1);
+        assert_eq!(outcome.summary.frames_queued, 1);
+        assert_eq!(outcome.summary.video_queue_len, 1);
+        assert_eq!(outcome.summary.incomplete_reassembly_frames, 0);
+        assert_eq!(outcome.video_queue_state.total_len(), 1);
+        assert!(outcome.reassembly_state.frame_progress().is_empty());
+    }
+
+    #[test]
+    fn receive_send_continuous_runtime_reports_heartbeat_timeout_summary() {
+        let launcher = ServerReceiveSendContinuousRuntimeLauncher::default();
+        let bind_port = reserve_localhost_udp_port();
+        let startup_config = launcher
+            .load_startup_config_from_str(&receive_send_runtime_test_config(bind_port))
+            .expect("continuous runtime config should load");
+        let server_address = SocketAddr::from(([127, 0, 0, 1], bind_port));
+        let handle = std::thread::spawn(move || {
+            launcher.run_with_writers_and_policy(
+                startup_config,
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+                ServerReceiveSendContinuousRuntimePolicy {
+                    receive_timeout: Duration::from_millis(60),
+                    max_iterations: None,
+                    heartbeat_timeout: Some(ServerHeartbeatTimeoutPolicy::new(1)),
+                    ..ServerReceiveSendContinuousRuntimePolicy::default()
+                },
+            )
+        });
+        let client_socket = UdpSocket::bind("127.0.0.1:0").expect("client socket should bind");
+        std::thread::sleep(Duration::from_millis(50));
+        client_socket
+            .send_to(
+                auth_request_packet("client-1", "presented-secret").as_slice(),
+                server_address,
+            )
+            .expect("accepted auth request should send");
+        client_socket
+            .send_to(
+                test_packet(
+                    MessageType::Heartbeat as u16,
+                    FIXED_HEADER_LEN,
+                    2,
+                    &heartbeat_payload(),
+                )
+                .as_slice(),
+                server_address,
+            )
+            .expect("heartbeat should send");
+
+        let outcome = handle
+            .join()
+            .expect("continuous runtime thread should join")
+            .expect("continuous runtime should complete");
+
+        assert_eq!(
+            outcome.summary.stop_reason,
+            ServerReceiveSendContinuousRuntimeStopReason::ReceiveTimedOut
+        );
+        let timeout_summary = outcome
+            .summary
+            .last_heartbeat_timeout_summary
+            .as_ref()
+            .expect("timeout summary should be preserved on stop");
+        assert_eq!(
+            timeout_summary.status,
+            ServerOperationalConditionStatus::ReconnectRequired
+        );
+        assert!(timeout_summary.timed_out_clients >= 1);
+        let client_summary = timeout_summary
+            .most_severe_client_summary
+            .as_ref()
+            .expect("timed out client summary should exist");
+        assert_eq!(
+            client_summary.reason,
+            ServerHeartbeatOperationalReason::TimedOut
         );
     }
 

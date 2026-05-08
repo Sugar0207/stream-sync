@@ -282,6 +282,48 @@ fn main() {
                 }
             }
         }
+        Some("--receive-send-runtime-continuous") => {
+            let command =
+                parse_receive_send_runtime_continuous_command_args(args.collect::<Vec<_>>());
+            let launcher =
+                stream_sync_server::ServerReceiveSendContinuousRuntimeLauncher::default();
+            let policy = stream_sync_server::ServerReceiveSendContinuousRuntimePolicy {
+                receive_timeout: std::time::Duration::from_millis(command.receive_timeout_ms),
+                max_iterations: command.max_iterations,
+                heartbeat_timeout: Some(stream_sync_server::ServerHeartbeatTimeoutPolicy::new(
+                    command.heartbeat_timeout_micros,
+                )),
+                ..stream_sync_server::ServerReceiveSendContinuousRuntimePolicy::default()
+            };
+            match launcher.run_from_path_with_writers_and_policy(
+                &command.config_path,
+                std::io::stderr(),
+                std::io::stderr(),
+                std::io::stderr(),
+                std::io::stderr(),
+                policy,
+            ) {
+                Ok(outcome) => println!(
+                    "{}",
+                    format_receive_send_runtime_continuous_summary(
+                        "--receive-send-runtime-continuous",
+                        &command.config_path,
+                        &outcome,
+                    )
+                ),
+                Err(error) => {
+                    eprintln!(
+                        "{}",
+                        format_receive_send_runtime_continuous_failure_summary(
+                            "--receive-send-runtime-continuous",
+                            &command,
+                            &error,
+                        )
+                    );
+                    std::process::exit(1);
+                }
+            }
+        }
         Some("--receive-auth-video-queue-once") => {
             let config_path = args
                 .next()
@@ -495,7 +537,7 @@ fn main() {
         }
         _ => {
             println!(
-                "stream-sync-server scaffold; use --auth-response-poc-once [config-path], --receive-send-once [config-path], --receive-send-twice [config-path], --receive-send-three [config-path], --receive-send-runtime-bounded [config-path] [max-iterations] [receive-timeout-ms], --receive-auth-video-queue-once [config-path] [max-video-packets] [receive-timeout-ms] [expected-reassembled-frames] [stop-after-expected-reassembled-frames] [receive-buffer-bytes] [expected-reassembled-clients] [expected-reassembled-frames-per-client], --receive-auth-video-queue-and-serve-handoff-once [config-path] [pipe-name] [max-video-packets] [receive-timeout-ms] [expected-reassembled-frames] [stop-after-expected-reassembled-frames] [receive-buffer-bytes] [expected-reassembled-clients] [expected-reassembled-frames-per-client], or --receive-auth-video-queue-and-serve-handoff-many [config-path] [pipe-name] [max-requests] [max-video-packets] [receive-timeout-ms] [expected-reassembled-frames] [stop-after-expected-reassembled-frames] [receive-buffer-bytes] [expected-reassembled-clients] [expected-reassembled-frames-per-client]"
+                "stream-sync-server scaffold; use --auth-response-poc-once [config-path], --receive-send-once [config-path], --receive-send-twice [config-path], --receive-send-three [config-path], --receive-send-runtime-bounded [config-path] [max-iterations] [receive-timeout-ms], --receive-send-runtime-continuous [config-path] [receive-timeout-ms] [max-iterations-or-0-for-unbounded] [heartbeat-timeout-micros], --receive-auth-video-queue-once [config-path] [max-video-packets] [receive-timeout-ms] [expected-reassembled-frames] [stop-after-expected-reassembled-frames] [receive-buffer-bytes] [expected-reassembled-clients] [expected-reassembled-frames-per-client], --receive-auth-video-queue-and-serve-handoff-once [config-path] [pipe-name] [max-video-packets] [receive-timeout-ms] [expected-reassembled-frames] [stop-after-expected-reassembled-frames] [receive-buffer-bytes] [expected-reassembled-clients] [expected-reassembled-frames-per-client], or --receive-auth-video-queue-and-serve-handoff-many [config-path] [pipe-name] [max-requests] [max-video-packets] [receive-timeout-ms] [expected-reassembled-frames] [stop-after-expected-reassembled-frames] [receive-buffer-bytes] [expected-reassembled-clients] [expected-reassembled-frames-per-client]"
             );
         }
     }
@@ -506,6 +548,14 @@ struct ReceiveSendRuntimeBoundedCommandArgs {
     config_path: String,
     max_iterations: usize,
     receive_timeout_ms: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ReceiveSendRuntimeContinuousCommandArgs {
+    config_path: String,
+    receive_timeout_ms: u64,
+    max_iterations: Option<usize>,
+    heartbeat_timeout_micros: u64,
 }
 
 fn parse_receive_send_runtime_bounded_command_args(
@@ -520,6 +570,29 @@ fn parse_receive_send_runtime_bounded_command_args(
             .unwrap_or(16),
         receive_timeout_ms: parse_optional_arg_or_exit::<u64>(args.next(), "receive-timeout-ms")
             .unwrap_or(1_000),
+    }
+}
+
+fn parse_receive_send_runtime_continuous_command_args(
+    args: Vec<String>,
+) -> ReceiveSendRuntimeContinuousCommandArgs {
+    let mut args = args.into_iter();
+    ReceiveSendRuntimeContinuousCommandArgs {
+        config_path: args
+            .next()
+            .unwrap_or_else(|| "configs/examples/server.example.toml".to_string()),
+        receive_timeout_ms: parse_optional_arg_or_exit::<u64>(args.next(), "receive-timeout-ms")
+            .unwrap_or(1_000),
+        max_iterations: parse_optional_arg_or_exit::<usize>(
+            args.next(),
+            "max-iterations-or-0-for-unbounded",
+        )
+        .and_then(|value| (value > 0).then_some(value)),
+        heartbeat_timeout_micros: parse_optional_arg_or_exit::<u64>(
+            args.next(),
+            "heartbeat-timeout-micros",
+        )
+        .unwrap_or(5_000_000),
     }
 }
 
@@ -660,6 +733,99 @@ fn format_receive_send_runtime_bounded_summary(
     )
 }
 
+fn format_receive_send_runtime_continuous_summary(
+    command_name: &str,
+    config_path: &str,
+    outcome: &stream_sync_server::ServerReceiveSendContinuousRuntimeOutcome,
+) -> String {
+    let summary = &outcome.summary;
+    let last_heartbeat_timeout = summary.last_heartbeat_timeout_summary.as_ref();
+    format!(
+        "command_name={} config_path={} receive_timeout_ms={} max_iterations={} heartbeat_timeout_micros={} iterations_attempted={} iterations_completed={} packets_received={} accepted_packets={} rejected_packets={} decode_errors={} auth_requests_received={} auth_responses_sent={} heartbeats_received={} heartbeat_acks_sent={} client_stats_received={} heartbeat_observations_committed={} frames_reassembled={} frames_queued={} direct_frames_queued={} video_queue_len={} incomplete_reassembly_frames={} outbound_queue_len={} registered_clients={} heartbeat_liveness_clients={} heartbeat_rtt_offset_clients={} last_receive_error={} last_send_error={} last_rejected_reason={} last_auth_status={} last_auth_reason={} last_registration_status={} last_registration_reason={} last_runtime_rejection_status={} last_runtime_rejection_reason={} last_heartbeat_timeout_status={} last_heartbeat_timeout_clients={} last_heartbeat_timeout_timed_out={} last_heartbeat_timeout_client={} last_heartbeat_timeout_reason={} stop_reason={}",
+        command_name,
+        config_path,
+        summary.receive_timeout.as_millis(),
+        format_optional_usize(summary.max_iterations),
+        last_heartbeat_timeout
+            .and_then(|value| {
+                value.most_severe_client_summary
+                    .as_ref()
+                    .and_then(|client| client.timeout_after_micros)
+            })
+            .unwrap_or(0),
+        summary.iterations_attempted,
+        summary.iterations_completed,
+        summary.packets_received,
+        summary.accepted_packets,
+        summary.rejected_packets,
+        summary.decode_errors,
+        summary.auth_requests_received,
+        summary.auth_responses_sent,
+        summary.heartbeats_received,
+        summary.heartbeat_acks_sent,
+        summary.client_stats_received,
+        summary.heartbeat_observations_committed,
+        summary.frames_reassembled,
+        summary.frames_queued,
+        summary.direct_frames_queued,
+        summary.video_queue_len,
+        summary.incomplete_reassembly_frames,
+        summary.outbound_queue_len,
+        summary.registered_clients,
+        summary.heartbeat_liveness_clients,
+        summary.heartbeat_rtt_offset_clients,
+        format_optional_error_kind(summary.last_receive_error),
+        format_optional_string(summary.last_send_error.as_deref()),
+        format_optional_string(summary.last_rejected_reason.as_deref()),
+        format_optional_operational_status(
+            summary.last_auth_summary.as_ref().map(|value| value.status)
+        ),
+        format_optional_auth_reason(summary.last_auth_summary.as_ref().map(|value| value.reason)),
+        format_optional_operational_status(
+            summary
+                .last_registration_summary
+                .as_ref()
+                .map(|value| value.status)
+        ),
+        format_optional_registration_reason(
+            summary
+                .last_registration_summary
+                .as_ref()
+                .map(|value| value.reason)
+        ),
+        format_optional_operational_status(
+            summary
+                .last_runtime_rejection_summary
+                .as_ref()
+                .map(|value| value.status)
+        ),
+        format_optional_packet_reject_reason(
+            summary
+                .last_runtime_rejection_summary
+                .as_ref()
+                .map(|value| value.reason)
+        ),
+        format_optional_operational_status(last_heartbeat_timeout.map(|value| value.status)),
+        last_heartbeat_timeout
+            .map(|value| value.clients_evaluated)
+            .unwrap_or(0),
+        last_heartbeat_timeout
+            .map(|value| value.timed_out_clients)
+            .unwrap_or(0),
+        format_optional_string(
+            last_heartbeat_timeout
+                .and_then(|value| value.most_severe_client_summary.as_ref())
+                .map(|value| value.client_id.0.as_str())
+        ),
+        format_optional_heartbeat_reason(
+            last_heartbeat_timeout
+                .and_then(|value| value.most_severe_client_summary.as_ref())
+                .map(|value| value.reason)
+        ),
+        receive_send_runtime_continuous_stop_reason_name(summary.stop_reason),
+    )
+}
+
 fn format_receive_send_runtime_bounded_failure_summary(
     command_name: &str,
     command: &ReceiveSendRuntimeBoundedCommandArgs,
@@ -761,6 +927,108 @@ fn format_receive_send_runtime_bounded_failure_summary(
     )
 }
 
+fn format_receive_send_runtime_continuous_failure_summary(
+    command_name: &str,
+    command: &ReceiveSendRuntimeContinuousCommandArgs,
+    error: &stream_sync_server::ServerReceiveSendContinuousRuntimeError,
+) -> String {
+    let partial_summary = continuous_runtime_error_partial_summary(error);
+    format!(
+        "command_name={} config_path={} receive_timeout_ms={} max_iterations={} heartbeat_timeout_micros={} iterations_attempted={} iterations_completed={} packets_received={} accepted_packets={} rejected_packets={} frames_reassembled={} frames_queued={} video_queue_len={} last_receive_error={} last_send_error={} last_rejected_reason={} last_auth_status={} last_auth_reason={} last_registration_status={} last_registration_reason={} last_runtime_rejection_status={} last_runtime_rejection_reason={} last_heartbeat_timeout_status={} stop_reason={} fatal_error_kind={} fatal_error_detail={}",
+        command_name,
+        command.config_path,
+        command.receive_timeout_ms,
+        format_optional_usize(command.max_iterations),
+        command.heartbeat_timeout_micros,
+        partial_summary
+            .as_ref()
+            .map(|summary| summary.iterations_attempted)
+            .unwrap_or(0),
+        partial_summary
+            .as_ref()
+            .map(|summary| summary.iterations_completed)
+            .unwrap_or(0),
+        partial_summary
+            .as_ref()
+            .map(|summary| summary.packets_received)
+            .unwrap_or(0),
+        partial_summary
+            .as_ref()
+            .map(|summary| summary.accepted_packets)
+            .unwrap_or(0),
+        partial_summary
+            .as_ref()
+            .map(|summary| summary.rejected_packets)
+            .unwrap_or(0),
+        partial_summary
+            .as_ref()
+            .map(|summary| summary.frames_reassembled)
+            .unwrap_or(0),
+        partial_summary
+            .as_ref()
+            .map(|summary| summary.frames_queued)
+            .unwrap_or(0),
+        partial_summary
+            .as_ref()
+            .map(|summary| summary.video_queue_len)
+            .unwrap_or(0),
+        format_optional_error_kind(
+            partial_summary
+                .as_ref()
+                .and_then(|summary| summary.last_receive_error)
+        ),
+        format_optional_string(
+            partial_summary
+                .as_ref()
+                .and_then(|summary| summary.last_send_error.as_deref())
+        ),
+        format_optional_string(
+            partial_summary
+                .as_ref()
+                .and_then(|summary| summary.last_rejected_reason.as_deref())
+        ),
+        format_optional_operational_status(partial_summary.as_ref().and_then(|summary| {
+            summary.last_auth_summary.as_ref().map(|value| value.status)
+        })),
+        format_optional_auth_reason(partial_summary.as_ref().and_then(|summary| {
+            summary.last_auth_summary.as_ref().map(|value| value.reason)
+        })),
+        format_optional_operational_status(partial_summary.as_ref().and_then(|summary| {
+            summary
+                .last_registration_summary
+                .as_ref()
+                .map(|value| value.status)
+        })),
+        format_optional_registration_reason(partial_summary.as_ref().and_then(|summary| {
+            summary
+                .last_registration_summary
+                .as_ref()
+                .map(|value| value.reason)
+        })),
+        format_optional_operational_status(partial_summary.as_ref().and_then(|summary| {
+            summary
+                .last_runtime_rejection_summary
+                .as_ref()
+                .map(|value| value.status)
+        })),
+        format_optional_packet_reject_reason(partial_summary.as_ref().and_then(|summary| {
+            summary
+                .last_runtime_rejection_summary
+                .as_ref()
+                .map(|value| value.reason)
+        })),
+        format_optional_operational_status(partial_summary.as_ref().and_then(|summary| {
+            summary
+                .last_heartbeat_timeout_summary
+                .as_ref()
+                .map(|value| value.status)
+        })),
+        continuous_runtime_error_stop_reason(error),
+        continuous_runtime_error_kind(error),
+        continuous_runtime_error_detail(error),
+    )
+}
+
 fn receive_send_runtime_bounded_stop_reason_name(
     reason: stream_sync_server::ServerReceiveSendRuntimeBoundedStopReason,
 ) -> String {
@@ -775,6 +1043,25 @@ fn receive_send_runtime_bounded_stop_reason_name(
             "ControllerStopped".to_string()
         }
         stream_sync_server::ServerReceiveSendRuntimeBoundedStopReason::SocketReceiveFailed(
+            error_kind,
+        ) => format!("SocketReceiveFailed({error_kind:?})"),
+    }
+}
+
+fn receive_send_runtime_continuous_stop_reason_name(
+    reason: stream_sync_server::ServerReceiveSendContinuousRuntimeStopReason,
+) -> String {
+    match reason {
+        stream_sync_server::ServerReceiveSendContinuousRuntimeStopReason::MaxIterationsReached => {
+            "MaxIterationsReached".to_string()
+        }
+        stream_sync_server::ServerReceiveSendContinuousRuntimeStopReason::ReceiveTimedOut => {
+            "ReceiveTimedOut".to_string()
+        }
+        stream_sync_server::ServerReceiveSendContinuousRuntimeStopReason::ControllerStopped => {
+            "ControllerStopped".to_string()
+        }
+        stream_sync_server::ServerReceiveSendContinuousRuntimeStopReason::SocketReceiveFailed(
             error_kind,
         ) => format!("SocketReceiveFailed({error_kind:?})"),
     }
@@ -870,6 +1157,72 @@ fn bounded_runtime_error_partial_summary(
     }
 }
 
+fn continuous_runtime_error_stop_reason(
+    error: &stream_sync_server::ServerReceiveSendContinuousRuntimeError,
+) -> &'static str {
+    match error {
+        stream_sync_server::ServerReceiveSendContinuousRuntimeError::Runtime { .. } => {
+            "RuntimeFatalError"
+        }
+        stream_sync_server::ServerReceiveSendContinuousRuntimeError::OneIterationStartup(_)
+        | stream_sync_server::ServerReceiveSendContinuousRuntimeError::Bind { .. }
+        | stream_sync_server::ServerReceiveSendContinuousRuntimeError::SetReceiveTimeout {
+            ..
+        } => "StartupFailure",
+    }
+}
+
+fn continuous_runtime_error_kind(
+    error: &stream_sync_server::ServerReceiveSendContinuousRuntimeError,
+) -> &'static str {
+    match error {
+        stream_sync_server::ServerReceiveSendContinuousRuntimeError::OneIterationStartup(_) => {
+            "ConfigLoadFailure"
+        }
+        stream_sync_server::ServerReceiveSendContinuousRuntimeError::Bind { .. } => {
+            "SocketBindFailure"
+        }
+        stream_sync_server::ServerReceiveSendContinuousRuntimeError::SetReceiveTimeout {
+            ..
+        } => "SocketReceiveSetupFailure",
+        stream_sync_server::ServerReceiveSendContinuousRuntimeError::Runtime { error, .. } => {
+            match error {
+                stream_sync_server::ServerControllerReceiveSendRuntimeError::Iteration(
+                    stream_sync_server::ServerReceiveSendOneIterationRuntimeError::Send(_),
+                ) => "SendFailure",
+                stream_sync_server::ServerControllerReceiveSendRuntimeError::Iteration(
+                    stream_sync_server::ServerReceiveSendOneIterationRuntimeError::ReceiveBody(_),
+                ) => "SocketReceiveFailure",
+                _ => "RuntimeFatalError",
+            }
+        }
+    }
+}
+
+fn continuous_runtime_error_detail(
+    error: &stream_sync_server::ServerReceiveSendContinuousRuntimeError,
+) -> String {
+    match error {
+        stream_sync_server::ServerReceiveSendContinuousRuntimeError::Runtime {
+            iteration_index,
+            error,
+            ..
+        } => format!("iteration_index={} error={error:?}", iteration_index),
+        other => format!("{other:?}"),
+    }
+}
+
+fn continuous_runtime_error_partial_summary(
+    error: &stream_sync_server::ServerReceiveSendContinuousRuntimeError,
+) -> Option<&stream_sync_server::ServerReceiveSendContinuousRuntimeSummary> {
+    match error {
+        stream_sync_server::ServerReceiveSendContinuousRuntimeError::Runtime {
+            summary, ..
+        } => Some(summary),
+        _ => None,
+    }
+}
+
 fn format_optional_error_kind(error_kind: Option<std::io::ErrorKind>) -> String {
     error_kind
         .map(|kind| format!("{kind:?}"))
@@ -878,6 +1231,12 @@ fn format_optional_error_kind(error_kind: Option<std::io::ErrorKind>) -> String 
 
 fn format_optional_string(value: Option<&str>) -> String {
     value.unwrap_or("none").to_string()
+}
+
+fn format_optional_usize(value: Option<usize>) -> String {
+    value
+        .map(|value| value.to_string())
+        .unwrap_or_else(|| "none".to_string())
 }
 
 fn operational_status_name(
@@ -941,6 +1300,16 @@ fn packet_reject_reason_name(
     }
 }
 
+fn heartbeat_operational_reason_name(
+    reason: stream_sync_server::ServerHeartbeatOperationalReason,
+) -> &'static str {
+    match reason {
+        stream_sync_server::ServerHeartbeatOperationalReason::NoHeartbeatYet => "NoHeartbeatYet",
+        stream_sync_server::ServerHeartbeatOperationalReason::Alive => "Alive",
+        stream_sync_server::ServerHeartbeatOperationalReason::TimedOut => "TimedOut",
+    }
+}
+
 fn format_optional_operational_status(
     status: Option<stream_sync_server::ServerOperationalConditionStatus>,
 ) -> String {
@@ -973,6 +1342,15 @@ fn format_optional_packet_reject_reason(
 ) -> String {
     reason
         .map(packet_reject_reason_name)
+        .unwrap_or("none")
+        .to_string()
+}
+
+fn format_optional_heartbeat_reason(
+    reason: Option<stream_sync_server::ServerHeartbeatOperationalReason>,
+) -> String {
+    reason
+        .map(heartbeat_operational_reason_name)
         .unwrap_or("none")
         .to_string()
 }
@@ -1379,7 +1757,10 @@ mod tests {
     use super::{
         format_handoff_read_mode, format_receive_send_runtime_bounded_failure_summary,
         format_receive_send_runtime_bounded_summary,
+        format_receive_send_runtime_continuous_failure_summary,
+        format_receive_send_runtime_continuous_summary,
         parse_receive_send_runtime_bounded_command_args,
+        parse_receive_send_runtime_continuous_command_args,
     };
 
     #[test]
@@ -1418,6 +1799,43 @@ mod tests {
         assert_eq!(args.config_path, "configs/custom/server.toml");
         assert_eq!(args.max_iterations, 24);
         assert_eq!(args.receive_timeout_ms, 250);
+    }
+
+    #[test]
+    fn parse_receive_send_runtime_continuous_command_uses_defaults() {
+        let args = parse_receive_send_runtime_continuous_command_args(Vec::new());
+
+        assert_eq!(args.config_path, "configs/examples/server.example.toml");
+        assert_eq!(args.receive_timeout_ms, 1_000);
+        assert_eq!(args.max_iterations, None);
+        assert_eq!(args.heartbeat_timeout_micros, 5_000_000);
+    }
+
+    #[test]
+    fn parse_receive_send_runtime_continuous_command_parses_custom_values() {
+        let args = parse_receive_send_runtime_continuous_command_args(vec![
+            "configs/custom/server.toml".to_string(),
+            "250".to_string(),
+            "32".to_string(),
+            "9000000".to_string(),
+        ]);
+
+        assert_eq!(args.config_path, "configs/custom/server.toml");
+        assert_eq!(args.receive_timeout_ms, 250);
+        assert_eq!(args.max_iterations, Some(32));
+        assert_eq!(args.heartbeat_timeout_micros, 9_000_000);
+    }
+
+    #[test]
+    fn parse_receive_send_runtime_continuous_command_treats_zero_max_iterations_as_unbounded() {
+        let args = parse_receive_send_runtime_continuous_command_args(vec![
+            "configs/custom/server.toml".to_string(),
+            "250".to_string(),
+            "0".to_string(),
+            "9000000".to_string(),
+        ]);
+
+        assert_eq!(args.max_iterations, None);
     }
 
     #[test]
@@ -1532,6 +1950,194 @@ mod tests {
         assert!(summary.contains("last_runtime_rejection_status=Reject"));
         assert!(summary.contains("last_runtime_rejection_reason=RunIdMismatch"));
         assert!(summary.contains("stop_reason=ReceiveTimedOut"));
+    }
+
+    #[test]
+    fn receive_send_runtime_continuous_summary_includes_required_fields() {
+        let summary = format_receive_send_runtime_continuous_summary(
+            "--receive-send-runtime-continuous",
+            "configs/examples/server.example.toml",
+            &stream_sync_server::ServerReceiveSendContinuousRuntimeOutcome {
+                bind_address: "127.0.0.1:5000"
+                    .parse()
+                    .expect("bind address should parse"),
+                registry: stream_sync_server::AuthenticatedSenderRegistry::default(),
+                queue_collection: stream_sync_server::ServerOutboundQueueCollection::default(),
+                video_queue_state: stream_sync_server::ServerVideoFrameQueueState::default(),
+                reassembly_state: stream_sync_server::ServerVideoFrameReassemblyState::default(),
+                heartbeat_liveness_state: stream_sync_server::ServerHeartbeatLivenessState::default(),
+                heartbeat_rtt_offset_state:
+                    stream_sync_server::ServerHeartbeatRttOffsetState::default(),
+                iterations: Vec::new(),
+                iteration_summaries: Vec::new(),
+                summary: stream_sync_server::ServerReceiveSendContinuousRuntimeSummary {
+                    receive_timeout: std::time::Duration::from_millis(1_000),
+                    max_iterations: Some(16),
+                    iterations_attempted: 4,
+                    iterations_completed: 4,
+                    packets_received: 3,
+                    accepted_packets: 2,
+                    rejected_packets: 1,
+                    decode_errors: 0,
+                    auth_requests_received: 1,
+                    auth_responses_sent: 1,
+                    heartbeats_received: 1,
+                    heartbeat_acks_sent: 1,
+                    client_stats_received: 1,
+                    heartbeat_observations_committed: 1,
+                    frames_reassembled: 2,
+                    frames_queued: 3,
+                    direct_frames_queued: 1,
+                    outbound_queue_len: 0,
+                    video_queue_len: 3,
+                    incomplete_reassembly_frames: 0,
+                    registered_clients: 2,
+                    heartbeat_liveness_clients: 1,
+                    heartbeat_rtt_offset_clients: 1,
+                    last_receive_error: Some(std::io::ErrorKind::TimedOut),
+                    last_send_error: None,
+                    last_rejected_reason: Some("UnauthenticatedSource".to_string()),
+                    last_auth_summary: Some(stream_sync_server::ServerAuthOperationalSummary {
+                        status: stream_sync_server::ServerOperationalConditionStatus::Continue,
+                        client_id: ClientId("client-1".to_string()),
+                        run_id: RunId("run-1".to_string()),
+                        reason: stream_sync_server::ServerAuthOperationalReason::Accepted,
+                    }),
+                    last_registration_summary: Some(
+                        stream_sync_server::AuthenticatedSenderRegistrationSummary {
+                            status: stream_sync_server::ServerOperationalConditionStatus::Continue,
+                            client_id: ClientId("client-1".to_string()),
+                            previous_source: None,
+                            current_source: std::net::SocketAddr::from(([127, 0, 0, 1], 5000))
+                                .into(),
+                            previous_run_id: None,
+                            current_run_id: RunId("run-1".to_string()),
+                            reason: stream_sync_server::AuthenticatedSenderRegistrationReason::FreshRegistration,
+                            entry: stream_sync_server::AuthenticatedSenderEntry {
+                                client_id: ClientId("client-1".to_string()),
+                                source: std::net::SocketAddr::from(([127, 0, 0, 1], 5000))
+                                    .into(),
+                                run_id: RunId("run-1".to_string()),
+                                protocol_version: ProtocolVersion(2),
+                                registered_at: Some(TimestampMicros(10)),
+                            },
+                        }
+                    ),
+                    last_runtime_rejection_summary: Some(
+                        stream_sync_server::ServerRuntimePacketOperationalSummary {
+                            status: stream_sync_server::ServerOperationalConditionStatus::Reject,
+                            message_type: MessageType::Heartbeat,
+                            client_id: Some(ClientId("client-1".to_string())),
+                            run_id: Some(RunId("run-1".to_string())),
+                            reason: stream_sync_server::PacketAcceptanceRejectReason::UnauthenticatedSource,
+                        }
+                    ),
+                    last_heartbeat_timeout_summary: Some(
+                        stream_sync_server::ServerHeartbeatTimeoutSweepSummary {
+                            status: stream_sync_server::ServerOperationalConditionStatus::ReconnectRequired,
+                            clients_evaluated: 2,
+                            timed_out_clients: 1,
+                            most_severe_client_summary: Some(
+                                stream_sync_server::ServerHeartbeatOperationalSummary {
+                                    status: stream_sync_server::ServerOperationalConditionStatus::ReconnectRequired,
+                                    client_id: ClientId("client-2".to_string()),
+                                    reason: stream_sync_server::ServerHeartbeatOperationalReason::TimedOut,
+                                    last_server_received_at: Some(TimestampMicros(30)),
+                                    elapsed_micros: Some(5_000_000),
+                                    timeout_after_micros: Some(5_000_000),
+                                }
+                            ),
+                        }
+                    ),
+                    stop_reason:
+                        stream_sync_server::ServerReceiveSendContinuousRuntimeStopReason::ReceiveTimedOut,
+                },
+            },
+        );
+
+        assert!(summary.contains("command_name=--receive-send-runtime-continuous"));
+        assert!(summary.contains("receive_timeout_ms=1000"));
+        assert!(summary.contains("max_iterations=16"));
+        assert!(summary.contains("packets_received=3"));
+        assert!(summary.contains("frames_reassembled=2"));
+        assert!(summary.contains("frames_queued=3"));
+        assert!(summary.contains("last_auth_status=Continue"));
+        assert!(summary.contains("last_registration_reason=FreshRegistration"));
+        assert!(summary.contains("last_runtime_rejection_reason=UnauthenticatedSource"));
+        assert!(summary.contains("last_heartbeat_timeout_status=ReconnectRequired"));
+        assert!(summary.contains("last_heartbeat_timeout_client=client-2"));
+        assert!(summary.contains("last_heartbeat_timeout_reason=TimedOut"));
+        assert!(summary.contains("stop_reason=ReceiveTimedOut"));
+    }
+
+    #[test]
+    fn receive_send_runtime_continuous_failure_summary_includes_runtime_visibility() {
+        let summary = format_receive_send_runtime_continuous_failure_summary(
+            "--receive-send-runtime-continuous",
+            &super::ReceiveSendRuntimeContinuousCommandArgs {
+                config_path: "configs/examples/server.example.toml".to_string(),
+                receive_timeout_ms: 500,
+                max_iterations: Some(4),
+                heartbeat_timeout_micros: 5_000_000,
+            },
+            &stream_sync_server::ServerReceiveSendContinuousRuntimeError::Runtime {
+                iteration_index: 2,
+                error: stream_sync_server::ServerControllerReceiveSendRuntimeError::Iteration(
+                    stream_sync_server::ServerReceiveSendOneIterationRuntimeError::Send(
+                        stream_sync_server::ServerOutboundSendOneRuntimeError::SocketSend {
+                            error_kind: std::io::ErrorKind::ConnectionRefused,
+                            event: stream_sync_net_core::OutboundSendLoopEvent {
+                                state: stream_sync_net_core::OutboundSendLoopTickState::Failed,
+                                log_event: None,
+                            },
+                        },
+                    ),
+                ),
+                summary: stream_sync_server::ServerReceiveSendContinuousRuntimeSummary {
+                    receive_timeout: std::time::Duration::from_millis(500),
+                    max_iterations: Some(4),
+                    iterations_attempted: 3,
+                    iterations_completed: 2,
+                    packets_received: 2,
+                    accepted_packets: 2,
+                    rejected_packets: 0,
+                    decode_errors: 0,
+                    auth_requests_received: 1,
+                    auth_responses_sent: 1,
+                    heartbeats_received: 1,
+                    heartbeat_acks_sent: 1,
+                    client_stats_received: 0,
+                    heartbeat_observations_committed: 0,
+                    frames_reassembled: 0,
+                    frames_queued: 0,
+                    direct_frames_queued: 0,
+                    outbound_queue_len: 0,
+                    video_queue_len: 0,
+                    incomplete_reassembly_frames: 0,
+                    registered_clients: 1,
+                    heartbeat_liveness_clients: 1,
+                    heartbeat_rtt_offset_clients: 0,
+                    last_receive_error: None,
+                    last_send_error: Some("SocketSend(ConnectionRefused)".to_string()),
+                    last_rejected_reason: None,
+                    last_auth_summary: None,
+                    last_registration_summary: None,
+                    last_runtime_rejection_summary: None,
+                    last_heartbeat_timeout_summary: None,
+                    stop_reason:
+                        stream_sync_server::ServerReceiveSendContinuousRuntimeStopReason::MaxIterationsReached,
+                },
+            },
+        );
+
+        assert!(summary.contains("command_name=--receive-send-runtime-continuous"));
+        assert!(summary.contains("receive_timeout_ms=500"));
+        assert!(summary.contains("max_iterations=4"));
+        assert!(summary.contains("frames_reassembled=0"));
+        assert!(summary.contains("last_send_error=SocketSend(ConnectionRefused)"));
+        assert!(summary.contains("stop_reason=RuntimeFatalError"));
+        assert!(summary.contains("fatal_error_kind=SendFailure"));
+        assert!(summary.contains("fatal_error_detail=iteration_index=2"));
     }
 
     #[test]

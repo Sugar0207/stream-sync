@@ -5,6 +5,87 @@
 - Codex
 
 ### Work
+- Implemented the minimal continuous receive/send runtime slice before
+  2-client long-run validation.
+- Added a loop-owned server runtime command:
+  - `--receive-send-runtime-continuous`
+- Kept the existing one-iteration controller boundary and added only the outer
+  persistent ownership needed for long-run observation:
+  - socket
+  - authenticated sender registry
+  - outbound queue collection
+  - video queue state
+  - fragment reassembly state
+  - heartbeat liveness state
+  - RTT/offset state
+- Extended the continuous path so it preserves and reports typed summaries for:
+  - auth decision
+  - registration / re-registration
+  - runtime packet rejection
+  - heartbeat timeout sweep
+- Added long-run-facing counters and queue visibility:
+  - packets received
+  - accepted / rejected packets
+  - frames reassembled
+  - frames queued
+  - direct frames queued
+  - video queue length
+  - incomplete reassembly count
+  - heartbeat observation commit count
+- Kept `VideoFrameFragment` handling explicit in the continuous path so
+  completed reassemblies enter the existing queue boundary instead of being
+  dropped as non-classified dispatch results.
+- Added CLI formatter / parser coverage and continuous runtime focused tests for
+  typed continuation / stop reasons and long-run observation fields.
+
+### Changed Files
+- `apps/server/src/lib.rs`
+- `apps/server/src/main.rs`
+- `docs/architecture/system-design.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### Decision
+- Treat the new continuous runtime as the smallest loop-oriented server owner
+  for long-run validation, not as a daemon/service lifecycle layer.
+- Keep continuation reason and stop reason typed:
+  - continuation:
+    - `AcceptedPacket`
+    - `RejectedPacket`
+    - `PacketProcessedWithoutClassification`
+  - stop:
+    - `MaxIterationsReached`
+    - `ReceiveTimedOut`
+    - `ControllerStopped`
+    - `SocketReceiveFailed(...)`
+- Reuse the step-4 hardening summaries from the continuous path instead of
+  inventing new string-only diagnostics.
+- Keep heartbeat timeout summary-only in this slice:
+  - preserve `NoHeartbeatYet` / `Alive` / `TimedOut`
+  - expose `ReconnectRequired` classification
+  - do not yet apply timeout invalidation, emit notices, or own reconnect
+    policy
+- Keep I/O, state ownership, and summary generation separated:
+  - the existing controller boundary still owns one-turn receive/send behavior
+  - the outer continuous launcher owns loop-persistent state
+  - summary shaping stays outside queue mutation / auth decision logic
+
+### Validation
+- `cargo fmt`
+- `cargo fmt --check`
+- `cargo check --workspace`
+- `cargo test -p stream-sync-server receive_send_continuous_runtime_`
+- `cargo test -p stream-sync-server receive_send_runtime_bounded_launcher_records_`
+- `cargo test -p stream-sync-server heartbeat_timeout_loop_tick_boundary_`
+- `cargo test -p stream-sync-server receive_send_runtime_continuous_`
+- `cargo test --workspace`
+- `git diff --check`
+
+## 2026-05-08
+### Type
+- Codex
+
+### Work
 - Implemented the minimal auth / runtime hardening slice before long-run
   validation.
 - Added typed operational summaries for:

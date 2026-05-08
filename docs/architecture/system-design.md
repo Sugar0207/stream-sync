@@ -9572,6 +9572,100 @@ Current narrow visibility policy:
   - `--receive-send-runtime-bounded` prints the last typed auth, registration,
     and runtime rejection summaries beside the backward-compatible string fields
 
+Continuous receive/send runtime first long-run slice:
+
+- keep this slice server-owned and loop-oriented, but still smaller than a
+  daemon/service runtime
+- the first code slice is now implemented as:
+
+```text
+stream-sync-server --receive-send-runtime-continuous
+  [config-path]
+  [receive-timeout-ms]
+  [max-iterations-or-0-for-unbounded]
+  [heartbeat-timeout-micros]
+```
+
+- persistent ownership for this slice:
+  - one bound UDP socket
+  - one `AuthenticatedSenderRegistry`
+  - one `ServerOutboundQueueCollection`
+  - one `ServerVideoFrameQueueState`
+  - one `ServerVideoFrameReassemblyState`
+  - one heartbeat liveness state
+  - one heartbeat RTT/offset state
+  - one caller-owned writer set
+- loop body policy:
+  - reuse the existing `ServerControllerReceiveSendRuntimeBoundary`
+  - classify each iteration as:
+    - `AcceptedPacket`
+    - `RejectedPacket`
+    - `PacketProcessedWithoutClassification`
+  - stop only for:
+    - `MaxIterationsReached`
+    - `ReceiveTimedOut`
+    - `ControllerStopped`
+    - `SocketReceiveFailed(...)`
+- current long-run observation fields:
+  - packet counters:
+    - `packets_received`
+    - `accepted_packets`
+    - `rejected_packets`
+    - `decode_errors`
+  - auth/runtime counters:
+    - `auth_requests_received`
+    - `auth_responses_sent`
+    - `heartbeats_received`
+    - `heartbeat_acks_sent`
+    - `client_stats_received`
+    - `heartbeat_observations_committed`
+  - video/reassembly counters:
+    - `frames_reassembled`
+    - `frames_queued`
+    - `direct_frames_queued`
+    - `video_queue_len`
+    - `incomplete_reassembly_frames`
+  - state-size counters:
+    - `outbound_queue_len`
+    - `registered_clients`
+    - `heartbeat_liveness_clients`
+    - `heartbeat_rtt_offset_clients`
+  - typed last-known summaries:
+    - auth summary
+    - registration summary
+    - runtime rejection summary
+    - heartbeat timeout sweep summary
+- heartbeat timeout in this slice is summary-only:
+  - registered clients are swept against the existing liveness state
+  - the result preserves:
+    - `NoHeartbeatYet`
+    - `Alive`
+    - `TimedOut`
+  - `TimedOut` maps to `ReconnectRequired`
+  - this slice does not yet apply timeout invalidation, emit notices, or own a
+    reconnect manager
+- fragment/video handling in this slice:
+  - accepted direct `VideoFrame` packets are queued into the persistent video
+    queue state
+  - accepted `VideoFrameFragment` packets are preserved through the continuous
+    loop dispatch and committed into persistent reassembly state
+  - completed reassemblies are queued through the existing queue boundary
+- responsibility split for the current continuous slice:
+  - I/O and packet dispatch stay in the existing receive/send runtime boundary
+  - auth / registration / packet rejection classification stays in the
+    hardening summaries
+  - liveness / RTT-offset / reassembly / queue ownership stay caller-owned but
+    loop-persistent inside this launcher
+  - switcher-side `NoFrame` / `Waiting` / `HandoffError` operational summary
+    remains downstream and separate
+- intentionally still out of scope:
+  - retry / requeue
+  - daemon/service lifecycle
+  - outbound notice send wakeup execution
+  - process-wide logger
+  - file sink open / rotation / retention
+  - dashboard/exporter integration
+
 First-slice stop policy:
 
 - bounded by `max_iterations`

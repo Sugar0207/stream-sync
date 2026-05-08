@@ -22,6 +22,7 @@
 ---
 
 ## 現在位置
+- continuous receive / send runtime の最小 slice を実装した。`stream-sync-server --receive-send-runtime-continuous [config-path] [receive-timeout-ms] [max-iterations-or-0-for-unbounded] [heartbeat-timeout-micros]` が 1 process lifetime で 1 bound UDP socket / 1 `AuthenticatedSenderRegistry` / 1 `ServerOutboundQueueCollection` / 1 `ServerVideoFrameQueueState` / fragment reassembly state / heartbeat liveness / RTT-offset state を保持しながら loop 継続できる。continuous path からも typed auth / registration / runtime rejection / heartbeat timeout summary を読めるようにし、2-client 長時間 validation 前提の最小観測面を追加した
 - 認証 / runtime hardening の最小 slice を実装した。auth decision、same-client registration、client-scoped gate rejection、heartbeat timeout を雑な文字列に寄せず typed status/reason で読めるようにし、`Reject` と `ReconnectRequired` と `InvestigationRequired` を `Continue` から分離した。manual auth PoC、`--receive-auth-video-queue-once`、`--receive-send-runtime-bounded` summary には typed auth / registration / runtime rejection visibility を追加した
 - `NoFrame` / `Waiting` / `HandoffError` の長時間 run 向け最小 status 整理を実装した。source-backed 2-view fallible validation には typed operational summary を追加し、per-side result kind を `Selected` / `NoFrame` / `Waiting` / `HandoffError` のまま保持しつつ、run-state を `Continue` / `RetryLater` / `ReconnectRequired` / `InvestigationRequired` で読めるようにした。late-drop summary あり path では post-mutation の `NoFrame` / `Waiting` 判断を summary へ接続できる
 - late frame queue mutation / jitter buffer / drop policy の最小 slice を source-backed path で実装した。`SwitcherSingleClientLateFrameQueueMutationBoundary` が oldest head を targetTime 基準で評価し、補正後 timestamp が `targetTime - max_late_micros` より古い frame だけを conservative に drop する。drop summary は testable に返し、source-backed 2-view validation では opt-in で接続できる
@@ -32,7 +33,7 @@
 - client 側は auth one-shot、heartbeat one-shot、`HeartbeatAckObservation` 付き `ClientStats` one-shot、one-tick runtime、accepted path 手動確認まで完了している
 - client continuous heartbeat loop は thin composition の completed body まで実装済みで、heartbeat timeout notice wakeup planning 境界、wakeup execution 境界、wakeup actual side-effect 境界、outer while-loop connection 境界、outer while-loop one-turn execution body 境界、actual timer wait / retry execution / reconnect 実行境界、outer while-loop 反復実行本体、reconnect policy 境界、caller-owned hook 付き actual socket 再確立境界、real UDP socket 差し替え hook、repeated body からの hook 注入経路まで完了している
 - 4-view operator MVP closeout は完了し、final regression も通過、push も完了している。bounded real encoded video / raw-key operator wrapper / `AllView` / `Focused(0..3)` / `AllView` return / raw console restore / `[video.encoder]` profile wiring / production H.264 stdout visibility / short OBS Window Capture validation までは current completed scope とする
-- 未完了の中心は continuous receive/send loop の次 slice、4-view sync orchestration の長時間運用 polish、dashboard UI rendering、実キュー / 実送信 / 継続ログ出力である。auth/runtime hardening は narrow slice を完了し、next major phase は continuous runtime の不足分と 2-client 長時間 validation に移る
+- 未完了の中心は 2-client 長時間 validation、4-view sync orchestration の長時間運用 polish、実 outbound queue flush / `ServerNotice` 実送信 / lifecycle の後続 slice、dashboard UI rendering である。auth/runtime hardening と continuous receive/send runtime の最小 slice は完了し、next major phase は 2-client 長時間 validation に移る
 - `stream-sync-server --receive-send-runtime-bounded [config-path] [max-iterations] [receive-timeout-ms]` は追加済みで、1 process lifetime で 1 bound UDP socket / 1 `AuthenticatedSenderRegistry` / 1 `ServerOutboundQueueCollection` / caller-owned writers を維持しながら existing `ServerControllerReceiveSendRuntimeBoundary` を outer loop から繰り返し呼べる
 - bounded repeated runtime summary には `command_name` / `config_path` / `max_iterations` / `receive_timeout_ms` / `iterations_attempted` / `iterations_completed` / `auth_requests_received` / `auth_responses_sent` / `heartbeats_received` / `heartbeat_acks_sent` / `client_stats_received` / `client_stats_returns_sent` / `accepted_packets` / `rejected_packets` / `decode_errors` / `send_failures` / `outbound_queue_len` / `registered_clients` / `stop_reason` を出す。current hardening slice では追加で `last_auth_status` / `last_auth_reason` / `last_registration_status` / `last_registration_reason` / `last_runtime_rejection_status` / `last_runtime_rejection_reason` を読める
 - fatal/stop visibility の narrow slice も追加済みで、success summary には `timeout_iterations` / `timeout_only_run` / `last_receive_error` / `last_send_error` / `last_rejected_reason` を追加した。fatal/startup failure 時は same command args を含む one-line failure summary を stderr に出し、`stop_reason` / `fatal_error_kind` / `fatal_error_detail` で silent failure を避ける。`last_rejected_reason` は backward-compatible string のまま残しつつ、typed summary を並置する
@@ -44,7 +45,9 @@
 - code-level validation では command parser、summary formatter、`max_iterations` stop、`ReceiveTimedOut` stop、timeout-only run summary、repeated auth registry persistence、repeated heartbeat existing-registry reuse、`ClientStats` observation path count、auth rejection visibility、gate rejection visibility、same-client re-registration summary、`run_id` mismatch rejection、heartbeat timeout status、startup failure summary formatting、send failure summary formatting、existing one-iteration runtime non-regression を追加済み
 - lightweight smoke validation も完了している。CLI shape は client 側 `--auth-request-poc-once`、`--auth-heartbeat-poc-once`、`--auth-heartbeat-stats-poc-once` を確認済みで、direct `ClientStats`-only sender CLI は未追加だが `--auth-heartbeat-stats-poc-once` で `ClientStats` observation path を刺激できる
 - bounded smoke rerun では rebuilt binary を使って `stream-sync-server --receive-send-runtime-bounded configs/examples/server.example.toml 6 5000` と `stream-sync-client --auth-heartbeat-stats-poc-once configs/examples/client.accepted.example.toml` を組み合わせ、`iterations_attempted=4` / `iterations_completed=4` / `auth_requests_received=1` / `auth_responses_sent=1` / `heartbeats_received=1` / `heartbeat_acks_sent=1` / `client_stats_received=1` / `client_stats_returns_sent=1` / `accepted_packets=3` / `send_failures=0` / `registered_clients=1` / `stop_reason=ReceiveTimedOut` を確認済み
-- outbound queue 実キュー、continuous receive/send loop 本体、send / receive の継続ログ出力、file sink open、process-wide logger、`ServerNotice` 実送信は未実装
+- continuous runtime summary には `packets_received` / `accepted_packets` / `rejected_packets` / `frames_reassembled` / `frames_queued` / `direct_frames_queued` / `video_queue_len` / `incomplete_reassembly_frames` / `heartbeat_observations_committed` / `heartbeat_liveness_clients` / `heartbeat_rtt_offset_clients` を追加し、iteration summary には typed continuation reason と queue length を追加した。heartbeat timeout sweep は summary-only で接続し、`NoHeartbeatYet` / `Alive` / `TimedOut` を continuous path からも読める
+- continuous runtime focused test では typed continuation / stop reason、auth summary、runtime rejection summary、fragment reassembly + queue counters、heartbeat timeout summary を固定済みで、CLI 側は command parser / success summary / failure summary を固定した
+- 実 outbound queue flush、`ServerNotice` 実送信、timeout apply に基づく reconnect policy、file sink open、process-wide logger は未実装
 - named-pipe handoff の manual localhost validation は、plain pipe name `streamsync-handoff-dev` を使った one-shot pass と bounded `max_requests=2` pass の両方が成功記録済みで、bounded pass では `inspect-latest` が同じ frame を 2 回返して queue mutation しない preview semantics を確認済み
 - switcher 側 reconnect/lifecycle の次 slice は retry 実行より先に no-auto-retry / classification-first を固定し、1 scheduler read = 1 logical request = 1 transport attempt のまま explicit `HandoffError` を保持する方針で進める
 - switcher 側 one-request handoff は lifecycle classifier と summary extension まで完了し、`attempt_count=1`、`final_result`、`last_error`、`retry_classification` を持ちながら retry は実行しない
@@ -168,12 +171,12 @@
 ---
 
 ## 直近でやること
-1. 認証 / runtime hardening と長時間 validation の順で固める
-   - hardening の narrow slice は完了したので、次は continuous runtime の不足分と long-run 前提の観測面へ進む
-   - その後に 2-client -> 4-client の長時間 run で drop / sync 誤差 / render 安定性を確認する
-2. continuous receive / send runtime の不足分と長時間 validation 前提の観測面を狭く埋める
-   - 実 outbound queue 処理と event destination selection を先に詰める
-3. placeholder / stale / hold / source-error の運用表示 polish が必要になったら、今回追加した typed summary を土台にして narrow に拡張する
+1. 2-client 長時間 validation の recipe と success/failure judgment を固定する
+   - continuous runtime summary を使って `packets_received` / `frames_queued` / `queue_len` / `heartbeat timeout` / `runtime rejection` の観測項目を先に固める
+   - source-backed 2-view path で `NoFrame` / `Waiting` / `HandoffError` と late-drop summary が読める状態を前提にする
+2. 2-client 長時間 validation を取り、sync 誤差 / drop / render 安定性 / timeout の出方を確認する
+   - continuous runtime と switcher validation の summary を並べて、継続可能状態と停止・再接続が必要な状態を切り分ける
+3. 実 outbound queue flush / `ServerNotice` 実送信 / lifecycle follow-up は、long-run で必要な不足が見えた範囲だけ narrow に進める
 
 ## 今後の大まかな指針
 - 残り todo は `MVP クリティカルパス`、`安定化 / 運用`、`future task` に分けて扱う
@@ -181,12 +184,12 @@
 - まずは「4人を real handoff で安定表示し続ける」ことを基準に優先度を決める
 
 ## 残り todo から見た推定 step
-- 目安は `4-7 step`。1 step は Codex と GPT の 1 往復で数える
-1. continuous receive / send runtime の不足分を埋める
+- 目安は `3-6 step`。1 step は Codex と GPT の 1 往復で数える
+1. 2-client の長時間 validation を取り、sync 誤差 / drop / render 安定性 / timeout の出方を確認する
+2. long-run で不足した continuous runtime の follow-up を narrow に埋める
    - 実 outbound queue 処理
-   - send error / receive-send event の destination selection
-   - later service lifecycle へつながる最小 runtime 整理
-2. 2-client の長時間 validation を取り、sync 誤差 / drop / render 安定性を確認する
+   - notice send / lifecycle への最小接続
+   - send error / receive-send event の destination selection follow-up
 3. 4-client all-real の長時間 validation を取り、OBS Window Capture を含む実運用寄りの再確認をする
 4. dashboard / status visibility と運用手順を MVP 必要最低限まで揃える
    - 接続状態、RTT、offset、drop、buffer 状態の表示
@@ -226,6 +229,11 @@ continuous runtime first slice の blocker:
 - [x] bounded stop policy
 - [x] aggregate runtime summary
 - [x] repeated auth / heartbeat / client-stats bounded smoke validation path
+- [x] continuous receive/send runtime ownership
+- [x] typed continuation / stop reason
+- [x] runtime hardening summary visibility from continuous path
+- [x] fragment reassembly / queue counters for long-run observation
+- [x] heartbeat timeout summary visibility from continuous path
 
 ## 将来の polish 候補
 - [ ] `--four-view-proof-window-once` / `--four-view-clean-output-window-once` に visual confirmation 用の `--hold-ms` / preview hold duration を追加するか後で判断する
