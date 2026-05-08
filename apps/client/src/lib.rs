@@ -1,4 +1,5 @@
 use std::{
+    cell::Cell,
     collections::BTreeMap,
     fs,
     io::{self, Write},
@@ -4514,6 +4515,7 @@ pub enum ClientContinuousRealEncodedVideoFrameStopReason {
 pub struct ClientContinuousRealEncodedVideoFrameSummary {
     pub configured_max_frames: u64,
     pub configured_max_ticks: u64,
+    pub configured_frame_interval_micros: u64,
     pub runtime_ticks: u64,
     pub capture_attempts: u64,
     pub frames_captured: u64,
@@ -4530,11 +4532,39 @@ pub struct ClientContinuousRealEncodedVideoFrameSummary {
     pub send_failures: u64,
     pub frames_remaining_to_max: u64,
     pub elapsed_micros: u64,
+    pub capture_elapsed_micros: u64,
+    pub encode_elapsed_micros: u64,
+    pub capture_wait_or_no_frame_elapsed_micros: u64,
     pub send_elapsed_micros: u64,
+    pub loop_interval_sleep_micros: u64,
     pub total_fragment_pacing_sleep_micros: u64,
     pub ticks_elapsed_while_sending: u64,
     pub stop_reason: Option<ClientContinuousRealEncodedVideoFrameStopReason>,
     pub last_send_failure: Option<ClientVideoFrameEncodeSendFailure>,
+}
+
+impl ClientContinuousRealEncodedVideoFrameSummary {
+    pub fn effective_output_fps(&self) -> f64 {
+        frames_per_second(self.frames_sent, self.elapsed_micros)
+    }
+
+    pub fn effective_fresh_capture_fps(&self) -> f64 {
+        frames_per_second(self.frames_captured, self.elapsed_micros)
+    }
+
+    pub fn effective_send_fps(&self) -> f64 {
+        frames_per_second(self.frames_sent, self.send_elapsed_micros)
+    }
+
+    pub fn avg_capture_elapsed_micros(&self) -> f64 {
+        let capture_timed_attempts = self.frames_captured + self.capture_failures;
+        average_duration_micros(self.capture_elapsed_micros, capture_timed_attempts)
+    }
+
+    pub fn avg_encode_elapsed_micros(&self) -> f64 {
+        let encode_attempts = self.frames_encoded + self.encode_failures;
+        average_duration_micros(self.encode_elapsed_micros, encode_attempts)
+    }
 }
 
 /// Bounded runtime result for repeated real encoded sends.
@@ -4553,6 +4583,52 @@ pub struct ClientContinuousRealEncodedVideoFrameRuntimeResult {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
 pub struct ClientContinuousRealEncodedVideoFrameBoundary {
     one_shot: ClientRealEncodedVideoFrameOneShotBoundary,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct ClientRealEncodedVideoFrameOneShotTimingObservation {
+    capture_elapsed_micros: u64,
+    encode_elapsed_micros: u64,
+}
+
+struct ClientObservedCaptureFrameAcquisitionRuntimeHook<'a, T> {
+    inner: &'a T,
+    elapsed_micros: &'a Cell<u64>,
+}
+
+impl<T> ClientCaptureFrameAcquisitionRuntimeHook
+    for ClientObservedCaptureFrameAcquisitionRuntimeHook<'_, T>
+where
+    T: ClientCaptureFrameAcquisitionRuntimeHook,
+{
+    fn acquire_one_bgra_frame(
+        &self,
+        input: &mut ClientCaptureFrameAcquisitionInput<'_>,
+    ) -> ClientCaptureFrameAcquisitionResult {
+        let started_at = Instant::now();
+        let result = self.inner.acquire_one_bgra_frame(input);
+        self.elapsed_micros
+            .set(started_at.elapsed().as_micros() as u64);
+        result
+    }
+}
+
+struct ClientObservedH264EncoderRuntimeHook<'a, T> {
+    inner: &'a T,
+    elapsed_micros: &'a Cell<u64>,
+}
+
+impl<T> ClientH264EncoderRuntimeHook for ClientObservedH264EncoderRuntimeHook<'_, T>
+where
+    T: ClientH264EncoderRuntimeHook,
+{
+    fn encode_bgra_frame(&self, input: &ClientH264EncoderInput) -> ClientH264EncoderHookResult {
+        let started_at = Instant::now();
+        let result = self.inner.encode_bgra_frame(input);
+        self.elapsed_micros
+            .set(started_at.elapsed().as_micros() as u64);
+        result
+    }
 }
 
 impl ClientContinuousRealEncodedVideoFrameBoundary {
@@ -4580,6 +4656,7 @@ impl ClientContinuousRealEncodedVideoFrameBoundary {
         let mut summary = ClientContinuousRealEncodedVideoFrameSummary {
             configured_max_frames: policy.max_frames,
             configured_max_ticks: policy.max_ticks,
+            configured_frame_interval_micros: policy.frame_interval_micros,
             ..ClientContinuousRealEncodedVideoFrameSummary::default()
         };
         let mut results = Vec::new();
@@ -4621,12 +4698,29 @@ impl ClientContinuousRealEncodedVideoFrameBoundary {
                 fragment_pacing: policy.fragment_pacing,
             };
 
+            let capture_elapsed_micros = Cell::new(0_u64);
+            let encode_elapsed_micros = Cell::new(0_u64);
+            let observed_capture_runtime = ClientObservedCaptureFrameAcquisitionRuntimeHook {
+                inner: capture_runtime_hook,
+                elapsed_micros: &capture_elapsed_micros,
+            };
+            let observed_encoder_runtime = ClientObservedH264EncoderRuntimeHook {
+                inner: encoder_runtime_hook,
+                elapsed_micros: &encode_elapsed_micros,
+            };
             let result = self.one_shot.send_once_with_runtimes(
                 &mut one_shot_input,
-                capture_runtime_hook,
-                encoder_runtime_hook,
+                &observed_capture_runtime,
+                &observed_encoder_runtime,
             );
-            update_continuous_real_encoded_summary(&mut summary, &result);
+            update_continuous_real_encoded_summary(
+                &mut summary,
+                &result,
+                ClientRealEncodedVideoFrameOneShotTimingObservation {
+                    capture_elapsed_micros: capture_elapsed_micros.get(),
+                    encode_elapsed_micros: encode_elapsed_micros.get(),
+                },
+            );
 
             match &result {
                 ClientRealEncodedVideoFrameOneShotResult::Sent(_) => {
@@ -4666,7 +4760,9 @@ impl ClientContinuousRealEncodedVideoFrameBoundary {
             if summary.stop_reason.is_some() {
                 break;
             }
-            sleep_for_continuous_real_encoded_frame_policy(policy, frame_wait_started_at);
+            summary.loop_interval_sleep_micros = summary.loop_interval_sleep_micros.saturating_add(
+                sleep_for_continuous_real_encoded_frame_policy(policy, frame_wait_started_at),
+            );
         }
 
         summary.frames_remaining_to_max = policy.max_frames.saturating_sub(summary.frames_sent);
@@ -4687,9 +4783,16 @@ impl ClientContinuousRealEncodedVideoFrameBoundary {
 fn update_continuous_real_encoded_summary(
     summary: &mut ClientContinuousRealEncodedVideoFrameSummary,
     result: &ClientRealEncodedVideoFrameOneShotResult,
+    timing: ClientRealEncodedVideoFrameOneShotTimingObservation,
 ) {
     match result {
         ClientRealEncodedVideoFrameOneShotResult::Sent(_) => {
+            summary.capture_elapsed_micros = summary
+                .capture_elapsed_micros
+                .saturating_add(timing.capture_elapsed_micros);
+            summary.encode_elapsed_micros = summary
+                .encode_elapsed_micros
+                .saturating_add(timing.encode_elapsed_micros);
             summary.frames_captured = summary.frames_captured.saturating_add(1);
             summary.frames_encoded = summary.frames_encoded.saturating_add(1);
             summary.frames_sent = summary.frames_sent.saturating_add(1);
@@ -4721,20 +4824,44 @@ fn update_continuous_real_encoded_summary(
         }
         ClientRealEncodedVideoFrameOneShotResult::NoFrameAvailable { .. } => {
             summary.no_frame_count = summary.no_frame_count.saturating_add(1);
+            summary.capture_wait_or_no_frame_elapsed_micros = summary
+                .capture_wait_or_no_frame_elapsed_micros
+                .saturating_add(timing.capture_elapsed_micros);
         }
         ClientRealEncodedVideoFrameOneShotResult::CaptureUnavailable { .. } => {
+            summary.capture_elapsed_micros = summary
+                .capture_elapsed_micros
+                .saturating_add(timing.capture_elapsed_micros);
             summary.capture_failures = summary.capture_failures.saturating_add(1);
         }
         ClientRealEncodedVideoFrameOneShotResult::EncodeUnavailable { .. } => {
+            summary.capture_elapsed_micros = summary
+                .capture_elapsed_micros
+                .saturating_add(timing.capture_elapsed_micros);
+            summary.encode_elapsed_micros = summary
+                .encode_elapsed_micros
+                .saturating_add(timing.encode_elapsed_micros);
             summary.frames_captured = summary.frames_captured.saturating_add(1);
             summary.encode_failures = summary.encode_failures.saturating_add(1);
         }
         ClientRealEncodedVideoFrameOneShotResult::FrameBuildFailed { .. } => {
+            summary.capture_elapsed_micros = summary
+                .capture_elapsed_micros
+                .saturating_add(timing.capture_elapsed_micros);
+            summary.encode_elapsed_micros = summary
+                .encode_elapsed_micros
+                .saturating_add(timing.encode_elapsed_micros);
             summary.frames_captured = summary.frames_captured.saturating_add(1);
             summary.frames_encoded = summary.frames_encoded.saturating_add(1);
             summary.frame_build_failures = summary.frame_build_failures.saturating_add(1);
         }
         ClientRealEncodedVideoFrameOneShotResult::SendFailed { failure } => {
+            summary.capture_elapsed_micros = summary
+                .capture_elapsed_micros
+                .saturating_add(timing.capture_elapsed_micros);
+            summary.encode_elapsed_micros = summary
+                .encode_elapsed_micros
+                .saturating_add(timing.encode_elapsed_micros);
             summary.frames_captured = summary.frames_captured.saturating_add(1);
             summary.frames_encoded = summary.frames_encoded.saturating_add(1);
             summary.send_failures = summary.send_failures.saturating_add(1);
@@ -4752,9 +4879,9 @@ fn update_continuous_real_encoded_summary(
 fn sleep_for_continuous_real_encoded_frame_policy(
     policy: ClientContinuousRealEncodedVideoFramePolicy,
     frame_wait_started_at: Option<Instant>,
-) {
+) -> u64 {
     if policy.frame_interval_micros == 0 {
-        return;
+        return 0;
     }
 
     let mut sleep_micros = policy.frame_interval_micros;
@@ -4762,7 +4889,7 @@ fn sleep_for_continuous_real_encoded_frame_policy(
         if policy.frame_wait_timeout_micros > 0 {
             let elapsed_micros = wait_start.elapsed().as_micros() as u64;
             if elapsed_micros >= policy.frame_wait_timeout_micros {
-                return;
+                return 0;
             }
             sleep_micros = sleep_micros.min(policy.frame_wait_timeout_micros - elapsed_micros);
         }
@@ -4770,7 +4897,23 @@ fn sleep_for_continuous_real_encoded_frame_policy(
 
     if sleep_micros > 0 {
         std::thread::sleep(Duration::from_micros(sleep_micros));
+        return sleep_micros;
     }
+    0
+}
+
+fn frames_per_second(count: u64, duration_micros: u64) -> f64 {
+    if count == 0 || duration_micros == 0 {
+        return 0.0;
+    }
+    count as f64 / (duration_micros as f64 / 1_000_000.0)
+}
+
+fn average_duration_micros(total_duration_micros: u64, count: u64) -> f64 {
+    if count == 0 {
+        return 0.0;
+    }
+    total_duration_micros as f64 / count as f64
 }
 
 /// Input for preparing ack observation return from a decoded HeartbeatAck.
@@ -13989,6 +14132,145 @@ mod tests {
             };
             assert_eq!(frame.frame_id, expected_frame_id);
         }
+    }
+
+    #[test]
+    fn client_video_frame_continuous_real_encoded_tracks_capture_encode_timing_and_output_fps() {
+        struct SlowCapture;
+        impl ClientCaptureFrameAcquisitionRuntimeHook for SlowCapture {
+            fn acquire_one_bgra_frame(
+                &self,
+                input: &mut ClientCaptureFrameAcquisitionInput<'_>,
+            ) -> ClientCaptureFrameAcquisitionResult {
+                std::thread::sleep(Duration::from_millis(2));
+                ClientCaptureFrameAcquisitionResult::FrameAcquired {
+                    frame: ClientRawCapturedVideoFrame {
+                        capture_timestamp: input.capture_timestamp,
+                        width: 2,
+                        height: 2,
+                        fps_nominal: input.fps_nominal,
+                        pixel_format: ClientRawVideoPixelFormat::Bgra8,
+                        pixels: vec![0; 2 * 2 * 4],
+                    },
+                }
+            }
+        }
+        struct SlowEncoder;
+        impl ClientH264EncoderRuntimeHook for SlowEncoder {
+            fn encode_bgra_frame(
+                &self,
+                _input: &ClientH264EncoderInput,
+            ) -> ClientH264EncoderHookResult {
+                std::thread::sleep(Duration::from_millis(3));
+                ClientH264EncoderHookResult::Encoded {
+                    payload: ClientH264EncodedPayload {
+                        bytes: vec![0x00, 0x00, 0x01, 0x65],
+                    },
+                }
+            }
+        }
+
+        let receiver = UdpSocket::bind("127.0.0.1:0").expect("receiver should bind");
+        receiver
+            .set_read_timeout(Some(Duration::from_secs(1)))
+            .expect("read timeout should be set");
+        let sender = UdpSocket::bind("127.0.0.1:0").expect("sender should bind");
+        let destination = receiver.local_addr().expect("receiver addr should exist");
+        let mut capture_runtime = client_capture_session_runtime_for_tests();
+
+        let result = ClientContinuousRealEncodedVideoFrameBoundary::default().run_with_runtimes(
+            ClientContinuousRealEncodedVideoFrameInput {
+                socket: &sender,
+                destination,
+                capture_runtime: &mut capture_runtime,
+                protocol_version: ProtocolVersion(2),
+                client_id: ClientId("client-1".to_string()),
+                run_id: RunId("run-1".to_string()),
+                first_frame_id: 140,
+                fps_nominal: 30,
+                is_keyframe: true,
+                start_capture_if_needed: true,
+                encoder_config: ClientVideoEncoderConfig::default(),
+                policy: ClientContinuousRealEncodedVideoFramePolicy {
+                    max_frames: 2,
+                    max_ticks: 10,
+                    frame_wait_timeout_micros: 0,
+                    frame_interval_micros: 0,
+                    stop_on_capture_failure: true,
+                    stop_on_send_failure: true,
+                    fragment_pacing: ClientVideoFrameFragmentPacingPolicy::default(),
+                },
+            },
+            &SlowCapture,
+            &SlowEncoder,
+        );
+
+        assert!(result.summary.capture_elapsed_micros >= 4_000);
+        assert!(result.summary.encode_elapsed_micros >= 6_000);
+        assert!(result.summary.avg_capture_elapsed_micros() >= 2_000.0);
+        assert!(result.summary.avg_encode_elapsed_micros() >= 3_000.0);
+        let expected_output_fps = result.summary.frames_sent as f64
+            / (result.summary.elapsed_micros as f64 / 1_000_000.0);
+        assert!((result.summary.effective_output_fps() - expected_output_fps).abs() < 0.000_001);
+    }
+
+    #[test]
+    fn client_video_frame_continuous_real_encoded_tracks_no_frame_wait_elapsed() {
+        struct SlowNoFrameCapture;
+        impl ClientCaptureFrameAcquisitionRuntimeHook for SlowNoFrameCapture {
+            fn acquire_one_bgra_frame(
+                &self,
+                _input: &mut ClientCaptureFrameAcquisitionInput<'_>,
+            ) -> ClientCaptureFrameAcquisitionResult {
+                std::thread::sleep(Duration::from_millis(4));
+                ClientCaptureFrameAcquisitionResult::NoFrameAvailable {
+                    message: Some("fixture no frame".to_string()),
+                }
+            }
+        }
+        struct ShouldNotEncode;
+        impl ClientH264EncoderRuntimeHook for ShouldNotEncode {
+            fn encode_bgra_frame(
+                &self,
+                _input: &ClientH264EncoderInput,
+            ) -> ClientH264EncoderHookResult {
+                panic!("encoder should not run when no frame is available");
+            }
+        }
+
+        let sender = UdpSocket::bind("127.0.0.1:0").expect("sender should bind");
+        let mut capture_runtime = client_capture_session_runtime_for_tests();
+
+        let result = ClientContinuousRealEncodedVideoFrameBoundary::default().run_with_runtimes(
+            ClientContinuousRealEncodedVideoFrameInput {
+                socket: &sender,
+                destination: "127.0.0.1:9".parse().unwrap(),
+                capture_runtime: &mut capture_runtime,
+                protocol_version: ProtocolVersion(2),
+                client_id: ClientId("client-1".to_string()),
+                run_id: RunId("run-1".to_string()),
+                first_frame_id: 150,
+                fps_nominal: 30,
+                is_keyframe: true,
+                start_capture_if_needed: true,
+                encoder_config: ClientVideoEncoderConfig::default(),
+                policy: ClientContinuousRealEncodedVideoFramePolicy {
+                    max_frames: 1,
+                    max_ticks: 2,
+                    frame_wait_timeout_micros: 0,
+                    frame_interval_micros: 0,
+                    stop_on_capture_failure: true,
+                    stop_on_send_failure: true,
+                    fragment_pacing: ClientVideoFrameFragmentPacingPolicy::default(),
+                },
+            },
+            &SlowNoFrameCapture,
+            &ShouldNotEncode,
+        );
+
+        assert!(result.summary.capture_wait_or_no_frame_elapsed_micros >= 8_000);
+        assert_eq!(result.summary.capture_elapsed_micros, 0);
+        assert_eq!(result.summary.encode_elapsed_micros, 0);
     }
 
     #[test]

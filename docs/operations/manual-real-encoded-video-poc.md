@@ -2443,6 +2443,7 @@ fragment_pacing_every=<n>
 fragment_pacing_delay_ms=<n>
 configured_max_frames=<n>
 configured_max_ticks=<n>
+configured_frame_interval_ms=<n>
 runtime_ticks=<n>
 capture_attempts=<n>
 frames_captured=<n>
@@ -2459,8 +2460,15 @@ frame_build_failures=<n>
 send_failures=<n>
 frames_remaining_to_max=<n>
 elapsed_ms=<n>
-effective_capture_fps=<n>
+capture_elapsed_ms=<n>
+encode_elapsed_ms=<n>
+avg_capture_elapsed_ms=<n>
+avg_encode_elapsed_ms=<n>
+capture_wait_or_no_frame_elapsed_ms=<n>
+effective_output_fps=<n>
+effective_fresh_capture_fps=<n>
 effective_send_fps=<n>
+loop_interval_sleep_ms=<n>
 total_fragment_pacing_sleep_ms=<n>
 send_elapsed_ms=<n>
 ticks_elapsed_while_sending=<n>
@@ -2478,12 +2486,25 @@ Interpretation:
 - `runtime_ticks` is the bounded loop counter.
 - `capture_attempts` is currently equal to `runtime_ticks` because one loop tick performs one capture/encode/send attempt.
 - `configured_max_ticks` is the internal guard derived from `max_frames` and may stop the run with `MaxTicksReached` before `frames_sent` reaches `configured_max_frames`.
+- `configured_frame_interval_ms` is the client loop polling cadence. At the current 30fps target this is typically about `33.333ms`.
 - `frames_remaining_to_max > 0` when `stop_reason=Some(MaxTicksReached)` means the bounded guard fired before the requested frame target was reached.
 - `runtime_ticks > frames_captured` usually means no-frame polling happened.
+- `capture_elapsed_ms` is the accumulated time spent in capture calls that returned a real frame or explicit capture failure.
+- `encode_elapsed_ms` is the accumulated time spent in encoder calls.
+- `avg_capture_elapsed_ms` is `capture_elapsed_ms / (frames_captured + capture_failures)`.
+- `avg_encode_elapsed_ms` is `encode_elapsed_ms / (frames_encoded + encode_failures)`.
+- `capture_wait_or_no_frame_elapsed_ms` is the accumulated time spent in capture calls that returned `NoFrameAvailable`.
 - `no_frame_count > 0` is acceptable if `frames_sent >= 1`.
 - `frames_captured > frames_encoded` points to encoder failure.
 - `frames_encoded > frames_sent` points to frame build or UDP send failure.
+- `effective_output_fps` is the human-facing end-to-end output rate: `frames_sent / elapsed_ms`.
+- `effective_fresh_capture_fps` is the fresh-frame acquisition rate: `frames_captured / elapsed_ms`.
+- `effective_send_fps` is send-path-only throughput: `frames_sent / send_elapsed_ms`.
+- `loop_interval_sleep_ms` is the accumulated bounded-loop cadence sleep and is separate from fragment pacing sleep.
 - `ticks_elapsed_while_sending=0` is expected in the current synchronous client loop because fragment pacing and send work happen inside the active tick rather than advancing a separate runtime tick.
+- current WGC acquisition uses `TryGetNextFrame()` and returns `NoFrameAvailable` immediately when the frame pool is empty; there is no backend-owned blocking wait in this path.
+- current software H.264 path invokes a fresh `ffmpeg` / `libx264` process for every frame, so per-frame process spawn / startup cost is part of `encode_elapsed_ms`.
+- to sustain `30fps`, the client needs to complete roughly one frame every `33.3ms` end to end. As a rule of thumb, `avg_capture_elapsed_ms + avg_encode_elapsed_ms + (send_elapsed_ms / frames_sent) + cadence/pacing overhead` must stay within that budget.
 - `fragmented_sends > 0` proves the sender used `VideoFrameFragment` packets.
 - `fragments_sent = fragments_attempted` proves all planned fragments were sent by the client.
 - `last_send_error=PacketTooLarge { ... }` after fragmentation support usually means a fragment packet still exceeded the conservative safe datagram limit, which should be treated as a bug or policy/config issue.

@@ -5,6 +5,86 @@
 - Codex code + docs update
 
 ### Work
+- Investigated the next human-validation result for
+  `--auth-real-encoded-video-frame-poc-bounded` after moving video so the
+  capture source stayed fresh:
+  - `configured_max_frames=100`
+  - `configured_max_ticks=1000`
+  - `runtime_ticks=101`
+  - `frames_sent=100`
+  - `elapsed_ms=12580.203`
+  - `effective_send_fps=53.860`
+- Confirmed the earlier stop-condition interpretation still holds:
+  - `runtime_ticks` is the bounded synchronous loop counter
+  - send work does not advance additional ticks
+  - `MaxTicksReached` is unrelated to send-time background ticking
+- Added bounded client timing breakdown to the runtime summary:
+  - `configured_frame_interval_ms`
+  - `capture_elapsed_ms`
+  - `encode_elapsed_ms`
+  - `avg_capture_elapsed_ms`
+  - `avg_encode_elapsed_ms`
+  - `capture_wait_or_no_frame_elapsed_ms`
+  - `effective_output_fps`
+  - `effective_fresh_capture_fps`
+  - `loop_interval_sleep_ms`
+- Replaced the ambiguous human-facing `effective_capture_fps` with:
+  - `effective_output_fps`
+  - `effective_fresh_capture_fps`
+- Added summary helper calculations in client code so focused tests can assert:
+  - average capture timing
+  - average encode timing
+  - effective output FPS
+- Added timing observation wrappers around the existing capture and encoder
+  hooks inside the bounded continuous runtime so the library can accumulate
+  capture / encode elapsed time without changing the server or switcher paths.
+- Kept send-path timing and fragment pacing timing alongside the new fields.
+- Exposed loop cadence visibility:
+  - `configured_frame_interval_ms`
+  - `loop_interval_sleep_ms`
+- Documented current code-level cause candidates for the ~8fps run:
+  - the current Windows Graphics Capture path uses `TryGetNextFrame()` and
+    returns `NoFrameAvailable` immediately when no fresh frame is queued
+  - the current software H.264 path spawns a fresh `ffmpeg` / `libx264`
+    process for every frame
+  - the bounded loop also performs one fixed cadence sleep per tick
+- Updated the manual doc to state the 30fps budget explicitly:
+  - one frame every ~`33.3ms` end to end
+  - capture + encode + send + cadence/pacing overhead must fit inside that
+    budget
+
+### Changed Files
+- `apps/client/src/lib.rs`
+- `apps/client/src/main.rs`
+- `docs/operations/manual-real-encoded-video-poc.md`
+- `docs/operations/two-client-long-run-validation.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### Decision
+- Treat end-to-end throughput as `effective_output_fps`, not
+  `effective_capture_fps`.
+- Keep fresh-frame acquisition throughput separate as
+  `effective_fresh_capture_fps`.
+- Treat the current per-frame FFmpeg process spawn and the bounded loop cadence
+  sleep as the primary code-level explanations for the current 30fps gap until
+  a future encoder/runtime redesign changes that behavior.
+- Do not change server, switcher, or handoff behavior in this slice.
+
+### Validation
+- `cargo fmt`
+- `cargo fmt --check`
+- `cargo check --workspace`
+- `cargo test -p stream-sync-client client_video_frame_continuous_real_encoded_`
+- `cargo test -p stream-sync-client client_video_frame_auth_real_encoded_bounded_poc_`
+- `cargo test --workspace`
+- `git diff --check`
+
+## 2026-05-08
+### Type
+- Codex code + docs update
+
+### Work
 - Investigated the human-validation confusion around
   `stream-sync-client --auth-real-encoded-video-frame-poc-bounded` summary
   fields, especially `frames_attempted`, `max_frames`, and
