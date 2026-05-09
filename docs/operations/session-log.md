@@ -5,6 +5,59 @@
 - Codex code + docs update
 
 ### Work
+- Fixed the early-stop bug in the receive phase of
+  `--receive-auth-video-queue-and-serve-handoff-many`.
+- Confirmed the concrete bug:
+  - a direct `VideoFrame` store set `stop_reason=DirectFrameQueued`
+  - the receive loop returned immediately after the first direct queued frame
+  - this closed the auth/receive phase before later clients could authenticate
+  - human validation then saw `client2` fail with
+    `AuthResponse(Receive(ConnectionReset))`
+- Changed the receive loop so a direct queued frame no longer terminates the
+  phase by itself.
+- Validation thresholding for this command is now queue-based:
+  - `frames_queued`
+  - `per_client_queued_frames`
+  - direct + reassembled frames both count
+- Added per-client observability for mixed direct/fragmented runs:
+  - `observed_queued_clients`
+  - `per_client_queued_frames`
+  - `per_client_direct_frames`
+  - `per_client_reassembled_frames`
+- Kept the bounded fallback behavior:
+  - `validation_ready=false` can still proceed to handoff serving on timeout or
+    max-packets
+  - but `DirectFrameQueued` no longer acts as the fallback/terminal reason
+- Added focused tests for:
+  - direct frame timeout without early stop
+  - second client auth/frame acceptance after first direct frame
+  - mixed direct + reassembled queued-frame threshold semantics
+
+### Changed Files
+- `apps/server/src/lib.rs`
+- `apps/server/src/main.rs`
+- `docs/operations/two-client-handoff-validation.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### Decision
+- For this handoff validation command, expected counts should be interpreted as
+  queued-frame thresholds, not fragmented-only thresholds.
+- This preserves the current server/client transport split while making mixed
+  direct/fragmented validation runs meaningful.
+
+### Validation
+- `cargo fmt`
+- focused receive/handoff tests:
+  - `cargo test -p stream-sync-server receive_auth_video_queue_once -- --nocapture`
+  - `cargo test -p stream-sync-server server_handoff_ready_line -- --nocapture`
+  - `cargo test -p stream-sync-server server_handoff_service_session_summary -- --nocapture`
+
+## 2026-05-09
+### Type
+- Codex code + docs update
+
+### Work
 - Investigated the premature-looking readiness in
   `--receive-auth-video-queue-and-serve-handoff-many`.
 - Confirmed the current receive phase already stops on:

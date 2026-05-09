@@ -1327,6 +1327,8 @@ impl ServerReceiveAuthVideoQueueOnceLauncher {
                             summary.non_video_packets = summary.non_video_packets.saturating_add(1);
                             continue;
                         };
+                        let client_id = packet.frame.client_id.clone();
+                        let run_id = packet.frame.run_id.clone();
                         let input = self.video_handler.prepare_input(packet);
                         let queue = self.video_queue_storage.store_frame(
                             video_queue_state,
@@ -1338,15 +1340,24 @@ impl ServerReceiveAuthVideoQueueOnceLauncher {
                             summary.direct_frames_queued =
                                 summary.direct_frames_queued.saturating_add(1);
                             summary.frames_queued = summary.frames_queued.saturating_add(1);
+                            record_direct_frame_progress(&mut summary, &client_id, &run_id);
                         }
                         summary.queue_len = video_queue_state.total_len();
-                        summary.stop_reason =
-                            Some(ServerReceiveAuthVideoQueueStopReason::DirectFrameQueued);
                         last_queue = Some(ServerVideoFrameQueueRuntimeResult::Queued(queue));
-                        return Ok(ServerReceiveAuthVideoQueueOnceVideoOutcome::Received {
-                            summary,
-                            queue: last_queue,
-                        });
+                        if let Some(stop_reason) =
+                            evaluate_reassembled_stop_reason(policy, &summary)
+                        {
+                            summary.stop_reason = Some(stop_reason);
+                            finalize_auth_video_queue_summary(
+                                &mut summary,
+                                reassembly_state,
+                                video_queue_state,
+                            );
+                            return Ok(ServerReceiveAuthVideoQueueOnceVideoOutcome::Received {
+                                summary,
+                                queue: last_queue,
+                            });
+                        }
                     }
                     ServerInboundRoute::VideoFrameFragment { .. } => {
                         let registered = self
@@ -1394,6 +1405,11 @@ impl ServerReceiveAuthVideoQueueOnceLauncher {
                                     ServerVideoFrameQueueStorageResult::Stored { .. }
                                 ) {
                                     summary.frames_queued = summary.frames_queued.saturating_add(1);
+                                    record_queued_frame_progress(
+                                        &mut summary,
+                                        &reassembled_frame.client_id,
+                                        &reassembled_frame.run_id,
+                                    );
                                 }
                                 last_queue =
                                     Some(ServerVideoFrameQueueRuntimeResult::Queued(queue_result));
@@ -1483,7 +1499,10 @@ pub struct ServerReceiveAuthVideoQueueOnceVideoSummary {
     pub incomplete_reassembly_frames: usize,
     pub queue_len: usize,
     pub incomplete_frame_progress: Vec<ServerVideoFrameReassemblyFrameProgress>,
+    pub observed_queued_clients: usize,
     pub observed_reassembled_clients: usize,
+    pub per_client_queued_frames: BTreeMap<String, u64>,
+    pub per_client_direct_frames: BTreeMap<String, u64>,
     pub per_client_reassembled_frames: BTreeMap<String, u64>,
     pub receive_timed_out: bool,
     pub max_packets_reached: bool,
@@ -1568,6 +1587,26 @@ fn record_reassembled_frame_progress(
     summary.observed_reassembled_clients = summary.per_client_reassembled_frames.len();
 }
 
+fn record_queued_frame_progress(
+    summary: &mut ServerReceiveAuthVideoQueueOnceVideoSummary,
+    client_id: &ClientId,
+    run_id: &RunId,
+) {
+    let key = format!("{}/{}", client_id.0, run_id.0);
+    *summary.per_client_queued_frames.entry(key).or_insert(0) += 1;
+    summary.observed_queued_clients = summary.per_client_queued_frames.len();
+}
+
+fn record_direct_frame_progress(
+    summary: &mut ServerReceiveAuthVideoQueueOnceVideoSummary,
+    client_id: &ClientId,
+    run_id: &RunId,
+) {
+    let key = format!("{}/{}", client_id.0, run_id.0);
+    *summary.per_client_direct_frames.entry(key).or_insert(0) += 1;
+    record_queued_frame_progress(summary, client_id, run_id);
+}
+
 fn evaluate_reassembled_stop_reason(
     policy: ServerReceiveAuthVideoQueueOnceManualPolicy,
     summary: &ServerReceiveAuthVideoQueueOnceVideoSummary,
@@ -1576,7 +1615,7 @@ fn evaluate_reassembled_stop_reason(
     let client_aware_enabled = policy.expected_reassembled_clients > 0;
 
     let frame_threshold_met = !frame_threshold_enabled
-        || summary.frames_reassembled >= policy.expected_reassembled_frames.max(1);
+        || summary.frames_queued >= policy.expected_reassembled_frames.max(1);
     let client_aware_met = !client_aware_enabled || client_aware_threshold_met(policy, summary);
 
     if !(frame_threshold_met && client_aware_met) {
@@ -1597,7 +1636,7 @@ fn client_aware_threshold_met(
     policy: ServerReceiveAuthVideoQueueOnceManualPolicy,
     summary: &ServerReceiveAuthVideoQueueOnceVideoSummary,
 ) -> bool {
-    if summary.observed_reassembled_clients < policy.expected_reassembled_clients as usize {
+    if summary.observed_queued_clients < policy.expected_reassembled_clients as usize {
         return false;
     }
 
@@ -1606,7 +1645,7 @@ fn client_aware_threshold_met(
     }
 
     summary
-        .per_client_reassembled_frames
+        .per_client_queued_frames
         .values()
         .filter(|count| **count >= policy.expected_reassembled_frames_per_client)
         .count()
@@ -16847,6 +16886,196 @@ shared_token = "secret"
     }
 
     #[test]
+    fn receive_auth_video_queue_once_direct_frame_timeout_does_not_stop_early() {
+        let launcher = ServerReceiveAuthVideoQueueOnceLauncher::default();
+        let bind_port = reserve_localhost_udp_port();
+        let startup_config = auth_video_queue_startup_config(
+            bind_port,
+            auth_config_for_clients(&["client-1"], Some("presented-secret")),
+        );
+        let policy = ServerReceiveAuthVideoQueueOnceManualPolicy {
+            max_video_packets: 8,
+            receive_timeout: Duration::from_millis(150),
+            expected_reassembled_frames: 2,
+            stop_after_expected_reassembled_frames: true,
+            receive_buffer_bytes: SERVER_DEFAULT_RECEIVE_BUFFER_BYTES,
+            expected_reassembled_clients: 2,
+            expected_reassembled_frames_per_client: 1,
+        };
+        let server_address = SocketAddr::from(([127, 0, 0, 1], bind_port));
+        let handle = std::thread::spawn(move || {
+            launcher.run_once_with_writers_and_policy(
+                startup_config,
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+                policy,
+            )
+        });
+        let client_socket = UdpSocket::bind("127.0.0.1:0").expect("client socket should bind");
+        client_socket
+            .set_read_timeout(Some(Duration::from_secs(1)))
+            .expect("client read timeout should be set");
+        std::thread::sleep(Duration::from_millis(50));
+        client_socket
+            .send_to(
+                auth_request_packet("client-1", "presented-secret").as_slice(),
+                server_address,
+            )
+            .expect("auth request should send");
+        let mut response_buffer = vec![0_u8; 1024];
+        client_socket
+            .recv_from(&mut response_buffer)
+            .expect("auth response should receive");
+        client_socket
+            .send_to(
+                video_frame_packet("client-1", 42).as_slice(),
+                server_address,
+            )
+            .expect("video frame should send");
+
+        let outcome = handle
+            .join()
+            .expect("receive launcher thread should join")
+            .expect("receive launcher should complete");
+        let ServerReceiveAuthVideoQueueOnceVideoOutcome::Received { summary, .. } = outcome.video
+        else {
+            panic!("video summary should be present");
+        };
+
+        assert_eq!(
+            summary.stop_reason,
+            Some(ServerReceiveAuthVideoQueueStopReason::ReceiveTimedOut)
+        );
+        assert_eq!(summary.frames_queued, 1);
+        assert_eq!(summary.direct_frames_queued, 1);
+        assert_eq!(summary.frames_reassembled, 0);
+        assert_eq!(summary.observed_queued_clients, 1);
+        assert_eq!(summary.observed_reassembled_clients, 0);
+        assert_eq!(
+            summary.per_client_queued_frames.get("client-1/run-1"),
+            Some(&1)
+        );
+        assert_eq!(
+            summary.per_client_direct_frames.get("client-1/run-1"),
+            Some(&1)
+        );
+        assert!(summary.per_client_reassembled_frames.is_empty());
+        assert!(summary.receive_timed_out);
+    }
+
+    #[test]
+    fn receive_auth_video_queue_once_accepts_second_client_after_first_direct_frame() {
+        let launcher = ServerReceiveAuthVideoQueueOnceLauncher::default();
+        let bind_port = reserve_localhost_udp_port();
+        let startup_config = auth_video_queue_startup_config(
+            bind_port,
+            auth_config_for_clients(&["client-1", "client-2"], Some("presented-secret")),
+        );
+        let policy = ServerReceiveAuthVideoQueueOnceManualPolicy {
+            max_video_packets: 12,
+            receive_timeout: Duration::from_millis(500),
+            expected_reassembled_frames: 2,
+            stop_after_expected_reassembled_frames: true,
+            receive_buffer_bytes: SERVER_DEFAULT_RECEIVE_BUFFER_BYTES,
+            expected_reassembled_clients: 2,
+            expected_reassembled_frames_per_client: 1,
+        };
+        let server_address = SocketAddr::from(([127, 0, 0, 1], bind_port));
+        let handle = std::thread::spawn(move || {
+            launcher.run_once_with_writers_and_policy(
+                startup_config,
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+                policy,
+            )
+        });
+        let client_one = UdpSocket::bind("127.0.0.1:0").expect("client one socket should bind");
+        let client_two = UdpSocket::bind("127.0.0.1:0").expect("client two socket should bind");
+        client_one
+            .set_read_timeout(Some(Duration::from_secs(1)))
+            .expect("client one read timeout should be set");
+        client_two
+            .set_read_timeout(Some(Duration::from_secs(1)))
+            .expect("client two read timeout should be set");
+        std::thread::sleep(Duration::from_millis(50));
+
+        client_one
+            .send_to(
+                auth_request_packet("client-1", "presented-secret").as_slice(),
+                server_address,
+            )
+            .expect("client one auth request should send");
+        let mut response_buffer = vec![0_u8; 1024];
+        client_one
+            .recv_from(&mut response_buffer)
+            .expect("client one auth response should receive");
+        client_one
+            .send_to(
+                video_frame_packet("client-1", 42).as_slice(),
+                server_address,
+            )
+            .expect("client one direct frame should send");
+
+        client_two
+            .send_to(
+                auth_request_packet("client-2", "presented-secret").as_slice(),
+                server_address,
+            )
+            .expect("client two auth request should send");
+        client_two
+            .recv_from(&mut response_buffer)
+            .expect("client two auth response should receive");
+        client_two
+            .send_to(
+                video_frame_packet("client-2", 43).as_slice(),
+                server_address,
+            )
+            .expect("client two direct frame should send");
+
+        let outcome = handle
+            .join()
+            .expect("receive launcher thread should join")
+            .expect("receive launcher should complete");
+        let ServerReceiveAuthVideoQueueOnceVideoOutcome::Received { summary, .. } = outcome.video
+        else {
+            panic!("video summary should be present");
+        };
+
+        assert_eq!(
+            summary.stop_reason,
+            Some(
+                ServerReceiveAuthVideoQueueStopReason::ReassembledFramesAndClientAwareThresholdReached
+            )
+        );
+        assert_eq!(outcome.registry.entries().count(), 2);
+        assert_eq!(summary.frames_queued, 2);
+        assert_eq!(summary.direct_frames_queued, 2);
+        assert_eq!(summary.frames_reassembled, 0);
+        assert_eq!(summary.observed_queued_clients, 2);
+        assert_eq!(
+            summary.per_client_queued_frames.get("client-1/run-1"),
+            Some(&1)
+        );
+        assert_eq!(
+            summary.per_client_queued_frames.get("client-2/run-1"),
+            Some(&1)
+        );
+        assert_eq!(
+            summary.per_client_direct_frames.get("client-1/run-1"),
+            Some(&1)
+        );
+        assert_eq!(
+            summary.per_client_direct_frames.get("client-2/run-1"),
+            Some(&1)
+        );
+        assert!(summary.per_client_reassembled_frames.is_empty());
+    }
+
+    #[test]
     fn video_stats_handler_runtime_prepares_stats_input_without_commit() {
         let source = packet_source();
         let registry = registry_with_client("client-1", source);
@@ -22598,7 +22827,10 @@ shared_token = "secret"
                     incomplete_reassembly_frames: 0,
                     queue_len: 1,
                     incomplete_frame_progress: Vec::new(),
+                    observed_queued_clients: 0,
                     observed_reassembled_clients: 0,
+                    per_client_queued_frames: BTreeMap::new(),
+                    per_client_direct_frames: BTreeMap::new(),
                     per_client_reassembled_frames: BTreeMap::new(),
                     receive_timed_out: false,
                     max_packets_reached: false,
@@ -22703,6 +22935,40 @@ shared_token = "presented-secret"
                     }]
                 })
                 .unwrap_or_default(),
+        }
+    }
+
+    fn auth_config_for_clients(
+        client_ids: &[&str],
+        configured_token: Option<&str>,
+    ) -> ServerAuthConfig {
+        ServerAuthConfig {
+            allowed_clients: client_ids
+                .iter()
+                .map(|client_id| AllowedClientConfig {
+                    client_id: (*client_id).to_string(),
+                    shared_token_id: "token-main".to_string(),
+                })
+                .collect(),
+            shared_tokens: configured_token
+                .map(|token| {
+                    vec![SharedTokenConfig {
+                        token_id: "token-main".to_string(),
+                        secret_ref: SharedTokenSecretRef::InlinePlaceholder(token.to_string()),
+                    }]
+                })
+                .unwrap_or_default(),
+        }
+    }
+
+    fn auth_video_queue_startup_config(
+        bind_port: u16,
+        auth_config: ServerAuthConfig,
+    ) -> ServerAuthResponsePocStartupConfig {
+        ServerAuthResponsePocStartupConfig {
+            bind_address: SocketAddr::from(([127, 0, 0, 1], bind_port)),
+            expected_protocol_version: ProtocolVersion(2),
+            auth_config,
         }
     }
 
@@ -23187,6 +23453,12 @@ shared_token = "presented-secret"
             ..ServerReceiveAuthVideoQueueOnceManualPolicy::default()
         };
         let mut summary = ServerReceiveAuthVideoQueueOnceVideoSummary::default();
+        summary.frames_queued = summary.frames_queued.saturating_add(1);
+        record_queued_frame_progress(
+            &mut summary,
+            &ClientId("player1".to_string()),
+            &RunId("run-1".to_string()),
+        );
         record_reassembled_frame_progress(
             &mut summary,
             &ClientId("player1".to_string()),
@@ -23195,6 +23467,12 @@ shared_token = "presented-secret"
 
         assert_eq!(evaluate_reassembled_stop_reason(policy, &summary), None);
 
+        summary.frames_queued = summary.frames_queued.saturating_add(1);
+        record_queued_frame_progress(
+            &mut summary,
+            &ClientId("player2".to_string()),
+            &RunId("run-1".to_string()),
+        );
         record_reassembled_frame_progress(
             &mut summary,
             &ClientId("player2".to_string()),
@@ -23219,6 +23497,12 @@ shared_token = "presented-secret"
 
         for _ in 0..2 {
             summary.frames_reassembled = summary.frames_reassembled.saturating_add(1);
+            summary.frames_queued = summary.frames_queued.saturating_add(1);
+            record_queued_frame_progress(
+                &mut summary,
+                &ClientId("player1".to_string()),
+                &RunId("run-1".to_string()),
+            );
             record_reassembled_frame_progress(
                 &mut summary,
                 &ClientId("player1".to_string()),
@@ -23230,12 +23514,78 @@ shared_token = "presented-secret"
 
         for _ in 0..2 {
             summary.frames_reassembled = summary.frames_reassembled.saturating_add(1);
+            summary.frames_queued = summary.frames_queued.saturating_add(1);
+            record_queued_frame_progress(
+                &mut summary,
+                &ClientId("player2".to_string()),
+                &RunId("run-1".to_string()),
+            );
             record_reassembled_frame_progress(
                 &mut summary,
                 &ClientId("player2".to_string()),
                 &RunId("run-1".to_string()),
             );
         }
+
+        assert_eq!(
+            evaluate_reassembled_stop_reason(policy, &summary),
+            Some(
+                ServerReceiveAuthVideoQueueStopReason::ReassembledFramesAndClientAwareThresholdReached
+            )
+        );
+    }
+
+    #[test]
+    fn client_aware_stop_counts_direct_and_reassembled_queued_frames_together() {
+        let policy = ServerReceiveAuthVideoQueueOnceManualPolicy {
+            expected_reassembled_frames: 4,
+            expected_reassembled_clients: 2,
+            expected_reassembled_frames_per_client: 2,
+            ..ServerReceiveAuthVideoQueueOnceManualPolicy::default()
+        };
+        let mut summary = ServerReceiveAuthVideoQueueOnceVideoSummary::default();
+
+        summary.frames_queued = 1;
+        summary.direct_frames_queued = 1;
+        record_direct_frame_progress(
+            &mut summary,
+            &ClientId("player1".to_string()),
+            &RunId("run-1".to_string()),
+        );
+        summary.frames_reassembled = summary.frames_reassembled.saturating_add(1);
+        record_reassembled_frame_progress(
+            &mut summary,
+            &ClientId("player1".to_string()),
+            &RunId("run-1".to_string()),
+        );
+        summary.frames_queued = summary.frames_queued.saturating_add(1);
+        record_queued_frame_progress(
+            &mut summary,
+            &ClientId("player1".to_string()),
+            &RunId("run-1".to_string()),
+        );
+
+        assert_eq!(evaluate_reassembled_stop_reason(policy, &summary), None);
+
+        summary.frames_reassembled = summary.frames_reassembled.saturating_add(1);
+        record_reassembled_frame_progress(
+            &mut summary,
+            &ClientId("player2".to_string()),
+            &RunId("run-1".to_string()),
+        );
+        summary.frames_queued = summary.frames_queued.saturating_add(1);
+        record_queued_frame_progress(
+            &mut summary,
+            &ClientId("player2".to_string()),
+            &RunId("run-1".to_string()),
+        );
+        summary.frames_queued = summary.frames_queued.saturating_add(1);
+        summary.direct_frames_queued = summary.direct_frames_queued.saturating_add(1);
+        record_direct_frame_progress(
+            &mut summary,
+            &ClientId("player2".to_string()),
+            &RunId("run-1".to_string()),
+        );
 
         assert_eq!(
             evaluate_reassembled_stop_reason(policy, &summary),

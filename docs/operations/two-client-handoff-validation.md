@@ -168,11 +168,15 @@ Primary receive-side fields:
 - `registered_clients`
 - `frames_reassembled`
 - `frames_queued`
+- `direct_frames_queued`
 - `rejected_packets`
 - `incomplete_reassembly_frames`
 - `manual_expected_reassembled_clients`
 - `manual_expected_reassembled_frames_per_client`
+- `observed_queued_clients`
 - `observed_reassembled_clients`
+- `per_client_queued_frames`
+- `per_client_direct_frames`
 - `per_client_reassembled_frames`
 - `validation_ready`
 - `ready_reason`
@@ -193,7 +197,10 @@ Primary handoff-side fields:
 - `expected_reassembled_frames`
 - `expected_clients`
 - `expected_per_client_frames`
+- `observed_queued_clients`
 - `observed_reassembled_clients`
+- `per_client_queued_frames`
+- `per_client_direct_frames`
 - `per_client_reassembled_frames`
 - `request_id`
 - `result_kind`
@@ -205,6 +212,23 @@ Primary handoff-side fields:
 
 For a good 2-client handoff run, both `player1` and `player2` should appear in
 successful `FrameRead` request lines at least once.
+
+### Expected Count Basis
+
+Current validation thresholding for this command is queue-based:
+
+- `frames_queued` is the total threshold counter
+- `direct_frames_queued` is the direct-send subset
+- `frames_reassembled` is the fragmented/reassembled subset
+- per-client thresholding uses `per_client_queued_frames`
+
+Interpretation:
+
+- direct `VideoFrame` packets count toward the same validation-ready threshold
+  as fragmented/reassembled frames
+- `per_client_reassembled_frames` remains useful observability, but
+  `validation_ready` is based on queued frames so mixed direct/fragmented runs
+  can still satisfy the expected count
 
 ### Switcher Raw One-Shot Read
 
@@ -380,6 +404,11 @@ What this should guarantee:
 - receive phase waits for both clients:
   - `expected_reassembled_clients=2`
   - `expected_reassembled_frames_per_client=900`
+- validation-ready frame counting uses queued frames:
+  - `expected_reassembled_frames=1800`
+  - counted against `frames_queued`
+  - `per_client_queued_frames`
+  - direct + reassembled frames both contribute
 - bounded handoff request budget matches the planned preview loop
 - after the receive phase finishes and the named-pipe server is actually ready,
   server stdout now emits a readiness line such as:
@@ -394,7 +423,10 @@ What this should guarantee:
   - `expected_reassembled_frames=1800`
   - `expected_clients=2`
   - `expected_per_client_frames=900`
+  - `observed_queued_clients=2`
   - `observed_reassembled_clients=2`
+  - `per_client_queued_frames=player1/streamsync-dev-session:900|player2/streamsync-dev-session:900`
+  - `per_client_direct_frames=...`
   - `per_client_reassembled_frames=player1/streamsync-dev-session:900|player2/streamsync-dev-session:900`
 
 Human start-order rule:
@@ -519,16 +551,22 @@ suspects as:
 ### Server Receive Side
 
 - `registered_clients=2`
-- `frames_reassembled=1800`
 - `frames_queued=1800`
+- `frames_reassembled` may be less than `1800`
+- `direct_frames_queued` may be non-zero
 - `rejected_packets=0`
 - `incomplete_reassembly_frames=0`
 - `manual_expected_reassembled_clients=2`
 - `manual_expected_reassembled_frames_per_client=900`
-- `observed_reassembled_clients=2`
-- `per_client_reassembled_frames` shows both:
+- `observed_queued_clients=2`
+- `observed_reassembled_clients` is visible but not the validation-ready gate when
+  direct frames are present
+- `per_client_queued_frames` shows both:
   - `player1/streamsync-dev-session:900`
   - `player2/streamsync-dev-session:900`
+- `per_client_direct_frames` may show a non-zero subset
+- `per_client_reassembled_frames` shows both:
+  - or the remaining fragmented/reassembled subset for each client
 
 Preferred receive stop result:
 
@@ -606,11 +644,15 @@ operator_note=
 registered_clients=
 frames_reassembled=
 frames_queued=
+direct_frames_queued=
 rejected_packets=
 incomplete_reassembly_frames=
 manual_expected_reassembled_clients=
 manual_expected_reassembled_frames_per_client=
+observed_queued_clients=
 observed_reassembled_clients=
+per_client_queued_frames=
+per_client_direct_frames=
 per_client_reassembled_frames=
 validation_ready=
 ready_reason=

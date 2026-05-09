@@ -1573,7 +1573,7 @@ fn expected_reassembled_frames_met(
     }
 
     summary
-        .map(|summary| summary.frames_reassembled >= policy.expected_reassembled_frames.max(1))
+        .map(|summary| summary.frames_queued >= policy.expected_reassembled_frames.max(1))
         .unwrap_or(false)
 }
 
@@ -1589,7 +1589,7 @@ fn expected_reassembled_clients_met(
         return false;
     };
 
-    if summary.observed_reassembled_clients < policy.expected_reassembled_clients as usize {
+    if summary.observed_queued_clients < policy.expected_reassembled_clients as usize {
         return false;
     }
 
@@ -1598,7 +1598,7 @@ fn expected_reassembled_clients_met(
     }
 
     summary
-        .per_client_reassembled_frames
+        .per_client_queued_frames
         .values()
         .filter(|count| **count >= policy.expected_reassembled_frames_per_client)
         .count()
@@ -1694,6 +1694,12 @@ fn format_receive_auth_video_queue_runtime_summary(
     let per_client_reassembled_frames = video_summary
         .map(format_per_client_reassembled_frames)
         .unwrap_or_else(|| "none".to_string());
+    let per_client_queued_frames = video_summary
+        .map(format_per_client_queued_frames)
+        .unwrap_or_else(|| "none".to_string());
+    let per_client_direct_frames = video_summary
+        .map(format_per_client_direct_frames)
+        .unwrap_or_else(|| "none".to_string());
     let stop_reason = match (&outcome.video, video_summary) {
         (
             stream_sync_server::ServerReceiveAuthVideoQueueOnceVideoOutcome::NotReceivedAuthRejected,
@@ -1718,7 +1724,7 @@ fn format_receive_auth_video_queue_runtime_summary(
     let validation_ready = receive_auth_video_queue_validation_ready(policy, video_summary);
 
     format!(
-        "receive auth/video queue runtime handled auth on {}; auth_accepted={} auth_reason={:?} auth_status={} auth_operational_reason={} registration_status={} registration_reason={} client_id={} run_id={} video={} queued={} queue_len={} dropped_oldest={} registered_clients={} manual_max_video_packets={} manual_receive_timeout_ms={} manual_expected_reassembled_frames={} manual_stop_after_expected_reassembled_frames={} manual_expected_reassembled_clients={} manual_expected_reassembled_frames_per_client={} manual_receive_buffer_requested_bytes={} manual_receive_buffer_effective_bytes={} manual_receive_buffer_set_error={} manual_receive_buffer_read_error={} packets_received={} fragments_received={} frames_reassembled={} frames_queued={} direct_frames_queued={} rejected_packets={} rejected_fragments={} duplicate_fragments={} non_video_packets={} incomplete_reassembly_frames={} incomplete_frame_progress={} observed_reassembled_clients={} per_client_reassembled_frames={} validation_ready={} ready_reason={} receive_stop_reason={} stop_reason={} receive_timed_out={} max_packets_reached={}",
+        "receive auth/video queue runtime handled auth on {}; auth_accepted={} auth_reason={:?} auth_status={} auth_operational_reason={} registration_status={} registration_reason={} client_id={} run_id={} video={} queued={} queue_len={} dropped_oldest={} registered_clients={} manual_max_video_packets={} manual_receive_timeout_ms={} manual_expected_reassembled_frames={} manual_stop_after_expected_reassembled_frames={} manual_expected_reassembled_clients={} manual_expected_reassembled_frames_per_client={} manual_receive_buffer_requested_bytes={} manual_receive_buffer_effective_bytes={} manual_receive_buffer_set_error={} manual_receive_buffer_read_error={} packets_received={} fragments_received={} frames_reassembled={} frames_queued={} direct_frames_queued={} rejected_packets={} rejected_fragments={} duplicate_fragments={} non_video_packets={} incomplete_reassembly_frames={} incomplete_frame_progress={} observed_queued_clients={} observed_reassembled_clients={} per_client_queued_frames={} per_client_direct_frames={} per_client_reassembled_frames={} validation_ready={} ready_reason={} receive_stop_reason={} stop_reason={} receive_timed_out={} max_packets_reached={}",
         outcome.bind_address,
         decision.accepted,
         decision.reason_code,
@@ -1775,8 +1781,13 @@ fn format_receive_auth_video_queue_runtime_summary(
             .unwrap_or_else(|| "none".to_string()),
         incomplete_progress,
         video_summary
+            .map(|summary| summary.observed_queued_clients.to_string())
+            .unwrap_or_else(|| "none".to_string()),
+        video_summary
             .map(|summary| summary.observed_reassembled_clients.to_string())
             .unwrap_or_else(|| "none".to_string()),
+        per_client_queued_frames,
+        per_client_direct_frames,
         per_client_reassembled_frames,
         validation_ready,
         ready_reason,
@@ -1800,6 +1811,36 @@ fn format_per_client_reassembled_frames(
 
     summary
         .per_client_reassembled_frames
+        .iter()
+        .map(|(scope, frames)| format!("{scope}:{frames}"))
+        .collect::<Vec<_>>()
+        .join("|")
+}
+
+fn format_per_client_queued_frames(
+    summary: &stream_sync_server::ServerReceiveAuthVideoQueueOnceVideoSummary,
+) -> String {
+    if summary.per_client_queued_frames.is_empty() {
+        return "none".to_string();
+    }
+
+    summary
+        .per_client_queued_frames
+        .iter()
+        .map(|(scope, frames)| format!("{scope}:{frames}"))
+        .collect::<Vec<_>>()
+        .join("|")
+}
+
+fn format_per_client_direct_frames(
+    summary: &stream_sync_server::ServerReceiveAuthVideoQueueOnceVideoSummary,
+) -> String {
+    if summary.per_client_direct_frames.is_empty() {
+        return "none".to_string();
+    }
+
+    summary
+        .per_client_direct_frames
         .iter()
         .map(|(scope, frames)| format!("{scope}:{frames}"))
         .collect::<Vec<_>>()
@@ -1914,6 +1955,12 @@ fn format_named_pipe_handoff_server_ready_line(
     let per_client_reassembled_frames = video_summary
         .map(format_per_client_reassembled_frames)
         .unwrap_or_else(|| "none".to_string());
+    let per_client_queued_frames = video_summary
+        .map(format_per_client_queued_frames)
+        .unwrap_or_else(|| "none".to_string());
+    let per_client_direct_frames = video_summary
+        .map(format_per_client_direct_frames)
+        .unwrap_or_else(|| "none".to_string());
     let validation_ready = receive_auth_video_queue_validation_ready(policy, video_summary);
     let ready_reason = format_receive_auth_video_queue_ready_reason(policy, video_summary);
     let receive_stop_reason = format_receive_auth_video_queue_reason(
@@ -1922,7 +1969,7 @@ fn format_named_pipe_handoff_server_ready_line(
     );
 
     format!(
-        "server named-pipe handoff bounded ready handoff_ready=true validation_ready={} ready_reason={} receive_stop_reason={} pipe_name={} actual_pipe_path={} queued_frames={} registered_clients={} expected_handoff_requests={} expected_reassembled_frames={} expected_clients={} expected_per_client_frames={} observed_reassembled_clients={} per_client_reassembled_frames={}",
+        "server named-pipe handoff bounded ready handoff_ready=true validation_ready={} ready_reason={} receive_stop_reason={} pipe_name={} actual_pipe_path={} queued_frames={} registered_clients={} expected_handoff_requests={} expected_reassembled_frames={} expected_clients={} expected_per_client_frames={} observed_queued_clients={} observed_reassembled_clients={} per_client_queued_frames={} per_client_direct_frames={} per_client_reassembled_frames={}",
         validation_ready,
         ready_reason,
         receive_stop_reason,
@@ -1935,8 +1982,13 @@ fn format_named_pipe_handoff_server_ready_line(
         policy.expected_reassembled_clients,
         policy.expected_reassembled_frames_per_client,
         video_summary
+            .map(|summary| summary.observed_queued_clients.to_string())
+            .unwrap_or_else(|| "none".to_string()),
+        video_summary
             .map(|summary| summary.observed_reassembled_clients.to_string())
             .unwrap_or_else(|| "none".to_string()),
+        per_client_queued_frames,
+        per_client_direct_frames,
         per_client_reassembled_frames
     )
 }
@@ -2753,7 +2805,9 @@ mod tests {
         );
 
         assert!(ready_line.contains("handoff_ready=true"));
-        assert!(ready_line.contains("validation_ready=false"));
+        assert!(ready_line.contains("validation_ready=true"));
+        assert!(ready_line.contains("ready_reason=expected_frames_reached"));
+        assert!(ready_line.contains("receive_stop_reason=manual_stop"));
         assert!(ready_line.contains("pipe_name=pipe-b"));
         assert!(ready_line.contains(r"actual_pipe_path=\\.\pipe\pipe-b"));
         assert!(ready_line.contains("expected_handoff_requests=3"));
@@ -2872,7 +2926,14 @@ mod tests {
                     incomplete_reassembly_frames: 0,
                     queue_len: 2,
                     incomplete_frame_progress: Vec::new(),
+                    observed_queued_clients: 1,
                     observed_reassembled_clients: 1,
+                    per_client_queued_frames: {
+                        let mut values = std::collections::BTreeMap::new();
+                        values.insert("player1/run-1".to_string(), 2);
+                        values
+                    },
+                    per_client_direct_frames: std::collections::BTreeMap::new(),
                     per_client_reassembled_frames,
                     receive_timed_out: true,
                     max_packets_reached: false,
@@ -2899,6 +2960,9 @@ mod tests {
         assert!(ready_line.contains("receive_stop_reason=receive_timeout"));
         assert!(ready_line.contains("expected_reassembled_frames=1800"));
         assert!(ready_line.contains("expected_clients=0"));
+        assert!(ready_line.contains("observed_queued_clients=1"));
+        assert!(ready_line.contains("per_client_queued_frames=player1/run-1:2"));
+        assert!(ready_line.contains("per_client_direct_frames=none"));
         assert!(ready_line.contains("per_client_reassembled_frames=player1/run-1:2"));
     }
 
@@ -2923,7 +2987,14 @@ mod tests {
                     incomplete_reassembly_frames: 0,
                     queue_len: 1_800,
                     incomplete_frame_progress: Vec::new(),
+                    observed_queued_clients: 1,
                     observed_reassembled_clients: 1,
+                    per_client_queued_frames: {
+                        let mut values = std::collections::BTreeMap::new();
+                        values.insert("player1/run-1".to_string(), 1_800);
+                        values
+                    },
+                    per_client_direct_frames: std::collections::BTreeMap::new(),
                     per_client_reassembled_frames,
                     receive_timed_out: true,
                     max_packets_reached: false,
@@ -2950,6 +3021,7 @@ mod tests {
         assert!(ready_line.contains("receive_stop_reason=receive_timeout"));
         assert!(ready_line.contains("expected_clients=2"));
         assert!(ready_line.contains("expected_per_client_frames=900"));
+        assert!(ready_line.contains("observed_queued_clients=1"));
         assert!(ready_line.contains("observed_reassembled_clients=1"));
     }
 
@@ -2975,7 +3047,15 @@ mod tests {
                     incomplete_reassembly_frames: 0,
                     queue_len: 1_800,
                     incomplete_frame_progress: Vec::new(),
+                    observed_queued_clients: 2,
                     observed_reassembled_clients: 2,
+                    per_client_queued_frames: {
+                        let mut values = std::collections::BTreeMap::new();
+                        values.insert("player1/run-1".to_string(), 900);
+                        values.insert("player2/run-1".to_string(), 900);
+                        values
+                    },
+                    per_client_direct_frames: std::collections::BTreeMap::new(),
                     per_client_reassembled_frames,
                     receive_timed_out: false,
                     max_packets_reached: false,
@@ -3000,6 +3080,9 @@ mod tests {
         assert!(ready_line.contains("validation_ready=true"));
         assert!(ready_line.contains("ready_reason=expected_clients_reached"));
         assert!(ready_line.contains("receive_stop_reason=expected_clients_reached"));
+        assert!(ready_line.contains("observed_queued_clients=2"));
+        assert!(ready_line.contains("per_client_queued_frames=player1/run-1:900|player2/run-1:900"));
+        assert!(ready_line.contains("per_client_direct_frames=none"));
         assert!(ready_line
             .contains("per_client_reassembled_frames=player1/run-1:900|player2/run-1:900"));
     }
@@ -3030,6 +3113,12 @@ mod tests {
         assert!(summary.contains("manual_max_video_packets=4096"));
         assert!(summary.contains("manual_expected_reassembled_clients=0"));
         assert!(summary.contains("manual_expected_reassembled_frames_per_client=0"));
+        assert!(summary.contains("observed_queued_clients=1"));
+        assert!(summary.contains("per_client_queued_frames=player1/run-1:1"));
+        assert!(summary.contains("per_client_direct_frames=player1/run-1:1"));
+        assert!(summary.contains("validation_ready=true"));
+        assert!(summary.contains("ready_reason=expected_frames_reached"));
+        assert!(summary.contains("receive_stop_reason=manual_stop"));
         assert!(summary.contains("pipe_name=pipe-session"));
         assert!(summary.contains(r"actual_pipe_path=\\.\pipe\pipe-session"));
         assert!(summary.contains("max_requests=2"));
@@ -3059,7 +3148,14 @@ mod tests {
                     incomplete_reassembly_frames: 0,
                     queue_len: 2,
                     incomplete_frame_progress: Vec::new(),
+                    observed_queued_clients: 1,
                     observed_reassembled_clients: 1,
+                    per_client_queued_frames: {
+                        let mut values = std::collections::BTreeMap::new();
+                        values.insert("player1/run-1".to_string(), 2);
+                        values
+                    },
+                    per_client_direct_frames: std::collections::BTreeMap::new(),
                     per_client_reassembled_frames: {
                         let mut values = std::collections::BTreeMap::new();
                         values.insert("player1/run-1".to_string(), 2);
@@ -3087,6 +3183,9 @@ mod tests {
         assert!(summary.contains("validation_ready=false"));
         assert!(summary.contains("ready_reason=receive_timeout"));
         assert!(summary.contains("receive_stop_reason=receive_timeout"));
+        assert!(summary.contains("observed_queued_clients=1"));
+        assert!(summary.contains("per_client_queued_frames=player1/run-1:2"));
+        assert!(summary.contains("per_client_direct_frames=none"));
         assert!(summary.contains("per_client_reassembled_frames=player1/run-1:2"));
     }
 
@@ -3198,7 +3297,18 @@ mod tests {
                         incomplete_reassembly_frames: 0,
                         queue_len: 1,
                         incomplete_frame_progress: Vec::new(),
+                        observed_queued_clients: 1,
                         observed_reassembled_clients: 0,
+                        per_client_queued_frames: {
+                            let mut values = std::collections::BTreeMap::new();
+                            values.insert("player1/run-1".to_string(), 1);
+                            values
+                        },
+                        per_client_direct_frames: {
+                            let mut values = std::collections::BTreeMap::new();
+                            values.insert("player1/run-1".to_string(), 1);
+                            values
+                        },
                         per_client_reassembled_frames: std::collections::BTreeMap::new(),
                         receive_timed_out: false,
                         max_packets_reached: false,
