@@ -5,6 +5,63 @@
 - Codex code + docs update
 
 ### Work
+- Investigated the remaining same-PC 2-client handoff blocker after transport /
+  queue / `FrameRead` had already passed.
+- Confirmed the likely decode root cause:
+  - the current switcher path decodes one H.264 payload in isolation
+  - persistent encoder payloads often arrive as VCL-only access units
+  - FFmpeg then reports `non-existing PPS 0 referenced` / `no frame` /
+    `Invalid data found when processing input`
+- Added a narrow client-only fix in the persistent bounded path:
+  - detect SPS and PPS NAL units from recovered Annex B access units
+  - cache the latest SPS/PPS during the bounded run
+  - prepend cached SPS/PPS ahead of later VCL-only payloads before sending
+  - defer send with typed `MissingH264ParameterSets` when a VCL payload arrives
+    before both SPS and PPS are cached
+- Added new bounded-summary observability:
+  - `h264_parameter_sets_cached`
+  - `h264_sps_count`
+  - `h264_pps_count`
+  - `h264_parameter_sets_prepended_count`
+  - `last_payload_had_parameter_sets`
+  - `h264_parameter_sets_missing_count`
+- Kept scope narrow:
+  - no server receive/handoff changes
+  - no switcher persistent decoder-context work
+  - no client cadence changes
+- Recorded the current handoff service limitation in docs:
+  - `--receive-auth-video-queue-and-serve-handoff-many` is still a staged
+    validation command
+  - the receive/auth phase completes before the handoff pipe opens
+  - concurrent receive + handoff serve remains a later slice after the decode
+    blocker
+
+### Changed Files
+- `apps/client/src/lib.rs`
+- `apps/client/src/main.rs`
+- `docs/operations/two-client-handoff-validation.md`
+- `docs/operations/manual-real-encoded-video-poc.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### Decision
+- The narrowest viable fix is client-side SPS/PPS caching plus payload prepend
+  for the persistent encoder path only.
+- This preserves the current switcher one-shot decode path while making
+  isolated handoff payloads decodable enough for the current human validation
+  boundary.
+
+### Validation
+- `cargo fmt`
+- focused client parameter-set tests:
+  - `cargo test -p stream-sync-client client_persistent_h264_parameter_set_cache -- --nocapture`
+  - `cargo test -p stream-sync-client client_video_frame_continuous_real_encoded_persistent_prepends_cached_parameter_sets_for_followup_vcl -- --nocapture`
+
+## 2026-05-09
+### Type
+- Codex code + docs update
+
+### Work
 - Fixed the early-stop bug in the receive phase of
   `--receive-auth-video-queue-and-serve-handoff-many`.
 - Confirmed the concrete bug:

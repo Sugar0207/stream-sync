@@ -19,6 +19,16 @@ Out of scope for this step:
 - adaptive jitter buffer expansion
 - dashboard / exporter work
 
+Known limitation for this staged validation:
+
+- current `--receive-auth-video-queue-and-serve-handoff-many` is not a
+  realtime concurrent runtime
+- the command finishes the bounded receive/auth phase first
+- only after that does it open the named-pipe handoff service
+- this is acceptable for bounded same-PC handoff validation
+- realtime preview / production still needs a future concurrent
+  receive-and-serve runtime
+
 ## Positioning
 
 Current validated baseline before this step:
@@ -182,6 +192,34 @@ Primary receive-side fields:
 - `ready_reason`
 - `receive_stop_reason`
 - `stop_reason`
+
+### Client Persistent Encoder Summary
+
+When running the current recommended client command:
+
+```text
+--auth-real-encoded-video-frame-poc-bounded ... --encoder-runtime persistent --cadence-mode deadline
+```
+
+also inspect:
+
+- `h264_parameter_sets_cached`
+- `h264_sps_count`
+- `h264_pps_count`
+- `h264_parameter_sets_prepended_count`
+- `last_payload_had_parameter_sets`
+- `h264_parameter_sets_missing_count`
+
+Interpretation:
+
+- `h264_parameter_sets_cached=true` means the client has cached both SPS and
+  PPS from the persistent Annex B stream
+- `h264_parameter_sets_prepended_count` shows how many sent access-unit
+  payloads needed cached SPS/PPS prepended for switcher one-shot decode
+- `h264_parameter_sets_missing_count` shows how many VCL access units were
+  deferred because no complete SPS/PPS cache existed yet
+- `last_encode_error=MissingH264ParameterSets` means the client chose typed
+  encode-deferred behavior instead of sending a likely undecodable payload
 
 ### Server Bounded Handoff Request Lines
 
@@ -588,6 +626,9 @@ Also acceptable:
   - `validation_ready=true`
   - `ready_reason=expected_clients_reached`
   - `receive_stop_reason=expected_clients_reached`
+- `handoff_ready=true` with `validation_ready=true` only means the staged
+  receive phase completed and the bounded handoff service is ready
+- it does not mean concurrent realtime preview behavior has been validated yet
 
 ### Switcher Side
 
@@ -619,6 +660,8 @@ Real-slot diagnostics should show:
 - `NoFrameAvailable` on slots `2` and `3`
 - `scheduler_status=PartialSelected` in this exact 2-real + 2-placeholder path
 - `stop_reason=ReceiveTimedOut` after expected counts were already reached
+- `handoff_ready=true` appearing only after both clients finish their bounded
+  send run, because this command is intentionally staged today
 
 ## Failure Paste-Back Template
 

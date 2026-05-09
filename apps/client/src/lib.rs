@@ -3309,6 +3309,7 @@ pub enum ClientH264EncoderDeferredReason {
     UnsupportedCaptureFormat,
     EncoderUnavailable,
     EncodeFailed,
+    MissingH264ParameterSets,
 }
 
 /// Result returned by a caller-owned encoder hook before it is converted into
@@ -4832,6 +4833,135 @@ impl ClientPersistentFfmpegH264AccessUnitSessionRuntime
     }
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct ClientPersistentH264ParameterSetCache {
+    sps_nal_units: Vec<Vec<u8>>,
+    pps_nal_units: Vec<Vec<u8>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum ClientPersistentH264PreparedPayloadResult {
+    Prepared {
+        payload: Vec<u8>,
+        prepended_cached_parameter_sets: bool,
+        payload_had_parameter_sets: bool,
+    },
+    MissingParameterSets,
+}
+
+impl ClientPersistentH264ParameterSetCache {
+    fn observe_access_unit(&mut self, access_unit: &ClientAnnexBAccessUnit) {
+        let sps_nal_units: Vec<Vec<u8>> = access_unit
+            .nal_units
+            .iter()
+            .filter(|nal_unit| nal_unit.kind == ClientAnnexBNalUnitKind::Sps)
+            .map(|nal_unit| nal_unit.bytes.clone())
+            .collect();
+        if !sps_nal_units.is_empty() {
+            self.sps_nal_units = sps_nal_units;
+        }
+
+        let pps_nal_units: Vec<Vec<u8>> = access_unit
+            .nal_units
+            .iter()
+            .filter(|nal_unit| nal_unit.kind == ClientAnnexBNalUnitKind::Pps)
+            .map(|nal_unit| nal_unit.bytes.clone())
+            .collect();
+        if !pps_nal_units.is_empty() {
+            self.pps_nal_units = pps_nal_units;
+        }
+    }
+
+    fn has_parameter_sets(&self) -> bool {
+        !self.sps_nal_units.is_empty() && !self.pps_nal_units.is_empty()
+    }
+
+    fn sps_count(&self) -> u64 {
+        self.sps_nal_units.len() as u64
+    }
+
+    fn pps_count(&self) -> u64 {
+        self.pps_nal_units.len() as u64
+    }
+
+    fn prepare_payload(
+        &self,
+        access_unit: &ClientAnnexBAccessUnit,
+    ) -> ClientPersistentH264PreparedPayloadResult {
+        if access_unit.contains_sps && access_unit.contains_pps {
+            return ClientPersistentH264PreparedPayloadResult::Prepared {
+                payload: access_unit.bytes.clone(),
+                prepended_cached_parameter_sets: false,
+                payload_had_parameter_sets: true,
+            };
+        }
+
+        let contains_vcl = access_unit
+            .nal_units
+            .iter()
+            .any(|nal_unit| nal_unit.kind.is_vcl());
+        if !contains_vcl {
+            return ClientPersistentH264PreparedPayloadResult::Prepared {
+                payload: access_unit.bytes.clone(),
+                prepended_cached_parameter_sets: false,
+                payload_had_parameter_sets: access_unit.contains_sps || access_unit.contains_pps,
+            };
+        }
+
+        if !self.has_parameter_sets() {
+            return ClientPersistentH264PreparedPayloadResult::MissingParameterSets;
+        }
+
+        let mut payload = Vec::new();
+        let mut prepended_cached_parameter_sets = false;
+
+        if access_unit.contains_sps {
+            for nal_unit in access_unit
+                .nal_units
+                .iter()
+                .filter(|nal_unit| nal_unit.kind == ClientAnnexBNalUnitKind::Sps)
+            {
+                payload.extend_from_slice(&nal_unit.bytes);
+            }
+        } else {
+            prepended_cached_parameter_sets = true;
+            self.sps_nal_units
+                .iter()
+                .for_each(|nal_unit| payload.extend_from_slice(nal_unit));
+        }
+
+        if access_unit.contains_pps {
+            for nal_unit in access_unit
+                .nal_units
+                .iter()
+                .filter(|nal_unit| nal_unit.kind == ClientAnnexBNalUnitKind::Pps)
+            {
+                payload.extend_from_slice(&nal_unit.bytes);
+            }
+        } else {
+            prepended_cached_parameter_sets = true;
+            self.pps_nal_units
+                .iter()
+                .for_each(|nal_unit| payload.extend_from_slice(nal_unit));
+        }
+
+        access_unit
+            .nal_units
+            .iter()
+            .filter(|nal_unit| {
+                nal_unit.kind != ClientAnnexBNalUnitKind::Sps
+                    && nal_unit.kind != ClientAnnexBNalUnitKind::Pps
+            })
+            .for_each(|nal_unit| payload.extend_from_slice(&nal_unit.bytes));
+
+        ClientPersistentH264PreparedPayloadResult::Prepared {
+            payload,
+            prepended_cached_parameter_sets,
+            payload_had_parameter_sets: true,
+        }
+    }
+}
+
 enum ClientPersistentFfmpegH264AccessUnitSessionStartResult {
     Started(Box<dyn ClientPersistentFfmpegH264AccessUnitSessionRuntime>),
     Failed {
@@ -5847,6 +5977,12 @@ pub struct ClientContinuousRealEncodedVideoFrameSummary {
     pub persistent_no_complete_access_unit_count: u64,
     pub persistent_stdout_closed_count: u64,
     pub persistent_malformed_stream_count: u64,
+    pub h264_parameter_sets_cached: bool,
+    pub h264_sps_count: u64,
+    pub h264_pps_count: u64,
+    pub h264_parameter_sets_prepended_count: u64,
+    pub last_payload_had_parameter_sets: bool,
+    pub h264_parameter_sets_missing_count: u64,
     pub last_encoder_exit_status: Option<i32>,
     pub frames_remaining_to_max: u64,
     pub elapsed_micros: u64,
@@ -5887,7 +6023,8 @@ impl ClientContinuousRealEncodedVideoFrameSummary {
         let encode_attempts = self
             .frames_encoded
             .saturating_add(self.encode_failures)
-            .saturating_add(self.persistent_no_complete_access_unit_count);
+            .saturating_add(self.persistent_no_complete_access_unit_count)
+            .saturating_add(self.h264_parameter_sets_missing_count);
         average_duration_micros(self.encode_elapsed_micros, encode_attempts)
     }
 }
@@ -6181,6 +6318,7 @@ impl ClientContinuousRealEncodedVideoFrameBoundary {
         let mut results = Vec::new();
         let mut frame_wait_started_at: Option<Instant> = None;
         let mut session: Option<Box<dyn ClientPersistentFfmpegH264AccessUnitSessionRuntime>> = None;
+        let mut h264_parameter_set_cache = ClientPersistentH264ParameterSetCache::default();
 
         loop {
             if summary.frames_sent >= policy.max_frames {
@@ -6272,6 +6410,7 @@ impl ClientContinuousRealEncodedVideoFrameBoundary {
 
                         self.handle_persistent_access_unit_session_result(
                             &mut summary,
+                            &mut h264_parameter_set_cache,
                             &mut session,
                             ClientPersistentRealEncodedFrameContext {
                                 socket: input.socket,
@@ -6290,6 +6429,12 @@ impl ClientContinuousRealEncodedVideoFrameBoundary {
                     }
                 }
             };
+            let missing_parameter_sets_deferred = matches!(
+                result,
+                ClientRealEncodedVideoFrameOneShotResult::EncodeUnavailable {
+                    reason: ClientH264EncoderDeferredReason::MissingH264ParameterSets,
+                }
+            );
             update_continuous_real_encoded_summary(
                 &mut summary,
                 &result,
@@ -6299,6 +6444,9 @@ impl ClientContinuousRealEncodedVideoFrameBoundary {
                 },
             );
             if no_complete_access_unit_yet {
+                summary.encode_failures = summary.encode_failures.saturating_sub(1);
+            }
+            if missing_parameter_sets_deferred {
                 summary.encode_failures = summary.encode_failures.saturating_sub(1);
             }
             if force_encode_failure_stop {
@@ -6382,6 +6530,7 @@ impl ClientContinuousRealEncodedVideoFrameBoundary {
     fn handle_persistent_access_unit_session_result(
         &self,
         summary: &mut ClientContinuousRealEncodedVideoFrameSummary,
+        h264_parameter_set_cache: &mut ClientPersistentH264ParameterSetCache,
         session: &mut Option<Box<dyn ClientPersistentFfmpegH264AccessUnitSessionRuntime>>,
         context: ClientPersistentRealEncodedFrameContext<'_>,
         frame: ClientRawCapturedVideoFrame,
@@ -6391,7 +6540,14 @@ impl ClientContinuousRealEncodedVideoFrameBoundary {
             ClientPersistentFfmpegH264AccessUnitSessionStepResult::AccessUnit(access_unit) => {
                 summary.persistent_access_units_emitted =
                     summary.persistent_access_units_emitted.saturating_add(1);
-                build_and_send_persistent_access_unit(self, context, frame, access_unit.bytes)
+                build_and_send_persistent_access_unit(
+                    self,
+                    summary,
+                    h264_parameter_set_cache,
+                    context,
+                    frame,
+                    access_unit,
+                )
             }
             ClientPersistentFfmpegH264AccessUnitSessionStepResult::NoCompleteAccessUnitYet {
                 ..
@@ -6434,9 +6590,11 @@ impl ClientContinuousRealEncodedVideoFrameBoundary {
                             summary.persistent_access_units_emitted.saturating_add(1);
                         build_and_send_persistent_access_unit(
                             self,
+                            summary,
+                            h264_parameter_set_cache,
                             context,
                             frame,
-                            access_unit.bytes,
+                            access_unit,
                         )
                     }
                     ClientAnnexBAccessUnitReaderFinishResult::MalformedStream { .. } => {
@@ -6501,10 +6659,38 @@ struct ClientPersistentRealEncodedFrameContext<'a> {
 
 fn build_and_send_persistent_access_unit(
     boundary: &ClientContinuousRealEncodedVideoFrameBoundary,
+    summary: &mut ClientContinuousRealEncodedVideoFrameSummary,
+    h264_parameter_set_cache: &mut ClientPersistentH264ParameterSetCache,
     context: ClientPersistentRealEncodedFrameContext<'_>,
     frame: ClientRawCapturedVideoFrame,
-    access_unit_bytes: Vec<u8>,
+    access_unit: ClientAnnexBAccessUnit,
 ) -> ClientRealEncodedVideoFrameOneShotResult {
+    h264_parameter_set_cache.observe_access_unit(&access_unit);
+    sync_h264_parameter_set_summary(summary, h264_parameter_set_cache);
+    let access_unit_bytes = match h264_parameter_set_cache.prepare_payload(&access_unit) {
+        ClientPersistentH264PreparedPayloadResult::Prepared {
+            payload,
+            prepended_cached_parameter_sets,
+            payload_had_parameter_sets,
+        } => {
+            if prepended_cached_parameter_sets {
+                summary.h264_parameter_sets_prepended_count = summary
+                    .h264_parameter_sets_prepended_count
+                    .saturating_add(1);
+            }
+            summary.last_payload_had_parameter_sets = payload_had_parameter_sets;
+            payload
+        }
+        ClientPersistentH264PreparedPayloadResult::MissingParameterSets => {
+            summary.h264_parameter_sets_missing_count =
+                summary.h264_parameter_sets_missing_count.saturating_add(1);
+            summary.last_payload_had_parameter_sets = false;
+            return ClientRealEncodedVideoFrameOneShotResult::EncodeUnavailable {
+                reason: ClientH264EncoderDeferredReason::MissingH264ParameterSets,
+            };
+        }
+    };
+
     let encoded = ClientEncodedVideoFrameSource {
         capture_timestamp: frame.capture_timestamp,
         width: frame.width,
@@ -6558,6 +6744,15 @@ fn build_and_send_persistent_access_unit(
         }
         Err(failure) => ClientRealEncodedVideoFrameOneShotResult::SendFailed { failure },
     }
+}
+
+fn sync_h264_parameter_set_summary(
+    summary: &mut ClientContinuousRealEncodedVideoFrameSummary,
+    h264_parameter_set_cache: &ClientPersistentH264ParameterSetCache,
+) {
+    summary.h264_parameter_sets_cached = h264_parameter_set_cache.has_parameter_sets();
+    summary.h264_sps_count = h264_parameter_set_cache.sps_count();
+    summary.h264_pps_count = h264_parameter_set_cache.pps_count();
 }
 
 fn persistent_start_error_kind_to_deferred_reason(
@@ -17309,7 +17504,7 @@ mod tests {
 
     #[derive(Debug)]
     struct FakePersistentSession {
-        next_step: Option<ClientPersistentFfmpegH264AccessUnitSessionStepResult>,
+        next_steps: Vec<ClientPersistentFfmpegH264AccessUnitSessionStepResult>,
         shutdown_result: ClientPersistentFfmpegH264AccessUnitSessionStepResult,
     }
 
@@ -17318,9 +17513,11 @@ mod tests {
             &mut self,
             _frame_bytes: &[u8],
         ) -> ClientPersistentFfmpegH264AccessUnitSessionStepResult {
-            self.next_step
-                .take()
-                .unwrap_or(ClientPersistentFfmpegH264AccessUnitSessionStepResult::RuntimeClosed)
+            if self.next_steps.is_empty() {
+                ClientPersistentFfmpegH264AccessUnitSessionStepResult::RuntimeClosed
+            } else {
+                self.next_steps.remove(0)
+            }
         }
 
         fn shutdown(self: Box<Self>) -> ClientPersistentFfmpegH264AccessUnitSessionStepResult {
@@ -17330,7 +17527,7 @@ mod tests {
 
     #[derive(Debug)]
     struct FakePersistentSessionFactory {
-        next_step: ClientPersistentFfmpegH264AccessUnitSessionStepResult,
+        next_steps: Vec<ClientPersistentFfmpegH264AccessUnitSessionStepResult>,
         shutdown_result: ClientPersistentFfmpegH264AccessUnitSessionStepResult,
     }
 
@@ -17344,7 +17541,7 @@ mod tests {
         ) -> ClientPersistentFfmpegH264AccessUnitSessionStartResult {
             ClientPersistentFfmpegH264AccessUnitSessionStartResult::Started(Box::new(
                 FakePersistentSession {
-                    next_step: Some(self.next_step.clone()),
+                    next_steps: self.next_steps.clone(),
                     shutdown_result: self.shutdown_result.clone(),
                 },
             ))
@@ -17373,13 +17570,63 @@ mod tests {
         ]
     }
 
+    fn fixture_persistent_parameter_set_prefix_bytes() -> Vec<u8> {
+        [
+            annex_b_test_nal(4, 0x67, &[0x42, 0x00, 0x1e]),
+            annex_b_test_nal(4, 0x68, &[0xce, 0x06, 0xe2]),
+        ]
+        .concat()
+    }
+
+    fn fixture_annex_b_nal_unit(
+        start_code_len: usize,
+        nal_header: u8,
+        payload: &[u8],
+    ) -> ClientAnnexBNalUnit {
+        let nal_unit_type = nal_header & 0x1f;
+        let kind = ClientAnnexBNalUnitKind::from_nal_unit_type(nal_unit_type);
+        ClientAnnexBNalUnit {
+            bytes: annex_b_test_nal(start_code_len, nal_header, payload),
+            start_code_len,
+            kind,
+            nal_unit_type,
+            first_mb_in_slice: if kind.is_vcl() { Some(0) } else { None },
+        }
+    }
+
     fn fixture_persistent_access_unit() -> ClientAnnexBAccessUnit {
+        let nal_units = vec![
+            fixture_annex_b_nal_unit(4, 0x67, &[0x42, 0x00, 0x1e]),
+            fixture_annex_b_nal_unit(4, 0x68, &[0xce, 0x06, 0xe2]),
+            fixture_annex_b_nal_unit(4, 0x65, &[0x88, 0x80]),
+        ];
         ClientAnnexBAccessUnit {
-            bytes: fixture_persistent_access_unit_bytes(),
-            nal_units: Vec::new(),
+            bytes: nal_units
+                .iter()
+                .flat_map(|nal_unit| nal_unit.bytes.clone())
+                .collect(),
+            nal_units,
             contains_idr: true,
             contains_sps: true,
             contains_pps: true,
+        }
+    }
+
+    fn fixture_persistent_vcl_only_access_unit_bytes() -> Vec<u8> {
+        annex_b_test_nal(4, 0x41, &[0x80])
+    }
+
+    fn fixture_persistent_vcl_only_access_unit() -> ClientAnnexBAccessUnit {
+        let nal_units = vec![fixture_annex_b_nal_unit(4, 0x41, &[0x80])];
+        ClientAnnexBAccessUnit {
+            bytes: nal_units
+                .iter()
+                .flat_map(|nal_unit| nal_unit.bytes.clone())
+                .collect(),
+            nal_units,
+            contains_idr: false,
+            contains_sps: false,
+            contains_pps: false,
         }
     }
 
@@ -17394,6 +17641,54 @@ mod tests {
                 stderr: String::new(),
             },
         }
+    }
+
+    #[test]
+    fn client_persistent_h264_parameter_set_cache_tracks_sps_and_pps_from_access_unit() {
+        let mut cache = ClientPersistentH264ParameterSetCache::default();
+        cache.observe_access_unit(&fixture_persistent_access_unit());
+
+        assert!(cache.has_parameter_sets());
+        assert_eq!(cache.sps_count(), 1);
+        assert_eq!(cache.pps_count(), 1);
+    }
+
+    #[test]
+    fn client_persistent_h264_parameter_set_cache_prepends_cached_parameter_sets_before_vcl() {
+        let mut cache = ClientPersistentH264ParameterSetCache::default();
+        cache.observe_access_unit(&fixture_persistent_access_unit());
+
+        let prepared = cache.prepare_payload(&fixture_persistent_vcl_only_access_unit());
+        let ClientPersistentH264PreparedPayloadResult::Prepared {
+            payload,
+            prepended_cached_parameter_sets,
+            payload_had_parameter_sets,
+        } = prepared
+        else {
+            panic!("cache should prepare a payload once parameter sets are cached");
+        };
+
+        assert!(prepended_cached_parameter_sets);
+        assert!(payload_had_parameter_sets);
+        assert_eq!(
+            payload,
+            [
+                fixture_persistent_parameter_set_prefix_bytes(),
+                fixture_persistent_vcl_only_access_unit_bytes(),
+            ]
+            .concat()
+        );
+    }
+
+    #[test]
+    fn client_persistent_h264_parameter_set_cache_requires_parameter_sets_for_vcl() {
+        let prepared = ClientPersistentH264ParameterSetCache::default()
+            .prepare_payload(&fixture_persistent_vcl_only_access_unit());
+
+        assert_eq!(
+            prepared,
+            ClientPersistentH264PreparedPayloadResult::MissingParameterSets
+        );
     }
 
     #[test]
@@ -17508,9 +17803,11 @@ mod tests {
                 &FixturePersistentCapture,
                 &UnusedPerFrameEncoder,
                 &FakePersistentSessionFactory {
-                    next_step: ClientPersistentFfmpegH264AccessUnitSessionStepResult::AccessUnit(
-                        fixture_persistent_access_unit(),
-                    ),
+                    next_steps: vec![
+                        ClientPersistentFfmpegH264AccessUnitSessionStepResult::AccessUnit(
+                            fixture_persistent_access_unit(),
+                        ),
+                    ],
                     shutdown_result: fixture_persistent_shutdown_step(Some(0)),
                 },
             );
@@ -17539,6 +17836,12 @@ mod tests {
         assert_eq!(result.summary.encoder_process_start_count, 1);
         assert_eq!(result.summary.persistent_access_units_emitted, 1);
         assert_eq!(result.summary.frames_sent, 1);
+        assert!(result.summary.h264_parameter_sets_cached);
+        assert_eq!(result.summary.h264_sps_count, 1);
+        assert_eq!(result.summary.h264_pps_count, 1);
+        assert_eq!(result.summary.h264_parameter_sets_prepended_count, 0);
+        assert!(result.summary.last_payload_had_parameter_sets);
+        assert_eq!(result.summary.h264_parameter_sets_missing_count, 0);
         assert_eq!(frame.payload, fixture_persistent_access_unit_bytes());
     }
 
@@ -17591,9 +17894,11 @@ mod tests {
                 &FixturePersistentCapture,
                 &UnusedPerFrameEncoder,
                 &FakePersistentSessionFactory {
-                    next_step: ClientPersistentFfmpegH264AccessUnitSessionStepResult::AccessUnit(
-                        fixture_persistent_access_unit(),
-                    ),
+                    next_steps: vec![
+                        ClientPersistentFfmpegH264AccessUnitSessionStepResult::AccessUnit(
+                            fixture_persistent_access_unit(),
+                        ),
+                    ],
                     shutdown_result: fixture_persistent_shutdown_step(Some(0)),
                 },
             );
@@ -17624,40 +17929,41 @@ mod tests {
 
         let result = ClientContinuousRealEncodedVideoFrameBoundary::default()
             .run_with_runtime_selection_and_persistent_factory(
-            ClientContinuousRealEncodedVideoFrameInput {
-                socket: &sender,
-                destination: "127.0.0.1:9".parse().unwrap(),
-                capture_runtime: &mut capture_runtime,
-                protocol_version: ProtocolVersion(2),
-                client_id: ClientId("client-1".to_string()),
-                run_id: RunId("run-1".to_string()),
-                first_frame_id: 172,
-                fps_nominal: 30,
-                is_keyframe: true,
-                start_capture_if_needed: true,
-                encoder_config: ClientVideoEncoderConfig::default(),
-                policy: ClientContinuousRealEncodedVideoFramePolicy {
-                    max_frames: 1,
-                    max_ticks: 1,
-                    frame_wait_timeout_micros: 0,
-                    frame_interval_micros: 0,
-                    cadence_mode: ClientContinuousRealEncodedVideoFrameCadenceMode::Fixed,
-                    stop_on_capture_failure: true,
-                    stop_on_send_failure: true,
-                    fragment_pacing: ClientVideoFrameFragmentPacingPolicy::default(),
+                ClientContinuousRealEncodedVideoFrameInput {
+                    socket: &sender,
+                    destination: "127.0.0.1:9".parse().unwrap(),
+                    capture_runtime: &mut capture_runtime,
+                    protocol_version: ProtocolVersion(2),
+                    client_id: ClientId("client-1".to_string()),
+                    run_id: RunId("run-1".to_string()),
+                    first_frame_id: 172,
+                    fps_nominal: 30,
+                    is_keyframe: true,
+                    start_capture_if_needed: true,
+                    encoder_config: ClientVideoEncoderConfig::default(),
+                    policy: ClientContinuousRealEncodedVideoFramePolicy {
+                        max_frames: 1,
+                        max_ticks: 1,
+                        frame_wait_timeout_micros: 0,
+                        frame_interval_micros: 0,
+                        cadence_mode: ClientContinuousRealEncodedVideoFrameCadenceMode::Fixed,
+                        stop_on_capture_failure: true,
+                        stop_on_send_failure: true,
+                        fragment_pacing: ClientVideoFrameFragmentPacingPolicy::default(),
+                    },
                 },
-            },
-            ClientRealEncodedVideoFrameEncoderRuntime::Persistent,
-            &FixturePersistentCapture,
-            &UnusedPerFrameEncoder,
-            &FakePersistentSessionFactory {
-                next_step:
+                ClientRealEncodedVideoFrameEncoderRuntime::Persistent,
+                &FixturePersistentCapture,
+                &UnusedPerFrameEncoder,
+                &FakePersistentSessionFactory {
+                    next_steps: vec![
                     ClientPersistentFfmpegH264AccessUnitSessionStepResult::NoCompleteAccessUnitYet {
                         buffered_bytes: 12,
                     },
-                shutdown_result: fixture_persistent_shutdown_step(Some(0)),
-            },
-        );
+                ],
+                    shutdown_result: fixture_persistent_shutdown_step(Some(0)),
+                },
+            );
 
         assert_eq!(result.summary.frames_captured, 1);
         assert_eq!(result.summary.frames_encoded, 0);
@@ -17667,6 +17973,192 @@ mod tests {
         assert_eq!(
             result.summary.stop_reason,
             Some(ClientContinuousRealEncodedVideoFrameStopReason::MaxTicksReached)
+        );
+    }
+
+    #[test]
+    fn client_video_frame_continuous_real_encoded_persistent_summary_tracks_missing_parameter_sets()
+    {
+        struct UnusedPerFrameEncoder;
+        impl ClientH264EncoderRuntimeHook for UnusedPerFrameEncoder {
+            fn encode_bgra_frame(
+                &self,
+                _input: &ClientH264EncoderInput,
+            ) -> ClientH264EncoderHookResult {
+                panic!("per-frame encoder should not run for persistent runtime");
+            }
+        }
+
+        let sender = UdpSocket::bind("127.0.0.1:0").expect("sender should bind");
+        let mut capture_runtime = client_capture_session_runtime_for_tests();
+
+        let result = ClientContinuousRealEncodedVideoFrameBoundary::default()
+            .run_with_runtime_selection_and_persistent_factory(
+                ClientContinuousRealEncodedVideoFrameInput {
+                    socket: &sender,
+                    destination: "127.0.0.1:9".parse().unwrap(),
+                    capture_runtime: &mut capture_runtime,
+                    protocol_version: ProtocolVersion(2),
+                    client_id: ClientId("client-1".to_string()),
+                    run_id: RunId("run-1".to_string()),
+                    first_frame_id: 176,
+                    fps_nominal: 30,
+                    is_keyframe: true,
+                    start_capture_if_needed: true,
+                    encoder_config: ClientVideoEncoderConfig::default(),
+                    policy: ClientContinuousRealEncodedVideoFramePolicy {
+                        max_frames: 1,
+                        max_ticks: 1,
+                        frame_wait_timeout_micros: 0,
+                        frame_interval_micros: 0,
+                        cadence_mode: ClientContinuousRealEncodedVideoFrameCadenceMode::Fixed,
+                        stop_on_capture_failure: true,
+                        stop_on_send_failure: true,
+                        fragment_pacing: ClientVideoFrameFragmentPacingPolicy::default(),
+                    },
+                },
+                ClientRealEncodedVideoFrameEncoderRuntime::Persistent,
+                &FixturePersistentCapture,
+                &UnusedPerFrameEncoder,
+                &FakePersistentSessionFactory {
+                    next_steps: vec![
+                        ClientPersistentFfmpegH264AccessUnitSessionStepResult::AccessUnit(
+                            fixture_persistent_vcl_only_access_unit(),
+                        ),
+                    ],
+                    shutdown_result: fixture_persistent_shutdown_step(Some(0)),
+                },
+            );
+
+        assert_eq!(result.summary.frames_sent, 0);
+        assert_eq!(result.summary.encode_failures, 0);
+        assert_eq!(result.summary.h264_parameter_sets_missing_count, 1);
+        assert!(!result.summary.h264_parameter_sets_cached);
+        assert_eq!(result.summary.h264_sps_count, 0);
+        assert_eq!(result.summary.h264_pps_count, 0);
+        assert!(!result.summary.last_payload_had_parameter_sets);
+        assert!(matches!(
+            result.results.as_slice(),
+            [
+                ClientRealEncodedVideoFrameOneShotResult::EncodeUnavailable {
+                    reason: ClientH264EncoderDeferredReason::MissingH264ParameterSets,
+                }
+            ]
+        ));
+    }
+
+    #[test]
+    fn client_video_frame_continuous_real_encoded_persistent_prepends_cached_parameter_sets_for_followup_vcl(
+    ) {
+        struct UnusedPerFrameEncoder;
+        impl ClientH264EncoderRuntimeHook for UnusedPerFrameEncoder {
+            fn encode_bgra_frame(
+                &self,
+                _input: &ClientH264EncoderInput,
+            ) -> ClientH264EncoderHookResult {
+                panic!("per-frame encoder should not run for persistent runtime");
+            }
+        }
+
+        let receiver = UdpSocket::bind("127.0.0.1:0").expect("receiver should bind");
+        receiver
+            .set_read_timeout(Some(Duration::from_secs(1)))
+            .expect("read timeout should be set");
+        let sender = UdpSocket::bind("127.0.0.1:0").expect("sender should bind");
+        let destination = receiver.local_addr().expect("receiver addr should exist");
+        let mut capture_runtime = client_capture_session_runtime_for_tests();
+
+        let result = ClientContinuousRealEncodedVideoFrameBoundary::default()
+            .run_with_runtime_selection_and_persistent_factory(
+                ClientContinuousRealEncodedVideoFrameInput {
+                    socket: &sender,
+                    destination,
+                    capture_runtime: &mut capture_runtime,
+                    protocol_version: ProtocolVersion(2),
+                    client_id: ClientId("client-1".to_string()),
+                    run_id: RunId("run-1".to_string()),
+                    first_frame_id: 177,
+                    fps_nominal: 30,
+                    is_keyframe: true,
+                    start_capture_if_needed: true,
+                    encoder_config: ClientVideoEncoderConfig::default(),
+                    policy: ClientContinuousRealEncodedVideoFramePolicy {
+                        max_frames: 2,
+                        max_ticks: 3,
+                        frame_wait_timeout_micros: 0,
+                        frame_interval_micros: 0,
+                        cadence_mode: ClientContinuousRealEncodedVideoFrameCadenceMode::Fixed,
+                        stop_on_capture_failure: true,
+                        stop_on_send_failure: true,
+                        fragment_pacing: ClientVideoFrameFragmentPacingPolicy::default(),
+                    },
+                },
+                ClientRealEncodedVideoFrameEncoderRuntime::Persistent,
+                &FixturePersistentCapture,
+                &UnusedPerFrameEncoder,
+                &FakePersistentSessionFactory {
+                    next_steps: vec![
+                        ClientPersistentFfmpegH264AccessUnitSessionStepResult::AccessUnit(
+                            fixture_persistent_access_unit(),
+                        ),
+                        ClientPersistentFfmpegH264AccessUnitSessionStepResult::AccessUnit(
+                            fixture_persistent_vcl_only_access_unit(),
+                        ),
+                    ],
+                    shutdown_result: fixture_persistent_shutdown_step(Some(0)),
+                },
+            );
+
+        let mut buffer = [0_u8; 4096];
+        let (len_first, _) = receiver
+            .recv_from(&mut buffer)
+            .expect("receiver should get the first persistent payload");
+        let first_packet =
+            decode_fixed_header(&buffer[..len_first]).expect("first packet header should decode");
+        let first_decoded = decode_payload_by_message_type(
+            DecodeContext {
+                expected_protocol_version: ProtocolVersion(2),
+            },
+            first_packet.header,
+            first_packet.payload,
+        )
+        .expect("first video frame should decode");
+        let ProtocolMessage::VideoFrame(first_frame) = first_decoded else {
+            panic!("expected first VideoFrame");
+        };
+
+        let (len_second, _) = receiver
+            .recv_from(&mut buffer)
+            .expect("receiver should get the second persistent payload");
+        let second_packet =
+            decode_fixed_header(&buffer[..len_second]).expect("second packet header should decode");
+        let second_decoded = decode_payload_by_message_type(
+            DecodeContext {
+                expected_protocol_version: ProtocolVersion(2),
+            },
+            second_packet.header,
+            second_packet.payload,
+        )
+        .expect("second video frame should decode");
+        let ProtocolMessage::VideoFrame(second_frame) = second_decoded else {
+            panic!("expected second VideoFrame");
+        };
+
+        assert_eq!(result.summary.frames_sent, 2);
+        assert_eq!(result.summary.h264_parameter_sets_prepended_count, 1);
+        assert!(result.summary.h264_parameter_sets_cached);
+        assert_eq!(result.summary.h264_sps_count, 1);
+        assert_eq!(result.summary.h264_pps_count, 1);
+        assert!(result.summary.last_payload_had_parameter_sets);
+        assert_eq!(result.summary.h264_parameter_sets_missing_count, 0);
+        assert_eq!(first_frame.payload, fixture_persistent_access_unit_bytes());
+        assert_eq!(
+            second_frame.payload,
+            [
+                fixture_persistent_parameter_set_prefix_bytes(),
+                fixture_persistent_vcl_only_access_unit_bytes(),
+            ]
+            .concat()
         );
     }
 
@@ -17715,11 +18207,12 @@ mod tests {
                 &FixturePersistentCapture,
                 &UnusedPerFrameEncoder,
                 &FakePersistentSessionFactory {
-                    next_step:
+                    next_steps: vec![
                         ClientPersistentFfmpegH264AccessUnitSessionStepResult::MalformedStream {
                             reason: ClientAnnexBAccessUnitReaderMalformedReason::MissingStartCode,
                             buffered_bytes: 7,
                         },
+                    ],
                     shutdown_result: fixture_persistent_shutdown_step(Some(0)),
                 },
             );
@@ -17760,15 +18253,18 @@ mod tests {
                 &FixturePersistentCapture,
                 &UnusedPerFrameEncoder,
                 &FakePersistentSessionFactory {
-                    next_step: ClientPersistentFfmpegH264AccessUnitSessionStepResult::StreamEnded {
-                        finish_result: ClientAnnexBAccessUnitReaderFinishResult::EofNoBufferedData,
-                        shutdown_result:
-                            ClientPersistentFfmpegH264EncoderShutdownResult::ExitedNonZero {
-                                exit_code: Some(23),
-                                remaining_annex_b_bytes: Vec::new(),
-                                stderr: "fixture closed".to_string(),
-                            },
-                    },
+                    next_steps: vec![
+                        ClientPersistentFfmpegH264AccessUnitSessionStepResult::StreamEnded {
+                            finish_result:
+                                ClientAnnexBAccessUnitReaderFinishResult::EofNoBufferedData,
+                            shutdown_result:
+                                ClientPersistentFfmpegH264EncoderShutdownResult::ExitedNonZero {
+                                    exit_code: Some(23),
+                                    remaining_annex_b_bytes: Vec::new(),
+                                    stderr: "fixture closed".to_string(),
+                                },
+                        },
+                    ],
                     shutdown_result: fixture_persistent_shutdown_step(Some(23)),
                 },
             );

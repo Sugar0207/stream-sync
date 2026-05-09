@@ -2588,6 +2588,15 @@ Current implementation status:
   keeps one FFmpeg process alive for the whole bounded run, feeds captured BGRA
   frames into `stdin`, and sends one recovered access unit at a time as the
   existing encoded `VideoFrame` payload
+- the persistent bounded path now also caches H.264 parameter sets from the
+  Annex B stream:
+  - detect SPS and PPS NAL units per recovered access unit
+  - keep the latest SPS/PPS cache for the bounded run
+  - prepend cached SPS/PPS ahead of later VCL-only access units so the current
+    switcher one-shot decode path can decode one payload in isolation
+  - if a VCL access unit arrives before both SPS and PPS are cached, return a
+    typed defer (`MissingH264ParameterSets`) instead of sending a likely
+    undecodable payload
 - summary now distinguishes:
   - `encoder_runtime=per_frame|persistent`
   - `encoder_process_start_count`
@@ -2595,6 +2604,12 @@ Current implementation status:
   - `persistent_no_complete_access_unit_count`
   - `persistent_stdout_closed_count`
   - `persistent_malformed_stream_count`
+  - `h264_parameter_sets_cached`
+  - `h264_sps_count`
+  - `h264_pps_count`
+  - `h264_parameter_sets_prepended_count`
+  - `last_payload_had_parameter_sets`
+  - `h264_parameter_sets_missing_count`
   - `last_encoder_exit_status`
 - the default bounded path is still the existing per-frame encoder runtime;
   persistent mode remains experimental until the next human re-measure confirms

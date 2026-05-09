@@ -27,6 +27,8 @@
 - 2-client validation の human-run recipe を same-PC 前提に更新した。`docs/operations/two-client-long-run-validation.md` と `docs/operations/two-client-long-run-validation.ps1` は same-PC smoke / stress profile、baseline 比較、`256` / `512` / `1024` の drain cap 比較、貼り返し template を source of truth とする
 - same-PC 2-client handoff validation preparation も docs に切り出した。main path は `stream-sync-server --receive-auth-video-queue-and-serve-handoff-many` + `stream-sync-switcher --four-view-two-real-handoff-preview-loop` とし、raw named-pipe isolation は `--read-queued-frame-handoff-once` を使う。`docs/operations/two-client-handoff-validation.md` を次の human-run source of truth とする
 - handoff named-pipe troubleshooting の narrow follow-up も進めた。server / switcher ともに short pipe name と full local pipe path を同じ actual Windows pipe path に normalize し、summary には requested `pipe_name` と normalized `actual_pipe_path` の両方を出す。server 側は summary-only 運用でも receive 完了直後に `handoff_ready=true` readiness line を stdout に出し、さらに `validation_ready` / `ready_reason` / `receive_stop_reason` / `expected_clients` / `expected_per_client_frames` / `observed_queued_clients` / `observed_reassembled_clients` / `per_client_queued_frames` / `per_client_direct_frames` / `per_client_reassembled_frames` も出す。human validation では `handoff_ready=true` だけでなく `validation_ready=true` を gate にし、`ready_reason=receive_timeout|max_packets_reached` は premature fallback として扱う。validation-ready の expected count は queued frame 基準で、direct frame と fragmented/reassembled frame を両方含む。serve 終了時には `handoff_stopped=true` / `stop_reason` / `handoff_requests_completed` / `frame_read_count` / `no_frame_count` / `parse_error_count` / `io_error_count` を含む stopped summary を出す
+- latest same-PC 2-client handoff validation では transport / queue / `FrameRead` までは PASS 済みになった。server ready は `handoff_ready=true` + `validation_ready=true`、switcher real slots も `handoff_response_kind=FrameRead` を返せている。一方で current switcher one-shot decode は persistent encoder payload を単体 decode できず、`SwitcherH264DecodeFailure` with `non-existing PPS 0 referenced` が next blocker である。current client persistent path には SPS/PPS cache + prepend の experimental behavior と summary visibility (`h264_parameter_sets_cached` / `h264_sps_count` / `h264_pps_count` / `h264_parameter_sets_prepended_count` / `last_payload_had_parameter_sets` / `h264_parameter_sets_missing_count`) を追加したため、次の human rerun は decode-error clearance の確認が main gate になる
+- current handoff-many command は引き続き staged validation 用であり、receive/auth phase 完了後に handoff pipe を開く。bounded same-PC validation では許容するが、realtime preview / production では receive と handoff serve を並行に持つ runtime が別 slice で必要である
 - client bounded real encoded sender の human-validation summary も整理した。`frames_attempted` は loop tick と capture/send attempt を混同しやすかったため human-facing 出力から外し、`configured_max_frames` / `configured_max_ticks` / `configured_frame_interval_ms` / `runtime_ticks` / `capture_attempts` / `frames_remaining_to_max` / `elapsed_ms` / `capture_elapsed_ms` / `encode_elapsed_ms` / `avg_capture_elapsed_ms` / `avg_encode_elapsed_ms` / `capture_wait_or_no_frame_elapsed_ms` / `effective_output_fps` / `effective_fresh_capture_fps` / `effective_send_fps` / `loop_interval_sleep_ms` / `total_fragment_pacing_sleep_ms` / `send_elapsed_ms` / `ticks_elapsed_while_sending` を追加した。current loop は synchronous なので `ticks_elapsed_while_sending=0` が期待値であり、`MaxTicksReached` 時は `frames_remaining_to_max > 0` で max-frames 未達が即読できる。per-frame baseline では `frames_sent=100` / `elapsed_ms=12977.898` / `avg_capture_elapsed_ms=5.042` / `avg_encode_elapsed_ms=72.569` / `effective_output_fps=7.705` / `loop_interval_sleep_ms=3366.633` / `send_elapsed_ms=1706.978` を観測した
 - client 側には experimental persistent FFmpeg encoder boundary の最小 slice も追加した。`ClientPersistentFfmpegH264EncoderBoundary` は 1 process spawn、BGRA raw frame bytes の `stdin` write、raw H.264 Annex B stream bytes の `stdout` read、typed shutdown / stdout close / non-zero exit を client-only library boundary として持つ。既存 bounded PoC と既存 per-frame encoder path はまだ切り替えておらず、access-unit/frame boundary recovery も未実装のため、現段階では observability と lifecycle 固定のための experimental runtime として扱う
 - client 側には experimental Annex B access-unit reader の最小 slice も追加した。`ClientAnnexBAccessUnitReaderBoundary` は persistent FFmpeg `stdout` byte stream を incremental に蓄積し、`0x000001` / `0x00000001` start code 付き NAL unit を切り出しながら conservative な sendable access unit を typed result で返せる。partial buffer / EOF incomplete / malformed stream は分離して扱い、SPS/PPS/SEI は current frame に VCL が見えた後は次 frame 側へ寄せる保守的境界として扱う。既存 bounded PoC への統合と real timing re-measure は次の slice
@@ -189,13 +191,13 @@
 ---
 
 ## 直近でやること
-1. docs/operations/two-client-handoff-validation.md を使って same-PC 2-client handoff validation を人間が実施する
+1. docs/operations/two-client-handoff-validation.md を使って same-PC 2-client handoff validation を人間が rerun する
    - bounded handoff session
    - `handoff_ready=true` かつ `validation_ready=true` を確認してから 2-real-slot switcher preview
-   - queued threshold が direct + reassembled の合算で満たされているか `per_client_queued_frames` と `per_client_direct_frames` も見る
-   - `ready_reason=receive_timeout|max_packets_reached` の場合は optional raw named-pipe isolation rerun より前に failed gate として貼り返す
-2. その結果を踏まえて、4-client all-real validation 準備へ進み、same-PC から次の validation surface へ広げる
-3. 実 outbound queue flush / `ServerNotice` 実送信 / lifecycle follow-up は、handoff 準備か 4-client 準備で不足が見えた範囲だけ narrow に進める
+   - client summary では `h264_parameter_sets_cached=true`、`h264_parameter_sets_missing_count`、`h264_parameter_sets_prepended_count`、`last_payload_had_parameter_sets` を見る
+   - switcher real slots の `decode_error=none` を次の pass/fail gate にする
+2. decode rerun が通ったら、staged handoff validation の PASS を確定し、4-client all-real validation 準備へ進む
+3. receive/auth と handoff serve の concurrent runtime は decode blocker 解消後の次 slice として narrow に進める
 
 ## 今後の大まかな指針
 - 残り todo は `MVP クリティカルパス`、`安定化 / 運用`、`future task` に分けて扱う
@@ -203,17 +205,12 @@
 - まずは「4人を real handoff で安定表示し続ける」ことを基準に優先度を決める
 
 ## 残り todo から見た推定 step
-- 目安は `3-6 step`。1 step は Codex と GPT の 1 往復で数える
-1. 人間が 2-client の長時間 validation を取り、sync 誤差 / drop / render 安定性 / timeout の出方を確認する
-2. 1-client fragmented reassembly blocker が解消した後に 2-client の長時間 validation を取り、sync 誤差 / drop / render 安定性 / timeout の出方を確認する
-3. long-run で不足した continuous runtime の follow-up を narrow に埋める
-   - 実 outbound queue 処理
-   - notice send / lifecycle への最小接続
-   - send error / receive-send event の destination selection follow-up
+- 目安は `3-5 step`。1 step は Codex と GPT の 1 往復で数える
+1. 人間が SPS/PPS prepend 入りの 2-client handoff validation を rerun し、switcher real slots の `decode_error=none` を確認する
+2. decode rerun の結果に応じて、persistent payload / switcher one-shot decode の narrow follow-up を閉じる
+3. staged handoff command の concurrent runtime follow-up を narrow に進める
 4. 4-client all-real の長時間 validation を取り、OBS Window Capture を含む実運用寄りの再確認をする
 5. dashboard / status visibility と運用手順を MVP 必要最低限まで揃える
-   - 接続状態、RTT、offset、drop、buffer 状態の表示
-   - manual 手順、互換性ルール、ログ運用の整理
 
 ## MVP closeout 時点で blocker ではなかった future task
 - [ ] same-session bounded server lifecycle polish
