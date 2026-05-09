@@ -209,6 +209,10 @@ also inspect:
 - `h264_parameter_sets_prepended_count`
 - `last_payload_had_parameter_sets`
 - `h264_parameter_sets_missing_count`
+- `last_payload_has_sps`
+- `last_payload_has_pps`
+- `last_payload_has_idr`
+- `last_payload_has_non_idr_vcl`
 
 Interpretation:
 
@@ -220,6 +224,8 @@ Interpretation:
   deferred because no complete SPS/PPS cache existed yet
 - `last_encode_error=MissingH264ParameterSets` means the client chose typed
   encode-deferred behavior instead of sending a likely undecodable payload
+- `last_payload_has_idr=false` with `last_payload_has_non_idr_vcl=true` is a
+  useful clue if switcher one-shot decode still fails after SPS/PPS prepend
 
 ### Server Bounded Handoff Request Lines
 
@@ -654,6 +660,33 @@ Real-slot diagnostics should show:
   - `io_error=none`
   - `decode_error=none`
   - `final_slot_result_kind=Selected`
+
+If decode still fails, inspect these slot-diagnostic fields before assuming a
+transport issue:
+
+- `decode_input_payload_len`
+- `decode_expected_width`
+- `decode_expected_height`
+- `decode_expected_pixel_format`
+- `decode_expected_rawvideo_len`
+- `decoded_stdout_len`
+- `ffmpeg_exit_status`
+- `ffmpeg_stderr_summary`
+- `payload_has_sps`
+- `payload_has_pps`
+- `payload_has_idr`
+- `payload_has_non_idr_vcl`
+- `payload_nal_kinds`
+
+Current interpretation for this slice:
+
+- if `payload_has_sps=true` and `payload_has_pps=true` but `decoded_stdout_len=0`,
+  the remaining suspects are width/height mismatch in the decode expectation or
+  one-shot decode on a non-IDR payload
+- if `decode_expected_width` / `decode_expected_height` do not match the client
+  encoder config, treat metadata mismatch as the next narrow follow-up
+- if SPS/PPS are present but `payload_has_idr=false`, record that as evidence
+  for a future keyframe/IDR handling slice
 
 ### Not A Failure By Itself
 

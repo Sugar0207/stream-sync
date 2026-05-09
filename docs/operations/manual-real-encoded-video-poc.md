@@ -2610,7 +2610,20 @@ Current implementation status:
   - `h264_parameter_sets_prepended_count`
   - `last_payload_had_parameter_sets`
   - `h264_parameter_sets_missing_count`
+  - `last_payload_has_sps`
+  - `last_payload_has_pps`
+  - `last_payload_has_idr`
+  - `last_payload_has_non_idr_vcl`
   - `last_encoder_exit_status`
+- latest same-PC handoff rerun after the SPS/PPS prepend change no longer shows
+  `non-existing PPS 0 referenced`
+- the remaining switcher-side decode blocker is now:
+  - `decoded_rawvideo_length_mismatch_expected=..._actual=0`
+- this makes the next observability questions narrower:
+  - whether switcher decode is expecting the wrong width/height from frame
+    metadata
+  - whether the payload is still non-IDR even after SPS/PPS prepend, which may
+    leave the one-shot decoder without a decodable output frame
 - the default bounded path is still the existing per-frame encoder runtime;
   persistent mode remains experimental until the next human re-measure confirms
   that `avg_encode_elapsed_ms` materially drops from the current `72.569ms`

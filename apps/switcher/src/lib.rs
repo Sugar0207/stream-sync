@@ -6311,6 +6311,14 @@ pub enum SwitcherDecodedFramePixelFormat {
     Bgra8,
 }
 
+impl SwitcherDecodedFramePixelFormat {
+    pub fn as_config_str(self) -> &'static str {
+        match self {
+            Self::Bgra8 => "bgra8",
+        }
+    }
+}
+
 /// One decoded video frame ready for a future real display path.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SwitcherDecodedFrame {
@@ -6328,6 +6336,109 @@ pub struct SwitcherH264DecodeInput {
     pub height: u32,
 }
 
+/// Lightweight Annex B NAL unit kinds used for decode observability.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum SwitcherH264AnnexBNalKind {
+    NonIdrVcl,
+    Idr,
+    Sei,
+    Sps,
+    Pps,
+    Aud,
+    Other(u8),
+}
+
+impl SwitcherH264AnnexBNalKind {
+    pub fn as_summary_str(self) -> String {
+        match self {
+            Self::NonIdrVcl => "non_idr_vcl".to_string(),
+            Self::Idr => "idr".to_string(),
+            Self::Sei => "sei".to_string(),
+            Self::Sps => "sps".to_string(),
+            Self::Pps => "pps".to_string(),
+            Self::Aud => "aud".to_string(),
+            Self::Other(nal_unit_type) => format!("other_{nal_unit_type}"),
+        }
+    }
+}
+
+/// Compact payload inspection for one Annex B H.264 frame payload.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct SwitcherH264AnnexBPayloadSummary {
+    pub payload_len: usize,
+    pub has_sps: bool,
+    pub has_pps: bool,
+    pub has_idr: bool,
+    pub has_non_idr_vcl: bool,
+    pub nal_kinds: Vec<SwitcherH264AnnexBNalKind>,
+}
+
+/// Lightweight payload inspection boundary used for switcher decode summary
+/// observability.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct SwitcherH264AnnexBPayloadInspectionBoundary;
+
+impl SwitcherH264AnnexBPayloadInspectionBoundary {
+    pub fn inspect_payload(&self, payload: &[u8]) -> SwitcherH264AnnexBPayloadSummary {
+        let mut summary = SwitcherH264AnnexBPayloadSummary {
+            payload_len: payload.len(),
+            ..SwitcherH264AnnexBPayloadSummary::default()
+        };
+        let mut search_from = 0_usize;
+        while let Some((start, start_code_len)) =
+            switcher_find_annex_b_start_code(payload, search_from)
+        {
+            let nal_header_index = start + start_code_len;
+            if nal_header_index >= payload.len() {
+                break;
+            }
+            let next_start = switcher_find_annex_b_start_code(payload, nal_header_index)
+                .map(|(next_start, _)| next_start)
+                .unwrap_or(payload.len());
+            if next_start <= nal_header_index {
+                search_from = nal_header_index.saturating_add(1);
+                continue;
+            }
+            let nal_unit_type = payload[nal_header_index] & 0x1f;
+            let kind = match nal_unit_type {
+                1..=4 => SwitcherH264AnnexBNalKind::NonIdrVcl,
+                5 => SwitcherH264AnnexBNalKind::Idr,
+                6 => SwitcherH264AnnexBNalKind::Sei,
+                7 => SwitcherH264AnnexBNalKind::Sps,
+                8 => SwitcherH264AnnexBNalKind::Pps,
+                9 => SwitcherH264AnnexBNalKind::Aud,
+                other => SwitcherH264AnnexBNalKind::Other(other),
+            };
+            summary.has_sps |= matches!(kind, SwitcherH264AnnexBNalKind::Sps);
+            summary.has_pps |= matches!(kind, SwitcherH264AnnexBNalKind::Pps);
+            summary.has_idr |= matches!(kind, SwitcherH264AnnexBNalKind::Idr);
+            summary.has_non_idr_vcl |= matches!(kind, SwitcherH264AnnexBNalKind::NonIdrVcl);
+            summary.nal_kinds.push(kind);
+            search_from = next_start;
+        }
+        summary
+    }
+}
+
+fn switcher_find_annex_b_start_code(bytes: &[u8], from: usize) -> Option<(usize, usize)> {
+    let mut index = from;
+    while index + 3 <= bytes.len() {
+        if index + 4 <= bytes.len()
+            && bytes[index] == 0
+            && bytes[index + 1] == 0
+            && bytes[index + 2] == 0
+            && bytes[index + 3] == 1
+        {
+            return Some((index, 4));
+        }
+        if bytes[index] == 0 && bytes[index + 1] == 0 && bytes[index + 2] == 1 {
+            return Some((index, 3));
+        }
+        index += 1;
+    }
+    None
+}
+
 /// Deferred reason for switcher-side H.264 decode.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum SwitcherH264DecodeDeferredReason {
@@ -6340,6 +6451,48 @@ pub enum SwitcherH264DecodeDeferredReason {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SwitcherH264DecodeFailure {
     pub message: String,
+    pub decode_input_payload_len: usize,
+    pub decode_expected_width: u32,
+    pub decode_expected_height: u32,
+    pub decode_expected_pixel_format: SwitcherDecodedFramePixelFormat,
+    pub decode_expected_rawvideo_len: usize,
+    pub decoded_stdout_len: usize,
+    pub ffmpeg_exit_status: Option<i32>,
+    pub ffmpeg_stderr_summary: Option<String>,
+    pub payload_has_sps: bool,
+    pub payload_has_pps: bool,
+    pub payload_has_idr: bool,
+    pub payload_has_non_idr_vcl: bool,
+    pub payload_nal_kinds: Vec<SwitcherH264AnnexBNalKind>,
+}
+
+impl SwitcherH264DecodeFailure {
+    pub fn from_input(
+        input: &SwitcherH264DecodeInput,
+        message: String,
+        decoded_stdout_len: usize,
+        ffmpeg_exit_status: Option<i32>,
+        ffmpeg_stderr_summary: Option<String>,
+    ) -> Self {
+        let payload_summary =
+            SwitcherH264AnnexBPayloadInspectionBoundary.inspect_payload(&input.encoded_payload);
+        Self {
+            message,
+            decode_input_payload_len: input.encoded_payload.len(),
+            decode_expected_width: input.width,
+            decode_expected_height: input.height,
+            decode_expected_pixel_format: SwitcherDecodedFramePixelFormat::Bgra8,
+            decode_expected_rawvideo_len: input.width as usize * input.height as usize * 4,
+            decoded_stdout_len,
+            ffmpeg_exit_status,
+            ffmpeg_stderr_summary,
+            payload_has_sps: payload_summary.has_sps,
+            payload_has_pps: payload_summary.has_pps,
+            payload_has_idr: payload_summary.has_idr,
+            payload_has_non_idr_vcl: payload_summary.has_non_idr_vcl,
+            payload_nal_kinds: payload_summary.nal_kinds,
+        }
+    }
 }
 
 /// Result of attempting one H.264 decode.
@@ -6426,44 +6579,78 @@ impl SwitcherH264DecodeRuntimeHook for SwitcherFfmpegH264DecodeRuntimeHook {
                 };
             }
             Err(error) => {
-                return SwitcherH264DecodeResult::Failed(SwitcherH264DecodeFailure {
-                    message: error.to_string(),
-                });
+                return SwitcherH264DecodeResult::Failed(SwitcherH264DecodeFailure::from_input(
+                    &input,
+                    error.to_string(),
+                    0,
+                    None,
+                    None,
+                ));
             }
         };
 
         if let Some(mut stdin) = child.stdin.take() {
             if let Err(error) = stdin.write_all(&input.encoded_payload) {
-                return SwitcherH264DecodeResult::Failed(SwitcherH264DecodeFailure {
-                    message: error.to_string(),
-                });
+                return SwitcherH264DecodeResult::Failed(SwitcherH264DecodeFailure::from_input(
+                    &input,
+                    error.to_string(),
+                    0,
+                    None,
+                    None,
+                ));
             }
         }
 
         let output = match child.wait_with_output() {
             Ok(output) => output,
             Err(error) => {
-                return SwitcherH264DecodeResult::Failed(SwitcherH264DecodeFailure {
-                    message: error.to_string(),
-                });
+                return SwitcherH264DecodeResult::Failed(SwitcherH264DecodeFailure::from_input(
+                    &input,
+                    error.to_string(),
+                    0,
+                    None,
+                    None,
+                ));
             }
         };
 
         if !output.status.success() {
-            return SwitcherH264DecodeResult::Failed(SwitcherH264DecodeFailure {
-                message: String::from_utf8_lossy(&output.stderr).trim().to_string(),
-            });
+            let stderr_summary = String::from_utf8_lossy(&output.stderr).trim().to_string();
+            let message = if stderr_summary.is_empty() {
+                format!("ffmpeg decode exited with status {}", output.status)
+            } else {
+                stderr_summary.clone()
+            };
+            return SwitcherH264DecodeResult::Failed(SwitcherH264DecodeFailure::from_input(
+                &input,
+                message,
+                output.stdout.len(),
+                output.status.code(),
+                if stderr_summary.is_empty() {
+                    None
+                } else {
+                    Some(stderr_summary)
+                },
+            ));
         }
 
         let expected_len = input.width as usize * input.height as usize * 4;
         if output.stdout.len() != expected_len {
-            return SwitcherH264DecodeResult::Failed(SwitcherH264DecodeFailure {
-                message: format!(
-                    "decoded rawvideo length mismatch expected={} actual={}",
-                    expected_len,
+            let stderr_summary = String::from_utf8_lossy(&output.stderr).trim().to_string();
+            return SwitcherH264DecodeResult::Failed(SwitcherH264DecodeFailure::from_input(
+                &input,
+                format!(
+                    "decoded_rawvideo_length_mismatch_expected={expected_len}_actual={}",
                     output.stdout.len()
                 ),
-            });
+                output.stdout.len(),
+                output.status.code(),
+                if stderr_summary.is_empty() {
+                    None
+                } else {
+                    Some(stderr_summary)
+                },
+            ));
         }
 
         SwitcherH264DecodeResult::Decoded(SwitcherDecodedFrame {
@@ -24526,28 +24713,101 @@ mod tests {
         impl SwitcherH264DecodeRuntimeHook for FailingDecode {
             fn decode_annex_b_h264(
                 &self,
-                _input: SwitcherH264DecodeInput,
+                input: SwitcherH264DecodeInput,
             ) -> SwitcherH264DecodeResult {
-                SwitcherH264DecodeResult::Failed(SwitcherH264DecodeFailure {
-                    message: "fixture decode failed".to_string(),
-                })
+                SwitcherH264DecodeResult::Failed(SwitcherH264DecodeFailure::from_input(
+                    &input,
+                    "fixture decode failed".to_string(),
+                    0,
+                    None,
+                    None,
+                ))
             }
         }
 
-        let result = SwitcherH264DecodeBoundary.decode_with_runtime(
-            SwitcherH264DecodeInput {
-                encoded_payload: vec![0x01],
-                width: 2,
-                height: 1,
-            },
-            &FailingDecode,
-        );
+        let input = SwitcherH264DecodeInput {
+            encoded_payload: vec![0x01],
+            width: 2,
+            height: 1,
+        };
+        let result = SwitcherH264DecodeBoundary.decode_with_runtime(input.clone(), &FailingDecode);
 
         assert_eq!(
             result,
-            SwitcherH264DecodeResult::Failed(SwitcherH264DecodeFailure {
-                message: "fixture decode failed".to_string()
-            })
+            SwitcherH264DecodeResult::Failed(SwitcherH264DecodeFailure::from_input(
+                &input,
+                "fixture decode failed".to_string(),
+                0,
+                None,
+                None,
+            ))
+        );
+    }
+
+    #[test]
+    fn h264_decode_failure_observability_keeps_expected_dimensions_and_stdout_length() {
+        let input = SwitcherH264DecodeInput {
+            encoded_payload: [
+                annex_b_test_nal(4, 0x67, &[0x11]),
+                annex_b_test_nal(4, 0x68, &[0x22]),
+                annex_b_test_nal(4, 0x65, &[0x80]),
+            ]
+            .concat(),
+            width: 1280,
+            height: 720,
+        };
+
+        let failure = SwitcherH264DecodeFailure::from_input(
+            &input,
+            "decoded_rawvideo_length_mismatch_expected=3686400_actual=0".to_string(),
+            0,
+            Some(0),
+            Some("no frame could be decoded".to_string()),
+        );
+
+        assert_eq!(
+            failure.decode_input_payload_len,
+            input.encoded_payload.len()
+        );
+        assert_eq!(failure.decode_expected_width, 1280);
+        assert_eq!(failure.decode_expected_height, 720);
+        assert_eq!(
+            failure.decode_expected_pixel_format,
+            SwitcherDecodedFramePixelFormat::Bgra8
+        );
+        assert_eq!(failure.decode_expected_rawvideo_len, 1280 * 720 * 4);
+        assert_eq!(failure.decoded_stdout_len, 0);
+        assert_eq!(failure.ffmpeg_exit_status, Some(0));
+        assert_eq!(
+            failure.ffmpeg_stderr_summary.as_deref(),
+            Some("no frame could be decoded")
+        );
+    }
+
+    #[test]
+    fn h264_annex_b_payload_inspection_detects_parameter_sets_and_vcl_kinds() {
+        let summary = SwitcherH264AnnexBPayloadInspectionBoundary.inspect_payload(
+            &[
+                annex_b_test_nal(4, 0x67, &[0x11]),
+                annex_b_test_nal(4, 0x68, &[0x22]),
+                annex_b_test_nal(4, 0x65, &[0x80]),
+                annex_b_test_nal(4, 0x41, &[0x80]),
+            ]
+            .concat(),
+        );
+
+        assert!(summary.has_sps);
+        assert!(summary.has_pps);
+        assert!(summary.has_idr);
+        assert!(summary.has_non_idr_vcl);
+        assert_eq!(
+            summary.nal_kinds,
+            vec![
+                SwitcherH264AnnexBNalKind::Sps,
+                SwitcherH264AnnexBNalKind::Pps,
+                SwitcherH264AnnexBNalKind::Idr,
+                SwitcherH264AnnexBNalKind::NonIdrVcl,
+            ]
         );
     }
 
@@ -24622,11 +24882,15 @@ mod tests {
         impl SwitcherH264DecodeRuntimeHook for FailingDecode {
             fn decode_annex_b_h264(
                 &self,
-                _input: SwitcherH264DecodeInput,
+                input: SwitcherH264DecodeInput,
             ) -> SwitcherH264DecodeResult {
-                SwitcherH264DecodeResult::Failed(SwitcherH264DecodeFailure {
-                    message: "fixture decode failed".to_string(),
-                })
+                SwitcherH264DecodeResult::Failed(SwitcherH264DecodeFailure::from_input(
+                    &input,
+                    "fixture decode failed".to_string(),
+                    0,
+                    None,
+                    None,
+                ))
             }
         }
 
@@ -25452,6 +25716,17 @@ mod tests {
         }
     }
 
+    fn annex_b_test_nal(start_code_len: usize, nal_header: u8, payload: &[u8]) -> Vec<u8> {
+        let mut bytes = if start_code_len == 4 {
+            vec![0x00, 0x00, 0x00, 0x01]
+        } else {
+            vec![0x00, 0x00, 0x01]
+        };
+        bytes.push(nal_header);
+        bytes.extend_from_slice(payload);
+        bytes
+    }
+
     fn current_test_suffix() -> String {
         format!("{}-{:?}", std::process::id(), std::thread::current().id())
     }
@@ -25684,12 +25959,16 @@ mod tests {
         fn decode_annex_b_h264(&self, input: SwitcherH264DecodeInput) -> SwitcherH264DecodeResult {
             self.inputs.borrow_mut().push(input.clone());
             if self.fail_on_last_byte == input.encoded_payload.last().copied() {
-                return SwitcherH264DecodeResult::Failed(SwitcherH264DecodeFailure {
-                    message: format!(
+                return SwitcherH264DecodeResult::Failed(SwitcherH264DecodeFailure::from_input(
+                    &input,
+                    format!(
                         "fixture decode failed for 0x{:02x}",
                         input.encoded_payload.last().copied().unwrap_or_default()
                     ),
-                });
+                    0,
+                    None,
+                    None,
+                ));
             }
             SwitcherH264DecodeResult::Decoded(SwitcherDecodedFrame {
                 width: input.width,
@@ -27044,10 +27323,14 @@ shared_token = "replace-with-shared-token-2"
     struct FailingLoopDecode;
 
     impl SwitcherH264DecodeRuntimeHook for FailingLoopDecode {
-        fn decode_annex_b_h264(&self, _input: SwitcherH264DecodeInput) -> SwitcherH264DecodeResult {
-            SwitcherH264DecodeResult::Failed(SwitcherH264DecodeFailure {
-                message: "fixture decode failed".to_string(),
-            })
+        fn decode_annex_b_h264(&self, input: SwitcherH264DecodeInput) -> SwitcherH264DecodeResult {
+            SwitcherH264DecodeResult::Failed(SwitcherH264DecodeFailure::from_input(
+                &input,
+                "fixture decode failed".to_string(),
+                0,
+                None,
+                None,
+            ))
         }
     }
 

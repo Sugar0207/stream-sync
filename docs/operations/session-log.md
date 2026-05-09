@@ -5,6 +5,67 @@
 - Codex code + docs update
 
 ### Work
+- Investigated the next decode-stage blocker after the SPS/PPS prepend change.
+- Confirmed the human rerun moved the failure forward:
+  - previous `non-existing PPS 0 referenced` disappeared
+  - current switcher failure is
+    `decoded_rawvideo_length_mismatch_expected=8294400_actual=0`
+- Added switcher-side decode observability:
+  - decode input payload length
+  - expected width / height / pixel format / rawvideo length
+  - decoded stdout byte length
+  - ffmpeg exit status
+  - ffmpeg stderr summary
+  - lightweight Annex B payload inspection:
+    `payload_has_sps`
+    `payload_has_pps`
+    `payload_has_idr`
+    `payload_has_non_idr_vcl`
+    `payload_nal_kinds`
+- Added client-side last-payload NAL visibility for the persistent bounded path:
+  - `last_payload_has_sps`
+  - `last_payload_has_pps`
+  - `last_payload_has_idr`
+  - `last_payload_has_non_idr_vcl`
+- Kept scope narrow:
+  - no server receive/handoff changes
+  - no switcher render-spec changes
+  - no client cadence changes
+- Recorded the new likely next suspects in docs:
+  - width/height metadata mismatch on the switcher decode expectation
+  - non-IDR one-shot decode limitation even with SPS/PPS present
+
+### Changed Files
+- `apps/client/src/lib.rs`
+- `apps/client/src/main.rs`
+- `apps/switcher/src/lib.rs`
+- `apps/switcher/src/main.rs`
+- `docs/operations/two-client-handoff-validation.md`
+- `docs/operations/manual-real-encoded-video-poc.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### Decision
+- The correct next slice is observability, not speculative rendering changes.
+- The rerun already proved the SPS/PPS prepend fix moved the failure boundary.
+- Next human evidence should decide between metadata mismatch and IDR/keyframe
+  follow-up.
+
+### Validation
+- `cargo fmt`
+- focused switcher/client tests:
+  - `cargo test -p stream-sync-switcher h264_decode_boundary -- --nocapture`
+  - `cargo test -p stream-sync-switcher h264_annex_b_payload_inspection -- --nocapture`
+  - `cargo test -p stream-sync-switcher h264_decode_failure_observability -- --nocapture`
+  - `cargo test -p stream-sync-switcher switcher_four_view_two_real_handoff_preview_summary_formats_expected_fields -- --nocapture`
+  - `cargo test -p stream-sync-client client_persistent_h264_parameter_set_cache -- --nocapture`
+  - `cargo test -p stream-sync-client client_video_frame_continuous_real_encoded_persistent_prepends_cached_parameter_sets_for_followup_vcl -- --nocapture`
+
+## 2026-05-09
+### Type
+- Codex code + docs update
+
+### Work
 - Investigated the remaining same-PC 2-client handoff blocker after transport /
   queue / `FrameRead` had already passed.
 - Confirmed the likely decode root cause:

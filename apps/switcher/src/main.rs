@@ -37,8 +37,9 @@ use stream_sync_switcher::{
     SwitcherFourViewManualPreviewProofFixtureMode, SwitcherFourViewManualPreviewProofInput,
     SwitcherFourViewManualPreviewProofResult, SwitcherFourViewManualPreviewProofSummary,
     SwitcherFourViewManualPreviewSchedulerSlotKind, SwitcherFourViewQuadLayoutPolicy,
-    SwitcherFourViewTargetTimeSourceSlotConfig, SwitcherH264DecodeDeferredReason,
-    SwitcherH264DecodeInput, SwitcherH264DecodeResult, SwitcherH264DecodeRuntimeHook,
+    SwitcherFourViewTargetTimeSourceSlotConfig, SwitcherH264AnnexBPayloadInspectionBoundary,
+    SwitcherH264DecodeDeferredReason, SwitcherH264DecodeFailure, SwitcherH264DecodeInput,
+    SwitcherH264DecodeResult, SwitcherH264DecodeRuntimeHook,
     SwitcherLiveTwoViewManualRuntimeBoundary, SwitcherLiveTwoViewManualRuntimeResult,
     SwitcherPlaceholderManualVerificationBoundary, SwitcherPlaceholderManualVerificationInput,
     SwitcherPlaceholderManualVerificationResult, SwitcherQueuedFrameHandoff,
@@ -1915,6 +1916,19 @@ struct FourViewPreviewSlotDiagnosticSummary {
     frame_id: Option<u64>,
     frame_payload_len: Option<usize>,
     decode_error: Option<String>,
+    decode_input_payload_len: Option<usize>,
+    decode_expected_width: Option<u32>,
+    decode_expected_height: Option<u32>,
+    decode_expected_pixel_format: Option<String>,
+    decode_expected_rawvideo_len: Option<usize>,
+    decoded_stdout_len: Option<usize>,
+    ffmpeg_exit_status: Option<i32>,
+    ffmpeg_stderr_summary: Option<String>,
+    payload_has_sps: Option<bool>,
+    payload_has_pps: Option<bool>,
+    payload_has_idr: Option<bool>,
+    payload_has_non_idr_vcl: Option<bool>,
+    payload_nal_kinds: Option<String>,
     render_input_kind: &'static str,
     final_slot_result_kind: &'static str,
 }
@@ -2608,6 +2622,19 @@ where
             frame_id: None,
             frame_payload_len: None,
             decode_error: None,
+            decode_input_payload_len: None,
+            decode_expected_width: None,
+            decode_expected_height: None,
+            decode_expected_pixel_format: None,
+            decode_expected_rawvideo_len: None,
+            decoded_stdout_len: None,
+            ffmpeg_exit_status: None,
+            ffmpeg_stderr_summary: None,
+            payload_has_sps: None,
+            payload_has_pps: None,
+            payload_has_idr: None,
+            payload_has_non_idr_vcl: None,
+            payload_nal_kinds: None,
             render_input_kind: "Unobserved",
             final_slot_result_kind: "NoFrameAvailable",
         })
@@ -2754,6 +2781,19 @@ where
             frame_id: None,
             frame_payload_len: None,
             decode_error: None,
+            decode_input_payload_len: None,
+            decode_expected_width: None,
+            decode_expected_height: None,
+            decode_expected_pixel_format: None,
+            decode_expected_rawvideo_len: None,
+            decoded_stdout_len: None,
+            ffmpeg_exit_status: None,
+            ffmpeg_stderr_summary: None,
+            payload_has_sps: None,
+            payload_has_pps: None,
+            payload_has_idr: None,
+            payload_has_non_idr_vcl: None,
+            payload_nal_kinds: None,
             render_input_kind: "Unobserved",
             final_slot_result_kind: "NoFrameAvailable",
         })
@@ -2909,6 +2949,19 @@ where
             frame_id: None,
             frame_payload_len: None,
             decode_error: None,
+            decode_input_payload_len: None,
+            decode_expected_width: None,
+            decode_expected_height: None,
+            decode_expected_pixel_format: None,
+            decode_expected_rawvideo_len: None,
+            decoded_stdout_len: None,
+            ffmpeg_exit_status: None,
+            ffmpeg_stderr_summary: None,
+            payload_has_sps: None,
+            payload_has_pps: None,
+            payload_has_idr: None,
+            payload_has_non_idr_vcl: None,
+            payload_nal_kinds: None,
             render_input_kind: "Unobserved",
             final_slot_result_kind: "NoFrameAvailable",
         })
@@ -3069,6 +3122,19 @@ where
             frame_id: None,
             frame_payload_len: None,
             decode_error: None,
+            decode_input_payload_len: None,
+            decode_expected_width: None,
+            decode_expected_height: None,
+            decode_expected_pixel_format: None,
+            decode_expected_rawvideo_len: None,
+            decoded_stdout_len: None,
+            ffmpeg_exit_status: None,
+            ffmpeg_stderr_summary: None,
+            payload_has_sps: None,
+            payload_has_pps: None,
+            payload_has_idr: None,
+            payload_has_non_idr_vcl: None,
+            payload_nal_kinds: None,
             render_input_kind: "Unobserved",
             final_slot_result_kind: "NoFrameAvailable",
         })
@@ -3300,6 +3366,19 @@ where
             frame_id: None,
             frame_payload_len: None,
             decode_error: None,
+            decode_input_payload_len: None,
+            decode_expected_width: None,
+            decode_expected_height: None,
+            decode_expected_pixel_format: None,
+            decode_expected_rawvideo_len: None,
+            decoded_stdout_len: None,
+            ffmpeg_exit_status: None,
+            ffmpeg_stderr_summary: None,
+            payload_has_sps: None,
+            payload_has_pps: None,
+            payload_has_idr: None,
+            payload_has_non_idr_vcl: None,
+            payload_nal_kinds: None,
             render_input_kind: "Unobserved",
             final_slot_result_kind: "NoFrameAvailable",
         })
@@ -3746,6 +3825,19 @@ where
             frame_id: None,
             frame_payload_len: None,
             decode_error: None,
+            decode_input_payload_len: None,
+            decode_expected_width: None,
+            decode_expected_height: None,
+            decode_expected_pixel_format: None,
+            decode_expected_rawvideo_len: None,
+            decoded_stdout_len: None,
+            ffmpeg_exit_status: None,
+            ffmpeg_stderr_summary: None,
+            payload_has_sps: None,
+            payload_has_pps: None,
+            payload_has_idr: None,
+            payload_has_non_idr_vcl: None,
+            payload_nal_kinds: None,
             render_input_kind: "Unobserved",
             final_slot_result_kind: "NoFrameAvailable",
         })
@@ -5509,6 +5601,21 @@ fn build_four_view_preview_slot_diagnostic(
             _ => (None, None),
         },
     };
+    let frame_payload = match response {
+        Some(stream_sync_net_core::ServerSwitcherQueuedFrameHandoffResponse::FrameRead {
+            frame,
+            ..
+        }) => Some(frame.encoded_payload.as_slice()),
+        _ => match observation_result {
+            Some(SwitcherQueuedFrameHandoffResult::FrameRead { frame, .. }) => {
+                Some(frame.encoded_payload.as_slice())
+            }
+            _ => None,
+        },
+    };
+    let payload_summary = frame_payload
+        .map(|payload| SwitcherH264AnnexBPayloadInspectionBoundary.inspect_payload(payload));
+    let decode_failure = four_view_preview_slot_decode_failure(render_slot);
 
     FourViewPreviewSlotDiagnosticSummary {
         slot_index,
@@ -5524,7 +5631,45 @@ fn build_four_view_preview_slot_diagnostic(
         response_payload_len: runtime.and_then(|value| value.response_payload_len),
         frame_id,
         frame_payload_len,
-        decode_error: four_view_preview_slot_decode_error(render_slot),
+        decode_error: decode_failure
+            .as_ref()
+            .map(|failure| failure.message.clone()),
+        decode_input_payload_len: decode_failure
+            .as_ref()
+            .map(|failure| failure.decode_input_payload_len),
+        decode_expected_width: decode_failure
+            .as_ref()
+            .map(|failure| failure.decode_expected_width),
+        decode_expected_height: decode_failure
+            .as_ref()
+            .map(|failure| failure.decode_expected_height),
+        decode_expected_pixel_format: decode_failure.as_ref().map(|failure| {
+            failure
+                .decode_expected_pixel_format
+                .as_config_str()
+                .to_string()
+        }),
+        decode_expected_rawvideo_len: decode_failure
+            .as_ref()
+            .map(|failure| failure.decode_expected_rawvideo_len),
+        decoded_stdout_len: decode_failure
+            .as_ref()
+            .map(|failure| failure.decoded_stdout_len),
+        ffmpeg_exit_status: decode_failure
+            .as_ref()
+            .and_then(|failure| failure.ffmpeg_exit_status),
+        ffmpeg_stderr_summary: decode_failure
+            .as_ref()
+            .and_then(|failure| failure.ffmpeg_stderr_summary.clone()),
+        payload_has_sps: payload_summary.as_ref().map(|summary| summary.has_sps),
+        payload_has_pps: payload_summary.as_ref().map(|summary| summary.has_pps),
+        payload_has_idr: payload_summary.as_ref().map(|summary| summary.has_idr),
+        payload_has_non_idr_vcl: payload_summary
+            .as_ref()
+            .map(|summary| summary.has_non_idr_vcl),
+        payload_nal_kinds: payload_summary
+            .as_ref()
+            .map(format_switcher_payload_nal_kinds),
         render_input_kind: format_four_view_render_input_kind(render_slot),
         final_slot_result_kind: format_four_view_real_handoff_scheduler_slot_kind(scheduler_result),
     }
@@ -5534,7 +5679,7 @@ fn format_four_view_preview_slot_diagnostic(
     diagnostic: &FourViewPreviewSlotDiagnosticSummary,
 ) -> String {
     format!(
-        "{}:client_id={},run_id={},request_id={},actual_pipe_path={},handoff_response_kind={},parse_error={},io_error={},response_payload_len={},frame_id={},frame_payload_len={},decode_error={},render_input_kind={},final_slot_result_kind={}",
+        "{}:client_id={},run_id={},request_id={},actual_pipe_path={},handoff_response_kind={},parse_error={},io_error={},response_payload_len={},frame_id={},frame_payload_len={},decode_error={},decode_input_payload_len={},decode_expected_width={},decode_expected_height={},decode_expected_pixel_format={},decode_expected_rawvideo_len={},decoded_stdout_len={},ffmpeg_exit_status={},ffmpeg_stderr_summary={},payload_has_sps={},payload_has_pps={},payload_has_idr={},payload_has_non_idr_vcl={},payload_nal_kinds={},render_input_kind={},final_slot_result_kind={}",
         diagnostic.slot_index,
         diagnostic.client_id.0,
         diagnostic.run_id.0,
@@ -5547,6 +5692,27 @@ fn format_four_view_preview_slot_diagnostic(
         format_optional_u64(diagnostic.frame_id),
         format_optional_usize(diagnostic.frame_payload_len),
         sanitize_summary_value(diagnostic.decode_error.as_deref().unwrap_or("none")),
+        format_optional_usize(diagnostic.decode_input_payload_len),
+        format_optional_u32(diagnostic.decode_expected_width),
+        format_optional_u32(diagnostic.decode_expected_height),
+        sanitize_summary_value(
+            diagnostic
+                .decode_expected_pixel_format
+                .as_deref()
+                .unwrap_or("none"),
+        ),
+        format_optional_usize(diagnostic.decode_expected_rawvideo_len),
+        format_optional_usize(diagnostic.decoded_stdout_len),
+        diagnostic
+            .ffmpeg_exit_status
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| "none".to_string()),
+        sanitize_summary_value(diagnostic.ffmpeg_stderr_summary.as_deref().unwrap_or("none")),
+        format_optional_bool(diagnostic.payload_has_sps),
+        format_optional_bool(diagnostic.payload_has_pps),
+        format_optional_bool(diagnostic.payload_has_idr),
+        format_optional_bool(diagnostic.payload_has_non_idr_vcl),
+        sanitize_summary_value(diagnostic.payload_nal_kinds.as_deref().unwrap_or("none")),
         diagnostic.render_input_kind,
         diagnostic.final_slot_result_kind,
     )
@@ -5580,16 +5746,30 @@ fn format_four_view_render_input_kind(
     }
 }
 
-fn four_view_preview_slot_decode_error(
+fn four_view_preview_slot_decode_failure(
     slot: &stream_sync_switcher::SwitcherFourViewHandoffQuadCompositionRenderSlot,
-) -> Option<String> {
+) -> Option<&SwitcherH264DecodeFailure> {
     match slot {
         stream_sync_switcher::SwitcherFourViewHandoffQuadCompositionRenderSlot::UseDecodeFailedPlaceholder {
             failure,
             ..
-        } => Some(format!("{failure:?}")),
+        } => Some(failure),
         _ => None,
     }
+}
+
+fn format_switcher_payload_nal_kinds(
+    summary: &stream_sync_switcher::SwitcherH264AnnexBPayloadSummary,
+) -> String {
+    if summary.nal_kinds.is_empty() {
+        return "none".to_string();
+    }
+    summary
+        .nal_kinds
+        .iter()
+        .map(|kind| kind.as_summary_str())
+        .collect::<Vec<_>>()
+        .join("+")
 }
 
 fn format_four_view_manual_preview_fixture_mode_name(

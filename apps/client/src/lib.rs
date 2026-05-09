@@ -5983,6 +5983,10 @@ pub struct ClientContinuousRealEncodedVideoFrameSummary {
     pub h264_parameter_sets_prepended_count: u64,
     pub last_payload_had_parameter_sets: bool,
     pub h264_parameter_sets_missing_count: u64,
+    pub last_payload_has_sps: bool,
+    pub last_payload_has_pps: bool,
+    pub last_payload_has_idr: bool,
+    pub last_payload_has_non_idr_vcl: bool,
     pub last_encoder_exit_status: Option<i32>,
     pub frames_remaining_to_max: u64,
     pub elapsed_micros: u64,
@@ -6679,12 +6683,28 @@ fn build_and_send_persistent_access_unit(
                     .saturating_add(1);
             }
             summary.last_payload_had_parameter_sets = payload_had_parameter_sets;
+            summary.last_payload_has_sps = access_unit.contains_sps
+                || (!access_unit.contains_sps && prepended_cached_parameter_sets);
+            summary.last_payload_has_pps = access_unit.contains_pps
+                || (!access_unit.contains_pps && prepended_cached_parameter_sets);
+            summary.last_payload_has_idr = access_unit.contains_idr;
+            summary.last_payload_has_non_idr_vcl = access_unit
+                .nal_units
+                .iter()
+                .any(|nal_unit| nal_unit.kind == ClientAnnexBNalUnitKind::NonIdrSlice);
             payload
         }
         ClientPersistentH264PreparedPayloadResult::MissingParameterSets => {
             summary.h264_parameter_sets_missing_count =
                 summary.h264_parameter_sets_missing_count.saturating_add(1);
             summary.last_payload_had_parameter_sets = false;
+            summary.last_payload_has_sps = false;
+            summary.last_payload_has_pps = false;
+            summary.last_payload_has_idr = access_unit.contains_idr;
+            summary.last_payload_has_non_idr_vcl = access_unit
+                .nal_units
+                .iter()
+                .any(|nal_unit| nal_unit.kind == ClientAnnexBNalUnitKind::NonIdrSlice);
             return ClientRealEncodedVideoFrameOneShotResult::EncodeUnavailable {
                 reason: ClientH264EncoderDeferredReason::MissingH264ParameterSets,
             };
@@ -17842,6 +17862,10 @@ mod tests {
         assert_eq!(result.summary.h264_parameter_sets_prepended_count, 0);
         assert!(result.summary.last_payload_had_parameter_sets);
         assert_eq!(result.summary.h264_parameter_sets_missing_count, 0);
+        assert!(result.summary.last_payload_has_sps);
+        assert!(result.summary.last_payload_has_pps);
+        assert!(result.summary.last_payload_has_idr);
+        assert!(!result.summary.last_payload_has_non_idr_vcl);
         assert_eq!(frame.payload, fixture_persistent_access_unit_bytes());
     }
 
@@ -18037,6 +18061,10 @@ mod tests {
         assert_eq!(result.summary.h264_sps_count, 0);
         assert_eq!(result.summary.h264_pps_count, 0);
         assert!(!result.summary.last_payload_had_parameter_sets);
+        assert!(!result.summary.last_payload_has_sps);
+        assert!(!result.summary.last_payload_has_pps);
+        assert!(!result.summary.last_payload_has_idr);
+        assert!(result.summary.last_payload_has_non_idr_vcl);
         assert!(matches!(
             result.results.as_slice(),
             [
@@ -18151,6 +18179,10 @@ mod tests {
         assert_eq!(result.summary.h264_pps_count, 1);
         assert!(result.summary.last_payload_had_parameter_sets);
         assert_eq!(result.summary.h264_parameter_sets_missing_count, 0);
+        assert!(result.summary.last_payload_has_sps);
+        assert!(result.summary.last_payload_has_pps);
+        assert!(!result.summary.last_payload_has_idr);
+        assert!(result.summary.last_payload_has_non_idr_vcl);
         assert_eq!(first_frame.payload, fixture_persistent_access_unit_bytes());
         assert_eq!(
             second_frame.payload,
