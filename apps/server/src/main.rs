@@ -2135,6 +2135,9 @@ fn format_handoff_read_mode(
     match mode {
         stream_sync_net_core::ServerSwitcherQueuedFrameReadMode::InspectOldest => "inspect-oldest",
         stream_sync_net_core::ServerSwitcherQueuedFrameReadMode::InspectLatest => "inspect-latest",
+        stream_sync_net_core::ServerSwitcherQueuedFrameReadMode::InspectLatestDecodable => {
+            "inspect-latest-decodable"
+        }
         stream_sync_net_core::ServerSwitcherQueuedFrameReadMode::DequeueOldest => "dequeue-oldest",
     }
 }
@@ -2170,6 +2173,10 @@ mod tests {
         assert_eq!(
             format_handoff_read_mode(ServerSwitcherQueuedFrameReadMode::InspectLatest),
             "inspect-latest"
+        );
+        assert_eq!(
+            format_handoff_read_mode(ServerSwitcherQueuedFrameReadMode::InspectLatestDecodable),
+            "inspect-latest-decodable"
         );
         assert_eq!(
             format_handoff_read_mode(ServerSwitcherQueuedFrameReadMode::DequeueOldest),

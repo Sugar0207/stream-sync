@@ -2615,6 +2615,13 @@ Current implementation status:
   - `last_payload_has_idr`
   - `last_payload_has_non_idr_vcl`
   - `last_encoder_exit_status`
+- the persistent bounded path now also stamps encoded-frame metadata from the
+  encoder output rather than raw capture input:
+  - `VideoFrame.width` uses the encoder effective output width
+  - `VideoFrame.height` uses the encoder effective output height
+  - `VideoFrame.fps_nominal` uses the encoder effective output fps
+  - `VideoFrame.is_keyframe=true` when the recovered access unit contains an
+    IDR NAL
 - latest same-PC handoff rerun after the SPS/PPS prepend change no longer shows
   `non-existing PPS 0 referenced`
 - the remaining switcher-side decode blocker is now:
@@ -2624,6 +2631,13 @@ Current implementation status:
     metadata
   - whether the payload is still non-IDR even after SPS/PPS prepend, which may
     leave the one-shot decoder without a decodable output frame
+- current handoff preview mitigation for that second case is an opt-in preview
+  mode:
+  - `preview-latest-decodable`
+  - this asks the server handoff path for the latest queued frame with
+    `VideoFrame.is_keyframe=true`
+  - this is intended only for the current one-shot preview/decode validation
+    slice
 - the default bounded path is still the existing per-frame encoder runtime;
   persistent mode remains experimental until the next human re-measure confirms
   that `avg_encode_elapsed_ms` materially drops from the current `72.569ms`

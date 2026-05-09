@@ -5,6 +5,68 @@
 - Codex code + docs update
 
 ### Work
+- Investigated the latest same-PC 2-client handoff rerun after the decode
+  observability slice.
+- Confirmed two concrete facts from the new evidence:
+  - switcher decode expectation was still seeing `1920x1080`
+  - payload inspection still showed `payload_has_idr=false`
+- Fixed the persistent client metadata source:
+  - `VideoFrame.width` / `height` now come from encoder output dimensions
+  - `VideoFrame.fps_nominal` now comes from encoder output fps
+  - `VideoFrame.is_keyframe=true` now means the encoded access unit contained
+    an IDR NAL
+- Added an opt-in IDR-preferring handoff preview mode across the current
+  server/switcher boundary:
+  - handoff wire mode `InspectLatestDecodable`
+  - switcher operator-facing mode `preview-latest-decodable`
+  - queue reads now prefer the latest queued frame marked keyframe-visible for
+    the selected client/run scope
+- Added preview-slot visibility for the selected frame metadata:
+  - `frame_is_keyframe`
+- Updated docs so the next human rerun uses
+  `preview-latest-decodable` rather than `preview-latest`.
+- Kept scope narrow:
+  - no concurrent receive + handoff serve runtime
+  - no switcher persistent decoder context
+  - no client cadence changes
+
+### Changed Files
+- `apps/client/src/lib.rs`
+- `apps/server/src/lib.rs`
+- `apps/server/src/main.rs`
+- `apps/switcher/src/lib.rs`
+- `apps/switcher/src/main.rs`
+- `crates/net-core/src/lib.rs`
+- `docs/operations/two-client-handoff-validation.md`
+- `docs/operations/manual-real-encoded-video-poc.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### Decision
+- One root cause was real metadata mismatch in the persistent client path, not
+  just a switcher-side display assumption.
+- The next human validation should prefer decodable/keyframe-visible payloads
+  explicitly instead of sampling arbitrary latest payloads in a one-shot decode
+  environment.
+- If the rerun still fails after `1280x720` metadata and
+  `preview-latest-decodable`, the next narrow slice should be keyframe cadence
+  or IDR policy rather than transport plumbing.
+
+### Validation
+- `cargo fmt`
+- `cargo check --workspace`
+- focused tests:
+  - `cargo test -p stream-sync-client client_video_frame_continuous_real_encoded_persistent -- --nocapture`
+  - `cargo test -p stream-sync-server handoff_handler_returns_latest_decodable -- --nocapture`
+  - `cargo test -p stream-sync-switcher single_client_queue_source_preview_latest_decodable -- --nocapture`
+  - `cargo test -p stream-sync-switcher h264_decode_failure_observability -- --nocapture`
+  - `cargo test -p stream-sync-switcher switcher_four_view_two_real_handoff_preview_summary_formats_expected_fields -- --nocapture`
+
+## 2026-05-09
+### Type
+- Codex code + docs update
+
+### Work
 - Investigated the next decode-stage blocker after the SPS/PPS prepend change.
 - Confirmed the human rerun moved the failure forward:
   - previous `non-existing PPS 0 referenced` disappeared

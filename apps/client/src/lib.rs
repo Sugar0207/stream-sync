@@ -6424,7 +6424,11 @@ impl ClientContinuousRealEncodedVideoFrameBoundary {
                                 run_id: &input.run_id,
                                 frame_id,
                                 send_timestamp,
-                                is_keyframe: input.is_keyframe,
+                                output_width: input.encoder_config.effective_width(frame.width),
+                                output_height: input.encoder_config.effective_height(frame.height),
+                                output_fps_nominal: input
+                                    .encoder_config
+                                    .effective_fps(frame.fps_nominal),
                                 fragment_pacing: policy.fragment_pacing,
                             },
                             frame,
@@ -6657,7 +6661,9 @@ struct ClientPersistentRealEncodedFrameContext<'a> {
     run_id: &'a RunId,
     frame_id: u64,
     send_timestamp: TimestampMicros,
-    is_keyframe: bool,
+    output_width: u32,
+    output_height: u32,
+    output_fps_nominal: u32,
     fragment_pacing: ClientVideoFrameFragmentPacingPolicy,
 }
 
@@ -6713,9 +6719,9 @@ fn build_and_send_persistent_access_unit(
 
     let encoded = ClientEncodedVideoFrameSource {
         capture_timestamp: frame.capture_timestamp,
-        width: frame.width,
-        height: frame.height,
-        fps_nominal: frame.fps_nominal,
+        width: context.output_width,
+        height: context.output_height,
+        fps_nominal: context.output_fps_nominal,
         codec: Codec::H264,
         payload: access_unit_bytes,
         source_kind: ClientEncodedVideoFrameSourceKind::RealCaptureH264,
@@ -6728,7 +6734,7 @@ fn build_and_send_persistent_access_unit(
             run_id: context.run_id.clone(),
             frame_id: context.frame_id,
             send_timestamp: context.send_timestamp,
-            is_keyframe: context.is_keyframe,
+            is_keyframe: access_unit.contains_idr,
             encoded,
         },
     ) {
@@ -17866,7 +17872,113 @@ mod tests {
         assert!(result.summary.last_payload_has_pps);
         assert!(result.summary.last_payload_has_idr);
         assert!(!result.summary.last_payload_has_non_idr_vcl);
+        assert!(frame.is_keyframe);
         assert_eq!(frame.payload, fixture_persistent_access_unit_bytes());
+    }
+
+    #[test]
+    fn client_video_frame_continuous_real_encoded_persistent_uses_encoder_output_dimensions() {
+        struct UnusedPerFrameEncoder;
+        impl ClientH264EncoderRuntimeHook for UnusedPerFrameEncoder {
+            fn encode_bgra_frame(
+                &self,
+                _input: &ClientH264EncoderInput,
+            ) -> ClientH264EncoderHookResult {
+                panic!("per-frame encoder should not run for persistent runtime");
+            }
+        }
+
+        struct FixtureLargePersistentCapture;
+        impl ClientCaptureFrameAcquisitionRuntimeHook for FixtureLargePersistentCapture {
+            fn acquire_one_bgra_frame(
+                &self,
+                input: &mut ClientCaptureFrameAcquisitionInput<'_>,
+            ) -> ClientCaptureFrameAcquisitionResult {
+                ClientCaptureFrameAcquisitionResult::FrameAcquired {
+                    frame: ClientRawCapturedVideoFrame {
+                        capture_timestamp: input.capture_timestamp,
+                        width: 1920,
+                        height: 1080,
+                        fps_nominal: input.fps_nominal,
+                        pixel_format: ClientRawVideoPixelFormat::Bgra8,
+                        pixels: vec![0; 1920 * 1080 * 4],
+                    },
+                }
+            }
+        }
+
+        let receiver = UdpSocket::bind("127.0.0.1:0").expect("receiver should bind");
+        receiver
+            .set_read_timeout(Some(Duration::from_secs(1)))
+            .expect("read timeout should be set");
+        let sender = UdpSocket::bind("127.0.0.1:0").expect("sender should bind");
+        let destination = receiver.local_addr().expect("receiver addr should exist");
+        let mut capture_runtime = client_capture_session_runtime_for_tests();
+
+        let mut encoder_config = ClientVideoEncoderConfig::default();
+        encoder_config.width = Some(1280);
+        encoder_config.height = Some(720);
+
+        let result = ClientContinuousRealEncodedVideoFrameBoundary::default()
+            .run_with_runtime_selection_and_persistent_factory(
+                ClientContinuousRealEncodedVideoFrameInput {
+                    socket: &sender,
+                    destination,
+                    capture_runtime: &mut capture_runtime,
+                    protocol_version: ProtocolVersion(2),
+                    client_id: ClientId("client-1".to_string()),
+                    run_id: RunId("run-1".to_string()),
+                    first_frame_id: 173,
+                    fps_nominal: 30,
+                    is_keyframe: false,
+                    start_capture_if_needed: true,
+                    encoder_config,
+                    policy: ClientContinuousRealEncodedVideoFramePolicy {
+                        max_frames: 1,
+                        max_ticks: 2,
+                        frame_wait_timeout_micros: 0,
+                        frame_interval_micros: 0,
+                        cadence_mode: ClientContinuousRealEncodedVideoFrameCadenceMode::Fixed,
+                        stop_on_capture_failure: true,
+                        stop_on_send_failure: true,
+                        fragment_pacing: ClientVideoFrameFragmentPacingPolicy::default(),
+                    },
+                },
+                ClientRealEncodedVideoFrameEncoderRuntime::Persistent,
+                &FixtureLargePersistentCapture,
+                &UnusedPerFrameEncoder,
+                &FakePersistentSessionFactory {
+                    next_steps: vec![
+                        ClientPersistentFfmpegH264AccessUnitSessionStepResult::AccessUnit(
+                            fixture_persistent_access_unit(),
+                        ),
+                    ],
+                    shutdown_result: fixture_persistent_shutdown_step(Some(0)),
+                },
+            );
+
+        let mut buffer = [0_u8; 2048];
+        let (len, _) = receiver
+            .recv_from(&mut buffer)
+            .expect("receiver should get a persistent-runtime video frame");
+        let packet = decode_fixed_header(&buffer[..len]).expect("video header should decode");
+        let decoded = decode_payload_by_message_type(
+            DecodeContext {
+                expected_protocol_version: ProtocolVersion(2),
+            },
+            packet.header,
+            packet.payload,
+        )
+        .expect("video frame should decode");
+        let ProtocolMessage::VideoFrame(frame) = decoded else {
+            panic!("expected VideoFrame");
+        };
+
+        assert_eq!(result.summary.frames_sent, 1);
+        assert_eq!(frame.width, 1280);
+        assert_eq!(frame.height, 720);
+        assert_eq!(frame.fps_nominal, 30);
+        assert!(frame.is_keyframe);
     }
 
     #[test]
@@ -18183,6 +18295,8 @@ mod tests {
         assert!(result.summary.last_payload_has_pps);
         assert!(!result.summary.last_payload_has_idr);
         assert!(result.summary.last_payload_has_non_idr_vcl);
+        assert!(first_frame.is_keyframe);
+        assert!(!second_frame.is_keyframe);
         assert_eq!(first_frame.payload, fixture_persistent_access_unit_bytes());
         assert_eq!(
             second_frame.payload,

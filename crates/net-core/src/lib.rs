@@ -99,6 +99,7 @@ const SERVER_SWITCHER_HANDOFF_RESPONSE_KIND_ERROR: u8 = 3;
 pub enum ServerSwitcherQueuedFrameReadMode {
     InspectOldest,
     InspectLatest,
+    InspectLatestDecodable,
     DequeueOldest,
 }
 
@@ -107,7 +108,8 @@ impl ServerSwitcherQueuedFrameReadMode {
         match self {
             Self::InspectOldest => 1,
             Self::InspectLatest => 2,
-            Self::DequeueOldest => 3,
+            Self::InspectLatestDecodable => 3,
+            Self::DequeueOldest => 4,
         }
     }
 }
@@ -119,7 +121,8 @@ impl TryFrom<u8> for ServerSwitcherQueuedFrameReadMode {
         match value {
             1 => Ok(Self::InspectOldest),
             2 => Ok(Self::InspectLatest),
-            3 => Ok(Self::DequeueOldest),
+            3 => Ok(Self::InspectLatestDecodable),
+            4 => Ok(Self::DequeueOldest),
             actual => Err(ServerSwitcherQueuedFrameHandoffCodecError::UnknownReadMode { actual }),
         }
     }

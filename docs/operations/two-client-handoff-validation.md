@@ -107,6 +107,7 @@ stream-sync-switcher --four-view-two-real-handoff-preview-loop
   [client1-id]
   [run1-id]
   [frames]
+  [preview-oldest|preview-latest|preview-latest-decodable]
 ```
 
 What this switcher command owns:
@@ -116,6 +117,8 @@ What this switcher command owns:
 - `Selected` / `NoFrameAvailable` / `WaitingForFrameAtOrBeforeTarget` /
   `HandoffError` preservation
 - decode / render into the existing clean output window path
+- optional IDR-preferring preview mode for one-shot decode:
+  - `preview-latest-decodable`
 
 Important current CLI note:
 
@@ -213,6 +216,8 @@ also inspect:
 - `last_payload_has_pps`
 - `last_payload_has_idr`
 - `last_payload_has_non_idr_vcl`
+- `encoder_width`
+- `encoder_height`
 
 Interpretation:
 
@@ -226,6 +231,8 @@ Interpretation:
   encode-deferred behavior instead of sending a likely undecodable payload
 - `last_payload_has_idr=false` with `last_payload_has_non_idr_vcl=true` is a
   useful clue if switcher one-shot decode still fails after SPS/PPS prepend
+- `encoder_width` / `encoder_height` are now the encoder output dimensions that
+  should survive through handoff and reach the switcher decode boundary
 
 ### Server Bounded Handoff Request Lines
 
@@ -492,13 +499,13 @@ Human start-order rule:
 ### Window 2: Client 1
 
 ```powershell
-.\target\debug\stream-sync-client.exe --auth-real-encoded-video-frame-poc-bounded configs/manual/client.player1.toml 900 4 2
+.\target\debug\stream-sync-client.exe --auth-real-encoded-video-frame-poc-bounded configs/manual/client.player1.toml 900 16 1 --encoder-runtime persistent --cadence-mode deadline
 ```
 
 ### Window 3: Client 2
 
 ```powershell
-.\target\debug\stream-sync-client.exe --auth-real-encoded-video-frame-poc-bounded configs/manual/client.player2.toml 900 4 2
+.\target\debug\stream-sync-client.exe --auth-real-encoded-video-frame-poc-bounded configs/manual/client.player2.toml 900 16 1 --encoder-runtime persistent --cadence-mode deadline
 ```
 
 ### Window 4: Switcher Main Handoff Preview
@@ -511,8 +518,17 @@ Start this only after:
   - `validation_ready=true`
 
 ```powershell
-.\target\debug\stream-sync-switcher.exe --four-view-two-real-handoff-preview-loop streamsync-handoff-dev 0 player1 streamsync-dev-session 1 player2 streamsync-dev-session 180
+.\target\debug\stream-sync-switcher.exe --four-view-two-real-handoff-preview-loop streamsync-handoff-dev 0 player1 streamsync-dev-session 1 player2 streamsync-dev-session 180 preview-latest-decodable
 ```
+
+Current recommendation:
+
+- use `preview-latest-decodable` for same-PC handoff validation while the
+  switcher decode path is still one-shot
+- this mode keeps the existing preview behavior opt-in and asks the server
+  handoff path for the latest queued frame marked decodable/keyframe-visible
+- current persistent client metadata uses `VideoFrame.is_keyframe=true` when
+  the encoded access unit contains an IDR NAL
 
 Expected render surface:
 
@@ -528,13 +544,13 @@ Use this only if the main preview loop reports an unexpected real-slot
 ### Window 4a: Raw One-Shot Read For Player 1
 
 ```powershell
-.\target\debug\stream-sync-switcher.exe --read-queued-frame-handoff-once streamsync-handoff-dev player1 streamsync-dev-session preview-latest 1
+.\target\debug\stream-sync-switcher.exe --read-queued-frame-handoff-once streamsync-handoff-dev player1 streamsync-dev-session preview-latest-decodable 1
 ```
 
 ### Window 4b: Raw One-Shot Read For Player 2
 
 ```powershell
-.\target\debug\stream-sync-switcher.exe --read-queued-frame-handoff-once streamsync-handoff-dev player2 streamsync-dev-session preview-latest 2
+.\target\debug\stream-sync-switcher.exe --read-queued-frame-handoff-once streamsync-handoff-dev player2 streamsync-dev-session preview-latest-decodable 2
 ```
 
 Expected success shape for the raw rerun:
@@ -650,12 +666,14 @@ Real-slot diagnostics should show:
 
 - slot `0` / `player1`
   - `handoff_response_kind=FrameRead`
+  - `frame_is_keyframe=true`
   - `parse_error=none`
   - `io_error=none`
   - `decode_error=none`
   - `final_slot_result_kind=Selected`
 - slot `1` / `player2`
   - `handoff_response_kind=FrameRead`
+  - `frame_is_keyframe=true`
   - `parse_error=none`
   - `io_error=none`
   - `decode_error=none`
@@ -687,6 +705,13 @@ Current interpretation for this slice:
   encoder config, treat metadata mismatch as the next narrow follow-up
 - if SPS/PPS are present but `payload_has_idr=false`, record that as evidence
   for a future keyframe/IDR handling slice
+- current code now fixes the persistent-path metadata source so
+  `decode_expected_width=1280`, `decode_expected_height=720`, and
+  `decode_expected_rawvideo_len=3686400` are the expected same-PC validation
+  values when the manual client configs use `1280x720`
+- if `preview-latest-decodable` still returns `frame_is_keyframe=false` or
+  `payload_has_idr=false`, treat that as evidence that the queue does not yet
+  contain an IDR-bearing latest decodable payload for that client scope
 
 ### Not A Failure By Itself
 
@@ -695,6 +720,22 @@ Current interpretation for this slice:
 - `stop_reason=ReceiveTimedOut` after expected counts were already reached
 - `handoff_ready=true` appearing only after both clients finish their bounded
   send run, because this command is intentionally staged today
+
+## Latest Narrow Follow-Up
+
+Current latest interpretation after the most recent human rerun:
+
+- server receive / queue / `validation_ready` is already passing
+- named-pipe handoff and `FrameRead` are already passing for both clients
+- client-side SPS/PPS cache + prepend is already effective because the earlier
+  `non-existing PPS 0 referenced` failure disappeared
+- one real root cause was metadata width/height mismatch:
+  - the persistent client path had been stamping raw capture dimensions into
+    `VideoFrame`
+  - the current code now stamps encoder output dimensions into `VideoFrame`
+- the remaining likely blocker is one-shot decode on non-IDR payloads
+- use `preview-latest-decodable` for the next rerun so the preview loop prefers
+  the latest queued frame marked keyframe/IDR-visible
 
 ## Failure Paste-Back Template
 

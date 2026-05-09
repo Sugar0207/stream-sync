@@ -5166,6 +5166,7 @@ impl ServerVideoFrameQueueState {
 pub enum ServerVideoFrameQueueReadMode {
     InspectOldest,
     InspectLatest,
+    InspectLatestDecodable,
     DequeueOldest,
 }
 
@@ -5218,6 +5219,11 @@ impl ServerVideoFrameQueueReadBoundary {
                 .cloned(),
             ServerVideoFrameQueueReadMode::InspectLatest => state
                 .frames_for_client_run(&input.client_id, &input.run_id)
+                .last()
+                .cloned(),
+            ServerVideoFrameQueueReadMode::InspectLatestDecodable => state
+                .frames_for_client_run(&input.client_id, &input.run_id)
+                .filter(|queued| queued.frame.is_keyframe)
                 .last()
                 .cloned(),
             ServerVideoFrameQueueReadMode::DequeueOldest => {
@@ -5322,6 +5328,9 @@ fn queue_read_mode_from_handoff(
         }
         ServerSwitcherQueuedFrameReadMode::InspectLatest => {
             ServerVideoFrameQueueReadMode::InspectLatest
+        }
+        ServerSwitcherQueuedFrameReadMode::InspectLatestDecodable => {
+            ServerVideoFrameQueueReadMode::InspectLatestDecodable
         }
         ServerSwitcherQueuedFrameReadMode::DequeueOldest => {
             ServerVideoFrameQueueReadMode::DequeueOldest
@@ -15961,6 +15970,31 @@ shared_token = "secret"
     }
 
     #[test]
+    fn video_frame_queue_read_boundary_inspects_latest_decodable_for_client_run() {
+        let mut state = ServerVideoFrameQueueState::default();
+        store_video_frame_for_read_test_with_keyframe(&mut state, "client-1", "run-1", 1, true);
+        store_video_frame_for_read_test_with_keyframe(&mut state, "client-1", "run-1", 2, false);
+        store_video_frame_for_read_test_with_keyframe(&mut state, "client-1", "run-1", 3, false);
+
+        let result = ServerVideoFrameQueueReadBoundary.read(
+            &mut state,
+            ServerVideoFrameQueueReadInput {
+                client_id: ClientId("client-1".to_string()),
+                run_id: RunId("run-1".to_string()),
+                mode: ServerVideoFrameQueueReadMode::InspectLatestDecodable,
+            },
+        );
+
+        let ServerVideoFrameQueueReadResult::FrameAvailable { frame, mode, .. } = result else {
+            panic!("latest decodable run frame should be readable");
+        };
+        assert_eq!(frame.frame.frame_id, 1);
+        assert!(frame.frame.is_keyframe);
+        assert_eq!(mode, ServerVideoFrameQueueReadMode::InspectLatestDecodable);
+        assert_eq!(state.total_len(), 3);
+    }
+
+    #[test]
     fn video_frame_queue_read_boundary_dequeues_oldest_for_client_run_only() {
         let mut state = ServerVideoFrameQueueState::default();
         store_video_frame_for_read_test(&mut state, "client-1", "run-1", 1);
@@ -16073,6 +16107,31 @@ shared_token = "secret"
         assert_eq!(frame.encoded_payload_len, 4);
         assert_eq!(frame.encoded_payload, vec![0xaa, 0xbb, 0xcc, 0xdd]);
         assert_eq!(state.total_len(), 1);
+    }
+
+    #[test]
+    fn server_switcher_handoff_handler_returns_latest_decodable_frame_when_latest_is_non_keyframe()
+    {
+        let mut state = ServerVideoFrameQueueState::default();
+        store_video_frame_for_read_test_with_keyframe(&mut state, "client-1", "run-1", 1, true);
+        store_video_frame_for_read_test_with_keyframe(&mut state, "client-1", "run-1", 2, false);
+
+        let response = ServerSwitcherQueuedFrameHandoffHandlerBoundary::default().handle_request(
+            &mut state,
+            ServerSwitcherQueuedFrameHandoffRequest {
+                handoff_version: 1,
+                request_id: 77,
+                client_id: ClientId("client-1".to_string()),
+                run_id: RunId("run-1".to_string()),
+                read_mode: ServerSwitcherQueuedFrameReadMode::InspectLatestDecodable,
+            },
+        );
+
+        let ServerSwitcherQueuedFrameHandoffResponse::FrameRead { frame, .. } = response else {
+            panic!("latest decodable handoff request should return a keyframe");
+        };
+        assert_eq!(frame.frame_id, 1);
+        assert!(frame.is_keyframe);
     }
 
     #[test]
@@ -23261,10 +23320,27 @@ shared_token = "presented-secret"
         run_id: &str,
         frame_id: u64,
     ) {
+        store_video_frame_for_read_test_with_keyframe(
+            queue_state,
+            client_id,
+            run_id,
+            frame_id,
+            true,
+        );
+    }
+
+    fn store_video_frame_for_read_test_with_keyframe(
+        queue_state: &mut ServerVideoFrameQueueState,
+        client_id: &str,
+        run_id: &str,
+        frame_id: u64,
+        is_keyframe: bool,
+    ) {
         let source = packet_source();
         let mut input = video_handler_input(client_id, source);
         input.registered_packet.frame.run_id = RunId(run_id.to_string());
         input.registered_packet.frame.frame_id = frame_id;
+        input.registered_packet.frame.is_keyframe = is_keyframe;
         input.registered_packet.authenticated_sender.run_id = RunId(run_id.to_string());
 
         let result = ServerVideoFrameQueueStorageBoundary.store_frame(

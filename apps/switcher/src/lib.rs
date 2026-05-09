@@ -137,6 +137,7 @@ impl SwitcherSingleViewLatestFrameSelectionBoundary {
 pub enum SwitcherSingleClientQueueSourceMode {
     PreviewOldest,
     PreviewLatest,
+    PreviewLatestDecodable,
     ConsumeOldest,
 }
 
@@ -145,6 +146,7 @@ impl SwitcherSingleClientQueueSourceMode {
         match self {
             Self::PreviewOldest => ServerVideoFrameQueueReadMode::InspectOldest,
             Self::PreviewLatest => ServerVideoFrameQueueReadMode::InspectLatest,
+            Self::PreviewLatestDecodable => ServerVideoFrameQueueReadMode::InspectLatestDecodable,
             Self::ConsumeOldest => ServerVideoFrameQueueReadMode::DequeueOldest,
         }
     }
@@ -153,6 +155,9 @@ impl SwitcherSingleClientQueueSourceMode {
         match self {
             Self::PreviewOldest => ServerSwitcherQueuedFrameReadMode::InspectOldest,
             Self::PreviewLatest => ServerSwitcherQueuedFrameReadMode::InspectLatest,
+            Self::PreviewLatestDecodable => {
+                ServerSwitcherQueuedFrameReadMode::InspectLatestDecodable
+            }
             Self::ConsumeOldest => ServerSwitcherQueuedFrameReadMode::DequeueOldest,
         }
     }
@@ -161,6 +166,9 @@ impl SwitcherSingleClientQueueSourceMode {
         match mode {
             ServerSwitcherQueuedFrameReadMode::InspectOldest => Self::PreviewOldest,
             ServerSwitcherQueuedFrameReadMode::InspectLatest => Self::PreviewLatest,
+            ServerSwitcherQueuedFrameReadMode::InspectLatestDecodable => {
+                Self::PreviewLatestDecodable
+            }
             ServerSwitcherQueuedFrameReadMode::DequeueOldest => Self::ConsumeOldest,
         }
     }
@@ -1214,6 +1222,7 @@ impl SwitcherQueuedFrameHandoffConsumerBoundary {
 pub enum SwitcherSingleClientTargetTimeSourceMode {
     PreviewOldestIfAtOrBefore,
     PreviewLatestIfAtOrBefore,
+    PreviewLatestDecodableIfAtOrBefore,
     ConsumeOldestAtOrBefore,
 }
 
@@ -1322,6 +1331,9 @@ impl SwitcherSingleClientTargetTimeHandoffSourceBoundary {
             SwitcherSingleClientTargetTimeSourceMode::PreviewLatestIfAtOrBefore => {
                 self.preview_latest_at_or_before(handoff, input, clock_offset_micros)
             }
+            SwitcherSingleClientTargetTimeSourceMode::PreviewLatestDecodableIfAtOrBefore => {
+                self.preview_latest_decodable_at_or_before(handoff, input, clock_offset_micros)
+            }
             SwitcherSingleClientTargetTimeSourceMode::ConsumeOldestAtOrBefore => {
                 self.consume_oldest_at_or_before(handoff, input, clock_offset_micros)
             }
@@ -1367,6 +1379,31 @@ impl SwitcherSingleClientTargetTimeHandoffSourceBoundary {
                 client_id: input.client_id,
                 run_id: input.run_id,
                 mode: SwitcherSingleClientQueueSourceMode::PreviewOldest,
+            },
+        );
+        handoff_consumer_result_for_candidate(
+            consumer_result,
+            target_timestamp,
+            mode,
+            false,
+            clock_offset_micros,
+        )
+    }
+
+    fn preview_latest_decodable_at_or_before(
+        &self,
+        handoff: &mut impl SwitcherQueuedFrameHandoff,
+        input: SwitcherSingleClientTargetTimeSourceInput,
+        clock_offset_micros: Option<i64>,
+    ) -> SwitcherSingleClientTargetTimeHandoffSourceResult {
+        let mode = input.mode;
+        let target_timestamp = input.target_timestamp;
+        let consumer_result = self.consumer.read_source_result(
+            handoff,
+            SwitcherQueuedFrameHandoffInput {
+                client_id: input.client_id,
+                run_id: input.run_id,
+                mode: SwitcherSingleClientQueueSourceMode::PreviewLatestDecodable,
             },
         );
         handoff_consumer_result_for_candidate(
@@ -1479,6 +1516,9 @@ impl SwitcherSingleClientTargetTimeSourceBoundary {
             SwitcherSingleClientTargetTimeSourceMode::PreviewLatestIfAtOrBefore => {
                 self.preview_latest_at_or_before(source, input, clock_offset_micros)
             }
+            SwitcherSingleClientTargetTimeSourceMode::PreviewLatestDecodableIfAtOrBefore => {
+                self.preview_latest_decodable_at_or_before(source, input, clock_offset_micros)
+            }
             SwitcherSingleClientTargetTimeSourceMode::ConsumeOldestAtOrBefore => {
                 self.consume_oldest_at_or_before(source, input, clock_offset_micros)
             }
@@ -1523,6 +1563,30 @@ impl SwitcherSingleClientTargetTimeSourceBoundary {
             client_id,
             run_id,
             mode: SwitcherSingleClientQueueSourceMode::PreviewOldest,
+        });
+        result_for_candidate(
+            source_result,
+            target_timestamp,
+            mode,
+            false,
+            clock_offset_micros,
+        )
+    }
+
+    fn preview_latest_decodable_at_or_before(
+        &self,
+        source: &mut impl SwitcherQueuedFrameSource,
+        input: SwitcherSingleClientTargetTimeSourceInput,
+        clock_offset_micros: Option<i64>,
+    ) -> SwitcherSingleClientTargetTimeSourceResult {
+        let client_id = input.client_id;
+        let run_id = input.run_id;
+        let mode = input.mode;
+        let target_timestamp = input.target_timestamp;
+        let source_result = source.read_queued_frame(SwitcherSingleClientQueueSourceInput {
+            client_id,
+            run_id,
+            mode: SwitcherSingleClientQueueSourceMode::PreviewLatestDecodable,
         });
         result_for_candidate(
             source_result,
@@ -2969,13 +3033,33 @@ impl SwitcherFourViewTargetTimeHandoffSourceSchedulerBoundary {
         handoff: &mut impl SwitcherQueuedFrameHandoff,
         input: SwitcherFourViewTargetTimeHandoffSourceSchedulerInput,
     ) -> SwitcherFourViewTargetTimeHandoffSourceSchedulerResult {
-        self.select_quad_preview_from_handoff_with_clock_offsets(handoff, input, [None; 4])
+        self.select_quad_preview_from_handoff_with_mode_and_clock_offsets(
+            handoff,
+            input,
+            SwitcherSingleClientTargetTimeSourceMode::PreviewLatestIfAtOrBefore,
+            [None; 4],
+        )
     }
 
     pub fn select_quad_preview_from_handoff_with_clock_offsets(
         &self,
         handoff: &mut impl SwitcherQueuedFrameHandoff,
         input: SwitcherFourViewTargetTimeHandoffSourceSchedulerInput,
+        clock_offsets_micros: [Option<i64>; 4],
+    ) -> SwitcherFourViewTargetTimeHandoffSourceSchedulerResult {
+        self.select_quad_preview_from_handoff_with_mode_and_clock_offsets(
+            handoff,
+            input,
+            SwitcherSingleClientTargetTimeSourceMode::PreviewLatestIfAtOrBefore,
+            clock_offsets_micros,
+        )
+    }
+
+    pub fn select_quad_preview_from_handoff_with_mode_and_clock_offsets(
+        &self,
+        handoff: &mut impl SwitcherQueuedFrameHandoff,
+        input: SwitcherFourViewTargetTimeHandoffSourceSchedulerInput,
+        mode: SwitcherSingleClientTargetTimeSourceMode,
         clock_offsets_micros: [Option<i64>; 4],
     ) -> SwitcherFourViewTargetTimeHandoffSourceSchedulerResult {
         let target_timestamp = input.target_timestamp;
@@ -2988,7 +3072,7 @@ impl SwitcherFourViewTargetTimeHandoffSourceSchedulerBoundary {
                     client_id: slot.client_id.clone(),
                     run_id: slot.run_id.clone(),
                     target_timestamp,
-                    mode: SwitcherSingleClientTargetTimeSourceMode::PreviewLatestIfAtOrBefore,
+                    mode,
                 },
                 clock_offsets_micros[index],
             );
@@ -5201,9 +5285,28 @@ impl SwitcherFourViewHandoffValidationBoundary {
         decode_runtime: &impl SwitcherH264DecodeRuntimeHook,
         render_runtime: &impl SwitcherWindowRenderRuntimeHook,
     ) -> SwitcherFourViewHandoffValidationOutput {
-        self.run_from_handoff_with_runtimes_and_clock_offset_state(
+        self.run_from_handoff_with_runtimes_and_mode_and_clock_offset_state(
             handoff,
             input,
+            SwitcherSingleClientTargetTimeSourceMode::PreviewLatestIfAtOrBefore,
+            None,
+            decode_runtime,
+            render_runtime,
+        )
+    }
+
+    pub fn run_from_handoff_with_runtimes_and_mode(
+        &self,
+        handoff: &mut impl SwitcherQueuedFrameHandoff,
+        input: SwitcherFourViewHandoffValidationInput,
+        mode: SwitcherSingleClientTargetTimeSourceMode,
+        decode_runtime: &impl SwitcherH264DecodeRuntimeHook,
+        render_runtime: &impl SwitcherWindowRenderRuntimeHook,
+    ) -> SwitcherFourViewHandoffValidationOutput {
+        self.run_from_handoff_with_runtimes_and_mode_and_clock_offset_state(
+            handoff,
+            input,
+            mode,
             None,
             decode_runtime,
             render_runtime,
@@ -5218,16 +5321,36 @@ impl SwitcherFourViewHandoffValidationBoundary {
         decode_runtime: &impl SwitcherH264DecodeRuntimeHook,
         render_runtime: &impl SwitcherWindowRenderRuntimeHook,
     ) -> SwitcherFourViewHandoffValidationOutput {
+        self.run_from_handoff_with_runtimes_and_mode_and_clock_offset_state(
+            handoff,
+            input,
+            SwitcherSingleClientTargetTimeSourceMode::PreviewLatestIfAtOrBefore,
+            heartbeat_rtt_offset_state,
+            decode_runtime,
+            render_runtime,
+        )
+    }
+
+    pub fn run_from_handoff_with_runtimes_and_mode_and_clock_offset_state(
+        &self,
+        handoff: &mut impl SwitcherQueuedFrameHandoff,
+        input: SwitcherFourViewHandoffValidationInput,
+        mode: SwitcherSingleClientTargetTimeSourceMode,
+        heartbeat_rtt_offset_state: Option<&ServerHeartbeatRttOffsetState>,
+        decode_runtime: &impl SwitcherH264DecodeRuntimeHook,
+        render_runtime: &impl SwitcherWindowRenderRuntimeHook,
+    ) -> SwitcherFourViewHandoffValidationOutput {
         let clock_offsets_micros =
             self.clock_offsets_for_slots(heartbeat_rtt_offset_state, &input.slots);
         let scheduler = self
             .scheduler
-            .select_quad_preview_from_handoff_with_clock_offsets(
+            .select_quad_preview_from_handoff_with_mode_and_clock_offsets(
                 handoff,
                 SwitcherFourViewTargetTimeHandoffSourceSchedulerInput {
                     slots: input.slots,
                     target_timestamp: input.target_timestamp,
                 },
+                mode,
                 clock_offsets_micros,
             );
         let decode_render_adapter = self.decode_render_adapter.adapt(
@@ -11683,6 +11806,53 @@ mod tests {
         assert_eq!(frame.client_id, client_id);
         assert_eq!(frame.frame_id, 3);
         assert_eq!(mode, SwitcherSingleClientQueueSourceMode::PreviewLatest);
+        assert_eq!(remaining_client_queue_len, before_len);
+        assert_eq!(state.client_queue_len(&client_id), before_len);
+    }
+
+    #[test]
+    fn single_client_queue_source_preview_latest_decodable_prefers_latest_keyframe() {
+        let mut state = ServerVideoFrameQueueState::default();
+        store_frame_for_run(
+            &mut state,
+            "client-1",
+            "run-1",
+            1,
+            TimestampMicros(2_010_000),
+        );
+        store_frame_for_run(
+            &mut state,
+            "client-1",
+            "run-1",
+            2,
+            TimestampMicros(2_010_100),
+        );
+        let client_id = ClientId("client-1".to_string());
+        let before_len = state.client_queue_len(&client_id);
+
+        let result = SwitcherSingleClientQueueSourceBoundary::default().read(
+            &mut state,
+            SwitcherSingleClientQueueSourceInput {
+                client_id: client_id.clone(),
+                run_id: RunId("run-1".to_string()),
+                mode: SwitcherSingleClientQueueSourceMode::PreviewLatestDecodable,
+            },
+        );
+
+        let SwitcherSingleClientQueueSourceResult::FrameAvailable {
+            frame,
+            mode,
+            remaining_client_queue_len,
+        } = result
+        else {
+            panic!("latest decodable frame for run should be available");
+        };
+        assert_eq!(frame.frame_id, 1);
+        assert!(frame.is_keyframe);
+        assert_eq!(
+            mode,
+            SwitcherSingleClientQueueSourceMode::PreviewLatestDecodable
+        );
         assert_eq!(remaining_client_queue_len, before_len);
         assert_eq!(state.client_queue_len(&client_id), before_len);
     }
