@@ -1015,6 +1015,19 @@ Interpretation:
   - `receive_stop_reason` not equal to
     `ReassembledFramesThresholdReached`
 
+Automated validation status on 2026-05-12:
+
+- PASS:
+  - `cargo fmt`
+  - `cargo fmt --check`
+  - `cargo check --workspace`
+  - focused concurrent server tests
+  - focused staged handoff regression tests
+  - `cargo test --workspace`
+  - `git diff --check`
+- next gate remains human validation for the same concurrent rerun recipe
+  below
+
 Current concurrent rerun gate:
 
 - server keeps receiving after auth:

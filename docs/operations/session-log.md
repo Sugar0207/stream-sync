@@ -1,5 +1,58 @@
 <!-- stream-sync/docs/operations/session-log.md -->
 
+## 2026-05-12
+### Type
+- Codex validation + docs update
+
+### Work
+- Re-checked the concurrent receive threshold fix request against the current
+  repo state.
+- Confirmed the server-side code and docs already reflected the intended
+  semantics:
+  - `expected_reassembled_frames=0` means disabled in concurrent mode
+  - `expected_clients=0` means disabled in concurrent mode
+  - `expected_per_client_frames=0` means disabled in concurrent mode
+  - concurrent ready/stopped summaries expose:
+    - `expected_reassembled_frames_enabled`
+    - `expected_clients_enabled`
+    - `expected_per_client_frames_enabled`
+- Ran the requested automated validation sweep and recorded a full PASS:
+  - `cargo fmt`
+  - `cargo fmt --check`
+  - `cargo check --workspace`
+  - `cargo test -p stream-sync-server concurrent -- --nocapture`
+  - `cargo test -p stream-sync-server disabled_expected_thresholds_do_not_stop_receive -- --nocapture`
+  - `cargo test -p stream-sync-server positive_reassembled_threshold_still_stops_receive -- --nocapture`
+  - `cargo test -p stream-sync-server handoff_service_session -- --nocapture`
+  - `cargo test --workspace`
+  - `git diff --check`
+- Updated the concurrent plan / validation docs / TODO so the repo records that
+  the automated validation is green and the next gate remains the human rerun.
+
+### Decision
+- No additional code change was required in this turn because the requested
+  disabled-threshold behavior and summary fields were already present in the
+  current server implementation.
+- The next meaningful confirmation is still human validation on the concurrent
+  runtime, not more local automated coverage.
+
+### Changed Files
+- `docs/operations/concurrent-handoff-runtime-plan.md`
+- `docs/operations/two-client-handoff-validation.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### Validation
+- `cargo fmt`
+- `cargo fmt --check`
+- `cargo check --workspace`
+- `cargo test -p stream-sync-server concurrent -- --nocapture`
+- `cargo test -p stream-sync-server disabled_expected_thresholds_do_not_stop_receive -- --nocapture`
+- `cargo test -p stream-sync-server positive_reassembled_threshold_still_stops_receive -- --nocapture`
+- `cargo test -p stream-sync-server handoff_service_session -- --nocapture`
+- `cargo test --workspace`
+- `git diff --check`
+
 ## 2026-05-11
 ### Type
 - Codex code + docs update

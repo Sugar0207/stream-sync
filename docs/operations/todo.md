@@ -2,7 +2,7 @@
 
 # StreamSync TODO
 
-最終更新: 2026-05-11
+最終更新: 2026-05-12
 
 このファイルは「現在どこまで終わっていて、次に何をやるか」を確認するための TODO です。  
 時系列の作業履歴、判断理由、各回の作業メモは `docs/operations/session-log.md` を正とします。
@@ -24,6 +24,7 @@
 ## 現在位置
 - latest concurrent human validation では `receive_ready=true` / `handoff_ready=true` / `runtime_mode=concurrent` は PASS したが、receive side が expected-threshold `0` を disabled ではなく stop判定に混ぜていた。実際の失敗 shape は `stop_reason=MaxHandoffRequestsReached` / `receive_stop_reason=ReassembledFramesThresholdReached` / `packets_received=1` / `frames_queued=0` / `frame_read_count=0` で、client 側は `frames_sent=900` まで進んでいたため、auth failure でも encoder failure でもなく concurrent receive closeout semantics の問題として扱う
 - current fix では concurrent runtime の `expected_reassembled_frames=0` / `expected_clients=0` / `expected_per_client_frames=0` を disabled として扱うようにした。receive stop判定は enabled threshold のみを見るようにし、ready/stopped summary には `expected_reassembled_frames_enabled` / `expected_clients_enabled` / `expected_per_client_frames_enabled` を追加した。same-PC continuous validation では `validation_ready=n/a` のまま、主な receive closeout は `receive_timeout` / `max_runtime_duration_ms` / `max_video_packets` / explicit stop に寄せる
+- 2026-05-12 の requested automated validation sweep は PASS した。`cargo fmt` / `cargo fmt --check` / `cargo check --workspace` / focused concurrent server tests / focused staged handoff regression tests / `cargo test --workspace` / `git diff --check` を通し、disabled-threshold semantics と staged regression に新たな自動 test failure は出ていない。next gate は変わらず same-PC human rerun で、`expected_*_enabled=false` と `receive_stop_reason != ReassembledFramesThresholdReached` を実機 stdout で確認すること
 - first concurrent receive + handoff serve runtime slice 自体は維持している。new command `--receive-auth-video-queue-and-serve-handoff-continuous` は staged command `--receive-auth-video-queue-and-serve-handoff-many` を残したまま、coarse-lock shared state 上で UDP receive/auth/reassembly/queue update と named-pipe handoff serve を同時に持てる
 - current next gate は same-PC 2-client で concurrent command の human validation を再度通すこと。first goal は「client 送信中に switcher が `preview-latest-decodable` で `FrameRead` と `frames_rendered > 0` に到達すること」であり、final server summary では `frame_read_count > 0` に加えて `packets_received > 1`、`expected_*_enabled=false`、`receive_stop_reason != ReassembledFramesThresholdReached` を success gate にする。retained-keyframe based preview と staged checkpoint は引き続き valid baseline として残す
 - 2-client human validation 方針は same-PC smoke / stress profile に固定した。今後の 2-client validation は server + client1 + client2 + capture + FFmpeg encode を同一 Windows PC 上で動かす前提とし、distributed-PC validation 用の server IP / firewall 手順は主目的にしない

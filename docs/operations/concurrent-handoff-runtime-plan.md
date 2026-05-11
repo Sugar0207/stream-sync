@@ -5,10 +5,19 @@
 ## Status
 - 2-client same-PC staged handoff preview checkpoint is PASS.
 - The first concurrent runtime slice is now implemented.
+- 2026-05-12 automated validation sweep is PASS:
+  - `cargo fmt`
+  - `cargo fmt --check`
+  - `cargo check --workspace`
+  - focused concurrent server tests
+  - focused staged handoff regression tests
+  - `cargo test --workspace`
+  - `git diff --check`
 - Existing staged command remains valid:
   - `--receive-auth-video-queue-and-serve-handoff-many`
 - New concurrent command is available:
   - `--receive-auth-video-queue-and-serve-handoff-continuous`
+- Next gate remains the same-PC human rerun for the concurrent command.
 
 ## Goal
 Move from the staged lifecycle:

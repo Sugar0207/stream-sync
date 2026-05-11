@@ -2003,6 +2003,8 @@ struct FourViewPreviewSlotDiagnosticSummary {
     decodable_source: Option<String>,
     retained_keyframe_available: Option<bool>,
     retained_keyframe_frame_id: Option<u64>,
+    decode_attempted: Option<bool>,
+    decode_skipped_reason: Option<String>,
     decode_error: Option<String>,
     decode_input_payload_len: Option<usize>,
     decode_expected_width: Option<u32>,
@@ -2017,8 +2019,62 @@ struct FourViewPreviewSlotDiagnosticSummary {
     payload_has_idr: Option<bool>,
     payload_has_non_idr_vcl: Option<bool>,
     payload_nal_kinds: Option<String>,
+    renderable_frame_available: Option<bool>,
+    renderable_frame_missing_reason: Option<String>,
+    selected_frame_available: Option<bool>,
+    selected_frame_id: Option<u64>,
+    selected_frame_source: Option<String>,
+    target_selection_result: &'static str,
     render_input_kind: &'static str,
     final_slot_result_kind: &'static str,
+}
+
+fn unobserved_four_view_preview_slot_diagnostic(
+    slot_index: usize,
+    slot: &SwitcherFourViewTargetTimeSourceSlotConfig,
+) -> FourViewPreviewSlotDiagnosticSummary {
+    FourViewPreviewSlotDiagnosticSummary {
+        slot_index,
+        client_id: slot.client_id.clone(),
+        run_id: slot.run_id.clone(),
+        request_id: None,
+        actual_pipe_path: None,
+        handoff_response_kind: None,
+        parse_error: None,
+        io_error: None,
+        response_payload_len: None,
+        frame_id: None,
+        frame_payload_len: None,
+        frame_is_keyframe: None,
+        handoff_no_frame_reason: None,
+        decodable_source: None,
+        retained_keyframe_available: None,
+        retained_keyframe_frame_id: None,
+        decode_attempted: None,
+        decode_skipped_reason: None,
+        decode_error: None,
+        decode_input_payload_len: None,
+        decode_expected_width: None,
+        decode_expected_height: None,
+        decode_expected_pixel_format: None,
+        decode_expected_rawvideo_len: None,
+        decoded_stdout_len: None,
+        ffmpeg_exit_status: None,
+        ffmpeg_stderr_summary: None,
+        payload_has_sps: None,
+        payload_has_pps: None,
+        payload_has_idr: None,
+        payload_has_non_idr_vcl: None,
+        payload_nal_kinds: None,
+        renderable_frame_available: None,
+        renderable_frame_missing_reason: None,
+        selected_frame_available: None,
+        selected_frame_id: None,
+        selected_frame_source: None,
+        target_selection_result: "Unobserved",
+        render_input_kind: "Unobserved",
+        final_slot_result_kind: "NoFrameAvailable",
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -2443,24 +2499,22 @@ fn run_four_view_two_real_handoff_preview_loop(
         DEFAULT_ONE_SHOT_REQUEST_ID,
     ));
     let render_runtime = SwitcherWindowsGdiPersistentWindowRenderRuntime::default();
-    Ok(
-        run_four_view_two_real_handoff_preview_loop_with_handoff_runtime_and_sleep(
-            pipe_name,
-            slot0_index,
-            client0_id,
-            run0_id,
-            slot1_index,
-            client1_id,
-            run1_id,
-            frames,
-            read_mode,
-            real_four_view_preview_target_timestamp(),
-            handoff,
-            &SwitcherFfmpegH264DecodeRuntimeHook::default(),
-            &render_runtime,
-            &RealSwitcherFrameCadenceSleepHook,
-        ),
-    )
+    Ok(run_four_view_two_real_handoff_preview_loop_with_handoff_runtime_target_timestamp_hook_and_sleep(
+        pipe_name,
+        slot0_index,
+        client0_id,
+        run0_id,
+        slot1_index,
+        client1_id,
+        run1_id,
+        frames,
+        read_mode,
+        real_four_view_preview_target_timestamp,
+        handoff,
+        &SwitcherFfmpegH264DecodeRuntimeHook::default(),
+        &render_runtime,
+        &RealSwitcherFrameCadenceSleepHook,
+    ))
 }
 
 #[cfg(not(windows))]
@@ -2700,40 +2754,10 @@ where
         "NoFrameAvailable".to_string(),
     ];
     let mut slot_diagnostics = std::array::from_fn(|slot_index| {
-        format_four_view_preview_slot_diagnostic(&FourViewPreviewSlotDiagnosticSummary {
+        format_four_view_preview_slot_diagnostic(&unobserved_four_view_preview_slot_diagnostic(
             slot_index,
-            client_id: slots[slot_index].client_id.clone(),
-            run_id: slots[slot_index].run_id.clone(),
-            request_id: None,
-            actual_pipe_path: None,
-            handoff_response_kind: None,
-            parse_error: None,
-            io_error: None,
-            response_payload_len: None,
-            frame_id: None,
-            frame_payload_len: None,
-            frame_is_keyframe: None,
-            handoff_no_frame_reason: None,
-            decodable_source: None,
-            retained_keyframe_available: None,
-            retained_keyframe_frame_id: None,
-            decode_error: None,
-            decode_input_payload_len: None,
-            decode_expected_width: None,
-            decode_expected_height: None,
-            decode_expected_pixel_format: None,
-            decode_expected_rawvideo_len: None,
-            decoded_stdout_len: None,
-            ffmpeg_exit_status: None,
-            ffmpeg_stderr_summary: None,
-            payload_has_sps: None,
-            payload_has_pps: None,
-            payload_has_idr: None,
-            payload_has_non_idr_vcl: None,
-            payload_nal_kinds: None,
-            render_input_kind: "Unobserved",
-            final_slot_result_kind: "NoFrameAvailable",
-        })
+            &slots[slot_index],
+        ))
     });
     let mut clean_output_render_result_kind = "NoRenderableQuadView";
     let mut window_title = SWITCHER_FOUR_VIEW_CLEAN_OUTPUT_WINDOW_TITLE.to_string();
@@ -2809,6 +2833,7 @@ where
     }
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
 fn run_four_view_two_real_handoff_preview_loop_with_handoff_runtime_and_sleep<
     RealHandoff,
     DecodeRuntime,
@@ -2833,6 +2858,51 @@ where
     RealHandoff: PreviewLoopRealHandoff,
     DecodeRuntime: SwitcherH264DecodeRuntimeHook,
     RenderRuntime: SwitcherWindowRenderRuntimeHook + SwitcherPersistentWindowLoopRuntimeHook,
+{
+    run_four_view_two_real_handoff_preview_loop_with_handoff_runtime_target_timestamp_hook_and_sleep(
+        pipe_name,
+        slot0_index,
+        client0_id,
+        run0_id,
+        slot1_index,
+        client1_id,
+        run1_id,
+        frames,
+        read_mode,
+        move || target_timestamp,
+        real_handoff,
+        decode_runtime,
+        render_runtime,
+        cadence_sleep,
+    )
+}
+
+fn run_four_view_two_real_handoff_preview_loop_with_handoff_runtime_target_timestamp_hook_and_sleep<
+    RealHandoff,
+    DecodeRuntime,
+    RenderRuntime,
+    TargetTimestampHook,
+>(
+    pipe_name: &str,
+    slot0_index: usize,
+    client0_id: ClientId,
+    run0_id: RunId,
+    slot1_index: usize,
+    client1_id: ClientId,
+    run1_id: RunId,
+    frames: NonZeroU32,
+    read_mode: SwitcherSingleClientQueueSourceMode,
+    mut target_timestamp_hook: TargetTimestampHook,
+    real_handoff: RealHandoff,
+    decode_runtime: &DecodeRuntime,
+    render_runtime: &RenderRuntime,
+    cadence_sleep: &impl SwitcherFrameCadenceSleepHook,
+) -> SwitcherFourViewTwoRealHandoffPreviewLoopSummary
+where
+    RealHandoff: PreviewLoopRealHandoff,
+    DecodeRuntime: SwitcherH264DecodeRuntimeHook,
+    RenderRuntime: SwitcherWindowRenderRuntimeHook + SwitcherPersistentWindowLoopRuntimeHook,
+    TargetTimestampHook: FnMut() -> TimestampMicros,
 {
     let actual_pipe_path = format_actual_handoff_pipe_path(pipe_name);
     let slots = default_four_view_two_real_handoff_preview_slots(
@@ -2866,40 +2936,10 @@ where
         "NoFrameAvailable".to_string(),
     ];
     let mut slot_diagnostics = std::array::from_fn(|slot_index| {
-        format_four_view_preview_slot_diagnostic(&FourViewPreviewSlotDiagnosticSummary {
+        format_four_view_preview_slot_diagnostic(&unobserved_four_view_preview_slot_diagnostic(
             slot_index,
-            client_id: slots[slot_index].client_id.clone(),
-            run_id: slots[slot_index].run_id.clone(),
-            request_id: None,
-            actual_pipe_path: None,
-            handoff_response_kind: None,
-            parse_error: None,
-            io_error: None,
-            response_payload_len: None,
-            frame_id: None,
-            frame_payload_len: None,
-            frame_is_keyframe: None,
-            handoff_no_frame_reason: None,
-            decodable_source: None,
-            retained_keyframe_available: None,
-            retained_keyframe_frame_id: None,
-            decode_error: None,
-            decode_input_payload_len: None,
-            decode_expected_width: None,
-            decode_expected_height: None,
-            decode_expected_pixel_format: None,
-            decode_expected_rawvideo_len: None,
-            decoded_stdout_len: None,
-            ffmpeg_exit_status: None,
-            ffmpeg_stderr_summary: None,
-            payload_has_sps: None,
-            payload_has_pps: None,
-            payload_has_idr: None,
-            payload_has_non_idr_vcl: None,
-            payload_nal_kinds: None,
-            render_input_kind: "Unobserved",
-            final_slot_result_kind: "NoFrameAvailable",
-        })
+            &slots[slot_index],
+        ))
     });
     let mut clean_output_render_result_kind = "NoRenderableQuadView";
     let mut window_title = SWITCHER_FOUR_VIEW_CLEAN_OUTPUT_WINDOW_TITLE.to_string();
@@ -2908,6 +2948,7 @@ where
 
     for frame_index in 0..frames.get() {
         handoff.begin_frame();
+        let target_timestamp = target_timestamp_hook();
         let validation = run_four_view_real_handoff_preview_validation_with_runtime_and_handoff(
             &mut handoff,
             slots.clone(),
@@ -3040,40 +3081,10 @@ where
         "NoFrameAvailable".to_string(),
     ];
     let mut slot_diagnostics = std::array::from_fn(|slot_index| {
-        format_four_view_preview_slot_diagnostic(&FourViewPreviewSlotDiagnosticSummary {
+        format_four_view_preview_slot_diagnostic(&unobserved_four_view_preview_slot_diagnostic(
             slot_index,
-            client_id: slots[slot_index].client_id.clone(),
-            run_id: slots[slot_index].run_id.clone(),
-            request_id: None,
-            actual_pipe_path: None,
-            handoff_response_kind: None,
-            parse_error: None,
-            io_error: None,
-            response_payload_len: None,
-            frame_id: None,
-            frame_payload_len: None,
-            frame_is_keyframe: None,
-            handoff_no_frame_reason: None,
-            decodable_source: None,
-            retained_keyframe_available: None,
-            retained_keyframe_frame_id: None,
-            decode_error: None,
-            decode_input_payload_len: None,
-            decode_expected_width: None,
-            decode_expected_height: None,
-            decode_expected_pixel_format: None,
-            decode_expected_rawvideo_len: None,
-            decoded_stdout_len: None,
-            ffmpeg_exit_status: None,
-            ffmpeg_stderr_summary: None,
-            payload_has_sps: None,
-            payload_has_pps: None,
-            payload_has_idr: None,
-            payload_has_non_idr_vcl: None,
-            payload_nal_kinds: None,
-            render_input_kind: "Unobserved",
-            final_slot_result_kind: "NoFrameAvailable",
-        })
+            &slots[slot_index],
+        ))
     });
     let mut clean_output_render_result_kind = "NoRenderableQuadView";
     let mut window_title = SWITCHER_FOUR_VIEW_CLEAN_OUTPUT_WINDOW_TITLE.to_string();
@@ -3219,40 +3230,10 @@ where
         "NoFrameAvailable".to_string(),
     ];
     let mut slot_diagnostics = std::array::from_fn(|slot_index| {
-        format_four_view_preview_slot_diagnostic(&FourViewPreviewSlotDiagnosticSummary {
+        format_four_view_preview_slot_diagnostic(&unobserved_four_view_preview_slot_diagnostic(
             slot_index,
-            client_id: slots[slot_index].client_id.clone(),
-            run_id: slots[slot_index].run_id.clone(),
-            request_id: None,
-            actual_pipe_path: None,
-            handoff_response_kind: None,
-            parse_error: None,
-            io_error: None,
-            response_payload_len: None,
-            frame_id: None,
-            frame_payload_len: None,
-            frame_is_keyframe: None,
-            handoff_no_frame_reason: None,
-            decodable_source: None,
-            retained_keyframe_available: None,
-            retained_keyframe_frame_id: None,
-            decode_error: None,
-            decode_input_payload_len: None,
-            decode_expected_width: None,
-            decode_expected_height: None,
-            decode_expected_pixel_format: None,
-            decode_expected_rawvideo_len: None,
-            decoded_stdout_len: None,
-            ffmpeg_exit_status: None,
-            ffmpeg_stderr_summary: None,
-            payload_has_sps: None,
-            payload_has_pps: None,
-            payload_has_idr: None,
-            payload_has_non_idr_vcl: None,
-            payload_nal_kinds: None,
-            render_input_kind: "Unobserved",
-            final_slot_result_kind: "NoFrameAvailable",
-        })
+            &slots[slot_index],
+        ))
     });
     let mut focused_result_kind = "NoFrameAvailable".to_string();
     let mut clean_output_render_result_kind = "NoRenderableFocusedView";
@@ -3469,40 +3450,10 @@ where
         "NoFrameAvailable".to_string(),
     ];
     let mut slot_diagnostics = std::array::from_fn(|slot_index| {
-        format_four_view_preview_slot_diagnostic(&FourViewPreviewSlotDiagnosticSummary {
+        format_four_view_preview_slot_diagnostic(&unobserved_four_view_preview_slot_diagnostic(
             slot_index,
-            client_id: slots[slot_index].client_id.clone(),
-            run_id: slots[slot_index].run_id.clone(),
-            request_id: None,
-            actual_pipe_path: None,
-            handoff_response_kind: None,
-            parse_error: None,
-            io_error: None,
-            response_payload_len: None,
-            frame_id: None,
-            frame_payload_len: None,
-            frame_is_keyframe: None,
-            handoff_no_frame_reason: None,
-            decodable_source: None,
-            retained_keyframe_available: None,
-            retained_keyframe_frame_id: None,
-            decode_error: None,
-            decode_input_payload_len: None,
-            decode_expected_width: None,
-            decode_expected_height: None,
-            decode_expected_pixel_format: None,
-            decode_expected_rawvideo_len: None,
-            decoded_stdout_len: None,
-            ffmpeg_exit_status: None,
-            ffmpeg_stderr_summary: None,
-            payload_has_sps: None,
-            payload_has_pps: None,
-            payload_has_idr: None,
-            payload_has_non_idr_vcl: None,
-            payload_nal_kinds: None,
-            render_input_kind: "Unobserved",
-            final_slot_result_kind: "NoFrameAvailable",
-        })
+            &slots[slot_index],
+        ))
     });
     let mut view_render_mode = "AllView".to_string();
     let mut output_layout = "QuadView".to_string();
@@ -3933,40 +3884,10 @@ where
         "NoFrameAvailable".to_string(),
     ];
     let mut slot_diagnostics = std::array::from_fn(|slot_index| {
-        format_four_view_preview_slot_diagnostic(&FourViewPreviewSlotDiagnosticSummary {
+        format_four_view_preview_slot_diagnostic(&unobserved_four_view_preview_slot_diagnostic(
             slot_index,
-            client_id: slots[slot_index].client_id.clone(),
-            run_id: slots[slot_index].run_id.clone(),
-            request_id: None,
-            actual_pipe_path: None,
-            handoff_response_kind: None,
-            parse_error: None,
-            io_error: None,
-            response_payload_len: None,
-            frame_id: None,
-            frame_payload_len: None,
-            frame_is_keyframe: None,
-            handoff_no_frame_reason: None,
-            decodable_source: None,
-            retained_keyframe_available: None,
-            retained_keyframe_frame_id: None,
-            decode_error: None,
-            decode_input_payload_len: None,
-            decode_expected_width: None,
-            decode_expected_height: None,
-            decode_expected_pixel_format: None,
-            decode_expected_rawvideo_len: None,
-            decoded_stdout_len: None,
-            ffmpeg_exit_status: None,
-            ffmpeg_stderr_summary: None,
-            payload_has_sps: None,
-            payload_has_pps: None,
-            payload_has_idr: None,
-            payload_has_non_idr_vcl: None,
-            payload_nal_kinds: None,
-            render_input_kind: "Unobserved",
-            final_slot_result_kind: "NoFrameAvailable",
-        })
+            &slots[slot_index],
+        ))
     });
     let mut clean_output_render_result_kind = match current_view_state {
         SwitcherFourViewControlledPreviewViewState::AllView => "NoRenderableQuadView".to_string(),
@@ -5715,6 +5636,15 @@ fn build_four_view_preview_slot_diagnostic(
     let runtime = request_output.and_then(|output| output.runtime.as_ref());
     let response = runtime.and_then(|value| value.response.as_ref());
     let observation_result = observation.map(|value| &value.result);
+    let handoff_response_kind = match response {
+        Some(response) => Some(format_handoff_response_kind(response)),
+        None => match observation_result {
+            Some(SwitcherQueuedFrameHandoffResult::FrameRead { .. }) => Some("FrameRead"),
+            Some(SwitcherQueuedFrameHandoffResult::NoFrameAvailable { .. }) => Some("NoFrame"),
+            Some(SwitcherQueuedFrameHandoffResult::HandoffError { .. }) => Some("HandoffError"),
+            None => None,
+        },
+    };
     let (frame_id, frame_payload_len, frame_is_keyframe) = match response {
         Some(stream_sync_net_core::ServerSwitcherQueuedFrameHandoffResponse::FrameRead {
             frame,
@@ -5782,6 +5712,23 @@ fn build_four_view_preview_slot_diagnostic(
     let payload_summary = frame_payload
         .map(|payload| SwitcherH264AnnexBPayloadInspectionBoundary.inspect_payload(payload));
     let decode_failure = four_view_preview_slot_decode_failure(render_slot);
+    let decode_attempted = Some(four_view_preview_slot_decode_attempted(render_slot));
+    let target_selection_result =
+        format_four_view_real_handoff_scheduler_slot_kind(scheduler_result);
+    let (selected_frame_available, selected_frame_id) = match scheduler_result {
+        SwitcherSingleClientTargetTimeHandoffSourceResult::Selected(selected) => {
+            (Some(true), Some(selected.frame.frame_id))
+        }
+        _ => (Some(false), None),
+    };
+    let selected_frame_source = if selected_frame_available == Some(true) {
+        decodable_source.clone()
+    } else {
+        None
+    };
+    let renderable_frame_available = Some(four_view_preview_slot_renderable_frame_available(
+        render_slot,
+    ));
 
     FourViewPreviewSlotDiagnosticSummary {
         slot_index,
@@ -5789,7 +5736,7 @@ fn build_four_view_preview_slot_diagnostic(
         run_id: slot.run_id.clone(),
         request_id: request_output.map(|output| output.summary.request_id),
         actual_pipe_path: request_output.and_then(|output| output.summary.actual_pipe_path.clone()),
-        handoff_response_kind: response.map(format_handoff_response_kind),
+        handoff_response_kind,
         parse_error: runtime
             .and_then(|value| value.parse_error.clone())
             .or_else(|| request_output.and_then(|output| output.summary.local_error.clone())),
@@ -5802,6 +5749,12 @@ fn build_four_view_preview_slot_diagnostic(
         decodable_source,
         retained_keyframe_available,
         retained_keyframe_frame_id,
+        decode_attempted,
+        decode_skipped_reason: if decode_attempted == Some(false) {
+            four_view_preview_slot_decode_skipped_reason(render_slot)
+        } else {
+            None
+        },
         decode_error: decode_failure
             .as_ref()
             .map(|failure| failure.message.clone()),
@@ -5841,8 +5794,18 @@ fn build_four_view_preview_slot_diagnostic(
         payload_nal_kinds: payload_summary
             .as_ref()
             .map(format_switcher_payload_nal_kinds),
+        renderable_frame_available,
+        renderable_frame_missing_reason: if renderable_frame_available == Some(false) {
+            four_view_preview_slot_renderable_frame_missing_reason(render_slot)
+        } else {
+            None
+        },
+        selected_frame_available,
+        selected_frame_id,
+        selected_frame_source,
+        target_selection_result,
         render_input_kind: format_four_view_render_input_kind(render_slot),
-        final_slot_result_kind: format_four_view_real_handoff_scheduler_slot_kind(scheduler_result),
+        final_slot_result_kind: target_selection_result,
     }
 }
 
@@ -5850,7 +5813,7 @@ fn format_four_view_preview_slot_diagnostic(
     diagnostic: &FourViewPreviewSlotDiagnosticSummary,
 ) -> String {
     format!(
-        "{}:client_id={},run_id={},request_id={},actual_pipe_path={},handoff_response_kind={},parse_error={},io_error={},response_payload_len={},frame_id={},frame_payload_len={},frame_is_keyframe={},handoff_no_frame_reason={},decodable_source={},retained_keyframe_available={},retained_keyframe_frame_id={},decode_error={},decode_input_payload_len={},decode_expected_width={},decode_expected_height={},decode_expected_pixel_format={},decode_expected_rawvideo_len={},decoded_stdout_len={},ffmpeg_exit_status={},ffmpeg_stderr_summary={},payload_has_sps={},payload_has_pps={},payload_has_idr={},payload_has_non_idr_vcl={},payload_nal_kinds={},render_input_kind={},final_slot_result_kind={}",
+        "{}:client_id={},run_id={},request_id={},actual_pipe_path={},handoff_response_kind={},parse_error={},io_error={},response_payload_len={},frame_id={},frame_payload_len={},frame_is_keyframe={},handoff_no_frame_reason={},decodable_source={},retained_keyframe_available={},retained_keyframe_frame_id={},selected_frame_available={},selected_frame_id={},selected_frame_source={},target_selection_result={},decode_attempted={},decode_skipped_reason={},decode_error={},decode_input_payload_len={},decode_expected_width={},decode_expected_height={},decode_expected_pixel_format={},decode_expected_rawvideo_len={},decoded_stdout_len={},ffmpeg_exit_status={},ffmpeg_stderr_summary={},payload_has_sps={},payload_has_pps={},payload_has_idr={},payload_has_non_idr_vcl={},payload_nal_kinds={},renderable_frame_available={},renderable_frame_missing_reason={},render_input_kind={},final_slot_result_kind={}",
         diagnostic.slot_index,
         diagnostic.client_id.0,
         diagnostic.run_id.0,
@@ -5872,6 +5835,12 @@ fn format_four_view_preview_slot_diagnostic(
         sanitize_summary_value(diagnostic.decodable_source.as_deref().unwrap_or("none")),
         format_optional_bool(diagnostic.retained_keyframe_available),
         format_optional_u64(diagnostic.retained_keyframe_frame_id),
+        format_optional_bool(diagnostic.selected_frame_available),
+        format_optional_u64(diagnostic.selected_frame_id),
+        sanitize_summary_value(diagnostic.selected_frame_source.as_deref().unwrap_or("none")),
+        diagnostic.target_selection_result,
+        format_optional_bool(diagnostic.decode_attempted),
+        sanitize_summary_value(diagnostic.decode_skipped_reason.as_deref().unwrap_or("none")),
         sanitize_summary_value(diagnostic.decode_error.as_deref().unwrap_or("none")),
         format_optional_usize(diagnostic.decode_input_payload_len),
         format_optional_u32(diagnostic.decode_expected_width),
@@ -5894,6 +5863,13 @@ fn format_four_view_preview_slot_diagnostic(
         format_optional_bool(diagnostic.payload_has_idr),
         format_optional_bool(diagnostic.payload_has_non_idr_vcl),
         sanitize_summary_value(diagnostic.payload_nal_kinds.as_deref().unwrap_or("none")),
+        format_optional_bool(diagnostic.renderable_frame_available),
+        sanitize_summary_value(
+            diagnostic
+                .renderable_frame_missing_reason
+                .as_deref()
+                .unwrap_or("none"),
+        ),
         diagnostic.render_input_kind,
         diagnostic.final_slot_result_kind,
     )
@@ -5936,6 +5912,136 @@ fn four_view_preview_slot_decode_failure(
             ..
         } => Some(failure),
         _ => None,
+    }
+}
+
+fn four_view_preview_slot_decode_attempted(
+    slot: &stream_sync_switcher::SwitcherFourViewHandoffQuadCompositionRenderSlot,
+) -> bool {
+    matches!(
+        slot,
+        stream_sync_switcher::SwitcherFourViewHandoffQuadCompositionRenderSlot::UseUpdatedFrame {
+            ..
+        }
+            | stream_sync_switcher::SwitcherFourViewHandoffQuadCompositionRenderSlot::UseDecodeDeferredPlaceholder {
+                ..
+            }
+            | stream_sync_switcher::SwitcherFourViewHandoffQuadCompositionRenderSlot::UseDecodeFailedPlaceholder {
+                ..
+            }
+    )
+}
+
+fn four_view_preview_slot_decode_skipped_reason(
+    slot: &stream_sync_switcher::SwitcherFourViewHandoffQuadCompositionRenderSlot,
+) -> Option<String> {
+    match slot {
+        stream_sync_switcher::SwitcherFourViewHandoffQuadCompositionRenderSlot::UseUpdatedFrame {
+            ..
+        }
+        | stream_sync_switcher::SwitcherFourViewHandoffQuadCompositionRenderSlot::UseDecodeDeferredPlaceholder {
+            ..
+        }
+        | stream_sync_switcher::SwitcherFourViewHandoffQuadCompositionRenderSlot::UseDecodeFailedPlaceholder {
+            ..
+        } => None,
+        stream_sync_switcher::SwitcherFourViewHandoffQuadCompositionRenderSlot::UseHeldPreviousFrame {
+            ..
+        } => Some("HoldPreviousFrame".to_string()),
+        stream_sync_switcher::SwitcherFourViewHandoffQuadCompositionRenderSlot::UseHeldPreviousFrameWithoutDecoded {
+            ..
+        } => Some("HoldPreviousFrameWithoutDecoded".to_string()),
+        stream_sync_switcher::SwitcherFourViewHandoffQuadCompositionRenderSlot::UseNoDisplayPlaceholder {
+            skipped,
+            ..
+        }
+        | stream_sync_switcher::SwitcherFourViewHandoffQuadCompositionRenderSlot::UseSourceErrorPlaceholder {
+            skipped,
+            ..
+        } => Some(format_four_view_skipped_instruction_reason(skipped).to_string()),
+    }
+}
+
+fn four_view_preview_slot_renderable_frame_available(
+    slot: &stream_sync_switcher::SwitcherFourViewHandoffQuadCompositionRenderSlot,
+) -> bool {
+    matches!(
+        slot,
+        stream_sync_switcher::SwitcherFourViewHandoffQuadCompositionRenderSlot::UseUpdatedFrame {
+            ..
+        }
+            | stream_sync_switcher::SwitcherFourViewHandoffQuadCompositionRenderSlot::UseHeldPreviousFrame {
+                ..
+            }
+    )
+}
+
+fn four_view_preview_slot_renderable_frame_missing_reason(
+    slot: &stream_sync_switcher::SwitcherFourViewHandoffQuadCompositionRenderSlot,
+) -> Option<String> {
+    match slot {
+        stream_sync_switcher::SwitcherFourViewHandoffQuadCompositionRenderSlot::UseUpdatedFrame {
+            ..
+        }
+        | stream_sync_switcher::SwitcherFourViewHandoffQuadCompositionRenderSlot::UseHeldPreviousFrame {
+            ..
+        } => None,
+        stream_sync_switcher::SwitcherFourViewHandoffQuadCompositionRenderSlot::UseHeldPreviousFrameWithoutDecoded {
+            ..
+        } => Some("HeldPreviousFrameWithoutDecoded".to_string()),
+        stream_sync_switcher::SwitcherFourViewHandoffQuadCompositionRenderSlot::UseNoDisplayPlaceholder {
+            skipped,
+            ..
+        } => Some(format!(
+            "NoDisplayPlaceholder:{}",
+            format_four_view_skipped_instruction_reason(skipped)
+        )),
+        stream_sync_switcher::SwitcherFourViewHandoffQuadCompositionRenderSlot::UseSourceErrorPlaceholder {
+            skipped,
+            ..
+        } => Some(format!(
+            "SourceErrorPlaceholder:{}",
+            format_four_view_skipped_instruction_reason(skipped)
+        )),
+        stream_sync_switcher::SwitcherFourViewHandoffQuadCompositionRenderSlot::UseDecodeDeferredPlaceholder {
+            reason,
+            ..
+        } => Some(format!(
+            "DecodeDeferred:{}",
+            format_switcher_h264_decode_deferred_reason(*reason)
+        )),
+        stream_sync_switcher::SwitcherFourViewHandoffQuadCompositionRenderSlot::UseDecodeFailedPlaceholder {
+            ..
+        } => Some("DecodeFailed".to_string()),
+    }
+}
+
+fn format_four_view_skipped_instruction_reason(
+    skipped: &stream_sync_switcher::SwitcherFourViewHandoffSchedulerDecodeRenderSlotInstruction,
+) -> &'static str {
+    match skipped {
+        stream_sync_switcher::SwitcherFourViewHandoffSchedulerDecodeRenderSlotInstruction::RenderFrame {
+            ..
+        } => "RenderFrame",
+        stream_sync_switcher::SwitcherFourViewHandoffSchedulerDecodeRenderSlotInstruction::SkipNoFrameAvailable {
+            ..
+        } => "NoFrameAvailable",
+        stream_sync_switcher::SwitcherFourViewHandoffSchedulerDecodeRenderSlotInstruction::SkipWaitingForFrameAtOrBeforeTarget {
+            ..
+        } => "WaitingForFrameAtOrBeforeTarget",
+        stream_sync_switcher::SwitcherFourViewHandoffSchedulerDecodeRenderSlotInstruction::SkipHandoffError {
+            ..
+        } => "HandoffError",
+    }
+}
+
+fn format_switcher_h264_decode_deferred_reason(
+    reason: SwitcherH264DecodeDeferredReason,
+) -> &'static str {
+    match reason {
+        SwitcherH264DecodeDeferredReason::EmptyPayload => "EmptyPayload",
+        SwitcherH264DecodeDeferredReason::InvalidDimensions => "InvalidDimensions",
+        SwitcherH264DecodeDeferredReason::FfmpegUnavailable => "FfmpegUnavailable",
     }
 }
 
@@ -7708,6 +7814,8 @@ mod tests {
                 decodable_source: Some("retained_keyframe".to_string()),
                 retained_keyframe_available: Some(true),
                 retained_keyframe_frame_id: Some(901),
+                decode_attempted: Some(false),
+                decode_skipped_reason: Some("NoFrameAvailable".to_string()),
                 decode_error: None,
                 decode_input_payload_len: None,
                 decode_expected_width: None,
@@ -7722,7 +7830,15 @@ mod tests {
                 payload_has_idr: None,
                 payload_has_non_idr_vcl: None,
                 payload_nal_kinds: None,
-                render_input_kind: "NoFrameAvailable",
+                renderable_frame_available: Some(false),
+                renderable_frame_missing_reason: Some(
+                    "NoDisplayPlaceholder:NoFrameAvailable".to_string(),
+                ),
+                selected_frame_available: Some(false),
+                selected_frame_id: None,
+                selected_frame_source: None,
+                target_selection_result: "NoFrameAvailable",
+                render_input_kind: "UseNoDisplayPlaceholder",
                 final_slot_result_kind: "NoFrameAvailable",
             },
         );
@@ -7731,6 +7847,135 @@ mod tests {
         assert!(formatted.contains("decodable_source=retained_keyframe"));
         assert!(formatted.contains("retained_keyframe_available=true"));
         assert!(formatted.contains("retained_keyframe_frame_id=901"));
+        assert!(formatted.contains("selected_frame_available=false"));
+        assert!(formatted.contains("target_selection_result=NoFrameAvailable"));
+        assert!(formatted.contains("decode_attempted=false"));
+        assert!(formatted.contains("decode_skipped_reason=NoFrameAvailable"));
+        assert!(formatted.contains("renderable_frame_available=false"));
+        assert!(formatted
+            .contains("renderable_frame_missing_reason=NoDisplayPlaceholder:NoFrameAvailable"));
+    }
+
+    #[test]
+    fn switcher_four_view_two_real_handoff_preview_loop_reports_waiting_decode_skip_diagnostics() {
+        let render_runtime = PersistentFixtureRenderedWindowRuntime::default();
+        let summary = run_four_view_two_real_handoff_preview_loop_with_handoff_runtime_and_sleep(
+            "fixture-pipe",
+            0,
+            ClientId("real-client-0".to_string()),
+            RunId("real-run-0".to_string()),
+            2,
+            ClientId("real-client-1".to_string()),
+            RunId("real-run-1".to_string()),
+            NonZeroU32::new(1).expect("1 should be non-zero"),
+            SwitcherSingleClientQueueSourceMode::PreviewLatestDecodable,
+            TimestampMicros(1_000_000),
+            StubRealQueuedFrameHandoff {
+                result: SwitcherQueuedFrameHandoffResult::FrameRead {
+                    frame: SwitcherSingleViewSelectedEncodedFrame {
+                        client_id: ClientId("real-client-0".to_string()),
+                        run_id: RunId("real-run-0".to_string()),
+                        frame_id: 9,
+                        capture_timestamp: TimestampMicros(1_000_001),
+                        send_timestamp: TimestampMicros(1_000_101),
+                        queued_at: TimestampMicros(2_400_001),
+                        is_keyframe: true,
+                        width: 2,
+                        height: 1,
+                        fps_nominal: 30,
+                        codec: Codec::H264,
+                        encoded_payload_len: 4,
+                        encoded_payload: vec![0, 0, 0, 1],
+                    },
+                    mode: SwitcherSingleClientQueueSourceMode::PreviewLatestDecodable,
+                    remaining_client_queue_len: 0,
+                },
+                calls: RefCell::new(0),
+            },
+            &DeterministicFourViewFixtureDecodeRuntime,
+            &render_runtime,
+            &RecordingCadenceSleepHook::default(),
+        );
+
+        assert_eq!(summary.frames_rendered, 0);
+        assert_eq!(
+            summary.slot_result_kinds[0],
+            "WaitingForFrameAtOrBeforeTarget".to_string()
+        );
+        assert!(summary.slot_diagnostics[0].contains("handoff_response_kind=FrameRead"));
+        assert!(summary.slot_diagnostics[0].contains("frame_is_keyframe=true"));
+        assert!(summary.slot_diagnostics[0].contains("selected_frame_available=false"));
+        assert!(summary.slot_diagnostics[0]
+            .contains("target_selection_result=WaitingForFrameAtOrBeforeTarget"));
+        assert!(summary.slot_diagnostics[0].contains("decode_attempted=false"));
+        assert!(summary.slot_diagnostics[0]
+            .contains("decode_skipped_reason=WaitingForFrameAtOrBeforeTarget"));
+        assert!(summary.slot_diagnostics[0].contains("renderable_frame_available=false"));
+        assert!(summary.slot_diagnostics[0].contains(
+            "renderable_frame_missing_reason=NoDisplayPlaceholder:WaitingForFrameAtOrBeforeTarget"
+        ));
+        assert!(summary.slot_diagnostics[0].contains("render_input_kind=UseNoDisplayPlaceholder"));
+    }
+
+    #[test]
+    fn switcher_four_view_two_real_handoff_preview_loop_recomputes_target_timestamp_per_frame() {
+        let render_runtime = PersistentFixtureRenderedWindowRuntime::default();
+        let mut target_timestamp_calls = 0u32;
+        let summary =
+            super::run_four_view_two_real_handoff_preview_loop_with_handoff_runtime_target_timestamp_hook_and_sleep(
+                "fixture-pipe",
+                0,
+                ClientId("real-client-0".to_string()),
+                RunId("real-run-0".to_string()),
+                2,
+                ClientId("real-client-1".to_string()),
+                RunId("real-run-1".to_string()),
+                NonZeroU32::new(2).expect("2 should be non-zero"),
+                SwitcherSingleClientQueueSourceMode::PreviewLatestDecodable,
+                || {
+                    target_timestamp_calls += 1;
+                    if target_timestamp_calls == 1 {
+                        TimestampMicros(1_000_000)
+                    } else {
+                        TimestampMicros(1_000_004)
+                    }
+                },
+                StubRealQueuedFrameHandoff {
+                    result: SwitcherQueuedFrameHandoffResult::FrameRead {
+                        frame: SwitcherSingleViewSelectedEncodedFrame {
+                            client_id: ClientId("real-client-0".to_string()),
+                            run_id: RunId("real-run-0".to_string()),
+                            frame_id: 11,
+                            capture_timestamp: TimestampMicros(1_000_001),
+                            send_timestamp: TimestampMicros(1_000_101),
+                            queued_at: TimestampMicros(2_400_001),
+                            is_keyframe: true,
+                            width: 2,
+                            height: 1,
+                            fps_nominal: 30,
+                            codec: Codec::H264,
+                            encoded_payload_len: 1,
+                            encoded_payload: vec![0x44],
+                        },
+                        mode: SwitcherSingleClientQueueSourceMode::PreviewLatestDecodable,
+                        remaining_client_queue_len: 0,
+                    },
+                    calls: RefCell::new(0),
+                },
+                &DeterministicFourViewFixtureDecodeRuntime,
+                &render_runtime,
+                &RecordingCadenceSleepHook::default(),
+            );
+
+        assert_eq!(target_timestamp_calls, 2);
+        assert_eq!(summary.frames_attempted, 2);
+        assert_eq!(summary.frames_rendered, 1);
+        assert_eq!(summary.slot_result_kinds[0], "Selected".to_string());
+        assert!(summary.slot_diagnostics[0].contains("selected_frame_available=true"));
+        assert!(summary.slot_diagnostics[0].contains("selected_frame_id=11"));
+        assert!(summary.slot_diagnostics[0].contains("decode_attempted=true"));
+        assert!(summary.slot_diagnostics[0].contains("renderable_frame_available=true"));
+        assert!(summary.slot_diagnostics[0].contains("render_input_kind=UseUpdatedFrame"));
     }
 
     #[test]
