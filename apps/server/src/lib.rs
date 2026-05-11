@@ -20,8 +20,9 @@ use stream_sync_net_core::{
     OutboundQueueStorageDecision, OutboundSendLogContext, OutboundSendLoopEvent,
     OutboundSendLoopTickBoundary, OutboundSendLoopTickPlan, PacketDestination, PacketSource,
     QueuedOutboundItem, SendFailureDisposition, SendFailureKind, SendLogEvent, SendLogStage,
-    ServerSwitcherQueuedFrameHandoffErrorCode, ServerSwitcherQueuedFrameHandoffFrame,
-    ServerSwitcherQueuedFrameHandoffRequest, ServerSwitcherQueuedFrameHandoffResponse,
+    ServerSwitcherQueuedFrameDecodableSource, ServerSwitcherQueuedFrameHandoffErrorCode,
+    ServerSwitcherQueuedFrameHandoffFrame, ServerSwitcherQueuedFrameHandoffRequest,
+    ServerSwitcherQueuedFrameHandoffResponse, ServerSwitcherQueuedFrameNoFrameReason,
     ServerSwitcherQueuedFrameReadMode, UdpSocketIoBoundary, DEFAULT_UDP_PACKET_BUFFER_LEN,
 };
 use stream_sync_protocol::{
@@ -5102,6 +5103,7 @@ pub struct ServerQueuedVideoFrame {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ServerVideoFrameQueueState {
     frames_by_client_id: BTreeMap<String, VecDeque<ServerQueuedVideoFrame>>,
+    retained_keyframe_by_client_run: BTreeMap<String, ServerQueuedVideoFrame>,
 }
 
 impl ServerVideoFrameQueueState {
@@ -5135,6 +5137,26 @@ impl ServerVideoFrameQueueState {
             .filter(move |queued| queued.frame.run_id == *run_id)
     }
 
+    pub fn retained_keyframe_for_client_run(
+        &self,
+        client_id: &ClientId,
+        run_id: &RunId,
+    ) -> Option<&ServerQueuedVideoFrame> {
+        self.retained_keyframe_by_client_run
+            .get(&client_run_scope_key(client_id, run_id))
+    }
+
+    pub fn retained_keyframe_clients(&self) -> usize {
+        self.retained_keyframe_by_client_run.len()
+    }
+
+    pub fn per_client_retained_keyframe_frame_id(&self) -> BTreeMap<String, u64> {
+        self.retained_keyframe_by_client_run
+            .iter()
+            .map(|(key, frame)| (key.clone(), frame.frame.frame_id))
+            .collect()
+    }
+
     pub fn pop_front(&mut self, client_id: &ClientId) -> Option<ServerQueuedVideoFrame> {
         let queue = self.frames_by_client_id.get_mut(&client_id.0)?;
         let frame = queue.pop_front();
@@ -5159,6 +5181,10 @@ impl ServerVideoFrameQueueState {
         }
         frame
     }
+}
+
+fn client_run_scope_key(client_id: &ClientId, run_id: &RunId) -> String {
+    format!("{}/{}", client_id.0, run_id.0)
 }
 
 /// Read mode for the first server-side queue consumption boundary.
@@ -5189,11 +5215,18 @@ pub enum ServerVideoFrameQueueReadResult {
         frame: ServerQueuedVideoFrame,
         mode: ServerVideoFrameQueueReadMode,
         remaining_client_queue_len: usize,
+        decodable_source: ServerSwitcherQueuedFrameDecodableSource,
+        retained_keyframe_available: bool,
+        retained_keyframe_frame_id: Option<u64>,
     },
     NoFrameAvailable {
         client_id: ClientId,
         run_id: RunId,
         client_queue_len: usize,
+        no_frame_reason: ServerSwitcherQueuedFrameNoFrameReason,
+        decodable_source: ServerSwitcherQueuedFrameDecodableSource,
+        retained_keyframe_available: bool,
+        retained_keyframe_frame_id: Option<u64>,
     },
 }
 
@@ -5212,23 +5245,52 @@ impl ServerVideoFrameQueueReadBoundary {
         state: &mut ServerVideoFrameQueueState,
         input: ServerVideoFrameQueueReadInput,
     ) -> ServerVideoFrameQueueReadResult {
-        let frame = match input.mode {
-            ServerVideoFrameQueueReadMode::InspectOldest => state
-                .frames_for_client_run(&input.client_id, &input.run_id)
-                .next()
-                .cloned(),
-            ServerVideoFrameQueueReadMode::InspectLatest => state
-                .frames_for_client_run(&input.client_id, &input.run_id)
-                .last()
-                .cloned(),
-            ServerVideoFrameQueueReadMode::InspectLatestDecodable => state
-                .frames_for_client_run(&input.client_id, &input.run_id)
-                .filter(|queued| queued.frame.is_keyframe)
-                .last()
-                .cloned(),
-            ServerVideoFrameQueueReadMode::DequeueOldest => {
-                state.pop_front_for_client_run(&input.client_id, &input.run_id)
+        let client_queue_len = state.client_queue_len(&input.client_id);
+        let run_queue_len = state
+            .frames_for_client_run(&input.client_id, &input.run_id)
+            .count();
+        let retained_keyframe = state
+            .retained_keyframe_for_client_run(&input.client_id, &input.run_id)
+            .cloned();
+        let retained_keyframe_available = retained_keyframe.is_some();
+        let retained_keyframe_frame_id =
+            retained_keyframe.as_ref().map(|frame| frame.frame.frame_id);
+        let (frame, decodable_source) = match input.mode {
+            ServerVideoFrameQueueReadMode::InspectOldest => (
+                state
+                    .frames_for_client_run(&input.client_id, &input.run_id)
+                    .next()
+                    .cloned(),
+                ServerSwitcherQueuedFrameDecodableSource::None,
+            ),
+            ServerVideoFrameQueueReadMode::InspectLatest => (
+                state
+                    .frames_for_client_run(&input.client_id, &input.run_id)
+                    .last()
+                    .cloned(),
+                ServerSwitcherQueuedFrameDecodableSource::None,
+            ),
+            ServerVideoFrameQueueReadMode::InspectLatestDecodable => {
+                let queue_frame = state
+                    .frames_for_client_run(&input.client_id, &input.run_id)
+                    .filter(|queued| queued.frame.is_keyframe)
+                    .last()
+                    .cloned();
+                match queue_frame {
+                    Some(frame) => (Some(frame), ServerSwitcherQueuedFrameDecodableSource::Queue),
+                    None => match retained_keyframe {
+                        Some(frame) => (
+                            Some(frame),
+                            ServerSwitcherQueuedFrameDecodableSource::RetainedKeyframe,
+                        ),
+                        None => (None, ServerSwitcherQueuedFrameDecodableSource::None),
+                    },
+                }
             }
+            ServerVideoFrameQueueReadMode::DequeueOldest => (
+                state.pop_front_for_client_run(&input.client_id, &input.run_id),
+                ServerSwitcherQueuedFrameDecodableSource::None,
+            ),
         };
 
         match frame {
@@ -5236,11 +5298,22 @@ impl ServerVideoFrameQueueReadBoundary {
                 frame,
                 mode: input.mode,
                 remaining_client_queue_len: state.client_queue_len(&input.client_id),
+                decodable_source,
+                retained_keyframe_available,
+                retained_keyframe_frame_id,
             },
             None => ServerVideoFrameQueueReadResult::NoFrameAvailable {
-                client_queue_len: state.client_queue_len(&input.client_id),
+                client_queue_len,
                 client_id: input.client_id,
                 run_id: input.run_id,
+                no_frame_reason: determine_no_frame_reason(
+                    input.mode,
+                    client_queue_len,
+                    run_queue_len,
+                ),
+                decodable_source: ServerSwitcherQueuedFrameDecodableSource::None,
+                retained_keyframe_available,
+                retained_keyframe_frame_id,
             },
         }
     }
@@ -5256,6 +5329,25 @@ impl ServerVideoFrameQueueReadBoundary {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
 pub struct ServerSwitcherQueuedFrameHandoffHandlerBoundary {
     queue_reader: ServerVideoFrameQueueReadBoundary,
+}
+
+fn determine_no_frame_reason(
+    mode: ServerVideoFrameQueueReadMode,
+    client_queue_len: usize,
+    run_queue_len: usize,
+) -> ServerSwitcherQueuedFrameNoFrameReason {
+    if client_queue_len == 0 {
+        return ServerSwitcherQueuedFrameNoFrameReason::NoFramesQueuedForClient;
+    }
+    if run_queue_len == 0 {
+        return ServerSwitcherQueuedFrameNoFrameReason::NoFramesQueuedForRequestedRun;
+    }
+    match mode {
+        ServerVideoFrameQueueReadMode::InspectLatestDecodable => {
+            ServerSwitcherQueuedFrameNoFrameReason::NoDecodableFrameAvailable
+        }
+        _ => ServerSwitcherQueuedFrameNoFrameReason::NoFramesQueuedForRequestedRun,
+    }
 }
 
 impl ServerSwitcherQueuedFrameHandoffHandlerBoundary {
@@ -5284,10 +5376,16 @@ impl ServerSwitcherQueuedFrameHandoffHandlerBoundary {
             ServerVideoFrameQueueReadResult::FrameAvailable {
                 frame,
                 remaining_client_queue_len,
+                decodable_source,
+                retained_keyframe_available,
+                retained_keyframe_frame_id,
                 ..
             } => ServerSwitcherQueuedFrameHandoffResponse::FrameRead {
                 request_id: request.request_id,
                 remaining_client_queue_len: queue_len_to_u32(remaining_client_queue_len),
+                decodable_source,
+                retained_keyframe_available,
+                retained_keyframe_frame_id,
                 frame: ServerSwitcherQueuedFrameHandoffFrame {
                     client_id: frame.frame.client_id,
                     run_id: frame.frame.run_id,
@@ -5308,12 +5406,20 @@ impl ServerSwitcherQueuedFrameHandoffHandlerBoundary {
                 client_id,
                 run_id,
                 client_queue_len,
+                no_frame_reason,
+                decodable_source,
+                retained_keyframe_available,
+                retained_keyframe_frame_id,
             } => ServerSwitcherQueuedFrameHandoffResponse::NoFrame {
                 request_id: request.request_id,
                 client_id,
                 run_id,
                 read_mode: request.read_mode,
                 client_queue_len: queue_len_to_u32(client_queue_len),
+                no_frame_reason,
+                decodable_source,
+                retained_keyframe_available,
+                retained_keyframe_frame_id,
             },
         }
     }
@@ -5377,6 +5483,9 @@ pub struct ServerSwitcherNamedPipeRequestServeSummary {
     pub frame_id: Option<u64>,
     pub frame_payload_len: Option<u32>,
     pub no_frame_reason: Option<String>,
+    pub decodable_source: ServerSwitcherQueuedFrameDecodableSource,
+    pub retained_keyframe_available: bool,
+    pub retained_keyframe_frame_id: Option<u64>,
     pub handoff_error: Option<stream_sync_net_core::ServerSwitcherQueuedFrameHandoffErrorCode>,
 }
 
@@ -5733,6 +5842,9 @@ fn summarize_named_pipe_request_output(
             request_id,
             frame,
             remaining_client_queue_len,
+            decodable_source,
+            retained_keyframe_available,
+            retained_keyframe_frame_id,
             ..
         } => ServerSwitcherNamedPipeRequestServeSummary {
             request_id: *request_id,
@@ -5744,6 +5856,9 @@ fn summarize_named_pipe_request_output(
             frame_id: Some(frame.frame_id),
             frame_payload_len: Some(frame.encoded_payload_len),
             no_frame_reason: None,
+            decodable_source: *decodable_source,
+            retained_keyframe_available: *retained_keyframe_available,
+            retained_keyframe_frame_id: *retained_keyframe_frame_id,
             handoff_error: None,
         },
         ServerSwitcherQueuedFrameHandoffResponse::NoFrame {
@@ -5751,6 +5866,10 @@ fn summarize_named_pipe_request_output(
             client_id,
             run_id,
             client_queue_len,
+            no_frame_reason,
+            decodable_source,
+            retained_keyframe_available,
+            retained_keyframe_frame_id,
             ..
         } => ServerSwitcherNamedPipeRequestServeSummary {
             request_id: *request_id,
@@ -5761,11 +5880,10 @@ fn summarize_named_pipe_request_output(
             selected_run_id: run_id.clone(),
             frame_id: None,
             frame_payload_len: None,
-            no_frame_reason: Some(if output.queue_len_before_read == 0 {
-                "NoFramesQueuedForClient".to_string()
-            } else {
-                "NoFramesQueuedForRequestedRun".to_string()
-            }),
+            no_frame_reason: Some(format!("{no_frame_reason:?}")),
+            decodable_source: *decodable_source,
+            retained_keyframe_available: *retained_keyframe_available,
+            retained_keyframe_frame_id: *retained_keyframe_frame_id,
             handoff_error: None,
         },
         ServerSwitcherQueuedFrameHandoffResponse::HandoffError { request_id, error } => {
@@ -5779,6 +5897,9 @@ fn summarize_named_pipe_request_output(
                 frame_id: None,
                 frame_payload_len: None,
                 no_frame_reason: None,
+                decodable_source: ServerSwitcherQueuedFrameDecodableSource::None,
+                retained_keyframe_available: false,
+                retained_keyframe_frame_id: None,
                 handoff_error: Some(*error),
             }
         }
@@ -5903,6 +6024,12 @@ impl ServerVideoFrameQueueStorageBoundary {
             payload_len: input.payload_len,
             queued_at,
         };
+        if queued.frame.is_keyframe {
+            state.retained_keyframe_by_client_run.insert(
+                client_run_scope_key(&queued.frame.client_id, &queued.frame.run_id),
+                queued.clone(),
+            );
+        }
         queue.push_back(queued.clone());
 
         ServerVideoFrameQueueStorageResult::Stored {
@@ -15935,6 +16062,9 @@ shared_token = "secret"
             frame,
             mode,
             remaining_client_queue_len,
+            decodable_source,
+            retained_keyframe_available,
+            retained_keyframe_frame_id,
         } = result
         else {
             panic!("oldest run frame should be readable");
@@ -15943,6 +16073,12 @@ shared_token = "secret"
         assert_eq!(frame.frame.frame_id, 1);
         assert_eq!(mode, ServerVideoFrameQueueReadMode::InspectOldest);
         assert_eq!(remaining_client_queue_len, 3);
+        assert_eq!(
+            decodable_source,
+            ServerSwitcherQueuedFrameDecodableSource::None
+        );
+        assert!(retained_keyframe_available);
+        assert_eq!(retained_keyframe_frame_id, Some(2));
         assert_eq!(state.client_queue_len(&ClientId("client-1".to_string())), 3);
     }
 
@@ -15985,13 +16121,162 @@ shared_token = "secret"
             },
         );
 
-        let ServerVideoFrameQueueReadResult::FrameAvailable { frame, mode, .. } = result else {
+        let ServerVideoFrameQueueReadResult::FrameAvailable {
+            frame,
+            mode,
+            decodable_source,
+            retained_keyframe_available,
+            retained_keyframe_frame_id,
+            ..
+        } = result
+        else {
             panic!("latest decodable run frame should be readable");
         };
         assert_eq!(frame.frame.frame_id, 1);
         assert!(frame.frame.is_keyframe);
         assert_eq!(mode, ServerVideoFrameQueueReadMode::InspectLatestDecodable);
+        assert_eq!(
+            decodable_source,
+            ServerSwitcherQueuedFrameDecodableSource::Queue
+        );
+        assert!(retained_keyframe_available);
+        assert_eq!(retained_keyframe_frame_id, Some(1));
         assert_eq!(state.total_len(), 3);
+    }
+
+    #[test]
+    fn video_frame_queue_state_retains_latest_keyframe_per_client_run() {
+        let mut state = ServerVideoFrameQueueState::default();
+        store_video_frame_for_read_test_with_keyframe_and_policy(
+            &mut state,
+            "client-1",
+            "run-1",
+            1,
+            true,
+            ServerVideoFrameQueuePolicy {
+                max_frames_per_client: 2,
+            },
+        );
+        store_video_frame_for_read_test_with_keyframe_and_policy(
+            &mut state,
+            "client-1",
+            "run-1",
+            2,
+            false,
+            ServerVideoFrameQueuePolicy {
+                max_frames_per_client: 2,
+            },
+        );
+        store_video_frame_for_read_test_with_keyframe_and_policy(
+            &mut state,
+            "client-1",
+            "run-1",
+            3,
+            false,
+            ServerVideoFrameQueuePolicy {
+                max_frames_per_client: 2,
+            },
+        );
+        store_video_frame_for_read_test_with_keyframe_and_policy(
+            &mut state,
+            "client-2",
+            "run-2",
+            9,
+            true,
+            ServerVideoFrameQueuePolicy {
+                max_frames_per_client: 2,
+            },
+        );
+
+        assert_eq!(state.total_len(), 3);
+        assert_eq!(state.retained_keyframe_clients(), 2);
+        assert_eq!(
+            state.per_client_retained_keyframe_frame_id(),
+            BTreeMap::from([
+                ("client-1/run-1".to_string(), 1_u64),
+                ("client-2/run-2".to_string(), 9_u64),
+            ])
+        );
+    }
+
+    #[test]
+    fn video_frame_queue_read_boundary_falls_back_to_retained_keyframe_when_queue_cap_drops_it() {
+        let mut state = ServerVideoFrameQueueState::default();
+        let policy = ServerVideoFrameQueuePolicy {
+            max_frames_per_client: 2,
+        };
+        store_video_frame_for_read_test_with_keyframe_and_policy(
+            &mut state, "client-1", "run-1", 1, true, policy,
+        );
+        store_video_frame_for_read_test_with_keyframe_and_policy(
+            &mut state, "client-1", "run-1", 2, false, policy,
+        );
+        store_video_frame_for_read_test_with_keyframe_and_policy(
+            &mut state, "client-1", "run-1", 3, false, policy,
+        );
+
+        let result = ServerVideoFrameQueueReadBoundary.read(
+            &mut state,
+            ServerVideoFrameQueueReadInput {
+                client_id: ClientId("client-1".to_string()),
+                run_id: RunId("run-1".to_string()),
+                mode: ServerVideoFrameQueueReadMode::InspectLatestDecodable,
+            },
+        );
+
+        let ServerVideoFrameQueueReadResult::FrameAvailable {
+            frame,
+            decodable_source,
+            retained_keyframe_available,
+            retained_keyframe_frame_id,
+            remaining_client_queue_len,
+            ..
+        } = result
+        else {
+            panic!("retained keyframe should satisfy latest decodable read");
+        };
+        assert_eq!(frame.frame.frame_id, 1);
+        assert_eq!(
+            decodable_source,
+            ServerSwitcherQueuedFrameDecodableSource::RetainedKeyframe
+        );
+        assert!(retained_keyframe_available);
+        assert_eq!(retained_keyframe_frame_id, Some(1));
+        assert_eq!(remaining_client_queue_len, 2);
+        let remaining: Vec<u64> = state
+            .frames_for_client(&ClientId("client-1".to_string()))
+            .map(|queued| queued.frame.frame_id)
+            .collect();
+        assert_eq!(remaining, vec![2, 3]);
+    }
+
+    #[test]
+    fn video_frame_queue_read_boundary_reports_no_decodable_frame_when_none_is_retained() {
+        let mut state = ServerVideoFrameQueueState::default();
+        store_video_frame_for_read_test_with_keyframe(&mut state, "client-1", "run-1", 2, false);
+        store_video_frame_for_read_test_with_keyframe(&mut state, "client-1", "run-1", 3, false);
+
+        let result = ServerVideoFrameQueueReadBoundary.read(
+            &mut state,
+            ServerVideoFrameQueueReadInput {
+                client_id: ClientId("client-1".to_string()),
+                run_id: RunId("run-1".to_string()),
+                mode: ServerVideoFrameQueueReadMode::InspectLatestDecodable,
+            },
+        );
+
+        assert_eq!(
+            result,
+            ServerVideoFrameQueueReadResult::NoFrameAvailable {
+                client_id: ClientId("client-1".to_string()),
+                run_id: RunId("run-1".to_string()),
+                client_queue_len: 2,
+                no_frame_reason: ServerSwitcherQueuedFrameNoFrameReason::NoDecodableFrameAvailable,
+                decodable_source: ServerSwitcherQueuedFrameDecodableSource::None,
+                retained_keyframe_available: false,
+                retained_keyframe_frame_id: None,
+            }
+        );
     }
 
     #[test]
@@ -16015,6 +16300,7 @@ shared_token = "secret"
             frame,
             mode,
             remaining_client_queue_len,
+            ..
         } = result
         else {
             panic!("oldest matching run frame should be dequeued");
@@ -16053,6 +16339,11 @@ shared_token = "secret"
                 client_id: ClientId("client-1".to_string()),
                 run_id: RunId("run-missing".to_string()),
                 client_queue_len: 1,
+                no_frame_reason:
+                    ServerSwitcherQueuedFrameNoFrameReason::NoFramesQueuedForRequestedRun,
+                decodable_source: ServerSwitcherQueuedFrameDecodableSource::None,
+                retained_keyframe_available: false,
+                retained_keyframe_frame_id: None,
             }
         );
         assert_eq!(state.total_len(), 1);
@@ -16086,6 +16377,9 @@ shared_token = "secret"
         let ServerSwitcherQueuedFrameHandoffResponse::FrameRead {
             request_id,
             remaining_client_queue_len,
+            decodable_source,
+            retained_keyframe_available,
+            retained_keyframe_frame_id,
             frame,
         } = response
         else {
@@ -16093,6 +16387,12 @@ shared_token = "secret"
         };
         assert_eq!(request_id, 44);
         assert_eq!(remaining_client_queue_len, 1);
+        assert_eq!(
+            decodable_source,
+            ServerSwitcherQueuedFrameDecodableSource::None
+        );
+        assert!(retained_keyframe_available);
+        assert_eq!(retained_keyframe_frame_id, Some(7));
         assert_eq!(frame.client_id, ClientId("client-1".to_string()));
         assert_eq!(frame.run_id, RunId("run-meta".to_string()));
         assert_eq!(frame.frame_id, 7);
@@ -16127,11 +16427,103 @@ shared_token = "secret"
             },
         );
 
-        let ServerSwitcherQueuedFrameHandoffResponse::FrameRead { frame, .. } = response else {
+        let ServerSwitcherQueuedFrameHandoffResponse::FrameRead {
+            frame,
+            decodable_source,
+            retained_keyframe_available,
+            retained_keyframe_frame_id,
+            ..
+        } = response
+        else {
             panic!("latest decodable handoff request should return a keyframe");
         };
         assert_eq!(frame.frame_id, 1);
         assert!(frame.is_keyframe);
+        assert_eq!(
+            decodable_source,
+            ServerSwitcherQueuedFrameDecodableSource::Queue
+        );
+        assert!(retained_keyframe_available);
+        assert_eq!(retained_keyframe_frame_id, Some(1));
+    }
+
+    #[test]
+    fn server_switcher_handoff_handler_returns_retained_keyframe_when_queue_has_no_keyframe() {
+        let mut state = ServerVideoFrameQueueState::default();
+        let policy = ServerVideoFrameQueuePolicy {
+            max_frames_per_client: 2,
+        };
+        store_video_frame_for_read_test_with_keyframe_and_policy(
+            &mut state, "client-1", "run-1", 1, true, policy,
+        );
+        store_video_frame_for_read_test_with_keyframe_and_policy(
+            &mut state, "client-1", "run-1", 2, false, policy,
+        );
+        store_video_frame_for_read_test_with_keyframe_and_policy(
+            &mut state, "client-1", "run-1", 3, false, policy,
+        );
+
+        let response = ServerSwitcherQueuedFrameHandoffHandlerBoundary::default().handle_request(
+            &mut state,
+            ServerSwitcherQueuedFrameHandoffRequest {
+                handoff_version: 1,
+                request_id: 78,
+                client_id: ClientId("client-1".to_string()),
+                run_id: RunId("run-1".to_string()),
+                read_mode: ServerSwitcherQueuedFrameReadMode::InspectLatestDecodable,
+            },
+        );
+
+        let ServerSwitcherQueuedFrameHandoffResponse::FrameRead {
+            frame,
+            decodable_source,
+            retained_keyframe_available,
+            retained_keyframe_frame_id,
+            ..
+        } = response
+        else {
+            panic!("retained keyframe should satisfy latest decodable handoff read");
+        };
+        assert_eq!(frame.frame_id, 1);
+        assert_eq!(
+            decodable_source,
+            ServerSwitcherQueuedFrameDecodableSource::RetainedKeyframe
+        );
+        assert!(retained_keyframe_available);
+        assert_eq!(retained_keyframe_frame_id, Some(1));
+    }
+
+    #[test]
+    fn server_switcher_handoff_handler_reports_no_decodable_frame_reason_when_none_is_retained() {
+        let mut state = ServerVideoFrameQueueState::default();
+        store_video_frame_for_read_test_with_keyframe(&mut state, "client-1", "run-1", 2, false);
+        store_video_frame_for_read_test_with_keyframe(&mut state, "client-1", "run-1", 3, false);
+
+        let response = ServerSwitcherQueuedFrameHandoffHandlerBoundary::default().handle_request(
+            &mut state,
+            ServerSwitcherQueuedFrameHandoffRequest {
+                handoff_version: 1,
+                request_id: 79,
+                client_id: ClientId("client-1".to_string()),
+                run_id: RunId("run-1".to_string()),
+                read_mode: ServerSwitcherQueuedFrameReadMode::InspectLatestDecodable,
+            },
+        );
+
+        assert_eq!(
+            response,
+            ServerSwitcherQueuedFrameHandoffResponse::NoFrame {
+                request_id: 79,
+                client_id: ClientId("client-1".to_string()),
+                run_id: RunId("run-1".to_string()),
+                read_mode: ServerSwitcherQueuedFrameReadMode::InspectLatestDecodable,
+                client_queue_len: 2,
+                no_frame_reason: ServerSwitcherQueuedFrameNoFrameReason::NoDecodableFrameAvailable,
+                decodable_source: ServerSwitcherQueuedFrameDecodableSource::None,
+                retained_keyframe_available: false,
+                retained_keyframe_frame_id: None,
+            }
+        );
     }
 
     #[test]
@@ -16158,6 +16550,11 @@ shared_token = "secret"
                 run_id: RunId("run-missing".to_string()),
                 read_mode: ServerSwitcherQueuedFrameReadMode::DequeueOldest,
                 client_queue_len: 1,
+                no_frame_reason:
+                    ServerSwitcherQueuedFrameNoFrameReason::NoFramesQueuedForRequestedRun,
+                decodable_source: ServerSwitcherQueuedFrameDecodableSource::None,
+                retained_keyframe_available: false,
+                retained_keyframe_frame_id: None,
             }
         );
         assert_eq!(state.total_len(), 1);
@@ -16231,6 +16628,7 @@ shared_token = "secret"
             request_id,
             remaining_client_queue_len,
             frame,
+            ..
         } = response
         else {
             panic!("server named-pipe runtime should return FrameRead");
@@ -16256,6 +16654,9 @@ shared_token = "secret"
                     0 => ServerSwitcherQueuedFrameHandoffResponse::FrameRead {
                         request_id,
                         remaining_client_queue_len: 2,
+                        decodable_source: ServerSwitcherQueuedFrameDecodableSource::None,
+                        retained_keyframe_available: true,
+                        retained_keyframe_frame_id: Some(11),
                         frame: ServerSwitcherQueuedFrameHandoffFrame {
                             client_id: ClientId("client-1".to_string()),
                             run_id: RunId("run-1".to_string()),
@@ -16278,6 +16679,11 @@ shared_token = "secret"
                         run_id: RunId("run-1".to_string()),
                         read_mode: ServerSwitcherQueuedFrameReadMode::InspectLatest,
                         client_queue_len: 0,
+                        no_frame_reason:
+                            ServerSwitcherQueuedFrameNoFrameReason::NoFramesQueuedForClient,
+                        decodable_source: ServerSwitcherQueuedFrameDecodableSource::None,
+                        retained_keyframe_available: false,
+                        retained_keyframe_frame_id: None,
                     },
                     _ => ServerSwitcherQueuedFrameHandoffResponse::HandoffError {
                         request_id,
@@ -16385,6 +16791,12 @@ shared_token = "secret"
                             run_id: RunId("run-a".to_string()),
                             read_mode: ServerSwitcherQueuedFrameReadMode::InspectLatest,
                             client_queue_len: 0,
+                            no_frame_reason:
+                                ServerSwitcherQueuedFrameNoFrameReason::NoFramesQueuedForClient,
+                            decodable_source:
+                                ServerSwitcherQueuedFrameDecodableSource::None,
+                            retained_keyframe_available: false,
+                            retained_keyframe_frame_id: None,
                         },
                         queue_len_before_read: 0,
                     }),
@@ -16447,6 +16859,9 @@ shared_token = "secret"
                                 frame_id: Some(2),
                                 frame_payload_len: Some(3),
                                 no_frame_reason: None,
+                                decodable_source: ServerSwitcherQueuedFrameDecodableSource::None,
+                                retained_keyframe_available: false,
+                                retained_keyframe_frame_id: None,
                                 handoff_error: None,
                             },
                             ServerSwitcherNamedPipeRequestServeSummary {
@@ -16459,6 +16874,9 @@ shared_token = "secret"
                                 frame_id: Some(2),
                                 frame_payload_len: Some(3),
                                 no_frame_reason: None,
+                                decodable_source: ServerSwitcherQueuedFrameDecodableSource::None,
+                                retained_keyframe_available: false,
+                                retained_keyframe_frame_id: None,
                                 handoff_error: None,
                             },
                         ],
@@ -23336,6 +23754,24 @@ shared_token = "presented-secret"
         frame_id: u64,
         is_keyframe: bool,
     ) {
+        store_video_frame_for_read_test_with_keyframe_and_policy(
+            queue_state,
+            client_id,
+            run_id,
+            frame_id,
+            is_keyframe,
+            ServerVideoFrameQueuePolicy::default(),
+        );
+    }
+
+    fn store_video_frame_for_read_test_with_keyframe_and_policy(
+        queue_state: &mut ServerVideoFrameQueueState,
+        client_id: &str,
+        run_id: &str,
+        frame_id: u64,
+        is_keyframe: bool,
+        policy: ServerVideoFrameQueuePolicy,
+    ) {
         let source = packet_source();
         let mut input = video_handler_input(client_id, source);
         input.registered_packet.frame.run_id = RunId(run_id.to_string());
@@ -23347,7 +23783,7 @@ shared_token = "presented-secret"
             queue_state,
             input,
             TimestampMicros(3_000_000 + frame_id),
-            ServerVideoFrameQueuePolicy::default(),
+            policy,
         );
         assert!(matches!(
             result,

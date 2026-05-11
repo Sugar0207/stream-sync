@@ -2636,6 +2636,9 @@ Current implementation status:
   - `preview-latest-decodable`
   - this asks the server handoff path for the latest queued frame with
     `VideoFrame.is_keyframe=true`
+  - if the bounded queue window is shorter than the encoder GOP, the server now
+    also retains the latest keyframe per `client_id + run_id` and can fall back
+    to that retained keyframe for decodable preview reads
   - this is intended only for the current one-shot preview/decode validation
     slice
 - the default bounded path is still the existing per-frame encoder runtime;

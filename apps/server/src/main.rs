@@ -1700,6 +1700,8 @@ fn format_receive_auth_video_queue_runtime_summary(
     let per_client_direct_frames = video_summary
         .map(format_per_client_direct_frames)
         .unwrap_or_else(|| "none".to_string());
+    let per_client_retained_keyframe_frame_id =
+        format_per_client_retained_keyframe_frame_id(&outcome.video_queue_state);
     let stop_reason = match (&outcome.video, video_summary) {
         (
             stream_sync_server::ServerReceiveAuthVideoQueueOnceVideoOutcome::NotReceivedAuthRejected,
@@ -1724,7 +1726,7 @@ fn format_receive_auth_video_queue_runtime_summary(
     let validation_ready = receive_auth_video_queue_validation_ready(policy, video_summary);
 
     format!(
-        "receive auth/video queue runtime handled auth on {}; auth_accepted={} auth_reason={:?} auth_status={} auth_operational_reason={} registration_status={} registration_reason={} client_id={} run_id={} video={} queued={} queue_len={} dropped_oldest={} registered_clients={} manual_max_video_packets={} manual_receive_timeout_ms={} manual_expected_reassembled_frames={} manual_stop_after_expected_reassembled_frames={} manual_expected_reassembled_clients={} manual_expected_reassembled_frames_per_client={} manual_receive_buffer_requested_bytes={} manual_receive_buffer_effective_bytes={} manual_receive_buffer_set_error={} manual_receive_buffer_read_error={} packets_received={} fragments_received={} frames_reassembled={} frames_queued={} direct_frames_queued={} rejected_packets={} rejected_fragments={} duplicate_fragments={} non_video_packets={} incomplete_reassembly_frames={} incomplete_frame_progress={} observed_queued_clients={} observed_reassembled_clients={} per_client_queued_frames={} per_client_direct_frames={} per_client_reassembled_frames={} validation_ready={} ready_reason={} receive_stop_reason={} stop_reason={} receive_timed_out={} max_packets_reached={}",
+        "receive auth/video queue runtime handled auth on {}; auth_accepted={} auth_reason={:?} auth_status={} auth_operational_reason={} registration_status={} registration_reason={} client_id={} run_id={} video={} queued={} queue_len={} dropped_oldest={} registered_clients={} manual_max_video_packets={} manual_receive_timeout_ms={} manual_expected_reassembled_frames={} manual_stop_after_expected_reassembled_frames={} manual_expected_reassembled_clients={} manual_expected_reassembled_frames_per_client={} manual_receive_buffer_requested_bytes={} manual_receive_buffer_effective_bytes={} manual_receive_buffer_set_error={} manual_receive_buffer_read_error={} packets_received={} fragments_received={} frames_reassembled={} frames_queued={} direct_frames_queued={} rejected_packets={} rejected_fragments={} duplicate_fragments={} non_video_packets={} incomplete_reassembly_frames={} incomplete_frame_progress={} observed_queued_clients={} observed_reassembled_clients={} per_client_queued_frames={} per_client_direct_frames={} per_client_reassembled_frames={} retained_keyframe_clients={} per_client_retained_keyframe_frame_id={} validation_ready={} ready_reason={} receive_stop_reason={} stop_reason={} receive_timed_out={} max_packets_reached={}",
         outcome.bind_address,
         decision.accepted,
         decision.reason_code,
@@ -1789,6 +1791,8 @@ fn format_receive_auth_video_queue_runtime_summary(
         per_client_queued_frames,
         per_client_direct_frames,
         per_client_reassembled_frames,
+        outcome.video_queue_state.retained_keyframe_clients(),
+        per_client_retained_keyframe_frame_id,
         validation_ready,
         ready_reason,
         receive_stop_reason,
@@ -1847,6 +1851,49 @@ fn format_per_client_direct_frames(
         .join("|")
 }
 
+fn format_per_client_retained_keyframe_frame_id(
+    queue_state: &stream_sync_server::ServerVideoFrameQueueState,
+) -> String {
+    let frame_ids = queue_state.per_client_retained_keyframe_frame_id();
+    if frame_ids.is_empty() {
+        return "none".to_string();
+    }
+
+    frame_ids
+        .iter()
+        .map(|(scope, frame_id)| format!("{scope}:{frame_id}"))
+        .collect::<Vec<_>>()
+        .join("|")
+}
+
+fn format_handoff_decodable_source(
+    source: stream_sync_net_core::ServerSwitcherQueuedFrameDecodableSource,
+) -> &'static str {
+    match source {
+        stream_sync_net_core::ServerSwitcherQueuedFrameDecodableSource::None => "none",
+        stream_sync_net_core::ServerSwitcherQueuedFrameDecodableSource::Queue => "queue",
+        stream_sync_net_core::ServerSwitcherQueuedFrameDecodableSource::RetainedKeyframe => {
+            "retained_keyframe"
+        }
+    }
+}
+
+fn format_handoff_no_frame_reason(
+    reason: stream_sync_net_core::ServerSwitcherQueuedFrameNoFrameReason,
+) -> &'static str {
+    match reason {
+        stream_sync_net_core::ServerSwitcherQueuedFrameNoFrameReason::NoFramesQueuedForClient => {
+            "NoFramesQueuedForClient"
+        }
+        stream_sync_net_core::ServerSwitcherQueuedFrameNoFrameReason::NoFramesQueuedForRequestedRun => {
+            "NoFramesQueuedForRequestedRun"
+        }
+        stream_sync_net_core::ServerSwitcherQueuedFrameNoFrameReason::NoDecodableFrameAvailable => {
+            "NoDecodableFrameAvailable"
+        }
+    }
+}
+
 #[cfg(windows)]
 fn serve_named_pipe_handoff_once(
     queue_state: &mut stream_sync_server::ServerVideoFrameQueueState,
@@ -1876,10 +1923,13 @@ fn format_named_pipe_handoff_server_summary(
     match &output.response {
         stream_sync_net_core::ServerSwitcherQueuedFrameHandoffResponse::FrameRead {
             remaining_client_queue_len,
+            decodable_source,
+            retained_keyframe_available,
+            retained_keyframe_frame_id,
             frame,
             ..
         } => format!(
-            "server named-pipe handoff once handoff_ready=true pipe_name={} actual_pipe_path={} request_id={} client_id={} run_id={} read_mode={} request_status=decoded response_status=written result_kind=FrameRead queue_len_before_read={} queue_len_after_read={} selected_client_id={} selected_run_id={} frame_id={} capture_timestamp={} send_timestamp={} queued_at={} width={} height={} fps_nominal={} codec={:?} is_keyframe={} frame_payload_len={}",
+            "server named-pipe handoff once handoff_ready=true pipe_name={} actual_pipe_path={} request_id={} client_id={} run_id={} read_mode={} request_status=decoded response_status=written result_kind=FrameRead queue_len_before_read={} queue_len_after_read={} selected_client_id={} selected_run_id={} frame_id={} capture_timestamp={} send_timestamp={} queued_at={} width={} height={} fps_nominal={} codec={:?} is_keyframe={} frame_payload_len={} no_frame_reason=none decodable_source={} retained_keyframe_available={} retained_keyframe_frame_id={}",
             pipe_name,
             actual_pipe_path,
             request.request_id,
@@ -1899,15 +1949,24 @@ fn format_named_pipe_handoff_server_summary(
             frame.fps_nominal,
             frame.codec,
             frame.is_keyframe,
-            frame.encoded_payload_len
+            frame.encoded_payload_len,
+            format_handoff_decodable_source(*decodable_source),
+            retained_keyframe_available,
+            retained_keyframe_frame_id
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "none".to_string())
         ),
         stream_sync_net_core::ServerSwitcherQueuedFrameHandoffResponse::NoFrame {
             client_id,
             run_id,
             client_queue_len,
+            no_frame_reason,
+            decodable_source,
+            retained_keyframe_available,
+            retained_keyframe_frame_id,
             ..
         } => format!(
-            "server named-pipe handoff once handoff_ready=true pipe_name={} actual_pipe_path={} request_id={} client_id={} run_id={} read_mode={} request_status=decoded response_status=written result_kind=NoFrame queue_len_before_read={} queue_len_after_read={} selected_client_id={} selected_run_id={} frame_id=none frame_payload_len=none no_frame_reason={}",
+            "server named-pipe handoff once handoff_ready=true pipe_name={} actual_pipe_path={} request_id={} client_id={} run_id={} read_mode={} request_status=decoded response_status=written result_kind=NoFrame queue_len_before_read={} queue_len_after_read={} selected_client_id={} selected_run_id={} frame_id=none frame_payload_len=none no_frame_reason={} decodable_source={} retained_keyframe_available={} retained_keyframe_frame_id={}",
             pipe_name,
             actual_pipe_path,
             request.request_id,
@@ -1918,11 +1977,12 @@ fn format_named_pipe_handoff_server_summary(
             client_queue_len,
             client_id.0,
             run_id.0,
-            if output.queue_len_before_read == 0 {
-                "NoFramesQueuedForClient"
-            } else {
-                "NoFramesQueuedForRequestedRun"
-            }
+            format_handoff_no_frame_reason(*no_frame_reason),
+            format_handoff_decodable_source(*decodable_source),
+            retained_keyframe_available,
+            retained_keyframe_frame_id
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "none".to_string())
         ),
         stream_sync_net_core::ServerSwitcherQueuedFrameHandoffResponse::HandoffError {
             error,
@@ -1961,6 +2021,8 @@ fn format_named_pipe_handoff_server_ready_line(
     let per_client_direct_frames = video_summary
         .map(format_per_client_direct_frames)
         .unwrap_or_else(|| "none".to_string());
+    let per_client_retained_keyframe_frame_id =
+        format_per_client_retained_keyframe_frame_id(&outcome.video_queue_state);
     let validation_ready = receive_auth_video_queue_validation_ready(policy, video_summary);
     let ready_reason = format_receive_auth_video_queue_ready_reason(policy, video_summary);
     let receive_stop_reason = format_receive_auth_video_queue_reason(
@@ -1969,7 +2031,7 @@ fn format_named_pipe_handoff_server_ready_line(
     );
 
     format!(
-        "server named-pipe handoff bounded ready handoff_ready=true validation_ready={} ready_reason={} receive_stop_reason={} pipe_name={} actual_pipe_path={} queued_frames={} registered_clients={} expected_handoff_requests={} expected_reassembled_frames={} expected_clients={} expected_per_client_frames={} observed_queued_clients={} observed_reassembled_clients={} per_client_queued_frames={} per_client_direct_frames={} per_client_reassembled_frames={}",
+        "server named-pipe handoff bounded ready handoff_ready=true validation_ready={} ready_reason={} receive_stop_reason={} pipe_name={} actual_pipe_path={} queued_frames={} registered_clients={} expected_handoff_requests={} expected_reassembled_frames={} expected_clients={} expected_per_client_frames={} observed_queued_clients={} observed_reassembled_clients={} per_client_queued_frames={} per_client_direct_frames={} per_client_reassembled_frames={} retained_keyframe_clients={} per_client_retained_keyframe_frame_id={}",
         validation_ready,
         ready_reason,
         receive_stop_reason,
@@ -1989,18 +2051,23 @@ fn format_named_pipe_handoff_server_ready_line(
             .unwrap_or_else(|| "none".to_string()),
         per_client_queued_frames,
         per_client_direct_frames,
-        per_client_reassembled_frames
+        per_client_reassembled_frames,
+        outcome.video_queue_state.retained_keyframe_clients(),
+        per_client_retained_keyframe_frame_id
     )
 }
 
 #[cfg(windows)]
 fn format_named_pipe_handoff_server_many_stopped_summary(
     pipe_name: &str,
+    receive: &stream_sync_server::ServerReceiveAuthVideoQueueOnceStartupOutcome,
     output: &stream_sync_server::ServerSwitcherNamedPipeManyRequestRuntimeOutput,
 ) -> String {
     let actual_pipe_path = format_actual_handoff_pipe_path(pipe_name);
+    let per_client_retained_keyframe_frame_id =
+        format_per_client_retained_keyframe_frame_id(&receive.video_queue_state);
     format!(
-        "server named-pipe handoff bounded stopped handoff_stopped=true pipe_name={} actual_pipe_path={} max_requests={} stop_reason={} handoff_requests_completed={} successful_responses={} handoff_errors={} frame_read_count={} no_frame_count={} parse_error_count={} io_error_count={}",
+        "server named-pipe handoff bounded stopped handoff_stopped=true pipe_name={} actual_pipe_path={} max_requests={} stop_reason={} handoff_requests_completed={} successful_responses={} handoff_errors={} frame_read_count={} no_frame_count={} parse_error_count={} io_error_count={} retained_keyframe_clients={} per_client_retained_keyframe_frame_id={}",
         pipe_name,
         actual_pipe_path,
         output.max_requests,
@@ -2011,7 +2078,9 @@ fn format_named_pipe_handoff_server_many_stopped_summary(
         output.frame_read_count,
         output.no_frame_count,
         output.parse_error_count,
-        output.io_error_count
+        output.io_error_count,
+        receive.video_queue_state.retained_keyframe_clients(),
+        per_client_retained_keyframe_frame_id
     )
 }
 
@@ -2026,7 +2095,7 @@ fn format_named_pipe_handoff_server_many_request_lines(
         .enumerate()
         .map(|(index, request)| {
             format!(
-                "server named-pipe handoff bounded request pipe_name={} request_index={} request_id={} queue_len_before_read={} queue_len_after_read={} result_kind={} selected_client_id={} selected_run_id={} frame_id={} frame_payload_len={} no_frame_reason={} handoff_error={}",
+                "server named-pipe handoff bounded request pipe_name={} request_index={} request_id={} queue_len_before_read={} queue_len_after_read={} result_kind={} selected_client_id={} selected_run_id={} frame_id={} frame_payload_len={} no_frame_reason={} decodable_source={} retained_keyframe_available={} retained_keyframe_frame_id={} handoff_error={}",
                 pipe_name,
                 index,
                 request.request_id,
@@ -2050,6 +2119,12 @@ fn format_named_pipe_handoff_server_many_request_lines(
                     .no_frame_reason
                     .clone()
                     .unwrap_or_else(|| "none".to_string()),
+                format_handoff_decodable_source(request.decodable_source),
+                request.retained_keyframe_available,
+                request
+                    .retained_keyframe_frame_id
+                    .map(|value| value.to_string())
+                    .unwrap_or_else(|| "none".to_string()),
                 request
                     .handoff_error
                     .map(|value| format!("{value:?}"))
@@ -2068,7 +2143,8 @@ fn format_named_pipe_handoff_service_session_summary(
     policy: stream_sync_server::ServerReceiveAuthVideoQueueOnceManualPolicy,
 ) -> String {
     let receive_summary = format_receive_auth_video_queue_runtime_summary(receive, policy);
-    let stopped_summary = format_named_pipe_handoff_server_many_stopped_summary(pipe_name, handoff);
+    let stopped_summary =
+        format_named_pipe_handoff_server_many_stopped_summary(pipe_name, receive, handoff);
     let request_lines = format_named_pipe_handoff_server_many_request_lines(pipe_name, handoff);
 
     if request_lines.is_empty() {
@@ -2145,9 +2221,10 @@ fn format_handoff_read_mode(
 #[cfg(test)]
 mod tests {
     use stream_sync_net_core::{
-        EncodedOutboundPacket, OutboundQueueItem, ServerSwitcherQueuedFrameHandoffFrame,
-        ServerSwitcherQueuedFrameHandoffRequest, ServerSwitcherQueuedFrameHandoffResponse,
-        ServerSwitcherQueuedFrameReadMode, SERVER_SWITCHER_HANDOFF_VERSION,
+        EncodedOutboundPacket, OutboundQueueItem, ServerSwitcherQueuedFrameDecodableSource,
+        ServerSwitcherQueuedFrameHandoffFrame, ServerSwitcherQueuedFrameHandoffRequest,
+        ServerSwitcherQueuedFrameHandoffResponse, ServerSwitcherQueuedFrameReadMode,
+        SERVER_SWITCHER_HANDOFF_VERSION,
     };
     use stream_sync_protocol::{
         AuthResponse, AuthResponseReasonCode, ClientId, Codec, MessageType, ProtocolMessage,
@@ -2760,6 +2837,9 @@ mod tests {
             response: ServerSwitcherQueuedFrameHandoffResponse::FrameRead {
                 request_id: 44,
                 remaining_client_queue_len: 2,
+                decodable_source: ServerSwitcherQueuedFrameDecodableSource::Queue,
+                retained_keyframe_available: true,
+                retained_keyframe_frame_id: Some(77),
                 frame: ServerSwitcherQueuedFrameHandoffFrame {
                     client_id: ClientId("player1".to_string()),
                     run_id: RunId("run-a".to_string()),
@@ -2818,6 +2898,8 @@ mod tests {
         assert!(ready_line.contains("pipe_name=pipe-b"));
         assert!(ready_line.contains(r"actual_pipe_path=\\.\pipe\pipe-b"));
         assert!(ready_line.contains("expected_handoff_requests=3"));
+        assert!(ready_line.contains("retained_keyframe_clients=0"));
+        assert!(ready_line.contains("per_client_retained_keyframe_frame_id=none"));
     }
 
     #[cfg(windows)]
@@ -2844,6 +2926,10 @@ mod tests {
                     frame_id: Some(77),
                     frame_payload_len: Some(3),
                     no_frame_reason: None,
+                    decodable_source:
+                        stream_sync_net_core::ServerSwitcherQueuedFrameDecodableSource::Queue,
+                    retained_keyframe_available: true,
+                    retained_keyframe_frame_id: Some(77),
                     handoff_error: None,
                 },
                 stream_sync_server::ServerSwitcherNamedPipeRequestServeSummary {
@@ -2856,6 +2942,10 @@ mod tests {
                     frame_id: None,
                     frame_payload_len: None,
                     no_frame_reason: None,
+                    decodable_source:
+                        stream_sync_net_core::ServerSwitcherQueuedFrameDecodableSource::None,
+                    retained_keyframe_available: false,
+                    retained_keyframe_frame_id: None,
                     handoff_error: Some(
                         stream_sync_net_core::ServerSwitcherQueuedFrameHandoffErrorCode::SourceShutdown,
                     ),
@@ -2863,8 +2953,11 @@ mod tests {
             ],
         };
 
-        let stopped_summary =
-            super::format_named_pipe_handoff_server_many_stopped_summary("pipe-b", &output);
+        let stopped_summary = super::format_named_pipe_handoff_server_many_stopped_summary(
+            "pipe-b",
+            &test_service_session_output().receive,
+            &output,
+        );
         let request_lines =
             super::format_named_pipe_handoff_server_many_request_lines("pipe-b", &output);
 
@@ -2877,7 +2970,11 @@ mod tests {
         assert!(stopped_summary.contains("frame_read_count=1"));
         assert!(stopped_summary.contains("parse_error_count=0"));
         assert!(stopped_summary.contains("io_error_count=0"));
+        assert!(stopped_summary.contains("retained_keyframe_clients=0"));
+        assert!(stopped_summary.contains("per_client_retained_keyframe_frame_id=none"));
         assert!(request_lines.contains("request_index=0"));
+        assert!(request_lines.contains("decodable_source=queue"));
+        assert!(request_lines.contains("retained_keyframe_available=true"));
         assert!(request_lines.contains("request_id=44"));
         assert!(request_lines.contains("result_kind=FrameRead"));
         assert!(request_lines.contains("queue_len_before_read=3"));
@@ -3348,6 +3445,10 @@ mod tests {
                         frame_id: Some(2),
                         frame_payload_len: Some(3),
                         no_frame_reason: None,
+                        decodable_source:
+                            stream_sync_net_core::ServerSwitcherQueuedFrameDecodableSource::Queue,
+                        retained_keyframe_available: true,
+                        retained_keyframe_frame_id: Some(2),
                         handoff_error: None,
                     },
                     stream_sync_server::ServerSwitcherNamedPipeRequestServeSummary {
@@ -3361,6 +3462,10 @@ mod tests {
                         frame_id: Some(2),
                         frame_payload_len: Some(3),
                         no_frame_reason: None,
+                        decodable_source:
+                            stream_sync_net_core::ServerSwitcherQueuedFrameDecodableSource::Queue,
+                        retained_keyframe_available: true,
+                        retained_keyframe_frame_id: Some(2),
                         handoff_error: None,
                     },
                 ],

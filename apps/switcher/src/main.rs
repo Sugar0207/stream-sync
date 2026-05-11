@@ -1507,6 +1507,34 @@ fn format_handoff_read_mode(
     }
 }
 
+fn format_handoff_decodable_source(
+    source: stream_sync_net_core::ServerSwitcherQueuedFrameDecodableSource,
+) -> &'static str {
+    match source {
+        stream_sync_net_core::ServerSwitcherQueuedFrameDecodableSource::None => "none",
+        stream_sync_net_core::ServerSwitcherQueuedFrameDecodableSource::Queue => "queue",
+        stream_sync_net_core::ServerSwitcherQueuedFrameDecodableSource::RetainedKeyframe => {
+            "retained_keyframe"
+        }
+    }
+}
+
+fn format_handoff_no_frame_reason(
+    reason: stream_sync_net_core::ServerSwitcherQueuedFrameNoFrameReason,
+) -> &'static str {
+    match reason {
+        stream_sync_net_core::ServerSwitcherQueuedFrameNoFrameReason::NoFramesQueuedForClient => {
+            "NoFramesQueuedForClient"
+        }
+        stream_sync_net_core::ServerSwitcherQueuedFrameNoFrameReason::NoFramesQueuedForRequestedRun => {
+            "NoFramesQueuedForRequestedRun"
+        }
+        stream_sync_net_core::ServerSwitcherQueuedFrameNoFrameReason::NoDecodableFrameAvailable => {
+            "NoDecodableFrameAvailable"
+        }
+    }
+}
+
 fn format_live_two_view_stop_reason(
     reason: SwitcherContinuousTwoViewSchedulingStopReason,
 ) -> &'static str {
@@ -1971,6 +1999,10 @@ struct FourViewPreviewSlotDiagnosticSummary {
     frame_id: Option<u64>,
     frame_payload_len: Option<usize>,
     frame_is_keyframe: Option<bool>,
+    handoff_no_frame_reason: Option<String>,
+    decodable_source: Option<String>,
+    retained_keyframe_available: Option<bool>,
+    retained_keyframe_frame_id: Option<u64>,
     decode_error: Option<String>,
     decode_input_payload_len: Option<usize>,
     decode_expected_width: Option<u32>,
@@ -2681,6 +2713,10 @@ where
             frame_id: None,
             frame_payload_len: None,
             frame_is_keyframe: None,
+            handoff_no_frame_reason: None,
+            decodable_source: None,
+            retained_keyframe_available: None,
+            retained_keyframe_frame_id: None,
             decode_error: None,
             decode_input_payload_len: None,
             decode_expected_width: None,
@@ -2843,6 +2879,10 @@ where
             frame_id: None,
             frame_payload_len: None,
             frame_is_keyframe: None,
+            handoff_no_frame_reason: None,
+            decodable_source: None,
+            retained_keyframe_available: None,
+            retained_keyframe_frame_id: None,
             decode_error: None,
             decode_input_payload_len: None,
             decode_expected_width: None,
@@ -3013,6 +3053,10 @@ where
             frame_id: None,
             frame_payload_len: None,
             frame_is_keyframe: None,
+            handoff_no_frame_reason: None,
+            decodable_source: None,
+            retained_keyframe_available: None,
+            retained_keyframe_frame_id: None,
             decode_error: None,
             decode_input_payload_len: None,
             decode_expected_width: None,
@@ -3188,6 +3232,10 @@ where
             frame_id: None,
             frame_payload_len: None,
             frame_is_keyframe: None,
+            handoff_no_frame_reason: None,
+            decodable_source: None,
+            retained_keyframe_available: None,
+            retained_keyframe_frame_id: None,
             decode_error: None,
             decode_input_payload_len: None,
             decode_expected_width: None,
@@ -3434,6 +3482,10 @@ where
             frame_id: None,
             frame_payload_len: None,
             frame_is_keyframe: None,
+            handoff_no_frame_reason: None,
+            decodable_source: None,
+            retained_keyframe_available: None,
+            retained_keyframe_frame_id: None,
             decode_error: None,
             decode_input_payload_len: None,
             decode_expected_width: None,
@@ -3894,6 +3946,10 @@ where
             frame_id: None,
             frame_payload_len: None,
             frame_is_keyframe: None,
+            handoff_no_frame_reason: None,
+            decodable_source: None,
+            retained_keyframe_available: None,
+            retained_keyframe_frame_id: None,
             decode_error: None,
             decode_input_payload_len: None,
             decode_expected_width: None,
@@ -5677,6 +5733,40 @@ fn build_four_view_preview_slot_diagnostic(
             _ => (None, None, None),
         },
     };
+    let handoff_no_frame_reason = match response {
+        Some(stream_sync_net_core::ServerSwitcherQueuedFrameHandoffResponse::NoFrame {
+            no_frame_reason,
+            ..
+        }) => Some(format_handoff_no_frame_reason(*no_frame_reason).to_string()),
+        _ => None,
+    };
+    let decodable_source = match response {
+        Some(stream_sync_net_core::ServerSwitcherQueuedFrameHandoffResponse::FrameRead {
+            decodable_source,
+            ..
+        })
+        | Some(stream_sync_net_core::ServerSwitcherQueuedFrameHandoffResponse::NoFrame {
+            decodable_source,
+            ..
+        }) => Some(format_handoff_decodable_source(*decodable_source).to_string()),
+        _ => None,
+    };
+    let (retained_keyframe_available, retained_keyframe_frame_id) = match response {
+        Some(stream_sync_net_core::ServerSwitcherQueuedFrameHandoffResponse::FrameRead {
+            retained_keyframe_available,
+            retained_keyframe_frame_id,
+            ..
+        })
+        | Some(stream_sync_net_core::ServerSwitcherQueuedFrameHandoffResponse::NoFrame {
+            retained_keyframe_available,
+            retained_keyframe_frame_id,
+            ..
+        }) => (
+            Some(*retained_keyframe_available),
+            *retained_keyframe_frame_id,
+        ),
+        _ => (None, None),
+    };
     let frame_payload = match response {
         Some(stream_sync_net_core::ServerSwitcherQueuedFrameHandoffResponse::FrameRead {
             frame,
@@ -5708,6 +5798,10 @@ fn build_four_view_preview_slot_diagnostic(
         frame_id,
         frame_payload_len,
         frame_is_keyframe,
+        handoff_no_frame_reason,
+        decodable_source,
+        retained_keyframe_available,
+        retained_keyframe_frame_id,
         decode_error: decode_failure
             .as_ref()
             .map(|failure| failure.message.clone()),
@@ -5756,7 +5850,7 @@ fn format_four_view_preview_slot_diagnostic(
     diagnostic: &FourViewPreviewSlotDiagnosticSummary,
 ) -> String {
     format!(
-        "{}:client_id={},run_id={},request_id={},actual_pipe_path={},handoff_response_kind={},parse_error={},io_error={},response_payload_len={},frame_id={},frame_payload_len={},frame_is_keyframe={},decode_error={},decode_input_payload_len={},decode_expected_width={},decode_expected_height={},decode_expected_pixel_format={},decode_expected_rawvideo_len={},decoded_stdout_len={},ffmpeg_exit_status={},ffmpeg_stderr_summary={},payload_has_sps={},payload_has_pps={},payload_has_idr={},payload_has_non_idr_vcl={},payload_nal_kinds={},render_input_kind={},final_slot_result_kind={}",
+        "{}:client_id={},run_id={},request_id={},actual_pipe_path={},handoff_response_kind={},parse_error={},io_error={},response_payload_len={},frame_id={},frame_payload_len={},frame_is_keyframe={},handoff_no_frame_reason={},decodable_source={},retained_keyframe_available={},retained_keyframe_frame_id={},decode_error={},decode_input_payload_len={},decode_expected_width={},decode_expected_height={},decode_expected_pixel_format={},decode_expected_rawvideo_len={},decoded_stdout_len={},ffmpeg_exit_status={},ffmpeg_stderr_summary={},payload_has_sps={},payload_has_pps={},payload_has_idr={},payload_has_non_idr_vcl={},payload_nal_kinds={},render_input_kind={},final_slot_result_kind={}",
         diagnostic.slot_index,
         diagnostic.client_id.0,
         diagnostic.run_id.0,
@@ -5769,6 +5863,15 @@ fn format_four_view_preview_slot_diagnostic(
         format_optional_u64(diagnostic.frame_id),
         format_optional_usize(diagnostic.frame_payload_len),
         format_optional_bool(diagnostic.frame_is_keyframe),
+        sanitize_summary_value(
+            diagnostic
+                .handoff_no_frame_reason
+                .as_deref()
+                .unwrap_or("none"),
+        ),
+        sanitize_summary_value(diagnostic.decodable_source.as_deref().unwrap_or("none")),
+        format_optional_bool(diagnostic.retained_keyframe_available),
+        format_optional_u64(diagnostic.retained_keyframe_frame_id),
         sanitize_summary_value(diagnostic.decode_error.as_deref().unwrap_or("none")),
         format_optional_usize(diagnostic.decode_input_payload_len),
         format_optional_u32(diagnostic.decode_expected_width),
@@ -7583,6 +7686,51 @@ mod tests {
             "output_height={}",
             FOUR_VIEW_CLEAN_OUTPUT_LOOP_OBS_OUTPUT_HEIGHT
         )));
+    }
+
+    #[test]
+    fn switcher_four_view_preview_slot_diagnostic_formats_decodable_fields() {
+        let formatted = super::format_four_view_preview_slot_diagnostic(
+            &super::FourViewPreviewSlotDiagnosticSummary {
+                slot_index: 0,
+                client_id: ClientId("player1".to_string()),
+                run_id: RunId("run-1".to_string()),
+                request_id: Some(9),
+                actual_pipe_path: Some(r"\\.\pipe\fixture-pipe".to_string()),
+                handoff_response_kind: Some("NoFrame"),
+                parse_error: None,
+                io_error: None,
+                response_payload_len: Some(0),
+                frame_id: None,
+                frame_payload_len: None,
+                frame_is_keyframe: None,
+                handoff_no_frame_reason: Some("NoDecodableFrameAvailable".to_string()),
+                decodable_source: Some("retained_keyframe".to_string()),
+                retained_keyframe_available: Some(true),
+                retained_keyframe_frame_id: Some(901),
+                decode_error: None,
+                decode_input_payload_len: None,
+                decode_expected_width: None,
+                decode_expected_height: None,
+                decode_expected_pixel_format: None,
+                decode_expected_rawvideo_len: None,
+                decoded_stdout_len: None,
+                ffmpeg_exit_status: None,
+                ffmpeg_stderr_summary: None,
+                payload_has_sps: None,
+                payload_has_pps: None,
+                payload_has_idr: None,
+                payload_has_non_idr_vcl: None,
+                payload_nal_kinds: None,
+                render_input_kind: "NoFrameAvailable",
+                final_slot_result_kind: "NoFrameAvailable",
+            },
+        );
+
+        assert!(formatted.contains("handoff_no_frame_reason=NoDecodableFrameAvailable"));
+        assert!(formatted.contains("decodable_source=retained_keyframe"));
+        assert!(formatted.contains("retained_keyframe_available=true"));
+        assert!(formatted.contains("retained_keyframe_frame_id=901"));
     }
 
     #[test]

@@ -191,6 +191,8 @@ Primary receive-side fields:
 - `per_client_queued_frames`
 - `per_client_direct_frames`
 - `per_client_reassembled_frames`
+- `retained_keyframe_clients`
+- `per_client_retained_keyframe_frame_id`
 - `validation_ready`
 - `ready_reason`
 - `receive_stop_reason`
@@ -253,12 +255,17 @@ Primary handoff-side fields:
 - `per_client_queued_frames`
 - `per_client_direct_frames`
 - `per_client_reassembled_frames`
+- `retained_keyframe_clients`
+- `per_client_retained_keyframe_frame_id`
 - `request_id`
 - `result_kind`
 - `selected_client_id`
 - `selected_run_id`
 - `frame_id`
 - `frame_payload_len`
+- `decodable_source`
+- `retained_keyframe_available`
+- `retained_keyframe_frame_id`
 - `handoff_error`
 
 For a good 2-client handoff run, both `player1` and `player2` should appear in
@@ -529,6 +536,9 @@ Current recommendation:
   handoff path for the latest queued frame marked decodable/keyframe-visible
 - current persistent client metadata uses `VideoFrame.is_keyframe=true` when
   the encoded access unit contains an IDR NAL
+- if the current retained queue window is shorter than one GOP, this mode now
+  falls back to the latest retained keyframe for the same `client_id + run_id`
+  scope
 
 Expected render surface:
 
@@ -667,6 +677,7 @@ Real-slot diagnostics should show:
 - slot `0` / `player1`
   - `handoff_response_kind=FrameRead`
   - `frame_is_keyframe=true`
+  - `decodable_source=queue` or `decodable_source=retained_keyframe`
   - `parse_error=none`
   - `io_error=none`
   - `decode_error=none`
@@ -674,6 +685,7 @@ Real-slot diagnostics should show:
 - slot `1` / `player2`
   - `handoff_response_kind=FrameRead`
   - `frame_is_keyframe=true`
+  - `decodable_source=queue` or `decodable_source=retained_keyframe`
   - `parse_error=none`
   - `io_error=none`
   - `decode_error=none`
@@ -695,6 +707,10 @@ transport issue:
 - `payload_has_idr`
 - `payload_has_non_idr_vcl`
 - `payload_nal_kinds`
+- `handoff_no_frame_reason`
+- `decodable_source`
+- `retained_keyframe_available`
+- `retained_keyframe_frame_id`
 
 Current interpretation for this slice:
 
@@ -709,6 +725,13 @@ Current interpretation for this slice:
   `decode_expected_width=1280`, `decode_expected_height=720`, and
   `decode_expected_rawvideo_len=3686400` are the expected same-PC validation
   values when the manual client configs use `1280x720`
+- if `preview-latest-decodable` returns `NoFrame` with
+  `handoff_no_frame_reason=NoDecodableFrameAvailable`, treat that as "queue
+  has frames but neither a queued keyframe nor a retained keyframe was
+  available"
+- if `preview-latest-decodable` returns `FrameRead` with
+  `decodable_source=retained_keyframe`, that is the expected fallback when the
+  retained queue window is shorter than one GOP
 - if `preview-latest-decodable` still returns `frame_is_keyframe=false` or
   `payload_has_idr=false`, treat that as evidence that the queue does not yet
   contain an IDR-bearing latest decodable payload for that client scope
@@ -733,9 +756,16 @@ Current latest interpretation after the most recent human rerun:
   - the persistent client path had been stamping raw capture dimensions into
     `VideoFrame`
   - the current code now stamps encoder output dimensions into `VideoFrame`
-- the remaining likely blocker is one-shot decode on non-IDR payloads
+- another real blocker was queue retention vs GOP length:
+  - the retained queue window was only `16` frames in the latest rerun
+  - client GOP was `30`
+  - latest-decodable could therefore find no queued IDR even though the run had
+    produced IDRs earlier
+- the current code now retains the latest keyframe per `client_id + run_id`
+  separately from the bounded queue cap
 - use `preview-latest-decodable` for the next rerun so the preview loop prefers
-  the latest queued frame marked keyframe/IDR-visible
+  the latest queued keyframe first and falls back to the retained keyframe when
+  needed
 
 ## Failure Paste-Back Template
 

@@ -128,6 +128,72 @@ impl TryFrom<u8> for ServerSwitcherQueuedFrameReadMode {
     }
 }
 
+/// Source used to satisfy a decodable/latest-decodable handoff request.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ServerSwitcherQueuedFrameDecodableSource {
+    None,
+    Queue,
+    RetainedKeyframe,
+}
+
+impl ServerSwitcherQueuedFrameDecodableSource {
+    fn wire_code(self) -> u8 {
+        match self {
+            Self::None => 0,
+            Self::Queue => 1,
+            Self::RetainedKeyframe => 2,
+        }
+    }
+}
+
+impl TryFrom<u8> for ServerSwitcherQueuedFrameDecodableSource {
+    type Error = ServerSwitcherQueuedFrameHandoffCodecError;
+
+    fn try_from(value: u8) -> Result<Self, Self::Error> {
+        match value {
+            0 => Ok(Self::None),
+            1 => Ok(Self::Queue),
+            2 => Ok(Self::RetainedKeyframe),
+            actual => {
+                Err(ServerSwitcherQueuedFrameHandoffCodecError::UnknownDecodableSource { actual })
+            }
+        }
+    }
+}
+
+/// Explicit no-frame reason for a server->switcher handoff read.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ServerSwitcherQueuedFrameNoFrameReason {
+    NoFramesQueuedForClient,
+    NoFramesQueuedForRequestedRun,
+    NoDecodableFrameAvailable,
+}
+
+impl ServerSwitcherQueuedFrameNoFrameReason {
+    fn wire_code(self) -> u8 {
+        match self {
+            Self::NoFramesQueuedForClient => 1,
+            Self::NoFramesQueuedForRequestedRun => 2,
+            Self::NoDecodableFrameAvailable => 3,
+        }
+    }
+}
+
+impl TryFrom<u8> for ServerSwitcherQueuedFrameNoFrameReason {
+    type Error = ServerSwitcherQueuedFrameHandoffCodecError;
+
+    fn try_from(value: u8) -> Result<Self, Self::Error> {
+        match value {
+            1 => Ok(Self::NoFramesQueuedForClient),
+            2 => Ok(Self::NoFramesQueuedForRequestedRun),
+            3 => Ok(Self::NoDecodableFrameAvailable),
+            actual => {
+                Err(ServerSwitcherQueuedFrameHandoffCodecError::UnknownNoFrameReason { actual })
+            }
+        }
+    }
+}
+
 /// Transport-neutral handoff error code for the first real server->switcher handoff.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ServerSwitcherQueuedFrameHandoffErrorCode {
@@ -204,6 +270,9 @@ pub enum ServerSwitcherQueuedFrameHandoffResponse {
     FrameRead {
         request_id: u64,
         remaining_client_queue_len: u32,
+        decodable_source: ServerSwitcherQueuedFrameDecodableSource,
+        retained_keyframe_available: bool,
+        retained_keyframe_frame_id: Option<u64>,
         frame: ServerSwitcherQueuedFrameHandoffFrame,
     },
     NoFrame {
@@ -212,6 +281,10 @@ pub enum ServerSwitcherQueuedFrameHandoffResponse {
         run_id: RunId,
         read_mode: ServerSwitcherQueuedFrameReadMode,
         client_queue_len: u32,
+        no_frame_reason: ServerSwitcherQueuedFrameNoFrameReason,
+        decodable_source: ServerSwitcherQueuedFrameDecodableSource,
+        retained_keyframe_available: bool,
+        retained_keyframe_frame_id: Option<u64>,
     },
     HandoffError {
         request_id: u64,
@@ -238,6 +311,12 @@ pub enum ServerSwitcherQueuedFrameHandoffCodecError {
     },
     InvalidUtf8,
     UnknownReadMode {
+        actual: u8,
+    },
+    UnknownDecodableSource {
+        actual: u8,
+    },
+    UnknownNoFrameReason {
         actual: u8,
     },
     UnknownResponseKind {
@@ -311,6 +390,9 @@ impl ServerSwitcherQueuedFrameHandoffCodecBoundary {
             ServerSwitcherQueuedFrameHandoffResponse::FrameRead {
                 request_id,
                 remaining_client_queue_len,
+                decodable_source,
+                retained_keyframe_available,
+                retained_keyframe_frame_id,
                 frame,
             } => {
                 if frame.encoded_payload_len as usize != frame.encoded_payload.len() {
@@ -324,6 +406,9 @@ impl ServerSwitcherQueuedFrameHandoffCodecBoundary {
                 push_u64(&mut body, *request_id);
                 push_u8(&mut body, SERVER_SWITCHER_HANDOFF_RESPONSE_KIND_FRAME_READ);
                 push_u32(&mut body, *remaining_client_queue_len);
+                push_u8(&mut body, decodable_source.wire_code());
+                push_u8(&mut body, u8::from(*retained_keyframe_available));
+                push_u64(&mut body, retained_keyframe_frame_id.unwrap_or(0));
                 push_string(&mut body, "client_id", &frame.client_id.0)?;
                 push_string(&mut body, "run_id", &frame.run_id.0)?;
                 push_u64(&mut body, frame.frame_id);
@@ -344,10 +429,18 @@ impl ServerSwitcherQueuedFrameHandoffCodecBoundary {
                 run_id,
                 read_mode,
                 client_queue_len,
+                no_frame_reason,
+                decodable_source,
+                retained_keyframe_available,
+                retained_keyframe_frame_id,
             } => {
                 push_u64(&mut body, *request_id);
                 push_u8(&mut body, SERVER_SWITCHER_HANDOFF_RESPONSE_KIND_NO_FRAME);
                 push_u32(&mut body, *client_queue_len);
+                push_u8(&mut body, no_frame_reason.wire_code());
+                push_u8(&mut body, decodable_source.wire_code());
+                push_u8(&mut body, u8::from(*retained_keyframe_available));
+                push_u64(&mut body, retained_keyframe_frame_id.unwrap_or(0));
                 push_string(&mut body, "client_id", &client_id.0)?;
                 push_string(&mut body, "run_id", &run_id.0)?;
                 push_u8(&mut body, read_mode.wire_code());
@@ -373,6 +466,11 @@ impl ServerSwitcherQueuedFrameHandoffCodecBoundary {
         let response = match kind {
             SERVER_SWITCHER_HANDOFF_RESPONSE_KIND_FRAME_READ => {
                 let remaining_client_queue_len = read_u32(body, &mut offset)?;
+                let decodable_source = ServerSwitcherQueuedFrameDecodableSource::try_from(
+                    read_u8(body, &mut offset)?,
+                )?;
+                let retained_keyframe_available = read_u8(body, &mut offset)? != 0;
+                let retained_keyframe_frame_id = read_u64(body, &mut offset)?;
                 let client_id = ClientId(read_string(body, &mut offset)?);
                 let run_id = RunId(read_string(body, &mut offset)?);
                 let frame_id = read_u64(body, &mut offset)?;
@@ -392,6 +490,10 @@ impl ServerSwitcherQueuedFrameHandoffCodecBoundary {
                 ServerSwitcherQueuedFrameHandoffResponse::FrameRead {
                     request_id,
                     remaining_client_queue_len,
+                    decodable_source,
+                    retained_keyframe_available,
+                    retained_keyframe_frame_id: retained_keyframe_available
+                        .then_some(retained_keyframe_frame_id),
                     frame: ServerSwitcherQueuedFrameHandoffFrame {
                         client_id,
                         run_id,
@@ -411,6 +513,13 @@ impl ServerSwitcherQueuedFrameHandoffCodecBoundary {
             }
             SERVER_SWITCHER_HANDOFF_RESPONSE_KIND_NO_FRAME => {
                 let client_queue_len = read_u32(body, &mut offset)?;
+                let no_frame_reason =
+                    ServerSwitcherQueuedFrameNoFrameReason::try_from(read_u8(body, &mut offset)?)?;
+                let decodable_source = ServerSwitcherQueuedFrameDecodableSource::try_from(
+                    read_u8(body, &mut offset)?,
+                )?;
+                let retained_keyframe_available = read_u8(body, &mut offset)? != 0;
+                let retained_keyframe_frame_id = read_u64(body, &mut offset)?;
                 let client_id = ClientId(read_string(body, &mut offset)?);
                 let run_id = RunId(read_string(body, &mut offset)?);
                 let read_mode =
@@ -421,6 +530,11 @@ impl ServerSwitcherQueuedFrameHandoffCodecBoundary {
                     run_id,
                     read_mode,
                     client_queue_len,
+                    no_frame_reason,
+                    decodable_source,
+                    retained_keyframe_available,
+                    retained_keyframe_frame_id: retained_keyframe_available
+                        .then_some(retained_keyframe_frame_id),
                 }
             }
             SERVER_SWITCHER_HANDOFF_RESPONSE_KIND_ERROR => {
@@ -1459,6 +1573,9 @@ mod tests {
         let response = ServerSwitcherQueuedFrameHandoffResponse::FrameRead {
             request_id: 7,
             remaining_client_queue_len: 3,
+            decodable_source: ServerSwitcherQueuedFrameDecodableSource::RetainedKeyframe,
+            retained_keyframe_available: true,
+            retained_keyframe_frame_id: Some(99),
             frame: ServerSwitcherQueuedFrameHandoffFrame {
                 client_id: ClientId("player1".to_string()),
                 run_id: RunId("streamsync-dev-session".to_string()),
@@ -1495,6 +1612,10 @@ mod tests {
             run_id: RunId("streamsync-dev-session".to_string()),
             read_mode: ServerSwitcherQueuedFrameReadMode::InspectOldest,
             client_queue_len: 0,
+            no_frame_reason: ServerSwitcherQueuedFrameNoFrameReason::NoFramesQueuedForClient,
+            decodable_source: ServerSwitcherQueuedFrameDecodableSource::None,
+            retained_keyframe_available: false,
+            retained_keyframe_frame_id: None,
         };
 
         let encoded = codec
@@ -1582,6 +1703,10 @@ mod tests {
             run_id: RunId("run-2".to_string()),
             read_mode: ServerSwitcherQueuedFrameReadMode::InspectLatest,
             client_queue_len: 1,
+            no_frame_reason: ServerSwitcherQueuedFrameNoFrameReason::NoFramesQueuedForRequestedRun,
+            decodable_source: ServerSwitcherQueuedFrameDecodableSource::None,
+            retained_keyframe_available: false,
+            retained_keyframe_frame_id: None,
         };
         let mut encoded = codec
             .encode_response_frame(&response)
@@ -1626,6 +1751,9 @@ mod tests {
         let response = ServerSwitcherQueuedFrameHandoffResponse::FrameRead {
             request_id: 91,
             remaining_client_queue_len: 2,
+            decodable_source: ServerSwitcherQueuedFrameDecodableSource::Queue,
+            retained_keyframe_available: false,
+            retained_keyframe_frame_id: None,
             frame: ServerSwitcherQueuedFrameHandoffFrame {
                 client_id: ClientId("player1".to_string()),
                 run_id: RunId("run-1".to_string()),
@@ -1649,6 +1777,9 @@ mod tests {
             + 8
             + 1
             + 4
+            + 1
+            + 1
+            + 8
             + 2
             + "player1".len()
             + 2

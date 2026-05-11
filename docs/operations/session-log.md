@@ -5,6 +5,64 @@
 - Codex code + docs update
 
 ### Work
+- Investigated the next handoff rerun after `preview-latest-decodable` had been
+  introduced.
+- Confirmed the new failure shape:
+  - server receive / queue / `validation_ready` still passed
+  - switcher `preview-latest-decodable` returned `NoFrame`
+  - the likely cause was retained queue length vs GOP length, not transport
+- Narrow interpretation from human evidence:
+  - retained queue length was effectively `16`
+  - client GOP was `30`
+  - latest queued window could therefore lose all keyframes while still holding
+    recent non-IDR frames
+- Added server-side latest keyframe retention per `client_id + run_id`.
+- Added latest-decodable fallback behavior:
+  - prefer latest queued keyframe first
+  - fall back to latest retained keyframe when the queue no longer holds one
+- Added new observability across the handoff boundary:
+  - `decodable_source=queue|retained_keyframe|none`
+  - `retained_keyframe_available`
+  - `retained_keyframe_frame_id`
+  - `handoff_no_frame_reason`
+- Added retained-keyframe summary visibility:
+  - `retained_keyframe_clients`
+  - `per_client_retained_keyframe_frame_id`
+- Kept scope narrow:
+  - no queue-cap bump as the fix
+  - no client encoder/cadence changes
+  - no switcher persistent decoder context
+  - no concurrent receive + handoff serve runtime
+
+### Changed Files
+- `crates/net-core/src/lib.rs`
+- `apps/server/src/lib.rs`
+- `apps/server/src/main.rs`
+- `apps/switcher/src/lib.rs`
+- `apps/switcher/src/main.rs`
+- `docs/operations/two-client-handoff-validation.md`
+- `docs/operations/manual-real-encoded-video-poc.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### Decision
+- Increasing the queue cap alone is the wrong fix because the same issue would
+  recur when GOP length exceeds the retained latest-frame window.
+- The narrow fix is to retain the latest decodable/keyframe-visible frame per
+  `client_id + run_id` separately from the bounded queue cap.
+
+### Validation
+- `cargo check --workspace`
+- focused retained-keyframe / decodable tests:
+  - `cargo test -p stream-sync-server retained_keyframe -- --nocapture`
+  - `cargo test -p stream-sync-switcher single_client_queue_source_preview_latest_decodable_uses_retained_keyframe_fallback -- --nocapture`
+  - `cargo test -p stream-sync-switcher switcher_four_view_preview_slot_diagnostic_formats_decodable_fields -- --nocapture`
+
+## 2026-05-09
+### Type
+- Codex code + docs update
+
+### Work
 - Investigated the latest same-PC 2-client handoff rerun after the decode
   observability slice.
 - Confirmed two concrete facts from the new evidence:

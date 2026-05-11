@@ -240,6 +240,7 @@ impl SwitcherSingleClientQueueSourceBoundary {
                 client_id,
                 run_id,
                 client_queue_len,
+                ..
             } => SwitcherSingleClientQueueSourceResult::NoFrameAvailable {
                 client_id,
                 run_id,
@@ -11858,6 +11859,71 @@ mod tests {
     }
 
     #[test]
+    fn single_client_queue_source_preview_latest_decodable_uses_retained_keyframe_fallback() {
+        let mut state = ServerVideoFrameQueueState::default();
+        let policy = ServerVideoFrameQueuePolicy {
+            max_frames_per_client: 2,
+        };
+        store_frame_for_run_with_policy(
+            &mut state,
+            "client-1",
+            "run-1",
+            1,
+            TimestampMicros(2_015_000),
+            policy,
+        );
+        store_frame_for_run_with_keyframe_and_policy(
+            &mut state,
+            "client-1",
+            "run-1",
+            2,
+            TimestampMicros(2_015_100),
+            false,
+            policy,
+        );
+        store_frame_for_run_with_keyframe_and_policy(
+            &mut state,
+            "client-1",
+            "run-1",
+            3,
+            TimestampMicros(2_015_200),
+            false,
+            policy,
+        );
+        let client_id = ClientId("client-1".to_string());
+
+        let result = SwitcherSingleClientQueueSourceBoundary::default().read(
+            &mut state,
+            SwitcherSingleClientQueueSourceInput {
+                client_id: client_id.clone(),
+                run_id: RunId("run-1".to_string()),
+                mode: SwitcherSingleClientQueueSourceMode::PreviewLatestDecodable,
+            },
+        );
+
+        let SwitcherSingleClientQueueSourceResult::FrameAvailable {
+            frame,
+            mode,
+            remaining_client_queue_len,
+        } = result
+        else {
+            panic!("retained keyframe should satisfy latest decodable preview");
+        };
+        assert_eq!(frame.frame_id, 1);
+        assert!(frame.is_keyframe);
+        assert_eq!(
+            mode,
+            SwitcherSingleClientQueueSourceMode::PreviewLatestDecodable
+        );
+        assert_eq!(remaining_client_queue_len, 2);
+        let remaining: Vec<u64> = state
+            .frames_for_client(&client_id)
+            .map(|queued| queued.frame.frame_id)
+            .collect();
+        assert_eq!(remaining, vec![2, 3]);
+    }
+
+    #[test]
     fn single_client_queue_source_consume_oldest_dequeues_one_run_scoped_frame() {
         let mut state = ServerVideoFrameQueueState::default();
         store_frame_for_run(
@@ -12287,6 +12353,10 @@ mod tests {
             ServerSwitcherQueuedFrameHandoffResponse::FrameRead {
                 request_id: 700,
                 remaining_client_queue_len: 2,
+                decodable_source:
+                    stream_sync_net_core::ServerSwitcherQueuedFrameDecodableSource::Queue,
+                retained_keyframe_available: true,
+                retained_keyframe_frame_id: Some(41),
                 frame: ServerSwitcherQueuedFrameHandoffFrame {
                     client_id: ClientId("client-actual".to_string()),
                     run_id: RunId("run-actual".to_string()),
@@ -12346,6 +12416,12 @@ mod tests {
                 run_id: RunId("run-1".to_string()),
                 read_mode: ServerSwitcherQueuedFrameReadMode::InspectOldest,
                 client_queue_len: 0,
+                no_frame_reason:
+                    stream_sync_net_core::ServerSwitcherQueuedFrameNoFrameReason::NoFramesQueuedForClient,
+                decodable_source:
+                    stream_sync_net_core::ServerSwitcherQueuedFrameDecodableSource::None,
+                retained_keyframe_available: false,
+                retained_keyframe_frame_id: None,
             },
         );
 
@@ -12870,6 +12946,10 @@ mod tests {
                     },
                     response: Some(ServerSwitcherQueuedFrameHandoffResponse::FrameRead {
                         request_id: 55,
+                        decodable_source:
+                            stream_sync_net_core::ServerSwitcherQueuedFrameDecodableSource::Queue,
+                        retained_keyframe_available: false,
+                        retained_keyframe_frame_id: None,
                         frame: ServerSwitcherQueuedFrameHandoffFrame {
                             client_id: input.client_id.clone(),
                             run_id: input.run_id.clone(),
@@ -12963,6 +13043,12 @@ mod tests {
                         run_id: input.run_id.clone(),
                         read_mode: ServerSwitcherQueuedFrameReadMode::InspectOldest,
                         client_queue_len: 0,
+                        no_frame_reason:
+                            stream_sync_net_core::ServerSwitcherQueuedFrameNoFrameReason::NoFramesQueuedForClient,
+                        decodable_source:
+                            stream_sync_net_core::ServerSwitcherQueuedFrameDecodableSource::None,
+                        retained_keyframe_available: false,
+                        retained_keyframe_frame_id: None,
                     }),
                     response_payload_len: Some(0),
                     parse_error: None,
@@ -25788,7 +25874,46 @@ mod tests {
         frame_id: u64,
         queued_at: TimestampMicros,
     ) -> ServerVideoFrameQueueStorageResult {
-        store_frame_with_run_payload(
+        store_frame_for_run_with_keyframe_and_policy(
+            state,
+            client_id,
+            run_id,
+            frame_id,
+            queued_at,
+            frame_id == 1,
+            ServerVideoFrameQueuePolicy::default(),
+        )
+    }
+
+    fn store_frame_for_run_with_policy(
+        state: &mut ServerVideoFrameQueueState,
+        client_id: &str,
+        run_id: &str,
+        frame_id: u64,
+        queued_at: TimestampMicros,
+        policy: ServerVideoFrameQueuePolicy,
+    ) -> ServerVideoFrameQueueStorageResult {
+        store_frame_for_run_with_keyframe_and_policy(
+            state,
+            client_id,
+            run_id,
+            frame_id,
+            queued_at,
+            frame_id == 1,
+            policy,
+        )
+    }
+
+    fn store_frame_for_run_with_keyframe_and_policy(
+        state: &mut ServerVideoFrameQueueState,
+        client_id: &str,
+        run_id: &str,
+        frame_id: u64,
+        queued_at: TimestampMicros,
+        is_keyframe: bool,
+        policy: ServerVideoFrameQueuePolicy,
+    ) -> ServerVideoFrameQueueStorageResult {
+        store_frame_with_run_payload_and_policy(
             state,
             client_id,
             run_id,
@@ -25797,6 +25922,8 @@ mod tests {
             1280,
             720,
             vec![frame_id as u8, 0xbb, 0xcc],
+            is_keyframe,
+            policy,
         )
     }
 
@@ -25824,15 +25951,37 @@ mod tests {
         height: u32,
         payload: Vec<u8>,
     ) -> ServerVideoFrameQueueStorageResult {
-        let packet =
-            registered_video_packet_for_run(client_id, run_id, frame_id, width, height, payload);
-        let input = ServerVideoFrameHandlerBoundary.prepare_input(packet);
-        ServerVideoFrameQueueStorageBoundary.store_frame(
+        store_frame_with_run_payload_and_policy(
             state,
-            input,
+            client_id,
+            run_id,
+            frame_id,
             queued_at,
+            width,
+            height,
+            payload,
+            frame_id == 1,
             ServerVideoFrameQueuePolicy::default(),
         )
+    }
+
+    fn store_frame_with_run_payload_and_policy(
+        state: &mut ServerVideoFrameQueueState,
+        client_id: &str,
+        run_id: &str,
+        frame_id: u64,
+        queued_at: TimestampMicros,
+        width: u32,
+        height: u32,
+        payload: Vec<u8>,
+        is_keyframe: bool,
+        policy: ServerVideoFrameQueuePolicy,
+    ) -> ServerVideoFrameQueueStorageResult {
+        let mut packet =
+            registered_video_packet_for_run(client_id, run_id, frame_id, width, height, payload);
+        packet.frame.is_keyframe = is_keyframe;
+        let input = ServerVideoFrameHandlerBoundary.prepare_input(packet);
+        ServerVideoFrameQueueStorageBoundary.store_frame(state, input, queued_at, policy)
     }
 
     fn registered_video_packet(
