@@ -2,6 +2,69 @@
 
 ## 2026-05-11
 ### Type
+- Codex docs-only design update
+
+### Work
+- Moved the next step from the passed staged 2-client handoff preview
+  checkpoint to a docs-only concurrent receive + handoff serve runtime design.
+- Kept the current checkpoint explicit:
+  - 2-client real handoff preview PASS remains valid
+  - current path is still staged and keyframe-preview oriented
+  - same-PC fps variance remains a known issue
+- Added a dedicated design source of truth:
+  - `docs/operations/concurrent-handoff-runtime-plan.md`
+- Fixed the next implementation direction:
+  - do not replace the staged command
+    `--receive-auth-video-queue-and-serve-handoff-many`
+  - add a new concurrent runtime alongside it
+  - recommended first command name:
+    `--receive-auth-video-queue-and-serve-handoff-continuous`
+- Recorded the first-slice runtime split:
+  - UDP receive / auth / reassembly / queue update loop
+  - named-pipe handoff serve loop
+  - shared queue + retained-keyframe state
+  - shared runtime summary / stop coordination
+- Recorded the first-slice shared-state plan:
+  - one runtime-owned shared state object
+  - coarse lock around queue + retained keyframe + closely related counters
+  - no payload cloning for summary snapshots
+  - handoff read clones only the selected response payload
+- Recorded readiness semantics for the future concurrent runtime:
+  - `receive_ready=true`
+  - `handoff_ready=true`
+  - `validation_ready=true|false|n/a`
+- Recorded the first human validation order for the concurrent slice:
+  - start server
+  - confirm `receive_ready=true`
+  - confirm `handoff_ready=true`
+  - start switcher
+  - start client1/client2
+  - confirm switcher can read while clients are still sending
+
+### Decision
+- The next implementation should not jump directly to 4-client work.
+- The next implementation should first make the passed 2-client preview path
+  concurrent and production-like in lifecycle shape.
+- The first implementation slice should stay intentionally small:
+  - 2-client same-PC only
+  - retained-keyframe based `preview-latest-decodable`
+  - no reconnect
+  - no daemon polish
+  - no OBS work
+  - no switcher persistent decoder context
+
+### Changed Files
+- `docs/operations/concurrent-handoff-runtime-plan.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+- `docs/operations/two-client-handoff-validation.md`
+- `docs/architecture/system-design.md`
+
+### Validation
+- `git diff --check`
+
+## 2026-05-11
+### Type
 - Human validation result + Codex docs update
 
 ### Work

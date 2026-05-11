@@ -68,6 +68,66 @@ shaped as a small pull/read trait over server queue data; a concrete
 cross-process transport can be decided later without changing protocol wire
 format.
 
+## Concurrent runtime direction
+
+After the staged 2-client same-PC handoff preview PASS checkpoint, the next
+runtime direction is concurrent receive + handoff serve rather than immediate
+4-client expansion.
+
+Target runtime shape:
+
+```text
+server process
+  -> UDP receive/auth/reassembly/queue update loop
+  -> named-pipe handoff serve loop
+  -> shared queue/retained-keyframe state
+  -> shared runtime summary state
+```
+
+Key architectural constraints:
+
+- keep the existing staged command
+  `--receive-auth-video-queue-and-serve-handoff-many`
+  as the stable bounded validation path
+- add a new concurrent runtime rather than mutating the staged path in place
+- keep switcher as the owner of preview scheduling and decode/display behavior
+- keep server as the owner of auth, receive, reassembly, queue update, and
+  retained-keyframe update
+
+Recommended first command family:
+
+- staged:
+  - `--receive-auth-video-queue-and-serve-handoff-many`
+- concurrent:
+  - `--receive-auth-video-queue-and-serve-handoff-continuous`
+
+Recommended first-slice shared-state policy:
+
+- one runtime-owned shared state object
+- coarse locking around queue + retained keyframe + closely related counters
+- no payload cloning for periodic summary output
+- handoff read clones only the selected response payload bytes
+
+Readiness semantics for the concurrent path:
+
+- `receive_ready=true`
+  - UDP receive runtime is ready
+- `handoff_ready=true`
+  - named-pipe handoff listener is ready
+- `validation_ready=true|false|n/a`
+  - optional in continuous mode; meaningful only when bounded expected
+    thresholds are configured for manual validation
+
+The first concurrent slice remains intentionally smaller than a production
+daemon:
+
+- same-PC 2-client only
+- retained-keyframe based `preview-latest-decodable`
+- no reconnect manager
+- no switcher persistent decoder context
+- no OBS-specific work
+- no 4-client scaling yet
+
 Smallest handoff interface:
 
 ```text

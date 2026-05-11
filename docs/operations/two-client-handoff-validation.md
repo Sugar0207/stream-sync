@@ -897,6 +897,22 @@ Known limits that remain after this PASS:
   `26fps`, so capture/cadence load variance remains a known issue rather than a
   blocker for this checkpoint
 
+## Next Design Step
+
+The next step after this PASS checkpoint is not immediate 4-client expansion.
+The next prioritized design step is concurrent receive + handoff serve runtime.
+
+Design source of truth:
+
+- `docs/operations/concurrent-handoff-runtime-plan.md`
+
+Reason:
+
+- current staged command proves the bounded receive-then-preview path
+- it does not prove that switcher can read while clients are still sending
+- a production-like preview path needs server receive/runtime and handoff serve
+  runtime to exist concurrently
+
 ## Failure Paste-Back Template
 
 ```text
