@@ -43,6 +43,12 @@ use std::{
     fs::File,
     io::{Read, Write},
     os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc, Mutex,
+    },
+    thread,
+    time::Instant,
 };
 #[cfg(windows)]
 use windows::{
@@ -1298,181 +1304,33 @@ impl ServerReceiveAuthVideoQueueOnceLauncher {
                     });
                 }
             };
-            summary.packets_received = summary.packets_received.saturating_add(1);
             let queued_at = current_system_timestamp_micros();
-
-            match self.receive_loop.handle_received_packet_with_gate(
-                expected_protocol_version,
+            if let Some(queue) = self.process_received_packet_for_video_queue(
+                socket,
+                auth_config,
                 registry,
+                video_queue_state,
+                reassembly_state,
+                expected_protocol_version,
                 received.source,
                 received.bytes,
-            ) {
-                ServerReceiveLoopGateOutcome::Accepted(route) => match route {
-                    ServerInboundRoute::AuthRequest { .. } => {
-                        self.auth
-                            .handle_route(
-                                socket,
-                                expected_protocol_version,
-                                auth_config,
-                                registry,
-                                route,
-                            )
-                            .map_err(ServerReceiveAuthVideoQueueOnceStartupError::Auth)?;
-                    }
-                    ServerInboundRoute::VideoFrame { .. } => {
-                        let registered = self
-                            .registered
-                            .prepare_for_handler(registry, route)
-                            .map_err(ServerReceiveAuthVideoQueueOnceStartupError::Registered)?;
-                        let ServerRegisteredClientPacket::VideoFrame(packet) = registered else {
-                            summary.non_video_packets = summary.non_video_packets.saturating_add(1);
-                            continue;
-                        };
-                        let client_id = packet.frame.client_id.clone();
-                        let run_id = packet.frame.run_id.clone();
-                        let frame_id = packet.frame.frame_id;
-                        let is_keyframe = packet.frame.is_keyframe;
-                        if is_keyframe {
-                            record_keyframe_received_progress(&mut summary);
-                        }
-                        let input = self.video_handler.prepare_input(packet);
-                        let queue = self.video_queue_storage.store_frame(
-                            video_queue_state,
-                            input,
-                            queued_at,
-                            ServerVideoFrameQueuePolicy::default(),
-                        );
-                        if matches!(queue, ServerVideoFrameQueueStorageResult::Stored { .. }) {
-                            summary.direct_frames_queued =
-                                summary.direct_frames_queued.saturating_add(1);
-                            summary.frames_queued = summary.frames_queued.saturating_add(1);
-                            record_direct_frame_progress(&mut summary, &client_id, &run_id);
-                            if is_keyframe {
-                                record_keyframe_queued_progress(
-                                    &mut summary,
-                                    &client_id,
-                                    &run_id,
-                                    frame_id,
-                                );
-                            }
-                        }
-                        summary.queue_len = video_queue_state.total_len();
-                        last_queue = Some(ServerVideoFrameQueueRuntimeResult::Queued(queue));
-                        if let Some(stop_reason) =
-                            evaluate_reassembled_stop_reason(policy, &summary)
-                        {
-                            summary.stop_reason = Some(stop_reason);
-                            finalize_auth_video_queue_summary(
-                                &mut summary,
-                                reassembly_state,
-                                video_queue_state,
-                            );
-                            return Ok(ServerReceiveAuthVideoQueueOnceVideoOutcome::Received {
-                                summary,
-                                queue: last_queue,
-                            });
-                        }
-                    }
-                    ServerInboundRoute::VideoFrameFragment { .. } => {
-                        let registered = self
-                            .registered
-                            .prepare_for_handler(registry, route)
-                            .map_err(ServerReceiveAuthVideoQueueOnceStartupError::Registered)?;
-                        let ServerRegisteredClientPacket::VideoFrameFragment(packet) = registered
-                        else {
-                            summary.non_video_packets = summary.non_video_packets.saturating_add(1);
-                            continue;
-                        };
-                        summary.fragments_received = summary.fragments_received.saturating_add(1);
-                        match self.reassembly.apply_fragment_and_queue_if_complete(
-                            reassembly_state,
-                            video_queue_state,
-                            packet,
-                            queued_at,
-                            ServerVideoFrameQueuePolicy::default(),
-                        ) {
-                            ServerVideoFrameReassemblyApplyResult::FragmentStored { .. } => {}
-                            ServerVideoFrameReassemblyApplyResult::DuplicateFragmentIgnored {
-                                ..
-                            } => {
-                                summary.duplicate_fragments =
-                                    summary.duplicate_fragments.saturating_add(1);
-                            }
-                            ServerVideoFrameReassemblyApplyResult::RejectedFragment { .. } => {
-                                summary.rejected_fragments =
-                                    summary.rejected_fragments.saturating_add(1);
-                            }
-                            ServerVideoFrameReassemblyApplyResult::FrameComplete {
-                                reassembled_frame,
-                                queue_result,
-                                ..
-                            } => {
-                                if reassembled_frame.is_keyframe {
-                                    record_keyframe_received_progress(&mut summary);
-                                }
-                                summary.frames_reassembled =
-                                    summary.frames_reassembled.saturating_add(1);
-                                record_reassembled_frame_progress(
-                                    &mut summary,
-                                    &reassembled_frame.client_id,
-                                    &reassembled_frame.run_id,
-                                );
-                                if matches!(
-                                    queue_result,
-                                    ServerVideoFrameQueueStorageResult::Stored { .. }
-                                ) {
-                                    summary.frames_queued = summary.frames_queued.saturating_add(1);
-                                    record_queued_frame_progress(
-                                        &mut summary,
-                                        &reassembled_frame.client_id,
-                                        &reassembled_frame.run_id,
-                                    );
-                                    if reassembled_frame.is_keyframe {
-                                        record_keyframe_queued_progress(
-                                            &mut summary,
-                                            &reassembled_frame.client_id,
-                                            &reassembled_frame.run_id,
-                                            reassembled_frame.frame_id,
-                                        );
-                                    }
-                                }
-                                last_queue =
-                                    Some(ServerVideoFrameQueueRuntimeResult::Queued(queue_result));
-                                if let Some(stop_reason) =
-                                    evaluate_reassembled_stop_reason(policy, &summary)
-                                {
-                                    summary.stop_reason = Some(stop_reason);
-                                    finalize_auth_video_queue_summary(
-                                        &mut summary,
-                                        reassembly_state,
-                                        video_queue_state,
-                                    );
-                                    return Ok(
-                                        ServerReceiveAuthVideoQueueOnceVideoOutcome::Received {
-                                            summary,
-                                            queue: last_queue,
-                                        },
-                                    );
-                                }
-                            }
-                        }
-                    }
-                    _ => {
-                        summary.non_video_packets = summary.non_video_packets.saturating_add(1);
-                    }
-                },
-                ServerReceiveLoopGateOutcome::Rejected(rejection) => {
-                    summary.rejected_packets = summary.rejected_packets.saturating_add(1);
-                    if matches!(
-                        rejection,
-                        ServerReceiveLoopGateRejection::Acceptance(PacketAcceptanceRejection {
-                            message_type: MessageType::VideoFrameFragment,
-                            ..
-                        })
-                    ) {
-                        summary.rejected_fragments = summary.rejected_fragments.saturating_add(1);
-                    }
-                }
+                queued_at,
+                &mut summary,
+            )? {
+                last_queue = Some(queue);
+            }
+            summary.queue_len = video_queue_state.total_len();
+            if let Some(stop_reason) = evaluate_reassembled_stop_reason(policy, &summary) {
+                summary.stop_reason = Some(stop_reason);
+                finalize_auth_video_queue_summary(
+                    &mut summary,
+                    reassembly_state,
+                    video_queue_state,
+                );
+                return Ok(ServerReceiveAuthVideoQueueOnceVideoOutcome::Received {
+                    summary,
+                    queue: last_queue,
+                });
             }
         }
 
@@ -1483,6 +1341,169 @@ impl ServerReceiveAuthVideoQueueOnceLauncher {
             summary,
             queue: last_queue,
         })
+    }
+
+    fn process_received_packet_for_video_queue(
+        &self,
+        socket: &UdpSocket,
+        auth_config: &ServerAuthConfig,
+        registry: &mut AuthenticatedSenderRegistry,
+        video_queue_state: &mut ServerVideoFrameQueueState,
+        reassembly_state: &mut ServerVideoFrameReassemblyState,
+        expected_protocol_version: ProtocolVersion,
+        source: PacketSource,
+        bytes: &[u8],
+        queued_at: TimestampMicros,
+        summary: &mut ServerReceiveAuthVideoQueueOnceVideoSummary,
+    ) -> Result<
+        Option<ServerVideoFrameQueueRuntimeResult>,
+        ServerReceiveAuthVideoQueueOnceStartupError,
+    > {
+        summary.packets_received = summary.packets_received.saturating_add(1);
+
+        match self.receive_loop.handle_received_packet_with_gate(
+            expected_protocol_version,
+            registry,
+            source,
+            bytes,
+        ) {
+            ServerReceiveLoopGateOutcome::Accepted(route) => match route {
+                ServerInboundRoute::AuthRequest { .. } => {
+                    self.auth
+                        .handle_route(
+                            socket,
+                            expected_protocol_version,
+                            auth_config,
+                            registry,
+                            route,
+                        )
+                        .map_err(ServerReceiveAuthVideoQueueOnceStartupError::Auth)?;
+                    Ok(None)
+                }
+                ServerInboundRoute::VideoFrame { .. } => {
+                    let registered = self
+                        .registered
+                        .prepare_for_handler(registry, route)
+                        .map_err(ServerReceiveAuthVideoQueueOnceStartupError::Registered)?;
+                    let ServerRegisteredClientPacket::VideoFrame(packet) = registered else {
+                        summary.non_video_packets = summary.non_video_packets.saturating_add(1);
+                        return Ok(None);
+                    };
+                    let client_id = packet.frame.client_id.clone();
+                    let run_id = packet.frame.run_id.clone();
+                    let frame_id = packet.frame.frame_id;
+                    let is_keyframe = packet.frame.is_keyframe;
+                    if is_keyframe {
+                        record_keyframe_received_progress(summary);
+                    }
+                    let input = self.video_handler.prepare_input(packet);
+                    let queue = self.video_queue_storage.store_frame(
+                        video_queue_state,
+                        input,
+                        queued_at,
+                        ServerVideoFrameQueuePolicy::default(),
+                    );
+                    if matches!(queue, ServerVideoFrameQueueStorageResult::Stored { .. }) {
+                        summary.direct_frames_queued =
+                            summary.direct_frames_queued.saturating_add(1);
+                        summary.frames_queued = summary.frames_queued.saturating_add(1);
+                        record_direct_frame_progress(summary, &client_id, &run_id);
+                        if is_keyframe {
+                            record_keyframe_queued_progress(summary, &client_id, &run_id, frame_id);
+                        }
+                    }
+                    Ok(Some(ServerVideoFrameQueueRuntimeResult::Queued(queue)))
+                }
+                ServerInboundRoute::VideoFrameFragment { .. } => {
+                    let registered = self
+                        .registered
+                        .prepare_for_handler(registry, route)
+                        .map_err(ServerReceiveAuthVideoQueueOnceStartupError::Registered)?;
+                    let ServerRegisteredClientPacket::VideoFrameFragment(packet) = registered
+                    else {
+                        summary.non_video_packets = summary.non_video_packets.saturating_add(1);
+                        return Ok(None);
+                    };
+                    summary.fragments_received = summary.fragments_received.saturating_add(1);
+                    match self.reassembly.apply_fragment_and_queue_if_complete(
+                        reassembly_state,
+                        video_queue_state,
+                        packet,
+                        queued_at,
+                        ServerVideoFrameQueuePolicy::default(),
+                    ) {
+                        ServerVideoFrameReassemblyApplyResult::FragmentStored { .. } => Ok(None),
+                        ServerVideoFrameReassemblyApplyResult::DuplicateFragmentIgnored {
+                            ..
+                        } => {
+                            summary.duplicate_fragments =
+                                summary.duplicate_fragments.saturating_add(1);
+                            Ok(None)
+                        }
+                        ServerVideoFrameReassemblyApplyResult::RejectedFragment { .. } => {
+                            summary.rejected_fragments =
+                                summary.rejected_fragments.saturating_add(1);
+                            Ok(None)
+                        }
+                        ServerVideoFrameReassemblyApplyResult::FrameComplete {
+                            reassembled_frame,
+                            queue_result,
+                            ..
+                        } => {
+                            if reassembled_frame.is_keyframe {
+                                record_keyframe_received_progress(summary);
+                            }
+                            summary.frames_reassembled =
+                                summary.frames_reassembled.saturating_add(1);
+                            record_reassembled_frame_progress(
+                                summary,
+                                &reassembled_frame.client_id,
+                                &reassembled_frame.run_id,
+                            );
+                            if matches!(
+                                queue_result,
+                                ServerVideoFrameQueueStorageResult::Stored { .. }
+                            ) {
+                                summary.frames_queued = summary.frames_queued.saturating_add(1);
+                                record_queued_frame_progress(
+                                    summary,
+                                    &reassembled_frame.client_id,
+                                    &reassembled_frame.run_id,
+                                );
+                                if reassembled_frame.is_keyframe {
+                                    record_keyframe_queued_progress(
+                                        summary,
+                                        &reassembled_frame.client_id,
+                                        &reassembled_frame.run_id,
+                                        reassembled_frame.frame_id,
+                                    );
+                                }
+                            }
+                            Ok(Some(ServerVideoFrameQueueRuntimeResult::Queued(
+                                queue_result,
+                            )))
+                        }
+                    }
+                }
+                _ => {
+                    summary.non_video_packets = summary.non_video_packets.saturating_add(1);
+                    Ok(None)
+                }
+            },
+            ServerReceiveLoopGateOutcome::Rejected(rejection) => {
+                summary.rejected_packets = summary.rejected_packets.saturating_add(1);
+                if matches!(
+                    rejection,
+                    ServerReceiveLoopGateRejection::Acceptance(PacketAcceptanceRejection {
+                        message_type: MessageType::VideoFrameFragment,
+                        ..
+                    })
+                ) {
+                    summary.rejected_fragments = summary.rejected_fragments.saturating_add(1);
+                }
+                Ok(None)
+            }
+        }
     }
 }
 
@@ -5677,6 +5698,497 @@ impl ServerReceiveAuthVideoQueueHandoffServiceSessionLauncher {
     }
 }
 
+/// Bounded first-slice policy for the concurrent receive + handoff runtime.
+#[cfg(windows)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct ServerReceiveAuthVideoQueueHandoffContinuousRuntimePolicy {
+    pub receive_timeout: Duration,
+    pub max_runtime_duration: Option<Duration>,
+    pub max_handoff_requests: Option<usize>,
+    pub max_video_packets: Option<usize>,
+    pub expected_reassembled_frames: u64,
+    pub stop_after_expected_reassembled_frames: bool,
+    pub receive_buffer_bytes: usize,
+    pub expected_reassembled_clients: u64,
+    pub expected_reassembled_frames_per_client: u64,
+}
+
+#[cfg(windows)]
+impl Default for ServerReceiveAuthVideoQueueHandoffContinuousRuntimePolicy {
+    fn default() -> Self {
+        Self {
+            receive_timeout: SERVER_AUTH_VIDEO_QUEUE_DEFAULT_FRAGMENT_IDLE_TIMEOUT,
+            max_runtime_duration: Some(Duration::from_secs(120)),
+            max_handoff_requests: Some(180),
+            max_video_packets: Some(SERVER_AUTH_VIDEO_QUEUE_DEFAULT_MAX_VIDEO_PACKETS),
+            expected_reassembled_frames: 0,
+            stop_after_expected_reassembled_frames: false,
+            receive_buffer_bytes: SERVER_DEFAULT_RECEIVE_BUFFER_BYTES,
+            expected_reassembled_clients: 0,
+            expected_reassembled_frames_per_client: 0,
+        }
+    }
+}
+
+#[cfg(windows)]
+impl ServerReceiveAuthVideoQueueHandoffContinuousRuntimePolicy {
+    fn receive_policy(self) -> ServerReceiveAuthVideoQueueOnceManualPolicy {
+        ServerReceiveAuthVideoQueueOnceManualPolicy {
+            max_video_packets: self.max_video_packets.unwrap_or(usize::MAX),
+            receive_timeout: self.receive_timeout,
+            expected_reassembled_frames: self.expected_reassembled_frames,
+            stop_after_expected_reassembled_frames: self.stop_after_expected_reassembled_frames,
+            receive_buffer_bytes: self.receive_buffer_bytes,
+            expected_reassembled_clients: self.expected_reassembled_clients,
+            expected_reassembled_frames_per_client: self.expected_reassembled_frames_per_client,
+        }
+    }
+
+    fn effective_max_handoff_requests(self) -> usize {
+        self.max_handoff_requests.unwrap_or(usize::MAX)
+    }
+}
+
+/// One-time ready snapshot emitted before the concurrent handoff loop begins.
+#[cfg(windows)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ServerReceiveAuthVideoQueueHandoffContinuousReadyState {
+    pub bind_address: SocketAddr,
+    pub pipe_name: String,
+    pub actual_pipe_path: String,
+    pub receive_buffer: ServerUdpReceiveBufferTuningResult,
+}
+
+/// Handoff-side counters for the concurrent receive + handoff runtime.
+#[cfg(windows)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ServerReceiveAuthVideoQueueHandoffContinuousHandoffSummary {
+    pub handoff_requests: usize,
+    pub frame_read_count: usize,
+    pub no_frame_count: usize,
+    pub decodable_source_none_count: usize,
+    pub decodable_source_queue_count: usize,
+    pub decodable_source_retained_keyframe_count: usize,
+    pub io_error_count: usize,
+}
+
+/// Receive-side stop reason for the concurrent receive + handoff runtime.
+#[cfg(windows)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ServerReceiveAuthVideoQueueHandoffContinuousReceiveStopReason {
+    StopRequested,
+    ReceiveTimedOut,
+    MaxRuntimeDurationReached,
+    MaxVideoPacketsReached,
+    ReassembledFramesThresholdReached,
+    ClientAwareThresholdReached,
+    ReassembledFramesAndClientAwareThresholdReached,
+}
+
+/// Overall stop reason for the concurrent receive + handoff runtime.
+#[cfg(windows)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ServerReceiveAuthVideoQueueHandoffContinuousRuntimeStopReason {
+    MaxHandoffRequestsReached,
+    ReceiveStopped,
+    HandoffStopped,
+}
+
+/// Aggregate concurrent receive + handoff runtime summary.
+#[cfg(windows)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ServerReceiveAuthVideoQueueHandoffContinuousRuntimeSummary {
+    pub packets_received: u64,
+    pub frames_queued: u64,
+    pub per_client_queued_frames: BTreeMap<String, u64>,
+    pub keyframes_queued: u64,
+    pub retained_keyframe_clients: usize,
+    pub handoff_requests: usize,
+    pub frame_read_count: usize,
+    pub no_frame_count: usize,
+    pub decodable_source_none_count: usize,
+    pub decodable_source_queue_count: usize,
+    pub decodable_source_retained_keyframe_count: usize,
+    pub io_error_count: usize,
+    pub stop_reason: ServerReceiveAuthVideoQueueHandoffContinuousRuntimeStopReason,
+    pub receive_stop_reason: ServerReceiveAuthVideoQueueHandoffContinuousReceiveStopReason,
+    pub handoff_stop_reason: ServerSwitcherNamedPipeManyRequestStopReason,
+    pub runtime_duration_ms: u64,
+}
+
+/// Output of the first concurrent receive + handoff runtime slice.
+#[cfg(windows)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ServerReceiveAuthVideoQueueHandoffContinuousRuntimeOutput {
+    pub bind_address: SocketAddr,
+    pub pipe_name: String,
+    pub actual_pipe_path: String,
+    pub receive_buffer: ServerUdpReceiveBufferTuningResult,
+    pub registry: AuthenticatedSenderRegistry,
+    pub video_queue_state: ServerVideoFrameQueueState,
+    pub reassembly_state: ServerVideoFrameReassemblyState,
+    pub receive_summary: ServerReceiveAuthVideoQueueOnceVideoSummary,
+    pub handoff_summary: ServerReceiveAuthVideoQueueHandoffContinuousHandoffSummary,
+    pub summary: ServerReceiveAuthVideoQueueHandoffContinuousRuntimeSummary,
+}
+
+/// Error while running the concurrent receive + handoff runtime.
+#[cfg(windows)]
+#[derive(Debug)]
+pub enum ServerReceiveAuthVideoQueueHandoffContinuousRuntimeError {
+    OneIterationStartup(ServerReceiveSendOneIterationStartupError),
+    Bind {
+        address: SocketAddr,
+        kind: io::ErrorKind,
+    },
+    SetReceiveTimeout {
+        address: SocketAddr,
+        kind: io::ErrorKind,
+    },
+    InvalidPipeName,
+    Receive(ServerReceiveAuthVideoQueueOnceStartupError),
+    ReceiveThreadPanicked,
+}
+
+#[cfg(windows)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct ServerReceiveAuthVideoQueueHandoffContinuousSharedState {
+    registry: AuthenticatedSenderRegistry,
+    video_queue_state: ServerVideoFrameQueueState,
+    reassembly_state: ServerVideoFrameReassemblyState,
+    receive_summary: ServerReceiveAuthVideoQueueOnceVideoSummary,
+    handoff_summary: ServerReceiveAuthVideoQueueHandoffContinuousHandoffSummary,
+}
+
+/// Launcher for the first concurrent receive + named-pipe handoff runtime.
+#[cfg(windows)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ServerReceiveAuthVideoQueueHandoffContinuousRuntimeLauncher {
+    receive: ServerReceiveAuthVideoQueueOnceLauncher,
+    handoff: ServerSwitcherNamedPipeOneRequestRuntimeBoundary,
+}
+
+#[cfg(windows)]
+impl ServerReceiveAuthVideoQueueHandoffContinuousRuntimeLauncher {
+    pub fn load_startup_config_from_path(
+        &self,
+        path: impl AsRef<Path>,
+    ) -> Result<
+        ServerAuthResponsePocStartupConfig,
+        ServerReceiveAuthVideoQueueHandoffContinuousRuntimeError,
+    > {
+        ServerReceiveSendOneIterationLauncher::default()
+            .load_startup_config_from_path(path)
+            .map_err(ServerReceiveAuthVideoQueueHandoffContinuousRuntimeError::OneIterationStartup)
+    }
+
+    pub fn run_from_path_with_policy(
+        &self,
+        path: impl AsRef<Path>,
+        pipe_name: &str,
+        policy: ServerReceiveAuthVideoQueueHandoffContinuousRuntimePolicy,
+    ) -> Result<
+        ServerReceiveAuthVideoQueueHandoffContinuousRuntimeOutput,
+        ServerReceiveAuthVideoQueueHandoffContinuousRuntimeError,
+    > {
+        self.run_from_path_with_policy_and_ready(path, pipe_name, policy, |_| {})
+    }
+
+    pub fn run_from_path_with_policy_and_ready<ReadyFn>(
+        &self,
+        path: impl AsRef<Path>,
+        pipe_name: &str,
+        policy: ServerReceiveAuthVideoQueueHandoffContinuousRuntimePolicy,
+        ready: ReadyFn,
+    ) -> Result<
+        ServerReceiveAuthVideoQueueHandoffContinuousRuntimeOutput,
+        ServerReceiveAuthVideoQueueHandoffContinuousRuntimeError,
+    >
+    where
+        ReadyFn: FnOnce(&ServerReceiveAuthVideoQueueHandoffContinuousReadyState),
+    {
+        let startup_config = self.load_startup_config_from_path(path)?;
+        self.run_with_policy_and_ready(startup_config, pipe_name, policy, ready)
+    }
+
+    pub fn run_with_policy_and_ready<ReadyFn>(
+        &self,
+        startup_config: ServerAuthResponsePocStartupConfig,
+        pipe_name: &str,
+        policy: ServerReceiveAuthVideoQueueHandoffContinuousRuntimePolicy,
+        ready: ReadyFn,
+    ) -> Result<
+        ServerReceiveAuthVideoQueueHandoffContinuousRuntimeOutput,
+        ServerReceiveAuthVideoQueueHandoffContinuousRuntimeError,
+    >
+    where
+        ReadyFn: FnOnce(&ServerReceiveAuthVideoQueueHandoffContinuousReadyState),
+    {
+        let actual_pipe_path = named_pipe_path(pipe_name).map_err(|_| {
+            ServerReceiveAuthVideoQueueHandoffContinuousRuntimeError::InvalidPipeName
+        })?;
+        let socket = self
+            .receive
+            .socket_io
+            .bind(startup_config.bind_address)
+            .map_err(
+                |error| ServerReceiveAuthVideoQueueHandoffContinuousRuntimeError::Bind {
+                    address: startup_config.bind_address,
+                    kind: error.kind(),
+                },
+            )?;
+        socket
+            .set_read_timeout(Some(policy.receive_timeout))
+            .map_err(|error| {
+                ServerReceiveAuthVideoQueueHandoffContinuousRuntimeError::SetReceiveTimeout {
+                    address: startup_config.bind_address,
+                    kind: error.kind(),
+                }
+            })?;
+        let receive_buffer = apply_receive_buffer_bytes(&socket, policy.receive_buffer_bytes);
+        let shared_state = Arc::new(Mutex::new(
+            ServerReceiveAuthVideoQueueHandoffContinuousSharedState::default(),
+        ));
+        let stop_requested = Arc::new(AtomicBool::new(false));
+        let runtime = *self;
+        let shared_state_for_receive = Arc::clone(&shared_state);
+        let stop_requested_for_receive = Arc::clone(&stop_requested);
+        let receive_policy = policy.receive_policy();
+        let runtime_started_at = Instant::now();
+        let receive_started_at = Instant::now();
+        let receive_thread = thread::spawn(move || {
+            runtime.run_receive_loop_until_stopped(
+                socket,
+                startup_config.auth_config,
+                startup_config.expected_protocol_version,
+                receive_policy,
+                policy.max_runtime_duration,
+                shared_state_for_receive,
+                stop_requested_for_receive,
+                receive_started_at,
+            )
+        });
+
+        let ready_state = ServerReceiveAuthVideoQueueHandoffContinuousReadyState {
+            bind_address: startup_config.bind_address,
+            pipe_name: pipe_name.to_string(),
+            actual_pipe_path: actual_pipe_path.clone(),
+            receive_buffer: receive_buffer.clone(),
+        };
+        ready(&ready_state);
+
+        let handoff_stop_reason = self.handoff.serve_many_shared_state(
+            &shared_state,
+            pipe_name,
+            policy.effective_max_handoff_requests(),
+        );
+        stop_requested.store(true, Ordering::SeqCst);
+        let receive_stop_reason =
+            match receive_thread.join() {
+                Ok(result) => result
+                    .map_err(ServerReceiveAuthVideoQueueHandoffContinuousRuntimeError::Receive)?,
+                Err(_) => return Err(
+                    ServerReceiveAuthVideoQueueHandoffContinuousRuntimeError::ReceiveThreadPanicked,
+                ),
+            };
+
+        let state = shared_state
+            .lock()
+            .expect("concurrent receive/handoff shared state lock should not poison")
+            .clone();
+        let runtime_duration_ms =
+            u64::try_from(runtime_started_at.elapsed().as_millis()).unwrap_or(u64::MAX);
+        let stop_reason = if handoff_stop_reason
+            == ServerSwitcherNamedPipeManyRequestStopReason::MaxRequestsReached
+        {
+            ServerReceiveAuthVideoQueueHandoffContinuousRuntimeStopReason::MaxHandoffRequestsReached
+        } else if receive_stop_reason
+            != ServerReceiveAuthVideoQueueHandoffContinuousReceiveStopReason::StopRequested
+        {
+            ServerReceiveAuthVideoQueueHandoffContinuousRuntimeStopReason::ReceiveStopped
+        } else {
+            ServerReceiveAuthVideoQueueHandoffContinuousRuntimeStopReason::HandoffStopped
+        };
+        let summary = ServerReceiveAuthVideoQueueHandoffContinuousRuntimeSummary {
+            packets_received: state.receive_summary.packets_received,
+            frames_queued: state.receive_summary.frames_queued,
+            per_client_queued_frames: state.receive_summary.per_client_queued_frames.clone(),
+            keyframes_queued: state.receive_summary.keyframes_queued,
+            retained_keyframe_clients: state.video_queue_state.retained_keyframe_clients(),
+            handoff_requests: state.handoff_summary.handoff_requests,
+            frame_read_count: state.handoff_summary.frame_read_count,
+            no_frame_count: state.handoff_summary.no_frame_count,
+            decodable_source_none_count: state.handoff_summary.decodable_source_none_count,
+            decodable_source_queue_count: state.handoff_summary.decodable_source_queue_count,
+            decodable_source_retained_keyframe_count: state
+                .handoff_summary
+                .decodable_source_retained_keyframe_count,
+            io_error_count: state.handoff_summary.io_error_count,
+            stop_reason,
+            receive_stop_reason,
+            handoff_stop_reason,
+            runtime_duration_ms,
+        };
+
+        Ok(ServerReceiveAuthVideoQueueHandoffContinuousRuntimeOutput {
+            bind_address: startup_config.bind_address,
+            pipe_name: pipe_name.to_string(),
+            actual_pipe_path,
+            receive_buffer,
+            registry: state.registry,
+            video_queue_state: state.video_queue_state,
+            reassembly_state: state.reassembly_state,
+            receive_summary: state.receive_summary,
+            handoff_summary: state.handoff_summary,
+            summary,
+        })
+    }
+
+    fn run_receive_loop_until_stopped(
+        &self,
+        socket: UdpSocket,
+        auth_config: ServerAuthConfig,
+        expected_protocol_version: ProtocolVersion,
+        policy: ServerReceiveAuthVideoQueueOnceManualPolicy,
+        max_runtime_duration: Option<Duration>,
+        shared_state: Arc<Mutex<ServerReceiveAuthVideoQueueHandoffContinuousSharedState>>,
+        stop_requested: Arc<AtomicBool>,
+        started_at: Instant,
+    ) -> Result<
+        ServerReceiveAuthVideoQueueHandoffContinuousReceiveStopReason,
+        ServerReceiveAuthVideoQueueOnceStartupError,
+    > {
+        let mut buffer = vec![0_u8; DEFAULT_UDP_PACKET_BUFFER_LEN];
+        loop {
+            if stop_requested.load(Ordering::SeqCst) {
+                let mut state = shared_state
+                    .lock()
+                    .expect("concurrent receive/handoff shared state lock should not poison");
+                finalize_concurrent_receive_summary(&mut state);
+                return Ok(
+                    ServerReceiveAuthVideoQueueHandoffContinuousReceiveStopReason::StopRequested,
+                );
+            }
+            if matches!(max_runtime_duration, Some(limit) if started_at.elapsed() >= limit) {
+                let mut state = shared_state
+                    .lock()
+                    .expect("concurrent receive/handoff shared state lock should not poison");
+                finalize_concurrent_receive_summary(&mut state);
+                return Ok(
+                    ServerReceiveAuthVideoQueueHandoffContinuousReceiveStopReason::MaxRuntimeDurationReached,
+                );
+            }
+
+            let received = match self.receive.socket_io.receive_one(&socket, &mut buffer) {
+                Ok(received) => received,
+                Err(error)
+                    if matches!(
+                        error.kind(),
+                        io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
+                    ) =>
+                {
+                    let mut state = shared_state
+                        .lock()
+                        .expect("concurrent receive/handoff shared state lock should not poison");
+                    state.receive_summary.receive_timed_out = true;
+                    state.receive_summary.stop_reason =
+                        Some(ServerReceiveAuthVideoQueueStopReason::ReceiveTimedOut);
+                    finalize_concurrent_receive_summary(&mut state);
+                    return Ok(
+                        ServerReceiveAuthVideoQueueHandoffContinuousReceiveStopReason::ReceiveTimedOut,
+                    );
+                }
+                Err(error) => {
+                    return Err(ServerReceiveAuthVideoQueueOnceStartupError::VideoReceive {
+                        kind: error.kind(),
+                    });
+                }
+            };
+
+            let queued_at = current_system_timestamp_micros();
+            let mut state = shared_state
+                .lock()
+                .expect("concurrent receive/handoff shared state lock should not poison");
+            let ServerReceiveAuthVideoQueueHandoffContinuousSharedState {
+                registry,
+                video_queue_state,
+                reassembly_state,
+                receive_summary,
+                ..
+            } = &mut *state;
+            let _ = self.receive.process_received_packet_for_video_queue(
+                &socket,
+                &auth_config,
+                registry,
+                video_queue_state,
+                reassembly_state,
+                expected_protocol_version,
+                received.source,
+                received.bytes,
+                queued_at,
+                receive_summary,
+            )?;
+            state.receive_summary.queue_len = state.video_queue_state.total_len();
+
+            if policy.max_video_packets != usize::MAX
+                && state.receive_summary.packets_received
+                    >= u64::try_from(policy.max_video_packets).unwrap_or(u64::MAX)
+            {
+                state.receive_summary.max_packets_reached = true;
+                state.receive_summary.stop_reason =
+                    Some(ServerReceiveAuthVideoQueueStopReason::MaxVideoPacketsReached);
+                finalize_concurrent_receive_summary(&mut state);
+                return Ok(
+                    ServerReceiveAuthVideoQueueHandoffContinuousReceiveStopReason::MaxVideoPacketsReached,
+                );
+            }
+
+            if let Some(stop_reason) =
+                evaluate_reassembled_stop_reason(policy, &state.receive_summary)
+            {
+                state.receive_summary.stop_reason = Some(stop_reason);
+                finalize_concurrent_receive_summary(&mut state);
+                return Ok(map_concurrent_receive_stop_reason(stop_reason));
+            }
+        }
+    }
+}
+
+#[cfg(windows)]
+fn map_concurrent_receive_stop_reason(
+    reason: ServerReceiveAuthVideoQueueStopReason,
+) -> ServerReceiveAuthVideoQueueHandoffContinuousReceiveStopReason {
+    match reason {
+        ServerReceiveAuthVideoQueueStopReason::DirectFrameQueued
+        | ServerReceiveAuthVideoQueueStopReason::ReassembledFramesThresholdReached => {
+            ServerReceiveAuthVideoQueueHandoffContinuousReceiveStopReason::ReassembledFramesThresholdReached
+        }
+        ServerReceiveAuthVideoQueueStopReason::ClientAwareThresholdReached => {
+            ServerReceiveAuthVideoQueueHandoffContinuousReceiveStopReason::ClientAwareThresholdReached
+        }
+        ServerReceiveAuthVideoQueueStopReason::ReassembledFramesAndClientAwareThresholdReached => {
+            ServerReceiveAuthVideoQueueHandoffContinuousReceiveStopReason::ReassembledFramesAndClientAwareThresholdReached
+        }
+        ServerReceiveAuthVideoQueueStopReason::ReceiveTimedOut => {
+            ServerReceiveAuthVideoQueueHandoffContinuousReceiveStopReason::ReceiveTimedOut
+        }
+        ServerReceiveAuthVideoQueueStopReason::MaxVideoPacketsReached => {
+            ServerReceiveAuthVideoQueueHandoffContinuousReceiveStopReason::MaxVideoPacketsReached
+        }
+    }
+}
+
+#[cfg(windows)]
+fn finalize_concurrent_receive_summary(
+    state: &mut ServerReceiveAuthVideoQueueHandoffContinuousSharedState,
+) {
+    finalize_auth_video_queue_summary(
+        &mut state.receive_summary,
+        &state.reassembly_state,
+        &state.video_queue_state,
+    );
+}
+
 /// Failure while serving one named-pipe handoff request.
 #[cfg(windows)]
 #[derive(Debug)]
@@ -5715,33 +6227,54 @@ impl ServerSwitcherNamedPipeOneRequestRuntimeBoundary {
         ServerSwitcherNamedPipeOneRequestRuntimeOutput,
         ServerSwitcherNamedPipeOneRequestRuntimeError,
     > {
-        let mut pipe = create_named_pipe_server_connection(pipe_name)
-            .map_err(ServerSwitcherNamedPipeOneRequestRuntimeError::CreatePipe)?;
-        connect_named_pipe_server(&pipe)
-            .map_err(ServerSwitcherNamedPipeOneRequestRuntimeError::Connect)?;
-
-        let request_frame = read_length_prefixed_frame(&mut pipe)
-            .map_err(ServerSwitcherNamedPipeOneRequestRuntimeError::ReadRequest)?;
-        let request = self
-            .codec
-            .decode_request_frame(&request_frame)
-            .map_err(ServerSwitcherNamedPipeOneRequestRuntimeError::DecodeRequest)?;
+        let (mut pipe, request) = self.accept_one_request(pipe_name)?;
         let queue_len_before_read = queue_state.client_queue_len(&request.client_id);
         let response = self.handler.handle_request(queue_state, request.clone());
-        let response_frame = self
-            .codec
-            .encode_response_frame(&response)
-            .map_err(ServerSwitcherNamedPipeOneRequestRuntimeError::EncodeResponse)?;
-        pipe.write_all(&response_frame)
-            .map_err(ServerSwitcherNamedPipeOneRequestRuntimeError::WriteResponse)?;
-        pipe.flush()
-            .map_err(ServerSwitcherNamedPipeOneRequestRuntimeError::FlushResponse)?;
+        self.write_one_response(&mut pipe, &response)?;
 
         Ok(ServerSwitcherNamedPipeOneRequestRuntimeOutput {
             request,
             response,
             queue_len_before_read,
         })
+    }
+
+    fn serve_many_shared_state(
+        &self,
+        shared_state: &Arc<Mutex<ServerReceiveAuthVideoQueueHandoffContinuousSharedState>>,
+        pipe_name: &str,
+        max_requests: usize,
+    ) -> ServerSwitcherNamedPipeManyRequestStopReason {
+        let mut requests_served = 0usize;
+        loop {
+            if requests_served >= max_requests {
+                return ServerSwitcherNamedPipeManyRequestStopReason::MaxRequestsReached;
+            }
+            match self.serve_once_shared_state(shared_state, pipe_name) {
+                Ok(_) => {
+                    requests_served = requests_served.saturating_add(1);
+                }
+                Err(error) => {
+                    let mut parse_error_count = 0usize;
+                    let mut io_error_count = 0usize;
+                    let stop_reason = summarize_named_pipe_many_stop_reason(
+                        error,
+                        &mut parse_error_count,
+                        &mut io_error_count,
+                    );
+                    if io_error_count > 0 {
+                        let mut state = shared_state.lock().expect(
+                            "concurrent receive/handoff shared state lock should not poison",
+                        );
+                        state.handoff_summary.io_error_count = state
+                            .handoff_summary
+                            .io_error_count
+                            .saturating_add(io_error_count);
+                    }
+                    return stop_reason;
+                }
+            }
+        }
     }
 
     /// Bounded server-side named-pipe accept loop for the next lifecycle slice.
@@ -5839,6 +6372,72 @@ impl ServerSwitcherNamedPipeOneRequestRuntimeBoundary {
             requests,
         })
     }
+
+    fn serve_once_shared_state(
+        &self,
+        shared_state: &Arc<Mutex<ServerReceiveAuthVideoQueueHandoffContinuousSharedState>>,
+        pipe_name: &str,
+    ) -> Result<
+        ServerSwitcherNamedPipeOneRequestRuntimeOutput,
+        ServerSwitcherNamedPipeOneRequestRuntimeError,
+    > {
+        let (mut pipe, request) = self.accept_one_request(pipe_name)?;
+        let output = {
+            let mut state = shared_state
+                .lock()
+                .expect("concurrent receive/handoff shared state lock should not poison");
+            let queue_len_before_read =
+                state.video_queue_state.client_queue_len(&request.client_id);
+            let response = self
+                .handler
+                .handle_request(&mut state.video_queue_state, request.clone());
+            record_concurrent_handoff_response_progress(&mut state.handoff_summary, &response);
+            ServerSwitcherNamedPipeOneRequestRuntimeOutput {
+                request,
+                response,
+                queue_len_before_read,
+            }
+        };
+        self.write_one_response(&mut pipe, &output.response)?;
+        Ok(output)
+    }
+
+    fn accept_one_request(
+        &self,
+        pipe_name: &str,
+    ) -> Result<
+        (File, ServerSwitcherQueuedFrameHandoffRequest),
+        ServerSwitcherNamedPipeOneRequestRuntimeError,
+    > {
+        let mut pipe = create_named_pipe_server_connection(pipe_name)
+            .map_err(ServerSwitcherNamedPipeOneRequestRuntimeError::CreatePipe)?;
+        connect_named_pipe_server(&pipe)
+            .map_err(ServerSwitcherNamedPipeOneRequestRuntimeError::Connect)?;
+
+        let request_frame = read_length_prefixed_frame(&mut pipe)
+            .map_err(ServerSwitcherNamedPipeOneRequestRuntimeError::ReadRequest)?;
+        let request = self
+            .codec
+            .decode_request_frame(&request_frame)
+            .map_err(ServerSwitcherNamedPipeOneRequestRuntimeError::DecodeRequest)?;
+        Ok((pipe, request))
+    }
+
+    fn write_one_response(
+        &self,
+        pipe: &mut File,
+        response: &ServerSwitcherQueuedFrameHandoffResponse,
+    ) -> Result<(), ServerSwitcherNamedPipeOneRequestRuntimeError> {
+        let response_frame = self
+            .codec
+            .encode_response_frame(response)
+            .map_err(ServerSwitcherNamedPipeOneRequestRuntimeError::EncodeResponse)?;
+        pipe.write_all(&response_frame)
+            .map_err(ServerSwitcherNamedPipeOneRequestRuntimeError::WriteResponse)?;
+        pipe.flush()
+            .map_err(ServerSwitcherNamedPipeOneRequestRuntimeError::FlushResponse)?;
+        Ok(())
+    }
 }
 
 #[cfg(windows)]
@@ -5877,6 +6476,51 @@ fn summarize_named_pipe_many_stop_reason(
         ServerSwitcherNamedPipeOneRequestRuntimeError::FlushResponse(_) => {
             *io_error_count = io_error_count.saturating_add(1);
             ServerSwitcherNamedPipeManyRequestStopReason::FlushResponse
+        }
+    }
+}
+
+#[cfg(windows)]
+fn record_concurrent_handoff_response_progress(
+    summary: &mut ServerReceiveAuthVideoQueueHandoffContinuousHandoffSummary,
+    response: &ServerSwitcherQueuedFrameHandoffResponse,
+) {
+    summary.handoff_requests = summary.handoff_requests.saturating_add(1);
+    match response {
+        ServerSwitcherQueuedFrameHandoffResponse::FrameRead {
+            decodable_source, ..
+        } => {
+            summary.frame_read_count = summary.frame_read_count.saturating_add(1);
+            record_concurrent_handoff_decodable_source(summary, *decodable_source);
+        }
+        ServerSwitcherQueuedFrameHandoffResponse::NoFrame {
+            decodable_source, ..
+        } => {
+            summary.no_frame_count = summary.no_frame_count.saturating_add(1);
+            record_concurrent_handoff_decodable_source(summary, *decodable_source);
+        }
+        ServerSwitcherQueuedFrameHandoffResponse::HandoffError { .. } => {}
+    }
+}
+
+#[cfg(windows)]
+fn record_concurrent_handoff_decodable_source(
+    summary: &mut ServerReceiveAuthVideoQueueHandoffContinuousHandoffSummary,
+    source: ServerSwitcherQueuedFrameDecodableSource,
+) {
+    match source {
+        ServerSwitcherQueuedFrameDecodableSource::None => {
+            summary.decodable_source_none_count =
+                summary.decodable_source_none_count.saturating_add(1);
+        }
+        ServerSwitcherQueuedFrameDecodableSource::Queue => {
+            summary.decodable_source_queue_count =
+                summary.decodable_source_queue_count.saturating_add(1);
+        }
+        ServerSwitcherQueuedFrameDecodableSource::RetainedKeyframe => {
+            summary.decodable_source_retained_keyframe_count = summary
+                .decodable_source_retained_keyframe_count
+                .saturating_add(1);
         }
     }
 }
@@ -16574,6 +17218,195 @@ shared_token = "secret"
                 retained_keyframe_available: false,
                 retained_keyframe_frame_id: None,
             }
+        );
+    }
+
+    #[test]
+    fn concurrent_shared_state_receive_helper_enqueues_direct_frame() {
+        let launcher = ServerReceiveAuthVideoQueueOnceLauncher::default();
+        let socket = UdpSocket::bind("127.0.0.1:0").expect("socket should bind");
+        let source = packet_source();
+        let mut shared = ServerReceiveAuthVideoQueueHandoffContinuousSharedState {
+            registry: registry_with_client("client-1", source),
+            ..Default::default()
+        };
+
+        launcher
+            .process_received_packet_for_video_queue(
+                &socket,
+                &auth_config(Some("secret")),
+                &mut shared.registry,
+                &mut shared.video_queue_state,
+                &mut shared.reassembly_state,
+                ProtocolVersion(2),
+                source,
+                &video_frame_packet("client-1", 42),
+                TimestampMicros(9_999),
+                &mut shared.receive_summary,
+            )
+            .expect("video frame should enqueue through shared-state receive helper");
+
+        assert_eq!(shared.receive_summary.packets_received, 1);
+        assert_eq!(shared.receive_summary.frames_queued, 1);
+        assert_eq!(shared.receive_summary.keyframes_queued, 1);
+        assert_eq!(
+            shared.receive_summary.per_client_queued_frames,
+            BTreeMap::from([("client-1/run-1".to_string(), 1)])
+        );
+        assert_eq!(shared.video_queue_state.total_len(), 1);
+        assert_eq!(shared.video_queue_state.retained_keyframe_clients(), 1);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn concurrent_shared_state_handoff_reads_latest_decodable_from_queue() {
+        let shared_state = Arc::new(Mutex::new(
+            ServerReceiveAuthVideoQueueHandoffContinuousSharedState::default(),
+        ));
+        {
+            let mut state = shared_state
+                .lock()
+                .expect("shared state lock should not poison");
+            store_video_frame_for_read_test_with_keyframe(
+                &mut state.video_queue_state,
+                "client-1",
+                "run-1",
+                11,
+                true,
+            );
+            store_video_frame_for_read_test_with_keyframe(
+                &mut state.video_queue_state,
+                "client-1",
+                "run-1",
+                12,
+                false,
+            );
+        }
+
+        let response = {
+            let mut state = shared_state
+                .lock()
+                .expect("shared state lock should not poison");
+            let response = ServerSwitcherQueuedFrameHandoffHandlerBoundary::default()
+                .handle_request(
+                    &mut state.video_queue_state,
+                    ServerSwitcherQueuedFrameHandoffRequest {
+                        handoff_version: 1,
+                        request_id: 1,
+                        client_id: ClientId("client-1".to_string()),
+                        run_id: RunId("run-1".to_string()),
+                        read_mode: ServerSwitcherQueuedFrameReadMode::InspectLatestDecodable,
+                    },
+                );
+            record_concurrent_handoff_response_progress(&mut state.handoff_summary, &response);
+            response
+        };
+
+        let ServerSwitcherQueuedFrameHandoffResponse::FrameRead {
+            frame,
+            decodable_source,
+            ..
+        } = response
+        else {
+            panic!("shared-state latest decodable request should return a frame");
+        };
+        assert_eq!(frame.frame_id, 11);
+        assert_eq!(
+            decodable_source,
+            ServerSwitcherQueuedFrameDecodableSource::Queue
+        );
+        let state = shared_state
+            .lock()
+            .expect("shared state lock should not poison");
+        assert_eq!(state.handoff_summary.handoff_requests, 1);
+        assert_eq!(state.handoff_summary.frame_read_count, 1);
+        assert_eq!(state.handoff_summary.decodable_source_queue_count, 1);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn concurrent_shared_state_handoff_uses_retained_keyframe_fallback() {
+        let shared_state = Arc::new(Mutex::new(
+            ServerReceiveAuthVideoQueueHandoffContinuousSharedState::default(),
+        ));
+        {
+            let mut state = shared_state
+                .lock()
+                .expect("shared state lock should not poison");
+            let policy = ServerVideoFrameQueuePolicy {
+                max_frames_per_client: 2,
+            };
+            store_video_frame_for_read_test_with_keyframe_and_policy(
+                &mut state.video_queue_state,
+                "client-1",
+                "run-1",
+                21,
+                true,
+                policy,
+            );
+            store_video_frame_for_read_test_with_keyframe_and_policy(
+                &mut state.video_queue_state,
+                "client-1",
+                "run-1",
+                22,
+                false,
+                policy,
+            );
+            store_video_frame_for_read_test_with_keyframe_and_policy(
+                &mut state.video_queue_state,
+                "client-1",
+                "run-1",
+                23,
+                false,
+                policy,
+            );
+        }
+
+        let response = {
+            let mut state = shared_state
+                .lock()
+                .expect("shared state lock should not poison");
+            let response = ServerSwitcherQueuedFrameHandoffHandlerBoundary::default()
+                .handle_request(
+                    &mut state.video_queue_state,
+                    ServerSwitcherQueuedFrameHandoffRequest {
+                        handoff_version: 1,
+                        request_id: 2,
+                        client_id: ClientId("client-1".to_string()),
+                        run_id: RunId("run-1".to_string()),
+                        read_mode: ServerSwitcherQueuedFrameReadMode::InspectLatestDecodable,
+                    },
+                );
+            record_concurrent_handoff_response_progress(&mut state.handoff_summary, &response);
+            response
+        };
+
+        let ServerSwitcherQueuedFrameHandoffResponse::FrameRead {
+            frame,
+            decodable_source,
+            retained_keyframe_available,
+            retained_keyframe_frame_id,
+            ..
+        } = response
+        else {
+            panic!("shared-state latest decodable request should fall back to retained keyframe");
+        };
+        assert_eq!(frame.frame_id, 21);
+        assert_eq!(
+            decodable_source,
+            ServerSwitcherQueuedFrameDecodableSource::RetainedKeyframe
+        );
+        assert!(retained_keyframe_available);
+        assert_eq!(retained_keyframe_frame_id, Some(21));
+        let state = shared_state
+            .lock()
+            .expect("shared state lock should not poison");
+        assert_eq!(state.handoff_summary.handoff_requests, 1);
+        assert_eq!(
+            state
+                .handoff_summary
+                .decodable_source_retained_keyframe_count,
+            1
         );
     }
 

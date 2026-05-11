@@ -2,348 +2,224 @@
 
 # Concurrent Handoff Runtime Plan
 
-## 目的
+## Status
+- 2-client same-PC staged handoff preview checkpoint is PASS.
+- The first concurrent runtime slice is now implemented.
+- Existing staged command remains valid:
+  - `--receive-auth-video-queue-and-serve-handoff-many`
+- New concurrent command is available:
+  - `--receive-auth-video-queue-and-serve-handoff-continuous`
 
-2-client real handoff preview validation は staged checkpoint として PASS
-したが、current server runtime は以下の順序で動く。
+## Goal
+Move from the staged lifecycle:
 
-1. UDP receive / auth / reassembly / queue
-2. expected frames 到達
-3. handoff pipe ready
-4. switcher read
+```text
+receive/auth/reassembly/queue
+-> expected frames reached
+-> handoff pipe ready
+-> switcher read
+```
 
-これは bounded validation としては十分だが、realtime preview /
-production-like operation としては不十分である。
+to a minimal concurrent lifecycle:
 
-この doc は、次段の concurrent receive + handoff serve runtime を
-docs-only で整理するための source of truth とする。
+```text
+receive/auth/reassembly/queue update
+|| handoff pipe serve
+```
 
-## 前提
+The first goal is narrow:
 
-- existing staged command
-  `--receive-auth-video-queue-and-serve-handoff-many` は残す
-- first concurrent slice は 2-client same-PC のみを対象にする
-- first concurrent slice では `preview-latest-decodable` と retained
-  keyframe fallback を前提にする
+- same-PC only
+- 2 real clients only
+- `preview-latest-decodable` only
+- retained-keyframe fallback allowed
 - no reconnect
 - no daemon/service polish
 - no 4-client
 - no OBS-specific work
 - no switcher persistent decoder context
 
-## 目指す runtime shape
+## Implemented Command
 
-起動直後に server が以下を並行に持つ。
+```text
+stream-sync-server --receive-auth-video-queue-and-serve-handoff-continuous
+  [config-path]
+  [pipe-name]
+  [max-handoff-requests-or-0-for-unbounded]
+  [receive-timeout-ms]
+  [max-runtime-duration-ms-or-0-for-unbounded]
+  [max-video-packets-or-0-for-unbounded]
+  [expected-reassembled-frames]
+  [stop-after-expected-reassembled-frames]
+  [receive-buffer-bytes]
+  [expected-reassembled-clients]
+  [expected-reassembled-frames-per-client]
+```
 
-1. UDP receive/auth/reassembly/queue update runtime
-2. named-pipe handoff serve runtime
-3. shared queue/retained state
-4. shared runtime summary/counters
+Current recommended first validation shape:
 
-Expected operator flow:
-
-1. server start
-2. `receive_ready=true`
-3. `handoff_ready=true`
-4. switcher start
-5. client1/client2 start
-6. client sending 中に switcher が `latest` / `latest-decodable` frame を読む
-
-## Command Candidate
-
-Recommended primary candidate:
-
-- `--receive-auth-video-queue-and-serve-handoff-continuous`
-
-Alternative shorter candidate:
-
-- `--receive-send-handoff-runtime-continuous`
-
-Naming judgment:
-
-- keep the staged command name family visible
-- prefer the longer explicit name for the first implementation because it makes
-  auth/video-queue/handoff ownership obvious
-- keep `continuous` explicit so it is not confused with staged / bounded
-  receive-then-serve commands
-
-Recommended initial CLI family:
-
-- staged:
-  - `--receive-auth-video-queue-and-serve-handoff-many`
-- concurrent:
-  - `--receive-auth-video-queue-and-serve-handoff-continuous`
+- `pipe-name=streamsync-handoff-dev`
+- `max-handoff-requests=180`
+- `receive-timeout-ms=30000`
+- `max-runtime-duration-ms=180000`
+- `max-video-packets=0`
+- `expected-reassembled-frames=0`
+- `stop-after-expected-reassembled-frames=false`
+- `receive-buffer-bytes=268435456`
+- `expected-reassembled-clients=0`
+- `expected-reassembled-frames-per-client=0`
 
 ## Responsibility Split
 
 ### Receive side
-
-Owns:
-
 - UDP bind / receive loop
 - auth decision and registry updates
-- `VideoFrameFragment` reassembly
-- queue insertion
+- fragment reassembly
+- bounded queue insertion
 - retained keyframe update
 - receive-side counters
 
-Does not own:
-
-- switcher targetTime scheduling
-- decode progression
-- display policy
-
 ### Handoff side
-
-Owns:
-
-- named-pipe listener lifecycle
-- request decode / response encode
+- named-pipe accept / request decode / response encode
 - queue read by `client_id + run_id + read_mode`
 - handoff-side counters
 
-Does not own:
-
-- frame mutation beyond current read semantics
-- switcher retry manager
-- decode/display state
-
-### Shared queue state
-
-Owns:
-
-- per `client_id + run_id` queued encoded frames
-- retained latest keyframe per `client_id + run_id`
-- per-client receive counters needed by both receive/handoff summaries
-
-### Runtime coordination
-
-Owns:
-
-- startup readiness
-- stop request propagation
-- aggregate summary output
-- shutdown ordering
-
-## Shared State Plan
-
-### State owned by the concurrent runtime
-
+### Shared state
 - authenticated sender registry
 - `ServerVideoFrameQueueState`
 - retained keyframe state
-- receive-side aggregate counters
-- handoff-side aggregate counters
-- runtime lifecycle state
+- `ServerVideoFrameReassemblyState`
+- receive summary counters
+- handoff summary counters
 
-### Minimum shared data to expose
+### Runtime coordination
+- early ready line
+- stop request propagation
+- aggregate stopped summary
 
-- queue per `client_id + run_id`
-- retained keyframe per `client_id + run_id`
-- per-client queued frame counts
-- per-client keyframe counts
-- receive totals
-- handoff request totals
-
-### Lock granularity
-
-Recommended first slice:
-
-- one runtime-owned shared state object
-- one coarse lock around queue + retained-keyframe + related counters
-
-Reason:
-
-- first slice is same-PC, 2-client, design target is correctness and
-  observability rather than peak throughput
-- queue read and queue write both already operate on one logical queue state
-- finer-grained locks add complexity before real contention evidence exists
-
-Deferred lock refinement candidates:
-
-- split queue/retained-frame state from pure counters
-- per-client queue partitions
-- read-mostly snapshots for summary output
-
-### Snapshot / clone policy
-
-- do not clone encoded payloads for periodic summary output
-- summary output should use counters and lightweight metadata snapshots only
-- handoff `FrameRead` may still clone payload bytes into the response as today
-- queue diagnostics should prefer frame ids / counts / timestamps over payload
-  duplication
-
-### Read path policy
-
-- handoff request takes lock
-- perform one queue read decision
-- clone only the selected frame payload needed for that response
-- release lock before blocking pipe write when possible in the implementation
-
-### Write path policy
-
-- receive loop takes lock
-- apply one accepted frame insertion
-- update retained keyframe if `is_keyframe=true`
-- update receive counters
-- release lock immediately after state mutation
+## Shared State Policy
+- First slice uses one coarse lock around queue state, retained keyframe state, reassembly state, registry, and closely related counters.
+- Handoff reads lock only around queue access and counter updates.
+- Pipe read / write stays outside the queue lock.
+- Summary output uses counters and metadata snapshots, not payload duplication.
 
 ## Readiness Semantics
 
-Recommended explicit readiness flags:
+Current concurrent ready line exposes:
 
-- `receive_ready=true|false`
-- `handoff_ready=true|false`
-- `validation_ready=true|false|n/a`
+- `receive_ready=true`
+- `handoff_ready=true`
+- `runtime_mode=concurrent`
+- `validation_ready=n/a`
+- `pipe_name=...`
+- `actual_pipe_path=...`
 
 Meaning:
 
 - `receive_ready=true`
-  - UDP socket bind and receive loop startup completed
+  - UDP socket bind and receive loop thread startup completed
 - `handoff_ready=true`
-  - named-pipe listener is ready to accept switcher requests
-- `validation_ready=true`
-  - bounded expected validation condition reached
+  - server is entering the named-pipe accept loop and switcher may connect
+- `validation_ready=n/a`
+  - concurrent mode is not using the staged bounded validation gate by default
 
-Continuous runtime note:
-
-- `validation_ready` is optional in continuous mode
-- first continuous implementation can expose it as:
-  - `validation_ready=n/a` when no expected frame/client thresholds are
-    configured
-  - `validation_ready=true|false` only when optional bounded thresholds are
-    supplied for manual same-PC validation
-
-Recommended first-slice behavior:
-
-- always emit `receive_ready`
-- always emit `handoff_ready`
-- allow `validation_ready` to be absent or `n/a` by default
-
-## Summary Field Plan
+## Summary Fields
 
 ### Receive side
-
 - `packets_received`
 - `frames_queued`
 - `per_client_queued_frames`
 - `keyframes_queued`
 - `retained_keyframe_clients`
 - `per_client_retained_keyframe_frame_id`
-- `observed_queued_clients`
-- `observed_reassembled_clients`
 
 ### Handoff side
-
 - `handoff_requests`
 - `frame_read_count`
 - `no_frame_count`
-- `decodable_source_queue_count`
-- `decodable_source_retained_keyframe_count`
-- `decodable_source_none_count`
+- `decodable_source_counts`
 - `io_error_count`
-- `parse_error_count`
 
 ### Runtime side
-
 - `stop_reason`
 - `receive_stop_reason`
 - `handoff_stop_reason`
 - `runtime_duration_ms`
-- `receive_ready`
-- `handoff_ready`
-- `validation_ready`
 
-## Stop / Shutdown Coordination
+## Stop Conditions
 
-Recommended first-slice stop model:
+First-slice concurrent runtime currently supports bounded shutdown by:
 
-- one runtime-owned stop flag
-- receive loop and handoff serve loop both observe it
-- any fatal startup error fails the whole runtime
-- normal shutdown is explicit and small:
-  - manual stop request
-  - configured max runtime / max requests if provided
-  - fatal receive error
-  - fatal handoff listener error
+- receive timeout
+- max runtime duration
+- max handoff requests
+- max received video packets
+- optional expected reassembled frame thresholds
 
-Deferred:
+Known current caveat:
 
-- reconnect/backoff
-- daemon manager
-- Ctrl+C polish
-- automatic restart
-- multi-process supervisor integration
+- if receive side stops first, overall process still depends on the handoff loop
+  reaching its own stop point
+- this is acceptable for the first same-PC manual slice because the switcher
+  loop is already bounded by frame count / request budget
 
-## MVP Slice
+## Human Validation Order
 
-Smallest useful concurrent slice:
+1. Start the concurrent server runtime.
+2. Confirm stdout includes:
+   - `receive_ready=true`
+   - `handoff_ready=true`
+   - `runtime_mode=concurrent`
+3. Start the switcher preview loop with `preview-latest-decodable`.
+4. Start client1.
+5. Start client2.
+6. Confirm the switcher reaches:
+   - `FrameRead` on the two real slots, or
+   - `frames_rendered > 0`
+7. Confirm the final server stopped summary includes:
+   - `handoff_requests > 0`
+   - `frame_read_count > 0`
+   - `retained_keyframe_clients >= 1`
 
-1. one new concurrent server command
-2. same-PC only
-3. 2-client target
-4. `preview-latest-decodable` only
-5. retained-keyframe fallback allowed and expected
-6. no reconnect
-7. no 4-client
-8. no OBS work
-9. no persistent decoder context
-10. summary-first observability
+## First Validation Commands
 
-What this MVP should prove:
+Server:
 
-- switcher can connect before clients finish sending
-- switcher can read during active receive
-- shared queue/retained state stays coherent
-- `FrameRead` / `NoFrame` / `HandoffError` stay explicit
+```powershell
+.\target\debug\stream-sync-server.exe --receive-auth-video-queue-and-serve-handoff-continuous configs/manual/server.two-real-slots.toml streamsync-handoff-dev 180 30000 180000 0 0 false 268435456 0 0
+```
 
-What this MVP should not try to prove:
+Switcher:
 
-- full realtime latest non-IDR decode progression
-- production lifecycle polish
-- multi-client load beyond current 2-client same-PC checkpoint
+```powershell
+.\target\debug\stream-sync-switcher.exe --four-view-two-real-handoff-preview-loop streamsync-handoff-dev 0 player1 streamsync-dev-session 1 player2 streamsync-dev-session 180 preview-latest-decodable
+```
 
-## Human Validation Procedure
+Client1:
 
-Recommended first manual procedure:
+```powershell
+.\target\debug\stream-sync-client.exe --auth-real-encoded-video-frame-poc-bounded configs/manual/client.player1.toml 900 16 1 --encoder-runtime persistent --cadence-mode deadline
+```
 
-1. start server concurrent runtime
-2. confirm `receive_ready=true`
-3. confirm `handoff_ready=true`
-4. start switcher preview loop
-5. start client1
-6. start client2
-7. confirm switcher can report `FrameRead` while clients are still sending
-8. confirm `frames_rendered > 0`
-9. confirm `render_failures=0`
-10. confirm real slots can return `decodable_source=queue` or
-    `decodable_source=retained_keyframe`
+Client2:
 
-Suggested same-PC evidence to capture:
+```powershell
+.\target\debug\stream-sync-client.exe --auth-real-encoded-video-frame-poc-bounded configs/manual/client.player2.toml 900 16 1 --encoder-runtime persistent --cadence-mode deadline
+```
 
-- server startup readiness line
-- one mid-run server runtime summary snapshot if available
-- switcher summary while clients are still active
-- final server runtime summary
-- final client summaries
+## Success Gate
+- server ready line is printed before clients start sending
+- switcher can connect after server start, before client traffic finishes
+- real slots reach `FrameRead`
+- `frames_rendered > 0`
+- `render_failures=0`
+- concurrent server stopped summary shows handoff traffic was actually served
+- staged command regressions remain green
 
-## Known Issues And Deferred Items
-
-Keep these explicit in the plan:
-
-- switcher persistent decoder context is still unimplemented
-- retained-keyframe preview is not the same as continuous latest non-IDR decode
-- same-PC client fps variance remains a known issue
-- concurrent receive + handoff serve is design-only in this step
-- staged command remains necessary as a stable validation baseline
-
-## Next Implementation Order
-
-Recommended order after this design step:
-
-1. add concurrent runtime boundary and command without replacing staged command
-2. emit readiness lines early
-3. share queue/retained state with coarse locking
-4. add runtime aggregate summary counters
-5. run 2-client same-PC human validation
-6. only then consider 4-client preparation or lifecycle polish
+## Known Limits
+- current preview path is still retained-keyframe-friendly, not a full latest
+  non-IDR continuous decode path
+- switcher persistent decoder context is still out of scope
+- same-PC client FPS variance remains a known issue
+- reconnect / daemon lifecycle polish remains deferred
+- 4-client and OBS validation remain later phases

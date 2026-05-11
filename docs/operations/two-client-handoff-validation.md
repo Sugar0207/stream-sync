@@ -29,6 +29,14 @@ Known limitation for this staged validation:
 - realtime preview / production still needs a future concurrent
   receive-and-serve runtime
 
+Current follow-up note:
+
+- the first concurrent runtime slice is now implemented as
+  `--receive-auth-video-queue-and-serve-handoff-continuous`
+- this document remains the staged validation source of truth
+- concurrent validation details now live in
+  `docs/operations/concurrent-handoff-runtime-plan.md`
+
 ## Positioning
 
 Current validated baseline before this step:
@@ -62,6 +70,23 @@ stream-sync-server --receive-auth-video-queue-and-serve-handoff-many
   [max-requests]
   [max-video-packets]
   [receive-timeout-ms]
+  [expected-reassembled-frames]
+  [stop-after-expected-reassembled-frames]
+  [receive-buffer-bytes]
+  [expected-reassembled-clients]
+  [expected-reassembled-frames-per-client]
+```
+
+First concurrent follow-up command:
+
+```text
+stream-sync-server --receive-auth-video-queue-and-serve-handoff-continuous
+  [config-path]
+  [pipe-name]
+  [max-handoff-requests-or-0-for-unbounded]
+  [receive-timeout-ms]
+  [max-runtime-duration-ms-or-0-for-unbounded]
+  [max-video-packets-or-0-for-unbounded]
   [expected-reassembled-frames]
   [stop-after-expected-reassembled-frames]
   [receive-buffer-bytes]
@@ -150,6 +175,33 @@ Important ownership split:
 - switcher owns targetTime selection after handoff
 - switcher owns `WaitingForFrameAtOrBeforeTarget`
 - switcher owns render-facing state
+
+## Next Runtime Step
+
+The staged command remains the checkpoint-preserving validation path.
+
+The newly implemented concurrent follow-up path is for the next human check:
+
+```text
+server start
+-> receive_ready=true
+-> handoff_ready=true
+-> switcher start
+-> client1/client2 start
+-> switcher reads while clients are still sending
+```
+
+What the first concurrent slice proves:
+
+- receive and handoff serve can coexist in one runtime
+- queue state and retained keyframe state can be shared safely
+- switcher can connect before bounded receive completion
+
+What it still does not prove:
+
+- latest non-IDR continuous decode progression
+- switcher persistent decoder context
+- reconnect / daemon lifecycle polish
 
 ## Same-PC Preconditions
 

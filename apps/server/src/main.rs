@@ -578,9 +578,72 @@ fn main() {
                 std::process::exit(1);
             }
         }
+        Some("--receive-auth-video-queue-and-serve-handoff-continuous") => {
+            let command = parse_receive_auth_video_queue_serve_handoff_continuous_command_args(
+                args.collect(),
+            );
+            validate_client_aware_stop_policy_or_exit(
+                command.expected_reassembled_clients,
+                command.expected_reassembled_frames_per_client,
+            );
+            #[cfg(windows)]
+            {
+                let launcher =
+                    stream_sync_server::ServerReceiveAuthVideoQueueHandoffContinuousRuntimeLauncher::default();
+                let policy =
+                    stream_sync_server::ServerReceiveAuthVideoQueueHandoffContinuousRuntimePolicy {
+                        receive_timeout: std::time::Duration::from_millis(
+                            command.receive_timeout_ms,
+                        ),
+                        max_runtime_duration: command
+                            .max_runtime_duration_ms
+                            .map(std::time::Duration::from_millis),
+                        max_handoff_requests: command.max_handoff_requests,
+                        max_video_packets: command.max_video_packets,
+                        expected_reassembled_frames: command.expected_reassembled_frames,
+                        stop_after_expected_reassembled_frames: command
+                            .stop_after_expected_reassembled_frames,
+                        receive_buffer_bytes: command.receive_buffer_bytes,
+                        expected_reassembled_clients: command.expected_reassembled_clients,
+                        expected_reassembled_frames_per_client: command
+                            .expected_reassembled_frames_per_client,
+                    };
+                match launcher.run_from_path_with_policy_and_ready(
+                    &command.config_path,
+                    &command.pipe_name,
+                    policy,
+                    |ready_state| {
+                        println!(
+                            "{}",
+                            format_named_pipe_handoff_concurrent_ready_line(
+                                ready_state,
+                                &command.pipe_name,
+                                policy,
+                            )
+                        );
+                    },
+                ) {
+                    Ok(outcome) => {
+                        println!("{}", format_named_pipe_handoff_concurrent_summary(&outcome))
+                    }
+                    Err(error) => {
+                        eprintln!(
+                            "receive auth/video queue and serve handoff continuous failed: {error:?}"
+                        );
+                        std::process::exit(1);
+                    }
+                }
+            }
+            #[cfg(not(windows))]
+            {
+                let _ = command;
+                eprintln!("receive auth/video queue and serve handoff continuous failed: named-pipe handoff command is only available on Windows");
+                std::process::exit(1);
+            }
+        }
         _ => {
             println!(
-                "stream-sync-server scaffold; use --auth-response-poc-once [config-path], --receive-send-once [config-path], --receive-send-twice [config-path], --receive-send-three [config-path], --receive-send-runtime-bounded [config-path] [max-iterations] [receive-timeout-ms], --receive-send-runtime-continuous [config-path] [receive-timeout-ms] [max-iterations-or-0-for-unbounded] [heartbeat-timeout-micros] [receive-buffer-bytes] [max-packets-per-drain-cycle] [--verbose], --receive-auth-video-queue-once [config-path] [max-video-packets] [receive-timeout-ms] [expected-reassembled-frames] [stop-after-expected-reassembled-frames] [receive-buffer-bytes] [expected-reassembled-clients] [expected-reassembled-frames-per-client], --receive-auth-video-queue-and-serve-handoff-once [config-path] [pipe-name] [max-video-packets] [receive-timeout-ms] [expected-reassembled-frames] [stop-after-expected-reassembled-frames] [receive-buffer-bytes] [expected-reassembled-clients] [expected-reassembled-frames-per-client], or --receive-auth-video-queue-and-serve-handoff-many [config-path] [pipe-name] [max-requests] [max-video-packets] [receive-timeout-ms] [expected-reassembled-frames] [stop-after-expected-reassembled-frames] [receive-buffer-bytes] [expected-reassembled-clients] [expected-reassembled-frames-per-client]"
+                "stream-sync-server scaffold; use --auth-response-poc-once [config-path], --receive-send-once [config-path], --receive-send-twice [config-path], --receive-send-three [config-path], --receive-send-runtime-bounded [config-path] [max-iterations] [receive-timeout-ms], --receive-send-runtime-continuous [config-path] [receive-timeout-ms] [max-iterations-or-0-for-unbounded] [heartbeat-timeout-micros] [receive-buffer-bytes] [max-packets-per-drain-cycle] [--verbose], --receive-auth-video-queue-once [config-path] [max-video-packets] [receive-timeout-ms] [expected-reassembled-frames] [stop-after-expected-reassembled-frames] [receive-buffer-bytes] [expected-reassembled-clients] [expected-reassembled-frames-per-client], --receive-auth-video-queue-and-serve-handoff-once [config-path] [pipe-name] [max-video-packets] [receive-timeout-ms] [expected-reassembled-frames] [stop-after-expected-reassembled-frames] [receive-buffer-bytes] [expected-reassembled-clients] [expected-reassembled-frames-per-client], --receive-auth-video-queue-and-serve-handoff-many [config-path] [pipe-name] [max-requests] [max-video-packets] [receive-timeout-ms] [expected-reassembled-frames] [stop-after-expected-reassembled-frames] [receive-buffer-bytes] [expected-reassembled-clients] [expected-reassembled-frames-per-client], or --receive-auth-video-queue-and-serve-handoff-continuous [config-path] [pipe-name] [max-handoff-requests-or-0-for-unbounded] [receive-timeout-ms] [max-runtime-duration-ms-or-0-for-unbounded] [max-video-packets-or-0-for-unbounded] [expected-reassembled-frames] [stop-after-expected-reassembled-frames] [receive-buffer-bytes] [expected-reassembled-clients] [expected-reassembled-frames-per-client]"
             );
         }
     }
@@ -602,6 +665,21 @@ struct ReceiveSendRuntimeContinuousCommandArgs {
     receive_buffer_bytes: usize,
     max_packets_per_drain_cycle: usize,
     verbose: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ReceiveAuthVideoQueueServeHandoffContinuousCommandArgs {
+    config_path: String,
+    pipe_name: String,
+    max_handoff_requests: Option<usize>,
+    receive_timeout_ms: u64,
+    max_runtime_duration_ms: Option<u64>,
+    max_video_packets: Option<usize>,
+    expected_reassembled_frames: u64,
+    stop_after_expected_reassembled_frames: bool,
+    receive_buffer_bytes: usize,
+    expected_reassembled_clients: u64,
+    expected_reassembled_frames_per_client: u64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -666,6 +744,58 @@ fn parse_receive_send_runtime_continuous_command_args(
         receive_buffer_bytes,
         max_packets_per_drain_cycle,
         verbose,
+    }
+}
+
+fn parse_receive_auth_video_queue_serve_handoff_continuous_command_args(
+    args: Vec<String>,
+) -> ReceiveAuthVideoQueueServeHandoffContinuousCommandArgs {
+    let mut args = args.into_iter();
+    let config_path = args
+        .next()
+        .unwrap_or_else(|| "configs/examples/server.example.toml".to_string());
+    let pipe_name = args
+        .next()
+        .unwrap_or_else(|| "stream-sync-handoff".to_string());
+    let max_handoff_requests =
+        parse_optional_arg_or_exit::<usize>(args.next(), "max-handoff-requests-or-0-for-unbounded")
+            .and_then(|value| (value > 0).then_some(value));
+    let receive_timeout_ms =
+        parse_optional_arg_or_exit::<u64>(args.next(), "receive-timeout-ms").unwrap_or(1_000);
+    let max_runtime_duration_ms = parse_optional_arg_or_exit::<u64>(
+        args.next(),
+        "max-runtime-duration-ms-or-0-for-unbounded",
+    )
+    .and_then(|value| (value > 0).then_some(value));
+    let max_video_packets =
+        parse_optional_arg_or_exit::<usize>(args.next(), "max-video-packets-or-0-for-unbounded")
+            .and_then(|value| (value > 0).then_some(value));
+    let expected_reassembled_frames =
+        parse_optional_arg_or_exit::<u64>(args.next(), "expected-reassembled-frames").unwrap_or(0);
+    let stop_after_expected_reassembled_frames =
+        parse_optional_bool_or_exit(args.next(), "stop-after-expected-reassembled-frames")
+            .unwrap_or(false);
+    let receive_buffer_bytes =
+        parse_optional_arg_or_exit::<usize>(args.next(), "receive-buffer-bytes")
+            .unwrap_or(stream_sync_server::SERVER_DEFAULT_RECEIVE_BUFFER_BYTES);
+    let expected_reassembled_clients =
+        parse_optional_arg_or_exit::<u64>(args.next(), "expected-reassembled-clients").unwrap_or(0);
+    let expected_reassembled_frames_per_client =
+        parse_optional_arg_or_exit::<u64>(args.next(), "expected-reassembled-frames-per-client")
+            .unwrap_or(0);
+
+    ReceiveAuthVideoQueueServeHandoffContinuousCommandArgs {
+        config_path,
+        pipe_name,
+        max_handoff_requests,
+        receive_timeout_ms,
+        max_runtime_duration_ms,
+        max_video_packets,
+        expected_reassembled_frames,
+        stop_after_expected_reassembled_frames,
+        receive_buffer_bytes,
+        expected_reassembled_clients,
+        expected_reassembled_frames_per_client,
     }
 }
 
@@ -2190,6 +2320,127 @@ fn format_named_pipe_handoff_service_session_summary(
 }
 
 #[cfg(windows)]
+fn format_named_pipe_handoff_concurrent_ready_line(
+    ready: &stream_sync_server::ServerReceiveAuthVideoQueueHandoffContinuousReadyState,
+    pipe_name: &str,
+    policy: stream_sync_server::ServerReceiveAuthVideoQueueHandoffContinuousRuntimePolicy,
+) -> String {
+    let effective_receive_buffer = ready
+        .receive_buffer
+        .effective_bytes
+        .map(|value| value.to_string())
+        .unwrap_or_else(|| "none".to_string());
+    let receive_buffer_set_error = ready.receive_buffer.set_error.as_deref().unwrap_or("none");
+    let receive_buffer_read_error = ready.receive_buffer.read_error.as_deref().unwrap_or("none");
+    format!(
+        "server named-pipe handoff concurrent ready receive_ready=true handoff_ready=true runtime_mode=concurrent validation_ready=n/a pipe_name={} actual_pipe_path={} bind_address={} max_handoff_requests={} receive_timeout_ms={} max_runtime_duration_ms={} max_video_packets={} expected_reassembled_frames={} expected_clients={} expected_per_client_frames={} receive_buffer_requested_bytes={} receive_buffer_effective_bytes={} receive_buffer_set_error={} receive_buffer_read_error={}",
+        pipe_name,
+        ready.actual_pipe_path,
+        ready.bind_address,
+        format_optional_usize(policy.max_handoff_requests),
+        policy.receive_timeout.as_millis(),
+        policy
+            .max_runtime_duration
+            .map(|value| value.as_millis().to_string())
+            .unwrap_or_else(|| "none".to_string()),
+        format_optional_usize(policy.max_video_packets),
+        policy.expected_reassembled_frames,
+        policy.expected_reassembled_clients,
+        policy.expected_reassembled_frames_per_client,
+        ready.receive_buffer.requested_bytes,
+        effective_receive_buffer,
+        receive_buffer_set_error,
+        receive_buffer_read_error
+    )
+}
+
+#[cfg(windows)]
+fn format_named_pipe_handoff_concurrent_summary(
+    outcome: &stream_sync_server::ServerReceiveAuthVideoQueueHandoffContinuousRuntimeOutput,
+) -> String {
+    let summary = &outcome.summary;
+    let per_client_queued_frames = format_per_client_queued_frames(&outcome.receive_summary);
+    let per_client_retained_keyframe_frame_id =
+        format_per_client_retained_keyframe_frame_id(&outcome.video_queue_state);
+    format!(
+        "server named-pipe handoff concurrent stopped runtime_mode=concurrent stop_reason={} receive_stop_reason={} handoff_stop_reason={} runtime_duration_ms={} packets_received={} frames_queued={} per_client_queued_frames={} keyframes_queued={} retained_keyframe_clients={} per_client_retained_keyframe_frame_id={} handoff_requests={} frame_read_count={} no_frame_count={} decodable_source_counts={} io_error_count={}",
+        format_concurrent_runtime_stop_reason(summary.stop_reason),
+        format_concurrent_receive_stop_reason(summary.receive_stop_reason),
+        format_server_handoff_stop_reason(summary.handoff_stop_reason),
+        summary.runtime_duration_ms,
+        summary.packets_received,
+        summary.frames_queued,
+        per_client_queued_frames,
+        summary.keyframes_queued,
+        summary.retained_keyframe_clients,
+        per_client_retained_keyframe_frame_id,
+        summary.handoff_requests,
+        summary.frame_read_count,
+        summary.no_frame_count,
+        format_concurrent_handoff_decodable_source_counts(summary),
+        summary.io_error_count
+    )
+}
+
+#[cfg(windows)]
+fn format_concurrent_runtime_stop_reason(
+    reason: stream_sync_server::ServerReceiveAuthVideoQueueHandoffContinuousRuntimeStopReason,
+) -> &'static str {
+    match reason {
+        stream_sync_server::ServerReceiveAuthVideoQueueHandoffContinuousRuntimeStopReason::MaxHandoffRequestsReached => {
+            "MaxHandoffRequestsReached"
+        }
+        stream_sync_server::ServerReceiveAuthVideoQueueHandoffContinuousRuntimeStopReason::ReceiveStopped => {
+            "ReceiveStopped"
+        }
+        stream_sync_server::ServerReceiveAuthVideoQueueHandoffContinuousRuntimeStopReason::HandoffStopped => {
+            "HandoffStopped"
+        }
+    }
+}
+
+#[cfg(windows)]
+fn format_concurrent_receive_stop_reason(
+    reason: stream_sync_server::ServerReceiveAuthVideoQueueHandoffContinuousReceiveStopReason,
+) -> &'static str {
+    match reason {
+        stream_sync_server::ServerReceiveAuthVideoQueueHandoffContinuousReceiveStopReason::StopRequested => {
+            "StopRequested"
+        }
+        stream_sync_server::ServerReceiveAuthVideoQueueHandoffContinuousReceiveStopReason::ReceiveTimedOut => {
+            "ReceiveTimedOut"
+        }
+        stream_sync_server::ServerReceiveAuthVideoQueueHandoffContinuousReceiveStopReason::MaxRuntimeDurationReached => {
+            "MaxRuntimeDurationReached"
+        }
+        stream_sync_server::ServerReceiveAuthVideoQueueHandoffContinuousReceiveStopReason::MaxVideoPacketsReached => {
+            "MaxVideoPacketsReached"
+        }
+        stream_sync_server::ServerReceiveAuthVideoQueueHandoffContinuousReceiveStopReason::ReassembledFramesThresholdReached => {
+            "ReassembledFramesThresholdReached"
+        }
+        stream_sync_server::ServerReceiveAuthVideoQueueHandoffContinuousReceiveStopReason::ClientAwareThresholdReached => {
+            "ClientAwareThresholdReached"
+        }
+        stream_sync_server::ServerReceiveAuthVideoQueueHandoffContinuousReceiveStopReason::ReassembledFramesAndClientAwareThresholdReached => {
+            "ReassembledFramesAndClientAwareThresholdReached"
+        }
+    }
+}
+
+#[cfg(windows)]
+fn format_concurrent_handoff_decodable_source_counts(
+    summary: &stream_sync_server::ServerReceiveAuthVideoQueueHandoffContinuousRuntimeSummary,
+) -> String {
+    format!(
+        "queue:{}|retained_keyframe:{}|none:{}",
+        summary.decodable_source_queue_count,
+        summary.decodable_source_retained_keyframe_count,
+        summary.decodable_source_none_count
+    )
+}
+
+#[cfg(windows)]
 fn format_server_handoff_result_kind(
     kind: stream_sync_server::ServerSwitcherNamedPipeRequestResultKind,
 ) -> &'static str {
@@ -2268,10 +2519,13 @@ mod tests {
 
     use super::{
         continuous_runtime_output_mode, format_handoff_read_mode,
+        format_named_pipe_handoff_concurrent_ready_line,
+        format_named_pipe_handoff_concurrent_summary,
         format_receive_send_runtime_bounded_failure_summary,
         format_receive_send_runtime_bounded_summary,
         format_receive_send_runtime_continuous_failure_summary,
         format_receive_send_runtime_continuous_summary,
+        parse_receive_auth_video_queue_serve_handoff_continuous_command_args,
         parse_receive_send_runtime_bounded_command_args,
         parse_receive_send_runtime_continuous_command_args,
     };
@@ -2356,6 +2610,51 @@ mod tests {
     }
 
     #[test]
+    fn parse_receive_auth_video_queue_serve_handoff_continuous_command_parses_custom_values() {
+        let args = parse_receive_auth_video_queue_serve_handoff_continuous_command_args(vec![
+            "configs/custom/server.toml".to_string(),
+            "pipe-a".to_string(),
+            "240".to_string(),
+            "750".to_string(),
+            "120000".to_string(),
+            "8192".to_string(),
+            "1800".to_string(),
+            "true".to_string(),
+            "4194304".to_string(),
+            "2".to_string(),
+            "900".to_string(),
+        ]);
+
+        assert_eq!(args.config_path, "configs/custom/server.toml");
+        assert_eq!(args.pipe_name, "pipe-a");
+        assert_eq!(args.max_handoff_requests, Some(240));
+        assert_eq!(args.receive_timeout_ms, 750);
+        assert_eq!(args.max_runtime_duration_ms, Some(120000));
+        assert_eq!(args.max_video_packets, Some(8192));
+        assert_eq!(args.expected_reassembled_frames, 1800);
+        assert!(args.stop_after_expected_reassembled_frames);
+        assert_eq!(args.receive_buffer_bytes, 4_194_304);
+        assert_eq!(args.expected_reassembled_clients, 2);
+        assert_eq!(args.expected_reassembled_frames_per_client, 900);
+    }
+
+    #[test]
+    fn parse_receive_auth_video_queue_serve_handoff_continuous_command_treats_zero_as_unbounded() {
+        let args = parse_receive_auth_video_queue_serve_handoff_continuous_command_args(vec![
+            "configs/custom/server.toml".to_string(),
+            "pipe-b".to_string(),
+            "0".to_string(),
+            "1000".to_string(),
+            "0".to_string(),
+            "0".to_string(),
+        ]);
+
+        assert_eq!(args.max_handoff_requests, None);
+        assert_eq!(args.max_runtime_duration_ms, None);
+        assert_eq!(args.max_video_packets, None);
+    }
+
+    #[test]
     fn parse_receive_send_runtime_continuous_command_treats_zero_max_iterations_as_unbounded() {
         let args = parse_receive_send_runtime_continuous_command_args(vec![
             "configs/custom/server.toml".to_string(),
@@ -2398,6 +2697,136 @@ mod tests {
             continuous_runtime_output_mode(&command),
             super::ContinuousRuntimeOutputMode::Verbose
         );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn concurrent_handoff_ready_line_includes_receive_and_handoff_ready_fields() {
+        let ready_line = format_named_pipe_handoff_concurrent_ready_line(
+            &stream_sync_server::ServerReceiveAuthVideoQueueHandoffContinuousReadyState {
+                bind_address: "127.0.0.1:5000".parse().expect("bind address should parse"),
+                pipe_name: "pipe-concurrent".to_string(),
+                actual_pipe_path: r"\\.\pipe\pipe-concurrent".to_string(),
+                receive_buffer: stream_sync_server::ServerUdpReceiveBufferTuningResult {
+                    requested_bytes: 8_388_608,
+                    effective_bytes: Some(8_388_608),
+                    set_error: None,
+                    read_error: None,
+                },
+            },
+            "pipe-concurrent",
+            stream_sync_server::ServerReceiveAuthVideoQueueHandoffContinuousRuntimePolicy {
+                receive_timeout: std::time::Duration::from_millis(1_000),
+                max_runtime_duration: Some(std::time::Duration::from_millis(60_000)),
+                max_handoff_requests: Some(180),
+                max_video_packets: Some(4_096),
+                expected_reassembled_frames: 0,
+                stop_after_expected_reassembled_frames: false,
+                receive_buffer_bytes: 8_388_608,
+                expected_reassembled_clients: 0,
+                expected_reassembled_frames_per_client: 0,
+            },
+        );
+
+        assert!(ready_line.contains("receive_ready=true"));
+        assert!(ready_line.contains("handoff_ready=true"));
+        assert!(ready_line.contains("runtime_mode=concurrent"));
+        assert!(ready_line.contains("validation_ready=n/a"));
+        assert!(ready_line.contains(r"actual_pipe_path=\\.\pipe\pipe-concurrent"));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn concurrent_handoff_summary_includes_receive_and_handoff_counters() {
+        let outcome =
+            stream_sync_server::ServerReceiveAuthVideoQueueHandoffContinuousRuntimeOutput {
+                bind_address: "127.0.0.1:5000"
+                    .parse()
+                    .expect("bind address should parse"),
+                pipe_name: "pipe-concurrent".to_string(),
+                actual_pipe_path: r"\\.\pipe\pipe-concurrent".to_string(),
+                receive_buffer: stream_sync_server::ServerUdpReceiveBufferTuningResult {
+                    requested_bytes: 8_388_608,
+                    effective_bytes: Some(8_388_608),
+                    set_error: None,
+                    read_error: None,
+                },
+                registry: stream_sync_server::AuthenticatedSenderRegistry::default(),
+                video_queue_state: test_service_session_output().receive.video_queue_state,
+                reassembly_state: stream_sync_server::ServerVideoFrameReassemblyState::default(),
+                receive_summary: stream_sync_server::ServerReceiveAuthVideoQueueOnceVideoSummary {
+                    packets_received: 120,
+                    fragments_received: 0,
+                    frames_reassembled: 0,
+                    frames_queued: 6,
+                    direct_frames_queued: 2,
+                    keyframes_received: 2,
+                    keyframes_queued: 2,
+                    rejected_packets: 0,
+                    rejected_fragments: 0,
+                    duplicate_fragments: 0,
+                    non_video_packets: 0,
+                    incomplete_reassembly_frames: 0,
+                    queue_len: 6,
+                    incomplete_frame_progress: Vec::new(),
+                    observed_queued_clients: 2,
+                    observed_reassembled_clients: 0,
+                    per_client_queued_frames: std::collections::BTreeMap::from([
+                        ("player1/run-1".to_string(), 3),
+                        ("player2/run-1".to_string(), 3),
+                    ]),
+                    per_client_keyframes_queued: std::collections::BTreeMap::new(),
+                    per_client_direct_frames: std::collections::BTreeMap::new(),
+                    per_client_reassembled_frames: std::collections::BTreeMap::new(),
+                    first_keyframe_frame_id: Some(10),
+                    last_keyframe_frame_id: Some(40),
+                    receive_timed_out: false,
+                    max_packets_reached: false,
+                    stop_reason: None,
+                },
+                handoff_summary:
+                    stream_sync_server::ServerReceiveAuthVideoQueueHandoffContinuousHandoffSummary {
+                        handoff_requests: 8,
+                        frame_read_count: 5,
+                        no_frame_count: 3,
+                        decodable_source_none_count: 3,
+                        decodable_source_queue_count: 1,
+                        decodable_source_retained_keyframe_count: 4,
+                        io_error_count: 0,
+                    },
+                summary: stream_sync_server::ServerReceiveAuthVideoQueueHandoffContinuousRuntimeSummary {
+                    packets_received: 120,
+                    frames_queued: 6,
+                    per_client_queued_frames: std::collections::BTreeMap::from([
+                        ("player1/run-1".to_string(), 3),
+                        ("player2/run-1".to_string(), 3),
+                    ]),
+                    keyframes_queued: 2,
+                    retained_keyframe_clients: 1,
+                    handoff_requests: 8,
+                    frame_read_count: 5,
+                    no_frame_count: 3,
+                    decodable_source_none_count: 3,
+                    decodable_source_queue_count: 1,
+                    decodable_source_retained_keyframe_count: 4,
+                    io_error_count: 0,
+                    stop_reason: stream_sync_server::ServerReceiveAuthVideoQueueHandoffContinuousRuntimeStopReason::MaxHandoffRequestsReached,
+                    receive_stop_reason: stream_sync_server::ServerReceiveAuthVideoQueueHandoffContinuousReceiveStopReason::StopRequested,
+                    handoff_stop_reason: stream_sync_server::ServerSwitcherNamedPipeManyRequestStopReason::MaxRequestsReached,
+                    runtime_duration_ms: 5_000,
+                },
+            };
+        let summary = format_named_pipe_handoff_concurrent_summary(&outcome);
+
+        assert!(summary.contains("runtime_mode=concurrent"));
+        assert!(summary.contains("stop_reason=MaxHandoffRequestsReached"));
+        assert!(summary.contains("packets_received=120"));
+        assert!(summary.contains("frames_queued=6"));
+        assert!(summary.contains("handoff_requests=8"));
+        assert!(summary.contains("frame_read_count=5"));
+        assert!(summary.contains("no_frame_count=3"));
+        assert!(summary.contains("decodable_source_counts=queue:1|retained_keyframe:4|none:3"));
+        assert!(summary.contains("io_error_count=0"));
     }
 
     #[test]

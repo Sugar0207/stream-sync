@@ -22,6 +22,8 @@
 ---
 
 ## 現在位置
+- first concurrent receive + handoff serve runtime slice は実装済み。new command `--receive-auth-video-queue-and-serve-handoff-continuous` は staged command `--receive-auth-video-queue-and-serve-handoff-many` を残したまま追加し、coarse-lock shared state 上で UDP receive/auth/reassembly/queue update と named-pipe handoff serve を同時に持てるようにした。ready line には `receive_ready=true` / `handoff_ready=true` / `runtime_mode=concurrent` / `validation_ready=n/a` / `actual_pipe_path` を出し、stopped summary には receive counters、handoff counters、`decodable_source_counts`、`stop_reason` / `receive_stop_reason` / `handoff_stop_reason` / `runtime_duration_ms` を出す
+- current next gate は same-PC 2-client で concurrent command の human validation を通すこと。first goal は「client 送信中に switcher が `preview-latest-decodable` で `FrameRead` と `frames_rendered > 0` に到達すること」であり、retained-keyframe based preview と staged checkpoint は引き続き valid baseline として残す
 - 2-client human validation 方針は same-PC smoke / stress profile に固定した。今後の 2-client validation は server + client1 + client2 + capture + FFmpeg encode を同一 Windows PC 上で動かす前提とし、distributed-PC validation 用の server IP / firewall 手順は主目的にしない
 - same-PC 2-client longer-run validation は PASS 済み。標準設定は `receive_buffer_bytes=268435456` + `max_packets_per_drain_cycle=1024` + summary-only + `receive_timeout_ms=30000` + `max_frames=900 per client` + `fragment_pacing_every=4` + `fragment_pacing_delay_ms=2` とし、client 合計 `1800` frames に対して server は `frames_reassembled=1800` / `frames_queued=1800` / `rejected_packets=0` / `decode_errors=0` / `incomplete_reassembly_frames=0` を確認した。`max_packets_drained_in_cycle=578` のため cap `1024` は現状十分である
 - 2-client validation の human-run recipe を same-PC 前提に更新した。`docs/operations/two-client-long-run-validation.md` と `docs/operations/two-client-long-run-validation.ps1` は same-PC smoke / stress profile、baseline 比較、`256` / `512` / `1024` の drain cap 比較、貼り返し template を source of truth とする
@@ -199,14 +201,16 @@
 ---
 
 ## 直近でやること
-1. docs/operations/two-client-handoff-validation.md を使って same-PC 2-client handoff validation を人間が rerun する
-   - bounded handoff session
-   - `handoff_ready=true` かつ `validation_ready=true` を確認してから 2-real-slot switcher preview
-   - switcher command は `preview-latest-decodable` を使う
-   - client summary では `encoder_width=1280` / `encoder_height=720`、`h264_parameter_sets_cached=true`、`h264_parameter_sets_missing_count`、`h264_parameter_sets_prepended_count`、`last_payload_has_idr`、`last_payload_has_non_idr_vcl` を見る
-   - switcher real slots では `frame_is_keyframe` / `handoff_no_frame_reason` / `decodable_source` / `retained_keyframe_available` / `retained_keyframe_frame_id` / `decode_expected_width` / `decode_expected_height` / `decode_expected_rawvideo_len` / `decoded_stdout_len` / `payload_nal_kinds` を確認する
-2. rerun の結果から、retained keyframe fallback で `FrameRead` と `decode_error=none` まで通るか、それとも IDR cadence / keyframe policy の narrow follow-up が必要かを確定する
-3. decode blocker が通ったら staged handoff validation の PASS を確定し、その後に receive/auth と handoff serve の concurrent runtime へ進む
+1. `docs/operations/concurrent-handoff-runtime-plan.md` の first validation command で same-PC 2-client concurrent handoff runtime を人間が rerun する
+   - server ready line で `receive_ready=true` / `handoff_ready=true` / `runtime_mode=concurrent` を確認する
+   - switcher は client 送信完了前から `preview-latest-decodable` で接続しておく
+   - real slots で `handoff_response_kind=FrameRead` または final `frames_rendered > 0` を確認する
+2. server stopped summary の `handoff_requests` / `frame_read_count` / `decodable_source_counts` / `retained_keyframe_clients` / `stop_reason` を確認し、first concurrent slice を PASS か narrow follow-up か判定する
+3. concurrent slice が通ったら次の候補を整理する
+   - switcher persistent decoder context
+   - latest non-IDR continuous decode progression
+   - 4-client preparation
+   - OBS capture validation
 
 ## 今後の大まかな指針
 - 残り todo は `MVP クリティカルパス`、`安定化 / 運用`、`future task` に分けて扱う
@@ -214,11 +218,12 @@
 - まずは「4人を real handoff で安定表示し続ける」ことを基準に優先度を決める
 
 ## 残り todo から見た推定 step
-- 目安は `2-4 step`。1 step は Codex と GPT の 1 往復で数える
-1. 人間が `preview-latest-decodable` 付きの 2-client handoff validation を rerun し、`1280x720` metadata fix と IDR優先 preview の効果を確認する
-2. その結果に応じて、必要なら keyframe cadence / IDR policy の narrow follow-up を入れる
-3. staged handoff command の concurrent runtime follow-up を narrow に進める
-4. 4-client all-real の長時間 validation を取り、OBS Window Capture を含む実運用寄りの再確認をする
+- 目安は `4-6 step`。1 step は Codex と GPT の 1 往復で数える
+1. 人間が concurrent command の 2-client same-PC validation を rerun する
+2. rerun 結果に応じて concurrent stop behavior か request-serving behavior の narrow follow-up を入れる
+3. switcher persistent decoder context の有無を含む realtime preview 改善方針を確定する
+4. 4-client preparation を進める
+5. OBS Window Capture を含む実運用寄り validation を再確認する
 
 ## MVP closeout 時点で blocker ではなかった future task
 - [ ] same-session bounded server lifecycle polish

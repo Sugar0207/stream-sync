@@ -2,6 +2,88 @@
 
 ## 2026-05-11
 ### Type
+- Codex code + docs update
+
+### Work
+- Implemented the first concurrent receive + handoff serve runtime slice on the
+  server side without removing the staged command.
+- Added the new server command:
+  - `--receive-auth-video-queue-and-serve-handoff-continuous`
+- Kept the current staged validation path intact:
+  - `--receive-auth-video-queue-and-serve-handoff-many`
+- Reused the existing receive/auth/reassembly/queue path by factoring the
+  per-packet queue-processing helper out of the staged bounded receive loop.
+- Reused the existing named-pipe handoff request/response path by splitting:
+  - accept/decode request
+  - queue access + response decision
+  - encode/write response
+- Added the first coarse-lock shared runtime state:
+  - authenticated sender registry
+  - queue state
+  - retained keyframe state
+  - reassembly state
+  - receive counters
+  - handoff counters
+- Added concurrent ready/stopped summary visibility:
+  - ready line:
+    - `receive_ready=true`
+    - `handoff_ready=true`
+    - `runtime_mode=concurrent`
+    - `validation_ready=n/a`
+    - `actual_pipe_path=...`
+  - stopped line:
+    - `packets_received`
+    - `frames_queued`
+    - `per_client_queued_frames`
+    - `keyframes_queued`
+    - `retained_keyframe_clients`
+    - `handoff_requests`
+    - `frame_read_count`
+    - `no_frame_count`
+    - `decodable_source_counts`
+    - `io_error_count`
+    - `stop_reason`
+    - `receive_stop_reason`
+    - `handoff_stop_reason`
+    - `runtime_duration_ms`
+- Added focused tests for the first concurrent slice:
+  - concurrent command parser
+  - concurrent ready-line formatting
+  - concurrent stopped summary formatting
+  - shared-state receive enqueue helper
+  - shared-state latest-decodable queue read
+  - shared-state retained-keyframe fallback
+- Re-ran staged server handoff regression tests to ensure the existing bounded
+  path was not broken.
+
+### Decision
+- The first concurrent implementation is intentionally still bounded and
+  validation-oriented.
+- It is acceptable that the runtime is not yet daemon-grade as long as the
+  switcher can connect early and read while clients are still sending.
+- The next human gate is no longer "can staged preview render", because that is
+  already PASS; it is now "can concurrent preview render during active send".
+
+### Changed Files
+- `apps/server/src/lib.rs`
+- `apps/server/src/main.rs`
+- `docs/operations/concurrent-handoff-runtime-plan.md`
+- `docs/operations/todo.md`
+- `docs/operations/two-client-handoff-validation.md`
+- `docs/operations/session-log.md`
+
+### Validation
+- `cargo fmt`
+- `cargo fmt --check`
+- `cargo check --workspace`
+- focused concurrent tests:
+  - `cargo test -p stream-sync-server concurrent -- --nocapture`
+- focused staged regression tests:
+  - `cargo test -p stream-sync-server handoff_service_session -- --nocapture`
+- `cargo test --workspace`
+
+## 2026-05-11
+### Type
 - Codex docs-only design update
 
 ### Work
