@@ -782,6 +782,121 @@ Current latest interpretation after the most recent human rerun:
   the latest queued keyframe first and falls back to the retained keyframe when
   needed
 
+## Latest PASS Checkpoint
+
+Latest same-PC 2-client human rerun is now a PASS for the current staged
+handoff-preview scope.
+
+PASS evidence:
+
+- server:
+  - `handoff_ready=true`
+  - `validation_ready=true`
+  - `ready_reason=expected_clients_reached`
+  - `receive_stop_reason=expected_clients_reached`
+  - `registered_clients=2`
+  - `observed_queued_clients=2`
+  - `observed_reassembled_clients=2`
+  - `per_client_queued_frames=player1/streamsync-dev-session:900|player2/streamsync-dev-session:900`
+  - `per_client_direct_frames=player1/...:9|player2/...:9`
+  - `per_client_reassembled_frames=player1/...:891|player2/...:891`
+  - `retained_keyframe_clients=2`
+  - `per_client_retained_keyframe_frame_id=player1/...:968|player2/...:975`
+- client1:
+  - `frames_sent=900`
+  - `h264_idr_count=30`
+  - `h264_non_idr_vcl_count=870`
+  - `keyframes_encoded=30`
+  - `keyframes_sent=30`
+  - `first_keyframe_frame_id=4`
+  - `last_keyframe_frame_id=968`
+  - `h264_parameter_sets_cached=true`
+  - `h264_sps_count=1`
+  - `h264_pps_count=1`
+  - `h264_parameter_sets_prepended_count=870`
+  - `encode_failures=0`
+  - `send_failures=0`
+  - `effective_output_fps=26.385`
+- client2:
+  - `frames_sent=900`
+  - `h264_idr_count=30`
+  - `h264_non_idr_vcl_count=870`
+  - `keyframes_encoded=30`
+  - `keyframes_sent=30`
+  - `first_keyframe_frame_id=4`
+  - `last_keyframe_frame_id=975`
+  - `h264_parameter_sets_cached=true`
+  - `h264_sps_count=1`
+  - `h264_pps_count=1`
+  - `h264_parameter_sets_prepended_count=870`
+  - `encode_failures=0`
+  - `send_failures=0`
+  - `effective_output_fps=26.192`
+- switcher:
+  - `--four-view-two-real-handoff-preview-loop ... preview-latest-decodable`
+  - `frames_attempted=180`
+  - `frames_rendered=180`
+  - `render_failures=0`
+  - `scheduler_status=PartialSelected`
+  - `slot_result_kinds=Selected|Selected|NoFrameAvailable|NoFrameAvailable`
+  - `clean_output_render_result_kind=Rendered`
+  - `output_width=1280`
+  - `output_height=720`
+  - slot0/player1:
+    - `handoff_response_kind=FrameRead`
+    - `frame_id=968`
+    - `frame_is_keyframe=true`
+    - `decodable_source=retained_keyframe`
+    - `retained_keyframe_available=true`
+    - `retained_keyframe_frame_id=968`
+    - `decode_error=none`
+    - `payload_has_sps=true`
+    - `payload_has_pps=true`
+    - `payload_has_idr=true`
+    - `payload_has_non_idr_vcl=false`
+    - `render_input_kind=UseUpdatedFrame`
+  - slot1/player2:
+    - `handoff_response_kind=FrameRead`
+    - `frame_id=975`
+    - `frame_is_keyframe=true`
+    - `decodable_source=retained_keyframe`
+    - `retained_keyframe_available=true`
+    - `retained_keyframe_frame_id=975`
+    - `decode_error=none`
+    - `payload_has_sps=true`
+    - `payload_has_pps=true`
+    - `payload_has_idr=true`
+    - `payload_has_non_idr_vcl=false`
+    - `render_input_kind=UseUpdatedFrame`
+
+Interpretation of this PASS:
+
+- current 2-client real handoff preview validation is PASS for:
+  - server receive / queue / validation-ready
+  - client persistent + deadline send
+  - SPS/PPS prepend
+  - keyframe metadata propagation
+  - retained-keyframe fallback
+  - switcher handoff `FrameRead`
+  - decode
+  - 2-real-slot preview render
+- `slot2` / `slot3` remain deterministic placeholder / no-frame slots in this
+  exact command shape, so `NoFrameAvailable` there is expected and not a
+  failure
+
+Known limits that remain after this PASS:
+
+- current `preview-latest-decodable` is still a staged keyframe-preview path:
+  - the selected frames in this PASS came from
+    `decodable_source=retained_keyframe`
+  - this does not yet prove continuous latest non-IDR decode behavior
+- receive and handoff serve are still staged rather than concurrent
+- switcher still has no persistent decoder context for real-time latest-frame
+  decode progression
+- same-PC 2-client bounded runs can still drop to effective send rates around
+  `26fps`, so capture/cadence load variance remains a known issue rather than a
+  blocker for this checkpoint
+
 ## Failure Paste-Back Template
 
 ```text
@@ -889,6 +1004,14 @@ encoded_payload_len=
 
 After this 2-client same-PC handoff pass, move to one of:
 
-1. server -> switcher handoff follow-up only if a narrow observability gap
-   still blocks interpretation
-2. 4-client all-real validation preparation
+1. 2-client PASS checkpoint closeout:
+   record the PASS, keep staged-preview limits explicit, and preserve the known
+   fps variance note
+2. concurrent receive + handoff serve design:
+   replace the staged post-receive handoff service with a real concurrent
+   runtime plan before calling the path production-like
+3. OBS capture validation follow-up:
+   re-confirm downstream output-window capture expectations after the preview
+   path is treated as a stable checkpoint
+4. 4-client all-real validation preparation:
+   only after the 2-client PASS checkpoint and known limits are documented

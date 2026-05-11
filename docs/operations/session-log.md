@@ -2,6 +2,103 @@
 
 ## 2026-05-11
 ### Type
+- Human validation result + Codex docs update
+
+### Work
+- Recorded the latest same-PC 2-client handoff preview human rerun as a PASS.
+- Captured the final observed summary shape:
+  - server:
+    - `handoff_ready=true`
+    - `validation_ready=true`
+    - `ready_reason=expected_clients_reached`
+    - `receive_stop_reason=expected_clients_reached`
+    - `registered_clients=2`
+    - `observed_queued_clients=2`
+    - `observed_reassembled_clients=2`
+    - `per_client_queued_frames=player1/streamsync-dev-session:900|player2/streamsync-dev-session:900`
+    - `per_client_direct_frames=player1/...:9|player2/...:9`
+    - `per_client_reassembled_frames=player1/...:891|player2/...:891`
+    - `retained_keyframe_clients=2`
+    - `per_client_retained_keyframe_frame_id=player1/...:968|player2/...:975`
+  - client1:
+    - `frames_sent=900`
+    - `h264_idr_count=30`
+    - `h264_non_idr_vcl_count=870`
+    - `keyframes_encoded=30`
+    - `keyframes_sent=30`
+    - `first_keyframe_frame_id=4`
+    - `last_keyframe_frame_id=968`
+    - `h264_parameter_sets_cached=true`
+    - `h264_sps_count=1`
+    - `h264_pps_count=1`
+    - `h264_parameter_sets_prepended_count=870`
+    - `encode_failures=0`
+    - `send_failures=0`
+    - `effective_output_fps=26.385`
+  - client2:
+    - `frames_sent=900`
+    - `h264_idr_count=30`
+    - `h264_non_idr_vcl_count=870`
+    - `keyframes_encoded=30`
+    - `keyframes_sent=30`
+    - `first_keyframe_frame_id=4`
+    - `last_keyframe_frame_id=975`
+    - `h264_parameter_sets_cached=true`
+    - `h264_sps_count=1`
+    - `h264_pps_count=1`
+    - `h264_parameter_sets_prepended_count=870`
+    - `encode_failures=0`
+    - `send_failures=0`
+    - `effective_output_fps=26.192`
+  - switcher:
+    - `frames_attempted=180`
+    - `frames_rendered=180`
+    - `render_failures=0`
+    - `scheduler_status=PartialSelected`
+    - `slot_result_kinds=Selected|Selected|NoFrameAvailable|NoFrameAvailable`
+    - `clean_output_render_result_kind=Rendered`
+    - `output_width=1280`
+    - `output_height=720`
+    - slot0/player1 returned `FrameRead`, `frame_is_keyframe=true`,
+      `decodable_source=retained_keyframe`, `retained_keyframe_frame_id=968`,
+      `decode_error=none`, `payload_has_sps=true`, `payload_has_pps=true`,
+      `payload_has_idr=true`, `render_input_kind=UseUpdatedFrame`
+    - slot1/player2 returned `FrameRead`, `frame_is_keyframe=true`,
+      `decodable_source=retained_keyframe`, `retained_keyframe_frame_id=975`,
+      `decode_error=none`, `payload_has_sps=true`, `payload_has_pps=true`,
+      `payload_has_idr=true`, `render_input_kind=UseUpdatedFrame`
+- Updated docs to treat this as the 2-client PASS checkpoint while keeping the
+  remaining limits explicit.
+
+### Decision
+- Current 2-client real handoff preview validation is PASS for the staged
+  checkpoint:
+  - server receive / queue / validation-ready
+  - client persistent + deadline send
+  - SPS/PPS prepend
+  - keyframe metadata propagation
+  - retained-keyframe fallback
+  - switcher handoff `FrameRead` / decode / render
+- This PASS does not yet prove production-like realtime preview:
+  - current `preview-latest-decodable` selected retained keyframes, not a
+    continuous latest non-IDR decode flow
+  - receive and handoff serve are still staged, not concurrent
+  - switcher still lacks a persistent decoder context for realtime latest-frame
+    progression
+- Same-PC `effective_output_fps` around `26fps` should remain a known issue and
+  not be hidden by the PASS checkpoint.
+
+### Changed Files
+- `docs/operations/two-client-handoff-validation.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+- `docs/operations/manual-real-encoded-video-poc.md`
+
+### Validation
+- `git diff --check`
+
+## 2026-05-11
+### Type
 - Codex code + docs update
 
 ### Work

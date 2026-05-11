@@ -4317,3 +4317,27 @@ Current expected success shape:
   eventually `= 2`
 - switcher `preview-latest-decodable` returns `decodable_source=queue` or
   `decodable_source=retained_keyframe`, not `none`
+
+Latest checkpoint after the rerun:
+
+- the current persistent + deadline path has now reached a PASS checkpoint for
+  the staged 2-client handoff preview path
+- this PASS includes:
+  - client `frames_sent=900`
+  - client `h264_idr_count=30`
+  - client `keyframes_sent=30`
+  - server `retained_keyframe_clients=2`
+  - switcher `frames_rendered=180`
+  - switcher `render_failures=0`
+  - real slots `handoff_response_kind=FrameRead`
+  - real slots `decode_error=none`
+  - real slots `decodable_source=retained_keyframe`
+- the current result should still be described as staged/keyframe-preview
+  success, not final realtime-latest-preview success
+
+Known issue that remains after this checkpoint:
+
+- same-PC 2-client bounded runs can still show effective send rates around
+  `26fps` even when send completion is stable
+- treat this as a capture/cadence/load variance issue to keep visible in docs,
+  not as a blocker for the current 2-client handoff preview PASS checkpoint
