@@ -1697,11 +1697,22 @@ fn format_receive_auth_video_queue_runtime_summary(
     let per_client_queued_frames = video_summary
         .map(format_per_client_queued_frames)
         .unwrap_or_else(|| "none".to_string());
+    let per_client_keyframes_queued = video_summary
+        .map(format_per_client_keyframes_queued)
+        .unwrap_or_else(|| "none".to_string());
     let per_client_direct_frames = video_summary
         .map(format_per_client_direct_frames)
         .unwrap_or_else(|| "none".to_string());
     let per_client_retained_keyframe_frame_id =
         format_per_client_retained_keyframe_frame_id(&outcome.video_queue_state);
+    let first_keyframe_frame_id = video_summary
+        .and_then(|summary| summary.first_keyframe_frame_id)
+        .map(|value| value.to_string())
+        .unwrap_or_else(|| "none".to_string());
+    let last_keyframe_frame_id = video_summary
+        .and_then(|summary| summary.last_keyframe_frame_id)
+        .map(|value| value.to_string())
+        .unwrap_or_else(|| "none".to_string());
     let stop_reason = match (&outcome.video, video_summary) {
         (
             stream_sync_server::ServerReceiveAuthVideoQueueOnceVideoOutcome::NotReceivedAuthRejected,
@@ -1726,7 +1737,7 @@ fn format_receive_auth_video_queue_runtime_summary(
     let validation_ready = receive_auth_video_queue_validation_ready(policy, video_summary);
 
     format!(
-        "receive auth/video queue runtime handled auth on {}; auth_accepted={} auth_reason={:?} auth_status={} auth_operational_reason={} registration_status={} registration_reason={} client_id={} run_id={} video={} queued={} queue_len={} dropped_oldest={} registered_clients={} manual_max_video_packets={} manual_receive_timeout_ms={} manual_expected_reassembled_frames={} manual_stop_after_expected_reassembled_frames={} manual_expected_reassembled_clients={} manual_expected_reassembled_frames_per_client={} manual_receive_buffer_requested_bytes={} manual_receive_buffer_effective_bytes={} manual_receive_buffer_set_error={} manual_receive_buffer_read_error={} packets_received={} fragments_received={} frames_reassembled={} frames_queued={} direct_frames_queued={} rejected_packets={} rejected_fragments={} duplicate_fragments={} non_video_packets={} incomplete_reassembly_frames={} incomplete_frame_progress={} observed_queued_clients={} observed_reassembled_clients={} per_client_queued_frames={} per_client_direct_frames={} per_client_reassembled_frames={} retained_keyframe_clients={} per_client_retained_keyframe_frame_id={} validation_ready={} ready_reason={} receive_stop_reason={} stop_reason={} receive_timed_out={} max_packets_reached={}",
+        "receive auth/video queue runtime handled auth on {}; auth_accepted={} auth_reason={:?} auth_status={} auth_operational_reason={} registration_status={} registration_reason={} client_id={} run_id={} video={} queued={} queue_len={} dropped_oldest={} registered_clients={} manual_max_video_packets={} manual_receive_timeout_ms={} manual_expected_reassembled_frames={} manual_stop_after_expected_reassembled_frames={} manual_expected_reassembled_clients={} manual_expected_reassembled_frames_per_client={} manual_receive_buffer_requested_bytes={} manual_receive_buffer_effective_bytes={} manual_receive_buffer_set_error={} manual_receive_buffer_read_error={} packets_received={} fragments_received={} frames_reassembled={} frames_queued={} direct_frames_queued={} keyframes_received={} keyframes_queued={} rejected_packets={} rejected_fragments={} duplicate_fragments={} non_video_packets={} incomplete_reassembly_frames={} incomplete_frame_progress={} observed_queued_clients={} observed_reassembled_clients={} per_client_queued_frames={} per_client_keyframes_queued={} per_client_direct_frames={} per_client_reassembled_frames={} first_keyframe_frame_id={} last_keyframe_frame_id={} retained_keyframe_clients={} per_client_retained_keyframe_frame_id={} validation_ready={} ready_reason={} receive_stop_reason={} stop_reason={} receive_timed_out={} max_packets_reached={}",
         outcome.bind_address,
         decision.accepted,
         decision.reason_code,
@@ -1767,6 +1778,12 @@ fn format_receive_auth_video_queue_runtime_summary(
             .map(|summary| summary.direct_frames_queued.to_string())
             .unwrap_or_else(|| "none".to_string()),
         video_summary
+            .map(|summary| summary.keyframes_received.to_string())
+            .unwrap_or_else(|| "none".to_string()),
+        video_summary
+            .map(|summary| summary.keyframes_queued.to_string())
+            .unwrap_or_else(|| "none".to_string()),
+        video_summary
             .map(|summary| summary.rejected_packets.to_string())
             .unwrap_or_else(|| "none".to_string()),
         video_summary
@@ -1789,8 +1806,11 @@ fn format_receive_auth_video_queue_runtime_summary(
             .map(|summary| summary.observed_reassembled_clients.to_string())
             .unwrap_or_else(|| "none".to_string()),
         per_client_queued_frames,
+        per_client_keyframes_queued,
         per_client_direct_frames,
         per_client_reassembled_frames,
+        first_keyframe_frame_id,
+        last_keyframe_frame_id,
         outcome.video_queue_state.retained_keyframe_clients(),
         per_client_retained_keyframe_frame_id,
         validation_ready,
@@ -1830,6 +1850,21 @@ fn format_per_client_queued_frames(
 
     summary
         .per_client_queued_frames
+        .iter()
+        .map(|(scope, frames)| format!("{scope}:{frames}"))
+        .collect::<Vec<_>>()
+        .join("|")
+}
+
+fn format_per_client_keyframes_queued(
+    summary: &stream_sync_server::ServerReceiveAuthVideoQueueOnceVideoSummary,
+) -> String {
+    if summary.per_client_keyframes_queued.is_empty() {
+        return "none".to_string();
+    }
+
+    summary
+        .per_client_keyframes_queued
         .iter()
         .map(|(scope, frames)| format!("{scope}:{frames}"))
         .collect::<Vec<_>>()
@@ -3023,6 +3058,8 @@ mod tests {
                     frames_reassembled: 2,
                     frames_queued: 2,
                     direct_frames_queued: 0,
+                    keyframes_received: 0,
+                    keyframes_queued: 0,
                     rejected_packets: 0,
                     rejected_fragments: 0,
                     duplicate_fragments: 0,
@@ -3037,8 +3074,11 @@ mod tests {
                         values.insert("player1/run-1".to_string(), 2);
                         values
                     },
+                    per_client_keyframes_queued: std::collections::BTreeMap::new(),
                     per_client_direct_frames: std::collections::BTreeMap::new(),
                     per_client_reassembled_frames,
+                    first_keyframe_frame_id: None,
+                    last_keyframe_frame_id: None,
                     receive_timed_out: true,
                     max_packets_reached: false,
                     stop_reason: Some(
@@ -3084,6 +3124,8 @@ mod tests {
                     frames_reassembled: 1_800,
                     frames_queued: 1_800,
                     direct_frames_queued: 0,
+                    keyframes_received: 0,
+                    keyframes_queued: 0,
                     rejected_packets: 0,
                     rejected_fragments: 0,
                     duplicate_fragments: 0,
@@ -3098,8 +3140,11 @@ mod tests {
                         values.insert("player1/run-1".to_string(), 1_800);
                         values
                     },
+                    per_client_keyframes_queued: std::collections::BTreeMap::new(),
                     per_client_direct_frames: std::collections::BTreeMap::new(),
                     per_client_reassembled_frames,
+                    first_keyframe_frame_id: None,
+                    last_keyframe_frame_id: None,
                     receive_timed_out: true,
                     max_packets_reached: false,
                     stop_reason: Some(
@@ -3144,6 +3189,8 @@ mod tests {
                     frames_reassembled: 1_800,
                     frames_queued: 1_800,
                     direct_frames_queued: 0,
+                    keyframes_received: 0,
+                    keyframes_queued: 0,
                     rejected_packets: 0,
                     rejected_fragments: 0,
                     duplicate_fragments: 0,
@@ -3159,8 +3206,11 @@ mod tests {
                         values.insert("player2/run-1".to_string(), 900);
                         values
                     },
+                    per_client_keyframes_queued: std::collections::BTreeMap::new(),
                     per_client_direct_frames: std::collections::BTreeMap::new(),
                     per_client_reassembled_frames,
+                    first_keyframe_frame_id: None,
+                    last_keyframe_frame_id: None,
                     receive_timed_out: false,
                     max_packets_reached: false,
                     stop_reason: Some(
@@ -3245,6 +3295,8 @@ mod tests {
                     frames_reassembled: 2,
                     frames_queued: 2,
                     direct_frames_queued: 0,
+                    keyframes_received: 0,
+                    keyframes_queued: 0,
                     rejected_packets: 0,
                     rejected_fragments: 0,
                     duplicate_fragments: 0,
@@ -3259,12 +3311,15 @@ mod tests {
                         values.insert("player1/run-1".to_string(), 2);
                         values
                     },
+                    per_client_keyframes_queued: std::collections::BTreeMap::new(),
                     per_client_direct_frames: std::collections::BTreeMap::new(),
                     per_client_reassembled_frames: {
                         let mut values = std::collections::BTreeMap::new();
                         values.insert("player1/run-1".to_string(), 2);
                         values
                     },
+                    first_keyframe_frame_id: None,
+                    last_keyframe_frame_id: None,
                     receive_timed_out: true,
                     max_packets_reached: false,
                     stop_reason: Some(
@@ -3394,6 +3449,8 @@ mod tests {
                         frames_reassembled: 0,
                         frames_queued: 1,
                         direct_frames_queued: 1,
+                        keyframes_received: 1,
+                        keyframes_queued: 1,
                         rejected_packets: 0,
                         rejected_fragments: 0,
                         duplicate_fragments: 0,
@@ -3408,12 +3465,19 @@ mod tests {
                             values.insert("player1/run-1".to_string(), 1);
                             values
                         },
+                        per_client_keyframes_queued: {
+                            let mut values = std::collections::BTreeMap::new();
+                            values.insert("player1/run-1".to_string(), 1);
+                            values
+                        },
                         per_client_direct_frames: {
                             let mut values = std::collections::BTreeMap::new();
                             values.insert("player1/run-1".to_string(), 1);
                             values
                         },
                         per_client_reassembled_frames: std::collections::BTreeMap::new(),
+                        first_keyframe_frame_id: Some(42),
+                        last_keyframe_frame_id: Some(42),
                         receive_timed_out: false,
                         max_packets_reached: false,
                         stop_reason: Some(

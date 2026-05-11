@@ -1517,9 +1517,10 @@ mod tests {
     use super::*;
     use stream_sync_protocol::{
         encode_auth_response_payload, AuthResponse, AuthResponseReasonCode, ClientId, Codec,
-        HeartbeatAck, MessageType, ProtocolVersion, RunId, TimestampMicros, FIXED_HEADER_LEN,
-        HEADER_FLAGS_OFFSET, HEADER_LENGTH_OFFSET, HEADER_MESSAGE_TYPE_OFFSET,
-        HEADER_PAYLOAD_LENGTH_OFFSET, HEADER_PROTOCOL_VERSION_OFFSET, HEADER_RESERVED_OFFSET,
+        HeartbeatAck, MessageType, ProtocolMessageEncoderBoundary, ProtocolVersion, RunId,
+        TimestampMicros, VideoFrameFragment, FIXED_HEADER_LEN, HEADER_FLAGS_OFFSET,
+        HEADER_LENGTH_OFFSET, HEADER_MESSAGE_TYPE_OFFSET, HEADER_PAYLOAD_LENGTH_OFFSET,
+        HEADER_PROTOCOL_VERSION_OFFSET, HEADER_RESERVED_OFFSET,
     };
 
     #[test]
@@ -1900,6 +1901,96 @@ mod tests {
         let decoded = decoded.expect("auth response should decode");
         assert_eq!(decoded.source, source);
         assert_eq!(decoded.message, ProtocolMessage::AuthResponse(response));
+    }
+
+    #[test]
+    fn decodes_video_frame_packet_preserving_is_keyframe() {
+        let source = packet_source();
+        let decoder = InboundPacketDecoder;
+        let message = ProtocolMessage::VideoFrame(stream_sync_protocol::VideoFrame {
+            is_keyframe: true,
+            ..match video_frame_message() {
+                ProtocolMessage::VideoFrame(frame) => frame,
+                other => panic!("expected video frame test helper, got {other:?}"),
+            }
+        });
+        let mut packet = Vec::new();
+        ProtocolMessageEncoderBoundary
+            .encode_message(
+                EncodeContext {
+                    protocol_version: ProtocolVersion(2),
+                },
+                &message,
+                &mut packet,
+            )
+            .expect("video frame should encode");
+
+        let decoded = decoder
+            .decode(
+                DecodeContext {
+                    expected_protocol_version: ProtocolVersion(2),
+                },
+                InboundPacket {
+                    source,
+                    bytes: &packet,
+                },
+            )
+            .expect("video frame packet should decode");
+
+        let ProtocolMessage::VideoFrame(frame) = decoded.message else {
+            panic!("expected decoded video frame");
+        };
+        assert!(frame.is_keyframe);
+    }
+
+    #[test]
+    fn decodes_video_frame_fragment_packet_preserving_is_keyframe() {
+        let source = packet_source();
+        let decoder = InboundPacketDecoder;
+        let message = ProtocolMessage::VideoFrameFragment(VideoFrameFragment {
+            message_type: MessageType::VideoFrameFragment,
+            protocol_version: ProtocolVersion(2),
+            client_id: ClientId("client-1".to_string()),
+            run_id: RunId("run-1".to_string()),
+            frame_id: 9,
+            capture_timestamp: TimestampMicros(2_000_000),
+            is_keyframe: true,
+            width: 1280,
+            height: 720,
+            fps_nominal: 30,
+            total_payload_len: 5,
+            chunk_index: 0,
+            chunk_count: 1,
+            chunk_payload_len: 5,
+            chunk_payload: vec![0xaa, 0xbb, 0xcc, 0xdd, 0xee],
+        });
+        let mut packet = Vec::new();
+        ProtocolMessageEncoderBoundary
+            .encode_message(
+                EncodeContext {
+                    protocol_version: ProtocolVersion(2),
+                },
+                &message,
+                &mut packet,
+            )
+            .expect("video frame fragment should encode");
+
+        let decoded = decoder
+            .decode(
+                DecodeContext {
+                    expected_protocol_version: ProtocolVersion(2),
+                },
+                InboundPacket {
+                    source,
+                    bytes: &packet,
+                },
+            )
+            .expect("video frame fragment packet should decode");
+
+        let ProtocolMessage::VideoFrameFragment(fragment) = decoded.message else {
+            panic!("expected decoded video frame fragment");
+        };
+        assert!(fragment.is_keyframe);
     }
 
     #[test]

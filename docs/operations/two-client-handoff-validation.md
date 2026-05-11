@@ -763,6 +763,21 @@ Current latest interpretation after the most recent human rerun:
     produced IDRs earlier
 - the current code now retains the latest keyframe per `client_id + run_id`
   separately from the bounded queue cap
+- the next rerun after that still showed `retained_keyframe_clients=0`, which
+  narrowed the problem further:
+  - fragmented traffic dominated the run
+  - client encoder GOP / SPS/PPS behavior still looked healthy
+  - the missing piece was keyframe metadata propagation, not keyframe cadence
+- the current code now carries `is_keyframe` through
+  `VideoFrameFragment` wire encode/decode and server reassembly, and adds
+  matching observability:
+  - client summary:
+    `h264_idr_count`, `h264_non_idr_vcl_count`, `keyframes_encoded`,
+    `keyframes_sent`, `first_keyframe_frame_id`, `last_keyframe_frame_id`
+  - server receive summary:
+    `keyframes_received`, `keyframes_queued`,
+    `per_client_keyframes_queued`, `first_keyframe_frame_id`,
+    `last_keyframe_frame_id`
 - use `preview-latest-decodable` for the next rerun so the preview loop prefers
   the latest queued keyframe first and falls back to the retained keyframe when
   needed
@@ -792,6 +807,8 @@ registered_clients=
 frames_reassembled=
 frames_queued=
 direct_frames_queued=
+keyframes_received=
+keyframes_queued=
 rejected_packets=
 incomplete_reassembly_frames=
 manual_expected_reassembled_clients=
@@ -799,12 +816,36 @@ manual_expected_reassembled_frames_per_client=
 observed_queued_clients=
 observed_reassembled_clients=
 per_client_queued_frames=
+per_client_keyframes_queued=
 per_client_direct_frames=
 per_client_reassembled_frames=
+retained_keyframe_clients=
+per_client_retained_keyframe_frame_id=
+first_keyframe_frame_id=
+last_keyframe_frame_id=
 validation_ready=
 ready_reason=
 receive_stop_reason=
 stop_reason=
+
+[client summary]
+encoder_gop_frames=
+frames_sent=
+h264_idr_count=
+h264_non_idr_vcl_count=
+keyframes_encoded=
+keyframes_sent=
+first_keyframe_frame_id=
+last_keyframe_frame_id=
+h264_parameter_sets_cached=
+h264_sps_count=
+h264_pps_count=
+h264_parameter_sets_prepended_count=
+h264_parameter_sets_missing_count=
+last_payload_has_sps=
+last_payload_has_pps=
+last_payload_has_idr=
+last_payload_has_non_idr_vcl=
 
 [server handoff request lines]
 request_1=

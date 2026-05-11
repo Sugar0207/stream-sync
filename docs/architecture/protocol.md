@@ -2890,6 +2890,7 @@ large encoded `VideoFrame` payloads.
 | `run_id` | string | Same run as the original frame. |
 | `frame_id` | `u64` | Original frame id. |
 | `capture_timestamp` | `u64` micros | Original capture timestamp. |
+| `is_keyframe` | `bool` / `u8` | `0 = false`, `1 = true`; copied from the original frame metadata so server-side reassembly can retain latest decodable/keyframe-visible frames. |
 | `width` | `u32` | Original frame width. |
 | `height` | `u32` | Original frame height. |
 | `fps_nominal` | `u32` | Original nominal FPS. |

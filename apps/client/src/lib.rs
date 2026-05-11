@@ -5447,6 +5447,7 @@ impl ClientVideoFrameFragmentationBoundary {
                 run_id: frame.run_id.clone(),
                 frame_id: frame.frame_id,
                 capture_timestamp: frame.capture_timestamp,
+                is_keyframe: frame.is_keyframe,
                 width: frame.width,
                 height: frame.height,
                 fps_nominal: frame.fps_nominal,
@@ -5980,9 +5981,15 @@ pub struct ClientContinuousRealEncodedVideoFrameSummary {
     pub h264_parameter_sets_cached: bool,
     pub h264_sps_count: u64,
     pub h264_pps_count: u64,
+    pub h264_idr_count: u64,
+    pub h264_non_idr_vcl_count: u64,
     pub h264_parameter_sets_prepended_count: u64,
     pub last_payload_had_parameter_sets: bool,
     pub h264_parameter_sets_missing_count: u64,
+    pub keyframes_encoded: u64,
+    pub keyframes_sent: u64,
+    pub first_keyframe_frame_id: Option<u64>,
+    pub last_keyframe_frame_id: Option<u64>,
     pub last_payload_has_sps: bool,
     pub last_payload_has_pps: bool,
     pub last_payload_has_idr: bool,
@@ -6677,6 +6684,7 @@ fn build_and_send_persistent_access_unit(
 ) -> ClientRealEncodedVideoFrameOneShotResult {
     h264_parameter_set_cache.observe_access_unit(&access_unit);
     sync_h264_parameter_set_summary(summary, h264_parameter_set_cache);
+    record_access_unit_keyframe_summary(summary, &access_unit);
     let access_unit_bytes = match h264_parameter_set_cache.prepare_payload(&access_unit) {
         ClientPersistentH264PreparedPayloadResult::Prepared {
             payload,
@@ -6745,6 +6753,9 @@ fn build_and_send_persistent_access_unit(
     };
 
     let sent_frame = built_frame.clone();
+    if built_frame.is_keyframe {
+        summary.keyframes_encoded = summary.keyframes_encoded.saturating_add(1);
+    }
     match boundary
         .one_shot
         .send
@@ -6779,6 +6790,33 @@ fn sync_h264_parameter_set_summary(
     summary.h264_parameter_sets_cached = h264_parameter_set_cache.has_parameter_sets();
     summary.h264_sps_count = h264_parameter_set_cache.sps_count();
     summary.h264_pps_count = h264_parameter_set_cache.pps_count();
+}
+
+fn record_access_unit_keyframe_summary(
+    summary: &mut ClientContinuousRealEncodedVideoFrameSummary,
+    access_unit: &ClientAnnexBAccessUnit,
+) {
+    if access_unit.contains_idr {
+        summary.h264_idr_count = summary.h264_idr_count.saturating_add(1);
+    }
+    if access_unit
+        .nal_units
+        .iter()
+        .any(|nal_unit| nal_unit.kind == ClientAnnexBNalUnitKind::NonIdrSlice)
+    {
+        summary.h264_non_idr_vcl_count = summary.h264_non_idr_vcl_count.saturating_add(1);
+    }
+}
+
+fn record_sent_keyframe_summary(
+    summary: &mut ClientContinuousRealEncodedVideoFrameSummary,
+    frame_id: u64,
+) {
+    summary.keyframes_sent = summary.keyframes_sent.saturating_add(1);
+    if summary.first_keyframe_frame_id.is_none() {
+        summary.first_keyframe_frame_id = Some(frame_id);
+    }
+    summary.last_keyframe_frame_id = Some(frame_id);
 }
 
 fn persistent_start_error_kind_to_deferred_reason(
@@ -6819,7 +6857,7 @@ fn update_continuous_real_encoded_summary(
     timing: ClientRealEncodedVideoFrameOneShotTimingObservation,
 ) {
     match result {
-        ClientRealEncodedVideoFrameOneShotResult::Sent(_) => {
+        ClientRealEncodedVideoFrameOneShotResult::Sent(sent) => {
             summary.capture_elapsed_micros = summary
                 .capture_elapsed_micros
                 .saturating_add(timing.capture_elapsed_micros);
@@ -6829,29 +6867,30 @@ fn update_continuous_real_encoded_summary(
             summary.frames_captured = summary.frames_captured.saturating_add(1);
             summary.frames_encoded = summary.frames_encoded.saturating_add(1);
             summary.frames_sent = summary.frames_sent.saturating_add(1);
-            if let ClientRealEncodedVideoFrameOneShotResult::Sent(sent) = result {
-                summary.send_elapsed_micros = summary
-                    .send_elapsed_micros
-                    .saturating_add(sent.send.send_elapsed_micros);
-                summary.total_fragment_pacing_sleep_micros = summary
-                    .total_fragment_pacing_sleep_micros
-                    .saturating_add(sent.send.total_fragment_pacing_sleep_micros);
-                match sent.send.summary {
-                    ClientVideoFrameSendSummary::DirectSent => {
-                        summary.direct_sends = summary.direct_sends.saturating_add(1);
-                    }
-                    ClientVideoFrameSendSummary::FragmentedSent {
-                        fragments_attempted,
-                        fragments_sent,
-                    } => {
-                        summary.fragmented_sends = summary.fragmented_sends.saturating_add(1);
-                        summary.fragments_attempted = summary
-                            .fragments_attempted
-                            .saturating_add(u64::from(fragments_attempted));
-                        summary.fragments_sent = summary
-                            .fragments_sent
-                            .saturating_add(u64::from(fragments_sent));
-                    }
+            if sent.frame.is_keyframe {
+                record_sent_keyframe_summary(summary, sent.frame.frame_id);
+            }
+            summary.send_elapsed_micros = summary
+                .send_elapsed_micros
+                .saturating_add(sent.send.send_elapsed_micros);
+            summary.total_fragment_pacing_sleep_micros = summary
+                .total_fragment_pacing_sleep_micros
+                .saturating_add(sent.send.total_fragment_pacing_sleep_micros);
+            match sent.send.summary {
+                ClientVideoFrameSendSummary::DirectSent => {
+                    summary.direct_sends = summary.direct_sends.saturating_add(1);
+                }
+                ClientVideoFrameSendSummary::FragmentedSent {
+                    fragments_attempted,
+                    fragments_sent,
+                } => {
+                    summary.fragmented_sends = summary.fragmented_sends.saturating_add(1);
+                    summary.fragments_attempted = summary
+                        .fragments_attempted
+                        .saturating_add(u64::from(fragments_attempted));
+                    summary.fragments_sent = summary
+                        .fragments_sent
+                        .saturating_add(u64::from(fragments_sent));
                 }
             }
         }
@@ -16083,6 +16122,7 @@ mod tests {
             };
             assert_eq!(fragment.frame_id, frame.frame_id);
             assert_eq!(fragment.capture_timestamp, frame.capture_timestamp);
+            assert_eq!(fragment.is_keyframe, frame.is_keyframe);
             assert_eq!(fragment.width, frame.width);
             assert_eq!(fragment.height, frame.height);
             assert_eq!(fragment.fps_nominal, frame.fps_nominal);
@@ -17865,9 +17905,15 @@ mod tests {
         assert!(result.summary.h264_parameter_sets_cached);
         assert_eq!(result.summary.h264_sps_count, 1);
         assert_eq!(result.summary.h264_pps_count, 1);
+        assert_eq!(result.summary.h264_idr_count, 1);
+        assert_eq!(result.summary.h264_non_idr_vcl_count, 0);
         assert_eq!(result.summary.h264_parameter_sets_prepended_count, 0);
         assert!(result.summary.last_payload_had_parameter_sets);
         assert_eq!(result.summary.h264_parameter_sets_missing_count, 0);
+        assert_eq!(result.summary.keyframes_encoded, 1);
+        assert_eq!(result.summary.keyframes_sent, 1);
+        assert_eq!(result.summary.first_keyframe_frame_id, Some(171));
+        assert_eq!(result.summary.last_keyframe_frame_id, Some(171));
         assert!(result.summary.last_payload_has_sps);
         assert!(result.summary.last_payload_has_pps);
         assert!(result.summary.last_payload_has_idr);
@@ -18285,12 +18331,18 @@ mod tests {
         };
 
         assert_eq!(result.summary.frames_sent, 2);
+        assert_eq!(result.summary.h264_idr_count, 1);
+        assert_eq!(result.summary.h264_non_idr_vcl_count, 1);
         assert_eq!(result.summary.h264_parameter_sets_prepended_count, 1);
         assert!(result.summary.h264_parameter_sets_cached);
         assert_eq!(result.summary.h264_sps_count, 1);
         assert_eq!(result.summary.h264_pps_count, 1);
         assert!(result.summary.last_payload_had_parameter_sets);
         assert_eq!(result.summary.h264_parameter_sets_missing_count, 0);
+        assert_eq!(result.summary.keyframes_encoded, 1);
+        assert_eq!(result.summary.keyframes_sent, 1);
+        assert_eq!(result.summary.first_keyframe_frame_id, Some(177));
+        assert_eq!(result.summary.last_keyframe_frame_id, Some(177));
         assert!(result.summary.last_payload_has_sps);
         assert!(result.summary.last_payload_has_pps);
         assert!(!result.summary.last_payload_has_idr);

@@ -1,5 +1,95 @@
 <!-- stream-sync/docs/operations/session-log.md -->
 
+## 2026-05-11
+### Type
+- Codex code + docs update
+
+### Work
+- Investigated the latest two-client handoff rerun where:
+  - server `validation_ready=true` still passed
+  - switcher `preview-latest-decodable` still returned `NoFrame`
+  - server `retained_keyframe_clients=0` showed the retained-keyframe fallback
+    had no keyframe metadata to use
+- Narrowed the likely root cause from "queue cap vs GOP" down to "fragment path
+  keyframe metadata loss":
+  - persistent client summary still implied IDR-bearing access units should
+    exist
+  - protocol `VideoFrame` already carried `is_keyframe`
+  - `VideoFrameFragment` wire encode/decode did not yet preserve `is_keyframe`
+  - server reassembly rebuilt fragmented frames with `is_keyframe=false`
+- Fixed keyframe metadata propagation end to end for fragmented traffic:
+  - `VideoFrameFragment` now carries `is_keyframe` on the wire
+  - client fragmentation copies `VideoFrame.is_keyframe` into each fragment
+  - server reassembly copies fragment `is_keyframe` into the completed
+    `VideoFrame`
+  - reassembly metadata mismatch checks now include `is_keyframe`
+- Added client-side persistent summary counters for human reruns:
+  - `h264_idr_count`
+  - `h264_non_idr_vcl_count`
+  - `keyframes_encoded`
+  - `keyframes_sent`
+  - `first_keyframe_frame_id`
+  - `last_keyframe_frame_id`
+- Added server receive summary counters for human reruns:
+  - `keyframes_received`
+  - `keyframes_queued`
+  - `per_client_keyframes_queued`
+  - `first_keyframe_frame_id`
+  - `last_keyframe_frame_id`
+- Extended server runtime summary formatting so the handoff-ready / service
+  summaries expose the new keyframe counters together with retained-keyframe
+  state.
+- Kept scope narrow:
+  - no client encoder cadence change
+  - no queue-cap-only workaround
+  - no concurrent receive + handoff serve runtime
+  - no switcher persistent decoder context
+
+### Changed Files
+- `apps/client/src/lib.rs`
+- `apps/client/src/main.rs`
+- `apps/server/src/lib.rs`
+- `apps/server/src/main.rs`
+- `crates/net-core/src/lib.rs`
+- `crates/protocol/src/lib.rs`
+- `docs/architecture/protocol.md`
+- `docs/operations/manual-real-encoded-video-poc.md`
+- `docs/operations/todo.md`
+- `docs/operations/two-client-handoff-validation.md`
+- `docs/operations/session-log.md`
+
+### Decision
+- The retained-keyframe fallback design was still correct, but it could not
+  work until `is_keyframe` survived the dominant fragmented path.
+- The current highest-confidence root cause for `retained_keyframe_clients=0`
+  was metadata propagation loss, not missing IDRs from the encoder.
+- The next human rerun should treat these as the main success gates:
+  - client `h264_idr_count > 0`
+  - client `keyframes_sent > 0`
+  - server `keyframes_received > 0`
+  - server `retained_keyframe_clients=2`
+  - switcher real-slot `decodable_source=queue|retained_keyframe`
+
+### Validation
+- `cargo fmt`
+- `cargo fmt --check`
+- `cargo check --workspace`
+- focused client tests:
+  - `cargo test -p stream-sync-client annex_b_reader -- --nocapture`
+  - `cargo test -p stream-sync-client client_video_frame_continuous_real_encoded_persistent -- --nocapture`
+- focused net-core tests:
+  - `cargo test -p stream-sync-net-core is_keyframe -- --nocapture`
+- focused server tests:
+  - `cargo test -p stream-sync-server retained_keyframe -- --nocapture`
+  - `cargo test -p stream-sync-server video_frame_fragment_reassembly_completes_in_order -- --nocapture`
+  - `cargo test -p stream-sync-server receive_auth_video_queue_once_direct_frame_timeout_does_not_stop_early -- --nocapture`
+  - `cargo test -p stream-sync-server receive_auth_video_queue_once_accepts_second_client_after_first_direct_frame -- --nocapture`
+- focused switcher tests:
+  - `cargo test -p stream-sync-switcher single_client_queue_source_preview_latest_decodable -- --nocapture`
+  - `cargo test -p stream-sync-switcher switcher_four_view_preview_slot_diagnostic_formats_decodable_fields -- --nocapture`
+- `cargo test --workspace`
+- `git diff --check`
+
 ## 2026-05-09
 ### Type
 - Codex code + docs update

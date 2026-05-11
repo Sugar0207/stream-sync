@@ -72,7 +72,7 @@ pub const VIDEO_FRAME_NUMERIC_METADATA_LEN: u16 = 46;
 ///
 /// This excludes length-prefixed `client_id`, length-prefixed `run_id`, and
 /// the variable fragment payload bytes.
-pub const VIDEO_FRAME_FRAGMENT_NUMERIC_METADATA_LEN: u16 = 44;
+pub const VIDEO_FRAME_FRAGMENT_NUMERIC_METADATA_LEN: u16 = 45;
 
 /// Byte length of the fixed numeric part of the planned ClientStats payload.
 ///
@@ -511,6 +511,7 @@ pub fn decode_video_frame_fragment_payload(
     let run_id = RunId(reader.read_string()?);
     let frame_id = reader.read_u64()?;
     let capture_timestamp = TimestampMicros(reader.read_u64()?);
+    let is_keyframe = reader.read_bool()?;
     let width = reader.read_u32()?;
     let height = reader.read_u32()?;
     let fps_nominal = reader.read_u32()?;
@@ -528,6 +529,7 @@ pub fn decode_video_frame_fragment_payload(
         run_id,
         frame_id,
         capture_timestamp,
+        is_keyframe,
         width,
         height,
         fps_nominal,
@@ -1217,6 +1219,7 @@ pub fn encode_video_frame_fragment_payload(
     write_string(output, &fragment.run_id.0)?;
     output.extend_from_slice(&fragment.frame_id.to_le_bytes());
     output.extend_from_slice(&fragment.capture_timestamp.0.to_le_bytes());
+    write_bool(output, fragment.is_keyframe);
     output.extend_from_slice(&fragment.width.to_le_bytes());
     output.extend_from_slice(&fragment.height.to_le_bytes());
     output.extend_from_slice(&fragment.fps_nominal.to_le_bytes());
@@ -1739,6 +1742,7 @@ pub struct VideoFrameFragment {
     pub run_id: RunId,
     pub frame_id: u64,
     pub capture_timestamp: TimestampMicros,
+    pub is_keyframe: bool,
     pub width: u32,
     pub height: u32,
     pub fps_nominal: u32,
@@ -3462,6 +3466,7 @@ mod tests {
             run_id: RunId("run-1".to_string()),
             frame_id: 42,
             capture_timestamp: TimestampMicros(1_000_000),
+            is_keyframe: true,
             width: 1280,
             height: 720,
             fps_nominal: 30,

@@ -4274,3 +4274,46 @@ Push judgment preconditions:
 - final regression checklist is green
 - closeout docs are updated
 - current MVP scope and future scope are clearly separated
+
+## Latest Keyframe Metadata Follow-Up
+
+Latest two-client handoff rerun interpretation:
+
+- retained-keyframe fallback itself was still the right direction, but
+  `retained_keyframe_clients=0` proved the server never saw a frame marked
+  `is_keyframe=true` in the dominant fragmented path
+- the narrow root cause was wire/reassembly metadata loss, not SPS/PPS cache
+  regression and not a need to widen queue cap
+
+Current observability to use on the next rerun:
+
+- client persistent summary:
+  - `h264_idr_count`
+  - `h264_non_idr_vcl_count`
+  - `keyframes_encoded`
+  - `keyframes_sent`
+  - `first_keyframe_frame_id`
+  - `last_keyframe_frame_id`
+- server receive summary:
+  - `keyframes_received`
+  - `keyframes_queued`
+  - `per_client_keyframes_queued`
+  - `first_keyframe_frame_id`
+  - `last_keyframe_frame_id`
+  - `retained_keyframe_clients`
+  - `per_client_retained_keyframe_frame_id`
+- switcher real-slot diagnostics:
+  - `handoff_no_frame_reason`
+  - `decodable_source`
+  - `retained_keyframe_available`
+  - `retained_keyframe_frame_id`
+
+Current expected success shape:
+
+- client `h264_idr_count > 0`
+- client `keyframes_sent > 0`
+- server `keyframes_received > 0`
+- server `retained_keyframe_clients >= 1` and, for the 2-client validation,
+  eventually `= 2`
+- switcher `preview-latest-decodable` returns `decodable_source=queue` or
+  `decodable_source=retained_keyframe`, not `none`

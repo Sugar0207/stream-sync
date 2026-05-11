@@ -1330,6 +1330,11 @@ impl ServerReceiveAuthVideoQueueOnceLauncher {
                         };
                         let client_id = packet.frame.client_id.clone();
                         let run_id = packet.frame.run_id.clone();
+                        let frame_id = packet.frame.frame_id;
+                        let is_keyframe = packet.frame.is_keyframe;
+                        if is_keyframe {
+                            record_keyframe_received_progress(&mut summary);
+                        }
                         let input = self.video_handler.prepare_input(packet);
                         let queue = self.video_queue_storage.store_frame(
                             video_queue_state,
@@ -1342,6 +1347,14 @@ impl ServerReceiveAuthVideoQueueOnceLauncher {
                                 summary.direct_frames_queued.saturating_add(1);
                             summary.frames_queued = summary.frames_queued.saturating_add(1);
                             record_direct_frame_progress(&mut summary, &client_id, &run_id);
+                            if is_keyframe {
+                                record_keyframe_queued_progress(
+                                    &mut summary,
+                                    &client_id,
+                                    &run_id,
+                                    frame_id,
+                                );
+                            }
                         }
                         summary.queue_len = video_queue_state.total_len();
                         last_queue = Some(ServerVideoFrameQueueRuntimeResult::Queued(queue));
@@ -1394,6 +1407,9 @@ impl ServerReceiveAuthVideoQueueOnceLauncher {
                                 queue_result,
                                 ..
                             } => {
+                                if reassembled_frame.is_keyframe {
+                                    record_keyframe_received_progress(&mut summary);
+                                }
                                 summary.frames_reassembled =
                                     summary.frames_reassembled.saturating_add(1);
                                 record_reassembled_frame_progress(
@@ -1411,6 +1427,14 @@ impl ServerReceiveAuthVideoQueueOnceLauncher {
                                         &reassembled_frame.client_id,
                                         &reassembled_frame.run_id,
                                     );
+                                    if reassembled_frame.is_keyframe {
+                                        record_keyframe_queued_progress(
+                                            &mut summary,
+                                            &reassembled_frame.client_id,
+                                            &reassembled_frame.run_id,
+                                            reassembled_frame.frame_id,
+                                        );
+                                    }
                                 }
                                 last_queue =
                                     Some(ServerVideoFrameQueueRuntimeResult::Queued(queue_result));
@@ -1493,6 +1517,8 @@ pub struct ServerReceiveAuthVideoQueueOnceVideoSummary {
     pub frames_reassembled: u64,
     pub frames_queued: u64,
     pub direct_frames_queued: u64,
+    pub keyframes_received: u64,
+    pub keyframes_queued: u64,
     pub rejected_packets: u64,
     pub rejected_fragments: u64,
     pub duplicate_fragments: u64,
@@ -1503,8 +1529,11 @@ pub struct ServerReceiveAuthVideoQueueOnceVideoSummary {
     pub observed_queued_clients: usize,
     pub observed_reassembled_clients: usize,
     pub per_client_queued_frames: BTreeMap<String, u64>,
+    pub per_client_keyframes_queued: BTreeMap<String, u64>,
     pub per_client_direct_frames: BTreeMap<String, u64>,
     pub per_client_reassembled_frames: BTreeMap<String, u64>,
+    pub first_keyframe_frame_id: Option<u64>,
+    pub last_keyframe_frame_id: Option<u64>,
     pub receive_timed_out: bool,
     pub max_packets_reached: bool,
     pub stop_reason: Option<ServerReceiveAuthVideoQueueStopReason>,
@@ -1606,6 +1635,25 @@ fn record_direct_frame_progress(
     let key = format!("{}/{}", client_id.0, run_id.0);
     *summary.per_client_direct_frames.entry(key).or_insert(0) += 1;
     record_queued_frame_progress(summary, client_id, run_id);
+}
+
+fn record_keyframe_received_progress(summary: &mut ServerReceiveAuthVideoQueueOnceVideoSummary) {
+    summary.keyframes_received = summary.keyframes_received.saturating_add(1);
+}
+
+fn record_keyframe_queued_progress(
+    summary: &mut ServerReceiveAuthVideoQueueOnceVideoSummary,
+    client_id: &ClientId,
+    run_id: &RunId,
+    frame_id: u64,
+) {
+    let key = format!("{}/{}", client_id.0, run_id.0);
+    summary.keyframes_queued = summary.keyframes_queued.saturating_add(1);
+    *summary.per_client_keyframes_queued.entry(key).or_insert(0) += 1;
+    if summary.first_keyframe_frame_id.is_none() {
+        summary.first_keyframe_frame_id = Some(frame_id);
+    }
+    summary.last_keyframe_frame_id = Some(frame_id);
 }
 
 fn evaluate_reassembled_stop_reason(
@@ -6091,6 +6139,7 @@ impl ServerVideoFrameReassemblyState {
 struct ServerVideoFrameReassemblyFrameState {
     protocol_version: ProtocolVersion,
     capture_timestamp: TimestampMicros,
+    is_keyframe: bool,
     width: u32,
     height: u32,
     fps_nominal: u32,
@@ -6105,6 +6154,7 @@ impl ServerVideoFrameReassemblyFrameState {
         Self {
             protocol_version: fragment.protocol_version,
             capture_timestamp: fragment.capture_timestamp,
+            is_keyframe: fragment.is_keyframe,
             width: fragment.width,
             height: fragment.height,
             fps_nominal: fragment.fps_nominal,
@@ -6260,7 +6310,7 @@ impl ServerVideoFrameFragmentReassemblyBoundary {
             frame_id: packet.fragment.frame_id,
             capture_timestamp: frame_state.capture_timestamp,
             send_timestamp: frame_state.capture_timestamp,
-            is_keyframe: false,
+            is_keyframe: frame_state.is_keyframe,
             metadata_reserved: [0; 3],
             width: frame_state.width,
             height: frame_state.height,
@@ -6316,6 +6366,7 @@ fn metadata_matches(
 ) -> bool {
     state.protocol_version == fragment.protocol_version
         && state.capture_timestamp == fragment.capture_timestamp
+        && state.is_keyframe == fragment.is_keyframe
         && state.width == fragment.width
         && state.height == fragment.height
         && state.fps_nominal == fragment.fps_nominal
@@ -16993,6 +17044,7 @@ shared_token = "secret"
             reassembled_frame.capture_timestamp,
             TimestampMicros(1_000_000)
         );
+        assert!(reassembled_frame.is_keyframe);
         assert_eq!(reassembled_frame.width, 1280);
         assert_eq!(reassembled_frame.height, 720);
         assert_eq!(reassembled_frame.fps_nominal, 30);
@@ -17005,6 +17057,11 @@ shared_token = "secret"
             ServerVideoFrameQueueStorageResult::Stored { .. }
         ));
         assert_eq!(queue_state.total_len(), 1);
+        assert_eq!(queue_state.retained_keyframe_clients(), 1);
+        assert_eq!(
+            queue_state.per_client_retained_keyframe_frame_id(),
+            BTreeMap::from([("client-1/run-1".to_string(), 42_u64)])
+        );
         assert_eq!(reassembly_state.tracked_frame_count(), 0);
     }
 
@@ -17259,9 +17316,15 @@ shared_token = "secret"
         };
         assert_eq!(queued.frame.client_id, ClientId("client-1".to_string()));
         assert_eq!(queued.frame.frame_id, 42);
+        assert!(queued.frame.is_keyframe);
         assert_eq!(current_client_queue_len, 1);
         assert_eq!(dropped_oldest, None);
         assert_eq!(queue_state.total_len(), 1);
+        assert_eq!(queue_state.retained_keyframe_clients(), 1);
+        assert_eq!(
+            queue_state.per_client_retained_keyframe_frame_id(),
+            BTreeMap::from([("client-1/run-1".to_string(), 42_u64)])
+        );
     }
 
     #[test]
@@ -17428,6 +17491,8 @@ shared_token = "secret"
         assert_eq!(summary.frames_queued, 1);
         assert_eq!(summary.direct_frames_queued, 1);
         assert_eq!(summary.frames_reassembled, 0);
+        assert_eq!(summary.keyframes_received, 1);
+        assert_eq!(summary.keyframes_queued, 1);
         assert_eq!(summary.observed_queued_clients, 1);
         assert_eq!(summary.observed_reassembled_clients, 0);
         assert_eq!(
@@ -17435,9 +17500,15 @@ shared_token = "secret"
             Some(&1)
         );
         assert_eq!(
+            summary.per_client_keyframes_queued.get("client-1/run-1"),
+            Some(&1)
+        );
+        assert_eq!(
             summary.per_client_direct_frames.get("client-1/run-1"),
             Some(&1)
         );
+        assert_eq!(summary.first_keyframe_frame_id, Some(42));
+        assert_eq!(summary.last_keyframe_frame_id, Some(42));
         assert!(summary.per_client_reassembled_frames.is_empty());
         assert!(summary.receive_timed_out);
     }
@@ -17532,6 +17603,8 @@ shared_token = "secret"
         assert_eq!(summary.frames_queued, 2);
         assert_eq!(summary.direct_frames_queued, 2);
         assert_eq!(summary.frames_reassembled, 0);
+        assert_eq!(summary.keyframes_received, 2);
+        assert_eq!(summary.keyframes_queued, 2);
         assert_eq!(summary.observed_queued_clients, 2);
         assert_eq!(
             summary.per_client_queued_frames.get("client-1/run-1"),
@@ -17549,6 +17622,16 @@ shared_token = "secret"
             summary.per_client_direct_frames.get("client-2/run-1"),
             Some(&1)
         );
+        assert_eq!(
+            summary.per_client_keyframes_queued.get("client-1/run-1"),
+            Some(&1)
+        );
+        assert_eq!(
+            summary.per_client_keyframes_queued.get("client-2/run-1"),
+            Some(&1)
+        );
+        assert_eq!(summary.first_keyframe_frame_id, Some(42));
+        assert_eq!(summary.last_keyframe_frame_id, Some(43));
         assert!(summary.per_client_reassembled_frames.is_empty());
     }
 
@@ -23297,6 +23380,8 @@ shared_token = "secret"
                     frames_reassembled: 0,
                     frames_queued: 1,
                     direct_frames_queued: 1,
+                    keyframes_received: 1,
+                    keyframes_queued: 1,
                     rejected_packets: 0,
                     rejected_fragments: 0,
                     duplicate_fragments: 0,
@@ -23304,11 +23389,17 @@ shared_token = "secret"
                     incomplete_reassembly_frames: 0,
                     queue_len: 1,
                     incomplete_frame_progress: Vec::new(),
-                    observed_queued_clients: 0,
+                    observed_queued_clients: 1,
                     observed_reassembled_clients: 0,
-                    per_client_queued_frames: BTreeMap::new(),
-                    per_client_direct_frames: BTreeMap::new(),
+                    per_client_queued_frames: BTreeMap::from([("client-1/run-1".to_string(), 1)]),
+                    per_client_keyframes_queued: BTreeMap::from([(
+                        "client-1/run-1".to_string(),
+                        1,
+                    )]),
+                    per_client_direct_frames: BTreeMap::from([("client-1/run-1".to_string(), 1)]),
                     per_client_reassembled_frames: BTreeMap::new(),
+                    first_keyframe_frame_id: Some(42),
+                    last_keyframe_frame_id: Some(42),
                     receive_timed_out: false,
                     max_packets_reached: false,
                     stop_reason: Some(ServerReceiveAuthVideoQueueStopReason::DirectFrameQueued),
@@ -23671,6 +23762,7 @@ shared_token = "presented-secret"
             run_id: RunId("run-1".to_string()),
             frame_id: 42,
             capture_timestamp: TimestampMicros(1_000_000),
+            is_keyframe: true,
             width: 1280,
             height: 720,
             fps_nominal: 30,
