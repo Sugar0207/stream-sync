@@ -191,6 +191,16 @@ server start
 -> switcher reads while clients are still sending
 ```
 
+Latest concurrent rerun note:
+
+- `receive_ready=true` and `handoff_ready=true` already proved the early ready
+  path
+- the first human rerun still ended before any client frames arrived because
+  `max_handoff_requests=180` was consumed entirely by startup `NoFrame`
+  requests
+- this should currently be treated as request-budget sizing, not as a receive
+  or pipe-readiness regression
+
 What the first concurrent slice proves:
 
 - receive and handoff serve can coexist in one runtime
@@ -202,6 +212,14 @@ What it still does not prove:
 - latest non-IDR continuous decode progression
 - switcher persistent decoder context
 - reconnect / daemon lifecycle polish
+
+Current concurrent validation guidance:
+
+- use a larger request safety limit such as `2000`
+- treat `max_runtime_duration_ms` as the primary closeout bound for human
+  validation
+- require final server `frame_read_count > 0` before calling the concurrent
+  slice PASS
 
 ## Same-PC Preconditions
 

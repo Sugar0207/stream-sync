@@ -2,6 +2,59 @@
 
 ## 2026-05-11
 ### Type
+- Human validation result + Codex docs update
+
+### Work
+- Recorded the first human rerun result for the concurrent receive + handoff
+  runtime.
+- Confirmed that the early ready path worked:
+  - `receive_ready=true`
+  - `handoff_ready=true`
+  - `runtime_mode=concurrent`
+  - `validation_ready=n/a`
+- Recorded the first failure shape:
+  - `stop_reason=MaxHandoffRequestsReached`
+  - `receive_stop_reason=ReceiveTimedOut`
+  - `handoff_stop_reason=MaxRequestsReached`
+  - `runtime_duration_ms=30072`
+  - `packets_received=0`
+  - `frames_queued=0`
+  - `retained_keyframe_clients=0`
+  - `handoff_requests=180`
+  - `frame_read_count=0`
+  - `no_frame_count=180`
+  - `decodable_source_counts=queue:0|retained_keyframe:0|none:180`
+- Recorded the likely cause:
+  - switcher preview loop started before client traffic
+  - startup `NoFrame` requests are natural in concurrent mode
+  - `max_handoff_requests=180` was too small for a 2-real-slot preview loop
+  - the server therefore spent its full request budget before any frame arrived
+- Updated docs so the next human rerun uses:
+  - `max_handoff_requests=2000`
+  - `max_runtime_duration_ms` as the primary closeout bound
+  - `frame_read_count > 0` as the success gate
+- Added a known-issue note:
+  - early `NoFrame` request traffic can currently exhaust a too-small request
+    budget before client frames arrive
+
+### Decision
+- This rerun is not evidence of a receive/runtime regression.
+- The failure is currently best treated as request-budget sizing and human
+  validation procedure tuning.
+- No code change is required for the narrow next step; docs-only correction is
+  sufficient.
+
+### Changed Files
+- `docs/operations/concurrent-handoff-runtime-plan.md`
+- `docs/operations/two-client-handoff-validation.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### Validation
+- `git diff --check`
+
+## 2026-05-11
+### Type
 - Codex code + docs update
 
 ### Work

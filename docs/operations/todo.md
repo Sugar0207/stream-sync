@@ -22,8 +22,9 @@
 ---
 
 ## 現在位置
+- latest concurrent first human validation では `receive_ready=true` / `handoff_ready=true` は PASS したが、`max_handoff_requests=180` が小さすぎたため、switcher が client 起動前に `NoFrame` request を投げ続けて `handoff_requests=180` / `frame_read_count=0` / `no_frame_count=180` のまま `stop_reason=MaxHandoffRequestsReached` で server が先に終了した。これは receive/queue/render failure ではなく request-budget sizing 問題として扱い、次回 human rerun では `max_handoff_requests=2000` を推奨し、`max_runtime_duration_ms` を主な closeout bound とする
 - first concurrent receive + handoff serve runtime slice は実装済み。new command `--receive-auth-video-queue-and-serve-handoff-continuous` は staged command `--receive-auth-video-queue-and-serve-handoff-many` を残したまま追加し、coarse-lock shared state 上で UDP receive/auth/reassembly/queue update と named-pipe handoff serve を同時に持てるようにした。ready line には `receive_ready=true` / `handoff_ready=true` / `runtime_mode=concurrent` / `validation_ready=n/a` / `actual_pipe_path` を出し、stopped summary には receive counters、handoff counters、`decodable_source_counts`、`stop_reason` / `receive_stop_reason` / `handoff_stop_reason` / `runtime_duration_ms` を出す
-- current next gate は same-PC 2-client で concurrent command の human validation を通すこと。first goal は「client 送信中に switcher が `preview-latest-decodable` で `FrameRead` と `frames_rendered > 0` に到達すること」であり、retained-keyframe based preview と staged checkpoint は引き続き valid baseline として残す
+- current next gate は same-PC 2-client で concurrent command の human validation を通すこと。first goal は「client 送信中に switcher が `preview-latest-decodable` で `FrameRead` と `frames_rendered > 0` に到達すること」であり、final server summary では `frame_read_count > 0` を success gate にする。retained-keyframe based preview と staged checkpoint は引き続き valid baseline として残す
 - 2-client human validation 方針は same-PC smoke / stress profile に固定した。今後の 2-client validation は server + client1 + client2 + capture + FFmpeg encode を同一 Windows PC 上で動かす前提とし、distributed-PC validation 用の server IP / firewall 手順は主目的にしない
 - same-PC 2-client longer-run validation は PASS 済み。標準設定は `receive_buffer_bytes=268435456` + `max_packets_per_drain_cycle=1024` + summary-only + `receive_timeout_ms=30000` + `max_frames=900 per client` + `fragment_pacing_every=4` + `fragment_pacing_delay_ms=2` とし、client 合計 `1800` frames に対して server は `frames_reassembled=1800` / `frames_queued=1800` / `rejected_packets=0` / `decode_errors=0` / `incomplete_reassembly_frames=0` を確認した。`max_packets_drained_in_cycle=578` のため cap `1024` は現状十分である
 - 2-client validation の human-run recipe を same-PC 前提に更新した。`docs/operations/two-client-long-run-validation.md` と `docs/operations/two-client-long-run-validation.ps1` は same-PC smoke / stress profile、baseline 比較、`256` / `512` / `1024` の drain cap 比較、貼り返し template を source of truth とする
@@ -203,9 +204,12 @@
 ## 直近でやること
 1. `docs/operations/concurrent-handoff-runtime-plan.md` の first validation command で same-PC 2-client concurrent handoff runtime を人間が rerun する
    - server ready line で `receive_ready=true` / `handoff_ready=true` / `runtime_mode=concurrent` を確認する
+   - server command は `max_handoff_requests=2000` を使い、`max_runtime_duration_ms` を主な closeout bound とする
    - switcher は client 送信完了前から `preview-latest-decodable` で接続しておく
    - real slots で `handoff_response_kind=FrameRead` または final `frames_rendered > 0` を確認する
 2. server stopped summary の `handoff_requests` / `frame_read_count` / `decodable_source_counts` / `retained_keyframe_clients` / `stop_reason` を確認し、first concurrent slice を PASS か narrow follow-up か判定する
+   - `frame_read_count > 0` を PASS gate とする
+   - `handoff_requests=max_handoff_requests` かつ `frame_read_count=0` / `packets_received=0` は early NoFrame budget exhaustion として扱う
 3. concurrent slice が通ったら次の候補を整理する
    - switcher persistent decoder context
    - latest non-IDR continuous decode progression

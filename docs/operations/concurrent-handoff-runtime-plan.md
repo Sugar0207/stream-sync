@@ -59,7 +59,7 @@ stream-sync-server --receive-auth-video-queue-and-serve-handoff-continuous
 Current recommended first validation shape:
 
 - `pipe-name=streamsync-handoff-dev`
-- `max-handoff-requests=180`
+- `max-handoff-requests=2000`
 - `receive-timeout-ms=30000`
 - `max-runtime-duration-ms=180000`
 - `max-video-packets=0`
@@ -162,6 +162,13 @@ Known current caveat:
   reaching its own stop point
 - this is acceptable for the first same-PC manual slice because the switcher
   loop is already bounded by frame count / request budget
+- `max_handoff_requests` is a total request safety limit, not the primary human
+  validation closeout mechanism
+- current switcher preview can legitimately issue many early `NoFrame` requests
+  before clients start sending
+- for human validation, `max_runtime_duration_ms` should be treated as the main
+  closeout bound and `max_handoff_requests` should be set high enough that
+  startup `NoFrame` traffic does not end the server early
 
 ## Human Validation Order
 
@@ -180,13 +187,18 @@ Known current caveat:
    - `handoff_requests > 0`
    - `frame_read_count > 0`
    - `retained_keyframe_clients >= 1`
+8. Treat this as a known early-failure shape rather than a transport failure:
+   - `stop_reason=MaxHandoffRequestsReached`
+   - `packets_received=0`
+   - `frame_read_count=0`
+   - `no_frame_count=max_handoff_requests`
 
 ## First Validation Commands
 
 Server:
 
 ```powershell
-.\target\debug\stream-sync-server.exe --receive-auth-video-queue-and-serve-handoff-continuous configs/manual/server.two-real-slots.toml streamsync-handoff-dev 180 30000 180000 0 0 false 268435456 0 0
+.\target\debug\stream-sync-server.exe --receive-auth-video-queue-and-serve-handoff-continuous configs/manual/server.two-real-slots.toml streamsync-handoff-dev 2000 30000 180000 0 0 false 268435456 0 0
 ```
 
 Switcher:
@@ -210,6 +222,7 @@ Client2:
 ## Success Gate
 - server ready line is printed before clients start sending
 - switcher can connect after server start, before client traffic finishes
+- final server summary shows `frame_read_count > 0`
 - real slots reach `FrameRead`
 - `frames_rendered > 0`
 - `render_failures=0`
@@ -221,5 +234,9 @@ Client2:
   non-IDR continuous decode path
 - switcher persistent decoder context is still out of scope
 - same-PC client FPS variance remains a known issue
+- early startup `NoFrame` traffic can exhaust a too-small `max_handoff_requests`
+  budget before client frames arrive
+- current human validation should therefore prefer a larger request safety limit
+  such as `2000` and use `max_runtime_duration_ms` as the main closeout bound
 - reconnect / daemon lifecycle polish remains deferred
 - 4-client and OBS validation remain later phases
