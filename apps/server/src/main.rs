@@ -1698,12 +1698,12 @@ fn expected_reassembled_frames_met(
     policy: stream_sync_server::ServerReceiveAuthVideoQueueOnceManualPolicy,
     summary: Option<&stream_sync_server::ServerReceiveAuthVideoQueueOnceVideoSummary>,
 ) -> bool {
-    if !policy.stop_after_expected_reassembled_frames {
+    if !policy.expected_reassembled_frames_enabled() {
         return true;
     }
 
     summary
-        .map(|summary| summary.frames_queued >= policy.expected_reassembled_frames.max(1))
+        .map(|summary| summary.frames_queued >= policy.expected_reassembled_frames)
         .unwrap_or(false)
 }
 
@@ -2333,7 +2333,7 @@ fn format_named_pipe_handoff_concurrent_ready_line(
     let receive_buffer_set_error = ready.receive_buffer.set_error.as_deref().unwrap_or("none");
     let receive_buffer_read_error = ready.receive_buffer.read_error.as_deref().unwrap_or("none");
     format!(
-        "server named-pipe handoff concurrent ready receive_ready=true handoff_ready=true runtime_mode=concurrent validation_ready=n/a pipe_name={} actual_pipe_path={} bind_address={} max_handoff_requests={} receive_timeout_ms={} max_runtime_duration_ms={} max_video_packets={} expected_reassembled_frames={} expected_clients={} expected_per_client_frames={} receive_buffer_requested_bytes={} receive_buffer_effective_bytes={} receive_buffer_set_error={} receive_buffer_read_error={}",
+        "server named-pipe handoff concurrent ready receive_ready=true handoff_ready=true runtime_mode=concurrent validation_ready=n/a pipe_name={} actual_pipe_path={} bind_address={} max_handoff_requests={} receive_timeout_ms={} max_runtime_duration_ms={} max_video_packets={} expected_reassembled_frames={} expected_reassembled_frames_enabled={} expected_clients={} expected_clients_enabled={} expected_per_client_frames={} expected_per_client_frames_enabled={} receive_buffer_requested_bytes={} receive_buffer_effective_bytes={} receive_buffer_set_error={} receive_buffer_read_error={}",
         pipe_name,
         ready.actual_pipe_path,
         ready.bind_address,
@@ -2345,8 +2345,11 @@ fn format_named_pipe_handoff_concurrent_ready_line(
             .unwrap_or_else(|| "none".to_string()),
         format_optional_usize(policy.max_video_packets),
         policy.expected_reassembled_frames,
+        policy.expected_reassembled_frames_enabled(),
         policy.expected_reassembled_clients,
+        policy.expected_reassembled_clients_enabled(),
         policy.expected_reassembled_frames_per_client,
+        policy.expected_reassembled_frames_per_client_enabled(),
         ready.receive_buffer.requested_bytes,
         effective_receive_buffer,
         receive_buffer_set_error,
@@ -2363,13 +2366,16 @@ fn format_named_pipe_handoff_concurrent_summary(
     let per_client_retained_keyframe_frame_id =
         format_per_client_retained_keyframe_frame_id(&outcome.video_queue_state);
     format!(
-        "server named-pipe handoff concurrent stopped runtime_mode=concurrent stop_reason={} receive_stop_reason={} handoff_stop_reason={} runtime_duration_ms={} packets_received={} frames_queued={} per_client_queued_frames={} keyframes_queued={} retained_keyframe_clients={} per_client_retained_keyframe_frame_id={} handoff_requests={} frame_read_count={} no_frame_count={} decodable_source_counts={} io_error_count={}",
+        "server named-pipe handoff concurrent stopped runtime_mode=concurrent stop_reason={} receive_stop_reason={} handoff_stop_reason={} runtime_duration_ms={} packets_received={} frames_queued={} expected_reassembled_frames_enabled={} expected_clients_enabled={} expected_per_client_frames_enabled={} per_client_queued_frames={} keyframes_queued={} retained_keyframe_clients={} per_client_retained_keyframe_frame_id={} handoff_requests={} frame_read_count={} no_frame_count={} decodable_source_counts={} io_error_count={}",
         format_concurrent_runtime_stop_reason(summary.stop_reason),
         format_concurrent_receive_stop_reason(summary.receive_stop_reason),
         format_server_handoff_stop_reason(summary.handoff_stop_reason),
         summary.runtime_duration_ms,
         summary.packets_received,
         summary.frames_queued,
+        summary.expected_reassembled_frames_enabled,
+        summary.expected_clients_enabled,
+        summary.expected_per_client_frames_enabled,
         per_client_queued_frames,
         summary.keyframes_queued,
         summary.retained_keyframe_clients,
@@ -2732,6 +2738,9 @@ mod tests {
         assert!(ready_line.contains("handoff_ready=true"));
         assert!(ready_line.contains("runtime_mode=concurrent"));
         assert!(ready_line.contains("validation_ready=n/a"));
+        assert!(ready_line.contains("expected_reassembled_frames_enabled=false"));
+        assert!(ready_line.contains("expected_clients_enabled=false"));
+        assert!(ready_line.contains("expected_per_client_frames_enabled=false"));
         assert!(ready_line.contains(r"actual_pipe_path=\\.\pipe\pipe-concurrent"));
     }
 
@@ -2810,6 +2819,9 @@ mod tests {
                     decodable_source_queue_count: 1,
                     decodable_source_retained_keyframe_count: 4,
                     io_error_count: 0,
+                    expected_reassembled_frames_enabled: true,
+                    expected_clients_enabled: true,
+                    expected_per_client_frames_enabled: true,
                     stop_reason: stream_sync_server::ServerReceiveAuthVideoQueueHandoffContinuousRuntimeStopReason::MaxHandoffRequestsReached,
                     receive_stop_reason: stream_sync_server::ServerReceiveAuthVideoQueueHandoffContinuousReceiveStopReason::StopRequested,
                     handoff_stop_reason: stream_sync_server::ServerSwitcherNamedPipeManyRequestStopReason::MaxRequestsReached,
@@ -2822,6 +2834,9 @@ mod tests {
         assert!(summary.contains("stop_reason=MaxHandoffRequestsReached"));
         assert!(summary.contains("packets_received=120"));
         assert!(summary.contains("frames_queued=6"));
+        assert!(summary.contains("expected_reassembled_frames_enabled=true"));
+        assert!(summary.contains("expected_clients_enabled=true"));
+        assert!(summary.contains("expected_per_client_frames_enabled=true"));
         assert!(summary.contains("handoff_requests=8"));
         assert!(summary.contains("frame_read_count=5"));
         assert!(summary.contains("no_frame_count=3"));

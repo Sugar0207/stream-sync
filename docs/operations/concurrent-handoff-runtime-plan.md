@@ -111,6 +111,9 @@ Current concurrent ready line exposes:
 - `handoff_ready=true`
 - `runtime_mode=concurrent`
 - `validation_ready=n/a`
+- `expected_reassembled_frames_enabled=true|false`
+- `expected_clients_enabled=true|false`
+- `expected_per_client_frames_enabled=true|false`
 - `pipe_name=...`
 - `actual_pipe_path=...`
 
@@ -122,6 +125,12 @@ Meaning:
   - server is entering the named-pipe accept loop and switcher may connect
 - `validation_ready=n/a`
   - concurrent mode is not using the staged bounded validation gate by default
+- `expected_*_enabled`
+  - `0` means disabled for the corresponding expected threshold
+  - current same-PC continuous validation should therefore show:
+    - `expected_reassembled_frames_enabled=false`
+    - `expected_clients_enabled=false`
+    - `expected_per_client_frames_enabled=false`
 
 ## Summary Fields
 
@@ -145,6 +154,9 @@ Meaning:
 - `receive_stop_reason`
 - `handoff_stop_reason`
 - `runtime_duration_ms`
+- `expected_reassembled_frames_enabled`
+- `expected_clients_enabled`
+- `expected_per_client_frames_enabled`
 
 ## Stop Conditions
 
@@ -155,6 +167,25 @@ First-slice concurrent runtime currently supports bounded shutdown by:
 - max handoff requests
 - max received video packets
 - optional expected reassembled frame thresholds
+
+Expected-threshold semantics for the concurrent path:
+
+- `expected_reassembled_frames=0`
+  - disabled
+  - must not produce `receive_stop_reason=ReassembledFramesThresholdReached`
+- `expected_reassembled_clients=0`
+  - disabled
+  - must not be treated as immediately satisfied
+- `expected_reassembled_frames_per_client=0`
+  - disabled
+  - must not be treated as immediately satisfied
+- with the current validation command
+  - `validation_ready` stays `n/a`
+  - receive closeout should primarily come from:
+    - `receive_timeout`
+    - `max_runtime_duration`
+    - `max_video_packets`
+    - explicit stop / handoff shutdown coordination
 
 Known current caveat:
 
@@ -177,6 +208,9 @@ Known current caveat:
    - `receive_ready=true`
    - `handoff_ready=true`
    - `runtime_mode=concurrent`
+   - `expected_reassembled_frames_enabled=false`
+   - `expected_clients_enabled=false`
+   - `expected_per_client_frames_enabled=false`
 3. Start the switcher preview loop with `preview-latest-decodable`.
 4. Start client1.
 5. Start client2.
@@ -185,8 +219,13 @@ Known current caveat:
    - `frames_rendered > 0`
 7. Confirm the final server stopped summary includes:
    - `handoff_requests > 0`
+   - `packets_received > 1`
    - `frame_read_count > 0`
    - `retained_keyframe_clients >= 1`
+   - `expected_reassembled_frames_enabled=false`
+   - `expected_clients_enabled=false`
+   - `expected_per_client_frames_enabled=false`
+   - `receive_stop_reason` is not `ReassembledFramesThresholdReached`
 8. Treat this as a known early-failure shape rather than a transport failure:
    - `stop_reason=MaxHandoffRequestsReached`
    - `packets_received=0`

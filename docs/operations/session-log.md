@@ -2,6 +2,63 @@
 
 ## 2026-05-11
 ### Type
+- Codex code + docs update
+
+### Work
+- Fixed concurrent receive threshold semantics so `0` means disabled for:
+  - `expected_reassembled_frames`
+  - `expected_reassembled_clients`
+  - `expected_reassembled_frames_per_client`
+- Updated the receive stop evaluation so disabled thresholds do not cause an
+  immediate stop and the all-disabled case returns no threshold stop reason.
+- Kept positive threshold behavior intact and added focused tests for:
+  - disabled threshold `0` not stopping receive
+  - positive reassembled threshold still stopping receive
+  - concurrent shared-state receive continuing to enqueue video after auth
+- Added concurrent ready/stopped summary visibility:
+  - `expected_reassembled_frames_enabled`
+  - `expected_clients_enabled`
+  - `expected_per_client_frames_enabled`
+- Updated concurrent validation docs and TODO so the next human rerun checks:
+  - `validation_ready=n/a`
+  - all three `expected_*_enabled=false`
+  - `receive_stop_reason != ReassembledFramesThresholdReached`
+  - `packets_received > 1`
+  - `frame_read_count > 0`
+
+### Root Cause
+- Concurrent receive reused the shared threshold evaluator from the bounded
+  receive path.
+- That evaluator treated "frame threshold disabled" and "client-aware
+  threshold disabled" as already satisfied booleans and still returned a stop
+  reason in the `(false, false)` case.
+- In practice, the continuous command passed `0/0/0` to mean disabled / not
+  applicable, but the receive loop could still finalize with
+  `ReassembledFramesThresholdReached` before video traffic actually arrived.
+
+### Changed Files
+- `apps/server/src/lib.rs`
+- `apps/server/src/main.rs`
+- `docs/operations/concurrent-handoff-runtime-plan.md`
+- `docs/operations/two-client-handoff-validation.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### Validation
+- `cargo fmt`
+- `cargo fmt --check`
+- `cargo check --workspace`
+- `cargo test -p stream-sync-server concurrent -- --nocapture`
+- `cargo test -p stream-sync-server disabled_expected_thresholds_do_not_stop_receive -- --nocapture`
+- `cargo test -p stream-sync-server positive_reassembled_threshold_still_stops_receive -- --nocapture`
+- `cargo test -p stream-sync-server handoff_service_session -- --nocapture`
+- `cargo test --workspace`
+  - first run timed out
+  - second run failed during link with `LNK1106`
+    (`stream_sync_server` test binary artifact write / seek failure)
+
+## 2026-05-11
+### Type
 - Human validation result + Codex docs update
 
 ### Work

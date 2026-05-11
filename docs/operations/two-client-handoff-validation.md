@@ -983,6 +983,46 @@ Reason:
 - a production-like preview path needs server receive/runtime and handoff serve
   runtime to exist concurrently
 
+## Concurrent Runtime Follow-Up
+
+Latest same-PC human validation for the concurrent command narrowed a distinct
+receive-side issue:
+
+- client auth succeeded and `frames_sent=900` still completed
+- concurrent server stopped with:
+  - `stop_reason=MaxHandoffRequestsReached`
+  - `receive_stop_reason=ReassembledFramesThresholdReached`
+  - `packets_received=1`
+  - `frames_queued=0`
+- the concurrent validation command intentionally passed:
+  - `expected_reassembled_frames=0`
+  - `expected_clients=0`
+  - `expected_per_client_frames=0`
+
+Interpretation:
+
+- for the concurrent command, `0` means disabled / not applicable
+- those `0` values must not be treated as immediately satisfied thresholds
+- the ready and stopped summaries now expose:
+  - `expected_reassembled_frames_enabled=true|false`
+  - `expected_clients_enabled=true|false`
+  - `expected_per_client_frames_enabled=true|false`
+- the current same-PC concurrent rerun should therefore show:
+  - `validation_ready=n/a`
+  - `expected_reassembled_frames_enabled=false`
+  - `expected_clients_enabled=false`
+  - `expected_per_client_frames_enabled=false`
+  - `receive_stop_reason` not equal to
+    `ReassembledFramesThresholdReached`
+
+Current concurrent rerun gate:
+
+- server keeps receiving after auth:
+  - `packets_received > 1`
+- switcher reads during active send:
+  - `frame_read_count > 0`
+  - or `frames_rendered > 0`
+
 ## Failure Paste-Back Template
 
 ```text

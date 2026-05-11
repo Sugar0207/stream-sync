@@ -22,9 +22,10 @@
 ---
 
 ## 現在位置
-- latest concurrent first human validation では `receive_ready=true` / `handoff_ready=true` は PASS したが、`max_handoff_requests=180` が小さすぎたため、switcher が client 起動前に `NoFrame` request を投げ続けて `handoff_requests=180` / `frame_read_count=0` / `no_frame_count=180` のまま `stop_reason=MaxHandoffRequestsReached` で server が先に終了した。これは receive/queue/render failure ではなく request-budget sizing 問題として扱い、次回 human rerun では `max_handoff_requests=2000` を推奨し、`max_runtime_duration_ms` を主な closeout bound とする
-- first concurrent receive + handoff serve runtime slice は実装済み。new command `--receive-auth-video-queue-and-serve-handoff-continuous` は staged command `--receive-auth-video-queue-and-serve-handoff-many` を残したまま追加し、coarse-lock shared state 上で UDP receive/auth/reassembly/queue update と named-pipe handoff serve を同時に持てるようにした。ready line には `receive_ready=true` / `handoff_ready=true` / `runtime_mode=concurrent` / `validation_ready=n/a` / `actual_pipe_path` を出し、stopped summary には receive counters、handoff counters、`decodable_source_counts`、`stop_reason` / `receive_stop_reason` / `handoff_stop_reason` / `runtime_duration_ms` を出す
-- current next gate は same-PC 2-client で concurrent command の human validation を通すこと。first goal は「client 送信中に switcher が `preview-latest-decodable` で `FrameRead` と `frames_rendered > 0` に到達すること」であり、final server summary では `frame_read_count > 0` を success gate にする。retained-keyframe based preview と staged checkpoint は引き続き valid baseline として残す
+- latest concurrent human validation では `receive_ready=true` / `handoff_ready=true` / `runtime_mode=concurrent` は PASS したが、receive side が expected-threshold `0` を disabled ではなく stop判定に混ぜていた。実際の失敗 shape は `stop_reason=MaxHandoffRequestsReached` / `receive_stop_reason=ReassembledFramesThresholdReached` / `packets_received=1` / `frames_queued=0` / `frame_read_count=0` で、client 側は `frames_sent=900` まで進んでいたため、auth failure でも encoder failure でもなく concurrent receive closeout semantics の問題として扱う
+- current fix では concurrent runtime の `expected_reassembled_frames=0` / `expected_clients=0` / `expected_per_client_frames=0` を disabled として扱うようにした。receive stop判定は enabled threshold のみを見るようにし、ready/stopped summary には `expected_reassembled_frames_enabled` / `expected_clients_enabled` / `expected_per_client_frames_enabled` を追加した。same-PC continuous validation では `validation_ready=n/a` のまま、主な receive closeout は `receive_timeout` / `max_runtime_duration_ms` / `max_video_packets` / explicit stop に寄せる
+- first concurrent receive + handoff serve runtime slice 自体は維持している。new command `--receive-auth-video-queue-and-serve-handoff-continuous` は staged command `--receive-auth-video-queue-and-serve-handoff-many` を残したまま、coarse-lock shared state 上で UDP receive/auth/reassembly/queue update と named-pipe handoff serve を同時に持てる
+- current next gate は same-PC 2-client で concurrent command の human validation を再度通すこと。first goal は「client 送信中に switcher が `preview-latest-decodable` で `FrameRead` と `frames_rendered > 0` に到達すること」であり、final server summary では `frame_read_count > 0` に加えて `packets_received > 1`、`expected_*_enabled=false`、`receive_stop_reason != ReassembledFramesThresholdReached` を success gate にする。retained-keyframe based preview と staged checkpoint は引き続き valid baseline として残す
 - 2-client human validation 方針は same-PC smoke / stress profile に固定した。今後の 2-client validation は server + client1 + client2 + capture + FFmpeg encode を同一 Windows PC 上で動かす前提とし、distributed-PC validation 用の server IP / firewall 手順は主目的にしない
 - same-PC 2-client longer-run validation は PASS 済み。標準設定は `receive_buffer_bytes=268435456` + `max_packets_per_drain_cycle=1024` + summary-only + `receive_timeout_ms=30000` + `max_frames=900 per client` + `fragment_pacing_every=4` + `fragment_pacing_delay_ms=2` とし、client 合計 `1800` frames に対して server は `frames_reassembled=1800` / `frames_queued=1800` / `rejected_packets=0` / `decode_errors=0` / `incomplete_reassembly_frames=0` を確認した。`max_packets_drained_in_cycle=578` のため cap `1024` は現状十分である
 - 2-client validation の human-run recipe を same-PC 前提に更新した。`docs/operations/two-client-long-run-validation.md` と `docs/operations/two-client-long-run-validation.ps1` は same-PC smoke / stress profile、baseline 比較、`256` / `512` / `1024` の drain cap 比較、貼り返し template を source of truth とする
@@ -205,10 +206,13 @@
 1. `docs/operations/concurrent-handoff-runtime-plan.md` の first validation command で same-PC 2-client concurrent handoff runtime を人間が rerun する
    - server ready line で `receive_ready=true` / `handoff_ready=true` / `runtime_mode=concurrent` を確認する
    - server command は `max_handoff_requests=2000` を使い、`max_runtime_duration_ms` を主な closeout bound とする
+   - ready line で `expected_reassembled_frames_enabled=false` / `expected_clients_enabled=false` / `expected_per_client_frames_enabled=false` を確認する
    - switcher は client 送信完了前から `preview-latest-decodable` で接続しておく
    - real slots で `handoff_response_kind=FrameRead` または final `frames_rendered > 0` を確認する
 2. server stopped summary の `handoff_requests` / `frame_read_count` / `decodable_source_counts` / `retained_keyframe_clients` / `stop_reason` を確認し、first concurrent slice を PASS か narrow follow-up か判定する
    - `frame_read_count > 0` を PASS gate とする
+   - `packets_received > 1` を合わせて確認する
+   - `receive_stop_reason=ReassembledFramesThresholdReached` は concurrent disabled-threshold regression として扱う
    - `handoff_requests=max_handoff_requests` かつ `frame_read_count=0` / `packets_received=0` は early NoFrame budget exhaustion として扱う
 3. concurrent slice が通ったら次の候補を整理する
    - switcher persistent decoder context
@@ -222,9 +226,9 @@
 - まずは「4人を real handoff で安定表示し続ける」ことを基準に優先度を決める
 
 ## 残り todo から見た推定 step
-- 目安は `4-6 step`。1 step は Codex と GPT の 1 往復で数える
+- 目安は `3-5 step`。1 step は Codex と GPT の 1 往復で数える
 1. 人間が concurrent command の 2-client same-PC validation を rerun する
-2. rerun 結果に応じて concurrent stop behavior か request-serving behavior の narrow follow-up を入れる
+2. rerun 結果に応じて concurrent request budget か receive/handoff behavior の narrow follow-up を入れる
 3. switcher persistent decoder context の有無を含む realtime preview 改善方針を確定する
 4. 4-client preparation を進める
 5. OBS Window Capture を含む実運用寄り validation を再確認する
