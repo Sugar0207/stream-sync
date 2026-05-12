@@ -2,7 +2,7 @@
 
 # StreamSync TODO
 
-最終更新: 2026-05-12
+最終更新: 2026-05-13
 
 このファイルは「現在どこまで終わっていて、次に何をやるか」を確認するための TODO です。  
 時系列の作業履歴、判断理由、各回の作業メモは `docs/operations/session-log.md` を正とします。
@@ -24,9 +24,13 @@
 ## 現在位置
 - latest concurrent human validation では `receive_ready=true` / `handoff_ready=true` / `runtime_mode=concurrent` は PASS したが、receive side が expected-threshold `0` を disabled ではなく stop判定に混ぜていた。実際の失敗 shape は `stop_reason=MaxHandoffRequestsReached` / `receive_stop_reason=ReassembledFramesThresholdReached` / `packets_received=1` / `frames_queued=0` / `frame_read_count=0` で、client 側は `frames_sent=900` まで進んでいたため、auth failure でも encoder failure でもなく concurrent receive closeout semantics の問題として扱う
 - current fix では concurrent runtime の `expected_reassembled_frames=0` / `expected_clients=0` / `expected_per_client_frames=0` を disabled として扱うようにした。receive stop判定は enabled threshold のみを見るようにし、ready/stopped summary には `expected_reassembled_frames_enabled` / `expected_clients_enabled` / `expected_per_client_frames_enabled` を追加した。same-PC continuous validation では `validation_ready=n/a` のまま、主な receive closeout は `receive_timeout` / `max_runtime_duration_ms` / `max_video_packets` / explicit stop に寄せる
-- 2026-05-12 の requested automated validation sweep は PASS した。`cargo fmt` / `cargo fmt --check` / `cargo check --workspace` / focused concurrent server tests / focused staged handoff regression tests / `cargo test --workspace` / `git diff --check` を通し、disabled-threshold semantics と staged regression に新たな自動 test failure は出ていない。next gate は変わらず same-PC human rerun で、`expected_*_enabled=false` と `receive_stop_reason != ReassembledFramesThresholdReached` を実機 stdout で確認すること
+- 2026-05-12 の requested automated validation sweep は PASS した。`cargo fmt` / `cargo fmt --check` / `cargo check --workspace` / focused concurrent server tests / focused staged handoff regression tests / `cargo test --workspace` / `git diff --check` を通し、disabled-threshold semantics と staged regression に新たな自動 test failure は出ていない。その後の same-PC human rerun でも server closeout gate は PASS し、`expected_*_enabled=false` と `receive_stop_reason != ReassembledFramesThresholdReached` の実機確認に加えて stopped summary も回収できた
+- latest same-PC concurrent human rerun では ready-line disabled-threshold semantics は PASS し、client1/client2 はそれぞれ `frames_sent=900` / `send_failures=0` / `stop_reason=Some(MaxFramesReached)`、switcher は `frames_rendered=83` / `slot_result_kinds=Selected|Selected|NoFrameAvailable|NoFrameAvailable` / real slots `handoff_response_kind=FrameRead` / `decodable_source=retained_keyframe` を確認できた。つまり switcher observable gate は PASS 扱いにできる
 - first concurrent receive + handoff serve runtime slice 自体は維持している。new command `--receive-auth-video-queue-and-serve-handoff-continuous` は staged command `--receive-auth-video-queue-and-serve-handoff-many` を残したまま、coarse-lock shared state 上で UDP receive/auth/reassembly/queue update と named-pipe handoff serve を同時に持てる
-- current next gate は same-PC 2-client で concurrent command の human validation を再度通すこと。first goal は「client 送信中に switcher が `preview-latest-decodable` で `FrameRead` と `frames_rendered > 0` に到達すること」であり、final server summary では `frame_read_count > 0` に加えて `packets_received > 1`、`expected_*_enabled=false`、`receive_stop_reason != ReassembledFramesThresholdReached` を success gate にする。retained-keyframe based preview と staged checkpoint は引き続き valid baseline として残す
+- 2026-05-13 の same-PC concurrent human rerun では server closeout gate も PASS した。`manual-logs/handoff-20260512-064305/` に server ready line と concurrent stopped summary の両方があり、server stopped summary は `runtime_mode=concurrent` / `stop_reason=ReceiveStopped` / `receive_stop_reason=ReceiveTimedOut` / `handoff_stop_reason=StopRequested` / `runtime_duration_ms=69320` / `packets_received=38347` / `frames_queued=1800` / `frame_read_count=202` / `no_frame_count=113` / `io_error_count=0` を満たした
+- switcher final summary は失敗として隠さず、server natural closeout 後の pipe disappearance follow-up として残す。`frames_attempted=180` / `frames_rendered=102` / `render_failures=0` / `scheduler_status=HandoffError` / `final slot_result_kinds=HandoffError|HandoffError|NoFrameAvailable|NoFrameAvailable` / final real-slot `connect os_error_2` は、次の narrow follow-up が server lifetime と switcher completion ordering の調整であることを示す
+- current next gate は stopped summary 回収ではなく、switcher final clean completion を server natural closeout とどう整列させるかの narrow follow-up に更新する
+- closeout fix 後の automated validation は PASS。`cargo fmt`、`cargo test -p stream-sync-server concurrent -- --nocapture`、focused test `concurrent_runtime_max_duration_closeout_returns_summary_without_client_requests`、`cargo test --workspace`、`git diff --check` を通した。current gate は code change ではなく server natural closeout と switcher completion ordering の narrow follow-up を決めること
 - 2-client human validation 方針は same-PC smoke / stress profile に固定した。今後の 2-client validation は server + client1 + client2 + capture + FFmpeg encode を同一 Windows PC 上で動かす前提とし、distributed-PC validation 用の server IP / firewall 手順は主目的にしない
 - same-PC 2-client longer-run validation は PASS 済み。標準設定は `receive_buffer_bytes=268435456` + `max_packets_per_drain_cycle=1024` + summary-only + `receive_timeout_ms=30000` + `max_frames=900 per client` + `fragment_pacing_every=4` + `fragment_pacing_delay_ms=2` とし、client 合計 `1800` frames に対して server は `frames_reassembled=1800` / `frames_queued=1800` / `rejected_packets=0` / `decode_errors=0` / `incomplete_reassembly_frames=0` を確認した。`max_packets_drained_in_cycle=578` のため cap `1024` は現状十分である
 - 2-client validation の human-run recipe を same-PC 前提に更新した。`docs/operations/two-client-long-run-validation.md` と `docs/operations/two-client-long-run-validation.ps1` は same-PC smoke / stress profile、baseline 比較、`256` / `512` / `1024` の drain cap 比較、貼り返し template を source of truth とする
@@ -1021,6 +1025,6 @@ continuous runtime first slice の blocker:
 - actual dashboard UI rendering remains unimplemented.
 
 ## Next Items
-1. continuous receive / send runtime の不足分と validation 観測面を狭く埋める
+1. concurrent server natural closeout と switcher final completion の順序 / graceful end ルールを narrow に決める
 2. 2-client 長時間 validation へ進む前に必要な観測面の不足を洗い出す
 3. 2-client 長時間 validation の recipe と success/failure judgment を固定する

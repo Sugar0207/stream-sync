@@ -1,5 +1,194 @@
 <!-- stream-sync/docs/operations/session-log.md -->
 
+## 2026-05-13
+### Type
+- Codex code + docs update
+
+### Work
+- Reviewed the concurrent closeout / stopped-summary emission path in server
+  code after the earlier missing-stopped-summary result.
+- Confirmed the stopped summary emission point:
+  - `apps/server/src/main.rs`
+  - `server named-pipe handoff concurrent stopped ...`
+  - printed only when the concurrent runtime launcher returns `Ok(outcome)`
+- Confirmed the old hang path:
+  - the receive thread could finish with a natural closeout reason
+  - but the main thread was still blocked in the handoff service loop
+  - that loop waited in blocking named-pipe accept/read and therefore did not
+    return control to `main`
+  - result: no stopped summary line in the server log even though the
+    switcher/client observable path had already passed
+- Confirmed the old `max_runtime_duration` weakness:
+  - it was checked only before entering blocking socket receive
+  - during idle periods, the runtime could still sleep for the full receive
+    timeout before observing that the runtime duration limit had elapsed
+- Implemented the narrow fix:
+  - receive-side natural closeout now sets shared stop-request state and wakes
+    the local named-pipe accept loop
+  - the handoff loop now returns `StopRequested` instead of waiting forever for
+    another request
+  - receive wait time now clamps to the remaining runtime budget
+- Added a focused concurrent runtime test:
+  - no client requests
+  - bounded `max_runtime_duration`
+  - runtime returns with summary instead of hanging
+  - expected closeout:
+    - `receive_stop_reason=MaxRuntimeDurationReached`
+    - `handoff_stop_reason=StopRequested`
+    - `stop_reason=ReceiveStopped`
+
+### Root Cause
+- The concurrent stopped summary was not skipped by formatting logic.
+- It was skipped because the runtime never returned to the success path that
+  prints it.
+- Specifically, the handoff loop could remain blocked in named-pipe accept/read
+  after receive-side natural closeout, so `main` never reached the final
+  `println!`.
+
+### Changed Files
+- `apps/server/src/lib.rs`
+- `apps/server/src/main.rs`
+- `docs/operations/concurrent-handoff-runtime-plan.md`
+- `docs/operations/two-client-handoff-validation.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### Validation
+- `cargo fmt`
+- `cargo test -p stream-sync-server concurrent -- --nocapture`
+- `cargo test -p stream-sync-server concurrent_runtime_max_duration_closeout_returns_summary_without_client_requests -- --nocapture`
+- `cargo test --workspace`
+- `git diff --check`
+
+## 2026-05-13
+### Type
+- Human log review + Codex docs update
+
+### Work
+- Reviewed the pasted-back same-PC concurrent rerun logs from repo-local
+  `manual-logs`.
+- Checked the two latest candidate rerun directories:
+  - `manual-logs/handoff-20260512-064305/`
+  - `manual-logs/handoff-20260512-064635/`
+- Confirmed the strongest observable PASS evidence in
+  `handoff-20260512-064305/`:
+  - server ready line shows:
+    - `receive_ready=true`
+    - `handoff_ready=true`
+    - `runtime_mode=concurrent`
+    - `validation_ready=n/a`
+    - `expected_reassembled_frames_enabled=false`
+    - `expected_clients_enabled=false`
+    - `expected_per_client_frames_enabled=false`
+  - server stopped summary shows:
+    - `server named-pipe handoff concurrent stopped ...`
+    - `runtime_mode=concurrent`
+    - `stop_reason=ReceiveStopped`
+    - `receive_stop_reason=ReceiveTimedOut`
+    - `handoff_stop_reason=StopRequested`
+    - `runtime_duration_ms=69320`
+    - `packets_received=38347`
+    - `frames_queued=1800`
+    - `frame_read_count=202`
+    - `no_frame_count=113`
+    - `decodable_source_counts=queue:20|retained_keyframe:182|none:113`
+    - `io_error_count=0`
+  - switcher summary still shows the narrow follow-up instead of a hidden failure:
+    - `frames_attempted=180`
+    - `frames_rendered=102`
+    - `render_failures=0`
+    - `scheduler_status=HandoffError`
+    - `final slot_result_kinds=HandoffError|HandoffError|NoFrameAvailable|NoFrameAvailable`
+    - final real-slot diagnostics show `connect os_error_2` for request_id `359/360`
+  - client1/client2 summaries each show:
+    - `accepted=true`
+    - `frames_sent=900`
+    - `send_failures=0`
+    - `stop_reason=Some(MaxFramesReached)`
+
+### Decision
+- Current judgment is PASS.
+- Reason:
+  - switcher/client observable criteria are satisfied
+  - disabled-threshold ready-line criteria are satisfied
+  - server closeout criteria are satisfied by the pasted-back stopped summary
+  - the remaining `HandoffError` is a narrow lifecycle/operator follow-up, not
+    a server-closeout failure
+- The remaining follow-up is whether the server should stay alive longer than
+  the switcher validation window, whether switcher should treat server natural
+  shutdown as graceful end, or whether the switcher run should be shortened.
+
+### Changed Files
+- `docs/operations/concurrent-handoff-runtime-plan.md`
+- `docs/operations/two-client-handoff-validation.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### Validation
+- repo-local manual log review
+- `git diff --check`
+
+## 2026-05-12
+### Type
+- Human validation result + Codex docs update
+
+### Work
+- Recorded the latest same-PC human rerun result for the concurrent receive +
+  handoff runtime.
+- Confirmed the concurrent ready line stayed correct for disabled-threshold
+  semantics:
+  - `receive_ready=true`
+  - `handoff_ready=true`
+  - `runtime_mode=concurrent`
+  - `validation_ready=n/a`
+  - `expected_reassembled_frames_enabled=false`
+  - `expected_clients_enabled=false`
+  - `expected_per_client_frames_enabled=false`
+- Confirmed both real senders completed their bounded runs successfully:
+  - client1:
+    - `accepted=true`
+    - `frames_encoded=900`
+    - `frames_sent=900`
+    - `send_failures=0`
+    - `stop_reason=Some(MaxFramesReached)`
+  - client2:
+    - `accepted=true`
+    - `frames_encoded=900`
+    - `frames_sent=900`
+    - `send_failures=0`
+    - `stop_reason=Some(MaxFramesReached)`
+- Confirmed the switcher observable gate passed during active send:
+  - `frames_rendered=83`
+  - `slot_result_kinds=Selected|Selected|NoFrameAvailable|NoFrameAvailable`
+  - slot0 `handoff_response_kind=FrameRead`
+  - slot1 `handoff_response_kind=FrameRead`
+  - slot0 `decodable_source=retained_keyframe`
+  - slot1 `decodable_source=retained_keyframe`
+  - final real-slot result `Selected` for player1/player2
+- Searched repo-local docs/logs for the final concurrent server stopped summary
+  but did not find a pasted-back record for this rerun.
+
+### Decision
+- This rerun is a PASS for the switcher/client observable gate and for the
+  disabled-threshold ready-line semantics.
+- It is not yet a fully closed PASS record in repo state because the final
+  server stopped summary fields are still missing:
+  - `packets_received`
+  - `frame_read_count`
+  - `receive_stop_reason`
+- The next step is therefore narrow: paste back or record the final server
+  summary for this same run rather than re-running the whole scenario first.
+
+### Changed Files
+- `docs/operations/concurrent-handoff-runtime-plan.md`
+- `docs/operations/two-client-handoff-validation.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### Validation
+- repo-local search for concurrent rerun summary/log evidence
+- `git diff --check`
+
 ## 2026-05-12
 ### Type
 - Codex validation + docs update

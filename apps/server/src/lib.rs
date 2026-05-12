@@ -40,7 +40,7 @@ use stream_sync_timebase::{
 
 #[cfg(windows)]
 use std::{
-    fs::File,
+    fs::{File, OpenOptions},
     io::{Read, Write},
     os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle},
     sync::{
@@ -5597,6 +5597,7 @@ pub struct ServerSwitcherNamedPipeManyRequestRuntimeOutput {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ServerSwitcherNamedPipeManyRequestStopReason {
     MaxRequestsReached,
+    StopRequested,
     InvalidPipeName,
     CreatePipe,
     Connect,
@@ -5989,11 +5990,13 @@ impl ServerReceiveAuthVideoQueueHandoffContinuousRuntimeLauncher {
         let receive_policy = policy.receive_policy();
         let runtime_started_at = Instant::now();
         let receive_started_at = Instant::now();
+        let pipe_name_for_receive = pipe_name.to_string();
         let receive_thread = thread::spawn(move || {
             runtime.run_receive_loop_until_stopped(
                 socket,
                 startup_config.auth_config,
                 startup_config.expected_protocol_version,
+                pipe_name_for_receive,
                 receive_policy,
                 policy.max_runtime_duration,
                 shared_state_for_receive,
@@ -6014,6 +6017,7 @@ impl ServerReceiveAuthVideoQueueHandoffContinuousRuntimeLauncher {
             &shared_state,
             pipe_name,
             policy.effective_max_handoff_requests(),
+            &stop_requested,
         );
         stop_requested.store(true, Ordering::SeqCst);
         let receive_stop_reason =
@@ -6086,6 +6090,7 @@ impl ServerReceiveAuthVideoQueueHandoffContinuousRuntimeLauncher {
         socket: UdpSocket,
         auth_config: ServerAuthConfig,
         expected_protocol_version: ProtocolVersion,
+        pipe_name: String,
         policy: ServerReceiveAuthVideoQueueOnceManualPolicy,
         max_runtime_duration: Option<Duration>,
         shared_state: Arc<Mutex<ServerReceiveAuthVideoQueueHandoffContinuousSharedState>>,
@@ -6111,9 +6116,24 @@ impl ServerReceiveAuthVideoQueueHandoffContinuousRuntimeLauncher {
                     .lock()
                     .expect("concurrent receive/handoff shared state lock should not poison");
                 finalize_concurrent_receive_summary(&mut state);
+                drop(state);
+                request_concurrent_handoff_shutdown(&pipe_name, stop_requested.as_ref());
                 return Ok(
                     ServerReceiveAuthVideoQueueHandoffContinuousReceiveStopReason::MaxRuntimeDurationReached,
                 );
+            }
+
+            let effective_receive_timeout = match max_runtime_duration {
+                Some(limit) => policy
+                    .receive_timeout
+                    .min(limit.saturating_sub(started_at.elapsed())),
+                None => policy.receive_timeout,
+            };
+            if let Err(error) = socket.set_read_timeout(Some(effective_receive_timeout)) {
+                request_concurrent_handoff_shutdown(&pipe_name, stop_requested.as_ref());
+                return Err(ServerReceiveAuthVideoQueueOnceStartupError::VideoReceive {
+                    kind: error.kind(),
+                });
             }
 
             let received = match self.receive.socket_io.receive_one(&socket, &mut buffer) {
@@ -6127,15 +6147,27 @@ impl ServerReceiveAuthVideoQueueHandoffContinuousRuntimeLauncher {
                     let mut state = shared_state
                         .lock()
                         .expect("concurrent receive/handoff shared state lock should not poison");
+                    if matches!(max_runtime_duration, Some(limit) if started_at.elapsed() >= limit)
+                    {
+                        finalize_concurrent_receive_summary(&mut state);
+                        drop(state);
+                        request_concurrent_handoff_shutdown(&pipe_name, stop_requested.as_ref());
+                        return Ok(
+                            ServerReceiveAuthVideoQueueHandoffContinuousReceiveStopReason::MaxRuntimeDurationReached,
+                        );
+                    }
                     state.receive_summary.receive_timed_out = true;
                     state.receive_summary.stop_reason =
                         Some(ServerReceiveAuthVideoQueueStopReason::ReceiveTimedOut);
                     finalize_concurrent_receive_summary(&mut state);
+                    drop(state);
+                    request_concurrent_handoff_shutdown(&pipe_name, stop_requested.as_ref());
                     return Ok(
                         ServerReceiveAuthVideoQueueHandoffContinuousReceiveStopReason::ReceiveTimedOut,
                     );
                 }
                 Err(error) => {
+                    request_concurrent_handoff_shutdown(&pipe_name, stop_requested.as_ref());
                     return Err(ServerReceiveAuthVideoQueueOnceStartupError::VideoReceive {
                         kind: error.kind(),
                     });
@@ -6153,7 +6185,7 @@ impl ServerReceiveAuthVideoQueueHandoffContinuousRuntimeLauncher {
                 receive_summary,
                 ..
             } = &mut *state;
-            let _ = self.receive.process_received_packet_for_video_queue(
+            if let Err(error) = self.receive.process_received_packet_for_video_queue(
                 &socket,
                 &auth_config,
                 registry,
@@ -6164,7 +6196,11 @@ impl ServerReceiveAuthVideoQueueHandoffContinuousRuntimeLauncher {
                 received.bytes,
                 queued_at,
                 receive_summary,
-            )?;
+            ) {
+                drop(state);
+                request_concurrent_handoff_shutdown(&pipe_name, stop_requested.as_ref());
+                return Err(error);
+            }
             state.receive_summary.queue_len = state.video_queue_state.total_len();
 
             if policy.max_video_packets != usize::MAX
@@ -6175,6 +6211,8 @@ impl ServerReceiveAuthVideoQueueHandoffContinuousRuntimeLauncher {
                 state.receive_summary.stop_reason =
                     Some(ServerReceiveAuthVideoQueueStopReason::MaxVideoPacketsReached);
                 finalize_concurrent_receive_summary(&mut state);
+                drop(state);
+                request_concurrent_handoff_shutdown(&pipe_name, stop_requested.as_ref());
                 return Ok(
                     ServerReceiveAuthVideoQueueHandoffContinuousReceiveStopReason::MaxVideoPacketsReached,
                 );
@@ -6185,6 +6223,8 @@ impl ServerReceiveAuthVideoQueueHandoffContinuousRuntimeLauncher {
             {
                 state.receive_summary.stop_reason = Some(stop_reason);
                 finalize_concurrent_receive_summary(&mut state);
+                drop(state);
+                request_concurrent_handoff_shutdown(&pipe_name, stop_requested.as_ref());
                 return Ok(map_concurrent_receive_stop_reason(stop_reason));
             }
         }
@@ -6226,10 +6266,34 @@ fn finalize_concurrent_receive_summary(
     );
 }
 
+#[cfg(windows)]
+fn request_concurrent_handoff_shutdown(pipe_name: &str, stop_requested: &AtomicBool) {
+    stop_requested.store(true, Ordering::SeqCst);
+    let _ = wake_named_pipe_server_connection(pipe_name);
+}
+
+#[cfg(windows)]
+fn wake_named_pipe_server_connection(pipe_name: &str) -> io::Result<()> {
+    let pipe_path = named_pipe_path(pipe_name)?;
+    for _ in 0..100 {
+        if let Ok(_pipe) = OpenOptions::new().read(true).write(true).open(&pipe_path) {
+            return Ok(());
+        }
+        thread::sleep(Duration::from_millis(20));
+    }
+
+    OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(pipe_path)
+        .map(|_| ())
+}
+
 /// Failure while serving one named-pipe handoff request.
 #[cfg(windows)]
 #[derive(Debug)]
 pub enum ServerSwitcherNamedPipeOneRequestRuntimeError {
+    StopRequested,
     InvalidPipeName,
     CreatePipe(io::Error),
     Connect(io::Error),
@@ -6264,7 +6328,8 @@ impl ServerSwitcherNamedPipeOneRequestRuntimeBoundary {
         ServerSwitcherNamedPipeOneRequestRuntimeOutput,
         ServerSwitcherNamedPipeOneRequestRuntimeError,
     > {
-        let (mut pipe, request) = self.accept_one_request(pipe_name)?;
+        let stop_requested = AtomicBool::new(false);
+        let (mut pipe, request) = self.accept_one_request(pipe_name, &stop_requested)?;
         let queue_len_before_read = queue_state.client_queue_len(&request.client_id);
         let response = self.handler.handle_request(queue_state, request.clone());
         self.write_one_response(&mut pipe, &response)?;
@@ -6281,13 +6346,17 @@ impl ServerSwitcherNamedPipeOneRequestRuntimeBoundary {
         shared_state: &Arc<Mutex<ServerReceiveAuthVideoQueueHandoffContinuousSharedState>>,
         pipe_name: &str,
         max_requests: usize,
+        stop_requested: &Arc<AtomicBool>,
     ) -> ServerSwitcherNamedPipeManyRequestStopReason {
         let mut requests_served = 0usize;
         loop {
+            if stop_requested.load(Ordering::SeqCst) {
+                return ServerSwitcherNamedPipeManyRequestStopReason::StopRequested;
+            }
             if requests_served >= max_requests {
                 return ServerSwitcherNamedPipeManyRequestStopReason::MaxRequestsReached;
             }
-            match self.serve_once_shared_state(shared_state, pipe_name) {
+            match self.serve_once_shared_state(shared_state, pipe_name, stop_requested.as_ref()) {
                 Ok(_) => {
                     requests_served = requests_served.saturating_add(1);
                 }
@@ -6414,11 +6483,12 @@ impl ServerSwitcherNamedPipeOneRequestRuntimeBoundary {
         &self,
         shared_state: &Arc<Mutex<ServerReceiveAuthVideoQueueHandoffContinuousSharedState>>,
         pipe_name: &str,
+        stop_requested: &AtomicBool,
     ) -> Result<
         ServerSwitcherNamedPipeOneRequestRuntimeOutput,
         ServerSwitcherNamedPipeOneRequestRuntimeError,
     > {
-        let (mut pipe, request) = self.accept_one_request(pipe_name)?;
+        let (mut pipe, request) = self.accept_one_request(pipe_name, stop_requested)?;
         let output = {
             let mut state = shared_state
                 .lock()
@@ -6442,6 +6512,7 @@ impl ServerSwitcherNamedPipeOneRequestRuntimeBoundary {
     fn accept_one_request(
         &self,
         pipe_name: &str,
+        stop_requested: &AtomicBool,
     ) -> Result<
         (File, ServerSwitcherQueuedFrameHandoffRequest),
         ServerSwitcherNamedPipeOneRequestRuntimeError,
@@ -6450,6 +6521,9 @@ impl ServerSwitcherNamedPipeOneRequestRuntimeBoundary {
             .map_err(ServerSwitcherNamedPipeOneRequestRuntimeError::CreatePipe)?;
         connect_named_pipe_server(&pipe)
             .map_err(ServerSwitcherNamedPipeOneRequestRuntimeError::Connect)?;
+        if stop_requested.load(Ordering::SeqCst) {
+            return Err(ServerSwitcherNamedPipeOneRequestRuntimeError::StopRequested);
+        }
 
         let request_frame = read_length_prefixed_frame(&mut pipe)
             .map_err(ServerSwitcherNamedPipeOneRequestRuntimeError::ReadRequest)?;
@@ -6484,6 +6558,9 @@ fn summarize_named_pipe_many_stop_reason(
     io_error_count: &mut usize,
 ) -> ServerSwitcherNamedPipeManyRequestStopReason {
     match error {
+        ServerSwitcherNamedPipeOneRequestRuntimeError::StopRequested => {
+            ServerSwitcherNamedPipeManyRequestStopReason::StopRequested
+        }
         ServerSwitcherNamedPipeOneRequestRuntimeError::InvalidPipeName => {
             ServerSwitcherNamedPipeManyRequestStopReason::InvalidPipeName
         }
@@ -17495,6 +17572,47 @@ shared_token = "secret"
                 .decodable_source_retained_keyframe_count,
             1
         );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn concurrent_runtime_max_duration_closeout_returns_summary_without_client_requests() {
+        let launcher = ServerReceiveAuthVideoQueueHandoffContinuousRuntimeLauncher::default();
+        let pipe_name = format!("stream-sync-concurrent-closeout-{}", current_test_suffix());
+        let outcome = launcher
+            .run_with_policy_and_ready(
+                auth_video_queue_startup_config(0, auth_config(Some("secret"))),
+                &pipe_name,
+                ServerReceiveAuthVideoQueueHandoffContinuousRuntimePolicy {
+                    receive_timeout: Duration::from_millis(500),
+                    max_runtime_duration: Some(Duration::from_millis(50)),
+                    max_handoff_requests: Some(2000),
+                    max_video_packets: None,
+                    expected_reassembled_frames: 0,
+                    stop_after_expected_reassembled_frames: false,
+                    receive_buffer_bytes: SERVER_DEFAULT_RECEIVE_BUFFER_BYTES,
+                    expected_reassembled_clients: 0,
+                    expected_reassembled_frames_per_client: 0,
+                },
+                |_| {},
+            )
+            .expect("concurrent runtime should return after max runtime duration");
+
+        assert_eq!(
+            outcome.summary.receive_stop_reason,
+            ServerReceiveAuthVideoQueueHandoffContinuousReceiveStopReason::MaxRuntimeDurationReached
+        );
+        assert_eq!(
+            outcome.summary.handoff_stop_reason,
+            ServerSwitcherNamedPipeManyRequestStopReason::StopRequested
+        );
+        assert_eq!(
+            outcome.summary.stop_reason,
+            ServerReceiveAuthVideoQueueHandoffContinuousRuntimeStopReason::ReceiveStopped
+        );
+        assert!(!outcome.summary.expected_reassembled_frames_enabled);
+        assert!(!outcome.summary.expected_clients_enabled);
+        assert!(!outcome.summary.expected_per_client_frames_enabled);
     }
 
     #[test]

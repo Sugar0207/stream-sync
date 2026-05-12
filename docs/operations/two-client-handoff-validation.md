@@ -1030,11 +1030,83 @@ Automated validation status on 2026-05-12:
 
 Current concurrent rerun gate:
 
-- server keeps receiving after auth:
-  - `packets_received > 1`
-- switcher reads during active send:
-  - `frame_read_count > 0`
-  - or `frames_rendered > 0`
+- ready-line disabled-threshold gate is PASS:
+  - `receive_ready=true`
+  - `handoff_ready=true`
+  - `runtime_mode=concurrent`
+  - `validation_ready=n/a`
+  - `expected_reassembled_frames_enabled=false`
+  - `expected_clients_enabled=false`
+  - `expected_per_client_frames_enabled=false`
+- client send gate is PASS:
+  - client1:
+    - `accepted=true`
+    - `frames_encoded=900`
+    - `frames_sent=900`
+    - `send_failures=0`
+    - `stop_reason=Some(MaxFramesReached)`
+  - client2:
+    - `accepted=true`
+    - `frames_encoded=900`
+    - `frames_sent=900`
+    - `send_failures=0`
+    - `stop_reason=Some(MaxFramesReached)`
+- switcher observable gate is PASS:
+  - `frames_rendered=83`
+  - `slot_result_kinds=Selected|Selected|NoFrameAvailable|NoFrameAvailable`
+  - slot0 `handoff_response_kind=FrameRead`
+  - slot1 `handoff_response_kind=FrameRead`
+  - slot0 `decodable_source=retained_keyframe`
+  - slot1 `decodable_source=retained_keyframe`
+  - final real-slot result `Selected` for player1/player2
+- server closeout gate is PASS:
+  - final server stopped summary for:
+    - `packets_received=38347`
+    - `frame_read_count=202`
+    - `receive_stop_reason=ReceiveTimedOut`
+    - `handoff_stop_reason=StopRequested`
+  - the same run satisfies the full server-closeout PASS criteria:
+    - `packets_received > 1`
+    - `frame_read_count > 0`
+    - `receive_stop_reason != ReassembledFramesThresholdReached`
+- switcher final summary remains visible as the narrow follow-up:
+  - `frames_attempted=180`
+  - `frames_rendered=102`
+  - `render_failures=0`
+  - `scheduler_status=HandoffError`
+  - `final slot_result_kinds=HandoffError|HandoffError|NoFrameAvailable|NoFrameAvailable`
+  - final real-slot diagnostics show `connect os_error_2` for request_id `359/360`
+  - interpret this as server natural closeout / named-pipe disappearance after the server stopped, not as a failed server-closeout gate
+- narrow follow-up:
+  - decide whether the server should stay alive longer than the switcher
+    validation window
+  - or whether the switcher should treat server natural shutdown as graceful end
+  - or whether the switcher run should reduce its planned frames
+  - do not mix this with 4-client expansion, OBS WebSocket, persistent decoder
+    context, or retry/backoff work
+- current fix status:
+  - receive-side natural closeout now wakes the local named-pipe accept loop
+    and requests handoff shutdown
+  - handoff closeout now returns `StopRequested` instead of waiting forever for
+    another client request
+  - receive wait time now clamps to remaining runtime budget so a natural
+    `MaxRuntimeDurationReached` closeout can happen even when no packets arrive
+- automated validation status on 2026-05-13 after the closeout fix:
+  - `cargo fmt`
+  - `cargo test -p stream-sync-server concurrent -- --nocapture`
+  - `cargo test -p stream-sync-server concurrent_runtime_max_duration_closeout_returns_summary_without_client_requests -- --nocapture`
+  - `cargo test --workspace`
+  - `git diff --check`
+- next human gate after this fix:
+  - rerun the same concurrent recipe and confirm
+    `server named-pipe handoff concurrent stopped ...` is printed
+  - then re-check:
+    - `expected_reassembled_frames_enabled=false`
+    - `expected_clients_enabled=false`
+    - `expected_per_client_frames_enabled=false`
+    - `packets_received > 1`
+    - `frame_read_count > 0`
+    - `receive_stop_reason != ReassembledFramesThresholdReached`
 
 ## Failure Paste-Back Template
 

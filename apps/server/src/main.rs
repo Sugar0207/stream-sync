@@ -2467,6 +2467,9 @@ fn format_server_handoff_stop_reason(
         stream_sync_server::ServerSwitcherNamedPipeManyRequestStopReason::MaxRequestsReached => {
             "MaxRequestsReached"
         }
+        stream_sync_server::ServerSwitcherNamedPipeManyRequestStopReason::StopRequested => {
+            "StopRequested"
+        }
         stream_sync_server::ServerSwitcherNamedPipeManyRequestStopReason::InvalidPipeName => {
             "InvalidPipeName"
         }

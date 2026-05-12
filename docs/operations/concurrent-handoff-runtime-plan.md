@@ -17,7 +17,65 @@
   - `--receive-auth-video-queue-and-serve-handoff-many`
 - New concurrent command is available:
   - `--receive-auth-video-queue-and-serve-handoff-continuous`
-- Next gate remains the same-PC human rerun for the concurrent command.
+- Latest same-PC human rerun is PASS for the server closeout gate and still
+  keeps the switcher final summary visible:
+  - ready line confirmed:
+    - `receive_ready=true`
+    - `handoff_ready=true`
+    - `runtime_mode=concurrent`
+    - `validation_ready=n/a`
+    - `expected_reassembled_frames_enabled=false`
+    - `expected_clients_enabled=false`
+    - `expected_per_client_frames_enabled=false`
+  - client1/client2 each confirmed:
+    - `accepted=true`
+    - `frames_encoded=900`
+    - `frames_sent=900`
+    - `send_failures=0`
+    - `stop_reason=Some(MaxFramesReached)`
+  - server stopped summary confirmed:
+    - `server named-pipe handoff concurrent stopped ...`
+    - `runtime_mode=concurrent`
+    - `stop_reason=ReceiveStopped`
+    - `receive_stop_reason=ReceiveTimedOut`
+    - `handoff_stop_reason=StopRequested`
+    - `runtime_duration_ms=69320`
+    - `packets_received=38347`
+    - `frames_queued=1800`
+    - `frame_read_count=202`
+    - `no_frame_count=113`
+    - `decodable_source_counts=queue:20|retained_keyframe:182|none:113`
+    - `io_error_count=0`
+  - switcher final summary is not hidden and is the narrow follow-up:
+    - `frames_attempted=180`
+    - `frames_rendered=102`
+    - `render_failures=0`
+    - `scheduler_status=HandoffError`
+    - `final slot_result_kinds=HandoffError|HandoffError|NoFrameAvailable|NoFrameAvailable`
+    - final real-slot diagnostics show `connect os_error_2` for request_id `359/360`
+- Current next gate is no longer stopped-summary recovery. It is the narrow
+  lifecycle/operator follow-up on server natural closeout versus switcher
+  completion ordering:
+  - decide whether the server should stay alive longer than the switcher
+    validation window
+  - decide whether the switcher should treat server natural shutdown as a
+    graceful end
+  - avoid mixing this follow-up with 4-client expansion, OBS WebSocket,
+    persistent decoder context, or retry/backoff work
+- Current fix in code:
+  - receive-side natural closeout now sets shared stop-request state and wakes
+    the local named-pipe accept loop
+  - the handoff loop now returns `StopRequested` instead of hanging on the next
+    pipe wait
+  - the receive loop now clamps socket read timeout to the remaining runtime
+    budget so `max_runtime_duration` can end an idle run without waiting for the
+    full original receive timeout
+- Automated validation after the closeout fix on 2026-05-13:
+  - `cargo fmt`
+  - `cargo test -p stream-sync-server concurrent -- --nocapture`
+  - `cargo test -p stream-sync-server concurrent_runtime_max_duration_closeout_returns_summary_without_client_requests -- --nocapture`
+  - `cargo test --workspace`
+  - `git diff --check`
 
 ## Goal
 Move from the staged lifecycle:
@@ -195,6 +253,10 @@ Expected-threshold semantics for the concurrent path:
     - `max_runtime_duration`
     - `max_video_packets`
     - explicit stop / handoff shutdown coordination
+  - if the operator waits through the configured runtime window and the server
+    still does not emit the concurrent stopped summary, treat that as an
+    unresolved summary-emission / runtime-closeout issue rather than as a
+    completed PASS
 
 Known current caveat:
 
