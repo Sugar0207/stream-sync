@@ -19,10 +19,16 @@
     within `360` seconds
 - Those same-PC saturation symptoms remain follow-up items, but they are not a
   blocker for planning the distributed-PC phase.
+- The environment for this phase has moved back to:
+  - `S:\stream-sync`
 - This step is docs-first only:
   - no code change
   - no distributed-PC actual run yet
   - no protocol or architecture change
+  - no `cargo build` / `cargo check` / `cargo test` in this slice
+- Build/test execution is intentionally handled in a later dedicated
+  build-validation step. This doc assumes the required binaries already exist
+  under `S:\stream-sync\target\debug\`.
 
 ## Validation Purpose
 
@@ -72,35 +78,27 @@ Reason:
 - it removes capture/encode pressure from the streaming PC as much as possible
 - it keeps the named-pipe handoff local to the streaming PC
 
-### Minimum Staged Rollout
+### Validation Order For The Next Slice
 
-Do not jump to `4` remote clients first if the available hardware is limited.
-Use this staged rollout:
+Do not jump directly to the distributed `4`-client run. Use this order:
 
-1. Stage A: `1` remote client
-   - streaming PC:
-     - `server`
-     - `switcher`
-     - `OBS`
-     - remaining local clients
-   - one other PC:
-     - one remote client
-2. Stage B: `2` or `3` remote clients
-   - spread as many clients as available to separate PCs
-3. Stage C: `4` remote clients
-   - one client per gameplay PC if available
+1. distributed-PC `2`-client smoke
+   - exactly `1` remote client is required
+   - `2` active clients total are recommended for the first runtime gate
+2. distributed-PC `2`-client OBS visible
+   - keep the same `2` active client scope
+   - add manual OBS preview evidence
+3. distributed-PC `4`-client summary-required run
+4. long OBS run
+5. failure-class-specific fixes
 
-Recommended first actual run:
+Interpretation:
 
-- Stage A with exactly `1` remote client
-
-Reason:
-
-- it is the smallest topology change from the existing same-PC PASS
-- it proves cross-host UDP reachability and auth without requiring all four
-  client PCs on the first attempt
-- it reduces same-PC saturation enough to start separating network issues from
-  local resource pressure
+- the next runtime slice is still distributed Stage A
+- for this repo, Stage A should first be proven with `2` active clients, not
+  with all `4`
+- widen to `4` active clients only after the distributed `2`-client runtime
+  gate and distributed `2`-client OBS visibility gate are both recorded
 
 ## Network Preconditions
 
@@ -114,7 +112,8 @@ Current server manual config already uses:
 Distributed-PC expectation:
 
 - server keeps listening on UDP `5000` on the streaming PC
-- server must remain reachable from other PCs on the same LAN
+- server must remain reachable from other PCs on the same LAN or Tailscale
+  network
 
 ### Client Server Address
 
@@ -125,13 +124,15 @@ Current local client configs use:
 
 Distributed-PC expectation:
 
-- every remote client must use:
-  - `server_host = <streaming-pc-lan-ip>`
+- every active distributed client must use:
+  - `server_host = <SERVER_HOST>`
   - `server_port = 5000`
-- when any client is remote, prefer all clients in that run to use the same
-  `<streaming-pc-lan-ip>` for consistency
-- if some local clients stay on `127.0.0.1`, record that explicitly in the
-  evidence block
+- `<SERVER_HOST>` may be:
+  - the streaming PC LAN IP
+  - the streaming PC Tailscale IP
+- when any client is remote, prefer all active clients in that run to use the
+  same `<SERVER_HOST>` for consistency, even if one client is started on the
+  streaming PC itself
 
 ### Firewall
 
@@ -141,10 +142,11 @@ The streaming PC must allow:
 
 Recommended assumption:
 
-- allow the rule on the private/LAN profile only
+- allow the rule on the private/LAN profile only when using a LAN IP
+- if using Tailscale, confirm the chosen network path still reaches UDP `5000`
 
-Remote client PCs do not need an inbound rule for this phase because they are
-only sending to the server and receiving normal auth responses on the same UDP
+Remote client PCs do not need a separate inbound rule for this phase because
+they only send to the server and receive the auth response on the same UDP
 socket they opened.
 
 ### Run Identity And Auth Consistency
@@ -152,7 +154,7 @@ socket they opened.
 All active participants in one run must agree on:
 
 - `run_id = streamsync-dev-session`
-- unique `client_id` per client:
+- unique `client_id` per active client:
   - `player1`
   - `player2`
   - `player3`
@@ -165,12 +167,67 @@ Interpretation:
 - `pipe_name` is local only between `server` and `switcher`
 - remote clients never touch the named pipe directly
 
+## Required Replacements
+
+Replace these values before running the command pack:
+
+- `<RUN_STAMP>`
+  - one shared timestamp such as `20260513-233000`
+  - reuse the exact same value on every participating PC for the same run
+- `<SERVER_HOST>`
+  - the streaming PC LAN IP or Tailscale IP
+- `<RUN_LABEL>`
+  - one of:
+    - `distributed-pc-2client-smoke`
+    - `distributed-pc-2client-obs`
+    - `distributed-pc-4client-summary`
+    - `distributed-pc-4client-obs`
+- active client config files
+  - update the referenced TOML files so `server_host = "<SERVER_HOST>"`
+  - keep `server_port = 5000`
+  - keep `run_id = "streamsync-dev-session"`
+  - keep the correct `client_id`
+  - keep the correct `shared_token`
+
+## Log Directory Convention
+
+Use the same run directory name on every participating PC under:
+
+- `S:\stream-sync\manual-logs\`
+
+Recommended names:
+
+- distributed `2`-client smoke:
+  - `manual-logs/distributed-pc-2client-smoke-<RUN_STAMP>`
+- distributed `2`-client OBS visible:
+  - `manual-logs/distributed-pc-2client-obs-<RUN_STAMP>`
+- distributed `4`-client summary-required:
+  - `manual-logs/distributed-pc-4client-summary-<RUN_STAMP>`
+- distributed `4`-client long OBS:
+  - `manual-logs/distributed-pc-4client-obs-<RUN_STAMP>`
+
+Recommended file names:
+
+- streaming PC:
+  - `server.log`
+  - `switcher.log`
+  - `obs-notes.txt`
+  - optional `obs-preview.png`
+- each active client PC:
+  - `client1.log`
+  - `client2.log`
+  - `client3.log`
+  - `client4.log`
+
 ## Preflight Checklist
 
 Before the first distributed-PC actual run:
 
-1. Record the streaming PC LAN IP.
-2. Record the exact PC placement for:
+1. Confirm the repo root on every participating PC is:
+   - `S:\stream-sync`
+2. Record the streaming PC address to use as:
+   - `<SERVER_HOST>`
+3. Record the exact PC placement for:
    - `server`
    - `switcher`
    - `OBS`
@@ -178,76 +235,39 @@ Before the first distributed-PC actual run:
    - `client2`
    - `client3`
    - `client4`
-3. Confirm the streaming PC can keep:
+4. Confirm the streaming PC can keep:
    - `configs/manual/server.two-real-slots.toml`
    - `pipe_name=streamsync-handoff-dev`
-4. Prepare per-client config values so each active client uses:
+5. Update the active client config files so each active client uses:
    - correct `client_id`
    - correct `shared_token`
-   - the intended `server_host`
+   - `server_host=<SERVER_HOST>`
    - `server_port=5000`
    - `run_id=streamsync-dev-session`
-5. Confirm Windows Firewall allows inbound UDP `5000` on the streaming PC.
-6. Confirm OBS is ready to capture:
+6. Confirm Windows Firewall allows inbound UDP `5000` on the streaming PC.
+7. Confirm the required binaries already exist from the separate build step:
+   - `S:\stream-sync\target\debug\stream-sync-server.exe`
+   - `S:\stream-sync\target\debug\stream-sync-switcher.exe`
+   - `S:\stream-sync\target\debug\stream-sync-client.exe`
+8. Confirm OBS is ready to capture:
    - `StreamSync 4-view Output`
-7. Build before the run:
+
+## Copy-Paste Command Pack
+
+These commands are written for `S:\stream-sync`.
+
+### Server PC Command
+
+Run on the streaming PC in its own PowerShell window.
 
 ```powershell
-cargo build -p stream-sync-server -p stream-sync-switcher -p stream-sync-client
-```
-
-## Launch Order
-
-Use this order exactly.
-
-1. Create a log directory and record topology metadata.
-2. Start the server on the streaming PC.
-3. Wait for the server ready line and confirm:
-   - `receive_ready=true`
-   - `handoff_ready=true`
-   - `runtime_mode=concurrent`
-   - `validation_ready=n/a`
-   - `expected_reassembled_frames_enabled=false`
-   - `expected_clients_enabled=false`
-   - `expected_per_client_frames_enabled=false`
-4. Start the switcher on the streaming PC.
-5. Start OBS on the streaming PC.
-6. Confirm OBS is pointed at:
-   - `StreamSync 4-view Output`
-7. Start the clients with minimal delay in this order:
-   - `client1`
-   - `client2`
-   - `client3`
-   - `client4`
-8. For summary-required runs:
-   - wait for the switcher final summary
-   - wait for all client final summaries
-   - wait for the server stopped summary
-9. For OBS-operation runs:
-   - capture OBS evidence first
-   - still wait for client and server summaries
-   - switcher final summary may be missing and must be classified separately
-
-## Command Shape
-
-Use the existing manual runtime commands. This phase changes topology and
-config values, not the binary interface.
-
-### Log Directory Naming
-
-Use one of these shapes:
-
-- summary-required run:
-  - `manual-logs/distributed-pc-summary-<yyyymmdd-hhmmss>`
-- OBS-operation run:
-  - `manual-logs/distributed-pc-obs-<yyyymmdd-hhmmss>`
-
-### Server Command
-
-Run on the streaming PC:
-
-```powershell
-.\target\debug\stream-sync-server.exe --receive-auth-video-queue-and-serve-handoff-continuous configs/manual/server.two-real-slots.toml streamsync-handoff-dev 4000 300000 600000 0 0 false 268435456 0 0
+$RepoRoot = 'S:\stream-sync'
+$RunStamp = '<RUN_STAMP>'
+$RunLabel = '<RUN_LABEL>'
+$LogDir = Join-Path $RepoRoot "manual-logs\$RunLabel-$RunStamp"
+New-Item -ItemType Directory -Path $LogDir -Force | Out-Null
+Set-Location $RepoRoot
+& .\target\debug\stream-sync-server.exe --receive-auth-video-queue-and-serve-handoff-continuous configs/manual/server.two-real-slots.toml streamsync-handoff-dev 4000 300000 600000 0 0 false 268435456 0 0 2>&1 | Tee-Object -FilePath (Join-Path $LogDir 'server.log')
 ```
 
 Expected meaning:
@@ -257,80 +277,185 @@ Expected meaning:
 - keep UDP port `5000`
 - keep the named pipe local on the streaming PC
 
-### Switcher Command
+### Switcher / OBS PC Command
 
-#### Summary-Required Run
+Run on the streaming PC in a second PowerShell window.
 
-Run on the streaming PC:
+#### Distributed `2`-client Smoke
 
 ```powershell
-.\target\debug\stream-sync-switcher.exe --four-view-four-real-handoff-preview-loop streamsync-handoff-dev player1 streamsync-dev-session player2 streamsync-dev-session player3 streamsync-dev-session player4 streamsync-dev-session 180 preview-latest-decodable
+$RepoRoot = 'S:\stream-sync'
+$RunStamp = '<RUN_STAMP>'
+$RunLabel = 'distributed-pc-2client-smoke'
+$LogDir = Join-Path $RepoRoot "manual-logs\$RunLabel-$RunStamp"
+New-Item -ItemType Directory -Path $LogDir -Force | Out-Null
+Set-Location $RepoRoot
+& .\target\debug\stream-sync-switcher.exe --four-view-two-real-handoff-preview-loop streamsync-handoff-dev 0 player1 streamsync-dev-session 1 player2 streamsync-dev-session 180 preview-latest-decodable 2>&1 | Tee-Object -FilePath (Join-Path $LogDir 'switcher.log')
 ```
 
 Use this when:
 
-- final switcher summary is required
-- this run is the main functional judgment run
+- the target is the first distributed runtime gate
+- switcher final summary is required
 
-#### OBS-Operation Run
-
-Run on the streaming PC:
+#### Distributed `2`-client OBS Visible
 
 ```powershell
-.\target\debug\stream-sync-switcher.exe --four-view-four-real-handoff-preview-loop streamsync-handoff-dev player1 streamsync-dev-session player2 streamsync-dev-session player3 streamsync-dev-session player4 streamsync-dev-session 900 preview-latest-decodable
+$RepoRoot = 'S:\stream-sync'
+$RunStamp = '<RUN_STAMP>'
+$RunLabel = 'distributed-pc-2client-obs'
+$LogDir = Join-Path $RepoRoot "manual-logs\$RunLabel-$RunStamp"
+New-Item -ItemType Directory -Path $LogDir -Force | Out-Null
+Set-Location $RepoRoot
+& .\target\debug\stream-sync-switcher.exe --four-view-two-real-handoff-preview-loop streamsync-handoff-dev 0 player1 streamsync-dev-session 1 player2 streamsync-dev-session 900 preview-latest-decodable 2>&1 | Tee-Object -FilePath (Join-Path $LogDir 'switcher.log')
 ```
 
 Use this when:
 
-- the operator needs longer time to manipulate OBS
-- the run is for capture evidence, not for strict switcher-summary closeout
+- the target is OBS visibility on the distributed `2`-client scope
+- the operator needs more time to manipulate OBS
 
-### Client Command
-
-Run on each client PC:
+#### Distributed `4`-client Summary-Required
 
 ```powershell
-.\target\debug\stream-sync-client.exe --auth-real-encoded-video-frame-poc-bounded <client-config-path> 900 16 1 --encoder-runtime persistent --cadence-mode deadline
+$RepoRoot = 'S:\stream-sync'
+$RunStamp = '<RUN_STAMP>'
+$RunLabel = 'distributed-pc-4client-summary'
+$LogDir = Join-Path $RepoRoot "manual-logs\$RunLabel-$RunStamp"
+New-Item -ItemType Directory -Path $LogDir -Force | Out-Null
+Set-Location $RepoRoot
+& .\target\debug\stream-sync-switcher.exe --four-view-four-real-handoff-preview-loop streamsync-handoff-dev player1 streamsync-dev-session player2 streamsync-dev-session player3 streamsync-dev-session player4 streamsync-dev-session 180 preview-latest-decodable 2>&1 | Tee-Object -FilePath (Join-Path $LogDir 'switcher.log')
 ```
 
-`<client-config-path>` must resolve to a config for that player's:
+#### Distributed `4`-client Long OBS Run
 
-- `client_id`
-- `shared_token`
-- `run_id`
-- `server_host`
-- `server_port`
+```powershell
+$RepoRoot = 'S:\stream-sync'
+$RunStamp = '<RUN_STAMP>'
+$RunLabel = 'distributed-pc-4client-obs'
+$LogDir = Join-Path $RepoRoot "manual-logs\$RunLabel-$RunStamp"
+New-Item -ItemType Directory -Path $LogDir -Force | Out-Null
+Set-Location $RepoRoot
+& .\target\debug\stream-sync-switcher.exe --four-view-four-real-handoff-preview-loop streamsync-handoff-dev player1 streamsync-dev-session player2 streamsync-dev-session player3 streamsync-dev-session player4 streamsync-dev-session 900 preview-latest-decodable 2>&1 | Tee-Object -FilePath (Join-Path $LogDir 'switcher.log')
+```
 
-Distributed-PC config rule:
+OBS manual steps on the same streaming PC:
 
-- remote clients must not use `127.0.0.1`
-- they must point at the streaming PC LAN IP
-
-### OBS Capture Check
-
-On the streaming PC:
-
-1. Select or update a normal `Window Capture` source.
-2. Confirm the selected title is exactly:
+1. Open or keep OBS ready.
+2. Select or update a normal `Window Capture` source.
+3. Confirm the selected title is exactly:
    - `StreamSync 4-view Output`
-3. Confirm OBS preview shows the `4`-view output.
-4. Capture a screenshot or equivalent pasted-back evidence.
+4. Confirm OBS preview shows the intended StreamSync output.
+5. Save a screenshot and a short note into the same run directory.
 
-## Success Criterion
+### Client PC 1 Command
 
-Use a two-layer judgment:
+Run on the PC assigned to `player1`.
 
-- functional PASS gate
-- performance interpretation
+```powershell
+$RepoRoot = 'S:\stream-sync'
+$RunStamp = '<RUN_STAMP>'
+$RunLabel = '<RUN_LABEL>'
+$LogDir = Join-Path $RepoRoot "manual-logs\$RunLabel-$RunStamp"
+New-Item -ItemType Directory -Path $LogDir -Force | Out-Null
+Set-Location $RepoRoot
+& .\target\debug\stream-sync-client.exe --auth-real-encoded-video-frame-poc-bounded configs/manual/client.player1.toml 900 16 1 --encoder-runtime persistent --cadence-mode deadline 2>&1 | Tee-Object -FilePath (Join-Path $LogDir 'client1.log')
+```
 
-### Functional PASS Gate
+### Client PC 2 Command
 
-Treat the distributed-PC run as a functional PASS only when all of the
-following are true.
+Run on the PC assigned to `player2`.
 
-#### Client Gate
+```powershell
+$RepoRoot = 'S:\stream-sync'
+$RunStamp = '<RUN_STAMP>'
+$RunLabel = '<RUN_LABEL>'
+$LogDir = Join-Path $RepoRoot "manual-logs\$RunLabel-$RunStamp"
+New-Item -ItemType Directory -Path $LogDir -Force | Out-Null
+Set-Location $RepoRoot
+& .\target\debug\stream-sync-client.exe --auth-real-encoded-video-frame-poc-bounded configs/manual/client.player2.toml 900 16 1 --encoder-runtime persistent --cadence-mode deadline 2>&1 | Tee-Object -FilePath (Join-Path $LogDir 'client2.log')
+```
 
-All active clients show:
+### Optional Placeholder: Client PC 3
+
+Use this only after widening to the distributed `4`-client run.
+
+```powershell
+$RepoRoot = 'S:\stream-sync'
+$RunStamp = '<RUN_STAMP>'
+$RunLabel = '<RUN_LABEL>'
+$LogDir = Join-Path $RepoRoot "manual-logs\$RunLabel-$RunStamp"
+New-Item -ItemType Directory -Path $LogDir -Force | Out-Null
+Set-Location $RepoRoot
+& .\target\debug\stream-sync-client.exe --auth-real-encoded-video-frame-poc-bounded configs/manual/client.player3.toml 900 16 1 --encoder-runtime persistent --cadence-mode deadline 2>&1 | Tee-Object -FilePath (Join-Path $LogDir 'client3.log')
+```
+
+### Optional Placeholder: Client PC 4
+
+Use this only after widening to the distributed `4`-client run.
+
+```powershell
+$RepoRoot = 'S:\stream-sync'
+$RunStamp = '<RUN_STAMP>'
+$RunLabel = '<RUN_LABEL>'
+$LogDir = Join-Path $RepoRoot "manual-logs\$RunLabel-$RunStamp"
+New-Item -ItemType Directory -Path $LogDir -Force | Out-Null
+Set-Location $RepoRoot
+& .\target\debug\stream-sync-client.exe --auth-real-encoded-video-frame-poc-bounded configs/manual/client.player4.toml 900 16 1 --encoder-runtime persistent --cadence-mode deadline 2>&1 | Tee-Object -FilePath (Join-Path $LogDir 'client4.log')
+```
+
+## Startup Order
+
+Use this order exactly.
+
+1. Pick one `<RUN_STAMP>` and one `<RUN_LABEL>` for the run.
+2. Update active client config files so they point to `<SERVER_HOST>`.
+3. Create the same-named run directory under `S:\stream-sync\manual-logs\` on
+   every participating PC.
+4. Start the server on the streaming PC.
+5. Wait for the server ready line and confirm:
+   - `receive_ready=true`
+   - `handoff_ready=true`
+   - `runtime_mode=concurrent`
+   - `validation_ready=n/a`
+   - `expected_reassembled_frames_enabled=false`
+   - `expected_clients_enabled=false`
+   - `expected_per_client_frames_enabled=false`
+6. Start the switcher on the streaming PC.
+7. For OBS-visible or long OBS runs:
+   - start OBS or bring it forward on the streaming PC
+8. Start the clients with minimal delay in this order:
+   - `client1`
+   - `client2`
+   - optional `client3`
+   - optional `client4`
+9. For summary-required runs:
+   - wait for the switcher final summary
+   - wait for all active client final summaries
+   - wait for the server stopped summary
+10. For OBS-visible or long OBS runs:
+   - capture OBS evidence first
+   - still wait for active client and server summaries
+   - if the switcher final summary is not collected within the operator wait
+     window, classify that separately from OBS visibility
+
+## Expected Summary Lines
+
+### Server Ready Line
+
+Expect all of:
+
+- `receive_ready=true`
+- `handoff_ready=true`
+- `runtime_mode=concurrent`
+- `validation_ready=n/a`
+- `expected_reassembled_frames_enabled=false`
+- `expected_clients_enabled=false`
+- `expected_per_client_frames_enabled=false`
+
+### Client Final Summaries
+
+Every active client should show:
 
 - `accepted=true`
 - `frames_sent=900`
@@ -344,16 +469,52 @@ Preferred stronger evidence:
 - `keyframes_sent=30`
 - `encode_failures=0`
 
-#### Server Gate
+### Distributed `2`-client Summary-Required Switcher
 
-The server ready line must show:
+Expect:
 
-- `receive_ready=true`
-- `handoff_ready=true`
-- `runtime_mode=concurrent`
-- `validation_ready=n/a`
+- `command_name=--four-view-two-real-handoff-preview-loop`
+- `preview_mode=preview-latest-decodable`
+- `scheduler_status=PartialSelected`
+- `slot_result_kinds=Selected|Selected|NoFrameAvailable|NoFrameAvailable`
+- `clean_output_render_result_kind=Rendered`
+- `render_failures=0`
+- `window_title=StreamSync 4-view Output`
+- `output_width=1280`
+- `output_height=720`
+- `frames_rendered > 0`
 
-The final server stopped summary must show:
+### Distributed `4`-client Summary-Required Switcher
+
+Expect:
+
+- `command_name=--four-view-four-real-handoff-preview-loop`
+- `preview_mode=preview-latest-decodable`
+- `scheduler_status=AllSelected`
+- `slot_result_kinds=Selected|Selected|Selected|Selected`
+- `clean_output_render_result_kind=Rendered`
+- `render_failures=0`
+- `window_title=StreamSync 4-view Output`
+- `output_width=1280`
+- `output_height=720`
+- `frames_rendered > 0`
+
+### Server Stopped Summary
+
+Distributed `2`-client expectation:
+
+- `stop_reason=ReceiveStopped`
+- `receive_stop_reason=ReceiveTimedOut`
+- `handoff_stop_reason=StopRequested`
+- `frames_queued=1800`
+- `per_client_queued_frames` includes:
+  - `player1/streamsync-dev-session:900`
+  - `player2/streamsync-dev-session:900`
+- `retained_keyframe_clients=2`
+- `frame_read_count > 0`
+- `io_error_count=0`
+
+Distributed `4`-client expectation:
 
 - `stop_reason=ReceiveStopped`
 - `receive_stop_reason=ReceiveTimedOut`
@@ -364,48 +525,80 @@ The final server stopped summary must show:
 - `frame_read_count > 0`
 - `io_error_count=0`
 
-#### Switcher Gate
+## PASS / PARTIAL / FAIL Criteria
 
-For the summary-required run, the final switcher summary must show:
+Use three separate judgment surfaces:
 
-- `command_name=--four-view-four-real-handoff-preview-loop`
-- `preview_mode=preview-latest-decodable`
-- `read_mode=inspect-latest-decodable`
-- `scheduler_status=AllSelected`
-- `slot_result_kinds=Selected|Selected|Selected|Selected`
-- `clean_output_render_result_kind=Rendered`
-- `render_failures=0`
-- `window_title=StreamSync 4-view Output`
-- `frames_rendered > 0`
+- runtime evidence
+- OBS visible evidence
+- long OBS visual stability evidence
 
-#### OBS Gate
+Important separation rule:
 
-OBS must show:
+- switcher final summary is runtime evidence
+- long OBS run is visual stability evidence
+- do not merge them into one PASS condition
 
-- selected window title is `StreamSync 4-view Output`
-- preview is visible
-- preview is not black
-- preview is not transparent
-- preview is not the wrong window
-- all `4` slots are visible
+### PASS
 
-### Performance Interpretation
+Treat the phase as `PASS` only when all required gates for the target run have
+passed.
 
-Performance is a separate judgment surface from functional PASS.
+Distributed `2`-client smoke `PASS`:
 
-Treat the run as having acceptable distributed-phase performance evidence when:
+- both active clients pass their final summary gate
+- server ready line passes
+- server stopped summary matches the distributed `2`-client expected counts
+- the short `2`-client switcher summary matches the runtime gate
 
-- no client stops with `EncodeFailure`
-- client effective output FPS does not collapse into the same
-  `16-18fps` band seen in the same-PC OBS PARTIAL run
-- switcher output is not subjectively reported as extremely low FPS
+Distributed `2`-client OBS visible `PASS`:
 
-Interpretation rule:
+- the earlier distributed `2`-client smoke runtime gate already passed
+- OBS selects `StreamSync 4-view Output`
+- OBS preview is visible
+- OBS preview is not black
+- OBS preview is not transparent
+- OBS preview is not the wrong window
 
-- if the functional PASS gate succeeds but performance is still degraded,
-  classify the run as:
-  - `functional PASS with distributed performance follow-up`
-- do not collapse that directly into network or OBS failure
+Distributed `4`-client summary-required `PASS`:
+
+- all four active clients pass their final summary gate
+- server ready line passes
+- server stopped summary matches the distributed `4`-client expected counts
+- the short `4`-client switcher summary matches the runtime gate
+
+### PARTIAL PASS
+
+Treat the run as `PARTIAL` when one evidence surface passes but another remains
+follow-up rather than a hard failure.
+
+Typical `PARTIAL` cases:
+
+- functional/runtime gate passes, but performance is still degraded
+- OBS visible evidence passes, but the long OBS run shows visible stutter or
+  low-FPS behavior
+- a long OBS run collects valid visual evidence, active client summaries, and
+  server summary, but the switcher final summary is not collected within the
+  operator wait window
+
+Interpretation:
+
+- in that long-run case, classify it as:
+  - visual evidence collected successfully
+  - switcher final-summary recovery missing
+- do not classify that shape as an OBS capture failure by itself
+
+### FAIL
+
+Treat the run as `FAIL` when the target gate itself fails.
+
+Examples:
+
+- an active client fails auth/send
+- server ready line never reaches the expected concurrent state
+- server stopped summary misses required queue participation
+- short summary-required switcher gate fails for the target stage
+- OBS cannot capture the intended window correctly during the OBS-visible run
 
 ## Failure Classification
 
@@ -419,12 +612,6 @@ Use this when:
 - server ready line exists but remote traffic does not arrive
 - auth/send attempts stall around basic connectivity
 
-Typical evidence:
-
-- no or near-zero `packets_received`
-- remote client send path runs but server shows no matching traffic
-- issue clears only after firewall/address correction
-
 ### 2. Auth / Config Mismatch
 
 Use this when:
@@ -432,37 +619,22 @@ Use this when:
 - `run_id` differs across participants
 - wrong `client_id` is used
 - wrong `shared_token` is used
-- client points at the wrong `server_host` or `server_port`
-
-Typical evidence:
-
-- `accepted=false`
-- auth reject reason such as invalid token
-- queue participation missing for one client scope only
+- a client points at the wrong `server_host` or `server_port`
 
 ### 3. Client Capture / Encode
 
-Use this when any client shows:
+Use this when any active client shows:
 
 - `EncodeFailure`
 - `frames_sent < 900`
 - `send_failures > 0`
-- local capture/encode degradation before transport is the main problem
 
 ### 4. Server Receive / Queue
 
 Use this when:
 
-- server ready line exists
 - clients authenticate and send
 - but final queue participation is incomplete or missing
-
-Typical evidence:
-
-- `frames_queued < 3600`
-- missing entries in `per_client_queued_frames`
-- `retained_keyframe_clients < 4`
-- `io_error_count > 0`
 
 ### 5. Handoff Transport
 
@@ -471,27 +643,12 @@ Use this when:
 - server queue state looks healthy
 - but named-pipe handoff or switcher read path fails
 
-Typical evidence:
-
-- `handoff_response_kind=HandoffError`
-- `parse_error!=none`
-- `io_error!=none`
-- switcher cannot read despite healthy queue evidence
-
 ### 6. Switcher Selection / Decode / Render
 
 Use this when:
 
 - handoff read exists
-- but switcher final state does not reach clean all-real output
-
-Typical evidence:
-
-- `scheduler_status!=AllSelected`
-- any final slot is not `Selected`
-- `decode_error!=none`
-- `clean_output_render_result_kind!=Rendered`
-- `render_failures>0`
+- but switcher final state does not reach the expected selected/rendered state
 
 ### 7. OBS Capture
 
@@ -500,14 +657,6 @@ Use this when:
 - StreamSync output may exist
 - but OBS cannot capture it correctly
 
-Typical evidence:
-
-- wrong selected title
-- black preview
-- transparent preview
-- wrong window
-- `4` slots not visible inside OBS preview
-
 ### 8. Distributed Clock / Timing / Performance
 
 Use this when:
@@ -515,34 +664,38 @@ Use this when:
 - network and auth are basically correct
 - but cross-host timing/resource behavior is still degraded
 
-Typical evidence:
-
-- visible low-FPS playback
-- client FPS collapse without a primary auth or queue failure
-- functional PASS gate succeeds, but runtime quality remains poor
-
-## Evidence Shape
+## Evidence Paste-Back Template
 
 Use this pasted-back report shape.
 
 ```text
-log_dir=manual-logs/distributed-pc-<summary-or-obs>-<timestamp>
-topology_stage=StageA|StageB|StageC
+repo_root=S:\stream-sync
+run_label=distributed-pc-2client-smoke|distributed-pc-2client-obs|distributed-pc-4client-summary|distributed-pc-4client-obs
+run_stamp=<RUN_STAMP>
+server_host=<SERVER_HOST>
 streaming_pc=<hostname or label>
-streaming_pc_lan_ip=<ip:port>
 server_pc=<hostname or label>
 switcher_pc=<hostname or label>
 obs_pc=<hostname or label>
 client1_pc=<hostname or label>
 client2_pc=<hostname or label>
-client3_pc=<hostname or label>
-client4_pc=<hostname or label>
-client_server_hosts=player1:<host>|player2:<host>|player3:<host>|player4:<host>
-selected_window_title=StreamSync 4-view Output|<other>
+client3_pc=<hostname or label>|inactive
+client4_pc=<hostname or label>|inactive
+active_clients=player1,player2|player1,player2,player3,player4
+client_server_hosts=player1:<SERVER_HOST>|player2:<SERVER_HOST>|player3:<SERVER_HOST or inactive>|player4:<SERVER_HOST or inactive>
+log_dir_streaming_pc=S:\stream-sync\manual-logs\<run_label>-<RUN_STAMP>
+log_dir_client1_pc=S:\stream-sync\manual-logs\<run_label>-<RUN_STAMP>
+log_dir_client2_pc=S:\stream-sync\manual-logs\<run_label>-<RUN_STAMP>
+log_dir_client3_pc=S:\stream-sync\manual-logs\<run_label>-<RUN_STAMP>|inactive
+log_dir_client4_pc=S:\stream-sync\manual-logs\<run_label>-<RUN_STAMP>|inactive
+selected_window_title=StreamSync 4-view Output|<other>|NotCollected
 obs_preview_result=Visible4View|Black|Transparent|WrongWindow|Partial4View|NotCollected
+server_ready_result=PASS|FAIL
+server_summary_result=PASS|PARTIAL|FAIL
+switcher_runtime_summary_result=PASS|PARTIAL|FAIL|NotCollected
+long_obs_visual_result=PASS|PARTIAL|FAIL|NotRun
 primary_classification=<one bucket above>
-functional_result=PASS|PARTIAL|FAIL
-performance_result=PASS|PARTIAL|FAIL
+overall_result=PASS|PARTIAL|FAIL
 notes=<short human observation>
 ```
 
@@ -551,67 +704,63 @@ Required attached evidence:
 - server ready line
 - server stopped summary
 - switcher final summary for summary-required runs
-- client1..4 final summaries
+- active client final summaries
 - OBS manual result
-- log directory path
+- log directory paths
 - PC placement memo
 
 ## Long OBS Run And Final Summary Handling
 
-The repo must treat OBS capture evidence and switcher final-summary recovery as
-separate concerns.
+The repo must treat runtime evidence and long-run visual evidence as separate
+concerns.
 
 ### Rule 1
 
-`OBS capture PASS` does not require switcher final summary recovery from a long
-operator-driven run.
+`switcher final summary` is runtime evidence.
 
 ### Rule 2
 
-When final switcher summary is required, use the short bounded switcher run:
-
-- `frames=180`
-
-This is the main functional gate.
+`long OBS run` is visual stability evidence.
 
 ### Rule 3
 
-When the operator needs longer time for OBS interaction, use the longer
-switcher run:
+Use the short bounded switcher run when runtime evidence is the main gate:
 
-- `frames=900`
-
-This run may end with:
-
-- OBS capture evidence collected
-- client summaries collected
-- server summary collected
-- switcher final summary not collected within the operator wait window
-
-That outcome must be classified as:
-
-- OBS evidence collected successfully
-- switcher final-summary recovery missing
-
-not as:
-
-- OBS capture failure by itself
+- distributed `2`-client smoke:
+  - `frames=180`
+- distributed `4`-client summary-required:
+  - `frames=180`
 
 ### Rule 4
 
-If both outputs are required, do two runs:
+Use the longer switcher run when the operator needs more time for OBS
+interaction:
+
+- distributed `2`-client OBS visible:
+  - `frames=900`
+- distributed `4`-client long OBS:
+  - `frames=900`
+
+### Rule 5
+
+If both runtime evidence and longer OBS evidence are required, do two runs:
 
 1. short summary-required run
-2. longer OBS-operation run
+2. longer OBS-visible or long OBS run
 
 This is preferred over trying to force one long run to satisfy both judgments.
 
 ## Expected Next Actual Run Order
 
-1. Execute Stage A with `1` remote client as the first distributed-PC run.
-2. Run the short summary-required command set first.
-3. If Stage A functionally passes, run the longer OBS-operation capture pass.
-4. Only then widen to Stage B or Stage C.
+1. Prepare the distributed-PC `2`-client smoke run on `S:\stream-sync`.
+2. Execute the short distributed `2`-client smoke command set first.
+3. If that runtime gate passes, execute the distributed `2`-client OBS visible
+   run.
+4. If both `2`-client gates pass, widen to the distributed `4`-client
+   summary-required run.
+5. After the distributed `4`-client runtime gate, run the long OBS visual
+   stability pass.
+6. Only then prioritize failure-class-specific fixes.
 
 ## Not In Scope Yet
 
@@ -622,4 +771,4 @@ This is preferred over trying to force one long run to satisfy both judgments.
 - OBS WebSocket / advanced OBS control
 - protocol or architecture changes
 - re-opening same-PC `4`-client PASS
-- re-opening OBS capture PASS
+- re-opening same-PC OBS capture PASS

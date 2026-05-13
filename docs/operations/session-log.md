@@ -2,6 +2,77 @@
 
 ## 2026-05-13
 ### Type
+- Codex docs/ops update
+
+### Work
+- Reviewed the repo-local inputs required for this docs-only slice:
+  - `AGENTS.md`
+  - `README.md`
+  - `docs/requirements/project-overview.md`
+  - `docs/architecture/system-design.md`
+  - `docs/architecture/protocol.md`
+  - `docs/architecture/decisions.md`
+  - `docs/operations/distributed-pc-validation.md`
+  - `docs/operations/four-client-validation.md`
+  - `docs/operations/obs-capture-validation.md`
+  - `docs/operations/todo.md`
+  - `docs/operations/session-log.md`
+- Kept the existing checkpoints fixed:
+  - same-PC `4`-client all-real functional PASS:
+    - `manual-logs/four-client-20260513-184503`
+  - same-PC OBS capture PASS:
+    - `manual-logs/obs-capture-20260513-190909`
+- Reworked `docs/operations/distributed-pc-validation.md` into a concrete
+  `S:\stream-sync` command-pack document:
+  - explicit replacement values:
+    - `<RUN_STAMP>`
+    - `<SERVER_HOST>`
+    - `<RUN_LABEL>`
+  - `manual-logs` naming convention for:
+    - distributed `2`-client smoke
+    - distributed `2`-client OBS visible
+    - distributed `4`-client summary-required
+    - distributed `4`-client long OBS
+  - copy-pasteable commands for:
+    - server PC
+    - switcher / OBS PC
+    - client PC `1`
+    - client PC `2`
+    - optional placeholders for client PC `3` and `4`
+  - startup order
+  - expected summary lines
+  - PASS / PARTIAL / FAIL criteria
+  - evidence paste-back template
+- Kept long OBS visual evidence and switcher final-summary runtime evidence as
+  separate judgment surfaces in the distributed-PC doc.
+- Updated `docs/operations/todo.md` so:
+  - the current docs-first next item is confirming the prepared distributed-PC
+    command pack
+  - the next validation order is:
+    - distributed-PC `2`-client smoke
+    - distributed-PC `2`-client OBS visible
+    - distributed-PC `4`-client
+    - long OBS run
+    - failure-class-specific fixes
+- Intentionally did not run `cargo build`, `cargo check`, or `cargo test`
+  because build validation is explicitly separated into a later dedicated step.
+
+### Decision
+- The next actual distributed runtime gate should be the distributed
+  `2`-client smoke run, not an immediate distributed `4`-client run.
+- Runtime evidence and long OBS visual stability evidence must stay separate.
+- The distributed-PC command pack should use `S:\stream-sync` paths only.
+
+### Changed Files
+- `docs/operations/distributed-pc-validation.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### Validation
+- `git diff --check`
+
+## 2026-05-13
+### Type
 - Codex docs/design update
 
 ### Work
