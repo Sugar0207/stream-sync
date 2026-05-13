@@ -7,7 +7,23 @@
   2-client same-PC concurrent validation PASS at:
   - `manual-logs/handoff-20260513-134658`
 - The 2-client concurrent PASS checkpoint is closed.
-- The next validation target is:
+- Latest same-PC 4-client all-real human run has been recorded from:
+  - `manual-logs/four-client-20260513-151543`
+- Latest 4-client result is FAIL, with primary failure bucket:
+  - `Switcher Selection / Decode / Render Failure`
+- The failure is not currently classified as:
+  - client auth / send failure
+  - server receive / queue participation failure
+  - named-pipe handoff transport / runtime failure
+- The latest result proves the server/client/handoff transport path:
+  - server ready line emitted
+  - server stopped summary emitted
+  - all 4 clients authenticated and sent `900` frames
+  - server queued `3600` frames, `900` per client
+  - server retained keyframes for all 4 client/run scopes
+  - switcher final real slots reached `FrameRead`
+  - switcher final diagnostics had `parse_error=none` and `io_error=none`
+- The remaining validation target is:
   - same-PC first
   - 4 real clients
   - concurrent server runtime
@@ -128,9 +144,16 @@ Chosen shape:
 - `frames=180`
   - preserves the same preview-window length used by the latest 2-client PASS
 - current command does not expose a preview-mode override
-  - this phase therefore validates the existing fixed all-real preview path as
-    implemented today
-  - it does not widen scope into preview-mode redesign
+  - code review confirms it currently uses
+    `PreviewLatestIfAtOrBefore`
+  - that maps to named-pipe handoff read mode `InspectLatest`
+  - it does not use `InspectLatestDecodable`
+  - therefore it does not request retained-keyframe fallback even when the
+    server has a retained keyframe available
+- current command also computes `real_four_view_preview_target_timestamp()`
+  once before the preview loop and reuses that fixed target for all ticks
+  - this differs from the 2-real preview loop, which recomputes targetTime per
+    tick through a target timestamp hook
 
 ### Clients
 
@@ -386,6 +409,222 @@ Response rule:
 - do not jump directly to retry/backoff, persistent decoder context, or
   distributed-PC work
 
+## Latest Same-PC 4-client Result
+
+Latest human run:
+
+- `manual-logs/four-client-20260513-151543`
+
+### Judgment
+
+Result:
+
+- FAIL
+
+Primary failure bucket:
+
+- `Switcher Selection / Decode / Render Failure`
+
+Reason:
+
+- client auth/send gate passed for `player1..player4`
+- server ready gate passed
+- server receive/queue participation gate passed
+- handoff transport/runtime gate passed
+- switcher final all-real state failed because all 4 real slots ended as
+  `WaitingForFrameAtOrBeforeTarget`
+- final clean output had no renderable quad view:
+  - `clean_output_render_result_kind=NoRenderableQuadView`
+
+### Evidence
+
+Server:
+
+- `receive_ready=true`
+- `handoff_ready=true`
+- `runtime_mode=concurrent`
+- `receive_timeout_ms=120000`
+- `max_runtime_duration_ms=360000`
+- `max_handoff_requests=4000`
+- `stop_reason=ReceiveStopped`
+- `receive_stop_reason=ReceiveTimedOut`
+- `handoff_stop_reason=StopRequested`
+- `packets_received=78225`
+- `frames_queued=3600`
+- `per_client_queued_frames`:
+  - `player1/streamsync-dev-session:900`
+  - `player2/streamsync-dev-session:900`
+  - `player3/streamsync-dev-session:900`
+  - `player4/streamsync-dev-session:900`
+- `keyframes_queued=120`
+- `retained_keyframe_clients=4`
+- `per_client_retained_keyframe_frame_id`:
+  - `player1/streamsync-dev-session:1173`
+  - `player2/streamsync-dev-session:1170`
+  - `player3/streamsync-dev-session:1161`
+  - `player4/streamsync-dev-session:1156`
+- `handoff_requests=648`
+- `frame_read_count=451`
+- `no_frame_count=197`
+- `decodable_source_counts=queue:0|retained_keyframe:0|none:648`
+- `io_error_count=0`
+
+Clients:
+
+- `player1..player4` all show:
+  - `accepted=true`
+  - `frames_encoded=900`
+  - `frames_sent=900`
+  - `send_failures=0`
+  - `keyframes_sent=30`
+  - `h264_parameter_sets_cached=true`
+  - `stop_reason=Some(MaxFramesReached)`
+- same-PC saturation is visible but not the primary bucket:
+  - effective output FPS is around `22fps` for all clients
+
+Switcher:
+
+- command:
+  - `--four-view-four-real-handoff-preview-loop`
+- `frames_attempted=180`
+- `frames_rendered=2`
+- `render_failures=0`
+- `scheduler_status=Waiting`
+- `slot_result_kinds`:
+  - `WaitingForFrameAtOrBeforeTarget`
+  - `WaitingForFrameAtOrBeforeTarget`
+  - `WaitingForFrameAtOrBeforeTarget`
+  - `WaitingForFrameAtOrBeforeTarget`
+- final real-slot diagnostics for all 4 slots show:
+  - `handoff_response_kind=FrameRead`
+  - `parse_error=none`
+  - `io_error=none`
+  - `retained_keyframe_available=true`
+  - `selected_frame_available=false`
+  - `target_selection_result=WaitingForFrameAtOrBeforeTarget`
+  - `decode_attempted=false`
+  - `decode_skipped_reason=WaitingForFrameAtOrBeforeTarget`
+  - `renderable_frame_available=false`
+  - `final_slot_result_kind=WaitingForFrameAtOrBeforeTarget`
+- final payloads were non-IDR:
+  - `frame_is_keyframe=false`
+  - `payload_has_sps=true`
+  - `payload_has_pps=true`
+  - `payload_has_idr=false`
+  - `payload_has_non_idr_vcl=true`
+- `clean_output_render_result_kind=NoRenderableQuadView`
+
+### Code Review
+
+Current 2-real preview path:
+
+- CLI:
+  - `--four-view-two-real-handoff-preview-loop ... [preview-oldest|preview-latest|preview-latest-decodable]`
+- latest PASS used:
+  - `preview-latest-decodable`
+- `preview-latest-decodable` maps to:
+  - switcher targetTime mode:
+    `PreviewLatestDecodableIfAtOrBefore`
+  - handoff queue read mode:
+    `InspectLatestDecodable`
+- server `InspectLatestDecodable` behavior:
+  - select the latest queued keyframe for the client/run if available
+  - otherwise fall back to the retained keyframe for that client/run
+  - otherwise return no decodable frame
+- the 2-real loop recomputes targetTime on each preview tick.
+
+Current 4-real preview path:
+
+- CLI:
+  - `--four-view-four-real-handoff-preview-loop`
+- no preview-mode argument is parsed
+- loop calls the 4-view validation with:
+  - `PreviewLatestIfAtOrBefore`
+- `PreviewLatestIfAtOrBefore` maps to:
+  - handoff queue read mode:
+    `InspectLatest`
+- `InspectLatest` returns the latest queued frame regardless of keyframe /
+  one-shot decodability
+- `InspectLatest` reports `decodable_source=none`
+- `InspectLatest` can still report `retained_keyframe_available=true`, but it
+  does not use the retained keyframe as the selected response frame
+- the 4-real loop computes `real_four_view_preview_target_timestamp()` once
+  before the loop and reuses it for all `180` ticks.
+
+`WaitingForFrameAtOrBeforeTarget` condition:
+
+- switcher first receives a frame from handoff
+- switcher applies targetTime selection
+- if the adjusted candidate capture timestamp is newer than targetTime, the
+  slot result becomes `WaitingForFrameAtOrBeforeTarget`
+- decode is intentionally skipped for that slot
+- render input becomes a no-display placeholder
+- if every real slot is waiting, scheduler status becomes `Waiting`
+- if no slot is renderable, clean output becomes `NoRenderableQuadView`
+
+This exactly matches the latest final diagnostics:
+
+- all 4 handoff responses were `FrameRead`
+- no parse or IO error occurred
+- all 4 selected-frame results were unavailable because targetTime rejected the
+  candidates as too new
+- all 4 decodes were skipped before H.264 decode
+- the clean output had no renderable quad view
+
+### Interpretation
+
+The strongest current interpretation is:
+
+- primary failure is switcher selection/render, not transport
+- two implementation differences are material:
+  - 4-real uses `InspectLatest`, not `InspectLatestDecodable`
+  - 4-real holds one fixed targetTime for the whole preview loop, while
+    2-real recomputes targetTime per tick
+- `decodable_source_counts=queue:0|retained_keyframe:0|none:648` is expected
+  for the 4-real command because every request used `InspectLatest`, whose
+  responses carry `decodable_source=none`
+- `retained_keyframe_available=true` in the switcher diagnostics only proves
+  the server had fallback material available; it does not mean the 4-real
+  command asked the server to use that fallback
+
+Therefore the next implementation should be a narrow switcher CLI/path slice,
+not a server/client/handoff transport change.
+
+## Next Minimal Implementation Slice
+
+Preferred next slice:
+
+1. Add an optional preview-mode argument to
+   `--four-view-four-real-handoff-preview-loop`:
+   - `preview-oldest`
+   - `preview-latest`
+   - `preview-latest-decodable`
+2. Keep backward compatibility:
+   - omitted argument keeps today's `preview-latest` behavior unless the
+     validation recipe explicitly chooses a new default in docs
+3. Wire the selected mode through the 4-real loop in the same shape as the
+   current 2-real loop:
+   - targetTime mode via `preview_target_time_mode_from_switcher_mode`
+   - handoff read mode via the existing
+     `SwitcherSingleClientQueueSourceMode` mapping
+4. Recompute targetTime per tick for the 4-real path, matching the current
+   2-real `target_timestamp_hook` behavior.
+5. Re-run same-PC 4-client validation with:
+   - `preview-latest-decodable`
+6. Keep these explicitly out of scope for that slice:
+   - retry/backoff manager
+   - persistent decoder context
+   - OBS WebSocket / advanced OBS control
+   - generic N-view refactor
+   - protocol wire-format changes
+
+Alternative, narrower but less explicit:
+
+- make the 4-real validation command default to the 2-real PASS-equivalent
+  `preview-latest-decodable` behavior
+- only choose this if preserving the exact current 4-real `preview-latest`
+  behavior is not useful for validation
+
 ## Known Risks
 
 - same-PC `4`-client load is materially heavier than the 2-client PASS:
@@ -395,6 +634,8 @@ Response rule:
   - `4` real switcher decode/render paths
 - the all-real `4`-slot preview command does not expose the
   `preview-latest-decodable` override used in the 2-real concurrent PASS
+- the all-real `4`-slot preview command currently uses a fixed targetTime for
+  the full loop, unlike the 2-real command's per-tick targetTime recomputation
 - startup `NoFrame` traffic scales with `4` real slots, so operator timing and
   request-budget headroom matter more than in the 2-client phase
 - switcher persistent decoder context is still out of scope, so a final-state
@@ -415,7 +656,10 @@ Response rule:
 
 ## Expected Next Step After This Preparation
 
-1. Execute exactly this same-PC 4-client all-real concurrent recipe.
-2. Record the full client/server/switcher stdout evidence.
-3. Classify the result with the buckets above before deciding whether any code
-   change is justified.
+1. Implement the smallest 4-real switcher preview-mode / per-tick targetTime
+   slice described above.
+2. Re-run the same-PC 4-client all-real concurrent recipe with
+   `preview-latest-decodable`.
+3. Record the full client/server/switcher stdout evidence and reclassify the
+   result before touching retry/backoff, persistent decoder context,
+   distributed-PC validation, or OBS control.

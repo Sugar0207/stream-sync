@@ -17,6 +17,49 @@
   - `--receive-auth-video-queue-and-serve-handoff-many`
 - New concurrent command is available:
   - `--receive-auth-video-queue-and-serve-handoff-continuous`
+- Latest same-PC 4-client all-real run from
+  `manual-logs/four-client-20260513-151543` keeps the concurrent server/client
+  / handoff transport path healthy, but fails the switcher final-state gate:
+  - server:
+    - ready line emitted
+    - stopped summary emitted
+    - `packets_received=78225`
+    - `frames_queued=3600`
+    - `per_client_queued_frames` includes `player1..player4` at `900` each
+    - `keyframes_queued=120`
+    - `retained_keyframe_clients=4`
+    - `handoff_requests=648`
+    - `frame_read_count=451`
+    - `no_frame_count=197`
+    - `decodable_source_counts=queue:0|retained_keyframe:0|none:648`
+    - `io_error_count=0`
+  - clients:
+    - all 4 authenticated and sent `900` frames with `send_failures=0`
+    - same-PC load reduced effective output FPS to around `22fps`
+  - switcher:
+    - command:
+      `--four-view-four-real-handoff-preview-loop`
+    - `frames_attempted=180`
+    - `frames_rendered=2`
+    - `render_failures=0`
+    - `scheduler_status=Waiting`
+    - `slot_result_kinds=WaitingForFrameAtOrBeforeTarget|WaitingForFrameAtOrBeforeTarget|WaitingForFrameAtOrBeforeTarget|WaitingForFrameAtOrBeforeTarget`
+    - final real-slot handoff responses were `FrameRead`
+    - final real-slot `parse_error=none` and `io_error=none`
+    - final real-slot `retained_keyframe_available=true`
+    - final real-slot `decode_attempted=false`
+    - final output:
+      `clean_output_render_result_kind=NoRenderableQuadView`
+  - current interpretation:
+    - primary failure bucket is switcher selection/render
+    - server receive/queue and handoff transport remain PASS
+    - 4-real path currently uses `PreviewLatestIfAtOrBefore` /
+      `InspectLatest`, so retained-keyframe fallback is not used
+    - 4-real path also holds one fixed targetTime for the full loop, unlike
+      the 2-real preview loop which recomputes targetTime per tick
+    - next slice should add 4-real preview-mode wiring and per-tick targetTime
+      parity before retry/backoff, persistent decoder context, distributed-PC,
+      or OBS work
 - Latest same-PC human rerun from `manual-logs/handoff-20260513-134658`
   keeps the concurrent server closeout gate PASS and now closes the switcher
   validation under the updated final-state-based criterion:

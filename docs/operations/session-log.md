@@ -2,6 +2,121 @@
 
 ## 2026-05-13
 ### Type
+- 4-client human run investigation + docs update
+
+### Work
+- Reviewed the requested repo-local inputs before editing:
+  - `AGENTS.md`
+  - `docs/operations/four-client-validation.md`
+  - `docs/operations/concurrent-handoff-runtime-plan.md`
+  - `docs/operations/two-client-handoff-validation.md`
+  - `docs/operations/todo.md`
+  - `docs/operations/session-log.md`
+- Reviewed latest same-PC 4-client all-real human run logs from:
+  - `manual-logs/four-client-20260513-151543`
+- Confirmed server/client/handoff transport evidence:
+  - server ready line emitted
+  - server stopped summary emitted
+  - `stop_reason=ReceiveStopped`
+  - `receive_stop_reason=ReceiveTimedOut`
+  - `handoff_stop_reason=StopRequested`
+  - `packets_received=78225`
+  - `frames_queued=3600`
+  - `per_client_queued_frames=player1/streamsync-dev-session:900|player2/streamsync-dev-session:900|player3/streamsync-dev-session:900|player4/streamsync-dev-session:900`
+  - `keyframes_queued=120`
+  - `retained_keyframe_clients=4`
+  - `handoff_requests=648`
+  - `frame_read_count=451`
+  - `no_frame_count=197`
+  - `decodable_source_counts=queue:0|retained_keyframe:0|none:648`
+  - `io_error_count=0`
+- Confirmed all 4 clients passed the send gate:
+  - `accepted=true`
+  - `frames_encoded=900`
+  - `frames_sent=900`
+  - `send_failures=0`
+  - `keyframes_sent=30`
+  - `h264_parameter_sets_cached=true`
+  - `stop_reason=Some(MaxFramesReached)`
+- Recorded same-PC saturation as observability:
+  - client effective output FPS was around `22fps`
+- Confirmed switcher final-state failure:
+  - command:
+    `--four-view-four-real-handoff-preview-loop`
+  - `frames_attempted=180`
+  - `frames_rendered=2`
+  - `render_failures=0`
+  - `scheduler_status=Waiting`
+  - `slot_result_kinds=WaitingForFrameAtOrBeforeTarget|WaitingForFrameAtOrBeforeTarget|WaitingForFrameAtOrBeforeTarget|WaitingForFrameAtOrBeforeTarget`
+  - final real-slot `handoff_response_kind=FrameRead`
+  - final real-slot `parse_error=none`
+  - final real-slot `io_error=none`
+  - final real-slot `retained_keyframe_available=true`
+  - final real-slot `selected_frame_available=false`
+  - final real-slot `target_selection_result=WaitingForFrameAtOrBeforeTarget`
+  - final real-slot `decode_attempted=false`
+  - final real-slot `decode_skipped_reason=WaitingForFrameAtOrBeforeTarget`
+  - `clean_output_render_result_kind=NoRenderableQuadView`
+- Reviewed code paths in:
+  - `apps/switcher/src/main.rs`
+  - `apps/switcher/src/lib.rs`
+  - `apps/server/src/lib.rs`
+- Confirmed the 2-client preview PASS path:
+  - parses optional preview mode
+  - latest PASS used `preview-latest-decodable`
+  - maps to `PreviewLatestDecodableIfAtOrBefore`
+  - maps to handoff read mode `InspectLatestDecodable`
+  - server `InspectLatestDecodable` selects latest queued keyframe or falls
+    back to retained keyframe
+  - targetTime is recomputed per preview tick
+- Confirmed the 4-client all-real path:
+  - does not parse a preview-mode argument
+  - calls validation with `PreviewLatestIfAtOrBefore`
+  - maps to handoff read mode `InspectLatest`
+  - `InspectLatest` returns latest queued frame regardless of keyframe /
+    one-shot decodability
+  - `InspectLatest` reports `decodable_source=none`
+  - retained keyframe availability is diagnostic only in this mode
+  - targetTime is computed once before the loop and reused for all ticks
+- Updated docs with the latest result, failure bucket, code-path difference,
+  and next minimal implementation slice.
+
+### Decision
+- Latest 4-client same-PC all-real validation is FAIL.
+- Primary failure bucket is:
+  - `Switcher Selection / Decode / Render Failure`
+- This is not a client auth/send failure.
+- This is not a server receive/queue participation failure.
+- This is not a named-pipe handoff transport/runtime failure.
+- `WaitingForFrameAtOrBeforeTarget` matches the code path:
+  - handoff returned a frame
+  - switcher targetTime rejected the candidate as newer than target
+  - decode was skipped
+  - no renderable quad view remained
+- `decodable_source_counts=queue:0|retained_keyframe:0|none:648` is expected
+  for the current 4-real command because it uses `InspectLatest`, not
+  `InspectLatestDecodable`.
+- The next narrow implementation should add 4-real preview-mode parity and
+  per-tick targetTime parity with the 2-real loop before considering
+  retry/backoff, persistent decoder context, distributed-PC, or OBS work.
+
+### Changed Files
+- `docs/operations/four-client-validation.md`
+- `docs/operations/concurrent-handoff-runtime-plan.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### Validation
+- repo-local log review:
+  - `manual-logs/four-client-20260513-151543`
+- repo-local code review:
+  - `apps/switcher/src/main.rs`
+  - `apps/switcher/src/lib.rs`
+  - `apps/server/src/lib.rs`
+- `git diff --check`
+
+## 2026-05-13
+### Type
 - Codex docs/design update
 
 ### Work
