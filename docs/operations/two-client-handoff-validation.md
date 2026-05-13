@@ -37,7 +37,7 @@ Current follow-up note:
 - concurrent validation details now live in
   `docs/operations/concurrent-handoff-runtime-plan.md`
 - the latest same-PC concurrent rerun evidence now comes from:
-  - `manual-logs/handoff-20260513-075344`
+  - `manual-logs/handoff-20260513-134658`
 - that rerun resolved the previous final switcher `HandoffError` /
   `os_error_2` follow-up after server lifetime was extended
 - switcher summary semantics review now confirms:
@@ -46,7 +46,7 @@ Current follow-up note:
     actually `Rendered`
   - fixed placeholder slots `2` and `3` do not by themselves lower
     `frames_rendered`; 2-real + 2-placeholder ticks can still render 1:1
-- latest `frames_rendered=126` against `frames_attempted=180` is therefore not
+- latest `frames_rendered=117` against `frames_attempted=180` is therefore not
   a hidden failure by itself; it is completion-count observability for warm-up
   / no-render ticks
 - next concurrent follow-up is no longer a semantics check:
@@ -892,90 +892,65 @@ Current latest interpretation after the most recent human rerun:
 
 ## Latest PASS Checkpoint
 
-Latest same-PC 2-client human rerun is now a PASS for the current staged
-handoff-preview scope.
+Latest same-PC 2-client human rerun at `manual-logs/handoff-20260513-134658`
+is a PASS under the updated final-state-based concurrent criterion.
 
 PASS evidence:
 
 - server:
-  - `handoff_ready=true`
-  - `validation_ready=true`
-  - `ready_reason=expected_clients_reached`
-  - `receive_stop_reason=expected_clients_reached`
-  - `registered_clients=2`
-  - `observed_queued_clients=2`
-  - `observed_reassembled_clients=2`
+  - `ready line emitted`
+  - `stopped summary emitted`
+  - `receive_timeout_ms=120000`
+  - `max_runtime_duration_ms=240000`
+  - `expected_reassembled_frames_enabled=false`
+  - `expected_clients_enabled=false`
+  - `expected_per_client_frames_enabled=false`
+  - `stop_reason=ReceiveStopped`
+  - `receive_stop_reason=ReceiveTimedOut`
+  - `handoff_stop_reason=StopRequested`
+  - `runtime_duration_ms=154708`
+  - `packets_received=36122`
+  - `frames_queued=1800`
   - `per_client_queued_frames=player1/streamsync-dev-session:900|player2/streamsync-dev-session:900`
-  - `per_client_direct_frames=player1/...:9|player2/...:9`
-  - `per_client_reassembled_frames=player1/...:891|player2/...:891`
+  - `keyframes_queued=60`
   - `retained_keyframe_clients=2`
-  - `per_client_retained_keyframe_frame_id=player1/...:968|player2/...:975`
+  - `frame_read_count=231`
+  - `no_frame_count=126`
+  - `decodable_source_counts=queue:20|retained_keyframe:211|none:126`
+  - `io_error_count=0`
 - client1:
+  - `accepted=true`
+  - `frames_encoded=900`
   - `frames_sent=900`
-  - `h264_idr_count=30`
-  - `h264_non_idr_vcl_count=870`
-  - `keyframes_encoded=30`
-  - `keyframes_sent=30`
-  - `first_keyframe_frame_id=4`
-  - `last_keyframe_frame_id=968`
-  - `h264_parameter_sets_cached=true`
-  - `h264_sps_count=1`
-  - `h264_pps_count=1`
-  - `h264_parameter_sets_prepended_count=870`
-  - `encode_failures=0`
   - `send_failures=0`
-  - `effective_output_fps=26.385`
+  - `keyframes_sent=30`
+  - `h264_parameter_sets_cached=true`
+  - `stop_reason=Some(MaxFramesReached)`
+  - `effective_output_fps=29.690`
 - client2:
+  - `accepted=true`
+  - `frames_encoded=900`
   - `frames_sent=900`
-  - `h264_idr_count=30`
-  - `h264_non_idr_vcl_count=870`
-  - `keyframes_encoded=30`
-  - `keyframes_sent=30`
-  - `first_keyframe_frame_id=4`
-  - `last_keyframe_frame_id=975`
-  - `h264_parameter_sets_cached=true`
-  - `h264_sps_count=1`
-  - `h264_pps_count=1`
-  - `h264_parameter_sets_prepended_count=870`
-  - `encode_failures=0`
   - `send_failures=0`
-  - `effective_output_fps=26.192`
+  - `keyframes_sent=30`
+  - `h264_parameter_sets_cached=true`
+  - `stop_reason=Some(MaxFramesReached)`
+  - `effective_output_fps=29.507`
 - switcher:
   - `--four-view-two-real-handoff-preview-loop ... preview-latest-decodable`
   - `frames_attempted=180`
-  - `frames_rendered=180`
+  - `frames_rendered=117`
   - `render_failures=0`
   - `scheduler_status=PartialSelected`
   - `slot_result_kinds=Selected|Selected|NoFrameAvailable|NoFrameAvailable`
   - `clean_output_render_result_kind=Rendered`
+  - `window_title=StreamSync 4-view Output`
   - `output_width=1280`
   - `output_height=720`
-  - slot0/player1:
-    - `handoff_response_kind=FrameRead`
-    - `frame_id=968`
-    - `frame_is_keyframe=true`
-    - `decodable_source=retained_keyframe`
-    - `retained_keyframe_available=true`
-    - `retained_keyframe_frame_id=968`
-    - `decode_error=none`
-    - `payload_has_sps=true`
-    - `payload_has_pps=true`
-    - `payload_has_idr=true`
-    - `payload_has_non_idr_vcl=false`
-    - `render_input_kind=UseUpdatedFrame`
-  - slot1/player2:
-    - `handoff_response_kind=FrameRead`
-    - `frame_id=975`
-    - `frame_is_keyframe=true`
-    - `decodable_source=retained_keyframe`
-    - `retained_keyframe_available=true`
-    - `retained_keyframe_frame_id=975`
-    - `decode_error=none`
-    - `payload_has_sps=true`
-    - `payload_has_pps=true`
-    - `payload_has_idr=true`
-    - `payload_has_non_idr_vcl=false`
-    - `render_input_kind=UseUpdatedFrame`
+  - final real-slot `handoff_response_kind=FrameRead`
+  - final real-slot `io_error=none`
+  - final real-slot `decodable_source=retained_keyframe`
+  - final real-slot `decode_error=none`
 
 Interpretation of this PASS:
 
@@ -988,6 +963,8 @@ Interpretation of this PASS:
   - switcher handoff `FrameRead`
   - decode
   - 2-real-slot preview render
+- `frames_rendered=117/180` remains visible as observability only; it is not a
+  blocker under the updated final-state-based criterion
 - `slot2` / `slot3` remain deterministic placeholder / no-frame slots in this
   exact command shape, so `NoFrameAvailable` there is expected and not a
   failure
@@ -995,31 +972,20 @@ Interpretation of this PASS:
 Known limits that remain after this PASS:
 
 - current `preview-latest-decodable` is still a staged keyframe-preview path:
-  - the selected frames in this PASS came from
-    `decodable_source=retained_keyframe`
   - this does not yet prove continuous latest non-IDR decode behavior
-- receive and handoff serve are still staged rather than concurrent
 - switcher still has no persistent decoder context for real-time latest-frame
   decode progression
-- same-PC 2-client bounded runs can still drop to effective send rates around
-  `26fps`, so capture/cadence load variance remains a known issue rather than a
-  blocker for this checkpoint
+- same-PC 2-client bounded runs can still show warm-up / no-render variance, so
+  the rendered/attempted ratio should remain observability rather than a gate
 
 ## Next Design Step
 
-The next step after this PASS checkpoint is not immediate 4-client expansion.
-The next prioritized design step is concurrent receive + handoff serve runtime.
+This 2-client concurrent validation is now closed. The next phase can move to
+one of:
 
-Design source of truth:
-
-- `docs/operations/concurrent-handoff-runtime-plan.md`
-
-Reason:
-
-- current staged command proves the bounded receive-then-preview path
-- it does not prove that switcher can read while clients are still sending
-- a production-like preview path needs server receive/runtime and handoff serve
-  runtime to exist concurrently
+- 4-client all-real validation preparation
+- OBS capture validation follow-up
+- other later-phase work already listed in the repo
 
 ## Concurrent Runtime Follow-Up
 
@@ -1097,19 +1063,19 @@ Current concurrent rerun gate:
     - `effective_output_fps=27.667`
 - server closeout gate is PASS:
   - latest evidence directory:
-    - `manual-logs/handoff-20260513-075344`
+    - `manual-logs/handoff-20260513-134658`
   - final server stopped summary for:
-    - `packets_received=41698`
+    - `packets_received=36122`
     - `frames_queued=1800`
     - `per_client_queued_frames=player1/streamsync-dev-session:900|player2/streamsync-dev-session:900`
     - `keyframes_queued=60`
     - `retained_keyframe_clients=2`
-    - `frame_read_count=245`
-    - `no_frame_count=107`
+    - `frame_read_count=231`
+    - `no_frame_count=126`
     - `receive_stop_reason=ReceiveTimedOut`
     - `handoff_stop_reason=StopRequested`
-    - `runtime_duration_ms=156823`
-    - `decodable_source_counts=queue:15|retained_keyframe:230|none:107`
+    - `runtime_duration_ms=154708`
+    - `decodable_source_counts=queue:20|retained_keyframe:211|none:126`
     - `io_error_count=0`
   - the same run satisfies the full server-closeout PASS criteria:
     - `packets_received > 1`
@@ -1118,7 +1084,7 @@ Current concurrent rerun gate:
 - switcher final-state gate is PASS for real-slot handoff selection and
   renderability:
   - `frames_attempted=180`
-  - `frames_rendered=126`
+  - `frames_rendered=117`
   - `render_failures=0`
   - `scheduler_status=PartialSelected`
   - `slot_result_kinds=Selected|Selected|NoFrameAvailable|NoFrameAvailable`
@@ -1131,7 +1097,7 @@ Current concurrent rerun gate:
     previous final `HandoffError` / `os_error_2`
 - summary semantics decision:
   - `frames_attempted=180` is the preview-loop tick count
-  - `frames_rendered=126` is the count of ticks whose clean output window
+  - `frames_rendered=117` is the count of ticks whose clean output window
     result reached `Rendered`
   - `render_failures=0` plus final `clean_output_render_result_kind=Rendered`
     can therefore coexist with `frames_rendered < frames_attempted`
@@ -1160,12 +1126,8 @@ Current concurrent rerun gate:
   - `cargo test --workspace`
   - `git diff --check`
 - next narrow gate after this rerun:
-  - use the final-state-based concurrent success condition above for the next
-    human rerun
-  - if the operator wants a higher rendered/attempted ratio, tune switcher
-    start timing, client start timing, planned frame count, or warm-up
-    handling without mixing in 4-client expansion, OBS WebSocket, persistent
-    decoder context, or retry/backoff work
+  - concurrent 2-client validation is closed; move the next phase forward only
+    in the later-phase docs
 
 ## Failure Paste-Back Template
 

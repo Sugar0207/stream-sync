@@ -17,9 +17,9 @@
   - `--receive-auth-video-queue-and-serve-handoff-many`
 - New concurrent command is available:
   - `--receive-auth-video-queue-and-serve-handoff-continuous`
-- Latest same-PC human rerun from `manual-logs/handoff-20260513-075344` keeps
-  the concurrent server closeout gate PASS and resolves the previous final
-  switcher `HandoffError` follow-up:
+- Latest same-PC human rerun from `manual-logs/handoff-20260513-134658`
+  keeps the concurrent server closeout gate PASS and now closes the switcher
+  validation under the updated final-state-based criterion:
   - ready line confirmed:
     - `receive_ready=true`
     - `handoff_ready=true`
@@ -56,19 +56,19 @@
     - `receive_stop_reason=ReceiveTimedOut`
     - `handoff_stop_reason=StopRequested`
     - `runtime_duration_ms=156823`
-    - `packets_received=41698`
+    - `packets_received=36122`
     - `frames_queued=1800`
     - `per_client_queued_frames=player1/streamsync-dev-session:900|player2/streamsync-dev-session:900`
     - `keyframes_queued=60`
     - `retained_keyframe_clients=2`
-    - `frame_read_count=245`
-    - `no_frame_count=107`
-    - `decodable_source_counts=queue:15|retained_keyframe:230|none:107`
+    - `frame_read_count=231`
+    - `no_frame_count=126`
+    - `decodable_source_counts=queue:20|retained_keyframe:211|none:126`
     - `io_error_count=0`
   - switcher final summary now proves clean final real-slot handoff
     selection/renderability:
     - `frames_attempted=180`
-    - `frames_rendered=126`
+    - `frames_rendered=117`
     - `render_failures=0`
     - `scheduler_status=PartialSelected`
     - `slot_result_kinds=Selected|Selected|NoFrameAvailable|NoFrameAvailable`
@@ -93,8 +93,15 @@
       - non-render ticks are excluded from `frames_rendered`, including
         `NoRenderableQuadView` and other clean-output results that are not
         `Rendered`
-    - latest `frames_rendered=126/180` is therefore expected completion-count
+    - latest `frames_rendered=117/180` is therefore expected completion-count
       semantics, not hidden render failure
+- updated final-state-based PASS interpretation:
+  - no final `HandoffError`
+  - final real slots `Selected`
+  - final real-slot `handoff_response_kind=FrameRead`
+  - final real-slot `io_error=none`
+  - `render_failures=0`
+  - `clean_output_render_result_kind=Rendered`
 - Current concurrent success gate after the semantics review:
   - no final `HandoffError`
   - final real slots `Selected`

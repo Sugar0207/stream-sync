@@ -2,6 +2,84 @@
 
 ## 2026-05-13
 ### Type
+- Human rerun evidence update + docs closure
+
+### Work
+- Recorded the latest same-PC concurrent rerun evidence from:
+  - `manual-logs/handoff-20260513-134658`
+- Reflected the updated final-state-based PASS in the concurrent runtime plan,
+  staged handoff validation notes, and TODO.
+- Captured the latest values:
+  - server:
+    - `ready line emitted`
+    - `stopped summary emitted`
+    - `receive_timeout_ms=120000`
+    - `max_runtime_duration_ms=240000`
+    - `expected_reassembled_frames_enabled=false`
+    - `expected_clients_enabled=false`
+    - `expected_per_client_frames_enabled=false`
+    - `stop_reason=ReceiveStopped`
+    - `receive_stop_reason=ReceiveTimedOut`
+    - `handoff_stop_reason=StopRequested`
+    - `runtime_duration_ms=154708`
+    - `packets_received=36122`
+    - `frames_queued=1800`
+    - `per_client_queued_frames=player1/streamsync-dev-session:900|player2/streamsync-dev-session:900`
+    - `keyframes_queued=60`
+    - `retained_keyframe_clients=2`
+    - `frame_read_count=231`
+    - `no_frame_count=126`
+    - `decodable_source_counts=queue:20|retained_keyframe:211|none:126`
+    - `io_error_count=0`
+  - switcher:
+    - `frames_attempted=180`
+    - `frames_rendered=117`
+    - `render_failures=0`
+    - `scheduler_status=PartialSelected`
+    - `slot_result_kinds=Selected|Selected|NoFrameAvailable|NoFrameAvailable`
+    - final real-slot `handoff_response_kind=FrameRead`
+    - final real-slot `io_error=none`
+    - final real-slot `decodable_source=retained_keyframe`
+    - final real-slot `decode_error=none`
+    - `clean_output_render_result_kind=Rendered`
+  - client1:
+    - `accepted=true`
+    - `frames_encoded=900`
+    - `frames_sent=900`
+    - `send_failures=0`
+    - `keyframes_sent=30`
+    - `h264_parameter_sets_cached=true`
+    - `stop_reason=Some(MaxFramesReached)`
+    - `effective_output_fps=29.690`
+  - client2:
+    - `accepted=true`
+    - `frames_encoded=900`
+    - `frames_sent=900`
+    - `send_failures=0`
+    - `keyframes_sent=30`
+    - `h264_parameter_sets_cached=true`
+    - `stop_reason=Some(MaxFramesReached)`
+    - `effective_output_fps=29.507`
+
+### Decision
+- The latest rerun is PASS under the updated final-state-based concurrent
+  criterion.
+- `frames_rendered=117/180` stays as observability, not a blocker.
+- The concurrent 2-client validation is now closed, so the next phase can move
+  on to later-phase planning.
+
+### Changed Files
+- `docs/operations/concurrent-handoff-runtime-plan.md`
+- `docs/operations/two-client-handoff-validation.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### Validation
+- repo-local docs review
+- `git diff --check`
+
+## 2026-05-13
+### Type
 - Codex docs update + switcher summary semantics review
 
 ### Work
