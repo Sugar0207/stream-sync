@@ -18,53 +18,66 @@
 - New concurrent command is available:
   - `--receive-auth-video-queue-and-serve-handoff-continuous`
 - Latest same-PC 4-client all-real run from
-  `manual-logs/four-client-20260513-151543` keeps the concurrent server/client
-  / handoff transport path healthy, but fails the switcher final-state gate:
+  `manual-logs/four-client-20260513-184503` now passes the final-state gate:
   - server:
     - ready line emitted
     - stopped summary emitted
-    - `packets_received=78225`
+    - `receive_timeout_ms=300000`
+    - `max_runtime_duration_ms=600000`
+    - `stop_reason=ReceiveStopped`
+    - `receive_stop_reason=ReceiveTimedOut`
+    - `handoff_stop_reason=StopRequested`
+    - `runtime_duration_ms=354363`
+    - `packets_received=73657`
     - `frames_queued=3600`
-    - `per_client_queued_frames` includes `player1..player4` at `900` each
+    - `per_client_queued_frames=player1/streamsync-dev-session:900|player2/streamsync-dev-session:900|player3/streamsync-dev-session:900|player4/streamsync-dev-session:900`
     - `keyframes_queued=120`
     - `retained_keyframe_clients=4`
-    - `handoff_requests=648`
-    - `frame_read_count=451`
-    - `no_frame_count=197`
-    - `decodable_source_counts=queue:0|retained_keyframe:0|none:648`
+    - `frame_read_count=526`
+    - `no_frame_count=178`
+    - `decodable_source_counts=queue:11|retained_keyframe:515|none:178`
     - `io_error_count=0`
   - clients:
     - all 4 authenticated and sent `900` frames with `send_failures=0`
-    - same-PC load reduced effective output FPS to around `22fps`
+    - `keyframes_sent=30`
+    - `h264_parameter_sets_cached=true`
+    - same-PC load reduced effective output FPS into the `19-20fps` band:
+      - `player1=19.732`
+      - `player2=20.201`
+      - `player3=20.299`
+      - `player4=20.040`
   - switcher:
     - command:
       `--four-view-four-real-handoff-preview-loop`
+    - `preview_mode=preview-latest-decodable`
+    - `read_mode=inspect-latest-decodable`
     - `frames_attempted=180`
-    - `frames_rendered=2`
+    - `frames_rendered=137`
     - `render_failures=0`
-    - `scheduler_status=Waiting`
-    - `slot_result_kinds=WaitingForFrameAtOrBeforeTarget|WaitingForFrameAtOrBeforeTarget|WaitingForFrameAtOrBeforeTarget|WaitingForFrameAtOrBeforeTarget`
+    - `scheduler_status=AllSelected`
+    - `slot_result_kinds=Selected|Selected|Selected|Selected`
     - final real-slot handoff responses were `FrameRead`
     - final real-slot `parse_error=none` and `io_error=none`
-    - final real-slot `retained_keyframe_available=true`
-    - final real-slot `decode_attempted=false`
+    - final real-slot `decodable_source=retained_keyframe`
+    - final real-slot `target_selection_result=Selected`
+    - final real-slot `decode_error=none`
+    - final real-slot `renderable_frame_available=true`
+    - final real-slot `final_slot_result_kind=Selected`
     - final output:
-      `clean_output_render_result_kind=NoRenderableQuadView`
+      `clean_output_render_result_kind=Rendered`
+      `output_width=1280`
+      `output_height=720`
   - current interpretation:
-    - primary failure bucket is switcher selection/render
+    - the earlier 151543 failure is superseded by the latest PASS evidence
     - server receive/queue and handoff transport remain PASS
-    - at the time of that run, 4-real path used
-      `PreviewLatestIfAtOrBefore` / `InspectLatest`, so retained-keyframe
-      fallback was not used
-    - at the time of that run, 4-real path also held one fixed targetTime for
-      the full loop, unlike the 2-real preview loop which recomputes targetTime
-      per tick
-    - current switcher code now has 4-real preview-mode wiring,
-      `preview-latest-decodable` support, summary visibility for
-      `preview_mode` / `read_mode`, and per-tick targetTime parity
-    - next slice is the same-PC 4-client human rerun with
-      `preview-latest-decodable`, before retry/backoff, persistent decoder
-      context, distributed-PC, or OBS work
+    - `preview-latest-decodable` exercised the retained-keyframe fallback
+    - the final four real slots were all `Selected`, so the run now closes under
+      the final-state-based PASS gate
+    - same-PC saturation remains a follow-up because client effective output
+      FPS landed in the `19-20fps` band
+    - next follow-up priority is distributed-PC validation, OBS capture
+      follow-up, and same-PC performance follow-up rather than retry/backoff,
+      persistent decoder context, or another 4-client rerun
 - Latest same-PC human rerun from `manual-logs/handoff-20260513-134658`
   keeps the concurrent server closeout gate PASS and now closes the switcher
   validation under the updated final-state-based criterion:

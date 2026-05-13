@@ -8,28 +8,31 @@
   - `manual-logs/handoff-20260513-134658`
 - The 2-client concurrent PASS checkpoint is closed.
 - Latest same-PC 4-client all-real human run has been recorded from:
-  - `manual-logs/four-client-20260513-151543`
-- Latest 4-client result is FAIL, with primary failure bucket:
-  - `Switcher Selection / Decode / Render Failure`
-- The failure is not currently classified as:
-  - client auth / send failure
-  - server receive / queue participation failure
-  - named-pipe handoff transport / runtime failure
+  - `manual-logs/four-client-20260513-184503`
+- Latest 4-client result is PASS under the final-state-based criterion:
+  - server ready / stopped summary passed
+  - client auth / send passed
+  - server receive / queue participation passed
+  - named-pipe handoff transport passed
+  - switcher final state reached `AllSelected`
+  - `preview_mode=preview-latest-decodable`
+  - `read_mode=inspect-latest-decodable`
+  - `clean_output_render_result_kind=Rendered`
 - The latest result proves the server/client/handoff transport path:
   - server ready line emitted
   - server stopped summary emitted
   - all 4 clients authenticated and sent `900` frames
   - server queued `3600` frames, `900` per client
   - server retained keyframes for all 4 client/run scopes
-  - switcher final real slots reached `FrameRead`
+  - switcher final real slots reached `Selected`
   - switcher final diagnostics had `parse_error=none` and `io_error=none`
-- The remaining validation target is:
-  - same-PC first
-  - 4 real clients
-  - concurrent server runtime
-  - final-state-based PASS judgment
-- Distributed-PC validation remains a later phase after the same-PC 4-client
-  result is recorded.
+  - retained-keyframe fallback was used in the final real-slot path
+- Same-PC saturation is still a known follow-up:
+  - client effective output FPS landed in the `19-20fps` band
+- The remaining follow-up target is:
+  - distributed-PC validation
+  - OBS capture follow-up
+  - same-PC performance follow-up
 
 ## Goal
 
@@ -417,17 +420,13 @@ Response rule:
 
 Latest human run:
 
-- `manual-logs/four-client-20260513-151543`
+- `manual-logs/four-client-20260513-184503`
 
 ### Judgment
 
 Result:
 
-- FAIL
-
-Primary failure bucket:
-
-- `Switcher Selection / Decode / Render Failure`
+- PASS
 
 Reason:
 
@@ -435,10 +434,10 @@ Reason:
 - server ready gate passed
 - server receive/queue participation gate passed
 - handoff transport/runtime gate passed
-- switcher final all-real state failed because all 4 real slots ended as
-  `WaitingForFrameAtOrBeforeTarget`
-- final clean output had no renderable quad view:
-  - `clean_output_render_result_kind=NoRenderableQuadView`
+- switcher final all-real state reached `AllSelected`
+- `preview-latest-decodable` allowed retained-keyframe fallback to keep all 4
+  real slots selected
+- same-PC saturation was observed, but it did not block the final-state PASS
 
 ### Evidence
 
@@ -447,13 +446,13 @@ Server:
 - `receive_ready=true`
 - `handoff_ready=true`
 - `runtime_mode=concurrent`
-- `receive_timeout_ms=120000`
-- `max_runtime_duration_ms=360000`
-- `max_handoff_requests=4000`
+- `receive_timeout_ms=300000`
+- `max_runtime_duration_ms=600000`
 - `stop_reason=ReceiveStopped`
 - `receive_stop_reason=ReceiveTimedOut`
 - `handoff_stop_reason=StopRequested`
-- `packets_received=78225`
+- `runtime_duration_ms=354363`
+- `packets_received=73657`
 - `frames_queued=3600`
 - `per_client_queued_frames`:
   - `player1/streamsync-dev-session:900`
@@ -462,15 +461,9 @@ Server:
   - `player4/streamsync-dev-session:900`
 - `keyframes_queued=120`
 - `retained_keyframe_clients=4`
-- `per_client_retained_keyframe_frame_id`:
-  - `player1/streamsync-dev-session:1173`
-  - `player2/streamsync-dev-session:1170`
-  - `player3/streamsync-dev-session:1161`
-  - `player4/streamsync-dev-session:1156`
-- `handoff_requests=648`
-- `frame_read_count=451`
-- `no_frame_count=197`
-- `decodable_source_counts=queue:0|retained_keyframe:0|none:648`
+- `frame_read_count=526`
+- `no_frame_count=178`
+- `decodable_source_counts=queue:11|retained_keyframe:515|none:178`
 - `io_error_count=0`
 
 Clients:
@@ -483,40 +476,32 @@ Clients:
   - `keyframes_sent=30`
   - `h264_parameter_sets_cached=true`
   - `stop_reason=Some(MaxFramesReached)`
-- same-PC saturation is visible but not the primary bucket:
-  - effective output FPS is around `22fps` for all clients
+- same-PC saturation is visible:
+  - `effective_output_fps=19.732|20.201|20.299|20.040`
 
 Switcher:
 
 - command:
   - `--four-view-four-real-handoff-preview-loop`
+- `preview_mode=preview-latest-decodable`
+- `read_mode=inspect-latest-decodable`
 - `frames_attempted=180`
-- `frames_rendered=2`
+- `frames_rendered=137`
 - `render_failures=0`
-- `scheduler_status=Waiting`
-- `slot_result_kinds`:
-  - `WaitingForFrameAtOrBeforeTarget`
-  - `WaitingForFrameAtOrBeforeTarget`
-  - `WaitingForFrameAtOrBeforeTarget`
-  - `WaitingForFrameAtOrBeforeTarget`
+- `scheduler_status=AllSelected`
+- `slot_result_kinds=Selected|Selected|Selected|Selected`
 - final real-slot diagnostics for all 4 slots show:
   - `handoff_response_kind=FrameRead`
   - `parse_error=none`
   - `io_error=none`
-  - `retained_keyframe_available=true`
-  - `selected_frame_available=false`
-  - `target_selection_result=WaitingForFrameAtOrBeforeTarget`
-  - `decode_attempted=false`
-  - `decode_skipped_reason=WaitingForFrameAtOrBeforeTarget`
-  - `renderable_frame_available=false`
-  - `final_slot_result_kind=WaitingForFrameAtOrBeforeTarget`
-- final payloads were non-IDR:
-  - `frame_is_keyframe=false`
-  - `payload_has_sps=true`
-  - `payload_has_pps=true`
-  - `payload_has_idr=false`
-  - `payload_has_non_idr_vcl=true`
-- `clean_output_render_result_kind=NoRenderableQuadView`
+  - `decodable_source=retained_keyframe`
+  - `target_selection_result=Selected`
+  - `decode_error=none`
+  - `renderable_frame_available=true`
+  - `final_slot_result_kind=Selected`
+- `clean_output_render_result_kind=Rendered`
+- `output_width=1280`
+- `output_height=720`
 
 ### Code Review
 
@@ -592,20 +577,17 @@ This exactly matches the latest final diagnostics:
 
 The strongest current interpretation is:
 
-- primary failure is switcher selection/render, not transport
-- two implementation differences are material:
-  - 4-real uses `InspectLatest`, not `InspectLatestDecodable`
-  - 4-real holds one fixed targetTime for the whole preview loop, while
-    2-real recomputes targetTime per tick
-- `decodable_source_counts=queue:0|retained_keyframe:0|none:648` is expected
-  for the 4-real command because every request used `InspectLatest`, whose
-  responses carry `decodable_source=none`
-- `retained_keyframe_available=true` in the switcher diagnostics only proves
-  the server had fallback material available; it does not mean the 4-real
-  command asked the server to use that fallback
+- primary gate is now PASS, not transport failure
+- `preview-latest-decodable` exercised the retained-keyframe fallback path
+- final-state success is governed by the selected real slots and clean output,
+  not by `frames_rendered == frames_attempted`
+- `frames_rendered=137/180` is completion-count observability, not a blocker
+- same-PC saturation remains a follow-up because the client FPS landed in the
+  `19-20fps` band
 
-Therefore the current next step is a same-PC rerun with the updated 4-real
-switcher path, not a server/client/handoff transport change.
+Therefore the current next step is follow-up work on distributed-PC
+validation, OBS capture behavior, and same-PC performance, not another 4-client
+rerun.
 
 ## Implemented Parity Slice
 
@@ -644,15 +626,14 @@ Still explicitly out of scope for this slice:
   - `4` encoders
   - `4` auth/send streams
   - `4` real switcher decode/render paths
-- the latest 4-client human evidence from `2026-05-13` was collected before
-  the parity slice above landed, so a rerun is still required to prove the new
-  path on real logs
 - startup `NoFrame` traffic scales with `4` real slots, so operator timing and
   request-budget headroom matter more than in the 2-client phase
-- switcher persistent decoder context is still out of scope, so a final-state
-  failure may still be rooted in one-shot decode limitations rather than
+- switcher persistent decoder context is still out of scope, so a future
+  regression may still be rooted in one-shot decode limitations rather than
   transport failure
 - same-PC success here does not prove distributed-PC behavior
+- same-PC saturation is now a known follow-up because the pass run still landed
+  in the `19-20fps` band on all four clients
 
 ## Not In Scope Yet
 
@@ -663,13 +644,12 @@ Still explicitly out of scope for this slice:
 - generic N-view refactor
 - protocol or architecture changes
 - re-opening the 2-client concurrent PASS judgment
-- further implementation changes before the rerun with
-  `preview-latest-decodable` is classified
+- further implementation changes before the latest PASS result is recorded in
+  the repo docs
 
 ## Expected Next Step After This Preparation
 
-1. Re-run the same-PC 4-client all-real concurrent recipe with
-   `preview-latest-decodable`.
-2. Record the full client/server/switcher stdout evidence and reclassify the
-   result before touching retry/backoff, persistent decoder context,
-   distributed-PC validation, or OBS control.
+1. Treat the latest same-PC 4-client all-real run as PASS and use it as the
+   current validation checkpoint.
+2. Move the next follow-up to distributed-PC validation, OBS capture
+   verification, and same-PC performance tuning in that order.

@@ -2,6 +2,92 @@
 
 ## 2026-05-13
 ### Type
+- Human rerun evidence update + Codex docs update
+
+### Work
+- Reviewed the required repo-local inputs before editing:
+  - `AGENTS.md`
+  - `docs/operations/four-client-validation.md`
+  - `docs/operations/concurrent-handoff-runtime-plan.md`
+  - `docs/operations/todo.md`
+  - `docs/operations/session-log.md`
+- Recorded the latest same-PC `4`-client all-real human run from:
+  - `manual-logs/four-client-20260513-184503`
+- Confirmed server ready/stopped evidence:
+  - `receive_ready=true`
+  - `handoff_ready=true`
+  - `runtime_mode=concurrent`
+  - `receive_timeout_ms=300000`
+  - `max_runtime_duration_ms=600000`
+  - `stop_reason=ReceiveStopped`
+  - `receive_stop_reason=ReceiveTimedOut`
+  - `handoff_stop_reason=StopRequested`
+  - `runtime_duration_ms=354363`
+  - `packets_received=73657`
+  - `frames_queued=3600`
+  - `per_client_queued_frames=player1/streamsync-dev-session:900|player2/streamsync-dev-session:900|player3/streamsync-dev-session:900|player4/streamsync-dev-session:900`
+  - `keyframes_queued=120`
+  - `retained_keyframe_clients=4`
+  - `frame_read_count=526`
+  - `no_frame_count=178`
+  - `decodable_source_counts=queue:11|retained_keyframe:515|none:178`
+  - `io_error_count=0`
+- Confirmed all 4 clients passed the send gate:
+  - `accepted=true`
+  - `frames_encoded=900`
+  - `frames_sent=900`
+  - `send_failures=0`
+  - `keyframes_sent=30`
+  - `h264_parameter_sets_cached=true`
+  - `stop_reason=Some(MaxFramesReached)`
+  - effective output FPS:
+    - `player1=19.732`
+    - `player2=20.201`
+    - `player3=20.299`
+    - `player4=20.040`
+- Confirmed switcher final-state PASS:
+  - command `--four-view-four-real-handoff-preview-loop`
+  - `preview_mode=preview-latest-decodable`
+  - `read_mode=inspect-latest-decodable`
+  - `frames_attempted=180`
+  - `frames_rendered=137`
+  - `render_failures=0`
+  - `scheduler_status=AllSelected`
+  - `slot_result_kinds=Selected|Selected|Selected|Selected`
+  - final real-slot diagnostics:
+    - `handoff_response_kind=FrameRead`
+    - `parse_error=none`
+    - `io_error=none`
+    - `decodable_source=retained_keyframe`
+    - `target_selection_result=Selected`
+    - `decode_error=none`
+    - `renderable_frame_available=true`
+    - `final_slot_result_kind=Selected`
+  - `clean_output_render_result_kind=Rendered`
+- Reflected the result in docs:
+  - `docs/operations/four-client-validation.md`
+  - `docs/operations/concurrent-handoff-runtime-plan.md`
+  - `docs/operations/todo.md`
+
+### Decision
+- Latest same-PC `4`-client all-real concurrent validation is PASS under the
+  final-state-based criterion.
+- `preview-latest-decodable` retained-keyframe fallback is confirmed on all
+  `4` real slots.
+- Same-PC saturation remains a follow-up, not a blocker.
+- `frames_rendered=137/180` is observability, not a failure condition.
+
+### Changed Files
+- `docs/operations/four-client-validation.md`
+- `docs/operations/concurrent-handoff-runtime-plan.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### Validation
+- `git diff --check`
+
+## 2026-05-13
+### Type
 - Codex code + docs update
 
 ### Work
