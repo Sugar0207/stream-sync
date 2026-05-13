@@ -2,6 +2,70 @@
 
 ## 2026-05-13
 ### Type
+- Codex docs update
+
+### Work
+- Reviewed the requested repo-local inputs before editing:
+  - `AGENTS.md`
+  - `docs/operations/obs-capture-validation.md`
+  - `docs/operations/four-client-validation.md`
+  - `docs/operations/todo.md`
+  - `docs/operations/session-log.md`
+- Recorded the latest pasted-back OBS capture evidence from:
+  - `manual-logs/obs-capture-20260513-190909`
+- Captured the OBS side as a PASS:
+  - `StreamSync 4-view Output` was selectable in OBS
+  - OBS preview displayed the `4`-client `4`-view output
+  - OBS-side issue was `none`
+- Captured the StreamSync runtime in the same run as PARTIAL:
+  - server ready line emitted
+  - server stopped summary emitted
+  - `max_handoff_requests=20000`
+  - `receive_timeout_ms=300000`
+  - `max_runtime_duration_ms=600000`
+  - `stop_reason=ReceiveStopped`
+  - `receive_stop_reason=ReceiveTimedOut`
+  - `handoff_stop_reason=StopRequested`
+  - `runtime_duration_ms=356528`
+  - `packets_received=79733`
+  - `frames_queued=3305`
+  - `per_client_queued_frames=player1/streamsync-dev-session:900|player2/streamsync-dev-session:782|player3/streamsync-dev-session:723|player4/streamsync-dev-session:900`
+  - `keyframes_queued=112`
+  - `retained_keyframe_clients=4`
+  - `frame_read_count=1637`
+  - `no_frame_count=319`
+  - `decodable_source_counts=queue:793|retained_keyframe:844|none:319`
+  - `io_error_count=0`
+  - switcher summary block was empty
+  - warning observed: `[WARN] switcher did not exit within 360 seconds.`
+  - final switcher summary was not collected within the wait window
+- Recorded the client outcomes:
+  - `client1`: `accepted=true`, `frames_encoded=900`, `frames_sent=900`, `send_failures=0`, `encode_failures=0`, `keyframes_sent=30`, `h264_parameter_sets_cached=true`, `stop_reason=Some(MaxFramesReached)`, `effective_output_fps=18.279`
+  - `client2`: `accepted=true`, `frames_encoded=782`, `frames_sent=782`, `send_failures=0`, `encode_failures=1`, `keyframes_sent=27`, `h264_parameter_sets_cached=true`, `stop_reason=Some(EncodeFailure)`, `effective_output_fps=17.050`
+  - `client3`: `accepted=true`, `frames_encoded=723`, `frames_sent=723`, `send_failures=0`, `encode_failures=1`, `keyframes_sent=25`, `h264_parameter_sets_cached=true`, `stop_reason=Some(EncodeFailure)`, `effective_output_fps=16.240`
+  - `client4`: `accepted=true`, `frames_encoded=900`, `frames_sent=900`, `send_failures=0`, `encode_failures=0`, `keyframes_sent=30`, `h264_parameter_sets_cached=true`, `stop_reason=Some(MaxFramesReached)`, `effective_output_fps=18.400`
+- Updated the docs so the repo now distinguishes:
+  - OBS capture PASS
+  - StreamSync runtime PARTIAL
+  - the earlier same-PC `4`-client all-real PASS remains intact
+
+### Decision
+- The latest pasted-back OBS run should be recorded as `OBS capture PASS / StreamSync runtime PARTIAL`.
+- `client2` and `client3` `EncodeFailure` plus same-PC saturation are follow-up items, not a rollback of the earlier `manual-logs/four-client-20260513-184503` PASS.
+- The empty switcher summary block is explained by the switcher not exiting within `360` seconds, not by an OBS capture failure.
+- The existing same-PC `4`-client all-real PASS remains valid and should not be overwritten.
+
+### Changed Files
+- `docs/operations/obs-capture-validation.md`
+- `docs/operations/four-client-validation.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### Validation
+- `git diff --check`
+
+## 2026-05-13
+### Type
 - Codex docs/design update
 
 ### Work

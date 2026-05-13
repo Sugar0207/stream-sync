@@ -35,6 +35,17 @@
   - OBS capture follow-up
   - distributed-PC validation
   - same-PC performance follow-up
+- The latest OBS capture follow-up run from:
+  - `manual-logs/obs-capture-20260513-190909`
+  recorded an OBS capture PASS with a same-PC runtime PARTIAL:
+  - OBS selected `StreamSync 4-view Output`
+  - OBS preview displayed the `4`-client `4`-view output
+  - OBS-side issue was `none`
+  - `client2` / `client3` hit `EncodeFailure`
+  - client effective output fps fell into the `16-18fps` range
+  - the switcher summary was not recovered because the switcher did not exit
+    within `360` seconds
+  - this is a follow-up on top of the existing PASS checkpoint, not a rollback
 
 ## Goal
 
@@ -644,6 +655,9 @@ Still explicitly out of scope for this slice:
 - same-PC success here does not prove distributed-PC behavior
 - same-PC saturation is now a known follow-up because the pass run still landed
   in the `19-20fps` band on all four clients
+- OBS capture plus same-PC `4`-client load can also surface the `16-18fps`
+  range and `EncodeFailure` on `client2` / `client3`, as seen in
+  `manual-logs/obs-capture-20260513-190909`
 
 ## Not In Scope Yet
 

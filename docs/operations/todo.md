@@ -23,6 +23,7 @@
 
 ## 現在位置
 - latest same-PC `4`-client all-real concurrent validation は `manual-logs/four-client-20260513-184503` を latest evidence として PASS 判定にした。server ready / stopped summary、client1..4 auth/send、server queue participation、named-pipe handoff transport は PASS しており、final switcher state は `AllSelected` / `Selected|Selected|Selected|Selected`、`clean_output_render_result_kind=Rendered`、`preview_mode=preview-latest-decodable`、`read_mode=inspect-latest-decodable` だった。same-PC saturation は残っており、client effective output fps は `19.732|20.201|20.299|20.040` まで落ちた
+- latest OBS capture validation は `manual-logs/obs-capture-20260513-190909` で追加され、OBS 側は `StreamSync 4-view Output` の選択と preview 表示が PASS した。一方で StreamSync runtime は same-PC saturation により PARTIAL で、client2 / client3 は `EncodeFailure`、client effective output fps は `16-18fps` 台、switcher final summary は `360` 秒以内に終了しなかったため未回収だった。これは既存の same-PC `4`-client all-real PASS を巻き戻すものではない
 - 2026-05-13 の narrow switcher parity slice は 184503 の PASS で実地確認まで完了した。`--four-view-four-real-handoff-preview-loop` は optional preview mode `[preview-oldest|preview-latest|preview-latest-decodable]` を受け付け、`preview-latest-decodable` で `PreviewLatestDecodableIfAtOrBefore` / `InspectLatestDecodable` を使える。retained-keyframe fallback は 2-client PASS path と同じ read-mode mapping に揃い、4-real targetTime も tick ごとに再計算される。summary には `preview_mode` / `read_mode` も出る。`frames_rendered=137/180` は completion-count observability であり、次の docs-first follow-up は OBS capture validation、その後に distributed-PC validation と same-PC performance tuning を置く
 - latest same-PC `4`-client PASS 後の downstream `Window Capture` follow-up source of truth も追加した。`docs/operations/obs-capture-validation.md` は `manual-logs/four-client-20260513-184503` を runtime baseline にして、OBS 側の目的、manual checklist、success criterion、failure classification、pasted-back evidence shape を整理する。OBS WebSocket / advanced OBS control はこの step でも引き続き out of scope にする
 - same-PC 2-client concurrent validation は `manual-logs/handoff-20260513-134658` を latest PASS evidence として closed にした。次 phase は rerun ではなく docs-first の `4`-client all-real validation preparation で、source of truth は `docs/operations/four-client-validation.md` とする
@@ -1029,6 +1030,6 @@ continuous runtime first slice の blocker:
 - actual dashboard UI rendering remains unimplemented.
 
 ## Next Items
-1. OBS capture follow-up で same-PC `4`-client PASS window の `Window Capture` 連携を確認する
-2. distributed-PC validation の手順とログ回収を詰める
-3. same-PC performance follow-up で `19-20fps` 台の saturation を詰める
+1. same-PC OBS + `4`-client performance / `EncodeFailure` follow-up を詰める
+2. switcher final summary collection strategy for long OBS validation runs を整理する
+3. distributed-PC validation planning を進める
