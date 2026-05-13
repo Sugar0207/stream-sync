@@ -36,6 +36,19 @@ Current follow-up note:
 - this document remains the staged validation source of truth
 - concurrent validation details now live in
   `docs/operations/concurrent-handoff-runtime-plan.md`
+- the latest same-PC concurrent rerun evidence now comes from:
+  - `manual-logs/handoff-20260513-075344`
+- that rerun resolved the previous final switcher `HandoffError` /
+  `os_error_2` follow-up after server lifetime was extended
+- the remaining narrow follow-up is not server closeout anymore:
+  - it is whether `frames_rendered=126` against `frames_attempted=180` should
+    still block a full switcher-completion PASS
+- next narrow follow-up for the concurrent path:
+  - confirm the summary-field semantics first, especially whether
+    `NoFrameAvailable` / placeholder ticks are excluded from
+    `frames_rendered`
+  - only after that decide whether to revise the success condition or tune
+    switcher/client timing and warm-up handling for another human rerun
 
 ## Positioning
 
@@ -58,6 +71,10 @@ client -> server receive/auth/reassembly/queue
   -> server named-pipe handoff
   -> switcher queue read / targetTime selection / decode / render
 ```
+
+When validating manually, prefer a server lifetime that outlasts the switcher
+window. If that is not practical, reduce the planned switcher frames so the
+final `HandoffError` does not become the expected end state.
 
 ## Current CLI And Boundary
 
@@ -1044,44 +1061,68 @@ Current concurrent rerun gate:
     - `frames_encoded=900`
     - `frames_sent=900`
     - `send_failures=0`
+    - `keyframes_sent=30`
+    - `h264_parameter_sets_cached=true`
     - `stop_reason=Some(MaxFramesReached)`
+    - `effective_output_fps=27.934`
   - client2:
     - `accepted=true`
     - `frames_encoded=900`
     - `frames_sent=900`
     - `send_failures=0`
+    - `keyframes_sent=30`
+    - `h264_parameter_sets_cached=true`
     - `stop_reason=Some(MaxFramesReached)`
-- switcher observable gate is PASS:
-  - `frames_rendered=83`
-  - `slot_result_kinds=Selected|Selected|NoFrameAvailable|NoFrameAvailable`
-  - slot0 `handoff_response_kind=FrameRead`
-  - slot1 `handoff_response_kind=FrameRead`
-  - slot0 `decodable_source=retained_keyframe`
-  - slot1 `decodable_source=retained_keyframe`
-  - final real-slot result `Selected` for player1/player2
+    - `effective_output_fps=27.667`
 - server closeout gate is PASS:
+  - latest evidence directory:
+    - `manual-logs/handoff-20260513-075344`
   - final server stopped summary for:
-    - `packets_received=38347`
-    - `frame_read_count=202`
+    - `packets_received=41698`
+    - `frames_queued=1800`
+    - `per_client_queued_frames=player1/streamsync-dev-session:900|player2/streamsync-dev-session:900`
+    - `keyframes_queued=60`
+    - `retained_keyframe_clients=2`
+    - `frame_read_count=245`
+    - `no_frame_count=107`
     - `receive_stop_reason=ReceiveTimedOut`
     - `handoff_stop_reason=StopRequested`
+    - `runtime_duration_ms=156823`
+    - `decodable_source_counts=queue:15|retained_keyframe:230|none:107`
+    - `io_error_count=0`
   - the same run satisfies the full server-closeout PASS criteria:
     - `packets_received > 1`
     - `frame_read_count > 0`
     - `receive_stop_reason != ReassembledFramesThresholdReached`
-- switcher final summary remains visible as the narrow follow-up:
+- switcher final-state gate is PASS for real-slot handoff selection and
+  renderability:
   - `frames_attempted=180`
-  - `frames_rendered=102`
+  - `frames_rendered=126`
   - `render_failures=0`
-  - `scheduler_status=HandoffError`
-  - `final slot_result_kinds=HandoffError|HandoffError|NoFrameAvailable|NoFrameAvailable`
-  - final real-slot diagnostics show `connect os_error_2` for request_id `359/360`
-  - interpret this as server natural closeout / named-pipe disappearance after the server stopped, not as a failed server-closeout gate
+  - `scheduler_status=PartialSelected`
+  - `slot_result_kinds=Selected|Selected|NoFrameAvailable|NoFrameAvailable`
+  - final real-slot `handoff_response_kind=FrameRead`
+  - final real-slot `io_error=none`
+  - final real-slot `decodable_source=retained_keyframe`
+  - final real-slot `decode_error=none`
+  - `clean_output_render_result_kind=Rendered`
+  - interpret this as evidence that extending server lifetime avoided the
+    previous final `HandoffError` / `os_error_2`
+- completion-count follow-up remains open:
+  - under the previous strict criterion, this is not yet a full
+    switcher-completion PASS because `frames_rendered=126`, not `180`
 - narrow follow-up:
-  - decide whether the server should stay alive longer than the switcher
-    validation window
-  - or whether the switcher should treat server natural shutdown as graceful end
-  - or whether the switcher run should reduce its planned frames
+  - confirm whether `NoFrameAvailable` / placeholder ticks are counted in
+    `frames_attempted` but excluded from `frames_rendered`
+  - if `frames_rendered < frames_attempted` can be normal in the current
+    design, consider revising the concurrent success condition to:
+    - no final `HandoffError`
+    - final real slots `Selected`
+    - `render_failures=0`
+    - `clean_output_render_result_kind=Rendered`
+  - if full render count is actually required, keep the strict completion
+    interpretation and adjust switcher start timing, client start timing,
+    planned frame count, or warm-up handling in the next human rerun
   - do not mix this with 4-client expansion, OBS WebSocket, persistent decoder
     context, or retry/backoff work
 - current fix status:
@@ -1097,16 +1138,13 @@ Current concurrent rerun gate:
   - `cargo test -p stream-sync-server concurrent_runtime_max_duration_closeout_returns_summary_without_client_requests -- --nocapture`
   - `cargo test --workspace`
   - `git diff --check`
-- next human gate after this fix:
-  - rerun the same concurrent recipe and confirm
-    `server named-pipe handoff concurrent stopped ...` is printed
-  - then re-check:
-    - `expected_reassembled_frames_enabled=false`
-    - `expected_clients_enabled=false`
-    - `expected_per_client_frames_enabled=false`
-    - `packets_received > 1`
-    - `frame_read_count > 0`
-    - `receive_stop_reason != ReassembledFramesThresholdReached`
+- next narrow gate after this rerun:
+  - inspect the switcher summary-field semantics before any code change
+  - then choose exactly one path:
+    - keep the current strict completion criterion and prepare a timing /
+      warm-up adjusted human rerun
+    - or revise the success condition if the current design already treats
+      `frames_rendered < frames_attempted` as normal
 
 ## Failure Paste-Back Template
 

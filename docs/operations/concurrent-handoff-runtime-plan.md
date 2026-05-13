@@ -17,51 +17,105 @@
   - `--receive-auth-video-queue-and-serve-handoff-many`
 - New concurrent command is available:
   - `--receive-auth-video-queue-and-serve-handoff-continuous`
-- Latest same-PC human rerun is PASS for the server closeout gate and still
-  keeps the switcher final summary visible:
+- Latest same-PC human rerun from `manual-logs/handoff-20260513-075344` keeps
+  the concurrent server closeout gate PASS and resolves the previous final
+  switcher `HandoffError` follow-up:
   - ready line confirmed:
     - `receive_ready=true`
     - `handoff_ready=true`
     - `runtime_mode=concurrent`
     - `validation_ready=n/a`
+    - `receive_timeout_ms=120000`
+    - `max_runtime_duration_ms=240000`
     - `expected_reassembled_frames_enabled=false`
     - `expected_clients_enabled=false`
     - `expected_per_client_frames_enabled=false`
-  - client1/client2 each confirmed:
+  - client1 confirmed:
     - `accepted=true`
     - `frames_encoded=900`
     - `frames_sent=900`
     - `send_failures=0`
+    - `keyframes_sent=30`
+    - `h264_parameter_sets_cached=true`
     - `stop_reason=Some(MaxFramesReached)`
-  - server stopped summary confirmed:
+    - `effective_output_fps=27.934`
+  - client2 confirmed:
+    - `accepted=true`
+    - `frames_encoded=900`
+    - `frames_sent=900`
+    - `send_failures=0`
+    - `keyframes_sent=30`
+    - `h264_parameter_sets_cached=true`
+    - `stop_reason=Some(MaxFramesReached)`
+    - `effective_output_fps=27.667`
+  - server stopped summary confirmed from the pasted-back 2026-05-13 human
+    rerun evidence:
     - `server named-pipe handoff concurrent stopped ...`
     - `runtime_mode=concurrent`
     - `stop_reason=ReceiveStopped`
     - `receive_stop_reason=ReceiveTimedOut`
     - `handoff_stop_reason=StopRequested`
-    - `runtime_duration_ms=69320`
-    - `packets_received=38347`
+    - `runtime_duration_ms=156823`
+    - `packets_received=41698`
     - `frames_queued=1800`
-    - `frame_read_count=202`
-    - `no_frame_count=113`
-    - `decodable_source_counts=queue:20|retained_keyframe:182|none:113`
+    - `per_client_queued_frames=player1/streamsync-dev-session:900|player2/streamsync-dev-session:900`
+    - `keyframes_queued=60`
+    - `retained_keyframe_clients=2`
+    - `frame_read_count=245`
+    - `no_frame_count=107`
+    - `decodable_source_counts=queue:15|retained_keyframe:230|none:107`
     - `io_error_count=0`
-  - switcher final summary is not hidden and is the narrow follow-up:
+  - switcher final summary now proves clean final real-slot handoff
+    selection/renderability:
     - `frames_attempted=180`
-    - `frames_rendered=102`
+    - `frames_rendered=126`
     - `render_failures=0`
-    - `scheduler_status=HandoffError`
-    - `final slot_result_kinds=HandoffError|HandoffError|NoFrameAvailable|NoFrameAvailable`
-    - final real-slot diagnostics show `connect os_error_2` for request_id `359/360`
-- Current next gate is no longer stopped-summary recovery. It is the narrow
-  lifecycle/operator follow-up on server natural closeout versus switcher
-  completion ordering:
-  - decide whether the server should stay alive longer than the switcher
-    validation window
-  - decide whether the switcher should treat server natural shutdown as a
-    graceful end
+    - `scheduler_status=PartialSelected`
+    - `slot_result_kinds=Selected|Selected|NoFrameAvailable|NoFrameAvailable`
+    - final real-slot `handoff_response_kind=FrameRead`
+    - final real-slot `io_error=none`
+    - final real-slot `decodable_source=retained_keyframe`
+    - final real-slot `decode_error=none`
+    - `clean_output_render_result_kind=Rendered`
+  - current interpretation:
+    - extending server lifetime avoided the previous final `HandoffError` /
+      `os_error_2`
+    - concurrent server closeout remains PASS
+    - client send / server queue / handoff read remain PASS
+    - final real-slot selection/renderability remains PASS
+    - full switcher completion is not yet PASS under the previous strict
+      criterion because `frames_rendered=126`, not `180`
+- Current next gate is now the narrow completion-count / summary-semantics
+  follow-up:
+  - confirm whether `NoFrameAvailable` / placeholder ticks are supposed to be
+    excluded from `frames_rendered`
+  - if `frames_rendered < frames_attempted` can be normal in the current
+    design, consider revising the success condition to:
+    - no final `HandoffError`
+    - final real slots `Selected`
+    - `render_failures=0`
+    - `clean_output_render_result_kind=Rendered`
+  - if full render count is actually required, keep the strict completion gate
+    and adjust switcher start timing, client start timing, planned frame
+    count, or warm-up handling in the next human rerun
   - avoid mixing this follow-up with 4-client expansion, OBS WebSocket,
     persistent decoder context, or retry/backoff work
+- Validation ordering rule:
+  - prefer server lifetime longer than the switcher validation window
+  - if the latest final switcher state is clean but
+    `frames_rendered < frames_attempted`, treat that first as a completion-count
+    semantics follow-up rather than as a server failure
+  - if a future rerun reintroduces a final `HandoffError`, keep the server
+    closeout PASS separate from that switcher lifecycle result
+- Operator ordering rule for manual validation:
+  - keep `receive_timeout_ms`, `max_runtime_duration_ms`, and overall server
+    lifetime longer than the switcher validation window whenever possible
+  - first confirm summary-field semantics before changing code or broadening
+    the PASS criterion
+  - if a new human rerun is still needed after that semantics check, adjust
+    switcher start timing, client start timing, planned frame count, or
+    warm-up handling before touching retry/backoff, graceful-end
+    implementation, or persistent decoder context
 - Current fix in code:
   - receive-side natural closeout now sets shared stop-request state and wakes
     the local named-pipe accept loop
@@ -338,6 +392,9 @@ Client2:
 - `render_failures=0`
 - concurrent server stopped summary shows handoff traffic was actually served
 - staged command regressions remain green
+- current strict full-completion interpretation still treats
+  `frames_rendered=frames_attempted` as a stronger PASS signal until the
+  summary-field semantics are confirmed
 
 ## Known Limits
 - current preview path is still retained-keyframe-friendly, not a full latest

@@ -2,6 +2,134 @@
 
 ## 2026-05-13
 ### Type
+- Human rerun evidence review + Codex docs update
+
+### Work
+- Recorded the latest same-PC concurrent rerun evidence from:
+  - `manual-logs/handoff-20260513-075344`
+- Updated the concurrent runtime plan, staged handoff validation notes, and
+  TODO so the repo reflects the newer final-state evidence instead of the older
+  final `HandoffError` / `os_error_2` result.
+- Recorded the latest ready/stopped summary fields:
+  - ready line:
+    - `receive_ready=true`
+    - `handoff_ready=true`
+    - `runtime_mode=concurrent`
+    - `validation_ready=n/a`
+    - `receive_timeout_ms=120000`
+    - `max_runtime_duration_ms=240000`
+    - `expected_reassembled_frames_enabled=false`
+    - `expected_clients_enabled=false`
+    - `expected_per_client_frames_enabled=false`
+  - stopped line:
+    - `stop_reason=ReceiveStopped`
+    - `receive_stop_reason=ReceiveTimedOut`
+    - `handoff_stop_reason=StopRequested`
+    - `runtime_duration_ms=156823`
+    - `packets_received=41698`
+    - `frames_queued=1800`
+    - `per_client_queued_frames=player1/streamsync-dev-session:900|player2/streamsync-dev-session:900`
+    - `keyframes_queued=60`
+    - `retained_keyframe_clients=2`
+    - `frame_read_count=245`
+    - `no_frame_count=107`
+    - `decodable_source_counts=queue:15|retained_keyframe:230|none:107`
+    - `io_error_count=0`
+- Recorded the latest switcher/client evidence:
+  - switcher:
+    - `frames_attempted=180`
+    - `frames_rendered=126`
+    - `render_failures=0`
+    - `scheduler_status=PartialSelected`
+    - `slot_result_kinds=Selected|Selected|NoFrameAvailable|NoFrameAvailable`
+    - final real-slot `handoff_response_kind=FrameRead`
+    - final real-slot `io_error=none`
+    - final real-slot `decodable_source=retained_keyframe`
+    - final real-slot `decode_error=none`
+    - `clean_output_render_result_kind=Rendered`
+  - client1:
+    - `accepted=true`
+    - `frames_sent=900`
+    - `send_failures=0`
+    - `keyframes_sent=30`
+    - `h264_parameter_sets_cached=true`
+    - `stop_reason=Some(MaxFramesReached)`
+    - `effective_output_fps=27.934`
+  - client2:
+    - `accepted=true`
+    - `frames_sent=900`
+    - `send_failures=0`
+    - `keyframes_sent=30`
+    - `h264_parameter_sets_cached=true`
+    - `stop_reason=Some(MaxFramesReached)`
+    - `effective_output_fps=27.667`
+- Left `frames_rendered=126/180` visible as the remaining completion-count
+  follow-up instead of hiding it behind a PASS label.
+- Updated the next-item wording so the next narrow step is summary-field
+  semantics review before any code change or broader design move.
+
+### Decision
+- Extending server lifetime resolved the previous final switcher
+  `HandoffError` / `os_error_2`.
+- Concurrent server closeout remains PASS.
+- Client send, server queue, handoff read, and final real-slot renderability
+  remain PASS.
+- Full switcher completion is still not PASS under the previous strict
+  criterion because `frames_rendered=126`, not `180`.
+- The next narrow follow-up is to confirm whether `frames_rendered` excludes
+  `NoFrameAvailable` / placeholder ticks; only after that should the repo
+  decide between a success-criterion revision and another timing/warm-up
+  adjusted human rerun.
+
+### Changed Files
+- `docs/operations/concurrent-handoff-runtime-plan.md`
+- `docs/operations/two-client-handoff-validation.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### Validation
+- repo-local docs review
+- `git diff --check`
+
+## 2026-05-13
+### Type
+- Docs/design update
+
+### Work
+- Fixed the ordering rule for the concurrent same-PC validation slice.
+- Clarified that the pasted-back 2026-05-13 human rerun evidence is the
+  source of the PASS judgment and should not be conflated with the earlier
+  partial-PASS `manual-logs/handoff-20260512-064305/` logs.
+- Separated the gates explicitly:
+  - server closeout / stopped-summary emission remains PASS
+  - switcher final clean completion remains an unresolved lifecycle ordering
+    follow-up when the server closes naturally first
+- Added the operator rule that future manual validation should keep server
+  lifetime longer than the switcher validation window when possible, or shorten
+  the planned switcher frames if the server must stop earlier.
+- Kept the follow-up isolated from 4-client expansion, OBS WebSocket, retry /
+  backoff manager work, and persistent decoder context work.
+
+### Decision
+- Server closeout PASS must not be downgraded because the switcher hit a final
+  `HandoffError` after the server had already naturally closed.
+- Switcher final `HandoffError` is a lifecycle ordering follow-up, not a
+  server-closeout failure.
+- The next validation recipe should say whether the server lifetime will be
+  extended or the switcher frame count will be reduced.
+
+### Changed Files
+- `docs/operations/concurrent-handoff-runtime-plan.md`
+- `docs/operations/two-client-handoff-validation.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### Validation
+- repo-local docs review
+- `git diff --check`
+
+## 2026-05-13
+### Type
 - Codex code + docs update
 
 ### Work
@@ -70,8 +198,8 @@
 - Checked the two latest candidate rerun directories:
   - `manual-logs/handoff-20260512-064305/`
   - `manual-logs/handoff-20260512-064635/`
-- Confirmed the strongest observable PASS evidence in
-  `handoff-20260512-064305/`:
+- Confirmed the strongest observable PASS evidence from the pasted-back
+  2026-05-13 human rerun:
   - server ready line shows:
     - `receive_ready=true`
     - `handoff_ready=true`
