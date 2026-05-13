@@ -2,7 +2,7 @@
 
 # StreamSync TODO
 
-最終更新: 2026-05-13
+最終更新: 2026-05-14
 
 このファイルは「現在どこまで終わっていて、次に何をやるか」を確認するための TODO です。  
 時系列の作業履歴、判断理由、各回の作業メモは `docs/operations/session-log.md` を正とします。
@@ -22,6 +22,7 @@
 ---
 
 ## 現在位置
+- same-PC `2`-client FPS rerun の switcher bottleneck follow-up は code slice 済み。`--four-view-two-real-handoff-preview-loop` は各 slot の最後に decode 済みで renderable だった frame を保持し、`NoFrameAvailable` / waiting tick だけでなく、同一 `client_id + run_id + frame_id` が再選択された unchanged frame でも前回 decoded frame を reuse して repeated decode を避ける。final summary には warmup/FPS fields に加えて `unchanged_frame_reuse_count` / `skipped_decode_unchanged_frame_count` / `redecoded_same_frame_count` / `decode_elapsed_ms` / `handoff_elapsed_ms` / `render_elapsed_ms` / average elapsed fields を出す。4-view handoff source error は previous frame hold ではなく source-error placeholder として扱う。server stopped summary 回収と client encode behavior はこの slice では対象外のまま
 - latest same-PC `4`-client all-real concurrent validation は `manual-logs/four-client-20260513-184503` を latest evidence として PASS 判定にした。server ready / stopped summary、client1..4 auth/send、server queue participation、named-pipe handoff transport は PASS しており、final switcher state は `AllSelected` / `Selected|Selected|Selected|Selected`、`clean_output_render_result_kind=Rendered`、`preview_mode=preview-latest-decodable`、`read_mode=inspect-latest-decodable` だった。same-PC saturation は残っており、client effective output fps は `19.732|20.201|20.299|20.040` まで落ちた
 - latest OBS capture validation は `manual-logs/obs-capture-20260513-190909` で追加され、OBS 側は `StreamSync 4-view Output` の選択と preview 表示が PASS した。一方で StreamSync runtime は same-PC saturation により PARTIAL で、client2 / client3 は `EncodeFailure`、client effective output fps は `16-18fps` 台、switcher final summary は `360` 秒以内に終了しなかったため未回収だった。これは既存の same-PC `4`-client all-real PASS を巻き戻すものではない
 - distributed-PC validation planning の source of truth を `docs/operations/distributed-pc-validation.md` に切り出した。same-PC `4`-client all-real functional PASS と OBS capture PASS は維持したまま、next phase を `server/switcher/OBS on streaming PC + one or more remote clients` の実行計画として固定し、PC配置、ネットワーク前提、起動順、command shape、success criterion、failure classification、evidence shape、long OBS run と switcher final summary の分離方針を明文化した
@@ -1041,8 +1042,9 @@ continuous runtime first slice の blocker:
 - actual dashboard UI rendering remains unimplemented.
 
 ## Next Items
-1. distributed-PC `2`-client smoke を実施する
-2. distributed-PC `2`-client OBS visible を実施する
-3. distributed-PC `4`-client summary-required run を実施する
-4. long OBS run を visual stability evidence として実施する
-5. failure-class-specific fixes を primary bucket ごとに整理する
+1. same-PC `2`-client smoke を rerun し、switcher final summary の unchanged-frame decode skip / FPS / timing diagnostics を確認する
+2. distributed-PC `2`-client smoke を実施する
+3. distributed-PC `2`-client OBS visible を実施する
+4. distributed-PC `4`-client summary-required run を実施する
+5. long OBS run を visual stability evidence として実施する
+6. failure-class-specific fixes を primary bucket ごとに整理する

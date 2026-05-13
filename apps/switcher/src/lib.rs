@@ -3245,40 +3245,51 @@ impl SwitcherFourViewHandoffQuadCompositionRenderConnectionBoundary {
                 mut frame,
                 selected,
                 consumed,
-            } => match self.decoder.decode_with_runtime(
-                SwitcherH264DecodeInput {
-                    encoded_payload: selected.frame.encoded_payload.clone(),
-                    width: selected.frame.width,
-                    height: selected.frame.height,
-                },
-                decode_runtime,
-            ) {
-                SwitcherH264DecodeResult::Decoded(decoded) => {
-                    frame.decoded = Some(decoded);
+            } => {
+                if frame.decoded.is_some() {
                     SwitcherFourViewHandoffQuadCompositionRenderSlot::UseUpdatedFrame {
                         placement,
                         frame,
                         selected,
                         consumed,
                     }
-                }
-                SwitcherH264DecodeResult::Deferred { reason } => {
-                    SwitcherFourViewHandoffQuadCompositionRenderSlot::UseDecodeDeferredPlaceholder {
-                        placement,
-                        selected,
-                        consumed,
-                        reason,
+                } else {
+                    match self.decoder.decode_with_runtime(
+                        SwitcherH264DecodeInput {
+                            encoded_payload: selected.frame.encoded_payload.clone(),
+                            width: selected.frame.width,
+                            height: selected.frame.height,
+                        },
+                        decode_runtime,
+                    ) {
+                        SwitcherH264DecodeResult::Decoded(decoded) => {
+                            frame.decoded = Some(decoded);
+                            SwitcherFourViewHandoffQuadCompositionRenderSlot::UseUpdatedFrame {
+                                placement,
+                                frame,
+                                selected,
+                                consumed,
+                            }
+                        }
+                        SwitcherH264DecodeResult::Deferred { reason } => {
+                            SwitcherFourViewHandoffQuadCompositionRenderSlot::UseDecodeDeferredPlaceholder {
+                                placement,
+                                selected,
+                                consumed,
+                                reason,
+                            }
+                        }
+                        SwitcherH264DecodeResult::Failed(failure) => {
+                            SwitcherFourViewHandoffQuadCompositionRenderSlot::UseDecodeFailedPlaceholder {
+                                placement,
+                                selected,
+                                consumed,
+                                failure,
+                            }
+                        }
                     }
                 }
-                SwitcherH264DecodeResult::Failed(failure) => {
-                    SwitcherFourViewHandoffQuadCompositionRenderSlot::UseDecodeFailedPlaceholder {
-                        placement,
-                        selected,
-                        consumed,
-                        failure,
-                    }
-                }
-            },
+            }
             SwitcherFourViewQuadCompositionSlotInstruction::UseHeldPreviousFrame {
                 placement,
                 frame,
@@ -4752,6 +4763,18 @@ fn four_view_handoff_display_decision_for_slot(
             selected,
             consumed,
         } => {
+            if let Some(mut frame) =
+                previous.filter(|frame| four_view_displayed_slot_matches_selected(frame, &selected))
+            {
+                frame.selected = Some(selected.clone());
+                frame.displayed_at = current_time;
+                return SwitcherFourViewHandoffDisplayDecision::Update {
+                    slot_index,
+                    frame,
+                    selected,
+                    consumed,
+                };
+            }
             let frame = SwitcherFourViewDisplayedSlot {
                 slot_index,
                 selected: Some(selected.clone()),
@@ -4790,22 +4813,24 @@ fn four_view_handoff_display_decision_for_slot(
         skipped @ SwitcherFourViewHandoffSchedulerDecodeRenderSlotInstruction::SkipHandoffError {
             slot_index,
             ..
-        } => {
-            let Some(frame) = previous else {
-                return SwitcherFourViewHandoffDisplayDecision::SourceErrorPlaceholder {
-                    slot_index,
-                    skipped,
-                };
-            };
-            let hold_duration_micros = current_time.0.saturating_sub(frame.displayed_at.0);
-            SwitcherFourViewHandoffDisplayDecision::HoldPrevious {
-                slot_index,
-                frame,
-                skipped,
-                hold_duration_micros,
-            }
-        }
+        } => SwitcherFourViewHandoffDisplayDecision::SourceErrorPlaceholder {
+            slot_index,
+            skipped,
+        },
     }
+}
+
+fn four_view_displayed_slot_matches_selected(
+    displayed: &SwitcherFourViewDisplayedSlot,
+    selected: &SwitcherJitterBufferSelectedFrame,
+) -> bool {
+    let Some(previous) = displayed.selected.as_ref() else {
+        return false;
+    };
+    displayed.decoded.is_some()
+        && previous.frame.client_id == selected.frame.client_id
+        && previous.frame.run_id == selected.frame.run_id
+        && previous.frame.frame_id == selected.frame.frame_id
 }
 
 fn quad_slot_placement(slot_index: usize) -> SwitcherFourViewQuadSlotPlacement {
@@ -16231,7 +16256,7 @@ mod tests {
     }
 
     #[test]
-    fn four_view_handoff_display_policy_preserves_source_error_detail_with_previous() {
+    fn four_view_handoff_display_policy_uses_source_error_placeholder_with_previous() {
         let mut state = ServerVideoFrameQueueState::default();
         store_frame_for_run(
             &mut state,
@@ -16287,12 +16312,10 @@ mod tests {
 
         assert!(matches!(
             output.slots[3],
-            SwitcherFourViewHandoffDisplayDecision::HoldPrevious {
+            SwitcherFourViewHandoffDisplayDecision::SourceErrorPlaceholder {
                 slot_index: 3,
                 skipped:
                     SwitcherFourViewHandoffSchedulerDecodeRenderSlotInstruction::SkipHandoffError { .. },
-                hold_duration_micros: 40,
-                ..
             }
         ));
     }

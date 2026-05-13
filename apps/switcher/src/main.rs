@@ -4,7 +4,7 @@ use std::num::NonZeroU32;
 use std::rc::Rc;
 use std::sync::Mutex;
 use std::thread;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 #[cfg(target_os = "windows")]
 use std::{
     fs::File,
@@ -30,8 +30,9 @@ use stream_sync_switcher::{
     SwitcherFourViewCleanOutputWindowProofResult, SwitcherFourViewCleanOutputWindowRenderResult,
     SwitcherFourViewComposedCanvasRenderResult,
     SwitcherFourViewComposedCanvasWindowRenderConnectionRenderResult,
-    SwitcherFourViewHandoffQuadCompositionRenderSlot, SwitcherFourViewHandoffValidationBoundary,
-    SwitcherFourViewHandoffValidationInput, SwitcherFourViewHandoffValidationOutput,
+    SwitcherFourViewDisplayedSlot, SwitcherFourViewHandoffQuadCompositionRenderSlot,
+    SwitcherFourViewHandoffValidationBoundary, SwitcherFourViewHandoffValidationInput,
+    SwitcherFourViewHandoffValidationOutput,
     SwitcherFourViewManualPreviewCompositionInstructionKind,
     SwitcherFourViewManualPreviewDisplaySlotKind, SwitcherFourViewManualPreviewProofBoundary,
     SwitcherFourViewManualPreviewProofFixtureMode, SwitcherFourViewManualPreviewProofInput,
@@ -1777,6 +1778,32 @@ struct SwitcherFourViewTwoRealHandoffPreviewLoopSummary {
     frames_attempted: u32,
     frames_rendered: u32,
     render_failures: u32,
+    elapsed_ms: u128,
+    target_fps: u32,
+    configured_frame_interval_ms: u128,
+    effective_attempt_fps: String,
+    effective_render_fps: String,
+    first_render_attempt_index: Option<u32>,
+    first_render_elapsed_ms: Option<u128>,
+    rendered_after_first_render: u32,
+    effective_render_fps_after_first_render: String,
+    no_render_before_first_render: u32,
+    selected_count: u32,
+    no_frame_count: u32,
+    handoff_error_count: u32,
+    decode_attempt_count: u32,
+    decode_success_count: u32,
+    render_success_count: u32,
+    render_failure_count: u32,
+    unchanged_frame_reuse_count: u32,
+    skipped_decode_unchanged_frame_count: u32,
+    redecoded_same_frame_count: u32,
+    decode_elapsed_ms: u128,
+    handoff_elapsed_ms: u128,
+    render_elapsed_ms: u128,
+    avg_decode_elapsed_ms: String,
+    avg_handoff_elapsed_ms: String,
+    avg_render_elapsed_ms: String,
     scheduler_status: stream_sync_switcher::SwitcherFourViewTargetTimeHandoffSourceSchedulerStatus,
     slot_bindings: [String; 4],
     slot_result_kinds: [String; 4],
@@ -2100,6 +2127,78 @@ trait SwitcherFrameCadenceSleepHook {
     fn sleep(&self, duration: Duration);
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct TwoRealPreviewLoopFpsDiagnostics {
+    elapsed_ms: u128,
+    target_fps: u32,
+    configured_frame_interval_ms: u128,
+    effective_attempt_fps: String,
+    effective_render_fps: String,
+    first_render_attempt_index: Option<u32>,
+    first_render_elapsed_ms: Option<u128>,
+    rendered_after_first_render: u32,
+    effective_render_fps_after_first_render: String,
+    no_render_before_first_render: u32,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct TwoRealPreviewLoopTickDiagnostics {
+    selected_count: u32,
+    no_frame_count: u32,
+    handoff_error_count: u32,
+    decode_attempt_count: u32,
+    decode_success_count: u32,
+    render_success_count: u32,
+    render_failure_count: u32,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct TwoRealPreviewLoopRuntimeTiming {
+    handoff_elapsed_ms: u128,
+    handoff_call_count: u32,
+    decode_elapsed_ms: u128,
+    decode_attempt_count: u32,
+    decode_success_count: u32,
+    render_elapsed_ms: u128,
+    render_call_count: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct TwoRealPreviewLoopDecodedSlotIdentity {
+    client_id: ClientId,
+    run_id: RunId,
+    frame_id: u64,
+    decodable_source: Option<String>,
+}
+
+struct TimedSwitcherH264DecodeRuntime<'a, Runtime> {
+    inner: &'a Runtime,
+    timing: Rc<RefCell<TwoRealPreviewLoopRuntimeTiming>>,
+}
+
+impl<'a, Runtime> TimedSwitcherH264DecodeRuntime<'a, Runtime> {
+    fn new(inner: &'a Runtime, timing: Rc<RefCell<TwoRealPreviewLoopRuntimeTiming>>) -> Self {
+        Self { inner, timing }
+    }
+}
+
+impl<Runtime> SwitcherH264DecodeRuntimeHook for TimedSwitcherH264DecodeRuntime<'_, Runtime>
+where
+    Runtime: SwitcherH264DecodeRuntimeHook,
+{
+    fn decode_annex_b_h264(&self, input: SwitcherH264DecodeInput) -> SwitcherH264DecodeResult {
+        let start = Instant::now();
+        let result = self.inner.decode_annex_b_h264(input);
+        let mut timing = self.timing.borrow_mut();
+        timing.decode_elapsed_ms += start.elapsed().as_millis();
+        timing.decode_attempt_count += 1;
+        if matches!(result, SwitcherH264DecodeResult::Decoded(_)) {
+            timing.decode_success_count += 1;
+        }
+        result
+    }
+}
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
 struct RealSwitcherFrameCadenceSleepHook;
 
@@ -2239,6 +2338,7 @@ struct MultiRealAndPlaceholderQueuedFrameHandoff<RealHandoff> {
     real_slots: Vec<(ClientId, RunId)>,
     real_handoff: RealHandoff,
     last_frame_slot_observations: [Option<FourViewPreviewSlotHandoffObservation>; 4],
+    timing: Option<Rc<RefCell<TwoRealPreviewLoopRuntimeTiming>>>,
 }
 
 impl<RealHandoff> MultiRealAndPlaceholderQueuedFrameHandoff<RealHandoff> {
@@ -2252,6 +2352,22 @@ impl<RealHandoff> MultiRealAndPlaceholderQueuedFrameHandoff<RealHandoff> {
             real_slots,
             real_handoff,
             last_frame_slot_observations: std::array::from_fn(|_| None),
+            timing: None,
+        }
+    }
+
+    fn with_timing(
+        slots: [SwitcherFourViewTargetTimeSourceSlotConfig; 4],
+        real_slots: Vec<(ClientId, RunId)>,
+        real_handoff: RealHandoff,
+        timing: Rc<RefCell<TwoRealPreviewLoopRuntimeTiming>>,
+    ) -> Self {
+        Self {
+            slots,
+            real_slots,
+            real_handoff,
+            last_frame_slot_observations: std::array::from_fn(|_| None),
+            timing: Some(timing),
         }
     }
 
@@ -2263,16 +2379,29 @@ impl<RealHandoff> MultiRealAndPlaceholderQueuedFrameHandoff<RealHandoff> {
         &self,
         validation: &SwitcherFourViewHandoffValidationOutput,
     ) -> [String; 4] {
+        self.take_last_frame_slot_diagnostics_with_decode_reuse(validation, [false; 4])
+    }
+
+    fn take_last_frame_slot_diagnostics_with_decode_reuse(
+        &self,
+        validation: &SwitcherFourViewHandoffValidationOutput,
+        unchanged_frame_reuse_slots: [bool; 4],
+    ) -> [String; 4] {
         std::array::from_fn(|slot_index| {
             let slot = &self.slots[slot_index];
             let observation = self.last_frame_slot_observations[slot_index].as_ref();
-            format_four_view_preview_slot_diagnostic(&build_four_view_preview_slot_diagnostic(
+            let mut diagnostic = build_four_view_preview_slot_diagnostic(
                 slot_index,
                 slot,
                 observation,
                 &validation.scheduler.slots[slot_index].result,
                 &validation.composition_render.composition.slots[slot_index],
-            ))
+            );
+            if unchanged_frame_reuse_slots[slot_index] {
+                diagnostic.decode_attempted = Some(false);
+                diagnostic.decode_skipped_reason = Some("UnchangedFrameReuse".to_string());
+            }
+            format_four_view_preview_slot_diagnostic(&diagnostic)
         })
     }
 }
@@ -2348,9 +2477,15 @@ where
             .iter()
             .any(|(client_id, run_id)| input.client_id == *client_id && input.run_id == *run_id)
         {
+            let handoff_start = Instant::now();
             let call = self
                 .real_handoff
                 .read_handoff_frame_with_observation(input.clone());
+            if let Some(timing) = &self.timing {
+                let mut timing = timing.borrow_mut();
+                timing.handoff_elapsed_ms += handoff_start.elapsed().as_millis();
+                timing.handoff_call_count += 1;
+            }
             self.last_frame_slot_observations[slot_index] =
                 Some(FourViewPreviewSlotHandoffObservation {
                     slot_index,
@@ -2921,17 +3056,29 @@ where
     let slot_bindings = slots
         .clone()
         .map(|slot| format_four_view_slot_binding(&slot));
-    let mut handoff = MultiRealAndPlaceholderQueuedFrameHandoff::new(
+    let timing = Rc::new(RefCell::new(TwoRealPreviewLoopRuntimeTiming::default()));
+    let mut handoff = MultiRealAndPlaceholderQueuedFrameHandoff::with_timing(
         slots.clone(),
         vec![
             (client0_id.clone(), run0_id.clone()),
             (client1_id.clone(), run1_id.clone()),
         ],
         real_handoff,
+        Rc::clone(&timing),
     );
     let mut frames_attempted = 0u32;
     let mut frames_rendered = 0u32;
     let mut render_failures = 0u32;
+    let mut selected_count = 0u32;
+    let mut no_frame_count = 0u32;
+    let mut handoff_error_count = 0u32;
+    let mut render_success_count = 0u32;
+    let mut render_failure_count = 0u32;
+    let mut first_render_attempt_index = None;
+    let mut first_render_elapsed_ms = None;
+    let mut unchanged_frame_reuse_count = 0u32;
+    let mut skipped_decode_unchanged_frame_count = 0u32;
+    let redecoded_same_frame_count = 0u32;
     let mut scheduler_status =
         stream_sync_switcher::SwitcherFourViewTargetTimeHandoffSourceSchedulerStatus::NoFrames;
     let mut slot_result_kinds = [
@@ -2950,17 +3097,28 @@ where
     let mut window_title = SWITCHER_FOUR_VIEW_CLEAN_OUTPUT_WINDOW_TITLE.to_string();
     let cadence = four_view_clean_output_window_loop_frame_cadence();
     let obs_runtime = ObsFriendlyFourViewLoopWindowRenderRuntime::new(render_runtime);
+    let timed_decode_runtime =
+        TimedSwitcherH264DecodeRuntime::new(decode_runtime, Rc::clone(&timing));
+    let mut previous_slots: [Option<SwitcherFourViewDisplayedSlot>; 4] =
+        std::array::from_fn(|_| None);
+    let mut decoded_slot_identities: [Option<TwoRealPreviewLoopDecodedSlotIdentity>; 4] =
+        std::array::from_fn(|_| None);
+    let loop_start = Instant::now();
 
     for frame_index in 0..frames.get() {
         handoff.begin_frame();
         let target_timestamp = target_timestamp_hook();
-        let validation = run_four_view_real_handoff_preview_validation_with_runtime_and_handoff(
+        let previous_slot_identities = decoded_slot_identities.clone();
+        let validation =
+            run_four_view_real_handoff_preview_validation_with_runtime_and_handoff_and_previous_slots(
             &mut handoff,
             slots.clone(),
             target_timestamp,
+            previous_slots.clone(),
             preview_target_time_mode_from_switcher_mode(read_mode),
-            decode_runtime,
+            &timed_decode_runtime,
         );
+        let render_start = Instant::now();
         let clean_output = SwitcherFourViewCleanOutputWindowBoundary::default()
             .render_with_runtime(
                 SwitcherFourViewCleanOutputWindowInput {
@@ -2968,16 +3126,45 @@ where
                 },
                 &obs_runtime,
             );
+        {
+            let mut timing = timing.borrow_mut();
+            timing.render_elapsed_ms += render_start.elapsed().as_millis();
+            timing.render_call_count += 1;
+        }
 
         frames_attempted += 1;
         scheduler_status = validation.scheduler.status;
         slot_result_kinds = validation.scheduler.slots.clone().map(|slot| {
             format_four_view_real_handoff_scheduler_slot_kind(&slot.result).to_string()
         });
-        slot_diagnostics = handoff.take_last_frame_slot_diagnostics(&validation);
         clean_output_render_result_kind =
             format_four_view_clean_output_window_result_kind(&clean_output.output_window);
         window_title = clean_output.window_identity.title.clone();
+        let current_slot_identities = update_two_real_decoded_slot_identities(
+            &decoded_slot_identities,
+            &handoff.last_frame_slot_observations,
+            &validation,
+        );
+        let unchanged_reuse_slots = two_real_unchanged_frame_reuse_slots(
+            &previous_slot_identities,
+            &current_slot_identities,
+            &validation,
+        );
+        slot_diagnostics = handoff
+            .take_last_frame_slot_diagnostics_with_decode_reuse(&validation, unchanged_reuse_slots);
+        let tick_diagnostics = four_view_two_real_tick_diagnostics(
+            &slot_result_kinds,
+            &validation,
+            &clean_output.output_window,
+        );
+        selected_count += tick_diagnostics.selected_count;
+        no_frame_count += tick_diagnostics.no_frame_count;
+        handoff_error_count += tick_diagnostics.handoff_error_count;
+        render_success_count += tick_diagnostics.render_success_count;
+        render_failure_count += tick_diagnostics.render_failure_count;
+        let unchanged_reuse = two_real_unchanged_frame_reuse_count(&unchanged_reuse_slots);
+        unchanged_frame_reuse_count += unchanged_reuse;
+        skipped_decode_unchanged_frame_count += unchanged_reuse;
 
         if let SwitcherFourViewCleanOutputWindowRenderResult::RenderReady { render, .. } =
             &clean_output.output_window
@@ -2985,6 +3172,10 @@ where
             match render {
                 SwitcherFourViewComposedCanvasRenderResult::Rendered { .. } => {
                     frames_rendered += 1;
+                    if first_render_attempt_index.is_none() {
+                        first_render_attempt_index = Some(frames_attempted);
+                        first_render_elapsed_ms = Some(loop_start.elapsed().as_millis());
+                    }
                 }
                 SwitcherFourViewComposedCanvasRenderResult::RenderFailed { .. } => {
                     render_failures += 1;
@@ -2992,6 +3183,9 @@ where
                 _ => {}
             }
         }
+        previous_slots =
+            update_four_view_previous_slots_from_validation(&previous_slots, &validation);
+        decoded_slot_identities = current_slot_identities;
 
         if frame_index + 1 < frames.get() {
             cadence_sleep.sleep(cadence);
@@ -3000,6 +3194,15 @@ where
 
     render_runtime.close_persistent_window();
     let render_metadata = obs_runtime.metadata_snapshot();
+    let timing = timing.borrow().clone();
+    let fps_diagnostics = build_two_real_preview_loop_fps_diagnostics(
+        loop_start.elapsed().as_millis(),
+        cadence,
+        frames_attempted,
+        frames_rendered,
+        first_render_attempt_index,
+        first_render_elapsed_ms,
+    );
 
     SwitcherFourViewTwoRealHandoffPreviewLoopSummary {
         real_slot0_index: slot0_index,
@@ -3015,6 +3218,42 @@ where
         frames_attempted,
         frames_rendered,
         render_failures,
+        elapsed_ms: fps_diagnostics.elapsed_ms,
+        target_fps: fps_diagnostics.target_fps,
+        configured_frame_interval_ms: fps_diagnostics.configured_frame_interval_ms,
+        effective_attempt_fps: fps_diagnostics.effective_attempt_fps,
+        effective_render_fps: fps_diagnostics.effective_render_fps,
+        first_render_attempt_index: fps_diagnostics.first_render_attempt_index,
+        first_render_elapsed_ms: fps_diagnostics.first_render_elapsed_ms,
+        rendered_after_first_render: fps_diagnostics.rendered_after_first_render,
+        effective_render_fps_after_first_render: fps_diagnostics
+            .effective_render_fps_after_first_render,
+        no_render_before_first_render: fps_diagnostics.no_render_before_first_render,
+        selected_count,
+        no_frame_count,
+        handoff_error_count,
+        decode_attempt_count: timing.decode_attempt_count,
+        decode_success_count: timing.decode_success_count,
+        render_success_count,
+        render_failure_count,
+        unchanged_frame_reuse_count,
+        skipped_decode_unchanged_frame_count,
+        redecoded_same_frame_count,
+        decode_elapsed_ms: timing.decode_elapsed_ms,
+        handoff_elapsed_ms: timing.handoff_elapsed_ms,
+        render_elapsed_ms: timing.render_elapsed_ms,
+        avg_decode_elapsed_ms: format_preview_loop_average_elapsed(
+            timing.decode_elapsed_ms,
+            timing.decode_attempt_count,
+        ),
+        avg_handoff_elapsed_ms: format_preview_loop_average_elapsed(
+            timing.handoff_elapsed_ms,
+            timing.handoff_call_count,
+        ),
+        avg_render_elapsed_ms: format_preview_loop_average_elapsed(
+            timing.render_elapsed_ms,
+            timing.render_call_count,
+        ),
         scheduler_status,
         slot_bindings,
         slot_result_kinds,
@@ -5022,6 +5261,238 @@ fn run_four_view_real_handoff_preview_validation_with_runtime_and_handoff(
     )
 }
 
+fn run_four_view_real_handoff_preview_validation_with_runtime_and_handoff_and_previous_slots(
+    handoff: &mut impl SwitcherQueuedFrameHandoff,
+    slots: [SwitcherFourViewTargetTimeSourceSlotConfig; 4],
+    target_timestamp: TimestampMicros,
+    previous_slots: [Option<SwitcherFourViewDisplayedSlot>; 4],
+    read_mode: stream_sync_switcher::SwitcherSingleClientTargetTimeSourceMode,
+    decode_runtime: &impl SwitcherH264DecodeRuntimeHook,
+) -> SwitcherFourViewHandoffValidationOutput {
+    SwitcherFourViewHandoffValidationBoundary::default().run_from_handoff_with_runtimes_and_mode(
+        handoff,
+        SwitcherFourViewHandoffValidationInput {
+            slots,
+            target_timestamp,
+            previous_slots,
+            display_current_time: TimestampMicros(target_timestamp.0.saturating_add(1)),
+            layout_policy: SwitcherFourViewQuadLayoutPolicy::default(),
+            composed_window_title: "StreamSync 4-view".to_string(),
+            composed_render_hold_millis: 0,
+        },
+        read_mode,
+        decode_runtime,
+        &SwitcherUnavailableWindowRenderRuntimeHook,
+    )
+}
+
+fn update_four_view_previous_slots_from_validation(
+    current_previous_slots: &[Option<SwitcherFourViewDisplayedSlot>; 4],
+    validation: &SwitcherFourViewHandoffValidationOutput,
+) -> [Option<SwitcherFourViewDisplayedSlot>; 4] {
+    std::array::from_fn(
+        |index| match &validation.composition_render.composition.slots[index] {
+            SwitcherFourViewHandoffQuadCompositionRenderSlot::UseUpdatedFrame { frame, .. }
+            | SwitcherFourViewHandoffQuadCompositionRenderSlot::UseHeldPreviousFrame {
+                frame,
+                ..
+            } if frame.decoded.is_some() => Some(frame.clone()),
+            _ => current_previous_slots[index].clone(),
+        },
+    )
+}
+
+fn update_two_real_decoded_slot_identities(
+    current_identities: &[Option<TwoRealPreviewLoopDecodedSlotIdentity>; 4],
+    observations: &[Option<FourViewPreviewSlotHandoffObservation>; 4],
+    validation: &SwitcherFourViewHandoffValidationOutput,
+) -> [Option<TwoRealPreviewLoopDecodedSlotIdentity>; 4] {
+    std::array::from_fn(
+        |index| match &validation.composition_render.composition.slots[index] {
+            SwitcherFourViewHandoffQuadCompositionRenderSlot::UseUpdatedFrame { frame, .. }
+                if frame.decoded.is_some() =>
+            {
+                two_real_decoded_slot_identity(index, observations, validation)
+                    .or_else(|| current_identities[index].clone())
+            }
+            SwitcherFourViewHandoffQuadCompositionRenderSlot::UseHeldPreviousFrame {
+                frame,
+                ..
+            } if frame.decoded.is_some() => current_identities[index].clone(),
+            _ => current_identities[index].clone(),
+        },
+    )
+}
+
+fn two_real_decoded_slot_identity(
+    slot_index: usize,
+    observations: &[Option<FourViewPreviewSlotHandoffObservation>; 4],
+    validation: &SwitcherFourViewHandoffValidationOutput,
+) -> Option<TwoRealPreviewLoopDecodedSlotIdentity> {
+    let selected = match &validation.scheduler.slots[slot_index].result {
+        SwitcherSingleClientTargetTimeHandoffSourceResult::Selected(selected) => selected,
+        _ => return None,
+    };
+    Some(TwoRealPreviewLoopDecodedSlotIdentity {
+        client_id: selected.frame.client_id.clone(),
+        run_id: selected.frame.run_id.clone(),
+        frame_id: selected.frame.frame_id,
+        decodable_source: observations[slot_index]
+            .as_ref()
+            .and_then(two_real_observation_decodable_source),
+    })
+}
+
+fn two_real_observation_decodable_source(
+    observation: &FourViewPreviewSlotHandoffObservation,
+) -> Option<String> {
+    let response = observation
+        .request_output
+        .as_ref()
+        .and_then(|output| output.runtime.as_ref())
+        .and_then(|runtime| runtime.response.as_ref());
+    match response {
+        Some(stream_sync_net_core::ServerSwitcherQueuedFrameHandoffResponse::FrameRead {
+            decodable_source,
+            ..
+        })
+        | Some(stream_sync_net_core::ServerSwitcherQueuedFrameHandoffResponse::NoFrame {
+            decodable_source,
+            ..
+        }) => Some(format_handoff_decodable_source(*decodable_source).to_string()),
+        _ => None,
+    }
+}
+
+fn two_real_unchanged_frame_reuse_slots(
+    previous_identities: &[Option<TwoRealPreviewLoopDecodedSlotIdentity>; 4],
+    current_identities: &[Option<TwoRealPreviewLoopDecodedSlotIdentity>; 4],
+    validation: &SwitcherFourViewHandoffValidationOutput,
+) -> [bool; 4] {
+    std::array::from_fn(|index| {
+        previous_identities[index].is_some()
+            && previous_identities[index] == current_identities[index]
+            && matches!(
+                &validation.composition_render.composition.slots[index],
+                SwitcherFourViewHandoffQuadCompositionRenderSlot::UseUpdatedFrame { .. }
+            )
+    })
+}
+
+fn two_real_unchanged_frame_reuse_count(unchanged_frame_reuse_slots: &[bool; 4]) -> u32 {
+    unchanged_frame_reuse_slots
+        .iter()
+        .filter(|unchanged| **unchanged)
+        .count() as u32
+}
+
+fn four_view_two_real_tick_diagnostics(
+    slot_result_kinds: &[String; 4],
+    validation: &SwitcherFourViewHandoffValidationOutput,
+    clean_output: &SwitcherFourViewCleanOutputWindowRenderResult,
+) -> TwoRealPreviewLoopTickDiagnostics {
+    let mut diagnostics = TwoRealPreviewLoopTickDiagnostics::default();
+
+    for kind in slot_result_kinds {
+        match kind.as_str() {
+            "Selected" => diagnostics.selected_count += 1,
+            "NoFrameAvailable" => diagnostics.no_frame_count += 1,
+            "HandoffError" => diagnostics.handoff_error_count += 1,
+            _ => {}
+        }
+    }
+
+    for slot in &validation.composition_render.composition.slots {
+        match slot {
+            SwitcherFourViewHandoffQuadCompositionRenderSlot::UseUpdatedFrame { .. } => {
+                diagnostics.decode_attempt_count += 1;
+                diagnostics.decode_success_count += 1;
+            }
+            SwitcherFourViewHandoffQuadCompositionRenderSlot::UseDecodeDeferredPlaceholder {
+                ..
+            }
+            | SwitcherFourViewHandoffQuadCompositionRenderSlot::UseDecodeFailedPlaceholder {
+                ..
+            } => {
+                diagnostics.decode_attempt_count += 1;
+            }
+            _ => {}
+        }
+    }
+
+    if let SwitcherFourViewCleanOutputWindowRenderResult::RenderReady { render, .. } = clean_output
+    {
+        match render {
+            SwitcherFourViewComposedCanvasRenderResult::Rendered { .. } => {
+                diagnostics.render_success_count += 1;
+            }
+            SwitcherFourViewComposedCanvasRenderResult::RenderFailed { .. } => {
+                diagnostics.render_failure_count += 1;
+            }
+            _ => {}
+        }
+    }
+
+    diagnostics
+}
+
+fn format_preview_loop_fps(count: u32, elapsed_ms: u128) -> String {
+    if elapsed_ms == 0 {
+        return "n/a".to_string();
+    }
+    format!("{:.3}", count as f64 * 1000.0 / elapsed_ms as f64)
+}
+
+fn format_preview_loop_average_elapsed(total_elapsed_ms: u128, count: u32) -> String {
+    if count == 0 {
+        return "n/a".to_string();
+    }
+    format!("{:.3}", total_elapsed_ms as f64 / count as f64)
+}
+
+fn build_two_real_preview_loop_fps_diagnostics(
+    elapsed_ms: u128,
+    cadence: Duration,
+    frames_attempted: u32,
+    frames_rendered: u32,
+    first_render_attempt_index: Option<u32>,
+    first_render_elapsed_ms: Option<u128>,
+) -> TwoRealPreviewLoopFpsDiagnostics {
+    let target_fps = if cadence.as_nanos() == 0 {
+        0
+    } else {
+        (1_000_000_000u128 / cadence.as_nanos()) as u32
+    };
+    let configured_frame_interval_ms = cadence.as_millis();
+    let no_render_before_first_render = first_render_attempt_index
+        .map(|attempt_index| attempt_index.saturating_sub(1))
+        .unwrap_or(frames_attempted);
+    let rendered_after_first_render = if first_render_attempt_index.is_some() {
+        frames_rendered
+    } else {
+        0
+    };
+    let elapsed_after_first_render_ms = first_render_elapsed_ms
+        .map(|first_elapsed| elapsed_ms.saturating_sub(first_elapsed))
+        .unwrap_or(0);
+
+    TwoRealPreviewLoopFpsDiagnostics {
+        elapsed_ms,
+        target_fps,
+        configured_frame_interval_ms,
+        effective_attempt_fps: format_preview_loop_fps(frames_attempted, elapsed_ms),
+        effective_render_fps: format_preview_loop_fps(frames_rendered, elapsed_ms),
+        first_render_attempt_index,
+        first_render_elapsed_ms,
+        rendered_after_first_render,
+        effective_render_fps_after_first_render: format_preview_loop_fps(
+            rendered_after_first_render,
+            elapsed_after_first_render_ms,
+        ),
+        no_render_before_first_render,
+    }
+}
+
 fn default_four_view_real_handoff_preview_slots(
     real_slot_index: usize,
     real_client_id: ClientId,
@@ -5503,7 +5974,7 @@ fn format_four_view_two_real_handoff_preview_loop_summary(
     summary: &SwitcherFourViewTwoRealHandoffPreviewLoopSummary,
 ) -> String {
     format!(
-        "switcher four-view two-real handoff preview loop command_name=--four-view-two-real-handoff-preview-loop real_handoff=true real_slot_count=2 real_slot0_index={} real_slot1_index={} pipe_name={} actual_pipe_path={} preview_mode={} read_mode={} client0_id={} run0_id={} client1_id={} run1_id={} frames_attempted={} frames_rendered={} render_failures={} scheduler_status={:?} slot_bindings={} slot_result_kinds={} slot_diagnostics={} clean_output_render_result_kind={} window_title={} output_width={} output_height={}",
+        "switcher four-view two-real handoff preview loop command_name=--four-view-two-real-handoff-preview-loop real_handoff=true real_slot_count=2 real_slot0_index={} real_slot1_index={} pipe_name={} actual_pipe_path={} preview_mode={} read_mode={} client0_id={} run0_id={} client1_id={} run1_id={} frames_attempted={} frames_rendered={} render_failures={} elapsed_ms={} target_fps={} configured_frame_interval_ms={} effective_attempt_fps={} effective_render_fps={} first_render_attempt_index={} first_render_elapsed_ms={} rendered_after_first_render={} effective_render_fps_after_first_render={} no_render_before_first_render={} selected_count={} no_frame_count={} handoff_error_count={} decode_attempt_count={} decode_success_count={} render_success_count={} render_failure_count={} unchanged_frame_reuse_count={} skipped_decode_unchanged_frame_count={} redecoded_same_frame_count={} decode_elapsed_ms={} handoff_elapsed_ms={} render_elapsed_ms={} avg_decode_elapsed_ms={} avg_handoff_elapsed_ms={} avg_render_elapsed_ms={} scheduler_status={:?} slot_bindings={} slot_result_kinds={} slot_diagnostics={} clean_output_render_result_kind={} window_title={} output_width={} output_height={}",
         summary.real_slot0_index,
         summary.real_slot1_index,
         summary.pipe_name,
@@ -5517,6 +5988,32 @@ fn format_four_view_two_real_handoff_preview_loop_summary(
         summary.frames_attempted,
         summary.frames_rendered,
         summary.render_failures,
+        summary.elapsed_ms,
+        summary.target_fps,
+        summary.configured_frame_interval_ms,
+        summary.effective_attempt_fps,
+        summary.effective_render_fps,
+        format_optional_u32(summary.first_render_attempt_index),
+        format_optional_u128(summary.first_render_elapsed_ms),
+        summary.rendered_after_first_render,
+        summary.effective_render_fps_after_first_render,
+        summary.no_render_before_first_render,
+        summary.selected_count,
+        summary.no_frame_count,
+        summary.handoff_error_count,
+        summary.decode_attempt_count,
+        summary.decode_success_count,
+        summary.render_success_count,
+        summary.render_failure_count,
+        summary.unchanged_frame_reuse_count,
+        summary.skipped_decode_unchanged_frame_count,
+        summary.redecoded_same_frame_count,
+        summary.decode_elapsed_ms,
+        summary.handoff_elapsed_ms,
+        summary.render_elapsed_ms,
+        summary.avg_decode_elapsed_ms,
+        summary.avg_handoff_elapsed_ms,
+        summary.avg_render_elapsed_ms,
         summary.scheduler_status,
         summary.slot_bindings.join("|"),
         summary.slot_result_kinds.join("|"),
@@ -6299,6 +6796,12 @@ fn format_optional_u32(value: Option<u32>) -> String {
 }
 
 fn format_optional_u64(value: Option<u64>) -> String {
+    value
+        .map(|value| value.to_string())
+        .unwrap_or_else(|| "none".to_string())
+}
+
+fn format_optional_u128(value: Option<u128>) -> String {
     value
         .map(|value| value.to_string())
         .unwrap_or_else(|| "none".to_string())
@@ -7318,6 +7821,99 @@ mod tests {
         }
     }
 
+    #[derive(Debug, Default)]
+    struct IncrementingFramePerClientHandoff {
+        client0_calls: RefCell<u32>,
+        client1_calls: RefCell<u32>,
+    }
+
+    impl SwitcherQueuedFrameHandoff for IncrementingFramePerClientHandoff {
+        fn read_handoff_frame(
+            &mut self,
+            input: SwitcherQueuedFrameHandoffInput,
+        ) -> SwitcherQueuedFrameHandoffResult {
+            let (calls, seed_base) = match input.client_id.0.as_str() {
+                "real-client-0" => (&self.client0_calls, 0x10),
+                "real-client-1" => (&self.client1_calls, 0x40),
+                _ => (&self.client0_calls, 0xdd),
+            };
+            let mut call_count = calls.borrow_mut();
+            let frame_id = *call_count as u64 + 1;
+            *call_count += 1;
+            let seed = seed_base + frame_id as u8 - 1;
+            SwitcherQueuedFrameHandoffResult::FrameRead {
+                frame: SwitcherSingleViewSelectedEncodedFrame {
+                    client_id: input.client_id,
+                    run_id: input.run_id,
+                    frame_id,
+                    capture_timestamp: TimestampMicros(1_000_000 + frame_id),
+                    send_timestamp: TimestampMicros(1_000_100 + frame_id),
+                    queued_at: TimestampMicros(2_400_000 + frame_id),
+                    is_keyframe: true,
+                    width: 2,
+                    height: 1,
+                    fps_nominal: 30,
+                    codec: Codec::H264,
+                    encoded_payload_len: 1,
+                    encoded_payload: vec![seed],
+                },
+                mode: input.mode,
+                remaining_client_queue_len: 0,
+            }
+        }
+    }
+
+    #[derive(Debug, Default)]
+    struct FirstReadThenHandoffErrorPerClientHandoff {
+        client0_calls: RefCell<u32>,
+        client1_calls: RefCell<u32>,
+    }
+
+    impl SwitcherQueuedFrameHandoff for FirstReadThenHandoffErrorPerClientHandoff {
+        fn read_handoff_frame(
+            &mut self,
+            input: SwitcherQueuedFrameHandoffInput,
+        ) -> SwitcherQueuedFrameHandoffResult {
+            let (calls, seed) = match input.client_id.0.as_str() {
+                "real-client-0" => (&self.client0_calls, 0x10),
+                "real-client-1" => (&self.client1_calls, 0x40),
+                _ => (&self.client0_calls, 0xdd),
+            };
+            let mut call_count = calls.borrow_mut();
+            let current_call = *call_count;
+            *call_count += 1;
+
+            if current_call > 0 {
+                return SwitcherQueuedFrameHandoffResult::HandoffError {
+                    client_id: input.client_id,
+                    run_id: input.run_id,
+                    mode: input.mode,
+                    error: SwitcherQueuedFrameHandoffError::SourceUnavailable,
+                };
+            }
+
+            SwitcherQueuedFrameHandoffResult::FrameRead {
+                frame: SwitcherSingleViewSelectedEncodedFrame {
+                    client_id: input.client_id,
+                    run_id: input.run_id,
+                    frame_id: 1,
+                    capture_timestamp: TimestampMicros(1_000_001),
+                    send_timestamp: TimestampMicros(1_000_101),
+                    queued_at: TimestampMicros(2_400_001),
+                    is_keyframe: true,
+                    width: 2,
+                    height: 1,
+                    fps_nominal: 30,
+                    codec: Codec::H264,
+                    encoded_payload_len: 1,
+                    encoded_payload: vec![seed],
+                },
+                mode: input.mode,
+                remaining_client_queue_len: 0,
+            }
+        }
+    }
+
     #[derive(Debug, Clone)]
     struct StubRealQueuedFrameHandoff {
         result: SwitcherQueuedFrameHandoffResult,
@@ -7360,6 +7956,57 @@ mod tests {
                     codec: Codec::H264,
                     encoded_payload_len: 1,
                     encoded_payload: vec![0x88],
+                },
+                mode: input.mode,
+                remaining_client_queue_len: 0,
+            }
+        }
+    }
+
+    #[derive(Debug, Default)]
+    struct FirstReadThenNoFramePerClientHandoff {
+        client0_calls: RefCell<u32>,
+        client1_calls: RefCell<u32>,
+    }
+
+    impl SwitcherQueuedFrameHandoff for FirstReadThenNoFramePerClientHandoff {
+        fn read_handoff_frame(
+            &mut self,
+            input: SwitcherQueuedFrameHandoffInput,
+        ) -> SwitcherQueuedFrameHandoffResult {
+            let (calls, seed) = match input.client_id.0.as_str() {
+                "real-client-0" => (&self.client0_calls, 0x10),
+                "real-client-1" => (&self.client1_calls, 0x40),
+                _ => (&self.client0_calls, 0xdd),
+            };
+            let mut call_count = calls.borrow_mut();
+            let current_call = *call_count;
+            *call_count += 1;
+
+            if current_call > 0 {
+                return SwitcherQueuedFrameHandoffResult::NoFrameAvailable {
+                    client_id: input.client_id,
+                    run_id: input.run_id,
+                    mode: input.mode,
+                    client_queue_len: 0,
+                };
+            }
+
+            SwitcherQueuedFrameHandoffResult::FrameRead {
+                frame: SwitcherSingleViewSelectedEncodedFrame {
+                    client_id: input.client_id,
+                    run_id: input.run_id,
+                    frame_id: current_call as u64 + 1,
+                    capture_timestamp: TimestampMicros(1_000_001),
+                    send_timestamp: TimestampMicros(1_000_101),
+                    queued_at: TimestampMicros(2_400_001),
+                    is_keyframe: true,
+                    width: 2,
+                    height: 1,
+                    fps_nominal: 30,
+                    codec: Codec::H264,
+                    encoded_payload_len: 1,
+                    encoded_payload: vec![seed],
                 },
                 mode: input.mode,
                 remaining_client_queue_len: 0,
@@ -7791,28 +8438,7 @@ mod tests {
             NonZeroU32::new(2).expect("2 should be non-zero"),
             SwitcherSingleClientQueueSourceMode::PreviewLatest,
             TimestampMicros(1_000_004),
-            StubRealQueuedFrameHandoff {
-                result: SwitcherQueuedFrameHandoffResult::FrameRead {
-                    frame: SwitcherSingleViewSelectedEncodedFrame {
-                        client_id: ClientId("real-client-0".to_string()),
-                        run_id: RunId("real-run-0".to_string()),
-                        frame_id: 1,
-                        capture_timestamp: TimestampMicros(1_000_001),
-                        send_timestamp: TimestampMicros(1_000_101),
-                        queued_at: TimestampMicros(2_400_001),
-                        is_keyframe: true,
-                        width: 2,
-                        height: 1,
-                        fps_nominal: 30,
-                        codec: Codec::H264,
-                        encoded_payload_len: 1,
-                        encoded_payload: vec![0x44],
-                    },
-                    mode: SwitcherSingleClientQueueSourceMode::PreviewLatest,
-                    remaining_client_queue_len: 0,
-                },
-                calls: RefCell::new(0),
-            },
+            PerClientStubRealQueuedFrameHandoff::default(),
             &DeterministicFourViewFixtureDecodeRuntime,
             &render_runtime,
             &RecordingCadenceSleepHook::default(),
@@ -7827,6 +8453,21 @@ mod tests {
         assert_eq!(summary.frames_attempted, 2);
         assert_eq!(summary.frames_rendered, 2);
         assert_eq!(summary.render_failures, 0);
+        assert_eq!(summary.target_fps, 30);
+        assert_eq!(summary.configured_frame_interval_ms, 33);
+        assert_eq!(summary.first_render_attempt_index, Some(1));
+        assert_eq!(summary.rendered_after_first_render, 2);
+        assert_eq!(summary.no_render_before_first_render, 0);
+        assert_eq!(summary.selected_count, 4);
+        assert_eq!(summary.no_frame_count, 4);
+        assert_eq!(summary.handoff_error_count, 0);
+        assert_eq!(summary.decode_attempt_count, 2);
+        assert_eq!(summary.decode_success_count, 2);
+        assert_eq!(summary.render_success_count, 2);
+        assert_eq!(summary.render_failure_count, 0);
+        assert_eq!(summary.unchanged_frame_reuse_count, 2);
+        assert_eq!(summary.skipped_decode_unchanged_frame_count, 2);
+        assert_eq!(summary.redecoded_same_frame_count, 0);
         assert_eq!(
             summary.slot_bindings,
             [
@@ -7858,6 +8499,171 @@ mod tests {
             summary.output_height,
             Some(FOUR_VIEW_CLEAN_OUTPUT_LOOP_OBS_OUTPUT_HEIGHT)
         );
+    }
+
+    #[test]
+    fn switcher_four_view_two_real_handoff_preview_loop_reuses_last_renderable_frames() {
+        let render_runtime = RecordingPersistentFixtureRenderedWindowRuntime::default();
+        let summary = run_four_view_two_real_handoff_preview_loop_with_handoff_runtime_and_sleep(
+            "fixture-pipe",
+            0,
+            ClientId("real-client-0".to_string()),
+            RunId("real-run-0".to_string()),
+            2,
+            ClientId("real-client-1".to_string()),
+            RunId("real-run-1".to_string()),
+            NonZeroU32::new(2).expect("2 should be non-zero"),
+            SwitcherSingleClientQueueSourceMode::PreviewLatest,
+            TimestampMicros(1_000_004),
+            FirstReadThenNoFramePerClientHandoff::default(),
+            &DeterministicFourViewFixtureDecodeRuntime,
+            &render_runtime,
+            &RecordingCadenceSleepHook::default(),
+        );
+
+        assert_eq!(summary.frames_attempted, 2);
+        assert_eq!(summary.frames_rendered, 2);
+        assert_eq!(summary.first_render_attempt_index, Some(1));
+        assert_eq!(summary.rendered_after_first_render, 2);
+        assert_eq!(summary.no_render_before_first_render, 0);
+        assert_eq!(summary.selected_count, 2);
+        assert_eq!(summary.no_frame_count, 6);
+        assert_eq!(summary.decode_attempt_count, 2);
+        assert_eq!(summary.decode_success_count, 2);
+        assert_eq!(summary.render_success_count, 2);
+        assert_eq!(summary.render_failure_count, 0);
+        assert_eq!(summary.unchanged_frame_reuse_count, 0);
+        assert_eq!(summary.skipped_decode_unchanged_frame_count, 0);
+        assert_eq!(
+            summary.slot_result_kinds,
+            [
+                "NoFrameAvailable".to_string(),
+                "NoFrameAvailable".to_string(),
+                "NoFrameAvailable".to_string(),
+                "NoFrameAvailable".to_string(),
+            ]
+        );
+
+        let requests = render_runtime.requests.borrow();
+        assert_eq!(requests.len(), 2);
+        assert_eq!(requests[0].top_left, [0x10, 0x11, 0x12, 255]);
+        assert_eq!(requests[0].bottom_left, [0x40, 0x41, 0x42, 255]);
+        assert_eq!(requests[1].top_left, requests[0].top_left);
+        assert_eq!(requests[1].bottom_left, requests[0].bottom_left);
+    }
+
+    #[test]
+    fn switcher_four_view_two_real_handoff_preview_loop_skips_decode_for_unchanged_selected_frames()
+    {
+        let render_runtime = RecordingPersistentFixtureRenderedWindowRuntime::default();
+        let summary = run_four_view_two_real_handoff_preview_loop_with_handoff_runtime_and_sleep(
+            "fixture-pipe",
+            0,
+            ClientId("real-client-0".to_string()),
+            RunId("real-run-0".to_string()),
+            2,
+            ClientId("real-client-1".to_string()),
+            RunId("real-run-1".to_string()),
+            NonZeroU32::new(2).expect("2 should be non-zero"),
+            SwitcherSingleClientQueueSourceMode::PreviewLatest,
+            TimestampMicros(1_000_004),
+            PerClientStubRealQueuedFrameHandoff::default(),
+            &DeterministicFourViewFixtureDecodeRuntime,
+            &render_runtime,
+            &RecordingCadenceSleepHook::default(),
+        );
+
+        assert_eq!(summary.frames_attempted, 2);
+        assert_eq!(summary.frames_rendered, 2);
+        assert_eq!(summary.selected_count, 4);
+        assert_eq!(summary.decode_attempt_count, 2);
+        assert_eq!(summary.decode_success_count, 2);
+        assert_eq!(summary.unchanged_frame_reuse_count, 2);
+        assert_eq!(summary.skipped_decode_unchanged_frame_count, 2);
+        assert_eq!(summary.redecoded_same_frame_count, 0);
+        assert!(summary.slot_diagnostics[0].contains("decode_attempted=false"));
+        assert!(summary.slot_diagnostics[0].contains("decode_skipped_reason=UnchangedFrameReuse"));
+        assert!(summary.slot_diagnostics[2].contains("decode_attempted=false"));
+        assert!(summary.slot_diagnostics[2].contains("decode_skipped_reason=UnchangedFrameReuse"));
+
+        let requests = render_runtime.requests.borrow();
+        assert_eq!(requests.len(), 2);
+        assert_eq!(requests[1].top_left, requests[0].top_left);
+        assert_eq!(requests[1].bottom_left, requests[0].bottom_left);
+    }
+
+    #[test]
+    fn switcher_four_view_two_real_handoff_preview_loop_redecodes_different_frame_ids() {
+        let render_runtime = RecordingPersistentFixtureRenderedWindowRuntime::default();
+        let summary = run_four_view_two_real_handoff_preview_loop_with_handoff_runtime_and_sleep(
+            "fixture-pipe",
+            0,
+            ClientId("real-client-0".to_string()),
+            RunId("real-run-0".to_string()),
+            2,
+            ClientId("real-client-1".to_string()),
+            RunId("real-run-1".to_string()),
+            NonZeroU32::new(2).expect("2 should be non-zero"),
+            SwitcherSingleClientQueueSourceMode::PreviewLatest,
+            TimestampMicros(1_000_004),
+            IncrementingFramePerClientHandoff::default(),
+            &DeterministicFourViewFixtureDecodeRuntime,
+            &render_runtime,
+            &RecordingCadenceSleepHook::default(),
+        );
+
+        assert_eq!(summary.frames_attempted, 2);
+        assert_eq!(summary.frames_rendered, 2);
+        assert_eq!(summary.selected_count, 4);
+        assert_eq!(summary.decode_attempt_count, 4);
+        assert_eq!(summary.decode_success_count, 4);
+        assert_eq!(summary.unchanged_frame_reuse_count, 0);
+        assert_eq!(summary.skipped_decode_unchanged_frame_count, 0);
+
+        let requests = render_runtime.requests.borrow();
+        assert_eq!(requests.len(), 2);
+        assert_ne!(requests[1].top_left, requests[0].top_left);
+        assert_ne!(requests[1].bottom_left, requests[0].bottom_left);
+    }
+
+    #[test]
+    fn switcher_four_view_two_real_handoff_preview_loop_does_not_reuse_source_error_as_content() {
+        let render_runtime = RecordingPersistentFixtureRenderedWindowRuntime::default();
+        let summary = run_four_view_two_real_handoff_preview_loop_with_handoff_runtime_and_sleep(
+            "fixture-pipe",
+            0,
+            ClientId("real-client-0".to_string()),
+            RunId("real-run-0".to_string()),
+            2,
+            ClientId("real-client-1".to_string()),
+            RunId("real-run-1".to_string()),
+            NonZeroU32::new(2).expect("2 should be non-zero"),
+            SwitcherSingleClientQueueSourceMode::PreviewLatest,
+            TimestampMicros(1_000_004),
+            FirstReadThenHandoffErrorPerClientHandoff::default(),
+            &DeterministicFourViewFixtureDecodeRuntime,
+            &render_runtime,
+            &RecordingCadenceSleepHook::default(),
+        );
+
+        assert_eq!(summary.frames_attempted, 2);
+        assert_eq!(summary.frames_rendered, 1);
+        assert_eq!(summary.handoff_error_count, 2);
+        assert_eq!(summary.decode_attempt_count, 2);
+        assert_eq!(summary.unchanged_frame_reuse_count, 0);
+        assert_eq!(summary.skipped_decode_unchanged_frame_count, 0);
+        assert_eq!(
+            summary.slot_result_kinds,
+            [
+                "HandoffError".to_string(),
+                "NoFrameAvailable".to_string(),
+                "HandoffError".to_string(),
+                "NoFrameAvailable".to_string(),
+            ]
+        );
+
+        let requests = render_runtime.requests.borrow();
+        assert_eq!(requests.len(), 1);
     }
 
     #[test]
@@ -7914,6 +8720,32 @@ mod tests {
         assert!(formatted.contains("run0_id=real-run-0"));
         assert!(formatted.contains("client1_id=real-client-1"));
         assert!(formatted.contains("run1_id=real-run-1"));
+        assert!(formatted.contains("elapsed_ms="));
+        assert!(formatted.contains("target_fps=30"));
+        assert!(formatted.contains("configured_frame_interval_ms=33"));
+        assert!(formatted.contains("effective_attempt_fps="));
+        assert!(formatted.contains("effective_render_fps="));
+        assert!(formatted.contains("first_render_attempt_index=none"));
+        assert!(formatted.contains("first_render_elapsed_ms=none"));
+        assert!(formatted.contains("rendered_after_first_render=0"));
+        assert!(formatted.contains("effective_render_fps_after_first_render=n/a"));
+        assert!(formatted.contains("no_render_before_first_render=1"));
+        assert!(formatted.contains("selected_count=2"));
+        assert!(formatted.contains("no_frame_count=2"));
+        assert!(formatted.contains("handoff_error_count=0"));
+        assert!(formatted.contains("decode_attempt_count=2"));
+        assert!(formatted.contains("decode_success_count=2"));
+        assert!(formatted.contains("render_success_count=0"));
+        assert!(formatted.contains("render_failure_count=1"));
+        assert!(formatted.contains("unchanged_frame_reuse_count=0"));
+        assert!(formatted.contains("skipped_decode_unchanged_frame_count=0"));
+        assert!(formatted.contains("redecoded_same_frame_count=0"));
+        assert!(formatted.contains("decode_elapsed_ms="));
+        assert!(formatted.contains("handoff_elapsed_ms="));
+        assert!(formatted.contains("render_elapsed_ms="));
+        assert!(formatted.contains("avg_decode_elapsed_ms="));
+        assert!(formatted.contains("avg_handoff_elapsed_ms="));
+        assert!(formatted.contains("avg_render_elapsed_ms="));
         assert!(formatted.contains("scheduler_status=PartialSelected"));
         assert!(formatted
             .contains("slot_result_kinds=NoFrameAvailable|Selected|NoFrameAvailable|Selected"));

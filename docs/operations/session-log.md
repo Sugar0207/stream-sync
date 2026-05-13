@@ -1,5 +1,130 @@
 <!-- stream-sync/docs/operations/session-log.md -->
 
+## 2026-05-14
+### Type
+- Codex implementation
+
+### Work
+- Investigated the same-PC `2`-client FPS rerun bottleneck in the switcher
+  `--four-view-two-real-handoff-preview-loop`.
+- Confirmed the previous last-frame reuse only helped no-frame / waiting ticks;
+  repeated `Selected` responses with the same retained keyframe identity still
+  went through decode.
+- Added unchanged-frame decode skip for selected frames that match the last
+  decoded/renderable slot identity by `client_id`, `run_id`, and `frame_id`.
+- Kept source errors on the source-error placeholder path instead of holding
+  previous source content.
+- Kept initial no-frame state on the no-display placeholder path.
+- Added final-summary diagnostics for unchanged-frame reuse, skipped unchanged
+  decodes, same-frame redecode count, handoff/decode/render elapsed totals, and
+  handoff/decode/render average elapsed timings.
+- Added focused tests for unchanged selected-frame reuse, different frame-id
+  re-decode, source-error non-reuse, and no-frame previous-frame reuse.
+- Kept client encode/capture behavior, server stopped summary collection,
+  long OBS run evidence, and distributed-PC docs out of scope.
+
+### Changed Files
+- `apps/switcher/src/lib.rs`
+- `apps/switcher/src/main.rs`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### Decisions
+- Count `decode_attempt_count` and `decode_success_count` from actual decode
+  runtime calls in the two-real loop summary, so skipped unchanged frames no
+  longer look like decode work.
+- Track `decodable_source` in the diagnostic slot identity when available from
+  handoff observations, while the decode-skip decision itself stays scoped to
+  the selected frame identity available inside the display policy.
+- Report `redecoded_same_frame_count` as a summary field; this slice does not
+  intentionally re-decode matching selected identities, so focused tests expect
+  it to remain `0`.
+
+### Unresolved
+- Needs a same-PC `2`-client rerun to confirm the preview loop attempt/render
+  FPS improves when retained keyframes are selected repeatedly.
+- Focused tests still depend on the local MSVC linker being present.
+
+### Next
+- Rerun the same-PC `2`-client smoke from `S:\stream-sync` and inspect
+  `unchanged_frame_reuse_count`, `skipped_decode_unchanged_frame_count`,
+  actual decode counts, and elapsed timing fields.
+
+### TODO Update
+- Updated current position with the unchanged-frame decode-skip slice.
+- Kept the immediate Next Item as a same-PC `2`-client rerun before returning
+  to distributed-PC validation.
+
+### Validation
+- `cargo fmt`
+- `cargo fmt --check`
+- `cargo test -p stream-sync-switcher two_real_handoff_preview -- --nocapture`
+  attempted as focused validation; in this environment it failed before running
+  tests because the MSVC linker `link.exe` was missing.
+
+## 2026-05-13
+### Type
+- Codex implementation
+
+### Work
+- Investigated the `--four-view-two-real-handoff-preview-loop` path from the
+  same-PC `2`-client smoke FPS question.
+- Confirmed the loop counted `frames_attempted` per preview tick and
+  `frames_rendered` only when the clean output window returned `Rendered`.
+- Changed the two-real preview loop to retain per-slot last renderable decoded
+  frames and pass them back into the existing 4-view validation boundary on
+  later ticks.
+- Changed the 4-view handoff display policy so handoff/source errors use a
+  source-error placeholder even when a previous frame exists; last-frame reuse
+  remains for normal no-frame / waiting ticks.
+- Added final-summary FPS / warmup diagnostics for the two-real loop:
+  `elapsed_ms`, `target_fps`, `configured_frame_interval_ms`,
+  `effective_attempt_fps`, `effective_render_fps`,
+  `first_render_attempt_index`, `first_render_elapsed_ms`,
+  `rendered_after_first_render`, `effective_render_fps_after_first_render`,
+  and `no_render_before_first_render`.
+- Added aggregate final-summary counters for selected / no-frame / handoff
+  error / decode attempt / decode success / render success / render failure.
+- Added focused test coverage for formatting the new diagnostics and for
+  reusing last renderable frames when the second tick has no new real frames.
+- Kept server stopped summary collection, client encode behavior,
+  distributed-PC docs, protocol, and H.264 wire behavior out of scope.
+
+### Changed Files
+- `apps/switcher/src/lib.rs`
+- `apps/switcher/src/main.rs`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### Decisions
+- Treat `frames_rendered / frames_attempted` as insufficient by itself for the
+  same-PC smoke result because startup no-frame ticks and source production FPS
+  need to be separated from switcher loop cadence.
+- Keep long OBS run evidence separate from switcher final-summary runtime
+  evidence.
+
+### Unresolved
+- Focused tests could not complete in this environment because `link.exe` was
+  not available for the MSVC Rust target.
+- The new diagnostics still need a same-PC `2`-client smoke rerun to compare
+  warmup-adjusted switcher FPS against client effective output FPS.
+
+### Next
+- Rerun the same-PC `2`-client smoke and inspect the new switcher final summary
+  fields.
+- Continue to keep server stopped summary collection as a separate step.
+
+### TODO Update
+- Added the switcher FPS diagnostics / last-frame reuse slice to current
+  position.
+- Put same-PC `2`-client smoke rerun ahead of distributed-PC validation in
+  Next Items for this immediate confirmation.
+
+### Validation
+- `cargo fmt`
+- `cargo test -p stream-sync-switcher two_real_handoff_preview -- --nocapture`
+  failed before running tests because the MSVC linker `link.exe` was missing.
+
 ## 2026-05-13
 ### Type
 - Codex docs/ops update

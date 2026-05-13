@@ -5,7 +5,7 @@
 [client]
 client_id = "player1"
 display_name = "Player 1"
-server_host = "192.168.0.108"
+server_host = "127.0.0.1"
 server_port = 5000
 shared_token = "client1"
 
@@ -57,3 +57,4 @@ connect_timeout_ms = 5000
 level = "info"
 json_lines = true
 output_dir = "logs/client"
+
