@@ -2,6 +2,83 @@
 
 ## 2026-05-13
 ### Type
+- Codex code + docs update
+
+### Work
+- Reviewed the required repo-local inputs before editing:
+  - `AGENTS.md`
+  - `README.md`
+  - `docs/requirements/project-overview.md`
+  - `docs/architecture/system-design.md`
+  - `docs/architecture/protocol.md`
+  - `docs/architecture/decisions.md`
+  - `docs/operations/four-client-validation.md`
+  - `docs/operations/concurrent-handoff-runtime-plan.md`
+  - `docs/operations/two-client-handoff-validation.md`
+  - `docs/operations/todo.md`
+  - `docs/operations/session-log.md`
+- Updated `apps/switcher/src/main.rs` so
+  `--four-view-four-real-handoff-preview-loop` now accepts an optional preview
+  mode argument:
+  - `preview-oldest`
+  - `preview-latest`
+  - `preview-latest-decodable`
+- Kept backward compatibility for the 4-real command:
+  - omitted preview mode still means `preview-latest`
+- Wired the selected 4-real preview mode through the same mapping used by the
+  2-real PASS path:
+  - `preview-latest-decodable`
+    -> `PreviewLatestDecodableIfAtOrBefore`
+    -> `InspectLatestDecodable`
+  - retained-keyframe fallback is therefore available on the 4-real path when
+    the server returns that mode's decodable response
+- Changed the 4-real preview loop to recompute
+  `real_four_view_preview_target_timestamp()` on each tick instead of reusing
+  one fixed value for the whole loop.
+- Added human-readable summary fields for preview selection mode visibility:
+  - `preview_mode`
+  - `read_mode`
+- Added focused tests for:
+  - optional preview-mode parsing and omitted-argument default
+  - `preview-latest-decodable` mapping to expected handoff/targetTime modes
+  - 4-real per-tick targetTime recomputation
+  - 4-real summary formatting with preview/read mode visibility
+- Updated later-phase docs so the repo now records:
+  - latest 4-client human failure was collected on the old 4-real path
+  - the parity slice is now implemented
+  - the next human rerun should use
+    `--four-view-four-real-handoff-preview-loop ... 180 preview-latest-decodable`
+
+### Decision
+- This slice stays within switcher CLI/path work only.
+- No server code or protocol wire format was changed.
+- The next gate is no longer implementation parity; it is a same-PC 4-client
+  human rerun with `preview-latest-decodable` and updated summary fields.
+
+### Changed Files
+- `apps/switcher/src/main.rs`
+- `docs/operations/concurrent-handoff-runtime-plan.md`
+- `docs/operations/four-client-validation.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### Validation
+- `cargo fmt`
+- focused switcher tests:
+  - `cargo test -p stream-sync-switcher switcher_four_view_four_real_handoff_preview -- --nocapture`
+  - `cargo test -p stream-sync-switcher switcher_optional_real_handoff_preview_mode -- --nocapture`
+  - `cargo test -p stream-sync-switcher switcher_preview_latest_decodable_maps_to_expected_handoff_and_target_time_modes -- --nocapture`
+- `cargo fmt --check`
+- `cargo check --workspace`
+- `cargo test --workspace`
+  - failed in this environment during MSVC linker / rustc test-build work:
+    - `link.exe` exit `1102`
+    - rustc OOM / ICE while compiling workspace test targets
+  - failure was not isolated to the edited switcher slice
+- `git diff --check`
+
+## 2026-05-13
+### Type
 - 4-client human run investigation + docs update
 
 ### Work

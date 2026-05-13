@@ -435,9 +435,10 @@ fn main() {
                 std::process::exit(1);
             }));
             let frames = parse_positive_u32_arg_or_exit(args.next(), "frames");
+            let read_mode = parse_optional_real_handoff_preview_mode_or_exit(args.next());
             match run_four_view_four_real_handoff_preview_loop(
                 &pipe_name, client0_id, run0_id, client1_id, run1_id, client2_id, run2_id,
-                client3_id, run3_id, frames,
+                client3_id, run3_id, frames, read_mode,
             ) {
                 Ok(summary) => println!(
                     "{}",
@@ -662,7 +663,7 @@ fn main() {
         }
         _ => {
             println!(
-                "stream-sync-switcher scaffold; use --placeholder-fixture-once [client-id], --placeholder-empty-once [client-id], --decode-latest-frame-once [client-id] [output-path], --receive-auth-video-placeholder-bridge-once [config-path] [client-id], --receive-auth-video-decode-latest-once [config-path] [client-id] [output-path], --receive-auth-video-render-decoded-once [config-path] [client-id] [hold-ms], --two-view-sync-fixture-once [left-client-id] [right-client-id] [hold-ms], --render-two-view-composed-fixture-once [hold-ms], --live-two-view-switcher-once [config-path] [left-client-id] [right-client-id], --four-view-proof-fixture-once [all-renderable|mixed-placeholder-source-error|placeholder-only], --four-view-proof-window-once [all-renderable], --four-view-clean-output-window-once [all-renderable], --four-view-clean-output-window-loop [all-renderable] [frames], --four-view-real-handoff-preview-loop [pipe-name] [real-slot-index] [client-id] [run-id] [frames], --four-view-two-real-handoff-preview-loop [pipe-name] [slot0-index] [client0-id] [run0-id] [slot1-index] [client1-id] [run1-id] [frames] [preview-oldest|preview-latest|preview-latest-decodable], --four-view-four-real-handoff-preview-loop [pipe-name] [client0-id] [run0-id] [client1-id] [run1-id] [client2-id] [run2-id] [client3-id] [run3-id] [frames], --four-view-focused-handoff-preview-loop [pipe-name] [focused-slot-index] [client0-id] [run0-id] [client1-id] [run1-id] [client2-id] [run2-id] [client3-id] [run3-id] [frames], --four-view-controlled-handoff-preview-loop [pipe-name] [client0-id] [run0-id] [client1-id] [run1-id] [client2-id] [run2-id] [client3-id] [run3-id] [max-ticks-per-command] [--commands \"status;focus 0;all;quit\"|--control-pipe streamsync-control-dev], --four-view-operator-wrapper [control-pipe-name] [--keys \"s;1;2;3;4;0;q;q\"|--raw-keys], --send-control-command [control-pipe-name] [command], or --read-queued-frame-handoff-once [pipe-name] [client-id] [run-id] [read-mode] [request-id]"
+                "stream-sync-switcher scaffold; use --placeholder-fixture-once [client-id], --placeholder-empty-once [client-id], --decode-latest-frame-once [client-id] [output-path], --receive-auth-video-placeholder-bridge-once [config-path] [client-id], --receive-auth-video-decode-latest-once [config-path] [client-id] [output-path], --receive-auth-video-render-decoded-once [config-path] [client-id] [hold-ms], --two-view-sync-fixture-once [left-client-id] [right-client-id] [hold-ms], --render-two-view-composed-fixture-once [hold-ms], --live-two-view-switcher-once [config-path] [left-client-id] [right-client-id], --four-view-proof-fixture-once [all-renderable|mixed-placeholder-source-error|placeholder-only], --four-view-proof-window-once [all-renderable], --four-view-clean-output-window-once [all-renderable], --four-view-clean-output-window-loop [all-renderable] [frames], --four-view-real-handoff-preview-loop [pipe-name] [real-slot-index] [client-id] [run-id] [frames], --four-view-two-real-handoff-preview-loop [pipe-name] [slot0-index] [client0-id] [run0-id] [slot1-index] [client1-id] [run1-id] [frames] [preview-oldest|preview-latest|preview-latest-decodable], --four-view-four-real-handoff-preview-loop [pipe-name] [client0-id] [run0-id] [client1-id] [run1-id] [client2-id] [run2-id] [client3-id] [run3-id] [frames] [preview-oldest|preview-latest|preview-latest-decodable], --four-view-focused-handoff-preview-loop [pipe-name] [focused-slot-index] [client0-id] [run0-id] [client1-id] [run1-id] [client2-id] [run2-id] [client3-id] [run3-id] [frames], --four-view-controlled-handoff-preview-loop [pipe-name] [client0-id] [run0-id] [client1-id] [run1-id] [client2-id] [run2-id] [client3-id] [run3-id] [max-ticks-per-command] [--commands \"status;focus 0;all;quit\"|--control-pipe streamsync-control-dev], --four-view-operator-wrapper [control-pipe-name] [--keys \"s;1;2;3;4;0;q;q\"|--raw-keys], --send-control-command [control-pipe-name] [command], or --read-queued-frame-handoff-once [pipe-name] [client-id] [run-id] [read-mode] [request-id]"
             );
         }
     }
@@ -1178,7 +1179,6 @@ fn run_named_pipe_handoff_once(
     Err("named-pipe handoff command is only available on Windows".to_string())
 }
 
-#[cfg(test)]
 fn format_handoff_mode(mode: SwitcherSingleClientQueueSourceMode) -> &'static str {
     match mode {
         SwitcherSingleClientQueueSourceMode::PreviewOldest => "preview-oldest",
@@ -1768,6 +1768,8 @@ struct SwitcherFourViewTwoRealHandoffPreviewLoopSummary {
     real_slot1_index: usize,
     pipe_name: String,
     actual_pipe_path: String,
+    preview_mode: &'static str,
+    read_mode: &'static str,
     client0_id: ClientId,
     run0_id: RunId,
     client1_id: ClientId,
@@ -1789,6 +1791,8 @@ struct SwitcherFourViewTwoRealHandoffPreviewLoopSummary {
 struct SwitcherFourViewFourRealHandoffPreviewLoopSummary {
     pipe_name: String,
     actual_pipe_path: String,
+    preview_mode: &'static str,
+    read_mode: &'static str,
     client0_id: ClientId,
     run0_id: RunId,
     client1_id: ClientId,
@@ -2544,31 +2548,31 @@ fn run_four_view_four_real_handoff_preview_loop(
     client3_id: ClientId,
     run3_id: RunId,
     frames: NonZeroU32,
+    read_mode: SwitcherSingleClientQueueSourceMode,
 ) -> Result<SwitcherFourViewFourRealHandoffPreviewLoopSummary, String> {
     let handoff = ObservedNamedPipePreviewHandoff::new(SwitcherNamedPipeQueuedFrameHandoff::new(
         pipe_name,
         DEFAULT_ONE_SHOT_REQUEST_ID,
     ));
     let render_runtime = SwitcherWindowsGdiPersistentWindowRenderRuntime::default();
-    Ok(
-        run_four_view_four_real_handoff_preview_loop_with_handoff_runtime_and_sleep(
-            pipe_name,
-            client0_id,
-            run0_id,
-            client1_id,
-            run1_id,
-            client2_id,
-            run2_id,
-            client3_id,
-            run3_id,
-            frames,
-            real_four_view_preview_target_timestamp(),
-            handoff,
-            &SwitcherFfmpegH264DecodeRuntimeHook::default(),
-            &render_runtime,
-            &RealSwitcherFrameCadenceSleepHook,
-        ),
-    )
+    Ok(run_four_view_four_real_handoff_preview_loop_with_handoff_runtime_target_timestamp_hook_and_sleep(
+        pipe_name,
+        client0_id,
+        run0_id,
+        client1_id,
+        run1_id,
+        client2_id,
+        run2_id,
+        client3_id,
+        run3_id,
+        frames,
+        read_mode,
+        real_four_view_preview_target_timestamp,
+        handoff,
+        &SwitcherFfmpegH264DecodeRuntimeHook::default(),
+        &render_runtime,
+        &RealSwitcherFrameCadenceSleepHook,
+    ))
 }
 
 #[cfg(not(windows))]
@@ -2583,6 +2587,7 @@ fn run_four_view_four_real_handoff_preview_loop(
     _client3_id: ClientId,
     _run3_id: RunId,
     _frames: NonZeroU32,
+    _read_mode: SwitcherSingleClientQueueSourceMode,
 ) -> Result<SwitcherFourViewFourRealHandoffPreviewLoopSummary, String> {
     Err("four-view four-real handoff preview loop is only available on Windows".to_string())
 }
@@ -3001,6 +3006,8 @@ where
         real_slot1_index: slot1_index,
         pipe_name: pipe_name.to_string(),
         actual_pipe_path,
+        preview_mode: format_handoff_mode(read_mode),
+        read_mode: format_handoff_read_mode(handoff_read_mode_from_switcher_mode(read_mode)),
         client0_id,
         run0_id,
         client1_id,
@@ -3019,6 +3026,7 @@ where
     }
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
 fn run_four_view_four_real_handoff_preview_loop_with_handoff_runtime_and_sleep<
     RealHandoff,
     DecodeRuntime,
@@ -3034,6 +3042,7 @@ fn run_four_view_four_real_handoff_preview_loop_with_handoff_runtime_and_sleep<
     client3_id: ClientId,
     run3_id: RunId,
     frames: NonZeroU32,
+    read_mode: SwitcherSingleClientQueueSourceMode,
     target_timestamp: TimestampMicros,
     real_handoff: RealHandoff,
     decode_runtime: &DecodeRuntime,
@@ -3044,6 +3053,55 @@ where
     RealHandoff: PreviewLoopRealHandoff,
     DecodeRuntime: SwitcherH264DecodeRuntimeHook,
     RenderRuntime: SwitcherWindowRenderRuntimeHook + SwitcherPersistentWindowLoopRuntimeHook,
+{
+    run_four_view_four_real_handoff_preview_loop_with_handoff_runtime_target_timestamp_hook_and_sleep(
+        pipe_name,
+        client0_id,
+        run0_id,
+        client1_id,
+        run1_id,
+        client2_id,
+        run2_id,
+        client3_id,
+        run3_id,
+        frames,
+        read_mode,
+        move || target_timestamp,
+        real_handoff,
+        decode_runtime,
+        render_runtime,
+        cadence_sleep,
+    )
+}
+
+fn run_four_view_four_real_handoff_preview_loop_with_handoff_runtime_target_timestamp_hook_and_sleep<
+    RealHandoff,
+    DecodeRuntime,
+    RenderRuntime,
+    TargetTimestampHook,
+>(
+    pipe_name: &str,
+    client0_id: ClientId,
+    run0_id: RunId,
+    client1_id: ClientId,
+    run1_id: RunId,
+    client2_id: ClientId,
+    run2_id: RunId,
+    client3_id: ClientId,
+    run3_id: RunId,
+    frames: NonZeroU32,
+    read_mode: SwitcherSingleClientQueueSourceMode,
+    mut target_timestamp_hook: TargetTimestampHook,
+    real_handoff: RealHandoff,
+    decode_runtime: &DecodeRuntime,
+    render_runtime: &RenderRuntime,
+    cadence_sleep: &impl SwitcherFrameCadenceSleepHook,
+) -> SwitcherFourViewFourRealHandoffPreviewLoopSummary
+where
+    RealHandoff: PreviewLoopRealHandoff,
+    DecodeRuntime: SwitcherH264DecodeRuntimeHook,
+    RenderRuntime: SwitcherWindowRenderRuntimeHook + SwitcherPersistentWindowLoopRuntimeHook,
+    TargetTimestampHook: FnMut() -> TimestampMicros,
 {
     let actual_pipe_path = format_actual_handoff_pipe_path(pipe_name);
     let slots = default_four_view_four_real_handoff_preview_slots(
@@ -3093,11 +3151,12 @@ where
 
     for frame_index in 0..frames.get() {
         handoff.begin_frame();
+        let target_timestamp = target_timestamp_hook();
         let validation = run_four_view_real_handoff_preview_validation_with_runtime_and_handoff(
             &mut handoff,
             slots.clone(),
             target_timestamp,
-            stream_sync_switcher::SwitcherSingleClientTargetTimeSourceMode::PreviewLatestIfAtOrBefore,
+            preview_target_time_mode_from_switcher_mode(read_mode),
             decode_runtime,
         );
         let clean_output = SwitcherFourViewCleanOutputWindowBoundary::default()
@@ -3143,6 +3202,8 @@ where
     SwitcherFourViewFourRealHandoffPreviewLoopSummary {
         pipe_name: pipe_name.to_string(),
         actual_pipe_path,
+        preview_mode: format_handoff_mode(read_mode),
+        read_mode: format_handoff_read_mode(handoff_read_mode_from_switcher_mode(read_mode)),
         client0_id,
         run0_id,
         client1_id,
@@ -5442,11 +5503,13 @@ fn format_four_view_two_real_handoff_preview_loop_summary(
     summary: &SwitcherFourViewTwoRealHandoffPreviewLoopSummary,
 ) -> String {
     format!(
-        "switcher four-view two-real handoff preview loop command_name=--four-view-two-real-handoff-preview-loop real_handoff=true real_slot_count=2 real_slot0_index={} real_slot1_index={} pipe_name={} actual_pipe_path={} client0_id={} run0_id={} client1_id={} run1_id={} frames_attempted={} frames_rendered={} render_failures={} scheduler_status={:?} slot_bindings={} slot_result_kinds={} slot_diagnostics={} clean_output_render_result_kind={} window_title={} output_width={} output_height={}",
+        "switcher four-view two-real handoff preview loop command_name=--four-view-two-real-handoff-preview-loop real_handoff=true real_slot_count=2 real_slot0_index={} real_slot1_index={} pipe_name={} actual_pipe_path={} preview_mode={} read_mode={} client0_id={} run0_id={} client1_id={} run1_id={} frames_attempted={} frames_rendered={} render_failures={} scheduler_status={:?} slot_bindings={} slot_result_kinds={} slot_diagnostics={} clean_output_render_result_kind={} window_title={} output_width={} output_height={}",
         summary.real_slot0_index,
         summary.real_slot1_index,
         summary.pipe_name,
         summary.actual_pipe_path,
+        summary.preview_mode,
+        summary.read_mode,
         summary.client0_id.0,
         summary.run0_id.0,
         summary.client1_id.0,
@@ -5469,9 +5532,11 @@ fn format_four_view_four_real_handoff_preview_loop_summary(
     summary: &SwitcherFourViewFourRealHandoffPreviewLoopSummary,
 ) -> String {
     format!(
-        "switcher four-view four-real handoff preview loop command_name=--four-view-four-real-handoff-preview-loop real_handoff=true real_slot_count=4 pipe_name={} actual_pipe_path={} client0_id={} run0_id={} client1_id={} run1_id={} client2_id={} run2_id={} client3_id={} run3_id={} frames_attempted={} frames_rendered={} render_failures={} scheduler_status={:?} slot_bindings={} slot_result_kinds={} slot_diagnostics={} clean_output_render_result_kind={} window_title={} output_width={} output_height={}",
+        "switcher four-view four-real handoff preview loop command_name=--four-view-four-real-handoff-preview-loop real_handoff=true real_slot_count=4 pipe_name={} actual_pipe_path={} preview_mode={} read_mode={} client0_id={} run0_id={} client1_id={} run1_id={} client2_id={} run2_id={} client3_id={} run3_id={} frames_attempted={} frames_rendered={} render_failures={} scheduler_status={:?} slot_bindings={} slot_result_kinds={} slot_diagnostics={} clean_output_render_result_kind={} window_title={} output_width={} output_height={}",
         summary.pipe_name,
         summary.actual_pipe_path,
+        summary.preview_mode,
+        summary.read_mode,
         summary.client0_id.0,
         summary.run0_id.0,
         summary.client1_id.0,
@@ -6566,20 +6631,22 @@ mod tests {
         format_four_view_two_real_handoff_preview_loop_summary, format_handoff_mode,
         format_handoff_read_mode, format_named_pipe_handoff_switcher_result_summary,
         format_named_pipe_handoff_switcher_summary,
-        four_view_clean_output_window_loop_frame_cadence,
+        four_view_clean_output_window_loop_frame_cadence, handoff_read_mode_from_switcher_mode,
         parse_four_view_actual_window_fixture_mode_or_exit,
         parse_four_view_all_renderable_fixture_mode, parse_four_view_control_command,
         parse_four_view_control_command_source,
         parse_four_view_manual_preview_fixture_mode_or_exit,
         parse_four_view_operator_wrapper_input_source, parse_four_view_real_slot_index_or_exit,
         parse_handoff_mode_or_exit, parse_optional_four_view_control_script,
-        parse_positive_u32_arg, process_four_view_operator_wrapper_key,
+        parse_optional_real_handoff_preview_mode_or_exit, parse_positive_u32_arg,
+        preview_target_time_mode_from_switcher_mode, process_four_view_operator_wrapper_key,
         read_length_prefixed_utf8_message,
         run_four_view_clean_output_window_loop_with_runtime_and_sleep,
         run_four_view_clean_output_window_with_runtime,
         run_four_view_controlled_handoff_preview_loop_with_handoff_runtime_and_sleep,
         run_four_view_focused_handoff_preview_loop_with_handoff_runtime_and_sleep,
         run_four_view_four_real_handoff_preview_loop_with_handoff_runtime_and_sleep,
+        run_four_view_four_real_handoff_preview_loop_with_handoff_runtime_target_timestamp_hook_and_sleep,
         run_four_view_manual_preview_proof_once, run_four_view_manual_preview_proof_with_runtime,
         run_four_view_operator_wrapper_with_runtime_and_clock_and_raw_key_runtime,
         run_four_view_real_handoff_preview_loop_with_handoff_runtime_and_sleep,
@@ -6616,6 +6683,40 @@ mod tests {
         assert_eq!(
             parse_handoff_mode_or_exit(Some("consume-oldest".to_string()), "mode"),
             SwitcherSingleClientQueueSourceMode::ConsumeOldest
+        );
+    }
+
+    #[test]
+    fn switcher_optional_real_handoff_preview_mode_accepts_preview_latest_decodable() {
+        assert_eq!(
+            parse_optional_real_handoff_preview_mode_or_exit(Some(
+                "preview-latest-decodable".to_string()
+            )),
+            SwitcherSingleClientQueueSourceMode::PreviewLatestDecodable
+        );
+    }
+
+    #[test]
+    fn switcher_optional_real_handoff_preview_mode_defaults_to_preview_latest() {
+        assert_eq!(
+            parse_optional_real_handoff_preview_mode_or_exit(None),
+            SwitcherSingleClientQueueSourceMode::PreviewLatest
+        );
+    }
+
+    #[test]
+    fn switcher_preview_latest_decodable_maps_to_expected_handoff_and_target_time_modes() {
+        assert_eq!(
+            handoff_read_mode_from_switcher_mode(
+                SwitcherSingleClientQueueSourceMode::PreviewLatestDecodable
+            ),
+            stream_sync_net_core::ServerSwitcherQueuedFrameReadMode::InspectLatestDecodable
+        );
+        assert_eq!(
+            preview_target_time_mode_from_switcher_mode(
+                SwitcherSingleClientQueueSourceMode::PreviewLatestDecodable
+            ),
+            stream_sync_switcher::SwitcherSingleClientTargetTimeSourceMode::PreviewLatestDecodableIfAtOrBefore
         );
     }
 
@@ -7233,6 +7334,39 @@ mod tests {
         }
     }
 
+    #[derive(Debug, Clone)]
+    struct RecordingInputModeQueuedFrameHandoff {
+        modes: std::rc::Rc<RefCell<Vec<SwitcherSingleClientQueueSourceMode>>>,
+    }
+
+    impl SwitcherQueuedFrameHandoff for RecordingInputModeQueuedFrameHandoff {
+        fn read_handoff_frame(
+            &mut self,
+            input: SwitcherQueuedFrameHandoffInput,
+        ) -> SwitcherQueuedFrameHandoffResult {
+            self.modes.borrow_mut().push(input.mode);
+            SwitcherQueuedFrameHandoffResult::FrameRead {
+                frame: SwitcherSingleViewSelectedEncodedFrame {
+                    client_id: input.client_id,
+                    run_id: input.run_id,
+                    frame_id: 21,
+                    capture_timestamp: TimestampMicros(1_000_001),
+                    send_timestamp: TimestampMicros(1_000_101),
+                    queued_at: TimestampMicros(2_400_001),
+                    is_keyframe: true,
+                    width: 2,
+                    height: 2,
+                    fps_nominal: 30,
+                    codec: Codec::H264,
+                    encoded_payload_len: 1,
+                    encoded_payload: vec![0x88],
+                },
+                mode: input.mode,
+                remaining_client_queue_len: 0,
+            }
+        }
+    }
+
     #[derive(Debug, Default)]
     struct RecordingCadenceSleepHook {
         durations: RefCell<Vec<Duration>>,
@@ -7774,6 +7908,8 @@ mod tests {
         assert!(formatted.contains("real_slot1_index=3"));
         assert!(formatted.contains("pipe_name=fixture-pipe"));
         assert!(formatted.contains(r"actual_pipe_path=\\.\pipe\fixture-pipe"));
+        assert!(formatted.contains("preview_mode=preview-latest"));
+        assert!(formatted.contains("read_mode=inspect-latest"));
         assert!(formatted.contains("client0_id=real-client-0"));
         assert!(formatted.contains("run0_id=real-run-0"));
         assert!(formatted.contains("client1_id=real-client-1"));
@@ -7979,6 +8115,70 @@ mod tests {
     }
 
     #[test]
+    fn switcher_four_view_four_real_handoff_preview_loop_recomputes_target_timestamp_per_frame() {
+        let render_runtime = PersistentFixtureRenderedWindowRuntime::default();
+        let mut target_timestamp_calls = 0u32;
+        let summary =
+            run_four_view_four_real_handoff_preview_loop_with_handoff_runtime_target_timestamp_hook_and_sleep(
+                "fixture-pipe",
+                ClientId("real-client-0".to_string()),
+                RunId("real-run-0".to_string()),
+                ClientId("real-client-1".to_string()),
+                RunId("real-run-1".to_string()),
+                ClientId("real-client-2".to_string()),
+                RunId("real-run-2".to_string()),
+                ClientId("real-client-3".to_string()),
+                RunId("real-run-3".to_string()),
+                NonZeroU32::new(2).expect("2 should be non-zero"),
+                SwitcherSingleClientQueueSourceMode::PreviewLatestDecodable,
+                || {
+                    target_timestamp_calls += 1;
+                    if target_timestamp_calls == 1 {
+                        TimestampMicros(1_000_000)
+                    } else {
+                        TimestampMicros(1_000_004)
+                    }
+                },
+                StubRealQueuedFrameHandoff {
+                    result: SwitcherQueuedFrameHandoffResult::FrameRead {
+                        frame: SwitcherSingleViewSelectedEncodedFrame {
+                            client_id: ClientId("real-client-0".to_string()),
+                            run_id: RunId("real-run-0".to_string()),
+                            frame_id: 31,
+                            capture_timestamp: TimestampMicros(1_000_001),
+                            send_timestamp: TimestampMicros(1_000_101),
+                            queued_at: TimestampMicros(2_400_001),
+                            is_keyframe: true,
+                            width: 2,
+                            height: 1,
+                            fps_nominal: 30,
+                            codec: Codec::H264,
+                            encoded_payload_len: 1,
+                            encoded_payload: vec![0x99],
+                        },
+                        mode: SwitcherSingleClientQueueSourceMode::PreviewLatestDecodable,
+                        remaining_client_queue_len: 0,
+                    },
+                    calls: RefCell::new(0),
+                },
+                &DeterministicFourViewFixtureDecodeRuntime,
+                &render_runtime,
+                &RecordingCadenceSleepHook::default(),
+            );
+
+        assert_eq!(target_timestamp_calls, 2);
+        assert_eq!(summary.frames_attempted, 2);
+        assert_eq!(summary.frames_rendered, 1);
+        assert_eq!(summary.preview_mode, "preview-latest-decodable");
+        assert_eq!(summary.read_mode, "inspect-latest-decodable");
+        assert_eq!(summary.slot_result_kinds[0], "Selected".to_string());
+        assert!(summary.slot_diagnostics[0].contains("selected_frame_available=true"));
+        assert!(summary.slot_diagnostics[0].contains("selected_frame_id=31"));
+        assert!(summary.slot_diagnostics[0].contains("decode_attempted=true"));
+        assert!(summary.slot_diagnostics[0].contains("renderable_frame_available=true"));
+    }
+
+    #[test]
     fn switcher_four_view_two_real_handoff_preview_summary_normalizes_full_pipe_path() {
         let summary = run_four_view_two_real_handoff_preview_loop_with_handoff_runtime_and_sleep(
             r"\\.\pipe\fixture-pipe",
@@ -8015,6 +8215,7 @@ mod tests {
     #[test]
     fn switcher_four_view_four_real_handoff_preview_loop_uses_all_real_slots() {
         let render_runtime = PersistentFixtureRenderedWindowRuntime::default();
+        let modes = std::rc::Rc::new(RefCell::new(Vec::new()));
         let summary = run_four_view_four_real_handoff_preview_loop_with_handoff_runtime_and_sleep(
             "fixture-pipe",
             ClientId("real-client-0".to_string()),
@@ -8026,28 +8227,10 @@ mod tests {
             ClientId("real-client-3".to_string()),
             RunId("real-run-3".to_string()),
             NonZeroU32::new(2).expect("2 should be non-zero"),
+            SwitcherSingleClientQueueSourceMode::PreviewLatestDecodable,
             TimestampMicros(1_000_004),
-            StubRealQueuedFrameHandoff {
-                result: SwitcherQueuedFrameHandoffResult::FrameRead {
-                    frame: SwitcherSingleViewSelectedEncodedFrame {
-                        client_id: ClientId("real-client-0".to_string()),
-                        run_id: RunId("real-run-0".to_string()),
-                        frame_id: 1,
-                        capture_timestamp: TimestampMicros(1_000_001),
-                        send_timestamp: TimestampMicros(1_000_101),
-                        queued_at: TimestampMicros(2_400_001),
-                        is_keyframe: true,
-                        width: 2,
-                        height: 1,
-                        fps_nominal: 30,
-                        codec: Codec::H264,
-                        encoded_payload_len: 1,
-                        encoded_payload: vec![0x66],
-                    },
-                    mode: SwitcherSingleClientQueueSourceMode::PreviewLatest,
-                    remaining_client_queue_len: 0,
-                },
-                calls: RefCell::new(0),
+            RecordingInputModeQueuedFrameHandoff {
+                modes: modes.clone(),
             },
             &DeterministicFourViewFixtureDecodeRuntime,
             &render_runtime,
@@ -8057,6 +8240,21 @@ mod tests {
         assert_eq!(summary.frames_attempted, 2);
         assert_eq!(summary.frames_rendered, 2);
         assert_eq!(summary.render_failures, 0);
+        assert_eq!(summary.preview_mode, "preview-latest-decodable");
+        assert_eq!(summary.read_mode, "inspect-latest-decodable");
+        assert_eq!(
+            modes.borrow().as_slice(),
+            &[
+                SwitcherSingleClientQueueSourceMode::PreviewLatestDecodable,
+                SwitcherSingleClientQueueSourceMode::PreviewLatestDecodable,
+                SwitcherSingleClientQueueSourceMode::PreviewLatestDecodable,
+                SwitcherSingleClientQueueSourceMode::PreviewLatestDecodable,
+                SwitcherSingleClientQueueSourceMode::PreviewLatestDecodable,
+                SwitcherSingleClientQueueSourceMode::PreviewLatestDecodable,
+                SwitcherSingleClientQueueSourceMode::PreviewLatestDecodable,
+                SwitcherSingleClientQueueSourceMode::PreviewLatestDecodable,
+            ]
+        );
         assert_eq!(
             summary.slot_bindings,
             [
@@ -8103,6 +8301,7 @@ mod tests {
             ClientId("real-client-3".to_string()),
             RunId("real-run-3".to_string()),
             NonZeroU32::new(1).expect("1 should be non-zero"),
+            SwitcherSingleClientQueueSourceMode::PreviewLatestDecodable,
             TimestampMicros(1_000_004),
             StubRealQueuedFrameHandoff {
                 result: SwitcherQueuedFrameHandoffResult::FrameRead {
@@ -8136,6 +8335,8 @@ mod tests {
         assert!(formatted.contains("real_handoff=true"));
         assert!(formatted.contains("real_slot_count=4"));
         assert!(formatted.contains("pipe_name=fixture-pipe"));
+        assert!(formatted.contains("preview_mode=preview-latest-decodable"));
+        assert!(formatted.contains("read_mode=inspect-latest-decodable"));
         assert!(formatted.contains("client0_id=real-client-0"));
         assert!(formatted.contains("run0_id=real-run-0"));
         assert!(formatted.contains("client1_id=real-client-1"));

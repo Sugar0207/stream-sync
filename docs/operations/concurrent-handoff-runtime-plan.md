@@ -53,13 +53,18 @@
   - current interpretation:
     - primary failure bucket is switcher selection/render
     - server receive/queue and handoff transport remain PASS
-    - 4-real path currently uses `PreviewLatestIfAtOrBefore` /
-      `InspectLatest`, so retained-keyframe fallback is not used
-    - 4-real path also holds one fixed targetTime for the full loop, unlike
-      the 2-real preview loop which recomputes targetTime per tick
-    - next slice should add 4-real preview-mode wiring and per-tick targetTime
-      parity before retry/backoff, persistent decoder context, distributed-PC,
-      or OBS work
+    - at the time of that run, 4-real path used
+      `PreviewLatestIfAtOrBefore` / `InspectLatest`, so retained-keyframe
+      fallback was not used
+    - at the time of that run, 4-real path also held one fixed targetTime for
+      the full loop, unlike the 2-real preview loop which recomputes targetTime
+      per tick
+    - current switcher code now has 4-real preview-mode wiring,
+      `preview-latest-decodable` support, summary visibility for
+      `preview_mode` / `read_mode`, and per-tick targetTime parity
+    - next slice is the same-PC 4-client human rerun with
+      `preview-latest-decodable`, before retry/backoff, persistent decoder
+      context, distributed-PC, or OBS work
 - Latest same-PC human rerun from `manual-logs/handoff-20260513-134658`
   keeps the concurrent server closeout gate PASS and now closes the switcher
   validation under the updated final-state-based criterion:

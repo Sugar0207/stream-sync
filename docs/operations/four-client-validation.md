@@ -131,7 +131,7 @@ Chosen shape:
 ### Switcher
 
 ```powershell
-.\target\debug\stream-sync-switcher.exe --four-view-four-real-handoff-preview-loop streamsync-handoff-dev player1 streamsync-dev-session player2 streamsync-dev-session player3 streamsync-dev-session player4 streamsync-dev-session 180
+.\target\debug\stream-sync-switcher.exe --four-view-four-real-handoff-preview-loop streamsync-handoff-dev player1 streamsync-dev-session player2 streamsync-dev-session player3 streamsync-dev-session player4 streamsync-dev-session 180 preview-latest-decodable
 ```
 
 Chosen shape:
@@ -143,17 +143,21 @@ Chosen shape:
   - slot `3` -> `player4`
 - `frames=180`
   - preserves the same preview-window length used by the latest 2-client PASS
-- current command does not expose a preview-mode override
-  - code review confirms it currently uses
-    `PreviewLatestIfAtOrBefore`
-  - that maps to named-pipe handoff read mode `InspectLatest`
-  - it does not use `InspectLatestDecodable`
-  - therefore it does not request retained-keyframe fallback even when the
-    server has a retained keyframe available
-- current command also computes `real_four_view_preview_target_timestamp()`
-  once before the preview loop and reuses that fixed target for all ticks
-  - this differs from the 2-real preview loop, which recomputes targetTime per
-    tick through a target timestamp hook
+- current command now accepts an optional preview-mode override:
+  - `preview-oldest`
+  - `preview-latest`
+  - `preview-latest-decodable`
+- recommended rerun mode is:
+  - `preview-latest-decodable`
+  - this maps to switcher targetTime mode
+    `PreviewLatestDecodableIfAtOrBefore`
+  - this maps to named-pipe handoff read mode `InspectLatestDecodable`
+  - that allows the same retained-keyframe fallback used by the 2-client PASS
+- omitted preview mode remains backward-compatible:
+  - default is still `preview-latest`
+- current command now recomputes `real_four_view_preview_target_timestamp()`
+  on each preview tick through the same target timestamp hook shape used by the
+  2-real preview loop
 
 ### Clients
 
@@ -533,7 +537,7 @@ Current 2-real preview path:
   - otherwise return no decodable frame
 - the 2-real loop recomputes targetTime on each preview tick.
 
-Current 4-real preview path:
+4-real preview path at the time of the latest human run on 2026-05-13:
 
 - CLI:
   - `--four-view-four-real-handoff-preview-loop`
@@ -550,6 +554,19 @@ Current 4-real preview path:
   does not use the retained keyframe as the selected response frame
 - the 4-real loop computes `real_four_view_preview_target_timestamp()` once
   before the loop and reuses it for all `180` ticks.
+
+Current 4-real preview path after the 2026-05-13 parity implementation:
+
+- CLI:
+  - `--four-view-four-real-handoff-preview-loop ... [preview-oldest|preview-latest|preview-latest-decodable]`
+- omitted preview mode keeps:
+  - `preview-latest`
+  - `PreviewLatestIfAtOrBefore`
+  - `InspectLatest`
+- `preview-latest-decodable` now maps to:
+  - `PreviewLatestDecodableIfAtOrBefore`
+  - `InspectLatestDecodable`
+- the 4-real loop now recomputes targetTime per preview tick.
 
 `WaitingForFrameAtOrBeforeTarget` condition:
 
@@ -587,43 +604,38 @@ The strongest current interpretation is:
   the server had fallback material available; it does not mean the 4-real
   command asked the server to use that fallback
 
-Therefore the next implementation should be a narrow switcher CLI/path slice,
-not a server/client/handoff transport change.
+Therefore the current next step is a same-PC rerun with the updated 4-real
+switcher path, not a server/client/handoff transport change.
 
-## Next Minimal Implementation Slice
+## Implemented Parity Slice
 
-Preferred next slice:
+Completed on 2026-05-13:
 
-1. Add an optional preview-mode argument to
-   `--four-view-four-real-handoff-preview-loop`:
-   - `preview-oldest`
-   - `preview-latest`
-   - `preview-latest-decodable`
-2. Keep backward compatibility:
-   - omitted argument keeps today's `preview-latest` behavior unless the
-     validation recipe explicitly chooses a new default in docs
-3. Wire the selected mode through the 4-real loop in the same shape as the
-   current 2-real loop:
-   - targetTime mode via `preview_target_time_mode_from_switcher_mode`
-   - handoff read mode via the existing
-     `SwitcherSingleClientQueueSourceMode` mapping
-4. Recompute targetTime per tick for the 4-real path, matching the current
-   2-real `target_timestamp_hook` behavior.
-5. Re-run same-PC 4-client validation with:
-   - `preview-latest-decodable`
-6. Keep these explicitly out of scope for that slice:
-   - retry/backoff manager
-   - persistent decoder context
-   - OBS WebSocket / advanced OBS control
-   - generic N-view refactor
-   - protocol wire-format changes
+- optional preview-mode argument added to
+  `--four-view-four-real-handoff-preview-loop`:
+  - `preview-oldest`
+  - `preview-latest`
+  - `preview-latest-decodable`
+- backward compatibility kept:
+  - omitted argument still means `preview-latest`
+- selected mode is now wired through the 4-real loop in the same shape as the
+  2-real loop:
+  - targetTime mode via `preview_target_time_mode_from_switcher_mode`
+  - handoff read mode via the existing
+    `SwitcherSingleClientQueueSourceMode` mapping
+- the 4-real loop now recomputes targetTime per tick, matching the 2-real
+  `target_timestamp_hook` behavior
+- final switcher summary now exposes:
+  - `preview_mode`
+  - `read_mode`
 
-Alternative, narrower but less explicit:
+Still explicitly out of scope for this slice:
 
-- make the 4-real validation command default to the 2-real PASS-equivalent
-  `preview-latest-decodable` behavior
-- only choose this if preserving the exact current 4-real `preview-latest`
-  behavior is not useful for validation
+- retry/backoff manager
+- persistent decoder context
+- OBS WebSocket / advanced OBS control
+- generic N-view refactor
+- protocol wire-format changes
 
 ## Known Risks
 
@@ -632,10 +644,9 @@ Alternative, narrower but less explicit:
   - `4` encoders
   - `4` auth/send streams
   - `4` real switcher decode/render paths
-- the all-real `4`-slot preview command does not expose the
-  `preview-latest-decodable` override used in the 2-real concurrent PASS
-- the all-real `4`-slot preview command currently uses a fixed targetTime for
-  the full loop, unlike the 2-real command's per-tick targetTime recomputation
+- the latest 4-client human evidence from `2026-05-13` was collected before
+  the parity slice above landed, so a rerun is still required to prove the new
+  path on real logs
 - startup `NoFrame` traffic scales with `4` real slots, so operator timing and
   request-budget headroom matter more than in the 2-client phase
 - switcher persistent decoder context is still out of scope, so a final-state
@@ -652,14 +663,13 @@ Alternative, narrower but less explicit:
 - generic N-view refactor
 - protocol or architecture changes
 - re-opening the 2-client concurrent PASS judgment
-- implementation changes for this phase before one run is classified
+- further implementation changes before the rerun with
+  `preview-latest-decodable` is classified
 
 ## Expected Next Step After This Preparation
 
-1. Implement the smallest 4-real switcher preview-mode / per-tick targetTime
-   slice described above.
-2. Re-run the same-PC 4-client all-real concurrent recipe with
+1. Re-run the same-PC 4-client all-real concurrent recipe with
    `preview-latest-decodable`.
-3. Record the full client/server/switcher stdout evidence and reclassify the
+2. Record the full client/server/switcher stdout evidence and reclassify the
    result before touching retry/backoff, persistent decoder context,
    distributed-PC validation, or OBS control.
