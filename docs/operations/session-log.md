@@ -2,6 +2,78 @@
 
 ## 2026-05-13
 ### Type
+- Codex docs/design update
+
+### Work
+- Reviewed the requested repo-local inputs before editing:
+  - `AGENTS.md`
+  - `docs/operations/four-client-validation.md`
+  - `docs/operations/obs-capture-validation.md`
+  - `docs/operations/concurrent-handoff-runtime-plan.md`
+  - `docs/operations/todo.md`
+  - `docs/operations/session-log.md`
+  - `docs/architecture/system-design.md`
+- Kept the existing checkpoints fixed:
+  - same-PC `4`-client all-real functional PASS:
+    - `manual-logs/four-client-20260513-184503`
+  - OBS capture PASS:
+    - `manual-logs/obs-capture-20260513-190909`
+- Added a dedicated next-phase source of truth:
+  - `docs/operations/distributed-pc-validation.md`
+- Defined the distributed-PC phase as:
+  - `server + switcher + OBS` on the streaming PC
+  - one or more remote clients on other PCs
+  - same-PC saturation follow-up kept separate from the first distributed
+    planning gate
+- Fixed the docs for the next phase:
+  - distributed validation purpose
+  - recommended PC topology
+  - Stage A / B / C rollout, with Stage A `1` remote client first
+  - network prerequisites:
+    - server bind
+    - remote client `server_host`
+    - firewall
+    - UDP `5000`
+    - `run_id` / `shared_token` / `client_id` consistency
+  - launch order
+  - server / switcher / client command shape
+  - summary-required run versus longer OBS-operation run
+  - success criterion
+  - failure classification
+  - pasted-back evidence shape
+  - long-run switcher final-summary handling
+- Updated the existing OBS and 4-client docs so they now point to the new
+  distributed-PC planning doc and explicitly keep these judgments separate:
+  - OBS capture PASS
+  - same-PC runtime PARTIAL under saturation
+  - switcher final summary missing on long OBS run is not by itself an OBS
+    failure
+- Updated `todo.md` so the next operator work now starts from:
+  - Stage A distributed-PC summary-required run
+  - then a separate longer distributed OBS-operation run
+
+### Decision
+- The next source of truth should now be distributed-PC planning, not another
+  same-PC rerun.
+- The first distributed actual run should be Stage A with exactly `1` remote
+  client.
+- Functional summary-required runs and longer OBS-operation runs should be
+  treated as separate run shapes.
+- Missing switcher final summary on a long OBS-operation run must not roll back
+  OBS capture PASS by itself.
+
+### Changed Files
+- `docs/operations/distributed-pc-validation.md`
+- `docs/operations/four-client-validation.md`
+- `docs/operations/obs-capture-validation.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### Validation
+- `git diff --check`
+
+## 2026-05-13
+### Type
 - Codex docs update
 
 ### Work

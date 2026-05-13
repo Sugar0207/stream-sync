@@ -21,6 +21,8 @@
 - Latest pasted-back OBS capture validation is recorded separately below:
   - OBS capture itself: PASS
   - StreamSync runtime: PARTIAL
+- The next-phase source of truth after this result is:
+  - `docs/operations/distributed-pc-validation.md`
 
 ## Latest Pasted-Back Result
 
@@ -73,6 +75,17 @@ Classification for this run:
   - switcher final summary was not collected because the switcher did not exit within `360` seconds
 - this does not roll back the earlier same-PC `4`-client all-real PASS from
   `manual-logs/four-client-20260513-184503`
+
+## Position After The Latest Result
+
+- Keep the OBS capture side as `PASS`.
+- Keep the same-PC runtime side as `PARTIAL`.
+- Do not treat missing switcher final summary from this long run as an OBS
+  capture failure by itself.
+- Treat `client2` / `client3` `EncodeFailure`, `16-18fps`, and very low
+  switcher FPS as same-PC saturation follow-up evidence.
+- Move the next docs-first step to:
+  - `docs/operations/distributed-pc-validation.md`
 
 ## Validation Purpose
 
@@ -421,10 +434,33 @@ obs_preview_screenshot=<path or pasted image>
 notes=<short human observation>
 ```
 
+## Long Run Summary Handling
+
+This OBS doc keeps two judgments separate:
+
+- OBS capture result
+- switcher final-summary recovery
+
+Rule:
+
+- a long OBS-operation run may still be `OBS capture PASS` even if the
+  switcher final summary is not recovered within the local wait window
+
+Preferred handling:
+
+1. use a short bounded run when switcher final summary is the main gate
+2. use a longer run when the operator needs more OBS interaction time
+3. if both are needed, do two runs instead of forcing one long run to serve
+   both purposes
+
+The distributed-PC phase follows the same separation rule in:
+
+- `docs/operations/distributed-pc-validation.md`
+
 ## Not In Scope Yet
 
 - OBS WebSocket / advanced OBS control
-- distributed-PC validation
+- distributed-PC actual run before the planning doc is applied
 - persistent decoder context work
 - retry/backoff manager work
 - generic N-view refactor

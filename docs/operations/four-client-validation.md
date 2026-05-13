@@ -30,7 +30,7 @@
 - Same-PC saturation is still a known follow-up:
   - client effective output FPS landed in the `19-20fps` band
 - The immediate next-step source of truth is now:
-  - `docs/operations/obs-capture-validation.md`
+  - `docs/operations/distributed-pc-validation.md`
 - The remaining follow-up target is:
   - OBS capture follow-up
   - distributed-PC validation
@@ -600,14 +600,15 @@ The strongest current interpretation is:
   `19-20fps` band
 
 Therefore the current next step is follow-up work on distributed-PC
-validation, OBS capture behavior, and same-PC performance, not another 4-client
-rerun.
+validation and same-PC performance, not another 4-client rerun.
 
 The immediate docs-first follow-up within that set is:
 
-- `docs/operations/obs-capture-validation.md`
-- reuse the latest PASS runtime baseline from
+- `docs/operations/distributed-pc-validation.md`
+- keep the same-PC `4`-client functional PASS fixed on
   `manual-logs/four-client-20260513-184503`
+- keep the OBS capture PASS fixed on
+  `manual-logs/obs-capture-20260513-190909`
 - keep OBS WebSocket / advanced OBS control out of scope
 
 ## Implemented Parity Slice
@@ -675,7 +676,10 @@ Still explicitly out of scope for this slice:
 
 1. Treat the latest same-PC 4-client all-real run as PASS and use it as the
    current validation checkpoint.
-2. Use `docs/operations/obs-capture-validation.md` as the next manual
-   follow-up source of truth for downstream `Window Capture` validation.
-3. After the OBS capture result is classified, move follow-up work to
-   distributed-PC validation and same-PC performance tuning.
+2. Treat the OBS capture result from `manual-logs/obs-capture-20260513-190909`
+   as `OBS capture PASS / same-PC runtime PARTIAL` without rolling back the
+   functional PASS checkpoint.
+3. Use `docs/operations/distributed-pc-validation.md` as the next manual
+   follow-up source of truth.
+4. Keep same-PC saturation as a separate performance follow-up after the
+   distributed-PC phase is classified.
