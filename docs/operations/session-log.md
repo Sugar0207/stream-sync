@@ -2,6 +2,64 @@
 
 ## 2026-05-13
 ### Type
+- Codex docs update + switcher summary semantics review
+
+### Work
+- Reviewed the requested repo-local inputs before making any change:
+  - `AGENTS.md`
+  - `docs/operations/concurrent-handoff-runtime-plan.md`
+  - `docs/operations/two-client-handoff-validation.md`
+  - `docs/operations/todo.md`
+  - `docs/operations/session-log.md`
+- Re-checked the latest same-PC concurrent evidence from:
+  - `manual-logs/handoff-20260513-075344`
+- Confirmed the switcher summary counter behavior directly from
+  `apps/switcher/src/main.rs`:
+  - `frames_attempted` increments once per
+    `--four-view-two-real-handoff-preview-loop` tick
+  - `frames_rendered` increments only when the clean output window result is
+    `Rendered`
+  - `render_failures` increments only for explicit `RenderFailed`
+  - `NoRenderableQuadView` and other non-`Rendered` clean-output results are
+    excluded from `frames_rendered`
+- Confirmed by current switcher tests that:
+  - 2-real + 2-placeholder ticks can still render 1:1
+  - waiting / no-render ticks can leave `frames_attempted` higher than
+    `frames_rendered`
+  - placeholder-only ticks stay explicit as `NoRenderableQuadView`
+- Updated the concurrent runtime plan, staged handoff validation notes, and
+  TODO so the repo now treats `frames_rendered=126/180` as completion-count
+  observability instead of a hidden failure.
+
+### Decision
+- `frames_rendered` is a clean-output `Rendered` success count, not a count of
+  all preview-loop ticks.
+- Fixed placeholder slots `2` and `3` are not, by themselves, the reason the
+  latest rerun stopped at `126/180`; the gap indicates non-render ticks such
+  as warm-up / no-frame / waiting / other non-`Rendered` clean-output outcomes.
+- For the concurrent 2-client validation, the repo should keep
+  `frames_rendered` as observability and use this final-state-based success
+  gate:
+  - no final `HandoffError`
+  - final real slots `Selected`
+  - final real-slot `handoff_response_kind=FrameRead`
+  - final real-slot `io_error=none`
+  - `render_failures=0`
+  - `clean_output_render_result_kind=Rendered`
+
+### Changed Files
+- `docs/operations/concurrent-handoff-runtime-plan.md`
+- `docs/operations/two-client-handoff-validation.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### Validation
+- repo-local code review of `apps/switcher/src/main.rs`
+- repo-local test review for current switcher preview-loop semantics
+- `git diff --check`
+
+## 2026-05-13
+### Type
 - Human rerun evidence review + Codex docs update
 
 ### Work

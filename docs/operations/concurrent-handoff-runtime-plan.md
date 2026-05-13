@@ -83,36 +83,38 @@
     - concurrent server closeout remains PASS
     - client send / server queue / handoff read remain PASS
     - final real-slot selection/renderability remains PASS
-    - full switcher completion is not yet PASS under the previous strict
-      criterion because `frames_rendered=126`, not `180`
-- Current next gate is now the narrow completion-count / summary-semantics
-  follow-up:
-  - confirm whether `NoFrameAvailable` / placeholder ticks are supposed to be
-    excluded from `frames_rendered`
-  - if `frames_rendered < frames_attempted` can be normal in the current
-    design, consider revising the success condition to:
-    - no final `HandoffError`
-    - final real slots `Selected`
-    - `render_failures=0`
-    - `clean_output_render_result_kind=Rendered`
-  - if full render count is actually required, keep the strict completion gate
-    and adjust switcher start timing, client start timing, planned frame
-    count, or warm-up handling in the next human rerun
-  - avoid mixing this follow-up with 4-client expansion, OBS WebSocket,
-    persistent decoder context, or retry/backoff work
+    - switcher summary semantics review now confirms:
+      - `frames_attempted` increments once per preview-loop tick
+      - `frames_rendered` increments only when the clean output window result
+        reaches `Rendered`
+      - fixed placeholder slots `2` and `3` do not by themselves reduce
+        `frames_rendered`; 2-real + 2-placeholder ticks still render when at
+        least one renderable quad view exists
+      - non-render ticks are excluded from `frames_rendered`, including
+        `NoRenderableQuadView` and other clean-output results that are not
+        `Rendered`
+    - latest `frames_rendered=126/180` is therefore expected completion-count
+      semantics, not hidden render failure
+- Current concurrent success gate after the semantics review:
+  - no final `HandoffError`
+  - final real slots `Selected`
+  - final real-slot `handoff_response_kind=FrameRead`
+  - final real-slot `io_error=none`
+  - `render_failures=0`
+  - `clean_output_render_result_kind=Rendered`
+  - keep `frames_rendered` as warm-up / coverage observability, not as a
+    strict pass/fail equality gate against `frames_attempted`
 - Validation ordering rule:
   - prefer server lifetime longer than the switcher validation window
   - if the latest final switcher state is clean but
-    `frames_rendered < frames_attempted`, treat that first as a completion-count
-    semantics follow-up rather than as a server failure
+    `frames_rendered < frames_attempted`, treat that as completion-count
+    observability rather than as a server failure by itself
   - if a future rerun reintroduces a final `HandoffError`, keep the server
     closeout PASS separate from that switcher lifecycle result
 - Operator ordering rule for manual validation:
   - keep `receive_timeout_ms`, `max_runtime_duration_ms`, and overall server
     lifetime longer than the switcher validation window whenever possible
-  - first confirm summary-field semantics before changing code or broadening
-    the PASS criterion
-  - if a new human rerun is still needed after that semantics check, adjust
+  - if a new human rerun is still needed, adjust
     switcher start timing, client start timing, planned frame count, or
     warm-up handling before touching retry/backoff, graceful-end
     implementation, or persistent decoder context
@@ -387,14 +389,15 @@ Client2:
 - server ready line is printed before clients start sending
 - switcher can connect after server start, before client traffic finishes
 - final server summary shows `frame_read_count > 0`
-- real slots reach `FrameRead`
+- no final `HandoffError`
+- final real slots reach `FrameRead` and end as `Selected`
 - `frames_rendered > 0`
 - `render_failures=0`
+- final `clean_output_render_result_kind=Rendered`
 - concurrent server stopped summary shows handoff traffic was actually served
 - staged command regressions remain green
-- current strict full-completion interpretation still treats
-  `frames_rendered=frames_attempted` as a stronger PASS signal until the
-  summary-field semantics are confirmed
+- `frames_rendered=frames_attempted` is optional stronger evidence for warm-up
+  efficiency, not a required PASS criterion
 
 ## Known Limits
 - current preview path is still retained-keyframe-friendly, not a full latest

@@ -40,15 +40,20 @@ Current follow-up note:
   - `manual-logs/handoff-20260513-075344`
 - that rerun resolved the previous final switcher `HandoffError` /
   `os_error_2` follow-up after server lifetime was extended
-- the remaining narrow follow-up is not server closeout anymore:
-  - it is whether `frames_rendered=126` against `frames_attempted=180` should
-    still block a full switcher-completion PASS
-- next narrow follow-up for the concurrent path:
-  - confirm the summary-field semantics first, especially whether
-    `NoFrameAvailable` / placeholder ticks are excluded from
-    `frames_rendered`
-  - only after that decide whether to revise the success condition or tune
-    switcher/client timing and warm-up handling for another human rerun
+- switcher summary semantics review now confirms:
+  - `frames_attempted` increments once per preview-loop tick
+  - `frames_rendered` increments only when the clean output window result is
+    actually `Rendered`
+  - fixed placeholder slots `2` and `3` do not by themselves lower
+    `frames_rendered`; 2-real + 2-placeholder ticks can still render 1:1
+- latest `frames_rendered=126` against `frames_attempted=180` is therefore not
+  a hidden failure by itself; it is completion-count observability for warm-up
+  / no-render ticks
+- next concurrent follow-up is no longer a semantics check:
+  - keep the concurrent success condition focused on final real-slot state and
+    clean output renderability
+  - only tune switcher/client timing and warm-up handling if a future human
+    rerun needs a higher rendered/attempted ratio
 
 ## Positioning
 
@@ -407,6 +412,22 @@ Primary fields from `--four-view-two-real-handoff-preview-loop`:
 - `window_title`
 - `output_width`
 - `output_height`
+
+Current summary semantics:
+
+- `frames_attempted`
+  - increments once per preview-loop tick
+  - this is the requested loop count, not a render-success count
+- `frames_rendered`
+  - increments only when the clean output window result reaches `Rendered`
+  - it excludes `NoRenderableQuadView` and other non-`Rendered` clean-output
+    results
+- placeholder slots
+  - slots `2` and `3` stay `NoFrameAvailable` by design in this command
+  - those placeholders can still coexist with a rendered tick when at least
+    one renderable quad view exists
+  - therefore `slot2/slot3` being placeholders is not, by itself, a reason
+    for `frames_rendered < frames_attempted`
 
 `slot_diagnostics` is the main per-slot drill-down surface. It already carries:
 
@@ -1108,23 +1129,23 @@ Current concurrent rerun gate:
   - `clean_output_render_result_kind=Rendered`
   - interpret this as evidence that extending server lifetime avoided the
     previous final `HandoffError` / `os_error_2`
-- completion-count follow-up remains open:
-  - under the previous strict criterion, this is not yet a full
-    switcher-completion PASS because `frames_rendered=126`, not `180`
-- narrow follow-up:
-  - confirm whether `NoFrameAvailable` / placeholder ticks are counted in
-    `frames_attempted` but excluded from `frames_rendered`
-  - if `frames_rendered < frames_attempted` can be normal in the current
-    design, consider revising the concurrent success condition to:
-    - no final `HandoffError`
-    - final real slots `Selected`
-    - `render_failures=0`
-    - `clean_output_render_result_kind=Rendered`
-  - if full render count is actually required, keep the strict completion
-    interpretation and adjust switcher start timing, client start timing,
-    planned frame count, or warm-up handling in the next human rerun
-  - do not mix this with 4-client expansion, OBS WebSocket, persistent decoder
-    context, or retry/backoff work
+- summary semantics decision:
+  - `frames_attempted=180` is the preview-loop tick count
+  - `frames_rendered=126` is the count of ticks whose clean output window
+    result reached `Rendered`
+  - `render_failures=0` plus final `clean_output_render_result_kind=Rendered`
+    can therefore coexist with `frames_rendered < frames_attempted`
+  - fixed placeholder slots `2` and `3` are not enough to explain the gap,
+    because the current design can still render 2-real + 2-placeholder ticks
+- concurrent success condition after this review:
+  - no final `HandoffError`
+  - final real slots `Selected`
+  - final real-slot `handoff_response_kind=FrameRead`
+  - final real-slot `io_error=none`
+  - `render_failures=0`
+  - `clean_output_render_result_kind=Rendered`
+  - keep `frames_rendered` as warm-up / coverage observability instead of a
+    strict equality gate against `frames_attempted`
 - current fix status:
   - receive-side natural closeout now wakes the local named-pipe accept loop
     and requests handoff shutdown
@@ -1139,12 +1160,12 @@ Current concurrent rerun gate:
   - `cargo test --workspace`
   - `git diff --check`
 - next narrow gate after this rerun:
-  - inspect the switcher summary-field semantics before any code change
-  - then choose exactly one path:
-    - keep the current strict completion criterion and prepare a timing /
-      warm-up adjusted human rerun
-    - or revise the success condition if the current design already treats
-      `frames_rendered < frames_attempted` as normal
+  - use the final-state-based concurrent success condition above for the next
+    human rerun
+  - if the operator wants a higher rendered/attempted ratio, tune switcher
+    start timing, client start timing, planned frame count, or warm-up
+    handling without mixing in 4-client expansion, OBS WebSocket, persistent
+    decoder context, or retry/backoff work
 
 ## Failure Paste-Back Template
 
