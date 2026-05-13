@@ -23,7 +23,8 @@
 
 ## 現在位置
 - latest same-PC `4`-client all-real concurrent validation は `manual-logs/four-client-20260513-184503` を latest evidence として PASS 判定にした。server ready / stopped summary、client1..4 auth/send、server queue participation、named-pipe handoff transport は PASS しており、final switcher state は `AllSelected` / `Selected|Selected|Selected|Selected`、`clean_output_render_result_kind=Rendered`、`preview_mode=preview-latest-decodable`、`read_mode=inspect-latest-decodable` だった。same-PC saturation は残っており、client effective output fps は `19.732|20.201|20.299|20.040` まで落ちた
-- 2026-05-13 の narrow switcher parity slice は 184503 の PASS で実地確認まで完了した。`--four-view-four-real-handoff-preview-loop` は optional preview mode `[preview-oldest|preview-latest|preview-latest-decodable]` を受け付け、`preview-latest-decodable` で `PreviewLatestDecodableIfAtOrBefore` / `InspectLatestDecodable` を使える。retained-keyframe fallback は 2-client PASS path と同じ read-mode mapping に揃い、4-real targetTime も tick ごとに再計算される。summary には `preview_mode` / `read_mode` も出る。`frames_rendered=137/180` は completion-count observability であり、次の follow-up は distributed-PC validation / OBS capture / same-PC performance tuning である
+- 2026-05-13 の narrow switcher parity slice は 184503 の PASS で実地確認まで完了した。`--four-view-four-real-handoff-preview-loop` は optional preview mode `[preview-oldest|preview-latest|preview-latest-decodable]` を受け付け、`preview-latest-decodable` で `PreviewLatestDecodableIfAtOrBefore` / `InspectLatestDecodable` を使える。retained-keyframe fallback は 2-client PASS path と同じ read-mode mapping に揃い、4-real targetTime も tick ごとに再計算される。summary には `preview_mode` / `read_mode` も出る。`frames_rendered=137/180` は completion-count observability であり、次の docs-first follow-up は OBS capture validation、その後に distributed-PC validation と same-PC performance tuning を置く
+- latest same-PC `4`-client PASS 後の downstream `Window Capture` follow-up source of truth も追加した。`docs/operations/obs-capture-validation.md` は `manual-logs/four-client-20260513-184503` を runtime baseline にして、OBS 側の目的、manual checklist、success criterion、failure classification、pasted-back evidence shape を整理する。OBS WebSocket / advanced OBS control はこの step でも引き続き out of scope にする
 - same-PC 2-client concurrent validation は `manual-logs/handoff-20260513-134658` を latest PASS evidence として closed にした。次 phase は rerun ではなく docs-first の `4`-client all-real validation preparation で、source of truth は `docs/operations/four-client-validation.md` とする
 - `4`-client validation の初期方針も固定した。distributed-PC より same-PC first を優先し、server + switcher + client1..4 を同一 Windows PC 上で動かす stress validation として扱う。main path は concurrent server `--receive-auth-video-queue-and-serve-handoff-continuous` + switcher `--four-view-four-real-handoff-preview-loop` + client1..4 bounded persistent/deadline send で、PASS criterion は final all-real slot state / clean output renderability / per-client queue participation を主 gate にする
 - latest concurrent human validation では `receive_ready=true` / `handoff_ready=true` / `runtime_mode=concurrent` は PASS したが、receive side が expected-threshold `0` を disabled ではなく stop判定に混ぜていた。実際の失敗 shape は `stop_reason=MaxHandoffRequestsReached` / `receive_stop_reason=ReassembledFramesThresholdReached` / `packets_received=1` / `frames_queued=0` / `frame_read_count=0` で、client 側は `frames_sent=900` まで進んでいたため、auth failure でも encoder failure でもなく concurrent receive closeout semantics の問題として扱う
@@ -213,22 +214,21 @@
 ---
 
 ## 直近でやること
-1. `docs/operations/concurrent-handoff-runtime-plan.md` の first validation command で same-PC 2-client concurrent handoff runtime を人間が rerun する
-   - server ready line で `receive_ready=true` / `handoff_ready=true` / `runtime_mode=concurrent` を確認する
-   - server command は `max_handoff_requests=2000` を使い、`max_runtime_duration_ms` を主な closeout bound とする
-   - ready line で `expected_reassembled_frames_enabled=false` / `expected_clients_enabled=false` / `expected_per_client_frames_enabled=false` を確認する
-   - switcher は client 送信完了前から `preview-latest-decodable` で接続しておく
-   - real slots で `handoff_response_kind=FrameRead` または final `frames_rendered > 0` を確認する
-2. server stopped summary の `handoff_requests` / `frame_read_count` / `decodable_source_counts` / `retained_keyframe_clients` / `stop_reason` を確認し、first concurrent slice を PASS か narrow follow-up か判定する
-   - `frame_read_count > 0` を PASS gate とする
-   - `packets_received > 1` を合わせて確認する
-   - `receive_stop_reason=ReassembledFramesThresholdReached` は concurrent disabled-threshold regression として扱う
-   - `handoff_requests=max_handoff_requests` かつ `frame_read_count=0` / `packets_received=0` は early NoFrame budget exhaustion として扱う
-3. concurrent slice が通ったら次の候補を整理する
-   - switcher persistent decoder context
-   - latest non-IDR continuous decode progression
-   - 4-client preparation
-   - OBS capture validation
+1. `docs/operations/obs-capture-validation.md` を source of truth にして、same-PC `4`-client all-real PASS runtime の downstream OBS `Window Capture` を人間が確認する
+   - `manual-logs/obs-capture-<timestamp>` を作り、`server` / `switcher` / `client1..4` の stdout evidence を回収する
+   - OBS では window title `StreamSync 4-view Output` を選ぶ
+   - OBS preview screenshot と目視結果を貼り返す
+2. 結果を先に failure classification へ落とす
+   - `StreamSync window not found`
+   - `OBS captures black screen`
+   - `OBS captures wrong window`
+   - `StreamSync window exists but no rendered content`
+   - `4 slots not visible`
+   - `same-PC performance saturation`
+3. OBS follow-up の結果に応じて次の narrow step を決める
+   - PASS なら distributed-PC validation 準備へ進む
+   - FAIL なら output/capture surface の narrow follow-up を切る
+   - same-PC saturation は別の performance follow-up として残す
 
 ## 今後の大まかな指針
 - 残り todo は `MVP クリティカルパス`、`安定化 / 運用`、`future task` に分けて扱う
@@ -236,12 +236,11 @@
 - まずは「4人を real handoff で安定表示し続ける」ことを基準に優先度を決める
 
 ## 残り todo から見た推定 step
-- 目安は `3-5 step`。1 step は Codex と GPT の 1 往復で数える
-1. 人間が concurrent command の 2-client same-PC validation を rerun する
-2. rerun 結果に応じて concurrent request budget か receive/handoff behavior の narrow follow-up を入れる
-3. switcher persistent decoder context の有無を含む realtime preview 改善方針を確定する
-4. 4-client preparation を進める
-5. OBS Window Capture を含む実運用寄り validation を再確認する
+- 目安は `3-4 step`。1 step は Codex と GPT の 1 往復で数える
+1. 人間が `docs/operations/obs-capture-validation.md` の recipe で OBS capture follow-up を実施する
+2. 貼り返し結果を failure classification に落として PASS/FAIL を確定する
+3. PASS なら distributed-PC validation の手順と evidence shape を詰める
+4. same-PC saturation を separate performance follow-up として詰める
 
 ## MVP closeout 時点で blocker ではなかった future task
 - [ ] same-session bounded server lifecycle polish
@@ -1030,6 +1029,6 @@ continuous runtime first slice の blocker:
 - actual dashboard UI rendering remains unimplemented.
 
 ## Next Items
-1. distributed-PC validation の手順とログ回収を詰める
-2. OBS capture follow-up で switcher の Window Capture 連携を確認する
+1. OBS capture follow-up で same-PC `4`-client PASS window の `Window Capture` 連携を確認する
+2. distributed-PC validation の手順とログ回収を詰める
 3. same-PC performance follow-up で `19-20fps` 台の saturation を詰める

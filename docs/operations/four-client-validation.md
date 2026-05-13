@@ -29,9 +29,11 @@
   - retained-keyframe fallback was used in the final real-slot path
 - Same-PC saturation is still a known follow-up:
   - client effective output FPS landed in the `19-20fps` band
+- The immediate next-step source of truth is now:
+  - `docs/operations/obs-capture-validation.md`
 - The remaining follow-up target is:
-  - distributed-PC validation
   - OBS capture follow-up
+  - distributed-PC validation
   - same-PC performance follow-up
 
 ## Goal
@@ -66,8 +68,8 @@ The following conditions carry forward without reopening the 2-client PASS:
   - `pipe_name=streamsync-handoff-dev`
 - same client runtime profile:
   - `max_frames=900`
-  - `fragment_pacing_every=4`
-  - `fragment_pacing_delay_ms=2`
+  - `fragment_pacing_every=16`
+  - `fragment_pacing_delay_ms=1`
   - `--encoder-runtime persistent`
   - `--cadence-mode deadline`
 - same server receive profile:
@@ -114,7 +116,7 @@ Compared with the 2-client PASS, this phase must newly confirm:
 ### Server
 
 ```powershell
-.\target\debug\stream-sync-server.exe --receive-auth-video-queue-and-serve-handoff-continuous configs/manual/server.two-real-slots.toml streamsync-handoff-dev 4000 120000 360000 0 0 false 268435456 0 0
+.\target\debug\stream-sync-server.exe --receive-auth-video-queue-and-serve-handoff-continuous configs/manual/server.two-real-slots.toml streamsync-handoff-dev 4000 300000 600000 0 0 false 268435456 0 0
 ```
 
 Chosen shape:
@@ -123,11 +125,12 @@ Chosen shape:
   - gives headroom above the nominal `180 frames * 4 real slots = 720`
     request count
   - avoids repeating the earlier startup `NoFrame` request-budget failure shape
-- `receive_timeout_ms=120000`
-  - matches the latest 2-client PASS checkpoint
-- `max_runtime_duration_ms=360000`
-  - intentionally longer than the 2-client checkpoint because same-PC
-    `4`-client execution is expected to be heavier
+- `receive_timeout_ms=300000`
+  - this matches the latest `4`-client PASS baseline and leaves more headroom
+    for same-PC saturation plus manual downstream OBS capture work
+- `max_runtime_duration_ms=600000`
+  - this matches the latest `4`-client PASS baseline and keeps the server
+    lifetime comfortably above the bounded switcher validation window
 - all expected-threshold arguments remain disabled in this phase
   - the pass/fail gate comes from final state, not from staged bounded receive
 
@@ -589,6 +592,13 @@ Therefore the current next step is follow-up work on distributed-PC
 validation, OBS capture behavior, and same-PC performance, not another 4-client
 rerun.
 
+The immediate docs-first follow-up within that set is:
+
+- `docs/operations/obs-capture-validation.md`
+- reuse the latest PASS runtime baseline from
+  `manual-logs/four-client-20260513-184503`
+- keep OBS WebSocket / advanced OBS control out of scope
+
 ## Implemented Parity Slice
 
 Completed on 2026-05-13:
@@ -651,5 +661,7 @@ Still explicitly out of scope for this slice:
 
 1. Treat the latest same-PC 4-client all-real run as PASS and use it as the
    current validation checkpoint.
-2. Move the next follow-up to distributed-PC validation, OBS capture
-   verification, and same-PC performance tuning in that order.
+2. Use `docs/operations/obs-capture-validation.md` as the next manual
+   follow-up source of truth for downstream `Window Capture` validation.
+3. After the OBS capture result is classified, move follow-up work to
+   distributed-PC validation and same-PC performance tuning.

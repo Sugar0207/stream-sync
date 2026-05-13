@@ -2,6 +2,66 @@
 
 ## 2026-05-13
 ### Type
+- Codex docs/design update
+
+### Work
+- Reviewed the requested repo-local inputs before editing:
+  - `AGENTS.md`
+  - `docs/operations/four-client-validation.md`
+  - `docs/operations/concurrent-handoff-runtime-plan.md`
+  - `docs/operations/todo.md`
+  - `docs/operations/session-log.md`
+  - `docs/architecture/system-design.md`
+- Kept the latest same-PC `4`-client all-real concurrent PASS fixed on:
+  - `manual-logs/four-client-20260513-184503`
+- Added a dedicated next-step source of truth:
+  - `docs/operations/obs-capture-validation.md`
+- Reused the latest PASS runtime baseline in that doc:
+  - server ready/stopped summaries
+  - switcher final `AllSelected` / `Rendered` output summary
+  - `window_title=StreamSync 4-view Output`
+  - client1..4 send-gate evidence
+- Defined the OBS follow-up scope as manual downstream `Window Capture`
+  validation only:
+  - purpose
+  - OBS-side check items
+  - StreamSync launch conditions
+  - manual checklist
+  - success criterion
+  - failure classification
+  - pasted-back evidence shape
+- Kept these items explicitly out of scope:
+  - code changes
+  - OBS WebSocket / advanced OBS control
+  - distributed-PC validation in the same step
+  - persistent decoder context
+  - retry/backoff manager
+- Updated later-phase docs and status tracking:
+  - `docs/operations/four-client-validation.md`
+  - `docs/operations/todo.md`
+  - immediate next step is now OBS capture follow-up
+  - distributed-PC validation and same-PC saturation stay after that
+
+### Decision
+- The latest same-PC `4`-client PASS remains closed and should be reused as the
+  runtime baseline for the next manual OBS check.
+- The next step after that PASS is docs-first/manual OBS capture validation,
+  not another `4`-client rerun and not distributed-PC work yet.
+- Same-PC `19-20fps` saturation remains a follow-up, but it does not by itself
+  invalidate an OBS capture PASS when the capture/output surface is visually
+  correct.
+
+### Changed Files
+- `docs/operations/obs-capture-validation.md`
+- `docs/operations/four-client-validation.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### Validation
+- `git diff --check`
+
+## 2026-05-13
+### Type
 - Human rerun evidence update + Codex docs update
 
 ### Work
