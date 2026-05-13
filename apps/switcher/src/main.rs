@@ -1804,6 +1804,19 @@ struct SwitcherFourViewTwoRealHandoffPreviewLoopSummary {
     avg_decode_elapsed_ms: String,
     avg_handoff_elapsed_ms: String,
     avg_render_elapsed_ms: String,
+    loop_total_elapsed_ms: u128,
+    attempt_body_elapsed_ms: u128,
+    loop_sleep_elapsed_ms: u128,
+    frame_interval_wait_elapsed_ms: u128,
+    event_pump_elapsed_ms: u128,
+    window_update_elapsed_ms: u128,
+    quad_view_compose_elapsed_ms: u128,
+    render_call_elapsed_ms: u128,
+    unaccounted_elapsed_ms: u128,
+    avg_attempt_elapsed_ms: String,
+    max_attempt_elapsed_ms: u128,
+    slow_attempt_count: u32,
+    slow_attempt_threshold_ms: u128,
     scheduler_status: stream_sync_switcher::SwitcherFourViewTargetTimeHandoffSourceSchedulerStatus,
     slot_bindings: [String; 4],
     slot_result_kinds: [String; 4],
@@ -2161,6 +2174,15 @@ struct TwoRealPreviewLoopRuntimeTiming {
     decode_success_count: u32,
     render_elapsed_ms: u128,
     render_call_count: u32,
+    attempt_body_elapsed_ms: u128,
+    loop_sleep_elapsed_ms: u128,
+    frame_interval_wait_elapsed_ms: u128,
+    event_pump_elapsed_ms: u128,
+    window_update_elapsed_ms: u128,
+    quad_view_compose_elapsed_ms: u128,
+    render_call_elapsed_ms: u128,
+    max_attempt_elapsed_ms: u128,
+    slow_attempt_count: u32,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -2214,6 +2236,8 @@ struct PersistentWindowLifecycleSnapshot {
     persistent_window: bool,
     window_updates: u32,
     window_closed: bool,
+    event_pump_elapsed_ms: u128,
+    window_update_elapsed_ms: u128,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
@@ -2230,6 +2254,7 @@ struct ObsFriendlyFourViewLoopRenderMetadataSnapshot {
 struct ObsFriendlyFourViewLoopWindowRenderRuntime<'a, Runtime> {
     inner: &'a Runtime,
     metadata: Mutex<ObsFriendlyFourViewLoopRenderMetadataSnapshot>,
+    timing: Option<Rc<RefCell<TwoRealPreviewLoopRuntimeTiming>>>,
 }
 
 impl<'a, Runtime> ObsFriendlyFourViewLoopWindowRenderRuntime<'a, Runtime> {
@@ -2237,6 +2262,18 @@ impl<'a, Runtime> ObsFriendlyFourViewLoopWindowRenderRuntime<'a, Runtime> {
         Self {
             inner,
             metadata: Mutex::new(ObsFriendlyFourViewLoopRenderMetadataSnapshot::default()),
+            timing: None,
+        }
+    }
+
+    fn with_timing(
+        inner: &'a Runtime,
+        timing: Rc<RefCell<TwoRealPreviewLoopRuntimeTiming>>,
+    ) -> Self {
+        Self {
+            inner,
+            metadata: Mutex::new(ObsFriendlyFourViewLoopRenderMetadataSnapshot::default()),
+            timing: Some(timing),
         }
     }
 
@@ -2268,6 +2305,7 @@ where
         let output_height = scaled_frame.height;
         let bgra_payload_len = scaled_frame.pixels.len();
 
+        let window_update_start = Instant::now();
         let result = self
             .inner
             .render_once(stream_sync_switcher::SwitcherWindowRenderRequest {
@@ -2275,6 +2313,10 @@ where
                 title: request.title,
                 hold_millis: request.hold_millis,
             });
+        if let Some(timing) = &self.timing {
+            timing.borrow_mut().window_update_elapsed_ms +=
+                window_update_start.elapsed().as_millis();
+        }
 
         let (window_visible, window_capture_candidate) =
             four_view_clean_output_window_runtime_visibility_flags(&result);
@@ -3096,7 +3138,9 @@ where
     let mut clean_output_render_result_kind = "NoRenderableQuadView";
     let mut window_title = SWITCHER_FOUR_VIEW_CLEAN_OUTPUT_WINDOW_TITLE.to_string();
     let cadence = four_view_clean_output_window_loop_frame_cadence();
-    let obs_runtime = ObsFriendlyFourViewLoopWindowRenderRuntime::new(render_runtime);
+    let slow_attempt_threshold_ms = cadence.as_millis().saturating_mul(2).max(1);
+    let obs_runtime =
+        ObsFriendlyFourViewLoopWindowRenderRuntime::with_timing(render_runtime, Rc::clone(&timing));
     let timed_decode_runtime =
         TimedSwitcherH264DecodeRuntime::new(decode_runtime, Rc::clone(&timing));
     let mut previous_slots: [Option<SwitcherFourViewDisplayedSlot>; 4] =
@@ -3106,9 +3150,12 @@ where
     let loop_start = Instant::now();
 
     for frame_index in 0..frames.get() {
+        let attempt_start = Instant::now();
         handoff.begin_frame();
         let target_timestamp = target_timestamp_hook();
         let previous_slot_identities = decoded_slot_identities.clone();
+        let timing_before_validation = timing.borrow().clone();
+        let validation_start = Instant::now();
         let validation =
             run_four_view_real_handoff_preview_validation_with_runtime_and_handoff_and_previous_slots(
             &mut handoff,
@@ -3118,6 +3165,20 @@ where
             preview_target_time_mode_from_switcher_mode(read_mode),
             &timed_decode_runtime,
         );
+        let validation_elapsed_ms = validation_start.elapsed().as_millis();
+        let timing_after_validation = timing.borrow().clone();
+        let validation_handoff_elapsed_ms = timing_after_validation
+            .handoff_elapsed_ms
+            .saturating_sub(timing_before_validation.handoff_elapsed_ms);
+        let validation_decode_elapsed_ms = timing_after_validation
+            .decode_elapsed_ms
+            .saturating_sub(timing_before_validation.decode_elapsed_ms);
+        {
+            let mut timing = timing.borrow_mut();
+            timing.quad_view_compose_elapsed_ms += validation_elapsed_ms
+                .saturating_sub(validation_handoff_elapsed_ms)
+                .saturating_sub(validation_decode_elapsed_ms);
+        }
         let render_start = Instant::now();
         let clean_output = SwitcherFourViewCleanOutputWindowBoundary::default()
             .render_with_runtime(
@@ -3126,9 +3187,11 @@ where
                 },
                 &obs_runtime,
             );
+        let render_call_elapsed_ms = render_start.elapsed().as_millis();
         {
             let mut timing = timing.borrow_mut();
-            timing.render_elapsed_ms += render_start.elapsed().as_millis();
+            timing.render_elapsed_ms += render_call_elapsed_ms;
+            timing.render_call_elapsed_ms += render_call_elapsed_ms;
             timing.render_call_count += 1;
         }
 
@@ -3187,16 +3250,34 @@ where
             update_four_view_previous_slots_from_validation(&previous_slots, &validation);
         decoded_slot_identities = current_slot_identities;
 
+        let attempt_elapsed_ms = attempt_start.elapsed().as_millis();
+        {
+            let mut timing = timing.borrow_mut();
+            timing.attempt_body_elapsed_ms += attempt_elapsed_ms;
+            timing.max_attempt_elapsed_ms = timing.max_attempt_elapsed_ms.max(attempt_elapsed_ms);
+            if attempt_elapsed_ms > slow_attempt_threshold_ms {
+                timing.slow_attempt_count += 1;
+            }
+        }
+
         if frame_index + 1 < frames.get() {
+            let sleep_start = Instant::now();
             cadence_sleep.sleep(cadence);
+            let sleep_elapsed_ms = sleep_start.elapsed().as_millis();
+            let mut timing = timing.borrow_mut();
+            timing.loop_sleep_elapsed_ms += sleep_elapsed_ms;
+            timing.frame_interval_wait_elapsed_ms += sleep_elapsed_ms;
         }
     }
 
     render_runtime.close_persistent_window();
     let render_metadata = obs_runtime.metadata_snapshot();
+    let lifecycle = render_runtime.lifecycle_snapshot();
+    timing.borrow_mut().event_pump_elapsed_ms += lifecycle.event_pump_elapsed_ms;
     let timing = timing.borrow().clone();
+    let loop_total_elapsed_ms = loop_start.elapsed().as_millis();
     let fps_diagnostics = build_two_real_preview_loop_fps_diagnostics(
-        loop_start.elapsed().as_millis(),
+        loop_total_elapsed_ms,
         cadence,
         frames_attempted,
         frames_rendered,
@@ -3254,6 +3335,24 @@ where
             timing.render_elapsed_ms,
             timing.render_call_count,
         ),
+        loop_total_elapsed_ms,
+        attempt_body_elapsed_ms: timing.attempt_body_elapsed_ms,
+        loop_sleep_elapsed_ms: timing.loop_sleep_elapsed_ms,
+        frame_interval_wait_elapsed_ms: timing.frame_interval_wait_elapsed_ms,
+        event_pump_elapsed_ms: timing.event_pump_elapsed_ms,
+        window_update_elapsed_ms: timing.window_update_elapsed_ms,
+        quad_view_compose_elapsed_ms: timing.quad_view_compose_elapsed_ms,
+        render_call_elapsed_ms: timing.render_call_elapsed_ms,
+        unaccounted_elapsed_ms: loop_total_elapsed_ms
+            .saturating_sub(timing.attempt_body_elapsed_ms)
+            .saturating_sub(timing.loop_sleep_elapsed_ms),
+        avg_attempt_elapsed_ms: format_preview_loop_average_elapsed(
+            timing.attempt_body_elapsed_ms,
+            frames_attempted,
+        ),
+        max_attempt_elapsed_ms: timing.max_attempt_elapsed_ms,
+        slow_attempt_count: timing.slow_attempt_count,
+        slow_attempt_threshold_ms,
         scheduler_status,
         slot_bindings,
         slot_result_kinds,
@@ -5638,6 +5737,7 @@ fn windows_persistent_render_update(
     state: &Mutex<WindowsPersistentWindowState>,
     request: stream_sync_switcher::SwitcherWindowRenderRequest,
 ) -> SwitcherWindowRenderResult {
+    let window_update_start = Instant::now();
     use std::ptr::null_mut;
     use windows::core::{w, PCWSTR};
     use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
@@ -5768,14 +5868,18 @@ fn windows_persistent_render_update(
 
     let _ = unsafe { InvalidateRect(Some(hwnd), None, true) };
     let mut msg = MSG::default();
+    let event_pump_start = Instant::now();
     while unsafe { PeekMessageW(&mut msg, Some(hwnd), 0, 0, PM_REMOVE) }.as_bool() {
         unsafe {
             let _ = TranslateMessage(&msg);
             DispatchMessageW(&msg);
         }
     }
+    let event_pump_elapsed_ms = event_pump_start.elapsed().as_millis();
 
     state.lifecycle.window_updates += 1;
+    state.lifecycle.event_pump_elapsed_ms += event_pump_elapsed_ms;
+    state.lifecycle.window_update_elapsed_ms += window_update_start.elapsed().as_millis();
 
     SwitcherWindowRenderResult::Rendered(stream_sync_switcher::SwitcherWindowRenderSuccess {
         width: request.frame.width,
@@ -5974,7 +6078,7 @@ fn format_four_view_two_real_handoff_preview_loop_summary(
     summary: &SwitcherFourViewTwoRealHandoffPreviewLoopSummary,
 ) -> String {
     format!(
-        "switcher four-view two-real handoff preview loop command_name=--four-view-two-real-handoff-preview-loop real_handoff=true real_slot_count=2 real_slot0_index={} real_slot1_index={} pipe_name={} actual_pipe_path={} preview_mode={} read_mode={} client0_id={} run0_id={} client1_id={} run1_id={} frames_attempted={} frames_rendered={} render_failures={} elapsed_ms={} target_fps={} configured_frame_interval_ms={} effective_attempt_fps={} effective_render_fps={} first_render_attempt_index={} first_render_elapsed_ms={} rendered_after_first_render={} effective_render_fps_after_first_render={} no_render_before_first_render={} selected_count={} no_frame_count={} handoff_error_count={} decode_attempt_count={} decode_success_count={} render_success_count={} render_failure_count={} unchanged_frame_reuse_count={} skipped_decode_unchanged_frame_count={} redecoded_same_frame_count={} decode_elapsed_ms={} handoff_elapsed_ms={} render_elapsed_ms={} avg_decode_elapsed_ms={} avg_handoff_elapsed_ms={} avg_render_elapsed_ms={} scheduler_status={:?} slot_bindings={} slot_result_kinds={} slot_diagnostics={} clean_output_render_result_kind={} window_title={} output_width={} output_height={}",
+        "switcher four-view two-real handoff preview loop command_name=--four-view-two-real-handoff-preview-loop real_handoff=true real_slot_count=2 real_slot0_index={} real_slot1_index={} pipe_name={} actual_pipe_path={} preview_mode={} read_mode={} client0_id={} run0_id={} client1_id={} run1_id={} frames_attempted={} frames_rendered={} render_failures={} elapsed_ms={} target_fps={} configured_frame_interval_ms={} effective_attempt_fps={} effective_render_fps={} first_render_attempt_index={} first_render_elapsed_ms={} rendered_after_first_render={} effective_render_fps_after_first_render={} no_render_before_first_render={} selected_count={} no_frame_count={} handoff_error_count={} decode_attempt_count={} decode_success_count={} render_success_count={} render_failure_count={} unchanged_frame_reuse_count={} skipped_decode_unchanged_frame_count={} redecoded_same_frame_count={} decode_elapsed_ms={} handoff_elapsed_ms={} render_elapsed_ms={} avg_decode_elapsed_ms={} avg_handoff_elapsed_ms={} avg_render_elapsed_ms={} loop_total_elapsed_ms={} attempt_body_elapsed_ms={} loop_sleep_elapsed_ms={} frame_interval_wait_elapsed_ms={} event_pump_elapsed_ms={} window_update_elapsed_ms={} quad_view_compose_elapsed_ms={} render_call_elapsed_ms={} unaccounted_elapsed_ms={} avg_attempt_elapsed_ms={} max_attempt_elapsed_ms={} slow_attempt_count={} slow_attempt_threshold_ms={} scheduler_status={:?} slot_bindings={} slot_result_kinds={} slot_diagnostics={} clean_output_render_result_kind={} window_title={} output_width={} output_height={}",
         summary.real_slot0_index,
         summary.real_slot1_index,
         summary.pipe_name,
@@ -6014,6 +6118,19 @@ fn format_four_view_two_real_handoff_preview_loop_summary(
         summary.avg_decode_elapsed_ms,
         summary.avg_handoff_elapsed_ms,
         summary.avg_render_elapsed_ms,
+        summary.loop_total_elapsed_ms,
+        summary.attempt_body_elapsed_ms,
+        summary.loop_sleep_elapsed_ms,
+        summary.frame_interval_wait_elapsed_ms,
+        summary.event_pump_elapsed_ms,
+        summary.window_update_elapsed_ms,
+        summary.quad_view_compose_elapsed_ms,
+        summary.render_call_elapsed_ms,
+        summary.unaccounted_elapsed_ms,
+        summary.avg_attempt_elapsed_ms,
+        summary.max_attempt_elapsed_ms,
+        summary.slow_attempt_count,
+        summary.slow_attempt_threshold_ms,
         summary.scheduler_status,
         summary.slot_bindings.join("|"),
         summary.slot_result_kinds.join("|"),
@@ -8746,6 +8863,22 @@ mod tests {
         assert!(formatted.contains("avg_decode_elapsed_ms="));
         assert!(formatted.contains("avg_handoff_elapsed_ms="));
         assert!(formatted.contains("avg_render_elapsed_ms="));
+        assert!(formatted.contains("loop_total_elapsed_ms="));
+        assert!(formatted.contains("attempt_body_elapsed_ms="));
+        assert!(formatted.contains("loop_sleep_elapsed_ms="));
+        assert!(formatted.contains("frame_interval_wait_elapsed_ms="));
+        assert!(formatted.contains("event_pump_elapsed_ms="));
+        assert!(formatted.contains("window_update_elapsed_ms="));
+        assert!(formatted.contains("quad_view_compose_elapsed_ms="));
+        assert!(formatted.contains("render_call_elapsed_ms="));
+        assert!(formatted.contains("unaccounted_elapsed_ms="));
+        assert!(formatted.contains("avg_attempt_elapsed_ms="));
+        assert!(formatted.contains("max_attempt_elapsed_ms="));
+        assert!(formatted.contains("slow_attempt_count="));
+        assert!(formatted.contains("slow_attempt_threshold_ms=66"));
+        assert_eq!(summary.loop_total_elapsed_ms, summary.elapsed_ms);
+        assert!(summary.unaccounted_elapsed_ms <= summary.loop_total_elapsed_ms);
+        assert!(summary.render_call_elapsed_ms >= summary.window_update_elapsed_ms);
         assert!(formatted.contains("scheduler_status=PartialSelected"));
         assert!(formatted
             .contains("slot_result_kinds=NoFrameAvailable|Selected|NoFrameAvailable|Selected"));

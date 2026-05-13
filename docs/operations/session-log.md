@@ -5,6 +5,71 @@
 - Codex implementation
 
 ### Work
+- Investigated the remaining same-PC `2`-client switcher FPS bottleneck after
+  unchanged-frame decode skip.
+- Kept the existing unchanged-frame reuse behavior intact.
+- Added two-real preview loop final-summary timing fields for loop total,
+  attempt body, cadence sleep / frame-interval wait, event pump, window update,
+  quad-view compose / validation overhead, render call, unaccounted elapsed,
+  average attempt time, max attempt time, slow attempt count, and slow attempt
+  threshold.
+- Timed per-attempt body outside the cadence sleep path so the next rerun can
+  separate active switcher work from sleep / wait time.
+- Timed clean-output render calls and the inner persistent window update call
+  separately; Windows event-pump time is also accumulated from the persistent
+  window lifecycle when available.
+- Used saturating subtraction for derived compose/validation overhead and
+  unaccounted elapsed values.
+- Added focused summary-formatting / accounting assertions for the new fields.
+- Kept client encode/capture optimization, server stopped summary collection,
+  long OBS run evidence, and distributed-PC validation docs out of scope.
+
+### Changed Files
+- `apps/switcher/src/main.rs`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### Decisions
+- Preserve `elapsed_ms` as the existing loop elapsed field and add
+  `loop_total_elapsed_ms` beside it for explicit accounting.
+- Treat `attempt_body_elapsed_ms + loop_sleep_elapsed_ms` as the top-level
+  accounted loop time; nested fields such as decode/render/window update are
+  diagnostic sub-breakdowns and are not double-subtracted from
+  `unaccounted_elapsed_ms`.
+- Use `2 * configured frame interval` as the slow-attempt threshold for the
+  30fps loop, which currently reports `slow_attempt_threshold_ms=66`.
+
+### Unresolved
+- Needs another same-PC `2`-client rerun to identify whether the missing time is
+  sleep/wait, attempt body, window update/event pump, compose/validation, or
+  remaining unaccounted overhead.
+- Focused tests still depend on the local MSVC linker being present.
+
+### Next
+- Rerun the same-PC `2`-client smoke from `S:\stream-sync` and inspect the new
+  timing fields against the previous `elapsed_ms=49131` result.
+
+### TODO Update
+- Updated current position from "decode skip implemented" to "remaining
+  switcher FPS bottleneck now has detailed loop timing instrumentation".
+- Kept the immediate Next Item as a same-PC `2`-client rerun before returning
+  to distributed-PC validation.
+
+### Validation
+- `cargo fmt`
+- `cargo fmt --check` could not run to completion in this session: the
+  escalated run was rejected by the tool approval layer, and the non-escalated
+  sandbox runner timed out before command startup.
+- `cargo test -p stream-sync-switcher two_real_handoff_preview -- --nocapture`
+  could not run to completion in this session because the non-escalated sandbox
+  runner timed out before command startup. The previous environment issue
+  remains that focused switcher tests require an available MSVC `link.exe`.
+
+## 2026-05-14
+### Type
+- Codex implementation
+
+### Work
 - Investigated the same-PC `2`-client FPS rerun bottleneck in the switcher
   `--four-view-two-real-handoff-preview-loop`.
 - Confirmed the previous last-frame reuse only helped no-frame / waiting ticks;
