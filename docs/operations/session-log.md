@@ -2,6 +2,91 @@
 
 ## 2026-05-13
 ### Type
+- Codex docs/design update
+
+### Work
+- Reviewed the requested repo-local inputs before editing:
+  - `AGENTS.md`
+  - `docs/operations/concurrent-handoff-runtime-plan.md`
+  - `docs/operations/two-client-handoff-validation.md`
+  - `docs/operations/todo.md`
+  - `docs/operations/session-log.md`
+  - `docs/architecture/system-design.md`
+- Kept the 2-client same-PC concurrent PASS checkpoint fixed on:
+  - `manual-logs/handoff-20260513-134658`
+- Added a dedicated next-phase source of truth:
+  - `docs/operations/four-client-validation.md`
+- Fixed the next-phase scope as docs-first same-PC `4`-client all-real
+  concurrent validation preparation.
+- Recorded the intended command shape for the next run:
+  - server:
+    - `--receive-auth-video-queue-and-serve-handoff-continuous`
+    - `max_handoff_requests=4000`
+    - `receive_timeout_ms=120000`
+    - `max_runtime_duration_ms=360000`
+    - disabled expected thresholds
+  - switcher:
+    - `--four-view-four-real-handoff-preview-loop`
+    - `player1..player4`
+    - `frames=180`
+  - clients:
+    - `player1..player4`
+    - `max_frames=900`
+    - `--encoder-runtime persistent`
+    - `--cadence-mode deadline`
+- Recorded the next-phase validation order and startup order:
+  - server ready line first
+  - switcher second
+  - client1/client2/client3/client4 immediately after
+  - final client summaries
+  - final server stopped summary
+- Defined the next-phase success criterion:
+  - all four clients accepted and send `900` frames
+  - final server summary emitted with `frames_queued=3600`
+  - `per_client_queued_frames` includes all four scopes
+  - `retained_keyframe_clients=4`
+  - final switcher state:
+    - `scheduler_status=AllSelected`
+    - `slot_result_kinds=Selected|Selected|Selected|Selected`
+    - `render_failures=0`
+    - `clean_output_render_result_kind=Rendered`
+- Added explicit failure classification buckets:
+  - preflight/config
+  - startup/ready
+  - client auth/send
+  - server receive/queue
+  - handoff transport/runtime
+  - switcher selection/decode/render
+  - same-PC saturation
+- Kept these items explicitly out of scope for this phase:
+  - distributed-PC validation
+  - OBS WebSocket / advanced OBS control
+  - retry/backoff manager
+  - persistent decoder context
+  - generic N-view refactor
+  - any code change before one classified run
+
+### Decision
+- The 2-client concurrent PASS should remain closed and should not be re-run
+  unless regression evidence appears.
+- The next phase should be same-PC first `4`-client all-real concurrent
+  validation, not distributed-PC and not OBS control work.
+- The `4`-client phase should use a final-state-based PASS gate and classify
+  failures before any implementation change is proposed.
+
+### Changed Files
+- `docs/operations/four-client-validation.md`
+- `docs/operations/concurrent-handoff-runtime-plan.md`
+- `docs/operations/two-client-handoff-validation.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### Validation
+- repo-local docs/code review for current `4`-real command shape
+- `git diff --check`
+
+## 2026-05-13
+### Type
 - Human rerun evidence update + docs closure
 
 ### Work

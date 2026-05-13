@@ -980,12 +980,15 @@ Known limits that remain after this PASS:
 
 ## Next Design Step
 
-This 2-client concurrent validation is now closed. The next phase can move to
-one of:
+This 2-client concurrent validation is now closed.
 
-- 4-client all-real validation preparation
-- OBS capture validation follow-up
-- other later-phase work already listed in the repo
+The next phase is:
+
+- same-PC first `4`-client all-real validation preparation
+- source of truth:
+  - `docs/operations/four-client-validation.md`
+
+OBS capture follow-up remains later than that same-PC `4`-client phase.
 
 ## Concurrent Runtime Follow-Up
 

@@ -416,4 +416,6 @@ Client2:
 - current human validation should therefore prefer a larger request safety limit
   such as `2000` and use `max_runtime_duration_ms` as the main closeout bound
 - reconnect / daemon lifecycle polish remains deferred
-- 4-client and OBS validation remain later phases
+- the next later-phase source of truth is now:
+  - `docs/operations/four-client-validation.md`
+- OBS validation remains after that same-PC `4`-client phase

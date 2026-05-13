@@ -22,6 +22,8 @@
 ---
 
 ## 現在位置
+- same-PC 2-client concurrent validation は `manual-logs/handoff-20260513-134658` を latest PASS evidence として closed にした。次 phase は rerun ではなく docs-first の `4`-client all-real validation preparation で、source of truth は `docs/operations/four-client-validation.md` とする
+- `4`-client validation の初期方針も固定した。distributed-PC より same-PC first を優先し、server + switcher + client1..4 を同一 Windows PC 上で動かす stress validation として扱う。main path は concurrent server `--receive-auth-video-queue-and-serve-handoff-continuous` + switcher `--four-view-four-real-handoff-preview-loop` + client1..4 bounded persistent/deadline send で、PASS criterion は final all-real slot state / clean output renderability / per-client queue participation を主 gate にする
 - latest concurrent human validation では `receive_ready=true` / `handoff_ready=true` / `runtime_mode=concurrent` は PASS したが、receive side が expected-threshold `0` を disabled ではなく stop判定に混ぜていた。実際の失敗 shape は `stop_reason=MaxHandoffRequestsReached` / `receive_stop_reason=ReassembledFramesThresholdReached` / `packets_received=1` / `frames_queued=0` / `frame_read_count=0` で、client 側は `frames_sent=900` まで進んでいたため、auth failure でも encoder failure でもなく concurrent receive closeout semantics の問題として扱う
 - current fix では concurrent runtime の `expected_reassembled_frames=0` / `expected_clients=0` / `expected_per_client_frames=0` を disabled として扱うようにした。receive stop判定は enabled threshold のみを見るようにし、ready/stopped summary には `expected_reassembled_frames_enabled` / `expected_clients_enabled` / `expected_per_client_frames_enabled` を追加した。same-PC continuous validation では `validation_ready=n/a` のまま、主な receive closeout は `receive_timeout` / `max_runtime_duration_ms` / `max_video_packets` / explicit stop に寄せる
 - 2026-05-12 の requested automated validation sweep は PASS した。`cargo fmt` / `cargo fmt --check` / `cargo check --workspace` / focused concurrent server tests / focused staged handoff regression tests / `cargo test --workspace` / `git diff --check` を通し、disabled-threshold semantics と staged regression に新たな自動 test failure は出ていない。その後の same-PC human rerun でも server closeout gate は PASS し、`expected_*_enabled=false` と `receive_stop_reason != ReassembledFramesThresholdReached` の実機確認に加えて stopped summary も回収できた
@@ -1026,6 +1028,6 @@ continuous runtime first slice の blocker:
 - actual dashboard UI rendering remains unimplemented.
 
 ## Next Items
-1. 4-client all-real validation preparation を docs ベースで整理する
-2. OBS capture validation follow-up の位置づけを確認する
-3. 2-client concurrent validation は PASS 済みとして固定し、再実行は regression 時のみ行う
+1. `docs/operations/four-client-validation.md` の same-PC recipe で `4`-client all-real concurrent validation を実行し、client/server/switcher の stdout evidence を貼り返す
+2. 失敗時は config/startup/client-send/server-queue/handoff/switcher/same-PC saturation の分類で切り分け、code change 前に primary failure bucket を固定する
+3. same-PC `4`-client result 記録後に、distributed-PC follow-up と OBS capture follow-up の優先順位を決める
