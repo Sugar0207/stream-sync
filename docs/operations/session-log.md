@@ -5,6 +5,86 @@
 - Codex implementation
 
 ### Work
+- Investigated the latest normal-client same-PC `2`-client rerun where clients
+  were near `30fps`, but switcher production readiness still failed with
+  `effective_render_fps_after_first_render=2.847`.
+- Confirmed the retained decoded-frame cache did not help in that run:
+  `decode_cached_frame_reuse_count=0` and `decode_cache_miss_count=56`.
+- Kept the existing unchanged-frame reuse path intact; the rerun evidence showed
+  `unchanged_frame_reuse_count=127` and
+  `skipped_decode_unchanged_frame_count=127`.
+- Reduced the two-real preview-loop hot path copies by bypassing the diagnostic
+  unavailable window render and avoiding the extra render-facing full-frame
+  clone before clean output rendering.
+- Added a borrowed clean-output render path for
+  `--four-view-two-real-handoff-preview-loop`: composed BGRA pixels are now
+  borrowed for OBS-profile scaling instead of first cloning into a
+  `SwitcherDecodedFrameRenderInput`.
+- Changed the Windows persistent GDI render update path to move the request
+  frame into the static paint buffer instead of cloning it.
+- Preallocated FFmpeg stdout raw BGRA output with the expected decoded frame
+  length to reduce decode output buffer growth overhead.
+- Added final-summary diagnostics:
+  `decoded_buffer_clone_count`, `composed_buffer_clone_count`,
+  `render_buffer_reuse_count`, `render_buffer_allocation_count`,
+  `render_buffer_bytes_copied_total`, and `decode_output_buffer_reuse_count`.
+- Kept source-error placeholder semantics, unchanged-frame decode reuse, visual
+  identity / composed-frame reuse, placeholder row cache, incremental
+  composition, render reuse, client encode/capture behavior, and
+  distributed-PC validation docs unchanged.
+
+### Changed Files
+- `apps/switcher/src/lib.rs`
+- `apps/switcher/src/main.rs`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### Decisions
+- Keep the public render boundary shape intact for now and optimize only the
+  production-facing two-real preview loop hot path.
+- Treat `decode_output_buffer_reuse_count` as explicitly reported but currently
+  `0`; the FFmpeg CLI backend still receives a fresh stdout buffer per decode.
+- Count render buffer reuse both for unchanged-render reuse and for any future
+  no-copy OBS-profile render input reuse.
+
+### Unresolved
+- A same-PC `2`-client rerun is still required to measure the real FPS and
+  timing impact.
+- `link.exe` is unavailable in this environment, so `cargo check` and focused
+  switcher tests could not reach crate compilation.
+- Persistent decoder or shared-memory/GPU render backend work remains out of
+  scope for this slice.
+
+### Next
+- Rerun the same-PC `2`-client smoke from `S:\stream-sync` and inspect
+  `effective_render_fps_after_first_render`, `render_buffer_copy_elapsed_ms`,
+  `render_buffer_reuse_count`, `render_buffer_allocation_count`,
+  `render_buffer_bytes_copied_total`, `decoded_buffer_clone_count`,
+  `composed_buffer_clone_count`, decode phase timing, and source-error
+  placeholder behavior.
+
+### TODO Update
+- Updated current position to the normal-client rerun interpretation and this
+  decode/render copy-reduction slice.
+- Updated the immediate Next Item to rerun the same-PC `2`-client smoke with
+  the new render/clone diagnostics.
+
+### Validation
+- `cargo fmt`
+- `cargo fmt --check`
+- `where.exe link`
+  - result: `link.exe` not found in this environment
+- `cargo check -p stream-sync-switcher`
+  - result: blocked before crate compilation because `link.exe` is not found
+- Focused switcher tests were not run because `link.exe` was unavailable.
+
+---
+
+## 2026-05-14
+### Type
+- Codex implementation
+
+### Work
 - Investigated the remaining same-PC `2`-client switcher FPS bottleneck after
   render reuse improved `render_call_elapsed_ms` but runtime still showed
   `effective_render_fps_after_first_render=2.675`.

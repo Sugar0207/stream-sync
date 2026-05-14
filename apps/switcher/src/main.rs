@@ -1815,6 +1815,9 @@ struct SwitcherFourViewTwoRealHandoffPreviewLoopSummary {
     decode_output_bytes_total: usize,
     decode_cached_frame_reuse_count: u32,
     decode_cache_miss_count: u32,
+    decoded_buffer_clone_count: u32,
+    composed_buffer_clone_count: u32,
+    decode_output_buffer_reuse_count: u32,
     handoff_elapsed_ms: u128,
     render_elapsed_ms: u128,
     avg_decode_elapsed_ms: String,
@@ -1830,6 +1833,9 @@ struct SwitcherFourViewTwoRealHandoffPreviewLoopSummary {
     window_update_elapsed_ms: u128,
     render_prepare_elapsed_ms: u128,
     render_buffer_copy_elapsed_ms: u128,
+    render_buffer_reuse_count: u32,
+    render_buffer_allocation_count: u32,
+    render_buffer_bytes_copied_total: usize,
     render_backend_wait_elapsed_ms: u128,
     texture_upload_elapsed_ms: u128,
     window_present_elapsed_ms: u128,
@@ -2220,6 +2226,9 @@ struct TwoRealPreviewLoopRuntimeTiming {
     decode_output_bytes_total: usize,
     decode_cached_frame_reuse_count: u32,
     decode_cache_miss_count: u32,
+    decoded_buffer_clone_count: u32,
+    composed_buffer_clone_count: u32,
+    decode_output_buffer_reuse_count: u32,
     render_elapsed_ms: u128,
     render_call_count: u32,
     attempt_body_elapsed_ms: u128,
@@ -2229,6 +2238,9 @@ struct TwoRealPreviewLoopRuntimeTiming {
     window_update_elapsed_ms: u128,
     render_prepare_elapsed_ms: u128,
     render_buffer_copy_elapsed_ms: u128,
+    render_buffer_reuse_count: u32,
+    render_buffer_allocation_count: u32,
+    render_buffer_bytes_copied_total: usize,
     render_backend_wait_elapsed_ms: u128,
     texture_upload_elapsed_ms: u128,
     window_present_elapsed_ms: u128,
@@ -2386,7 +2398,9 @@ where
             source_identity,
         };
         if let Some(decoded) = self.decoded_cache.borrow().get(&key).cloned() {
-            self.timing.borrow_mut().decode_cached_frame_reuse_count += 1;
+            let mut timing = self.timing.borrow_mut();
+            timing.decode_cached_frame_reuse_count += 1;
+            timing.decoded_buffer_clone_count += 1;
             return SwitcherH264DecodeResult::Decoded(decoded);
         }
 
@@ -2400,6 +2414,7 @@ where
         timing.decode_attempt_count += 1;
         if let SwitcherH264DecodeResult::Decoded(decoded) = &result {
             timing.decode_success_count += 1;
+            timing.decoded_buffer_clone_count += 1;
             self.decoded_cache.borrow_mut().insert(key, decoded.clone());
         }
         result
@@ -2421,6 +2436,9 @@ fn add_decode_runtime_diagnostics(
     timing.decode_output_bytes_total = timing
         .decode_output_bytes_total
         .saturating_add(diagnostics.output_bytes);
+    timing.decode_output_buffer_reuse_count = timing
+        .decode_output_buffer_reuse_count
+        .saturating_add(diagnostics.output_buffer_reuse_count);
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
@@ -2451,6 +2469,13 @@ struct ObsFriendlyFourViewLoopRenderMetadataSnapshot {
     bgra_payload_len: Option<usize>,
     window_visible: Option<bool>,
     window_capture_candidate: Option<bool>,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+struct BgraRenderBufferDiagnostics {
+    allocation_count: u32,
+    reuse_count: u32,
+    bytes_copied_total: usize,
 }
 
 struct ObsFriendlyFourViewLoopWindowRenderRuntime<'a, Runtime> {
@@ -2485,40 +2510,73 @@ impl<'a, Runtime> ObsFriendlyFourViewLoopWindowRenderRuntime<'a, Runtime> {
             .lock()
             .expect("obs-friendly loop metadata mutex should not be poisoned")
     }
-}
 
-impl<Runtime> SwitcherWindowRenderRuntimeHook
-    for ObsFriendlyFourViewLoopWindowRenderRuntime<'_, Runtime>
-where
-    Runtime: SwitcherWindowRenderRuntimeHook,
-{
-    fn render_once(
+    fn render_bgra_once(
         &self,
-        request: stream_sync_switcher::SwitcherWindowRenderRequest,
-    ) -> SwitcherWindowRenderResult {
-        let source_width = request.frame.width;
-        let source_height = request.frame.height;
+        width: u32,
+        height: u32,
+        pixel_format: SwitcherDecodedFramePixelFormat,
+        pixels: &[u8],
+        title: String,
+        hold_millis: u64,
+    ) -> SwitcherWindowRenderResult
+    where
+        Runtime: SwitcherWindowRenderRuntimeHook,
+    {
         let scale_start = Instant::now();
-        let scaled_frame = scale_four_view_bgra_render_input_to_obs_validation_profile(
-            &request.frame,
+        let (scaled_frame, diagnostics) = scale_four_view_bgra_to_obs_validation_profile_from_slice(
+            width,
+            height,
+            pixel_format,
+            pixels,
             FOUR_VIEW_CLEAN_OUTPUT_LOOP_OBS_OUTPUT_WIDTH,
             FOUR_VIEW_CLEAN_OUTPUT_LOOP_OBS_OUTPUT_HEIGHT,
         );
-        let render_buffer_copy_elapsed_ms = scale_start.elapsed().as_millis();
+        self.record_render_buffer_diagnostics(scale_start.elapsed().as_millis(), diagnostics);
+        self.render_scaled_frame(width, height, scaled_frame, title, hold_millis)
+    }
+
+    fn record_render_buffer_diagnostics(
+        &self,
+        render_buffer_copy_elapsed_ms: u128,
+        diagnostics: BgraRenderBufferDiagnostics,
+    ) {
+        if let Some(timing) = &self.timing {
+            let mut timing = timing.borrow_mut();
+            timing.render_buffer_copy_elapsed_ms += render_buffer_copy_elapsed_ms;
+            timing.render_buffer_reuse_count = timing
+                .render_buffer_reuse_count
+                .saturating_add(diagnostics.reuse_count);
+            timing.render_buffer_allocation_count = timing
+                .render_buffer_allocation_count
+                .saturating_add(diagnostics.allocation_count);
+            timing.render_buffer_bytes_copied_total = timing
+                .render_buffer_bytes_copied_total
+                .saturating_add(diagnostics.bytes_copied_total);
+        }
+    }
+
+    fn render_scaled_frame(
+        &self,
+        source_width: u32,
+        source_height: u32,
+        scaled_frame: stream_sync_switcher::SwitcherDecodedFrameRenderInput,
+        title: String,
+        hold_millis: u64,
+    ) -> SwitcherWindowRenderResult
+    where
+        Runtime: SwitcherWindowRenderRuntimeHook,
+    {
         let output_width = scaled_frame.width;
         let output_height = scaled_frame.height;
         let bgra_payload_len = scaled_frame.pixels.len();
-        if let Some(timing) = &self.timing {
-            timing.borrow_mut().render_buffer_copy_elapsed_ms += render_buffer_copy_elapsed_ms;
-        }
-
         let window_update_start = Instant::now();
         let result = self
             .inner
             .render_once(stream_sync_switcher::SwitcherWindowRenderRequest {
                 frame: scaled_frame,
-                title: request.title,
-                hold_millis: request.hold_millis,
+                title,
+                hold_millis,
             });
         if let Some(timing) = &self.timing {
             let window_update_elapsed_ms = window_update_start.elapsed().as_millis();
@@ -2544,6 +2602,47 @@ where
             };
 
         result
+    }
+}
+
+impl<Runtime> SwitcherWindowRenderRuntimeHook
+    for ObsFriendlyFourViewLoopWindowRenderRuntime<'_, Runtime>
+where
+    Runtime: SwitcherWindowRenderRuntimeHook,
+{
+    fn render_once(
+        &self,
+        request: stream_sync_switcher::SwitcherWindowRenderRequest,
+    ) -> SwitcherWindowRenderResult {
+        let source_width = request.frame.width;
+        let source_height = request.frame.height;
+        let scale_start = Instant::now();
+        let (scaled_frame, diagnostics) = if request.frame.width
+            == FOUR_VIEW_CLEAN_OUTPUT_LOOP_OBS_OUTPUT_WIDTH
+            && request.frame.height == FOUR_VIEW_CLEAN_OUTPUT_LOOP_OBS_OUTPUT_HEIGHT
+        {
+            (
+                request.frame,
+                BgraRenderBufferDiagnostics {
+                    reuse_count: 1,
+                    ..BgraRenderBufferDiagnostics::default()
+                },
+            )
+        } else {
+            scale_four_view_bgra_render_input_to_obs_validation_profile(
+                &request.frame,
+                FOUR_VIEW_CLEAN_OUTPUT_LOOP_OBS_OUTPUT_WIDTH,
+                FOUR_VIEW_CLEAN_OUTPUT_LOOP_OBS_OUTPUT_HEIGHT,
+            )
+        };
+        self.record_render_buffer_diagnostics(scale_start.elapsed().as_millis(), diagnostics);
+        self.render_scaled_frame(
+            source_width,
+            source_height,
+            scaled_frame,
+            request.title,
+            request.hold_millis,
+        )
     }
 }
 
@@ -2639,6 +2738,23 @@ impl<RealHandoff> MultiRealAndPlaceholderQueuedFrameHandoff<RealHandoff> {
         validation: &SwitcherFourViewHandoffValidationOutput,
         unchanged_frame_reuse_slots: [bool; 4],
     ) -> [String; 4] {
+        self.take_last_frame_slot_diagnostics_from_pre_composition(
+            &SwitcherFourViewHandoffValidationPreCompositionOutput {
+                scheduler: validation.scheduler.clone(),
+                decode_render_adapter: validation.decode_render_adapter.clone(),
+                display: validation.display.clone(),
+                composition_instruction: validation.composition_instruction.clone(),
+                composition_render: validation.composition_render.clone(),
+            },
+            unchanged_frame_reuse_slots,
+        )
+    }
+
+    fn take_last_frame_slot_diagnostics_from_pre_composition(
+        &self,
+        pre_composition: &SwitcherFourViewHandoffValidationPreCompositionOutput,
+        unchanged_frame_reuse_slots: [bool; 4],
+    ) -> [String; 4] {
         std::array::from_fn(|slot_index| {
             let slot = &self.slots[slot_index];
             let observation = self.last_frame_slot_observations[slot_index].as_ref();
@@ -2646,8 +2762,8 @@ impl<RealHandoff> MultiRealAndPlaceholderQueuedFrameHandoff<RealHandoff> {
                 slot_index,
                 slot,
                 observation,
-                &validation.scheduler.slots[slot_index].result,
-                &validation.composition_render.composition.slots[slot_index],
+                &pre_composition.scheduler.slots[slot_index].result,
+                &pre_composition.composition_render.composition.slots[slot_index],
             );
             if unchanged_frame_reuse_slots[slot_index] {
                 diagnostic.decode_attempted = Some(false);
@@ -3363,7 +3479,7 @@ where
         std::array::from_fn(|_| None);
     let mut previous_visual_identities: Option<[TwoRealPreviewLoopSlotVisualIdentity; 4]> = None;
     let mut previous_bgra_composition: Option<SwitcherFourViewQuadCompositionResult> = None;
-    let mut previous_clean_output: Option<SwitcherFourViewCleanOutputWindowOutput> = None;
+    let mut previous_clean_output: Option<SwitcherFourViewCleanOutputWindowRenderResult> = None;
     let mut quad_composition_cache = TwoRealPreviewLoopQuadCompositionCache::default();
     let mut quad_view_compose_attempt_count = 0u32;
     let mut quad_view_compose_success_count = 0u32;
@@ -3429,20 +3545,57 @@ where
         } else {
             quad_view_visual_changed_count += 1;
         }
-        let bgra_composition = if visual_unchanged {
-            if let Some(previous_composition) = previous_bgra_composition.clone() {
-                quad_view_compose_skipped_unchanged_count += 1;
-                quad_view_reused_slot_count += 4;
-                if matches!(
-                    previous_composition,
-                    SwitcherFourViewQuadCompositionResult::ComposedFrame { .. }
-                ) {
-                    quad_view_composed_frame_reuse_count += 1;
-                }
-                SwitcherFourViewQuadCompositionOutput {
-                    scheduler_status: pre_composition.scheduler.status,
-                    connection: pre_composition.composition_render.clone(),
-                    composition: previous_composition,
+        let previous_clean_output_is_rendered = previous_clean_output
+            .as_ref()
+            .map(clean_output_window_result_was_rendered)
+            .unwrap_or(false);
+        let can_reuse_rendered_output = visual_unchanged && previous_clean_output_is_rendered;
+        if visual_unchanged {
+            render_input_unchanged_count += 1;
+        }
+
+        let mut render_facing_for_next: Option<
+            stream_sync_switcher::SwitcherFourViewQuadRenderFacingConnectionOutput,
+        > = None;
+        let clean_output = if can_reuse_rendered_output {
+            render_reuse_frame_count += 1;
+            timing.borrow_mut().render_buffer_reuse_count += 1;
+            render_runtime.pump_persistent_window_events();
+            previous_clean_output
+                .clone()
+                .expect("render reuse should have previous clean output")
+        } else {
+            let bgra_composition = if visual_unchanged {
+                if let Some(previous_composition) = previous_bgra_composition.clone() {
+                    timing.borrow_mut().composed_buffer_clone_count += 1;
+                    quad_view_compose_skipped_unchanged_count += 1;
+                    quad_view_reused_slot_count += 4;
+                    if matches!(
+                        previous_composition,
+                        SwitcherFourViewQuadCompositionResult::ComposedFrame { .. }
+                    ) {
+                        quad_view_composed_frame_reuse_count += 1;
+                    }
+                    SwitcherFourViewQuadCompositionOutput {
+                        scheduler_status: pre_composition.scheduler.status,
+                        connection: pre_composition.composition_render.clone(),
+                        composition: previous_composition,
+                    }
+                } else {
+                    compose_two_real_preview_quad_view(
+                        &pre_composition,
+                        validation_input.layout_policy,
+                        &timing,
+                        &mut quad_composition_cache,
+                        previous_visual_identities.as_ref(),
+                        &current_visual_identities,
+                        &mut quad_view_compose_attempt_count,
+                        &mut quad_view_compose_success_count,
+                        &mut quad_view_incremental_update_count,
+                        &mut quad_view_full_compose_count,
+                        &mut quad_view_changed_slot_update_count,
+                        &mut quad_view_reused_slot_count,
+                    )
                 }
             } else {
                 compose_two_real_preview_quad_view(
@@ -3459,68 +3612,15 @@ where
                     &mut quad_view_changed_slot_update_count,
                     &mut quad_view_reused_slot_count,
                 )
-            }
-        } else {
-            compose_two_real_preview_quad_view(
-                &pre_composition,
-                validation_input.layout_policy,
-                &timing,
-                &mut quad_composition_cache,
-                previous_visual_identities.as_ref(),
-                &current_visual_identities,
-                &mut quad_view_compose_attempt_count,
-                &mut quad_view_compose_success_count,
-                &mut quad_view_incremental_update_count,
-                &mut quad_view_full_compose_count,
-                &mut quad_view_changed_slot_update_count,
-                &mut quad_view_reused_slot_count,
-            )
-        };
-        let render_facing = SwitcherFourViewQuadRenderFacingConnectionBoundary::default()
-            .connect_composition_output(bgra_composition.clone());
-        let window_render = SwitcherFourViewComposedCanvasWindowRenderBoundary::default()
-            .render_with_runtime(
-                SwitcherFourViewComposedCanvasWindowRenderInput {
-                    render_facing_output: render_facing.clone(),
-                    window_title: validation_input.composed_window_title,
-                    render_hold_millis: validation_input.composed_render_hold_millis,
-                },
-                &SwitcherUnavailableWindowRenderRuntimeHook,
-            );
-        let validation = SwitcherFourViewHandoffValidationOutput {
-            scheduler: pre_composition.scheduler.clone(),
-            decode_render_adapter: pre_composition.decode_render_adapter.clone(),
-            display: pre_composition.display.clone(),
-            composition_instruction: pre_composition.composition_instruction.clone(),
-            composition_render: pre_composition.composition_render.clone(),
-            bgra_composition,
-            render_facing,
-            window_render,
-        };
-        let previous_clean_output_is_rendered = previous_clean_output
-            .as_ref()
-            .map(clean_output_window_was_rendered)
-            .unwrap_or(false);
-        let can_reuse_rendered_output = visual_unchanged && previous_clean_output_is_rendered;
-        if visual_unchanged {
-            render_input_unchanged_count += 1;
-        }
-        let clean_output = if can_reuse_rendered_output {
-            render_reuse_frame_count += 1;
-            render_runtime.pump_persistent_window_events();
-            previous_clean_output
-                .clone()
-                .expect("render reuse should have previous clean output")
-        } else {
+            };
+            let render_facing = SwitcherFourViewQuadRenderFacingConnectionBoundary::default()
+                .connect_composition_output(bgra_composition);
             let timing_before_render = timing.borrow().clone();
             let render_start = Instant::now();
-            let clean_output = SwitcherFourViewCleanOutputWindowBoundary::default()
-                .render_with_runtime(
-                    SwitcherFourViewCleanOutputWindowInput {
-                        render_facing_output: validation.render_facing.clone(),
-                    },
-                    &obs_runtime,
-                );
+            let clean_output_render = render_four_view_clean_output_from_borrowed_render_facing(
+                &render_facing,
+                &obs_runtime,
+            );
             let render_call_elapsed_ms = render_start.elapsed().as_millis();
             {
                 let timing_after_render = timing.borrow().clone();
@@ -3538,28 +3638,35 @@ where
                     .saturating_sub(render_backend_wait_delta);
                 timing.render_call_count += 1;
             }
-            clean_output
+            render_facing_for_next = Some(render_facing);
+            clean_output_render
         };
 
+        if let Some(render_facing) = render_facing_for_next {
+            previous_bgra_composition = Some(render_facing.composition.composition);
+        }
+
         frames_attempted += 1;
-        scheduler_status = validation.scheduler.status;
-        slot_result_kinds = validation.scheduler.slots.clone().map(|slot| {
+        scheduler_status = pre_composition.scheduler.status;
+        slot_result_kinds = pre_composition.scheduler.slots.clone().map(|slot| {
             format_four_view_real_handoff_scheduler_slot_kind(&slot.result).to_string()
         });
         clean_output_render_result_kind =
-            format_four_view_clean_output_window_result_kind(&clean_output.output_window);
-        window_title = clean_output.window_identity.title.clone();
+            format_four_view_clean_output_window_result_kind(&clean_output);
+        window_title = SWITCHER_FOUR_VIEW_CLEAN_OUTPUT_WINDOW_TITLE.to_string();
         let unchanged_reuse_slots = two_real_unchanged_frame_reuse_slots(
             &previous_slot_identities,
             &current_slot_identities,
             &pre_composition,
         );
-        slot_diagnostics = handoff
-            .take_last_frame_slot_diagnostics_with_decode_reuse(&validation, unchanged_reuse_slots);
-        let tick_diagnostics = four_view_two_real_tick_diagnostics(
+        slot_diagnostics = handoff.take_last_frame_slot_diagnostics_from_pre_composition(
+            &pre_composition,
+            unchanged_reuse_slots,
+        );
+        let tick_diagnostics = four_view_two_real_tick_diagnostics_from_composition_render(
             &slot_result_kinds,
-            &validation,
-            &clean_output.output_window,
+            &pre_composition.composition_render,
+            &clean_output,
         );
         selected_count += tick_diagnostics.selected_count;
         no_frame_count += tick_diagnostics.no_frame_count;
@@ -3571,7 +3678,7 @@ where
         skipped_decode_unchanged_frame_count += unchanged_reuse;
 
         if let SwitcherFourViewCleanOutputWindowRenderResult::RenderReady { render, .. } =
-            &clean_output.output_window
+            &clean_output
         {
             match render {
                 SwitcherFourViewComposedCanvasRenderResult::Rendered { .. } => {
@@ -3587,11 +3694,12 @@ where
                 _ => {}
             }
         }
-        previous_slots =
-            update_four_view_previous_slots_from_validation(&previous_slots, &validation);
+        previous_slots = update_four_view_previous_slots_from_composition_render(
+            &previous_slots,
+            &pre_composition.composition_render,
+        );
         decoded_slot_identities = current_slot_identities;
         previous_visual_identities = Some(current_visual_identities);
-        previous_bgra_composition = Some(validation.bgra_composition.composition.clone());
         previous_clean_output = Some(clean_output.clone());
 
         let attempt_elapsed_ms = attempt_start.elapsed().as_millis();
@@ -3674,6 +3782,9 @@ where
         decode_output_bytes_total: timing.decode_output_bytes_total,
         decode_cached_frame_reuse_count: timing.decode_cached_frame_reuse_count,
         decode_cache_miss_count: timing.decode_cache_miss_count,
+        decoded_buffer_clone_count: timing.decoded_buffer_clone_count,
+        composed_buffer_clone_count: timing.composed_buffer_clone_count,
+        decode_output_buffer_reuse_count: timing.decode_output_buffer_reuse_count,
         handoff_elapsed_ms: timing.handoff_elapsed_ms,
         render_elapsed_ms: timing.render_elapsed_ms,
         avg_decode_elapsed_ms: format_preview_loop_average_elapsed(
@@ -3704,6 +3815,9 @@ where
         window_update_elapsed_ms: timing.window_update_elapsed_ms,
         render_prepare_elapsed_ms: timing.render_prepare_elapsed_ms,
         render_buffer_copy_elapsed_ms: timing.render_buffer_copy_elapsed_ms,
+        render_buffer_reuse_count: timing.render_buffer_reuse_count,
+        render_buffer_allocation_count: timing.render_buffer_allocation_count,
+        render_buffer_bytes_copied_total: timing.render_buffer_bytes_copied_total,
         render_backend_wait_elapsed_ms: timing.render_backend_wait_elapsed_ms,
         texture_upload_elapsed_ms: timing.texture_upload_elapsed_ms,
         window_present_elapsed_ms: timing.window_present_elapsed_ms,
@@ -5778,16 +5892,23 @@ fn update_four_view_previous_slots_from_validation(
     current_previous_slots: &[Option<SwitcherFourViewDisplayedSlot>; 4],
     validation: &SwitcherFourViewHandoffValidationOutput,
 ) -> [Option<SwitcherFourViewDisplayedSlot>; 4] {
-    std::array::from_fn(
-        |index| match &validation.composition_render.composition.slots[index] {
-            SwitcherFourViewHandoffQuadCompositionRenderSlot::UseUpdatedFrame { frame, .. }
-            | SwitcherFourViewHandoffQuadCompositionRenderSlot::UseHeldPreviousFrame {
-                frame,
-                ..
-            } if frame.decoded.is_some() => Some(frame.clone()),
-            _ => current_previous_slots[index].clone(),
-        },
+    update_four_view_previous_slots_from_composition_render(
+        current_previous_slots,
+        &validation.composition_render,
     )
+}
+
+fn update_four_view_previous_slots_from_composition_render(
+    current_previous_slots: &[Option<SwitcherFourViewDisplayedSlot>; 4],
+    composition_render: &stream_sync_switcher::SwitcherFourViewHandoffQuadCompositionRenderConnectionOutput,
+) -> [Option<SwitcherFourViewDisplayedSlot>; 4] {
+    std::array::from_fn(|index| match &composition_render.composition.slots[index] {
+        SwitcherFourViewHandoffQuadCompositionRenderSlot::UseUpdatedFrame { frame, .. }
+        | SwitcherFourViewHandoffQuadCompositionRenderSlot::UseHeldPreviousFrame {
+            frame, ..
+        } if frame.decoded.is_some() => Some(frame.clone()),
+        _ => current_previous_slots[index].clone(),
+    })
 }
 
 fn compose_two_real_preview_quad_view(
@@ -5826,6 +5947,7 @@ fn compose_two_real_preview_quad_view(
         SwitcherFourViewQuadCompositionResult::ComposedFrame { .. }
     ) {
         *quad_view_compose_success_count += 1;
+        timing.borrow_mut().composed_buffer_clone_count += 1;
     }
     if update_diagnostics.incremental_update {
         *quad_view_incremental_update_count += 1;
@@ -6523,6 +6645,18 @@ fn four_view_two_real_tick_diagnostics(
     validation: &SwitcherFourViewHandoffValidationOutput,
     clean_output: &SwitcherFourViewCleanOutputWindowRenderResult,
 ) -> TwoRealPreviewLoopTickDiagnostics {
+    four_view_two_real_tick_diagnostics_from_composition_render(
+        slot_result_kinds,
+        &validation.composition_render,
+        clean_output,
+    )
+}
+
+fn four_view_two_real_tick_diagnostics_from_composition_render(
+    slot_result_kinds: &[String; 4],
+    composition_render: &stream_sync_switcher::SwitcherFourViewHandoffQuadCompositionRenderConnectionOutput,
+    clean_output: &SwitcherFourViewCleanOutputWindowRenderResult,
+) -> TwoRealPreviewLoopTickDiagnostics {
     let mut diagnostics = TwoRealPreviewLoopTickDiagnostics::default();
 
     for kind in slot_result_kinds {
@@ -6534,7 +6668,7 @@ fn four_view_two_real_tick_diagnostics(
         }
     }
 
-    for slot in &validation.composition_render.composition.slots {
+    for slot in &composition_render.composition.slots {
         match slot {
             SwitcherFourViewHandoffQuadCompositionRenderSlot::UseUpdatedFrame { .. } => {
                 diagnostics.decode_attempt_count += 1;
@@ -6727,24 +6861,55 @@ fn scale_four_view_bgra_render_input_to_obs_validation_profile(
     frame: &stream_sync_switcher::SwitcherDecodedFrameRenderInput,
     output_width: u32,
     output_height: u32,
-) -> stream_sync_switcher::SwitcherDecodedFrameRenderInput {
+) -> (
+    stream_sync_switcher::SwitcherDecodedFrameRenderInput,
+    BgraRenderBufferDiagnostics,
+) {
+    scale_four_view_bgra_to_obs_validation_profile_from_slice(
+        frame.width,
+        frame.height,
+        frame.pixel_format,
+        &frame.pixels,
+        output_width,
+        output_height,
+    )
+}
+
+fn scale_four_view_bgra_to_obs_validation_profile_from_slice(
+    width: u32,
+    height: u32,
+    pixel_format: SwitcherDecodedFramePixelFormat,
+    pixels_source: &[u8],
+    output_width: u32,
+    output_height: u32,
+) -> (
+    stream_sync_switcher::SwitcherDecodedFrameRenderInput,
+    BgraRenderBufferDiagnostics,
+) {
     let expected_len = output_width as usize * output_height as usize * 4;
     let mut pixels = vec![0u8; expected_len];
+    let mut diagnostics = BgraRenderBufferDiagnostics {
+        allocation_count: 1,
+        ..BgraRenderBufferDiagnostics::default()
+    };
 
-    if frame.width == output_width && frame.height == output_height {
-        pixels.copy_from_slice(&frame.pixels);
-        return stream_sync_switcher::SwitcherDecodedFrameRenderInput {
-            width: output_width,
-            height: output_height,
-            pixel_format: frame.pixel_format,
-            pixels,
-        };
+    if width == output_width && height == output_height {
+        pixels.copy_from_slice(pixels_source);
+        diagnostics.bytes_copied_total =
+            diagnostics.bytes_copied_total.saturating_add(pixels.len());
+        return (
+            stream_sync_switcher::SwitcherDecodedFrameRenderInput {
+                width: output_width,
+                height: output_height,
+                pixel_format,
+                pixels,
+            },
+            diagnostics,
+        );
     }
 
-    if frame.width == output_width.saturating_mul(2)
-        && frame.height == output_height.saturating_mul(2)
-    {
-        let source_stride = frame.width as usize * 4;
+    if width == output_width.saturating_mul(2) && height == output_height.saturating_mul(2) {
+        let source_stride = width as usize * 4;
         let destination_stride = output_width as usize * 4;
         for y in 0..output_height as usize {
             let source_row_start = y * 2 * source_stride;
@@ -6753,35 +6918,44 @@ fn scale_four_view_bgra_render_input_to_obs_validation_profile(
                 let source_index = source_row_start + x * 2 * 4;
                 let destination_index = destination_row_start + x * 4;
                 pixels[destination_index..destination_index + 4]
-                    .copy_from_slice(&frame.pixels[source_index..source_index + 4]);
+                    .copy_from_slice(&pixels_source[source_index..source_index + 4]);
             }
         }
+        diagnostics.bytes_copied_total =
+            diagnostics.bytes_copied_total.saturating_add(pixels.len());
 
-        return stream_sync_switcher::SwitcherDecodedFrameRenderInput {
-            width: output_width,
-            height: output_height,
-            pixel_format: frame.pixel_format,
-            pixels,
-        };
+        return (
+            stream_sync_switcher::SwitcherDecodedFrameRenderInput {
+                width: output_width,
+                height: output_height,
+                pixel_format,
+                pixels,
+            },
+            diagnostics,
+        );
     }
 
     for y in 0..output_height as usize {
-        let source_y = y * frame.height as usize / output_height as usize;
+        let source_y = y * height as usize / output_height as usize;
         for x in 0..output_width as usize {
-            let source_x = x * frame.width as usize / output_width as usize;
-            let source_index = (source_y * frame.width as usize + source_x) * 4;
+            let source_x = x * width as usize / output_width as usize;
+            let source_index = (source_y * width as usize + source_x) * 4;
             let destination_index = (y * output_width as usize + x) * 4;
             pixels[destination_index..destination_index + 4]
-                .copy_from_slice(&frame.pixels[source_index..source_index + 4]);
+                .copy_from_slice(&pixels_source[source_index..source_index + 4]);
         }
     }
+    diagnostics.bytes_copied_total = diagnostics.bytes_copied_total.saturating_add(pixels.len());
 
-    stream_sync_switcher::SwitcherDecodedFrameRenderInput {
-        width: output_width,
-        height: output_height,
-        pixel_format: frame.pixel_format,
-        pixels,
-    }
+    (
+        stream_sync_switcher::SwitcherDecodedFrameRenderInput {
+            width: output_width,
+            height: output_height,
+            pixel_format,
+            pixels,
+        },
+        diagnostics,
+    )
 }
 
 fn four_view_clean_output_window_runtime_visibility_flags(
@@ -6796,6 +6970,106 @@ fn four_view_clean_output_window_runtime_visibility_flags(
         | SwitcherWindowRenderResult::InvalidFrame { .. } => (Some(false), Some(false)),
         SwitcherWindowRenderResult::RenderDeferred { .. }
         | SwitcherWindowRenderResult::BackendUnavailable { .. } => (None, None),
+    }
+}
+
+fn render_four_view_clean_output_from_borrowed_render_facing<RenderRuntime>(
+    render_facing: &stream_sync_switcher::SwitcherFourViewQuadRenderFacingConnectionOutput,
+    runtime: &ObsFriendlyFourViewLoopWindowRenderRuntime<'_, RenderRuntime>,
+) -> stream_sync_switcher::SwitcherFourViewCleanOutputWindowRenderResult
+where
+    RenderRuntime: SwitcherWindowRenderRuntimeHook,
+{
+    match &render_facing.render {
+        stream_sync_switcher::SwitcherFourViewQuadRenderFacingResult::RenderReady {
+            input: render_input,
+        } => render_four_view_clean_output_ready_from_borrowed_composition(
+            render_input,
+            &render_facing.composition.composition,
+            runtime,
+        ),
+        stream_sync_switcher::SwitcherFourViewQuadRenderFacingResult::NoRenderableQuadView {
+            slots,
+        } => stream_sync_switcher::SwitcherFourViewCleanOutputWindowRenderResult::NoRenderableQuadView {
+            slots: slots.clone(),
+        },
+        stream_sync_switcher::SwitcherFourViewQuadRenderFacingResult::InvalidQuadView {
+            reason,
+            slots,
+        } => stream_sync_switcher::SwitcherFourViewCleanOutputWindowRenderResult::InvalidQuadView {
+            reason: stream_sync_switcher::SwitcherFourViewComposedCanvasWindowRenderInvalidReason::Upstream(reason.clone()),
+            slots: slots.clone(),
+        },
+    }
+}
+
+fn render_four_view_clean_output_ready_from_borrowed_composition<RenderRuntime>(
+    render_input: &stream_sync_switcher::SwitcherFourViewComposedFrameRenderInput,
+    composition: &stream_sync_switcher::SwitcherFourViewQuadCompositionResult,
+    runtime: &ObsFriendlyFourViewLoopWindowRenderRuntime<'_, RenderRuntime>,
+) -> stream_sync_switcher::SwitcherFourViewCleanOutputWindowRenderResult
+where
+    RenderRuntime: SwitcherWindowRenderRuntimeHook,
+{
+    let stream_sync_switcher::SwitcherFourViewQuadCompositionResult::ComposedFrame { frame } =
+        composition
+    else {
+        return stream_sync_switcher::SwitcherFourViewCleanOutputWindowRenderResult::InvalidQuadView {
+            reason:
+                stream_sync_switcher::SwitcherFourViewComposedCanvasWindowRenderInvalidReason::MissingComposedFrameForRenderReady,
+            slots: render_input.slots.clone(),
+        };
+    };
+
+    if frame.width != render_input.width
+        || frame.height != render_input.height
+        || frame.pixels.len() != render_input.bgra_payload_len
+    {
+        return stream_sync_switcher::SwitcherFourViewCleanOutputWindowRenderResult::InvalidQuadView {
+            reason:
+                stream_sync_switcher::SwitcherFourViewComposedCanvasWindowRenderInvalidReason::RenderReadyMetadataMismatch {
+                    expected_width: render_input.width,
+                    expected_height: render_input.height,
+                    expected_bgra_payload_len: render_input.bgra_payload_len,
+                    actual_width: frame.width,
+                    actual_height: frame.height,
+                    actual_bgra_payload_len: frame.pixels.len(),
+                },
+            slots: render_input.slots.clone(),
+        };
+    }
+
+    let render = match runtime.render_bgra_once(
+        frame.width,
+        frame.height,
+        frame.pixel_format,
+        &frame.pixels,
+        SWITCHER_FOUR_VIEW_CLEAN_OUTPUT_WINDOW_TITLE.to_string(),
+        0,
+    ) {
+        SwitcherWindowRenderResult::Rendered(render) => {
+            SwitcherFourViewComposedCanvasRenderResult::Rendered { render }
+        }
+        SwitcherWindowRenderResult::RenderDeferred { reason } => {
+            SwitcherFourViewComposedCanvasRenderResult::RenderDeferred { reason }
+        }
+        SwitcherWindowRenderResult::BackendUnavailable { reason, message } => {
+            SwitcherFourViewComposedCanvasRenderResult::BackendUnavailable { reason, message }
+        }
+        SwitcherWindowRenderResult::InvalidFrame { error } => {
+            SwitcherFourViewComposedCanvasRenderResult::InvalidComposedFrame { error }
+        }
+        SwitcherWindowRenderResult::RenderFailed { message } => {
+            SwitcherFourViewComposedCanvasRenderResult::RenderFailed { message }
+        }
+    };
+
+    stream_sync_switcher::SwitcherFourViewCleanOutputWindowRenderResult::RenderReady {
+        width: render_input.width,
+        height: render_input.height,
+        bgra_payload_len: render_input.bgra_payload_len,
+        slots: render_input.slots.clone(),
+        render,
     }
 }
 
@@ -6873,8 +7147,10 @@ fn windows_persistent_render_update(
         }
     }
 
+    let frame_width = request.frame.width;
+    let frame_height = request.frame.height;
     unsafe {
-        PERSISTENT_PAINT_FRAME = Some(request.frame.clone());
+        PERSISTENT_PAINT_FRAME = Some(request.frame);
     }
 
     let mut state = state
@@ -6909,8 +7185,8 @@ fn windows_persistent_render_update(
                 WINDOW_STYLE(WS_OVERLAPPEDWINDOW.0),
                 CW_USEDEFAULT,
                 CW_USEDEFAULT,
-                request.frame.width as i32,
-                request.frame.height as i32,
+                frame_width as i32,
+                frame_height as i32,
                 None,
                 None,
                 Some(instance.into()),
@@ -6949,8 +7225,8 @@ fn windows_persistent_render_update(
     state.lifecycle.window_update_elapsed_ms += window_update_start.elapsed().as_millis();
 
     SwitcherWindowRenderResult::Rendered(stream_sync_switcher::SwitcherWindowRenderSuccess {
-        width: request.frame.width,
-        height: request.frame.height,
+        width: frame_width,
+        height: frame_height,
         title: request.title,
         hold_millis: request.hold_millis,
     })
@@ -7169,7 +7445,7 @@ fn format_four_view_two_real_handoff_preview_loop_summary(
     summary: &SwitcherFourViewTwoRealHandoffPreviewLoopSummary,
 ) -> String {
     format!(
-        "switcher four-view two-real handoff preview loop command_name=--four-view-two-real-handoff-preview-loop real_handoff=true real_slot_count=2 real_slot0_index={} real_slot1_index={} pipe_name={} actual_pipe_path={} preview_mode={} read_mode={} client0_id={} run0_id={} client1_id={} run1_id={} frames_attempted={} frames_rendered={} render_failures={} elapsed_ms={} target_fps={} configured_frame_interval_ms={} effective_attempt_fps={} effective_render_fps={} first_render_attempt_index={} first_render_elapsed_ms={} rendered_after_first_render={} effective_render_fps_after_first_render={} no_render_before_first_render={} selected_count={} no_frame_count={} handoff_error_count={} decode_attempt_count={} decode_success_count={} render_success_count={} render_failure_count={} unchanged_frame_reuse_count={} skipped_decode_unchanged_frame_count={} redecoded_same_frame_count={} decode_elapsed_ms={} decode_process_spawn_elapsed_ms={} decode_input_write_elapsed_ms={} decode_output_read_elapsed_ms={} decode_process_wait_elapsed_ms={} decode_pixel_convert_elapsed_ms={} decode_buffer_allocation_count={} decode_output_bytes_total={} decode_cached_frame_reuse_count={} decode_cache_miss_count={} handoff_elapsed_ms={} render_elapsed_ms={} avg_decode_elapsed_ms={} avg_decode_output_read_elapsed_ms={} avg_decode_process_spawn_elapsed_ms={} avg_handoff_elapsed_ms={} avg_render_elapsed_ms={} loop_total_elapsed_ms={} attempt_body_elapsed_ms={} loop_sleep_elapsed_ms={} frame_interval_wait_elapsed_ms={} event_pump_elapsed_ms={} window_update_elapsed_ms={} render_prepare_elapsed_ms={} render_buffer_copy_elapsed_ms={} render_backend_wait_elapsed_ms={} texture_upload_elapsed_ms={} window_present_elapsed_ms={} vsync_or_present_block_elapsed_ms={} quad_view_compose_elapsed_ms={} quad_view_compose_attempt_count={} quad_view_compose_success_count={} quad_view_compose_skipped_unchanged_count={} quad_view_composed_frame_reuse_count={} quad_view_visual_unchanged_count={} quad_view_visual_changed_count={} quad_view_incremental_update_count={} quad_view_full_compose_count={} quad_view_changed_slot_update_count={} quad_view_reused_slot_count={} quad_view_allocation_count={} avg_quad_view_incremental_update_elapsed_ms={} avg_quad_view_compose_elapsed_ms={} render_call_elapsed_ms={} render_input_unchanged_count={} render_reuse_frame_count={} unaccounted_elapsed_ms={} avg_attempt_elapsed_ms={} max_attempt_elapsed_ms={} slow_attempt_count={} slow_attempt_threshold_ms={} scheduler_status={:?} slot_bindings={} slot_result_kinds={} slot_diagnostics={} clean_output_render_result_kind={} window_title={} output_width={} output_height={}",
+        "switcher four-view two-real handoff preview loop command_name=--four-view-two-real-handoff-preview-loop real_handoff=true real_slot_count=2 real_slot0_index={} real_slot1_index={} pipe_name={} actual_pipe_path={} preview_mode={} read_mode={} client0_id={} run0_id={} client1_id={} run1_id={} frames_attempted={} frames_rendered={} render_failures={} elapsed_ms={} target_fps={} configured_frame_interval_ms={} effective_attempt_fps={} effective_render_fps={} first_render_attempt_index={} first_render_elapsed_ms={} rendered_after_first_render={} effective_render_fps_after_first_render={} no_render_before_first_render={} selected_count={} no_frame_count={} handoff_error_count={} decode_attempt_count={} decode_success_count={} render_success_count={} render_failure_count={} unchanged_frame_reuse_count={} skipped_decode_unchanged_frame_count={} redecoded_same_frame_count={} decode_elapsed_ms={} decode_process_spawn_elapsed_ms={} decode_input_write_elapsed_ms={} decode_output_read_elapsed_ms={} decode_process_wait_elapsed_ms={} decode_pixel_convert_elapsed_ms={} decode_buffer_allocation_count={} decode_output_bytes_total={} decode_cached_frame_reuse_count={} decode_cache_miss_count={} decoded_buffer_clone_count={} composed_buffer_clone_count={} decode_output_buffer_reuse_count={} handoff_elapsed_ms={} render_elapsed_ms={} avg_decode_elapsed_ms={} avg_decode_output_read_elapsed_ms={} avg_decode_process_spawn_elapsed_ms={} avg_handoff_elapsed_ms={} avg_render_elapsed_ms={} loop_total_elapsed_ms={} attempt_body_elapsed_ms={} loop_sleep_elapsed_ms={} frame_interval_wait_elapsed_ms={} event_pump_elapsed_ms={} window_update_elapsed_ms={} render_prepare_elapsed_ms={} render_buffer_copy_elapsed_ms={} render_buffer_reuse_count={} render_buffer_allocation_count={} render_buffer_bytes_copied_total={} render_backend_wait_elapsed_ms={} texture_upload_elapsed_ms={} window_present_elapsed_ms={} vsync_or_present_block_elapsed_ms={} quad_view_compose_elapsed_ms={} quad_view_compose_attempt_count={} quad_view_compose_success_count={} quad_view_compose_skipped_unchanged_count={} quad_view_composed_frame_reuse_count={} quad_view_visual_unchanged_count={} quad_view_visual_changed_count={} quad_view_incremental_update_count={} quad_view_full_compose_count={} quad_view_changed_slot_update_count={} quad_view_reused_slot_count={} quad_view_allocation_count={} avg_quad_view_incremental_update_elapsed_ms={} avg_quad_view_compose_elapsed_ms={} render_call_elapsed_ms={} render_input_unchanged_count={} render_reuse_frame_count={} unaccounted_elapsed_ms={} avg_attempt_elapsed_ms={} max_attempt_elapsed_ms={} slow_attempt_count={} slow_attempt_threshold_ms={} scheduler_status={:?} slot_bindings={} slot_result_kinds={} slot_diagnostics={} clean_output_render_result_kind={} window_title={} output_width={} output_height={}",
         summary.real_slot0_index,
         summary.real_slot1_index,
         summary.pipe_name,
@@ -7213,6 +7489,9 @@ fn format_four_view_two_real_handoff_preview_loop_summary(
         summary.decode_output_bytes_total,
         summary.decode_cached_frame_reuse_count,
         summary.decode_cache_miss_count,
+        summary.decoded_buffer_clone_count,
+        summary.composed_buffer_clone_count,
+        summary.decode_output_buffer_reuse_count,
         summary.handoff_elapsed_ms,
         summary.render_elapsed_ms,
         summary.avg_decode_elapsed_ms,
@@ -7228,6 +7507,9 @@ fn format_four_view_two_real_handoff_preview_loop_summary(
         summary.window_update_elapsed_ms,
         summary.render_prepare_elapsed_ms,
         summary.render_buffer_copy_elapsed_ms,
+        summary.render_buffer_reuse_count,
+        summary.render_buffer_allocation_count,
+        summary.render_buffer_bytes_copied_total,
         summary.render_backend_wait_elapsed_ms,
         summary.texture_upload_elapsed_ms,
         summary.window_present_elapsed_ms,
@@ -7986,8 +8268,14 @@ fn format_four_view_clean_output_window_result_kind(
 }
 
 fn clean_output_window_was_rendered(output: &SwitcherFourViewCleanOutputWindowOutput) -> bool {
+    clean_output_window_result_was_rendered(&output.output_window)
+}
+
+fn clean_output_window_result_was_rendered(
+    output: &SwitcherFourViewCleanOutputWindowRenderResult,
+) -> bool {
     matches!(
-        &output.output_window,
+        output,
         SwitcherFourViewCleanOutputWindowRenderResult::RenderReady {
             render: SwitcherFourViewComposedCanvasRenderResult::Rendered { .. },
             ..
@@ -9875,6 +10163,14 @@ mod tests {
         assert_eq!(summary.decode_success_count, 2);
         assert_eq!(summary.render_success_count, 2);
         assert_eq!(summary.render_failure_count, 0);
+        assert_eq!(summary.render_buffer_reuse_count, 1);
+        assert_eq!(summary.render_buffer_allocation_count, 1);
+        assert_eq!(
+            summary.render_buffer_bytes_copied_total,
+            (FOUR_VIEW_CLEAN_OUTPUT_LOOP_OBS_OUTPUT_WIDTH
+                * FOUR_VIEW_CLEAN_OUTPUT_LOOP_OBS_OUTPUT_HEIGHT
+                * 4) as usize
+        );
         assert_eq!(summary.unchanged_frame_reuse_count, 2);
         assert_eq!(summary.skipped_decode_unchanged_frame_count, 2);
         assert_eq!(summary.redecoded_same_frame_count, 0);
@@ -9968,6 +10264,8 @@ mod tests {
         assert_eq!(summary.quad_view_allocation_count, 1);
         assert_eq!(summary.render_input_unchanged_count, 1);
         assert_eq!(summary.render_reuse_frame_count, 1);
+        assert_eq!(summary.render_buffer_reuse_count, 1);
+        assert_eq!(summary.render_buffer_allocation_count, 1);
         assert_eq!(
             summary.slot_result_kinds,
             [
@@ -10026,6 +10324,8 @@ mod tests {
         assert_eq!(summary.quad_view_allocation_count, 1);
         assert_eq!(summary.render_input_unchanged_count, 1);
         assert_eq!(summary.render_reuse_frame_count, 1);
+        assert_eq!(summary.render_buffer_reuse_count, 1);
+        assert_eq!(summary.render_buffer_allocation_count, 1);
         assert!(summary.slot_diagnostics[0].contains("decode_attempted=false"));
         assert!(summary.slot_diagnostics[0].contains("decode_skipped_reason=UnchangedFrameReuse"));
         assert!(summary.slot_diagnostics[2].contains("decode_attempted=false"));
@@ -10075,6 +10375,8 @@ mod tests {
         assert_eq!(summary.quad_view_changed_slot_update_count, 6);
         assert_eq!(summary.quad_view_reused_slot_count, 2);
         assert_eq!(summary.quad_view_allocation_count, 1);
+        assert_eq!(summary.render_buffer_reuse_count, 0);
+        assert_eq!(summary.render_buffer_allocation_count, 2);
 
         let requests = render_runtime.requests.borrow();
         assert_eq!(requests.len(), 2);
@@ -10341,6 +10643,9 @@ mod tests {
         assert!(formatted.contains("decode_output_bytes_total="));
         assert!(formatted.contains("decode_cached_frame_reuse_count=0"));
         assert!(formatted.contains("decode_cache_miss_count=2"));
+        assert!(formatted.contains("decoded_buffer_clone_count="));
+        assert!(formatted.contains("composed_buffer_clone_count="));
+        assert!(formatted.contains("decode_output_buffer_reuse_count=0"));
         assert!(formatted.contains("handoff_elapsed_ms="));
         assert!(formatted.contains("render_elapsed_ms="));
         assert!(formatted.contains("avg_decode_elapsed_ms="));
@@ -10356,6 +10661,9 @@ mod tests {
         assert!(formatted.contains("window_update_elapsed_ms="));
         assert!(formatted.contains("render_prepare_elapsed_ms="));
         assert!(formatted.contains("render_buffer_copy_elapsed_ms="));
+        assert!(formatted.contains("render_buffer_reuse_count=0"));
+        assert!(formatted.contains("render_buffer_allocation_count=1"));
+        assert!(formatted.contains("render_buffer_bytes_copied_total="));
         assert!(formatted.contains("render_backend_wait_elapsed_ms="));
         assert!(formatted.contains("texture_upload_elapsed_ms=0"));
         assert!(formatted.contains("window_present_elapsed_ms=0"));

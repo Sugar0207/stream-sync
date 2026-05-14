@@ -6728,6 +6728,7 @@ pub struct SwitcherH264DecodeRuntimeDiagnostics {
     pub pixel_convert_elapsed_ms: u128,
     pub buffer_allocation_count: u32,
     pub output_bytes: usize,
+    pub output_buffer_reuse_count: u32,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -6930,8 +6931,9 @@ impl SwitcherH264DecodeRuntimeHook for SwitcherFfmpegH264DecodeRuntimeHook {
             (result, stderr_bytes)
         });
 
+        let expected_len = input.width as usize * input.height as usize * 4;
         let output_read_start = Instant::now();
-        let mut stdout_bytes = Vec::new();
+        let mut stdout_bytes = Vec::with_capacity(expected_len);
         if let Err(error) = stdout.read_to_end(&mut stdout_bytes) {
             diagnostics.output_read_elapsed_ms = output_read_start.elapsed().as_millis();
             let _ = child.kill();
@@ -7018,7 +7020,6 @@ impl SwitcherH264DecodeRuntimeHook for SwitcherFfmpegH264DecodeRuntimeHook {
             };
         }
 
-        let expected_len = input.width as usize * input.height as usize * 4;
         if stdout_bytes.len() != expected_len {
             let stderr_summary = String::from_utf8_lossy(&stderr_bytes).trim().to_string();
             return SwitcherH264DecodeRuntimeOutput {
