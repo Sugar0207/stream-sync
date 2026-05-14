@@ -8,6 +8,7 @@
 .codex-logs/
 *.log
 .tmp-streamsync-run/
+/manual-logs/
 
 # Editor and OS files
 .DS_Store

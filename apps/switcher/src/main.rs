@@ -2253,6 +2253,9 @@ struct TwoRealPreviewLoopQuadCompositionCache {
     height: u32,
     placeholder_bgra: [u8; 4],
     pixels: Vec<u8>,
+    placeholder_row_width: u32,
+    placeholder_row_bgra: [u8; 4],
+    placeholder_row: Vec<u8>,
     allocation_count: u32,
 }
 
@@ -2280,6 +2283,19 @@ impl TwoRealPreviewLoopQuadCompositionCache {
         self.height = height;
         self.placeholder_bgra = placeholder_bgra;
         needs_allocation
+    }
+
+    fn prepare_placeholder_row(&mut self, width: u32, placeholder_bgra: [u8; 4]) {
+        let len = width as usize * 4;
+        if self.placeholder_row.len() != len
+            || self.placeholder_row_width != width
+            || self.placeholder_row_bgra != placeholder_bgra
+        {
+            self.placeholder_row.resize(len, 0);
+            fill_two_real_bgra(&mut self.placeholder_row, placeholder_bgra);
+            self.placeholder_row_width = width;
+            self.placeholder_row_bgra = placeholder_bgra;
+        }
     }
 }
 
@@ -5775,8 +5791,18 @@ fn compose_two_real_preview_quad_view_incremental(
         changed_slots
     };
     if full_compose {
-        fill_two_real_bgra(&mut cache.pixels, policy.placeholder_bgra);
+        cache.prepare_placeholder_row(canvas_width, policy.placeholder_bgra);
+        fill_two_real_bgra_rows(
+            &mut cache.pixels,
+            canvas_width,
+            0,
+            0,
+            canvas_width,
+            canvas_height,
+            &cache.placeholder_row,
+        );
     }
+    cache.prepare_placeholder_row(slot_width, policy.placeholder_bgra);
 
     let slots =
         connection.composition.slots.clone().map(|slot| {
@@ -5790,7 +5816,8 @@ fn compose_two_real_preview_quad_view_incremental(
                 canvas_width,
                 slot_width,
                 slot_height,
-                policy.placeholder_bgra,
+                !full_compose,
+                &cache.placeholder_row,
                 slot,
             );
         }
@@ -6060,12 +6087,15 @@ fn update_two_real_quad_slot_region(
     canvas_width: u32,
     slot_width: u32,
     slot_height: u32,
-    placeholder_bgra: [u8; 4],
+    fill_placeholder: bool,
+    placeholder_row: &[u8],
     slot: &SwitcherFourViewHandoffQuadCompositionRenderSlot,
 ) {
     let placement = two_real_quad_connected_slot_placement(slot);
     let rect = two_real_quad_slot_rect(placement, slot_width, slot_height);
-    fill_two_real_bgra_rect(canvas, canvas_width, rect, placeholder_bgra);
+    if fill_placeholder {
+        fill_two_real_bgra_rect(canvas, canvas_width, rect, placeholder_row);
+    }
     if let Some((frame, _)) = two_real_renderable_frame_and_placement(slot) {
         copy_two_real_bgra_frame_into_canvas(canvas, canvas_width, frame, rect.x, rect.y);
     }
@@ -6081,14 +6111,35 @@ fn fill_two_real_bgra_rect(
     canvas: &mut [u8],
     canvas_width: u32,
     rect: SwitcherFourViewQuadComposedSlotRect,
-    color: [u8; 4],
+    placeholder_row: &[u8],
+) {
+    fill_two_real_bgra_rows(
+        canvas,
+        canvas_width,
+        rect.x,
+        rect.y,
+        rect.width,
+        rect.height,
+        placeholder_row,
+    );
+}
+
+fn fill_two_real_bgra_rows(
+    canvas: &mut [u8],
+    canvas_width: u32,
+    dst_x: u32,
+    dst_y: u32,
+    width: u32,
+    height: u32,
+    placeholder_row: &[u8],
 ) {
     let canvas_stride = canvas_width as usize * 4;
-    let rect_stride = rect.width as usize * 4;
-    for row in 0..rect.height as usize {
-        let dst_start = (rect.y as usize + row) * canvas_stride + rect.x as usize * 4;
-        let dst_end = dst_start + rect_stride;
-        fill_two_real_bgra(&mut canvas[dst_start..dst_end], color);
+    let row_len = width as usize * 4;
+    let placeholder_row = &placeholder_row[..row_len];
+    for row in 0..height as usize {
+        let dst_start = (dst_y as usize + row) * canvas_stride + dst_x as usize * 4;
+        let dst_end = dst_start + row_len;
+        canvas[dst_start..dst_end].copy_from_slice(placeholder_row);
     }
 }
 

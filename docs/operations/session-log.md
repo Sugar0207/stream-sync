@@ -2,6 +2,71 @@
 
 ## 2026-05-14
 ### Type
+- Codex implementation follow-up
+
+### Work
+- Reviewed the existing same-PC `2`-client incremental quad composition path
+  for `--four-view-two-real-handoff-preview-loop`.
+- Kept the persistent canvas and visual-identity based changed-slot update
+  behavior intact.
+- Reduced remaining placeholder hot-path work by caching a reusable BGRA
+  placeholder row inside the two-real quad composition cache.
+- Changed full-compose behavior so the full canvas is placeholder-filled once
+  and renderable slots are copied over it, instead of placeholder-filling each
+  slot again during the same full compose.
+- Kept source-error placeholder behavior unchanged: source errors still change
+  visual identity and update the affected slot region instead of reusing the
+  previous source frame.
+- Did not start render/window backend optimization or client encode/capture
+  optimization.
+
+### Changed Files
+- `apps/switcher/src/main.rs`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### Decisions
+- Keep `quad_view_allocation_count` focused on persistent quad canvas
+  allocation / resize events; the placeholder row cache is an internal helper
+  for reducing fill cost and does not change the summary field meaning.
+- Leave the generic `compose_fixed_quad_view` API unchanged for this slice and
+  keep the production-facing optimization scoped to the same-PC two-real
+  preview loop.
+
+### Unresolved
+- Needs a same-PC `2`-client rerun to measure real
+  `avg_quad_view_compose_elapsed_ms` and FPS improvement against the
+  `245.549ms` baseline.
+- Downstream render/window cost remains a likely next bottleneck if compose
+  drops as expected.
+
+### Next
+- Rerun the same-PC `2`-client smoke from `S:\stream-sync` and compare
+  `quad_view_compose_elapsed_ms`, `avg_quad_view_compose_elapsed_ms`,
+  `quad_view_incremental_update_count`, `quad_view_full_compose_count`,
+  `quad_view_changed_slot_update_count`, `quad_view_reused_slot_count`,
+  `quad_view_allocation_count`, and FPS fields.
+
+### TODO Update
+- Added the placeholder-row cache / no duplicate slot fill refinement to the
+  current composition-performance TODO position.
+- Kept the next item as the same-PC `2`-client rerun for composition
+  diagnostics.
+
+### Validation
+- `where.exe link`
+  - result: `link.exe` not found in this environment
+- `cargo fmt`
+- `cargo fmt --check`
+- `cargo test -p stream-sync-switcher four_view_two_real_handoff_preview_loop -- --nocapture`
+  - result: PASS, `9` focused main preview-loop tests passed
+- `cargo test -p stream-sync-switcher quad_composition -- --nocapture`
+  - result: PASS, `12` focused library quad-composition tests passed
+
+---
+
+## 2026-05-14
+### Type
 - Codex implementation
 
 ### Work
