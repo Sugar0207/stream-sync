@@ -30,16 +30,17 @@ use stream_sync_switcher::{
     SwitcherFourViewCleanOutputWindowProofResult, SwitcherFourViewCleanOutputWindowRenderResult,
     SwitcherFourViewComposedCanvasRenderResult, SwitcherFourViewComposedCanvasWindowRenderBoundary,
     SwitcherFourViewComposedCanvasWindowRenderConnectionRenderResult,
-    SwitcherFourViewComposedCanvasWindowRenderInput, SwitcherFourViewDisplayedSlot,
-    SwitcherFourViewHandoffQuadCompositionRenderSlot, SwitcherFourViewHandoffValidationBoundary,
-    SwitcherFourViewHandoffValidationInput, SwitcherFourViewHandoffValidationOutput,
-    SwitcherFourViewHandoffValidationPreCompositionOutput,
+    SwitcherFourViewComposedCanvasWindowRenderInput, SwitcherFourViewComposedFrame,
+    SwitcherFourViewDisplayedSlot, SwitcherFourViewHandoffQuadCompositionRenderSlot,
+    SwitcherFourViewHandoffValidationBoundary, SwitcherFourViewHandoffValidationInput,
+    SwitcherFourViewHandoffValidationOutput, SwitcherFourViewHandoffValidationPreCompositionOutput,
     SwitcherFourViewManualPreviewCompositionInstructionKind,
     SwitcherFourViewManualPreviewDisplaySlotKind, SwitcherFourViewManualPreviewProofBoundary,
     SwitcherFourViewManualPreviewProofFixtureMode, SwitcherFourViewManualPreviewProofInput,
     SwitcherFourViewManualPreviewProofResult, SwitcherFourViewManualPreviewProofSummary,
-    SwitcherFourViewManualPreviewSchedulerSlotKind, SwitcherFourViewQuadCompositionBoundary,
-    SwitcherFourViewQuadCompositionInput, SwitcherFourViewQuadCompositionOutput,
+    SwitcherFourViewManualPreviewSchedulerSlotKind, SwitcherFourViewQuadComposedSlotKind,
+    SwitcherFourViewQuadComposedSlotMetadata, SwitcherFourViewQuadComposedSlotRect,
+    SwitcherFourViewQuadCompositionInvalidReason, SwitcherFourViewQuadCompositionOutput,
     SwitcherFourViewQuadCompositionResult, SwitcherFourViewQuadLayoutPolicy,
     SwitcherFourViewQuadRenderFacingConnectionBoundary, SwitcherFourViewTargetTimeSourceSlotConfig,
     SwitcherH264AnnexBPayloadInspectionBoundary, SwitcherH264DecodeDeferredReason,
@@ -1820,6 +1821,12 @@ struct SwitcherFourViewTwoRealHandoffPreviewLoopSummary {
     quad_view_composed_frame_reuse_count: u32,
     quad_view_visual_unchanged_count: u32,
     quad_view_visual_changed_count: u32,
+    quad_view_incremental_update_count: u32,
+    quad_view_full_compose_count: u32,
+    quad_view_changed_slot_update_count: u32,
+    quad_view_reused_slot_count: u32,
+    quad_view_allocation_count: u32,
+    avg_quad_view_incremental_update_elapsed_ms: String,
     avg_quad_view_compose_elapsed_ms: String,
     render_call_elapsed_ms: u128,
     unaccounted_elapsed_ms: u128,
@@ -2190,6 +2197,7 @@ struct TwoRealPreviewLoopRuntimeTiming {
     event_pump_elapsed_ms: u128,
     window_update_elapsed_ms: u128,
     quad_view_compose_elapsed_ms: u128,
+    quad_view_incremental_update_elapsed_ms: u128,
     render_call_elapsed_ms: u128,
     max_attempt_elapsed_ms: u128,
     slow_attempt_count: u32,
@@ -2237,6 +2245,51 @@ enum TwoRealPreviewLoopSlotVisualIdentity {
         frame_id: u64,
         selected_frame_source: Option<String>,
     },
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct TwoRealPreviewLoopQuadCompositionCache {
+    width: u32,
+    height: u32,
+    placeholder_bgra: [u8; 4],
+    pixels: Vec<u8>,
+    allocation_count: u32,
+}
+
+impl TwoRealPreviewLoopQuadCompositionCache {
+    fn has_ready_canvas(&self, width: u32, height: u32, placeholder_bgra: [u8; 4]) -> bool {
+        !self.pixels.is_empty()
+            && self.width == width
+            && self.height == height
+            && self.placeholder_bgra == placeholder_bgra
+    }
+
+    fn prepare_canvas(
+        &mut self,
+        width: u32,
+        height: u32,
+        len: usize,
+        placeholder_bgra: [u8; 4],
+    ) -> bool {
+        let needs_allocation = self.pixels.len() != len;
+        if needs_allocation {
+            self.pixels.resize(len, 0);
+            self.allocation_count = self.allocation_count.saturating_add(1);
+        }
+        self.width = width;
+        self.height = height;
+        self.placeholder_bgra = placeholder_bgra;
+        needs_allocation
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct TwoRealPreviewLoopQuadCompositionUpdateDiagnostics {
+    full_compose: bool,
+    incremental_update: bool,
+    changed_slot_count: u32,
+    reused_slot_count: u32,
+    allocation_count: u32,
 }
 
 struct TimedSwitcherH264DecodeRuntime<'a, Runtime> {
@@ -3195,12 +3248,17 @@ where
         std::array::from_fn(|_| None);
     let mut previous_visual_identities: Option<[TwoRealPreviewLoopSlotVisualIdentity; 4]> = None;
     let mut previous_bgra_composition: Option<SwitcherFourViewQuadCompositionResult> = None;
+    let mut quad_composition_cache = TwoRealPreviewLoopQuadCompositionCache::default();
     let mut quad_view_compose_attempt_count = 0u32;
     let mut quad_view_compose_success_count = 0u32;
     let mut quad_view_compose_skipped_unchanged_count = 0u32;
     let mut quad_view_composed_frame_reuse_count = 0u32;
     let mut quad_view_visual_unchanged_count = 0u32;
     let mut quad_view_visual_changed_count = 0u32;
+    let mut quad_view_incremental_update_count = 0u32;
+    let mut quad_view_full_compose_count = 0u32;
+    let mut quad_view_changed_slot_update_count = 0u32;
+    let mut quad_view_reused_slot_count = 0u32;
     let loop_start = Instant::now();
 
     for frame_index in 0..frames.get() {
@@ -3256,6 +3314,7 @@ where
         let bgra_composition = if visual_unchanged {
             if let Some(previous_composition) = previous_bgra_composition.clone() {
                 quad_view_compose_skipped_unchanged_count += 1;
+                quad_view_reused_slot_count += 4;
                 if matches!(
                     previous_composition,
                     SwitcherFourViewQuadCompositionResult::ComposedFrame { .. }
@@ -3272,8 +3331,15 @@ where
                     &pre_composition,
                     validation_input.layout_policy,
                     &timing,
+                    &mut quad_composition_cache,
+                    previous_visual_identities.as_ref(),
+                    &current_visual_identities,
                     &mut quad_view_compose_attempt_count,
                     &mut quad_view_compose_success_count,
+                    &mut quad_view_incremental_update_count,
+                    &mut quad_view_full_compose_count,
+                    &mut quad_view_changed_slot_update_count,
+                    &mut quad_view_reused_slot_count,
                 )
             }
         } else {
@@ -3281,8 +3347,15 @@ where
                 &pre_composition,
                 validation_input.layout_policy,
                 &timing,
+                &mut quad_composition_cache,
+                previous_visual_identities.as_ref(),
+                &current_visual_identities,
                 &mut quad_view_compose_attempt_count,
                 &mut quad_view_compose_success_count,
+                &mut quad_view_incremental_update_count,
+                &mut quad_view_full_compose_count,
+                &mut quad_view_changed_slot_update_count,
+                &mut quad_view_reused_slot_count,
             )
         };
         let render_facing = SwitcherFourViewQuadRenderFacingConnectionBoundary::default()
@@ -3472,6 +3545,15 @@ where
         quad_view_composed_frame_reuse_count,
         quad_view_visual_unchanged_count,
         quad_view_visual_changed_count,
+        quad_view_incremental_update_count,
+        quad_view_full_compose_count,
+        quad_view_changed_slot_update_count,
+        quad_view_reused_slot_count,
+        quad_view_allocation_count: quad_composition_cache.allocation_count,
+        avg_quad_view_incremental_update_elapsed_ms: format_preview_loop_average_elapsed(
+            timing.quad_view_incremental_update_elapsed_ms,
+            quad_view_incremental_update_count,
+        ),
         avg_quad_view_compose_elapsed_ms: format_preview_loop_average_elapsed(
             timing.quad_view_compose_elapsed_ms,
             quad_view_compose_attempt_count,
@@ -5540,25 +5622,492 @@ fn compose_two_real_preview_quad_view(
     pre_composition: &SwitcherFourViewHandoffValidationPreCompositionOutput,
     layout_policy: SwitcherFourViewQuadLayoutPolicy,
     timing: &Rc<RefCell<TwoRealPreviewLoopRuntimeTiming>>,
+    cache: &mut TwoRealPreviewLoopQuadCompositionCache,
+    previous_visual_identities: Option<&[TwoRealPreviewLoopSlotVisualIdentity; 4]>,
+    current_visual_identities: &[TwoRealPreviewLoopSlotVisualIdentity; 4],
     quad_view_compose_attempt_count: &mut u32,
     quad_view_compose_success_count: &mut u32,
+    quad_view_incremental_update_count: &mut u32,
+    quad_view_full_compose_count: &mut u32,
+    quad_view_changed_slot_update_count: &mut u32,
+    quad_view_reused_slot_count: &mut u32,
 ) -> SwitcherFourViewQuadCompositionOutput {
     *quad_view_compose_attempt_count += 1;
     let compose_start = Instant::now();
-    let output = SwitcherFourViewQuadCompositionBoundary::default().compose_fixed_quad_view(
-        SwitcherFourViewQuadCompositionInput {
-            connection: pre_composition.composition_render.clone(),
-            layout_policy,
-        },
+    let (composition, update_diagnostics) = compose_two_real_preview_quad_view_incremental(
+        &pre_composition.composition_render,
+        layout_policy,
+        cache,
+        previous_visual_identities,
+        current_visual_identities,
     );
-    timing.borrow_mut().quad_view_compose_elapsed_ms += compose_start.elapsed().as_millis();
+    let compose_elapsed_ms = compose_start.elapsed().as_millis();
+    {
+        let mut timing = timing.borrow_mut();
+        timing.quad_view_compose_elapsed_ms += compose_elapsed_ms;
+        if update_diagnostics.incremental_update {
+            timing.quad_view_incremental_update_elapsed_ms += compose_elapsed_ms;
+        }
+    }
     if matches!(
-        output.composition,
+        composition,
         SwitcherFourViewQuadCompositionResult::ComposedFrame { .. }
     ) {
         *quad_view_compose_success_count += 1;
     }
+    if update_diagnostics.incremental_update {
+        *quad_view_incremental_update_count += 1;
+    }
+    if update_diagnostics.full_compose {
+        *quad_view_full_compose_count += 1;
+    }
+    *quad_view_changed_slot_update_count += update_diagnostics.changed_slot_count;
+    *quad_view_reused_slot_count += update_diagnostics.reused_slot_count;
+    let output = SwitcherFourViewQuadCompositionOutput {
+        scheduler_status: pre_composition.scheduler.status,
+        connection: pre_composition.composition_render.clone(),
+        composition,
+    };
     output
+}
+
+fn compose_two_real_preview_quad_view_incremental(
+    connection: &stream_sync_switcher::SwitcherFourViewHandoffQuadCompositionRenderConnectionOutput,
+    policy: SwitcherFourViewQuadLayoutPolicy,
+    cache: &mut TwoRealPreviewLoopQuadCompositionCache,
+    previous_visual_identities: Option<&[TwoRealPreviewLoopSlotVisualIdentity; 4]>,
+    current_visual_identities: &[TwoRealPreviewLoopSlotVisualIdentity; 4],
+) -> (
+    SwitcherFourViewQuadCompositionResult,
+    TwoRealPreviewLoopQuadCompositionUpdateDiagnostics,
+) {
+    let base_slots = connection
+        .composition
+        .slots
+        .clone()
+        .map(two_real_quad_composed_slot_metadata_without_rect);
+
+    if let Some(placement) = connection
+        .composition
+        .slots
+        .iter()
+        .find_map(two_real_missing_decoded_slot_placement)
+    {
+        return (
+            SwitcherFourViewQuadCompositionResult::InvalidQuadView {
+                reason: SwitcherFourViewQuadCompositionInvalidReason::MissingDecodedPixels {
+                    placement,
+                },
+                slots: base_slots,
+            },
+            TwoRealPreviewLoopQuadCompositionUpdateDiagnostics::default(),
+        );
+    }
+
+    let Some((slot_width, slot_height)) = two_real_quad_slot_size(&connection.composition.slots)
+    else {
+        return (
+            SwitcherFourViewQuadCompositionResult::NoRenderableQuadView { slots: base_slots },
+            TwoRealPreviewLoopQuadCompositionUpdateDiagnostics::default(),
+        );
+    };
+
+    for slot in &connection.composition.slots {
+        if let Err(reason) = validate_two_real_quad_renderable_slot(slot) {
+            return (
+                SwitcherFourViewQuadCompositionResult::InvalidQuadView {
+                    reason,
+                    slots: base_slots,
+                },
+                TwoRealPreviewLoopQuadCompositionUpdateDiagnostics::default(),
+            );
+        }
+    }
+
+    let Some(canvas_width) = slot_width.checked_mul(2) else {
+        return (
+            SwitcherFourViewQuadCompositionResult::InvalidQuadView {
+                reason: SwitcherFourViewQuadCompositionInvalidReason::CanvasTooLarge,
+                slots: base_slots,
+            },
+            TwoRealPreviewLoopQuadCompositionUpdateDiagnostics::default(),
+        );
+    };
+    let Some(canvas_height) = slot_height.checked_mul(2) else {
+        return (
+            SwitcherFourViewQuadCompositionResult::InvalidQuadView {
+                reason: SwitcherFourViewQuadCompositionInvalidReason::CanvasTooLarge,
+                slots: base_slots,
+            },
+            TwoRealPreviewLoopQuadCompositionUpdateDiagnostics::default(),
+        );
+    };
+    let Some(canvas_len) = canvas_width
+        .checked_mul(canvas_height)
+        .and_then(|pixels| pixels.checked_mul(4))
+        .map(|len| len as usize)
+    else {
+        return (
+            SwitcherFourViewQuadCompositionResult::InvalidQuadView {
+                reason: SwitcherFourViewQuadCompositionInvalidReason::CanvasTooLarge,
+                slots: base_slots,
+            },
+            TwoRealPreviewLoopQuadCompositionUpdateDiagnostics::default(),
+        );
+    };
+
+    let changed_slots = two_real_preview_loop_changed_visual_slots(
+        previous_visual_identities,
+        current_visual_identities,
+    );
+    let cache_was_ready =
+        cache.has_ready_canvas(canvas_width, canvas_height, policy.placeholder_bgra);
+    let allocated = cache.prepare_canvas(
+        canvas_width,
+        canvas_height,
+        canvas_len,
+        policy.placeholder_bgra,
+    );
+    let full_compose = !cache_was_ready;
+    let slots_to_update = if full_compose {
+        [true, true, true, true]
+    } else {
+        changed_slots
+    };
+    if full_compose {
+        fill_two_real_bgra(&mut cache.pixels, policy.placeholder_bgra);
+    }
+
+    let slots =
+        connection.composition.slots.clone().map(|slot| {
+            two_real_quad_composed_slot_metadata_with_rect(slot, slot_width, slot_height)
+        });
+
+    for (slot_index, slot) in connection.composition.slots.iter().enumerate() {
+        if slots_to_update[slot_index] {
+            update_two_real_quad_slot_region(
+                &mut cache.pixels,
+                canvas_width,
+                slot_width,
+                slot_height,
+                policy.placeholder_bgra,
+                slot,
+            );
+        }
+    }
+
+    let changed_slot_count = slots_to_update.iter().filter(|changed| **changed).count() as u32;
+    let reused_slot_count = 4u32.saturating_sub(changed_slot_count);
+    let diagnostics = TwoRealPreviewLoopQuadCompositionUpdateDiagnostics {
+        full_compose,
+        incremental_update: !full_compose,
+        changed_slot_count,
+        reused_slot_count,
+        allocation_count: u32::from(allocated),
+    };
+
+    (
+        SwitcherFourViewQuadCompositionResult::ComposedFrame {
+            frame: SwitcherFourViewComposedFrame {
+                width: canvas_width,
+                height: canvas_height,
+                pixel_format: SwitcherDecodedFramePixelFormat::Bgra8,
+                pixels: cache.pixels.clone(),
+                slots,
+            },
+        },
+        diagnostics,
+    )
+}
+
+fn two_real_preview_loop_changed_visual_slots(
+    previous_visual_identities: Option<&[TwoRealPreviewLoopSlotVisualIdentity; 4]>,
+    current_visual_identities: &[TwoRealPreviewLoopSlotVisualIdentity; 4],
+) -> [bool; 4] {
+    std::array::from_fn(|index| {
+        previous_visual_identities
+            .map(|previous| previous[index] != current_visual_identities[index])
+            .unwrap_or(true)
+    })
+}
+
+fn two_real_quad_composed_slot_metadata_without_rect(
+    slot: SwitcherFourViewHandoffQuadCompositionRenderSlot,
+) -> SwitcherFourViewQuadComposedSlotMetadata {
+    two_real_quad_composed_slot_metadata(slot, None)
+}
+
+fn two_real_quad_composed_slot_metadata_with_rect(
+    slot: SwitcherFourViewHandoffQuadCompositionRenderSlot,
+    slot_width: u32,
+    slot_height: u32,
+) -> SwitcherFourViewQuadComposedSlotMetadata {
+    let placement = two_real_quad_connected_slot_placement(&slot);
+    let rect = Some(two_real_quad_slot_rect(placement, slot_width, slot_height));
+    two_real_quad_composed_slot_metadata(slot, rect)
+}
+
+fn two_real_quad_composed_slot_metadata(
+    slot: SwitcherFourViewHandoffQuadCompositionRenderSlot,
+    rect: Option<SwitcherFourViewQuadComposedSlotRect>,
+) -> SwitcherFourViewQuadComposedSlotMetadata {
+    let placement = two_real_quad_connected_slot_placement(&slot);
+    let kind = match slot {
+        SwitcherFourViewHandoffQuadCompositionRenderSlot::UseUpdatedFrame {
+            frame,
+            selected,
+            consumed,
+            ..
+        } => SwitcherFourViewQuadComposedSlotKind::Updated {
+            frame,
+            selected,
+            consumed,
+        },
+        SwitcherFourViewHandoffQuadCompositionRenderSlot::UseHeldPreviousFrame {
+            frame,
+            skipped,
+            hold_duration_micros,
+            ..
+        } => SwitcherFourViewQuadComposedSlotKind::HeldPrevious {
+            frame,
+            skipped,
+            hold_duration_micros,
+        },
+        SwitcherFourViewHandoffQuadCompositionRenderSlot::UseHeldPreviousFrameWithoutDecoded {
+            frame,
+            skipped,
+            hold_duration_micros,
+            ..
+        } => SwitcherFourViewQuadComposedSlotKind::MissingDecodedPixels {
+            frame,
+            skipped,
+            hold_duration_micros,
+        },
+        SwitcherFourViewHandoffQuadCompositionRenderSlot::UseNoDisplayPlaceholder {
+            skipped,
+            ..
+        } => SwitcherFourViewQuadComposedSlotKind::NoDisplayPlaceholder { skipped },
+        SwitcherFourViewHandoffQuadCompositionRenderSlot::UseSourceErrorPlaceholder {
+            skipped,
+            ..
+        } => SwitcherFourViewQuadComposedSlotKind::SourceErrorPlaceholder { skipped },
+        SwitcherFourViewHandoffQuadCompositionRenderSlot::UseDecodeDeferredPlaceholder {
+            selected,
+            consumed,
+            reason,
+            ..
+        } => SwitcherFourViewQuadComposedSlotKind::DecodeDeferredPlaceholder {
+            selected,
+            consumed,
+            reason,
+        },
+        SwitcherFourViewHandoffQuadCompositionRenderSlot::UseDecodeFailedPlaceholder {
+            selected,
+            consumed,
+            failure,
+            ..
+        } => SwitcherFourViewQuadComposedSlotKind::DecodeFailedPlaceholder {
+            selected,
+            consumed,
+            failure,
+        },
+    };
+
+    SwitcherFourViewQuadComposedSlotMetadata {
+        placement,
+        rect,
+        kind,
+    }
+}
+
+fn two_real_quad_connected_slot_placement(
+    slot: &SwitcherFourViewHandoffQuadCompositionRenderSlot,
+) -> stream_sync_switcher::SwitcherFourViewQuadSlotPlacement {
+    match slot {
+        SwitcherFourViewHandoffQuadCompositionRenderSlot::UseUpdatedFrame { placement, .. }
+        | SwitcherFourViewHandoffQuadCompositionRenderSlot::UseHeldPreviousFrame {
+            placement,
+            ..
+        }
+        | SwitcherFourViewHandoffQuadCompositionRenderSlot::UseHeldPreviousFrameWithoutDecoded {
+            placement,
+            ..
+        }
+        | SwitcherFourViewHandoffQuadCompositionRenderSlot::UseNoDisplayPlaceholder {
+            placement,
+            ..
+        }
+        | SwitcherFourViewHandoffQuadCompositionRenderSlot::UseSourceErrorPlaceholder {
+            placement,
+            ..
+        }
+        | SwitcherFourViewHandoffQuadCompositionRenderSlot::UseDecodeDeferredPlaceholder {
+            placement,
+            ..
+        }
+        | SwitcherFourViewHandoffQuadCompositionRenderSlot::UseDecodeFailedPlaceholder {
+            placement,
+            ..
+        } => *placement,
+    }
+}
+
+fn two_real_missing_decoded_slot_placement(
+    slot: &SwitcherFourViewHandoffQuadCompositionRenderSlot,
+) -> Option<stream_sync_switcher::SwitcherFourViewQuadSlotPlacement> {
+    match slot {
+        SwitcherFourViewHandoffQuadCompositionRenderSlot::UseHeldPreviousFrameWithoutDecoded {
+            placement,
+            ..
+        } => Some(*placement),
+        _ => None,
+    }
+}
+
+fn two_real_quad_slot_rect(
+    placement: stream_sync_switcher::SwitcherFourViewQuadSlotPlacement,
+    slot_width: u32,
+    slot_height: u32,
+) -> SwitcherFourViewQuadComposedSlotRect {
+    SwitcherFourViewQuadComposedSlotRect {
+        placement,
+        x: placement.column as u32 * slot_width,
+        y: placement.row as u32 * slot_height,
+        width: slot_width,
+        height: slot_height,
+    }
+}
+
+fn two_real_renderable_frame_and_placement(
+    slot: &SwitcherFourViewHandoffQuadCompositionRenderSlot,
+) -> Option<(
+    &SwitcherDecodedFrame,
+    stream_sync_switcher::SwitcherFourViewQuadSlotPlacement,
+)> {
+    match slot {
+        SwitcherFourViewHandoffQuadCompositionRenderSlot::UseUpdatedFrame {
+            placement,
+            frame,
+            ..
+        }
+        | SwitcherFourViewHandoffQuadCompositionRenderSlot::UseHeldPreviousFrame {
+            placement,
+            frame,
+            ..
+        } => frame.decoded.as_ref().map(|decoded| (decoded, *placement)),
+        _ => None,
+    }
+}
+
+fn two_real_quad_slot_size(
+    slots: &[SwitcherFourViewHandoffQuadCompositionRenderSlot; 4],
+) -> Option<(u32, u32)> {
+    let mut width: Option<u32> = None;
+    let mut height: Option<u32> = None;
+
+    for slot in slots {
+        let Some((frame, _)) = two_real_renderable_frame_and_placement(slot) else {
+            continue;
+        };
+        width = Some(width.map_or(frame.width, |current| current.max(frame.width)));
+        height = Some(height.map_or(frame.height, |current| current.max(frame.height)));
+    }
+
+    Some((width?, height?))
+}
+
+fn validate_two_real_quad_renderable_slot(
+    slot: &SwitcherFourViewHandoffQuadCompositionRenderSlot,
+) -> Result<(), SwitcherFourViewQuadCompositionInvalidReason> {
+    let Some((frame, placement)) = two_real_renderable_frame_and_placement(slot) else {
+        return Ok(());
+    };
+
+    if frame.pixel_format != SwitcherDecodedFramePixelFormat::Bgra8 {
+        return Err(
+            SwitcherFourViewQuadCompositionInvalidReason::UnsupportedPixelFormat {
+                placement,
+                actual: frame.pixel_format,
+            },
+        );
+    }
+    if frame.width == 0 || frame.height == 0 {
+        return Err(SwitcherFourViewQuadCompositionInvalidReason::InvalidDimensions { placement });
+    }
+    let Some(expected) = frame
+        .width
+        .checked_mul(frame.height)
+        .and_then(|pixels| pixels.checked_mul(4))
+        .map(|len| len as usize)
+    else {
+        return Err(SwitcherFourViewQuadCompositionInvalidReason::CanvasTooLarge);
+    };
+    if frame.pixels.len() != expected {
+        return Err(
+            SwitcherFourViewQuadCompositionInvalidReason::InvalidBufferLength {
+                placement,
+                expected,
+                actual: frame.pixels.len(),
+            },
+        );
+    }
+
+    Ok(())
+}
+
+fn update_two_real_quad_slot_region(
+    canvas: &mut [u8],
+    canvas_width: u32,
+    slot_width: u32,
+    slot_height: u32,
+    placeholder_bgra: [u8; 4],
+    slot: &SwitcherFourViewHandoffQuadCompositionRenderSlot,
+) {
+    let placement = two_real_quad_connected_slot_placement(slot);
+    let rect = two_real_quad_slot_rect(placement, slot_width, slot_height);
+    fill_two_real_bgra_rect(canvas, canvas_width, rect, placeholder_bgra);
+    if let Some((frame, _)) = two_real_renderable_frame_and_placement(slot) {
+        copy_two_real_bgra_frame_into_canvas(canvas, canvas_width, frame, rect.x, rect.y);
+    }
+}
+
+fn fill_two_real_bgra(pixels: &mut [u8], color: [u8; 4]) {
+    for pixel in pixels.chunks_exact_mut(4) {
+        pixel.copy_from_slice(&color);
+    }
+}
+
+fn fill_two_real_bgra_rect(
+    canvas: &mut [u8],
+    canvas_width: u32,
+    rect: SwitcherFourViewQuadComposedSlotRect,
+    color: [u8; 4],
+) {
+    let canvas_stride = canvas_width as usize * 4;
+    let rect_stride = rect.width as usize * 4;
+    for row in 0..rect.height as usize {
+        let dst_start = (rect.y as usize + row) * canvas_stride + rect.x as usize * 4;
+        let dst_end = dst_start + rect_stride;
+        fill_two_real_bgra(&mut canvas[dst_start..dst_end], color);
+    }
+}
+
+fn copy_two_real_bgra_frame_into_canvas(
+    canvas: &mut [u8],
+    canvas_width: u32,
+    frame: &SwitcherDecodedFrame,
+    dst_x: u32,
+    dst_y: u32,
+) {
+    let src_stride = frame.width as usize * 4;
+    let canvas_stride = canvas_width as usize * 4;
+    for row in 0..frame.height as usize {
+        let src_start = row * src_stride;
+        let dst_start = (dst_y as usize + row) * canvas_stride + dst_x as usize * 4;
+        let dst_end = dst_start + src_stride;
+        canvas[dst_start..dst_end]
+            .copy_from_slice(&frame.pixels[src_start..src_start + src_stride]);
+    }
 }
 
 fn update_two_real_decoded_slot_identities(
@@ -6355,7 +6904,7 @@ fn format_four_view_two_real_handoff_preview_loop_summary(
     summary: &SwitcherFourViewTwoRealHandoffPreviewLoopSummary,
 ) -> String {
     format!(
-        "switcher four-view two-real handoff preview loop command_name=--four-view-two-real-handoff-preview-loop real_handoff=true real_slot_count=2 real_slot0_index={} real_slot1_index={} pipe_name={} actual_pipe_path={} preview_mode={} read_mode={} client0_id={} run0_id={} client1_id={} run1_id={} frames_attempted={} frames_rendered={} render_failures={} elapsed_ms={} target_fps={} configured_frame_interval_ms={} effective_attempt_fps={} effective_render_fps={} first_render_attempt_index={} first_render_elapsed_ms={} rendered_after_first_render={} effective_render_fps_after_first_render={} no_render_before_first_render={} selected_count={} no_frame_count={} handoff_error_count={} decode_attempt_count={} decode_success_count={} render_success_count={} render_failure_count={} unchanged_frame_reuse_count={} skipped_decode_unchanged_frame_count={} redecoded_same_frame_count={} decode_elapsed_ms={} handoff_elapsed_ms={} render_elapsed_ms={} avg_decode_elapsed_ms={} avg_handoff_elapsed_ms={} avg_render_elapsed_ms={} loop_total_elapsed_ms={} attempt_body_elapsed_ms={} loop_sleep_elapsed_ms={} frame_interval_wait_elapsed_ms={} event_pump_elapsed_ms={} window_update_elapsed_ms={} quad_view_compose_elapsed_ms={} quad_view_compose_attempt_count={} quad_view_compose_success_count={} quad_view_compose_skipped_unchanged_count={} quad_view_composed_frame_reuse_count={} quad_view_visual_unchanged_count={} quad_view_visual_changed_count={} avg_quad_view_compose_elapsed_ms={} render_call_elapsed_ms={} unaccounted_elapsed_ms={} avg_attempt_elapsed_ms={} max_attempt_elapsed_ms={} slow_attempt_count={} slow_attempt_threshold_ms={} scheduler_status={:?} slot_bindings={} slot_result_kinds={} slot_diagnostics={} clean_output_render_result_kind={} window_title={} output_width={} output_height={}",
+        "switcher four-view two-real handoff preview loop command_name=--four-view-two-real-handoff-preview-loop real_handoff=true real_slot_count=2 real_slot0_index={} real_slot1_index={} pipe_name={} actual_pipe_path={} preview_mode={} read_mode={} client0_id={} run0_id={} client1_id={} run1_id={} frames_attempted={} frames_rendered={} render_failures={} elapsed_ms={} target_fps={} configured_frame_interval_ms={} effective_attempt_fps={} effective_render_fps={} first_render_attempt_index={} first_render_elapsed_ms={} rendered_after_first_render={} effective_render_fps_after_first_render={} no_render_before_first_render={} selected_count={} no_frame_count={} handoff_error_count={} decode_attempt_count={} decode_success_count={} render_success_count={} render_failure_count={} unchanged_frame_reuse_count={} skipped_decode_unchanged_frame_count={} redecoded_same_frame_count={} decode_elapsed_ms={} handoff_elapsed_ms={} render_elapsed_ms={} avg_decode_elapsed_ms={} avg_handoff_elapsed_ms={} avg_render_elapsed_ms={} loop_total_elapsed_ms={} attempt_body_elapsed_ms={} loop_sleep_elapsed_ms={} frame_interval_wait_elapsed_ms={} event_pump_elapsed_ms={} window_update_elapsed_ms={} quad_view_compose_elapsed_ms={} quad_view_compose_attempt_count={} quad_view_compose_success_count={} quad_view_compose_skipped_unchanged_count={} quad_view_composed_frame_reuse_count={} quad_view_visual_unchanged_count={} quad_view_visual_changed_count={} quad_view_incremental_update_count={} quad_view_full_compose_count={} quad_view_changed_slot_update_count={} quad_view_reused_slot_count={} quad_view_allocation_count={} avg_quad_view_incremental_update_elapsed_ms={} avg_quad_view_compose_elapsed_ms={} render_call_elapsed_ms={} unaccounted_elapsed_ms={} avg_attempt_elapsed_ms={} max_attempt_elapsed_ms={} slow_attempt_count={} slow_attempt_threshold_ms={} scheduler_status={:?} slot_bindings={} slot_result_kinds={} slot_diagnostics={} clean_output_render_result_kind={} window_title={} output_width={} output_height={}",
         summary.real_slot0_index,
         summary.real_slot1_index,
         summary.pipe_name,
@@ -6408,6 +6957,12 @@ fn format_four_view_two_real_handoff_preview_loop_summary(
         summary.quad_view_composed_frame_reuse_count,
         summary.quad_view_visual_unchanged_count,
         summary.quad_view_visual_changed_count,
+        summary.quad_view_incremental_update_count,
+        summary.quad_view_full_compose_count,
+        summary.quad_view_changed_slot_update_count,
+        summary.quad_view_reused_slot_count,
+        summary.quad_view_allocation_count,
+        summary.avg_quad_view_incremental_update_elapsed_ms,
         summary.avg_quad_view_compose_elapsed_ms,
         summary.render_call_elapsed_ms,
         summary.unaccounted_elapsed_ms,
@@ -8315,6 +8870,57 @@ mod tests {
         }
     }
 
+    #[derive(Debug, Default)]
+    struct Slot0SecondReadErrorSlot2StableHandoff {
+        client0_calls: RefCell<u32>,
+        client1_calls: RefCell<u32>,
+    }
+
+    impl SwitcherQueuedFrameHandoff for Slot0SecondReadErrorSlot2StableHandoff {
+        fn read_handoff_frame(
+            &mut self,
+            input: SwitcherQueuedFrameHandoffInput,
+        ) -> SwitcherQueuedFrameHandoffResult {
+            let (calls, seed) = match input.client_id.0.as_str() {
+                "real-client-0" => (&self.client0_calls, 0x10),
+                "real-client-1" => (&self.client1_calls, 0x40),
+                _ => (&self.client0_calls, 0xdd),
+            };
+            let mut call_count = calls.borrow_mut();
+            let current_call = *call_count;
+            *call_count += 1;
+
+            if input.client_id.0 == "real-client-0" && current_call > 0 {
+                return SwitcherQueuedFrameHandoffResult::HandoffError {
+                    client_id: input.client_id,
+                    run_id: input.run_id,
+                    mode: input.mode,
+                    error: SwitcherQueuedFrameHandoffError::SourceUnavailable,
+                };
+            }
+
+            SwitcherQueuedFrameHandoffResult::FrameRead {
+                frame: SwitcherSingleViewSelectedEncodedFrame {
+                    client_id: input.client_id,
+                    run_id: input.run_id,
+                    frame_id: 1,
+                    capture_timestamp: TimestampMicros(1_000_001),
+                    send_timestamp: TimestampMicros(1_000_101),
+                    queued_at: TimestampMicros(2_400_001),
+                    is_keyframe: true,
+                    width: 2,
+                    height: 1,
+                    fps_nominal: 30,
+                    codec: Codec::H264,
+                    encoded_payload_len: 1,
+                    encoded_payload: vec![seed],
+                },
+                mode: input.mode,
+                remaining_client_queue_len: 0,
+            }
+        }
+    }
+
     #[derive(Debug, Clone)]
     struct StubRealQueuedFrameHandoff {
         result: SwitcherQueuedFrameHandoffResult,
@@ -8892,6 +9498,11 @@ mod tests {
         assert_eq!(summary.quad_view_composed_frame_reuse_count, 1);
         assert_eq!(summary.quad_view_visual_unchanged_count, 1);
         assert_eq!(summary.quad_view_visual_changed_count, 1);
+        assert_eq!(summary.quad_view_incremental_update_count, 0);
+        assert_eq!(summary.quad_view_full_compose_count, 1);
+        assert_eq!(summary.quad_view_changed_slot_update_count, 4);
+        assert_eq!(summary.quad_view_reused_slot_count, 4);
+        assert_eq!(summary.quad_view_allocation_count, 1);
         assert_eq!(
             summary.slot_bindings,
             [
@@ -8964,6 +9575,11 @@ mod tests {
         assert_eq!(summary.quad_view_composed_frame_reuse_count, 1);
         assert_eq!(summary.quad_view_visual_unchanged_count, 1);
         assert_eq!(summary.quad_view_visual_changed_count, 1);
+        assert_eq!(summary.quad_view_incremental_update_count, 0);
+        assert_eq!(summary.quad_view_full_compose_count, 1);
+        assert_eq!(summary.quad_view_changed_slot_update_count, 4);
+        assert_eq!(summary.quad_view_reused_slot_count, 4);
+        assert_eq!(summary.quad_view_allocation_count, 1);
         assert_eq!(
             summary.slot_result_kinds,
             [
@@ -9017,6 +9633,11 @@ mod tests {
         assert_eq!(summary.quad_view_composed_frame_reuse_count, 1);
         assert_eq!(summary.quad_view_visual_unchanged_count, 1);
         assert_eq!(summary.quad_view_visual_changed_count, 1);
+        assert_eq!(summary.quad_view_incremental_update_count, 0);
+        assert_eq!(summary.quad_view_full_compose_count, 1);
+        assert_eq!(summary.quad_view_changed_slot_update_count, 4);
+        assert_eq!(summary.quad_view_reused_slot_count, 4);
+        assert_eq!(summary.quad_view_allocation_count, 1);
         assert!(summary.slot_diagnostics[0].contains("decode_attempted=false"));
         assert!(summary.slot_diagnostics[0].contains("decode_skipped_reason=UnchangedFrameReuse"));
         assert!(summary.slot_diagnostics[2].contains("decode_attempted=false"));
@@ -9061,6 +9682,11 @@ mod tests {
         assert_eq!(summary.quad_view_composed_frame_reuse_count, 0);
         assert_eq!(summary.quad_view_visual_unchanged_count, 0);
         assert_eq!(summary.quad_view_visual_changed_count, 2);
+        assert_eq!(summary.quad_view_incremental_update_count, 1);
+        assert_eq!(summary.quad_view_full_compose_count, 1);
+        assert_eq!(summary.quad_view_changed_slot_update_count, 6);
+        assert_eq!(summary.quad_view_reused_slot_count, 2);
+        assert_eq!(summary.quad_view_allocation_count, 1);
 
         let requests = render_runtime.requests.borrow();
         assert_eq!(requests.len(), 2);
@@ -9115,6 +9741,55 @@ mod tests {
     }
 
     #[test]
+    fn switcher_four_view_two_real_handoff_preview_loop_updates_only_source_error_slot_region() {
+        let render_runtime = RecordingPersistentFixtureRenderedWindowRuntime::default();
+        let summary = run_four_view_two_real_handoff_preview_loop_with_handoff_runtime_and_sleep(
+            "fixture-pipe",
+            0,
+            ClientId("real-client-0".to_string()),
+            RunId("real-run-0".to_string()),
+            2,
+            ClientId("real-client-1".to_string()),
+            RunId("real-run-1".to_string()),
+            NonZeroU32::new(2).expect("2 should be non-zero"),
+            SwitcherSingleClientQueueSourceMode::PreviewLatest,
+            TimestampMicros(1_000_004),
+            Slot0SecondReadErrorSlot2StableHandoff::default(),
+            &DeterministicFourViewFixtureDecodeRuntime,
+            &render_runtime,
+            &RecordingCadenceSleepHook::default(),
+        );
+
+        assert_eq!(summary.frames_attempted, 2);
+        assert_eq!(summary.frames_rendered, 2);
+        assert_eq!(summary.handoff_error_count, 1);
+        assert_eq!(summary.quad_view_compose_attempt_count, 2);
+        assert_eq!(summary.quad_view_compose_success_count, 2);
+        assert_eq!(summary.quad_view_incremental_update_count, 1);
+        assert_eq!(summary.quad_view_full_compose_count, 1);
+        assert_eq!(summary.quad_view_changed_slot_update_count, 5);
+        assert_eq!(summary.quad_view_reused_slot_count, 3);
+        assert_eq!(summary.quad_view_allocation_count, 1);
+        assert_eq!(
+            summary.slot_result_kinds,
+            [
+                "HandoffError".to_string(),
+                "NoFrameAvailable".to_string(),
+                "Selected".to_string(),
+                "NoFrameAvailable".to_string(),
+            ]
+        );
+
+        let requests = render_runtime.requests.borrow();
+        assert_eq!(requests.len(), 2);
+        assert_eq!(requests[0].top_left, [0x10, 0x11, 0x12, 255]);
+        assert_eq!(requests[1].top_left, [16, 16, 16, 255]);
+        assert_eq!(requests[1].bottom_left, requests[0].bottom_left);
+        assert_eq!(requests[1].top_right, requests[0].top_right);
+        assert_eq!(requests[1].bottom_right, requests[0].bottom_right);
+    }
+
+    #[test]
     fn switcher_four_view_two_real_handoff_preview_loop_skips_stable_initial_no_frame_composition()
     {
         let render_runtime = RecordingPersistentFixtureRenderedWindowRuntime::default();
@@ -9145,6 +9820,11 @@ mod tests {
         assert_eq!(summary.quad_view_composed_frame_reuse_count, 0);
         assert_eq!(summary.quad_view_visual_unchanged_count, 2);
         assert_eq!(summary.quad_view_visual_changed_count, 1);
+        assert_eq!(summary.quad_view_incremental_update_count, 0);
+        assert_eq!(summary.quad_view_full_compose_count, 0);
+        assert_eq!(summary.quad_view_changed_slot_update_count, 0);
+        assert_eq!(summary.quad_view_reused_slot_count, 8);
+        assert_eq!(summary.quad_view_allocation_count, 0);
         assert_eq!(
             summary.clean_output_render_result_kind,
             "NoRenderableQuadView"
@@ -9245,6 +9925,12 @@ mod tests {
         assert!(formatted.contains("quad_view_composed_frame_reuse_count=0"));
         assert!(formatted.contains("quad_view_visual_unchanged_count=0"));
         assert!(formatted.contains("quad_view_visual_changed_count=1"));
+        assert!(formatted.contains("quad_view_incremental_update_count=0"));
+        assert!(formatted.contains("quad_view_full_compose_count=1"));
+        assert!(formatted.contains("quad_view_changed_slot_update_count=4"));
+        assert!(formatted.contains("quad_view_reused_slot_count=0"));
+        assert!(formatted.contains("quad_view_allocation_count=1"));
+        assert!(formatted.contains("avg_quad_view_incremental_update_elapsed_ms=n/a"));
         assert!(formatted.contains("avg_quad_view_compose_elapsed_ms="));
         assert!(formatted.contains("render_call_elapsed_ms="));
         assert!(formatted.contains("unaccounted_elapsed_ms="));

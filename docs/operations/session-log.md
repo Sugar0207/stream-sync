@@ -5,6 +5,84 @@
 - Codex implementation
 
 ### Work
+- Investigated the same-PC `2`-client quad-view reuse rerun where runtime /
+  queue / handoff stayed healthy and visual reuse worked, but actual quad
+  composition was still too expensive:
+  `avg_quad_view_compose_elapsed_ms=245.549`.
+- Confirmed the hot compose path was still allocating a full quad canvas,
+  filling the whole canvas with placeholder BGRA, and copying every renderable
+  slot on each actual composition.
+- Added a two-real preview-loop scoped persistent quad composition buffer.
+- Added an incremental update path for
+  `--four-view-two-real-handoff-preview-loop`: after the first composed canvas
+  for a stable size, changed visual slots update only their slot region while
+  unchanged slot regions stay untouched.
+- Kept existing whole composed-frame reuse for fully unchanged visual identity
+  ticks.
+- Kept unchanged-frame decode reuse intact.
+- Preserved source-error behavior: source / handoff errors still change visual
+  identity, update the affected slot region to source-error placeholder color,
+  and never reuse the previous source frame as source content.
+- Kept stable no-frame placeholder-only ticks from forcing persistent canvas
+  allocation or full recomposition.
+- Added final-summary diagnostics:
+  `quad_view_incremental_update_count`, `quad_view_full_compose_count`,
+  `quad_view_changed_slot_update_count`, `quad_view_reused_slot_count`,
+  `quad_view_allocation_count`, and
+  `avg_quad_view_incremental_update_elapsed_ms`.
+- Added focused two-real assertions for incremental slot updates, unchanged
+  slot preservation, source-error slot transition, and stable no-frame
+  placeholder behavior.
+- Kept render/window backend optimization, client encode/capture optimization,
+  and distributed-PC validation docs out of scope.
+
+### Changed Files
+- `apps/switcher/src/main.rs`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### Decisions
+- Scope the incremental composer to the production-facing two-real preview
+  loop first, leaving the generic `compose_fixed_quad_view` boundary unchanged.
+- Count `quad_view_compose_elapsed_ms` for actual full or incremental
+  composition attempts only; unchanged visual ticks still count as skipped
+  composition reuse.
+- Count `quad_view_allocation_count` as persistent quad buffer allocation /
+  resize events, not every downstream owned-frame clone still required by the
+  current render-facing API.
+
+### Unresolved
+- Needs a same-PC `2`-client rerun to measure whether
+  `avg_quad_view_compose_elapsed_ms` drops significantly below `245.549ms`.
+- Downstream render call / window update cost remains a likely next bottleneck
+  after composition cost is reduced.
+
+### Next
+- Rerun the same-PC `2`-client smoke from `S:\stream-sync` and inspect
+  `quad_view_incremental_update_count`, `quad_view_full_compose_count`,
+  `quad_view_changed_slot_update_count`, `quad_view_reused_slot_count`,
+  `quad_view_allocation_count`, `avg_quad_view_incremental_update_elapsed_ms`,
+  `avg_quad_view_compose_elapsed_ms`, `quad_view_compose_elapsed_ms`, and FPS
+  fields.
+
+### TODO Update
+- Updated current position from whole composed-frame reuse status to
+  incremental quad composition status.
+- Updated the immediate Next Item to a same-PC `2`-client rerun focused on
+  incremental composition diagnostics and FPS.
+
+### Validation
+- `cargo fmt`
+- `cargo fmt --check`
+- `cargo test -p stream-sync-switcher two_real_handoff_preview -- --nocapture`
+  - result: PASS, `11` focused tests passed
+  - `link.exe` was available in this environment
+
+## 2026-05-14
+### Type
+- Codex implementation
+
+### Work
 - Investigated the remaining same-PC `2`-client switcher FPS bottleneck after
   the timing rerun identified `quad_view_compose_elapsed_ms=26880` as the
   largest measured cost.
