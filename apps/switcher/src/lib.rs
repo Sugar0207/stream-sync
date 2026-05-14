@@ -1,9 +1,9 @@
 use std::{
-    io::{self, Write},
+    io::{self, Read, Write},
     net::{SocketAddr, UdpSocket},
     path::{Path, PathBuf},
     process::{Command, Stdio},
-    time::{Duration, SystemTime, UNIX_EPOCH},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 use stream_sync_net_core::{
@@ -34,7 +34,6 @@ use stream_sync_server::{
 #[cfg(windows)]
 use std::{
     fs::File,
-    io::Read,
     os::windows::io::{FromRawHandle, OwnedHandle},
 };
 #[cfg(windows)]
@@ -3270,6 +3269,12 @@ impl SwitcherFourViewHandoffQuadCompositionRenderConnectionBoundary {
                             encoded_payload: selected.frame.encoded_payload.clone(),
                             width: selected.frame.width,
                             height: selected.frame.height,
+                            source_identity: Some(SwitcherH264DecodeSourceIdentity {
+                                client_id: selected.frame.client_id.clone(),
+                                run_id: selected.frame.run_id.clone(),
+                                frame_id: selected.frame.frame_id,
+                                source_identity: "selected".to_string(),
+                            }),
                         },
                         decode_runtime,
                     ) {
@@ -5160,39 +5165,31 @@ impl SwitcherFourViewComposedCanvasWindowRenderBoundary {
             };
         }
 
-        let decoded = SwitcherDecodedFrame {
+        let frame_input = SwitcherDecodedFrameRenderInput {
             width: frame.width,
             height: frame.height,
             pixel_format: frame.pixel_format,
             pixels: frame.pixels.clone(),
         };
-        let render = match SwitcherDecodedFrameRenderInput::from_decoded_frame(&decoded) {
-            Ok(frame_input) => match runtime.render_once(SwitcherWindowRenderRequest {
-                frame: frame_input,
-                title: window_title,
-                hold_millis: render_hold_millis,
-            }) {
-                SwitcherWindowRenderResult::Rendered(render) => {
-                    SwitcherFourViewComposedCanvasRenderResult::Rendered { render }
-                }
-                SwitcherWindowRenderResult::RenderDeferred { reason } => {
-                    SwitcherFourViewComposedCanvasRenderResult::RenderDeferred { reason }
-                }
-                SwitcherWindowRenderResult::BackendUnavailable { reason, message } => {
-                    SwitcherFourViewComposedCanvasRenderResult::BackendUnavailable {
-                        reason,
-                        message,
-                    }
-                }
-                SwitcherWindowRenderResult::InvalidFrame { error } => {
-                    SwitcherFourViewComposedCanvasRenderResult::InvalidComposedFrame { error }
-                }
-                SwitcherWindowRenderResult::RenderFailed { message } => {
-                    SwitcherFourViewComposedCanvasRenderResult::RenderFailed { message }
-                }
-            },
-            Err(error) => {
+        let render = match runtime.render_once(SwitcherWindowRenderRequest {
+            frame: frame_input,
+            title: window_title,
+            hold_millis: render_hold_millis,
+        }) {
+            SwitcherWindowRenderResult::Rendered(render) => {
+                SwitcherFourViewComposedCanvasRenderResult::Rendered { render }
+            }
+            SwitcherWindowRenderResult::RenderDeferred { reason } => {
+                SwitcherFourViewComposedCanvasRenderResult::RenderDeferred { reason }
+            }
+            SwitcherWindowRenderResult::BackendUnavailable { reason, message } => {
+                SwitcherFourViewComposedCanvasRenderResult::BackendUnavailable { reason, message }
+            }
+            SwitcherWindowRenderResult::InvalidFrame { error } => {
                 SwitcherFourViewComposedCanvasRenderResult::InvalidComposedFrame { error }
+            }
+            SwitcherWindowRenderResult::RenderFailed { message } => {
+                SwitcherFourViewComposedCanvasRenderResult::RenderFailed { message }
             }
         };
 
@@ -6536,6 +6533,17 @@ pub struct SwitcherH264DecodeInput {
     pub encoded_payload: Vec<u8>,
     pub width: u32,
     pub height: u32,
+    pub source_identity: Option<SwitcherH264DecodeSourceIdentity>,
+}
+
+/// Optional source identity for decode caches that sit above a stateless
+/// H.264 runtime.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct SwitcherH264DecodeSourceIdentity {
+    pub client_id: ClientId,
+    pub run_id: RunId,
+    pub frame_id: u64,
+    pub source_identity: String,
 }
 
 /// Lightweight Annex B NAL unit kinds used for decode observability.
@@ -6707,12 +6715,54 @@ pub enum SwitcherH264DecodeResult {
     Failed(SwitcherH264DecodeFailure),
 }
 
+/// Runtime-level diagnostics for one H.264 decode call.
+///
+/// Not every backend can expose every phase. Unknown or not-applicable phases
+/// remain zero.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct SwitcherH264DecodeRuntimeDiagnostics {
+    pub process_spawn_elapsed_ms: u128,
+    pub input_write_elapsed_ms: u128,
+    pub output_read_elapsed_ms: u128,
+    pub process_wait_elapsed_ms: u128,
+    pub pixel_convert_elapsed_ms: u128,
+    pub buffer_allocation_count: u32,
+    pub output_bytes: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SwitcherH264DecodeRuntimeOutput {
+    pub result: SwitcherH264DecodeResult,
+    pub diagnostics: SwitcherH264DecodeRuntimeDiagnostics,
+}
+
 /// Runtime hook for H.264 decode.
 ///
 /// This keeps the boundary testable and leaves future library/hardware decode
 /// integration caller-owned.
 pub trait SwitcherH264DecodeRuntimeHook {
     fn decode_annex_b_h264(&self, input: SwitcherH264DecodeInput) -> SwitcherH264DecodeResult;
+
+    fn decode_annex_b_h264_with_diagnostics(
+        &self,
+        input: SwitcherH264DecodeInput,
+    ) -> SwitcherH264DecodeRuntimeOutput {
+        let result = self.decode_annex_b_h264(input);
+        let output_bytes = match &result {
+            SwitcherH264DecodeResult::Decoded(decoded) => decoded.pixels.len(),
+            SwitcherH264DecodeResult::Failed(failure) => failure.decoded_stdout_len,
+            SwitcherH264DecodeResult::Deferred { .. } => 0,
+        };
+        let buffer_allocation_count = u32::from(output_bytes > 0);
+        SwitcherH264DecodeRuntimeOutput {
+            result,
+            diagnostics: SwitcherH264DecodeRuntimeDiagnostics {
+                output_bytes,
+                buffer_allocation_count,
+                ..SwitcherH264DecodeRuntimeDiagnostics::default()
+            },
+        }
+    }
 }
 
 /// Placeholder-safe default decode runtime.
@@ -6743,17 +6793,32 @@ impl Default for SwitcherFfmpegH264DecodeRuntimeHook {
 
 impl SwitcherH264DecodeRuntimeHook for SwitcherFfmpegH264DecodeRuntimeHook {
     fn decode_annex_b_h264(&self, input: SwitcherH264DecodeInput) -> SwitcherH264DecodeResult {
+        self.decode_annex_b_h264_with_diagnostics(input).result
+    }
+
+    fn decode_annex_b_h264_with_diagnostics(
+        &self,
+        input: SwitcherH264DecodeInput,
+    ) -> SwitcherH264DecodeRuntimeOutput {
+        let mut diagnostics = SwitcherH264DecodeRuntimeDiagnostics::default();
         if input.encoded_payload.is_empty() {
-            return SwitcherH264DecodeResult::Deferred {
-                reason: SwitcherH264DecodeDeferredReason::EmptyPayload,
+            return SwitcherH264DecodeRuntimeOutput {
+                result: SwitcherH264DecodeResult::Deferred {
+                    reason: SwitcherH264DecodeDeferredReason::EmptyPayload,
+                },
+                diagnostics,
             };
         }
         if input.width == 0 || input.height == 0 {
-            return SwitcherH264DecodeResult::Deferred {
-                reason: SwitcherH264DecodeDeferredReason::InvalidDimensions,
+            return SwitcherH264DecodeRuntimeOutput {
+                result: SwitcherH264DecodeResult::Deferred {
+                    reason: SwitcherH264DecodeDeferredReason::InvalidDimensions,
+                },
+                diagnostics,
             };
         }
 
+        let spawn_start = Instant::now();
         let mut child = match Command::new(&self.ffmpeg_path)
             .arg("-hide_banner")
             .arg("-loglevel")
@@ -6774,93 +6839,216 @@ impl SwitcherH264DecodeRuntimeHook for SwitcherFfmpegH264DecodeRuntimeHook {
             .stderr(Stdio::piped())
             .spawn()
         {
-            Ok(child) => child,
+            Ok(child) => {
+                diagnostics.process_spawn_elapsed_ms = spawn_start.elapsed().as_millis();
+                child
+            }
             Err(error) if error.kind() == io::ErrorKind::NotFound => {
-                return SwitcherH264DecodeResult::Deferred {
-                    reason: SwitcherH264DecodeDeferredReason::FfmpegUnavailable,
+                diagnostics.process_spawn_elapsed_ms = spawn_start.elapsed().as_millis();
+                return SwitcherH264DecodeRuntimeOutput {
+                    result: SwitcherH264DecodeResult::Deferred {
+                        reason: SwitcherH264DecodeDeferredReason::FfmpegUnavailable,
+                    },
+                    diagnostics,
                 };
             }
             Err(error) => {
-                return SwitcherH264DecodeResult::Failed(SwitcherH264DecodeFailure::from_input(
-                    &input,
-                    error.to_string(),
-                    0,
-                    None,
-                    None,
-                ));
+                diagnostics.process_spawn_elapsed_ms = spawn_start.elapsed().as_millis();
+                return SwitcherH264DecodeRuntimeOutput {
+                    result: SwitcherH264DecodeResult::Failed(
+                        SwitcherH264DecodeFailure::from_input(
+                            &input,
+                            error.to_string(),
+                            0,
+                            None,
+                            None,
+                        ),
+                    ),
+                    diagnostics,
+                };
             }
         };
 
         if let Some(mut stdin) = child.stdin.take() {
+            let input_write_start = Instant::now();
             if let Err(error) = stdin.write_all(&input.encoded_payload) {
-                return SwitcherH264DecodeResult::Failed(SwitcherH264DecodeFailure::from_input(
-                    &input,
-                    error.to_string(),
-                    0,
-                    None,
-                    None,
-                ));
+                diagnostics.input_write_elapsed_ms = input_write_start.elapsed().as_millis();
+                let _ = child.kill();
+                let _ = child.wait();
+                return SwitcherH264DecodeRuntimeOutput {
+                    result: SwitcherH264DecodeResult::Failed(
+                        SwitcherH264DecodeFailure::from_input(
+                            &input,
+                            error.to_string(),
+                            0,
+                            None,
+                            None,
+                        ),
+                    ),
+                    diagnostics,
+                };
             }
+            diagnostics.input_write_elapsed_ms = input_write_start.elapsed().as_millis();
         }
 
-        let output = match child.wait_with_output() {
-            Ok(output) => output,
-            Err(error) => {
-                return SwitcherH264DecodeResult::Failed(SwitcherH264DecodeFailure::from_input(
+        let Some(mut stdout) = child.stdout.take() else {
+            let wait_start = Instant::now();
+            let _ = child.kill();
+            let _ = child.wait();
+            diagnostics.process_wait_elapsed_ms = wait_start.elapsed().as_millis();
+            return SwitcherH264DecodeRuntimeOutput {
+                result: SwitcherH264DecodeResult::Failed(SwitcherH264DecodeFailure::from_input(
                     &input,
-                    error.to_string(),
+                    "ffmpeg stdout pipe unavailable".to_string(),
                     0,
                     None,
                     None,
-                ));
-            }
+                )),
+                diagnostics,
+            };
+        };
+        let Some(mut stderr) = child.stderr.take() else {
+            let wait_start = Instant::now();
+            let _ = child.kill();
+            let _ = child.wait();
+            diagnostics.process_wait_elapsed_ms = wait_start.elapsed().as_millis();
+            return SwitcherH264DecodeRuntimeOutput {
+                result: SwitcherH264DecodeResult::Failed(SwitcherH264DecodeFailure::from_input(
+                    &input,
+                    "ffmpeg stderr pipe unavailable".to_string(),
+                    0,
+                    None,
+                    None,
+                )),
+                diagnostics,
+            };
         };
 
-        if !output.status.success() {
-            let stderr_summary = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        let stderr_reader = std::thread::spawn(move || {
+            let mut stderr_bytes = Vec::new();
+            let result = stderr.read_to_end(&mut stderr_bytes);
+            (result, stderr_bytes)
+        });
+
+        let output_read_start = Instant::now();
+        let mut stdout_bytes = Vec::new();
+        if let Err(error) = stdout.read_to_end(&mut stdout_bytes) {
+            diagnostics.output_read_elapsed_ms = output_read_start.elapsed().as_millis();
+            let _ = child.kill();
+            let wait_start = Instant::now();
+            let _ = child.wait();
+            diagnostics.process_wait_elapsed_ms = wait_start.elapsed().as_millis();
+            let _ = stderr_reader.join();
+            return SwitcherH264DecodeRuntimeOutput {
+                result: SwitcherH264DecodeResult::Failed(SwitcherH264DecodeFailure::from_input(
+                    &input,
+                    error.to_string(),
+                    stdout_bytes.len(),
+                    None,
+                    None,
+                )),
+                diagnostics,
+            };
+        }
+        diagnostics.output_read_elapsed_ms = output_read_start.elapsed().as_millis();
+
+        let wait_start = Instant::now();
+        let status = match child.wait() {
+            Ok(status) => status,
+            Err(error) => {
+                diagnostics.process_wait_elapsed_ms = wait_start.elapsed().as_millis();
+                let _ = stderr_reader.join();
+                return SwitcherH264DecodeRuntimeOutput {
+                    result: SwitcherH264DecodeResult::Failed(
+                        SwitcherH264DecodeFailure::from_input(
+                            &input,
+                            error.to_string(),
+                            stdout_bytes.len(),
+                            None,
+                            None,
+                        ),
+                    ),
+                    diagnostics,
+                };
+            }
+        };
+        diagnostics.process_wait_elapsed_ms = wait_start.elapsed().as_millis();
+
+        let stderr_bytes = match stderr_reader.join() {
+            Ok((Ok(_), bytes)) => bytes,
+            Ok((Err(error), _)) => {
+                return SwitcherH264DecodeRuntimeOutput {
+                    result: SwitcherH264DecodeResult::Failed(
+                        SwitcherH264DecodeFailure::from_input(
+                            &input,
+                            error.to_string(),
+                            stdout_bytes.len(),
+                            status.code(),
+                            None,
+                        ),
+                    ),
+                    diagnostics,
+                };
+            }
+            Err(_) => Vec::new(),
+        };
+        diagnostics.output_bytes = stdout_bytes.len();
+        diagnostics.buffer_allocation_count = u32::from(!stdout_bytes.is_empty());
+
+        if !status.success() {
+            let stderr_summary = String::from_utf8_lossy(&stderr_bytes).trim().to_string();
             let message = if stderr_summary.is_empty() {
-                format!("ffmpeg decode exited with status {}", output.status)
+                format!("ffmpeg decode exited with status {status}")
             } else {
                 stderr_summary.clone()
             };
-            return SwitcherH264DecodeResult::Failed(SwitcherH264DecodeFailure::from_input(
-                &input,
-                message,
-                output.stdout.len(),
-                output.status.code(),
-                if stderr_summary.is_empty() {
-                    None
-                } else {
-                    Some(stderr_summary)
-                },
-            ));
+            return SwitcherH264DecodeRuntimeOutput {
+                result: SwitcherH264DecodeResult::Failed(SwitcherH264DecodeFailure::from_input(
+                    &input,
+                    message,
+                    stdout_bytes.len(),
+                    status.code(),
+                    if stderr_summary.is_empty() {
+                        None
+                    } else {
+                        Some(stderr_summary)
+                    },
+                )),
+                diagnostics,
+            };
         }
 
         let expected_len = input.width as usize * input.height as usize * 4;
-        if output.stdout.len() != expected_len {
-            let stderr_summary = String::from_utf8_lossy(&output.stderr).trim().to_string();
-            return SwitcherH264DecodeResult::Failed(SwitcherH264DecodeFailure::from_input(
-                &input,
-                format!(
-                    "decoded_rawvideo_length_mismatch_expected={expected_len}_actual={}",
-                    output.stdout.len()
-                ),
-                output.stdout.len(),
-                output.status.code(),
-                if stderr_summary.is_empty() {
-                    None
-                } else {
-                    Some(stderr_summary)
-                },
-            ));
+        if stdout_bytes.len() != expected_len {
+            let stderr_summary = String::from_utf8_lossy(&stderr_bytes).trim().to_string();
+            return SwitcherH264DecodeRuntimeOutput {
+                result: SwitcherH264DecodeResult::Failed(SwitcherH264DecodeFailure::from_input(
+                    &input,
+                    format!(
+                        "decoded_rawvideo_length_mismatch_expected={expected_len}_actual={}",
+                        stdout_bytes.len()
+                    ),
+                    stdout_bytes.len(),
+                    status.code(),
+                    if stderr_summary.is_empty() {
+                        None
+                    } else {
+                        Some(stderr_summary)
+                    },
+                )),
+                diagnostics,
+            };
         }
 
-        SwitcherH264DecodeResult::Decoded(SwitcherDecodedFrame {
-            width: input.width,
-            height: input.height,
-            pixel_format: SwitcherDecodedFramePixelFormat::Bgra8,
-            pixels: output.stdout,
-        })
+        SwitcherH264DecodeRuntimeOutput {
+            result: SwitcherH264DecodeResult::Decoded(SwitcherDecodedFrame {
+                width: input.width,
+                height: input.height,
+                pixel_format: SwitcherDecodedFramePixelFormat::Bgra8,
+                pixels: stdout_bytes,
+            }),
+            diagnostics,
+        }
     }
 }
 
@@ -6935,6 +7123,7 @@ impl SwitcherSingleViewPlaceholderDisplayBoundary {
                         encoded_payload: selected.encoded_payload.clone(),
                         width: selected.width,
                         height: selected.height,
+                        source_identity: None,
                     },
                     runtime,
                 );
@@ -8942,6 +9131,7 @@ impl SwitcherTwoViewDecodeRenderBoundary {
                 encoded_payload: selected.frame.encoded_payload.clone(),
                 width: selected.frame.width,
                 height: selected.frame.height,
+                source_identity: None,
             },
             decode_runtime,
         ) {
@@ -10392,6 +10582,7 @@ impl SwitcherLiveTwoViewRuntimeBoundary {
                 encoded_payload: selected.frame.encoded_payload.clone(),
                 width: selected.frame.width,
                 height: selected.frame.height,
+                source_identity: None,
             },
             decode_runtime,
         ) {
@@ -11187,6 +11378,7 @@ impl SwitcherContinuousRenderLoopBoundary {
                     encoded_payload: selected.encoded_payload.clone(),
                     width: selected.width,
                     height: selected.height,
+                    source_identity: None,
                 },
                 decode_runtime,
             );
@@ -25005,6 +25197,7 @@ mod tests {
                 encoded_payload: vec![0x00, 0x00, 0x01, 0x65],
                 width: 2,
                 height: 1,
+                source_identity: None,
             },
             &SuccessfulDecode,
         );
@@ -25027,6 +25220,7 @@ mod tests {
                 encoded_payload: Vec::new(),
                 width: 2,
                 height: 1,
+                source_identity: None,
             },
             &SwitcherFfmpegH264DecodeRuntimeHook::default(),
         );
@@ -25061,6 +25255,7 @@ mod tests {
             encoded_payload: vec![0x01],
             width: 2,
             height: 1,
+            source_identity: None,
         };
         let result = SwitcherH264DecodeBoundary.decode_with_runtime(input.clone(), &FailingDecode);
 
@@ -25087,6 +25282,7 @@ mod tests {
             .concat(),
             width: 1280,
             height: 720,
+            source_identity: None,
         };
 
         let failure = SwitcherH264DecodeFailure::from_input(

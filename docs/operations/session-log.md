@@ -2,6 +2,180 @@
 
 ## 2026-05-14
 ### Type
+- Codex implementation
+
+### Work
+- Investigated the remaining same-PC `2`-client switcher FPS bottleneck after
+  render reuse improved `render_call_elapsed_ms` but runtime still showed
+  `effective_render_fps_after_first_render=2.675`.
+- Confirmed the current switcher H.264 runtime is still stateless per decode:
+  it spawns FFmpeg for each actual decode, writes the Annex B H.264 payload to
+  stdin, asks FFmpeg for `rawvideo` in `bgra`, reads stdout bytes into a Rust
+  buffer, then waits for the child process.
+- Added runtime decode phase diagnostics and surfaced them in
+  `--four-view-two-real-handoff-preview-loop` final summary:
+  `decode_process_spawn_elapsed_ms`, `decode_input_write_elapsed_ms`,
+  `decode_output_read_elapsed_ms`, `decode_process_wait_elapsed_ms`,
+  `decode_pixel_convert_elapsed_ms`, `decode_buffer_allocation_count`,
+  `decode_output_bytes_total`, `avg_decode_output_read_elapsed_ms`, and
+  `avg_decode_process_spawn_elapsed_ms`.
+- Kept Rust-side `decode_pixel_convert_elapsed_ms=0` for this backend because
+  BGRA conversion is requested from FFmpeg via `-pix_fmt bgra`.
+- Added optional decode source identity to `SwitcherH264DecodeInput`.
+- Added a two-real preview-loop decoded-frame cache keyed by
+  `client_id + run_id + frame_id + source_identity` when available, falling
+  back to dimensions + payload only for generic decode callers without source
+  identity.
+- Added summary counters `decode_cached_frame_reuse_count` and
+  `decode_cache_miss_count`.
+- Preserved source-error behavior: handoff/source errors still become
+  source-error placeholders and do not reuse previous source content as if it
+  were current source content.
+- Kept unchanged-frame decode reuse, visual identity / composed-frame reuse,
+  placeholder row cache, incremental composition, render reuse, and client
+  encode/capture behavior intact.
+- Did not change distributed-PC validation docs beyond TODO/session-log.
+
+### Changed Files
+- `apps/switcher/src/lib.rs`
+- `apps/switcher/src/main.rs`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### Decisions
+- Do not introduce a persistent decoder yet. The current slice only measures
+  the FFmpeg process phases and avoids redundant repeated retained-frame
+  decodes when the same source identity is selected again.
+- Include `frame_id` in the decoded-cache identity so different frame ids
+  decode again even if their H.264 payload bytes happen to match.
+- Treat output-read timing as the stdout raw BGRA read phase; process wait is
+  measured after stdout EOF, so most FFmpeg runtime cost is expected to appear
+  in spawn, input write, and output read for this backend.
+
+### Unresolved
+- Needs a same-PC `2`-client rerun to determine whether the remaining decode
+  cost is mostly FFmpeg process spawn, stdout raw BGRA read, or another phase.
+- `render_buffer_copy_elapsed_ms=4935` remains the secondary suspect and
+  should be rechecked with the new decode breakdown.
+- A full persistent decoder remains out of scope until the diagnostics justify
+  it and the architecture supports it cleanly.
+
+### Next
+- Rerun the same-PC `2`-client smoke from `S:\stream-sync` and inspect
+  `decode_process_spawn_elapsed_ms`, `decode_input_write_elapsed_ms`,
+  `decode_output_read_elapsed_ms`, `decode_process_wait_elapsed_ms`,
+  `decode_output_bytes_total`, `decode_cached_frame_reuse_count`,
+  `decode_cache_miss_count`, `render_buffer_copy_elapsed_ms`, and FPS fields.
+
+### TODO Update
+- Updated current position from render reuse follow-up to decode-path
+  diagnostics and source-identity decoded-frame cache.
+- Updated the immediate Next Item to a same-PC `2`-client rerun focused on
+  decode phase breakdown, decoded-cache hit visibility, FPS, and render buffer
+  copy diagnostics.
+
+### Validation
+- `cargo fmt`
+- `cargo fmt --check`
+- `where.exe link`
+  - result: `link.exe` not found in this environment
+- `cargo check -p stream-sync-switcher`
+  - result: PASS
+- `git diff --check`
+  - result: PASS
+- Focused switcher tests were not run because `link.exe` was unavailable.
+
+---
+
+## 2026-05-14
+### Type
+- Codex implementation
+
+### Work
+- Investigated the same-PC `2`-client placeholder-fill rerun where quad-view
+  composition improved to `avg_quad_view_compose_elapsed_ms=14.692`, but
+  switcher throughput was still limited by render/decode cost:
+  `render_call_elapsed_ms=14737`, `avg_render_elapsed_ms=81.872`,
+  `decode_elapsed_ms=7075`, and `avg_decode_elapsed_ms=124.123`.
+- Confirmed `render_call_elapsed_ms` includes more than the GDI window update:
+  the clean-output boundary clones the composed BGRA frame into render input,
+  the OBS-friendly wrapper scales/copies the composed quad canvas to
+  `1280x720`, and then the persistent GDI runtime clones the scaled frame and
+  invalidates/pumps the window.
+- Added render-path summary diagnostics for the two-real preview loop:
+  `render_prepare_elapsed_ms`, `render_buffer_copy_elapsed_ms`,
+  `render_backend_wait_elapsed_ms`, `texture_upload_elapsed_ms`,
+  `window_present_elapsed_ms`, `vsync_or_present_block_elapsed_ms`,
+  `render_input_unchanged_count`, and `render_reuse_frame_count`.
+- Added unchanged-render-input reuse in
+  `--four-view-two-real-handoff-preview-loop`: when visual identity is
+  unchanged and the previous clean output was rendered, the loop reuses the
+  previous rendered output and only pumps the persistent window events.
+- Added a persistent window event-pump hook so unchanged render reuse does not
+  freeze the window message loop.
+- Removed one redundant composed-frame-to-render-input clone in the generic
+  composed-canvas window render boundary.
+- Added `1:1` and `2:1` fast paths for OBS validation profile BGRA scaling.
+- Kept unchanged-frame decode reuse, visual identity / composed-frame reuse,
+  placeholder row cache, incremental composition, and source-error placeholder
+  semantics intact.
+- Did not start client encode/capture optimization or distributed-PC docs
+  changes.
+
+### Changed Files
+- `apps/switcher/src/lib.rs`
+- `apps/switcher/src/main.rs`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### Decisions
+- Treat GDI persistent window update as `render_backend_wait_elapsed_ms` for
+  now. This path does not expose texture upload, explicit present, or vsync
+  wait phases, so those diagnostics are emitted as `0` until a backend exposes
+  them directly.
+- Count reused unchanged render outputs separately with
+  `render_reuse_frame_count` while preserving `frames_rendered` as the
+  user-visible clean-output availability count.
+- Leave decode optimization for a follow-up; decode is still heavy but this
+  slice stays focused on render/window cost.
+
+### Unresolved
+- Needs a same-PC `2`-client rerun to measure whether
+  `render_call_elapsed_ms`, `avg_render_elapsed_ms`, and FPS improve.
+- Decode cost remains a likely next bottleneck if render reuse lowers the
+  render path enough.
+- The current GDI backend still uses CPU BGRA buffers and does not expose
+  true texture upload / present / vsync timings.
+
+### Next
+- Rerun the same-PC `2`-client smoke from `S:\stream-sync` and inspect
+  `render_input_unchanged_count`, `render_reuse_frame_count`,
+  `render_prepare_elapsed_ms`, `render_buffer_copy_elapsed_ms`,
+  `render_backend_wait_elapsed_ms`, `render_call_elapsed_ms`,
+  `avg_render_elapsed_ms`, FPS fields, and decode timing.
+
+### TODO Update
+- Updated current position from composition optimization to render-path
+  bottleneck investigation and unchanged-render reuse.
+- Updated the immediate Next Item to a same-PC `2`-client rerun focused on
+  render reuse / render breakdown diagnostics.
+
+### Validation
+- `where.exe link`
+  - result: `link.exe` not found in this environment
+- `cargo fmt`
+- `cargo fmt --check`
+- `cargo test -p stream-sync-switcher four_view_two_real_handoff_preview_loop -- --nocapture`
+  - result: PASS, `9` focused main preview-loop tests passed
+- `cargo test -p stream-sync-switcher quad_composition -- --nocapture`
+  - result: PASS, `12` focused library quad-composition tests passed
+- `git diff --check`
+  - result: PASS
+
+---
+
+## 2026-05-14
+### Type
 - Codex implementation follow-up
 
 ### Work

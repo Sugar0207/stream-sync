@@ -1,4 +1,5 @@
 use std::cell::RefCell;
+use std::collections::HashMap;
 use std::io::{self, BufRead};
 use std::num::NonZeroU32;
 use std::rc::Rc;
@@ -26,9 +27,10 @@ use stream_sync_switcher::{
     SwitcherDecodeLatestFrameOnceInput, SwitcherDecodeLatestFrameOnceResult, SwitcherDecodedFrame,
     SwitcherDecodedFramePixelFormat, SwitcherDecodedFrameRenderInput,
     SwitcherFfmpegH264DecodeRuntimeHook, SwitcherFourViewCleanOutputWindowBoundary,
-    SwitcherFourViewCleanOutputWindowInput, SwitcherFourViewCleanOutputWindowProofBoundary,
-    SwitcherFourViewCleanOutputWindowProofResult, SwitcherFourViewCleanOutputWindowRenderResult,
-    SwitcherFourViewComposedCanvasRenderResult, SwitcherFourViewComposedCanvasWindowRenderBoundary,
+    SwitcherFourViewCleanOutputWindowInput, SwitcherFourViewCleanOutputWindowOutput,
+    SwitcherFourViewCleanOutputWindowProofBoundary, SwitcherFourViewCleanOutputWindowProofResult,
+    SwitcherFourViewCleanOutputWindowRenderResult, SwitcherFourViewComposedCanvasRenderResult,
+    SwitcherFourViewComposedCanvasWindowRenderBoundary,
     SwitcherFourViewComposedCanvasWindowRenderConnectionRenderResult,
     SwitcherFourViewComposedCanvasWindowRenderInput, SwitcherFourViewComposedFrame,
     SwitcherFourViewDisplayedSlot, SwitcherFourViewHandoffQuadCompositionRenderSlot,
@@ -45,7 +47,8 @@ use stream_sync_switcher::{
     SwitcherFourViewQuadRenderFacingConnectionBoundary, SwitcherFourViewTargetTimeSourceSlotConfig,
     SwitcherH264AnnexBPayloadInspectionBoundary, SwitcherH264DecodeDeferredReason,
     SwitcherH264DecodeFailure, SwitcherH264DecodeInput, SwitcherH264DecodeResult,
-    SwitcherH264DecodeRuntimeHook, SwitcherLiveTwoViewManualRuntimeBoundary,
+    SwitcherH264DecodeRuntimeDiagnostics, SwitcherH264DecodeRuntimeHook,
+    SwitcherH264DecodeSourceIdentity, SwitcherLiveTwoViewManualRuntimeBoundary,
     SwitcherLiveTwoViewManualRuntimeResult, SwitcherPlaceholderManualVerificationBoundary,
     SwitcherPlaceholderManualVerificationInput, SwitcherPlaceholderManualVerificationResult,
     SwitcherQueuedFrameHandoff, SwitcherQueuedFrameHandoffInput, SwitcherQueuedFrameHandoffResult,
@@ -1803,9 +1806,20 @@ struct SwitcherFourViewTwoRealHandoffPreviewLoopSummary {
     skipped_decode_unchanged_frame_count: u32,
     redecoded_same_frame_count: u32,
     decode_elapsed_ms: u128,
+    decode_process_spawn_elapsed_ms: u128,
+    decode_input_write_elapsed_ms: u128,
+    decode_output_read_elapsed_ms: u128,
+    decode_process_wait_elapsed_ms: u128,
+    decode_pixel_convert_elapsed_ms: u128,
+    decode_buffer_allocation_count: u32,
+    decode_output_bytes_total: usize,
+    decode_cached_frame_reuse_count: u32,
+    decode_cache_miss_count: u32,
     handoff_elapsed_ms: u128,
     render_elapsed_ms: u128,
     avg_decode_elapsed_ms: String,
+    avg_decode_output_read_elapsed_ms: String,
+    avg_decode_process_spawn_elapsed_ms: String,
     avg_handoff_elapsed_ms: String,
     avg_render_elapsed_ms: String,
     loop_total_elapsed_ms: u128,
@@ -1814,6 +1828,12 @@ struct SwitcherFourViewTwoRealHandoffPreviewLoopSummary {
     frame_interval_wait_elapsed_ms: u128,
     event_pump_elapsed_ms: u128,
     window_update_elapsed_ms: u128,
+    render_prepare_elapsed_ms: u128,
+    render_buffer_copy_elapsed_ms: u128,
+    render_backend_wait_elapsed_ms: u128,
+    texture_upload_elapsed_ms: u128,
+    window_present_elapsed_ms: u128,
+    vsync_or_present_block_elapsed_ms: u128,
     quad_view_compose_elapsed_ms: u128,
     quad_view_compose_attempt_count: u32,
     quad_view_compose_success_count: u32,
@@ -1829,6 +1849,8 @@ struct SwitcherFourViewTwoRealHandoffPreviewLoopSummary {
     avg_quad_view_incremental_update_elapsed_ms: String,
     avg_quad_view_compose_elapsed_ms: String,
     render_call_elapsed_ms: u128,
+    render_input_unchanged_count: u32,
+    render_reuse_frame_count: u32,
     unaccounted_elapsed_ms: u128,
     avg_attempt_elapsed_ms: String,
     max_attempt_elapsed_ms: u128,
@@ -2189,6 +2211,15 @@ struct TwoRealPreviewLoopRuntimeTiming {
     decode_elapsed_ms: u128,
     decode_attempt_count: u32,
     decode_success_count: u32,
+    decode_process_spawn_elapsed_ms: u128,
+    decode_input_write_elapsed_ms: u128,
+    decode_output_read_elapsed_ms: u128,
+    decode_process_wait_elapsed_ms: u128,
+    decode_pixel_convert_elapsed_ms: u128,
+    decode_buffer_allocation_count: u32,
+    decode_output_bytes_total: usize,
+    decode_cached_frame_reuse_count: u32,
+    decode_cache_miss_count: u32,
     render_elapsed_ms: u128,
     render_call_count: u32,
     attempt_body_elapsed_ms: u128,
@@ -2196,6 +2227,12 @@ struct TwoRealPreviewLoopRuntimeTiming {
     frame_interval_wait_elapsed_ms: u128,
     event_pump_elapsed_ms: u128,
     window_update_elapsed_ms: u128,
+    render_prepare_elapsed_ms: u128,
+    render_buffer_copy_elapsed_ms: u128,
+    render_backend_wait_elapsed_ms: u128,
+    texture_upload_elapsed_ms: u128,
+    window_present_elapsed_ms: u128,
+    vsync_or_present_block_elapsed_ms: u128,
     quad_view_compose_elapsed_ms: u128,
     quad_view_incremental_update_elapsed_ms: u128,
     render_call_elapsed_ms: u128,
@@ -2308,14 +2345,27 @@ struct TwoRealPreviewLoopQuadCompositionUpdateDiagnostics {
     allocation_count: u32,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct TwoRealPreviewLoopDecodeCacheKey {
+    width: u32,
+    height: u32,
+    source_identity: Option<SwitcherH264DecodeSourceIdentity>,
+    encoded_payload: Vec<u8>,
+}
+
 struct TimedSwitcherH264DecodeRuntime<'a, Runtime> {
     inner: &'a Runtime,
     timing: Rc<RefCell<TwoRealPreviewLoopRuntimeTiming>>,
+    decoded_cache: RefCell<HashMap<TwoRealPreviewLoopDecodeCacheKey, SwitcherDecodedFrame>>,
 }
 
 impl<'a, Runtime> TimedSwitcherH264DecodeRuntime<'a, Runtime> {
     fn new(inner: &'a Runtime, timing: Rc<RefCell<TwoRealPreviewLoopRuntimeTiming>>) -> Self {
-        Self { inner, timing }
+        Self {
+            inner,
+            timing,
+            decoded_cache: RefCell::new(HashMap::new()),
+        }
     }
 }
 
@@ -2324,16 +2374,53 @@ where
     Runtime: SwitcherH264DecodeRuntimeHook,
 {
     fn decode_annex_b_h264(&self, input: SwitcherH264DecodeInput) -> SwitcherH264DecodeResult {
+        let source_identity = input.source_identity.clone();
+        let key = TwoRealPreviewLoopDecodeCacheKey {
+            width: input.width,
+            height: input.height,
+            encoded_payload: if source_identity.is_some() {
+                Vec::new()
+            } else {
+                input.encoded_payload.clone()
+            },
+            source_identity,
+        };
+        if let Some(decoded) = self.decoded_cache.borrow().get(&key).cloned() {
+            self.timing.borrow_mut().decode_cached_frame_reuse_count += 1;
+            return SwitcherH264DecodeResult::Decoded(decoded);
+        }
+
+        self.timing.borrow_mut().decode_cache_miss_count += 1;
         let start = Instant::now();
-        let result = self.inner.decode_annex_b_h264(input);
+        let output = self.inner.decode_annex_b_h264_with_diagnostics(input);
+        let result = output.result;
         let mut timing = self.timing.borrow_mut();
         timing.decode_elapsed_ms += start.elapsed().as_millis();
+        add_decode_runtime_diagnostics(&mut timing, output.diagnostics);
         timing.decode_attempt_count += 1;
-        if matches!(result, SwitcherH264DecodeResult::Decoded(_)) {
+        if let SwitcherH264DecodeResult::Decoded(decoded) = &result {
             timing.decode_success_count += 1;
+            self.decoded_cache.borrow_mut().insert(key, decoded.clone());
         }
         result
     }
+}
+
+fn add_decode_runtime_diagnostics(
+    timing: &mut TwoRealPreviewLoopRuntimeTiming,
+    diagnostics: SwitcherH264DecodeRuntimeDiagnostics,
+) {
+    timing.decode_process_spawn_elapsed_ms += diagnostics.process_spawn_elapsed_ms;
+    timing.decode_input_write_elapsed_ms += diagnostics.input_write_elapsed_ms;
+    timing.decode_output_read_elapsed_ms += diagnostics.output_read_elapsed_ms;
+    timing.decode_process_wait_elapsed_ms += diagnostics.process_wait_elapsed_ms;
+    timing.decode_pixel_convert_elapsed_ms += diagnostics.pixel_convert_elapsed_ms;
+    timing.decode_buffer_allocation_count = timing
+        .decode_buffer_allocation_count
+        .saturating_add(diagnostics.buffer_allocation_count);
+    timing.decode_output_bytes_total = timing
+        .decode_output_bytes_total
+        .saturating_add(diagnostics.output_bytes);
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
@@ -2411,14 +2498,19 @@ where
     ) -> SwitcherWindowRenderResult {
         let source_width = request.frame.width;
         let source_height = request.frame.height;
+        let scale_start = Instant::now();
         let scaled_frame = scale_four_view_bgra_render_input_to_obs_validation_profile(
             &request.frame,
             FOUR_VIEW_CLEAN_OUTPUT_LOOP_OBS_OUTPUT_WIDTH,
             FOUR_VIEW_CLEAN_OUTPUT_LOOP_OBS_OUTPUT_HEIGHT,
         );
+        let render_buffer_copy_elapsed_ms = scale_start.elapsed().as_millis();
         let output_width = scaled_frame.width;
         let output_height = scaled_frame.height;
         let bgra_payload_len = scaled_frame.pixels.len();
+        if let Some(timing) = &self.timing {
+            timing.borrow_mut().render_buffer_copy_elapsed_ms += render_buffer_copy_elapsed_ms;
+        }
 
         let window_update_start = Instant::now();
         let result = self
@@ -2429,8 +2521,10 @@ where
                 hold_millis: request.hold_millis,
             });
         if let Some(timing) = &self.timing {
-            timing.borrow_mut().window_update_elapsed_ms +=
-                window_update_start.elapsed().as_millis();
+            let window_update_elapsed_ms = window_update_start.elapsed().as_millis();
+            let mut timing = timing.borrow_mut();
+            timing.window_update_elapsed_ms += window_update_elapsed_ms;
+            timing.render_backend_wait_elapsed_ms += window_update_elapsed_ms;
         }
 
         let (window_visible, window_capture_candidate) =
@@ -2456,6 +2550,7 @@ where
 trait SwitcherPersistentWindowLoopRuntimeHook: SwitcherWindowRenderRuntimeHook {
     fn close_persistent_window(&self);
     fn lifecycle_snapshot(&self) -> PersistentWindowLifecycleSnapshot;
+    fn pump_persistent_window_events(&self) {}
 }
 
 #[cfg(not(target_os = "windows"))]
@@ -2708,6 +2803,10 @@ impl SwitcherPersistentWindowLoopRuntimeHook for SwitcherWindowsGdiPersistentWin
             .lock()
             .expect("persistent window state mutex should not be poisoned")
             .lifecycle
+    }
+
+    fn pump_persistent_window_events(&self) {
+        windows_persistent_render_pump_events(&self.state);
     }
 }
 
@@ -3264,6 +3363,7 @@ where
         std::array::from_fn(|_| None);
     let mut previous_visual_identities: Option<[TwoRealPreviewLoopSlotVisualIdentity; 4]> = None;
     let mut previous_bgra_composition: Option<SwitcherFourViewQuadCompositionResult> = None;
+    let mut previous_clean_output: Option<SwitcherFourViewCleanOutputWindowOutput> = None;
     let mut quad_composition_cache = TwoRealPreviewLoopQuadCompositionCache::default();
     let mut quad_view_compose_attempt_count = 0u32;
     let mut quad_view_compose_success_count = 0u32;
@@ -3275,6 +3375,8 @@ where
     let mut quad_view_full_compose_count = 0u32;
     let mut quad_view_changed_slot_update_count = 0u32;
     let mut quad_view_reused_slot_count = 0u32;
+    let mut render_input_unchanged_count = 0u32;
+    let mut render_reuse_frame_count = 0u32;
     let loop_start = Instant::now();
 
     for frame_index in 0..frames.get() {
@@ -3395,21 +3497,49 @@ where
             render_facing,
             window_render,
         };
-        let render_start = Instant::now();
-        let clean_output = SwitcherFourViewCleanOutputWindowBoundary::default()
-            .render_with_runtime(
-                SwitcherFourViewCleanOutputWindowInput {
-                    render_facing_output: validation.render_facing.clone(),
-                },
-                &obs_runtime,
-            );
-        let render_call_elapsed_ms = render_start.elapsed().as_millis();
-        {
-            let mut timing = timing.borrow_mut();
-            timing.render_elapsed_ms += render_call_elapsed_ms;
-            timing.render_call_elapsed_ms += render_call_elapsed_ms;
-            timing.render_call_count += 1;
+        let previous_clean_output_is_rendered = previous_clean_output
+            .as_ref()
+            .map(clean_output_window_was_rendered)
+            .unwrap_or(false);
+        let can_reuse_rendered_output = visual_unchanged && previous_clean_output_is_rendered;
+        if visual_unchanged {
+            render_input_unchanged_count += 1;
         }
+        let clean_output = if can_reuse_rendered_output {
+            render_reuse_frame_count += 1;
+            render_runtime.pump_persistent_window_events();
+            previous_clean_output
+                .clone()
+                .expect("render reuse should have previous clean output")
+        } else {
+            let timing_before_render = timing.borrow().clone();
+            let render_start = Instant::now();
+            let clean_output = SwitcherFourViewCleanOutputWindowBoundary::default()
+                .render_with_runtime(
+                    SwitcherFourViewCleanOutputWindowInput {
+                        render_facing_output: validation.render_facing.clone(),
+                    },
+                    &obs_runtime,
+                );
+            let render_call_elapsed_ms = render_start.elapsed().as_millis();
+            {
+                let timing_after_render = timing.borrow().clone();
+                let render_buffer_copy_delta = timing_after_render
+                    .render_buffer_copy_elapsed_ms
+                    .saturating_sub(timing_before_render.render_buffer_copy_elapsed_ms);
+                let render_backend_wait_delta = timing_after_render
+                    .render_backend_wait_elapsed_ms
+                    .saturating_sub(timing_before_render.render_backend_wait_elapsed_ms);
+                let mut timing = timing.borrow_mut();
+                timing.render_elapsed_ms += render_call_elapsed_ms;
+                timing.render_call_elapsed_ms += render_call_elapsed_ms;
+                timing.render_prepare_elapsed_ms += render_call_elapsed_ms
+                    .saturating_sub(render_buffer_copy_delta)
+                    .saturating_sub(render_backend_wait_delta);
+                timing.render_call_count += 1;
+            }
+            clean_output
+        };
 
         frames_attempted += 1;
         scheduler_status = validation.scheduler.status;
@@ -3462,6 +3592,7 @@ where
         decoded_slot_identities = current_slot_identities;
         previous_visual_identities = Some(current_visual_identities);
         previous_bgra_composition = Some(validation.bgra_composition.composition.clone());
+        previous_clean_output = Some(clean_output.clone());
 
         let attempt_elapsed_ms = attempt_start.elapsed().as_millis();
         {
@@ -3534,10 +3665,27 @@ where
         skipped_decode_unchanged_frame_count,
         redecoded_same_frame_count,
         decode_elapsed_ms: timing.decode_elapsed_ms,
+        decode_process_spawn_elapsed_ms: timing.decode_process_spawn_elapsed_ms,
+        decode_input_write_elapsed_ms: timing.decode_input_write_elapsed_ms,
+        decode_output_read_elapsed_ms: timing.decode_output_read_elapsed_ms,
+        decode_process_wait_elapsed_ms: timing.decode_process_wait_elapsed_ms,
+        decode_pixel_convert_elapsed_ms: timing.decode_pixel_convert_elapsed_ms,
+        decode_buffer_allocation_count: timing.decode_buffer_allocation_count,
+        decode_output_bytes_total: timing.decode_output_bytes_total,
+        decode_cached_frame_reuse_count: timing.decode_cached_frame_reuse_count,
+        decode_cache_miss_count: timing.decode_cache_miss_count,
         handoff_elapsed_ms: timing.handoff_elapsed_ms,
         render_elapsed_ms: timing.render_elapsed_ms,
         avg_decode_elapsed_ms: format_preview_loop_average_elapsed(
             timing.decode_elapsed_ms,
+            timing.decode_attempt_count,
+        ),
+        avg_decode_output_read_elapsed_ms: format_preview_loop_average_elapsed(
+            timing.decode_output_read_elapsed_ms,
+            timing.decode_attempt_count,
+        ),
+        avg_decode_process_spawn_elapsed_ms: format_preview_loop_average_elapsed(
+            timing.decode_process_spawn_elapsed_ms,
             timing.decode_attempt_count,
         ),
         avg_handoff_elapsed_ms: format_preview_loop_average_elapsed(
@@ -3554,6 +3702,12 @@ where
         frame_interval_wait_elapsed_ms: timing.frame_interval_wait_elapsed_ms,
         event_pump_elapsed_ms: timing.event_pump_elapsed_ms,
         window_update_elapsed_ms: timing.window_update_elapsed_ms,
+        render_prepare_elapsed_ms: timing.render_prepare_elapsed_ms,
+        render_buffer_copy_elapsed_ms: timing.render_buffer_copy_elapsed_ms,
+        render_backend_wait_elapsed_ms: timing.render_backend_wait_elapsed_ms,
+        texture_upload_elapsed_ms: timing.texture_upload_elapsed_ms,
+        window_present_elapsed_ms: timing.window_present_elapsed_ms,
+        vsync_or_present_block_elapsed_ms: timing.vsync_or_present_block_elapsed_ms,
         quad_view_compose_elapsed_ms: timing.quad_view_compose_elapsed_ms,
         quad_view_compose_attempt_count,
         quad_view_compose_success_count,
@@ -3575,6 +3729,8 @@ where
             quad_view_compose_attempt_count,
         ),
         render_call_elapsed_ms: timing.render_call_elapsed_ms,
+        render_input_unchanged_count,
+        render_reuse_frame_count,
         unaccounted_elapsed_ms: loop_total_elapsed_ms
             .saturating_sub(timing.attempt_body_elapsed_ms)
             .saturating_sub(timing.loop_sleep_elapsed_ms),
@@ -6575,6 +6731,40 @@ fn scale_four_view_bgra_render_input_to_obs_validation_profile(
     let expected_len = output_width as usize * output_height as usize * 4;
     let mut pixels = vec![0u8; expected_len];
 
+    if frame.width == output_width && frame.height == output_height {
+        pixels.copy_from_slice(&frame.pixels);
+        return stream_sync_switcher::SwitcherDecodedFrameRenderInput {
+            width: output_width,
+            height: output_height,
+            pixel_format: frame.pixel_format,
+            pixels,
+        };
+    }
+
+    if frame.width == output_width.saturating_mul(2)
+        && frame.height == output_height.saturating_mul(2)
+    {
+        let source_stride = frame.width as usize * 4;
+        let destination_stride = output_width as usize * 4;
+        for y in 0..output_height as usize {
+            let source_row_start = y * 2 * source_stride;
+            let destination_row_start = y * destination_stride;
+            for x in 0..output_width as usize {
+                let source_index = source_row_start + x * 2 * 4;
+                let destination_index = destination_row_start + x * 4;
+                pixels[destination_index..destination_index + 4]
+                    .copy_from_slice(&frame.pixels[source_index..source_index + 4]);
+            }
+        }
+
+        return stream_sync_switcher::SwitcherDecodedFrameRenderInput {
+            width: output_width,
+            height: output_height,
+            pixel_format: frame.pixel_format,
+            pixels,
+        };
+    }
+
     for y in 0..output_height as usize {
         let source_y = y * frame.height as usize / output_height as usize;
         for x in 0..output_width as usize {
@@ -6767,6 +6957,30 @@ fn windows_persistent_render_update(
 }
 
 #[cfg(target_os = "windows")]
+fn windows_persistent_render_pump_events(state: &Mutex<WindowsPersistentWindowState>) {
+    use windows::Win32::UI::WindowsAndMessaging::{
+        DispatchMessageW, PeekMessageW, TranslateMessage, MSG, PM_REMOVE,
+    };
+
+    let mut state = state
+        .lock()
+        .expect("persistent window state mutex should not be poisoned");
+    let Some(hwnd) = state.hwnd else {
+        return;
+    };
+
+    let event_pump_start = Instant::now();
+    let mut msg = MSG::default();
+    while unsafe { PeekMessageW(&mut msg, Some(hwnd), 0, 0, PM_REMOVE) }.as_bool() {
+        unsafe {
+            let _ = TranslateMessage(&msg);
+            DispatchMessageW(&msg);
+        }
+    }
+    state.lifecycle.event_pump_elapsed_ms += event_pump_start.elapsed().as_millis();
+}
+
+#[cfg(target_os = "windows")]
 fn windows_persistent_render_close(state: &Mutex<WindowsPersistentWindowState>) {
     use windows::Win32::UI::WindowsAndMessaging::{
         DestroyWindow, DispatchMessageW, PeekMessageW, TranslateMessage, MSG, PM_REMOVE,
@@ -6955,7 +7169,7 @@ fn format_four_view_two_real_handoff_preview_loop_summary(
     summary: &SwitcherFourViewTwoRealHandoffPreviewLoopSummary,
 ) -> String {
     format!(
-        "switcher four-view two-real handoff preview loop command_name=--four-view-two-real-handoff-preview-loop real_handoff=true real_slot_count=2 real_slot0_index={} real_slot1_index={} pipe_name={} actual_pipe_path={} preview_mode={} read_mode={} client0_id={} run0_id={} client1_id={} run1_id={} frames_attempted={} frames_rendered={} render_failures={} elapsed_ms={} target_fps={} configured_frame_interval_ms={} effective_attempt_fps={} effective_render_fps={} first_render_attempt_index={} first_render_elapsed_ms={} rendered_after_first_render={} effective_render_fps_after_first_render={} no_render_before_first_render={} selected_count={} no_frame_count={} handoff_error_count={} decode_attempt_count={} decode_success_count={} render_success_count={} render_failure_count={} unchanged_frame_reuse_count={} skipped_decode_unchanged_frame_count={} redecoded_same_frame_count={} decode_elapsed_ms={} handoff_elapsed_ms={} render_elapsed_ms={} avg_decode_elapsed_ms={} avg_handoff_elapsed_ms={} avg_render_elapsed_ms={} loop_total_elapsed_ms={} attempt_body_elapsed_ms={} loop_sleep_elapsed_ms={} frame_interval_wait_elapsed_ms={} event_pump_elapsed_ms={} window_update_elapsed_ms={} quad_view_compose_elapsed_ms={} quad_view_compose_attempt_count={} quad_view_compose_success_count={} quad_view_compose_skipped_unchanged_count={} quad_view_composed_frame_reuse_count={} quad_view_visual_unchanged_count={} quad_view_visual_changed_count={} quad_view_incremental_update_count={} quad_view_full_compose_count={} quad_view_changed_slot_update_count={} quad_view_reused_slot_count={} quad_view_allocation_count={} avg_quad_view_incremental_update_elapsed_ms={} avg_quad_view_compose_elapsed_ms={} render_call_elapsed_ms={} unaccounted_elapsed_ms={} avg_attempt_elapsed_ms={} max_attempt_elapsed_ms={} slow_attempt_count={} slow_attempt_threshold_ms={} scheduler_status={:?} slot_bindings={} slot_result_kinds={} slot_diagnostics={} clean_output_render_result_kind={} window_title={} output_width={} output_height={}",
+        "switcher four-view two-real handoff preview loop command_name=--four-view-two-real-handoff-preview-loop real_handoff=true real_slot_count=2 real_slot0_index={} real_slot1_index={} pipe_name={} actual_pipe_path={} preview_mode={} read_mode={} client0_id={} run0_id={} client1_id={} run1_id={} frames_attempted={} frames_rendered={} render_failures={} elapsed_ms={} target_fps={} configured_frame_interval_ms={} effective_attempt_fps={} effective_render_fps={} first_render_attempt_index={} first_render_elapsed_ms={} rendered_after_first_render={} effective_render_fps_after_first_render={} no_render_before_first_render={} selected_count={} no_frame_count={} handoff_error_count={} decode_attempt_count={} decode_success_count={} render_success_count={} render_failure_count={} unchanged_frame_reuse_count={} skipped_decode_unchanged_frame_count={} redecoded_same_frame_count={} decode_elapsed_ms={} decode_process_spawn_elapsed_ms={} decode_input_write_elapsed_ms={} decode_output_read_elapsed_ms={} decode_process_wait_elapsed_ms={} decode_pixel_convert_elapsed_ms={} decode_buffer_allocation_count={} decode_output_bytes_total={} decode_cached_frame_reuse_count={} decode_cache_miss_count={} handoff_elapsed_ms={} render_elapsed_ms={} avg_decode_elapsed_ms={} avg_decode_output_read_elapsed_ms={} avg_decode_process_spawn_elapsed_ms={} avg_handoff_elapsed_ms={} avg_render_elapsed_ms={} loop_total_elapsed_ms={} attempt_body_elapsed_ms={} loop_sleep_elapsed_ms={} frame_interval_wait_elapsed_ms={} event_pump_elapsed_ms={} window_update_elapsed_ms={} render_prepare_elapsed_ms={} render_buffer_copy_elapsed_ms={} render_backend_wait_elapsed_ms={} texture_upload_elapsed_ms={} window_present_elapsed_ms={} vsync_or_present_block_elapsed_ms={} quad_view_compose_elapsed_ms={} quad_view_compose_attempt_count={} quad_view_compose_success_count={} quad_view_compose_skipped_unchanged_count={} quad_view_composed_frame_reuse_count={} quad_view_visual_unchanged_count={} quad_view_visual_changed_count={} quad_view_incremental_update_count={} quad_view_full_compose_count={} quad_view_changed_slot_update_count={} quad_view_reused_slot_count={} quad_view_allocation_count={} avg_quad_view_incremental_update_elapsed_ms={} avg_quad_view_compose_elapsed_ms={} render_call_elapsed_ms={} render_input_unchanged_count={} render_reuse_frame_count={} unaccounted_elapsed_ms={} avg_attempt_elapsed_ms={} max_attempt_elapsed_ms={} slow_attempt_count={} slow_attempt_threshold_ms={} scheduler_status={:?} slot_bindings={} slot_result_kinds={} slot_diagnostics={} clean_output_render_result_kind={} window_title={} output_width={} output_height={}",
         summary.real_slot0_index,
         summary.real_slot1_index,
         summary.pipe_name,
@@ -6990,9 +7204,20 @@ fn format_four_view_two_real_handoff_preview_loop_summary(
         summary.skipped_decode_unchanged_frame_count,
         summary.redecoded_same_frame_count,
         summary.decode_elapsed_ms,
+        summary.decode_process_spawn_elapsed_ms,
+        summary.decode_input_write_elapsed_ms,
+        summary.decode_output_read_elapsed_ms,
+        summary.decode_process_wait_elapsed_ms,
+        summary.decode_pixel_convert_elapsed_ms,
+        summary.decode_buffer_allocation_count,
+        summary.decode_output_bytes_total,
+        summary.decode_cached_frame_reuse_count,
+        summary.decode_cache_miss_count,
         summary.handoff_elapsed_ms,
         summary.render_elapsed_ms,
         summary.avg_decode_elapsed_ms,
+        summary.avg_decode_output_read_elapsed_ms,
+        summary.avg_decode_process_spawn_elapsed_ms,
         summary.avg_handoff_elapsed_ms,
         summary.avg_render_elapsed_ms,
         summary.loop_total_elapsed_ms,
@@ -7001,6 +7226,12 @@ fn format_four_view_two_real_handoff_preview_loop_summary(
         summary.frame_interval_wait_elapsed_ms,
         summary.event_pump_elapsed_ms,
         summary.window_update_elapsed_ms,
+        summary.render_prepare_elapsed_ms,
+        summary.render_buffer_copy_elapsed_ms,
+        summary.render_backend_wait_elapsed_ms,
+        summary.texture_upload_elapsed_ms,
+        summary.window_present_elapsed_ms,
+        summary.vsync_or_present_block_elapsed_ms,
         summary.quad_view_compose_elapsed_ms,
         summary.quad_view_compose_attempt_count,
         summary.quad_view_compose_success_count,
@@ -7016,6 +7247,8 @@ fn format_four_view_two_real_handoff_preview_loop_summary(
         summary.avg_quad_view_incremental_update_elapsed_ms,
         summary.avg_quad_view_compose_elapsed_ms,
         summary.render_call_elapsed_ms,
+        summary.render_input_unchanged_count,
+        summary.render_reuse_frame_count,
         summary.unaccounted_elapsed_ms,
         summary.avg_attempt_elapsed_ms,
         summary.max_attempt_elapsed_ms,
@@ -7750,6 +7983,16 @@ fn format_four_view_clean_output_window_result_kind(
         }
         SwitcherFourViewCleanOutputWindowRenderResult::InvalidQuadView { .. } => "InvalidQuadView",
     }
+}
+
+fn clean_output_window_was_rendered(output: &SwitcherFourViewCleanOutputWindowOutput) -> bool {
+    matches!(
+        &output.output_window,
+        SwitcherFourViewCleanOutputWindowRenderResult::RenderReady {
+            render: SwitcherFourViewComposedCanvasRenderResult::Rendered { .. },
+            ..
+        }
+    )
 }
 
 fn format_focused_window_render_result_kind(result: &SwitcherWindowRenderResult) -> &'static str {
@@ -8871,6 +9114,47 @@ mod tests {
     }
 
     #[derive(Debug, Default)]
+    struct SamePayloadIncrementingFramePerClientHandoff {
+        client0_calls: RefCell<u32>,
+        client1_calls: RefCell<u32>,
+    }
+
+    impl SwitcherQueuedFrameHandoff for SamePayloadIncrementingFramePerClientHandoff {
+        fn read_handoff_frame(
+            &mut self,
+            input: SwitcherQueuedFrameHandoffInput,
+        ) -> SwitcherQueuedFrameHandoffResult {
+            let (calls, seed) = match input.client_id.0.as_str() {
+                "real-client-0" => (&self.client0_calls, 0x10),
+                "real-client-1" => (&self.client1_calls, 0x40),
+                _ => (&self.client0_calls, 0xdd),
+            };
+            let mut call_count = calls.borrow_mut();
+            let frame_id = *call_count as u64 + 1;
+            *call_count += 1;
+            SwitcherQueuedFrameHandoffResult::FrameRead {
+                frame: SwitcherSingleViewSelectedEncodedFrame {
+                    client_id: input.client_id,
+                    run_id: input.run_id,
+                    frame_id,
+                    capture_timestamp: TimestampMicros(1_000_000 + frame_id),
+                    send_timestamp: TimestampMicros(1_000_100 + frame_id),
+                    queued_at: TimestampMicros(2_400_000 + frame_id),
+                    is_keyframe: true,
+                    width: 2,
+                    height: 1,
+                    fps_nominal: 30,
+                    codec: Codec::H264,
+                    encoded_payload_len: 1,
+                    encoded_payload: vec![seed],
+                },
+                mode: input.mode,
+                remaining_client_queue_len: 0,
+            }
+        }
+    }
+
+    #[derive(Debug, Default)]
     struct FirstReadThenHandoffErrorPerClientHandoff {
         client0_calls: RefCell<u32>,
         client1_calls: RefCell<u32>,
@@ -8891,6 +9175,57 @@ mod tests {
             *call_count += 1;
 
             if current_call > 0 {
+                return SwitcherQueuedFrameHandoffResult::HandoffError {
+                    client_id: input.client_id,
+                    run_id: input.run_id,
+                    mode: input.mode,
+                    error: SwitcherQueuedFrameHandoffError::SourceUnavailable,
+                };
+            }
+
+            SwitcherQueuedFrameHandoffResult::FrameRead {
+                frame: SwitcherSingleViewSelectedEncodedFrame {
+                    client_id: input.client_id,
+                    run_id: input.run_id,
+                    frame_id: 1,
+                    capture_timestamp: TimestampMicros(1_000_001),
+                    send_timestamp: TimestampMicros(1_000_101),
+                    queued_at: TimestampMicros(2_400_001),
+                    is_keyframe: true,
+                    width: 2,
+                    height: 1,
+                    fps_nominal: 30,
+                    codec: Codec::H264,
+                    encoded_payload_len: 1,
+                    encoded_payload: vec![seed],
+                },
+                mode: input.mode,
+                remaining_client_queue_len: 0,
+            }
+        }
+    }
+
+    #[derive(Debug, Default)]
+    struct FirstReadThenErrorThenSameFramePerClientHandoff {
+        client0_calls: RefCell<u32>,
+        client1_calls: RefCell<u32>,
+    }
+
+    impl SwitcherQueuedFrameHandoff for FirstReadThenErrorThenSameFramePerClientHandoff {
+        fn read_handoff_frame(
+            &mut self,
+            input: SwitcherQueuedFrameHandoffInput,
+        ) -> SwitcherQueuedFrameHandoffResult {
+            let (calls, seed) = match input.client_id.0.as_str() {
+                "real-client-0" => (&self.client0_calls, 0x10),
+                "real-client-1" => (&self.client1_calls, 0x40),
+                _ => (&self.client0_calls, 0xdd),
+            };
+            let mut call_count = calls.borrow_mut();
+            let current_call = *call_count;
+            *call_count += 1;
+
+            if current_call == 1 {
                 return SwitcherQueuedFrameHandoffResult::HandoffError {
                     client_id: input.client_id,
                     run_id: input.run_id,
@@ -9631,6 +9966,8 @@ mod tests {
         assert_eq!(summary.quad_view_changed_slot_update_count, 4);
         assert_eq!(summary.quad_view_reused_slot_count, 4);
         assert_eq!(summary.quad_view_allocation_count, 1);
+        assert_eq!(summary.render_input_unchanged_count, 1);
+        assert_eq!(summary.render_reuse_frame_count, 1);
         assert_eq!(
             summary.slot_result_kinds,
             [
@@ -9642,11 +9979,9 @@ mod tests {
         );
 
         let requests = render_runtime.requests.borrow();
-        assert_eq!(requests.len(), 2);
+        assert_eq!(requests.len(), 1);
         assert_eq!(requests[0].top_left, [0x10, 0x11, 0x12, 255]);
         assert_eq!(requests[0].bottom_left, [0x40, 0x41, 0x42, 255]);
-        assert_eq!(requests[1].top_left, requests[0].top_left);
-        assert_eq!(requests[1].bottom_left, requests[0].bottom_left);
     }
 
     #[test]
@@ -9689,15 +10024,17 @@ mod tests {
         assert_eq!(summary.quad_view_changed_slot_update_count, 4);
         assert_eq!(summary.quad_view_reused_slot_count, 4);
         assert_eq!(summary.quad_view_allocation_count, 1);
+        assert_eq!(summary.render_input_unchanged_count, 1);
+        assert_eq!(summary.render_reuse_frame_count, 1);
         assert!(summary.slot_diagnostics[0].contains("decode_attempted=false"));
         assert!(summary.slot_diagnostics[0].contains("decode_skipped_reason=UnchangedFrameReuse"));
         assert!(summary.slot_diagnostics[2].contains("decode_attempted=false"));
         assert!(summary.slot_diagnostics[2].contains("decode_skipped_reason=UnchangedFrameReuse"));
 
         let requests = render_runtime.requests.borrow();
-        assert_eq!(requests.len(), 2);
-        assert_eq!(requests[1].top_left, requests[0].top_left);
-        assert_eq!(requests[1].bottom_left, requests[0].bottom_left);
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0].top_left, [0x10, 0x11, 0x12, 255]);
+        assert_eq!(requests[0].bottom_left, [0x40, 0x41, 0x42, 255]);
     }
 
     #[test]
@@ -9743,6 +10080,64 @@ mod tests {
         assert_eq!(requests.len(), 2);
         assert_ne!(requests[1].top_left, requests[0].top_left);
         assert_ne!(requests[1].bottom_left, requests[0].bottom_left);
+    }
+
+    #[test]
+    fn switcher_four_view_two_real_handoff_preview_loop_decodes_different_frame_ids_even_with_same_payload(
+    ) {
+        let render_runtime = RecordingPersistentFixtureRenderedWindowRuntime::default();
+        let summary = run_four_view_two_real_handoff_preview_loop_with_handoff_runtime_and_sleep(
+            "fixture-pipe",
+            0,
+            ClientId("real-client-0".to_string()),
+            RunId("real-run-0".to_string()),
+            2,
+            ClientId("real-client-1".to_string()),
+            RunId("real-run-1".to_string()),
+            NonZeroU32::new(2).expect("2 should be non-zero"),
+            SwitcherSingleClientQueueSourceMode::PreviewLatest,
+            TimestampMicros(1_000_004),
+            SamePayloadIncrementingFramePerClientHandoff::default(),
+            &DeterministicFourViewFixtureDecodeRuntime,
+            &render_runtime,
+            &RecordingCadenceSleepHook::default(),
+        );
+
+        assert_eq!(summary.selected_count, 4);
+        assert_eq!(summary.decode_attempt_count, 4);
+        assert_eq!(summary.decode_success_count, 4);
+        assert_eq!(summary.decode_cache_miss_count, 4);
+        assert_eq!(summary.decode_cached_frame_reuse_count, 0);
+        assert_eq!(summary.skipped_decode_unchanged_frame_count, 0);
+    }
+
+    #[test]
+    fn switcher_four_view_two_real_handoff_preview_loop_reuses_decoded_cache_for_same_frame_after_source_error(
+    ) {
+        let render_runtime = RecordingPersistentFixtureRenderedWindowRuntime::default();
+        let summary = run_four_view_two_real_handoff_preview_loop_with_handoff_runtime_and_sleep(
+            "fixture-pipe",
+            0,
+            ClientId("real-client-0".to_string()),
+            RunId("real-run-0".to_string()),
+            2,
+            ClientId("real-client-1".to_string()),
+            RunId("real-run-1".to_string()),
+            NonZeroU32::new(3).expect("3 should be non-zero"),
+            SwitcherSingleClientQueueSourceMode::PreviewLatest,
+            TimestampMicros(1_000_004),
+            FirstReadThenErrorThenSameFramePerClientHandoff::default(),
+            &DeterministicFourViewFixtureDecodeRuntime,
+            &render_runtime,
+            &RecordingCadenceSleepHook::default(),
+        );
+
+        assert_eq!(summary.selected_count, 4);
+        assert_eq!(summary.handoff_error_count, 2);
+        assert_eq!(summary.decode_attempt_count, 2);
+        assert_eq!(summary.decode_success_count, 2);
+        assert_eq!(summary.decode_cache_miss_count, 2);
+        assert_eq!(summary.decode_cached_frame_reuse_count, 2);
     }
 
     #[test]
@@ -9896,28 +10291,7 @@ mod tests {
             NonZeroU32::new(1).expect("1 should be non-zero"),
             SwitcherSingleClientQueueSourceMode::PreviewLatest,
             TimestampMicros(1_000_004),
-            StubRealQueuedFrameHandoff {
-                result: SwitcherQueuedFrameHandoffResult::FrameRead {
-                    frame: SwitcherSingleViewSelectedEncodedFrame {
-                        client_id: ClientId("real-client-0".to_string()),
-                        run_id: RunId("real-run-0".to_string()),
-                        frame_id: 1,
-                        capture_timestamp: TimestampMicros(1_000_001),
-                        send_timestamp: TimestampMicros(1_000_101),
-                        queued_at: TimestampMicros(2_400_001),
-                        is_keyframe: true,
-                        width: 2,
-                        height: 1,
-                        fps_nominal: 30,
-                        codec: Codec::H264,
-                        encoded_payload_len: 1,
-                        encoded_payload: vec![0x55],
-                    },
-                    mode: SwitcherSingleClientQueueSourceMode::PreviewLatest,
-                    remaining_client_queue_len: 0,
-                },
-                calls: RefCell::new(0),
-            },
+            PerClientStubRealQueuedFrameHandoff::default(),
             &DeterministicFourViewFixtureDecodeRuntime,
             &PersistentFixtureRenderFailedWindowRuntime::default(),
             &RecordingCadenceSleepHook::default(),
@@ -9958,9 +10332,20 @@ mod tests {
         assert!(formatted.contains("skipped_decode_unchanged_frame_count=0"));
         assert!(formatted.contains("redecoded_same_frame_count=0"));
         assert!(formatted.contains("decode_elapsed_ms="));
+        assert!(formatted.contains("decode_process_spawn_elapsed_ms="));
+        assert!(formatted.contains("decode_input_write_elapsed_ms="));
+        assert!(formatted.contains("decode_output_read_elapsed_ms="));
+        assert!(formatted.contains("decode_process_wait_elapsed_ms="));
+        assert!(formatted.contains("decode_pixel_convert_elapsed_ms=0"));
+        assert!(formatted.contains("decode_buffer_allocation_count="));
+        assert!(formatted.contains("decode_output_bytes_total="));
+        assert!(formatted.contains("decode_cached_frame_reuse_count=0"));
+        assert!(formatted.contains("decode_cache_miss_count=2"));
         assert!(formatted.contains("handoff_elapsed_ms="));
         assert!(formatted.contains("render_elapsed_ms="));
         assert!(formatted.contains("avg_decode_elapsed_ms="));
+        assert!(formatted.contains("avg_decode_output_read_elapsed_ms="));
+        assert!(formatted.contains("avg_decode_process_spawn_elapsed_ms="));
         assert!(formatted.contains("avg_handoff_elapsed_ms="));
         assert!(formatted.contains("avg_render_elapsed_ms="));
         assert!(formatted.contains("loop_total_elapsed_ms="));
@@ -9969,6 +10354,12 @@ mod tests {
         assert!(formatted.contains("frame_interval_wait_elapsed_ms="));
         assert!(formatted.contains("event_pump_elapsed_ms="));
         assert!(formatted.contains("window_update_elapsed_ms="));
+        assert!(formatted.contains("render_prepare_elapsed_ms="));
+        assert!(formatted.contains("render_buffer_copy_elapsed_ms="));
+        assert!(formatted.contains("render_backend_wait_elapsed_ms="));
+        assert!(formatted.contains("texture_upload_elapsed_ms=0"));
+        assert!(formatted.contains("window_present_elapsed_ms=0"));
+        assert!(formatted.contains("vsync_or_present_block_elapsed_ms=0"));
         assert!(formatted.contains("quad_view_compose_elapsed_ms="));
         assert!(formatted.contains("quad_view_compose_attempt_count=1"));
         assert!(formatted.contains("quad_view_compose_success_count=1"));
@@ -9984,6 +10375,8 @@ mod tests {
         assert!(formatted.contains("avg_quad_view_incremental_update_elapsed_ms=n/a"));
         assert!(formatted.contains("avg_quad_view_compose_elapsed_ms="));
         assert!(formatted.contains("render_call_elapsed_ms="));
+        assert!(formatted.contains("render_input_unchanged_count=0"));
+        assert!(formatted.contains("render_reuse_frame_count=0"));
         assert!(formatted.contains("unaccounted_elapsed_ms="));
         assert!(formatted.contains("avg_attempt_elapsed_ms="));
         assert!(formatted.contains("max_attempt_elapsed_ms="));
