@@ -28,23 +28,26 @@ use stream_sync_switcher::{
     SwitcherFfmpegH264DecodeRuntimeHook, SwitcherFourViewCleanOutputWindowBoundary,
     SwitcherFourViewCleanOutputWindowInput, SwitcherFourViewCleanOutputWindowProofBoundary,
     SwitcherFourViewCleanOutputWindowProofResult, SwitcherFourViewCleanOutputWindowRenderResult,
-    SwitcherFourViewComposedCanvasRenderResult,
+    SwitcherFourViewComposedCanvasRenderResult, SwitcherFourViewComposedCanvasWindowRenderBoundary,
     SwitcherFourViewComposedCanvasWindowRenderConnectionRenderResult,
-    SwitcherFourViewDisplayedSlot, SwitcherFourViewHandoffQuadCompositionRenderSlot,
-    SwitcherFourViewHandoffValidationBoundary, SwitcherFourViewHandoffValidationInput,
-    SwitcherFourViewHandoffValidationOutput,
+    SwitcherFourViewComposedCanvasWindowRenderInput, SwitcherFourViewDisplayedSlot,
+    SwitcherFourViewHandoffQuadCompositionRenderSlot, SwitcherFourViewHandoffValidationBoundary,
+    SwitcherFourViewHandoffValidationInput, SwitcherFourViewHandoffValidationOutput,
+    SwitcherFourViewHandoffValidationPreCompositionOutput,
     SwitcherFourViewManualPreviewCompositionInstructionKind,
     SwitcherFourViewManualPreviewDisplaySlotKind, SwitcherFourViewManualPreviewProofBoundary,
     SwitcherFourViewManualPreviewProofFixtureMode, SwitcherFourViewManualPreviewProofInput,
     SwitcherFourViewManualPreviewProofResult, SwitcherFourViewManualPreviewProofSummary,
-    SwitcherFourViewManualPreviewSchedulerSlotKind, SwitcherFourViewQuadLayoutPolicy,
-    SwitcherFourViewTargetTimeSourceSlotConfig, SwitcherH264AnnexBPayloadInspectionBoundary,
-    SwitcherH264DecodeDeferredReason, SwitcherH264DecodeFailure, SwitcherH264DecodeInput,
-    SwitcherH264DecodeResult, SwitcherH264DecodeRuntimeHook,
-    SwitcherLiveTwoViewManualRuntimeBoundary, SwitcherLiveTwoViewManualRuntimeResult,
-    SwitcherPlaceholderManualVerificationBoundary, SwitcherPlaceholderManualVerificationInput,
-    SwitcherPlaceholderManualVerificationResult, SwitcherQueuedFrameHandoff,
-    SwitcherQueuedFrameHandoffInput, SwitcherQueuedFrameHandoffResult,
+    SwitcherFourViewManualPreviewSchedulerSlotKind, SwitcherFourViewQuadCompositionBoundary,
+    SwitcherFourViewQuadCompositionInput, SwitcherFourViewQuadCompositionOutput,
+    SwitcherFourViewQuadCompositionResult, SwitcherFourViewQuadLayoutPolicy,
+    SwitcherFourViewQuadRenderFacingConnectionBoundary, SwitcherFourViewTargetTimeSourceSlotConfig,
+    SwitcherH264AnnexBPayloadInspectionBoundary, SwitcherH264DecodeDeferredReason,
+    SwitcherH264DecodeFailure, SwitcherH264DecodeInput, SwitcherH264DecodeResult,
+    SwitcherH264DecodeRuntimeHook, SwitcherLiveTwoViewManualRuntimeBoundary,
+    SwitcherLiveTwoViewManualRuntimeResult, SwitcherPlaceholderManualVerificationBoundary,
+    SwitcherPlaceholderManualVerificationInput, SwitcherPlaceholderManualVerificationResult,
+    SwitcherQueuedFrameHandoff, SwitcherQueuedFrameHandoffInput, SwitcherQueuedFrameHandoffResult,
     SwitcherSingleClientQueueSourceMode, SwitcherSingleClientTargetTimeHandoffSourceResult,
     SwitcherTwoViewComposedCanvasRenderBoundary, SwitcherTwoViewComposedCanvasRenderResult,
     SwitcherTwoViewCompositionBoundary, SwitcherTwoViewCompositionInput,
@@ -1811,6 +1814,13 @@ struct SwitcherFourViewTwoRealHandoffPreviewLoopSummary {
     event_pump_elapsed_ms: u128,
     window_update_elapsed_ms: u128,
     quad_view_compose_elapsed_ms: u128,
+    quad_view_compose_attempt_count: u32,
+    quad_view_compose_success_count: u32,
+    quad_view_compose_skipped_unchanged_count: u32,
+    quad_view_composed_frame_reuse_count: u32,
+    quad_view_visual_unchanged_count: u32,
+    quad_view_visual_changed_count: u32,
+    avg_quad_view_compose_elapsed_ms: String,
     render_call_elapsed_ms: u128,
     unaccounted_elapsed_ms: u128,
     avg_attempt_elapsed_ms: String,
@@ -2191,6 +2201,42 @@ struct TwoRealPreviewLoopDecodedSlotIdentity {
     run_id: RunId,
     frame_id: u64,
     decodable_source: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum TwoRealPreviewLoopSlotVisualIdentity {
+    SourceFrame {
+        client_id: ClientId,
+        run_id: RunId,
+        frame_id: u64,
+        selected_frame_source: Option<String>,
+    },
+    NoDisplayPlaceholder {
+        reason: String,
+    },
+    SourceErrorPlaceholder {
+        reason: String,
+    },
+    DecodeDeferredPlaceholder {
+        client_id: ClientId,
+        run_id: RunId,
+        frame_id: u64,
+        selected_frame_source: Option<String>,
+        reason: String,
+    },
+    DecodeFailedPlaceholder {
+        client_id: ClientId,
+        run_id: RunId,
+        frame_id: u64,
+        selected_frame_source: Option<String>,
+        failure: String,
+    },
+    MissingDecodedPixels {
+        client_id: ClientId,
+        run_id: RunId,
+        frame_id: u64,
+        selected_frame_source: Option<String>,
+    },
 }
 
 struct TimedSwitcherH264DecodeRuntime<'a, Runtime> {
@@ -3147,6 +3193,14 @@ where
         std::array::from_fn(|_| None);
     let mut decoded_slot_identities: [Option<TwoRealPreviewLoopDecodedSlotIdentity>; 4] =
         std::array::from_fn(|_| None);
+    let mut previous_visual_identities: Option<[TwoRealPreviewLoopSlotVisualIdentity; 4]> = None;
+    let mut previous_bgra_composition: Option<SwitcherFourViewQuadCompositionResult> = None;
+    let mut quad_view_compose_attempt_count = 0u32;
+    let mut quad_view_compose_success_count = 0u32;
+    let mut quad_view_compose_skipped_unchanged_count = 0u32;
+    let mut quad_view_composed_frame_reuse_count = 0u32;
+    let mut quad_view_visual_unchanged_count = 0u32;
+    let mut quad_view_visual_changed_count = 0u32;
     let loop_start = Instant::now();
 
     for frame_index in 0..frames.get() {
@@ -3156,15 +3210,22 @@ where
         let previous_slot_identities = decoded_slot_identities.clone();
         let timing_before_validation = timing.borrow().clone();
         let validation_start = Instant::now();
-        let validation =
-            run_four_view_real_handoff_preview_validation_with_runtime_and_handoff_and_previous_slots(
-            &mut handoff,
-            slots.clone(),
+        let validation_input = SwitcherFourViewHandoffValidationInput {
+            slots: slots.clone(),
             target_timestamp,
-            previous_slots.clone(),
-            preview_target_time_mode_from_switcher_mode(read_mode),
-            &timed_decode_runtime,
-        );
+            previous_slots: previous_slots.clone(),
+            display_current_time: TimestampMicros(target_timestamp.0.saturating_add(1)),
+            layout_policy: SwitcherFourViewQuadLayoutPolicy::default(),
+            composed_window_title: "StreamSync 4-view".to_string(),
+            composed_render_hold_millis: 0,
+        };
+        let pre_composition = SwitcherFourViewHandoffValidationBoundary::default()
+            .run_from_handoff_to_composition_render_with_runtimes_and_mode(
+                &mut handoff,
+                &validation_input,
+                preview_target_time_mode_from_switcher_mode(read_mode),
+                &timed_decode_runtime,
+            );
         let validation_elapsed_ms = validation_start.elapsed().as_millis();
         let timing_after_validation = timing.borrow().clone();
         let validation_handoff_elapsed_ms = timing_after_validation
@@ -3173,12 +3234,78 @@ where
         let validation_decode_elapsed_ms = timing_after_validation
             .decode_elapsed_ms
             .saturating_sub(timing_before_validation.decode_elapsed_ms);
-        {
-            let mut timing = timing.borrow_mut();
-            timing.quad_view_compose_elapsed_ms += validation_elapsed_ms
-                .saturating_sub(validation_handoff_elapsed_ms)
-                .saturating_sub(validation_decode_elapsed_ms);
+        let _pre_composition_elapsed_ms = validation_elapsed_ms
+            .saturating_sub(validation_handoff_elapsed_ms)
+            .saturating_sub(validation_decode_elapsed_ms);
+        let current_slot_identities = update_two_real_decoded_slot_identities(
+            &decoded_slot_identities,
+            &handoff.last_frame_slot_observations,
+            &pre_composition,
+        );
+        let current_visual_identities =
+            two_real_preview_loop_visual_identities(&current_slot_identities, &pre_composition);
+        let visual_unchanged = previous_visual_identities
+            .as_ref()
+            .map(|previous| previous == &current_visual_identities)
+            .unwrap_or(false);
+        if visual_unchanged {
+            quad_view_visual_unchanged_count += 1;
+        } else {
+            quad_view_visual_changed_count += 1;
         }
+        let bgra_composition = if visual_unchanged {
+            if let Some(previous_composition) = previous_bgra_composition.clone() {
+                quad_view_compose_skipped_unchanged_count += 1;
+                if matches!(
+                    previous_composition,
+                    SwitcherFourViewQuadCompositionResult::ComposedFrame { .. }
+                ) {
+                    quad_view_composed_frame_reuse_count += 1;
+                }
+                SwitcherFourViewQuadCompositionOutput {
+                    scheduler_status: pre_composition.scheduler.status,
+                    connection: pre_composition.composition_render.clone(),
+                    composition: previous_composition,
+                }
+            } else {
+                compose_two_real_preview_quad_view(
+                    &pre_composition,
+                    validation_input.layout_policy,
+                    &timing,
+                    &mut quad_view_compose_attempt_count,
+                    &mut quad_view_compose_success_count,
+                )
+            }
+        } else {
+            compose_two_real_preview_quad_view(
+                &pre_composition,
+                validation_input.layout_policy,
+                &timing,
+                &mut quad_view_compose_attempt_count,
+                &mut quad_view_compose_success_count,
+            )
+        };
+        let render_facing = SwitcherFourViewQuadRenderFacingConnectionBoundary::default()
+            .connect_composition_output(bgra_composition.clone());
+        let window_render = SwitcherFourViewComposedCanvasWindowRenderBoundary::default()
+            .render_with_runtime(
+                SwitcherFourViewComposedCanvasWindowRenderInput {
+                    render_facing_output: render_facing.clone(),
+                    window_title: validation_input.composed_window_title,
+                    render_hold_millis: validation_input.composed_render_hold_millis,
+                },
+                &SwitcherUnavailableWindowRenderRuntimeHook,
+            );
+        let validation = SwitcherFourViewHandoffValidationOutput {
+            scheduler: pre_composition.scheduler.clone(),
+            decode_render_adapter: pre_composition.decode_render_adapter.clone(),
+            display: pre_composition.display.clone(),
+            composition_instruction: pre_composition.composition_instruction.clone(),
+            composition_render: pre_composition.composition_render.clone(),
+            bgra_composition,
+            render_facing,
+            window_render,
+        };
         let render_start = Instant::now();
         let clean_output = SwitcherFourViewCleanOutputWindowBoundary::default()
             .render_with_runtime(
@@ -3203,15 +3330,10 @@ where
         clean_output_render_result_kind =
             format_four_view_clean_output_window_result_kind(&clean_output.output_window);
         window_title = clean_output.window_identity.title.clone();
-        let current_slot_identities = update_two_real_decoded_slot_identities(
-            &decoded_slot_identities,
-            &handoff.last_frame_slot_observations,
-            &validation,
-        );
         let unchanged_reuse_slots = two_real_unchanged_frame_reuse_slots(
             &previous_slot_identities,
             &current_slot_identities,
-            &validation,
+            &pre_composition,
         );
         slot_diagnostics = handoff
             .take_last_frame_slot_diagnostics_with_decode_reuse(&validation, unchanged_reuse_slots);
@@ -3249,6 +3371,8 @@ where
         previous_slots =
             update_four_view_previous_slots_from_validation(&previous_slots, &validation);
         decoded_slot_identities = current_slot_identities;
+        previous_visual_identities = Some(current_visual_identities);
+        previous_bgra_composition = Some(validation.bgra_composition.composition.clone());
 
         let attempt_elapsed_ms = attempt_start.elapsed().as_millis();
         {
@@ -3342,6 +3466,16 @@ where
         event_pump_elapsed_ms: timing.event_pump_elapsed_ms,
         window_update_elapsed_ms: timing.window_update_elapsed_ms,
         quad_view_compose_elapsed_ms: timing.quad_view_compose_elapsed_ms,
+        quad_view_compose_attempt_count,
+        quad_view_compose_success_count,
+        quad_view_compose_skipped_unchanged_count,
+        quad_view_composed_frame_reuse_count,
+        quad_view_visual_unchanged_count,
+        quad_view_visual_changed_count,
+        avg_quad_view_compose_elapsed_ms: format_preview_loop_average_elapsed(
+            timing.quad_view_compose_elapsed_ms,
+            quad_view_compose_attempt_count,
+        ),
         render_call_elapsed_ms: timing.render_call_elapsed_ms,
         unaccounted_elapsed_ms: loop_total_elapsed_ms
             .saturating_sub(timing.attempt_body_elapsed_ms)
@@ -5360,6 +5494,7 @@ fn run_four_view_real_handoff_preview_validation_with_runtime_and_handoff(
     )
 }
 
+#[allow(dead_code)]
 fn run_four_view_real_handoff_preview_validation_with_runtime_and_handoff_and_previous_slots(
     handoff: &mut impl SwitcherQueuedFrameHandoff,
     slots: [SwitcherFourViewTargetTimeSourceSlotConfig; 4],
@@ -5401,17 +5536,42 @@ fn update_four_view_previous_slots_from_validation(
     )
 }
 
+fn compose_two_real_preview_quad_view(
+    pre_composition: &SwitcherFourViewHandoffValidationPreCompositionOutput,
+    layout_policy: SwitcherFourViewQuadLayoutPolicy,
+    timing: &Rc<RefCell<TwoRealPreviewLoopRuntimeTiming>>,
+    quad_view_compose_attempt_count: &mut u32,
+    quad_view_compose_success_count: &mut u32,
+) -> SwitcherFourViewQuadCompositionOutput {
+    *quad_view_compose_attempt_count += 1;
+    let compose_start = Instant::now();
+    let output = SwitcherFourViewQuadCompositionBoundary::default().compose_fixed_quad_view(
+        SwitcherFourViewQuadCompositionInput {
+            connection: pre_composition.composition_render.clone(),
+            layout_policy,
+        },
+    );
+    timing.borrow_mut().quad_view_compose_elapsed_ms += compose_start.elapsed().as_millis();
+    if matches!(
+        output.composition,
+        SwitcherFourViewQuadCompositionResult::ComposedFrame { .. }
+    ) {
+        *quad_view_compose_success_count += 1;
+    }
+    output
+}
+
 fn update_two_real_decoded_slot_identities(
     current_identities: &[Option<TwoRealPreviewLoopDecodedSlotIdentity>; 4],
     observations: &[Option<FourViewPreviewSlotHandoffObservation>; 4],
-    validation: &SwitcherFourViewHandoffValidationOutput,
+    pre_composition: &SwitcherFourViewHandoffValidationPreCompositionOutput,
 ) -> [Option<TwoRealPreviewLoopDecodedSlotIdentity>; 4] {
-    std::array::from_fn(
-        |index| match &validation.composition_render.composition.slots[index] {
+    std::array::from_fn(|index| {
+        match &pre_composition.composition_render.composition.slots[index] {
             SwitcherFourViewHandoffQuadCompositionRenderSlot::UseUpdatedFrame { frame, .. }
                 if frame.decoded.is_some() =>
             {
-                two_real_decoded_slot_identity(index, observations, validation)
+                two_real_decoded_slot_identity(index, observations, pre_composition)
                     .or_else(|| current_identities[index].clone())
             }
             SwitcherFourViewHandoffQuadCompositionRenderSlot::UseHeldPreviousFrame {
@@ -5419,16 +5579,16 @@ fn update_two_real_decoded_slot_identities(
                 ..
             } if frame.decoded.is_some() => current_identities[index].clone(),
             _ => current_identities[index].clone(),
-        },
-    )
+        }
+    })
 }
 
 fn two_real_decoded_slot_identity(
     slot_index: usize,
     observations: &[Option<FourViewPreviewSlotHandoffObservation>; 4],
-    validation: &SwitcherFourViewHandoffValidationOutput,
+    pre_composition: &SwitcherFourViewHandoffValidationPreCompositionOutput,
 ) -> Option<TwoRealPreviewLoopDecodedSlotIdentity> {
-    let selected = match &validation.scheduler.slots[slot_index].result {
+    let selected = match &pre_composition.scheduler.slots[slot_index].result {
         SwitcherSingleClientTargetTimeHandoffSourceResult::Selected(selected) => selected,
         _ => return None,
     };
@@ -5463,16 +5623,133 @@ fn two_real_observation_decodable_source(
     }
 }
 
+fn two_real_preview_loop_visual_identities(
+    decoded_identities: &[Option<TwoRealPreviewLoopDecodedSlotIdentity>; 4],
+    pre_composition: &SwitcherFourViewHandoffValidationPreCompositionOutput,
+) -> [TwoRealPreviewLoopSlotVisualIdentity; 4] {
+    std::array::from_fn(|index| {
+        two_real_preview_loop_slot_visual_identity(
+            decoded_identities[index].as_ref(),
+            &pre_composition.composition_render.composition.slots[index],
+        )
+    })
+}
+
+fn two_real_preview_loop_slot_visual_identity(
+    decoded_identity: Option<&TwoRealPreviewLoopDecodedSlotIdentity>,
+    slot: &SwitcherFourViewHandoffQuadCompositionRenderSlot,
+) -> TwoRealPreviewLoopSlotVisualIdentity {
+    match slot {
+        SwitcherFourViewHandoffQuadCompositionRenderSlot::UseUpdatedFrame { frame, .. }
+        | SwitcherFourViewHandoffQuadCompositionRenderSlot::UseHeldPreviousFrame {
+            frame, ..
+        } => two_real_preview_loop_source_frame_visual_identity(frame, decoded_identity),
+        SwitcherFourViewHandoffQuadCompositionRenderSlot::UseHeldPreviousFrameWithoutDecoded {
+            frame,
+            ..
+        } => {
+            let (client_id, run_id, frame_id, selected_frame_source) =
+                two_real_preview_loop_displayed_frame_identity_parts(frame, decoded_identity);
+            TwoRealPreviewLoopSlotVisualIdentity::MissingDecodedPixels {
+                client_id,
+                run_id,
+                frame_id,
+                selected_frame_source,
+            }
+        }
+        SwitcherFourViewHandoffQuadCompositionRenderSlot::UseNoDisplayPlaceholder {
+            skipped,
+            ..
+        } => TwoRealPreviewLoopSlotVisualIdentity::NoDisplayPlaceholder {
+            reason: format_four_view_skipped_instruction_reason(skipped).to_string(),
+        },
+        SwitcherFourViewHandoffQuadCompositionRenderSlot::UseSourceErrorPlaceholder {
+            skipped,
+            ..
+        } => TwoRealPreviewLoopSlotVisualIdentity::SourceErrorPlaceholder {
+            reason: format_four_view_skipped_instruction_reason(skipped).to_string(),
+        },
+        SwitcherFourViewHandoffQuadCompositionRenderSlot::UseDecodeDeferredPlaceholder {
+            selected,
+            reason,
+            ..
+        } => TwoRealPreviewLoopSlotVisualIdentity::DecodeDeferredPlaceholder {
+            client_id: selected.frame.client_id.clone(),
+            run_id: selected.frame.run_id.clone(),
+            frame_id: selected.frame.frame_id,
+            selected_frame_source: decoded_identity
+                .and_then(|identity| identity.decodable_source.clone()),
+            reason: format_switcher_h264_decode_deferred_reason(*reason).to_string(),
+        },
+        SwitcherFourViewHandoffQuadCompositionRenderSlot::UseDecodeFailedPlaceholder {
+            selected,
+            failure,
+            ..
+        } => TwoRealPreviewLoopSlotVisualIdentity::DecodeFailedPlaceholder {
+            client_id: selected.frame.client_id.clone(),
+            run_id: selected.frame.run_id.clone(),
+            frame_id: selected.frame.frame_id,
+            selected_frame_source: decoded_identity
+                .and_then(|identity| identity.decodable_source.clone()),
+            failure: failure.message.clone(),
+        },
+    }
+}
+
+fn two_real_preview_loop_source_frame_visual_identity(
+    frame: &SwitcherFourViewDisplayedSlot,
+    decoded_identity: Option<&TwoRealPreviewLoopDecodedSlotIdentity>,
+) -> TwoRealPreviewLoopSlotVisualIdentity {
+    let (client_id, run_id, frame_id, selected_frame_source) =
+        two_real_preview_loop_displayed_frame_identity_parts(frame, decoded_identity);
+    TwoRealPreviewLoopSlotVisualIdentity::SourceFrame {
+        client_id,
+        run_id,
+        frame_id,
+        selected_frame_source,
+    }
+}
+
+fn two_real_preview_loop_displayed_frame_identity_parts(
+    frame: &SwitcherFourViewDisplayedSlot,
+    decoded_identity: Option<&TwoRealPreviewLoopDecodedSlotIdentity>,
+) -> (ClientId, RunId, u64, Option<String>) {
+    if let Some(identity) = decoded_identity {
+        return (
+            identity.client_id.clone(),
+            identity.run_id.clone(),
+            identity.frame_id,
+            identity.decodable_source.clone(),
+        );
+    }
+
+    if let Some(selected) = &frame.selected {
+        return (
+            selected.frame.client_id.clone(),
+            selected.frame.run_id.clone(),
+            selected.frame.frame_id,
+            None,
+        );
+    }
+
+    (
+        ClientId("unknown-client".to_string()),
+        RunId("unknown-run".to_string()),
+        0,
+        None,
+    )
+}
+
 fn two_real_unchanged_frame_reuse_slots(
     previous_identities: &[Option<TwoRealPreviewLoopDecodedSlotIdentity>; 4],
     current_identities: &[Option<TwoRealPreviewLoopDecodedSlotIdentity>; 4],
-    validation: &SwitcherFourViewHandoffValidationOutput,
+    pre_composition: &SwitcherFourViewHandoffValidationPreCompositionOutput,
 ) -> [bool; 4] {
     std::array::from_fn(|index| {
         previous_identities[index].is_some()
             && previous_identities[index] == current_identities[index]
             && matches!(
-                &validation.composition_render.composition.slots[index],
+                &pre_composition.composition_render.composition.slots[index],
                 SwitcherFourViewHandoffQuadCompositionRenderSlot::UseUpdatedFrame { .. }
             )
     })
@@ -6078,7 +6355,7 @@ fn format_four_view_two_real_handoff_preview_loop_summary(
     summary: &SwitcherFourViewTwoRealHandoffPreviewLoopSummary,
 ) -> String {
     format!(
-        "switcher four-view two-real handoff preview loop command_name=--four-view-two-real-handoff-preview-loop real_handoff=true real_slot_count=2 real_slot0_index={} real_slot1_index={} pipe_name={} actual_pipe_path={} preview_mode={} read_mode={} client0_id={} run0_id={} client1_id={} run1_id={} frames_attempted={} frames_rendered={} render_failures={} elapsed_ms={} target_fps={} configured_frame_interval_ms={} effective_attempt_fps={} effective_render_fps={} first_render_attempt_index={} first_render_elapsed_ms={} rendered_after_first_render={} effective_render_fps_after_first_render={} no_render_before_first_render={} selected_count={} no_frame_count={} handoff_error_count={} decode_attempt_count={} decode_success_count={} render_success_count={} render_failure_count={} unchanged_frame_reuse_count={} skipped_decode_unchanged_frame_count={} redecoded_same_frame_count={} decode_elapsed_ms={} handoff_elapsed_ms={} render_elapsed_ms={} avg_decode_elapsed_ms={} avg_handoff_elapsed_ms={} avg_render_elapsed_ms={} loop_total_elapsed_ms={} attempt_body_elapsed_ms={} loop_sleep_elapsed_ms={} frame_interval_wait_elapsed_ms={} event_pump_elapsed_ms={} window_update_elapsed_ms={} quad_view_compose_elapsed_ms={} render_call_elapsed_ms={} unaccounted_elapsed_ms={} avg_attempt_elapsed_ms={} max_attempt_elapsed_ms={} slow_attempt_count={} slow_attempt_threshold_ms={} scheduler_status={:?} slot_bindings={} slot_result_kinds={} slot_diagnostics={} clean_output_render_result_kind={} window_title={} output_width={} output_height={}",
+        "switcher four-view two-real handoff preview loop command_name=--four-view-two-real-handoff-preview-loop real_handoff=true real_slot_count=2 real_slot0_index={} real_slot1_index={} pipe_name={} actual_pipe_path={} preview_mode={} read_mode={} client0_id={} run0_id={} client1_id={} run1_id={} frames_attempted={} frames_rendered={} render_failures={} elapsed_ms={} target_fps={} configured_frame_interval_ms={} effective_attempt_fps={} effective_render_fps={} first_render_attempt_index={} first_render_elapsed_ms={} rendered_after_first_render={} effective_render_fps_after_first_render={} no_render_before_first_render={} selected_count={} no_frame_count={} handoff_error_count={} decode_attempt_count={} decode_success_count={} render_success_count={} render_failure_count={} unchanged_frame_reuse_count={} skipped_decode_unchanged_frame_count={} redecoded_same_frame_count={} decode_elapsed_ms={} handoff_elapsed_ms={} render_elapsed_ms={} avg_decode_elapsed_ms={} avg_handoff_elapsed_ms={} avg_render_elapsed_ms={} loop_total_elapsed_ms={} attempt_body_elapsed_ms={} loop_sleep_elapsed_ms={} frame_interval_wait_elapsed_ms={} event_pump_elapsed_ms={} window_update_elapsed_ms={} quad_view_compose_elapsed_ms={} quad_view_compose_attempt_count={} quad_view_compose_success_count={} quad_view_compose_skipped_unchanged_count={} quad_view_composed_frame_reuse_count={} quad_view_visual_unchanged_count={} quad_view_visual_changed_count={} avg_quad_view_compose_elapsed_ms={} render_call_elapsed_ms={} unaccounted_elapsed_ms={} avg_attempt_elapsed_ms={} max_attempt_elapsed_ms={} slow_attempt_count={} slow_attempt_threshold_ms={} scheduler_status={:?} slot_bindings={} slot_result_kinds={} slot_diagnostics={} clean_output_render_result_kind={} window_title={} output_width={} output_height={}",
         summary.real_slot0_index,
         summary.real_slot1_index,
         summary.pipe_name,
@@ -6125,6 +6402,13 @@ fn format_four_view_two_real_handoff_preview_loop_summary(
         summary.event_pump_elapsed_ms,
         summary.window_update_elapsed_ms,
         summary.quad_view_compose_elapsed_ms,
+        summary.quad_view_compose_attempt_count,
+        summary.quad_view_compose_success_count,
+        summary.quad_view_compose_skipped_unchanged_count,
+        summary.quad_view_composed_frame_reuse_count,
+        summary.quad_view_visual_unchanged_count,
+        summary.quad_view_visual_changed_count,
+        summary.avg_quad_view_compose_elapsed_ms,
         summary.render_call_elapsed_ms,
         summary.unaccounted_elapsed_ms,
         summary.avg_attempt_elapsed_ms,
@@ -8132,6 +8416,23 @@ mod tests {
     }
 
     #[derive(Debug, Default)]
+    struct AlwaysNoFramePerClientHandoff;
+
+    impl SwitcherQueuedFrameHandoff for AlwaysNoFramePerClientHandoff {
+        fn read_handoff_frame(
+            &mut self,
+            input: SwitcherQueuedFrameHandoffInput,
+        ) -> SwitcherQueuedFrameHandoffResult {
+            SwitcherQueuedFrameHandoffResult::NoFrameAvailable {
+                client_id: input.client_id,
+                run_id: input.run_id,
+                mode: input.mode,
+                client_queue_len: 0,
+            }
+        }
+    }
+
+    #[derive(Debug, Default)]
     struct RecordingCadenceSleepHook {
         durations: RefCell<Vec<Duration>>,
     }
@@ -8585,6 +8886,12 @@ mod tests {
         assert_eq!(summary.unchanged_frame_reuse_count, 2);
         assert_eq!(summary.skipped_decode_unchanged_frame_count, 2);
         assert_eq!(summary.redecoded_same_frame_count, 0);
+        assert_eq!(summary.quad_view_compose_attempt_count, 1);
+        assert_eq!(summary.quad_view_compose_success_count, 1);
+        assert_eq!(summary.quad_view_compose_skipped_unchanged_count, 1);
+        assert_eq!(summary.quad_view_composed_frame_reuse_count, 1);
+        assert_eq!(summary.quad_view_visual_unchanged_count, 1);
+        assert_eq!(summary.quad_view_visual_changed_count, 1);
         assert_eq!(
             summary.slot_bindings,
             [
@@ -8651,6 +8958,12 @@ mod tests {
         assert_eq!(summary.render_failure_count, 0);
         assert_eq!(summary.unchanged_frame_reuse_count, 0);
         assert_eq!(summary.skipped_decode_unchanged_frame_count, 0);
+        assert_eq!(summary.quad_view_compose_attempt_count, 1);
+        assert_eq!(summary.quad_view_compose_success_count, 1);
+        assert_eq!(summary.quad_view_compose_skipped_unchanged_count, 1);
+        assert_eq!(summary.quad_view_composed_frame_reuse_count, 1);
+        assert_eq!(summary.quad_view_visual_unchanged_count, 1);
+        assert_eq!(summary.quad_view_visual_changed_count, 1);
         assert_eq!(
             summary.slot_result_kinds,
             [
@@ -8698,6 +9011,12 @@ mod tests {
         assert_eq!(summary.unchanged_frame_reuse_count, 2);
         assert_eq!(summary.skipped_decode_unchanged_frame_count, 2);
         assert_eq!(summary.redecoded_same_frame_count, 0);
+        assert_eq!(summary.quad_view_compose_attempt_count, 1);
+        assert_eq!(summary.quad_view_compose_success_count, 1);
+        assert_eq!(summary.quad_view_compose_skipped_unchanged_count, 1);
+        assert_eq!(summary.quad_view_composed_frame_reuse_count, 1);
+        assert_eq!(summary.quad_view_visual_unchanged_count, 1);
+        assert_eq!(summary.quad_view_visual_changed_count, 1);
         assert!(summary.slot_diagnostics[0].contains("decode_attempted=false"));
         assert!(summary.slot_diagnostics[0].contains("decode_skipped_reason=UnchangedFrameReuse"));
         assert!(summary.slot_diagnostics[2].contains("decode_attempted=false"));
@@ -8736,6 +9055,12 @@ mod tests {
         assert_eq!(summary.decode_success_count, 4);
         assert_eq!(summary.unchanged_frame_reuse_count, 0);
         assert_eq!(summary.skipped_decode_unchanged_frame_count, 0);
+        assert_eq!(summary.quad_view_compose_attempt_count, 2);
+        assert_eq!(summary.quad_view_compose_success_count, 2);
+        assert_eq!(summary.quad_view_compose_skipped_unchanged_count, 0);
+        assert_eq!(summary.quad_view_composed_frame_reuse_count, 0);
+        assert_eq!(summary.quad_view_visual_unchanged_count, 0);
+        assert_eq!(summary.quad_view_visual_changed_count, 2);
 
         let requests = render_runtime.requests.borrow();
         assert_eq!(requests.len(), 2);
@@ -8769,6 +9094,12 @@ mod tests {
         assert_eq!(summary.decode_attempt_count, 2);
         assert_eq!(summary.unchanged_frame_reuse_count, 0);
         assert_eq!(summary.skipped_decode_unchanged_frame_count, 0);
+        assert_eq!(summary.quad_view_compose_attempt_count, 2);
+        assert_eq!(summary.quad_view_compose_success_count, 1);
+        assert_eq!(summary.quad_view_compose_skipped_unchanged_count, 0);
+        assert_eq!(summary.quad_view_composed_frame_reuse_count, 0);
+        assert_eq!(summary.quad_view_visual_unchanged_count, 0);
+        assert_eq!(summary.quad_view_visual_changed_count, 2);
         assert_eq!(
             summary.slot_result_kinds,
             [
@@ -8781,6 +9112,44 @@ mod tests {
 
         let requests = render_runtime.requests.borrow();
         assert_eq!(requests.len(), 1);
+    }
+
+    #[test]
+    fn switcher_four_view_two_real_handoff_preview_loop_skips_stable_initial_no_frame_composition()
+    {
+        let render_runtime = RecordingPersistentFixtureRenderedWindowRuntime::default();
+        let summary = run_four_view_two_real_handoff_preview_loop_with_handoff_runtime_and_sleep(
+            "fixture-pipe",
+            0,
+            ClientId("real-client-0".to_string()),
+            RunId("real-run-0".to_string()),
+            2,
+            ClientId("real-client-1".to_string()),
+            RunId("real-run-1".to_string()),
+            NonZeroU32::new(3).expect("3 should be non-zero"),
+            SwitcherSingleClientQueueSourceMode::PreviewLatest,
+            TimestampMicros(1_000_004),
+            AlwaysNoFramePerClientHandoff,
+            &DeterministicFourViewFixtureDecodeRuntime,
+            &render_runtime,
+            &RecordingCadenceSleepHook::default(),
+        );
+
+        assert_eq!(summary.frames_attempted, 3);
+        assert_eq!(summary.frames_rendered, 0);
+        assert_eq!(summary.no_frame_count, 12);
+        assert_eq!(summary.decode_attempt_count, 0);
+        assert_eq!(summary.quad_view_compose_attempt_count, 1);
+        assert_eq!(summary.quad_view_compose_success_count, 0);
+        assert_eq!(summary.quad_view_compose_skipped_unchanged_count, 2);
+        assert_eq!(summary.quad_view_composed_frame_reuse_count, 0);
+        assert_eq!(summary.quad_view_visual_unchanged_count, 2);
+        assert_eq!(summary.quad_view_visual_changed_count, 1);
+        assert_eq!(
+            summary.clean_output_render_result_kind,
+            "NoRenderableQuadView"
+        );
+        assert!(render_runtime.requests.borrow().is_empty());
     }
 
     #[test]
@@ -8870,6 +9239,13 @@ mod tests {
         assert!(formatted.contains("event_pump_elapsed_ms="));
         assert!(formatted.contains("window_update_elapsed_ms="));
         assert!(formatted.contains("quad_view_compose_elapsed_ms="));
+        assert!(formatted.contains("quad_view_compose_attempt_count=1"));
+        assert!(formatted.contains("quad_view_compose_success_count=1"));
+        assert!(formatted.contains("quad_view_compose_skipped_unchanged_count=0"));
+        assert!(formatted.contains("quad_view_composed_frame_reuse_count=0"));
+        assert!(formatted.contains("quad_view_visual_unchanged_count=0"));
+        assert!(formatted.contains("quad_view_visual_changed_count=1"));
+        assert!(formatted.contains("avg_quad_view_compose_elapsed_ms="));
         assert!(formatted.contains("render_call_elapsed_ms="));
         assert!(formatted.contains("unaccounted_elapsed_ms="));
         assert!(formatted.contains("avg_attempt_elapsed_ms="));

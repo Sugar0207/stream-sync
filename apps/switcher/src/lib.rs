@@ -2787,6 +2787,17 @@ pub struct SwitcherFourViewHandoffValidationOutput {
     pub window_render: SwitcherFourViewComposedCanvasWindowRenderConnectionOutput,
 }
 
+/// Output from the 4-view handoff-backed validation path before expensive BGRA
+/// quad composition.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SwitcherFourViewHandoffValidationPreCompositionOutput {
+    pub scheduler: SwitcherFourViewTargetTimeHandoffSourceSchedulerResult,
+    pub decode_render_adapter: SwitcherFourViewHandoffSchedulerDecodeRenderAdapterOutput,
+    pub display: SwitcherFourViewHandoffDisplayPolicyOutput,
+    pub composition_instruction: SwitcherFourViewHandoffQuadCompositionAdapterOutput,
+    pub composition_render: SwitcherFourViewHandoffQuadCompositionRenderConnectionOutput,
+}
+
 /// Deterministic fixture mode for the first bounded 4-view proof wrapper.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum SwitcherFourViewManualPreviewProofFixtureMode {
@@ -5339,6 +5350,22 @@ impl SwitcherFourViewHandoffValidationBoundary {
         )
     }
 
+    pub fn run_from_handoff_to_composition_render_with_runtimes_and_mode(
+        &self,
+        handoff: &mut impl SwitcherQueuedFrameHandoff,
+        input: &SwitcherFourViewHandoffValidationInput,
+        mode: SwitcherSingleClientTargetTimeSourceMode,
+        decode_runtime: &impl SwitcherH264DecodeRuntimeHook,
+    ) -> SwitcherFourViewHandoffValidationPreCompositionOutput {
+        self.run_from_handoff_to_composition_render_with_runtimes_and_mode_and_clock_offset_state(
+            handoff,
+            input,
+            mode,
+            None,
+            decode_runtime,
+        )
+    }
+
     pub fn run_from_handoff_with_runtimes_and_clock_offset_state(
         &self,
         handoff: &mut impl SwitcherQueuedFrameHandoff,
@@ -5366,46 +5393,18 @@ impl SwitcherFourViewHandoffValidationBoundary {
         decode_runtime: &impl SwitcherH264DecodeRuntimeHook,
         render_runtime: &impl SwitcherWindowRenderRuntimeHook,
     ) -> SwitcherFourViewHandoffValidationOutput {
-        let clock_offsets_micros =
-            self.clock_offsets_for_slots(heartbeat_rtt_offset_state, &input.slots);
-        let scheduler = self
-            .scheduler
-            .select_quad_preview_from_handoff_with_mode_and_clock_offsets(
+        let pre_composition = self
+            .run_from_handoff_to_composition_render_with_runtimes_and_mode_and_clock_offset_state(
                 handoff,
-                SwitcherFourViewTargetTimeHandoffSourceSchedulerInput {
-                    slots: input.slots,
-                    target_timestamp: input.target_timestamp,
-                },
+                &input,
                 mode,
-                clock_offsets_micros,
+                heartbeat_rtt_offset_state,
+                decode_runtime,
             );
-        let decode_render_adapter = self.decode_render_adapter.adapt(
-            SwitcherFourViewHandoffSchedulerDecodeRenderAdapterInput {
-                scheduler_result: scheduler.clone(),
-            },
-        );
-        let display = self
-            .display_policy
-            .decide(SwitcherFourViewHandoffDisplayPolicyInput {
-                adapter_output: decode_render_adapter.clone(),
-                previous_slots: input.previous_slots,
-                current_time: input.display_current_time,
-            });
-        let composition_instruction =
-            self.composition_adapter
-                .adapt(SwitcherFourViewHandoffQuadCompositionAdapterInput {
-                    display: display.clone(),
-                });
-        let composition_render = self.composition_render.connect_adapter_output_with_runtime(
-            SwitcherFourViewHandoffQuadCompositionRenderConnectionInput {
-                adapter_output: composition_instruction.clone(),
-            },
-            decode_runtime,
-        );
         let bgra_composition =
             self.bgra_composition
                 .compose_fixed_quad_view(SwitcherFourViewQuadCompositionInput {
-                    connection: composition_render.clone(),
+                    connection: pre_composition.composition_render.clone(),
                     layout_policy: input.layout_policy,
                 });
         let render_facing = self
@@ -5421,14 +5420,68 @@ impl SwitcherFourViewHandoffValidationBoundary {
         );
 
         SwitcherFourViewHandoffValidationOutput {
+            scheduler: pre_composition.scheduler,
+            decode_render_adapter: pre_composition.decode_render_adapter,
+            display: pre_composition.display,
+            composition_instruction: pre_composition.composition_instruction,
+            composition_render: pre_composition.composition_render,
+            bgra_composition,
+            render_facing,
+            window_render,
+        }
+    }
+
+    pub fn run_from_handoff_to_composition_render_with_runtimes_and_mode_and_clock_offset_state(
+        &self,
+        handoff: &mut impl SwitcherQueuedFrameHandoff,
+        input: &SwitcherFourViewHandoffValidationInput,
+        mode: SwitcherSingleClientTargetTimeSourceMode,
+        heartbeat_rtt_offset_state: Option<&ServerHeartbeatRttOffsetState>,
+        decode_runtime: &impl SwitcherH264DecodeRuntimeHook,
+    ) -> SwitcherFourViewHandoffValidationPreCompositionOutput {
+        let clock_offsets_micros =
+            self.clock_offsets_for_slots(heartbeat_rtt_offset_state, &input.slots);
+        let scheduler = self
+            .scheduler
+            .select_quad_preview_from_handoff_with_mode_and_clock_offsets(
+                handoff,
+                SwitcherFourViewTargetTimeHandoffSourceSchedulerInput {
+                    slots: input.slots.clone(),
+                    target_timestamp: input.target_timestamp,
+                },
+                mode,
+                clock_offsets_micros,
+            );
+        let decode_render_adapter = self.decode_render_adapter.adapt(
+            SwitcherFourViewHandoffSchedulerDecodeRenderAdapterInput {
+                scheduler_result: scheduler.clone(),
+            },
+        );
+        let display = self
+            .display_policy
+            .decide(SwitcherFourViewHandoffDisplayPolicyInput {
+                adapter_output: decode_render_adapter.clone(),
+                previous_slots: input.previous_slots.clone(),
+                current_time: input.display_current_time,
+            });
+        let composition_instruction =
+            self.composition_adapter
+                .adapt(SwitcherFourViewHandoffQuadCompositionAdapterInput {
+                    display: display.clone(),
+                });
+        let composition_render = self.composition_render.connect_adapter_output_with_runtime(
+            SwitcherFourViewHandoffQuadCompositionRenderConnectionInput {
+                adapter_output: composition_instruction.clone(),
+            },
+            decode_runtime,
+        );
+
+        SwitcherFourViewHandoffValidationPreCompositionOutput {
             scheduler,
             decode_render_adapter,
             display,
             composition_instruction,
             composition_render,
-            bgra_composition,
-            render_facing,
-            window_render,
         }
     }
 

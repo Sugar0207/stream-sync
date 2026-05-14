@@ -6,6 +6,86 @@
 
 ### Work
 - Investigated the remaining same-PC `2`-client switcher FPS bottleneck after
+  the timing rerun identified `quad_view_compose_elapsed_ms=26880` as the
+  largest measured cost.
+- Split the 4-view handoff validation boundary so callers can stop after
+  scheduler / display / decode / composition-render connection and decide
+  whether BGRA quad composition is needed.
+- Added stable per-slot visual identities in the two-real preview loop:
+  selected source frame identity uses `client_id`, `run_id`, `frame_id`, and
+  `decodable_source`; stable no-frame states use no-display placeholder
+  identity; source / handoff errors use source-error placeholder identity.
+- Added composed quad-view reuse in
+  `--four-view-two-real-handoff-preview-loop`: when all slot visual identities
+  are unchanged and a previous composition result exists, the loop skips
+  `compose_fixed_quad_view` and reuses the previous composition result for
+  render-facing / clean-output rendering.
+- Kept unchanged-frame decode reuse intact.
+- Preserved source-error behavior: `HandoffError` / source errors still become
+  source-error placeholders and do not reuse the previous source frame.
+- Added final-summary diagnostics:
+  `quad_view_compose_attempt_count`,
+  `quad_view_compose_success_count`,
+  `quad_view_compose_skipped_unchanged_count`,
+  `quad_view_composed_frame_reuse_count`,
+  `quad_view_visual_unchanged_count`,
+  `quad_view_visual_changed_count`, and
+  `avg_quad_view_compose_elapsed_ms`.
+- Added focused two-real tests for unchanged visual reuse, changed frame-id
+  recomposition, source-error recomposition, and stable initial no-frame
+  placeholder composition skip.
+- Kept client encode/capture optimization and distributed-PC validation docs out
+  of scope.
+
+### Changed Files
+- `apps/switcher/src/lib.rs`
+- `apps/switcher/src/main.rs`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### Decisions
+- Treat visual identity comparison as a switcher preview-loop optimization
+  layer, not a protocol change.
+- Reuse the previous composition result for both rendered composed frames and
+  stable no-render composition results so stable initial no-frame ticks do not
+  repeatedly enter quad composition.
+- Count `quad_view_compose_elapsed_ms` from actual
+  `compose_fixed_quad_view` calls only, so it should drop when composition is
+  skipped.
+
+### Unresolved
+- Needs a same-PC `2`-client rerun to confirm the measured
+  `quad_view_compose_elapsed_ms`, attempt FPS, and render FPS improve in the
+  human timing profile.
+- `render_call_elapsed_ms` remains a known secondary cost after composition.
+
+### Next
+- Rerun the same-PC `2`-client smoke from `S:\stream-sync` and inspect
+  `quad_view_compose_attempt_count`,
+  `quad_view_compose_skipped_unchanged_count`,
+  `quad_view_composed_frame_reuse_count`,
+  `avg_quad_view_compose_elapsed_ms`, `quad_view_compose_elapsed_ms`,
+  and FPS fields.
+
+### TODO Update
+- Updated current position from timing-instrumentation status to the
+  quad-view recomposition skip implementation.
+- Updated the immediate Next Item to a same-PC `2`-client rerun focused on
+  quad-view compose skip / composed-frame reuse diagnostics.
+
+### Validation
+- `cargo fmt`
+- `cargo fmt --check`
+- `cargo test -p stream-sync-switcher two_real_handoff_preview -- --nocapture`
+  - result: PASS, `10` focused tests passed
+  - `link.exe` was available in this environment
+
+## 2026-05-14
+### Type
+- Codex implementation
+
+### Work
+- Investigated the remaining same-PC `2`-client switcher FPS bottleneck after
   unchanged-frame decode skip.
 - Kept the existing unchanged-frame reuse behavior intact.
 - Added two-real preview loop final-summary timing fields for loop total,
