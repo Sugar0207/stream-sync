@@ -1,5 +1,109 @@
 <!-- stream-sync/docs/operations/session-log.md -->
 
+## 2026-05-16
+### Type
+- Codex documentation update
+
+### Work
+- Recorded the same-PC `2`-client render smoke rerun evidence from
+  `manual-logs/two-client-render-smoke-20260515-232256`.
+- Marked the runtime smoke itself as PASS while keeping Production Readiness as
+  FAIL.
+- Recorded the hot path optimization effect as positive:
+  `effective_render_fps_after_first_render` improved from the previous bad
+  baseline `2.847` to `12.215`, about `4.3x`.
+- Recorded that there was no obvious server/client/switcher regression in this
+  smoke run:
+  - server emitted ready/stopped and ended with
+    `receive_stop_reason=ReceiveTimedOut`,
+    `handoff_stop_reason=StopRequested`, `packets_received=35884`,
+    `frames_queued=1800`,
+    `per_client_queued_frames=player1/streamsync-dev-session:900|player2/streamsync-dev-session:900`,
+    `retained_keyframe_clients=2`, `frame_read_count=437`,
+    `no_frame_count=159`,
+    `decodable_source_counts=queue:46|retained_keyframe:391|none:159`, and
+    `io_error_count=0`
+  - switcher ended with
+    `command=--four-view-two-real-handoff-preview-loop`,
+    `preview_mode=preview-latest-decodable`,
+    `read_mode=inspect-latest-decodable`, `frames_attempted=300`,
+    `frames_rendered=226`, `render_failures=0`, `elapsed_ms=21258`,
+    `effective_attempt_fps=14.112`, `effective_render_fps=10.631`,
+    `first_render_attempt_index=75`,
+    `effective_render_fps_after_first_render=12.215`, `selected_count=437`,
+    `decode_attempt_count=30`, `decode_success_count=30`,
+    `render_success_count=226`, `unchanged_frame_reuse_count=378`,
+    `skipped_decode_unchanged_frame_count=378`,
+    `redecoded_same_frame_count=0`, `decode_elapsed_ms=2185`,
+    `avg_decode_elapsed_ms=72.833`, `render_elapsed_ms=2433`,
+    `avg_render_elapsed_ms=20.275`, `render_buffer_copy_elapsed_ms=2225`,
+    `decoded_buffer_clone_count=30`, `composed_buffer_clone_count=112`,
+    `render_buffer_reuse_count=180`, `render_buffer_allocation_count=46`,
+    `render_buffer_bytes_copied_total=169574400`,
+    `decode_output_buffer_reuse_count=0`,
+    `scheduler_status=PartialSelected`,
+    `slot_result_kinds=Selected|Selected|NoFrameAvailable|NoFrameAvailable`,
+    and `clean_output_render_result_kind=Rendered`
+  - both clients stayed healthy with
+    `accepted=true`, `frames_encoded=900`, `frames_sent=900`,
+    `send_failures=0`, `encode_failures=0`,
+    `stop_reason=Some(MaxFramesReached)`, and
+    `effective_output_fps=24.021|23.966`
+- Narrowed the next bottleneck candidates to:
+  - render buffer copy / Windows GDI render path
+  - decode output reuse
+  - persistent decoder as a future follow-up candidate only
+- Kept this step docs-only; no code or behavior changes were made here.
+
+### Changed Files
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### Decisions
+- Treat the rerun as positive runtime evidence for the existing hot path
+  optimization rather than as production readiness clearance.
+- Keep Production Readiness at FAIL because
+  `effective_render_fps_after_first_render=12.215` is still far below the
+  `30fps` target.
+- Read `render_buffer_copy_elapsed_ms=2225` and
+  `avg_render_elapsed_ms=20.275` as the most immediate render-side bottleneck
+  signal.
+- Keep decode in scope as a performance candidate because
+  `avg_decode_elapsed_ms=72.833` remains large and
+  `decode_output_buffer_reuse_count=0` shows the current path still does not
+  reuse decode output buffers.
+- Do not start persistent decoder implementation in this step; keep it as a
+  future candidate after the narrower render-copy and decode-output-reuse
+  follow-ups are better defined.
+
+### Unresolved
+- Production Readiness remains FAIL.
+- The switcher still falls short of the `30fps` target even after the hot path
+  improvement.
+- It is not yet resolved whether the next best slice should start from render
+  buffer copy reduction or decode output reuse.
+
+### Next
+- Organize the next narrow slice around render buffer copy and Windows GDI
+  render path evidence first.
+- Keep decode output reuse as the next competing candidate if the render-side
+  evidence does not explain enough of the gap.
+- Leave persistent decoder as a future follow-up candidate, not an immediate
+  implementation commitment.
+
+### TODO Update
+- Updated `docs/operations/todo.md` current position with the latest same-PC
+  `2`-client render smoke rerun evidence.
+- Replaced the old pending-rerun next item with bottleneck-oriented next items
+  for render buffer copy, decode output reuse, and persistent decoder
+  candidate planning.
+
+### Validation
+- `git diff --check`
+  - result: PASS
+
+---
+
 ## 2026-05-15
 ### Type
 - Codex implementation
