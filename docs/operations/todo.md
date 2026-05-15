@@ -2,7 +2,7 @@
 
 # StreamSync TODO
 
-最終更新: 2026-05-14
+最終更新: 2026-05-15
 
 このファイルは「現在どこまで終わっていて、次に何をやるか」を確認するための TODO です。  
 時系列の作業履歴、判断理由、各回の作業メモは `docs/operations/session-log.md` を正とします。
@@ -22,6 +22,7 @@
 ---
 
 ## 現在位置
+- 2026-05-15 の narrow compile-fix slice では、same-PC `2`-client switcher hot path optimization 後に壊れていた `apps/switcher/src/main.rs` の型不一致を最小修正で解消した。`render_four_view_focused_slot_with_runtime` は OBS validation profile 変換 helper の返り値を `(SwitcherDecodedFrameRenderInput, BgraRenderBufferDiagnostics)` として受け、`frame:` には `SwitcherDecodedFrameRenderInput` だけを渡すように戻した。focused preview helper 自体は summary timing を持たないため diagnostics は `_scaled_diagnostics` として明示受けに留め、unused import warning も削除した。`cargo fmt`、`cargo fmt --check`、`cargo check -p stream-sync-switcher`、focused switcher tests、`cargo check --workspace`、`git diff --check`、`cargo build -p stream-sync-server -p stream-sync-switcher -p stream-sync-client` は PASS し、`target\debug\stream-sync-switcher.exe` の timestamp は `2026-05-15 22:59:39` に更新された。runtime smoke rerun はまだ未実施で、次 step に残す
 - latest same-PC `2`-client normal-client rerun では runtime は概ね動作し、client output FPS は `29.050|29.083fps` だったが、switcher は `effective_render_fps_after_first_render=2.847` に留まり production readiness は FAIL のまま。decoded retained frame cache は `decode_cached_frame_reuse_count=0` / `decode_cache_miss_count=56` で hit せず、既存の unchanged-frame reuse は `unchanged_frame_reuse_count=127` / `skipped_decode_unchanged_frame_count=127` と効いている。今回の code slice では `--four-view-two-real-handoff-preview-loop` の hot path から診断用 unavailable window render と render-facing full-frame clone を外し、clean output render は composed BGRA を借用して OBS validation profile へ直接変換するようにした。Windows persistent GDI path も request frame を static paint buffer へ clone せず move する。final summary には `decoded_buffer_clone_count` / `composed_buffer_clone_count` / `render_buffer_reuse_count` / `render_buffer_allocation_count` / `render_buffer_bytes_copied_total` / `decode_output_buffer_reuse_count` を追加し、FFmpeg stdout buffer は expected raw BGRA size で capacity を確保する。source-error placeholder semantics、unchanged-frame decode reuse、visual identity / composed-frame reuse、placeholder row cache、incremental composition、render reuse、client encode/capture behavior 非変更、distributed-PC validation docs 非変更は維持
 - latest same-PC `4`-client all-real concurrent validation は `manual-logs/four-client-20260513-184503` を latest evidence として PASS 判定にした。server ready / stopped summary、client1..4 auth/send、server queue participation、named-pipe handoff transport は PASS しており、final switcher state は `AllSelected` / `Selected|Selected|Selected|Selected`、`clean_output_render_result_kind=Rendered`、`preview_mode=preview-latest-decodable`、`read_mode=inspect-latest-decodable` だった。same-PC saturation は残っており、client effective output fps は `19.732|20.201|20.299|20.040` まで落ちた
 - latest OBS capture validation は `manual-logs/obs-capture-20260513-190909` で追加され、OBS 側は `StreamSync 4-view Output` の選択と preview 表示が PASS した。一方で StreamSync runtime は same-PC saturation により PARTIAL で、client2 / client3 は `EncodeFailure`、client effective output fps は `16-18fps` 台、switcher final summary は `360` 秒以内に終了しなかったため未回収だった。これは既存の same-PC `4`-client all-real PASS を巻き戻すものではない
@@ -1042,7 +1043,7 @@ continuous runtime first slice の blocker:
 - actual dashboard UI rendering remains unimplemented.
 
 ## Next Items
-1. same-PC `2`-client smoke を rerun し、switcher final summary の FPS / `render_buffer_copy_elapsed_ms` / `render_buffer_reuse_count` / `render_buffer_allocation_count` / `render_buffer_bytes_copied_total` / `decoded_buffer_clone_count` / `composed_buffer_clone_count` / decode phase breakdown を確認する
+1. same-PC `2`-client smoke を rerun し、switcher final summary の FPS / `render_buffer_copy_elapsed_ms` / `render_buffer_reuse_count` / `render_buffer_allocation_count` / `render_buffer_bytes_copied_total` / `decoded_buffer_clone_count` / `composed_buffer_clone_count` / decode phase breakdown を確認する（この rerun は今回の compile-fix step ではまだ実施していない）
 2. distributed-PC `2`-client smoke を実施する
 3. distributed-PC `2`-client OBS visible を実施する
 4. distributed-PC `4`-client summary-required run を実施する

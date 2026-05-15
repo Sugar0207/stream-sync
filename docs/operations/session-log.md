@@ -1,5 +1,78 @@
 <!-- stream-sync/docs/operations/session-log.md -->
 
+## 2026-05-15
+### Type
+- Codex implementation
+
+### Work
+- Fixed the post-hot-path-optimization compile error in
+  `apps/switcher/src/main.rs` caused by passing the full
+  `(SwitcherDecodedFrameRenderInput, BgraRenderBufferDiagnostics)` tuple into
+  `SwitcherWindowRenderRequest.frame`.
+- Updated `render_four_view_focused_slot_with_runtime` to destructure the OBS
+  validation profile scaling helper result into `scaled_input` and
+  `_scaled_diagnostics`, then pass only `scaled_input` as the render request
+  frame.
+- Removed the now-unused imports
+  `SwitcherFourViewComposedCanvasWindowRenderBoundary` and
+  `SwitcherFourViewComposedCanvasWindowRenderInput`.
+- Kept the fix scoped to the focused preview helper and did not change server,
+  protocol, runtime smoke flow, or diagnostics summary wiring outside this
+  callsite.
+- Rebuilt the three binaries and confirmed
+  `target\debug\stream-sync-switcher.exe` updated to
+  `2026-05-15 22:59:39`.
+
+### Changed Files
+- `apps/switcher/src/main.rs`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### Decisions
+- Keep the current diagnostics-returning scaling helper shape unchanged.
+- At this focused preview callsite, receive diagnostics explicitly as
+  `_scaled_diagnostics` rather than discarding the tuple implicitly, because
+  this helper does not own the summary timing/counter aggregation path.
+- Leave the existing `dead_code` warnings in `apps/switcher/src/main.rs`
+  untouched because they predate this compile-fix slice and are outside the
+  requested scope.
+
+### Unresolved
+- same-PC `2`-client runtime smoke rerun is still pending and was intentionally
+  not executed in this step.
+- Existing `dead_code` warnings remain for
+  `update_four_view_previous_slots_from_validation`,
+  `four_view_two_real_tick_diagnostics`, and
+  `clean_output_window_was_rendered`.
+
+### Next
+- Run the deferred same-PC `2`-client smoke rerun and inspect the new
+  render/decode diagnostics in the switcher final summary.
+- If the rerun still shows low `effective_render_fps_after_first_render`,
+  continue from the current hot-path diagnostics rather than widening scope
+  into protocol/server work.
+
+### TODO Update
+- Updated `docs/operations/todo.md` current position with the compile-fix
+  status, validation results, and rebuilt switcher binary timestamp.
+- Kept the same-PC `2`-client smoke rerun as the immediate next item.
+
+### Validation
+- `cargo fmt`
+- `cargo fmt --check`
+- `cargo test -p stream-sync-switcher switcher_four_view_focused_handoff_preview -- --nocapture`
+  - result: PASS (`3` tests)
+- `cargo check -p stream-sync-switcher`
+  - result: PASS
+- `cargo check --workspace`
+  - result: PASS
+- `git diff --check`
+  - result: PASS (line-ending warning only)
+- `cargo build -p stream-sync-server -p stream-sync-switcher -p stream-sync-client`
+  - result: PASS
+
+---
+
 ## 2026-05-14
 ### Type
 - Codex implementation

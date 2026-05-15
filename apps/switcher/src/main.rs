@@ -30,12 +30,11 @@ use stream_sync_switcher::{
     SwitcherFourViewCleanOutputWindowInput, SwitcherFourViewCleanOutputWindowOutput,
     SwitcherFourViewCleanOutputWindowProofBoundary, SwitcherFourViewCleanOutputWindowProofResult,
     SwitcherFourViewCleanOutputWindowRenderResult, SwitcherFourViewComposedCanvasRenderResult,
-    SwitcherFourViewComposedCanvasWindowRenderBoundary,
     SwitcherFourViewComposedCanvasWindowRenderConnectionRenderResult,
-    SwitcherFourViewComposedCanvasWindowRenderInput, SwitcherFourViewComposedFrame,
-    SwitcherFourViewDisplayedSlot, SwitcherFourViewHandoffQuadCompositionRenderSlot,
-    SwitcherFourViewHandoffValidationBoundary, SwitcherFourViewHandoffValidationInput,
-    SwitcherFourViewHandoffValidationOutput, SwitcherFourViewHandoffValidationPreCompositionOutput,
+    SwitcherFourViewComposedFrame, SwitcherFourViewDisplayedSlot,
+    SwitcherFourViewHandoffQuadCompositionRenderSlot, SwitcherFourViewHandoffValidationBoundary,
+    SwitcherFourViewHandoffValidationInput, SwitcherFourViewHandoffValidationOutput,
+    SwitcherFourViewHandoffValidationPreCompositionOutput,
     SwitcherFourViewManualPreviewCompositionInstructionKind,
     SwitcherFourViewManualPreviewDisplaySlotKind, SwitcherFourViewManualPreviewProofBoundary,
     SwitcherFourViewManualPreviewProofFixtureMode, SwitcherFourViewManualPreviewProofInput,
@@ -5823,11 +5822,12 @@ fn render_four_view_focused_slot_with_runtime(
         Ok(render_input) => render_input,
         Err(_) => return "InvalidFrame",
     };
-    let scaled_input = scale_four_view_bgra_render_input_to_obs_validation_profile(
-        &render_input,
-        FOUR_VIEW_CLEAN_OUTPUT_LOOP_OBS_OUTPUT_WIDTH,
-        FOUR_VIEW_CLEAN_OUTPUT_LOOP_OBS_OUTPUT_HEIGHT,
-    );
+    let (scaled_input, _scaled_diagnostics) =
+        scale_four_view_bgra_render_input_to_obs_validation_profile(
+            &render_input,
+            FOUR_VIEW_CLEAN_OUTPUT_LOOP_OBS_OUTPUT_WIDTH,
+            FOUR_VIEW_CLEAN_OUTPUT_LOOP_OBS_OUTPUT_HEIGHT,
+        );
 
     format_focused_window_render_result_kind(&render_runtime.render_once(
         SwitcherWindowRenderRequest {
