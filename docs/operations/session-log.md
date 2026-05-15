@@ -2,6 +2,104 @@
 
 ## 2026-05-16
 ### Type
+- Codex investigation
+
+### Work
+- Read the required operational docs:
+  - `docs/operations/todo.md`
+  - `docs/operations/session-log.md`
+  - `docs/operations/four-client-validation.md`
+  - `docs/operations/obs-capture-validation.md`
+- Narrowed the latest same-PC `2`-client render smoke follow-up to the current
+  `apps/switcher` render path without changing runtime behavior.
+- Confirmed that `render_buffer_copy_elapsed_ms` is recorded only around the
+  OBS-friendly BGRA scaling/materialization helpers in
+  `apps/switcher/src/main.rs`:
+  - `scale_four_view_bgra_to_obs_validation_profile_from_slice`
+  - `scale_four_view_bgra_render_input_to_obs_validation_profile`
+  - `ObsFriendlyFourViewLoopWindowRenderRuntime::record_render_buffer_diagnostics`
+- Confirmed that the current `render_buffer_copy_elapsed_ms=2225` does not
+  measure Windows GDI `StretchDIBits` time directly. The GDI-side work stays in
+  `window_update_elapsed_ms` / `render_backend_wait_elapsed_ms` because the
+  persistent runtime only records the outer `render_once` / window-update span.
+- Confirmed the persistent Windows render path shape in
+  `windows_persistent_render_update`:
+  - `request.frame` is moved into `PERSISTENT_PAINT_FRAME`
+  - the window is invalidated with `InvalidateRect(Some(hwnd), None, true)`
+  - the message pump drains `WM_PAINT`
+  - `StretchDIBits` repaints the whole window from the BGRA buffer
+- Confirmed the remaining render-side copy/allocation picture:
+  - `render_buffer_reuse_count=180` comes from unchanged-frame clean-output
+    render reuse
+  - `render_buffer_allocation_count=46` comes from `46` fresh OBS-friendly
+    output-buffer materializations
+  - `render_buffer_bytes_copied_total=169574400` equals
+    `46 * 1280 * 720 * 4`, so this metric is counting full output-buffer writes
+    rather than arbitrary intermediate bytes
+- Confirmed why `composed_buffer_clone_count=112` remains:
+  - `46` clones come from the composed-frame path
+    (`quad_view_full_compose_count=1` + `quad_view_incremental_update_count=45`)
+    where `cache.pixels.clone()` is returned as a new composed frame
+  - `66` more clones come from `previous_bgra_composition.clone()` on visually
+    unchanged ticks where the loop could not use clean-output render reuse yet
+- Confirmed `decode_output_buffer_reuse_count=0` is a separate decoder-side
+  issue:
+  - the FFmpeg runtime in `apps/switcher/src/lib.rs` allocates
+    `Vec::with_capacity(expected_len)` for stdout on each decode
+  - the diagnostics field `output_buffer_reuse_count` is never incremented in
+    the current FFmpeg path
+- Kept this step docs-first. No code path or runtime behavior was changed.
+
+### Changed Files
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### Decisions
+- Treat `render_buffer_copy_elapsed_ms=2225` as a CPU-side
+  scale/copy/materialization metric, not as a direct GDI blit metric.
+- Treat the current GDI bottleneck as "full-window invalidate + full-frame
+  `StretchDIBits` repaint on each changed render" until the diagnostics are
+  split more explicitly.
+- Keep `decode_output_buffer_reuse_count=0` outside the immediate render/GDI
+  slice because it belongs to the FFmpeg decode-output buffer lifecycle rather
+  than the Windows render path.
+- Keep shared-memory, GPU backend, and persistent decoder work out of scope for
+  the next slice.
+
+### Unresolved
+- Production Readiness remains FAIL because the latest same-PC `2`-client run
+  is still well below the `30fps` target.
+- The current diagnostics still do not isolate GDI repaint time from the
+  broader `window_update_elapsed_ms` / `render_backend_wait_elapsed_ms` bucket.
+- The changed-render path still materializes a fresh `1280x720` BGRA output
+  buffer whenever render reuse cannot be used.
+
+### Next
+- Propose the next minimal implementation slice around a reusable
+  `1280x720` BGRA scratch/render buffer inside `apps/switcher/src/main.rs` so
+  changed renders can avoid repeated allocation without widening into a new
+  backend.
+- Tighten diagnostics semantics so CPU render-buffer materialization and GDI
+  repaint/wait are easier to read separately in the final summary.
+- Leave decoder output-buffer reuse as a separate follow-up after the render/GDI
+  slice is closed.
+
+### TODO Update
+- Updated `docs/operations/todo.md` current position with the investigated
+  meaning of `render_buffer_copy_elapsed_ms`, the remaining persistent GDI path,
+  the exact interpretation of render/composed buffer counters, and the decision
+  to keep decode-output reuse separate.
+- Replaced the broad render/decode next items with a narrower reusable-render-
+  buffer + diagnostics-semantics follow-up.
+
+### Validation
+- `git diff --check`
+  - result: PASS (LF/CRLF warning only)
+
+---
+
+## 2026-05-16
+### Type
 - Codex documentation update
 
 ### Work
