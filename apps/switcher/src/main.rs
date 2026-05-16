@@ -2374,13 +2374,6 @@ struct TwoRealPreviewLoopQuadCompositionCache {
 }
 
 impl TwoRealPreviewLoopQuadCompositionCache {
-    fn has_ready_canvas(&self, width: u32, height: u32, placeholder_bgra: [u8; 4]) -> bool {
-        !self.pixels.is_empty()
-            && self.width == width
-            && self.height == height
-            && self.placeholder_bgra == placeholder_bgra
-    }
-
     fn prepare_canvas(
         &mut self,
         width: u32,
@@ -6281,7 +6274,7 @@ fn compose_two_real_preview_quad_view_incremental(
         }
     }
 
-    let Some(canvas_width) = slot_width.checked_mul(2) else {
+    let Some(virtual_canvas_width) = slot_width.checked_mul(2) else {
         return (
             SwitcherFourViewQuadCompositionResult::InvalidQuadView {
                 reason: SwitcherFourViewQuadCompositionInvalidReason::CanvasTooLarge,
@@ -6290,7 +6283,7 @@ fn compose_two_real_preview_quad_view_incremental(
             TwoRealPreviewLoopQuadCompositionUpdateDiagnostics::default(),
         );
     };
-    let Some(canvas_height) = slot_height.checked_mul(2) else {
+    let Some(virtual_canvas_height) = slot_height.checked_mul(2) else {
         return (
             SwitcherFourViewQuadCompositionResult::InvalidQuadView {
                 reason: SwitcherFourViewQuadCompositionInvalidReason::CanvasTooLarge,
@@ -6299,8 +6292,10 @@ fn compose_two_real_preview_quad_view_incremental(
             TwoRealPreviewLoopQuadCompositionUpdateDiagnostics::default(),
         );
     };
-    let Some(canvas_len) = canvas_width
-        .checked_mul(canvas_height)
+    let output_width = FOUR_VIEW_CLEAN_OUTPUT_LOOP_OBS_OUTPUT_WIDTH;
+    let output_height = FOUR_VIEW_CLEAN_OUTPUT_LOOP_OBS_OUTPUT_HEIGHT;
+    let Some(output_len) = output_width
+        .checked_mul(output_height)
         .and_then(|pixels| pixels.checked_mul(4))
         .map(|len| len as usize)
     else {
@@ -6317,58 +6312,77 @@ fn compose_two_real_preview_quad_view_incremental(
         previous_visual_identities,
         current_visual_identities,
     );
-    let cache_was_ready =
-        cache.has_ready_canvas(canvas_width, canvas_height, policy.placeholder_bgra);
     let allocated = cache.prepare_canvas(
-        canvas_width,
-        canvas_height,
-        canvas_len,
+        output_width,
+        output_height,
+        output_len,
         policy.placeholder_bgra,
     );
-    let full_compose = !cache_was_ready;
-    let slots_to_update = if full_compose {
-        [true, true, true, true]
-    } else {
-        changed_slots
-    };
-    if full_compose {
-        cache.prepare_placeholder_row(canvas_width, policy.placeholder_bgra);
-        fill_two_real_bgra_rows(
-            &mut cache.pixels,
-            canvas_width,
-            0,
-            0,
-            canvas_width,
-            canvas_height,
-            &cache.placeholder_row,
-        );
-    }
-    cache.prepare_placeholder_row(slot_width, policy.placeholder_bgra);
+    cache.prepare_placeholder_row(output_width, policy.placeholder_bgra);
+    fill_two_real_bgra_rows(
+        &mut cache.pixels,
+        output_width,
+        0,
+        0,
+        output_width,
+        output_height,
+        &cache.placeholder_row,
+    );
 
-    let slots =
-        connection.composition.slots.clone().map(|slot| {
-            two_real_quad_composed_slot_metadata_with_rect(slot, slot_width, slot_height)
-        });
+    let output_slot_width = output_width / 2;
+    let output_slot_height = output_height / 2;
+    let slots = connection.composition.slots.clone().map(|slot| {
+        two_real_quad_composed_slot_metadata_with_rect(slot, output_slot_width, output_slot_height)
+    });
 
-    for (slot_index, slot) in connection.composition.slots.iter().enumerate() {
-        if slots_to_update[slot_index] {
-            update_two_real_quad_slot_region(
-                &mut cache.pixels,
-                canvas_width,
-                slot_width,
-                slot_height,
-                !full_compose,
-                &cache.placeholder_row,
-                slot,
-            );
+    let renderable_frames_by_slot: [Option<&SwitcherDecodedFrame>; 4] = connection
+        .composition
+        .slots
+        .each_ref()
+        .map(|slot| two_real_renderable_frame_and_placement(slot).map(|(frame, _)| frame));
+    let output_stride = output_width as usize * 4;
+    let x_mappings = (0..output_width)
+        .map(|x| {
+            let source_x = x as u64 * virtual_canvas_width as u64 / output_width as u64;
+            (
+                (source_x / slot_width as u64) as usize,
+                (source_x % slot_width as u64) as u32,
+            )
+        })
+        .collect::<Vec<_>>();
+    let y_mappings = (0..output_height)
+        .map(|y| {
+            let source_y = y as u64 * virtual_canvas_height as u64 / output_height as u64;
+            (
+                (source_y / slot_height as u64) as usize,
+                (source_y % slot_height as u64) as u32,
+            )
+        })
+        .collect::<Vec<_>>();
+
+    for (dst_y, (slot_row, local_y)) in y_mappings.iter().copied().enumerate() {
+        let row_start = dst_y * output_stride;
+        for (dst_x, (slot_column, local_x)) in x_mappings.iter().copied().enumerate() {
+            let slot_index = slot_row * 2 + slot_column;
+            let Some(frame) = renderable_frames_by_slot[slot_index] else {
+                continue;
+            };
+            if local_x >= frame.width || local_y >= frame.height {
+                continue;
+            }
+
+            let source_index = ((local_y as usize * frame.width as usize) + local_x as usize) * 4;
+            let destination_index = row_start + dst_x * 4;
+            cache.pixels[destination_index..destination_index + 4]
+                .copy_from_slice(&frame.pixels[source_index..source_index + 4]);
         }
     }
 
-    let changed_slot_count = slots_to_update.iter().filter(|changed| **changed).count() as u32;
+    let changed_slot_count = changed_slots.iter().filter(|changed| **changed).count() as u32;
     let reused_slot_count = 4u32.saturating_sub(changed_slot_count);
     let diagnostics = TwoRealPreviewLoopQuadCompositionUpdateDiagnostics {
-        full_compose,
-        incremental_update: !full_compose,
+        full_compose: true,
+        incremental_update: false,
         changed_slot_count,
         reused_slot_count,
         allocation_count: u32::from(allocated),
@@ -6377,8 +6391,8 @@ fn compose_two_real_preview_quad_view_incremental(
     (
         SwitcherFourViewQuadCompositionResult::ComposedFrame {
             frame: SwitcherFourViewComposedFrame {
-                width: canvas_width,
-                height: canvas_height,
+                width: output_width,
+                height: output_height,
                 pixel_format: SwitcherDecodedFramePixelFormat::Bgra8,
                 pixels: cache.pixels.clone(),
                 slots,
@@ -6628,46 +6642,10 @@ fn validate_two_real_quad_renderable_slot(
     Ok(())
 }
 
-fn update_two_real_quad_slot_region(
-    canvas: &mut [u8],
-    canvas_width: u32,
-    slot_width: u32,
-    slot_height: u32,
-    fill_placeholder: bool,
-    placeholder_row: &[u8],
-    slot: &SwitcherFourViewHandoffQuadCompositionRenderSlot,
-) {
-    let placement = two_real_quad_connected_slot_placement(slot);
-    let rect = two_real_quad_slot_rect(placement, slot_width, slot_height);
-    if fill_placeholder {
-        fill_two_real_bgra_rect(canvas, canvas_width, rect, placeholder_row);
-    }
-    if let Some((frame, _)) = two_real_renderable_frame_and_placement(slot) {
-        copy_two_real_bgra_frame_into_canvas(canvas, canvas_width, frame, rect.x, rect.y);
-    }
-}
-
 fn fill_two_real_bgra(pixels: &mut [u8], color: [u8; 4]) {
     for pixel in pixels.chunks_exact_mut(4) {
         pixel.copy_from_slice(&color);
     }
-}
-
-fn fill_two_real_bgra_rect(
-    canvas: &mut [u8],
-    canvas_width: u32,
-    rect: SwitcherFourViewQuadComposedSlotRect,
-    placeholder_row: &[u8],
-) {
-    fill_two_real_bgra_rows(
-        canvas,
-        canvas_width,
-        rect.x,
-        rect.y,
-        rect.width,
-        rect.height,
-        placeholder_row,
-    );
 }
 
 fn fill_two_real_bgra_rows(
@@ -6686,24 +6664,6 @@ fn fill_two_real_bgra_rows(
         let dst_start = (dst_y as usize + row) * canvas_stride + dst_x as usize * 4;
         let dst_end = dst_start + row_len;
         canvas[dst_start..dst_end].copy_from_slice(placeholder_row);
-    }
-}
-
-fn copy_two_real_bgra_frame_into_canvas(
-    canvas: &mut [u8],
-    canvas_width: u32,
-    frame: &SwitcherDecodedFrame,
-    dst_x: u32,
-    dst_y: u32,
-) {
-    let src_stride = frame.width as usize * 4;
-    let canvas_stride = canvas_width as usize * 4;
-    for row in 0..frame.height as usize {
-        let src_start = row * src_stride;
-        let dst_start = (dst_y as usize + row) * canvas_stride + dst_x as usize * 4;
-        let dst_end = dst_start + src_stride;
-        canvas[dst_start..dst_end]
-            .copy_from_slice(&frame.pixels[src_start..src_start + src_stride]);
     }
 }
 
@@ -7429,12 +7389,16 @@ fn scale_four_view_bgra_to_obs_validation_profile_from_slice(
         let scale_loop_start = Instant::now();
         let source_stride = width as usize * 4;
         let destination_stride = output_width as usize * 4;
-        copy_bgra_half_scale_rows(
-            &mut pixels,
-            pixels_source,
-            source_stride,
-            destination_stride,
-        );
+        for y in 0..output_height as usize {
+            let source_row_start = y * 2 * source_stride;
+            let destination_row_start = y * destination_stride;
+            for x in 0..output_width as usize {
+                let source_index = source_row_start + x * 2 * 4;
+                let destination_index = destination_row_start + x * 4;
+                pixels[destination_index..destination_index + 4]
+                    .copy_from_slice(&pixels_source[source_index..source_index + 4]);
+            }
+        }
         diagnostics.scale_loop_elapsed_ms = scale_loop_start.elapsed().as_millis();
         diagnostics.bytes_copied_total =
             diagnostics.bytes_copied_total.saturating_add(pixels.len());
@@ -7475,26 +7439,6 @@ fn scale_four_view_bgra_to_obs_validation_profile_from_slice(
         },
         diagnostics,
     )
-}
-
-fn copy_bgra_half_scale_rows(
-    destination: &mut [u8],
-    source: &[u8],
-    source_stride: usize,
-    destination_stride: usize,
-) {
-    for (destination_row, source_rows) in destination
-        .chunks_exact_mut(destination_stride)
-        .zip(source.chunks_exact(source_stride * 2))
-    {
-        let source_row = &source_rows[..source_stride];
-        for (destination_pixel, source_double_pixel) in destination_row
-            .chunks_exact_mut(4)
-            .zip(source_row.chunks_exact(8))
-        {
-            destination_pixel.copy_from_slice(&source_double_pixel[..4]);
-        }
-    }
 }
 
 fn four_view_clean_output_window_runtime_visibility_flags(
@@ -9985,6 +9929,46 @@ mod tests {
     }
 
     #[derive(Debug, Default)]
+    struct ObsProfileSizedPerClientHandoff {
+        calls: RefCell<u32>,
+    }
+
+    impl SwitcherQueuedFrameHandoff for ObsProfileSizedPerClientHandoff {
+        fn read_handoff_frame(
+            &mut self,
+            input: SwitcherQueuedFrameHandoffInput,
+        ) -> SwitcherQueuedFrameHandoffResult {
+            *self.calls.borrow_mut() += 1;
+            let seed = match input.client_id.0.as_str() {
+                "real-client-0" => 0x10,
+                "real-client-1" => 0x40,
+                "real-client-2" => 0x70,
+                "real-client-3" => 0xa0,
+                _ => 0xdd,
+            };
+            SwitcherQueuedFrameHandoffResult::FrameRead {
+                frame: SwitcherSingleViewSelectedEncodedFrame {
+                    client_id: input.client_id,
+                    run_id: input.run_id,
+                    frame_id: 1,
+                    capture_timestamp: TimestampMicros(1_000_001),
+                    send_timestamp: TimestampMicros(1_000_101),
+                    queued_at: TimestampMicros(2_400_001),
+                    is_keyframe: true,
+                    width: FOUR_VIEW_CLEAN_OUTPUT_LOOP_OBS_OUTPUT_WIDTH,
+                    height: FOUR_VIEW_CLEAN_OUTPUT_LOOP_OBS_OUTPUT_HEIGHT,
+                    fps_nominal: 30,
+                    codec: Codec::H264,
+                    encoded_payload_len: 1,
+                    encoded_payload: vec![seed],
+                },
+                mode: input.mode,
+                remaining_client_queue_len: 0,
+            }
+        }
+    }
+
+    #[derive(Debug, Default)]
     struct IncrementingFramePerClientHandoff {
         client0_calls: RefCell<u32>,
         client1_calls: RefCell<u32>,
@@ -11185,6 +11169,70 @@ mod tests {
     }
 
     #[test]
+    fn switcher_four_view_two_real_handoff_preview_loop_direct_compose_hits_same_size_copy_for_obs_profile(
+    ) {
+        let render_runtime = RecordingPersistentFixtureRenderedWindowRuntime::default();
+        let summary = run_four_view_two_real_handoff_preview_loop_with_handoff_runtime_and_sleep(
+            "fixture-pipe",
+            0,
+            ClientId("real-client-0".to_string()),
+            RunId("real-run-0".to_string()),
+            2,
+            ClientId("real-client-1".to_string()),
+            RunId("real-run-1".to_string()),
+            NonZeroU32::new(2).expect("2 should be non-zero"),
+            SwitcherSingleClientQueueSourceMode::PreviewLatest,
+            TimestampMicros(1_000_004),
+            ObsProfileSizedPerClientHandoff::default(),
+            &DeterministicFourViewFixtureDecodeRuntime,
+            &render_runtime,
+            &RecordingCadenceSleepHook::default(),
+        );
+
+        assert_eq!(summary.frames_attempted, 2);
+        assert_eq!(summary.frames_rendered, 2);
+        assert_eq!(summary.quad_view_compose_attempt_count, 1);
+        assert_eq!(summary.quad_view_compose_success_count, 1);
+        assert_eq!(summary.quad_view_incremental_update_count, 0);
+        assert_eq!(summary.quad_view_full_compose_count, 1);
+        assert_eq!(summary.render_input_unchanged_count, 1);
+        assert_eq!(summary.render_reuse_frame_count, 1);
+        assert_eq!(summary.render_buffer_passthrough_count, 0);
+        assert_eq!(summary.render_buffer_same_size_copy_count, 1);
+        assert_eq!(summary.render_buffer_half_scale_count, 0);
+        assert_eq!(summary.render_buffer_generic_scale_count, 0);
+        assert_eq!(
+            summary.render_buffer_bytes_copied_total,
+            (FOUR_VIEW_CLEAN_OUTPUT_LOOP_OBS_OUTPUT_WIDTH
+                * FOUR_VIEW_CLEAN_OUTPUT_LOOP_OBS_OUTPUT_HEIGHT
+                * 4) as usize
+        );
+        assert_eq!(
+            summary.output_width,
+            Some(FOUR_VIEW_CLEAN_OUTPUT_LOOP_OBS_OUTPUT_WIDTH)
+        );
+        assert_eq!(
+            summary.output_height,
+            Some(FOUR_VIEW_CLEAN_OUTPUT_LOOP_OBS_OUTPUT_HEIGHT)
+        );
+
+        let requests = render_runtime.requests.borrow();
+        assert_eq!(requests.len(), 1);
+        assert_eq!(
+            requests[0].width,
+            FOUR_VIEW_CLEAN_OUTPUT_LOOP_OBS_OUTPUT_WIDTH
+        );
+        assert_eq!(
+            requests[0].height,
+            FOUR_VIEW_CLEAN_OUTPUT_LOOP_OBS_OUTPUT_HEIGHT
+        );
+        assert_eq!(requests[0].top_left, [0x10, 0x11, 0x12, 255]);
+        assert_eq!(requests[0].top_right, [16, 16, 16, 255]);
+        assert_eq!(requests[0].bottom_left, [0x40, 0x41, 0x42, 255]);
+        assert_eq!(requests[0].bottom_right, [16, 16, 16, 255]);
+    }
+
+    #[test]
     fn switcher_four_view_two_real_handoff_preview_loop_reuses_last_renderable_frames() {
         let render_runtime = RecordingPersistentFixtureRenderedWindowRuntime::default();
         let summary = run_four_view_two_real_handoff_preview_loop_with_handoff_runtime_and_sleep(
@@ -11397,8 +11445,8 @@ mod tests {
         assert_eq!(summary.slot0_selected_source_changed_count, 0);
         assert_eq!(summary.slot2_selected_source_changed_count, 0);
         assert_eq!(summary.placeholder_visual_changed_count, 0);
-        assert_eq!(summary.quad_view_incremental_update_count, 1);
-        assert_eq!(summary.quad_view_full_compose_count, 1);
+        assert_eq!(summary.quad_view_incremental_update_count, 0);
+        assert_eq!(summary.quad_view_full_compose_count, 2);
         assert_eq!(summary.quad_view_changed_slot_update_count, 6);
         assert_eq!(summary.quad_view_reused_slot_count, 2);
         assert_eq!(summary.quad_view_allocation_count, 1);
@@ -11545,8 +11593,8 @@ mod tests {
         assert_eq!(summary.materialization_reason_first_render_count, 1);
         assert_eq!(summary.materialization_reason_visual_changed_count, 1);
         assert_eq!(summary.placeholder_visual_changed_count, 1);
-        assert_eq!(summary.quad_view_incremental_update_count, 1);
-        assert_eq!(summary.quad_view_full_compose_count, 1);
+        assert_eq!(summary.quad_view_incremental_update_count, 0);
+        assert_eq!(summary.quad_view_full_compose_count, 2);
         assert_eq!(summary.quad_view_changed_slot_update_count, 5);
         assert_eq!(summary.quad_view_reused_slot_count, 3);
         assert_eq!(summary.quad_view_allocation_count, 1);

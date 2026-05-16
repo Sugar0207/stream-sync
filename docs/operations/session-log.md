@@ -1,6 +1,322 @@
 <!-- stream-sync/docs/operations/session-log.md -->
 
+## 2026-05-17
+### Type
+- Codex documentation update
+
+### Work
+- Recorded the latest same-PC `2`-client rerun evidence from `manual-logs/two-client-render-rerun-20260517-004552`.
+- Confirmed that the direct `1280x720` compose path eliminated the half-scale branch on the two-real clean output path:
+  - `render_buffer_half_scale_count=0`
+  - `render_buffer_same_size_copy_count=32`
+  - `render_buffer_passthrough_count=0`
+  - `render_buffer_generic_scale_count=0`
+  - `render_buffer_scale_loop_elapsed_ms=0`
+- Confirmed that render materialization dropped sharply versus the previous direct-compose baseline `manual-logs/two-client-render-rerun-20260516-171634`:
+  - `avg_render_elapsed_ms=17.694 -> 1.143`
+  - `render_elapsed_ms=1911 -> 120`
+  - `effective_render_fps_after_first_render=10.948 -> 12.920`
+  - `effective_render_fps=9.577 -> 11.224`
+- Kept branch diagnostics, materialization diagnostics, and source-only `selected_source` churn fix intact.
+- Reframed the next bottleneck as decoder-side follow-up:
+  - `decode_elapsed_ms=2180`
+  - `decode_output_read_elapsed_ms=1654`
+  - `decode_output_buffer_reuse_count=0`
+- Updated `docs/operations/todo.md` and `docs/operations/direct-compose-plan.md` so the current state now reflects the successful direct-compose rerun and the new decoder-side focus.
+- No code changes were made in this step.
+
+### Changed Files
+- `docs/operations/direct-compose-plan.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### Decisions
+- Treat the direct `1280x720` compose path as effective for the two-real clean output path.
+- Keep branch diagnostics, materialization diagnostics, and source-only churn fix in place.
+- Keep Production Readiness as FAIL because the rerun is still not a final 30fps pass.
+- Move the next performance slice to decoder-side follow-up rather than widening direct compose immediately.
+
+### Unresolved
+- The decoder-side bottleneck is now the likely remaining dominant cost.
+- `decode_output_buffer_reuse_count=0` suggests decoder-side reuse is still a candidate, but the concrete follow-up is not yet implemented.
+- Direct compose has not yet been expanded to `4`-client all-real output.
+- Production Readiness remains FAIL.
+
+### Next
+- Narrow the decoder-side follow-up candidate.
+- Keep the next rerun comparison anchored to the direct-compose baseline.
+- Only consider expanding direct compose to `4`-client all-real after decoder-side cost is better understood.
+
+### TODO Update
+- Updated `docs/operations/todo.md` current position with the half-scale branch elimination, render materialization reduction, and decoder-side bottleneck.
+- Replaced the top next items with decoder-side follow-up planning.
+
+### Validation
+- `git diff --check`
+  - result: PASS (LF/CRLF warning only)
+
+## 2026-05-17
+### Type
+- Codex implementation
+
+### Work
+- Implemented the Phase 1 additive direct `1280x720` compose path for the two-real clean output loop in `apps/switcher/src/main.rs`.
+- Kept the existing full-size fixed quad composition path in `apps/switcher/src/lib.rs` unchanged.
+- Replaced the two-real clean output path's local full-size intermediate materialization with direct output materialization to the OBS profile dimensions.
+- Preserved the current visual rule by composing with the same effective nearest-neighbor semantics as the previous composed-canvas scaling path:
+  - fixed `2x2` slot placement is unchanged
+  - placeholder regions still remain background-filled
+  - source pixels are sampled according to the same virtual full-canvas scale mapping rather than introducing a new interpolation rule
+- Kept the existing render/materialization path shape intact downstream of composition:
+  - the two-real loop still produces a `SwitcherFourViewQuadCompositionOutput`
+  - existing render-facing validation still runs
+  - the OBS-friendly runtime still owns render-buffer diagnostics
+- Kept branch diagnostics, materialization diagnostics, and the source-only `selected_source` churn fix intact.
+- Added focused coverage for the new path:
+  - `switcher_four_view_two_real_handoff_preview_loop_direct_compose_hits_same_size_copy_for_obs_profile`
+  - the test confirms `1280x720` direct output, same-size render-buffer behavior, and placeholder corners
+- Updated existing focused expectations that previously assumed the local two-real path would use one full compose plus one incremental compose:
+  - the two-real direct path now fully recomposes on changed visuals, so those specific counters now reflect `full_compose_count=2` / `incremental_update_count=0` in the affected tests
+- Updated `docs/operations/direct-compose-plan.md` and `docs/operations/todo.md` to reflect that the implementation landed as a two-real-loop-local additive path while the lib full-size path remains.
+- Did not run the runtime rerun in this step.
+
+### Changed Files
+- `apps/switcher/src/main.rs`
+- `docs/operations/direct-compose-plan.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### Decisions
+- Land the additive direct compose path inside the two-real clean output loop implementation rather than widening public switcher APIs in this step.
+- Keep the existing full-size lib composition boundary untouched so four-real / focused / generic fixed-quad behavior is not pulled into the same slice.
+- Reuse the existing render-buffer diagnostics instead of adding new summary fields, because `same_size_copy_count` / `half_scale_count` already show whether the direct path is taking effect.
+- Keep Production Readiness as FAIL because no post-implementation runtime rerun was collected yet.
+
+### Unresolved
+- No same-PC rerun has been collected after the direct-compose implementation.
+- The direct-compose path is only connected for the two-real clean output loop in this step.
+- It remains unknown how much runtime gain this produces against `manual-logs/two-client-render-rerun-20260516-171634`.
+
+### Next
+- Run the next same-PC `2`-client rerun and compare `render_buffer_half_scale_count`, `render_buffer_same_size_copy_count`, `render_buffer_scale_loop_elapsed_ms`, and `effective_render_fps_after_first_render` against `manual-logs/two-client-render-rerun-20260516-171634`.
+- If the rerun is good, evaluate whether the same additive direct-compose semantics should be extended narrowly to the `4`-client all-real clean output path.
+- Only revisit decoder-side follow-up if the direct compose change does not reduce the remaining render cost enough.
+
+### TODO Update
+- Updated `docs/operations/direct-compose-plan.md` with the implementation note for the Phase 1 direct-compose landing.
+- Updated `docs/operations/todo.md` current position with the new direct-compose implementation status and focused validation results.
+- Replaced the top next items with the post-implementation rerun comparison.
+
+### Validation
+- `cargo fmt`
+  - result: PASS
+- `cargo fmt --check`
+  - result: PASS
+- `cargo check -p stream-sync-switcher`
+  - result: PASS
+  - note: existing unused-function warnings only
+- focused switcher tests
+  - result: PASS
+  - command:
+    `cargo test -p stream-sync-switcher obs_scale_helper -- --nocapture`
+  - command:
+    `cargo test -p stream-sync-switcher switcher_four_view_two_real_handoff_preview -- --nocapture`
+  - command:
+    `cargo test -p stream-sync-switcher four_view_quad_composition_boundary_composes_four_renderable_slots -- --nocapture`
+- `cargo check --workspace`
+  - result: PASS
+  - note: existing switcher unused-function warnings only
+- `git diff --check`
+  - result: PASS (LF/CRLF warnings only)
+
+## 2026-05-17
+### Type
+- Codex documentation update
+
+### Work
+- Inspected the current `4`-view composition path in `apps/switcher/src/lib.rs` and the OBS-friendly render/materialization path in `apps/switcher/src/main.rs`.
+- Confirmed the current shape precisely:
+  - `compose_four_view_quad_canvas` picks `slot_width` / `slot_height` from the max renderable decoded slot size
+  - current `1280x720` decoded inputs therefore become a `2560x1440` fixed `2x2` composed canvas
+  - the canvas is prefilled with `placeholder_bgra=[16,16,16,255]`
+  - renderable slots are copied at native size into their slot rects without scaling
+  - OBS clean output later goes through `scale_four_view_bgra_to_obs_validation_profile_from_slice`
+  - the current dominant branch remains the `2560x1440 -> 1280x720` half-scale path
+- Confirmed the current half-scale visual semantics that a future direct compose path must preserve:
+  - each destination pixel comes from the top-left pixel of the corresponding `2x2` source block
+  - slot placement remains fixed `2x2`
+  - placeholder regions remain background-filled rather than separately painted
+- Wrote `docs/operations/direct-compose-plan.md` as the new docs-first source of truth for the next slice.
+- Fixed the design scope in docs so the next implementation stays narrow:
+  - keep the existing `2560x1440` composed-canvas path
+  - add a separate OBS clean output direct `1280x720` compose path instead of replacing the generic path
+  - keep branch diagnostics, materialization diagnostics, source-only `selected_source` churn fix, placeholder behavior, and `4`-client all-real behavior intact
+  - limit the first implementation slice to the two-real clean output path
+- Updated `docs/operations/todo.md` to point at the new direct-compose plan and to move the next items from docs-first planning to a future minimal additive implementation slice.
+- No code changes were made in this step.
+
+### Changed Files
+- `docs/operations/direct-compose-plan.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### Decisions
+- Treat direct `1280x720` compose as an additive OBS clean output path, not as a replacement for the current full-size composed canvas path.
+- Preserve current half-scale visual semantics rather than introducing a different scaler behavior.
+- Keep the first implementation slice scoped to the two-real clean output path to avoid widening into a generic refactor.
+- Keep Production Readiness as FAIL because this step is docs-first only and no new runtime evidence was collected.
+
+### Unresolved
+- The direct-compose path is not implemented yet.
+- The exact ownership/metadata handoff shape for a parallel OBS-specific compose result still needs to be chosen at implementation time.
+- No rerun was performed in this step, so runtime benefit is still hypothetical.
+- Decoder-side follow-up remains secondary until the additive direct-compose slice is tried.
+
+### Next
+- Implement the minimum additive direct `1280x720` compose path for the two-real clean output flow only.
+- Run the next same-PC `2`-client rerun and compare branch counters and scale-loop timing against `manual-logs/two-client-render-rerun-20260516-171634`.
+- Revisit decoder-side follow-up only if direct compose does not sufficiently reduce render cost.
+
+### TODO Update
+- Added `docs/operations/direct-compose-plan.md` as the direct-compose design source of truth.
+- Updated `docs/operations/todo.md` current position with the confirmed `2560x1440` compose -> `1280x720` half-scale path and the additive direct-compose decision.
+- Replaced the top next items with the future minimal implementation slice and rerun comparison.
+
+### Validation
+- `git diff --check`
+  - result: PASS (LF/CRLF warnings only)
+
 ## 2026-05-16
+### Type
+- Codex documentation update
+
+### Work
+- Recorded the latest same-PC `2`-client rerun evidence from `manual-logs/two-client-render-rerun-20260516-171634`.
+- Confirmed that the half-scale row/chunk fast path narrow revert recovered runtime behavior:
+  - `effective_render_fps_after_first_render=10.948`
+  - `effective_render_fps=9.577`
+  - `avg_render_elapsed_ms=17.694`
+  - `render_buffer_scale_loop_elapsed_ms=1779`
+  - `avg_render_buffer_cpu_scale_copy_elapsed_ms=16.472`
+  - `render_buffer_half_scale_count=29`
+  - `render_buffer_bytes_copied_total=106905600`
+- Compared against the half-scale fast path regression `manual-logs/two-client-render-rerun-20260516-163239` and confirmed the revert moved performance back in the right direction:
+  - `effective_render_fps_after_first_render=8.798`
+  - `avg_render_elapsed_ms=39.598`
+  - `render_buffer_scale_loop_elapsed_ms=4588`
+  - `avg_render_buffer_cpu_scale_copy_elapsed_ms=37.607`
+- Kept branch diagnostics, materialization diagnostics, and source-only `selected_source` churn fix intact as requested.
+- Confirmed the rerun stayed clean on the server/client/handoff side:
+  - `server frames_queued=1800`
+  - `per_client_queued_frames=player1:900|player2:900`
+  - `io_error_count=0`
+  - `client1/client2 frames_sent=900`
+- Reframed the next step as docs-first follow-up work on direct `1280x720` compose or decoder-side investigation, not a code change in this step.
+- Updated `docs/operations/todo.md` so the current position reflects the recovered rerun and the remaining half-scale branch as the dominant bottleneck.
+- No code changes were made in this step.
+
+### Changed Files
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### Decisions
+- Treat the half-scale row/chunk fast path narrow revert as successful enough to keep, because runtime evidence moved back in the correct direction.
+- Keep branch diagnostics, materialization diagnostics, and source-only churn fix in place.
+- Keep Production Readiness as FAIL because the rerun is still below the 30fps target.
+- Keep next work focused on direct `1280x720` compose and decoder-side follow-up instead of widening the revert slice.
+
+### Unresolved
+- The half-scale branch remains dominant even after the revert.
+- Direct `1280x720` compose is not yet designed as a docs-first slice.
+- Decoder-side follow-up has not yet been narrowed to a concrete next mechanism.
+- Production Readiness remains FAIL.
+
+### Next
+- Write the docs-first shape for direct `1280x720` compose.
+- Narrow the decoder-side follow-up candidate.
+- Keep the next rerun comparison anchored to the revert-after baseline.
+
+### TODO Update
+- Updated `docs/operations/todo.md` current position with the recovered half-scale revert evidence and the new follow-up candidates.
+- Replaced the top next items with direct compose / decoder-side follow-up planning.
+
+### Validation
+- `git diff --check`
+  - result: PASS (LF/CRLF warning only)
+
+## 2026-05-16
+### Type
+- Codex implementation
+
+### Work
+- Recorded the latest same-PC `2`-client rerun evidence from `manual-logs/two-client-render-rerun-20260516-163239`.
+- Confirmed that the half-scale branch remained dominant after the row/chunk fast path:
+  - `render_buffer_half_scale_count=55`
+  - `render_buffer_same_size_copy_count=0`
+  - `render_buffer_passthrough_count=0`
+  - `render_buffer_generic_scale_count=0`
+- Confirmed the runtime regression versus the earlier baseline `manual-logs/two-client-render-rerun-20260516-161048`:
+  - `effective_render_fps_after_first_render=9.036 -> 8.798`
+  - `render_buffer_scale_loop_elapsed_ms=3105 -> 4588`
+  - `avg_render_buffer_cpu_scale_copy_elapsed_ms=22.664 -> 37.607`
+  - `avg_render_elapsed_ms=24.292 -> 39.598`
+- Narrowly reverted only the half-scale fast path mechanics in `apps/switcher/src/main.rs`:
+  - removed the row/chunk-based helper
+  - restored the previous per-pixel half-scale loop body inside `scale_four_view_bgra_to_obs_validation_profile_from_slice`
+- Kept the following intact:
+  - half-scale / same-size / passthrough / generic branch diagnostics
+  - materialization reason diagnostics
+  - source-only `selected_source` churn fix
+  - focused test coverage for half-scale semantics (`2x2` block top-left pixel selection)
+- Reconfirmed that direct `1280x720` compose stays out of this step and remains a future follow-up because current 4-view composition still materializes a `slot_width * 2` by `slot_height * 2` composed BGRA frame upstream of the OBS-profile shrink.
+- Kept runtime rerun out of this step as requested.
+
+### Changed Files
+- `apps/switcher/src/main.rs`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### Decisions
+- Do not keep the row/chunk half-scale helper as an optimization because the latest runtime evidence regressed the dominant path.
+- Revert only the half-scale mechanics and keep the observability that proved the regression.
+- Keep direct `1280x720` compose as a separate follow-up instead of widening this revert slice.
+
+### Unresolved
+- No post-revert rerun was collected in this step, so recovery versus `manual-logs/two-client-render-rerun-20260516-163239` is still unproven.
+- The half-scale branch remains the dominant bottleneck even after this revert decision.
+- Production Readiness remains FAIL.
+
+### Next
+- Run the next same-PC `2`-client rerun after the narrow revert and compare it against both `manual-logs/two-client-render-rerun-20260516-163239` and `manual-logs/two-client-render-rerun-20260516-161048`.
+- If half-scale still dominates after reverting, evaluate a direct `1280x720` compose path without widening beyond switcher composition/render boundaries.
+- Keep distributed-PC validation deferred until the same-PC render baseline is re-established.
+
+### TODO Update
+- Updated `docs/operations/todo.md` current position with the regressed rerun evidence and the decision to revert the half-scale fast path mechanics.
+- Replaced the top next items with a post-revert rerun-first sequence.
+
+### Validation
+- `cargo fmt`
+  - result: PASS
+- `cargo fmt --check`
+  - result: PASS
+- `cargo check -p stream-sync-switcher`
+  - result: PASS
+  - note: existing unused-function warnings only
+- focused switcher tests
+  - result: PASS
+  - command:
+    `cargo test -p stream-sync-switcher obs_scale_helper -- --nocapture`
+  - command:
+    `cargo test -p stream-sync-switcher obs_render_runtime_records_passthrough_when_frame_already_matches_obs_profile -- --nocapture`
+  - command:
+    `cargo test -p stream-sync-switcher switcher_four_view_two_real_handoff_preview -- --nocapture`
+- `cargo check --workspace`
+  - result: PASS
+  - note: existing switcher unused-function warnings only
+- `git diff --check`
+  - result: PASS (LF/CRLF warnings only)
+
 ### Type
 - Codex implementation
 
