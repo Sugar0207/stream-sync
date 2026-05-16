@@ -22,6 +22,8 @@
 ---
 
 ## 現在位置
+- switcher hot-path diagnostics は `apps/switcher/src/main.rs` に最小追加済み。2-real preview loop summary から `materialization_reason_first_render_count` / `materialization_reason_visual_changed_count` / `materialization_reason_force_render_count` / `materialization_reason_unknown_count`、slot別 `frame_id_changed_count` / `selected_source_changed_count`、`placeholder_visual_changed_count`、および `render_buffer_scale_prepare_elapsed_ms` / `render_buffer_scale_loop_elapsed_ms` / `render_buffer_output_copy_elapsed_ms` / `render_buffer_resize_elapsed_ms` / `render_buffer_clear_elapsed_ms` を追えるようにした。既存 summary fields は維持した
+- `materialization_reason_profile_or_size_mismatch_count` は field だけ先行で保持し、current implementation では `0` reserved にしている。理由は `clean_output` summary が持つ `width/height` が OBS materialized output size ではなく pre-scale composition metadata であり、ここを直接比較すると false positive になるため。runtime rerun ではまず `visual_changed` / `force_render` / slot frame/source counters を読む
 - reusable OBS render buffer pool mechanics の narrow revert は `apps/switcher/src/main.rs` に反映済み。thread-local retained buffer は pool から pre-pool 相当の single-slot `REUSABLE_OBS_RENDER_BUFFER` へ戻し、`take_reusable_obs_render_buffer` / `recycle_obs_render_buffer` も `1` 本だけ保持する挙動に戻した。最新の same-PC `2`-client post-revert rerun (`manual-logs/two-client-render-rerun-20260516-120125`) は smoke と runtime cleanliness は PASS し、post-pool regression からは明確に回復したが、pre-pool baseline `manual-logs/two-client-render-smoke-20260515-232256` にはまだ完全には戻っていない
 - CPU/GDI diagnostics は維持した。`render_buffer_cpu_scale_copy_elapsed_ms=3520` / `avg_render_buffer_cpu_scale_copy_elapsed_ms=27.077` / `render_buffer_materialization_elapsed_ms=3520` が残りの dominant bucket で、`gdi_stretchdibits_elapsed_ms=10` / `gdi_wm_paint_elapsed_ms=16` / `gdi_paint_wait_elapsed_ms=26` なので GDI は latest rerun では dominant ではない
 - focused switcher tests では pool 専用 test を single-slot semantics に更新し、`obs_render_buffer_reuses_single_retained_buffer` として retained buffer が `1` 本だけ reuse されることを確認した。`cargo fmt` / `cargo fmt --check` / `cargo check -p stream-sync-switcher` / focused switcher tests / `cargo check --workspace` / `git diff --check` は通している
@@ -1029,9 +1031,9 @@ continuous runtime first slice の blocker:
 - actual dashboard UI rendering remains unimplemented.
 
 ## Next Items
-1. `render_buffer_cpu_scale_copy_elapsed_ms` / `render_buffer_materialization_elapsed_ms` の CPU scale/copy/materialization path を follow-up し、post-revert でも baseline 未達の理由を詰める
-2. 必要なら same-PC `2`-client rerun をもう一度取り、`manual-logs/two-client-render-smoke-20260515-232256` と `manual-logs/two-client-render-rerun-20260516-120125` を直接比較して残差を確認する
-3. `avg_decode_elapsed_ms=72.833` と `decode_output_buffer_reuse_count=0` は decoder-side follow-up として別 slice に残し、今回の render CPU follow-up とは混ぜない
+1. same-PC `2`-client rerun を次 step で取り、`materialization_reason_*` / slot別 visual change counters / `render_buffer_scale_*` breakdown を回収して、materialization が `visual_changed` 主体なのか `force_render` 主体なのかを確定する
+2. `manual-logs/two-client-render-smoke-20260515-232256` と `manual-logs/two-client-render-rerun-20260516-120125` を、新 diagnostics 付き rerun と直接比較し、`quad_view_visual_changed_count` と `render_reuse_frame_count` の差が slot frame advance 由来か placeholder/source-state 由来かを切り分ける
+3. `avg_decode_elapsed_ms=72.833` と `decode_output_buffer_reuse_count=0` は decoder-side follow-up として別 slice に残し、今回の materialization diagnostics rerun とは混ぜない
 4. distributed-PC `2`-client smoke は render baseline の回復確認後に回す
 5. distributed-PC `2`-client OBS visible は render baseline の回復確認後に回す
 6. distributed-PC `4`-client summary-required run は render baseline の回復確認後に回す

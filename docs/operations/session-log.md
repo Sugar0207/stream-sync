@@ -2,6 +2,81 @@
 
 ## 2026-05-16
 ### Type
+- Codex implementation
+
+### Work
+- Added the requested narrow diagnostics slice to `apps/switcher/src/main.rs` without widening scope into config, decoder persistence, GPU/shared-memory, protocol, or server changes.
+- Extended the 2-real preview loop summary so the switcher can now report why OBS-friendly CPU materialization happened:
+  - `materialization_reason_first_render_count`
+  - `materialization_reason_visual_changed_count`
+  - `materialization_reason_previous_output_missing_count`
+  - `materialization_reason_profile_or_size_mismatch_count`
+  - `materialization_reason_force_render_count`
+  - `materialization_reason_unknown_count`
+- Added slot-level visual identity change counters so the next rerun can separate frame churn from source-selection churn:
+  - `slot0..3_frame_id_changed_count`
+  - `slot0..3_selected_source_changed_count`
+  - `placeholder_visual_changed_count`
+- Split the previous monolithic CPU materialization bucket into smaller summary timings:
+  - `render_buffer_scale_prepare_elapsed_ms`
+  - `render_buffer_scale_loop_elapsed_ms`
+  - `render_buffer_output_copy_elapsed_ms`
+  - `render_buffer_resize_elapsed_ms`
+  - `render_buffer_clear_elapsed_ms`
+- Kept all existing summary fields intact, including the compatibility aliases:
+  - `render_buffer_cpu_scale_copy_elapsed_ms`
+  - `render_buffer_copy_elapsed_ms`
+  - `render_buffer_materialization_elapsed_ms`
+- Added focused test coverage for the new diagnostics:
+  - first-render-only materialization
+  - visual-changed materialization on frame-id advance
+  - force-render materialization after a prior render failure
+  - placeholder/source-error visual change counting
+- Kept runtime rerun out of this step as requested.
+
+### Changed Files
+- `apps/switcher/src/main.rs`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### Decisions
+- Classify materialization reasons from the local render gate in the 2-real preview loop rather than from config or external reruns.
+- Keep `materialization_reason_profile_or_size_mismatch_count` as a reserved summary field for now, but do not derive it from the current `clean_output` width/height metadata because that metadata represents pre-scale composition size and would create false positives.
+- Treat slot-level visual change counters as additive diagnostics, not mutually exclusive truth labels. A single visual change can contribute to frame-id churn, source-selection churn, and placeholder churn independently.
+
+### Unresolved
+- The new `materialization_reason_profile_or_size_mismatch_count` field is intentionally zero-reserved until there is a trustworthy previous-output profile/size signal to compare against.
+- No new runtime evidence was collected in this step, so the actual dominant reason mix for `manual-logs/two-client-render-rerun-20260516-120125` is still pending the next rerun.
+- Production Readiness remains FAIL.
+
+### Next
+- Run the next same-PC `2`-client rerun and read the new `materialization_reason_*`, slot change, and render-buffer breakdown fields directly.
+- Compare the next rerun against the pre-pool baseline and the latest post-revert rerun to see whether CPU materialization is being driven mainly by `visual_changed` or by `force_render`.
+
+### TODO Update
+- Updated `docs/operations/todo.md` current position to record that the direct materialization/visual-change diagnostics are now in the codebase.
+- Replaced the top next item with a rerun that reads the new counters instead of doing another docs-only or config-boundary step.
+
+### Validation
+- `cargo fmt`
+  - result: PASS
+- `cargo fmt --check`
+  - result: PASS
+- `cargo check -p stream-sync-switcher`
+  - result: PASS
+- focused switcher tests
+  - result: PASS
+  - command:
+    `cargo test -p stream-sync-switcher switcher_four_view_two_real_handoff_preview -- --nocapture`
+  - command:
+    `cargo test -p stream-sync-switcher obs_render_buffer_reuses_single_retained_buffer -- --nocapture`
+- `cargo check --workspace`
+  - result: PASS
+- `git diff --check`
+  - result: PASS (LF/CRLF warning only)
+
+## 2026-05-16
+### Type
 - Codex documentation update
 
 ### Work

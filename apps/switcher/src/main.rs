@@ -1838,6 +1838,11 @@ struct SwitcherFourViewTwoRealHandoffPreviewLoopSummary {
     render_buffer_cpu_scale_copy_elapsed_ms: u128,
     render_buffer_copy_elapsed_ms: u128,
     render_buffer_materialization_elapsed_ms: u128,
+    render_buffer_scale_prepare_elapsed_ms: u128,
+    render_buffer_scale_loop_elapsed_ms: u128,
+    render_buffer_output_copy_elapsed_ms: u128,
+    render_buffer_resize_elapsed_ms: u128,
+    render_buffer_clear_elapsed_ms: u128,
     render_buffer_reuse_count: u32,
     render_buffer_allocation_count: u32,
     render_buffer_bytes_copied_total: usize,
@@ -1856,6 +1861,21 @@ struct SwitcherFourViewTwoRealHandoffPreviewLoopSummary {
     quad_view_composed_frame_reuse_count: u32,
     quad_view_visual_unchanged_count: u32,
     quad_view_visual_changed_count: u32,
+    materialization_reason_first_render_count: u32,
+    materialization_reason_visual_changed_count: u32,
+    materialization_reason_previous_output_missing_count: u32,
+    materialization_reason_profile_or_size_mismatch_count: u32,
+    materialization_reason_force_render_count: u32,
+    materialization_reason_unknown_count: u32,
+    slot0_frame_id_changed_count: u32,
+    slot1_frame_id_changed_count: u32,
+    slot2_frame_id_changed_count: u32,
+    slot3_frame_id_changed_count: u32,
+    slot0_selected_source_changed_count: u32,
+    slot1_selected_source_changed_count: u32,
+    slot2_selected_source_changed_count: u32,
+    slot3_selected_source_changed_count: u32,
+    placeholder_visual_changed_count: u32,
     quad_view_incremental_update_count: u32,
     quad_view_full_compose_count: u32,
     quad_view_changed_slot_update_count: u32,
@@ -2252,6 +2272,11 @@ struct TwoRealPreviewLoopRuntimeTiming {
     window_update_elapsed_ms: u128,
     render_prepare_elapsed_ms: u128,
     render_buffer_copy_elapsed_ms: u128,
+    render_buffer_scale_prepare_elapsed_ms: u128,
+    render_buffer_scale_loop_elapsed_ms: u128,
+    render_buffer_output_copy_elapsed_ms: u128,
+    render_buffer_resize_elapsed_ms: u128,
+    render_buffer_clear_elapsed_ms: u128,
     render_buffer_reuse_count: u32,
     render_buffer_allocation_count: u32,
     render_buffer_bytes_copied_total: usize,
@@ -2308,6 +2333,24 @@ enum TwoRealPreviewLoopSlotVisualIdentity {
         frame_id: u64,
         selected_frame_source: Option<String>,
     },
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct TwoRealPreviewLoopVisualChangeDiagnostics {
+    frame_id_changed_counts: [u32; 4],
+    selected_source_changed_counts: [u32; 4],
+    placeholder_visual_changed_count: u32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TwoRealPreviewLoopMaterializationReason {
+    FirstRender,
+    VisualChanged,
+    PreviousOutputMissing,
+    #[allow(dead_code)]
+    ProfileOrSizeMismatch,
+    ForceRender,
+    Unknown,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -2494,27 +2537,47 @@ struct BgraRenderBufferDiagnostics {
     allocation_count: u32,
     reuse_count: u32,
     bytes_copied_total: usize,
+    scale_prepare_elapsed_ms: u128,
+    scale_loop_elapsed_ms: u128,
+    output_copy_elapsed_ms: u128,
+    resize_elapsed_ms: u128,
+    clear_elapsed_ms: u128,
 }
 
 fn take_reusable_obs_render_buffer(expected_len: usize) -> (Vec<u8>, BgraRenderBufferDiagnostics) {
     REUSABLE_OBS_RENDER_BUFFER.with(|buffer_slot| {
+        let prepare_start = Instant::now();
         let mut buffer_slot = buffer_slot.borrow_mut();
         let mut diagnostics = BgraRenderBufferDiagnostics::default();
         if let Some(mut pixels) = buffer_slot.take() {
             let reusable_capacity = pixels.capacity() >= expected_len;
+            let resize_start = Instant::now();
             pixels.resize(expected_len, 0);
+            diagnostics.resize_elapsed_ms = resize_start.elapsed().as_millis();
             if reusable_capacity {
                 diagnostics.reuse_count = 1;
             } else {
                 diagnostics.allocation_count = 1;
             }
+            diagnostics.scale_prepare_elapsed_ms = prepare_start
+                .elapsed()
+                .as_millis()
+                .saturating_sub(diagnostics.resize_elapsed_ms);
             return (pixels, diagnostics);
         }
 
+        let resize_start = Instant::now();
+        let pixels = vec![0u8; expected_len];
+        let resize_elapsed_ms = resize_start.elapsed().as_millis();
         (
-            vec![0u8; expected_len],
+            pixels,
             BgraRenderBufferDiagnostics {
                 allocation_count: 1,
+                scale_prepare_elapsed_ms: prepare_start
+                    .elapsed()
+                    .as_millis()
+                    .saturating_sub(resize_elapsed_ms),
+                resize_elapsed_ms,
                 ..BgraRenderBufferDiagnostics::default()
             },
         )
@@ -2597,6 +2660,11 @@ impl<'a, Runtime> ObsFriendlyFourViewLoopWindowRenderRuntime<'a, Runtime> {
         if let Some(timing) = &self.timing {
             let mut timing = timing.borrow_mut();
             timing.render_buffer_copy_elapsed_ms += render_buffer_copy_elapsed_ms;
+            timing.render_buffer_scale_prepare_elapsed_ms += diagnostics.scale_prepare_elapsed_ms;
+            timing.render_buffer_scale_loop_elapsed_ms += diagnostics.scale_loop_elapsed_ms;
+            timing.render_buffer_output_copy_elapsed_ms += diagnostics.output_copy_elapsed_ms;
+            timing.render_buffer_resize_elapsed_ms += diagnostics.resize_elapsed_ms;
+            timing.render_buffer_clear_elapsed_ms += diagnostics.clear_elapsed_ms;
             timing.render_buffer_reuse_count = timing
                 .render_buffer_reuse_count
                 .saturating_add(diagnostics.reuse_count);
@@ -3540,6 +3608,15 @@ where
     let mut quad_view_composed_frame_reuse_count = 0u32;
     let mut quad_view_visual_unchanged_count = 0u32;
     let mut quad_view_visual_changed_count = 0u32;
+    let mut materialization_reason_first_render_count = 0u32;
+    let mut materialization_reason_visual_changed_count = 0u32;
+    let mut materialization_reason_previous_output_missing_count = 0u32;
+    let mut materialization_reason_profile_or_size_mismatch_count = 0u32;
+    let mut materialization_reason_force_render_count = 0u32;
+    let mut materialization_reason_unknown_count = 0u32;
+    let mut slot_frame_id_changed_counts = [0u32; 4];
+    let mut slot_selected_source_changed_counts = [0u32; 4];
+    let mut placeholder_visual_changed_count = 0u32;
     let mut quad_view_incremental_update_count = 0u32;
     let mut quad_view_full_compose_count = 0u32;
     let mut quad_view_changed_slot_update_count = 0u32;
@@ -3589,6 +3666,20 @@ where
         );
         let current_visual_identities =
             two_real_preview_loop_visual_identities(&current_slot_identities, &pre_composition);
+        let visual_change_diagnostics = two_real_preview_loop_visual_change_diagnostics(
+            previous_visual_identities.as_ref(),
+            &current_visual_identities,
+        );
+        for slot_index in 0..4 {
+            slot_frame_id_changed_counts[slot_index] = slot_frame_id_changed_counts[slot_index]
+                .saturating_add(visual_change_diagnostics.frame_id_changed_counts[slot_index]);
+            slot_selected_source_changed_counts[slot_index] =
+                slot_selected_source_changed_counts[slot_index].saturating_add(
+                    visual_change_diagnostics.selected_source_changed_counts[slot_index],
+                );
+        }
+        placeholder_visual_changed_count = placeholder_visual_changed_count
+            .saturating_add(visual_change_diagnostics.placeholder_visual_changed_count);
         let visual_unchanged = previous_visual_identities
             .as_ref()
             .map(|previous| previous == &current_visual_identities)
@@ -3669,6 +3760,10 @@ where
             let render_facing = SwitcherFourViewQuadRenderFacingConnectionBoundary::default()
                 .connect_composition_output(bgra_composition);
             let timing_before_render = timing.borrow().clone();
+            let render_ready_before_clean_output = matches!(
+                &render_facing.render,
+                stream_sync_switcher::SwitcherFourViewQuadRenderFacingResult::RenderReady { .. }
+            );
             let render_start = Instant::now();
             let clean_output_render = render_four_view_clean_output_from_borrowed_render_facing(
                 &render_facing,
@@ -3690,6 +3785,40 @@ where
                     .saturating_sub(render_buffer_copy_delta)
                     .saturating_sub(render_backend_wait_delta);
                 timing.render_call_count += 1;
+                if render_ready_before_clean_output {
+                    match classify_two_real_preview_loop_materialization_reason(
+                        frames_attempted,
+                        previous_clean_output.as_ref(),
+                        visual_unchanged,
+                    ) {
+                        TwoRealPreviewLoopMaterializationReason::FirstRender => {
+                            materialization_reason_first_render_count =
+                                materialization_reason_first_render_count.saturating_add(1);
+                        }
+                        TwoRealPreviewLoopMaterializationReason::VisualChanged => {
+                            materialization_reason_visual_changed_count =
+                                materialization_reason_visual_changed_count.saturating_add(1);
+                        }
+                        TwoRealPreviewLoopMaterializationReason::PreviousOutputMissing => {
+                            materialization_reason_previous_output_missing_count =
+                                materialization_reason_previous_output_missing_count
+                                    .saturating_add(1);
+                        }
+                        TwoRealPreviewLoopMaterializationReason::ProfileOrSizeMismatch => {
+                            materialization_reason_profile_or_size_mismatch_count =
+                                materialization_reason_profile_or_size_mismatch_count
+                                    .saturating_add(1);
+                        }
+                        TwoRealPreviewLoopMaterializationReason::ForceRender => {
+                            materialization_reason_force_render_count =
+                                materialization_reason_force_render_count.saturating_add(1);
+                        }
+                        TwoRealPreviewLoopMaterializationReason::Unknown => {
+                            materialization_reason_unknown_count =
+                                materialization_reason_unknown_count.saturating_add(1);
+                        }
+                    }
+                }
             }
             render_facing_for_next = Some(render_facing);
             clean_output_render
@@ -3870,6 +3999,11 @@ where
         render_buffer_cpu_scale_copy_elapsed_ms: timing.render_buffer_copy_elapsed_ms,
         render_buffer_copy_elapsed_ms: timing.render_buffer_copy_elapsed_ms,
         render_buffer_materialization_elapsed_ms: timing.render_buffer_copy_elapsed_ms,
+        render_buffer_scale_prepare_elapsed_ms: timing.render_buffer_scale_prepare_elapsed_ms,
+        render_buffer_scale_loop_elapsed_ms: timing.render_buffer_scale_loop_elapsed_ms,
+        render_buffer_output_copy_elapsed_ms: timing.render_buffer_output_copy_elapsed_ms,
+        render_buffer_resize_elapsed_ms: timing.render_buffer_resize_elapsed_ms,
+        render_buffer_clear_elapsed_ms: timing.render_buffer_clear_elapsed_ms,
         render_buffer_reuse_count: timing.render_buffer_reuse_count,
         render_buffer_allocation_count: timing.render_buffer_allocation_count,
         render_buffer_bytes_copied_total: timing.render_buffer_bytes_copied_total,
@@ -3888,6 +4022,21 @@ where
         quad_view_composed_frame_reuse_count,
         quad_view_visual_unchanged_count,
         quad_view_visual_changed_count,
+        materialization_reason_first_render_count,
+        materialization_reason_visual_changed_count,
+        materialization_reason_previous_output_missing_count,
+        materialization_reason_profile_or_size_mismatch_count,
+        materialization_reason_force_render_count,
+        materialization_reason_unknown_count,
+        slot0_frame_id_changed_count: slot_frame_id_changed_counts[0],
+        slot1_frame_id_changed_count: slot_frame_id_changed_counts[1],
+        slot2_frame_id_changed_count: slot_frame_id_changed_counts[2],
+        slot3_frame_id_changed_count: slot_frame_id_changed_counts[3],
+        slot0_selected_source_changed_count: slot_selected_source_changed_counts[0],
+        slot1_selected_source_changed_count: slot_selected_source_changed_counts[1],
+        slot2_selected_source_changed_count: slot_selected_source_changed_counts[2],
+        slot3_selected_source_changed_count: slot_selected_source_changed_counts[3],
+        placeholder_visual_changed_count,
         quad_view_incremental_update_count,
         quad_view_full_compose_count,
         quad_view_changed_slot_update_count,
@@ -6698,6 +6847,126 @@ fn two_real_preview_loop_displayed_frame_identity_parts(
     )
 }
 
+fn two_real_preview_loop_visual_change_diagnostics(
+    previous_visual_identities: Option<&[TwoRealPreviewLoopSlotVisualIdentity; 4]>,
+    current_visual_identities: &[TwoRealPreviewLoopSlotVisualIdentity; 4],
+) -> TwoRealPreviewLoopVisualChangeDiagnostics {
+    let Some(previous_visual_identities) = previous_visual_identities else {
+        return TwoRealPreviewLoopVisualChangeDiagnostics::default();
+    };
+
+    let mut diagnostics = TwoRealPreviewLoopVisualChangeDiagnostics::default();
+    for slot_index in 0..4 {
+        let previous = &previous_visual_identities[slot_index];
+        let current = &current_visual_identities[slot_index];
+        if previous == current {
+            continue;
+        }
+
+        let previous_frame_id = two_real_preview_loop_visual_identity_frame_id(previous);
+        let current_frame_id = two_real_preview_loop_visual_identity_frame_id(current);
+        if previous_frame_id.is_some()
+            && current_frame_id.is_some()
+            && previous_frame_id != current_frame_id
+        {
+            diagnostics.frame_id_changed_counts[slot_index] = 1;
+        }
+
+        let previous_selected_source =
+            two_real_preview_loop_visual_identity_selected_source(previous);
+        let current_selected_source =
+            two_real_preview_loop_visual_identity_selected_source(current);
+        if previous_selected_source != current_selected_source
+            && (previous_selected_source.is_some() || current_selected_source.is_some())
+        {
+            diagnostics.selected_source_changed_counts[slot_index] = 1;
+        }
+
+        if two_real_preview_loop_visual_identity_is_placeholder(previous)
+            || two_real_preview_loop_visual_identity_is_placeholder(current)
+        {
+            diagnostics.placeholder_visual_changed_count = diagnostics
+                .placeholder_visual_changed_count
+                .saturating_add(1);
+        }
+    }
+
+    diagnostics
+}
+
+fn two_real_preview_loop_visual_identity_frame_id(
+    identity: &TwoRealPreviewLoopSlotVisualIdentity,
+) -> Option<u64> {
+    match identity {
+        TwoRealPreviewLoopSlotVisualIdentity::SourceFrame { frame_id, .. }
+        | TwoRealPreviewLoopSlotVisualIdentity::DecodeDeferredPlaceholder { frame_id, .. }
+        | TwoRealPreviewLoopSlotVisualIdentity::DecodeFailedPlaceholder { frame_id, .. }
+        | TwoRealPreviewLoopSlotVisualIdentity::MissingDecodedPixels { frame_id, .. } => {
+            Some(*frame_id)
+        }
+        TwoRealPreviewLoopSlotVisualIdentity::NoDisplayPlaceholder { .. }
+        | TwoRealPreviewLoopSlotVisualIdentity::SourceErrorPlaceholder { .. } => None,
+    }
+}
+
+fn two_real_preview_loop_visual_identity_selected_source(
+    identity: &TwoRealPreviewLoopSlotVisualIdentity,
+) -> Option<&str> {
+    match identity {
+        TwoRealPreviewLoopSlotVisualIdentity::SourceFrame {
+            selected_frame_source,
+            ..
+        }
+        | TwoRealPreviewLoopSlotVisualIdentity::DecodeDeferredPlaceholder {
+            selected_frame_source,
+            ..
+        }
+        | TwoRealPreviewLoopSlotVisualIdentity::DecodeFailedPlaceholder {
+            selected_frame_source,
+            ..
+        }
+        | TwoRealPreviewLoopSlotVisualIdentity::MissingDecodedPixels {
+            selected_frame_source,
+            ..
+        } => selected_frame_source.as_deref(),
+        TwoRealPreviewLoopSlotVisualIdentity::NoDisplayPlaceholder { .. }
+        | TwoRealPreviewLoopSlotVisualIdentity::SourceErrorPlaceholder { .. } => None,
+    }
+}
+
+fn two_real_preview_loop_visual_identity_is_placeholder(
+    identity: &TwoRealPreviewLoopSlotVisualIdentity,
+) -> bool {
+    !matches!(
+        identity,
+        TwoRealPreviewLoopSlotVisualIdentity::SourceFrame { .. }
+    )
+}
+
+fn classify_two_real_preview_loop_materialization_reason(
+    frames_attempted_before_increment: u32,
+    previous_clean_output: Option<&SwitcherFourViewCleanOutputWindowRenderResult>,
+    visual_unchanged: bool,
+) -> TwoRealPreviewLoopMaterializationReason {
+    if frames_attempted_before_increment == 0 {
+        return TwoRealPreviewLoopMaterializationReason::FirstRender;
+    }
+
+    let Some(previous_clean_output) = previous_clean_output else {
+        return TwoRealPreviewLoopMaterializationReason::PreviousOutputMissing;
+    };
+
+    if !visual_unchanged {
+        return TwoRealPreviewLoopMaterializationReason::VisualChanged;
+    }
+
+    if !clean_output_window_result_was_rendered(previous_clean_output) {
+        return TwoRealPreviewLoopMaterializationReason::ForceRender;
+    }
+
+    TwoRealPreviewLoopMaterializationReason::Unknown
+}
+
 fn two_real_unchanged_frame_reuse_slots(
     previous_identities: &[Option<TwoRealPreviewLoopDecodedSlotIdentity>; 4],
     current_identities: &[Option<TwoRealPreviewLoopDecodedSlotIdentity>; 4],
@@ -6970,7 +7239,9 @@ fn scale_four_view_bgra_to_obs_validation_profile_from_slice(
     let (mut pixels, mut diagnostics) = take_reusable_obs_render_buffer(expected_len);
 
     if width == output_width && height == output_height {
+        let output_copy_start = Instant::now();
         pixels.copy_from_slice(pixels_source);
+        diagnostics.output_copy_elapsed_ms = output_copy_start.elapsed().as_millis();
         diagnostics.bytes_copied_total =
             diagnostics.bytes_copied_total.saturating_add(pixels.len());
         return (
@@ -6985,6 +7256,7 @@ fn scale_four_view_bgra_to_obs_validation_profile_from_slice(
     }
 
     if width == output_width.saturating_mul(2) && height == output_height.saturating_mul(2) {
+        let scale_loop_start = Instant::now();
         let source_stride = width as usize * 4;
         let destination_stride = output_width as usize * 4;
         for y in 0..output_height as usize {
@@ -6997,6 +7269,7 @@ fn scale_four_view_bgra_to_obs_validation_profile_from_slice(
                     .copy_from_slice(&pixels_source[source_index..source_index + 4]);
             }
         }
+        diagnostics.scale_loop_elapsed_ms = scale_loop_start.elapsed().as_millis();
         diagnostics.bytes_copied_total =
             diagnostics.bytes_copied_total.saturating_add(pixels.len());
 
@@ -7011,6 +7284,7 @@ fn scale_four_view_bgra_to_obs_validation_profile_from_slice(
         );
     }
 
+    let scale_loop_start = Instant::now();
     for y in 0..output_height as usize {
         let source_y = y * height as usize / output_height as usize;
         for x in 0..output_width as usize {
@@ -7021,6 +7295,7 @@ fn scale_four_view_bgra_to_obs_validation_profile_from_slice(
                 .copy_from_slice(&pixels_source[source_index..source_index + 4]);
         }
     }
+    diagnostics.scale_loop_elapsed_ms = scale_loop_start.elapsed().as_millis();
     diagnostics.bytes_copied_total = diagnostics.bytes_copied_total.saturating_add(pixels.len());
 
     (
@@ -7561,7 +7836,7 @@ fn format_four_view_two_real_handoff_preview_loop_summary(
     summary: &SwitcherFourViewTwoRealHandoffPreviewLoopSummary,
 ) -> String {
     format!(
-        "switcher four-view two-real handoff preview loop command_name=--four-view-two-real-handoff-preview-loop real_handoff=true real_slot_count=2 real_slot0_index={} real_slot1_index={} pipe_name={} actual_pipe_path={} preview_mode={} read_mode={} client0_id={} run0_id={} client1_id={} run1_id={} frames_attempted={} frames_rendered={} render_failures={} elapsed_ms={} target_fps={} configured_frame_interval_ms={} effective_attempt_fps={} effective_render_fps={} first_render_attempt_index={} first_render_elapsed_ms={} rendered_after_first_render={} effective_render_fps_after_first_render={} no_render_before_first_render={} selected_count={} no_frame_count={} handoff_error_count={} decode_attempt_count={} decode_success_count={} render_success_count={} render_failure_count={} unchanged_frame_reuse_count={} skipped_decode_unchanged_frame_count={} redecoded_same_frame_count={} decode_elapsed_ms={} decode_process_spawn_elapsed_ms={} decode_input_write_elapsed_ms={} decode_output_read_elapsed_ms={} decode_process_wait_elapsed_ms={} decode_pixel_convert_elapsed_ms={} decode_buffer_allocation_count={} decode_output_bytes_total={} decode_cached_frame_reuse_count={} decode_cache_miss_count={} decoded_buffer_clone_count={} composed_buffer_clone_count={} decode_output_buffer_reuse_count={} handoff_elapsed_ms={} render_elapsed_ms={} avg_decode_elapsed_ms={} avg_decode_output_read_elapsed_ms={} avg_decode_process_spawn_elapsed_ms={} avg_handoff_elapsed_ms={} avg_render_elapsed_ms={} loop_total_elapsed_ms={} attempt_body_elapsed_ms={} loop_sleep_elapsed_ms={} frame_interval_wait_elapsed_ms={} event_pump_elapsed_ms={} window_update_elapsed_ms={} render_prepare_elapsed_ms={} render_buffer_cpu_scale_copy_elapsed_ms={} render_buffer_copy_elapsed_ms={} render_buffer_materialization_elapsed_ms={} render_buffer_reuse_count={} render_buffer_allocation_count={} render_buffer_bytes_copied_total={} render_backend_wait_elapsed_ms={} gdi_invalidate_elapsed_ms={} gdi_paint_wait_elapsed_ms={} gdi_wm_paint_elapsed_ms={} gdi_stretchdibits_elapsed_ms={} texture_upload_elapsed_ms={} window_present_elapsed_ms={} vsync_or_present_block_elapsed_ms={} quad_view_compose_elapsed_ms={} quad_view_compose_attempt_count={} quad_view_compose_success_count={} quad_view_compose_skipped_unchanged_count={} quad_view_composed_frame_reuse_count={} quad_view_visual_unchanged_count={} quad_view_visual_changed_count={} quad_view_incremental_update_count={} quad_view_full_compose_count={} quad_view_changed_slot_update_count={} quad_view_reused_slot_count={} quad_view_allocation_count={} avg_render_buffer_cpu_scale_copy_elapsed_ms={} avg_render_buffer_materialization_elapsed_ms={} avg_gdi_paint_wait_elapsed_ms={} avg_gdi_wm_paint_elapsed_ms={} avg_gdi_stretchdibits_elapsed_ms={} avg_quad_view_incremental_update_elapsed_ms={} avg_quad_view_compose_elapsed_ms={} render_call_elapsed_ms={} render_input_unchanged_count={} render_reuse_frame_count={} unaccounted_elapsed_ms={} avg_attempt_elapsed_ms={} max_attempt_elapsed_ms={} slow_attempt_count={} slow_attempt_threshold_ms={} scheduler_status={:?} slot_bindings={} slot_result_kinds={} slot_diagnostics={} clean_output_render_result_kind={} window_title={} output_width={} output_height={}",
+        "switcher four-view two-real handoff preview loop command_name=--four-view-two-real-handoff-preview-loop real_handoff=true real_slot_count=2 real_slot0_index={} real_slot1_index={} pipe_name={} actual_pipe_path={} preview_mode={} read_mode={} client0_id={} run0_id={} client1_id={} run1_id={} frames_attempted={} frames_rendered={} render_failures={} elapsed_ms={} target_fps={} configured_frame_interval_ms={} effective_attempt_fps={} effective_render_fps={} first_render_attempt_index={} first_render_elapsed_ms={} rendered_after_first_render={} effective_render_fps_after_first_render={} no_render_before_first_render={} selected_count={} no_frame_count={} handoff_error_count={} decode_attempt_count={} decode_success_count={} render_success_count={} render_failure_count={} unchanged_frame_reuse_count={} skipped_decode_unchanged_frame_count={} redecoded_same_frame_count={} decode_elapsed_ms={} decode_process_spawn_elapsed_ms={} decode_input_write_elapsed_ms={} decode_output_read_elapsed_ms={} decode_process_wait_elapsed_ms={} decode_pixel_convert_elapsed_ms={} decode_buffer_allocation_count={} decode_output_bytes_total={} decode_cached_frame_reuse_count={} decode_cache_miss_count={} decoded_buffer_clone_count={} composed_buffer_clone_count={} decode_output_buffer_reuse_count={} handoff_elapsed_ms={} render_elapsed_ms={} avg_decode_elapsed_ms={} avg_decode_output_read_elapsed_ms={} avg_decode_process_spawn_elapsed_ms={} avg_handoff_elapsed_ms={} avg_render_elapsed_ms={} loop_total_elapsed_ms={} attempt_body_elapsed_ms={} loop_sleep_elapsed_ms={} frame_interval_wait_elapsed_ms={} event_pump_elapsed_ms={} window_update_elapsed_ms={} render_prepare_elapsed_ms={} render_buffer_cpu_scale_copy_elapsed_ms={} render_buffer_copy_elapsed_ms={} render_buffer_materialization_elapsed_ms={} render_buffer_scale_prepare_elapsed_ms={} render_buffer_scale_loop_elapsed_ms={} render_buffer_output_copy_elapsed_ms={} render_buffer_resize_elapsed_ms={} render_buffer_clear_elapsed_ms={} render_buffer_reuse_count={} render_buffer_allocation_count={} render_buffer_bytes_copied_total={} render_backend_wait_elapsed_ms={} gdi_invalidate_elapsed_ms={} gdi_paint_wait_elapsed_ms={} gdi_wm_paint_elapsed_ms={} gdi_stretchdibits_elapsed_ms={} texture_upload_elapsed_ms={} window_present_elapsed_ms={} vsync_or_present_block_elapsed_ms={} quad_view_compose_elapsed_ms={} quad_view_compose_attempt_count={} quad_view_compose_success_count={} quad_view_compose_skipped_unchanged_count={} quad_view_composed_frame_reuse_count={} quad_view_visual_unchanged_count={} quad_view_visual_changed_count={} materialization_reason_first_render_count={} materialization_reason_visual_changed_count={} materialization_reason_previous_output_missing_count={} materialization_reason_profile_or_size_mismatch_count={} materialization_reason_force_render_count={} materialization_reason_unknown_count={} slot0_frame_id_changed_count={} slot1_frame_id_changed_count={} slot2_frame_id_changed_count={} slot3_frame_id_changed_count={} slot0_selected_source_changed_count={} slot1_selected_source_changed_count={} slot2_selected_source_changed_count={} slot3_selected_source_changed_count={} placeholder_visual_changed_count={} quad_view_incremental_update_count={} quad_view_full_compose_count={} quad_view_changed_slot_update_count={} quad_view_reused_slot_count={} quad_view_allocation_count={} avg_render_buffer_cpu_scale_copy_elapsed_ms={} avg_render_buffer_materialization_elapsed_ms={} avg_gdi_paint_wait_elapsed_ms={} avg_gdi_wm_paint_elapsed_ms={} avg_gdi_stretchdibits_elapsed_ms={} avg_quad_view_incremental_update_elapsed_ms={} avg_quad_view_compose_elapsed_ms={} render_call_elapsed_ms={} render_input_unchanged_count={} render_reuse_frame_count={} unaccounted_elapsed_ms={} avg_attempt_elapsed_ms={} max_attempt_elapsed_ms={} slow_attempt_count={} slow_attempt_threshold_ms={} scheduler_status={:?} slot_bindings={} slot_result_kinds={} slot_diagnostics={} clean_output_render_result_kind={} window_title={} output_width={} output_height={}",
         summary.real_slot0_index,
         summary.real_slot1_index,
         summary.pipe_name,
@@ -7625,6 +7900,11 @@ fn format_four_view_two_real_handoff_preview_loop_summary(
         summary.render_buffer_cpu_scale_copy_elapsed_ms,
         summary.render_buffer_copy_elapsed_ms,
         summary.render_buffer_materialization_elapsed_ms,
+        summary.render_buffer_scale_prepare_elapsed_ms,
+        summary.render_buffer_scale_loop_elapsed_ms,
+        summary.render_buffer_output_copy_elapsed_ms,
+        summary.render_buffer_resize_elapsed_ms,
+        summary.render_buffer_clear_elapsed_ms,
         summary.render_buffer_reuse_count,
         summary.render_buffer_allocation_count,
         summary.render_buffer_bytes_copied_total,
@@ -7643,6 +7923,21 @@ fn format_four_view_two_real_handoff_preview_loop_summary(
         summary.quad_view_composed_frame_reuse_count,
         summary.quad_view_visual_unchanged_count,
         summary.quad_view_visual_changed_count,
+        summary.materialization_reason_first_render_count,
+        summary.materialization_reason_visual_changed_count,
+        summary.materialization_reason_previous_output_missing_count,
+        summary.materialization_reason_profile_or_size_mismatch_count,
+        summary.materialization_reason_force_render_count,
+        summary.materialization_reason_unknown_count,
+        summary.slot0_frame_id_changed_count,
+        summary.slot1_frame_id_changed_count,
+        summary.slot2_frame_id_changed_count,
+        summary.slot3_frame_id_changed_count,
+        summary.slot0_selected_source_changed_count,
+        summary.slot1_selected_source_changed_count,
+        summary.slot2_selected_source_changed_count,
+        summary.slot3_selected_source_changed_count,
+        summary.placeholder_visual_changed_count,
         summary.quad_view_incremental_update_count,
         summary.quad_view_full_compose_count,
         summary.quad_view_changed_slot_update_count,
@@ -10343,6 +10638,13 @@ mod tests {
         assert_eq!(summary.quad_view_composed_frame_reuse_count, 0);
         assert_eq!(summary.quad_view_visual_unchanged_count, 1);
         assert_eq!(summary.quad_view_visual_changed_count, 1);
+        assert_eq!(summary.materialization_reason_first_render_count, 1);
+        assert_eq!(summary.materialization_reason_visual_changed_count, 0);
+        assert_eq!(summary.materialization_reason_force_render_count, 0);
+        assert_eq!(summary.materialization_reason_unknown_count, 0);
+        assert_eq!(summary.slot0_frame_id_changed_count, 0);
+        assert_eq!(summary.slot2_frame_id_changed_count, 0);
+        assert_eq!(summary.placeholder_visual_changed_count, 0);
         assert_eq!(summary.quad_view_incremental_update_count, 0);
         assert_eq!(summary.quad_view_full_compose_count, 1);
         assert_eq!(summary.quad_view_changed_slot_update_count, 4);
@@ -10420,6 +10722,9 @@ mod tests {
         assert_eq!(summary.quad_view_composed_frame_reuse_count, 0);
         assert_eq!(summary.quad_view_visual_unchanged_count, 1);
         assert_eq!(summary.quad_view_visual_changed_count, 1);
+        assert_eq!(summary.materialization_reason_first_render_count, 1);
+        assert_eq!(summary.materialization_reason_visual_changed_count, 0);
+        assert_eq!(summary.materialization_reason_force_render_count, 0);
         assert_eq!(summary.quad_view_incremental_update_count, 0);
         assert_eq!(summary.quad_view_full_compose_count, 1);
         assert_eq!(summary.quad_view_changed_slot_update_count, 4);
@@ -10480,6 +10785,9 @@ mod tests {
         assert_eq!(summary.quad_view_composed_frame_reuse_count, 0);
         assert_eq!(summary.quad_view_visual_unchanged_count, 1);
         assert_eq!(summary.quad_view_visual_changed_count, 1);
+        assert_eq!(summary.materialization_reason_first_render_count, 1);
+        assert_eq!(summary.materialization_reason_visual_changed_count, 0);
+        assert_eq!(summary.materialization_reason_force_render_count, 0);
         assert_eq!(summary.quad_view_incremental_update_count, 0);
         assert_eq!(summary.quad_view_full_compose_count, 1);
         assert_eq!(summary.quad_view_changed_slot_update_count, 4);
@@ -10533,6 +10841,14 @@ mod tests {
         assert_eq!(summary.quad_view_composed_frame_reuse_count, 0);
         assert_eq!(summary.quad_view_visual_unchanged_count, 0);
         assert_eq!(summary.quad_view_visual_changed_count, 2);
+        assert_eq!(summary.materialization_reason_first_render_count, 1);
+        assert_eq!(summary.materialization_reason_visual_changed_count, 1);
+        assert_eq!(summary.materialization_reason_force_render_count, 0);
+        assert_eq!(summary.slot0_frame_id_changed_count, 1);
+        assert_eq!(summary.slot2_frame_id_changed_count, 1);
+        assert_eq!(summary.slot0_selected_source_changed_count, 0);
+        assert_eq!(summary.slot2_selected_source_changed_count, 0);
+        assert_eq!(summary.placeholder_visual_changed_count, 0);
         assert_eq!(summary.quad_view_incremental_update_count, 1);
         assert_eq!(summary.quad_view_full_compose_count, 1);
         assert_eq!(summary.quad_view_changed_slot_update_count, 6);
@@ -10678,6 +10994,9 @@ mod tests {
         assert_eq!(summary.handoff_error_count, 1);
         assert_eq!(summary.quad_view_compose_attempt_count, 2);
         assert_eq!(summary.quad_view_compose_success_count, 2);
+        assert_eq!(summary.materialization_reason_first_render_count, 1);
+        assert_eq!(summary.materialization_reason_visual_changed_count, 1);
+        assert_eq!(summary.placeholder_visual_changed_count, 1);
         assert_eq!(summary.quad_view_incremental_update_count, 1);
         assert_eq!(summary.quad_view_full_compose_count, 1);
         assert_eq!(summary.quad_view_changed_slot_update_count, 5);
@@ -10743,6 +11062,39 @@ mod tests {
             "NoRenderableQuadView"
         );
         assert!(render_runtime.requests.borrow().is_empty());
+    }
+
+    #[test]
+    fn switcher_four_view_two_real_handoff_preview_loop_reports_force_render_materialization_reason(
+    ) {
+        let summary = run_four_view_two_real_handoff_preview_loop_with_handoff_runtime_and_sleep(
+            "fixture-pipe",
+            0,
+            ClientId("real-client-0".to_string()),
+            RunId("real-run-0".to_string()),
+            2,
+            ClientId("real-client-1".to_string()),
+            RunId("real-run-1".to_string()),
+            NonZeroU32::new(2).expect("2 should be non-zero"),
+            SwitcherSingleClientQueueSourceMode::PreviewLatest,
+            TimestampMicros(1_000_004),
+            PerClientStubRealQueuedFrameHandoff::default(),
+            &DeterministicFourViewFixtureDecodeRuntime,
+            &PersistentFixtureRenderFailedWindowRuntime::default(),
+            &RecordingCadenceSleepHook::default(),
+        );
+
+        assert_eq!(summary.frames_attempted, 2);
+        assert_eq!(summary.frames_rendered, 0);
+        assert_eq!(summary.render_failures, 2);
+        assert_eq!(summary.render_input_unchanged_count, 1);
+        assert_eq!(summary.render_reuse_frame_count, 0);
+        assert_eq!(summary.materialization_reason_first_render_count, 1);
+        assert_eq!(summary.materialization_reason_visual_changed_count, 0);
+        assert_eq!(summary.materialization_reason_force_render_count, 1);
+        assert_eq!(summary.materialization_reason_unknown_count, 0);
+        assert_eq!(summary.slot0_frame_id_changed_count, 0);
+        assert_eq!(summary.slot2_frame_id_changed_count, 0);
     }
 
     #[test]
@@ -10828,6 +11180,11 @@ mod tests {
         assert!(formatted.contains("render_buffer_cpu_scale_copy_elapsed_ms="));
         assert!(formatted.contains("render_buffer_copy_elapsed_ms="));
         assert!(formatted.contains("render_buffer_materialization_elapsed_ms="));
+        assert!(formatted.contains("render_buffer_scale_prepare_elapsed_ms="));
+        assert!(formatted.contains("render_buffer_scale_loop_elapsed_ms="));
+        assert!(formatted.contains("render_buffer_output_copy_elapsed_ms="));
+        assert!(formatted.contains("render_buffer_resize_elapsed_ms="));
+        assert!(formatted.contains("render_buffer_clear_elapsed_ms="));
         assert!(formatted.contains("render_buffer_reuse_count=0"));
         assert!(formatted.contains("render_buffer_allocation_count=1"));
         assert!(formatted.contains("render_buffer_bytes_copied_total="));
@@ -10846,6 +11203,21 @@ mod tests {
         assert!(formatted.contains("quad_view_composed_frame_reuse_count=0"));
         assert!(formatted.contains("quad_view_visual_unchanged_count=0"));
         assert!(formatted.contains("quad_view_visual_changed_count=1"));
+        assert!(formatted.contains("materialization_reason_first_render_count=1"));
+        assert!(formatted.contains("materialization_reason_visual_changed_count=0"));
+        assert!(formatted.contains("materialization_reason_previous_output_missing_count=0"));
+        assert!(formatted.contains("materialization_reason_profile_or_size_mismatch_count=0"));
+        assert!(formatted.contains("materialization_reason_force_render_count=0"));
+        assert!(formatted.contains("materialization_reason_unknown_count=0"));
+        assert!(formatted.contains("slot0_frame_id_changed_count=0"));
+        assert!(formatted.contains("slot1_frame_id_changed_count=0"));
+        assert!(formatted.contains("slot2_frame_id_changed_count=0"));
+        assert!(formatted.contains("slot3_frame_id_changed_count=0"));
+        assert!(formatted.contains("slot0_selected_source_changed_count=0"));
+        assert!(formatted.contains("slot1_selected_source_changed_count=0"));
+        assert!(formatted.contains("slot2_selected_source_changed_count=0"));
+        assert!(formatted.contains("slot3_selected_source_changed_count=0"));
+        assert!(formatted.contains("placeholder_visual_changed_count=0"));
         assert!(formatted.contains("quad_view_incremental_update_count=0"));
         assert!(formatted.contains("quad_view_full_compose_count=1"));
         assert!(formatted.contains("quad_view_changed_slot_update_count=4"));
