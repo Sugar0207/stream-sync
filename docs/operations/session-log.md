@@ -5,6 +5,72 @@
 - Codex implementation
 
 ### Work
+- Narrowed the remaining switcher render bottleneck further to the `2560x1440 -> 1280x720` helper loop in `apps/switcher/src/main.rs`.
+- Confirmed by code inspection that the old half-scale branch was doing per-pixel index math and 4-byte slice copies for every destination pixel:
+  - `source_row_start = y * 2 * source_stride`
+  - `source_index = source_row_start + x * 8`
+  - `pixels[destination_index..destination_index + 4].copy_from_slice(...)`
+- Replaced that half-scale loop with a row/chunk-based fast path that:
+  - iterates destination rows with `chunks_exact_mut(destination_stride)`
+  - iterates every other source row with `chunks_exact(source_stride * 2)`
+  - iterates pixels as `dst 4-byte chunk` zipped with `src 8-byte chunk`
+  - preserves the existing nearest-neighbor semantics of taking the top-left pixel from each `2x2` source block
+- Added focused coverage for the actual pixel-selection rule so the optimization does not silently change output semantics.
+- Re-checked the direct `1280x720` compose idea and kept it out of this step:
+  - current 4-view composition in `apps/switcher/src/lib.rs` still builds a full `slot_width * 2` by `slot_height * 2` `SwitcherFourViewComposedFrame`
+  - the OBS-friendly shrink happens later in `main.rs`
+  - therefore direct compose would cross composition/render-facing boundaries and is better handled as a follow-up, not inside this hot-path-only slice
+- Kept branch diagnostics and the source-only churn fix intact.
+- Kept runtime rerun out of this step as requested.
+
+### Changed Files
+- `apps/switcher/src/main.rs`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### Decisions
+- Optimize the currently dominant half-scale helper in place instead of widening into config, decoder persistence, GPU/shared-memory, or protocol/server work.
+- Keep the optimization safe and local: no `unsafe`, no new backend, no cross-module refactor.
+- Treat direct `1280x720` compose as a separate follow-up because current ownership and boundary shape centers on a composed `2560x1440` BGRA frame.
+
+### Unresolved
+- No runtime rerun was collected in this step, so the actual delta in `render_buffer_scale_loop_elapsed_ms` is still pending.
+- It remains unproven whether this loop-only change is enough to move the switcher meaningfully toward the 30fps target.
+- Production Readiness remains FAIL.
+
+### Next
+- Run the next same-PC `2`-client rerun and compare the updated half-scale loop against `manual-logs/two-client-render-rerun-20260516-161048`.
+- If half-scale remains dominant after the rerun, evaluate a direct `1280x720` compose path without widening beyond switcher composition/render boundaries.
+- Keep distributed-PC validation deferred until the current same-PC render bottleneck is measured again.
+
+### TODO Update
+- Updated `docs/operations/todo.md` current position with the new half-scale loop optimization and the direct-compose follow-up note.
+- Replaced the top next items with rerun-first validation of the optimized half-scale path.
+
+### Validation
+- `cargo fmt`
+  - result: PASS
+- `cargo fmt --check`
+  - result: PASS
+- `cargo check -p stream-sync-switcher`
+  - result: PASS
+  - note: existing unused-function warnings only
+- focused switcher tests
+  - result: PASS
+  - command:
+    `cargo test -p stream-sync-switcher obs_scale_helper -- --nocapture`
+  - command:
+    `cargo test -p stream-sync-switcher obs_render_runtime_records_passthrough_when_frame_already_matches_obs_profile -- --nocapture`
+- `cargo check --workspace`
+  - result: PASS
+  - note: existing switcher unused-function warnings only
+- `git diff --check`
+  - result: PASS (LF/CRLF warnings only)
+
+### Type
+- Codex implementation
+
+### Work
 - Inspected the remaining switcher render-buffer bottleneck narrowly in `apps/switcher/src/main.rs` without widening into protocol/server/distributed-PC work.
 - Confirmed by code inspection that same-size fast paths already exist in the current switcher:
   - `scale_four_view_bgra_to_obs_validation_profile_from_slice` already uses a direct full-slice copy when `width == output_width && height == output_height`

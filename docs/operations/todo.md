@@ -22,6 +22,8 @@
 ---
 
 ## 現在位置
+- 2026-05-16 の narrow half-scale optimization で、`apps/switcher/src/main.rs` の `scale_four_view_bgra_to_obs_validation_profile_from_slice` にある `2560x1440 -> 1280x720` 専用 branch を row/chunk ベースの loop に置き換えた。従来の `x` / `y` ごとの index 再計算と 4-byte slice copy を減らしつつ、`2x2` block の左上 pixel を採る current nearest-neighbor semantics は focused test で固定した
+- 同 inspection では direct `1280x720` compose も再確認したが、current 4-view path は `apps/switcher/src/lib.rs` の fixed quad composition boundary で `slot_width * 2` / `slot_height * 2` の `SwitcherFourViewComposedFrame` を先に組み、その後 window render 前に `main.rs` 側で OBS validation profile へ縮小している。したがって direct compose は current half-scale helper の内側だけでは閉じず、composition/render-facing boundary もまたぐ follow-up として扱う
 - 2026-05-16 の narrow switcher inspection で、`apps/switcher/src/main.rs` の render buffer materialization helper には same-size fast path が既に存在することを確認した。`scale_four_view_bgra_to_obs_validation_profile_from_slice` は `width == output_width && height == output_height` なら full-slice copy、`ObsFriendlyFourViewLoopWindowRenderRuntime::render_once` は `SwitcherDecodedFrameRenderInput` 自体が既に `1280x720` のとき helper を呼ばずにそのまま render へ流す passthrough branch を持っている
 - 同 inspection では、latest bottleneck `render_buffer_scale_loop_elapsed_ms=2115` は「same-size fast path 未実装」よりも `2x` half-scale path の可能性が高いと整理した。4-view composition は renderable slot の最大サイズを `slot_width/slot_height` として canvas を `2x2` で組むため、current client decode metadata `1280x720` 前提では composed canvas は推論上 `2560x1440` になる。このため latest rerun は実質 `2560x1440 -> 1280x720` の half-scale loop を踏んでいた可能性が高く、`1280x720 -> 1280x720` passthrough が支配的だった shape ではない
 - 次 rerun で即読めるよう、switcher summary に render-buffer branch counters を追加した。`render_buffer_passthrough_count`、`render_buffer_same_size_copy_count`、`render_buffer_half_scale_count`、`render_buffer_generic_scale_count` により、same-size bypass が使われたか、helper same-size copy か、current dominant half-scale loop か、generic nearest-neighbor かを runtime summary だけで切り分けられる
@@ -1032,6 +1034,6 @@ continuous runtime first slice の blocker:
 - actual dashboard UI rendering remains unimplemented.
 
 ## Next Items
-1. same-PC `2`-client rerun を次 step で回し、`render_buffer_passthrough_count` / `render_buffer_same_size_copy_count` / `render_buffer_half_scale_count` / `render_buffer_generic_scale_count` を読んで latest `2115ms` がどの branch に乗っているか runtime evidence で確定する
-2. rerun で half-scale path が支配的なら、`2560x1440 -> 1280x720` 専用 loop の narrow optimization を検討し、same-size fast path 追加ではなく current dominant branch の最小改善へ進む
-3. distributed-PC `2`-client smoke は scale loop branch の runtime evidence を揃えてから回し、同じ 30fps target に対する baseline 比較へ進める
+1. same-PC `2`-client rerun を次 step で回し、`render_buffer_half_scale_count=materialization_reason_visual_changed_count` の shapeが維持されたまま、latest chunked half-scale loop で `render_buffer_scale_loop_elapsed_ms` / `avg_render_elapsed_ms` / `effective_render_fps_after_first_render` がどこまで改善するか runtime evidence を回収する
+2. rerun 後も half-scale が支配的なら、direct `1280x720` compose を narrow follow-up として再評価する。current code shape では `apps/switcher/src/lib.rs` の 4-view composition/render-facing boundary までまたぐため、helper 単体の tweak ではなく責務境界を保った最小設計から入る
+3. distributed-PC `2`-client smoke は same-PC rerun で current half-scale 最適化の結果を固めてから回し、同じ 30fps target に対する baseline 比較へ進める

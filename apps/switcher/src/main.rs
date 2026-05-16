@@ -7429,16 +7429,12 @@ fn scale_four_view_bgra_to_obs_validation_profile_from_slice(
         let scale_loop_start = Instant::now();
         let source_stride = width as usize * 4;
         let destination_stride = output_width as usize * 4;
-        for y in 0..output_height as usize {
-            let source_row_start = y * 2 * source_stride;
-            let destination_row_start = y * destination_stride;
-            for x in 0..output_width as usize {
-                let source_index = source_row_start + x * 2 * 4;
-                let destination_index = destination_row_start + x * 4;
-                pixels[destination_index..destination_index + 4]
-                    .copy_from_slice(&pixels_source[source_index..source_index + 4]);
-            }
-        }
+        copy_bgra_half_scale_rows(
+            &mut pixels,
+            pixels_source,
+            source_stride,
+            destination_stride,
+        );
         diagnostics.scale_loop_elapsed_ms = scale_loop_start.elapsed().as_millis();
         diagnostics.bytes_copied_total =
             diagnostics.bytes_copied_total.saturating_add(pixels.len());
@@ -7479,6 +7475,26 @@ fn scale_four_view_bgra_to_obs_validation_profile_from_slice(
         },
         diagnostics,
     )
+}
+
+fn copy_bgra_half_scale_rows(
+    destination: &mut [u8],
+    source: &[u8],
+    source_stride: usize,
+    destination_stride: usize,
+) {
+    for (destination_row, source_rows) in destination
+        .chunks_exact_mut(destination_stride)
+        .zip(source.chunks_exact(source_stride * 2))
+    {
+        let source_row = &source_rows[..source_stride];
+        for (destination_pixel, source_double_pixel) in destination_row
+            .chunks_exact_mut(4)
+            .zip(source_row.chunks_exact(8))
+        {
+            destination_pixel.copy_from_slice(&source_double_pixel[..4]);
+        }
+    }
 }
 
 fn four_view_clean_output_window_runtime_visibility_flags(
@@ -10819,6 +10835,61 @@ mod tests {
         assert_eq!(diagnostics.half_scale_count, 1);
         assert_eq!(diagnostics.generic_scale_count, 0);
         assert_eq!(diagnostics.passthrough_count, 0);
+
+        REUSABLE_OBS_RENDER_BUFFER.with(|buffer| *buffer.borrow_mut() = None);
+    }
+
+    #[test]
+    fn obs_scale_helper_half_scale_keeps_top_left_pixel_of_each_2x2_block() {
+        REUSABLE_OBS_RENDER_BUFFER.with(|buffer| *buffer.borrow_mut() = None);
+
+        let source = [
+            [1, 2, 3, 255],
+            [9, 9, 9, 255],
+            [4, 5, 6, 255],
+            [8, 8, 8, 255],
+            [7, 7, 7, 255],
+            [7, 7, 7, 255],
+            [6, 6, 6, 255],
+            [6, 6, 6, 255],
+            [10, 11, 12, 255],
+            [5, 5, 5, 255],
+            [13, 14, 15, 255],
+            [4, 4, 4, 255],
+            [3, 3, 3, 255],
+            [3, 3, 3, 255],
+            [2, 2, 2, 255],
+            [2, 2, 2, 255],
+        ]
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>();
+        let (scaled, diagnostics) = scale_four_view_bgra_to_obs_validation_profile_from_slice(
+            4,
+            4,
+            SwitcherDecodedFramePixelFormat::Bgra8,
+            &source,
+            2,
+            2,
+        );
+
+        assert_eq!(diagnostics.half_scale_count, 1);
+        assert_eq!(
+            sample_bgra_pixel(&scaled.pixels, scaled.width, 0, 0),
+            [1, 2, 3, 255]
+        );
+        assert_eq!(
+            sample_bgra_pixel(&scaled.pixels, scaled.width, 1, 0),
+            [4, 5, 6, 255]
+        );
+        assert_eq!(
+            sample_bgra_pixel(&scaled.pixels, scaled.width, 0, 1),
+            [10, 11, 12, 255]
+        );
+        assert_eq!(
+            sample_bgra_pixel(&scaled.pixels, scaled.width, 1, 1),
+            [13, 14, 15, 255]
+        );
 
         REUSABLE_OBS_RENDER_BUFFER.with(|buffer| *buffer.borrow_mut() = None);
     }
