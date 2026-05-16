@@ -22,10 +22,11 @@
 ---
 
 ## 現在位置
-- latest same-PC `2`-client render smoke follow-up の narrow code inspection では、`render_buffer_copy_elapsed_ms=2225` が `apps/switcher/src/main.rs` の `ObsFriendlyFourViewLoopWindowRenderRuntime` から `scale_four_view_bgra_to_obs_validation_profile_from_slice` / `scale_four_view_bgra_render_input_to_obs_validation_profile` を呼ぶ区間だけを計測していることを確認した。ここで記録されるのは OBS capture 用 `1280x720` BGRA output buffer の allocation + copy/scale であり、Windows GDI `StretchDIBits` 自体の待ち時間は含まれない。persistent Windows render path は `request.frame` を `PERSISTENT_PAINT_FRAME` に move した後、`InvalidateRect(Some(hwnd), None, true)` で毎回ウィンドウ全体を invalidate し、`WM_PAINT` -> `BeginPaint` -> `StretchDIBits` -> `EndPaint` をフルフレームで回す。したがって GDI 側の repaint/copy/wait は現状 `window_update_elapsed_ms` / `render_backend_wait_elapsed_ms` にしか入っていない。`render_buffer_reuse_count=180` は unchanged frame の clean-output render reuse と一致し、`render_buffer_allocation_count=46` / `render_buffer_bytes_copied_total=169574400` は `46 * 1280 * 720 * 4` byte の fresh output buffer materialization を意味する。`composed_buffer_clone_count=112` は `quad_view_full_compose_count=1` + `quad_view_incremental_update_count=45` の composed-frame clone `46` 回と、visual unchanged だが previous clean output が render-ready ではなく `previous_bgra_composition.clone()` に退避した `66` 回の合計として説明できる。`decode_output_buffer_reuse_count=0` は `apps/switcher/src/lib.rs` の FFmpeg decode runtime が毎 decode ごとに `Vec::with_capacity(expected_len)` で stdout buffer を作る decoder-side issue であり、current render/GDI bottleneck とは別 slice として扱う。next narrow implementation candidate は shared-memory / GPU / persistent decoder には進まず、`apps/switcher/src/main.rs` 内で changed render 用の reusable `1280x720` BGRA scratch/render buffer を持たせて allocation を減らしつつ、render diagnostics を CPU scale/copy と GDI repaint wait に分けて意味補正することに置く
-- latest same-PC `2`-client render smoke rerun は `manual-logs/two-client-render-smoke-20260515-232256` を latest evidence として PASS 判定にした。server は ready/stopped を出しつつ `receive_stop_reason=ReceiveTimedOut` / `handoff_stop_reason=StopRequested` / `packets_received=35884` / `frames_queued=1800` / `per_client_queued_frames=player1/streamsync-dev-session:900|player2/streamsync-dev-session:900` / `retained_keyframe_clients=2` / `frame_read_count=437` / `no_frame_count=159` / `decodable_source_counts=queue:46|retained_keyframe:391|none:159` / `io_error_count=0` を満たした。switcher は `--four-view-two-real-handoff-preview-loop` / `preview-latest-decodable` / `inspect-latest-decodable` で `frames_attempted=300` / `frames_rendered=226` / `render_failures=0` / `effective_attempt_fps=14.112` / `effective_render_fps=10.631` / `effective_render_fps_after_first_render=12.215` / `selected_count=437` / `decode_attempt_count=30` / `decode_success_count=30` / `render_success_count=226` / `unchanged_frame_reuse_count=378` / `skipped_decode_unchanged_frame_count=378` / `avg_decode_elapsed_ms=72.833` / `avg_render_elapsed_ms=20.275` / `render_buffer_copy_elapsed_ms=2225` / `decoded_buffer_clone_count=30` / `composed_buffer_clone_count=112` / `render_buffer_reuse_count=180` / `render_buffer_allocation_count=46` / `render_buffer_bytes_copied_total=169574400` / `decode_output_buffer_reuse_count=0` / `scheduler_status=PartialSelected` / `slot_result_kinds=Selected|Selected|NoFrameAvailable|NoFrameAvailable` / `clean_output_render_result_kind=Rendered` を満たした。clients も `accepted=true` / `frames_encoded=900` / `frames_sent=900` / `send_failures=0` / `encode_failures=0` / `stop_reason=Some(MaxFramesReached)` / `effective_output_fps=24.021|23.966` で揃った。hot path optimization の効果は positive で、`effective_render_fps_after_first_render` は previous bad baseline `2.847` から `12.215` へ改善し約 `4.3x` になった。一方で `30fps` target には未達のため Production Readiness は引き続き FAIL とする。next bottleneck は `render_buffer_copy_elapsed_ms=2225` を含む render buffer copy / Windows GDI render path、`decode_output_buffer_reuse_count=0` を含む decode output reuse、不変条件を崩さない future follow-up としての persistent decoder candidate に絞る
+- reusable OBS render buffer pool mechanics の narrow revert は `apps/switcher/src/main.rs` に反映済み。thread-local retained buffer は pool から pre-pool 相当の single-slot `REUSABLE_OBS_RENDER_BUFFER` へ戻し、`take_reusable_obs_render_buffer` / `recycle_obs_render_buffer` も `1` 本だけ保持する挙動に戻した。最新の same-PC `2`-client post-revert rerun (`manual-logs/two-client-render-rerun-20260516-120125`) は smoke と runtime cleanliness は PASS し、post-pool regression からは明確に回復したが、pre-pool baseline `manual-logs/two-client-render-smoke-20260515-232256` にはまだ完全には戻っていない
+- CPU/GDI diagnostics は維持した。`render_buffer_cpu_scale_copy_elapsed_ms=3520` / `avg_render_buffer_cpu_scale_copy_elapsed_ms=27.077` / `render_buffer_materialization_elapsed_ms=3520` が残りの dominant bucket で、`gdi_stretchdibits_elapsed_ms=10` / `gdi_wm_paint_elapsed_ms=16` / `gdi_paint_wait_elapsed_ms=26` なので GDI は latest rerun では dominant ではない
+- focused switcher tests では pool 専用 test を single-slot semantics に更新し、`obs_render_buffer_reuses_single_retained_buffer` として retained buffer が `1` 本だけ reuse されることを確認した。`cargo fmt` / `cargo fmt --check` / `cargo check -p stream-sync-switcher` / focused switcher tests / `cargo check --workspace` / `git diff --check` は通している
+- latest rerun で client/server は clean だったが、`effective_render_fps_after_first_render=10.517` は pre-pool baseline `12.215` にまだ届いていないため、regression は回復途中として扱う。Production Readiness は引き続き FAIL
 - 2026-05-15 の narrow compile-fix slice では、same-PC `2`-client switcher hot path optimization 後に壊れていた `apps/switcher/src/main.rs` の型不一致を最小修正で解消した。`render_four_view_focused_slot_with_runtime` は OBS validation profile 変換 helper の返り値を `(SwitcherDecodedFrameRenderInput, BgraRenderBufferDiagnostics)` として受け、`frame:` には `SwitcherDecodedFrameRenderInput` だけを渡すように戻した。focused preview helper 自体は summary timing を持たないため diagnostics は `_scaled_diagnostics` として明示受けに留め、unused import warning も削除した。`cargo fmt`、`cargo fmt --check`、`cargo check -p stream-sync-switcher`、focused switcher tests、`cargo check --workspace`、`git diff --check`、`cargo build -p stream-sync-server -p stream-sync-switcher -p stream-sync-client` は PASS し、`target\debug\stream-sync-switcher.exe` の timestamp は `2026-05-15 22:59:39` に更新された。この compile-fix が latest render smoke rerun の前提になった
-- latest same-PC `2`-client normal-client rerun では runtime は概ね動作し、client output FPS は `29.050|29.083fps` だったが、switcher は `effective_render_fps_after_first_render=2.847` に留まり production readiness は FAIL のまま。decoded retained frame cache は `decode_cached_frame_reuse_count=0` / `decode_cache_miss_count=56` で hit せず、既存の unchanged-frame reuse は `unchanged_frame_reuse_count=127` / `skipped_decode_unchanged_frame_count=127` と効いている。今回の code slice では `--four-view-two-real-handoff-preview-loop` の hot path から診断用 unavailable window render と render-facing full-frame clone を外し、clean output render は composed BGRA を借用して OBS validation profile へ直接変換するようにした。Windows persistent GDI path も request frame を static paint buffer へ clone せず move する。final summary には `decoded_buffer_clone_count` / `composed_buffer_clone_count` / `render_buffer_reuse_count` / `render_buffer_allocation_count` / `render_buffer_bytes_copied_total` / `decode_output_buffer_reuse_count` を追加し、FFmpeg stdout buffer は expected raw BGRA size で capacity を確保する。source-error placeholder semantics、unchanged-frame decode reuse、visual identity / composed-frame reuse、placeholder row cache、incremental composition、render reuse、client encode/capture behavior 非変更、distributed-PC validation docs 非変更は維持
 - latest same-PC `4`-client all-real concurrent validation は `manual-logs/four-client-20260513-184503` を latest evidence として PASS 判定にした。server ready / stopped summary、client1..4 auth/send、server queue participation、named-pipe handoff transport は PASS しており、final switcher state は `AllSelected` / `Selected|Selected|Selected|Selected`、`clean_output_render_result_kind=Rendered`、`preview_mode=preview-latest-decodable`、`read_mode=inspect-latest-decodable` だった。same-PC saturation は残っており、client effective output fps は `19.732|20.201|20.299|20.040` まで落ちた
 - latest OBS capture validation は `manual-logs/obs-capture-20260513-190909` で追加され、OBS 側は `StreamSync 4-view Output` の選択と preview 表示が PASS した。一方で StreamSync runtime は same-PC saturation により PARTIAL で、client2 / client3 は `EncodeFailure`、client effective output fps は `16-18fps` 台、switcher final summary は `360` 秒以内に終了しなかったため未回収だった。これは既存の same-PC `4`-client all-real PASS を巻き戻すものではない
 - distributed-PC validation planning の source of truth を `docs/operations/distributed-pc-validation.md` に切り出した。same-PC `4`-client all-real functional PASS と OBS capture PASS は維持したまま、next phase を `server/switcher/OBS on streaming PC + one or more remote clients` の実行計画として固定し、PC配置、ネットワーク前提、起動順、command shape、success criterion、failure classification、evidence shape、long OBS run と switcher final summary の分離方針を明文化した
@@ -221,28 +222,11 @@
 ---
 
 ## 直近でやること
-1. `docs/operations/distributed-pc-validation.md` の `S:\stream-sync` command pack を current next item として人間が確定する
-   - `<SERVER_HOST>` に使う streaming PC の LAN IP または Tailscale IP
-   - `<RUN_STAMP>` の共有
-   - `server` / `switcher` / `OBS` / `client1..4` の PC配置
-   - active client config の `server_host`
-   - streaming PC の UDP `5000` firewall
-   - build/check/test はこの step ではなく専用 build-validation step に分離する
-2. distributed-PC `2`-client smoke を short summary-required run として実施する
-   - `manual-logs/distributed-pc-2client-smoke-<timestamp>` を使う
-   - switcher は `--four-view-two-real-handoff-preview-loop ... 180 preview-latest-decodable`
-   - active clients はまず `player1` / `player2`
-3. distributed-PC `2`-client OBS visible を別 run で実施する
-   - `manual-logs/distributed-pc-2client-obs-<timestamp>` を使う
-   - switcher は `--four-view-two-real-handoff-preview-loop ... 900 preview-latest-decodable`
-   - OBS preview evidence を回収する
-4. distributed-PC `4`-client summary-required run に widen する
-   - `manual-logs/distributed-pc-4client-summary-<timestamp>` を使う
-   - switcher は `--four-view-four-real-handoff-preview-loop ... 180 preview-latest-decodable`
-5. long OBS run を visual stability evidence として分けて実施する
-   - `manual-logs/distributed-pc-4client-obs-<timestamp>` を使う
-   - switcher final summary は runtime evidence と混ぜない
-6. failure-class-specific fixes を primary classification ごとに詰める
+1. same-PC `2`-client render rerun を single-slot revert 後の状態で `1` 回実施し、pre-pool baseline `manual-logs/two-client-render-smoke-20260515-232256` と比較する
+2. rerun では `effective_render_fps_after_first_render` / `avg_render_elapsed_ms` / `render_buffer_cpu_scale_copy_elapsed_ms` / `render_buffer_allocation_count` / `render_buffer_reuse_count` / `render_buffer_bytes_copied_total` / `quad_view_visual_changed_count` / `quad_view_compose_success_count` / `render_reuse_frame_count` / `decode_attempt_count` を見る
+3. single-slot revert 後も `visual_changed` churn が高止まりする場合だけ、`visual_unchanged` / clean-output reuse gate 側の追加 diagnostics または最小修正を検討する
+4. `decode_attempt_count` の summary semantics と actual decode runtime cost を混同しないようにしつつ、`avg_decode_elapsed_ms` / `decode_output_buffer_reuse_count=0` は separate decoder follow-up として維持する
+5. distributed-PC / persistent decoder / shared-memory / GPU backend には進まず、same-PC render hot path の A/B を先に閉じる
 
 ## 今後の大まかな指針
 - 残り todo は `MVP クリティカルパス`、`安定化 / 運用`、`future task` に分けて扱う
@@ -1045,9 +1029,9 @@ continuous runtime first slice の blocker:
 - actual dashboard UI rendering remains unimplemented.
 
 ## Next Items
-1. `apps/switcher/src/main.rs` の OBS-friendly render helper に reusable `1280x720` BGRA scratch/render buffer を持たせ、changed render ごとの fresh allocation を減らす最小 slice を検討する
-2. `render_buffer_copy_elapsed_ms` を CPU scale/copy/materialization、`window_update_elapsed_ms` / `render_backend_wait_elapsed_ms` を GDI invalidate/`WM_PAINT`/`StretchDIBits` wait として docs / diagnostics 上でより明確に分ける
-3. `avg_decode_elapsed_ms=72.833` と `decode_output_buffer_reuse_count=0` は decoder-side follow-up として別 slice に残し、今回の render/GDI follow-up とは混ぜない
-4. distributed-PC `2`-client smoke を実施する
-5. distributed-PC `2`-client OBS visible を実施する
-6. distributed-PC `4`-client summary-required run を実施する
+1. `render_buffer_cpu_scale_copy_elapsed_ms` / `render_buffer_materialization_elapsed_ms` の CPU scale/copy/materialization path を follow-up し、post-revert でも baseline 未達の理由を詰める
+2. 必要なら same-PC `2`-client rerun をもう一度取り、`manual-logs/two-client-render-smoke-20260515-232256` と `manual-logs/two-client-render-rerun-20260516-120125` を直接比較して残差を確認する
+3. `avg_decode_elapsed_ms=72.833` と `decode_output_buffer_reuse_count=0` は decoder-side follow-up として別 slice に残し、今回の render CPU follow-up とは混ぜない
+4. distributed-PC `2`-client smoke は render baseline の回復確認後に回す
+5. distributed-PC `2`-client OBS visible は render baseline の回復確認後に回す
+6. distributed-PC `4`-client summary-required run は render baseline の回復確認後に回す

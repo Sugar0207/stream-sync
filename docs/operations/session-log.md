@@ -2,6 +2,459 @@
 
 ## 2026-05-16
 ### Type
+- Codex documentation update
+
+### Work
+- Recorded the latest same-PC `2`-client post-revert rerun evidence from `manual-logs/two-client-render-rerun-20260516-120125`.
+- Reconciled the post-revert results against the post-pool regression and the pre-pool baseline:
+  - post-revert latest: `effective_render_fps_after_first_render=10.517`, `effective_render_fps=9.243`, `avg_render_elapsed_ms=29.008`, `render_buffer_bytes_copied_total=191692800`, `decode_attempt_count=34`, `render_buffer_reuse_count=220`, `render_buffer_allocation_count=2`
+  - pre-pool baseline: `effective_render_fps_after_first_render=12.215`, `effective_render_fps=10.631`, `avg_render_elapsed_ms=20.275`, `render_buffer_bytes_copied_total=169574400`, `decode_attempt_count=30`
+  - post-pool regression: `effective_render_fps_after_first_render=6.655 / 7.839`, `render_buffer_bytes_copied_total=302284800 / 335462400`, `decode_attempt_count=58 / 60`
+- Kept the runtime interpretation clean and narrow:
+  - build required binaries: PASS
+  - server exited naturally
+  - switcher exited
+  - error logs empty
+  - server/client summaries were clean
+- Recorded the bottleneck split from the latest rerun:
+  - GDI is not dominant: `gdi_stretchdibits_elapsed_ms=10`, `gdi_wm_paint_elapsed_ms=16`, `gdi_paint_wait_elapsed_ms=26`
+  - CPU scale/copy/materialization remains dominant: `render_buffer_cpu_scale_copy_elapsed_ms=3520`, `avg_render_buffer_cpu_scale_copy_elapsed_ms=27.077`, `render_buffer_materialization_elapsed_ms=3520`
+- Updated the repo docs so the current state is now "post-pool regression recovered, but pre-pool baseline not fully restored" instead of "rerun pending".
+
+### Changed Files
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### Decisions
+- Treat the reusable OBS render buffer pool revert as a successful regression-isolation step, not a complete performance fix.
+- Keep the latest rerun classified as partial recovery because it is clearly better than the post-pool regression but still short of the pre-pool baseline.
+- Treat CPU scale/copy/materialization as the next bottleneck to inspect.
+- Keep GDI diagnostics in the summary, but do not treat GDI as the dominant limiter for this rerun.
+
+### Unresolved
+- The remaining gap between the latest post-revert rerun and the pre-pool baseline is still not fully explained.
+- It is not yet proven how much further gain is available from CPU-side materialization tuning alone.
+- Production Readiness remains FAIL because the latest rerun is still below the 30fps target.
+
+### Next
+- Follow up on the CPU scale/copy/materialization path using the latest rerun as the comparison baseline.
+- Keep decoder-side buffer reuse as a separate slice.
+- Defer distributed-PC validation until render recovery is closer to baseline.
+
+### TODO Update
+- Updated `docs/operations/todo.md` current position to record the post-revert recovery, the remaining gap to pre-pool baseline, and the CPU materialization bottleneck.
+- Replaced the immediate next items with CPU-side follow-up rather than another pool-mechanics rerun.
+
+### Validation
+- `git diff --check`
+  - result: PASS (LF/CRLF warning only)
+
+## 2026-05-16
+### Type
+- Codex implementation
+
+### Work
+- Implemented the requested narrow revert in `apps/switcher/src/main.rs`.
+- Replaced the post-regression reusable OBS render buffer pool mechanics with a
+  pre-pool-style single retained buffer:
+  - `REUSABLE_OBS_RENDER_BUFFERS` -> `REUSABLE_OBS_RENDER_BUFFER`
+  - removed the retained-pool capacity logic
+  - `take_reusable_obs_render_buffer` now reuses at most one retained buffer
+  - `recycle_obs_render_buffer` now stores only one retained buffer
+- Kept the current Windows persistent paint-frame lifecycle intact, so the next
+  changed render still sees the same A/B condition as the pre-pool path: when
+  the previous scaled frame is still held by the persistent paint window, the
+  next changed render materializes a fresh output buffer rather than borrowing
+  from a retained pool of two.
+- Kept the CPU/GDI diagnostics and summary compatibility fields intact:
+  - `render_buffer_cpu_scale_copy_elapsed_ms`
+  - `avg_render_buffer_cpu_scale_copy_elapsed_ms`
+  - `render_buffer_materialization_elapsed_ms`
+  - `avg_render_buffer_materialization_elapsed_ms`
+  - `gdi_invalidate_elapsed_ms`
+  - `gdi_paint_wait_elapsed_ms`
+  - `gdi_wm_paint_elapsed_ms`
+  - `gdi_stretchdibits_elapsed_ms`
+- Updated the pool-specific test to match the reverted single-slot semantics:
+  - removed the two-retained-buffer expectation
+  - added `obs_render_buffer_reuses_single_retained_buffer`
+- Kept this step narrow: no protocol/server/runtime architecture changes and no
+  rerun in this turn.
+
+### Changed Files
+- `apps/switcher/src/main.rs`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### Decisions
+- Use the single-slot retained-buffer behavior as the revert target because it
+  restores the pre-pool A/B condition without deleting the useful CPU/GDI
+  diagnostics that were added later.
+- Keep all current summary fields and diagnostics semantics stable so the next
+  human rerun can compare pre-pool, post-pool, and post-revert results without
+  changing parsing expectations.
+- Do not call this a successful optimization; this is a regression-isolation
+  revert.
+
+### Unresolved
+- Runtime rerun after the revert is still pending.
+- It is not yet confirmed whether the revert alone restores the pre-pool
+  materialization cadence and effective render FPS.
+- Production Readiness remains FAIL.
+
+### Next
+- Rerun the same-PC `2`-client render scenario in this single-slot post-revert
+  state.
+- Compare the rerun directly against:
+  - pre-pool baseline `manual-logs/two-client-render-smoke-20260515-232256`
+  - post-pool rerun `manual-logs/two-client-render-rerun-20260516-111024`
+  - post-pool rerun `manual-logs/two-client-render-rerun-20260516-113414`
+- If changed-render churn remains high after the revert, investigate the render
+  reuse gate itself rather than buffer-retention mechanics.
+
+### TODO Update
+- Updated `docs/operations/todo.md` current position to reflect that the
+  single-slot revert is now implemented and ready for A/B rerun.
+- Replaced the old "revert candidate" wording with rerun-after-revert next
+  steps.
+
+### Validation
+- `cargo fmt`
+  - result: PASS
+- `cargo fmt --check`
+  - result: PASS
+- `cargo check -p stream-sync-switcher`
+  - result: PASS
+- focused switcher tests
+  - result: PASS
+  - command:
+    `cargo test -p stream-sync-switcher switcher_four_view_two_real_handoff_preview -- --nocapture`
+  - command:
+    `cargo test -p stream-sync-switcher obs_render_buffer_reuses_single_retained_buffer -- --nocapture`
+- `cargo check --workspace`
+  - result: PASS
+- `git diff --check`
+  - result: PASS (LF/CRLF warning only)
+
+## 2026-05-16
+### Type
+- Codex investigation
+
+### Work
+- Analyzed the second same-condition rerun evidence for
+  `manual-logs/two-client-render-rerun-20260516-113414` against the current
+  `apps/switcher` render path without changing runtime behavior.
+- Recorded that the regression is now reproducible across two post-pool reruns:
+  - first post-pool rerun:
+    `manual-logs/two-client-render-rerun-20260516-111024`
+  - second post-pool rerun:
+    `manual-logs/two-client-render-rerun-20260516-113414`
+- Confirmed again that the reusable OBS render buffer pool itself is only
+  solving the allocation objective:
+  - pre-pool `render_buffer_allocation_count=46`
+  - both post-pool reruns `render_buffer_allocation_count=2`
+- Confirmed that the latest materialization count is explained directly by the
+  current code path:
+  - `render_buffer_bytes_copied_total=335462400`
+  - `1280 * 720 * 4 = 3686400`
+  - `335462400 / 3686400 = 91`
+  - latest `quad_view_compose_success_count=91`
+  - therefore the helper
+    `scale_four_view_bgra_to_obs_validation_profile_from_slice` materially wrote
+    a full OBS-friendly output buffer `91` times in this rerun
+- Confirmed that total non-reuse ticks are larger than the materialization
+  count:
+  - latest `frames_attempted=300`
+  - latest `render_reuse_frame_count=164`
+  - non-reuse ticks = `136`
+  - latest `quad_view_compose_success_count=91`
+  - therefore `45` non-reuse ticks still did not reach composed-frame
+    materialization and instead stayed in non-renderable / invalid branches
+- Confirmed that the latest regression is not primarily explained by broken
+  previous-clean-output reuse semantics:
+  - latest `render_input_unchanged_count=204`
+  - latest `render_reuse_frame_count=164`
+  - unchanged-but-not-reused ticks = `40`
+  - latest `quad_view_visual_changed_count=96`
+  - the dominant growth is the `visual_changed` path, not the smaller
+    unchanged-but-not-reused path
+- Confirmed from `apps/switcher/src/main.rs` that the visual-change gate is
+  upstream of the pool implementation:
+  - `visual_unchanged` compares
+    `previous_visual_identities == current_visual_identities`
+  - `TwoRealPreviewLoopSlotVisualIdentity` is built from frame identity,
+    placeholder kind, source-error/decode state, and selected frame source
+  - the pool code only affects output-buffer allocation/recycling and does not
+    participate in visual-identity comparison
+- Confirmed the most plausible code-path explanation for the regression:
+  - because the pool change did not alter visual-identity semantics directly,
+    the rise in `quad_view_visual_changed_count=96` is more consistent with a
+    slower loop cadence that allows selected frame identities to advance between
+    ticks more often
+  - once more ticks become `visual_changed`, the loop enters the compose +
+    materialize path more often, which raises CPU materialization time and
+    further reduces effective FPS
+- Confirmed that the clone counters are better read as downstream effects than
+  first causes:
+  - latest `decoded_buffer_clone_count=60` matches latest
+    `decode_attempt_count=60`
+  - latest `composed_buffer_clone_count=131` is consistent with
+    `91` composed-frame successes plus `40` unchanged-but-not-reused previous
+    composition clones
+- Confirmed again that direct GDI blit time is not the primary bottleneck in
+  this rerun:
+  - `render_buffer_cpu_scale_copy_elapsed_ms=6253`
+  - `gdi_paint_wait_elapsed_ms=75`
+  - `gdi_wm_paint_elapsed_ms=47`
+  - `gdi_stretchdibits_elapsed_ms=32`
+- Recorded the latest runtime as PARTIAL / regression even though client2 no
+  longer hit `FrameWaitTimeout`:
+  - `effective_render_fps_after_first_render=12.215 -> 7.839`
+  - `avg_render_elapsed_ms=20.275 -> 49.750`
+  - `render_buffer_copy_elapsed_ms=2225 -> 6253`
+  - `render_buffer_bytes_copied_total=169574400 -> 335462400`
+  - `decode_attempt_count=30 -> 60`
+- Kept this step docs-first. No code path was changed here.
+
+### Changed Files
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### Decisions
+- Do not treat the reusable OBS render buffer pool as a successful optimization;
+  the end-to-end regression is now reproducible.
+- Do not blame the current regression on a broken `previous_clean_output` or
+  `previous_bgra_composition` reuse gate first, because the numbers point more
+  strongly to increased `visual_changed` churn.
+- Keep the new `gdi_*` diagnostics.
+- Recommend the next minimal corrective step as "keep diagnostics, narrow-revert
+  the pool mechanics, rerun A/B" rather than starting with a reuse-gate rewrite
+  or widening into decoder/backend work.
+
+### Unresolved
+- The exact micro-cost inside the pool path that started the slower-cadence /
+  higher-churn feedback loop is still not proven from code inspection alone.
+- It is still possible that some part of the regression is runtime variance, but
+  the second same-condition rerun makes that a weaker primary explanation than
+  before.
+- Production Readiness remains FAIL because the latest rerun is still far below
+  the `30fps` target.
+
+### Next
+- Revert only the reusable OBS render buffer pool mechanics in
+  `apps/switcher/src/main.rs` while preserving the CPU/GDI diagnostics.
+- Rerun the same same-PC `2`-client scenario and compare:
+  - `quad_view_visual_changed_count`
+  - `quad_view_compose_success_count`
+  - `render_reuse_frame_count`
+  - `render_buffer_bytes_copied_total`
+  - `render_buffer_cpu_scale_copy_elapsed_ms`
+  - `decode_attempt_count`
+- If the revert does not reduce changed-render churn, add narrower trigger
+  diagnostics around the render reuse gate before touching broader architecture.
+
+### TODO Update
+- Updated `docs/operations/todo.md` current position with the second rerun and
+  the stronger conclusion that `visual_changed` churn, not obvious reuse-gate
+  breakage, is the main regression shape.
+- Replaced the previous "rerun one more time" next items with a narrower
+  revert-and-rerun A/B recommendation.
+
+### Validation
+- `git diff --check`
+  - result: PASS (LF/CRLF warning only)
+
+## 2026-05-16
+### Type
+- Codex investigation
+
+### Work
+- Analyzed the latest same-PC `2`-client rerun evidence for
+  `manual-logs/two-client-render-rerun-20260516-111024` against the current
+  `apps/switcher` render path without changing runtime behavior.
+- Confirmed that the reusable OBS render buffer pool itself is functioning for
+  allocation reduction:
+  - previous `render_buffer_allocation_count=46`
+  - latest `render_buffer_allocation_count=2`
+  - latest `render_buffer_reuse_count=226`
+- Confirmed that the regression signal is not "more allocations" but "more full
+  output-buffer materializations":
+  - `render_buffer_bytes_copied_total=302284800`
+  - `1280 * 720 * 4 = 3686400`
+  - `302284800 / 3686400 = 82`
+  - latest `frames_rendered=228` and `render_reuse_frame_count=146` also imply
+    `82` non-reused renders
+  - the CPU-side helper
+    `scale_four_view_bgra_to_obs_validation_profile_from_slice` increments
+    `bytes_copied_total` once per full OBS-friendly output write, regardless of
+    whether the buffer came from the pool or from a fresh allocation
+- Confirmed that the dominant new timing bucket is still CPU materialization,
+  not direct GDI blit time:
+  - `render_buffer_cpu_scale_copy_elapsed_ms=6692`
+  - `gdi_paint_wait_elapsed_ms=1256`
+  - `gdi_wm_paint_elapsed_ms=67`
+  - `gdi_stretchdibits_elapsed_ms=44`
+- Confirmed from `apps/switcher/src/main.rs` that changed-render frequency is
+  driven by visual-identity and clean-output reuse gates rather than by pool
+  state:
+  - `visual_unchanged` compares `previous_visual_identities` against current
+    identities
+  - clean-output render reuse only happens when `visual_unchanged` and
+    `previous_clean_output_is_rendered` are both true
+  - when composition can be reused but clean-output render reuse cannot, the
+    loop still goes through CPU materialization again
+- Confirmed that `decode_attempt_count` should not be read as a direct FFmpeg
+  invocation count in this loop:
+  - `four_view_two_real_tick_diagnostics_from_composition_render` derives it
+    from slot-level composition outcomes such as `UseUpdatedFrame`,
+    `UseDecodeDeferredPlaceholder`, and `UseDecodeFailedPlaceholder`
+  - therefore the increase `30 -> 58` can reflect changed slot/input churn or
+    slower tick cadence, not necessarily a render-buffer-pool regression
+- Recorded the latest runtime as PARTIAL / regression:
+  - `effective_render_fps_after_first_render=12.215 -> 6.655`
+  - `avg_render_elapsed_ms=20.275 -> 54.214`
+  - `render_buffer_copy_elapsed_ms=2225 -> 6692`
+  - `decode_attempt_count=30 -> 58`
+  - client2 ended with `stop_reason=Some(FrameWaitTimeout)`
+- Kept this step docs-first. No code path was changed here.
+
+### Changed Files
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### Decisions
+- Do not treat the pool step as a successful optimization yet, even though the
+  allocation objective itself succeeded.
+- Keep the reusable OBS render buffer pool for now because the observed
+  regression is better explained by increased changed/non-reused render work
+  than by the pool bookkeeping itself.
+- Keep the new `gdi_*` diagnostics because they successfully show that direct
+  `StretchDIBits` time is not the primary bottleneck in this rerun.
+- Do not jump to persistent decoder, shared-memory, GPU backend, protocol, or
+  server changes from this evidence.
+
+### Unresolved
+- Why the latest rerun produced more changed/non-reused renders than the
+  previous run remains unresolved.
+- It is not yet proven whether the rise in `decode_attempt_count` came mainly
+  from slower tick cadence, input/runtime variance, or a narrower render-loop
+  semantic change.
+- Production Readiness remains FAIL because the latest rerun is well below the
+  `30fps` target and is now classified as regression evidence.
+
+### Next
+- Rerun the same-PC `2`-client render scenario once more under the same
+  conditions to check whether the higher changed-render/materialization count is
+  reproducible.
+- If the regression reproduces, inspect `visual_unchanged`,
+  `render_input_unchanged_count`, `render_reuse_frame_count`, and related clean-
+  output reuse gates before considering a pool revert.
+- If the regression does not reproduce, treat runtime variance and client2
+  `FrameWaitTimeout` as a stronger explanation and keep the pool while gathering
+  more evidence.
+- Keep decoder output reuse as a separate follow-up after the render-regression
+  source is better isolated.
+
+### TODO Update
+- Replaced `docs/operations/todo.md` current position with the latest rerun
+  regression status instead of the earlier pre-rerun success framing.
+- Replaced the old distributed-PC next items with immediate render-regression
+  investigation items centered on rerun reproducibility and changed-render
+  churn.
+
+### Validation
+- `git diff --check`
+  - result: PASS (LF/CRLF warning only)
+
+## 2026-05-16
+### Type
+- Codex implementation
+
+### Work
+- Implemented the requested narrow render/GDI slice in
+  `apps/switcher/src/main.rs`.
+- Replaced the single-slot OBS-friendly BGRA reuse state with a bounded
+  `REUSABLE_OBS_RENDER_BUFFERS` pool that can retain up to `2` output buffers.
+- Kept the changed scope local to the existing `1280x720` OBS validation
+  profile path:
+  - `take_reusable_obs_render_buffer`
+  - `recycle_obs_render_buffer`
+  - `ObsFriendlyFourViewLoopWindowRenderRuntime`
+  - `windows_persistent_render_update`
+- Added explicit diagnostics fields while preserving existing summary fields:
+  - CPU-side materialization:
+    `render_buffer_cpu_scale_copy_elapsed_ms`
+  - GDI-side timing:
+    `gdi_wm_paint_elapsed_ms`
+    `gdi_stretchdibits_elapsed_ms`
+  - average fields for the new CPU/GDI timings
+- Kept compatibility semantics for the existing fields:
+  - `render_buffer_copy_elapsed_ms` and
+    `render_buffer_materialization_elapsed_ms` still report the same CPU-side
+    scale/copy/materialization bucket
+  - `gdi_paint_wait_elapsed_ms` still represents the broader post-invalidate
+    message-pump wait, while the new fields isolate time spent inside
+    `WM_PAINT` and inside `StretchDIBits`
+- Updated focused switcher tests:
+  - added a new pool-level reuse test for the retained OBS buffers
+  - updated a few stale expectations so they match the current unchanged-frame
+    clean-output render reuse semantics
+  - renamed the source-error cache test to reflect that the current behavior
+    keeps unchanged-frame reuse rather than reporting decode-cache reuse
+
+### Changed Files
+- `apps/switcher/src/main.rs`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### Decisions
+- Use a bounded retained-buffer pool of size `2` as the smallest reusable
+  scratch/render-buffer shape for the Windows persistent output path.
+- Keep decoder output buffer reuse out of scope for this step.
+- Keep runtime rerun out of scope for this step; this remains the next manual
+  validation slice.
+
+### Unresolved
+- Production Readiness remains FAIL until the rerun shows clear improvement and
+  the path reaches the `30fps` target.
+- It is not yet confirmed from runtime evidence how much of the remaining gap is
+  CPU materialization versus GDI repaint cost after the new pool lands.
+
+### Next
+- Rerun the same-PC `2`-client render smoke and compare:
+  - `render_buffer_allocation_count`
+  - `render_buffer_reuse_count`
+  - `render_buffer_cpu_scale_copy_elapsed_ms`
+  - `gdi_wm_paint_elapsed_ms`
+  - `gdi_stretchdibits_elapsed_ms`
+- Keep decoder output reuse as a separate follow-up after the render/GDI rerun.
+
+### TODO Update
+- Updated `docs/operations/todo.md` current position with the implemented
+  buffer-pool + diagnostics split.
+- Replaced the old implementation-candidate next items with rerun-oriented next
+  items.
+
+### Validation
+- `cargo fmt`
+  - result: PASS
+- `cargo fmt --check`
+  - result: PASS
+- `cargo check -p stream-sync-switcher`
+  - result: PASS
+- focused switcher tests
+  - result: PASS
+  - command:
+    `cargo test -p stream-sync-switcher switcher_four_view_two_real_handoff_preview -- --nocapture`
+  - command:
+    `cargo test -p stream-sync-switcher obs_render_buffer_pool_reuses_two_retained_obs_buffers -- --nocapture`
+- `cargo check --workspace`
+  - result: PASS
+- `git diff --check`
+  - result: PASS (LF/CRLF warning only)
+
+## 2026-05-16
+### Type
 - Codex investigation
 
 ### Work
