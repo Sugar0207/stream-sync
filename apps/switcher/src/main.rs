@@ -3682,7 +3682,12 @@ where
             .saturating_add(visual_change_diagnostics.placeholder_visual_changed_count);
         let visual_unchanged = previous_visual_identities
             .as_ref()
-            .map(|previous| previous == &current_visual_identities)
+            .map(|previous| {
+                two_real_preview_loop_visual_identities_render_equal(
+                    previous,
+                    &current_visual_identities,
+                )
+            })
             .unwrap_or(false);
         if visual_unchanged {
             quad_view_visual_unchanged_count += 1;
@@ -6360,7 +6365,12 @@ fn two_real_preview_loop_changed_visual_slots(
 ) -> [bool; 4] {
     std::array::from_fn(|index| {
         previous_visual_identities
-            .map(|previous| previous[index] != current_visual_identities[index])
+            .map(|previous| {
+                !two_real_preview_loop_slot_visual_identity_render_eq(
+                    &previous[index],
+                    &current_visual_identities[index],
+                )
+            })
             .unwrap_or(true)
     })
 }
@@ -6882,8 +6892,9 @@ fn two_real_preview_loop_visual_change_diagnostics(
             diagnostics.selected_source_changed_counts[slot_index] = 1;
         }
 
-        if two_real_preview_loop_visual_identity_is_placeholder(previous)
-            || two_real_preview_loop_visual_identity_is_placeholder(current)
+        if !two_real_preview_loop_slot_visual_identity_render_eq(previous, current)
+            && (two_real_preview_loop_visual_identity_is_placeholder(previous)
+                || two_real_preview_loop_visual_identity_is_placeholder(current))
         {
             diagnostics.placeholder_visual_changed_count = diagnostics
                 .placeholder_visual_changed_count
@@ -6906,6 +6917,121 @@ fn two_real_preview_loop_visual_identity_frame_id(
         }
         TwoRealPreviewLoopSlotVisualIdentity::NoDisplayPlaceholder { .. }
         | TwoRealPreviewLoopSlotVisualIdentity::SourceErrorPlaceholder { .. } => None,
+    }
+}
+
+fn two_real_preview_loop_visual_identities_render_equal(
+    previous: &[TwoRealPreviewLoopSlotVisualIdentity; 4],
+    current: &[TwoRealPreviewLoopSlotVisualIdentity; 4],
+) -> bool {
+    previous
+        .iter()
+        .zip(current.iter())
+        .all(|(previous, current)| {
+            two_real_preview_loop_slot_visual_identity_render_eq(previous, current)
+        })
+}
+
+fn two_real_preview_loop_slot_visual_identity_render_eq(
+    previous: &TwoRealPreviewLoopSlotVisualIdentity,
+    current: &TwoRealPreviewLoopSlotVisualIdentity,
+) -> bool {
+    match (previous, current) {
+        (
+            TwoRealPreviewLoopSlotVisualIdentity::SourceFrame {
+                client_id: previous_client_id,
+                run_id: previous_run_id,
+                frame_id: previous_frame_id,
+                ..
+            },
+            TwoRealPreviewLoopSlotVisualIdentity::SourceFrame {
+                client_id: current_client_id,
+                run_id: current_run_id,
+                frame_id: current_frame_id,
+                ..
+            },
+        ) => {
+            previous_client_id == current_client_id
+                && previous_run_id == current_run_id
+                && previous_frame_id == current_frame_id
+        }
+        (
+            TwoRealPreviewLoopSlotVisualIdentity::NoDisplayPlaceholder {
+                reason: previous_reason,
+            },
+            TwoRealPreviewLoopSlotVisualIdentity::NoDisplayPlaceholder {
+                reason: current_reason,
+            },
+        )
+        | (
+            TwoRealPreviewLoopSlotVisualIdentity::SourceErrorPlaceholder {
+                reason: previous_reason,
+            },
+            TwoRealPreviewLoopSlotVisualIdentity::SourceErrorPlaceholder {
+                reason: current_reason,
+            },
+        ) => previous_reason == current_reason,
+        (
+            TwoRealPreviewLoopSlotVisualIdentity::DecodeDeferredPlaceholder {
+                client_id: previous_client_id,
+                run_id: previous_run_id,
+                frame_id: previous_frame_id,
+                reason: previous_reason,
+                ..
+            },
+            TwoRealPreviewLoopSlotVisualIdentity::DecodeDeferredPlaceholder {
+                client_id: current_client_id,
+                run_id: current_run_id,
+                frame_id: current_frame_id,
+                reason: current_reason,
+                ..
+            },
+        ) => {
+            previous_client_id == current_client_id
+                && previous_run_id == current_run_id
+                && previous_frame_id == current_frame_id
+                && previous_reason == current_reason
+        }
+        (
+            TwoRealPreviewLoopSlotVisualIdentity::DecodeFailedPlaceholder {
+                client_id: previous_client_id,
+                run_id: previous_run_id,
+                frame_id: previous_frame_id,
+                failure: previous_failure,
+                ..
+            },
+            TwoRealPreviewLoopSlotVisualIdentity::DecodeFailedPlaceholder {
+                client_id: current_client_id,
+                run_id: current_run_id,
+                frame_id: current_frame_id,
+                failure: current_failure,
+                ..
+            },
+        ) => {
+            previous_client_id == current_client_id
+                && previous_run_id == current_run_id
+                && previous_frame_id == current_frame_id
+                && previous_failure == current_failure
+        }
+        (
+            TwoRealPreviewLoopSlotVisualIdentity::MissingDecodedPixels {
+                client_id: previous_client_id,
+                run_id: previous_run_id,
+                frame_id: previous_frame_id,
+                ..
+            },
+            TwoRealPreviewLoopSlotVisualIdentity::MissingDecodedPixels {
+                client_id: current_client_id,
+                run_id: current_run_id,
+                frame_id: current_frame_id,
+                ..
+            },
+        ) => {
+            previous_client_id == current_client_id
+                && previous_run_id == current_run_id
+                && previous_frame_id == current_frame_id
+        }
+        _ => false,
     }
 }
 
@@ -6973,13 +7099,27 @@ fn two_real_unchanged_frame_reuse_slots(
     pre_composition: &SwitcherFourViewHandoffValidationPreCompositionOutput,
 ) -> [bool; 4] {
     std::array::from_fn(|index| {
-        previous_identities[index].is_some()
-            && previous_identities[index] == current_identities[index]
-            && matches!(
-                &pre_composition.composition_render.composition.slots[index],
-                SwitcherFourViewHandoffQuadCompositionRenderSlot::UseUpdatedFrame { .. }
-            )
+        two_real_preview_loop_decoded_slot_identity_render_eq(
+            previous_identities[index].as_ref(),
+            current_identities[index].as_ref(),
+        ) && matches!(
+            &pre_composition.composition_render.composition.slots[index],
+            SwitcherFourViewHandoffQuadCompositionRenderSlot::UseUpdatedFrame { .. }
+        )
     })
+}
+
+fn two_real_preview_loop_decoded_slot_identity_render_eq(
+    previous: Option<&TwoRealPreviewLoopDecodedSlotIdentity>,
+    current: Option<&TwoRealPreviewLoopDecodedSlotIdentity>,
+) -> bool {
+    matches!(
+        (previous, current),
+        (Some(previous), Some(current))
+            if previous.client_id == current.client_id
+                && previous.run_id == current.run_id
+                && previous.frame_id == current.frame_id
+    )
 }
 
 fn two_real_unchanged_frame_reuse_count(unchanged_frame_reuse_slots: &[bool; 4]) -> u32 {
@@ -9121,10 +9261,11 @@ mod tests {
         FourViewOperatorWrapperClock, FourViewOperatorWrapperGuardState,
         FourViewOperatorWrapperInputSource, FourViewOperatorWrapperRawConsoleRestoreTracker,
         FourViewOperatorWrapperRawKeyReader, FourViewOperatorWrapperRawKeyRuntime,
-        PersistentWindowLifecycleSnapshot, SwitcherFourViewControlledPreviewCommand,
-        SwitcherFourViewControlledPreviewCommandSummary, SwitcherFrameCadenceSleepHook,
-        SwitcherPersistentWindowLoopRuntimeHook, SwitcherQueuedFrameHandoffResult,
-        SwitcherSingleClientQueueSourceMode, FOUR_VIEW_CLEAN_OUTPUT_LOOP_OBS_OUTPUT_HEIGHT,
+        PersistentWindowLifecycleSnapshot, PreviewLoopRealHandoff, PreviewLoopRealHandoffCall,
+        SwitcherFourViewControlledPreviewCommand, SwitcherFourViewControlledPreviewCommandSummary,
+        SwitcherFrameCadenceSleepHook, SwitcherPersistentWindowLoopRuntimeHook,
+        SwitcherQueuedFrameHandoffResult, SwitcherSingleClientQueueSourceMode,
+        FOUR_VIEW_CLEAN_OUTPUT_LOOP_OBS_OUTPUT_HEIGHT,
         FOUR_VIEW_CLEAN_OUTPUT_LOOP_OBS_OUTPUT_WIDTH, FOUR_VIEW_CLEAN_OUTPUT_LOOP_SCALE_MODE,
         REUSABLE_OBS_RENDER_BUFFER,
     };
@@ -10040,6 +10181,142 @@ mod tests {
         }
     }
 
+    fn observed_frame_read_request_output(
+        pipe_name: &str,
+        input: &SwitcherQueuedFrameHandoffInput,
+        request_id: u64,
+        frame: &SwitcherSingleViewSelectedEncodedFrame,
+        decodable_source: stream_sync_net_core::ServerSwitcherQueuedFrameDecodableSource,
+        retained_keyframe_available: bool,
+        retained_keyframe_frame_id: Option<u64>,
+    ) -> SwitcherNamedPipeQueuedFrameHandoffRequestOutput {
+        let result = SwitcherQueuedFrameHandoffResult::FrameRead {
+            frame: frame.clone(),
+            mode: input.mode,
+            remaining_client_queue_len: 0,
+        };
+        let response = stream_sync_net_core::ServerSwitcherQueuedFrameHandoffResponse::FrameRead {
+            request_id,
+            remaining_client_queue_len: 0,
+            decodable_source,
+            retained_keyframe_available,
+            retained_keyframe_frame_id,
+            frame: stream_sync_net_core::ServerSwitcherQueuedFrameHandoffFrame {
+                client_id: frame.client_id.clone(),
+                run_id: frame.run_id.clone(),
+                frame_id: frame.frame_id,
+                capture_timestamp: frame.capture_timestamp,
+                send_timestamp: frame.send_timestamp,
+                queued_at: frame.queued_at,
+                is_keyframe: frame.is_keyframe,
+                width: frame.width,
+                height: frame.height,
+                fps_nominal: frame.fps_nominal,
+                codec: frame.codec,
+                encoded_payload_len: frame.encoded_payload_len as u32,
+                encoded_payload: frame.encoded_payload.clone(),
+            },
+        };
+
+        SwitcherNamedPipeQueuedFrameHandoffRequestOutput {
+            summary: SwitcherNamedPipeQueuedFrameHandoffRequestSummary {
+                pipe_name: pipe_name.to_string(),
+                actual_pipe_path: Some(format!(r"\\.\pipe\{pipe_name}")),
+                request_id,
+                read_mode: input.mode,
+                attempt_count: 1,
+                timeout_millis: 5_000,
+                request_status: SwitcherNamedPipeQueuedFrameHandoffRequestStatus::Sent,
+                response_status: SwitcherNamedPipeQueuedFrameHandoffResponseStatus::Decoded,
+                result_kind: SwitcherNamedPipeQueuedFrameHandoffResultKind::FrameRead,
+                final_result: SwitcherNamedPipeQueuedFrameHandoffResultKind::FrameRead,
+                last_error: None,
+                local_error: None,
+                retry_classification: None,
+                elapsed_millis: 0,
+            },
+            runtime: Some(
+                stream_sync_switcher::SwitcherNamedPipeQueuedFrameHandoffRuntimeOutput {
+                    request: stream_sync_net_core::ServerSwitcherQueuedFrameHandoffRequest {
+                        handoff_version: stream_sync_net_core::SERVER_SWITCHER_HANDOFF_VERSION,
+                        request_id,
+                        client_id: input.client_id.clone(),
+                        run_id: input.run_id.clone(),
+                        read_mode: handoff_read_mode_from_switcher_mode(input.mode),
+                    },
+                    response: Some(response),
+                    response_payload_len: Some(frame.encoded_payload_len),
+                    parse_error: None,
+                    io_error: None,
+                    result: result.clone(),
+                },
+            ),
+            result,
+        }
+    }
+
+    #[derive(Debug, Default)]
+    struct SourceFlappingObservedPerClientHandoff {
+        client0_calls: RefCell<u32>,
+        client1_calls: RefCell<u32>,
+    }
+
+    impl PreviewLoopRealHandoff for SourceFlappingObservedPerClientHandoff {
+        fn read_handoff_frame_with_observation(
+            &mut self,
+            input: SwitcherQueuedFrameHandoffInput,
+        ) -> PreviewLoopRealHandoffCall {
+            let (calls, seed, request_id_base) = match input.client_id.0.as_str() {
+                "real-client-0" => (&self.client0_calls, 0x10, 100u64),
+                "real-client-1" => (&self.client1_calls, 0x40, 200u64),
+                _ => (&self.client0_calls, 0xdd, 900u64),
+            };
+            let mut call_count = calls.borrow_mut();
+            let current_call = *call_count;
+            *call_count += 1;
+
+            let frame = SwitcherSingleViewSelectedEncodedFrame {
+                client_id: input.client_id.clone(),
+                run_id: input.run_id.clone(),
+                frame_id: 1,
+                capture_timestamp: TimestampMicros(1_000_001),
+                send_timestamp: TimestampMicros(1_000_101),
+                queued_at: TimestampMicros(2_400_001),
+                is_keyframe: true,
+                width: 2,
+                height: 2,
+                fps_nominal: 30,
+                codec: Codec::H264,
+                encoded_payload_len: 1,
+                encoded_payload: vec![seed],
+            };
+            let decodable_source = if current_call == 0 {
+                stream_sync_net_core::ServerSwitcherQueuedFrameDecodableSource::Queue
+            } else {
+                stream_sync_net_core::ServerSwitcherQueuedFrameDecodableSource::RetainedKeyframe
+            };
+            let request_output = observed_frame_read_request_output(
+                "fixture-pipe",
+                &input,
+                request_id_base + current_call as u64,
+                &frame,
+                decodable_source,
+                true,
+                Some(frame.frame_id),
+            );
+            let result = SwitcherQueuedFrameHandoffResult::FrameRead {
+                frame,
+                mode: input.mode,
+                remaining_client_queue_len: 0,
+            };
+
+            PreviewLoopRealHandoffCall {
+                request_output: Some(request_output),
+                result,
+            }
+        }
+    }
+
     #[derive(Debug, Clone)]
     struct RecordingInputModeQueuedFrameHandoff {
         modes: std::rc::Rc<RefCell<Vec<SwitcherSingleClientQueueSourceMode>>>,
@@ -10801,6 +11078,53 @@ mod tests {
         assert!(summary.slot_diagnostics[0].contains("decode_skipped_reason=UnchangedFrameReuse"));
         assert!(summary.slot_diagnostics[2].contains("decode_attempted=false"));
         assert!(summary.slot_diagnostics[2].contains("decode_skipped_reason=UnchangedFrameReuse"));
+
+        let requests = render_runtime.requests.borrow();
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0].top_left, [0x10, 0x11, 0x12, 255]);
+        assert_eq!(requests[0].bottom_left, [0x40, 0x41, 0x42, 255]);
+    }
+
+    #[test]
+    fn switcher_four_view_two_real_handoff_preview_loop_reuses_render_when_only_selected_source_changes(
+    ) {
+        let render_runtime = RecordingPersistentFixtureRenderedWindowRuntime::default();
+        let summary = run_four_view_two_real_handoff_preview_loop_with_handoff_runtime_and_sleep(
+            "fixture-pipe",
+            0,
+            ClientId("real-client-0".to_string()),
+            RunId("real-run-0".to_string()),
+            2,
+            ClientId("real-client-1".to_string()),
+            RunId("real-run-1".to_string()),
+            NonZeroU32::new(2).expect("2 should be non-zero"),
+            SwitcherSingleClientQueueSourceMode::PreviewLatestDecodable,
+            TimestampMicros(1_000_004),
+            SourceFlappingObservedPerClientHandoff::default(),
+            &DeterministicFourViewFixtureDecodeRuntime,
+            &render_runtime,
+            &RecordingCadenceSleepHook::default(),
+        );
+
+        assert_eq!(summary.frames_attempted, 2);
+        assert_eq!(summary.frames_rendered, 2);
+        assert_eq!(summary.decode_attempt_count, 2);
+        assert_eq!(summary.skipped_decode_unchanged_frame_count, 2);
+        assert_eq!(summary.quad_view_visual_unchanged_count, 1);
+        assert_eq!(summary.quad_view_visual_changed_count, 1);
+        assert_eq!(summary.materialization_reason_first_render_count, 1);
+        assert_eq!(summary.materialization_reason_visual_changed_count, 0);
+        assert_eq!(summary.materialization_reason_force_render_count, 0);
+        assert_eq!(summary.slot0_frame_id_changed_count, 0);
+        assert_eq!(summary.slot2_frame_id_changed_count, 0);
+        assert_eq!(summary.slot0_selected_source_changed_count, 1);
+        assert_eq!(summary.slot2_selected_source_changed_count, 1);
+        assert_eq!(summary.placeholder_visual_changed_count, 0);
+        assert_eq!(summary.render_input_unchanged_count, 1);
+        assert_eq!(summary.render_reuse_frame_count, 1);
+        assert_eq!(summary.render_buffer_reuse_count, 1);
+        assert!(summary.slot_diagnostics[0].contains("selected_frame_source=retained_keyframe"));
+        assert!(summary.slot_diagnostics[2].contains("selected_frame_source=retained_keyframe"));
 
         let requests = render_runtime.requests.borrow();
         assert_eq!(requests.len(), 1);

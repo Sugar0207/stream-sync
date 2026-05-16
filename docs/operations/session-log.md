@@ -2,6 +2,130 @@
 
 ## 2026-05-16
 ### Type
+- Codex documentation update
+
+### Work
+- Recorded the latest same-PC `2`-client rerun evidence from `manual-logs/two-client-render-rerun-20260516-141228`.
+- Confirmed that the source-only `selected_source` churn fix is runtime-effective:
+  - `materialization_reason_visual_changed_count=73 -> 31`
+  - `quad_view_visual_changed_count=80 -> 36`
+  - `render_buffer_bytes_copied_total=269107200 -> 114278400`
+  - `render_buffer_cpu_scale_copy_elapsed_ms=4112 -> 2115`
+  - `effective_render_fps_after_first_render=10.755 -> 12.029`
+- Kept the server/client/handoff path clean in the rerun:
+  - `server frames_queued=1800`
+  - `per_client_queued_frames=player1:900|player2:900`
+  - `io_error_count=0`
+  - `client1/client2 frames_sent=900`
+  - `send_failures=0`
+  - `encode_failures=0`
+- Reclassified the remaining bottleneck as the scale loop body, with `render_buffer_scale_loop_elapsed_ms=2115` still dominant.
+- Updated `docs/operations/todo.md` so the current position now reflects the successful source-only churn reduction and the remaining scale-loop bottleneck.
+- No code changes were made in this step.
+
+### Changed Files
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### Decisions
+- Treat the source-only `selected_source` churn fix as validated by runtime evidence.
+- Keep `selected_source_changed_count` as diagnostics, but no longer treat it as the main render-facing cause.
+- Keep Production Readiness as FAIL because the 30fps target is still not met.
+- Keep the next bottleneck labeled as the scale loop body rather than server/client/handoff or GDI.
+
+### Unresolved
+- The scale loop hot path still needs decomposition before the next performance slice.
+- `selected_source_changed_count` still moves, but its remaining impact on render cost is now secondary and unproven.
+- Production Readiness remains FAIL.
+
+### Next
+- Inspect the scale loop hot path and split `render_buffer_scale_loop_elapsed_ms`.
+- Confirm whether any render-facing gate still depends on source churn beyond diagnostics.
+- Defer distributed-PC reruns until scale-loop cost is reduced further.
+
+### TODO Update
+- Updated `docs/operations/todo.md` current position with the latest rerun, the source-only churn delta, and the scale loop bottleneck.
+- Replaced the previous rerun-first next items with scale-loop-focused next steps.
+
+### Validation
+- `git diff --check`
+  - result: PASS (LF/CRLF warning only)
+
+## 2026-05-16
+### Type
+- Codex implementation
+
+### Work
+- Investigated the latest same-PC `2`-client rerun evidence from `manual-logs/two-client-render-rerun-20260516-134408` and narrowed the next hot path target to `selected_source` churn inside the switcher:
+  - `materialization_reason_visual_changed_count=73`
+  - `slot0_selected_source_changed_count=37`
+  - `slot1_selected_source_changed_count=40`
+  - `slot0_frame_id_changed_count=18`
+  - `slot1_frame_id_changed_count=17`
+- Confirmed in `apps/switcher/src/main.rs` that the previous 2-real preview loop used full identity equality for all of the following:
+  - `visual_unchanged`
+  - clean-output render reuse gate
+  - changed-slot detection for quad-view incremental updates
+  - unchanged decode reuse counters
+- Confirmed the problematic path directly:
+  - `TwoRealPreviewLoopSlotVisualIdentity` included `selected_frame_source`
+  - `TwoRealPreviewLoopDecodedSlotIdentity` included `decodable_source`
+  - same `client_id` / `run_id` / `frame_id` could still compare different when source flipped between `queue` and `retained_keyframe`
+- Implemented a minimal fix that keeps source diagnostics but narrows render-facing equality:
+  - added render-equality helpers that ignore source-only differences when the displayed frame identity is otherwise the same
+  - switched `visual_unchanged` and changed-slot incremental update detection to that render-equality helper
+  - aligned unchanged decode reuse counters to the same frame-identity basis so source-only churn no longer undercounts `skipped_decode_unchanged_frame_count`
+  - kept `slot*_selected_source_changed_count` intact as diagnostics
+  - kept placeholder/source-error/frame-id driven visual changes intact
+- Tightened `placeholder_visual_changed_count` so source-only metadata changes inside placeholder states no longer increment it.
+- Added focused coverage for the exact narrow case:
+  - `switcher_four_view_two_real_handoff_preview_loop_reuses_render_when_only_selected_source_changes`
+  - the test uses an observed handoff fixture that returns the same frame while `decodable_source` flips from `queue` to `retained_keyframe`, and verifies that render reuse still happens while source-change counters remain visible
+- Kept runtime rerun out of this step as requested.
+
+### Changed Files
+- `apps/switcher/src/main.rs`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### Decisions
+- Treat `selected_source` / `decodable_source` as diagnostics-only for this slice, not as render-facing visual identity, when `client_id` / `run_id` / `frame_id` and placeholder/decode state are unchanged.
+- Apply the same source-agnostic frame identity rule to render reuse, quad-view changed-slot detection, and unchanged decode reuse counters so the summary does not drift away from actual behavior.
+- Keep all existing summary fields intact; this slice changes equality semantics only, not summary schema.
+
+### Unresolved
+- No runtime rerun was collected in this step, so the actual delta in `materialization_reason_visual_changed_count` after the fix is still unproven.
+- If rerun evidence still shows high `visual_changed`, the next narrow suspects are frame advance and placeholder transitions rather than source-only churn.
+- Production Readiness remains FAIL.
+
+### Next
+- Run the next same-PC `2`-client rerun and confirm whether source-only churn stops causing extra materialization.
+- Compare post-fix `quad_view_visual_changed_count`, `render_reuse_frame_count`, and `placeholder_visual_changed_count` against `manual-logs/two-client-render-rerun-20260516-134408`.
+
+### TODO Update
+- Updated `docs/operations/todo.md` current position to record the latest rerun evidence, the confirmed code path, and the render-facing equality fix.
+- Replaced the top next items with a post-fix rerun/readback sequence rather than another code-only investigation.
+
+### Validation
+- `cargo fmt`
+  - result: PASS
+- `cargo fmt --check`
+  - result: PASS
+- `cargo check -p stream-sync-switcher`
+  - result: PASS
+- focused switcher tests
+  - result: PASS
+  - command:
+    `cargo test -p stream-sync-switcher switcher_four_view_two_real_handoff_preview -- --nocapture`
+  - command:
+    `cargo test -p stream-sync-switcher obs_render_buffer_reuses_single_retained_buffer -- --nocapture`
+- `cargo check --workspace`
+  - result: PASS
+- `git diff --check`
+  - result: PASS (LF/CRLF warning only)
+
+## 2026-05-16
+### Type
 - Codex implementation
 
 ### Work
