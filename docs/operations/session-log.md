@@ -2,6 +2,73 @@
 
 ## 2026-05-16
 ### Type
+- Codex implementation
+
+### Work
+- Inspected the remaining switcher render-buffer bottleneck narrowly in `apps/switcher/src/main.rs` without widening into protocol/server/distributed-PC work.
+- Confirmed by code inspection that same-size fast paths already exist in the current switcher:
+  - `scale_four_view_bgra_to_obs_validation_profile_from_slice` already uses a direct full-slice copy when `width == output_width && height == output_height`
+  - `ObsFriendlyFourViewLoopWindowRenderRuntime::render_once` already bypasses the helper entirely when the incoming `SwitcherDecodedFrameRenderInput` is already `1280x720`
+- Confirmed by code inspection that the current 4-view composition shape makes the dominant latest path unlikely to be `1280x720 -> 1280x720`:
+  - `four_view_quad_slot_size` takes the max renderable slot dimensions
+  - fixed 4-view composition then builds a `2x2` canvas from that slot size
+  - with the current client decode metadata remaining `1280x720`, the composed frame is inferred to be `2560x1440`
+  - therefore the latest `render_buffer_scale_loop_elapsed_ms=2115` is more likely the dedicated `2x` half-scale path than a missing same-size passthrough
+- Added minimal render-buffer branch observability so the next rerun can prove that runtime shape directly:
+  - `render_buffer_passthrough_count`
+  - `render_buffer_same_size_copy_count`
+  - `render_buffer_half_scale_count`
+  - `render_buffer_generic_scale_count`
+- Added focused tests that lock those branches:
+  - helper same-size copy path
+  - helper `2x` half-scale path
+  - render-runtime passthrough path when the frame already matches the OBS output profile
+- Kept runtime rerun out of this step as requested.
+
+### Changed Files
+- `apps/switcher/src/main.rs`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### Decisions
+- Do not add another same-size fast path because the narrow inspection showed that path already exists in both the helper and the render runtime.
+- Treat the remaining dominant scale-loop cost as a likely `2560x1440 -> 1280x720` half-scale problem until the next rerun confirms the new branch counters.
+- Keep the next step focused on runtime confirmation and, only if needed, a narrow optimization of the current half-scale branch rather than config work, benchmark design, persistent decoder work, or GPU/shared-memory work.
+
+### Unresolved
+- No new runtime rerun was collected in this step, so the half-scale interpretation is still an inference from the current code path and prior runtime evidence rather than a newly observed summary.
+- The current half-scale loop itself has not been optimized yet.
+- Production Readiness remains FAIL.
+
+### Next
+- Run the next same-PC `2`-client rerun and read the new render-buffer branch counters directly.
+- If `render_buffer_half_scale_count` dominates, inspect only that `2x` loop body for the next narrow optimization slice.
+- Keep distributed-PC validation deferred until the current scale-loop branch is confirmed and reduced further.
+
+### TODO Update
+- Updated `docs/operations/todo.md` current position to record that same-size fast paths already exist and that the likely remaining dominant branch is half-scale.
+- Replaced the top next items with a rerun that reads the new branch counters before any further scale-loop implementation work.
+
+### Validation
+- `cargo fmt`
+  - result: PASS
+- `cargo fmt --check`
+  - result: PASS
+- `cargo check -p stream-sync-switcher`
+  - result: PASS
+- focused switcher tests
+  - result: PASS
+  - command:
+    `cargo test -p stream-sync-switcher obs_ -- --nocapture`
+  - command:
+    `cargo test -p stream-sync-switcher switcher_four_view_two_real_handoff_preview -- --nocapture`
+- `cargo check --workspace`
+  - result: PASS
+- `git diff --check`
+  - result: PASS (LF/CRLF warning only)
+
+## 2026-05-16
+### Type
 - Codex documentation update
 
 ### Work

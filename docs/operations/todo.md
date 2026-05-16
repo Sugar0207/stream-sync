@@ -22,6 +22,9 @@
 ---
 
 ## 現在位置
+- 2026-05-16 の narrow switcher inspection で、`apps/switcher/src/main.rs` の render buffer materialization helper には same-size fast path が既に存在することを確認した。`scale_four_view_bgra_to_obs_validation_profile_from_slice` は `width == output_width && height == output_height` なら full-slice copy、`ObsFriendlyFourViewLoopWindowRenderRuntime::render_once` は `SwitcherDecodedFrameRenderInput` 自体が既に `1280x720` のとき helper を呼ばずにそのまま render へ流す passthrough branch を持っている
+- 同 inspection では、latest bottleneck `render_buffer_scale_loop_elapsed_ms=2115` は「same-size fast path 未実装」よりも `2x` half-scale path の可能性が高いと整理した。4-view composition は renderable slot の最大サイズを `slot_width/slot_height` として canvas を `2x2` で組むため、current client decode metadata `1280x720` 前提では composed canvas は推論上 `2560x1440` になる。このため latest rerun は実質 `2560x1440 -> 1280x720` の half-scale loop を踏んでいた可能性が高く、`1280x720 -> 1280x720` passthrough が支配的だった shape ではない
+- 次 rerun で即読めるよう、switcher summary に render-buffer branch counters を追加した。`render_buffer_passthrough_count`、`render_buffer_same_size_copy_count`、`render_buffer_half_scale_count`、`render_buffer_generic_scale_count` により、same-size bypass が使われたか、helper same-size copy か、current dominant half-scale loop か、generic nearest-neighbor かを runtime summary だけで切り分けられる
 - latest same-PC `2`-client rerun `manual-logs/two-client-render-rerun-20260516-141228` では、source-only `selected_source` churn fix が runtime evidence 上で有効だった。`materialization_reason_visual_changed_count=31` まで下がり、前回 diagnostic rerun の `73` から大きく改善した
 - 同 rerun では `quad_view_visual_changed_count=36`、`render_reuse_frame_count=203`、`render_buffer_bytes_copied_total=114278400`、`render_buffer_cpu_scale_copy_elapsed_ms=2115`、`render_buffer_scale_loop_elapsed_ms=2115`、`effective_render_fps_after_first_render=12.029` だった。前回 diagnostic rerun の `quad_view_visual_changed_count=80`、`render_buffer_bytes_copied_total=269107200`、`render_buffer_cpu_scale_copy_elapsed_ms=4112`、`effective_render_fps_after_first_render=10.755` と比べて、render-facing churn と CPU scale/copy cost がどちらも大きく減った
 - server/client/handoff は clean のままで、`server frames_queued=1800`、`per_client_queued_frames=player1:900|player2:900`、`io_error_count=0`、`client1/client2 frames_sent=900`、`send_failures=0`、`encode_failures=0` だった。`selected_source_changed_count` は `slot0=32` / `slot1=30` で残っているが、render-facing `visual_changed` と materialization は大きく減っており、source-only churn は diagnostics としては残すが render gate の主因ではなくなった
@@ -1029,6 +1032,6 @@ continuous runtime first slice の blocker:
 - actual dashboard UI rendering remains unimplemented.
 
 ## Next Items
-1. scale loop 本体の hot path を次 step で追い、`render_buffer_scale_loop_elapsed_ms=2115` の内訳を切り分ける
-2. source-only `selected_source` churn は diagnostics として残しつつ、render gate への影響が他に残っていないかを確認する
-3. distributed-PC `2`-client smoke は scale loop ボトルネックの整理後に回し、同じ 30fps target に対する baseline 比較へ進める
+1. same-PC `2`-client rerun を次 step で回し、`render_buffer_passthrough_count` / `render_buffer_same_size_copy_count` / `render_buffer_half_scale_count` / `render_buffer_generic_scale_count` を読んで latest `2115ms` がどの branch に乗っているか runtime evidence で確定する
+2. rerun で half-scale path が支配的なら、`2560x1440 -> 1280x720` 専用 loop の narrow optimization を検討し、same-size fast path 追加ではなく current dominant branch の最小改善へ進む
+3. distributed-PC `2`-client smoke は scale loop branch の runtime evidence を揃えてから回し、同じ 30fps target に対する baseline 比較へ進める

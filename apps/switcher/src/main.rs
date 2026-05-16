@@ -1843,6 +1843,10 @@ struct SwitcherFourViewTwoRealHandoffPreviewLoopSummary {
     render_buffer_output_copy_elapsed_ms: u128,
     render_buffer_resize_elapsed_ms: u128,
     render_buffer_clear_elapsed_ms: u128,
+    render_buffer_passthrough_count: u32,
+    render_buffer_same_size_copy_count: u32,
+    render_buffer_half_scale_count: u32,
+    render_buffer_generic_scale_count: u32,
     render_buffer_reuse_count: u32,
     render_buffer_allocation_count: u32,
     render_buffer_bytes_copied_total: usize,
@@ -2277,6 +2281,10 @@ struct TwoRealPreviewLoopRuntimeTiming {
     render_buffer_output_copy_elapsed_ms: u128,
     render_buffer_resize_elapsed_ms: u128,
     render_buffer_clear_elapsed_ms: u128,
+    render_buffer_passthrough_count: u32,
+    render_buffer_same_size_copy_count: u32,
+    render_buffer_half_scale_count: u32,
+    render_buffer_generic_scale_count: u32,
     render_buffer_reuse_count: u32,
     render_buffer_allocation_count: u32,
     render_buffer_bytes_copied_total: usize,
@@ -2542,6 +2550,10 @@ struct BgraRenderBufferDiagnostics {
     output_copy_elapsed_ms: u128,
     resize_elapsed_ms: u128,
     clear_elapsed_ms: u128,
+    passthrough_count: u32,
+    same_size_copy_count: u32,
+    half_scale_count: u32,
+    generic_scale_count: u32,
 }
 
 fn take_reusable_obs_render_buffer(expected_len: usize) -> (Vec<u8>, BgraRenderBufferDiagnostics) {
@@ -2665,6 +2677,18 @@ impl<'a, Runtime> ObsFriendlyFourViewLoopWindowRenderRuntime<'a, Runtime> {
             timing.render_buffer_output_copy_elapsed_ms += diagnostics.output_copy_elapsed_ms;
             timing.render_buffer_resize_elapsed_ms += diagnostics.resize_elapsed_ms;
             timing.render_buffer_clear_elapsed_ms += diagnostics.clear_elapsed_ms;
+            timing.render_buffer_passthrough_count = timing
+                .render_buffer_passthrough_count
+                .saturating_add(diagnostics.passthrough_count);
+            timing.render_buffer_same_size_copy_count = timing
+                .render_buffer_same_size_copy_count
+                .saturating_add(diagnostics.same_size_copy_count);
+            timing.render_buffer_half_scale_count = timing
+                .render_buffer_half_scale_count
+                .saturating_add(diagnostics.half_scale_count);
+            timing.render_buffer_generic_scale_count = timing
+                .render_buffer_generic_scale_count
+                .saturating_add(diagnostics.generic_scale_count);
             timing.render_buffer_reuse_count = timing
                 .render_buffer_reuse_count
                 .saturating_add(diagnostics.reuse_count);
@@ -2745,6 +2769,7 @@ where
             (
                 request.frame,
                 BgraRenderBufferDiagnostics {
+                    passthrough_count: 1,
                     reuse_count: 1,
                     ..BgraRenderBufferDiagnostics::default()
                 },
@@ -4009,6 +4034,10 @@ where
         render_buffer_output_copy_elapsed_ms: timing.render_buffer_output_copy_elapsed_ms,
         render_buffer_resize_elapsed_ms: timing.render_buffer_resize_elapsed_ms,
         render_buffer_clear_elapsed_ms: timing.render_buffer_clear_elapsed_ms,
+        render_buffer_passthrough_count: timing.render_buffer_passthrough_count,
+        render_buffer_same_size_copy_count: timing.render_buffer_same_size_copy_count,
+        render_buffer_half_scale_count: timing.render_buffer_half_scale_count,
+        render_buffer_generic_scale_count: timing.render_buffer_generic_scale_count,
         render_buffer_reuse_count: timing.render_buffer_reuse_count,
         render_buffer_allocation_count: timing.render_buffer_allocation_count,
         render_buffer_bytes_copied_total: timing.render_buffer_bytes_copied_total,
@@ -7384,6 +7413,7 @@ fn scale_four_view_bgra_to_obs_validation_profile_from_slice(
         diagnostics.output_copy_elapsed_ms = output_copy_start.elapsed().as_millis();
         diagnostics.bytes_copied_total =
             diagnostics.bytes_copied_total.saturating_add(pixels.len());
+        diagnostics.same_size_copy_count = 1;
         return (
             stream_sync_switcher::SwitcherDecodedFrameRenderInput {
                 width: output_width,
@@ -7412,6 +7442,7 @@ fn scale_four_view_bgra_to_obs_validation_profile_from_slice(
         diagnostics.scale_loop_elapsed_ms = scale_loop_start.elapsed().as_millis();
         diagnostics.bytes_copied_total =
             diagnostics.bytes_copied_total.saturating_add(pixels.len());
+        diagnostics.half_scale_count = 1;
 
         return (
             stream_sync_switcher::SwitcherDecodedFrameRenderInput {
@@ -7437,6 +7468,7 @@ fn scale_four_view_bgra_to_obs_validation_profile_from_slice(
     }
     diagnostics.scale_loop_elapsed_ms = scale_loop_start.elapsed().as_millis();
     diagnostics.bytes_copied_total = diagnostics.bytes_copied_total.saturating_add(pixels.len());
+    diagnostics.generic_scale_count = 1;
 
     (
         stream_sync_switcher::SwitcherDecodedFrameRenderInput {
@@ -7976,7 +8008,7 @@ fn format_four_view_two_real_handoff_preview_loop_summary(
     summary: &SwitcherFourViewTwoRealHandoffPreviewLoopSummary,
 ) -> String {
     format!(
-        "switcher four-view two-real handoff preview loop command_name=--four-view-two-real-handoff-preview-loop real_handoff=true real_slot_count=2 real_slot0_index={} real_slot1_index={} pipe_name={} actual_pipe_path={} preview_mode={} read_mode={} client0_id={} run0_id={} client1_id={} run1_id={} frames_attempted={} frames_rendered={} render_failures={} elapsed_ms={} target_fps={} configured_frame_interval_ms={} effective_attempt_fps={} effective_render_fps={} first_render_attempt_index={} first_render_elapsed_ms={} rendered_after_first_render={} effective_render_fps_after_first_render={} no_render_before_first_render={} selected_count={} no_frame_count={} handoff_error_count={} decode_attempt_count={} decode_success_count={} render_success_count={} render_failure_count={} unchanged_frame_reuse_count={} skipped_decode_unchanged_frame_count={} redecoded_same_frame_count={} decode_elapsed_ms={} decode_process_spawn_elapsed_ms={} decode_input_write_elapsed_ms={} decode_output_read_elapsed_ms={} decode_process_wait_elapsed_ms={} decode_pixel_convert_elapsed_ms={} decode_buffer_allocation_count={} decode_output_bytes_total={} decode_cached_frame_reuse_count={} decode_cache_miss_count={} decoded_buffer_clone_count={} composed_buffer_clone_count={} decode_output_buffer_reuse_count={} handoff_elapsed_ms={} render_elapsed_ms={} avg_decode_elapsed_ms={} avg_decode_output_read_elapsed_ms={} avg_decode_process_spawn_elapsed_ms={} avg_handoff_elapsed_ms={} avg_render_elapsed_ms={} loop_total_elapsed_ms={} attempt_body_elapsed_ms={} loop_sleep_elapsed_ms={} frame_interval_wait_elapsed_ms={} event_pump_elapsed_ms={} window_update_elapsed_ms={} render_prepare_elapsed_ms={} render_buffer_cpu_scale_copy_elapsed_ms={} render_buffer_copy_elapsed_ms={} render_buffer_materialization_elapsed_ms={} render_buffer_scale_prepare_elapsed_ms={} render_buffer_scale_loop_elapsed_ms={} render_buffer_output_copy_elapsed_ms={} render_buffer_resize_elapsed_ms={} render_buffer_clear_elapsed_ms={} render_buffer_reuse_count={} render_buffer_allocation_count={} render_buffer_bytes_copied_total={} render_backend_wait_elapsed_ms={} gdi_invalidate_elapsed_ms={} gdi_paint_wait_elapsed_ms={} gdi_wm_paint_elapsed_ms={} gdi_stretchdibits_elapsed_ms={} texture_upload_elapsed_ms={} window_present_elapsed_ms={} vsync_or_present_block_elapsed_ms={} quad_view_compose_elapsed_ms={} quad_view_compose_attempt_count={} quad_view_compose_success_count={} quad_view_compose_skipped_unchanged_count={} quad_view_composed_frame_reuse_count={} quad_view_visual_unchanged_count={} quad_view_visual_changed_count={} materialization_reason_first_render_count={} materialization_reason_visual_changed_count={} materialization_reason_previous_output_missing_count={} materialization_reason_profile_or_size_mismatch_count={} materialization_reason_force_render_count={} materialization_reason_unknown_count={} slot0_frame_id_changed_count={} slot1_frame_id_changed_count={} slot2_frame_id_changed_count={} slot3_frame_id_changed_count={} slot0_selected_source_changed_count={} slot1_selected_source_changed_count={} slot2_selected_source_changed_count={} slot3_selected_source_changed_count={} placeholder_visual_changed_count={} quad_view_incremental_update_count={} quad_view_full_compose_count={} quad_view_changed_slot_update_count={} quad_view_reused_slot_count={} quad_view_allocation_count={} avg_render_buffer_cpu_scale_copy_elapsed_ms={} avg_render_buffer_materialization_elapsed_ms={} avg_gdi_paint_wait_elapsed_ms={} avg_gdi_wm_paint_elapsed_ms={} avg_gdi_stretchdibits_elapsed_ms={} avg_quad_view_incremental_update_elapsed_ms={} avg_quad_view_compose_elapsed_ms={} render_call_elapsed_ms={} render_input_unchanged_count={} render_reuse_frame_count={} unaccounted_elapsed_ms={} avg_attempt_elapsed_ms={} max_attempt_elapsed_ms={} slow_attempt_count={} slow_attempt_threshold_ms={} scheduler_status={:?} slot_bindings={} slot_result_kinds={} slot_diagnostics={} clean_output_render_result_kind={} window_title={} output_width={} output_height={}",
+        "switcher four-view two-real handoff preview loop command_name=--four-view-two-real-handoff-preview-loop real_handoff=true real_slot_count=2 real_slot0_index={} real_slot1_index={} pipe_name={} actual_pipe_path={} preview_mode={} read_mode={} client0_id={} run0_id={} client1_id={} run1_id={} frames_attempted={} frames_rendered={} render_failures={} elapsed_ms={} target_fps={} configured_frame_interval_ms={} effective_attempt_fps={} effective_render_fps={} first_render_attempt_index={} first_render_elapsed_ms={} rendered_after_first_render={} effective_render_fps_after_first_render={} no_render_before_first_render={} selected_count={} no_frame_count={} handoff_error_count={} decode_attempt_count={} decode_success_count={} render_success_count={} render_failure_count={} unchanged_frame_reuse_count={} skipped_decode_unchanged_frame_count={} redecoded_same_frame_count={} decode_elapsed_ms={} decode_process_spawn_elapsed_ms={} decode_input_write_elapsed_ms={} decode_output_read_elapsed_ms={} decode_process_wait_elapsed_ms={} decode_pixel_convert_elapsed_ms={} decode_buffer_allocation_count={} decode_output_bytes_total={} decode_cached_frame_reuse_count={} decode_cache_miss_count={} decoded_buffer_clone_count={} composed_buffer_clone_count={} decode_output_buffer_reuse_count={} handoff_elapsed_ms={} render_elapsed_ms={} avg_decode_elapsed_ms={} avg_decode_output_read_elapsed_ms={} avg_decode_process_spawn_elapsed_ms={} avg_handoff_elapsed_ms={} avg_render_elapsed_ms={} loop_total_elapsed_ms={} attempt_body_elapsed_ms={} loop_sleep_elapsed_ms={} frame_interval_wait_elapsed_ms={} event_pump_elapsed_ms={} window_update_elapsed_ms={} render_prepare_elapsed_ms={} render_buffer_cpu_scale_copy_elapsed_ms={} render_buffer_copy_elapsed_ms={} render_buffer_materialization_elapsed_ms={} render_buffer_scale_prepare_elapsed_ms={} render_buffer_scale_loop_elapsed_ms={} render_buffer_output_copy_elapsed_ms={} render_buffer_resize_elapsed_ms={} render_buffer_clear_elapsed_ms={} render_buffer_passthrough_count={} render_buffer_same_size_copy_count={} render_buffer_half_scale_count={} render_buffer_generic_scale_count={} render_buffer_reuse_count={} render_buffer_allocation_count={} render_buffer_bytes_copied_total={} render_backend_wait_elapsed_ms={} gdi_invalidate_elapsed_ms={} gdi_paint_wait_elapsed_ms={} gdi_wm_paint_elapsed_ms={} gdi_stretchdibits_elapsed_ms={} texture_upload_elapsed_ms={} window_present_elapsed_ms={} vsync_or_present_block_elapsed_ms={} quad_view_compose_elapsed_ms={} quad_view_compose_attempt_count={} quad_view_compose_success_count={} quad_view_compose_skipped_unchanged_count={} quad_view_composed_frame_reuse_count={} quad_view_visual_unchanged_count={} quad_view_visual_changed_count={} materialization_reason_first_render_count={} materialization_reason_visual_changed_count={} materialization_reason_previous_output_missing_count={} materialization_reason_profile_or_size_mismatch_count={} materialization_reason_force_render_count={} materialization_reason_unknown_count={} slot0_frame_id_changed_count={} slot1_frame_id_changed_count={} slot2_frame_id_changed_count={} slot3_frame_id_changed_count={} slot0_selected_source_changed_count={} slot1_selected_source_changed_count={} slot2_selected_source_changed_count={} slot3_selected_source_changed_count={} placeholder_visual_changed_count={} quad_view_incremental_update_count={} quad_view_full_compose_count={} quad_view_changed_slot_update_count={} quad_view_reused_slot_count={} quad_view_allocation_count={} avg_render_buffer_cpu_scale_copy_elapsed_ms={} avg_render_buffer_materialization_elapsed_ms={} avg_gdi_paint_wait_elapsed_ms={} avg_gdi_wm_paint_elapsed_ms={} avg_gdi_stretchdibits_elapsed_ms={} avg_quad_view_incremental_update_elapsed_ms={} avg_quad_view_compose_elapsed_ms={} render_call_elapsed_ms={} render_input_unchanged_count={} render_reuse_frame_count={} unaccounted_elapsed_ms={} avg_attempt_elapsed_ms={} max_attempt_elapsed_ms={} slow_attempt_count={} slow_attempt_threshold_ms={} scheduler_status={:?} slot_bindings={} slot_result_kinds={} slot_diagnostics={} clean_output_render_result_kind={} window_title={} output_width={} output_height={}",
         summary.real_slot0_index,
         summary.real_slot1_index,
         summary.pipe_name,
@@ -8045,6 +8077,10 @@ fn format_four_view_two_real_handoff_preview_loop_summary(
         summary.render_buffer_output_copy_elapsed_ms,
         summary.render_buffer_resize_elapsed_ms,
         summary.render_buffer_clear_elapsed_ms,
+        summary.render_buffer_passthrough_count,
+        summary.render_buffer_same_size_copy_count,
+        summary.render_buffer_half_scale_count,
+        summary.render_buffer_generic_scale_count,
         summary.render_buffer_reuse_count,
         summary.render_buffer_allocation_count,
         summary.render_buffer_bytes_copied_total,
@@ -9199,11 +9235,12 @@ mod tests {
     use std::collections::VecDeque;
     use std::io;
     use std::num::NonZeroU32;
+    use std::rc::Rc;
     use std::time::Duration;
 
     use stream_sync_protocol::{ClientId, Codec, RunId, TimestampMicros};
     use stream_sync_switcher::{
-        SwitcherFourViewCleanOutputWindowRenderResult,
+        SwitcherDecodedFramePixelFormat, SwitcherFourViewCleanOutputWindowRenderResult,
         SwitcherFourViewManualPreviewBgraCompositionKind,
         SwitcherFourViewManualPreviewProofFixtureMode,
         SwitcherFourViewManualPreviewRenderFacingKind,
@@ -9254,18 +9291,20 @@ mod tests {
         run_four_view_operator_wrapper_with_runtime_and_clock_and_raw_key_runtime,
         run_four_view_real_handoff_preview_loop_with_handoff_runtime_and_sleep,
         run_four_view_two_real_handoff_preview_loop_with_handoff_runtime_and_sleep,
-        run_send_control_command_with_runtime, split_scripted_operator_wrapper_keys,
-        take_reusable_obs_render_buffer, validate_distinct_four_view_real_slot_indices,
-        write_length_prefixed_utf8_message, DeterministicFourViewFixtureDecodeRuntime,
-        FourViewControlCommandSource, FourViewControlPipeClientRuntime,
-        FourViewOperatorWrapperClock, FourViewOperatorWrapperGuardState,
-        FourViewOperatorWrapperInputSource, FourViewOperatorWrapperRawConsoleRestoreTracker,
-        FourViewOperatorWrapperRawKeyReader, FourViewOperatorWrapperRawKeyRuntime,
+        run_send_control_command_with_runtime,
+        scale_four_view_bgra_to_obs_validation_profile_from_slice,
+        split_scripted_operator_wrapper_keys, take_reusable_obs_render_buffer,
+        validate_distinct_four_view_real_slot_indices, write_length_prefixed_utf8_message,
+        DeterministicFourViewFixtureDecodeRuntime, FourViewControlCommandSource,
+        FourViewControlPipeClientRuntime, FourViewOperatorWrapperClock,
+        FourViewOperatorWrapperGuardState, FourViewOperatorWrapperInputSource,
+        FourViewOperatorWrapperRawConsoleRestoreTracker, FourViewOperatorWrapperRawKeyReader,
+        FourViewOperatorWrapperRawKeyRuntime, ObsFriendlyFourViewLoopWindowRenderRuntime,
         PersistentWindowLifecycleSnapshot, PreviewLoopRealHandoff, PreviewLoopRealHandoffCall,
         SwitcherFourViewControlledPreviewCommand, SwitcherFourViewControlledPreviewCommandSummary,
         SwitcherFrameCadenceSleepHook, SwitcherPersistentWindowLoopRuntimeHook,
         SwitcherQueuedFrameHandoffResult, SwitcherSingleClientQueueSourceMode,
-        FOUR_VIEW_CLEAN_OUTPUT_LOOP_OBS_OUTPUT_HEIGHT,
+        TwoRealPreviewLoopRuntimeTiming, FOUR_VIEW_CLEAN_OUTPUT_LOOP_OBS_OUTPUT_HEIGHT,
         FOUR_VIEW_CLEAN_OUTPUT_LOOP_OBS_OUTPUT_WIDTH, FOUR_VIEW_CLEAN_OUTPUT_LOOP_SCALE_MODE,
         REUSABLE_OBS_RENDER_BUFFER,
     };
@@ -10723,6 +10762,120 @@ mod tests {
     }
 
     #[test]
+    fn obs_scale_helper_records_same_size_copy_path() {
+        REUSABLE_OBS_RENDER_BUFFER.with(|buffer| *buffer.borrow_mut() = None);
+
+        let expected_len = (FOUR_VIEW_CLEAN_OUTPUT_LOOP_OBS_OUTPUT_WIDTH
+            * FOUR_VIEW_CLEAN_OUTPUT_LOOP_OBS_OUTPUT_HEIGHT
+            * 4) as usize;
+        let source = vec![0x2a; expected_len];
+        let (scaled, diagnostics) = scale_four_view_bgra_to_obs_validation_profile_from_slice(
+            FOUR_VIEW_CLEAN_OUTPUT_LOOP_OBS_OUTPUT_WIDTH,
+            FOUR_VIEW_CLEAN_OUTPUT_LOOP_OBS_OUTPUT_HEIGHT,
+            SwitcherDecodedFramePixelFormat::Bgra8,
+            &source,
+            FOUR_VIEW_CLEAN_OUTPUT_LOOP_OBS_OUTPUT_WIDTH,
+            FOUR_VIEW_CLEAN_OUTPUT_LOOP_OBS_OUTPUT_HEIGHT,
+        );
+
+        assert_eq!(scaled.width, FOUR_VIEW_CLEAN_OUTPUT_LOOP_OBS_OUTPUT_WIDTH);
+        assert_eq!(scaled.height, FOUR_VIEW_CLEAN_OUTPUT_LOOP_OBS_OUTPUT_HEIGHT);
+        assert_eq!(scaled.pixels.len(), expected_len);
+        assert_eq!(diagnostics.bytes_copied_total, expected_len);
+        assert_eq!(diagnostics.same_size_copy_count, 1);
+        assert_eq!(diagnostics.half_scale_count, 0);
+        assert_eq!(diagnostics.generic_scale_count, 0);
+        assert_eq!(diagnostics.passthrough_count, 0);
+
+        REUSABLE_OBS_RENDER_BUFFER.with(|buffer| *buffer.borrow_mut() = None);
+    }
+
+    #[test]
+    fn obs_scale_helper_records_half_scale_path() {
+        REUSABLE_OBS_RENDER_BUFFER.with(|buffer| *buffer.borrow_mut() = None);
+
+        let source_width = FOUR_VIEW_CLEAN_OUTPUT_LOOP_OBS_OUTPUT_WIDTH * 2;
+        let source_height = FOUR_VIEW_CLEAN_OUTPUT_LOOP_OBS_OUTPUT_HEIGHT * 2;
+        let source_len = (source_width * source_height * 4) as usize;
+        let source = vec![0x55; source_len];
+        let (scaled, diagnostics) = scale_four_view_bgra_to_obs_validation_profile_from_slice(
+            source_width,
+            source_height,
+            SwitcherDecodedFramePixelFormat::Bgra8,
+            &source,
+            FOUR_VIEW_CLEAN_OUTPUT_LOOP_OBS_OUTPUT_WIDTH,
+            FOUR_VIEW_CLEAN_OUTPUT_LOOP_OBS_OUTPUT_HEIGHT,
+        );
+
+        assert_eq!(scaled.width, FOUR_VIEW_CLEAN_OUTPUT_LOOP_OBS_OUTPUT_WIDTH);
+        assert_eq!(scaled.height, FOUR_VIEW_CLEAN_OUTPUT_LOOP_OBS_OUTPUT_HEIGHT);
+        assert_eq!(
+            scaled.pixels.len(),
+            (FOUR_VIEW_CLEAN_OUTPUT_LOOP_OBS_OUTPUT_WIDTH
+                * FOUR_VIEW_CLEAN_OUTPUT_LOOP_OBS_OUTPUT_HEIGHT
+                * 4) as usize
+        );
+        assert_eq!(diagnostics.same_size_copy_count, 0);
+        assert_eq!(diagnostics.half_scale_count, 1);
+        assert_eq!(diagnostics.generic_scale_count, 0);
+        assert_eq!(diagnostics.passthrough_count, 0);
+
+        REUSABLE_OBS_RENDER_BUFFER.with(|buffer| *buffer.borrow_mut() = None);
+    }
+
+    #[test]
+    fn obs_render_runtime_records_passthrough_when_frame_already_matches_obs_profile() {
+        #[derive(Debug, Default)]
+        struct RecordingRender;
+
+        impl SwitcherWindowRenderRuntimeHook for RecordingRender {
+            fn render_once(
+                &self,
+                request: SwitcherWindowRenderRequest,
+            ) -> SwitcherWindowRenderResult {
+                SwitcherWindowRenderResult::Rendered(
+                    stream_sync_switcher::SwitcherWindowRenderSuccess {
+                        width: request.frame.width,
+                        height: request.frame.height,
+                        title: request.title,
+                        hold_millis: request.hold_millis,
+                    },
+                )
+            }
+        }
+
+        let timing = Rc::new(RefCell::new(TwoRealPreviewLoopRuntimeTiming::default()));
+        let runtime = RecordingRender;
+        let obs_runtime =
+            ObsFriendlyFourViewLoopWindowRenderRuntime::with_timing(&runtime, Rc::clone(&timing));
+        let request = SwitcherWindowRenderRequest {
+            frame: stream_sync_switcher::SwitcherDecodedFrameRenderInput {
+                width: FOUR_VIEW_CLEAN_OUTPUT_LOOP_OBS_OUTPUT_WIDTH,
+                height: FOUR_VIEW_CLEAN_OUTPUT_LOOP_OBS_OUTPUT_HEIGHT,
+                pixel_format: SwitcherDecodedFramePixelFormat::Bgra8,
+                pixels: vec![
+                    0;
+                    (FOUR_VIEW_CLEAN_OUTPUT_LOOP_OBS_OUTPUT_WIDTH
+                        * FOUR_VIEW_CLEAN_OUTPUT_LOOP_OBS_OUTPUT_HEIGHT
+                        * 4) as usize
+                ],
+            },
+            title: "StreamSync 4-view Output".to_string(),
+            hold_millis: 0,
+        };
+
+        let result = obs_runtime.render_once(request);
+
+        assert!(matches!(result, SwitcherWindowRenderResult::Rendered(_)));
+        let timing = timing.borrow().clone();
+        assert_eq!(timing.render_buffer_passthrough_count, 1);
+        assert_eq!(timing.render_buffer_same_size_copy_count, 0);
+        assert_eq!(timing.render_buffer_half_scale_count, 0);
+        assert_eq!(timing.render_buffer_generic_scale_count, 0);
+        assert_eq!(timing.render_buffer_scale_loop_elapsed_ms, 0);
+    }
+
+    #[test]
     fn switcher_four_view_real_handoff_preview_loop_uses_one_real_slot_and_three_placeholders() {
         let render_runtime = PersistentFixtureRenderedWindowRuntime::default();
         let summary = run_four_view_real_handoff_preview_loop_with_handoff_runtime_and_sleep(
@@ -11509,6 +11662,10 @@ mod tests {
         assert!(formatted.contains("render_buffer_output_copy_elapsed_ms="));
         assert!(formatted.contains("render_buffer_resize_elapsed_ms="));
         assert!(formatted.contains("render_buffer_clear_elapsed_ms="));
+        assert!(formatted.contains("render_buffer_passthrough_count="));
+        assert!(formatted.contains("render_buffer_same_size_copy_count="));
+        assert!(formatted.contains("render_buffer_half_scale_count="));
+        assert!(formatted.contains("render_buffer_generic_scale_count="));
         assert!(formatted.contains("render_buffer_reuse_count=0"));
         assert!(formatted.contains("render_buffer_allocation_count=1"));
         assert!(formatted.contains("render_buffer_bytes_copied_total="));
