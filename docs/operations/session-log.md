@@ -2,6 +2,69 @@
 
 ## 2026-05-17
 ### Type
+- Codex implementation
+
+### Work
+- Added safer one-shot decode diagnostics without changing decode behavior.
+- Kept the current one-shot FFmpeg path structure intact:
+  - no FFmpeg arg changes
+  - no manual write loop conversion
+  - no persistent decoder revive
+  - no continuous-stream rewrite
+- Added one-shot phase diagnostics in `apps/switcher/src/lib.rs`:
+  - `one_shot_decode_stdin_close_elapsed_ms`
+  - `one_shot_decode_stdin_write_to_stdout_first_byte_elapsed_ms`
+  - `one_shot_decode_stdout_first_byte_elapsed_ms`
+- Added derived summary fields in `apps/switcher/src/main.rs`:
+  - `one_shot_decode_write_throughput_bytes_per_ms`
+  - `one_shot_decode_input_write_elapsed_per_payload_kb`
+  - `one_shot_decode_read_throughput_bytes_per_ms`
+- Kept expected raw output length stable while measuring first-byte timing by reading one byte first and then reading the remaining expected rawvideo bytes through the existing bounded path.
+- Updated the focused two-real summary formatting test for the new fields.
+- Did not run a runtime rerun in this step.
+
+### Changed Files
+- `apps/switcher/src/lib.rs`
+- `apps/switcher/src/main.rs`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### Decisions
+- Treat the new slice as diagnostics-only; it does not change one-shot decode semantics.
+- Keep scaled decode output, incremental compose, and persistent config-disabled behavior unchanged.
+- Keep Production Readiness as FAIL until the next rerun shows the new timing split.
+
+### Findings
+- `stdin close` can now be observed separately from `stdin.write_all(...)`.
+- `stdout first byte` can now be observed separately from the rest of the bounded rawvideo read.
+- `stdin_write_to_stdout_first_byte` now gives a direct measurement of the interval from write completion to first output-byte visibility.
+- Derived throughput and per-payload-kb fields can be computed safely in summary formatting without changing decode behavior.
+
+### Next
+- Run the next same-PC `2`-client rerun from `S:\stream-sync` with `--disable-persistent-decoder`.
+- Compare `one_shot_decode_stdin_close_elapsed_ms`, `one_shot_decode_stdin_write_to_stdout_first_byte_elapsed_ms`, and `one_shot_decode_stdout_first_byte_elapsed_ms` against `one_shot_decode_input_write_elapsed_ms`.
+- Use the new throughput and per-payload-kb fields to judge whether payload-size-normalized write cost still tracks the latest rerun bottleneck.
+
+### TODO Update
+- Updated `docs/operations/todo.md` with the implemented diagnostics fields and the next rerun focus.
+
+### Validation
+- `cargo fmt`
+  - result: PASS
+- `cargo check -p stream-sync-switcher`
+  - result: PASS
+- `cargo test -p stream-sync-switcher switcher_four_view_two_real_handoff_preview_summary_formats_expected_fields -- --nocapture`
+  - result: PASS
+- `cargo test -p stream-sync-switcher switcher_four_view_two_real_handoff_preview_loop_redecodes_different_frame_ids -- --nocapture`
+  - result: PASS
+- `cargo test -p stream-sync-switcher switcher_four_view_two_real_handoff_preview_loop_updates_only_source_error_slot_region -- --nocapture`
+  - result: PASS
+- `git diff --check`
+  - result: PASS
+  - note: LF/CRLF warnings only
+
+## 2026-05-17
+### Type
 - Codex docs-first analysis
 
 ### Work

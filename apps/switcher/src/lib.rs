@@ -6728,6 +6728,8 @@ pub enum SwitcherH264DecodeResult {
 pub struct SwitcherH264DecodeRuntimeDiagnostics {
     pub process_spawn_elapsed_ms: u128,
     pub input_write_elapsed_ms: u128,
+    pub stdin_close_elapsed_ms: u128,
+    pub stdin_write_to_stdout_first_byte_elapsed_ms: u128,
     pub input_payload_bytes: usize,
     pub input_payload_has_idr: bool,
     pub output_width: Option<u32>,
@@ -6735,6 +6737,7 @@ pub struct SwitcherH264DecodeRuntimeDiagnostics {
     pub output_pixel_format: Option<SwitcherDecodedFramePixelFormat>,
     pub scaled_output_enabled: bool,
     pub scaled_output_reason: Option<String>,
+    pub stdout_first_byte_elapsed_ms: u128,
     pub output_read_elapsed_ms: u128,
     pub output_read_exact_elapsed_ms: u128,
     pub output_extra_probe_elapsed_ms: u128,
@@ -6770,6 +6773,9 @@ pub struct SwitcherH264DecodeRuntimeDiagnostics {
     pub one_shot_decode_attempt_count: u32,
     pub one_shot_decode_elapsed_ms: u128,
     pub one_shot_decode_input_write_elapsed_ms: u128,
+    pub one_shot_decode_stdin_close_elapsed_ms: u128,
+    pub one_shot_decode_stdin_write_to_stdout_first_byte_elapsed_ms: u128,
+    pub one_shot_decode_stdout_first_byte_elapsed_ms: u128,
     pub one_shot_decode_output_read_elapsed_ms: u128,
     pub one_shot_decode_output_read_exact_elapsed_ms: u128,
     pub one_shot_decode_extra_output_probe_elapsed_ms: u128,
@@ -7473,6 +7479,7 @@ fn persistent_ffmpeg_stdout_reader_loop(
         let response = match read_expected_rawvideo_stdout(
             &mut stdout,
             request.expected_len,
+            None,
             &mut diagnostics,
         ) {
             Ok(output) => SwitcherPersistentFfmpegStdoutReadResponse::Ok {
@@ -7588,6 +7595,26 @@ fn decode_with_one_shot_ffmpeg_runtime(
             .diagnostics
             .one_shot_decode_input_write_elapsed_ms
             .saturating_add(output.diagnostics.input_write_elapsed_ms);
+        output.diagnostics.one_shot_decode_stdin_close_elapsed_ms = output
+            .diagnostics
+            .one_shot_decode_stdin_close_elapsed_ms
+            .saturating_add(output.diagnostics.stdin_close_elapsed_ms);
+        output
+            .diagnostics
+            .one_shot_decode_stdin_write_to_stdout_first_byte_elapsed_ms = output
+            .diagnostics
+            .one_shot_decode_stdin_write_to_stdout_first_byte_elapsed_ms
+            .saturating_add(
+                output
+                    .diagnostics
+                    .stdin_write_to_stdout_first_byte_elapsed_ms,
+            );
+        output
+            .diagnostics
+            .one_shot_decode_stdout_first_byte_elapsed_ms = output
+            .diagnostics
+            .one_shot_decode_stdout_first_byte_elapsed_ms
+            .saturating_add(output.diagnostics.stdout_first_byte_elapsed_ms);
         output.diagnostics.one_shot_decode_output_read_elapsed_ms = output
             .diagnostics
             .one_shot_decode_output_read_elapsed_ms
@@ -7670,6 +7697,7 @@ fn decode_with_one_shot_ffmpeg_runtime_inner(
         }
     };
 
+    let mut stdin_write_completed_at = None;
     if let Some(mut stdin) = child.stdin.take() {
         let input_write_start = Instant::now();
         if let Err(error) = stdin.write_all(&input.encoded_payload) {
@@ -7688,6 +7716,10 @@ fn decode_with_one_shot_ffmpeg_runtime_inner(
             };
         }
         diagnostics.input_write_elapsed_ms = input_write_start.elapsed().as_millis();
+        stdin_write_completed_at = Some(Instant::now());
+        let stdin_close_start = Instant::now();
+        drop(stdin);
+        diagnostics.stdin_close_elapsed_ms = stdin_close_start.elapsed().as_millis();
     }
 
     let Some(mut stdout) = child.stdout.take() else {
@@ -7730,29 +7762,31 @@ fn decode_with_one_shot_ffmpeg_runtime_inner(
     });
 
     let expected_len = diagnostics.output_expected_bytes;
-    let stdout_read =
-        match read_expected_rawvideo_stdout(&mut stdout, expected_len, &mut diagnostics) {
-            Ok(output) => output,
-            Err(error) => {
-                let _ = child.kill();
-                let wait_start = Instant::now();
-                let _ = child.wait();
-                diagnostics.process_wait_elapsed_ms = wait_start.elapsed().as_millis();
-                let _ = stderr_reader.join();
-                return SwitcherH264DecodeRuntimeOutput {
-                    result: SwitcherH264DecodeResult::Failed(
-                        SwitcherH264DecodeFailure::from_input(
-                            &input,
-                            error.error.to_string(),
-                            error.partial_bytes.len(),
-                            None,
-                            None,
-                        ),
-                    ),
-                    diagnostics,
-                };
-            }
-        };
+    let stdout_read = match read_expected_rawvideo_stdout(
+        &mut stdout,
+        expected_len,
+        stdin_write_completed_at,
+        &mut diagnostics,
+    ) {
+        Ok(output) => output,
+        Err(error) => {
+            let _ = child.kill();
+            let wait_start = Instant::now();
+            let _ = child.wait();
+            diagnostics.process_wait_elapsed_ms = wait_start.elapsed().as_millis();
+            let _ = stderr_reader.join();
+            return SwitcherH264DecodeRuntimeOutput {
+                result: SwitcherH264DecodeResult::Failed(SwitcherH264DecodeFailure::from_input(
+                    &input,
+                    error.error.to_string(),
+                    error.partial_bytes.len(),
+                    None,
+                    None,
+                )),
+                diagnostics,
+            };
+        }
+    };
     let SwitcherFfmpegDecodeStdoutReadOutput {
         bytes: stdout_bytes,
         extra_output_len,
@@ -7861,9 +7895,18 @@ fn merge_decode_runtime_diagnostics(
     target.input_write_elapsed_ms = target
         .input_write_elapsed_ms
         .saturating_add(source.input_write_elapsed_ms);
+    target.stdin_close_elapsed_ms = target
+        .stdin_close_elapsed_ms
+        .saturating_add(source.stdin_close_elapsed_ms);
+    target.stdin_write_to_stdout_first_byte_elapsed_ms = target
+        .stdin_write_to_stdout_first_byte_elapsed_ms
+        .saturating_add(source.stdin_write_to_stdout_first_byte_elapsed_ms);
     target.input_payload_bytes = target
         .input_payload_bytes
         .saturating_add(source.input_payload_bytes);
+    target.stdout_first_byte_elapsed_ms = target
+        .stdout_first_byte_elapsed_ms
+        .saturating_add(source.stdout_first_byte_elapsed_ms);
     target.output_read_elapsed_ms = target
         .output_read_elapsed_ms
         .saturating_add(source.output_read_elapsed_ms);
@@ -7958,6 +8001,15 @@ fn merge_decode_runtime_diagnostics(
     target.one_shot_decode_input_write_elapsed_ms = target
         .one_shot_decode_input_write_elapsed_ms
         .saturating_add(source.one_shot_decode_input_write_elapsed_ms);
+    target.one_shot_decode_stdin_close_elapsed_ms = target
+        .one_shot_decode_stdin_close_elapsed_ms
+        .saturating_add(source.one_shot_decode_stdin_close_elapsed_ms);
+    target.one_shot_decode_stdin_write_to_stdout_first_byte_elapsed_ms = target
+        .one_shot_decode_stdin_write_to_stdout_first_byte_elapsed_ms
+        .saturating_add(source.one_shot_decode_stdin_write_to_stdout_first_byte_elapsed_ms);
+    target.one_shot_decode_stdout_first_byte_elapsed_ms = target
+        .one_shot_decode_stdout_first_byte_elapsed_ms
+        .saturating_add(source.one_shot_decode_stdout_first_byte_elapsed_ms);
     target.one_shot_decode_output_read_elapsed_ms = target
         .one_shot_decode_output_read_elapsed_ms
         .saturating_add(source.one_shot_decode_output_read_elapsed_ms);
@@ -7972,6 +8024,7 @@ fn merge_decode_runtime_diagnostics(
 fn read_expected_rawvideo_stdout(
     stdout: &mut impl Read,
     expected_len: usize,
+    stdin_write_completed_at: Option<Instant>,
     diagnostics: &mut SwitcherH264DecodeRuntimeDiagnostics,
 ) -> Result<SwitcherFfmpegDecodeStdoutReadOutput, SwitcherFfmpegDecodeStdoutReadError> {
     let output_read_start = Instant::now();
@@ -7979,8 +8032,27 @@ fn read_expected_rawvideo_stdout(
     diagnostics.buffer_allocation_count = u32::from(expected_len > 0);
 
     let read_exact_start = Instant::now();
+    if expected_len > 0 {
+        let mut first_byte = [0u8; 1];
+        if let Err(error) = stdout.read_exact(&mut first_byte) {
+            diagnostics.output_read_exact_elapsed_ms = read_exact_start.elapsed().as_millis();
+            diagnostics.output_read_elapsed_ms = output_read_start.elapsed().as_millis();
+            diagnostics.output_bytes = stdout_bytes.len();
+            return Err(SwitcherFfmpegDecodeStdoutReadError {
+                error,
+                partial_bytes: stdout_bytes,
+            });
+        }
+        diagnostics.stdout_first_byte_elapsed_ms = output_read_start.elapsed().as_millis();
+        if let Some(stdin_write_completed_at) = stdin_write_completed_at {
+            diagnostics.stdin_write_to_stdout_first_byte_elapsed_ms =
+                stdin_write_completed_at.elapsed().as_millis();
+        }
+        stdout_bytes.push(first_byte[0]);
+    }
     {
-        let mut limited_stdout = stdout.take(expected_len as u64);
+        let remaining_len = expected_len.saturating_sub(stdout_bytes.len());
+        let mut limited_stdout = stdout.take(remaining_len as u64);
         if let Err(error) = limited_stdout.read_to_end(&mut stdout_bytes) {
             diagnostics.output_read_exact_elapsed_ms = read_exact_start.elapsed().as_millis();
             diagnostics.output_read_elapsed_ms = output_read_start.elapsed().as_millis();
@@ -26317,7 +26389,7 @@ mod tests {
         let mut reader = std::io::Cursor::new(vec![1, 2, 3, 4, 5, 6, 7, 8]);
         let mut diagnostics = SwitcherH264DecodeRuntimeDiagnostics::default();
 
-        let output = read_expected_rawvideo_stdout(&mut reader, 8, &mut diagnostics)
+        let output = read_expected_rawvideo_stdout(&mut reader, 8, None, &mut diagnostics)
             .expect("expected exact-sized decode stdout to succeed");
 
         assert_eq!(output.bytes, vec![1, 2, 3, 4, 5, 6, 7, 8]);
@@ -26334,7 +26406,7 @@ mod tests {
         let mut reader = std::io::Cursor::new(vec![1, 2, 3, 4, 5, 6]);
         let mut diagnostics = SwitcherH264DecodeRuntimeDiagnostics::default();
 
-        let error = read_expected_rawvideo_stdout(&mut reader, 8, &mut diagnostics)
+        let error = read_expected_rawvideo_stdout(&mut reader, 8, None, &mut diagnostics)
             .expect_err("short decode stdout should fail");
 
         assert_eq!(error.partial_bytes, vec![1, 2, 3, 4, 5, 6]);
@@ -26353,7 +26425,7 @@ mod tests {
         let mut reader = std::io::Cursor::new(vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
         let mut diagnostics = SwitcherH264DecodeRuntimeDiagnostics::default();
 
-        let output = read_expected_rawvideo_stdout(&mut reader, 8, &mut diagnostics)
+        let output = read_expected_rawvideo_stdout(&mut reader, 8, None, &mut diagnostics)
             .expect("oversized decode stdout should still return the expected rawvideo bytes");
 
         assert_eq!(output.bytes, vec![1, 2, 3, 4, 5, 6, 7, 8]);
