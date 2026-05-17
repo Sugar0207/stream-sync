@@ -66,6 +66,20 @@
 - `gdi_paint_wait_elapsed_ms=51` は今回 run では主犯と見なさない
 - したがって persistent decoder を単独原因と断定せず、next dominant candidates は one-shot decode I/O と quad_view_compose full compose cost に絞る
 
+## Incremental Compose Rerun Update
+- same-PC `2`-client rerun `manual-logs/two-client-render-rerun-20260517-183552` では、`--disable-persistent-decoder` を維持したまま incremental quad compose の runtime 効果を確認できた
+- persistent decoder config-disabled は引き続き正常動作し、`persistent_decode_config_enabled=false`、`persistent_decode_attempt_count=0`、`persistent_decode_timeout_count=0`、`persistent_decode_skipped_by_config_count=30` を確認した
+- compose-side は明確に改善した
+  - `quad_view_compose_elapsed_ms=3899 -> 704`
+  - `quad_view_full_compose_count=57 -> 1`
+  - `quad_view_incremental_update_count=0 -> 24`
+  - `avg_quad_view_compose_elapsed_ms=62.887 -> 14.080`
+  - `effective_render_fps_after_first_render=7.760 -> 11.587`
+- `quad_view_incremental_skip_reason_counts=previous_output_missing:1|profile_or_size_mismatch:0|all_slots_changed:0|unknown:0` なので、latest rerun では first render 相当の 1 回以外は incremental path が使えていた
+- `gdi_paint_wait_elapsed_ms=15` のため、latest rerun でも GDI wait は主犯扱いしない
+- ただし switcher はまだ `effective_render_fps=9.592` / `effective_render_fps_after_first_render=11.587` で 30fps target 未達なので、compose PASS 後の next dominant candidate は one-shot decode I/O に戻す
+- current request/response persistent decoder はこの結果でも revive せず、凍結候補のまま維持する
+
 ## 何を置き換えるか
 - 置き換え対象は `apps/switcher/src/lib.rs` の current one-shot FFmpeg decode runtime のうち、decode ごとに作っている FFmpeg process lifecycle
 - 具体的には以下を persistent 化候補とする
@@ -153,9 +167,15 @@
 ## Next Candidate Comparison
 - current request/response persistent decoder を current path として凍結する
 - continuous-stream decoder rewrite は別設計候補として保留し、別 step で必要性を再判断する
-- one-shot-only baseline rerun `manual-logs/two-client-render-rerun-20260517-174753` を current baseline とし、decoder I/O と compose cost を next comparison axis にする
-- one-shot fallback path の `decode_input_write_elapsed_ms` / `decode_output_read_elapsed_ms` / `decode_output_read_exact_elapsed_ms` / `decode_process_spawn_elapsed_ms` を再度 narrow に調査する
-- `quad_view_compose_elapsed_ms` / `quad_view_full_compose_count` / `quad_view_incremental_update_count=0` を見直し、full compose cost を下げられる narrow candidate があるか確認する
+- one-shot-only compose-pass rerun `manual-logs/two-client-render-rerun-20260517-183552` を current baseline とし、next comparison axis を one-shot decode I/O に戻す
+- current one-shot fallback path の `decode_input_write_elapsed_ms` / `decode_output_read_elapsed_ms` / `decode_output_read_exact_elapsed_ms` / `decode_process_spawn_elapsed_ms` を再度 narrow に調査する
+- current one-shot code path では以下の境界を前提に safer slice を選ぶ
+  - `decode_process_spawn_elapsed_ms`: `Command::spawn()` だけ
+  - `decode_input_write_elapsed_ms`: `stdin.write_all(&input.encoded_payload)` だけ
+  - `decode_output_read_exact_elapsed_ms`: `stdout.take(expected_len).read_to_end(...)` だけ
+  - `decode_output_read_elapsed_ms`: bounded read + extra-output probe まで
+  - `decode_process_wait_elapsed_ms`: `child.wait()` だけ
+- next step では payload bytes / expected stdout bytes / keyframe payload size と elapsed の関係を見て、one-shot process を残したまま削れる read/write 周辺の小改善か、narrow diagnostics 追加に絞る
 - decode cache ownership / `decode_output_buffer_reuse_count=0` / clone-store follow-up は decoder I/O / compose の次比較候補として残す
 
 ## out of scope

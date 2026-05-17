@@ -5,6 +5,152 @@
 - Codex documentation update
 
 ### Work
+- Recorded the latest same-PC `2`-client rerun evidence from `manual-logs/two-client-render-rerun-20260517-183552`.
+- Confirmed that the pure one-shot-only baseline stayed valid while the new incremental quad compose path worked at runtime:
+  - `persistent_decode_config_enabled=false`
+  - `persistent_decode_attempt_count=0`
+  - `persistent_decode_timeout_count=0`
+  - `persistent_decode_skipped_by_config_count=30`
+- Recorded the runtime PASS shape for incremental quad compose:
+  - `quad_view_compose_elapsed_ms=704`
+  - `quad_view_compose_success_count=25`
+  - `quad_view_full_compose_count=1`
+  - `quad_view_incremental_update_count=24`
+  - `quad_view_incremental_skip_reason_counts=previous_output_missing:1|profile_or_size_mismatch:0|all_slots_changed:0|unknown:0`
+  - `avg_quad_view_compose_elapsed_ms=14.080`
+  - `avg_quad_view_incremental_update_elapsed_ms=27.417`
+- Recorded the improvement relative to the previous one-shot-only baseline `manual-logs/two-client-render-rerun-20260517-174753`:
+  - `quad_view_full_compose_count=57 -> 1`
+  - `quad_view_incremental_update_count=0 -> 24`
+  - `quad_view_compose_elapsed_ms=3899 -> 704`
+  - `effective_render_fps_after_first_render=7.760 -> 11.587`
+- Recorded that the rerun still missed the 30fps target and therefore the next dominant candidate shifts back to one-shot decode I/O:
+  - `effective_render_fps=9.592`
+  - `effective_render_fps_after_first_render=11.587`
+  - `one_shot_decode_attempt_count=30`
+  - `one_shot_decode_elapsed_ms=2751`
+  - `one_shot_decode_input_write_elapsed_ms=1146`
+  - `one_shot_decode_output_read_elapsed_ms=1294`
+  - `one_shot_decode_output_read_exact_elapsed_ms=1086`
+  - `avg_decode_elapsed_ms=91.700`
+- Re-read the current one-shot FFmpeg decode path in `apps/switcher/src/lib.rs` and fixed the next investigation boundaries in docs:
+  - `decode_process_spawn_elapsed_ms` is `Command::spawn()` only
+  - `decode_input_write_elapsed_ms` is `stdin.write_all(&input.encoded_payload)` only
+  - `decode_output_read_exact_elapsed_ms` is the bounded `stdout.take(expected_len).read_to_end(...)` portion only
+  - `decode_output_read_elapsed_ms` is the bounded read plus the extra-output probe
+  - `decode_process_wait_elapsed_ms` remains separate at `child.wait()`
+- Kept this step docs-first with no code changes.
+
+### Changed Files
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+- `docs/operations/persistent-decoder-plan.md`
+
+### Decisions
+- Treat incremental quad compose as runtime PASS.
+- Treat one-shot decode I/O as the next dominant candidate.
+- Keep request/response persistent decoder frozen as a candidate, not as the current optimization path.
+- Keep Production Readiness as FAIL.
+
+### Unresolved
+- No new code was added in this step.
+- It is still unresolved which one-shot decode sub-cost should be attacked first: spawn, input write, bounded stdout read, or post-read probe behavior.
+- Payload bytes / expected stdout bytes / keyframe-size correlations have not yet been captured in rerun evidence.
+- Production Readiness remains FAIL.
+
+### Next
+- Use `manual-logs/two-client-render-rerun-20260517-183552` as the new compose-pass baseline.
+- Narrow the next code-change step to one-shot FFmpeg decode I/O only.
+- Prefer safer one-shot slices over reviving the request/response persistent decoder path.
+
+### TODO Update
+- Updated `docs/operations/todo.md` current position to reflect incremental compose PASS and the shift back to one-shot decode I/O.
+- Updated `docs/operations/persistent-decoder-plan.md` to record the compose-pass rerun and the new next-candidate ordering.
+
+### Validation
+- `git diff --check`
+  - result: PASS (LF/CRLF warnings only)
+
+## 2026-05-17
+### Type
+- Codex implementation
+
+### Work
+- Investigated the latest one-shot-only baseline `manual-logs/two-client-render-rerun-20260517-174753` with the specific goal of explaining why `quad_view_incremental_update_count=0` while `quad_view_full_compose_count=57` remained high.
+- Confirmed from `apps/switcher/src/main.rs` that the current helper named `compose_two_real_preview_quad_view_incremental` was not actually doing partial updates.
+  - it computed `changed_slots`
+  - it recorded `changed_slot_count` / `reused_slot_count`
+  - but it still repainted the entire output canvas and always returned `full_compose=true`, `incremental_update=false`
+- Recorded the concrete code-path explanation for the latest rerun:
+  - `quad_view_incremental_update_count=0` was structural, not just a runtime condition
+  - `quad_view_changed_slot_update_count=70` and `quad_view_reused_slot_count=414` were only observability counters, not proof that slot-local compose was active
+  - `previous_bgra_composition` reuse only existed for the fully `visual_unchanged` branch; once `visual_unchanged=false`, the compose helper still redrew the full quad
+- Added a minimal two-real-only incremental compose slice in `apps/switcher/src/main.rs`.
+  - keep full compose for first render, previous composed output missing, profile/size mismatch, and all-slot-changed cases
+  - only use incremental compose when a previous composed quad exists, the cached output profile/size still matches, and exactly `1-3` slots changed
+  - update only the changed slot rectangles in the cached quad buffer, while leaving unchanged slot pixels in place
+- Added narrow quad-compose diagnostics so the next rerun can explain why full compose still happens when it does:
+  - `quad_view_incremental_skip_reason`
+  - `quad_view_incremental_skip_reason_counts`
+  - `quad_view_full_compose_reason_counts`
+  - `quad_view_changed_real_slot_count`
+  - `quad_view_changed_placeholder_slot_count`
+  - `quad_view_previous_output_available_count`
+  - `quad_view_previous_output_missing_count`
+  - `quad_view_profile_or_size_mismatch_count`
+- Updated focused switcher tests to match the new two-real incremental behavior.
+  - `switcher_four_view_two_real_handoff_preview_loop_redecodes_different_frame_ids`
+  - `switcher_four_view_two_real_handoff_preview_loop_updates_only_source_error_slot_region`
+  - `switcher_four_view_two_real_handoff_preview_summary_formats_expected_fields`
+- Kept this step scoped away from persistent decoder, one-shot FFmpeg decode I/O redesign, four-client widening, and runtime rerun.
+
+### Changed Files
+- `apps/switcher/src/main.rs`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### Decisions
+- Treat the old `quad_view_incremental_update_count=0` as a code-path limitation in the two-real compose helper, not as evidence that incremental compose was impossible in the current loop.
+- Keep the new incremental path additive and conservative:
+  - two-real preview loop only
+  - reuse cached composed pixels only when previous composed output availability is explicit
+  - keep full compose as the default fallback for any unsafe/mismatched case
+- Keep the next runtime comparison on the one-shot-only baseline with `--disable-persistent-decoder`.
+- Keep Production Readiness as FAIL.
+
+### Unresolved
+- No post-fix rerun has been collected yet.
+- It is still unknown how much of the current FPS deficit will remain after full compose count drops.
+- one-shot decode I/O (`decode_input_write_elapsed_ms` / `decode_output_read_elapsed_ms` / `decode_output_read_exact_elapsed_ms` / `decode_process_spawn_elapsed_ms`) remains a likely co-dominant cost.
+- Production Readiness remains FAIL.
+
+### Next
+- Run the next same-PC `2`-client rerun from `S:\stream-sync` with `--disable-persistent-decoder` still enabled.
+- Compare `quad_view_incremental_update_count`, `quad_view_full_compose_count`, `quad_view_incremental_skip_reason_counts`, and `avg_quad_view_compose_elapsed_ms` against `manual-logs/two-client-render-rerun-20260517-174753`.
+- If compose cost drops but FPS remains low, move the next narrow step back to one-shot decode I/O.
+
+### TODO Update
+- Updated `docs/operations/todo.md` current position to record that `quad_view_incremental_update_count=0` came from the compose helper implementation.
+- Replaced the top next items with a rerun plan centered on the new incremental compose diagnostics.
+
+### Validation
+- `cargo fmt`
+  - result: PASS
+- `cargo check -p stream-sync-switcher`
+  - result: PASS
+  - note: existing `apps/switcher/src/main.rs` dead-code warnings only
+- focused switcher tests
+  - result: PASS
+  - commands:
+    - `cargo test -p stream-sync-switcher switcher_four_view_two_real_handoff_preview_summary_formats_expected_fields -- --nocapture`
+    - `cargo test -p stream-sync-switcher switcher_four_view_two_real_handoff_preview_loop_redecodes_different_frame_ids -- --nocapture`
+    - `cargo test -p stream-sync-switcher switcher_four_view_two_real_handoff_preview_loop_updates_only_source_error_slot_region -- --nocapture`
+
+## 2026-05-17
+### Type
+- Codex documentation update
+
+### Work
 - Recorded the latest same-PC `2`-client one-shot-only rerun evidence from `manual-logs/two-client-render-rerun-20260517-174753`.
 - Confirmed that the new `--disable-persistent-decoder` toggle behaved as intended and produced a valid pure one-shot-only baseline:
   - `persistent_decode_config_enabled=false`

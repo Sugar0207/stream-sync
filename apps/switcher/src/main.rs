@@ -1953,8 +1953,16 @@ struct SwitcherFourViewTwoRealHandoffPreviewLoopSummary {
     placeholder_visual_changed_count: u32,
     quad_view_incremental_update_count: u32,
     quad_view_full_compose_count: u32,
+    quad_view_incremental_skip_reason: String,
+    quad_view_incremental_skip_reason_counts: String,
+    quad_view_full_compose_reason_counts: String,
     quad_view_changed_slot_update_count: u32,
+    quad_view_changed_real_slot_count: u32,
+    quad_view_changed_placeholder_slot_count: u32,
     quad_view_reused_slot_count: u32,
+    quad_view_previous_output_available_count: u32,
+    quad_view_previous_output_missing_count: u32,
+    quad_view_profile_or_size_mismatch_count: u32,
     quad_view_allocation_count: u32,
     avg_render_buffer_cpu_scale_copy_elapsed_ms: String,
     avg_render_buffer_materialization_elapsed_ms: String,
@@ -2511,12 +2519,36 @@ impl TwoRealPreviewLoopQuadCompositionCache {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TwoRealPreviewLoopQuadIncrementalSkipReason {
+    PreviousOutputMissing,
+    ProfileOrSizeMismatch,
+    AllSlotsChanged,
+    Unknown,
+}
+
+impl TwoRealPreviewLoopQuadIncrementalSkipReason {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::PreviousOutputMissing => "previous_output_missing",
+            Self::ProfileOrSizeMismatch => "profile_or_size_mismatch",
+            Self::AllSlotsChanged => "all_slots_changed",
+            Self::Unknown => "unknown",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 struct TwoRealPreviewLoopQuadCompositionUpdateDiagnostics {
     full_compose: bool,
     incremental_update: bool,
     changed_slot_count: u32,
+    changed_real_slot_count: u32,
+    changed_placeholder_slot_count: u32,
     reused_slot_count: u32,
+    previous_output_available: bool,
+    profile_or_size_mismatch: bool,
+    incremental_skip_reason: Option<TwoRealPreviewLoopQuadIncrementalSkipReason>,
     allocation_count: u32,
 }
 
@@ -3839,8 +3871,18 @@ where
     let mut placeholder_visual_changed_count = 0u32;
     let mut quad_view_incremental_update_count = 0u32;
     let mut quad_view_full_compose_count = 0u32;
+    let mut quad_view_incremental_skip_reason = "none".to_string();
+    let mut quad_view_incremental_skip_previous_output_missing_count = 0u32;
+    let mut quad_view_incremental_skip_profile_or_size_mismatch_count = 0u32;
+    let mut quad_view_incremental_skip_all_slots_changed_count = 0u32;
+    let mut quad_view_incremental_skip_unknown_count = 0u32;
     let mut quad_view_changed_slot_update_count = 0u32;
+    let mut quad_view_changed_real_slot_count = 0u32;
+    let mut quad_view_changed_placeholder_slot_count = 0u32;
     let mut quad_view_reused_slot_count = 0u32;
+    let mut quad_view_previous_output_available_count = 0u32;
+    let mut quad_view_previous_output_missing_count = 0u32;
+    let mut quad_view_profile_or_size_mismatch_count = 0u32;
     let mut render_input_unchanged_count = 0u32;
     let mut render_reuse_frame_count = 0u32;
     let loop_start = Instant::now();
@@ -3919,6 +3961,15 @@ where
             .map(clean_output_window_result_was_rendered)
             .unwrap_or(false);
         let can_reuse_rendered_output = visual_unchanged && previous_clean_output_is_rendered;
+        let previous_composed_output_available = previous_bgra_composition
+            .as_ref()
+            .map(|composition| {
+                matches!(
+                    composition,
+                    SwitcherFourViewQuadCompositionResult::ComposedFrame { .. }
+                )
+            })
+            .unwrap_or(false);
         if visual_unchanged {
             render_input_unchanged_count += 1;
         }
@@ -3934,7 +3985,7 @@ where
                 .clone()
                 .expect("render reuse should have previous clean output")
         } else {
-            let bgra_composition = if visual_unchanged {
+            let (bgra_composition, compose_update_diagnostics) = if visual_unchanged {
                 if let Some(previous_composition) = previous_bgra_composition.clone() {
                     timing.borrow_mut().composed_buffer_clone_count += 1;
                     quad_view_compose_skipped_unchanged_count += 1;
@@ -3945,17 +3996,21 @@ where
                     ) {
                         quad_view_composed_frame_reuse_count += 1;
                     }
-                    SwitcherFourViewQuadCompositionOutput {
-                        scheduler_status: pre_composition.scheduler.status,
-                        connection: pre_composition.composition_render.clone(),
-                        composition: previous_composition,
-                    }
+                    (
+                        SwitcherFourViewQuadCompositionOutput {
+                            scheduler_status: pre_composition.scheduler.status,
+                            connection: pre_composition.composition_render.clone(),
+                            composition: previous_composition,
+                        },
+                        TwoRealPreviewLoopQuadCompositionUpdateDiagnostics::default(),
+                    )
                 } else {
                     compose_two_real_preview_quad_view(
                         &pre_composition,
                         validation_input.layout_policy,
                         &timing,
                         &mut quad_composition_cache,
+                        previous_composed_output_available,
                         previous_visual_identities.as_ref(),
                         &current_visual_identities,
                         &mut quad_view_compose_attempt_count,
@@ -3972,6 +4027,7 @@ where
                     validation_input.layout_policy,
                     &timing,
                     &mut quad_composition_cache,
+                    previous_composed_output_available,
                     previous_visual_identities.as_ref(),
                     &current_visual_identities,
                     &mut quad_view_compose_attempt_count,
@@ -3982,6 +4038,46 @@ where
                     &mut quad_view_reused_slot_count,
                 )
             };
+            quad_view_changed_real_slot_count = quad_view_changed_real_slot_count
+                .saturating_add(compose_update_diagnostics.changed_real_slot_count);
+            quad_view_changed_placeholder_slot_count = quad_view_changed_placeholder_slot_count
+                .saturating_add(compose_update_diagnostics.changed_placeholder_slot_count);
+            if compose_update_diagnostics.previous_output_available {
+                quad_view_previous_output_available_count =
+                    quad_view_previous_output_available_count.saturating_add(1);
+            } else if compose_update_diagnostics.full_compose {
+                quad_view_previous_output_missing_count =
+                    quad_view_previous_output_missing_count.saturating_add(1);
+            }
+            if compose_update_diagnostics.profile_or_size_mismatch {
+                quad_view_profile_or_size_mismatch_count =
+                    quad_view_profile_or_size_mismatch_count.saturating_add(1);
+            }
+            if compose_update_diagnostics.incremental_update {
+                quad_view_incremental_skip_reason = "none".to_string();
+            } else if let Some(skip_reason) = compose_update_diagnostics.incremental_skip_reason {
+                quad_view_incremental_skip_reason = skip_reason.as_str().to_string();
+                match skip_reason {
+                    TwoRealPreviewLoopQuadIncrementalSkipReason::PreviousOutputMissing => {
+                        quad_view_incremental_skip_previous_output_missing_count =
+                            quad_view_incremental_skip_previous_output_missing_count
+                                .saturating_add(1);
+                    }
+                    TwoRealPreviewLoopQuadIncrementalSkipReason::ProfileOrSizeMismatch => {
+                        quad_view_incremental_skip_profile_or_size_mismatch_count =
+                            quad_view_incremental_skip_profile_or_size_mismatch_count
+                                .saturating_add(1);
+                    }
+                    TwoRealPreviewLoopQuadIncrementalSkipReason::AllSlotsChanged => {
+                        quad_view_incremental_skip_all_slots_changed_count =
+                            quad_view_incremental_skip_all_slots_changed_count.saturating_add(1);
+                    }
+                    TwoRealPreviewLoopQuadIncrementalSkipReason::Unknown => {
+                        quad_view_incremental_skip_unknown_count =
+                            quad_view_incremental_skip_unknown_count.saturating_add(1);
+                    }
+                }
+            }
             let render_facing = SwitcherFourViewQuadRenderFacingConnectionBoundary::default()
                 .connect_composition_output(bgra_composition);
             let timing_before_render = timing.borrow().clone();
@@ -4143,6 +4239,14 @@ where
         first_render_attempt_index,
         first_render_elapsed_ms,
     );
+    let quad_view_incremental_skip_reason_counts = format!(
+        "previous_output_missing:{}|profile_or_size_mismatch:{}|all_slots_changed:{}|unknown:{}",
+        quad_view_incremental_skip_previous_output_missing_count,
+        quad_view_incremental_skip_profile_or_size_mismatch_count,
+        quad_view_incremental_skip_all_slots_changed_count,
+        quad_view_incremental_skip_unknown_count,
+    );
+    let quad_view_full_compose_reason_counts = quad_view_incremental_skip_reason_counts.clone();
 
     SwitcherFourViewTwoRealHandoffPreviewLoopSummary {
         real_slot0_index: slot0_index,
@@ -4317,8 +4421,16 @@ where
         placeholder_visual_changed_count,
         quad_view_incremental_update_count,
         quad_view_full_compose_count,
+        quad_view_incremental_skip_reason,
+        quad_view_incremental_skip_reason_counts,
+        quad_view_full_compose_reason_counts,
         quad_view_changed_slot_update_count,
+        quad_view_changed_real_slot_count,
+        quad_view_changed_placeholder_slot_count,
         quad_view_reused_slot_count,
+        quad_view_previous_output_available_count,
+        quad_view_previous_output_missing_count,
+        quad_view_profile_or_size_mismatch_count,
         quad_view_allocation_count: quad_composition_cache.allocation_count,
         avg_render_buffer_cpu_scale_copy_elapsed_ms: format_preview_loop_average_elapsed(
             timing.render_buffer_copy_elapsed_ms,
@@ -6423,6 +6535,7 @@ fn compose_two_real_preview_quad_view(
     layout_policy: SwitcherFourViewQuadLayoutPolicy,
     timing: &Rc<RefCell<TwoRealPreviewLoopRuntimeTiming>>,
     cache: &mut TwoRealPreviewLoopQuadCompositionCache,
+    previous_output_available: bool,
     previous_visual_identities: Option<&[TwoRealPreviewLoopSlotVisualIdentity; 4]>,
     current_visual_identities: &[TwoRealPreviewLoopSlotVisualIdentity; 4],
     quad_view_compose_attempt_count: &mut u32,
@@ -6431,13 +6544,17 @@ fn compose_two_real_preview_quad_view(
     quad_view_full_compose_count: &mut u32,
     quad_view_changed_slot_update_count: &mut u32,
     quad_view_reused_slot_count: &mut u32,
-) -> SwitcherFourViewQuadCompositionOutput {
+) -> (
+    SwitcherFourViewQuadCompositionOutput,
+    TwoRealPreviewLoopQuadCompositionUpdateDiagnostics,
+) {
     *quad_view_compose_attempt_count += 1;
     let compose_start = Instant::now();
     let (composition, update_diagnostics) = compose_two_real_preview_quad_view_incremental(
         &pre_composition.composition_render,
         layout_policy,
         cache,
+        previous_output_available,
         previous_visual_identities,
         current_visual_identities,
     );
@@ -6469,13 +6586,14 @@ fn compose_two_real_preview_quad_view(
         connection: pre_composition.composition_render.clone(),
         composition,
     };
-    output
+    (output, update_diagnostics)
 }
 
 fn compose_two_real_preview_quad_view_incremental(
     connection: &stream_sync_switcher::SwitcherFourViewHandoffQuadCompositionRenderConnectionOutput,
     policy: SwitcherFourViewQuadLayoutPolicy,
     cache: &mut TwoRealPreviewLoopQuadCompositionCache,
+    previous_output_available: bool,
     previous_visual_identities: Option<&[TwoRealPreviewLoopSlotVisualIdentity; 4]>,
     current_visual_identities: &[TwoRealPreviewLoopSlotVisualIdentity; 4],
 ) -> (
@@ -6525,24 +6643,6 @@ fn compose_two_real_preview_quad_view_incremental(
         }
     }
 
-    let Some(virtual_canvas_width) = slot_width.checked_mul(2) else {
-        return (
-            SwitcherFourViewQuadCompositionResult::InvalidQuadView {
-                reason: SwitcherFourViewQuadCompositionInvalidReason::CanvasTooLarge,
-                slots: base_slots,
-            },
-            TwoRealPreviewLoopQuadCompositionUpdateDiagnostics::default(),
-        );
-    };
-    let Some(virtual_canvas_height) = slot_height.checked_mul(2) else {
-        return (
-            SwitcherFourViewQuadCompositionResult::InvalidQuadView {
-                reason: SwitcherFourViewQuadCompositionInvalidReason::CanvasTooLarge,
-                slots: base_slots,
-            },
-            TwoRealPreviewLoopQuadCompositionUpdateDiagnostics::default(),
-        );
-    };
     let output_width = FOUR_VIEW_CLEAN_OUTPUT_LOOP_OBS_OUTPUT_WIDTH;
     let output_height = FOUR_VIEW_CLEAN_OUTPUT_LOOP_OBS_OUTPUT_HEIGHT;
     let Some(output_len) = output_width
@@ -6570,72 +6670,84 @@ fn compose_two_real_preview_quad_view_incremental(
         policy.placeholder_bgra,
     );
     cache.prepare_placeholder_row(output_width, policy.placeholder_bgra);
-    fill_two_real_bgra_rows(
-        &mut cache.pixels,
-        output_width,
-        0,
-        0,
-        output_width,
-        output_height,
-        &cache.placeholder_row,
-    );
 
+    let changed_slot_count = changed_slots.iter().filter(|changed| **changed).count() as u32;
     let output_slot_width = output_width / 2;
     let output_slot_height = output_height / 2;
     let slots = connection.composition.slots.clone().map(|slot| {
         two_real_quad_composed_slot_metadata_with_rect(slot, output_slot_width, output_slot_height)
     });
-
-    let renderable_frames_by_slot: [Option<&SwitcherDecodedFrame>; 4] = connection
+    let profile_or_size_mismatch = previous_output_available && allocated;
+    let can_incremental_update =
+        previous_output_available && !allocated && changed_slot_count > 0 && changed_slot_count < 4;
+    let changed_real_slot_count = connection
         .composition
         .slots
-        .each_ref()
-        .map(|slot| two_real_renderable_frame_and_placement(slot).map(|(frame, _)| frame));
-    let output_stride = output_width as usize * 4;
-    let x_mappings = (0..output_width)
-        .map(|x| {
-            let source_x = x as u64 * virtual_canvas_width as u64 / output_width as u64;
-            (
-                (source_x / slot_width as u64) as usize,
-                (source_x % slot_width as u64) as u32,
-            )
-        })
-        .collect::<Vec<_>>();
-    let y_mappings = (0..output_height)
-        .map(|y| {
-            let source_y = y as u64 * virtual_canvas_height as u64 / output_height as u64;
-            (
-                (source_y / slot_height as u64) as usize,
-                (source_y % slot_height as u64) as u32,
-            )
-        })
-        .collect::<Vec<_>>();
-
-    for (dst_y, (slot_row, local_y)) in y_mappings.iter().copied().enumerate() {
-        let row_start = dst_y * output_stride;
-        for (dst_x, (slot_column, local_x)) in x_mappings.iter().copied().enumerate() {
-            let slot_index = slot_row * 2 + slot_column;
-            let Some(frame) = renderable_frames_by_slot[slot_index] else {
-                continue;
-            };
-            if local_x >= frame.width || local_y >= frame.height {
+        .iter()
+        .zip(changed_slots.iter())
+        .filter(|(_, changed)| **changed)
+        .filter(|(slot, _)| two_real_renderable_frame_and_placement(slot).is_some())
+        .count() as u32;
+    let changed_placeholder_slot_count = changed_slot_count.saturating_sub(changed_real_slot_count);
+    let reused_slot_count = 4u32.saturating_sub(changed_slot_count);
+    if can_incremental_update {
+        for (slot_index, slot) in connection.composition.slots.iter().enumerate() {
+            if !changed_slots[slot_index] {
                 continue;
             }
-
-            let source_index = ((local_y as usize * frame.width as usize) + local_x as usize) * 4;
-            let destination_index = row_start + dst_x * 4;
-            cache.pixels[destination_index..destination_index + 4]
-                .copy_from_slice(&frame.pixels[source_index..source_index + 4]);
+            update_two_real_quad_output_slot(
+                &mut cache.pixels,
+                output_width,
+                output_height,
+                slot,
+                &cache.placeholder_row,
+                slot_width,
+                slot_height,
+            );
+        }
+    } else {
+        fill_two_real_bgra_rows(
+            &mut cache.pixels,
+            output_width,
+            0,
+            0,
+            output_width,
+            output_height,
+            &cache.placeholder_row,
+        );
+        for slot in &connection.composition.slots {
+            update_two_real_quad_output_slot(
+                &mut cache.pixels,
+                output_width,
+                output_height,
+                slot,
+                &cache.placeholder_row,
+                slot_width,
+                slot_height,
+            );
         }
     }
-
-    let changed_slot_count = changed_slots.iter().filter(|changed| **changed).count() as u32;
-    let reused_slot_count = 4u32.saturating_sub(changed_slot_count);
+    let incremental_skip_reason = if can_incremental_update {
+        None
+    } else if !previous_output_available {
+        Some(TwoRealPreviewLoopQuadIncrementalSkipReason::PreviousOutputMissing)
+    } else if allocated {
+        Some(TwoRealPreviewLoopQuadIncrementalSkipReason::ProfileOrSizeMismatch)
+    } else if changed_slot_count >= 4 {
+        Some(TwoRealPreviewLoopQuadIncrementalSkipReason::AllSlotsChanged)
+    } else {
+        Some(TwoRealPreviewLoopQuadIncrementalSkipReason::Unknown)
+    };
     let diagnostics = TwoRealPreviewLoopQuadCompositionUpdateDiagnostics {
-        full_compose: true,
-        incremental_update: false,
+        full_compose: !can_incremental_update,
+        incremental_update: can_incremental_update,
         changed_slot_count,
+        changed_real_slot_count,
+        changed_placeholder_slot_count,
         reused_slot_count,
+        previous_output_available,
+        profile_or_size_mismatch,
+        incremental_skip_reason,
         allocation_count: u32::from(allocated),
     };
 
@@ -6915,6 +7027,58 @@ fn fill_two_real_bgra_rows(
         let dst_start = (dst_y as usize + row) * canvas_stride + dst_x as usize * 4;
         let dst_end = dst_start + row_len;
         canvas[dst_start..dst_end].copy_from_slice(placeholder_row);
+    }
+}
+
+fn update_two_real_quad_output_slot(
+    canvas: &mut [u8],
+    canvas_width: u32,
+    canvas_height: u32,
+    slot: &SwitcherFourViewHandoffQuadCompositionRenderSlot,
+    placeholder_row: &[u8],
+    virtual_slot_width: u32,
+    virtual_slot_height: u32,
+) {
+    let output_slot_width = canvas_width / 2;
+    let output_slot_height = canvas_height / 2;
+    let rect = two_real_quad_slot_rect(
+        two_real_quad_connected_slot_placement(slot),
+        output_slot_width,
+        output_slot_height,
+    );
+    fill_two_real_bgra_rows(
+        canvas,
+        canvas_width,
+        rect.x,
+        rect.y,
+        rect.width,
+        rect.height,
+        placeholder_row,
+    );
+    let Some((frame, _)) = two_real_renderable_frame_and_placement(slot) else {
+        return;
+    };
+
+    let canvas_stride = canvas_width as usize * 4;
+    for dst_local_y in 0..rect.height {
+        let source_y =
+            (dst_local_y as u64 * virtual_slot_height as u64 / rect.height as u64) as u32;
+        if source_y >= frame.height {
+            continue;
+        }
+        let dst_y = rect.y + dst_local_y;
+        let row_start = dst_y as usize * canvas_stride + rect.x as usize * 4;
+        for dst_local_x in 0..rect.width {
+            let source_x =
+                (dst_local_x as u64 * virtual_slot_width as u64 / rect.width as u64) as u32;
+            if source_x >= frame.width {
+                continue;
+            }
+            let source_index = ((source_y as usize * frame.width as usize) + source_x as usize) * 4;
+            let destination_index = row_start + dst_local_x as usize * 4;
+            canvas[destination_index..destination_index + 4]
+                .copy_from_slice(&frame.pixels[source_index..source_index + 4]);
+        }
     }
 }
 
@@ -8219,7 +8383,7 @@ fn format_four_view_two_real_handoff_preview_loop_summary(
     summary: &SwitcherFourViewTwoRealHandoffPreviewLoopSummary,
 ) -> String {
     format!(
-        "switcher four-view two-real handoff preview loop command_name=--four-view-two-real-handoff-preview-loop real_handoff=true real_slot_count=2 real_slot0_index={} real_slot1_index={} pipe_name={} actual_pipe_path={} preview_mode={} read_mode={} client0_id={} run0_id={} client1_id={} run1_id={} frames_attempted={} frames_rendered={} render_failures={} elapsed_ms={} target_fps={} configured_frame_interval_ms={} effective_attempt_fps={} effective_render_fps={} first_render_attempt_index={} first_render_elapsed_ms={} rendered_after_first_render={} effective_render_fps_after_first_render={} no_render_before_first_render={} selected_count={} no_frame_count={} handoff_error_count={} decode_attempt_count={} decode_success_count={} render_success_count={} render_failure_count={} unchanged_frame_reuse_count={} skipped_decode_unchanged_frame_count={} redecoded_same_frame_count={} decode_elapsed_ms={} decode_process_spawn_elapsed_ms={} decode_input_write_elapsed_ms={} decode_input_payload_bytes_total={} decode_output_read_elapsed_ms={} decode_output_read_exact_elapsed_ms={} decode_output_vec_resize_elapsed_ms={} decode_process_wait_elapsed_ms={} decode_pixel_convert_elapsed_ms={} decode_buffer_allocation_count={} decode_output_bytes_total={} decode_stdout_expected_bytes_total={} decode_cached_frame_reuse_count={} decode_cache_miss_count={} decoded_buffer_clone_count={} decode_cache_hit_clone_count={} decode_cache_store_clone_count={} decoded_buffer_clone_elapsed_ms={} composed_buffer_clone_count={} decode_output_buffer_reuse_count={} persistent_decode_config_enabled={} persistent_decode_enabled={} persistent_decode_attempt_count={} persistent_decode_success_count={} persistent_decode_failure_count={} persistent_decode_fallback_count={} persistent_decode_process_spawn_count={} persistent_decode_process_restart_count={} persistent_decode_stdin_write_elapsed_ms={} persistent_decode_stdout_read_elapsed_ms={} persistent_decode_stdout_read_exact_elapsed_ms={} persistent_decode_output_bytes_total={} persistent_decode_last_error={} persistent_decode_runtime_disabled={} persistent_decode_runtime_disabled_reason={} persistent_decode_consecutive_failure_count={} persistent_decode_disabled_after_failure_count={} persistent_decode_skipped_by_config_count={} persistent_decode_skipped_after_disabled_count={} persistent_decode_timeout_count={} persistent_decode_timeout_elapsed_ms={} one_shot_decode_fallback_count={} one_shot_decode_attempt_count={} one_shot_decode_elapsed_ms={} one_shot_decode_input_write_elapsed_ms={} one_shot_decode_output_read_elapsed_ms={} one_shot_decode_output_read_exact_elapsed_ms={} handoff_elapsed_ms={} render_elapsed_ms={} avg_decode_elapsed_ms={} avg_decode_input_write_elapsed_ms={} avg_decode_output_read_elapsed_ms={} avg_decode_process_spawn_elapsed_ms={} avg_handoff_elapsed_ms={} avg_render_elapsed_ms={} loop_total_elapsed_ms={} attempt_body_elapsed_ms={} loop_sleep_elapsed_ms={} frame_interval_wait_elapsed_ms={} event_pump_elapsed_ms={} window_update_elapsed_ms={} render_prepare_elapsed_ms={} render_buffer_cpu_scale_copy_elapsed_ms={} render_buffer_copy_elapsed_ms={} render_buffer_materialization_elapsed_ms={} render_buffer_scale_prepare_elapsed_ms={} render_buffer_scale_loop_elapsed_ms={} render_buffer_output_copy_elapsed_ms={} render_buffer_resize_elapsed_ms={} render_buffer_clear_elapsed_ms={} render_buffer_passthrough_count={} render_buffer_same_size_copy_count={} render_buffer_half_scale_count={} render_buffer_generic_scale_count={} render_buffer_reuse_count={} render_buffer_allocation_count={} render_buffer_bytes_copied_total={} render_backend_wait_elapsed_ms={} gdi_invalidate_elapsed_ms={} gdi_paint_wait_elapsed_ms={} gdi_wm_paint_elapsed_ms={} gdi_stretchdibits_elapsed_ms={} texture_upload_elapsed_ms={} window_present_elapsed_ms={} vsync_or_present_block_elapsed_ms={} quad_view_compose_elapsed_ms={} quad_view_compose_attempt_count={} quad_view_compose_success_count={} quad_view_compose_skipped_unchanged_count={} quad_view_composed_frame_reuse_count={} quad_view_visual_unchanged_count={} quad_view_visual_changed_count={} materialization_reason_first_render_count={} materialization_reason_visual_changed_count={} materialization_reason_previous_output_missing_count={} materialization_reason_profile_or_size_mismatch_count={} materialization_reason_force_render_count={} materialization_reason_unknown_count={} slot0_frame_id_changed_count={} slot1_frame_id_changed_count={} slot2_frame_id_changed_count={} slot3_frame_id_changed_count={} slot0_selected_source_changed_count={} slot1_selected_source_changed_count={} slot2_selected_source_changed_count={} slot3_selected_source_changed_count={} placeholder_visual_changed_count={} quad_view_incremental_update_count={} quad_view_full_compose_count={} quad_view_changed_slot_update_count={} quad_view_reused_slot_count={} quad_view_allocation_count={} avg_render_buffer_cpu_scale_copy_elapsed_ms={} avg_render_buffer_materialization_elapsed_ms={} avg_gdi_paint_wait_elapsed_ms={} avg_gdi_wm_paint_elapsed_ms={} avg_gdi_stretchdibits_elapsed_ms={} avg_quad_view_incremental_update_elapsed_ms={} avg_quad_view_compose_elapsed_ms={} render_call_elapsed_ms={} render_input_unchanged_count={} render_reuse_frame_count={} unaccounted_elapsed_ms={} avg_attempt_elapsed_ms={} max_attempt_elapsed_ms={} slow_attempt_count={} slow_attempt_threshold_ms={} scheduler_status={:?} slot_bindings={} slot_result_kinds={} slot_diagnostics={} clean_output_render_result_kind={} window_title={} output_width={} output_height={}",
+        "switcher four-view two-real handoff preview loop command_name=--four-view-two-real-handoff-preview-loop real_handoff=true real_slot_count=2 real_slot0_index={} real_slot1_index={} pipe_name={} actual_pipe_path={} preview_mode={} read_mode={} client0_id={} run0_id={} client1_id={} run1_id={} frames_attempted={} frames_rendered={} render_failures={} elapsed_ms={} target_fps={} configured_frame_interval_ms={} effective_attempt_fps={} effective_render_fps={} first_render_attempt_index={} first_render_elapsed_ms={} rendered_after_first_render={} effective_render_fps_after_first_render={} no_render_before_first_render={} selected_count={} no_frame_count={} handoff_error_count={} decode_attempt_count={} decode_success_count={} render_success_count={} render_failure_count={} unchanged_frame_reuse_count={} skipped_decode_unchanged_frame_count={} redecoded_same_frame_count={} decode_elapsed_ms={} decode_process_spawn_elapsed_ms={} decode_input_write_elapsed_ms={} decode_input_payload_bytes_total={} decode_output_read_elapsed_ms={} decode_output_read_exact_elapsed_ms={} decode_output_vec_resize_elapsed_ms={} decode_process_wait_elapsed_ms={} decode_pixel_convert_elapsed_ms={} decode_buffer_allocation_count={} decode_output_bytes_total={} decode_stdout_expected_bytes_total={} decode_cached_frame_reuse_count={} decode_cache_miss_count={} decoded_buffer_clone_count={} decode_cache_hit_clone_count={} decode_cache_store_clone_count={} decoded_buffer_clone_elapsed_ms={} composed_buffer_clone_count={} decode_output_buffer_reuse_count={} persistent_decode_config_enabled={} persistent_decode_enabled={} persistent_decode_attempt_count={} persistent_decode_success_count={} persistent_decode_failure_count={} persistent_decode_fallback_count={} persistent_decode_process_spawn_count={} persistent_decode_process_restart_count={} persistent_decode_stdin_write_elapsed_ms={} persistent_decode_stdout_read_elapsed_ms={} persistent_decode_stdout_read_exact_elapsed_ms={} persistent_decode_output_bytes_total={} persistent_decode_last_error={} persistent_decode_runtime_disabled={} persistent_decode_runtime_disabled_reason={} persistent_decode_consecutive_failure_count={} persistent_decode_disabled_after_failure_count={} persistent_decode_skipped_by_config_count={} persistent_decode_skipped_after_disabled_count={} persistent_decode_timeout_count={} persistent_decode_timeout_elapsed_ms={} one_shot_decode_fallback_count={} one_shot_decode_attempt_count={} one_shot_decode_elapsed_ms={} one_shot_decode_input_write_elapsed_ms={} one_shot_decode_output_read_elapsed_ms={} one_shot_decode_output_read_exact_elapsed_ms={} handoff_elapsed_ms={} render_elapsed_ms={} avg_decode_elapsed_ms={} avg_decode_input_write_elapsed_ms={} avg_decode_output_read_elapsed_ms={} avg_decode_process_spawn_elapsed_ms={} avg_handoff_elapsed_ms={} avg_render_elapsed_ms={} loop_total_elapsed_ms={} attempt_body_elapsed_ms={} loop_sleep_elapsed_ms={} frame_interval_wait_elapsed_ms={} event_pump_elapsed_ms={} window_update_elapsed_ms={} render_prepare_elapsed_ms={} render_buffer_cpu_scale_copy_elapsed_ms={} render_buffer_copy_elapsed_ms={} render_buffer_materialization_elapsed_ms={} render_buffer_scale_prepare_elapsed_ms={} render_buffer_scale_loop_elapsed_ms={} render_buffer_output_copy_elapsed_ms={} render_buffer_resize_elapsed_ms={} render_buffer_clear_elapsed_ms={} render_buffer_passthrough_count={} render_buffer_same_size_copy_count={} render_buffer_half_scale_count={} render_buffer_generic_scale_count={} render_buffer_reuse_count={} render_buffer_allocation_count={} render_buffer_bytes_copied_total={} render_backend_wait_elapsed_ms={} gdi_invalidate_elapsed_ms={} gdi_paint_wait_elapsed_ms={} gdi_wm_paint_elapsed_ms={} gdi_stretchdibits_elapsed_ms={} texture_upload_elapsed_ms={} window_present_elapsed_ms={} vsync_or_present_block_elapsed_ms={} quad_view_compose_elapsed_ms={} quad_view_compose_attempt_count={} quad_view_compose_success_count={} quad_view_compose_skipped_unchanged_count={} quad_view_composed_frame_reuse_count={} quad_view_visual_unchanged_count={} quad_view_visual_changed_count={} materialization_reason_first_render_count={} materialization_reason_visual_changed_count={} materialization_reason_previous_output_missing_count={} materialization_reason_profile_or_size_mismatch_count={} materialization_reason_force_render_count={} materialization_reason_unknown_count={} slot0_frame_id_changed_count={} slot1_frame_id_changed_count={} slot2_frame_id_changed_count={} slot3_frame_id_changed_count={} slot0_selected_source_changed_count={} slot1_selected_source_changed_count={} slot2_selected_source_changed_count={} slot3_selected_source_changed_count={} placeholder_visual_changed_count={} quad_view_incremental_update_count={} quad_view_full_compose_count={} quad_view_incremental_skip_reason={} quad_view_incremental_skip_reason_counts={} quad_view_full_compose_reason_counts={} quad_view_changed_slot_update_count={} quad_view_changed_real_slot_count={} quad_view_changed_placeholder_slot_count={} quad_view_reused_slot_count={} quad_view_previous_output_available_count={} quad_view_previous_output_missing_count={} quad_view_profile_or_size_mismatch_count={} quad_view_allocation_count={} avg_render_buffer_cpu_scale_copy_elapsed_ms={} avg_render_buffer_materialization_elapsed_ms={} avg_gdi_paint_wait_elapsed_ms={} avg_gdi_wm_paint_elapsed_ms={} avg_gdi_stretchdibits_elapsed_ms={} avg_quad_view_incremental_update_elapsed_ms={} avg_quad_view_compose_elapsed_ms={} render_call_elapsed_ms={} render_input_unchanged_count={} render_reuse_frame_count={} unaccounted_elapsed_ms={} avg_attempt_elapsed_ms={} max_attempt_elapsed_ms={} slow_attempt_count={} slow_attempt_threshold_ms={} scheduler_status={:?} slot_bindings={} slot_result_kinds={} slot_diagnostics={} clean_output_render_result_kind={} window_title={} output_width={} output_height={}",
         summary.real_slot0_index,
         summary.real_slot1_index,
         summary.pipe_name,
@@ -8362,8 +8526,16 @@ fn format_four_view_two_real_handoff_preview_loop_summary(
         summary.placeholder_visual_changed_count,
         summary.quad_view_incremental_update_count,
         summary.quad_view_full_compose_count,
+        summary.quad_view_incremental_skip_reason,
+        summary.quad_view_incremental_skip_reason_counts,
+        summary.quad_view_full_compose_reason_counts,
         summary.quad_view_changed_slot_update_count,
+        summary.quad_view_changed_real_slot_count,
+        summary.quad_view_changed_placeholder_slot_count,
         summary.quad_view_reused_slot_count,
+        summary.quad_view_previous_output_available_count,
+        summary.quad_view_previous_output_missing_count,
+        summary.quad_view_profile_or_size_mismatch_count,
         summary.quad_view_allocation_count,
         summary.avg_render_buffer_cpu_scale_copy_elapsed_ms,
         summary.avg_render_buffer_materialization_elapsed_ms,
@@ -11754,8 +11926,13 @@ mod tests {
         assert_eq!(summary.slot0_selected_source_changed_count, 0);
         assert_eq!(summary.slot2_selected_source_changed_count, 0);
         assert_eq!(summary.placeholder_visual_changed_count, 0);
-        assert_eq!(summary.quad_view_incremental_update_count, 0);
-        assert_eq!(summary.quad_view_full_compose_count, 2);
+        assert_eq!(summary.quad_view_incremental_update_count, 1);
+        assert_eq!(summary.quad_view_full_compose_count, 1);
+        assert_eq!(summary.quad_view_changed_real_slot_count, 4);
+        assert_eq!(summary.quad_view_changed_placeholder_slot_count, 2);
+        assert_eq!(summary.quad_view_previous_output_available_count, 1);
+        assert_eq!(summary.quad_view_previous_output_missing_count, 1);
+        assert_eq!(summary.quad_view_profile_or_size_mismatch_count, 0);
         assert_eq!(summary.quad_view_changed_slot_update_count, 6);
         assert_eq!(summary.quad_view_reused_slot_count, 2);
         assert_eq!(summary.quad_view_allocation_count, 1);
@@ -11902,8 +12079,13 @@ mod tests {
         assert_eq!(summary.materialization_reason_first_render_count, 1);
         assert_eq!(summary.materialization_reason_visual_changed_count, 1);
         assert_eq!(summary.placeholder_visual_changed_count, 1);
-        assert_eq!(summary.quad_view_incremental_update_count, 0);
-        assert_eq!(summary.quad_view_full_compose_count, 2);
+        assert_eq!(summary.quad_view_incremental_update_count, 1);
+        assert_eq!(summary.quad_view_full_compose_count, 1);
+        assert_eq!(summary.quad_view_changed_real_slot_count, 2);
+        assert_eq!(summary.quad_view_changed_placeholder_slot_count, 3);
+        assert_eq!(summary.quad_view_previous_output_available_count, 1);
+        assert_eq!(summary.quad_view_previous_output_missing_count, 1);
+        assert_eq!(summary.quad_view_profile_or_size_mismatch_count, 0);
         assert_eq!(summary.quad_view_changed_slot_update_count, 5);
         assert_eq!(summary.quad_view_reused_slot_count, 3);
         assert_eq!(summary.quad_view_allocation_count, 1);
@@ -12160,8 +12342,16 @@ mod tests {
         assert!(formatted.contains("placeholder_visual_changed_count=0"));
         assert!(formatted.contains("quad_view_incremental_update_count=0"));
         assert!(formatted.contains("quad_view_full_compose_count=1"));
+        assert!(formatted.contains("quad_view_incremental_skip_reason=previous_output_missing"));
+        assert!(formatted.contains("quad_view_incremental_skip_reason_counts=previous_output_missing:1|profile_or_size_mismatch:0|all_slots_changed:0|unknown:0"));
+        assert!(formatted.contains("quad_view_full_compose_reason_counts=previous_output_missing:1|profile_or_size_mismatch:0|all_slots_changed:0|unknown:0"));
         assert!(formatted.contains("quad_view_changed_slot_update_count=4"));
+        assert!(formatted.contains("quad_view_changed_real_slot_count=2"));
+        assert!(formatted.contains("quad_view_changed_placeholder_slot_count=2"));
         assert!(formatted.contains("quad_view_reused_slot_count=0"));
+        assert!(formatted.contains("quad_view_previous_output_available_count=0"));
+        assert!(formatted.contains("quad_view_previous_output_missing_count=1"));
+        assert!(formatted.contains("quad_view_profile_or_size_mismatch_count=0"));
         assert!(formatted.contains("quad_view_allocation_count=1"));
         assert!(formatted.contains("avg_render_buffer_cpu_scale_copy_elapsed_ms="));
         assert!(formatted.contains("avg_render_buffer_materialization_elapsed_ms="));
