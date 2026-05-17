@@ -2,6 +2,99 @@
 
 ## 2026-05-18
 ### Type
+- Codex docs-first analysis
+
+### Work
+- Recorded the latest same-PC `2`-client rerun evidence from `S:\stream-sync\manual-logs\two-client-render-rerun-20260518-080637`.
+- Kept the step docs-only and did not change code.
+- Updated `docs/operations/todo.md`, `docs/operations/session-log.md`, and `docs/operations/persistent-decoder-plan.md` to replace the previous noisy-run focus with the latest comparison evidence.
+- Kept scaled decode output PASS, persistent config-disabled PASS, and incremental compose PASS explicitly recorded.
+- Narrowed the next candidate to:
+  - first-byte wait variance
+  - output-read slow variance
+  - input-write outlier
+- Left slow-attempt correlation as a diagnostics-only design candidate and did not implement new fields in this step.
+
+### Changed Files
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+- `docs/operations/persistent-decoder-plan.md`
+
+### Decisions
+- Treat `manual-logs/two-client-render-rerun-20260518-080637` as the latest comparison rerun.
+- Keep scaled decode output marked as PASS.
+- Keep request/response persistent decoder frozen.
+- Keep Production Readiness as FAIL.
+
+### Findings
+- Scaled decode output remained valid in the latest rerun:
+  - `one_shot_decode_output_width=640`
+  - `one_shot_decode_output_height=360`
+  - `one_shot_decode_output_pixel_format=Bgra8`
+  - `one_shot_decode_scaled_output_enabled=true`
+  - `one_shot_decode_expected_output_bytes_per_frame=921600`
+- Transport remained healthy:
+  - server `packets_received=37374`
+  - server `frames_queued=1800`
+  - server `per_client_queued_frames=player1/streamsync-dev-session:900|player2/streamsync-dev-session:900`
+  - server `io_error_count=0`
+  - client `frames_sent=900|900`
+  - client `effective_output_fps=29.157|28.887`
+- Latest switcher FPS was still below the previous scaled-pass rerun, but meaningfully better than the noisy rerun:
+  - `effective_render_fps_after_first_render=16.579 -> 13.760`
+  - noisy rerun reference: `9.469`
+- Decode attempt frequency was not the main anomaly in this rerun:
+  - `decode_attempt_count=28`
+  - `one_shot_decode_attempt_slot_counts=slot0:14|slot1:14`
+  - `one_shot_decode_attempt_reason_counts=frame_id_changed:26|cache_miss:0|previous_unavailable:0|source_recovered:2|unknown:0`
+  - `decode_cache_miss_slot0_count=14`
+  - `decode_cache_miss_slot1_count=14`
+- The heavier evidence moved to per-attempt variance:
+  - `one_shot_decode_input_write_elapsed_ms=1648`
+  - `one_shot_decode_input_write_elapsed_ms_max=401`
+  - `one_shot_decode_stdin_write_to_stdout_first_byte_elapsed_ms=1474`
+  - `one_shot_decode_stdin_write_to_stdout_first_byte_elapsed_ms_max=186`
+  - `one_shot_decode_stdout_first_byte_elapsed_ms=1472`
+  - `one_shot_decode_first_byte_elapsed_ms_max=186`
+  - `one_shot_decode_first_byte_slow_count=7`
+  - `one_shot_decode_output_read_elapsed_ms=1775`
+  - `one_shot_decode_output_read_elapsed_ms_max=221`
+  - `one_shot_decode_output_read_slow_count=7`
+- Latest payload bytes were smaller than the previous scaled-pass rerun:
+  - `one_shot_decode_input_payload_bytes_avg=195142.192 -> 83475.286`
+  - this weakens payload-size growth as the main explanation
+- Compose/display variance still matters as a secondary note:
+  - `quad_view_incremental_update_count=46`
+  - `quad_view_full_compose_count=1`
+  - `quad_view_compose_elapsed_ms=969`
+  - `gdi_paint_wait_elapsed_ms=80`
+  - `placeholder_visual_changed_count=44`
+  - `scheduler_status=PartialSelected`
+
+### Next
+- Compare `manual-logs/two-client-render-rerun-20260518-080637` against `manual-logs/two-client-render-rerun-20260517-223121` with emphasis on:
+  - `one_shot_decode_first_byte_slow_count`
+  - `one_shot_decode_output_read_slow_count`
+  - `one_shot_decode_input_write_elapsed_ms_max`
+  - `one_shot_decode_attempt_slot_counts`
+  - `one_shot_decode_attempt_reason_counts`
+- If another code slice is needed, keep it diagnostics-only and limit it to slow-attempt correlation fields for:
+  - first-byte slow attempts
+  - output-read slow attempts
+  - input-write outliers
+- Keep persistent decoder and continuous-stream rewrite out of scope.
+
+### TODO Update
+- Updated `docs/operations/todo.md` current position and next items to treat decode attempt frequency as non-primary in the latest rerun.
+- Updated `docs/operations/persistent-decoder-plan.md` with the latest comparison rerun and the diagnostics-only next-candidate shape.
+
+### Validation
+- `git diff --check`
+  - result: PASS
+  - note: LF/CRLF warnings only
+
+## 2026-05-18
+### Type
 - Codex implementation
 
 ### Work

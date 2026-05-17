@@ -2,7 +2,7 @@
 
 # Persistent Decoder Minimal Plan
 
-最終更新: 2026-05-17
+最終更新: 2026-05-18
 
 ## 目的
 - same-PC `2`-client rerun `manual-logs/two-client-render-rerun-20260517-121040` で、current one-shot FFmpeg decode path の dominant cost が `decode_output_read_elapsed_ms=3430` / `decode_output_read_exact_elapsed_ms=2771` に寄っていることを受け、persistent decoder を next design candidate として最小導入設計に整理する
@@ -199,6 +199,47 @@
 - この slice は two-real preview loop の observability 追加だけに閉じており、one-shot FFmpeg args、decode routing、scaled output shape、persistent config-disabled toggle は変えていない
 - 補足として、current two-real preview loop は `source_identity` 文字列を `selected` 固定で入れている。したがって new `queue` / `retained_keyframe` attempt source counts は cache key divergence を直接示すものではなく、「どの handoff source 由来の decode attempt が多かったか」を見る補助観測として扱う
 
+## Balanced Scaled-Pass Rerun Update
+- same-PC `2`-client rerun `manual-logs/two-client-render-rerun-20260518-080637` では、two-real preview loop 限定 scaled decode output は runtime PASS 継続だった
+- persistent decoder config-disabled も引き続き PASS で、`persistent_decode_config_enabled=false`、`persistent_decode_attempt_count=0`、`persistent_decode_timeout_count=0` を維持した
+- transport / queue / client send も成立している
+  - server `packets_received=37374`
+  - server `frames_queued=1800`
+  - server `per_client_queued_frames=player1/streamsync-dev-session:900|player2/streamsync-dev-session:900`
+  - client `frames_sent=900|900`
+  - client `effective_output_fps=29.157|28.887`
+- latest switcher rerun は previous scaled-pass rerun `manual-logs/two-client-render-rerun-20260517-223121` よりは遅いが、noisy rerun `manual-logs/two-client-render-rerun-20260518-022141` よりは改善した
+  - `effective_render_fps_after_first_render=16.579 -> 13.760`
+  - noisy rerun reference: `9.469`
+- current interpretation では decode attempt frequency は今回の主犯ではない
+  - `decode_attempt_count=28`
+  - `one_shot_decode_attempt_slot_counts=slot0:14|slot1:14`
+  - `one_shot_decode_attempt_reason_counts=frame_id_changed:26|cache_miss:0|previous_unavailable:0|source_recovered:2|unknown:0`
+  - `decode_cache_miss_slot0_count=14`
+  - `decode_cache_miss_slot1_count=14`
+- heavier evidence は per-attempt variance 側に寄った
+  - `one_shot_decode_input_write_elapsed_ms=1648`
+  - `one_shot_decode_input_write_elapsed_ms_max=401`
+  - `one_shot_decode_stdin_write_to_stdout_first_byte_elapsed_ms=1474`
+  - `one_shot_decode_stdin_write_to_stdout_first_byte_elapsed_ms_max=186`
+  - `one_shot_decode_stdout_first_byte_elapsed_ms=1472`
+  - `one_shot_decode_first_byte_elapsed_ms_max=186`
+  - `one_shot_decode_first_byte_slow_count=7`
+  - `one_shot_decode_output_read_elapsed_ms=1775`
+  - `one_shot_decode_output_read_elapsed_ms_max=221`
+  - `one_shot_decode_output_read_slow_count=7`
+- payload bytes は previous scaled-pass rerun より小さかった
+  - `one_shot_decode_input_payload_bytes_avg=195142.192 -> 83475.286`
+  - したがって latest rerun の variance は payload size 増加だけでは説明しにくい
+- compose / GDI も secondary note として残す
+  - `quad_view_incremental_update_count=46`
+  - `quad_view_full_compose_count=1`
+  - `quad_view_compose_elapsed_ms=969`
+  - `gdi_paint_wait_elapsed_ms=80`
+  - `placeholder_visual_changed_count=44`
+  - `scheduler_status=PartialSelected`
+- したがって next dominant candidate は persistent decoder revive ではなく、one-shot path の `first-byte wait variance` / `output-read slow variance` / `input-write outlier` へ移す
+
 ## Safer Diagnostics Candidates
 - high-value candidates
   - `one_shot_decode_stdin_close_elapsed_ms`
@@ -222,6 +263,18 @@
   - `one_shot_decode_payload_bytes_per_write_max`
     - syscall単位の write size を取るには `write_all` を manual loop 化する必要があり、first safer slice としては挙動変更が増える
 - next implementation slice が必要になっても、まずは high-value candidates のうち derived fields と first-byte timing に寄せる
+- latest comparison rerun を受けた docs-only minimal design として、slow-attempt correlation 追加を検討する場合は以下に限定する
+  - `one_shot_decode_slow_first_byte_slot_counts`
+  - `one_shot_decode_slow_first_byte_source_counts`
+  - `one_shot_decode_slow_first_byte_reason_counts`
+  - `one_shot_decode_slow_output_read_slot_counts`
+  - `one_shot_decode_slow_output_read_source_counts`
+  - `one_shot_decode_slow_output_read_reason_counts`
+  - `one_shot_decode_input_write_outlier_count`
+  - `one_shot_decode_input_write_outlier_threshold_ms`
+  - `one_shot_decode_input_write_outlier_slot_counts`
+  - `one_shot_decode_input_write_outlier_payload_bytes_avg`
+- この候補も observability-only に留め、FFmpeg args、pixel format、one-shot decode routing、persistent decoder state machine には触れない
 
 ## 何を置き換えるか
 - 置き換え対象は `apps/switcher/src/lib.rs` の current one-shot FFmpeg decode runtime のうち、decode ごとに作っている FFmpeg process lifecycle
@@ -310,19 +363,20 @@
 ## Next Candidate Comparison
 - current request/response persistent decoder を current path として凍結する
 - continuous-stream decoder rewrite は別設計候補として保留し、別 step で必要性を再判断する
-- one-shot-only compose-pass rerun `manual-logs/two-client-render-rerun-20260517-183552` を current baseline とし、next comparison axis を one-shot decode I/O に戻す
-- current one-shot fallback path の `decode_input_write_elapsed_ms` / `decode_output_read_elapsed_ms` / `decode_output_read_exact_elapsed_ms` / `decode_process_spawn_elapsed_ms` を再度 narrow に調査する
+- latest comparison baseline は `manual-logs/two-client-render-rerun-20260518-080637` と `manual-logs/two-client-render-rerun-20260517-223121` の組に更新する
+- current one-shot fallback path の next comparison axis は decode attempt frequency そのものではなく、`decode_input_write_elapsed_ms_max` / `one_shot_decode_first_byte_slow_count` / `one_shot_decode_output_read_slow_count` を含む per-attempt variance に寄せる
 - current one-shot code path では以下の境界を前提に safer slice を選ぶ
   - `decode_process_spawn_elapsed_ms`: `Command::spawn()` だけ
   - `decode_input_write_elapsed_ms`: `stdin.write_all(&input.encoded_payload)` だけ
   - `decode_output_read_exact_elapsed_ms`: `stdout.take(expected_len).read_to_end(...)` だけ
   - `decode_output_read_elapsed_ms`: bounded read + extra-output probe まで
   - `decode_process_wait_elapsed_ms`: `child.wait()` だけ
-- current one-shot observability には payload-size min/max/avg、keyframe vs non-keyframe attempt/elapsed split、per-phase max elapsed、expected output bytes per frame、extra-output probe elapsed も追加し、next rerun では request/response persistent decoder を revive せずに safer one-shot-only slices を比較する
-- next safer slice は extra-output probe ではなく、one-shot process を残したまま `stdin write` と `stdout raw BGRA read volume` をどう削れるかに置く
-- first additive implementation は two-real preview loop 限定の scaled decode output とし、full-size decode path や request/response persistent path には広げない
-- raw BGRA 以外の intermediate pixel format が switcher 側の最終 pixel format と両立するか、read volume 削減候補として比較対象にする
+- current one-shot observability には payload-size min/max/avg、keyframe vs non-keyframe attempt/elapsed split、per-phase max elapsed、expected output bytes per frame、extra-output probe elapsed も追加済みで、next rerun では request/response persistent decoder を revive せずに per-attempt variance を比較する
+- next safer slice は extra-output probe や persistent decoder revive ではなく、slow first-byte / slow output-read / input-write outlier の correlation diagnostics に置く
+- first additive implementation は observability-only に限定し、two-real preview loop 以外へ広げない
+- raw BGRA 以外の intermediate pixel format 比較は latest rerun の主候補から外し、first-byte/read variance を切り分けた後の次候補としてだけ残す
 - stdin write は current evidence では pipe backpressure か FFmpeg側 consumption wait の可能性を疑うが、persistent request/response path には戻らず one-shot path 内だけで判断する
+- compose / GDI variance も regression guard として残し、decode-side だけに原因を断定しない
 - decode cache ownership / `decode_output_buffer_reuse_count=0` / clone-store follow-up は decoder I/O / compose の次比較候補として残す
 
 ## out of scope
