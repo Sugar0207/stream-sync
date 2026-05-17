@@ -5,6 +5,85 @@
 - Codex implementation
 
 ### Work
+- Reflected the latest same-PC `2`-client rerun evidence from `manual-logs/two-client-render-rerun-20260517-125737`.
+- Confirmed that the first persistent decoder request/response slice failed at runtime rather than improving FPS:
+  - `persistent_decode_attempt_count=20`
+  - `persistent_decode_success_count=0`
+  - `persistent_decode_failure_count=20`
+  - `persistent_decode_fallback_count=20`
+  - `persistent_decode_process_spawn_count=21`
+  - `persistent_decode_process_restart_count=20`
+  - `persistent_decode_last_error=persistent_decode_stdout_read_timeout`
+  - `one_shot_decode_fallback_count=20`
+- Confirmed the primary regression shape in the rerun:
+  - one-shot fallback itself still decoded successfully
+  - the dominant new cost was waiting for persistent timeout before fallback
+  - `effective_render_fps_after_first_render=4.411`
+  - `effective_render_fps=4.060`
+  - `decode_elapsed_ms=42170`
+  - `avg_decode_elapsed_ms=2108.500`
+- Added fail-fast / circuit-breaker handling to the persistent runtime in `apps/switcher/src/lib.rs`.
+  - `persistent_decode_stdout_read_timeout` now increments explicit timeout diagnostics
+  - the persistent runtime is disabled after the first timeout in the same run
+  - the current FFmpeg session is stopped instead of entering a restart storm
+  - later decode calls skip the persistent path and go directly to one-shot fallback
+- Added summary diagnostics wiring in `apps/switcher/src/main.rs` so the two-real preview summary exposes:
+  - `persistent_decode_runtime_disabled`
+  - `persistent_decode_runtime_disabled_reason`
+  - `persistent_decode_consecutive_failure_count`
+  - `persistent_decode_disabled_after_failure_count`
+  - `persistent_decode_skipped_after_disabled_count`
+  - `persistent_decode_timeout_count`
+  - `persistent_decode_timeout_elapsed_ms`
+- Updated `docs/operations/todo.md` and `docs/operations/persistent-decoder-plan.md` so the request/response runtime failure and the guarded fallback-first strategy are the current source of truth.
+- Kept runtime rerun out of scope for this step.
+
+### Changed Files
+- `apps/switcher/src/lib.rs`
+- `apps/switcher/src/main.rs`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+- `docs/operations/persistent-decoder-plan.md`
+
+### Decisions
+- Treat the current persistent request/response decoder path as a runtime-failed experiment, not a successful optimization.
+- Stop the timeout/restart storm first instead of widening into a continuous-stream rewrite in the same step.
+- Keep one-shot fallback always available after runtime disable.
+- Keep Production Readiness as FAIL.
+
+### Unresolved
+- No post-fail-fast rerun has been collected yet.
+- It is still unproven whether the guarded persistent slice can ever succeed with the current request/response stdout framing assumption.
+- Continuous-stream decoder rewrite remains deferred to a later step.
+- Production Readiness remains FAIL.
+
+### Next
+- Run the next same-PC `2`-client rerun and confirm that one timeout disables the persistent runtime for the rest of the run.
+- Verify that `persistent_decode_process_restart_count` no longer climbs per decode after the first timeout.
+- Compare the guarded fallback run against the one-shot baseline before deciding whether to keep probing the persistent path or retire it in favor of a later continuous-stream design.
+
+### TODO Update
+- Updated `docs/operations/todo.md` current position with the `20260517-125737` runtime FAIL evidence and the new fail-fast behavior.
+- Updated `docs/operations/persistent-decoder-plan.md` to record that the current request/response persistent path failed at runtime and that continuous-stream rewrite stays out of scope for this step.
+
+### Validation
+- `cargo fmt`
+  - result: PASS
+- `cargo check -p stream-sync-switcher`
+  - result: PASS
+  - note: existing `apps/switcher/src/main.rs` dead-code warnings only
+- focused switcher test
+  - result: PASS
+  - command:
+    `cargo test -p stream-sync-switcher switcher_four_view_two_real_handoff_preview_summary_formats_expected_fields -- --nocapture`
+- `git diff --check`
+  - result: PASS (LF/CRLF warnings only)
+
+## 2026-05-17
+### Type
+- Codex implementation
+
+### Work
 - Ran build validation for the new persistent decoder minimal additive slice in `apps/switcher`.
 - Executed:
   - `cargo fmt`

@@ -15,6 +15,14 @@
 - `decode_output_vec_resize_elapsed_ms=0` なので、zero-fill は current blocker ではない
 - `decode_output_buffer_reuse_count=0` と decode cache ownership の問題は残るが、latest evidence では first-order bottleneck ではない
 
+## Runtime Failure Update
+- same-PC `2`-client rerun `manual-logs/two-client-render-rerun-20260517-125737` では、first persistent decoder slice は runtime FAIL だった
+- current request/response assumption では `persistent_decode_attempt_count=20` に対して `persistent_decode_success_count=0`、`persistent_decode_failure_count=20`、`persistent_decode_fallback_count=20`、`persistent_decode_process_restart_count=20`、`persistent_decode_last_error=persistent_decode_stdout_read_timeout` だった
+- `persistent_decode_stdout_read_elapsed_ms=0`、`persistent_decode_stdout_read_exact_elapsed_ms=0`、`persistent_decode_output_bytes_total=0` なので、persistent stdout 側は expected raw BGRA frame を 1 回も返せていない
+- one-shot fallback 自体は成功しているが、timeout 待ちのせいで `effective_render_fps_after_first_render=4.411`、`decode_elapsed_ms=42170` まで悪化したため、current request/response path を成功 optimization としては扱わない
+- current code では regression stop を優先し、`persistent_decode_stdout_read_timeout` を 1 回観測した時点で runtime-disabled にして以後は即 one-shot fallback へ流す fail-fast / circuit breaker を追加した
+- したがって current persistent slice は「request/response path の runtime viability を probing する guarded experiment」であり、continuous-stream decoder rewrite は別 step の候補として明示的に保留する
+
 ## 何を置き換えるか
 - 置き換え対象は `apps/switcher/src/lib.rs` の current one-shot FFmpeg decode runtime のうち、decode ごとに作っている FFmpeg process lifecycle
 - 具体的には以下を persistent 化候補とする
@@ -73,6 +81,8 @@
   - stderr から fatal decode session corruption が疑われるケース
 - restart 失敗時は current one-shot decoder に fallback できる形を残す
 - fallback は常設でも、debug-only flag でもよいが、first slice では narrow revert path を残すことを優先する
+- `persistent_decode_stdout_read_timeout` は current evidence では高リスク failure として扱い、毎 decode で restart を繰り返さず runtime-disabled に倒す
+- timeout disable 後は summary diagnostics から disabled reason / skipped count が分かる状態を維持し、同 run 内では即 one-shot fallback に流す
 
 ## diagnostics 候補
 - 維持したい既存 field
@@ -99,6 +109,7 @@
 
 ## out of scope
 - persistent decoder の full architecture rewrite
+- continuous-stream decoder rewrite
 - unsafe 前提の raw buffer tricks
 - GPU decode / shared-memory backend
 - render config 化

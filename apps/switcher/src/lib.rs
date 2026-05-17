@@ -6746,6 +6746,13 @@ pub struct SwitcherH264DecodeRuntimeDiagnostics {
     pub persistent_decode_stdout_read_exact_elapsed_ms: u128,
     pub persistent_decode_output_bytes: usize,
     pub persistent_decode_last_error: Option<String>,
+    pub persistent_decode_runtime_disabled: bool,
+    pub persistent_decode_runtime_disabled_reason: Option<String>,
+    pub persistent_decode_consecutive_failure_count: u32,
+    pub persistent_decode_disabled_after_failure_count: u32,
+    pub persistent_decode_skipped_after_disabled_count: u32,
+    pub persistent_decode_timeout_count: u32,
+    pub persistent_decode_timeout_elapsed_ms: u128,
     pub one_shot_decode_fallback_count: u32,
 }
 
@@ -6842,8 +6849,10 @@ impl SwitcherH264DecodeRuntimeHook for SwitcherFfmpegH264DecodeRuntimeHook {
 pub struct SwitcherPersistentFfmpegH264DecodeRuntimeHook {
     pub ffmpeg_path: PathBuf,
     pub read_timeout: Duration,
-    session: std::cell::RefCell<Option<SwitcherPersistentFfmpegDecodeSession>>,
+    runtime_state: std::cell::RefCell<SwitcherPersistentFfmpegDecodeRuntimeState>,
 }
+
+const PERSISTENT_DECODE_TIMEOUT_DISABLE_THRESHOLD: u32 = 1;
 
 struct SwitcherPersistentFfmpegDecodeSession {
     child: Child,
@@ -6852,6 +6861,14 @@ struct SwitcherPersistentFfmpegDecodeSession {
     stdout_thread: Option<std::thread::JoinHandle<()>>,
     stderr_bytes: Arc<Mutex<Vec<u8>>>,
     stderr_thread: Option<std::thread::JoinHandle<()>>,
+}
+
+#[derive(Default)]
+struct SwitcherPersistentFfmpegDecodeRuntimeState {
+    session: Option<SwitcherPersistentFfmpegDecodeSession>,
+    runtime_disabled: bool,
+    runtime_disabled_reason: Option<String>,
+    consecutive_failure_count: u32,
 }
 
 struct SwitcherPersistentFfmpegStdoutReadRequest {
@@ -6885,7 +6902,9 @@ impl Default for SwitcherPersistentFfmpegH264DecodeRuntimeHook {
         Self {
             ffmpeg_path: ffmpeg_path.clone(),
             read_timeout: Duration::from_millis(2_000),
-            session: std::cell::RefCell::new(None),
+            runtime_state: std::cell::RefCell::new(
+                SwitcherPersistentFfmpegDecodeRuntimeState::default(),
+            ),
         }
     }
 }
@@ -6916,7 +6935,7 @@ impl SwitcherPersistentFfmpegH264DecodeRuntimeHook {
         &self,
         diagnostics: &mut SwitcherH264DecodeRuntimeDiagnostics,
     ) -> Result<(), io::Error> {
-        if self.session.borrow().is_some() {
+        if self.runtime_state.borrow().session.is_some() {
             return Ok(());
         }
         diagnostics.persistent_decode_process_spawn_count = diagnostics
@@ -6927,18 +6946,12 @@ impl SwitcherPersistentFfmpegH264DecodeRuntimeHook {
         diagnostics.process_spawn_elapsed_ms = diagnostics
             .process_spawn_elapsed_ms
             .saturating_add(spawn_start.elapsed().as_millis());
-        *self.session.borrow_mut() = Some(session);
+        self.runtime_state.borrow_mut().session = Some(session);
         Ok(())
     }
 
-    fn restart_session(
-        &self,
-        diagnostics: &mut SwitcherH264DecodeRuntimeDiagnostics,
-    ) -> Result<(), io::Error> {
-        diagnostics.persistent_decode_process_restart_count = diagnostics
-            .persistent_decode_process_restart_count
-            .saturating_add(1);
-        if let Some(session) = self.session.borrow_mut().take() {
+    fn stop_session(&self, diagnostics: &mut SwitcherH264DecodeRuntimeDiagnostics) {
+        if let Some(session) = self.runtime_state.borrow_mut().session.take() {
             if let Some(stderr_summary) = session.stderr_summary() {
                 diagnostics.persistent_decode_last_error =
                     Some(match diagnostics.persistent_decode_last_error.take() {
@@ -6950,26 +6963,80 @@ impl SwitcherPersistentFfmpegH264DecodeRuntimeHook {
                 .process_wait_elapsed_ms
                 .saturating_add(session.stop());
         }
-        diagnostics.persistent_decode_process_spawn_count = diagnostics
-            .persistent_decode_process_spawn_count
+    }
+
+    fn restart_session(
+        &self,
+        diagnostics: &mut SwitcherH264DecodeRuntimeDiagnostics,
+    ) -> Result<(), io::Error> {
+        diagnostics.persistent_decode_process_restart_count = diagnostics
+            .persistent_decode_process_restart_count
             .saturating_add(1);
-        let spawn_start = Instant::now();
-        let session = spawn_persistent_ffmpeg_decode_session(&self.ffmpeg_path)?;
-        diagnostics.process_spawn_elapsed_ms = diagnostics
-            .process_spawn_elapsed_ms
-            .saturating_add(spawn_start.elapsed().as_millis());
-        *self.session.borrow_mut() = Some(session);
-        Ok(())
+        self.stop_session(diagnostics);
+        self.ensure_session(diagnostics)
     }
 
     fn record_persistent_error(
+        &self,
         diagnostics: &mut SwitcherH264DecodeRuntimeDiagnostics,
         message: impl Into<String>,
-    ) {
+    ) -> String {
+        let message = message.into();
+        let consecutive_failure_count = {
+            let mut state = self.runtime_state.borrow_mut();
+            state.consecutive_failure_count = state.consecutive_failure_count.saturating_add(1);
+            state.consecutive_failure_count
+        };
         diagnostics.persistent_decode_failure_count = diagnostics
             .persistent_decode_failure_count
             .saturating_add(1);
-        diagnostics.persistent_decode_last_error = Some(message.into());
+        diagnostics.persistent_decode_consecutive_failure_count = consecutive_failure_count;
+        diagnostics.persistent_decode_last_error = Some(message.clone());
+        message
+    }
+
+    fn reset_consecutive_failure_count(&self) {
+        self.runtime_state.borrow_mut().consecutive_failure_count = 0;
+    }
+
+    fn mark_runtime_disabled(
+        &self,
+        diagnostics: &mut SwitcherH264DecodeRuntimeDiagnostics,
+        reason: impl Into<String>,
+    ) {
+        let reason = reason.into();
+        {
+            let mut state = self.runtime_state.borrow_mut();
+            state.runtime_disabled = true;
+            state.runtime_disabled_reason = Some(reason.clone());
+        }
+        diagnostics.persistent_decode_runtime_disabled = true;
+        diagnostics.persistent_decode_runtime_disabled_reason = Some(reason.clone());
+        diagnostics.persistent_decode_disabled_after_failure_count = diagnostics
+            .persistent_decode_disabled_after_failure_count
+            .saturating_add(1);
+        diagnostics.persistent_decode_last_error = Some(reason);
+    }
+
+    fn apply_runtime_state_snapshot(&self, diagnostics: &mut SwitcherH264DecodeRuntimeDiagnostics) {
+        let state = self.runtime_state.borrow();
+        diagnostics.persistent_decode_runtime_disabled = state.runtime_disabled;
+        diagnostics.persistent_decode_consecutive_failure_count = state.consecutive_failure_count;
+        if let Some(reason) = &state.runtime_disabled_reason {
+            diagnostics.persistent_decode_runtime_disabled_reason = Some(reason.clone());
+        }
+    }
+
+    fn skip_disabled_runtime(
+        &self,
+        input: SwitcherH264DecodeInput,
+        diagnostics: &mut SwitcherH264DecodeRuntimeDiagnostics,
+    ) -> SwitcherH264DecodeRuntimeOutput {
+        diagnostics.persistent_decode_skipped_after_disabled_count = diagnostics
+            .persistent_decode_skipped_after_disabled_count
+            .saturating_add(1);
+        self.apply_runtime_state_snapshot(diagnostics);
+        self.fallback_to_one_shot(input, diagnostics)
     }
 }
 
@@ -6988,6 +7055,7 @@ impl SwitcherH264DecodeRuntimeHook for SwitcherPersistentFfmpegH264DecodeRuntime
             output_expected_bytes: input.width as usize * input.height as usize * 4,
             ..SwitcherH264DecodeRuntimeDiagnostics::default()
         };
+        self.apply_runtime_state_snapshot(&mut diagnostics);
         if input.encoded_payload.is_empty() {
             return SwitcherH264DecodeRuntimeOutput {
                 result: SwitcherH264DecodeResult::Deferred {
@@ -7004,8 +7072,11 @@ impl SwitcherH264DecodeRuntimeHook for SwitcherPersistentFfmpegH264DecodeRuntime
                 diagnostics,
             };
         }
+        if diagnostics.persistent_decode_runtime_disabled {
+            return self.skip_disabled_runtime(input, &mut diagnostics);
+        }
 
-        let bootstrap_required = self.session.borrow().is_none();
+        let bootstrap_required = self.runtime_state.borrow().session.is_none();
         if bootstrap_required {
             let payload_summary =
                 SwitcherH264AnnexBPayloadInspectionBoundary.inspect_payload(&input.encoded_payload);
@@ -7025,7 +7096,7 @@ impl SwitcherH264DecodeRuntimeHook for SwitcherPersistentFfmpegH264DecodeRuntime
                     diagnostics,
                 };
             }
-            Self::record_persistent_error(&mut diagnostics, error.to_string());
+            self.record_persistent_error(&mut diagnostics, error.to_string());
             return self.fallback_to_one_shot(input, &mut diagnostics);
         }
 
@@ -7034,8 +7105,9 @@ impl SwitcherH264DecodeRuntimeHook for SwitcherPersistentFfmpegH264DecodeRuntime
             .saturating_add(1);
 
         let write_result = {
-            let mut session_ref = self.session.borrow_mut();
+            let mut session_ref = self.runtime_state.borrow_mut();
             let session = session_ref
+                .session
                 .as_mut()
                 .expect("persistent decode session should exist after ensure_session");
             let write_start = Instant::now();
@@ -7051,7 +7123,7 @@ impl SwitcherH264DecodeRuntimeHook for SwitcherPersistentFfmpegH264DecodeRuntime
             .saturating_add(write_result.1);
 
         if let Err(error) = write_result.0 {
-            Self::record_persistent_error(&mut diagnostics, error.to_string());
+            self.record_persistent_error(&mut diagnostics, error.to_string());
             if let Err(restart_error) = self.restart_session(&mut diagnostics) {
                 diagnostics.persistent_decode_last_error = Some(format!(
                     "{}|persistent_restart_failed:{}",
@@ -7066,12 +7138,13 @@ impl SwitcherH264DecodeRuntimeHook for SwitcherPersistentFfmpegH264DecodeRuntime
         }
 
         let (read_request_send_result, read_response_rx) = {
-            let session_ref = self.session.borrow();
+            let session_ref = self.runtime_state.borrow();
             let session = session_ref
+                .session
                 .as_ref()
                 .expect("persistent decode session should exist while reading");
             let Some(stdout_request_tx) = session.stdout_request_tx.as_ref() else {
-                Self::record_persistent_error(
+                self.record_persistent_error(
                     &mut diagnostics,
                     "persistent_stdout_request_channel_unavailable",
                 );
@@ -7098,7 +7171,7 @@ impl SwitcherH264DecodeRuntimeHook for SwitcherPersistentFfmpegH264DecodeRuntime
         };
 
         if let Err(error) = read_request_send_result {
-            Self::record_persistent_error(&mut diagnostics, error.to_string());
+            self.record_persistent_error(&mut diagnostics, error.to_string());
             if let Err(restart_error) = self.restart_session(&mut diagnostics) {
                 diagnostics.persistent_decode_last_error = Some(format!(
                     "{}|persistent_restart_failed:{}",
@@ -7112,27 +7185,30 @@ impl SwitcherH264DecodeRuntimeHook for SwitcherPersistentFfmpegH264DecodeRuntime
             return self.fallback_to_one_shot(input, &mut diagnostics);
         }
 
+        let timeout_wait_start = Instant::now();
         let response = match read_response_rx.recv_timeout(self.read_timeout) {
             Ok(response) => response,
             Err(mpsc::RecvTimeoutError::Timeout) => {
-                Self::record_persistent_error(
+                diagnostics.persistent_decode_timeout_count = diagnostics
+                    .persistent_decode_timeout_count
+                    .saturating_add(1);
+                diagnostics.persistent_decode_timeout_elapsed_ms = diagnostics
+                    .persistent_decode_timeout_elapsed_ms
+                    .saturating_add(timeout_wait_start.elapsed().as_millis());
+                let timeout_message = self.record_persistent_error(
                     &mut diagnostics,
                     "persistent_decode_stdout_read_timeout",
                 );
-                if let Err(restart_error) = self.restart_session(&mut diagnostics) {
-                    diagnostics.persistent_decode_last_error = Some(format!(
-                        "{}|persistent_restart_failed:{}",
-                        diagnostics
-                            .persistent_decode_last_error
-                            .clone()
-                            .unwrap_or_else(|| "persistent_decode_stdout_read_timeout".to_string()),
-                        restart_error
-                    ));
+                if diagnostics.persistent_decode_consecutive_failure_count
+                    >= PERSISTENT_DECODE_TIMEOUT_DISABLE_THRESHOLD
+                {
+                    self.stop_session(&mut diagnostics);
+                    self.mark_runtime_disabled(&mut diagnostics, timeout_message);
                 }
                 return self.fallback_to_one_shot(input, &mut diagnostics);
             }
             Err(mpsc::RecvTimeoutError::Disconnected) => {
-                Self::record_persistent_error(
+                self.record_persistent_error(
                     &mut diagnostics,
                     "persistent_decode_stdout_reader_disconnected",
                 );
@@ -7170,7 +7246,7 @@ impl SwitcherH264DecodeRuntimeHook for SwitcherPersistentFfmpegH264DecodeRuntime
                 if output.extra_output_len != 0 {
                     let expected_len = diagnostics.output_expected_bytes;
                     let actual_len = expected_len.saturating_add(output.extra_output_len);
-                    Self::record_persistent_error(
+                    self.record_persistent_error(
                         &mut diagnostics,
                         format!(
                             "decoded_rawvideo_length_mismatch_expected={}_actual={}",
@@ -7193,6 +7269,7 @@ impl SwitcherH264DecodeRuntimeHook for SwitcherPersistentFfmpegH264DecodeRuntime
                 diagnostics.persistent_decode_success_count = diagnostics
                     .persistent_decode_success_count
                     .saturating_add(1);
+                self.reset_consecutive_failure_count();
                 return SwitcherH264DecodeRuntimeOutput {
                     result: SwitcherH264DecodeResult::Decoded(SwitcherDecodedFrame {
                         width: input.width,
@@ -7217,7 +7294,7 @@ impl SwitcherH264DecodeRuntimeHook for SwitcherPersistentFfmpegH264DecodeRuntime
                 diagnostics.persistent_decode_output_bytes = diagnostics
                     .persistent_decode_output_bytes
                     .saturating_add(read_diagnostics.output_bytes);
-                Self::record_persistent_error(&mut diagnostics, error.error.to_string());
+                self.record_persistent_error(&mut diagnostics, error.error.to_string());
                 if let Err(restart_error) = self.restart_session(&mut diagnostics) {
                     diagnostics.persistent_decode_last_error = Some(format!(
                         "{}|persistent_restart_failed:{}",
@@ -7679,6 +7756,25 @@ fn merge_decode_runtime_diagnostics(
     if let Some(last_error) = &source.persistent_decode_last_error {
         target.persistent_decode_last_error = Some(last_error.clone());
     }
+    target.persistent_decode_runtime_disabled |= source.persistent_decode_runtime_disabled;
+    if let Some(disabled_reason) = &source.persistent_decode_runtime_disabled_reason {
+        target.persistent_decode_runtime_disabled_reason = Some(disabled_reason.clone());
+    }
+    target.persistent_decode_consecutive_failure_count = target
+        .persistent_decode_consecutive_failure_count
+        .max(source.persistent_decode_consecutive_failure_count);
+    target.persistent_decode_disabled_after_failure_count = target
+        .persistent_decode_disabled_after_failure_count
+        .saturating_add(source.persistent_decode_disabled_after_failure_count);
+    target.persistent_decode_skipped_after_disabled_count = target
+        .persistent_decode_skipped_after_disabled_count
+        .saturating_add(source.persistent_decode_skipped_after_disabled_count);
+    target.persistent_decode_timeout_count = target
+        .persistent_decode_timeout_count
+        .saturating_add(source.persistent_decode_timeout_count);
+    target.persistent_decode_timeout_elapsed_ms = target
+        .persistent_decode_timeout_elapsed_ms
+        .saturating_add(source.persistent_decode_timeout_elapsed_ms);
     target.one_shot_decode_fallback_count = target
         .one_shot_decode_fallback_count
         .saturating_add(source.one_shot_decode_fallback_count);
