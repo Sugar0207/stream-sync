@@ -154,6 +154,51 @@
 - current evidence だけでは `stdin write` の内訳を `OS pipe backpressure` と `FFmpeg 側 consumption wait` に分け切れない。current summary は write完了後から stdout first byte までの待ちを独立計測していないため、write中に詰まったのか、write後に decode/scale/output 準備で待ったのかを確定できない
 - したがって next safer slice は挙動変更ではなく diagnostics 追加を優先する。request/response persistent decoder revive や continuous-stream decoder rewrite には戻らない
 
+## Noisy Scaled-Pass Rerun Update
+- same-PC `2`-client rerun `manual-logs/two-client-render-rerun-20260518-022141` では、two-real preview loop 限定 scaled decode output は runtime PASS 継続だった
+- persistent decoder config-disabled も引き続き PASS で、`persistent_decode_config_enabled=false`、`persistent_decode_attempt_count=0`、`persistent_decode_timeout_count=0` を維持した
+- scaled decode output failure shape は出ていない
+  - `one_shot_decode_output_width=640`
+  - `one_shot_decode_output_height=360`
+  - `one_shot_decode_output_pixel_format=Bgra8`
+  - `one_shot_decode_scaled_output_enabled=true`
+  - `one_shot_decode_expected_output_bytes_per_frame=921600`
+- ただし latest run は noisy で、previous scaled-pass rerun `manual-logs/two-client-render-rerun-20260517-223121` より悪化した
+  - `effective_render_fps_after_first_render=16.579 -> 9.469`
+  - `decode_attempt_count=26 -> 42`
+  - `one_shot_decode_elapsed_ms=2029 -> 8809`
+  - `one_shot_decode_input_write_elapsed_ms=937 -> 3132`
+  - `one_shot_decode_output_read_elapsed_ms=816 -> 4655`
+  - `one_shot_decode_output_read_exact_elapsed_ms=676 -> 3729`
+- first-byte diagnostics も重かった
+  - `one_shot_decode_stdin_write_to_stdout_first_byte_elapsed_ms=3781`
+  - `one_shot_decode_stdout_first_byte_elapsed_ms=3687`
+- payload bytes はむしろ previous scaled-pass rerun より小さかった
+  - `one_shot_decode_input_payload_bytes_avg=195142.192 -> 91042.357`
+  - したがって latest regression は payload size 増加だけでは説明しにくい
+- compose/display side も同時に重かった
+  - `quad_view_compose_elapsed_ms=1667`
+  - `gdi_paint_wait_elapsed_ms=132`
+  - `placeholder_visual_changed_count=61`
+  - `scheduler_status=PartialSelected`
+- current interpretation は「scaled output は効いたまま、decode attempt frequency と per-attempt first-byte/read wait が同時に悪化した noisy run」である
+
+## Decode Attempt Frequency Code-Path Findings
+- `apps/switcher/src/main.rs` の two-real preview loop decode runtime では、actual `decode_attempt_count` は decode cache miss 時にだけ増える
+- preview-loop cache key は `width` / `height` / `source_identity(client_id, run_id, frame_id)` を使う
+- `source_identity` がある current real-slot path では payload bytes そのものは cache key に入らない
+- `apps/switcher/src/lib.rs` の unchanged-frame reuse は、slot が `UseUpdatedFrame` を維持しつつ decoded-slot render identity の `client_id/run_id/frame_id` が前回と一致した場合にだけ成立する
+- したがって `decode_attempt_count=26 -> 42` の増加候補は以下に置く
+  - real slot の `frame_id` churn 増加
+  - `Selected` 継続より `NoFrameAvailable` / `HandoffError` / held-previous / placeholder 遷移が増え、unchanged-frame reuse が減った
+  - partial selection や placeholder visual churn により stable `UseUpdatedFrame` が続きにくかった
+- `selected_source_changed_count` は queue / retained_keyframe 切り替えなどの visual churn を読む補助にはなるが、source kind 自体は decode cache key ではない
+- next candidate は「one decode をさらに速くする」前に、「なぜ actual decode 回数が増えたか」を slot/frame-identity diagnostics と一緒に読む方向へ移す
+- latest diagnostics-only slice では、この比較を next rerun で直接読めるように `one_shot_decode_attempt_source_counts`、`one_shot_decode_attempt_slot_counts`、`one_shot_decode_attempt_reason_counts`、`decode_cache_miss_slot0_count`、`decode_cache_miss_slot1_count`、`skipped_decode_unchanged_slot0_count`、`skipped_decode_unchanged_slot1_count` を summary に追加した
+- 同時に per-attempt variance 用に `one_shot_decode_first_byte_elapsed_ms_max`、`one_shot_decode_stdin_write_to_stdout_first_byte_elapsed_ms_max`、`one_shot_decode_first_byte_slow_count`、`one_shot_decode_output_read_slow_count` と fixed threshold `66ms` も追加し、attempt count 増加だけでは説明できない noisy outlier を見やすくした
+- この slice は two-real preview loop の observability 追加だけに閉じており、one-shot FFmpeg args、decode routing、scaled output shape、persistent config-disabled toggle は変えていない
+- 補足として、current two-real preview loop は `source_identity` 文字列を `selected` 固定で入れている。したがって new `queue` / `retained_keyframe` attempt source counts は cache key divergence を直接示すものではなく、「どの handoff source 由来の decode attempt が多かったか」を見る補助観測として扱う
+
 ## Safer Diagnostics Candidates
 - high-value candidates
   - `one_shot_decode_stdin_close_elapsed_ms`

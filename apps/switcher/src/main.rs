@@ -1,5 +1,5 @@
 use std::cell::RefCell;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::{self, BufRead};
 use std::num::NonZeroU32;
 use std::rc::Rc;
@@ -1893,12 +1893,23 @@ struct SwitcherFourViewTwoRealHandoffPreviewLoopSummary {
     one_shot_decode_input_write_elapsed_ms_max: u128,
     one_shot_decode_stdin_close_elapsed_ms: u128,
     one_shot_decode_stdin_write_to_stdout_first_byte_elapsed_ms: u128,
+    one_shot_decode_stdin_write_to_stdout_first_byte_elapsed_ms_max: u128,
     one_shot_decode_stdout_first_byte_elapsed_ms: u128,
+    one_shot_decode_first_byte_elapsed_ms_max: u128,
+    one_shot_decode_first_byte_slow_count: u32,
+    one_shot_decode_first_byte_slow_threshold_ms: u128,
     one_shot_decode_output_read_elapsed_ms: u128,
     one_shot_decode_output_read_elapsed_ms_max: u128,
+    one_shot_decode_output_read_slow_count: u32,
+    one_shot_decode_output_read_slow_threshold_ms: u128,
     one_shot_decode_output_read_exact_elapsed_ms: u128,
     one_shot_decode_output_read_exact_elapsed_ms_max: u128,
     one_shot_decode_extra_output_probe_elapsed_ms: u128,
+    one_shot_decode_attempt_source_counts: String,
+    one_shot_decode_attempt_slot_counts: String,
+    one_shot_decode_attempt_reason_counts: String,
+    decode_cache_miss_slot0_count: u32,
+    decode_cache_miss_slot1_count: u32,
     one_shot_decode_input_payload_bytes_min: Option<usize>,
     one_shot_decode_input_payload_bytes_max: usize,
     one_shot_decode_input_payload_bytes_avg: String,
@@ -1977,6 +1988,8 @@ struct SwitcherFourViewTwoRealHandoffPreviewLoopSummary {
     slot2_selected_source_changed_count: u32,
     slot3_selected_source_changed_count: u32,
     placeholder_visual_changed_count: u32,
+    skipped_decode_unchanged_slot0_count: u32,
+    skipped_decode_unchanged_slot1_count: u32,
     quad_view_incremental_update_count: u32,
     quad_view_full_compose_count: u32,
     quad_view_incremental_skip_reason: String,
@@ -2408,12 +2421,30 @@ struct TwoRealPreviewLoopRuntimeTiming {
     one_shot_decode_input_write_elapsed_ms_max: u128,
     one_shot_decode_stdin_close_elapsed_ms: u128,
     one_shot_decode_stdin_write_to_stdout_first_byte_elapsed_ms: u128,
+    one_shot_decode_stdin_write_to_stdout_first_byte_elapsed_ms_max: u128,
     one_shot_decode_stdout_first_byte_elapsed_ms: u128,
+    one_shot_decode_first_byte_elapsed_ms_max: u128,
+    one_shot_decode_first_byte_slow_count: u32,
     one_shot_decode_output_read_elapsed_ms: u128,
     one_shot_decode_output_read_elapsed_ms_max: u128,
+    one_shot_decode_output_read_slow_count: u32,
     one_shot_decode_output_read_exact_elapsed_ms: u128,
     one_shot_decode_output_read_exact_elapsed_ms_max: u128,
     one_shot_decode_extra_output_probe_elapsed_ms: u128,
+    one_shot_decode_attempt_source_queue_count: u32,
+    one_shot_decode_attempt_source_retained_keyframe_count: u32,
+    one_shot_decode_attempt_source_unknown_count: u32,
+    one_shot_decode_attempt_slot0_count: u32,
+    one_shot_decode_attempt_slot1_count: u32,
+    one_shot_decode_attempt_reason_frame_id_changed_count: u32,
+    one_shot_decode_attempt_reason_cache_miss_count: u32,
+    one_shot_decode_attempt_reason_previous_unavailable_count: u32,
+    one_shot_decode_attempt_reason_source_recovered_count: u32,
+    one_shot_decode_attempt_reason_unknown_count: u32,
+    decode_cache_miss_slot0_count: u32,
+    decode_cache_miss_slot1_count: u32,
+    skipped_decode_unchanged_slot0_count: u32,
+    skipped_decode_unchanged_slot1_count: u32,
     one_shot_decode_input_payload_bytes_min: Option<usize>,
     one_shot_decode_input_payload_bytes_max: usize,
     one_shot_decode_input_payload_bytes_total: usize,
@@ -2459,6 +2490,34 @@ struct TwoRealPreviewLoopRuntimeTiming {
     render_call_elapsed_ms: u128,
     max_attempt_elapsed_ms: u128,
     slow_attempt_count: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct TwoRealPreviewLoopSeenDecodeCacheKey {
+    width: u32,
+    height: u32,
+    client_id: ClientId,
+    run_id: RunId,
+    frame_id: u64,
+    source_identity: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TwoRealPreviewLoopDecodeAttemptReason {
+    FrameIdChanged,
+    CacheMiss,
+    PreviousUnavailable,
+    SourceRecovered,
+    Unknown,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct TwoRealPreviewLoopDecodeAttemptCandidate {
+    slot_index: usize,
+    key: Option<TwoRealPreviewLoopSeenDecodeCacheKey>,
+    selected_frame_source: Option<String>,
+    reason: TwoRealPreviewLoopDecodeAttemptReason,
+    probable_cache_miss: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -2804,9 +2863,15 @@ fn add_decode_runtime_diagnostics(
     timing.one_shot_decode_stdin_write_to_stdout_first_byte_elapsed_ms = timing
         .one_shot_decode_stdin_write_to_stdout_first_byte_elapsed_ms
         .saturating_add(diagnostics.one_shot_decode_stdin_write_to_stdout_first_byte_elapsed_ms);
+    timing.one_shot_decode_stdin_write_to_stdout_first_byte_elapsed_ms_max = timing
+        .one_shot_decode_stdin_write_to_stdout_first_byte_elapsed_ms_max
+        .max(diagnostics.one_shot_decode_stdin_write_to_stdout_first_byte_elapsed_ms);
     timing.one_shot_decode_stdout_first_byte_elapsed_ms = timing
         .one_shot_decode_stdout_first_byte_elapsed_ms
         .saturating_add(diagnostics.one_shot_decode_stdout_first_byte_elapsed_ms);
+    timing.one_shot_decode_first_byte_elapsed_ms_max = timing
+        .one_shot_decode_first_byte_elapsed_ms_max
+        .max(diagnostics.one_shot_decode_stdout_first_byte_elapsed_ms);
     timing.one_shot_decode_output_read_elapsed_ms = timing
         .one_shot_decode_output_read_elapsed_ms
         .saturating_add(diagnostics.one_shot_decode_output_read_elapsed_ms);
@@ -2823,6 +2888,17 @@ fn add_decode_runtime_diagnostics(
         .one_shot_decode_extra_output_probe_elapsed_ms
         .saturating_add(diagnostics.one_shot_decode_extra_output_probe_elapsed_ms);
     if diagnostics.one_shot_decode_attempt_count != 0 {
+        let slow_threshold_ms = two_real_preview_loop_slow_threshold_ms();
+        if diagnostics.one_shot_decode_stdout_first_byte_elapsed_ms > slow_threshold_ms {
+            timing.one_shot_decode_first_byte_slow_count = timing
+                .one_shot_decode_first_byte_slow_count
+                .saturating_add(diagnostics.one_shot_decode_attempt_count);
+        }
+        if diagnostics.one_shot_decode_output_read_elapsed_ms > slow_threshold_ms {
+            timing.one_shot_decode_output_read_slow_count = timing
+                .one_shot_decode_output_read_slow_count
+                .saturating_add(diagnostics.one_shot_decode_attempt_count);
+        }
         timing.one_shot_decode_input_payload_bytes_min =
             Some(match timing.one_shot_decode_input_payload_bytes_min {
                 Some(current_min) => current_min.min(diagnostics.input_payload_bytes),
@@ -3261,6 +3337,18 @@ impl<RealHandoff> MultiRealAndPlaceholderQueuedFrameHandoff<RealHandoff> {
         pre_composition: &SwitcherFourViewHandoffValidationPreCompositionOutput,
         unchanged_frame_reuse_slots: [bool; 4],
     ) -> [String; 4] {
+        self.take_last_frame_slot_diagnostic_summaries_from_pre_composition(
+            pre_composition,
+            unchanged_frame_reuse_slots,
+        )
+        .map(|diagnostic| format_four_view_preview_slot_diagnostic(&diagnostic))
+    }
+
+    fn take_last_frame_slot_diagnostic_summaries_from_pre_composition(
+        &self,
+        pre_composition: &SwitcherFourViewHandoffValidationPreCompositionOutput,
+        unchanged_frame_reuse_slots: [bool; 4],
+    ) -> [FourViewPreviewSlotDiagnosticSummary; 4] {
         std::array::from_fn(|slot_index| {
             let slot = &self.slots[slot_index];
             let observation = self.last_frame_slot_observations[slot_index].as_ref();
@@ -3275,7 +3363,7 @@ impl<RealHandoff> MultiRealAndPlaceholderQueuedFrameHandoff<RealHandoff> {
                 diagnostic.decode_attempted = Some(false);
                 diagnostic.decode_skipped_reason = Some("UnchangedFrameReuse".to_string());
             }
-            format_four_view_preview_slot_diagnostic(&diagnostic)
+            diagnostic
         })
     }
 }
@@ -3980,7 +4068,7 @@ where
     let mut clean_output_render_result_kind = "NoRenderableQuadView";
     let mut window_title = SWITCHER_FOUR_VIEW_CLEAN_OUTPUT_WINDOW_TITLE.to_string();
     let cadence = four_view_clean_output_window_loop_frame_cadence();
-    let slow_attempt_threshold_ms = cadence.as_millis().saturating_mul(2).max(1);
+    let slow_attempt_threshold_ms = two_real_preview_loop_slow_threshold_ms();
     let obs_runtime =
         ObsFriendlyFourViewLoopWindowRenderRuntime::with_timing(render_runtime, Rc::clone(&timing));
     let timed_decode_runtime = TimedSwitcherH264DecodeRuntime::new(
@@ -3997,8 +4085,11 @@ where
     let mut decoded_slot_identities: [Option<TwoRealPreviewLoopDecodedSlotIdentity>; 4] =
         std::array::from_fn(|_| None);
     let mut previous_visual_identities: Option<[TwoRealPreviewLoopSlotVisualIdentity; 4]> = None;
+    let mut previous_slot_diagnostic_summaries: Option<[FourViewPreviewSlotDiagnosticSummary; 4]> =
+        None;
     let mut previous_bgra_composition: Option<SwitcherFourViewQuadCompositionResult> = None;
     let mut previous_clean_output: Option<SwitcherFourViewCleanOutputWindowRenderResult> = None;
+    let mut seen_decode_cache_keys = HashSet::new();
     let mut quad_composition_cache = TwoRealPreviewLoopQuadCompositionCache::default();
     let mut quad_view_compose_attempt_count = 0u32;
     let mut quad_view_compose_success_count = 0u32;
@@ -4308,10 +4399,31 @@ where
             &current_slot_identities,
             &pre_composition,
         );
-        slot_diagnostics = handoff.take_last_frame_slot_diagnostics_from_pre_composition(
-            &pre_composition,
-            unchanged_reuse_slots,
-        );
+        let slot_diagnostic_summaries = handoff
+            .take_last_frame_slot_diagnostic_summaries_from_pre_composition(
+                &pre_composition,
+                unchanged_reuse_slots,
+            );
+        slot_diagnostics = slot_diagnostic_summaries
+            .clone()
+            .map(|diagnostic| format_four_view_preview_slot_diagnostic(&diagnostic));
+        let decode_attempt_delta = timing_after_validation
+            .decode_attempt_count
+            .saturating_sub(timing_before_validation.decode_attempt_count);
+        {
+            let mut timing = timing.borrow_mut();
+            record_two_real_decode_attempt_diagnostics(
+                &mut timing,
+                slot0_index,
+                slot1_index,
+                decode_attempt_delta,
+                &unchanged_reuse_slots,
+                &previous_slot_identities,
+                previous_slot_diagnostic_summaries.as_ref(),
+                &slot_diagnostic_summaries,
+                &mut seen_decode_cache_keys,
+            );
+        }
         let tick_diagnostics = four_view_two_real_tick_diagnostics_from_composition_render(
             &slot_result_kinds,
             &pre_composition.composition_render,
@@ -4348,6 +4460,7 @@ where
             &pre_composition.composition_render,
         );
         decoded_slot_identities = current_slot_identities;
+        previous_slot_diagnostic_summaries = Some(slot_diagnostic_summaries);
         previous_visual_identities = Some(current_visual_identities);
         previous_clean_output = Some(clean_output.clone());
 
@@ -4487,15 +4600,45 @@ where
         one_shot_decode_input_write_elapsed_ms: timing.one_shot_decode_input_write_elapsed_ms,
         one_shot_decode_input_write_elapsed_ms_max: timing
             .one_shot_decode_input_write_elapsed_ms_max,
+        one_shot_decode_stdin_close_elapsed_ms: timing.one_shot_decode_stdin_close_elapsed_ms,
+        one_shot_decode_stdin_write_to_stdout_first_byte_elapsed_ms: timing
+            .one_shot_decode_stdin_write_to_stdout_first_byte_elapsed_ms,
+        one_shot_decode_stdin_write_to_stdout_first_byte_elapsed_ms_max: timing
+            .one_shot_decode_stdin_write_to_stdout_first_byte_elapsed_ms_max,
+        one_shot_decode_stdout_first_byte_elapsed_ms: timing
+            .one_shot_decode_stdout_first_byte_elapsed_ms,
+        one_shot_decode_first_byte_elapsed_ms_max: timing.one_shot_decode_first_byte_elapsed_ms_max,
+        one_shot_decode_first_byte_slow_count: timing.one_shot_decode_first_byte_slow_count,
+        one_shot_decode_first_byte_slow_threshold_ms: slow_attempt_threshold_ms,
         one_shot_decode_output_read_elapsed_ms: timing.one_shot_decode_output_read_elapsed_ms,
         one_shot_decode_output_read_elapsed_ms_max: timing
             .one_shot_decode_output_read_elapsed_ms_max,
+        one_shot_decode_output_read_slow_count: timing.one_shot_decode_output_read_slow_count,
+        one_shot_decode_output_read_slow_threshold_ms: slow_attempt_threshold_ms,
         one_shot_decode_output_read_exact_elapsed_ms: timing
             .one_shot_decode_output_read_exact_elapsed_ms,
         one_shot_decode_output_read_exact_elapsed_ms_max: timing
             .one_shot_decode_output_read_exact_elapsed_ms_max,
         one_shot_decode_extra_output_probe_elapsed_ms: timing
             .one_shot_decode_extra_output_probe_elapsed_ms,
+        one_shot_decode_attempt_source_counts: format_two_real_attempt_source_counts(
+            timing.one_shot_decode_attempt_source_queue_count,
+            timing.one_shot_decode_attempt_source_retained_keyframe_count,
+            timing.one_shot_decode_attempt_source_unknown_count,
+        ),
+        one_shot_decode_attempt_slot_counts: format_two_real_attempt_slot_counts(
+            timing.one_shot_decode_attempt_slot0_count,
+            timing.one_shot_decode_attempt_slot1_count,
+        ),
+        one_shot_decode_attempt_reason_counts: format_two_real_attempt_reason_counts(
+            timing.one_shot_decode_attempt_reason_frame_id_changed_count,
+            timing.one_shot_decode_attempt_reason_cache_miss_count,
+            timing.one_shot_decode_attempt_reason_previous_unavailable_count,
+            timing.one_shot_decode_attempt_reason_source_recovered_count,
+            timing.one_shot_decode_attempt_reason_unknown_count,
+        ),
+        decode_cache_miss_slot0_count: timing.decode_cache_miss_slot0_count,
+        decode_cache_miss_slot1_count: timing.decode_cache_miss_slot1_count,
         one_shot_decode_input_payload_bytes_min: timing.one_shot_decode_input_payload_bytes_min,
         one_shot_decode_input_payload_bytes_max: timing.one_shot_decode_input_payload_bytes_max,
         one_shot_decode_input_payload_bytes_avg: format_preview_loop_average_usize(
@@ -4530,11 +4673,6 @@ where
             .one_shot_decode_scaled_output_reason
             .clone()
             .unwrap_or_else(|| "two_real_slot_size".to_string()),
-        one_shot_decode_stdin_close_elapsed_ms: timing.one_shot_decode_stdin_close_elapsed_ms,
-        one_shot_decode_stdin_write_to_stdout_first_byte_elapsed_ms: timing
-            .one_shot_decode_stdin_write_to_stdout_first_byte_elapsed_ms,
-        one_shot_decode_stdout_first_byte_elapsed_ms: timing
-            .one_shot_decode_stdout_first_byte_elapsed_ms,
         one_shot_decode_write_throughput_bytes_per_ms: format_preview_loop_bytes_per_ms(
             timing.one_shot_decode_input_payload_bytes_total,
             timing.one_shot_decode_input_write_elapsed_ms,
@@ -4626,6 +4764,8 @@ where
         slot2_selected_source_changed_count: slot_selected_source_changed_counts[2],
         slot3_selected_source_changed_count: slot_selected_source_changed_counts[3],
         placeholder_visual_changed_count,
+        skipped_decode_unchanged_slot0_count: timing.skipped_decode_unchanged_slot0_count,
+        skipped_decode_unchanged_slot1_count: timing.skipped_decode_unchanged_slot1_count,
         quad_view_incremental_update_count,
         quad_view_full_compose_count,
         quad_view_incremental_skip_reason,
@@ -6628,6 +6768,13 @@ fn four_view_clean_output_window_loop_frame_cadence() -> Duration {
     Duration::from_secs_f64(1.0 / 30.0)
 }
 
+fn two_real_preview_loop_slow_threshold_ms() -> u128 {
+    four_view_clean_output_window_loop_frame_cadence()
+        .as_millis()
+        .saturating_mul(2)
+        .max(1)
+}
+
 fn render_four_view_focused_slot_with_runtime(
     slot: &SwitcherFourViewHandoffQuadCompositionRenderSlot,
     render_runtime: &impl SwitcherWindowRenderRuntimeHook,
@@ -7740,6 +7887,228 @@ fn two_real_unchanged_frame_reuse_count(unchanged_frame_reuse_slots: &[bool; 4])
         .count() as u32
 }
 
+fn count_real_slot_unchanged_reuse(
+    unchanged_frame_reuse_slots: &[bool; 4],
+    real_slot_index: usize,
+) -> u32 {
+    if unchanged_frame_reuse_slots[real_slot_index] {
+        1
+    } else {
+        0
+    }
+}
+
+fn two_real_preview_loop_decode_cache_key_for_slot(
+    slot_diagnostic: &FourViewPreviewSlotDiagnosticSummary,
+) -> Option<TwoRealPreviewLoopSeenDecodeCacheKey> {
+    let frame_id = slot_diagnostic.selected_frame_id?;
+    Some(TwoRealPreviewLoopSeenDecodeCacheKey {
+        width: FOUR_VIEW_CLEAN_OUTPUT_LOOP_OBS_OUTPUT_WIDTH / 2,
+        height: FOUR_VIEW_CLEAN_OUTPUT_LOOP_OBS_OUTPUT_HEIGHT / 2,
+        client_id: slot_diagnostic.client_id.clone(),
+        run_id: slot_diagnostic.run_id.clone(),
+        frame_id,
+        source_identity: "selected".to_string(),
+    })
+}
+
+fn two_real_preview_loop_decode_attempt_reason(
+    previous_slot_identity: Option<&TwoRealPreviewLoopDecodedSlotIdentity>,
+    previous_slot_diagnostic: Option<&FourViewPreviewSlotDiagnosticSummary>,
+    current_slot_diagnostic: &FourViewPreviewSlotDiagnosticSummary,
+    probable_cache_miss: bool,
+) -> TwoRealPreviewLoopDecodeAttemptReason {
+    let current_frame_id = current_slot_diagnostic.selected_frame_id;
+    if let (Some(previous_slot_identity), Some(current_frame_id)) =
+        (previous_slot_identity, current_frame_id)
+    {
+        if previous_slot_identity.frame_id != current_frame_id {
+            return TwoRealPreviewLoopDecodeAttemptReason::FrameIdChanged;
+        }
+    }
+    if previous_slot_diagnostic
+        .map(|diagnostic| diagnostic.selected_frame_available != Some(true))
+        .unwrap_or(false)
+        && current_slot_diagnostic.selected_frame_available == Some(true)
+    {
+        return TwoRealPreviewLoopDecodeAttemptReason::SourceRecovered;
+    }
+    if previous_slot_identity.is_none() {
+        return TwoRealPreviewLoopDecodeAttemptReason::PreviousUnavailable;
+    }
+    if probable_cache_miss {
+        return TwoRealPreviewLoopDecodeAttemptReason::CacheMiss;
+    }
+    TwoRealPreviewLoopDecodeAttemptReason::Unknown
+}
+
+fn format_two_real_attempt_source_counts(
+    queue: u32,
+    retained_keyframe: u32,
+    unknown: u32,
+) -> String {
+    format!("queue:{queue}|retained_keyframe:{retained_keyframe}|unknown:{unknown}")
+}
+
+fn format_two_real_attempt_slot_counts(slot0: u32, slot1: u32) -> String {
+    format!("slot0:{slot0}|slot1:{slot1}")
+}
+
+fn format_two_real_attempt_reason_counts(
+    frame_id_changed: u32,
+    cache_miss: u32,
+    previous_unavailable: u32,
+    source_recovered: u32,
+    unknown: u32,
+) -> String {
+    format!(
+        "frame_id_changed:{frame_id_changed}|cache_miss:{cache_miss}|previous_unavailable:{previous_unavailable}|source_recovered:{source_recovered}|unknown:{unknown}"
+    )
+}
+
+fn record_two_real_decode_attempt_candidate(
+    timing: &mut TwoRealPreviewLoopRuntimeTiming,
+    slot0_index: usize,
+    slot1_index: usize,
+    candidate: &TwoRealPreviewLoopDecodeAttemptCandidate,
+) {
+    match candidate.selected_frame_source.as_deref() {
+        Some("queue") => {
+            timing.one_shot_decode_attempt_source_queue_count = timing
+                .one_shot_decode_attempt_source_queue_count
+                .saturating_add(1);
+        }
+        Some("retained_keyframe") => {
+            timing.one_shot_decode_attempt_source_retained_keyframe_count = timing
+                .one_shot_decode_attempt_source_retained_keyframe_count
+                .saturating_add(1);
+        }
+        _ => {
+            timing.one_shot_decode_attempt_source_unknown_count = timing
+                .one_shot_decode_attempt_source_unknown_count
+                .saturating_add(1);
+        }
+    }
+    if candidate.slot_index == slot0_index {
+        timing.one_shot_decode_attempt_slot0_count =
+            timing.one_shot_decode_attempt_slot0_count.saturating_add(1);
+        timing.decode_cache_miss_slot0_count =
+            timing.decode_cache_miss_slot0_count.saturating_add(1);
+    } else if candidate.slot_index == slot1_index {
+        timing.one_shot_decode_attempt_slot1_count =
+            timing.one_shot_decode_attempt_slot1_count.saturating_add(1);
+        timing.decode_cache_miss_slot1_count =
+            timing.decode_cache_miss_slot1_count.saturating_add(1);
+    }
+    match candidate.reason {
+        TwoRealPreviewLoopDecodeAttemptReason::FrameIdChanged => {
+            timing.one_shot_decode_attempt_reason_frame_id_changed_count = timing
+                .one_shot_decode_attempt_reason_frame_id_changed_count
+                .saturating_add(1);
+        }
+        TwoRealPreviewLoopDecodeAttemptReason::CacheMiss => {
+            timing.one_shot_decode_attempt_reason_cache_miss_count = timing
+                .one_shot_decode_attempt_reason_cache_miss_count
+                .saturating_add(1);
+        }
+        TwoRealPreviewLoopDecodeAttemptReason::PreviousUnavailable => {
+            timing.one_shot_decode_attempt_reason_previous_unavailable_count = timing
+                .one_shot_decode_attempt_reason_previous_unavailable_count
+                .saturating_add(1);
+        }
+        TwoRealPreviewLoopDecodeAttemptReason::SourceRecovered => {
+            timing.one_shot_decode_attempt_reason_source_recovered_count = timing
+                .one_shot_decode_attempt_reason_source_recovered_count
+                .saturating_add(1);
+        }
+        TwoRealPreviewLoopDecodeAttemptReason::Unknown => {
+            timing.one_shot_decode_attempt_reason_unknown_count = timing
+                .one_shot_decode_attempt_reason_unknown_count
+                .saturating_add(1);
+        }
+    }
+}
+
+fn record_two_real_decode_attempt_diagnostics(
+    timing: &mut TwoRealPreviewLoopRuntimeTiming,
+    slot0_index: usize,
+    slot1_index: usize,
+    decode_attempt_delta: u32,
+    unchanged_frame_reuse_slots: &[bool; 4],
+    previous_slot_identities: &[Option<TwoRealPreviewLoopDecodedSlotIdentity>; 4],
+    previous_slot_diagnostic_summaries: Option<&[FourViewPreviewSlotDiagnosticSummary; 4]>,
+    current_slot_diagnostic_summaries: &[FourViewPreviewSlotDiagnosticSummary; 4],
+    seen_decode_cache_keys: &mut HashSet<TwoRealPreviewLoopSeenDecodeCacheKey>,
+) {
+    timing.skipped_decode_unchanged_slot0_count =
+        timing.skipped_decode_unchanged_slot0_count.saturating_add(
+            count_real_slot_unchanged_reuse(unchanged_frame_reuse_slots, slot0_index),
+        );
+    timing.skipped_decode_unchanged_slot1_count =
+        timing.skipped_decode_unchanged_slot1_count.saturating_add(
+            count_real_slot_unchanged_reuse(unchanged_frame_reuse_slots, slot1_index),
+        );
+
+    let mut candidates = Vec::new();
+    for slot_index in [slot0_index, slot1_index] {
+        let slot_diagnostic = &current_slot_diagnostic_summaries[slot_index];
+        if slot_diagnostic.decode_attempted != Some(true) || unchanged_frame_reuse_slots[slot_index]
+        {
+            continue;
+        }
+        let key = two_real_preview_loop_decode_cache_key_for_slot(slot_diagnostic);
+        let probable_cache_miss = key
+            .as_ref()
+            .map(|key| !seen_decode_cache_keys.contains(key))
+            .unwrap_or(true);
+        let reason = two_real_preview_loop_decode_attempt_reason(
+            previous_slot_identities[slot_index].as_ref(),
+            previous_slot_diagnostic_summaries.map(|diagnostics| &diagnostics[slot_index]),
+            slot_diagnostic,
+            probable_cache_miss,
+        );
+        candidates.push(TwoRealPreviewLoopDecodeAttemptCandidate {
+            slot_index,
+            key,
+            selected_frame_source: slot_diagnostic.selected_frame_source.clone(),
+            reason,
+            probable_cache_miss,
+        });
+    }
+
+    let mut remaining_attempts = decode_attempt_delta as usize;
+    for candidate in candidates
+        .iter()
+        .filter(|candidate| candidate.probable_cache_miss)
+    {
+        if remaining_attempts == 0 {
+            break;
+        }
+        record_two_real_decode_attempt_candidate(timing, slot0_index, slot1_index, candidate);
+        remaining_attempts -= 1;
+    }
+    for candidate in candidates
+        .iter()
+        .filter(|candidate| !candidate.probable_cache_miss)
+    {
+        if remaining_attempts == 0 {
+            break;
+        }
+        record_two_real_decode_attempt_candidate(timing, slot0_index, slot1_index, candidate);
+        remaining_attempts -= 1;
+    }
+
+    for candidate in &candidates {
+        if current_slot_diagnostic_summaries[candidate.slot_index].render_input_kind
+            == "UseUpdatedFrame"
+        {
+            if let Some(key) = &candidate.key {
+                seen_decode_cache_keys.insert(key.clone());
+            }
+        }
+    }
+}
+
 fn four_view_two_real_tick_diagnostics(
     slot_result_kinds: &[String; 4],
     validation: &SwitcherFourViewHandoffValidationOutput,
@@ -8617,7 +8986,7 @@ fn format_four_view_two_real_handoff_preview_loop_summary(
     summary: &SwitcherFourViewTwoRealHandoffPreviewLoopSummary,
 ) -> String {
     format!(
-        "switcher four-view two-real handoff preview loop command_name=--four-view-two-real-handoff-preview-loop real_handoff=true real_slot_count=2 real_slot0_index={} real_slot1_index={} pipe_name={} actual_pipe_path={} preview_mode={} read_mode={} client0_id={} run0_id={} client1_id={} run1_id={} frames_attempted={} frames_rendered={} render_failures={} elapsed_ms={} target_fps={} configured_frame_interval_ms={} effective_attempt_fps={} effective_render_fps={} first_render_attempt_index={} first_render_elapsed_ms={} rendered_after_first_render={} effective_render_fps_after_first_render={} no_render_before_first_render={} selected_count={} no_frame_count={} handoff_error_count={} decode_attempt_count={} decode_success_count={} render_success_count={} render_failure_count={} unchanged_frame_reuse_count={} skipped_decode_unchanged_frame_count={} redecoded_same_frame_count={} decode_elapsed_ms={} decode_process_spawn_elapsed_ms={} decode_input_write_elapsed_ms={} decode_input_payload_bytes_total={} decode_output_read_elapsed_ms={} decode_output_read_exact_elapsed_ms={} decode_output_vec_resize_elapsed_ms={} decode_process_wait_elapsed_ms={} decode_pixel_convert_elapsed_ms={} decode_buffer_allocation_count={} decode_output_bytes_total={} decode_stdout_expected_bytes_total={} decode_cached_frame_reuse_count={} decode_cache_miss_count={} decoded_buffer_clone_count={} decode_cache_hit_clone_count={} decode_cache_store_clone_count={} decoded_buffer_clone_elapsed_ms={} composed_buffer_clone_count={} decode_output_buffer_reuse_count={} persistent_decode_config_enabled={} persistent_decode_enabled={} persistent_decode_attempt_count={} persistent_decode_success_count={} persistent_decode_failure_count={} persistent_decode_fallback_count={} persistent_decode_process_spawn_count={} persistent_decode_process_restart_count={} persistent_decode_stdin_write_elapsed_ms={} persistent_decode_stdout_read_elapsed_ms={} persistent_decode_stdout_read_exact_elapsed_ms={} persistent_decode_output_bytes_total={} persistent_decode_last_error={} persistent_decode_runtime_disabled={} persistent_decode_runtime_disabled_reason={} persistent_decode_consecutive_failure_count={} persistent_decode_disabled_after_failure_count={} persistent_decode_skipped_by_config_count={} persistent_decode_skipped_after_disabled_count={} persistent_decode_timeout_count={} persistent_decode_timeout_elapsed_ms={} one_shot_decode_fallback_count={} one_shot_decode_attempt_count={} one_shot_decode_elapsed_ms={} one_shot_decode_elapsed_ms_max={} one_shot_decode_input_write_elapsed_ms={} one_shot_decode_input_write_elapsed_ms_max={} one_shot_decode_stdin_close_elapsed_ms={} one_shot_decode_stdin_write_to_stdout_first_byte_elapsed_ms={} one_shot_decode_stdout_first_byte_elapsed_ms={} one_shot_decode_output_read_elapsed_ms={} one_shot_decode_output_read_elapsed_ms_max={} one_shot_decode_output_read_exact_elapsed_ms={} one_shot_decode_output_read_exact_elapsed_ms_max={} one_shot_decode_extra_output_probe_elapsed_ms={} one_shot_decode_write_throughput_bytes_per_ms={} one_shot_decode_input_write_elapsed_per_payload_kb={} one_shot_decode_read_throughput_bytes_per_ms={} one_shot_decode_input_payload_bytes_min={} one_shot_decode_input_payload_bytes_max={} one_shot_decode_input_payload_bytes_avg={} one_shot_decode_keyframe_attempt_count={} one_shot_decode_non_keyframe_attempt_count={} one_shot_decode_keyframe_elapsed_ms={} one_shot_decode_non_keyframe_elapsed_ms={} one_shot_decode_keyframe_input_payload_bytes_total={} one_shot_decode_non_keyframe_input_payload_bytes_total={} one_shot_decode_expected_output_bytes_per_frame={} one_shot_decode_output_width={} one_shot_decode_output_height={} one_shot_decode_output_pixel_format={} one_shot_decode_scaled_output_enabled={} one_shot_decode_scaled_output_reason={} handoff_elapsed_ms={} render_elapsed_ms={} avg_decode_elapsed_ms={} avg_decode_input_write_elapsed_ms={} avg_decode_output_read_elapsed_ms={} avg_decode_process_spawn_elapsed_ms={} avg_handoff_elapsed_ms={} avg_render_elapsed_ms={} loop_total_elapsed_ms={} attempt_body_elapsed_ms={} loop_sleep_elapsed_ms={} frame_interval_wait_elapsed_ms={} event_pump_elapsed_ms={} window_update_elapsed_ms={} render_prepare_elapsed_ms={} render_buffer_cpu_scale_copy_elapsed_ms={} render_buffer_copy_elapsed_ms={} render_buffer_materialization_elapsed_ms={} render_buffer_scale_prepare_elapsed_ms={} render_buffer_scale_loop_elapsed_ms={} render_buffer_output_copy_elapsed_ms={} render_buffer_resize_elapsed_ms={} render_buffer_clear_elapsed_ms={} render_buffer_passthrough_count={} render_buffer_same_size_copy_count={} render_buffer_half_scale_count={} render_buffer_generic_scale_count={} render_buffer_reuse_count={} render_buffer_allocation_count={} render_buffer_bytes_copied_total={} render_backend_wait_elapsed_ms={} gdi_invalidate_elapsed_ms={} gdi_paint_wait_elapsed_ms={} gdi_wm_paint_elapsed_ms={} gdi_stretchdibits_elapsed_ms={} texture_upload_elapsed_ms={} window_present_elapsed_ms={} vsync_or_present_block_elapsed_ms={} quad_view_compose_elapsed_ms={} quad_view_compose_attempt_count={} quad_view_compose_success_count={} quad_view_compose_skipped_unchanged_count={} quad_view_composed_frame_reuse_count={} quad_view_visual_unchanged_count={} quad_view_visual_changed_count={} materialization_reason_first_render_count={} materialization_reason_visual_changed_count={} materialization_reason_previous_output_missing_count={} materialization_reason_profile_or_size_mismatch_count={} materialization_reason_force_render_count={} materialization_reason_unknown_count={} slot0_frame_id_changed_count={} slot1_frame_id_changed_count={} slot2_frame_id_changed_count={} slot3_frame_id_changed_count={} slot0_selected_source_changed_count={} slot1_selected_source_changed_count={} slot2_selected_source_changed_count={} slot3_selected_source_changed_count={} placeholder_visual_changed_count={} quad_view_incremental_update_count={} quad_view_full_compose_count={} quad_view_incremental_skip_reason={} quad_view_incremental_skip_reason_counts={} quad_view_full_compose_reason_counts={} quad_view_changed_slot_update_count={} quad_view_changed_real_slot_count={} quad_view_changed_placeholder_slot_count={} quad_view_reused_slot_count={} quad_view_previous_output_available_count={} quad_view_previous_output_missing_count={} quad_view_profile_or_size_mismatch_count={} quad_view_allocation_count={} avg_render_buffer_cpu_scale_copy_elapsed_ms={} avg_render_buffer_materialization_elapsed_ms={} avg_gdi_paint_wait_elapsed_ms={} avg_gdi_wm_paint_elapsed_ms={} avg_gdi_stretchdibits_elapsed_ms={} avg_quad_view_incremental_update_elapsed_ms={} avg_quad_view_compose_elapsed_ms={} render_call_elapsed_ms={} render_input_unchanged_count={} render_reuse_frame_count={} unaccounted_elapsed_ms={} avg_attempt_elapsed_ms={} max_attempt_elapsed_ms={} slow_attempt_count={} slow_attempt_threshold_ms={} scheduler_status={:?} slot_bindings={} slot_result_kinds={} slot_diagnostics={} clean_output_render_result_kind={} window_title={} output_width={} output_height={}",
+        "switcher four-view two-real handoff preview loop command_name=--four-view-two-real-handoff-preview-loop real_handoff=true real_slot_count=2 real_slot0_index={} real_slot1_index={} pipe_name={} actual_pipe_path={} preview_mode={} read_mode={} client0_id={} run0_id={} client1_id={} run1_id={} frames_attempted={} frames_rendered={} render_failures={} elapsed_ms={} target_fps={} configured_frame_interval_ms={} effective_attempt_fps={} effective_render_fps={} first_render_attempt_index={} first_render_elapsed_ms={} rendered_after_first_render={} effective_render_fps_after_first_render={} no_render_before_first_render={} selected_count={} no_frame_count={} handoff_error_count={} decode_attempt_count={} decode_success_count={} render_success_count={} render_failure_count={} unchanged_frame_reuse_count={} skipped_decode_unchanged_frame_count={} redecoded_same_frame_count={} decode_elapsed_ms={} decode_process_spawn_elapsed_ms={} decode_input_write_elapsed_ms={} decode_input_payload_bytes_total={} decode_output_read_elapsed_ms={} decode_output_read_exact_elapsed_ms={} decode_output_vec_resize_elapsed_ms={} decode_process_wait_elapsed_ms={} decode_pixel_convert_elapsed_ms={} decode_buffer_allocation_count={} decode_output_bytes_total={} decode_stdout_expected_bytes_total={} decode_cached_frame_reuse_count={} decode_cache_miss_count={} decoded_buffer_clone_count={} decode_cache_hit_clone_count={} decode_cache_store_clone_count={} decoded_buffer_clone_elapsed_ms={} composed_buffer_clone_count={} decode_output_buffer_reuse_count={} persistent_decode_config_enabled={} persistent_decode_enabled={} persistent_decode_attempt_count={} persistent_decode_success_count={} persistent_decode_failure_count={} persistent_decode_fallback_count={} persistent_decode_process_spawn_count={} persistent_decode_process_restart_count={} persistent_decode_stdin_write_elapsed_ms={} persistent_decode_stdout_read_elapsed_ms={} persistent_decode_stdout_read_exact_elapsed_ms={} persistent_decode_output_bytes_total={} persistent_decode_last_error={} persistent_decode_runtime_disabled={} persistent_decode_runtime_disabled_reason={} persistent_decode_consecutive_failure_count={} persistent_decode_disabled_after_failure_count={} persistent_decode_skipped_by_config_count={} persistent_decode_skipped_after_disabled_count={} persistent_decode_timeout_count={} persistent_decode_timeout_elapsed_ms={} one_shot_decode_fallback_count={} one_shot_decode_attempt_count={} one_shot_decode_elapsed_ms={} one_shot_decode_elapsed_ms_max={} one_shot_decode_input_write_elapsed_ms={} one_shot_decode_input_write_elapsed_ms_max={} one_shot_decode_stdin_close_elapsed_ms={} one_shot_decode_stdin_write_to_stdout_first_byte_elapsed_ms={} one_shot_decode_stdin_write_to_stdout_first_byte_elapsed_ms_max={} one_shot_decode_stdout_first_byte_elapsed_ms={} one_shot_decode_first_byte_elapsed_ms_max={} one_shot_decode_first_byte_slow_count={} one_shot_decode_first_byte_slow_threshold_ms={} one_shot_decode_output_read_elapsed_ms={} one_shot_decode_output_read_elapsed_ms_max={} one_shot_decode_output_read_slow_count={} one_shot_decode_output_read_slow_threshold_ms={} one_shot_decode_output_read_exact_elapsed_ms={} one_shot_decode_output_read_exact_elapsed_ms_max={} one_shot_decode_extra_output_probe_elapsed_ms={} one_shot_decode_attempt_source_counts={} one_shot_decode_attempt_slot_counts={} one_shot_decode_attempt_reason_counts={} decode_cache_miss_slot0_count={} decode_cache_miss_slot1_count={} one_shot_decode_write_throughput_bytes_per_ms={} one_shot_decode_input_write_elapsed_per_payload_kb={} one_shot_decode_read_throughput_bytes_per_ms={} one_shot_decode_input_payload_bytes_min={} one_shot_decode_input_payload_bytes_max={} one_shot_decode_input_payload_bytes_avg={} one_shot_decode_keyframe_attempt_count={} one_shot_decode_non_keyframe_attempt_count={} one_shot_decode_keyframe_elapsed_ms={} one_shot_decode_non_keyframe_elapsed_ms={} one_shot_decode_keyframe_input_payload_bytes_total={} one_shot_decode_non_keyframe_input_payload_bytes_total={} one_shot_decode_expected_output_bytes_per_frame={} one_shot_decode_output_width={} one_shot_decode_output_height={} one_shot_decode_output_pixel_format={} one_shot_decode_scaled_output_enabled={} one_shot_decode_scaled_output_reason={} handoff_elapsed_ms={} render_elapsed_ms={} avg_decode_elapsed_ms={} avg_decode_input_write_elapsed_ms={} avg_decode_output_read_elapsed_ms={} avg_decode_process_spawn_elapsed_ms={} avg_handoff_elapsed_ms={} avg_render_elapsed_ms={} loop_total_elapsed_ms={} attempt_body_elapsed_ms={} loop_sleep_elapsed_ms={} frame_interval_wait_elapsed_ms={} event_pump_elapsed_ms={} window_update_elapsed_ms={} render_prepare_elapsed_ms={} render_buffer_cpu_scale_copy_elapsed_ms={} render_buffer_copy_elapsed_ms={} render_buffer_materialization_elapsed_ms={} render_buffer_scale_prepare_elapsed_ms={} render_buffer_scale_loop_elapsed_ms={} render_buffer_output_copy_elapsed_ms={} render_buffer_resize_elapsed_ms={} render_buffer_clear_elapsed_ms={} render_buffer_passthrough_count={} render_buffer_same_size_copy_count={} render_buffer_half_scale_count={} render_buffer_generic_scale_count={} render_buffer_reuse_count={} render_buffer_allocation_count={} render_buffer_bytes_copied_total={} render_backend_wait_elapsed_ms={} gdi_invalidate_elapsed_ms={} gdi_paint_wait_elapsed_ms={} gdi_wm_paint_elapsed_ms={} gdi_stretchdibits_elapsed_ms={} texture_upload_elapsed_ms={} window_present_elapsed_ms={} vsync_or_present_block_elapsed_ms={} quad_view_compose_elapsed_ms={} quad_view_compose_attempt_count={} quad_view_compose_success_count={} quad_view_compose_skipped_unchanged_count={} quad_view_composed_frame_reuse_count={} quad_view_visual_unchanged_count={} quad_view_visual_changed_count={} materialization_reason_first_render_count={} materialization_reason_visual_changed_count={} materialization_reason_previous_output_missing_count={} materialization_reason_profile_or_size_mismatch_count={} materialization_reason_force_render_count={} materialization_reason_unknown_count={} slot0_frame_id_changed_count={} slot1_frame_id_changed_count={} slot2_frame_id_changed_count={} slot3_frame_id_changed_count={} slot0_selected_source_changed_count={} slot1_selected_source_changed_count={} slot2_selected_source_changed_count={} slot3_selected_source_changed_count={} placeholder_visual_changed_count={} skipped_decode_unchanged_slot0_count={} skipped_decode_unchanged_slot1_count={} quad_view_incremental_update_count={} quad_view_full_compose_count={} quad_view_incremental_skip_reason={} quad_view_incremental_skip_reason_counts={} quad_view_full_compose_reason_counts={} quad_view_changed_slot_update_count={} quad_view_changed_real_slot_count={} quad_view_changed_placeholder_slot_count={} quad_view_reused_slot_count={} quad_view_previous_output_available_count={} quad_view_previous_output_missing_count={} quad_view_profile_or_size_mismatch_count={} quad_view_allocation_count={} avg_render_buffer_cpu_scale_copy_elapsed_ms={} avg_render_buffer_materialization_elapsed_ms={} avg_gdi_paint_wait_elapsed_ms={} avg_gdi_wm_paint_elapsed_ms={} avg_gdi_stretchdibits_elapsed_ms={} avg_quad_view_incremental_update_elapsed_ms={} avg_quad_view_compose_elapsed_ms={} render_call_elapsed_ms={} render_input_unchanged_count={} render_reuse_frame_count={} unaccounted_elapsed_ms={} avg_attempt_elapsed_ms={} max_attempt_elapsed_ms={} slow_attempt_count={} slow_attempt_threshold_ms={} scheduler_status={:?} slot_bindings={} slot_result_kinds={} slot_diagnostics={} clean_output_render_result_kind={} window_title={} output_width={} output_height={}",
         summary.real_slot0_index,
         summary.real_slot1_index,
         summary.pipe_name,
@@ -8700,12 +9069,23 @@ fn format_four_view_two_real_handoff_preview_loop_summary(
         summary.one_shot_decode_input_write_elapsed_ms_max,
         summary.one_shot_decode_stdin_close_elapsed_ms,
         summary.one_shot_decode_stdin_write_to_stdout_first_byte_elapsed_ms,
+        summary.one_shot_decode_stdin_write_to_stdout_first_byte_elapsed_ms_max,
         summary.one_shot_decode_stdout_first_byte_elapsed_ms,
+        summary.one_shot_decode_first_byte_elapsed_ms_max,
+        summary.one_shot_decode_first_byte_slow_count,
+        summary.one_shot_decode_first_byte_slow_threshold_ms,
         summary.one_shot_decode_output_read_elapsed_ms,
         summary.one_shot_decode_output_read_elapsed_ms_max,
+        summary.one_shot_decode_output_read_slow_count,
+        summary.one_shot_decode_output_read_slow_threshold_ms,
         summary.one_shot_decode_output_read_exact_elapsed_ms,
         summary.one_shot_decode_output_read_exact_elapsed_ms_max,
         summary.one_shot_decode_extra_output_probe_elapsed_ms,
+        summary.one_shot_decode_attempt_source_counts,
+        summary.one_shot_decode_attempt_slot_counts,
+        summary.one_shot_decode_attempt_reason_counts,
+        summary.decode_cache_miss_slot0_count,
+        summary.decode_cache_miss_slot1_count,
         summary.one_shot_decode_write_throughput_bytes_per_ms,
         summary.one_shot_decode_input_write_elapsed_per_payload_kb,
         summary.one_shot_decode_read_throughput_bytes_per_ms,
@@ -8784,6 +9164,8 @@ fn format_four_view_two_real_handoff_preview_loop_summary(
         summary.slot2_selected_source_changed_count,
         summary.slot3_selected_source_changed_count,
         summary.placeholder_visual_changed_count,
+        summary.skipped_decode_unchanged_slot0_count,
+        summary.skipped_decode_unchanged_slot1_count,
         summary.quad_view_incremental_update_count,
         summary.quad_view_full_compose_count,
         summary.quad_view_incremental_skip_reason,
@@ -12186,6 +12568,22 @@ mod tests {
         assert_eq!(summary.slot0_selected_source_changed_count, 0);
         assert_eq!(summary.slot2_selected_source_changed_count, 0);
         assert_eq!(summary.placeholder_visual_changed_count, 0);
+        assert_eq!(
+            summary.one_shot_decode_attempt_source_counts,
+            "queue:0|retained_keyframe:0|unknown:4"
+        );
+        assert_eq!(
+            summary.one_shot_decode_attempt_slot_counts,
+            "slot0:2|slot1:2"
+        );
+        assert_eq!(
+            summary.one_shot_decode_attempt_reason_counts,
+            "frame_id_changed:2|cache_miss:0|previous_unavailable:2|source_recovered:0|unknown:0"
+        );
+        assert_eq!(summary.decode_cache_miss_slot0_count, 2);
+        assert_eq!(summary.decode_cache_miss_slot1_count, 2);
+        assert_eq!(summary.skipped_decode_unchanged_slot0_count, 0);
+        assert_eq!(summary.skipped_decode_unchanged_slot1_count, 0);
         assert_eq!(summary.quad_view_incremental_update_count, 1);
         assert_eq!(summary.quad_view_full_compose_count, 1);
         assert_eq!(summary.quad_view_changed_real_slot_count, 4);
@@ -12542,12 +12940,27 @@ mod tests {
         assert!(formatted.contains("one_shot_decode_input_write_elapsed_ms_max=0"));
         assert!(formatted.contains("one_shot_decode_stdin_close_elapsed_ms=0"));
         assert!(formatted.contains("one_shot_decode_stdin_write_to_stdout_first_byte_elapsed_ms=0"));
+        assert!(
+            formatted.contains("one_shot_decode_stdin_write_to_stdout_first_byte_elapsed_ms_max=0")
+        );
         assert!(formatted.contains("one_shot_decode_stdout_first_byte_elapsed_ms=0"));
+        assert!(formatted.contains("one_shot_decode_first_byte_elapsed_ms_max=0"));
+        assert!(formatted.contains("one_shot_decode_first_byte_slow_count=0"));
+        assert!(formatted.contains("one_shot_decode_first_byte_slow_threshold_ms=66"));
         assert!(formatted.contains("one_shot_decode_output_read_elapsed_ms=0"));
         assert!(formatted.contains("one_shot_decode_output_read_elapsed_ms_max=0"));
+        assert!(formatted.contains("one_shot_decode_output_read_slow_count=0"));
+        assert!(formatted.contains("one_shot_decode_output_read_slow_threshold_ms=66"));
         assert!(formatted.contains("one_shot_decode_output_read_exact_elapsed_ms=0"));
         assert!(formatted.contains("one_shot_decode_output_read_exact_elapsed_ms_max=0"));
         assert!(formatted.contains("one_shot_decode_extra_output_probe_elapsed_ms=0"));
+        assert!(formatted.contains(
+            "one_shot_decode_attempt_source_counts=queue:0|retained_keyframe:0|unknown:2"
+        ));
+        assert!(formatted.contains("one_shot_decode_attempt_slot_counts=slot0:1|slot1:1"));
+        assert!(formatted.contains("one_shot_decode_attempt_reason_counts=frame_id_changed:0|cache_miss:0|previous_unavailable:2|source_recovered:0|unknown:0"));
+        assert!(formatted.contains("decode_cache_miss_slot0_count=1"));
+        assert!(formatted.contains("decode_cache_miss_slot1_count=1"));
         assert!(formatted.contains("one_shot_decode_write_throughput_bytes_per_ms=n/a"));
         assert!(formatted.contains("one_shot_decode_input_write_elapsed_per_payload_kb=n/a"));
         assert!(formatted.contains("one_shot_decode_read_throughput_bytes_per_ms=n/a"));
@@ -12626,6 +13039,8 @@ mod tests {
         assert!(formatted.contains("slot2_selected_source_changed_count=0"));
         assert!(formatted.contains("slot3_selected_source_changed_count=0"));
         assert!(formatted.contains("placeholder_visual_changed_count=0"));
+        assert!(formatted.contains("skipped_decode_unchanged_slot0_count=0"));
+        assert!(formatted.contains("skipped_decode_unchanged_slot1_count=0"));
         assert!(formatted.contains("quad_view_incremental_update_count=0"));
         assert!(formatted.contains("quad_view_full_compose_count=1"));
         assert!(formatted.contains("quad_view_incremental_skip_reason=previous_output_missing"));

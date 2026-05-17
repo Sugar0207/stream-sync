@@ -1,5 +1,176 @@
 <!-- stream-sync/docs/operations/session-log.md -->
 
+## 2026-05-18
+### Type
+- Codex implementation
+
+### Work
+- Added a diagnostics-only slice to the two-real preview loop summary without changing one-shot FFmpeg decode behavior.
+- Kept the current constraints intact:
+  - no FFmpeg arg changes
+  - no one-shot decode routing changes
+  - no persistent decoder revive
+  - no continuous-stream rewrite
+- Added attempt-frequency-oriented summary fields in `apps/switcher/src/main.rs`:
+  - `one_shot_decode_attempt_source_counts`
+  - `one_shot_decode_attempt_slot_counts`
+  - `one_shot_decode_attempt_reason_counts`
+  - `decode_cache_miss_slot0_count`
+  - `decode_cache_miss_slot1_count`
+  - `skipped_decode_unchanged_slot0_count`
+  - `skipped_decode_unchanged_slot1_count`
+- Added first-byte/read-variance summary fields:
+  - `one_shot_decode_first_byte_elapsed_ms_max`
+  - `one_shot_decode_stdin_write_to_stdout_first_byte_elapsed_ms_max`
+  - `one_shot_decode_first_byte_slow_count`
+  - `one_shot_decode_first_byte_slow_threshold_ms`
+  - `one_shot_decode_output_read_slow_count`
+  - `one_shot_decode_output_read_slow_threshold_ms`
+- Updated the focused two-real summary formatting test and kept the existing scaled-output / persistent-disabled diagnostics visible.
+- Did not run a runtime rerun in this step.
+
+### Changed Files
+- `apps/switcher/src/main.rs`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+- `docs/operations/persistent-decoder-plan.md`
+
+### Decisions
+- Treat this slice as observability-only for the two-real preview loop.
+- Keep the current scaled decode output slice as-is.
+- Keep request/response persistent decoder frozen.
+- Keep Production Readiness as FAIL.
+
+### Findings
+- The new fields separate two different questions that were previously mixed together:
+  - did we decode more often?
+  - were the decodes themselves slower on first-byte/read wait?
+- `decode_attempt_count` still reflects actual cache misses only, but the new slot/reason counters make it easier to explain where those misses came from.
+- `skipped_decode_unchanged_slot0_count` / `slot1_count` expose how much unchanged-frame reuse was preserved per real slot.
+- `one_shot_decode_first_byte_elapsed_ms_max` and `one_shot_decode_stdin_write_to_stdout_first_byte_elapsed_ms_max` expose whether a noisy rerun contained a few very slow attempts even if the total attempt count alone is not enough to explain the regression.
+- `one_shot_decode_first_byte_slow_count` and `one_shot_decode_output_read_slow_count` use a fixed `66ms` threshold so the next rerun can compare slow-attempt frequency directly without changing the decode path.
+- Current code-path review also clarified one subtle point:
+  - the preview-loop cache key shape includes `source_identity`
+  - but the current two-real preview loop populates that string as `selected`
+  - so `queue` vs `retained_keyframe` counts are useful attempt-source evidence, not a direct explanation of cache-key divergence
+
+### Next
+- Run the next same-PC `2`-client rerun from `S:\stream-sync` with `--disable-persistent-decoder`.
+- Compare:
+  - `one_shot_decode_attempt_slot_counts`
+  - `one_shot_decode_attempt_reason_counts`
+  - `decode_cache_miss_slot0_count`
+  - `decode_cache_miss_slot1_count`
+  - `skipped_decode_unchanged_slot0_count`
+  - `skipped_decode_unchanged_slot1_count`
+  - `one_shot_decode_first_byte_elapsed_ms_max`
+  - `one_shot_decode_stdin_write_to_stdout_first_byte_elapsed_ms_max`
+  - `one_shot_decode_first_byte_slow_count`
+  - `one_shot_decode_output_read_slow_count`
+- Use that rerun to judge whether `decode_attempt_count=26 -> 42` was mostly:
+  - more cache misses / less unchanged reuse
+  - worse per-attempt first-byte variance
+  - or both
+
+### TODO Update
+- Updated `docs/operations/todo.md` current position and next items for the new attempt-frequency / first-byte-variance diagnostics.
+- Updated `docs/operations/persistent-decoder-plan.md` to record the new observability slice while keeping persistent decoder frozen.
+
+### Validation
+- `cargo fmt`
+  - result: PASS
+- `cargo check -p stream-sync-switcher`
+  - result: PASS
+- `cargo test -p stream-sync-switcher switcher_four_view_two_real_handoff_preview_summary_formats_expected_fields -- --nocapture`
+  - result: PASS
+- `cargo test -p stream-sync-switcher switcher_four_view_two_real_handoff_preview_loop_redecodes_different_frame_ids -- --nocapture`
+  - result: PASS
+- `cargo test -p stream-sync-switcher switcher_four_view_two_real_handoff_preview_loop_updates_only_source_error_slot_region -- --nocapture`
+  - result: PASS
+- `git diff --check`
+  - result: PASS
+  - note: LF/CRLF warnings only
+
+## 2026-05-18
+### Type
+- Codex docs-first analysis
+
+### Work
+- Recorded the latest same-PC `2`-client rerun evidence from `S:\stream-sync\manual-logs\two-client-render-rerun-20260518-022141`.
+- Kept the step docs-first and did not change code.
+- Re-read the two-real preview loop decode/cache path in `apps/switcher/src/main.rs` and the unchanged-frame reuse / visual-change helpers in `apps/switcher/src/lib.rs`.
+- Organized the latest regression interpretation around:
+  - decode attempt frequency
+  - stdout first-byte wait variance
+  - stdout read variance
+  - compose / GDI variance
+- Kept scaled decode output and persistent config-disabled behavior marked as PASS.
+
+### Changed Files
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+- `docs/operations/persistent-decoder-plan.md`
+
+### Decisions
+- Treat `manual-logs/two-client-render-rerun-20260518-022141` as a noisy comparison run, not as evidence that the scaled decode slice regressed.
+- Keep request/response persistent decoder frozen.
+- Keep Production Readiness as FAIL.
+
+### Findings
+- Scaled decode output remained valid in the latest rerun:
+  - `one_shot_decode_output_width=640`
+  - `one_shot_decode_output_height=360`
+  - `one_shot_decode_output_pixel_format=Bgra8`
+  - `one_shot_decode_scaled_output_enabled=true`
+  - `one_shot_decode_expected_output_bytes_per_frame=921600`
+- Latest FPS regressed to `effective_render_fps_after_first_render=9.469`, but the regression does not match a scaled-output failure shape.
+- The latest run was heavier than the previous scaled-pass rerun on both decode frequency and per-attempt wait:
+  - `decode_attempt_count=26 -> 42`
+  - `one_shot_decode_elapsed_ms=2029 -> 8809`
+  - `one_shot_decode_input_write_elapsed_ms=937 -> 3132`
+  - `one_shot_decode_output_read_elapsed_ms=816 -> 4655`
+  - `one_shot_decode_output_read_exact_elapsed_ms=676 -> 3729`
+  - `one_shot_decode_stdin_write_to_stdout_first_byte_elapsed_ms=3781`
+  - `one_shot_decode_stdout_first_byte_elapsed_ms=3687`
+- Latest payload bytes were actually smaller than the prior scaled-pass rerun:
+  - `one_shot_decode_input_payload_bytes_avg=195142.192 -> 91042.357`
+  - this weakens payload-size growth as the main explanation for the regression
+- Code-path review showed:
+  - actual `decode_attempt_count` is incremented only on two-real preview loop decode cache miss in `TimedSwitcherH264DecodeRuntime`
+  - the preview-loop cache key uses `width`, `height`, and `source_identity(client_id, run_id, frame_id)`
+  - for identified sources, payload bytes are not part of the cache key
+  - `unchanged_frame_reuse_count` / `skipped_decode_unchanged_frame_count` only grow when the slot remains `UseUpdatedFrame` and the decoded-slot render identity keeps the same `client_id/run_id/frame_id`
+  - `selected_source_changed_count` can explain render/placeholder churn, but source kind itself is not the decode-cache key
+- This makes the current leading hypothesis:
+  - more real-slot `frame_id` churn
+  - more `NoFrameAvailable` / `HandoffError` / held-previous / placeholder transitions reducing unchanged-frame reuse
+  - plus heavier first-byte/read variance on the attempts that do happen
+- The latest run also had extra compose/display noise:
+  - `quad_view_compose_elapsed_ms=1667`
+  - `gdi_paint_wait_elapsed_ms=132`
+  - `placeholder_visual_changed_count=61`
+  - `scheduler_status=PartialSelected`
+
+### Next
+- Compare `manual-logs/two-client-render-rerun-20260518-022141` against `manual-logs/two-client-render-rerun-20260517-223121` with emphasis on:
+  - `slot0/slot1 frame_id_changed_count`
+  - `slot0/slot1 selected_source_changed_count`
+  - `selected_count`
+  - `no_frame_count`
+  - `handoff_error_count`
+  - `placeholder_visual_changed_count`
+- Use the latest first-byte diagnostics to decide whether the main issue is more decode attempts, worse per-attempt first-byte wait, or both.
+- Keep persistent decoder and continuous-stream rewrite out of scope.
+
+### TODO Update
+- Updated `docs/operations/todo.md` current position and next items to treat decode attempt frequency and first-byte/read variance as the next comparison axis.
+- Updated `docs/operations/persistent-decoder-plan.md` with the latest noisy-run evidence and the decode-attempt code-path findings.
+
+### Validation
+- `git diff --check`
+  - result: PASS
+  - note: LF/CRLF warnings only
+
 ## 2026-05-17
 ### Type
 - Codex implementation
