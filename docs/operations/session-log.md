@@ -2,6 +2,165 @@
 
 ## 2026-05-17
 ### Type
+- Codex implementation
+
+### Work
+- Ran build validation for the new persistent decoder minimal additive slice in `apps/switcher`.
+- Executed:
+  - `cargo fmt`
+  - `cargo check -p stream-sync-switcher`
+  - focused switcher test `cargo test -p stream-sync-switcher switcher_four_view_two_real_handoff_preview_summary_formats_expected_fields -- --nocapture`
+  - `git diff --check`
+- Fixed the compile error that appeared in `apps/switcher/src/lib.rs`:
+  - persistent extra-output mismatch formatting was borrowing `diagnostics` immutably while `record_persistent_error(&mut diagnostics, ...)` already held a mutable borrow
+  - resolved it by storing `expected_len` / `actual_len` in locals before calling `record_persistent_error`
+- Removed one unused field from the persistent runtime struct:
+  - dropped `one_shot_fallback` from `SwitcherPersistentFfmpegH264DecodeRuntimeHook`
+  - kept the actual one-shot fallback behavior intact through `decode_with_one_shot_ffmpeg_runtime`
+- Confirmed the persistent decoder slice still stays within the intended scope:
+  - one-shot decoder remains present
+  - fallback remains present
+  - two-real preview loop is the only runtime-wired persistent path
+  - four-real path still uses the existing one-shot runtime
+- Kept runtime rerun out of scope for this step.
+
+### Changed Files
+- `apps/switcher/src/lib.rs`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### Decisions
+- Keep the persistent decoder slice enabled and build-clean rather than feature-disabling it.
+- Treat the remaining `apps/switcher/src/main.rs` dead-code warnings as pre-existing/non-blocking for this step.
+- Keep Production Readiness as FAIL until runtime evidence is collected.
+
+### Unresolved
+- No post-build runtime rerun has been collected yet.
+- The persistent decoder path has not yet been compared against `manual-logs/two-client-render-rerun-20260517-121040`.
+- Existing switcher warnings in `apps/switcher/src/main.rs` remain:
+  - `update_four_view_previous_slots_from_validation`
+  - `four_view_two_real_tick_diagnostics`
+  - `clean_output_window_was_rendered`
+- Production Readiness remains FAIL.
+
+### Next
+- Run the next same-PC `2`-client rerun and compare `persistent_decode_*` counters plus existing decode read timings against the latest baseline.
+- Use the first runtime evidence to decide whether bootstrap gating or restart/fallback policy needs a narrow follow-up.
+- Keep ownership/reuse changes out of scope until the persistent decoder rerun results are known.
+
+### TODO Update
+- Updated `docs/operations/todo.md` current position to reflect that the persistent decoder slice now passes build validation and is waiting for runtime evidence.
+
+### Validation
+- `cargo fmt`
+  - result: PASS
+- `cargo check -p stream-sync-switcher`
+  - result: PASS
+  - note: existing `apps/switcher/src/main.rs` dead-code warnings only
+- focused switcher test
+  - result: PASS
+  - command:
+    `cargo test -p stream-sync-switcher switcher_four_view_two_real_handoff_preview_summary_formats_expected_fields -- --nocapture`
+- `git diff --check`
+  - result: PASS (LF/CRLF warnings only)
+
+## 2026-05-17
+### Type
+- Codex implementation
+
+### Work
+- Attempted to verify the requested workspace root first.
+  - `S:\stream-sync` was not a valid working directory in this session.
+  - confirmed the active editable repo contents under `D:\stream-sync` matched the expected `StreamSync` files (`AGENTS.md`, `docs/operations/todo.md`, `docs/operations/persistent-decoder-plan.md`, `apps/switcher/src/lib.rs`, `apps/switcher/src/main.rs`)
+- Implemented the minimal additive persistent decoder slice described in `docs/operations/persistent-decoder-plan.md`.
+- Kept the existing one-shot FFmpeg decode path intact by refactoring it into a reusable internal helper instead of deleting or rewriting it.
+- Added `SwitcherPersistentFfmpegH264DecodeRuntimeHook` in `apps/switcher/src/lib.rs`.
+  - keeps one FFmpeg process alive
+  - reuses stdin/stdout pipes across decode calls
+  - uses a stdout reader thread with per-request expected rawvideo length
+  - keeps the one-shot runtime as fallback
+- Added the narrow safety gates from the design doc:
+  - initial persistent bootstrap requires a payload containing `SPS + PPS + IDR`
+  - persistent write/read/request-channel failures trigger process restart attempt
+  - the current decode call falls back to one-shot after persistent failure/restart handling
+- Added persistent decoder diagnostics to runtime output so the two-real preview summary can distinguish persistent-path activity from one-shot fallback activity:
+  - `persistent_decode_enabled`
+  - `persistent_decode_attempt_count`
+  - `persistent_decode_success_count`
+  - `persistent_decode_failure_count`
+  - `persistent_decode_fallback_count`
+  - `persistent_decode_process_spawn_count`
+  - `persistent_decode_process_restart_count`
+  - `persistent_decode_stdin_write_elapsed_ms`
+  - `persistent_decode_stdout_read_elapsed_ms`
+  - `persistent_decode_stdout_read_exact_elapsed_ms`
+  - `persistent_decode_output_bytes_total`
+  - `persistent_decode_last_error`
+  - `one_shot_decode_fallback_count`
+- Limited the runtime wiring to the same-PC two-real preview loop only.
+  - `run_four_view_two_real_handoff_preview_loop` now instantiates `SwitcherPersistentFfmpegH264DecodeRuntimeHook`
+  - four-real and other decode call sites still use the existing one-shot runtime
+- Updated the two-real preview timing aggregation and summary formatting in `apps/switcher/src/main.rs` so summary lines expose the persistent decoder path, fallback count, and last error.
+- Updated `docs/operations/todo.md` so the current position reflects “persistent decoder slice implemented, rerun pending”.
+- Did not run the runtime rerun in this step.
+
+### Changed Files
+- `apps/switcher/src/lib.rs`
+- `apps/switcher/src/main.rs`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### Decisions
+- Keep the scope additive:
+  - persistent decoder is introduced only as a new runtime hook
+  - one-shot FFmpeg decode remains available and is used as fallback
+- Keep the first runtime activation narrow:
+  - enable persistent decoder only for the two-real preview loop
+  - do not widen to four-real or other command paths yet
+- Keep bootstrap conservative:
+  - do not start a fresh persistent decoder session on a payload that lacks `SPS/PPS/IDR`
+- Keep Production Readiness as FAIL until runtime evidence is collected.
+
+### Unresolved
+- No post-implementation runtime rerun has been collected yet.
+- It is still unproven how much `decode_output_read_exact_elapsed_ms` / `decode_output_read_elapsed_ms` will fall in practice.
+- The current decoded-buffer ownership model is unchanged, so `decode_output_buffer_reuse_count=0` may still remain after the persistent decoder slice.
+- In this session, `cargo fmt` / `cargo check` / focused tests could not be executed because the user-requested `S:\stream-sync` workspace was unavailable and escalated execution against `D:\stream-sync` was not authorized.
+- Production Readiness remains FAIL.
+
+### Next
+- Run the same-PC `2`-client rerun and compare:
+  - `persistent_decode_attempt_count`
+  - `persistent_decode_success_count`
+  - `persistent_decode_fallback_count`
+  - `persistent_decode_process_spawn_count`
+  - `persistent_decode_process_restart_count`
+  - `persistent_decode_stdout_read_elapsed_ms`
+  - `persistent_decode_stdout_read_exact_elapsed_ms`
+  - existing `decode_output_read_elapsed_ms`
+  - existing `decode_output_read_exact_elapsed_ms`
+- Use the rerun to determine whether the bootstrap gate or restart/fallback policy is too conservative.
+- Only after that, decide whether the next narrow slice should stay in persistent decoder tuning or move to ownership/reuse follow-up.
+
+### TODO Update
+- Updated `docs/operations/todo.md` current position from “persistent decoder design candidate” to “persistent decoder minimal slice implemented, rerun pending”.
+- Replaced the top next items with rerun-first validation of the new persistent decoder diagnostics.
+
+### Validation
+- `git diff --check`
+  - result: PASS (LF/CRLF warnings only)
+- `cargo fmt`
+  - result: NOT RUN
+  - note: escalated execution against `D:\stream-sync` was rejected because the requested workspace root was `S:\stream-sync`, and `S:\stream-sync` was unavailable in this session
+- `cargo check -p stream-sync-switcher`
+  - result: NOT RUN
+  - note: same workspace/root restriction as above
+- focused switcher tests
+  - result: NOT RUN
+  - note: same workspace/root restriction as above
+
+## 2026-05-17
+### Type
 - Codex documentation update
 
 ### Work

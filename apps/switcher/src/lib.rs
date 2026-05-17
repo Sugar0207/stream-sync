@@ -2,7 +2,8 @@ use std::{
     io::{self, ErrorKind, Read, Write},
     net::{SocketAddr, UdpSocket},
     path::{Path, PathBuf},
-    process::{Command, Stdio},
+    process::{Child, ChildStderr, ChildStdin, ChildStdout, Command, Stdio},
+    sync::{mpsc, Arc, Mutex},
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
@@ -6719,7 +6720,7 @@ pub enum SwitcherH264DecodeResult {
 ///
 /// Not every backend can expose every phase. Unknown or not-applicable phases
 /// remain zero.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct SwitcherH264DecodeRuntimeDiagnostics {
     pub process_spawn_elapsed_ms: u128,
     pub input_write_elapsed_ms: u128,
@@ -6733,6 +6734,19 @@ pub struct SwitcherH264DecodeRuntimeDiagnostics {
     pub output_bytes: usize,
     pub output_expected_bytes: usize,
     pub output_buffer_reuse_count: u32,
+    pub persistent_decode_enabled: bool,
+    pub persistent_decode_attempt_count: u32,
+    pub persistent_decode_success_count: u32,
+    pub persistent_decode_failure_count: u32,
+    pub persistent_decode_fallback_count: u32,
+    pub persistent_decode_process_spawn_count: u32,
+    pub persistent_decode_process_restart_count: u32,
+    pub persistent_decode_stdin_write_elapsed_ms: u128,
+    pub persistent_decode_stdout_read_elapsed_ms: u128,
+    pub persistent_decode_stdout_read_exact_elapsed_ms: u128,
+    pub persistent_decode_output_bytes: usize,
+    pub persistent_decode_last_error: Option<String>,
+    pub one_shot_decode_fallback_count: u32,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -6821,8 +6835,159 @@ impl SwitcherH264DecodeRuntimeHook for SwitcherFfmpegH264DecodeRuntimeHook {
         &self,
         input: SwitcherH264DecodeInput,
     ) -> SwitcherH264DecodeRuntimeOutput {
-        let mut diagnostics = SwitcherH264DecodeRuntimeDiagnostics::default();
-        diagnostics.input_payload_bytes = input.encoded_payload.len();
+        decode_with_one_shot_ffmpeg_runtime(&self.ffmpeg_path, input)
+    }
+}
+
+pub struct SwitcherPersistentFfmpegH264DecodeRuntimeHook {
+    pub ffmpeg_path: PathBuf,
+    pub read_timeout: Duration,
+    session: std::cell::RefCell<Option<SwitcherPersistentFfmpegDecodeSession>>,
+}
+
+struct SwitcherPersistentFfmpegDecodeSession {
+    child: Child,
+    stdin: ChildStdin,
+    stdout_request_tx: Option<mpsc::Sender<SwitcherPersistentFfmpegStdoutReadRequest>>,
+    stdout_thread: Option<std::thread::JoinHandle<()>>,
+    stderr_bytes: Arc<Mutex<Vec<u8>>>,
+    stderr_thread: Option<std::thread::JoinHandle<()>>,
+}
+
+struct SwitcherPersistentFfmpegStdoutReadRequest {
+    expected_len: usize,
+    response_tx: mpsc::Sender<SwitcherPersistentFfmpegStdoutReadResponse>,
+}
+
+enum SwitcherPersistentFfmpegStdoutReadResponse {
+    Ok {
+        output: SwitcherFfmpegDecodeStdoutReadOutput,
+        diagnostics: SwitcherH264DecodeRuntimeDiagnostics,
+    },
+    Err {
+        error: SwitcherFfmpegDecodeStdoutReadError,
+        diagnostics: SwitcherH264DecodeRuntimeDiagnostics,
+    },
+}
+
+impl std::fmt::Debug for SwitcherPersistentFfmpegH264DecodeRuntimeHook {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SwitcherPersistentFfmpegH264DecodeRuntimeHook")
+            .field("ffmpeg_path", &self.ffmpeg_path)
+            .field("read_timeout", &self.read_timeout)
+            .finish()
+    }
+}
+
+impl Default for SwitcherPersistentFfmpegH264DecodeRuntimeHook {
+    fn default() -> Self {
+        let ffmpeg_path = PathBuf::from("ffmpeg");
+        Self {
+            ffmpeg_path: ffmpeg_path.clone(),
+            read_timeout: Duration::from_millis(2_000),
+            session: std::cell::RefCell::new(None),
+        }
+    }
+}
+
+impl SwitcherPersistentFfmpegH264DecodeRuntimeHook {
+    fn fallback_to_one_shot(
+        &self,
+        input: SwitcherH264DecodeInput,
+        diagnostics: &mut SwitcherH264DecodeRuntimeDiagnostics,
+    ) -> SwitcherH264DecodeRuntimeOutput {
+        diagnostics.persistent_decode_fallback_count = diagnostics
+            .persistent_decode_fallback_count
+            .saturating_add(1);
+        diagnostics.one_shot_decode_fallback_count =
+            diagnostics.one_shot_decode_fallback_count.saturating_add(1);
+        let fallback = decode_with_one_shot_ffmpeg_runtime(&self.ffmpeg_path, input);
+        let mut fallback_diagnostics = fallback.diagnostics.clone();
+        fallback_diagnostics.input_payload_bytes = 0;
+        fallback_diagnostics.output_expected_bytes = 0;
+        merge_decode_runtime_diagnostics(diagnostics, &fallback_diagnostics);
+        SwitcherH264DecodeRuntimeOutput {
+            result: fallback.result,
+            diagnostics: diagnostics.clone(),
+        }
+    }
+
+    fn ensure_session(
+        &self,
+        diagnostics: &mut SwitcherH264DecodeRuntimeDiagnostics,
+    ) -> Result<(), io::Error> {
+        if self.session.borrow().is_some() {
+            return Ok(());
+        }
+        diagnostics.persistent_decode_process_spawn_count = diagnostics
+            .persistent_decode_process_spawn_count
+            .saturating_add(1);
+        let spawn_start = Instant::now();
+        let session = spawn_persistent_ffmpeg_decode_session(&self.ffmpeg_path)?;
+        diagnostics.process_spawn_elapsed_ms = diagnostics
+            .process_spawn_elapsed_ms
+            .saturating_add(spawn_start.elapsed().as_millis());
+        *self.session.borrow_mut() = Some(session);
+        Ok(())
+    }
+
+    fn restart_session(
+        &self,
+        diagnostics: &mut SwitcherH264DecodeRuntimeDiagnostics,
+    ) -> Result<(), io::Error> {
+        diagnostics.persistent_decode_process_restart_count = diagnostics
+            .persistent_decode_process_restart_count
+            .saturating_add(1);
+        if let Some(session) = self.session.borrow_mut().take() {
+            if let Some(stderr_summary) = session.stderr_summary() {
+                diagnostics.persistent_decode_last_error =
+                    Some(match diagnostics.persistent_decode_last_error.take() {
+                        Some(existing) => format!("{existing}|stderr:{stderr_summary}"),
+                        None => stderr_summary,
+                    });
+            }
+            diagnostics.process_wait_elapsed_ms = diagnostics
+                .process_wait_elapsed_ms
+                .saturating_add(session.stop());
+        }
+        diagnostics.persistent_decode_process_spawn_count = diagnostics
+            .persistent_decode_process_spawn_count
+            .saturating_add(1);
+        let spawn_start = Instant::now();
+        let session = spawn_persistent_ffmpeg_decode_session(&self.ffmpeg_path)?;
+        diagnostics.process_spawn_elapsed_ms = diagnostics
+            .process_spawn_elapsed_ms
+            .saturating_add(spawn_start.elapsed().as_millis());
+        *self.session.borrow_mut() = Some(session);
+        Ok(())
+    }
+
+    fn record_persistent_error(
+        diagnostics: &mut SwitcherH264DecodeRuntimeDiagnostics,
+        message: impl Into<String>,
+    ) {
+        diagnostics.persistent_decode_failure_count = diagnostics
+            .persistent_decode_failure_count
+            .saturating_add(1);
+        diagnostics.persistent_decode_last_error = Some(message.into());
+    }
+}
+
+impl SwitcherH264DecodeRuntimeHook for SwitcherPersistentFfmpegH264DecodeRuntimeHook {
+    fn decode_annex_b_h264(&self, input: SwitcherH264DecodeInput) -> SwitcherH264DecodeResult {
+        self.decode_annex_b_h264_with_diagnostics(input).result
+    }
+
+    fn decode_annex_b_h264_with_diagnostics(
+        &self,
+        input: SwitcherH264DecodeInput,
+    ) -> SwitcherH264DecodeRuntimeOutput {
+        let mut diagnostics = SwitcherH264DecodeRuntimeDiagnostics {
+            persistent_decode_enabled: true,
+            input_payload_bytes: input.encoded_payload.len(),
+            output_expected_bytes: input.width as usize * input.height as usize * 4,
+            ..SwitcherH264DecodeRuntimeDiagnostics::default()
+        };
         if input.encoded_payload.is_empty() {
             return SwitcherH264DecodeRuntimeOutput {
                 result: SwitcherH264DecodeResult::Deferred {
@@ -6839,35 +7004,20 @@ impl SwitcherH264DecodeRuntimeHook for SwitcherFfmpegH264DecodeRuntimeHook {
                 diagnostics,
             };
         }
-        diagnostics.output_expected_bytes = input.width as usize * input.height as usize * 4;
 
-        let spawn_start = Instant::now();
-        let mut child = match Command::new(&self.ffmpeg_path)
-            .arg("-hide_banner")
-            .arg("-loglevel")
-            .arg("error")
-            .arg("-f")
-            .arg("h264")
-            .arg("-i")
-            .arg("pipe:0")
-            .arg("-frames:v")
-            .arg("1")
-            .arg("-f")
-            .arg("rawvideo")
-            .arg("-pix_fmt")
-            .arg("bgra")
-            .arg("pipe:1")
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-        {
-            Ok(child) => {
-                diagnostics.process_spawn_elapsed_ms = spawn_start.elapsed().as_millis();
-                child
+        let bootstrap_required = self.session.borrow().is_none();
+        if bootstrap_required {
+            let payload_summary =
+                SwitcherH264AnnexBPayloadInspectionBoundary.inspect_payload(&input.encoded_payload);
+            if !(payload_summary.has_idr && payload_summary.has_sps && payload_summary.has_pps) {
+                diagnostics.persistent_decode_last_error =
+                    Some("persistent_bootstrap_requires_sps_pps_idr".to_string());
+                return self.fallback_to_one_shot(input, &mut diagnostics);
             }
-            Err(error) if error.kind() == io::ErrorKind::NotFound => {
-                diagnostics.process_spawn_elapsed_ms = spawn_start.elapsed().as_millis();
+        }
+
+        if let Err(error) = self.ensure_session(&mut diagnostics) {
+            if error.kind() == io::ErrorKind::NotFound {
                 return SwitcherH264DecodeRuntimeOutput {
                     result: SwitcherH264DecodeResult::Deferred {
                         reason: SwitcherH264DecodeDeferredReason::FfmpegUnavailable,
@@ -6875,125 +7025,482 @@ impl SwitcherH264DecodeRuntimeHook for SwitcherFfmpegH264DecodeRuntimeHook {
                     diagnostics,
                 };
             }
-            Err(error) => {
-                diagnostics.process_spawn_elapsed_ms = spawn_start.elapsed().as_millis();
-                return SwitcherH264DecodeRuntimeOutput {
-                    result: SwitcherH264DecodeResult::Failed(
-                        SwitcherH264DecodeFailure::from_input(
-                            &input,
-                            error.to_string(),
-                            0,
-                            None,
-                            None,
-                        ),
-                    ),
-                    diagnostics,
-                };
-            }
-        };
-
-        if let Some(mut stdin) = child.stdin.take() {
-            let input_write_start = Instant::now();
-            if let Err(error) = stdin.write_all(&input.encoded_payload) {
-                diagnostics.input_write_elapsed_ms = input_write_start.elapsed().as_millis();
-                let _ = child.kill();
-                let _ = child.wait();
-                return SwitcherH264DecodeRuntimeOutput {
-                    result: SwitcherH264DecodeResult::Failed(
-                        SwitcherH264DecodeFailure::from_input(
-                            &input,
-                            error.to_string(),
-                            0,
-                            None,
-                            None,
-                        ),
-                    ),
-                    diagnostics,
-                };
-            }
-            diagnostics.input_write_elapsed_ms = input_write_start.elapsed().as_millis();
+            Self::record_persistent_error(&mut diagnostics, error.to_string());
+            return self.fallback_to_one_shot(input, &mut diagnostics);
         }
 
-        let Some(mut stdout) = child.stdout.take() else {
-            let wait_start = Instant::now();
-            let _ = child.kill();
-            let _ = child.wait();
-            diagnostics.process_wait_elapsed_ms = wait_start.elapsed().as_millis();
-            return SwitcherH264DecodeRuntimeOutput {
-                result: SwitcherH264DecodeResult::Failed(SwitcherH264DecodeFailure::from_input(
-                    &input,
-                    "ffmpeg stdout pipe unavailable".to_string(),
-                    0,
-                    None,
-                    None,
-                )),
-                diagnostics,
-            };
-        };
-        let Some(mut stderr) = child.stderr.take() else {
-            let wait_start = Instant::now();
-            let _ = child.kill();
-            let _ = child.wait();
-            diagnostics.process_wait_elapsed_ms = wait_start.elapsed().as_millis();
-            return SwitcherH264DecodeRuntimeOutput {
-                result: SwitcherH264DecodeResult::Failed(SwitcherH264DecodeFailure::from_input(
-                    &input,
-                    "ffmpeg stderr pipe unavailable".to_string(),
-                    0,
-                    None,
-                    None,
-                )),
-                diagnostics,
-            };
-        };
+        diagnostics.persistent_decode_attempt_count = diagnostics
+            .persistent_decode_attempt_count
+            .saturating_add(1);
 
-        let stderr_reader = std::thread::spawn(move || {
-            let mut stderr_bytes = Vec::new();
-            let result = stderr.read_to_end(&mut stderr_bytes);
-            (result, stderr_bytes)
-        });
+        let write_result = {
+            let mut session_ref = self.session.borrow_mut();
+            let session = session_ref
+                .as_mut()
+                .expect("persistent decode session should exist after ensure_session");
+            let write_start = Instant::now();
+            let result = session.stdin.write_all(&input.encoded_payload);
+            let elapsed = write_start.elapsed().as_millis();
+            (result, elapsed)
+        };
+        diagnostics.input_write_elapsed_ms = diagnostics
+            .input_write_elapsed_ms
+            .saturating_add(write_result.1);
+        diagnostics.persistent_decode_stdin_write_elapsed_ms = diagnostics
+            .persistent_decode_stdin_write_elapsed_ms
+            .saturating_add(write_result.1);
 
-        let expected_len = diagnostics.output_expected_bytes;
-        let stdout_read =
-            match read_expected_rawvideo_stdout(&mut stdout, expected_len, &mut diagnostics) {
-                Ok(output) => output,
-                Err(error) => {
-                    let _ = child.kill();
-                    let wait_start = Instant::now();
-                    let _ = child.wait();
-                    diagnostics.process_wait_elapsed_ms = wait_start.elapsed().as_millis();
-                    let _ = stderr_reader.join();
-                    return SwitcherH264DecodeRuntimeOutput {
-                        result: SwitcherH264DecodeResult::Failed(
-                            SwitcherH264DecodeFailure::from_input(
-                                &input,
-                                error.error.to_string(),
-                                error.partial_bytes.len(),
-                                None,
-                                None,
+        if let Err(error) = write_result.0 {
+            Self::record_persistent_error(&mut diagnostics, error.to_string());
+            if let Err(restart_error) = self.restart_session(&mut diagnostics) {
+                diagnostics.persistent_decode_last_error = Some(format!(
+                    "{}|persistent_restart_failed:{}",
+                    diagnostics
+                        .persistent_decode_last_error
+                        .clone()
+                        .unwrap_or_else(|| "persistent_write_failed".to_string()),
+                    restart_error
+                ));
+            }
+            return self.fallback_to_one_shot(input, &mut diagnostics);
+        }
+
+        let (read_request_send_result, read_response_rx) = {
+            let session_ref = self.session.borrow();
+            let session = session_ref
+                .as_ref()
+                .expect("persistent decode session should exist while reading");
+            let Some(stdout_request_tx) = session.stdout_request_tx.as_ref() else {
+                Self::record_persistent_error(
+                    &mut diagnostics,
+                    "persistent_stdout_request_channel_unavailable",
+                );
+                if let Err(restart_error) = self.restart_session(&mut diagnostics) {
+                    diagnostics.persistent_decode_last_error = Some(format!(
+                        "{}|persistent_restart_failed:{}",
+                        diagnostics
+                            .persistent_decode_last_error
+                            .clone()
+                            .unwrap_or_else(
+                                || "persistent_stdout_request_channel_unavailable".to_string()
                             ),
-                        ),
-                        diagnostics,
-                    };
+                        restart_error
+                    ));
                 }
+                return self.fallback_to_one_shot(input, &mut diagnostics);
             };
-        let SwitcherFfmpegDecodeStdoutReadOutput {
-            bytes: stdout_bytes,
-            extra_output_len,
-        } = stdout_read;
+            let (response_tx, response_rx) = mpsc::channel();
+            let send_result = stdout_request_tx.send(SwitcherPersistentFfmpegStdoutReadRequest {
+                expected_len: diagnostics.output_expected_bytes,
+                response_tx,
+            });
+            (send_result, response_rx)
+        };
 
+        if let Err(error) = read_request_send_result {
+            Self::record_persistent_error(&mut diagnostics, error.to_string());
+            if let Err(restart_error) = self.restart_session(&mut diagnostics) {
+                diagnostics.persistent_decode_last_error = Some(format!(
+                    "{}|persistent_restart_failed:{}",
+                    diagnostics
+                        .persistent_decode_last_error
+                        .clone()
+                        .unwrap_or_else(|| "persistent_stdout_request_send_failed".to_string()),
+                    restart_error
+                ));
+            }
+            return self.fallback_to_one_shot(input, &mut diagnostics);
+        }
+
+        let response = match read_response_rx.recv_timeout(self.read_timeout) {
+            Ok(response) => response,
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                Self::record_persistent_error(
+                    &mut diagnostics,
+                    "persistent_decode_stdout_read_timeout",
+                );
+                if let Err(restart_error) = self.restart_session(&mut diagnostics) {
+                    diagnostics.persistent_decode_last_error = Some(format!(
+                        "{}|persistent_restart_failed:{}",
+                        diagnostics
+                            .persistent_decode_last_error
+                            .clone()
+                            .unwrap_or_else(|| "persistent_decode_stdout_read_timeout".to_string()),
+                        restart_error
+                    ));
+                }
+                return self.fallback_to_one_shot(input, &mut diagnostics);
+            }
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                Self::record_persistent_error(
+                    &mut diagnostics,
+                    "persistent_decode_stdout_reader_disconnected",
+                );
+                if let Err(restart_error) = self.restart_session(&mut diagnostics) {
+                    diagnostics.persistent_decode_last_error = Some(format!(
+                        "{}|persistent_restart_failed:{}",
+                        diagnostics
+                            .persistent_decode_last_error
+                            .clone()
+                            .unwrap_or_else(
+                                || "persistent_decode_stdout_reader_disconnected".to_string()
+                            ),
+                        restart_error
+                    ));
+                }
+                return self.fallback_to_one_shot(input, &mut diagnostics);
+            }
+        };
+
+        match response {
+            SwitcherPersistentFfmpegStdoutReadResponse::Ok {
+                output,
+                diagnostics: read_diagnostics,
+            } => {
+                merge_decode_runtime_diagnostics(&mut diagnostics, &read_diagnostics);
+                diagnostics.persistent_decode_stdout_read_elapsed_ms = diagnostics
+                    .persistent_decode_stdout_read_elapsed_ms
+                    .saturating_add(read_diagnostics.output_read_elapsed_ms);
+                diagnostics.persistent_decode_stdout_read_exact_elapsed_ms = diagnostics
+                    .persistent_decode_stdout_read_exact_elapsed_ms
+                    .saturating_add(read_diagnostics.output_read_exact_elapsed_ms);
+                diagnostics.persistent_decode_output_bytes = diagnostics
+                    .persistent_decode_output_bytes
+                    .saturating_add(read_diagnostics.output_bytes);
+                if output.extra_output_len != 0 {
+                    let expected_len = diagnostics.output_expected_bytes;
+                    let actual_len = expected_len.saturating_add(output.extra_output_len);
+                    Self::record_persistent_error(
+                        &mut diagnostics,
+                        format!(
+                            "decoded_rawvideo_length_mismatch_expected={}_actual={}",
+                            expected_len, actual_len
+                        ),
+                    );
+                    if let Err(restart_error) = self.restart_session(&mut diagnostics) {
+                        diagnostics.persistent_decode_last_error = Some(format!(
+                            "{}|persistent_restart_failed:{}",
+                            diagnostics
+                                .persistent_decode_last_error
+                                .clone()
+                                .unwrap_or_else(|| "persistent_decode_extra_output".to_string()),
+                            restart_error
+                        ));
+                    }
+                    return self.fallback_to_one_shot(input, &mut diagnostics);
+                }
+
+                diagnostics.persistent_decode_success_count = diagnostics
+                    .persistent_decode_success_count
+                    .saturating_add(1);
+                return SwitcherH264DecodeRuntimeOutput {
+                    result: SwitcherH264DecodeResult::Decoded(SwitcherDecodedFrame {
+                        width: input.width,
+                        height: input.height,
+                        pixel_format: SwitcherDecodedFramePixelFormat::Bgra8,
+                        pixels: output.bytes,
+                    }),
+                    diagnostics,
+                };
+            }
+            SwitcherPersistentFfmpegStdoutReadResponse::Err {
+                error,
+                diagnostics: read_diagnostics,
+            } => {
+                merge_decode_runtime_diagnostics(&mut diagnostics, &read_diagnostics);
+                diagnostics.persistent_decode_stdout_read_elapsed_ms = diagnostics
+                    .persistent_decode_stdout_read_elapsed_ms
+                    .saturating_add(read_diagnostics.output_read_elapsed_ms);
+                diagnostics.persistent_decode_stdout_read_exact_elapsed_ms = diagnostics
+                    .persistent_decode_stdout_read_exact_elapsed_ms
+                    .saturating_add(read_diagnostics.output_read_exact_elapsed_ms);
+                diagnostics.persistent_decode_output_bytes = diagnostics
+                    .persistent_decode_output_bytes
+                    .saturating_add(read_diagnostics.output_bytes);
+                Self::record_persistent_error(&mut diagnostics, error.error.to_string());
+                if let Err(restart_error) = self.restart_session(&mut diagnostics) {
+                    diagnostics.persistent_decode_last_error = Some(format!(
+                        "{}|persistent_restart_failed:{}",
+                        diagnostics
+                            .persistent_decode_last_error
+                            .clone()
+                            .unwrap_or_else(|| "persistent_decode_stdout_read_failed".to_string()),
+                        restart_error
+                    ));
+                }
+                return self.fallback_to_one_shot(input, &mut diagnostics);
+            }
+        }
+    }
+}
+
+fn spawn_persistent_ffmpeg_decode_session(
+    ffmpeg_path: &Path,
+) -> Result<SwitcherPersistentFfmpegDecodeSession, io::Error> {
+    let mut child = spawn_ffmpeg_decode_process(ffmpeg_path, false)?;
+    let stdin = child.stdin.take().ok_or_else(|| {
+        io::Error::new(
+            ErrorKind::BrokenPipe,
+            "persistent ffmpeg stdin pipe unavailable",
+        )
+    })?;
+    let stdout = child.stdout.take().ok_or_else(|| {
+        io::Error::new(
+            ErrorKind::BrokenPipe,
+            "persistent ffmpeg stdout pipe unavailable",
+        )
+    })?;
+    let stderr = child.stderr.take().ok_or_else(|| {
+        io::Error::new(
+            ErrorKind::BrokenPipe,
+            "persistent ffmpeg stderr pipe unavailable",
+        )
+    })?;
+
+    let (stdout_request_tx, stdout_request_rx) = mpsc::channel();
+    let stdout_thread = std::thread::spawn(move || {
+        persistent_ffmpeg_stdout_reader_loop(stdout, stdout_request_rx);
+    });
+    let stderr_bytes = Arc::new(Mutex::new(Vec::new()));
+    let stderr_bytes_writer = Arc::clone(&stderr_bytes);
+    let stderr_thread = std::thread::spawn(move || {
+        persistent_ffmpeg_stderr_reader_loop(stderr, stderr_bytes_writer);
+    });
+
+    Ok(SwitcherPersistentFfmpegDecodeSession {
+        child,
+        stdin,
+        stdout_request_tx: Some(stdout_request_tx),
+        stdout_thread: Some(stdout_thread),
+        stderr_bytes,
+        stderr_thread: Some(stderr_thread),
+    })
+}
+
+fn persistent_ffmpeg_stdout_reader_loop(
+    mut stdout: ChildStdout,
+    stdout_request_rx: mpsc::Receiver<SwitcherPersistentFfmpegStdoutReadRequest>,
+) {
+    while let Ok(request) = stdout_request_rx.recv() {
+        let mut diagnostics = SwitcherH264DecodeRuntimeDiagnostics::default();
+        let response = match read_expected_rawvideo_stdout(
+            &mut stdout,
+            request.expected_len,
+            &mut diagnostics,
+        ) {
+            Ok(output) => SwitcherPersistentFfmpegStdoutReadResponse::Ok {
+                output,
+                diagnostics,
+            },
+            Err(error) => SwitcherPersistentFfmpegStdoutReadResponse::Err { error, diagnostics },
+        };
+        let stop_after_error = matches!(
+            response,
+            SwitcherPersistentFfmpegStdoutReadResponse::Err { .. }
+        );
+        let _ = request.response_tx.send(response);
+        if stop_after_error {
+            break;
+        }
+    }
+}
+
+fn persistent_ffmpeg_stderr_reader_loop(
+    mut stderr: ChildStderr,
+    stderr_bytes: Arc<Mutex<Vec<u8>>>,
+) {
+    let mut buffer = Vec::new();
+    let _ = stderr.read_to_end(&mut buffer);
+    if let Ok(mut shared) = stderr_bytes.lock() {
+        *shared = buffer;
+    }
+}
+
+impl SwitcherPersistentFfmpegDecodeSession {
+    fn stderr_summary(&self) -> Option<String> {
+        let Ok(stderr_bytes) = self.stderr_bytes.lock() else {
+            return None;
+        };
+        let summary = String::from_utf8_lossy(&stderr_bytes).trim().to_string();
+        if summary.is_empty() {
+            None
+        } else {
+            Some(summary)
+        }
+    }
+
+    fn stop(mut self) -> u128 {
+        if let Some(stdout_request_tx) = self.stdout_request_tx.take() {
+            drop(stdout_request_tx);
+        }
+        let _ = self.child.kill();
         let wait_start = Instant::now();
-        let status = match child.wait() {
-            Ok(status) => status,
+        let _ = self.child.wait();
+        let wait_elapsed_ms = wait_start.elapsed().as_millis();
+        if let Some(stdout_thread) = self.stdout_thread.take() {
+            let _ = stdout_thread.join();
+        }
+        if let Some(stderr_thread) = self.stderr_thread.take() {
+            let _ = stderr_thread.join();
+        }
+        wait_elapsed_ms
+    }
+}
+
+fn spawn_ffmpeg_decode_process(ffmpeg_path: &Path, one_shot: bool) -> Result<Child, io::Error> {
+    let mut command = Command::new(ffmpeg_path);
+    command
+        .arg("-hide_banner")
+        .arg("-loglevel")
+        .arg("error")
+        .arg("-f")
+        .arg("h264")
+        .arg("-i")
+        .arg("pipe:0");
+    if one_shot {
+        command.arg("-frames:v").arg("1");
+    }
+    command
+        .arg("-f")
+        .arg("rawvideo")
+        .arg("-pix_fmt")
+        .arg("bgra")
+        .arg("pipe:1")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+}
+
+fn decode_with_one_shot_ffmpeg_runtime(
+    ffmpeg_path: &Path,
+    input: SwitcherH264DecodeInput,
+) -> SwitcherH264DecodeRuntimeOutput {
+    let mut diagnostics = SwitcherH264DecodeRuntimeDiagnostics::default();
+    diagnostics.input_payload_bytes = input.encoded_payload.len();
+    if input.encoded_payload.is_empty() {
+        return SwitcherH264DecodeRuntimeOutput {
+            result: SwitcherH264DecodeResult::Deferred {
+                reason: SwitcherH264DecodeDeferredReason::EmptyPayload,
+            },
+            diagnostics,
+        };
+    }
+    if input.width == 0 || input.height == 0 {
+        return SwitcherH264DecodeRuntimeOutput {
+            result: SwitcherH264DecodeResult::Deferred {
+                reason: SwitcherH264DecodeDeferredReason::InvalidDimensions,
+            },
+            diagnostics,
+        };
+    }
+    diagnostics.output_expected_bytes = input.width as usize * input.height as usize * 4;
+
+    let spawn_start = Instant::now();
+    let mut child = match spawn_ffmpeg_decode_process(ffmpeg_path, true) {
+        Ok(child) => {
+            diagnostics.process_spawn_elapsed_ms = spawn_start.elapsed().as_millis();
+            child
+        }
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            diagnostics.process_spawn_elapsed_ms = spawn_start.elapsed().as_millis();
+            return SwitcherH264DecodeRuntimeOutput {
+                result: SwitcherH264DecodeResult::Deferred {
+                    reason: SwitcherH264DecodeDeferredReason::FfmpegUnavailable,
+                },
+                diagnostics,
+            };
+        }
+        Err(error) => {
+            diagnostics.process_spawn_elapsed_ms = spawn_start.elapsed().as_millis();
+            return SwitcherH264DecodeRuntimeOutput {
+                result: SwitcherH264DecodeResult::Failed(SwitcherH264DecodeFailure::from_input(
+                    &input,
+                    error.to_string(),
+                    0,
+                    None,
+                    None,
+                )),
+                diagnostics,
+            };
+        }
+    };
+
+    if let Some(mut stdin) = child.stdin.take() {
+        let input_write_start = Instant::now();
+        if let Err(error) = stdin.write_all(&input.encoded_payload) {
+            diagnostics.input_write_elapsed_ms = input_write_start.elapsed().as_millis();
+            let _ = child.kill();
+            let _ = child.wait();
+            return SwitcherH264DecodeRuntimeOutput {
+                result: SwitcherH264DecodeResult::Failed(SwitcherH264DecodeFailure::from_input(
+                    &input,
+                    error.to_string(),
+                    0,
+                    None,
+                    None,
+                )),
+                diagnostics,
+            };
+        }
+        diagnostics.input_write_elapsed_ms = input_write_start.elapsed().as_millis();
+    }
+
+    let Some(mut stdout) = child.stdout.take() else {
+        let wait_start = Instant::now();
+        let _ = child.kill();
+        let _ = child.wait();
+        diagnostics.process_wait_elapsed_ms = wait_start.elapsed().as_millis();
+        return SwitcherH264DecodeRuntimeOutput {
+            result: SwitcherH264DecodeResult::Failed(SwitcherH264DecodeFailure::from_input(
+                &input,
+                "ffmpeg stdout pipe unavailable".to_string(),
+                0,
+                None,
+                None,
+            )),
+            diagnostics,
+        };
+    };
+    let Some(mut stderr) = child.stderr.take() else {
+        let wait_start = Instant::now();
+        let _ = child.kill();
+        let _ = child.wait();
+        diagnostics.process_wait_elapsed_ms = wait_start.elapsed().as_millis();
+        return SwitcherH264DecodeRuntimeOutput {
+            result: SwitcherH264DecodeResult::Failed(SwitcherH264DecodeFailure::from_input(
+                &input,
+                "ffmpeg stderr pipe unavailable".to_string(),
+                0,
+                None,
+                None,
+            )),
+            diagnostics,
+        };
+    };
+
+    let stderr_reader = std::thread::spawn(move || {
+        let mut stderr_bytes = Vec::new();
+        let result = stderr.read_to_end(&mut stderr_bytes);
+        (result, stderr_bytes)
+    });
+
+    let expected_len = diagnostics.output_expected_bytes;
+    let stdout_read =
+        match read_expected_rawvideo_stdout(&mut stdout, expected_len, &mut diagnostics) {
+            Ok(output) => output,
             Err(error) => {
+                let _ = child.kill();
+                let wait_start = Instant::now();
+                let _ = child.wait();
                 diagnostics.process_wait_elapsed_ms = wait_start.elapsed().as_millis();
                 let _ = stderr_reader.join();
                 return SwitcherH264DecodeRuntimeOutput {
                     result: SwitcherH264DecodeResult::Failed(
                         SwitcherH264DecodeFailure::from_input(
                             &input,
-                            error.to_string(),
-                            stdout_bytes.len(),
+                            error.error.to_string(),
+                            error.partial_bytes.len(),
                             None,
                             None,
                         ),
@@ -7002,82 +7509,179 @@ impl SwitcherH264DecodeRuntimeHook for SwitcherFfmpegH264DecodeRuntimeHook {
                 };
             }
         };
-        diagnostics.process_wait_elapsed_ms = wait_start.elapsed().as_millis();
+    let SwitcherFfmpegDecodeStdoutReadOutput {
+        bytes: stdout_bytes,
+        extra_output_len,
+    } = stdout_read;
 
-        let stderr_bytes = match stderr_reader.join() {
-            Ok((Ok(_), bytes)) => bytes,
-            Ok((Err(error), _)) => {
-                return SwitcherH264DecodeRuntimeOutput {
-                    result: SwitcherH264DecodeResult::Failed(
-                        SwitcherH264DecodeFailure::from_input(
-                            &input,
-                            error.to_string(),
-                            stdout_bytes.len(),
-                            status.code(),
-                            None,
-                        ),
-                    ),
-                    diagnostics,
-                };
-            }
-            Err(_) => Vec::new(),
-        };
-        diagnostics.output_bytes = stdout_bytes.len();
-
-        if !status.success() {
-            let stderr_summary = String::from_utf8_lossy(&stderr_bytes).trim().to_string();
-            let message = if stderr_summary.is_empty() {
-                format!("ffmpeg decode exited with status {status}")
-            } else {
-                stderr_summary.clone()
-            };
+    let wait_start = Instant::now();
+    let status = match child.wait() {
+        Ok(status) => status,
+        Err(error) => {
+            diagnostics.process_wait_elapsed_ms = wait_start.elapsed().as_millis();
+            let _ = stderr_reader.join();
             return SwitcherH264DecodeRuntimeOutput {
                 result: SwitcherH264DecodeResult::Failed(SwitcherH264DecodeFailure::from_input(
                     &input,
-                    message,
+                    error.to_string(),
+                    stdout_bytes.len(),
+                    None,
+                    None,
+                )),
+                diagnostics,
+            };
+        }
+    };
+    diagnostics.process_wait_elapsed_ms = wait_start.elapsed().as_millis();
+
+    let stderr_bytes = match stderr_reader.join() {
+        Ok((Ok(_), bytes)) => bytes,
+        Ok((Err(error), _)) => {
+            return SwitcherH264DecodeRuntimeOutput {
+                result: SwitcherH264DecodeResult::Failed(SwitcherH264DecodeFailure::from_input(
+                    &input,
+                    error.to_string(),
                     stdout_bytes.len(),
                     status.code(),
-                    if stderr_summary.is_empty() {
-                        None
-                    } else {
-                        Some(stderr_summary)
-                    },
+                    None,
                 )),
                 diagnostics,
             };
         }
+        Err(_) => Vec::new(),
+    };
+    diagnostics.output_bytes = stdout_bytes.len();
 
-        if extra_output_len != 0 {
-            let stderr_summary = String::from_utf8_lossy(&stderr_bytes).trim().to_string();
-            return SwitcherH264DecodeRuntimeOutput {
-                result: SwitcherH264DecodeResult::Failed(SwitcherH264DecodeFailure::from_input(
-                    &input,
-                    format!(
-                        "decoded_rawvideo_length_mismatch_expected={expected_len}_actual={}",
-                        expected_len.saturating_add(extra_output_len)
-                    ),
-                    expected_len.saturating_add(extra_output_len),
-                    status.code(),
-                    if stderr_summary.is_empty() {
-                        None
-                    } else {
-                        Some(stderr_summary)
-                    },
-                )),
-                diagnostics,
-            };
-        }
-
-        SwitcherH264DecodeRuntimeOutput {
-            result: SwitcherH264DecodeResult::Decoded(SwitcherDecodedFrame {
-                width: input.width,
-                height: input.height,
-                pixel_format: SwitcherDecodedFramePixelFormat::Bgra8,
-                pixels: stdout_bytes,
-            }),
+    if !status.success() {
+        let stderr_summary = String::from_utf8_lossy(&stderr_bytes).trim().to_string();
+        let message = if stderr_summary.is_empty() {
+            format!("ffmpeg decode exited with status {status}")
+        } else {
+            stderr_summary.clone()
+        };
+        return SwitcherH264DecodeRuntimeOutput {
+            result: SwitcherH264DecodeResult::Failed(SwitcherH264DecodeFailure::from_input(
+                &input,
+                message,
+                stdout_bytes.len(),
+                status.code(),
+                if stderr_summary.is_empty() {
+                    None
+                } else {
+                    Some(stderr_summary)
+                },
+            )),
             diagnostics,
-        }
+        };
     }
+
+    if extra_output_len != 0 {
+        let stderr_summary = String::from_utf8_lossy(&stderr_bytes).trim().to_string();
+        return SwitcherH264DecodeRuntimeOutput {
+            result: SwitcherH264DecodeResult::Failed(SwitcherH264DecodeFailure::from_input(
+                &input,
+                format!(
+                    "decoded_rawvideo_length_mismatch_expected={expected_len}_actual={}",
+                    expected_len.saturating_add(extra_output_len)
+                ),
+                expected_len.saturating_add(extra_output_len),
+                status.code(),
+                if stderr_summary.is_empty() {
+                    None
+                } else {
+                    Some(stderr_summary)
+                },
+            )),
+            diagnostics,
+        };
+    }
+
+    SwitcherH264DecodeRuntimeOutput {
+        result: SwitcherH264DecodeResult::Decoded(SwitcherDecodedFrame {
+            width: input.width,
+            height: input.height,
+            pixel_format: SwitcherDecodedFramePixelFormat::Bgra8,
+            pixels: stdout_bytes,
+        }),
+        diagnostics,
+    }
+}
+
+fn merge_decode_runtime_diagnostics(
+    target: &mut SwitcherH264DecodeRuntimeDiagnostics,
+    source: &SwitcherH264DecodeRuntimeDiagnostics,
+) {
+    target.process_spawn_elapsed_ms = target
+        .process_spawn_elapsed_ms
+        .saturating_add(source.process_spawn_elapsed_ms);
+    target.input_write_elapsed_ms = target
+        .input_write_elapsed_ms
+        .saturating_add(source.input_write_elapsed_ms);
+    target.input_payload_bytes = target
+        .input_payload_bytes
+        .saturating_add(source.input_payload_bytes);
+    target.output_read_elapsed_ms = target
+        .output_read_elapsed_ms
+        .saturating_add(source.output_read_elapsed_ms);
+    target.output_read_exact_elapsed_ms = target
+        .output_read_exact_elapsed_ms
+        .saturating_add(source.output_read_exact_elapsed_ms);
+    target.output_vec_resize_elapsed_ms = target
+        .output_vec_resize_elapsed_ms
+        .saturating_add(source.output_vec_resize_elapsed_ms);
+    target.process_wait_elapsed_ms = target
+        .process_wait_elapsed_ms
+        .saturating_add(source.process_wait_elapsed_ms);
+    target.pixel_convert_elapsed_ms = target
+        .pixel_convert_elapsed_ms
+        .saturating_add(source.pixel_convert_elapsed_ms);
+    target.buffer_allocation_count = target
+        .buffer_allocation_count
+        .saturating_add(source.buffer_allocation_count);
+    target.output_bytes = target.output_bytes.saturating_add(source.output_bytes);
+    target.output_expected_bytes = target
+        .output_expected_bytes
+        .saturating_add(source.output_expected_bytes);
+    target.output_buffer_reuse_count = target
+        .output_buffer_reuse_count
+        .saturating_add(source.output_buffer_reuse_count);
+    target.persistent_decode_enabled |= source.persistent_decode_enabled;
+    target.persistent_decode_attempt_count = target
+        .persistent_decode_attempt_count
+        .saturating_add(source.persistent_decode_attempt_count);
+    target.persistent_decode_success_count = target
+        .persistent_decode_success_count
+        .saturating_add(source.persistent_decode_success_count);
+    target.persistent_decode_failure_count = target
+        .persistent_decode_failure_count
+        .saturating_add(source.persistent_decode_failure_count);
+    target.persistent_decode_fallback_count = target
+        .persistent_decode_fallback_count
+        .saturating_add(source.persistent_decode_fallback_count);
+    target.persistent_decode_process_spawn_count = target
+        .persistent_decode_process_spawn_count
+        .saturating_add(source.persistent_decode_process_spawn_count);
+    target.persistent_decode_process_restart_count = target
+        .persistent_decode_process_restart_count
+        .saturating_add(source.persistent_decode_process_restart_count);
+    target.persistent_decode_stdin_write_elapsed_ms = target
+        .persistent_decode_stdin_write_elapsed_ms
+        .saturating_add(source.persistent_decode_stdin_write_elapsed_ms);
+    target.persistent_decode_stdout_read_elapsed_ms = target
+        .persistent_decode_stdout_read_elapsed_ms
+        .saturating_add(source.persistent_decode_stdout_read_elapsed_ms);
+    target.persistent_decode_stdout_read_exact_elapsed_ms = target
+        .persistent_decode_stdout_read_exact_elapsed_ms
+        .saturating_add(source.persistent_decode_stdout_read_exact_elapsed_ms);
+    target.persistent_decode_output_bytes = target
+        .persistent_decode_output_bytes
+        .saturating_add(source.persistent_decode_output_bytes);
+    if let Some(last_error) = &source.persistent_decode_last_error {
+        target.persistent_decode_last_error = Some(last_error.clone());
+    }
+    target.one_shot_decode_fallback_count = target
+        .one_shot_decode_fallback_count
+        .saturating_add(source.one_shot_decode_fallback_count);
 }
 
 fn read_expected_rawvideo_stdout(
