@@ -2,6 +2,60 @@
 
 ## 2026-05-17
 ### Type
+- Codex docs-first analysis
+
+### Work
+- Re-read the latest same-PC `2`-client rerun evidence from `S:\stream-sync\manual-logs\two-client-render-rerun-20260517-223121` and the current one-shot decode path in `apps/switcher/src/lib.rs`.
+- Confirmed from code that current `decode_input_write_elapsed_ms` measures only `stdin.write_all(&input.encoded_payload)`.
+- Recorded the main interpretation guardrail:
+  - this timer is not just parent-side memory copy time
+  - it can include OS pipe backpressure
+  - it can include waiting for FFmpeg-side stdin consumption
+  - it does not currently include `stdin` handle drop / EOF close
+- Recorded that payload size impact must now be treated as a first-order comparison candidate because payload avg in the latest rerun is much larger than the `20260517-194136` baseline while stdout raw BGRA read volume is already reduced.
+- Organized the next safer slice as diagnostics-first rather than behavior change.
+- Kept request/response persistent decoder frozen and did not move toward a continuous-stream rewrite.
+- Kept the step docs-only; no code changes were made.
+
+### Changed Files
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+- `docs/operations/persistent-decoder-plan.md`
+
+### Decisions
+- Keep scaled decode output as PASS and keep stdout raw BGRA read volume reduction as already-achieved evidence.
+- Move the next dominant candidate analysis to `stdin write` / FFmpeg stdin consumption wait / payload size impact.
+- Prefer safer diagnostics additions over one-shot path behavior changes for the next implementation slice.
+- Keep Production Readiness as FAIL.
+
+### Findings
+- Current one-shot write timing cannot distinguish:
+  - write blocked on pipe capacity while FFmpeg had not consumed enough input
+  - write completed, then FFmpeg delayed before first stdout byte
+- Current code also does not time `stdin` close / EOF signaling separately.
+- Because `one_shot_decode_input_payload_bytes_avg=195142.192` is much higher than the previous `96744.115` baseline, payload-size-normalized diagnostics are now worth prioritizing.
+- `one_shot_decode_stdin_flush_elapsed_ms` is a lower-value candidate than first-byte timing or derived throughput metrics.
+- `one_shot_decode_payload_bytes_per_write_max` is not a good first diagnostics slice because it would require replacing `write_all` with a manual loop and changes the hot path more than needed.
+
+### Next
+- If the next step adds diagnostics, prioritize:
+  - `one_shot_decode_stdin_close_elapsed_ms`
+  - `one_shot_decode_stdin_write_to_stdout_first_byte_elapsed_ms`
+  - `one_shot_decode_stdout_first_byte_elapsed_ms`
+  - derived write/read throughput and per-payload-kb fields
+- Keep the one-shot path and request/response persistent decoder freeze unchanged while collecting that evidence.
+
+### TODO Update
+- Updated `docs/operations/todo.md` with the stdin-write interpretation guardrail and safer diagnostics direction.
+- Updated `docs/operations/persistent-decoder-plan.md` with the stdin-write analysis and prioritized diagnostics candidates.
+
+### Validation
+- `git diff --check`
+  - result: PASS
+  - note: LF/CRLF warnings only
+
+## 2026-05-17
+### Type
 - Codex documentation update
 
 ### Work

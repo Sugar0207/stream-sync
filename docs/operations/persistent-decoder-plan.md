@@ -141,6 +141,43 @@
 - final diagnostics には `handoff_error_count=15` と `scheduler_status=HandoffError` が混ざったが、server/client transport、scaled decode output runtime PASS、persistent config-disabled toggle の evidence 自体は有効扱いにする
 - request/response persistent decoder はこの rerun 後も revive せず、凍結候補のまま維持する
 
+## One-Shot Stdin Write Analysis Update
+- latest one-shot path を `apps/switcher/src/lib.rs` で再確認すると、current `decode_input_write_elapsed_ms` は `stdin.write_all(&input.encoded_payload)` だけを測っている
+- したがって current `stdin write` elapsed は単純な parent-side memory copy ではなく、少なくとも次を含み得る
+  - anonymous pipe の空き容量待ち
+  - FFmpeg process が stdin を読み始めるまでの待ち
+  - FFmpeg が decode / parser / filter graph 初期化を進めながら stdin を断続的に消費することによる backpressure
+- 一方で current timer には以下は含まれていない
+  - `stdin` handle drop / EOF close の時間
+  - `stdin` write 完了後から stdout first byte が返るまでの待ち
+- latest rerun `manual-logs/two-client-render-rerun-20260517-223121` では `one_shot_decode_input_payload_bytes_avg=195142.192` と baseline `manual-logs/two-client-render-rerun-20260517-194136` の `96744.115` より payload avg がほぼ倍化している。stdout raw BGRA read volume は `95846400 -> 23961600` まで下がった一方、`one_shot_decode_input_write_elapsed_ms=937` がまだ大きいので、payload size impact を next dominant candidate に含める
+- current evidence だけでは `stdin write` の内訳を `OS pipe backpressure` と `FFmpeg 側 consumption wait` に分け切れない。current summary は write完了後から stdout first byte までの待ちを独立計測していないため、write中に詰まったのか、write後に decode/scale/output 準備で待ったのかを確定できない
+- したがって next safer slice は挙動変更ではなく diagnostics 追加を優先する。request/response persistent decoder revive や continuous-stream decoder rewrite には戻らない
+
+## Safer Diagnostics Candidates
+- high-value candidates
+  - `one_shot_decode_stdin_close_elapsed_ms`
+    - current timer外の EOF close cost を切り分けられる
+  - `one_shot_decode_stdin_write_to_stdout_first_byte_elapsed_ms`
+    - write完了後に FFmpeg 側でどれだけ待ってから first output byte が出るかを見られる
+  - `one_shot_decode_stdout_first_byte_elapsed_ms`
+    - spawn 以後の first output visibility を見られる
+  - derived `one_shot_decode_write_throughput_bytes_per_ms`
+    - current `input_payload_bytes` と `input_write_elapsed_ms` から挙動変更なしで算出できる
+  - derived `one_shot_decode_input_write_elapsed_per_payload_kb`
+    - payload size impact の比較に使える
+- medium-value candidates
+  - `one_shot_decode_read_throughput_bytes_per_ms`
+    - scaled stdout read volume 改善後の比較用に残せる
+  - `one_shot_decode_spawn_to_stdin_write_start_elapsed_ms`
+    - parent-side gap が実質ゼロか確認できるが、child readiness の本丸切り分けにはなりにくい
+- low-value or risky-first candidates
+  - `one_shot_decode_stdin_flush_elapsed_ms`
+    - pipe write path では有意な差分が出ない可能性が高く、優先度は低い
+  - `one_shot_decode_payload_bytes_per_write_max`
+    - syscall単位の write size を取るには `write_all` を manual loop 化する必要があり、first safer slice としては挙動変更が増える
+- next implementation slice が必要になっても、まずは high-value candidates のうち derived fields と first-byte timing に寄せる
+
 ## 何を置き換えるか
 - 置き換え対象は `apps/switcher/src/lib.rs` の current one-shot FFmpeg decode runtime のうち、decode ごとに作っている FFmpeg process lifecycle
 - 具体的には以下を persistent 化候補とする
