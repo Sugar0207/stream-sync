@@ -175,6 +175,7 @@
   - `decode_output_read_exact_elapsed_ms`: `stdout.take(expected_len).read_to_end(...)` だけ
   - `decode_output_read_elapsed_ms`: bounded read + extra-output probe まで
   - `decode_process_wait_elapsed_ms`: `child.wait()` だけ
+- current one-shot observability には payload-size min/max/avg、keyframe vs non-keyframe attempt/elapsed split、per-phase max elapsed、expected output bytes per frame、extra-output probe elapsed も追加し、next rerun では request/response persistent decoder を revive せずに safer one-shot-only slices を比較する
 - next step では payload bytes / expected stdout bytes / keyframe payload size と elapsed の関係を見て、one-shot process を残したまま削れる read/write 周辺の小改善か、narrow diagnostics 追加に絞る
 - decode cache ownership / `decode_output_buffer_reuse_count=0` / clone-store follow-up は decoder I/O / compose の次比較候補として残す
 

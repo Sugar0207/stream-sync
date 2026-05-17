@@ -6725,8 +6725,10 @@ pub struct SwitcherH264DecodeRuntimeDiagnostics {
     pub process_spawn_elapsed_ms: u128,
     pub input_write_elapsed_ms: u128,
     pub input_payload_bytes: usize,
+    pub input_payload_has_idr: bool,
     pub output_read_elapsed_ms: u128,
     pub output_read_exact_elapsed_ms: u128,
+    pub output_extra_probe_elapsed_ms: u128,
     pub output_vec_resize_elapsed_ms: u128,
     pub process_wait_elapsed_ms: u128,
     pub pixel_convert_elapsed_ms: u128,
@@ -6761,6 +6763,7 @@ pub struct SwitcherH264DecodeRuntimeDiagnostics {
     pub one_shot_decode_input_write_elapsed_ms: u128,
     pub one_shot_decode_output_read_elapsed_ms: u128,
     pub one_shot_decode_output_read_exact_elapsed_ms: u128,
+    pub one_shot_decode_extra_output_probe_elapsed_ms: u128,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -7525,6 +7528,12 @@ fn decode_with_one_shot_ffmpeg_runtime(
             .diagnostics
             .one_shot_decode_output_read_exact_elapsed_ms
             .saturating_add(output.diagnostics.output_read_exact_elapsed_ms);
+        output
+            .diagnostics
+            .one_shot_decode_extra_output_probe_elapsed_ms = output
+            .diagnostics
+            .one_shot_decode_extra_output_probe_elapsed_ms
+            .saturating_add(output.diagnostics.output_extra_probe_elapsed_ms);
     }
     output
 }
@@ -7535,6 +7544,9 @@ fn decode_with_one_shot_ffmpeg_runtime_inner(
 ) -> SwitcherH264DecodeRuntimeOutput {
     let mut diagnostics = SwitcherH264DecodeRuntimeDiagnostics::default();
     diagnostics.input_payload_bytes = input.encoded_payload.len();
+    diagnostics.input_payload_has_idr = SwitcherH264AnnexBPayloadInspectionBoundary
+        .inspect_payload(&input.encoded_payload)
+        .has_idr;
     if input.encoded_payload.is_empty() {
         return SwitcherH264DecodeRuntimeOutput {
             result: SwitcherH264DecodeResult::Deferred {
@@ -7877,6 +7889,9 @@ fn merge_decode_runtime_diagnostics(
     target.one_shot_decode_output_read_exact_elapsed_ms = target
         .one_shot_decode_output_read_exact_elapsed_ms
         .saturating_add(source.one_shot_decode_output_read_exact_elapsed_ms);
+    target.one_shot_decode_extra_output_probe_elapsed_ms = target
+        .one_shot_decode_extra_output_probe_elapsed_ms
+        .saturating_add(source.one_shot_decode_extra_output_probe_elapsed_ms);
 }
 
 fn read_expected_rawvideo_stdout(
@@ -7920,11 +7935,13 @@ fn read_expected_rawvideo_stdout(
 
     let mut extra_output_len = 0usize;
     let mut extra_probe = [0u8; 4096];
+    let extra_probe_start = Instant::now();
     loop {
         match stdout.read(&mut extra_probe) {
             Ok(0) => break,
             Ok(read) => extra_output_len = extra_output_len.saturating_add(read),
             Err(error) => {
+                diagnostics.output_extra_probe_elapsed_ms = extra_probe_start.elapsed().as_millis();
                 diagnostics.output_read_elapsed_ms = output_read_start.elapsed().as_millis();
                 diagnostics.output_bytes = stdout_bytes.len();
                 return Err(SwitcherFfmpegDecodeStdoutReadError {
@@ -7935,6 +7952,7 @@ fn read_expected_rawvideo_stdout(
         }
     }
 
+    diagnostics.output_extra_probe_elapsed_ms = extra_probe_start.elapsed().as_millis();
     diagnostics.output_read_elapsed_ms = output_read_start.elapsed().as_millis();
     diagnostics.output_bytes = stdout_bytes.len();
     Ok(SwitcherFfmpegDecodeStdoutReadOutput {

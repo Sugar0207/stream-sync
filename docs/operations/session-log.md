@@ -2,6 +2,84 @@
 
 ## 2026-05-17
 ### Type
+- Codex implementation
+
+### Work
+- Added narrow one-shot FFmpeg decode I/O diagnostics without changing decode behavior.
+- Kept the scope intentionally away from:
+  - request/response persistent decoder retry
+  - continuous-stream decoder rewrite
+  - one-shot FFmpeg process removal
+- Re-read the current one-shot code path in `apps/switcher/src/lib.rs` and kept the metric boundaries explicit:
+  - `decode_process_spawn_elapsed_ms` is `Command::spawn()` only
+  - `decode_input_write_elapsed_ms` is `stdin.write_all(&input.encoded_payload)` only
+  - `decode_output_read_exact_elapsed_ms` is the bounded `stdout.take(expected_len).read_to_end(...)` portion only
+  - `decode_output_read_elapsed_ms` is the bounded read plus the extra-output probe
+  - `decode_process_wait_elapsed_ms` remains separate at `child.wait()`
+- Added per-decode observability needed for the next rerun:
+  - payload IDR presence (`input_payload_has_idr`)
+  - extra-output probe elapsed (`output_extra_probe_elapsed_ms`)
+- Added one-shot-only summary diagnostics in `apps/switcher/src/main.rs`:
+  - `one_shot_decode_input_payload_bytes_min`
+  - `one_shot_decode_input_payload_bytes_max`
+  - `one_shot_decode_input_payload_bytes_avg`
+  - `one_shot_decode_elapsed_ms_max`
+  - `one_shot_decode_input_write_elapsed_ms_max`
+  - `one_shot_decode_output_read_elapsed_ms_max`
+  - `one_shot_decode_output_read_exact_elapsed_ms_max`
+  - `one_shot_decode_keyframe_attempt_count`
+  - `one_shot_decode_non_keyframe_attempt_count`
+  - `one_shot_decode_keyframe_elapsed_ms`
+  - `one_shot_decode_non_keyframe_elapsed_ms`
+  - `one_shot_decode_keyframe_input_payload_bytes_total`
+  - `one_shot_decode_non_keyframe_input_payload_bytes_total`
+  - `one_shot_decode_expected_output_bytes_per_frame`
+  - `one_shot_decode_extra_output_probe_elapsed_ms`
+- Updated the focused summary formatting test so these fields stay visible in the two-real preview summary line.
+- Kept the runtime baseline anchored at `manual-logs/two-client-render-rerun-20260517-183552`; no rerun was executed in this step.
+
+### Changed Files
+- `apps/switcher/src/lib.rs`
+- `apps/switcher/src/main.rs`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### Decisions
+- Keep this step diagnostics-only for one-shot decode I/O.
+- Keep one-shot decode behavior unchanged.
+- Keep request/response persistent decoder frozen.
+- Keep Production Readiness as FAIL.
+
+### Unresolved
+- No new runtime evidence has been collected yet.
+- It is still unresolved whether the next safer slice should target input write, bounded stdout read, or extra-output probe behavior first.
+- `decode_output_buffer_reuse_count=0` remains unchanged.
+- Production Readiness remains FAIL.
+
+### Next
+- Run the next same-PC `2`-client rerun from `S:\stream-sync` with `--disable-persistent-decoder`.
+- Compare payload-size min/max/avg, per-phase max elapsed, keyframe vs non-keyframe elapsed, and extra-output probe elapsed against the `20260517-183552` baseline.
+- Use that evidence to decide whether the next narrow one-shot slice should hit input write, bounded read, or post-read probe behavior.
+
+### TODO Update
+- Updated `docs/operations/todo.md` current position to record the new one-shot decode diagnostics fields.
+- Replaced the top next items with a rerun plan centered on payload size, keyframe split, max elapsed, and extra-output probe evidence.
+
+### Validation
+- `cargo fmt`
+  - result: PASS
+- `cargo check -p stream-sync-switcher`
+  - result: PASS
+  - note: existing `apps/switcher/src/main.rs` dead-code warnings only
+- focused switcher test
+  - result: PASS
+  - command:
+    `cargo test -p stream-sync-switcher switcher_four_view_two_real_handoff_preview_summary_formats_expected_fields -- --nocapture`
+- `git diff --check`
+  - result: PASS (LF/CRLF warnings only)
+
+## 2026-05-17
+### Type
 - Codex documentation update
 
 ### Work
