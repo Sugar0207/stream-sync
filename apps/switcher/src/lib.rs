@@ -1,5 +1,5 @@
 use std::{
-    io::{self, Read, Write},
+    io::{self, ErrorKind, Read, Write},
     net::{SocketAddr, UdpSocket},
     path::{Path, PathBuf},
     process::{Command, Stdio},
@@ -6724,6 +6724,8 @@ pub struct SwitcherH264DecodeRuntimeDiagnostics {
     pub process_spawn_elapsed_ms: u128,
     pub input_write_elapsed_ms: u128,
     pub output_read_elapsed_ms: u128,
+    pub output_read_exact_elapsed_ms: u128,
+    pub output_vec_resize_elapsed_ms: u128,
     pub process_wait_elapsed_ms: u128,
     pub pixel_convert_elapsed_ms: u128,
     pub buffer_allocation_count: u32,
@@ -6782,6 +6784,18 @@ impl SwitcherH264DecodeRuntimeHook for SwitcherDeferredH264DecodeRuntimeHook {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SwitcherFfmpegH264DecodeRuntimeHook {
     pub ffmpeg_path: PathBuf,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct SwitcherFfmpegDecodeStdoutReadOutput {
+    bytes: Vec<u8>,
+    extra_output_len: usize,
+}
+
+#[derive(Debug)]
+struct SwitcherFfmpegDecodeStdoutReadError {
+    error: io::Error,
+    partial_bytes: Vec<u8>,
 }
 
 impl Default for SwitcherFfmpegH264DecodeRuntimeHook {
@@ -6932,27 +6946,33 @@ impl SwitcherH264DecodeRuntimeHook for SwitcherFfmpegH264DecodeRuntimeHook {
         });
 
         let expected_len = input.width as usize * input.height as usize * 4;
-        let output_read_start = Instant::now();
-        let mut stdout_bytes = Vec::with_capacity(expected_len);
-        if let Err(error) = stdout.read_to_end(&mut stdout_bytes) {
-            diagnostics.output_read_elapsed_ms = output_read_start.elapsed().as_millis();
-            let _ = child.kill();
-            let wait_start = Instant::now();
-            let _ = child.wait();
-            diagnostics.process_wait_elapsed_ms = wait_start.elapsed().as_millis();
-            let _ = stderr_reader.join();
-            return SwitcherH264DecodeRuntimeOutput {
-                result: SwitcherH264DecodeResult::Failed(SwitcherH264DecodeFailure::from_input(
-                    &input,
-                    error.to_string(),
-                    stdout_bytes.len(),
-                    None,
-                    None,
-                )),
-                diagnostics,
+        let stdout_read =
+            match read_expected_rawvideo_stdout(&mut stdout, expected_len, &mut diagnostics) {
+                Ok(output) => output,
+                Err(error) => {
+                    let _ = child.kill();
+                    let wait_start = Instant::now();
+                    let _ = child.wait();
+                    diagnostics.process_wait_elapsed_ms = wait_start.elapsed().as_millis();
+                    let _ = stderr_reader.join();
+                    return SwitcherH264DecodeRuntimeOutput {
+                        result: SwitcherH264DecodeResult::Failed(
+                            SwitcherH264DecodeFailure::from_input(
+                                &input,
+                                error.error.to_string(),
+                                error.partial_bytes.len(),
+                                None,
+                                None,
+                            ),
+                        ),
+                        diagnostics,
+                    };
+                }
             };
-        }
-        diagnostics.output_read_elapsed_ms = output_read_start.elapsed().as_millis();
+        let SwitcherFfmpegDecodeStdoutReadOutput {
+            bytes: stdout_bytes,
+            extra_output_len,
+        } = stdout_read;
 
         let wait_start = Instant::now();
         let status = match child.wait() {
@@ -6995,7 +7015,6 @@ impl SwitcherH264DecodeRuntimeHook for SwitcherFfmpegH264DecodeRuntimeHook {
             Err(_) => Vec::new(),
         };
         diagnostics.output_bytes = stdout_bytes.len();
-        diagnostics.buffer_allocation_count = u32::from(!stdout_bytes.is_empty());
 
         if !status.success() {
             let stderr_summary = String::from_utf8_lossy(&stderr_bytes).trim().to_string();
@@ -7020,16 +7039,16 @@ impl SwitcherH264DecodeRuntimeHook for SwitcherFfmpegH264DecodeRuntimeHook {
             };
         }
 
-        if stdout_bytes.len() != expected_len {
+        if extra_output_len != 0 {
             let stderr_summary = String::from_utf8_lossy(&stderr_bytes).trim().to_string();
             return SwitcherH264DecodeRuntimeOutput {
                 result: SwitcherH264DecodeResult::Failed(SwitcherH264DecodeFailure::from_input(
                     &input,
                     format!(
                         "decoded_rawvideo_length_mismatch_expected={expected_len}_actual={}",
-                        stdout_bytes.len()
+                        expected_len.saturating_add(extra_output_len)
                     ),
-                    stdout_bytes.len(),
+                    expected_len.saturating_add(extra_output_len),
                     status.code(),
                     if stderr_summary.is_empty() {
                         None
@@ -7051,6 +7070,70 @@ impl SwitcherH264DecodeRuntimeHook for SwitcherFfmpegH264DecodeRuntimeHook {
             diagnostics,
         }
     }
+}
+
+fn read_expected_rawvideo_stdout(
+    stdout: &mut impl Read,
+    expected_len: usize,
+    diagnostics: &mut SwitcherH264DecodeRuntimeDiagnostics,
+) -> Result<SwitcherFfmpegDecodeStdoutReadOutput, SwitcherFfmpegDecodeStdoutReadError> {
+    let output_read_start = Instant::now();
+    let mut stdout_bytes = Vec::with_capacity(expected_len);
+    diagnostics.buffer_allocation_count = u32::from(expected_len > 0);
+
+    let read_exact_start = Instant::now();
+    {
+        let mut limited_stdout = stdout.take(expected_len as u64);
+        if let Err(error) = limited_stdout.read_to_end(&mut stdout_bytes) {
+            diagnostics.output_read_exact_elapsed_ms = read_exact_start.elapsed().as_millis();
+            diagnostics.output_read_elapsed_ms = output_read_start.elapsed().as_millis();
+            diagnostics.output_bytes = stdout_bytes.len();
+            return Err(SwitcherFfmpegDecodeStdoutReadError {
+                error,
+                partial_bytes: stdout_bytes,
+            });
+        }
+    }
+    diagnostics.output_read_exact_elapsed_ms = read_exact_start.elapsed().as_millis();
+
+    if stdout_bytes.len() != expected_len {
+        diagnostics.output_read_elapsed_ms = output_read_start.elapsed().as_millis();
+        diagnostics.output_bytes = stdout_bytes.len();
+        return Err(SwitcherFfmpegDecodeStdoutReadError {
+            error: io::Error::new(
+                ErrorKind::UnexpectedEof,
+                format!(
+                    "decoded_rawvideo_length_mismatch_expected={expected_len}_actual={}",
+                    stdout_bytes.len()
+                ),
+            ),
+            partial_bytes: stdout_bytes,
+        });
+    }
+
+    let mut extra_output_len = 0usize;
+    let mut extra_probe = [0u8; 4096];
+    loop {
+        match stdout.read(&mut extra_probe) {
+            Ok(0) => break,
+            Ok(read) => extra_output_len = extra_output_len.saturating_add(read),
+            Err(error) => {
+                diagnostics.output_read_elapsed_ms = output_read_start.elapsed().as_millis();
+                diagnostics.output_bytes = stdout_bytes.len();
+                return Err(SwitcherFfmpegDecodeStdoutReadError {
+                    error,
+                    partial_bytes: stdout_bytes,
+                });
+            }
+        }
+    }
+
+    diagnostics.output_read_elapsed_ms = output_read_start.elapsed().as_millis();
+    diagnostics.output_bytes = stdout_bytes.len();
+    Ok(SwitcherFfmpegDecodeStdoutReadOutput {
+        bytes: stdout_bytes,
+        extra_output_len,
+    })
 }
 
 /// Boundary for decoding one selected H.264 frame payload.
@@ -25311,6 +25394,57 @@ mod tests {
             failure.ffmpeg_stderr_summary.as_deref(),
             Some("no frame could be decoded")
         );
+    }
+
+    #[test]
+    fn ffmpeg_decode_stdout_read_reads_expected_len_and_records_split_diagnostics() {
+        let mut reader = std::io::Cursor::new(vec![1, 2, 3, 4, 5, 6, 7, 8]);
+        let mut diagnostics = SwitcherH264DecodeRuntimeDiagnostics::default();
+
+        let output = read_expected_rawvideo_stdout(&mut reader, 8, &mut diagnostics)
+            .expect("expected exact-sized decode stdout to succeed");
+
+        assert_eq!(output.bytes, vec![1, 2, 3, 4, 5, 6, 7, 8]);
+        assert_eq!(output.extra_output_len, 0);
+        assert_eq!(diagnostics.output_bytes, 8);
+        assert_eq!(diagnostics.buffer_allocation_count, 1);
+        assert_eq!(diagnostics.output_buffer_reuse_count, 0);
+        assert_eq!(diagnostics.output_vec_resize_elapsed_ms, 0);
+        assert!(diagnostics.output_read_elapsed_ms >= diagnostics.output_read_exact_elapsed_ms);
+    }
+
+    #[test]
+    fn ffmpeg_decode_stdout_read_preserves_partial_len_on_short_output() {
+        let mut reader = std::io::Cursor::new(vec![1, 2, 3, 4, 5, 6]);
+        let mut diagnostics = SwitcherH264DecodeRuntimeDiagnostics::default();
+
+        let error = read_expected_rawvideo_stdout(&mut reader, 8, &mut diagnostics)
+            .expect_err("short decode stdout should fail");
+
+        assert_eq!(error.partial_bytes, vec![1, 2, 3, 4, 5, 6]);
+        assert_eq!(diagnostics.output_bytes, 6);
+        assert_eq!(diagnostics.buffer_allocation_count, 1);
+        assert_eq!(diagnostics.output_buffer_reuse_count, 0);
+        assert_eq!(diagnostics.output_vec_resize_elapsed_ms, 0);
+        assert!(error
+            .error
+            .to_string()
+            .contains("decoded_rawvideo_length_mismatch"));
+    }
+
+    #[test]
+    fn ffmpeg_decode_stdout_read_reports_extra_output_len_without_hiding_expected_bytes() {
+        let mut reader = std::io::Cursor::new(vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
+        let mut diagnostics = SwitcherH264DecodeRuntimeDiagnostics::default();
+
+        let output = read_expected_rawvideo_stdout(&mut reader, 8, &mut diagnostics)
+            .expect("oversized decode stdout should still return the expected rawvideo bytes");
+
+        assert_eq!(output.bytes, vec![1, 2, 3, 4, 5, 6, 7, 8]);
+        assert_eq!(output.extra_output_len, 2);
+        assert_eq!(diagnostics.output_bytes, 8);
+        assert_eq!(diagnostics.output_buffer_reuse_count, 0);
+        assert_eq!(diagnostics.output_vec_resize_elapsed_ms, 0);
     }
 
     #[test]

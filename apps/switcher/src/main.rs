@@ -1812,6 +1812,8 @@ struct SwitcherFourViewTwoRealHandoffPreviewLoopSummary {
     decode_process_spawn_elapsed_ms: u128,
     decode_input_write_elapsed_ms: u128,
     decode_output_read_elapsed_ms: u128,
+    decode_output_read_exact_elapsed_ms: u128,
+    decode_output_vec_resize_elapsed_ms: u128,
     decode_process_wait_elapsed_ms: u128,
     decode_pixel_convert_elapsed_ms: u128,
     decode_buffer_allocation_count: u32,
@@ -2258,6 +2260,8 @@ struct TwoRealPreviewLoopRuntimeTiming {
     decode_process_spawn_elapsed_ms: u128,
     decode_input_write_elapsed_ms: u128,
     decode_output_read_elapsed_ms: u128,
+    decode_output_read_exact_elapsed_ms: u128,
+    decode_output_vec_resize_elapsed_ms: u128,
     decode_process_wait_elapsed_ms: u128,
     decode_pixel_convert_elapsed_ms: u128,
     decode_buffer_allocation_count: u32,
@@ -2486,6 +2490,8 @@ fn add_decode_runtime_diagnostics(
     timing.decode_process_spawn_elapsed_ms += diagnostics.process_spawn_elapsed_ms;
     timing.decode_input_write_elapsed_ms += diagnostics.input_write_elapsed_ms;
     timing.decode_output_read_elapsed_ms += diagnostics.output_read_elapsed_ms;
+    timing.decode_output_read_exact_elapsed_ms += diagnostics.output_read_exact_elapsed_ms;
+    timing.decode_output_vec_resize_elapsed_ms += diagnostics.output_vec_resize_elapsed_ms;
     timing.decode_process_wait_elapsed_ms += diagnostics.process_wait_elapsed_ms;
     timing.decode_pixel_convert_elapsed_ms += diagnostics.pixel_convert_elapsed_ms;
     timing.decode_buffer_allocation_count = timing
@@ -3981,6 +3987,8 @@ where
         decode_process_spawn_elapsed_ms: timing.decode_process_spawn_elapsed_ms,
         decode_input_write_elapsed_ms: timing.decode_input_write_elapsed_ms,
         decode_output_read_elapsed_ms: timing.decode_output_read_elapsed_ms,
+        decode_output_read_exact_elapsed_ms: timing.decode_output_read_exact_elapsed_ms,
+        decode_output_vec_resize_elapsed_ms: timing.decode_output_vec_resize_elapsed_ms,
         decode_process_wait_elapsed_ms: timing.decode_process_wait_elapsed_ms,
         decode_pixel_convert_elapsed_ms: timing.decode_pixel_convert_elapsed_ms,
         decode_buffer_allocation_count: timing.decode_buffer_allocation_count,
@@ -7968,7 +7976,7 @@ fn format_four_view_two_real_handoff_preview_loop_summary(
     summary: &SwitcherFourViewTwoRealHandoffPreviewLoopSummary,
 ) -> String {
     format!(
-        "switcher four-view two-real handoff preview loop command_name=--four-view-two-real-handoff-preview-loop real_handoff=true real_slot_count=2 real_slot0_index={} real_slot1_index={} pipe_name={} actual_pipe_path={} preview_mode={} read_mode={} client0_id={} run0_id={} client1_id={} run1_id={} frames_attempted={} frames_rendered={} render_failures={} elapsed_ms={} target_fps={} configured_frame_interval_ms={} effective_attempt_fps={} effective_render_fps={} first_render_attempt_index={} first_render_elapsed_ms={} rendered_after_first_render={} effective_render_fps_after_first_render={} no_render_before_first_render={} selected_count={} no_frame_count={} handoff_error_count={} decode_attempt_count={} decode_success_count={} render_success_count={} render_failure_count={} unchanged_frame_reuse_count={} skipped_decode_unchanged_frame_count={} redecoded_same_frame_count={} decode_elapsed_ms={} decode_process_spawn_elapsed_ms={} decode_input_write_elapsed_ms={} decode_output_read_elapsed_ms={} decode_process_wait_elapsed_ms={} decode_pixel_convert_elapsed_ms={} decode_buffer_allocation_count={} decode_output_bytes_total={} decode_cached_frame_reuse_count={} decode_cache_miss_count={} decoded_buffer_clone_count={} composed_buffer_clone_count={} decode_output_buffer_reuse_count={} handoff_elapsed_ms={} render_elapsed_ms={} avg_decode_elapsed_ms={} avg_decode_output_read_elapsed_ms={} avg_decode_process_spawn_elapsed_ms={} avg_handoff_elapsed_ms={} avg_render_elapsed_ms={} loop_total_elapsed_ms={} attempt_body_elapsed_ms={} loop_sleep_elapsed_ms={} frame_interval_wait_elapsed_ms={} event_pump_elapsed_ms={} window_update_elapsed_ms={} render_prepare_elapsed_ms={} render_buffer_cpu_scale_copy_elapsed_ms={} render_buffer_copy_elapsed_ms={} render_buffer_materialization_elapsed_ms={} render_buffer_scale_prepare_elapsed_ms={} render_buffer_scale_loop_elapsed_ms={} render_buffer_output_copy_elapsed_ms={} render_buffer_resize_elapsed_ms={} render_buffer_clear_elapsed_ms={} render_buffer_passthrough_count={} render_buffer_same_size_copy_count={} render_buffer_half_scale_count={} render_buffer_generic_scale_count={} render_buffer_reuse_count={} render_buffer_allocation_count={} render_buffer_bytes_copied_total={} render_backend_wait_elapsed_ms={} gdi_invalidate_elapsed_ms={} gdi_paint_wait_elapsed_ms={} gdi_wm_paint_elapsed_ms={} gdi_stretchdibits_elapsed_ms={} texture_upload_elapsed_ms={} window_present_elapsed_ms={} vsync_or_present_block_elapsed_ms={} quad_view_compose_elapsed_ms={} quad_view_compose_attempt_count={} quad_view_compose_success_count={} quad_view_compose_skipped_unchanged_count={} quad_view_composed_frame_reuse_count={} quad_view_visual_unchanged_count={} quad_view_visual_changed_count={} materialization_reason_first_render_count={} materialization_reason_visual_changed_count={} materialization_reason_previous_output_missing_count={} materialization_reason_profile_or_size_mismatch_count={} materialization_reason_force_render_count={} materialization_reason_unknown_count={} slot0_frame_id_changed_count={} slot1_frame_id_changed_count={} slot2_frame_id_changed_count={} slot3_frame_id_changed_count={} slot0_selected_source_changed_count={} slot1_selected_source_changed_count={} slot2_selected_source_changed_count={} slot3_selected_source_changed_count={} placeholder_visual_changed_count={} quad_view_incremental_update_count={} quad_view_full_compose_count={} quad_view_changed_slot_update_count={} quad_view_reused_slot_count={} quad_view_allocation_count={} avg_render_buffer_cpu_scale_copy_elapsed_ms={} avg_render_buffer_materialization_elapsed_ms={} avg_gdi_paint_wait_elapsed_ms={} avg_gdi_wm_paint_elapsed_ms={} avg_gdi_stretchdibits_elapsed_ms={} avg_quad_view_incremental_update_elapsed_ms={} avg_quad_view_compose_elapsed_ms={} render_call_elapsed_ms={} render_input_unchanged_count={} render_reuse_frame_count={} unaccounted_elapsed_ms={} avg_attempt_elapsed_ms={} max_attempt_elapsed_ms={} slow_attempt_count={} slow_attempt_threshold_ms={} scheduler_status={:?} slot_bindings={} slot_result_kinds={} slot_diagnostics={} clean_output_render_result_kind={} window_title={} output_width={} output_height={}",
+        "switcher four-view two-real handoff preview loop command_name=--four-view-two-real-handoff-preview-loop real_handoff=true real_slot_count=2 real_slot0_index={} real_slot1_index={} pipe_name={} actual_pipe_path={} preview_mode={} read_mode={} client0_id={} run0_id={} client1_id={} run1_id={} frames_attempted={} frames_rendered={} render_failures={} elapsed_ms={} target_fps={} configured_frame_interval_ms={} effective_attempt_fps={} effective_render_fps={} first_render_attempt_index={} first_render_elapsed_ms={} rendered_after_first_render={} effective_render_fps_after_first_render={} no_render_before_first_render={} selected_count={} no_frame_count={} handoff_error_count={} decode_attempt_count={} decode_success_count={} render_success_count={} render_failure_count={} unchanged_frame_reuse_count={} skipped_decode_unchanged_frame_count={} redecoded_same_frame_count={} decode_elapsed_ms={} decode_process_spawn_elapsed_ms={} decode_input_write_elapsed_ms={} decode_output_read_elapsed_ms={} decode_output_read_exact_elapsed_ms={} decode_output_vec_resize_elapsed_ms={} decode_process_wait_elapsed_ms={} decode_pixel_convert_elapsed_ms={} decode_buffer_allocation_count={} decode_output_bytes_total={} decode_cached_frame_reuse_count={} decode_cache_miss_count={} decoded_buffer_clone_count={} composed_buffer_clone_count={} decode_output_buffer_reuse_count={} handoff_elapsed_ms={} render_elapsed_ms={} avg_decode_elapsed_ms={} avg_decode_output_read_elapsed_ms={} avg_decode_process_spawn_elapsed_ms={} avg_handoff_elapsed_ms={} avg_render_elapsed_ms={} loop_total_elapsed_ms={} attempt_body_elapsed_ms={} loop_sleep_elapsed_ms={} frame_interval_wait_elapsed_ms={} event_pump_elapsed_ms={} window_update_elapsed_ms={} render_prepare_elapsed_ms={} render_buffer_cpu_scale_copy_elapsed_ms={} render_buffer_copy_elapsed_ms={} render_buffer_materialization_elapsed_ms={} render_buffer_scale_prepare_elapsed_ms={} render_buffer_scale_loop_elapsed_ms={} render_buffer_output_copy_elapsed_ms={} render_buffer_resize_elapsed_ms={} render_buffer_clear_elapsed_ms={} render_buffer_passthrough_count={} render_buffer_same_size_copy_count={} render_buffer_half_scale_count={} render_buffer_generic_scale_count={} render_buffer_reuse_count={} render_buffer_allocation_count={} render_buffer_bytes_copied_total={} render_backend_wait_elapsed_ms={} gdi_invalidate_elapsed_ms={} gdi_paint_wait_elapsed_ms={} gdi_wm_paint_elapsed_ms={} gdi_stretchdibits_elapsed_ms={} texture_upload_elapsed_ms={} window_present_elapsed_ms={} vsync_or_present_block_elapsed_ms={} quad_view_compose_elapsed_ms={} quad_view_compose_attempt_count={} quad_view_compose_success_count={} quad_view_compose_skipped_unchanged_count={} quad_view_composed_frame_reuse_count={} quad_view_visual_unchanged_count={} quad_view_visual_changed_count={} materialization_reason_first_render_count={} materialization_reason_visual_changed_count={} materialization_reason_previous_output_missing_count={} materialization_reason_profile_or_size_mismatch_count={} materialization_reason_force_render_count={} materialization_reason_unknown_count={} slot0_frame_id_changed_count={} slot1_frame_id_changed_count={} slot2_frame_id_changed_count={} slot3_frame_id_changed_count={} slot0_selected_source_changed_count={} slot1_selected_source_changed_count={} slot2_selected_source_changed_count={} slot3_selected_source_changed_count={} placeholder_visual_changed_count={} quad_view_incremental_update_count={} quad_view_full_compose_count={} quad_view_changed_slot_update_count={} quad_view_reused_slot_count={} quad_view_allocation_count={} avg_render_buffer_cpu_scale_copy_elapsed_ms={} avg_render_buffer_materialization_elapsed_ms={} avg_gdi_paint_wait_elapsed_ms={} avg_gdi_wm_paint_elapsed_ms={} avg_gdi_stretchdibits_elapsed_ms={} avg_quad_view_incremental_update_elapsed_ms={} avg_quad_view_compose_elapsed_ms={} render_call_elapsed_ms={} render_input_unchanged_count={} render_reuse_frame_count={} unaccounted_elapsed_ms={} avg_attempt_elapsed_ms={} max_attempt_elapsed_ms={} slow_attempt_count={} slow_attempt_threshold_ms={} scheduler_status={:?} slot_bindings={} slot_result_kinds={} slot_diagnostics={} clean_output_render_result_kind={} window_title={} output_width={} output_height={}",
         summary.real_slot0_index,
         summary.real_slot1_index,
         summary.pipe_name,
@@ -8006,6 +8014,8 @@ fn format_four_view_two_real_handoff_preview_loop_summary(
         summary.decode_process_spawn_elapsed_ms,
         summary.decode_input_write_elapsed_ms,
         summary.decode_output_read_elapsed_ms,
+        summary.decode_output_read_exact_elapsed_ms,
+        summary.decode_output_vec_resize_elapsed_ms,
         summary.decode_process_wait_elapsed_ms,
         summary.decode_pixel_convert_elapsed_ms,
         summary.decode_buffer_allocation_count,
@@ -11750,6 +11760,8 @@ mod tests {
         assert!(formatted.contains("decode_process_spawn_elapsed_ms="));
         assert!(formatted.contains("decode_input_write_elapsed_ms="));
         assert!(formatted.contains("decode_output_read_elapsed_ms="));
+        assert!(formatted.contains("decode_output_read_exact_elapsed_ms="));
+        assert!(formatted.contains("decode_output_vec_resize_elapsed_ms="));
         assert!(formatted.contains("decode_process_wait_elapsed_ms="));
         assert!(formatted.contains("decode_pixel_convert_elapsed_ms=0"));
         assert!(formatted.contains("decode_buffer_allocation_count="));

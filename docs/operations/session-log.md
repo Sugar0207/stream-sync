@@ -5,6 +5,218 @@
 - Codex documentation update
 
 ### Work
+- Recorded the latest same-PC `2`-client rerun evidence from `manual-logs/two-client-render-rerun-20260517-114532`.
+- Confirmed that the zero-fill removal in the exact-read path worked as intended:
+  - `decode_output_vec_resize_elapsed_ms=1081 -> 0`
+- Confirmed that the rerun recovered from the exact-read regression, but did not return to the direct-compose baseline:
+  - `effective_render_fps_after_first_render=9.628 -> 10.286`
+  - `decode_elapsed_ms=4536 -> 3687`
+  - `decode_output_read_elapsed_ms=1946 -> 1514`
+  - baseline `effective_render_fps_after_first_render=12.920`
+  - baseline `decode_elapsed_ms=2180`
+- Kept direct compose in place and confirmed it is still not the current dominant issue:
+  - `render_buffer_half_scale_count=0`
+  - `render_buffer_same_size_copy_count=38`
+  - `render_buffer_scale_loop_elapsed_ms=0`
+  - `render_buffer_cpu_scale_copy_elapsed_ms=3`
+- Reframed the remaining bottleneck as the one-shot FFmpeg decode path:
+  - `decode_process_spawn_elapsed_ms=564`
+  - `decode_input_write_elapsed_ms=1418`
+  - `decode_output_read_exact_elapsed_ms=990`
+  - `decoded_buffer_clone_count=35`
+  - `decode_output_buffer_reuse_count=0`
+- Updated `docs/operations/todo.md` and `docs/operations/direct-compose-plan.md` so the current state reflects the zero-fill removal result and the next decoder-side analysis target.
+- No code changes were made in this step.
+
+### Changed Files
+- `docs/operations/direct-compose-plan.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### Decisions
+- Treat the zero-fill removal as successful because it reduced the extra resize cost to `0`.
+- Do not call the rerun a full recovery, because it is still below the direct-compose baseline.
+- Keep direct compose in place and treat render materialization as non-dominant.
+- Move the next slice to one-shot FFmpeg decode path decomposition rather than persistent decoder or GPU work.
+
+### Unresolved
+- The one-shot FFmpeg decode path is still the remaining dominant bottleneck.
+- `decode_output_buffer_reuse_count=0` still points to decode cache ownership as a possible follow-up, but not the next implemented step.
+- Persistent decoder remains a candidate, not an implementation in this step.
+- Production Readiness remains FAIL.
+
+### Next
+- Break down the one-shot FFmpeg decode path by spawn / input write / exact-read / clone ownership.
+- Keep persistent decoder as a candidate only.
+- Keep direct compose stable and do not widen it to `4`-client all-real yet.
+
+### TODO Update
+- Updated `docs/operations/todo.md` current position with the zero-fill removal effect and the remaining decoder-side cost.
+- Replaced the top next items with one-shot FFmpeg decode path analysis.
+
+### Validation
+- `git diff --check`
+  - result: PASS (LF/CRLF warning only)
+
+## 2026-05-17
+### Type
+- Codex implementation
+
+### Work
+- Investigated the runtime regression that appeared after the previous FFmpeg decode stdout exact-read change, using the latest same-PC `2`-client rerun `manual-logs/two-client-render-rerun-20260517-090959` as the new evidence point.
+- Confirmed that direct compose remained effective and was not the current dominant issue:
+  - `render_buffer_half_scale_count=0`
+  - `render_buffer_same_size_copy_count=48`
+  - `render_buffer_scale_loop_elapsed_ms=0`
+- Confirmed the decoder-side regression shape versus `manual-logs/two-client-render-rerun-20260517-004552`:
+  - `effective_render_fps_after_first_render=12.920 -> 9.628`
+  - `effective_render_fps=11.224 -> 8.584`
+  - `decode_attempt_count=29 -> 47`
+  - `decode_elapsed_ms=2180 -> 4536`
+  - `avg_decode_elapsed_ms=75.172 -> 96.511`
+  - `avg_decode_output_read_elapsed_ms=57.034 -> 41.404`
+- Confirmed by code inspection that `decode_output_vec_resize_elapsed_ms=1081` was measuring the `read_expected_rawvideo_stdout` setup cost directly:
+  - `Vec::with_capacity(expected_len)`
+  - `resize(expected_len, 0)`
+  - therefore the metric was effectively capturing per-decode zero-fill / prepare-for-read cost
+- Concluded that the current exact-read implementation was not a successful optimization:
+  - the split diagnostics were useful
+  - the `resize(..., 0)` mechanics were too expensive in the current ownership model
+  - current decoder output ownership still does not allow safe reusable output-buffer recycling in this narrow step
+- Applied a narrow revert of the costly mechanics while keeping the useful observability:
+  - removed the per-decode `resize(expected_len, 0)`
+  - kept expected-size bounded stdout reading by using `take(expected_len).read_to_end(...)`
+  - kept short-read failure length
+  - kept oversized-output detection by probing the remaining stdout after the bounded read
+  - kept `decode_output_read_elapsed_ms`, `decode_output_read_exact_elapsed_ms`, and `decode_output_vec_resize_elapsed_ms`
+- Updated focused helper tests so the current path now explicitly expects `decode_output_vec_resize_elapsed_ms=0`.
+- Updated `docs/operations/todo.md` so the current position and next items reflect the regression evidence and the narrow revert.
+- Did not run the runtime rerun in this step.
+
+### Changed Files
+- `apps/switcher/src/lib.rs`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### Decisions
+- Do not treat the previous exact-read implementation as a successful optimization.
+- Keep the useful decode stdout diagnostics, but narrow-revert the zero-fill-heavy mechanics.
+- Keep this step away from persistent decoder work, unsafe buffer tricks, and ownership refactors.
+- Keep Production Readiness as FAIL because no post-revert runtime rerun was collected yet.
+
+### Unresolved
+- `decode_output_buffer_reuse_count` is still expected to remain `0` until decoded-frame ownership changes.
+- It is still unproven in runtime whether the narrow revert recovers the previous decoder-side baseline.
+- `decoded_buffer_clone_count` and cache ownership are still possible future decoder-side follow-ups.
+- Production Readiness remains FAIL.
+
+### Next
+- Run the next same-PC `2`-client rerun and verify whether `decode_output_vec_resize_elapsed_ms` collapses while `decode_elapsed_ms` and FPS recover.
+- If runtime is still decoder-bound, narrow the next slice to decoded-buffer clone / cache ownership follow-up.
+- Keep direct-compose widening, persistent decoder, and GPU/shared-memory work out of the next immediate slice.
+
+### TODO Update
+- Updated `docs/operations/todo.md` current position with the `20260517-090959` regression evidence, the confirmed meaning of `decode_output_vec_resize_elapsed_ms`, and the narrow revert decision.
+- Replaced the top next items with rerun-first verification of the revert.
+
+### Validation
+- `cargo fmt`
+  - result: PASS
+- `cargo fmt --check`
+  - result: PASS
+- `cargo check -p stream-sync-switcher`
+  - result: PASS
+  - note: existing switcher unused-function warnings only
+- focused switcher tests
+  - result: PASS
+  - command:
+    `cargo test -p stream-sync-switcher ffmpeg_decode_stdout_read -- --nocapture`
+  - command:
+    `cargo test -p stream-sync-switcher switcher_four_view_two_real_handoff_preview -- --nocapture`
+- `cargo check --workspace`
+  - result: PASS
+  - note: existing switcher unused-function warnings only
+- `git diff --check`
+  - result: PASS (LF/CRLF warnings only)
+
+## 2026-05-17
+### Type
+- Codex implementation
+
+### Work
+- Narrowed the current decoder-side bottleneck in `apps/switcher/src/lib.rs` and `apps/switcher/src/main.rs` without widening into a persistent decoder slice.
+- Confirmed by code inspection that the current FFmpeg one-shot decode path already knows the expected raw BGRA size but was still reading FFmpeg stdout via `read_to_end`:
+  - `decode_output_read_elapsed_ms` was measuring the whole stdout read path
+  - `decode_output_buffer_reuse_count` stayed `0` because the decoded BGRA buffer is returned as owned `Vec<u8>` and then cloned into the decode cache, so the current per-decode path has no recyclable output buffer owner
+- Replaced the FFmpeg stdout read path with expected-size exact-read handling:
+  - allocate the output `Vec<u8>` to the expected rawvideo length up front
+  - read until the expected byte count is filled
+  - keep explicit short-read failure length
+  - keep explicit oversized-output length by probing for trailing bytes after the expected read
+- Added minimal decoder-side diagnostics split so the old total remains visible while its internal shape is clearer:
+  - `decode_output_read_elapsed_ms`
+  - `decode_output_read_exact_elapsed_ms`
+  - `decode_output_vec_resize_elapsed_ms`
+- Kept existing diagnostics intact, including `decode_output_buffer_reuse_count`, and did not attempt to fake reuse where ownership still prevents it.
+- Added focused helper coverage for the new stdout read path:
+  - exact-size read
+  - short output / partial-length preservation
+  - oversized output / extra-length preservation
+- Updated `docs/operations/todo.md` so the current position and next items reflect the decoder-side findings and the next rerun target.
+- Did not run the runtime rerun in this step.
+
+### Changed Files
+- `apps/switcher/src/lib.rs`
+- `apps/switcher/src/main.rs`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### Decisions
+- Keep this step inside the current one-shot FFmpeg decode path rather than widening into persistent decoder ownership or shared decoded-frame storage.
+- Treat `decode_output_buffer_reuse_count=0` as a real ownership signal in the current implementation, not just a missing counter increment.
+- Add only the minimum extra diagnostics needed to interpret `decode_output_read_elapsed_ms`.
+- Keep Production Readiness as FAIL because no post-change runtime rerun was collected yet.
+
+### Unresolved
+- `decode_output_buffer_reuse_count` is still expected to remain `0` until decoded-frame ownership changes or a different cache/storage strategy is introduced.
+- `decoded_buffer_clone_count` is still a candidate follow-up after the next rerun.
+- No runtime evidence has been collected yet for the new read path.
+- Production Readiness remains FAIL.
+
+### Next
+- Run the next same-PC `2`-client rerun and compare `decode_output_read_elapsed_ms`, `decode_output_read_exact_elapsed_ms`, and `decode_output_vec_resize_elapsed_ms`.
+- Use that rerun to decide whether the next decoder-side slice should stay in stdout/read/allocation territory or move to decoded-buffer ownership/caching.
+- Keep persistent decoder, GPU/shared-memory, and direct-compose widening out of the next immediate slice unless the rerun clearly justifies it.
+
+### TODO Update
+- Updated `docs/operations/todo.md` current position with the confirmed `read_to_end` -> exact-read change, the ownership explanation for `decode_output_buffer_reuse_count=0`, and the new diagnostics.
+- Replaced the top next items with rerun-first decoder-side follow-up.
+
+### Validation
+- `cargo fmt`
+  - result: PASS
+- `cargo fmt --check`
+  - result: PASS
+- `cargo check -p stream-sync-switcher`
+  - result: PASS
+  - note: existing switcher unused-function warnings only
+- focused switcher tests
+  - result: PASS
+  - command:
+    `cargo test -p stream-sync-switcher ffmpeg_decode_stdout_read -- --nocapture`
+  - command:
+    `cargo test -p stream-sync-switcher switcher_four_view_two_real_handoff_preview -- --nocapture`
+- `cargo check --workspace`
+  - result: PASS
+  - note: existing switcher unused-function warnings only
+- `git diff --check`
+  - result: PASS (LF/CRLF warnings only)
+
+## 2026-05-17
+### Type
+- Codex documentation update
+
+### Work
 - Recorded the latest same-PC `2`-client rerun evidence from `manual-logs/two-client-render-rerun-20260517-004552`.
 - Confirmed that the direct `1280x720` compose path eliminated the half-scale branch on the two-real clean output path:
   - `render_buffer_half_scale_count=0`

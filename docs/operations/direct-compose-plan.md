@@ -115,3 +115,4 @@
 - render materialization も `avg_render_elapsed_ms=1.143` / `render_elapsed_ms=120` まで軽くなった
 - `decode_elapsed_ms=2180` / `decode_output_read_elapsed_ms=1654` / `decode_output_buffer_reuse_count=0` から、次のフォローアップは decoder-side と整理する
 - direct compose は two-real clean output path で有効、4-client 展開は次段階の候補として残す
+- latest same-PC `2`-client rerun `manual-logs/two-client-render-rerun-20260517-114532` でも direct compose は維持され、`render_buffer_half_scale_count=0` / `render_buffer_same_size_copy_count=38` を保ったまま decoder-side zero-fill removal の効果が確認できた
