@@ -6734,6 +6734,7 @@ pub struct SwitcherH264DecodeRuntimeDiagnostics {
     pub output_bytes: usize,
     pub output_expected_bytes: usize,
     pub output_buffer_reuse_count: u32,
+    pub persistent_decode_config_enabled: bool,
     pub persistent_decode_enabled: bool,
     pub persistent_decode_attempt_count: u32,
     pub persistent_decode_success_count: u32,
@@ -6750,10 +6751,16 @@ pub struct SwitcherH264DecodeRuntimeDiagnostics {
     pub persistent_decode_runtime_disabled_reason: Option<String>,
     pub persistent_decode_consecutive_failure_count: u32,
     pub persistent_decode_disabled_after_failure_count: u32,
+    pub persistent_decode_skipped_by_config_count: u32,
     pub persistent_decode_skipped_after_disabled_count: u32,
     pub persistent_decode_timeout_count: u32,
     pub persistent_decode_timeout_elapsed_ms: u128,
     pub one_shot_decode_fallback_count: u32,
+    pub one_shot_decode_attempt_count: u32,
+    pub one_shot_decode_elapsed_ms: u128,
+    pub one_shot_decode_input_write_elapsed_ms: u128,
+    pub one_shot_decode_output_read_elapsed_ms: u128,
+    pub one_shot_decode_output_read_exact_elapsed_ms: u128,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -6849,6 +6856,7 @@ impl SwitcherH264DecodeRuntimeHook for SwitcherFfmpegH264DecodeRuntimeHook {
 pub struct SwitcherPersistentFfmpegH264DecodeRuntimeHook {
     pub ffmpeg_path: PathBuf,
     pub read_timeout: Duration,
+    config_enabled: bool,
     runtime_state: std::cell::RefCell<SwitcherPersistentFfmpegDecodeRuntimeState>,
 }
 
@@ -6902,6 +6910,7 @@ impl Default for SwitcherPersistentFfmpegH264DecodeRuntimeHook {
         Self {
             ffmpeg_path: ffmpeg_path.clone(),
             read_timeout: Duration::from_millis(2_000),
+            config_enabled: true,
             runtime_state: std::cell::RefCell::new(
                 SwitcherPersistentFfmpegDecodeRuntimeState::default(),
             ),
@@ -6910,6 +6919,29 @@ impl Default for SwitcherPersistentFfmpegH264DecodeRuntimeHook {
 }
 
 impl SwitcherPersistentFfmpegH264DecodeRuntimeHook {
+    pub fn with_config_enabled(config_enabled: bool) -> Self {
+        Self {
+            config_enabled,
+            ..Self::default()
+        }
+    }
+
+    fn run_one_shot_without_persistent_fallback(
+        &self,
+        input: SwitcherH264DecodeInput,
+        diagnostics: &mut SwitcherH264DecodeRuntimeDiagnostics,
+    ) -> SwitcherH264DecodeRuntimeOutput {
+        let one_shot = decode_with_one_shot_ffmpeg_runtime(&self.ffmpeg_path, input);
+        let mut one_shot_diagnostics = one_shot.diagnostics.clone();
+        one_shot_diagnostics.input_payload_bytes = 0;
+        one_shot_diagnostics.output_expected_bytes = 0;
+        merge_decode_runtime_diagnostics(diagnostics, &one_shot_diagnostics);
+        SwitcherH264DecodeRuntimeOutput {
+            result: one_shot.result,
+            diagnostics: diagnostics.clone(),
+        }
+    }
+
     fn fallback_to_one_shot(
         &self,
         input: SwitcherH264DecodeInput,
@@ -7038,6 +7070,17 @@ impl SwitcherPersistentFfmpegH264DecodeRuntimeHook {
         self.apply_runtime_state_snapshot(diagnostics);
         self.fallback_to_one_shot(input, diagnostics)
     }
+
+    fn skip_config_disabled_runtime(
+        &self,
+        input: SwitcherH264DecodeInput,
+        diagnostics: &mut SwitcherH264DecodeRuntimeDiagnostics,
+    ) -> SwitcherH264DecodeRuntimeOutput {
+        diagnostics.persistent_decode_skipped_by_config_count = diagnostics
+            .persistent_decode_skipped_by_config_count
+            .saturating_add(1);
+        self.run_one_shot_without_persistent_fallback(input, diagnostics)
+    }
 }
 
 impl SwitcherH264DecodeRuntimeHook for SwitcherPersistentFfmpegH264DecodeRuntimeHook {
@@ -7050,11 +7093,15 @@ impl SwitcherH264DecodeRuntimeHook for SwitcherPersistentFfmpegH264DecodeRuntime
         input: SwitcherH264DecodeInput,
     ) -> SwitcherH264DecodeRuntimeOutput {
         let mut diagnostics = SwitcherH264DecodeRuntimeDiagnostics {
-            persistent_decode_enabled: true,
+            persistent_decode_config_enabled: self.config_enabled,
+            persistent_decode_enabled: self.config_enabled,
             input_payload_bytes: input.encoded_payload.len(),
             output_expected_bytes: input.width as usize * input.height as usize * 4,
             ..SwitcherH264DecodeRuntimeDiagnostics::default()
         };
+        if !self.config_enabled {
+            return self.skip_config_disabled_runtime(input, &mut diagnostics);
+        }
         self.apply_runtime_state_snapshot(&mut diagnostics);
         if input.encoded_payload.is_empty() {
             return SwitcherH264DecodeRuntimeOutput {
@@ -7453,6 +7500,39 @@ fn decode_with_one_shot_ffmpeg_runtime(
     ffmpeg_path: &Path,
     input: SwitcherH264DecodeInput,
 ) -> SwitcherH264DecodeRuntimeOutput {
+    let total_start = Instant::now();
+    let mut output = decode_with_one_shot_ffmpeg_runtime_inner(ffmpeg_path, input);
+    if output.diagnostics.output_expected_bytes != 0 {
+        output.diagnostics.one_shot_decode_attempt_count = output
+            .diagnostics
+            .one_shot_decode_attempt_count
+            .saturating_add(1);
+        output.diagnostics.one_shot_decode_elapsed_ms = output
+            .diagnostics
+            .one_shot_decode_elapsed_ms
+            .saturating_add(total_start.elapsed().as_millis());
+        output.diagnostics.one_shot_decode_input_write_elapsed_ms = output
+            .diagnostics
+            .one_shot_decode_input_write_elapsed_ms
+            .saturating_add(output.diagnostics.input_write_elapsed_ms);
+        output.diagnostics.one_shot_decode_output_read_elapsed_ms = output
+            .diagnostics
+            .one_shot_decode_output_read_elapsed_ms
+            .saturating_add(output.diagnostics.output_read_elapsed_ms);
+        output
+            .diagnostics
+            .one_shot_decode_output_read_exact_elapsed_ms = output
+            .diagnostics
+            .one_shot_decode_output_read_exact_elapsed_ms
+            .saturating_add(output.diagnostics.output_read_exact_elapsed_ms);
+    }
+    output
+}
+
+fn decode_with_one_shot_ffmpeg_runtime_inner(
+    ffmpeg_path: &Path,
+    input: SwitcherH264DecodeInput,
+) -> SwitcherH264DecodeRuntimeOutput {
     let mut diagnostics = SwitcherH264DecodeRuntimeDiagnostics::default();
     diagnostics.input_payload_bytes = input.encoded_payload.len();
     if input.encoded_payload.is_empty() {
@@ -7722,6 +7802,7 @@ fn merge_decode_runtime_diagnostics(
     target.output_buffer_reuse_count = target
         .output_buffer_reuse_count
         .saturating_add(source.output_buffer_reuse_count);
+    target.persistent_decode_config_enabled |= source.persistent_decode_config_enabled;
     target.persistent_decode_enabled |= source.persistent_decode_enabled;
     target.persistent_decode_attempt_count = target
         .persistent_decode_attempt_count
@@ -7766,6 +7847,9 @@ fn merge_decode_runtime_diagnostics(
     target.persistent_decode_disabled_after_failure_count = target
         .persistent_decode_disabled_after_failure_count
         .saturating_add(source.persistent_decode_disabled_after_failure_count);
+    target.persistent_decode_skipped_by_config_count = target
+        .persistent_decode_skipped_by_config_count
+        .saturating_add(source.persistent_decode_skipped_by_config_count);
     target.persistent_decode_skipped_after_disabled_count = target
         .persistent_decode_skipped_after_disabled_count
         .saturating_add(source.persistent_decode_skipped_after_disabled_count);
@@ -7778,6 +7862,21 @@ fn merge_decode_runtime_diagnostics(
     target.one_shot_decode_fallback_count = target
         .one_shot_decode_fallback_count
         .saturating_add(source.one_shot_decode_fallback_count);
+    target.one_shot_decode_attempt_count = target
+        .one_shot_decode_attempt_count
+        .saturating_add(source.one_shot_decode_attempt_count);
+    target.one_shot_decode_elapsed_ms = target
+        .one_shot_decode_elapsed_ms
+        .saturating_add(source.one_shot_decode_elapsed_ms);
+    target.one_shot_decode_input_write_elapsed_ms = target
+        .one_shot_decode_input_write_elapsed_ms
+        .saturating_add(source.one_shot_decode_input_write_elapsed_ms);
+    target.one_shot_decode_output_read_elapsed_ms = target
+        .one_shot_decode_output_read_elapsed_ms
+        .saturating_add(source.one_shot_decode_output_read_elapsed_ms);
+    target.one_shot_decode_output_read_exact_elapsed_ms = target
+        .one_shot_decode_output_read_exact_elapsed_ms
+        .saturating_add(source.one_shot_decode_output_read_exact_elapsed_ms);
 }
 
 fn read_expected_rawvideo_stdout(

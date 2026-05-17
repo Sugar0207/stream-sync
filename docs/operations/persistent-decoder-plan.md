@@ -23,6 +23,29 @@
 - current code では regression stop を優先し、`persistent_decode_stdout_read_timeout` を 1 回観測した時点で runtime-disabled にして以後は即 one-shot fallback へ流す fail-fast / circuit breaker を追加した
 - したがって current persistent slice は「request/response path の runtime viability を probing する guarded experiment」であり、continuous-stream decoder rewrite は別 step の候補として明示的に保留する
 
+## Circuit Breaker Rerun Update
+- same-PC `2`-client rerun `manual-logs/two-client-render-rerun-20260517-170552` では、fail-fast / circuit breaker 自体は PASS した
+- `persistent_decode_attempt_count=1`、`persistent_decode_process_spawn_count=1`、`persistent_decode_process_restart_count=0`、`persistent_decode_runtime_disabled=true`、`persistent_decode_runtime_disabled_reason=persistent_decode_stdout_read_timeout`、`persistent_decode_skipped_after_disabled_count=50`、`persistent_decode_timeout_count=1` で、timeout 1 回後に request/response persistent path は実質停止し、restart storm は再発しなかった
+- `effective_render_fps_after_first_render=4.411 -> 8.107` まで回復したため、regression stop としては有効だった
+- ただし `persistent_decode_success_count=0`、`persistent_decode_failure_count=1`、`persistent_decode_fallback_count=51`、`one_shot_decode_fallback_count=51` のままで、persistent decoder 自体は runtime FAIL 継続だった
+- この rerun により、current request/response persistent decoder は「guarded fallback protection は有効だが decode optimization としては未成立」と整理する
+- したがって current request/response path は再挑戦 priority を下げ、凍結候補として扱う
+
+## One-Shot-Only Baseline Toggle
+- current two-real preview loop には `--disable-persistent-decoder` を追加し、persistent decoder を config-disabled のまま起動できる
+- config-disabled run では persistent timeout attempt を 1 回も行わず、最初から one-shot decode path に流す
+- summary では以下を分けて読む
+  - `persistent_decode_config_enabled=false`
+  - `persistent_decode_runtime_disabled=false`
+  - `persistent_decode_skipped_by_config_count`
+  - `one_shot_decode_attempt_count`
+  - `one_shot_decode_elapsed_ms`
+  - `one_shot_decode_input_write_elapsed_ms`
+  - `one_shot_decode_output_read_elapsed_ms`
+  - `one_shot_decode_output_read_exact_elapsed_ms`
+- one-shot-only baseline rerun command shapeは `S:\stream-sync` を repo root にして、existing `--four-view-two-real-handoff-preview-loop` command の末尾に `--disable-persistent-decoder` を付ける
+- この toggle は request/response persistent decoder の再挑戦ではなく、pure one-shot baseline を取り直して decoder / compose / GDI variance を切り分けるための最小比較手段とする
+
 ## 何を置き換えるか
 - 置き換え対象は `apps/switcher/src/lib.rs` の current one-shot FFmpeg decode runtime のうち、decode ごとに作っている FFmpeg process lifecycle
 - 具体的には以下を persistent 化候補とする
@@ -106,6 +129,14 @@
 3. first target は two-real preview loop のみとし、global default runtime 置換はしない
 4. process reuse / restart / one-shot fallback の最小 diagnostics を追加する
 5. same-PC `2`-client rerun で `decode_output_read_exact_elapsed_ms` / `decode_output_read_elapsed_ms` / `decode_process_spawn_elapsed_ms` を比較する
+
+## Next Candidate Comparison
+- current request/response persistent decoder を current path として凍結する
+- continuous-stream decoder rewrite は別設計候補として保留し、別 step で必要性を再判断する
+- one-shot-only baseline rerun を `--disable-persistent-decoder` で回し、circuit-breaker run と比較する
+- one-shot fallback path の `decode_input_write_elapsed_ms` / `decode_output_read_elapsed_ms` / `decode_output_read_exact_elapsed_ms` を再度 narrow に調査する
+- decode cache ownership / `decode_output_buffer_reuse_count=0` / clone-store follow-up を next candidate として比較する
+- latest rerun で再浮上した `quad_view_compose_elapsed_ms` / `gdi_paint_wait_elapsed_ms` の variance を再確認し、decoder-side 以外の next dominant が戻ってきていないかを確認する
 
 ## out of scope
 - persistent decoder の full architecture rewrite

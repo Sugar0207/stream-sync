@@ -5,6 +5,147 @@
 - Codex implementation
 
 ### Work
+- Added the smallest runtime toggle for the two-real preview loop so a pure one-shot-only baseline rerun can be collected without removing the persistent decoder code.
+- Added `--disable-persistent-decoder` to `--four-view-two-real-handoff-preview-loop`.
+- Kept the scope narrow:
+  - no server/client/protocol changes
+  - no continuous-stream decoder rewrite
+  - no four-client widening
+- Wired the persistent runtime so config-disabled mode bypasses the persistent request/response path entirely:
+  - no persistent timeout attempt
+  - no persistent process spawn
+  - immediate one-shot decode path
+- Added summary diagnostics to distinguish config-disabled and runtime-disabled cases:
+  - `persistent_decode_config_enabled`
+  - `persistent_decode_runtime_disabled`
+  - `persistent_decode_runtime_disabled_reason`
+  - `persistent_decode_skipped_by_config_count`
+- Added minimal one-shot-specific diagnostics so the next rerun can compare pure one-shot-only baseline against the circuit-breaker run:
+  - `one_shot_decode_attempt_count`
+  - `one_shot_decode_elapsed_ms`
+  - `one_shot_decode_input_write_elapsed_ms`
+  - `one_shot_decode_output_read_elapsed_ms`
+  - `one_shot_decode_output_read_exact_elapsed_ms`
+- Updated the two-real preview summary formatting test expectations for the new diagnostics.
+- Updated docs so the next `S:\stream-sync` rerun can use the current command with `--disable-persistent-decoder` appended.
+- Kept runtime rerun out of scope for this step.
+
+### Changed Files
+- `apps/switcher/src/lib.rs`
+- `apps/switcher/src/main.rs`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+- `docs/operations/persistent-decoder-plan.md`
+
+### Decisions
+- Keep the persistent decoder code present but allow config-disabled baseline runs.
+- Distinguish config-disabled and runtime-disabled explicitly in summary output.
+- Use one-shot-only baseline reruns before deciding whether the next dominant cost is decoder I/O again or quad-view/GDI variance.
+- Keep Production Readiness as FAIL.
+
+### Unresolved
+- No post-toggle runtime rerun has been collected yet.
+- It is still unknown whether the next dominant issue after removing persistent attempts is one-shot decode I/O, quad-view compose variance, or GDI wait variance.
+- Request/response persistent decoder remains a freeze candidate, not a recovered optimization.
+- Production Readiness remains FAIL.
+
+### Next
+- Run the next same-PC `2`-client rerun from `S:\stream-sync` with `--disable-persistent-decoder`.
+- Compare the new one-shot-only counters against the `manual-logs/two-client-render-rerun-20260517-170552` circuit-breaker run.
+- Re-rank decoder ownership/reuse versus compose/GDI variance only after that baseline is collected.
+
+### TODO Update
+- Updated `docs/operations/todo.md` current position with the new config-disabled toggle and the one-shot-only baseline plan.
+- Updated `docs/operations/persistent-decoder-plan.md` with the baseline toggle and the command shape for the next rerun.
+
+### Validation
+- `cargo fmt`
+  - result: PASS
+- `cargo check -p stream-sync-switcher`
+  - result: PASS
+  - note: existing `apps/switcher/src/main.rs` dead-code warnings only
+- focused switcher test
+  - result: PASS
+  - command:
+    `cargo test -p stream-sync-switcher switcher_four_view_two_real_handoff_preview_summary_formats_expected_fields -- --nocapture`
+- `git diff --check`
+  - result: PASS (LF/CRLF warnings only)
+
+## 2026-05-17
+### Type
+- Codex documentation update
+
+### Work
+- Recorded the latest same-PC `2`-client rerun evidence from `manual-logs/two-client-render-rerun-20260517-170552`.
+- Split the result into two separate judgments instead of treating it as one combined decoder result:
+  - circuit breaker behavior: PASS
+  - persistent decoder request/response path itself: runtime FAIL
+- Recorded why the circuit breaker is considered successful:
+  - `persistent_decode_attempt_count=1`
+  - `persistent_decode_process_spawn_count=1`
+  - `persistent_decode_process_restart_count=0`
+  - `persistent_decode_runtime_disabled=true`
+  - `persistent_decode_runtime_disabled_reason=persistent_decode_stdout_read_timeout`
+  - `persistent_decode_skipped_after_disabled_count=50`
+  - `persistent_decode_timeout_count=1`
+  - one timeout disabled the persistent path for the rest of the run and stopped the restart storm
+- Recorded why the persistent decoder itself is still considered a runtime failure:
+  - `persistent_decode_success_count=0`
+  - `persistent_decode_failure_count=1`
+  - `persistent_decode_fallback_count=51`
+  - `one_shot_decode_fallback_count=51`
+  - the run still relied entirely on one-shot fallback for successful decode
+- Recorded the runtime recovery shape relative to the previous timeout-storm rerun:
+  - `effective_render_fps_after_first_render=4.411 -> 8.107`
+  - `effective_render_fps=6.887`
+  - `decode_elapsed_ms=7661`
+  - `avg_decode_elapsed_ms=150.216`
+  - this is a useful regression-stop result, but still below the one-shot baseline
+- Recorded the current narrow follow-up candidates instead of widening implementation:
+  - freeze the current request/response persistent decoder path as a candidate rather than pushing it further
+  - keep continuous-stream decoder rewrite as a separate design candidate only
+  - re-check one-shot fallback path input-write / output-read cost
+  - compare decode cache ownership / buffer reuse follow-up
+  - re-check `quad_view_compose_elapsed_ms=4041`, `avg_quad_view_compose_elapsed_ms=55.356`, and `gdi_paint_wait_elapsed_ms=1192` as possible runtime variance contributors
+- Updated `docs/operations/todo.md` and `docs/operations/persistent-decoder-plan.md` so the latest rerun and the new candidate ordering are the current source of truth.
+- Kept this step docs-only; no code changes were made.
+
+### Changed Files
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+- `docs/operations/persistent-decoder-plan.md`
+
+### Decisions
+- Treat the circuit breaker as successful and keep it.
+- Treat the current request/response persistent decoder path as a freeze candidate rather than the next optimization path.
+- Keep continuous-stream decoder rewrite deferred to a different step.
+- Keep Production Readiness as FAIL.
+
+### Unresolved
+- The current persistent decoder still has `success_count=0`.
+- It is still unknown whether the next dominant issue is purely one-shot decode I/O again or whether quad-view compose / GDI wait variance has become comparably important in this runtime shape.
+- No code changes were made in this step.
+- Production Readiness remains FAIL.
+
+### Next
+- Use `S:\stream-sync` for the next same-PC rerun and compare the one-shot fallback path timings against the pre-persistent baseline.
+- Decide whether to freeze the request/response persistent decoder path completely or leave it only as a guarded experimental branch.
+- Re-check decoder ownership/reuse and quad-view/GDI variance before choosing the next code-change target.
+
+### TODO Update
+- Updated `docs/operations/todo.md` current position to the `20260517-170552` rerun.
+- Replaced the top next items with the narrowed post-rerun candidate comparison.
+- Updated `docs/operations/persistent-decoder-plan.md` with the circuit-breaker rerun result and freeze-candidate framing.
+
+### Validation
+- `git diff --check`
+  - result: PASS (LF/CRLF warnings only)
+
+## 2026-05-17
+### Type
+- Codex implementation
+
+### Work
 - Reflected the latest same-PC `2`-client rerun evidence from `manual-logs/two-client-render-rerun-20260517-125737`.
 - Confirmed that the first persistent decoder request/response slice failed at runtime rather than improving FPS:
   - `persistent_decode_attempt_count=20`
