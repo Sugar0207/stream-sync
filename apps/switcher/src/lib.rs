@@ -3270,6 +3270,8 @@ impl SwitcherFourViewHandoffQuadCompositionRenderConnectionBoundary {
                             encoded_payload: selected.frame.encoded_payload.clone(),
                             width: selected.frame.width,
                             height: selected.frame.height,
+                            scaled_output_enabled: false,
+                            scaled_output_reason: None,
                             source_identity: Some(SwitcherH264DecodeSourceIdentity {
                                 client_id: selected.frame.client_id.clone(),
                                 run_id: selected.frame.run_id.clone(),
@@ -6534,6 +6536,8 @@ pub struct SwitcherH264DecodeInput {
     pub encoded_payload: Vec<u8>,
     pub width: u32,
     pub height: u32,
+    pub scaled_output_enabled: bool,
+    pub scaled_output_reason: Option<String>,
     pub source_identity: Option<SwitcherH264DecodeSourceIdentity>,
 }
 
@@ -6726,6 +6730,11 @@ pub struct SwitcherH264DecodeRuntimeDiagnostics {
     pub input_write_elapsed_ms: u128,
     pub input_payload_bytes: usize,
     pub input_payload_has_idr: bool,
+    pub output_width: Option<u32>,
+    pub output_height: Option<u32>,
+    pub output_pixel_format: Option<SwitcherDecodedFramePixelFormat>,
+    pub scaled_output_enabled: bool,
+    pub scaled_output_reason: Option<String>,
     pub output_read_elapsed_ms: u128,
     pub output_read_exact_elapsed_ms: u128,
     pub output_extra_probe_elapsed_ms: u128,
@@ -6783,6 +6792,10 @@ pub trait SwitcherH264DecodeRuntimeHook {
         &self,
         input: SwitcherH264DecodeInput,
     ) -> SwitcherH264DecodeRuntimeOutput {
+        let expected_output_width = input.width;
+        let expected_output_height = input.height;
+        let scaled_output_enabled = input.scaled_output_enabled;
+        let scaled_output_reason = input.scaled_output_reason.clone();
         let input_payload_bytes = input.encoded_payload.len();
         let output_expected_bytes = input.width as usize * input.height as usize * 4;
         let result = self.decode_annex_b_h264(input);
@@ -6791,11 +6804,33 @@ pub trait SwitcherH264DecodeRuntimeHook {
             SwitcherH264DecodeResult::Failed(failure) => failure.decoded_stdout_len,
             SwitcherH264DecodeResult::Deferred { .. } => 0,
         };
+        let (output_width, output_height, output_pixel_format) = match &result {
+            SwitcherH264DecodeResult::Decoded(decoded) => (
+                Some(decoded.width),
+                Some(decoded.height),
+                Some(decoded.pixel_format),
+            ),
+            SwitcherH264DecodeResult::Failed(failure) => (
+                Some(failure.decode_expected_width),
+                Some(failure.decode_expected_height),
+                Some(failure.decode_expected_pixel_format),
+            ),
+            SwitcherH264DecodeResult::Deferred { .. } => (
+                Some(expected_output_width),
+                Some(expected_output_height),
+                Some(SwitcherDecodedFramePixelFormat::Bgra8),
+            ),
+        };
         let buffer_allocation_count = u32::from(output_bytes > 0);
         SwitcherH264DecodeRuntimeOutput {
             result,
             diagnostics: SwitcherH264DecodeRuntimeDiagnostics {
                 input_payload_bytes,
+                output_width,
+                output_height,
+                output_pixel_format,
+                scaled_output_enabled,
+                scaled_output_reason,
                 output_bytes,
                 output_expected_bytes,
                 buffer_allocation_count,
@@ -7099,6 +7134,11 @@ impl SwitcherH264DecodeRuntimeHook for SwitcherPersistentFfmpegH264DecodeRuntime
             persistent_decode_config_enabled: self.config_enabled,
             persistent_decode_enabled: self.config_enabled,
             input_payload_bytes: input.encoded_payload.len(),
+            output_width: Some(input.width),
+            output_height: Some(input.height),
+            output_pixel_format: Some(SwitcherDecodedFramePixelFormat::Bgra8),
+            scaled_output_enabled: input.scaled_output_enabled,
+            scaled_output_reason: input.scaled_output_reason.clone(),
             output_expected_bytes: input.width as usize * input.height as usize * 4,
             ..SwitcherH264DecodeRuntimeDiagnostics::default()
         };
@@ -7124,6 +7164,9 @@ impl SwitcherH264DecodeRuntimeHook for SwitcherPersistentFfmpegH264DecodeRuntime
         }
         if diagnostics.persistent_decode_runtime_disabled {
             return self.skip_disabled_runtime(input, &mut diagnostics);
+        }
+        if input.scaled_output_enabled {
+            return self.run_one_shot_without_persistent_fallback(input, &mut diagnostics);
         }
 
         let bootstrap_required = self.runtime_state.borrow().session.is_none();
@@ -7364,7 +7407,24 @@ impl SwitcherH264DecodeRuntimeHook for SwitcherPersistentFfmpegH264DecodeRuntime
 fn spawn_persistent_ffmpeg_decode_session(
     ffmpeg_path: &Path,
 ) -> Result<SwitcherPersistentFfmpegDecodeSession, io::Error> {
-    let mut child = spawn_ffmpeg_decode_process(ffmpeg_path, false)?;
+    let mut command = Command::new(ffmpeg_path);
+    command
+        .arg("-hide_banner")
+        .arg("-loglevel")
+        .arg("error")
+        .arg("-f")
+        .arg("h264")
+        .arg("-i")
+        .arg("pipe:0")
+        .arg("-f")
+        .arg("rawvideo")
+        .arg("-pix_fmt")
+        .arg("bgra")
+        .arg("pipe:1")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let mut child = command.spawn()?;
     let stdin = child.stdin.take().ok_or_else(|| {
         io::Error::new(
             ErrorKind::BrokenPipe,
@@ -7474,7 +7534,11 @@ impl SwitcherPersistentFfmpegDecodeSession {
     }
 }
 
-fn spawn_ffmpeg_decode_process(ffmpeg_path: &Path, one_shot: bool) -> Result<Child, io::Error> {
+fn spawn_ffmpeg_decode_process(
+    ffmpeg_path: &Path,
+    one_shot: bool,
+    input: &SwitcherH264DecodeInput,
+) -> Result<Child, io::Error> {
     let mut command = Command::new(ffmpeg_path);
     command
         .arg("-hide_banner")
@@ -7486,6 +7550,12 @@ fn spawn_ffmpeg_decode_process(ffmpeg_path: &Path, one_shot: bool) -> Result<Chi
         .arg("pipe:0");
     if one_shot {
         command.arg("-frames:v").arg("1");
+    }
+    if input.scaled_output_enabled {
+        command.arg("-vf").arg(format!(
+            "scale={}:{}:flags=neighbor",
+            input.width, input.height
+        ));
     }
     command
         .arg("-f")
@@ -7547,6 +7617,11 @@ fn decode_with_one_shot_ffmpeg_runtime_inner(
     diagnostics.input_payload_has_idr = SwitcherH264AnnexBPayloadInspectionBoundary
         .inspect_payload(&input.encoded_payload)
         .has_idr;
+    diagnostics.output_width = Some(input.width);
+    diagnostics.output_height = Some(input.height);
+    diagnostics.output_pixel_format = Some(SwitcherDecodedFramePixelFormat::Bgra8);
+    diagnostics.scaled_output_enabled = input.scaled_output_enabled;
+    diagnostics.scaled_output_reason = input.scaled_output_reason.clone();
     if input.encoded_payload.is_empty() {
         return SwitcherH264DecodeRuntimeOutput {
             result: SwitcherH264DecodeResult::Deferred {
@@ -7566,7 +7641,7 @@ fn decode_with_one_shot_ffmpeg_runtime_inner(
     diagnostics.output_expected_bytes = input.width as usize * input.height as usize * 4;
 
     let spawn_start = Instant::now();
-    let mut child = match spawn_ffmpeg_decode_process(ffmpeg_path, true) {
+    let mut child = match spawn_ffmpeg_decode_process(ffmpeg_path, true, &input) {
         Ok(child) => {
             diagnostics.process_spawn_elapsed_ms = spawn_start.elapsed().as_millis();
             child
@@ -8032,6 +8107,8 @@ impl SwitcherSingleViewPlaceholderDisplayBoundary {
                         encoded_payload: selected.encoded_payload.clone(),
                         width: selected.width,
                         height: selected.height,
+                        scaled_output_enabled: false,
+                        scaled_output_reason: None,
                         source_identity: None,
                     },
                     runtime,
@@ -10040,6 +10117,8 @@ impl SwitcherTwoViewDecodeRenderBoundary {
                 encoded_payload: selected.frame.encoded_payload.clone(),
                 width: selected.frame.width,
                 height: selected.frame.height,
+                scaled_output_enabled: false,
+                scaled_output_reason: None,
                 source_identity: None,
             },
             decode_runtime,
@@ -11491,6 +11570,8 @@ impl SwitcherLiveTwoViewRuntimeBoundary {
                 encoded_payload: selected.frame.encoded_payload.clone(),
                 width: selected.frame.width,
                 height: selected.frame.height,
+                scaled_output_enabled: false,
+                scaled_output_reason: None,
                 source_identity: None,
             },
             decode_runtime,
@@ -12287,6 +12368,8 @@ impl SwitcherContinuousRenderLoopBoundary {
                     encoded_payload: selected.encoded_payload.clone(),
                     width: selected.width,
                     height: selected.height,
+                    scaled_output_enabled: false,
+                    scaled_output_reason: None,
                     source_identity: None,
                 },
                 decode_runtime,
@@ -26106,6 +26189,8 @@ mod tests {
                 encoded_payload: vec![0x00, 0x00, 0x01, 0x65],
                 width: 2,
                 height: 1,
+                scaled_output_enabled: false,
+                scaled_output_reason: None,
                 source_identity: None,
             },
             &SuccessfulDecode,
@@ -26129,6 +26214,8 @@ mod tests {
                 encoded_payload: Vec::new(),
                 width: 2,
                 height: 1,
+                scaled_output_enabled: false,
+                scaled_output_reason: None,
                 source_identity: None,
             },
             &SwitcherFfmpegH264DecodeRuntimeHook::default(),
@@ -26164,6 +26251,8 @@ mod tests {
             encoded_payload: vec![0x01],
             width: 2,
             height: 1,
+            scaled_output_enabled: false,
+            scaled_output_reason: None,
             source_identity: None,
         };
         let result = SwitcherH264DecodeBoundary.decode_with_runtime(input.clone(), &FailingDecode);
@@ -26191,6 +26280,8 @@ mod tests {
             .concat(),
             width: 1280,
             height: 720,
+            scaled_output_enabled: false,
+            scaled_output_reason: None,
             source_identity: None,
         };
 

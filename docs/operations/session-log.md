@@ -2,6 +2,133 @@
 
 ## 2026-05-17
 ### Type
+- Codex build validation
+
+### Work
+- Applied the narrow compile fix for the two-real scaled decode slice without reviving request/response persistent decoder work.
+- Kept the routing rule explicit:
+  - `input.scaled_output_enabled == true` bypasses the persistent decoder attempt path
+  - scaled output goes directly to the one-shot FFmpeg decode path
+  - full-size decode paths remain available for non-scaled inputs
+  - persistent config-disabled and runtime-disabled toggles remain in place
+- Kept persistent session startup local instead of widening `spawn_ffmpeg_decode_process` back into the persistent helper path.
+- Revalidated the added scaled-output diagnostics and focused two-real loop tests.
+- Did not run a runtime rerun in this step.
+
+### Changed Files
+- `apps/switcher/src/lib.rs`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+- `docs/operations/persistent-decoder-plan.md`
+
+### Decisions
+- Keep the current scaled decode slice one-shot-only.
+- Do not broaden persistent decoder helper/spawn behavior to support scaled output.
+- Keep Production Readiness as FAIL until rerun evidence is collected.
+
+### Unresolved
+- No new runtime evidence has been collected yet for `one_shot_decode_output_width=640`, `one_shot_decode_output_height=360`, or `one_shot_decode_expected_output_bytes_per_frame=921600`.
+- Remaining decoder-side cost after stdout volume reduction still needs rerun evidence.
+- The existing `dead_code` warnings in `apps/switcher/src/main.rs` remain unchanged by this step.
+
+### Next
+- Run the next same-PC `2`-client rerun from `S:\stream-sync` with `--disable-persistent-decoder`.
+- Confirm `one_shot_decode_output_width=640`, `one_shot_decode_output_height=360`, `one_shot_decode_output_pixel_format=Bgra8`, `one_shot_decode_scaled_output_enabled=true`, `one_shot_decode_scaled_output_reason=two_real_slot_size`, and `one_shot_decode_expected_output_bytes_per_frame=921600`.
+- Compare `decode_stdout_expected_bytes_total`, `one_shot_decode_input_write_elapsed_ms`, and `one_shot_decode_output_read_elapsed_ms` against `manual-logs/two-client-render-rerun-20260517-194136`.
+
+### TODO Update
+- Updated `docs/operations/todo.md` current position with the validated one-shot-only scaled-output routing.
+- Updated `docs/operations/persistent-decoder-plan.md` to record that scaled output bypasses the persistent decoder attempt path.
+
+### Validation
+- `cargo fmt`
+  - result: PASS
+- `cargo check -p stream-sync-switcher`
+  - result: PASS
+- `cargo test -p stream-sync-switcher switcher_four_view_two_real_handoff_preview_summary_formats_expected_fields -- --nocapture`
+  - result: PASS
+- `cargo test -p stream-sync-switcher switcher_four_view_two_real_handoff_preview_loop_redecodes_different_frame_ids -- --nocapture`
+  - result: PASS
+- `cargo test -p stream-sync-switcher switcher_four_view_two_real_handoff_preview_loop_updates_only_source_error_slot_region -- --nocapture`
+  - result: PASS
+- `git diff --check`
+  - result: PASS
+  - note: LF/CRLF warnings only
+
+## 2026-05-17
+### Type
+- Codex implementation
+
+### Work
+- Investigated whether the one-shot FFmpeg path could reduce raw BGRA stdout read volume without reviving persistent decoder or moving to a continuous-stream design.
+- Confirmed the two-real preview loop relationships in code:
+  - final clean output window is fixed at `1280x720`
+  - two-real quad output always uses `640x360` slot rectangles inside that `1280x720` canvas
+  - `compose_two_real_preview_quad_view_incremental` already maps decoded real-slot frames into those slot rectangles, so slot-local composition does not require decoded frames to remain `1280x720`
+  - final render still expects the composed quad view to match the OBS-friendly `1280x720` output profile
+- Confirmed that current decode input width/height are used as expected rawvideo output dimensions for FFmpeg, stdout expected-byte diagnostics, and decoded frame dimensions.
+- Added a narrow two-real-only scaled decode slice:
+  - `TimedSwitcherH264DecodeRuntime` now overrides two-real preview decode input to `640x360`
+  - the override is marked with `scaled_output_enabled=true`
+  - `scaled_output_reason=two_real_slot_size`
+  - the one-shot FFmpeg runtime now passes `-vf scale=640:360:flags=neighbor` before raw BGRA stdout output when scaled output is enabled
+- Kept the scope intentionally narrow:
+  - one-shot FFmpeg process remains in place
+  - full-size decode paths remain available elsewhere
+  - persistent decoder config-disabled toggle remains untouched
+  - no server/client/protocol changes
+- Added summary visibility for the new decode output shape:
+  - `one_shot_decode_output_width`
+  - `one_shot_decode_output_height`
+  - `one_shot_decode_output_pixel_format`
+  - `one_shot_decode_scaled_output_enabled`
+  - `one_shot_decode_scaled_output_reason`
+- Updated the focused two-real summary formatting test expectations to the slot-sized decode output shape.
+- Did not run a rerun in this step.
+
+### Changed Files
+- `apps/switcher/src/lib.rs`
+- `apps/switcher/src/main.rs`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+- `docs/operations/persistent-decoder-plan.md`
+
+### Decisions
+- Treat slot-sized one-shot decode output as the current safer slice for reducing raw stdout read volume.
+- Keep this change scoped to the two-real preview loop only.
+- Keep request/response persistent decoder frozen.
+- Keep Production Readiness as FAIL.
+
+### Unresolved
+- No new runtime evidence has been collected yet for the scaled decode slice.
+- It is still unresolved how much of the remaining decoder-side cost comes from stdin write after stdout volume drops.
+- Raw BGRA versus alternative intermediate pixel-format tradeoffs remain untested.
+- Production Readiness remains FAIL.
+
+### Next
+- Run the next same-PC `2`-client rerun from `S:\stream-sync` with `--disable-persistent-decoder`.
+- Confirm whether `one_shot_decode_output_width=640`, `one_shot_decode_output_height=360`, `one_shot_decode_scaled_output_enabled=true`, and `one_shot_decode_expected_output_bytes_per_frame=921600` appear in the summary.
+- Compare `one_shot_decode_input_write_elapsed_ms`, `one_shot_decode_output_read_elapsed_ms`, and `decode_stdout_expected_bytes_total` against `manual-logs/two-client-render-rerun-20260517-194136`.
+
+### TODO Update
+- Updated `docs/operations/todo.md` current position with the new two-real scaled decode slice and next rerun gate.
+- Updated `docs/operations/persistent-decoder-plan.md` so the slot-sized decode output slice is part of the current one-shot-only comparison plan.
+
+### Validation
+- `git diff --check`
+  - result: PASS (LF/CRLF warnings only)
+- `cargo fmt`
+  - result: NOT RUN
+  - note: sandbox runner connection timed out and escalated retry was rejected due usage limit
+- `cargo check -p stream-sync-switcher`
+  - result: NOT RUN
+  - note: sandbox runner connection timed out and escalated retry was rejected due usage limit
+- focused switcher tests
+  - result: NOT RUN
+  - note: sandbox runner connection timed out and escalated retry was rejected due usage limit
+
+## 2026-05-17
+### Type
 - Codex documentation update
 
 ### Work

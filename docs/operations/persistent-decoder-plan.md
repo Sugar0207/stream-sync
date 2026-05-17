@@ -116,6 +116,9 @@
   - `stdout raw BGRA read / read_exact volume`
 - latest rerun は `one_shot_decode_keyframe_attempt_count=0`、`one_shot_decode_non_keyframe_attempt_count=26`、`one_shot_decode_keyframe_elapsed_ms=0`、`one_shot_decode_non_keyframe_elapsed_ms=2287` だったため、keyframe/non-keyframe split の優劣はまだ判断保留にする
 - current request/response persistent decoder はこの rerun 後も revive せず、凍結候補のまま維持する
+- current additive code slice は two-real preview loop 限定の scaled decode output に置いた。loop-local `TimedSwitcherH264DecodeRuntime` は decode input を `640x360` と `scaled_output_enabled=true` / `scaled_output_reason=two_real_slot_size` に override し、FFmpeg one-shot process は `scale=640:360:flags=neighbor` を通して raw BGRA stdout を返す
+- compile fix として、`scaled_output_enabled=true` の decode input は request/response persistent decoder path を試行せず one-shot decode path に直行させる。persistent helper / spawn path は scaled-output 対応へ広げ直さず、凍結候補の persistent runtime は current slice でも revive しない
+- この slice の狙いは `one_shot_decode_expected_output_bytes_per_frame` を `3686400 -> 921600` 相当に落とし、`decode_stdout_expected_bytes_total` を縮めることにある。runtime rerun はまだ未実施なので success 判定は保留にする
 
 ## 何を置き換えるか
 - 置き換え対象は `apps/switcher/src/lib.rs` の current one-shot FFmpeg decode runtime のうち、decode ごとに作っている FFmpeg process lifecycle
@@ -214,6 +217,7 @@
   - `decode_process_wait_elapsed_ms`: `child.wait()` だけ
 - current one-shot observability には payload-size min/max/avg、keyframe vs non-keyframe attempt/elapsed split、per-phase max elapsed、expected output bytes per frame、extra-output probe elapsed も追加し、next rerun では request/response persistent decoder を revive せずに safer one-shot-only slices を比較する
 - next safer slice は extra-output probe ではなく、one-shot process を残したまま `stdin write` と `stdout raw BGRA read volume` をどう削れるかに置く
+- first additive implementation は two-real preview loop 限定の scaled decode output とし、full-size decode path や request/response persistent path には広げない
 - raw BGRA 以外の intermediate pixel format が switcher 側の最終 pixel format と両立するか、read volume 削減候補として比較対象にする
 - stdin write は current evidence では pipe backpressure か FFmpeg側 consumption wait の可能性を疑うが、persistent request/response path には戻らず one-shot path 内だけで判断する
 - decode cache ownership / `decode_output_buffer_reuse_count=0` / clone-store follow-up は decoder I/O / compose の次比較候補として残す
