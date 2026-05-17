@@ -46,6 +46,26 @@
 - one-shot-only baseline rerun command shapeは `S:\stream-sync` を repo root にして、existing `--four-view-two-real-handoff-preview-loop` command の末尾に `--disable-persistent-decoder` を付ける
 - この toggle は request/response persistent decoder の再挑戦ではなく、pure one-shot baseline を取り直して decoder / compose / GDI variance を切り分けるための最小比較手段とする
 
+## One-Shot-Only Baseline Rerun Update
+- same-PC `2`-client rerun `manual-logs/two-client-render-rerun-20260517-174753` で、one-shot-only baseline は想定通り成立した
+- persistent decoder config-disabled は正常動作し、`persistent_decode_config_enabled=false`、`persistent_decode_enabled=false`、`persistent_decode_attempt_count=0`、`persistent_decode_timeout_count=0`、`persistent_decode_process_spawn_count=0`、`persistent_decode_process_restart_count=0`、`persistent_decode_skipped_by_config_count=60` を確認した
+- server / client / transport は成立しており、persistent decoder を完全に避けても switcher FPS は `effective_render_fps_after_first_render=7.760`、`effective_render_fps=7.114` に留まった
+- pure one-shot baseline の decoder-side evidence は以下だった
+  - `decode_elapsed_ms=8010`
+  - `avg_decode_elapsed_ms=133.500`
+  - `decode_process_spawn_elapsed_ms=635`
+  - `decode_input_write_elapsed_ms=3300`
+  - `decode_output_read_elapsed_ms=3671`
+  - `decode_output_read_exact_elapsed_ms=2765`
+  - `one_shot_decode_attempt_count=60`
+  - `one_shot_decode_elapsed_ms=8010`
+  - `one_shot_decode_input_write_elapsed_ms=3300`
+  - `one_shot_decode_output_read_elapsed_ms=3671`
+  - `one_shot_decode_output_read_exact_elapsed_ms=2765`
+- same run では `quad_view_compose_elapsed_ms=3899`、`quad_view_compose_success_count=57`、`quad_view_full_compose_count=57`、`quad_view_incremental_update_count=0`、`avg_quad_view_compose_elapsed_ms=62.887` も重く、persistent decoder 以外の dominant cost が戻ってきている
+- `gdi_paint_wait_elapsed_ms=51` は今回 run では主犯と見なさない
+- したがって persistent decoder を単独原因と断定せず、next dominant candidates は one-shot decode I/O と quad_view_compose full compose cost に絞る
+
 ## 何を置き換えるか
 - 置き換え対象は `apps/switcher/src/lib.rs` の current one-shot FFmpeg decode runtime のうち、decode ごとに作っている FFmpeg process lifecycle
 - 具体的には以下を persistent 化候補とする
@@ -133,10 +153,10 @@
 ## Next Candidate Comparison
 - current request/response persistent decoder を current path として凍結する
 - continuous-stream decoder rewrite は別設計候補として保留し、別 step で必要性を再判断する
-- one-shot-only baseline rerun を `--disable-persistent-decoder` で回し、circuit-breaker run と比較する
-- one-shot fallback path の `decode_input_write_elapsed_ms` / `decode_output_read_elapsed_ms` / `decode_output_read_exact_elapsed_ms` を再度 narrow に調査する
-- decode cache ownership / `decode_output_buffer_reuse_count=0` / clone-store follow-up を next candidate として比較する
-- latest rerun で再浮上した `quad_view_compose_elapsed_ms` / `gdi_paint_wait_elapsed_ms` の variance を再確認し、decoder-side 以外の next dominant が戻ってきていないかを確認する
+- one-shot-only baseline rerun `manual-logs/two-client-render-rerun-20260517-174753` を current baseline とし、decoder I/O と compose cost を next comparison axis にする
+- one-shot fallback path の `decode_input_write_elapsed_ms` / `decode_output_read_elapsed_ms` / `decode_output_read_exact_elapsed_ms` / `decode_process_spawn_elapsed_ms` を再度 narrow に調査する
+- `quad_view_compose_elapsed_ms` / `quad_view_full_compose_count` / `quad_view_incremental_update_count=0` を見直し、full compose cost を下げられる narrow candidate があるか確認する
+- decode cache ownership / `decode_output_buffer_reuse_count=0` / clone-store follow-up は decoder I/O / compose の次比較候補として残す
 
 ## out of scope
 - persistent decoder の full architecture rewrite

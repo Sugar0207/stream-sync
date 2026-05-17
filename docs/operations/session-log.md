@@ -2,6 +2,90 @@
 
 ## 2026-05-17
 ### Type
+- Codex documentation update
+
+### Work
+- Recorded the latest same-PC `2`-client one-shot-only rerun evidence from `manual-logs/two-client-render-rerun-20260517-174753`.
+- Confirmed that the new `--disable-persistent-decoder` toggle behaved as intended and produced a valid pure one-shot-only baseline:
+  - `persistent_decode_config_enabled=false`
+  - `persistent_decode_enabled=false`
+  - `persistent_decode_attempt_count=0`
+  - `persistent_decode_timeout_count=0`
+  - `persistent_decode_process_spawn_count=0`
+  - `persistent_decode_process_restart_count=0`
+  - `persistent_decode_skipped_by_config_count=60`
+- Recorded that server/client/transport remained healthy in the same run:
+  - server `packets_received=36466`
+  - server `frames_queued=1800`
+  - server `per_client_queued_frames=player1/streamsync-dev-session:900|player2/streamsync-dev-session:900`
+  - server `keyframes_queued=60`
+  - server `io_error_count=0`
+  - client1/client2 `frames_sent=900`
+  - client1/client2 `encode_failures=0`
+  - client1/client2 `send_failures=0`
+  - client effective output fps roughly `29.6-29.8`
+- Recorded that persistent decoder is therefore not the only explanation for the low switcher FPS:
+  - pure one-shot-only baseline still landed at `effective_render_fps_after_first_render=7.760`
+  - `effective_render_fps=7.114`
+  - `frames_rendered=231`
+- Narrowed the next dominant decoder-side candidates using the one-shot-only evidence:
+  - `decode_elapsed_ms=8010`
+  - `avg_decode_elapsed_ms=133.500`
+  - `decode_process_spawn_elapsed_ms=635`
+  - `decode_input_write_elapsed_ms=3300`
+  - `decode_output_read_elapsed_ms=3671`
+  - `decode_output_read_exact_elapsed_ms=2765`
+  - `one_shot_decode_attempt_count=60`
+  - `one_shot_decode_elapsed_ms=8010`
+  - `one_shot_decode_input_write_elapsed_ms=3300`
+  - `one_shot_decode_output_read_elapsed_ms=3671`
+  - `one_shot_decode_output_read_exact_elapsed_ms=2765`
+- Narrowed the next dominant compose-side candidate from the same run:
+  - `quad_view_compose_elapsed_ms=3899`
+  - `quad_view_compose_success_count=57`
+  - `quad_view_full_compose_count=57`
+  - `quad_view_incremental_update_count=0`
+  - `avg_quad_view_compose_elapsed_ms=62.887`
+- Recorded that `gdi_paint_wait_elapsed_ms=51` is not treated as the primary culprit in this rerun.
+- Reframed the next work as a comparison between:
+  - one-shot decode I/O
+  - quad-view full compose cost
+- Kept request/response persistent decoder as a freeze candidate and kept this step docs-only.
+
+### Changed Files
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+- `docs/operations/persistent-decoder-plan.md`
+
+### Decisions
+- Treat `manual-logs/two-client-render-rerun-20260517-174753` as the current pure one-shot-only baseline.
+- Treat the persistent decoder config-disabled toggle as PASS.
+- Do not blame the remaining FPS deficit on persistent decoder alone.
+- Keep request/response persistent decoder as a freeze candidate.
+- Keep Production Readiness as FAIL.
+
+### Unresolved
+- No code changes were made in this step.
+- It is still unresolved whether the next implementation slice should hit one-shot decode I/O first or quad-view full compose first.
+- decode cache ownership / buffer reuse remains a later comparison candidate, not the current top candidate.
+- Production Readiness remains FAIL.
+
+### Next
+- Use the one-shot-only baseline as the new comparison point for the next narrow code-change step.
+- Compare one-shot decode I/O versus quad-view full compose cost before choosing the next implementation target.
+- Leave persistent decoder frozen unless a later design step explicitly revisits it.
+
+### TODO Update
+- Updated `docs/operations/todo.md` current position to the `20260517-174753` one-shot-only baseline.
+- Replaced the top next items with the decoder-I/O versus compose-cost comparison.
+- Updated `docs/operations/persistent-decoder-plan.md` to record the successful config-disabled baseline rerun and the new candidate ordering.
+
+### Validation
+- `git diff --check`
+  - result: PASS (LF/CRLF warnings only)
+
+## 2026-05-17
+### Type
 - Codex implementation
 
 ### Work
