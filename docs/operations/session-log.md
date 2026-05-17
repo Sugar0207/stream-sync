@@ -2,6 +2,65 @@
 
 ## 2026-05-17
 ### Type
+- Codex documentation update
+
+### Work
+- Recorded the latest same-PC `2`-client rerun evidence from `S:\stream-sync\manual-logs\two-client-render-rerun-20260517-223121`.
+- Updated the operations docs to mark the two-real preview loop limited scaled decode output as a runtime PASS.
+- Recorded the successful scaled one-shot decode output shape:
+  - `one_shot_decode_output_width=640`
+  - `one_shot_decode_output_height=360`
+  - `one_shot_decode_output_pixel_format=Bgra8`
+  - `one_shot_decode_scaled_output_enabled=true`
+  - `one_shot_decode_scaled_output_reason=two_real_slot_size`
+  - `one_shot_decode_expected_output_bytes_per_frame=921600`
+- Recorded the raw stdout volume reduction against baseline `manual-logs/two-client-render-rerun-20260517-194136`:
+  - `decode_stdout_expected_bytes_total=95846400 -> 23961600`
+  - `one_shot_decode_output_read_elapsed_ms=952 -> 816`
+  - `one_shot_decode_output_read_exact_elapsed_ms=815 -> 676`
+- Recorded the FPS improvement and its limit:
+  - `effective_render_fps_after_first_render=13.201 -> 16.579`
+  - `effective_render_fps=12.942`
+  - still far from the `30fps` target
+- Moved the next dominant candidate focus to:
+  - `stdin write`
+  - FFmpeg stdin consumption wait
+  - payload size impact
+- Recorded the caution point that final diagnostics still contained `handoff_error_count=15` and `scheduler_status=HandoffError`, while treating server/client transport and scaled decode evidence as still valid.
+- Kept Production Readiness as FAIL.
+- Kept the step docs-only; no code changes were made.
+
+### Changed Files
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+- `docs/operations/persistent-decoder-plan.md`
+
+### Decisions
+- Treat scaled decode output as a validated runtime slice for the two-real preview loop.
+- Keep request/response persistent decoder frozen.
+- Do not promote Production Readiness; FPS remains below target and final diagnostics still contain handoff errors.
+
+### Unresolved
+- `one_shot_decode_elapsed_ms=2029` remains too large for the target frame rate.
+- `one_shot_decode_input_write_elapsed_ms=937` remains a dominant decoder-side cost candidate.
+- The exact split between caller-side `stdin write`, FFmpeg-side stdin consumption wait, and payload size impact still needs the next analysis step.
+
+### Next
+- Compare the latest payload size shape `min=96690 / max=230687 / avg=195142.192` against decode/input-write elapsed to narrow the next candidate.
+- Keep the one-shot-only path and docs-first approach while deciding whether more diagnostics are needed around stdin consumption timing.
+- Continue treating request/response persistent decoder as frozen.
+
+### TODO Update
+- Updated `docs/operations/todo.md` current position to use `manual-logs/two-client-render-rerun-20260517-223121` as the latest rerun evidence.
+- Updated `docs/operations/persistent-decoder-plan.md` to record the scaled decode runtime PASS and the next candidate shift toward stdin write / FFmpeg stdin consumption wait / payload size impact.
+
+### Validation
+- `git diff --check`
+  - result: PASS
+  - note: LF/CRLF warnings only
+
+## 2026-05-17
+### Type
 - Codex build validation
 
 ### Work

@@ -118,7 +118,28 @@
 - current request/response persistent decoder はこの rerun 後も revive せず、凍結候補のまま維持する
 - current additive code slice は two-real preview loop 限定の scaled decode output に置いた。loop-local `TimedSwitcherH264DecodeRuntime` は decode input を `640x360` と `scaled_output_enabled=true` / `scaled_output_reason=two_real_slot_size` に override し、FFmpeg one-shot process は `scale=640:360:flags=neighbor` を通して raw BGRA stdout を返す
 - compile fix として、`scaled_output_enabled=true` の decode input は request/response persistent decoder path を試行せず one-shot decode path に直行させる。persistent helper / spawn path は scaled-output 対応へ広げ直さず、凍結候補の persistent runtime は current slice でも revive しない
-- この slice の狙いは `one_shot_decode_expected_output_bytes_per_frame` を `3686400 -> 921600` 相当に落とし、`decode_stdout_expected_bytes_total` を縮めることにある。runtime rerun はまだ未実施なので success 判定は保留にする
+- この slice の狙いは `one_shot_decode_expected_output_bytes_per_frame` を `3686400 -> 921600` 相当に落とし、`decode_stdout_expected_bytes_total` を縮めることにある
+
+## Scaled Decode Output PASS Rerun Update
+- same-PC `2`-client rerun `manual-logs/two-client-render-rerun-20260517-223121` では、two-real preview loop 限定 scaled decode output は runtime PASS した
+- persistent decoder config-disabled は引き続き正常動作し、`persistent_decode_config_enabled=false`、`persistent_decode_attempt_count=0`、`persistent_decode_timeout_count=0`、`persistent_decode_skipped_by_config_count=26` を確認した
+- scaled one-shot decode output shape は狙いどおりだった
+  - `one_shot_decode_output_width=640`
+  - `one_shot_decode_output_height=360`
+  - `one_shot_decode_output_pixel_format=Bgra8`
+  - `one_shot_decode_scaled_output_enabled=true`
+  - `one_shot_decode_scaled_output_reason=two_real_slot_size`
+  - `one_shot_decode_expected_output_bytes_per_frame=921600`
+- stdout raw BGRA read volume は baseline `manual-logs/two-client-render-rerun-20260517-194136` から大きく下がった
+  - `decode_stdout_expected_bytes_total=95846400 -> 23961600`
+  - `decode_output_bytes_total=23961600`
+  - `one_shot_decode_output_read_elapsed_ms=952 -> 816`
+  - `one_shot_decode_output_read_exact_elapsed_ms=815 -> 676`
+- switcher FPS も改善し、`effective_render_fps_after_first_render=13.201 -> 16.579`、`effective_render_fps=12.942` を確認した
+- ただし `one_shot_decode_elapsed_ms=2029` と `one_shot_decode_input_write_elapsed_ms=937` はまだ大きく、30fps target には遠い
+- latest rerun では payload bytes も増えており、`one_shot_decode_input_payload_bytes_min=96690`、`max=230687`、`avg=195142.192` だった。したがって next dominant candidate は `stdin write` そのものだけに固定せず、FFmpeg stdin consumption wait と payload size impact も含めて整理する
+- final diagnostics には `handoff_error_count=15` と `scheduler_status=HandoffError` が混ざったが、server/client transport、scaled decode output runtime PASS、persistent config-disabled toggle の evidence 自体は有効扱いにする
+- request/response persistent decoder はこの rerun 後も revive せず、凍結候補のまま維持する
 
 ## 何を置き換えるか
 - 置き換え対象は `apps/switcher/src/lib.rs` の current one-shot FFmpeg decode runtime のうち、decode ごとに作っている FFmpeg process lifecycle
