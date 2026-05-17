@@ -80,6 +80,43 @@
 - ただし switcher はまだ `effective_render_fps=9.592` / `effective_render_fps_after_first_render=11.587` で 30fps target 未達なので、compose PASS 後の next dominant candidate は one-shot decode I/O に戻す
 - current request/response persistent decoder はこの結果でも revive せず、凍結候補のまま維持する
 
+## One-Shot Decode I/O Diagnostics Rerun Update
+- same-PC `2`-client rerun `manual-logs/two-client-render-rerun-20260517-194136` では、`--disable-persistent-decoder` を維持したまま one-shot decode I/O diagnostics を回収できた
+- persistent decoder config-disabled は引き続き正常動作し、`persistent_decode_config_enabled=false`、`persistent_decode_attempt_count=0`、`persistent_decode_timeout_count=0`、`persistent_decode_skipped_by_config_count=26` を確認した
+- transport / compose / render side も current rerun では成立している
+  - `effective_render_fps=10.521`
+  - `effective_render_fps_after_first_render=13.201`
+  - `quad_view_compose_elapsed_ms=578`
+  - `quad_view_incremental_update_count=27`
+  - `quad_view_full_compose_count=1`
+  - `avg_quad_view_compose_elapsed_ms=15.211`
+  - `gdi_paint_wait_elapsed_ms=8`
+- latest one-shot decode diagnostics は次の shape だった
+  - `one_shot_decode_elapsed_ms=2287`
+  - `one_shot_decode_elapsed_ms_max=144`
+  - `one_shot_decode_input_write_elapsed_ms=1051`
+  - `one_shot_decode_input_write_elapsed_ms_max=94`
+  - `one_shot_decode_output_read_elapsed_ms=952`
+  - `one_shot_decode_output_read_elapsed_ms_max=118`
+  - `one_shot_decode_output_read_exact_elapsed_ms=815`
+  - `one_shot_decode_output_read_exact_elapsed_ms_max=112`
+  - `one_shot_decode_extra_output_probe_elapsed_ms=124`
+  - `decode_process_spawn_elapsed_ms=129`
+  - `decode_process_wait_elapsed_ms=93`
+  - `one_shot_decode_input_payload_bytes_min=56049`
+  - `one_shot_decode_input_payload_bytes_max=122774`
+  - `one_shot_decode_input_payload_bytes_avg=96744.115`
+  - `decode_input_payload_bytes_total=2515347`
+  - `decode_stdout_expected_bytes_total=95846400`
+  - `one_shot_decode_expected_output_bytes_per_frame=3686400`
+- current evidence では extra-output probe は主犯ではない。`one_shot_decode_extra_output_probe_elapsed_ms=124` に留まり、`stdin write` と `stdout raw BGRA read` のほうが支配的だった
+- current evidence では `decode_process_spawn_elapsed_ms` / `decode_process_wait_elapsed_ms` も first-order culprit ではない
+- current dominant candidates は以下に絞る
+  - `stdin write`
+  - `stdout raw BGRA read / read_exact volume`
+- latest rerun は `one_shot_decode_keyframe_attempt_count=0`、`one_shot_decode_non_keyframe_attempt_count=26`、`one_shot_decode_keyframe_elapsed_ms=0`、`one_shot_decode_non_keyframe_elapsed_ms=2287` だったため、keyframe/non-keyframe split の優劣はまだ判断保留にする
+- current request/response persistent decoder はこの rerun 後も revive せず、凍結候補のまま維持する
+
 ## 何を置き換えるか
 - 置き換え対象は `apps/switcher/src/lib.rs` の current one-shot FFmpeg decode runtime のうち、decode ごとに作っている FFmpeg process lifecycle
 - 具体的には以下を persistent 化候補とする
@@ -176,7 +213,9 @@
   - `decode_output_read_elapsed_ms`: bounded read + extra-output probe まで
   - `decode_process_wait_elapsed_ms`: `child.wait()` だけ
 - current one-shot observability には payload-size min/max/avg、keyframe vs non-keyframe attempt/elapsed split、per-phase max elapsed、expected output bytes per frame、extra-output probe elapsed も追加し、next rerun では request/response persistent decoder を revive せずに safer one-shot-only slices を比較する
-- next step では payload bytes / expected stdout bytes / keyframe payload size と elapsed の関係を見て、one-shot process を残したまま削れる read/write 周辺の小改善か、narrow diagnostics 追加に絞る
+- next safer slice は extra-output probe ではなく、one-shot process を残したまま `stdin write` と `stdout raw BGRA read volume` をどう削れるかに置く
+- raw BGRA 以外の intermediate pixel format が switcher 側の最終 pixel format と両立するか、read volume 削減候補として比較対象にする
+- stdin write は current evidence では pipe backpressure か FFmpeg側 consumption wait の可能性を疑うが、persistent request/response path には戻らず one-shot path 内だけで判断する
 - decode cache ownership / `decode_output_buffer_reuse_count=0` / clone-store follow-up は decoder I/O / compose の次比較候補として残す
 
 ## out of scope

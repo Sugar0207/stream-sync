@@ -2,6 +2,97 @@
 
 ## 2026-05-17
 ### Type
+- Codex documentation update
+
+### Work
+- Recorded the latest same-PC `2`-client rerun evidence from `manual-logs/two-client-render-rerun-20260517-194136`.
+- Confirmed that the pure one-shot-only baseline remained valid with persistent decoder config-disabled:
+  - `persistent_decode_config_enabled=false`
+  - `persistent_decode_attempt_count=0`
+  - `persistent_decode_timeout_count=0`
+  - `persistent_decode_skipped_by_config_count=26`
+- Recorded that transport remained healthy in the same run:
+  - server `packets_received=35925`
+  - server `frames_queued=1800`
+  - server `per_client_queued_frames=player1/streamsync-dev-session:900|player2/streamsync-dev-session:900`
+  - server `io_error_count=0`
+  - client1/client2 `frames_sent=900`
+  - client1/client2 `encode_failures=0`
+  - client1/client2 `send_failures=0`
+- Recorded that incremental compose remained a runtime PASS and is not the current dominant candidate:
+  - `quad_view_compose_elapsed_ms=578`
+  - `quad_view_incremental_update_count=27`
+  - `quad_view_full_compose_count=1`
+  - `avg_quad_view_compose_elapsed_ms=15.211`
+  - `gdi_paint_wait_elapsed_ms=8`
+  - `render_elapsed_ms=131`
+  - `avg_render_elapsed_ms=1.016`
+- Recorded the latest one-shot decode I/O diagnostics:
+  - `decode_attempt_count=26`
+  - `decode_success_count=26`
+  - `one_shot_decode_attempt_count=26`
+  - `one_shot_decode_elapsed_ms=2287`
+  - `one_shot_decode_elapsed_ms_max=144`
+  - `one_shot_decode_input_write_elapsed_ms=1051`
+  - `one_shot_decode_input_write_elapsed_ms_max=94`
+  - `one_shot_decode_output_read_elapsed_ms=952`
+  - `one_shot_decode_output_read_elapsed_ms_max=118`
+  - `one_shot_decode_output_read_exact_elapsed_ms=815`
+  - `one_shot_decode_output_read_exact_elapsed_ms_max=112`
+  - `one_shot_decode_extra_output_probe_elapsed_ms=124`
+  - `decode_process_spawn_elapsed_ms=129`
+  - `decode_process_wait_elapsed_ms=93`
+  - `one_shot_decode_input_payload_bytes_min=56049`
+  - `one_shot_decode_input_payload_bytes_max=122774`
+  - `one_shot_decode_input_payload_bytes_avg=96744.115`
+  - `decode_input_payload_bytes_total=2515347`
+  - `decode_stdout_expected_bytes_total=95846400`
+  - `one_shot_decode_expected_output_bytes_per_frame=3686400`
+- Recorded the current judgment from these diagnostics:
+  - extra-output probe is not the main culprit
+  - process spawn / wait are not the main culprits in this rerun
+  - the next dominant candidates narrow to `stdin write` and `stdout raw BGRA read / read_exact volume`
+- Recorded that keyframe/non-keyframe comparison remains unresolved in this rerun because:
+  - `one_shot_decode_keyframe_attempt_count=0`
+  - `one_shot_decode_non_keyframe_attempt_count=26`
+  - `one_shot_decode_keyframe_elapsed_ms=0`
+  - `one_shot_decode_non_keyframe_elapsed_ms=2287`
+- Kept this step docs-only with no code changes.
+
+### Changed Files
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+- `docs/operations/persistent-decoder-plan.md`
+
+### Decisions
+- Treat `manual-logs/two-client-render-rerun-20260517-194136` as the new one-shot decode I/O baseline.
+- Treat extra-output probe as a lower-priority follow-up.
+- Treat `stdin write` and `stdout raw BGRA read volume` as the next dominant candidates.
+- Keep request/response persistent decoder frozen.
+- Keep Production Readiness as FAIL.
+
+### Unresolved
+- No code changes were made in this step.
+- It is still unresolved whether the safer next slice should attack stdin write first or stdout read volume first.
+- keyframe versus non-keyframe cost is still unresolved because this rerun contained no keyframe decode attempts.
+- Production Readiness remains FAIL.
+
+### Next
+- Keep the next implementation step inside the one-shot FFmpeg path.
+- Re-read whether stdout read volume can be reduced while preserving the one-shot process model and switcher-side pixel-format requirements.
+- Re-check whether stdin write cost is dominated by pipe backpressure / FFmpeg-side consumption wait before choosing the next narrow code slice.
+
+### TODO Update
+- Updated `docs/operations/todo.md` current position to the `20260517-194136` rerun.
+- Replaced the top next items with the `stdin write` versus `stdout raw BGRA read volume` comparison.
+- Updated `docs/operations/persistent-decoder-plan.md` so the current one-shot-only dominant candidates are the source of truth.
+
+### Validation
+- `git diff --check`
+  - result: PASS (LF/CRLF warnings only)
+
+## 2026-05-17
+### Type
 - Codex implementation
 
 ### Work
