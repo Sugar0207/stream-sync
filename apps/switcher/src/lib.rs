@@ -6723,6 +6723,7 @@ pub enum SwitcherH264DecodeResult {
 pub struct SwitcherH264DecodeRuntimeDiagnostics {
     pub process_spawn_elapsed_ms: u128,
     pub input_write_elapsed_ms: u128,
+    pub input_payload_bytes: usize,
     pub output_read_elapsed_ms: u128,
     pub output_read_exact_elapsed_ms: u128,
     pub output_vec_resize_elapsed_ms: u128,
@@ -6730,6 +6731,7 @@ pub struct SwitcherH264DecodeRuntimeDiagnostics {
     pub pixel_convert_elapsed_ms: u128,
     pub buffer_allocation_count: u32,
     pub output_bytes: usize,
+    pub output_expected_bytes: usize,
     pub output_buffer_reuse_count: u32,
 }
 
@@ -6750,6 +6752,8 @@ pub trait SwitcherH264DecodeRuntimeHook {
         &self,
         input: SwitcherH264DecodeInput,
     ) -> SwitcherH264DecodeRuntimeOutput {
+        let input_payload_bytes = input.encoded_payload.len();
+        let output_expected_bytes = input.width as usize * input.height as usize * 4;
         let result = self.decode_annex_b_h264(input);
         let output_bytes = match &result {
             SwitcherH264DecodeResult::Decoded(decoded) => decoded.pixels.len(),
@@ -6760,7 +6764,9 @@ pub trait SwitcherH264DecodeRuntimeHook {
         SwitcherH264DecodeRuntimeOutput {
             result,
             diagnostics: SwitcherH264DecodeRuntimeDiagnostics {
+                input_payload_bytes,
                 output_bytes,
+                output_expected_bytes,
                 buffer_allocation_count,
                 ..SwitcherH264DecodeRuntimeDiagnostics::default()
             },
@@ -6816,6 +6822,7 @@ impl SwitcherH264DecodeRuntimeHook for SwitcherFfmpegH264DecodeRuntimeHook {
         input: SwitcherH264DecodeInput,
     ) -> SwitcherH264DecodeRuntimeOutput {
         let mut diagnostics = SwitcherH264DecodeRuntimeDiagnostics::default();
+        diagnostics.input_payload_bytes = input.encoded_payload.len();
         if input.encoded_payload.is_empty() {
             return SwitcherH264DecodeRuntimeOutput {
                 result: SwitcherH264DecodeResult::Deferred {
@@ -6832,6 +6839,7 @@ impl SwitcherH264DecodeRuntimeHook for SwitcherFfmpegH264DecodeRuntimeHook {
                 diagnostics,
             };
         }
+        diagnostics.output_expected_bytes = input.width as usize * input.height as usize * 4;
 
         let spawn_start = Instant::now();
         let mut child = match Command::new(&self.ffmpeg_path)
@@ -6945,7 +6953,7 @@ impl SwitcherH264DecodeRuntimeHook for SwitcherFfmpegH264DecodeRuntimeHook {
             (result, stderr_bytes)
         });
 
-        let expected_len = input.width as usize * input.height as usize * 4;
+        let expected_len = diagnostics.output_expected_bytes;
         let stdout_read =
             match read_expected_rawvideo_stdout(&mut stdout, expected_len, &mut diagnostics) {
                 Ok(output) => output,

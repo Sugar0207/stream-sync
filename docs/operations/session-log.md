@@ -2,6 +2,96 @@
 
 ## 2026-05-17
 ### Type
+- Codex implementation
+
+### Work
+- Inspected the current one-shot FFmpeg decode path in `apps/switcher/src/lib.rs` and the two-real timing/cache wrapper in `apps/switcher/src/main.rs` to narrow the remaining decoder-side cost after the zero-fill removal rerun `manual-logs/two-client-render-rerun-20260517-114532`.
+- Confirmed the timing boundaries in the current code path:
+  - `decode_process_spawn_elapsed_ms`
+    - measured from `spawn_start` to `Command::spawn()` success/failure
+    - does not include stdin write, stdout read, wait, or stderr join
+  - `decode_input_write_elapsed_ms`
+    - measures only `stdin.write_all(&input.encoded_payload)`
+    - has no explicit `flush`
+    - excludes `stdin` drop/close because the timer is recorded before the `stdin` handle leaves scope
+    - may still include blocking while FFmpeg consumes pipe input
+  - `decode_output_read_exact_elapsed_ms`
+    - measures only `stdout.take(expected_len).read_to_end(...)`
+    - excludes the trailing extra-output probe, `child.wait()`, and stderr join
+    - can still include FFmpeg-side decode/output scheduling latency because the read blocks until the expected rawvideo bytes are produced
+- Confirmed the current clone ownership shape in `apps/switcher/src/main.rs`:
+  - `decoded_buffer_clone_count` was previously a combined counter for:
+    - decode-cache hit return clone
+    - decode-cache store clone after a successful one-shot decode
+  - current decode-cache keying remains caller-owned and current ownership still does not permit true decoded-output buffer reuse in this slice
+- Added minimal decoder-side diagnostics for the next rerun without widening into persistent decoder work:
+  - `decode_input_payload_bytes_total`
+  - `decode_stdout_expected_bytes_total`
+  - `avg_decode_input_write_elapsed_ms`
+  - `decode_cache_hit_clone_count`
+  - `decode_cache_store_clone_count`
+  - `decoded_buffer_clone_elapsed_ms`
+- Updated the timed decode wrapper so clone timing/counts are recorded separately for:
+  - cache-hit return clone
+  - cache-store clone on successful decode
+- Kept existing diagnostics intact, including:
+  - `decode_process_spawn_elapsed_ms`
+  - `decode_input_write_elapsed_ms`
+  - `decode_output_read_elapsed_ms`
+  - `decode_output_read_exact_elapsed_ms`
+  - `decode_output_buffer_reuse_count`
+- Updated `docs/operations/todo.md` so the current position and next items reflect the new instrumentation and the rerun-first follow-up.
+- Did not run the runtime rerun in this step.
+
+### Changed Files
+- `apps/switcher/src/lib.rs`
+- `apps/switcher/src/main.rs`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### Decisions
+- Keep this step focused on decomposition and observability of the current one-shot FFmpeg decode path.
+- Do not widen into persistent decoder, unsafe buffer tricks, or decoder architecture rewrite.
+- Keep the new diagnostics minimal and aligned with the current rerun questions.
+- Keep Production Readiness as FAIL because no post-instrumentation runtime rerun was collected yet.
+
+### Unresolved
+- No runtime evidence has been collected yet for the new payload/clone diagnostics.
+- `decode_output_buffer_reuse_count` remains `0` in the current ownership model.
+- It is still not proven whether spawn, stdin write, bounded stdout read, or decoded-buffer clone/store is the dominant remaining sub-cost.
+- Production Readiness remains FAIL.
+
+### Next
+- Run the next same-PC `2`-client rerun and compare payload/write/read/clone diagnostics against `manual-logs/two-client-render-rerun-20260517-114532`.
+- Use the new clone split to determine whether `decoded_buffer_clone_count` is mostly cache-store or cache-hit driven.
+- Keep persistent decoder as a candidate only until the current one-shot path is better bounded.
+
+### TODO Update
+- Updated `docs/operations/todo.md` current position with the code-path definitions for spawn/write/read timing and the decoded-cache clone ownership split.
+- Replaced the top next items with rerun-first validation of the new decoder-side diagnostics.
+
+### Validation
+- `cargo fmt`
+  - result: PASS
+- `cargo fmt --check`
+  - result: PASS
+- `cargo check -p stream-sync-switcher`
+  - result: PASS
+  - note: existing switcher unused-function warnings only
+- focused switcher tests
+  - result: PASS
+  - command:
+    `cargo test -p stream-sync-switcher ffmpeg_decode_stdout_read -- --nocapture`
+  - command:
+    `cargo test -p stream-sync-switcher switcher_four_view_two_real_handoff_preview -- --nocapture`
+- `cargo check --workspace`
+  - result: PASS
+  - note: existing switcher unused-function warnings only
+- `git diff --check`
+  - result: PASS (LF/CRLF warnings only)
+
+## 2026-05-17
+### Type
 - Codex documentation update
 
 ### Work
