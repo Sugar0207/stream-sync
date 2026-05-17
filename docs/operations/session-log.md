@@ -2,6 +2,64 @@
 
 ## 2026-05-17
 ### Type
+- Codex documentation update
+
+### Work
+- Recorded the latest same-PC `2`-client rerun evidence from `manual-logs/two-client-render-rerun-20260517-121040`.
+- Reclassified the current bottleneck as one-shot FFmpeg decode output production/read rather than input write or clone/store:
+  - `decode_output_read_elapsed_ms=3430`
+  - `decode_output_read_exact_elapsed_ms=2771`
+  - `decode_stdout_expected_bytes_total=136396800`
+  - `decode_input_write_elapsed_ms=427`
+  - `decoded_buffer_clone_elapsed_ms=27`
+- Confirmed the decoder-side context that still holds after the rerun:
+  - direct compose remains effective
+  - zero-fill removal remains effective with `decode_output_vec_resize_elapsed_ms=0`
+  - render materialization / GDI / server / client / handoff are not the dominant issue in this run
+- Added `docs/operations/persistent-decoder-plan.md` as the docs-first source of truth for the next design candidate.
+- Narrowed the persistent decoder plan to a minimal introduction slice only:
+  - replace per-decode FFmpeg process spawn/open-close in the current one-shot path
+  - keep current `SwitcherH264DecodeInput` / runtime-output shape
+  - keep direct compose and current decode cache/render path unchanged in the first slice
+  - keep one-shot fallback and process restart strategy explicit
+  - define access-unit boundary, SPS/PPS/keyframe assumptions, diagnostics candidates, and implementation order
+- Updated `docs/operations/todo.md` so the current position and next items now point to the persistent decoder design candidate instead of another instrumentation-first rerun.
+- Made no code changes in this step.
+
+### Changed Files
+- `docs/operations/persistent-decoder-plan.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### Decisions
+- Treat the latest rerun as evidence that the dominant remaining cost is output production/read in the current one-shot FFmpeg decode path.
+- Treat `decode_input_write_elapsed_ms` and `decoded_buffer_clone_elapsed_ms` as non-dominant in the current evidence set.
+- Promote persistent decoder from a distant candidate to the next design candidate.
+- Keep this step docs-first only; do not implement persistent decoder yet.
+- Keep Production Readiness as FAIL.
+
+### Unresolved
+- No persistent decoder code has been implemented yet.
+- It is still unproven how much of `decode_output_read_exact_elapsed_ms` will fall once process lifetime and pipe reuse are changed.
+- `decode_output_buffer_reuse_count=0` and decode cache ownership remain follow-up topics, but not the first target of the persistent decoder slice.
+- Production Readiness remains FAIL.
+
+### Next
+- Use `docs/operations/persistent-decoder-plan.md` as the next implementation source of truth.
+- Keep the first persistent decoder slice limited to the current two-real preview loop path.
+- Compare persistent decoder rerun results against `manual-logs/two-client-render-rerun-20260517-121040` and the direct-compose baseline after implementation.
+
+### TODO Update
+- Updated `docs/operations/todo.md` current position with the `20260517-121040` rerun evidence and the persistent decoder promotion.
+- Replaced the top next items with the persistent decoder minimal implementation/design follow-up.
+- Added `docs/operations/persistent-decoder-plan.md` as the persistent decoder design reference.
+
+### Validation
+- `git diff --check`
+  - result: PASS (LF/CRLF warnings only)
+
+## 2026-05-17
+### Type
 - Codex implementation
 
 ### Work
