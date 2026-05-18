@@ -240,6 +240,35 @@
   - `scheduler_status=PartialSelected`
 - したがって next dominant candidate は persistent decoder revive ではなく、one-shot path の `first-byte wait variance` / `output-read slow variance` / `input-write outlier` へ移す
 
+## Slow Correlation Rerun Update
+- same-PC `2`-client rerun `manual-logs/two-client-render-rerun-20260518-111013` では、implemented slow correlation diagnostics を初めて runtime で読めた
+- scaled decode output は引き続き PASS で、`one_shot_decode_output_width=640`、`one_shot_decode_output_height=360`、`one_shot_decode_scaled_output_enabled=true`、`one_shot_decode_expected_output_bytes_per_frame=921600` を維持した
+- persistent decoder config-disabled も引き続き PASS で、`persistent_decode_config_enabled=false`、`persistent_decode_attempt_count=0` を維持した
+- after-first FPS は改善した
+  - `effective_render_fps_after_first_render=17.749`
+  - previous correlation rerun `manual-logs/two-client-render-rerun-20260518-080637`: `13.760`
+  - previous scaled-pass rerun `manual-logs/two-client-render-rerun-20260517-223121`: `16.579`
+- current evidence では decode attempt frequency / slot bias / input-write outlier は主犯ではない
+  - `decode_attempt_count=20`
+  - `one_shot_decode_attempt_slot_counts=slot0:10|slot1:10`
+  - `one_shot_decode_attempt_source_counts=queue:20|retained_keyframe:0|unknown:0`
+  - `one_shot_decode_input_write_outlier_count=0`
+- slow first-byte / slow output-read は low count に留まり、reason bias は `source_recovered` に寄った
+  - `one_shot_decode_first_byte_slow_count=3`
+  - `one_shot_decode_output_read_slow_count=3`
+  - `one_shot_decode_slow_first_byte_reason_counts=frame_id_changed:1|cache_miss:0|previous_unavailable:0|source_recovered:2|unknown:0`
+  - `one_shot_decode_slow_output_read_reason_counts=frame_id_changed:1|cache_miss:0|previous_unavailable:0|source_recovered:2|unknown:0`
+- input-write outlier payload correlation は current rerun では読めなかった
+  - `one_shot_decode_input_write_outlier_payload_bytes_avg=n/a`
+- 一方で startup / availability 側はなお重い
+  - `first_render_attempt_index=137`
+  - `first_render_elapsed_ms=5025`
+  - `no_render_before_first_render=136`
+  - `no_frame_count=864`
+  - `handoff_error_count=22`
+  - server `no_frame_count=264`
+- したがって next candidate は one-shot decode I/O broad regression ではなく、`source_recovered slow path` と `startup/no-frame availability` に寄せる
+
 ## Safer Diagnostics Candidates
 - high-value candidates
   - `one_shot_decode_stdin_close_elapsed_ms`
@@ -366,18 +395,18 @@
 ## Next Candidate Comparison
 - current request/response persistent decoder を current path として凍結する
 - continuous-stream decoder rewrite は別設計候補として保留し、別 step で必要性を再判断する
-- latest comparison baseline は `manual-logs/two-client-render-rerun-20260518-080637` と `manual-logs/two-client-render-rerun-20260517-223121` の組に更新する
-- current one-shot fallback path の next comparison axis は decode attempt frequency そのものではなく、`decode_input_write_elapsed_ms_max` / `one_shot_decode_first_byte_slow_count` / `one_shot_decode_output_read_slow_count` を含む per-attempt variance に寄せる
+- latest comparison baseline は `manual-logs/two-client-render-rerun-20260518-111013` と `manual-logs/two-client-render-rerun-20260517-223121` の組に更新する
+- current one-shot fallback path の next comparison axis は decode attempt frequency そのものではなく、implemented slow correlation fields の `source_recovered` 偏りと startup/no-frame availability に寄せる
 - current one-shot code path では以下の境界を前提に safer slice を選ぶ
   - `decode_process_spawn_elapsed_ms`: `Command::spawn()` だけ
   - `decode_input_write_elapsed_ms`: `stdin.write_all(&input.encoded_payload)` だけ
   - `decode_output_read_exact_elapsed_ms`: `stdout.take(expected_len).read_to_end(...)` だけ
   - `decode_output_read_elapsed_ms`: bounded read + extra-output probe まで
   - `decode_process_wait_elapsed_ms`: `child.wait()` だけ
-- current one-shot observability には payload-size min/max/avg、keyframe vs non-keyframe attempt/elapsed split、per-phase max elapsed、expected output bytes per frame、extra-output probe elapsed も追加済みで、next rerun では request/response persistent decoder を revive せずに per-attempt variance を比較する
-- next safer slice は extra-output probe や persistent decoder revive ではなく、slow first-byte / slow output-read / input-write outlier の correlation diagnostics に置く
-- first additive implementation は observability-only に限定し、two-real preview loop 以外へ広げない
-- raw BGRA 以外の intermediate pixel format 比較は latest rerun の主候補から外し、first-byte/read variance を切り分けた後の次候補としてだけ残す
+- current one-shot observability には payload-size min/max/avg、keyframe vs non-keyframe attempt/elapsed split、per-phase max elapsed、expected output bytes per frame、extra-output probe elapsed に加え、slow first-byte / slow output-read / input-write outlier correlation fields も追加済みで、next rerun では request/response persistent decoder を revive せずに bias を比較する
+- next safer slice は extra-output probe や persistent decoder revive ではなく、`source_recovered` 時の slow path と startup/no-frame availability の関係を narrow に整理する docs-first / diagnostics-first follow-up に置く
+- first additive implementation は observability-only に限定したまま維持し、two-real preview loop 以外へ広げない
+- raw BGRA 以外の intermediate pixel format 比較は current latest rerun の主候補から外し、availability 側の切り分け後の次候補としてだけ残す
 - stdin write は current evidence では pipe backpressure か FFmpeg側 consumption wait の可能性を疑うが、persistent request/response path には戻らず one-shot path 内だけで判断する
 - compose / GDI variance も regression guard として残し、decode-side だけに原因を断定しない
 - decode cache ownership / `decode_output_buffer_reuse_count=0` / clone-store follow-up は decoder I/O / compose の次比較候補として残す

@@ -2,6 +2,92 @@
 
 ## 2026-05-18
 ### Type
+- Codex docs-first analysis
+
+### Work
+- Recorded the latest same-PC `2`-client rerun evidence from `S:\stream-sync\manual-logs\two-client-render-rerun-20260518-111013`.
+- Kept the step docs-only and did not change code.
+- Updated `docs/operations/todo.md`, `docs/operations/session-log.md`, and `docs/operations/persistent-decoder-plan.md` to reflect the first rerun that included the implemented slow correlation diagnostics.
+- Kept scaled decode output PASS, persistent config-disabled PASS, and incremental compose PASS explicitly recorded.
+- Narrowed the next candidate to:
+  - source_recovered slow path
+  - startup no-render / no-frame availability
+
+### Changed Files
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+- `docs/operations/persistent-decoder-plan.md`
+
+### Decisions
+- Treat `manual-logs/two-client-render-rerun-20260518-111013` as the latest comparison rerun.
+- Keep scaled decode output marked as PASS.
+- Keep request/response persistent decoder frozen.
+- Keep Production Readiness as FAIL.
+
+### Findings
+- Scaled decode output remained valid in the latest rerun:
+  - `one_shot_decode_output_width=640`
+  - `one_shot_decode_output_height=360`
+  - `one_shot_decode_output_pixel_format=Bgra8`
+  - `one_shot_decode_scaled_output_enabled=true`
+  - `one_shot_decode_expected_output_bytes_per_frame=921600`
+- Transport remained healthy:
+  - server `packets_received=34059`
+  - server `frames_queued=1800`
+  - server `per_client_queued_frames=player1/streamsync-dev-session:900|player2/streamsync-dev-session:900`
+  - server `io_error_count=0`
+  - client `frames_sent=900|900`
+  - client `effective_output_fps=26.110|26.070`
+- After-first render FPS improved again:
+  - `effective_render_fps_after_first_render=13.760 -> 17.749`
+  - previous scaled-pass rerun reference: `16.579`
+- Decode attempt frequency, slot bias, and input-write outlier were not the dominant issue in this rerun:
+  - `decode_attempt_count=20`
+  - `one_shot_decode_attempt_slot_counts=slot0:10|slot1:10`
+  - `one_shot_decode_input_write_outlier_count=0`
+- Slow decode correlation counts were low and biased toward `source_recovered`:
+  - `one_shot_decode_first_byte_slow_count=3`
+  - `one_shot_decode_output_read_slow_count=3`
+  - `one_shot_decode_slow_first_byte_reason_counts=frame_id_changed:1|source_recovered:2`
+  - `one_shot_decode_slow_output_read_reason_counts=frame_id_changed:1|source_recovered:2`
+- The startup / availability side is still notable:
+  - `first_render_attempt_index=137`
+  - `first_render_elapsed_ms=5025`
+  - `no_render_before_first_render=136`
+  - `no_frame_count=864`
+  - `handoff_error_count=22`
+  - server `no_frame_count=264`
+- Compose/display variance looked lighter in this rerun and remains only a regression guard:
+  - `quad_view_compose_elapsed_ms=537`
+  - `gdi_paint_wait_elapsed_ms=18`
+  - `quad_view_incremental_update_count=43`
+  - `quad_view_full_compose_count=1`
+
+### Next
+- Compare `manual-logs/two-client-render-rerun-20260518-111013` against `manual-logs/two-client-render-rerun-20260517-223121` with emphasis on:
+  - `one_shot_decode_slow_first_byte_reason_counts`
+  - `one_shot_decode_slow_output_read_reason_counts`
+  - `one_shot_decode_attempt_reason_counts`
+- In the next rerun, prioritize startup / availability fields:
+  - `first_render_attempt_index`
+  - `first_render_elapsed_ms`
+  - `no_render_before_first_render`
+  - `no_frame_count`
+  - `handoff_error_count`
+  - server `no_frame_count`
+- Keep persistent decoder and continuous-stream rewrite out of scope.
+
+### TODO Update
+- Updated `docs/operations/todo.md` current position and next items to treat `source_recovered` slow path and startup/no-frame availability as the next main candidates.
+- Updated `docs/operations/persistent-decoder-plan.md` with the first rerun evidence for the implemented slow correlation fields.
+
+### Validation
+- `git diff --check`
+  - result: PASS
+  - note: LF/CRLF warnings only
+
+## 2026-05-18
+### Type
 - Codex implementation
 
 ### Work
