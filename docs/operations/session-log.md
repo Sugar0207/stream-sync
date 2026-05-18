@@ -2,6 +2,92 @@
 
 ## 2026-05-18
 ### Type
+- Codex implementation
+
+### Work
+- Added a diagnostics-only slice to the two-real preview loop summary without changing one-shot FFmpeg decode behavior.
+- Kept the current constraints intact:
+  - no FFmpeg arg changes
+  - no one-shot decode routing changes
+  - no persistent decoder revive
+  - no continuous-stream rewrite
+- Added lightweight per-attempt observation wiring in `apps/switcher/src/main.rs` and joined it back to the existing two-real attempt candidate metadata by current source identity / frame identity.
+- Added new summary fields for:
+  - slow first-byte slot/source/reason counts
+  - slow output-read slot/source/reason counts
+  - input-write outlier count / threshold / slot/source/reason counts
+  - input-write outlier payload bytes total / avg
+- Updated the focused summary formatting test and related two-real preview loop tests.
+- Updated `docs/operations/todo.md`, `docs/operations/session-log.md`, and `docs/operations/persistent-decoder-plan.md`.
+- Did not run a runtime rerun in this step.
+
+### Changed Files
+- `apps/switcher/src/main.rs`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+- `docs/operations/persistent-decoder-plan.md`
+
+### Decisions
+- Keep this slice diagnostics-only.
+- Reuse the existing `66ms` slow threshold for:
+  - first-byte slow
+  - output-read slow
+  - input-write outlier
+- Keep scaled decode output, incremental compose, and persistent config-disabled diagnostics unchanged.
+- Keep Production Readiness as FAIL.
+
+### Findings
+- The new slice keeps existing summary field meaning intact:
+  - `one_shot_decode_attempt_*` still describes actual decode-attempt frequency / source / slot / reason
+  - `one_shot_decode_first_byte_slow_count` and `one_shot_decode_output_read_slow_count` still remain total slow-attempt counters
+- New correlation fields now let the next rerun answer summary-only questions that were previously ambiguous:
+  - whether slow first-byte attempts skew to slot0 or slot1
+  - whether they skew to `queue` or `retained_keyframe`
+  - whether they skew to `frame_id_changed` or `source_recovered`
+  - whether slow output-read follows the same bias
+  - whether input-write outliers also carry larger payload bytes on average
+- The implementation does not change one-shot decode selection or cache behavior:
+  - the per-attempt observation is recorded only after an actual decode miss
+  - the correlation join uses the existing source-identity-based key shape
+  - FFmpeg invocation and decode routing remain unchanged
+
+### Next
+- Run the next same-PC `2`-client rerun from `S:\stream-sync` with `--disable-persistent-decoder`.
+- Compare:
+  - `one_shot_decode_slow_first_byte_slot_counts`
+  - `one_shot_decode_slow_first_byte_source_counts`
+  - `one_shot_decode_slow_first_byte_reason_counts`
+  - `one_shot_decode_slow_output_read_slot_counts`
+  - `one_shot_decode_slow_output_read_source_counts`
+  - `one_shot_decode_slow_output_read_reason_counts`
+  - `one_shot_decode_input_write_outlier_count`
+  - `one_shot_decode_input_write_outlier_slot_counts`
+  - `one_shot_decode_input_write_outlier_source_counts`
+  - `one_shot_decode_input_write_outlier_reason_counts`
+  - `one_shot_decode_input_write_outlier_payload_bytes_avg`
+- Use that rerun to judge whether per-attempt variance looks source-biased, slot-biased, reason-biased, payload-correlated, or still mixed with compose/GDI noise.
+
+### TODO Update
+- Updated `docs/operations/todo.md` current position and next items for the implemented slow/outlier correlation diagnostics.
+- Updated `docs/operations/persistent-decoder-plan.md` to record that the new fields are implemented and ready for the next rerun comparison.
+
+### Validation
+- `cargo fmt`
+  - result: PASS
+- `cargo check -p stream-sync-switcher`
+  - result: PASS
+- `cargo test -p stream-sync-switcher switcher_four_view_two_real_handoff_preview_summary_formats_expected_fields -- --nocapture`
+  - result: PASS
+- `cargo test -p stream-sync-switcher switcher_four_view_two_real_handoff_preview_loop_redecodes_different_frame_ids -- --nocapture`
+  - result: PASS
+- `cargo test -p stream-sync-switcher switcher_four_view_two_real_handoff_preview_loop_updates_only_source_error_slot_region -- --nocapture`
+  - result: PASS
+- `git diff --check`
+  - result: PASS
+  - note: LF/CRLF warnings only
+
+## 2026-05-18
+### Type
 - Codex docs-first analysis
 
 ### Work

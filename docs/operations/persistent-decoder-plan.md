@@ -275,6 +275,9 @@
   - `one_shot_decode_input_write_outlier_slot_counts`
   - `one_shot_decode_input_write_outlier_payload_bytes_avg`
 - この候補も observability-only に留め、FFmpeg args、pixel format、one-shot decode routing、persistent decoder state machine には触れない
+- latest implementation slice で上記 correlation fields は `apps/switcher/src/main.rs` に実装済みになった
+- current implementation は actual decode miss ごとの per-attempt observation を existing source identity / frame identity に後結合しており、one-shot decode behavior 自体は変えていない
+- したがって next step は新 field 追加ではなく、`S:\stream-sync` rerun で bias を読む比較に移す
 
 ## 何を置き換えるか
 - 置き換え対象は `apps/switcher/src/lib.rs` の current one-shot FFmpeg decode runtime のうち、decode ごとに作っている FFmpeg process lifecycle
