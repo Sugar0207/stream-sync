@@ -5,6 +5,69 @@
 - Codex docs-first analysis
 
 ### Work
+- Re-read the latest two-real preview loop code path in `apps/switcher/src/main.rs` and the four-view scheduler/display/composition boundaries in `apps/switcher/src/lib.rs`.
+- Kept the step docs-only and did not change code.
+- Updated `docs/operations/todo.md`, `docs/operations/session-log.md`, and `docs/operations/persistent-decoder-plan.md` to reflect the startup/no-frame availability and `source_recovered` slow-path findings.
+- Kept scaled decode output PASS, incremental compose PASS, and persistent config-disabled PASS explicitly unchanged.
+
+### Changed Files
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+- `docs/operations/persistent-decoder-plan.md`
+
+### Decisions
+- Keep this step docs-first and do not add runtime changes.
+- Keep request/response persistent decoder frozen.
+- Keep Production Readiness as FAIL.
+- Treat any follow-up implementation as diagnostics-only if the next rerun still leaves startup/no-frame attribution ambiguous.
+
+### Findings
+- `first_render_attempt_index` and `first_render_elapsed_ms` are assigned only when the two-real preview loop reaches clean output `RenderReady` and inner render `Rendered`.
+- `no_render_before_first_render` is not an independently tracked runtime counter. It is derived from the first successful render attempt index, so it directly measures how many loop attempts completed before the first rendered output.
+- The startup path is `scheduler -> decode/render adapter -> display policy -> quad composition -> render-facing -> clean output render`.
+- At startup, `SkipNoFrameAvailable` and `SkipWaitingForFrameAtOrBeforeTarget` become `NoDisplayPlaceholder` while no previous displayed slot exists, and a tick with zero renderable slots stays `NoRenderableQuadView`.
+- This explains why server aggregate `frames_queued=1800` does not guarantee immediate switcher renderability. The switcher still needs at least one target-time-eligible and renderable selected slot to exit the startup no-render phase.
+- Switcher `no_frame_count` and server `no_frame_count` are not 1:1 comparable counters:
+  - switcher counts per-slot/per-tick no-frame observations
+  - server counts no-frame observations at the handoff/queue-read layer
+- `source_recovered` is assigned when the previous slot diagnostic did not have `selected_frame_available=true` and the current slot diagnostic does.
+- Because the previous unavailable state can come from `NoFrameAvailable`, `WaitingForFrameAtOrBeforeTarget`, or `HandoffError`, the latest `source_recovered` slow bias is consistent with a post-gap / post-error recovery decode pattern, but not yet strong enough to claim a single dominant root cause.
+- `handoff_error_count` can feed this transition indirectly because a slot can move from prior `HandoffError` to current selected/available, which then classifies the next decode attempt as `source_recovered`.
+- Current summary fields are enough to compare coarse slow-attempt bias by reason, but not enough to aggregate why pre-first-render attempts stayed non-rendered.
+
+### Next
+- In the next rerun from `S:\stream-sync`, keep comparing:
+  - `first_render_attempt_index`
+  - `first_render_elapsed_ms`
+  - `no_render_before_first_render`
+  - `no_frame_count`
+  - `handoff_error_count`
+  - server `no_frame_count`
+- If startup attribution is still ambiguous, keep the next code slice diagnostics-only and limit it to:
+  - `first_render_wait_reason_counts`
+  - `no_render_before_first_render_reason_counts`
+  - `startup_no_frame_count`
+  - `startup_handoff_error_count`
+  - `startup_selected_but_not_rendered_count`
+  - `source_recovered_after_no_frame_count`
+  - `source_recovered_after_handoff_error_count`
+- Keep persistent decoder revive and continuous-stream rewrite out of scope.
+
+### TODO Update
+- Updated `docs/operations/todo.md` current position with the startup/no-frame code-path interpretation and the `source_recovered` transition semantics.
+- Updated `docs/operations/todo.md` next items to prefer startup/no-frame attribution and minimal diagnostics-only follow-up over broader decode-path changes.
+- Updated `docs/operations/persistent-decoder-plan.md` with code-path findings for startup/no-frame availability and `source_recovered` slow-path interpretation.
+
+### Validation
+- `git diff --check`
+  - result: PASS
+  - note: LF/CRLF warnings only
+
+## 2026-05-18
+### Type
+- Codex docs-first analysis
+
+### Work
 - Recorded the latest same-PC `2`-client rerun evidence from `S:\stream-sync\manual-logs\two-client-render-rerun-20260518-111013`.
 - Kept the step docs-only and did not change code.
 - Updated `docs/operations/todo.md`, `docs/operations/session-log.md`, and `docs/operations/persistent-decoder-plan.md` to reflect the first rerun that included the implemented slow correlation diagnostics.

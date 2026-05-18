@@ -269,6 +269,27 @@
   - server `no_frame_count=264`
 - したがって next candidate は one-shot decode I/O broad regression ではなく、`source_recovered slow path` と `startup/no-frame availability` に寄せる
 
+## Startup / Source-Recovered Code-Path Findings
+- `apps/switcher/src/main.rs` の two-real preview loop では、`first_render_attempt_index` と `first_render_elapsed_ms` は clean output が `RenderReady` かつ inner render が `Rendered` になった最初の tick でのみ確定する
+- `no_render_before_first_render` は独立 counter ではなく、first rendered attempt index から導出される。したがって startup 中に non-render tick が続いた本数をそのまま読む項目として扱える
+- current startup chain は `scheduler -> decode/render adapter -> display policy -> quad composition -> render-facing -> clean output render`
+- `apps/switcher/src/lib.rs` の four-view scheduler では、slot ごとに `Selected` / `NoFrameAvailable` / `WaitingForFrameAtOrBeforeTarget` / `HandoffError` を保持したまま downstream へ流す
+- display policy では、`SkipNoFrameAvailable` と `SkipWaitingForFrameAtOrBeforeTarget` は previous displayed slot が無い間 `NoDisplayPlaceholder` になり、`SkipHandoffError` は `SourceErrorPlaceholder` になる
+- composition/render-facing では renderable slot count が `0` の tick は `NoRenderableQuadView` のまま終わる。つまり server aggregate で `frames_queued=1800` が見えていても、switcher startup では target-time eligible な selected slot が renderable になるまで first render は始まらない
+- latest rerun の `no_frame_count=864` と server `no_frame_count=264` は意味が違う。switcher 側は per-slot/per-tick 集計、server 側は handoff/queue read 層の no-frame 観測なので 1:1 比較ではなく availability trend として読む
+- `source_recovered` は previous slot diagnostic で `selected_frame_available != true`、current slot diagnostic で `selected_frame_available == true` になったときに付く
+- previous unavailable は `NoFrameAvailable` だけでなく `WaitingForFrameAtOrBeforeTarget` や `HandoffError` でも起こり得る。したがって latest rerun の `source_recovered:2` slow bias は「post-gap / post-error recovery decode」の候補として読むが、single-cause 断定には使わない
+- `handoff_error_count` もこの transition に関与し得る。previous tick が `HandoffError` で selected frame unavailable、current tick で selected frame available に戻ると、その次の decode attempt reason は `source_recovered` になり得る
+- current summary は slow bias の coarse comparison には十分だが、pre-first-render の non-render reason を aggregate では持っていない
+- 追加するなら next safer slice は diagnostics-only に留め、最小候補を以下へ絞る
+  - `first_render_wait_reason_counts`
+  - `no_render_before_first_render_reason_counts`
+  - `startup_no_frame_count`
+  - `startup_handoff_error_count`
+  - `startup_selected_but_not_rendered_count`
+  - `source_recovered_after_no_frame_count`
+  - `source_recovered_after_handoff_error_count`
+
 ## Safer Diagnostics Candidates
 - high-value candidates
   - `one_shot_decode_stdin_close_elapsed_ms`
@@ -397,6 +418,16 @@
 - continuous-stream decoder rewrite は別設計候補として保留し、別 step で必要性を再判断する
 - latest comparison baseline は `manual-logs/two-client-render-rerun-20260518-111013` と `manual-logs/two-client-render-rerun-20260517-223121` の組に更新する
 - current one-shot fallback path の next comparison axis は decode attempt frequency そのものではなく、implemented slow correlation fields の `source_recovered` 偏りと startup/no-frame availability に寄せる
+- next rerun で優先して見る summary は以下
+  - `first_render_attempt_index`
+  - `first_render_elapsed_ms`
+  - `no_render_before_first_render`
+  - `no_frame_count`
+  - `handoff_error_count`
+  - server `no_frame_count`
+  - `one_shot_decode_attempt_reason_counts`
+  - `one_shot_decode_slow_first_byte_reason_counts`
+  - `one_shot_decode_slow_output_read_reason_counts`
 - current one-shot code path では以下の境界を前提に safer slice を選ぶ
   - `decode_process_spawn_elapsed_ms`: `Command::spawn()` だけ
   - `decode_input_write_elapsed_ms`: `stdin.write_all(&input.encoded_payload)` だけ
