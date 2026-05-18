@@ -26,6 +26,15 @@
 - latest evidence では decode attempt frequency、slow first-byte、slow output-read、input-write outlier のどれか 1 つを主犯とは断定しない
 - 残課題は one-shot FFmpeg の per-attempt variance と、decode miss 時に render loop が FFmpeg I/O を同期的に待つ構造にある
 
+## current implementation status
+- 2026-05-18 first implementation slice として、two-real preview loop 専用の opt-in `--enable-continuous-stream-decoder` を追加した
+- scope は first configured real source、つまり command 引数上の `client0_id/run0_id` に限定する。slot1 / second real source は one-shot decode のまま残す
+- runtime は request/response persistent decoder helper を復活させず、continuous 専用に input writer thread、stdout raw BGRA reader thread、frame_id correspondence queue、decoded cache/key order を分けて持つ
+- startup は selected access unit が `has_sps && has_pps && has_idr` を満たすまで continuous process を開始せず、one-shot fallback に倒す
+- output queue / cache は first slice では selected `frame_id` の exact lookup と latest decoded cache reuse に留め、targetTime 厳密 selection は future slice に残す
+- memory upper bound は decoded cache key order `30` frames とし、bound 超過時は stale decoded frame を discard する
+- runtime rerun は未実施。build validation 通過後、人間側が `S:\stream-sync` で opt-in rerun して summary diagnostics を比較する
+
 ## request/response persistent decoder との違い
 - request/response persistent decoder:
   - render loop から `1 request -> stdin write -> stdout expected bytes read -> response wait` を同期的に待つ
@@ -155,9 +164,11 @@
   - disabled state では current one-shot path と同等に戻す
 
 ## diagnostics
-first implementationで summary に追加したい候補:
+first implementation で summary に追加済み:
 
-- `continuous_decode_enabled`
+- `continuous_decode_config_enabled`
+- `continuous_decode_runtime_enabled`
+- `continuous_decode_slot0_enabled`
 - `continuous_decode_input_frame_count`
 - `continuous_decode_output_frame_count`
 - `continuous_decode_queue_len`
@@ -166,14 +177,14 @@ first implementationで summary に追加したい候補:
 - `continuous_decode_stdout_read_elapsed_ms`
 - `continuous_decode_stall_count`
 - `continuous_decode_restart_count`
+- `continuous_decode_runtime_disabled`
+- `continuous_decode_runtime_disabled_reason`
 - `continuous_decode_fallback_to_one_shot_count`
 - `render_used_continuous_decoded_count`
 - `render_used_one_shot_fallback_count`
 
 追加候補:
 
-- `continuous_decode_runtime_disabled`
-- `continuous_decode_runtime_disabled_reason`
 - `continuous_decode_input_queue_drop_count`
 - `continuous_decode_output_queue_drop_count`
 - `continuous_decode_keyframe_wait_count`
@@ -192,20 +203,27 @@ first implementationで summary に追加したい候補:
 - `render_used_one_shot_fallback_count` が高い場合、continuous path はまだ hot path になっていない
 
 ## 最小 implementation slice
-docs-only後に実装する場合の最小候補:
+2026-05-18 first slice で実装済み:
 
 1. two-real preview loop 専用の opt-in flag を追加する
-   - 例: `--enable-continuous-stream-decoder`
+   - `--enable-continuous-stream-decoder`
    - existing `--disable-persistent-decoder` とは別物として扱う
 2. real slot 1 つだけ continuous decoder runtime を持つ
-   - player1 / slot0 から開始
-   - slot1 は current one-shot path のまま
-   - summary で continuous slot と one-shot slot を比較する
-3. per-slot input queue / correspondence queue / decoded output queue を caller-owned state として実装する
+   - command 上の first real source `client0_id/run0_id` から開始
+   - second real source は current one-shot path のまま
+   - summary で continuous path 使用回数と one-shot fallback 使用回数を比較する
+3. input writer / correspondence queue / decoded output event / decoded cache を continuous runtime state として実装する
 4. startup は keyframe wait にし、non-keyframe だけでは decoder を開始しない
-5. render loop は selected frame_id の decoded cache lookup を試し、無ければ one-shot fallback または hold/placeholder に落とす
+5. render loop は selected frame_id の decoded cache lookup を試し、無ければ one-shot fallback に落とす
 6. one-shot path、current request/response persistent path、scaled decode output path は削除しない
 7. diagnostics は上記 minimum set に限定し、4-client / distributed-PC / GPU decode / protocol変更には進まない
+
+future implementation slice:
+
+1. opt-in rerun で `render_used_continuous_decoded_count`、`render_used_one_shot_fallback_count`、`continuous_decode_frame_id_lag`、`continuous_decode_stall_count` を確認する
+2. stdout stall / input write failure / frame_id mismatch suspicion の runtime disable reason を actual run evidence に合わせて増やす
+3. selected frame exact lookup だけで足りない場合に、targetTime-aware queue lookup を追加する
+4. restart policy は first slice の counter visibility から始め、restart storm を避ける threshold を runtime evidence 後に決める
 
 ## out of scope
 - request/response persistent decoder の復活
@@ -221,7 +239,8 @@ docs-only後に実装する場合の最小候補:
 
 ## 完了条件
 - continuous-stream decoder は request/response persistent decoder と別設計として扱う
-- two-real preview loop 限定の最小導入設計がある
+- two-real preview loop 限定の opt-in path がある
+- first slice は first real source のみ continuous 対象で、second real source は one-shot のまま
 - frame_id correspondence / queue / fallback / diagnostics / implementation slice が整理されている
-- code変更は次 step 以降に分離する
+- one-shot fallback が残っている
 - Production Readiness は FAIL 継続

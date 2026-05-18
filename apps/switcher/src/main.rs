@@ -1,15 +1,15 @@
 use std::cell::RefCell;
-use std::collections::{HashMap, HashSet};
-use std::io::{self, BufRead};
+use std::collections::{HashMap, HashSet, VecDeque};
+use std::io::{self, BufRead, Read, Write};
 use std::num::NonZeroU32;
+use std::process::{Child, Command, Stdio};
 use std::rc::Rc;
-use std::sync::Mutex;
+use std::sync::{mpsc, Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 #[cfg(target_os = "windows")]
 use std::{
     fs::File,
-    io::{Read, Write},
     os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle},
 };
 use stream_sync_net_core::PacketSource;
@@ -400,6 +400,7 @@ fn main() {
                 frames,
                 two_real_options.read_mode,
                 two_real_options.persistent_decoder_enabled,
+                two_real_options.continuous_stream_decoder_enabled,
             ) {
                 Ok(summary) => println!(
                     "{}",
@@ -1664,6 +1665,7 @@ fn parse_optional_real_handoff_preview_mode_or_exit(
 struct TwoRealHandoffPreviewLoopOptions {
     read_mode: SwitcherSingleClientQueueSourceMode,
     persistent_decoder_enabled: bool,
+    continuous_stream_decoder_enabled: bool,
 }
 
 fn parse_two_real_handoff_preview_options_or_exit(
@@ -1672,9 +1674,14 @@ fn parse_two_real_handoff_preview_options_or_exit(
     let mut read_mode = SwitcherSingleClientQueueSourceMode::PreviewLatest;
     let mut read_mode_explicit = false;
     let mut persistent_decoder_enabled = true;
+    let mut continuous_stream_decoder_enabled = false;
     for value in values {
         if value == "--disable-persistent-decoder" {
             persistent_decoder_enabled = false;
+            continue;
+        }
+        if value == "--enable-continuous-stream-decoder" {
+            continuous_stream_decoder_enabled = true;
             continue;
         }
         if !read_mode_explicit {
@@ -1683,13 +1690,14 @@ fn parse_two_real_handoff_preview_options_or_exit(
             continue;
         }
         eprintln!(
-            "invalid extra argument for --four-view-two-real-handoff-preview-loop: expected preview-oldest, preview-latest, preview-latest-decodable, or --disable-persistent-decoder"
+            "invalid extra argument for --four-view-two-real-handoff-preview-loop: expected preview-oldest, preview-latest, preview-latest-decodable, --disable-persistent-decoder, or --enable-continuous-stream-decoder"
         );
         std::process::exit(1);
     }
     TwoRealHandoffPreviewLoopOptions {
         read_mode,
         persistent_decoder_enabled,
+        continuous_stream_decoder_enabled,
     }
 }
 
@@ -1885,6 +1893,22 @@ struct SwitcherFourViewTwoRealHandoffPreviewLoopSummary {
     persistent_decode_skipped_after_disabled_count: u32,
     persistent_decode_timeout_count: u32,
     persistent_decode_timeout_elapsed_ms: u128,
+    continuous_decode_config_enabled: bool,
+    continuous_decode_runtime_enabled: bool,
+    continuous_decode_slot0_enabled: bool,
+    continuous_decode_input_frame_count: u32,
+    continuous_decode_output_frame_count: u32,
+    continuous_decode_queue_len: usize,
+    continuous_decode_dropped_stale_count: u32,
+    continuous_decode_frame_id_lag: u64,
+    continuous_decode_stdout_read_elapsed_ms: u128,
+    continuous_decode_stall_count: u32,
+    continuous_decode_restart_count: u32,
+    continuous_decode_runtime_disabled: bool,
+    continuous_decode_runtime_disabled_reason: String,
+    continuous_decode_fallback_to_one_shot_count: u32,
+    render_used_continuous_decoded_count: u32,
+    render_used_one_shot_fallback_count: u32,
     one_shot_decode_fallback_count: u32,
     one_shot_decode_attempt_count: u32,
     one_shot_decode_elapsed_ms: u128,
@@ -2426,6 +2450,22 @@ struct TwoRealPreviewLoopRuntimeTiming {
     persistent_decode_skipped_after_disabled_count: u32,
     persistent_decode_timeout_count: u32,
     persistent_decode_timeout_elapsed_ms: u128,
+    continuous_decode_config_enabled: bool,
+    continuous_decode_runtime_enabled: bool,
+    continuous_decode_slot0_enabled: bool,
+    continuous_decode_input_frame_count: u32,
+    continuous_decode_output_frame_count: u32,
+    continuous_decode_queue_len: usize,
+    continuous_decode_dropped_stale_count: u32,
+    continuous_decode_frame_id_lag: u64,
+    continuous_decode_stdout_read_elapsed_ms: u128,
+    continuous_decode_stall_count: u32,
+    continuous_decode_restart_count: u32,
+    continuous_decode_runtime_disabled: bool,
+    continuous_decode_runtime_disabled_reason: Option<String>,
+    continuous_decode_fallback_to_one_shot_count: u32,
+    render_used_continuous_decoded_count: u32,
+    render_used_one_shot_fallback_count: u32,
     one_shot_decode_fallback_count: u32,
     one_shot_decode_attempt_count: u32,
     one_shot_decode_elapsed_ms: u128,
@@ -2730,11 +2770,468 @@ struct TwoRealPreviewLoopDecodeOutputOverride {
     reason: &'static str,
 }
 
+const TWO_REAL_CONTINUOUS_DECODE_QUEUE_BOUND: usize = 30;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct TwoRealContinuousDecodeSource {
+    client_id: ClientId,
+    run_id: RunId,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct TwoRealContinuousDecodeMetadata {
+    key: TwoRealPreviewLoopDecodeCacheKey,
+    frame_id: u64,
+}
+
+struct TwoRealContinuousDecodeInput {
+    metadata: TwoRealContinuousDecodeMetadata,
+    encoded_payload: Vec<u8>,
+}
+
+struct TwoRealContinuousDecodeOutput {
+    metadata: TwoRealContinuousDecodeMetadata,
+    frame: SwitcherDecodedFrame,
+    stdout_read_elapsed_ms: u128,
+}
+
+enum TwoRealContinuousDecodeEvent {
+    Decoded(TwoRealContinuousDecodeOutput),
+    RuntimeError(String),
+}
+
+struct TwoRealContinuousDecodeSession {
+    child: Child,
+    input_tx: mpsc::SyncSender<TwoRealContinuousDecodeInput>,
+    output_rx: mpsc::Receiver<TwoRealContinuousDecodeEvent>,
+    writer_thread: Option<thread::JoinHandle<()>>,
+    reader_thread: Option<thread::JoinHandle<()>>,
+    stderr_thread: Option<thread::JoinHandle<()>>,
+}
+
+impl TwoRealContinuousDecodeSession {
+    fn stop(mut self) {
+        drop(self.input_tx);
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+        if let Some(writer_thread) = self.writer_thread.take() {
+            let _ = writer_thread.join();
+        }
+        if let Some(reader_thread) = self.reader_thread.take() {
+            let _ = reader_thread.join();
+        }
+        if let Some(stderr_thread) = self.stderr_thread.take() {
+            let _ = stderr_thread.join();
+        }
+    }
+}
+
+struct TwoRealContinuousDecodeRuntime {
+    source: TwoRealContinuousDecodeSource,
+    session: Option<TwoRealContinuousDecodeSession>,
+    output_expected_len: usize,
+    runtime_disabled: bool,
+    runtime_disabled_reason: Option<String>,
+    enqueued_keys: HashSet<TwoRealPreviewLoopDecodeCacheKey>,
+    continuous_decoded_keys: HashSet<TwoRealPreviewLoopDecodeCacheKey>,
+    continuous_key_order: VecDeque<TwoRealPreviewLoopDecodeCacheKey>,
+    latest_decoded_frame_id: Option<u64>,
+    last_output_at: Option<Instant>,
+    restart_count: u32,
+}
+
+impl TwoRealContinuousDecodeRuntime {
+    fn new(source: TwoRealContinuousDecodeSource, output_width: u32, output_height: u32) -> Self {
+        let output_expected_len = output_width as usize * output_height as usize * 4;
+        Self {
+            source,
+            session: None,
+            output_expected_len,
+            runtime_disabled: false,
+            runtime_disabled_reason: None,
+            enqueued_keys: HashSet::new(),
+            continuous_decoded_keys: HashSet::new(),
+            continuous_key_order: VecDeque::new(),
+            latest_decoded_frame_id: None,
+            last_output_at: None,
+            restart_count: 0,
+        }
+    }
+
+    fn matches_source(&self, input: &SwitcherH264DecodeInput) -> bool {
+        input
+            .source_identity
+            .as_ref()
+            .map(|source| {
+                source.client_id == self.source.client_id && source.run_id == self.source.run_id
+            })
+            .unwrap_or(false)
+    }
+
+    fn update_timing_flags(&self, timing: &mut TwoRealPreviewLoopRuntimeTiming) {
+        timing.continuous_decode_config_enabled = true;
+        timing.continuous_decode_slot0_enabled = true;
+        timing.continuous_decode_runtime_enabled = !self.runtime_disabled;
+        timing.continuous_decode_runtime_disabled = self.runtime_disabled;
+        timing.continuous_decode_runtime_disabled_reason = self.runtime_disabled_reason.clone();
+        timing.continuous_decode_queue_len = self.continuous_key_order.len();
+        timing.continuous_decode_restart_count = self.restart_count;
+    }
+
+    fn disable(&mut self, timing: &mut TwoRealPreviewLoopRuntimeTiming, reason: impl Into<String>) {
+        let reason = reason.into();
+        self.runtime_disabled = true;
+        self.runtime_disabled_reason = Some(reason.clone());
+        if let Some(session) = self.session.take() {
+            session.stop();
+        }
+        timing.continuous_decode_runtime_enabled = false;
+        timing.continuous_decode_runtime_disabled = true;
+        timing.continuous_decode_runtime_disabled_reason = Some(reason);
+    }
+
+    fn ensure_started(
+        &mut self,
+        input: &SwitcherH264DecodeInput,
+        timing: &mut TwoRealPreviewLoopRuntimeTiming,
+    ) -> Result<(), String> {
+        self.update_timing_flags(timing);
+        if self.runtime_disabled {
+            return Err(self
+                .runtime_disabled_reason
+                .clone()
+                .unwrap_or_else(|| "continuous_runtime_disabled".to_string()));
+        }
+        if self.session.is_some() {
+            return Ok(());
+        }
+        let payload_summary =
+            SwitcherH264AnnexBPayloadInspectionBoundary.inspect_payload(&input.encoded_payload);
+        if !(payload_summary.has_sps && payload_summary.has_pps && payload_summary.has_idr) {
+            return Err("continuous_startup_requires_sps_pps_idr".to_string());
+        }
+        match spawn_two_real_continuous_ffmpeg_decode_session(
+            "ffmpeg",
+            input.width,
+            input.height,
+            input.scaled_output_enabled,
+            self.output_expected_len,
+        ) {
+            Ok(session) => {
+                self.session = Some(session);
+                self.last_output_at = Some(Instant::now());
+                Ok(())
+            }
+            Err(error) => {
+                let reason = if error.kind() == io::ErrorKind::NotFound {
+                    "continuous_ffmpeg_unavailable".to_string()
+                } else {
+                    format!("continuous_ffmpeg_spawn_failed:{}", error)
+                };
+                self.disable(timing, reason.clone());
+                Err(reason)
+            }
+        }
+    }
+
+    fn enqueue(
+        &mut self,
+        input: &SwitcherH264DecodeInput,
+        key: &TwoRealPreviewLoopDecodeCacheKey,
+        timing: &mut TwoRealPreviewLoopRuntimeTiming,
+    ) {
+        self.update_timing_flags(timing);
+        if self.runtime_disabled || self.enqueued_keys.contains(key) {
+            return;
+        }
+        let Some(source_identity) = input.source_identity.as_ref() else {
+            return;
+        };
+        if self.ensure_started(input, timing).is_err() {
+            return;
+        }
+        let metadata = TwoRealContinuousDecodeMetadata {
+            key: key.clone(),
+            frame_id: source_identity.frame_id,
+        };
+        let Some(session) = self.session.as_ref() else {
+            return;
+        };
+        match session.input_tx.try_send(TwoRealContinuousDecodeInput {
+            metadata,
+            encoded_payload: input.encoded_payload.clone(),
+        }) {
+            Ok(()) => {
+                self.enqueued_keys.insert(key.clone());
+                timing.continuous_decode_input_frame_count =
+                    timing.continuous_decode_input_frame_count.saturating_add(1);
+            }
+            Err(mpsc::TrySendError::Full(_)) => {
+                timing.continuous_decode_dropped_stale_count = timing
+                    .continuous_decode_dropped_stale_count
+                    .saturating_add(1);
+            }
+            Err(mpsc::TrySendError::Disconnected(_)) => {
+                self.disable(timing, "continuous_input_writer_disconnected");
+            }
+        }
+    }
+
+    fn drain_outputs(
+        &mut self,
+        decoded_cache: &mut HashMap<TwoRealPreviewLoopDecodeCacheKey, SwitcherDecodedFrame>,
+        timing: &mut TwoRealPreviewLoopRuntimeTiming,
+    ) {
+        self.update_timing_flags(timing);
+        let mut events = Vec::new();
+        if let Some(session) = self.session.as_ref() {
+            while let Ok(event) = session.output_rx.try_recv() {
+                events.push(event);
+            }
+        }
+        for event in events {
+            match event {
+                TwoRealContinuousDecodeEvent::Decoded(output) => {
+                    timing.continuous_decode_output_frame_count = timing
+                        .continuous_decode_output_frame_count
+                        .saturating_add(1);
+                    timing.continuous_decode_stdout_read_elapsed_ms = timing
+                        .continuous_decode_stdout_read_elapsed_ms
+                        .saturating_add(output.stdout_read_elapsed_ms);
+                    self.latest_decoded_frame_id = Some(output.metadata.frame_id);
+                    self.last_output_at = Some(Instant::now());
+                    decoded_cache.insert(output.metadata.key.clone(), output.frame);
+                    self.continuous_decoded_keys
+                        .insert(output.metadata.key.clone());
+                    self.continuous_key_order
+                        .push_back(output.metadata.key.clone());
+                    while self.continuous_key_order.len() > TWO_REAL_CONTINUOUS_DECODE_QUEUE_BOUND {
+                        if let Some(stale_key) = self.continuous_key_order.pop_front() {
+                            self.continuous_decoded_keys.remove(&stale_key);
+                            decoded_cache.remove(&stale_key);
+                            timing.continuous_decode_dropped_stale_count = timing
+                                .continuous_decode_dropped_stale_count
+                                .saturating_add(1);
+                        }
+                    }
+                }
+                TwoRealContinuousDecodeEvent::RuntimeError(reason) => {
+                    self.disable(timing, reason);
+                }
+            }
+        }
+        timing.continuous_decode_queue_len = self.continuous_key_order.len();
+        timing.continuous_decode_runtime_enabled = !self.runtime_disabled;
+    }
+
+    fn observe_frame_id_lag(
+        &self,
+        input: &SwitcherH264DecodeInput,
+        timing: &mut TwoRealPreviewLoopRuntimeTiming,
+    ) {
+        if let (Some(source), Some(latest_decoded)) =
+            (input.source_identity.as_ref(), self.latest_decoded_frame_id)
+        {
+            timing.continuous_decode_frame_id_lag = timing
+                .continuous_decode_frame_id_lag
+                .max(source.frame_id.saturating_sub(latest_decoded));
+            if source.frame_id.saturating_sub(latest_decoded)
+                > TWO_REAL_CONTINUOUS_DECODE_QUEUE_BOUND as u64
+            {
+                timing.continuous_decode_stall_count =
+                    timing.continuous_decode_stall_count.saturating_add(1);
+            }
+        }
+    }
+
+    fn is_continuous_decoded_key(&self, key: &TwoRealPreviewLoopDecodeCacheKey) -> bool {
+        self.continuous_decoded_keys.contains(key)
+    }
+
+    fn stop(&mut self) {
+        if let Some(session) = self.session.take() {
+            session.stop();
+        }
+    }
+}
+
+impl Drop for TwoRealContinuousDecodeRuntime {
+    fn drop(&mut self) {
+        self.stop();
+    }
+}
+
+fn spawn_two_real_continuous_ffmpeg_decode_session(
+    ffmpeg_path: &str,
+    output_width: u32,
+    output_height: u32,
+    scaled_output_enabled: bool,
+    expected_len: usize,
+) -> io::Result<TwoRealContinuousDecodeSession> {
+    let mut command = Command::new(ffmpeg_path);
+    command
+        .arg("-hide_banner")
+        .arg("-loglevel")
+        .arg("error")
+        .arg("-f")
+        .arg("h264")
+        .arg("-i")
+        .arg("pipe:0");
+    if scaled_output_enabled {
+        command.arg("-vf").arg(format!(
+            "scale={output_width}:{output_height}:flags=neighbor"
+        ));
+    }
+    command
+        .arg("-f")
+        .arg("rawvideo")
+        .arg("-pix_fmt")
+        .arg("bgra")
+        .arg("pipe:1")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let mut child = command.spawn()?;
+    let stdin = child.stdin.take().ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::BrokenPipe,
+            "continuous ffmpeg stdin pipe unavailable",
+        )
+    })?;
+    let stdout = child.stdout.take().ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::BrokenPipe,
+            "continuous ffmpeg stdout pipe unavailable",
+        )
+    })?;
+    let stderr = child.stderr.take().ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::BrokenPipe,
+            "continuous ffmpeg stderr pipe unavailable",
+        )
+    })?;
+    let (input_tx, input_rx) = mpsc::sync_channel(TWO_REAL_CONTINUOUS_DECODE_QUEUE_BOUND);
+    let (output_tx, output_rx) = mpsc::channel();
+    let correspondence = Arc::new(Mutex::new(VecDeque::new()));
+    let writer_correspondence = Arc::clone(&correspondence);
+    let writer_output_tx = output_tx.clone();
+    let writer_thread = thread::spawn(move || {
+        two_real_continuous_ffmpeg_writer_loop(
+            stdin,
+            input_rx,
+            writer_correspondence,
+            writer_output_tx,
+        );
+    });
+    let reader_thread = thread::spawn(move || {
+        two_real_continuous_ffmpeg_reader_loop(
+            stdout,
+            expected_len,
+            output_width,
+            output_height,
+            correspondence,
+            output_tx,
+        );
+    });
+    let stderr_thread = thread::spawn(move || {
+        let mut stderr = stderr;
+        let mut stderr_bytes = Vec::new();
+        let _ = stderr.read_to_end(&mut stderr_bytes);
+    });
+    Ok(TwoRealContinuousDecodeSession {
+        child,
+        input_tx,
+        output_rx,
+        writer_thread: Some(writer_thread),
+        reader_thread: Some(reader_thread),
+        stderr_thread: Some(stderr_thread),
+    })
+}
+
+fn two_real_continuous_ffmpeg_writer_loop(
+    mut stdin: impl Write,
+    input_rx: mpsc::Receiver<TwoRealContinuousDecodeInput>,
+    correspondence: Arc<Mutex<VecDeque<TwoRealContinuousDecodeMetadata>>>,
+    output_tx: mpsc::Sender<TwoRealContinuousDecodeEvent>,
+) {
+    while let Ok(input) = input_rx.recv() {
+        if let Ok(mut queue) = correspondence.lock() {
+            queue.push_back(input.metadata);
+        } else {
+            let _ = output_tx.send(TwoRealContinuousDecodeEvent::RuntimeError(
+                "continuous_correspondence_lock_poisoned".to_string(),
+            ));
+            break;
+        }
+        if let Err(error) = stdin.write_all(&input.encoded_payload) {
+            let _ = output_tx.send(TwoRealContinuousDecodeEvent::RuntimeError(format!(
+                "continuous_stdin_write_failed:{}",
+                error
+            )));
+            break;
+        }
+    }
+}
+
+fn two_real_continuous_ffmpeg_reader_loop(
+    mut stdout: impl Read,
+    expected_len: usize,
+    output_width: u32,
+    output_height: u32,
+    correspondence: Arc<Mutex<VecDeque<TwoRealContinuousDecodeMetadata>>>,
+    output_tx: mpsc::Sender<TwoRealContinuousDecodeEvent>,
+) {
+    loop {
+        let read_start = Instant::now();
+        let mut pixels = vec![0u8; expected_len];
+        if let Err(error) = stdout.read_exact(&mut pixels) {
+            let _ = output_tx.send(TwoRealContinuousDecodeEvent::RuntimeError(format!(
+                "continuous_stdout_read_failed:{}",
+                error
+            )));
+            break;
+        }
+        let metadata = match correspondence.lock() {
+            Ok(mut queue) => queue.pop_front(),
+            Err(_) => {
+                let _ = output_tx.send(TwoRealContinuousDecodeEvent::RuntimeError(
+                    "continuous_correspondence_lock_poisoned".to_string(),
+                ));
+                break;
+            }
+        };
+        let Some(metadata) = metadata else {
+            let _ = output_tx.send(TwoRealContinuousDecodeEvent::RuntimeError(
+                "continuous_frame_id_mismatch_output_without_input".to_string(),
+            ));
+            break;
+        };
+        if output_tx
+            .send(TwoRealContinuousDecodeEvent::Decoded(
+                TwoRealContinuousDecodeOutput {
+                    metadata,
+                    frame: SwitcherDecodedFrame {
+                        width: output_width,
+                        height: output_height,
+                        pixel_format: SwitcherDecodedFramePixelFormat::Bgra8,
+                        pixels,
+                    },
+                    stdout_read_elapsed_ms: read_start.elapsed().as_millis(),
+                },
+            ))
+            .is_err()
+        {
+            break;
+        }
+    }
+}
+
 struct TimedSwitcherH264DecodeRuntime<'a, Runtime> {
     inner: &'a Runtime,
     timing: Rc<RefCell<TwoRealPreviewLoopRuntimeTiming>>,
     decoded_cache: RefCell<HashMap<TwoRealPreviewLoopDecodeCacheKey, SwitcherDecodedFrame>>,
     output_override: Option<TwoRealPreviewLoopDecodeOutputOverride>,
+    continuous_slot0: RefCell<Option<TwoRealContinuousDecodeRuntime>>,
 }
 
 impl<'a, Runtime> TimedSwitcherH264DecodeRuntime<'a, Runtime> {
@@ -2742,12 +3239,31 @@ impl<'a, Runtime> TimedSwitcherH264DecodeRuntime<'a, Runtime> {
         inner: &'a Runtime,
         timing: Rc<RefCell<TwoRealPreviewLoopRuntimeTiming>>,
         output_override: Option<TwoRealPreviewLoopDecodeOutputOverride>,
+        continuous_slot0_source: Option<TwoRealContinuousDecodeSource>,
     ) -> Self {
+        let continuous_slot0 = continuous_slot0_source.map(|source| {
+            let output_width = output_override
+                .as_ref()
+                .map(|override_config| override_config.width)
+                .unwrap_or(0);
+            let output_height = output_override
+                .as_ref()
+                .map(|override_config| override_config.height)
+                .unwrap_or(0);
+            TwoRealContinuousDecodeRuntime::new(source, output_width, output_height)
+        });
+        {
+            let mut timing = timing.borrow_mut();
+            timing.continuous_decode_config_enabled = continuous_slot0.is_some();
+            timing.continuous_decode_slot0_enabled = continuous_slot0.is_some();
+            timing.continuous_decode_runtime_enabled = continuous_slot0.is_some();
+        }
         Self {
             inner,
             timing,
             decoded_cache: RefCell::new(HashMap::new()),
             output_override,
+            continuous_slot0: RefCell::new(continuous_slot0),
         }
     }
 }
@@ -2779,6 +3295,23 @@ where
             },
             source_identity,
         };
+        let continuous_slot0_targeted = {
+            let mut continuous_slot0 = self.continuous_slot0.borrow_mut();
+            if let Some(continuous_slot0) = continuous_slot0.as_mut() {
+                let mut timing = self.timing.borrow_mut();
+                continuous_slot0.update_timing_flags(&mut timing);
+                if continuous_slot0.matches_source(&input) {
+                    continuous_slot0
+                        .drain_outputs(&mut self.decoded_cache.borrow_mut(), &mut timing);
+                    continuous_slot0.observe_frame_id_lag(&input, &mut timing);
+                    true
+                } else {
+                    false
+                }
+            } else {
+                false
+            }
+        };
         if let Some(decoded) = self.decoded_cache.borrow().get(&key) {
             let clone_start = Instant::now();
             let decoded = decoded.clone();
@@ -2787,10 +3320,51 @@ where
             timing.decode_cache_hit_clone_count += 1;
             timing.decoded_buffer_clone_count += 1;
             timing.decoded_buffer_clone_elapsed_ms += clone_start.elapsed().as_millis();
+            if self
+                .continuous_slot0
+                .borrow()
+                .as_ref()
+                .map(|continuous_slot0| continuous_slot0.is_continuous_decoded_key(&key))
+                .unwrap_or(false)
+            {
+                timing.render_used_continuous_decoded_count = timing
+                    .render_used_continuous_decoded_count
+                    .saturating_add(1);
+            }
             return SwitcherH264DecodeResult::Decoded(decoded);
         }
 
         self.timing.borrow_mut().decode_cache_miss_count += 1;
+        if continuous_slot0_targeted {
+            {
+                let mut continuous_slot0 = self.continuous_slot0.borrow_mut();
+                if let Some(continuous_slot0) = continuous_slot0.as_mut() {
+                    let mut timing = self.timing.borrow_mut();
+                    continuous_slot0.enqueue(&input, &key, &mut timing);
+                    continuous_slot0
+                        .drain_outputs(&mut self.decoded_cache.borrow_mut(), &mut timing);
+                }
+            }
+            if let Some(decoded) = self.decoded_cache.borrow().get(&key) {
+                let clone_start = Instant::now();
+                let decoded = decoded.clone();
+                let mut timing = self.timing.borrow_mut();
+                timing.decode_cached_frame_reuse_count += 1;
+                timing.decode_cache_hit_clone_count += 1;
+                timing.decoded_buffer_clone_count += 1;
+                timing.decoded_buffer_clone_elapsed_ms += clone_start.elapsed().as_millis();
+                timing.render_used_continuous_decoded_count = timing
+                    .render_used_continuous_decoded_count
+                    .saturating_add(1);
+                return SwitcherH264DecodeResult::Decoded(decoded);
+            }
+            let mut timing = self.timing.borrow_mut();
+            timing.continuous_decode_fallback_to_one_shot_count = timing
+                .continuous_decode_fallback_to_one_shot_count
+                .saturating_add(1);
+            timing.render_used_one_shot_fallback_count =
+                timing.render_used_one_shot_fallback_count.saturating_add(1);
+        }
         let start = Instant::now();
         let output = self.inner.decode_annex_b_h264_with_diagnostics(input);
         let result = output.result;
@@ -3686,6 +4260,7 @@ fn run_four_view_two_real_handoff_preview_loop(
     frames: NonZeroU32,
     read_mode: SwitcherSingleClientQueueSourceMode,
     persistent_decoder_enabled: bool,
+    continuous_stream_decoder_enabled: bool,
 ) -> Result<SwitcherFourViewTwoRealHandoffPreviewLoopSummary, String> {
     let handoff = ObservedNamedPipePreviewHandoff::new(SwitcherNamedPipeQueuedFrameHandoff::new(
         pipe_name,
@@ -3707,6 +4282,7 @@ fn run_four_view_two_real_handoff_preview_loop(
         frames,
         read_mode,
         real_four_view_preview_target_timestamp,
+        continuous_stream_decoder_enabled,
         handoff,
         &persistent_decode_runtime,
         &render_runtime,
@@ -3726,6 +4302,7 @@ fn run_four_view_two_real_handoff_preview_loop(
     _frames: NonZeroU32,
     _read_mode: SwitcherSingleClientQueueSourceMode,
     _persistent_decoder_enabled: bool,
+    _continuous_stream_decoder_enabled: bool,
 ) -> Result<SwitcherFourViewTwoRealHandoffPreviewLoopSummary, String> {
     Err("four-view two-real handoff preview loop is only available on Windows".to_string())
 }
@@ -4069,6 +4646,7 @@ where
         frames,
         read_mode,
         move || target_timestamp,
+        false,
         real_handoff,
         decode_runtime,
         render_runtime,
@@ -4092,6 +4670,7 @@ fn run_four_view_two_real_handoff_preview_loop_with_handoff_runtime_target_times
     frames: NonZeroU32,
     read_mode: SwitcherSingleClientQueueSourceMode,
     mut target_timestamp_hook: TargetTimestampHook,
+    continuous_stream_decoder_enabled: bool,
     real_handoff: RealHandoff,
     decode_runtime: &DecodeRuntime,
     render_runtime: &RenderRuntime,
@@ -4165,6 +4744,10 @@ where
             width: FOUR_VIEW_CLEAN_OUTPUT_LOOP_OBS_OUTPUT_WIDTH / 2,
             height: FOUR_VIEW_CLEAN_OUTPUT_LOOP_OBS_OUTPUT_HEIGHT / 2,
             reason: "two_real_slot_size",
+        }),
+        continuous_stream_decoder_enabled.then(|| TwoRealContinuousDecodeSource {
+            client_id: client0_id.clone(),
+            run_id: run0_id.clone(),
         }),
     );
     let mut previous_slots: [Option<SwitcherFourViewDisplayedSlot>; 4] =
@@ -4685,6 +5268,26 @@ where
             .persistent_decode_skipped_after_disabled_count,
         persistent_decode_timeout_count: timing.persistent_decode_timeout_count,
         persistent_decode_timeout_elapsed_ms: timing.persistent_decode_timeout_elapsed_ms,
+        continuous_decode_config_enabled: timing.continuous_decode_config_enabled,
+        continuous_decode_runtime_enabled: timing.continuous_decode_runtime_enabled,
+        continuous_decode_slot0_enabled: timing.continuous_decode_slot0_enabled,
+        continuous_decode_input_frame_count: timing.continuous_decode_input_frame_count,
+        continuous_decode_output_frame_count: timing.continuous_decode_output_frame_count,
+        continuous_decode_queue_len: timing.continuous_decode_queue_len,
+        continuous_decode_dropped_stale_count: timing.continuous_decode_dropped_stale_count,
+        continuous_decode_frame_id_lag: timing.continuous_decode_frame_id_lag,
+        continuous_decode_stdout_read_elapsed_ms: timing.continuous_decode_stdout_read_elapsed_ms,
+        continuous_decode_stall_count: timing.continuous_decode_stall_count,
+        continuous_decode_restart_count: timing.continuous_decode_restart_count,
+        continuous_decode_runtime_disabled: timing.continuous_decode_runtime_disabled,
+        continuous_decode_runtime_disabled_reason: timing
+            .continuous_decode_runtime_disabled_reason
+            .clone()
+            .unwrap_or_else(|| "none".to_string()),
+        continuous_decode_fallback_to_one_shot_count: timing
+            .continuous_decode_fallback_to_one_shot_count,
+        render_used_continuous_decoded_count: timing.render_used_continuous_decoded_count,
+        render_used_one_shot_fallback_count: timing.render_used_one_shot_fallback_count,
         one_shot_decode_fallback_count: timing.one_shot_decode_fallback_count,
         one_shot_decode_attempt_count: timing.one_shot_decode_attempt_count,
         one_shot_decode_elapsed_ms: timing.one_shot_decode_elapsed_ms,
@@ -9287,7 +9890,7 @@ fn format_four_view_two_real_handoff_preview_loop_summary(
     summary: &SwitcherFourViewTwoRealHandoffPreviewLoopSummary,
 ) -> String {
     format!(
-        "switcher four-view two-real handoff preview loop command_name=--four-view-two-real-handoff-preview-loop real_handoff=true real_slot_count=2 real_slot0_index={} real_slot1_index={} pipe_name={} actual_pipe_path={} preview_mode={} read_mode={} client0_id={} run0_id={} client1_id={} run1_id={} frames_attempted={} frames_rendered={} render_failures={} elapsed_ms={} target_fps={} configured_frame_interval_ms={} effective_attempt_fps={} effective_render_fps={} first_render_attempt_index={} first_render_elapsed_ms={} rendered_after_first_render={} effective_render_fps_after_first_render={} no_render_before_first_render={} selected_count={} no_frame_count={} handoff_error_count={} decode_attempt_count={} decode_success_count={} render_success_count={} render_failure_count={} unchanged_frame_reuse_count={} skipped_decode_unchanged_frame_count={} redecoded_same_frame_count={} decode_elapsed_ms={} decode_process_spawn_elapsed_ms={} decode_input_write_elapsed_ms={} decode_input_payload_bytes_total={} decode_output_read_elapsed_ms={} decode_output_read_exact_elapsed_ms={} decode_output_vec_resize_elapsed_ms={} decode_process_wait_elapsed_ms={} decode_pixel_convert_elapsed_ms={} decode_buffer_allocation_count={} decode_output_bytes_total={} decode_stdout_expected_bytes_total={} decode_cached_frame_reuse_count={} decode_cache_miss_count={} decoded_buffer_clone_count={} decode_cache_hit_clone_count={} decode_cache_store_clone_count={} decoded_buffer_clone_elapsed_ms={} composed_buffer_clone_count={} decode_output_buffer_reuse_count={} persistent_decode_config_enabled={} persistent_decode_enabled={} persistent_decode_attempt_count={} persistent_decode_success_count={} persistent_decode_failure_count={} persistent_decode_fallback_count={} persistent_decode_process_spawn_count={} persistent_decode_process_restart_count={} persistent_decode_stdin_write_elapsed_ms={} persistent_decode_stdout_read_elapsed_ms={} persistent_decode_stdout_read_exact_elapsed_ms={} persistent_decode_output_bytes_total={} persistent_decode_last_error={} persistent_decode_runtime_disabled={} persistent_decode_runtime_disabled_reason={} persistent_decode_consecutive_failure_count={} persistent_decode_disabled_after_failure_count={} persistent_decode_skipped_by_config_count={} persistent_decode_skipped_after_disabled_count={} persistent_decode_timeout_count={} persistent_decode_timeout_elapsed_ms={} one_shot_decode_fallback_count={} one_shot_decode_attempt_count={} one_shot_decode_elapsed_ms={} one_shot_decode_elapsed_ms_max={} one_shot_decode_input_write_elapsed_ms={} one_shot_decode_input_write_elapsed_ms_max={} one_shot_decode_stdin_close_elapsed_ms={} one_shot_decode_stdin_write_to_stdout_first_byte_elapsed_ms={} one_shot_decode_stdin_write_to_stdout_first_byte_elapsed_ms_max={} one_shot_decode_stdout_first_byte_elapsed_ms={} one_shot_decode_first_byte_elapsed_ms_max={} one_shot_decode_first_byte_slow_count={} one_shot_decode_first_byte_slow_threshold_ms={} one_shot_decode_output_read_elapsed_ms={} one_shot_decode_output_read_elapsed_ms_max={} one_shot_decode_output_read_slow_count={} one_shot_decode_output_read_slow_threshold_ms={} one_shot_decode_output_read_exact_elapsed_ms={} one_shot_decode_output_read_exact_elapsed_ms_max={} one_shot_decode_extra_output_probe_elapsed_ms={} one_shot_decode_attempt_source_counts={} one_shot_decode_attempt_slot_counts={} one_shot_decode_attempt_reason_counts={} one_shot_decode_slow_first_byte_slot_counts={} one_shot_decode_slow_first_byte_source_counts={} one_shot_decode_slow_first_byte_reason_counts={} one_shot_decode_slow_output_read_slot_counts={} one_shot_decode_slow_output_read_source_counts={} one_shot_decode_slow_output_read_reason_counts={} one_shot_decode_input_write_outlier_count={} one_shot_decode_input_write_outlier_threshold_ms={} one_shot_decode_input_write_outlier_slot_counts={} one_shot_decode_input_write_outlier_source_counts={} one_shot_decode_input_write_outlier_reason_counts={} one_shot_decode_input_write_outlier_payload_bytes_total={} one_shot_decode_input_write_outlier_payload_bytes_avg={} decode_cache_miss_slot0_count={} decode_cache_miss_slot1_count={} one_shot_decode_write_throughput_bytes_per_ms={} one_shot_decode_input_write_elapsed_per_payload_kb={} one_shot_decode_read_throughput_bytes_per_ms={} one_shot_decode_input_payload_bytes_min={} one_shot_decode_input_payload_bytes_max={} one_shot_decode_input_payload_bytes_avg={} one_shot_decode_keyframe_attempt_count={} one_shot_decode_non_keyframe_attempt_count={} one_shot_decode_keyframe_elapsed_ms={} one_shot_decode_non_keyframe_elapsed_ms={} one_shot_decode_keyframe_input_payload_bytes_total={} one_shot_decode_non_keyframe_input_payload_bytes_total={} one_shot_decode_expected_output_bytes_per_frame={} one_shot_decode_output_width={} one_shot_decode_output_height={} one_shot_decode_output_pixel_format={} one_shot_decode_scaled_output_enabled={} one_shot_decode_scaled_output_reason={} handoff_elapsed_ms={} render_elapsed_ms={} avg_decode_elapsed_ms={} avg_decode_input_write_elapsed_ms={} avg_decode_output_read_elapsed_ms={} avg_decode_process_spawn_elapsed_ms={} avg_handoff_elapsed_ms={} avg_render_elapsed_ms={} loop_total_elapsed_ms={} attempt_body_elapsed_ms={} loop_sleep_elapsed_ms={} frame_interval_wait_elapsed_ms={} event_pump_elapsed_ms={} window_update_elapsed_ms={} render_prepare_elapsed_ms={} render_buffer_cpu_scale_copy_elapsed_ms={} render_buffer_copy_elapsed_ms={} render_buffer_materialization_elapsed_ms={} render_buffer_scale_prepare_elapsed_ms={} render_buffer_scale_loop_elapsed_ms={} render_buffer_output_copy_elapsed_ms={} render_buffer_resize_elapsed_ms={} render_buffer_clear_elapsed_ms={} render_buffer_passthrough_count={} render_buffer_same_size_copy_count={} render_buffer_half_scale_count={} render_buffer_generic_scale_count={} render_buffer_reuse_count={} render_buffer_allocation_count={} render_buffer_bytes_copied_total={} render_backend_wait_elapsed_ms={} gdi_invalidate_elapsed_ms={} gdi_paint_wait_elapsed_ms={} gdi_wm_paint_elapsed_ms={} gdi_stretchdibits_elapsed_ms={} texture_upload_elapsed_ms={} window_present_elapsed_ms={} vsync_or_present_block_elapsed_ms={} quad_view_compose_elapsed_ms={} quad_view_compose_attempt_count={} quad_view_compose_success_count={} quad_view_compose_skipped_unchanged_count={} quad_view_composed_frame_reuse_count={} quad_view_visual_unchanged_count={} quad_view_visual_changed_count={} materialization_reason_first_render_count={} materialization_reason_visual_changed_count={} materialization_reason_previous_output_missing_count={} materialization_reason_profile_or_size_mismatch_count={} materialization_reason_force_render_count={} materialization_reason_unknown_count={} slot0_frame_id_changed_count={} slot1_frame_id_changed_count={} slot2_frame_id_changed_count={} slot3_frame_id_changed_count={} slot0_selected_source_changed_count={} slot1_selected_source_changed_count={} slot2_selected_source_changed_count={} slot3_selected_source_changed_count={} placeholder_visual_changed_count={} skipped_decode_unchanged_slot0_count={} skipped_decode_unchanged_slot1_count={} quad_view_incremental_update_count={} quad_view_full_compose_count={} quad_view_incremental_skip_reason={} quad_view_incremental_skip_reason_counts={} quad_view_full_compose_reason_counts={} quad_view_changed_slot_update_count={} quad_view_changed_real_slot_count={} quad_view_changed_placeholder_slot_count={} quad_view_reused_slot_count={} quad_view_previous_output_available_count={} quad_view_previous_output_missing_count={} quad_view_profile_or_size_mismatch_count={} quad_view_allocation_count={} avg_render_buffer_cpu_scale_copy_elapsed_ms={} avg_render_buffer_materialization_elapsed_ms={} avg_gdi_paint_wait_elapsed_ms={} avg_gdi_wm_paint_elapsed_ms={} avg_gdi_stretchdibits_elapsed_ms={} avg_quad_view_incremental_update_elapsed_ms={} avg_quad_view_compose_elapsed_ms={} render_call_elapsed_ms={} render_input_unchanged_count={} render_reuse_frame_count={} unaccounted_elapsed_ms={} avg_attempt_elapsed_ms={} max_attempt_elapsed_ms={} slow_attempt_count={} slow_attempt_threshold_ms={} scheduler_status={:?} slot_bindings={} slot_result_kinds={} slot_diagnostics={} clean_output_render_result_kind={} window_title={} output_width={} output_height={}",
+        "switcher four-view two-real handoff preview loop command_name=--four-view-two-real-handoff-preview-loop real_handoff=true real_slot_count=2 real_slot0_index={} real_slot1_index={} pipe_name={} actual_pipe_path={} preview_mode={} read_mode={} client0_id={} run0_id={} client1_id={} run1_id={} frames_attempted={} frames_rendered={} render_failures={} elapsed_ms={} target_fps={} configured_frame_interval_ms={} effective_attempt_fps={} effective_render_fps={} first_render_attempt_index={} first_render_elapsed_ms={} rendered_after_first_render={} effective_render_fps_after_first_render={} no_render_before_first_render={} selected_count={} no_frame_count={} handoff_error_count={} decode_attempt_count={} decode_success_count={} render_success_count={} render_failure_count={} unchanged_frame_reuse_count={} skipped_decode_unchanged_frame_count={} redecoded_same_frame_count={} decode_elapsed_ms={} decode_process_spawn_elapsed_ms={} decode_input_write_elapsed_ms={} decode_input_payload_bytes_total={} decode_output_read_elapsed_ms={} decode_output_read_exact_elapsed_ms={} decode_output_vec_resize_elapsed_ms={} decode_process_wait_elapsed_ms={} decode_pixel_convert_elapsed_ms={} decode_buffer_allocation_count={} decode_output_bytes_total={} decode_stdout_expected_bytes_total={} decode_cached_frame_reuse_count={} decode_cache_miss_count={} decoded_buffer_clone_count={} decode_cache_hit_clone_count={} decode_cache_store_clone_count={} decoded_buffer_clone_elapsed_ms={} composed_buffer_clone_count={} decode_output_buffer_reuse_count={} persistent_decode_config_enabled={} persistent_decode_enabled={} persistent_decode_attempt_count={} persistent_decode_success_count={} persistent_decode_failure_count={} persistent_decode_fallback_count={} persistent_decode_process_spawn_count={} persistent_decode_process_restart_count={} persistent_decode_stdin_write_elapsed_ms={} persistent_decode_stdout_read_elapsed_ms={} persistent_decode_stdout_read_exact_elapsed_ms={} persistent_decode_output_bytes_total={} persistent_decode_last_error={} persistent_decode_runtime_disabled={} persistent_decode_runtime_disabled_reason={} persistent_decode_consecutive_failure_count={} persistent_decode_disabled_after_failure_count={} persistent_decode_skipped_by_config_count={} persistent_decode_skipped_after_disabled_count={} persistent_decode_timeout_count={} persistent_decode_timeout_elapsed_ms={} continuous_decode_config_enabled={} continuous_decode_runtime_enabled={} continuous_decode_slot0_enabled={} continuous_decode_input_frame_count={} continuous_decode_output_frame_count={} continuous_decode_queue_len={} continuous_decode_dropped_stale_count={} continuous_decode_frame_id_lag={} continuous_decode_stdout_read_elapsed_ms={} continuous_decode_stall_count={} continuous_decode_restart_count={} continuous_decode_runtime_disabled={} continuous_decode_runtime_disabled_reason={} continuous_decode_fallback_to_one_shot_count={} render_used_continuous_decoded_count={} render_used_one_shot_fallback_count={} one_shot_decode_fallback_count={} one_shot_decode_attempt_count={} one_shot_decode_elapsed_ms={} one_shot_decode_elapsed_ms_max={} one_shot_decode_input_write_elapsed_ms={} one_shot_decode_input_write_elapsed_ms_max={} one_shot_decode_stdin_close_elapsed_ms={} one_shot_decode_stdin_write_to_stdout_first_byte_elapsed_ms={} one_shot_decode_stdin_write_to_stdout_first_byte_elapsed_ms_max={} one_shot_decode_stdout_first_byte_elapsed_ms={} one_shot_decode_first_byte_elapsed_ms_max={} one_shot_decode_first_byte_slow_count={} one_shot_decode_first_byte_slow_threshold_ms={} one_shot_decode_output_read_elapsed_ms={} one_shot_decode_output_read_elapsed_ms_max={} one_shot_decode_output_read_slow_count={} one_shot_decode_output_read_slow_threshold_ms={} one_shot_decode_output_read_exact_elapsed_ms={} one_shot_decode_output_read_exact_elapsed_ms_max={} one_shot_decode_extra_output_probe_elapsed_ms={} one_shot_decode_attempt_source_counts={} one_shot_decode_attempt_slot_counts={} one_shot_decode_attempt_reason_counts={} one_shot_decode_slow_first_byte_slot_counts={} one_shot_decode_slow_first_byte_source_counts={} one_shot_decode_slow_first_byte_reason_counts={} one_shot_decode_slow_output_read_slot_counts={} one_shot_decode_slow_output_read_source_counts={} one_shot_decode_slow_output_read_reason_counts={} one_shot_decode_input_write_outlier_count={} one_shot_decode_input_write_outlier_threshold_ms={} one_shot_decode_input_write_outlier_slot_counts={} one_shot_decode_input_write_outlier_source_counts={} one_shot_decode_input_write_outlier_reason_counts={} one_shot_decode_input_write_outlier_payload_bytes_total={} one_shot_decode_input_write_outlier_payload_bytes_avg={} decode_cache_miss_slot0_count={} decode_cache_miss_slot1_count={} one_shot_decode_write_throughput_bytes_per_ms={} one_shot_decode_input_write_elapsed_per_payload_kb={} one_shot_decode_read_throughput_bytes_per_ms={} one_shot_decode_input_payload_bytes_min={} one_shot_decode_input_payload_bytes_max={} one_shot_decode_input_payload_bytes_avg={} one_shot_decode_keyframe_attempt_count={} one_shot_decode_non_keyframe_attempt_count={} one_shot_decode_keyframe_elapsed_ms={} one_shot_decode_non_keyframe_elapsed_ms={} one_shot_decode_keyframe_input_payload_bytes_total={} one_shot_decode_non_keyframe_input_payload_bytes_total={} one_shot_decode_expected_output_bytes_per_frame={} one_shot_decode_output_width={} one_shot_decode_output_height={} one_shot_decode_output_pixel_format={} one_shot_decode_scaled_output_enabled={} one_shot_decode_scaled_output_reason={} handoff_elapsed_ms={} render_elapsed_ms={} avg_decode_elapsed_ms={} avg_decode_input_write_elapsed_ms={} avg_decode_output_read_elapsed_ms={} avg_decode_process_spawn_elapsed_ms={} avg_handoff_elapsed_ms={} avg_render_elapsed_ms={} loop_total_elapsed_ms={} attempt_body_elapsed_ms={} loop_sleep_elapsed_ms={} frame_interval_wait_elapsed_ms={} event_pump_elapsed_ms={} window_update_elapsed_ms={} render_prepare_elapsed_ms={} render_buffer_cpu_scale_copy_elapsed_ms={} render_buffer_copy_elapsed_ms={} render_buffer_materialization_elapsed_ms={} render_buffer_scale_prepare_elapsed_ms={} render_buffer_scale_loop_elapsed_ms={} render_buffer_output_copy_elapsed_ms={} render_buffer_resize_elapsed_ms={} render_buffer_clear_elapsed_ms={} render_buffer_passthrough_count={} render_buffer_same_size_copy_count={} render_buffer_half_scale_count={} render_buffer_generic_scale_count={} render_buffer_reuse_count={} render_buffer_allocation_count={} render_buffer_bytes_copied_total={} render_backend_wait_elapsed_ms={} gdi_invalidate_elapsed_ms={} gdi_paint_wait_elapsed_ms={} gdi_wm_paint_elapsed_ms={} gdi_stretchdibits_elapsed_ms={} texture_upload_elapsed_ms={} window_present_elapsed_ms={} vsync_or_present_block_elapsed_ms={} quad_view_compose_elapsed_ms={} quad_view_compose_attempt_count={} quad_view_compose_success_count={} quad_view_compose_skipped_unchanged_count={} quad_view_composed_frame_reuse_count={} quad_view_visual_unchanged_count={} quad_view_visual_changed_count={} materialization_reason_first_render_count={} materialization_reason_visual_changed_count={} materialization_reason_previous_output_missing_count={} materialization_reason_profile_or_size_mismatch_count={} materialization_reason_force_render_count={} materialization_reason_unknown_count={} slot0_frame_id_changed_count={} slot1_frame_id_changed_count={} slot2_frame_id_changed_count={} slot3_frame_id_changed_count={} slot0_selected_source_changed_count={} slot1_selected_source_changed_count={} slot2_selected_source_changed_count={} slot3_selected_source_changed_count={} placeholder_visual_changed_count={} skipped_decode_unchanged_slot0_count={} skipped_decode_unchanged_slot1_count={} quad_view_incremental_update_count={} quad_view_full_compose_count={} quad_view_incremental_skip_reason={} quad_view_incremental_skip_reason_counts={} quad_view_full_compose_reason_counts={} quad_view_changed_slot_update_count={} quad_view_changed_real_slot_count={} quad_view_changed_placeholder_slot_count={} quad_view_reused_slot_count={} quad_view_previous_output_available_count={} quad_view_previous_output_missing_count={} quad_view_profile_or_size_mismatch_count={} quad_view_allocation_count={} avg_render_buffer_cpu_scale_copy_elapsed_ms={} avg_render_buffer_materialization_elapsed_ms={} avg_gdi_paint_wait_elapsed_ms={} avg_gdi_wm_paint_elapsed_ms={} avg_gdi_stretchdibits_elapsed_ms={} avg_quad_view_incremental_update_elapsed_ms={} avg_quad_view_compose_elapsed_ms={} render_call_elapsed_ms={} render_input_unchanged_count={} render_reuse_frame_count={} unaccounted_elapsed_ms={} avg_attempt_elapsed_ms={} max_attempt_elapsed_ms={} slow_attempt_count={} slow_attempt_threshold_ms={} scheduler_status={:?} slot_bindings={} slot_result_kinds={} slot_diagnostics={} clean_output_render_result_kind={} window_title={} output_width={} output_height={}",
         summary.real_slot0_index,
         summary.real_slot1_index,
         summary.pipe_name,
@@ -9362,6 +9965,22 @@ fn format_four_view_two_real_handoff_preview_loop_summary(
         summary.persistent_decode_skipped_after_disabled_count,
         summary.persistent_decode_timeout_count,
         summary.persistent_decode_timeout_elapsed_ms,
+        summary.continuous_decode_config_enabled,
+        summary.continuous_decode_runtime_enabled,
+        summary.continuous_decode_slot0_enabled,
+        summary.continuous_decode_input_frame_count,
+        summary.continuous_decode_output_frame_count,
+        summary.continuous_decode_queue_len,
+        summary.continuous_decode_dropped_stale_count,
+        summary.continuous_decode_frame_id_lag,
+        summary.continuous_decode_stdout_read_elapsed_ms,
+        summary.continuous_decode_stall_count,
+        summary.continuous_decode_restart_count,
+        summary.continuous_decode_runtime_disabled,
+        sanitize_summary_value(&summary.continuous_decode_runtime_disabled_reason),
+        summary.continuous_decode_fallback_to_one_shot_count,
+        summary.render_used_continuous_decoded_count,
+        summary.render_used_one_shot_fallback_count,
         summary.one_shot_decode_fallback_count,
         summary.one_shot_decode_attempt_count,
         summary.one_shot_decode_elapsed_ms,
@@ -10730,6 +11349,7 @@ mod tests {
             SwitcherSingleClientQueueSourceMode::PreviewLatest
         );
         assert!(options.persistent_decoder_enabled);
+        assert!(!options.continuous_stream_decoder_enabled);
     }
 
     #[test]
@@ -10743,6 +11363,22 @@ mod tests {
             SwitcherSingleClientQueueSourceMode::PreviewLatestDecodable
         );
         assert!(!options.persistent_decoder_enabled);
+        assert!(!options.continuous_stream_decoder_enabled);
+    }
+
+    #[test]
+    fn switcher_two_real_handoff_preview_options_accept_enable_continuous_stream_decoder_flag() {
+        let options = super::parse_two_real_handoff_preview_options_or_exit(vec![
+            "preview-latest-decodable".to_string(),
+            "--enable-continuous-stream-decoder".to_string(),
+            "--disable-persistent-decoder".to_string(),
+        ]);
+        assert_eq!(
+            options.read_mode,
+            SwitcherSingleClientQueueSourceMode::PreviewLatestDecodable
+        );
+        assert!(!options.persistent_decoder_enabled);
+        assert!(options.continuous_stream_decoder_enabled);
     }
 
     #[test]
@@ -13292,6 +13928,22 @@ mod tests {
         assert!(formatted.contains("persistent_decode_skipped_after_disabled_count=0"));
         assert!(formatted.contains("persistent_decode_timeout_count=0"));
         assert!(formatted.contains("persistent_decode_timeout_elapsed_ms=0"));
+        assert!(formatted.contains("continuous_decode_config_enabled=false"));
+        assert!(formatted.contains("continuous_decode_runtime_enabled=false"));
+        assert!(formatted.contains("continuous_decode_slot0_enabled=false"));
+        assert!(formatted.contains("continuous_decode_input_frame_count=0"));
+        assert!(formatted.contains("continuous_decode_output_frame_count=0"));
+        assert!(formatted.contains("continuous_decode_queue_len=0"));
+        assert!(formatted.contains("continuous_decode_dropped_stale_count=0"));
+        assert!(formatted.contains("continuous_decode_frame_id_lag=0"));
+        assert!(formatted.contains("continuous_decode_stdout_read_elapsed_ms=0"));
+        assert!(formatted.contains("continuous_decode_stall_count=0"));
+        assert!(formatted.contains("continuous_decode_restart_count=0"));
+        assert!(formatted.contains("continuous_decode_runtime_disabled=false"));
+        assert!(formatted.contains("continuous_decode_runtime_disabled_reason=none"));
+        assert!(formatted.contains("continuous_decode_fallback_to_one_shot_count=0"));
+        assert!(formatted.contains("render_used_continuous_decoded_count=0"));
+        assert!(formatted.contains("render_used_one_shot_fallback_count=0"));
         assert!(formatted.contains("one_shot_decode_fallback_count=0"));
         assert!(formatted.contains("one_shot_decode_attempt_count=0"));
         assert!(formatted.contains("one_shot_decode_elapsed_ms=0"));
@@ -13613,6 +14265,7 @@ mod tests {
                         TimestampMicros(1_000_004)
                     }
                 },
+                false,
                 StubRealQueuedFrameHandoff {
                     result: SwitcherQueuedFrameHandoffResult::FrameRead {
                         frame: SwitcherSingleViewSelectedEncodedFrame {

@@ -29,6 +29,7 @@
 - continuous-stream decoder は render loop から FFmpeg stdout wait を外し、per-slot access unit input queue、stdout reader thread、decoded frame queue/cache、frame_id correspondence queue を持つ別候補として扱う
 - continuous-stream decoder の first target は two-real preview loop 限定で、server / client / protocol / 4-client / GPU decode には広げない
 - この分離により、persistent request/response path を revive せずに、one-shot decode の render-loop blocking を外す設計候補だけを次 step 以降へ渡せる
+- 2026-05-18 first implementation slice でもこの分離を維持した。`--enable-continuous-stream-decoder` は continuous 専用 runtime を opt-in するだけで、request/response persistent decoder helper を復活させない
 
 ## Circuit Breaker Rerun Update
 - same-PC `2`-client rerun `manual-logs/two-client-render-rerun-20260517-170552` では、fail-fast / circuit breaker 自体は PASS した

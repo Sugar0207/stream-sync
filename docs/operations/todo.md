@@ -26,9 +26,10 @@
 - persistent decoder config-disabled toggle も PASS 継続だった。request/response persistent decoder は過去に `persistent_decode_stdout_read_timeout` で runtime FAIL しているため、引き続き凍結候補として扱い、continuous-stream decoder とは別物として整理する
 - latest good-ish rerun の switcher は `effective_render_fps_after_first_render=17.247` で、30fps には未達だった。`decode_attempt_count=26`、`one_shot_decode_elapsed_ms=1893`、`one_shot_decode_first_byte_slow_count=0`、`one_shot_decode_output_read_slow_count=0`、`one_shot_decode_input_write_outlier_count=0` なので、decode attempt frequency / slow first-byte / slow output-read / input-write outlier のいずれか 1 つを主犯とは断定しない
 - latest good-ish rerun では `quad_view_compose_elapsed_ms=636`、`gdi_paint_wait_elapsed_ms=12` で、incremental compose と render/GDI は regression guard として残すが、current evidence の first-order culprit とは置かない
-- 30fps に向けた next design candidate は one-shot FFmpeg の per-attempt variance と render-loop blocking を外す continuous-stream decoder とする。ただし今回は docs-first のみで、code 変更はしない
-- continuous-stream decoder の source of truth として `docs/operations/continuous-stream-decoder-plan.md` を追加した。per-real-slot access unit input queue、stdout reader thread、decoded frame queue/cache、frame_id correspondence queue、fallback/restart/diagnostics、two-real preview loop 限定の最小 implementation slice を整理済み
+- 30fps に向けた next design candidate は one-shot FFmpeg の per-attempt variance と render-loop blocking を外す continuous-stream decoder とする。2026-05-18 first implementation slice では two-real preview loop 専用 opt-in `--enable-continuous-stream-decoder` を追加し、first configured real source だけ continuous path 対象にした
+- continuous-stream decoder の source of truth は `docs/operations/continuous-stream-decoder-plan.md`。per-real-slot access unit input queue、stdout reader thread、decoded frame queue/cache、frame_id correspondence queue、fallback/restart/diagnostics、two-real preview loop 限定の最小 implementation slice を整理し、first slice の実装状況も反映済み
 - continuous-stream decoder は request/response persistent decoder の復活ではない。`1 request -> 1 response` を待たず、H.264 access unit を stream として投入し、reader thread が raw BGRA stdout を読み続け、render loop は decoded queue/cache を参照する別設計として扱う
+- continuous-stream decoder first slice は slot1 / second real source、4-client、server / client / protocol、GPU decode、targetTime 厳密 decoded queue selection には広げていない。one-shot fallback は維持し、Production Readiness は FAIL 継続
 - code path 上、`first_render_attempt_index` / `first_render_elapsed_ms` は two-real preview loop の clean output が `RenderReady` かつ inner render が `Rendered` になった最初の tick でだけ確定する。`no_render_before_first_render` は別 counter ではなく、その first render attempt index から導出されるため、startup で renderable slot が 1 つも成立しない tick が続くとそのまま増える
 - `no_frame_count=864`、`handoff_error_count=22`、server `no_frame_count=264`、`placeholder_visual_changed_count=46`、`scheduler_status=PartialSelected` は、after-first FPS 改善後も availability / startup 側に未解決が残ることを示している。Production Readiness は FAIL 継続
 - startup/no-frame availability の current code path は `scheduler -> decode/render adapter -> display policy -> quad composition -> render-facing -> clean output render` で、`SkipNoFrameAvailable` / `SkipWaitingForFrameAtOrBeforeTarget` は previous frame が無い間 `NoDisplayPlaceholder` に落ちる。さらに renderable slot count が `0` の tick は `NoRenderableQuadView` のままなので、server aggregate `frames_queued=1800` が成立していても switcher startup が直ちに first render へ進むとは限らない
@@ -230,11 +231,11 @@
 ---
 
 ## 直近でやること
-1. next step では `S:\stream-sync\manual-logs/two-client-render-rerun-20260518-111013` を latest comparison run、`S:\stream-sync\manual-logs/two-client-render-rerun-20260517-223121` を previous scaled-pass run として比較し、`decode_attempt_count=20` と `slot0:10|slot1:10` が主犯ではない前提で `source_recovered:2` の slow path を優先して読む
-2. rerun 比較では `one_shot_decode_slow_first_byte_reason_counts` / `one_shot_decode_slow_output_read_reason_counts` / `one_shot_decode_attempt_reason_counts` を使い、slow attempt が `source_recovered` に偏るのか、`frame_id_changed` 優位へ戻るのかを再確認する
-3. availability 側では `first_render_attempt_index` / `first_render_elapsed_ms` / `no_render_before_first_render` / `no_frame_count` / `handoff_error_count` を優先して見て、startup/no-frame availability が after-first FPS とは別の主課題かを整理する
-4. incremental quad compose は PASS として維持し、same-PC rerun 比較では `quad_view_incremental_update_count` / `quad_view_full_compose_count` / `quad_view_compose_elapsed_ms` / `gdi_paint_wait_elapsed_ms` / `placeholder_visual_changed_count` を compose/GDI variance の regression guard として残す
-5. request/response persistent decoder / continuous-stream rewrite / shared-memory / GPU backend / distributed-PC widening には進まず、same-PC two-real の next dominant candidate を first-byte wait variance / output-read slow variance / input-write outlier に絞って閉じる
+1. human rerun は `S:\stream-sync` を repo root にして、two-real preview loop の既存 command 末尾に `--disable-persistent-decoder --enable-continuous-stream-decoder` を付け、first configured real source の continuous opt-in path を比較する
+2. rerun 比較では `continuous_decode_config_enabled` / `continuous_decode_runtime_enabled` / `continuous_decode_slot0_enabled` / `continuous_decode_input_frame_count` / `continuous_decode_output_frame_count` / `continuous_decode_frame_id_lag` / `continuous_decode_stall_count` / `render_used_continuous_decoded_count` / `render_used_one_shot_fallback_count` を優先して読む
+3. one-shot fallback は正常 escape hatch として残す。`continuous_decode_fallback_to_one_shot_count` が高い場合は startup keyframe待ち、stdout stall、frame_id lag、selected frame exact cache miss のどこで fallback しているかを切り分ける
+4. incremental quad compose / render/GDI は PASS として維持し、same-PC rerun 比較では `quad_view_incremental_update_count` / `quad_view_full_compose_count` / `quad_view_compose_elapsed_ms` / `gdi_paint_wait_elapsed_ms` / `placeholder_visual_changed_count` を regression guard として残す
+5. request/response persistent decoder revive / slot1 continuous化 / 4-client widening / shared-memory / GPU backend / distributed-PC actual run には進まず、first slice の slot0-only opt-in evidence を先に読む
 
 ## 今後の大まかな指針
 - 残り todo は `MVP クリティカルパス`、`安定化 / 運用`、`future task` に分けて扱う
@@ -1037,6 +1038,6 @@ continuous runtime first slice の blocker:
 - actual dashboard UI rendering remains unimplemented.
 
 ## Next Items
-1. continuous-stream decoder を実装する場合は、`docs/operations/continuous-stream-decoder-plan.md` の最小 slice に従い、two-real preview loop 限定・one real slot opt-in・one-shot fallback維持・feature flag/CLI toggle付きで始める
-2. implementation 前に frame_id correspondence の前提を再確認する。特に libx264 zerolatency / no B-frame 前提、startup keyframe requirement、drop / skip / decoder delay 時の mismatch suspicion policy を確認する
-3. `S:\stream-sync` の rerun では continuous-stream decoder 実装後も `effective_render_fps_after_first_render`、`render_used_continuous_decoded_count`、`render_used_one_shot_fallback_count`、`continuous_decode_frame_id_lag`、`continuous_decode_stall_count`、`continuous_decode_restart_count` を中心に、30fps 未達原因を単一断定せず比較する
+1. `S:\stream-sync` の opt-in rerun で `effective_render_fps_after_first_render`、`render_used_continuous_decoded_count`、`render_used_one_shot_fallback_count`、`continuous_decode_frame_id_lag`、`continuous_decode_stall_count`、`continuous_decode_restart_count` を中心に、30fps 未達原因を単一断定せず比較する
+2. frame_id correspondence の actual evidence を確認する。特に libx264 zerolatency / no B-frame 前提、startup keyframe requirement、drop / skip / decoder delay 時の mismatch suspicion policy を summary reason と照合する
+3. opt-in path が成立した場合だけ、targetTime-aware decoded queue lookup / restart threshold / slot1 rollout を次 candidate として切り分ける

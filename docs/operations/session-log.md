@@ -2,6 +2,76 @@
 
 ## 2026-05-18
 ### Type
+- Codex implementation
+
+### Work
+- Added the first additive continuous-stream decoder implementation slice for the two-real preview loop.
+- Added CLI opt-in `--enable-continuous-stream-decoder`.
+- Kept the scope to the first configured real source (`client0_id/run0_id`) only; the second real source stays on one-shot decode.
+- Kept one-shot fallback in place and did not revive the request/response persistent decoder.
+- Added continuous-stream decoder summary diagnostics and updated focused summary/CLI tests.
+- Updated `docs/operations/todo.md`, `docs/operations/continuous-stream-decoder-plan.md`, and `docs/operations/persistent-decoder-plan.md`.
+- Did not run a runtime rerun in this step.
+
+### Changed Files
+- `apps/switcher/src/main.rs`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+- `docs/operations/continuous-stream-decoder-plan.md`
+- `docs/operations/persistent-decoder-plan.md`
+
+### Decisions
+- Treat continuous-stream decoder as a separate runtime from request/response persistent decoder.
+- Decode stdout is raw BGRA without frame_id, so the first slice maps input order to output order with a correspondence queue.
+- Startup requires a decodable SPS/PPS/IDR access unit; otherwise the render path uses one-shot fallback.
+- The decoded cache/key order is bounded to `30` frames and drops stale decoded frames above the bound.
+- First slice uses exact selected frame lookup and cached latest continuous output only; targetTime-aware decoded queue selection remains future work.
+- Production Readiness remains FAIL.
+
+### Findings
+- The implementation adds input writer thread / stdout reader thread separation and keeps render-loop fallback behavior additive.
+- Continuous runtime diagnostics now include config/runtime/slot0 enablement, input/output counts, queue length, dropped stale count, frame_id lag, stdout read elapsed, stall/restart counters, runtime disabled state/reason, fallback count, and render-used continuous/fallback counts.
+- No runtime FPS conclusion is made in this step because Codex did not perform the opt-in rerun.
+
+### Next
+- Run the opt-in rerun from `S:\stream-sync` with the existing two-real preview loop command plus `--disable-persistent-decoder --enable-continuous-stream-decoder`.
+- Compare `render_used_continuous_decoded_count`, `render_used_one_shot_fallback_count`, `continuous_decode_frame_id_lag`, `continuous_decode_stall_count`, and `continuous_decode_runtime_disabled_reason`.
+- Only after opt-in evidence is available, decide whether to add targetTime-aware decoded queue lookup, restart thresholds, or slot1 rollout.
+
+### TODO Update
+- Completed:
+  - two-real preview loop continuous-stream decoder first slice
+  - slot0/first-real-source opt-in CLI
+  - continuous diagnostics in summary formatter
+- Added:
+  - human opt-in rerun from `S:\stream-sync`
+  - actual frame_id lag/stall/fallback evidence review
+- Held:
+  - slot1 continuous decode
+  - 4-client rollout
+  - request/response persistent decoder revive
+  - GPU decode / distributed-PC actual run
+
+### Validation
+- `cargo fmt`
+  - result: PASS
+- `cargo check -p stream-sync-switcher`
+  - result: PASS
+  - note: existing dead-code warnings remain in unrelated helpers
+- `cargo test -p stream-sync-switcher switcher_four_view_two_real_handoff_preview_summary_formats_expected_fields -- --nocapture`
+  - result: PASS
+- `cargo test -p stream-sync-switcher switcher_four_view_two_real_handoff_preview_loop_redecodes_different_frame_ids -- --nocapture`
+  - result: PASS
+- `cargo test -p stream-sync-switcher switcher_four_view_two_real_handoff_preview_loop_updates_only_source_error_slot_region -- --nocapture`
+  - result: PASS
+- `cargo test -p stream-sync-switcher switcher_two_real_handoff_preview_options -- --nocapture`
+  - result: PASS
+- `git diff --check`
+  - result: PASS
+  - note: LF/CRLF warnings only
+
+## 2026-05-18
+### Type
 - Codex docs-first design
 
 ### Work
