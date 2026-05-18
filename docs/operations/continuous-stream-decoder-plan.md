@@ -34,6 +34,9 @@
 - output queue / cache は first slice では selected `frame_id` の exact lookup と latest decoded cache reuse に留め、targetTime 厳密 selection は future slice に残す
 - memory upper bound は decoded cache key order `30` frames とし、bound 超過時は stale decoded frame を discard する
 - runtime rerun は未実施。build validation 通過後、人間側が `S:\stream-sync` で opt-in rerun して summary diagnostics を比較する
+- latest human rerun `S:\stream-sync\manual-logs\two-client-render-rerun-20260518-141625` は `frames_attempted=300` / `render_failures=0` まで到達しており crash ではなく bounded loop natural exit 寄り。ただし `continuous_decode_config_enabled=false` だったため continuous-stream decoder opt-in run ではない
+- opt-in rerun では `--four-view-two-real-handoff-preview-loop ... [frames] [preview-latest-decodable] --disable-persistent-decoder --enable-continuous-stream-decoder` のように、required args と optional read-mode の後ろへ flags を付ける形を推奨する
+- parser 上は optional flags は `[frames]` の後ろであれば read-mode の前後どちらにも置ける。ただし docs / copy-paste command では末尾に flags を並べ、summary で `continuous_decode_config_enabled=true` を first gate として確認する
 
 ## request/response persistent decoder との違い
 - request/response persistent decoder:

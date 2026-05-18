@@ -2,6 +2,61 @@
 
 ## 2026-05-18
 ### Type
+- Codex investigation / command guidance fix
+
+### Work
+- Investigated why latest human rerun `S:\stream-sync\manual-logs\two-client-render-rerun-20260518-141625` reported all continuous diagnostics as false / zero.
+- Confirmed the CLI parser accepts `--enable-continuous-stream-decoder` and can combine it with `--disable-persistent-decoder`.
+- Confirmed parser optional flags are accepted after required `[frames]`, either before or after optional read-mode.
+- Updated switcher help text so the two-real preview loop usage advertises `--enable-continuous-stream-decoder`.
+- Strengthened the CLI option unit test to cover flags before read-mode as well as after read-mode.
+- Updated `docs/operations/todo.md` and `docs/operations/continuous-stream-decoder-plan.md` with rerun guidance.
+
+### Changed Files
+- `apps/switcher/src/main.rs`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+- `docs/operations/continuous-stream-decoder-plan.md`
+
+### Findings
+- `continuous_decode_config_enabled=false` is set when `continuous_stream_decoder_enabled` is false before constructing `TimedSwitcherH264DecodeRuntime`.
+- In the current code path, `--enable-continuous-stream-decoder` flows from parser -> `run_four_view_two_real_handoff_preview_loop` -> target-timestamp loop -> `TimedSwitcherH264DecodeRuntime::new(...)`.
+- If the flag is enabled, the constructor receives `Some(TwoRealContinuousDecodeSource { client_id: client0_id, run_id: run0_id })`, so `continuous_decode_config_enabled` should become true before any decode attempt.
+- Therefore the observed `continuous_decode_config_enabled=false` means the latest rerun was not an opt-in continuous decoder invocation, or it used a binary/script that did not include/pass the flag.
+- The rerun directory itself was not available in this Codex filesystem (`S:\stream-sync\manual-logs\two-client-render-rerun-20260518-141625` was not readable here), so the exact command could not be verified from the log files in this environment.
+
+### Next
+- Re-run from `S:\stream-sync` with the existing two-real command plus `--disable-persistent-decoder --enable-continuous-stream-decoder`.
+- Treat `continuous_decode_config_enabled=true` as the first gate before reading FPS or output counts.
+- If it remains false, inspect the exact `run-switcher.ps1` / captured command and confirm the rebuilt `target\debug\stream-sync-switcher.exe` is the binary being launched.
+
+### TODO Update
+- Completed:
+  - CLI propagation review
+  - flag co-use / position check
+  - help text correction
+- Added:
+  - `continuous_decode_config_enabled=true` as first opt-in rerun gate
+- Held:
+  - decoder implementation expansion
+  - slot1 continuous rollout
+
+### Validation
+- `cargo fmt`
+  - result: PASS
+- `cargo check -p stream-sync-switcher`
+  - result: PASS
+  - note: existing dead-code warnings remain in unrelated helpers
+- `cargo test -p stream-sync-switcher switcher_two_real_handoff_preview_options -- --nocapture`
+  - result: PASS
+- `cargo test -p stream-sync-switcher switcher_four_view_two_real_handoff_preview_summary_formats_expected_fields -- --nocapture`
+  - result: PASS
+- `git diff --check`
+  - result: PASS
+  - note: LF/CRLF warnings only
+
+## 2026-05-18
+### Type
 - Codex implementation
 
 ### Work
