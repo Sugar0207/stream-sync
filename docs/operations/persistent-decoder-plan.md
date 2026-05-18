@@ -23,6 +23,13 @@
 - current code では regression stop を優先し、`persistent_decode_stdout_read_timeout` を 1 回観測した時点で runtime-disabled にして以後は即 one-shot fallback へ流す fail-fast / circuit breaker を追加した
 - したがって current persistent slice は「request/response path の runtime viability を probing する guarded experiment」であり、continuous-stream decoder rewrite は別 step の候補として明示的に保留する
 
+## Continuous Stream Decoder Separation
+- 2026-05-18 の docs-first slice で、continuous-stream decoder は current request/response persistent decoder とは別設計として `docs/operations/continuous-stream-decoder-plan.md` に切り出した
+- request/response persistent decoder は `1 request -> 1 stdout response` を render loop が待つ形であり、過去 rerun では `persistent_decode_stdout_read_timeout` により runtime FAIL したため凍結候補を維持する
+- continuous-stream decoder は render loop から FFmpeg stdout wait を外し、per-slot access unit input queue、stdout reader thread、decoded frame queue/cache、frame_id correspondence queue を持つ別候補として扱う
+- continuous-stream decoder の first target は two-real preview loop 限定で、server / client / protocol / 4-client / GPU decode には広げない
+- この分離により、persistent request/response path を revive せずに、one-shot decode の render-loop blocking を外す設計候補だけを次 step 以降へ渡せる
+
 ## Circuit Breaker Rerun Update
 - same-PC `2`-client rerun `manual-logs/two-client-render-rerun-20260517-170552` では、fail-fast / circuit breaker 自体は PASS した
 - `persistent_decode_attempt_count=1`、`persistent_decode_process_spawn_count=1`、`persistent_decode_process_restart_count=0`、`persistent_decode_runtime_disabled=true`、`persistent_decode_runtime_disabled_reason=persistent_decode_stdout_read_timeout`、`persistent_decode_skipped_after_disabled_count=50`、`persistent_decode_timeout_count=1` で、timeout 1 回後に request/response persistent path は実質停止し、restart storm は再発しなかった
@@ -415,8 +422,8 @@
 
 ## Next Candidate Comparison
 - current request/response persistent decoder を current path として凍結する
-- continuous-stream decoder rewrite は別設計候補として保留し、別 step で必要性を再判断する
-- latest comparison baseline は `manual-logs/two-client-render-rerun-20260518-111013` と `manual-logs/two-client-render-rerun-20260517-223121` の組に更新する
+- continuous-stream decoder rewrite は `docs/operations/continuous-stream-decoder-plan.md` に切り出した別設計候補として扱い、request/response persistent decoder の再挑戦とは分ける
+- latest good-ish comparison baseline は `manual-logs/two-client-render-rerun-20260518-124418` とし、previous scaled/correlation reruns は必要に応じて `manual-logs/two-client-render-rerun-20260518-111013` / `manual-logs/two-client-render-rerun-20260517-223121` を参照する
 - current one-shot fallback path の next comparison axis は decode attempt frequency そのものではなく、implemented slow correlation fields の `source_recovered` 偏りと startup/no-frame availability に寄せる
 - next rerun で優先して見る summary は以下
   - `first_render_attempt_index`

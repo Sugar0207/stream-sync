@@ -2,6 +2,63 @@
 
 ## 2026-05-18
 ### Type
+- Codex docs-first design
+
+### Work
+- Kept the step docs-only and did not change code.
+- Added `docs/operations/continuous-stream-decoder-plan.md` as the source of truth for the continuous-stream decoder candidate.
+- Updated `docs/operations/todo.md` to move the current next item from immediate startup/source-recovered diagnostics toward a docs-first continuous-stream decoder design candidate.
+- Updated `docs/operations/persistent-decoder-plan.md` to explicitly separate continuous-stream decoder from the failed request/response persistent decoder.
+
+### Changed Files
+- `docs/operations/continuous-stream-decoder-plan.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+- `docs/operations/persistent-decoder-plan.md`
+
+### Decisions
+- continuous-stream decoder is not a revival of the request/response persistent decoder.
+- The request/response persistent decoder remains frozen / config-disabled candidate because previous runtime evidence showed `persistent_decode_stdout_read_timeout` and severe FPS regression.
+- The continuous-stream candidate should remove one-shot FFmpeg wait from the render loop by using per-real-slot access unit input queues, stdout reader threads, decoded frame queues/caches, and frame_id correspondence queues.
+- First implementation, if taken later, should be two-real preview loop only, preferably one real slot first, with an explicit opt-in toggle and one-shot fallback preserved.
+- Production Readiness remains FAIL.
+
+### Findings
+- latest good-ish rerun `S:\stream-sync\manual-logs\two-client-render-rerun-20260518-124418` kept scaled decode output PASS and incremental compose PASS but remained below 30fps with `effective_render_fps_after_first_render=17.247`.
+- In that rerun, `decode_attempt_count=26`, `one_shot_decode_elapsed_ms=1893`, `one_shot_decode_first_byte_slow_count=0`, `one_shot_decode_output_read_slow_count=0`, and `one_shot_decode_input_write_outlier_count=0`, so the current evidence does not support a single-cause claim.
+- continuous-stream frame_id mapping must account for the fact that FFmpeg stdout rawvideo has no frame_id. The first design uses input order / output order correspondence, but treats B-frames, decoder delay, drop/skip, and correspondence underflow as high-risk mismatch cases.
+- Startup/restart requires a decodable keyframe access unit, preferably SPS/PPS/IDR or retained keyframe with parameter sets already prepended.
+- Queue policy should be bounded, per-slot, and stale-discard oriented; latest-only is too weak for targetTime, so the design prefers frame_id lookup plus targetTime-aware latest decoded lookup.
+
+### Next
+- If implementation proceeds, add an opt-in two-real continuous-stream decoder slice with one real slot first.
+- Keep the one-shot path as fallback and keep request/response persistent decoder frozen.
+- Add only the minimum diagnostics needed to compare render-loop blocking removal:
+  - `continuous_decode_enabled`
+  - `continuous_decode_input_frame_count`
+  - `continuous_decode_output_frame_count`
+  - `continuous_decode_queue_len`
+  - `continuous_decode_dropped_stale_count`
+  - `continuous_decode_frame_id_lag`
+  - `continuous_decode_stdout_read_elapsed_ms`
+  - `continuous_decode_stall_count`
+  - `continuous_decode_restart_count`
+  - `continuous_decode_fallback_to_one_shot_count`
+  - `render_used_continuous_decoded_count`
+  - `render_used_one_shot_fallback_count`
+
+### TODO Update
+- Added `docs/operations/continuous-stream-decoder-plan.md` as the current design source of truth.
+- Updated `docs/operations/todo.md` Next Items toward the narrow continuous-stream implementation slice.
+- Kept Production Readiness as FAIL.
+
+### Validation
+- `git diff --check`
+  - result: PASS
+  - note: LF/CRLF warnings only
+
+## 2026-05-18
+### Type
 - Codex docs-first analysis
 
 ### Work
