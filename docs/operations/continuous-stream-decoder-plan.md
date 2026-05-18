@@ -38,6 +38,72 @@
 - opt-in rerun では `--four-view-two-real-handoff-preview-loop ... [frames] [preview-latest-decodable] --disable-persistent-decoder --enable-continuous-stream-decoder` のように、required args と optional read-mode の後ろへ flags を付ける形を推奨する
 - parser 上は optional flags は `[frames]` の後ろであれば read-mode の前後どちらにも置ける。ただし docs / copy-paste command では末尾に flags を並べ、summary で `continuous_decode_config_enabled=true` を first gate として確認する
 
+## First Opt-In Runtime Result
+- latest continuous opt-in rerun:
+  - `S:\stream-sync\manual-logs\two-client-render-rerun-20260518-235217`
+- PASS / PARTIAL PASS:
+  - continuous opt-in flag propagation: PASS
+    - `continuous_decode_config_enabled=true`
+    - `continuous_decode_runtime_enabled=true`
+    - `continuous_decode_slot0_enabled=true`
+  - continuous runtime created: PASS
+    - `continuous_decode_runtime_disabled=false`
+    - `continuous_decode_runtime_disabled_reason=none`
+    - `continuous_decode_restart_count=0`
+  - continuous input feeding: PASS
+    - `continuous_decode_input_frame_count=22`
+  - continuous stdout output: PARTIAL PASS
+    - `continuous_decode_output_frame_count=10`
+    - `continuous_decode_queue_len=10`
+    - `continuous_decode_stdout_read_elapsed_ms=20306`
+    - `continuous_decode_stall_count=1`
+    - `continuous_decode_dropped_stale_count=0`
+  - one-shot fallback safety: PASS
+    - `continuous_decode_fallback_to_one_shot_count=22`
+    - `render_used_one_shot_fallback_count=22`
+    - `one_shot_decode_attempt_count=44`
+- FAIL:
+  - continuous render consumption: FAIL
+    - `render_used_continuous_decoded_count=0`
+  - FPS improvement: FAIL
+    - `effective_render_fps_after_first_render=10.887`
+  - Production Readiness: FAIL
+- Additional runtime context:
+  - `continuous_decode_frame_id_lag=362`
+  - `one_shot_decode_elapsed_ms=6354`
+  - `one_shot_decode_first_byte_slow_count=8`
+  - `one_shot_decode_output_read_slow_count=16`
+  - `one_shot_decode_input_write_outlier_count=14`
+  - `one_shot_decode_input_payload_bytes_avg=256049.864`
+  - `quad_view_compose_elapsed_ms=1432`
+  - `gdi_paint_wait_elapsed_ms=0`
+
+## Render-Consumption Code-Path Findings
+- current slot0 continuous path is exact-key only:
+  - `TimedSwitcherH264DecodeRuntime::decode_annex_b_h264` builds a decode cache key from output width / height plus `source_identity(client_id, run_id, frame_id)`
+  - continuous decoded frames are inserted into the same `decoded_cache` under that exact key
+  - render increments `render_used_continuous_decoded_count` only when the requested key is already in cache and `continuous_decoded_keys` contains that exact key
+- miss behavior:
+  - on cache miss for the configured slot0 source, the runtime enqueues the currently selected access unit into the continuous input queue
+  - it drains any already available output immediately after enqueue
+  - if the same exact key is still absent, it increments `continuous_decode_fallback_to_one_shot_count` and `render_used_one_shot_fallback_count`, then executes the normal one-shot decode path
+- There is no current latest-decoded fallback:
+  - the first slice does not search for "latest decoded frame <= targetTime"
+  - it does not use "latest decoded frame for the same source" when the exact requested `frame_id` is missing
+  - therefore decoded queue/cache can contain frames while current render still falls back if selected `frame_id` has moved ahead
+- `continuous_decode_frame_id_lag` meaning:
+  - updated from the maximum observed `selected_frame_id.saturating_sub(latest_decoded_frame_id)` for the configured source
+  - `362` means the latest continuous decoded output observed by the runtime was up to 362 frame ids behind the selected frame requested by render
+  - it is a coarse lag signal, not a proof of a single root cause
+- Likely contributing structures, still not single-cause:
+  - input feeding is render-demand-driven: a frame is enqueued only after render asks to decode that selected frame
+  - selected frame exact match is required for render consumption
+  - output produced later may correspond to a frame that is no longer selected by the next render tick
+  - current summary does not expose requested frame id, latest decoded frame id, decoded queue oldest/newest frame id, or correspondence backlog
+- `continuous_decode_output_frame_count=10` vs `input_frame_count=22` can mean decoder lag, stdout reader blocking, FFmpeg buffering/delay, or input/output correspondence backlog. Current diagnostics cannot separate those yet.
+- `continuous_decode_stdout_read_elapsed_ms=20306` is accumulated reader-thread `read_exact(expected_len)` time for output frames. With output count `10`, it indicates the reader spent substantial wall time waiting for raw BGRA frames, but because it is accumulated inside the reader thread it should not be read as direct render-loop blocking time.
+- `continuous_decode_stall_count=1` is currently incremented when `selected_frame_id - latest_decoded_frame_id` exceeds the queue bound (`30`). It is therefore a lag threshold observation, not a process restart or runtime disable event.
+
 ## request/response persistent decoder との違い
 - request/response persistent decoder:
   - render loop から `1 request -> stdin write -> stdout expected bytes read -> response wait` を同期的に待つ
@@ -188,6 +254,22 @@ first implementation で summary に追加済み:
 
 追加候補:
 
+- `continuous_decode_lookup_miss_count`
+- `continuous_decode_lookup_hit_count`
+- `continuous_decode_lookup_miss_reason_counts`
+- `continuous_decode_latest_decoded_frame_id`
+- `continuous_decode_requested_frame_id`
+- `continuous_decode_requested_minus_latest_lag`
+- `continuous_decode_exact_match_required_count`
+- `continuous_decode_stale_frame_available_count`
+- `continuous_decode_queue_oldest_frame_id`
+- `continuous_decode_queue_newest_frame_id`
+- `continuous_decode_input_frame_id_min`
+- `continuous_decode_input_frame_id_max`
+- `continuous_decode_output_frame_id_min`
+- `continuous_decode_output_frame_id_max`
+- `continuous_decode_output_pending_correspondence_count`
+- `continuous_decode_writer_input_queue_len`
 - `continuous_decode_input_queue_drop_count`
 - `continuous_decode_output_queue_drop_count`
 - `continuous_decode_keyframe_wait_count`
@@ -204,6 +286,25 @@ first implementation で summary に追加済み:
 - `continuous_decode_frame_id_lag` は selected frame_id と latest decoded frame_id の差を読む
 - `render_used_continuous_decoded_count` は render loop が one-shot wait を避けられた回数
 - `render_used_one_shot_fallback_count` が高い場合、continuous path はまだ hot path になっていない
+
+次に優先する diagnostics-only slice:
+
+1. lookup outcome:
+   - exact hit / miss count
+   - requested frame id
+   - latest decoded frame id
+   - requested-minus-latest lag
+   - exact match required count
+2. decoded queue range:
+   - oldest / newest decoded frame id
+   - stale frame available count
+3. input/output correspondence:
+   - input frame id min/max
+   - output frame id min/max
+   - pending correspondence count
+   - writer input queue length
+
+この slice は observability-only とし、slot1 continuous 化、4-client 化、FFmpeg args / pixel format変更、one-shot fallback 削除、targetTime-aware lookup 本実装には進めない。
 
 ## 最小 implementation slice
 2026-05-18 first slice で実装済み:

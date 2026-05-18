@@ -27537,3 +27537,95 @@ switcher four-view proof fixture deterministic=true real_handoff=false actual_wi
 - `cargo fmt --check`
 - `cargo test -p stream-sync-client client_video_frame`
 - `cargo check --workspace`
+---
+
+## 2026-05-18
+### Type
+- Codex
+
+### Work
+- Reflected latest continuous opt-in rerun `S:\stream-sync\manual-logs\two-client-render-rerun-20260518-235217` into operations docs.
+- Split the first continuous-stream runtime result into PASS / PARTIAL PASS / FAIL:
+  - PASS: opt-in flag propagation, runtime created, slot0 enabled, input feeding, one-shot fallback safety.
+  - PARTIAL PASS: stdout output was produced.
+  - FAIL: continuous render consumption, FPS improvement, Production Readiness.
+- Investigated the slot0 continuous render-consumption path in `apps/switcher/src/main.rs`.
+- Kept this step docs / diagnostics design only. No slot1 continuous work, no 4-client widening, no server/client/protocol changes, no request/response persistent decoder revival, no GPU decode, no runtime rerun from Codex.
+
+### Runtime Evidence
+- LogDir: `S:\stream-sync\manual-logs\two-client-render-rerun-20260518-235217`
+- PASS / PARTIAL:
+  - `continuous_decode_config_enabled=true`
+  - `continuous_decode_runtime_enabled=true`
+  - `continuous_decode_slot0_enabled=true`
+  - `continuous_decode_input_frame_count=22`
+  - `continuous_decode_output_frame_count=10`
+  - `continuous_decode_queue_len=10`
+  - `continuous_decode_dropped_stale_count=0`
+  - `continuous_decode_restart_count=0`
+  - `continuous_decode_runtime_disabled=false`
+  - `continuous_decode_runtime_disabled_reason=none`
+- FAIL / blocker:
+  - `render_used_continuous_decoded_count=0`
+  - `continuous_decode_fallback_to_one_shot_count=22`
+  - `render_used_one_shot_fallback_count=22`
+  - `continuous_decode_frame_id_lag=362`
+  - `effective_render_fps_after_first_render=10.887`
+- Other context:
+  - `continuous_decode_stdout_read_elapsed_ms=20306`
+  - `continuous_decode_stall_count=1`
+  - `one_shot_decode_attempt_count=44`
+  - `one_shot_decode_elapsed_ms=6354`
+  - `one_shot_decode_first_byte_slow_count=8`
+  - `one_shot_decode_output_read_slow_count=16`
+  - `one_shot_decode_input_write_outlier_count=14`
+  - `one_shot_decode_input_payload_bytes_avg=256049.864`
+  - `quad_view_compose_elapsed_ms=1432`
+  - `gdi_paint_wait_elapsed_ms=0`
+
+### Code-Path Findings
+- `TimedSwitcherH264DecodeRuntime::decode_annex_b_h264` creates a cache key from output width / height and exact `source_identity(client_id, run_id, frame_id)`.
+- Slot0 continuous decoded frames are only counted as render-consumed when that exact key is found in `decoded_cache` and `continuous_decoded_keys` contains the same key.
+- On miss, current slot0 flow enqueues the selected access unit, drains any already ready output, then falls back to one-shot if the same exact key is still absent.
+- There is no current latest-decoded-frame fallback and no targetTime-aware decoded queue lookup in the first slice.
+- Therefore decoded queue/cache can contain frames while render still consumes zero continuous frames if selected `frame_id` has already moved ahead.
+- `continuous_decode_frame_id_lag` is the maximum observed `selected_frame_id - latest_decoded_frame_id` for the configured source. The observed `362` means continuous output was far behind the frame being requested by render, but does not by itself prove a single cause.
+- Input feeding is currently render-demand-driven, so continuous decode can naturally trail selected frames: render requests a selected frame, only then enqueues it, and same-tick render still requires exact decoded availability.
+- `continuous_decode_output_frame_count=10` for `input_frame_count=22` may reflect decoder lag, FFmpeg buffering/delay, stdout reader wait, or pending input/output correspondence. Current diagnostics do not separate those.
+- `continuous_decode_stdout_read_elapsed_ms=20306` is accumulated inside the stdout reader thread and should not be read as direct render-loop blocking time.
+- `continuous_decode_stall_count=1` is a lag-threshold observation (`requested - latest > queue bound`), not a restart or runtime-disable event.
+
+### Decisions
+- Production Readiness remains FAIL.
+- Do not treat the first opt-in runtime as successful optimization, because render consumed zero continuous decoded frames.
+- Do not add slot1 continuous, 4-client continuous, targetTime-aware lookup implementation, or latest decoded fallback in this step without more diagnostics.
+- Next slice should be diagnostics-only unless exact lookup failure is proven enough to justify a slot0-only fallback.
+
+### Next
+- Add lookup diagnostics:
+  - `continuous_decode_lookup_miss_count`
+  - `continuous_decode_lookup_hit_count`
+  - `continuous_decode_lookup_miss_reason_counts`
+  - `continuous_decode_latest_decoded_frame_id`
+  - `continuous_decode_requested_frame_id`
+  - `continuous_decode_requested_minus_latest_lag`
+  - `continuous_decode_exact_match_required_count`
+  - `continuous_decode_stale_frame_available_count`
+  - `continuous_decode_queue_oldest_frame_id`
+  - `continuous_decode_queue_newest_frame_id`
+- Add input/output correspondence diagnostics:
+  - `continuous_decode_input_frame_id_min`
+  - `continuous_decode_input_frame_id_max`
+  - `continuous_decode_output_frame_id_min`
+  - `continuous_decode_output_frame_id_max`
+  - `continuous_decode_output_pending_correspondence_count`
+  - `continuous_decode_writer_input_queue_len`
+- Human rerun remains `S:\stream-sync` side only after the diagnostics slice.
+
+### Changed Files
+- `docs/operations/todo.md`
+- `docs/operations/continuous-stream-decoder-plan.md`
+- `docs/operations/session-log.md`
+
+### Validation
+- Docs-only change; run `git diff --check`.
