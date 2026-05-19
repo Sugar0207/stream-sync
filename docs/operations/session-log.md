@@ -27697,3 +27697,92 @@ switcher four-view proof fixture deterministic=true real_handoff=false actual_wi
 - `cargo check -p stream-sync-switcher`
 - `cargo test -p stream-sync-switcher switcher_four_view_two_real_handoff_preview_summary_formats_expected_fields -- --nocapture`
 - `git diff --check`
+
+---
+
+## 2026-05-19
+### Type
+- Codex docs-first analysis
+
+### Work
+- Recorded latest continuous lookup diagnostics rerun `S:\stream-sync\manual-logs\two-client-render-rerun-20260519-111942`.
+- Kept the step docs-only and did not change code.
+- Re-read the slot0 continuous decoder code path in `apps/switcher/src/main.rs` and the handoff / targetTime source context in `apps/switcher/src/lib.rs`.
+- Updated `docs/operations/todo.md` and `docs/operations/continuous-stream-decoder-plan.md` to treat `output_pending:9` / `output_frame_count=0` as the current primary failure shape.
+- Kept Production Readiness as FAIL.
+
+### Changed Files
+- `docs/operations/todo.md`
+- `docs/operations/continuous-stream-decoder-plan.md`
+- `docs/operations/session-log.md`
+
+### Runtime Evidence
+- opt-in propagation: PASS
+  - `continuous_decode_config_enabled=true`
+  - `continuous_decode_runtime_enabled=true`
+  - `continuous_decode_slot0_enabled=true`
+- runtime created: PASS
+  - `continuous_decode_runtime_disabled=false`
+- slot0 input feeding: PASS
+  - `continuous_decode_input_frame_count=9`
+- lookup diagnostics: PASS
+  - `continuous_decode_lookup_hit_count=0`
+  - `continuous_decode_lookup_miss_count=9`
+  - `continuous_decode_lookup_miss_reason_counts=exact_key_missing:0|queue_empty:0|runtime_disabled:0|output_pending:9|frame_id_lagging:0|unknown:0`
+- continuous stdout output: FAIL
+  - `continuous_decode_output_frame_count=0`
+  - `continuous_decode_queue_len=0`
+  - `continuous_decode_latest_decoded_frame_id=none`
+- render consumption: FAIL
+  - `render_used_continuous_decoded_count=0`
+  - `render_used_one_shot_fallback_count=9`
+  - `continuous_decode_fallback_to_one_shot_count=9`
+- FPS improvement attributable to continuous path: FAIL
+  - `effective_render_fps_after_first_render=18.810`
+  - continuous output and render consumption were both 0, so this is not continuous-path evidence
+
+### Findings
+- `output_pending:9` is earlier than exact-key mismatch as a failure signal for this run.
+- `continuous_decode_output_pending_correspondence_count=9` with `continuous_decode_writer_input_queue_len=0` means accepted inputs reached the writer side and are waiting in the writer/reader correspondence queue, but no raw BGRA output frame was delivered by the reader.
+- `continuous_decode_stdout_read_elapsed_ms=0` means no successful stdout frame read was recorded. It does not prove the reader was not blocked, because the elapsed value is emitted only after `read_exact(expected_len)` succeeds.
+- `continuous_decode_input_frame_id_min=4` and `continuous_decode_input_frame_id_max=307` with only 9 inputs is a strong sparse-input signal.
+- Current code feeds continuous decoder input only from the render-demand selected frame path:
+  - selected frame exact cache lookup is attempted
+  - on cache miss, that selected access unit is enqueued
+  - output is drained immediately
+  - if exact key is still absent, one-shot fallback runs
+- Therefore the continuous decoder may be receiving sparse selected access units rather than a continuous H.264 client stream.
+- Startup requires `has_sps && has_pps && has_idr`, so at least one bootstrap input likely satisfied SPS/PPS/IDR. The current summary does not show whether later inputs were IDR, SPS/PPS, or non-IDR VCL only.
+- The stderr thread currently drains FFmpeg stderr into bytes and discards them, so the run cannot distinguish stdout blocking from FFmpeg decode/reference errors.
+
+### Decisions
+- Do not implement latest decoded fallback yet. The current evidence points to no stdout output before lookup policy becomes the main question.
+- Do not implement targetTime-aware decoded queue lookup yet.
+- Do not widen to slot1 continuous or 4-client continuous.
+- Treat next implementation candidate as diagnostics-only first, then possibly slot0 per-client continuous feed/drain policy.
+- Keep one-shot fallback as the safety path.
+
+### Next
+- Add diagnostics for input frame-id gap, input SPS/PPS/IDR/non-IDR NAL kinds, and FFmpeg stderr summary.
+- Add stdout-output-pending counters such as blocked/no-output-after-input/no-output-after-keyframe/bootstrap input/output.
+- Use the next human rerun from `S:\stream-sync` with `--disable-persistent-decoder --enable-continuous-stream-decoder` to decide whether the next real fix should be slot0 per-client continuous feed/drain.
+
+### TODO Update
+- Completed:
+  - latest rerun `S:\stream-sync\manual-logs\two-client-render-rerun-20260519-111942` reflected in docs
+  - output-pending failure shape separated from exact lookup miss / stale decoded frame
+  - render-demand sparse feed code-path finding recorded
+- Added:
+  - next diagnostics candidates for frame-id gaps, NAL kinds, FFmpeg stderr, and stdout no-output state
+  - next design candidate for slot0 per-client continuous feed/drain policy
+- Held:
+  - latest decoded fallback
+  - targetTime-aware lookup
+  - slot1 continuous rollout
+  - 4-client rollout
+  - request/response persistent decoder revival
+
+### Validation
+- `git diff --check`
+  - result: PASS
+  - note: LF/CRLF warnings only

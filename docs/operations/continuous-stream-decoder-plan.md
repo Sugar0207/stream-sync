@@ -147,6 +147,81 @@
   - latest decoded fallback
   - slot1 / 4-client continuous rollout
 
+## Lookup Diagnostics Runtime Result
+- latest continuous lookup diagnostics rerun:
+  - `S:\stream-sync\manual-logs\two-client-render-rerun-20260519-111942`
+- PASS:
+  - continuous opt-in flag propagation:
+    - `continuous_decode_config_enabled=true`
+    - `continuous_decode_runtime_enabled=true`
+    - `continuous_decode_slot0_enabled=true`
+  - continuous runtime created:
+    - `continuous_decode_runtime_disabled=false`
+  - slot0 input feeding:
+    - `continuous_decode_input_frame_count=9`
+  - continuous lookup diagnostics:
+    - `continuous_decode_lookup_hit_count=0`
+    - `continuous_decode_lookup_miss_count=9`
+    - `continuous_decode_exact_match_required_count=9`
+- FAIL:
+  - continuous stdout output:
+    - `continuous_decode_output_frame_count=0`
+    - `continuous_decode_queue_len=0`
+    - `continuous_decode_latest_decoded_frame_id=none`
+    - `continuous_decode_output_frame_id_min=none`
+    - `continuous_decode_output_frame_id_max=none`
+  - continuous render consumption:
+    - `render_used_continuous_decoded_count=0`
+    - `render_used_one_shot_fallback_count=9`
+    - `continuous_decode_fallback_to_one_shot_count=9`
+  - FPS improvement attributable to continuous path:
+    - `effective_render_fps_after_first_render=18.810`
+    - continuous output / render consumption が 0 なので、この FPS は continuous path 成果として扱わない
+  - Production Readiness: FAIL
+- Key diagnostic result:
+  - `continuous_decode_lookup_miss_reason_counts=exact_key_missing:0|queue_empty:0|runtime_disabled:0|output_pending:9|frame_id_lagging:0|unknown:0`
+  - `continuous_decode_output_pending_correspondence_count=9`
+  - `continuous_decode_writer_input_queue_len=0`
+  - writer input queue は空で、correspondence queue に 9 件残っている。writer thread は accepted input を受け取り FFmpeg stdin write まで進めた可能性が高く、pending は writer より後段、つまり FFmpeg decode / stdout raw frame output / reader delivery の間にある
+- Frame range:
+  - `continuous_decode_requested_frame_id=307`
+  - `continuous_decode_input_frame_id_min=4`
+  - `continuous_decode_input_frame_id_max=307`
+  - `continuous_decode_output_frame_id_min=none`
+  - `continuous_decode_output_frame_id_max=none`
+  - input 9 件で frame_id が `4 -> 307` まで飛んでおり、continuous decoder に連続 stream ではなく render-demand selected access unit を sparse に渡している疑いが強い
+- Lag semantics for this run:
+  - `continuous_decode_frame_id_lag` は latest decoded frame id がある時に `requested_frame_id - latest_decoded_frame_id` の max として更新される
+  - 今回は `continuous_decode_latest_decoded_frame_id=none` / `continuous_decode_requested_minus_latest_lag=none` なので、lag を計算できる decoded output が 1 件も無い
+  - したがって今回の主 evidence は frame_id lag ではなく `output_pending:9` と output count `0`
+
+## Output-Pending Code-Path Findings
+- current feed point is render-demand:
+  - `TimedSwitcherH264DecodeRuntime::decode_annex_b_h264` は selected frame の cache key を作る
+  - configured slot0 source なら既存 continuous output を drain し、requested frame_id を観測する
+  - exact cache hit が無ければ、その tick で要求された selected access unit だけを continuous input queue へ enqueue する
+  - enqueue 直後に再度 drain して exact key を探し、それでも無ければ one-shot fallback へ進む
+- current continuous input is not a background client stream feed:
+  - handoff / targetTime selection が選んだ selected frame だけが decode hook に到達する
+  - cache hit しない selected frame だけが continuous runtime に渡る
+  - selected frame が `4 -> 307` のように飛ぶと、FFmpeg は参照 frame の連続性を失った non-IDR P-frame を受け取る可能性がある
+- startup keyframe gate:
+  - runtime startup は first input が `has_sps && has_pps && has_idr` を満たす場合だけ session を作る
+  - 今回 `input_frame_count=9` なので startup gate は少なくとも一度通過しているが、その後の input が SPS/PPS/IDR を含むか、non-IDR VCL だけかは current summary では見えない
+- output pending classification:
+  - lookup miss reason `output_pending` は `pending_correspondence_count > 0 || writer_input_queue_len > 0` の時に付く
+  - 今回は `writer_input_queue_len=0` かつ `pending_correspondence_count=9` のため、accepted input は writer thread が受け取り correspondence queue に積んだ後、reader が raw BGRA frame を pop できていない
+- stdout / stderr visibility gap:
+  - stdout reader は `read_exact(expected_len)` 成功後だけ decoded event と `stdout_read_elapsed_ms` を出す
+  - 今回 `continuous_decode_stdout_read_elapsed_ms=0` は successful read が無かったという意味で、reader が待っていない証明ではない
+  - stderr thread は現在 `read_to_end` して bytes を捨てており、FFmpeg の reference error / decode error summary は summary に出ない
+- Current likely issue:
+  - continuous input is sparse / render-demand driven
+  - H.264 stream continuity is not preserved
+  - FFmpeg may be waiting for enough valid stream / reference frames
+  - stdout reader has no decoded raw frame to return
+  - exact lookup strictness is not the current first problem for this run
+
 ## request/response persistent decoder との違い
 - request/response persistent decoder:
   - render loop から `1 request -> stdin write -> stdout expected bytes read -> response wait` を同期的に待つ
@@ -316,16 +391,28 @@ first implementation で summary に追加済み:
 
 追加候補:
 
+- `continuous_decode_input_frame_id_gap_max`
+- `continuous_decode_input_frame_id_gap_total`
+- `continuous_decode_input_non_consecutive_count`
+- `continuous_decode_input_keyframe_count`
+- `continuous_decode_input_non_keyframe_count`
+- `continuous_decode_input_has_sps_count`
+- `continuous_decode_input_has_pps_count`
+- `continuous_decode_input_has_idr_count`
+- `continuous_decode_input_has_non_idr_vcl_count`
+- `continuous_decode_last_input_payload_nal_kinds`
+- `continuous_decode_ffmpeg_stderr_summary`
+- `continuous_decode_stdout_reader_blocked_count`
+- `continuous_decode_no_output_after_input_count`
+- `continuous_decode_no_output_after_keyframe_count`
+- `continuous_decode_bootstrap_input_count`
+- `continuous_decode_bootstrap_output_count`
 - `continuous_decode_input_queue_drop_count`
 - `continuous_decode_output_queue_drop_count`
 - `continuous_decode_keyframe_wait_count`
-- `continuous_decode_bootstrap_keyframe_count`
 - `continuous_decode_frame_id_mismatch_suspicion_count`
 - `continuous_decode_stdout_reader_error_count`
 - `continuous_decode_stdin_write_error_count`
-- `continuous_decode_per_slot_input_counts`
-- `continuous_decode_per_slot_output_counts`
-- `continuous_decode_per_slot_queue_lens`
 
 読み方:
 - `continuous_decode_input_frame_count` と `output_frame_count` の差は decoder lag の coarse signal
@@ -335,22 +422,22 @@ first implementation で summary に追加済み:
 
 次に優先する diagnostics-only slice:
 
-1. lookup outcome:
-   - exact hit / miss count
-   - requested frame id
-   - latest decoded frame id
-   - requested-minus-latest lag
-   - exact match required count
-2. decoded queue range:
-   - oldest / newest decoded frame id
-   - stale frame available count
-3. input/output correspondence:
-   - input frame id min/max
-   - output frame id min/max
-   - pending correspondence count
-   - writer input queue length
+1. sparse input / H.264 continuity:
+   - input frame_id gap max / total
+   - non-consecutive input count
+   - keyframe / non-keyframe input count
+   - SPS / PPS / IDR / non-IDR VCL counts
+   - last input payload NAL kinds
+2. stdout output pending:
+   - FFmpeg stderr summary
+   - stdout reader blocked / no-output-after-input count
+   - no-output-after-keyframe count
+   - bootstrap input/output count
+3. feed policy decision support:
+   - evidence that selected-frame-only render-demand feed is sparse
+   - evidence that per-client continuous feed/drain is needed before latest decoded fallback
 
-この slice は observability-only とし、slot1 continuous 化、4-client 化、FFmpeg args / pixel format変更、one-shot fallback 削除、targetTime-aware lookup 本実装には進めない。
+この slice は observability-only とし、slot1 continuous 化、4-client 化、FFmpeg args / pixel format変更、one-shot fallback 削除、latest decoded fallback、targetTime-aware lookup 本実装には進めない。
 
 ## 最小 implementation slice
 2026-05-18 first slice で実装済み:
