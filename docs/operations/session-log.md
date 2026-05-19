@@ -2,6 +2,72 @@
 
 ## 2026-05-19
 ### Type
+- Codex docs-first design
+
+### Work
+- Designed the slot0 per-client continuous feed/drain policy as a docs-first step.
+- Added a focused plan at `docs/operations/continuous-feed-drain-plan.md`.
+- Kept this step docs-only and did not change code.
+- Compared current render-demand selected-frame feed with an oldest-driven bounded per-client feed candidate.
+- Clarified handoff/source access, render loop vs feeder resource contention, queue/backpressure/drop policy, feed cadence, exact lookup, targetTime, fallback, diagnostics, and first implementation scope.
+- Kept latest decoded fallback and targetTime-aware decoded render consumption out of the first implementation slice.
+
+### Changed Files
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+- `docs/operations/continuous-stream-decoder-plan.md`
+- `docs/operations/continuous-feed-drain-plan.md`
+
+### Design Summary
+- First feed/drain candidate:
+  - slot0 only
+  - two-real preview loop only
+  - opt-in continuous decoder only
+  - bounded synchronous feed helper before validation/decode/render
+  - oldest-driven source access as the first candidate
+  - exact selected frame lookup remains the only continuous render consumption path
+  - one-shot fallback remains mandatory
+- The feeder is opportunistic and bounded; render selection remains authoritative for display.
+- The first design avoids a separate feeder thread, server push, queue snapshot hot path, protocol changes, and slot1/4-client widening.
+
+### Findings
+- Current render-demand feed enqueues only after exact selected-frame cache miss, so it feeds continuous decoder after render already needs the frame.
+- Latest evidence showed continuous output can be produced, but decoded frames lag behind requested selected frames:
+  - `requested_frame_id=535`
+  - `latest_decoded_frame_id=386`
+  - `requested_minus_latest_lag=149`
+- Because latest decoded output can be stale, latest decoded fallback is unsafe as the next step.
+- Existing handoff modes support oldest/latest/latest-decodable preview and oldest consume. For stream continuity, oldest-driven feed is the first candidate, while latest modes remain better suited to display selection.
+
+### Decisions
+- Create a separate feed/drain plan instead of continuing to expand the broad continuous-stream decoder plan.
+- Use `docs/operations/continuous-feed-drain-plan.md` as the first implementation boundary source of truth.
+- Prefer a bounded synchronous slot0 feed helper before adding a feeder thread.
+- Prefer `PreviewOldest` observation plus guarded `ConsumeOldest` as the first feed source candidate, with queue mutation risk called out explicitly.
+- Keep latest decoded fallback held until max staleness / no-future-frame guards are designed.
+
+### TODO Update
+- Completed:
+  - slot0 feed/drain docs-first design
+  - current render-demand feed problem statement
+  - handoff/source, resource contention, queue/drop, cadence, fallback, diagnostics, and first slice boundaries
+- Added:
+  - new plan file `docs/operations/continuous-feed-drain-plan.md`
+  - next item to review first implementation slice before code
+- Held:
+  - code implementation
+  - latest decoded fallback
+  - targetTime-aware decoded queue lookup
+  - slot1 continuous
+  - 4-client continuous
+  - server/client/protocol changes
+
+### Validation
+- `git diff --check`
+  - result: PASS
+
+## 2026-05-19
+### Type
 - Codex docs-first investigation
 
 ### Work

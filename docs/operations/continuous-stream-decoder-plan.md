@@ -543,6 +543,9 @@
   - next work should move docs-first to slot0 per-client continuous feed/drain policy, not to latest decoded fallback
 
 ## Slot0 Per-Client Continuous Feed / Drain Policy Draft
+- source of truth:
+  - detailed first implementation boundary is split into `docs/operations/continuous-feed-drain-plan.md`
+  - this section remains the short rationale inside the broader continuous-stream decoder plan
 - goal:
   - stop treating continuous decoder input as a render-demand side effect of exact selected-frame cache miss
   - feed slot0 from a per-client stream source continuously enough that decoded output can stay near targetTime / selected frame instead of lagging by hundreds of frame ids
@@ -857,9 +860,9 @@ first implementation で summary に追加済み:
 
 future implementation slice:
 
-1. slot0 per-client continuous feed/drain policy を docs-first で固定する
+1. `docs/operations/continuous-feed-drain-plan.md` に沿って slot0 per-client feed/drain の first implementation slice を切る
 2. first implementation scope を slot0 / two-real preview loop / opt-in continuous decoder / diagnostics-first に限定する
-3. feed source read cadence と queue/backpressure/drop policy を決める
+3. feed source read cadence と queue/backpressure/drop policy は同 plan の oldest-driven bounded feed 方針を第一候補にする
 4. exact lookup + one-shot fallback を維持したまま、continuous input が sparse render-demand feed から脱せるかを確認する
 5. latest decoded fallback と targetTime-aware render consumption は、stale guard 設計ができるまで実装しない
 6. restart policy は first slice の counter visibility から始め、restart storm を避ける threshold を runtime evidence 後に決める
