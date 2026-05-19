@@ -326,6 +326,104 @@
   - slot0 per-client feed/drain architecture
   - slot1 / 4-client rollout
 
+## FFmpeg Runtime Diagnostics Rerun
+- latest rerun:
+  - `S:\stream-sync\manual-logs\two-client-render-rerun-20260519-133514`
+- PASS:
+  - opt-in propagation:
+    - `continuous_decode_config_enabled=true`
+    - `continuous_decode_runtime_enabled=true`
+    - `continuous_decode_slot0_enabled=true`
+  - continuous runtime exists and stays alive:
+    - `continuous_decode_process_running=true`
+    - `continuous_decode_process_exit_status=none`
+  - stdin write:
+    - `continuous_decode_stdin_write_count=10`
+    - `continuous_decode_stdin_write_bytes_total=659384`
+    - `continuous_decode_stdin_write_error_count=0`
+    - `continuous_decode_last_stdin_write_error=none`
+  - stderr reader / stderr:
+    - `continuous_decode_stderr_reader_alive=true`
+    - `continuous_decode_stderr_bytes_total=0`
+    - `continuous_decode_ffmpeg_stderr_summary=none`
+  - stdout reader state:
+    - `continuous_decode_stdout_read_attempt_count=1`
+    - `continuous_decode_stdout_read_in_progress=true`
+- FAIL:
+  - continuous stdout output:
+    - `continuous_decode_output_frame_count=0`
+    - `continuous_decode_lookup_miss_reason_counts=exact_key_missing:0|queue_empty:0|runtime_disabled:0|output_pending:10|frame_id_lagging:0|unknown:0`
+    - `continuous_decode_first_input_to_first_output_elapsed_ms=none`
+    - `continuous_decode_first_input_to_now_elapsed_ms=11453`
+  - continuous render consumption:
+    - `render_used_continuous_decoded_count=0`
+    - `render_used_one_shot_fallback_count=10`
+  - FPS improvement attributable to continuous path:
+    - `effective_render_fps_after_first_render=20.451` is not attributable to continuous decoded frames because output/render consumption stayed `0`
+  - Production Readiness: FAIL
+- input shape:
+  - sparse feed remains visible:
+    - `continuous_decode_input_frame_id_min=4`
+    - `continuous_decode_input_frame_id_max=342`
+    - `continuous_decode_input_frame_id_gap_max=38`
+    - `continuous_decode_input_frame_id_gap_total=338`
+    - `continuous_decode_input_non_consecutive_count=9`
+  - all accepted continuous input still carries keyframe/parameter-set evidence:
+    - `continuous_decode_input_keyframe_count=10`
+    - `continuous_decode_input_non_keyframe_count=0`
+    - `continuous_decode_input_has_sps_count=10`
+    - `continuous_decode_input_has_pps_count=10`
+    - `continuous_decode_input_has_idr_count=10`
+    - `continuous_decode_input_has_non_idr_vcl_count=0`
+    - `continuous_decode_last_input_payload_nal_kinds=sps+pps+idr+idr+idr+idr+idr+idr+idr+idr`
+- one-shot comparison:
+  - one-shot fallback remains the safety path and succeeds on the same scaled output shape:
+    - `one_shot_decode_attempt_count=19`
+    - `one_shot_decode_elapsed_ms=1175`
+    - `one_shot_decode_output_width=640`
+    - `one_shot_decode_output_height=360`
+    - `one_shot_decode_scaled_output_enabled=true`
+  - raw BGRA frame boundary remains `640 * 360 * 4 = 921600` bytes
+- interpretation:
+  - main evidence is `stdin write success / process alive / stderr none / stdout read in progress / output 0`
+  - because every accepted continuous input includes SPS/PPS/IDR and no non-IDR VCL was observed, P-frame reference missing alone is not enough to explain output `0`
+  - current suspicion shifts from payload validity toward continuous FFmpeg runtime semantics: stdin kept open, parser/probing/buffering, lack of EOF/flush, lack of low-latency/probe args, stdout reader waiting for a full raw frame, or stderr being too quiet under `-loglevel error`
+
+## FFmpeg Args / Read Boundary Findings
+- exact one-shot args in the scaled two-real path:
+  - `ffmpeg -hide_banner -loglevel error -f h264 -i pipe:0 -frames:v 1 -vf scale=640:360:flags=neighbor -f rawvideo -pix_fmt bgra pipe:1`
+- exact continuous args in the latest rerun:
+  - `ffmpeg -hide_banner -loglevel error -f h264 -i pipe:0 -vf scale=640:360:flags=neighbor -f rawvideo -pix_fmt bgra pipe:1`
+- exact diff:
+  - one-shot has `-frames:v 1`; continuous does not
+  - one-shot writes one access unit, drops stdin to send EOF, reads one raw frame, then waits for process exit
+  - continuous writes access units to the same stdin handle and keeps it open; stdout reader loops with `read_exact(expected_len)` and only reports after a full `921600` byte raw BGRA frame is available
+  - both use the same scale filter, output pixel format, rawvideo muxer, and `-loglevel error`
+- expectation:
+  - an open-stdin continuous H.264 Annex B stream to rawvideo stdout is a reasonable FFmpeg process shape in principle, but current evidence shows this exact args/lifetime shape does not emit a raw frame in the observed run
+  - `-frames:v 1` plus stdin EOF may be helping one-shot flush parser/decoder output; continuous lacks that EOF boundary by design
+  - current reader has no partial-byte counter, so `stdout_read_in_progress=true` only proves it is waiting for a full frame, not whether FFmpeg emitted zero bytes or a partial raw frame
+  - `-loglevel error` may hide useful warnings about probing, buffering, parser delay, or decode-drop behavior
+- next minimal experiment design:
+  - keep default continuous args unchanged
+  - add an opt-in experimental args toggle only if code changes proceed, e.g. `--continuous-decoder-low-latency-args`
+  - candidate pre-input args:
+    - `-fflags nobuffer`
+    - `-flags low_delay`
+    - `-analyzeduration 0`
+    - `-probesize 32`
+  - candidate output/logging args:
+    - `-flush_packets 1`
+    - temporary bounded `-loglevel warning` or `-loglevel info`
+  - pair the toggle with diagnostics:
+    - `continuous_decode_ffmpeg_loglevel`
+    - `continuous_decode_ffmpeg_low_latency_args_enabled`
+    - `continuous_decode_ffmpeg_probe_args_enabled`
+    - `continuous_decode_stdout_partial_bytes_read`
+    - `continuous_decode_stdout_first_byte_seen`
+    - `continuous_decode_stdout_first_byte_elapsed_ms`
+  - do not use this experiment to implement latest decoded fallback, targetTime-aware lookup, slot0 per-client feed/drain, slot1 rollout, or 4-client rollout
+
 ## request/response persistent decoder との違い
 - request/response persistent decoder:
   - render loop から `1 request -> stdin write -> stdout expected bytes read -> response wait` を同期的に待つ
@@ -534,6 +632,12 @@ first implementation で summary に追加済み:
 - `continuous_decode_keyframe_wait_count`
 - `continuous_decode_frame_id_mismatch_suspicion_count`
 - `continuous_decode_stdout_reader_error_count`
+- `continuous_decode_ffmpeg_loglevel`
+- `continuous_decode_ffmpeg_low_latency_args_enabled`
+- `continuous_decode_ffmpeg_probe_args_enabled`
+- `continuous_decode_stdout_partial_bytes_read`
+- `continuous_decode_stdout_first_byte_seen`
+- `continuous_decode_stdout_first_byte_elapsed_ms`
 
 読み方:
 - `continuous_decode_input_frame_count` と `output_frame_count` の差は decoder lag の coarse signal
@@ -541,24 +645,20 @@ first implementation で summary に追加済み:
 - `render_used_continuous_decoded_count` は render loop が one-shot wait を避けられた回数
 - `render_used_one_shot_fallback_count` が高い場合、continuous path はまだ hot path になっていない
 
-次に優先する rerun evidence:
+次に優先する evidence / experiment:
 
-1. FFmpeg runtime / pipe status:
-   - args summary
-   - stdin write count / bytes / error
-   - process running / exit status
-   - stdout read attempt / in-progress
-   - stderr reader alive / bytes / last time
-   - first-input-to-output / first-input-to-now elapsed
-2. output `0` の切り分け:
-   - stdin write が成功しているのに stdout read が in-progress のままか
-   - process が生存しているのに stderr bytes が `0` のままか
-   - first input から十分な時間が経っても first output が `none` のままか
+1. opt-in FFmpeg args variant:
+   - default continuous args は変更しない
+   - experimental toggle でだけ low-latency/probe args と temporary loglevel を試す
+   - args variant により `stdout_read_in_progress=true` / output `0` が変わるかを見る
+2. stdout boundary visibility:
+   - current `read_exact(921600)` は full raw frame 到着まで成功扱いにならない
+   - partial bytes / first byte の有無を追加し、FFmpeg が全く出していないのか、full frame 未満で止まっているのかを分ける
 3. feed policy decision support:
    - selected-frame-only render-demand feed が sparse である evidence は保持
-   - all-keyframe input でも output pending が続くかを FFmpeg runtime diagnostics と合わせて読む
+   - ただし all-keyframe input でも output pending が続いたため、feed architecture rewrite より先に FFmpeg runtime args / buffering / stdout boundary を検証する
 
-この slice は observability-only とし、slot1 continuous 化、4-client 化、FFmpeg args / pixel format変更、one-shot fallback 削除、latest decoded fallback、targetTime-aware lookup 本実装には進めない。
+この slice は observability / opt-in experiment-only とし、slot1 continuous 化、4-client 化、default FFmpeg args / pixel format変更、one-shot fallback 削除、latest decoded fallback、targetTime-aware lookup 本実装には進めない。
 
 ## 最小 implementation slice
 2026-05-18 first slice で実装済み:
@@ -578,10 +678,11 @@ first implementation で summary に追加済み:
 
 future implementation slice:
 
-1. next rerun で FFmpeg runtime が stdin write 後に alive/blocking/no-stderr/no-output なのか、write error / process exit なのかを確認する
-2. stdout stall / input write failure / process exit / frame_id mismatch suspicion の runtime disable reason を actual run evidence に合わせて増やす
-3. output `0` が feed policy 由来と確認できた場合のみ、slot0 per-client continuous feed/drain policy を別 step で設計する
-4. restart policy は first slice の counter visibility から始め、restart storm を避ける threshold を runtime evidence 後に決める
+1. opt-in `--continuous-decoder-low-latency-args` 相当を追加する場合は default args を維持し、summary に args variant / loglevel / probe toggles を出す
+2. stdout partial-byte / first-byte diagnostics を追加し、full-frame `read_exact` boundary で観測が消えていないかを確認する
+3. low-latency/probe args でも output `0` が続く場合、stderr loglevel を bounded に上げた rerun evidence で parser/buffering/drop reason を見る
+4. output `0` が feed policy 由来と確認できた場合のみ、slot0 per-client continuous feed/drain policy を別 step で設計する
+5. restart policy は first slice の counter visibility から始め、restart storm を避ける threshold を runtime evidence 後に決める
 
 ## out of scope
 - request/response persistent decoder の復活

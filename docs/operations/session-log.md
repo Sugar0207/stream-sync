@@ -2,6 +2,97 @@
 
 ## 2026-05-19
 ### Type
+- Codex docs-first investigation
+
+### Work
+- Reflected latest human rerun `S:\stream-sync\manual-logs\two-client-render-rerun-20260519-133514`.
+- Kept the step docs-first and did not change code.
+- Organized the continuous FFmpeg runtime diagnostics around the main finding: stdin write succeeded, process stayed alive, stderr stayed empty, stdout reader stayed in progress, and decoded output remained `0`.
+- Compared the code path for one-shot FFmpeg args vs continuous FFmpeg args.
+- Designed the next minimal opt-in experiment candidate without changing default continuous args.
+- Did not implement slot1 continuous decode, 4-client continuous decode, latest decoded fallback, targetTime-aware lookup, slot0 per-client feed/drain policy, request/response persistent decoder revive, GPU decode, or pixel format changes.
+
+### Changed Files
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+- `docs/operations/continuous-stream-decoder-plan.md`
+
+### Runtime Result
+- Latest rerun:
+  - `S:\stream-sync\manual-logs\two-client-render-rerun-20260519-133514`
+- PASS:
+  - opt-in propagation: `continuous_decode_config_enabled=true`
+  - runtime created: `continuous_decode_runtime_enabled=true`
+  - slot0 enabled: `continuous_decode_slot0_enabled=true`
+  - stdin write: `continuous_decode_stdin_write_count=10` / `continuous_decode_stdin_write_bytes_total=659384` / `continuous_decode_stdin_write_error_count=0`
+  - process alive: `continuous_decode_process_running=true` / `continuous_decode_process_exit_status=none`
+  - stderr reader / stderr: `continuous_decode_stderr_reader_alive=true` / `continuous_decode_stderr_bytes_total=0` / `continuous_decode_ffmpeg_stderr_summary=none`
+  - stdout reader state: `continuous_decode_stdout_read_attempt_count=1` / `continuous_decode_stdout_read_in_progress=true`
+  - one-shot fallback safety: `render_used_one_shot_fallback_count=10`
+- FAIL:
+  - continuous decoded output: `continuous_decode_output_frame_count=0`
+  - continuous render consumption: `render_used_continuous_decoded_count=0`
+  - continuous-path FPS improvement: `effective_render_fps_after_first_render=20.451` is not attributable to continuous decoded frames
+  - Production Readiness: FAIL
+
+### Findings
+- Main evidence is `stdin write success / process alive / stderr none / stdout read in progress / output 0`.
+- The continuous runtime accepted `10` inputs with sparse frame ids:
+  - `continuous_decode_input_frame_id_min=4`
+  - `continuous_decode_input_frame_id_max=342`
+  - `continuous_decode_input_frame_id_gap_max=38`
+  - `continuous_decode_input_frame_id_gap_total=338`
+  - `continuous_decode_input_non_consecutive_count=9`
+- All accepted continuous inputs carried keyframe/parameter-set evidence:
+  - `continuous_decode_input_keyframe_count=10`
+  - `continuous_decode_input_non_keyframe_count=0`
+  - `continuous_decode_input_has_sps_count=10`
+  - `continuous_decode_input_has_pps_count=10`
+  - `continuous_decode_input_has_idr_count=10`
+  - `continuous_decode_input_has_non_idr_vcl_count=0`
+  - `continuous_decode_last_input_payload_nal_kinds=sps+pps+idr+idr+idr+idr+idr+idr+idr+idr`
+- Because inputs are all SPS/PPS/IDR keyframes, P-frame reference missing alone is not enough to explain output `0`.
+- One-shot fallback succeeds on the same scaled `640x360` raw BGRA path:
+  - `one_shot_decode_output_width=640`
+  - `one_shot_decode_output_height=360`
+  - `one_shot_decode_scaled_output_enabled=true`
+- Code path comparison:
+  - one-shot scaled args are `ffmpeg -hide_banner -loglevel error -f h264 -i pipe:0 -frames:v 1 -vf scale=640:360:flags=neighbor -f rawvideo -pix_fmt bgra pipe:1`
+  - continuous args are `ffmpeg -hide_banner -loglevel error -f h264 -i pipe:0 -vf scale=640:360:flags=neighbor -f rawvideo -pix_fmt bgra pipe:1`
+  - one-shot writes one payload, closes stdin/EOF, reads one raw frame, and waits for process exit
+  - continuous keeps stdin open and the stdout reader blocks in `read_exact(640 * 360 * 4)` until a full `921600` byte frame is available
+- Current suspicion is continuous FFmpeg stdin open / parser buffering / EOF or flush wait / missing low-latency or probe args / stdout full-frame read boundary / quiet `-loglevel error`, rather than payload corruption as the first explanation.
+
+### Decisions
+- Keep default continuous FFmpeg args unchanged for this docs-first step.
+- Keep one-shot fallback in place.
+- Treat next code slice, if taken, as opt-in experiment / diagnostics-only:
+  - `--continuous-decoder-low-latency-args` or equivalent internal experimental toggle
+  - candidate args: `-fflags nobuffer`, `-flags low_delay`, `-analyzeduration 0`, `-probesize 32`, `-flush_packets 1`
+  - temporary bounded `-loglevel warning` or `info`
+  - diagnostics: `continuous_decode_ffmpeg_loglevel`, low-latency/probe args enabled flags, stdout partial bytes, stdout first-byte seen, stdout first-byte elapsed
+- Do not move to latest decoded fallback, targetTime-aware lookup, slot0 per-client feed/drain implementation, slot1 continuous, or 4-client continuous until this runtime boundary is tested.
+
+### TODO Update
+- Completed:
+  - latest rerun documentation
+  - one-shot vs continuous FFmpeg args comparison
+  - output `0` interpretation with all-keyframe input
+- Added:
+  - opt-in experimental low-latency/probe args toggle design
+  - stdout partial-byte / first-byte diagnostics candidate
+- Held:
+  - latest decoded fallback
+  - targetTime-aware lookup
+  - slot0 per-client feed/drain implementation
+  - slot1 / 4-client rollout
+
+### Validation
+- `git diff --check`
+  - result: PASS
+
+## 2026-05-19
+### Type
 - Codex diagnostics-only implementation
 
 ### Work
