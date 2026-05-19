@@ -2,7 +2,7 @@
 
 # Continuous Stream Decoder Plan
 
-最終更新: 2026-05-19
+最終更新: 2026-05-20
 
 ## 目的
 - two-real preview loop の 30fps 目標に向けて、render loop から one-shot FFmpeg wait を外すための next design candidate を整理する
@@ -641,6 +641,46 @@ Added diagnostics:
 
 This slice intentionally still does not implement latest decoded fallback, targetTime-aware decoded render consumption, slot1 continuous decode, 4-client continuous decode, server/client/protocol changes, request/response persistent decoder revival, GPU decode, or one-shot fallback removal. Production Readiness remains FAIL.
 
+## Bounded Feed Helper Runtime Result
+- latest rerun:
+  - `S:\stream-sync\manual-logs\two-client-render-rerun-20260519-202043`
+- PASS:
+  - continuous opt-in: `continuous_decode_config_enabled=true`
+  - continuous runtime: `continuous_decode_runtime_enabled=true`
+  - slot0 enabled: `continuous_decode_slot0_enabled=true`
+  - low-latency args: `continuous_decode_ffmpeg_low_latency_args_enabled=true`
+  - bounded feed helper: `continuous_feed_enabled=true`
+  - feeder as main input: `continuous_decode_input_from_feeder_count=368`
+  - render-demand sparse feed reduced: `continuous_decode_input_from_render_demand_count=4`
+  - feeder lag to selected: `continuous_decode_feeder_lag_to_selected=0`
+- PASS / PARTIAL PASS:
+  - continuous input: `continuous_decode_input_frame_count=372`
+  - continuous output: `continuous_decode_output_frame_count=340`
+  - decoded queue length: `continuous_decode_queue_len=30`
+  - stale decoded drops: `continuous_decode_dropped_stale_count=310`
+- FAIL:
+  - continuous render consumption: `render_used_continuous_decoded_count=0`
+  - exact render hit: `continuous_decode_render_exact_hit_count=0`
+  - exact miss stale: `continuous_decode_render_miss_stale_count=12`
+  - exact miss not-ready: `continuous_decode_render_miss_not_ready_count=2`
+  - one-shot fallback use: `continuous_decode_fallback_to_one_shot_count=14` / `render_used_one_shot_fallback_count=14`
+  - Production Readiness: FAIL
+
+Key interpretation:
+
+- The bounded feed helper did its job: slot0 continuous input is no longer mainly fed by render-demand exact misses.
+- Continuous decoder output is available in volume.
+- Render still uses `0` continuous decoded frames because render consumption is exact selected-frame lookup only.
+- Requested frame and latest decoded frame still have lag:
+  - `continuous_decode_requested_frame_id=459`
+  - `continuous_decode_latest_decoded_frame_id=426`
+  - `continuous_decode_requested_minus_latest_lag=40`
+  - `continuous_decode_frame_id_lag=42`
+  - decoded queue range `390..426`
+- This moves the next design question to targetTime-aware / bounded-lag decoded queue lookup.
+- Unbounded latest decoded fallback remains unsafe because it can show stale frames and break the sync-first goal.
+- One-shot fallback remains mandatory while bounded lookup policy is designed and tested.
+
 ## request/response persistent decoder との違い
 - request/response persistent decoder:
   - render loop から `1 request -> stdin write -> stdout expected bytes read -> response wait` を同期的に待つ
@@ -867,18 +907,17 @@ first implementation で summary に追加済み:
 
 次に優先する docs/design evidence:
 
-1. slot0 per-client continuous feed/drain policy:
-   - current render-demand selected-frame-only feed と、per-client stream feed の責務差分を固定する
-   - handoff/source からどの read mode / cadence で連続 access unit を取得するかを決める
-   - queue bound、drop、backpressure、duplicate frame_id skip の最小 policy を決める
+1. targetTime-aware / bounded-lag decoded queue lookup:
+   - exact selected-frame lookup が miss した後、同じ source の decoded queue から targetTime 以前かつ bounded lag 内の候補を探す
+   - unbounded latest decoded fallback は stale frame 表示リスクがあるため採用しない
+   - `docs/operations/continuous-decoded-lookup-plan.md` を source of truth とする
 2. stale decoded frame safety:
-   - latest decoded fallback は `requested_frame_id=535` / `latest_decoded_frame_id=386` のような古い frame 表示リスクがあるため保留する
-   - exact frame_id lookup は維持し、targetTime-aware lookup は最大 staleness guard を設計してから別 step にする
-3. diagnostics for feed/drain:
-   - feed accepted / dropped / skipped duplicate / source no-frame / source waiting / source error counts
-   - feed batch size、input queue high-water mark、requested-minus-latest lag、stale decoded available count を first implementation candidate に含める
+   - `requested_frame_id=459` / `latest_decoded_frame_id=426` / lag `40` の evidence では、guard なし fallback は unsafe
+   - exact frame_id lookup は最優先で維持し、bounded-lag lookup は second choice に限定する
+3. diagnostics for bounded lookup:
+   - bounded lookup hit / rejected stale / rejected not-ready / fallback-to-one-shot を first implementation candidate に含める
 
-この次 slice も docs-first とし、slot1 continuous 化、4-client 化、default FFmpeg args / pixel format変更、one-shot fallback 削除、latest decoded fallback、targetTime-aware lookup 本実装には進めない。
+この次 slice も docs-first とし、slot1 continuous 化、4-client 化、default FFmpeg args / pixel format変更、one-shot fallback 削除、無制限 latest decoded fallback には進めない。
 
 ## 最小 implementation slice
 2026-05-18 first slice で実装済み:
@@ -898,12 +937,12 @@ first implementation で summary に追加済み:
 
 future implementation slice:
 
-1. `docs/operations/continuous-feed-drain-plan.md` に沿って slot0 per-client feed/drain の first implementation slice を切る
+1. `docs/operations/continuous-decoded-lookup-plan.md` に沿って bounded-lag decoded queue lookup の first implementation slice を切る
 2. first implementation scope を slot0 / two-real preview loop / opt-in continuous decoder / diagnostics-first に限定する
-3. feed source read cadence と queue/backpressure/drop policy は同 plan の oldest-driven bounded feed 方針を第一候補にする
-4. exact lookup + one-shot fallback を維持したまま、continuous input が sparse render-demand feed から脱せるかを確認する
-5. latest decoded fallback と targetTime-aware render consumption は、stale guard 設計ができるまで実装しない
-6. restart policy は first slice の counter visibility から始め、restart storm を避ける threshold を runtime evidence 後に決める
+3. lookup order は exact selected-frame lookup first、bounded-lag decoded lookup second、one-shot fallback third とする
+4. targetTime より未来の decoded frame は表示しない
+5. allowed lag threshold と stale guard は conservative default から始め、runtime evidence 後に調整する
+6. one-shot fallback は必ず残す
 
 ## out of scope
 - request/response persistent decoder の復活

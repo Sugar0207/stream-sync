@@ -2,7 +2,7 @@
 
 # StreamSync TODO
 
-最終更新: 2026-05-19
+最終更新: 2026-05-20
 
 このファイルは「現在どこまで終わっていて、次に何をやるか」を確認するための TODO です。  
 時系列の作業履歴、判断理由、各回の作業メモは `docs/operations/session-log.md` を正とします。
@@ -66,6 +66,11 @@
 - slot0 per-client continuous feed/drain policy は `docs/operations/continuous-feed-drain-plan.md` に切り出した。first candidate は slot0 / two-real preview loop / opt-in continuous decoder 限定で、oldest-driven bounded feed を第一候補にし、render selection は display authority のまま維持する。exact selected frame lookup と one-shot fallback は残し、latest decoded fallback と targetTime-aware decoded render consumption は stale guard 設計まで保留する
 - 2026-05-19 first implementation slice で、two-real preview loop 限定の slot0 bounded continuous feed helper を additive に追加した。helper は opt-in continuous decoder 有効時だけ validation/decode/render 前に `PreviewOldest` から最大 `2` frame を試し、enqueue 成功時だけ guarded `ConsumeOldest` で進める。slot1 / 4-client / server-client-protocol / latest decoded fallback / targetTime-aware lookup は未変更で、one-shot fallback と exact selected frame lookup は維持する
 - 同 implementation slice で summary に continuous feed diagnostics を追加した。`continuous_feed_*`、`continuous_decode_input_from_feeder_count` / `continuous_decode_input_from_render_demand_count`、`continuous_decode_feeder_lag_to_selected`、`continuous_decode_render_exact_hit_count` / `continuous_decode_render_miss_stale_count` / `continuous_decode_render_miss_not_ready_count` を次回 rerun の確認対象にする。Production Readiness は FAIL 継続
+- latest bounded-feed rerun は `S:\stream-sync\manual-logs\two-client-render-rerun-20260519-202043` として扱う。`continuous_decode_config_enabled=true` / `continuous_decode_runtime_enabled=true` / `continuous_decode_slot0_enabled=true` / `continuous_decode_ffmpeg_low_latency_args_enabled=true` / `continuous_feed_enabled=true` で continuous opt-in、low-latency args、bounded feed helper は runtime PASS とする
+- 同 rerun では `continuous_feed_attempt_count=300` / `continuous_feed_handoff_request_count=910` / `continuous_feed_frame_received_count=368` / `continuous_feed_enqueued_count=368` / `continuous_feed_skipped_count=0` / `continuous_feed_latest_received_frame_id=467` / `continuous_feed_latest_enqueued_frame_id=467` だった。`continuous_decode_input_from_feeder_count=368` / `continuous_decode_input_from_render_demand_count=4` / `continuous_decode_feeder_lag_to_selected=0` により、slot0 continuous input は render-demand sparse feed から feeder 主入力へかなり脱出できたと扱う
+- continuous decoder output は `continuous_decode_input_frame_count=372` / `continuous_decode_output_frame_count=340` / `continuous_decode_queue_len=30` / `continuous_decode_dropped_stale_count=310` で PASS / PARTIAL PASS とする。一方で render consumption は `render_used_continuous_decoded_count=0` / `continuous_decode_render_exact_hit_count=0` / `continuous_decode_render_miss_stale_count=12` / `continuous_decode_render_miss_not_ready_count=2` / `continuous_decode_fallback_to_one_shot_count=14` / `render_used_one_shot_fallback_count=14` なので FAIL 継続とする
+- latest rerun の lookup 問題は exact selected-frame lookup strictness と decoded lag として扱う。`continuous_decode_requested_frame_id=459` に対して `continuous_decode_latest_decoded_frame_id=426`、`continuous_decode_requested_minus_latest_lag=40`、`continuous_decode_frame_id_lag=42`、queue range は `390..426` だった。feeder は selected side に追いついているが、decoded output が requested frame から約 `40` frame 遅れており、exact hit だけでは render hot path に乗らない
+- next candidate は `docs/operations/continuous-decoded-lookup-plan.md` の targetTime-aware / bounded-lag decoded queue lookup docs-first 設計へ移す。latest decoded fallback は無制限に使うと stale frame 表示リスクがあるため、bounded-lag guard と no-future-frame guard を前提にする。Production Readiness は FAIL 継続
 - code path 上、`first_render_attempt_index` / `first_render_elapsed_ms` は two-real preview loop の clean output が `RenderReady` かつ inner render が `Rendered` になった最初の tick でだけ確定する。`no_render_before_first_render` は別 counter ではなく、その first render attempt index から導出されるため、startup で renderable slot が 1 つも成立しない tick が続くとそのまま増える
 - `no_frame_count=864`、`handoff_error_count=22`、server `no_frame_count=264`、`placeholder_visual_changed_count=46`、`scheduler_status=PartialSelected` は、after-first FPS 改善後も availability / startup 側に未解決が残ることを示している。Production Readiness は FAIL 継続
 - startup/no-frame availability の current code path は `scheduler -> decode/render adapter -> display policy -> quad composition -> render-facing -> clean output render` で、`SkipNoFrameAvailable` / `SkipWaitingForFrameAtOrBeforeTarget` は previous frame が無い間 `NoDisplayPlaceholder` に落ちる。さらに renderable slot count が `0` の tick は `NoRenderableQuadView` のままなので、server aggregate `frames_queued=1800` が成立していても switcher startup が直ちに first render へ進むとは限らない
@@ -1074,6 +1079,6 @@ continuous runtime first slice の blocker:
 - actual dashboard UI rendering remains unimplemented.
 
 ## Next Items
-1. 人間側で `S:\stream-sync` から `--disable-persistent-decoder --enable-continuous-stream-decoder --continuous-decoder-low-latency-args` を維持して rerun し、`continuous_feed_*` と feeder/render-demand input split を確認する
-2. rerun では `continuous_feed_enqueued_count`、`continuous_decode_input_from_feeder_count`、`continuous_decode_input_from_render_demand_count`、`continuous_decode_feeder_lag_to_selected`、`continuous_decode_render_exact_hit_count`、`continuous_decode_render_miss_stale_count`、`continuous_decode_render_miss_not_ready_count` を stale lag / exact hit 改善の evidence として読む
-3. 次 step でも Production Readiness FAIL を維持し、latest decoded fallback、targetTime-aware decoded queue lookup 本実装、slot1 continuous 化、4-client 化、request/response persistent decoder 復活、GPU decode、one-shot fallback 削除には広げない
+1. `docs/operations/continuous-decoded-lookup-plan.md` に沿って、targetTime-aware / bounded-lag decoded queue lookup の first implementation slice をレビューする
+2. 実装する場合も slot0 / two-real preview loop / opt-in continuous のみで、exact lookup first、bounded-lag lookup second、one-shot fallback third の順序を守る
+3. 次 step でも Production Readiness FAIL を維持し、slot1 continuous 化、4-client 化、request/response persistent decoder 復活、GPU decode、one-shot fallback 削除、無制限 latest decoded fallback には広げない

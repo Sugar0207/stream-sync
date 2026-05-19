@@ -1,5 +1,91 @@
 <!-- stream-sync/docs/operations/session-log.md -->
 
+## 2026-05-20
+### Type
+- Codex docs-first investigation
+
+### Work
+- Reflected latest human rerun `S:\stream-sync\manual-logs\two-client-render-rerun-20260519-202043`.
+- Kept this step docs-only and did not change code.
+- Separated bounded feed helper runtime PASS from continuous render consumption FAIL.
+- Recorded feeder as the main continuous input source after the bounded helper.
+- Reframed the current blocker as exact selected-frame lookup strictness plus decoded queue lag.
+- Added `docs/operations/continuous-decoded-lookup-plan.md` as the next docs-first design candidate.
+- Kept Production Readiness as FAIL.
+
+### Changed Files
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+- `docs/operations/continuous-feed-drain-plan.md`
+- `docs/operations/continuous-stream-decoder-plan.md`
+- `docs/operations/continuous-decoded-lookup-plan.md`
+
+### Runtime Result
+- latest rerun:
+  - `S:\stream-sync\manual-logs\two-client-render-rerun-20260519-202043`
+- PASS:
+  - continuous opt-in: `continuous_decode_config_enabled=true`
+  - continuous runtime: `continuous_decode_runtime_enabled=true`
+  - slot0 enabled: `continuous_decode_slot0_enabled=true`
+  - low-latency args: `continuous_decode_ffmpeg_low_latency_args_enabled=true`
+  - bounded feed helper: `continuous_feed_enabled=true`
+  - feeder primary input: `continuous_decode_input_from_feeder_count=368`
+  - render-demand input reduced: `continuous_decode_input_from_render_demand_count=4`
+  - feeder caught selected side: `continuous_decode_feeder_lag_to_selected=0`
+- PASS / PARTIAL PASS:
+  - continuous output: `continuous_decode_output_frame_count=340`
+  - decoded queue: `continuous_decode_queue_len=30`
+  - stale decoded drops: `continuous_decode_dropped_stale_count=310`
+- FAIL:
+  - render consumption: `render_used_continuous_decoded_count=0`
+  - exact hit: `continuous_decode_render_exact_hit_count=0`
+  - exact miss stale: `continuous_decode_render_miss_stale_count=12`
+  - exact miss not ready: `continuous_decode_render_miss_not_ready_count=2`
+  - one-shot fallback: `continuous_decode_fallback_to_one_shot_count=14` / `render_used_one_shot_fallback_count=14`
+  - Production Readiness: FAIL
+
+### Findings
+- Bounded feed helper is runtime PASS: `continuous_feed_attempt_count=300`, `continuous_feed_handoff_request_count=910`, `continuous_feed_frame_received_count=368`, `continuous_feed_enqueued_count=368`, `continuous_feed_skipped_count=0`, and latest received/enqueued frame id both reached `467`.
+- Continuous decoder output is no longer the primary blocker in this rerun because output reached `340`.
+- Render consumption is still `0` because current render policy requires exact selected-frame lookup.
+- Decoded output trails requested render frame by around `40` frame ids:
+  - `continuous_decode_requested_frame_id=459`
+  - `continuous_decode_latest_decoded_frame_id=426`
+  - `continuous_decode_requested_minus_latest_lag=40`
+  - `continuous_decode_frame_id_lag=42`
+  - decoded queue range `390..426`
+- `scheduler_status=HandoffError` remains relevant as source/handoff status, but it should not be treated as the decoded lookup root cause by itself.
+
+### Decisions
+- Treat bounded feed helper as PASS and do not widen feed max count in this step.
+- Treat continuous render consumption as FAIL.
+- Move the next docs-first design candidate to targetTime-aware / bounded-lag decoded queue lookup.
+- Keep exact selected-frame lookup as the first priority.
+- Keep one-shot fallback as the third priority after exact and bounded-lag lookup.
+- Reject unbounded latest decoded fallback because it can show stale frames.
+- Keep slot1 continuous, 4-client rollout, server/client/protocol changes, request/response persistent decoder revival, GPU decode, and one-shot fallback removal out of scope.
+
+### TODO Update
+- Completed:
+  - latest rerun reflection
+  - bounded feed helper PASS documentation
+  - render consumption FAIL documentation
+- Added:
+  - `docs/operations/continuous-decoded-lookup-plan.md`
+  - next candidate: targetTime-aware / bounded-lag decoded queue lookup docs-first design
+- Held:
+  - code changes
+  - targetTime-aware decoded queue lookup implementation
+  - latest decoded fallback without bounded-lag guard
+  - slot1 continuous
+  - 4-client continuous
+  - feed max count changes
+  - Production Readiness PASS
+
+### Validation
+- `git diff --check`
+  - result: PASS
+
 ## 2026-05-19
 ### Type
 - Codex implementation

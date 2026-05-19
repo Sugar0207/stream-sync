@@ -2,7 +2,7 @@
 
 # Slot0 Continuous Feed / Drain Plan
 
-最終更新: 2026-05-19
+最終更新: 2026-05-20
 
 ## 目的
 - slot0 continuous decoder を render-demand selected-frame feed から切り離し、per-client stream として連続 access unit を feed する最小方針を整理する
@@ -282,11 +282,83 @@ Still not implemented:
 - server/client/protocol changes
 - GPU decode
 
+## first runtime evidence
+latest rerun:
+
+- `S:\stream-sync\manual-logs\two-client-render-rerun-20260519-202043`
+
+Runtime PASS:
+
+- continuous opt-in:
+  - `continuous_decode_config_enabled=true`
+  - `continuous_decode_runtime_enabled=true`
+  - `continuous_decode_slot0_enabled=true`
+- low-latency args:
+  - `continuous_decode_ffmpeg_low_latency_args_enabled=true`
+- bounded feed helper:
+  - `continuous_feed_enabled=true`
+  - `continuous_feed_attempt_count=300`
+  - `continuous_feed_handoff_request_count=910`
+  - `continuous_feed_frame_received_count=368`
+  - `continuous_feed_no_frame_count=161`
+  - `continuous_feed_handoff_error_count=13`
+  - `continuous_feed_enqueued_count=368`
+  - `continuous_feed_skipped_count=0`
+  - `continuous_feed_latest_received_frame_id=467`
+  - `continuous_feed_latest_enqueued_frame_id=467`
+
+Feed interpretation:
+
+- `continuous_decode_input_from_feeder_count=368`
+- `continuous_decode_input_from_render_demand_count=4`
+- `continuous_decode_feeder_lag_to_selected=0`
+
+The feed helper is now the main slot0 continuous input source. This resolves the
+previous "render-demand sparse feed only" problem enough to move the next
+design question from feed/drain to decoded lookup policy.
+
+Continuous decoder output:
+
+- `continuous_decode_input_frame_count=372`
+- `continuous_decode_output_frame_count=340`
+- `continuous_decode_queue_len=30`
+- `continuous_decode_dropped_stale_count=310`
+
+This is PASS / PARTIAL PASS: output is clearly being produced, but the queue is
+bounded and older decoded frames are being dropped under pressure.
+
+Render consumption remains FAIL:
+
+- `render_used_continuous_decoded_count=0`
+- `continuous_decode_render_exact_hit_count=0`
+- `continuous_decode_render_miss_stale_count=12`
+- `continuous_decode_render_miss_not_ready_count=2`
+- `continuous_decode_fallback_to_one_shot_count=14`
+- `render_used_one_shot_fallback_count=14`
+
+Lag evidence:
+
+- `continuous_decode_requested_frame_id=459`
+- `continuous_decode_latest_decoded_frame_id=426`
+- `continuous_decode_requested_minus_latest_lag=40`
+- `continuous_decode_queue_oldest_frame_id=390`
+- `continuous_decode_queue_newest_frame_id=426`
+- `continuous_decode_output_pending_correspondence_count=31`
+- `continuous_decode_frame_id_lag=42`
+
+The latest evidence says the feeder caught up to the selected side, but decoded
+output still trails the requested render frame by around `40` frame ids. Exact
+selected-frame lookup is therefore too strict for the current decoded queue lag.
+The next docs-first candidate is targetTime-aware / bounded-lag decoded queue
+lookup, not more feed widening.
+
 ## readiness
 - Production Readiness remains FAIL
 - This plan is a first implementation boundary, not a production architecture
-- Success for the next code slice means:
-  - feed diagnostics prove slot0 is no longer sparse render-demand only
-  - continuous decoded latest frame stays closer to requested frame
-  - at least some exact lookup hits appear
+- Feed helper runtime evidence is PASS for slot0 / two-real preview loop
+- Continuous render consumption remains FAIL
+- Next success criterion moves to decoded lookup:
+  - exact lookup remains preferred
+  - bounded-lag lookup produces guarded hits when exact lookup misses
+  - stale / not-ready rejection counts are visible
   - one-shot fallback remains available and visible
