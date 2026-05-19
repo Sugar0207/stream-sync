@@ -2,6 +2,75 @@
 
 ## 2026-05-20
 ### Type
+- Codex implementation
+
+### Work
+- Implemented the slot0 / two-real / opt-in continuous output lag diagnostics-only slice.
+- Added summary diagnostics for latest input/output frame-id lag, pending correspondence frame_id range, input-to-output max lag, output lag to selected, output throughput, reader full-frame max elapsed, and decoded queue drop reason counts.
+- Kept continuous decoder behavior, exact lookup, bounded-lag lookup, allowed lag threshold, feed max count, FFmpeg defaults, one-shot fallback, slot1, and 4-client scope unchanged.
+- Updated output lag docs and TODO with the new rerun gate.
+- Did not run a runtime rerun from Codex.
+
+### Changed Files
+- `apps/switcher/src/main.rs`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+- `docs/operations/continuous-output-lag-plan.md`
+
+### Diagnostics Added
+- `continuous_decode_latest_input_minus_latest_output_lag`
+- `continuous_decode_pending_correspondence_frame_id_min`
+- `continuous_decode_pending_correspondence_frame_id_max`
+- `continuous_decode_input_to_output_lag_frames_max`
+- `continuous_decode_output_lag_to_selected_frames`
+- `continuous_decode_output_throughput_fps`
+- `continuous_decode_reader_full_frame_elapsed_ms_max`
+- `continuous_decode_queue_drop_reason_counts`
+
+### Decisions
+- Keep `continuous_decode_dropped_stale_count` as the existing shared historical counter.
+- Add `continuous_decode_queue_drop_reason_counts` as an additive split for `input_queue_full` and `decoded_cache_bound`.
+- Use frame-id and throughput diagnostics first; hold timestamp-heavy pending age / output latency diagnostics until this rerun shows they are needed.
+- Keep Production Readiness as FAIL.
+
+### Next
+- Human rerun should be performed from `S:\stream-sync`.
+- Keep rerun suffix:
+  - `--disable-persistent-decoder --enable-continuous-stream-decoder --continuous-decoder-low-latency-args`
+- Read pending correspondence frame_id range, latest input-output lag, input-to-output max lag, output lag to selected, output throughput, reader full-frame max, and queue drop reason counts before changing threshold or lookup policy.
+
+### TODO Update
+- Completed:
+  - output lag diagnostics-only first slice implementation
+  - summary formatter update
+  - focused summary test update
+  - docs update for the next rerun evidence shape
+- Added:
+  - human rerun gate for output lag / pending correspondence / stdout read / queue-drop diagnostics
+- Held:
+  - allowed lag threshold change
+  - targetTime-aware lookup implementation
+  - latest decoded fallback
+  - feed max count change
+  - slot1 continuous
+  - 4-client continuous
+  - Production Readiness PASS
+
+### Validation
+- `cargo fmt`
+  - result: PASS
+- `cargo check -p stream-sync-switcher`
+  - result: PASS
+  - note: existing dead-code warnings remain in unrelated helpers
+- `cargo test -p stream-sync-switcher switcher_four_view_two_real_handoff_preview_summary_formats_expected_fields -- --nocapture`
+  - result: PASS
+  - note: first sandbox attempt timed out while connecting the runner; rerun with approval passed
+- `git diff --check`
+  - result: PASS
+  - note: LF/CRLF warnings only
+
+## 2026-05-20
+### Type
 - Codex docs-first design
 
 ### Work

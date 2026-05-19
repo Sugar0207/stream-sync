@@ -6,9 +6,9 @@ Last updated: 2026-05-20
 
 ## Purpose
 - Analyze why slot0 continuous decoded output still trails the requested render frame after bounded feed helper and bounded-lag lookup wiring both reached runtime evidence.
-- Keep this step docs-first only.
-- Do not change code, allowed lag threshold, feed max count, lookup policy, FFmpeg defaults, server/client/protocol, slot1, or 4-client rollout.
-- Define the smallest next diagnostics slice for continuous output lag / pending correspondence / stdout read latency / decoded queue-drop policy.
+- Keep the implementation slice diagnostics-only.
+- Do not change allowed lag threshold, feed max count, lookup policy, FFmpeg defaults, server/client/protocol, slot1, or 4-client rollout.
+- Define and track the smallest diagnostics slice for continuous output lag / pending correspondence / stdout read latency / decoded queue-drop policy.
 
 ## Latest Evidence
 - latest rerun:
@@ -120,16 +120,16 @@ First priority:
 - `continuous_decode_pending_correspondence_frame_id_min`
 - `continuous_decode_pending_correspondence_frame_id_max`
 - `continuous_decode_latest_input_minus_latest_output_lag`
-- `continuous_decode_input_to_output_lag_frames_avg`
 - `continuous_decode_input_to_output_lag_frames_max`
+- `continuous_decode_output_lag_to_selected_frames`
 - `continuous_decode_output_throughput_fps`
+- `continuous_decode_reader_full_frame_elapsed_ms_max`
+- `continuous_decode_queue_drop_reason_counts`
 
 Second priority:
 
-- `continuous_decode_reader_full_frame_elapsed_ms_max`
-- `continuous_decode_output_lag_to_selected_frames`
+- `continuous_decode_input_to_output_lag_frames_avg`
 - `continuous_decode_correspondence_pending_age_ms`
-- `continuous_decode_queue_drop_reason_counts`
 
 Hold for later:
 
@@ -161,8 +161,39 @@ Implementation shape:
 - Expose pending correspondence frame-id min/max by peeking the `correspondence` queue.
 - Track latest continuous input frame id and latest continuous output frame id, then derive `latest_input_minus_latest_output_lag`.
 - Track max full-frame stdout read elapsed from successful reader outputs.
-- Derive output throughput from output count over runtime first-input/first-output elapsed window.
+- Derive output throughput from output count over the runtime first-input-to-now elapsed window.
 - Split `continuous_decode_dropped_stale_count` into reason counts before changing queue/drop behavior.
+
+## Diagnostics Implementation Status
+- 2026-05-20 implementation slice is complete for slot0 / two-real / opt-in continuous summary diagnostics.
+- Added summary fields:
+  - `continuous_decode_latest_input_minus_latest_output_lag`
+  - `continuous_decode_pending_correspondence_frame_id_min`
+  - `continuous_decode_pending_correspondence_frame_id_max`
+  - `continuous_decode_input_to_output_lag_frames_max`
+  - `continuous_decode_output_lag_to_selected_frames`
+  - `continuous_decode_output_throughput_fps`
+  - `continuous_decode_reader_full_frame_elapsed_ms_max`
+  - `continuous_decode_queue_drop_reason_counts`
+- `continuous_decode_dropped_stale_count` remains unchanged as the shared historical counter; `continuous_decode_queue_drop_reason_counts` is additive and currently splits:
+  - `input_queue_full`
+  - `decoded_cache_bound`
+  - `unknown`
+- Held fields:
+  - `continuous_decode_input_to_output_lag_frames_avg`
+  - `continuous_decode_output_latency_frames_avg`
+  - `continuous_decode_output_latency_frames_max`
+  - `continuous_decode_correspondence_pending_age_ms`
+- Behavior intentionally unchanged:
+  - exact lookup first
+  - bounded-lag lookup second
+  - one-shot fallback third
+  - allowed lag threshold `5` frames
+  - feed max count
+  - low-latency args default
+  - no latest decoded fallback
+  - no targetTime-aware lookup implementation
+  - no slot1 / 4-client rollout
 
 ## Out Of Scope
 - Changing `continuous_decode_bounded_lookup_allowed_lag_frames`
