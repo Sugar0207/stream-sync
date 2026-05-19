@@ -151,21 +151,23 @@ First design preference:
 Add first-slice summary fields:
 
 - `continuous_decode_bounded_lookup_enabled`
+- `continuous_decode_bounded_lookup_allowed_lag_frames`
 - `continuous_decode_bounded_lookup_hit_count`
 - `continuous_decode_bounded_lookup_used_frame_id`
 - `continuous_decode_bounded_lookup_requested_frame_id`
 - `continuous_decode_bounded_lookup_lag_frames`
 - `continuous_decode_bounded_lookup_rejected_stale_count`
+- `continuous_decode_bounded_lookup_rejected_future_count`
 - `continuous_decode_bounded_lookup_rejected_not_ready_count`
 - `continuous_decode_bounded_lookup_fallback_to_one_shot_count`
+- `continuous_decode_render_used_exact_count`
+- `continuous_decode_render_used_bounded_lag_count`
 
 Optional later diagnostics:
 
-- `continuous_decode_bounded_lookup_allowed_lag_frames`
 - `continuous_decode_bounded_lookup_candidate_count`
 - `continuous_decode_bounded_lookup_candidate_oldest_frame_id`
 - `continuous_decode_bounded_lookup_candidate_newest_frame_id`
-- `continuous_decode_bounded_lookup_rejected_future_count`
 - `continuous_decode_bounded_lookup_rejected_source_mismatch_count`
 
 ## first implementation slice
@@ -191,3 +193,57 @@ Optional later diagnostics:
 - one-shot fallback remains visible and functional
 - no stale frame is accepted when lag exceeds the first threshold
 - Production Readiness remains FAIL until real render consumption and sync safety are proven
+
+## first implementation status
+2026-05-20 first code slice implemented:
+
+- slot0 only
+- two-real preview loop only
+- opt-in continuous only
+- exact selected-frame lookup remains first
+- bounded-lag frame_id-nearest lookup runs only after exact lookup misses
+- one-shot fallback remains third
+- allowed lag is a fixed safety-first `5` frames
+- requested frame_id より未来の decoded frame は使わない
+- lag が `5` frames を超える decoded frame は stale として拒否する
+- startup / queue empty / no usable decoded frame は not-ready として one-shot fallback に進む
+
+Added diagnostics:
+
+- `continuous_decode_bounded_lookup_enabled`
+- `continuous_decode_bounded_lookup_allowed_lag_frames`
+- `continuous_decode_bounded_lookup_hit_count`
+- `continuous_decode_bounded_lookup_used_frame_id`
+- `continuous_decode_bounded_lookup_requested_frame_id`
+- `continuous_decode_bounded_lookup_lag_frames`
+- `continuous_decode_bounded_lookup_rejected_stale_count`
+- `continuous_decode_bounded_lookup_rejected_future_count`
+- `continuous_decode_bounded_lookup_rejected_not_ready_count`
+- `continuous_decode_bounded_lookup_fallback_to_one_shot_count`
+- `continuous_decode_render_used_exact_count`
+- `continuous_decode_render_used_bounded_lag_count`
+
+Still not implemented:
+
+- targetTime-aware decoded queue lookup 本格実装
+- CLI-configurable lag threshold
+- slot1 continuous
+- 4-client continuous
+- server / client / protocol changes
+- unbounded latest decoded fallback
+- one-shot fallback removal
+
+Runtime guidance:
+
+- Codex did not run a manual rerun
+- next human rerun should be from `S:\stream-sync`
+- keep:
+  - `--disable-persistent-decoder --enable-continuous-stream-decoder --continuous-decoder-low-latency-args`
+- first read:
+  - `continuous_decode_bounded_lookup_hit_count`
+  - `continuous_decode_bounded_lookup_lag_frames`
+  - `continuous_decode_bounded_lookup_rejected_stale_count`
+  - `continuous_decode_bounded_lookup_rejected_future_count`
+  - `continuous_decode_bounded_lookup_rejected_not_ready_count`
+  - `continuous_decode_render_used_bounded_lag_count`
+  - `render_used_continuous_decoded_count`

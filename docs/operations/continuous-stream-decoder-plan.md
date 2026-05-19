@@ -937,12 +937,13 @@ first implementation で summary に追加済み:
 
 future implementation slice:
 
-1. `docs/operations/continuous-decoded-lookup-plan.md` に沿って bounded-lag decoded queue lookup の first implementation slice を切る
-2. first implementation scope を slot0 / two-real preview loop / opt-in continuous decoder / diagnostics-first に限定する
-3. lookup order は exact selected-frame lookup first、bounded-lag decoded lookup second、one-shot fallback third とする
-4. targetTime より未来の decoded frame は表示しない
-5. allowed lag threshold と stale guard は conservative default から始め、runtime evidence 後に調整する
-6. one-shot fallback は必ず残す
+1. implemented `docs/operations/continuous-decoded-lookup-plan.md` first slice を human rerun で確認する
+2. first implementation scope は slot0 / two-real preview loop / opt-in continuous decoder / diagnostics-first に限定済み
+3. lookup order は exact selected-frame lookup first、bounded-lag decoded lookup second、one-shot fallback third にした
+4. requested frame_id より未来の decoded frame は表示しない
+5. allowed lag threshold は safety-first の固定 `5` frames とし、runtime evidence 後に調整候補を検討する
+6. one-shot fallback は残している
+7. next step では bounded lookup hit / stale rejection / not-ready rejection / one-shot fallback の runtime evidence を読む
 
 ## out of scope
 - request/response persistent decoder の復活

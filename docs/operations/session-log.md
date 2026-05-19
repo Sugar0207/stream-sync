@@ -2,6 +2,106 @@
 
 ## 2026-05-20
 ### Type
+- Codex implementation
+
+### Work
+- Added the first bounded-lag decoded queue lookup slice for slot0 continuous decode.
+- Kept the change limited to the two-real preview loop and opt-in continuous decoder path.
+- Preserved exact selected-frame lookup as first priority.
+- Added bounded-lag frame_id-nearest lookup only after exact lookup misses.
+- Preserved one-shot fallback when bounded lookup misses or rejects the candidate.
+- Did not run a manual runtime rerun in Codex.
+
+### Changed Files
+- `apps/switcher/src/main.rs`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+- `docs/operations/continuous-decoded-lookup-plan.md`
+- `docs/operations/continuous-stream-decoder-plan.md`
+
+### Implementation
+- Added fixed safety-first bounded lookup threshold:
+  - `TWO_REAL_CONTINUOUS_BOUNDED_LOOKUP_ALLOWED_LAG_FRAMES=5`
+- Added bounded lookup candidate selection:
+  - same slot0 source only
+  - same output dimensions only
+  - nearest decoded frame_id at or before requested frame_id
+  - reject requested-future candidates
+  - reject candidates whose lag exceeds `5` frames
+- Added render path order:
+  - exact selected-frame lookup
+  - render-demand enqueue + exact re-check
+  - bounded-lag decoded queue lookup
+  - one-shot fallback
+- Added focused tests for bounded lookup hit / stale reject / future reject.
+
+### Diagnostics
+- Added summary fields:
+  - `continuous_decode_bounded_lookup_enabled`
+  - `continuous_decode_bounded_lookup_allowed_lag_frames`
+  - `continuous_decode_bounded_lookup_hit_count`
+  - `continuous_decode_bounded_lookup_used_frame_id`
+  - `continuous_decode_bounded_lookup_requested_frame_id`
+  - `continuous_decode_bounded_lookup_lag_frames`
+  - `continuous_decode_bounded_lookup_rejected_stale_count`
+  - `continuous_decode_bounded_lookup_rejected_future_count`
+  - `continuous_decode_bounded_lookup_rejected_not_ready_count`
+  - `continuous_decode_bounded_lookup_fallback_to_one_shot_count`
+  - `continuous_decode_render_used_exact_count`
+  - `continuous_decode_render_used_bounded_lag_count`
+
+### Decisions
+- Use `5` frames as the first allowed lag threshold because the latest evidence had lag around `40`, and accepting that would risk stale video.
+- Keep the threshold as a constant in this slice; no CLI/config flag yet.
+- Use frame_id-nearest lookup for the first implementation, not full targetTime-aware lookup.
+- Do not use unbounded latest decoded fallback.
+- Keep Production Readiness as FAIL.
+
+### Runtime Guidance
+- Next human rerun should be from `S:\stream-sync`.
+- Keep the suffix:
+  - `--disable-persistent-decoder --enable-continuous-stream-decoder --continuous-decoder-low-latency-args`
+- Read these first:
+  - `continuous_decode_bounded_lookup_hit_count`
+  - `continuous_decode_bounded_lookup_lag_frames`
+  - `continuous_decode_bounded_lookup_rejected_stale_count`
+  - `continuous_decode_bounded_lookup_rejected_future_count`
+  - `continuous_decode_bounded_lookup_rejected_not_ready_count`
+  - `continuous_decode_render_used_bounded_lag_count`
+  - `render_used_continuous_decoded_count`
+
+### TODO Update
+- Completed:
+  - slot0 bounded-lag decoded queue lookup first implementation slice
+  - bounded lookup summary diagnostics
+  - focused bounded lookup tests
+- Added:
+  - human rerun gate for bounded lookup diagnostics
+- Held:
+  - runtime rerun
+  - targetTime-aware decoded queue lookup full implementation
+  - slot1 continuous
+  - 4-client continuous
+  - server/client/protocol changes
+  - unbounded latest decoded fallback
+  - one-shot fallback removal
+  - Production Readiness PASS
+
+### Validation
+- `cargo fmt`
+  - result: PASS
+- `cargo check -p stream-sync-switcher`
+  - result: PASS
+  - note: existing dead-code warnings remain
+- `cargo test -p stream-sync-switcher continuous_decode_bounded_lookup -- --nocapture`
+  - result: PASS
+- `cargo test -p stream-sync-switcher switcher_four_view_two_real_handoff_preview_summary_formats_expected_fields -- --nocapture`
+  - result: PASS
+- `git diff --check`
+  - result: PASS
+
+## 2026-05-20
+### Type
 - Codex docs-first investigation
 
 ### Work

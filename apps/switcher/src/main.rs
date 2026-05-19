@@ -1995,6 +1995,18 @@ struct SwitcherFourViewTwoRealHandoffPreviewLoopSummary {
     continuous_decode_render_exact_hit_count: u32,
     continuous_decode_render_miss_stale_count: u32,
     continuous_decode_render_miss_not_ready_count: u32,
+    continuous_decode_bounded_lookup_enabled: bool,
+    continuous_decode_bounded_lookup_allowed_lag_frames: u64,
+    continuous_decode_bounded_lookup_hit_count: u32,
+    continuous_decode_bounded_lookup_used_frame_id: Option<u64>,
+    continuous_decode_bounded_lookup_requested_frame_id: Option<u64>,
+    continuous_decode_bounded_lookup_lag_frames: Option<u64>,
+    continuous_decode_bounded_lookup_rejected_stale_count: u32,
+    continuous_decode_bounded_lookup_rejected_future_count: u32,
+    continuous_decode_bounded_lookup_rejected_not_ready_count: u32,
+    continuous_decode_bounded_lookup_fallback_to_one_shot_count: u32,
+    continuous_decode_render_used_exact_count: u32,
+    continuous_decode_render_used_bounded_lag_count: u32,
     render_used_continuous_decoded_count: u32,
     render_used_one_shot_fallback_count: u32,
     one_shot_decode_fallback_count: u32,
@@ -2641,6 +2653,18 @@ struct TwoRealPreviewLoopRuntimeTiming {
     continuous_decode_render_exact_hit_count: u32,
     continuous_decode_render_miss_stale_count: u32,
     continuous_decode_render_miss_not_ready_count: u32,
+    continuous_decode_bounded_lookup_enabled: bool,
+    continuous_decode_bounded_lookup_allowed_lag_frames: u64,
+    continuous_decode_bounded_lookup_hit_count: u32,
+    continuous_decode_bounded_lookup_used_frame_id: Option<u64>,
+    continuous_decode_bounded_lookup_requested_frame_id: Option<u64>,
+    continuous_decode_bounded_lookup_lag_frames: Option<u64>,
+    continuous_decode_bounded_lookup_rejected_stale_count: u32,
+    continuous_decode_bounded_lookup_rejected_future_count: u32,
+    continuous_decode_bounded_lookup_rejected_not_ready_count: u32,
+    continuous_decode_bounded_lookup_fallback_to_one_shot_count: u32,
+    continuous_decode_render_used_exact_count: u32,
+    continuous_decode_render_used_bounded_lag_count: u32,
     render_used_continuous_decoded_count: u32,
     render_used_one_shot_fallback_count: u32,
     one_shot_decode_fallback_count: u32,
@@ -2948,6 +2972,7 @@ struct TwoRealPreviewLoopDecodeOutputOverride {
 }
 
 const TWO_REAL_CONTINUOUS_DECODE_QUEUE_BOUND: usize = 30;
+const TWO_REAL_CONTINUOUS_BOUNDED_LOOKUP_ALLOWED_LAG_FRAMES: u64 = 5;
 const TWO_REAL_CONTINUOUS_DECODE_STDERR_SUMMARY_MAX_BYTES: usize = 512;
 const TWO_REAL_CONTINUOUS_FEED_MAX_FRAMES_PER_ATTEMPT: usize = 2;
 
@@ -3014,6 +3039,19 @@ enum TwoRealContinuousDecodeLookupMissReason {
     RuntimeDisabled,
     OutputPending,
     FrameIdLagging,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum TwoRealContinuousBoundedLookupCandidate {
+    Hit {
+        key: TwoRealPreviewLoopDecodeCacheKey,
+        used_frame_id: u64,
+        requested_frame_id: u64,
+        lag_frames: u64,
+    },
+    RejectedStale,
+    RejectedFuture,
+    RejectedNotReady,
 }
 
 struct TwoRealContinuousDecodeSharedDiagnostics {
@@ -3214,6 +3252,56 @@ impl TwoRealContinuousDecodeRuntime {
             .and_then(Self::decoded_key_frame_id)
     }
 
+    fn bounded_lag_lookup_candidate(
+        &self,
+        input: &SwitcherH264DecodeInput,
+    ) -> TwoRealContinuousBoundedLookupCandidate {
+        if self.runtime_disabled || self.continuous_key_order.is_empty() {
+            return TwoRealContinuousBoundedLookupCandidate::RejectedNotReady;
+        }
+        let Some(requested_source) = input.source_identity.as_ref() else {
+            return TwoRealContinuousBoundedLookupCandidate::RejectedNotReady;
+        };
+        let mut future_candidate_seen = false;
+        let mut nearest: Option<(TwoRealPreviewLoopDecodeCacheKey, u64)> = None;
+        for key in self.continuous_key_order.iter().rev() {
+            if key.width != input.width || key.height != input.height {
+                continue;
+            }
+            let Some(candidate_source) = key.source_identity.as_ref() else {
+                continue;
+            };
+            if candidate_source.client_id != requested_source.client_id
+                || candidate_source.run_id != requested_source.run_id
+            {
+                continue;
+            }
+            if candidate_source.frame_id > requested_source.frame_id {
+                future_candidate_seen = true;
+                continue;
+            }
+            nearest = Some((key.clone(), candidate_source.frame_id));
+            break;
+        }
+        let Some((key, used_frame_id)) = nearest else {
+            return if future_candidate_seen {
+                TwoRealContinuousBoundedLookupCandidate::RejectedFuture
+            } else {
+                TwoRealContinuousBoundedLookupCandidate::RejectedNotReady
+            };
+        };
+        let lag_frames = requested_source.frame_id.saturating_sub(used_frame_id);
+        if lag_frames > TWO_REAL_CONTINUOUS_BOUNDED_LOOKUP_ALLOWED_LAG_FRAMES {
+            return TwoRealContinuousBoundedLookupCandidate::RejectedStale;
+        }
+        TwoRealContinuousBoundedLookupCandidate::Hit {
+            key,
+            used_frame_id,
+            requested_frame_id: requested_source.frame_id,
+            lag_frames,
+        }
+    }
+
     fn pending_correspondence_count(&self) -> usize {
         self.session
             .as_ref()
@@ -3250,6 +3338,9 @@ impl TwoRealContinuousDecodeRuntime {
         timing.continuous_decode_runtime_enabled = !self.runtime_disabled;
         timing.continuous_decode_runtime_disabled = self.runtime_disabled;
         timing.continuous_decode_runtime_disabled_reason = self.runtime_disabled_reason.clone();
+        timing.continuous_decode_bounded_lookup_enabled = true;
+        timing.continuous_decode_bounded_lookup_allowed_lag_frames =
+            TWO_REAL_CONTINUOUS_BOUNDED_LOOKUP_ALLOWED_LAG_FRAMES;
         timing.continuous_decode_ffmpeg_low_latency_args_enabled =
             self.config.low_latency_args_enabled;
         timing.continuous_decode_ffmpeg_probe_args_enabled = self.config.probe_args_enabled();
@@ -3371,6 +3462,52 @@ impl TwoRealContinuousDecodeRuntime {
         timing.continuous_decode_render_exact_hit_count = timing
             .continuous_decode_render_exact_hit_count
             .saturating_add(1);
+        timing.continuous_decode_render_used_exact_count = timing
+            .continuous_decode_render_used_exact_count
+            .saturating_add(1);
+    }
+
+    fn observe_bounded_lookup_hit(
+        &self,
+        timing: &mut TwoRealPreviewLoopRuntimeTiming,
+        used_frame_id: u64,
+        requested_frame_id: u64,
+        lag_frames: u64,
+    ) {
+        timing.continuous_decode_bounded_lookup_hit_count = timing
+            .continuous_decode_bounded_lookup_hit_count
+            .saturating_add(1);
+        timing.continuous_decode_bounded_lookup_used_frame_id = Some(used_frame_id);
+        timing.continuous_decode_bounded_lookup_requested_frame_id = Some(requested_frame_id);
+        timing.continuous_decode_bounded_lookup_lag_frames = Some(lag_frames);
+        timing.continuous_decode_render_used_bounded_lag_count = timing
+            .continuous_decode_render_used_bounded_lag_count
+            .saturating_add(1);
+    }
+
+    fn observe_bounded_lookup_rejection(
+        &self,
+        timing: &mut TwoRealPreviewLoopRuntimeTiming,
+        candidate: &TwoRealContinuousBoundedLookupCandidate,
+    ) {
+        match candidate {
+            TwoRealContinuousBoundedLookupCandidate::RejectedStale => {
+                timing.continuous_decode_bounded_lookup_rejected_stale_count = timing
+                    .continuous_decode_bounded_lookup_rejected_stale_count
+                    .saturating_add(1);
+            }
+            TwoRealContinuousBoundedLookupCandidate::RejectedFuture => {
+                timing.continuous_decode_bounded_lookup_rejected_future_count = timing
+                    .continuous_decode_bounded_lookup_rejected_future_count
+                    .saturating_add(1);
+            }
+            TwoRealContinuousBoundedLookupCandidate::RejectedNotReady => {
+                timing.continuous_decode_bounded_lookup_rejected_not_ready_count = timing
+                    .continuous_decode_bounded_lookup_rejected_not_ready_count
+                    .saturating_add(1);
+            }
+            TwoRealContinuousBoundedLookupCandidate::Hit { .. } => {}
+        }
     }
 
     fn classify_lookup_miss(
@@ -4385,10 +4522,62 @@ where
                     .saturating_add(1);
                 return SwitcherH264DecodeResult::Decoded(decoded);
             }
+            let bounded_candidate = self
+                .continuous_slot0
+                .borrow()
+                .as_ref()
+                .map(|continuous_slot0| continuous_slot0.bounded_lag_lookup_candidate(&input))
+                .unwrap_or(TwoRealContinuousBoundedLookupCandidate::RejectedNotReady);
+            match bounded_candidate {
+                TwoRealContinuousBoundedLookupCandidate::Hit {
+                    key: bounded_key,
+                    used_frame_id,
+                    requested_frame_id,
+                    lag_frames,
+                } => {
+                    if let Some(decoded) = self.decoded_cache.borrow().get(&bounded_key) {
+                        let clone_start = Instant::now();
+                        let decoded = decoded.clone();
+                        let mut timing = self.timing.borrow_mut();
+                        timing.decode_cached_frame_reuse_count += 1;
+                        timing.decode_cache_hit_clone_count += 1;
+                        timing.decoded_buffer_clone_count += 1;
+                        timing.decoded_buffer_clone_elapsed_ms += clone_start.elapsed().as_millis();
+                        if let Some(continuous_slot0) = self.continuous_slot0.borrow().as_ref() {
+                            continuous_slot0.observe_bounded_lookup_hit(
+                                &mut timing,
+                                used_frame_id,
+                                requested_frame_id,
+                                lag_frames,
+                            );
+                        }
+                        timing.render_used_continuous_decoded_count = timing
+                            .render_used_continuous_decoded_count
+                            .saturating_add(1);
+                        return SwitcherH264DecodeResult::Decoded(decoded);
+                    }
+                    let mut timing = self.timing.borrow_mut();
+                    if let Some(continuous_slot0) = self.continuous_slot0.borrow().as_ref() {
+                        continuous_slot0.observe_bounded_lookup_rejection(
+                            &mut timing,
+                            &TwoRealContinuousBoundedLookupCandidate::RejectedNotReady,
+                        );
+                    }
+                }
+                candidate => {
+                    let mut timing = self.timing.borrow_mut();
+                    if let Some(continuous_slot0) = self.continuous_slot0.borrow().as_ref() {
+                        continuous_slot0.observe_bounded_lookup_rejection(&mut timing, &candidate);
+                    }
+                }
+            }
             let mut timing = self.timing.borrow_mut();
             if let Some(continuous_slot0) = self.continuous_slot0.borrow().as_ref() {
                 continuous_slot0.observe_lookup_miss(&input, &mut timing);
             }
+            timing.continuous_decode_bounded_lookup_fallback_to_one_shot_count = timing
+                .continuous_decode_bounded_lookup_fallback_to_one_shot_count
+                .saturating_add(1);
             timing.continuous_decode_fallback_to_one_shot_count = timing
                 .continuous_decode_fallback_to_one_shot_count
                 .saturating_add(1);
@@ -6657,6 +6846,28 @@ where
         continuous_decode_render_miss_stale_count: timing.continuous_decode_render_miss_stale_count,
         continuous_decode_render_miss_not_ready_count: timing
             .continuous_decode_render_miss_not_ready_count,
+        continuous_decode_bounded_lookup_enabled: timing.continuous_decode_bounded_lookup_enabled,
+        continuous_decode_bounded_lookup_allowed_lag_frames: timing
+            .continuous_decode_bounded_lookup_allowed_lag_frames,
+        continuous_decode_bounded_lookup_hit_count: timing
+            .continuous_decode_bounded_lookup_hit_count,
+        continuous_decode_bounded_lookup_used_frame_id: timing
+            .continuous_decode_bounded_lookup_used_frame_id,
+        continuous_decode_bounded_lookup_requested_frame_id: timing
+            .continuous_decode_bounded_lookup_requested_frame_id,
+        continuous_decode_bounded_lookup_lag_frames: timing
+            .continuous_decode_bounded_lookup_lag_frames,
+        continuous_decode_bounded_lookup_rejected_stale_count: timing
+            .continuous_decode_bounded_lookup_rejected_stale_count,
+        continuous_decode_bounded_lookup_rejected_future_count: timing
+            .continuous_decode_bounded_lookup_rejected_future_count,
+        continuous_decode_bounded_lookup_rejected_not_ready_count: timing
+            .continuous_decode_bounded_lookup_rejected_not_ready_count,
+        continuous_decode_bounded_lookup_fallback_to_one_shot_count: timing
+            .continuous_decode_bounded_lookup_fallback_to_one_shot_count,
+        continuous_decode_render_used_exact_count: timing.continuous_decode_render_used_exact_count,
+        continuous_decode_render_used_bounded_lag_count: timing
+            .continuous_decode_render_used_bounded_lag_count,
         render_used_continuous_decoded_count: timing.render_used_continuous_decoded_count,
         render_used_one_shot_fallback_count: timing.render_used_one_shot_fallback_count,
         one_shot_decode_fallback_count: timing.one_shot_decode_fallback_count,
@@ -11586,7 +11797,7 @@ fn format_four_view_two_real_handoff_preview_loop_summary(
         format_optional_u32(summary.output_height),
     );
     format!(
-        "{summary_line} continuous_decode_ffmpeg_low_latency_args_enabled={} continuous_decode_ffmpeg_probe_args_enabled={} continuous_decode_ffmpeg_loglevel={} continuous_decode_stdout_first_byte_seen={} continuous_decode_stdout_first_byte_elapsed_ms={} continuous_decode_stdout_partial_bytes_read={} continuous_decode_stdout_partial_read_count={} continuous_decode_stdout_expected_frame_bytes={} continuous_decode_stdout_read_waiting_for_full_frame={} continuous_feed_enabled={} continuous_feed_attempt_count={} continuous_feed_handoff_request_count={} continuous_feed_frame_received_count={} continuous_feed_no_frame_count={} continuous_feed_handoff_error_count={} continuous_feed_enqueued_count={} continuous_feed_skipped_count={} continuous_feed_skip_reason_counts={} continuous_feed_dropped_stale_input_count={} continuous_feed_latest_received_frame_id={} continuous_feed_latest_enqueued_frame_id={} continuous_decode_input_from_feeder_count={} continuous_decode_input_from_render_demand_count={} continuous_decode_feeder_lag_to_selected={} continuous_decode_render_exact_hit_count={} continuous_decode_render_miss_stale_count={} continuous_decode_render_miss_not_ready_count={}",
+        "{summary_line} continuous_decode_ffmpeg_low_latency_args_enabled={} continuous_decode_ffmpeg_probe_args_enabled={} continuous_decode_ffmpeg_loglevel={} continuous_decode_stdout_first_byte_seen={} continuous_decode_stdout_first_byte_elapsed_ms={} continuous_decode_stdout_partial_bytes_read={} continuous_decode_stdout_partial_read_count={} continuous_decode_stdout_expected_frame_bytes={} continuous_decode_stdout_read_waiting_for_full_frame={} continuous_feed_enabled={} continuous_feed_attempt_count={} continuous_feed_handoff_request_count={} continuous_feed_frame_received_count={} continuous_feed_no_frame_count={} continuous_feed_handoff_error_count={} continuous_feed_enqueued_count={} continuous_feed_skipped_count={} continuous_feed_skip_reason_counts={} continuous_feed_dropped_stale_input_count={} continuous_feed_latest_received_frame_id={} continuous_feed_latest_enqueued_frame_id={} continuous_decode_input_from_feeder_count={} continuous_decode_input_from_render_demand_count={} continuous_decode_feeder_lag_to_selected={} continuous_decode_render_exact_hit_count={} continuous_decode_render_miss_stale_count={} continuous_decode_render_miss_not_ready_count={} continuous_decode_bounded_lookup_enabled={} continuous_decode_bounded_lookup_allowed_lag_frames={} continuous_decode_bounded_lookup_hit_count={} continuous_decode_bounded_lookup_used_frame_id={} continuous_decode_bounded_lookup_requested_frame_id={} continuous_decode_bounded_lookup_lag_frames={} continuous_decode_bounded_lookup_rejected_stale_count={} continuous_decode_bounded_lookup_rejected_future_count={} continuous_decode_bounded_lookup_rejected_not_ready_count={} continuous_decode_bounded_lookup_fallback_to_one_shot_count={} continuous_decode_render_used_exact_count={} continuous_decode_render_used_bounded_lag_count={}",
         summary.continuous_decode_ffmpeg_low_latency_args_enabled,
         summary.continuous_decode_ffmpeg_probe_args_enabled,
         sanitize_summary_value(&summary.continuous_decode_ffmpeg_loglevel),
@@ -11614,6 +11825,18 @@ fn format_four_view_two_real_handoff_preview_loop_summary(
         summary.continuous_decode_render_exact_hit_count,
         summary.continuous_decode_render_miss_stale_count,
         summary.continuous_decode_render_miss_not_ready_count,
+        summary.continuous_decode_bounded_lookup_enabled,
+        summary.continuous_decode_bounded_lookup_allowed_lag_frames,
+        summary.continuous_decode_bounded_lookup_hit_count,
+        format_optional_u64(summary.continuous_decode_bounded_lookup_used_frame_id),
+        format_optional_u64(summary.continuous_decode_bounded_lookup_requested_frame_id),
+        format_optional_u64(summary.continuous_decode_bounded_lookup_lag_frames),
+        summary.continuous_decode_bounded_lookup_rejected_stale_count,
+        summary.continuous_decode_bounded_lookup_rejected_future_count,
+        summary.continuous_decode_bounded_lookup_rejected_not_ready_count,
+        summary.continuous_decode_bounded_lookup_fallback_to_one_shot_count,
+        summary.continuous_decode_render_used_exact_count,
+        summary.continuous_decode_render_used_bounded_lag_count,
     )
 }
 
@@ -12716,8 +12939,8 @@ mod tests {
         SwitcherFourViewManualPreviewBgraCompositionKind,
         SwitcherFourViewManualPreviewProofFixtureMode,
         SwitcherFourViewManualPreviewRenderFacingKind,
-        SwitcherFourViewManualPreviewWindowRenderKind,
-        SwitcherNamedPipeQueuedFrameHandoffRequestOutput,
+        SwitcherFourViewManualPreviewWindowRenderKind, SwitcherH264DecodeInput,
+        SwitcherH264DecodeSourceIdentity, SwitcherNamedPipeQueuedFrameHandoffRequestOutput,
         SwitcherNamedPipeQueuedFrameHandoffRequestStatus,
         SwitcherNamedPipeQueuedFrameHandoffRequestSummary,
         SwitcherNamedPipeQueuedFrameHandoffResponseStatus,
@@ -12776,7 +12999,10 @@ mod tests {
         SwitcherFourViewControlledPreviewCommand, SwitcherFourViewControlledPreviewCommandSummary,
         SwitcherFrameCadenceSleepHook, SwitcherPersistentWindowLoopRuntimeHook,
         SwitcherQueuedFrameHandoffResult, SwitcherSingleClientQueueSourceMode,
-        TwoRealPreviewLoopRuntimeTiming, FOUR_VIEW_CLEAN_OUTPUT_LOOP_OBS_OUTPUT_HEIGHT,
+        TwoRealContinuousBoundedLookupCandidate, TwoRealContinuousDecodeConfig,
+        TwoRealContinuousDecodeRuntime, TwoRealContinuousDecodeSource,
+        TwoRealPreviewLoopDecodeCacheKey, TwoRealPreviewLoopRuntimeTiming,
+        FOUR_VIEW_CLEAN_OUTPUT_LOOP_OBS_OUTPUT_HEIGHT,
         FOUR_VIEW_CLEAN_OUTPUT_LOOP_OBS_OUTPUT_WIDTH, FOUR_VIEW_CLEAN_OUTPUT_LOOP_SCALE_MODE,
         REUSABLE_OBS_RENDER_BUFFER,
     };
@@ -15579,6 +15805,18 @@ mod tests {
         assert!(formatted.contains("continuous_decode_render_exact_hit_count=0"));
         assert!(formatted.contains("continuous_decode_render_miss_stale_count=0"));
         assert!(formatted.contains("continuous_decode_render_miss_not_ready_count=0"));
+        assert!(formatted.contains("continuous_decode_bounded_lookup_enabled=false"));
+        assert!(formatted.contains("continuous_decode_bounded_lookup_allowed_lag_frames=0"));
+        assert!(formatted.contains("continuous_decode_bounded_lookup_hit_count=0"));
+        assert!(formatted.contains("continuous_decode_bounded_lookup_used_frame_id=none"));
+        assert!(formatted.contains("continuous_decode_bounded_lookup_requested_frame_id=none"));
+        assert!(formatted.contains("continuous_decode_bounded_lookup_lag_frames=none"));
+        assert!(formatted.contains("continuous_decode_bounded_lookup_rejected_stale_count=0"));
+        assert!(formatted.contains("continuous_decode_bounded_lookup_rejected_future_count=0"));
+        assert!(formatted.contains("continuous_decode_bounded_lookup_rejected_not_ready_count=0"));
+        assert!(formatted.contains("continuous_decode_bounded_lookup_fallback_to_one_shot_count=0"));
+        assert!(formatted.contains("continuous_decode_render_used_exact_count=0"));
+        assert!(formatted.contains("continuous_decode_render_used_bounded_lag_count=0"));
         assert!(formatted.contains("render_used_continuous_decoded_count=0"));
         assert!(formatted.contains("render_used_one_shot_fallback_count=0"));
         assert!(formatted.contains("one_shot_decode_fallback_count=0"));
@@ -15754,6 +15992,91 @@ mod tests {
             "output_height={}",
             FOUR_VIEW_CLEAN_OUTPUT_LOOP_OBS_OUTPUT_HEIGHT
         )));
+    }
+
+    fn two_real_continuous_test_key(frame_id: u64) -> TwoRealPreviewLoopDecodeCacheKey {
+        TwoRealPreviewLoopDecodeCacheKey {
+            width: 640,
+            height: 360,
+            encoded_payload: Vec::new(),
+            source_identity: Some(SwitcherH264DecodeSourceIdentity {
+                client_id: ClientId("real-client-0".to_string()),
+                run_id: RunId("real-run-0".to_string()),
+                frame_id,
+                source_identity: "selected".to_string(),
+            }),
+        }
+    }
+
+    fn two_real_continuous_test_input(frame_id: u64) -> SwitcherH264DecodeInput {
+        SwitcherH264DecodeInput {
+            encoded_payload: vec![0, 0, 0, 1, 0x67],
+            width: 640,
+            height: 360,
+            scaled_output_enabled: true,
+            scaled_output_reason: Some("two_real_slot_size".to_string()),
+            source_identity: Some(SwitcherH264DecodeSourceIdentity {
+                client_id: ClientId("real-client-0".to_string()),
+                run_id: RunId("real-run-0".to_string()),
+                frame_id,
+                source_identity: "selected".to_string(),
+            }),
+        }
+    }
+
+    fn two_real_continuous_test_runtime() -> TwoRealContinuousDecodeRuntime {
+        TwoRealContinuousDecodeRuntime::new(
+            TwoRealContinuousDecodeSource {
+                client_id: ClientId("real-client-0".to_string()),
+                run_id: RunId("real-run-0".to_string()),
+            },
+            640,
+            360,
+            TwoRealContinuousDecodeConfig::default(),
+        )
+    }
+
+    #[test]
+    fn continuous_decode_bounded_lookup_selects_nearest_within_lag() {
+        let mut runtime = two_real_continuous_test_runtime();
+        let key = two_real_continuous_test_key(100);
+        runtime.continuous_key_order.push_back(key.clone());
+        runtime.continuous_decoded_keys.insert(key.clone());
+
+        let candidate = runtime.bounded_lag_lookup_candidate(&two_real_continuous_test_input(105));
+
+        assert_eq!(
+            candidate,
+            TwoRealContinuousBoundedLookupCandidate::Hit {
+                key,
+                used_frame_id: 100,
+                requested_frame_id: 105,
+                lag_frames: 5,
+            }
+        );
+    }
+
+    #[test]
+    fn continuous_decode_bounded_lookup_rejects_stale_and_future_candidates() {
+        let mut stale_runtime = two_real_continuous_test_runtime();
+        stale_runtime
+            .continuous_key_order
+            .push_back(two_real_continuous_test_key(100));
+
+        assert_eq!(
+            stale_runtime.bounded_lag_lookup_candidate(&two_real_continuous_test_input(106)),
+            TwoRealContinuousBoundedLookupCandidate::RejectedStale
+        );
+
+        let mut future_runtime = two_real_continuous_test_runtime();
+        future_runtime
+            .continuous_key_order
+            .push_back(two_real_continuous_test_key(110));
+
+        assert_eq!(
+            future_runtime.bounded_lag_lookup_candidate(&two_real_continuous_test_input(105)),
+            TwoRealContinuousBoundedLookupCandidate::RejectedFuture
+        );
     }
 
     #[test]
