@@ -1,5 +1,81 @@
 <!-- stream-sync/docs/operations/session-log.md -->
 
+## 2026-05-19
+### Type
+- Codex diagnostics-only implementation
+
+### Work
+- Reflected latest human rerun `S:\stream-sync\manual-logs\two-client-render-rerun-20260519-122239`.
+- Kept the step scoped to slot0 continuous decoder diagnostics.
+- Added summary diagnostics for continuous FFmpeg runtime args, stdin write progress, process status, stdout read in-progress state, stderr reader state, and first-input timing.
+- Did not change continuous feed policy, FFmpeg args, pixel format, exact-match lookup, latest decoded fallback, targetTime-aware lookup, slot1 continuous rollout, 4-client rollout, or one-shot fallback behavior.
+- Updated `docs/operations/todo.md` and `docs/operations/continuous-stream-decoder-plan.md` with the latest all-keyframe output-pending evidence.
+
+### Changed Files
+- `apps/switcher/src/main.rs`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+- `docs/operations/continuous-stream-decoder-plan.md`
+
+### Findings
+- Latest rerun had continuous opt-in, runtime creation, slot0 input feeding, and lookup diagnostics working:
+  - `continuous_decode_config_enabled=true`
+  - `continuous_decode_runtime_enabled=true`
+  - `continuous_decode_slot0_enabled=true`
+  - `continuous_decode_input_frame_count=18`
+- Continuous stdout output and render consumption remained FAIL:
+  - `continuous_decode_output_frame_count=0`
+  - `continuous_decode_lookup_miss_reason_counts=exact_key_missing:0|queue_empty:0|runtime_disabled:0|output_pending:18|frame_id_lagging:0|unknown:0`
+  - `render_used_continuous_decoded_count=0`
+  - `render_used_one_shot_fallback_count=18`
+- `continuous_decode_output_pending_correspondence_count=18` with `continuous_decode_writer_input_queue_len=0` moves the first suspicion after the writer queue: FFmpeg stdin handling, decode/probing/buffering, rawvideo stdout emission, stdout read, process status, or stderr visibility.
+- Sparse render-demand feed is confirmed:
+  - `continuous_decode_input_frame_id_min=4`
+  - `continuous_decode_input_frame_id_max=525`
+  - `continuous_decode_input_frame_id_gap_max=37`
+  - `continuous_decode_input_frame_id_gap_total=521`
+  - `continuous_decode_input_non_consecutive_count=17`
+- Missing non-IDR references alone do not explain this rerun because all accepted continuous inputs carried keyframe/parameter-set evidence:
+  - `continuous_decode_input_keyframe_count=18`
+  - `continuous_decode_input_non_keyframe_count=0`
+  - `continuous_decode_input_has_sps_count=18`
+  - `continuous_decode_input_has_pps_count=18`
+  - `continuous_decode_input_has_idr_count=18`
+  - `continuous_decode_input_has_non_idr_vcl_count=0`
+- `continuous_decode_ffmpeg_stderr_summary=none`, `continuous_decode_stdout_reader_blocked_count=16`, `continuous_decode_no_output_after_input_count=17`, `continuous_decode_no_output_after_keyframe_count=17`, and `continuous_decode_bootstrap_output_count=0` make FFmpeg runtime / pipe diagnostics the next narrow evidence point.
+
+### Decisions
+- Treat `S:\stream-sync\manual-logs\two-client-render-rerun-20260519-122239` as output-pending runtime evidence, not as a continuous decoder success.
+- Keep Production Readiness as FAIL.
+- Keep one-shot fallback as the safety path.
+- Do not implement latest decoded fallback, targetTime-aware lookup, slot0 per-client feed/drain policy, slot1 continuous, or 4-client continuous in this step.
+- Next human rerun should keep `--disable-persistent-decoder --enable-continuous-stream-decoder` and read the new FFmpeg runtime diagnostics before any architecture change.
+
+### TODO Update
+- Completed:
+  - latest output-pending rerun documentation
+  - FFmpeg runtime diagnostics-only summary fields
+- Added:
+  - next rerun evidence for args/stdin/process/stdout/stderr/first-input timing
+- Held:
+  - feed architecture rewrite
+  - latest decoded fallback
+  - targetTime-aware lookup
+  - slot1 / 4-client rollout
+
+### Validation
+- `cargo fmt`
+  - result: PASS
+- `cargo check -p stream-sync-switcher`
+  - result: PASS
+  - note: existing dead-code warnings remain in unrelated helpers
+- `cargo test -p stream-sync-switcher switcher_four_view_two_real_handoff_preview_summary_formats_expected_fields -- --nocapture`
+  - result: PASS
+  - note: initial sandbox runner attempt timed out, escalated rerun completed successfully
+- `git diff --check`
+  - result: PASS
+  - note: LF/CRLF warnings only
+
 ## 2026-05-18
 ### Type
 - Codex investigation / command guidance fix

@@ -1944,6 +1944,22 @@ struct SwitcherFourViewTwoRealHandoffPreviewLoopSummary {
     continuous_decode_bootstrap_output_count: u32,
     continuous_decode_last_input_frame_id: Option<u64>,
     continuous_decode_last_output_frame_id: Option<u64>,
+    continuous_decode_ffmpeg_args_summary: String,
+    continuous_decode_stdin_write_count: usize,
+    continuous_decode_stdin_write_bytes_total: usize,
+    continuous_decode_stdin_write_error_count: usize,
+    continuous_decode_last_stdin_write_error: String,
+    continuous_decode_process_running: bool,
+    continuous_decode_process_exit_status: String,
+    continuous_decode_stdout_read_attempt_count: usize,
+    continuous_decode_stdout_read_in_progress: bool,
+    continuous_decode_stderr_reader_alive: bool,
+    continuous_decode_stderr_bytes_total: usize,
+    continuous_decode_last_stderr_at_ms: Option<u128>,
+    continuous_decode_last_input_write_elapsed_ms: u128,
+    continuous_decode_last_input_payload_bytes: usize,
+    continuous_decode_first_input_to_first_output_elapsed_ms: Option<u128>,
+    continuous_decode_first_input_to_now_elapsed_ms: Option<u128>,
     render_used_continuous_decoded_count: u32,
     render_used_one_shot_fallback_count: u32,
     one_shot_decode_fallback_count: u32,
@@ -2540,6 +2556,22 @@ struct TwoRealPreviewLoopRuntimeTiming {
     continuous_decode_bootstrap_output_count: u32,
     continuous_decode_last_input_frame_id: Option<u64>,
     continuous_decode_last_output_frame_id: Option<u64>,
+    continuous_decode_ffmpeg_args_summary: Option<String>,
+    continuous_decode_stdin_write_count: usize,
+    continuous_decode_stdin_write_bytes_total: usize,
+    continuous_decode_stdin_write_error_count: usize,
+    continuous_decode_last_stdin_write_error: Option<String>,
+    continuous_decode_process_running: bool,
+    continuous_decode_process_exit_status: Option<String>,
+    continuous_decode_stdout_read_attempt_count: usize,
+    continuous_decode_stdout_read_in_progress: bool,
+    continuous_decode_stderr_reader_alive: bool,
+    continuous_decode_stderr_bytes_total: usize,
+    continuous_decode_last_stderr_at_ms: Option<u128>,
+    continuous_decode_last_input_write_elapsed_ms: u128,
+    continuous_decode_last_input_payload_bytes: usize,
+    continuous_decode_first_input_to_first_output_elapsed_ms: Option<u128>,
+    continuous_decode_first_input_to_now_elapsed_ms: Option<u128>,
     render_used_continuous_decoded_count: u32,
     render_used_one_shot_fallback_count: u32,
     one_shot_decode_fallback_count: u32,
@@ -2886,24 +2918,92 @@ enum TwoRealContinuousDecodeLookupMissReason {
     FrameIdLagging,
 }
 
+struct TwoRealContinuousDecodeSharedDiagnostics {
+    stdin_write_count: AtomicUsize,
+    stdin_write_bytes_total: AtomicUsize,
+    stdin_write_error_count: AtomicUsize,
+    last_stdin_write_elapsed_ms: AtomicUsize,
+    last_input_payload_bytes: AtomicUsize,
+    stdout_read_attempt_count: AtomicUsize,
+    stdout_read_in_progress: AtomicUsize,
+    stderr_reader_alive: AtomicUsize,
+    stderr_bytes_total: AtomicUsize,
+    last_stderr_at_ms: AtomicUsize,
+    last_stdin_write_error: Mutex<Option<String>>,
+    process_exit_status: Mutex<Option<String>>,
+}
+
+impl TwoRealContinuousDecodeSharedDiagnostics {
+    fn new() -> Self {
+        Self {
+            stdin_write_count: AtomicUsize::new(0),
+            stdin_write_bytes_total: AtomicUsize::new(0),
+            stdin_write_error_count: AtomicUsize::new(0),
+            last_stdin_write_elapsed_ms: AtomicUsize::new(0),
+            last_input_payload_bytes: AtomicUsize::new(0),
+            stdout_read_attempt_count: AtomicUsize::new(0),
+            stdout_read_in_progress: AtomicUsize::new(0),
+            stderr_reader_alive: AtomicUsize::new(0),
+            stderr_bytes_total: AtomicUsize::new(0),
+            last_stderr_at_ms: AtomicUsize::new(0),
+            last_stdin_write_error: Mutex::new(None),
+            process_exit_status: Mutex::new(None),
+        }
+    }
+}
+
 struct TwoRealContinuousDecodeSession {
-    child: Child,
+    child: Mutex<Child>,
+    ffmpeg_args_summary: String,
     input_tx: mpsc::SyncSender<TwoRealContinuousDecodeInput>,
     output_rx: mpsc::Receiver<TwoRealContinuousDecodeEvent>,
     correspondence: Arc<Mutex<VecDeque<TwoRealContinuousDecodeMetadata>>>,
     writer_input_queue_len: Arc<AtomicUsize>,
     stdout_reader_waiting: Arc<AtomicUsize>,
     stderr_summary_bytes: Arc<Mutex<Vec<u8>>>,
+    diagnostics: Arc<TwoRealContinuousDecodeSharedDiagnostics>,
     writer_thread: Option<thread::JoinHandle<()>>,
     reader_thread: Option<thread::JoinHandle<()>>,
     stderr_thread: Option<thread::JoinHandle<()>>,
 }
 
 impl TwoRealContinuousDecodeSession {
+    fn process_exit_status(&self) -> Option<String> {
+        if let Some(status) = self
+            .diagnostics
+            .process_exit_status
+            .lock()
+            .ok()
+            .and_then(|status| status.clone())
+        {
+            return Some(status);
+        }
+        let status = self
+            .child
+            .lock()
+            .ok()
+            .and_then(|mut child| child.try_wait().ok().flatten())
+            .map(|status| status.to_string());
+        if let Some(status) = status.as_ref() {
+            if let Ok(mut stored_status) = self.diagnostics.process_exit_status.lock() {
+                *stored_status = Some(status.clone());
+            }
+        }
+        status
+    }
+
     fn stop(mut self) {
         drop(self.input_tx);
-        let _ = self.child.kill();
-        let _ = self.child.wait();
+        if let Ok(mut child) = self.child.lock() {
+            let _ = child.kill();
+            let status = child
+                .wait()
+                .map(|status| status.to_string())
+                .unwrap_or_else(|error| format!("wait_error:{}", error));
+            if let Ok(mut stored_status) = self.diagnostics.process_exit_status.lock() {
+                *stored_status = Some(status);
+            }
+        }
         if let Some(writer_thread) = self.writer_thread.take() {
             let _ = writer_thread.join();
         }
@@ -2927,6 +3027,8 @@ struct TwoRealContinuousDecodeRuntime {
     continuous_key_order: VecDeque<TwoRealPreviewLoopDecodeCacheKey>,
     latest_decoded_frame_id: Option<u64>,
     last_output_at: Option<Instant>,
+    first_input_at: Option<Instant>,
+    first_output_at: Option<Instant>,
     restart_count: u32,
     last_ffmpeg_stderr_summary: Option<String>,
 }
@@ -2945,6 +3047,8 @@ impl TwoRealContinuousDecodeRuntime {
             continuous_key_order: VecDeque::new(),
             latest_decoded_frame_id: None,
             last_output_at: None,
+            first_input_at: None,
+            first_output_at: None,
             restart_count: 0,
             last_ffmpeg_stderr_summary: None,
         }
@@ -3022,6 +3126,55 @@ impl TwoRealContinuousDecodeRuntime {
         timing.continuous_decode_restart_count = self.restart_count;
         if let Some(stderr_summary) = self.current_ffmpeg_stderr_summary() {
             timing.continuous_decode_ffmpeg_stderr_summary = Some(stderr_summary);
+        }
+        if let Some(first_input_at) = self.first_input_at {
+            timing.continuous_decode_first_input_to_now_elapsed_ms =
+                Some(first_input_at.elapsed().as_millis());
+            if let Some(first_output_at) = self.first_output_at {
+                timing.continuous_decode_first_input_to_first_output_elapsed_ms =
+                    Some(first_output_at.duration_since(first_input_at).as_millis());
+            }
+        }
+        if let Some(session) = self.session.as_ref() {
+            let diagnostics = &session.diagnostics;
+            timing.continuous_decode_ffmpeg_args_summary =
+                Some(session.ffmpeg_args_summary.clone());
+            timing.continuous_decode_stdin_write_count =
+                diagnostics.stdin_write_count.load(Ordering::Relaxed);
+            timing.continuous_decode_stdin_write_bytes_total =
+                diagnostics.stdin_write_bytes_total.load(Ordering::Relaxed);
+            timing.continuous_decode_stdin_write_error_count =
+                diagnostics.stdin_write_error_count.load(Ordering::Relaxed);
+            timing.continuous_decode_last_stdin_write_error = diagnostics
+                .last_stdin_write_error
+                .lock()
+                .ok()
+                .and_then(|error| error.clone());
+            let process_exit_status = session.process_exit_status();
+            timing.continuous_decode_process_running = process_exit_status.is_none();
+            timing.continuous_decode_process_exit_status = process_exit_status;
+            timing.continuous_decode_stdout_read_attempt_count = diagnostics
+                .stdout_read_attempt_count
+                .load(Ordering::Relaxed);
+            timing.continuous_decode_stdout_read_in_progress =
+                diagnostics.stdout_read_in_progress.load(Ordering::Relaxed) > 0;
+            timing.continuous_decode_stderr_reader_alive =
+                diagnostics.stderr_reader_alive.load(Ordering::Relaxed) > 0;
+            timing.continuous_decode_stderr_bytes_total =
+                diagnostics.stderr_bytes_total.load(Ordering::Relaxed);
+            timing.continuous_decode_last_stderr_at_ms =
+                match diagnostics.last_stderr_at_ms.load(Ordering::Relaxed) {
+                    0 => None,
+                    value => Some(value.saturating_sub(1) as u128),
+                };
+            timing.continuous_decode_last_input_write_elapsed_ms = diagnostics
+                .last_stdin_write_elapsed_ms
+                .load(Ordering::Relaxed)
+                as u128;
+            timing.continuous_decode_last_input_payload_bytes =
+                diagnostics.last_input_payload_bytes.load(Ordering::Relaxed);
+        } else if self.runtime_disabled_reason.is_some() {
+            timing.continuous_decode_process_running = false;
         }
     }
 
@@ -3235,6 +3388,9 @@ impl TwoRealContinuousDecodeRuntime {
             encoded_payload: input.encoded_payload.clone(),
         }) {
             Ok(()) => {
+                if self.first_input_at.is_none() {
+                    self.first_input_at = Some(Instant::now());
+                }
                 let payload_summary = SwitcherH264AnnexBPayloadInspectionBoundary
                     .inspect_payload(&input.encoded_payload);
                 if let Some(previous_frame_id) = timing.continuous_decode_last_input_frame_id {
@@ -3361,6 +3517,9 @@ impl TwoRealContinuousDecodeRuntime {
                         .saturating_add(output.stdout_read_elapsed_ms);
                     timing.continuous_decode_last_output_frame_id = Some(output.metadata.frame_id);
                     self.latest_decoded_frame_id = Some(output.metadata.frame_id);
+                    if self.first_output_at.is_none() {
+                        self.first_output_at = Some(Instant::now());
+                    }
                     self.last_output_at = Some(Instant::now());
                     decoded_cache.insert(output.metadata.key.clone(), output.frame);
                     self.continuous_decoded_keys
@@ -3409,26 +3568,34 @@ fn spawn_two_real_continuous_ffmpeg_decode_session(
     scaled_output_enabled: bool,
     expected_len: usize,
 ) -> io::Result<TwoRealContinuousDecodeSession> {
-    let mut command = Command::new(ffmpeg_path);
-    command
-        .arg("-hide_banner")
-        .arg("-loglevel")
-        .arg("error")
-        .arg("-f")
-        .arg("h264")
-        .arg("-i")
-        .arg("pipe:0");
+    let mut ffmpeg_args = vec![
+        "-hide_banner".to_string(),
+        "-loglevel".to_string(),
+        "error".to_string(),
+        "-f".to_string(),
+        "h264".to_string(),
+        "-i".to_string(),
+        "pipe:0".to_string(),
+    ];
     if scaled_output_enabled {
-        command.arg("-vf").arg(format!(
+        ffmpeg_args.push("-vf".to_string());
+        ffmpeg_args.push(format!(
             "scale={output_width}:{output_height}:flags=neighbor"
         ));
     }
+    ffmpeg_args.extend([
+        "-f".to_string(),
+        "rawvideo".to_string(),
+        "-pix_fmt".to_string(),
+        "bgra".to_string(),
+        "pipe:1".to_string(),
+    ]);
+    let ffmpeg_args_summary = format!("{}|{}", ffmpeg_path, ffmpeg_args.join("|"));
+    let mut command = Command::new(ffmpeg_path);
+    for arg in &ffmpeg_args {
+        command.arg(arg);
+    }
     command
-        .arg("-f")
-        .arg("rawvideo")
-        .arg("-pix_fmt")
-        .arg("bgra")
-        .arg("pipe:1")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
@@ -3457,11 +3624,16 @@ fn spawn_two_real_continuous_ffmpeg_decode_session(
     let writer_input_queue_len = Arc::new(AtomicUsize::new(0));
     let stdout_reader_waiting = Arc::new(AtomicUsize::new(0));
     let stderr_summary_bytes = Arc::new(Mutex::new(Vec::new()));
+    let diagnostics = Arc::new(TwoRealContinuousDecodeSharedDiagnostics::new());
+    let runtime_started_at = Instant::now();
     let writer_correspondence = Arc::clone(&correspondence);
     let reader_correspondence = Arc::clone(&correspondence);
     let writer_input_queue_len_for_thread = Arc::clone(&writer_input_queue_len);
     let stdout_reader_waiting_for_thread = Arc::clone(&stdout_reader_waiting);
     let stderr_summary_bytes_for_thread = Arc::clone(&stderr_summary_bytes);
+    let writer_diagnostics = Arc::clone(&diagnostics);
+    let reader_diagnostics = Arc::clone(&diagnostics);
+    let stderr_diagnostics = Arc::clone(&diagnostics);
     let writer_output_tx = output_tx.clone();
     let writer_thread = thread::spawn(move || {
         two_real_continuous_ffmpeg_writer_loop(
@@ -3469,6 +3641,7 @@ fn spawn_two_real_continuous_ffmpeg_decode_session(
             input_rx,
             writer_correspondence,
             writer_input_queue_len_for_thread,
+            writer_diagnostics,
             writer_output_tx,
         );
     });
@@ -3480,20 +3653,28 @@ fn spawn_two_real_continuous_ffmpeg_decode_session(
             output_height,
             reader_correspondence,
             stdout_reader_waiting_for_thread,
+            reader_diagnostics,
             output_tx,
         );
     });
     let stderr_thread = thread::spawn(move || {
-        two_real_continuous_ffmpeg_stderr_loop(stderr, stderr_summary_bytes_for_thread);
+        two_real_continuous_ffmpeg_stderr_loop(
+            stderr,
+            stderr_summary_bytes_for_thread,
+            stderr_diagnostics,
+            runtime_started_at,
+        );
     });
     Ok(TwoRealContinuousDecodeSession {
-        child,
+        child: Mutex::new(child),
+        ffmpeg_args_summary,
         input_tx,
         output_rx,
         correspondence,
         writer_input_queue_len,
         stdout_reader_waiting,
         stderr_summary_bytes,
+        diagnostics,
         writer_thread: Some(writer_thread),
         reader_thread: Some(reader_thread),
         stderr_thread: Some(stderr_thread),
@@ -3505,10 +3686,14 @@ fn two_real_continuous_ffmpeg_writer_loop(
     input_rx: mpsc::Receiver<TwoRealContinuousDecodeInput>,
     correspondence: Arc<Mutex<VecDeque<TwoRealContinuousDecodeMetadata>>>,
     writer_input_queue_len: Arc<AtomicUsize>,
+    diagnostics: Arc<TwoRealContinuousDecodeSharedDiagnostics>,
     output_tx: mpsc::Sender<TwoRealContinuousDecodeEvent>,
 ) {
     while let Ok(input) = input_rx.recv() {
         writer_input_queue_len.fetch_sub(1, Ordering::Relaxed);
+        diagnostics
+            .last_input_payload_bytes
+            .store(input.encoded_payload.len(), Ordering::Relaxed);
         if let Ok(mut queue) = correspondence.lock() {
             queue.push_back(input.metadata);
         } else {
@@ -3517,12 +3702,38 @@ fn two_real_continuous_ffmpeg_writer_loop(
             ));
             break;
         }
-        if let Err(error) = stdin.write_all(&input.encoded_payload) {
-            let _ = output_tx.send(TwoRealContinuousDecodeEvent::RuntimeError(format!(
-                "continuous_stdin_write_failed:{}",
-                error
-            )));
-            break;
+        let write_start = Instant::now();
+        match stdin.write_all(&input.encoded_payload) {
+            Ok(()) => {
+                diagnostics
+                    .stdin_write_count
+                    .fetch_add(1, Ordering::Relaxed);
+                diagnostics
+                    .stdin_write_bytes_total
+                    .fetch_add(input.encoded_payload.len(), Ordering::Relaxed);
+                diagnostics.last_stdin_write_elapsed_ms.store(
+                    write_start.elapsed().as_millis().min(usize::MAX as u128) as usize,
+                    Ordering::Relaxed,
+                );
+            }
+            Err(error) => {
+                diagnostics.last_stdin_write_elapsed_ms.store(
+                    write_start.elapsed().as_millis().min(usize::MAX as u128) as usize,
+                    Ordering::Relaxed,
+                );
+                diagnostics
+                    .stdin_write_error_count
+                    .fetch_add(1, Ordering::Relaxed);
+                let error = error.to_string();
+                if let Ok(mut last_error) = diagnostics.last_stdin_write_error.lock() {
+                    *last_error = Some(error.clone());
+                }
+                let _ = output_tx.send(TwoRealContinuousDecodeEvent::RuntimeError(format!(
+                    "continuous_stdin_write_failed:{}",
+                    error
+                )));
+                break;
+            }
         }
     }
 }
@@ -3534,14 +3745,24 @@ fn two_real_continuous_ffmpeg_reader_loop(
     output_height: u32,
     correspondence: Arc<Mutex<VecDeque<TwoRealContinuousDecodeMetadata>>>,
     stdout_reader_waiting: Arc<AtomicUsize>,
+    diagnostics: Arc<TwoRealContinuousDecodeSharedDiagnostics>,
     output_tx: mpsc::Sender<TwoRealContinuousDecodeEvent>,
 ) {
     loop {
         let read_start = Instant::now();
         let mut pixels = vec![0u8; expected_len];
+        diagnostics
+            .stdout_read_attempt_count
+            .fetch_add(1, Ordering::Relaxed);
+        diagnostics
+            .stdout_read_in_progress
+            .store(1, Ordering::Relaxed);
         stdout_reader_waiting.store(1, Ordering::Relaxed);
         if let Err(error) = stdout.read_exact(&mut pixels) {
             stdout_reader_waiting.store(0, Ordering::Relaxed);
+            diagnostics
+                .stdout_read_in_progress
+                .store(0, Ordering::Relaxed);
             let _ = output_tx.send(TwoRealContinuousDecodeEvent::RuntimeError(format!(
                 "continuous_stdout_read_failed:{}",
                 error
@@ -3549,6 +3770,9 @@ fn two_real_continuous_ffmpeg_reader_loop(
             break;
         }
         stdout_reader_waiting.store(0, Ordering::Relaxed);
+        diagnostics
+            .stdout_read_in_progress
+            .store(0, Ordering::Relaxed);
         let metadata = match correspondence.lock() {
             Ok(mut queue) => queue.pop_front(),
             Err(_) => {
@@ -3587,12 +3811,26 @@ fn two_real_continuous_ffmpeg_reader_loop(
 fn two_real_continuous_ffmpeg_stderr_loop(
     mut stderr: impl Read,
     stderr_summary_bytes: Arc<Mutex<Vec<u8>>>,
+    diagnostics: Arc<TwoRealContinuousDecodeSharedDiagnostics>,
+    runtime_started_at: Instant,
 ) {
+    diagnostics.stderr_reader_alive.store(1, Ordering::Relaxed);
     let mut chunk = [0_u8; 256];
     loop {
         match stderr.read(&mut chunk) {
             Ok(0) => break,
             Ok(bytes_read) => {
+                diagnostics
+                    .stderr_bytes_total
+                    .fetch_add(bytes_read, Ordering::Relaxed);
+                diagnostics.last_stderr_at_ms.store(
+                    runtime_started_at
+                        .elapsed()
+                        .as_millis()
+                        .saturating_add(1)
+                        .min(usize::MAX as u128) as usize,
+                    Ordering::Relaxed,
+                );
                 if let Ok(mut bytes) = stderr_summary_bytes.lock() {
                     bytes.extend_from_slice(&chunk[..bytes_read]);
                     if bytes.len() > TWO_REAL_CONTINUOUS_DECODE_STDERR_SUMMARY_MAX_BYTES {
@@ -3607,6 +3845,7 @@ fn two_real_continuous_ffmpeg_stderr_loop(
             Err(_) => break,
         }
     }
+    diagnostics.stderr_reader_alive.store(0, Ordering::Relaxed);
 }
 
 fn format_continuous_ffmpeg_stderr_summary(
@@ -5769,6 +6008,36 @@ where
         continuous_decode_bootstrap_output_count: timing.continuous_decode_bootstrap_output_count,
         continuous_decode_last_input_frame_id: timing.continuous_decode_last_input_frame_id,
         continuous_decode_last_output_frame_id: timing.continuous_decode_last_output_frame_id,
+        continuous_decode_ffmpeg_args_summary: timing
+            .continuous_decode_ffmpeg_args_summary
+            .clone()
+            .unwrap_or_else(|| "none".to_string()),
+        continuous_decode_stdin_write_count: timing.continuous_decode_stdin_write_count,
+        continuous_decode_stdin_write_bytes_total: timing.continuous_decode_stdin_write_bytes_total,
+        continuous_decode_stdin_write_error_count: timing.continuous_decode_stdin_write_error_count,
+        continuous_decode_last_stdin_write_error: timing
+            .continuous_decode_last_stdin_write_error
+            .clone()
+            .unwrap_or_else(|| "none".to_string()),
+        continuous_decode_process_running: timing.continuous_decode_process_running,
+        continuous_decode_process_exit_status: timing
+            .continuous_decode_process_exit_status
+            .clone()
+            .unwrap_or_else(|| "none".to_string()),
+        continuous_decode_stdout_read_attempt_count: timing
+            .continuous_decode_stdout_read_attempt_count,
+        continuous_decode_stdout_read_in_progress: timing.continuous_decode_stdout_read_in_progress,
+        continuous_decode_stderr_reader_alive: timing.continuous_decode_stderr_reader_alive,
+        continuous_decode_stderr_bytes_total: timing.continuous_decode_stderr_bytes_total,
+        continuous_decode_last_stderr_at_ms: timing.continuous_decode_last_stderr_at_ms,
+        continuous_decode_last_input_write_elapsed_ms: timing
+            .continuous_decode_last_input_write_elapsed_ms,
+        continuous_decode_last_input_payload_bytes: timing
+            .continuous_decode_last_input_payload_bytes,
+        continuous_decode_first_input_to_first_output_elapsed_ms: timing
+            .continuous_decode_first_input_to_first_output_elapsed_ms,
+        continuous_decode_first_input_to_now_elapsed_ms: timing
+            .continuous_decode_first_input_to_now_elapsed_ms,
         render_used_continuous_decoded_count: timing.render_used_continuous_decoded_count,
         render_used_one_shot_fallback_count: timing.render_used_one_shot_fallback_count,
         one_shot_decode_fallback_count: timing.one_shot_decode_fallback_count,
@@ -10386,7 +10655,7 @@ fn format_four_view_two_real_handoff_preview_loop_summary(
     summary: &SwitcherFourViewTwoRealHandoffPreviewLoopSummary,
 ) -> String {
     format!(
-        "switcher four-view two-real handoff preview loop command_name=--four-view-two-real-handoff-preview-loop real_handoff=true real_slot_count=2 real_slot0_index={} real_slot1_index={} pipe_name={} actual_pipe_path={} preview_mode={} read_mode={} client0_id={} run0_id={} client1_id={} run1_id={} frames_attempted={} frames_rendered={} render_failures={} elapsed_ms={} target_fps={} configured_frame_interval_ms={} effective_attempt_fps={} effective_render_fps={} first_render_attempt_index={} first_render_elapsed_ms={} rendered_after_first_render={} effective_render_fps_after_first_render={} no_render_before_first_render={} selected_count={} no_frame_count={} handoff_error_count={} decode_attempt_count={} decode_success_count={} render_success_count={} render_failure_count={} unchanged_frame_reuse_count={} skipped_decode_unchanged_frame_count={} redecoded_same_frame_count={} decode_elapsed_ms={} decode_process_spawn_elapsed_ms={} decode_input_write_elapsed_ms={} decode_input_payload_bytes_total={} decode_output_read_elapsed_ms={} decode_output_read_exact_elapsed_ms={} decode_output_vec_resize_elapsed_ms={} decode_process_wait_elapsed_ms={} decode_pixel_convert_elapsed_ms={} decode_buffer_allocation_count={} decode_output_bytes_total={} decode_stdout_expected_bytes_total={} decode_cached_frame_reuse_count={} decode_cache_miss_count={} decoded_buffer_clone_count={} decode_cache_hit_clone_count={} decode_cache_store_clone_count={} decoded_buffer_clone_elapsed_ms={} composed_buffer_clone_count={} decode_output_buffer_reuse_count={} persistent_decode_config_enabled={} persistent_decode_enabled={} persistent_decode_attempt_count={} persistent_decode_success_count={} persistent_decode_failure_count={} persistent_decode_fallback_count={} persistent_decode_process_spawn_count={} persistent_decode_process_restart_count={} persistent_decode_stdin_write_elapsed_ms={} persistent_decode_stdout_read_elapsed_ms={} persistent_decode_stdout_read_exact_elapsed_ms={} persistent_decode_output_bytes_total={} persistent_decode_last_error={} persistent_decode_runtime_disabled={} persistent_decode_runtime_disabled_reason={} persistent_decode_consecutive_failure_count={} persistent_decode_disabled_after_failure_count={} persistent_decode_skipped_by_config_count={} persistent_decode_skipped_after_disabled_count={} persistent_decode_timeout_count={} persistent_decode_timeout_elapsed_ms={} continuous_decode_config_enabled={} continuous_decode_runtime_enabled={} continuous_decode_slot0_enabled={} continuous_decode_input_frame_count={} continuous_decode_output_frame_count={} continuous_decode_queue_len={} continuous_decode_dropped_stale_count={} continuous_decode_frame_id_lag={} continuous_decode_stdout_read_elapsed_ms={} continuous_decode_stall_count={} continuous_decode_restart_count={} continuous_decode_runtime_disabled={} continuous_decode_runtime_disabled_reason={} continuous_decode_fallback_to_one_shot_count={} continuous_decode_lookup_hit_count={} continuous_decode_lookup_miss_count={} continuous_decode_lookup_miss_reason_counts={} continuous_decode_requested_frame_id={} continuous_decode_latest_decoded_frame_id={} continuous_decode_requested_minus_latest_lag={} continuous_decode_queue_oldest_frame_id={} continuous_decode_queue_newest_frame_id={} continuous_decode_input_frame_id_min={} continuous_decode_input_frame_id_max={} continuous_decode_output_frame_id_min={} continuous_decode_output_frame_id_max={} continuous_decode_output_pending_correspondence_count={} continuous_decode_writer_input_queue_len={} continuous_decode_exact_match_required_count={} continuous_decode_stale_frame_available_count={} continuous_decode_input_frame_id_gap_max={} continuous_decode_input_frame_id_gap_total={} continuous_decode_input_non_consecutive_count={} continuous_decode_input_keyframe_count={} continuous_decode_input_non_keyframe_count={} continuous_decode_input_has_sps_count={} continuous_decode_input_has_pps_count={} continuous_decode_input_has_idr_count={} continuous_decode_input_has_non_idr_vcl_count={} continuous_decode_last_input_payload_nal_kinds={} continuous_decode_ffmpeg_stderr_summary={} continuous_decode_stdout_reader_blocked_count={} continuous_decode_no_output_after_input_count={} continuous_decode_no_output_after_keyframe_count={} continuous_decode_bootstrap_input_count={} continuous_decode_bootstrap_output_count={} continuous_decode_last_input_frame_id={} continuous_decode_last_output_frame_id={} render_used_continuous_decoded_count={} render_used_one_shot_fallback_count={} one_shot_decode_fallback_count={} one_shot_decode_attempt_count={} one_shot_decode_elapsed_ms={} one_shot_decode_elapsed_ms_max={} one_shot_decode_input_write_elapsed_ms={} one_shot_decode_input_write_elapsed_ms_max={} one_shot_decode_stdin_close_elapsed_ms={} one_shot_decode_stdin_write_to_stdout_first_byte_elapsed_ms={} one_shot_decode_stdin_write_to_stdout_first_byte_elapsed_ms_max={} one_shot_decode_stdout_first_byte_elapsed_ms={} one_shot_decode_first_byte_elapsed_ms_max={} one_shot_decode_first_byte_slow_count={} one_shot_decode_first_byte_slow_threshold_ms={} one_shot_decode_output_read_elapsed_ms={} one_shot_decode_output_read_elapsed_ms_max={} one_shot_decode_output_read_slow_count={} one_shot_decode_output_read_slow_threshold_ms={} one_shot_decode_output_read_exact_elapsed_ms={} one_shot_decode_output_read_exact_elapsed_ms_max={} one_shot_decode_extra_output_probe_elapsed_ms={} one_shot_decode_attempt_source_counts={} one_shot_decode_attempt_slot_counts={} one_shot_decode_attempt_reason_counts={} one_shot_decode_slow_first_byte_slot_counts={} one_shot_decode_slow_first_byte_source_counts={} one_shot_decode_slow_first_byte_reason_counts={} one_shot_decode_slow_output_read_slot_counts={} one_shot_decode_slow_output_read_source_counts={} one_shot_decode_slow_output_read_reason_counts={} one_shot_decode_input_write_outlier_count={} one_shot_decode_input_write_outlier_threshold_ms={} one_shot_decode_input_write_outlier_slot_counts={} one_shot_decode_input_write_outlier_source_counts={} one_shot_decode_input_write_outlier_reason_counts={} one_shot_decode_input_write_outlier_payload_bytes_total={} one_shot_decode_input_write_outlier_payload_bytes_avg={} decode_cache_miss_slot0_count={} decode_cache_miss_slot1_count={} one_shot_decode_write_throughput_bytes_per_ms={} one_shot_decode_input_write_elapsed_per_payload_kb={} one_shot_decode_read_throughput_bytes_per_ms={} one_shot_decode_input_payload_bytes_min={} one_shot_decode_input_payload_bytes_max={} one_shot_decode_input_payload_bytes_avg={} one_shot_decode_keyframe_attempt_count={} one_shot_decode_non_keyframe_attempt_count={} one_shot_decode_keyframe_elapsed_ms={} one_shot_decode_non_keyframe_elapsed_ms={} one_shot_decode_keyframe_input_payload_bytes_total={} one_shot_decode_non_keyframe_input_payload_bytes_total={} one_shot_decode_expected_output_bytes_per_frame={} one_shot_decode_output_width={} one_shot_decode_output_height={} one_shot_decode_output_pixel_format={} one_shot_decode_scaled_output_enabled={} one_shot_decode_scaled_output_reason={} handoff_elapsed_ms={} render_elapsed_ms={} avg_decode_elapsed_ms={} avg_decode_input_write_elapsed_ms={} avg_decode_output_read_elapsed_ms={} avg_decode_process_spawn_elapsed_ms={} avg_handoff_elapsed_ms={} avg_render_elapsed_ms={} loop_total_elapsed_ms={} attempt_body_elapsed_ms={} loop_sleep_elapsed_ms={} frame_interval_wait_elapsed_ms={} event_pump_elapsed_ms={} window_update_elapsed_ms={} render_prepare_elapsed_ms={} render_buffer_cpu_scale_copy_elapsed_ms={} render_buffer_copy_elapsed_ms={} render_buffer_materialization_elapsed_ms={} render_buffer_scale_prepare_elapsed_ms={} render_buffer_scale_loop_elapsed_ms={} render_buffer_output_copy_elapsed_ms={} render_buffer_resize_elapsed_ms={} render_buffer_clear_elapsed_ms={} render_buffer_passthrough_count={} render_buffer_same_size_copy_count={} render_buffer_half_scale_count={} render_buffer_generic_scale_count={} render_buffer_reuse_count={} render_buffer_allocation_count={} render_buffer_bytes_copied_total={} render_backend_wait_elapsed_ms={} gdi_invalidate_elapsed_ms={} gdi_paint_wait_elapsed_ms={} gdi_wm_paint_elapsed_ms={} gdi_stretchdibits_elapsed_ms={} texture_upload_elapsed_ms={} window_present_elapsed_ms={} vsync_or_present_block_elapsed_ms={} quad_view_compose_elapsed_ms={} quad_view_compose_attempt_count={} quad_view_compose_success_count={} quad_view_compose_skipped_unchanged_count={} quad_view_composed_frame_reuse_count={} quad_view_visual_unchanged_count={} quad_view_visual_changed_count={} materialization_reason_first_render_count={} materialization_reason_visual_changed_count={} materialization_reason_previous_output_missing_count={} materialization_reason_profile_or_size_mismatch_count={} materialization_reason_force_render_count={} materialization_reason_unknown_count={} slot0_frame_id_changed_count={} slot1_frame_id_changed_count={} slot2_frame_id_changed_count={} slot3_frame_id_changed_count={} slot0_selected_source_changed_count={} slot1_selected_source_changed_count={} slot2_selected_source_changed_count={} slot3_selected_source_changed_count={} placeholder_visual_changed_count={} skipped_decode_unchanged_slot0_count={} skipped_decode_unchanged_slot1_count={} quad_view_incremental_update_count={} quad_view_full_compose_count={} quad_view_incremental_skip_reason={} quad_view_incremental_skip_reason_counts={} quad_view_full_compose_reason_counts={} quad_view_changed_slot_update_count={} quad_view_changed_real_slot_count={} quad_view_changed_placeholder_slot_count={} quad_view_reused_slot_count={} quad_view_previous_output_available_count={} quad_view_previous_output_missing_count={} quad_view_profile_or_size_mismatch_count={} quad_view_allocation_count={} avg_render_buffer_cpu_scale_copy_elapsed_ms={} avg_render_buffer_materialization_elapsed_ms={} avg_gdi_paint_wait_elapsed_ms={} avg_gdi_wm_paint_elapsed_ms={} avg_gdi_stretchdibits_elapsed_ms={} avg_quad_view_incremental_update_elapsed_ms={} avg_quad_view_compose_elapsed_ms={} render_call_elapsed_ms={} render_input_unchanged_count={} render_reuse_frame_count={} unaccounted_elapsed_ms={} avg_attempt_elapsed_ms={} max_attempt_elapsed_ms={} slow_attempt_count={} slow_attempt_threshold_ms={} scheduler_status={:?} slot_bindings={} slot_result_kinds={} slot_diagnostics={} clean_output_render_result_kind={} window_title={} output_width={} output_height={}",
+        "switcher four-view two-real handoff preview loop command_name=--four-view-two-real-handoff-preview-loop real_handoff=true real_slot_count=2 real_slot0_index={} real_slot1_index={} pipe_name={} actual_pipe_path={} preview_mode={} read_mode={} client0_id={} run0_id={} client1_id={} run1_id={} frames_attempted={} frames_rendered={} render_failures={} elapsed_ms={} target_fps={} configured_frame_interval_ms={} effective_attempt_fps={} effective_render_fps={} first_render_attempt_index={} first_render_elapsed_ms={} rendered_after_first_render={} effective_render_fps_after_first_render={} no_render_before_first_render={} selected_count={} no_frame_count={} handoff_error_count={} decode_attempt_count={} decode_success_count={} render_success_count={} render_failure_count={} unchanged_frame_reuse_count={} skipped_decode_unchanged_frame_count={} redecoded_same_frame_count={} decode_elapsed_ms={} decode_process_spawn_elapsed_ms={} decode_input_write_elapsed_ms={} decode_input_payload_bytes_total={} decode_output_read_elapsed_ms={} decode_output_read_exact_elapsed_ms={} decode_output_vec_resize_elapsed_ms={} decode_process_wait_elapsed_ms={} decode_pixel_convert_elapsed_ms={} decode_buffer_allocation_count={} decode_output_bytes_total={} decode_stdout_expected_bytes_total={} decode_cached_frame_reuse_count={} decode_cache_miss_count={} decoded_buffer_clone_count={} decode_cache_hit_clone_count={} decode_cache_store_clone_count={} decoded_buffer_clone_elapsed_ms={} composed_buffer_clone_count={} decode_output_buffer_reuse_count={} persistent_decode_config_enabled={} persistent_decode_enabled={} persistent_decode_attempt_count={} persistent_decode_success_count={} persistent_decode_failure_count={} persistent_decode_fallback_count={} persistent_decode_process_spawn_count={} persistent_decode_process_restart_count={} persistent_decode_stdin_write_elapsed_ms={} persistent_decode_stdout_read_elapsed_ms={} persistent_decode_stdout_read_exact_elapsed_ms={} persistent_decode_output_bytes_total={} persistent_decode_last_error={} persistent_decode_runtime_disabled={} persistent_decode_runtime_disabled_reason={} persistent_decode_consecutive_failure_count={} persistent_decode_disabled_after_failure_count={} persistent_decode_skipped_by_config_count={} persistent_decode_skipped_after_disabled_count={} persistent_decode_timeout_count={} persistent_decode_timeout_elapsed_ms={} continuous_decode_config_enabled={} continuous_decode_runtime_enabled={} continuous_decode_slot0_enabled={} continuous_decode_input_frame_count={} continuous_decode_output_frame_count={} continuous_decode_queue_len={} continuous_decode_dropped_stale_count={} continuous_decode_frame_id_lag={} continuous_decode_stdout_read_elapsed_ms={} continuous_decode_stall_count={} continuous_decode_restart_count={} continuous_decode_runtime_disabled={} continuous_decode_runtime_disabled_reason={} continuous_decode_fallback_to_one_shot_count={} continuous_decode_lookup_hit_count={} continuous_decode_lookup_miss_count={} continuous_decode_lookup_miss_reason_counts={} continuous_decode_requested_frame_id={} continuous_decode_latest_decoded_frame_id={} continuous_decode_requested_minus_latest_lag={} continuous_decode_queue_oldest_frame_id={} continuous_decode_queue_newest_frame_id={} continuous_decode_input_frame_id_min={} continuous_decode_input_frame_id_max={} continuous_decode_output_frame_id_min={} continuous_decode_output_frame_id_max={} continuous_decode_output_pending_correspondence_count={} continuous_decode_writer_input_queue_len={} continuous_decode_exact_match_required_count={} continuous_decode_stale_frame_available_count={} continuous_decode_input_frame_id_gap_max={} continuous_decode_input_frame_id_gap_total={} continuous_decode_input_non_consecutive_count={} continuous_decode_input_keyframe_count={} continuous_decode_input_non_keyframe_count={} continuous_decode_input_has_sps_count={} continuous_decode_input_has_pps_count={} continuous_decode_input_has_idr_count={} continuous_decode_input_has_non_idr_vcl_count={} continuous_decode_last_input_payload_nal_kinds={} continuous_decode_ffmpeg_stderr_summary={} continuous_decode_stdout_reader_blocked_count={} continuous_decode_no_output_after_input_count={} continuous_decode_no_output_after_keyframe_count={} continuous_decode_bootstrap_input_count={} continuous_decode_bootstrap_output_count={} continuous_decode_last_input_frame_id={} continuous_decode_last_output_frame_id={} continuous_decode_ffmpeg_args_summary={} continuous_decode_stdin_write_count={} continuous_decode_stdin_write_bytes_total={} continuous_decode_stdin_write_error_count={} continuous_decode_last_stdin_write_error={} continuous_decode_process_running={} continuous_decode_process_exit_status={} continuous_decode_stdout_read_attempt_count={} continuous_decode_stdout_read_in_progress={} continuous_decode_stderr_reader_alive={} continuous_decode_stderr_bytes_total={} continuous_decode_last_stderr_at_ms={} continuous_decode_last_input_write_elapsed_ms={} continuous_decode_last_input_payload_bytes={} continuous_decode_first_input_to_first_output_elapsed_ms={} continuous_decode_first_input_to_now_elapsed_ms={} render_used_continuous_decoded_count={} render_used_one_shot_fallback_count={} one_shot_decode_fallback_count={} one_shot_decode_attempt_count={} one_shot_decode_elapsed_ms={} one_shot_decode_elapsed_ms_max={} one_shot_decode_input_write_elapsed_ms={} one_shot_decode_input_write_elapsed_ms_max={} one_shot_decode_stdin_close_elapsed_ms={} one_shot_decode_stdin_write_to_stdout_first_byte_elapsed_ms={} one_shot_decode_stdin_write_to_stdout_first_byte_elapsed_ms_max={} one_shot_decode_stdout_first_byte_elapsed_ms={} one_shot_decode_first_byte_elapsed_ms_max={} one_shot_decode_first_byte_slow_count={} one_shot_decode_first_byte_slow_threshold_ms={} one_shot_decode_output_read_elapsed_ms={} one_shot_decode_output_read_elapsed_ms_max={} one_shot_decode_output_read_slow_count={} one_shot_decode_output_read_slow_threshold_ms={} one_shot_decode_output_read_exact_elapsed_ms={} one_shot_decode_output_read_exact_elapsed_ms_max={} one_shot_decode_extra_output_probe_elapsed_ms={} one_shot_decode_attempt_source_counts={} one_shot_decode_attempt_slot_counts={} one_shot_decode_attempt_reason_counts={} one_shot_decode_slow_first_byte_slot_counts={} one_shot_decode_slow_first_byte_source_counts={} one_shot_decode_slow_first_byte_reason_counts={} one_shot_decode_slow_output_read_slot_counts={} one_shot_decode_slow_output_read_source_counts={} one_shot_decode_slow_output_read_reason_counts={} one_shot_decode_input_write_outlier_count={} one_shot_decode_input_write_outlier_threshold_ms={} one_shot_decode_input_write_outlier_slot_counts={} one_shot_decode_input_write_outlier_source_counts={} one_shot_decode_input_write_outlier_reason_counts={} one_shot_decode_input_write_outlier_payload_bytes_total={} one_shot_decode_input_write_outlier_payload_bytes_avg={} decode_cache_miss_slot0_count={} decode_cache_miss_slot1_count={} one_shot_decode_write_throughput_bytes_per_ms={} one_shot_decode_input_write_elapsed_per_payload_kb={} one_shot_decode_read_throughput_bytes_per_ms={} one_shot_decode_input_payload_bytes_min={} one_shot_decode_input_payload_bytes_max={} one_shot_decode_input_payload_bytes_avg={} one_shot_decode_keyframe_attempt_count={} one_shot_decode_non_keyframe_attempt_count={} one_shot_decode_keyframe_elapsed_ms={} one_shot_decode_non_keyframe_elapsed_ms={} one_shot_decode_keyframe_input_payload_bytes_total={} one_shot_decode_non_keyframe_input_payload_bytes_total={} one_shot_decode_expected_output_bytes_per_frame={} one_shot_decode_output_width={} one_shot_decode_output_height={} one_shot_decode_output_pixel_format={} one_shot_decode_scaled_output_enabled={} one_shot_decode_scaled_output_reason={} handoff_elapsed_ms={} render_elapsed_ms={} avg_decode_elapsed_ms={} avg_decode_input_write_elapsed_ms={} avg_decode_output_read_elapsed_ms={} avg_decode_process_spawn_elapsed_ms={} avg_handoff_elapsed_ms={} avg_render_elapsed_ms={} loop_total_elapsed_ms={} attempt_body_elapsed_ms={} loop_sleep_elapsed_ms={} frame_interval_wait_elapsed_ms={} event_pump_elapsed_ms={} window_update_elapsed_ms={} render_prepare_elapsed_ms={} render_buffer_cpu_scale_copy_elapsed_ms={} render_buffer_copy_elapsed_ms={} render_buffer_materialization_elapsed_ms={} render_buffer_scale_prepare_elapsed_ms={} render_buffer_scale_loop_elapsed_ms={} render_buffer_output_copy_elapsed_ms={} render_buffer_resize_elapsed_ms={} render_buffer_clear_elapsed_ms={} render_buffer_passthrough_count={} render_buffer_same_size_copy_count={} render_buffer_half_scale_count={} render_buffer_generic_scale_count={} render_buffer_reuse_count={} render_buffer_allocation_count={} render_buffer_bytes_copied_total={} render_backend_wait_elapsed_ms={} gdi_invalidate_elapsed_ms={} gdi_paint_wait_elapsed_ms={} gdi_wm_paint_elapsed_ms={} gdi_stretchdibits_elapsed_ms={} texture_upload_elapsed_ms={} window_present_elapsed_ms={} vsync_or_present_block_elapsed_ms={} quad_view_compose_elapsed_ms={} quad_view_compose_attempt_count={} quad_view_compose_success_count={} quad_view_compose_skipped_unchanged_count={} quad_view_composed_frame_reuse_count={} quad_view_visual_unchanged_count={} quad_view_visual_changed_count={} materialization_reason_first_render_count={} materialization_reason_visual_changed_count={} materialization_reason_previous_output_missing_count={} materialization_reason_profile_or_size_mismatch_count={} materialization_reason_force_render_count={} materialization_reason_unknown_count={} slot0_frame_id_changed_count={} slot1_frame_id_changed_count={} slot2_frame_id_changed_count={} slot3_frame_id_changed_count={} slot0_selected_source_changed_count={} slot1_selected_source_changed_count={} slot2_selected_source_changed_count={} slot3_selected_source_changed_count={} placeholder_visual_changed_count={} skipped_decode_unchanged_slot0_count={} skipped_decode_unchanged_slot1_count={} quad_view_incremental_update_count={} quad_view_full_compose_count={} quad_view_incremental_skip_reason={} quad_view_incremental_skip_reason_counts={} quad_view_full_compose_reason_counts={} quad_view_changed_slot_update_count={} quad_view_changed_real_slot_count={} quad_view_changed_placeholder_slot_count={} quad_view_reused_slot_count={} quad_view_previous_output_available_count={} quad_view_previous_output_missing_count={} quad_view_profile_or_size_mismatch_count={} quad_view_allocation_count={} avg_render_buffer_cpu_scale_copy_elapsed_ms={} avg_render_buffer_materialization_elapsed_ms={} avg_gdi_paint_wait_elapsed_ms={} avg_gdi_wm_paint_elapsed_ms={} avg_gdi_stretchdibits_elapsed_ms={} avg_quad_view_incremental_update_elapsed_ms={} avg_quad_view_compose_elapsed_ms={} render_call_elapsed_ms={} render_input_unchanged_count={} render_reuse_frame_count={} unaccounted_elapsed_ms={} avg_attempt_elapsed_ms={} max_attempt_elapsed_ms={} slow_attempt_count={} slow_attempt_threshold_ms={} scheduler_status={:?} slot_bindings={} slot_result_kinds={} slot_diagnostics={} clean_output_render_result_kind={} window_title={} output_width={} output_height={}",
         summary.real_slot0_index,
         summary.real_slot1_index,
         summary.pipe_name,
@@ -10509,6 +10778,22 @@ fn format_four_view_two_real_handoff_preview_loop_summary(
         summary.continuous_decode_bootstrap_output_count,
         format_optional_u64(summary.continuous_decode_last_input_frame_id),
         format_optional_u64(summary.continuous_decode_last_output_frame_id),
+        sanitize_summary_value(&summary.continuous_decode_ffmpeg_args_summary),
+        summary.continuous_decode_stdin_write_count,
+        summary.continuous_decode_stdin_write_bytes_total,
+        summary.continuous_decode_stdin_write_error_count,
+        sanitize_summary_value(&summary.continuous_decode_last_stdin_write_error),
+        summary.continuous_decode_process_running,
+        sanitize_summary_value(&summary.continuous_decode_process_exit_status),
+        summary.continuous_decode_stdout_read_attempt_count,
+        summary.continuous_decode_stdout_read_in_progress,
+        summary.continuous_decode_stderr_reader_alive,
+        summary.continuous_decode_stderr_bytes_total,
+        format_optional_u128(summary.continuous_decode_last_stderr_at_ms),
+        summary.continuous_decode_last_input_write_elapsed_ms,
+        summary.continuous_decode_last_input_payload_bytes,
+        format_optional_u128(summary.continuous_decode_first_input_to_first_output_elapsed_ms),
+        format_optional_u128(summary.continuous_decode_first_input_to_now_elapsed_ms),
         summary.render_used_continuous_decoded_count,
         summary.render_used_one_shot_fallback_count,
         summary.one_shot_decode_fallback_count,
@@ -14518,6 +14803,22 @@ mod tests {
         assert!(formatted.contains("continuous_decode_bootstrap_output_count=0"));
         assert!(formatted.contains("continuous_decode_last_input_frame_id=none"));
         assert!(formatted.contains("continuous_decode_last_output_frame_id=none"));
+        assert!(formatted.contains("continuous_decode_ffmpeg_args_summary=none"));
+        assert!(formatted.contains("continuous_decode_stdin_write_count=0"));
+        assert!(formatted.contains("continuous_decode_stdin_write_bytes_total=0"));
+        assert!(formatted.contains("continuous_decode_stdin_write_error_count=0"));
+        assert!(formatted.contains("continuous_decode_last_stdin_write_error=none"));
+        assert!(formatted.contains("continuous_decode_process_running=false"));
+        assert!(formatted.contains("continuous_decode_process_exit_status=none"));
+        assert!(formatted.contains("continuous_decode_stdout_read_attempt_count=0"));
+        assert!(formatted.contains("continuous_decode_stdout_read_in_progress=false"));
+        assert!(formatted.contains("continuous_decode_stderr_reader_alive=false"));
+        assert!(formatted.contains("continuous_decode_stderr_bytes_total=0"));
+        assert!(formatted.contains("continuous_decode_last_stderr_at_ms=none"));
+        assert!(formatted.contains("continuous_decode_last_input_write_elapsed_ms=0"));
+        assert!(formatted.contains("continuous_decode_last_input_payload_bytes=0"));
+        assert!(formatted.contains("continuous_decode_first_input_to_first_output_elapsed_ms=none"));
+        assert!(formatted.contains("continuous_decode_first_input_to_now_elapsed_ms=none"));
         assert!(formatted.contains("render_used_continuous_decoded_count=0"));
         assert!(formatted.contains("render_used_one_shot_fallback_count=0"));
         assert!(formatted.contains("one_shot_decode_fallback_count=0"));

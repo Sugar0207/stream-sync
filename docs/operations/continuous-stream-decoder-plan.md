@@ -266,6 +266,66 @@
   - slot0 per-client feed/drain implementation
   - slot1 / 4-client continuous rollout
 
+## All-Keyframe Output-Pending Rerun
+- latest rerun:
+  - `S:\stream-sync\manual-logs\two-client-render-rerun-20260519-122239`
+- PASS:
+  - opt-in propagation: `continuous_decode_config_enabled=true`
+  - runtime created: `continuous_decode_runtime_enabled=true`
+  - slot0 input feeding: `continuous_decode_slot0_enabled=true` / `continuous_decode_input_frame_count=18`
+  - lookup/output-pending diagnostics: `continuous_decode_lookup_miss_count=18` / `continuous_decode_lookup_miss_reason_counts=exact_key_missing:0|queue_empty:0|runtime_disabled:0|output_pending:18|frame_id_lagging:0|unknown:0`
+- FAIL:
+  - continuous stdout output: `continuous_decode_output_frame_count=0`
+  - continuous render consumption: `render_used_continuous_decoded_count=0` / `render_used_one_shot_fallback_count=18`
+  - continuous path FPS improvement: `effective_render_fps_after_first_render=12.601` is not attributable to continuous decoded frames
+- key observations:
+  - writer queue is not the visible backlog: `continuous_decode_writer_input_queue_len=0`
+  - correspondence remains pending after input is consumed: `continuous_decode_output_pending_correspondence_count=18`
+  - sparse render-demand feed is confirmed: `continuous_decode_input_frame_id_min=4` / `continuous_decode_input_frame_id_max=525` / `continuous_decode_input_frame_id_gap_max=37` / `continuous_decode_input_frame_id_gap_total=521` / `continuous_decode_input_non_consecutive_count=17`
+  - all accepted continuous inputs include keyframe/parameter-set evidence: `continuous_decode_input_keyframe_count=18` / `continuous_decode_input_non_keyframe_count=0` / `continuous_decode_input_has_sps_count=18` / `continuous_decode_input_has_pps_count=18` / `continuous_decode_input_has_idr_count=18` / `continuous_decode_input_has_non_idr_vcl_count=0`
+  - latest input NAL summary was `continuous_decode_last_input_payload_nal_kinds=sps+pps+idr+idr+idr+idr+idr+idr+idr+idr`
+  - stderr did not explain the missing output: `continuous_decode_ffmpeg_stderr_summary=none`
+  - reader/pending counters point at stdout output not appearing: `continuous_decode_stdout_reader_blocked_count=16` / `continuous_decode_no_output_after_input_count=17` / `continuous_decode_no_output_after_keyframe_count=17` / `continuous_decode_bootstrap_input_count=18` / `continuous_decode_bootstrap_output_count=0`
+- interpretation:
+  - `output_pending:18` with writer queue `0` means current first problem is after input has left the writer queue: FFmpeg stdin handling, decode/probing/buffering, rawvideo stdout emission, stdout read, process state, or stderr visibility
+  - sparse render-demand feed remains a structural concern, but all inputs carrying SPS/PPS/IDR makes missing non-IDR reference frames insufficient as the only explanation for output `0`
+  - next evidence should come from FFmpeg-runtime diagnostics before changing lookup, fallback, or feed architecture
+
+## FFmpeg Runtime Diagnostics Implementation
+- 2026-05-19 diagnostics-only slice added runtime boundary fields:
+  - `continuous_decode_ffmpeg_args_summary`
+  - `continuous_decode_stdin_write_count`
+  - `continuous_decode_stdin_write_bytes_total`
+  - `continuous_decode_stdin_write_error_count`
+  - `continuous_decode_last_stdin_write_error`
+  - `continuous_decode_process_running`
+  - `continuous_decode_process_exit_status`
+  - `continuous_decode_stdout_read_attempt_count`
+  - `continuous_decode_stdout_read_in_progress`
+  - `continuous_decode_stderr_reader_alive`
+  - `continuous_decode_stderr_bytes_total`
+  - `continuous_decode_last_stderr_at_ms`
+  - `continuous_decode_last_input_write_elapsed_ms`
+  - `continuous_decode_last_input_payload_bytes`
+  - `continuous_decode_first_input_to_first_output_elapsed_ms`
+  - `continuous_decode_first_input_to_now_elapsed_ms`
+- meaning:
+  - `continuous_decode_ffmpeg_args_summary` records the continuous process command shape without changing args
+  - stdin write count/bytes/error/last-error distinguish writer success from broken pipe or pipe backpressure symptoms
+  - process running/exit status checks the child process through the live session and preserves a status when observed
+  - stdout read attempt/in-progress separates "no successful read" from "reader currently blocked in read_exact"
+  - stderr reader alive/bytes/last time separates true empty stderr from a dead/unobserved stderr reader
+  - first-input timers show whether FFmpeg is waiting/buffering after accepted input, and whether the first output ever appeared
+- this slice intentionally does not change:
+  - continuous feed policy
+  - FFmpeg args / pixel format
+  - exact-match lookup
+  - one-shot fallback
+  - latest decoded fallback
+  - targetTime-aware lookup
+  - slot0 per-client feed/drain architecture
+  - slot1 / 4-client rollout
+
 ## request/response persistent decoder との違い
 - request/response persistent decoder:
   - render loop から `1 request -> stdin write -> stdout expected bytes read -> response wait` を同期的に待つ
@@ -450,6 +510,22 @@ first implementation で summary に追加済み:
 - `continuous_decode_bootstrap_output_count`
 - `continuous_decode_last_input_frame_id`
 - `continuous_decode_last_output_frame_id`
+- `continuous_decode_ffmpeg_args_summary`
+- `continuous_decode_stdin_write_count`
+- `continuous_decode_stdin_write_bytes_total`
+- `continuous_decode_stdin_write_error_count`
+- `continuous_decode_last_stdin_write_error`
+- `continuous_decode_process_running`
+- `continuous_decode_process_exit_status`
+- `continuous_decode_stdout_read_attempt_count`
+- `continuous_decode_stdout_read_in_progress`
+- `continuous_decode_stderr_reader_alive`
+- `continuous_decode_stderr_bytes_total`
+- `continuous_decode_last_stderr_at_ms`
+- `continuous_decode_last_input_write_elapsed_ms`
+- `continuous_decode_last_input_payload_bytes`
+- `continuous_decode_first_input_to_first_output_elapsed_ms`
+- `continuous_decode_first_input_to_now_elapsed_ms`
 
 追加候補:
 
@@ -458,7 +534,6 @@ first implementation で summary に追加済み:
 - `continuous_decode_keyframe_wait_count`
 - `continuous_decode_frame_id_mismatch_suspicion_count`
 - `continuous_decode_stdout_reader_error_count`
-- `continuous_decode_stdin_write_error_count`
 
 読み方:
 - `continuous_decode_input_frame_count` と `output_frame_count` の差は decoder lag の coarse signal
@@ -466,22 +541,22 @@ first implementation で summary に追加済み:
 - `render_used_continuous_decoded_count` は render loop が one-shot wait を避けられた回数
 - `render_used_one_shot_fallback_count` が高い場合、continuous path はまだ hot path になっていない
 
-次に優先する diagnostics-only slice:
+次に優先する rerun evidence:
 
-1. sparse input / H.264 continuity:
-   - input frame_id gap max / total
-   - non-consecutive input count
-   - keyframe / non-keyframe input count
-   - SPS / PPS / IDR / non-IDR VCL counts
-   - last input payload NAL kinds
-2. stdout output pending:
-   - FFmpeg stderr summary
-   - stdout reader blocked / no-output-after-input count
-   - no-output-after-keyframe count
-   - bootstrap input/output count
+1. FFmpeg runtime / pipe status:
+   - args summary
+   - stdin write count / bytes / error
+   - process running / exit status
+   - stdout read attempt / in-progress
+   - stderr reader alive / bytes / last time
+   - first-input-to-output / first-input-to-now elapsed
+2. output `0` の切り分け:
+   - stdin write が成功しているのに stdout read が in-progress のままか
+   - process が生存しているのに stderr bytes が `0` のままか
+   - first input から十分な時間が経っても first output が `none` のままか
 3. feed policy decision support:
-   - evidence that selected-frame-only render-demand feed is sparse
-   - evidence that per-client continuous feed/drain is needed before latest decoded fallback
+   - selected-frame-only render-demand feed が sparse である evidence は保持
+   - all-keyframe input でも output pending が続くかを FFmpeg runtime diagnostics と合わせて読む
 
 この slice は observability-only とし、slot1 continuous 化、4-client 化、FFmpeg args / pixel format変更、one-shot fallback 削除、latest decoded fallback、targetTime-aware lookup 本実装には進めない。
 
@@ -503,9 +578,9 @@ first implementation で summary に追加済み:
 
 future implementation slice:
 
-1. opt-in rerun で `render_used_continuous_decoded_count`、`render_used_one_shot_fallback_count`、`continuous_decode_frame_id_lag`、`continuous_decode_stall_count` を確認する
-2. stdout stall / input write failure / frame_id mismatch suspicion の runtime disable reason を actual run evidence に合わせて増やす
-3. selected frame exact lookup だけで足りない場合に、targetTime-aware queue lookup を追加する
+1. next rerun で FFmpeg runtime が stdin write 後に alive/blocking/no-stderr/no-output なのか、write error / process exit なのかを確認する
+2. stdout stall / input write failure / process exit / frame_id mismatch suspicion の runtime disable reason を actual run evidence に合わせて増やす
+3. output `0` が feed policy 由来と確認できた場合のみ、slot0 per-client continuous feed/drain policy を別 step で設計する
 4. restart policy は first slice の counter visibility から始め、restart storm を避ける threshold を runtime evidence 後に決める
 
 ## out of scope
