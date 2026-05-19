@@ -323,3 +323,9 @@ Next diagnostics candidates:
 - `continuous_decode_output_lag_to_selected_frames`
 - `continuous_decode_reader_full_frame_elapsed_ms_max`
 - `continuous_decode_output_throughput_fps`
+
+Follow-up:
+
+- Detailed output lag / pending correspondence analysis now lives in `docs/operations/continuous-output-lag-plan.md`.
+- Do not widen `allowed_lag_frames=5` until the output lag plan has runtime diagnostics for pending correspondence frame_id range, latest input/output lag, and output throughput.
+- Bounded lookup remains a guarded render-consumption policy; it is not expected to fix decoder output lag by itself.

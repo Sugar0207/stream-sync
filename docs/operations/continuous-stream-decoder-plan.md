@@ -969,6 +969,20 @@ future implementation slice:
    - `continuous_decode_output_lag_to_selected_frames`
    - `continuous_decode_reader_full_frame_elapsed_ms_max`
    - `continuous_decode_output_throughput_fps`
+12. output lag docs-first analysis is split into `docs/operations/continuous-output-lag-plan.md`
+13. first diagnostics-only candidate should prioritize:
+   - `continuous_decode_pending_correspondence_frame_id_min`
+   - `continuous_decode_pending_correspondence_frame_id_max`
+   - `continuous_decode_latest_input_minus_latest_output_lag`
+   - `continuous_decode_input_to_output_lag_frames_avg`
+   - `continuous_decode_input_to_output_lag_frames_max`
+   - `continuous_decode_output_throughput_fps`
+14. second diagnostics candidate should add:
+   - `continuous_decode_reader_full_frame_elapsed_ms_max`
+   - `continuous_decode_output_lag_to_selected_frames`
+   - `continuous_decode_correspondence_pending_age_ms`
+   - `continuous_decode_queue_drop_reason_counts`
+15. Do not use this analysis to widen the bounded-lag threshold or remove one-shot fallback.
 
 ## out of scope
 - request/response persistent decoder の復活

@@ -398,6 +398,8 @@ Feed/drain interpretation:
 - The feed helper is no longer the primary blocker for slot0/two-real/opt-in continuous.
 - The decoded output path still trails requested render too far for bounded lookup to accept.
 - Feed max count should not be widened in this step. The next candidate is output lag / correspondence backlog / stdout read latency / decoded queue-drop policy.
+- Detailed output lag analysis is now tracked in `docs/operations/continuous-output-lag-plan.md`.
+- The next feed-related change should wait until pending correspondence frame_id range and latest input/output lag are visible; otherwise feed max changes could increase backlog without improving render consumption.
 
 ## readiness
 - Production Readiness remains FAIL

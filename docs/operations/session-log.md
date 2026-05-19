@@ -2,6 +2,97 @@
 
 ## 2026-05-20
 ### Type
+- Codex docs-first design
+
+### Work
+- Added `docs/operations/continuous-output-lag-plan.md`.
+- Kept this step docs-only and did not change code.
+- Analyzed continuous decoder output lag, pending correspondence, stdout read latency, input/output count gap, decoded queue-drop policy, and one-shot fallback double-load risk.
+- Kept bounded lookup threshold, feed max count, lookup policy, latest decoded fallback, slot1, 4-client, FFmpeg defaults, and Production Readiness unchanged.
+
+### Changed Files
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+- `docs/operations/continuous-output-lag-plan.md`
+- `docs/operations/continuous-feed-drain-plan.md`
+- `docs/operations/continuous-stream-decoder-plan.md`
+- `docs/operations/continuous-decoded-lookup-plan.md`
+
+### Runtime Evidence
+- latest rerun:
+  - `S:\stream-sync\manual-logs\two-client-render-rerun-20260520-005310`
+- bounded lookup wiring PASS:
+  - `continuous_decode_bounded_lookup_enabled=true`
+  - `continuous_decode_bounded_lookup_allowed_lag_frames=5`
+- continuous render consumption FAIL:
+  - `continuous_decode_bounded_lookup_hit_count=0`
+  - `continuous_decode_bounded_lookup_rejected_stale_count=17`
+  - `continuous_decode_bounded_lookup_rejected_not_ready_count=2`
+  - `continuous_decode_bounded_lookup_fallback_to_one_shot_count=19`
+  - `render_used_continuous_decoded_count=0`
+- output lag / backlog:
+  - `continuous_decode_input_frame_count=378`
+  - `continuous_decode_output_frame_count=297`
+  - `continuous_decode_output_pending_correspondence_count=79`
+  - `continuous_decode_requested_minus_latest_lag=88`
+  - `continuous_decode_frame_id_lag=163`
+  - `continuous_decode_stdout_read_elapsed_ms=20840`
+  - `continuous_decode_stdout_reader_blocked_count=17`
+  - `continuous_decode_queue_len=30`
+  - `continuous_decode_dropped_stale_count=267`
+
+### Code-Path Findings
+- `enqueue()` pushes input into a bounded `input_tx`; `writer_input_queue_len` tracks inputs accepted by the runtime but not yet received by the writer thread.
+- The writer thread pushes frame metadata into `correspondence` before writing the encoded payload to FFmpeg stdin.
+- The reader thread pops one `correspondence` metadata item only after it reads one full raw BGRA frame from stdout.
+- Therefore `continuous_decode_output_pending_correspondence_count=79` means writer-side accepted inputs are waiting for matching full stdout frames; it points after writer queue intake and before decoded cache availability.
+- `continuous_decode_stdout_read_elapsed_ms` is accumulated reader-thread successful full-frame read time, not direct render-loop blocking time.
+- `continuous_decode_stdout_reader_blocked_count` increments when render observes pending correspondence, no writer queue backlog, and the reader thread in a stdout full-frame read.
+- `queue_len=30` is the decoded cache bound; `dropped_stale_count=267` indicates old decoded frames are being discarded under the bound, but newest decoded still lagged requested by `88`, so threshold widening would show stale frames rather than solve output lag.
+- One-shot fallback remains safe, but `one_shot_decode_attempt_count=38` / `one_shot_decode_elapsed_ms=7162` can mean continuous decode and one-shot fallback are creating double-load while render safety is preserved.
+
+### Decisions
+- Do not change `continuous_decode_bounded_lookup_allowed_lag_frames`.
+- Do not implement targetTime-aware lookup or latest decoded fallback.
+- Treat next implementation candidate as diagnostics-only, not behavior change.
+- First diagnostics priority:
+  - `continuous_decode_pending_correspondence_frame_id_min`
+  - `continuous_decode_pending_correspondence_frame_id_max`
+  - `continuous_decode_latest_input_minus_latest_output_lag`
+  - `continuous_decode_input_to_output_lag_frames_avg`
+  - `continuous_decode_input_to_output_lag_frames_max`
+  - `continuous_decode_output_throughput_fps`
+- Second diagnostics priority:
+  - `continuous_decode_reader_full_frame_elapsed_ms_max`
+  - `continuous_decode_output_lag_to_selected_frames`
+  - `continuous_decode_correspondence_pending_age_ms`
+  - `continuous_decode_queue_drop_reason_counts`
+- Hold average/max output latency with enqueue timestamps until the simpler frame-id/throughput fields prove insufficient.
+
+### TODO Update
+- Completed:
+  - output lag / pending correspondence / stdout latency docs-first analysis
+  - minimal diagnostics design
+- Added:
+  - `docs/operations/continuous-output-lag-plan.md`
+  - next candidate: slot0/two-real/opt-in diagnostics-only first slice for output lag
+- Held:
+  - code changes
+  - threshold change
+  - targetTime-aware lookup implementation
+  - latest decoded fallback
+  - feed max count change
+  - slot1 continuous
+  - 4-client continuous
+  - Production Readiness PASS
+
+### Validation
+- `git diff --check`
+  - result: PASS
+  - note: LF/CRLF warnings only
+
+## 2026-05-20
+### Type
 - Codex docs-first investigation
 
 ### Work
