@@ -2,6 +2,103 @@
 
 ## 2026-05-20
 ### Type
+- Codex docs-first investigation
+
+### Work
+- Reflected latest human rerun `S:\stream-sync\manual-logs\two-client-render-rerun-20260520-005310`.
+- Kept this step docs-only and did not change code.
+- Separated bounded-lag lookup wiring PASS from bounded-lag render consumption FAIL.
+- Recorded that the `5` frame bounded-lag threshold is not the main blocker in this run because decoded output trails requested render by much more than the guard.
+- Moved the next candidate away from threshold expansion and toward continuous decoder output lag / output pending correspondence / stdout read latency / decoded queue-drop policy analysis.
+- Kept Production Readiness as FAIL.
+
+### Changed Files
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+- `docs/operations/continuous-feed-drain-plan.md`
+- `docs/operations/continuous-stream-decoder-plan.md`
+- `docs/operations/continuous-decoded-lookup-plan.md`
+
+### Runtime Result
+- latest rerun:
+  - `S:\stream-sync\manual-logs\two-client-render-rerun-20260520-005310`
+- PASS:
+  - continuous opt-in: `continuous_decode_config_enabled=true`
+  - continuous runtime: `continuous_decode_runtime_enabled=true`
+  - slot0 enabled: `continuous_decode_slot0_enabled=true`
+  - low-latency args: `continuous_decode_ffmpeg_low_latency_args_enabled=true`
+  - bounded feed helper: `continuous_feed_enabled=true`
+  - feeder primary input: `continuous_decode_input_from_feeder_count=361`
+  - render-demand input reduced but still present: `continuous_decode_input_from_render_demand_count=17`
+  - feeder caught selected side: `continuous_decode_feeder_lag_to_selected=0`
+  - bounded-lag lookup wiring: `continuous_decode_bounded_lookup_enabled=true`
+  - bounded-lag threshold exposed: `continuous_decode_bounded_lookup_allowed_lag_frames=5`
+- PASS / PARTIAL PASS:
+  - continuous input: `continuous_decode_input_frame_count=378`
+  - continuous output: `continuous_decode_output_frame_count=297`
+  - decoded queue: `continuous_decode_queue_len=30`
+  - stale decoded drops: `continuous_decode_dropped_stale_count=267`
+- FAIL:
+  - bounded-lag lookup hits: `continuous_decode_bounded_lookup_hit_count=0`
+  - bounded-lag stale rejects: `continuous_decode_bounded_lookup_rejected_stale_count=17`
+  - bounded-lag not-ready rejects: `continuous_decode_bounded_lookup_rejected_not_ready_count=2`
+  - bounded-lag fallback: `continuous_decode_bounded_lookup_fallback_to_one_shot_count=19`
+  - exact render use: `continuous_decode_render_used_exact_count=0`
+  - bounded-lag render use: `continuous_decode_render_used_bounded_lag_count=0`
+  - continuous render consumption: `render_used_continuous_decoded_count=0`
+  - one-shot fallback use: `render_used_one_shot_fallback_count=19`
+  - Production Readiness: FAIL
+
+### Findings
+- Bounded feed helper remains runtime PASS: `continuous_feed_frame_received_count=369`, `continuous_feed_enqueued_count=361`, `continuous_feed_skipped_count=9`, and skip reasons were `duplicate:8|future_frame:0|runtime_disabled:0|startup_not_ready:0|input_queue_full:0|source_mismatch:0|consume_mismatch:1|unknown:0`.
+- Bounded-lag lookup diagnostics are present in the summary, so implementation wiring is PASS.
+- Bounded-lag lookup did not consume any frame: hit count was `0`, exact and bounded render-use counters were both `0`, and all `19` decode attempts still fell back to one-shot.
+- Requested/latest lag is too large for a small threshold tweak:
+  - `continuous_decode_requested_frame_id=627`
+  - `continuous_decode_latest_decoded_frame_id=551`
+  - `continuous_decode_requested_minus_latest_lag=88`
+  - `continuous_decode_frame_id_lag=163`
+- Output/correspondence backlog is visible:
+  - `continuous_decode_output_pending_correspondence_count=79`
+  - `continuous_decode_stdout_read_elapsed_ms=20840`
+  - `continuous_decode_stdout_reader_blocked_count=17`
+  - input/output gap: `378 - 297 = 81`
+- `queue_len=30` and `dropped_stale_count=267` show the decoded queue is bounded and dropping older decoded frames while latest decoded still remains far behind the requested render frame.
+- One-shot fallback safety remains PASS, but `one_shot_decode_attempt_count=38` and `one_shot_decode_elapsed_ms=7162` suggest fallback can add parallel runtime load while continuous decode is also working.
+- `scheduler_status=PartialSelected` is source-selection context; it should not be treated as the only cause of continuous render consumption failure.
+
+### Decisions
+- Do not widen `continuous_decode_bounded_lookup_allowed_lag_frames` in this step.
+- Treat unbounded latest decoded fallback as unsafe because accepting lag `88` would risk stale frame display.
+- Treat the next docs-first candidate as continuous decoder output lag / pending correspondence / stdout read latency, not threshold tuning.
+- Keep one-shot fallback in place.
+- Keep slot1 continuous, 4-client rollout, feed max changes, targetTime-aware lookup implementation, request/response persistent decoder revival, GPU decode, and Production Readiness PASS out of scope.
+
+### TODO Update
+- Completed:
+  - latest rerun reflection
+  - bounded-lag lookup wiring PASS documentation
+  - render consumption FAIL documentation
+- Added:
+  - next candidate: continuous decoder output lag / output pending correspondence / stdout read latency / decoded queue-drop policy docs-first analysis
+  - candidate diagnostics: output latency frames avg/max, input-to-output lag avg/max, pending correspondence age, queue drop reason counts, output lag to selected, reader full-frame elapsed max, output throughput FPS
+- Held:
+  - code changes
+  - allowed lag threshold change
+  - targetTime-aware decoded lookup implementation
+  - unbounded latest decoded fallback
+  - slot1 continuous
+  - 4-client continuous
+  - feed max count changes
+  - Production Readiness PASS
+
+### Validation
+- `git diff --check`
+  - result: PASS
+  - note: LF/CRLF warnings only
+
+## 2026-05-20
+### Type
 - Codex implementation
 
 ### Work

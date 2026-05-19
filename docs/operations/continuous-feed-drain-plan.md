@@ -352,6 +352,53 @@ selected-frame lookup is therefore too strict for the current decoded queue lag.
 The next docs-first candidate is targetTime-aware / bounded-lag decoded queue
 lookup, not more feed widening.
 
+## bounded lookup runtime evidence
+latest rerun:
+
+- `S:\stream-sync\manual-logs\two-client-render-rerun-20260520-005310`
+
+Feed helper remains PASS:
+
+- `continuous_feed_enabled=true`
+- `continuous_feed_attempt_count=300`
+- `continuous_feed_frame_received_count=369`
+- `continuous_feed_enqueued_count=361`
+- `continuous_feed_skipped_count=9`
+- `continuous_feed_skip_reason_counts=duplicate:8|future_frame:0|runtime_disabled:0|startup_not_ready:0|input_queue_full:0|source_mismatch:0|consume_mismatch:1|unknown:0`
+- `continuous_decode_input_from_feeder_count=361`
+- `continuous_decode_input_from_render_demand_count=17`
+- `continuous_decode_feeder_lag_to_selected=0`
+
+Bounded lookup wiring PASS, render consumption FAIL:
+
+- `continuous_decode_bounded_lookup_enabled=true`
+- `continuous_decode_bounded_lookup_allowed_lag_frames=5`
+- `continuous_decode_bounded_lookup_hit_count=0`
+- `continuous_decode_bounded_lookup_rejected_stale_count=17`
+- `continuous_decode_bounded_lookup_rejected_not_ready_count=2`
+- `continuous_decode_bounded_lookup_fallback_to_one_shot_count=19`
+- `continuous_decode_render_used_exact_count=0`
+- `continuous_decode_render_used_bounded_lag_count=0`
+- `render_used_continuous_decoded_count=0`
+
+Output lag evidence:
+
+- `continuous_decode_input_frame_count=378`
+- `continuous_decode_output_frame_count=297`
+- `continuous_decode_queue_len=30`
+- `continuous_decode_dropped_stale_count=267`
+- `continuous_decode_requested_minus_latest_lag=88`
+- `continuous_decode_frame_id_lag=163`
+- `continuous_decode_output_pending_correspondence_count=79`
+- `continuous_decode_stdout_read_elapsed_ms=20840`
+- `continuous_decode_stdout_reader_blocked_count=17`
+
+Feed/drain interpretation:
+
+- The feed helper is no longer the primary blocker for slot0/two-real/opt-in continuous.
+- The decoded output path still trails requested render too far for bounded lookup to accept.
+- Feed max count should not be widened in this step. The next candidate is output lag / correspondence backlog / stdout read latency / decoded queue-drop policy.
+
 ## readiness
 - Production Readiness remains FAIL
 - This plan is a first implementation boundary, not a production architecture

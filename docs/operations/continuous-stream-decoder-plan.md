@@ -937,13 +937,38 @@ first implementation で summary に追加済み:
 
 future implementation slice:
 
-1. implemented `docs/operations/continuous-decoded-lookup-plan.md` first slice を human rerun で確認する
+1. bounded-lag decoded lookup first slice は実装済みで、human rerun で runtime evidence を回収済み
 2. first implementation scope は slot0 / two-real preview loop / opt-in continuous decoder / diagnostics-first に限定済み
 3. lookup order は exact selected-frame lookup first、bounded-lag decoded lookup second、one-shot fallback third にした
 4. requested frame_id より未来の decoded frame は表示しない
-5. allowed lag threshold は safety-first の固定 `5` frames とし、runtime evidence 後に調整候補を検討する
+5. allowed lag threshold は safety-first の固定 `5` frames のまま維持する
 6. one-shot fallback は残している
-7. next step では bounded lookup hit / stale rejection / not-ready rejection / one-shot fallback の runtime evidence を読む
+7. latest rerun `S:\stream-sync\manual-logs\two-client-render-rerun-20260520-005310` では bounded lookup wiring は PASS:
+   - `continuous_decode_bounded_lookup_enabled=true`
+   - `continuous_decode_bounded_lookup_allowed_lag_frames=5`
+8. 同 rerun では bounded lookup / continuous render consumption は FAIL:
+   - `continuous_decode_bounded_lookup_hit_count=0`
+   - `continuous_decode_bounded_lookup_rejected_stale_count=17`
+   - `continuous_decode_bounded_lookup_rejected_not_ready_count=2`
+   - `continuous_decode_bounded_lookup_fallback_to_one_shot_count=19`
+   - `continuous_decode_render_used_exact_count=0`
+   - `continuous_decode_render_used_bounded_lag_count=0`
+   - `render_used_continuous_decoded_count=0`
+9. `5` frame threshold を単純に緩める段階ではない:
+   - `continuous_decode_requested_minus_latest_lag=88`
+   - `continuous_decode_frame_id_lag=163`
+   - `continuous_decode_output_pending_correspondence_count=79`
+   - `continuous_decode_stdout_read_elapsed_ms=20840`
+   - `continuous_decode_stdout_reader_blocked_count=17`
+10. next docs-first candidate は threshold tuning ではなく、continuous decoder output lag / output pending correspondence / stdout read latency / decoded queue-drop policy の分析にする
+11. 次に足すなら diagnostics は最小に絞る:
+   - `continuous_decode_output_latency_frames_avg/max`
+   - `continuous_decode_input_to_output_lag_frames_avg/max`
+   - `continuous_decode_correspondence_pending_age_ms`
+   - `continuous_decode_queue_drop_reason_counts`
+   - `continuous_decode_output_lag_to_selected_frames`
+   - `continuous_decode_reader_full_frame_elapsed_ms_max`
+   - `continuous_decode_output_throughput_fps`
 
 ## out of scope
 - request/response persistent decoder の復活
