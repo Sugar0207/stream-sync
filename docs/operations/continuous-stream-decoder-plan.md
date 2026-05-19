@@ -2,7 +2,7 @@
 
 # Continuous Stream Decoder Plan
 
-最終更新: 2026-05-18
+最終更新: 2026-05-19
 
 ## 目的
 - two-real preview loop の 30fps 目標に向けて、render loop から one-shot FFmpeg wait を外すための next design candidate を整理する
@@ -103,6 +103,49 @@
 - `continuous_decode_output_frame_count=10` vs `input_frame_count=22` can mean decoder lag, stdout reader blocking, FFmpeg buffering/delay, or input/output correspondence backlog. Current diagnostics cannot separate those yet.
 - `continuous_decode_stdout_read_elapsed_ms=20306` is accumulated reader-thread `read_exact(expected_len)` time for output frames. With output count `10`, it indicates the reader spent substantial wall time waiting for raw BGRA frames, but because it is accumulated inside the reader thread it should not be read as direct render-loop blocking time.
 - `continuous_decode_stall_count=1` is currently incremented when `selected_frame_id - latest_decoded_frame_id` exceeds the queue bound (`30`). It is therefore a lag threshold observation, not a process restart or runtime disable event.
+
+## Lookup Diagnostics Implementation
+- 2026-05-19 diagnostics-only slice で、slot0 continuous lookup と frame_id correspondence の summary fields を追加した
+- added fields:
+  - `continuous_decode_lookup_hit_count`
+  - `continuous_decode_lookup_miss_count`
+  - `continuous_decode_lookup_miss_reason_counts`
+    - `exact_key_missing`
+    - `queue_empty`
+    - `runtime_disabled`
+    - `output_pending`
+    - `frame_id_lagging`
+    - `unknown`
+  - `continuous_decode_requested_frame_id`
+  - `continuous_decode_latest_decoded_frame_id`
+  - `continuous_decode_requested_minus_latest_lag`
+  - `continuous_decode_queue_oldest_frame_id`
+  - `continuous_decode_queue_newest_frame_id`
+  - `continuous_decode_input_frame_id_min`
+  - `continuous_decode_input_frame_id_max`
+  - `continuous_decode_output_frame_id_min`
+  - `continuous_decode_output_frame_id_max`
+  - `continuous_decode_output_pending_correspondence_count`
+  - `continuous_decode_writer_input_queue_len`
+  - `continuous_decode_exact_match_required_count`
+  - `continuous_decode_stale_frame_available_count`
+- meaning:
+  - `continuous_decode_frame_id_lag` remains max observed lag for the run
+  - `continuous_decode_requested_minus_latest_lag` is the latest/current requested-minus-latest lag when latest decoded frame id is known
+  - `continuous_decode_lookup_hit_count` counts exact continuous decoded cache hits
+  - `continuous_decode_lookup_miss_count` counts slot0 continuous exact lookup misses without changing fallback behavior
+  - `continuous_decode_stale_frame_available_count` increments when decoded queue has a newest frame older than the requested frame id at miss time
+  - `continuous_decode_output_pending_correspondence_count` reads the correspondence queue length held between writer and reader
+  - `continuous_decode_writer_input_queue_len` is an atomic approximation of inputs accepted by the runtime but not yet received by the writer thread
+- this slice intentionally does not change:
+  - exact-match lookup behavior
+  - one-shot fallback
+  - decoded cache / queue selection policy
+  - FFmpeg args
+  - pixel format
+  - targetTime-aware lookup
+  - latest decoded fallback
+  - slot1 / 4-client continuous rollout
 
 ## request/response persistent decoder との違い
 - request/response persistent decoder:
@@ -252,7 +295,7 @@ first implementation で summary に追加済み:
 - `render_used_continuous_decoded_count`
 - `render_used_one_shot_fallback_count`
 
-追加候補:
+追加済み:
 
 - `continuous_decode_lookup_miss_count`
 - `continuous_decode_lookup_hit_count`
@@ -270,6 +313,9 @@ first implementation で summary に追加済み:
 - `continuous_decode_output_frame_id_max`
 - `continuous_decode_output_pending_correspondence_count`
 - `continuous_decode_writer_input_queue_len`
+
+追加候補:
+
 - `continuous_decode_input_queue_drop_count`
 - `continuous_decode_output_queue_drop_count`
 - `continuous_decode_keyframe_wait_count`

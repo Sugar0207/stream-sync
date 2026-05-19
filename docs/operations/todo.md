@@ -2,7 +2,7 @@
 
 # StreamSync TODO
 
-最終更新: 2026-05-18
+最終更新: 2026-05-19
 
 このファイルは「現在どこまで終わっていて、次に何をやるか」を確認するための TODO です。  
 時系列の作業履歴、判断理由、各回の作業メモは `docs/operations/session-log.md` を正とします。
@@ -35,6 +35,8 @@
 - 同 rerun では `render_used_continuous_decoded_count=0`、`continuous_decode_fallback_to_one_shot_count=22`、`render_used_one_shot_fallback_count=22`、`continuous_decode_frame_id_lag=362`、`effective_render_fps_after_first_render=10.887` だった。continuous render consumption と FPS improvement は FAIL で、one-shot fallback safety は PASS、Production Readiness は FAIL 継続とする
 - current code path では slot0 continuous decoded frame は selected frame の decode cache key exact match でだけ render に使われる。miss 時は selected frame を continuous input queue へ enqueue した直後に同 tick で one-shot fallback へ進み、latest decoded frame fallback / targetTime-aware decoded queue lookup はまだ無い。decoded queue に frame があっても selected `frame_id` が先へ進むと render は continuous frame を使えない
 - `continuous_decode_frame_id_lag` は requested selected `frame_id - latest_decoded_frame_id` の最大値として更新される。`362` は latest decoded output が current selected frame より大きく遅れていた coarse signal で、input feeding が render-demand-driven であること、reader output が 10/22 に留まること、exact lookup だけでは追いつけないことの複合候補として扱い、原因を 1 つに断定しない
+- 2026-05-19 diagnostics-only slice で slot0 continuous lookup observability を追加した。summary には `continuous_decode_lookup_hit_count` / `continuous_decode_lookup_miss_count` / `continuous_decode_lookup_miss_reason_counts`、requested/latest frame_id、requested-minus-latest current lag、decoded queue oldest/newest frame_id、input/output frame_id min/max、pending correspondence count、writer input queue len、exact-match-required count、stale-frame-available count が出る
+- この diagnostics slice は挙動変更なし。slot0 exact match lookup、one-shot fallback、decoded cache / queue selection policy は維持し、latest decoded fallback / targetTime-aware decoded queue lookup / slot1 continuous 化 / 4-client 化には進めていない。Production Readiness は FAIL 継続
 - code path 上、`first_render_attempt_index` / `first_render_elapsed_ms` は two-real preview loop の clean output が `RenderReady` かつ inner render が `Rendered` になった最初の tick でだけ確定する。`no_render_before_first_render` は別 counter ではなく、その first render attempt index から導出されるため、startup で renderable slot が 1 つも成立しない tick が続くとそのまま増える
 - `no_frame_count=864`、`handoff_error_count=22`、server `no_frame_count=264`、`placeholder_visual_changed_count=46`、`scheduler_status=PartialSelected` は、after-first FPS 改善後も availability / startup 側に未解決が残ることを示している。Production Readiness は FAIL 継続
 - startup/no-frame availability の current code path は `scheduler -> decode/render adapter -> display policy -> quad composition -> render-facing -> clean output render` で、`SkipNoFrameAvailable` / `SkipWaitingForFrameAtOrBeforeTarget` は previous frame が無い間 `NoDisplayPlaceholder` に落ちる。さらに renderable slot count が `0` の tick は `NoRenderableQuadView` のままなので、server aggregate `frames_queued=1800` が成立していても switcher startup が直ちに first render へ進むとは限らない
@@ -1043,6 +1045,6 @@ continuous runtime first slice の blocker:
 - actual dashboard UI rendering remains unimplemented.
 
 ## Next Items
-1. `S:\stream-sync` の次回 opt-in rerun 前に、slot0 continuous lookup diagnostics を追加する。優先候補は `continuous_decode_lookup_hit_count`、`continuous_decode_lookup_miss_count`、`continuous_decode_requested_frame_id`、`continuous_decode_latest_decoded_frame_id`、`continuous_decode_requested_minus_latest_lag`、`continuous_decode_queue_oldest_frame_id`、`continuous_decode_queue_newest_frame_id`
-2. continuous input / output の対応範囲を読む diagnostics を追加する。優先候補は `continuous_decode_input_frame_id_min/max`、`continuous_decode_output_frame_id_min/max`、`continuous_decode_output_pending_correspondence_count`、`continuous_decode_writer_input_queue_len`
-3. diagnostics rerun 後に、slot0 限定の latest decoded frame fallback を使うか、targetTime-aware decoded queue lookup まで待つかを判断する。slot1 continuous 化、4-client 化、request/response persistent decoder 復活、GPU decode はまだ進めない
+1. 人間側 `S:\stream-sync` で opt-in rerun を実施し、`--disable-persistent-decoder --enable-continuous-stream-decoder` を維持したまま new continuous lookup diagnostics を回収する
+2. rerun 結果で exact miss が queue_empty / output_pending / frame_id_lagging / exact_key_missing のどれに寄るか、requested/latest/current lag と input/output frame_id range のズレを読む
+3. diagnostics evidence が揃った後に、slot0 限定 latest decoded fallback を検討するか、targetTime-aware decoded queue lookup まで待つか判断する。slot1 continuous 化、4-client 化、request/response persistent decoder 復活、GPU decode はまだ進めない

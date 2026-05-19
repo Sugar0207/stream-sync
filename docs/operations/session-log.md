@@ -27629,3 +27629,71 @@ switcher four-view proof fixture deterministic=true real_handoff=false actual_wi
 
 ### Validation
 - Docs-only change; run `git diff --check`.
+
+---
+
+## 2026-05-19
+### Type
+- Codex
+
+### Work
+- Implemented the slot0 continuous decoder diagnostics-only slice for the two-real handoff preview loop.
+- Added summary visibility for continuous exact lookup hit/miss, requested/latest frame id, current requested-minus-latest lag, decoded queue frame-id range, input/output frame-id range, correspondence backlog, writer input queue length, exact-match-required count, and stale-frame-available count.
+- Kept continuous decoder behavior unchanged:
+  - exact cache-key lookup remains required
+  - one-shot fallback remains in place
+  - no latest decoded fallback
+  - no targetTime-aware decoded queue lookup
+  - no slot1 continuous rollout
+  - no 4-client widening
+  - no server/client/protocol changes
+  - no request/response persistent decoder revival
+  - no runtime rerun from Codex
+
+### Changed Files
+- `apps/switcher/src/main.rs`
+- `docs/operations/todo.md`
+- `docs/operations/continuous-stream-decoder-plan.md`
+- `docs/operations/session-log.md`
+
+### Diagnostics Added
+- `continuous_decode_lookup_hit_count`
+- `continuous_decode_lookup_miss_count`
+- `continuous_decode_lookup_miss_reason_counts`
+  - `exact_key_missing`
+  - `queue_empty`
+  - `runtime_disabled`
+  - `output_pending`
+  - `frame_id_lagging`
+  - `unknown`
+- `continuous_decode_requested_frame_id`
+- `continuous_decode_latest_decoded_frame_id`
+- `continuous_decode_requested_minus_latest_lag`
+- `continuous_decode_queue_oldest_frame_id`
+- `continuous_decode_queue_newest_frame_id`
+- `continuous_decode_input_frame_id_min`
+- `continuous_decode_input_frame_id_max`
+- `continuous_decode_output_frame_id_min`
+- `continuous_decode_output_frame_id_max`
+- `continuous_decode_output_pending_correspondence_count`
+- `continuous_decode_writer_input_queue_len`
+- `continuous_decode_exact_match_required_count`
+- `continuous_decode_stale_frame_available_count`
+
+### Decisions
+- `continuous_decode_frame_id_lag` remains the max observed `requested - latest_decoded` lag over the run.
+- `continuous_decode_requested_minus_latest_lag` is the current/latest observed lag, not a max.
+- `continuous_decode_writer_input_queue_len` is an atomic approximation for inputs accepted by the runtime but not yet received by the writer thread.
+- `continuous_decode_output_pending_correspondence_count` reads the writer/reader correspondence queue length and is the stronger signal for output backlog after the writer receives an input.
+- `continuous_decode_lookup_miss_count` is observability only and does not imply a behavior change.
+
+### Next
+- Human rerun should be performed from `S:\stream-sync` with `--disable-persistent-decoder --enable-continuous-stream-decoder`.
+- Read the new fields to determine whether misses are primarily `queue_empty`, `output_pending`, `frame_id_lagging`, or `exact_key_missing`.
+- Only after that evidence, decide whether slot0 latest decoded fallback is safe enough or whether targetTime-aware decoded queue lookup is required.
+
+### Validation
+- `cargo fmt`
+- `cargo check -p stream-sync-switcher`
+- `cargo test -p stream-sync-switcher switcher_four_view_two_real_handoff_preview_summary_formats_expected_fields -- --nocapture`
+- `git diff --check`

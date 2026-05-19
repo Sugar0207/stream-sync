@@ -4,7 +4,10 @@ use std::io::{self, BufRead, Read, Write};
 use std::num::NonZeroU32;
 use std::process::{Child, Command, Stdio};
 use std::rc::Rc;
-use std::sync::{mpsc, Arc, Mutex};
+use std::sync::{
+    atomic::{AtomicUsize, Ordering},
+    mpsc, Arc, Mutex,
+};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 #[cfg(target_os = "windows")]
@@ -1907,6 +1910,22 @@ struct SwitcherFourViewTwoRealHandoffPreviewLoopSummary {
     continuous_decode_runtime_disabled: bool,
     continuous_decode_runtime_disabled_reason: String,
     continuous_decode_fallback_to_one_shot_count: u32,
+    continuous_decode_lookup_hit_count: u32,
+    continuous_decode_lookup_miss_count: u32,
+    continuous_decode_lookup_miss_reason_counts: String,
+    continuous_decode_requested_frame_id: Option<u64>,
+    continuous_decode_latest_decoded_frame_id: Option<u64>,
+    continuous_decode_requested_minus_latest_lag: Option<u64>,
+    continuous_decode_queue_oldest_frame_id: Option<u64>,
+    continuous_decode_queue_newest_frame_id: Option<u64>,
+    continuous_decode_input_frame_id_min: Option<u64>,
+    continuous_decode_input_frame_id_max: Option<u64>,
+    continuous_decode_output_frame_id_min: Option<u64>,
+    continuous_decode_output_frame_id_max: Option<u64>,
+    continuous_decode_output_pending_correspondence_count: usize,
+    continuous_decode_writer_input_queue_len: usize,
+    continuous_decode_exact_match_required_count: u32,
+    continuous_decode_stale_frame_available_count: u32,
     render_used_continuous_decoded_count: u32,
     render_used_one_shot_fallback_count: u32,
     one_shot_decode_fallback_count: u32,
@@ -2464,6 +2483,27 @@ struct TwoRealPreviewLoopRuntimeTiming {
     continuous_decode_runtime_disabled: bool,
     continuous_decode_runtime_disabled_reason: Option<String>,
     continuous_decode_fallback_to_one_shot_count: u32,
+    continuous_decode_lookup_hit_count: u32,
+    continuous_decode_lookup_miss_count: u32,
+    continuous_decode_lookup_miss_reason_exact_key_missing_count: u32,
+    continuous_decode_lookup_miss_reason_queue_empty_count: u32,
+    continuous_decode_lookup_miss_reason_runtime_disabled_count: u32,
+    continuous_decode_lookup_miss_reason_output_pending_count: u32,
+    continuous_decode_lookup_miss_reason_frame_id_lagging_count: u32,
+    continuous_decode_lookup_miss_reason_unknown_count: u32,
+    continuous_decode_requested_frame_id: Option<u64>,
+    continuous_decode_latest_decoded_frame_id: Option<u64>,
+    continuous_decode_requested_minus_latest_lag: Option<u64>,
+    continuous_decode_queue_oldest_frame_id: Option<u64>,
+    continuous_decode_queue_newest_frame_id: Option<u64>,
+    continuous_decode_input_frame_id_min: Option<u64>,
+    continuous_decode_input_frame_id_max: Option<u64>,
+    continuous_decode_output_frame_id_min: Option<u64>,
+    continuous_decode_output_frame_id_max: Option<u64>,
+    continuous_decode_output_pending_correspondence_count: usize,
+    continuous_decode_writer_input_queue_len: usize,
+    continuous_decode_exact_match_required_count: u32,
+    continuous_decode_stale_frame_available_count: u32,
     render_used_continuous_decoded_count: u32,
     render_used_one_shot_fallback_count: u32,
     one_shot_decode_fallback_count: u32,
@@ -2800,10 +2840,21 @@ enum TwoRealContinuousDecodeEvent {
     RuntimeError(String),
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TwoRealContinuousDecodeLookupMissReason {
+    ExactKeyMissing,
+    QueueEmpty,
+    RuntimeDisabled,
+    OutputPending,
+    FrameIdLagging,
+}
+
 struct TwoRealContinuousDecodeSession {
     child: Child,
     input_tx: mpsc::SyncSender<TwoRealContinuousDecodeInput>,
     output_rx: mpsc::Receiver<TwoRealContinuousDecodeEvent>,
+    correspondence: Arc<Mutex<VecDeque<TwoRealContinuousDecodeMetadata>>>,
+    writer_input_queue_len: Arc<AtomicUsize>,
     writer_thread: Option<thread::JoinHandle<()>>,
     reader_thread: Option<thread::JoinHandle<()>>,
     stderr_thread: Option<thread::JoinHandle<()>>,
@@ -2868,6 +2919,36 @@ impl TwoRealContinuousDecodeRuntime {
             .unwrap_or(false)
     }
 
+    fn decoded_key_frame_id(key: &TwoRealPreviewLoopDecodeCacheKey) -> Option<u64> {
+        key.source_identity.as_ref().map(|source| source.frame_id)
+    }
+
+    fn queue_oldest_frame_id(&self) -> Option<u64> {
+        self.continuous_key_order
+            .front()
+            .and_then(Self::decoded_key_frame_id)
+    }
+
+    fn queue_newest_frame_id(&self) -> Option<u64> {
+        self.continuous_key_order
+            .back()
+            .and_then(Self::decoded_key_frame_id)
+    }
+
+    fn pending_correspondence_count(&self) -> usize {
+        self.session
+            .as_ref()
+            .and_then(|session| session.correspondence.lock().ok().map(|queue| queue.len()))
+            .unwrap_or(0)
+    }
+
+    fn writer_input_queue_len(&self) -> usize {
+        self.session
+            .as_ref()
+            .map(|session| session.writer_input_queue_len.load(Ordering::Relaxed))
+            .unwrap_or(0)
+    }
+
     fn update_timing_flags(&self, timing: &mut TwoRealPreviewLoopRuntimeTiming) {
         timing.continuous_decode_config_enabled = true;
         timing.continuous_decode_slot0_enabled = true;
@@ -2875,7 +2956,112 @@ impl TwoRealContinuousDecodeRuntime {
         timing.continuous_decode_runtime_disabled = self.runtime_disabled;
         timing.continuous_decode_runtime_disabled_reason = self.runtime_disabled_reason.clone();
         timing.continuous_decode_queue_len = self.continuous_key_order.len();
+        timing.continuous_decode_latest_decoded_frame_id = self.latest_decoded_frame_id;
+        timing.continuous_decode_queue_oldest_frame_id = self.queue_oldest_frame_id();
+        timing.continuous_decode_queue_newest_frame_id = self.queue_newest_frame_id();
+        timing.continuous_decode_output_pending_correspondence_count =
+            self.pending_correspondence_count();
+        timing.continuous_decode_writer_input_queue_len = self.writer_input_queue_len();
         timing.continuous_decode_restart_count = self.restart_count;
+    }
+
+    fn observe_requested_frame(
+        &self,
+        input: &SwitcherH264DecodeInput,
+        timing: &mut TwoRealPreviewLoopRuntimeTiming,
+    ) {
+        let Some(source) = input.source_identity.as_ref() else {
+            return;
+        };
+        timing.continuous_decode_requested_frame_id = Some(source.frame_id);
+        timing.continuous_decode_exact_match_required_count = timing
+            .continuous_decode_exact_match_required_count
+            .saturating_add(1);
+        if let Some(latest_decoded) = self.latest_decoded_frame_id {
+            let current_lag = source.frame_id.saturating_sub(latest_decoded);
+            timing.continuous_decode_requested_minus_latest_lag = Some(current_lag);
+            timing.continuous_decode_frame_id_lag =
+                timing.continuous_decode_frame_id_lag.max(current_lag);
+            if current_lag > TWO_REAL_CONTINUOUS_DECODE_QUEUE_BOUND as u64 {
+                timing.continuous_decode_stall_count =
+                    timing.continuous_decode_stall_count.saturating_add(1);
+            }
+        }
+    }
+
+    fn observe_lookup_hit(&self, timing: &mut TwoRealPreviewLoopRuntimeTiming) {
+        timing.continuous_decode_lookup_hit_count =
+            timing.continuous_decode_lookup_hit_count.saturating_add(1);
+    }
+
+    fn classify_lookup_miss(
+        &self,
+        input: &SwitcherH264DecodeInput,
+    ) -> TwoRealContinuousDecodeLookupMissReason {
+        if self.runtime_disabled {
+            return TwoRealContinuousDecodeLookupMissReason::RuntimeDisabled;
+        }
+        let pending_correspondence_count = self.pending_correspondence_count();
+        let writer_input_queue_len = self.writer_input_queue_len();
+        if pending_correspondence_count > 0 || writer_input_queue_len > 0 {
+            return TwoRealContinuousDecodeLookupMissReason::OutputPending;
+        }
+        if self.continuous_key_order.is_empty() {
+            return TwoRealContinuousDecodeLookupMissReason::QueueEmpty;
+        }
+        if let (Some(source), Some(latest_decoded)) =
+            (input.source_identity.as_ref(), self.latest_decoded_frame_id)
+        {
+            if source.frame_id > latest_decoded {
+                return TwoRealContinuousDecodeLookupMissReason::FrameIdLagging;
+            }
+        }
+        TwoRealContinuousDecodeLookupMissReason::ExactKeyMissing
+    }
+
+    fn observe_lookup_miss(
+        &self,
+        input: &SwitcherH264DecodeInput,
+        timing: &mut TwoRealPreviewLoopRuntimeTiming,
+    ) {
+        timing.continuous_decode_lookup_miss_count =
+            timing.continuous_decode_lookup_miss_count.saturating_add(1);
+        match self.classify_lookup_miss(input) {
+            TwoRealContinuousDecodeLookupMissReason::ExactKeyMissing => {
+                timing.continuous_decode_lookup_miss_reason_exact_key_missing_count = timing
+                    .continuous_decode_lookup_miss_reason_exact_key_missing_count
+                    .saturating_add(1);
+            }
+            TwoRealContinuousDecodeLookupMissReason::QueueEmpty => {
+                timing.continuous_decode_lookup_miss_reason_queue_empty_count = timing
+                    .continuous_decode_lookup_miss_reason_queue_empty_count
+                    .saturating_add(1);
+            }
+            TwoRealContinuousDecodeLookupMissReason::RuntimeDisabled => {
+                timing.continuous_decode_lookup_miss_reason_runtime_disabled_count = timing
+                    .continuous_decode_lookup_miss_reason_runtime_disabled_count
+                    .saturating_add(1);
+            }
+            TwoRealContinuousDecodeLookupMissReason::OutputPending => {
+                timing.continuous_decode_lookup_miss_reason_output_pending_count = timing
+                    .continuous_decode_lookup_miss_reason_output_pending_count
+                    .saturating_add(1);
+            }
+            TwoRealContinuousDecodeLookupMissReason::FrameIdLagging => {
+                timing.continuous_decode_lookup_miss_reason_frame_id_lagging_count = timing
+                    .continuous_decode_lookup_miss_reason_frame_id_lagging_count
+                    .saturating_add(1);
+            }
+        }
+        if let (Some(source), Some(newest)) =
+            (input.source_identity.as_ref(), self.queue_newest_frame_id())
+        {
+            if newest < source.frame_id {
+                timing.continuous_decode_stale_frame_available_count = timing
+                    .continuous_decode_stale_frame_available_count
+                    .saturating_add(1);
+            }
+        }
     }
 
     fn disable(&mut self, timing: &mut TwoRealPreviewLoopRuntimeTiming, reason: impl Into<String>) {
@@ -2957,6 +3143,9 @@ impl TwoRealContinuousDecodeRuntime {
         let Some(session) = self.session.as_ref() else {
             return;
         };
+        session
+            .writer_input_queue_len
+            .fetch_add(1, Ordering::Relaxed);
         match session.input_tx.try_send(TwoRealContinuousDecodeInput {
             metadata,
             encoded_payload: input.encoded_payload.clone(),
@@ -2965,13 +3154,31 @@ impl TwoRealContinuousDecodeRuntime {
                 self.enqueued_keys.insert(key.clone());
                 timing.continuous_decode_input_frame_count =
                     timing.continuous_decode_input_frame_count.saturating_add(1);
+                timing.continuous_decode_input_frame_id_min = Some(
+                    timing
+                        .continuous_decode_input_frame_id_min
+                        .map(|current| current.min(source_identity.frame_id))
+                        .unwrap_or(source_identity.frame_id),
+                );
+                timing.continuous_decode_input_frame_id_max = Some(
+                    timing
+                        .continuous_decode_input_frame_id_max
+                        .map(|current| current.max(source_identity.frame_id))
+                        .unwrap_or(source_identity.frame_id),
+                );
             }
             Err(mpsc::TrySendError::Full(_)) => {
+                session
+                    .writer_input_queue_len
+                    .fetch_sub(1, Ordering::Relaxed);
                 timing.continuous_decode_dropped_stale_count = timing
                     .continuous_decode_dropped_stale_count
                     .saturating_add(1);
             }
             Err(mpsc::TrySendError::Disconnected(_)) => {
+                session
+                    .writer_input_queue_len
+                    .fetch_sub(1, Ordering::Relaxed);
                 self.disable(timing, "continuous_input_writer_disconnected");
             }
         }
@@ -2995,6 +3202,18 @@ impl TwoRealContinuousDecodeRuntime {
                     timing.continuous_decode_output_frame_count = timing
                         .continuous_decode_output_frame_count
                         .saturating_add(1);
+                    timing.continuous_decode_output_frame_id_min = Some(
+                        timing
+                            .continuous_decode_output_frame_id_min
+                            .map(|current| current.min(output.metadata.frame_id))
+                            .unwrap_or(output.metadata.frame_id),
+                    );
+                    timing.continuous_decode_output_frame_id_max = Some(
+                        timing
+                            .continuous_decode_output_frame_id_max
+                            .map(|current| current.max(output.metadata.frame_id))
+                            .unwrap_or(output.metadata.frame_id),
+                    );
                     timing.continuous_decode_stdout_read_elapsed_ms = timing
                         .continuous_decode_stdout_read_elapsed_ms
                         .saturating_add(output.stdout_read_elapsed_ms);
@@ -3020,28 +3239,7 @@ impl TwoRealContinuousDecodeRuntime {
                 }
             }
         }
-        timing.continuous_decode_queue_len = self.continuous_key_order.len();
-        timing.continuous_decode_runtime_enabled = !self.runtime_disabled;
-    }
-
-    fn observe_frame_id_lag(
-        &self,
-        input: &SwitcherH264DecodeInput,
-        timing: &mut TwoRealPreviewLoopRuntimeTiming,
-    ) {
-        if let (Some(source), Some(latest_decoded)) =
-            (input.source_identity.as_ref(), self.latest_decoded_frame_id)
-        {
-            timing.continuous_decode_frame_id_lag = timing
-                .continuous_decode_frame_id_lag
-                .max(source.frame_id.saturating_sub(latest_decoded));
-            if source.frame_id.saturating_sub(latest_decoded)
-                > TWO_REAL_CONTINUOUS_DECODE_QUEUE_BOUND as u64
-            {
-                timing.continuous_decode_stall_count =
-                    timing.continuous_decode_stall_count.saturating_add(1);
-            }
-        }
+        self.update_timing_flags(timing);
     }
 
     fn is_continuous_decoded_key(&self, key: &TwoRealPreviewLoopDecodeCacheKey) -> bool {
@@ -3113,13 +3311,17 @@ fn spawn_two_real_continuous_ffmpeg_decode_session(
     let (input_tx, input_rx) = mpsc::sync_channel(TWO_REAL_CONTINUOUS_DECODE_QUEUE_BOUND);
     let (output_tx, output_rx) = mpsc::channel();
     let correspondence = Arc::new(Mutex::new(VecDeque::new()));
+    let writer_input_queue_len = Arc::new(AtomicUsize::new(0));
     let writer_correspondence = Arc::clone(&correspondence);
+    let reader_correspondence = Arc::clone(&correspondence);
+    let writer_input_queue_len_for_thread = Arc::clone(&writer_input_queue_len);
     let writer_output_tx = output_tx.clone();
     let writer_thread = thread::spawn(move || {
         two_real_continuous_ffmpeg_writer_loop(
             stdin,
             input_rx,
             writer_correspondence,
+            writer_input_queue_len_for_thread,
             writer_output_tx,
         );
     });
@@ -3129,7 +3331,7 @@ fn spawn_two_real_continuous_ffmpeg_decode_session(
             expected_len,
             output_width,
             output_height,
-            correspondence,
+            reader_correspondence,
             output_tx,
         );
     });
@@ -3142,6 +3344,8 @@ fn spawn_two_real_continuous_ffmpeg_decode_session(
         child,
         input_tx,
         output_rx,
+        correspondence,
+        writer_input_queue_len,
         writer_thread: Some(writer_thread),
         reader_thread: Some(reader_thread),
         stderr_thread: Some(stderr_thread),
@@ -3152,9 +3356,11 @@ fn two_real_continuous_ffmpeg_writer_loop(
     mut stdin: impl Write,
     input_rx: mpsc::Receiver<TwoRealContinuousDecodeInput>,
     correspondence: Arc<Mutex<VecDeque<TwoRealContinuousDecodeMetadata>>>,
+    writer_input_queue_len: Arc<AtomicUsize>,
     output_tx: mpsc::Sender<TwoRealContinuousDecodeEvent>,
 ) {
     while let Ok(input) = input_rx.recv() {
+        writer_input_queue_len.fetch_sub(1, Ordering::Relaxed);
         if let Ok(mut queue) = correspondence.lock() {
             queue.push_back(input.metadata);
         } else {
@@ -3303,7 +3509,7 @@ where
                 if continuous_slot0.matches_source(&input) {
                     continuous_slot0
                         .drain_outputs(&mut self.decoded_cache.borrow_mut(), &mut timing);
-                    continuous_slot0.observe_frame_id_lag(&input, &mut timing);
+                    continuous_slot0.observe_requested_frame(&input, &mut timing);
                     true
                 } else {
                     false
@@ -3315,18 +3521,27 @@ where
         if let Some(decoded) = self.decoded_cache.borrow().get(&key) {
             let clone_start = Instant::now();
             let decoded = decoded.clone();
+            let continuous_cache_hit = self
+                .continuous_slot0
+                .borrow()
+                .as_ref()
+                .map(|continuous_slot0| continuous_slot0.is_continuous_decoded_key(&key))
+                .unwrap_or(false);
             let mut timing = self.timing.borrow_mut();
             timing.decode_cached_frame_reuse_count += 1;
             timing.decode_cache_hit_clone_count += 1;
             timing.decoded_buffer_clone_count += 1;
             timing.decoded_buffer_clone_elapsed_ms += clone_start.elapsed().as_millis();
-            if self
-                .continuous_slot0
-                .borrow()
-                .as_ref()
-                .map(|continuous_slot0| continuous_slot0.is_continuous_decoded_key(&key))
-                .unwrap_or(false)
-            {
+            if continuous_slot0_targeted {
+                if continuous_cache_hit {
+                    if let Some(continuous_slot0) = self.continuous_slot0.borrow().as_ref() {
+                        continuous_slot0.observe_lookup_hit(&mut timing);
+                    }
+                } else if let Some(continuous_slot0) = self.continuous_slot0.borrow().as_ref() {
+                    continuous_slot0.observe_lookup_miss(&input, &mut timing);
+                }
+            }
+            if continuous_cache_hit {
                 timing.render_used_continuous_decoded_count = timing
                     .render_used_continuous_decoded_count
                     .saturating_add(1);
@@ -3353,12 +3568,18 @@ where
                 timing.decode_cache_hit_clone_count += 1;
                 timing.decoded_buffer_clone_count += 1;
                 timing.decoded_buffer_clone_elapsed_ms += clone_start.elapsed().as_millis();
+                if let Some(continuous_slot0) = self.continuous_slot0.borrow().as_ref() {
+                    continuous_slot0.observe_lookup_hit(&mut timing);
+                }
                 timing.render_used_continuous_decoded_count = timing
                     .render_used_continuous_decoded_count
                     .saturating_add(1);
                 return SwitcherH264DecodeResult::Decoded(decoded);
             }
             let mut timing = self.timing.borrow_mut();
+            if let Some(continuous_slot0) = self.continuous_slot0.borrow().as_ref() {
+                continuous_slot0.observe_lookup_miss(&input, &mut timing);
+            }
             timing.continuous_decode_fallback_to_one_shot_count = timing
                 .continuous_decode_fallback_to_one_shot_count
                 .saturating_add(1);
@@ -5286,6 +5507,34 @@ where
             .unwrap_or_else(|| "none".to_string()),
         continuous_decode_fallback_to_one_shot_count: timing
             .continuous_decode_fallback_to_one_shot_count,
+        continuous_decode_lookup_hit_count: timing.continuous_decode_lookup_hit_count,
+        continuous_decode_lookup_miss_count: timing.continuous_decode_lookup_miss_count,
+        continuous_decode_lookup_miss_reason_counts:
+            format_continuous_decode_lookup_miss_reason_counts(
+                timing.continuous_decode_lookup_miss_reason_exact_key_missing_count,
+                timing.continuous_decode_lookup_miss_reason_queue_empty_count,
+                timing.continuous_decode_lookup_miss_reason_runtime_disabled_count,
+                timing.continuous_decode_lookup_miss_reason_output_pending_count,
+                timing.continuous_decode_lookup_miss_reason_frame_id_lagging_count,
+                timing.continuous_decode_lookup_miss_reason_unknown_count,
+            ),
+        continuous_decode_requested_frame_id: timing.continuous_decode_requested_frame_id,
+        continuous_decode_latest_decoded_frame_id: timing.continuous_decode_latest_decoded_frame_id,
+        continuous_decode_requested_minus_latest_lag: timing
+            .continuous_decode_requested_minus_latest_lag,
+        continuous_decode_queue_oldest_frame_id: timing.continuous_decode_queue_oldest_frame_id,
+        continuous_decode_queue_newest_frame_id: timing.continuous_decode_queue_newest_frame_id,
+        continuous_decode_input_frame_id_min: timing.continuous_decode_input_frame_id_min,
+        continuous_decode_input_frame_id_max: timing.continuous_decode_input_frame_id_max,
+        continuous_decode_output_frame_id_min: timing.continuous_decode_output_frame_id_min,
+        continuous_decode_output_frame_id_max: timing.continuous_decode_output_frame_id_max,
+        continuous_decode_output_pending_correspondence_count: timing
+            .continuous_decode_output_pending_correspondence_count,
+        continuous_decode_writer_input_queue_len: timing.continuous_decode_writer_input_queue_len,
+        continuous_decode_exact_match_required_count: timing
+            .continuous_decode_exact_match_required_count,
+        continuous_decode_stale_frame_available_count: timing
+            .continuous_decode_stale_frame_available_count,
         render_used_continuous_decoded_count: timing.render_used_continuous_decoded_count,
         render_used_one_shot_fallback_count: timing.render_used_one_shot_fallback_count,
         one_shot_decode_fallback_count: timing.one_shot_decode_fallback_count,
@@ -8717,6 +8966,19 @@ fn format_two_real_attempt_reason_counts(
     )
 }
 
+fn format_continuous_decode_lookup_miss_reason_counts(
+    exact_key_missing: u32,
+    queue_empty: u32,
+    runtime_disabled: u32,
+    output_pending: u32,
+    frame_id_lagging: u32,
+    unknown: u32,
+) -> String {
+    format!(
+        "exact_key_missing:{exact_key_missing}|queue_empty:{queue_empty}|runtime_disabled:{runtime_disabled}|output_pending:{output_pending}|frame_id_lagging:{frame_id_lagging}|unknown:{unknown}"
+    )
+}
+
 fn record_two_real_attempt_slot_counts(
     slot0_index: usize,
     slot1_index: usize,
@@ -9890,7 +10152,7 @@ fn format_four_view_two_real_handoff_preview_loop_summary(
     summary: &SwitcherFourViewTwoRealHandoffPreviewLoopSummary,
 ) -> String {
     format!(
-        "switcher four-view two-real handoff preview loop command_name=--four-view-two-real-handoff-preview-loop real_handoff=true real_slot_count=2 real_slot0_index={} real_slot1_index={} pipe_name={} actual_pipe_path={} preview_mode={} read_mode={} client0_id={} run0_id={} client1_id={} run1_id={} frames_attempted={} frames_rendered={} render_failures={} elapsed_ms={} target_fps={} configured_frame_interval_ms={} effective_attempt_fps={} effective_render_fps={} first_render_attempt_index={} first_render_elapsed_ms={} rendered_after_first_render={} effective_render_fps_after_first_render={} no_render_before_first_render={} selected_count={} no_frame_count={} handoff_error_count={} decode_attempt_count={} decode_success_count={} render_success_count={} render_failure_count={} unchanged_frame_reuse_count={} skipped_decode_unchanged_frame_count={} redecoded_same_frame_count={} decode_elapsed_ms={} decode_process_spawn_elapsed_ms={} decode_input_write_elapsed_ms={} decode_input_payload_bytes_total={} decode_output_read_elapsed_ms={} decode_output_read_exact_elapsed_ms={} decode_output_vec_resize_elapsed_ms={} decode_process_wait_elapsed_ms={} decode_pixel_convert_elapsed_ms={} decode_buffer_allocation_count={} decode_output_bytes_total={} decode_stdout_expected_bytes_total={} decode_cached_frame_reuse_count={} decode_cache_miss_count={} decoded_buffer_clone_count={} decode_cache_hit_clone_count={} decode_cache_store_clone_count={} decoded_buffer_clone_elapsed_ms={} composed_buffer_clone_count={} decode_output_buffer_reuse_count={} persistent_decode_config_enabled={} persistent_decode_enabled={} persistent_decode_attempt_count={} persistent_decode_success_count={} persistent_decode_failure_count={} persistent_decode_fallback_count={} persistent_decode_process_spawn_count={} persistent_decode_process_restart_count={} persistent_decode_stdin_write_elapsed_ms={} persistent_decode_stdout_read_elapsed_ms={} persistent_decode_stdout_read_exact_elapsed_ms={} persistent_decode_output_bytes_total={} persistent_decode_last_error={} persistent_decode_runtime_disabled={} persistent_decode_runtime_disabled_reason={} persistent_decode_consecutive_failure_count={} persistent_decode_disabled_after_failure_count={} persistent_decode_skipped_by_config_count={} persistent_decode_skipped_after_disabled_count={} persistent_decode_timeout_count={} persistent_decode_timeout_elapsed_ms={} continuous_decode_config_enabled={} continuous_decode_runtime_enabled={} continuous_decode_slot0_enabled={} continuous_decode_input_frame_count={} continuous_decode_output_frame_count={} continuous_decode_queue_len={} continuous_decode_dropped_stale_count={} continuous_decode_frame_id_lag={} continuous_decode_stdout_read_elapsed_ms={} continuous_decode_stall_count={} continuous_decode_restart_count={} continuous_decode_runtime_disabled={} continuous_decode_runtime_disabled_reason={} continuous_decode_fallback_to_one_shot_count={} render_used_continuous_decoded_count={} render_used_one_shot_fallback_count={} one_shot_decode_fallback_count={} one_shot_decode_attempt_count={} one_shot_decode_elapsed_ms={} one_shot_decode_elapsed_ms_max={} one_shot_decode_input_write_elapsed_ms={} one_shot_decode_input_write_elapsed_ms_max={} one_shot_decode_stdin_close_elapsed_ms={} one_shot_decode_stdin_write_to_stdout_first_byte_elapsed_ms={} one_shot_decode_stdin_write_to_stdout_first_byte_elapsed_ms_max={} one_shot_decode_stdout_first_byte_elapsed_ms={} one_shot_decode_first_byte_elapsed_ms_max={} one_shot_decode_first_byte_slow_count={} one_shot_decode_first_byte_slow_threshold_ms={} one_shot_decode_output_read_elapsed_ms={} one_shot_decode_output_read_elapsed_ms_max={} one_shot_decode_output_read_slow_count={} one_shot_decode_output_read_slow_threshold_ms={} one_shot_decode_output_read_exact_elapsed_ms={} one_shot_decode_output_read_exact_elapsed_ms_max={} one_shot_decode_extra_output_probe_elapsed_ms={} one_shot_decode_attempt_source_counts={} one_shot_decode_attempt_slot_counts={} one_shot_decode_attempt_reason_counts={} one_shot_decode_slow_first_byte_slot_counts={} one_shot_decode_slow_first_byte_source_counts={} one_shot_decode_slow_first_byte_reason_counts={} one_shot_decode_slow_output_read_slot_counts={} one_shot_decode_slow_output_read_source_counts={} one_shot_decode_slow_output_read_reason_counts={} one_shot_decode_input_write_outlier_count={} one_shot_decode_input_write_outlier_threshold_ms={} one_shot_decode_input_write_outlier_slot_counts={} one_shot_decode_input_write_outlier_source_counts={} one_shot_decode_input_write_outlier_reason_counts={} one_shot_decode_input_write_outlier_payload_bytes_total={} one_shot_decode_input_write_outlier_payload_bytes_avg={} decode_cache_miss_slot0_count={} decode_cache_miss_slot1_count={} one_shot_decode_write_throughput_bytes_per_ms={} one_shot_decode_input_write_elapsed_per_payload_kb={} one_shot_decode_read_throughput_bytes_per_ms={} one_shot_decode_input_payload_bytes_min={} one_shot_decode_input_payload_bytes_max={} one_shot_decode_input_payload_bytes_avg={} one_shot_decode_keyframe_attempt_count={} one_shot_decode_non_keyframe_attempt_count={} one_shot_decode_keyframe_elapsed_ms={} one_shot_decode_non_keyframe_elapsed_ms={} one_shot_decode_keyframe_input_payload_bytes_total={} one_shot_decode_non_keyframe_input_payload_bytes_total={} one_shot_decode_expected_output_bytes_per_frame={} one_shot_decode_output_width={} one_shot_decode_output_height={} one_shot_decode_output_pixel_format={} one_shot_decode_scaled_output_enabled={} one_shot_decode_scaled_output_reason={} handoff_elapsed_ms={} render_elapsed_ms={} avg_decode_elapsed_ms={} avg_decode_input_write_elapsed_ms={} avg_decode_output_read_elapsed_ms={} avg_decode_process_spawn_elapsed_ms={} avg_handoff_elapsed_ms={} avg_render_elapsed_ms={} loop_total_elapsed_ms={} attempt_body_elapsed_ms={} loop_sleep_elapsed_ms={} frame_interval_wait_elapsed_ms={} event_pump_elapsed_ms={} window_update_elapsed_ms={} render_prepare_elapsed_ms={} render_buffer_cpu_scale_copy_elapsed_ms={} render_buffer_copy_elapsed_ms={} render_buffer_materialization_elapsed_ms={} render_buffer_scale_prepare_elapsed_ms={} render_buffer_scale_loop_elapsed_ms={} render_buffer_output_copy_elapsed_ms={} render_buffer_resize_elapsed_ms={} render_buffer_clear_elapsed_ms={} render_buffer_passthrough_count={} render_buffer_same_size_copy_count={} render_buffer_half_scale_count={} render_buffer_generic_scale_count={} render_buffer_reuse_count={} render_buffer_allocation_count={} render_buffer_bytes_copied_total={} render_backend_wait_elapsed_ms={} gdi_invalidate_elapsed_ms={} gdi_paint_wait_elapsed_ms={} gdi_wm_paint_elapsed_ms={} gdi_stretchdibits_elapsed_ms={} texture_upload_elapsed_ms={} window_present_elapsed_ms={} vsync_or_present_block_elapsed_ms={} quad_view_compose_elapsed_ms={} quad_view_compose_attempt_count={} quad_view_compose_success_count={} quad_view_compose_skipped_unchanged_count={} quad_view_composed_frame_reuse_count={} quad_view_visual_unchanged_count={} quad_view_visual_changed_count={} materialization_reason_first_render_count={} materialization_reason_visual_changed_count={} materialization_reason_previous_output_missing_count={} materialization_reason_profile_or_size_mismatch_count={} materialization_reason_force_render_count={} materialization_reason_unknown_count={} slot0_frame_id_changed_count={} slot1_frame_id_changed_count={} slot2_frame_id_changed_count={} slot3_frame_id_changed_count={} slot0_selected_source_changed_count={} slot1_selected_source_changed_count={} slot2_selected_source_changed_count={} slot3_selected_source_changed_count={} placeholder_visual_changed_count={} skipped_decode_unchanged_slot0_count={} skipped_decode_unchanged_slot1_count={} quad_view_incremental_update_count={} quad_view_full_compose_count={} quad_view_incremental_skip_reason={} quad_view_incremental_skip_reason_counts={} quad_view_full_compose_reason_counts={} quad_view_changed_slot_update_count={} quad_view_changed_real_slot_count={} quad_view_changed_placeholder_slot_count={} quad_view_reused_slot_count={} quad_view_previous_output_available_count={} quad_view_previous_output_missing_count={} quad_view_profile_or_size_mismatch_count={} quad_view_allocation_count={} avg_render_buffer_cpu_scale_copy_elapsed_ms={} avg_render_buffer_materialization_elapsed_ms={} avg_gdi_paint_wait_elapsed_ms={} avg_gdi_wm_paint_elapsed_ms={} avg_gdi_stretchdibits_elapsed_ms={} avg_quad_view_incremental_update_elapsed_ms={} avg_quad_view_compose_elapsed_ms={} render_call_elapsed_ms={} render_input_unchanged_count={} render_reuse_frame_count={} unaccounted_elapsed_ms={} avg_attempt_elapsed_ms={} max_attempt_elapsed_ms={} slow_attempt_count={} slow_attempt_threshold_ms={} scheduler_status={:?} slot_bindings={} slot_result_kinds={} slot_diagnostics={} clean_output_render_result_kind={} window_title={} output_width={} output_height={}",
+        "switcher four-view two-real handoff preview loop command_name=--four-view-two-real-handoff-preview-loop real_handoff=true real_slot_count=2 real_slot0_index={} real_slot1_index={} pipe_name={} actual_pipe_path={} preview_mode={} read_mode={} client0_id={} run0_id={} client1_id={} run1_id={} frames_attempted={} frames_rendered={} render_failures={} elapsed_ms={} target_fps={} configured_frame_interval_ms={} effective_attempt_fps={} effective_render_fps={} first_render_attempt_index={} first_render_elapsed_ms={} rendered_after_first_render={} effective_render_fps_after_first_render={} no_render_before_first_render={} selected_count={} no_frame_count={} handoff_error_count={} decode_attempt_count={} decode_success_count={} render_success_count={} render_failure_count={} unchanged_frame_reuse_count={} skipped_decode_unchanged_frame_count={} redecoded_same_frame_count={} decode_elapsed_ms={} decode_process_spawn_elapsed_ms={} decode_input_write_elapsed_ms={} decode_input_payload_bytes_total={} decode_output_read_elapsed_ms={} decode_output_read_exact_elapsed_ms={} decode_output_vec_resize_elapsed_ms={} decode_process_wait_elapsed_ms={} decode_pixel_convert_elapsed_ms={} decode_buffer_allocation_count={} decode_output_bytes_total={} decode_stdout_expected_bytes_total={} decode_cached_frame_reuse_count={} decode_cache_miss_count={} decoded_buffer_clone_count={} decode_cache_hit_clone_count={} decode_cache_store_clone_count={} decoded_buffer_clone_elapsed_ms={} composed_buffer_clone_count={} decode_output_buffer_reuse_count={} persistent_decode_config_enabled={} persistent_decode_enabled={} persistent_decode_attempt_count={} persistent_decode_success_count={} persistent_decode_failure_count={} persistent_decode_fallback_count={} persistent_decode_process_spawn_count={} persistent_decode_process_restart_count={} persistent_decode_stdin_write_elapsed_ms={} persistent_decode_stdout_read_elapsed_ms={} persistent_decode_stdout_read_exact_elapsed_ms={} persistent_decode_output_bytes_total={} persistent_decode_last_error={} persistent_decode_runtime_disabled={} persistent_decode_runtime_disabled_reason={} persistent_decode_consecutive_failure_count={} persistent_decode_disabled_after_failure_count={} persistent_decode_skipped_by_config_count={} persistent_decode_skipped_after_disabled_count={} persistent_decode_timeout_count={} persistent_decode_timeout_elapsed_ms={} continuous_decode_config_enabled={} continuous_decode_runtime_enabled={} continuous_decode_slot0_enabled={} continuous_decode_input_frame_count={} continuous_decode_output_frame_count={} continuous_decode_queue_len={} continuous_decode_dropped_stale_count={} continuous_decode_frame_id_lag={} continuous_decode_stdout_read_elapsed_ms={} continuous_decode_stall_count={} continuous_decode_restart_count={} continuous_decode_runtime_disabled={} continuous_decode_runtime_disabled_reason={} continuous_decode_fallback_to_one_shot_count={} continuous_decode_lookup_hit_count={} continuous_decode_lookup_miss_count={} continuous_decode_lookup_miss_reason_counts={} continuous_decode_requested_frame_id={} continuous_decode_latest_decoded_frame_id={} continuous_decode_requested_minus_latest_lag={} continuous_decode_queue_oldest_frame_id={} continuous_decode_queue_newest_frame_id={} continuous_decode_input_frame_id_min={} continuous_decode_input_frame_id_max={} continuous_decode_output_frame_id_min={} continuous_decode_output_frame_id_max={} continuous_decode_output_pending_correspondence_count={} continuous_decode_writer_input_queue_len={} continuous_decode_exact_match_required_count={} continuous_decode_stale_frame_available_count={} render_used_continuous_decoded_count={} render_used_one_shot_fallback_count={} one_shot_decode_fallback_count={} one_shot_decode_attempt_count={} one_shot_decode_elapsed_ms={} one_shot_decode_elapsed_ms_max={} one_shot_decode_input_write_elapsed_ms={} one_shot_decode_input_write_elapsed_ms_max={} one_shot_decode_stdin_close_elapsed_ms={} one_shot_decode_stdin_write_to_stdout_first_byte_elapsed_ms={} one_shot_decode_stdin_write_to_stdout_first_byte_elapsed_ms_max={} one_shot_decode_stdout_first_byte_elapsed_ms={} one_shot_decode_first_byte_elapsed_ms_max={} one_shot_decode_first_byte_slow_count={} one_shot_decode_first_byte_slow_threshold_ms={} one_shot_decode_output_read_elapsed_ms={} one_shot_decode_output_read_elapsed_ms_max={} one_shot_decode_output_read_slow_count={} one_shot_decode_output_read_slow_threshold_ms={} one_shot_decode_output_read_exact_elapsed_ms={} one_shot_decode_output_read_exact_elapsed_ms_max={} one_shot_decode_extra_output_probe_elapsed_ms={} one_shot_decode_attempt_source_counts={} one_shot_decode_attempt_slot_counts={} one_shot_decode_attempt_reason_counts={} one_shot_decode_slow_first_byte_slot_counts={} one_shot_decode_slow_first_byte_source_counts={} one_shot_decode_slow_first_byte_reason_counts={} one_shot_decode_slow_output_read_slot_counts={} one_shot_decode_slow_output_read_source_counts={} one_shot_decode_slow_output_read_reason_counts={} one_shot_decode_input_write_outlier_count={} one_shot_decode_input_write_outlier_threshold_ms={} one_shot_decode_input_write_outlier_slot_counts={} one_shot_decode_input_write_outlier_source_counts={} one_shot_decode_input_write_outlier_reason_counts={} one_shot_decode_input_write_outlier_payload_bytes_total={} one_shot_decode_input_write_outlier_payload_bytes_avg={} decode_cache_miss_slot0_count={} decode_cache_miss_slot1_count={} one_shot_decode_write_throughput_bytes_per_ms={} one_shot_decode_input_write_elapsed_per_payload_kb={} one_shot_decode_read_throughput_bytes_per_ms={} one_shot_decode_input_payload_bytes_min={} one_shot_decode_input_payload_bytes_max={} one_shot_decode_input_payload_bytes_avg={} one_shot_decode_keyframe_attempt_count={} one_shot_decode_non_keyframe_attempt_count={} one_shot_decode_keyframe_elapsed_ms={} one_shot_decode_non_keyframe_elapsed_ms={} one_shot_decode_keyframe_input_payload_bytes_total={} one_shot_decode_non_keyframe_input_payload_bytes_total={} one_shot_decode_expected_output_bytes_per_frame={} one_shot_decode_output_width={} one_shot_decode_output_height={} one_shot_decode_output_pixel_format={} one_shot_decode_scaled_output_enabled={} one_shot_decode_scaled_output_reason={} handoff_elapsed_ms={} render_elapsed_ms={} avg_decode_elapsed_ms={} avg_decode_input_write_elapsed_ms={} avg_decode_output_read_elapsed_ms={} avg_decode_process_spawn_elapsed_ms={} avg_handoff_elapsed_ms={} avg_render_elapsed_ms={} loop_total_elapsed_ms={} attempt_body_elapsed_ms={} loop_sleep_elapsed_ms={} frame_interval_wait_elapsed_ms={} event_pump_elapsed_ms={} window_update_elapsed_ms={} render_prepare_elapsed_ms={} render_buffer_cpu_scale_copy_elapsed_ms={} render_buffer_copy_elapsed_ms={} render_buffer_materialization_elapsed_ms={} render_buffer_scale_prepare_elapsed_ms={} render_buffer_scale_loop_elapsed_ms={} render_buffer_output_copy_elapsed_ms={} render_buffer_resize_elapsed_ms={} render_buffer_clear_elapsed_ms={} render_buffer_passthrough_count={} render_buffer_same_size_copy_count={} render_buffer_half_scale_count={} render_buffer_generic_scale_count={} render_buffer_reuse_count={} render_buffer_allocation_count={} render_buffer_bytes_copied_total={} render_backend_wait_elapsed_ms={} gdi_invalidate_elapsed_ms={} gdi_paint_wait_elapsed_ms={} gdi_wm_paint_elapsed_ms={} gdi_stretchdibits_elapsed_ms={} texture_upload_elapsed_ms={} window_present_elapsed_ms={} vsync_or_present_block_elapsed_ms={} quad_view_compose_elapsed_ms={} quad_view_compose_attempt_count={} quad_view_compose_success_count={} quad_view_compose_skipped_unchanged_count={} quad_view_composed_frame_reuse_count={} quad_view_visual_unchanged_count={} quad_view_visual_changed_count={} materialization_reason_first_render_count={} materialization_reason_visual_changed_count={} materialization_reason_previous_output_missing_count={} materialization_reason_profile_or_size_mismatch_count={} materialization_reason_force_render_count={} materialization_reason_unknown_count={} slot0_frame_id_changed_count={} slot1_frame_id_changed_count={} slot2_frame_id_changed_count={} slot3_frame_id_changed_count={} slot0_selected_source_changed_count={} slot1_selected_source_changed_count={} slot2_selected_source_changed_count={} slot3_selected_source_changed_count={} placeholder_visual_changed_count={} skipped_decode_unchanged_slot0_count={} skipped_decode_unchanged_slot1_count={} quad_view_incremental_update_count={} quad_view_full_compose_count={} quad_view_incremental_skip_reason={} quad_view_incremental_skip_reason_counts={} quad_view_full_compose_reason_counts={} quad_view_changed_slot_update_count={} quad_view_changed_real_slot_count={} quad_view_changed_placeholder_slot_count={} quad_view_reused_slot_count={} quad_view_previous_output_available_count={} quad_view_previous_output_missing_count={} quad_view_profile_or_size_mismatch_count={} quad_view_allocation_count={} avg_render_buffer_cpu_scale_copy_elapsed_ms={} avg_render_buffer_materialization_elapsed_ms={} avg_gdi_paint_wait_elapsed_ms={} avg_gdi_wm_paint_elapsed_ms={} avg_gdi_stretchdibits_elapsed_ms={} avg_quad_view_incremental_update_elapsed_ms={} avg_quad_view_compose_elapsed_ms={} render_call_elapsed_ms={} render_input_unchanged_count={} render_reuse_frame_count={} unaccounted_elapsed_ms={} avg_attempt_elapsed_ms={} max_attempt_elapsed_ms={} slow_attempt_count={} slow_attempt_threshold_ms={} scheduler_status={:?} slot_bindings={} slot_result_kinds={} slot_diagnostics={} clean_output_render_result_kind={} window_title={} output_width={} output_height={}",
         summary.real_slot0_index,
         summary.real_slot1_index,
         summary.pipe_name,
@@ -9979,6 +10241,22 @@ fn format_four_view_two_real_handoff_preview_loop_summary(
         summary.continuous_decode_runtime_disabled,
         sanitize_summary_value(&summary.continuous_decode_runtime_disabled_reason),
         summary.continuous_decode_fallback_to_one_shot_count,
+        summary.continuous_decode_lookup_hit_count,
+        summary.continuous_decode_lookup_miss_count,
+        summary.continuous_decode_lookup_miss_reason_counts,
+        format_optional_u64(summary.continuous_decode_requested_frame_id),
+        format_optional_u64(summary.continuous_decode_latest_decoded_frame_id),
+        format_optional_u64(summary.continuous_decode_requested_minus_latest_lag),
+        format_optional_u64(summary.continuous_decode_queue_oldest_frame_id),
+        format_optional_u64(summary.continuous_decode_queue_newest_frame_id),
+        format_optional_u64(summary.continuous_decode_input_frame_id_min),
+        format_optional_u64(summary.continuous_decode_input_frame_id_max),
+        format_optional_u64(summary.continuous_decode_output_frame_id_min),
+        format_optional_u64(summary.continuous_decode_output_frame_id_max),
+        summary.continuous_decode_output_pending_correspondence_count,
+        summary.continuous_decode_writer_input_queue_len,
+        summary.continuous_decode_exact_match_required_count,
+        summary.continuous_decode_stale_frame_available_count,
         summary.render_used_continuous_decoded_count,
         summary.render_used_one_shot_fallback_count,
         summary.one_shot_decode_fallback_count,
@@ -13954,6 +14232,22 @@ mod tests {
         assert!(formatted.contains("continuous_decode_runtime_disabled=false"));
         assert!(formatted.contains("continuous_decode_runtime_disabled_reason=none"));
         assert!(formatted.contains("continuous_decode_fallback_to_one_shot_count=0"));
+        assert!(formatted.contains("continuous_decode_lookup_hit_count=0"));
+        assert!(formatted.contains("continuous_decode_lookup_miss_count=0"));
+        assert!(formatted.contains("continuous_decode_lookup_miss_reason_counts=exact_key_missing:0|queue_empty:0|runtime_disabled:0|output_pending:0|frame_id_lagging:0|unknown:0"));
+        assert!(formatted.contains("continuous_decode_requested_frame_id=none"));
+        assert!(formatted.contains("continuous_decode_latest_decoded_frame_id=none"));
+        assert!(formatted.contains("continuous_decode_requested_minus_latest_lag=none"));
+        assert!(formatted.contains("continuous_decode_queue_oldest_frame_id=none"));
+        assert!(formatted.contains("continuous_decode_queue_newest_frame_id=none"));
+        assert!(formatted.contains("continuous_decode_input_frame_id_min=none"));
+        assert!(formatted.contains("continuous_decode_input_frame_id_max=none"));
+        assert!(formatted.contains("continuous_decode_output_frame_id_min=none"));
+        assert!(formatted.contains("continuous_decode_output_frame_id_max=none"));
+        assert!(formatted.contains("continuous_decode_output_pending_correspondence_count=0"));
+        assert!(formatted.contains("continuous_decode_writer_input_queue_len=0"));
+        assert!(formatted.contains("continuous_decode_exact_match_required_count=0"));
+        assert!(formatted.contains("continuous_decode_stale_frame_available_count=0"));
         assert!(formatted.contains("render_used_continuous_decoded_count=0"));
         assert!(formatted.contains("render_used_one_shot_fallback_count=0"));
         assert!(formatted.contains("one_shot_decode_fallback_count=0"));
