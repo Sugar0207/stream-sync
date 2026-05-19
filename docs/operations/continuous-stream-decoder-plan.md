@@ -222,6 +222,50 @@
   - stdout reader has no decoded raw frame to return
   - exact lookup strictness is not the current first problem for this run
 
+## Output-Pending Diagnostics Implementation
+- 2026-05-19 diagnostics-only slice で、slot0 continuous output pending の切り分け fields を追加した
+- added fields:
+  - `continuous_decode_input_frame_id_gap_max`
+  - `continuous_decode_input_frame_id_gap_total`
+  - `continuous_decode_input_non_consecutive_count`
+  - `continuous_decode_input_keyframe_count`
+  - `continuous_decode_input_non_keyframe_count`
+  - `continuous_decode_input_has_sps_count`
+  - `continuous_decode_input_has_pps_count`
+  - `continuous_decode_input_has_idr_count`
+  - `continuous_decode_input_has_non_idr_vcl_count`
+  - `continuous_decode_last_input_payload_nal_kinds`
+  - `continuous_decode_ffmpeg_stderr_summary`
+  - `continuous_decode_stdout_reader_blocked_count`
+  - `continuous_decode_no_output_after_input_count`
+  - `continuous_decode_no_output_after_keyframe_count`
+  - `continuous_decode_bootstrap_input_count`
+  - `continuous_decode_bootstrap_output_count`
+  - `continuous_decode_last_input_frame_id`
+  - `continuous_decode_last_output_frame_id`
+- meaning:
+  - `continuous_decode_input_frame_id_gap_max` / `gap_total` are computed from accepted continuous input order, so they expose sparse render-demand feed
+  - `continuous_decode_input_non_consecutive_count` increments when consecutive accepted input frame ids are not exactly `+1`
+  - input keyframe count uses `has_idr` from the existing Annex B payload inspection helper
+  - SPS/PPS/IDR/non-IDR VCL counts use the same existing payload inspection helper and do not change payload handling
+  - `continuous_decode_last_input_payload_nal_kinds` keeps only the latest accepted input's compact NAL kinds
+  - `continuous_decode_ffmpeg_stderr_summary` keeps a bounded stderr tail (`512` bytes) and sanitizes at summary formatting
+  - `continuous_decode_stdout_reader_blocked_count` increments when lookup misses observe pending correspondence, no writer queue backlog, and the reader thread is inside stdout `read_exact`
+  - `continuous_decode_no_output_after_input_count` increments on output-pending lookup miss with correspondence backlog
+  - `continuous_decode_no_output_after_keyframe_count` increments when output remains pending after at least one IDR input has been accepted
+  - bootstrap input/output counts expose whether output appears before or after the first decoded frame
+- this slice intentionally does not change:
+  - continuous input feed policy
+  - exact-match lookup behavior
+  - one-shot fallback
+  - decoded cache / queue selection policy
+  - FFmpeg args
+  - pixel format
+  - latest decoded fallback
+  - targetTime-aware lookup
+  - slot0 per-client feed/drain implementation
+  - slot1 / 4-client continuous rollout
+
 ## request/response persistent decoder との違い
 - request/response persistent decoder:
   - render loop から `1 request -> stdin write -> stdout expected bytes read -> response wait` を同期的に待つ
@@ -388,9 +432,6 @@ first implementation で summary に追加済み:
 - `continuous_decode_output_frame_id_max`
 - `continuous_decode_output_pending_correspondence_count`
 - `continuous_decode_writer_input_queue_len`
-
-追加候補:
-
 - `continuous_decode_input_frame_id_gap_max`
 - `continuous_decode_input_frame_id_gap_total`
 - `continuous_decode_input_non_consecutive_count`
@@ -407,6 +448,11 @@ first implementation で summary に追加済み:
 - `continuous_decode_no_output_after_keyframe_count`
 - `continuous_decode_bootstrap_input_count`
 - `continuous_decode_bootstrap_output_count`
+- `continuous_decode_last_input_frame_id`
+- `continuous_decode_last_output_frame_id`
+
+追加候補:
+
 - `continuous_decode_input_queue_drop_count`
 - `continuous_decode_output_queue_drop_count`
 - `continuous_decode_keyframe_wait_count`

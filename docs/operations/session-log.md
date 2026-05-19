@@ -27702,6 +27702,94 @@ switcher four-view proof fixture deterministic=true real_handoff=false actual_wi
 
 ## 2026-05-19
 ### Type
+- Codex implementation
+
+### Work
+- Added a diagnostics-only slice for slot0 continuous output pending.
+- Added summary visibility for continuous input frame-id gaps, non-consecutive input count, input keyframe/non-keyframe count, SPS/PPS/IDR/non-IDR VCL counts, latest input NAL kinds, FFmpeg stderr tail, stdout-reader pending observations, no-output-after-input/keyframe counts, bootstrap input/output counts, and last input/output frame ids.
+- Reused the existing Annex B payload inspection helper for NAL diagnostics.
+- Kept the continuous decoder behavior unchanged:
+  - render-demand selected-frame enqueue remains unchanged
+  - exact cache-key lookup remains required
+  - one-shot fallback remains in place
+  - no latest decoded fallback
+  - no targetTime-aware decoded queue lookup
+  - no slot0 per-client feed/drain policy implementation
+  - no slot1 continuous rollout
+  - no 4-client widening
+  - no server/client/protocol changes
+  - no request/response persistent decoder revival
+  - no runtime rerun from Codex
+
+### Changed Files
+- `apps/switcher/src/main.rs`
+- `docs/operations/todo.md`
+- `docs/operations/continuous-stream-decoder-plan.md`
+- `docs/operations/session-log.md`
+
+### Diagnostics Added
+- `continuous_decode_input_frame_id_gap_max`
+- `continuous_decode_input_frame_id_gap_total`
+- `continuous_decode_input_non_consecutive_count`
+- `continuous_decode_input_keyframe_count`
+- `continuous_decode_input_non_keyframe_count`
+- `continuous_decode_input_has_sps_count`
+- `continuous_decode_input_has_pps_count`
+- `continuous_decode_input_has_idr_count`
+- `continuous_decode_input_has_non_idr_vcl_count`
+- `continuous_decode_last_input_payload_nal_kinds`
+- `continuous_decode_ffmpeg_stderr_summary`
+- `continuous_decode_stdout_reader_blocked_count`
+- `continuous_decode_no_output_after_input_count`
+- `continuous_decode_no_output_after_keyframe_count`
+- `continuous_decode_bootstrap_input_count`
+- `continuous_decode_bootstrap_output_count`
+- `continuous_decode_last_input_frame_id`
+- `continuous_decode_last_output_frame_id`
+
+### Decisions
+- Treat input `has_idr` as the continuous input keyframe diagnostic for this slice.
+- Keep FFmpeg stderr as a bounded tail summary instead of full stderr output.
+- Count stdout-reader blocked observations only when correspondence backlog exists, writer input queue is empty, and the reader thread is inside stdout `read_exact`.
+- Use these diagnostics to decide next whether slot0 per-client continuous feed/drain is needed.
+- Keep Production Readiness as FAIL.
+
+### Next
+- Human rerun should be performed from `S:\stream-sync` with `--disable-persistent-decoder --enable-continuous-stream-decoder`.
+- Read frame-id gap / NAL / stderr / no-output fields before considering any feed-policy change.
+- Do not move to latest decoded fallback, targetTime-aware lookup, slot1 continuous, or 4-client continuous until output-pending evidence is understood.
+
+### TODO Update
+- Completed:
+  - slot0 continuous output-pending diagnostics implementation
+  - summary formatter and focused summary test update
+  - docs update for the next rerun evidence shape
+- Added:
+  - human rerun gate for frame-id gaps, NAL counts, stderr summary, stdout blocked, and no-output-after-input
+- Held:
+  - latest decoded fallback
+  - targetTime-aware lookup
+  - slot0 per-client feed/drain implementation
+  - slot1 continuous rollout
+  - 4-client rollout
+  - request/response persistent decoder revival
+
+### Validation
+- `cargo fmt`
+  - result: PASS
+- `cargo check -p stream-sync-switcher`
+  - result: PASS
+  - note: existing dead-code warnings remain in unrelated helpers
+- `cargo test -p stream-sync-switcher switcher_four_view_two_real_handoff_preview_summary_formats_expected_fields -- --nocapture`
+  - result: PASS
+- `git diff --check`
+  - result: PASS
+  - note: LF/CRLF warnings only
+
+---
+
+## 2026-05-19
+### Type
 - Codex docs-first analysis
 
 ### Work
