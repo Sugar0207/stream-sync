@@ -469,6 +469,137 @@
   - targetTime-aware decoded queue lookup
   - slot0 per-client feed/drain policy
 
+## Low-Latency / Probe Args Runtime Result
+- latest rerun:
+  - `S:\stream-sync\manual-logs\two-client-render-rerun-20260519-171331`
+- PASS:
+  - continuous opt-in propagation:
+    - `continuous_decode_config_enabled=true`
+    - `continuous_decode_runtime_enabled=true`
+    - `continuous_decode_slot0_enabled=true`
+  - low-latency / probe args variant enabled:
+    - `continuous_decode_ffmpeg_low_latency_args_enabled=true`
+    - `continuous_decode_ffmpeg_probe_args_enabled=true`
+    - `continuous_decode_ffmpeg_loglevel=warning`
+  - one-shot fallback safety:
+    - `render_used_one_shot_fallback_count=15`
+    - `continuous_decode_fallback_to_one_shot_count=15`
+- PARTIAL PASS:
+  - continuous stdout output:
+    - previous output-pending runs observed `continuous_decode_output_frame_count=0`
+    - this rerun produced `continuous_decode_output_frame_count=11`
+    - `continuous_decode_queue_len=11`
+    - `continuous_decode_stdout_first_byte_seen=true`
+    - `continuous_decode_stdout_first_byte_elapsed_ms=4126`
+    - `continuous_decode_first_input_to_first_output_elapsed_ms=5322`
+    - `continuous_decode_stdout_partial_bytes_read=0`
+    - `continuous_decode_stdout_expected_frame_bytes=921600`
+  - interpretation:
+    - low-latency / probe args changed the runtime boundary enough for FFmpeg stdout to deliver full raw BGRA frames
+    - this is not a continuous render-path success because decoded frames were not consumed by render
+- FAIL:
+  - continuous render consumption:
+    - `render_used_continuous_decoded_count=0`
+    - `continuous_decode_lookup_hit_count=0`
+    - `continuous_decode_lookup_miss_count=15`
+    - `continuous_decode_lookup_miss_reason_counts=exact_key_missing:0|queue_empty:0|runtime_disabled:0|output_pending:15|frame_id_lagging:0|unknown:0`
+    - `render_used_one_shot_fallback_count=15`
+  - FPS improvement attributable to continuous path:
+    - `effective_render_fps_after_first_render=13.627`
+    - because `render_used_continuous_decoded_count=0`, this FPS is not attributed to continuous decoded-frame consumption
+  - Production Readiness: FAIL
+- stale decoded frame evidence:
+  - requested selected frame is far ahead of latest continuous decoded output:
+    - `continuous_decode_requested_frame_id=535`
+    - `continuous_decode_latest_decoded_frame_id=386`
+    - `continuous_decode_requested_minus_latest_lag=149`
+    - `continuous_decode_frame_id_lag=173`
+  - decoded queue contains only older frames relative to the requested frame:
+    - `continuous_decode_queue_oldest_frame_id=4`
+    - `continuous_decode_queue_newest_frame_id=386`
+    - `continuous_decode_stale_frame_available_count=11`
+    - `continuous_decode_output_frame_id_min=4`
+    - `continuous_decode_output_frame_id_max=386`
+  - continuous input remains sparse / render-demand driven:
+    - `continuous_decode_input_frame_count=15`
+    - `continuous_decode_input_frame_id_min=4`
+    - `continuous_decode_input_frame_id_max=535`
+    - `continuous_decode_input_frame_id_gap_max=66`
+    - `continuous_decode_input_frame_id_gap_total=531`
+    - `continuous_decode_input_non_consecutive_count=14`
+    - `continuous_decode_input_keyframe_count=15`
+    - `continuous_decode_input_non_keyframe_count=0`
+  - output correspondence lag remains visible:
+    - `continuous_decode_output_pending_correspondence_count=3`
+- stderr note:
+  - `continuous_decode_ffmpeg_stderr_summary=[in#0/h264_...] Stream #0: not enough frames to estimate rate; consider increasing probesize`
+  - current evidence should be read as args-variant output progress plus stale decode lag, not as full FFmpeg runtime success
+- current interpretation:
+  - low-latency / probe args are useful enough to keep as an opt-in diagnostic/runtime variant
+  - output can now be produced, but the current render-demand sparse feed cannot keep latest decoded output close enough to the selected frame
+  - exact `frame_id` lookup cannot hit because requested frame `535` is far ahead of latest decoded frame `386`
+  - decoded queue has stale frames available, but silently displaying latest decoded frame would risk showing old video out of sync
+  - latest decoded fallback is therefore held out of the next candidate until a targetTime/staleness policy proves it is safe
+  - next work should move docs-first to slot0 per-client continuous feed/drain policy, not to latest decoded fallback
+
+## Slot0 Per-Client Continuous Feed / Drain Policy Draft
+- goal:
+  - stop treating continuous decoder input as a render-demand side effect of exact selected-frame cache miss
+  - feed slot0 from a per-client stream source continuously enough that decoded output can stay near targetTime / selected frame instead of lagging by hundreds of frame ids
+  - keep this as a docs-first design until the minimum policy is clear
+- current render-demand feed:
+  - scheduler selects one encoded frame for the current render tick
+  - decode hook checks exact selected `client_id + run_id + frame_id` cache key
+  - on miss, it enqueues only that selected access unit into the continuous runtime
+  - the same tick falls back to one-shot if exact output is not already available
+  - result in latest rerun: sparse input `4 -> 535`, output only through `386`, exact lookup `0`, one-shot fallback `15`
+- proposed per-client feed:
+  - slot0 owns a continuous feed cursor for its configured `client_id + run_id`
+  - each tick, before render decode lookup, the feed boundary reads a bounded batch of consecutive or nearest-available queued encoded frames from the handoff/source side
+  - the feed boundary prefers monotonic `frame_id` progression and avoids enqueueing duplicate frame ids already accepted by the continuous runtime
+  - targetTime selection still decides what render wants to display; the feed boundary only keeps the decoder warm and near the source stream
+- handoff source access:
+  - first design should stay switcher-side and reuse existing handoff/source abstractions where possible
+  - do not move targetTime selection to server
+  - do not change client/server UDP protocol
+  - if current named-pipe handoff exposes only one read per request, the first design may need a small switcher-side feed helper that issues bounded repeated reads for slot0 only
+  - a hot-path queue snapshot or server push stream remains out of scope unless repeated one-frame reads prove insufficient
+- queue / backpressure / drop policy:
+  - input queue is per slot and bounded by frame count
+  - first policy target: keep roughly one second or less of 30fps input, e.g. `30` accepted access units, unless runtime evidence suggests a smaller bound
+  - when full, drop oldest frames that are already older than the feed cursor / render target window
+  - prefer keeping the newest decodable keyframe plus recent frames over preserving every stale access unit
+  - never block render loop waiting for feed queue space
+  - expose drop counts before using drops as a tuning signal
+- decoder input feed cadence:
+  - feed at most a bounded batch per render tick, rather than unbounded catch-up
+  - initial docs candidate: enqueue up to `N` new slot0 access units per tick, where `N` starts small and is measured against pipe/write pressure
+  - feed should happen before exact cache lookup drain so freshly decoded output from previous ticks is visible
+  - writer thread remains the owner of FFmpeg stdin writes; render thread only enqueues or skips
+- targetTime / latest decoded / exact frame_id handling:
+  - exact selected `frame_id` cache hit remains the only safe continuous render consumption in the current code path
+  - latest decoded fallback is not the next candidate because latest decoded frame may be stale by `149` frame ids or more
+  - targetTime-aware decoded queue lookup remains a future policy, but should require explicit maximum staleness and no-future-frame guards before it can render old decoded frames
+  - decoder runtime should not decide sync; it should provide decoded frames plus metadata and diagnostics
+- one-shot fallback:
+  - keep one-shot fallback as the safety path for exact miss, runtime disabled, feed stall, or suspicious lag
+  - first feed/drain slice should reduce fallback count only if exact decoded frames become available naturally
+  - do not delete one-shot fallback while continuous output is stale or unconsumed
+- diagnostics needed for first feed/drain slice:
+  - feed attempts / accepted / skipped duplicate / dropped stale counts
+  - feed batch size and per-tick feed elapsed
+  - source read count and source no-frame/waiting/error counts for feed
+  - input queue high-water mark and drop reason counts
+  - latest fed frame id, latest requested frame id, latest decoded frame id, requested-minus-latest lag
+  - exact hit count, stale decoded available count, and fallback-to-one-shot count remain mandatory
+- first implementation slice boundary, if this design is accepted later:
+  - slot0 only
+  - two-real preview loop only
+  - opt-in continuous decoder only
+  - docs/tests/diagnostics first, no slot1 continuous and no 4-client widening
+  - preserve exact lookup and one-shot fallback
+  - no latest decoded fallback and no targetTime-aware render consumption in the first feed/drain implementation
+
 ## request/response persistent decoder との違い
 - request/response persistent decoder:
   - render loop から `1 request -> stdin write -> stdout expected bytes read -> response wait` を同期的に待つ
@@ -510,9 +641,9 @@
 - server / handoff / targetTime source は引き続き encoded frame を選ぶ
 - continuous decoder は targetTime を決めない
 - decoder runtime は「投入された access unit を順序通り decode し、decoded frame を frame_id / timestamp metadata と一緒に保持する」だけに寄せる
-- render loop の lookup 方針は first slice では以下の二段にする
-  - preferred: selected encoded frame の `client_id + run_id + frame_id` に一致する decoded frame
-  - fallback candidate: same source の latest decoded frame で、targetTime より未来に進みすぎないもの
+- render loop の lookup 方針は current first slice では selected encoded frame の `client_id + run_id + frame_id` に一致する decoded frame を preferred / effectively only safe consumption path とする
+- same source の latest decoded frame fallback は、latest rerun で `requested_frame_id=535` に対して `latest_decoded_frame_id=386` まで stale になり得ることが分かったため、現時点では次候補から外す
+- future targetTime-aware decoded queue lookup を検討する場合は、targetTime より未来に進まないことに加え、最大 staleness / frame_id lag guard を持つまでは render に使わない
 - targetTime より古すぎる decoded frame を使うかどうかは display policy / stale policy 側で扱い、decoder runtime が勝手に同期判断をしない
 
 ## frame_id 対応
@@ -693,20 +824,20 @@ first implementation で summary に追加済み:
 - `render_used_continuous_decoded_count` は render loop が one-shot wait を避けられた回数
 - `render_used_one_shot_fallback_count` が高い場合、continuous path はまだ hot path になっていない
 
-次に優先する rerun evidence:
+次に優先する docs/design evidence:
 
-1. opt-in FFmpeg args variant:
-   - 人間側 `S:\stream-sync` で `--disable-persistent-decoder --enable-continuous-stream-decoder --continuous-decoder-low-latency-args` を付けて rerun する
-   - `continuous_decode_ffmpeg_args_summary` に low-latency/probe args と `-loglevel warning` が入ったか確認する
-   - args variant により `stdout_read_in_progress=true` / output `0` が変わるかを見る
-2. stdout boundary visibility:
-   - current `read_exact(921600)` は full raw frame 到着まで成功扱いにならない
-   - partial bytes / first byte の有無を追加し、FFmpeg が全く出していないのか、full frame 未満で止まっているのかを分ける
-3. feed policy decision support:
-   - selected-frame-only render-demand feed が sparse である evidence は保持
-   - ただし all-keyframe input でも output pending が続いたため、feed architecture rewrite より先に FFmpeg runtime args / buffering / stdout boundary を検証する
+1. slot0 per-client continuous feed/drain policy:
+   - current render-demand selected-frame-only feed と、per-client stream feed の責務差分を固定する
+   - handoff/source からどの read mode / cadence で連続 access unit を取得するかを決める
+   - queue bound、drop、backpressure、duplicate frame_id skip の最小 policy を決める
+2. stale decoded frame safety:
+   - latest decoded fallback は `requested_frame_id=535` / `latest_decoded_frame_id=386` のような古い frame 表示リスクがあるため保留する
+   - exact frame_id lookup は維持し、targetTime-aware lookup は最大 staleness guard を設計してから別 step にする
+3. diagnostics for feed/drain:
+   - feed accepted / dropped / skipped duplicate / source no-frame / source waiting / source error counts
+   - feed batch size、input queue high-water mark、requested-minus-latest lag、stale decoded available count を first implementation candidate に含める
 
-この slice は observability / opt-in experiment-only とし、slot1 continuous 化、4-client 化、default FFmpeg args / pixel format変更、one-shot fallback 削除、latest decoded fallback、targetTime-aware lookup 本実装には進めない。
+この次 slice も docs-first とし、slot1 continuous 化、4-client 化、default FFmpeg args / pixel format変更、one-shot fallback 削除、latest decoded fallback、targetTime-aware lookup 本実装には進めない。
 
 ## 最小 implementation slice
 2026-05-18 first slice で実装済み:
@@ -726,11 +857,11 @@ first implementation で summary に追加済み:
 
 future implementation slice:
 
-1. next rerun で opt-in low-latency/probe args が output `0` を変えるか確認する
-2. `continuous_decode_stdout_first_byte_seen=false` なら FFmpeg が stdout に全く出していない方向へ寄せる
-3. `continuous_decode_stdout_first_byte_seen=true` かつ `continuous_decode_stdout_partial_bytes_read < 921600` なら stdout full-frame boundary / filter output completion の問題として扱う
-4. low-latency/probe args でも output `0` が続く場合、bounded stderr summary の warning log から parser/buffering/drop reason を見る
-5. output `0` が feed policy 由来と確認できた場合のみ、slot0 per-client continuous feed/drain policy を別 step で設計する
+1. slot0 per-client continuous feed/drain policy を docs-first で固定する
+2. first implementation scope を slot0 / two-real preview loop / opt-in continuous decoder / diagnostics-first に限定する
+3. feed source read cadence と queue/backpressure/drop policy を決める
+4. exact lookup + one-shot fallback を維持したまま、continuous input が sparse render-demand feed から脱せるかを確認する
+5. latest decoded fallback と targetTime-aware render consumption は、stale guard 設計ができるまで実装しない
 6. restart policy は first slice の counter visibility から始め、restart storm を避ける threshold を runtime evidence 後に決める
 
 ## out of scope

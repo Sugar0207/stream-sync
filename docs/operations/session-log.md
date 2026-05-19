@@ -2,6 +2,110 @@
 
 ## 2026-05-19
 ### Type
+- Codex docs-first investigation
+
+### Work
+- Reflected latest human rerun `S:\stream-sync\manual-logs\two-client-render-rerun-20260519-171331`.
+- Kept this step docs-only and did not change code.
+- Separated low-latency/probe args runtime progress from render consumption failure.
+- Recorded continuous stdout output as PARTIAL PASS because output progressed from `0` to `11`.
+- Recorded continuous render consumption and continuous-attributable FPS improvement as FAIL because render used `0` continuous decoded frames and fell back to one-shot `15` times.
+- Reframed the current blocker as stale decoded frame / lag from render-demand sparse feed.
+- Moved the next candidate to slot0 per-client continuous feed/drain policy docs-first design.
+- Kept latest decoded fallback, targetTime-aware decoded queue lookup, slot1 continuous, 4-client continuous, request/response persistent decoder revive, GPU decode, and one-shot fallback removal out of scope.
+
+### Changed Files
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+- `docs/operations/continuous-stream-decoder-plan.md`
+
+### Runtime Result
+- Latest rerun:
+  - `S:\stream-sync\manual-logs\two-client-render-rerun-20260519-171331`
+- PASS:
+  - opt-in propagation: `continuous_decode_config_enabled=true`
+  - runtime enabled: `continuous_decode_runtime_enabled=true`
+  - slot0 enabled: `continuous_decode_slot0_enabled=true`
+  - low-latency args enabled: `continuous_decode_ffmpeg_low_latency_args_enabled=true`
+  - probe args enabled: `continuous_decode_ffmpeg_probe_args_enabled=true`
+  - loglevel variant: `continuous_decode_ffmpeg_loglevel=warning`
+  - one-shot fallback safety: `render_used_one_shot_fallback_count=15`
+- PARTIAL PASS:
+  - continuous stdout output: `continuous_decode_output_frame_count=11`
+  - continuous queue length: `continuous_decode_queue_len=11`
+  - first stdout byte: `continuous_decode_stdout_first_byte_seen=true`
+  - first stdout byte elapsed: `continuous_decode_stdout_first_byte_elapsed_ms=4126`
+  - first input to first output elapsed: `continuous_decode_first_input_to_first_output_elapsed_ms=5322`
+  - expected raw BGRA frame bytes: `continuous_decode_stdout_expected_frame_bytes=921600`
+- FAIL:
+  - render consumption: `render_used_continuous_decoded_count=0`
+  - exact lookup: `continuous_decode_lookup_hit_count=0`
+  - fallback: `continuous_decode_fallback_to_one_shot_count=15`
+  - FPS improvement attributable to continuous path: `effective_render_fps_after_first_render=13.627` is not attributed to continuous decoded consumption
+  - Production Readiness: FAIL
+
+### Findings
+- Low-latency/probe args are no longer an output-0 failure in this rerun; continuous stdout produced `11` full raw frames.
+- Render consumption still failed because exact lookup never hit and one-shot fallback handled every rendered decode attempt.
+- The current blocker is stale decoded output:
+  - `continuous_decode_requested_frame_id=535`
+  - `continuous_decode_latest_decoded_frame_id=386`
+  - `continuous_decode_requested_minus_latest_lag=149`
+  - `continuous_decode_frame_id_lag=173`
+  - `continuous_decode_stale_frame_available_count=11`
+  - `continuous_decode_queue_oldest_frame_id=4`
+  - `continuous_decode_queue_newest_frame_id=386`
+- Sparse render-demand feed remains visible:
+  - `continuous_decode_input_frame_count=15`
+  - `continuous_decode_input_frame_id_min=4`
+  - `continuous_decode_input_frame_id_max=535`
+  - `continuous_decode_input_frame_id_gap_max=66`
+  - `continuous_decode_input_frame_id_gap_total=531`
+  - `continuous_decode_input_non_consecutive_count=14`
+- FFmpeg warning context:
+  - `continuous_decode_ffmpeg_stderr_summary=[in#0/h264_...] Stream #0: not enough frames to estimate rate; consider increasing probesize`
+
+### Decisions
+- Treat low-latency/probe args as PARTIAL PASS, not full success.
+- Treat render consumption as FAIL and keep Production Readiness as FAIL.
+- Do not implement latest decoded fallback next, because latest decoded frame can be stale by `149` frame ids in current evidence.
+- Move the next design candidate to slot0 per-client continuous feed/drain policy.
+- Keep exact selected frame lookup and one-shot fallback as safety rails for the first feed/drain design.
+
+### Next Design Notes
+- Minimal slot0 per-client feed/drain design should cover:
+  - current render-demand feed vs continuous per-client feed
+  - how to read consecutive or near-consecutive access units from the handoff/source side
+  - input queue bounds, backpressure, duplicate skip, and stale drop policy
+  - feed cadence per render tick
+  - exact frame_id lookup, targetTime, latest decoded frame, and staleness guard responsibilities
+  - one-shot fallback preservation
+  - feed/drain diagnostics
+  - first implementation slice limited to slot0 / two-real preview loop / opt-in continuous path
+
+### TODO Update
+- Completed:
+  - latest low-latency/probe args rerun documentation
+  - PARTIAL PASS vs FAIL separation
+  - stale decoded frame / lag interpretation
+- Added:
+  - next candidate: slot0 per-client continuous feed/drain policy docs-first design
+  - latest decoded fallback hold due stale-frame risk
+- Held:
+  - code changes
+  - latest decoded fallback
+  - targetTime-aware decoded queue lookup
+  - slot1 continuous
+  - 4-client continuous
+  - request/response persistent decoder revive
+  - GPU decode
+
+### Validation
+- `git diff --check`
+  - result: PASS
+
+## 2026-05-19
+### Type
 - Codex implementation
 
 ### Work
