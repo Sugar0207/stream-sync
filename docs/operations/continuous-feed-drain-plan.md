@@ -236,6 +236,52 @@
 - Should continuous runtime expose an enqueue-only method that does not also perform render lookup side effects?
 - Which diagnostics should be added to the existing summary line first without making it too noisy?
 
+## first implementation status
+2026-05-19 first code slice implemented:
+
+- two-real preview loop only
+- slot0 configured `client0_id + run0_id` only
+- requires opt-in continuous decoder
+- adds a synchronous bounded helper before validation/decode/render
+- helper reads `PreviewOldest` and attempts at most `2` frames per preview-loop tick
+- helper enqueues accepted access units into the existing slot0 continuous runtime input path
+- helper advances the source with `ConsumeOldest` only after enqueue success
+- helper skips targetTime-future oldest frames
+- exact selected-frame lookup remains the only continuous render consumption path
+- render-demand enqueue remains as fallback when exact lookup misses
+- one-shot fallback remains mandatory
+
+Diagnostics added to summary:
+
+- `continuous_feed_enabled`
+- `continuous_feed_attempt_count`
+- `continuous_feed_handoff_request_count`
+- `continuous_feed_frame_received_count`
+- `continuous_feed_no_frame_count`
+- `continuous_feed_handoff_error_count`
+- `continuous_feed_enqueued_count`
+- `continuous_feed_skipped_count`
+- `continuous_feed_skip_reason_counts`
+- `continuous_feed_dropped_stale_input_count`
+- `continuous_feed_latest_received_frame_id`
+- `continuous_feed_latest_enqueued_frame_id`
+- `continuous_decode_input_from_feeder_count`
+- `continuous_decode_input_from_render_demand_count`
+- `continuous_decode_feeder_lag_to_selected`
+- `continuous_decode_render_exact_hit_count`
+- `continuous_decode_render_miss_stale_count`
+- `continuous_decode_render_miss_not_ready_count`
+
+Still not implemented:
+
+- latest decoded fallback
+- targetTime-aware decoded queue lookup
+- slot1 continuous
+- 4-client continuous
+- separate feeder thread
+- server/client/protocol changes
+- GPU decode
+
 ## readiness
 - Production Readiness remains FAIL
 - This plan is a first implementation boundary, not a production architecture

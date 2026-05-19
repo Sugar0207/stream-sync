@@ -2,6 +2,80 @@
 
 ## 2026-05-19
 ### Type
+- Codex implementation
+
+### Work
+- Added the first slot0 bounded continuous feed helper implementation slice for the two-real preview loop.
+- Kept the path additive and opt-in: it runs only when the continuous stream decoder is enabled for slot0.
+- The helper runs before validation/decode/render, reads `PreviewOldest`, enqueues at most `2` accepted slot0 access units per attempt, and advances the source with guarded `ConsumeOldest` only after enqueue success.
+- Preserved exact selected-frame lookup, render-demand enqueue fallback, and one-shot fallback.
+- Did not implement slot1 continuous decode, 4-client continuous decode, server/client/protocol changes, latest decoded fallback, targetTime-aware decoded queue lookup, request/response persistent decoder revival, GPU decode, pixel format changes, or a runtime rerun.
+
+### Changed Files
+- `apps/switcher/src/main.rs`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+- `docs/operations/continuous-feed-drain-plan.md`
+- `docs/operations/continuous-stream-decoder-plan.md`
+
+### Implementation
+- Added `continuous_feed_*` summary diagnostics for helper enablement, attempts, handoff requests, source frame/no-frame/error counts, enqueued/skipped counts, skip reason counts, stale input drops, and latest received/enqueued frame ids.
+- Split continuous input source diagnostics into:
+  - `continuous_decode_input_from_feeder_count`
+  - `continuous_decode_input_from_render_demand_count`
+- Added render-side exact/miss diagnostics:
+  - `continuous_decode_feeder_lag_to_selected`
+  - `continuous_decode_render_exact_hit_count`
+  - `continuous_decode_render_miss_stale_count`
+  - `continuous_decode_render_miss_not_ready_count`
+- Added a feed-specific enqueue path that shares the existing continuous runtime queue and decoded cache, but does not change render consumption policy.
+
+### Decisions
+- Use a synchronous bounded helper first, not a separate feeder thread.
+- Use `PreviewOldest -> enqueue -> guarded ConsumeOldest` for the first implementation slice.
+- Skip targetTime-future oldest frames rather than predecode them in this slice.
+- Keep latest decoded fallback held because latest decoded output can be stale relative to selected frame ids.
+- Keep Production Readiness as FAIL.
+
+### Runtime Guidance
+- Codex did not run a manual runtime rerun.
+- Next human rerun should be from `S:\stream-sync`.
+- Keep the suffix:
+  - `--disable-persistent-decoder --enable-continuous-stream-decoder --continuous-decoder-low-latency-args`
+- Read `continuous_feed_enqueued_count`, `continuous_decode_input_from_feeder_count`, `continuous_decode_input_from_render_demand_count`, `continuous_decode_feeder_lag_to_selected`, `continuous_decode_render_exact_hit_count`, `continuous_decode_render_miss_stale_count`, and `continuous_decode_render_miss_not_ready_count` before widening scope.
+
+### TODO Update
+- Completed:
+  - slot0 bounded feed helper first implementation slice
+  - feeder vs render-demand input diagnostics
+  - summary formatting fields for feed and render exact/miss classification
+- Added:
+  - next human rerun gate for continuous feed diagnostics
+  - evidence fields for stale lag / exact hit improvement
+- Held:
+  - latest decoded fallback
+  - targetTime-aware decoded queue lookup
+  - slot1 continuous
+  - 4-client continuous
+  - server/client/protocol changes
+  - request/response persistent decoder revival
+  - GPU decode
+
+### Validation
+- `cargo fmt`
+  - result: PASS
+- `cargo check -p stream-sync-switcher`
+  - result: PASS
+  - note: existing dead-code warnings remain in unrelated helpers
+- `cargo test -p stream-sync-switcher switcher_four_view_two_real_handoff_preview_summary_formats_expected_fields -- --nocapture`
+  - result: NOT RUN
+  - reason: escalation approval was rejected by the environment usage limit; no workaround execution was attempted
+- `git diff --check`
+  - result: PASS
+  - note: LF/CRLF warnings only
+
+## 2026-05-19
+### Type
 - Codex docs-first design
 
 ### Work

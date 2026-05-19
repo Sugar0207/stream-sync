@@ -603,6 +603,44 @@
   - preserve exact lookup and one-shot fallback
   - no latest decoded fallback and no targetTime-aware render consumption in the first feed/drain implementation
 
+## Slot0 Bounded Feed Helper First Slice
+2026-05-19 implementation status:
+
+- implemented for two-real preview loop only
+- implemented for slot0 configured `client0_id + run0_id` only
+- runs only when the opt-in continuous stream decoder is enabled
+- runs before validation/decode/render
+- reads `PreviewOldest` and attempts at most `2` access units per preview-loop tick
+- enqueues accepted access units into the existing slot0 continuous runtime input path
+- advances the source with guarded `ConsumeOldest` only after enqueue success
+- skips targetTime-future oldest frames
+- keeps exact selected-frame lookup as the only continuous render consumption path
+- keeps render-demand enqueue as fallback on exact miss
+- keeps one-shot fallback
+
+Added diagnostics:
+
+- `continuous_feed_enabled`
+- `continuous_feed_attempt_count`
+- `continuous_feed_handoff_request_count`
+- `continuous_feed_frame_received_count`
+- `continuous_feed_no_frame_count`
+- `continuous_feed_handoff_error_count`
+- `continuous_feed_enqueued_count`
+- `continuous_feed_skipped_count`
+- `continuous_feed_skip_reason_counts`
+- `continuous_feed_dropped_stale_input_count`
+- `continuous_feed_latest_received_frame_id`
+- `continuous_feed_latest_enqueued_frame_id`
+- `continuous_decode_input_from_feeder_count`
+- `continuous_decode_input_from_render_demand_count`
+- `continuous_decode_feeder_lag_to_selected`
+- `continuous_decode_render_exact_hit_count`
+- `continuous_decode_render_miss_stale_count`
+- `continuous_decode_render_miss_not_ready_count`
+
+This slice intentionally still does not implement latest decoded fallback, targetTime-aware decoded render consumption, slot1 continuous decode, 4-client continuous decode, server/client/protocol changes, request/response persistent decoder revival, GPU decode, or one-shot fallback removal. Production Readiness remains FAIL.
+
 ## request/response persistent decoder との違い
 - request/response persistent decoder:
   - render loop から `1 request -> stdin write -> stdout expected bytes read -> response wait` を同期的に待つ
