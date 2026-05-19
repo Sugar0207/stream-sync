@@ -2,6 +2,101 @@
 
 ## 2026-05-19
 ### Type
+- Codex implementation
+
+### Work
+- Added a two-real preview loop only experimental continuous FFmpeg args opt-in.
+- Added CLI flag `--continuous-decoder-low-latency-args`.
+- Kept default continuous FFmpeg args unchanged.
+- Added stdout first-byte / partial-byte diagnostics for the continuous reader thread.
+- Kept continuous feeding, exact lookup, one-shot fallback, pixel format, latest decoded fallback, targetTime-aware lookup, slot0 per-client feed/drain policy, slot1 continuous, and 4-client rollout unchanged.
+- Updated `docs/operations/todo.md` and `docs/operations/continuous-stream-decoder-plan.md`.
+- Did not run a runtime rerun in Codex.
+
+### Changed Files
+- `apps/switcher/src/main.rs`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+- `docs/operations/continuous-stream-decoder-plan.md`
+
+### Implementation
+- New CLI option:
+  - `--continuous-decoder-low-latency-args`
+  - intended to be used with `--enable-continuous-stream-decoder`
+  - default is false
+- Default continuous args remain:
+  - `ffmpeg -hide_banner -loglevel error -f h264 -i pipe:0 -vf scale=640:360:flags=neighbor -f rawvideo -pix_fmt bgra pipe:1`
+- Opt-in continuous args add:
+  - `-loglevel warning`
+  - `-fflags nobuffer`
+  - `-flags low_delay`
+  - `-analyzeduration 0`
+  - `-probesize 32`
+  - `-flush_packets 1`
+- Added summary diagnostics:
+  - `continuous_decode_ffmpeg_low_latency_args_enabled`
+  - `continuous_decode_ffmpeg_probe_args_enabled`
+  - `continuous_decode_ffmpeg_loglevel`
+  - `continuous_decode_stdout_first_byte_seen`
+  - `continuous_decode_stdout_first_byte_elapsed_ms`
+  - `continuous_decode_stdout_partial_bytes_read`
+  - `continuous_decode_stdout_partial_read_count`
+  - `continuous_decode_stdout_expected_frame_bytes`
+  - `continuous_decode_stdout_read_waiting_for_full_frame`
+
+### Decisions
+- Use `warning` rather than `info` for the opt-in loglevel to keep stderr bounded and less noisy while still exposing decode/parser warnings hidden by `error`.
+- Preserve the full-frame stdout wait semantics: decoded output is still emitted only after one full raw BGRA frame is read.
+- Treat `continuous_decode_stdout_partial_bytes_read` as current in-progress bytes toward the current expected raw frame; it resets after a full frame is completed.
+- Keep Production Readiness as FAIL.
+
+### Runtime Guidance
+- Next human rerun should be from `S:\stream-sync`.
+- Add this suffix to the existing two-real command:
+  - `--disable-persistent-decoder --enable-continuous-stream-decoder --continuous-decoder-low-latency-args`
+- Key fields to compare:
+  - `continuous_decode_ffmpeg_args_summary`
+  - `continuous_decode_ffmpeg_low_latency_args_enabled`
+  - `continuous_decode_ffmpeg_probe_args_enabled`
+  - `continuous_decode_ffmpeg_loglevel`
+  - `continuous_decode_stdout_first_byte_seen`
+  - `continuous_decode_stdout_partial_bytes_read`
+  - `continuous_decode_stdout_expected_frame_bytes`
+  - `continuous_decode_output_frame_count`
+
+### TODO Update
+- Completed:
+  - opt-in low-latency/probe args toggle
+  - stdout first-byte / partial-byte diagnostics
+  - summary formatting test update
+- Added:
+  - next rerun guidance with `--continuous-decoder-low-latency-args`
+  - first-byte / partial-byte interpretation
+- Held:
+  - latest decoded fallback
+  - targetTime-aware lookup
+  - slot0 per-client feed/drain implementation
+  - slot1 / 4-client rollout
+
+### Validation
+- `cargo fmt`
+  - result: PASS
+- `cargo check -p stream-sync-switcher`
+  - result: PASS
+  - note: existing dead-code warnings remain in unrelated helpers
+- `cargo test -p stream-sync-switcher switcher_four_view_two_real_handoff_preview_summary_formats_expected_fields -- --nocapture`
+  - result: PASS
+  - note: initial sandbox runner attempt timed out, escalated rerun completed successfully
+- `cargo test -p stream-sync-switcher switcher_two_real_handoff_preview_options -- --nocapture`
+  - result: PASS
+- `cargo test -p stream-sync-switcher switcher_two_real_continuous_ffmpeg_args -- --nocapture`
+  - result: PASS
+- `git diff --check`
+  - result: PASS
+  - note: LF/CRLF warnings only
+
+## 2026-05-19
+### Type
 - Codex docs-first investigation
 
 ### Work

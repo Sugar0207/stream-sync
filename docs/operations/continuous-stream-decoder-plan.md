@@ -424,6 +424,51 @@
     - `continuous_decode_stdout_first_byte_elapsed_ms`
   - do not use this experiment to implement latest decoded fallback, targetTime-aware lookup, slot0 per-client feed/drain, slot1 rollout, or 4-client rollout
 
+## Experimental Low-Latency Args Toggle Implementation
+- 2026-05-19 implementation slice added a two-real preview loop only opt-in flag:
+  - `--continuous-decoder-low-latency-args`
+  - intended usage with the existing continuous opt-in:
+    - `--disable-persistent-decoder --enable-continuous-stream-decoder --continuous-decoder-low-latency-args`
+- default behavior:
+  - default continuous FFmpeg args remain unchanged:
+    - `ffmpeg -hide_banner -loglevel error -f h264 -i pipe:0 -vf scale=640:360:flags=neighbor -f rawvideo -pix_fmt bgra pipe:1`
+  - continuous feeding, exact lookup, one-shot fallback, pixel format, and decoded queue/cache behavior are unchanged
+- opt-in behavior:
+  - `-loglevel warning`
+  - pre-input:
+    - `-fflags nobuffer`
+    - `-flags low_delay`
+    - `-analyzeduration 0`
+    - `-probesize 32`
+  - output-side:
+    - `-flush_packets 1`
+  - `continuous_decode_ffmpeg_args_summary` includes the selected args so the human rerun can verify the variant actually ran
+- added summary diagnostics:
+  - `continuous_decode_ffmpeg_low_latency_args_enabled`
+  - `continuous_decode_ffmpeg_probe_args_enabled`
+  - `continuous_decode_ffmpeg_loglevel`
+  - `continuous_decode_stdout_first_byte_seen`
+  - `continuous_decode_stdout_first_byte_elapsed_ms`
+  - `continuous_decode_stdout_partial_bytes_read`
+  - `continuous_decode_stdout_partial_read_count`
+  - `continuous_decode_stdout_expected_frame_bytes`
+  - `continuous_decode_stdout_read_waiting_for_full_frame`
+- stdout reader boundary:
+  - the reader still waits for a full raw BGRA frame before producing a decoded output event
+  - for the current scaled path, expected frame bytes are `640 * 360 * 4 = 921600`
+  - partial-byte diagnostics expose whether FFmpeg has emitted no stdout bytes or has emitted less than one full frame while the reader remains blocked
+- this slice intentionally does not change:
+  - slot1 continuous decode
+  - 4-client rollout
+  - server / client / protocol code
+  - request/response persistent decoder
+  - GPU decode
+  - one-shot fallback
+  - pixel format
+  - latest decoded fallback
+  - targetTime-aware decoded queue lookup
+  - slot0 per-client feed/drain policy
+
 ## request/response persistent decoder との違い
 - request/response persistent decoder:
   - render loop から `1 request -> stdin write -> stdout expected bytes read -> response wait` を同期的に待つ
@@ -624,6 +669,15 @@ first implementation で summary に追加済み:
 - `continuous_decode_last_input_payload_bytes`
 - `continuous_decode_first_input_to_first_output_elapsed_ms`
 - `continuous_decode_first_input_to_now_elapsed_ms`
+- `continuous_decode_ffmpeg_loglevel`
+- `continuous_decode_ffmpeg_low_latency_args_enabled`
+- `continuous_decode_ffmpeg_probe_args_enabled`
+- `continuous_decode_stdout_partial_bytes_read`
+- `continuous_decode_stdout_first_byte_seen`
+- `continuous_decode_stdout_first_byte_elapsed_ms`
+- `continuous_decode_stdout_partial_read_count`
+- `continuous_decode_stdout_expected_frame_bytes`
+- `continuous_decode_stdout_read_waiting_for_full_frame`
 
 追加候補:
 
@@ -632,12 +686,6 @@ first implementation で summary に追加済み:
 - `continuous_decode_keyframe_wait_count`
 - `continuous_decode_frame_id_mismatch_suspicion_count`
 - `continuous_decode_stdout_reader_error_count`
-- `continuous_decode_ffmpeg_loglevel`
-- `continuous_decode_ffmpeg_low_latency_args_enabled`
-- `continuous_decode_ffmpeg_probe_args_enabled`
-- `continuous_decode_stdout_partial_bytes_read`
-- `continuous_decode_stdout_first_byte_seen`
-- `continuous_decode_stdout_first_byte_elapsed_ms`
 
 読み方:
 - `continuous_decode_input_frame_count` と `output_frame_count` の差は decoder lag の coarse signal
@@ -645,11 +693,11 @@ first implementation で summary に追加済み:
 - `render_used_continuous_decoded_count` は render loop が one-shot wait を避けられた回数
 - `render_used_one_shot_fallback_count` が高い場合、continuous path はまだ hot path になっていない
 
-次に優先する evidence / experiment:
+次に優先する rerun evidence:
 
 1. opt-in FFmpeg args variant:
-   - default continuous args は変更しない
-   - experimental toggle でだけ low-latency/probe args と temporary loglevel を試す
+   - 人間側 `S:\stream-sync` で `--disable-persistent-decoder --enable-continuous-stream-decoder --continuous-decoder-low-latency-args` を付けて rerun する
+   - `continuous_decode_ffmpeg_args_summary` に low-latency/probe args と `-loglevel warning` が入ったか確認する
    - args variant により `stdout_read_in_progress=true` / output `0` が変わるかを見る
 2. stdout boundary visibility:
    - current `read_exact(921600)` は full raw frame 到着まで成功扱いにならない
@@ -678,11 +726,12 @@ first implementation で summary に追加済み:
 
 future implementation slice:
 
-1. opt-in `--continuous-decoder-low-latency-args` 相当を追加する場合は default args を維持し、summary に args variant / loglevel / probe toggles を出す
-2. stdout partial-byte / first-byte diagnostics を追加し、full-frame `read_exact` boundary で観測が消えていないかを確認する
-3. low-latency/probe args でも output `0` が続く場合、stderr loglevel を bounded に上げた rerun evidence で parser/buffering/drop reason を見る
-4. output `0` が feed policy 由来と確認できた場合のみ、slot0 per-client continuous feed/drain policy を別 step で設計する
-5. restart policy は first slice の counter visibility から始め、restart storm を避ける threshold を runtime evidence 後に決める
+1. next rerun で opt-in low-latency/probe args が output `0` を変えるか確認する
+2. `continuous_decode_stdout_first_byte_seen=false` なら FFmpeg が stdout に全く出していない方向へ寄せる
+3. `continuous_decode_stdout_first_byte_seen=true` かつ `continuous_decode_stdout_partial_bytes_read < 921600` なら stdout full-frame boundary / filter output completion の問題として扱う
+4. low-latency/probe args でも output `0` が続く場合、bounded stderr summary の warning log から parser/buffering/drop reason を見る
+5. output `0` が feed policy 由来と確認できた場合のみ、slot0 per-client continuous feed/drain policy を別 step で設計する
+6. restart policy は first slice の counter visibility から始め、restart storm を避ける threshold を runtime evidence 後に決める
 
 ## out of scope
 - request/response persistent decoder の復活
