@@ -329,3 +329,48 @@ Follow-up:
 - Detailed output lag / pending correspondence analysis now lives in `docs/operations/continuous-output-lag-plan.md`.
 - Do not widen `allowed_lag_frames=5` until the output lag plan has runtime diagnostics for pending correspondence frame_id range, latest input/output lag, and output throughput.
 - Bounded lookup remains a guarded render-consumption policy; it is not expected to fix decoder output lag by itself.
+
+## output lag diagnostics rerun update
+latest rerun:
+
+- `S:\stream-sync\manual-logs\two-client-render-rerun-20260520-014041`
+
+Wiring / output PASS:
+
+- `continuous_decode_config_enabled=true`
+- `continuous_decode_runtime_enabled=true`
+- `continuous_decode_slot0_enabled=true`
+- `continuous_decode_ffmpeg_low_latency_args_enabled=true`
+- `continuous_feed_enabled=true`
+- `continuous_decode_bounded_lookup_allowed_lag_frames=5`
+- `continuous_decode_input_from_feeder_count=412`
+- `continuous_decode_input_from_render_demand_count=5`
+- `continuous_decode_output_frame_count=367`
+
+Lookup adoption / render consumption FAIL:
+
+- `continuous_decode_bounded_lookup_hit_count=0`
+- `continuous_decode_bounded_lookup_rejected_stale_count=13`
+- `continuous_decode_bounded_lookup_rejected_not_ready_count=2`
+- `continuous_decode_bounded_lookup_fallback_to_one_shot_count=15`
+- `render_used_continuous_decoded_count=0`
+- `render_used_one_shot_fallback_count=15`
+
+Output lag evidence:
+
+- `continuous_decode_requested_frame_id=446`
+- `continuous_decode_latest_decoded_frame_id=401`
+- `continuous_decode_requested_minus_latest_lag=64`
+- `continuous_decode_frame_id_lag=64`
+- `continuous_decode_latest_input_minus_latest_output_lag=78`
+- `continuous_decode_output_lag_to_selected_frames=64`
+- `continuous_decode_output_pending_correspondence_count=48`
+- `continuous_decode_output_throughput_fps=23.309`
+- `continuous_decode_reader_full_frame_elapsed_ms_max=1305`
+
+Interpretation:
+
+- Bounded lookup remains safety-correct: it rejects stale/not-ready frames instead of displaying continuous output that is far behind requested selection.
+- `allowed_lag_frames=5` should not be widened as the next step. The observed lag is much larger than a safe sync-first guard.
+- TargetTime-aware decoded queue lookup and latest decoded fallback stay held until continuous output is close enough to selected/source cadence.
+- Next work should be docs-first analysis of continuous decoder output throughput, stdout full-frame read latency, raw BGRA output path cost, and one-shot fallback double-load.

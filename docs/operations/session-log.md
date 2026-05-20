@@ -2,6 +2,122 @@
 
 ## 2026-05-20
 ### Type
+- Codex docs-only evidence reflection
+
+### Work
+- Reflected latest human rerun `S:\stream-sync\manual-logs\two-client-render-rerun-20260520-014041`.
+- Kept this step docs-only and did not change code.
+- Separated feed/helper PASS, continuous output PASS, and continuous render consumption FAIL.
+- Recorded that output-lag diagnostics wiring is PASS and that continuous output throughput / stdout read latency are now the next docs-first analysis target.
+- Kept threshold tuning, targetTime-aware lookup implementation, latest decoded fallback, feed max count changes, slot1/4-client rollout, request/response persistent decoder revival, GPU decode, and one-shot fallback removal out of scope.
+- Kept Production Readiness as FAIL.
+
+### Changed Files
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+- `docs/operations/continuous-output-lag-plan.md`
+- `docs/operations/continuous-feed-drain-plan.md`
+- `docs/operations/continuous-stream-decoder-plan.md`
+- `docs/operations/continuous-decoded-lookup-plan.md`
+
+### Runtime Evidence
+- latest rerun:
+  - `S:\stream-sync\manual-logs\two-client-render-rerun-20260520-014041`
+- PASS:
+  - continuous opt-in: `continuous_decode_config_enabled=true`
+  - continuous runtime: `continuous_decode_runtime_enabled=true`
+  - slot0 enabled: `continuous_decode_slot0_enabled=true`
+  - low-latency args: `continuous_decode_ffmpeg_low_latency_args_enabled=true`
+  - bounded feed helper: `continuous_feed_enabled=true`
+  - output-lag diagnostics wiring: latest input-output lag, pending correspondence frame-id range, output throughput, reader full-frame max, and queue drop reason counts are present
+- Feed helper PASS:
+  - `continuous_feed_attempt_count=300`
+  - `continuous_feed_handoff_request_count=930`
+  - `continuous_feed_frame_received_count=418`
+  - `continuous_feed_enqueued_count=412`
+  - `continuous_feed_skipped_count=6`
+  - `continuous_decode_input_from_feeder_count=412`
+  - `continuous_decode_input_from_render_demand_count=5`
+  - `continuous_decode_feeder_lag_to_selected=7`
+- Continuous output PASS:
+  - `continuous_decode_input_frame_count=417`
+  - `continuous_decode_output_frame_count=367`
+  - `continuous_decode_queue_len=30`
+  - `continuous_decode_dropped_stale_count=337`
+  - `continuous_decode_queue_drop_reason_counts=input_queue_full:0|decoded_cache_bound:337|unknown:0`
+- Continuous render consumption FAIL:
+  - `render_used_continuous_decoded_count=0`
+  - `continuous_decode_bounded_lookup_hit_count=0`
+  - `continuous_decode_bounded_lookup_rejected_stale_count=13`
+  - `continuous_decode_bounded_lookup_rejected_not_ready_count=2`
+  - `continuous_decode_bounded_lookup_fallback_to_one_shot_count=15`
+  - `render_used_one_shot_fallback_count=15`
+- Output lag / throughput:
+  - `continuous_decode_requested_frame_id=446`
+  - `continuous_decode_latest_decoded_frame_id=401`
+  - `continuous_decode_requested_minus_latest_lag=64`
+  - `continuous_decode_frame_id_lag=64`
+  - `continuous_decode_output_pending_correspondence_count=48`
+  - `continuous_decode_latest_input_minus_latest_output_lag=78`
+  - `continuous_decode_pending_correspondence_frame_id_min=404`
+  - `continuous_decode_pending_correspondence_frame_id_max=479`
+  - `continuous_decode_input_to_output_lag_frames_max=78`
+  - `continuous_decode_output_lag_to_selected_frames=64`
+  - `continuous_decode_output_throughput_fps=23.309`
+  - `continuous_decode_reader_full_frame_elapsed_ms_max=1305`
+  - `continuous_decode_stdout_read_elapsed_ms=15498`
+  - `continuous_decode_stdout_reader_blocked_count=13`
+- Source / fallback context:
+  - client1 `effective_output_fps=28.561`
+  - client2 `effective_output_fps=28.721`
+  - server `frames_queued=1800`
+  - `one_shot_decode_attempt_count=30`
+  - `one_shot_decode_elapsed_ms=3659`
+  - `effective_render_fps_after_first_render=14.198`
+
+### Findings
+- The feeder is now the primary slot0 continuous input source, so feed/drain is not the first blocker in this run.
+- Continuous decoded output is being produced, so output itself is PASS.
+- Continuous output throughput is below the 28fps-class client output cadence, and newest continuous output is still behind selected/source frame ids.
+- Decoded cache bound drops are visible, but `input_queue_full=0` and newest decoded output still being stale mean queue/drop policy is not the first root cause by itself.
+- Bounded lookup adoption remains FAIL because all guarded candidates were stale or not ready; using a much wider threshold would risk stale frame display.
+- One-shot fallback remains safe, but it may contribute double-load while continuous decode is also active.
+
+### Decisions
+- Do not tune `continuous_decode_bounded_lookup_allowed_lag_frames` next.
+- Do not implement targetTime-aware decoded queue lookup or latest decoded fallback next.
+- Keep feed max count unchanged until output throughput / stdout read latency is understood.
+- Treat next candidate as docs-first analysis of continuous decoder output throughput, stdout full-frame read latency, raw BGRA output/scale path cost, and one-shot fallback double-load.
+- If code is touched next, prefer diagnostics-only or a small opt-in experiment; do not change defaults.
+
+### TODO Update
+- Completed:
+  - latest output-lag diagnostics rerun reflection
+  - feed PASS / output PASS / render consumption FAIL separation
+  - threshold tuning held after runtime evidence
+- Added:
+  - next candidate: continuous decoder output throughput / stdout read latency / raw BGRA output path / one-shot fallback double-load docs-first analysis
+  - design questions for output pixel format / scale path, reader buffering, fallback suppression risk, and feed max count hold
+- Held:
+  - code changes
+  - allowed lag threshold change
+  - targetTime-aware decoded lookup implementation
+  - latest decoded fallback
+  - feed max count change
+  - slot1 continuous
+  - 4-client continuous
+  - request/response persistent decoder revival
+  - GPU decode
+  - one-shot fallback removal
+  - Production Readiness PASS
+
+### Validation
+- `git diff --check`
+  - result: PASS
+  - note: LF/CRLF warnings only
+
+## 2026-05-20
+### Type
 - Codex implementation
 
 ### Work

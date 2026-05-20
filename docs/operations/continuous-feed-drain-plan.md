@@ -401,6 +401,47 @@ Feed/drain interpretation:
 - Detailed output lag analysis is now tracked in `docs/operations/continuous-output-lag-plan.md`.
 - The next feed-related change should wait until pending correspondence frame_id range and latest input/output lag are visible; otherwise feed max changes could increase backlog without improving render consumption.
 
+## output lag diagnostics runtime evidence
+latest rerun:
+
+- `S:\stream-sync\manual-logs\two-client-render-rerun-20260520-014041`
+
+Feed helper remains PASS and is the primary continuous input source:
+
+- `continuous_feed_enabled=true`
+- `continuous_feed_attempt_count=300`
+- `continuous_feed_handoff_request_count=930`
+- `continuous_feed_frame_received_count=418`
+- `continuous_feed_enqueued_count=412`
+- `continuous_feed_skipped_count=6`
+- `continuous_decode_input_from_feeder_count=412`
+- `continuous_decode_input_from_render_demand_count=5`
+- `continuous_decode_feeder_lag_to_selected=7`
+
+Continuous output is PASS, but throughput is behind source cadence:
+
+- `continuous_decode_input_frame_count=417`
+- `continuous_decode_output_frame_count=367`
+- `continuous_decode_output_throughput_fps=23.309`
+- client output fps was `28.561` / `28.721`
+- `continuous_decode_latest_input_minus_latest_output_lag=78`
+- `continuous_decode_output_lag_to_selected_frames=64`
+- `continuous_decode_output_pending_correspondence_count=48`
+
+Render consumption remains FAIL:
+
+- `continuous_decode_bounded_lookup_hit_count=0`
+- `render_used_continuous_decoded_count=0`
+- `render_used_one_shot_fallback_count=15`
+
+Feed/drain interpretation:
+
+- The feeder is no longer the primary blocker for slot0/two-real/opt-in continuous.
+- Feed max count should remain unchanged while output throughput is below source fps.
+- Increasing feed pressure before improving output throughput or stdout full-frame read latency could grow correspondence backlog.
+- The next feed-related decision should be made only after continuous decoder output throughput / stdout read latency / raw BGRA output path / one-shot fallback double-load analysis.
+- Threshold tuning, targetTime-aware lookup, latest decoded fallback, slot1 continuous, 4-client rollout, and one-shot fallback removal remain out of scope.
+
 ## readiness
 - Production Readiness remains FAIL
 - This plan is a first implementation boundary, not a production architecture

@@ -984,6 +984,41 @@ future implementation slice:
    - `continuous_decode_queue_drop_reason_counts`
 15. Do not use this analysis to widen the bounded-lag threshold or remove one-shot fallback.
 
+latest output-lag diagnostics rerun update:
+
+1. latest rerun is `S:\stream-sync\manual-logs\two-client-render-rerun-20260520-014041`
+2. continuous opt-in / runtime / slot0 / low-latency args remain PASS:
+   - `continuous_decode_config_enabled=true`
+   - `continuous_decode_runtime_enabled=true`
+   - `continuous_decode_slot0_enabled=true`
+   - `continuous_decode_ffmpeg_low_latency_args_enabled=true`
+3. bounded feed helper is PASS and is the main input source:
+   - `continuous_feed_enabled=true`
+   - `continuous_feed_attempt_count=300`
+   - `continuous_feed_handoff_request_count=930`
+   - `continuous_feed_frame_received_count=418`
+   - `continuous_feed_enqueued_count=412`
+   - `continuous_decode_input_from_feeder_count=412`
+   - `continuous_decode_input_from_render_demand_count=5`
+4. continuous output is PASS:
+   - `continuous_decode_input_frame_count=417`
+   - `continuous_decode_output_frame_count=367`
+   - `continuous_decode_queue_len=30`
+5. continuous render consumption remains FAIL:
+   - `continuous_decode_bounded_lookup_hit_count=0`
+   - `render_used_continuous_decoded_count=0`
+   - `render_used_one_shot_fallback_count=15`
+6. output-lag diagnostics show newest continuous output is still behind:
+   - `continuous_decode_latest_input_minus_latest_output_lag=78`
+   - `continuous_decode_output_lag_to_selected_frames=64`
+   - `continuous_decode_output_pending_correspondence_count=48`
+   - `continuous_decode_output_throughput_fps=23.309`
+   - `continuous_decode_reader_full_frame_elapsed_ms_max=1305`
+7. client output fps was `28.561` / `28.721`, so continuous output throughput is below source cadence in this run.
+8. The next design target is not threshold tuning. It is continuous decoder output throughput / stdout full-frame read latency / raw BGRA output path / one-shot fallback double-load analysis.
+9. The request/response persistent decoder remains frozen. This rerun does not justify reviving it.
+10. Production Readiness remains FAIL.
+
 ## out of scope
 - request/response persistent decoder の復活
 - server / client / protocol code の変更

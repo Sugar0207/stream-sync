@@ -12,42 +12,58 @@ Last updated: 2026-05-20
 
 ## Latest Evidence
 - latest rerun:
-  - `S:\stream-sync\manual-logs\two-client-render-rerun-20260520-005310`
+  - `S:\stream-sync\manual-logs\two-client-render-rerun-20260520-014041`
 - PASS:
   - `continuous_decode_config_enabled=true`
   - `continuous_decode_runtime_enabled=true`
   - `continuous_decode_slot0_enabled=true`
   - `continuous_decode_ffmpeg_low_latency_args_enabled=true`
   - `continuous_feed_enabled=true`
-  - `continuous_feed_enqueued_count=361`
-  - `continuous_decode_input_from_feeder_count=361`
-  - `continuous_decode_input_from_render_demand_count=17`
-  - `continuous_decode_feeder_lag_to_selected=0`
+  - `continuous_feed_attempt_count=300`
+  - `continuous_feed_handoff_request_count=930`
+  - `continuous_feed_frame_received_count=418`
+  - `continuous_feed_enqueued_count=412`
+  - `continuous_feed_skipped_count=6`
+  - `continuous_decode_input_from_feeder_count=412`
+  - `continuous_decode_input_from_render_demand_count=5`
+  - `continuous_decode_feeder_lag_to_selected=7`
   - `continuous_decode_bounded_lookup_enabled=true`
   - `continuous_decode_bounded_lookup_allowed_lag_frames=5`
-- PARTIAL PASS:
-  - `continuous_decode_input_frame_count=378`
-  - `continuous_decode_output_frame_count=297`
+- continuous output PASS:
+  - `continuous_decode_input_frame_count=417`
+  - `continuous_decode_output_frame_count=367`
   - `continuous_decode_queue_len=30`
 - FAIL:
   - `continuous_decode_bounded_lookup_hit_count=0`
-  - `continuous_decode_bounded_lookup_rejected_stale_count=17`
+  - `continuous_decode_bounded_lookup_rejected_stale_count=13`
   - `continuous_decode_bounded_lookup_rejected_not_ready_count=2`
-  - `continuous_decode_bounded_lookup_fallback_to_one_shot_count=19`
-  - `continuous_decode_render_used_exact_count=0`
-  - `continuous_decode_render_used_bounded_lag_count=0`
+  - `continuous_decode_bounded_lookup_fallback_to_one_shot_count=15`
   - `render_used_continuous_decoded_count=0`
+  - `render_used_one_shot_fallback_count=15`
 - Lag / backlog:
-  - `continuous_decode_requested_frame_id=627`
-  - `continuous_decode_latest_decoded_frame_id=551`
-  - `continuous_decode_requested_minus_latest_lag=88`
-  - `continuous_decode_frame_id_lag=163`
-  - `continuous_decode_output_pending_correspondence_count=79`
-  - `continuous_decode_stdout_read_elapsed_ms=20840`
-  - `continuous_decode_stdout_reader_blocked_count=17`
-  - `continuous_decode_dropped_stale_count=267`
-  - `one_shot_decode_attempt_count=38`
-  - `one_shot_decode_elapsed_ms=7162`
+  - `continuous_decode_requested_frame_id=446`
+  - `continuous_decode_latest_decoded_frame_id=401`
+  - `continuous_decode_requested_minus_latest_lag=64`
+  - `continuous_decode_frame_id_lag=64`
+  - `continuous_decode_output_pending_correspondence_count=48`
+  - `continuous_decode_latest_input_minus_latest_output_lag=78`
+  - `continuous_decode_pending_correspondence_frame_id_min=404`
+  - `continuous_decode_pending_correspondence_frame_id_max=479`
+  - `continuous_decode_input_to_output_lag_frames_max=78`
+  - `continuous_decode_output_lag_to_selected_frames=64`
+  - `continuous_decode_output_throughput_fps=23.309`
+  - `continuous_decode_reader_full_frame_elapsed_ms_max=1305`
+  - `continuous_decode_stdout_read_elapsed_ms=15498`
+  - `continuous_decode_stdout_reader_blocked_count=13`
+  - `continuous_decode_dropped_stale_count=337`
+  - `continuous_decode_queue_drop_reason_counts=input_queue_full:0|decoded_cache_bound:337|unknown:0`
+  - `one_shot_decode_attempt_count=30`
+  - `one_shot_decode_elapsed_ms=3659`
+  - `effective_render_fps_after_first_render=14.198`
+- Source/client context:
+  - `client1 effective_output_fps=28.561`
+  - `client2 effective_output_fps=28.721`
+  - server `frames_queued=1800`
 
 ## Code Path Summary
 Current continuous runtime has three relevant queues/counters:
@@ -71,7 +87,8 @@ Current continuous runtime has three relevant queues/counters:
 - Writer can accept input faster than reader receives full BGRA frames.
 - Every writer-accepted input pushes metadata to `correspondence`.
 - Reader cannot pop metadata until `expected_len` bytes for one full frame have been read from stdout.
-- In the latest rerun, input was `378` and output was `297`, so the coarse input-output gap was `81`; pending correspondence was `79`, which is consistent with a large writer-to-reader backlog.
+- In the latest rerun, input was `417` and output was `367`, so the coarse input-output gap was `50`; pending correspondence was `48`, which is consistent with a writer-to-reader/output backlog.
+- `continuous_decode_latest_input_minus_latest_output_lag=78` and `continuous_decode_output_lag_to_selected_frames=64` show that the newest continuous output itself is still behind selected/source cadence.
 - This does not prove FFmpeg is broken. It can mean decoder throughput is below input/feed rate, stdout full-frame reads are slow, FFmpeg internal buffering is delaying output, or a correspondence/output mismatch is accumulating.
 
 ## Stdout Read Metrics
@@ -86,33 +103,68 @@ Current continuous runtime has three relevant queues/counters:
 
 ## Input / Output Count Gap
 - Latest run:
-  - input `378`
-  - output `297`
-  - coarse gap `81`
-  - pending correspondence `79`
+  - input `417`
+  - output `367`
+  - coarse gap `50`
+  - pending correspondence `48`
+  - latest input minus latest output lag `78`
+  - output lag to selected `64`
+  - output throughput `23.309fps`
+  - client output fps `28.561` / `28.721`
 - The gap should be treated as a throughput / latency signal, not a single-cause failure.
+- Continuous output throughput is below the observed client/source fps. That makes output throughput / stdout read latency / raw BGRA output cost a safer next investigation target than lookup-threshold tuning.
 - Possible contributors:
   - feed rate exceeds FFmpeg decode + scale + rawvideo output throughput
   - stdout reader waits for full `921600` byte BGRA frames
+  - `scale=640:360:flags=neighbor` plus raw BGRA conversion/output is still too expensive for the current continuous path
+  - reader buffering or full-frame read boundaries add burst latency
   - FFmpeg parser/decoder buffering even with low-latency args
   - output event drain cadence from reader thread to render loop is not fast enough
   - one-shot fallback load competes for CPU/process/pipe resources while continuous decode is also active
 
 ## Decoded Queue And Drop Policy
 - `queue_len=30` means the decoded cache is at the configured bound.
-- `dropped_stale_count=267` includes at least decoded-cache bound drops; it can also include input queue full drops under the current shared counter.
+- `dropped_stale_count=337` is now split by reason as `input_queue_full:0|decoded_cache_bound:337|unknown:0`.
 - Once decoded frames are older than the last 30 cached continuous outputs, they are removed from `continuous_key_order` and `decoded_cache`.
 - This protects memory, but it also means a delayed render lookup cannot recover older decoded frames.
-- In the latest rerun, latest decoded was `551` while requested was `627`; even the newest decoded frame was stale by `88`, so increasing display threshold would show stale video rather than fix output lag.
-- The queue bound is not the immediate display blocker by itself; the bigger issue is that the newest decoded output is too far behind requested selection.
+- In the latest rerun, latest decoded was `401` while requested was `446`; output lag to selected was `64`, and latest input minus latest output lag was `78`.
+- Decoded cache bound drops are visible, but the newest decoded frame itself is still stale. Queue/drop policy is therefore not the first root cause by itself; the bigger issue is that continuous output throughput is not keeping up.
 
 ## One-Shot Fallback Double Load
-- Bounded lookup failure led to `render_used_one_shot_fallback_count=19`.
-- The same run had `one_shot_decode_attempt_count=38` and `one_shot_decode_elapsed_ms=7162`.
+- Bounded lookup failure led to `render_used_one_shot_fallback_count=15`.
+- The same run had `one_shot_decode_attempt_count=30` and `one_shot_decode_elapsed_ms=3659`.
 - Because continuous decoding stays active while one-shot fallback runs, the process may be doing both:
   - continuous FFmpeg stdin/stdout decode work
   - one-shot FFmpeg decode attempts for render safety
 - This is correct for safety, but it can hide or worsen throughput problems. The next diagnostics should make double-load visible before removing fallback or changing behavior.
+
+## Latest Diagnostics Interpretation
+- Continuous opt-in, low-latency args, bounded feed helper, output-lag diagnostics wiring, and continuous output are PASS for slot0/two-real/opt-in scope.
+- Continuous render consumption and bounded lookup adoption remain FAIL because no continuous decoded frame was accepted for render.
+- The latest blocker is not a too-small `5` frame bounded-lag threshold. A threshold wide enough to accept lag `64` or `78` would risk stale video and contradict the sync-first goal.
+- Output throughput is below the client/source fps range (`23.309fps` vs `28fps` class source output), so the next safest step is docs-first analysis of:
+  - continuous decoder output throughput
+  - stdout full-frame read latency
+  - raw BGRA output volume and scale path cost
+  - continuous decoder + one-shot fallback double-load
+- Feed max count should remain unchanged for now. Feeding faster while output throughput is already below source cadence may increase correspondence backlog instead of improving render consumption.
+- One-shot fallback remains a safety path. Suppressing it before continuous output is usable could reduce visible output safety even if it reduces load.
+
+## Next Design Candidates
+- Diagnostics-only candidate:
+  - add timing around stdout reader buffering / per-frame read phases if current full-frame max is insufficient
+  - expose output reader delivery cadence versus render-loop drain cadence
+  - expose raw BGRA read/copy/materialization costs separately from FFmpeg decode/scale when possible
+- Small opt-in experiment candidate:
+  - compare continuous decoder output pixel format / scale path without changing default behavior
+  - keep the experiment two-real / slot0 / opt-in only
+  - preserve one-shot fallback and all current stale-frame guards
+- Held as risky-first:
+  - widening `continuous_decode_bounded_lookup_allowed_lag_frames`
+  - targetTime-aware decoded queue lookup implementation
+  - unbounded latest decoded fallback
+  - one-shot fallback suppression/removal
+  - feed max count increase
 
 ## Minimal Next Diagnostics
 First priority:
@@ -211,6 +263,7 @@ Implementation shape:
 ## Readiness
 - Bounded feed helper: PASS for current slot0/two-real scope
 - Bounded lookup wiring: PASS
-- Continuous output: PARTIAL PASS
+- Output lag diagnostics wiring: PASS
+- Continuous output: PASS
 - Continuous render consumption: FAIL
 - Production Readiness: FAIL
