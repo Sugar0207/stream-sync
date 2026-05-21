@@ -2,6 +2,76 @@
 
 ## 2026-05-22
 ### Type
+- Codex implementation
+
+### Work
+- Implemented the slot0 / two-real / opt-in continuous one-shot fallback double-load isolation first code slice.
+- Added CLI flag `--continuous-decoder-slot0-suppress-one-shot-fallback` with default `false`.
+- Kept exact and bounded-lag continuous lookup first; when slot0 continuous runtime is running and suppression is enabled, a remaining slot0 miss/reject now returns the existing decode-deferred placeholder path instead of launching slot0 one-shot fallback.
+- Kept slot1 one-shot fallback, default fallback behavior, pixel format, scale path, allowed lag threshold, feed max count, low-latency default, and 4-client scope unchanged.
+- Did not run a runtime rerun from Codex.
+
+### Changed Files
+- `apps/switcher/src/main.rs`
+- `apps/switcher/src/lib.rs`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+- `docs/operations/continuous-one-shot-double-load-plan.md`
+- `docs/operations/continuous-output-throughput-plan.md`
+
+### Diagnostics Added
+- `continuous_decode_slot0_one_shot_suppression_enabled`
+- `continuous_decode_slot0_one_shot_suppressed_count`
+- `continuous_decode_slot0_one_shot_suppressed_reason_counts`
+- `continuous_decode_slot0_one_shot_suppressed_render_safety_counts`
+- `continuous_decode_slot0_one_shot_suppressed_continuous_not_ready_count`
+- `continuous_decode_slot0_one_shot_suppressed_stale_count`
+
+### Decisions
+- Use the explicit first-slice flag name `--continuous-decoder-slot0-suppress-one-shot-fallback`.
+- Treat suppression as effective only after the slot0 continuous process is running.
+- Use the existing decode-deferred placeholder path with `ContinuousOneShotSuppressed` for first-slice render safety instead of unbounded stale continuous output.
+- Keep Production Readiness as FAIL.
+
+### Runtime Result
+- Codex runtime rerun: not run.
+- Next human rerun root remains `S:\stream-sync`.
+- Base suffix remains:
+  - `--disable-persistent-decoder --enable-continuous-stream-decoder --continuous-decoder-low-latency-args`
+- Isolation rerun adds:
+  - `--continuous-decoder-slot0-suppress-one-shot-fallback`
+
+### TODO Update
+- Completed:
+  - slot0 opt-in one-shot suppression CLI slice
+  - suppression summary diagnostics and formatter assertions
+  - first-slice render-safety decision via decode-deferred placeholder
+- Added:
+  - human isolation rerun gate for suppression and competing one-shot on/off comparison
+- Held:
+  - default fallback policy changes
+  - threshold tuning
+  - pixel-format / scale-path changes
+  - slot1 / 4-client widening
+
+### Validation
+- `cargo fmt`
+  - result: PASS
+- `cargo check -p stream-sync-switcher`
+  - result: PASS
+  - note: existing dead-code warnings remain in unrelated helpers
+- `cargo test -p stream-sync-switcher switcher_four_view_two_real_handoff_preview_summary_formats_expected_fields -- --nocapture`
+  - result: PASS
+  - note: sandbox runner startup timed out; focused test passed when rerun outside the sandbox
+- `cargo test -p stream-sync-switcher switcher_two_real_handoff_preview_options -- --nocapture`
+  - result: PASS
+  - note: sandbox runner startup timed out; focused option tests passed when rerun outside the sandbox
+- `git diff --check`
+  - result: PASS
+  - note: LF/CRLF warnings only
+
+## 2026-05-22
+### Type
 - Codex docs-only evidence reflection and docs-first experiment design
 
 ### Work

@@ -36,18 +36,14 @@ Last updated: 2026-05-22
 - This asks whether double-load is a meaningful contributor. It does not claim double-load is the only FPS cause.
 
 ## Flag Shape
-Preferred flag:
-
-- `--continuous-decoder-slot0-output-throughput-isolation`
-
-Alternate explicit flag:
+First implementation flag:
 
 - `--continuous-decoder-slot0-suppress-one-shot-fallback`
 
-Design preference:
+Decision:
 
-- Prefer the isolation name if the implementation is intentionally diagnostic and may choose a render-safety response richer than a bare fallback suppression toggle.
-- Prefer the suppression name only if the behavior is exactly scoped to skipping slot0 one-shot fallback and the summary makes that experiment state unmistakable.
+- Use the explicit suppression name because the first slice only skips slot0 one-shot fallback after the slot0 continuous runtime is running.
+- Keep it an isolation experiment through scope, diagnostics, and docs. The default path does not change.
 
 ## Scope
 - slot0 only
@@ -67,25 +63,26 @@ Design preference:
   - do not suppress slot1 one-shot work
   - do not remove fallback globally
 
-Render-safety options to compare before implementation:
+First-slice render safety:
 
-1. Hold previous slot0 frame
-   - Closest to preserving visible continuity when a prior frame exists.
-   - Can make staleness visible for longer, so summary must keep miss/reject reasons.
-2. Placeholder
-   - Makes missing continuous output obvious.
-   - Strong diagnostic isolation, but visually harsher.
-3. No updated slot0 frame for the tick
-   - Avoids fabricating a replacement decode.
-   - Must preserve existing composition/render invariants before use.
+- Return the existing H.264 decode-deferred path with `ContinuousOneShotSuppressed`.
+- That path becomes the existing decode-deferred placeholder instead of one-shot decoded output.
+- Do not hold an unlimited stale continuous decoded frame and do not invent a new production display fallback policy.
 
-The docs-first recommendation is to select the smallest option already compatible with the two-real preview loop display policy. Do not invent a production fallback policy inside this experiment.
+Held alternatives:
+
+- previous slot0 frame hold
+- no-updated-frame tick behavior
 
 ## Diagnostics
 Experiment-state fields to add if code proceeds:
 
+- `continuous_decode_slot0_one_shot_suppression_enabled`
 - `continuous_decode_slot0_one_shot_suppressed_count`
 - `continuous_decode_slot0_one_shot_suppressed_reason_counts`
+- `continuous_decode_slot0_one_shot_suppressed_render_safety_counts`
+- `continuous_decode_slot0_one_shot_suppressed_continuous_not_ready_count`
+- `continuous_decode_slot0_one_shot_suppressed_stale_count`
 
 Existing fields to compare:
 
@@ -111,6 +108,24 @@ Useful supporting readback:
 - Continuous decoder output throughput can be compared against the valid `20260522-075029` baseline.
 - Render consumption staying FAIL is allowed evidence; the experiment is for throughput isolation first.
 - Production Readiness remains FAIL.
+
+## First Implementation Status
+- 2026-05-22 first code slice is implemented for slot0 / two-real / opt-in continuous only.
+- Parser wiring accepts the new CLI flag with default `false`.
+- Suppression becomes effective only when the flag is on and the slot0 continuous process is running.
+- Exact and bounded-lag continuous lookup still run first.
+- If lookup still misses or rejects while suppression is active, slot0 returns `ContinuousOneShotSuppressed` into the existing decode-deferred placeholder path instead of launching slot0 one-shot fallback.
+- Slot1 one-shot behavior remains unchanged.
+- Summary now exposes:
+  - `continuous_decode_slot0_one_shot_suppression_enabled`
+  - `continuous_decode_slot0_one_shot_suppressed_count`
+  - `continuous_decode_slot0_one_shot_suppressed_reason_counts`
+  - `continuous_decode_slot0_one_shot_suppressed_render_safety_counts`
+  - `continuous_decode_slot0_one_shot_suppressed_continuous_not_ready_count`
+  - `continuous_decode_slot0_one_shot_suppressed_stale_count`
+- The existing competing one-shot counters stay visible for on/off comparison.
+- Next human rerun keeps the base suffix and adds:
+  - `--continuous-decoder-slot0-suppress-one-shot-fallback`
 
 ## Held
 - allowed lag threshold changes

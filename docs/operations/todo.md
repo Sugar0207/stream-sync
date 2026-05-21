@@ -1084,13 +1084,14 @@ continuous runtime first slice の blocker:
 - requested/output lag remains far outside the guarded lookup threshold: `continuous_decode_requested_frame_id=526`, `continuous_decode_latest_decoded_frame_id=458`, `continuous_decode_requested_minus_latest_lag=73`, `continuous_decode_latest_input_minus_latest_output_lag=74`, `continuous_decode_output_lag_to_selected_frames=73`, and pending correspondence frame range `464..532`
 - client output fps stayed in the 28fps range (`client1 effective_output_fps=28.358`, `client2 effective_output_fps=28.501`) while continuous output throughput was `21.773fps`. Competing one-shot work was also visible at `continuous_decode_competing_one_shot_attempt_count=34` / `continuous_decode_competing_one_shot_decode_elapsed_ms=3515`, so double-load is the next opt-in isolation candidate without claiming a single FPS cause
 - continuous output throughput analysis remains tracked in `docs/operations/continuous-output-throughput-plan.md`; next docs-first experiment design is `docs/operations/continuous-one-shot-double-load-plan.md`
-- one-shot fallback suppression is not a default policy change. Any future experiment stays slot0 / two-real / opt-in continuous only, keeps slot1 one-shot behavior, compares render safety before implementation, and leaves Production Readiness FAIL
+- slot0 one-shot fallback isolation first code slice now adds opt-in `--continuous-decoder-slot0-suppress-one-shot-fallback`. Default behavior is unchanged; suppression becomes effective only while slot0 continuous runtime is running, slot1 stays one-shot, and the first render-safety path is existing decode-deferred placeholder rather than unbounded stale decoded output
+- summary now exposes slot0 suppression state and outcome fields: `continuous_decode_slot0_one_shot_suppression_enabled`, suppressed count/reason/render-safety counts, plus continuous-not-ready and stale suppressed counters. Existing competing one-shot counters stay visible for the next on/off rerun comparison
 - metrics commit, snapshot export cadence, dashboard refresh consumer policy, and dashboard refresh runtime wiring remain separate from timer wait, retry, reconnect, socket ownership, cleanup, UI rendering, video, switcher, and OBS.
 - server notice queue storage remains separate from notice send wakeup execution.
 - actual dashboard UI rendering remains unimplemented.
 
 ## Next Items
-1. `continuous-one-shot-double-load-plan.md` の slot0 one-shot fallback isolation flag と render safety option を docs-first で確定する
-2. 次の code slice に進むなら、slot0 / two-real / opt-in continuous 限定で suppression/isolation diagnostics を実装し、default fallback behavior と slot1 one-shot behavior を維持する
-3. pixel format / scale path / stdout reader buffering experiment は double-load isolation の比較後に再評価し、threshold tuning は output lag が guarded range に近づくまで進めない
+1. 人間側 `S:\stream-sync` で base suffix `--disable-persistent-decoder --enable-continuous-stream-decoder --continuous-decoder-low-latency-args` に `--continuous-decoder-slot0-suppress-one-shot-fallback` を足した isolation rerun を行う
+2. suppression on/off で continuous output throughput、reader avg、output lag、suppressed counters、competing one-shot counters、render FPS を比較する
+3. pixel format / scale path / stdout reader buffering experiment は double-load isolation evidence 後に再評価し、threshold tuning は output lag が guarded range に近づくまで進めない
 4. Production Readiness FAIL を維持し、allowed lag threshold 変更、targetTime-aware lookup 実装、latest decoded fallback、slot1 continuous 化、4-client 化、request/response persistent decoder 復活、GPU decode、one-shot fallback 削除、feed max count 変更には広げない

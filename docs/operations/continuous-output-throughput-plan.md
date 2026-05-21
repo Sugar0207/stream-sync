@@ -236,6 +236,19 @@ The next docs-first candidate is the one-shot double-load isolation plan in
 - Feed max count remains unchanged because output throughput is already below source cadence.
 - Production Readiness remains FAIL.
 
+## One-Shot Isolation Implementation Update
+- 2026-05-22 first isolation code slice now adds
+  `--continuous-decoder-slot0-suppress-one-shot-fallback`.
+- Scope stays slot0 / two-real / opt-in continuous only; default behavior and
+  slot1 one-shot fallback remain unchanged.
+- The safe first-slice render result is the existing decode-deferred placeholder
+  path with `ContinuousOneShotSuppressed`, not unbounded stale decoded output.
+- Summary now adds suppression-enabled, suppression-count, suppression-reason,
+  render-safety, continuous-not-ready, and stale counters while keeping the
+  competing one-shot counters from the throughput diagnostics slice.
+- Next evidence gate is a human `S:\stream-sync` rerun that compares the base
+  low-latency suffix with and without the new suppression flag.
+
 ## Out Of Scope
 - `continuous_decode_bounded_lookup_allowed_lag_frames` changes
 - TargetTime-aware decoded queue lookup implementation

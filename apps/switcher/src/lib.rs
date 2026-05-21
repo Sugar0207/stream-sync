@@ -6660,6 +6660,7 @@ pub enum SwitcherH264DecodeDeferredReason {
     EmptyPayload,
     InvalidDimensions,
     FfmpegUnavailable,
+    ContinuousOneShotSuppressed,
 }
 
 /// Failure details for switcher-side H.264 decode.
