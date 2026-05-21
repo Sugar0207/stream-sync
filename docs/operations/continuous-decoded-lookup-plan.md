@@ -327,6 +327,7 @@ Next diagnostics candidates:
 Follow-up:
 
 - Detailed output lag / pending correspondence analysis now lives in `docs/operations/continuous-output-lag-plan.md`.
+- Detailed output throughput / stdout full-frame read / raw BGRA path / one-shot double-load analysis now lives in `docs/operations/continuous-output-throughput-plan.md`.
 - Do not widen `allowed_lag_frames=5` until the output lag plan has runtime diagnostics for pending correspondence frame_id range, latest input/output lag, and output throughput.
 - Bounded lookup remains a guarded render-consumption policy; it is not expected to fix decoder output lag by itself.
 
@@ -374,3 +375,4 @@ Interpretation:
 - `allowed_lag_frames=5` should not be widened as the next step. The observed lag is much larger than a safe sync-first guard.
 - TargetTime-aware decoded queue lookup and latest decoded fallback stay held until continuous output is close enough to selected/source cadence.
 - Next work should be docs-first analysis of continuous decoder output throughput, stdout full-frame read latency, raw BGRA output path cost, and one-shot fallback double-load.
+- That docs-first analysis is now split to `docs/operations/continuous-output-throughput-plan.md`; the lookup plan remains a policy guard, not the first root-cause fix for `23.309fps` output throughput.

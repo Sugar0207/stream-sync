@@ -1019,6 +1019,24 @@ latest output-lag diagnostics rerun update:
 9. The request/response persistent decoder remains frozen. This rerun does not justify reviving it.
 10. Production Readiness remains FAIL.
 
+latest output-throughput docs-first update:
+
+1. Continuous output throughput analysis is now tracked in `docs/operations/continuous-output-throughput-plan.md`.
+2. Current code-path suspects remain multiple, not a single proven root cause:
+   - FFmpeg decode + `scale=640:360:flags=neighbor` + BGRA conversion/output
+   - stdout full-frame read boundary for `921600` bytes/frame
+   - reader buffering / raw frame materialization
+   - continuous decoder and one-shot fallback double-load
+3. The next code slice, if any, should be diagnostics-only:
+   - reader full-frame avg / slow count / slow threshold
+   - output bytes total / bytes per sec
+   - output frame interval avg / max
+   - stdout read throughput
+   - FFmpeg scale enabled / output pixel format
+   - competing one-shot elapsed / attempt counters
+4. Small opt-in experiments for pixel format, scale path, or reader buffering should wait until diagnostics identify the likely bottleneck.
+5. One-shot fallback suppression, threshold widening, targetTime-aware lookup, latest decoded fallback, feed max increase, slot1/4-client rollout, GPU decode, and request/response persistent revival remain out of scope.
+
 ## out of scope
 - request/response persistent decoder の復活
 - server / client / protocol code の変更

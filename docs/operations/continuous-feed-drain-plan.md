@@ -440,6 +440,8 @@ Feed/drain interpretation:
 - Feed max count should remain unchanged while output throughput is below source fps.
 - Increasing feed pressure before improving output throughput or stdout full-frame read latency could grow correspondence backlog.
 - The next feed-related decision should be made only after continuous decoder output throughput / stdout read latency / raw BGRA output path / one-shot fallback double-load analysis.
+- Detailed throughput analysis is now tracked in `docs/operations/continuous-output-throughput-plan.md`.
+- Feed max count remains held because output throughput is already below source cadence; increasing feed pressure before output catches up could increase pending correspondence.
 - Threshold tuning, targetTime-aware lookup, latest decoded fallback, slot1 continuous, 4-client rollout, and one-shot fallback removal remain out of scope.
 
 ## readiness

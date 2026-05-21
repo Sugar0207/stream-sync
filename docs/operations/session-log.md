@@ -2,6 +2,102 @@
 
 ## 2026-05-20
 ### Type
+- Codex docs-first throughput analysis
+
+### Work
+- Added continuous output throughput analysis for latest rerun `S:\stream-sync\manual-logs\two-client-render-rerun-20260520-014041`.
+- Kept this step docs-only and did not change code.
+- Separated feed PASS, continuous output PASS, and continuous render consumption FAIL from the next throughput question.
+- Analyzed stdout full-frame read latency, `scale=640:360:flags=neighbor` + raw BGRA output, reader full-frame boundary, decoded cache bound drops, and one-shot fallback double-load as separate candidates.
+- Kept allowed lag threshold, lookup policy, feed max count, FFmpeg defaults, slot1/4-client scope, request/response persistent decoder, GPU decode, and one-shot fallback unchanged.
+- Kept Production Readiness as FAIL.
+
+### Changed Files
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+- `docs/operations/continuous-output-throughput-plan.md`
+- `docs/operations/continuous-output-lag-plan.md`
+- `docs/operations/continuous-feed-drain-plan.md`
+- `docs/operations/continuous-stream-decoder-plan.md`
+- `docs/operations/continuous-decoded-lookup-plan.md`
+
+### Runtime Evidence
+- latest rerun:
+  - `S:\stream-sync\manual-logs\two-client-render-rerun-20260520-014041`
+- Feed PASS:
+  - `continuous_feed_enqueued_count=412`
+  - `continuous_decode_input_from_feeder_count=412`
+  - `continuous_decode_input_from_render_demand_count=5`
+- Continuous output PASS:
+  - `continuous_decode_output_frame_count=367`
+  - `continuous_decode_output_throughput_fps=23.309`
+- Continuous render consumption FAIL:
+  - `render_used_continuous_decoded_count=0`
+  - `continuous_decode_bounded_lookup_hit_count=0`
+- Output lag / read latency:
+  - `continuous_decode_latest_input_minus_latest_output_lag=78`
+  - `continuous_decode_output_lag_to_selected_frames=64`
+  - `continuous_decode_output_pending_correspondence_count=48`
+  - `continuous_decode_reader_full_frame_elapsed_ms_max=1305`
+  - `continuous_decode_stdout_read_elapsed_ms=15498`
+  - `continuous_decode_stdout_reader_blocked_count=13`
+- Source / fallback context:
+  - client1 `effective_output_fps=28.561`
+  - client2 `effective_output_fps=28.721`
+  - `one_shot_decode_attempt_count=30`
+  - `one_shot_decode_elapsed_ms=3659`
+
+### Findings
+- The feeder is already the primary input source in this run, and continuous output is being produced.
+- Continuous output throughput is still below the observed 28fps-class source cadence, so lookup threshold tuning is not the next safest step.
+- The current continuous output profile emits `640x360` raw BGRA frames, or `921600` bytes per frame.
+- At `23.309fps`, the raw stdout volume is about `21.5 MB/s`; at 28-30fps it would be about `26-28 MB/s`.
+- The byte volume alone is not enough to declare root cause, but it makes FFmpeg decode/scale/BGRA conversion, stdout full-frame reads, reader buffering, and raw frame materialization the next diagnostics target.
+- `continuous_decode_reader_full_frame_elapsed_ms_max=1305` shows at least one large full-frame read delay, but average read latency and slow-frame count are not yet visible.
+- Decoded cache bound drops are visible, but latest decoded output remains stale; cache drops are more likely a result of output lag than the first root cause.
+- One-shot fallback remains safe, but simultaneous continuous and one-shot FFmpeg work can contribute double-load.
+
+### Decisions
+- Add `docs/operations/continuous-output-throughput-plan.md` as the source for throughput / stdout read / raw BGRA / fallback double-load analysis.
+- If code is touched next, prefer diagnostics-only:
+  - reader full-frame avg / slow count / slow threshold
+  - output bytes total / bytes per sec
+  - output frame interval avg / max
+  - stdout read throughput
+  - FFmpeg scale enabled / output pixel format
+  - competing one-shot elapsed / attempt counters
+- Treat opt-in pixel format, scale path, or reader buffering experiments as second choice after diagnostics.
+- Do not make one-shot fallback suppression the first experiment.
+- Do not widen `allowed_lag_frames=5`, implement targetTime-aware lookup, use latest decoded fallback, change feed max count, or mark Production Readiness PASS.
+
+### TODO Update
+- Completed:
+  - docs-first analysis of continuous output throughput staying around `23fps`
+  - stdout full-frame read latency / raw BGRA path / one-shot double-load candidate separation
+  - next code slice recommendation as diagnostics-only first
+- Added:
+  - `docs/operations/continuous-output-throughput-plan.md`
+  - next diagnostics fields for reader full-frame avg/slow, output bytes/sec, frame interval, stdout throughput, scale/pixel format, and competing one-shot counters
+- Held:
+  - code changes
+  - allowed lag threshold change
+  - targetTime-aware decoded lookup implementation
+  - latest decoded fallback
+  - feed max count change
+  - slot1 continuous
+  - 4-client continuous
+  - request/response persistent decoder revival
+  - GPU decode
+  - one-shot fallback removal
+  - Production Readiness PASS
+
+### Validation
+- `git diff --check`
+  - result: PASS
+  - note: LF/CRLF warnings only
+
+## 2026-05-20
+### Type
 - Codex docs-only evidence reflection
 
 ### Work

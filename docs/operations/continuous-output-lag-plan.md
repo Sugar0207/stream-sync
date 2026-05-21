@@ -166,6 +166,17 @@ Current continuous runtime has three relevant queues/counters:
   - one-shot fallback suppression/removal
   - feed max count increase
 
+## Throughput Analysis Split
+- Detailed continuous output throughput analysis now lives in `docs/operations/continuous-output-throughput-plan.md`.
+- This lag plan remains the source for frame-id lag, pending correspondence, decoded cache/drop, and render-consumption interpretation.
+- The throughput plan is the source for the next docs-first question: why continuous output stays around `23.309fps` while client output is `28fps` class.
+- Current code-path candidates are:
+  - FFmpeg decode + `scale=640:360:flags=neighbor` + BGRA conversion/output
+  - stdout full-frame read latency for `921600` byte frames
+  - reader buffering / per-frame allocation and materialization
+  - continuous decoder and one-shot fallback double-load
+- The next implementation should be diagnostics-only before any opt-in experiment. Do not use this evidence to widen the bounded-lag threshold or make stale decoded frames displayable.
+
 ## Minimal Next Diagnostics
 First priority:
 
