@@ -5,37 +5,62 @@
 Last updated: 2026-05-22
 
 ## Purpose
-- Analyze why slot0 continuous decoder output throughput stayed around `23fps` after feed helper and continuous output both reached runtime PASS.
-- Keep the next code pass diagnostics-only: no throughput behavior changes, no threshold tuning, no lookup policy changes, no feed max count changes.
-- Separate stdout full-frame read latency, raw BGRA output volume, FFmpeg scale/output path cost, reader buffering, and one-shot fallback double-load before choosing the next code slice.
+- Analyze why slot0 continuous decoder output throughput stays below source cadence after feed helper, continuous output, and throughput diagnostics all reached runtime evidence.
+- Keep the next candidate docs-first and opt-in: no default behavior changes, no threshold tuning, no lookup policy changes, no feed max count changes.
+- Use the validated throughput diagnostics to separate stdout full-frame read latency, raw BGRA output volume, FFmpeg scale/output path cost, reader buffering, and one-shot fallback double-load before choosing the next code slice.
 
 ## Latest Evidence
 - latest rerun:
-  - `S:\stream-sync\manual-logs\two-client-render-rerun-20260520-014041`
+  - `S:\stream-sync\manual-logs\two-client-render-rerun-20260522-075029`
+- validity:
+  - build PASS with `C:\streamsync-target\stream-sync-rerun\debug\*.exe`
+  - low-latency args PASS:
+    - `continuous_decode_ffmpeg_low_latency_args_enabled=true`
+    - `continuous_decode_ffmpeg_probe_args_enabled=true`
+    - `continuous_decode_ffmpeg_loglevel=warning`
+  - throughput diagnostics runtime evaluation: VALID
 - Feed PASS:
-  - `continuous_feed_enqueued_count=412`
-  - `continuous_decode_input_from_feeder_count=412`
+  - `continuous_feed_frame_received_count=458`
+  - `continuous_feed_enqueued_count=449`
+  - `continuous_decode_input_from_feeder_count=449`
   - `continuous_decode_input_from_render_demand_count=5`
+  - `continuous_decode_feeder_lag_to_selected=2`
 - Continuous output PASS:
-  - `continuous_decode_input_frame_count=417`
-  - `continuous_decode_output_frame_count=367`
-  - `continuous_decode_output_throughput_fps=23.309`
+  - `continuous_decode_input_frame_count=454`
+  - `continuous_decode_output_frame_count=396`
+  - `continuous_decode_output_throughput_fps=21.773`
+  - `continuous_decode_output_bytes_total=364953600`
+  - `continuous_decode_output_bytes_per_sec=20065625.687`
 - Continuous render consumption FAIL:
   - `render_used_continuous_decoded_count=0`
+  - `continuous_decode_render_exact_hit_count=0`
   - `continuous_decode_bounded_lookup_hit_count=0`
+- Output/read diagnostics:
+  - `continuous_decode_stdout_expected_frame_bytes=921600`
+  - `continuous_decode_reader_full_frame_elapsed_ms_avg=45.192`
+  - `continuous_decode_reader_full_frame_elapsed_ms_max=1217`
+  - `continuous_decode_reader_full_frame_slow_count=43`
+  - `continuous_decode_output_frame_interval_ms_avg=42.228`
+  - `continuous_decode_output_frame_interval_ms_max=382`
+  - `continuous_decode_stdout_read_throughput_bytes_per_ms=20393.026`
+  - `continuous_decode_ffmpeg_scale_enabled=true`
+  - `continuous_decode_ffmpeg_output_pixel_format=bgra`
 - Output lag:
-  - `continuous_decode_latest_input_minus_latest_output_lag=78`
-  - `continuous_decode_output_lag_to_selected_frames=64`
-  - `continuous_decode_output_pending_correspondence_count=48`
-  - `continuous_decode_reader_full_frame_elapsed_ms_max=1305`
-  - `continuous_decode_stdout_read_elapsed_ms=15498`
-  - `continuous_decode_stdout_reader_blocked_count=13`
+  - `continuous_decode_requested_frame_id=526`
+  - `continuous_decode_latest_decoded_frame_id=458`
+  - `continuous_decode_requested_minus_latest_lag=73`
+  - `continuous_decode_latest_input_minus_latest_output_lag=74`
+  - `continuous_decode_output_lag_to_selected_frames=73`
+  - `continuous_decode_pending_correspondence_frame_id_min=464`
+  - `continuous_decode_pending_correspondence_frame_id_max=532`
 - Source / render safety context:
-  - client1 `effective_output_fps=28.561`
-  - client2 `effective_output_fps=28.721`
-  - `render_used_one_shot_fallback_count=15`
-  - `one_shot_decode_attempt_count=30`
-  - `one_shot_decode_elapsed_ms=3659`
+  - client1 `effective_output_fps=28.358`
+  - client2 `effective_output_fps=28.501`
+  - `effective_render_fps_after_first_render=13.737`
+  - `continuous_decode_competing_one_shot_attempt_count=34`
+  - `continuous_decode_competing_one_shot_decode_elapsed_ms=3515`
+  - `one_shot_decode_attempt_count=34`
+  - `one_shot_decode_elapsed_ms=3515`
 
 ## Code Path Summary
 Continuous slot0 output path:
@@ -67,20 +92,27 @@ Continuous slot0 output path:
    - Exact lookup runs first, bounded-lag lookup runs second, and one-shot fallback remains the safety path.
 
 ## Throughput Shape
-- Continuous output throughput was `23.309fps`.
-- Client output fps was `28.561` / `28.721`, so continuous output was roughly `5.3fps` below observed source cadence.
+- Continuous output throughput was `21.773fps`.
+- Client output fps was `28.358` / `28.501`, so continuous output was roughly `6.6fps` below observed source cadence.
 - The raw stdout volume implied by current output format is:
-  - `921600 bytes/frame * 23.309fps = about 21.5 MB/s`
-  - `921600 bytes/frame * 28.6fps = about 26.4 MB/s`
+  - measured current run: `continuous_decode_output_bytes_per_sec=20065625.687`
+  - `921600 bytes/frame * 21.773fps = about 20.1 MB/s`
+  - `921600 bytes/frame * 28.4fps = about 26.2 MB/s`
   - `921600 bytes/frame * 30fps = about 27.6 MB/s`
 - This byte rate is not huge for memory bandwidth, but it is still a per-frame pipe/read/copy boundary attached to FFmpeg decode, scale, pixel conversion, and render-side drain.
-- `continuous_decode_reader_full_frame_elapsed_ms_max=1305` is an outlier/max signal. It does not prove the average read is slow, but it proves the current reader can spend more than one second waiting for a full raw frame in at least one observed interval.
+- The new diagnostics are runtime-valid:
+  - reader full-frame average was `45.192ms`
+  - reader full-frame max was `1217ms`
+  - `43` full-frame reads crossed the fixed `66ms` slow threshold
+  - reader-delivered output frame interval average was `42.228ms`
+  - frame interval max was `382ms`
+- The reader average and output interval average are already slower than 28fps-class cadence, while the max full-frame stall proves at least one interval waited more than one second for a full raw frame.
 - Input/output gap and pending correspondence agree with a throughput backlog:
-  - input `417`
-  - output `367`
-  - coarse gap `50`
-  - pending correspondence `48`
-  - latest input-output lag `78`
+  - input `454`
+  - output `396`
+  - coarse gap `58`
+  - latest input-output lag `74`
+  - output lag to selected `73`
 
 ## Candidate Causes
 ### FFmpeg Decode / Scale / BGRA Conversion
@@ -112,9 +144,9 @@ Continuous slot0 output path:
 
 ### One-Shot Fallback Double Load
 - One-shot fallback is still required for safety because continuous render consumption is `0`.
-- The same run had `one_shot_decode_attempt_count=30` and `one_shot_decode_elapsed_ms=3659`.
+- The same run had `continuous_decode_competing_one_shot_attempt_count=34` and `continuous_decode_competing_one_shot_decode_elapsed_ms=3515`; the one-shot totals were the same `34` attempts / `3515ms`.
 - Continuous FFmpeg and one-shot FFmpeg can therefore compete for CPU, process scheduling, pipe I/O, and memory bandwidth.
-- This could worsen continuous throughput, but suppressing fallback first is risky because it would remove the current visible safety path.
+- This makes double-load a strong next isolation candidate, but it is not proof of the sole cause.
 
 ## Diagnostics-Only Next Slice
 The 2026-05-22 code slice is implemented as diagnostics-only and remains slot0 / two-real / opt-in:
@@ -156,38 +188,51 @@ Diagnostics interpretation goal:
   format, scale path, or one-shot fallback policy.
 - Runtime rerun remains human-side from `S:\stream-sync`; Codex did not run the
   two-client preview loop for this implementation.
+- Human rerun `S:\stream-sync\manual-logs\two-client-render-rerun-20260522-075029`
+  now validates the diagnostics at runtime. Reader avg/slow, raw output
+  bytes/sec, output frame interval, stdout throughput, scale/pixel-format, and
+  competing one-shot fields all appeared in the summary.
 
 ## Opt-In Experiment Candidates
-Only after diagnostics show where the time is going:
+The next docs-first candidate is the one-shot double-load isolation plan in
+`docs/operations/continuous-one-shot-double-load-plan.md`.
 
-1. Continuous output pixel format comparison
-   - Compare BGRA against an alternate raw format only behind an opt-in flag.
+1. One-shot fallback double-load isolation
+   - Suppress slot0 one-shot fallback only behind a two-real / opt-in continuous
+     experiment while the slot0 continuous runtime is running.
+   - Keep slot1 one-shot behavior unchanged.
+   - Compare previous-frame hold, placeholder, and no-updated-frame render safety
+     before choosing the experiment behavior.
+   - Keep production default unchanged.
+
+2. Continuous output pixel format comparison
+   - Hold after the double-load isolation design.
    - Current render/composition path expects BGRA-like decoded frames, so non-BGRA output would need conversion somewhere else.
    - Default must not change until compatibility and total pipeline cost are measured.
 
-2. Scale path comparison
-   - Compare FFmpeg scale versus moving scale/conversion work outside the continuous FFmpeg output path.
-   - This is not automatically cheaper: raw 720p BGRA would be much larger than `921600` bytes/frame.
-   - Treat it as a measurement experiment, not an architectural decision.
+3. Scale path comparison
+   - Hold after double-load isolation design.
+   - Raw 720p BGRA would be much larger than `921600` bytes/frame, so moving scale work is not automatically cheaper.
 
-3. Output reader buffering experiment
+4. Output reader buffering experiment
    - Compare current full-frame read loop with a small buffering/read helper change only if diagnostics show read-bound behavior.
    - Preserve full-frame correctness; do not emit partial raw frames.
-
-4. One-shot fallback suppression
-   - Hold as risky-first.
-   - It may reduce double-load, but it can also remove render safety while continuous output is still stale and unused.
 
 5. Additional FFmpeg args
    - Keep defaults unchanged.
    - Any new FFmpeg args should be opt-in and reported in summary diagnostics.
 
 ## Design Decision
-- The diagnostics-only code change is now in place; the next evidence gate is
-  the human rerun that reads these summary fields.
-- A small opt-in experiment is second choice, after diagnostics identify whether the bottleneck is FFmpeg output, stdout read, raw BGRA volume, reader buffering, or one-shot competition.
+- The throughput diagnostics runtime evaluation is VALID on
+  `20260522-075029`.
+- Feed remains PASS, continuous output remains PASS, and render consumption
+  remains FAIL; those outcomes stay separate.
+- The next docs-first design target is a slot0 one-shot fallback double-load
+  isolation experiment, not threshold tuning.
+- Pixel-format, scale-path, reader-buffering, and additional FFmpeg args remain
+  later opt-in experiment candidates.
 - Threshold tuning is held because output lag is far outside the `5` frame guard.
-- TargetTime-aware lookup and latest decoded fallback are held because accepting `64` to `78` frames of lag would violate sync-first behavior.
+- TargetTime-aware lookup and latest decoded fallback are held because accepting `73` to `74` frames of lag would violate sync-first behavior.
 - Feed max count remains unchanged because output throughput is already below source cadence.
 - Production Readiness remains FAIL.
 

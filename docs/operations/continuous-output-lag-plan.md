@@ -2,7 +2,7 @@
 
 # Continuous Output Lag Plan
 
-Last updated: 2026-05-20
+Last updated: 2026-05-22
 
 ## Purpose
 - Analyze why slot0 continuous decoded output still trails the requested render frame after bounded feed helper and bounded-lag lookup wiring both reached runtime evidence.
@@ -12,58 +12,57 @@ Last updated: 2026-05-20
 
 ## Latest Evidence
 - latest rerun:
-  - `S:\stream-sync\manual-logs\two-client-render-rerun-20260520-014041`
+  - `S:\stream-sync\manual-logs\two-client-render-rerun-20260522-075029`
 - PASS:
   - `continuous_decode_config_enabled=true`
   - `continuous_decode_runtime_enabled=true`
   - `continuous_decode_slot0_enabled=true`
   - `continuous_decode_ffmpeg_low_latency_args_enabled=true`
+  - `continuous_decode_ffmpeg_probe_args_enabled=true`
+  - `continuous_decode_ffmpeg_loglevel=warning`
   - `continuous_feed_enabled=true`
-  - `continuous_feed_attempt_count=300`
-  - `continuous_feed_handoff_request_count=930`
-  - `continuous_feed_frame_received_count=418`
-  - `continuous_feed_enqueued_count=412`
-  - `continuous_feed_skipped_count=6`
-  - `continuous_decode_input_from_feeder_count=412`
+  - throughput diagnostics runtime evaluation VALID
+  - `continuous_feed_frame_received_count=458`
+  - `continuous_feed_enqueued_count=449`
+  - `continuous_decode_input_from_feeder_count=449`
   - `continuous_decode_input_from_render_demand_count=5`
-  - `continuous_decode_feeder_lag_to_selected=7`
+  - `continuous_decode_feeder_lag_to_selected=2`
   - `continuous_decode_bounded_lookup_enabled=true`
   - `continuous_decode_bounded_lookup_allowed_lag_frames=5`
 - continuous output PASS:
-  - `continuous_decode_input_frame_count=417`
-  - `continuous_decode_output_frame_count=367`
-  - `continuous_decode_queue_len=30`
+  - `continuous_decode_input_frame_count=454`
+  - `continuous_decode_output_frame_count=396`
+  - `continuous_decode_output_throughput_fps=21.773`
+  - `continuous_decode_output_bytes_total=364953600`
+  - `continuous_decode_output_bytes_per_sec=20065625.687`
 - FAIL:
+  - `continuous_decode_render_exact_hit_count=0`
   - `continuous_decode_bounded_lookup_hit_count=0`
-  - `continuous_decode_bounded_lookup_rejected_stale_count=13`
+  - `continuous_decode_bounded_lookup_rejected_stale_count=15`
   - `continuous_decode_bounded_lookup_rejected_not_ready_count=2`
-  - `continuous_decode_bounded_lookup_fallback_to_one_shot_count=15`
   - `render_used_continuous_decoded_count=0`
-  - `render_used_one_shot_fallback_count=15`
 - Lag / backlog:
-  - `continuous_decode_requested_frame_id=446`
-  - `continuous_decode_latest_decoded_frame_id=401`
-  - `continuous_decode_requested_minus_latest_lag=64`
-  - `continuous_decode_frame_id_lag=64`
-  - `continuous_decode_output_pending_correspondence_count=48`
-  - `continuous_decode_latest_input_minus_latest_output_lag=78`
-  - `continuous_decode_pending_correspondence_frame_id_min=404`
-  - `continuous_decode_pending_correspondence_frame_id_max=479`
-  - `continuous_decode_input_to_output_lag_frames_max=78`
-  - `continuous_decode_output_lag_to_selected_frames=64`
-  - `continuous_decode_output_throughput_fps=23.309`
-  - `continuous_decode_reader_full_frame_elapsed_ms_max=1305`
-  - `continuous_decode_stdout_read_elapsed_ms=15498`
-  - `continuous_decode_stdout_reader_blocked_count=13`
-  - `continuous_decode_dropped_stale_count=337`
-  - `continuous_decode_queue_drop_reason_counts=input_queue_full:0|decoded_cache_bound:337|unknown:0`
-  - `one_shot_decode_attempt_count=30`
-  - `one_shot_decode_elapsed_ms=3659`
-  - `effective_render_fps_after_first_render=14.198`
+  - `continuous_decode_requested_frame_id=526`
+  - `continuous_decode_latest_decoded_frame_id=458`
+  - `continuous_decode_requested_minus_latest_lag=73`
+  - `continuous_decode_latest_input_minus_latest_output_lag=74`
+  - `continuous_decode_pending_correspondence_frame_id_min=464`
+  - `continuous_decode_pending_correspondence_frame_id_max=532`
+  - `continuous_decode_output_lag_to_selected_frames=73`
+  - `continuous_decode_reader_full_frame_elapsed_ms_avg=45.192`
+  - `continuous_decode_reader_full_frame_elapsed_ms_max=1217`
+  - `continuous_decode_reader_full_frame_slow_count=43`
+  - `continuous_decode_output_frame_interval_ms_avg=42.228`
+  - `continuous_decode_output_frame_interval_ms_max=382`
+  - `continuous_decode_stdout_read_throughput_bytes_per_ms=20393.026`
+  - `continuous_decode_competing_one_shot_attempt_count=34`
+  - `continuous_decode_competing_one_shot_decode_elapsed_ms=3515`
+  - `one_shot_decode_attempt_count=34`
+  - `one_shot_decode_elapsed_ms=3515`
+  - `effective_render_fps_after_first_render=13.737`
 - Source/client context:
-  - `client1 effective_output_fps=28.561`
-  - `client2 effective_output_fps=28.721`
-  - server `frames_queued=1800`
+  - `client1 effective_output_fps=28.358`
+  - `client2 effective_output_fps=28.501`
 
 ## Code Path Summary
 Current continuous runtime has three relevant queues/counters:
@@ -139,43 +138,41 @@ Current continuous runtime has three relevant queues/counters:
 - This is correct for safety, but it can hide or worsen throughput problems. The next diagnostics should make double-load visible before removing fallback or changing behavior.
 
 ## Latest Diagnostics Interpretation
-- Continuous opt-in, low-latency args, bounded feed helper, output-lag diagnostics wiring, and continuous output are PASS for slot0/two-real/opt-in scope.
+- Continuous opt-in, low-latency args, bounded feed helper, output-lag diagnostics wiring, throughput diagnostics runtime evaluation, and continuous output are PASS for slot0/two-real/opt-in scope.
 - Continuous render consumption and bounded lookup adoption remain FAIL because no continuous decoded frame was accepted for render.
-- The latest blocker is not a too-small `5` frame bounded-lag threshold. A threshold wide enough to accept lag `64` or `78` would risk stale video and contradict the sync-first goal.
-- Output throughput is below the client/source fps range (`23.309fps` vs `28fps` class source output), so the next safest step is docs-first analysis of:
-  - continuous decoder output throughput
-  - stdout full-frame read latency
-  - raw BGRA output volume and scale path cost
-  - continuous decoder + one-shot fallback double-load
+- The latest blocker is not a too-small `5` frame bounded-lag threshold. A threshold wide enough to accept lag `73` or `74` would risk stale video and contradict the sync-first goal.
+- Output throughput is below the client/source fps range (`21.773fps` vs `28fps` class source output), and the runtime-valid diagnostics now show reader avg `45.192ms`, output interval avg `42.228ms`, max reader stall `1217ms`, and `34` competing one-shot attempts over `3515ms`.
+- The next docs-first design target is one-shot fallback double-load isolation under a narrow opt-in experiment, not threshold tuning or a default throughput behavior change.
 - Feed max count should remain unchanged for now. Feeding faster while output throughput is already below source cadence may increase correspondence backlog instead of improving render consumption.
-- One-shot fallback remains a safety path. Suppressing it before continuous output is usable could reduce visible output safety even if it reduces load.
+- One-shot fallback remains the safe default path. Any suppression must stay slot0/two-real/opt-in and preserve default behavior.
 
 ## Next Design Candidates
-- Diagnostics-only candidate:
-  - add timing around stdout reader buffering / per-frame read phases if current full-frame max is insufficient
-  - expose output reader delivery cadence versus render-loop drain cadence
-  - expose raw BGRA read/copy/materialization costs separately from FFmpeg decode/scale when possible
 - Small opt-in experiment candidate:
-  - compare continuous decoder output pixel format / scale path without changing default behavior
-  - keep the experiment two-real / slot0 / opt-in only
-  - preserve one-shot fallback and all current stale-frame guards
+  - design slot0 one-shot fallback double-load isolation first
+  - compare throughput without slot0 one-shot fallback work while slot0 continuous runtime is enabled/running
+  - keep slot1 one-shot behavior and default behavior unchanged
+  - choose previous-frame hold / placeholder / no-updated-frame render safety before implementation
+- Held throughput experiments:
+  - continuous decoder output pixel format comparison
+  - FFmpeg scale-path comparison
+  - stdout reader buffering change
 - Held as risky-first:
   - widening `continuous_decode_bounded_lookup_allowed_lag_frames`
   - targetTime-aware decoded queue lookup implementation
   - unbounded latest decoded fallback
-  - one-shot fallback suppression/removal
   - feed max count increase
 
 ## Throughput Analysis Split
 - Detailed continuous output throughput analysis now lives in `docs/operations/continuous-output-throughput-plan.md`.
+- The opt-in double-load isolation design now lives in `docs/operations/continuous-one-shot-double-load-plan.md`.
 - This lag plan remains the source for frame-id lag, pending correspondence, decoded cache/drop, and render-consumption interpretation.
-- The throughput plan is the source for the next docs-first question: why continuous output stays around `23.309fps` while client output is `28fps` class.
+- The throughput plan is the source for the runtime-valid question: why continuous output stays at `21.773fps` while client output is `28fps` class.
 - Current code-path candidates are:
   - FFmpeg decode + `scale=640:360:flags=neighbor` + BGRA conversion/output
   - stdout full-frame read latency for `921600` byte frames
   - reader buffering / per-frame allocation and materialization
   - continuous decoder and one-shot fallback double-load
-- The next implementation should be diagnostics-only before any opt-in experiment. Do not use this evidence to widen the bounded-lag threshold or make stale decoded frames displayable.
+- The next implementation candidate, if chosen after docs review, should be the narrow opt-in double-load isolation slice. Do not use this evidence to widen the bounded-lag threshold or make stale decoded frames displayable.
 
 ## Minimal Next Diagnostics
 First priority:

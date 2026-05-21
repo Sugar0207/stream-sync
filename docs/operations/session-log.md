@@ -2,6 +2,112 @@
 
 ## 2026-05-22
 ### Type
+- Codex docs-only evidence reflection and docs-first experiment design
+
+### Work
+- Reflected latest valid throughput rerun `S:\stream-sync\manual-logs\two-client-render-rerun-20260522-075029`.
+- Kept this step docs-only and did not change code.
+- Recorded throughput diagnostics runtime evaluation as VALID after the new summary fields appeared with the low-latency continuous rerun binary from `C:\streamsync-target\stream-sync-rerun\debug\*.exe`.
+- Kept feed PASS, continuous output PASS, and render consumption FAIL separate.
+- Updated the next candidate from threshold tuning or pixel/scale changes to a docs-first opt-in one-shot fallback double-load isolation experiment.
+- Kept Production Readiness as FAIL.
+
+### Changed Files
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+- `docs/operations/continuous-output-throughput-plan.md`
+- `docs/operations/continuous-output-lag-plan.md`
+- `docs/operations/continuous-feed-drain-plan.md`
+- `docs/operations/continuous-stream-decoder-plan.md`
+- `docs/operations/continuous-decoded-lookup-plan.md`
+- `docs/operations/continuous-one-shot-double-load-plan.md`
+
+### Runtime Evidence
+- latest rerun:
+  - `S:\stream-sync\manual-logs\two-client-render-rerun-20260522-075029`
+- validity:
+  - build PASS with `C:\streamsync-target\stream-sync-rerun\debug\*.exe`
+  - `continuous_decode_ffmpeg_low_latency_args_enabled=true`
+  - `continuous_decode_ffmpeg_probe_args_enabled=true`
+  - `continuous_decode_ffmpeg_loglevel=warning`
+  - throughput diagnostics summary fields present
+- Feed PASS:
+  - `continuous_feed_frame_received_count=458`
+  - `continuous_feed_enqueued_count=449`
+  - `continuous_decode_input_from_feeder_count=449`
+  - `continuous_decode_input_from_render_demand_count=5`
+  - `continuous_decode_feeder_lag_to_selected=2`
+- Continuous output PASS:
+  - `continuous_decode_input_frame_count=454`
+  - `continuous_decode_output_frame_count=396`
+  - `continuous_decode_output_throughput_fps=21.773`
+  - `continuous_decode_output_bytes_total=364953600`
+  - `continuous_decode_output_bytes_per_sec=20065625.687`
+- Throughput readback:
+  - `continuous_decode_stdout_expected_frame_bytes=921600`
+  - `continuous_decode_reader_full_frame_elapsed_ms_avg=45.192`
+  - `continuous_decode_reader_full_frame_elapsed_ms_max=1217`
+  - `continuous_decode_reader_full_frame_slow_count=43`
+  - `continuous_decode_output_frame_interval_ms_avg=42.228`
+  - `continuous_decode_output_frame_interval_ms_max=382`
+  - `continuous_decode_stdout_read_throughput_bytes_per_ms=20393.026`
+  - `continuous_decode_ffmpeg_scale_enabled=true`
+  - `continuous_decode_ffmpeg_output_pixel_format=bgra`
+- Lag / render FAIL:
+  - `continuous_decode_requested_frame_id=526`
+  - `continuous_decode_latest_decoded_frame_id=458`
+  - `continuous_decode_requested_minus_latest_lag=73`
+  - `continuous_decode_latest_input_minus_latest_output_lag=74`
+  - `continuous_decode_output_lag_to_selected_frames=73`
+  - `continuous_decode_pending_correspondence_frame_id_min=464`
+  - `continuous_decode_pending_correspondence_frame_id_max=532`
+  - `render_used_continuous_decoded_count=0`
+  - `continuous_decode_render_exact_hit_count=0`
+  - `continuous_decode_bounded_lookup_hit_count=0`
+  - `continuous_decode_bounded_lookup_rejected_stale_count=15`
+  - `continuous_decode_bounded_lookup_rejected_not_ready_count=2`
+- Source / competing work:
+  - client1 `effective_output_fps=28.358`
+  - client2 `effective_output_fps=28.501`
+  - `continuous_decode_competing_one_shot_attempt_count=34`
+  - `continuous_decode_competing_one_shot_decode_elapsed_ms=3515`
+  - `one_shot_decode_attempt_count=34`
+  - `one_shot_decode_elapsed_ms=3515`
+  - `effective_render_fps_after_first_render=13.737`
+
+### Findings
+- Throughput diagnostics are now runtime-valid for the slot0 / two-real / opt-in continuous slice.
+- Continuous output remains below 28fps-class source cadence at `21.773fps`, while reader full-frame avg `45.192ms`, output frame interval avg `42.228ms`, and max reader stall `1217ms` show output cadence pressure directly.
+- Feed helper and continuous output remain PASS, but render consumption and bounded lookup adoption remain FAIL.
+- Competing one-shot work at `34` attempts / `3515ms` is a strong double-load isolation candidate, but not proof of a single FPS root cause.
+
+### Decisions
+- Add `docs/operations/continuous-one-shot-double-load-plan.md` for the next docs-first experiment boundary.
+- Prefer a narrow opt-in isolation flag proposal for slot0 / two-real / continuous runtime only; keep default one-shot fallback behavior unchanged.
+- Compare previous-frame hold, placeholder, and no-updated-frame render safety before implementing suppression behavior.
+- Hold allowed lag threshold changes, targetTime-aware lookup, latest decoded fallback, feed max count changes, pixel-format changes, scale-path changes, low-latency default changes, slot1/4-client widening, request/response persistent decoder revival, GPU decode, and Production Readiness PASS.
+
+### TODO Update
+- Completed:
+  - latest throughput diagnostics rerun reflection
+  - throughput diagnostics runtime evaluation marked VALID
+  - feed PASS / output PASS / render consumption FAIL separation after latest rerun
+- Added:
+  - docs-first one-shot fallback double-load isolation plan
+  - next-candidate update toward slot0 opt-in isolation diagnostics
+- Held:
+  - code changes
+  - runtime rerun from Codex
+  - threshold tuning
+  - pixel-format / scale-path experiment
+  - one-shot fallback removal
+
+### Validation
+- `git diff --check`
+  - result: PASS
+
+## 2026-05-22
+### Type
 - Codex implementation
 
 ### Work

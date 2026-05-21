@@ -376,3 +376,24 @@ Interpretation:
 - TargetTime-aware decoded queue lookup and latest decoded fallback stay held until continuous output is close enough to selected/source cadence.
 - Next work should be docs-first analysis of continuous decoder output throughput, stdout full-frame read latency, raw BGRA output path cost, and one-shot fallback double-load.
 - That docs-first analysis is now split to `docs/operations/continuous-output-throughput-plan.md`; the lookup plan remains a policy guard, not the first root-cause fix for `23.309fps` output throughput.
+
+## throughput diagnostics validity update
+latest rerun:
+
+- `S:\stream-sync\manual-logs\two-client-render-rerun-20260522-075029`
+
+Interpretation:
+
+- Throughput diagnostics runtime evaluation is VALID.
+- Feed remains PASS and continuous output remains PASS, but render consumption remains FAIL:
+  - `continuous_decode_output_throughput_fps=21.773`
+  - `render_used_continuous_decoded_count=0`
+  - `continuous_decode_bounded_lookup_hit_count=0`
+- Output remains far outside `allowed_lag_frames=5`:
+  - `continuous_decode_requested_minus_latest_lag=73`
+  - `continuous_decode_latest_input_minus_latest_output_lag=74`
+  - `continuous_decode_output_lag_to_selected_frames=73`
+- One-shot double-load is now directly visible:
+  - `continuous_decode_competing_one_shot_attempt_count=34`
+  - `continuous_decode_competing_one_shot_decode_elapsed_ms=3515`
+- The next docs-first candidate is the slot0 opt-in isolation plan in `docs/operations/continuous-one-shot-double-load-plan.md`, not threshold tuning, targetTime-aware lookup, or latest decoded fallback.
