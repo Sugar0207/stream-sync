@@ -1,5 +1,77 @@
 <!-- stream-sync/docs/operations/session-log.md -->
 
+## 2026-05-22
+### Type
+- Codex implementation
+
+### Work
+- Implemented the slot0 / two-real / opt-in continuous output throughput diagnostics-only slice.
+- Added summary visibility for reader full-frame avg/slow metrics, raw output bytes/sec, reader-delivered output frame interval avg/max, stdout read throughput, FFmpeg continuous scale/output pixel-format diagnostics, and one-shot work that occurs while continuous diagnostics are active.
+- Kept continuous decoder behavior, lookup policy, allowed lag threshold, feed max count, FFmpeg default args, output pixel format, scale path, and one-shot fallback policy unchanged.
+- Updated the throughput plan and TODO so the next evidence gate is the human rerun from `S:\stream-sync`.
+- Did not run a runtime rerun from Codex.
+
+### Changed Files
+- `apps/switcher/src/main.rs`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+- `docs/operations/continuous-output-throughput-plan.md`
+
+### Diagnostics Added
+- `continuous_decode_reader_full_frame_elapsed_ms_avg`
+- `continuous_decode_reader_full_frame_slow_count`
+- `continuous_decode_reader_full_frame_slow_threshold_ms`
+- `continuous_decode_output_bytes_total`
+- `continuous_decode_output_bytes_per_sec`
+- `continuous_decode_output_frame_interval_ms_avg`
+- `continuous_decode_output_frame_interval_ms_max`
+- `continuous_decode_stdout_read_throughput_bytes_per_ms`
+- `continuous_decode_ffmpeg_scale_enabled`
+- `continuous_decode_ffmpeg_output_pixel_format`
+- `continuous_decode_competing_one_shot_decode_elapsed_ms`
+- `continuous_decode_competing_one_shot_attempt_count`
+
+### Decisions
+- Use fixed `66ms` full-frame slow threshold for this diagnostics pass only.
+- Count raw output bytes from delivered continuous decoded BGRA frames and keep the existing `continuous_decode_stdout_expected_frame_bytes` field as the per-frame raw BGRA premise.
+- Measure output frame interval from reader-emitted continuous output events without changing read or render behavior.
+- Treat one-shot attempts observed while the continuous FFmpeg process is running as competing one-shot load diagnostics; keep fallback intact.
+- Keep Production Readiness as FAIL.
+
+### Runtime Result
+- Codex runtime rerun: not run.
+- Next human rerun root remains `S:\stream-sync`.
+- Keep rerun suffix:
+  - `--disable-persistent-decoder --enable-continuous-stream-decoder --continuous-decoder-low-latency-args`
+
+### TODO Update
+- Completed:
+  - slot0 continuous output throughput diagnostics summary slice
+  - focused summary formatter assertions for new fields
+  - throughput plan status update
+- Added:
+  - human rerun gate for reader avg/slow, output bytes/sec, frame interval, stdout throughput, and competing one-shot fields
+- Held:
+  - allowed lag threshold changes
+  - targetTime-aware decoded lookup
+  - latest decoded fallback
+  - feed max count changes
+  - pixel-format / scale-path experiments
+  - one-shot fallback suppression or removal
+
+### Validation
+- `cargo fmt`
+  - result: PASS
+- `cargo check -p stream-sync-switcher`
+  - result: PASS
+  - note: existing dead-code warnings remain in unrelated helpers
+- `cargo test -p stream-sync-switcher switcher_four_view_two_real_handoff_preview_summary_formats_expected_fields -- --nocapture`
+  - result: PASS
+  - note: sandbox runner startup timed out; focused test passed when rerun outside the sandbox
+- `git diff --check`
+  - result: PASS
+  - note: LF/CRLF warnings only
+
 ## 2026-05-20
 ### Type
 - Codex docs-first throughput analysis

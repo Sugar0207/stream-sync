@@ -2,7 +2,7 @@
 
 # StreamSync TODO
 
-最終更新: 2026-05-20
+最終更新: 2026-05-22
 
 このファイルは「現在どこまで終わっていて、次に何をやるか」を確認するための TODO です。  
 時系列の作業履歴、判断理由、各回の作業メモは `docs/operations/session-log.md` を正とします。
@@ -1082,13 +1082,14 @@ continuous runtime first slice の blocker:
 - continuous render consumption remains FAIL: `render_used_continuous_decoded_count=0`, `continuous_decode_bounded_lookup_hit_count=0`, `continuous_decode_bounded_lookup_rejected_stale_count=13`, `continuous_decode_bounded_lookup_rejected_not_ready_count=2`, `continuous_decode_bounded_lookup_fallback_to_one_shot_count=15`, and `render_used_one_shot_fallback_count=15`
 - latest output-lag diagnostics point to continuous output being behind selected/source cadence, not a threshold-only issue: `continuous_decode_latest_input_minus_latest_output_lag=78`, `continuous_decode_output_lag_to_selected_frames=64`, `continuous_decode_output_pending_correspondence_count=48`, `continuous_decode_pending_correspondence_frame_id_min=404`, `continuous_decode_pending_correspondence_frame_id_max=479`, `continuous_decode_input_to_output_lag_frames_max=78`, `continuous_decode_output_throughput_fps=23.309`, `continuous_decode_reader_full_frame_elapsed_ms_max=1305`, `continuous_decode_stdout_read_elapsed_ms=15498`, and `continuous_decode_stdout_reader_blocked_count=13`
 - client output fps was still in the 28fps range (`client1 effective_output_fps=28.561`, `client2 effective_output_fps=28.721`) while continuous output throughput was `23.309fps`, so the next docs-first candidate is continuous decoder output throughput / stdout full-frame read latency / raw BGRA read+scale cost / one-shot fallback double-load. Do not widen the allowed lag threshold, add targetTime-aware lookup, use latest decoded fallback, raise feed max count, expand to slot1/4-client, revive request/response persistent decoder, remove one-shot fallback, or mark Production Readiness PASS
-- continuous output throughput analysis is now tracked in `docs/operations/continuous-output-throughput-plan.md`. The next code slice, if any, should be diagnostics-only first; opt-in pixel format / scale path / reader buffering experiments are second choice after diagnostics, and one-shot fallback suppression remains risky-first
+- continuous output throughput analysis is now tracked in `docs/operations/continuous-output-throughput-plan.md`. 2026-05-22 diagnostics-only slice added reader full-frame avg / slow count, output bytes/sec, output frame interval avg/max, stdout read throughput, FFmpeg scale/output pixel-format fields, and continuous-active competing one-shot counters to the slot0 / two-real / opt-in summary
+- この diagnostics slice は behavior change なし。continuous decoder behavior、lookup policy、allowed lag threshold、feed max count、FFmpeg default args、pixel format、scale path、one-shot fallback policy を維持し、Production Readiness は FAIL 継続とする
 - metrics commit, snapshot export cadence, dashboard refresh consumer policy, and dashboard refresh runtime wiring remain separate from timer wait, retry, reconnect, socket ownership, cleanup, UI rendering, video, switcher, and OBS.
 - server notice queue storage remains separate from notice send wakeup execution.
 - actual dashboard UI rendering remains unimplemented.
 
 ## Next Items
-1. 次に code を触る場合は diagnostics-only とし、`continuous_decode_reader_full_frame_elapsed_ms_avg`、slow count / threshold、output bytes/sec、frame interval avg/max、stdout read throughput、FFmpeg scale/pixel-format、competing one-shot counters を slot0 / two-real / opt-in summary に追加する
-2. diagnostics 追加後は人間側で `S:\stream-sync` から `--disable-persistent-decoder --enable-continuous-stream-decoder --continuous-decoder-low-latency-args` の rerun を行い、output throughput が source fps に近づく前に lookup threshold を広げない
+1. 人間側で `S:\stream-sync` から `--disable-persistent-decoder --enable-continuous-stream-decoder --continuous-decoder-low-latency-args` の rerun を行い、reader avg/slow、output bytes/sec、frame interval、stdout throughput、competing one-shot fields を読む
+2. output throughput が source fps に近づく前に lookup threshold を広げず、今回の throughput diagnostics を `continuous-output-throughput-plan.md` と照合する
 3. diagnostics 結果を見てから、continuous output pixel format、scale path、output reader buffering の小さな opt-in experiment を比較する。one-shot fallback 抑制は render safety risk が高いため first experiment にしない
 4. Production Readiness FAIL を維持し、allowed lag threshold 変更、targetTime-aware lookup 実装、latest decoded fallback、slot1 continuous 化、4-client 化、request/response persistent decoder 復活、GPU decode、one-shot fallback 削除、feed max count 変更には広げない

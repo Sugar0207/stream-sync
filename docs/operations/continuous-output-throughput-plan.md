@@ -2,11 +2,11 @@
 
 # Continuous Output Throughput Plan
 
-Last updated: 2026-05-20
+Last updated: 2026-05-22
 
 ## Purpose
 - Analyze why slot0 continuous decoder output throughput stayed around `23fps` after feed helper and continuous output both reached runtime PASS.
-- Keep this pass docs-only: no code changes, no threshold tuning, no lookup policy changes, no feed max count changes.
+- Keep the next code pass diagnostics-only: no throughput behavior changes, no threshold tuning, no lookup policy changes, no feed max count changes.
 - Separate stdout full-frame read latency, raw BGRA output volume, FFmpeg scale/output path cost, reader buffering, and one-shot fallback double-load before choosing the next code slice.
 
 ## Latest Evidence
@@ -117,7 +117,7 @@ Continuous slot0 output path:
 - This could worsen continuous throughput, but suppressing fallback first is risky because it would remove the current visible safety path.
 
 ## Diagnostics-Only Next Slice
-First code slice, if any, should be diagnostics-only and remain slot0 / two-real / opt-in:
+The 2026-05-22 code slice is implemented as diagnostics-only and remains slot0 / two-real / opt-in:
 
 - `continuous_decode_reader_full_frame_elapsed_ms_avg`
 - `continuous_decode_reader_full_frame_slow_count`
@@ -138,6 +138,24 @@ Diagnostics interpretation goal:
 - If output bytes/sec is stable but below source cadence, focus on decode/scale/pixel-format throughput.
 - If output frame interval max aligns with one-shot elapsed bursts, double-load becomes a stronger candidate.
 - If avg read is healthy but render consumption remains `0`, revisit lookup only after output lag shrinks into a safe guard range.
+
+## Diagnostics Implementation Status
+- Summary now exposes the planned throughput fields:
+  - reader full-frame average, slow count, and fixed `66ms` slow threshold
+  - output raw bytes total and bytes/sec
+  - reader-delivered output frame interval average/max
+  - stdout full-frame read throughput bytes/ms
+  - FFmpeg continuous scale-enabled and output pixel-format diagnostics
+  - one-shot attempt/elapsed totals observed while the continuous FFmpeg process is running
+- Existing raw BGRA premise remains visible through
+  `continuous_decode_stdout_expected_frame_bytes`; current slot size output is
+  still `640x360` BGRA and therefore `921600` bytes/frame.
+- The slice only aggregates existing slot0 continuous reader/output timing and
+  one-shot diagnostics. It does not change continuous decode behavior, lookup
+  policy, allowed lag threshold, feed max count, FFmpeg defaults, output pixel
+  format, scale path, or one-shot fallback policy.
+- Runtime rerun remains human-side from `S:\stream-sync`; Codex did not run the
+  two-client preview loop for this implementation.
 
 ## Opt-In Experiment Candidates
 Only after diagnostics show where the time is going:
@@ -165,7 +183,8 @@ Only after diagnostics show where the time is going:
    - Any new FFmpeg args should be opt-in and reported in summary diagnostics.
 
 ## Design Decision
-- The next safest code change is diagnostics-only.
+- The diagnostics-only code change is now in place; the next evidence gate is
+  the human rerun that reads these summary fields.
 - A small opt-in experiment is second choice, after diagnostics identify whether the bottleneck is FFmpeg output, stdout read, raw BGRA volume, reader buffering, or one-shot competition.
 - Threshold tuning is held because output lag is far outside the `5` frame guard.
 - TargetTime-aware lookup and latest decoded fallback are held because accepting `64` to `78` frames of lag would violate sync-first behavior.
@@ -173,7 +192,6 @@ Only after diagnostics show where the time is going:
 - Production Readiness remains FAIL.
 
 ## Out Of Scope
-- Code changes in this docs-only step
 - `continuous_decode_bounded_lookup_allowed_lag_frames` changes
 - TargetTime-aware decoded queue lookup implementation
 - Latest decoded fallback
