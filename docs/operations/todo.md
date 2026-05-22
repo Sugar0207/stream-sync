@@ -1081,6 +1081,8 @@ continuous runtime first slice の blocker:
 - ON with suppression improved the same comparison slice: suppression count `255`, suppression reasons `continuous_not_ready:27|stale:228|future:0|unknown:0`, render safety `decode_deferred_placeholder:255|unknown:0`, `continuous_decode_output_throughput_fps=26.814`, competing one-shot `13` attempts / `942ms`, continuous render use `11`, bounded lookup hits `11`, and render FPS `17.401`
 - one-shot double-load is now a strong throughput contributor candidate in the slot0 / two-real / opt-in continuous slice, but suppression is still isolation evidence rather than a default policy decision
 - stale and not-ready pressure remain visible even in ON evidence: suppression reasons still contain stale `228` and continuous-not-ready `27`; suppression alone is not a complete render-consumption solution
+- bounded lookup threshold / stale guard docs-first review now lives in `docs/operations/continuous-decoded-lookup-plan.md`. Default allowed lag stays fixed at `5`; first experiment candidates are explicit opt-in `8` then `10`, with requested-future rejection and unbounded latest-decoded fallback still held
+- first threshold experiment shape, if code is touched next, is same-build suppression-ON comparison for slot0 / two-real / opt-in continuous only via candidate `--continuous-decoder-bounded-lookup-allowed-lag-frames <N>`. Compare threshold `5` vs `8` or `10` with bounded hit lag, stale/not-ready rejects, continuous render use, render FPS, placeholder churn, and suppression counters visible
 - continuous output throughput analysis remains tracked in `docs/operations/continuous-output-throughput-plan.md`; the A/B evidence and opt-in suppression boundary remain tracked in `docs/operations/continuous-one-shot-double-load-plan.md`
 - slot0 one-shot fallback isolation first code slice remains opt-in via `--continuous-decoder-slot0-suppress-one-shot-fallback`. Default behavior is unchanged; slot1 stays one-shot, and the first render-safety path remains existing decode-deferred placeholder rather than unbounded stale decoded output
 - metrics commit, snapshot export cadence, dashboard refresh consumer policy, and dashboard refresh runtime wiring remain separate from timer wait, retry, reconnect, socket ownership, cleanup, UI rendering, video, switcher, and OBS.
@@ -1088,7 +1090,7 @@ continuous runtime first slice の blocker:
 - actual dashboard UI rendering remains unimplemented.
 
 ## Next Items
-1. next code 候補は suppression default 化ではなく、stale/not-ready reject を前提にした bounded lookup allowed-lag threshold / policy の docs-first 検討にする
-2. threshold tuning を検討する場合も slot0 / two-real / opt-in continuous の narrow experiment flag 境界に閉じ、sync-first guard を外す policy にはしない
-3. one-shot suppression A/B evidence は throughput strong-candidate evidence として維持し、BGRA / scale / stdout reader experiment はその後段候補へ戻す
-4. Production Readiness FAIL を維持し、targetTime-aware lookup 実装、latest decoded fallback、slot1 continuous 化、4-client 化、request/response persistent decoder 復活、GPU decode、one-shot fallback 削除、feed max count 変更には広げない
+1. next code slice を選ぶなら default threshold 変更ではなく、suppression ON 専用の narrow bounded lookup threshold experiment flag を最小設計する
+2. threshold `5` vs `8` comparison を first candidate にし、`10` や dynamic policy は stale-frame safety と summary visibility を先に満たせる場合だけ後続候補にする
+3. requested より未来の decoded frame、unbounded latest decoded fallback、suppression default 化には進まず、BGRA / scale / stdout reader experiment は lookup threshold evidence 後に再評価する
+4. Production Readiness FAIL を維持し、targetTime-aware lookup 実装、slot1 continuous 化、4-client 化、request/response persistent decoder 復活、GPU decode、one-shot fallback 削除、feed max count 変更には広げない

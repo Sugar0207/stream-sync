@@ -88,13 +88,33 @@ First design preference:
 ## allowed lag threshold candidates
 - Implemented first slice:
   - `allowed_lag_frames=5`
-  - keep this fixed after the latest rerun; do not widen it until output lag / correspondence backlog is understood
-- Conservative first default:
+  - keep this as the default after the matched suppression A/B
+  - it already produced ON bounded-lookup hits at lag `5`
+  - it keeps the current display guard close to sync-first behavior while stale
+    rejects remain high
+- Benefits of staying at default `5`:
+  - limits visibly old slot0 continuous frames while frame-id lag still varies
+  - keeps the first bounded-lookup evidence distinct from suppression evidence
+  - makes stale reject count a useful signal instead of silently widening display
+    eligibility
+- Costs of staying at default `5`:
+  - suppression ON still rejected stale candidates `228` times in the matched A/B
+  - output lag to selected improved to `8`, so some near-threshold candidates may
+    remain unusable even when output throughput improves
+  - render may keep using the suppression safety placeholder when a bounded but
+    slightly older decoded frame could be available
+- Fixed opt-in experiment candidates:
   - `allowed_lag_frames=8`
-  - roughly below one third of a second at 30fps
-- Wider diagnostic candidate:
-  - `allowed_lag_frames=15`
-  - about half a second at 30fps
+  - first candidate because it is only slightly above the matched ON output lag
+    signal and remains below one third of a second at 30fps
+  - `allowed_lag_frames=10`
+  - second candidate if `8` remains too narrow; risk is higher stale display
+    tolerance and comparison noise from letting more old frames through
+- Dynamic threshold candidate:
+  - docs-only hold for now
+  - it would need an explicit bound, a clear input signal, and summary visibility
+    for the chosen threshold on every run
+  - do not derive it silently from queue length, last hit lag, or render FPS
 - Queue-bound ceiling:
   - never allow more than the decoded queue bound, currently `30`
   - `30` should be a debug ceiling, not the first display default
@@ -115,6 +135,15 @@ First design preference:
   - output/correspondence state suggests frame_id mismatch risk
 - Rejected stale candidates should not prevent one-shot fallback
 - Rejection should increment explicit diagnostics rather than being hidden as a generic miss
+- Threshold experiments must keep these guards:
+  - never use a decoded frame after the requested frame id
+  - never turn lookup miss into unbounded latest decoded fallback
+  - keep future-frame rejection explicit
+  - keep the selected source identity check
+  - keep placeholder / previous display safety decisions separate from the lookup
+    threshold itself
+- If the experiment threshold is wider than `5`, summary output must make the
+  actual allowed lag and accepted hit lag obvious before comparing render FPS.
 
 ## lookup priority
 1. Exact selected-frame lookup:
@@ -391,3 +420,80 @@ Interpretation:
 - ON suppression reasons still show stale `228` and continuous-not-ready `27`.
 - One-shot double-load is now a strong contributor candidate, but suppression stays opt-in evidence rather than the default policy.
 - The next docs-first gate returns to bounded lookup allowed-lag threshold / policy review. Any threshold experiment must stay narrow and opt-in; targetTime-aware lookup and latest decoded fallback remain held.
+
+## matched A/B threshold policy review
+Evidence premise:
+
+- matched suppression OFF/ON rerun:
+  - `S:\stream-sync\manual-logs\two-client-ab-rerun-20260522-103943`
+- OFF:
+  - `continuous_decode_output_lag_to_selected_frames=17`
+  - `continuous_decode_latest_input_minus_latest_output_lag=20`
+  - `continuous_decode_bounded_lookup_hit_count=0`
+- ON:
+  - `continuous_decode_output_lag_to_selected_frames=8`
+  - `continuous_decode_latest_input_minus_latest_output_lag=33`
+  - `continuous_decode_bounded_lookup_hit_count=11`
+  - `continuous_decode_slot0_one_shot_suppressed_reason_counts=continuous_not_ready:27|stale:228|future:0|unknown:0`
+
+Policy reading:
+
+- The current fixed `5` guard is not useless: ON evidence has bounded hits at the
+  current limit and keeps future/unbounded fallback out of render use.
+- The same ON evidence leaves many stale and not-ready rejects. Threshold review
+  is justified, but stale count alone does not prove that every rejected frame is
+  safe to display.
+- `not_ready` is not solved by widening lag. It can mean output/cache availability
+  is still missing at lookup time.
+- A wider threshold can trade fewer placeholders for more visible lag. That is an
+  experiment question, not a default policy change.
+
+Opt-in experiment shape:
+
+- first flag candidate:
+  - `--continuous-decoder-bounded-lookup-allowed-lag-frames <N>`
+- first values to compare:
+  - default-equivalent `5`
+  - fixed `8`
+  - fixed `10` only if `8` remains informative but too narrow
+- first scope:
+  - slot0 only
+  - two-real preview loop only
+  - opt-in continuous only
+  - same-build rerun from `S:\stream-sync`
+- recommended isolation boundary:
+  - run the threshold comparison with
+    `--continuous-decoder-slot0-suppress-one-shot-fallback` ON so the matched
+    A/B double-load result is not reopened while threshold policy is measured
+  - keep the threshold flag explicit even if it is accepted only under that
+    suppression experiment scope in the first code slice
+
+Diagnostics to compare:
+
+- `continuous_decode_bounded_lookup_allowed_lag_frames`
+- `continuous_decode_bounded_lookup_hit_count`
+- `continuous_decode_bounded_lookup_lag_frames`
+- `continuous_decode_bounded_lookup_rejected_stale_count`
+- `continuous_decode_bounded_lookup_rejected_not_ready_count`
+- `render_used_continuous_decoded_count`
+- `effective_render_fps_after_first_render`
+- `placeholder_visual_changed_count`
+- `continuous_decode_slot0_one_shot_suppressed_count`
+
+Comparison rules:
+
+- compare threshold `5` vs `8` or `10` on the same build
+- keep suppression ON for the first threshold comparison
+- treat large client FPS differences as noisy before attributing threshold effects
+- read accepted bounded-hit lag together with stale reject count; a hit increase is
+  not a success if it hides an unsafe stale-frame display policy
+
+Held:
+
+- default `5` threshold change
+- dynamic allowed-lag implementation
+- targetTime-aware decoded queue lookup
+- unbounded latest decoded fallback
+- suppression defaulting
+- slot1 / 4-client widening
+- Production Readiness PASS

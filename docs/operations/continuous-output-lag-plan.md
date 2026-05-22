@@ -121,13 +121,13 @@ Current continuous runtime has three relevant queues/counters:
 - Suppression ON strongly reduced competing one-shot work and improved output throughput, continuous render consumption, bounded lookup adoption, and render FPS.
 - One-shot double-load is a strong contributor candidate, but suppression remains opt-in isolation evidence rather than a default policy change.
 - ON evidence still suppresses stale `228` and continuous-not-ready `27` cases.
-- The next docs-first design question is bounded lookup allowed-lag threshold / policy, with any threshold tuning kept narrow and opt-in.
+- The bounded lookup allowed-lag threshold / stale-guard review is now recorded in `docs/operations/continuous-decoded-lookup-plan.md`, with any threshold tuning kept narrow and opt-in.
 - Feed max count should remain unchanged for now. Feeding faster while output throughput is already below source cadence may increase correspondence backlog instead of improving render consumption.
 - One-shot fallback remains the safe default path. Any suppression must stay slot0/two-real/opt-in and preserve default behavior.
 
 ## Next Design Candidates
-- Next docs-first candidate:
-  - review bounded lookup allowed-lag threshold / policy after the matched suppression A/B
+- Next code candidate if selected after docs review:
+  - use the lookup-plan opt-in bounded lookup allowed-lag threshold experiment shape after the matched suppression A/B
   - keep sync-first stale-frame safety explicit
   - keep any threshold experiment behind a narrow opt-in flag if implemented
 - Held throughput experiments:

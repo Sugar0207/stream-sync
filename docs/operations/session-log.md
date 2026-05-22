@@ -2,6 +2,66 @@
 
 ## 2026-05-22
 ### Type
+- Codex docs-first bounded lookup threshold policy review
+
+### Work
+- Kept this step docs-only and did not change code or run a Codex runtime rerun.
+- Extended `continuous-decoded-lookup-plan.md` with the next bounded lookup allowed-lag threshold / stale-guard policy review after the matched suppression A/B.
+- Kept default `continuous_decode_bounded_lookup_allowed_lag_frames=5` unchanged.
+- Documented fixed opt-in threshold candidates `8` and `10`, held dynamic threshold work, and kept unbounded latest-decoded fallback out of the design.
+- Aligned TODO and related continuous plans so the next code candidate is a narrow threshold experiment only if chosen.
+
+### Changed Files
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+- `docs/operations/continuous-decoded-lookup-plan.md`
+- `docs/operations/continuous-one-shot-double-load-plan.md`
+- `docs/operations/continuous-output-throughput-plan.md`
+- `docs/operations/continuous-output-lag-plan.md`
+- `docs/operations/continuous-stream-decoder-plan.md`
+
+### Evidence Premise
+- latest matched suppression OFF/ON rerun:
+  - `S:\stream-sync\manual-logs\two-client-ab-rerun-20260522-103943`
+- current threshold:
+  - `continuous_decode_bounded_lookup_allowed_lag_frames=5`
+- ON evidence:
+  - output lag to selected `8`
+  - bounded lookup hits `11`
+  - suppression reasons `continuous_not_ready:27|stale:228|future:0|unknown:0`
+
+### Findings
+- Threshold `5` is still safety-useful and already produces ON bounded hits, but it can leave near-threshold decoded frames in stale rejection when output lag improves.
+- Stale reject count justifies threshold review; it does not prove every rejected frame is safe to display.
+- Not-ready reject count is not fixed by widening allowed lag because no usable decoded frame may exist at lookup time.
+- Widening allowed lag trades placeholder avoidance against stale-frame display risk and must stay an experiment question.
+
+### Decisions
+- Keep default allowed lag `5` unchanged.
+- First fixed threshold experiment candidate is `8`; `10` is a second candidate if `8` is informative but still too narrow.
+- Hold dynamic threshold implementation until its bound, input signal, and summary visibility are explicit.
+- Candidate flag shape is `--continuous-decoder-bounded-lookup-allowed-lag-frames <N>`.
+- First threshold comparison should stay slot0 / two-real / opt-in continuous and run with suppression ON so double-load isolation is not reopened.
+- Keep requested-future rejection, same-source checks, unbounded latest-decoded fallback ban, and Production Readiness FAIL.
+
+### TODO Update
+- Completed:
+  - docs-first bounded lookup allowed-lag threshold / stale-guard review
+- Added:
+  - explicit opt-in threshold experiment shape and comparison metrics
+- Held:
+  - code changes
+  - default threshold changes
+  - suppression defaulting
+  - targetTime-aware lookup and unbounded latest decoded fallback
+
+### Validation
+- `git diff --check`
+  - result: PASS
+  - note: LF/CRLF warnings only
+
+## 2026-05-22
+### Type
 - Codex docs-only matched A/B evidence reflection
 
 ### Work

@@ -1011,9 +1011,9 @@ latest output-throughput diagnostics rerun update:
    - render FPS `17.401`
    - suppression reasons `continuous_not_ready:27|stale:228|future:0|unknown:0`
 6. one-shot double-load is now a strong throughput contributor candidate, but suppression remains opt-in evidence rather than a default policy change.
-7. The next docs-first gate is bounded lookup allowed-lag threshold / policy review with any threshold experiment kept narrow and opt-in.
-10. The request/response persistent decoder remains frozen. This rerun does not justify reviving it.
-11. Production Readiness remains FAIL.
+7. The next threshold experiment, if selected, follows the bounded lookup allowed-lag threshold / stale-guard review in `docs/operations/continuous-decoded-lookup-plan.md` and stays narrow and opt-in.
+8. The request/response persistent decoder remains frozen. This rerun does not justify reviving it.
+9. Production Readiness remains FAIL.
 
 latest output-throughput docs-first update:
 
@@ -1024,7 +1024,7 @@ latest output-throughput docs-first update:
    - stdout full-frame read boundary for `921600` bytes/frame
    - reader buffering / raw frame materialization
    - continuous decoder and one-shot fallback double-load
-4. The next docs-first gate is bounded lookup allowed-lag threshold / policy review after the matched A/B.
+4. The lookup-plan bounded allowed-lag threshold / stale-guard review is now the policy source after the matched A/B.
 5. Pixel-format, scale-path, reader-buffering, and FFmpeg args experiments move back behind that review.
 6. Default one-shot fallback policy, threshold widening, targetTime-aware lookup, latest decoded fallback, feed max increase, slot1/4-client rollout, GPU decode, and request/response persistent revival remain out of scope.
 

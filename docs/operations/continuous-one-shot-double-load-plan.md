@@ -182,9 +182,10 @@ Interpretation:
   continuous render use, bounded lookup adoption, and render FPS in this slice.
 - Stale and not-ready suppression reasons remain high, so suppression is not a
   complete solution.
-- Next code candidate is not suppression defaulting. Move to docs-first bounded
-  lookup allowed-lag threshold / policy review, and keep any threshold experiment
-  narrow and opt-in.
+- Next code candidate is not suppression defaulting. The bounded lookup
+  allowed-lag threshold / stale-guard review now lives in
+  `docs/operations/continuous-decoded-lookup-plan.md`; keep any threshold
+  experiment narrow and opt-in.
 
 ## Held
 - allowed lag threshold changes

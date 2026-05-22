@@ -6,7 +6,9 @@ Last updated: 2026-05-22
 
 ## Purpose
 - Analyze why slot0 continuous decoder output throughput stays below source cadence after feed helper, continuous output, and throughput diagnostics all reached runtime evidence.
-- Keep the next candidate docs-first and opt-in: no default behavior changes, no threshold tuning, no lookup policy changes, no feed max count changes.
+- Keep this throughput plan docs-first and opt-in: it does not change defaults,
+  lookup threshold/policy, or feed max count. Threshold review now lives in the
+  decoded lookup plan.
 - Use the validated throughput diagnostics to separate stdout full-frame read latency, raw BGRA output volume, FFmpeg scale/output path cost, reader buffering, and one-shot fallback double-load before choosing the next code slice.
 
 ## Latest Evidence
@@ -208,7 +210,8 @@ candidate has moved to bounded lookup allowed-lag threshold / policy review.
 - One-shot double-load is now a strong contributor candidate for this slice, but
   this still does not justify a single-cause FPS conclusion or default suppression.
 - Stale/not-ready suppression reasons remain high ON, so the next code candidate
-  moves to docs-first bounded lookup allowed-lag threshold / policy review.
+  moves to the bounded lookup allowed-lag threshold / stale-guard review now
+  documented in `docs/operations/continuous-decoded-lookup-plan.md`.
 - Any threshold experiment must stay narrow and opt-in.
 - Pixel-format, scale-path, reader-buffering, and additional FFmpeg args move
   back to later opt-in experiment candidates.
@@ -232,8 +235,8 @@ candidate has moved to bounded lookup allowed-lag threshold / policy review.
   - ON throughput `26.814fps`, competing one-shot `13` attempts / `942ms`,
     bounded lookup/render use `11`
   - ON suppression count `255`
-- Keep suppression as an opt-in isolation path. The next docs-first review is
-  bounded lookup threshold / policy, not a suppression default change.
+- Keep suppression as an opt-in isolation path. The next threshold experiment, if
+  selected, follows the lookup-plan opt-in scope rather than changing defaults.
 
 ## Out Of Scope
 - `continuous_decode_bounded_lookup_allowed_lag_frames` changes
