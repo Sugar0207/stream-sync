@@ -11,22 +11,27 @@ Last updated: 2026-05-22
 
 ## Evidence Gate
 - latest valid rerun:
+  - suppression ON `S:\stream-sync\manual-logs\two-client-render-rerun-20260522-082451`
+- prior valid OFF baseline:
   - `S:\stream-sync\manual-logs\two-client-render-rerun-20260522-075029`
 - build / runtime validity:
   - build PASS from `C:\streamsync-target\stream-sync-rerun\debug\*.exe`
   - low-latency args active
-  - throughput diagnostics present in summary
+  - suppression diagnostics present in summary
 - separated result:
   - feed PASS
   - continuous output PASS
-  - continuous render consumption FAIL
-- throughput gap:
-  - continuous output `21.773fps`
-  - client output `28.358fps` / `28.501fps`
-- double-load signal:
-  - `continuous_decode_competing_one_shot_attempt_count=34`
-  - `continuous_decode_competing_one_shot_decode_elapsed_ms=3515`
-  - one-shot totals match at `34` attempts / `3515ms`
+  - continuous render consumption PARTIAL PASS
+- suppression ON:
+  - `continuous_decode_slot0_one_shot_suppression_enabled=true`
+  - `continuous_decode_slot0_one_shot_suppressed_count=216`
+  - render safety stayed on `decode_deferred_placeholder:216|unknown:0`
+- throughput / source cadence:
+  - continuous output `22.327fps`
+  - client output `22.340fps` / `22.453fps`
+- suppression ON double-load signal:
+  - `continuous_decode_competing_one_shot_attempt_count=12`
+  - `continuous_decode_competing_one_shot_decode_elapsed_ms=1414`
 
 ## Experiment Question
 - When slot0 continuous runtime is enabled and running, does removing slot0 one-shot fallback work from that same preview loop materially improve:
@@ -34,6 +39,9 @@ Last updated: 2026-05-22
   - reader full-frame latency
   - output lag to selected frames
 - This asks whether double-load is a meaningful contributor. It does not claim double-load is the only FPS cause.
+- Suppression ON evidence is valid, but the first ON rerun is not a matched causal
+  comparison because client output fps fell from the OFF baseline `28fps` class
+  to the ON run `22fps` class.
 
 ## Flag Shape
 First implementation flag:
@@ -126,6 +134,49 @@ Useful supporting readback:
 - The existing competing one-shot counters stay visible for on/off comparison.
 - Next human rerun keeps the base suffix and adds:
   - `--continuous-decoder-slot0-suppress-one-shot-fallback`
+
+## Suppression ON Runtime Result
+- latest ON rerun:
+  - `S:\stream-sync\manual-logs\two-client-render-rerun-20260522-082451`
+- VALID / PASS:
+  - binary path remains `C:\streamsync-target\stream-sync-rerun\debug\*.exe`
+  - low-latency args remain active
+  - suppression flag is active
+  - feed, continuous output, and suppression diagnostics wiring are PASS
+- one-shot suppression effect: PARTIAL PASS
+  - `continuous_decode_slot0_one_shot_suppressed_count=216`
+  - `continuous_decode_slot0_one_shot_suppressed_reason_counts=continuous_not_ready:51|stale:165|future:0|unknown:0`
+  - `continuous_decode_slot0_one_shot_suppressed_render_safety_counts=decode_deferred_placeholder:216|unknown:0`
+  - competing one-shot fell from OFF baseline `34` attempts / `3515ms`
+    to ON `12` attempts / `1414ms`
+- continuous render consumption: PARTIAL PASS
+  - `render_used_continuous_decoded_count=3`
+  - `continuous_decode_bounded_lookup_hit_count=3`
+  - `continuous_decode_render_used_bounded_lag_count=3`
+- throughput causality: INCONCLUSIVE
+  - OFF baseline clients were `28.358fps` / `28.501fps`
+  - ON clients were `22.340fps` / `22.453fps`
+  - output lag to selected moved from OFF `73` to ON `17`, but the input
+    cadence changed enough that this is not yet suppression-only evidence
+
+## Matched A/B Rerun
+- Use the same build and same target exe:
+  - `C:\streamsync-target\stream-sync-rerun\debug\*.exe`
+- OFF suffix:
+  - `--disable-persistent-decoder --enable-continuous-stream-decoder --continuous-decoder-low-latency-args`
+- ON suffix:
+  - `--disable-persistent-decoder --enable-continuous-stream-decoder --continuous-decoder-low-latency-args --continuous-decoder-slot0-suppress-one-shot-fallback`
+- Compare:
+  - client `effective_output_fps`
+  - `continuous_decode_output_throughput_fps`
+  - `continuous_decode_output_lag_to_selected_frames`
+  - `continuous_decode_latest_input_minus_latest_output_lag`
+  - `continuous_decode_competing_one_shot_attempt_count`
+  - `continuous_decode_competing_one_shot_decode_elapsed_ms`
+  - `render_used_continuous_decoded_count`
+  - `continuous_decode_bounded_lookup_hit_count`
+  - `effective_render_fps_after_first_render`
+- Mark the comparison noisy if client fps differs by more than roughly `2fps`.
 
 ## Held
 - allowed lag threshold changes

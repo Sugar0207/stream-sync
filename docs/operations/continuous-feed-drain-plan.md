@@ -404,40 +404,44 @@ Feed/drain interpretation:
 ## output throughput diagnostics runtime evidence
 latest rerun:
 
-- `S:\stream-sync\manual-logs\two-client-render-rerun-20260522-075029`
+- suppression ON latest evidence:
+  - `S:\stream-sync\manual-logs\two-client-render-rerun-20260522-082451`
+- prior valid suppression OFF baseline:
+  - `S:\stream-sync\manual-logs\two-client-render-rerun-20260522-075029`
 
 Feed helper remains PASS and is the primary continuous input source:
 
 - `continuous_feed_enabled=true`
-- `continuous_feed_frame_received_count=458`
-- `continuous_feed_enqueued_count=449`
-- `continuous_decode_input_from_feeder_count=449`
-- `continuous_decode_input_from_render_demand_count=5`
-- `continuous_decode_feeder_lag_to_selected=2`
+- `continuous_feed_frame_received_count=347`
+- `continuous_feed_enqueued_count=345`
+- `continuous_decode_input_from_feeder_count=345`
+- `continuous_decode_input_from_render_demand_count=2`
+- `continuous_decode_feeder_lag_to_selected=0`
 
-Continuous output is PASS, but throughput is behind source cadence:
+Continuous output is PASS in the suppression ON rerun:
 
-- `continuous_decode_input_frame_count=454`
-- `continuous_decode_output_frame_count=396`
-- `continuous_decode_output_throughput_fps=21.773`
-- client output fps was `28.358` / `28.501`
-- `continuous_decode_latest_input_minus_latest_output_lag=74`
-- `continuous_decode_output_lag_to_selected_frames=73`
+- `continuous_decode_input_frame_count=347`
+- `continuous_decode_output_frame_count=304`
+- `continuous_decode_output_throughput_fps=22.327`
+- client output fps was `22.340` / `22.453`
+- `continuous_decode_latest_input_minus_latest_output_lag=46`
+- `continuous_decode_output_lag_to_selected_frames=17`
 
-Render consumption remains FAIL:
+Render consumption is PARTIAL PASS and suppression is active:
 
-- `continuous_decode_bounded_lookup_hit_count=0`
-- `render_used_continuous_decoded_count=0`
-- `continuous_decode_competing_one_shot_attempt_count=34`
-- `continuous_decode_competing_one_shot_decode_elapsed_ms=3515`
+- `continuous_decode_bounded_lookup_hit_count=3`
+- `render_used_continuous_decoded_count=3`
+- `continuous_decode_slot0_one_shot_suppressed_count=216`
+- `continuous_decode_competing_one_shot_attempt_count=12`
+- `continuous_decode_competing_one_shot_decode_elapsed_ms=1414`
 
 Feed/drain interpretation:
 
 - The feeder is no longer the primary blocker for slot0/two-real/opt-in continuous.
 - Feed max count should remain unchanged while output throughput is below source fps.
-- Latest runtime-valid throughput diagnostics show output remains below source cadence and competing one-shot work is visible.
-- The next feed-related decision should wait for the slot0 opt-in one-shot double-load isolation design, not increase feed pressure first.
-- Detailed throughput analysis is tracked in `docs/operations/continuous-output-throughput-plan.md`; the next isolation design is tracked in `docs/operations/continuous-one-shot-double-load-plan.md`.
+- Latest runtime-valid suppression ON evidence shows one-shot work reduced and bounded continuous consumption appeared, but source fps changed from the prior OFF baseline.
+- Throughput causality remains INCONCLUSIVE until same-build matched OFF/ON A/B reruns keep client fps close enough for comparison.
+- Detailed throughput analysis is tracked in `docs/operations/continuous-output-throughput-plan.md`; matched A/B policy is tracked in `docs/operations/continuous-one-shot-double-load-plan.md`.
 - Feed max count remains held because output throughput is already below source cadence; increasing feed pressure before output catches up could increase pending correspondence.
 - Threshold tuning, targetTime-aware lookup, latest decoded fallback, slot1 continuous, 4-client rollout, and one-shot fallback removal remain out of scope.
 

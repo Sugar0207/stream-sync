@@ -11,6 +11,8 @@ Last updated: 2026-05-22
 
 ## Latest Evidence
 - latest rerun:
+  - suppression ON `S:\stream-sync\manual-logs\two-client-render-rerun-20260522-082451`
+- prior OFF baseline:
   - `S:\stream-sync\manual-logs\two-client-render-rerun-20260522-075029`
 - validity:
   - build PASS with `C:\streamsync-target\stream-sync-rerun\debug\*.exe`
@@ -18,49 +20,43 @@ Last updated: 2026-05-22
     - `continuous_decode_ffmpeg_low_latency_args_enabled=true`
     - `continuous_decode_ffmpeg_probe_args_enabled=true`
     - `continuous_decode_ffmpeg_loglevel=warning`
-  - throughput diagnostics runtime evaluation: VALID
+  - suppression ON runtime evaluation: VALID
+  - `continuous_decode_slot0_one_shot_suppression_enabled=true`
 - Feed PASS:
-  - `continuous_feed_frame_received_count=458`
-  - `continuous_feed_enqueued_count=449`
-  - `continuous_decode_input_from_feeder_count=449`
-  - `continuous_decode_input_from_render_demand_count=5`
-  - `continuous_decode_feeder_lag_to_selected=2`
+  - `continuous_feed_frame_received_count=347`
+  - `continuous_feed_enqueued_count=345`
+  - `continuous_decode_input_from_feeder_count=345`
+  - `continuous_decode_input_from_render_demand_count=2`
+  - `continuous_decode_feeder_lag_to_selected=0`
 - Continuous output PASS:
-  - `continuous_decode_input_frame_count=454`
-  - `continuous_decode_output_frame_count=396`
-  - `continuous_decode_output_throughput_fps=21.773`
-  - `continuous_decode_output_bytes_total=364953600`
-  - `continuous_decode_output_bytes_per_sec=20065625.687`
-- Continuous render consumption FAIL:
-  - `render_used_continuous_decoded_count=0`
-  - `continuous_decode_render_exact_hit_count=0`
-  - `continuous_decode_bounded_lookup_hit_count=0`
+  - `continuous_decode_input_frame_count=347`
+  - `continuous_decode_output_frame_count=304`
+  - `continuous_decode_output_throughput_fps=22.327`
+  - `continuous_decode_output_bytes_per_sec=20576263.220`
+- Continuous render consumption PARTIAL PASS:
+  - `render_used_continuous_decoded_count=3`
+  - `continuous_decode_bounded_lookup_hit_count=3`
+  - `continuous_decode_render_used_bounded_lag_count=3`
 - Output/read diagnostics:
-  - `continuous_decode_stdout_expected_frame_bytes=921600`
-  - `continuous_decode_reader_full_frame_elapsed_ms_avg=45.192`
-  - `continuous_decode_reader_full_frame_elapsed_ms_max=1217`
-  - `continuous_decode_reader_full_frame_slow_count=43`
-  - `continuous_decode_output_frame_interval_ms_avg=42.228`
-  - `continuous_decode_output_frame_interval_ms_max=382`
-  - `continuous_decode_stdout_read_throughput_bytes_per_ms=20393.026`
-  - `continuous_decode_ffmpeg_scale_enabled=true`
-  - `continuous_decode_ffmpeg_output_pixel_format=bgra`
+  - `continuous_decode_reader_full_frame_elapsed_ms_avg=44.220`
+  - `continuous_decode_reader_full_frame_elapsed_ms_max=2233`
+  - `continuous_decode_output_frame_interval_ms_avg=36.997`
+  - `continuous_decode_output_frame_interval_ms_max=335`
 - Output lag:
-  - `continuous_decode_requested_frame_id=526`
-  - `continuous_decode_latest_decoded_frame_id=458`
-  - `continuous_decode_requested_minus_latest_lag=73`
-  - `continuous_decode_latest_input_minus_latest_output_lag=74`
-  - `continuous_decode_output_lag_to_selected_frames=73`
-  - `continuous_decode_pending_correspondence_frame_id_min=464`
-  - `continuous_decode_pending_correspondence_frame_id_max=532`
+  - `continuous_decode_requested_frame_id=431`
+  - `continuous_decode_latest_decoded_frame_id=414`
+  - `continuous_decode_requested_minus_latest_lag=17`
+  - `continuous_decode_latest_input_minus_latest_output_lag=46`
+  - `continuous_decode_output_lag_to_selected_frames=17`
 - Source / render safety context:
-  - client1 `effective_output_fps=28.358`
-  - client2 `effective_output_fps=28.501`
-  - `effective_render_fps_after_first_render=13.737`
-  - `continuous_decode_competing_one_shot_attempt_count=34`
-  - `continuous_decode_competing_one_shot_decode_elapsed_ms=3515`
-  - `one_shot_decode_attempt_count=34`
-  - `one_shot_decode_elapsed_ms=3515`
+  - client1 `effective_output_fps=22.340`
+  - client2 `effective_output_fps=22.453`
+  - `effective_render_fps_after_first_render=15.857`
+  - `continuous_decode_slot0_one_shot_suppressed_count=216`
+  - `continuous_decode_slot0_one_shot_suppressed_reason_counts=continuous_not_ready:51|stale:165|future:0|unknown:0`
+  - `continuous_decode_slot0_one_shot_suppressed_render_safety_counts=decode_deferred_placeholder:216|unknown:0`
+  - `continuous_decode_competing_one_shot_attempt_count=12`
+  - `continuous_decode_competing_one_shot_decode_elapsed_ms=1414`
 
 ## Code Path Summary
 Continuous slot0 output path:
@@ -223,12 +219,15 @@ The next docs-first candidate is the one-shot double-load isolation plan in
    - Any new FFmpeg args should be opt-in and reported in summary diagnostics.
 
 ## Design Decision
-- The throughput diagnostics runtime evaluation is VALID on
-  `20260522-075029`.
-- Feed remains PASS, continuous output remains PASS, and render consumption
-  remains FAIL; those outcomes stay separate.
-- The next docs-first design target is a slot0 one-shot fallback double-load
-  isolation experiment, not threshold tuning.
+- Suppression ON runtime evaluation is VALID on `20260522-082451`.
+- Feed remains PASS and continuous output remains PASS; continuous render
+  consumption is now PARTIAL PASS because bounded lookup rendered `3` continuous
+  frames.
+- Suppression reduced competing one-shot work in the ON run, but throughput
+  causality is INCONCLUSIVE because the ON run client output fps is `22fps`
+  class while the prior OFF baseline is `28fps` class.
+- The next evidence gate is matched A/B rerun with the same build and close
+  client source fps, not another code change.
 - Pixel-format, scale-path, reader-buffering, and additional FFmpeg args remain
   later opt-in experiment candidates.
 - Threshold tuning is held because output lag is far outside the `5` frame guard.
@@ -246,8 +245,14 @@ The next docs-first candidate is the one-shot double-load isolation plan in
 - Summary now adds suppression-enabled, suppression-count, suppression-reason,
   render-safety, continuous-not-ready, and stale counters while keeping the
   competing one-shot counters from the throughput diagnostics slice.
-- Next evidence gate is a human `S:\stream-sync` rerun that compares the base
-  low-latency suffix with and without the new suppression flag.
+- First suppression ON rerun is valid:
+  - suppression count `216`
+  - render safety `decode_deferred_placeholder:216|unknown:0`
+  - competing one-shot `12` attempts / `1414ms`
+  - continuous bounded lookup/render use `3`
+- The ON rerun is not yet a matched OFF/ON throughput comparison. Use the same
+  `C:\streamsync-target\stream-sync-rerun\debug\*.exe` build and mark the A/B
+  comparison noisy if client fps differs by more than roughly `2fps`.
 
 ## Out Of Scope
 - `continuous_decode_bounded_lookup_allowed_lag_frames` changes

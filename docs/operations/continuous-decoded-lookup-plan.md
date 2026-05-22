@@ -380,20 +380,25 @@ Interpretation:
 ## throughput diagnostics validity update
 latest rerun:
 
-- `S:\stream-sync\manual-logs\two-client-render-rerun-20260522-075029`
+- suppression ON latest evidence:
+  - `S:\stream-sync\manual-logs\two-client-render-rerun-20260522-082451`
+- prior valid suppression OFF baseline:
+  - `S:\stream-sync\manual-logs\two-client-render-rerun-20260522-075029`
 
 Interpretation:
 
-- Throughput diagnostics runtime evaluation is VALID.
-- Feed remains PASS and continuous output remains PASS, but render consumption remains FAIL:
-  - `continuous_decode_output_throughput_fps=21.773`
-  - `render_used_continuous_decoded_count=0`
-  - `continuous_decode_bounded_lookup_hit_count=0`
-- Output remains far outside `allowed_lag_frames=5`:
-  - `continuous_decode_requested_minus_latest_lag=73`
-  - `continuous_decode_latest_input_minus_latest_output_lag=74`
-  - `continuous_decode_output_lag_to_selected_frames=73`
-- One-shot double-load is now directly visible:
-  - `continuous_decode_competing_one_shot_attempt_count=34`
-  - `continuous_decode_competing_one_shot_decode_elapsed_ms=3515`
-- The next docs-first candidate is the slot0 opt-in isolation plan in `docs/operations/continuous-one-shot-double-load-plan.md`, not threshold tuning, targetTime-aware lookup, or latest decoded fallback.
+- Suppression ON runtime evaluation is VALID.
+- Feed and continuous output remain PASS, while continuous render consumption is PARTIAL PASS:
+  - `continuous_decode_output_throughput_fps=22.327`
+  - `render_used_continuous_decoded_count=3`
+  - `continuous_decode_bounded_lookup_hit_count=3`
+- Guarded lookup still rejects stale and not-ready candidates:
+  - `continuous_decode_bounded_lookup_rejected_stale_count=165`
+  - `continuous_decode_bounded_lookup_rejected_not_ready_count=51`
+  - `continuous_decode_output_lag_to_selected_frames=17`
+- Suppression ON reduced visible competing one-shot work relative to the prior OFF baseline:
+  - ON `continuous_decode_competing_one_shot_attempt_count=12`
+  - ON `continuous_decode_competing_one_shot_decode_elapsed_ms=1414`
+  - OFF baseline was `34` attempts / `3515ms`
+- Throughput causality is INCONCLUSIVE because ON client fps was `22.340` / `22.453` while the OFF baseline was `28.358` / `28.501`.
+- The next gate is matched OFF/ON A/B rerun evidence in `docs/operations/continuous-one-shot-double-load-plan.md`, not threshold tuning, targetTime-aware lookup, or latest decoded fallback.

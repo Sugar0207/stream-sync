@@ -2,6 +2,101 @@
 
 ## 2026-05-22
 ### Type
+- Codex docs-only evidence reflection
+
+### Work
+- Reflected latest valid suppression ON rerun `S:\stream-sync\manual-logs\two-client-render-rerun-20260522-082451`.
+- Kept this step docs-only and did not change code or run a Codex runtime rerun.
+- Recorded suppression flag, low-latency args, feed, continuous output, and suppression diagnostics wiring as PASS.
+- Recorded continuous render consumption as PARTIAL PASS and throughput causality as INCONCLUSIVE because the ON client source cadence differs from the prior OFF baseline.
+- Updated the next action to a matched OFF/ON A/B rerun with the same `C:\streamsync-target\stream-sync-rerun\debug\*.exe`.
+
+### Changed Files
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+- `docs/operations/continuous-one-shot-double-load-plan.md`
+- `docs/operations/continuous-output-throughput-plan.md`
+- `docs/operations/continuous-output-lag-plan.md`
+- `docs/operations/continuous-feed-drain-plan.md`
+- `docs/operations/continuous-stream-decoder-plan.md`
+- `docs/operations/continuous-decoded-lookup-plan.md`
+
+### Runtime Evidence
+- latest rerun:
+  - `S:\stream-sync\manual-logs\two-client-render-rerun-20260522-082451`
+- validity:
+  - binary path `C:\streamsync-target\stream-sync-rerun\debug\*.exe`
+  - `continuous_decode_ffmpeg_low_latency_args_enabled=true`
+  - `continuous_decode_ffmpeg_probe_args_enabled=true`
+  - `continuous_decode_ffmpeg_loglevel=warning`
+  - `continuous_decode_slot0_one_shot_suppression_enabled=true`
+- Feed PASS:
+  - `continuous_feed_frame_received_count=347`
+  - `continuous_feed_enqueued_count=345`
+  - `continuous_decode_input_from_feeder_count=345`
+  - `continuous_decode_input_from_render_demand_count=2`
+  - `continuous_decode_feeder_lag_to_selected=0`
+- Continuous output PASS:
+  - `continuous_decode_input_frame_count=347`
+  - `continuous_decode_output_frame_count=304`
+  - `continuous_decode_output_throughput_fps=22.327`
+  - `continuous_decode_output_bytes_per_sec=20576263.220`
+  - `continuous_decode_reader_full_frame_elapsed_ms_avg=44.220`
+  - `continuous_decode_reader_full_frame_elapsed_ms_max=2233`
+  - `continuous_decode_output_frame_interval_ms_avg=36.997`
+  - `continuous_decode_output_frame_interval_ms_max=335`
+- Render / lookup PARTIAL PASS:
+  - `render_used_continuous_decoded_count=3`
+  - `render_used_one_shot_fallback_count=0`
+  - `continuous_decode_bounded_lookup_hit_count=3`
+  - `continuous_decode_render_used_bounded_lag_count=3`
+  - `continuous_decode_bounded_lookup_rejected_stale_count=165`
+  - `continuous_decode_bounded_lookup_rejected_not_ready_count=51`
+- Suppression PASS:
+  - `continuous_decode_slot0_one_shot_suppressed_count=216`
+  - `continuous_decode_slot0_one_shot_suppressed_reason_counts=continuous_not_ready:51|stale:165|future:0|unknown:0`
+  - `continuous_decode_slot0_one_shot_suppressed_render_safety_counts=decode_deferred_placeholder:216|unknown:0`
+- Competing one-shot:
+  - `continuous_decode_competing_one_shot_attempt_count=12`
+  - `continuous_decode_competing_one_shot_decode_elapsed_ms=1414`
+  - `one_shot_decode_attempt_count=12`
+  - `one_shot_decode_elapsed_ms=1414`
+- Source / render context:
+  - client output fps `22.340` / `22.453`
+  - `effective_render_fps_after_first_render=15.857`
+
+### Findings
+- Suppression ON runtime evidence is VALID, and the first isolation slice exercised its guarded decode-deferred placeholder path for `216` slot0 misses/rejects.
+- Continuous render consumption moved from zero to a small bounded-lag hit count of `3`, so this rerun is PARTIAL PASS for render consumption rather than a full adoption result.
+- Competing one-shot work fell from the prior valid OFF baseline `34` attempts / `3515ms` to `12` / `1414ms` in the ON rerun.
+- Throughput causality remains INCONCLUSIVE because the prior valid OFF baseline had client output fps `28.358` / `28.501`, while this ON rerun had `22.340` / `22.453`.
+
+### Decisions
+- Use matched A/B reruns before attributing output-throughput change to one-shot suppression.
+- Keep OFF suffix `--disable-persistent-decoder --enable-continuous-stream-decoder --continuous-decoder-low-latency-args`.
+- Keep ON suffix as the OFF suffix plus `--continuous-decoder-slot0-suppress-one-shot-fallback`.
+- Treat A/B comparisons with client source fps differing by more than roughly `2fps` as noisy.
+- Keep Production Readiness as FAIL and hold threshold tuning, pixel-format / scale-path experiments, targetTime-aware lookup, latest decoded fallback, slot1/4-client widening, request/response persistent decoder revival, GPU decode, feed max count changes, and one-shot fallback removal.
+
+### TODO Update
+- Completed:
+  - suppression ON runtime evidence reflection
+  - VALID / PASS / PARTIAL PASS / INCONCLUSIVE status split for the latest rerun
+- Added:
+  - matched OFF/ON A/B rerun gate with source-fps noise check
+- Held:
+  - code changes
+  - runtime rerun from Codex
+  - suppression behavior changes
+  - threshold and pixel/scale experiments
+
+### Validation
+- `git diff --check`
+  - result: PASS
+  - note: LF/CRLF warnings only
+
+## 2026-05-22
+### Type
 - Codex implementation
 
 ### Work

@@ -12,7 +12,7 @@ Last updated: 2026-05-22
 
 ## Latest Evidence
 - latest rerun:
-  - `S:\stream-sync\manual-logs\two-client-render-rerun-20260522-075029`
+  - suppression ON `S:\stream-sync\manual-logs\two-client-render-rerun-20260522-082451`
 - PASS:
   - `continuous_decode_config_enabled=true`
   - `continuous_decode_runtime_enabled=true`
@@ -21,48 +21,43 @@ Last updated: 2026-05-22
   - `continuous_decode_ffmpeg_probe_args_enabled=true`
   - `continuous_decode_ffmpeg_loglevel=warning`
   - `continuous_feed_enabled=true`
-  - throughput diagnostics runtime evaluation VALID
-  - `continuous_feed_frame_received_count=458`
-  - `continuous_feed_enqueued_count=449`
-  - `continuous_decode_input_from_feeder_count=449`
-  - `continuous_decode_input_from_render_demand_count=5`
-  - `continuous_decode_feeder_lag_to_selected=2`
+  - suppression ON runtime evaluation VALID
+  - `continuous_decode_slot0_one_shot_suppression_enabled=true`
+  - `continuous_feed_frame_received_count=347`
+  - `continuous_feed_enqueued_count=345`
+  - `continuous_decode_input_from_feeder_count=345`
+  - `continuous_decode_input_from_render_demand_count=2`
+  - `continuous_decode_feeder_lag_to_selected=0`
   - `continuous_decode_bounded_lookup_enabled=true`
   - `continuous_decode_bounded_lookup_allowed_lag_frames=5`
 - continuous output PASS:
-  - `continuous_decode_input_frame_count=454`
-  - `continuous_decode_output_frame_count=396`
-  - `continuous_decode_output_throughput_fps=21.773`
-  - `continuous_decode_output_bytes_total=364953600`
-  - `continuous_decode_output_bytes_per_sec=20065625.687`
-- FAIL:
-  - `continuous_decode_render_exact_hit_count=0`
-  - `continuous_decode_bounded_lookup_hit_count=0`
-  - `continuous_decode_bounded_lookup_rejected_stale_count=15`
-  - `continuous_decode_bounded_lookup_rejected_not_ready_count=2`
-  - `render_used_continuous_decoded_count=0`
+  - `continuous_decode_input_frame_count=347`
+  - `continuous_decode_output_frame_count=304`
+  - `continuous_decode_output_throughput_fps=22.327`
+  - `continuous_decode_output_bytes_per_sec=20576263.220`
+- continuous render PARTIAL PASS:
+  - `continuous_decode_bounded_lookup_hit_count=3`
+  - `continuous_decode_render_used_bounded_lag_count=3`
+  - `continuous_decode_bounded_lookup_rejected_stale_count=165`
+  - `continuous_decode_bounded_lookup_rejected_not_ready_count=51`
+  - `render_used_continuous_decoded_count=3`
 - Lag / backlog:
-  - `continuous_decode_requested_frame_id=526`
-  - `continuous_decode_latest_decoded_frame_id=458`
-  - `continuous_decode_requested_minus_latest_lag=73`
-  - `continuous_decode_latest_input_minus_latest_output_lag=74`
-  - `continuous_decode_pending_correspondence_frame_id_min=464`
-  - `continuous_decode_pending_correspondence_frame_id_max=532`
-  - `continuous_decode_output_lag_to_selected_frames=73`
-  - `continuous_decode_reader_full_frame_elapsed_ms_avg=45.192`
-  - `continuous_decode_reader_full_frame_elapsed_ms_max=1217`
-  - `continuous_decode_reader_full_frame_slow_count=43`
-  - `continuous_decode_output_frame_interval_ms_avg=42.228`
-  - `continuous_decode_output_frame_interval_ms_max=382`
-  - `continuous_decode_stdout_read_throughput_bytes_per_ms=20393.026`
-  - `continuous_decode_competing_one_shot_attempt_count=34`
-  - `continuous_decode_competing_one_shot_decode_elapsed_ms=3515`
-  - `one_shot_decode_attempt_count=34`
-  - `one_shot_decode_elapsed_ms=3515`
-  - `effective_render_fps_after_first_render=13.737`
+  - `continuous_decode_requested_frame_id=431`
+  - `continuous_decode_latest_decoded_frame_id=414`
+  - `continuous_decode_requested_minus_latest_lag=17`
+  - `continuous_decode_latest_input_minus_latest_output_lag=46`
+  - `continuous_decode_output_lag_to_selected_frames=17`
+  - `continuous_decode_reader_full_frame_elapsed_ms_avg=44.220`
+  - `continuous_decode_reader_full_frame_elapsed_ms_max=2233`
+  - `continuous_decode_output_frame_interval_ms_avg=36.997`
+  - `continuous_decode_output_frame_interval_ms_max=335`
+  - `continuous_decode_competing_one_shot_attempt_count=12`
+  - `continuous_decode_competing_one_shot_decode_elapsed_ms=1414`
+  - `continuous_decode_slot0_one_shot_suppressed_count=216`
+  - `effective_render_fps_after_first_render=15.857`
 - Source/client context:
-  - `client1 effective_output_fps=28.358`
-  - `client2 effective_output_fps=28.501`
+  - `client1 effective_output_fps=22.340`
+  - `client2 effective_output_fps=22.453`
 
 ## Code Path Summary
 Current continuous runtime has three relevant queues/counters:
@@ -138,11 +133,11 @@ Current continuous runtime has three relevant queues/counters:
 - This is correct for safety, but it can hide or worsen throughput problems. The next diagnostics should make double-load visible before removing fallback or changing behavior.
 
 ## Latest Diagnostics Interpretation
-- Continuous opt-in, low-latency args, bounded feed helper, output-lag diagnostics wiring, throughput diagnostics runtime evaluation, and continuous output are PASS for slot0/two-real/opt-in scope.
-- Continuous render consumption and bounded lookup adoption remain FAIL because no continuous decoded frame was accepted for render.
-- The latest blocker is not a too-small `5` frame bounded-lag threshold. A threshold wide enough to accept lag `73` or `74` would risk stale video and contradict the sync-first goal.
-- Output throughput is below the client/source fps range (`21.773fps` vs `28fps` class source output), and the runtime-valid diagnostics now show reader avg `45.192ms`, output interval avg `42.228ms`, max reader stall `1217ms`, and `34` competing one-shot attempts over `3515ms`.
-- The next docs-first design target is one-shot fallback double-load isolation under a narrow opt-in experiment, not threshold tuning or a default throughput behavior change.
+- Continuous opt-in, low-latency args, bounded feed helper, suppression diagnostics wiring, and continuous output are PASS for slot0/two-real/opt-in scope.
+- Continuous render consumption and bounded lookup adoption are PARTIAL PASS because `3` bounded-lag continuous frames reached render.
+- The ON run shows output lag to selected at `17`, still outside the `5` frame guard for most rejected candidates.
+- Competing one-shot work fell to `12` attempts / `1414ms`, but throughput causality is INCONCLUSIVE because source fps changed from the OFF baseline `28fps` class to ON `22fps` class.
+- The next evidence gate is matched A/B rerun, not threshold tuning or a new throughput code slice.
 - Feed max count should remain unchanged for now. Feeding faster while output throughput is already below source cadence may increase correspondence backlog instead of improving render consumption.
 - One-shot fallback remains the safe default path. Any suppression must stay slot0/two-real/opt-in and preserve default behavior.
 
@@ -273,5 +268,5 @@ Implementation shape:
 - Bounded lookup wiring: PASS
 - Output lag diagnostics wiring: PASS
 - Continuous output: PASS
-- Continuous render consumption: FAIL
+- Continuous render consumption: PARTIAL PASS on suppression ON evidence
 - Production Readiness: FAIL
