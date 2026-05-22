@@ -404,44 +404,37 @@ Feed/drain interpretation:
 ## output throughput diagnostics runtime evidence
 latest rerun:
 
-- suppression ON latest evidence:
-  - `S:\stream-sync\manual-logs\two-client-render-rerun-20260522-082451`
-- prior valid suppression OFF baseline:
-  - `S:\stream-sync\manual-logs\two-client-render-rerun-20260522-075029`
+- matched suppression OFF/ON evidence:
+  - `S:\stream-sync\manual-logs\two-client-ab-rerun-20260522-103943`
 
-Feed helper remains PASS and is the primary continuous input source:
+Matched A/B validity:
 
-- `continuous_feed_enabled=true`
-- `continuous_feed_frame_received_count=347`
-- `continuous_feed_enqueued_count=345`
-- `continuous_decode_input_from_feeder_count=345`
-- `continuous_decode_input_from_render_demand_count=2`
-- `continuous_decode_feeder_lag_to_selected=0`
+- OFF and ON used the same `C:\streamsync-target\stream-sync-rerun\debug\*.exe`
+- source fps mismatch is not noisy enough to reject the comparison
+- feed max count remains unchanged
 
-Continuous output is PASS in the suppression ON rerun:
+OFF no suppression:
 
-- `continuous_decode_input_frame_count=347`
-- `continuous_decode_output_frame_count=304`
-- `continuous_decode_output_throughput_fps=22.327`
-- client output fps was `22.340` / `22.453`
-- `continuous_decode_latest_input_minus_latest_output_lag=46`
-- `continuous_decode_output_lag_to_selected_frames=17`
+- client fps `27.806` / `27.167`
+- output throughput `20.129fps`
+- competing one-shot `37` attempts / `5401ms`
+- continuous render use and bounded lookup hit both `0`
 
-Render consumption is PARTIAL PASS and suppression is active:
+ON slot0 suppression:
 
-- `continuous_decode_bounded_lookup_hit_count=3`
-- `render_used_continuous_decoded_count=3`
-- `continuous_decode_slot0_one_shot_suppressed_count=216`
-- `continuous_decode_competing_one_shot_attempt_count=12`
-- `continuous_decode_competing_one_shot_decode_elapsed_ms=1414`
+- pasted client evidence includes `28.134fps`
+- output throughput `26.814fps`
+- competing one-shot `13` attempts / `942ms`
+- continuous render use and bounded lookup hit both `11`
+- suppression reasons `continuous_not_ready:27|stale:228|future:0|unknown:0`
 
 Feed/drain interpretation:
 
 - The feeder is no longer the primary blocker for slot0/two-real/opt-in continuous.
-- Feed max count should remain unchanged while output throughput is below source fps.
-- Latest runtime-valid suppression ON evidence shows one-shot work reduced and bounded continuous consumption appeared, but source fps changed from the prior OFF baseline.
-- Throughput causality remains INCONCLUSIVE until same-build matched OFF/ON A/B reruns keep client fps close enough for comparison.
-- Detailed throughput analysis is tracked in `docs/operations/continuous-output-throughput-plan.md`; matched A/B policy is tracked in `docs/operations/continuous-one-shot-double-load-plan.md`.
+- Feed max count should remain unchanged after the matched suppression A/B.
+- One-shot double-load is now a strong throughput contributor candidate for this slice.
+- Stale and not-ready pressure remains ON, so the next docs-first question moves to bounded lookup threshold / policy rather than more feed pressure.
+- Detailed throughput analysis is tracked in `docs/operations/continuous-output-throughput-plan.md`; matched A/B evidence is tracked in `docs/operations/continuous-one-shot-double-load-plan.md`.
 - Feed max count remains held because output throughput is already below source cadence; increasing feed pressure before output catches up could increase pending correspondence.
 - Threshold tuning, targetTime-aware lookup, latest decoded fallback, slot1 continuous, 4-client rollout, and one-shot fallback removal remain out of scope.
 
@@ -449,8 +442,8 @@ Feed/drain interpretation:
 - Production Readiness remains FAIL
 - This plan is a first implementation boundary, not a production architecture
 - Feed helper runtime evidence is PASS for slot0 / two-real preview loop
-- Continuous render consumption remains FAIL
-- Next success criterion moves to decoded lookup:
+- Continuous render consumption is still not complete, but matched suppression ON evidence moved bounded lookup/render use from `0` to `11`
+- Next success criterion stays on decoded lookup:
   - exact lookup remains preferred
   - bounded-lag lookup produces guarded hits when exact lookup misses
   - stale / not-ready rejection counts are visible

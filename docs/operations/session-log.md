@@ -2,6 +2,87 @@
 
 ## 2026-05-22
 ### Type
+- Codex docs-only matched A/B evidence reflection
+
+### Work
+- Reflected matched suppression OFF/ON rerun `S:\stream-sync\manual-logs\two-client-ab-rerun-20260522-103943`.
+- Kept this step docs-only and did not change code or run a Codex runtime rerun.
+- Recorded the same-build OFF/ON comparison as VALID寄り because source client fps mismatch is not noisy enough to reject the A/B read.
+- Recorded one-shot double-load as a strong throughput contributor candidate for the slot0 / two-real / opt-in continuous slice.
+- Moved the next candidate from matched A/B collection to docs-first bounded lookup allowed-lag threshold / policy review without defaulting suppression.
+
+### Changed Files
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+- `docs/operations/continuous-one-shot-double-load-plan.md`
+- `docs/operations/continuous-output-throughput-plan.md`
+- `docs/operations/continuous-output-lag-plan.md`
+- `docs/operations/continuous-feed-drain-plan.md`
+- `docs/operations/continuous-stream-decoder-plan.md`
+- `docs/operations/continuous-decoded-lookup-plan.md`
+
+### Matched A/B Evidence
+- rerun root:
+  - `S:\stream-sync\manual-logs\two-client-ab-rerun-20260522-103943`
+- shared validity:
+  - OFF and ON used the same `C:\streamsync-target\stream-sync-rerun\debug\*.exe`
+  - source fps mismatch is not noisy enough to reject the comparison
+- OFF `off-no-suppression`:
+  - `continuous_decode_slot0_one_shot_suppression_enabled=false`
+  - client effective fps `27.806` / `27.167`
+  - `continuous_decode_output_throughput_fps=20.129`
+  - `continuous_decode_output_lag_to_selected_frames=17`
+  - `continuous_decode_latest_input_minus_latest_output_lag=20`
+  - competing one-shot `37` attempts / `5401ms`
+  - `render_used_continuous_decoded_count=0`
+  - `continuous_decode_bounded_lookup_hit_count=0`
+  - `effective_render_fps_after_first_render=11.594`
+- ON `on-slot0-suppression`:
+  - `continuous_decode_slot0_one_shot_suppression_enabled=true`
+  - pasted client evidence includes `effective_output_fps=28.134`
+  - `continuous_decode_slot0_one_shot_suppressed_count=255`
+  - `continuous_decode_slot0_one_shot_suppressed_reason_counts=continuous_not_ready:27|stale:228|future:0|unknown:0`
+  - `continuous_decode_slot0_one_shot_suppressed_render_safety_counts=decode_deferred_placeholder:255|unknown:0`
+  - `continuous_decode_output_throughput_fps=26.814`
+  - `continuous_decode_output_lag_to_selected_frames=8`
+  - `continuous_decode_latest_input_minus_latest_output_lag=33`
+  - competing one-shot `13` attempts / `942ms`
+  - `render_used_continuous_decoded_count=11`
+  - `continuous_decode_bounded_lookup_hit_count=11`
+  - `effective_render_fps_after_first_render=17.401`
+
+### Findings
+- ON suppression strongly reduced competing one-shot load in the matched rerun and coincided with higher continuous output throughput, render FPS, continuous render use, and bounded lookup hits.
+- The A/B evidence is strong enough to keep one-shot double-load as the next dominant contributor candidate in this slice, without claiming a single global FPS root cause.
+- Suppression remains useful as opt-in isolation evidence; it is not ready to become default behavior.
+- Stale/not-ready rejects remain high in ON evidence, so suppression alone does not complete render consumption.
+
+### Decisions
+- Do not default suppression next.
+- Move the next docs-first design question to bounded lookup allowed-lag threshold / policy because ON evidence still suppresses stale `228` and continuous-not-ready `27` cases.
+- Any threshold experiment must remain narrow and opt-in rather than widening sync guards in the default path.
+- Move BGRA / scale / stdout reader experiments back behind the lookup threshold/policy docs review.
+- Keep Production Readiness as FAIL and hold targetTime-aware lookup implementation, latest decoded fallback, feed max count changes, slot1/4-client widening, request/response persistent decoder revival, GPU decode, and one-shot fallback removal.
+
+### TODO Update
+- Completed:
+  - matched suppression OFF/ON A/B evidence reflection
+  - strong double-load candidate readback
+- Added:
+  - docs-first bounded lookup threshold / policy candidate after matched A/B
+- Held:
+  - code changes
+  - suppression defaulting
+  - runtime rerun from Codex
+  - pixel-format / scale-path / stdout-reader experiments
+
+### Validation
+- `git diff --check`
+  - result: PASS
+  - note: LF/CRLF warnings only
+
+## 2026-05-22
+### Type
 - Codex docs-only evidence reflection
 
 ### Work

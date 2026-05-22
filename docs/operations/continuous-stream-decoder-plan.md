@@ -986,51 +986,46 @@ future implementation slice:
 
 latest output-throughput diagnostics rerun update:
 
-1. latest suppression ON rerun is `S:\stream-sync\manual-logs\two-client-render-rerun-20260522-082451`; prior valid suppression OFF baseline remains `S:\stream-sync\manual-logs\two-client-render-rerun-20260522-075029`
-2. continuous opt-in / runtime / slot0 / low-latency args / suppression diagnostics remain PASS:
+1. latest matched suppression OFF/ON rerun is `S:\stream-sync\manual-logs\two-client-ab-rerun-20260522-103943`
+2. same-build A/B validity is PASS / VALID寄り:
+   - OFF and ON used `C:\streamsync-target\stream-sync-rerun\debug\*.exe`
+   - source fps mismatch is not noisy enough to reject the comparison
+3. continuous opt-in / runtime / slot0 / low-latency args / suppression diagnostics remain PASS:
    - `continuous_decode_config_enabled=true`
    - `continuous_decode_runtime_enabled=true`
    - `continuous_decode_slot0_enabled=true`
    - `continuous_decode_ffmpeg_low_latency_args_enabled=true`
    - `continuous_decode_slot0_one_shot_suppression_enabled=true`
-   - `continuous_decode_slot0_one_shot_suppressed_count=216`
-3. bounded feed helper is PASS and is the main input source:
-   - `continuous_feed_enabled=true`
-   - `continuous_feed_frame_received_count=347`
-   - `continuous_feed_enqueued_count=345`
-   - `continuous_decode_input_from_feeder_count=345`
-   - `continuous_decode_input_from_render_demand_count=2`
-4. continuous output is PASS:
-   - `continuous_decode_input_frame_count=347`
-   - `continuous_decode_output_frame_count=304`
-   - `continuous_decode_output_throughput_fps=22.327`
-5. continuous render consumption is PARTIAL PASS:
-   - `continuous_decode_bounded_lookup_hit_count=3`
-   - `render_used_continuous_decoded_count=3`
-   - `render_used_one_shot_fallback_count=0`
-6. throughput diagnostics are VALID and newest continuous output is still guarded:
-   - `continuous_decode_reader_full_frame_elapsed_ms_avg=44.220`
-   - `continuous_decode_reader_full_frame_elapsed_ms_max=2233`
-   - `continuous_decode_output_frame_interval_ms_avg=36.997`
-   - `continuous_decode_latest_input_minus_latest_output_lag=46`
-   - `continuous_decode_output_lag_to_selected_frames=17`
-7. suppression ON client output fps was `22.340` / `22.453`, while the prior OFF baseline was `28.358` / `28.501`; throughput causality is INCONCLUSIVE without matched source cadence.
-8. competing one-shot work fell to `continuous_decode_competing_one_shot_attempt_count=12` / `continuous_decode_competing_one_shot_decode_elapsed_ms=1414` in the ON rerun; prior OFF baseline was `34` / `3515ms`.
-9. The next gate is matched OFF/ON A/B rerun evidence, not threshold tuning or another behavior change.
+   - `continuous_decode_slot0_one_shot_suppressed_count=255`
+4. OFF no suppression:
+   - client fps `27.806` / `27.167`
+   - `continuous_decode_output_throughput_fps=20.129`
+   - competing one-shot `37` attempts / `5401ms`
+   - continuous render use and bounded lookup hit both `0`
+   - render FPS `11.594`
+5. ON slot0 suppression:
+   - pasted client evidence includes `28.134fps`
+   - `continuous_decode_output_throughput_fps=26.814`
+   - competing one-shot `13` attempts / `942ms`
+   - continuous render use and bounded lookup hit both `11`
+   - render FPS `17.401`
+   - suppression reasons `continuous_not_ready:27|stale:228|future:0|unknown:0`
+6. one-shot double-load is now a strong throughput contributor candidate, but suppression remains opt-in evidence rather than a default policy change.
+7. The next docs-first gate is bounded lookup allowed-lag threshold / policy review with any threshold experiment kept narrow and opt-in.
 10. The request/response persistent decoder remains frozen. This rerun does not justify reviving it.
 11. Production Readiness remains FAIL.
 
 latest output-throughput docs-first update:
 
 1. Continuous output throughput analysis is now tracked in `docs/operations/continuous-output-throughput-plan.md`.
-2. Latest suppression ON evaluation is VALID; feed PASS, continuous output PASS, render consumption PARTIAL PASS, and throughput causality INCONCLUSIVE remain separate.
+2. Latest matched suppression A/B comparison is VALID寄り; double-load is a strong contributor candidate while suppression remains opt-in evidence.
 3. Current code-path suspects remain multiple, not a single proven root cause:
    - FFmpeg decode + `scale=640:360:flags=neighbor` + BGRA conversion/output
    - stdout full-frame read boundary for `921600` bytes/frame
    - reader buffering / raw frame materialization
    - continuous decoder and one-shot fallback double-load
-4. The next evidence gate is the same-build matched OFF/ON A/B rerun policy in `docs/operations/continuous-one-shot-double-load-plan.md`.
-5. Pixel-format, scale-path, reader-buffering, and FFmpeg args experiments stay held behind that comparison.
+4. The next docs-first gate is bounded lookup allowed-lag threshold / policy review after the matched A/B.
+5. Pixel-format, scale-path, reader-buffering, and FFmpeg args experiments move back behind that review.
 6. Default one-shot fallback policy, threshold widening, targetTime-aware lookup, latest decoded fallback, feed max increase, slot1/4-client rollout, GPU decode, and request/response persistent revival remain out of scope.
 
 ## out of scope

@@ -10,28 +10,17 @@ Last updated: 2026-05-22
 - Keep the experiment narrower than a fallback policy change: default behavior remains unchanged and Production Readiness remains FAIL.
 
 ## Evidence Gate
-- latest valid rerun:
-  - suppression ON `S:\stream-sync\manual-logs\two-client-render-rerun-20260522-082451`
-- prior valid OFF baseline:
-  - `S:\stream-sync\manual-logs\two-client-render-rerun-20260522-075029`
+- latest matched rerun:
+  - `S:\stream-sync\manual-logs\two-client-ab-rerun-20260522-103943`
 - build / runtime validity:
-  - build PASS from `C:\streamsync-target\stream-sync-rerun\debug\*.exe`
-  - low-latency args active
-  - suppression diagnostics present in summary
+  - OFF and ON used the same `C:\streamsync-target\stream-sync-rerun\debug\*.exe`
+  - source client fps mismatch is not noisy enough to reject the A/B read
+  - comparison status is VALID寄り
 - separated result:
-  - feed PASS
-  - continuous output PASS
-  - continuous render consumption PARTIAL PASS
-- suppression ON:
-  - `continuous_decode_slot0_one_shot_suppression_enabled=true`
-  - `continuous_decode_slot0_one_shot_suppressed_count=216`
-  - render safety stayed on `decode_deferred_placeholder:216|unknown:0`
-- throughput / source cadence:
-  - continuous output `22.327fps`
-  - client output `22.340fps` / `22.453fps`
-- suppression ON double-load signal:
-  - `continuous_decode_competing_one_shot_attempt_count=12`
-  - `continuous_decode_competing_one_shot_decode_elapsed_ms=1414`
+  - suppression flag / diagnostics PASS
+  - continuous output throughput improved ON
+  - continuous render consumption and bounded lookup adoption improved ON
+  - Production Readiness remains FAIL
 
 ## Experiment Question
 - When slot0 continuous runtime is enabled and running, does removing slot0 one-shot fallback work from that same preview loop materially improve:
@@ -39,9 +28,10 @@ Last updated: 2026-05-22
   - reader full-frame latency
   - output lag to selected frames
 - This asks whether double-load is a meaningful contributor. It does not claim double-load is the only FPS cause.
-- Suppression ON evidence is valid, but the first ON rerun is not a matched causal
-  comparison because client output fps fell from the OFF baseline `28fps` class
-  to the ON run `22fps` class.
+- The matched rerun now makes one-shot double-load a strong contributor candidate in
+  this slot0 / two-real / opt-in continuous slice.
+- That evidence does not default suppression and does not prove a single global FPS
+  root cause.
 
 ## Flag Shape
 First implementation flag:
@@ -159,24 +149,42 @@ Useful supporting readback:
   - output lag to selected moved from OFF `73` to ON `17`, but the input
     cadence changed enough that this is not yet suppression-only evidence
 
-## Matched A/B Rerun
-- Use the same build and same target exe:
-  - `C:\streamsync-target\stream-sync-rerun\debug\*.exe`
-- OFF suffix:
-  - `--disable-persistent-decoder --enable-continuous-stream-decoder --continuous-decoder-low-latency-args`
-- ON suffix:
-  - `--disable-persistent-decoder --enable-continuous-stream-decoder --continuous-decoder-low-latency-args --continuous-decoder-slot0-suppress-one-shot-fallback`
-- Compare:
-  - client `effective_output_fps`
-  - `continuous_decode_output_throughput_fps`
-  - `continuous_decode_output_lag_to_selected_frames`
-  - `continuous_decode_latest_input_minus_latest_output_lag`
-  - `continuous_decode_competing_one_shot_attempt_count`
-  - `continuous_decode_competing_one_shot_decode_elapsed_ms`
-  - `render_used_continuous_decoded_count`
-  - `continuous_decode_bounded_lookup_hit_count`
-  - `effective_render_fps_after_first_render`
-- Mark the comparison noisy if client fps differs by more than roughly `2fps`.
+## Matched A/B Runtime Result
+Rerun root:
+
+- `S:\stream-sync\manual-logs\two-client-ab-rerun-20260522-103943`
+
+| Metric | OFF no suppression | ON slot0 suppression |
+| --- | --- | --- |
+| log dir | `off-no-suppression` | `on-slot0-suppression` |
+| suppression enabled | `false` | `true` |
+| client fps evidence | `27.806` / `27.167` | pasted evidence includes `28.134` |
+| continuous output throughput fps | `20.129` | `26.814` |
+| output lag to selected frames | `17` | `8` |
+| latest input minus latest output lag | `20` | `33` |
+| competing one-shot attempts | `37` | `13` |
+| competing one-shot elapsed ms | `5401` | `942` |
+| continuous render use | `0` | `11` |
+| bounded lookup hits | `0` | `11` |
+| render fps after first render | `11.594` | `17.401` |
+
+ON suppression diagnostics:
+
+- `continuous_decode_slot0_one_shot_suppressed_count=255`
+- `continuous_decode_slot0_one_shot_suppressed_reason_counts=continuous_not_ready:27|stale:228|future:0|unknown:0`
+- `continuous_decode_slot0_one_shot_suppressed_render_safety_counts=decode_deferred_placeholder:255|unknown:0`
+
+Interpretation:
+
+- OFF / ON is a same-build A/B and source fps mismatch is not noisy enough to
+  reject the comparison.
+- Suppression ON strongly reduces competing one-shot load and improves throughput,
+  continuous render use, bounded lookup adoption, and render FPS in this slice.
+- Stale and not-ready suppression reasons remain high, so suppression is not a
+  complete solution.
+- Next code candidate is not suppression defaulting. Move to docs-first bounded
+  lookup allowed-lag threshold / policy review, and keep any threshold experiment
+  narrow and opt-in.
 
 ## Held
 - allowed lag threshold changes

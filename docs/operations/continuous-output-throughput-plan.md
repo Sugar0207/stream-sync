@@ -10,53 +10,34 @@ Last updated: 2026-05-22
 - Use the validated throughput diagnostics to separate stdout full-frame read latency, raw BGRA output volume, FFmpeg scale/output path cost, reader buffering, and one-shot fallback double-load before choosing the next code slice.
 
 ## Latest Evidence
-- latest rerun:
-  - suppression ON `S:\stream-sync\manual-logs\two-client-render-rerun-20260522-082451`
-- prior OFF baseline:
-  - `S:\stream-sync\manual-logs\two-client-render-rerun-20260522-075029`
+- latest matched rerun:
+  - `S:\stream-sync\manual-logs\two-client-ab-rerun-20260522-103943`
 - validity:
-  - build PASS with `C:\streamsync-target\stream-sync-rerun\debug\*.exe`
-  - low-latency args PASS:
-    - `continuous_decode_ffmpeg_low_latency_args_enabled=true`
-    - `continuous_decode_ffmpeg_probe_args_enabled=true`
-    - `continuous_decode_ffmpeg_loglevel=warning`
-  - suppression ON runtime evaluation: VALID
-  - `continuous_decode_slot0_one_shot_suppression_enabled=true`
-- Feed PASS:
-  - `continuous_feed_frame_received_count=347`
-  - `continuous_feed_enqueued_count=345`
-  - `continuous_decode_input_from_feeder_count=345`
-  - `continuous_decode_input_from_render_demand_count=2`
-  - `continuous_decode_feeder_lag_to_selected=0`
-- Continuous output PASS:
-  - `continuous_decode_input_frame_count=347`
-  - `continuous_decode_output_frame_count=304`
-  - `continuous_decode_output_throughput_fps=22.327`
-  - `continuous_decode_output_bytes_per_sec=20576263.220`
-- Continuous render consumption PARTIAL PASS:
-  - `render_used_continuous_decoded_count=3`
-  - `continuous_decode_bounded_lookup_hit_count=3`
-  - `continuous_decode_render_used_bounded_lag_count=3`
-- Output/read diagnostics:
-  - `continuous_decode_reader_full_frame_elapsed_ms_avg=44.220`
-  - `continuous_decode_reader_full_frame_elapsed_ms_max=2233`
-  - `continuous_decode_output_frame_interval_ms_avg=36.997`
-  - `continuous_decode_output_frame_interval_ms_max=335`
-- Output lag:
-  - `continuous_decode_requested_frame_id=431`
-  - `continuous_decode_latest_decoded_frame_id=414`
-  - `continuous_decode_requested_minus_latest_lag=17`
-  - `continuous_decode_latest_input_minus_latest_output_lag=46`
+  - OFF and ON used the same `C:\streamsync-target\stream-sync-rerun\debug\*.exe`
+  - source fps mismatch is not noisy enough to reject the comparison
+  - OFF client fps was `27.806` / `27.167`
+  - ON pasted client evidence includes `28.134`
+- OFF no suppression:
+  - `continuous_decode_slot0_one_shot_suppression_enabled=false`
+  - `continuous_decode_output_throughput_fps=20.129`
   - `continuous_decode_output_lag_to_selected_frames=17`
-- Source / render safety context:
-  - client1 `effective_output_fps=22.340`
-  - client2 `effective_output_fps=22.453`
-  - `effective_render_fps_after_first_render=15.857`
-  - `continuous_decode_slot0_one_shot_suppressed_count=216`
-  - `continuous_decode_slot0_one_shot_suppressed_reason_counts=continuous_not_ready:51|stale:165|future:0|unknown:0`
-  - `continuous_decode_slot0_one_shot_suppressed_render_safety_counts=decode_deferred_placeholder:216|unknown:0`
-  - `continuous_decode_competing_one_shot_attempt_count=12`
-  - `continuous_decode_competing_one_shot_decode_elapsed_ms=1414`
+  - `continuous_decode_latest_input_minus_latest_output_lag=20`
+  - competing one-shot `37` attempts / `5401ms`
+  - continuous render use `0`
+  - bounded lookup hit `0`
+  - render FPS `11.594`
+- ON slot0 suppression:
+  - `continuous_decode_slot0_one_shot_suppression_enabled=true`
+  - `continuous_decode_slot0_one_shot_suppressed_count=255`
+  - suppression reasons `continuous_not_ready:27|stale:228|future:0|unknown:0`
+  - render safety `decode_deferred_placeholder:255|unknown:0`
+  - `continuous_decode_output_throughput_fps=26.814`
+  - `continuous_decode_output_lag_to_selected_frames=8`
+  - `continuous_decode_latest_input_minus_latest_output_lag=33`
+  - competing one-shot `13` attempts / `942ms`
+  - continuous render use `11`
+  - bounded lookup hit `11`
+  - render FPS `17.401`
 
 ## Code Path Summary
 Continuous slot0 output path:
@@ -190,8 +171,9 @@ Diagnostics interpretation goal:
   competing one-shot fields all appeared in the summary.
 
 ## Opt-In Experiment Candidates
-The next docs-first candidate is the one-shot double-load isolation plan in
-`docs/operations/continuous-one-shot-double-load-plan.md`.
+The matched A/B evidence for one-shot double-load isolation now lives in
+`docs/operations/continuous-one-shot-double-load-plan.md`. The next docs-first
+candidate has moved to bounded lookup allowed-lag threshold / policy review.
 
 1. One-shot fallback double-load isolation
    - Suppress slot0 one-shot fallback only behind a two-real / opt-in continuous
@@ -219,18 +201,17 @@ The next docs-first candidate is the one-shot double-load isolation plan in
    - Any new FFmpeg args should be opt-in and reported in summary diagnostics.
 
 ## Design Decision
-- Suppression ON runtime evaluation is VALID on `20260522-082451`.
-- Feed remains PASS and continuous output remains PASS; continuous render
-  consumption is now PARTIAL PASS because bounded lookup rendered `3` continuous
-  frames.
-- Suppression reduced competing one-shot work in the ON run, but throughput
-  causality is INCONCLUSIVE because the ON run client output fps is `22fps`
-  class while the prior OFF baseline is `28fps` class.
-- The next evidence gate is matched A/B rerun with the same build and close
-  client source fps, not another code change.
-- Pixel-format, scale-path, reader-buffering, and additional FFmpeg args remain
-  later opt-in experiment candidates.
-- Threshold tuning is held because output lag is far outside the `5` frame guard.
+- Matched A/B suppression comparison is VALID寄り on `20260522-103943`.
+- Suppression ON is useful opt-in isolation evidence: competing one-shot load fell
+  from `37` attempts / `5401ms` to `13` / `942ms`, while throughput, continuous
+  render use, bounded lookup hit, and render FPS all improved.
+- One-shot double-load is now a strong contributor candidate for this slice, but
+  this still does not justify a single-cause FPS conclusion or default suppression.
+- Stale/not-ready suppression reasons remain high ON, so the next code candidate
+  moves to docs-first bounded lookup allowed-lag threshold / policy review.
+- Any threshold experiment must stay narrow and opt-in.
+- Pixel-format, scale-path, reader-buffering, and additional FFmpeg args move
+  back to later opt-in experiment candidates.
 - TargetTime-aware lookup and latest decoded fallback are held because accepting `73` to `74` frames of lag would violate sync-first behavior.
 - Feed max count remains unchanged because output throughput is already below source cadence.
 - Production Readiness remains FAIL.
@@ -245,14 +226,14 @@ The next docs-first candidate is the one-shot double-load isolation plan in
 - Summary now adds suppression-enabled, suppression-count, suppression-reason,
   render-safety, continuous-not-ready, and stale counters while keeping the
   competing one-shot counters from the throughput diagnostics slice.
-- First suppression ON rerun is valid:
-  - suppression count `216`
-  - render safety `decode_deferred_placeholder:216|unknown:0`
-  - competing one-shot `12` attempts / `1414ms`
-  - continuous bounded lookup/render use `3`
-- The ON rerun is not yet a matched OFF/ON throughput comparison. Use the same
-  `C:\streamsync-target\stream-sync-rerun\debug\*.exe` build and mark the A/B
-  comparison noisy if client fps differs by more than roughly `2fps`.
+- Matched suppression A/B evidence is now runtime-valid:
+  - OFF throughput `20.129fps`, competing one-shot `37` attempts / `5401ms`,
+    bounded lookup/render use `0`
+  - ON throughput `26.814fps`, competing one-shot `13` attempts / `942ms`,
+    bounded lookup/render use `11`
+  - ON suppression count `255`
+- Keep suppression as an opt-in isolation path. The next docs-first review is
+  bounded lookup threshold / policy, not a suppression default change.
 
 ## Out Of Scope
 - `continuous_decode_bounded_lookup_allowed_lag_frames` changes

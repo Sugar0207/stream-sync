@@ -380,25 +380,14 @@ Interpretation:
 ## throughput diagnostics validity update
 latest rerun:
 
-- suppression ON latest evidence:
-  - `S:\stream-sync\manual-logs\two-client-render-rerun-20260522-082451`
-- prior valid suppression OFF baseline:
-  - `S:\stream-sync\manual-logs\two-client-render-rerun-20260522-075029`
+- matched suppression OFF/ON evidence:
+  - `S:\stream-sync\manual-logs\two-client-ab-rerun-20260522-103943`
 
 Interpretation:
 
-- Suppression ON runtime evaluation is VALID.
-- Feed and continuous output remain PASS, while continuous render consumption is PARTIAL PASS:
-  - `continuous_decode_output_throughput_fps=22.327`
-  - `render_used_continuous_decoded_count=3`
-  - `continuous_decode_bounded_lookup_hit_count=3`
-- Guarded lookup still rejects stale and not-ready candidates:
-  - `continuous_decode_bounded_lookup_rejected_stale_count=165`
-  - `continuous_decode_bounded_lookup_rejected_not_ready_count=51`
-  - `continuous_decode_output_lag_to_selected_frames=17`
-- Suppression ON reduced visible competing one-shot work relative to the prior OFF baseline:
-  - ON `continuous_decode_competing_one_shot_attempt_count=12`
-  - ON `continuous_decode_competing_one_shot_decode_elapsed_ms=1414`
-  - OFF baseline was `34` attempts / `3515ms`
-- Throughput causality is INCONCLUSIVE because ON client fps was `22.340` / `22.453` while the OFF baseline was `28.358` / `28.501`.
-- The next gate is matched OFF/ON A/B rerun evidence in `docs/operations/continuous-one-shot-double-load-plan.md`, not threshold tuning, targetTime-aware lookup, or latest decoded fallback.
+- Same-build OFF/ON comparison is VALID寄り and source fps mismatch is not noisy enough to reject the read.
+- OFF no suppression had throughput `20.129fps`, competing one-shot `37` attempts / `5401ms`, render continuous use `0`, and bounded lookup hits `0`.
+- ON slot0 suppression had throughput `26.814fps`, competing one-shot `13` attempts / `942ms`, render continuous use `11`, and bounded lookup hits `11`.
+- ON suppression reasons still show stale `228` and continuous-not-ready `27`.
+- One-shot double-load is now a strong contributor candidate, but suppression stays opt-in evidence rather than the default policy.
+- The next docs-first gate returns to bounded lookup allowed-lag threshold / policy review. Any threshold experiment must stay narrow and opt-in; targetTime-aware lookup and latest decoded fallback remain held.
