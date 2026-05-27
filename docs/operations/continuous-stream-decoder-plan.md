@@ -1064,6 +1064,41 @@ latest output-availability next-line update:
    `docs/operations/continuous-output-availability-plan.md`.
 6. Production Readiness remains FAIL.
 
+latest output availability rerun verdict:
+
+1. latest rerun:
+   - `S:\stream-sync\manual-logs\two-client-output-availability-rerun-20260527-173716`
+2. validity:
+   - build PASS
+   - switcher binary:
+     `C:\streamsync-target\stream-sync-rerun\debug\stream-sync-switcher.exe`
+     LastWriteTime `2026/05/27 17:25:51`
+   - client FFmpeg preflight/spawn errors are `none`
+3. client / server / feed:
+   - client1/client2 `frames_sent=900` at `29.538fps` / `28.694fps`
+   - server `frames_queued=1800`
+   - continuous feed received/enqueued `453` / `423`
+   - classify these as PASS for the current slot0 / two-real / opt-in scope
+4. continuous output / backlog:
+   - output `316` frames at `21.269fps`
+   - pending correspondence `115`
+   - pending correspondence avg age `1948.809ms`
+   - latest input-output gap `115`
+   - selected-output gap `99`
+   - reader full-frame avg `46.430ms`, max `1125ms`, slow count `42`
+5. lookup / availability:
+   - allowed lag `8`
+   - bounded lookup hits `3`
+   - stale availability rejects `238`
+   - not-ready availability rejects `22`
+6. interpretation:
+   - not-ready is secondary
+   - stale/output backlog is dominant
+   - threshold tuning alone is insufficient
+   - next code candidate moves to output pipeline / stdout reader / FFmpeg
+     scale path opt-in experiment planning
+7. Production Readiness remains FAIL.
+
 ## out of scope
 - request/response persistent decoder の復活
 - server / client / protocol code の変更

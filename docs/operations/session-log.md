@@ -1,5 +1,83 @@
 <!-- stream-sync/docs/operations/session-log.md -->
 
+## 2026-05-28
+### Type
+- Codex docs-only evidence reflection
+
+### Work
+- Reflected output availability rerun
+  `S:\stream-sync\manual-logs\two-client-output-availability-rerun-20260527-173716`.
+- Kept this step docs-only; no code changes and no Codex runtime rerun.
+- Recorded the rerun as VALID:
+  - build PASS
+  - switcher binary:
+    `C:\streamsync-target\stream-sync-rerun\debug\stream-sync-switcher.exe`
+    LastWriteTime `2026/05/27 17:25:51`
+  - client FFmpeg preflight/spawn errors are `none`
+  - client1/client2 sent `900` frames each at `29.538fps` / `28.694fps`
+  - server queued `1800` frames total
+- Classified client / server / feed as PASS for the current slot0 / two-real /
+  opt-in continuous scope.
+- Classified output availability diagnostics as VALID.
+- Recorded the main bottleneck shape as pending correspondence / stdout-reader
+  full-frame latency / continuous output backlog / stale output rather than
+  not-ready:
+  - output throughput `21.269fps` versus about `29fps` source cadence
+  - pending correspondence `115`
+  - pending correspondence avg age `1948.809ms`
+  - latest input-output gap `115`
+  - selected-output gap `99`
+  - reader full-frame avg `46.430ms`, max `1125ms`, slow count `42`
+  - stale availability rejects `238` versus not-ready `22`
+- Kept the threshold branch as HOLD / candidate and recorded that threshold
+  tuning alone is insufficient.
+- Kept one-shot suppression as strong contributor evidence, but demoted it from
+  the next main culprit because the latest shape is output backlog.
+
+### Changed Files
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+- `docs/operations/continuous-output-availability-plan.md`
+- `docs/operations/continuous-output-throughput-plan.md`
+- `docs/operations/continuous-output-lag-plan.md`
+- `docs/operations/continuous-decoded-lookup-plan.md`
+- `docs/operations/continuous-stream-decoder-plan.md`
+- `docs/operations/continuous-one-shot-double-load-plan.md`
+
+### Decision
+- Next code candidate should be opt-in output pipeline experiment planning, not
+  a default policy change:
+  - stdout/raw BGRA pipe throughput experiment
+  - FFmpeg scale path split experiment
+  - completed correspondence latency diagnostics
+  - reader blocking phase diagnostics
+- Any next code slice must remain slot0 / two-real / opt-in continuous only.
+- Do not change default allowed lag, suppression default, feed max count,
+  FFmpeg args, pixel format, scale path, fallback policy, slot1, 4-client,
+  server/client/protocol, persistent decoder, or GPU path.
+- Production Readiness remains FAIL.
+
+### Validation
+- `git diff --check`
+  - result: PASS
+  - note: LF/CRLF warnings only.
+
+### TODO Update
+- Completed:
+  - latest output availability rerun reflected in docs.
+- Added:
+  - output backlog / pending correspondence / reader latency as the next main
+    bottleneck shape.
+  - output pipeline / stdout reader / FFmpeg scale path as the next candidate
+    direction.
+- Held:
+  - threshold default change
+  - suppression default change
+  - latest decoded fallback / targetTime-aware lookup
+  - feed max count change
+  - FFmpeg args / pixel-format / scale-path implementation
+  - slot1 / 4-client / protocol / GPU / one-shot fallback removal
+
 ## 2026-05-27
 ### Type
 - Codex implementation

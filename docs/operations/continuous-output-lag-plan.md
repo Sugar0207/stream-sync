@@ -2,7 +2,7 @@
 
 # Continuous Output Lag Plan
 
-Last updated: 2026-05-27
+Last updated: 2026-05-28
 
 ## Purpose
 - Analyze why slot0 continuous decoded output still trails the requested render frame after bounded feed helper and bounded-lag lookup wiring both reached runtime evidence.
@@ -13,6 +13,43 @@ Last updated: 2026-05-27
   move the next main line to output availability / throughput.
 
 ## Latest Evidence
+- latest output availability rerun:
+  - `S:\stream-sync\manual-logs\two-client-output-availability-rerun-20260527-173716`
+  - validity is PASS:
+    - build PASS
+    - switcher binary:
+      `C:\streamsync-target\stream-sync-rerun\debug\stream-sync-switcher.exe`
+      LastWriteTime `2026/05/27 17:25:51`
+    - client FFmpeg preflight/spawn errors are `none`
+  - client / server / feed are PASS:
+    - client1/client2 sent `900` frames each at `29.538fps` / `28.694fps`
+    - server queued `1800` frames total
+    - continuous feed received `453` frames and enqueued `423`
+  - output backlog evidence:
+    - `continuous_decode_input_frame_count=431`
+    - `continuous_decode_output_frame_count=316`
+    - `continuous_decode_pending_correspondence_count=115`
+    - `continuous_decode_pending_correspondence_age_ms_max=3939`
+    - `continuous_decode_pending_correspondence_age_ms_avg=1948.809`
+    - `continuous_decode_latest_input_to_output_frame_gap=115`
+    - `continuous_decode_output_lag_to_selected_frames=99`
+    - `continuous_decode_input_to_output_lag_frames_max=118`
+  - reader evidence:
+    - `continuous_decode_reader_full_frame_elapsed_ms_avg=46.430`
+    - `continuous_decode_reader_full_frame_elapsed_ms_max=1125`
+    - `continuous_decode_reader_full_frame_slow_count=42`
+    - `continuous_decode_stdout_read_waiting_for_full_frame=true`
+  - lookup / availability:
+    - `continuous_decode_bounded_lookup_allowed_lag_frames=8`
+    - bounded hit count `3`, render continuous use `3`
+    - stale availability count `238`
+    - not-ready availability count `22`
+    - future availability count `0`
+  - interpretation:
+    - not-ready is secondary in this rerun
+    - stale/output backlog is dominant
+    - threshold tuning alone is insufficient because newest output remains far
+      behind selected/source cadence
 - latest reverse-order lag threshold A/B rerun:
   - `S:\stream-sync\manual-logs\two-client-lag-reverse-ab-rerun-20260527-164258`
   - comparison is VALID
@@ -88,6 +125,19 @@ Current continuous runtime has three relevant queues/counters:
 - This pattern means accepted input has moved past the writer queue, but render lookup observes the reader still waiting for output. It points after writer queue intake and before decoded cache availability.
 
 ## Input / Output Count Gap
+- Latest output availability rerun:
+  - input `431`
+  - output `316`
+  - coarse gap `115`
+  - pending correspondence `115`
+  - pending correspondence average age `1948.809ms`
+  - latest input-output gap `115`
+  - output lag to selected `99`
+  - output throughput `21.269fps`
+  - client output fps `29.538` / `28.694`
+- This makes the backlog shape clearer than earlier runs: accepted continuous
+  input is moving past feed/writer intake, but full stdout frames arrive too
+  slowly to keep newest decoded output near the selected frame.
 - Latest run:
   - input `417`
   - output `367`
@@ -125,6 +175,16 @@ Current continuous runtime has three relevant queues/counters:
 - This is correct for safety, but it can hide or worsen throughput problems. The next diagnostics should make double-load visible before removing fallback or changing behavior.
 
 ## Latest Diagnostics Interpretation
+- Output availability diagnostics are now runtime VALID on
+  `S:\stream-sync\manual-logs\two-client-output-availability-rerun-20260527-173716`.
+- Client FFmpeg, server queueing, and continuous feed are PASS in that rerun.
+- The main lag shape is pending correspondence / stdout-reader full-frame
+  latency / continuous output backlog / stale output.
+- Not-ready remains visible, but `22` not-ready versus `238` stale availability
+  rejects means not-ready is not the main issue in this rerun.
+- Threshold tuning alone is insufficient: even with allowed lag `8`, latest
+  input-to-output gap `115` and selected-to-output gap `99` remain far outside
+  a safe sync-first display guard.
 - Matched suppression OFF/ON comparison is VALID寄り on the same build and source fps mismatch is not noisy enough to reject the A/B read.
 - Suppression ON strongly reduced competing one-shot work and improved output throughput, continuous render consumption, bounded lookup adoption, and render FPS.
 - One-shot double-load is a strong contributor candidate, but suppression remains opt-in isolation evidence rather than a default policy change.
@@ -134,9 +194,12 @@ Current continuous runtime has three relevant queues/counters:
 - One-shot fallback remains the safe default path. Any suppression must stay slot0/two-real/opt-in and preserve default behavior.
 
 ## Next Design Candidates
-- Next code candidate if selected after docs review:
-  - output availability diagnostics for pending correspondence pressure and
-    stdout reader full-frame latency
+- Next code candidate if selected after docs review should move from
+  diagnostics evidence to opt-in output pipeline experiment planning:
+  - stdout/raw BGRA pipe throughput experiment
+  - FFmpeg scale path split experiment
+  - completed correspondence latency diagnostics
+  - reader blocking phase diagnostics
   - keep it slot0 / two-real / opt-in continuous only
   - keep sync-first stale-frame safety explicit
 - Candidate comparison now lives in

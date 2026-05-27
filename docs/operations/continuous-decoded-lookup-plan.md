@@ -525,6 +525,30 @@ Reverse-order threshold verdict:
 - Candidate comparison for that next line now lives in
   `docs/operations/continuous-output-availability-plan.md`.
 
+Latest output availability rerun update:
+
+- latest rerun:
+  - `S:\stream-sync\manual-logs\two-client-output-availability-rerun-20260527-173716`
+- output availability diagnostics are VALID.
+- Client / server / feed are PASS:
+  - client1/client2 sent `900` frames each at about `29.538fps` / `28.694fps`
+  - server queued `1800` frames
+  - continuous feed received/enqueued `453` / `423`
+- Bounded lookup with allowed lag `8` produced only `3` hits while stale
+  availability rejects were `238` and not-ready rejects were `22`.
+- Continuous output itself is behind:
+  - output throughput `21.269fps` versus about `29fps` source cadence
+  - pending correspondence `115`
+  - latest input-output gap `115`
+  - selected-output gap `99`
+- Interpretation:
+  - not-ready is not the main issue in this rerun
+  - stale/output backlog is dominant
+  - threshold tuning alone is insufficient; widening allowed lag would risk
+    stale-frame display instead of fixing the output pipeline backlog
+- Next code candidate should move to output pipeline / stdout reader / FFmpeg
+  scale-path opt-in planning, not another threshold promotion.
+
 Held:
 
 - default `5` threshold change

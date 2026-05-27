@@ -2,7 +2,7 @@
 
 # Continuous One-Shot Double-Load Plan
 
-Last updated: 2026-05-27
+Last updated: 2026-05-28
 
 ## Purpose
 - Design the next docs-first opt-in experiment after throughput diagnostics became runtime-valid.
@@ -10,6 +10,18 @@ Last updated: 2026-05-27
 - Keep the experiment narrower than a fallback policy change: default behavior remains unchanged and Production Readiness remains FAIL.
 
 ## Evidence Gate
+- latest output availability rerun:
+  - `S:\stream-sync\manual-logs\two-client-output-availability-rerun-20260527-173716`
+  - output availability diagnostics are VALID
+  - client / server / feed are PASS for this slice
+  - output backlog dominates the latest shape:
+    - output throughput `21.269fps` versus about `29fps` source cadence
+    - pending correspondence `115`
+    - pending correspondence avg age `1948.809ms`
+    - stale availability rejects `238`
+    - not-ready availability rejects `22`
+  - this does not weaken suppression as strong contributor evidence, but it
+    keeps suppression defaulting out of the next main line
 - latest reverse-order lag threshold A/B rerun:
   - `S:\stream-sync\manual-logs\two-client-lag-reverse-ab-rerun-20260527-164258`
   - comparison is VALID and remains separate from the double-load isolation read
@@ -193,6 +205,11 @@ Interpretation:
   pending correspondence pressure, stdout reader full-frame latency, raw BGRA
   pipe throughput, and queue/cache policy visibility. Candidate comparison now
   lives in `docs/operations/continuous-output-availability-plan.md`.
+- The latest output availability rerun moves the next code candidate from
+  suppression/default policy toward output pipeline planning: stdout/raw BGRA
+  pipe throughput, FFmpeg scale path split, completed correspondence latency,
+  and reader blocking phase diagnostics. One-shot suppression stays supporting
+  evidence, not the main next culprit.
 
 ## Held
 - allowed lag threshold changes

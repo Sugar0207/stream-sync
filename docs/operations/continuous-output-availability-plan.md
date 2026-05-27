@@ -2,7 +2,7 @@
 
 # Continuous Output Availability Plan
 
-Last updated: 2026-05-27
+Last updated: 2026-05-28
 
 ## Purpose
 - Move the next continuous-stream decoder investigation from bounded lookup
@@ -13,6 +13,38 @@ Last updated: 2026-05-27
 - Keep Production Readiness as FAIL.
 
 ## Current Verdict
+- latest output availability rerun:
+  - `S:\stream-sync\manual-logs\two-client-output-availability-rerun-20260527-173716`
+  - build and runtime evidence are VALID:
+    - switcher binary:
+      `C:\streamsync-target\stream-sync-rerun\debug\stream-sync-switcher.exe`
+      LastWriteTime `2026/05/27 17:25:51`
+    - client FFmpeg preflight/spawn errors are `none`
+    - client1/client2 sent `900` frames each at `29.538fps` / `28.694fps`
+    - server queued `1800` frames total:
+      `player1/streamsync-dev-session:900|player2/streamsync-dev-session:900`
+  - continuous feed is PASS for the current slot0 / two-real / opt-in scope:
+    - `continuous_feed_frame_received_count=453`
+    - `continuous_feed_enqueued_count=423`
+    - `continuous_decode_input_frame_count=431`
+  - output availability diagnostics are VALID:
+    - `continuous_decode_output_frame_count=316`
+    - `continuous_decode_output_throughput_fps=21.269`
+    - `continuous_decode_pending_correspondence_count=115`
+    - `continuous_decode_pending_correspondence_age_ms_avg=1948.809`
+    - `continuous_decode_latest_input_to_output_frame_gap=115`
+    - `continuous_decode_output_lag_to_selected_frames=99`
+    - reader full-frame average `46.430ms`, max `1125ms`, slow count `42`
+  - interpretation:
+    - not-ready is not the main issue in this rerun:
+      `continuous_decode_output_availability_not_ready_count=22`
+    - stale/output backlog is dominant:
+      `continuous_decode_output_availability_stale_count=238`
+    - continuous output throughput is about `21fps` while source is about
+      `29fps`
+    - pending correspondence count `115` and average age about `1.95s`
+      indicate output pipeline backlog
+    - threshold tuning alone is insufficient
 - latest reverse-order lag threshold A/B rerun:
   - `S:\stream-sync\manual-logs\two-client-lag-reverse-ab-rerun-20260527-164258`
   - lag8 is a small PARTIAL PASS versus lag5
@@ -43,11 +75,11 @@ Last updated: 2026-05-27
 
 | Candidate | What It Answers | Why It Helps Now | Risk | Verdict |
 | --- | --- | --- | --- | --- |
-| Pending correspondence pressure diagnostics | Whether writer-accepted inputs are piling up before full stdout frames can be matched to metadata. | Not-ready rejects and pending correspondence remain even when lag is widened; this directly measures output availability pressure. | Low if diagnostics-only. | First safe code-slice candidate. |
-| Raw BGRA pipe throughput / stdout reader buffering diagnostics | Whether `921600` byte full-frame reads, short reads, allocation, or reader scheduling dominate output latency. | lag8 still has reader avg `50.000ms`, throughput `19.635fps`, and selected-output lag `89`; reader availability is still slower than 30fps cadence. | Low for diagnostics; medium for buffering behavior changes. | Pair with pending-correspondence diagnostics first; defer behavior changes. |
+| Pending correspondence pressure diagnostics | Whether writer-accepted inputs are piling up before full stdout frames can be matched to metadata. | Latest availability rerun shows pending correspondence `115`, avg age `1948.809ms`, and latest input-output gap `115`. | Low if diagnostics-only. | Implemented and runtime VALID. |
+| Raw BGRA pipe throughput / stdout reader buffering diagnostics | Whether `921600` byte full-frame reads, short reads, allocation, or reader scheduling dominate output latency. | Latest availability rerun shows reader avg `46.430ms`, max `1125ms`, slow count `42`, and output throughput `21.269fps` while source is about `29fps`. | Low for diagnostics; medium for buffering behavior changes. | Next opt-in output pipeline experiment planning candidate. |
 | Continuous output queue/cache policy diagnostics | Whether decoded cache bound `30`, dropped stale count, or drain cadence hides usable decoded frames. | Cache drops are visible, but newest decoded output itself is still behind; diagnostics can confirm whether cache policy is a symptom or contributor. | Low if diagnostics-only. | Secondary diagnostics in the same or next slice. |
-| FFmpeg continuous output scale path experiment | Separates FFmpeg scale cost from raw pipe / pixel conversion cost. | Current path is `-vf scale=640:360:flags=neighbor -f rawvideo -pix_fmt bgra pipe:1`; scale and BGRA conversion remain plausible contributors. | Medium: source-size raw BGRA can be much heavier, and moving scale responsibility may require renderer-side conversion/copy work. | Later opt-in experiment after availability diagnostics. |
-| One-shot competing load | Measures continuous-vs-one-shot process contention. | Suppression ON already made this a strong contributor candidate and improved throughput/render use. | Medium if made default; low as already opt-in. | Demoted from next main culprit; keep as supporting evidence, not default policy. |
+| FFmpeg continuous output scale path experiment | Separates FFmpeg scale cost from raw pipe / pixel conversion cost. | Current path is `-vf scale=640:360:flags=neighbor -f rawvideo -pix_fmt bgra pipe:1`; scale and BGRA conversion remain plausible contributors after client/server/feed PASS. | Medium: source-size raw BGRA can be much heavier, and moving scale responsibility may require renderer-side conversion/copy work. | Next opt-in planning candidate, not implemented. |
+| One-shot competing load | Measures continuous-vs-one-shot process contention. | Suppression ON already made this a strong contributor candidate and improved throughput/render use, but the latest rerun points more directly at output backlog/stale output. | Medium if made default; low as already opt-in. | Supporting evidence; not the next main culprit and not a default policy. |
 
 ## Recommended Next Code Slice
 - Name it as an output availability diagnostics slice, not a policy change.
@@ -78,6 +110,11 @@ Last updated: 2026-05-27
 ## Implementation Status
 - 2026-05-27 first diagnostics-only slice implemented for the slot0 /
   two-real / opt-in continuous path.
+- 2026-05-27 output availability rerun
+  `S:\stream-sync\manual-logs\two-client-output-availability-rerun-20260527-173716`
+  validates the diagnostics. The key shape is output backlog rather than
+  transport, client encoding, server queueing, feed intake, or not-ready
+  pressure.
 - Summary now exposes:
   - `continuous_decode_pending_correspondence_count`
   - `continuous_decode_pending_correspondence_age_ms_max`
@@ -101,6 +138,20 @@ Last updated: 2026-05-27
 - Next human rerun should read these fields together with bounded lookup
   reject counts, output throughput, output lag to selected, pending
   correspondence min/max, and queue drop counts.
+
+## Next Code Candidate Direction
+- Do not move back to threshold tuning as the next main line. Lag8 stays a
+  held candidate, but the latest availability rerun shows stale/output backlog
+  dominates over not-ready.
+- The next code candidate should be planning for opt-in output pipeline
+  experiments, still slot0 / two-real / opt-in continuous only:
+  1. stdout/raw BGRA pipe throughput experiment
+  2. FFmpeg scale path split experiment
+  3. completed correspondence latency diagnostics
+  4. reader blocking phase diagnostics
+- These are not default behavior changes. They must keep full-frame correctness,
+  same-source and no-future-frame guards, one-shot fallback, current feed max
+  count, and current default FFmpeg path unless an explicit opt-in flag is used.
 
 ## Later Opt-In Experiments
 1. Raw BGRA pipe / stdout reader buffering experiment
