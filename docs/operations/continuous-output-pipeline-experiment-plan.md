@@ -223,6 +223,48 @@ Opt-in shape if implemented later:
 - Keep default raw BGRA output unchanged when the flag is absent.
 - Keep same-source and no-future-frame guards unchanged.
 
+Implementation status:
+
+- 2026-05-28 first code slice implemented for slot0 / two-real /
+  `--enable-continuous-stream-decoder` only.
+- New opt-in flag:
+  - `--continuous-decoder-output-pipeline-experiment <mode>`
+- Implemented modes:
+  - `default`
+  - `scaled-bgr24`
+- Default mode remains unchanged:
+  - `-vf scale=640:360:flags=neighbor`
+  - `-f rawvideo`
+  - `-pix_fmt bgra`
+  - expected stdout frame bytes `640 * 360 * 4 = 921600`
+- `scaled-bgr24` keeps the same FFmpeg scale path but changes stdout pixel
+  format to `bgr24`:
+  - expected stdout frame bytes `640 * 360 * 3 = 691200`
+  - pipe bytes saved per frame `230400`
+  - reader converts BGR24 back to BGRA before inserting into the decoded cache,
+    so render remains usable and the downstream renderer contract stays BGRA.
+- Summary fields added for the comparison:
+  - `continuous_decode_output_pipeline_experiment_mode`
+  - `continuous_decode_output_bytes_per_frame`
+  - `continuous_decode_output_pipe_bytes_saved_per_frame`
+  - `continuous_decode_output_pixel_convert_elapsed_ms`
+  - `continuous_decode_output_pixel_convert_elapsed_ms_max`
+  - `continuous_decode_output_pixel_convert_count`
+- Existing pipe/read fields remain the main comparison surface:
+  - `continuous_decode_ffmpeg_output_pixel_format`
+  - `continuous_decode_stdout_expected_frame_bytes`
+  - `continuous_decode_output_bytes_per_sec`
+  - `continuous_decode_stdout_read_throughput_bytes_per_ms`
+  - reader full-frame avg/max/slow
+  - completed and pending correspondence latency/age
+- Not implemented in this slice:
+  - source-size raw output
+  - `scaled-rgb24`
+  - `no-scale-bgra`
+  - FFmpeg scale path split
+  - reader buffering behavior changes
+  - lookup, fallback, threshold, suppression, feed, slot1, or 4-client changes
+
 ## FFmpeg Scale Path Split Experiment Plan
 Current baseline:
 
@@ -288,12 +330,14 @@ Boundary:
   opt-in reader-buffering experiment is explicitly selected.
 
 ## Next Recommendation
-- First code slice: completed correspondence latency diagnostics is implemented.
-- Latest rerun validates that both pending backlog and completed outputs are
-  delayed by seconds, so the next code candidate should not be threshold
-  tuning.
+- First raw pipe / stdout throughput code slice is implemented as opt-in
+  `scaled-bgr24`; the next step is human runtime comparison, not a default
+  change.
+- Latest completed correspondence rerun validates that both pending backlog and
+  completed outputs are delayed by seconds, so the next main line remains
+  output pipeline evidence rather than threshold tuning.
 - Next candidate order:
-  1. stdout/raw BGRA pipe throughput opt-in experiment
+  1. default vs `scaled-bgr24` human rerun comparison
   2. FFmpeg scale path split opt-in experiment
   3. reader blocking phase diagnostics
 - Keep one-shot suppression as strong contributor evidence, but not the current

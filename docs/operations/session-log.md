@@ -2,6 +2,82 @@
 
 ## 2026-05-28
 ### Type
+- Codex implementation
+
+### Work
+- Implemented the first raw pipe / stdout throughput opt-in experiment slice for
+  the slot0 / two-real / opt-in continuous path.
+- Added CLI option:
+  - `--continuous-decoder-output-pipeline-experiment <mode>`
+- Implemented modes:
+  - `default`
+  - `scaled-bgr24`
+- Kept default behavior unchanged:
+  - default continuous FFmpeg output remains scaled BGRA rawvideo
+  - default expected frame bytes remains `921600`
+  - no threshold, suppression, feed, lookup, fallback, slot1, 4-client,
+    server/client/protocol, request/response persistent decoder, or GPU change
+- In `scaled-bgr24`, continuous FFmpeg keeps the same
+  `scale=640:360:flags=neighbor` path but emits `bgr24` rawvideo
+  (`691200` bytes/frame). The reader converts BGR24 back to BGRA before render.
+- Added summary fields:
+  - `continuous_decode_output_pipeline_experiment_mode`
+  - `continuous_decode_output_bytes_per_frame`
+  - `continuous_decode_output_pipe_bytes_saved_per_frame`
+  - `continuous_decode_output_pixel_convert_elapsed_ms`
+  - `continuous_decode_output_pixel_convert_elapsed_ms_max`
+  - `continuous_decode_output_pixel_convert_count`
+- Updated output pipeline / availability / throughput / lag docs and TODO.
+- Did not run runtime rerun from Codex.
+
+### Changed Files
+- `apps/switcher/src/main.rs`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+- `docs/operations/continuous-output-pipeline-experiment-plan.md`
+- `docs/operations/continuous-output-throughput-plan.md`
+- `docs/operations/continuous-output-availability-plan.md`
+- `docs/operations/continuous-output-lag-plan.md`
+
+### Decision
+- Use `scaled-bgr24` as the narrow first comparison because it reduces raw
+  stdout bytes/frame by `230400` without changing scale dimensions or the
+  renderer-facing BGRA contract.
+- Keep source-size raw output, `no-scale-bgra`, and `scaled-rgb24` out of this
+  slice.
+- Production Readiness remains FAIL.
+
+### Validation
+- `cargo fmt`
+  - result: PASS
+- `cargo check -p stream-sync-switcher`
+  - result: PASS
+  - note: existing dead-code warnings remain
+- `cargo test -p stream-sync-switcher switcher_four_view_two_real_handoff_preview_summary_formats_expected_fields -- --nocapture`
+  - result: PASS
+- `cargo test -p stream-sync-switcher switcher_two_real_handoff_preview_options -- --nocapture`
+  - result: PASS
+- `cargo test -p stream-sync-switcher bgr24 -- --nocapture`
+  - result: PASS
+- `git diff --check`
+  - result: PASS
+  - note: LF/CRLF warnings only.
+
+### TODO Update
+- Completed:
+  - first raw pipe / stdout throughput opt-in code slice
+- Added:
+  - next human comparison: default vs `scaled-bgr24` from `S:\stream-sync`
+- Held:
+  - FFmpeg scale path split implementation
+  - reader blocking phase diagnostics
+  - default threshold / suppression changes
+  - targetTime-aware lookup / latest decoded fallback
+  - feed max count change
+  - slot1 / 4-client / server-client-protocol / GPU / one-shot fallback removal
+
+## 2026-05-28
+### Type
 - Codex docs-only evidence reflection
 
 ### Work

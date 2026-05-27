@@ -45,6 +45,16 @@ Last updated: 2026-05-28
     - threshold tuning alone is insufficient
     - next work should move to raw BGRA stdout throughput and FFmpeg scale path
       split experiments
+- 2026-05-28 first raw pipe / stdout throughput code slice:
+  - implemented opt-in `--continuous-decoder-output-pipeline-experiment
+    scaled-bgr24`
+  - default remains scaled BGRA with `921600` stdout bytes/frame
+  - experiment keeps the same scale path and uses BGR24 `691200`
+    stdout bytes/frame, then converts back to BGRA before render
+  - summary adds experiment mode, bytes/frame, pipe bytes saved/frame, and
+    pixel conversion timing/count
+  - no threshold, lookup, fallback, feed, slot1, 4-client, FFmpeg default, or
+    Production Readiness change
 - latest output availability rerun:
   - `S:\stream-sync\manual-logs\two-client-output-availability-rerun-20260527-173716`
   - validity is PASS:

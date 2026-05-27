@@ -2,7 +2,7 @@
 
 # StreamSync TODO
 
-最終更新: 2026-05-27
+最終更新: 2026-05-28
 
 このファイルは「現在どこまで終わっていて、次に何をやるか」を確認するための TODO です。  
 時系列の作業履歴、判断理由、各回の作業メモは `docs/operations/session-log.md` を正とします。
@@ -27,7 +27,8 @@
 - next continuous-stream decoder main line is output availability / throughput rather than another default threshold move. The diagnostics slice is runtime VALID and points to stale/output backlog rather than not-ready: continuous output is `316` frames at `21.269fps`, pending correspondence is `115` with avg age `1948.809ms`, latest input-output gap is `115`, selected-output gap is `99`, reader full-frame avg is `46.430ms`, and stale availability rejects `238` exceed not-ready `22`
 - latest completed correspondence rerun is `manual-logs/two-client-completed-correspondence-rerun-20260528-010504` and is VALID. Client/server/feed remain PASS: client1/client2 sent `900` frames at `29.443fps` / `29.112fps`, server queued `1800` frames, and FFmpeg preflight succeeded. Completed correspondence diagnostics are VALID and show completed outputs are also seconds late: completed latency avg `2624.940ms`, max `5258ms`, latest `5251ms`, slow `301/301`
 - output backlog is now the dominant continuous line: continuous output is `301` frames at `17.151fps` while source is about `29fps`; pending correspondence is `137` with avg age `2540.606ms` and max `5300ms`; latest input-output gap is `156`; output lag to selected is `150`; stale rejects `228` exceed not-ready `19`. Threshold tuning alone is insufficient, and Production Readiness remains FAIL
-- next code candidate should move from completed latency diagnostics to raw BGRA pipe / stdout throughput and FFmpeg scale path split opt-in experiments, followed by reader blocking phase diagnostics. Threshold branch remains HOLD / candidate, and one-shot suppression remains strong contributor evidence but not the current main bottleneck
+- 2026-05-28 first raw pipe / stdout throughput code slice is implemented as opt-in only. `--continuous-decoder-output-pipeline-experiment scaled-bgr24` keeps the same `640x360` scale path but changes continuous FFmpeg stdout from BGRA `921600` bytes/frame to BGR24 `691200` bytes/frame, then converts back to BGRA before render. Default mode remains BGRA with unchanged FFmpeg args. Summary now exposes output pipeline experiment mode, bytes/frame, bytes saved/frame, and pixel-convert timing/count
+- next evidence candidate should be a human rerun from `S:\stream-sync` comparing default versus `--continuous-decoder-output-pipeline-experiment scaled-bgr24` under slot0 / two-real / `--enable-continuous-stream-decoder`. Threshold branch remains HOLD / candidate, and one-shot suppression remains strong contributor evidence but not the current main bottleneck
 - latest good-ish same-PC `2`-client rerun は `manual-logs/two-client-render-rerun-20260518-124418` として扱う。two-real preview loop 限定 scaled one-shot decode output は runtime PASS 継続で、`one_shot_decode_output_width=640`、`one_shot_decode_output_height=360`、`one_shot_decode_expected_output_bytes_per_frame=921600` を維持した
 - persistent decoder config-disabled toggle も PASS 継続だった。request/response persistent decoder は過去に `persistent_decode_stdout_read_timeout` で runtime FAIL しているため、引き続き凍結候補として扱い、continuous-stream decoder とは別物として整理する
 - latest good-ish rerun の switcher は `effective_render_fps_after_first_render=17.247` で、30fps には未達だった。`decode_attempt_count=26`、`one_shot_decode_elapsed_ms=1893`、`one_shot_decode_first_byte_slow_count=0`、`one_shot_decode_output_read_slow_count=0`、`one_shot_decode_input_write_outlier_count=0` なので、decode attempt frequency / slow first-byte / slow output-read / input-write outlier のいずれか 1 つを主犯とは断定しない
@@ -280,8 +281,8 @@
 ---
 
 ## 直近でやること
-1. next docs-first/code planning は `S:\stream-sync\manual-logs\two-client-output-availability-rerun-20260527-173716` を最新 evidence として、threshold tuning ではなく `docs/operations/continuous-output-pipeline-experiment-plan.md` の output pipeline / stdout reader / FFmpeg scale path 側に進める。valid runtime は引き続き `C:\streamsync-target\stream-sync-rerun\debug\*.exe`
-2. 次 code を切るなら behavior-changing default ではなく、slot0 / two-real / opt-in continuous 限定で raw BGRA pipe / stdout throughput opt-in experiment を第一候補にする。次点で FFmpeg scale path split opt-in experiment、reader blocking phase diagnostics の順に比較する
+1. 次 human rerun は `S:\stream-sync` で default continuous output と `--continuous-decoder-output-pipeline-experiment scaled-bgr24` を比較し、valid runtime は引き続き `C:\streamsync-target\stream-sync-rerun\debug\*.exe` を使う
+2. 比較では `continuous_decode_output_pipeline_experiment_mode`、`continuous_decode_ffmpeg_output_pixel_format`、`continuous_decode_output_bytes_per_frame`、`continuous_decode_output_pipe_bytes_saved_per_frame`、pixel convert timing、stdout throughput、reader full-frame latency、completed/pending correspondence、stale/not-ready を同時に読む
 3. one-shot fallback は正常 escape hatch として残す。one-shot suppression は strong contributor evidence だが、今回の主問題は pending correspondence / stdout reader full-frame latency / continuous output backlog / stale output として扱う
 4. incremental quad compose / render/GDI は PASS として維持し、same-PC rerun 比較では `quad_view_incremental_update_count` / `quad_view_full_compose_count` / `quad_view_compose_elapsed_ms` / `gdi_paint_wait_elapsed_ms` / `placeholder_visual_changed_count` を regression guard として残す
 5. request/response persistent decoder revive / slot1 continuous化 / 4-client widening / shared-memory / GPU backend / distributed-PC actual run には進まず、first slice の slot0-only opt-in evidence を先に読む

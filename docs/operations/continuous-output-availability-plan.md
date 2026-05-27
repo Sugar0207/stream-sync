@@ -102,7 +102,7 @@ Last updated: 2026-05-28
 | Candidate | What It Answers | Why It Helps Now | Risk | Verdict |
 | --- | --- | --- | --- | --- |
 | Pending correspondence pressure diagnostics | Whether writer-accepted inputs are piling up before full stdout frames can be matched to metadata. | Latest availability rerun shows pending correspondence `115`, avg age `1948.809ms`, and latest input-output gap `115`. | Low if diagnostics-only. | Implemented and runtime VALID. |
-| Raw BGRA pipe throughput / stdout reader buffering diagnostics | Whether `921600` byte full-frame reads, short reads, allocation, or reader scheduling dominate output latency. | Latest availability rerun shows reader avg `46.430ms`, max `1125ms`, slow count `42`, and output throughput `21.269fps` while source is about `29fps`. | Low for diagnostics; medium for buffering behavior changes. | Next opt-in output pipeline experiment planning candidate. |
+| Raw BGRA pipe throughput / stdout reader buffering diagnostics | Whether `921600` byte full-frame reads, short reads, allocation, or reader scheduling dominate output latency. | Latest availability rerun shows reader avg `46.430ms`, max `1125ms`, slow count `42`, and output throughput `21.269fps` while source is about `29fps`. | Low for diagnostics; medium for buffering behavior changes. | First opt-in `scaled-bgr24` experiment slice implemented; needs human comparison. |
 | Continuous output queue/cache policy diagnostics | Whether decoded cache bound `30`, dropped stale count, or drain cadence hides usable decoded frames. | Cache drops are visible, but newest decoded output itself is still behind; diagnostics can confirm whether cache policy is a symptom or contributor. | Low if diagnostics-only. | Secondary diagnostics in the same or next slice. |
 | FFmpeg continuous output scale path experiment | Separates FFmpeg scale cost from raw pipe / pixel conversion cost. | Current path is `-vf scale=640:360:flags=neighbor -f rawvideo -pix_fmt bgra pipe:1`; scale and BGRA conversion remain plausible contributors after client/server/feed PASS. | Medium: source-size raw BGRA can be much heavier, and moving scale responsibility may require renderer-side conversion/copy work. | Next opt-in planning candidate, not implemented. |
 | One-shot competing load | Measures continuous-vs-one-shot process contention. | Suppression ON already made this a strong contributor candidate and improved throughput/render use, but the latest rerun points more directly at output backlog/stale output. | Medium if made default; low as already opt-in. | Supporting evidence; not the next main culprit and not a default policy. |
@@ -169,14 +169,19 @@ Last updated: 2026-05-28
 - Do not move back to threshold tuning as the next main line. Lag8 stays a
   held candidate, but the latest availability rerun shows stale/output backlog
   dominates over not-ready.
-- The next code candidate should be planning for opt-in output pipeline
-  experiments, now tracked in
-  `docs/operations/continuous-output-pipeline-experiment-plan.md`, still slot0
-  / two-real / opt-in continuous only:
-  1. stdout/raw BGRA pipe throughput experiment
-  2. FFmpeg scale path split experiment
-  3. completed correspondence latency diagnostics
-  4. reader blocking phase diagnostics
+- The first opt-in output pipeline experiment slice is now implemented, still
+  slot0 / two-real / opt-in continuous only:
+  - `--continuous-decoder-output-pipeline-experiment scaled-bgr24`
+  - default remains scaled BGRA `921600` bytes/frame
+  - experiment mode keeps scaling but emits BGR24 `691200` bytes/frame and
+    converts back to BGRA before render
+  - summary reports experiment mode, pixel format, bytes/frame, pipe bytes
+    saved/frame, pixel conversion time, stdout throughput, reader latency, and
+    correspondence backlog
+- Next candidate order:
+  1. default vs `scaled-bgr24` human rerun comparison
+  2. FFmpeg scale path split opt-in experiment
+  3. reader blocking phase diagnostics
 - These are not default behavior changes. They must keep full-frame correctness,
   same-source and no-future-frame guards, one-shot fallback, current feed max
   count, and current default FFmpeg path unless an explicit opt-in flag is used.

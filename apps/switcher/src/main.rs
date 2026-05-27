@@ -407,6 +407,7 @@ fn main() {
                 two_real_options.continuous_decoder_low_latency_args_enabled,
                 two_real_options.continuous_decoder_slot0_suppress_one_shot_fallback,
                 two_real_options.continuous_decoder_bounded_lookup_allowed_lag_frames,
+                two_real_options.continuous_decoder_output_pipeline_experiment_mode,
             ) {
                 Ok(summary) => println!(
                     "{}",
@@ -1668,6 +1669,63 @@ fn parse_optional_real_handoff_preview_mode_or_exit(
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TwoRealContinuousOutputPipelineExperimentMode {
+    Default,
+    ScaledBgr24,
+}
+
+impl Default for TwoRealContinuousOutputPipelineExperimentMode {
+    fn default() -> Self {
+        Self::Default
+    }
+}
+
+impl TwoRealContinuousOutputPipelineExperimentMode {
+    fn parse_or_exit(value: &str) -> Self {
+        match value {
+            "default" => Self::Default,
+            "scaled-bgr24" => Self::ScaledBgr24,
+            _ => {
+                eprintln!(
+                    "invalid continuous-decoder-output-pipeline-experiment: expected default or scaled-bgr24"
+                );
+                std::process::exit(1);
+            }
+        }
+    }
+
+    fn summary_value(self) -> &'static str {
+        match self {
+            Self::Default => "default",
+            Self::ScaledBgr24 => "scaled-bgr24",
+        }
+    }
+
+    fn ffmpeg_output_pixel_format(self) -> &'static str {
+        match self {
+            Self::Default => "bgra",
+            Self::ScaledBgr24 => "bgr24",
+        }
+    }
+
+    fn output_bytes_per_pixel(self) -> usize {
+        match self {
+            Self::Default => 4,
+            Self::ScaledBgr24 => 3,
+        }
+    }
+
+    fn output_frame_bytes(self, width: u32, height: u32) -> usize {
+        width as usize * height as usize * self.output_bytes_per_pixel()
+    }
+
+    fn pipe_bytes_saved_per_frame(self, width: u32, height: u32) -> usize {
+        let default_bytes = Self::Default.output_frame_bytes(width, height);
+        default_bytes.saturating_sub(self.output_frame_bytes(width, height))
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct TwoRealHandoffPreviewLoopOptions {
     read_mode: SwitcherSingleClientQueueSourceMode,
     persistent_decoder_enabled: bool,
@@ -1675,6 +1733,8 @@ struct TwoRealHandoffPreviewLoopOptions {
     continuous_decoder_low_latency_args_enabled: bool,
     continuous_decoder_slot0_suppress_one_shot_fallback: bool,
     continuous_decoder_bounded_lookup_allowed_lag_frames: Option<u64>,
+    continuous_decoder_output_pipeline_experiment_mode:
+        TwoRealContinuousOutputPipelineExperimentMode,
 }
 
 fn parse_two_real_handoff_preview_options_or_exit(
@@ -1687,6 +1747,8 @@ fn parse_two_real_handoff_preview_options_or_exit(
     let mut continuous_decoder_low_latency_args_enabled = false;
     let mut continuous_decoder_slot0_suppress_one_shot_fallback = false;
     let mut continuous_decoder_bounded_lookup_allowed_lag_frames = None;
+    let mut continuous_decoder_output_pipeline_experiment_mode =
+        TwoRealContinuousOutputPipelineExperimentMode::default();
     let mut values = values.into_iter();
     while let Some(value) = values.next() {
         if value == "--disable-persistent-decoder" {
@@ -1724,13 +1786,22 @@ fn parse_two_real_handoff_preview_options_or_exit(
             continuous_decoder_bounded_lookup_allowed_lag_frames = Some(allowed_lag_frames);
             continue;
         }
+        if value == "--continuous-decoder-output-pipeline-experiment" {
+            let mode = values.next().unwrap_or_else(|| {
+                eprintln!("missing continuous-decoder-output-pipeline-experiment");
+                std::process::exit(1);
+            });
+            continuous_decoder_output_pipeline_experiment_mode =
+                TwoRealContinuousOutputPipelineExperimentMode::parse_or_exit(&mode);
+            continue;
+        }
         if !read_mode_explicit {
             read_mode = parse_optional_real_handoff_preview_mode_or_exit(Some(value));
             read_mode_explicit = true;
             continue;
         }
         eprintln!(
-            "invalid extra argument for --four-view-two-real-handoff-preview-loop: expected preview-oldest, preview-latest, preview-latest-decodable, --disable-persistent-decoder, --enable-continuous-stream-decoder, --continuous-decoder-low-latency-args, or --continuous-decoder-slot0-suppress-one-shot-fallback"
+            "invalid extra argument for --four-view-two-real-handoff-preview-loop: expected preview-oldest, preview-latest, preview-latest-decodable, --disable-persistent-decoder, --enable-continuous-stream-decoder, --continuous-decoder-low-latency-args, --continuous-decoder-slot0-suppress-one-shot-fallback, --continuous-decoder-bounded-lookup-allowed-lag-frames, or --continuous-decoder-output-pipeline-experiment"
         );
         std::process::exit(1);
     }
@@ -1741,6 +1812,7 @@ fn parse_two_real_handoff_preview_options_or_exit(
         continuous_decoder_low_latency_args_enabled,
         continuous_decoder_slot0_suppress_one_shot_fallback,
         continuous_decoder_bounded_lookup_allowed_lag_frames,
+        continuous_decoder_output_pipeline_experiment_mode,
     }
 }
 
@@ -2041,6 +2113,12 @@ struct SwitcherFourViewTwoRealHandoffPreviewLoopSummary {
     continuous_decode_stdout_read_throughput_bytes_per_ms: String,
     continuous_decode_ffmpeg_scale_enabled: bool,
     continuous_decode_ffmpeg_output_pixel_format: String,
+    continuous_decode_output_pipeline_experiment_mode: String,
+    continuous_decode_output_bytes_per_frame: usize,
+    continuous_decode_output_pipe_bytes_saved_per_frame: usize,
+    continuous_decode_output_pixel_convert_elapsed_ms: u128,
+    continuous_decode_output_pixel_convert_elapsed_ms_max: u128,
+    continuous_decode_output_pixel_convert_count: u32,
     continuous_decode_competing_one_shot_decode_elapsed_ms: u128,
     continuous_decode_competing_one_shot_attempt_count: u32,
     continuous_decode_slot0_one_shot_suppression_enabled: bool,
@@ -2729,6 +2807,12 @@ struct TwoRealPreviewLoopRuntimeTiming {
     continuous_decode_output_frame_interval_ms_max: u128,
     continuous_decode_ffmpeg_scale_enabled: bool,
     continuous_decode_ffmpeg_output_pixel_format: Option<String>,
+    continuous_decode_output_pipeline_experiment_mode: Option<String>,
+    continuous_decode_output_bytes_per_frame: usize,
+    continuous_decode_output_pipe_bytes_saved_per_frame: usize,
+    continuous_decode_output_pixel_convert_elapsed_ms: u128,
+    continuous_decode_output_pixel_convert_elapsed_ms_max: u128,
+    continuous_decode_output_pixel_convert_count: u32,
     continuous_decode_competing_one_shot_decode_elapsed_ms: u128,
     continuous_decode_competing_one_shot_attempt_count: u32,
     continuous_decode_slot0_one_shot_suppression_enabled: bool,
@@ -3157,6 +3241,9 @@ struct TwoRealContinuousDecodeOutput {
     metadata: TwoRealContinuousDecodeMetadata,
     frame: SwitcherDecodedFrame,
     stdout_read_elapsed_ms: u128,
+    output_pipe_bytes_len: usize,
+    pixel_convert_elapsed_ms: u128,
+    pixel_convert_count: u32,
     reader_emitted_at: Instant,
 }
 
@@ -3347,6 +3434,7 @@ struct TwoRealContinuousDecodeConfig {
     low_latency_args_enabled: bool,
     slot0_one_shot_suppression_enabled: bool,
     bounded_lookup_allowed_lag_frames: Option<u64>,
+    output_pipeline_experiment_mode: TwoRealContinuousOutputPipelineExperimentMode,
 }
 
 impl TwoRealContinuousDecodeConfig {
@@ -3366,12 +3454,29 @@ impl TwoRealContinuousDecodeConfig {
         self.bounded_lookup_allowed_lag_frames
             .unwrap_or(TWO_REAL_CONTINUOUS_BOUNDED_LOOKUP_ALLOWED_LAG_FRAMES)
     }
+
+    fn ffmpeg_output_pixel_format(self) -> &'static str {
+        self.output_pipeline_experiment_mode
+            .ffmpeg_output_pixel_format()
+    }
+
+    fn output_frame_bytes(self, width: u32, height: u32) -> usize {
+        self.output_pipeline_experiment_mode
+            .output_frame_bytes(width, height)
+    }
+
+    fn output_pipe_bytes_saved_per_frame(self, width: u32, height: u32) -> usize {
+        self.output_pipeline_experiment_mode
+            .pipe_bytes_saved_per_frame(width, height)
+    }
 }
 
 struct TwoRealContinuousDecodeRuntime {
     source: TwoRealContinuousDecodeSource,
     config: TwoRealContinuousDecodeConfig,
     session: Option<TwoRealContinuousDecodeSession>,
+    output_width: u32,
+    output_height: u32,
     output_expected_len: usize,
     runtime_disabled: bool,
     runtime_disabled_reason: Option<String>,
@@ -3393,11 +3498,13 @@ impl TwoRealContinuousDecodeRuntime {
         output_height: u32,
         config: TwoRealContinuousDecodeConfig,
     ) -> Self {
-        let output_expected_len = output_width as usize * output_height as usize * 4;
+        let output_expected_len = config.output_frame_bytes(output_width, output_height);
         Self {
             source,
             config,
             session: None,
+            output_width,
+            output_height,
             output_expected_len,
             runtime_disabled: false,
             runtime_disabled_reason: None,
@@ -3573,6 +3680,16 @@ impl TwoRealContinuousDecodeRuntime {
             self.config.low_latency_args_enabled;
         timing.continuous_decode_ffmpeg_probe_args_enabled = self.config.probe_args_enabled();
         timing.continuous_decode_ffmpeg_loglevel = Some(self.config.ffmpeg_loglevel().to_string());
+        timing.continuous_decode_output_pipeline_experiment_mode = Some(
+            self.config
+                .output_pipeline_experiment_mode
+                .summary_value()
+                .to_string(),
+        );
+        timing.continuous_decode_output_bytes_per_frame = self.output_expected_len;
+        timing.continuous_decode_output_pipe_bytes_saved_per_frame = self
+            .config
+            .output_pipe_bytes_saved_per_frame(self.output_width, self.output_height);
         timing.continuous_decode_slot0_one_shot_suppression_enabled =
             self.config.slot0_one_shot_suppression_enabled;
         timing.continuous_decode_queue_len = self.continuous_key_order.len();
@@ -3919,7 +4036,8 @@ impl TwoRealContinuousDecodeRuntime {
             Ok(session) => {
                 self.session = Some(session);
                 timing.continuous_decode_ffmpeg_scale_enabled = input.scaled_output_enabled;
-                timing.continuous_decode_ffmpeg_output_pixel_format = Some("bgra".to_string());
+                timing.continuous_decode_ffmpeg_output_pixel_format =
+                    Some(self.config.ffmpeg_output_pixel_format().to_string());
                 Ok(())
             }
             Err(error) => {
@@ -4140,7 +4258,16 @@ impl TwoRealContinuousDecodeRuntime {
                     );
                     timing.continuous_decode_output_bytes_total = timing
                         .continuous_decode_output_bytes_total
-                        .saturating_add(output.frame.pixels.len());
+                        .saturating_add(output.output_pipe_bytes_len);
+                    timing.continuous_decode_output_pixel_convert_elapsed_ms = timing
+                        .continuous_decode_output_pixel_convert_elapsed_ms
+                        .saturating_add(output.pixel_convert_elapsed_ms);
+                    timing.continuous_decode_output_pixel_convert_elapsed_ms_max = timing
+                        .continuous_decode_output_pixel_convert_elapsed_ms_max
+                        .max(output.pixel_convert_elapsed_ms);
+                    timing.continuous_decode_output_pixel_convert_count = timing
+                        .continuous_decode_output_pixel_convert_count
+                        .saturating_add(output.pixel_convert_count);
                     if let Some(last_output_at) = self.last_output_at {
                         let output_interval_ms = output
                             .reader_emitted_at
@@ -4259,7 +4386,7 @@ fn build_two_real_continuous_ffmpeg_args(
         "-f".to_string(),
         "rawvideo".to_string(),
         "-pix_fmt".to_string(),
-        "bgra".to_string(),
+        config.ffmpeg_output_pixel_format().to_string(),
     ]);
     if config.low_latency_args_enabled {
         ffmpeg_args.extend(["-flush_packets".to_string(), "1".to_string()]);
@@ -4343,6 +4470,7 @@ fn spawn_two_real_continuous_ffmpeg_decode_session(
             expected_len,
             output_width,
             output_height,
+            config.output_pipeline_experiment_mode,
             reader_correspondence,
             stdout_reader_waiting_for_thread,
             reader_diagnostics,
@@ -4437,6 +4565,7 @@ fn two_real_continuous_ffmpeg_reader_loop(
     expected_len: usize,
     output_width: u32,
     output_height: u32,
+    output_pipeline_experiment_mode: TwoRealContinuousOutputPipelineExperimentMode,
     correspondence: Arc<Mutex<VecDeque<TwoRealContinuousDecodeMetadata>>>,
     stdout_reader_waiting: Arc<AtomicUsize>,
     diagnostics: Arc<TwoRealContinuousDecodeSharedDiagnostics>,
@@ -4524,6 +4653,18 @@ fn two_real_continuous_ffmpeg_reader_loop(
         diagnostics
             .stdout_partial_bytes_read
             .store(0, Ordering::Relaxed);
+        let stdout_read_elapsed_ms = read_start.elapsed().as_millis();
+        let output_pipe_bytes_len = pixels.len();
+        let convert_start = Instant::now();
+        let (pixels, pixel_convert_elapsed_ms, pixel_convert_count) =
+            match output_pipeline_experiment_mode {
+                TwoRealContinuousOutputPipelineExperimentMode::Default => (pixels, 0, 0),
+                TwoRealContinuousOutputPipelineExperimentMode::ScaledBgr24 => (
+                    convert_bgr24_to_bgra8(&pixels),
+                    convert_start.elapsed().as_millis(),
+                    1,
+                ),
+            };
         let metadata = match correspondence.lock() {
             Ok(mut queue) => queue.pop_front(),
             Err(_) => {
@@ -4549,7 +4690,10 @@ fn two_real_continuous_ffmpeg_reader_loop(
                         pixel_format: SwitcherDecodedFramePixelFormat::Bgra8,
                         pixels,
                     },
-                    stdout_read_elapsed_ms: read_start.elapsed().as_millis(),
+                    stdout_read_elapsed_ms,
+                    output_pipe_bytes_len,
+                    pixel_convert_elapsed_ms,
+                    pixel_convert_count,
                     reader_emitted_at: Instant::now(),
                 },
             ))
@@ -4558,6 +4702,14 @@ fn two_real_continuous_ffmpeg_reader_loop(
             break;
         }
     }
+}
+
+fn convert_bgr24_to_bgra8(pixels: &[u8]) -> Vec<u8> {
+    let mut output = Vec::with_capacity(pixels.len() / 3 * 4);
+    for chunk in pixels.chunks_exact(3) {
+        output.extend_from_slice(&[chunk[0], chunk[1], chunk[2], 255]);
+    }
+    output
 }
 
 fn two_real_continuous_ffmpeg_stderr_loop(
@@ -6062,6 +6214,7 @@ fn run_four_view_two_real_handoff_preview_loop(
     continuous_decoder_low_latency_args_enabled: bool,
     continuous_decoder_slot0_suppress_one_shot_fallback: bool,
     continuous_decoder_bounded_lookup_allowed_lag_frames: Option<u64>,
+    continuous_decoder_output_pipeline_experiment_mode: TwoRealContinuousOutputPipelineExperimentMode,
 ) -> Result<SwitcherFourViewTwoRealHandoffPreviewLoopSummary, String> {
     let handoff = ObservedNamedPipePreviewHandoff::new(SwitcherNamedPipeQueuedFrameHandoff::new(
         pipe_name,
@@ -6087,6 +6240,7 @@ fn run_four_view_two_real_handoff_preview_loop(
         continuous_decoder_low_latency_args_enabled,
         continuous_decoder_slot0_suppress_one_shot_fallback,
         continuous_decoder_bounded_lookup_allowed_lag_frames,
+        continuous_decoder_output_pipeline_experiment_mode,
         handoff,
         &persistent_decode_runtime,
         &render_runtime,
@@ -6110,6 +6264,7 @@ fn run_four_view_two_real_handoff_preview_loop(
     _continuous_decoder_low_latency_args_enabled: bool,
     _continuous_decoder_slot0_suppress_one_shot_fallback: bool,
     _continuous_decoder_bounded_lookup_allowed_lag_frames: Option<u64>,
+    _continuous_decoder_output_pipeline_experiment_mode: TwoRealContinuousOutputPipelineExperimentMode,
 ) -> Result<SwitcherFourViewTwoRealHandoffPreviewLoopSummary, String> {
     Err("four-view two-real handoff preview loop is only available on Windows".to_string())
 }
@@ -6457,6 +6612,7 @@ where
         false,
         false,
         None,
+        TwoRealContinuousOutputPipelineExperimentMode::Default,
         real_handoff,
         decode_runtime,
         render_runtime,
@@ -6484,6 +6640,7 @@ fn run_four_view_two_real_handoff_preview_loop_with_handoff_runtime_target_times
     continuous_decoder_low_latency_args_enabled: bool,
     continuous_decoder_slot0_suppress_one_shot_fallback: bool,
     continuous_decoder_bounded_lookup_allowed_lag_frames: Option<u64>,
+    continuous_decoder_output_pipeline_experiment_mode: TwoRealContinuousOutputPipelineExperimentMode,
     real_handoff: RealHandoff,
     decode_runtime: &DecodeRuntime,
     render_runtime: &RenderRuntime,
@@ -6567,6 +6724,7 @@ where
             slot0_one_shot_suppression_enabled: continuous_stream_decoder_enabled
                 && continuous_decoder_slot0_suppress_one_shot_fallback,
             bounded_lookup_allowed_lag_frames: continuous_decoder_bounded_lookup_allowed_lag_frames,
+            output_pipeline_experiment_mode: continuous_decoder_output_pipeline_experiment_mode,
         },
     );
     let mut previous_slots: [Option<SwitcherFourViewDisplayedSlot>; 4] =
@@ -7305,6 +7463,19 @@ where
             .continuous_decode_ffmpeg_output_pixel_format
             .clone()
             .unwrap_or_else(|| "none".to_string()),
+        continuous_decode_output_pipeline_experiment_mode: timing
+            .continuous_decode_output_pipeline_experiment_mode
+            .clone()
+            .unwrap_or_else(|| "default".to_string()),
+        continuous_decode_output_bytes_per_frame: timing.continuous_decode_output_bytes_per_frame,
+        continuous_decode_output_pipe_bytes_saved_per_frame: timing
+            .continuous_decode_output_pipe_bytes_saved_per_frame,
+        continuous_decode_output_pixel_convert_elapsed_ms: timing
+            .continuous_decode_output_pixel_convert_elapsed_ms,
+        continuous_decode_output_pixel_convert_elapsed_ms_max: timing
+            .continuous_decode_output_pixel_convert_elapsed_ms_max,
+        continuous_decode_output_pixel_convert_count: timing
+            .continuous_decode_output_pixel_convert_count,
         continuous_decode_competing_one_shot_decode_elapsed_ms: timing
             .continuous_decode_competing_one_shot_decode_elapsed_ms,
         continuous_decode_competing_one_shot_attempt_count: timing
@@ -12357,7 +12528,7 @@ fn format_four_view_two_real_handoff_preview_loop_summary(
         format_optional_u32(summary.output_height),
     );
     format!(
-        "{summary_line} continuous_decode_ffmpeg_low_latency_args_enabled={} continuous_decode_ffmpeg_probe_args_enabled={} continuous_decode_ffmpeg_loglevel={} continuous_decode_stdout_first_byte_seen={} continuous_decode_stdout_first_byte_elapsed_ms={} continuous_decode_stdout_partial_bytes_read={} continuous_decode_stdout_partial_read_count={} continuous_decode_stdout_expected_frame_bytes={} continuous_decode_stdout_read_waiting_for_full_frame={} continuous_feed_enabled={} continuous_feed_attempt_count={} continuous_feed_handoff_request_count={} continuous_feed_frame_received_count={} continuous_feed_no_frame_count={} continuous_feed_handoff_error_count={} continuous_feed_enqueued_count={} continuous_feed_skipped_count={} continuous_feed_skip_reason_counts={} continuous_feed_dropped_stale_input_count={} continuous_feed_latest_received_frame_id={} continuous_feed_latest_enqueued_frame_id={} continuous_decode_input_from_feeder_count={} continuous_decode_input_from_render_demand_count={} continuous_decode_feeder_lag_to_selected={} continuous_decode_render_exact_hit_count={} continuous_decode_render_miss_stale_count={} continuous_decode_render_miss_not_ready_count={} continuous_decode_bounded_lookup_enabled={} continuous_decode_bounded_lookup_allowed_lag_frames={} continuous_decode_bounded_lookup_hit_count={} continuous_decode_bounded_lookup_used_frame_id={} continuous_decode_bounded_lookup_requested_frame_id={} continuous_decode_bounded_lookup_lag_frames={} continuous_decode_bounded_lookup_rejected_stale_count={} continuous_decode_bounded_lookup_rejected_future_count={} continuous_decode_bounded_lookup_rejected_not_ready_count={} continuous_decode_output_availability_not_ready_count={} continuous_decode_output_availability_stale_count={} continuous_decode_output_availability_future_count={} continuous_decode_bounded_lookup_fallback_to_one_shot_count={} continuous_decode_render_used_exact_count={} continuous_decode_render_used_bounded_lag_count={} continuous_decode_pending_correspondence_count={} continuous_decode_pending_correspondence_age_ms_max={} continuous_decode_pending_correspondence_age_ms_avg={} continuous_decode_pending_correspondence_oldest_frame_id={} continuous_decode_pending_correspondence_newest_frame_id={} continuous_decode_completed_correspondence_count={} continuous_decode_completed_correspondence_latency_ms_avg={} continuous_decode_completed_correspondence_latency_ms_max={} continuous_decode_completed_correspondence_latency_slow_count={} continuous_decode_completed_correspondence_latency_slow_threshold_ms={} continuous_decode_completed_correspondence_frame_id_min={} continuous_decode_completed_correspondence_frame_id_max={} continuous_decode_completed_correspondence_latest_latency_ms={} continuous_decode_latest_input_minus_latest_output_lag={} continuous_decode_latest_input_to_output_frame_gap={} continuous_decode_pending_correspondence_frame_id_min={} continuous_decode_pending_correspondence_frame_id_max={} continuous_decode_input_to_output_lag_frames_max={} continuous_decode_output_lag_to_selected_frames={} continuous_decode_latest_selected_to_output_frame_gap={} continuous_decode_output_throughput_fps={} continuous_decode_reader_full_frame_elapsed_ms_max={} continuous_decode_reader_full_frame_elapsed_ms_avg={} continuous_decode_reader_full_frame_slow_count={} continuous_decode_reader_full_frame_slow_threshold_ms={} continuous_decode_output_bytes_total={} continuous_decode_output_bytes_per_sec={} continuous_decode_output_frame_interval_ms_avg={} continuous_decode_output_frame_interval_ms_max={} continuous_decode_stdout_read_throughput_bytes_per_ms={} continuous_decode_ffmpeg_scale_enabled={} continuous_decode_ffmpeg_output_pixel_format={} continuous_decode_competing_one_shot_decode_elapsed_ms={} continuous_decode_competing_one_shot_attempt_count={} continuous_decode_slot0_one_shot_suppression_enabled={} continuous_decode_slot0_one_shot_suppressed_count={} continuous_decode_slot0_one_shot_suppressed_reason_counts={} continuous_decode_slot0_one_shot_suppressed_render_safety_counts={} continuous_decode_slot0_one_shot_suppressed_continuous_not_ready_count={} continuous_decode_slot0_one_shot_suppressed_stale_count={} continuous_decode_queue_drop_reason_counts={}",
+        "{summary_line} continuous_decode_ffmpeg_low_latency_args_enabled={} continuous_decode_ffmpeg_probe_args_enabled={} continuous_decode_ffmpeg_loglevel={} continuous_decode_stdout_first_byte_seen={} continuous_decode_stdout_first_byte_elapsed_ms={} continuous_decode_stdout_partial_bytes_read={} continuous_decode_stdout_partial_read_count={} continuous_decode_stdout_expected_frame_bytes={} continuous_decode_stdout_read_waiting_for_full_frame={} continuous_feed_enabled={} continuous_feed_attempt_count={} continuous_feed_handoff_request_count={} continuous_feed_frame_received_count={} continuous_feed_no_frame_count={} continuous_feed_handoff_error_count={} continuous_feed_enqueued_count={} continuous_feed_skipped_count={} continuous_feed_skip_reason_counts={} continuous_feed_dropped_stale_input_count={} continuous_feed_latest_received_frame_id={} continuous_feed_latest_enqueued_frame_id={} continuous_decode_input_from_feeder_count={} continuous_decode_input_from_render_demand_count={} continuous_decode_feeder_lag_to_selected={} continuous_decode_render_exact_hit_count={} continuous_decode_render_miss_stale_count={} continuous_decode_render_miss_not_ready_count={} continuous_decode_bounded_lookup_enabled={} continuous_decode_bounded_lookup_allowed_lag_frames={} continuous_decode_bounded_lookup_hit_count={} continuous_decode_bounded_lookup_used_frame_id={} continuous_decode_bounded_lookup_requested_frame_id={} continuous_decode_bounded_lookup_lag_frames={} continuous_decode_bounded_lookup_rejected_stale_count={} continuous_decode_bounded_lookup_rejected_future_count={} continuous_decode_bounded_lookup_rejected_not_ready_count={} continuous_decode_output_availability_not_ready_count={} continuous_decode_output_availability_stale_count={} continuous_decode_output_availability_future_count={} continuous_decode_bounded_lookup_fallback_to_one_shot_count={} continuous_decode_render_used_exact_count={} continuous_decode_render_used_bounded_lag_count={} continuous_decode_pending_correspondence_count={} continuous_decode_pending_correspondence_age_ms_max={} continuous_decode_pending_correspondence_age_ms_avg={} continuous_decode_pending_correspondence_oldest_frame_id={} continuous_decode_pending_correspondence_newest_frame_id={} continuous_decode_completed_correspondence_count={} continuous_decode_completed_correspondence_latency_ms_avg={} continuous_decode_completed_correspondence_latency_ms_max={} continuous_decode_completed_correspondence_latency_slow_count={} continuous_decode_completed_correspondence_latency_slow_threshold_ms={} continuous_decode_completed_correspondence_frame_id_min={} continuous_decode_completed_correspondence_frame_id_max={} continuous_decode_completed_correspondence_latest_latency_ms={} continuous_decode_latest_input_minus_latest_output_lag={} continuous_decode_latest_input_to_output_frame_gap={} continuous_decode_pending_correspondence_frame_id_min={} continuous_decode_pending_correspondence_frame_id_max={} continuous_decode_input_to_output_lag_frames_max={} continuous_decode_output_lag_to_selected_frames={} continuous_decode_latest_selected_to_output_frame_gap={} continuous_decode_output_throughput_fps={} continuous_decode_reader_full_frame_elapsed_ms_max={} continuous_decode_reader_full_frame_elapsed_ms_avg={} continuous_decode_reader_full_frame_slow_count={} continuous_decode_reader_full_frame_slow_threshold_ms={} continuous_decode_output_bytes_total={} continuous_decode_output_bytes_per_sec={} continuous_decode_output_frame_interval_ms_avg={} continuous_decode_output_frame_interval_ms_max={} continuous_decode_stdout_read_throughput_bytes_per_ms={} continuous_decode_ffmpeg_scale_enabled={} continuous_decode_ffmpeg_output_pixel_format={} continuous_decode_output_pipeline_experiment_mode={} continuous_decode_output_bytes_per_frame={} continuous_decode_output_pipe_bytes_saved_per_frame={} continuous_decode_output_pixel_convert_elapsed_ms={} continuous_decode_output_pixel_convert_elapsed_ms_max={} continuous_decode_output_pixel_convert_count={} continuous_decode_competing_one_shot_decode_elapsed_ms={} continuous_decode_competing_one_shot_attempt_count={} continuous_decode_slot0_one_shot_suppression_enabled={} continuous_decode_slot0_one_shot_suppressed_count={} continuous_decode_slot0_one_shot_suppressed_reason_counts={} continuous_decode_slot0_one_shot_suppressed_render_safety_counts={} continuous_decode_slot0_one_shot_suppressed_continuous_not_ready_count={} continuous_decode_slot0_one_shot_suppressed_stale_count={} continuous_decode_queue_drop_reason_counts={}",
         summary.continuous_decode_ffmpeg_low_latency_args_enabled,
         summary.continuous_decode_ffmpeg_probe_args_enabled,
         sanitize_summary_value(&summary.continuous_decode_ffmpeg_loglevel),
@@ -12432,6 +12603,12 @@ fn format_four_view_two_real_handoff_preview_loop_summary(
         summary.continuous_decode_stdout_read_throughput_bytes_per_ms,
         summary.continuous_decode_ffmpeg_scale_enabled,
         sanitize_summary_value(&summary.continuous_decode_ffmpeg_output_pixel_format),
+        sanitize_summary_value(&summary.continuous_decode_output_pipeline_experiment_mode),
+        summary.continuous_decode_output_bytes_per_frame,
+        summary.continuous_decode_output_pipe_bytes_saved_per_frame,
+        summary.continuous_decode_output_pixel_convert_elapsed_ms,
+        summary.continuous_decode_output_pixel_convert_elapsed_ms_max,
+        summary.continuous_decode_output_pixel_convert_count,
         summary.continuous_decode_competing_one_shot_decode_elapsed_ms,
         summary.continuous_decode_competing_one_shot_attempt_count,
         summary.continuous_decode_slot0_one_shot_suppression_enabled,
@@ -13669,6 +13846,10 @@ mod tests {
             options.continuous_decoder_bounded_lookup_allowed_lag_frames,
             None
         );
+        assert_eq!(
+            options.continuous_decoder_output_pipeline_experiment_mode,
+            super::TwoRealContinuousOutputPipelineExperimentMode::Default
+        );
     }
 
     #[test]
@@ -13688,6 +13869,10 @@ mod tests {
         assert_eq!(
             options.continuous_decoder_bounded_lookup_allowed_lag_frames,
             None
+        );
+        assert_eq!(
+            options.continuous_decoder_output_pipeline_experiment_mode,
+            super::TwoRealContinuousOutputPipelineExperimentMode::Default
         );
     }
 
@@ -13714,6 +13899,8 @@ mod tests {
             "--continuous-decoder-slot0-suppress-one-shot-fallback".to_string(),
             "--continuous-decoder-bounded-lookup-allowed-lag-frames".to_string(),
             "8".to_string(),
+            "--continuous-decoder-output-pipeline-experiment".to_string(),
+            "scaled-bgr24".to_string(),
             "preview-latest-decodable".to_string(),
         ]);
         assert_eq!(
@@ -13727,6 +13914,10 @@ mod tests {
         assert_eq!(
             options.continuous_decoder_bounded_lookup_allowed_lag_frames,
             Some(8)
+        );
+        assert_eq!(
+            options.continuous_decoder_output_pipeline_experiment_mode,
+            super::TwoRealContinuousOutputPipelineExperimentMode::ScaledBgr24
         );
     }
 
@@ -13793,6 +13984,30 @@ mod tests {
         assert!(args
             .windows(2)
             .any(|window| window[0] == "-pix_fmt" && window[1] == "bgra"));
+    }
+
+    #[test]
+    fn switcher_two_real_continuous_ffmpeg_args_support_scaled_bgr24_experiment() {
+        let config = super::TwoRealContinuousDecodeConfig {
+            output_pipeline_experiment_mode:
+                super::TwoRealContinuousOutputPipelineExperimentMode::ScaledBgr24,
+            ..super::TwoRealContinuousDecodeConfig::default()
+        };
+        let args = super::build_two_real_continuous_ffmpeg_args(640, 360, true, config);
+
+        assert!(args
+            .windows(2)
+            .any(|window| window[0] == "-pix_fmt" && window[1] == "bgr24"));
+        assert_eq!(config.output_frame_bytes(640, 360), 691_200);
+        assert_eq!(config.output_pipe_bytes_saved_per_frame(640, 360), 230_400);
+    }
+
+    #[test]
+    fn switcher_two_real_continuous_bgr24_output_converts_to_bgra() {
+        assert_eq!(
+            super::convert_bgr24_to_bgra8(&[10, 20, 30, 40, 50, 60]),
+            vec![10, 20, 30, 255, 40, 50, 60, 255]
+        );
     }
 
     #[test]
@@ -16487,6 +16702,12 @@ mod tests {
         assert!(formatted.contains("continuous_decode_stdout_read_throughput_bytes_per_ms=n/a"));
         assert!(formatted.contains("continuous_decode_ffmpeg_scale_enabled=false"));
         assert!(formatted.contains("continuous_decode_ffmpeg_output_pixel_format=none"));
+        assert!(formatted.contains("continuous_decode_output_pipeline_experiment_mode=default"));
+        assert!(formatted.contains("continuous_decode_output_bytes_per_frame=0"));
+        assert!(formatted.contains("continuous_decode_output_pipe_bytes_saved_per_frame=0"));
+        assert!(formatted.contains("continuous_decode_output_pixel_convert_elapsed_ms=0"));
+        assert!(formatted.contains("continuous_decode_output_pixel_convert_elapsed_ms_max=0"));
+        assert!(formatted.contains("continuous_decode_output_pixel_convert_count=0"));
         assert!(formatted.contains("continuous_decode_competing_one_shot_decode_elapsed_ms=0"));
         assert!(formatted.contains("continuous_decode_competing_one_shot_attempt_count=0"));
         assert!(formatted.contains("continuous_decode_slot0_one_shot_suppression_enabled=false"));
@@ -17022,6 +17243,7 @@ mod tests {
                 false,
                 false,
                 None,
+                super::TwoRealContinuousOutputPipelineExperimentMode::Default,
                 StubRealQueuedFrameHandoff {
                     result: SwitcherQueuedFrameHandoffResult::FrameRead {
                         frame: SwitcherSingleViewSelectedEncodedFrame {

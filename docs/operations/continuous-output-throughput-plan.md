@@ -120,12 +120,22 @@ Continuous slot0 output path:
      - `-pix_fmt bgra`
      - `pipe:1`
    - Low-latency args may be enabled, but the output format remains raw BGRA.
+   - 2026-05-28 adds an opt-in comparison mode only:
+     `--continuous-decoder-output-pipeline-experiment scaled-bgr24`.
+     Default remains raw BGRA. In `scaled-bgr24`, FFmpeg keeps the same scale
+     filter and emits `bgr24` rawvideo, reducing pipe bytes/frame from
+     `921600` to `691200`; the switcher reader converts BGR24 back to BGRA
+     before render.
 
 4. Continuous stdout reader
    - The reader allocates one `expected_len` buffer for each output frame read attempt.
    - For `640x360` BGRA, `expected_len = 640 * 360 * 4 = 921600` bytes/frame.
    - The reader loops until one full raw frame is read from stdout.
    - Only after a full raw frame is available can it pop the correspondence metadata and emit a decoded output event.
+   - In the opt-in `scaled-bgr24` experiment, the full-frame read boundary is
+     `691200` bytes. Pixel conversion timing is reported separately so reader
+     full-frame latency remains the stdout read metric, not the conversion
+     metric.
 
 5. Render-side drain and lookup
    - Render drains decoded events into the bounded decoded cache/key order.
