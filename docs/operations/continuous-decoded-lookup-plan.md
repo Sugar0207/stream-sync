@@ -2,7 +2,7 @@
 
 # Continuous Decoded Lookup Plan
 
-最終更新: 2026-05-20
+最終更新: 2026-05-22
 
 ## 目的
 - bounded feed helper PASS 後も render consumption が `0` のままなので、slot0 continuous decoded queue の参照方針を docs-first で整理する
@@ -110,6 +110,16 @@ First design preference:
   - `allowed_lag_frames=10`
   - second candidate if `8` remains too narrow; risk is higher stale display
     tolerance and comparison noise from letting more old frames through
+- First threshold experiment code slice:
+  - `--continuous-decoder-bounded-lookup-allowed-lag-frames <N>` is now wired
+    into the two-real continuous slot0 bounded lookup threshold
+  - omitted flag keeps the default `5`
+  - CLI values above the decoded queue bound are rejected
+  - first human comparison value is explicit `8`; `10` stays a later candidate
+    only if `8` is still narrow after same-build evidence
+  - summary keeps reporting the effective
+    `continuous_decode_bounded_lookup_allowed_lag_frames` and accepted
+    `continuous_decode_bounded_lookup_lag_frames`
 - Dynamic threshold candidate:
   - docs-only hold for now
   - it would need an explicit bound, a clear input signal, and summary visibility
@@ -450,7 +460,7 @@ Policy reading:
 
 Opt-in experiment shape:
 
-- first flag candidate:
+- implemented first flag:
   - `--continuous-decoder-bounded-lookup-allowed-lag-frames <N>`
 - first values to compare:
   - default-equivalent `5`

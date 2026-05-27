@@ -406,6 +406,7 @@ fn main() {
                 two_real_options.continuous_stream_decoder_enabled,
                 two_real_options.continuous_decoder_low_latency_args_enabled,
                 two_real_options.continuous_decoder_slot0_suppress_one_shot_fallback,
+                two_real_options.continuous_decoder_bounded_lookup_allowed_lag_frames,
             ) {
                 Ok(summary) => println!(
                     "{}",
@@ -1673,6 +1674,7 @@ struct TwoRealHandoffPreviewLoopOptions {
     continuous_stream_decoder_enabled: bool,
     continuous_decoder_low_latency_args_enabled: bool,
     continuous_decoder_slot0_suppress_one_shot_fallback: bool,
+    continuous_decoder_bounded_lookup_allowed_lag_frames: Option<u64>,
 }
 
 fn parse_two_real_handoff_preview_options_or_exit(
@@ -1684,7 +1686,9 @@ fn parse_two_real_handoff_preview_options_or_exit(
     let mut continuous_stream_decoder_enabled = false;
     let mut continuous_decoder_low_latency_args_enabled = false;
     let mut continuous_decoder_slot0_suppress_one_shot_fallback = false;
-    for value in values {
+    let mut continuous_decoder_bounded_lookup_allowed_lag_frames = None;
+    let mut values = values.into_iter();
+    while let Some(value) = values.next() {
         if value == "--disable-persistent-decoder" {
             persistent_decoder_enabled = false;
             continue;
@@ -1699,6 +1703,25 @@ fn parse_two_real_handoff_preview_options_or_exit(
         }
         if value == "--continuous-decoder-slot0-suppress-one-shot-fallback" {
             continuous_decoder_slot0_suppress_one_shot_fallback = true;
+            continue;
+        }
+        if value == "--continuous-decoder-bounded-lookup-allowed-lag-frames" {
+            let allowed_lag_frames = values.next().unwrap_or_else(|| {
+                eprintln!("missing continuous-decoder-bounded-lookup-allowed-lag-frames");
+                std::process::exit(1);
+            });
+            let allowed_lag_frames = allowed_lag_frames.parse::<u64>().unwrap_or_else(|error| {
+                eprintln!("invalid continuous-decoder-bounded-lookup-allowed-lag-frames: {error}");
+                std::process::exit(1);
+            });
+            if allowed_lag_frames > TWO_REAL_CONTINUOUS_DECODE_QUEUE_BOUND as u64 {
+                eprintln!(
+                    "invalid continuous-decoder-bounded-lookup-allowed-lag-frames: expected <= {}",
+                    TWO_REAL_CONTINUOUS_DECODE_QUEUE_BOUND
+                );
+                std::process::exit(1);
+            }
+            continuous_decoder_bounded_lookup_allowed_lag_frames = Some(allowed_lag_frames);
             continue;
         }
         if !read_mode_explicit {
@@ -1717,6 +1740,7 @@ fn parse_two_real_handoff_preview_options_or_exit(
         continuous_stream_decoder_enabled,
         continuous_decoder_low_latency_args_enabled,
         continuous_decoder_slot0_suppress_one_shot_fallback,
+        continuous_decoder_bounded_lookup_allowed_lag_frames,
     }
 }
 
@@ -3235,6 +3259,7 @@ impl TwoRealContinuousDecodeSession {
 struct TwoRealContinuousDecodeConfig {
     low_latency_args_enabled: bool,
     slot0_one_shot_suppression_enabled: bool,
+    bounded_lookup_allowed_lag_frames: Option<u64>,
 }
 
 impl TwoRealContinuousDecodeConfig {
@@ -3248,6 +3273,11 @@ impl TwoRealContinuousDecodeConfig {
 
     fn probe_args_enabled(self) -> bool {
         self.low_latency_args_enabled
+    }
+
+    fn bounded_lookup_allowed_lag_frames(self) -> u64 {
+        self.bounded_lookup_allowed_lag_frames
+            .unwrap_or(TWO_REAL_CONTINUOUS_BOUNDED_LOOKUP_ALLOWED_LAG_FRAMES)
     }
 }
 
@@ -3361,7 +3391,7 @@ impl TwoRealContinuousDecodeRuntime {
             };
         };
         let lag_frames = requested_source.frame_id.saturating_sub(used_frame_id);
-        if lag_frames > TWO_REAL_CONTINUOUS_BOUNDED_LOOKUP_ALLOWED_LAG_FRAMES {
+        if lag_frames > self.config.bounded_lookup_allowed_lag_frames() {
             return TwoRealContinuousBoundedLookupCandidate::RejectedStale;
         }
         TwoRealContinuousBoundedLookupCandidate::Hit {
@@ -3435,7 +3465,7 @@ impl TwoRealContinuousDecodeRuntime {
         timing.continuous_decode_runtime_disabled_reason = self.runtime_disabled_reason.clone();
         timing.continuous_decode_bounded_lookup_enabled = true;
         timing.continuous_decode_bounded_lookup_allowed_lag_frames =
-            TWO_REAL_CONTINUOUS_BOUNDED_LOOKUP_ALLOWED_LAG_FRAMES;
+            self.config.bounded_lookup_allowed_lag_frames();
         timing.continuous_decode_ffmpeg_low_latency_args_enabled =
             self.config.low_latency_args_enabled;
         timing.continuous_decode_ffmpeg_probe_args_enabled = self.config.probe_args_enabled();
@@ -5902,6 +5932,7 @@ fn run_four_view_two_real_handoff_preview_loop(
     continuous_stream_decoder_enabled: bool,
     continuous_decoder_low_latency_args_enabled: bool,
     continuous_decoder_slot0_suppress_one_shot_fallback: bool,
+    continuous_decoder_bounded_lookup_allowed_lag_frames: Option<u64>,
 ) -> Result<SwitcherFourViewTwoRealHandoffPreviewLoopSummary, String> {
     let handoff = ObservedNamedPipePreviewHandoff::new(SwitcherNamedPipeQueuedFrameHandoff::new(
         pipe_name,
@@ -5926,6 +5957,7 @@ fn run_four_view_two_real_handoff_preview_loop(
         continuous_stream_decoder_enabled,
         continuous_decoder_low_latency_args_enabled,
         continuous_decoder_slot0_suppress_one_shot_fallback,
+        continuous_decoder_bounded_lookup_allowed_lag_frames,
         handoff,
         &persistent_decode_runtime,
         &render_runtime,
@@ -5948,6 +5980,7 @@ fn run_four_view_two_real_handoff_preview_loop(
     _continuous_stream_decoder_enabled: bool,
     _continuous_decoder_low_latency_args_enabled: bool,
     _continuous_decoder_slot0_suppress_one_shot_fallback: bool,
+    _continuous_decoder_bounded_lookup_allowed_lag_frames: Option<u64>,
 ) -> Result<SwitcherFourViewTwoRealHandoffPreviewLoopSummary, String> {
     Err("four-view two-real handoff preview loop is only available on Windows".to_string())
 }
@@ -6294,6 +6327,7 @@ where
         false,
         false,
         false,
+        None,
         real_handoff,
         decode_runtime,
         render_runtime,
@@ -6320,6 +6354,7 @@ fn run_four_view_two_real_handoff_preview_loop_with_handoff_runtime_target_times
     continuous_stream_decoder_enabled: bool,
     continuous_decoder_low_latency_args_enabled: bool,
     continuous_decoder_slot0_suppress_one_shot_fallback: bool,
+    continuous_decoder_bounded_lookup_allowed_lag_frames: Option<u64>,
     real_handoff: RealHandoff,
     decode_runtime: &DecodeRuntime,
     render_runtime: &RenderRuntime,
@@ -6402,6 +6437,7 @@ where
             low_latency_args_enabled: continuous_decoder_low_latency_args_enabled,
             slot0_one_shot_suppression_enabled: continuous_stream_decoder_enabled
                 && continuous_decoder_slot0_suppress_one_shot_fallback,
+            bounded_lookup_allowed_lag_frames: continuous_decoder_bounded_lookup_allowed_lag_frames,
         },
     );
     let mut previous_slots: [Option<SwitcherFourViewDisplayedSlot>; 4] =
@@ -13440,6 +13476,10 @@ mod tests {
         assert!(!options.continuous_stream_decoder_enabled);
         assert!(!options.continuous_decoder_low_latency_args_enabled);
         assert!(!options.continuous_decoder_slot0_suppress_one_shot_fallback);
+        assert_eq!(
+            options.continuous_decoder_bounded_lookup_allowed_lag_frames,
+            None
+        );
     }
 
     #[test]
@@ -13456,6 +13496,10 @@ mod tests {
         assert!(!options.continuous_stream_decoder_enabled);
         assert!(!options.continuous_decoder_low_latency_args_enabled);
         assert!(!options.continuous_decoder_slot0_suppress_one_shot_fallback);
+        assert_eq!(
+            options.continuous_decoder_bounded_lookup_allowed_lag_frames,
+            None
+        );
     }
 
     #[test]
@@ -13479,6 +13523,8 @@ mod tests {
             "--enable-continuous-stream-decoder".to_string(),
             "--continuous-decoder-low-latency-args".to_string(),
             "--continuous-decoder-slot0-suppress-one-shot-fallback".to_string(),
+            "--continuous-decoder-bounded-lookup-allowed-lag-frames".to_string(),
+            "8".to_string(),
             "preview-latest-decodable".to_string(),
         ]);
         assert_eq!(
@@ -13489,6 +13535,10 @@ mod tests {
         assert!(options.continuous_stream_decoder_enabled);
         assert!(options.continuous_decoder_low_latency_args_enabled);
         assert!(options.continuous_decoder_slot0_suppress_one_shot_fallback);
+        assert_eq!(
+            options.continuous_decoder_bounded_lookup_allowed_lag_frames,
+            Some(8)
+        );
     }
 
     #[test]
@@ -16498,6 +16548,25 @@ mod tests {
     }
 
     #[test]
+    fn continuous_decode_bounded_lookup_uses_configured_allowed_lag() {
+        let mut runtime = two_real_continuous_test_runtime();
+        runtime.config.bounded_lookup_allowed_lag_frames = Some(8);
+        let key = two_real_continuous_test_key(100);
+        runtime.continuous_key_order.push_back(key.clone());
+        runtime.continuous_decoded_keys.insert(key.clone());
+
+        assert_eq!(
+            runtime.bounded_lag_lookup_candidate(&two_real_continuous_test_input(108)),
+            TwoRealContinuousBoundedLookupCandidate::Hit {
+                key,
+                used_frame_id: 100,
+                requested_frame_id: 108,
+                lag_frames: 8,
+            }
+        );
+    }
+
+    #[test]
     fn switcher_four_view_preview_slot_diagnostic_formats_decodable_fields() {
         let formatted = super::format_four_view_preview_slot_diagnostic(
             &super::FourViewPreviewSlotDiagnosticSummary {
@@ -16646,6 +16715,7 @@ mod tests {
                 false,
                 false,
                 false,
+                None,
                 StubRealQueuedFrameHandoff {
                     result: SwitcherQueuedFrameHandoffResult::FrameRead {
                         frame: SwitcherSingleViewSelectedEncodedFrame {

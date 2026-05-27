@@ -2,6 +2,68 @@
 
 ## 2026-05-22
 ### Type
+- Codex implementation
+
+### Work
+- Implemented the narrow bounded lookup allowed-lag threshold experiment flag for the two-real opt-in continuous slot0 path.
+- Added `--continuous-decoder-bounded-lookup-allowed-lag-frames <N>` and kept omitted/default behavior at the existing `5` frame threshold.
+- Kept exact lookup first, bounded lookup second, one-shot fallback third, requested-future rejection, same-source guard, and suppression safety behavior unchanged.
+- Did not run a Codex runtime rerun.
+
+### Changed Files
+- `apps/switcher/src/main.rs`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+- `docs/operations/continuous-decoded-lookup-plan.md`
+
+### Implementation
+- Threaded the optional CLI lag value through the two-real preview loop into the slot0 continuous decode config.
+- Resolved the runtime threshold from the CLI override when present and from the existing `TWO_REAL_CONTINUOUS_BOUNDED_LOOKUP_ALLOWED_LAG_FRAMES=5` constant when omitted.
+- Kept the CLI override bounded by the existing decoded queue bound instead of accepting a threshold wider than the slot0 continuous queue.
+- Kept existing summary fields as the experiment readout:
+  - `continuous_decode_bounded_lookup_allowed_lag_frames`
+  - `continuous_decode_bounded_lookup_lag_frames`
+  - bounded hit and stale/not-ready reject counters
+- Added focused parser and configured allowed-lag coverage so explicit `8` can be tested without widening the default path.
+
+### Decisions
+- Treat this as an opt-in threshold experiment only, not a threshold default change.
+- First human comparison remains suppression ON with default-equivalent `5` vs explicit `8` from the same build.
+- Keep `10`, dynamic threshold policy, targetTime-aware lookup, latest decoded fallback, suppression defaulting, slot1/4-client widening, and pixel/scale work held.
+- Keep Production Readiness as FAIL.
+
+### TODO Update
+- Completed:
+  - first bounded lookup allowed-lag threshold experiment flag slice
+- Added:
+  - same-build human rerun comparison for suppression ON threshold `5` vs explicit `8`
+- Held:
+  - default threshold change
+  - threshold `10` until `8` evidence exists
+  - runtime rerun from Codex
+
+### Validation
+- `cargo fmt`
+  - result: PASS
+- `cargo check -p stream-sync-switcher`
+  - result: PASS
+  - note: existing dead-code warnings remain in unrelated helpers
+- `cargo test -p stream-sync-switcher switcher_four_view_two_real_handoff_preview_summary_formats_expected_fields -- --nocapture`
+  - result: PASS
+- `cargo test -p stream-sync-switcher switcher_two_real_handoff_preview_options -- --nocapture`
+  - result: PASS
+- `cargo test -p stream-sync-switcher continuous_decode_bounded_lookup_uses_configured_allowed_lag -- --nocapture`
+  - result: PASS
+- test note:
+  - the first focused test hit linker `LNK1190` from corrupted `stream-sync-server`
+    debug information; `cargo clean -p stream-sync-server` cleared the stale build
+    artifact, and the rerun passed
+- `git diff --check`
+  - result: PASS
+  - note: LF/CRLF warnings only
+
+## 2026-05-22
+### Type
 - Codex docs-first bounded lookup threshold policy review
 
 ### Work
