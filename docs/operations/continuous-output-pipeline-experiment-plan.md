@@ -115,6 +115,25 @@ Implementation boundary if code is selected:
 - no lookup policy changes
 - no fallback policy changes
 
+Implementation status:
+
+- 2026-05-28 first code slice implemented.
+- Summary now exposes:
+  - `continuous_decode_completed_correspondence_count`
+  - `continuous_decode_completed_correspondence_latency_ms_avg`
+  - `continuous_decode_completed_correspondence_latency_ms_max`
+  - `continuous_decode_completed_correspondence_latency_slow_count`
+  - `continuous_decode_completed_correspondence_latency_slow_threshold_ms`
+  - `continuous_decode_completed_correspondence_frame_id_min`
+  - `continuous_decode_completed_correspondence_frame_id_max`
+  - `continuous_decode_completed_correspondence_latest_latency_ms`
+- Pending correspondence age remains the unfinished backlog metric. Completed
+  correspondence latency is a separate completed-output metric measured from
+  correspondence queue insertion to reader-emitted output.
+- Behavior is unchanged: no FFmpeg args, pixel format, scale path, feed max,
+  lookup order, threshold default, suppression default, or fallback policy
+  change.
+
 ## stdout/raw BGRA Pipe Throughput Experiment Plan
 Current baseline:
 
@@ -225,7 +244,9 @@ Boundary:
   opt-in reader-buffering experiment is explicitly selected.
 
 ## Next Recommendation
-- First code slice: completed correspondence latency diagnostics.
+- First code slice: completed correspondence latency diagnostics is implemented.
+- Next rerun should compare pending backlog age against completed latency and
+  reader full-frame elapsed.
 - Then compare whether stdout/raw BGRA pipe throughput or FFmpeg scale path
   split should be the first opt-in behavior experiment.
 - Keep threshold branch HOLD / candidate and one-shot suppression as supporting

@@ -306,6 +306,15 @@ Implementation shape:
   - `continuous_decode_output_availability_not_ready_count`
   - `continuous_decode_output_availability_stale_count`
   - `continuous_decode_output_availability_future_count`
+- 2026-05-28 completed correspondence latency diagnostics slice adds:
+  - `continuous_decode_completed_correspondence_count`
+  - `continuous_decode_completed_correspondence_latency_ms_avg`
+  - `continuous_decode_completed_correspondence_latency_ms_max`
+  - `continuous_decode_completed_correspondence_latency_slow_count`
+  - `continuous_decode_completed_correspondence_latency_slow_threshold_ms`
+  - `continuous_decode_completed_correspondence_frame_id_min`
+  - `continuous_decode_completed_correspondence_frame_id_max`
+  - `continuous_decode_completed_correspondence_latest_latency_ms`
 - Held fields:
   - `continuous_decode_input_to_output_lag_frames_avg`
   - `continuous_decode_output_latency_frames_avg`

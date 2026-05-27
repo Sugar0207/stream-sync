@@ -243,6 +243,8 @@ experiment design now lives in
      `docs/operations/continuous-output-pipeline-experiment-plan.md`.
    - Keep it diagnostics-only and use it to compare pending backlog age against
      successful input-to-output latency before changing output behavior.
+   - Implemented on 2026-05-28 with completed count, avg/max/latest latency,
+     slow count/threshold, and completed frame-id min/max summary fields.
 
 3. Raw BGRA pipe throughput / stdout reader buffering experiment
    - Next opt-in output pipeline planning candidate.

@@ -2,6 +2,88 @@
 
 ## 2026-05-28
 ### Type
+- Codex implementation
+
+### Work
+- Implemented completed correspondence latency diagnostics for the slot0 /
+  two-real / opt-in continuous path.
+- Kept behavior unchanged:
+  - no FFmpeg args change
+  - no pixel format or scale path experiment
+  - no default allowed lag change
+  - no suppression default change
+  - no feed max count change
+  - no lookup or fallback policy change
+- Added summary diagnostics:
+  - `continuous_decode_completed_correspondence_count`
+  - `continuous_decode_completed_correspondence_latency_ms_avg`
+  - `continuous_decode_completed_correspondence_latency_ms_max`
+  - `continuous_decode_completed_correspondence_latency_slow_count`
+  - `continuous_decode_completed_correspondence_latency_slow_threshold_ms`
+  - `continuous_decode_completed_correspondence_frame_id_min`
+  - `continuous_decode_completed_correspondence_frame_id_max`
+  - `continuous_decode_completed_correspondence_latest_latency_ms`
+- Pending correspondence age remains the unfinished backlog metric. Completed
+  correspondence latency is measured separately from correspondence queue
+  insertion to reader-emitted output completion.
+- Updated TODO and output pipeline / availability / throughput / lag docs.
+
+### Changed Files
+- `apps/switcher/src/main.rs`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+- `docs/operations/continuous-output-pipeline-experiment-plan.md`
+- `docs/operations/continuous-output-availability-plan.md`
+- `docs/operations/continuous-output-throughput-plan.md`
+- `docs/operations/continuous-output-lag-plan.md`
+
+### Decision
+- Use the existing `correspondence_enqueued_at` metadata timestamp for completed
+  latency, but record it only when an output actually completes.
+- Keep reader full-frame elapsed separate:
+  - reader full-frame elapsed measures the stdout full-frame read itself
+  - completed correspondence latency measures metadata pending-to-output
+    completion
+- Use the same fixed `66ms` slow threshold family for the first completed
+  latency slow counter so it can be compared against reader full-frame slow
+  count in the next rerun.
+- Production Readiness remains FAIL.
+
+### Validation
+- `cargo fmt`
+  - result: PASS
+- `cargo check -p stream-sync-switcher`
+  - result: PASS
+  - note: existing dead-code warnings remain.
+- `cargo test -p stream-sync-switcher switcher_four_view_two_real_handoff_preview_summary_formats_expected_fields -- --nocapture`
+  - result: PASS
+  - note: sandbox runner pipe failed to start the command, so it was rerun with
+    approved escalation; test passed.
+- `cargo test -p stream-sync-switcher continuous_decode_completed_correspondence_latency_tracks_completed_outputs -- --nocapture`
+  - result: PASS
+  - note: sandbox runner pipe failed to start the command, so it was rerun with
+    approved escalation; test passed.
+- `git diff --check`
+  - result: PASS
+  - note: LF/CRLF warnings only.
+
+### TODO Update
+- Completed:
+  - completed correspondence latency diagnostics first code slice.
+- Added:
+  - next human rerun should compare pending correspondence age/count with
+    completed correspondence latency avg/max/latest/slow.
+- Held:
+  - FFmpeg args / pixel-format / scale-path implementation
+  - raw BGRA pipe experiment
+  - default allowed lag change
+  - suppression default change
+  - targetTime-aware lookup / latest decoded fallback
+  - feed max count change
+  - slot1 / 4-client / server-client-protocol / GPU / one-shot fallback removal
+
+## 2026-05-28
+### Type
 - Codex docs-only planning
 
 ### Work

@@ -156,7 +156,9 @@ Last updated: 2026-05-28
   count, and current default FFmpeg path unless an explicit opt-in flag is used.
 - Recommended first code slice from that plan is completed correspondence
   latency diagnostics because it is additive and does not change FFmpeg output
-  shape or reader semantics.
+  shape or reader semantics. This slice is now implemented and adds completed
+  correspondence count, avg/max/latest latency, slow count/threshold, and
+  completed frame-id min/max to the two-real slot0 opt-in continuous summary.
 
 ## Later Opt-In Experiments
 1. Raw BGRA pipe / stdout reader buffering experiment
