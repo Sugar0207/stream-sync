@@ -2,6 +2,78 @@
 
 ## 2026-05-27
 ### Type
+- Codex implementation
+
+### Work
+- Implemented the first continuous output availability diagnostics-only slice
+  for the slot0 / two-real / opt-in continuous path.
+- Added pending correspondence age/range diagnostics by timestamping metadata
+  when it enters the continuous output correspondence queue.
+- Added summary fields for pending correspondence pressure, latest
+  input/selected to output frame gaps, and output availability not-ready /
+  stale / future counts.
+- Kept exact lookup first, bounded lookup second, one-shot fallback third, and
+  left default threshold, suppression default, feed max count, FFmpeg args,
+  pixel format, scale path, slot coverage, server/client/protocol, and GPU
+  paths unchanged.
+- Updated output availability / throughput / lag docs to mark this as the
+  first diagnostics implementation slice and to keep threshold lag8 as HOLD /
+  candidate.
+
+### Changed Files
+- `apps/switcher/src/main.rs`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+- `docs/operations/continuous-output-availability-plan.md`
+- `docs/operations/continuous-output-throughput-plan.md`
+- `docs/operations/continuous-output-lag-plan.md`
+
+### Decision
+- Pending correspondence age is measured from correspondence queue insertion,
+  not from feeder enqueue, so it stays focused on writer-to-reader/output
+  availability pressure.
+- Output availability not-ready / stale / future counters are additive aliases
+  tied to bounded lookup rejection classes; existing bounded lookup fields keep
+  their meaning.
+- Reader full-frame avg/max/slow fields remain the stdout latency source of
+  truth; no reader buffering or FFmpeg behavior was changed.
+- Production Readiness remains FAIL.
+
+### Validation
+- `cargo fmt`
+  - result: PASS
+- `cargo check -p stream-sync-switcher`
+  - result: PASS
+  - note: existing dead-code warnings remain.
+- `cargo test -p stream-sync-switcher switcher_four_view_two_real_handoff_preview_summary_formats_expected_fields -- --nocapture`
+  - result: PASS
+  - note: sandbox runner pipe failed to start the command, so it was rerun with
+    approved escalation; test passed.
+- `cargo test -p stream-sync-switcher continuous_decode_output_availability_counts_bounded_lookup_rejections -- --nocapture`
+  - result: PASS
+  - note: sandbox runner pipe failed to start the command, so it was rerun with
+    approved escalation; test passed.
+- `git diff --check`
+  - result: PASS
+  - note: LF/CRLF warnings only.
+
+### TODO Update
+- Completed:
+  - first output availability diagnostics-only code slice
+- Added:
+  - human rerun should read pending correspondence age/range, latest
+    input/selected to output gaps, availability rejection counts, and reader
+    full-frame latency from the summary.
+- Held:
+  - threshold default change
+  - suppression default change
+  - feed max count change
+  - FFmpeg args / pixel-format / scale-path experiment
+  - latest decoded fallback / targetTime-aware lookup
+  - slot1 / 4-client / GPU / protocol widening
+
+## 2026-05-27
+### Type
 - Codex docs-only planning
 
 ### Work

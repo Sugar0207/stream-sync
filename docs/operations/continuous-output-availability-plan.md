@@ -75,6 +75,33 @@ Last updated: 2026-05-27
   - slot1 continuous
   - 4-client continuous
 
+## Implementation Status
+- 2026-05-27 first diagnostics-only slice implemented for the slot0 /
+  two-real / opt-in continuous path.
+- Summary now exposes:
+  - `continuous_decode_pending_correspondence_count`
+  - `continuous_decode_pending_correspondence_age_ms_max`
+  - `continuous_decode_pending_correspondence_age_ms_avg`
+  - `continuous_decode_pending_correspondence_oldest_frame_id`
+  - `continuous_decode_pending_correspondence_newest_frame_id`
+  - `continuous_decode_latest_input_to_output_frame_gap`
+  - `continuous_decode_latest_selected_to_output_frame_gap`
+  - `continuous_decode_output_availability_not_ready_count`
+  - `continuous_decode_output_availability_stale_count`
+  - `continuous_decode_output_availability_future_count`
+  - existing reader fields:
+    `continuous_decode_reader_full_frame_elapsed_ms_avg`,
+    `continuous_decode_reader_full_frame_elapsed_ms_max`,
+    `continuous_decode_reader_full_frame_slow_count`,
+    `continuous_decode_reader_full_frame_slow_threshold_ms`
+- The new availability counters are additive diagnostics tied to bounded lookup
+  rejection classes. They do not change exact lookup, bounded lookup, one-shot
+  fallback, feed pressure, FFmpeg args, pixel format, scale path, slot coverage,
+  or defaults.
+- Next human rerun should read these fields together with bounded lookup
+  reject counts, output throughput, output lag to selected, pending
+  correspondence min/max, and queue drop counts.
+
 ## Later Opt-In Experiments
 1. Raw BGRA pipe / stdout reader buffering experiment
    - Only after diagnostics show reader-bound behavior.

@@ -230,11 +230,21 @@ Implementation shape:
   - `input_queue_full`
   - `decoded_cache_bound`
   - `unknown`
+- 2026-05-27 availability diagnostics slice adds:
+  - `continuous_decode_pending_correspondence_count`
+  - `continuous_decode_pending_correspondence_age_ms_max`
+  - `continuous_decode_pending_correspondence_age_ms_avg`
+  - `continuous_decode_pending_correspondence_oldest_frame_id`
+  - `continuous_decode_pending_correspondence_newest_frame_id`
+  - `continuous_decode_latest_input_to_output_frame_gap`
+  - `continuous_decode_latest_selected_to_output_frame_gap`
+  - `continuous_decode_output_availability_not_ready_count`
+  - `continuous_decode_output_availability_stale_count`
+  - `continuous_decode_output_availability_future_count`
 - Held fields:
   - `continuous_decode_input_to_output_lag_frames_avg`
   - `continuous_decode_output_latency_frames_avg`
   - `continuous_decode_output_latency_frames_max`
-  - `continuous_decode_correspondence_pending_age_ms`
 - Behavior intentionally unchanged:
   - exact lookup first
   - bounded-lag lookup second

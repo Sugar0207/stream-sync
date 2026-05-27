@@ -188,11 +188,12 @@ and is HOLD / candidate after the reverse-order A/B. The next docs-first
 candidate has moved to output availability / throughput.
 
 1. Pending correspondence / output availability diagnostics
-   - First safe code-slice candidate if implementation resumes.
+   - First safe code-slice candidate; implemented as a diagnostics-only summary
+     slice for slot0 / two-real / opt-in continuous.
    - Keep it diagnostics-only, slot0 / two-real / opt-in continuous only.
-   - Measure output frame age, decoded frame age, selected-vs-decoded distance,
-     pending correspondence age/range, and reader blocking phases before
-     changing policy.
+   - Summary now measures pending correspondence age/range, latest
+     input/selected to output frame gaps, and output availability not-ready /
+     stale / future counts before changing policy.
 
 2. Raw BGRA pipe throughput / stdout reader buffering experiment
    - Pair diagnostics with pending correspondence pressure first.
