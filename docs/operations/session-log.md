@@ -2,6 +2,71 @@
 
 ## 2026-05-27
 ### Type
+- Codex docs-only planning
+
+### Work
+- Kept this step docs-only; no code changes and no Codex runtime rerun.
+- Added `docs/operations/continuous-output-availability-plan.md` as the central
+  docs-first comparison for the next continuous output availability /
+  throughput line.
+- Preserved the reverse-order lag threshold verdict: lag8 is a small PARTIAL
+  PASS and adoption candidate, default `8` promotion is HOLD, and default `5`
+  remains the guard.
+- Moved the next main line away from threshold defaulting toward pending
+  correspondence pressure, stdout reader full-frame latency, raw BGRA pipe
+  throughput, and queue/cache diagnostics.
+- Kept one-shot suppression as strong opt-in isolation evidence, not a default
+  policy and not the next main culprit by itself.
+
+### Changed Files
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+- `docs/operations/continuous-output-availability-plan.md`
+- `docs/operations/continuous-output-throughput-plan.md`
+- `docs/operations/continuous-output-lag-plan.md`
+- `docs/operations/continuous-decoded-lookup-plan.md`
+- `docs/operations/continuous-feed-drain-plan.md`
+- `docs/operations/continuous-stream-decoder-plan.md`
+- `docs/operations/continuous-one-shot-double-load-plan.md`
+
+### Candidate Comparison
+- First safe code-slice candidate: output availability diagnostics for pending
+  correspondence pressure and stdout reader full-frame latency.
+- Secondary diagnostics: continuous output queue/cache policy visibility.
+- Later opt-in experiments: FFmpeg scale-path comparison and raw BGRA
+  pipe/stdout reader buffering behavior changes.
+- Demoted from next main culprit: one-shot competing load, because suppression
+  is already strong isolation evidence but stale/not-ready/output-lag pressure
+  remains.
+
+### Decisions
+- Next code slice, if selected, should stay diagnostics-only, slot0 / two-real /
+  opt-in continuous enabled only.
+- Do not change default allowed lag, suppression default, feed max count,
+  FFmpeg scale/pixel format, targetTime-aware lookup, latest decoded fallback,
+  slot1, 4-client, server/client/protocol, GPU, or one-shot fallback.
+- Production Readiness remains FAIL.
+
+### TODO Update
+- Completed:
+  - docs-first output availability / throughput candidate comparison
+- Added:
+  - `continuous-output-availability-plan.md`
+  - TODO next-items shift from threshold defaulting to output availability
+    diagnostics
+- Held:
+  - code changes
+  - runtime rerun from Codex
+  - default threshold / suppression changes
+  - scale / pixel-format / reader-buffering behavior changes
+
+### Validation
+- `git diff --check`
+  - result: PASS
+  - note: LF/CRLF warnings only
+
+## 2026-05-27
+### Type
 - Codex docs-only evidence reflection
 
 ### Work

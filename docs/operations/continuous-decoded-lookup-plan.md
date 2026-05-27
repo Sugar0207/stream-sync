@@ -439,7 +439,10 @@ Interpretation:
 - ON slot0 suppression had throughput `26.814fps`, competing one-shot `13` attempts / `942ms`, render continuous use `11`, and bounded lookup hits `11`.
 - ON suppression reasons still show stale `228` and continuous-not-ready `27`.
 - One-shot double-load is now a strong contributor candidate, but suppression stays opt-in evidence rather than the default policy.
-- The next docs-first gate returns to bounded lookup allowed-lag threshold / policy review. Any threshold experiment must stay narrow and opt-in; targetTime-aware lookup and latest decoded fallback remain held.
+- The bounded lookup allowed-lag threshold / policy review has now produced a
+  held lag8 candidate, not a default promotion. The next docs-first gate moves
+  to output availability / throughput; targetTime-aware lookup and latest
+  decoded fallback remain held.
 
 ## matched A/B threshold policy review
 Evidence premise:
@@ -507,6 +510,20 @@ Comparison rules:
 - treat large client FPS differences as noisy before attributing threshold effects
 - read accepted bounded-hit lag together with stale reject count; a hit increase is
   not a success if it hides an unsafe stale-frame display policy
+
+Reverse-order threshold verdict:
+
+- latest rerun:
+  - `S:\stream-sync\manual-logs\two-client-lag-reverse-ab-rerun-20260527-164258`
+- lag8 is a small PARTIAL PASS and remains an adoption candidate.
+- Default `8` promotion is HOLD; default `5` remains the current guard.
+- The branch should be kept as candidate evidence, not expanded into dynamic
+  thresholding, targetTime-aware lookup, or latest-decoded fallback yet.
+- The next main line moves to output availability / throughput because allowed
+  lag alone does not solve not-ready rejects, pending correspondence, stdout
+  reader latency, or continuous output throughput.
+- Candidate comparison for that next line now lives in
+  `docs/operations/continuous-output-availability-plan.md`.
 
 Held:
 

@@ -23,6 +23,7 @@
 
 ## 現在位置
 - latest reverse-order lag threshold A/B rerun is `manual-logs/two-client-lag-reverse-ab-rerun-20260527-164258` as the current threshold evidence. lag8 vs lag5 is VALID, lag8 is a small PARTIAL PASS and held adoption candidate, and default `8` promotion is HOLD while default `5` remains the current guard
+- next continuous-stream decoder main line is output availability / throughput rather than another default threshold move. The docs-first candidate comparison now lives in `docs/operations/continuous-output-availability-plan.md`; pending correspondence pressure and stdout reader full-frame latency are the first safe diagnostics direction, while FFmpeg scale-path and reader-buffering behavior changes remain later opt-in experiments
 - latest good-ish same-PC `2`-client rerun は `manual-logs/two-client-render-rerun-20260518-124418` として扱う。two-real preview loop 限定 scaled one-shot decode output は runtime PASS 継続で、`one_shot_decode_output_width=640`、`one_shot_decode_output_height=360`、`one_shot_decode_expected_output_bytes_per_frame=921600` を維持した
 - persistent decoder config-disabled toggle も PASS 継続だった。request/response persistent decoder は過去に `persistent_decode_stdout_read_timeout` で runtime FAIL しているため、引き続き凍結候補として扱い、continuous-stream decoder とは別物として整理する
 - latest good-ish rerun の switcher は `effective_render_fps_after_first_render=17.247` で、30fps には未達だった。`decode_attempt_count=26`、`one_shot_decode_elapsed_ms=1893`、`one_shot_decode_first_byte_slow_count=0`、`one_shot_decode_output_read_slow_count=0`、`one_shot_decode_input_write_outlier_count=0` なので、decode attempt frequency / slow first-byte / slow output-read / input-write outlier のいずれか 1 つを主犯とは断定しない
@@ -1091,7 +1092,8 @@ continuous runtime first slice の blocker:
 - actual dashboard UI rendering remains unimplemented.
 
 ## Next Items
-1. keep `continuous_decode_bounded_lookup_allowed_lag_frames=5` as the default guard and treat lag8 as a small PARTIAL PASS / adoption candidate, not a default promotion yet
-2. if another threshold rerun is needed, preserve the reverse-order comparison shape and continue reading `continuous_decode_bounded_lookup_allowed_lag_frames` / accepted hit lag / stale-not-ready rejects / continuous render use / render FPS / placeholder churn / suppression counters together
-3. requested より未来の decoded frame、unbounded latest decoded fallback、suppression default 化、dynamic policy default 化には進まず、BGRA / scale / stdout reader experiment は lookup threshold evidence 後に再評価する
-4. Production Readiness FAIL を維持し、targetTime-aware lookup 実装、slot1 continuous 化、4-client 化、request/response persistent decoder 復活、GPU decode、one-shot fallback 削除、feed max count 変更には広げない
+1. keep `continuous_decode_bounded_lookup_allowed_lag_frames=5` as the default guard and treat lag8 as a small PARTIAL PASS / adoption candidate, not a default promotion
+2. docs-first next line is continuous output availability / throughput: pending correspondence pressure, stdout reader full-frame latency, selected-vs-decoded age/distance, and queue/cache policy diagnostics
+3. if code resumes, keep the first slice diagnostics-only, slot0 / two-real / opt-in continuous enabled only, with no default threshold, suppression, feed max, FFmpeg scale/pixel-format, slot1, 4-client, or protocol changes
+4. keep FFmpeg scale-path comparison and raw BGRA pipe / stdout reader buffering behavior changes as later opt-in experiments after availability diagnostics; do not adopt source-size raw output by default
+5. Production Readiness FAIL を維持し、targetTime-aware lookup 実装、latest decoded fallback、unbounded stale fallback、slot1 continuous 化、4-client 化、request/response persistent decoder 復活、GPU decode、one-shot fallback 削除には広げない

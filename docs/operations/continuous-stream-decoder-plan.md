@@ -1011,7 +1011,9 @@ latest output-throughput diagnostics rerun update:
    - render FPS `17.401`
    - suppression reasons `continuous_not_ready:27|stale:228|future:0|unknown:0`
 6. one-shot double-load is now a strong throughput contributor candidate, but suppression remains opt-in evidence rather than a default policy change.
-7. The next threshold experiment, if selected, follows the bounded lookup allowed-lag threshold / stale-guard review in `docs/operations/continuous-decoded-lookup-plan.md` and stays narrow and opt-in.
+7. The bounded lookup allowed-lag threshold branch now stays as held candidate
+   evidence in `docs/operations/continuous-decoded-lookup-plan.md`; the next
+   main line moves to output availability / throughput diagnostics.
 8. The request/response persistent decoder remains frozen. This rerun does not justify reviving it.
 9. Production Readiness remains FAIL.
 
@@ -1043,6 +1045,23 @@ latest reverse-order lag threshold update:
    - `12.342` vs `12.159`
 5. default `8` promotion is HOLD:
    - keep `5` as the current guard for now
+6. Production Readiness remains FAIL.
+
+latest output-availability next-line update:
+
+1. The threshold branch is held as candidate evidence rather than promoted to a
+   default policy.
+2. The next main line is continuous output availability / throughput:
+   - pending correspondence pressure
+   - stdout reader full-frame latency
+   - raw BGRA pipe throughput
+   - decoded queue/cache policy diagnostics
+3. The first safe code slice, if selected, should be diagnostics-only and stay
+   slot0 / two-real / opt-in continuous.
+4. FFmpeg scale-path or reader-buffering behavior changes should remain later
+   opt-in experiments after availability diagnostics identify a likely bottleneck.
+5. Candidate comparison now lives in
+   `docs/operations/continuous-output-availability-plan.md`.
 6. Production Readiness remains FAIL.
 
 ## out of scope

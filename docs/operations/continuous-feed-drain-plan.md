@@ -349,8 +349,9 @@ Lag evidence:
 The latest evidence says the feeder caught up to the selected side, but decoded
 output still trails the requested render frame by around `40` frame ids. Exact
 selected-frame lookup is therefore too strict for the current decoded queue lag.
-The next docs-first candidate is targetTime-aware / bounded-lag decoded queue
-lookup, not more feed widening.
+The current next docs-first candidate is output availability / throughput
+diagnostics, not more feed widening. TargetTime-aware / bounded-lag lookup
+remains held until output is closer to selected/source cadence.
 
 ## bounded lookup runtime evidence
 latest rerun:
@@ -433,10 +434,22 @@ Feed/drain interpretation:
 - The feeder is no longer the primary blocker for slot0/two-real/opt-in continuous.
 - Feed max count should remain unchanged after the matched suppression A/B.
 - One-shot double-load is now a strong throughput contributor candidate for this slice.
-- Stale and not-ready pressure remains ON, so the next docs-first question moves to bounded lookup threshold / policy rather than more feed pressure.
+- Stale and not-ready pressure remains ON. After the threshold branch produced
+  a held lag8 candidate, the next docs-first question moves to output
+  availability / throughput rather than more feed pressure.
 - Detailed throughput analysis is tracked in `docs/operations/continuous-output-throughput-plan.md`; matched A/B evidence is tracked in `docs/operations/continuous-one-shot-double-load-plan.md`.
 - Feed max count remains held because output throughput is already below source cadence; increasing feed pressure before output catches up could increase pending correspondence.
 - Threshold tuning, targetTime-aware lookup, latest decoded fallback, slot1 continuous, 4-client rollout, and one-shot fallback removal remain out of scope.
+
+## output availability next-line update
+- Reverse-order threshold A/B evidence keeps lag8 as a small PARTIAL PASS /
+  adoption candidate, but default `8` promotion is HOLD.
+- The next main line is output availability / throughput rather than more feed
+  pressure or default threshold widening.
+- Feed max count remains held until pending correspondence pressure, stdout
+  reader full-frame latency, and output frame age are better separated.
+- Candidate comparison now lives in
+  `docs/operations/continuous-output-availability-plan.md`.
 
 ## readiness
 - Production Readiness remains FAIL

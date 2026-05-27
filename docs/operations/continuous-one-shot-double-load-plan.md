@@ -186,9 +186,13 @@ Interpretation:
 - Stale and not-ready suppression reasons remain high, so suppression is not a
   complete solution.
 - Next code candidate is not suppression defaulting. The bounded lookup
-  allowed-lag threshold / stale-guard review now lives in
-  `docs/operations/continuous-decoded-lookup-plan.md`; keep any threshold
-  experiment narrow and opt-in.
+  allowed-lag threshold branch now lives in
+  `docs/operations/continuous-decoded-lookup-plan.md`; lag8 is HOLD /
+  candidate after the reverse-order A/B, not a default promotion.
+- The next main line moves to output availability / throughput diagnostics:
+  pending correspondence pressure, stdout reader full-frame latency, raw BGRA
+  pipe throughput, and queue/cache policy visibility. Candidate comparison now
+  lives in `docs/operations/continuous-output-availability-plan.md`.
 
 ## Held
 - allowed lag threshold changes

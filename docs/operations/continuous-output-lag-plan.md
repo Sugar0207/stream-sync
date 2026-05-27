@@ -6,9 +6,11 @@ Last updated: 2026-05-27
 
 ## Purpose
 - Analyze why slot0 continuous decoded output still trails the requested render frame after bounded feed helper and bounded-lag lookup wiring both reached runtime evidence.
-- Keep the implementation slice diagnostics-only.
+- Keep the next implementation slice diagnostics-first and opt-in.
 - Do not change allowed lag threshold, feed max count, lookup policy, FFmpeg defaults, server/client/protocol, slot1, or 4-client rollout.
 - Define and track the smallest diagnostics slice for continuous output lag / pending correspondence / stdout read latency / decoded queue-drop policy.
+- After the reverse-order threshold A/B, treat lag8 as HOLD / candidate and
+  move the next main line to output availability / throughput.
 
 ## Latest Evidence
 - latest reverse-order lag threshold A/B rerun:
@@ -127,19 +129,22 @@ Current continuous runtime has three relevant queues/counters:
 - Suppression ON strongly reduced competing one-shot work and improved output throughput, continuous render consumption, bounded lookup adoption, and render FPS.
 - One-shot double-load is a strong contributor candidate, but suppression remains opt-in isolation evidence rather than a default policy change.
 - ON evidence still suppresses stale `228` and continuous-not-ready `27` cases.
-- The bounded lookup allowed-lag threshold / stale-guard review is now recorded in `docs/operations/continuous-decoded-lookup-plan.md`, with any threshold tuning kept narrow and opt-in.
+- The bounded lookup allowed-lag threshold / stale-guard review is now recorded in `docs/operations/continuous-decoded-lookup-plan.md`; lag8 is a held adoption candidate, and default `8` promotion remains HOLD.
 - Feed max count should remain unchanged for now. Feeding faster while output throughput is already below source cadence may increase correspondence backlog instead of improving render consumption.
 - One-shot fallback remains the safe default path. Any suppression must stay slot0/two-real/opt-in and preserve default behavior.
 
 ## Next Design Candidates
 - Next code candidate if selected after docs review:
-  - use the lookup-plan opt-in bounded lookup allowed-lag threshold experiment shape after the matched suppression A/B
+  - output availability diagnostics for pending correspondence pressure and
+    stdout reader full-frame latency
+  - keep it slot0 / two-real / opt-in continuous only
   - keep sync-first stale-frame safety explicit
-  - keep any threshold experiment behind a narrow opt-in flag if implemented
-- Held throughput experiments:
-  - continuous decoder output pixel format comparison
+- Candidate comparison now lives in
+  `docs/operations/continuous-output-availability-plan.md`.
+- Held or later throughput experiments:
   - FFmpeg scale-path comparison
-  - stdout reader buffering change
+  - raw BGRA pipe / stdout reader buffering behavior change
+  - continuous output queue/cache policy changes
 - Held as risky default behavior:
   - default threshold widening
   - targetTime-aware decoded queue lookup implementation
@@ -156,7 +161,9 @@ Current continuous runtime has three relevant queues/counters:
   - stdout full-frame read latency for `921600` byte frames
   - reader buffering / per-frame allocation and materialization
   - continuous decoder and one-shot fallback double-load
-- The matched A/B moves the next docs review to bounded lookup threshold / policy. Do not turn that review into an unguarded stale-frame path or a default suppression change.
+- The reverse-order threshold A/B keeps lag8 as a held candidate and moves the
+  next docs review to output availability / throughput. Do not turn that review
+  into an unguarded stale-frame path or a default suppression change.
 
 ## Minimal Next Diagnostics
 First priority:

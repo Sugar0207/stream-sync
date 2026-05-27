@@ -10,6 +10,9 @@ Last updated: 2026-05-27
   lookup threshold/policy, or feed max count. Threshold review now lives in the
   decoded lookup plan.
 - Use the validated throughput diagnostics to separate stdout full-frame read latency, raw BGRA output volume, FFmpeg scale/output path cost, reader buffering, and one-shot fallback double-load before choosing the next code slice.
+- After the reverse-order threshold A/B, move the next main line to output
+  availability / throughput. The central candidate comparison now lives in
+  `docs/operations/continuous-output-availability-plan.md`.
 
 ## Latest Evidence
 - latest reverse-order lag threshold A/B rerun:
@@ -179,33 +182,39 @@ Diagnostics interpretation goal:
 
 ## Opt-In Experiment Candidates
 The matched A/B evidence for one-shot double-load isolation now lives in
-`docs/operations/continuous-one-shot-double-load-plan.md`. The next docs-first
-candidate has moved to bounded lookup allowed-lag threshold / policy review.
+`docs/operations/continuous-one-shot-double-load-plan.md`. The bounded lookup
+threshold branch now lives in `docs/operations/continuous-decoded-lookup-plan.md`
+and is HOLD / candidate after the reverse-order A/B. The next docs-first
+candidate has moved to output availability / throughput.
 
-1. One-shot fallback double-load isolation
-   - Suppress slot0 one-shot fallback only behind a two-real / opt-in continuous
-     experiment while the slot0 continuous runtime is running.
-   - Keep slot1 one-shot behavior unchanged.
-   - Compare previous-frame hold, placeholder, and no-updated-frame render safety
-     before choosing the experiment behavior.
-   - Keep production default unchanged.
+1. Pending correspondence / output availability diagnostics
+   - First safe code-slice candidate if implementation resumes.
+   - Keep it diagnostics-only, slot0 / two-real / opt-in continuous only.
+   - Measure output frame age, decoded frame age, selected-vs-decoded distance,
+     pending correspondence age/range, and reader blocking phases before
+     changing policy.
 
-2. Continuous output pixel format comparison
-   - Hold after the double-load isolation design.
-   - Current render/composition path expects BGRA-like decoded frames, so non-BGRA output would need conversion somewhere else.
-   - Default must not change until compatibility and total pipeline cost are measured.
-
-3. Scale path comparison
-   - Hold after double-load isolation design.
-   - Raw 720p BGRA would be much larger than `921600` bytes/frame, so moving scale work is not automatically cheaper.
-
-4. Output reader buffering experiment
-   - Compare current full-frame read loop with a small buffering/read helper change only if diagnostics show read-bound behavior.
+2. Raw BGRA pipe throughput / stdout reader buffering experiment
+   - Pair diagnostics with pending correspondence pressure first.
    - Preserve full-frame correctness; do not emit partial raw frames.
+   - Any reader buffering behavior change remains opt-in and summarized.
 
-5. Additional FFmpeg args
-   - Keep defaults unchanged.
-   - Any new FFmpeg args should be opt-in and reported in summary diagnostics.
+3. Queue/cache policy diagnostics
+   - Keep decoded cache bound `30` unchanged.
+   - Diagnose whether cache bound drops are a symptom of output lag or are
+     hiding otherwise safe decoded frames.
+
+4. FFmpeg scale path comparison
+   - Later opt-in experiment, not the immediate code slice.
+   - Current path stays `scale=640:360:flags=neighbor` plus raw BGRA.
+   - Source-size raw output may be heavier than the current `921600` bytes/frame
+     path, so do not adopt it without total pipeline evidence.
+
+5. One-shot fallback double-load isolation
+   - Already has strong opt-in evidence from suppression ON.
+   - Demote from next main culprit because suppression reduced load but stale /
+     not-ready and output lag remain.
+   - Keep production default unchanged.
 
 ## Design Decision
 - Matched A/B suppression comparison is VALID寄り on `20260522-103943`.
@@ -217,12 +226,14 @@ candidate has moved to bounded lookup allowed-lag threshold / policy review.
 - The reverse-order lag threshold A/B rerun stays consistent with that reading:
   lag8 is a small PARTIAL PASS, but the default `8` change remains HOLD because
   render FPS is near-tied and not-ready rejects still remain.
-- Stale/not-ready suppression reasons remain high ON, so the next code candidate
-  moves to the bounded lookup allowed-lag threshold / stale-guard review now
-  documented in `docs/operations/continuous-decoded-lookup-plan.md`.
-- Any threshold experiment must stay narrow and opt-in.
-- Pixel-format, scale-path, reader-buffering, and additional FFmpeg args move
-  back to later opt-in experiment candidates.
+- The threshold branch stays as a held adoption candidate, not the next default
+  move.
+- Stale/not-ready suppression reasons and reverse-order not-ready rejects remain
+  visible, so the next code candidate moves to output availability diagnostics:
+  pending correspondence pressure, stdout reader full-frame latency, raw BGRA
+  pipe throughput, and queue/cache policy diagnostics.
+- Pixel-format, scale-path, reader-buffering, and additional FFmpeg args remain
+  opt-in experiment candidates after diagnostics identify a likely bottleneck.
 - TargetTime-aware lookup and latest decoded fallback are held because accepting `73` to `74` frames of lag would violate sync-first behavior.
 - Feed max count remains unchanged because output throughput is already below source cadence.
 - Production Readiness remains FAIL.
@@ -243,8 +254,9 @@ candidate has moved to bounded lookup allowed-lag threshold / policy review.
   - ON throughput `26.814fps`, competing one-shot `13` attempts / `942ms`,
     bounded lookup/render use `11`
   - ON suppression count `255`
-- Keep suppression as an opt-in isolation path. The next threshold experiment, if
-  selected, follows the lookup-plan opt-in scope rather than changing defaults.
+- Keep suppression as an opt-in isolation path. The threshold branch remains a
+  held candidate in the lookup plan; the next main line follows the output
+  availability plan rather than changing defaults.
 
 ## Out Of Scope
 - `continuous_decode_bounded_lookup_allowed_lag_frames` changes
