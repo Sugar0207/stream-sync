@@ -45,6 +45,8 @@ Last updated: 2026-05-28
     - default BGRA remains the safer runtime path
     - next throughput candidate should examine conversion/direct-render path
       and FFmpeg scale path split before any default change
+    - detailed conversion/direct-render planning now lives in
+      `docs/operations/continuous-pixel-conversion-plan.md`
 
 - latest completed correspondence rerun:
   - `S:\stream-sync\manual-logs\two-client-completed-correspondence-rerun-20260528-010504`
@@ -327,6 +329,16 @@ experiment design now lives in
      throughput.
    - Current path stays `scale=640:360:flags=neighbor` plus raw BGRA by
      default.
+   - After the `scaled-bgr24` A/B, do not combine scale split with direct
+     render or unsafe conversion in the first follow-up slice.
+
+5. BGR24 conversion optimization / direct render review
+   - New first docs-first candidate after the output pipeline A/B.
+   - Start with buffer reuse or safe scalar conversion if code is selected.
+   - Direct BGR24 render path is wider because renderer-facing buffers,
+     composition, GDI, and OBS-friendly output are BGRA-oriented.
+   - Source of truth:
+     `docs/operations/continuous-pixel-conversion-plan.md`.
    - Source-size raw output may be heavier than the current `921600`
      bytes/frame path, so do not adopt it without total pipeline evidence.
 

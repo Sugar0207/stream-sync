@@ -38,6 +38,8 @@ Last updated: 2026-05-28
     - keep default BGRA
     - hold / fail `scaled-bgr24` adoption
     - Production Readiness remains FAIL
+    - detailed conversion/direct-render review now lives in
+      `docs/operations/continuous-pixel-conversion-plan.md`
 - latest completed correspondence rerun:
   - `S:\stream-sync\manual-logs\two-client-completed-correspondence-rerun-20260528-010504`
   - rerun is VALID:
@@ -206,7 +208,8 @@ Last updated: 2026-05-28
   - verdict: wiring and reader improvement PASS, raw pipe bytes PARTIAL PASS,
     but adoption HOLD / FAIL due to BGR24-to-BGRA conversion cost
 - Next candidate order:
-  1. BGR24 conversion optimization / direct render path docs-first review
+  1. BGR24 conversion optimization docs-first review, then a narrow opt-in
+     conversion optimization slice if selected
   2. FFmpeg scale path split opt-in experiment docs-first review
   3. reader blocking phase diagnostics
 - These are not default behavior changes. They must keep full-frame correctness,

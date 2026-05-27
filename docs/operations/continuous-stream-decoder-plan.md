@@ -1178,9 +1178,11 @@ latest output pipeline A/B rerun verdict:
      large
    - default BGRA remains the safer runtime path
    - scaled-bgr24 adoption is HOLD / FAIL
-   - next candidates are BGR24 conversion optimization / direct render path
-     docs-first review, FFmpeg scale path split, and reader blocking phase
-     diagnostics
+   - next candidates are BGR24 conversion optimization docs-first review,
+     direct BGR24 render path impact review, FFmpeg scale path split, and
+     reader blocking phase diagnostics
+   - detailed conversion/direct-render review now lives in
+     `docs/operations/continuous-pixel-conversion-plan.md`
 6. Production Readiness remains FAIL.
 
 ## out of scope

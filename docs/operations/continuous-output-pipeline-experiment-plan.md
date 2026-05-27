@@ -84,6 +84,8 @@ Last updated: 2026-05-28
   - `scaled-bgr24` remains a useful diagnostic but is not an adoption candidate
     yet.
   - Default BGRA remains the safer runtime path.
+  - Detailed conversion/direct-render follow-up now lives in
+    `docs/operations/continuous-pixel-conversion-plan.md`.
 
 - latest completed correspondence rerun:
   - `S:\stream-sync\manual-logs\two-client-completed-correspondence-rerun-20260528-010504`
@@ -344,6 +346,17 @@ Runtime verdict:
   2. FFmpeg scale path split
   3. reader blocking phase diagnostics
 
+Conversion follow-up:
+
+- Source of truth:
+  `docs/operations/continuous-pixel-conversion-plan.md`.
+- Preferred next code slice, if selected, is not direct BGR24 render. Start with
+  opt-in conversion optimization:
+  - buffer reuse, or
+  - safe scalar conversion with pre-sized output
+- Direct BGR24 render remains docs-first only until the BGRA-oriented decoded
+  frame, composition, GDI, and OBS-friendly output contracts are reviewed.
+
 ## FFmpeg Scale Path Split Experiment Plan
 Current baseline:
 
@@ -417,7 +430,8 @@ Boundary:
 - Latest output pipeline A/B shows raw stdout bytes are meaningful but the
   current BGR24-to-BGRA conversion makes `scaled-bgr24` worse end to end.
 - Next candidate order:
-  1. BGR24 conversion optimization / direct render path docs-first review
+  1. BGR24 conversion optimization docs-first review, then a narrow opt-in
+     conversion optimization slice if selected
   2. FFmpeg scale path split opt-in experiment docs-first review
   3. reader blocking phase diagnostics
 - Keep one-shot suppression as strong contributor evidence, but not the current

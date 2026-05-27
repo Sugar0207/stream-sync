@@ -36,6 +36,8 @@ Last updated: 2026-05-28
     - raw pipe bytes hypothesis is PARTIAL PASS
     - BGR24-to-BGRA conversion is a new strong bottleneck candidate
     - keep default BGRA; hold / fail `scaled-bgr24` adoption
+    - detailed conversion/direct-render review now lives in
+      `docs/operations/continuous-pixel-conversion-plan.md`
 - latest completed correspondence rerun:
   - `S:\stream-sync\manual-logs\two-client-completed-correspondence-rerun-20260528-010504`
   - validity is PASS:
@@ -265,7 +267,9 @@ Current continuous runtime has three relevant queues/counters:
 ## Next Design Candidates
 - Next code candidate if selected after docs review should move from the
   `scaled-bgr24` A/B result to:
-  - BGR24 conversion optimization / direct render path docs-first review
+  - BGR24 conversion optimization docs-first review, then a narrow opt-in
+    conversion optimization slice if selected
+  - direct BGR24 render path docs-first impact review only
   - FFmpeg scale path split experiment
   - reader blocking phase diagnostics
   - keep it slot0 / two-real / opt-in continuous only

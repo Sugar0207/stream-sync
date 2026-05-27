@@ -2,6 +2,66 @@
 
 ## 2026-05-28
 ### Type
+- Codex docs-first planning
+
+### Work
+- Added `docs/operations/continuous-pixel-conversion-plan.md` as the source of
+  truth for the next BGR24 conversion / direct render / scale split review.
+- Kept this step docs-only; no code changes and no Codex runtime rerun.
+- Preserved the latest output pipeline A/B verdict:
+  - `scaled-bgr24` wiring / args / expected bytes / reader improvement: PASS
+  - raw pipe bytes hypothesis: PARTIAL PASS
+  - BGR24-to-BGRA conversion cost: strong bottleneck candidate
+  - `scaled-bgr24` adoption: HOLD / FAIL
+  - default BGRA remains the safer runtime path
+  - Production Readiness remains FAIL
+- Compared follow-up candidates:
+  - BGR24 conversion buffer reuse
+  - safe scalar conversion optimization
+  - unsafe / SIMD conversion as later candidate only
+  - direct BGR24 render path as wider impact review only
+  - FFmpeg scale path split as the next opt-in experiment family
+  - reader blocking phase diagnostics as lower priority after conversion/scale
+
+### Changed Files
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+- `docs/operations/continuous-pixel-conversion-plan.md`
+- `docs/operations/continuous-output-pipeline-experiment-plan.md`
+- `docs/operations/continuous-output-availability-plan.md`
+- `docs/operations/continuous-output-throughput-plan.md`
+- `docs/operations/continuous-output-lag-plan.md`
+- `docs/operations/continuous-stream-decoder-plan.md`
+
+### Decision
+- If code resumes, the safest first slice is opt-in conversion optimization for
+  `scaled-bgr24`, preferably buffer reuse or safe scalar conversion.
+- Direct BGR24 render path is not the first code slice because decoded frame,
+  composition, GDI, and OBS-friendly output contracts are BGRA-oriented.
+- FFmpeg scale path split remains opt-in and must not default to source-size
+  raw output.
+
+### Validation
+- `git diff --check`
+  - result: PASS
+  - note: LF/CRLF warnings only.
+
+### TODO Update
+- Completed:
+  - docs-first conversion/direct-render/scale-split candidate review.
+- Added:
+  - new `continuous-pixel-conversion-plan.md` source of truth.
+  - BGR24 conversion optimization as the next narrow opt-in candidate.
+- Held:
+  - code changes
+  - direct BGR24 render path implementation
+  - FFmpeg scale path implementation
+  - reader blocking phase diagnostics implementation
+  - scaled-bgr24 default promotion
+  - threshold / suppression / fallback / feed / slot1 / 4-client / GPU changes
+
+## 2026-05-28
+### Type
 - Codex docs-only evidence reflection
 
 ### Work
