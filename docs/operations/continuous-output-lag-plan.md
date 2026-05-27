@@ -2,7 +2,7 @@
 
 # Continuous Output Lag Plan
 
-Last updated: 2026-05-22
+Last updated: 2026-05-27
 
 ## Purpose
 - Analyze why slot0 continuous decoded output still trails the requested render frame after bounded feed helper and bounded-lag lookup wiring both reached runtime evidence.
@@ -11,6 +11,12 @@ Last updated: 2026-05-22
 - Define and track the smallest diagnostics slice for continuous output lag / pending correspondence / stdout read latency / decoded queue-drop policy.
 
 ## Latest Evidence
+- latest reverse-order lag threshold A/B rerun:
+  - `S:\stream-sync\manual-logs\two-client-lag-reverse-ab-rerun-20260527-164258`
+  - comparison is VALID
+  - lag8 improves output lag, throughput, stale rejection, and reader average latency versus lag5
+  - lag5 keeps a slight render FPS edge and slightly fewer not-ready rejects
+  - default `8` promotion is HOLD; keep default `5` unchanged
 - latest matched rerun:
   - `S:\stream-sync\manual-logs\two-client-ab-rerun-20260522-103943`
 - PASS:

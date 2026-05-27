@@ -2,7 +2,7 @@
 
 # StreamSync TODO
 
-最終更新: 2026-05-22
+最終更新: 2026-05-27
 
 このファイルは「現在どこまで終わっていて、次に何をやるか」を確認するための TODO です。  
 時系列の作業履歴、判断理由、各回の作業メモは `docs/operations/session-log.md` を正とします。
@@ -22,6 +22,7 @@
 ---
 
 ## 現在位置
+- latest reverse-order lag threshold A/B rerun is `manual-logs/two-client-lag-reverse-ab-rerun-20260527-164258` as the current threshold evidence. lag8 vs lag5 is VALID, lag8 is a small PARTIAL PASS and held adoption candidate, and default `8` promotion is HOLD while default `5` remains the current guard
 - latest good-ish same-PC `2`-client rerun は `manual-logs/two-client-render-rerun-20260518-124418` として扱う。two-real preview loop 限定 scaled one-shot decode output は runtime PASS 継続で、`one_shot_decode_output_width=640`、`one_shot_decode_output_height=360`、`one_shot_decode_expected_output_bytes_per_frame=921600` を維持した
 - persistent decoder config-disabled toggle も PASS 継続だった。request/response persistent decoder は過去に `persistent_decode_stdout_read_timeout` で runtime FAIL しているため、引き続き凍結候補として扱い、continuous-stream decoder とは別物として整理する
 - latest good-ish rerun の switcher は `effective_render_fps_after_first_render=17.247` で、30fps には未達だった。`decode_attempt_count=26`、`one_shot_decode_elapsed_ms=1893`、`one_shot_decode_first_byte_slow_count=0`、`one_shot_decode_output_read_slow_count=0`、`one_shot_decode_input_write_outlier_count=0` なので、decode attempt frequency / slow first-byte / slow output-read / input-write outlier のいずれか 1 つを主犯とは断定しない
@@ -1076,13 +1077,13 @@ continuous runtime first slice の blocker:
 - server->switcher Windows named-pipe one-request / one-response runtime slice is now implemented: `apps/server` can create one pipe instance, read one framed request, run the queue-read handoff handler, and write one framed response; `apps/switcher` can build one request, connect, write, read one framed response, and map IO/decode failure into explicit handoff errors. Local Windows smoke tests are isolated with `#[ignore]`, while default handoff validation uses focused non-I/O mapping tests.
 - switcher now has a thin named-pipe-backed `SwitcherQueuedFrameHandoff` wrapper with a minimal request-id policy: callers may supply an explicit request id per read, or the wrapper may consume a caller-owned monotonic `u64` counter. Focused fake-runtime tests cover request-id preservation/generation and result propagation for `FrameRead`, `NoFrameAvailable`, explicit handoff errors, and local runtime encode failures staying explicit instead of becoming `NoFrame`.
 - named-pipe one-shot manual CLI is now implemented. `--receive-auth-video-queue-and-serve-handoff-once` reuses the queue-owning server launcher and then serves one named-pipe handoff request, while `--read-queued-frame-handoff-once` issues one explicit switcher pull/read over named pipe. A localhost one-shot handoff run is now recorded as successful when using the plain pipe name `streamsync-handoff-dev`; the same manual session observed `SourceUnavailable` when the full `\\.\pipe\streamsync-handoff-dev` path was passed directly to the CLI.
-- latest matched suppression OFF/ON rerun is `S:\stream-sync\manual-logs\two-client-ab-rerun-20260522-103943`. OFF and ON used the same `C:\streamsync-target\stream-sync-rerun\debug\*.exe`; source client fps mismatch is not noisy enough to reject the comparison, so the A/B evidence is VALID寄り
+- latest matched suppression OFF/ON rerun is `S:\stream-sync\manual-logs\two-client-ab-rerun-20260522-103943`. OFF and ON used the same `C:\streamsync-target\stream-sync-rerun\debug\*.exe`; source client fps mismatch is not noisy enough to reject the comparison, so the A/B evidence is VALID寄り. This remains separate opt-in evidence, but the current threshold verdict now comes from the reverse-order lag A/B rerun
 - OFF without suppression kept slot0 one-shot load high: `continuous_decode_output_throughput_fps=20.129`, competing one-shot `37` attempts / `5401ms`, continuous render use `0`, bounded lookup hits `0`, and `effective_render_fps_after_first_render=11.594`
 - ON with suppression improved the same comparison slice: suppression count `255`, suppression reasons `continuous_not_ready:27|stale:228|future:0|unknown:0`, render safety `decode_deferred_placeholder:255|unknown:0`, `continuous_decode_output_throughput_fps=26.814`, competing one-shot `13` attempts / `942ms`, continuous render use `11`, bounded lookup hits `11`, and render FPS `17.401`
 - one-shot double-load is now a strong throughput contributor candidate in the slot0 / two-real / opt-in continuous slice, but suppression is still isolation evidence rather than a default policy decision
 - stale and not-ready pressure remain visible even in ON evidence: suppression reasons still contain stale `228` and continuous-not-ready `27`; suppression alone is not a complete render-consumption solution
-- bounded lookup threshold / stale guard docs-first review now lives in `docs/operations/continuous-decoded-lookup-plan.md`. Default allowed lag stays fixed at `5`; first experiment flag `--continuous-decoder-bounded-lookup-allowed-lag-frames <N>` is now wired for the two-real slot0 opt-in continuous path, with requested-future rejection and unbounded latest-decoded fallback still held
-- first threshold human comparison is same-build suppression-ON evidence for slot0 / two-real / opt-in continuous only: omitted/default-equivalent `5` vs explicit `8` first, then `10` only if `8` remains narrow. Compare bounded hit lag, stale/not-ready rejects, continuous render use, render FPS, placeholder churn, and suppression counters
+- bounded lookup threshold / stale guard docs-first review now lives in `docs/operations/continuous-decoded-lookup-plan.md`. Default allowed lag stays fixed at `5`; first experiment flag `--continuous-decoder-bounded-lookup-allowed-lag-frames <N>` is now wired for the two-real slot0 opt-in continuous path, with requested-future rejection and unbounded latest-decoded fallback still held. The latest reverse-order lag A/B says lag8 is a small PARTIAL PASS, but default `8` promotion is HOLD
+- first threshold human comparison is the reverse-order lag A/B evidence for slot0 / two-real / opt-in continuous only: `8` vs `5` is VALID, with lag8 improving bounded hit, output lag, throughput, and reader average latency, while lag5 keeps a tiny render-FPS edge and slightly fewer not-ready rejects. Compare bounded hit lag, stale/not-ready rejects, continuous render use, render FPS, placeholder churn, and suppression counters
 - continuous output throughput analysis remains tracked in `docs/operations/continuous-output-throughput-plan.md`; the A/B evidence and opt-in suppression boundary remain tracked in `docs/operations/continuous-one-shot-double-load-plan.md`
 - slot0 one-shot fallback isolation first code slice remains opt-in via `--continuous-decoder-slot0-suppress-one-shot-fallback`. Default behavior is unchanged; slot1 stays one-shot, and the first render-safety path remains existing decode-deferred placeholder rather than unbounded stale decoded output
 - metrics commit, snapshot export cadence, dashboard refresh consumer policy, and dashboard refresh runtime wiring remain separate from timer wait, retry, reconnect, socket ownership, cleanup, UI rendering, video, switcher, and OBS.
@@ -1090,7 +1091,7 @@ continuous runtime first slice の blocker:
 - actual dashboard UI rendering remains unimplemented.
 
 ## Next Items
-1. human rerun は `S:\stream-sync` で same-build suppression ON 比較にし、bounded lookup allowed lag の omitted/default-equivalent `5` と explicit `8` を比較する
-2. rerun では `continuous_decode_bounded_lookup_allowed_lag_frames` / accepted hit lag / stale-not-ready rejects / continuous render use / render FPS / placeholder churn / suppression counters を同時に読む。`10` や dynamic policy は `8` evidence 後の候補に残す
-3. requested より未来の decoded frame、unbounded latest decoded fallback、suppression default 化には進まず、BGRA / scale / stdout reader experiment は lookup threshold evidence 後に再評価する
+1. keep `continuous_decode_bounded_lookup_allowed_lag_frames=5` as the default guard and treat lag8 as a small PARTIAL PASS / adoption candidate, not a default promotion yet
+2. if another threshold rerun is needed, preserve the reverse-order comparison shape and continue reading `continuous_decode_bounded_lookup_allowed_lag_frames` / accepted hit lag / stale-not-ready rejects / continuous render use / render FPS / placeholder churn / suppression counters together
+3. requested より未来の decoded frame、unbounded latest decoded fallback、suppression default 化、dynamic policy default 化には進まず、BGRA / scale / stdout reader experiment は lookup threshold evidence 後に再評価する
 4. Production Readiness FAIL を維持し、targetTime-aware lookup 実装、slot1 continuous 化、4-client 化、request/response persistent decoder 復活、GPU decode、one-shot fallback 削除、feed max count 変更には広げない

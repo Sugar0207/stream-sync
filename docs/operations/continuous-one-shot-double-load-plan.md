@@ -2,7 +2,7 @@
 
 # Continuous One-Shot Double-Load Plan
 
-Last updated: 2026-05-22
+Last updated: 2026-05-27
 
 ## Purpose
 - Design the next docs-first opt-in experiment after throughput diagnostics became runtime-valid.
@@ -10,6 +10,9 @@ Last updated: 2026-05-22
 - Keep the experiment narrower than a fallback policy change: default behavior remains unchanged and Production Readiness remains FAIL.
 
 ## Evidence Gate
+- latest reverse-order lag threshold A/B rerun:
+  - `S:\stream-sync\manual-logs\two-client-lag-reverse-ab-rerun-20260527-164258`
+  - comparison is VALID and remains separate from the double-load isolation read
 - latest matched rerun:
   - `S:\stream-sync\manual-logs\two-client-ab-rerun-20260522-103943`
 - build / runtime validity:

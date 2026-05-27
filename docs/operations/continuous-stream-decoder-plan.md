@@ -2,7 +2,7 @@
 
 # Continuous Stream Decoder Plan
 
-最終更新: 2026-05-20
+最終更新: 2026-05-27
 
 ## 目的
 - two-real preview loop の 30fps 目標に向けて、render loop から one-shot FFmpeg wait を外すための next design candidate を整理する
@@ -1027,6 +1027,23 @@ latest output-throughput docs-first update:
 4. The lookup-plan bounded allowed-lag threshold / stale-guard review is now the policy source after the matched A/B.
 5. Pixel-format, scale-path, reader-buffering, and FFmpeg args experiments move back behind that review.
 6. Default one-shot fallback policy, threshold widening, targetTime-aware lookup, latest decoded fallback, feed max increase, slot1/4-client rollout, GPU decode, and request/response persistent revival remain out of scope.
+
+latest reverse-order lag threshold update:
+
+1. latest rerun:
+   - `S:\stream-sync\manual-logs\two-client-lag-reverse-ab-rerun-20260527-164258`
+2. comparison is VALID:
+   - lag8 is a small PARTIAL PASS versus lag5
+3. lag8 moves in the right direction:
+   - bounded lookup hit `2` vs `1`
+   - output lag to selected `89` vs `120`
+   - output throughput `19.635fps` vs `17.189fps`
+   - reader average `50.000ms` vs `57.473ms`
+4. lag5 still has a tiny render-FPS edge:
+   - `12.342` vs `12.159`
+5. default `8` promotion is HOLD:
+   - keep `5` as the current guard for now
+6. Production Readiness remains FAIL.
 
 ## out of scope
 - request/response persistent decoder の復活

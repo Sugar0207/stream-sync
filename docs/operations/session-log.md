@@ -1,5 +1,70 @@
 <!-- stream-sync/docs/operations/session-log.md -->
 
+## 2026-05-27
+### Type
+- Codex docs-only evidence reflection
+
+### Work
+- Reflected reverse-order lag threshold A/B rerun `S:\stream-sync\manual-logs\two-client-lag-reverse-ab-rerun-20260527-164258`.
+- Kept this step docs-only; no code changes and no Codex runtime rerun.
+- Recorded the lag8 vs lag5 comparison as VALID because client FPS stayed within 2fps and both runs used the same `C:\streamsync-target\stream-sync-rerun\debug\*.exe`.
+- Marked lag8 as a small PARTIAL PASS: it improved bounded lookup hit rate, stale reject count, output lag, throughput, and reader average latency versus lag5, while lag5 kept a slight render FPS edge and slightly fewer not-ready rejects.
+- Kept Production Readiness as FAIL and held the default `8` promotion.
+
+### Changed Files
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+- `docs/operations/continuous-decoded-lookup-plan.md`
+- `docs/operations/continuous-output-throughput-plan.md`
+- `docs/operations/continuous-output-lag-plan.md`
+- `docs/operations/continuous-stream-decoder-plan.md`
+- `docs/operations/continuous-one-shot-double-load-plan.md`
+
+### Evidence
+- lag8:
+  - `continuous_decode_bounded_lookup_allowed_lag_frames=8`
+  - `continuous_decode_bounded_lookup_hit_count=2`
+  - `continuous_decode_bounded_lookup_lag_frames=7`
+  - `continuous_decode_bounded_lookup_rejected_stale_count=221`
+  - `continuous_decode_bounded_lookup_rejected_not_ready_count=25`
+  - `render_used_continuous_decoded_count=2`
+  - `effective_render_fps_after_first_render=12.159`
+  - `continuous_decode_output_lag_to_selected_frames=89`
+  - `continuous_decode_output_throughput_fps=19.635`
+  - `continuous_decode_reader_full_frame_elapsed_ms_avg=50.000`
+- lag5:
+  - `continuous_decode_bounded_lookup_allowed_lag_frames=5`
+  - `continuous_decode_bounded_lookup_hit_count=1`
+  - `continuous_decode_bounded_lookup_lag_frames=5`
+  - `continuous_decode_bounded_lookup_rejected_stale_count=238`
+  - `continuous_decode_bounded_lookup_rejected_not_ready_count=22`
+  - `render_used_continuous_decoded_count=1`
+  - `effective_render_fps_after_first_render=12.342`
+  - `continuous_decode_output_lag_to_selected_frames=120`
+  - `continuous_decode_output_throughput_fps=17.189`
+  - `continuous_decode_reader_full_frame_elapsed_ms_avg=57.473`
+
+### Decisions
+- Keep `continuous_decode_bounded_lookup_allowed_lag_frames=5` as the default guard for now.
+- Treat lag8 as an adoption candidate but HOLD the default `8` promotion.
+- Keep the reverse-order threshold A/B read separate from the earlier suppression OFF/ON evidence.
+- Preserve Production Readiness as FAIL.
+
+### TODO Update
+- Completed:
+  - reverse-order lag threshold A/B rerun reflection
+  - VALID / small PARTIAL PASS / HOLD recording for lag8 vs lag5
+- Added:
+  - default `8` promotion HOLD note in lookup / throughput / lag / decoder docs
+- Held:
+  - code changes
+  - runtime rerun from Codex
+  - default threshold change
+
+### Validation
+- `git diff --check`
+  - result: PASS
+
 ## 2026-05-22
 ### Type
 - Codex implementation

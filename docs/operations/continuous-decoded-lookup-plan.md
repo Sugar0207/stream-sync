@@ -2,7 +2,7 @@
 
 # Continuous Decoded Lookup Plan
 
-最終更新: 2026-05-22
+最終更新: 2026-05-27
 
 ## 目的
 - bounded feed helper PASS 後も render consumption が `0` のままなので、slot0 continuous decoded queue の参照方針を docs-first で整理する
@@ -12,36 +12,40 @@
 
 ## latest evidence
 - latest rerun:
-  - `S:\stream-sync\manual-logs\two-client-render-rerun-20260519-202043`
-- PASS:
-  - `continuous_decode_config_enabled=true`
-  - `continuous_decode_runtime_enabled=true`
-  - `continuous_decode_slot0_enabled=true`
-  - `continuous_decode_ffmpeg_low_latency_args_enabled=true`
-  - `continuous_feed_enabled=true`
-  - `continuous_decode_input_from_feeder_count=368`
-  - `continuous_decode_input_from_render_demand_count=4`
-  - `continuous_decode_feeder_lag_to_selected=0`
-- PASS / PARTIAL PASS:
-  - `continuous_decode_input_frame_count=372`
-  - `continuous_decode_output_frame_count=340`
-  - `continuous_decode_queue_len=30`
-  - `continuous_decode_dropped_stale_count=310`
-- FAIL:
-  - `render_used_continuous_decoded_count=0`
-  - `continuous_decode_render_exact_hit_count=0`
-  - `continuous_decode_render_miss_stale_count=12`
-  - `continuous_decode_render_miss_not_ready_count=2`
-  - `continuous_decode_fallback_to_one_shot_count=14`
-  - `render_used_one_shot_fallback_count=14`
-- Lag:
-  - `continuous_decode_requested_frame_id=459`
-  - `continuous_decode_latest_decoded_frame_id=426`
-  - `continuous_decode_requested_minus_latest_lag=40`
-  - `continuous_decode_queue_oldest_frame_id=390`
-  - `continuous_decode_queue_newest_frame_id=426`
-  - `continuous_decode_output_pending_correspondence_count=31`
-  - `continuous_decode_frame_id_lag=42`
+  - `S:\stream-sync\manual-logs\two-client-lag-reverse-ab-rerun-20260527-164258`
+- validity:
+  - both runs used `C:\streamsync-target\stream-sync-rerun\debug\*.exe`
+  - client FPS stayed within 2fps, so the comparison is VALID
+- lag8:
+  - `continuous_decode_bounded_lookup_allowed_lag_frames=8`
+  - `continuous_decode_bounded_lookup_hit_count=2`
+  - `continuous_decode_bounded_lookup_lag_frames=7`
+  - `continuous_decode_bounded_lookup_rejected_stale_count=221`
+  - `continuous_decode_bounded_lookup_rejected_not_ready_count=25`
+  - `render_used_continuous_decoded_count=2`
+  - `effective_render_fps_after_first_render=12.159`
+  - `placeholder_visual_changed_count=80`
+  - `continuous_decode_output_lag_to_selected_frames=89`
+  - `continuous_decode_output_throughput_fps=19.635`
+  - `continuous_decode_reader_full_frame_elapsed_ms_avg=50.000`
+- lag5:
+  - `continuous_decode_bounded_lookup_allowed_lag_frames=5`
+  - `continuous_decode_bounded_lookup_hit_count=1`
+  - `continuous_decode_bounded_lookup_lag_frames=5`
+  - `continuous_decode_bounded_lookup_rejected_stale_count=238`
+  - `continuous_decode_bounded_lookup_rejected_not_ready_count=22`
+  - `render_used_continuous_decoded_count=1`
+  - `effective_render_fps_after_first_render=12.342`
+  - `placeholder_visual_changed_count=81`
+  - `continuous_decode_output_lag_to_selected_frames=120`
+  - `continuous_decode_output_throughput_fps=17.189`
+  - `continuous_decode_reader_full_frame_elapsed_ms_avg=57.473`
+- interpretation:
+  - lag8 is a small PARTIAL PASS and a stronger adoption candidate than lag5
+  - lag8 improves bounded lookup hit rate, stale reject count, output lag, throughput, and reader average latency
+  - lag5 keeps a slightly higher render FPS and slightly fewer not-ready rejects
+  - default `8` promotion is HOLD
+  - default `5` remains the current guard
 
 ## current exact lookup problem
 - current render consumption requires exact selected-frame cache key match:
@@ -88,7 +92,7 @@ First design preference:
 ## allowed lag threshold candidates
 - Implemented first slice:
   - `allowed_lag_frames=5`
-  - keep this as the default after the matched suppression A/B
+  - keep this as the current default guard until a future policy review explicitly promotes a wider threshold
   - it already produced ON bounded-lookup hits at lag `5`
   - it keeps the current display guard close to sync-first behavior while stale
     rejects remain high
@@ -110,6 +114,12 @@ First design preference:
   - `allowed_lag_frames=10`
   - second candidate if `8` remains too narrow; risk is higher stale display
     tolerance and comparison noise from letting more old frames through
+- latest reverse-order threshold A/B rerun:
+  - `S:\stream-sync\manual-logs\two-client-lag-reverse-ab-rerun-20260527-164258`
+  - comparison is VALID
+  - lag `8` is a small PARTIAL PASS and a held adoption candidate
+  - lag `5` keeps a tiny render-FPS edge and slightly fewer not-ready rejects
+  - default `8` promotion is HOLD; keep default `5` unchanged for now
 - First threshold experiment code slice:
   - `--continuous-decoder-bounded-lookup-allowed-lag-frames <N>` is now wired
     into the two-real continuous slot0 bounded lookup threshold

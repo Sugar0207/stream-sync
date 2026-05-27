@@ -2,7 +2,7 @@
 
 # Continuous Output Throughput Plan
 
-Last updated: 2026-05-22
+Last updated: 2026-05-27
 
 ## Purpose
 - Analyze why slot0 continuous decoder output throughput stays below source cadence after feed helper, continuous output, and throughput diagnostics all reached runtime evidence.
@@ -12,6 +12,11 @@ Last updated: 2026-05-22
 - Use the validated throughput diagnostics to separate stdout full-frame read latency, raw BGRA output volume, FFmpeg scale/output path cost, reader buffering, and one-shot fallback double-load before choosing the next code slice.
 
 ## Latest Evidence
+- latest reverse-order lag threshold A/B rerun:
+  - `S:\stream-sync\manual-logs\two-client-lag-reverse-ab-rerun-20260527-164258`
+  - comparison is VALID
+  - lag8 improved output throughput, output lag, and reader average latency versus lag5
+  - render FPS stayed near-tied, so default `8` promotion is HOLD
 - latest matched rerun:
   - `S:\stream-sync\manual-logs\two-client-ab-rerun-20260522-103943`
 - validity:
@@ -209,6 +214,9 @@ candidate has moved to bounded lookup allowed-lag threshold / policy review.
   render use, bounded lookup hit, and render FPS all improved.
 - One-shot double-load is now a strong contributor candidate for this slice, but
   this still does not justify a single-cause FPS conclusion or default suppression.
+- The reverse-order lag threshold A/B rerun stays consistent with that reading:
+  lag8 is a small PARTIAL PASS, but the default `8` change remains HOLD because
+  render FPS is near-tied and not-ready rejects still remain.
 - Stale/not-ready suppression reasons remain high ON, so the next code candidate
   moves to the bounded lookup allowed-lag threshold / stale-guard review now
   documented in `docs/operations/continuous-decoded-lookup-plan.md`.
