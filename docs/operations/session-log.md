@@ -2,6 +2,81 @@
 
 ## 2026-05-28
 ### Type
+- Codex docs-only evidence reflection
+
+### Work
+- Reflected output pipeline A/B rerun
+  `S:\stream-sync\manual-logs\two-client-output-pipeline-ab-rerun-20260528-014200`.
+- Kept this step docs-only; no code changes and no Codex runtime rerun.
+- Recorded the rerun as VALID-ish / useful evidence:
+  - FFmpeg available before runtime
+  - build PASS with existing dead-code warnings only
+  - default and scaled used the same
+    `C:\streamsync-target\stream-sync-rerun\debug\*.exe`
+  - both server runs queued `1800` frames with
+    `player1/streamsync-dev-session:900|player2/streamsync-dev-session:900`
+  - client FPS was close enough for comparison
+- Split the `scaled-bgr24` verdict:
+  - PASS: flag / args / summary wiring
+  - PASS: expected stdout bytes changed `921600 -> 691200`
+  - PASS: reader avg improved `37.968ms -> 17.739ms`
+  - PASS: stdout throughput improved `24273.288 -> 38965.867` bytes/ms
+  - FAIL for adoption: output throughput regressed `25.816fps -> 22.150fps`
+  - FAIL for adoption: completed latency avg regressed
+    `1309.796ms -> 2037.903ms`
+  - FAIL for adoption: pending age avg regressed `803.227ms -> 1709.438ms`
+  - FAIL for adoption: output lag to selected regressed `46 -> 88`
+  - FAIL for adoption: bounded lookup hits fell `6 -> 3`
+- Recorded BGR24-to-BGRA conversion as a new strong bottleneck candidate:
+  - total conversion time `8636ms`
+  - frame count `329`
+  - average about `26.25ms/frame`
+- Recorded raw pipe bytes hypothesis as PARTIAL PASS.
+- Kept default BGRA as the safer runtime path and marked scaled-bgr24 adoption
+  HOLD / FAIL.
+- Kept Production Readiness as FAIL.
+
+### Changed Files
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+- `docs/operations/continuous-output-pipeline-experiment-plan.md`
+- `docs/operations/continuous-output-availability-plan.md`
+- `docs/operations/continuous-output-throughput-plan.md`
+- `docs/operations/continuous-output-lag-plan.md`
+- `docs/operations/continuous-stream-decoder-plan.md`
+
+### Decision
+- Do not promote `scaled-bgr24` to default.
+- Treat raw pipe bytes as a real contributor but not the only bottleneck.
+- Move the next docs-first candidate to:
+  1. BGR24 conversion optimization / direct render path
+  2. FFmpeg scale path split experiment
+  3. reader blocking phase diagnostics
+- Keep threshold branch HOLD / candidate and one-shot suppression as supporting
+  evidence rather than the current main bottleneck.
+
+### Validation
+- `git diff --check`
+  - result: PASS
+  - note: LF/CRLF warnings only.
+
+### TODO Update
+- Completed:
+  - latest output pipeline A/B rerun reflected in docs.
+- Added:
+  - raw pipe bytes hypothesis PARTIAL PASS.
+  - BGR24 conversion cost as a new strong bottleneck candidate.
+  - default-bgra continuation and scaled-bgr24 adoption HOLD / FAIL.
+- Held:
+  - code changes
+  - scaled-bgr24 default promotion
+  - BGR24 conversion optimization implementation
+  - FFmpeg scale path implementation
+  - reader blocking phase diagnostics implementation
+  - threshold / suppression / fallback / feed / slot1 / 4-client / GPU changes
+
+## 2026-05-28
+### Type
 - Codex implementation
 
 ### Work

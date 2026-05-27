@@ -13,6 +13,31 @@ Last updated: 2026-05-28
 - Keep Production Readiness as FAIL.
 
 ## Current Verdict
+- latest output pipeline A/B rerun:
+  - `S:\stream-sync\manual-logs\two-client-output-pipeline-ab-rerun-20260528-014200`
+  - evidence is VALID-ish / useful:
+    - FFmpeg available before runtime
+    - build PASS with existing dead-code warnings only
+    - same build / same `C:\streamsync-target\stream-sync-rerun\debug\*.exe`
+    - both default and scaled servers queued `1800` frames
+  - `scaled-bgr24` PASS:
+    - flag / args / summary wiring correct
+    - stdout bytes/frame reduced `921600 -> 691200`
+    - reader avg improved `37.968ms -> 17.739ms`
+    - stdout throughput improved `24273.288 -> 38965.867` bytes/ms
+  - `scaled-bgr24` FAIL for adoption:
+    - output throughput worsened `25.816fps -> 22.150fps`
+    - completed latency avg worsened `1309.796ms -> 2037.903ms`
+    - pending age avg worsened `803.227ms -> 1709.438ms`
+    - output lag to selected worsened `46 -> 88`
+    - bounded lookup hits fell `6 -> 3`
+    - pixel conversion cost was `8636ms / 329 ~= 26.25ms/frame`
+  - current availability verdict:
+    - raw pipe bytes hypothesis is PARTIAL PASS
+    - BGR24-to-BGRA conversion cost is a new strong bottleneck candidate
+    - keep default BGRA
+    - hold / fail `scaled-bgr24` adoption
+    - Production Readiness remains FAIL
 - latest completed correspondence rerun:
   - `S:\stream-sync\manual-logs\two-client-completed-correspondence-rerun-20260528-010504`
   - rerun is VALID:
@@ -102,7 +127,7 @@ Last updated: 2026-05-28
 | Candidate | What It Answers | Why It Helps Now | Risk | Verdict |
 | --- | --- | --- | --- | --- |
 | Pending correspondence pressure diagnostics | Whether writer-accepted inputs are piling up before full stdout frames can be matched to metadata. | Latest availability rerun shows pending correspondence `115`, avg age `1948.809ms`, and latest input-output gap `115`. | Low if diagnostics-only. | Implemented and runtime VALID. |
-| Raw BGRA pipe throughput / stdout reader buffering diagnostics | Whether `921600` byte full-frame reads, short reads, allocation, or reader scheduling dominate output latency. | Latest availability rerun shows reader avg `46.430ms`, max `1125ms`, slow count `42`, and output throughput `21.269fps` while source is about `29fps`. | Low for diagnostics; medium for buffering behavior changes. | First opt-in `scaled-bgr24` experiment slice implemented; needs human comparison. |
+| Raw BGRA pipe throughput / stdout reader buffering diagnostics | Whether `921600` byte full-frame reads, short reads, allocation, or reader scheduling dominate output latency. | Latest A/B shows `scaled-bgr24` improves reader avg and stdout throughput after bytes/frame falls to `691200`. | Low for diagnostics; medium for buffering behavior changes. | PARTIAL PASS as a hypothesis; `scaled-bgr24` adoption HOLD / FAIL because conversion regresses end-to-end. |
 | Continuous output queue/cache policy diagnostics | Whether decoded cache bound `30`, dropped stale count, or drain cadence hides usable decoded frames. | Cache drops are visible, but newest decoded output itself is still behind; diagnostics can confirm whether cache policy is a symptom or contributor. | Low if diagnostics-only. | Secondary diagnostics in the same or next slice. |
 | FFmpeg continuous output scale path experiment | Separates FFmpeg scale cost from raw pipe / pixel conversion cost. | Current path is `-vf scale=640:360:flags=neighbor -f rawvideo -pix_fmt bgra pipe:1`; scale and BGRA conversion remain plausible contributors after client/server/feed PASS. | Medium: source-size raw BGRA can be much heavier, and moving scale responsibility may require renderer-side conversion/copy work. | Next opt-in planning candidate, not implemented. |
 | One-shot competing load | Measures continuous-vs-one-shot process contention. | Suppression ON already made this a strong contributor candidate and improved throughput/render use, but the latest rerun points more directly at output backlog/stale output. | Medium if made default; low as already opt-in. | Supporting evidence; not the next main culprit and not a default policy. |
@@ -169,7 +194,7 @@ Last updated: 2026-05-28
 - Do not move back to threshold tuning as the next main line. Lag8 stays a
   held candidate, but the latest availability rerun shows stale/output backlog
   dominates over not-ready.
-- The first opt-in output pipeline experiment slice is now implemented, still
+- The first opt-in output pipeline experiment slice has now been rerun, still
   slot0 / two-real / opt-in continuous only:
   - `--continuous-decoder-output-pipeline-experiment scaled-bgr24`
   - default remains scaled BGRA `921600` bytes/frame
@@ -178,9 +203,11 @@ Last updated: 2026-05-28
   - summary reports experiment mode, pixel format, bytes/frame, pipe bytes
     saved/frame, pixel conversion time, stdout throughput, reader latency, and
     correspondence backlog
+  - verdict: wiring and reader improvement PASS, raw pipe bytes PARTIAL PASS,
+    but adoption HOLD / FAIL due to BGR24-to-BGRA conversion cost
 - Next candidate order:
-  1. default vs `scaled-bgr24` human rerun comparison
-  2. FFmpeg scale path split opt-in experiment
+  1. BGR24 conversion optimization / direct render path docs-first review
+  2. FFmpeg scale path split opt-in experiment docs-first review
   3. reader blocking phase diagnostics
 - These are not default behavior changes. They must keep full-frame correctness,
   same-source and no-future-frame guards, one-shot fallback, current feed max

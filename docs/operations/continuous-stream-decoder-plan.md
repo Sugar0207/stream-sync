@@ -1138,6 +1138,51 @@ latest completed correspondence rerun verdict:
      that if needed
 7. Production Readiness remains FAIL.
 
+latest output pipeline A/B rerun verdict:
+
+1. latest rerun:
+   - `S:\stream-sync\manual-logs\two-client-output-pipeline-ab-rerun-20260528-014200`
+2. validity:
+   - FFmpeg available before runtime
+   - build PASS with existing dead-code warnings only
+   - same build / same `C:\streamsync-target\stream-sync-rerun\debug\*.exe`
+   - default and scaled servers both queued `1800` frames
+3. default BGRA:
+   - output mode `default`
+   - pixel format `bgra`
+   - bytes/frame `921600`
+   - output throughput `25.816fps`
+   - reader avg `37.968ms`
+   - completed latency avg `1309.796ms`
+   - pending age avg `803.227ms`
+   - output lag to selected `46`
+   - bounded lookup hits `6`
+4. scaled BGR24:
+   - output mode `scaled-bgr24`
+   - pixel format `bgr24`
+   - bytes/frame `691200`
+   - pipe bytes saved/frame `230400`
+   - output throughput `22.150fps`
+   - reader avg `17.739ms`
+   - completed latency avg `2037.903ms`
+   - pending age avg `1709.438ms`
+   - output lag to selected `88`
+   - bounded lookup hits `3`
+   - BGR24-to-BGRA conversion total/count `8636ms` / `329`, about
+     `26.25ms/frame`
+5. interpretation:
+   - `scaled-bgr24` wiring, args, expected bytes, and reader improvement are
+     PASS
+   - raw pipe bytes hypothesis is PARTIAL PASS
+   - current `scaled-bgr24` path is worse end to end because conversion cost is
+     large
+   - default BGRA remains the safer runtime path
+   - scaled-bgr24 adoption is HOLD / FAIL
+   - next candidates are BGR24 conversion optimization / direct render path
+     docs-first review, FFmpeg scale path split, and reader blocking phase
+     diagnostics
+6. Production Readiness remains FAIL.
+
 ## out of scope
 - request/response persistent decoder の復活
 - server / client / protocol code の変更

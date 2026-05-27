@@ -15,6 +15,37 @@ Last updated: 2026-05-28
   `docs/operations/continuous-output-availability-plan.md`.
 
 ## Latest Evidence
+- latest output pipeline A/B rerun:
+  - `S:\stream-sync\manual-logs\two-client-output-pipeline-ab-rerun-20260528-014200`
+  - evidence is VALID-ish / useful on the same
+    `C:\streamsync-target\stream-sync-rerun\debug\*.exe`
+  - both default and scaled server runs queued `1800` frames
+  - `scaled-bgr24` wiring is PASS:
+    - `continuous_decode_output_pipeline_experiment_mode=scaled-bgr24`
+    - `continuous_decode_ffmpeg_output_pixel_format=bgr24`
+    - `continuous_decode_output_bytes_per_frame=691200`
+    - `continuous_decode_output_pipe_bytes_saved_per_frame=230400`
+  - raw pipe/read improved:
+    - reader avg `37.968ms -> 17.739ms`
+    - reader slow count `47 -> 24`
+    - stdout throughput `24273.288 -> 38965.867` bytes/ms
+  - end-to-end throughput regressed:
+    - output throughput `25.816fps -> 22.150fps`
+    - completed latency avg `1309.796ms -> 2037.903ms`
+    - pending age avg `803.227ms -> 1709.438ms`
+    - output lag to selected `46 -> 88`
+    - bounded lookup hits `6 -> 3`
+  - BGR24-to-BGRA conversion cost was large:
+    - total `8636ms`
+    - count `329`
+    - average about `26.25ms/frame`
+  - interpretation:
+    - raw pipe bytes hypothesis is PARTIAL PASS
+    - `scaled-bgr24` adoption is HOLD / FAIL
+    - default BGRA remains the safer runtime path
+    - next throughput candidate should examine conversion/direct-render path
+      and FFmpeg scale path split before any default change
+
 - latest completed correspondence rerun:
   - `S:\stream-sync\manual-logs\two-client-completed-correspondence-rerun-20260528-010504`
   - evidence is VALID on

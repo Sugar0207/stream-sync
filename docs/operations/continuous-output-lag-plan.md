@@ -13,6 +13,29 @@ Last updated: 2026-05-28
   move the next main line to output availability / throughput.
 
 ## Latest Evidence
+- latest output pipeline A/B rerun:
+  - `S:\stream-sync\manual-logs\two-client-output-pipeline-ab-rerun-20260528-014200`
+  - default BGRA:
+    - output throughput `25.816fps`
+    - completed latency avg/max/latest `1309.796ms` / `1827ms` / `1591ms`
+    - pending age avg/max `803.227ms` / `1646ms`
+    - latest input-output gap `45`
+    - output lag to selected `46`
+    - bounded lookup hits `6`
+  - scaled BGR24:
+    - output throughput `22.150fps`
+    - completed latency avg/max/latest `2037.903ms` / `3508ms` / `3508ms`
+    - pending age avg/max `1709.438ms` / `3502ms`
+    - latest input-output gap `106`
+    - output lag to selected `88`
+    - bounded lookup hits `3`
+    - pixel conversion total/max/count `8636ms` / `41ms` / `329`
+  - lag verdict:
+    - `scaled-bgr24` reduces pipe bytes and reader time, but output lag and
+      correspondence delay get worse after conversion cost
+    - raw pipe bytes hypothesis is PARTIAL PASS
+    - BGR24-to-BGRA conversion is a new strong bottleneck candidate
+    - keep default BGRA; hold / fail `scaled-bgr24` adoption
 - latest completed correspondence rerun:
   - `S:\stream-sync\manual-logs\two-client-completed-correspondence-rerun-20260528-010504`
   - validity is PASS:
@@ -240,10 +263,9 @@ Current continuous runtime has three relevant queues/counters:
 - One-shot fallback remains the safe default path. Any suppression must stay slot0/two-real/opt-in and preserve default behavior.
 
 ## Next Design Candidates
-- Next code candidate if selected after docs review should move from
-  diagnostics evidence to opt-in output pipeline experiment planning:
-  - completed correspondence latency diagnostics
-  - stdout/raw BGRA pipe throughput experiment
+- Next code candidate if selected after docs review should move from the
+  `scaled-bgr24` A/B result to:
+  - BGR24 conversion optimization / direct render path docs-first review
   - FFmpeg scale path split experiment
   - reader blocking phase diagnostics
   - keep it slot0 / two-real / opt-in continuous only

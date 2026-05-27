@@ -17,6 +17,74 @@ Last updated: 2026-05-28
 - Keep Production Readiness as FAIL.
 
 ## Latest Evidence
+- latest output pipeline A/B rerun:
+  - root:
+    `S:\stream-sync\manual-logs\two-client-output-pipeline-ab-rerun-20260528-014200`
+  - default:
+    `S:\stream-sync\manual-logs\two-client-output-pipeline-ab-rerun-20260528-014200\default-bgra`
+  - scaled:
+    `S:\stream-sync\manual-logs\two-client-output-pipeline-ab-rerun-20260528-014200\scaled-bgr24`
+- Validity:
+  - FFmpeg was available before runtime.
+  - Build was PASS with existing dead-code warnings only.
+  - Both runs used the same build / same
+    `C:\streamsync-target\stream-sync-rerun\debug\*.exe`.
+  - Default and scaled servers both queued `1800` frames:
+    `player1/streamsync-dev-session:900|player2/streamsync-dev-session:900`.
+  - Client FPS was close enough for comparison: default around `29fps`, scaled
+    around `28.5-29.6fps`.
+- Default BGRA:
+  - mode `default`
+  - pixel format `bgra`
+  - bytes/frame `921600`
+  - pipe bytes saved/frame `0`
+  - output throughput `25.816fps`
+  - reader full-frame avg/max/slow `37.968ms` / `1199ms` / `47`
+  - stdout read throughput `24273.288` bytes/ms
+  - completed correspondence count `402`
+  - completed latency avg/max/latest `1309.796ms` / `1827ms` / `1591ms`
+  - pending count `44`
+  - pending age avg/max `803.227ms` / `1646ms`
+  - latest input-output gap `45`
+  - output lag to selected `46`
+  - bounded lookup hits `6`
+  - stale/not-ready `234` / `24`
+  - render FPS `14.626`
+- Scaled BGR24:
+  - mode `scaled-bgr24`
+  - pixel format `bgr24`
+  - bytes/frame `691200`
+  - pipe bytes saved/frame `230400`
+  - output throughput `22.150fps`
+  - reader full-frame avg/max/slow `17.739ms` / `1145ms` / `24`
+  - stdout read throughput `38965.867` bytes/ms
+  - completed correspondence count `329`
+  - completed latency avg/max/latest `2037.903ms` / `3508ms` / `3508ms`
+  - pending count `105`
+  - pending age avg/max `1709.438ms` / `3502ms`
+  - latest input-output gap `106`
+  - output lag to selected `88`
+  - bounded lookup hits `3`
+  - stale/not-ready `236` / `25`
+  - render FPS `15.688`
+  - pixel conversion total/max/count `8636ms` / `41ms` / `329`
+  - pixel conversion average is about `26.25ms/frame`
+- Verdict:
+  - The A/B is VALID-ish / useful evidence.
+  - `scaled-bgr24` wiring, FFmpeg args, expected bytes, and summary fields are
+    PASS.
+  - Raw stdout bytes are a real factor: reader avg improved from `37.968ms` to
+    `17.739ms`, and stdout throughput improved from `24273.288` to
+    `38965.867` bytes/ms.
+  - Raw pipe bytes hypothesis is PARTIAL PASS.
+  - End-to-end pipeline is worse with `scaled-bgr24`: output throughput,
+    completed latency, pending age, output lag, and bounded lookup hits all
+    regress.
+  - BGR24-to-BGRA conversion cost is the new strong bottleneck candidate.
+  - `scaled-bgr24` remains a useful diagnostic but is not an adoption candidate
+    yet.
+  - Default BGRA remains the safer runtime path.
+
 - latest completed correspondence rerun:
   - `S:\stream-sync\manual-logs\two-client-completed-correspondence-rerun-20260528-010504`
 - Validity:
@@ -265,6 +333,17 @@ Implementation status:
   - reader buffering behavior changes
   - lookup, fallback, threshold, suppression, feed, slot1, or 4-client changes
 
+Runtime verdict:
+
+- `scaled-bgr24` adoption is HOLD / FAIL for now.
+- Keep `default` BGRA as the recommended runtime path.
+- Treat `scaled-bgr24` as diagnostic evidence that raw pipe bytes matter, not
+  as a throughput fix.
+- Next investigation should be docs-first:
+  1. BGR24 conversion optimization / direct render path
+  2. FFmpeg scale path split
+  3. reader blocking phase diagnostics
+
 ## FFmpeg Scale Path Split Experiment Plan
 Current baseline:
 
@@ -331,14 +410,15 @@ Boundary:
 
 ## Next Recommendation
 - First raw pipe / stdout throughput code slice is implemented as opt-in
-  `scaled-bgr24`; the next step is human runtime comparison, not a default
-  change.
+  `scaled-bgr24`, and the first A/B rerun is now reflected.
 - Latest completed correspondence rerun validates that both pending backlog and
   completed outputs are delayed by seconds, so the next main line remains
   output pipeline evidence rather than threshold tuning.
+- Latest output pipeline A/B shows raw stdout bytes are meaningful but the
+  current BGR24-to-BGRA conversion makes `scaled-bgr24` worse end to end.
 - Next candidate order:
-  1. default vs `scaled-bgr24` human rerun comparison
-  2. FFmpeg scale path split opt-in experiment
+  1. BGR24 conversion optimization / direct render path docs-first review
+  2. FFmpeg scale path split opt-in experiment docs-first review
   3. reader blocking phase diagnostics
 - Keep one-shot suppression as strong contributor evidence, but not the current
   main bottleneck.
