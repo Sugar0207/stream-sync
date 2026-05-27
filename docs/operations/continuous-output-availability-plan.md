@@ -144,7 +144,9 @@ Last updated: 2026-05-28
   held candidate, but the latest availability rerun shows stale/output backlog
   dominates over not-ready.
 - The next code candidate should be planning for opt-in output pipeline
-  experiments, still slot0 / two-real / opt-in continuous only:
+  experiments, now tracked in
+  `docs/operations/continuous-output-pipeline-experiment-plan.md`, still slot0
+  / two-real / opt-in continuous only:
   1. stdout/raw BGRA pipe throughput experiment
   2. FFmpeg scale path split experiment
   3. completed correspondence latency diagnostics
@@ -152,6 +154,9 @@ Last updated: 2026-05-28
 - These are not default behavior changes. They must keep full-frame correctness,
   same-source and no-future-frame guards, one-shot fallback, current feed max
   count, and current default FFmpeg path unless an explicit opt-in flag is used.
+- Recommended first code slice from that plan is completed correspondence
+  latency diagnostics because it is additive and does not change FFmpeg output
+  shape or reader semantics.
 
 ## Later Opt-In Experiments
 1. Raw BGRA pipe / stdout reader buffering experiment

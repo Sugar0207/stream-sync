@@ -1097,6 +1097,11 @@ latest output availability rerun verdict:
    - threshold tuning alone is insufficient
    - next code candidate moves to output pipeline / stdout reader / FFmpeg
      scale path opt-in experiment planning
+   - detailed plan is
+     `docs/operations/continuous-output-pipeline-experiment-plan.md`
+   - first recommended code slice is completed correspondence latency
+     diagnostics because it is additive and does not change FFmpeg args or
+     reader behavior
 7. Production Readiness remains FAIL.
 
 ## out of scope

@@ -2,6 +2,70 @@
 
 ## 2026-05-28
 ### Type
+- Codex docs-only planning
+
+### Work
+- Kept this step docs-only; no code changes and no Codex runtime rerun.
+- Added `docs/operations/continuous-output-pipeline-experiment-plan.md` to
+  design the next output pipeline candidates after the VALID output
+  availability rerun.
+- Preserved latest evidence:
+  - `S:\stream-sync\manual-logs\two-client-output-availability-rerun-20260527-173716`
+  - source side about `29fps`
+  - continuous output `21.269fps`
+  - pending correspondence `115`
+  - pending correspondence avg age `1948.809ms`
+  - reader full-frame avg `46.430ms`, max `1125ms`, slow count `42`
+  - stale availability `238` versus not-ready `22`
+- Designed the next candidate order:
+  1. completed correspondence latency diagnostics
+  2. stdout/raw BGRA pipe throughput opt-in experiment planning
+  3. FFmpeg scale path split opt-in experiment planning
+  4. reader blocking phase diagnostics
+- Updated output availability / throughput / lag / stream decoder docs to point
+  at the new output pipeline experiment plan.
+
+### Changed Files
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+- `docs/operations/continuous-output-availability-plan.md`
+- `docs/operations/continuous-output-throughput-plan.md`
+- `docs/operations/continuous-output-lag-plan.md`
+- `docs/operations/continuous-stream-decoder-plan.md`
+- `docs/operations/continuous-output-pipeline-experiment-plan.md`
+
+### Decision
+- First recommended code slice is completed correspondence latency diagnostics
+  because it is additive and does not change FFmpeg args, pixel format, scale
+  path, lookup order, or fallback policy.
+- stdout/raw BGRA pipe throughput and FFmpeg scale path split remain opt-in
+  experiment plans, not implemented behavior changes.
+- Source-size raw output is explicitly high risk because it can multiply
+  bytes/frame; do not adopt it as default.
+- Scope remains slot0 / two-real / opt-in continuous only.
+- Production Readiness remains FAIL.
+
+### Validation
+- `git diff --check`
+  - result: PASS
+  - note: LF/CRLF warnings only.
+
+### TODO Update
+- Completed:
+  - output pipeline experiment candidates documented docs-first.
+- Added:
+  - new output pipeline experiment plan.
+  - next code-slice priority order with completed correspondence latency first.
+- Held:
+  - FFmpeg args / pixel-format / scale-path implementation
+  - default allowed lag change
+  - suppression default change
+  - targetTime-aware lookup / latest decoded fallback
+  - feed max count change
+  - slot1 / 4-client / server-client-protocol / GPU / one-shot fallback removal
+
+## 2026-05-28
+### Type
 - Codex docs-only evidence reflection
 
 ### Work

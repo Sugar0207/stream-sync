@@ -196,14 +196,16 @@ Current continuous runtime has three relevant queues/counters:
 ## Next Design Candidates
 - Next code candidate if selected after docs review should move from
   diagnostics evidence to opt-in output pipeline experiment planning:
+  - completed correspondence latency diagnostics
   - stdout/raw BGRA pipe throughput experiment
   - FFmpeg scale path split experiment
-  - completed correspondence latency diagnostics
   - reader blocking phase diagnostics
   - keep it slot0 / two-real / opt-in continuous only
   - keep sync-first stale-frame safety explicit
 - Candidate comparison now lives in
   `docs/operations/continuous-output-availability-plan.md`.
+- Detailed output pipeline experiment design now lives in
+  `docs/operations/continuous-output-pipeline-experiment-plan.md`.
 - Held or later throughput experiments:
   - FFmpeg scale-path comparison
   - raw BGRA pipe / stdout reader buffering behavior change

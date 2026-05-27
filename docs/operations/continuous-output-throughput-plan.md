@@ -224,7 +224,9 @@ The matched A/B evidence for one-shot double-load isolation now lives in
 `docs/operations/continuous-one-shot-double-load-plan.md`. The bounded lookup
 threshold branch now lives in `docs/operations/continuous-decoded-lookup-plan.md`
 and is HOLD / candidate after the reverse-order A/B. The next docs-first
-candidate has moved to output availability / throughput.
+candidate has moved to output availability / throughput. The output pipeline
+experiment design now lives in
+`docs/operations/continuous-output-pipeline-experiment-plan.md`.
 
 1. Pending correspondence / output availability diagnostics
    - First safe code-slice candidate; implemented as a diagnostics-only summary
@@ -236,25 +238,25 @@ candidate has moved to output availability / throughput.
    - Latest output availability rerun validates this slice and points to stale /
      output backlog as dominant over not-ready.
 
-2. Raw BGRA pipe throughput / stdout reader buffering experiment
+2. Completed correspondence latency diagnostics
+   - Recommended first code slice in
+     `docs/operations/continuous-output-pipeline-experiment-plan.md`.
+   - Keep it diagnostics-only and use it to compare pending backlog age against
+     successful input-to-output latency before changing output behavior.
+
+3. Raw BGRA pipe throughput / stdout reader buffering experiment
    - Next opt-in output pipeline planning candidate.
    - Use latest availability evidence to separate pipe/read/copy cadence from
      FFmpeg decode/scale/output cadence.
    - Preserve full-frame correctness; do not emit partial raw frames.
    - Any reader buffering behavior change remains opt-in and summarized.
 
-3. FFmpeg scale path comparison
+4. FFmpeg scale path comparison
    - Next opt-in planning candidate alongside stdout/raw BGRA pipe throughput.
    - Current path stays `scale=640:360:flags=neighbor` plus raw BGRA by
      default.
    - Source-size raw output may be heavier than the current `921600`
      bytes/frame path, so do not adopt it without total pipeline evidence.
-
-4. Completed correspondence latency diagnostics
-   - Add only if another diagnostics slice is needed before behavior
-     experiments.
-   - Measure accepted-input-to-output latency for completed correspondences so
-     pending age can be compared against successful output age.
 
 5. Reader blocking phase diagnostics
    - Add only if output pipeline attribution remains unclear.
