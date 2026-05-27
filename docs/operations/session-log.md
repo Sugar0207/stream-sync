@@ -2,6 +2,87 @@
 
 ## 2026-05-28
 ### Type
+- Codex docs-only evidence reflection
+
+### Work
+- Reflected completed correspondence rerun
+  `S:\stream-sync\manual-logs\two-client-completed-correspondence-rerun-20260528-010504`.
+- Kept this step docs-only; no code changes and no Codex runtime rerun.
+- Recorded the rerun as VALID:
+  - FFmpeg preflight passed with `8.1.1-full_build-www.gyan.dev`
+  - `stream-sync-switcher` compiled with existing dead-code warnings only
+  - switcher binary:
+    `C:\streamsync-target\stream-sync-rerun\debug\stream-sync-switcher.exe`
+    LastWriteTime `2026/05/28 1:05:18`
+  - client1/client2 sent `900` frames at `29.443fps` / `29.112fps`
+  - server queued `1800` frames
+- Classified client / server / feed as PASS for the current slot0 / two-real /
+  opt-in continuous scope.
+- Classified completed correspondence diagnostics as VALID.
+- Recorded the main bottleneck shape:
+  - continuous output `301` frames at `17.151fps` while source is about `29fps`
+  - completed correspondence latency avg/max/latest
+    `2624.940ms` / `5258ms` / `5251ms`
+  - completed slow count `301/301` at threshold `66ms`
+  - pending correspondence `137`, avg/max `2540.606ms` / `5300ms`
+  - latest input-output gap `156`
+  - output lag to selected `150`
+  - reader full-frame avg/max/slow `57.488ms` / `1176ms` / `43`
+  - stale `228` versus not-ready `19`
+- Recorded verdict:
+  - completed outputs and unfinished backlog are both seconds late
+  - continuous output pipeline is not keeping up with input/source cadence
+  - threshold tuning alone is insufficient
+  - next candidate should be raw BGRA pipe / stdout throughput and FFmpeg
+    scale path split opt-in experiments
+  - one-shot suppression remains strong contributor evidence, but not the
+    current main bottleneck
+  - Production Readiness remains FAIL
+
+### Changed Files
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+- `docs/operations/continuous-output-pipeline-experiment-plan.md`
+- `docs/operations/continuous-output-availability-plan.md`
+- `docs/operations/continuous-output-throughput-plan.md`
+- `docs/operations/continuous-output-lag-plan.md`
+- `docs/operations/continuous-decoded-lookup-plan.md`
+- `docs/operations/continuous-stream-decoder-plan.md`
+- `docs/operations/continuous-one-shot-double-load-plan.md`
+
+### Decision
+- Move the next main line from completed latency diagnostics to output pipeline
+  experiments:
+  1. raw BGRA pipe / stdout throughput opt-in experiment
+  2. FFmpeg scale path split opt-in experiment
+  3. reader blocking phase diagnostics
+- Keep threshold branch HOLD / candidate.
+- Keep default behavior, FFmpeg args, pixel format, scale path, feed max,
+  fallback policy, threshold default, and suppression default unchanged.
+- Production Readiness remains FAIL.
+
+### Validation
+- `git diff --check`
+  - result: PASS
+  - note: LF/CRLF warnings only.
+
+### TODO Update
+- Completed:
+  - latest completed correspondence rerun reflected in docs.
+- Added:
+  - completed latency and pending age are both seconds late.
+  - next candidate direction is raw BGRA stdout throughput / FFmpeg scale path
+    split.
+- Held:
+  - code changes
+  - FFmpeg args / pixel-format / scale-path implementation
+  - default threshold / suppression changes
+  - targetTime-aware lookup / latest decoded fallback
+  - feed max count change
+  - slot1 / 4-client / server-client-protocol / GPU / one-shot fallback removal
+
+## 2026-05-28
+### Type
 - Codex implementation
 
 ### Work

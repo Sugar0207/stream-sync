@@ -13,6 +13,38 @@ Last updated: 2026-05-28
   move the next main line to output availability / throughput.
 
 ## Latest Evidence
+- latest completed correspondence rerun:
+  - `S:\stream-sync\manual-logs\two-client-completed-correspondence-rerun-20260528-010504`
+  - validity is PASS:
+    - FFmpeg version check succeeded before runtime
+    - switcher binary:
+      `C:\streamsync-target\stream-sync-rerun\debug\stream-sync-switcher.exe`
+      LastWriteTime `2026/05/28 1:05:18`
+    - client/server/feed are PASS for this slice
+  - output lag evidence:
+    - input `438`
+    - output `301`
+    - throughput `17.151fps`
+    - completed correspondence latency avg `2624.940ms`
+    - completed correspondence latency max `5258ms`
+    - completed correspondence latest latency `5251ms`
+    - pending correspondence `137`
+    - pending avg `2540.606ms`
+    - pending max `5300ms`
+    - latest input-output gap `156`
+    - output lag to selected `150`
+  - lookup/render evidence:
+    - allowed lag `8`
+    - bounded lookup hits `0`
+    - render used continuous decoded `0`
+    - stale `228`, not-ready `19`, future `0`
+  - interpretation:
+    - completed output and pending backlog are both seconds late
+    - not-ready is secondary
+    - stale/output backlog dominates
+    - threshold tuning alone is insufficient
+    - next work should move to raw BGRA stdout throughput and FFmpeg scale path
+      split experiments
 - latest output availability rerun:
   - `S:\stream-sync\manual-logs\two-client-output-availability-rerun-20260527-173716`
   - validity is PASS:
@@ -177,6 +209,10 @@ Current continuous runtime has three relevant queues/counters:
 ## Latest Diagnostics Interpretation
 - Output availability diagnostics are now runtime VALID on
   `S:\stream-sync\manual-logs\two-client-output-availability-rerun-20260527-173716`.
+- Completed correspondence diagnostics are runtime VALID on
+  `S:\stream-sync\manual-logs\two-client-completed-correspondence-rerun-20260528-010504`.
+- Completed latency avg/max/latest `2624.940ms` / `5258ms` / `5251ms`
+  confirms that even successful outputs are seconds behind.
 - Client FFmpeg, server queueing, and continuous feed are PASS in that rerun.
 - The main lag shape is pending correspondence / stdout-reader full-frame
   latency / continuous output backlog / stale output.
@@ -315,6 +351,10 @@ Implementation shape:
   - `continuous_decode_completed_correspondence_frame_id_min`
   - `continuous_decode_completed_correspondence_frame_id_max`
   - `continuous_decode_completed_correspondence_latest_latency_ms`
+- latest completed correspondence rerun validates these fields and shows the
+  same backlog shape in both completed and pending correspondence:
+  - completed avg/max/latest `2624.940ms` / `5258ms` / `5251ms`
+  - pending avg/max `2540.606ms` / `5300ms`
 - Held fields:
   - `continuous_decode_input_to_output_lag_frames_avg`
   - `continuous_decode_output_latency_frames_avg`

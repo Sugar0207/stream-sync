@@ -549,6 +549,27 @@ Latest output availability rerun update:
 - Next code candidate should move to output pipeline / stdout reader / FFmpeg
   scale-path opt-in planning, not another threshold promotion.
 
+Latest completed correspondence rerun update:
+
+- latest rerun:
+  - `S:\stream-sync\manual-logs\two-client-completed-correspondence-rerun-20260528-010504`
+- completed correspondence diagnostics are VALID.
+- With allowed lag `8`, bounded lookup hits were `0` and render used
+  continuous decoded frames `0`.
+- The latest output was far behind selected/source cadence:
+  - completed latency avg/max/latest `2624.940ms` / `5258ms` / `5251ms`
+  - pending avg/max `2540.606ms` / `5300ms`
+  - latest input-output gap `156`
+  - selected-output gap `150`
+  - stale rejects `228` versus not-ready `19`
+- Interpretation:
+  - threshold tuning alone is insufficient
+  - widening the allowed lag would trade sync safety for stale display while
+    the output pipeline remains behind
+  - keep the threshold branch HOLD / candidate
+  - next candidate stays raw BGRA stdout throughput / FFmpeg scale path split
+    rather than another lookup threshold change
+
 Held:
 
 - default `5` threshold change

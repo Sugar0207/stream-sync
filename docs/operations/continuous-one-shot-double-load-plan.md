@@ -10,6 +10,17 @@ Last updated: 2026-05-28
 - Keep the experiment narrower than a fallback policy change: default behavior remains unchanged and Production Readiness remains FAIL.
 
 ## Evidence Gate
+- latest completed correspondence rerun:
+  - `S:\stream-sync\manual-logs\two-client-completed-correspondence-rerun-20260528-010504`
+  - completed correspondence diagnostics are VALID
+  - output pipeline backlog dominates:
+    - continuous output `17.151fps` versus source about `29fps`
+    - completed latency avg/max/latest `2624.940ms` / `5258ms` / `5251ms`
+    - pending avg/max `2540.606ms` / `5300ms`
+    - stale `228` versus not-ready `19`
+  - one-shot suppression remains strong contributor evidence, but this rerun
+    points the next main bottleneck at continuous output pipeline throughput
+    rather than suppression defaulting
 - latest output availability rerun:
   - `S:\stream-sync\manual-logs\two-client-output-availability-rerun-20260527-173716`
   - output availability diagnostics are VALID

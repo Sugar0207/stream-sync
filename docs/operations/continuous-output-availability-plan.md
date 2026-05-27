@@ -13,6 +13,32 @@ Last updated: 2026-05-28
 - Keep Production Readiness as FAIL.
 
 ## Current Verdict
+- latest completed correspondence rerun:
+  - `S:\stream-sync\manual-logs\two-client-completed-correspondence-rerun-20260528-010504`
+  - rerun is VALID:
+    - FFmpeg preflight passed with `8.1.1-full_build-www.gyan.dev`
+    - switcher binary:
+      `C:\streamsync-target\stream-sync-rerun\debug\stream-sync-switcher.exe`
+      LastWriteTime `2026/05/28 1:05:18`
+    - client1/client2 sent `900` frames at `29.443fps` / `29.112fps`
+    - server queued `1800` frames total
+  - completed correspondence diagnostics are VALID:
+    - count `301`
+    - latency avg `2624.940ms`
+    - max `5258ms`
+    - latest `5251ms`
+    - slow count `301` at threshold `66ms`
+  - pending age is also large:
+    - pending count `137`
+    - avg `2540.606ms`
+    - max `5300ms`
+  - output availability verdict:
+    - continuous output `17.151fps` versus source about `29fps`
+    - stale rejects `228` dominate not-ready `19`
+    - completed outputs and unfinished backlog are both seconds late
+    - threshold tuning alone is insufficient
+    - next candidate moves to raw BGRA pipe / stdout throughput and FFmpeg
+      scale path split opt-in experiments
 - latest output availability rerun:
   - `S:\stream-sync\manual-logs\two-client-output-availability-rerun-20260527-173716`
   - build and runtime evidence are VALID:
@@ -159,6 +185,9 @@ Last updated: 2026-05-28
   shape or reader semantics. This slice is now implemented and adds completed
   correspondence count, avg/max/latest latency, slow count/threshold, and
   completed frame-id min/max to the two-real slot0 opt-in continuous summary.
+- The latest completed correspondence rerun validates that slice and shifts the
+  next candidate to raw BGRA pipe / stdout throughput and FFmpeg scale path
+  split opt-in experiments.
 
 ## Later Opt-In Experiments
 1. Raw BGRA pipe / stdout reader buffering experiment

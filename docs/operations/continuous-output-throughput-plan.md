@@ -15,6 +15,29 @@ Last updated: 2026-05-28
   `docs/operations/continuous-output-availability-plan.md`.
 
 ## Latest Evidence
+- latest completed correspondence rerun:
+  - `S:\stream-sync\manual-logs\two-client-completed-correspondence-rerun-20260528-010504`
+  - evidence is VALID on
+    `C:\streamsync-target\stream-sync-rerun\debug\stream-sync-switcher.exe`
+    LastWriteTime `2026/05/28 1:05:18`
+  - source side remains about `29fps`:
+    - client1 `29.443fps`
+    - client2 `29.112fps`
+    - server `frames_queued=1800`
+  - continuous output throughput dropped to `17.151fps`
+  - raw output rate was `15806358.974` bytes/sec
+  - output interval avg/max was `53.770ms` / `603ms`
+  - stdout read throughput was `16031.068` bytes/ms
+  - reader full-frame avg/max/slow was `57.488ms` / `1176ms` / `43`
+  - completed correspondence latency avg/max/latest was
+    `2624.940ms` / `5258ms` / `5251ms`
+  - pending correspondence avg/max was `2540.606ms` / `5300ms`
+  - interpretation:
+    - completed and pending correspondence both show seconds of pipeline delay
+    - output throughput is far below source cadence
+    - next candidate should be raw BGRA pipe / stdout throughput and FFmpeg
+      scale path split, not threshold tuning
+
 - latest output availability rerun:
   - `S:\stream-sync\manual-logs\two-client-output-availability-rerun-20260527-173716`
   - evidence is VALID on
@@ -245,16 +268,22 @@ experiment design now lives in
      successful input-to-output latency before changing output behavior.
    - Implemented on 2026-05-28 with completed count, avg/max/latest latency,
      slow count/threshold, and completed frame-id min/max summary fields.
+   - Runtime VALID on
+     `S:\stream-sync\manual-logs\two-client-completed-correspondence-rerun-20260528-010504`.
+   - Result: completed output latency and pending backlog age are both seconds
+     late, so this diagnostics slice points downstream to output pipeline
+     throughput.
 
 3. Raw BGRA pipe throughput / stdout reader buffering experiment
-   - Next opt-in output pipeline planning candidate.
+   - Next opt-in output pipeline candidate.
    - Use latest availability evidence to separate pipe/read/copy cadence from
      FFmpeg decode/scale/output cadence.
    - Preserve full-frame correctness; do not emit partial raw frames.
    - Any reader buffering behavior change remains opt-in and summarized.
 
 4. FFmpeg scale path comparison
-   - Next opt-in planning candidate alongside stdout/raw BGRA pipe throughput.
+   - Next opt-in planning candidate after or alongside stdout/raw BGRA pipe
+     throughput.
    - Current path stays `scale=640:360:flags=neighbor` plus raw BGRA by
      default.
    - Source-size raw output may be heavier than the current `921600`

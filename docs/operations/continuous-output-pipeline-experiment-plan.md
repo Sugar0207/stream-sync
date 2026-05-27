@@ -17,6 +17,50 @@ Last updated: 2026-05-28
 - Keep Production Readiness as FAIL.
 
 ## Latest Evidence
+- latest completed correspondence rerun:
+  - `S:\stream-sync\manual-logs\two-client-completed-correspondence-rerun-20260528-010504`
+- Validity:
+  - `ffmpeg -version` succeeded before runtime
+  - detected FFmpeg version: `8.1.1-full_build-www.gyan.dev`
+  - `stream-sync-switcher` compiled with existing dead-code warnings only
+  - switcher binary:
+    `C:\streamsync-target\stream-sync-rerun\debug\stream-sync-switcher.exe`
+    LastWriteTime `2026/05/28 1:05:18`
+- Source / transport / feed are PASS for this slice:
+  - client1 `frames_sent=900`, `effective_output_fps=29.443`
+  - client2 `frames_sent=900`, `effective_output_fps=29.112`
+  - server `frames_queued=1800`
+  - server per-client frames:
+    `player1/streamsync-dev-session:900|player2/streamsync-dev-session:900`
+- Completed correspondence diagnostics are VALID:
+  - `continuous_decode_completed_correspondence_count=301`
+  - `continuous_decode_completed_correspondence_latency_ms_avg=2624.940`
+  - `continuous_decode_completed_correspondence_latency_ms_max=5258`
+  - `continuous_decode_completed_correspondence_latency_slow_count=301`
+  - `continuous_decode_completed_correspondence_latest_latency_ms=5251`
+  - completed frame range `4..373`
+- Pending / gap evidence confirms the same backlog shape:
+  - `continuous_decode_pending_correspondence_count=137`
+  - `continuous_decode_pending_correspondence_age_ms_avg=2540.606`
+  - `continuous_decode_pending_correspondence_age_ms_max=5300`
+  - pending frame range `371..529`
+  - `continuous_decode_latest_input_to_output_frame_gap=156`
+  - `continuous_decode_output_lag_to_selected_frames=150`
+- Output pipeline evidence:
+  - source is about `29fps`
+  - continuous output is `17.151fps`
+  - `continuous_decode_output_bytes_per_sec=15806358.974`
+  - `continuous_decode_output_frame_interval_ms_avg=53.770`
+  - reader full-frame avg `57.488ms`, max `1176ms`, slow count `43`
+- Verdict:
+  - completed latency and pending age are both around `2.5s` or more
+  - every completed correspondence exceeded the `66ms` slow threshold
+  - not-ready `19` is small compared with stale `228`
+  - continuous output pipeline is not keeping up with source cadence
+  - threshold tuning alone is insufficient
+  - next candidate should move to raw BGRA pipe / stdout throughput and FFmpeg
+    scale path split planning
+
 - latest output availability rerun:
   - `S:\stream-sync\manual-logs\two-client-output-availability-rerun-20260527-173716`
 - Source side is healthy for this slice:
@@ -245,10 +289,15 @@ Boundary:
 
 ## Next Recommendation
 - First code slice: completed correspondence latency diagnostics is implemented.
-- Next rerun should compare pending backlog age against completed latency and
-  reader full-frame elapsed.
-- Then compare whether stdout/raw BGRA pipe throughput or FFmpeg scale path
-  split should be the first opt-in behavior experiment.
+- Latest rerun validates that both pending backlog and completed outputs are
+  delayed by seconds, so the next code candidate should not be threshold
+  tuning.
+- Next candidate order:
+  1. stdout/raw BGRA pipe throughput opt-in experiment
+  2. FFmpeg scale path split opt-in experiment
+  3. reader blocking phase diagnostics
+- Keep one-shot suppression as strong contributor evidence, but not the current
+  main bottleneck.
 - Keep threshold branch HOLD / candidate and one-shot suppression as supporting
   evidence, not the next main default policy.
 - Production Readiness remains FAIL.

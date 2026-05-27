@@ -1104,6 +1104,40 @@ latest output availability rerun verdict:
      reader behavior
 7. Production Readiness remains FAIL.
 
+latest completed correspondence rerun verdict:
+
+1. latest rerun:
+   - `S:\stream-sync\manual-logs\two-client-completed-correspondence-rerun-20260528-010504`
+2. validity:
+   - FFmpeg preflight succeeded with `8.1.1-full_build-www.gyan.dev`
+   - switcher binary:
+     `C:\streamsync-target\stream-sync-rerun\debug\stream-sync-switcher.exe`
+     LastWriteTime `2026/05/28 1:05:18`
+3. client / server / feed:
+   - client1/client2 `frames_sent=900` at `29.443fps` / `29.112fps`
+   - server `frames_queued=1800`
+   - classify these as PASS for the current slot0 / two-real / opt-in scope
+4. continuous output / completed correspondence:
+   - output `301` frames at `17.151fps`
+   - completed correspondence count `301`
+   - completed latency avg/max/latest `2624.940ms` / `5258ms` / `5251ms`
+   - completed slow count `301` at threshold `66ms`
+   - pending correspondence `137`, avg/max `2540.606ms` / `5300ms`
+   - reader full-frame avg/max/slow `57.488ms` / `1176ms` / `43`
+5. lookup / availability:
+   - allowed lag `8`
+   - bounded lookup hits `0`
+   - render continuous use `0`
+   - stale `228` versus not-ready `19`
+6. interpretation:
+   - completed and pending correspondence are both seconds late
+   - continuous output pipeline is not keeping up with input/source cadence
+   - threshold tuning alone is insufficient
+   - next candidate moves to raw BGRA stdout throughput / FFmpeg scale path
+     split opt-in experiments, with reader blocking phase diagnostics after
+     that if needed
+7. Production Readiness remains FAIL.
+
 ## out of scope
 - request/response persistent decoder の復活
 - server / client / protocol code の変更
