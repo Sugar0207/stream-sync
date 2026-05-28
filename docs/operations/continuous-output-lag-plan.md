@@ -274,6 +274,10 @@ Current continuous runtime has three relevant queues/counters:
   - reader blocking phase diagnostics
   - keep it slot0 / two-real / opt-in continuous only
   - keep sync-first stale-frame safety explicit
+- 2026-05-28 first BGR24 conversion optimization slice is implemented for
+  `scaled-bgr24` only. It uses safe in-place reverse scalar expansion and adds
+  conversion reuse/allocation/bytes/mode summary fields. Default BGRA remains
+  the safe runtime path until human rerun evidence shows otherwise.
 - Candidate comparison now lives in
   `docs/operations/continuous-output-availability-plan.md`.
 - Detailed output pipeline experiment design now lives in

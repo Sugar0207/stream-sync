@@ -339,6 +339,10 @@ experiment design now lives in
      composition, GDI, and OBS-friendly output are BGRA-oriented.
    - Source of truth:
      `docs/operations/continuous-pixel-conversion-plan.md`.
+   - 2026-05-28 first conversion optimization slice is implemented for
+     `scaled-bgr24` only. It uses safe in-place reverse scalar expansion from
+     BGR24 to BGRA and adds conversion reuse/allocation/bytes/mode summary
+     fields. Default BGRA remains unchanged.
    - Source-size raw output may be heavier than the current `921600`
      bytes/frame path, so do not adopt it without total pipeline evidence.
 

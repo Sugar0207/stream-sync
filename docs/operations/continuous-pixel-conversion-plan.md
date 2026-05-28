@@ -105,6 +105,32 @@ First safe code slice if selected:
   drops enough that end-to-end output throughput / completed latency no longer
   regresses versus default BGRA.
 
+Implementation status:
+
+- 2026-05-28 first conversion optimization code slice implemented for
+  `scaled-bgr24` only.
+- Default BGRA behavior is unchanged.
+- The reader now allocates the final BGRA-sized output buffer for
+  `scaled-bgr24`, reads only the BGR24 pipe payload into the front of that
+  buffer, then expands BGR24 to BGRA in-place with a safe reverse scalar loop.
+- This avoids the previous extra conversion output `Vec` and repeated small
+  append path while preserving the renderer-facing BGRA frame contract.
+- Diagnostic meaning:
+  - reuse count increments when the final BGRA frame buffer is reused as the
+    conversion target.
+  - allocation count tracks separate conversion-buffer allocation and should
+    remain `0` for the optimized `scaled-bgr24` path.
+- New summary fields:
+  - `continuous_decode_output_pixel_convert_buffer_reuse_count`
+  - `continuous_decode_output_pixel_convert_buffer_allocation_count`
+  - `continuous_decode_output_pixel_convert_bytes_written_total`
+  - `continuous_decode_output_pixel_convert_bytes_written_per_frame`
+  - `continuous_decode_output_pixel_convert_mode`
+- Expected optimized mode value:
+  - `bgr24-in-place-safe-scalar`
+- Adoption status remains HOLD / FAIL until a human rerun compares the optimized
+  `scaled-bgr24` path against default BGRA.
+
 ## Direct BGR24 Render Path
 Question:
 

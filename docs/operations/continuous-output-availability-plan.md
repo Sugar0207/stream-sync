@@ -207,6 +207,11 @@ Last updated: 2026-05-28
     correspondence backlog
   - verdict: wiring and reader improvement PASS, raw pipe bytes PARTIAL PASS,
     but adoption HOLD / FAIL due to BGR24-to-BGRA conversion cost
+- 2026-05-28 first conversion optimization slice is implemented for
+  `scaled-bgr24` only. It keeps the renderer-facing BGRA contract but expands
+  BGR24 to BGRA in-place with a safe reverse scalar loop and adds conversion
+  reuse/allocation/bytes/mode summary fields. Adoption remains HOLD until human
+  rerun evidence exists.
 - Next candidate order:
   1. BGR24 conversion optimization docs-first review, then a narrow opt-in
      conversion optimization slice if selected

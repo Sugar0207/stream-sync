@@ -2119,6 +2119,11 @@ struct SwitcherFourViewTwoRealHandoffPreviewLoopSummary {
     continuous_decode_output_pixel_convert_elapsed_ms: u128,
     continuous_decode_output_pixel_convert_elapsed_ms_max: u128,
     continuous_decode_output_pixel_convert_count: u32,
+    continuous_decode_output_pixel_convert_buffer_reuse_count: u32,
+    continuous_decode_output_pixel_convert_buffer_allocation_count: u32,
+    continuous_decode_output_pixel_convert_bytes_written_total: usize,
+    continuous_decode_output_pixel_convert_bytes_written_per_frame: usize,
+    continuous_decode_output_pixel_convert_mode: String,
     continuous_decode_competing_one_shot_decode_elapsed_ms: u128,
     continuous_decode_competing_one_shot_attempt_count: u32,
     continuous_decode_slot0_one_shot_suppression_enabled: bool,
@@ -2813,6 +2818,11 @@ struct TwoRealPreviewLoopRuntimeTiming {
     continuous_decode_output_pixel_convert_elapsed_ms: u128,
     continuous_decode_output_pixel_convert_elapsed_ms_max: u128,
     continuous_decode_output_pixel_convert_count: u32,
+    continuous_decode_output_pixel_convert_buffer_reuse_count: u32,
+    continuous_decode_output_pixel_convert_buffer_allocation_count: u32,
+    continuous_decode_output_pixel_convert_bytes_written_total: usize,
+    continuous_decode_output_pixel_convert_bytes_written_per_frame: usize,
+    continuous_decode_output_pixel_convert_mode: Option<String>,
     continuous_decode_competing_one_shot_decode_elapsed_ms: u128,
     continuous_decode_competing_one_shot_attempt_count: u32,
     continuous_decode_slot0_one_shot_suppression_enabled: bool,
@@ -3244,6 +3254,10 @@ struct TwoRealContinuousDecodeOutput {
     output_pipe_bytes_len: usize,
     pixel_convert_elapsed_ms: u128,
     pixel_convert_count: u32,
+    pixel_convert_buffer_reuse_count: u32,
+    pixel_convert_buffer_allocation_count: u32,
+    pixel_convert_bytes_written: usize,
+    pixel_convert_mode: &'static str,
     reader_emitted_at: Instant,
 }
 
@@ -4268,6 +4282,19 @@ impl TwoRealContinuousDecodeRuntime {
                     timing.continuous_decode_output_pixel_convert_count = timing
                         .continuous_decode_output_pixel_convert_count
                         .saturating_add(output.pixel_convert_count);
+                    timing.continuous_decode_output_pixel_convert_buffer_reuse_count = timing
+                        .continuous_decode_output_pixel_convert_buffer_reuse_count
+                        .saturating_add(output.pixel_convert_buffer_reuse_count);
+                    timing.continuous_decode_output_pixel_convert_buffer_allocation_count = timing
+                        .continuous_decode_output_pixel_convert_buffer_allocation_count
+                        .saturating_add(output.pixel_convert_buffer_allocation_count);
+                    timing.continuous_decode_output_pixel_convert_bytes_written_total = timing
+                        .continuous_decode_output_pixel_convert_bytes_written_total
+                        .saturating_add(output.pixel_convert_bytes_written);
+                    if output.pixel_convert_count > 0 {
+                        timing.continuous_decode_output_pixel_convert_mode =
+                            Some(output.pixel_convert_mode.to_string());
+                    }
                     if let Some(last_output_at) = self.last_output_at {
                         let output_interval_ms = output
                             .reader_emitted_at
@@ -4573,7 +4600,12 @@ fn two_real_continuous_ffmpeg_reader_loop(
 ) {
     loop {
         let read_start = Instant::now();
-        let mut pixels = vec![0u8; expected_len];
+        let mut pixels = match output_pipeline_experiment_mode {
+            TwoRealContinuousOutputPipelineExperimentMode::Default => vec![0u8; expected_len],
+            TwoRealContinuousOutputPipelineExperimentMode::ScaledBgr24 => {
+                vec![0u8; output_width as usize * output_height as usize * 4]
+            }
+        };
         diagnostics
             .stdout_read_attempt_count
             .fetch_add(1, Ordering::Relaxed);
@@ -4589,7 +4621,7 @@ fn two_real_continuous_ffmpeg_reader_loop(
         stdout_reader_waiting.store(1, Ordering::Relaxed);
         let mut bytes_read_total = 0usize;
         while bytes_read_total < expected_len {
-            match stdout.read(&mut pixels[bytes_read_total..]) {
+            match stdout.read(&mut pixels[bytes_read_total..expected_len]) {
                 Ok(0) => {
                     stdout_reader_waiting.store(0, Ordering::Relaxed);
                     diagnostics
@@ -4654,17 +4686,33 @@ fn two_real_continuous_ffmpeg_reader_loop(
             .stdout_partial_bytes_read
             .store(0, Ordering::Relaxed);
         let stdout_read_elapsed_ms = read_start.elapsed().as_millis();
-        let output_pipe_bytes_len = pixels.len();
+        let output_pipe_bytes_len = expected_len;
         let convert_start = Instant::now();
-        let (pixels, pixel_convert_elapsed_ms, pixel_convert_count) =
-            match output_pipeline_experiment_mode {
-                TwoRealContinuousOutputPipelineExperimentMode::Default => (pixels, 0, 0),
-                TwoRealContinuousOutputPipelineExperimentMode::ScaledBgr24 => (
-                    convert_bgr24_to_bgra8(&pixels),
+        let (
+            pixels,
+            pixel_convert_elapsed_ms,
+            pixel_convert_count,
+            pixel_convert_buffer_reuse_count,
+            pixel_convert_buffer_allocation_count,
+            pixel_convert_bytes_written,
+            pixel_convert_mode,
+        ) = match output_pipeline_experiment_mode {
+            TwoRealContinuousOutputPipelineExperimentMode::Default => {
+                (pixels, 0, 0, 0, 0, 0, "none")
+            }
+            TwoRealContinuousOutputPipelineExperimentMode::ScaledBgr24 => {
+                let bytes_written = convert_bgr24_to_bgra8_in_place(&mut pixels, expected_len);
+                (
+                    pixels,
                     convert_start.elapsed().as_millis(),
                     1,
-                ),
-            };
+                    1,
+                    0,
+                    bytes_written,
+                    "bgr24-in-place-safe-scalar",
+                )
+            }
+        };
         let metadata = match correspondence.lock() {
             Ok(mut queue) => queue.pop_front(),
             Err(_) => {
@@ -4694,6 +4742,10 @@ fn two_real_continuous_ffmpeg_reader_loop(
                     output_pipe_bytes_len,
                     pixel_convert_elapsed_ms,
                     pixel_convert_count,
+                    pixel_convert_buffer_reuse_count,
+                    pixel_convert_buffer_allocation_count,
+                    pixel_convert_bytes_written,
+                    pixel_convert_mode,
                     reader_emitted_at: Instant::now(),
                 },
             ))
@@ -4704,12 +4756,31 @@ fn two_real_continuous_ffmpeg_reader_loop(
     }
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
 fn convert_bgr24_to_bgra8(pixels: &[u8]) -> Vec<u8> {
-    let mut output = Vec::with_capacity(pixels.len() / 3 * 4);
-    for chunk in pixels.chunks_exact(3) {
-        output.extend_from_slice(&[chunk[0], chunk[1], chunk[2], 255]);
-    }
+    let mut output = vec![0u8; pixels.len() / 3 * 4];
+    output[..pixels.len()].copy_from_slice(pixels);
+    convert_bgr24_to_bgra8_in_place(&mut output, pixels.len());
     output
+}
+
+fn convert_bgr24_to_bgra8_in_place(pixels: &mut [u8], bgr_len: usize) -> usize {
+    debug_assert_eq!(bgr_len % 3, 0);
+    let pixel_count = bgr_len / 3;
+    let bgra_len = pixel_count * 4;
+    debug_assert!(pixels.len() >= bgra_len);
+    for pixel_index in (0..pixel_count).rev() {
+        let source_index = pixel_index * 3;
+        let target_index = pixel_index * 4;
+        let b = pixels[source_index];
+        let g = pixels[source_index + 1];
+        let r = pixels[source_index + 2];
+        pixels[target_index] = b;
+        pixels[target_index + 1] = g;
+        pixels[target_index + 2] = r;
+        pixels[target_index + 3] = 255;
+    }
+    bgra_len
 }
 
 fn two_real_continuous_ffmpeg_stderr_loop(
@@ -7476,6 +7547,25 @@ where
             .continuous_decode_output_pixel_convert_elapsed_ms_max,
         continuous_decode_output_pixel_convert_count: timing
             .continuous_decode_output_pixel_convert_count,
+        continuous_decode_output_pixel_convert_buffer_reuse_count: timing
+            .continuous_decode_output_pixel_convert_buffer_reuse_count,
+        continuous_decode_output_pixel_convert_buffer_allocation_count: timing
+            .continuous_decode_output_pixel_convert_buffer_allocation_count,
+        continuous_decode_output_pixel_convert_bytes_written_total: timing
+            .continuous_decode_output_pixel_convert_bytes_written_total,
+        continuous_decode_output_pixel_convert_bytes_written_per_frame: if timing
+            .continuous_decode_output_pixel_convert_count
+            > 0
+        {
+            timing.continuous_decode_output_pixel_convert_bytes_written_total
+                / timing.continuous_decode_output_pixel_convert_count as usize
+        } else {
+            0
+        },
+        continuous_decode_output_pixel_convert_mode: timing
+            .continuous_decode_output_pixel_convert_mode
+            .clone()
+            .unwrap_or_else(|| "none".to_string()),
         continuous_decode_competing_one_shot_decode_elapsed_ms: timing
             .continuous_decode_competing_one_shot_decode_elapsed_ms,
         continuous_decode_competing_one_shot_attempt_count: timing
@@ -12528,7 +12618,7 @@ fn format_four_view_two_real_handoff_preview_loop_summary(
         format_optional_u32(summary.output_height),
     );
     format!(
-        "{summary_line} continuous_decode_ffmpeg_low_latency_args_enabled={} continuous_decode_ffmpeg_probe_args_enabled={} continuous_decode_ffmpeg_loglevel={} continuous_decode_stdout_first_byte_seen={} continuous_decode_stdout_first_byte_elapsed_ms={} continuous_decode_stdout_partial_bytes_read={} continuous_decode_stdout_partial_read_count={} continuous_decode_stdout_expected_frame_bytes={} continuous_decode_stdout_read_waiting_for_full_frame={} continuous_feed_enabled={} continuous_feed_attempt_count={} continuous_feed_handoff_request_count={} continuous_feed_frame_received_count={} continuous_feed_no_frame_count={} continuous_feed_handoff_error_count={} continuous_feed_enqueued_count={} continuous_feed_skipped_count={} continuous_feed_skip_reason_counts={} continuous_feed_dropped_stale_input_count={} continuous_feed_latest_received_frame_id={} continuous_feed_latest_enqueued_frame_id={} continuous_decode_input_from_feeder_count={} continuous_decode_input_from_render_demand_count={} continuous_decode_feeder_lag_to_selected={} continuous_decode_render_exact_hit_count={} continuous_decode_render_miss_stale_count={} continuous_decode_render_miss_not_ready_count={} continuous_decode_bounded_lookup_enabled={} continuous_decode_bounded_lookup_allowed_lag_frames={} continuous_decode_bounded_lookup_hit_count={} continuous_decode_bounded_lookup_used_frame_id={} continuous_decode_bounded_lookup_requested_frame_id={} continuous_decode_bounded_lookup_lag_frames={} continuous_decode_bounded_lookup_rejected_stale_count={} continuous_decode_bounded_lookup_rejected_future_count={} continuous_decode_bounded_lookup_rejected_not_ready_count={} continuous_decode_output_availability_not_ready_count={} continuous_decode_output_availability_stale_count={} continuous_decode_output_availability_future_count={} continuous_decode_bounded_lookup_fallback_to_one_shot_count={} continuous_decode_render_used_exact_count={} continuous_decode_render_used_bounded_lag_count={} continuous_decode_pending_correspondence_count={} continuous_decode_pending_correspondence_age_ms_max={} continuous_decode_pending_correspondence_age_ms_avg={} continuous_decode_pending_correspondence_oldest_frame_id={} continuous_decode_pending_correspondence_newest_frame_id={} continuous_decode_completed_correspondence_count={} continuous_decode_completed_correspondence_latency_ms_avg={} continuous_decode_completed_correspondence_latency_ms_max={} continuous_decode_completed_correspondence_latency_slow_count={} continuous_decode_completed_correspondence_latency_slow_threshold_ms={} continuous_decode_completed_correspondence_frame_id_min={} continuous_decode_completed_correspondence_frame_id_max={} continuous_decode_completed_correspondence_latest_latency_ms={} continuous_decode_latest_input_minus_latest_output_lag={} continuous_decode_latest_input_to_output_frame_gap={} continuous_decode_pending_correspondence_frame_id_min={} continuous_decode_pending_correspondence_frame_id_max={} continuous_decode_input_to_output_lag_frames_max={} continuous_decode_output_lag_to_selected_frames={} continuous_decode_latest_selected_to_output_frame_gap={} continuous_decode_output_throughput_fps={} continuous_decode_reader_full_frame_elapsed_ms_max={} continuous_decode_reader_full_frame_elapsed_ms_avg={} continuous_decode_reader_full_frame_slow_count={} continuous_decode_reader_full_frame_slow_threshold_ms={} continuous_decode_output_bytes_total={} continuous_decode_output_bytes_per_sec={} continuous_decode_output_frame_interval_ms_avg={} continuous_decode_output_frame_interval_ms_max={} continuous_decode_stdout_read_throughput_bytes_per_ms={} continuous_decode_ffmpeg_scale_enabled={} continuous_decode_ffmpeg_output_pixel_format={} continuous_decode_output_pipeline_experiment_mode={} continuous_decode_output_bytes_per_frame={} continuous_decode_output_pipe_bytes_saved_per_frame={} continuous_decode_output_pixel_convert_elapsed_ms={} continuous_decode_output_pixel_convert_elapsed_ms_max={} continuous_decode_output_pixel_convert_count={} continuous_decode_competing_one_shot_decode_elapsed_ms={} continuous_decode_competing_one_shot_attempt_count={} continuous_decode_slot0_one_shot_suppression_enabled={} continuous_decode_slot0_one_shot_suppressed_count={} continuous_decode_slot0_one_shot_suppressed_reason_counts={} continuous_decode_slot0_one_shot_suppressed_render_safety_counts={} continuous_decode_slot0_one_shot_suppressed_continuous_not_ready_count={} continuous_decode_slot0_one_shot_suppressed_stale_count={} continuous_decode_queue_drop_reason_counts={}",
+        "{summary_line} continuous_decode_ffmpeg_low_latency_args_enabled={} continuous_decode_ffmpeg_probe_args_enabled={} continuous_decode_ffmpeg_loglevel={} continuous_decode_stdout_first_byte_seen={} continuous_decode_stdout_first_byte_elapsed_ms={} continuous_decode_stdout_partial_bytes_read={} continuous_decode_stdout_partial_read_count={} continuous_decode_stdout_expected_frame_bytes={} continuous_decode_stdout_read_waiting_for_full_frame={} continuous_feed_enabled={} continuous_feed_attempt_count={} continuous_feed_handoff_request_count={} continuous_feed_frame_received_count={} continuous_feed_no_frame_count={} continuous_feed_handoff_error_count={} continuous_feed_enqueued_count={} continuous_feed_skipped_count={} continuous_feed_skip_reason_counts={} continuous_feed_dropped_stale_input_count={} continuous_feed_latest_received_frame_id={} continuous_feed_latest_enqueued_frame_id={} continuous_decode_input_from_feeder_count={} continuous_decode_input_from_render_demand_count={} continuous_decode_feeder_lag_to_selected={} continuous_decode_render_exact_hit_count={} continuous_decode_render_miss_stale_count={} continuous_decode_render_miss_not_ready_count={} continuous_decode_bounded_lookup_enabled={} continuous_decode_bounded_lookup_allowed_lag_frames={} continuous_decode_bounded_lookup_hit_count={} continuous_decode_bounded_lookup_used_frame_id={} continuous_decode_bounded_lookup_requested_frame_id={} continuous_decode_bounded_lookup_lag_frames={} continuous_decode_bounded_lookup_rejected_stale_count={} continuous_decode_bounded_lookup_rejected_future_count={} continuous_decode_bounded_lookup_rejected_not_ready_count={} continuous_decode_output_availability_not_ready_count={} continuous_decode_output_availability_stale_count={} continuous_decode_output_availability_future_count={} continuous_decode_bounded_lookup_fallback_to_one_shot_count={} continuous_decode_render_used_exact_count={} continuous_decode_render_used_bounded_lag_count={} continuous_decode_pending_correspondence_count={} continuous_decode_pending_correspondence_age_ms_max={} continuous_decode_pending_correspondence_age_ms_avg={} continuous_decode_pending_correspondence_oldest_frame_id={} continuous_decode_pending_correspondence_newest_frame_id={} continuous_decode_completed_correspondence_count={} continuous_decode_completed_correspondence_latency_ms_avg={} continuous_decode_completed_correspondence_latency_ms_max={} continuous_decode_completed_correspondence_latency_slow_count={} continuous_decode_completed_correspondence_latency_slow_threshold_ms={} continuous_decode_completed_correspondence_frame_id_min={} continuous_decode_completed_correspondence_frame_id_max={} continuous_decode_completed_correspondence_latest_latency_ms={} continuous_decode_latest_input_minus_latest_output_lag={} continuous_decode_latest_input_to_output_frame_gap={} continuous_decode_pending_correspondence_frame_id_min={} continuous_decode_pending_correspondence_frame_id_max={} continuous_decode_input_to_output_lag_frames_max={} continuous_decode_output_lag_to_selected_frames={} continuous_decode_latest_selected_to_output_frame_gap={} continuous_decode_output_throughput_fps={} continuous_decode_reader_full_frame_elapsed_ms_max={} continuous_decode_reader_full_frame_elapsed_ms_avg={} continuous_decode_reader_full_frame_slow_count={} continuous_decode_reader_full_frame_slow_threshold_ms={} continuous_decode_output_bytes_total={} continuous_decode_output_bytes_per_sec={} continuous_decode_output_frame_interval_ms_avg={} continuous_decode_output_frame_interval_ms_max={} continuous_decode_stdout_read_throughput_bytes_per_ms={} continuous_decode_ffmpeg_scale_enabled={} continuous_decode_ffmpeg_output_pixel_format={} continuous_decode_output_pipeline_experiment_mode={} continuous_decode_output_bytes_per_frame={} continuous_decode_output_pipe_bytes_saved_per_frame={} continuous_decode_output_pixel_convert_elapsed_ms={} continuous_decode_output_pixel_convert_elapsed_ms_max={} continuous_decode_output_pixel_convert_count={} continuous_decode_output_pixel_convert_buffer_reuse_count={} continuous_decode_output_pixel_convert_buffer_allocation_count={} continuous_decode_output_pixel_convert_bytes_written_total={} continuous_decode_output_pixel_convert_bytes_written_per_frame={} continuous_decode_output_pixel_convert_mode={} continuous_decode_competing_one_shot_decode_elapsed_ms={} continuous_decode_competing_one_shot_attempt_count={} continuous_decode_slot0_one_shot_suppression_enabled={} continuous_decode_slot0_one_shot_suppressed_count={} continuous_decode_slot0_one_shot_suppressed_reason_counts={} continuous_decode_slot0_one_shot_suppressed_render_safety_counts={} continuous_decode_slot0_one_shot_suppressed_continuous_not_ready_count={} continuous_decode_slot0_one_shot_suppressed_stale_count={} continuous_decode_queue_drop_reason_counts={}",
         summary.continuous_decode_ffmpeg_low_latency_args_enabled,
         summary.continuous_decode_ffmpeg_probe_args_enabled,
         sanitize_summary_value(&summary.continuous_decode_ffmpeg_loglevel),
@@ -12609,6 +12699,11 @@ fn format_four_view_two_real_handoff_preview_loop_summary(
         summary.continuous_decode_output_pixel_convert_elapsed_ms,
         summary.continuous_decode_output_pixel_convert_elapsed_ms_max,
         summary.continuous_decode_output_pixel_convert_count,
+        summary.continuous_decode_output_pixel_convert_buffer_reuse_count,
+        summary.continuous_decode_output_pixel_convert_buffer_allocation_count,
+        summary.continuous_decode_output_pixel_convert_bytes_written_total,
+        summary.continuous_decode_output_pixel_convert_bytes_written_per_frame,
+        sanitize_summary_value(&summary.continuous_decode_output_pixel_convert_mode),
         summary.continuous_decode_competing_one_shot_decode_elapsed_ms,
         summary.continuous_decode_competing_one_shot_attempt_count,
         summary.continuous_decode_slot0_one_shot_suppression_enabled,
@@ -14008,6 +14103,32 @@ mod tests {
             super::convert_bgr24_to_bgra8(&[10, 20, 30, 40, 50, 60]),
             vec![10, 20, 30, 255, 40, 50, 60, 255]
         );
+    }
+
+    #[test]
+    fn switcher_two_real_continuous_bgr24_output_converts_in_place() {
+        let mut pixels = vec![10, 20, 30, 40, 50, 60, 0, 0];
+        let bytes_written = super::convert_bgr24_to_bgra8_in_place(&mut pixels, 6);
+
+        assert_eq!(bytes_written, 8);
+        assert_eq!(pixels, vec![10, 20, 30, 255, 40, 50, 60, 255]);
+    }
+
+    #[test]
+    fn switcher_two_real_continuous_bgr24_output_converts_expected_scaled_frame_size() {
+        let bgr_len = 640 * 360 * 3;
+        let bgra_len = 640 * 360 * 4;
+        let mut pixels = vec![0u8; bgra_len];
+        pixels[0..3].copy_from_slice(&[1, 2, 3]);
+        pixels[bgr_len - 3..bgr_len].copy_from_slice(&[4, 5, 6]);
+
+        let bytes_written = super::convert_bgr24_to_bgra8_in_place(&mut pixels, bgr_len);
+
+        assert_eq!(bgr_len, 691_200);
+        assert_eq!(bgra_len, 921_600);
+        assert_eq!(bytes_written, bgra_len);
+        assert_eq!(&pixels[0..4], &[1, 2, 3, 255]);
+        assert_eq!(&pixels[bgra_len - 4..bgra_len], &[4, 5, 6, 255]);
     }
 
     #[test]
@@ -16708,6 +16829,15 @@ mod tests {
         assert!(formatted.contains("continuous_decode_output_pixel_convert_elapsed_ms=0"));
         assert!(formatted.contains("continuous_decode_output_pixel_convert_elapsed_ms_max=0"));
         assert!(formatted.contains("continuous_decode_output_pixel_convert_count=0"));
+        assert!(formatted.contains("continuous_decode_output_pixel_convert_buffer_reuse_count=0"));
+        assert!(
+            formatted.contains("continuous_decode_output_pixel_convert_buffer_allocation_count=0")
+        );
+        assert!(formatted.contains("continuous_decode_output_pixel_convert_bytes_written_total=0"));
+        assert!(
+            formatted.contains("continuous_decode_output_pixel_convert_bytes_written_per_frame=0")
+        );
+        assert!(formatted.contains("continuous_decode_output_pixel_convert_mode=none"));
         assert!(formatted.contains("continuous_decode_competing_one_shot_decode_elapsed_ms=0"));
         assert!(formatted.contains("continuous_decode_competing_one_shot_attempt_count=0"));
         assert!(formatted.contains("continuous_decode_slot0_one_shot_suppression_enabled=false"));

@@ -356,6 +356,12 @@ Conversion follow-up:
   - safe scalar conversion with pre-sized output
 - Direct BGR24 render remains docs-first only until the BGRA-oriented decoded
   frame, composition, GDI, and OBS-friendly output contracts are reviewed.
+- 2026-05-28 first conversion optimization slice is implemented for
+  `scaled-bgr24`: BGR24 is expanded to BGRA in-place with a safe reverse scalar
+  loop, and summary reports reuse/allocation counts, bytes written, and
+  conversion mode. The optimized path reuses the final BGRA frame buffer as the
+  conversion target and should not allocate a separate conversion buffer.
+  Default BGRA is unchanged.
 
 ## FFmpeg Scale Path Split Experiment Plan
 Current baseline:

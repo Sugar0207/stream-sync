@@ -2,6 +2,99 @@
 
 ## 2026-05-28
 ### Type
+- Codex implementation
+
+### Work
+- Implemented the first BGR24-to-BGRA conversion optimization slice for the
+  slot0 / two-real / opt-in continuous `scaled-bgr24` path.
+- Kept default behavior unchanged:
+  - default output pipeline mode remains BGRA
+  - `scaled-bgr24` remains opt-in
+  - no direct BGR24 render path
+  - no FFmpeg scale path experiment
+  - no reader blocking phase diagnostics
+  - no threshold, suppression, lookup, fallback, feed, slot1, 4-client,
+    server/client/protocol, persistent decoder, GPU, or one-shot fallback
+    change
+- Changed the `scaled-bgr24` reader conversion from a separate conversion
+  `Vec` / append path to safe in-place reverse scalar expansion:
+  - read BGR24 pipe payload into the front of a BGRA-sized frame buffer
+  - expand from the end so unread BGR bytes are not overwritten
+  - preserve renderer-facing BGRA output
+  - count this as final BGRA frame-buffer reuse for conversion, with no
+    separate conversion-buffer allocation on the optimized path
+- Added summary diagnostics:
+  - `continuous_decode_output_pixel_convert_buffer_reuse_count`
+  - `continuous_decode_output_pixel_convert_buffer_allocation_count`
+  - `continuous_decode_output_pixel_convert_bytes_written_total`
+  - `continuous_decode_output_pixel_convert_bytes_written_per_frame`
+  - `continuous_decode_output_pixel_convert_mode`
+- Focused `bgr24` tests caught an in-place overlap bug in the first reverse
+  scalar loop; fixed it by staging B/G/R source bytes in locals before writing
+  the BGRA destination bytes.
+- Updated TODO and continuous output pipeline / throughput / availability /
+  lag / pixel conversion docs.
+- Did not run runtime rerun from Codex.
+
+### Changed Files
+- `apps/switcher/src/main.rs`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+- `docs/operations/continuous-pixel-conversion-plan.md`
+- `docs/operations/continuous-output-pipeline-experiment-plan.md`
+- `docs/operations/continuous-output-throughput-plan.md`
+- `docs/operations/continuous-output-availability-plan.md`
+- `docs/operations/continuous-output-lag-plan.md`
+
+### Decision
+- Use safe scalar in-place conversion for the first slice.
+- Treat `continuous_decode_output_pixel_convert_buffer_allocation_count` as
+  conversion-buffer allocation count, not the final frame buffer allocation.
+- Do not implement unsafe / SIMD in this slice.
+- Do not widen to direct render because the render/composition/GDI/OBS-friendly
+  output contract remains BGRA-oriented.
+- Keep `scaled-bgr24` adoption HOLD until human rerun evidence exists.
+- Production Readiness remains FAIL.
+
+### Validation
+- `cargo fmt`
+  - result: PASS
+- `cargo check -p stream-sync-switcher`
+  - result: PASS
+  - note: existing dead-code warnings remain in unrelated helpers
+- `cargo test -p stream-sync-switcher switcher_four_view_two_real_handoff_preview_summary_formats_expected_fields -- --nocapture`
+  - result: PASS
+  - note: sandbox runner pipe failed to start the command, so it was rerun with
+    approved escalation.
+- `cargo test -p stream-sync-switcher switcher_two_real_handoff_preview_options -- --nocapture`
+  - result: PASS
+  - note: sandbox runner pipe failed to start the command, so it was rerun with
+    approved escalation.
+- `cargo test -p stream-sync-switcher bgr24 -- --nocapture`
+  - result: PASS
+  - note: first run caught the overlap bug above; rerun passed after the fix.
+- `git diff --check`
+  - result: PASS
+  - note: LF/CRLF warnings only
+
+### TODO Update
+- Completed:
+  - first BGR24 conversion optimization code slice.
+  - in-place conversion overlap bug fixed before completion.
+- Added:
+  - conversion buffer reuse/allocation/bytes/mode summary diagnostics.
+  - next human rerun should compare optimized `scaled-bgr24` against default
+    BGRA baseline.
+- Held:
+  - direct BGR24 render path
+  - FFmpeg scale path experiment
+  - reader blocking phase diagnostics
+  - unsafe / SIMD conversion
+  - scaled-bgr24 default promotion
+  - threshold / suppression / fallback / feed / slot1 / 4-client / GPU changes
+
+## 2026-05-28
+### Type
 - Codex docs-first planning
 
 ### Work
