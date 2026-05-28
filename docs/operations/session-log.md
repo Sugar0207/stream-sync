@@ -2,6 +2,61 @@
 
 ## 2026-05-29
 ### Type
+- Codex docs-first architecture planning
+
+### Work
+- Added a `ProgramOutput` boundary plan based on the latest switcher
+  output/render/decode path investigation.
+- Kept the step docs-only:
+  - no ProgramOutput implementation
+  - no renderer rewrite
+  - no GPU / slot renderer implementation
+  - no current 4-view Preview behavior change
+  - no runtime behavior change
+
+### Decision
+- `PreviewOutput` is the human-facing multiview / monitoring output.
+  It may show 4 slots, selected border, labels, status overlays, diagnostics,
+  and may keep the current CPU-side composed BGRA canvas temporarily.
+- `ProgramOutput` is the OBS-facing selected-only output. It should render only
+  the currently selected client/source full-screen, without Preview labels,
+  debug UI, slot borders, or multiview layout by default.
+- The safest Program seam is after handoff / targetTime / decode selection and
+  before current 4-view BGRA composition. This lets Preview own multiview
+  composition/overlays while Program consumes the selected decoded source
+  directly.
+- Program selection should have its own state name/boundary, such as
+  `ProgramSelection` / `active_program_source`, based on `selected_client_id`
+  plus optional run/session identity and optional selected-slot provenance.
+  `Focused(slot_index)` remains Preview display state unless an explicit mapping
+  is later defined.
+- First implementation path should introduce the boundary/naming first, then
+  reuse decoded BGRA and `SwitcherWindowRenderRuntimeHook` for a temporary
+  full-window selected-frame Program renderer where safe. Waiting for a new
+  slot/GPU renderer is not required for the first Program slice.
+
+### Changed Files
+- `docs/operations/continuous-output-pipeline-experiment-plan.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### Validation
+- `git diff --check`
+  - result: PASS
+
+### TODO Update
+- Marked the ProgramOutput boundary plan as recorded.
+- Reordered next items toward:
+  1. minimal `PreviewOutput` / `ProgramOutput` naming or types without behavior
+     change
+  2. selected-only Program render path using existing BGRA/window render where
+     safe
+  3. OBS capturing Program only after Program exists
+- Kept `scaled-bgr24`, `no-scale-bgra`, and continuous decoder diagnostics as
+  opt-in/performance work, not blockers for ProgramOutput boundary planning.
+
+## 2026-05-29
+### Type
 - Codex investigation / docs-only architecture review
 
 ### Work

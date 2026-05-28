@@ -619,6 +619,95 @@ Boundary:
 - Keep the current four-view/two-real preview loops unchanged until that plan
   is explicit.
 
+## ProgramOutput boundary plan
+
+This plan records the target boundary only. It does not rename the current
+4-view output to Program and does not require renderer changes in this step.
+
+### Responsibility split
+
+- `PreviewOutput` is the human-facing multiview / monitoring output.
+  - It may show 4 slots, a selected border, labels, status overlays,
+    diagnostics, and other operator-facing UI.
+  - The current implementation may continue to use one CPU-side composed BGRA
+    canvas temporarily.
+  - The long-term target is slot layout rendering: fixed slot rectangles,
+    per-source frame rendering into each slot, then selected border / labels /
+    status overlays on top.
+- `ProgramOutput` is the OBS-facing selected-only output.
+  - It renders only the currently selected client/source full-screen.
+  - It should not include Preview labels, debug UI, slot borders, or the
+    multiview layout by default.
+  - Once implemented, it should be the only OBS Window Capture target.
+
+### Boundary seam
+
+The safest future seam for `ProgramOutput` is after handoff / targetTime /
+decode selection and before the current 4-view BGRA composition path.
+
+At that point the switcher has already selected or produced decoded BGRA frame
+data for sources, but it has not yet committed those frames to the Preview-only
+quad canvas. Splitting there lets `PreviewOutput` keep its multiview
+composition/overlay responsibilities while `ProgramOutput` consumes the selected
+source directly for full-window rendering. It also avoids treating Preview focus
+or layout rendering as the final broadcast output contract.
+
+### Selected source state ownership
+
+- `selected_client_id` / selected source identity is the safest Program-facing
+  owner because it follows the broadcast source instead of the Preview layout.
+  If frame identity needs to be disambiguated, carry the matching run/session
+  identity with it.
+- Selected slot index is useful operator input and provenance for the current
+  4-fixed-slot UI, but it is layout-coupled. It should map to a source rather
+  than become the Program state by itself.
+- `Focused(slot_index)` already behaves like Preview display state. Reusing it
+  silently as Program state would mix monitoring focus with broadcast selection.
+  If a focus action should also switch Program later, that mapping should be
+  explicit in code and docs.
+
+Recommended initial owner/name: introduce a Program-specific selection boundary
+such as `ProgramSelection` / `active_program_source` with
+`selected_client_id`, optional run/session identity, and optional
+`selected_slot_index` provenance. Do not make `Focused(slot_index)` the Program
+state name.
+
+### First implementation choice
+
+- Option A: reuse existing decoded BGRA frames and
+  `SwitcherWindowRenderRuntimeHook` as a temporary full-window selected-frame
+  renderer. This is small, but it is only safe after the Program boundary is
+  named separately.
+- Option B: introduce a minimal `PreviewOutput` / `ProgramOutput` boundary first
+  without behavior change, then add the selected-only render path behind that
+  boundary.
+- Option C: wait for a new renderer abstraction before Program output. This is
+  not required for the first Program slice and would delay the OBS separation.
+
+Recommended path: B first, then A. Create the output boundary and naming before
+adding behavior, then initially render Program by reusing the existing BGRA /
+window-render machinery where safe. Slot layout / GPU renderer work should stay
+as a later Preview optimization, not a blocker for Program separation.
+
+### Staged implementation plan
+
+1. Docs boundary plan only.
+2. Introduce minimal `PreviewOutput` / `ProgramOutput` naming or types without
+   behavior change.
+3. Add selected-only Program render path using existing BGRA/window render where
+   safe.
+4. Make OBS capture the Program window only.
+5. Later investigate slot layout rendering / GPU renderer for Preview.
+
+### Non-goals for the first Program slice
+
+- Do not implement Program output in this docs step.
+- Do not remove or change the current 4-view Preview behavior.
+- Do not convert Preview to GPU or slot rendering yet.
+- Do not call the current 4-view output Program.
+- Do not include Preview labels, diagnostics, or slot borders in Program by
+  default.
+
 ## Next Recommendation
 - First raw pipe / stdout throughput code slice is implemented as opt-in
   `scaled-bgr24`, and the first A/B rerun is now reflected.
