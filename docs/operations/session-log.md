@@ -1,5 +1,96 @@
 <!-- stream-sync/docs/operations/session-log.md -->
 
+## 2026-05-29
+### Type
+- Codex investigation / docs-only architecture review
+
+### Work
+- Inspected current switcher output/render/decode paths before any Program
+  output or slot-renderer architecture change.
+- Reviewed:
+  - four-view clean output loop
+  - one-real / two-real / four-real / focused / controlled handoff preview loops
+  - continuous decoder output pipeline experiment modes
+  - one-shot, persistent, and continuous FFmpeg decode paths
+  - BGRA/BGR24 buffer creation, conversion, copy, reuse, and diagnostics
+  - CPU-side QuadView BGRA composition
+  - OBS-friendly 1280x720 window render wrapper and persistent GDI path
+  - selected slot / focused preview / controlled preview concepts
+- Kept this step docs-only. No ProgramOutput implementation, renderer rewrite,
+  GPU/slot renderer conversion, runtime behavior change, or broad rename was
+  performed.
+
+### Findings
+- Decoded frames are produced as renderer-facing BGRA frames:
+  - one-shot / persistent FFmpeg decode hooks in `apps/switcher/src/lib.rs`
+  - opt-in two-real continuous decoder in `apps/switcher/src/main.rs`
+- The current 4-view / multiview path does create one CPU-side composed BGRA
+  canvas before rendering:
+  - `SwitcherFourViewQuadCompositionBoundary`
+  - `compose_four_view_quad_canvas`
+  - `SwitcherFourViewComposedFrame`
+- The two-real loop adds reuse and incremental-compose behavior, but the window
+  still receives one composed BGRA frame.
+- `SwitcherWindowRenderRuntimeHook` is a useful render abstraction, but it is
+  currently one-frame-oriented and not a slot renderer.
+- `SwitcherFourViewQuadRenderFacingConnectionOutput` is the cleanest current
+  seam before presentation because it preserves scheduler status, slot metadata,
+  and render readiness without owning a second pixel buffer.
+- OBS-facing output and human-facing Preview are currently mixed at the window
+  level:
+  - both use the stable clean output window title `StreamSync 4-view Output`
+  - the OBS-friendly wrapper scales/copies output to 1280x720
+  - no separate Program window/output exists yet
+- Selected-source concepts exist as Preview concepts:
+  - per-slot selected frame metadata
+  - controlled preview `AllView`
+  - controlled/focused preview `Focused(slot_index)`
+  - focused full-window render still belongs to the preview/clean-output family
+
+### Architecture Implication
+- Treat current CPU-side composed BGRA as the validated Preview compatibility
+  path, not as the long-term rendering architecture.
+- Do not rename current clean output to Program.
+- The safest future ProgramOutput seam is downstream of handoff/targetTime
+  source selection and decode, but before 4-view BGRA composition.
+- A future Preview slot renderer should likely attach around the current
+  render-facing / composition-render connection rather than inside FFmpeg
+  decode or named-pipe handoff.
+
+### Recommended Next Step
+- Add a docs-first ProgramOutput boundary plan:
+  - define PreviewOutput vs ProgramOutput responsibilities
+  - identify active-source state ownership
+  - decide whether first ProgramOutput reuses decoded BGRA and the existing
+    `SwitcherWindowRenderRuntimeHook`
+  - keep the first implementation, if selected later, separate from existing
+    4-view Preview behavior
+
+### Changed Files
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+- `docs/operations/continuous-output-pipeline-experiment-plan.md`
+
+### Decision
+- No code comments were added because the existing code already clearly names
+  the current path as composed BGRA / clean output / future OBS consumer, and a
+  docs-only diff better matches the investigation-first constraint.
+- ProgramOutput remains unimplemented.
+- Preview slot renderer / GPU renderer remains unimplemented.
+- Production Readiness remains FAIL.
+
+### Validation
+- `git diff --check`
+  - result: PASS
+  - note: LF/CRLF warnings only.
+
+### TODO Update
+- Updated current position with the switcher output/render path investigation.
+- Added ProgramOutput docs-first boundary planning as the next architecture
+  item.
+- Kept `no-scale-bgra` A/B and continuous decoder performance work as
+  diagnostics/opt-in only.
+
 ## 2026-05-28
 ### Type
 - Codex implementation

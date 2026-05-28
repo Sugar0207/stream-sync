@@ -2,7 +2,7 @@
 
 # Continuous Output Pipeline Experiment Plan
 
-Last updated: 2026-05-28
+Last updated: 2026-05-29
 
 ## Purpose
 - Design the next docs-first candidates after output availability diagnostics
@@ -529,6 +529,95 @@ Boundary:
 - Do not emit partial frames.
 - Do not change blocking semantics in the first diagnostic slice unless a later
   opt-in reader-buffering experiment is explicitly selected.
+
+## Switcher current output/render path investigation
+
+### Findings
+- Decoded frames are currently produced in two families:
+  - one-shot / persistent FFmpeg decode hooks in `apps/switcher/src/lib.rs`
+    produce `SwitcherDecodedFrame { pixel_format: Bgra8, pixels: Vec<u8> }`
+    from Annex B H.264 payloads.
+  - the opt-in two-real continuous decoder in `apps/switcher/src/main.rs`
+    feeds H.264 access units to a long-running FFmpeg process and reads raw
+    frames from stdout into the same renderer-facing BGRA contract.
+- The standard one-shot and request/response persistent decode paths ask
+  FFmpeg for `-pix_fmt bgra`; scaled output is represented by the requested
+  output width/height plus `scaled_output_enabled`.
+- The continuous decoder experiment modes are:
+  - `default`: FFmpeg scales to slot size and emits BGRA.
+  - `scaled-bgr24`: FFmpeg scales to slot size and emits BGR24; the reader
+    expands it back to BGRA in-place before the frame reaches render/composition.
+  - `no-scale-bgra`: FFmpeg emits source-size BGRA without the scale filter;
+    this is diagnostics-only and can multiply stdout bytes substantially.
+- The current 4-view / multiview path still creates one CPU-side composed BGRA
+  canvas before window rendering:
+  - `SwitcherFourViewQuadCompositionBoundary` builds a
+    `SwitcherFourViewComposedFrame`.
+  - `compose_four_view_quad_canvas` allocates/fills one BGRA canvas and copies
+    renderable slot frames into fixed 2x2 rects.
+  - the two-real loop can reuse a previous composed frame or perform an
+    incremental update, but the output presented to the window remains one
+    composed BGRA frame.
+- The render abstraction exists, but it is frame-oriented rather than
+  slot-renderer-oriented:
+  - `SwitcherWindowRenderRuntimeHook` accepts one `SwitcherWindowRenderRequest`
+    containing one `SwitcherDecodedFrameRenderInput`.
+  - `SwitcherFourViewQuadRenderFacingConnectionOutput` is the clearest
+    downstream seam before presentation because it preserves scheduler status,
+    slot metadata, and render readiness without owning a new pixel buffer.
+  - There is no current renderer backend that draws independent source frames
+    into slot rectangles directly.
+- OBS-facing output and human-facing preview are currently mixed at the window
+  level:
+  - the stable clean output window title is `StreamSync 4-view Output`.
+  - the OBS-friendly wrapper scales/copies whatever 4-view/focused output is
+    produced into the fixed 1280x720 validation profile and presents it through
+    the same persistent GDI window.
+  - there is no separate Program window/output concept yet.
+- Selected-source concepts already exist, but they are preview-state concepts:
+  - scheduler results preserve selected frames per slot.
+  - controlled preview has `AllView` and `Focused(slot_index)` view state.
+  - focused preview renders one selected slot full-window, but this is still
+    under the preview/clean-output window family, not a separate ProgramOutput.
+- Diagnostics are already rich around the temporary CPU-heavy path:
+  - clone/copy/allocation: decoded buffer clone counts, composed buffer clone
+    count, render buffer reuse/allocation, bytes copied, scale/copy elapsed
+    fields.
+  - decode: FFmpeg spawn/write/read/wait, stdout first-byte/full-frame,
+    persistent fallback/timeout, continuous input/output/correspondence/backlog.
+  - render: render call elapsed, GDI invalidate/paint/StretchDIBits, window
+    lifecycle/update counters.
+
+### Architecture implication
+- Treat the current CPU-side composed BGRA path as the validated compatibility
+  implementation for Preview, not as the long-term rendering architecture.
+- Do not rename the current clean output path to Program. It currently carries
+  both human preview and OBS capture duties, and renaming would merge concepts
+  before Program semantics exist.
+- The safest future seam for `ProgramOutput` is downstream of targetTime /
+  handoff scheduling and decode, but before the 4-view BGRA composition:
+  - reuse source selection, decoded-frame production, and per-slot/source
+    metadata.
+  - add a separate Program render/output owner that renders only the active
+    source full-screen.
+  - keep Preview responsible for 4-view/operator layout until a slot renderer
+    replaces the composed BGRA canvas.
+- A later Preview slot renderer can most likely attach near the current
+  `SwitcherFourViewQuadRenderFacingConnectionOutput` / composition-render
+  connection, because that area already carries fixed slot placement,
+  renderability, selected/no-frame/waiting/source-error detail, and scheduler
+  status.
+
+### Recommended next step
+- Add a docs-first `ProgramOutput` boundary plan before any implementation:
+  - define `PreviewOutput` vs `ProgramOutput` responsibilities.
+  - identify the active-source state owner.
+  - decide whether Program initially reuses decoded BGRA frames and the existing
+    `SwitcherWindowRenderRuntimeHook`, or gets a new typed output boundary.
+  - keep the first implementation, if selected later, as a separate Program
+    full-window output path without changing existing 4-view Preview behavior.
+- Keep the current four-view/two-real preview loops unchanged until that plan
+  is explicit.
 
 ## Next Recommendation
 - First raw pipe / stdout throughput code slice is implemented as opt-in
