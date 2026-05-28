@@ -2,6 +2,82 @@
 
 ## 2026-05-28
 ### Type
+- Codex docs-only evidence reflection
+
+### Work
+- Reflected optimized BGR24 A/B rerun
+  `S:\stream-sync\manual-logs\two-client-optimized-bgr24-ab-rerun-20260528-103130`.
+- Kept this step docs-only; no code changes and no Codex runtime rerun.
+- Recorded the rerun as VALID-ish / useful evidence:
+  - FFmpeg available before runtime
+  - build PASS with existing dead-code warnings only
+  - default and optimized runs used the same
+    `C:\streamsync-target\stream-sync-rerun\debug\*.exe`
+  - both server runs queued `1800` frames with
+    `player1/streamsync-dev-session:900|player2/streamsync-dev-session:900`
+  - client FPS was close enough for comparison
+- Classified optimized `scaled-bgr24` conversion optimization as PASS:
+  - previous conversion avg about `26.25ms/frame`
+  - current conversion avg `2105ms / 389 ~= 5.41ms/frame`
+  - reuse count `389` equals conversion count `389`
+  - allocation count `0`
+  - bytes written per frame `921600`
+  - mode `bgr24-in-place-safe-scalar`
+- Classified optimized `scaled-bgr24` adoption as HOLD:
+  - reader avg improved `36.604ms -> 31.108ms`
+  - output lag to selected improved `33 -> 28`
+  - render FPS after first render improved `15.883 -> 16.361`
+  - output throughput was slightly lower `26.272fps -> 26.092fps`
+  - completed latency avg worsened `1123.244ms -> 1350.666ms`
+  - pending age avg worsened `733.029ms -> 932.068ms`
+  - pending count worsened `35 -> 44`
+  - bounded lookup hits worsened `11 -> 4`
+- Kept default BGRA as the safer runtime path.
+- Updated TODO and output pipeline / throughput / availability / lag / pixel
+  conversion / continuous-stream docs.
+
+### Changed Files
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+- `docs/operations/continuous-pixel-conversion-plan.md`
+- `docs/operations/continuous-output-pipeline-experiment-plan.md`
+- `docs/operations/continuous-output-throughput-plan.md`
+- `docs/operations/continuous-output-availability-plan.md`
+- `docs/operations/continuous-output-lag-plan.md`
+- `docs/operations/continuous-stream-decoder-plan.md`
+
+### Decision
+- Treat BGR24 conversion optimization as PASS.
+- Treat optimized `scaled-bgr24` end-to-end result as PARTIAL PASS and adoption
+  HOLD.
+- Do not promote `scaled-bgr24` to default.
+- Next code candidate should be FFmpeg scale path split opt-in experiment or
+  reader/completed latency breakdown diagnostics.
+- Reverse-order threshold A/B remains a later/supporting branch.
+- Production Readiness remains FAIL.
+
+### Validation
+- `git diff --check`
+  - result: PASS
+  - note: LF/CRLF warnings only.
+
+### TODO Update
+- Completed:
+  - optimized BGR24 A/B rerun reflected in docs.
+  - conversion optimization PASS recorded.
+- Added:
+  - optimized `scaled-bgr24` adoption HOLD despite conversion improvement.
+  - next candidate moved to FFmpeg scale path split or reader/completed latency
+    breakdown diagnostics.
+- Held:
+  - default promotion for `scaled-bgr24`
+  - direct BGR24 render path
+  - FFmpeg scale path implementation in this docs-only step
+  - reader blocking diagnostics implementation in this docs-only step
+  - threshold / suppression / fallback / feed / slot1 / 4-client / GPU changes
+
+## 2026-05-28
+### Type
 - Codex implementation
 
 ### Work

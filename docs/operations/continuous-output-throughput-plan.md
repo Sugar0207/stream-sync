@@ -15,6 +15,38 @@ Last updated: 2026-05-28
   `docs/operations/continuous-output-availability-plan.md`.
 
 ## Latest Evidence
+- latest optimized BGR24 A/B rerun:
+  - `S:\stream-sync\manual-logs\two-client-optimized-bgr24-ab-rerun-20260528-103130`
+  - evidence is VALID-ish / useful on the same
+    `C:\streamsync-target\stream-sync-rerun\debug\*.exe`
+  - both default and optimized server runs queued `1800` frames
+  - optimized `scaled-bgr24` wiring and conversion diagnostics are PASS:
+    - `continuous_decode_output_pipeline_experiment_mode=scaled-bgr24`
+    - `continuous_decode_ffmpeg_output_pixel_format=bgr24`
+    - `continuous_decode_output_bytes_per_frame=691200`
+    - `continuous_decode_output_pipe_bytes_saved_per_frame=230400`
+    - conversion mode `bgr24-in-place-safe-scalar`
+    - conversion reuse/allocation `389` / `0`
+    - conversion average `2105ms / 389 ~= 5.41ms/frame`
+  - pipe/read and selected-lag improved versus default:
+    - reader avg `36.604ms -> 31.108ms`
+    - reader slow count `32 -> 24`
+    - output lag to selected `33 -> 28`
+    - render FPS after first render `15.883 -> 16.361`
+  - end-to-end adoption remains HOLD:
+    - output throughput `26.272fps -> 26.092fps`
+    - completed latency avg `1123.244ms -> 1350.666ms`
+    - pending age avg `733.029ms -> 932.068ms`
+    - pending count `35 -> 44`
+    - bounded lookup hits `11 -> 4`
+  - interpretation:
+    - BGR24 conversion optimization is PASS
+    - raw pipe bytes hypothesis remains PARTIAL PASS
+    - optimized `scaled-bgr24` adoption is HOLD
+    - default BGRA remains the safer runtime path
+    - next throughput candidate should be FFmpeg scale path split or
+      reader/completed latency breakdown diagnostics, not default promotion
+
 - latest output pipeline A/B rerun:
   - `S:\stream-sync\manual-logs\two-client-output-pipeline-ab-rerun-20260528-014200`
   - evidence is VALID-ish / useful on the same
@@ -343,6 +375,10 @@ experiment design now lives in
      `scaled-bgr24` only. It uses safe in-place reverse scalar expansion from
      BGR24 to BGRA and adds conversion reuse/allocation/bytes/mode summary
      fields. Default BGRA remains unchanged.
+   - Latest optimized BGR24 A/B validates conversion optimization as PASS
+     (`~5.41ms/frame`, reuse/allocation `389` / `0`), but adoption remains
+     HOLD because default BGRA still has better completed latency, pending age,
+     pending count, throughput, and bounded lookup hits.
    - Source-size raw output may be heavier than the current `921600`
      bytes/frame path, so do not adopt it without total pipeline evidence.
 
@@ -383,6 +419,9 @@ experiment design now lives in
   pipe throughput, and queue/cache policy diagnostics.
 - Pixel-format, scale-path, reader-buffering, and additional FFmpeg args remain
   opt-in experiment candidates after diagnostics identify a likely bottleneck.
+- After optimized BGR24 A/B, pixel-format conversion is no longer the first
+  unresolved throughput candidate. The next main line is FFmpeg scale path split
+  or reader/completed latency breakdown diagnostics.
 - TargetTime-aware lookup and latest decoded fallback are held because accepting `73` to `74` frames of lag would violate sync-first behavior.
 - Feed max count remains unchanged because output throughput is already below source cadence.
 - Production Readiness remains FAIL.

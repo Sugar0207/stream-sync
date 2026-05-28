@@ -13,6 +13,36 @@ Last updated: 2026-05-28
   move the next main line to output availability / throughput.
 
 ## Latest Evidence
+- latest optimized BGR24 A/B rerun:
+  - `S:\stream-sync\manual-logs\two-client-optimized-bgr24-ab-rerun-20260528-103130`
+  - default BGRA:
+    - output throughput `26.272fps`
+    - completed latency avg/max/latest `1123.244ms` / `1349ms` / `1066ms`
+    - pending count `35`
+    - pending age avg/max `733.029ms` / `1361ms`
+    - latest input-output gap `35`
+    - output lag to selected `33`
+    - bounded lookup hits `11`
+  - optimized scaled BGR24:
+    - output throughput `26.092fps`
+    - completed latency avg/max/latest `1350.666ms` / `1659ms` / `1466ms`
+    - pending count `44`
+    - pending age avg/max `932.068ms` / `1653ms`
+    - latest input-output gap `46`
+    - output lag to selected `28`
+    - bounded lookup hits `4`
+    - conversion total/max/count `2105ms` / `8ms` / `389`
+    - conversion average about `5.41ms/frame`
+    - reuse/allocation `389` / `0`
+  - lag verdict:
+    - BGR24 conversion optimization is PASS
+    - output lag to selected improved in optimized `scaled-bgr24`, but
+      completed latency, pending age/count, output throughput, and bounded
+      lookup hits still favor default BGRA
+    - optimized `scaled-bgr24` adoption is HOLD
+    - keep default BGRA and move the next candidate to FFmpeg scale path split
+      or reader/completed latency breakdown diagnostics
+
 - latest output pipeline A/B rerun:
   - `S:\stream-sync\manual-logs\two-client-output-pipeline-ab-rerun-20260528-014200`
   - default BGRA:
@@ -266,18 +296,18 @@ Current continuous runtime has three relevant queues/counters:
 
 ## Next Design Candidates
 - Next code candidate if selected after docs review should move from the
-  `scaled-bgr24` A/B result to:
-  - BGR24 conversion optimization docs-first review, then a narrow opt-in
-    conversion optimization slice if selected
+  optimized `scaled-bgr24` A/B result to:
+  - FFmpeg scale path split opt-in experiment
+  - reader/completed latency breakdown diagnostics
   - direct BGR24 render path docs-first impact review only
-  - FFmpeg scale path split experiment
-  - reader blocking phase diagnostics
   - keep it slot0 / two-real / opt-in continuous only
   - keep sync-first stale-frame safety explicit
 - 2026-05-28 first BGR24 conversion optimization slice is implemented for
   `scaled-bgr24` only. It uses safe in-place reverse scalar expansion and adds
-  conversion reuse/allocation/bytes/mode summary fields. Default BGRA remains
-  the safe runtime path until human rerun evidence shows otherwise.
+  conversion reuse/allocation/bytes/mode summary fields.
+- 2026-05-28 optimized BGR24 A/B evidence now shows conversion optimization
+  PASS, but default BGRA remains the safe path and optimized `scaled-bgr24`
+  adoption is HOLD.
 - Candidate comparison now lives in
   `docs/operations/continuous-output-availability-plan.md`.
 - Detailed output pipeline experiment design now lives in

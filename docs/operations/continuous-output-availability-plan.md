@@ -13,6 +13,40 @@ Last updated: 2026-05-28
 - Keep Production Readiness as FAIL.
 
 ## Current Verdict
+- latest optimized BGR24 A/B rerun:
+  - `S:\stream-sync\manual-logs\two-client-optimized-bgr24-ab-rerun-20260528-103130`
+  - evidence is VALID-ish / useful:
+    - FFmpeg available before runtime
+    - build PASS with existing dead-code warnings only
+    - same `C:\streamsync-target\stream-sync-rerun\debug\*.exe`
+    - both default and optimized servers queued `1800` frames
+  - optimized `scaled-bgr24` conversion optimization PASS:
+    - conversion average improved from about `26.25ms/frame` to about
+      `5.41ms/frame`
+    - reuse count `389` equals conversion count
+    - allocation count `0`
+    - bytes written per frame `921600`
+    - mode `bgr24-in-place-safe-scalar`
+  - optimized `scaled-bgr24` availability/read improvements:
+    - stdout bytes/frame reduced `921600 -> 691200`
+    - reader avg improved `36.604ms -> 31.108ms`
+    - reader slow count improved `32 -> 24`
+    - output lag to selected improved `33 -> 28`
+    - render FPS after first render improved `15.883 -> 16.361`
+  - optimized `scaled-bgr24` adoption HOLD:
+    - output throughput slightly worsened `26.272fps -> 26.092fps`
+    - completed latency avg worsened `1123.244ms -> 1350.666ms`
+    - pending age avg worsened `733.029ms -> 932.068ms`
+    - pending count worsened `35 -> 44`
+    - bounded lookup hits fell `11 -> 4`
+  - current availability verdict:
+    - conversion optimization is PASS
+    - raw pipe bytes hypothesis is PARTIAL PASS
+    - default BGRA remains the safe path
+    - optimized `scaled-bgr24` adoption is HOLD
+    - next candidate is FFmpeg scale path split or reader/completed latency
+      breakdown diagnostics
+    - Production Readiness remains FAIL
 - latest output pipeline A/B rerun:
   - `S:\stream-sync\manual-logs\two-client-output-pipeline-ab-rerun-20260528-014200`
   - evidence is VALID-ish / useful:
@@ -129,9 +163,9 @@ Last updated: 2026-05-28
 | Candidate | What It Answers | Why It Helps Now | Risk | Verdict |
 | --- | --- | --- | --- | --- |
 | Pending correspondence pressure diagnostics | Whether writer-accepted inputs are piling up before full stdout frames can be matched to metadata. | Latest availability rerun shows pending correspondence `115`, avg age `1948.809ms`, and latest input-output gap `115`. | Low if diagnostics-only. | Implemented and runtime VALID. |
-| Raw BGRA pipe throughput / stdout reader buffering diagnostics | Whether `921600` byte full-frame reads, short reads, allocation, or reader scheduling dominate output latency. | Latest A/B shows `scaled-bgr24` improves reader avg and stdout throughput after bytes/frame falls to `691200`. | Low for diagnostics; medium for buffering behavior changes. | PARTIAL PASS as a hypothesis; `scaled-bgr24` adoption HOLD / FAIL because conversion regresses end-to-end. |
+| Raw BGRA pipe throughput / stdout reader buffering diagnostics | Whether `921600` byte full-frame reads, short reads, allocation, or reader scheduling dominate output latency. | Optimized A/B shows `scaled-bgr24` improves reader avg after bytes/frame falls to `691200`, but end-to-end still favors default BGRA. | Low for diagnostics; medium for buffering behavior changes. | PARTIAL PASS as a hypothesis; optimized `scaled-bgr24` adoption HOLD. |
 | Continuous output queue/cache policy diagnostics | Whether decoded cache bound `30`, dropped stale count, or drain cadence hides usable decoded frames. | Cache drops are visible, but newest decoded output itself is still behind; diagnostics can confirm whether cache policy is a symptom or contributor. | Low if diagnostics-only. | Secondary diagnostics in the same or next slice. |
-| FFmpeg continuous output scale path experiment | Separates FFmpeg scale cost from raw pipe / pixel conversion cost. | Current path is `-vf scale=640:360:flags=neighbor -f rawvideo -pix_fmt bgra pipe:1`; scale and BGRA conversion remain plausible contributors after client/server/feed PASS. | Medium: source-size raw BGRA can be much heavier, and moving scale responsibility may require renderer-side conversion/copy work. | Next opt-in planning candidate, not implemented. |
+| FFmpeg continuous output scale path experiment | Separates FFmpeg scale cost from raw pipe / pixel conversion cost. | Optimized BGR24 reduced conversion cost, so scale/output responsibility is now the cleaner next split after client/server/feed PASS. | Medium: source-size raw BGRA can be much heavier, and moving scale responsibility may require renderer-side conversion/copy work. | Next opt-in planning candidate, not implemented. |
 | One-shot competing load | Measures continuous-vs-one-shot process contention. | Suppression ON already made this a strong contributor candidate and improved throughput/render use, but the latest rerun points more directly at output backlog/stale output. | Medium if made default; low as already opt-in. | Supporting evidence; not the next main culprit and not a default policy. |
 
 ## Recommended Next Code Slice
@@ -210,13 +244,15 @@ Last updated: 2026-05-28
 - 2026-05-28 first conversion optimization slice is implemented for
   `scaled-bgr24` only. It keeps the renderer-facing BGRA contract but expands
   BGR24 to BGRA in-place with a safe reverse scalar loop and adds conversion
-  reuse/allocation/bytes/mode summary fields. Adoption remains HOLD until human
-  rerun evidence exists.
+  reuse/allocation/bytes/mode summary fields.
+- 2026-05-28 optimized BGR24 A/B rerun validates conversion optimization as
+  PASS, but keeps `scaled-bgr24` adoption HOLD. The next code candidate moves
+  to FFmpeg scale path split opt-in experiment or reader/completed latency
+  breakdown diagnostics rather than another conversion/default-promotion step.
 - Next candidate order:
-  1. BGR24 conversion optimization docs-first review, then a narrow opt-in
-     conversion optimization slice if selected
-  2. FFmpeg scale path split opt-in experiment docs-first review
-  3. reader blocking phase diagnostics
+  1. FFmpeg scale path split opt-in experiment docs-first review
+  2. reader/completed latency breakdown diagnostics
+  3. direct BGR24 render path impact review only
 - These are not default behavior changes. They must keep full-frame correctness,
   same-source and no-future-frame guards, one-shot fallback, current feed max
   count, and current default FFmpeg path unless an explicit opt-in flag is used.
@@ -230,17 +266,16 @@ Last updated: 2026-05-28
   split opt-in experiments.
 
 ## Later Opt-In Experiments
-1. Raw BGRA pipe / stdout reader buffering experiment
-   - Only after diagnostics show reader-bound behavior.
-   - Preserve full-frame correctness and do not emit partial frames.
-   - Summary must expose the experiment flag and byte/read timing deltas.
-
-2. FFmpeg scale path experiment
+1. FFmpeg scale path experiment
+   - Next preferred opt-in experiment family after optimized BGR24 conversion.
    - Keep source-size raw output as an explicit risk, not the default candidate.
    - Compare current scaled BGRA output against a narrow opt-in variant that
      separates scale cost from pipe/output cost.
-   - Do not move scaling responsibility permanently without total pipeline cost
-     evidence.
+
+2. Raw BGRA pipe / stdout reader buffering experiment
+   - Only after diagnostics show reader-bound behavior.
+   - Preserve full-frame correctness and do not emit partial frames.
+   - Summary must expose the experiment flag and byte/read timing deltas.
 
 3. Queue/cache policy experiment
    - Only after diagnostics prove decoded cache/drop policy is hiding otherwise

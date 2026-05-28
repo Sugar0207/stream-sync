@@ -15,7 +15,57 @@ Last updated: 2026-05-28
 - Keep Production Readiness as FAIL.
 
 ## Latest Evidence
-- latest output pipeline A/B rerun:
+- latest optimized BGR24 A/B rerun:
+  - root:
+    `S:\stream-sync\manual-logs\two-client-optimized-bgr24-ab-rerun-20260528-103130`
+  - default:
+    `S:\stream-sync\manual-logs\two-client-optimized-bgr24-ab-rerun-20260528-103130\default-bgra`
+  - optimized:
+    `S:\stream-sync\manual-logs\two-client-optimized-bgr24-ab-rerun-20260528-103130\optimized-scaled-bgr24`
+- Validity:
+  - FFmpeg was available before runtime.
+  - Build was PASS with existing dead-code warnings only.
+  - Both runs used the same `C:\streamsync-target\stream-sync-rerun\debug\*.exe`.
+  - Both servers queued `1800` frames with
+    `player1/streamsync-dev-session:900|player2/streamsync-dev-session:900`.
+  - Client FPS was close enough for useful comparison.
+- Default BGRA:
+  - output throughput `26.272fps`
+  - reader full-frame avg/max/slow `36.604ms` / `1157ms` / `32`
+  - completed correspondence latency avg/max/latest
+    `1123.244ms` / `1349ms` / `1066ms`
+  - pending correspondence count `35`
+  - pending age avg/max `733.029ms` / `1361ms`
+  - output lag to selected `33`
+  - bounded lookup hits `11`
+  - render FPS after first render `15.883`
+- Optimized scaled BGR24:
+  - output throughput `26.092fps`
+  - reader full-frame avg/max/slow `31.108ms` / `1139ms` / `24`
+  - completed correspondence latency avg/max/latest
+    `1350.666ms` / `1659ms` / `1466ms`
+  - pending correspondence count `44`
+  - pending age avg/max `932.068ms` / `1653ms`
+  - output lag to selected `28`
+  - bounded lookup hits `4`
+  - render FPS after first render `16.361`
+  - pixel conversion total/max/count `2105ms` / `8ms` / `389`
+  - conversion average about `5.41ms/frame`
+  - reuse/allocation `389` / `0`
+  - bytes written total/per-frame `358502400` / `921600`
+  - conversion mode `bgr24-in-place-safe-scalar`
+- Interpretation:
+  - BGR24 conversion optimization is PASS.
+  - Optimized `scaled-bgr24` is PARTIAL PASS but adoption HOLD.
+  - Default BGRA remains the safer runtime path because completed latency,
+    pending age/count, output throughput, and bounded lookup hits still favor
+    default overall.
+  - Next candidate should move to FFmpeg scale path split or reader/completed
+    latency breakdown diagnostics, not `scaled-bgr24` default promotion.
+
+- pre-optimization output pipeline A/B rerun:
+  - `S:\stream-sync\manual-logs\two-client-output-pipeline-ab-rerun-20260528-014200`
+- pre-optimization output pipeline A/B details:
   - root:
     `S:\stream-sync\manual-logs\two-client-output-pipeline-ab-rerun-20260528-014200`
   - default:
@@ -51,9 +101,12 @@ Last updated: 2026-05-28
 ## Current Verdict
 - `scaled-bgr24` wiring / args / expected bytes / reader improvement: PASS.
 - Raw pipe bytes hypothesis: PARTIAL PASS.
-- `scaled-bgr24` adoption: HOLD / FAIL.
+- BGR24 conversion optimization: PASS.
+- Optimized `scaled-bgr24` adoption: HOLD.
 - Default BGRA remains the safer runtime path.
-- BGR24-to-BGRA conversion cost is now a strong bottleneck candidate.
+- BGR24-to-BGRA conversion cost was reduced from about `26.25ms/frame` to about
+  `5.41ms/frame`, but end-to-end latency/backlog still does not clearly beat
+  default BGRA.
 - Threshold tuning alone remains insufficient.
 - Production Readiness remains FAIL.
 
@@ -128,8 +181,10 @@ Implementation status:
   - `continuous_decode_output_pixel_convert_mode`
 - Expected optimized mode value:
   - `bgr24-in-place-safe-scalar`
-- Adoption status remains HOLD / FAIL until a human rerun compares the optimized
-  `scaled-bgr24` path against default BGRA.
+- Latest optimized rerun result:
+  - conversion optimization PASS
+  - `scaled-bgr24` adoption HOLD
+  - default BGRA remains the safe path
 
 ## Direct BGR24 Render Path
 Question:
@@ -210,10 +265,12 @@ Success fields for any scale split rerun:
   - correspondence pop / event send
 
 ## Recommendation
-1. Next docs/code candidate: BGR24 conversion optimization with buffer reuse or
-   safe scalar conversion, opt-in only.
-2. Next docs-only comparison: FFmpeg scale path split experiment shape.
-3. Later diagnostics: reader blocking phase diagnostics.
+1. Next code candidate: FFmpeg scale path split opt-in experiment or
+   reader/completed latency breakdown diagnostics.
+2. Keep direct BGR24 render path docs-first only.
+3. Keep unsafe / SIMD conversion as a later candidate only if safe scalar
+   conversion becomes the proven remaining bottleneck.
 
-Keep default BGRA. Keep `scaled-bgr24` as HOLD / FAIL for adoption. Keep raw
-pipe bytes as PARTIAL PASS. Keep Production Readiness FAIL.
+Keep default BGRA. Treat optimized `scaled-bgr24` conversion as PASS but
+adoption as HOLD. Keep raw pipe bytes as PARTIAL PASS. Keep Production
+Readiness FAIL.

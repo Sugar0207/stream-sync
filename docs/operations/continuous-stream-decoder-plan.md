@@ -1178,11 +1178,57 @@ latest output pipeline A/B rerun verdict:
      large
    - default BGRA remains the safer runtime path
    - scaled-bgr24 adoption is HOLD / FAIL
-   - next candidates are BGR24 conversion optimization docs-first review,
+   - next candidates were BGR24 conversion optimization docs-first review,
      direct BGR24 render path impact review, FFmpeg scale path split, and
-     reader blocking phase diagnostics
+     reader blocking phase diagnostics before the optimized BGR24 rerun
    - detailed conversion/direct-render review now lives in
      `docs/operations/continuous-pixel-conversion-plan.md`
+6. Production Readiness remains FAIL.
+
+latest optimized BGR24 A/B rerun verdict:
+
+1. latest rerun:
+   - `S:\stream-sync\manual-logs\two-client-optimized-bgr24-ab-rerun-20260528-103130`
+2. validity:
+   - FFmpeg available before runtime
+   - build PASS with existing dead-code warnings only
+   - same `C:\streamsync-target\stream-sync-rerun\debug\*.exe`
+   - default and optimized servers both queued `1800` frames
+3. default BGRA:
+   - output mode `default`
+   - pixel format `bgra`
+   - bytes/frame `921600`
+   - output throughput `26.272fps`
+   - reader avg `36.604ms`
+   - completed latency avg `1123.244ms`
+   - pending age avg `733.029ms`
+   - pending count `35`
+   - output lag to selected `33`
+   - bounded lookup hits `11`
+4. optimized scaled BGR24:
+   - output mode `scaled-bgr24`
+   - pixel format `bgr24`
+   - bytes/frame `691200`
+   - pipe bytes saved/frame `230400`
+   - output throughput `26.092fps`
+   - reader avg `31.108ms`
+   - completed latency avg `1350.666ms`
+   - pending age avg `932.068ms`
+   - pending count `44`
+   - output lag to selected `28`
+   - bounded lookup hits `4`
+   - BGR24-to-BGRA conversion total/count `2105ms` / `389`, about
+     `5.41ms/frame`
+   - conversion reuse/allocation `389` / `0`
+   - conversion mode `bgr24-in-place-safe-scalar`
+5. interpretation:
+   - BGR24 conversion optimization is PASS
+   - raw pipe bytes hypothesis remains PARTIAL PASS
+   - optimized `scaled-bgr24` is PARTIAL PASS but adoption HOLD
+   - default BGRA remains the safer runtime path
+   - next candidate is FFmpeg scale path split opt-in experiment or
+     reader/completed latency breakdown diagnostics
+   - reverse-order threshold A/B remains a later/supporting branch
 6. Production Readiness remains FAIL.
 
 ## out of scope
