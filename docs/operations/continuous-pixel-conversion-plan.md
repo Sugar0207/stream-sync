@@ -63,6 +63,42 @@ Last updated: 2026-05-28
   - Next candidate should move to FFmpeg scale path split or reader/completed
     latency breakdown diagnostics, not `scaled-bgr24` default promotion.
 
+## Scale Path Split Code Slice
+- 2026-05-28 first FFmpeg scale path split slice is implemented as opt-in
+  `no-scale-bgra`.
+- Scope remains narrow:
+  - slot0 only
+  - two-real preview loop only
+  - requires opt-in continuous decoder
+  - selected explicitly with
+    `--continuous-decoder-output-pipeline-experiment no-scale-bgra`
+- The slice does not implement direct BGR24 render, unsafe/SIMD conversion, or
+  reader blocking phase diagnostics.
+- The slice keeps:
+  - default BGRA behavior unchanged
+  - optimized `scaled-bgr24` behavior unchanged
+  - default path as `scale=640:360:flags=neighbor` + `pix_fmt bgra`
+  - `scaled-bgr24` as scaled 640x360 BGR24 + safe scalar in-place BGRA
+    expansion
+- `no-scale-bgra` removes the continuous FFmpeg scale filter and keeps
+  `pix_fmt bgra`, so stdout emits source-size BGRA.
+- Risk:
+  - source-size 1280x720 BGRA is `3686400` bytes/frame, 4x the 640x360 BGRA
+    default.
+  - Treat this as diagnostics-only until runtime evidence proves otherwise.
+- New summary diagnostics:
+  - `continuous_decode_output_pipeline_scale_mode`
+  - `continuous_decode_output_source_width`
+  - `continuous_decode_output_source_height`
+  - `continuous_decode_output_scaled_width`
+  - `continuous_decode_output_scaled_height`
+  - `continuous_decode_output_scale_removed_count`
+  - `continuous_decode_output_scale_path_experiment_enabled`
+- Runtime rerun:
+  - not performed by Codex
+  - next rerun should be human-side from `S:\stream-sync` using the valid
+    `C:\streamsync-target\stream-sync-rerun\debug\*.exe` runtime
+
 - pre-optimization output pipeline A/B rerun:
   - `S:\stream-sync\manual-logs\two-client-output-pipeline-ab-rerun-20260528-014200`
 - pre-optimization output pipeline A/B details:
@@ -107,6 +143,8 @@ Last updated: 2026-05-28
 - BGR24-to-BGRA conversion cost was reduced from about `26.25ms/frame` to about
   `5.41ms/frame`, but end-to-end latency/backlog still does not clearly beat
   default BGRA.
+- FFmpeg scale path split first slice is implemented as opt-in
+  `no-scale-bgra`, but runtime evidence is still pending.
 - Threshold tuning alone remains insufficient.
 - Production Readiness remains FAIL.
 
@@ -117,7 +155,7 @@ Last updated: 2026-05-28
 | BGR24 conversion buffer reuse | Whether allocation / fresh output buffer materialization is a major part of the `26.25ms/frame` conversion cost. | Low-risk first optimization candidate if implemented behind the existing opt-in experiment mode. | Low to medium: must avoid frame lifetime aliasing and preserve decoded-cache ownership. | Best first code candidate after docs review. |
 | BGR24 conversion loop optimization | Whether per-pixel conversion mechanics dominate after allocation is reduced. | Could reduce conversion time while keeping renderer-facing BGRA unchanged. | Medium: unsafe writes or SIMD require careful tests and bounds guarantees. | Second candidate after buffer reuse or a focused benchmark. |
 | Direct BGR24 render path | Whether avoiding conversion entirely beats optimized conversion. | Removes the `26.25ms/frame` conversion tax if renderer can consume BGR24 safely. | High: current render, compose cache, GDI/OBS-friendly output, and decoded-frame format contracts are BGRA-oriented. | Not first code slice; docs-first impact review only. |
-| FFmpeg scale path split | Whether scale/format conversion inside FFmpeg still dominates once pipe bytes and conversion are separated. | Clarifies scale cost vs output bytes vs renderer-side work. | Medium: source-size raw output can multiply bytes/frame and should not become default. | Next opt-in experiment candidate after conversion path review. |
+| FFmpeg scale path split | Whether scale/format conversion inside FFmpeg still dominates once pipe bytes and conversion are separated. | Clarifies scale cost vs output bytes vs renderer-side work. | Medium: source-size raw output can multiply bytes/frame and should not become default. | First opt-in `no-scale-bgra` code slice implemented; runtime evidence pending. |
 | Reader blocking phase diagnostics | Whether remaining reader stalls are first-byte, partial-read, or full-frame completion waits. | Useful attribution after conversion/scale candidates are scoped. | Low if diagnostics-only. | Lower priority than conversion/scale for the next slice because reader avg improved in `scaled-bgr24`. |
 
 ## BGR24 Conversion Optimization
@@ -265,10 +303,12 @@ Success fields for any scale split rerun:
   - correspondence pop / event send
 
 ## Recommendation
-1. Next code candidate: FFmpeg scale path split opt-in experiment or
-   reader/completed latency breakdown diagnostics.
-2. Keep direct BGR24 render path docs-first only.
-3. Keep unsafe / SIMD conversion as a later candidate only if safe scalar
+1. Next evidence candidate: human-side `no-scale-bgra` A/B rerun for the
+   implemented FFmpeg scale path split slice.
+2. Next code candidate after that: reader/completed latency breakdown
+   diagnostics if no-scale evidence is ambiguous.
+3. Keep direct BGR24 render path docs-first only.
+4. Keep unsafe / SIMD conversion as a later candidate only if safe scalar
    conversion becomes the proven remaining bottleneck.
 
 Keep default BGRA. Treat optimized `scaled-bgr24` conversion as PASS but

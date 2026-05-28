@@ -2,6 +2,84 @@
 
 ## 2026-05-28
 ### Type
+- Codex implementation
+
+### Work
+- Implemented first FFmpeg scale path split code slice as opt-in
+  `no-scale-bgra` for slot0 / two-real / continuous decoder only.
+- Added CLI mode parsing for
+  `--continuous-decoder-output-pipeline-experiment no-scale-bgra`.
+- Kept default `default` behavior unchanged:
+  `scale=640:360:flags=neighbor` + `pix_fmt bgra` + `921600` bytes/frame.
+- Kept optimized `scaled-bgr24` behavior unchanged:
+  scaled 640x360 BGR24 pipe bytes `691200`, safe scalar in-place BGRA
+  expansion, opt-in only.
+- Added no-scale behavior:
+  - continuous FFmpeg scale filter is removed
+  - `pix_fmt bgra` is preserved
+  - expected stdout bytes are source-size BGRA
+  - 1280x720 source-size BGRA is `3686400` bytes/frame
+  - mode is diagnostics-only / not an adoption candidate
+- Added summary diagnostics:
+  - `continuous_decode_output_pipeline_scale_mode`
+  - `continuous_decode_output_source_width`
+  - `continuous_decode_output_source_height`
+  - `continuous_decode_output_scaled_width`
+  - `continuous_decode_output_scaled_height`
+  - `continuous_decode_output_scale_removed_count`
+  - `continuous_decode_output_scale_path_experiment_enabled`
+- Kept runtime rerun out of Codex scope.
+
+### Changed Files
+- `apps/switcher/src/main.rs`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+- `docs/operations/continuous-pixel-conversion-plan.md`
+- `docs/operations/continuous-output-pipeline-experiment-plan.md`
+- `docs/operations/continuous-output-throughput-plan.md`
+- `docs/operations/continuous-output-availability-plan.md`
+- `docs/operations/continuous-output-lag-plan.md`
+
+### Decision
+- `no-scale-bgra` is an opt-in diagnostics experiment only.
+- Do not promote `no-scale-bgra` or `scaled-bgr24` to default.
+- Source-size BGRA output may increase pipe bytes substantially, so next step
+  is human-side A/B evidence from `S:\stream-sync`.
+- Direct BGR24 render, unsafe/SIMD conversion, reader blocking diagnostics,
+  threshold/default/suppression/feed/fallback/slot1/4-client/server/client/
+  protocol/GPU changes remain out of scope.
+- Production Readiness remains FAIL.
+
+### Validation
+- `cargo fmt`
+  - result: PASS
+- `cargo check -p stream-sync-switcher`
+  - result: PASS
+  - note: existing dead-code warnings only
+- `cargo test -p stream-sync-switcher switcher_four_view_two_real_handoff_preview_summary_formats_expected_fields -- --nocapture`
+  - result: PASS
+  - note: existing dead-code warnings only
+- `cargo test -p stream-sync-switcher switcher_two_real_handoff_preview_options -- --nocapture`
+  - result: PASS
+  - note: existing dead-code warnings only
+- `cargo test -p stream-sync-switcher output_pipeline -- --nocapture`
+  - result: PASS
+  - note: existing dead-code warnings only
+
+### TODO Update
+- Completed:
+  - FFmpeg scale path split first code slice implemented as opt-in
+    `no-scale-bgra`.
+  - scale mode / source-size / scaled-size / scale removed diagnostics added.
+- Added:
+  - human-side `no-scale-bgra` A/B rerun as next evidence candidate.
+- Held:
+  - default BGRA remains safe path.
+  - optimized `scaled-bgr24` adoption remains HOLD.
+  - Production Readiness remains FAIL.
+
+## 2026-05-28
+### Type
 - Codex docs-only evidence reflection
 
 ### Work

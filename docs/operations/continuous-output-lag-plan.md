@@ -43,6 +43,18 @@ Last updated: 2026-05-28
     - keep default BGRA and move the next candidate to FFmpeg scale path split
       or reader/completed latency breakdown diagnostics
 
+- 2026-05-28 code status:
+  - FFmpeg scale path split first slice is implemented as opt-in
+    `no-scale-bgra`.
+  - It is limited to slot0 / two-real / opt-in continuous mode.
+  - The continuous FFmpeg scale filter is removed only for this mode; BGRA
+    output remains source-size.
+  - At 1280x720 source, stdout expected bytes/frame become `3686400`, so the
+    mode is diagnostics-only and not a default/adoption candidate.
+  - Summary exposes scale mode, source/scaled dimensions, scale removed count,
+    and scale path experiment enabled flag for lag A/B interpretation.
+  - No Codex runtime rerun was performed.
+
 - latest output pipeline A/B rerun:
   - `S:\stream-sync\manual-logs\two-client-output-pipeline-ab-rerun-20260528-014200`
   - default BGRA:
@@ -295,10 +307,12 @@ Current continuous runtime has three relevant queues/counters:
 - One-shot fallback remains the safe default path. Any suppression must stay slot0/two-real/opt-in and preserve default behavior.
 
 ## Next Design Candidates
-- Next code candidate if selected after docs review should move from the
-  optimized `scaled-bgr24` A/B result to:
-  - FFmpeg scale path split opt-in experiment
-  - reader/completed latency breakdown diagnostics
+- Next evidence candidate should move from the optimized `scaled-bgr24` A/B
+  result to:
+  - human-side `no-scale-bgra` A/B rerun for the implemented FFmpeg scale path
+    split slice
+  - reader/completed latency breakdown diagnostics if no-scale evidence is
+    ambiguous
   - direct BGR24 render path docs-first impact review only
   - keep it slot0 / two-real / opt-in continuous only
   - keep sync-first stale-frame safety explicit
@@ -308,12 +322,14 @@ Current continuous runtime has three relevant queues/counters:
 - 2026-05-28 optimized BGR24 A/B evidence now shows conversion optimization
   PASS, but default BGRA remains the safe path and optimized `scaled-bgr24`
   adoption is HOLD.
+- 2026-05-28 first FFmpeg scale path split code slice is implemented as
+  `no-scale-bgra`; runtime lag evidence is pending.
 - Candidate comparison now lives in
   `docs/operations/continuous-output-availability-plan.md`.
 - Detailed output pipeline experiment design now lives in
   `docs/operations/continuous-output-pipeline-experiment-plan.md`.
 - Held or later throughput experiments:
-  - FFmpeg scale-path comparison
+  - additional FFmpeg scale-path comparison beyond `no-scale-bgra`
   - raw BGRA pipe / stdout reader buffering behavior change
   - continuous output queue/cache policy changes
 - Held as risky default behavior:

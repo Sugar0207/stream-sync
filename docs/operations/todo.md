@@ -33,6 +33,7 @@
 - 2026-05-28 BGR24 conversion optimization first slice is implemented for `scaled-bgr24` only. The reader now expands BGR24 to BGRA in-place with a safe reverse scalar loop, avoiding the previous extra conversion Vec / append path. Summary adds conversion buffer reuse/allocation counts, bytes-written total/per-frame, and conversion mode; the optimized path reports reuse for the final BGRA frame buffer and no separate conversion buffer allocation. Default BGRA output path remains unchanged and `scaled-bgr24` is still opt-in / adoption HOLD
 - latest optimized BGR24 A/B rerun is `manual-logs/two-client-optimized-bgr24-ab-rerun-20260528-103130` and is VALID-ish / useful evidence on the same `C:\streamsync-target\stream-sync-rerun\debug\*.exe` runtime. Conversion optimization is PASS: conversion avg improved from about `26.25ms/frame` to `2105ms / 389 ~= 5.41ms/frame`, reuse count equals conversion count `389`, allocation count is `0`, bytes written per frame is `921600`, and mode is `bgr24-in-place-safe-scalar`
 - optimized `scaled-bgr24` remains PARTIAL PASS / adoption HOLD. It reduced pipe bytes `921600 -> 691200`, improved reader avg `36.604ms -> 31.108ms`, output lag to selected `33 -> 28`, and render FPS after first render `15.883 -> 16.361`, but default BGRA still wins the safer end-to-end read: output throughput `26.272 -> 26.092`, completed latency avg `1123.244ms -> 1350.666ms`, pending age avg `733.029ms -> 932.068ms`, pending count `35 -> 44`, and bounded lookup hits `11 -> 4`. Keep default BGRA, do not promote `scaled-bgr24`, and keep Production Readiness FAIL
+- 2026-05-28 FFmpeg scale path split first code slice is implemented as opt-in `no-scale-bgra` for slot0 / two-real / continuous only. It removes the continuous FFmpeg `scale=640:360:flags=neighbor` filter while keeping `pix_fmt bgra`; expected stdout bytes are source-size BGRA, so 1280x720 is `3686400` bytes/frame and diagnostics-only / not an adoption candidate. Default BGRA and optimized `scaled-bgr24` paths remain unchanged, `no-scale-bgra` is not default, and runtime rerun is still pending for human-side `S:\stream-sync`
 - latest good-ish same-PC `2`-client rerun は `manual-logs/two-client-render-rerun-20260518-124418` として扱う。two-real preview loop 限定 scaled one-shot decode output は runtime PASS 継続で、`one_shot_decode_output_width=640`、`one_shot_decode_output_height=360`、`one_shot_decode_expected_output_bytes_per_frame=921600` を維持した
 - persistent decoder config-disabled toggle も PASS 継続だった。request/response persistent decoder は過去に `persistent_decode_stdout_read_timeout` で runtime FAIL しているため、引き続き凍結候補として扱い、continuous-stream decoder とは別物として整理する
 - latest good-ish rerun の switcher は `effective_render_fps_after_first_render=17.247` で、30fps には未達だった。`decode_attempt_count=26`、`one_shot_decode_elapsed_ms=1893`、`one_shot_decode_first_byte_slow_count=0`、`one_shot_decode_output_read_slow_count=0`、`one_shot_decode_input_write_outlier_count=0` なので、decode attempt frequency / slow first-byte / slow output-read / input-write outlier のいずれか 1 つを主犯とは断定しない
@@ -285,11 +286,12 @@
 ---
 
 ## 直近でやること
-1. 次 code candidate は FFmpeg scale path split opt-in experiment か reader/completed latency breakdown diagnostics とし、valid runtime は引き続き `C:\streamsync-target\stream-sync-rerun\debug\*.exe` を使う
-2. optimized BGR24 A/B は conversion optimization PASS / `scaled-bgr24` adoption HOLD として扱う。default-bgra 継続、Production Readiness FAIL を維持する
-3. one-shot fallback は正常 escape hatch として残す。one-shot suppression は strong contributor evidence だが、今回の主問題は pending correspondence / stdout reader full-frame latency / continuous output backlog / stale output として扱う
-4. incremental quad compose / render/GDI は PASS として維持し、same-PC rerun 比較では `quad_view_incremental_update_count` / `quad_view_full_compose_count` / `quad_view_compose_elapsed_ms` / `gdi_paint_wait_elapsed_ms` / `placeholder_visual_changed_count` を regression guard として残す
-5. request/response persistent decoder revive / slot1 continuous化 / 4-client widening / shared-memory / GPU backend / distributed-PC actual run には進まず、first slice の slot0-only opt-in evidence を先に読む
+1. 次は人間側で `S:\stream-sync` から `no-scale-bgra` opt-in A/B rerun を実施し、valid runtime は引き続き `C:\streamsync-target\stream-sync-rerun\debug\*.exe` を使う
+2. `no-scale-bgra` は diagnostics-only として、source-size BGRA bytes/frame、scale removed count、completed/pending latency、reader avg、output throughput、bounded lookup hitsを default BGRA / optimized `scaled-bgr24` と比較する
+3. optimized BGR24 A/B は conversion optimization PASS / `scaled-bgr24` adoption HOLD として扱う。default-bgra 継続、Production Readiness FAIL を維持する
+4. one-shot fallback は正常 escape hatch として残す。one-shot suppression は strong contributor evidence だが、今回の主問題は pending correspondence / stdout reader full-frame latency / continuous output backlog / stale output として扱う
+5. incremental quad compose / render/GDI は PASS として維持し、same-PC rerun 比較では `quad_view_incremental_update_count` / `quad_view_full_compose_count` / `quad_view_compose_elapsed_ms` / `gdi_paint_wait_elapsed_ms` / `placeholder_visual_changed_count` を regression guard として残す
+6. request/response persistent decoder revive / slot1 continuous化 / 4-client widening / shared-memory / GPU backend / distributed-PC actual run には進まず、first slice の slot0-only opt-in evidence を先に読む
 
 ## 今後の大まかな指針
 - 残り todo は `MVP クリティカルパス`、`安定化 / 運用`、`future task` に分けて扱う
@@ -1102,7 +1104,7 @@ continuous runtime first slice の blocker:
 
 ## Next Items
 1. keep default BGRA as the safe path; optimized `scaled-bgr24` conversion is PASS, but adoption remains HOLD after the `20260528-103130` A/B
-2. if code resumes, choose either an FFmpeg scale path split opt-in experiment or reader/completed latency breakdown diagnostics; do not promote `scaled-bgr24` by default
+2. run the new opt-in `no-scale-bgra` scale path split A/B before any default promotion; treat it as diagnostics-only because source-size BGRA can be 4x 640x360 BGRA at 1280x720
 3. keep the next slice diagnostics-only or opt-in experiment only, slot0 / two-real / opt-in continuous enabled only, with no default threshold, suppression, feed max, slot1, 4-client, or protocol changes
 4. reverse-order threshold A/B remains later/supporting evidence; keep `continuous_decode_bounded_lookup_allowed_lag_frames=5` as the default guard and treat lag8 as a small PARTIAL PASS / adoption candidate, not a default promotion
 5. Production Readiness FAIL を維持し、targetTime-aware lookup 実装、latest decoded fallback、unbounded stale fallback、slot1 continuous 化、4-client 化、request/response persistent decoder 復活、GPU decode、one-shot fallback 削除には広げない

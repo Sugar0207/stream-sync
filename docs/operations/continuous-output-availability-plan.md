@@ -47,6 +47,19 @@ Last updated: 2026-05-28
     - next candidate is FFmpeg scale path split or reader/completed latency
       breakdown diagnostics
     - Production Readiness remains FAIL
+- 2026-05-28 code status:
+  - FFmpeg scale path split first slice is implemented as opt-in
+    `no-scale-bgra` for slot0 / two-real / continuous only.
+  - It removes the continuous FFmpeg scale filter while keeping BGRA output,
+    so source-size output can increase pipe bytes substantially.
+  - At 1280x720 source, expected bytes/frame are `3686400`; this is
+    diagnostics-only and not an adoption candidate.
+  - Default BGRA and optimized `scaled-bgr24` remain unchanged and opt-in
+    behavior is preserved.
+  - Summary now exposes scale mode, source/scaled dimensions, scale removed
+    count, and scale path experiment enabled flag.
+  - No Codex runtime rerun was performed; next availability evidence should be
+    a human-side `S:\stream-sync` A/B on the valid runtime.
 - latest output pipeline A/B rerun:
   - `S:\stream-sync\manual-logs\two-client-output-pipeline-ab-rerun-20260528-014200`
   - evidence is VALID-ish / useful:
@@ -249,9 +262,13 @@ Last updated: 2026-05-28
   PASS, but keeps `scaled-bgr24` adoption HOLD. The next code candidate moves
   to FFmpeg scale path split opt-in experiment or reader/completed latency
   breakdown diagnostics rather than another conversion/default-promotion step.
+- 2026-05-28 FFmpeg scale path split first code slice is now implemented as
+  opt-in `no-scale-bgra`; the next availability step is human-side A/B
+  evidence, not broadening the code.
 - Next candidate order:
-  1. FFmpeg scale path split opt-in experiment docs-first review
-  2. reader/completed latency breakdown diagnostics
+  1. `no-scale-bgra` opt-in A/B rerun
+  2. reader/completed latency breakdown diagnostics if no-scale evidence is
+     inconclusive
   3. direct BGR24 render path impact review only
 - These are not default behavior changes. They must keep full-frame correctness,
   same-source and no-future-frame guards, one-shot fallback, current feed max
@@ -267,7 +284,8 @@ Last updated: 2026-05-28
 
 ## Later Opt-In Experiments
 1. FFmpeg scale path experiment
-   - Next preferred opt-in experiment family after optimized BGR24 conversion.
+   - First `no-scale-bgra` code slice is implemented; runtime evidence is
+     pending.
    - Keep source-size raw output as an explicit risk, not the default candidate.
    - Compare current scaled BGRA output against a narrow opt-in variant that
      separates scale cost from pipe/output cost.

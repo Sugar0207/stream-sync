@@ -78,6 +78,41 @@ Last updated: 2026-05-28
   - Next candidate should be FFmpeg scale path split opt-in experiment or
     reader/completed latency breakdown diagnostics.
 
+## Current Code Slice
+- 2026-05-28 first FFmpeg scale path split slice is implemented as opt-in
+  `no-scale-bgra`.
+- Scope:
+  - slot0 continuous decoder only
+  - two-real handoff preview loop only
+  - requires `--enable-continuous-stream-decoder`
+  - selected with
+    `--continuous-decoder-output-pipeline-experiment no-scale-bgra`
+- Behavior:
+  - removes continuous FFmpeg `-vf scale=640:360:flags=neighbor`
+  - keeps `-pix_fmt bgra`
+  - reads source-size raw BGRA from stdout
+  - leaves default `default` mode as scaled 640x360 BGRA
+  - leaves optimized `scaled-bgr24` as scaled 640x360 BGR24 with safe scalar
+    in-place BGRA expansion
+- Diagnostics now expose:
+  - `continuous_decode_output_pipeline_scale_mode`
+  - `continuous_decode_output_source_width`
+  - `continuous_decode_output_source_height`
+  - `continuous_decode_output_scaled_width`
+  - `continuous_decode_output_scaled_height`
+  - `continuous_decode_output_scale_removed_count`
+  - `continuous_decode_output_scale_path_experiment_enabled`
+- Expected bytes:
+  - default BGRA: `640 * 360 * 4 = 921600`
+  - scaled BGR24 pipe: `640 * 360 * 3 = 691200`
+  - no-scale BGRA at 1280x720 source: `1280 * 720 * 4 = 3686400`
+- Verdict before runtime rerun:
+  - implementation wiring is ready for human-side A/B
+  - `no-scale-bgra` is diagnostics-only, not an adoption candidate
+  - default BGRA remains the safe path
+  - optimized `scaled-bgr24` remains adoption HOLD
+  - Production Readiness remains FAIL
+
 - latest output pipeline A/B rerun:
   - root:
     `S:\stream-sync\manual-logs\two-client-output-pipeline-ab-rerun-20260528-014200`
@@ -504,9 +539,12 @@ Boundary:
 - Latest optimized BGR24 A/B shows conversion optimization worked, but
   `scaled-bgr24` still does not clearly beat default BGRA end to end.
 - Next candidate order:
-  1. FFmpeg scale path split opt-in experiment docs-first review
-  2. reader/completed latency breakdown diagnostics
+  1. human-side `no-scale-bgra` A/B rerun for the scale path split slice
+  2. reader/completed latency breakdown diagnostics if no-scale evidence is
+     ambiguous
   3. direct BGR24 render path docs-first impact review only
+- The `no-scale-bgra` code slice is already implemented; do not broaden it
+  before runtime evidence.
 - Keep one-shot suppression as strong contributor evidence, but not the current
   main bottleneck.
 - Keep threshold branch HOLD / candidate and one-shot suppression as supporting

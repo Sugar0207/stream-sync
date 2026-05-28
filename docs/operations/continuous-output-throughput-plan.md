@@ -47,6 +47,20 @@ Last updated: 2026-05-28
     - next throughput candidate should be FFmpeg scale path split or
       reader/completed latency breakdown diagnostics, not default promotion
 
+- 2026-05-28 code status:
+  - FFmpeg scale path split first slice is implemented as opt-in
+    `no-scale-bgra`
+  - default BGRA and optimized `scaled-bgr24` output shapes are unchanged
+  - `no-scale-bgra` removes the continuous FFmpeg scale filter and keeps BGRA
+    output at source size
+  - at 1280x720 source, expected pipe bytes are `3686400` per frame, which is
+    4x the 640x360 BGRA default output size
+  - summary now reports scale mode, source/scaled dimensions, scale removed
+    count, and scale path experiment enabled flag
+  - no runtime rerun has been performed by Codex; next evidence should come
+    from human-side `S:\stream-sync` A/B on the valid
+    `C:\streamsync-target\stream-sync-rerun\debug\*.exe` runtime
+
 - latest output pipeline A/B rerun:
   - `S:\stream-sync\manual-logs\two-client-output-pipeline-ab-rerun-20260528-014200`
   - evidence is VALID-ish / useful on the same
@@ -357,12 +371,14 @@ experiment design now lives in
    - Any reader buffering behavior change remains opt-in and summarized.
 
 4. FFmpeg scale path comparison
-   - Next opt-in planning candidate after or alongside stdout/raw BGRA pipe
-     throughput.
+   - First opt-in code slice is implemented as `no-scale-bgra`; runtime
+     throughput evidence is pending.
    - Current path stays `scale=640:360:flags=neighbor` plus raw BGRA by
      default.
    - After the `scaled-bgr24` A/B, do not combine scale split with direct
      render or unsafe conversion in the first follow-up slice.
+   - Treat source-size BGRA bytes/frame as a risk metric, especially
+     `3686400` bytes/frame at 1280x720.
 
 5. BGR24 conversion optimization / direct render review
    - New first docs-first candidate after the output pipeline A/B.
@@ -420,8 +436,9 @@ experiment design now lives in
 - Pixel-format, scale-path, reader-buffering, and additional FFmpeg args remain
   opt-in experiment candidates after diagnostics identify a likely bottleneck.
 - After optimized BGR24 A/B, pixel-format conversion is no longer the first
-  unresolved throughput candidate. The next main line is FFmpeg scale path split
-  or reader/completed latency breakdown diagnostics.
+  unresolved throughput candidate. The FFmpeg scale path split first slice is
+  now implemented; next main line is human-side no-scale A/B evidence or
+  reader/completed latency breakdown diagnostics.
 - TargetTime-aware lookup and latest decoded fallback are held because accepting `73` to `74` frames of lag would violate sync-first behavior.
 - Feed max count remains unchanged because output throughput is already below source cadence.
 - Production Readiness remains FAIL.
