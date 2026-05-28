@@ -2,6 +2,66 @@
 
 ## 2026-05-29
 ### Type
+- Codex minimal ProgramOutput render boundary / docs update
+
+### Work
+- Added the first selected-only ProgramOutput render path as an internal
+  boundary using the existing decoded BGRA / window render infrastructure.
+- Kept this step narrow and non-invasive:
+  - no live Preview loop wiring
+  - no Program window loop or CLI flag
+  - no OBS capture change
+  - no renderer rewrite
+  - no GPU / slot layout renderer
+  - no current 4-view Preview behavior change
+
+### Changed Files
+- `apps/switcher/src/lib.rs`
+- `docs/operations/continuous-output-pipeline-experiment-plan.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### Implementation
+- Added `SWITCHER_PROGRAM_OUTPUT_WINDOW_TITLE` with the separate title
+  `StreamSync Program Output`.
+- Added `SwitcherProgramOutputRenderInput` and
+  `SwitcherProgramOutputRenderResult`.
+- Added
+  `SwitcherProgramOutputBoundary::render_selected_decoded_frame_with_runtime`.
+- The boundary requires caller-supplied `SwitcherProgramSelection` and an
+  already-selected decoded BGRA frame. It does not derive Program state from
+  Preview `Focused(slot_index)`.
+- The boundary passes the selected decoded frame directly to
+  `SwitcherWindowRenderBoundary`, so the internal Program path does not include
+  Preview labels, slot borders, debug UI, multiview layout, or 4-view BGRA
+  composition.
+
+### Tests
+- Added narrow unit coverage that:
+  - renders a selected Program decoded frame with the Program title
+  - reports missing selected decoded frame as an explicit Program result
+
+### Validation
+- `cargo fmt`
+  - result: PASS
+- `cargo check -p stream-sync-switcher`
+  - result: PASS
+  - note: existing unused-function warnings remain in `apps/switcher/src/main.rs`
+    for `update_four_view_previous_slots_from_validation`,
+    `four_view_two_real_tick_diagnostics`, and
+    `clean_output_window_was_rendered`.
+- `cargo test -p stream-sync-switcher program_output --lib`
+  - result: PASS
+  - note: 2 passed, 292 filtered out.
+
+### TODO Update
+- Marked the internal selected-only Program render boundary as done.
+- Kept the next step as a separate opt-in live Program window / CLI flag around
+  the internal boundary.
+- Kept OBS capture target changes after a stable separate Program window exists.
+
+## 2026-05-29
+### Type
 - Codex minimal code boundary / docs update
 
 ### Work

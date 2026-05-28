@@ -51,6 +51,7 @@ use windows::{
 };
 
 pub const CRATE_NAME: &str = "stream-sync-switcher";
+pub const SWITCHER_PROGRAM_OUTPUT_WINDOW_TITLE: &str = "StreamSync Program Output";
 
 /// Marker boundary for the current human-facing multiview output.
 ///
@@ -79,6 +80,99 @@ pub struct SwitcherProgramSelection {
     pub selected_client_id: ClientId,
     pub selected_run_id: Option<RunId>,
     pub selected_slot_index: Option<usize>,
+}
+
+/// Input for the first selected-only ProgramOutput render path.
+///
+/// The caller must supply an explicit Program selection and the decoded BGRA
+/// frame that belongs to that source. This boundary does not derive Program
+/// selection from Preview focus.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SwitcherProgramOutputRenderInput<'a> {
+    pub selection: &'a SwitcherProgramSelection,
+    pub selected_decoded_frame: Option<&'a SwitcherDecodedFrame>,
+    pub window_title: &'a str,
+    pub render_hold_millis: u64,
+}
+
+/// Missing-source reason for selected-only ProgramOutput rendering.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum SwitcherProgramOutputMissingSelectedSourceReason {
+    NoDecodedFrameForSelection,
+}
+
+/// Result of the first selected-only ProgramOutput render boundary.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SwitcherProgramOutputRenderResult {
+    Rendered {
+        selection: SwitcherProgramSelection,
+        render: SwitcherWindowRenderSuccess,
+    },
+    MissingSelectedSource {
+        selection: SwitcherProgramSelection,
+        reason: SwitcherProgramOutputMissingSelectedSourceReason,
+    },
+    RenderDeferred {
+        selection: SwitcherProgramSelection,
+        reason: SwitcherWindowRenderDeferredReason,
+    },
+    BackendUnavailable {
+        selection: SwitcherProgramSelection,
+        reason: SwitcherWindowBackendUnavailableReason,
+        message: Option<String>,
+    },
+    InvalidSelectedFrame {
+        selection: SwitcherProgramSelection,
+        error: SwitcherDecodedFrameRenderInputError,
+    },
+    RenderFailed {
+        selection: SwitcherProgramSelection,
+        message: String,
+    },
+}
+
+impl SwitcherProgramOutputBoundary {
+    pub fn render_selected_decoded_frame_with_runtime(
+        &self,
+        input: SwitcherProgramOutputRenderInput<'_>,
+        runtime: &impl SwitcherWindowRenderRuntimeHook,
+    ) -> SwitcherProgramOutputRenderResult {
+        let selection = input.selection.clone();
+        let Some(frame) = input.selected_decoded_frame else {
+            return SwitcherProgramOutputRenderResult::MissingSelectedSource {
+                selection,
+                reason:
+                    SwitcherProgramOutputMissingSelectedSourceReason::NoDecodedFrameForSelection,
+            };
+        };
+
+        match SwitcherWindowRenderBoundary.render_decoded_frame_with_runtime(
+            frame,
+            input.window_title,
+            input.render_hold_millis,
+            runtime,
+        ) {
+            SwitcherWindowRenderResult::Rendered(render) => {
+                SwitcherProgramOutputRenderResult::Rendered { selection, render }
+            }
+            SwitcherWindowRenderResult::RenderDeferred { reason } => {
+                SwitcherProgramOutputRenderResult::RenderDeferred { selection, reason }
+            }
+            SwitcherWindowRenderResult::BackendUnavailable { reason, message } => {
+                SwitcherProgramOutputRenderResult::BackendUnavailable {
+                    selection,
+                    reason,
+                    message,
+                }
+            }
+            SwitcherWindowRenderResult::InvalidFrame { error } => {
+                SwitcherProgramOutputRenderResult::InvalidSelectedFrame { selection, error }
+            }
+            SwitcherWindowRenderResult::RenderFailed { message } => {
+                SwitcherProgramOutputRenderResult::RenderFailed { selection, message }
+            }
+        }
+    }
 }
 
 /// Input for selecting one client's latest encoded frame for single-view PoC.
@@ -26740,6 +26834,90 @@ mod tests {
                 title: "StreamSync Test".to_string(),
                 hold_millis: 123
             })
+        );
+    }
+
+    #[test]
+    fn program_output_renders_selected_decoded_frame_with_program_title() {
+        struct FixtureRender;
+        impl SwitcherWindowRenderRuntimeHook for FixtureRender {
+            fn render_once(
+                &self,
+                request: SwitcherWindowRenderRequest,
+            ) -> SwitcherWindowRenderResult {
+                assert_eq!(request.title, SWITCHER_PROGRAM_OUTPUT_WINDOW_TITLE);
+                assert_eq!(request.frame.width, 2);
+                assert_eq!(request.frame.height, 1);
+                assert_eq!(request.frame.pixels.len(), 8);
+                SwitcherWindowRenderResult::Rendered(SwitcherWindowRenderSuccess {
+                    width: request.frame.width,
+                    height: request.frame.height,
+                    title: request.title,
+                    hold_millis: request.hold_millis,
+                })
+            }
+        }
+        let selection = SwitcherProgramSelection {
+            selected_client_id: ClientId("client-program".to_string()),
+            selected_run_id: Some(RunId("run-program".to_string())),
+            selected_slot_index: Some(2),
+        };
+        let frame = SwitcherDecodedFrame {
+            width: 2,
+            height: 1,
+            pixel_format: SwitcherDecodedFramePixelFormat::Bgra8,
+            pixels: vec![0; 8],
+        };
+
+        let result = SwitcherProgramOutputBoundary.render_selected_decoded_frame_with_runtime(
+            SwitcherProgramOutputRenderInput {
+                selection: &selection,
+                selected_decoded_frame: Some(&frame),
+                window_title: SWITCHER_PROGRAM_OUTPUT_WINDOW_TITLE,
+                render_hold_millis: 77,
+            },
+            &FixtureRender,
+        );
+
+        assert_eq!(
+            result,
+            SwitcherProgramOutputRenderResult::Rendered {
+                selection,
+                render: SwitcherWindowRenderSuccess {
+                    width: 2,
+                    height: 1,
+                    title: SWITCHER_PROGRAM_OUTPUT_WINDOW_TITLE.to_string(),
+                    hold_millis: 77,
+                }
+            }
+        );
+    }
+
+    #[test]
+    fn program_output_missing_selected_decoded_frame_is_explicit() {
+        let selection = SwitcherProgramSelection {
+            selected_client_id: ClientId("client-program".to_string()),
+            selected_run_id: None,
+            selected_slot_index: None,
+        };
+
+        let result = SwitcherProgramOutputBoundary.render_selected_decoded_frame_with_runtime(
+            SwitcherProgramOutputRenderInput {
+                selection: &selection,
+                selected_decoded_frame: None,
+                window_title: SWITCHER_PROGRAM_OUTPUT_WINDOW_TITLE,
+                render_hold_millis: 1,
+            },
+            &SwitcherUnavailableWindowRenderRuntimeHook,
+        );
+
+        assert_eq!(
+            result,
+            SwitcherProgramOutputRenderResult::MissingSelectedSource {
+                selection,
+                reason:
+                    SwitcherProgramOutputMissingSelectedSourceReason::NoDecodedFrameForSelection
+            }
         );
     }
 

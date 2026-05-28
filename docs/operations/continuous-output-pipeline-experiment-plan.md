@@ -714,9 +714,28 @@ as a later Preview optimization, not a blocker for Program separation.
 - No Program render path, second window, OBS capture change, renderer rewrite,
   or 4-view Preview behavior change was added in this slice.
 
+### Internal Program render path status
+
+- 2026-05-29 first selected-only Program render path is implemented as an
+  internal boundary only:
+  - `SwitcherProgramOutputBoundary::render_selected_decoded_frame_with_runtime`
+  - `SwitcherProgramOutputRenderInput`
+  - `SwitcherProgramOutputRenderResult`
+  - `SWITCHER_PROGRAM_OUTPUT_WINDOW_TITLE`
+- The boundary requires caller-supplied `SwitcherProgramSelection` and a selected
+  decoded BGRA frame. It does not derive Program selection from
+  `Focused(slot_index)`.
+- The selected Program frame is passed directly to the existing
+  `SwitcherWindowRenderBoundary`, so there is no Preview label, multiview
+  layout, selected border, debug overlay, or 4-view BGRA composition in this
+  internal path.
+- This is not wired into the live Preview loops yet. No Program window is
+  created by default, no CLI flag activates it yet, and OBS capture remains
+  unchanged.
+
 ### Non-goals for the first Program slice
 
-- Do not implement Program output in this docs step.
+- Do not make Program output the default OBS target yet.
 - Do not remove or change the current 4-view Preview behavior.
 - Do not convert Preview to GPU or slot rendering yet.
 - Do not call the current 4-view output Program.
