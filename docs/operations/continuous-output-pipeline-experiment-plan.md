@@ -699,6 +699,21 @@ as a later Preview optimization, not a blocker for Program separation.
 4. Make OBS capture the Program window only.
 5. Later investigate slot layout rendering / GPU renderer for Preview.
 
+### Boundary type slice status
+
+- 2026-05-29 code boundary slice added marker/naming types only:
+  - `SwitcherPreviewOutputBoundary`
+  - `SwitcherProgramOutputBoundary`
+  - `SwitcherProgramSelection`
+- `SwitcherProgramSelection` keeps `selected_client_id` as the primary source
+  identity and treats `selected_slot_index` as optional Preview-layout
+  provenance.
+- The current controlled-preview `Focused(slot_index)` state is documented as
+  Preview display state. It is not Program state unless a later slice explicitly
+  maps it to `SwitcherProgramSelection`.
+- No Program render path, second window, OBS capture change, renderer rewrite,
+  or 4-view Preview behavior change was added in this slice.
+
 ### Non-goals for the first Program slice
 
 - Do not implement Program output in this docs step.

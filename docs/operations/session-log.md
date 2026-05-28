@@ -2,6 +2,58 @@
 
 ## 2026-05-29
 ### Type
+- Codex minimal code boundary / docs update
+
+### Work
+- Added behavior-neutral switcher naming/type boundaries for future
+  PreviewOutput / ProgramOutput separation.
+- Added code comments clarifying that current controlled-preview focus is
+  Preview display state, not Program selection state.
+- Kept this step narrow:
+  - no Program render path
+  - no Program window
+  - no OBS capture change
+  - no renderer rewrite
+  - no current 4-view Preview behavior change
+
+### Changed Files
+- `apps/switcher/src/lib.rs`
+- `apps/switcher/src/main.rs`
+- `docs/operations/continuous-output-pipeline-experiment-plan.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### Implementation
+- Added `SwitcherPreviewOutputBoundary` as a marker boundary for the current
+  human-facing 4-view / multiview output.
+- Added `SwitcherProgramOutputBoundary` as a marker boundary for future
+  OBS-facing selected-only output.
+- Added `SwitcherProgramSelection` with `selected_client_id` as the primary
+  Program source identity, optional `selected_run_id`, and optional
+  `selected_slot_index` provenance.
+- Documented `SwitcherFourViewControlledPreviewViewState::Focused(slot_index)`
+  as Preview display state. A future Program switch must explicitly map Preview
+  slot focus into `SwitcherProgramSelection`.
+
+### Validation
+- `cargo fmt`
+  - result: PASS
+- `cargo check -p stream-sync-switcher`
+  - result: PASS
+  - note: existing unused-function warnings remain in `apps/switcher/src/main.rs`
+    for `update_four_view_previous_slots_from_validation`,
+    `four_view_two_real_tick_diagnostics`, and
+    `clean_output_window_was_rendered`.
+
+### TODO Update
+- Marked the minimal PreviewOutput / ProgramOutput naming/type boundary as done.
+- Kept next items ordered toward selected-only Program render, Program-only OBS
+  capture, and later Preview slot layout / GPU renderer investigation.
+- Kept continuous decoder output pipeline A/B and diagnostics work opt-in and
+  non-blocking for ProgramOutput separation.
+
+## 2026-05-29
+### Type
 - Codex docs-first architecture planning
 
 ### Work

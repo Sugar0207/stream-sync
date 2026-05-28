@@ -2419,6 +2419,11 @@ struct SwitcherFourViewFocusedHandoffPreviewLoopSummary {
     output_height: Option<u32>,
 }
 
+/// Human-facing Preview display state for the current 4-view control loop.
+///
+/// `Focused(slot_index)` is not ProgramOutput selection state. A future Program
+/// switch must explicitly map Preview slot focus to a Program source identity
+/// such as `SwitcherProgramSelection`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum SwitcherFourViewControlledPreviewViewState {
     AllView,

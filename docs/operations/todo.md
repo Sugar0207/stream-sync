@@ -22,7 +22,7 @@
 ---
 
 ## 現在位置
-- 2026-05-29 ProgramOutput boundary plan is recorded in `docs/operations/continuous-output-pipeline-experiment-plan.md`. Current 4-view / multiview remains `PreviewOutput`; future `ProgramOutput` should be OBS-facing selected-only output, inserted after handoff / targetTime / decode selection and before 4-view BGRA composition. ProgramOutput is not implemented yet, and the current `StreamSync 4-view Output` must not be renamed to Program without separating responsibilities
+- 2026-05-29 minimal PreviewOutput / ProgramOutput naming/type boundary is added in switcher code without behavior change. Current 4-view / multiview remains `PreviewOutput`; future `ProgramOutput` remains OBS-facing selected-only output, inserted after handoff / targetTime / decode selection and before 4-view BGRA composition. `SwitcherProgramSelection` keeps `selected_client_id` as primary identity, and `Focused(slot_index)` remains Preview display state unless a later slice explicitly maps it to Program selection. Program rendering and a Program window are not implemented yet
 - latest reverse-order lag threshold A/B rerun is `manual-logs/two-client-lag-reverse-ab-rerun-20260527-164258` as the current threshold evidence. lag8 vs lag5 is VALID, lag8 is a small PARTIAL PASS and held adoption candidate, and default `8` promotion is HOLD while default `5` remains the current guard
 - latest output availability rerun is `manual-logs/two-client-output-availability-rerun-20260527-173716` and is VALID. Client FFmpeg recovered, client1/client2 sent `900` frames each at about `29.538fps` / `28.694fps`, server queued `1800` frames, and continuous feed received/enqueued `453` / `423` frames, so client / server / feed are PASS for this slice
 - next continuous-stream decoder main line is output availability / throughput rather than another default threshold move. The diagnostics slice is runtime VALID and points to stale/output backlog rather than not-ready: continuous output is `316` frames at `21.269fps`, pending correspondence is `115` with avg age `1948.809ms`, latest input-output gap is `115`, selected-output gap is `99`, reader full-frame avg is `46.430ms`, and stale availability rejects `238` exceed not-ready `22`
@@ -1104,9 +1104,10 @@ continuous runtime first slice の blocker:
 - actual dashboard UI rendering remains unimplemented.
 
 ## Next Items
-1. introduce minimal `PreviewOutput` / `ProgramOutput` naming or types without behavior change; keep current 4-view / multiview behavior as Preview and do not rename the clean output path into Program
-2. after the boundary exists, add a selected-only Program render path using existing decoded BGRA / window render machinery where safe, with Program selection owned separately from `Focused(slot_index)`
-3. make OBS capture the Program window only after selected-only Program output exists; keep Preview as human-facing multiview / monitoring output
-4. keep default BGRA as the safe path; optimized `scaled-bgr24` conversion is PASS, but adoption remains HOLD after the `20260528-103130` A/B
-5. run the new opt-in `no-scale-bgra` scale path split A/B before any default promotion; treat it as diagnostics-only because source-size BGRA can be 4x 640x360 BGRA at 1280x720
-6. keep continuous decoder diagnostics/performance work opt-in and non-blocking for ProgramOutput boundary work: no default threshold, suppression, feed max, slot1, 4-client, protocol, GPU decode, or one-shot fallback removal changes
+1. [x] introduce minimal `PreviewOutput` / `ProgramOutput` naming or types without behavior change; keep current 4-view / multiview behavior as Preview and do not rename the clean output path into Program
+2. [ ] add a selected-only Program render path using existing decoded BGRA / window render machinery where safe, with Program selection owned separately from `Focused(slot_index)`
+3. [ ] make OBS capture the Program window only after selected-only Program output exists; keep Preview as human-facing multiview / monitoring output
+4. [ ] later investigate Preview slot layout rendering / GPU renderer; do not block the first selected-only Program path on this
+5. [ ] keep default BGRA as the safe path; optimized `scaled-bgr24` conversion is PASS, but adoption remains HOLD after the `20260528-103130` A/B
+6. [ ] run the new opt-in `no-scale-bgra` scale path split A/B before any default promotion; treat it as diagnostics-only because source-size BGRA can be 4x 640x360 BGRA at 1280x720
+7. [ ] keep continuous decoder diagnostics/performance work opt-in and non-blocking for ProgramOutput boundary work: no default threshold, suppression, feed max, slot1, 4-client, protocol, GPU decode, or one-shot fallback removal changes

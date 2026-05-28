@@ -52,6 +52,35 @@ use windows::{
 
 pub const CRATE_NAME: &str = "stream-sync-switcher";
 
+/// Marker boundary for the current human-facing multiview output.
+///
+/// The existing 4-view / clean-output window belongs to PreviewOutput. It may
+/// keep using the CPU-side composed BGRA canvas until a later slot renderer
+/// slice replaces that implementation detail.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct SwitcherPreviewOutputBoundary;
+
+/// Marker boundary for the future OBS-facing selected-only output.
+///
+/// This type intentionally does not create a render loop, window, or OBS
+/// capture target yet. ProgramOutput should be inserted after handoff /
+/// targetTime / decode selection and before Preview's 4-view BGRA composition.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct SwitcherProgramOutputBoundary;
+
+/// Source identity selected for future ProgramOutput rendering.
+///
+/// `selected_client_id` is the primary Program source identity. A slot index is
+/// only provenance from the current Preview layout and must not replace the
+/// client/source identity. `Focused(slot_index)` remains Preview display state
+/// unless a later slice explicitly maps it into this Program selection.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SwitcherProgramSelection {
+    pub selected_client_id: ClientId,
+    pub selected_run_id: Option<RunId>,
+    pub selected_slot_index: Option<usize>,
+}
+
 /// Input for selecting one client's latest encoded frame for single-view PoC.
 ///
 /// The queue state is borrowed from the caller and is not mutated by this
