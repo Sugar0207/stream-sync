@@ -2,6 +2,79 @@
 
 ## 2026-05-29
 ### Type
+- Codex opt-in live ProgramOutput window wiring / docs update
+
+### Work
+- Wired the internal selected-only ProgramOutput render boundary into the
+  two-real live preview loop behind an explicit opt-in flag.
+- Kept default behavior unchanged:
+  - no default Program window
+  - no OBS capture target change
+  - no current 4-view Preview behavior change
+  - no renderer / decoder rewrite
+  - no GPU / slot layout renderer
+
+### Changed Files
+- `apps/switcher/src/main.rs`
+- `docs/operations/continuous-output-pipeline-experiment-plan.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### Implementation
+- Added `--enable-program-output-window` to
+  `--four-view-two-real-handoff-preview-loop`.
+- When the flag is absent, ProgramOutput remains disabled and the existing
+  `StreamSync 4-view Output` behavior remains Preview-only.
+- When the flag is present, the loop creates a separate persistent render
+  runtime and renders the selected decoded BGRA frame to
+  `StreamSync Program Output` through
+  `SwitcherProgramOutputBoundary::render_selected_decoded_frame_with_runtime`.
+- The Program path is inserted after handoff / targetTime / decode selection and
+  before 4-view BGRA composition.
+- Temporary selection behavior is explicit:
+  - first renderable decoded real slot in slot-index order
+  - `selected_client_id` remains the Program identity
+  - `selected_slot_index` is provenance only
+  - `Focused(slot_index)` is not used as Program state
+- Added summary diagnostics:
+  - `program_output_enabled`
+  - `program_output_render_count`
+  - `program_output_missing_selected_source_count`
+  - `program_output_last_result_kind`
+  - `program_output_selected_client_id`
+  - `program_output_selected_slot_index`
+  - `program_output_window_title`
+
+### Tests
+- Added parser coverage for `--enable-program-output-window`.
+- Added a narrow two-real loop test proving opt-in Program rendering uses a
+  separate Program title/runtime and renders one selected-only decoded frame.
+
+### Validation
+- `cargo fmt`
+  - result: PASS
+- `cargo check -p stream-sync-switcher`
+  - result: PASS
+  - note: existing unused-function warnings remain in `apps/switcher/src/main.rs`
+    for `update_four_view_previous_slots_from_validation`,
+    `four_view_two_real_tick_diagnostics`, and
+    `clean_output_window_was_rendered`.
+- `cargo test -p stream-sync-switcher program_output --lib`
+  - result: PASS
+  - note: 2 passed, 292 filtered out.
+- `cargo test -p stream-sync-switcher program_output`
+  - result: PASS
+  - note: lib ProgramOutput tests and the main opt-in Program window test passed.
+
+### TODO Update
+- Marked the opt-in live Program window / CLI flag step as done.
+- Added manual validation of the opt-in Program window as the next ProgramOutput
+  item before moving OBS capture.
+- Kept OBS capture changes, Preview slot layout, and GPU renderer work out of
+  scope.
+
+## 2026-05-29
+### Type
 - Codex minimal ProgramOutput render boundary / docs update
 
 ### Work

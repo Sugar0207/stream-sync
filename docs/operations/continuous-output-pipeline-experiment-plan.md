@@ -733,6 +733,24 @@ as a later Preview optimization, not a blocker for Program separation.
   created by default, no CLI flag activates it yet, and OBS capture remains
   unchanged.
 
+### Opt-in live Program window status
+
+- 2026-05-29 the internal selected-only Program render boundary is wired into
+  `--four-view-two-real-handoff-preview-loop` behind the opt-in flag
+  `--enable-program-output-window`.
+- Default behavior remains Preview-only. Without the flag, the current
+  `StreamSync 4-view Output` path and OBS capture expectations are unchanged.
+- With the flag, the two-real loop creates a separate persistent render runtime
+  and renders the selected Program frame to `StreamSync Program Output`.
+- Temporary selection behavior is explicit: Program selection is not derived
+  from `Focused(slot_index)`. Until explicit Program selection input exists, the
+  loop picks the first renderable decoded real slot in slot-index order and
+  records `selected_slot_index` only as provenance. If no decoded Program frame
+  is available, it falls back to the first configured real slot identity and
+  reports `MissingSelectedSource`.
+- OBS capture is not changed yet. The Program window is only made available as
+  a future capture target.
+
 ### Non-goals for the first Program slice
 
 - Do not make Program output the default OBS target yet.
