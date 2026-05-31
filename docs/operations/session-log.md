@@ -2,6 +2,48 @@
 
 ## 2026-06-01
 ### Type
+- Codex docs-only OBS capture operation update
+
+### Work
+- Recorded the validated Preview / Program separation in the operational docs.
+- Added the OBS capture rule that production Window Capture should target
+  `StreamSync Program Output`, while `StreamSync 4-view Output` remains
+  human-facing Preview / monitoring only.
+- Added the current Program window command examples and the current
+  static-CLI limitations to the ProgramOutput experiment plan.
+- Updated the project overview wording so the README no longer implies that
+  OBS captures the 4-view window as the only output surface.
+- Reordered the TODO so the next steps now lead with OBS Program capture
+  manual-operation docs, hotkey/control-pipe switching design, and longer
+  runtime validation with OBS capturing Program.
+
+### Manual Validation Reflected
+- The previously validated Program window facts remain unchanged:
+  - `--enable-program-output-window` gates Program rendering
+  - `StreamSync Program Output` appears as an OBS Window Capture candidate
+  - Program window renders selected-only output, not 4-view/multiview
+  - Preview window remains `StreamSync 4-view Output`
+  - explicit Program selection still works with `--program-selected-client-id`
+    for `player1` and `player2`
+
+### Changed Files
+- `README.md`
+- `docs/operations/continuous-output-pipeline-experiment-plan.md`
+- `docs/operations/obs-capture-validation.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### Validation
+- `git diff --check`
+  - result: PASS
+  - note: Git reported LF/CRLF normalization warnings only for the edited docs.
+
+### TODO Update
+- Marked the OBS capture operation docs slice as done.
+- Reordered the next items so Program capture ops now lead the remaining work.
+
+## 2026-06-01
+### Type
 - Codex explicit ProgramOutput source selection / docs update
 
 ### Work

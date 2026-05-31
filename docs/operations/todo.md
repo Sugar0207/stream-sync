@@ -1109,8 +1109,10 @@ continuous runtime first slice の blocker:
 3. [x] add the smallest opt-in live Program window path / CLI flag around the internal Program render boundary; keep current 4-view Preview default unchanged
 4. [x] validate the opt-in Program window manually with two real sources, confirming the separate title, selected-only image, summary fields, and no regression in `StreamSync 4-view Output`
 5. [x] add explicit Program source selection for the opt-in Program window via `--program-selected-client-id <client_id>`, while preserving fallback behavior when omitted
-6. [ ] make OBS capture the Program window only after selected-only Program output exists as a stable separate window; keep Preview as human-facing multiview / monitoring output
-7. [ ] later investigate Preview slot layout rendering / GPU renderer; do not block the first selected-only Program path on this
-8. [ ] keep default BGRA as the safe path; optimized `scaled-bgr24` conversion is PASS, but adoption remains HOLD after the `20260528-103130` A/B
-9. [ ] run the new opt-in `no-scale-bgra` scale path split A/B before any default promotion; treat it as diagnostics-only because source-size BGRA can be 4x 640x360 BGRA at 1280x720
-10. [ ] keep continuous decoder diagnostics/performance work opt-in and non-blocking for ProgramOutput boundary work: no default threshold, suppression, feed max, slot1, 4-client, protocol, GPU decode, or one-shot fallback removal changes
+6. [x] document the OBS capture operation for separated PreviewOutput / ProgramOutput so OBS targets `StreamSync Program Output`, not `StreamSync 4-view Output`, for production capture
+7. [ ] design Program source switching over hotkey or control pipe; keep current CLI/static selection as the only supported switch for now
+8. [ ] run longer runtime validation with OBS capturing `StreamSync Program Output` and confirm the split holds across extended use
+9. [ ] later investigate Preview slot layout rendering / GPU renderer; do not block the first selected-only Program path on this
+10. [ ] keep default BGRA as the safe path; optimized `scaled-bgr24` conversion is PASS, but adoption remains HOLD after the `20260528-103130` A/B
+11. [ ] run the new opt-in `no-scale-bgra` scale path split A/B before any default promotion; treat it as diagnostics-only because source-size BGRA can be 4x 640x360 BGRA at 1280x720
+12. [ ] keep continuous decoder diagnostics/performance work opt-in and non-blocking for ProgramOutput boundary work: no default threshold, suppression, feed max, slot1, 4-client, protocol, GPU decode, or one-shot fallback removal changes

@@ -63,6 +63,26 @@
   - `client3`: `accepted=true`, `frames_encoded=723`, `frames_sent=723`, `send_failures=0`, `encode_failures=1`, `keyframes_sent=25`, `h264_parameter_sets_cached=true`, `stop_reason=Some(EncodeFailure)`, `effective_output_fps=16.240`
   - `client4`: `accepted=true`, `frames_encoded=900`, `frames_sent=900`, `send_failures=0`, `encode_failures=0`, `keyframes_sent=30`, `h264_parameter_sets_cached=true`, `stop_reason=Some(MaxFramesReached)`, `effective_output_fps=18.400`
 
+## Current Program Capture Rule
+
+The validation evidence above is the historical `StreamSync 4-view Output`
+OBS capture PASS. After Preview / Program separation, the production OBS rule
+is now:
+
+- OBS Window Capture target: `StreamSync Program Output`
+- `StreamSync 4-view Output` remains human-facing Preview / monitoring only
+- do not use `StreamSync 4-view Output` for production Program capture
+- enable Program output with `--enable-program-output-window`
+- select an explicit Program source with `--program-selected-client-id <client_id>`
+
+Validated command examples for the Program path:
+
+```text
+--enable-program-output-window
+--enable-program-output-window --program-selected-client-id player1
+--enable-program-output-window --program-selected-client-id player2
+```
+
 Classification for this run:
 
 - OBS capture validation: PASS

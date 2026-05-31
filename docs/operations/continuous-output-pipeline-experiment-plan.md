@@ -2,7 +2,7 @@
 
 # Continuous Output Pipeline Experiment Plan
 
-Last updated: 2026-05-29
+Last updated: 2026-06-01
 
 ## Purpose
 - Design the next docs-first candidates after output availability diagnostics
@@ -763,6 +763,33 @@ as a later Preview optimization, not a blocker for Program separation.
   Capture lists `StreamSync Program Output`.
 - OBS capture is not changed yet. The Program window is only made available as
   a future capture target.
+
+### OBS Capture Operation
+
+For the separated PreviewOutput / ProgramOutput flow, OBS capture should be
+operated as follows:
+
+- OBS Window Capture target: `StreamSync Program Output`
+- Do not capture `StreamSync 4-view Output` for production Program output
+- `StreamSync 4-view Output` remains human-facing Preview / monitoring output
+- Program output is enabled with `--enable-program-output-window`
+- Explicit Program source selection uses `--program-selected-client-id <client_id>`
+
+Validated command examples:
+
+```text
+--enable-program-output-window
+--enable-program-output-window --program-selected-client-id player1
+--enable-program-output-window --program-selected-client-id player2
+```
+
+Current limitations:
+
+- Program selection is CLI/static for now
+- no hotkey or control-pipe switching yet
+- no `--program-selected-run-id` yet
+- Preview still uses the CPU-side composed BGRA path
+- OBS setup remains manual and is not changed by code
 
 ### Non-goals for the first Program slice
 
