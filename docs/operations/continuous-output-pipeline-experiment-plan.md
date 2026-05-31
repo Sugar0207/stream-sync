@@ -742,12 +742,25 @@ as a later Preview optimization, not a blocker for Program separation.
   `StreamSync 4-view Output` path and OBS capture expectations are unchanged.
 - With the flag, the two-real loop creates a separate persistent render runtime
   and renders the selected Program frame to `StreamSync Program Output`.
-- Temporary selection behavior is explicit: Program selection is not derived
-  from `Focused(slot_index)`. Until explicit Program selection input exists, the
-  loop picks the first renderable decoded real slot in slot-index order and
-  records `selected_slot_index` only as provenance. If no decoded Program frame
-  is available, it falls back to the first configured real slot identity and
-  reports `MissingSelectedSource`.
+- Program selection is not derived from `Focused(slot_index)`.
+  `--program-selected-client-id <client_id>` now requests the Program source by
+  primary `selected_client_id`. If the requested client maps to a known real
+  slot, `selected_slot_index` is filled only as provenance.
+- If no explicit Program selection is provided, the loop preserves the
+  previous fallback: first renderable decoded real slot in slot-index order. If
+  no decoded Program frame is available, it falls back to the first configured
+  real slot identity and reports `MissingSelectedSource`.
+- If explicit Program selection is provided but the requested client is missing
+  or not currently renderable, ProgramOutput reports `MissingSelectedSource`
+  plus `program_output_missing_selected_source_reason`.
+- Summary diagnostics include `program_output_selection_mode`,
+  `program_output_requested_client_id`, `program_output_selected_client_id`,
+  `program_output_selected_slot_index`, and
+  `program_output_missing_selected_source_reason`.
+- Manual validation confirmed that Preview and Program windows appear
+  separately, Program shows one video only, Preview 4-view layout / selected
+  border / labels / debug UI are not mixed into ProgramOutput, and OBS Window
+  Capture lists `StreamSync Program Output`.
 - OBS capture is not changed yet. The Program window is only made available as
   a future capture target.
 

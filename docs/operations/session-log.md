@@ -1,5 +1,79 @@
 <!-- stream-sync/docs/operations/session-log.md -->
 
+## 2026-06-01
+### Type
+- Codex explicit ProgramOutput source selection / docs update
+
+### Work
+- Added explicit Program source selection to the opt-in Program window path for
+  `--four-view-two-real-handoff-preview-loop`.
+- Preserved current behavior when no explicit Program selection is supplied:
+  - Preview remains the existing 4-view output
+  - ProgramOutput still requires `--enable-program-output-window`
+  - fallback remains first renderable decoded real slot in slot-index order
+  - no OBS capture target change
+  - no renderer / decoder rewrite
+  - no GPU / slot layout renderer
+
+### Manual Validation Reflected
+- Preview window was displayed.
+- Program window was displayed.
+- Program window showed only one video.
+- 4-view layout, selected border, debug UI, and Preview labels were not mixed
+  into ProgramOutput.
+- OBS Window Capture listed `StreamSync Program Output` as a capture candidate.
+
+### Changed Files
+- `apps/switcher/src/main.rs`
+- `docs/operations/continuous-output-pipeline-experiment-plan.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### Implementation
+- Added `--program-selected-client-id <client_id>` to the existing two-real
+  handoff preview loop options.
+- When supplied, ProgramOutput selects the matching decoded Program source by
+  `selected_client_id`.
+- `selected_slot_index` is filled only as provenance when the requested client
+  maps to a configured real slot.
+- `Focused(slot_index)` remains Preview display state and is not read as
+  Program state.
+- If the requested client is missing or not renderable, ProgramOutput reports
+  `MissingSelectedSource` and a missing-source reason.
+- Added summary diagnostics:
+  - `program_output_selection_mode`
+  - `program_output_requested_client_id`
+  - `program_output_missing_selected_source_reason`
+
+### Validation
+- `cargo fmt`
+  - result: PASS
+- `cargo check -p stream-sync-switcher`
+  - result: PASS
+  - note: existing unused-function warnings remain in `apps/switcher/src/main.rs`
+    for `update_four_view_previous_slots_from_validation`,
+    `four_view_two_real_tick_diagnostics`, and
+    `clean_output_window_was_rendered`.
+- `cargo test -p stream-sync-switcher program_output --lib`
+  - result: PASS
+  - note: 2 passed, 292 filtered out.
+- `cargo test -p stream-sync-switcher program_output`
+  - result: PASS
+  - note: lib ProgramOutput tests and the main opt-in Program window test passed.
+- `cargo test -p stream-sync-switcher switcher_two_real_handoff_preview_options`
+  - result: PASS
+  - note: 3 main parser tests passed.
+- `cargo test -p stream-sync-switcher switcher_four_view_two_real_handoff_preview_loop_can_explicitly_select_program_client`
+  - result: PASS
+- `cargo test -p stream-sync-switcher switcher_four_view_two_real_handoff_preview_loop_reports_missing_explicit_program_client`
+  - result: PASS
+
+### TODO Update
+- Marked opt-in Program window manual validation as done.
+- Added and marked explicit Program source selection as done.
+- Kept OBS capture target changes, Preview slot layout, GPU renderer, and
+  decoder/render rewrites out of scope.
+
 ## 2026-05-29
 ### Type
 - Codex opt-in live ProgramOutput window wiring / docs update

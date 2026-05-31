@@ -2,7 +2,7 @@
 
 # StreamSync TODO
 
-最終更新: 2026-05-29
+最終更新: 2026-06-01
 
 このファイルは「現在どこまで終わっていて、次に何をやるか」を確認するための TODO です。  
 時系列の作業履歴、判断理由、各回の作業メモは `docs/operations/session-log.md` を正とします。
@@ -22,7 +22,7 @@
 ---
 
 ## 現在位置
-- 2026-05-29 opt-in live Program window path is added to `--four-view-two-real-handoff-preview-loop` via `--enable-program-output-window`. Default behavior remains Preview-only. With the flag, a separate `StreamSync Program Output` persistent window renders the selected decoded BGRA frame through the internal ProgramOutput boundary, without 4-view composition, Preview labels, borders, debug UI, or `Focused(slot_index)` Program reuse. Temporary Program selection picks the first renderable decoded real slot in slot-index order and records the slot only as provenance; if no decoded Program frame exists, the summary reports `MissingSelectedSource`. OBS capture is still unchanged and should not move until the Program window is validated as stable
+- 2026-06-01 opt-in live Program window path is manually validated and now has explicit source selection for `--four-view-two-real-handoff-preview-loop`. `--enable-program-output-window` still gates Program rendering, and `--program-selected-client-id <client_id>` requests the Program source by `selected_client_id`. With no explicit Program selection, fallback behavior remains the first renderable decoded real slot in slot-index order. `selected_slot_index` remains provenance only, `Focused(slot_index)` is not reused as Program state, and missing / non-renderable explicit selections report `MissingSelectedSource` plus a missing-source reason. Manual validation confirmed Preview and Program windows both appeared, Program showed one video only, Preview layout / selected border / debug UI / labels were not mixed into ProgramOutput, and OBS Window Capture listed `StreamSync Program Output`; OBS capture target is still not changed by code
 - latest reverse-order lag threshold A/B rerun is `manual-logs/two-client-lag-reverse-ab-rerun-20260527-164258` as the current threshold evidence. lag8 vs lag5 is VALID, lag8 is a small PARTIAL PASS and held adoption candidate, and default `8` promotion is HOLD while default `5` remains the current guard
 - latest output availability rerun is `manual-logs/two-client-output-availability-rerun-20260527-173716` and is VALID. Client FFmpeg recovered, client1/client2 sent `900` frames each at about `29.538fps` / `28.694fps`, server queued `1800` frames, and continuous feed received/enqueued `453` / `423` frames, so client / server / feed are PASS for this slice
 - next continuous-stream decoder main line is output availability / throughput rather than another default threshold move. The diagnostics slice is runtime VALID and points to stale/output backlog rather than not-ready: continuous output is `316` frames at `21.269fps`, pending correspondence is `115` with avg age `1948.809ms`, latest input-output gap is `115`, selected-output gap is `99`, reader full-frame avg is `46.430ms`, and stale availability rejects `238` exceed not-ready `22`
@@ -1107,9 +1107,10 @@ continuous runtime first slice の blocker:
 1. [x] introduce minimal `PreviewOutput` / `ProgramOutput` naming or types without behavior change; keep current 4-view / multiview behavior as Preview and do not rename the clean output path into Program
 2. [x] add an internal selected-only Program render boundary using existing decoded BGRA / window render machinery, with Program selection owned separately from `Focused(slot_index)`
 3. [x] add the smallest opt-in live Program window path / CLI flag around the internal Program render boundary; keep current 4-view Preview default unchanged
-4. [ ] validate the opt-in Program window manually with two real sources, confirming the separate title, selected-only image, summary fields, and no regression in `StreamSync 4-view Output`
-5. [ ] make OBS capture the Program window only after selected-only Program output exists as a stable separate window; keep Preview as human-facing multiview / monitoring output
-6. [ ] later investigate Preview slot layout rendering / GPU renderer; do not block the first selected-only Program path on this
-7. [ ] keep default BGRA as the safe path; optimized `scaled-bgr24` conversion is PASS, but adoption remains HOLD after the `20260528-103130` A/B
-8. [ ] run the new opt-in `no-scale-bgra` scale path split A/B before any default promotion; treat it as diagnostics-only because source-size BGRA can be 4x 640x360 BGRA at 1280x720
-9. [ ] keep continuous decoder diagnostics/performance work opt-in and non-blocking for ProgramOutput boundary work: no default threshold, suppression, feed max, slot1, 4-client, protocol, GPU decode, or one-shot fallback removal changes
+4. [x] validate the opt-in Program window manually with two real sources, confirming the separate title, selected-only image, summary fields, and no regression in `StreamSync 4-view Output`
+5. [x] add explicit Program source selection for the opt-in Program window via `--program-selected-client-id <client_id>`, while preserving fallback behavior when omitted
+6. [ ] make OBS capture the Program window only after selected-only Program output exists as a stable separate window; keep Preview as human-facing multiview / monitoring output
+7. [ ] later investigate Preview slot layout rendering / GPU renderer; do not block the first selected-only Program path on this
+8. [ ] keep default BGRA as the safe path; optimized `scaled-bgr24` conversion is PASS, but adoption remains HOLD after the `20260528-103130` A/B
+9. [ ] run the new opt-in `no-scale-bgra` scale path split A/B before any default promotion; treat it as diagnostics-only because source-size BGRA can be 4x 640x360 BGRA at 1280x720
+10. [ ] keep continuous decoder diagnostics/performance work opt-in and non-blocking for ProgramOutput boundary work: no default threshold, suppression, feed max, slot1, 4-client, protocol, GPU decode, or one-shot fallback removal changes
