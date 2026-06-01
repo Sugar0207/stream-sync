@@ -82,6 +82,7 @@ Validated command examples for the Program path:
 --enable-program-output-window --program-selected-client-id player1
 --enable-program-output-window --program-selected-client-id player2
 --enable-program-output-window --program-selected-client-id player2 --enable-program-continuous-decode
+--enable-program-output-window --program-selected-client-id player2 --enable-program-continuous-decode --program-continuous-decode-mode smooth-latest
 ```
 
 ## Latest Program Capture Stability Result
@@ -135,18 +136,47 @@ Validated command examples for the Program path:
   - `--enable-program-continuous-decode` maps explicit
     `--program-selected-client-id` to the known real slot source and reuses the
     existing single-source continuous decoder for that selected Program source
+  - `--program-continuous-decode-mode target-frame` is the default and keeps the
+    exact/bounded target-frame lookup behavior
+  - `--program-continuous-decode-mode smooth-latest` is Program-only and accepts
+    the latest available continuous decoded frame, even when delayed
   - no default behavior changes
   - no OBS setup changes
   - no hotkey / control-pipe switching yet
   - no GPU renderer or Preview slot layout rendering
+- Latest Program continuous decode validation:
+  - continuous output was produced:
+    `continuous_decode_output_frame_count=3318`,
+    `continuous_decode_output_throughput_fps=17.435`
+  - Program used no continuous frames in target-frame mode:
+    `program_render_used_continuous_decoded_count=0`,
+    `program_render_used_one_shot_fallback_count=146`,
+    `program_decode_mode=fallback`
+  - target-frame lag / stale rejection blocked Program use:
+    `program_selected_source_frame_lag=435`,
+    `continuous_decode_lookup_hit_count=0`,
+    `continuous_decode_bounded_lookup_rejected_stale_count=143`
+- Current architectural decision:
+  - for OBS Program output, smoothness has priority over low latency when
+    `smooth-latest` is enabled
+  - delayed Program video is acceptable for the MVP if it is smooth
+  - exact/bounded `target-frame` mode remains available for future low-latency
+    work
 - New fields to watch on the next Program OBS rerun:
   - `program_decode_mode`
   - `program_continuous_decode_enabled`
+  - `program_continuous_decode_mode`
   - `program_continuous_decode_output_frame_count`
   - `program_continuous_decode_lookup_hit_count`
   - `program_continuous_decode_lookup_miss_count`
   - `program_render_used_continuous_decoded_count`
+  - `program_render_used_continuous_latest_count`
+  - `program_render_used_continuous_exact_count`
+  - `program_render_used_continuous_stale_but_accepted_count`
   - `program_render_used_one_shot_fallback_count`
+  - `program_continuous_latest_frame_id`
+  - `program_continuous_selected_frame_lag`
+  - `program_continuous_latest_output_age_ms`
   - `program_decode_fps`
   - `program_selected_source_frame_lag`
 - OBS capture target remains manual and unchanged by code.

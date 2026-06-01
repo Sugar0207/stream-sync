@@ -2,6 +2,71 @@
 
 ## 2026-06-01
 ### Type
+- Codex Program continuous smooth-latest playout mode
+
+### Work
+- Investigated the Program continuous decode validation where the selected
+  Program continuous decoder started and produced frames, but ProgramOutput
+  still rendered via fallback.
+- Added `--program-continuous-decode-mode <mode>` to the two-real handoff
+  Preview loop options.
+- Kept `target-frame` as the default mode, preserving existing exact/bounded
+  lookup behavior.
+- Added opt-in `smooth-latest` mode for ProgramOutput. In this mode, Program
+  render prefers the latest available continuous decoded frame for the explicit
+  Program source, even when that frame is older than the current target frame.
+- Preserved `--enable-program-output-window` and
+  `--enable-program-continuous-decode` as required gates for Program smooth
+  continuous playout.
+
+### Investigation Notes
+- The failing validation was not a decoder-start problem:
+  `continuous_decode_output_frame_count=3318` and
+  `continuous_decode_output_throughput_fps=17.435`.
+- Program did not use continuous output because target-frame lookup rejected the
+  delayed decoded frames:
+  `program_render_used_continuous_decoded_count=0`,
+  `program_render_used_one_shot_fallback_count=146`,
+  `program_decode_mode=fallback`, and selected/output lag `435`.
+- The current exact/bounded path is still useful for future low-latency work,
+  but OBS Program output can accept latency if playback is smoother.
+
+### Changed Files
+- `apps/switcher/src/main.rs`
+- `docs/operations/continuous-output-pipeline-experiment-plan.md`
+- `docs/operations/obs-capture-validation.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### Validation
+- `cargo fmt`
+  - result: PASS
+- `cargo check -p stream-sync-switcher`
+  - result: PASS
+  - note: existing unused-function warnings remain in `apps/switcher/src/main.rs`
+    for `update_four_view_previous_slots_from_validation`,
+    `four_view_two_real_tick_diagnostics`, and
+    `clean_output_window_was_rendered`.
+- `cargo test -p stream-sync-switcher program_output --lib`
+  - result: PASS
+- `cargo test -p stream-sync-switcher program_output`
+  - result: PASS
+- `cargo test -p stream-sync-switcher switcher_two_real_handoff_preview_options`
+  - result: PASS
+- `cargo test -p stream-sync-switcher switcher_two_real_program_smooth_latest_prefers_stale_continuous_frame`
+  - result: PASS
+- `cargo test -p stream-sync-switcher switcher_two_real_program_target_frame_keeps_existing_selected_frame_choice`
+  - result: PASS
+- `cargo test -p stream-sync-switcher switcher_four_view_two_real_handoff_preview_summary_formats_expected_fields`
+  - result: PASS
+
+### TODO Update
+- Marked `smooth-latest` Program continuous playout mode as implemented.
+- Moved next validation to:
+  `--enable-program-output-window --program-selected-client-id player2 --enable-program-continuous-decode --program-continuous-decode-mode smooth-latest`.
+
+## 2026-06-01
+### Type
 - Codex selected Program continuous decode opt-in
 
 ### Work
