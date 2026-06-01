@@ -83,6 +83,7 @@ Validated command examples for the Program path:
 --enable-program-output-window --program-selected-client-id player2
 --enable-program-output-window --program-selected-client-id player2 --enable-program-continuous-decode
 --enable-program-output-window --program-selected-client-id player2 --enable-program-continuous-decode --program-continuous-decode-mode smooth-latest
+--enable-program-output-window --program-selected-client-id player2 --enable-program-continuous-decode --program-continuous-decode-mode smooth-latest --program-first-validation-mode
 ```
 
 ## Latest Program Capture Stability Result
@@ -145,24 +146,58 @@ Validated command examples for the Program path:
   - no hotkey / control-pipe switching yet
   - no GPU renderer or Preview slot layout rendering
 - Latest Program continuous decode validation:
-  - continuous output was produced:
-    `continuous_decode_output_frame_count=3318`,
-    `continuous_decode_output_throughput_fps=17.435`
-  - Program used no continuous frames in target-frame mode:
-    `program_render_used_continuous_decoded_count=0`,
-    `program_render_used_one_shot_fallback_count=146`,
-    `program_decode_mode=fallback`
-  - target-frame lag / stale rejection blocked Program use:
-    `program_selected_source_frame_lag=435`,
-    `continuous_decode_lookup_hit_count=0`,
-    `continuous_decode_bounded_lookup_rejected_stale_count=143`
+  - `smooth-latest` succeeded structurally:
+    `program_decode_mode=continuous`,
+    `program_render_used_continuous_decoded_count=2887`,
+    `program_render_used_continuous_latest_count=2887`,
+    `program_render_used_continuous_stale_but_accepted_count=2585`,
+    `program_render_used_one_shot_fallback_count=1`
+  - Program placeholder / black output was no longer the main issue:
+    `program_output_placeholder_render_count=0`,
+    `program_output_black_frame_render_count=0`,
+    `program_output_missing_after_first_render_count=0`
+  - remaining smoothness is still FAIL / follow-up required:
+    `program_decode_fps=19.724`,
+    `continuous_decode_output_throughput_fps=19.724`,
+    `effective_render_fps=12.021`,
+    `effective_render_fps_after_first_render=12.180`
+  - Preview/shared-loop cost is now the leading blocker candidate:
+    `quad_view_compose_elapsed_ms=15432`,
+    `render_buffer_cpu_scale_copy_elapsed_ms=8798`,
+    `one_shot_decode_elapsed_ms=48683`
+  - the server stopped at `MaxHandoffRequestsReached` with
+    `max_handoff_requests=16000`, so longer 3000-attempt validation should use
+    a larger handoff budget
 - Current architectural decision:
   - for OBS Program output, smoothness has priority over low latency when
     `smooth-latest` is enabled
   - delayed Program video is acceptable for the MVP if it is smooth
   - exact/bounded `target-frame` mode remains available for future low-latency
     work
+- New opt-in Program-first validation mode:
+  - `--program-first-validation-mode` keeps default behavior unchanged unless
+    explicitly supplied
+  - it is intended for ProgramOutput validation with
+    `--enable-program-output-window`,
+    `--program-selected-client-id <client_id>`,
+    `--enable-program-continuous-decode`, and
+    `--program-continuous-decode-mode smooth-latest`
+  - it keeps Program selected-only and lets Preview reuse its previous composed
+    output after the first Preview render, reducing Preview 4-view
+    composition/render materialization pressure during Program validation
+  - it also enables the existing continuous-source one-shot suppression for the
+    Program continuous source while the continuous process is running
+  - Preview is intentionally lower quality / lower freshness in this validation
+    mode; Program smoothness is the metric under test
 - New fields to watch on the next Program OBS rerun:
+  - `program_first_validation_enabled`
+  - `preview_compose_skipped_for_program_count`
+  - `preview_compose_reused_for_program_count`
+  - `program_render_loop_attempt_count`
+  - `program_window_render_success_count`
+  - `program_window_render_failure_count`
+  - `program_render_effective_fps`
+  - `effective_program_render_fps`
   - `program_decode_mode`
   - `program_continuous_decode_enabled`
   - `program_continuous_decode_mode`
@@ -179,6 +214,11 @@ Validated command examples for the Program path:
   - `program_continuous_latest_output_age_ms`
   - `program_decode_fps`
   - `program_selected_source_frame_lag`
+- Long validation handoff budget guidance:
+  - avoid `max_handoff_requests=16000` for 3000-attempt Program-first reruns
+  - prefer a large bounded value such as `64000`, or the current equivalent
+    no-budget / very-large-budget local validation setting if one is used in
+    the script, so server shutdown does not end the run early
 - OBS capture target remains manual and unchanged by code.
 
 Classification for this run:

@@ -796,6 +796,30 @@ as a later Preview optimization, not a blocker for Program separation.
     Delayed Program video is acceptable for MVP if it is smooth.
   - The previous exact/bounded path remains available for future low-latency
     work.
+- 2026-06-01 Program-first validation follow-up adds
+  `--program-first-validation-mode`:
+  - the flag is opt-in only and does not change default Preview / Program
+    behavior.
+  - intended validation command shape keeps Program selected-only with
+    `--enable-program-output-window`,
+    `--program-selected-client-id <client_id>`,
+    `--enable-program-continuous-decode`, and
+    `--program-continuous-decode-mode smooth-latest`.
+  - after the first Preview render, Preview may reuse its previous composed
+    output instead of recomposing/rendering the 4-view canvas on every tick.
+  - the mode also enables the existing continuous-source one-shot suppression
+    for the Program continuous source while that continuous process is running.
+  - Program still renders the latest available continuous decoded frame; Preview
+    freshness is intentionally reduced for this validation.
+  - new summary diagnostics:
+    `program_first_validation_enabled`,
+    `preview_compose_skipped_for_program_count`,
+    `preview_compose_reused_for_program_count`,
+    `program_render_loop_attempt_count`,
+    `program_window_render_success_count`,
+    `program_window_render_failure_count`,
+    `program_render_effective_fps`, and
+    `effective_program_render_fps`.
 - Manual validation confirmed that Preview and Program windows appear
   separately, Program shows one video only, Preview 4-view layout / selected
   border / labels / debug UI are not mixed into ProgramOutput, and OBS Window
@@ -841,27 +865,35 @@ as a later Preview optimization, not a blocker for Program separation.
   - `one_shot_decode_elapsed_ms=44474`
   - `continuous_decode_config_enabled=false`
   - `continuous_decode_runtime_enabled=false`
-- The latest Program continuous decode validation changed the evidence:
-  - `--enable-program-continuous-decode` started the continuous decoder.
-  - continuous output was produced:
-    `continuous_decode_output_frame_count=3318`,
-    `continuous_decode_output_throughput_fps=17.435`.
-  - Program still used no continuous frames:
-    `program_render_used_continuous_decoded_count=0`,
-    `program_render_used_one_shot_fallback_count=146`,
-    `program_decode_mode=fallback`.
-  - The rejection reason is target-frame staleness/lag:
-    `program_selected_source_frame_lag=435`,
-    `continuous_decode_requested_minus_latest_lag=435`,
-    `continuous_decode_output_lag_to_selected_frames=435`,
-    `continuous_decode_lookup_hit_count=0`,
-    `continuous_decode_lookup_miss_reason_counts=output_pending:146`,
-    `continuous_decode_bounded_lookup_rejected_stale_count=143`.
-- Interpretation: ProgramOutput is still driven inside the same two-real Preview
-  loop and shares the loop's blocking costs, but Program does not need the same
-  target-frame latency policy as Preview. For OBS Program output, smooth delayed
-  playout is preferable to rejecting stale continuous frames and falling back to
-  one-shot decode. This is still not a renderer or OBS automation slice.
+- The latest `smooth-latest` Program continuous validation changed the evidence:
+  - Program continuous output is now structurally used:
+    `program_decode_mode=continuous`,
+    `program_render_used_continuous_decoded_count=2887`,
+    `program_render_used_continuous_latest_count=2887`,
+    `program_render_used_continuous_stale_but_accepted_count=2585`,
+    `program_render_used_one_shot_fallback_count=1`.
+  - Program black/placeholder counters are no longer the main issue:
+    `program_output_placeholder_render_count=0`,
+    `program_output_black_frame_render_count=0`,
+    `program_output_missing_after_first_render_count=0`.
+  - Perceived stutter remains large:
+    `program_decode_fps=19.724`,
+    `continuous_decode_output_throughput_fps=19.724`,
+    `effective_render_fps=12.021`,
+    `effective_render_fps_after_first_render=12.180`.
+  - Current leading blocker candidate is shared Preview work in the same loop:
+    `quad_view_compose_elapsed_ms=15432`,
+    `render_buffer_cpu_scale_copy_elapsed_ms=8798`,
+    `one_shot_decode_elapsed_ms=48683`.
+  - The server stopped at `MaxHandoffRequestsReached` with
+    `max_handoff_requests=16000`, so the next 3000-attempt validation should use
+    a much larger bounded handoff budget such as `64000` or the current
+    no-budget / very-large-budget validation setting.
+- Interpretation: `smooth-latest` fixed the previous continuous-frame use
+  problem. ProgramOutput now needs a Program-first validation path that reduces
+  Preview 4-view composition / one-shot decode pressure before hotkey or
+  control-pipe switching work. This is still not a renderer or OBS automation
+  slice.
 - New selected Program continuous decode diagnostics include:
   - `program_decode_mode`
   - `program_continuous_decode_enabled`
@@ -879,6 +911,14 @@ as a later Preview optimization, not a blocker for Program separation.
   - `program_continuous_latest_output_age_ms`
   - `program_decode_fps`
   - `program_selected_source_frame_lag`
+  - `program_first_validation_enabled`
+  - `preview_compose_skipped_for_program_count`
+  - `preview_compose_reused_for_program_count`
+  - `program_render_loop_attempt_count`
+  - `program_window_render_success_count`
+  - `program_window_render_failure_count`
+  - `program_render_effective_fps`
+  - `effective_program_render_fps`
 
 ### OBS Capture Operation
 
@@ -894,6 +934,7 @@ operated as follows:
   `--enable-program-continuous-decode`
 - Smooth delayed Program playout is opt-in via
   `--program-continuous-decode-mode smooth-latest`
+- Program-first validation is opt-in via `--program-first-validation-mode`
 
 Validated command examples:
 
@@ -903,6 +944,7 @@ Validated command examples:
 --enable-program-output-window --program-selected-client-id player2
 --enable-program-output-window --program-selected-client-id player2 --enable-program-continuous-decode
 --enable-program-output-window --program-selected-client-id player2 --enable-program-continuous-decode --program-continuous-decode-mode smooth-latest
+--enable-program-output-window --program-selected-client-id player2 --enable-program-continuous-decode --program-continuous-decode-mode smooth-latest --program-first-validation-mode
 ```
 
 Current limitations:
@@ -916,6 +958,8 @@ Current limitations:
   not a multi-source continuous decoder
 - `smooth-latest` is Program-only and does not change Preview's target-frame
   exact/bounded behavior
+- `--program-first-validation-mode` intentionally reduces Preview freshness /
+  quality during validation; it is not a production Preview behavior change
 - OBS setup remains manual and is not changed by code
 
 ### Non-goals for the first Program slice
@@ -936,10 +980,10 @@ Current limitations:
 - Latest optimized BGR24 A/B shows conversion optimization worked, but
   `scaled-bgr24` still does not clearly beat default BGRA end to end.
 - Next candidate order:
-  1. human-side Program rerun with
-     `--enable-program-output-window --program-selected-client-id player2 --enable-program-continuous-decode --program-continuous-decode-mode smooth-latest`
-     to see whether accepting delayed latest continuous output improves Program
-     smoothness and reduces one-shot fallback / last-valid-frame reuse
+  1. human-side Program-first rerun with
+     `--enable-program-output-window --program-selected-client-id player2 --enable-program-continuous-decode --program-continuous-decode-mode smooth-latest --program-first-validation-mode`
+     and a larger handoff budget to see whether reducing Preview workload
+     improves Program smoothness
   2. human-side `no-scale-bgra` A/B rerun for the scale path split slice
   3. reader/completed latency breakdown diagnostics if no-scale evidence is
      ambiguous

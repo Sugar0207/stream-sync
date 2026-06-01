@@ -2,6 +2,82 @@
 
 ## 2026-06-01
 ### Type
+- Codex Program-first validation mode
+
+### Work
+- Investigated the latest `smooth-latest` ProgramOutput validation where OBS
+  captured `StreamSync Program Output`, Program used continuous decoded frames,
+  and black / placeholder counters were improved, but perceived stutter remained
+  large.
+- Added opt-in `--program-first-validation-mode` to
+  `--four-view-two-real-handoff-preview-loop`.
+- Kept default behavior unchanged when the new flag is absent.
+- In Program-first mode, the loop keeps Program selected-only and lets Preview
+  reuse its previous composed output after the first Preview render, reducing
+  Preview 4-view composition / render materialization pressure during Program
+  validation.
+- Program-first mode also enables the existing continuous-source one-shot
+  suppression for the Program continuous source while the continuous process is
+  running.
+- Added Program-first summary diagnostics and parser / loop coverage.
+- Added `program_window_render_failure_count` alongside the Program window
+  success counter so skipped/missing-source Program render ticks are visible.
+
+### Investigation Notes
+- `smooth-latest` fixed the previous continuous-frame use problem:
+  `program_decode_mode=continuous`,
+  `program_render_used_continuous_decoded_count=2887`,
+  `program_render_used_continuous_latest_count=2887`,
+  `program_render_used_continuous_stale_but_accepted_count=2585`, and
+  `program_render_used_one_shot_fallback_count=1`.
+- Remaining stutter is likely tied to shared Preview-loop work rather than
+  Program frame lookup:
+  `program_decode_fps=19.724`,
+  `effective_render_fps=12.021`,
+  `quad_view_compose_elapsed_ms=15432`,
+  `render_buffer_cpu_scale_copy_elapsed_ms=8798`, and
+  `one_shot_decode_elapsed_ms=48683`.
+- The long validation stopped at `MaxHandoffRequestsReached` with
+  `max_handoff_requests=16000`, so the next 3000-attempt rerun should use a
+  larger bounded budget such as `64000` or the current no-budget /
+  very-large-budget validation setting.
+
+### Changed Files
+- `apps/switcher/src/main.rs`
+- `docs/operations/continuous-output-pipeline-experiment-plan.md`
+- `docs/operations/obs-capture-validation.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### Validation
+- `cargo fmt`
+  - result: PASS
+- `cargo check -p stream-sync-switcher`
+  - result: PASS
+  - note: existing unused-function warnings remain in `apps/switcher/src/main.rs`
+    for `update_four_view_previous_slots_from_validation`,
+    `four_view_two_real_tick_diagnostics`, and
+    `clean_output_window_was_rendered`.
+- `cargo test -p stream-sync-switcher program_output --lib`
+  - result: PASS
+- `cargo test -p stream-sync-switcher program_output`
+  - result: PASS
+- `cargo test -p stream-sync-switcher switcher_two_real_handoff_preview_options`
+  - result: PASS
+- `cargo test -p stream-sync-switcher switcher_four_view_two_real_handoff_preview_loop_program_first_reuses_preview_after_first_render`
+  - result: PASS
+- `cargo test -p stream-sync-switcher switcher_four_view_two_real_handoff_preview_summary_formats_expected_fields`
+  - result: PASS
+
+### TODO Update
+- Marked the `smooth-latest` long validation follow-up as complete with a
+  remaining stutter finding.
+- Marked Program-first validation mode implementation as complete.
+- Moved the next ProgramOutput item to a long OBS rerun with
+  `--program-first-validation-mode` and a larger handoff request budget.
+
+## 2026-06-01
+### Type
 - Codex Program continuous smooth-latest playout mode
 
 ### Work
