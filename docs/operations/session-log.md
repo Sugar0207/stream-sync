@@ -2,6 +2,70 @@
 
 ## 2026-06-01
 ### Type
+- Codex ProgramOutput stability diagnostics / reuse mitigation
+
+### Work
+- Investigated the pasted-back long OBS Program capture result where OBS was
+  correctly capturing `StreamSync Program Output` with explicit `player2`, but
+  Program visual stability still showed frequent black/placeholder and large
+  stutter.
+- Added ProgramOutput summary diagnostics for missing-before/after-first-render,
+  previous-frame reuse, placeholder/black render counts, and first render
+  timing.
+- Added last-valid Program frame caching for explicit Program selection. When
+  the requested client has no newly decoded frame on a later tick, ProgramOutput
+  reuses the previous valid Program frame for that same selected source while
+  still reporting the selected source as missing for diagnostics.
+- Kept fallback behavior unchanged when no explicit Program selection is
+  supplied.
+
+### Investigation Notes
+- The pasted-back run had correct Program identity:
+  `program_output_selection_mode=explicit`, requested/selected `player2`, and
+  selected slot provenance `1`.
+- The same run still showed `program_output_missing_selected_source_count=223`
+  with final `last_result=Rendered`, so the previous final reason could end as
+  `none` even after intermittent missing-source ticks.
+- Stutter remains plausibly tied to the shared two-real Preview loop cadence:
+  one-shot decode (`37600ms`), Preview quad composition (`10844ms`), and CPU
+  scale/copy (`6332ms`) are all still on the hot path for this mode.
+
+### Changed Files
+- `apps/switcher/src/main.rs`
+- `docs/operations/continuous-output-pipeline-experiment-plan.md`
+- `docs/operations/obs-capture-validation.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### Validation
+- `cargo fmt`
+  - result: PASS
+- `cargo check -p stream-sync-switcher`
+  - result: PASS
+  - note: existing unused-function warnings remain in `apps/switcher/src/main.rs`
+    for `update_four_view_previous_slots_from_validation`,
+    `four_view_two_real_tick_diagnostics`, and
+    `clean_output_window_was_rendered`.
+- `cargo test -p stream-sync-switcher program_output --lib`
+  - result: PASS
+- `cargo test -p stream-sync-switcher program_output`
+  - result: PASS
+- `cargo test -p stream-sync-switcher switcher_four_view_two_real_handoff_preview_loop_reuses_previous_program_frame_on_missing_tick`
+  - result: PASS
+- `cargo test -p stream-sync-switcher switcher_two_real_handoff_preview_options`
+  - result: PASS
+- `git diff --check`
+  - result: PASS
+  - note: Git reported LF/CRLF normalization warnings only for edited docs.
+
+### TODO Update
+- Marked ProgramOutput stability diagnostics and explicit-source frame reuse as
+  done.
+- Moved the next ProgramOutput work to long OBS rerun and stutter seam
+  investigation before hotkey/control-pipe source switching.
+
+## 2026-06-01
+### Type
 - Codex docs-only OBS capture operation update
 
 ### Work

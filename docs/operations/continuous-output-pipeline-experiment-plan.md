@@ -757,12 +757,54 @@ as a later Preview optimization, not a blocker for Program separation.
   `program_output_requested_client_id`, `program_output_selected_client_id`,
   `program_output_selected_slot_index`, and
   `program_output_missing_selected_source_reason`.
+- 2026-06-01 Program stability follow-up adds the following summary fields:
+  - `program_output_missing_before_first_render_count`
+  - `program_output_missing_after_first_render_count`
+  - `program_output_reused_previous_frame_count`
+  - `program_output_placeholder_render_count`
+  - `program_output_black_frame_render_count`
+  - `program_output_first_render_attempt_index`
+  - `program_output_first_render_elapsed_ms`
+- For explicit Program selection, if the requested source has no newly decoded
+  frame on a tick after a valid Program frame has already rendered, ProgramOutput
+  now reuses the last valid Program frame for that same selected source. Missing
+  selected-source reporting is preserved. Preview placeholders are not reused.
+- The first-renderable fallback path remains the compatibility behavior only
+  when no explicit Program selection is supplied.
 - Manual validation confirmed that Preview and Program windows appear
   separately, Program shows one video only, Preview 4-view layout / selected
   border / labels / debug UI are not mixed into ProgramOutput, and OBS Window
   Capture lists `StreamSync Program Output`.
 - OBS capture is not changed yet. The Program window is only made available as
   a future capture target.
+
+### Latest Program OBS stability evidence
+
+- Long OBS validation captured `StreamSync Program Output` with explicit
+  `--program-selected-client-id player2`; OBS did not capture
+  `StreamSync 4-view Output`.
+- Program selection identity looked correct:
+  - `program_output_selection_mode=explicit`
+  - requested / selected client: `player2`
+  - selected slot provenance: `1`
+  - last result: `Rendered`
+- The stability result is still FAIL / follow-up required:
+  - frequent black/placeholder was observed
+  - large perceived stutter was observed
+  - `frames_attempted=3000`
+  - `frames_rendered=2908`
+  - `effective_render_fps=15.327`
+  - `program_output_render_count=2777`
+  - `program_output_missing_selected_source_count=223`
+  - `one_shot_decode_elapsed_ms=37600`
+  - `quad_view_compose_elapsed_ms=10844`
+  - `render_buffer_cpu_scale_copy_elapsed_ms=6332`
+  - continuous decoder was disabled
+- Interpretation: ProgramOutput is still driven inside the same two-real Preview
+  loop and shares the loop's blocking costs. One-shot decode, Preview quad
+  composition, and CPU scale/copy remain candidate stutter seams. This slice is
+  a visual continuity mitigation and diagnostics improvement, not a renderer or
+  decoder rewrite.
 
 ### OBS Capture Operation
 

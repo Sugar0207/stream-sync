@@ -83,6 +83,46 @@ Validated command examples for the Program path:
 --enable-program-output-window --program-selected-client-id player2
 ```
 
+## Latest Program Capture Stability Result
+
+- Manual long-run OBS validation used the separated Program target:
+  - OBS captured `StreamSync Program Output`
+  - OBS did not capture `StreamSync 4-view Output`
+  - ProgramOutput was enabled with
+    `--enable-program-output-window --program-selected-client-id player2`
+- Target selection / window separation result:
+  - `program_output_enabled=true`
+  - `program_output_selection_mode=explicit`
+  - `program_output_requested_client_id=player2`
+  - `program_output_selected_client_id=player2`
+  - `program_output_selected_slot_index=1`
+  - `program_output_last_result_kind=Rendered`
+  - `program_output_window_title=StreamSync_Program_Output`
+- Stability result:
+  - OBS target selection: PASS
+  - Program visual stability: FAIL / follow-up required
+  - observed issue: frequent black/placeholder appearance and large perceived
+    stutter during the long capture
+- Relevant metrics from the pasted-back run:
+  - `frames_attempted=3000`
+  - `frames_rendered=2908`
+  - `effective_render_fps=15.327`
+  - `program_output_render_count=2777`
+  - `program_output_missing_selected_source_count=223`
+  - `program_output_missing_selected_source_reason=none`
+  - `one_shot_decode_elapsed_ms=37600`
+  - `quad_view_compose_elapsed_ms=10844`
+  - `render_buffer_cpu_scale_copy_elapsed_ms=6332`
+  - continuous decoder was disabled
+- Follow-up code slice:
+  - adds non-spammy ProgramOutput missing/reuse/first-render counters
+  - makes explicit Program selection prefer the last valid Program frame when
+    the selected source has no newly decoded frame for a tick
+  - keeps missing-source reporting; the cached frame is only a visual
+    continuity fallback
+  - does not reuse Preview placeholders
+- OBS capture target remains manual and unchanged by code.
+
 Classification for this run:
 
 - OBS capture validation: PASS
