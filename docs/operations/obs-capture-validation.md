@@ -81,6 +81,7 @@ Validated command examples for the Program path:
 --enable-program-output-window
 --enable-program-output-window --program-selected-client-id player1
 --enable-program-output-window --program-selected-client-id player2
+--enable-program-output-window --program-selected-client-id player2 --enable-program-continuous-decode
 ```
 
 ## Latest Program Capture Stability Result
@@ -121,6 +122,33 @@ Validated command examples for the Program path:
   - keeps missing-source reporting; the cached frame is only a visual
     continuity fallback
   - does not reuse Preview placeholders
+- Latest reuse rerun interpretation:
+  - Program target selection and explicit `player2` identity remained correct
+  - internal Program placeholder / black counters were `0` because the last
+    valid Program frame was reused after first render
+  - visual stability was still not sufficient: missing before first render
+    remained `130`, missing after first render / reused previous frame were
+    `154`, render FPS was about `14.202`, and one-shot decode took `44474ms`
+  - selected Program one-shot decode is too slow for stable Program output
+    under this long run
+- New opt-in follow-up:
+  - `--enable-program-continuous-decode` maps explicit
+    `--program-selected-client-id` to the known real slot source and reuses the
+    existing single-source continuous decoder for that selected Program source
+  - no default behavior changes
+  - no OBS setup changes
+  - no hotkey / control-pipe switching yet
+  - no GPU renderer or Preview slot layout rendering
+- New fields to watch on the next Program OBS rerun:
+  - `program_decode_mode`
+  - `program_continuous_decode_enabled`
+  - `program_continuous_decode_output_frame_count`
+  - `program_continuous_decode_lookup_hit_count`
+  - `program_continuous_decode_lookup_miss_count`
+  - `program_render_used_continuous_decoded_count`
+  - `program_render_used_one_shot_fallback_count`
+  - `program_decode_fps`
+  - `program_selected_source_frame_lag`
 - OBS capture target remains manual and unchanged by code.
 
 Classification for this run:

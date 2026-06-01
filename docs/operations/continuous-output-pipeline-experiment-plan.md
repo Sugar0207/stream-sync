@@ -771,6 +771,20 @@ as a later Preview optimization, not a blocker for Program separation.
   selected-source reporting is preserved. Preview placeholders are not reused.
 - The first-renderable fallback path remains the compatibility behavior only
   when no explicit Program selection is supplied.
+- 2026-06-01 selected Program decode follow-up adds
+  `--enable-program-continuous-decode` as an opt-in path for the same
+  two-real loop. When Program output is enabled and
+  `--program-selected-client-id <client_id>` maps to one of the known real
+  slots, the existing single-source continuous decoder is configured for that
+  selected Program source instead of the previous hard-coded first real source.
+- `--enable-program-continuous-decode` is intentionally inert without
+  `--enable-program-output-window` and an explicit Program client selection
+  that maps to a real slot. It does not change the no-flag default, and it does
+  not change the first-renderable Program fallback when no explicit selection is
+  supplied.
+- The selected Program continuous path keeps `selected_client_id` as the
+  primary Program identity. `selected_slot_index` remains provenance only. It
+  does not derive Program state from `Focused(slot_index)`.
 - Manual validation confirmed that Preview and Program windows appear
   separately, Program shows one video only, Preview 4-view layout / selected
   border / labels / debug UI are not mixed into ProgramOutput, and OBS Window
@@ -800,11 +814,37 @@ as a later Preview optimization, not a blocker for Program separation.
   - `quad_view_compose_elapsed_ms=10844`
   - `render_buffer_cpu_scale_copy_elapsed_ms=6332`
   - continuous decoder was disabled
+- A later Program reuse rerun still shows selected Program throughput as the
+  next bottleneck rather than OBS target selection:
+  - `program_output_missing_before_first_render_count=130`
+  - `program_output_missing_after_first_render_count=154`
+  - `program_output_reused_previous_frame_count=154`
+  - `program_output_placeholder_render_count=0`
+  - `program_output_black_frame_render_count=0`
+  - `program_output_last_result_kind=Rendered`
+  - `effective_render_fps=14.202`
+  - `effective_render_fps_after_first_render=14.526`
+  - `decode_attempt_count=383`
+  - `decode_success_count=383`
+  - `avg_decode_elapsed_ms=116.131`
+  - `one_shot_decode_elapsed_ms=44474`
+  - `continuous_decode_config_enabled=false`
+  - `continuous_decode_runtime_enabled=false`
 - Interpretation: ProgramOutput is still driven inside the same two-real Preview
-  loop and shares the loop's blocking costs. One-shot decode, Preview quad
-  composition, and CPU scale/copy remain candidate stutter seams. This slice is
-  a visual continuity mitigation and diagnostics improvement, not a renderer or
-  decoder rewrite.
+  loop and shares the loop's blocking costs. One-shot decode is now the first
+  Program-selected throughput target. Preview quad composition and CPU
+  scale/copy remain candidate seams after selected Program continuous decode
+  evidence is collected. This is still not a renderer or OBS automation slice.
+- New selected Program continuous decode diagnostics include:
+  - `program_decode_mode`
+  - `program_continuous_decode_enabled`
+  - `program_continuous_decode_output_frame_count`
+  - `program_continuous_decode_lookup_hit_count`
+  - `program_continuous_decode_lookup_miss_count`
+  - `program_render_used_continuous_decoded_count`
+  - `program_render_used_one_shot_fallback_count`
+  - `program_decode_fps`
+  - `program_selected_source_frame_lag`
 
 ### OBS Capture Operation
 
@@ -816,6 +856,8 @@ operated as follows:
 - `StreamSync 4-view Output` remains human-facing Preview / monitoring output
 - Program output is enabled with `--enable-program-output-window`
 - Explicit Program source selection uses `--program-selected-client-id <client_id>`
+- Selected Program continuous decode is opt-in via
+  `--enable-program-continuous-decode`
 
 Validated command examples:
 
@@ -823,6 +865,7 @@ Validated command examples:
 --enable-program-output-window
 --enable-program-output-window --program-selected-client-id player1
 --enable-program-output-window --program-selected-client-id player2
+--enable-program-output-window --program-selected-client-id player2 --enable-program-continuous-decode
 ```
 
 Current limitations:
@@ -831,6 +874,9 @@ Current limitations:
 - no hotkey or control-pipe switching yet
 - no `--program-selected-run-id` yet
 - Preview still uses the CPU-side composed BGRA path
+- selected Program continuous decode reuses the existing single-source
+  continuous decoder; it is not a GPU renderer, not slot-layout rendering, and
+  not a multi-source continuous decoder
 - OBS setup remains manual and is not changed by code
 
 ### Non-goals for the first Program slice
@@ -851,10 +897,14 @@ Current limitations:
 - Latest optimized BGR24 A/B shows conversion optimization worked, but
   `scaled-bgr24` still does not clearly beat default BGRA end to end.
 - Next candidate order:
-  1. human-side `no-scale-bgra` A/B rerun for the scale path split slice
-  2. reader/completed latency breakdown diagnostics if no-scale evidence is
+  1. human-side Program rerun with
+     `--enable-program-output-window --program-selected-client-id <client_id> --enable-program-continuous-decode`
+     to see whether the selected Program source reaches useful continuous
+     decode throughput and reduces last-valid-frame reuse
+  2. human-side `no-scale-bgra` A/B rerun for the scale path split slice
+  3. reader/completed latency breakdown diagnostics if no-scale evidence is
      ambiguous
-  3. direct BGR24 render path docs-first impact review only
+  4. direct BGR24 render path docs-first impact review only
 - The `no-scale-bgra` code slice is already implemented; do not broaden it
   before runtime evidence.
 - Keep one-shot suppression as strong contributor evidence, but not the current

@@ -2,6 +2,72 @@
 
 ## 2026-06-01
 ### Type
+- Codex selected Program continuous decode opt-in
+
+### Work
+- Investigated the latest Program reuse rerun evidence where OBS captured
+  `StreamSync Program Output` with explicit `player2`, but visual stability was
+  still poor.
+- Confirmed the immediate bottleneck is selected Program source decode
+  throughput rather than OBS target selection: one-shot decode succeeded, but
+  `avg_decode_elapsed_ms=116.131`, `one_shot_decode_elapsed_ms=44474`, and
+  effective render FPS around `14fps` are too slow for stable Program output.
+- Added opt-in CLI wiring for `--enable-program-continuous-decode` in
+  `--four-view-two-real-handoff-preview-loop`.
+- Reused the existing single-source continuous decoder for the explicit Program
+  source when `--enable-program-output-window` and
+  `--program-selected-client-id <client_id>` are both present and that client
+  maps to a known real slot.
+- Kept the no-flag default, first-renderable Program fallback, OBS setup,
+  Preview behavior, renderer, decoder architecture, and `Focused(slot_index)`
+  separation unchanged.
+
+### Investigation Notes
+- Existing continuous decoder plumbing was still named slot0-oriented in
+  places, but the runtime already takes a `TwoRealContinuousDecodeSource` with
+  `client_id` and `run_id`.
+- The previous live feed path was hard-coded to `client0_id/run0_id`. The new
+  opt-in source selection maps explicit Program `selected_client_id` to the
+  corresponding real slot's `client_id/run_id` and feeds that source instead.
+- If explicit Program selection is missing or does not map to a real slot, the
+  new Program continuous decode path does not activate. Existing ProgramOutput
+  missing-source reporting remains responsible for the visible Program outcome.
+
+### Changed Files
+- `apps/switcher/src/main.rs`
+- `docs/operations/continuous-output-pipeline-experiment-plan.md`
+- `docs/operations/obs-capture-validation.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### Validation
+- `cargo fmt`
+  - result: PASS
+- `cargo check -p stream-sync-switcher`
+  - result: PASS
+  - note: existing unused-function warnings remain in `apps/switcher/src/main.rs`
+    for `update_four_view_previous_slots_from_validation`,
+    `four_view_two_real_tick_diagnostics`, and
+    `clean_output_window_was_rendered`.
+- `cargo test -p stream-sync-switcher program_output --lib`
+  - result: PASS
+- `cargo test -p stream-sync-switcher program_output`
+  - result: PASS
+- `cargo test -p stream-sync-switcher switcher_two_real_handoff_preview_options`
+  - result: PASS
+- `cargo test -p stream-sync-switcher switcher_two_real_program_continuous_decode_source_maps_explicit_real_slot`
+  - result: PASS
+- `cargo test -p stream-sync-switcher switcher_four_view_two_real_handoff_preview_summary_formats_expected_fields`
+  - result: PASS
+
+### TODO Update
+- Marked selected Program continuous decode opt-in wiring as done.
+- Moved the next ProgramOutput check to a longer OBS rerun with
+  `program_decode_mode`, Program continuous decode counters, Program frame reuse,
+  and perceived stutter as the main comparison fields.
+
+## 2026-06-01
+### Type
 - Codex ProgramOutput stability diagnostics / reuse mitigation
 
 ### Work

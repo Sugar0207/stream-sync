@@ -413,6 +413,7 @@ fn main() {
                 two_real_options.continuous_decoder_output_pipeline_experiment_mode,
                 two_real_options.program_output_window_enabled,
                 two_real_options.program_selected_client_id,
+                two_real_options.program_continuous_decode_enabled,
             ) {
                 Ok(summary) => println!(
                     "{}",
@@ -690,7 +691,7 @@ fn main() {
         }
         _ => {
             println!(
-                "stream-sync-switcher scaffold; use --placeholder-fixture-once [client-id], --placeholder-empty-once [client-id], --decode-latest-frame-once [client-id] [output-path], --receive-auth-video-placeholder-bridge-once [config-path] [client-id], --receive-auth-video-decode-latest-once [config-path] [client-id] [output-path], --receive-auth-video-render-decoded-once [config-path] [client-id] [hold-ms], --two-view-sync-fixture-once [left-client-id] [right-client-id] [hold-ms], --render-two-view-composed-fixture-once [hold-ms], --live-two-view-switcher-once [config-path] [left-client-id] [right-client-id], --four-view-proof-fixture-once [all-renderable|mixed-placeholder-source-error|placeholder-only], --four-view-proof-window-once [all-renderable], --four-view-clean-output-window-once [all-renderable], --four-view-clean-output-window-loop [all-renderable] [frames], --four-view-real-handoff-preview-loop [pipe-name] [real-slot-index] [client-id] [run-id] [frames], --four-view-two-real-handoff-preview-loop [pipe-name] [slot0-index] [client0-id] [run0-id] [slot1-index] [client1-id] [run1-id] [frames] [preview-oldest|preview-latest|preview-latest-decodable] [--disable-persistent-decoder] [--enable-continuous-stream-decoder] [--continuous-decoder-low-latency-args] [--continuous-decoder-slot0-suppress-one-shot-fallback] [--enable-program-output-window] [--program-selected-client-id client-id], --four-view-four-real-handoff-preview-loop [pipe-name] [client0-id] [run0-id] [client1-id] [run1-id] [client2-id] [run2-id] [client3-id] [run3-id] [frames] [preview-oldest|preview-latest|preview-latest-decodable], --four-view-focused-handoff-preview-loop [pipe-name] [focused-slot-index] [client0-id] [run0-id] [client1-id] [run1-id] [client2-id] [run2-id] [client3-id] [run3-id] [frames], --four-view-controlled-handoff-preview-loop [pipe-name] [client0-id] [run0-id] [client1-id] [run1-id] [client2-id] [run2-id] [client3-id] [run3-id] [max-ticks-per-command] [--commands \"status;focus 0;all;quit\"|--control-pipe streamsync-control-dev], --four-view-operator-wrapper [control-pipe-name] [--keys \"s;1;2;3;4;0;q;q\"|--raw-keys], --send-control-command [control-pipe-name] [command], or --read-queued-frame-handoff-once [pipe-name] [client-id] [run-id] [read-mode] [request-id]"
+                "stream-sync-switcher scaffold; use --placeholder-fixture-once [client-id], --placeholder-empty-once [client-id], --decode-latest-frame-once [client-id] [output-path], --receive-auth-video-placeholder-bridge-once [config-path] [client-id], --receive-auth-video-decode-latest-once [config-path] [client-id] [output-path], --receive-auth-video-render-decoded-once [config-path] [client-id] [hold-ms], --two-view-sync-fixture-once [left-client-id] [right-client-id] [hold-ms], --render-two-view-composed-fixture-once [hold-ms], --live-two-view-switcher-once [config-path] [left-client-id] [right-client-id], --four-view-proof-fixture-once [all-renderable|mixed-placeholder-source-error|placeholder-only], --four-view-proof-window-once [all-renderable], --four-view-clean-output-window-once [all-renderable], --four-view-clean-output-window-loop [all-renderable] [frames], --four-view-real-handoff-preview-loop [pipe-name] [real-slot-index] [client-id] [run-id] [frames], --four-view-two-real-handoff-preview-loop [pipe-name] [slot0-index] [client0-id] [run0-id] [slot1-index] [client1-id] [run1-id] [frames] [preview-oldest|preview-latest|preview-latest-decodable] [--disable-persistent-decoder] [--enable-continuous-stream-decoder] [--continuous-decoder-low-latency-args] [--continuous-decoder-slot0-suppress-one-shot-fallback] [--enable-program-output-window] [--program-selected-client-id client-id] [--enable-program-continuous-decode], --four-view-four-real-handoff-preview-loop [pipe-name] [client0-id] [run0-id] [client1-id] [run1-id] [client2-id] [run2-id] [client3-id] [run3-id] [frames] [preview-oldest|preview-latest|preview-latest-decodable], --four-view-focused-handoff-preview-loop [pipe-name] [focused-slot-index] [client0-id] [run0-id] [client1-id] [run1-id] [client2-id] [run2-id] [client3-id] [frames], --four-view-controlled-handoff-preview-loop [pipe-name] [client0-id] [run0-id] [client1-id] [run1-id] [client2-id] [run2-id] [client3-id] [run3-id] [max-ticks-per-command] [--commands \"status;focus 0;all;quit\"|--control-pipe streamsync-control-dev], --four-view-operator-wrapper [control-pipe-name] [--keys \"s;1;2;3;4;0;q;q\"|--raw-keys], --send-control-command [control-pipe-name] [command], or --read-queued-frame-handoff-once [pipe-name] [client-id] [run-id] [read-mode] [request-id]"
             );
         }
     }
@@ -1774,6 +1775,7 @@ struct TwoRealHandoffPreviewLoopOptions {
         TwoRealContinuousOutputPipelineExperimentMode,
     program_output_window_enabled: bool,
     program_selected_client_id: Option<ClientId>,
+    program_continuous_decode_enabled: bool,
 }
 
 fn parse_two_real_handoff_preview_options_or_exit(
@@ -1790,6 +1792,7 @@ fn parse_two_real_handoff_preview_options_or_exit(
         TwoRealContinuousOutputPipelineExperimentMode::default();
     let mut program_output_window_enabled = false;
     let mut program_selected_client_id = None;
+    let mut program_continuous_decode_enabled = false;
     let mut values = values.into_iter();
     while let Some(value) = values.next() {
         if value == "--disable-persistent-decoder" {
@@ -1848,13 +1851,17 @@ fn parse_two_real_handoff_preview_options_or_exit(
             program_selected_client_id = Some(ClientId(client_id));
             continue;
         }
+        if value == "--enable-program-continuous-decode" {
+            program_continuous_decode_enabled = true;
+            continue;
+        }
         if !read_mode_explicit {
             read_mode = parse_optional_real_handoff_preview_mode_or_exit(Some(value));
             read_mode_explicit = true;
             continue;
         }
         eprintln!(
-            "invalid extra argument for --four-view-two-real-handoff-preview-loop: expected preview-oldest, preview-latest, preview-latest-decodable, --disable-persistent-decoder, --enable-continuous-stream-decoder, --continuous-decoder-low-latency-args, --continuous-decoder-slot0-suppress-one-shot-fallback, --continuous-decoder-bounded-lookup-allowed-lag-frames, --continuous-decoder-output-pipeline-experiment, --enable-program-output-window, or --program-selected-client-id"
+            "invalid extra argument for --four-view-two-real-handoff-preview-loop: expected preview-oldest, preview-latest, preview-latest-decodable, --disable-persistent-decoder, --enable-continuous-stream-decoder, --continuous-decoder-low-latency-args, --continuous-decoder-slot0-suppress-one-shot-fallback, --continuous-decoder-bounded-lookup-allowed-lag-frames, --continuous-decoder-output-pipeline-experiment, --enable-program-output-window, --program-selected-client-id, or --enable-program-continuous-decode"
         );
         std::process::exit(1);
     }
@@ -1868,6 +1875,7 @@ fn parse_two_real_handoff_preview_options_or_exit(
         continuous_decoder_output_pipeline_experiment_mode,
         program_output_window_enabled,
         program_selected_client_id,
+        program_continuous_decode_enabled,
     }
 }
 
@@ -2401,6 +2409,15 @@ struct SwitcherFourViewTwoRealHandoffPreviewLoopSummary {
     program_output_selected_client_id: Option<ClientId>,
     program_output_selected_slot_index: Option<usize>,
     program_output_window_title: Option<String>,
+    program_decode_mode: &'static str,
+    program_continuous_decode_enabled: bool,
+    program_continuous_decode_output_frame_count: u32,
+    program_continuous_decode_lookup_hit_count: u32,
+    program_continuous_decode_lookup_miss_count: u32,
+    program_render_used_continuous_decoded_count: u32,
+    program_render_used_one_shot_fallback_count: u32,
+    program_decode_fps: String,
+    program_selected_source_frame_lag: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -6471,6 +6488,7 @@ fn run_four_view_two_real_handoff_preview_loop(
     continuous_decoder_output_pipeline_experiment_mode: TwoRealContinuousOutputPipelineExperimentMode,
     program_output_window_enabled: bool,
     program_selected_client_id: Option<ClientId>,
+    program_continuous_decode_enabled: bool,
 ) -> Result<SwitcherFourViewTwoRealHandoffPreviewLoopSummary, String> {
     let handoff = ObservedNamedPipePreviewHandoff::new(SwitcherNamedPipeQueuedFrameHandoff::new(
         pipe_name,
@@ -6505,6 +6523,7 @@ fn run_four_view_two_real_handoff_preview_loop(
         &RealSwitcherFrameCadenceSleepHook,
         program_output_window_enabled,
         program_selected_client_id,
+        program_continuous_decode_enabled,
         program_render_runtime.as_ref(),
     ))
 }
@@ -6528,6 +6547,7 @@ fn run_four_view_two_real_handoff_preview_loop(
     _continuous_decoder_output_pipeline_experiment_mode: TwoRealContinuousOutputPipelineExperimentMode,
     _program_output_window_enabled: bool,
     _program_selected_client_id: Option<ClientId>,
+    _program_continuous_decode_enabled: bool,
 ) -> Result<SwitcherFourViewTwoRealHandoffPreviewLoopSummary, String> {
     Err("four-view two-real handoff preview loop is only available on Windows".to_string())
 }
@@ -6882,6 +6902,7 @@ where
         cadence_sleep,
         false,
         None,
+        false,
         None,
     )
 }
@@ -7228,6 +7249,23 @@ fn requested_program_selection_from_real_slots(
     }
 }
 
+fn program_continuous_decode_source_from_real_slots(
+    slots: &[SwitcherFourViewTargetTimeSourceSlotConfig; 4],
+    real_slot_indices: [usize; 2],
+    requested_client_id: Option<&ClientId>,
+) -> Option<TwoRealContinuousDecodeSource> {
+    let requested_client_id = requested_client_id?;
+    real_slot_indices
+        .iter()
+        .copied()
+        .filter_map(|slot_index| slots.get(slot_index))
+        .find(|slot| slot.client_id == *requested_client_id)
+        .map(|slot| TwoRealContinuousDecodeSource {
+            client_id: slot.client_id.clone(),
+            run_id: slot.run_id.clone(),
+        })
+}
+
 fn format_program_output_render_result_kind(
     result: &SwitcherProgramOutputRenderResult,
 ) -> &'static str {
@@ -7278,6 +7316,7 @@ fn run_four_view_two_real_handoff_preview_loop_with_handoff_runtime_target_times
     cadence_sleep: &impl SwitcherFrameCadenceSleepHook,
     program_output_window_enabled: bool,
     program_selected_client_id: Option<ClientId>,
+    program_continuous_decode_enabled: bool,
     program_render_runtime: Option<&RenderRuntime>,
 ) -> SwitcherFourViewTwoRealHandoffPreviewLoopSummary
 where
@@ -7368,6 +7407,24 @@ where
     let slow_attempt_threshold_ms = two_real_preview_loop_slow_threshold_ms();
     let obs_runtime =
         ObsFriendlyFourViewLoopWindowRenderRuntime::with_timing(render_runtime, Rc::clone(&timing));
+    let program_continuous_decode_source =
+        if program_continuous_decode_enabled && program_output_window_enabled {
+            program_continuous_decode_source_from_real_slots(
+                &slots,
+                [slot0_index, slot1_index],
+                program_selected_client_id.as_ref(),
+            )
+        } else {
+            None
+        };
+    let continuous_decode_source = program_continuous_decode_source.clone().or_else(|| {
+        continuous_stream_decoder_enabled.then(|| TwoRealContinuousDecodeSource {
+            client_id: client0_id.clone(),
+            run_id: run0_id.clone(),
+        })
+    });
+    let continuous_decode_config_enabled = continuous_decode_source.is_some();
+    let continuous_feed_source = continuous_decode_source.clone();
     let timed_decode_runtime = TimedSwitcherH264DecodeRuntime::new(
         decode_runtime,
         Rc::clone(&timing),
@@ -7376,13 +7433,10 @@ where
             height: FOUR_VIEW_CLEAN_OUTPUT_LOOP_OBS_OUTPUT_HEIGHT / 2,
             reason: "two_real_slot_size",
         }),
-        continuous_stream_decoder_enabled.then(|| TwoRealContinuousDecodeSource {
-            client_id: client0_id.clone(),
-            run_id: run0_id.clone(),
-        }),
+        continuous_decode_source,
         TwoRealContinuousDecodeConfig {
             low_latency_args_enabled: continuous_decoder_low_latency_args_enabled,
-            slot0_one_shot_suppression_enabled: continuous_stream_decoder_enabled
+            slot0_one_shot_suppression_enabled: continuous_decode_config_enabled
                 && continuous_decoder_slot0_suppress_one_shot_fallback,
             bounded_lookup_allowed_lag_frames: continuous_decoder_bounded_lookup_allowed_lag_frames,
             output_pipeline_experiment_mode: continuous_decoder_output_pipeline_experiment_mode,
@@ -7437,14 +7491,16 @@ where
         let attempt_start = Instant::now();
         handoff.begin_frame();
         let target_timestamp = target_timestamp_hook();
-        run_slot0_continuous_bounded_feed(
-            &mut handoff,
-            &timed_decode_runtime,
-            &timing,
-            &client0_id,
-            &run0_id,
-            target_timestamp,
-        );
+        if let Some(continuous_feed_source) = continuous_feed_source.as_ref() {
+            run_slot0_continuous_bounded_feed(
+                &mut handoff,
+                &timed_decode_runtime,
+                &timing,
+                &continuous_feed_source.client_id,
+                &continuous_feed_source.run_id,
+                target_timestamp,
+            );
+        }
         let previous_slot_identities = decoded_slot_identities.clone();
         let timing_before_validation = timing.borrow().clone();
         let validation_start = Instant::now();
@@ -7884,6 +7940,16 @@ where
         quad_view_incremental_skip_unknown_count,
     );
     let quad_view_full_compose_reason_counts = quad_view_incremental_skip_reason_counts.clone();
+    let program_continuous_decode_active = program_continuous_decode_source.is_some();
+    let program_decode_mode = if !program_output_window_enabled {
+        "disabled"
+    } else if program_continuous_decode_active && timing.render_used_continuous_decoded_count > 0 {
+        "continuous"
+    } else if program_continuous_decode_active && timing.render_used_one_shot_fallback_count > 0 {
+        "fallback"
+    } else {
+        "one_shot"
+    };
 
     SwitcherFourViewTwoRealHandoffPreviewLoopSummary {
         real_slot0_index: slot0_index,
@@ -8623,6 +8689,48 @@ where
         program_output_selected_slot_index,
         program_output_window_title: program_output_window_enabled
             .then(|| SWITCHER_PROGRAM_OUTPUT_WINDOW_TITLE.to_string()),
+        program_decode_mode,
+        program_continuous_decode_enabled: program_continuous_decode_active,
+        program_continuous_decode_output_frame_count: if program_continuous_decode_active {
+            timing.continuous_decode_output_frame_count
+        } else {
+            0
+        },
+        program_continuous_decode_lookup_hit_count: if program_continuous_decode_active {
+            timing.continuous_decode_lookup_hit_count
+        } else {
+            0
+        },
+        program_continuous_decode_lookup_miss_count: if program_continuous_decode_active {
+            timing.continuous_decode_lookup_miss_count
+        } else {
+            0
+        },
+        program_render_used_continuous_decoded_count: if program_continuous_decode_active {
+            timing.render_used_continuous_decoded_count
+        } else {
+            0
+        },
+        program_render_used_one_shot_fallback_count: if program_continuous_decode_active {
+            timing.render_used_one_shot_fallback_count
+        } else {
+            0
+        },
+        program_decode_fps: if program_continuous_decode_active {
+            format_preview_loop_fps(
+                timing.continuous_decode_output_frame_count,
+                timing
+                    .continuous_decode_first_input_to_now_elapsed_ms
+                    .unwrap_or(loop_total_elapsed_ms),
+            )
+        } else {
+            "n/a".to_string()
+        },
+        program_selected_source_frame_lag: if program_continuous_decode_active {
+            timing.continuous_decode_requested_minus_latest_lag
+        } else {
+            None
+        },
     }
 }
 
@@ -13294,7 +13402,7 @@ fn format_four_view_two_real_handoff_preview_loop_summary(
         format_optional_u32(summary.output_height),
     );
     format!(
-        "{summary_line} continuous_decode_ffmpeg_low_latency_args_enabled={} continuous_decode_ffmpeg_probe_args_enabled={} continuous_decode_ffmpeg_loglevel={} continuous_decode_stdout_first_byte_seen={} continuous_decode_stdout_first_byte_elapsed_ms={} continuous_decode_stdout_partial_bytes_read={} continuous_decode_stdout_partial_read_count={} continuous_decode_stdout_expected_frame_bytes={} continuous_decode_stdout_read_waiting_for_full_frame={} continuous_feed_enabled={} continuous_feed_attempt_count={} continuous_feed_handoff_request_count={} continuous_feed_frame_received_count={} continuous_feed_no_frame_count={} continuous_feed_handoff_error_count={} continuous_feed_enqueued_count={} continuous_feed_skipped_count={} continuous_feed_skip_reason_counts={} continuous_feed_dropped_stale_input_count={} continuous_feed_latest_received_frame_id={} continuous_feed_latest_enqueued_frame_id={} continuous_decode_input_from_feeder_count={} continuous_decode_input_from_render_demand_count={} continuous_decode_feeder_lag_to_selected={} continuous_decode_render_exact_hit_count={} continuous_decode_render_miss_stale_count={} continuous_decode_render_miss_not_ready_count={} continuous_decode_bounded_lookup_enabled={} continuous_decode_bounded_lookup_allowed_lag_frames={} continuous_decode_bounded_lookup_hit_count={} continuous_decode_bounded_lookup_used_frame_id={} continuous_decode_bounded_lookup_requested_frame_id={} continuous_decode_bounded_lookup_lag_frames={} continuous_decode_bounded_lookup_rejected_stale_count={} continuous_decode_bounded_lookup_rejected_future_count={} continuous_decode_bounded_lookup_rejected_not_ready_count={} continuous_decode_output_availability_not_ready_count={} continuous_decode_output_availability_stale_count={} continuous_decode_output_availability_future_count={} continuous_decode_bounded_lookup_fallback_to_one_shot_count={} continuous_decode_render_used_exact_count={} continuous_decode_render_used_bounded_lag_count={} continuous_decode_pending_correspondence_count={} continuous_decode_pending_correspondence_age_ms_max={} continuous_decode_pending_correspondence_age_ms_avg={} continuous_decode_pending_correspondence_oldest_frame_id={} continuous_decode_pending_correspondence_newest_frame_id={} continuous_decode_completed_correspondence_count={} continuous_decode_completed_correspondence_latency_ms_avg={} continuous_decode_completed_correspondence_latency_ms_max={} continuous_decode_completed_correspondence_latency_slow_count={} continuous_decode_completed_correspondence_latency_slow_threshold_ms={} continuous_decode_completed_correspondence_frame_id_min={} continuous_decode_completed_correspondence_frame_id_max={} continuous_decode_completed_correspondence_latest_latency_ms={} continuous_decode_latest_input_minus_latest_output_lag={} continuous_decode_latest_input_to_output_frame_gap={} continuous_decode_pending_correspondence_frame_id_min={} continuous_decode_pending_correspondence_frame_id_max={} continuous_decode_input_to_output_lag_frames_max={} continuous_decode_output_lag_to_selected_frames={} continuous_decode_latest_selected_to_output_frame_gap={} continuous_decode_output_throughput_fps={} continuous_decode_reader_full_frame_elapsed_ms_max={} continuous_decode_reader_full_frame_elapsed_ms_avg={} continuous_decode_reader_full_frame_slow_count={} continuous_decode_reader_full_frame_slow_threshold_ms={} continuous_decode_output_bytes_total={} continuous_decode_output_bytes_per_sec={} continuous_decode_output_frame_interval_ms_avg={} continuous_decode_output_frame_interval_ms_max={} continuous_decode_stdout_read_throughput_bytes_per_ms={} continuous_decode_ffmpeg_scale_enabled={} continuous_decode_ffmpeg_output_pixel_format={} continuous_decode_output_pipeline_experiment_mode={} continuous_decode_output_pipeline_scale_mode={} continuous_decode_output_source_width={} continuous_decode_output_source_height={} continuous_decode_output_scaled_width={} continuous_decode_output_scaled_height={} continuous_decode_output_scale_removed_count={} continuous_decode_output_scale_path_experiment_enabled={} continuous_decode_output_bytes_per_frame={} continuous_decode_output_pipe_bytes_saved_per_frame={} continuous_decode_output_pixel_convert_elapsed_ms={} continuous_decode_output_pixel_convert_elapsed_ms_max={} continuous_decode_output_pixel_convert_count={} continuous_decode_output_pixel_convert_buffer_reuse_count={} continuous_decode_output_pixel_convert_buffer_allocation_count={} continuous_decode_output_pixel_convert_bytes_written_total={} continuous_decode_output_pixel_convert_bytes_written_per_frame={} continuous_decode_output_pixel_convert_mode={} continuous_decode_competing_one_shot_decode_elapsed_ms={} continuous_decode_competing_one_shot_attempt_count={} continuous_decode_slot0_one_shot_suppression_enabled={} continuous_decode_slot0_one_shot_suppressed_count={} continuous_decode_slot0_one_shot_suppressed_reason_counts={} continuous_decode_slot0_one_shot_suppressed_render_safety_counts={} continuous_decode_slot0_one_shot_suppressed_continuous_not_ready_count={} continuous_decode_slot0_one_shot_suppressed_stale_count={} continuous_decode_queue_drop_reason_counts={} program_output_enabled={} program_output_selection_mode={} program_output_requested_client_id={} program_output_render_count={} program_output_missing_selected_source_count={} program_output_missing_before_first_render_count={} program_output_missing_after_first_render_count={} program_output_reused_previous_frame_count={} program_output_placeholder_render_count={} program_output_black_frame_render_count={} program_output_first_render_attempt_index={} program_output_first_render_elapsed_ms={} program_output_missing_selected_source_reason={} program_output_last_result_kind={} program_output_selected_client_id={} program_output_selected_slot_index={} program_output_window_title={}",
+        "{summary_line} continuous_decode_ffmpeg_low_latency_args_enabled={} continuous_decode_ffmpeg_probe_args_enabled={} continuous_decode_ffmpeg_loglevel={} continuous_decode_stdout_first_byte_seen={} continuous_decode_stdout_first_byte_elapsed_ms={} continuous_decode_stdout_partial_bytes_read={} continuous_decode_stdout_partial_read_count={} continuous_decode_stdout_expected_frame_bytes={} continuous_decode_stdout_read_waiting_for_full_frame={} continuous_feed_enabled={} continuous_feed_attempt_count={} continuous_feed_handoff_request_count={} continuous_feed_frame_received_count={} continuous_feed_no_frame_count={} continuous_feed_handoff_error_count={} continuous_feed_enqueued_count={} continuous_feed_skipped_count={} continuous_feed_skip_reason_counts={} continuous_feed_dropped_stale_input_count={} continuous_feed_latest_received_frame_id={} continuous_feed_latest_enqueued_frame_id={} continuous_decode_input_from_feeder_count={} continuous_decode_input_from_render_demand_count={} continuous_decode_feeder_lag_to_selected={} continuous_decode_render_exact_hit_count={} continuous_decode_render_miss_stale_count={} continuous_decode_render_miss_not_ready_count={} continuous_decode_bounded_lookup_enabled={} continuous_decode_bounded_lookup_allowed_lag_frames={} continuous_decode_bounded_lookup_hit_count={} continuous_decode_bounded_lookup_used_frame_id={} continuous_decode_bounded_lookup_requested_frame_id={} continuous_decode_bounded_lookup_lag_frames={} continuous_decode_bounded_lookup_rejected_stale_count={} continuous_decode_bounded_lookup_rejected_future_count={} continuous_decode_bounded_lookup_rejected_not_ready_count={} continuous_decode_output_availability_not_ready_count={} continuous_decode_output_availability_stale_count={} continuous_decode_output_availability_future_count={} continuous_decode_bounded_lookup_fallback_to_one_shot_count={} continuous_decode_render_used_exact_count={} continuous_decode_render_used_bounded_lag_count={} continuous_decode_pending_correspondence_count={} continuous_decode_pending_correspondence_age_ms_max={} continuous_decode_pending_correspondence_age_ms_avg={} continuous_decode_pending_correspondence_oldest_frame_id={} continuous_decode_pending_correspondence_newest_frame_id={} continuous_decode_completed_correspondence_count={} continuous_decode_completed_correspondence_latency_ms_avg={} continuous_decode_completed_correspondence_latency_ms_max={} continuous_decode_completed_correspondence_latency_slow_count={} continuous_decode_completed_correspondence_latency_slow_threshold_ms={} continuous_decode_completed_correspondence_frame_id_min={} continuous_decode_completed_correspondence_frame_id_max={} continuous_decode_completed_correspondence_latest_latency_ms={} continuous_decode_latest_input_minus_latest_output_lag={} continuous_decode_latest_input_to_output_frame_gap={} continuous_decode_pending_correspondence_frame_id_min={} continuous_decode_pending_correspondence_frame_id_max={} continuous_decode_input_to_output_lag_frames_max={} continuous_decode_output_lag_to_selected_frames={} continuous_decode_latest_selected_to_output_frame_gap={} continuous_decode_output_throughput_fps={} continuous_decode_reader_full_frame_elapsed_ms_max={} continuous_decode_reader_full_frame_elapsed_ms_avg={} continuous_decode_reader_full_frame_slow_count={} continuous_decode_reader_full_frame_slow_threshold_ms={} continuous_decode_output_bytes_total={} continuous_decode_output_bytes_per_sec={} continuous_decode_output_frame_interval_ms_avg={} continuous_decode_output_frame_interval_ms_max={} continuous_decode_stdout_read_throughput_bytes_per_ms={} continuous_decode_ffmpeg_scale_enabled={} continuous_decode_ffmpeg_output_pixel_format={} continuous_decode_output_pipeline_experiment_mode={} continuous_decode_output_pipeline_scale_mode={} continuous_decode_output_source_width={} continuous_decode_output_source_height={} continuous_decode_output_scaled_width={} continuous_decode_output_scaled_height={} continuous_decode_output_scale_removed_count={} continuous_decode_output_scale_path_experiment_enabled={} continuous_decode_output_bytes_per_frame={} continuous_decode_output_pipe_bytes_saved_per_frame={} continuous_decode_output_pixel_convert_elapsed_ms={} continuous_decode_output_pixel_convert_elapsed_ms_max={} continuous_decode_output_pixel_convert_count={} continuous_decode_output_pixel_convert_buffer_reuse_count={} continuous_decode_output_pixel_convert_buffer_allocation_count={} continuous_decode_output_pixel_convert_bytes_written_total={} continuous_decode_output_pixel_convert_bytes_written_per_frame={} continuous_decode_output_pixel_convert_mode={} continuous_decode_competing_one_shot_decode_elapsed_ms={} continuous_decode_competing_one_shot_attempt_count={} continuous_decode_slot0_one_shot_suppression_enabled={} continuous_decode_slot0_one_shot_suppressed_count={} continuous_decode_slot0_one_shot_suppressed_reason_counts={} continuous_decode_slot0_one_shot_suppressed_render_safety_counts={} continuous_decode_slot0_one_shot_suppressed_continuous_not_ready_count={} continuous_decode_slot0_one_shot_suppressed_stale_count={} continuous_decode_queue_drop_reason_counts={} program_output_enabled={} program_output_selection_mode={} program_output_requested_client_id={} program_output_render_count={} program_output_missing_selected_source_count={} program_output_missing_before_first_render_count={} program_output_missing_after_first_render_count={} program_output_reused_previous_frame_count={} program_output_placeholder_render_count={} program_output_black_frame_render_count={} program_output_first_render_attempt_index={} program_output_first_render_elapsed_ms={} program_output_missing_selected_source_reason={} program_output_last_result_kind={} program_output_selected_client_id={} program_output_selected_slot_index={} program_output_window_title={} program_decode_mode={} program_continuous_decode_enabled={} program_continuous_decode_output_frame_count={} program_continuous_decode_lookup_hit_count={} program_continuous_decode_lookup_miss_count={} program_render_used_continuous_decoded_count={} program_render_used_one_shot_fallback_count={} program_decode_fps={} program_selected_source_frame_lag={}",
         summary.continuous_decode_ffmpeg_low_latency_args_enabled,
         summary.continuous_decode_ffmpeg_probe_args_enabled,
         sanitize_summary_value(&summary.continuous_decode_ffmpeg_loglevel),
@@ -13423,6 +13531,15 @@ fn format_four_view_two_real_handoff_preview_loop_summary(
         ),
         format_optional_usize(summary.program_output_selected_slot_index),
         format_optional_summary_string(summary.program_output_window_title.as_deref()),
+        summary.program_decode_mode,
+        summary.program_continuous_decode_enabled,
+        summary.program_continuous_decode_output_frame_count,
+        summary.program_continuous_decode_lookup_hit_count,
+        summary.program_continuous_decode_lookup_miss_count,
+        summary.program_render_used_continuous_decoded_count,
+        summary.program_render_used_one_shot_fallback_count,
+        summary.program_decode_fps,
+        format_optional_u64(summary.program_selected_source_frame_lag),
     )
 }
 
@@ -14664,6 +14781,7 @@ mod tests {
             super::TwoRealContinuousOutputPipelineExperimentMode::Default
         );
         assert!(!options.program_output_window_enabled);
+        assert!(!options.program_continuous_decode_enabled);
         assert_eq!(options.program_selected_client_id, None);
     }
 
@@ -14717,6 +14835,7 @@ mod tests {
             "--continuous-decoder-output-pipeline-experiment".to_string(),
             "scaled-bgr24".to_string(),
             "--enable-program-output-window".to_string(),
+            "--enable-program-continuous-decode".to_string(),
             "--program-selected-client-id".to_string(),
             "real-client-1".to_string(),
             "preview-latest-decodable".to_string(),
@@ -14738,6 +14857,7 @@ mod tests {
             super::TwoRealContinuousOutputPipelineExperimentMode::ScaledBgr24
         );
         assert!(options.program_output_window_enabled);
+        assert!(options.program_continuous_decode_enabled);
         assert_eq!(
             options.program_selected_client_id,
             Some(ClientId("real-client-1".to_string()))
@@ -14752,6 +14872,42 @@ mod tests {
         assert_eq!(
             options.continuous_decoder_output_pipeline_experiment_mode,
             super::TwoRealContinuousOutputPipelineExperimentMode::NoScaleBgra
+        );
+    }
+
+    #[test]
+    fn switcher_two_real_program_continuous_decode_source_maps_explicit_real_slot() {
+        let slots = super::default_four_view_two_real_handoff_preview_slots(
+            0,
+            ClientId("real-client-0".to_string()),
+            RunId("real-run-0".to_string()),
+            2,
+            ClientId("real-client-1".to_string()),
+            RunId("real-run-1".to_string()),
+        );
+
+        assert_eq!(
+            super::program_continuous_decode_source_from_real_slots(
+                &slots,
+                [0, 2],
+                Some(&ClientId("real-client-1".to_string()))
+            ),
+            Some(super::TwoRealContinuousDecodeSource {
+                client_id: ClientId("real-client-1".to_string()),
+                run_id: RunId("real-run-1".to_string()),
+            })
+        );
+        assert_eq!(
+            super::program_continuous_decode_source_from_real_slots(
+                &slots,
+                [0, 2],
+                Some(&ClientId("missing-client".to_string()))
+            ),
+            None
+        );
+        assert_eq!(
+            super::program_continuous_decode_source_from_real_slots(&slots, [0, 2], None),
+            None
         );
     }
 
@@ -16813,6 +16969,7 @@ mod tests {
                 &RecordingCadenceSleepHook::default(),
                 true,
                 None,
+                false,
                 Some(&program_runtime),
             );
 
@@ -16883,6 +17040,7 @@ mod tests {
                 &RecordingCadenceSleepHook::default(),
                 true,
                 Some(ClientId("real-client-1".to_string())),
+                false,
                 Some(&program_runtime),
             );
 
@@ -16930,6 +17088,7 @@ mod tests {
                 &RecordingCadenceSleepHook::default(),
                 true,
                 Some(ClientId("missing-client".to_string())),
+                false,
                 Some(&program_runtime),
             );
 
@@ -16985,6 +17144,7 @@ mod tests {
                 &RecordingCadenceSleepHook::default(),
                 true,
                 Some(ClientId("real-client-0".to_string())),
+                false,
                 Some(&program_runtime),
             );
 
@@ -18054,6 +18214,27 @@ mod tests {
             "output_height={}",
             FOUR_VIEW_CLEAN_OUTPUT_LOOP_OBS_OUTPUT_HEIGHT
         )));
+        assert!(formatted.contains("program_output_enabled=false"));
+        assert!(formatted.contains("program_output_selection_mode=disabled"));
+        assert!(formatted.contains("program_output_requested_client_id=none"));
+        assert!(formatted.contains("program_output_render_count=0"));
+        assert!(formatted.contains("program_output_missing_selected_source_count=0"));
+        assert!(formatted.contains("program_output_missing_before_first_render_count=0"));
+        assert!(formatted.contains("program_output_missing_after_first_render_count=0"));
+        assert!(formatted.contains("program_output_reused_previous_frame_count=0"));
+        assert!(formatted.contains("program_output_last_result_kind=Disabled"));
+        assert!(formatted.contains("program_output_selected_client_id=none"));
+        assert!(formatted.contains("program_output_selected_slot_index=none"));
+        assert!(formatted.contains("program_output_window_title=none"));
+        assert!(formatted.contains("program_decode_mode=disabled"));
+        assert!(formatted.contains("program_continuous_decode_enabled=false"));
+        assert!(formatted.contains("program_continuous_decode_output_frame_count=0"));
+        assert!(formatted.contains("program_continuous_decode_lookup_hit_count=0"));
+        assert!(formatted.contains("program_continuous_decode_lookup_miss_count=0"));
+        assert!(formatted.contains("program_render_used_continuous_decoded_count=0"));
+        assert!(formatted.contains("program_render_used_one_shot_fallback_count=0"));
+        assert!(formatted.contains("program_decode_fps=n/a"));
+        assert!(formatted.contains("program_selected_source_frame_lag=none"));
     }
 
     fn two_real_continuous_test_key(frame_id: u64) -> TwoRealPreviewLoopDecodeCacheKey {
@@ -18432,6 +18613,7 @@ mod tests {
                 &RecordingCadenceSleepHook::default(),
                 false,
                 None,
+                false,
                 None,
             );
 
