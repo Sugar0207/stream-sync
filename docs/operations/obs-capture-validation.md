@@ -194,8 +194,47 @@ Validated command examples for the Program path:
       Preview
   - Preview is intentionally lower quality / lower freshness in this validation
     mode; Program smoothness is the metric under test
+- Latest Program-first + one-shot suppression validation result:
+  - classification: ProgramOutput PASS / near-MVP for OBS output
+  - OBS captured `StreamSync Program Output`
+  - OBS did not accidentally capture `StreamSync 4-view Output`
+  - selected Program identity was not visually distinguishable in this manual
+    run because the sources looked similar
+  - 4-view / border / debug UI / Preview labels did not mix into Program
+  - black screen / placeholder: none
+  - perceived stutter: small
+  - Program metrics:
+    - `program_render_effective_fps=21.795`
+    - `effective_program_render_fps=21.795`
+    - `continuous_decode_output_throughput_fps=27.102`
+    - `program_decode_fps=27.102`
+    - `program_render_used_continuous_latest_count=2841`
+    - `program_render_used_one_shot_fallback_count=0`
+    - `one_shot_decode_attempt_count=0`
+    - `program_output_placeholder_render_count=0`
+    - `program_output_black_frame_render_count=0`
+    - `program_first_suppressed_preview_one_shot_decode_count=2872`
+    - `program_first_remaining_one_shot_decode_count=0`
+  - Preview result in this validation mode:
+    - `StreamSync 4-view Output` was not displayed
+    - `frames_rendered=0`
+    - `clean_output_render_result_kind=NoRenderableQuadView`
+    - `output_width=none`
+    - `output_height=none`
+  - Interpretation:
+    - `--program-first-validation-mode` is a ProgramOutput validation mode, not
+      the final operator mode.
+    - In this mode, Preview may be absent, stale, or reduced quality.
+    - Practical operation still needs a later low-cost Preview / multiview
+      restore path while Program remains prioritized.
+    - Low-frequency Preview refresh is deferred until it can be added without
+      reintroducing default non-Program one-shot decode pressure.
 - New fields to watch on the next Program OBS rerun:
   - `program_first_validation_enabled`
+  - `program_first_preview_visible`
+  - `program_first_preview_refresh_interval`
+  - `program_first_preview_refresh_count`
+  - `program_first_preview_suppressed_count`
   - `preview_compose_skipped_for_program_count`
   - `preview_compose_reused_for_program_count`
   - `program_render_loop_attempt_count`

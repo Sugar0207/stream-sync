@@ -2,6 +2,94 @@
 
 ## 2026-06-03
 ### Type
+- Codex Program-first validation result / Preview semantics decision
+
+### Work
+- Recorded the latest Program-first + `smooth-latest` + Preview one-shot
+  suppression OBS validation as ProgramOutput PASS / near-MVP.
+- Clarified that `--program-first-validation-mode` is ProgramOutput validation
+  mode, not the final operator mode.
+- Chose Option A for this step: keep Program-first as Program-only validation
+  mode where Preview may be absent, stale, or reduced.
+- Deferred the opt-in low-frequency Preview refresh implementation because a
+  useful Preview refresh without reintroducing default non-Program one-shot
+  decode pressure needs a separate low-cost Preview / multiview design.
+- Added diagnostics that expose the current Program-first Preview state without
+  changing behavior:
+  - `program_first_preview_visible`
+  - `program_first_preview_refresh_interval`
+  - `program_first_preview_refresh_count`
+  - `program_first_preview_suppressed_count`
+- Updated OBS validation docs, continuous output pipeline experiment docs, and
+  TODO.
+
+### Recorded Validation Result
+- OBS captured `StreamSync Program Output`: yes.
+- OBS did not accidentally capture `StreamSync 4-view Output`: yes.
+- Selected Program identity was visually indistinguishable because sources
+  looked similar.
+- 4-view / border / debug UI / Preview labels did not mix into Program.
+- Black screen / placeholder: none.
+- Perceived stutter: small.
+- `StreamSync 4-view Output` was not displayed.
+- Metrics:
+  - `program_render_effective_fps=21.795`
+  - `effective_program_render_fps=21.795`
+  - `continuous_decode_output_throughput_fps=27.102`
+  - `program_decode_fps=27.102`
+  - `program_render_used_continuous_latest_count=2841`
+  - `program_render_used_one_shot_fallback_count=0`
+  - `one_shot_decode_attempt_count=0`
+  - `program_output_placeholder_render_count=0`
+  - `program_output_black_frame_render_count=0`
+  - `program_first_suppressed_preview_one_shot_decode_count=2872`
+  - `program_first_remaining_one_shot_decode_count=0`
+  - `frames_rendered=0`
+  - `clean_output_render_result_kind=NoRenderableQuadView`
+  - `output_width=none`
+  - `output_height=none`
+
+### Changed Files
+- `apps/switcher/src/main.rs`
+- `docs/operations/continuous-output-pipeline-experiment-plan.md`
+- `docs/operations/obs-capture-validation.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### Validation
+- `cargo fmt`
+  - result: PASS
+- `cargo check -p stream-sync-switcher`
+  - result: PASS
+  - note: existing unused-function warnings remain in `apps/switcher/src/main.rs`
+    for `update_four_view_previous_slots_from_validation`,
+    `four_view_two_real_tick_diagnostics`, and
+    `clean_output_window_was_rendered`.
+- `cargo test -p stream-sync-switcher program_output --lib`
+  - result: PASS
+- `cargo test -p stream-sync-switcher program_output`
+  - result: PASS
+- `cargo test -p stream-sync-switcher switcher_two_real_handoff_preview_options`
+  - result: PASS
+- `cargo test -p stream-sync-switcher switcher_four_view_two_real_handoff_preview_loop_program_first_reuses_preview_after_first_render`
+  - result: PASS
+- `cargo test -p stream-sync-switcher switcher_four_view_two_real_handoff_preview_summary_formats_expected_fields`
+  - result: PASS
+- `cargo test -p stream-sync-switcher switcher_program_first_suppresses_non_program_preview_one_shot_decode`
+  - result: PASS
+- `git diff --check`
+  - result: PASS
+  - note: Git reported LF/CRLF normalization warnings only for edited files.
+
+### TODO Update
+- Marked the Program-first OBS rerun as PASS / near-MVP for ProgramOutput.
+- Recorded Program-first Preview semantics as ProgramOutput validation mode
+  semantics.
+- Added the next practical operator task: design low-cost Preview / multiview
+  restore while keeping Program prioritized.
+
+## 2026-06-03
+### Type
 - Codex Program-first Preview one-shot decode suppression
 
 ### Work

@@ -2,7 +2,7 @@
 
 # Continuous Output Pipeline Experiment Plan
 
-Last updated: 2026-06-01
+Last updated: 2026-06-03
 
 ## Purpose
 - Design the next docs-first candidates after output availability diagnostics
@@ -17,6 +17,44 @@ Last updated: 2026-06-01
 - Keep Production Readiness as FAIL.
 
 ## Latest Evidence
+- latest Program-first ProgramOutput validation:
+  - mode:
+    `--enable-program-output-window --program-selected-client-id player2 --enable-program-continuous-decode --program-continuous-decode-mode smooth-latest --program-first-validation-mode`
+  - classification: ProgramOutput PASS / near-MVP for OBS output
+  - OBS captured `StreamSync Program Output` and did not accidentally capture
+    `StreamSync 4-view Output`
+  - no Preview labels / borders / debug UI mixed into Program
+  - black / placeholder: none
+  - perceived stutter: small
+  - Program output:
+    - `program_render_effective_fps=21.795`
+    - `effective_program_render_fps=21.795`
+    - `continuous_decode_output_throughput_fps=27.102`
+    - `program_decode_fps=27.102`
+    - `program_render_used_continuous_latest_count=2841`
+    - `program_render_used_one_shot_fallback_count=0`
+  - one-shot pressure:
+    - `one_shot_decode_attempt_count=0`
+    - `program_first_suppressed_preview_one_shot_decode_count=2872`
+    - `program_first_remaining_one_shot_decode_count=0`
+  - Preview in this validation mode:
+    - `StreamSync 4-view Output` was not displayed
+    - `frames_rendered=0`
+    - `clean_output_render_result_kind=NoRenderableQuadView`
+    - `output_width=none`
+    - `output_height=none`
+  - Decision:
+    - keep `--program-first-validation-mode` as ProgramOutput validation mode,
+      not final operator mode
+    - Preview may be absent, stale, or reduced in this mode
+    - do not add low-frequency Preview refresh yet; a useful refresh path
+      without default non-Program one-shot decode pressure needs a separate
+      low-cost Preview / multiview design
+    - new diagnostics expose the current decision:
+      `program_first_preview_visible`,
+      `program_first_preview_refresh_interval`,
+      `program_first_preview_refresh_count`, and
+      `program_first_preview_suppressed_count`
 - latest optimized BGR24 A/B rerun:
   - root:
     `S:\stream-sync\manual-logs\two-client-optimized-bgr24-ab-rerun-20260528-103130`
