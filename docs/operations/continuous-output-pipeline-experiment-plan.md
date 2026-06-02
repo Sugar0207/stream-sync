@@ -70,6 +70,21 @@ Last updated: 2026-06-03
       `operator_preview_forced_one_shot_decode_count`, which should remain `0`
       in the intended Program continuous + smooth-latest operator validation
       run.
+  - Latest low-cost Preview operator validation with interval `30` made the
+    Preview window visible, but monitoring failed:
+    `operator_preview_refresh_success_count=4`,
+    `operator_preview_refresh_skipped_count=2900`,
+    `operator_preview_render_effective_fps=0.031`, and client1 ended black /
+    `DecodeDeferred:ContinuousOneShotSuppressed`.
+  - New follow-up:
+    `--program-first-preview-decode-refresh-interval <ticks>` allows at most
+    one non-Program Preview one-shot decode on matching Preview refresh ticks.
+    Watch `operator_preview_decode_refresh_attempt_count`,
+    `operator_preview_decode_refresh_success_count`,
+    `operator_preview_decode_refresh_source_counts`,
+    `operator_preview_decode_refresh_budget_exceeded_count`, and
+    `operator_preview_non_program_visible_count` while keeping
+    `program_render_used_one_shot_fallback_count` near zero.
 - latest optimized BGR24 A/B rerun:
   - root:
     `S:\stream-sync\manual-logs\two-client-optimized-bgr24-ab-rerun-20260528-103130`
@@ -996,6 +1011,8 @@ operated as follows:
 - Smooth delayed Program playout is opt-in via
   `--program-continuous-decode-mode smooth-latest`
 - Program-first validation is opt-in via `--program-first-validation-mode`
+- Low-frequency operator Preview decode allowance is opt-in via
+  `--program-first-preview-decode-refresh-interval <ticks>`
 
 Validated command examples:
 
@@ -1006,6 +1023,7 @@ Validated command examples:
 --enable-program-output-window --program-selected-client-id player2 --enable-program-continuous-decode
 --enable-program-output-window --program-selected-client-id player2 --enable-program-continuous-decode --program-continuous-decode-mode smooth-latest
 --enable-program-output-window --program-selected-client-id player2 --enable-program-continuous-decode --program-continuous-decode-mode smooth-latest --program-first-validation-mode
+--enable-program-output-window --program-selected-client-id player2 --enable-program-continuous-decode --program-continuous-decode-mode smooth-latest --program-first-validation-mode --program-first-preview-refresh-interval 10 --program-first-preview-decode-refresh-interval 30
 ```
 
 Current limitations:
@@ -1021,7 +1039,31 @@ Current limitations:
   exact/bounded behavior
 - `--program-first-validation-mode` intentionally reduces Preview freshness /
   quality during validation; it is not a production Preview behavior change
+- `--program-first-preview-decode-refresh-interval` only allows non-Program
+  Preview one-shot decode on matching low-cost Preview refresh ticks and uses a
+  one-source-per-tick budget; it is not a return to every-tick Preview decode
 - OBS setup remains manual and is not changed by code
+
+### Latest Operator Low-cost Preview Result
+
+- The latest operator low-cost Preview validation used
+  `--program-first-preview-refresh-interval 30`.
+- ProgramOutput remained structurally good:
+  `program_render_effective_fps=21.886`,
+  `program_render_used_continuous_latest_count=2819`,
+  `program_render_used_one_shot_fallback_count=0`, and
+  `one_shot_decode_attempt_count=0`.
+- Preview was visible but not useful for monitoring:
+  client1 was black, slot0 / client1 ended as
+  `DecodeDeferred:ContinuousOneShotSuppressed`, and
+  `operator_preview_render_effective_fps=0.031`.
+- Refresh success was too low:
+  `operator_preview_refresh_attempt_count=100`,
+  `operator_preview_refresh_success_count=4`, and
+  `operator_preview_refresh_skipped_count=2900`.
+- Next validation should allow low-frequency non-Program Preview decode with
+  `--program-first-preview-decode-refresh-interval <ticks>` while keeping
+  ProgramOutput selected-only and prioritized.
 
 ### Non-goals for the first Program slice
 

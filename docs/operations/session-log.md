@@ -2,6 +2,90 @@
 
 ## 2026-06-03
 ### Type
+- Codex low-frequency operator Preview decode allowance
+
+### Work
+- Investigated the latest Program-first operator low-cost Preview validation
+  using `--program-first-preview-refresh-interval 30`.
+- Recorded that ProgramOutput stayed structurally selected-only and used
+  continuous latest frames, but the 4-view Preview was not useful for operator
+  monitoring because client1 was black / decode-deferred and refresh success
+  was too low.
+- Added opt-in
+  `--program-first-preview-decode-refresh-interval <ticks>` for the two-real
+  Program-first path.
+- Kept default behavior unchanged. Without the new flag, non-Program Preview
+  one-shot decode remains suppressed in Program-first operator mode.
+- With the new flag, non-Program Preview one-shot decode is allowed only on
+  Preview refresh ticks that match the decode refresh interval, with a budget
+  of at most one non-Program source per matching tick.
+- ProgramOutput remains selected-only and prioritized; the Program continuous
+  `smooth-latest` path is unchanged.
+
+### Investigation Notes
+- Latest operator low-cost Preview validation:
+  - OBS captured `StreamSync Program Output`
+  - OBS did not capture `StreamSync 4-view Output`
+  - Program did not mix 4-view / borders / debug / Preview labels
+  - Program black / placeholder: none
+  - Program perceived stutter: large in this run
+  - `StreamSync 4-view Output` was displayed, but client1 was black
+  - `program_render_effective_fps=21.886`
+  - `program_render_used_continuous_latest_count=2819`
+  - `program_render_used_one_shot_fallback_count=0`
+  - `one_shot_decode_attempt_count=0`
+  - `operator_preview_refresh_interval_ticks=30`
+  - `operator_preview_refresh_attempt_count=100`
+  - `operator_preview_refresh_success_count=4`
+  - `operator_preview_refresh_skipped_count=2900`
+  - `operator_preview_render_effective_fps=0.031`
+  - slot0 / client1 ended as
+    `DecodeDeferred:ContinuousOneShotSuppressed`
+
+### Changed Files
+- `apps/switcher/src/main.rs`
+- `docs/operations/continuous-output-pipeline-experiment-plan.md`
+- `docs/operations/obs-capture-validation.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### TODO Update
+- Marked the previous low-cost Preview validation as complete with a monitoring
+  failure result.
+- Marked the low-frequency Preview decode allowance implementation as complete.
+- Added the next manual validation candidate using both
+  `--program-first-preview-refresh-interval` and
+  `--program-first-preview-decode-refresh-interval`.
+
+### Validation
+- `cargo fmt`
+  - result: PASS
+- `cargo check -p stream-sync-switcher`
+  - result: PASS
+  - note: existing unused-function warnings remain in `apps/switcher/src/main.rs`
+    for `update_four_view_previous_slots_from_validation`,
+    `four_view_two_real_tick_diagnostics`, and
+    `clean_output_window_was_rendered`.
+- `cargo test -p stream-sync-switcher program_output --lib`
+  - result: PASS
+- `cargo test -p stream-sync-switcher program_output`
+  - result: PASS
+- `cargo test -p stream-sync-switcher switcher_two_real_handoff_preview_options`
+  - result: PASS
+- `cargo test -p stream-sync-switcher switcher_operator_preview_decode_refresh_decision_requires_preview_refresh_tick`
+  - result: PASS
+- `cargo test -p stream-sync-switcher switcher_program_first_preview_decode_refresh_allows_one_non_program_decode`
+  - result: PASS
+- `cargo test -p stream-sync-switcher switcher_four_view_two_real_handoff_preview_loop_program_first_reuses_preview_after_first_render`
+  - result: PASS
+- `cargo test -p stream-sync-switcher switcher_four_view_two_real_handoff_preview_summary_formats_expected_fields`
+  - result: PASS
+- `git diff --check`
+  - result: PASS
+  - note: LF/CRLF warnings only
+
+## 2026-06-03
+### Type
 - Codex operator low-cost Preview restore candidate
 
 ### Work

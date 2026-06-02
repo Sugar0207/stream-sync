@@ -84,6 +84,7 @@ Validated command examples for the Program path:
 --enable-program-output-window --program-selected-client-id player2 --enable-program-continuous-decode
 --enable-program-output-window --program-selected-client-id player2 --enable-program-continuous-decode --program-continuous-decode-mode smooth-latest
 --enable-program-output-window --program-selected-client-id player2 --enable-program-continuous-decode --program-continuous-decode-mode smooth-latest --program-first-validation-mode
+--enable-program-output-window --program-selected-client-id player2 --enable-program-continuous-decode --program-continuous-decode-mode smooth-latest --program-first-validation-mode --program-first-preview-refresh-interval 10 --program-first-preview-decode-refresh-interval 30
 ```
 
 ## Latest Program Capture Stability Result
@@ -245,6 +246,40 @@ Validated command examples for the Program path:
     visible Preview; the diagnostics below are the source of truth.
   - This does not render 4-view as Program and does not change OBS capture
     target selection.
+- Latest operator low-cost Preview validation with interval `30`:
+  - OBS captured `StreamSync Program Output`
+  - OBS did not capture `StreamSync 4-view Output`
+  - Program stayed selected-only; 4-view / borders / debug UI / Preview labels
+    were not mixed into Program
+  - Program black / placeholder: none
+  - Program perceived stutter: large in this run
+  - `StreamSync 4-view Output` was displayed, but client1 was black and Preview
+    was not useful for monitoring
+  - refresh was too sparse:
+    `operator_preview_refresh_attempt_count=100`,
+    `operator_preview_refresh_success_count=4`,
+    `operator_preview_refresh_skipped_count=2900`,
+    `operator_preview_render_effective_fps=0.031`
+  - non-Program Preview one-shot decode was still fully suppressed:
+    `one_shot_decode_attempt_count=0`,
+    `program_first_remaining_one_shot_decode_count=0`,
+    `operator_preview_forced_one_shot_decode_count=0`, and slot0 / client1
+    ended as `DecodeDeferred:ContinuousOneShotSuppressed`
+  - Program continuous path remained structurally good:
+    `program_render_effective_fps=21.886`,
+    `program_render_used_continuous_latest_count=2819`,
+    `program_render_used_one_shot_fallback_count=0`
+- New opt-in low-frequency Preview decode allowance:
+  - `--program-first-preview-decode-refresh-interval <ticks>` is disabled by
+    default.
+  - It only applies when operator low-cost Preview refresh is active.
+  - It only permits non-Program Preview one-shot decode on Preview refresh
+    ticks that also match the decode refresh interval.
+  - The current budget is at most one non-Program Preview source per matching
+    refresh tick; additional non-Program decode requests stay suppressed and
+    increment the budget-exceeded diagnostic.
+  - ProgramOutput remains selected-only and prioritized; Program continuous
+    `smooth-latest` selection is unchanged.
 - New fields to watch on the next Program OBS rerun:
   - `program_first_validation_enabled`
   - `program_first_preview_visible`
@@ -259,6 +294,16 @@ Validated command examples for the Program path:
   - `operator_preview_used_stale_frame_count`
   - `operator_preview_forced_one_shot_decode_count`
   - `operator_preview_render_effective_fps`
+  - `operator_preview_decode_refresh_enabled`
+  - `operator_preview_decode_refresh_interval_ticks`
+  - `operator_preview_decode_refresh_attempt_count`
+  - `operator_preview_decode_refresh_success_count`
+  - `operator_preview_decode_refresh_skipped_count`
+  - `operator_preview_decode_refresh_source_counts`
+  - `operator_preview_decode_refresh_elapsed_ms`
+  - `operator_preview_decode_refresh_budget_exceeded_count`
+  - `operator_preview_non_program_visible_count`
+  - `operator_preview_program_fps_impact_estimate`
   - `preview_compose_skipped_for_program_count`
   - `preview_compose_reused_for_program_count`
   - `program_render_loop_attempt_count`
