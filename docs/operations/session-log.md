@@ -2,6 +2,92 @@
 
 ## 2026-06-03
 ### Type
+- Codex operator low-cost Preview restore candidate
+
+### Work
+- Inspected the current Program-first Preview behavior after the near-MVP
+  ProgramOutput validation.
+- Confirmed the current no-Preview result is caused by Program-first Preview
+  compose reuse after any previous clean output exists, even if that previous
+  result is `NoRenderableQuadView`.
+- Added the opt-in operator validation flag
+  `--program-first-preview-refresh-interval <ticks>`.
+- Kept default behavior unchanged when the new flag is absent.
+- Kept `--program-first-validation-mode` semantics as ProgramOutput validation
+  mode; the new flag is a separate low-cost Preview restore candidate for
+  operator validation.
+- On refresh ticks, the loop attempts Preview compose/render again.
+- On non-refresh ticks, Program-first still skips/reuses Preview composition so
+  Program rendering remains prioritized.
+- Kept non-Program Preview one-shot suppression active, including the first
+  tick in low-cost Preview mode, so refresh attempts must use already available
+  decoded/cache/continuous frames or diagnose that no usable Preview exists.
+- Added operator low-cost Preview diagnostics:
+  - `operator_low_cost_preview_enabled`
+  - `operator_preview_refresh_interval_ticks`
+  - `operator_preview_refresh_attempt_count`
+  - `operator_preview_refresh_success_count`
+  - `operator_preview_refresh_skipped_count`
+  - `operator_preview_used_stale_frame_count`
+  - `operator_preview_forced_one_shot_decode_count`
+  - `operator_preview_render_effective_fps`
+
+### Investigation Notes
+- `frames_rendered=0` / `clean_output_render_result_kind=NoRenderableQuadView`
+  in Program-first validation is not a ProgramOutput failure; it means the
+  Preview side never recovered from the first no-renderable result once
+  Program-first reuse started.
+- A stale previous Preview output can be shown when the previous clean output
+  is already rendered; that is now counted by
+  `operator_preview_used_stale_frame_count`.
+- A refresh tick can be attempted without intentionally re-enabling
+  non-Program one-shot decode because Program-first one-shot suppression stays
+  active.
+- The low-cost Preview restore candidate does not guarantee first-frame Preview
+  visibility. If no decoded/cache/continuous frame is usable, the attempt is
+  visible in diagnostics but may still render no Preview.
+
+### Changed Files
+- `apps/switcher/src/main.rs`
+- `docs/operations/continuous-output-pipeline-experiment-plan.md`
+- `docs/operations/obs-capture-validation.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### Validation
+- `cargo fmt`
+  - result: PASS
+- `cargo check -p stream-sync-switcher`
+  - result: PASS
+  - note: existing unused-function warnings remain in `apps/switcher/src/main.rs`
+    for `update_four_view_previous_slots_from_validation`,
+    `four_view_two_real_tick_diagnostics`, and
+    `clean_output_window_was_rendered`.
+- `cargo test -p stream-sync-switcher program_output --lib`
+  - result: PASS
+- `cargo test -p stream-sync-switcher program_output`
+  - result: PASS
+- `cargo test -p stream-sync-switcher switcher_two_real_handoff_preview_options`
+  - result: PASS
+- `cargo test -p stream-sync-switcher switcher_operator_low_cost_preview_refresh_decision_uses_interval_ticks`
+  - result: PASS
+- `cargo test -p stream-sync-switcher switcher_four_view_two_real_handoff_preview_loop_program_first_reuses_preview_after_first_render`
+  - result: PASS
+- `cargo test -p stream-sync-switcher switcher_four_view_two_real_handoff_preview_summary_formats_expected_fields`
+  - result: PASS
+- `cargo test -p stream-sync-switcher switcher_program_first_suppresses_non_program_preview_one_shot_decode`
+  - result: PASS
+- `git diff --check`
+  - result: PASS
+  - note: Git reported LF/CRLF normalization warnings only for edited files.
+
+### TODO Update
+- Added the low-cost Preview restore candidate as completed.
+- Added the next manual validation task for
+  `--program-first-preview-refresh-interval <ticks>`.
+
+## 2026-06-03
+### Type
 - Codex Program-first validation result / Preview semantics decision
 
 ### Work

@@ -55,6 +55,21 @@ Last updated: 2026-06-03
       `program_first_preview_refresh_interval`,
       `program_first_preview_refresh_count`, and
       `program_first_preview_suppressed_count`
+  - Follow-up operator low-cost Preview restore candidate:
+    - `--program-first-preview-refresh-interval <ticks>` is now the narrow
+      opt-in validation shape for restoring a human-facing Preview cadence
+      without changing default behavior.
+    - It keeps `--program-first-validation-mode` Program-first semantics and
+      only attempts Preview compose/render every N ticks.
+    - Non-refresh ticks continue to skip/reuse Preview composition so Program
+      rendering stays prioritized.
+    - Non-Program Preview one-shot suppression remains active; refresh ticks
+      should compose from already available decoded/cache/continuous data or
+      clearly diagnose that no usable Preview frame exists yet.
+    - The key guard metric is
+      `operator_preview_forced_one_shot_decode_count`, which should remain `0`
+      in the intended Program continuous + smooth-latest operator validation
+      run.
 - latest optimized BGR24 A/B rerun:
   - root:
     `S:\stream-sync\manual-logs\two-client-optimized-bgr24-ab-rerun-20260528-103130`

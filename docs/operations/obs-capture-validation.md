@@ -229,12 +229,36 @@ Validated command examples for the Program path:
       restore path while Program remains prioritized.
     - Low-frequency Preview refresh is deferred until it can be added without
       reintroducing default non-Program one-shot decode pressure.
+- New opt-in operator low-cost Preview restore candidate:
+  - `--program-first-preview-refresh-interval <ticks>` is only an operator
+    validation aid for Program-first runs; defaults remain unchanged when it is
+    absent.
+  - The intended command shape keeps ProgramOutput selected-only and
+    prioritized:
+    `--enable-program-output-window --program-selected-client-id <client_id> --enable-program-continuous-decode --program-continuous-decode-mode smooth-latest --program-first-validation-mode --program-first-preview-refresh-interval <ticks>`.
+  - On refresh ticks the switcher attempts Preview compose/render again.
+  - On non-refresh ticks Program-first still skips/reuses Preview composition.
+  - Non-Program Preview one-shot suppression remains active, including the
+    first tick in this low-cost mode; Preview must use already available
+    decoded/cache/continuous data or render a reduced/placeholder result.
+  - If no usable Preview frame exists yet, this mode may still report no
+    visible Preview; the diagnostics below are the source of truth.
+  - This does not render 4-view as Program and does not change OBS capture
+    target selection.
 - New fields to watch on the next Program OBS rerun:
   - `program_first_validation_enabled`
   - `program_first_preview_visible`
   - `program_first_preview_refresh_interval`
   - `program_first_preview_refresh_count`
   - `program_first_preview_suppressed_count`
+  - `operator_low_cost_preview_enabled`
+  - `operator_preview_refresh_interval_ticks`
+  - `operator_preview_refresh_attempt_count`
+  - `operator_preview_refresh_success_count`
+  - `operator_preview_refresh_skipped_count`
+  - `operator_preview_used_stale_frame_count`
+  - `operator_preview_forced_one_shot_decode_count`
+  - `operator_preview_render_effective_fps`
   - `preview_compose_skipped_for_program_count`
   - `preview_compose_reused_for_program_count`
   - `program_render_loop_attempt_count`
