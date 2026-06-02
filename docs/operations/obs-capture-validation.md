@@ -185,8 +185,13 @@ Validated command examples for the Program path:
   - it keeps Program selected-only and lets Preview reuse its previous composed
     output after the first Preview render, reducing Preview 4-view
     composition/render materialization pressure during Program validation
-  - it also enables the existing continuous-source one-shot suppression for the
-    Program continuous source while the continuous process is running
+  - it also enables Program-only decode pressure reduction after the first
+    Preview output exists:
+    - the Program continuous source keeps the existing continuous one-shot
+      suppression behavior while the continuous process is running
+    - non-Program Preview sources are prevented from falling through to
+      one-shot decode and instead become decode-deferred placeholders for
+      Preview
   - Preview is intentionally lower quality / lower freshness in this validation
     mode; Program smoothness is the metric under test
 - New fields to watch on the next Program OBS rerun:
@@ -214,6 +219,10 @@ Validated command examples for the Program path:
   - `program_continuous_latest_output_age_ms`
   - `program_decode_fps`
   - `program_selected_source_frame_lag`
+  - `program_first_suppressed_preview_one_shot_decode_count`
+  - `program_first_suppressed_preview_one_shot_decode_slot_counts`
+  - `program_first_program_only_decode_path_enabled`
+  - `program_first_remaining_one_shot_decode_count`
 - Long validation handoff budget guidance:
   - avoid `max_handoff_requests=16000` for 3000-attempt Program-first reruns
   - prefer a large bounded value such as `64000`, or the current equivalent

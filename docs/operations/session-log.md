@@ -1,5 +1,80 @@
 <!-- stream-sync/docs/operations/session-log.md -->
 
+## 2026-06-03
+### Type
+- Codex Program-first Preview one-shot decode suppression
+
+### Work
+- Investigated why Program-first validation still reported
+  `one_shot_decode_attempt_count=157` and
+  `one_shot_decode_attempt_slot_counts=slot0:157|slot1:0` while Program selected
+  `player2`.
+- Found that Program-first mode skipped/reused Preview composition after a
+  previous Preview output existed, but the upstream Preview slot decode path
+  still ran before that reuse decision.
+- Added Program-first-only suppression for non-Program Preview one-shot decode
+  after a previous Preview output exists.
+- Kept default behavior unchanged when `--program-first-validation-mode` is
+  absent.
+- Kept ProgramOutput selected-only; the Program continuous source remains the
+  only source eligible for Program continuous/latest render.
+- Added diagnostics for Program-first decode suppression:
+  - `program_first_suppressed_preview_one_shot_decode_count`
+  - `program_first_suppressed_preview_one_shot_decode_slot_counts`
+  - `program_first_program_only_decode_path_enabled`
+  - `program_first_remaining_one_shot_decode_count`
+- Updated OBS validation docs, ProgramOutput experiment docs, and TODO.
+
+### Investigation Notes
+- The suspicious one-shot work was Preview-side, not Program-side, because the
+  slot counter showed only `slot0` while explicit Program selection was
+  `player2` / slot1.
+- Existing Program-first composition reuse happened after
+  `SwitcherFourViewHandoffValidationBoundary` had already asked the decode
+  runtime for selected Preview slots.
+- The safe suppression point is therefore immediately before one-shot FFmpeg
+  fallback in `TimedSwitcherH264DecodeRuntime`, after cache/continuous hits are
+  allowed and only when the source does not match the Program continuous source.
+- Suppression is activated only on Program-first ticks where a previous Preview
+  output exists, preserving the first Preview render path.
+
+### Changed Files
+- `apps/switcher/src/main.rs`
+- `docs/operations/continuous-output-pipeline-experiment-plan.md`
+- `docs/operations/obs-capture-validation.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### Validation
+- `cargo fmt`
+  - result: PASS
+- `cargo check -p stream-sync-switcher`
+  - result: PASS
+  - note: existing unused-function warnings remain in `apps/switcher/src/main.rs`
+    for `update_four_view_previous_slots_from_validation`,
+    `four_view_two_real_tick_diagnostics`, and
+    `clean_output_window_was_rendered`.
+- `cargo test -p stream-sync-switcher program_output --lib`
+  - result: PASS
+- `cargo test -p stream-sync-switcher program_output`
+  - result: PASS
+- `cargo test -p stream-sync-switcher switcher_two_real_handoff_preview_options`
+  - result: PASS
+- `cargo test -p stream-sync-switcher switcher_four_view_two_real_handoff_preview_loop_program_first_reuses_preview_after_first_render`
+  - result: PASS
+- `cargo test -p stream-sync-switcher switcher_four_view_two_real_handoff_preview_summary_formats_expected_fields`
+  - result: PASS
+- `cargo test -p stream-sync-switcher switcher_program_first_suppresses_non_program_preview_one_shot_decode`
+  - result: PASS
+- `git diff --check`
+  - result: PASS
+  - note: Git reported LF/CRLF normalization warnings only for edited files.
+
+### TODO Update
+- Added the Program-first non-Program Preview one-shot suppression checkpoint.
+- Updated the next Program-first OBS rerun checklist to include the new
+  suppression diagnostics and remaining one-shot counter.
+
 ## 2026-06-01
 ### Type
 - Codex Program-first validation mode

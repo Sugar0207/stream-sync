@@ -807,8 +807,11 @@ as a later Preview optimization, not a blocker for Program separation.
     `--program-continuous-decode-mode smooth-latest`.
   - after the first Preview render, Preview may reuse its previous composed
     output instead of recomposing/rendering the 4-view canvas on every tick.
-  - the mode also enables the existing continuous-source one-shot suppression
-    for the Program continuous source while that continuous process is running.
+  - the mode also enables Program-only decode pressure reduction after a
+    previous Preview output exists. The Program continuous source keeps the
+    existing continuous one-shot suppression behavior while that continuous
+    process is running, and non-Program Preview sources are prevented from
+    falling through to Preview-side one-shot decode.
   - Program still renders the latest available continuous decoded frame; Preview
     freshness is intentionally reduced for this validation.
   - new summary diagnostics:
@@ -820,6 +823,11 @@ as a later Preview optimization, not a blocker for Program separation.
     `program_window_render_failure_count`,
     `program_render_effective_fps`, and
     `effective_program_render_fps`.
+  - additional decode-suppression diagnostics:
+    `program_first_suppressed_preview_one_shot_decode_count`,
+    `program_first_suppressed_preview_one_shot_decode_slot_counts`,
+    `program_first_program_only_decode_path_enabled`, and
+    `program_first_remaining_one_shot_decode_count`.
 - Manual validation confirmed that Preview and Program windows appear
   separately, Program shows one video only, Preview 4-view layout / selected
   border / labels / debug UI are not mixed into ProgramOutput, and OBS Window
