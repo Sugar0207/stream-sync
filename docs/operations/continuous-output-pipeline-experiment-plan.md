@@ -85,6 +85,34 @@ Last updated: 2026-06-03
     `operator_preview_decode_refresh_budget_exceeded_count`, and
     `operator_preview_non_program_visible_count` while keeping
     `program_render_used_one_shot_fallback_count` near zero.
+  - Latest decode-refresh validation with
+    `--program-first-preview-refresh-interval 10` and
+    `--program-first-preview-decode-refresh-interval 30` improved the
+    non-Program Preview slot but exposed a Program-slot reuse gap:
+    - Program stayed selected-only and used continuous latest:
+      `program_render_effective_fps=19.884`,
+      `program_render_used_continuous_latest_count=2846`,
+      `program_render_used_one_shot_fallback_count=0`,
+      `program_output_black_frame_render_count=0`, and
+      `program_output_placeholder_render_count=0`.
+    - Preview decode refresh made client1 / slot0 visible:
+      `operator_preview_decode_refresh_success_count=96`,
+      `operator_preview_decode_refresh_source_counts=slot0:96|slot1:0`,
+      and `operator_preview_non_program_visible_count=1`.
+    - Program-selected player2 / slot1 still ended black / decode-deferred in
+      Preview even though ProgramOutput rendered player2 from continuous
+      latest.
+    - Current implementation adds an opt-in Preview-only reuse path for the
+      explicit Program-selected slot. It reuses `continuous_latest` first and
+      `last_valid_program` second, without changing ProgramOutput rendering or
+      default Preview behavior.
+    - Next validation should keep both refresh knobs at `10` and `30`, and
+      watch `operator_preview_reused_program_frame_count`,
+      `operator_preview_program_slot_visible_count`,
+      `operator_preview_program_slot_reuse_source`,
+      `operator_preview_program_slot_black_count`,
+      `operator_preview_decode_refresh_source_counts`, and
+      `program_render_used_one_shot_fallback_count`.
 - latest optimized BGR24 A/B rerun:
   - root:
     `S:\stream-sync\manual-logs\two-client-optimized-bgr24-ab-rerun-20260528-103130`
@@ -1013,6 +1041,9 @@ operated as follows:
 - Program-first validation is opt-in via `--program-first-validation-mode`
 - Low-frequency operator Preview decode allowance is opt-in via
   `--program-first-preview-decode-refresh-interval <ticks>`
+- Program-selected low-cost Preview slot reuse is opt-in under Program-first
+  low-cost Preview mode and explicit Program selection; it reuses the Program
+  continuous/latest frame for Preview only
 
 Validated command examples:
 
@@ -1042,28 +1073,36 @@ Current limitations:
 - `--program-first-preview-decode-refresh-interval` only allows non-Program
   Preview one-shot decode on matching low-cost Preview refresh ticks and uses a
   one-source-per-tick budget; it is not a return to every-tick Preview decode
+- Program-selected Preview slot reuse does not render 4-view as Program and
+  does not mix Preview labels / borders / debug UI into ProgramOutput
 - OBS setup remains manual and is not changed by code
 
 ### Latest Operator Low-cost Preview Result
 
 - The latest operator low-cost Preview validation used
-  `--program-first-preview-refresh-interval 30`.
+  `--program-first-preview-refresh-interval 10` and
+  `--program-first-preview-decode-refresh-interval 30`.
 - ProgramOutput remained structurally good:
-  `program_render_effective_fps=21.886`,
-  `program_render_used_continuous_latest_count=2819`,
-  `program_render_used_one_shot_fallback_count=0`, and
-  `one_shot_decode_attempt_count=0`.
-- Preview was visible but not useful for monitoring:
-  client1 was black, slot0 / client1 ended as
-  `DecodeDeferred:ContinuousOneShotSuppressed`, and
-  `operator_preview_render_effective_fps=0.031`.
-- Refresh success was too low:
-  `operator_preview_refresh_attempt_count=100`,
-  `operator_preview_refresh_success_count=4`, and
-  `operator_preview_refresh_skipped_count=2900`.
-- Next validation should allow low-frequency non-Program Preview decode with
-  `--program-first-preview-decode-refresh-interval <ticks>` while keeping
-  ProgramOutput selected-only and prioritized.
+  `program_render_effective_fps=19.884`,
+  `program_render_used_continuous_latest_count=2846`,
+  `program_render_used_one_shot_fallback_count=0`,
+  `program_output_black_frame_render_count=0`, and
+  `program_output_placeholder_render_count=0`.
+- Preview was visible and the non-Program slot improved:
+  `operator_preview_decode_refresh_success_count=96`,
+  `operator_preview_decode_refresh_source_counts=slot0:96|slot1:0`, and
+  `operator_preview_non_program_visible_count=1`.
+- Preview was still not useful enough for monitoring because the explicit
+  Program source player2 / slot1 stayed black / decode-deferred even though
+  ProgramOutput rendered player2 from continuous latest.
+- Current code now adds opt-in Program-selected Preview slot reuse. Next
+  validation should keep the same `10` / `30` refresh knobs and compare
+  `operator_preview_reused_program_frame_count`,
+  `operator_preview_program_slot_visible_count`,
+  `operator_preview_program_slot_reuse_source`,
+  `operator_preview_program_slot_black_count`,
+  `operator_preview_decode_refresh_source_counts`, and
+  `program_render_used_one_shot_fallback_count`.
 
 ### Non-goals for the first Program slice
 
@@ -1083,10 +1122,9 @@ Current limitations:
 - Latest optimized BGR24 A/B shows conversion optimization worked, but
   `scaled-bgr24` still does not clearly beat default BGRA end to end.
 - Next candidate order:
-  1. human-side Program-first rerun with
-     `--enable-program-output-window --program-selected-client-id player2 --enable-program-continuous-decode --program-continuous-decode-mode smooth-latest --program-first-validation-mode`
-     and a larger handoff budget to see whether reducing Preview workload
-     improves Program smoothness
+  1. human-side Program-first low-cost Preview rerun with
+     `--enable-program-output-window --program-selected-client-id player2 --enable-program-continuous-decode --program-continuous-decode-mode smooth-latest --program-first-validation-mode --program-first-preview-refresh-interval 10 --program-first-preview-decode-refresh-interval 30`
+     to validate Program-selected Preview slot reuse.
   2. human-side `no-scale-bgra` A/B rerun for the scale path split slice
   3. reader/completed latency breakdown diagnostics if no-scale evidence is
      ambiguous

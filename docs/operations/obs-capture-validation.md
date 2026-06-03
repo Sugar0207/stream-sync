@@ -280,6 +280,51 @@ Validated command examples for the Program path:
     increment the budget-exceeded diagnostic.
   - ProgramOutput remains selected-only and prioritized; Program continuous
     `smooth-latest` selection is unchanged.
+- Latest low-cost Preview decode refresh validation with
+  `--program-first-preview-refresh-interval 10` and
+  `--program-first-preview-decode-refresh-interval 30`:
+  - OBS captured `StreamSync Program Output`
+  - OBS did not capture `StreamSync 4-view Output`
+  - Program stayed selected-only; 4-view / borders / debug UI / Preview labels
+    were not mixed into Program
+  - Program black / placeholder: none
+  - Program perceived stutter: small
+  - Program metrics:
+    - `program_render_effective_fps=19.884`
+    - `effective_program_render_fps=19.884`
+    - `program_render_used_continuous_latest_count=2846`
+    - `program_render_used_one_shot_fallback_count=0`
+    - `program_output_black_frame_render_count=0`
+    - `program_output_placeholder_render_count=0`
+  - Preview metrics:
+    - `operator_preview_refresh_success_count=243`
+    - `operator_preview_decode_refresh_success_count=96`
+    - `operator_preview_decode_refresh_source_counts=slot0:96|slot1:0`
+    - `operator_preview_non_program_visible_count=1`
+    - `one_shot_decode_attempt_slot_counts=slot0:96|slot1:0`
+  - Interpretation:
+    - the low-frequency decode allowance made client1 / slot0 visible enough
+      to be useful as the non-Program Preview source
+    - the explicit Program source player2 / slot1 still ended black /
+      decode-deferred in Preview even though ProgramOutput rendered player2
+      through continuous latest
+    - likely cause: the Program continuous/latest decoded frame was not being
+      reused by the corresponding 4-view Preview slot
+- New opt-in Program frame reuse for low-cost Preview:
+  - applies only under Program-first low-cost Preview mode with explicit
+    Program selection
+  - the Program-selected Preview slot may reuse the Program continuous latest
+    decoded frame, or the last valid Program frame as fallback, without
+    requiring one-shot decode for that Program source Preview slot
+  - non-Program Preview behavior is unchanged: non-Program sources still need
+    `--program-first-preview-decode-refresh-interval <ticks>` for low-frequency
+    one-shot decode, and the per-tick budget remains in force
+  - ProgramOutput rendering stays separate; the 4-view Preview is not rendered
+    as Program, and Preview labels / borders / debug UI are not mixed into the
+    Program window
+  - next validation should keep:
+    `--program-first-preview-refresh-interval 10` and
+    `--program-first-preview-decode-refresh-interval 30`
 - New fields to watch on the next Program OBS rerun:
   - `program_first_validation_enabled`
   - `program_first_preview_visible`
@@ -303,6 +348,10 @@ Validated command examples for the Program path:
   - `operator_preview_decode_refresh_elapsed_ms`
   - `operator_preview_decode_refresh_budget_exceeded_count`
   - `operator_preview_non_program_visible_count`
+  - `operator_preview_reused_program_frame_count`
+  - `operator_preview_program_slot_visible_count`
+  - `operator_preview_program_slot_reuse_source`
+  - `operator_preview_program_slot_black_count`
   - `operator_preview_program_fps_impact_estimate`
   - `preview_compose_skipped_for_program_count`
   - `preview_compose_reused_for_program_count`

@@ -2,6 +2,125 @@
 
 ## 2026-06-03
 ### Type
+- Codex Program frame reuse for low-cost Preview
+
+### Work
+- Investigated why the latest Program-first low-cost Preview validation made
+  client1 / slot0 visible but left the explicit Program source player2 / slot1
+  black in 4-view Preview.
+- Confirmed ProgramOutput was already rendering player2 from continuous latest,
+  while the Preview slot still depended on Preview-side renderability /
+  one-shot decode state.
+- Added a small opt-in Preview-only reuse path for Program-first low-cost
+  Preview mode:
+  - only active when `--program-first-validation-mode` and low-cost Preview
+    restore are enabled
+  - requires explicit `--program-selected-client-id`
+  - checks that the Preview slot identity matches the Program-selected
+    client/run/slot
+  - reuses Program `continuous_latest` first
+  - falls back to `last_valid_program` only if no matching continuous latest
+    frame is available
+  - does not require one-shot decode for the Program source Preview slot
+- Kept non-Program Preview behavior unchanged:
+  - non-Program one-shot decode still requires
+    `--program-first-preview-decode-refresh-interval <ticks>`
+  - the one-decode-per-matching-refresh-tick budget remains in force
+  - default behavior remains unchanged when the Program-first / low-cost
+    Preview flags are absent
+- Kept ProgramOutput rendering separate from Preview. The reuse path mutates the
+  Preview pre-composition clone only, so 4-view labels / borders / debug UI are
+  not mixed into ProgramOutput.
+
+### Investigation Notes
+- Latest validation command shape:
+  `--enable-program-output-window --program-selected-client-id player2 --enable-program-continuous-decode --program-continuous-decode-mode smooth-latest --program-first-validation-mode --program-first-preview-refresh-interval 10 --program-first-preview-decode-refresh-interval 30`
+- Manual result:
+  - OBS captured `StreamSync Program Output`
+  - OBS did not capture `StreamSync 4-view Output`
+  - Program did not mix 4-view / borders / debug / Preview labels
+  - Program black / placeholder: none
+  - Program perceived stutter: small
+  - 4-view Preview was displayed but not useful enough for monitoring
+  - client1 / slot0 became visible
+  - player2 / slot1 stayed black / decode-deferred in Preview
+- Key metrics:
+  - `program_render_effective_fps=19.884`
+  - `effective_program_render_fps=19.884`
+  - `program_render_used_continuous_latest_count=2846`
+  - `program_render_used_one_shot_fallback_count=0`
+  - `program_output_black_frame_render_count=0`
+  - `program_output_placeholder_render_count=0`
+  - `operator_preview_refresh_success_count=243`
+  - `operator_preview_decode_refresh_success_count=96`
+  - `operator_preview_decode_refresh_source_counts=slot0:96|slot1:0`
+  - `operator_preview_non_program_visible_count=1`
+  - `one_shot_decode_attempt_slot_counts=slot0:96|slot1:0`
+- Interpretation:
+  - the low-frequency decode allowance fixed the non-Program slot partially
+  - the missing piece was reuse of the Program continuous/latest decoded frame
+    into the matching Preview slot
+
+### Diagnostics
+- Added / updated summary fields:
+  - `operator_preview_reused_program_frame_count`
+  - `operator_preview_program_slot_visible_count`
+  - `operator_preview_program_slot_reuse_source=continuous_latest|last_valid_program|none`
+  - `operator_preview_program_slot_black_count`
+  - existing `operator_preview_non_program_visible_count`
+  - existing `operator_preview_decode_refresh_source_counts`
+  - existing Program metrics including `program_render_effective_fps`,
+    `program_render_used_continuous_latest_count`, and
+    `program_render_used_one_shot_fallback_count`
+
+### Changed Files
+- `apps/switcher/src/main.rs`
+- `docs/operations/continuous-output-pipeline-experiment-plan.md`
+- `docs/operations/obs-capture-validation.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### TODO Update
+- Marked the two-refresh-knob manual validation as complete with the result:
+  client1 visible, Program-selected player2 still black in Preview.
+- Marked the Program-selected Preview slot reuse implementation as complete.
+- Added the next manual validation candidate with the same refresh knobs:
+  `--program-first-preview-refresh-interval 10` and
+  `--program-first-preview-decode-refresh-interval 30`.
+
+### Validation
+- `cargo fmt`
+  - result: PASS
+- `cargo check -p stream-sync-switcher`
+  - result: PASS
+  - note: existing unused-function warnings remain in `apps/switcher/src/main.rs`
+    for `update_four_view_previous_slots_from_validation`,
+    `four_view_two_real_tick_diagnostics`, and
+    `clean_output_window_was_rendered`.
+- `cargo test -p stream-sync-switcher switcher_operator_preview_reuses_program_continuous_latest_for_program_slot`
+  - result: PASS
+- `cargo test -p stream-sync-switcher switcher_operator_preview_program_reuse_can_fall_back_to_last_valid_program_frame`
+  - result: PASS
+- `cargo test -p stream-sync-switcher program_output --lib`
+  - result: PASS
+- `cargo test -p stream-sync-switcher program_output`
+  - result: PASS
+- `cargo test -p stream-sync-switcher switcher_two_real_handoff_preview_options`
+  - result: PASS
+- `cargo test -p stream-sync-switcher switcher_operator_preview_decode_refresh_decision_requires_preview_refresh_tick`
+  - result: PASS
+- `cargo test -p stream-sync-switcher switcher_program_first_preview_decode_refresh_allows_one_non_program_decode`
+  - result: PASS
+- `cargo test -p stream-sync-switcher switcher_four_view_two_real_handoff_preview_loop_program_first_reuses_preview_after_first_render`
+  - result: PASS
+- `cargo test -p stream-sync-switcher switcher_four_view_two_real_handoff_preview_summary_formats_expected_fields`
+  - result: PASS
+- `git diff --check`
+  - result: PASS
+  - note: LF/CRLF warnings only
+
+## 2026-06-03
+### Type
 - Codex low-frequency operator Preview decode allowance
 
 ### Work
