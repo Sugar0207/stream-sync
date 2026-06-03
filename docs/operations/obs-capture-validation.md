@@ -349,6 +349,52 @@ Validated command examples for the Program path:
     `--program-first-preview-refresh-interval 30`,
     `--program-first-preview-decode-refresh-interval 90`, and
     `--operator-preview-snapshot-retention`
+- Latest `5` / `90` snapshot-style low-cost Preview validation:
+  - command shape:
+    `--enable-program-output-window --program-selected-client-id player2 --enable-program-continuous-decode --program-continuous-decode-mode smooth-latest --program-first-validation-mode --program-first-preview-refresh-interval 5 --program-first-preview-decode-refresh-interval 90 --operator-preview-snapshot-retention`
+  - OBS setup result:
+    - OBS captured `StreamSync Program Output`
+    - OBS did not capture `StreamSync 4-view Output`
+    - Program did not mix 4-view / borders / debug UI / Preview labels
+  - ProgramOutput result:
+    - classification: near-MVP / partial PASS
+    - black / placeholder: none
+    - perceived stutter: small
+    - `program_render_effective_fps=16.201`
+    - `effective_program_render_fps=16.201`
+    - `program_render_used_continuous_latest_count=2736`
+    - `program_render_used_one_shot_fallback_count=0`
+    - `program_output_black_frame_render_count=0`
+    - `program_output_placeholder_render_count=0`
+  - Preview result:
+    - `StreamSync 4-view Output` was displayed
+    - client1 was not black
+    - client2 was not black
+    - client1 / client2 flicker: none
+    - Preview was still not useful for monitoring
+    - Preview update frequency was too low
+    - `operator_preview_render_effective_fps=3.233`
+    - `operator_preview_refresh_interval_ticks=5`
+    - `operator_preview_decode_refresh_interval_ticks=90`
+    - `operator_preview_decode_refresh_success_count=31`
+    - `operator_preview_snapshot_retention_enabled=true`
+    - `operator_preview_snapshot_reuse_count=2743`
+    - `operator_preview_placeholder_avoided_by_snapshot_count=2743`
+    - `operator_preview_slot_black_after_snapshot_count=0`
+    - `one_shot_decode_attempt_count=31`
+  - Comparison:
+    - `10` / `90` gave better Program FPS around `18.437`, but Preview was
+      still too slow
+    - `5` / `90` improved Preview repaint to `3.233fps`, but Preview was still
+      too slow and Program FPS dropped to `16.201`
+  - Decision:
+    - snapshot retention works for stable visibility
+    - same-loop Preview refresh tuning is limited / paused
+    - do not continue lowering Preview refresh interval in this path
+    - current Preview is stable snapshot-only, not the final operator
+      monitoring Preview
+    - recommended next path is ProgramOutput near-MVP closeout first, then a
+      separate Preview cadence/runtime or lighter renderer design
 - New fields to watch on the next Program OBS rerun:
   - `program_first_validation_enabled`
   - `program_first_preview_visible`

@@ -2,6 +2,86 @@
 
 ## 2026-06-03
 ### Type
+- Codex 5/90 snapshot Preview validation closeout
+
+### Work
+- Recorded the latest `5` / `90` snapshot-style low-cost Preview validation.
+- Closed the current same-loop low-cost Preview refresh tuning line as limited
+  / paused.
+- Decided the next architecture direction in docs:
+  - close ProgramOutput near-MVP first
+  - treat current Preview as stable snapshot-only, not final monitoring Preview
+  - future operator Preview needs a separate cadence/runtime or lighter
+    renderer path
+  - hotkey/control pipe remains after ProgramOutput closeout
+- No Rust code changes were made in this step.
+
+### Validation Result
+- Command shape:
+  `--enable-program-output-window --program-selected-client-id player2 --enable-program-continuous-decode --program-continuous-decode-mode smooth-latest --program-first-validation-mode --program-first-preview-refresh-interval 5 --program-first-preview-decode-refresh-interval 90 --operator-preview-snapshot-retention`
+- Manual result:
+  - OBS captured `StreamSync Program Output`
+  - OBS did not capture `StreamSync 4-view Output`
+  - Program did not mix 4-view / borders / debug UI / Preview labels
+  - Program black / placeholder: no
+  - Program perceived stutter: small
+  - `StreamSync 4-view Output` was displayed
+  - 4-view Preview was not useful for monitoring
+  - Preview update frequency was too low
+  - client1 was not black
+  - client2 was not black
+  - client1 / client2 flicker: none
+- Metrics:
+  - `program_render_effective_fps=16.201`
+  - `effective_program_render_fps=16.201`
+  - `program_render_used_continuous_latest_count=2736`
+  - `program_render_used_one_shot_fallback_count=0`
+  - `program_output_black_frame_render_count=0`
+  - `program_output_placeholder_render_count=0`
+  - `operator_preview_render_effective_fps=3.233`
+  - `operator_preview_refresh_interval_ticks=5`
+  - `operator_preview_decode_refresh_interval_ticks=90`
+  - `operator_preview_decode_refresh_success_count=31`
+  - `operator_preview_snapshot_retention_enabled=true`
+  - `operator_preview_snapshot_reuse_count=2743`
+  - `operator_preview_placeholder_avoided_by_snapshot_count=2743`
+  - `operator_preview_slot_black_after_snapshot_count=0`
+  - `one_shot_decode_attempt_count=31`
+
+### Interpretation
+- Snapshot retention works for stable Preview visibility.
+- It fixed black/flicker for both visible sources.
+- `10` / `90` gave better Program FPS around `18.437`, but Preview was still
+  too slow.
+- `5` / `90` improved Preview repaint to `3.233fps`, but Preview was still too
+  slow and Program FPS dropped to `16.201`.
+- Increasing Preview refresh frequency in the same loop hurts ProgramOutput and
+  still does not make Preview useful enough.
+- Do not continue lowering Preview refresh interval in the current same-loop
+  path.
+
+### Changed Files
+- `docs/operations/continuous-output-pipeline-experiment-plan.md`
+- `docs/operations/obs-capture-validation.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### TODO Update
+- Marked the `5` / `90` snapshot validation as complete.
+- Marked same-loop low-cost Preview refresh tuning as limited / paused.
+- Added ProgramOutput near-MVP closeout as the next preferred task.
+- Added future separate Preview cadence/runtime or lighter renderer design.
+- Kept hotkey/control pipe after ProgramOutput closeout.
+
+### Validation
+- Docs-only change; `cargo fmt` and `cargo check` were not run because Rust was
+  not touched.
+- `git diff --check`
+  - result: PASS
+  - note: LF/CRLF warnings only
+
+## 2026-06-03
+### Type
 - Codex snapshot-style low-cost Preview retention
 
 ### Work

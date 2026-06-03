@@ -112,18 +112,33 @@ Last updated: 2026-06-03
       per-slot snapshots and reuses them when the next tick would otherwise
       show placeholder/deferred output. It does not trigger extra one-shot
       decode and keeps ProgramOutput rendering separate.
-    - Next validation should start with
-      `--program-first-preview-refresh-interval 30`,
+    - Latest `5` / `90` snapshot validation used
+      `--program-first-preview-refresh-interval 5`,
       `--program-first-preview-decode-refresh-interval 90`, and
-      `--operator-preview-snapshot-retention`. Watch
-      `operator_preview_snapshot_retention_enabled`,
-      `operator_preview_snapshot_reuse_count`,
-      `operator_preview_snapshot_reuse_slot_counts`,
-      `operator_preview_snapshot_created_count`,
-      `operator_preview_snapshot_created_slot_counts`,
-      `operator_preview_placeholder_avoided_by_snapshot_count`,
-      `operator_preview_slot_black_after_snapshot_count`,
-      `program_render_effective_fps`, and `one_shot_decode_elapsed_ms`.
+      `--operator-preview-snapshot-retention`.
+    - Snapshot retention worked for stable visibility:
+      client1/client2 were not black, flicker was gone,
+      `operator_preview_snapshot_retention_enabled=true`,
+      `operator_preview_snapshot_reuse_count=2743`,
+      `operator_preview_placeholder_avoided_by_snapshot_count=2743`, and
+      `operator_preview_slot_black_after_snapshot_count=0`.
+    - ProgramOutput remained near-MVP / partial PASS:
+      OBS target separation was correct, Program did not mix Preview UI,
+      black/placeholder counters were `0`, perceived stutter was small,
+      `program_render_used_continuous_latest_count=2736`, and
+      `program_render_used_one_shot_fallback_count=0`.
+    - Same-loop Preview tuning is now limited:
+      `operator_preview_render_effective_fps=3.233` was still too slow for
+      operator monitoring, and Program FPS dropped to
+      `program_render_effective_fps=16.201`.
+    - Comparison: `10` / `90` gave better Program FPS around `18.437` but
+      Preview was still too slow; `5` / `90` improved repaint to `3.233fps`
+      but remained too slow and cost Program FPS.
+    - Decision: pause same-loop low-cost Preview refresh tuning. Do not keep
+      lowering Preview refresh interval in this path. Close ProgramOutput
+      near-MVP first; treat current Preview as stable snapshot-only, and move
+      future operator Preview work to a separate cadence/runtime or lighter
+      renderer design.
 - latest optimized BGR24 A/B rerun:
   - root:
     `S:\stream-sync\manual-logs\two-client-optimized-bgr24-ab-rerun-20260528-103130`
@@ -1057,6 +1072,8 @@ operated as follows:
   continuous/latest frame for Preview only
 - Snapshot-style low-cost Preview retention is opt-in via
   `--operator-preview-snapshot-retention`
+- Same-loop low-cost Preview refresh tuning is paused after the `5` / `90`
+  validation. Do not keep lowering the refresh interval in this path.
 
 Validated command examples:
 
@@ -1069,6 +1086,7 @@ Validated command examples:
 --enable-program-output-window --program-selected-client-id player2 --enable-program-continuous-decode --program-continuous-decode-mode smooth-latest --program-first-validation-mode
 --enable-program-output-window --program-selected-client-id player2 --enable-program-continuous-decode --program-continuous-decode-mode smooth-latest --program-first-validation-mode --program-first-preview-refresh-interval 10 --program-first-preview-decode-refresh-interval 30
 --enable-program-output-window --program-selected-client-id player2 --enable-program-continuous-decode --program-continuous-decode-mode smooth-latest --program-first-validation-mode --program-first-preview-refresh-interval 30 --program-first-preview-decode-refresh-interval 90 --operator-preview-snapshot-retention
+--enable-program-output-window --program-selected-client-id player2 --enable-program-continuous-decode --program-continuous-decode-mode smooth-latest --program-first-validation-mode --program-first-preview-refresh-interval 5 --program-first-preview-decode-refresh-interval 90 --operator-preview-snapshot-retention
 ```
 
 Current limitations:
@@ -1097,30 +1115,28 @@ Current limitations:
 ### Latest Operator Low-cost Preview Result
 
 - The latest operator low-cost Preview validation used
-  `--program-first-preview-refresh-interval 10` and
-  `--program-first-preview-decode-refresh-interval 30`.
-- ProgramOutput remained selected-only and used continuous latest, but
-  smoothness worsened:
-  `program_render_effective_fps=15.581`,
-  `program_render_used_continuous_latest_count=2799`,
+  `--program-first-preview-refresh-interval 5`,
+  `--program-first-preview-decode-refresh-interval 90`, and
+  `--operator-preview-snapshot-retention`.
+- ProgramOutput remains near-MVP / partial PASS:
+  `program_render_effective_fps=16.201`,
+  `program_render_used_continuous_latest_count=2736`,
   `program_render_used_one_shot_fallback_count=0`,
   `program_output_black_frame_render_count=0`, and
   `program_output_placeholder_render_count=0`.
-- Preview one-shot cost was high:
-  `one_shot_decode_attempt_count=94`,
-  `one_shot_decode_elapsed_ms=16349`, and
-  `avg_decode_elapsed_ms=174.096`.
-- Preview reuse / visibility existed:
-  `operator_preview_reused_program_frame_count=157`,
-  `operator_preview_program_slot_visible_count=1`, and
-  `operator_preview_non_program_visible_count=1`.
-- Preview was still not useful because client1 and client2 both flickered.
-- Current code now adds opt-in snapshot retention. Next validation should use
-  `--program-first-preview-refresh-interval 30`,
-  `--program-first-preview-decode-refresh-interval 90`, and
-  `--operator-preview-snapshot-retention`, then compare snapshot
-  reuse/creation/placeholder-avoided/black-after-snapshot metrics plus Program
-  render FPS and one-shot decode cost.
+- OBS target separation was correct and Program did not mix Preview UI.
+- Snapshot retention fixed black/flicker:
+  client1/client2 were not black, flicker was gone,
+  `operator_preview_snapshot_reuse_count=2743`,
+  `operator_preview_placeholder_avoided_by_snapshot_count=2743`, and
+  `operator_preview_slot_black_after_snapshot_count=0`.
+- Preview remained too slow for operator monitoring:
+  `operator_preview_render_effective_fps=3.233`,
+  `operator_preview_decode_refresh_success_count=31`, and
+  `one_shot_decode_attempt_count=31`.
+- Same-loop low-cost Preview refresh tuning is now paused. The next
+  architecture direction is ProgramOutput near-MVP closeout first, then a
+  separate Preview cadence/runtime or lighter renderer design.
 
 ### Non-goals for the first Program slice
 
@@ -1140,12 +1156,17 @@ Current limitations:
 - Latest optimized BGR24 A/B shows conversion optimization worked, but
   `scaled-bgr24` still does not clearly beat default BGRA end to end.
 - Next candidate order:
-  1. human-side snapshot-style Program-first low-cost Preview rerun with
-     `--enable-program-output-window --program-selected-client-id player2 --enable-program-continuous-decode --program-continuous-decode-mode smooth-latest --program-first-validation-mode --program-first-preview-refresh-interval 30 --program-first-preview-decode-refresh-interval 90 --operator-preview-snapshot-retention`.
-  2. human-side `no-scale-bgra` A/B rerun for the scale path split slice
-  3. reader/completed latency breakdown diagnostics if no-scale evidence is
+  1. ProgramOutput near-MVP closeout: acceptance threshold for Program FPS /
+     smoothness, black/placeholder guard, OBS target separation, and current
+     static Program selection constraints.
+  2. Separate Preview cadence/runtime or lighter renderer design for future
+     operator monitoring; current Preview is stable snapshot-only.
+  3. Program source switching over hotkey/control pipe after ProgramOutput
+     closeout.
+  4. human-side `no-scale-bgra` A/B rerun for the scale path split slice
+  5. reader/completed latency breakdown diagnostics if no-scale evidence is
      ambiguous
-  4. direct BGR24 render path docs-first impact review only
+  6. direct BGR24 render path docs-first impact review only
 - The `no-scale-bgra` code slice is already implemented; do not broaden it
   before runtime evidence.
 - Keep one-shot suppression as strong contributor evidence, but not the current
