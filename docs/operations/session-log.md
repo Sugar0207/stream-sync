@@ -2,6 +2,96 @@
 
 ## 2026-06-03
 ### Type
+- Codex ProgramOutput non-FPS blocker audit
+
+### Work
+- Revisited the previous ProgramOutput near-MVP closeout direction and marked
+  it premature.
+- Audited ProgramOutput non-FPS operational blockers in docs.
+- Redefined ProgramOutput closeout as criteria-first work rather than a current
+  status claim.
+- Kept same-loop low-cost Preview refresh tuning paused.
+- Did not implement runtime behavior, hotkey/control pipe, OBS automation, or
+  default behavior changes.
+- Checked `README.md`; it describes project goals / architecture but does not
+  claim ProgramOutput is closeout-ready, so it was not changed.
+
+### Audited Blockers
+- Startup / first render delay:
+  - `program_output_first_render_elapsed_ms=16045`
+- Missing selected source before first render:
+  - `program_output_missing_selected_source_count=264`
+  - `program_output_missing_before_first_render_count=264`
+  - `program_output_missing_after_first_render_count=0`
+  - `program_output_missing_selected_source_reason=NoDecodedFrameForSelection`
+- Selected source identity and verification:
+  - current source is CLI-fixed by `--program-selected-client-id`
+  - runtime source switching is not implemented
+  - player1/player2 visual differentiation is weak, so manual visual
+    verification is not strong enough alone
+- Smooth-latest latency / lag semantics:
+  - `program_selected_source_frame_lag=299`
+  - `program_continuous_selected_frame_lag=285`
+  - `continuous_decode_latest_selected_to_output_frame_gap=299`
+  - accepted lag is not yet specified as a closeout criterion
+- OBS capture safety:
+  - latest OBS target separation was correct
+  - OBS remains manually configurable and can still capture the wrong window
+- Program-first validation vs final operator mode:
+  - `--program-first-validation-mode` remains a validation mode, not final
+    operator mode
+- Preview / operator monitoring:
+  - current Preview is stable snapshot-only, not final monitoring Preview
+
+### Closeout Criteria To Define
+- Output correctness:
+  selected-only Program image, no 4-view / Preview labels / borders / debug UI,
+  and black / placeholder counters guarded.
+- Startup behavior:
+  accepted first-render delay, accepted missing-selected-source count before
+  first render, and explicit `NoDecodedFrameForSelection` handling.
+- Source selection correctness:
+  selected client/run/slot identity diagnostics plus visually distinguishable
+  validation sources.
+- OBS capture safety:
+  exact `StreamSync Program Output` target, wrong-window prevention, and manual
+  evidence checklist.
+- Latency / lag acceptance:
+  explicit bounds for `program_selected_source_frame_lag`,
+  `program_continuous_selected_frame_lag`, and
+  `continuous_decode_latest_selected_to_output_frame_gap`.
+- Stability over long run:
+  no black / placeholder regression, no after-first selected-source missing
+  regression, and agreed FPS / stutter range.
+- Operator visibility / Preview dependency:
+  ProgramOutput closeout must not depend on final Preview monitoring.
+- Diagnostics completeness:
+  first render, missing-source reason, selected identity, lag, black /
+  placeholder, and OBS target evidence must be available.
+
+### Changed Files
+- `docs/operations/continuous-output-pipeline-experiment-plan.md`
+- `docs/operations/obs-capture-validation.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### TODO Update
+- Replaced ProgramOutput near-MVP closeout with ProgramOutput non-FPS blocker
+  audit.
+- Added follow-up tasks for first render / missing selected source,
+  selected-source visual verification, latency/lag acceptance criteria, and OBS
+  capture safety checklist.
+- Kept hotkey/control pipe and separate Preview cadence/runtime as later work.
+
+### Validation
+- Docs-only change; `cargo fmt` and `cargo check` were not run because Rust was
+  not touched.
+- `git diff --check`
+  - result: PASS
+  - note: LF/CRLF warnings only
+
+## 2026-06-03
+### Type
 - Codex 5/90 snapshot Preview validation closeout
 
 ### Work

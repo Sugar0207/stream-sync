@@ -20,7 +20,7 @@ Last updated: 2026-06-03
 - latest Program-first ProgramOutput validation:
   - mode:
     `--enable-program-output-window --program-selected-client-id player2 --enable-program-continuous-decode --program-continuous-decode-mode smooth-latest --program-first-validation-mode`
-  - classification: ProgramOutput PASS / near-MVP for OBS output
+  - classification: strong ProgramOutput structural evidence, not closeout-ready
   - OBS captured `StreamSync Program Output` and did not accidentally capture
     `StreamSync 4-view Output`
   - no Preview labels / borders / debug UI mixed into Program
@@ -122,7 +122,7 @@ Last updated: 2026-06-03
       `operator_preview_snapshot_reuse_count=2743`,
       `operator_preview_placeholder_avoided_by_snapshot_count=2743`, and
       `operator_preview_slot_black_after_snapshot_count=0`.
-    - ProgramOutput remained near-MVP / partial PASS:
+    - ProgramOutput remained structurally promising / partial PASS, not closeout-ready:
       OBS target separation was correct, Program did not mix Preview UI,
       black/placeholder counters were `0`, perceived stutter was small,
       `program_render_used_continuous_latest_count=2736`, and
@@ -135,10 +135,25 @@ Last updated: 2026-06-03
       Preview was still too slow; `5` / `90` improved repaint to `3.233fps`
       but remained too slow and cost Program FPS.
     - Decision: pause same-loop low-cost Preview refresh tuning. Do not keep
-      lowering Preview refresh interval in this path. Close ProgramOutput
-      near-MVP first; treat current Preview as stable snapshot-only, and move
-      future operator Preview work to a separate cadence/runtime or lighter
-      renderer design.
+      lowering Preview refresh interval in this path. Do not close
+      ProgramOutput near-MVP yet; first audit non-FPS blockers and define
+      closeout criteria. Treat current Preview as stable snapshot-only, and
+      move future operator Preview work to a separate cadence/runtime or
+      lighter renderer design.
+    - ProgramOutput non-FPS blockers from latest validation:
+      first render was delayed (`program_output_first_render_elapsed_ms=16045`),
+      selected source was missing before first render
+      (`program_output_missing_selected_source_count=264`,
+      `program_output_missing_before_first_render_count=264`,
+      `program_output_missing_after_first_render_count=0`,
+      `program_output_missing_selected_source_reason=NoDecodedFrameForSelection`),
+      smooth-latest lag is not acceptance-defined
+      (`program_selected_source_frame_lag=299`,
+      `program_continuous_selected_frame_lag=285`,
+      `continuous_decode_latest_selected_to_output_frame_gap=299`),
+      current source identity is CLI-fixed, runtime switching is missing,
+      Preview is not final monitoring, OBS can still be manually
+      misconfigured, and player1/player2 visual differentiation is weak.
 - latest optimized BGR24 A/B rerun:
   - root:
     `S:\stream-sync\manual-logs\two-client-optimized-bgr24-ab-rerun-20260528-103130`
@@ -1074,6 +1089,8 @@ operated as follows:
   `--operator-preview-snapshot-retention`
 - Same-loop low-cost Preview refresh tuning is paused after the `5` / `90`
   validation. Do not keep lowering the refresh interval in this path.
+- ProgramOutput is structurally promising but not closeout-ready until
+  non-FPS operational blockers and closeout criteria are resolved.
 
 Validated command examples:
 
@@ -1118,7 +1135,7 @@ Current limitations:
   `--program-first-preview-refresh-interval 5`,
   `--program-first-preview-decode-refresh-interval 90`, and
   `--operator-preview-snapshot-retention`.
-- ProgramOutput remains near-MVP / partial PASS:
+- ProgramOutput remains structurally promising / partial PASS, not closeout-ready:
   `program_render_effective_fps=16.201`,
   `program_render_used_continuous_latest_count=2736`,
   `program_render_used_one_shot_fallback_count=0`,
@@ -1134,9 +1151,11 @@ Current limitations:
   `operator_preview_render_effective_fps=3.233`,
   `operator_preview_decode_refresh_success_count=31`, and
   `one_shot_decode_attempt_count=31`.
-- Same-loop low-cost Preview refresh tuning is now paused. The next
-  architecture direction is ProgramOutput near-MVP closeout first, then a
-  separate Preview cadence/runtime or lighter renderer design.
+- Same-loop low-cost Preview refresh tuning is now paused. ProgramOutput is not
+  closeout-ready yet because first-render delay, startup missing selected
+  source, smooth-latest lag acceptance, static CLI source identity, missing
+  runtime switching, manual OBS safety, weak visual source differentiation, and
+  final Preview monitoring remain unresolved.
 
 ### Non-goals for the first Program slice
 
@@ -1156,17 +1175,25 @@ Current limitations:
 - Latest optimized BGR24 A/B shows conversion optimization worked, but
   `scaled-bgr24` still does not clearly beat default BGRA end to end.
 - Next candidate order:
-  1. ProgramOutput near-MVP closeout: acceptance threshold for Program FPS /
-     smoothness, black/placeholder guard, OBS target separation, and current
-     static Program selection constraints.
-  2. Separate Preview cadence/runtime or lighter renderer design for future
+  1. ProgramOutput non-FPS blocker audit and closeout criteria definition:
+     startup / first render, missing selected source before first render,
+     selected-source verification, smooth-latest lag acceptance, OBS capture
+     safety, Program-first validation vs final operator mode, diagnostics
+     completeness, and long-run stability.
+  2. First-render / missing-selected-source investigation focused on
+     `NoDecodedFrameForSelection` before first render.
+  3. Selected-source visual verification plan, including stronger player1 /
+     player2 visual differentiation and client/run/slot identity evidence.
+  4. Smooth-latest latency/lag acceptance criteria separate from FPS.
+  5. OBS ProgramOutput capture safety checklist.
+  6. Separate Preview cadence/runtime or lighter renderer design for future
      operator monitoring; current Preview is stable snapshot-only.
-  3. Program source switching over hotkey/control pipe after ProgramOutput
-     closeout.
-  4. human-side `no-scale-bgra` A/B rerun for the scale path split slice
-  5. reader/completed latency breakdown diagnostics if no-scale evidence is
+  7. Program source switching over hotkey/control pipe later, after
+     ProgramOutput criteria are defined.
+  8. human-side `no-scale-bgra` A/B rerun for the scale path split slice
+  9. reader/completed latency breakdown diagnostics if no-scale evidence is
      ambiguous
-  6. direct BGR24 render path docs-first impact review only
+  10. direct BGR24 render path docs-first impact review only
 - The `no-scale-bgra` code slice is already implemented; do not broaden it
   before runtime evidence.
 - Keep one-shot suppression as strong contributor evidence, but not the current

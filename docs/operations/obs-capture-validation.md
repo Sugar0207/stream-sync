@@ -196,7 +196,7 @@ Validated command examples for the Program path:
   - Preview is intentionally lower quality / lower freshness in this validation
     mode; Program smoothness is the metric under test
 - Latest Program-first + one-shot suppression validation result:
-  - classification: ProgramOutput PASS / near-MVP for OBS output
+  - classification: strong ProgramOutput structural evidence, not closeout-ready
   - OBS captured `StreamSync Program Output`
   - OBS did not accidentally capture `StreamSync 4-view Output`
   - selected Program identity was not visually distinguishable in this manual
@@ -357,7 +357,7 @@ Validated command examples for the Program path:
     - OBS did not capture `StreamSync 4-view Output`
     - Program did not mix 4-view / borders / debug UI / Preview labels
   - ProgramOutput result:
-    - classification: near-MVP / partial PASS
+    - classification: structurally promising / partial PASS, not closeout-ready
     - black / placeholder: none
     - perceived stutter: small
     - `program_render_effective_fps=16.201`
@@ -393,8 +393,86 @@ Validated command examples for the Program path:
     - do not continue lowering Preview refresh interval in this path
     - current Preview is stable snapshot-only, not the final operator
       monitoring Preview
-    - recommended next path is ProgramOutput near-MVP closeout first, then a
-      separate Preview cadence/runtime or lighter renderer design
+    - do not claim ProgramOutput near-MVP closeout yet
+    - recommended next path is a ProgramOutput non-FPS blocker audit, then
+      first-render / source-selection / lag criteria work, before any
+      closeout claim
+- ProgramOutput non-FPS blocker audit:
+  - current status: structurally promising, but not closeout-ready
+  - FPS remains a blocker, but not the only blocker
+  - startup / first render:
+    - `program_output_first_render_elapsed_ms=16045`
+    - first render delay is too long to close out without an explicit
+      acceptance threshold
+  - missing selected source before first render:
+    - `program_output_missing_selected_source_count=264`
+    - `program_output_missing_before_first_render_count=264`
+    - `program_output_missing_after_first_render_count=0`
+    - `program_output_missing_selected_source_reason=NoDecodedFrameForSelection`
+    - this is structurally improved after first render, but startup missing
+      selection is still an operational blocker
+  - selected source identity / verification:
+    - current Program source is CLI-fixed by `--program-selected-client-id`
+    - runtime switching is not implemented
+    - visual differentiation between player1/player2 is weak, so selected
+      source verification cannot rely on manual visual impression alone
+    - closeout needs explicit selected client/run/slot identity evidence and
+      stronger visual distinguishability in the validation setup
+  - smooth-latest latency / lag semantics:
+    - current smooth-latest behavior accepts delayed latest decoded output
+      informally
+    - latest lag metrics are large:
+      `program_selected_source_frame_lag=299`,
+      `program_continuous_selected_frame_lag=285`, and
+      `continuous_decode_latest_selected_to_output_frame_gap=299`
+    - acceptable lag must be specified separately from render FPS
+  - OBS capture safety:
+    - latest OBS target separation was correct
+    - OBS remains manual and can still be pointed at the wrong window
+    - closeout needs a checklist for exact `StreamSync Program Output` capture,
+      wrong-window prevention, and pasted-back evidence
+  - Program-first validation mode:
+    - `--program-first-validation-mode` is still a validation mode, not final
+      operator mode
+    - current 4-view Preview is stable snapshot-only and not final operator
+      monitoring Preview
+  - runtime control:
+    - hotkey/control pipe is not implemented
+    - current source identity is static / CLI-fixed
+- ProgramOutput closeout criteria to define before closeout:
+  - Output correctness:
+    - Program window renders only the selected Program source
+    - no 4-view layout, Preview labels, slot borders, or debug UI are mixed in
+    - black / placeholder counters remain `0` after first valid render
+  - Startup behavior:
+    - maximum accepted `program_output_first_render_elapsed_ms`
+    - maximum accepted missing-selected-source count before first render
+    - explicit handling for `NoDecodedFrameForSelection`
+  - Source selection correctness:
+    - selected client/run/slot identity is visible in summary diagnostics
+    - validation sources are visually distinguishable enough for manual check
+    - current static CLI selection limitations are documented
+  - OBS capture safety:
+    - OBS captures exactly `StreamSync Program Output`
+    - OBS does not capture `StreamSync 4-view Output`
+    - wrong/stale window capture is checked and recorded
+  - Latency / lag acceptance:
+    - accepted smooth-latest lag bounds are defined
+    - `program_selected_source_frame_lag`,
+      `program_continuous_selected_frame_lag`, and
+      `continuous_decode_latest_selected_to_output_frame_gap` are included in
+      the gate
+  - Stability over long run:
+    - no black / placeholder regression
+    - no after-first-render selected-source missing regression
+    - render FPS and perceived stutter remain within an agreed range
+  - Operator visibility / Preview dependency:
+    - ProgramOutput closeout does not depend on final Preview monitoring
+    - current Preview is accepted only as stable snapshot-only
+  - Diagnostics completeness:
+    - first render, missing-source reason, selected identity, lag, black /
+      placeholder, and OBS target evidence are all available in pasted-back
+      validation
 - New fields to watch on the next Program OBS rerun:
   - `program_first_validation_enabled`
   - `program_first_preview_visible`
