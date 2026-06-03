@@ -1,5 +1,104 @@
 <!-- stream-sync/docs/operations/session-log.md -->
 
+## 2026-06-04
+### Type
+- Codex ProgramOutput startup fallback diagnostics / validation planning
+
+### Work
+- Investigated why `program_startup_one_shot_fallback_allowed=true` can appear
+  with `program_startup_one_shot_fallback_attempt_count=0`.
+- Kept runtime behavior unchanged and added diagnostics only.
+- Added ProgramOutput startup one-shot candidate / blocked reason / keyframe /
+  retained-keyframe / selected-frame-source counters to the two-real summary.
+- Added focused formatter tests for the new reason/source count fields.
+- Updated ProgramOutput validation docs with the latest rerun interpretation
+  and a clients-before-switcher startup validation plan.
+- Kept ProgramOutput closeout blocked and same-loop Preview tuning paused.
+
+### Changed Files
+- `apps/switcher/src/main.rs`
+- `docs/operations/todo.md`
+- `docs/operations/obs-capture-validation.md`
+- `docs/operations/continuous-output-pipeline-experiment-plan.md`
+- `docs/operations/session-log.md`
+
+### Latest Runtime Interpretation
+- `program_selection_resolved_elapsed_ms=0` and
+  `program_continuous_source_resolved_elapsed_ms=0` rule out selected-source
+  resolution as the observed startup cause.
+- `program_first_source_frame_seen_elapsed_ms=4702` and
+  `program_first_continuous_input_elapsed_ms=4702` show selected source frame
+  arrival and continuous input begin together.
+- `program_first_continuous_output_elapsed_ms=6826`,
+  `program_first_renderable_decoded_frame_elapsed_ms=6826`, and
+  `program_output_first_render_elapsed_ms=6826` show first render is gated by
+  first continuous output/renderable decoded frame in this run.
+- The script starts switcher first, then waits before starting client1 and
+  selected client2, so roughly 2.5s of first-render elapsed may be process
+  start order rather than ProgramOutput decode/render cost.
+
+### Findings
+- `program_startup_one_shot_fallback_allowed=true` means smooth-latest
+  ProgramOutput may consume an already decoded selected frame as fallback.
+- ProgramOutput does not currently launch one-shot decode itself.
+- The selected decoded frame candidate is produced by the validation /
+  pre-composition decode path. If that path has no decoded frame yet, fallback
+  attempt remains 0 even though fallback use is allowed.
+- The existing suppression count is not proof that ProgramOutput itself
+  suppressed a fallback attempt; it can reflect continuous-path / validation
+  decode suppression before a selected decoded frame exists.
+
+### Added Diagnostics
+- `program_startup_one_shot_fallback_blocked_reason_counts`
+- `program_startup_selected_frame_keyframe_available_count`
+- `program_startup_selected_frame_source_counts`
+- `program_startup_retained_keyframe_available_count`
+- `program_startup_one_shot_candidate_count`
+- `program_startup_one_shot_candidate_rejected_count`
+- `program_startup_one_shot_candidate_rejected_reason_counts`
+
+### Validation Plan Update
+- Add a clients-before-switcher startup run:
+  - start server and both clients first
+  - wait until selected-client live/retained frames exist
+  - start switcher ProgramOutput afterward
+- Compare that against the current switcher-first script using:
+  - `program_first_source_frame_seen_elapsed_ms`
+  - `program_first_continuous_input_elapsed_ms`
+  - `program_first_continuous_output_elapsed_ms`
+  - `program_first_renderable_decoded_frame_elapsed_ms`
+  - `program_output_first_render_elapsed_ms`
+- Use this A/B to separate process start order delay from real ProgramOutput
+  decode/render startup delay.
+
+### TODO Update
+- Updated current position to reflect latest startup diagnostics interpretation.
+- Replaced the top next task with clients-before-switcher startup validation.
+- Added the candidate diagnostics rerun as the next evidence gate.
+- Kept ProgramOutput non-FPS blocker audit active.
+
+### Validation
+- `cargo fmt`
+  - result: PASS
+- `cargo check -p stream-sync-switcher`
+  - result: PASS
+  - note: existing dead-code warnings remain
+- `cargo test -p stream-sync-switcher program_startup_one_shot_reason_counts`
+  - result: PASS
+- `cargo test -p stream-sync-switcher program_startup_selected_frame_source_counts`
+  - result: PASS
+- `cargo test -p stream-sync-switcher switcher_four_view_two_real_handoff_preview_summary_formats_expected_fields`
+  - result: PASS
+- `cargo test -p stream-sync-switcher program_output --lib`
+  - result: PASS
+- `cargo test -p stream-sync-switcher program_output`
+  - result: PASS
+- `git diff --check`
+  - result: PASS
+  - note: LF/CRLF warnings only
+
+---
+
 ## 2026-06-03
 ### Type
 - Codex ProgramOutput non-FPS blocker audit

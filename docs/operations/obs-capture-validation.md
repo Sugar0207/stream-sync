@@ -465,6 +465,55 @@ Validated command examples for the Program path:
     continuous input vs continuous output timing, first renderable decoded frame
     vs first Program render timing, startup missing reason counts, and one-shot
     fallback allowed / attempted / suppressed counters
+  - latest diagnostic rerun interpretation:
+    - `program_selection_resolved_elapsed_ms=0`
+    - `program_continuous_source_resolved_elapsed_ms=0`
+    - `program_first_source_frame_seen_elapsed_ms=4702`
+    - `program_first_continuous_input_elapsed_ms=4702`
+    - `program_first_continuous_output_elapsed_ms=6826`
+    - `program_first_renderable_decoded_frame_elapsed_ms=6826`
+    - `program_output_first_render_elapsed_ms=6826`
+    - `program_first_render_missing_reason_counts=NoDecodedFrameForSelection:170|RequestedClientNotInRealSlots:0|unknown:0`
+    - `program_startup_one_shot_fallback_allowed=true`
+    - `program_startup_one_shot_fallback_attempt_count=0`
+    - `program_startup_one_shot_fallback_suppressed_count=34`
+    - source identity and selected-source resolution are not the cause in this
+      run
+    - missing selected source happens before first render only
+    - about 2.5s of the elapsed first-render time may be validation process
+      start order, because the script starts switcher first, then client1, then
+      selected client2
+    - after the selected source frame first appears, continuous first output
+      and first Program render line up at 6826ms; the remaining observed gap is
+      primarily continuous decode startup/output readiness
+  - `program_startup_one_shot_fallback_allowed=true` means smooth-latest
+    ProgramOutput is allowed to consume an already decoded selected frame as a
+    startup fallback. It does not mean ProgramOutput starts a one-shot decode
+    itself. If the validation/pre-composition path has not produced a selected
+    decoded frame, the fallback attempt counter remains 0.
+  - added candidate diagnostics for the next rerun:
+    - `program_startup_one_shot_fallback_blocked_reason_counts`
+    - `program_startup_selected_frame_keyframe_available_count`
+    - `program_startup_selected_frame_source_counts`
+    - `program_startup_retained_keyframe_available_count`
+    - `program_startup_one_shot_candidate_count`
+    - `program_startup_one_shot_candidate_rejected_count`
+    - `program_startup_one_shot_candidate_rejected_reason_counts`
+  - startup validation should now be run in two start-order shapes:
+    - current switcher-first shape:
+      start switcher, wait 2s, start client1, wait 0.5s, start selected
+      client2
+    - clients-before-switcher shape:
+      start server and both clients first, wait until live/retained frames are
+      available for the selected client, then start switcher ProgramOutput
+    - compare:
+      `program_first_source_frame_seen_elapsed_ms`,
+      `program_first_continuous_input_elapsed_ms`,
+      `program_first_continuous_output_elapsed_ms`,
+      `program_first_renderable_decoded_frame_elapsed_ms`, and
+      `program_output_first_render_elapsed_ms`
+    - purpose: separate validation process start order delay from actual
+      ProgramOutput decode/render startup delay
   - candidate fixes remain documentation-only until rerun evidence narrows the
     cause:
     - startup-only one-shot fallback
@@ -560,6 +609,13 @@ Validated command examples for the Program path:
   - `program_startup_one_shot_fallback_allowed`
   - `program_startup_one_shot_fallback_attempt_count`
   - `program_startup_one_shot_fallback_suppressed_count`
+  - `program_startup_one_shot_fallback_blocked_reason_counts`
+  - `program_startup_selected_frame_keyframe_available_count`
+  - `program_startup_selected_frame_source_counts`
+  - `program_startup_retained_keyframe_available_count`
+  - `program_startup_one_shot_candidate_count`
+  - `program_startup_one_shot_candidate_rejected_count`
+  - `program_startup_one_shot_candidate_rejected_reason_counts`
   - `program_startup_continuous_pending_count`
   - `program_startup_no_selected_source_count`
   - `program_startup_no_decoded_frame_count`

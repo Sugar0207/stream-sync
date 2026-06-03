@@ -180,6 +180,34 @@ Last updated: 2026-06-03
       first continuous frame, retained-keyframe bootstrap, first-frame Program
       policy, or a source identity/run_id fix. Do not implement those fixes
       before the rerun evidence.
+    - Latest ProgramOutput startup rerun narrows the first-render delay:
+      selection/source identity resolve at `0ms`, selected source frame and
+      continuous input first appear at `4702ms`, continuous output /
+      renderable frame / first Program render all happen at `6826ms`, and
+      missing source is only before first render. Because the validation
+      script starts switcher first, then waits before starting client1/client2,
+      about 2.5s of the elapsed first render may be process start order rather
+      than runtime decode/render delay.
+    - Startup one-shot fallback interpretation:
+      `program_startup_one_shot_fallback_allowed=true` means smooth-latest
+      ProgramOutput may use an already decoded selected frame if one exists;
+      ProgramOutput does not currently launch one-shot decode itself. If the
+      validation/pre-composition path has not produced a selected decoded
+      frame, `program_startup_one_shot_fallback_attempt_count` remains `0`.
+    - Additional candidate diagnostics now separate no-candidate from
+      rejected-candidate cases:
+      `program_startup_one_shot_fallback_blocked_reason_counts`,
+      `program_startup_selected_frame_keyframe_available_count`,
+      `program_startup_selected_frame_source_counts`,
+      `program_startup_retained_keyframe_available_count`,
+      `program_startup_one_shot_candidate_count`,
+      `program_startup_one_shot_candidate_rejected_count`, and
+      `program_startup_one_shot_candidate_rejected_reason_counts`.
+    - Next validation should add a clients-before-switcher startup shape:
+      start server and both clients first, wait for live/retained selected
+      frames, then start switcher ProgramOutput. Compare first source frame,
+      continuous input/output, renderable decoded frame, and Program first
+      render elapsed values against the current switcher-first script.
 - latest optimized BGR24 A/B rerun:
   - root:
     `S:\stream-sync\manual-logs\two-client-optimized-bgr24-ab-rerun-20260528-103130`
