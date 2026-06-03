@@ -154,6 +154,32 @@ Last updated: 2026-06-03
       current source identity is CLI-fixed, runtime switching is missing,
       Preview is not final monitoring, OBS can still be manually
       misconfigured, and player1/player2 visual differentiation is weak.
+    - ProgramOutput startup diagnostic slice now adds stdout summary fields for
+      selection/source/input/output/renderable timing and startup
+      classification:
+      `program_selection_resolved_elapsed_ms`,
+      `program_continuous_source_resolved_elapsed_ms`,
+      `program_first_source_frame_seen_elapsed_ms`,
+      `program_first_continuous_input_elapsed_ms`,
+      `program_first_continuous_output_elapsed_ms`,
+      `program_first_renderable_decoded_frame_elapsed_ms`,
+      `program_first_render_waiting_for_decode_count`,
+      `program_first_render_missing_reason_counts`,
+      `program_startup_one_shot_fallback_allowed`,
+      `program_startup_one_shot_fallback_attempt_count`,
+      `program_startup_one_shot_fallback_suppressed_count`,
+      `program_startup_continuous_pending_count`,
+      `program_startup_no_selected_source_count`,
+      `program_startup_no_decoded_frame_count`,
+      `program_startup_latest_continuous_available_count`,
+      `program_startup_latest_continuous_rejected_count`, and
+      `program_startup_source_identity_mismatch_count`.
+    - Next evidence gate: rerun the same Program-first smooth-latest validation
+      shape with these fields, then decide whether the smallest fix should be
+      startup-only one-shot fallback, continuous prewarm, blocking wait for
+      first continuous frame, retained-keyframe bootstrap, first-frame Program
+      policy, or a source identity/run_id fix. Do not implement those fixes
+      before the rerun evidence.
 - latest optimized BGR24 A/B rerun:
   - root:
     `S:\stream-sync\manual-logs\two-client-optimized-bgr24-ab-rerun-20260528-103130`

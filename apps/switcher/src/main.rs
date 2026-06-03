@@ -2517,6 +2517,23 @@ struct SwitcherFourViewTwoRealHandoffPreviewLoopSummary {
     program_output_selected_client_id: Option<ClientId>,
     program_output_selected_slot_index: Option<usize>,
     program_output_window_title: Option<String>,
+    program_selection_resolved_elapsed_ms: Option<u128>,
+    program_continuous_source_resolved_elapsed_ms: Option<u128>,
+    program_first_source_frame_seen_elapsed_ms: Option<u128>,
+    program_first_continuous_input_elapsed_ms: Option<u128>,
+    program_first_continuous_output_elapsed_ms: Option<u128>,
+    program_first_renderable_decoded_frame_elapsed_ms: Option<u128>,
+    program_first_render_waiting_for_decode_count: u32,
+    program_first_render_missing_reason_counts: String,
+    program_startup_one_shot_fallback_allowed: bool,
+    program_startup_one_shot_fallback_attempt_count: u32,
+    program_startup_one_shot_fallback_suppressed_count: u32,
+    program_startup_continuous_pending_count: u32,
+    program_startup_no_selected_source_count: u32,
+    program_startup_no_decoded_frame_count: u32,
+    program_startup_latest_continuous_available_count: u32,
+    program_startup_latest_continuous_rejected_count: u32,
+    program_startup_source_identity_mismatch_count: u32,
     program_decode_mode: &'static str,
     program_continuous_decode_enabled: bool,
     program_continuous_decode_mode: &'static str,
@@ -7325,6 +7342,7 @@ struct TwoRealProgramOutputTickDiagnostics {
     requested_client_id: Option<ClientId>,
     result_kind: &'static str,
     rendered: bool,
+    renderable_decoded_frame: bool,
     missing_selected_source: bool,
     missing_selected_source_reason: Option<&'static str>,
     reused_previous_frame: bool,
@@ -7496,6 +7514,7 @@ where
             requested_client_id: requested_client_id.cloned(),
             result_kind: "Disabled",
             rendered: false,
+            renderable_decoded_frame: false,
             missing_selected_source: false,
             missing_selected_source_reason: None,
             reused_previous_frame: false,
@@ -7520,6 +7539,7 @@ where
             requested_client_id: requested_client_id.cloned(),
             result_kind: "NoRuntime",
             rendered: false,
+            renderable_decoded_frame: false,
             missing_selected_source: false,
             missing_selected_source_reason: None,
             reused_previous_frame: false,
@@ -7589,6 +7609,7 @@ where
         requested_client_id: requested_client_id.cloned(),
         result_kind,
         rendered: matches!(result, SwitcherProgramOutputRenderResult::Rendered { .. }),
+        renderable_decoded_frame: render_choice.decoded_frame.is_some(),
         missing_selected_source,
         missing_selected_source_reason,
         reused_previous_frame: render_choice.reused_previous_frame,
@@ -7883,6 +7904,17 @@ fn format_program_output_missing_selected_source_reason(
             "NoDecodedFrameForSelection"
         }
     }
+}
+
+fn format_program_first_render_missing_reason_counts(
+    no_decoded_frame: u32,
+    requested_client_not_in_real_slots: u32,
+    unknown: u32,
+) -> String {
+    format!(
+        "NoDecodedFrameForSelection:{}|RequestedClientNotInRealSlots:{}|unknown:{}",
+        no_decoded_frame, requested_client_not_in_real_slots, unknown,
+    )
 }
 
 fn should_attempt_operator_low_cost_preview_refresh(
@@ -8510,6 +8542,39 @@ where
     let mut render_reuse_frame_count = 0u32;
     let mut last_valid_program_frame: Option<TwoRealCachedProgramOutputFrame> = None;
     let loop_start = Instant::now();
+    let program_selection_resolved_elapsed_ms = if program_output_window_enabled {
+        if let Some(requested_client_id) = program_selected_client_id.as_ref() {
+            requested_program_selection_from_real_slots(
+                &slots,
+                [slot0_index, slot1_index],
+                requested_client_id,
+            )
+            .selected_slot_index
+            .map(|_| 0)
+        } else {
+            Some(0)
+        }
+    } else {
+        None
+    };
+    let program_continuous_source_resolved_elapsed_ms =
+        program_continuous_decode_source.as_ref().map(|_| 0);
+    let mut program_first_source_frame_seen_elapsed_ms = None;
+    let mut program_first_continuous_input_elapsed_ms = None;
+    let mut program_first_continuous_output_elapsed_ms = None;
+    let mut program_first_renderable_decoded_frame_elapsed_ms = None;
+    let mut program_first_render_waiting_for_decode_count = 0u32;
+    let mut program_startup_missing_no_decoded_frame_count = 0u32;
+    let mut program_startup_missing_requested_client_not_in_real_slots_count = 0u32;
+    let mut program_startup_missing_unknown_count = 0u32;
+    let mut program_startup_one_shot_fallback_attempt_count = 0u32;
+    let mut program_startup_one_shot_fallback_suppressed_count = 0u32;
+    let mut program_startup_continuous_pending_count = 0u32;
+    let mut program_startup_no_selected_source_count = 0u32;
+    let mut program_startup_no_decoded_frame_count = 0u32;
+    let mut program_startup_latest_continuous_available_count = 0u32;
+    let mut program_startup_latest_continuous_rejected_count = 0u32;
+    let mut program_startup_source_identity_mismatch_count = 0u32;
 
     for frame_index in 0..frames.get() {
         let attempt_start = Instant::now();
@@ -8613,6 +8678,52 @@ where
         let _pre_composition_elapsed_ms = validation_elapsed_ms
             .saturating_sub(validation_handoff_elapsed_ms)
             .saturating_sub(validation_decode_elapsed_ms);
+        let current_program_selection = if program_output_window_enabled {
+            Some(
+                if let Some(requested_client_id) = program_selected_client_id.as_ref() {
+                    requested_program_selection_from_real_slots(
+                        &slots,
+                        [slot0_index, slot1_index],
+                        requested_client_id,
+                    )
+                } else {
+                    fallback_program_selection_from_real_slots(&slots, [slot0_index, slot1_index])
+                },
+            )
+        } else {
+            None
+        };
+        let program_had_first_render = program_output_first_render_attempt_index.is_some();
+        if !program_had_first_render {
+            let source_identity_mismatch_delta = timing_after_validation
+                .continuous_feed_skip_reason_source_mismatch_count
+                .saturating_sub(
+                    timing_before_validation.continuous_feed_skip_reason_source_mismatch_count,
+                );
+            program_startup_source_identity_mismatch_count =
+                program_startup_source_identity_mismatch_count
+                    .saturating_add(source_identity_mismatch_delta);
+            let suppressed_delta = timing_after_validation
+                .continuous_decode_slot0_one_shot_suppressed_count
+                .saturating_sub(
+                    timing_before_validation.continuous_decode_slot0_one_shot_suppressed_count,
+                );
+            program_startup_one_shot_fallback_suppressed_count =
+                program_startup_one_shot_fallback_suppressed_count.saturating_add(suppressed_delta);
+            if let Some(selection) = current_program_selection.as_ref() {
+                if selection.selected_slot_index.is_none() {
+                    program_startup_no_selected_source_count =
+                        program_startup_no_selected_source_count.saturating_add(1);
+                }
+                if selected_program_frame_id_from_pre_composition(&pre_composition, selection)
+                    .is_some()
+                    && program_first_source_frame_seen_elapsed_ms.is_none()
+                {
+                    program_first_source_frame_seen_elapsed_ms =
+                        Some(loop_start.elapsed().as_millis());
+                }
+            }
+        }
         let program_continuous_latest_frame =
             if program_continuous_decode_mode == ProgramContinuousDecodeMode::SmoothLatest {
                 program_continuous_decode_source
@@ -8647,7 +8758,68 @@ where
         if program_output_window_enabled {
             program_render_loop_attempt_count = program_render_loop_attempt_count.saturating_add(1);
         }
-        let program_had_first_render = program_output_first_render_attempt_index.is_some();
+        let timing_after_program_tick = timing.borrow().clone();
+        if timing_after_program_tick.continuous_decode_input_frame_count > 0
+            && program_first_continuous_input_elapsed_ms.is_none()
+        {
+            program_first_continuous_input_elapsed_ms = Some(loop_start.elapsed().as_millis());
+        }
+        if timing_after_program_tick.continuous_decode_output_frame_count > 0
+            && program_first_continuous_output_elapsed_ms.is_none()
+        {
+            program_first_continuous_output_elapsed_ms = Some(loop_start.elapsed().as_millis());
+        }
+        if program_output_tick.renderable_decoded_frame
+            && program_first_renderable_decoded_frame_elapsed_ms.is_none()
+        {
+            program_first_renderable_decoded_frame_elapsed_ms =
+                Some(loop_start.elapsed().as_millis());
+        }
+        if !program_had_first_render {
+            if program_continuous_latest_frame.is_some() {
+                program_startup_latest_continuous_available_count =
+                    program_startup_latest_continuous_available_count.saturating_add(1);
+                if !program_output_tick.used_continuous_latest {
+                    program_startup_latest_continuous_rejected_count =
+                        program_startup_latest_continuous_rejected_count.saturating_add(1);
+                }
+            }
+            if timing_after_program_tick.continuous_decode_output_pending_correspondence_count > 0
+                || timing_after_program_tick.continuous_decode_writer_input_queue_len > 0
+                || timing_after_program_tick.continuous_decode_input_frame_count
+                    > timing_after_program_tick.continuous_decode_output_frame_count
+            {
+                program_startup_continuous_pending_count =
+                    program_startup_continuous_pending_count.saturating_add(1);
+            }
+            if program_output_tick.used_one_shot_fallback {
+                program_startup_one_shot_fallback_attempt_count =
+                    program_startup_one_shot_fallback_attempt_count.saturating_add(1);
+            }
+            if program_output_tick.missing_selected_source {
+                match program_output_tick.missing_selected_source_reason {
+                    Some("NoDecodedFrameForSelection") => {
+                        program_startup_missing_no_decoded_frame_count =
+                            program_startup_missing_no_decoded_frame_count.saturating_add(1);
+                        program_startup_no_decoded_frame_count =
+                            program_startup_no_decoded_frame_count.saturating_add(1);
+                        if program_output_tick.selected_slot_index.is_some() {
+                            program_first_render_waiting_for_decode_count =
+                                program_first_render_waiting_for_decode_count.saturating_add(1);
+                        }
+                    }
+                    Some("RequestedClientNotInRealSlots") => {
+                        program_startup_missing_requested_client_not_in_real_slots_count =
+                            program_startup_missing_requested_client_not_in_real_slots_count
+                                .saturating_add(1);
+                    }
+                    _ => {
+                        program_startup_missing_unknown_count =
+                            program_startup_missing_unknown_count.saturating_add(1);
+                    }
+                }
+            }
+        }
         if program_output_tick.rendered {
             program_output_render_count = program_output_render_count.saturating_add(1);
             program_window_render_success_count =
@@ -9965,6 +10137,29 @@ where
         program_output_selected_slot_index,
         program_output_window_title: program_output_window_enabled
             .then(|| SWITCHER_PROGRAM_OUTPUT_WINDOW_TITLE.to_string()),
+        program_selection_resolved_elapsed_ms,
+        program_continuous_source_resolved_elapsed_ms,
+        program_first_source_frame_seen_elapsed_ms,
+        program_first_continuous_input_elapsed_ms,
+        program_first_continuous_output_elapsed_ms,
+        program_first_renderable_decoded_frame_elapsed_ms,
+        program_first_render_waiting_for_decode_count,
+        program_first_render_missing_reason_counts:
+            format_program_first_render_missing_reason_counts(
+                program_startup_missing_no_decoded_frame_count,
+                program_startup_missing_requested_client_not_in_real_slots_count,
+                program_startup_missing_unknown_count,
+            ),
+        program_startup_one_shot_fallback_allowed: smooth_latest_program_continuous
+            && program_output_window_enabled,
+        program_startup_one_shot_fallback_attempt_count,
+        program_startup_one_shot_fallback_suppressed_count,
+        program_startup_continuous_pending_count,
+        program_startup_no_selected_source_count,
+        program_startup_no_decoded_frame_count,
+        program_startup_latest_continuous_available_count,
+        program_startup_latest_continuous_rejected_count,
+        program_startup_source_identity_mismatch_count,
         program_decode_mode,
         program_continuous_decode_enabled: program_continuous_decode_active,
         program_continuous_decode_mode: program_continuous_decode_mode.as_str(),
@@ -14812,7 +15007,7 @@ fn format_four_view_two_real_handoff_preview_loop_summary(
         format_optional_u32(summary.output_height),
     );
     format!(
-        "{summary_line} continuous_decode_ffmpeg_low_latency_args_enabled={} continuous_decode_ffmpeg_probe_args_enabled={} continuous_decode_ffmpeg_loglevel={} continuous_decode_stdout_first_byte_seen={} continuous_decode_stdout_first_byte_elapsed_ms={} continuous_decode_stdout_partial_bytes_read={} continuous_decode_stdout_partial_read_count={} continuous_decode_stdout_expected_frame_bytes={} continuous_decode_stdout_read_waiting_for_full_frame={} continuous_feed_enabled={} continuous_feed_attempt_count={} continuous_feed_handoff_request_count={} continuous_feed_frame_received_count={} continuous_feed_no_frame_count={} continuous_feed_handoff_error_count={} continuous_feed_enqueued_count={} continuous_feed_skipped_count={} continuous_feed_skip_reason_counts={} continuous_feed_dropped_stale_input_count={} continuous_feed_latest_received_frame_id={} continuous_feed_latest_enqueued_frame_id={} continuous_decode_input_from_feeder_count={} continuous_decode_input_from_render_demand_count={} continuous_decode_feeder_lag_to_selected={} continuous_decode_render_exact_hit_count={} continuous_decode_render_miss_stale_count={} continuous_decode_render_miss_not_ready_count={} continuous_decode_bounded_lookup_enabled={} continuous_decode_bounded_lookup_allowed_lag_frames={} continuous_decode_bounded_lookup_hit_count={} continuous_decode_bounded_lookup_used_frame_id={} continuous_decode_bounded_lookup_requested_frame_id={} continuous_decode_bounded_lookup_lag_frames={} continuous_decode_bounded_lookup_rejected_stale_count={} continuous_decode_bounded_lookup_rejected_future_count={} continuous_decode_bounded_lookup_rejected_not_ready_count={} continuous_decode_output_availability_not_ready_count={} continuous_decode_output_availability_stale_count={} continuous_decode_output_availability_future_count={} continuous_decode_bounded_lookup_fallback_to_one_shot_count={} continuous_decode_render_used_exact_count={} continuous_decode_render_used_bounded_lag_count={} continuous_decode_pending_correspondence_count={} continuous_decode_pending_correspondence_age_ms_max={} continuous_decode_pending_correspondence_age_ms_avg={} continuous_decode_pending_correspondence_oldest_frame_id={} continuous_decode_pending_correspondence_newest_frame_id={} continuous_decode_completed_correspondence_count={} continuous_decode_completed_correspondence_latency_ms_avg={} continuous_decode_completed_correspondence_latency_ms_max={} continuous_decode_completed_correspondence_latency_slow_count={} continuous_decode_completed_correspondence_latency_slow_threshold_ms={} continuous_decode_completed_correspondence_frame_id_min={} continuous_decode_completed_correspondence_frame_id_max={} continuous_decode_completed_correspondence_latest_latency_ms={} continuous_decode_latest_input_minus_latest_output_lag={} continuous_decode_latest_input_to_output_frame_gap={} continuous_decode_pending_correspondence_frame_id_min={} continuous_decode_pending_correspondence_frame_id_max={} continuous_decode_input_to_output_lag_frames_max={} continuous_decode_output_lag_to_selected_frames={} continuous_decode_latest_selected_to_output_frame_gap={} continuous_decode_output_throughput_fps={} continuous_decode_reader_full_frame_elapsed_ms_max={} continuous_decode_reader_full_frame_elapsed_ms_avg={} continuous_decode_reader_full_frame_slow_count={} continuous_decode_reader_full_frame_slow_threshold_ms={} continuous_decode_output_bytes_total={} continuous_decode_output_bytes_per_sec={} continuous_decode_output_frame_interval_ms_avg={} continuous_decode_output_frame_interval_ms_max={} continuous_decode_stdout_read_throughput_bytes_per_ms={} continuous_decode_ffmpeg_scale_enabled={} continuous_decode_ffmpeg_output_pixel_format={} continuous_decode_output_pipeline_experiment_mode={} continuous_decode_output_pipeline_scale_mode={} continuous_decode_output_source_width={} continuous_decode_output_source_height={} continuous_decode_output_scaled_width={} continuous_decode_output_scaled_height={} continuous_decode_output_scale_removed_count={} continuous_decode_output_scale_path_experiment_enabled={} continuous_decode_output_bytes_per_frame={} continuous_decode_output_pipe_bytes_saved_per_frame={} continuous_decode_output_pixel_convert_elapsed_ms={} continuous_decode_output_pixel_convert_elapsed_ms_max={} continuous_decode_output_pixel_convert_count={} continuous_decode_output_pixel_convert_buffer_reuse_count={} continuous_decode_output_pixel_convert_buffer_allocation_count={} continuous_decode_output_pixel_convert_bytes_written_total={} continuous_decode_output_pixel_convert_bytes_written_per_frame={} continuous_decode_output_pixel_convert_mode={} continuous_decode_competing_one_shot_decode_elapsed_ms={} continuous_decode_competing_one_shot_attempt_count={} continuous_decode_slot0_one_shot_suppression_enabled={} continuous_decode_slot0_one_shot_suppressed_count={} continuous_decode_slot0_one_shot_suppressed_reason_counts={} continuous_decode_slot0_one_shot_suppressed_render_safety_counts={} continuous_decode_slot0_one_shot_suppressed_continuous_not_ready_count={} continuous_decode_slot0_one_shot_suppressed_stale_count={} continuous_decode_queue_drop_reason_counts={} program_output_enabled={} program_output_selection_mode={} program_output_requested_client_id={} program_output_render_count={} program_output_missing_selected_source_count={} program_output_missing_before_first_render_count={} program_output_missing_after_first_render_count={} program_output_reused_previous_frame_count={} program_output_placeholder_render_count={} program_output_black_frame_render_count={} program_output_first_render_attempt_index={} program_output_first_render_elapsed_ms={} program_output_missing_selected_source_reason={} program_output_last_result_kind={} program_output_selected_client_id={} program_output_selected_slot_index={} program_output_window_title={} program_decode_mode={} program_continuous_decode_enabled={} program_continuous_decode_mode={} program_continuous_decode_output_frame_count={} program_continuous_decode_lookup_hit_count={} program_continuous_decode_lookup_miss_count={} program_render_used_continuous_decoded_count={} program_render_used_continuous_latest_count={} program_render_used_continuous_exact_count={} program_render_used_continuous_stale_but_accepted_count={} program_render_used_one_shot_fallback_count={} program_continuous_latest_frame_id={} program_continuous_selected_frame_lag={} program_continuous_latest_output_age_ms={} program_decode_fps={} program_selected_source_frame_lag={} program_first_validation_enabled={} program_first_suppressed_preview_one_shot_decode_count={} program_first_suppressed_preview_one_shot_decode_slot_counts={} program_first_program_only_decode_path_enabled={} program_first_remaining_one_shot_decode_count={} program_first_preview_visible={} program_first_preview_refresh_interval={} program_first_preview_refresh_count={} program_first_preview_suppressed_count={} operator_low_cost_preview_enabled={} operator_preview_refresh_interval_ticks={} operator_preview_refresh_attempt_count={} operator_preview_refresh_success_count={} operator_preview_refresh_skipped_count={} operator_preview_used_stale_frame_count={} operator_preview_forced_one_shot_decode_count={} operator_preview_render_effective_fps={} operator_preview_decode_refresh_enabled={} operator_preview_decode_refresh_interval_ticks={} operator_preview_decode_refresh_attempt_count={} operator_preview_decode_refresh_success_count={} operator_preview_decode_refresh_skipped_count={} operator_preview_decode_refresh_source_counts={} operator_preview_decode_refresh_elapsed_ms={} operator_preview_decode_refresh_budget_exceeded_count={} operator_preview_non_program_visible_count={} operator_preview_reused_program_frame_count={} operator_preview_program_slot_visible_count={} operator_preview_program_slot_reuse_source={} operator_preview_program_slot_black_count={} operator_preview_snapshot_retention_enabled={} operator_preview_snapshot_reuse_count={} operator_preview_snapshot_reuse_slot_counts={} operator_preview_snapshot_created_count={} operator_preview_snapshot_created_slot_counts={} operator_preview_placeholder_avoided_by_snapshot_count={} operator_preview_slot_black_after_snapshot_count={} operator_preview_program_fps_impact_estimate={} preview_compose_skipped_for_program_count={} preview_compose_reused_for_program_count={} program_render_loop_attempt_count={} program_window_render_success_count={} program_window_render_failure_count={} program_render_effective_fps={} effective_program_render_fps={}",
+        "{summary_line} continuous_decode_ffmpeg_low_latency_args_enabled={} continuous_decode_ffmpeg_probe_args_enabled={} continuous_decode_ffmpeg_loglevel={} continuous_decode_stdout_first_byte_seen={} continuous_decode_stdout_first_byte_elapsed_ms={} continuous_decode_stdout_partial_bytes_read={} continuous_decode_stdout_partial_read_count={} continuous_decode_stdout_expected_frame_bytes={} continuous_decode_stdout_read_waiting_for_full_frame={} continuous_feed_enabled={} continuous_feed_attempt_count={} continuous_feed_handoff_request_count={} continuous_feed_frame_received_count={} continuous_feed_no_frame_count={} continuous_feed_handoff_error_count={} continuous_feed_enqueued_count={} continuous_feed_skipped_count={} continuous_feed_skip_reason_counts={} continuous_feed_dropped_stale_input_count={} continuous_feed_latest_received_frame_id={} continuous_feed_latest_enqueued_frame_id={} continuous_decode_input_from_feeder_count={} continuous_decode_input_from_render_demand_count={} continuous_decode_feeder_lag_to_selected={} continuous_decode_render_exact_hit_count={} continuous_decode_render_miss_stale_count={} continuous_decode_render_miss_not_ready_count={} continuous_decode_bounded_lookup_enabled={} continuous_decode_bounded_lookup_allowed_lag_frames={} continuous_decode_bounded_lookup_hit_count={} continuous_decode_bounded_lookup_used_frame_id={} continuous_decode_bounded_lookup_requested_frame_id={} continuous_decode_bounded_lookup_lag_frames={} continuous_decode_bounded_lookup_rejected_stale_count={} continuous_decode_bounded_lookup_rejected_future_count={} continuous_decode_bounded_lookup_rejected_not_ready_count={} continuous_decode_output_availability_not_ready_count={} continuous_decode_output_availability_stale_count={} continuous_decode_output_availability_future_count={} continuous_decode_bounded_lookup_fallback_to_one_shot_count={} continuous_decode_render_used_exact_count={} continuous_decode_render_used_bounded_lag_count={} continuous_decode_pending_correspondence_count={} continuous_decode_pending_correspondence_age_ms_max={} continuous_decode_pending_correspondence_age_ms_avg={} continuous_decode_pending_correspondence_oldest_frame_id={} continuous_decode_pending_correspondence_newest_frame_id={} continuous_decode_completed_correspondence_count={} continuous_decode_completed_correspondence_latency_ms_avg={} continuous_decode_completed_correspondence_latency_ms_max={} continuous_decode_completed_correspondence_latency_slow_count={} continuous_decode_completed_correspondence_latency_slow_threshold_ms={} continuous_decode_completed_correspondence_frame_id_min={} continuous_decode_completed_correspondence_frame_id_max={} continuous_decode_completed_correspondence_latest_latency_ms={} continuous_decode_latest_input_minus_latest_output_lag={} continuous_decode_latest_input_to_output_frame_gap={} continuous_decode_pending_correspondence_frame_id_min={} continuous_decode_pending_correspondence_frame_id_max={} continuous_decode_input_to_output_lag_frames_max={} continuous_decode_output_lag_to_selected_frames={} continuous_decode_latest_selected_to_output_frame_gap={} continuous_decode_output_throughput_fps={} continuous_decode_reader_full_frame_elapsed_ms_max={} continuous_decode_reader_full_frame_elapsed_ms_avg={} continuous_decode_reader_full_frame_slow_count={} continuous_decode_reader_full_frame_slow_threshold_ms={} continuous_decode_output_bytes_total={} continuous_decode_output_bytes_per_sec={} continuous_decode_output_frame_interval_ms_avg={} continuous_decode_output_frame_interval_ms_max={} continuous_decode_stdout_read_throughput_bytes_per_ms={} continuous_decode_ffmpeg_scale_enabled={} continuous_decode_ffmpeg_output_pixel_format={} continuous_decode_output_pipeline_experiment_mode={} continuous_decode_output_pipeline_scale_mode={} continuous_decode_output_source_width={} continuous_decode_output_source_height={} continuous_decode_output_scaled_width={} continuous_decode_output_scaled_height={} continuous_decode_output_scale_removed_count={} continuous_decode_output_scale_path_experiment_enabled={} continuous_decode_output_bytes_per_frame={} continuous_decode_output_pipe_bytes_saved_per_frame={} continuous_decode_output_pixel_convert_elapsed_ms={} continuous_decode_output_pixel_convert_elapsed_ms_max={} continuous_decode_output_pixel_convert_count={} continuous_decode_output_pixel_convert_buffer_reuse_count={} continuous_decode_output_pixel_convert_buffer_allocation_count={} continuous_decode_output_pixel_convert_bytes_written_total={} continuous_decode_output_pixel_convert_bytes_written_per_frame={} continuous_decode_output_pixel_convert_mode={} continuous_decode_competing_one_shot_decode_elapsed_ms={} continuous_decode_competing_one_shot_attempt_count={} continuous_decode_slot0_one_shot_suppression_enabled={} continuous_decode_slot0_one_shot_suppressed_count={} continuous_decode_slot0_one_shot_suppressed_reason_counts={} continuous_decode_slot0_one_shot_suppressed_render_safety_counts={} continuous_decode_slot0_one_shot_suppressed_continuous_not_ready_count={} continuous_decode_slot0_one_shot_suppressed_stale_count={} continuous_decode_queue_drop_reason_counts={} program_output_enabled={} program_output_selection_mode={} program_output_requested_client_id={} program_output_render_count={} program_output_missing_selected_source_count={} program_output_missing_before_first_render_count={} program_output_missing_after_first_render_count={} program_output_reused_previous_frame_count={} program_output_placeholder_render_count={} program_output_black_frame_render_count={} program_output_first_render_attempt_index={} program_output_first_render_elapsed_ms={} program_output_missing_selected_source_reason={} program_output_last_result_kind={} program_output_selected_client_id={} program_output_selected_slot_index={} program_output_window_title={} program_selection_resolved_elapsed_ms={} program_continuous_source_resolved_elapsed_ms={} program_first_source_frame_seen_elapsed_ms={} program_first_continuous_input_elapsed_ms={} program_first_continuous_output_elapsed_ms={} program_first_renderable_decoded_frame_elapsed_ms={} program_first_render_waiting_for_decode_count={} program_first_render_missing_reason_counts={} program_startup_one_shot_fallback_allowed={} program_startup_one_shot_fallback_attempt_count={} program_startup_one_shot_fallback_suppressed_count={} program_startup_continuous_pending_count={} program_startup_no_selected_source_count={} program_startup_no_decoded_frame_count={} program_startup_latest_continuous_available_count={} program_startup_latest_continuous_rejected_count={} program_startup_source_identity_mismatch_count={} program_decode_mode={} program_continuous_decode_enabled={} program_continuous_decode_mode={} program_continuous_decode_output_frame_count={} program_continuous_decode_lookup_hit_count={} program_continuous_decode_lookup_miss_count={} program_render_used_continuous_decoded_count={} program_render_used_continuous_latest_count={} program_render_used_continuous_exact_count={} program_render_used_continuous_stale_but_accepted_count={} program_render_used_one_shot_fallback_count={} program_continuous_latest_frame_id={} program_continuous_selected_frame_lag={} program_continuous_latest_output_age_ms={} program_decode_fps={} program_selected_source_frame_lag={} program_first_validation_enabled={} program_first_suppressed_preview_one_shot_decode_count={} program_first_suppressed_preview_one_shot_decode_slot_counts={} program_first_program_only_decode_path_enabled={} program_first_remaining_one_shot_decode_count={} program_first_preview_visible={} program_first_preview_refresh_interval={} program_first_preview_refresh_count={} program_first_preview_suppressed_count={} operator_low_cost_preview_enabled={} operator_preview_refresh_interval_ticks={} operator_preview_refresh_attempt_count={} operator_preview_refresh_success_count={} operator_preview_refresh_skipped_count={} operator_preview_used_stale_frame_count={} operator_preview_forced_one_shot_decode_count={} operator_preview_render_effective_fps={} operator_preview_decode_refresh_enabled={} operator_preview_decode_refresh_interval_ticks={} operator_preview_decode_refresh_attempt_count={} operator_preview_decode_refresh_success_count={} operator_preview_decode_refresh_skipped_count={} operator_preview_decode_refresh_source_counts={} operator_preview_decode_refresh_elapsed_ms={} operator_preview_decode_refresh_budget_exceeded_count={} operator_preview_non_program_visible_count={} operator_preview_reused_program_frame_count={} operator_preview_program_slot_visible_count={} operator_preview_program_slot_reuse_source={} operator_preview_program_slot_black_count={} operator_preview_snapshot_retention_enabled={} operator_preview_snapshot_reuse_count={} operator_preview_snapshot_reuse_slot_counts={} operator_preview_snapshot_created_count={} operator_preview_snapshot_created_slot_counts={} operator_preview_placeholder_avoided_by_snapshot_count={} operator_preview_slot_black_after_snapshot_count={} operator_preview_program_fps_impact_estimate={} preview_compose_skipped_for_program_count={} preview_compose_reused_for_program_count={} program_render_loop_attempt_count={} program_window_render_success_count={} program_window_render_failure_count={} program_render_effective_fps={} effective_program_render_fps={}",
         summary.continuous_decode_ffmpeg_low_latency_args_enabled,
         summary.continuous_decode_ffmpeg_probe_args_enabled,
         sanitize_summary_value(&summary.continuous_decode_ffmpeg_loglevel),
@@ -14941,6 +15136,23 @@ fn format_four_view_two_real_handoff_preview_loop_summary(
         ),
         format_optional_usize(summary.program_output_selected_slot_index),
         format_optional_summary_string(summary.program_output_window_title.as_deref()),
+        format_optional_u128(summary.program_selection_resolved_elapsed_ms),
+        format_optional_u128(summary.program_continuous_source_resolved_elapsed_ms),
+        format_optional_u128(summary.program_first_source_frame_seen_elapsed_ms),
+        format_optional_u128(summary.program_first_continuous_input_elapsed_ms),
+        format_optional_u128(summary.program_first_continuous_output_elapsed_ms),
+        format_optional_u128(summary.program_first_renderable_decoded_frame_elapsed_ms),
+        summary.program_first_render_waiting_for_decode_count,
+        summary.program_first_render_missing_reason_counts,
+        summary.program_startup_one_shot_fallback_allowed,
+        summary.program_startup_one_shot_fallback_attempt_count,
+        summary.program_startup_one_shot_fallback_suppressed_count,
+        summary.program_startup_continuous_pending_count,
+        summary.program_startup_no_selected_source_count,
+        summary.program_startup_no_decoded_frame_count,
+        summary.program_startup_latest_continuous_available_count,
+        summary.program_startup_latest_continuous_rejected_count,
+        summary.program_startup_source_identity_mismatch_count,
         summary.program_decode_mode,
         summary.program_continuous_decode_enabled,
         summary.program_continuous_decode_mode,
@@ -16146,6 +16358,7 @@ mod tests {
         format_four_view_two_real_handoff_preview_loop_summary, format_handoff_mode,
         format_handoff_read_mode, format_named_pipe_handoff_switcher_result_summary,
         format_named_pipe_handoff_switcher_summary,
+        format_program_first_render_missing_reason_counts,
         four_view_clean_output_window_loop_frame_cadence, handoff_read_mode_from_switcher_mode,
         observe_two_real_completed_correspondence_latency,
         parse_four_view_actual_window_fixture_mode_or_exit,
@@ -19957,6 +20170,16 @@ mod tests {
     }
 
     #[test]
+    fn program_first_render_missing_reason_counts_formats_expected_fields() {
+        let formatted = format_program_first_render_missing_reason_counts(7, 2, 1);
+
+        assert_eq!(
+            formatted,
+            "NoDecodedFrameForSelection:7|RequestedClientNotInRealSlots:2|unknown:1"
+        );
+    }
+
+    #[test]
     fn switcher_four_view_two_real_handoff_preview_summary_formats_expected_fields() {
         let summary = run_four_view_two_real_handoff_preview_loop_with_handoff_runtime_and_sleep(
             "fixture-pipe",
@@ -20412,6 +20635,23 @@ mod tests {
         assert!(formatted.contains("program_output_selected_client_id=none"));
         assert!(formatted.contains("program_output_selected_slot_index=none"));
         assert!(formatted.contains("program_output_window_title=none"));
+        assert!(formatted.contains("program_selection_resolved_elapsed_ms=none"));
+        assert!(formatted.contains("program_continuous_source_resolved_elapsed_ms=none"));
+        assert!(formatted.contains("program_first_source_frame_seen_elapsed_ms=none"));
+        assert!(formatted.contains("program_first_continuous_input_elapsed_ms=none"));
+        assert!(formatted.contains("program_first_continuous_output_elapsed_ms=none"));
+        assert!(formatted.contains("program_first_renderable_decoded_frame_elapsed_ms=none"));
+        assert!(formatted.contains("program_first_render_waiting_for_decode_count=0"));
+        assert!(formatted.contains("program_first_render_missing_reason_counts=NoDecodedFrameForSelection:0|RequestedClientNotInRealSlots:0|unknown:0"));
+        assert!(formatted.contains("program_startup_one_shot_fallback_allowed=false"));
+        assert!(formatted.contains("program_startup_one_shot_fallback_attempt_count=0"));
+        assert!(formatted.contains("program_startup_one_shot_fallback_suppressed_count=0"));
+        assert!(formatted.contains("program_startup_continuous_pending_count=0"));
+        assert!(formatted.contains("program_startup_no_selected_source_count=0"));
+        assert!(formatted.contains("program_startup_no_decoded_frame_count=0"));
+        assert!(formatted.contains("program_startup_latest_continuous_available_count=0"));
+        assert!(formatted.contains("program_startup_latest_continuous_rejected_count=0"));
+        assert!(formatted.contains("program_startup_source_identity_mismatch_count=0"));
         assert!(formatted.contains("program_decode_mode=disabled"));
         assert!(formatted.contains("program_continuous_decode_enabled=false"));
         assert!(formatted.contains("program_continuous_decode_mode=target-frame"));

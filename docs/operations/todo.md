@@ -26,14 +26,15 @@
 - Snapshot retention により Preview の black / flicker は解消し、client1 / client2 も両方表示された。
 - ただし Preview update frequency は operator monitoring 用としてまだ低すぎるため、現行の same-loop low-cost Preview refresh tuning は limited / paused。
 - Current Preview は stable snapshot-only とみなし、final monitoring Preview とは分けて扱う。
-- ProgramOutput は near-MVP closeout ではない。FPS 以外の blocker が残っているため、次の主題は ProgramOutput non-FPS blocker audit。
-- `NoDecodedFrameForSelection` を含む first render / missing selected source の問題は、ProgramOutput の未解決事項として残す。
+- ProgramOutput は near-MVP closeout ではない。FPS 以外の blocker が残っているため、ProgramOutput non-FPS blocker audit は継続中。
+- `NoDecodedFrameForSelection` を含む first render / missing selected source の問題は、startup diagnostics を追加済み。次は rerun evidence で selection/source/input/output/renderable のどこが詰まるかを読む。
+- ProgramOutput startup diagnostics は、selection 解決、continuous source 解決、first source frame、first continuous input/output、first renderable decoded frame、startup missing reason、fallback / pending / source mismatch を stdout summary に出す。
 - selected source identity の視認性、smooth-latest の latency / lag accept criteria、OBS capture safety も未整理のまま残す。
 - 現在の詳細は `docs/operations/obs-capture-validation.md` と `docs/operations/session-log.md` を参照する。
 
 ## 次にやること
-1. [ ] ProgramOutput non-FPS blocker audit
-2. [ ] First Program render delay と first render 前の missing selected source / `NoDecodedFrameForSelection` を調べる
+1. [ ] ProgramOutput startup diagnostics 付き rerun を実施し、first render delay / `NoDecodedFrameForSelection` の原因を evidence で切り分ける
+2. [ ] ProgramOutput non-FPS blocker audit を継続し、first render の次に selected identity / lag / OBS safety を確認する
 3. [ ] selected source visual verification と player1 / player2 の見分けやすさを整理する
 4. [ ] smooth-latest の latency / lag acceptance criteria を FPS とは別に定義する
 5. [ ] OBS capture safety checklist を作る

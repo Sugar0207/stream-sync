@@ -90,6 +90,97 @@
   - result: PASS
   - note: LF/CRLF warnings only
 
+---
+
+## 2026-06-03
+### Type
+- Codex diagnostic implementation
+
+### Work
+- Investigated ProgramOutput startup flow around explicit selection,
+  Program continuous decode source mapping, selected source frame observation,
+  continuous input/output timing, and renderable decoded-frame availability.
+- Kept behavior unchanged and added diagnostics only.
+- Added a focused formatter test for Program first-render missing reason counts.
+- Updated ProgramOutput startup docs and TODO state; ProgramOutput closeout
+  remains blocked.
+
+### Changed Files
+- `apps/switcher/src/main.rs`
+- `docs/operations/todo.md`
+- `docs/operations/obs-capture-validation.md`
+- `docs/operations/continuous-output-pipeline-experiment-plan.md`
+- `docs/operations/session-log.md`
+
+### Added Diagnostics
+- `program_selection_resolved_elapsed_ms`
+- `program_continuous_source_resolved_elapsed_ms`
+- `program_first_source_frame_seen_elapsed_ms`
+- `program_first_continuous_input_elapsed_ms`
+- `program_first_continuous_output_elapsed_ms`
+- `program_first_renderable_decoded_frame_elapsed_ms`
+- `program_first_render_waiting_for_decode_count`
+- `program_first_render_missing_reason_counts`
+- `program_startup_one_shot_fallback_allowed`
+- `program_startup_one_shot_fallback_attempt_count`
+- `program_startup_one_shot_fallback_suppressed_count`
+- `program_startup_continuous_pending_count`
+- `program_startup_no_selected_source_count`
+- `program_startup_no_decoded_frame_count`
+- `program_startup_latest_continuous_available_count`
+- `program_startup_latest_continuous_rejected_count`
+- `program_startup_source_identity_mismatch_count`
+
+### Findings
+- `--program-selected-client-id` and Program continuous source resolution are
+  static against configured real slots in this path; when they resolve, the
+  summary can now show that as `0ms`.
+- Program-first one-shot suppression does not suppress the Program source
+  itself; it suppresses non-Program Preview one-shot work. Therefore
+  `program_render_used_one_shot_fallback_count=0` is more likely caused by no
+  selected decoded frame being available before first render than by direct
+  Program fallback suppression, unless the new suppression counters prove
+  otherwise.
+- `smooth-latest` latest-frame availability is now counted before first render,
+  so the next rerun can distinguish "latest continuous frame absent" from
+  "latest continuous frame existed but was not accepted."
+
+### Next
+- Rerun the existing Program-first smooth-latest validation shape and inspect
+  the new startup diagnostics before implementing a fix.
+- Candidate fixes remain documentation-only:
+  startup-only one-shot fallback, continuous decode prewarm, startup blocking
+  wait for first continuous frame, retained keyframe / first keyframe
+  bootstrap, first-frame ProgramOutput policy, or source identity / run_id fix
+  if proven.
+
+### TODO Update
+- Kept ProgramOutput near-MVP closeout blocked.
+- Kept same-loop low-cost Preview refresh tuning paused.
+- Updated first-render investigation to "diagnostics added; next rerun evidence
+  required."
+- Recorded new diagnostics and the next rerun evidence focus.
+
+### Validation
+- `cargo fmt`
+  - result: PASS
+- `cargo check -p stream-sync-switcher`
+  - result: PASS
+  - note: existing dead-code warnings remain
+- `cargo test -p stream-sync-switcher program_first_render_missing_reason_counts --lib`
+  - result: PASS / 0 tests, because the focused test is in the binary target
+- `cargo test -p stream-sync-switcher program_first_render_missing_reason_counts`
+  - result: PASS
+- `cargo test -p stream-sync-switcher switcher_four_view_two_real_handoff_preview_summary_formats_expected_fields`
+  - result: PASS
+- `cargo test -p stream-sync-switcher program_output --lib`
+  - result: PASS
+- `cargo test -p stream-sync-switcher program_output`
+  - result: PASS
+- `git diff --check`
+  - result: PASS
+  - note: LF/CRLF warnings only
+
 ## 2026-06-03
 ### Type
 - Codex docs-only TODO reorganization

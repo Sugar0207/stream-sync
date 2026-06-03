@@ -439,6 +439,40 @@ Validated command examples for the Program path:
   - runtime control:
     - hotkey/control pipe is not implemented
     - current source identity is static / CLI-fixed
+- ProgramOutput first-render diagnostic slice:
+  - implemented diagnostics-only startup fields for the next rerun; default
+    behavior is unchanged
+  - new elapsed fields:
+    - `program_selection_resolved_elapsed_ms`
+    - `program_continuous_source_resolved_elapsed_ms`
+    - `program_first_source_frame_seen_elapsed_ms`
+    - `program_first_continuous_input_elapsed_ms`
+    - `program_first_continuous_output_elapsed_ms`
+    - `program_first_renderable_decoded_frame_elapsed_ms`
+  - new startup classification fields:
+    - `program_first_render_waiting_for_decode_count`
+    - `program_first_render_missing_reason_counts`
+    - `program_startup_one_shot_fallback_allowed`
+    - `program_startup_one_shot_fallback_attempt_count`
+    - `program_startup_one_shot_fallback_suppressed_count`
+    - `program_startup_continuous_pending_count`
+    - `program_startup_no_selected_source_count`
+    - `program_startup_no_decoded_frame_count`
+    - `program_startup_latest_continuous_available_count`
+    - `program_startup_latest_continuous_rejected_count`
+    - `program_startup_source_identity_mismatch_count`
+  - next rerun should compare source frame seen vs continuous input timing,
+    continuous input vs continuous output timing, first renderable decoded frame
+    vs first Program render timing, startup missing reason counts, and one-shot
+    fallback allowed / attempted / suppressed counters
+  - candidate fixes remain documentation-only until rerun evidence narrows the
+    cause:
+    - startup-only one-shot fallback
+    - startup continuous decode prewarm
+    - startup blocking wait for first continuous frame
+    - retained keyframe / first keyframe bootstrap
+    - first-frame special policy for ProgramOutput
+    - source identity / run_id mismatch fix if proven
 - ProgramOutput closeout criteria to define before closeout:
   - Output correctness:
     - Program window renders only the selected Program source
@@ -515,6 +549,23 @@ Validated command examples for the Program path:
   - `program_window_render_failure_count`
   - `program_render_effective_fps`
   - `effective_program_render_fps`
+  - `program_selection_resolved_elapsed_ms`
+  - `program_continuous_source_resolved_elapsed_ms`
+  - `program_first_source_frame_seen_elapsed_ms`
+  - `program_first_continuous_input_elapsed_ms`
+  - `program_first_continuous_output_elapsed_ms`
+  - `program_first_renderable_decoded_frame_elapsed_ms`
+  - `program_first_render_waiting_for_decode_count`
+  - `program_first_render_missing_reason_counts`
+  - `program_startup_one_shot_fallback_allowed`
+  - `program_startup_one_shot_fallback_attempt_count`
+  - `program_startup_one_shot_fallback_suppressed_count`
+  - `program_startup_continuous_pending_count`
+  - `program_startup_no_selected_source_count`
+  - `program_startup_no_decoded_frame_count`
+  - `program_startup_latest_continuous_available_count`
+  - `program_startup_latest_continuous_rejected_count`
+  - `program_startup_source_identity_mismatch_count`
   - `program_decode_mode`
   - `program_continuous_decode_enabled`
   - `program_continuous_decode_mode`
