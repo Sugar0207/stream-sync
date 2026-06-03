@@ -280,36 +280,44 @@ Validated command examples for the Program path:
     increment the budget-exceeded diagnostic.
   - ProgramOutput remains selected-only and prioritized; Program continuous
     `smooth-latest` selection is unchanged.
-- Latest low-cost Preview decode refresh validation with
+- Latest low-cost Preview decode refresh + Program-slot reuse validation with
   `--program-first-preview-refresh-interval 10` and
   `--program-first-preview-decode-refresh-interval 30`:
   - OBS captured `StreamSync Program Output`
   - OBS did not capture `StreamSync 4-view Output`
   - Program stayed selected-only; 4-view / borders / debug UI / Preview labels
     were not mixed into Program
-  - Program black / placeholder: none
-  - Program perceived stutter: small
+  - Program black / placeholder: sometimes in manual perception, but summary
+    counters stayed `0`
+  - Program perceived stutter: large
   - Program metrics:
-    - `program_render_effective_fps=19.884`
-    - `effective_program_render_fps=19.884`
-    - `program_render_used_continuous_latest_count=2846`
+    - `program_render_effective_fps=15.581`
+    - `effective_program_render_fps=15.581`
+    - `program_render_used_continuous_latest_count=2799`
     - `program_render_used_one_shot_fallback_count=0`
     - `program_output_black_frame_render_count=0`
     - `program_output_placeholder_render_count=0`
+    - `continuous_decode_output_throughput_fps=23.976`
+    - `one_shot_decode_attempt_count=94`
+    - `one_shot_decode_elapsed_ms=16349`
+    - `avg_decode_elapsed_ms=174.096`
   - Preview metrics:
-    - `operator_preview_refresh_success_count=243`
-    - `operator_preview_decode_refresh_success_count=96`
-    - `operator_preview_decode_refresh_source_counts=slot0:96|slot1:0`
+    - `operator_preview_decode_refresh_success_count=94`
+    - `one_shot_decode_attempt_slot_counts=slot0:94|slot1:0`
+    - `operator_preview_reused_program_frame_count=157`
+    - `operator_preview_program_slot_visible_count=1`
+    - `operator_preview_program_slot_black_count=201`
+    - `operator_preview_render_effective_fps=1.431`
     - `operator_preview_non_program_visible_count=1`
-    - `one_shot_decode_attempt_slot_counts=slot0:96|slot1:0`
   - Interpretation:
-    - the low-frequency decode allowance made client1 / slot0 visible enough
-      to be useful as the non-Program Preview source
-    - the explicit Program source player2 / slot1 still ended black /
-      decode-deferred in Preview even though ProgramOutput rendered player2
-      through continuous latest
-    - likely cause: the Program continuous/latest decoded frame was not being
-      reused by the corresponding 4-view Preview slot
+    - Program-selected Preview slot reuse exists and can make the Program slot
+      visible
+    - low-frequency one-shot decode made client1 / slot0 visible sometimes
+    - both client1 and client2 still flickered, so Preview was not useful for
+      monitoring
+    - the one-shot decode cost hurt Program smoothness
+    - low-FPS video Preview is now treated as too expensive / unstable for the
+      next operator candidate
 - New opt-in Program frame reuse for low-cost Preview:
   - applies only under Program-first low-cost Preview mode with explicit
     Program selection
@@ -322,9 +330,25 @@ Validated command examples for the Program path:
   - ProgramOutput rendering stays separate; the 4-view Preview is not rendered
     as Program, and Preview labels / borders / debug UI are not mixed into the
     Program window
-  - next validation should keep:
-    `--program-first-preview-refresh-interval 10` and
-    `--program-first-preview-decode-refresh-interval 30`
+  - the `10` / `30` validation showed this is not enough by itself because the
+    slots still flickered
+- New opt-in snapshot-style low-cost Preview candidate:
+  - flag: `--operator-preview-snapshot-retention`
+  - active only with Program-first low-cost Preview flags
+  - once a Preview slot has a renderable image, the loop retains it as a
+    last-visible snapshot
+  - if a later tick would show `DecodeDeferred`, `NoDisplayPlaceholder`,
+    source-error / decode-failed placeholder, or a decoded-less held frame, the
+    Preview slot reuses the retained snapshot instead
+  - the snapshot path does not trigger extra one-shot decode
+  - Program source freshness still prefers Program continuous/latest or
+    last-valid Program frame before falling back to retained snapshot
+  - non-Program source freshness comes from very infrequent one-shot snapshot
+    updates
+  - next validation should start with:
+    `--program-first-preview-refresh-interval 30`,
+    `--program-first-preview-decode-refresh-interval 90`, and
+    `--operator-preview-snapshot-retention`
 - New fields to watch on the next Program OBS rerun:
   - `program_first_validation_enabled`
   - `program_first_preview_visible`
@@ -352,6 +376,13 @@ Validated command examples for the Program path:
   - `operator_preview_program_slot_visible_count`
   - `operator_preview_program_slot_reuse_source`
   - `operator_preview_program_slot_black_count`
+  - `operator_preview_snapshot_retention_enabled`
+  - `operator_preview_snapshot_reuse_count`
+  - `operator_preview_snapshot_reuse_slot_counts`
+  - `operator_preview_snapshot_created_count`
+  - `operator_preview_snapshot_created_slot_counts`
+  - `operator_preview_placeholder_avoided_by_snapshot_count`
+  - `operator_preview_slot_black_after_snapshot_count`
   - `operator_preview_program_fps_impact_estimate`
   - `preview_compose_skipped_for_program_count`
   - `preview_compose_reused_for_program_count`

@@ -35,9 +35,10 @@ use stream_sync_switcher::{
     SwitcherFourViewCleanOutputWindowRenderResult, SwitcherFourViewComposedCanvasRenderResult,
     SwitcherFourViewComposedCanvasWindowRenderConnectionRenderResult,
     SwitcherFourViewComposedFrame, SwitcherFourViewDisplayedSlot,
-    SwitcherFourViewHandoffQuadCompositionRenderSlot, SwitcherFourViewHandoffValidationBoundary,
-    SwitcherFourViewHandoffValidationInput, SwitcherFourViewHandoffValidationOutput,
-    SwitcherFourViewHandoffValidationPreCompositionOutput,
+    SwitcherFourViewHandoffQuadCompositionRenderSlot,
+    SwitcherFourViewHandoffSchedulerDecodeRenderSlotInstruction,
+    SwitcherFourViewHandoffValidationBoundary, SwitcherFourViewHandoffValidationInput,
+    SwitcherFourViewHandoffValidationOutput, SwitcherFourViewHandoffValidationPreCompositionOutput,
     SwitcherFourViewManualPreviewCompositionInstructionKind,
     SwitcherFourViewManualPreviewDisplaySlotKind, SwitcherFourViewManualPreviewProofBoundary,
     SwitcherFourViewManualPreviewProofFixtureMode, SwitcherFourViewManualPreviewProofInput,
@@ -418,6 +419,7 @@ fn main() {
                 two_real_options.program_first_validation_mode,
                 two_real_options.program_first_preview_refresh_interval,
                 two_real_options.program_first_preview_decode_refresh_interval,
+                two_real_options.operator_preview_snapshot_retention_enabled,
             ) {
                 Ok(summary) => println!(
                     "{}",
@@ -1784,6 +1786,7 @@ struct TwoRealHandoffPreviewLoopOptions {
     program_first_validation_mode: bool,
     program_first_preview_refresh_interval: Option<NonZeroU32>,
     program_first_preview_decode_refresh_interval: Option<NonZeroU32>,
+    operator_preview_snapshot_retention_enabled: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1845,6 +1848,7 @@ fn parse_two_real_handoff_preview_options_or_exit(
     let mut program_first_validation_mode = false;
     let mut program_first_preview_refresh_interval = None;
     let mut program_first_preview_decode_refresh_interval = None;
+    let mut operator_preview_snapshot_retention_enabled = false;
     let mut values = values.into_iter();
     while let Some(value) = values.next() {
         if value == "--disable-persistent-decoder" {
@@ -1950,13 +1954,17 @@ fn parse_two_real_handoff_preview_options_or_exit(
                 }));
             continue;
         }
+        if value == "--operator-preview-snapshot-retention" {
+            operator_preview_snapshot_retention_enabled = true;
+            continue;
+        }
         if !read_mode_explicit {
             read_mode = parse_optional_real_handoff_preview_mode_or_exit(Some(value));
             read_mode_explicit = true;
             continue;
         }
         eprintln!(
-            "invalid extra argument for --four-view-two-real-handoff-preview-loop: expected preview-oldest, preview-latest, preview-latest-decodable, --disable-persistent-decoder, --enable-continuous-stream-decoder, --continuous-decoder-low-latency-args, --continuous-decoder-slot0-suppress-one-shot-fallback, --continuous-decoder-bounded-lookup-allowed-lag-frames, --continuous-decoder-output-pipeline-experiment, --enable-program-output-window, --program-selected-client-id, --enable-program-continuous-decode, --program-continuous-decode-mode, --program-first-validation-mode, --program-first-preview-refresh-interval, or --program-first-preview-decode-refresh-interval"
+            "invalid extra argument for --four-view-two-real-handoff-preview-loop: expected preview-oldest, preview-latest, preview-latest-decodable, --disable-persistent-decoder, --enable-continuous-stream-decoder, --continuous-decoder-low-latency-args, --continuous-decoder-slot0-suppress-one-shot-fallback, --continuous-decoder-bounded-lookup-allowed-lag-frames, --continuous-decoder-output-pipeline-experiment, --enable-program-output-window, --program-selected-client-id, --enable-program-continuous-decode, --program-continuous-decode-mode, --program-first-validation-mode, --program-first-preview-refresh-interval, --program-first-preview-decode-refresh-interval, or --operator-preview-snapshot-retention"
         );
         std::process::exit(1);
     }
@@ -1975,6 +1983,7 @@ fn parse_two_real_handoff_preview_options_or_exit(
         program_first_validation_mode,
         program_first_preview_refresh_interval,
         program_first_preview_decode_refresh_interval,
+        operator_preview_snapshot_retention_enabled,
     }
 }
 
@@ -2554,6 +2563,13 @@ struct SwitcherFourViewTwoRealHandoffPreviewLoopSummary {
     operator_preview_program_slot_visible_count: u32,
     operator_preview_program_slot_reuse_source: &'static str,
     operator_preview_program_slot_black_count: u32,
+    operator_preview_snapshot_retention_enabled: bool,
+    operator_preview_snapshot_reuse_count: u32,
+    operator_preview_snapshot_reuse_slot_counts: String,
+    operator_preview_snapshot_created_count: u32,
+    operator_preview_snapshot_created_slot_counts: String,
+    operator_preview_placeholder_avoided_by_snapshot_count: u32,
+    operator_preview_slot_black_after_snapshot_count: u32,
     operator_preview_program_fps_impact_estimate: String,
     preview_compose_skipped_for_program_count: u32,
     preview_compose_reused_for_program_count: u32,
@@ -6869,6 +6885,7 @@ fn run_four_view_two_real_handoff_preview_loop(
     program_first_validation_mode: bool,
     program_first_preview_refresh_interval: Option<NonZeroU32>,
     program_first_preview_decode_refresh_interval: Option<NonZeroU32>,
+    operator_preview_snapshot_retention_enabled: bool,
 ) -> Result<SwitcherFourViewTwoRealHandoffPreviewLoopSummary, String> {
     let handoff = ObservedNamedPipePreviewHandoff::new(SwitcherNamedPipeQueuedFrameHandoff::new(
         pipe_name,
@@ -6908,6 +6925,7 @@ fn run_four_view_two_real_handoff_preview_loop(
         program_first_validation_mode,
         program_first_preview_refresh_interval,
         program_first_preview_decode_refresh_interval,
+        operator_preview_snapshot_retention_enabled,
         program_render_runtime.as_ref(),
     ))
 }
@@ -6936,6 +6954,7 @@ fn run_four_view_two_real_handoff_preview_loop(
     _program_first_validation_mode: bool,
     _program_first_preview_refresh_interval: Option<NonZeroU32>,
     _program_first_preview_decode_refresh_interval: Option<NonZeroU32>,
+    _operator_preview_snapshot_retention_enabled: bool,
 ) -> Result<SwitcherFourViewTwoRealHandoffPreviewLoopSummary, String> {
     Err("four-view two-real handoff preview loop is only available on Windows".to_string())
 }
@@ -7295,6 +7314,7 @@ where
         false,
         None,
         None,
+        false,
         None,
     )
 }
@@ -7945,6 +7965,168 @@ fn refresh_two_real_preview_composition_renderability(
     };
 }
 
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+struct TwoRealOperatorPreviewSnapshotRetentionDiagnostics {
+    reuse_count: u32,
+    reuse_slot_counts: [u32; 4],
+    placeholder_avoided_by_snapshot_count: u32,
+    slot_black_after_snapshot_count: u32,
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+struct TwoRealOperatorPreviewSnapshotCreationDiagnostics {
+    created_count: u32,
+    created_slot_counts: [u32; 4],
+}
+
+fn four_view_displayed_slot_has_decoded_frame(slot: &SwitcherFourViewDisplayedSlot) -> bool {
+    slot.decoded.is_some()
+}
+
+fn four_view_render_slot_is_renderable(
+    slot: &SwitcherFourViewHandoffQuadCompositionRenderSlot,
+) -> bool {
+    matches!(
+        slot,
+        SwitcherFourViewHandoffQuadCompositionRenderSlot::UseUpdatedFrame { frame, .. }
+            | SwitcherFourViewHandoffQuadCompositionRenderSlot::UseHeldPreviousFrame {
+                frame,
+                ..
+            } if four_view_displayed_slot_has_decoded_frame(frame)
+    )
+}
+
+fn apply_operator_preview_snapshot_retention(
+    pre_composition: &mut SwitcherFourViewHandoffValidationPreCompositionOutput,
+    snapshots: &[Option<SwitcherFourViewDisplayedSlot>; 4],
+) -> TwoRealOperatorPreviewSnapshotRetentionDiagnostics {
+    let mut diagnostics = TwoRealOperatorPreviewSnapshotRetentionDiagnostics::default();
+    for slot_index in 0..4 {
+        let Some(snapshot) = snapshots[slot_index]
+            .as_ref()
+            .filter(|snapshot| four_view_displayed_slot_has_decoded_frame(snapshot))
+            .cloned()
+        else {
+            continue;
+        };
+        let slot = &mut pre_composition.composition_render.composition.slots[slot_index];
+        if four_view_render_slot_is_renderable(slot) {
+            continue;
+        }
+
+        let replacement = match slot.clone() {
+            SwitcherFourViewHandoffQuadCompositionRenderSlot::UseUpdatedFrame {
+                placement,
+                selected,
+                consumed,
+                ..
+            } => Some((
+                placement,
+                SwitcherFourViewHandoffSchedulerDecodeRenderSlotInstruction::RenderFrame {
+                    slot_index: placement.slot_index,
+                    selected,
+                    consumed,
+                },
+            )),
+            SwitcherFourViewHandoffQuadCompositionRenderSlot::UseHeldPreviousFrame {
+                placement,
+                skipped,
+                ..
+            }
+            | SwitcherFourViewHandoffQuadCompositionRenderSlot::UseHeldPreviousFrameWithoutDecoded {
+                placement,
+                skipped,
+                ..
+            }
+            | SwitcherFourViewHandoffQuadCompositionRenderSlot::UseNoDisplayPlaceholder {
+                placement,
+                skipped,
+                ..
+            }
+            | SwitcherFourViewHandoffQuadCompositionRenderSlot::UseSourceErrorPlaceholder {
+                placement,
+                skipped,
+                ..
+            } => Some((placement, skipped)),
+            SwitcherFourViewHandoffQuadCompositionRenderSlot::UseDecodeDeferredPlaceholder {
+                placement,
+                selected,
+                consumed,
+                ..
+            }
+            | SwitcherFourViewHandoffQuadCompositionRenderSlot::UseDecodeFailedPlaceholder {
+                placement,
+                selected,
+                consumed,
+                ..
+            } => Some((
+                placement,
+                SwitcherFourViewHandoffSchedulerDecodeRenderSlotInstruction::RenderFrame {
+                    slot_index: placement.slot_index,
+                    selected,
+                    consumed,
+                },
+            )),
+        };
+
+        if let Some((placement, skipped)) = replacement {
+            *slot = SwitcherFourViewHandoffQuadCompositionRenderSlot::UseHeldPreviousFrame {
+                placement,
+                frame: snapshot,
+                skipped,
+                hold_duration_micros: 0,
+            };
+            diagnostics.reuse_count = diagnostics.reuse_count.saturating_add(1);
+            diagnostics.reuse_slot_counts[slot_index] =
+                diagnostics.reuse_slot_counts[slot_index].saturating_add(1);
+            diagnostics.placeholder_avoided_by_snapshot_count = diagnostics
+                .placeholder_avoided_by_snapshot_count
+                .saturating_add(1);
+        }
+    }
+
+    if diagnostics.reuse_count > 0 {
+        refresh_two_real_preview_composition_renderability(pre_composition);
+    }
+
+    for slot_index in 0..4 {
+        if snapshots[slot_index]
+            .as_ref()
+            .is_some_and(four_view_displayed_slot_has_decoded_frame)
+            && !four_view_render_slot_is_renderable(
+                &pre_composition.composition_render.composition.slots[slot_index],
+            )
+        {
+            diagnostics.slot_black_after_snapshot_count = diagnostics
+                .slot_black_after_snapshot_count
+                .saturating_add(1);
+        }
+    }
+
+    diagnostics
+}
+
+fn operator_preview_snapshot_creation_diagnostics(
+    previous_snapshots: &[Option<SwitcherFourViewDisplayedSlot>; 4],
+    next_snapshots: &[Option<SwitcherFourViewDisplayedSlot>; 4],
+) -> TwoRealOperatorPreviewSnapshotCreationDiagnostics {
+    let mut diagnostics = TwoRealOperatorPreviewSnapshotCreationDiagnostics::default();
+    for slot_index in 0..4 {
+        let Some(next_snapshot) = next_snapshots[slot_index]
+            .as_ref()
+            .filter(|snapshot| four_view_displayed_slot_has_decoded_frame(snapshot))
+        else {
+            continue;
+        };
+        if previous_snapshots[slot_index].as_ref() != Some(next_snapshot) {
+            diagnostics.created_count = diagnostics.created_count.saturating_add(1);
+            diagnostics.created_slot_counts[slot_index] =
+                diagnostics.created_slot_counts[slot_index].saturating_add(1);
+        }
+    }
+    diagnostics
+}
+
 fn operator_preview_program_slot_visible(
     decoded_slot_identities: &[Option<TwoRealPreviewLoopDecodedSlotIdentity>; 4],
     program_selection: Option<&SwitcherProgramSelection>,
@@ -8100,6 +8282,7 @@ fn run_four_view_two_real_handoff_preview_loop_with_handoff_runtime_target_times
     program_first_validation_mode: bool,
     program_first_preview_refresh_interval: Option<NonZeroU32>,
     program_first_preview_decode_refresh_interval: Option<NonZeroU32>,
+    operator_preview_snapshot_retention_enabled: bool,
     program_render_runtime: Option<&RenderRuntime>,
 ) -> SwitcherFourViewTwoRealHandoffPreviewLoopSummary
 where
@@ -8204,11 +8387,19 @@ where
     let mut operator_preview_forced_one_shot_decode_count = 0u32;
     let operator_preview_decode_refresh_enabled = operator_low_cost_preview_enabled
         && program_first_preview_decode_refresh_interval.is_some();
+    let operator_preview_snapshot_retention_active =
+        operator_low_cost_preview_enabled && operator_preview_snapshot_retention_enabled;
     let mut operator_preview_decode_refresh_skipped_count = 0u32;
     let mut operator_preview_non_program_visible_count = 0u32;
     let mut operator_preview_reused_program_frame_count = 0u32;
     let mut operator_preview_program_slot_visible_count = 0u32;
     let mut operator_preview_program_slot_black_count = 0u32;
+    let mut operator_preview_snapshot_reuse_count = 0u32;
+    let mut operator_preview_snapshot_reuse_slot_counts = [0u32; 4];
+    let mut operator_preview_snapshot_created_count = 0u32;
+    let mut operator_preview_snapshot_created_slot_counts = [0u32; 4];
+    let mut operator_preview_placeholder_avoided_by_snapshot_count = 0u32;
+    let mut operator_preview_slot_black_after_snapshot_count = 0u32;
     let mut operator_preview_program_slot_reuse_source =
         TwoRealOperatorPreviewProgramReuseSource::None;
     let mut program_render_loop_attempt_count = 0u32;
@@ -8571,6 +8762,25 @@ where
                 }
             }
         }
+        if operator_preview_snapshot_retention_active {
+            let snapshot_diagnostics = apply_operator_preview_snapshot_retention(
+                &mut preview_pre_composition,
+                &previous_slots,
+            );
+            operator_preview_snapshot_reuse_count = operator_preview_snapshot_reuse_count
+                .saturating_add(snapshot_diagnostics.reuse_count);
+            for slot_index in 0..4 {
+                operator_preview_snapshot_reuse_slot_counts[slot_index] =
+                    operator_preview_snapshot_reuse_slot_counts[slot_index]
+                        .saturating_add(snapshot_diagnostics.reuse_slot_counts[slot_index]);
+            }
+            operator_preview_placeholder_avoided_by_snapshot_count =
+                operator_preview_placeholder_avoided_by_snapshot_count
+                    .saturating_add(snapshot_diagnostics.placeholder_avoided_by_snapshot_count);
+            operator_preview_slot_black_after_snapshot_count =
+                operator_preview_slot_black_after_snapshot_count
+                    .saturating_add(snapshot_diagnostics.slot_black_after_snapshot_count);
+        }
         let current_slot_identities = update_two_real_decoded_slot_identities(
             &decoded_slot_identities,
             &handoff.last_frame_slot_observations,
@@ -8919,10 +9129,25 @@ where
                 _ => {}
             }
         }
-        previous_slots = update_four_view_previous_slots_from_composition_render(
+        let next_previous_slots = update_four_view_previous_slots_from_composition_render(
             &previous_slots,
             &preview_pre_composition.composition_render,
         );
+        if operator_preview_snapshot_retention_active {
+            let snapshot_creation_diagnostics = operator_preview_snapshot_creation_diagnostics(
+                &previous_slots,
+                &next_previous_slots,
+            );
+            operator_preview_snapshot_created_count = operator_preview_snapshot_created_count
+                .saturating_add(snapshot_creation_diagnostics.created_count);
+            for slot_index in 0..4 {
+                operator_preview_snapshot_created_slot_counts[slot_index] =
+                    operator_preview_snapshot_created_slot_counts[slot_index].saturating_add(
+                        snapshot_creation_diagnostics.created_slot_counts[slot_index],
+                    );
+            }
+        }
+        previous_slots = next_previous_slots;
         decoded_slot_identities = current_slot_identities;
         previous_slot_diagnostic_summaries = Some(slot_diagnostic_summaries);
         previous_visual_identities = Some(current_visual_identities);
@@ -9864,6 +10089,40 @@ where
         },
         operator_preview_program_slot_black_count: if operator_low_cost_preview_enabled {
             operator_preview_program_slot_black_count
+        } else {
+            0
+        },
+        operator_preview_snapshot_retention_enabled: operator_preview_snapshot_retention_active,
+        operator_preview_snapshot_reuse_count: if operator_preview_snapshot_retention_active {
+            operator_preview_snapshot_reuse_count
+        } else {
+            0
+        },
+        operator_preview_snapshot_reuse_slot_counts: if operator_preview_snapshot_retention_active {
+            format_four_view_slot_counts(operator_preview_snapshot_reuse_slot_counts)
+        } else {
+            format_four_view_slot_counts([0; 4])
+        },
+        operator_preview_snapshot_created_count: if operator_preview_snapshot_retention_active {
+            operator_preview_snapshot_created_count
+        } else {
+            0
+        },
+        operator_preview_snapshot_created_slot_counts: if operator_preview_snapshot_retention_active
+        {
+            format_four_view_slot_counts(operator_preview_snapshot_created_slot_counts)
+        } else {
+            format_four_view_slot_counts([0; 4])
+        },
+        operator_preview_placeholder_avoided_by_snapshot_count:
+            if operator_preview_snapshot_retention_active {
+                operator_preview_placeholder_avoided_by_snapshot_count
+            } else {
+                0
+            },
+        operator_preview_slot_black_after_snapshot_count: if operator_preview_snapshot_retention_active
+        {
+            operator_preview_slot_black_after_snapshot_count
         } else {
             0
         },
@@ -13001,6 +13260,13 @@ fn format_two_real_attempt_slot_counts(slot0: u32, slot1: u32) -> String {
     format!("slot0:{slot0}|slot1:{slot1}")
 }
 
+fn format_four_view_slot_counts(slot_counts: [u32; 4]) -> String {
+    format!(
+        "slot0:{}|slot1:{}|slot2:{}|slot3:{}",
+        slot_counts[0], slot_counts[1], slot_counts[2], slot_counts[3]
+    )
+}
+
 fn format_two_real_attempt_reason_counts(
     frame_id_changed: u32,
     cache_miss: u32,
@@ -14546,7 +14812,7 @@ fn format_four_view_two_real_handoff_preview_loop_summary(
         format_optional_u32(summary.output_height),
     );
     format!(
-        "{summary_line} continuous_decode_ffmpeg_low_latency_args_enabled={} continuous_decode_ffmpeg_probe_args_enabled={} continuous_decode_ffmpeg_loglevel={} continuous_decode_stdout_first_byte_seen={} continuous_decode_stdout_first_byte_elapsed_ms={} continuous_decode_stdout_partial_bytes_read={} continuous_decode_stdout_partial_read_count={} continuous_decode_stdout_expected_frame_bytes={} continuous_decode_stdout_read_waiting_for_full_frame={} continuous_feed_enabled={} continuous_feed_attempt_count={} continuous_feed_handoff_request_count={} continuous_feed_frame_received_count={} continuous_feed_no_frame_count={} continuous_feed_handoff_error_count={} continuous_feed_enqueued_count={} continuous_feed_skipped_count={} continuous_feed_skip_reason_counts={} continuous_feed_dropped_stale_input_count={} continuous_feed_latest_received_frame_id={} continuous_feed_latest_enqueued_frame_id={} continuous_decode_input_from_feeder_count={} continuous_decode_input_from_render_demand_count={} continuous_decode_feeder_lag_to_selected={} continuous_decode_render_exact_hit_count={} continuous_decode_render_miss_stale_count={} continuous_decode_render_miss_not_ready_count={} continuous_decode_bounded_lookup_enabled={} continuous_decode_bounded_lookup_allowed_lag_frames={} continuous_decode_bounded_lookup_hit_count={} continuous_decode_bounded_lookup_used_frame_id={} continuous_decode_bounded_lookup_requested_frame_id={} continuous_decode_bounded_lookup_lag_frames={} continuous_decode_bounded_lookup_rejected_stale_count={} continuous_decode_bounded_lookup_rejected_future_count={} continuous_decode_bounded_lookup_rejected_not_ready_count={} continuous_decode_output_availability_not_ready_count={} continuous_decode_output_availability_stale_count={} continuous_decode_output_availability_future_count={} continuous_decode_bounded_lookup_fallback_to_one_shot_count={} continuous_decode_render_used_exact_count={} continuous_decode_render_used_bounded_lag_count={} continuous_decode_pending_correspondence_count={} continuous_decode_pending_correspondence_age_ms_max={} continuous_decode_pending_correspondence_age_ms_avg={} continuous_decode_pending_correspondence_oldest_frame_id={} continuous_decode_pending_correspondence_newest_frame_id={} continuous_decode_completed_correspondence_count={} continuous_decode_completed_correspondence_latency_ms_avg={} continuous_decode_completed_correspondence_latency_ms_max={} continuous_decode_completed_correspondence_latency_slow_count={} continuous_decode_completed_correspondence_latency_slow_threshold_ms={} continuous_decode_completed_correspondence_frame_id_min={} continuous_decode_completed_correspondence_frame_id_max={} continuous_decode_completed_correspondence_latest_latency_ms={} continuous_decode_latest_input_minus_latest_output_lag={} continuous_decode_latest_input_to_output_frame_gap={} continuous_decode_pending_correspondence_frame_id_min={} continuous_decode_pending_correspondence_frame_id_max={} continuous_decode_input_to_output_lag_frames_max={} continuous_decode_output_lag_to_selected_frames={} continuous_decode_latest_selected_to_output_frame_gap={} continuous_decode_output_throughput_fps={} continuous_decode_reader_full_frame_elapsed_ms_max={} continuous_decode_reader_full_frame_elapsed_ms_avg={} continuous_decode_reader_full_frame_slow_count={} continuous_decode_reader_full_frame_slow_threshold_ms={} continuous_decode_output_bytes_total={} continuous_decode_output_bytes_per_sec={} continuous_decode_output_frame_interval_ms_avg={} continuous_decode_output_frame_interval_ms_max={} continuous_decode_stdout_read_throughput_bytes_per_ms={} continuous_decode_ffmpeg_scale_enabled={} continuous_decode_ffmpeg_output_pixel_format={} continuous_decode_output_pipeline_experiment_mode={} continuous_decode_output_pipeline_scale_mode={} continuous_decode_output_source_width={} continuous_decode_output_source_height={} continuous_decode_output_scaled_width={} continuous_decode_output_scaled_height={} continuous_decode_output_scale_removed_count={} continuous_decode_output_scale_path_experiment_enabled={} continuous_decode_output_bytes_per_frame={} continuous_decode_output_pipe_bytes_saved_per_frame={} continuous_decode_output_pixel_convert_elapsed_ms={} continuous_decode_output_pixel_convert_elapsed_ms_max={} continuous_decode_output_pixel_convert_count={} continuous_decode_output_pixel_convert_buffer_reuse_count={} continuous_decode_output_pixel_convert_buffer_allocation_count={} continuous_decode_output_pixel_convert_bytes_written_total={} continuous_decode_output_pixel_convert_bytes_written_per_frame={} continuous_decode_output_pixel_convert_mode={} continuous_decode_competing_one_shot_decode_elapsed_ms={} continuous_decode_competing_one_shot_attempt_count={} continuous_decode_slot0_one_shot_suppression_enabled={} continuous_decode_slot0_one_shot_suppressed_count={} continuous_decode_slot0_one_shot_suppressed_reason_counts={} continuous_decode_slot0_one_shot_suppressed_render_safety_counts={} continuous_decode_slot0_one_shot_suppressed_continuous_not_ready_count={} continuous_decode_slot0_one_shot_suppressed_stale_count={} continuous_decode_queue_drop_reason_counts={} program_output_enabled={} program_output_selection_mode={} program_output_requested_client_id={} program_output_render_count={} program_output_missing_selected_source_count={} program_output_missing_before_first_render_count={} program_output_missing_after_first_render_count={} program_output_reused_previous_frame_count={} program_output_placeholder_render_count={} program_output_black_frame_render_count={} program_output_first_render_attempt_index={} program_output_first_render_elapsed_ms={} program_output_missing_selected_source_reason={} program_output_last_result_kind={} program_output_selected_client_id={} program_output_selected_slot_index={} program_output_window_title={} program_decode_mode={} program_continuous_decode_enabled={} program_continuous_decode_mode={} program_continuous_decode_output_frame_count={} program_continuous_decode_lookup_hit_count={} program_continuous_decode_lookup_miss_count={} program_render_used_continuous_decoded_count={} program_render_used_continuous_latest_count={} program_render_used_continuous_exact_count={} program_render_used_continuous_stale_but_accepted_count={} program_render_used_one_shot_fallback_count={} program_continuous_latest_frame_id={} program_continuous_selected_frame_lag={} program_continuous_latest_output_age_ms={} program_decode_fps={} program_selected_source_frame_lag={} program_first_validation_enabled={} program_first_suppressed_preview_one_shot_decode_count={} program_first_suppressed_preview_one_shot_decode_slot_counts={} program_first_program_only_decode_path_enabled={} program_first_remaining_one_shot_decode_count={} program_first_preview_visible={} program_first_preview_refresh_interval={} program_first_preview_refresh_count={} program_first_preview_suppressed_count={} operator_low_cost_preview_enabled={} operator_preview_refresh_interval_ticks={} operator_preview_refresh_attempt_count={} operator_preview_refresh_success_count={} operator_preview_refresh_skipped_count={} operator_preview_used_stale_frame_count={} operator_preview_forced_one_shot_decode_count={} operator_preview_render_effective_fps={} operator_preview_decode_refresh_enabled={} operator_preview_decode_refresh_interval_ticks={} operator_preview_decode_refresh_attempt_count={} operator_preview_decode_refresh_success_count={} operator_preview_decode_refresh_skipped_count={} operator_preview_decode_refresh_source_counts={} operator_preview_decode_refresh_elapsed_ms={} operator_preview_decode_refresh_budget_exceeded_count={} operator_preview_non_program_visible_count={} operator_preview_reused_program_frame_count={} operator_preview_program_slot_visible_count={} operator_preview_program_slot_reuse_source={} operator_preview_program_slot_black_count={} operator_preview_program_fps_impact_estimate={} preview_compose_skipped_for_program_count={} preview_compose_reused_for_program_count={} program_render_loop_attempt_count={} program_window_render_success_count={} program_window_render_failure_count={} program_render_effective_fps={} effective_program_render_fps={}",
+        "{summary_line} continuous_decode_ffmpeg_low_latency_args_enabled={} continuous_decode_ffmpeg_probe_args_enabled={} continuous_decode_ffmpeg_loglevel={} continuous_decode_stdout_first_byte_seen={} continuous_decode_stdout_first_byte_elapsed_ms={} continuous_decode_stdout_partial_bytes_read={} continuous_decode_stdout_partial_read_count={} continuous_decode_stdout_expected_frame_bytes={} continuous_decode_stdout_read_waiting_for_full_frame={} continuous_feed_enabled={} continuous_feed_attempt_count={} continuous_feed_handoff_request_count={} continuous_feed_frame_received_count={} continuous_feed_no_frame_count={} continuous_feed_handoff_error_count={} continuous_feed_enqueued_count={} continuous_feed_skipped_count={} continuous_feed_skip_reason_counts={} continuous_feed_dropped_stale_input_count={} continuous_feed_latest_received_frame_id={} continuous_feed_latest_enqueued_frame_id={} continuous_decode_input_from_feeder_count={} continuous_decode_input_from_render_demand_count={} continuous_decode_feeder_lag_to_selected={} continuous_decode_render_exact_hit_count={} continuous_decode_render_miss_stale_count={} continuous_decode_render_miss_not_ready_count={} continuous_decode_bounded_lookup_enabled={} continuous_decode_bounded_lookup_allowed_lag_frames={} continuous_decode_bounded_lookup_hit_count={} continuous_decode_bounded_lookup_used_frame_id={} continuous_decode_bounded_lookup_requested_frame_id={} continuous_decode_bounded_lookup_lag_frames={} continuous_decode_bounded_lookup_rejected_stale_count={} continuous_decode_bounded_lookup_rejected_future_count={} continuous_decode_bounded_lookup_rejected_not_ready_count={} continuous_decode_output_availability_not_ready_count={} continuous_decode_output_availability_stale_count={} continuous_decode_output_availability_future_count={} continuous_decode_bounded_lookup_fallback_to_one_shot_count={} continuous_decode_render_used_exact_count={} continuous_decode_render_used_bounded_lag_count={} continuous_decode_pending_correspondence_count={} continuous_decode_pending_correspondence_age_ms_max={} continuous_decode_pending_correspondence_age_ms_avg={} continuous_decode_pending_correspondence_oldest_frame_id={} continuous_decode_pending_correspondence_newest_frame_id={} continuous_decode_completed_correspondence_count={} continuous_decode_completed_correspondence_latency_ms_avg={} continuous_decode_completed_correspondence_latency_ms_max={} continuous_decode_completed_correspondence_latency_slow_count={} continuous_decode_completed_correspondence_latency_slow_threshold_ms={} continuous_decode_completed_correspondence_frame_id_min={} continuous_decode_completed_correspondence_frame_id_max={} continuous_decode_completed_correspondence_latest_latency_ms={} continuous_decode_latest_input_minus_latest_output_lag={} continuous_decode_latest_input_to_output_frame_gap={} continuous_decode_pending_correspondence_frame_id_min={} continuous_decode_pending_correspondence_frame_id_max={} continuous_decode_input_to_output_lag_frames_max={} continuous_decode_output_lag_to_selected_frames={} continuous_decode_latest_selected_to_output_frame_gap={} continuous_decode_output_throughput_fps={} continuous_decode_reader_full_frame_elapsed_ms_max={} continuous_decode_reader_full_frame_elapsed_ms_avg={} continuous_decode_reader_full_frame_slow_count={} continuous_decode_reader_full_frame_slow_threshold_ms={} continuous_decode_output_bytes_total={} continuous_decode_output_bytes_per_sec={} continuous_decode_output_frame_interval_ms_avg={} continuous_decode_output_frame_interval_ms_max={} continuous_decode_stdout_read_throughput_bytes_per_ms={} continuous_decode_ffmpeg_scale_enabled={} continuous_decode_ffmpeg_output_pixel_format={} continuous_decode_output_pipeline_experiment_mode={} continuous_decode_output_pipeline_scale_mode={} continuous_decode_output_source_width={} continuous_decode_output_source_height={} continuous_decode_output_scaled_width={} continuous_decode_output_scaled_height={} continuous_decode_output_scale_removed_count={} continuous_decode_output_scale_path_experiment_enabled={} continuous_decode_output_bytes_per_frame={} continuous_decode_output_pipe_bytes_saved_per_frame={} continuous_decode_output_pixel_convert_elapsed_ms={} continuous_decode_output_pixel_convert_elapsed_ms_max={} continuous_decode_output_pixel_convert_count={} continuous_decode_output_pixel_convert_buffer_reuse_count={} continuous_decode_output_pixel_convert_buffer_allocation_count={} continuous_decode_output_pixel_convert_bytes_written_total={} continuous_decode_output_pixel_convert_bytes_written_per_frame={} continuous_decode_output_pixel_convert_mode={} continuous_decode_competing_one_shot_decode_elapsed_ms={} continuous_decode_competing_one_shot_attempt_count={} continuous_decode_slot0_one_shot_suppression_enabled={} continuous_decode_slot0_one_shot_suppressed_count={} continuous_decode_slot0_one_shot_suppressed_reason_counts={} continuous_decode_slot0_one_shot_suppressed_render_safety_counts={} continuous_decode_slot0_one_shot_suppressed_continuous_not_ready_count={} continuous_decode_slot0_one_shot_suppressed_stale_count={} continuous_decode_queue_drop_reason_counts={} program_output_enabled={} program_output_selection_mode={} program_output_requested_client_id={} program_output_render_count={} program_output_missing_selected_source_count={} program_output_missing_before_first_render_count={} program_output_missing_after_first_render_count={} program_output_reused_previous_frame_count={} program_output_placeholder_render_count={} program_output_black_frame_render_count={} program_output_first_render_attempt_index={} program_output_first_render_elapsed_ms={} program_output_missing_selected_source_reason={} program_output_last_result_kind={} program_output_selected_client_id={} program_output_selected_slot_index={} program_output_window_title={} program_decode_mode={} program_continuous_decode_enabled={} program_continuous_decode_mode={} program_continuous_decode_output_frame_count={} program_continuous_decode_lookup_hit_count={} program_continuous_decode_lookup_miss_count={} program_render_used_continuous_decoded_count={} program_render_used_continuous_latest_count={} program_render_used_continuous_exact_count={} program_render_used_continuous_stale_but_accepted_count={} program_render_used_one_shot_fallback_count={} program_continuous_latest_frame_id={} program_continuous_selected_frame_lag={} program_continuous_latest_output_age_ms={} program_decode_fps={} program_selected_source_frame_lag={} program_first_validation_enabled={} program_first_suppressed_preview_one_shot_decode_count={} program_first_suppressed_preview_one_shot_decode_slot_counts={} program_first_program_only_decode_path_enabled={} program_first_remaining_one_shot_decode_count={} program_first_preview_visible={} program_first_preview_refresh_interval={} program_first_preview_refresh_count={} program_first_preview_suppressed_count={} operator_low_cost_preview_enabled={} operator_preview_refresh_interval_ticks={} operator_preview_refresh_attempt_count={} operator_preview_refresh_success_count={} operator_preview_refresh_skipped_count={} operator_preview_used_stale_frame_count={} operator_preview_forced_one_shot_decode_count={} operator_preview_render_effective_fps={} operator_preview_decode_refresh_enabled={} operator_preview_decode_refresh_interval_ticks={} operator_preview_decode_refresh_attempt_count={} operator_preview_decode_refresh_success_count={} operator_preview_decode_refresh_skipped_count={} operator_preview_decode_refresh_source_counts={} operator_preview_decode_refresh_elapsed_ms={} operator_preview_decode_refresh_budget_exceeded_count={} operator_preview_non_program_visible_count={} operator_preview_reused_program_frame_count={} operator_preview_program_slot_visible_count={} operator_preview_program_slot_reuse_source={} operator_preview_program_slot_black_count={} operator_preview_snapshot_retention_enabled={} operator_preview_snapshot_reuse_count={} operator_preview_snapshot_reuse_slot_counts={} operator_preview_snapshot_created_count={} operator_preview_snapshot_created_slot_counts={} operator_preview_placeholder_avoided_by_snapshot_count={} operator_preview_slot_black_after_snapshot_count={} operator_preview_program_fps_impact_estimate={} preview_compose_skipped_for_program_count={} preview_compose_reused_for_program_count={} program_render_loop_attempt_count={} program_window_render_success_count={} program_window_render_failure_count={} program_render_effective_fps={} effective_program_render_fps={}",
         summary.continuous_decode_ffmpeg_low_latency_args_enabled,
         summary.continuous_decode_ffmpeg_probe_args_enabled,
         sanitize_summary_value(&summary.continuous_decode_ffmpeg_loglevel),
@@ -14721,6 +14987,13 @@ fn format_four_view_two_real_handoff_preview_loop_summary(
         summary.operator_preview_program_slot_visible_count,
         summary.operator_preview_program_slot_reuse_source,
         summary.operator_preview_program_slot_black_count,
+        summary.operator_preview_snapshot_retention_enabled,
+        summary.operator_preview_snapshot_reuse_count,
+        summary.operator_preview_snapshot_reuse_slot_counts,
+        summary.operator_preview_snapshot_created_count,
+        summary.operator_preview_snapshot_created_slot_counts,
+        summary.operator_preview_placeholder_avoided_by_snapshot_count,
+        summary.operator_preview_slot_black_after_snapshot_count,
         summary.operator_preview_program_fps_impact_estimate,
         summary.preview_compose_skipped_for_program_count,
         summary.preview_compose_reused_for_program_count,
@@ -15837,6 +16110,7 @@ mod tests {
     use stream_sync_protocol::{ClientId, Codec, RunId, TimestampMicros};
     use stream_sync_switcher::{
         SwitcherDecodedFramePixelFormat, SwitcherFourViewCleanOutputWindowRenderResult,
+        SwitcherFourViewDisplayedSlot,
         SwitcherFourViewHandoffQuadCompositionRenderConnectionRenderResult,
         SwitcherFourViewHandoffQuadCompositionRenderSlot,
         SwitcherFourViewHandoffValidationBoundary, SwitcherFourViewHandoffValidationInput,
@@ -15986,6 +16260,7 @@ mod tests {
         assert!(!options.program_first_validation_mode);
         assert_eq!(options.program_first_preview_refresh_interval, None);
         assert_eq!(options.program_first_preview_decode_refresh_interval, None);
+        assert!(!options.operator_preview_snapshot_retention_enabled);
     }
 
     #[test]
@@ -16048,6 +16323,7 @@ mod tests {
             "30".to_string(),
             "--program-first-preview-decode-refresh-interval".to_string(),
             "60".to_string(),
+            "--operator-preview-snapshot-retention".to_string(),
             "preview-latest-decodable".to_string(),
         ]);
         assert_eq!(
@@ -16089,6 +16365,7 @@ mod tests {
                 .map(NonZeroU32::get),
             Some(60)
         );
+        assert!(options.operator_preview_snapshot_retention_enabled);
 
         let options = super::parse_two_real_handoff_preview_options_or_exit(vec![
             "--enable-continuous-stream-decoder".to_string(),
@@ -16357,6 +16634,174 @@ mod tests {
             super::TwoRealOperatorPreviewProgramReuseSource::LastValidProgram
         );
         assert_eq!(candidate, Some(&cached.decoded_frame));
+    }
+
+    #[test]
+    fn switcher_operator_preview_snapshot_retention_replaces_decode_deferred_slot() {
+        let slots = super::default_four_view_two_real_handoff_preview_slots(
+            0,
+            ClientId("real-client-0".to_string()),
+            RunId("real-run-0".to_string()),
+            2,
+            ClientId("real-client-1".to_string()),
+            RunId("real-run-1".to_string()),
+        );
+        let mut handoff = super::MultiRealAndPlaceholderQueuedFrameHandoff::new(
+            slots.clone(),
+            vec![
+                (
+                    ClientId("real-client-0".to_string()),
+                    RunId("real-run-0".to_string()),
+                ),
+                (
+                    ClientId("real-client-1".to_string()),
+                    RunId("real-run-1".to_string()),
+                ),
+            ],
+            PerClientStubRealQueuedFrameHandoff::default(),
+        );
+        let input = SwitcherFourViewHandoffValidationInput {
+            slots,
+            target_timestamp: TimestampMicros(1_000_004),
+            previous_slots: std::array::from_fn(|_| None),
+            display_current_time: TimestampMicros(1_000_005),
+            layout_policy: SwitcherFourViewQuadLayoutPolicy::default(),
+            composed_window_title: "StreamSync 4-view".to_string(),
+            composed_render_hold_millis: 0,
+        };
+        let mut pre_composition = SwitcherFourViewHandoffValidationBoundary::default()
+            .run_from_handoff_to_composition_render_with_runtimes_and_mode(
+                &mut handoff,
+                &input,
+                super::preview_target_time_mode_from_switcher_mode(
+                    SwitcherSingleClientQueueSourceMode::PreviewLatest,
+                ),
+                &AlwaysSuppressPreviewDecodeRuntime,
+            );
+        assert!(matches!(
+            pre_composition.composition_render.composition.slots[2],
+            SwitcherFourViewHandoffQuadCompositionRenderSlot::UseDecodeDeferredPlaceholder { .. }
+        ));
+
+        let snapshot = SwitcherFourViewDisplayedSlot {
+            slot_index: 2,
+            selected: None,
+            decoded: Some(fixture_decoded_frame(2, 2, [0x31, 0x32, 0x33, 255])),
+            displayed_at: TimestampMicros(900_000),
+        };
+        let mut snapshots: [Option<SwitcherFourViewDisplayedSlot>; 4] =
+            std::array::from_fn(|_| None);
+        snapshots[2] = Some(snapshot.clone());
+
+        let diagnostics =
+            super::apply_operator_preview_snapshot_retention(&mut pre_composition, &snapshots);
+
+        assert_eq!(diagnostics.reuse_count, 1);
+        assert_eq!(diagnostics.reuse_slot_counts, [0, 0, 1, 0]);
+        assert_eq!(diagnostics.placeholder_avoided_by_snapshot_count, 1);
+        assert_eq!(diagnostics.slot_black_after_snapshot_count, 0);
+        assert!(matches!(
+            pre_composition.composition_render.render,
+            SwitcherFourViewHandoffQuadCompositionRenderConnectionRenderResult::CompositionReady {
+                renderable_slot_count: 1
+            }
+        ));
+        let SwitcherFourViewHandoffQuadCompositionRenderSlot::UseHeldPreviousFrame {
+            frame, ..
+        } = &pre_composition.composition_render.composition.slots[2]
+        else {
+            panic!("decode-deferred slot should be replaced by a held snapshot");
+        };
+        assert_eq!(frame, &snapshot);
+    }
+
+    #[test]
+    fn switcher_operator_preview_snapshot_retention_replaces_no_display_placeholder_slot() {
+        let slots = super::default_four_view_two_real_handoff_preview_slots(
+            0,
+            ClientId("real-client-0".to_string()),
+            RunId("real-run-0".to_string()),
+            2,
+            ClientId("real-client-1".to_string()),
+            RunId("real-run-1".to_string()),
+        );
+        let mut handoff = super::MultiRealAndPlaceholderQueuedFrameHandoff::new(
+            slots.clone(),
+            vec![
+                (
+                    ClientId("real-client-0".to_string()),
+                    RunId("real-run-0".to_string()),
+                ),
+                (
+                    ClientId("real-client-1".to_string()),
+                    RunId("real-run-1".to_string()),
+                ),
+            ],
+            PerClientStubRealQueuedFrameHandoff::default(),
+        );
+        let input = SwitcherFourViewHandoffValidationInput {
+            slots,
+            target_timestamp: TimestampMicros(1_000_004),
+            previous_slots: std::array::from_fn(|_| None),
+            display_current_time: TimestampMicros(1_000_005),
+            layout_policy: SwitcherFourViewQuadLayoutPolicy::default(),
+            composed_window_title: "StreamSync 4-view".to_string(),
+            composed_render_hold_millis: 0,
+        };
+        let mut pre_composition = SwitcherFourViewHandoffValidationBoundary::default()
+            .run_from_handoff_to_composition_render_with_runtimes_and_mode(
+                &mut handoff,
+                &input,
+                super::preview_target_time_mode_from_switcher_mode(
+                    SwitcherSingleClientQueueSourceMode::PreviewLatest,
+                ),
+                &AlwaysSuppressPreviewDecodeRuntime,
+            );
+        assert!(matches!(
+            pre_composition.composition_render.composition.slots[1],
+            SwitcherFourViewHandoffQuadCompositionRenderSlot::UseNoDisplayPlaceholder { .. }
+        ));
+
+        let snapshot = SwitcherFourViewDisplayedSlot {
+            slot_index: 1,
+            selected: None,
+            decoded: Some(fixture_decoded_frame(2, 2, [0x41, 0x42, 0x43, 255])),
+            displayed_at: TimestampMicros(900_001),
+        };
+        let mut snapshots: [Option<SwitcherFourViewDisplayedSlot>; 4] =
+            std::array::from_fn(|_| None);
+        snapshots[1] = Some(snapshot.clone());
+
+        let diagnostics =
+            super::apply_operator_preview_snapshot_retention(&mut pre_composition, &snapshots);
+
+        assert_eq!(diagnostics.reuse_count, 1);
+        assert_eq!(diagnostics.reuse_slot_counts, [0, 1, 0, 0]);
+        assert_eq!(diagnostics.placeholder_avoided_by_snapshot_count, 1);
+        let SwitcherFourViewHandoffQuadCompositionRenderSlot::UseHeldPreviousFrame {
+            frame, ..
+        } = &pre_composition.composition_render.composition.slots[1]
+        else {
+            panic!("no-display placeholder should be replaced by a held snapshot");
+        };
+        assert_eq!(frame, &snapshot);
+    }
+
+    #[test]
+    fn switcher_operator_preview_snapshot_creation_counts_new_visible_snapshots() {
+        let previous: [Option<SwitcherFourViewDisplayedSlot>; 4] = std::array::from_fn(|_| None);
+        let mut next: [Option<SwitcherFourViewDisplayedSlot>; 4] = std::array::from_fn(|_| None);
+        next[0] = Some(SwitcherFourViewDisplayedSlot {
+            slot_index: 0,
+            selected: None,
+            decoded: Some(fixture_decoded_frame(2, 2, [0x51, 0x52, 0x53, 255])),
+            displayed_at: TimestampMicros(900_002),
+        });
+
+        let diagnostics = super::operator_preview_snapshot_creation_diagnostics(&previous, &next);
+
+        assert_eq!(diagnostics.created_count, 1);
+        assert_eq!(diagnostics.created_slot_counts, [1, 0, 0, 0]);
     }
 
     #[test]
@@ -18463,6 +18908,7 @@ mod tests {
                 false,
                 None,
                 None,
+                false,
                 Some(&program_runtime),
             );
 
@@ -18538,6 +18984,7 @@ mod tests {
                 false,
                 None,
                 None,
+                false,
                 Some(&program_runtime),
             );
 
@@ -18590,6 +19037,7 @@ mod tests {
                 false,
                 None,
                 None,
+                false,
                 Some(&program_runtime),
             );
 
@@ -18650,6 +19098,7 @@ mod tests {
                 false,
                 None,
                 None,
+                false,
                 Some(&program_runtime),
             );
 
@@ -18711,6 +19160,7 @@ mod tests {
                 true,
                 None,
                 None,
+                false,
                 Some(&program_runtime),
             );
 
@@ -20010,6 +20460,17 @@ mod tests {
         assert!(formatted.contains("operator_preview_program_slot_visible_count=0"));
         assert!(formatted.contains("operator_preview_program_slot_reuse_source=none"));
         assert!(formatted.contains("operator_preview_program_slot_black_count=0"));
+        assert!(formatted.contains("operator_preview_snapshot_retention_enabled=false"));
+        assert!(formatted.contains("operator_preview_snapshot_reuse_count=0"));
+        assert!(formatted.contains(
+            "operator_preview_snapshot_reuse_slot_counts=slot0:0|slot1:0|slot2:0|slot3:0"
+        ));
+        assert!(formatted.contains("operator_preview_snapshot_created_count=0"));
+        assert!(formatted.contains(
+            "operator_preview_snapshot_created_slot_counts=slot0:0|slot1:0|slot2:0|slot3:0"
+        ));
+        assert!(formatted.contains("operator_preview_placeholder_avoided_by_snapshot_count=0"));
+        assert!(formatted.contains("operator_preview_slot_black_after_snapshot_count=0"));
         assert!(formatted.contains("operator_preview_program_fps_impact_estimate=n/a"));
         assert!(formatted.contains("preview_compose_skipped_for_program_count=0"));
         assert!(formatted.contains("preview_compose_reused_for_program_count=0"));
@@ -20401,6 +20862,7 @@ mod tests {
                 false,
                 None,
                 None,
+                false,
                 None,
             );
 

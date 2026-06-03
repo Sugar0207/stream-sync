@@ -2,6 +2,126 @@
 
 ## 2026-06-03
 ### Type
+- Codex snapshot-style low-cost Preview retention
+
+### Work
+- Investigated the latest Program-first low-cost Preview validation using
+  `--program-first-preview-refresh-interval 10` and
+  `--program-first-preview-decode-refresh-interval 30`.
+- Recorded that Program-selected Preview slot reuse exists, but restoring
+  Preview as low-FPS video is still unstable and too expensive.
+- Added opt-in `--operator-preview-snapshot-retention` for Program-first
+  low-cost Preview mode.
+- Implemented a per-slot last-visible snapshot retention path:
+  - once a Preview slot has a decoded/renderable image, it is retained in the
+    existing previous-slot state
+  - if a later tick would produce decode-deferred, no-display placeholder,
+    source-error / decode-failed placeholder, or decoded-less held output, the
+    Preview pre-composition clone is changed to `UseHeldPreviousFrame`
+  - no extra one-shot decode is triggered by snapshot retention
+  - ProgramOutput rendering remains separate from Preview rendering
+- Kept default behavior unchanged. The new retention path is active only when
+  Program-first low-cost Preview mode is active and the new flag is present.
+
+### Investigation Notes
+- Latest validation command shape:
+  `--enable-program-output-window --program-selected-client-id player2 --enable-program-continuous-decode --program-continuous-decode-mode smooth-latest --program-first-validation-mode --program-first-preview-refresh-interval 10 --program-first-preview-decode-refresh-interval 30`
+- Manual result:
+  - OBS captured `StreamSync Program Output`
+  - OBS did not capture `StreamSync 4-view Output`
+  - Program did not mix 4-view / borders / debug / Preview labels
+  - Program perceived stutter: large
+  - `StreamSync 4-view Output` was displayed
+  - 4-view Preview was not useful for monitoring
+  - Preview update frequency was too low
+  - client1 flickered
+  - client2 flickered
+- Key metrics:
+  - `program_render_effective_fps=15.581`
+  - `effective_program_render_fps=15.581`
+  - `program_render_used_continuous_latest_count=2799`
+  - `program_render_used_one_shot_fallback_count=0`
+  - `program_output_black_frame_render_count=0`
+  - `program_output_placeholder_render_count=0`
+  - `continuous_decode_output_throughput_fps=23.976`
+  - `one_shot_decode_attempt_count=94`
+  - `one_shot_decode_elapsed_ms=16349`
+  - `one_shot_decode_attempt_slot_counts=slot0:94|slot1:0`
+  - `avg_decode_elapsed_ms=174.096`
+  - `operator_preview_decode_refresh_success_count=94`
+  - `operator_preview_reused_program_frame_count=157`
+  - `operator_preview_program_slot_visible_count=1`
+  - `operator_preview_program_slot_black_count=201`
+  - `operator_preview_render_effective_fps=1.431`
+  - `operator_preview_non_program_visible_count=1`
+- Interpretation:
+  - Program-selected Preview slot reuse is present
+  - the non-Program low-frequency one-shot allowance made client1 visible
+    sometimes
+  - one-shot decode cost hurt Program smoothness
+  - both slots flickered, so low-FPS video Preview is not the next operator
+    candidate
+  - next direction is stable snapshot-style Preview, not low-FPS video Preview
+
+### Diagnostics
+- Added / updated summary fields:
+  - `operator_preview_snapshot_retention_enabled`
+  - `operator_preview_snapshot_reuse_count`
+  - `operator_preview_snapshot_reuse_slot_counts`
+  - `operator_preview_snapshot_created_count`
+  - `operator_preview_snapshot_created_slot_counts`
+  - `operator_preview_placeholder_avoided_by_snapshot_count`
+  - `operator_preview_slot_black_after_snapshot_count`
+  - existing `operator_preview_reused_program_frame_count`
+  - existing `operator_preview_program_slot_black_count`
+  - existing `operator_preview_non_program_visible_count`
+  - existing `program_render_effective_fps`
+
+### Changed Files
+- `apps/switcher/src/main.rs`
+- `docs/operations/continuous-output-pipeline-experiment-plan.md`
+- `docs/operations/obs-capture-validation.md`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+
+### TODO Update
+- Marked the `10` / `30` Program-first operator Preview rerun as complete with
+  the result that both slots flickered and Program smoothness worsened.
+- Marked snapshot-style Preview retention implementation as complete.
+- Added the next validation candidate:
+  `--program-first-preview-refresh-interval 30`,
+  `--program-first-preview-decode-refresh-interval 90`, and
+  `--operator-preview-snapshot-retention`.
+
+### Validation
+- `cargo fmt`
+  - result: PASS
+- `cargo check -p stream-sync-switcher`
+  - result: PASS
+  - note: existing unused-function warnings remain in `apps/switcher/src/main.rs`
+    for `update_four_view_previous_slots_from_validation`,
+    `four_view_two_real_tick_diagnostics`, and
+    `clean_output_window_was_rendered`.
+- `cargo test -p stream-sync-switcher switcher_operator_preview_snapshot_retention_replaces_decode_deferred_slot`
+  - result: PASS
+- `cargo test -p stream-sync-switcher switcher_operator_preview_snapshot_retention_replaces_no_display_placeholder_slot`
+  - result: PASS
+- `cargo test -p stream-sync-switcher switcher_operator_preview_snapshot_creation_counts_new_visible_snapshots`
+  - result: PASS
+- `cargo test -p stream-sync-switcher switcher_two_real_handoff_preview_options`
+  - result: PASS
+- `cargo test -p stream-sync-switcher switcher_four_view_two_real_handoff_preview_summary_formats_expected_fields`
+  - result: PASS
+- `cargo test -p stream-sync-switcher program_output --lib`
+  - result: PASS
+- `cargo test -p stream-sync-switcher program_output`
+  - result: PASS
+- `git diff --check`
+  - result: PASS
+  - note: LF/CRLF warnings only
+
+## 2026-06-03
+### Type
 - Codex Program frame reuse for low-cost Preview
 
 ### Work

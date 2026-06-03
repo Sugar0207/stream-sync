@@ -85,34 +85,45 @@ Last updated: 2026-06-03
     `operator_preview_decode_refresh_budget_exceeded_count`, and
     `operator_preview_non_program_visible_count` while keeping
     `program_render_used_one_shot_fallback_count` near zero.
-  - Latest decode-refresh validation with
+  - Latest decode-refresh + Program-slot reuse validation with
     `--program-first-preview-refresh-interval 10` and
-    `--program-first-preview-decode-refresh-interval 30` improved the
-    non-Program Preview slot but exposed a Program-slot reuse gap:
-    - Program stayed selected-only and used continuous latest:
-      `program_render_effective_fps=19.884`,
-      `program_render_used_continuous_latest_count=2846`,
-      `program_render_used_one_shot_fallback_count=0`,
-      `program_output_black_frame_render_count=0`, and
-      `program_output_placeholder_render_count=0`.
-    - Preview decode refresh made client1 / slot0 visible:
-      `operator_preview_decode_refresh_success_count=96`,
-      `operator_preview_decode_refresh_source_counts=slot0:96|slot1:0`,
-      and `operator_preview_non_program_visible_count=1`.
-    - Program-selected player2 / slot1 still ended black / decode-deferred in
-      Preview even though ProgramOutput rendered player2 from continuous
-      latest.
-    - Current implementation adds an opt-in Preview-only reuse path for the
-      explicit Program-selected slot. It reuses `continuous_latest` first and
-      `last_valid_program` second, without changing ProgramOutput rendering or
-      default Preview behavior.
-    - Next validation should keep both refresh knobs at `10` and `30`, and
-      watch `operator_preview_reused_program_frame_count`,
-      `operator_preview_program_slot_visible_count`,
-      `operator_preview_program_slot_reuse_source`,
-      `operator_preview_program_slot_black_count`,
-      `operator_preview_decode_refresh_source_counts`, and
-      `program_render_used_one_shot_fallback_count`.
+    `--program-first-preview-decode-refresh-interval 30` made both Preview
+    slots visible sometimes, but it failed as an operator direction:
+    - Program stayed selected-only and used continuous latest, but smoothness
+      worsened: `program_render_effective_fps=15.581`,
+      `program_render_used_continuous_latest_count=2799`, and
+      `program_render_used_one_shot_fallback_count=0`.
+    - Preview one-shot cost was high:
+      `one_shot_decode_attempt_count=94`,
+      `one_shot_decode_elapsed_ms=16349`, and
+      `avg_decode_elapsed_ms=174.096`.
+    - Program-selected reuse was active:
+      `operator_preview_reused_program_frame_count=157`,
+      `operator_preview_program_slot_visible_count=1`, and
+      `operator_preview_program_slot_black_count=201`.
+    - Non-Program Preview was also visible sometimes:
+      `operator_preview_non_program_visible_count=1`.
+    - Manual result: client1 and client2 both flickered, and 4-view Preview was
+      not useful for monitoring.
+    - Decision: do not keep pursuing low-FPS video Preview as the next
+      operator candidate. Use stable snapshot-style Preview instead.
+    - Current implementation adds opt-in
+      `--operator-preview-snapshot-retention`, which retains last-visible
+      per-slot snapshots and reuses them when the next tick would otherwise
+      show placeholder/deferred output. It does not trigger extra one-shot
+      decode and keeps ProgramOutput rendering separate.
+    - Next validation should start with
+      `--program-first-preview-refresh-interval 30`,
+      `--program-first-preview-decode-refresh-interval 90`, and
+      `--operator-preview-snapshot-retention`. Watch
+      `operator_preview_snapshot_retention_enabled`,
+      `operator_preview_snapshot_reuse_count`,
+      `operator_preview_snapshot_reuse_slot_counts`,
+      `operator_preview_snapshot_created_count`,
+      `operator_preview_snapshot_created_slot_counts`,
+      `operator_preview_placeholder_avoided_by_snapshot_count`,
+      `operator_preview_slot_black_after_snapshot_count`,
+      `program_render_effective_fps`, and `one_shot_decode_elapsed_ms`.
 - latest optimized BGR24 A/B rerun:
   - root:
     `S:\stream-sync\manual-logs\two-client-optimized-bgr24-ab-rerun-20260528-103130`
@@ -1044,6 +1055,8 @@ operated as follows:
 - Program-selected low-cost Preview slot reuse is opt-in under Program-first
   low-cost Preview mode and explicit Program selection; it reuses the Program
   continuous/latest frame for Preview only
+- Snapshot-style low-cost Preview retention is opt-in via
+  `--operator-preview-snapshot-retention`
 
 Validated command examples:
 
@@ -1055,6 +1068,7 @@ Validated command examples:
 --enable-program-output-window --program-selected-client-id player2 --enable-program-continuous-decode --program-continuous-decode-mode smooth-latest
 --enable-program-output-window --program-selected-client-id player2 --enable-program-continuous-decode --program-continuous-decode-mode smooth-latest --program-first-validation-mode
 --enable-program-output-window --program-selected-client-id player2 --enable-program-continuous-decode --program-continuous-decode-mode smooth-latest --program-first-validation-mode --program-first-preview-refresh-interval 10 --program-first-preview-decode-refresh-interval 30
+--enable-program-output-window --program-selected-client-id player2 --enable-program-continuous-decode --program-continuous-decode-mode smooth-latest --program-first-validation-mode --program-first-preview-refresh-interval 30 --program-first-preview-decode-refresh-interval 90 --operator-preview-snapshot-retention
 ```
 
 Current limitations:
@@ -1075,6 +1089,9 @@ Current limitations:
   one-source-per-tick budget; it is not a return to every-tick Preview decode
 - Program-selected Preview slot reuse does not render 4-view as Program and
   does not mix Preview labels / borders / debug UI into ProgramOutput
+- Snapshot retention keeps last-visible Preview slot images when the next tick
+  would otherwise show placeholder/deferred output; it does not add extra
+  decode pressure
 - OBS setup remains manual and is not changed by code
 
 ### Latest Operator Low-cost Preview Result
@@ -1082,27 +1099,28 @@ Current limitations:
 - The latest operator low-cost Preview validation used
   `--program-first-preview-refresh-interval 10` and
   `--program-first-preview-decode-refresh-interval 30`.
-- ProgramOutput remained structurally good:
-  `program_render_effective_fps=19.884`,
-  `program_render_used_continuous_latest_count=2846`,
+- ProgramOutput remained selected-only and used continuous latest, but
+  smoothness worsened:
+  `program_render_effective_fps=15.581`,
+  `program_render_used_continuous_latest_count=2799`,
   `program_render_used_one_shot_fallback_count=0`,
   `program_output_black_frame_render_count=0`, and
   `program_output_placeholder_render_count=0`.
-- Preview was visible and the non-Program slot improved:
-  `operator_preview_decode_refresh_success_count=96`,
-  `operator_preview_decode_refresh_source_counts=slot0:96|slot1:0`, and
+- Preview one-shot cost was high:
+  `one_shot_decode_attempt_count=94`,
+  `one_shot_decode_elapsed_ms=16349`, and
+  `avg_decode_elapsed_ms=174.096`.
+- Preview reuse / visibility existed:
+  `operator_preview_reused_program_frame_count=157`,
+  `operator_preview_program_slot_visible_count=1`, and
   `operator_preview_non_program_visible_count=1`.
-- Preview was still not useful enough for monitoring because the explicit
-  Program source player2 / slot1 stayed black / decode-deferred even though
-  ProgramOutput rendered player2 from continuous latest.
-- Current code now adds opt-in Program-selected Preview slot reuse. Next
-  validation should keep the same `10` / `30` refresh knobs and compare
-  `operator_preview_reused_program_frame_count`,
-  `operator_preview_program_slot_visible_count`,
-  `operator_preview_program_slot_reuse_source`,
-  `operator_preview_program_slot_black_count`,
-  `operator_preview_decode_refresh_source_counts`, and
-  `program_render_used_one_shot_fallback_count`.
+- Preview was still not useful because client1 and client2 both flickered.
+- Current code now adds opt-in snapshot retention. Next validation should use
+  `--program-first-preview-refresh-interval 30`,
+  `--program-first-preview-decode-refresh-interval 90`, and
+  `--operator-preview-snapshot-retention`, then compare snapshot
+  reuse/creation/placeholder-avoided/black-after-snapshot metrics plus Program
+  render FPS and one-shot decode cost.
 
 ### Non-goals for the first Program slice
 
@@ -1122,9 +1140,8 @@ Current limitations:
 - Latest optimized BGR24 A/B shows conversion optimization worked, but
   `scaled-bgr24` still does not clearly beat default BGRA end to end.
 - Next candidate order:
-  1. human-side Program-first low-cost Preview rerun with
-     `--enable-program-output-window --program-selected-client-id player2 --enable-program-continuous-decode --program-continuous-decode-mode smooth-latest --program-first-validation-mode --program-first-preview-refresh-interval 10 --program-first-preview-decode-refresh-interval 30`
-     to validate Program-selected Preview slot reuse.
+  1. human-side snapshot-style Program-first low-cost Preview rerun with
+     `--enable-program-output-window --program-selected-client-id player2 --enable-program-continuous-decode --program-continuous-decode-mode smooth-latest --program-first-validation-mode --program-first-preview-refresh-interval 30 --program-first-preview-decode-refresh-interval 90 --operator-preview-snapshot-retention`.
   2. human-side `no-scale-bgra` A/B rerun for the scale path split slice
   3. reader/completed latency breakdown diagnostics if no-scale evidence is
      ambiguous
