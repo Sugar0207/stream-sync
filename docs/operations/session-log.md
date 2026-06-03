@@ -92,6 +92,22 @@
 
 ## 2026-06-03
 ### Type
+- Codex docs-only TODO reorganization
+
+### Work
+- Reorganized `docs/operations/todo.md` into a compact current-state TODO.
+- Moved the current priority back to `ProgramOutput` non-FPS blocker audit.
+- Kept the work docs-only; no Rust code or runtime behavior was changed.
+
+### TODO Update
+- Current position now reflects the latest ProgramOutput / Preview state.
+- Next work is centered on ProgramOutput non-FPS blockers instead of stale same-loop Preview tuning.
+
+### Validation
+- `git diff --check` will be run after the doc edits are finalized.
+
+## 2026-06-03
+### Type
 - Codex 5/90 snapshot Preview validation closeout
 
 ### Work
