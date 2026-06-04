@@ -1118,6 +1118,13 @@ as a later Preview optimization, not a blocker for Program separation.
   - `program_window_render_failure_count`
   - `program_render_effective_fps`
   - `effective_program_render_fps`
+  - `program_startup_bootstrap_enabled`
+  - `program_startup_bootstrap_attempt_count`
+  - `program_startup_bootstrap_success_count`
+  - `program_startup_bootstrap_elapsed_ms`
+  - `program_startup_bootstrap_source_counts`
+  - `program_startup_bootstrap_rejected_reason_counts`
+  - `program_startup_bootstrap_used_for_first_render`
 
 ### OBS Capture Operation
 
@@ -1134,6 +1141,9 @@ operated as follows:
 - Smooth delayed Program playout is opt-in via
   `--program-continuous-decode-mode smooth-latest`
 - Program-first validation is opt-in via `--program-first-validation-mode`
+- Program startup one-shot bootstrap is opt-in via
+  `--program-startup-bootstrap-one-shot`; it is ProgramOutput-only, startup-only,
+  and keeps default behavior unchanged
 - Low-frequency operator Preview decode allowance is opt-in via
   `--program-first-preview-decode-refresh-interval <ticks>`
 - Program-selected low-cost Preview slot reuse is opt-in under Program-first
@@ -1145,6 +1155,12 @@ operated as follows:
   validation. Do not keep lowering the refresh interval in this path.
 - ProgramOutput is structurally promising but not closeout-ready until
   non-FPS operational blockers and closeout criteria are resolved.
+- Latest clients-before-switcher startup validation reduced first selected
+  source/input visibility to `246ms` and first Program render to `1964ms`, with
+  after-first missing / black / placeholder all `0`. The remaining startup
+  focus is the roughly 1.6s gap to first continuous output, so the next Program
+  startup validation is an A/B with and without
+  `--program-startup-bootstrap-one-shot`.
 
 Validated command examples:
 
@@ -1158,6 +1174,7 @@ Validated command examples:
 --enable-program-output-window --program-selected-client-id player2 --enable-program-continuous-decode --program-continuous-decode-mode smooth-latest --program-first-validation-mode --program-first-preview-refresh-interval 10 --program-first-preview-decode-refresh-interval 30
 --enable-program-output-window --program-selected-client-id player2 --enable-program-continuous-decode --program-continuous-decode-mode smooth-latest --program-first-validation-mode --program-first-preview-refresh-interval 30 --program-first-preview-decode-refresh-interval 90 --operator-preview-snapshot-retention
 --enable-program-output-window --program-selected-client-id player2 --enable-program-continuous-decode --program-continuous-decode-mode smooth-latest --program-first-validation-mode --program-first-preview-refresh-interval 5 --program-first-preview-decode-refresh-interval 90 --operator-preview-snapshot-retention
+--enable-program-output-window --program-selected-client-id player2 --enable-program-continuous-decode --program-continuous-decode-mode smooth-latest --program-first-validation-mode --program-startup-bootstrap-one-shot
 ```
 
 Current limitations:
@@ -1176,6 +1193,11 @@ Current limitations:
 - `--program-first-preview-decode-refresh-interval` only allows non-Program
   Preview one-shot decode on matching low-cost Preview refresh ticks and uses a
   one-source-per-tick budget; it is not a return to every-tick Preview decode
+- `--program-startup-bootstrap-one-shot` does not make 4-view Preview a Program
+  source, does not change OBS setup, and does not add hotkey/control-pipe
+  switching. It only lets ProgramOutput attempt a selected-source one-shot
+  bootstrap before first Program render when continuous latest / last-valid /
+  selected decoded frames are not yet available.
 - Program-selected Preview slot reuse does not render 4-view as Program and
   does not mix Preview labels / borders / debug UI into ProgramOutput
 - Snapshot retention keeps last-visible Preview slot images when the next tick

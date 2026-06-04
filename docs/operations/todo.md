@@ -27,15 +27,16 @@
 - ただし Preview update frequency は operator monitoring 用としてまだ低すぎるため、現行の same-loop low-cost Preview refresh tuning は limited / paused。
 - Current Preview は stable snapshot-only とみなし、final monitoring Preview とは分けて扱う。
 - ProgramOutput は near-MVP closeout ではない。FPS 以外の blocker が残っているため、ProgramOutput non-FPS blocker audit は継続中。
-- `NoDecodedFrameForSelection` を含む first render / missing selected source の問題は、startup diagnostics 付き rerun で、selection / source identity は原因ではなく、selected source frame 到着と continuous first output の間が主要観測点になった。
-- ProgramOutput startup one-shot fallback は `allowed=true` でも ProgramOutput 自身が one-shot decode を起動するわけではないため、selected decoded frame candidate がない間は attempt されない。次 rerun では candidate / blocked reason / keyframe / retained-keyframe / source counts を読む。
-- 最新の起動順では switcher 起動後に clients を起動しているため、first render elapsed の一部は実 decode/render 遅延ではなく validation process start order delay として分離して扱う。
+- `NoDecodedFrameForSelection` を含む first render / missing selected source の問題は、startup diagnostics と clients-before-switcher rerun で、selection / source identity ではなく selected source frame 到着から continuous first output までの待ちが主要観測点になった。
+- clients-before-switcher 起動順では `program_first_source_frame_seen_elapsed_ms=246`、`program_first_continuous_output_elapsed_ms=1964`、`program_output_first_render_elapsed_ms=1964`、`program_output_missing_before_first_render_count=29`、after-first missing / black / placeholder は `0`。process start order delay は分離できたが、continuous first output まで約 1.6s 残る。
+- ProgramOutput startup one-shot bootstrap は opt-in `--program-startup-bootstrap-one-shot` として実装済み。既定動作は変更せず、ProgramOutput 初回 render 前、明示 `--program-selected-client-id`、continuous latest / last-valid / selected decoded がまだない場合だけ候補化する。
+- 新 diagnostics は `program_startup_bootstrap_enabled`、attempt / success / elapsed / source counts / rejected reason counts / first-render 使用有無を読む。
 - selected source identity の視認性、smooth-latest の latency / lag accept criteria、OBS capture safety も未整理のまま残す。
 - 現在の詳細は `docs/operations/obs-capture-validation.md` と `docs/operations/session-log.md` を参照する。
 
 ## 次にやること
-1. [ ] clients-before-switcher 起動順の ProgramOutput startup validation を追加実施し、process start order delay と実 first-render delay を分離する
-2. [ ] ProgramOutput startup one-shot candidate diagnostics 付き rerun を実施し、fallback attempt なしの理由を candidate / blocked reason / keyframe / retained-keyframe で確認する
+1. [ ] clients-before-switcher 起動順で `--program-startup-bootstrap-one-shot` なし / ありの A/B validation を実施し、first render elapsed と bootstrap diagnostics を比較する
+2. [ ] bootstrap 有効時の `program_startup_bootstrap_attempt_count` / success / rejected reason / used_for_first_render を読み、startup-only one-shot が実 first-render delay を縮めるか判断する
 3. [ ] ProgramOutput non-FPS blocker audit を継続し、first render の次に selected identity / lag / OBS safety を確認する
 4. [ ] selected source visual verification と player1 / player2 の見分けやすさを整理する
 5. [ ] smooth-latest の latency / lag acceptance criteria を FPS とは別に定義する

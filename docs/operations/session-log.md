@@ -2,6 +2,90 @@
 
 ## 2026-06-04
 ### Type
+- Codex ProgramOutput startup bootstrap implementation
+
+### Work
+- Used the clients-before-switcher startup validation result to separate
+  process start order delay from real ProgramOutput first-render delay.
+- Implemented a small opt-in ProgramOutput startup bootstrap:
+  `--program-startup-bootstrap-one-shot`.
+- Kept default behavior unchanged.
+- Kept ProgramOutput / Preview separation intact:
+  - no Preview one-shot fallback revival
+  - no 4-view-as-Program path
+  - no hotkey / control pipe
+  - no OBS automation changes
+- Added ProgramOutput startup bootstrap diagnostics to the two-real summary:
+  - `program_startup_bootstrap_enabled`
+  - `program_startup_bootstrap_attempt_count`
+  - `program_startup_bootstrap_success_count`
+  - `program_startup_bootstrap_elapsed_ms`
+  - `program_startup_bootstrap_source_counts`
+  - `program_startup_bootstrap_rejected_reason_counts`
+  - `program_startup_bootstrap_used_for_first_render`
+
+### Runtime Evidence Used
+- Switcher-first:
+  - `program_first_source_frame_seen_elapsed_ms=4702`
+  - `program_first_continuous_input_elapsed_ms=4702`
+  - `program_first_continuous_output_elapsed_ms=6826`
+  - `program_output_first_render_elapsed_ms=6826`
+  - `program_output_missing_before_first_render_count=170`
+- Clients-before-switcher:
+  - `program_first_source_frame_seen_elapsed_ms=246`
+  - `program_first_continuous_input_elapsed_ms=246`
+  - `program_first_continuous_output_elapsed_ms=1964`
+  - `program_first_renderable_decoded_frame_elapsed_ms=1964`
+  - `program_output_first_render_elapsed_ms=1964`
+  - `program_output_missing_before_first_render_count=29`
+  - `program_output_missing_after_first_render_count=0`
+  - `program_output_black_frame_render_count=0`
+  - `program_output_placeholder_render_count=0`
+  - `program_render_effective_fps=19.589`
+
+### Decision
+- Docs-only was not enough because clients-before-switcher removed the process
+  start order delay but still left about 1.6s between first Program input and
+  first continuous output / render.
+- Implemented the smallest opt-in bootstrap so the next validation can compare
+  continuous-first-render startup against a ProgramOutput-only one-shot
+  bootstrap.
+- The bootstrap only runs before first Program render, requires explicit
+  `--program-selected-client-id`, and does not override continuous latest,
+  last-valid Program frame, or already decoded selected frames.
+
+### Changed Files
+- `apps/switcher/src/main.rs`
+- `docs/operations/todo.md`
+- `docs/operations/obs-capture-validation.md`
+- `docs/operations/continuous-output-pipeline-experiment-plan.md`
+- `docs/operations/session-log.md`
+
+### TODO Update
+- Marked clients-before-switcher startup validation as reflected.
+- Replaced the next evidence gate with a clients-before-switcher A/B:
+  `--program-startup-bootstrap-one-shot` off vs on.
+- Kept ProgramOutput closeout blocked and same-loop Preview tuning paused.
+
+### Validation
+- `cargo fmt`
+  - result: PASS
+- `cargo check -p stream-sync-switcher`
+  - result: PASS
+  - note: existing dead-code warnings remain
+- `cargo test -p stream-sync-switcher program_startup_bootstrap`
+  - result: PASS
+- `cargo test -p stream-sync-switcher program_output --lib`
+  - result: PASS
+- `cargo test -p stream-sync-switcher program_output`
+  - result: PASS
+- `git diff --check`
+  - result: PASS
+  - note: LF/CRLF warnings only
+
+---
+
+### Type
 - Codex ProgramOutput startup fallback diagnostics / validation planning
 
 ### Work

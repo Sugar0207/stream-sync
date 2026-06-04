@@ -514,12 +514,43 @@ Validated command examples for the Program path:
       `program_output_first_render_elapsed_ms`
     - purpose: separate validation process start order delay from actual
       ProgramOutput decode/render startup delay
-  - candidate fixes remain documentation-only until rerun evidence narrows the
-    cause:
-    - startup-only one-shot fallback
+  - clients-before-switcher rerun result:
+    - `program_first_source_frame_seen_elapsed_ms=246`
+    - `program_first_continuous_input_elapsed_ms=246`
+    - `program_first_continuous_output_elapsed_ms=1964`
+    - `program_first_renderable_decoded_frame_elapsed_ms=1964`
+    - `program_output_first_render_elapsed_ms=1964`
+    - `program_output_missing_before_first_render_count=29`
+    - `program_output_missing_after_first_render_count=0`
+    - `program_output_black_frame_render_count=0`
+    - `program_output_placeholder_render_count=0`
+    - `program_render_effective_fps=19.589`
+    - interpretation: process start order delay is separated, but continuous
+      first output still takes about 1.6s after first selected source input
+  - startup-only one-shot bootstrap is now implemented as opt-in
+    `--program-startup-bootstrap-one-shot`:
+    - default behavior remains unchanged
+    - ProgramOutput only, no Preview one-shot fallback revival
+    - only before first Program render
+    - requires explicit `--program-selected-client-id`
+    - does not override continuous latest, last-valid Program frame, or an
+      already decoded selected frame
+    - only candidates selected keyframe / retained-keyframe startup source
+    - diagnostics:
+      `program_startup_bootstrap_enabled`,
+      `program_startup_bootstrap_attempt_count`,
+      `program_startup_bootstrap_success_count`,
+      `program_startup_bootstrap_elapsed_ms`,
+      `program_startup_bootstrap_source_counts`,
+      `program_startup_bootstrap_rejected_reason_counts`,
+      `program_startup_bootstrap_used_for_first_render`
+  - next validation should A/B clients-before-switcher with and without
+    `--program-startup-bootstrap-one-shot` and compare first-render elapsed,
+    missing-before-first-render count, bootstrap attempt/success, rejected
+    reason counts, and whether bootstrap was used for first render.
+  - other candidate fixes remain deferred until this A/B evidence is read:
     - startup continuous decode prewarm
     - startup blocking wait for first continuous frame
-    - retained keyframe / first keyframe bootstrap
     - first-frame special policy for ProgramOutput
     - source identity / run_id mismatch fix if proven
 - ProgramOutput closeout criteria to define before closeout:
