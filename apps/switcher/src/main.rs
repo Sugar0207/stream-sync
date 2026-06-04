@@ -2547,6 +2547,23 @@ struct SwitcherFourViewTwoRealHandoffPreviewLoopSummary {
     program_startup_bootstrap_attempt_count: u32,
     program_startup_bootstrap_success_count: u32,
     program_startup_bootstrap_elapsed_ms: u128,
+    program_startup_bootstrap_decode_attempt_elapsed_ms: u128,
+    program_startup_bootstrap_decode_error_counts: String,
+    program_startup_bootstrap_ffmpeg_exit_status: String,
+    program_startup_bootstrap_ffmpeg_stderr_summary: String,
+    program_startup_bootstrap_payload_bytes_min: Option<usize>,
+    program_startup_bootstrap_payload_bytes_max: usize,
+    program_startup_bootstrap_payload_bytes_avg: String,
+    program_startup_bootstrap_payload_nal_kinds: String,
+    program_startup_bootstrap_payload_has_sps_count: u32,
+    program_startup_bootstrap_payload_has_pps_count: u32,
+    program_startup_bootstrap_payload_has_idr_count: u32,
+    program_startup_bootstrap_frame_id_min: Option<u64>,
+    program_startup_bootstrap_frame_id_max: Option<u64>,
+    program_startup_bootstrap_slot_counts: String,
+    program_startup_bootstrap_client_counts: String,
+    program_startup_bootstrap_actual_decode_invoked_count: u32,
+    program_startup_bootstrap_decode_skipped_before_invoke_count: u32,
     program_startup_bootstrap_source_counts: String,
     program_startup_bootstrap_rejected_reason_counts: String,
     program_startup_bootstrap_used_for_first_render: bool,
@@ -8207,6 +8224,92 @@ fn format_program_startup_bootstrap_rejected_reason_counts(
     )
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ProgramStartupBootstrapDecodeErrorClass {
+    Failed,
+    DeferredEmptyPayload,
+    DeferredInvalidDimensions,
+    DeferredFfmpegUnavailable,
+    DeferredContinuousOneShotSuppressed,
+}
+
+fn program_startup_bootstrap_decode_error_class(
+    result: &SwitcherH264DecodeResult,
+) -> Option<ProgramStartupBootstrapDecodeErrorClass> {
+    match result {
+        SwitcherH264DecodeResult::Decoded(_) => None,
+        SwitcherH264DecodeResult::Failed(_) => {
+            Some(ProgramStartupBootstrapDecodeErrorClass::Failed)
+        }
+        SwitcherH264DecodeResult::Deferred { reason } => Some(match reason {
+            SwitcherH264DecodeDeferredReason::EmptyPayload => {
+                ProgramStartupBootstrapDecodeErrorClass::DeferredEmptyPayload
+            }
+            SwitcherH264DecodeDeferredReason::InvalidDimensions => {
+                ProgramStartupBootstrapDecodeErrorClass::DeferredInvalidDimensions
+            }
+            SwitcherH264DecodeDeferredReason::FfmpegUnavailable => {
+                ProgramStartupBootstrapDecodeErrorClass::DeferredFfmpegUnavailable
+            }
+            SwitcherH264DecodeDeferredReason::ContinuousOneShotSuppressed => {
+                ProgramStartupBootstrapDecodeErrorClass::DeferredContinuousOneShotSuppressed
+            }
+        }),
+    }
+}
+
+fn program_startup_bootstrap_decode_error_skipped_before_invoke(
+    class: ProgramStartupBootstrapDecodeErrorClass,
+) -> bool {
+    matches!(
+        class,
+        ProgramStartupBootstrapDecodeErrorClass::DeferredEmptyPayload
+            | ProgramStartupBootstrapDecodeErrorClass::DeferredInvalidDimensions
+            | ProgramStartupBootstrapDecodeErrorClass::DeferredFfmpegUnavailable
+            | ProgramStartupBootstrapDecodeErrorClass::DeferredContinuousOneShotSuppressed
+    )
+}
+
+fn format_program_startup_bootstrap_decode_error_counts(
+    failed: u32,
+    deferred_empty_payload: u32,
+    deferred_invalid_dimensions: u32,
+    deferred_ffmpeg_unavailable: u32,
+    deferred_continuous_one_shot_suppressed: u32,
+    unknown: u32,
+) -> String {
+    format!(
+        "failed:{}|deferred_empty_payload:{}|deferred_invalid_dimensions:{}|deferred_ffmpeg_unavailable:{}|deferred_continuous_one_shot_suppressed:{}|unknown:{}",
+        failed,
+        deferred_empty_payload,
+        deferred_invalid_dimensions,
+        deferred_ffmpeg_unavailable,
+        deferred_continuous_one_shot_suppressed,
+        unknown,
+    )
+}
+
+fn format_program_startup_bootstrap_slot_counts(slot0: u32, slot1: u32, unknown: u32) -> String {
+    format!("slot0:{}|slot1:{}|unknown:{}", slot0, slot1, unknown)
+}
+
+fn format_program_startup_bootstrap_client_counts(
+    client0_id: &ClientId,
+    client0_count: u32,
+    client1_id: &ClientId,
+    client1_count: u32,
+    unknown: u32,
+) -> String {
+    format!(
+        "{}:{}|{}:{}|unknown:{}",
+        sanitize_summary_value(&client0_id.0),
+        client0_count,
+        sanitize_summary_value(&client1_id.0),
+        client1_count,
+        unknown,
+    )
+}
+
 fn should_attempt_operator_low_cost_preview_refresh(
     operator_low_cost_preview_enabled: bool,
     refresh_interval: Option<NonZeroU32>,
@@ -8879,6 +8982,32 @@ where
     let mut program_startup_bootstrap_attempt_count = 0u32;
     let mut program_startup_bootstrap_success_count = 0u32;
     let mut program_startup_bootstrap_elapsed_ms = 0u128;
+    let mut program_startup_bootstrap_decode_attempt_elapsed_ms = 0u128;
+    let mut program_startup_bootstrap_decode_failed_count = 0u32;
+    let mut program_startup_bootstrap_decode_deferred_empty_payload_count = 0u32;
+    let mut program_startup_bootstrap_decode_deferred_invalid_dimensions_count = 0u32;
+    let mut program_startup_bootstrap_decode_deferred_ffmpeg_unavailable_count = 0u32;
+    let mut program_startup_bootstrap_decode_deferred_continuous_one_shot_suppressed_count = 0u32;
+    let program_startup_bootstrap_decode_unknown_count = 0u32;
+    let mut program_startup_bootstrap_ffmpeg_exit_status = None::<i32>;
+    let mut program_startup_bootstrap_ffmpeg_stderr_summary = None::<String>;
+    let mut program_startup_bootstrap_payload_bytes_min = None::<usize>;
+    let mut program_startup_bootstrap_payload_bytes_max = 0usize;
+    let mut program_startup_bootstrap_payload_bytes_total = 0usize;
+    let mut program_startup_bootstrap_payload_nal_kinds = "none".to_string();
+    let mut program_startup_bootstrap_payload_has_sps_count = 0u32;
+    let mut program_startup_bootstrap_payload_has_pps_count = 0u32;
+    let mut program_startup_bootstrap_payload_has_idr_count = 0u32;
+    let mut program_startup_bootstrap_frame_id_min = None::<u64>;
+    let mut program_startup_bootstrap_frame_id_max = None::<u64>;
+    let mut program_startup_bootstrap_slot0_count = 0u32;
+    let mut program_startup_bootstrap_slot1_count = 0u32;
+    let mut program_startup_bootstrap_slot_unknown_count = 0u32;
+    let mut program_startup_bootstrap_client0_count = 0u32;
+    let mut program_startup_bootstrap_client1_count = 0u32;
+    let mut program_startup_bootstrap_client_unknown_count = 0u32;
+    let mut program_startup_bootstrap_actual_decode_invoked_count = 0u32;
+    let mut program_startup_bootstrap_decode_skipped_before_invoke_count = 0u32;
     let mut program_startup_bootstrap_source_queue_count = 0u32;
     let mut program_startup_bootstrap_source_retained_keyframe_count = 0u32;
     let mut program_startup_bootstrap_source_none_count = 0u32;
@@ -9196,30 +9325,156 @@ where
                             }
                         }
                         let bootstrap_start = Instant::now();
-                        let decode_result = timed_decode_runtime.decode_annex_b_h264(
-                            program_startup_bootstrap_decode_input(selected_frame),
+                        let bootstrap_input =
+                            program_startup_bootstrap_decode_input(selected_frame);
+                        let bootstrap_payload_summary = SwitcherH264AnnexBPayloadInspectionBoundary
+                            .inspect_payload(&bootstrap_input.encoded_payload);
+                        program_startup_bootstrap_payload_bytes_min = Some(
+                            program_startup_bootstrap_payload_bytes_min
+                                .map_or(bootstrap_payload_summary.payload_len, |current| {
+                                    current.min(bootstrap_payload_summary.payload_len)
+                                }),
                         );
+                        program_startup_bootstrap_payload_bytes_max =
+                            program_startup_bootstrap_payload_bytes_max
+                                .max(bootstrap_payload_summary.payload_len);
+                        program_startup_bootstrap_payload_bytes_total =
+                            program_startup_bootstrap_payload_bytes_total
+                                .saturating_add(bootstrap_payload_summary.payload_len);
+                        program_startup_bootstrap_payload_nal_kinds =
+                            format_switcher_payload_nal_kinds(&bootstrap_payload_summary);
+                        if bootstrap_payload_summary.has_sps {
+                            program_startup_bootstrap_payload_has_sps_count =
+                                program_startup_bootstrap_payload_has_sps_count.saturating_add(1);
+                        }
+                        if bootstrap_payload_summary.has_pps {
+                            program_startup_bootstrap_payload_has_pps_count =
+                                program_startup_bootstrap_payload_has_pps_count.saturating_add(1);
+                        }
+                        if bootstrap_payload_summary.has_idr {
+                            program_startup_bootstrap_payload_has_idr_count =
+                                program_startup_bootstrap_payload_has_idr_count.saturating_add(1);
+                        }
+                        program_startup_bootstrap_frame_id_min = Some(
+                            program_startup_bootstrap_frame_id_min
+                                .map_or(selected_frame.frame_id, |current| {
+                                    current.min(selected_frame.frame_id)
+                                }),
+                        );
+                        program_startup_bootstrap_frame_id_max = Some(
+                            program_startup_bootstrap_frame_id_max
+                                .map_or(selected_frame.frame_id, |current| {
+                                    current.max(selected_frame.frame_id)
+                                }),
+                        );
+                        if selected_frame.client_id == client0_id
+                            && selected_frame.run_id == run0_id
+                        {
+                            program_startup_bootstrap_slot0_count =
+                                program_startup_bootstrap_slot0_count.saturating_add(1);
+                            program_startup_bootstrap_client0_count =
+                                program_startup_bootstrap_client0_count.saturating_add(1);
+                        } else if selected_frame.client_id == client1_id
+                            && selected_frame.run_id == run1_id
+                        {
+                            program_startup_bootstrap_slot1_count =
+                                program_startup_bootstrap_slot1_count.saturating_add(1);
+                            program_startup_bootstrap_client1_count =
+                                program_startup_bootstrap_client1_count.saturating_add(1);
+                        } else {
+                            program_startup_bootstrap_slot_unknown_count =
+                                program_startup_bootstrap_slot_unknown_count.saturating_add(1);
+                            program_startup_bootstrap_client_unknown_count =
+                                program_startup_bootstrap_client_unknown_count.saturating_add(1);
+                        }
+                        let decode_output = timed_decode_runtime
+                            .decode_annex_b_h264_with_diagnostics(bootstrap_input);
                         program_startup_bootstrap_elapsed_ms = program_startup_bootstrap_elapsed_ms
                             .saturating_add(bootstrap_start.elapsed().as_millis());
+                        program_startup_bootstrap_decode_attempt_elapsed_ms =
+                            program_startup_bootstrap_decode_attempt_elapsed_ms
+                                .saturating_add(bootstrap_start.elapsed().as_millis());
+                        let decode_result = decode_output.result;
+                        if matches!(
+                            decode_result,
+                            SwitcherH264DecodeResult::Decoded(_)
+                                | SwitcherH264DecodeResult::Failed(_)
+                        ) {
+                            program_startup_bootstrap_actual_decode_invoked_count =
+                                program_startup_bootstrap_actual_decode_invoked_count
+                                    .saturating_add(1);
+                        }
                         match decode_result {
                             SwitcherH264DecodeResult::Decoded(decoded) => {
                                 program_startup_bootstrap_success_count =
                                     program_startup_bootstrap_success_count.saturating_add(1);
                                 program_startup_bootstrap_frame = Some(decoded);
                             }
-                            _ => count_program_startup_bootstrap_rejected_reason(
-                                ProgramStartupBootstrapRejectedReason::DecodeFailed,
-                                &mut program_startup_bootstrap_rejected_disabled_count,
-                                &mut program_startup_bootstrap_rejected_not_explicit_selection_count,
-                                &mut program_startup_bootstrap_rejected_after_first_render_count,
-                                &mut program_startup_bootstrap_rejected_no_selected_frame_count,
-                                &mut program_startup_bootstrap_rejected_no_keyframe_candidate_count,
-                                &mut program_startup_bootstrap_rejected_continuous_latest_preferred_count,
-                                &mut program_startup_bootstrap_rejected_last_valid_preferred_count,
-                                &mut program_startup_bootstrap_rejected_selected_decoded_preferred_count,
-                                &mut program_startup_bootstrap_rejected_decode_failed_count,
-                                &mut program_startup_bootstrap_rejected_unknown_count,
-                            ),
+                            failed_or_deferred => {
+                                if let Some(class) = program_startup_bootstrap_decode_error_class(
+                                    &failed_or_deferred,
+                                ) {
+                                    if program_startup_bootstrap_decode_error_skipped_before_invoke(
+                                        class,
+                                    ) {
+                                        program_startup_bootstrap_decode_skipped_before_invoke_count =
+                                            program_startup_bootstrap_decode_skipped_before_invoke_count
+                                                .saturating_add(1);
+                                    }
+                                    match class {
+                                        ProgramStartupBootstrapDecodeErrorClass::Failed => {
+                                            program_startup_bootstrap_decode_failed_count =
+                                                program_startup_bootstrap_decode_failed_count
+                                                    .saturating_add(1);
+                                        }
+                                        ProgramStartupBootstrapDecodeErrorClass::DeferredEmptyPayload => {
+                                            program_startup_bootstrap_decode_deferred_empty_payload_count =
+                                                program_startup_bootstrap_decode_deferred_empty_payload_count
+                                                    .saturating_add(1);
+                                        }
+                                        ProgramStartupBootstrapDecodeErrorClass::DeferredInvalidDimensions => {
+                                            program_startup_bootstrap_decode_deferred_invalid_dimensions_count =
+                                                program_startup_bootstrap_decode_deferred_invalid_dimensions_count
+                                                    .saturating_add(1);
+                                        }
+                                        ProgramStartupBootstrapDecodeErrorClass::DeferredFfmpegUnavailable => {
+                                            program_startup_bootstrap_decode_deferred_ffmpeg_unavailable_count =
+                                                program_startup_bootstrap_decode_deferred_ffmpeg_unavailable_count
+                                                    .saturating_add(1);
+                                        }
+                                        ProgramStartupBootstrapDecodeErrorClass::DeferredContinuousOneShotSuppressed => {
+                                            program_startup_bootstrap_decode_deferred_continuous_one_shot_suppressed_count =
+                                                program_startup_bootstrap_decode_deferred_continuous_one_shot_suppressed_count
+                                                    .saturating_add(1);
+                                        }
+                                    }
+                                }
+                                if let SwitcherH264DecodeResult::Failed(failure) =
+                                    &failed_or_deferred
+                                {
+                                    program_startup_bootstrap_ffmpeg_exit_status =
+                                        failure.ffmpeg_exit_status;
+                                    if let Some(stderr_summary) =
+                                        failure.ffmpeg_stderr_summary.as_ref()
+                                    {
+                                        program_startup_bootstrap_ffmpeg_stderr_summary =
+                                            Some(stderr_summary.clone());
+                                    }
+                                }
+                                count_program_startup_bootstrap_rejected_reason(
+                                    ProgramStartupBootstrapRejectedReason::DecodeFailed,
+                                    &mut program_startup_bootstrap_rejected_disabled_count,
+                                    &mut program_startup_bootstrap_rejected_not_explicit_selection_count,
+                                    &mut program_startup_bootstrap_rejected_after_first_render_count,
+                                    &mut program_startup_bootstrap_rejected_no_selected_frame_count,
+                                    &mut program_startup_bootstrap_rejected_no_keyframe_candidate_count,
+                                    &mut program_startup_bootstrap_rejected_continuous_latest_preferred_count,
+                                    &mut program_startup_bootstrap_rejected_last_valid_preferred_count,
+                                    &mut program_startup_bootstrap_rejected_selected_decoded_preferred_count,
+                                    &mut program_startup_bootstrap_rejected_decode_failed_count,
+                                    &mut program_startup_bootstrap_rejected_unknown_count,
+                                )
+                            }
                         }
                     } else {
                         count_program_startup_bootstrap_rejected_reason(
@@ -9956,10 +10211,10 @@ where
         actual_pipe_path,
         preview_mode: format_handoff_mode(read_mode),
         read_mode: format_handoff_read_mode(handoff_read_mode_from_switcher_mode(read_mode)),
-        client0_id,
-        run0_id,
-        client1_id,
-        run1_id,
+        client0_id: client0_id.clone(),
+        run0_id: run0_id.clone(),
+        client1_id: client1_id.clone(),
+        run1_id: run1_id.clone(),
         frames_attempted,
         frames_rendered,
         render_failures,
@@ -10736,6 +10991,49 @@ where
         program_startup_bootstrap_attempt_count,
         program_startup_bootstrap_success_count,
         program_startup_bootstrap_elapsed_ms,
+        program_startup_bootstrap_decode_attempt_elapsed_ms,
+        program_startup_bootstrap_decode_error_counts:
+            format_program_startup_bootstrap_decode_error_counts(
+                program_startup_bootstrap_decode_failed_count,
+                program_startup_bootstrap_decode_deferred_empty_payload_count,
+                program_startup_bootstrap_decode_deferred_invalid_dimensions_count,
+                program_startup_bootstrap_decode_deferred_ffmpeg_unavailable_count,
+                program_startup_bootstrap_decode_deferred_continuous_one_shot_suppressed_count,
+                program_startup_bootstrap_decode_unknown_count,
+            ),
+        program_startup_bootstrap_ffmpeg_exit_status: program_startup_bootstrap_ffmpeg_exit_status
+            .map(|status| status.to_string())
+            .unwrap_or_else(|| "none".to_string()),
+        program_startup_bootstrap_ffmpeg_stderr_summary:
+            program_startup_bootstrap_ffmpeg_stderr_summary
+                .clone()
+                .unwrap_or_else(|| "none".to_string()),
+        program_startup_bootstrap_payload_bytes_min,
+        program_startup_bootstrap_payload_bytes_max,
+        program_startup_bootstrap_payload_bytes_avg: format_preview_loop_average_usize(
+            program_startup_bootstrap_payload_bytes_total,
+            program_startup_bootstrap_attempt_count,
+        ),
+        program_startup_bootstrap_payload_nal_kinds,
+        program_startup_bootstrap_payload_has_sps_count,
+        program_startup_bootstrap_payload_has_pps_count,
+        program_startup_bootstrap_payload_has_idr_count,
+        program_startup_bootstrap_frame_id_min,
+        program_startup_bootstrap_frame_id_max,
+        program_startup_bootstrap_slot_counts: format_program_startup_bootstrap_slot_counts(
+            program_startup_bootstrap_slot0_count,
+            program_startup_bootstrap_slot1_count,
+            program_startup_bootstrap_slot_unknown_count,
+        ),
+        program_startup_bootstrap_client_counts: format_program_startup_bootstrap_client_counts(
+            &client0_id,
+            program_startup_bootstrap_client0_count,
+            &client1_id,
+            program_startup_bootstrap_client1_count,
+            program_startup_bootstrap_client_unknown_count,
+        ),
+        program_startup_bootstrap_actual_decode_invoked_count,
+        program_startup_bootstrap_decode_skipped_before_invoke_count,
         program_startup_bootstrap_source_counts: format_program_startup_selected_frame_source_counts(
             program_startup_bootstrap_source_queue_count,
             program_startup_bootstrap_source_retained_keyframe_count,
@@ -15630,7 +15928,7 @@ fn format_four_view_two_real_handoff_preview_loop_summary(
         format_optional_u32(summary.output_height),
     );
     format!(
-        "{summary_line} continuous_decode_ffmpeg_low_latency_args_enabled={} continuous_decode_ffmpeg_probe_args_enabled={} continuous_decode_ffmpeg_loglevel={} continuous_decode_stdout_first_byte_seen={} continuous_decode_stdout_first_byte_elapsed_ms={} continuous_decode_stdout_partial_bytes_read={} continuous_decode_stdout_partial_read_count={} continuous_decode_stdout_expected_frame_bytes={} continuous_decode_stdout_read_waiting_for_full_frame={} continuous_feed_enabled={} continuous_feed_attempt_count={} continuous_feed_handoff_request_count={} continuous_feed_frame_received_count={} continuous_feed_no_frame_count={} continuous_feed_handoff_error_count={} continuous_feed_enqueued_count={} continuous_feed_skipped_count={} continuous_feed_skip_reason_counts={} continuous_feed_dropped_stale_input_count={} continuous_feed_latest_received_frame_id={} continuous_feed_latest_enqueued_frame_id={} continuous_decode_input_from_feeder_count={} continuous_decode_input_from_render_demand_count={} continuous_decode_feeder_lag_to_selected={} continuous_decode_render_exact_hit_count={} continuous_decode_render_miss_stale_count={} continuous_decode_render_miss_not_ready_count={} continuous_decode_bounded_lookup_enabled={} continuous_decode_bounded_lookup_allowed_lag_frames={} continuous_decode_bounded_lookup_hit_count={} continuous_decode_bounded_lookup_used_frame_id={} continuous_decode_bounded_lookup_requested_frame_id={} continuous_decode_bounded_lookup_lag_frames={} continuous_decode_bounded_lookup_rejected_stale_count={} continuous_decode_bounded_lookup_rejected_future_count={} continuous_decode_bounded_lookup_rejected_not_ready_count={} continuous_decode_output_availability_not_ready_count={} continuous_decode_output_availability_stale_count={} continuous_decode_output_availability_future_count={} continuous_decode_bounded_lookup_fallback_to_one_shot_count={} continuous_decode_render_used_exact_count={} continuous_decode_render_used_bounded_lag_count={} continuous_decode_pending_correspondence_count={} continuous_decode_pending_correspondence_age_ms_max={} continuous_decode_pending_correspondence_age_ms_avg={} continuous_decode_pending_correspondence_oldest_frame_id={} continuous_decode_pending_correspondence_newest_frame_id={} continuous_decode_completed_correspondence_count={} continuous_decode_completed_correspondence_latency_ms_avg={} continuous_decode_completed_correspondence_latency_ms_max={} continuous_decode_completed_correspondence_latency_slow_count={} continuous_decode_completed_correspondence_latency_slow_threshold_ms={} continuous_decode_completed_correspondence_frame_id_min={} continuous_decode_completed_correspondence_frame_id_max={} continuous_decode_completed_correspondence_latest_latency_ms={} continuous_decode_latest_input_minus_latest_output_lag={} continuous_decode_latest_input_to_output_frame_gap={} continuous_decode_pending_correspondence_frame_id_min={} continuous_decode_pending_correspondence_frame_id_max={} continuous_decode_input_to_output_lag_frames_max={} continuous_decode_output_lag_to_selected_frames={} continuous_decode_latest_selected_to_output_frame_gap={} continuous_decode_output_throughput_fps={} continuous_decode_reader_full_frame_elapsed_ms_max={} continuous_decode_reader_full_frame_elapsed_ms_avg={} continuous_decode_reader_full_frame_slow_count={} continuous_decode_reader_full_frame_slow_threshold_ms={} continuous_decode_output_bytes_total={} continuous_decode_output_bytes_per_sec={} continuous_decode_output_frame_interval_ms_avg={} continuous_decode_output_frame_interval_ms_max={} continuous_decode_stdout_read_throughput_bytes_per_ms={} continuous_decode_ffmpeg_scale_enabled={} continuous_decode_ffmpeg_output_pixel_format={} continuous_decode_output_pipeline_experiment_mode={} continuous_decode_output_pipeline_scale_mode={} continuous_decode_output_source_width={} continuous_decode_output_source_height={} continuous_decode_output_scaled_width={} continuous_decode_output_scaled_height={} continuous_decode_output_scale_removed_count={} continuous_decode_output_scale_path_experiment_enabled={} continuous_decode_output_bytes_per_frame={} continuous_decode_output_pipe_bytes_saved_per_frame={} continuous_decode_output_pixel_convert_elapsed_ms={} continuous_decode_output_pixel_convert_elapsed_ms_max={} continuous_decode_output_pixel_convert_count={} continuous_decode_output_pixel_convert_buffer_reuse_count={} continuous_decode_output_pixel_convert_buffer_allocation_count={} continuous_decode_output_pixel_convert_bytes_written_total={} continuous_decode_output_pixel_convert_bytes_written_per_frame={} continuous_decode_output_pixel_convert_mode={} continuous_decode_competing_one_shot_decode_elapsed_ms={} continuous_decode_competing_one_shot_attempt_count={} continuous_decode_slot0_one_shot_suppression_enabled={} continuous_decode_slot0_one_shot_suppressed_count={} continuous_decode_slot0_one_shot_suppressed_reason_counts={} continuous_decode_slot0_one_shot_suppressed_render_safety_counts={} continuous_decode_slot0_one_shot_suppressed_continuous_not_ready_count={} continuous_decode_slot0_one_shot_suppressed_stale_count={} continuous_decode_queue_drop_reason_counts={} program_output_enabled={} program_output_selection_mode={} program_output_requested_client_id={} program_output_render_count={} program_output_missing_selected_source_count={} program_output_missing_before_first_render_count={} program_output_missing_after_first_render_count={} program_output_reused_previous_frame_count={} program_output_placeholder_render_count={} program_output_black_frame_render_count={} program_output_first_render_attempt_index={} program_output_first_render_elapsed_ms={} program_output_missing_selected_source_reason={} program_output_last_result_kind={} program_output_selected_client_id={} program_output_selected_slot_index={} program_output_window_title={} program_selection_resolved_elapsed_ms={} program_continuous_source_resolved_elapsed_ms={} program_first_source_frame_seen_elapsed_ms={} program_first_continuous_input_elapsed_ms={} program_first_continuous_output_elapsed_ms={} program_first_renderable_decoded_frame_elapsed_ms={} program_first_render_waiting_for_decode_count={} program_first_render_missing_reason_counts={} program_startup_one_shot_fallback_allowed={} program_startup_one_shot_fallback_attempt_count={} program_startup_one_shot_fallback_suppressed_count={} program_startup_one_shot_fallback_blocked_reason_counts={} program_startup_selected_frame_keyframe_available_count={} program_startup_selected_frame_source_counts={} program_startup_retained_keyframe_available_count={} program_startup_one_shot_candidate_count={} program_startup_one_shot_candidate_rejected_count={} program_startup_one_shot_candidate_rejected_reason_counts={} program_startup_bootstrap_enabled={} program_startup_bootstrap_attempt_count={} program_startup_bootstrap_success_count={} program_startup_bootstrap_elapsed_ms={} program_startup_bootstrap_source_counts={} program_startup_bootstrap_rejected_reason_counts={} program_startup_bootstrap_used_for_first_render={} program_startup_continuous_pending_count={} program_startup_no_selected_source_count={} program_startup_no_decoded_frame_count={} program_startup_latest_continuous_available_count={} program_startup_latest_continuous_rejected_count={} program_startup_source_identity_mismatch_count={} program_decode_mode={} program_continuous_decode_enabled={} program_continuous_decode_mode={} program_continuous_decode_output_frame_count={} program_continuous_decode_lookup_hit_count={} program_continuous_decode_lookup_miss_count={} program_render_used_continuous_decoded_count={} program_render_used_continuous_latest_count={} program_render_used_continuous_exact_count={} program_render_used_continuous_stale_but_accepted_count={} program_render_used_one_shot_fallback_count={} program_continuous_latest_frame_id={} program_continuous_selected_frame_lag={} program_continuous_latest_output_age_ms={} program_decode_fps={} program_selected_source_frame_lag={} program_first_validation_enabled={} program_first_suppressed_preview_one_shot_decode_count={} program_first_suppressed_preview_one_shot_decode_slot_counts={} program_first_program_only_decode_path_enabled={} program_first_remaining_one_shot_decode_count={} program_first_preview_visible={} program_first_preview_refresh_interval={} program_first_preview_refresh_count={} program_first_preview_suppressed_count={} operator_low_cost_preview_enabled={} operator_preview_refresh_interval_ticks={} operator_preview_refresh_attempt_count={} operator_preview_refresh_success_count={} operator_preview_refresh_skipped_count={} operator_preview_used_stale_frame_count={} operator_preview_forced_one_shot_decode_count={} operator_preview_render_effective_fps={} operator_preview_decode_refresh_enabled={} operator_preview_decode_refresh_interval_ticks={} operator_preview_decode_refresh_attempt_count={} operator_preview_decode_refresh_success_count={} operator_preview_decode_refresh_skipped_count={} operator_preview_decode_refresh_source_counts={} operator_preview_decode_refresh_elapsed_ms={} operator_preview_decode_refresh_budget_exceeded_count={} operator_preview_non_program_visible_count={} operator_preview_reused_program_frame_count={} operator_preview_program_slot_visible_count={} operator_preview_program_slot_reuse_source={} operator_preview_program_slot_black_count={} operator_preview_snapshot_retention_enabled={} operator_preview_snapshot_reuse_count={} operator_preview_snapshot_reuse_slot_counts={} operator_preview_snapshot_created_count={} operator_preview_snapshot_created_slot_counts={} operator_preview_placeholder_avoided_by_snapshot_count={} operator_preview_slot_black_after_snapshot_count={} operator_preview_program_fps_impact_estimate={} preview_compose_skipped_for_program_count={} preview_compose_reused_for_program_count={} program_render_loop_attempt_count={} program_window_render_success_count={} program_window_render_failure_count={} program_render_effective_fps={} effective_program_render_fps={}",
+        "{summary_line} continuous_decode_ffmpeg_low_latency_args_enabled={} continuous_decode_ffmpeg_probe_args_enabled={} continuous_decode_ffmpeg_loglevel={} continuous_decode_stdout_first_byte_seen={} continuous_decode_stdout_first_byte_elapsed_ms={} continuous_decode_stdout_partial_bytes_read={} continuous_decode_stdout_partial_read_count={} continuous_decode_stdout_expected_frame_bytes={} continuous_decode_stdout_read_waiting_for_full_frame={} continuous_feed_enabled={} continuous_feed_attempt_count={} continuous_feed_handoff_request_count={} continuous_feed_frame_received_count={} continuous_feed_no_frame_count={} continuous_feed_handoff_error_count={} continuous_feed_enqueued_count={} continuous_feed_skipped_count={} continuous_feed_skip_reason_counts={} continuous_feed_dropped_stale_input_count={} continuous_feed_latest_received_frame_id={} continuous_feed_latest_enqueued_frame_id={} continuous_decode_input_from_feeder_count={} continuous_decode_input_from_render_demand_count={} continuous_decode_feeder_lag_to_selected={} continuous_decode_render_exact_hit_count={} continuous_decode_render_miss_stale_count={} continuous_decode_render_miss_not_ready_count={} continuous_decode_bounded_lookup_enabled={} continuous_decode_bounded_lookup_allowed_lag_frames={} continuous_decode_bounded_lookup_hit_count={} continuous_decode_bounded_lookup_used_frame_id={} continuous_decode_bounded_lookup_requested_frame_id={} continuous_decode_bounded_lookup_lag_frames={} continuous_decode_bounded_lookup_rejected_stale_count={} continuous_decode_bounded_lookup_rejected_future_count={} continuous_decode_bounded_lookup_rejected_not_ready_count={} continuous_decode_output_availability_not_ready_count={} continuous_decode_output_availability_stale_count={} continuous_decode_output_availability_future_count={} continuous_decode_bounded_lookup_fallback_to_one_shot_count={} continuous_decode_render_used_exact_count={} continuous_decode_render_used_bounded_lag_count={} continuous_decode_pending_correspondence_count={} continuous_decode_pending_correspondence_age_ms_max={} continuous_decode_pending_correspondence_age_ms_avg={} continuous_decode_pending_correspondence_oldest_frame_id={} continuous_decode_pending_correspondence_newest_frame_id={} continuous_decode_completed_correspondence_count={} continuous_decode_completed_correspondence_latency_ms_avg={} continuous_decode_completed_correspondence_latency_ms_max={} continuous_decode_completed_correspondence_latency_slow_count={} continuous_decode_completed_correspondence_latency_slow_threshold_ms={} continuous_decode_completed_correspondence_frame_id_min={} continuous_decode_completed_correspondence_frame_id_max={} continuous_decode_completed_correspondence_latest_latency_ms={} continuous_decode_latest_input_minus_latest_output_lag={} continuous_decode_latest_input_to_output_frame_gap={} continuous_decode_pending_correspondence_frame_id_min={} continuous_decode_pending_correspondence_frame_id_max={} continuous_decode_input_to_output_lag_frames_max={} continuous_decode_output_lag_to_selected_frames={} continuous_decode_latest_selected_to_output_frame_gap={} continuous_decode_output_throughput_fps={} continuous_decode_reader_full_frame_elapsed_ms_max={} continuous_decode_reader_full_frame_elapsed_ms_avg={} continuous_decode_reader_full_frame_slow_count={} continuous_decode_reader_full_frame_slow_threshold_ms={} continuous_decode_output_bytes_total={} continuous_decode_output_bytes_per_sec={} continuous_decode_output_frame_interval_ms_avg={} continuous_decode_output_frame_interval_ms_max={} continuous_decode_stdout_read_throughput_bytes_per_ms={} continuous_decode_ffmpeg_scale_enabled={} continuous_decode_ffmpeg_output_pixel_format={} continuous_decode_output_pipeline_experiment_mode={} continuous_decode_output_pipeline_scale_mode={} continuous_decode_output_source_width={} continuous_decode_output_source_height={} continuous_decode_output_scaled_width={} continuous_decode_output_scaled_height={} continuous_decode_output_scale_removed_count={} continuous_decode_output_scale_path_experiment_enabled={} continuous_decode_output_bytes_per_frame={} continuous_decode_output_pipe_bytes_saved_per_frame={} continuous_decode_output_pixel_convert_elapsed_ms={} continuous_decode_output_pixel_convert_elapsed_ms_max={} continuous_decode_output_pixel_convert_count={} continuous_decode_output_pixel_convert_buffer_reuse_count={} continuous_decode_output_pixel_convert_buffer_allocation_count={} continuous_decode_output_pixel_convert_bytes_written_total={} continuous_decode_output_pixel_convert_bytes_written_per_frame={} continuous_decode_output_pixel_convert_mode={} continuous_decode_competing_one_shot_decode_elapsed_ms={} continuous_decode_competing_one_shot_attempt_count={} continuous_decode_slot0_one_shot_suppression_enabled={} continuous_decode_slot0_one_shot_suppressed_count={} continuous_decode_slot0_one_shot_suppressed_reason_counts={} continuous_decode_slot0_one_shot_suppressed_render_safety_counts={} continuous_decode_slot0_one_shot_suppressed_continuous_not_ready_count={} continuous_decode_slot0_one_shot_suppressed_stale_count={} continuous_decode_queue_drop_reason_counts={} program_output_enabled={} program_output_selection_mode={} program_output_requested_client_id={} program_output_render_count={} program_output_missing_selected_source_count={} program_output_missing_before_first_render_count={} program_output_missing_after_first_render_count={} program_output_reused_previous_frame_count={} program_output_placeholder_render_count={} program_output_black_frame_render_count={} program_output_first_render_attempt_index={} program_output_first_render_elapsed_ms={} program_output_missing_selected_source_reason={} program_output_last_result_kind={} program_output_selected_client_id={} program_output_selected_slot_index={} program_output_window_title={} program_selection_resolved_elapsed_ms={} program_continuous_source_resolved_elapsed_ms={} program_first_source_frame_seen_elapsed_ms={} program_first_continuous_input_elapsed_ms={} program_first_continuous_output_elapsed_ms={} program_first_renderable_decoded_frame_elapsed_ms={} program_first_render_waiting_for_decode_count={} program_first_render_missing_reason_counts={} program_startup_one_shot_fallback_allowed={} program_startup_one_shot_fallback_attempt_count={} program_startup_one_shot_fallback_suppressed_count={} program_startup_one_shot_fallback_blocked_reason_counts={} program_startup_selected_frame_keyframe_available_count={} program_startup_selected_frame_source_counts={} program_startup_retained_keyframe_available_count={} program_startup_one_shot_candidate_count={} program_startup_one_shot_candidate_rejected_count={} program_startup_one_shot_candidate_rejected_reason_counts={} program_startup_bootstrap_enabled={} program_startup_bootstrap_attempt_count={} program_startup_bootstrap_success_count={} program_startup_bootstrap_elapsed_ms={} program_startup_bootstrap_decode_attempt_elapsed_ms={} program_startup_bootstrap_decode_error_counts={} program_startup_bootstrap_ffmpeg_exit_status={} program_startup_bootstrap_ffmpeg_stderr_summary={} program_startup_bootstrap_payload_bytes_min={} program_startup_bootstrap_payload_bytes_max={} program_startup_bootstrap_payload_bytes_avg={} program_startup_bootstrap_payload_nal_kinds={} program_startup_bootstrap_payload_has_sps_count={} program_startup_bootstrap_payload_has_pps_count={} program_startup_bootstrap_payload_has_idr_count={} program_startup_bootstrap_frame_id_min={} program_startup_bootstrap_frame_id_max={} program_startup_bootstrap_slot_counts={} program_startup_bootstrap_client_counts={} program_startup_bootstrap_actual_decode_invoked_count={} program_startup_bootstrap_decode_skipped_before_invoke_count={} program_startup_bootstrap_source_counts={} program_startup_bootstrap_rejected_reason_counts={} program_startup_bootstrap_used_for_first_render={} program_startup_continuous_pending_count={} program_startup_no_selected_source_count={} program_startup_no_decoded_frame_count={} program_startup_latest_continuous_available_count={} program_startup_latest_continuous_rejected_count={} program_startup_source_identity_mismatch_count={} program_decode_mode={} program_continuous_decode_enabled={} program_continuous_decode_mode={} program_continuous_decode_output_frame_count={} program_continuous_decode_lookup_hit_count={} program_continuous_decode_lookup_miss_count={} program_render_used_continuous_decoded_count={} program_render_used_continuous_latest_count={} program_render_used_continuous_exact_count={} program_render_used_continuous_stale_but_accepted_count={} program_render_used_one_shot_fallback_count={} program_continuous_latest_frame_id={} program_continuous_selected_frame_lag={} program_continuous_latest_output_age_ms={} program_decode_fps={} program_selected_source_frame_lag={} program_first_validation_enabled={} program_first_suppressed_preview_one_shot_decode_count={} program_first_suppressed_preview_one_shot_decode_slot_counts={} program_first_program_only_decode_path_enabled={} program_first_remaining_one_shot_decode_count={} program_first_preview_visible={} program_first_preview_refresh_interval={} program_first_preview_refresh_count={} program_first_preview_suppressed_count={} operator_low_cost_preview_enabled={} operator_preview_refresh_interval_ticks={} operator_preview_refresh_attempt_count={} operator_preview_refresh_success_count={} operator_preview_refresh_skipped_count={} operator_preview_used_stale_frame_count={} operator_preview_forced_one_shot_decode_count={} operator_preview_render_effective_fps={} operator_preview_decode_refresh_enabled={} operator_preview_decode_refresh_interval_ticks={} operator_preview_decode_refresh_attempt_count={} operator_preview_decode_refresh_success_count={} operator_preview_decode_refresh_skipped_count={} operator_preview_decode_refresh_source_counts={} operator_preview_decode_refresh_elapsed_ms={} operator_preview_decode_refresh_budget_exceeded_count={} operator_preview_non_program_visible_count={} operator_preview_reused_program_frame_count={} operator_preview_program_slot_visible_count={} operator_preview_program_slot_reuse_source={} operator_preview_program_slot_black_count={} operator_preview_snapshot_retention_enabled={} operator_preview_snapshot_reuse_count={} operator_preview_snapshot_reuse_slot_counts={} operator_preview_snapshot_created_count={} operator_preview_snapshot_created_slot_counts={} operator_preview_placeholder_avoided_by_snapshot_count={} operator_preview_slot_black_after_snapshot_count={} operator_preview_program_fps_impact_estimate={} preview_compose_skipped_for_program_count={} preview_compose_reused_for_program_count={} program_render_loop_attempt_count={} program_window_render_success_count={} program_window_render_failure_count={} program_render_effective_fps={} effective_program_render_fps={}",
         summary.continuous_decode_ffmpeg_low_latency_args_enabled,
         summary.continuous_decode_ffmpeg_probe_args_enabled,
         sanitize_summary_value(&summary.continuous_decode_ffmpeg_loglevel),
@@ -15781,6 +16079,23 @@ fn format_four_view_two_real_handoff_preview_loop_summary(
         summary.program_startup_bootstrap_attempt_count,
         summary.program_startup_bootstrap_success_count,
         summary.program_startup_bootstrap_elapsed_ms,
+        summary.program_startup_bootstrap_decode_attempt_elapsed_ms,
+        summary.program_startup_bootstrap_decode_error_counts,
+        sanitize_summary_value(&summary.program_startup_bootstrap_ffmpeg_exit_status),
+        sanitize_summary_value(&summary.program_startup_bootstrap_ffmpeg_stderr_summary),
+        format_optional_usize(summary.program_startup_bootstrap_payload_bytes_min),
+        summary.program_startup_bootstrap_payload_bytes_max,
+        summary.program_startup_bootstrap_payload_bytes_avg,
+        summary.program_startup_bootstrap_payload_nal_kinds,
+        summary.program_startup_bootstrap_payload_has_sps_count,
+        summary.program_startup_bootstrap_payload_has_pps_count,
+        summary.program_startup_bootstrap_payload_has_idr_count,
+        format_optional_u64(summary.program_startup_bootstrap_frame_id_min),
+        format_optional_u64(summary.program_startup_bootstrap_frame_id_max),
+        summary.program_startup_bootstrap_slot_counts,
+        summary.program_startup_bootstrap_client_counts,
+        summary.program_startup_bootstrap_actual_decode_invoked_count,
+        summary.program_startup_bootstrap_decode_skipped_before_invoke_count,
         summary.program_startup_bootstrap_source_counts,
         summary.program_startup_bootstrap_rejected_reason_counts,
         summary.program_startup_bootstrap_used_for_first_render,
@@ -16967,8 +17282,8 @@ mod tests {
         SwitcherFourViewManualPreviewProofFixtureMode,
         SwitcherFourViewManualPreviewRenderFacingKind,
         SwitcherFourViewManualPreviewWindowRenderKind, SwitcherFourViewQuadLayoutPolicy,
-        SwitcherH264DecodeDeferredReason, SwitcherH264DecodeInput, SwitcherH264DecodeResult,
-        SwitcherH264DecodeRuntimeHook, SwitcherH264DecodeSourceIdentity,
+        SwitcherH264DecodeDeferredReason, SwitcherH264DecodeFailure, SwitcherH264DecodeInput,
+        SwitcherH264DecodeResult, SwitcherH264DecodeRuntimeHook, SwitcherH264DecodeSourceIdentity,
         SwitcherNamedPipeQueuedFrameHandoffRequestOutput,
         SwitcherNamedPipeQueuedFrameHandoffRequestStatus,
         SwitcherNamedPipeQueuedFrameHandoffRequestSummary,
@@ -16996,7 +17311,10 @@ mod tests {
         format_handoff_read_mode, format_named_pipe_handoff_switcher_result_summary,
         format_named_pipe_handoff_switcher_summary,
         format_program_first_render_missing_reason_counts,
+        format_program_startup_bootstrap_client_counts,
+        format_program_startup_bootstrap_decode_error_counts,
         format_program_startup_bootstrap_rejected_reason_counts,
+        format_program_startup_bootstrap_slot_counts,
         format_program_startup_one_shot_reason_counts,
         format_program_startup_selected_frame_source_counts,
         four_view_clean_output_window_loop_frame_cadence, handoff_read_mode_from_switcher_mode,
@@ -17009,6 +17327,8 @@ mod tests {
         parse_handoff_mode_or_exit, parse_optional_four_view_control_script,
         parse_optional_real_handoff_preview_mode_or_exit, parse_positive_u32_arg,
         preview_target_time_mode_from_switcher_mode, process_four_view_operator_wrapper_key,
+        program_startup_bootstrap_decode_error_class,
+        program_startup_bootstrap_decode_error_skipped_before_invoke,
         program_startup_bootstrap_rejection_reason, read_length_prefixed_utf8_message,
         recycle_obs_render_buffer, run_four_view_clean_output_window_loop_with_runtime_and_sleep,
         run_four_view_clean_output_window_with_runtime,
@@ -20858,6 +21178,83 @@ mod tests {
     }
 
     #[test]
+    fn program_startup_bootstrap_decode_diagnostic_counts_format_expected_fields() {
+        assert_eq!(
+            format_program_startup_bootstrap_decode_error_counts(1, 2, 3, 5, 7, 11),
+            "failed:1|deferred_empty_payload:2|deferred_invalid_dimensions:3|deferred_ffmpeg_unavailable:5|deferred_continuous_one_shot_suppressed:7|unknown:11"
+        );
+        assert_eq!(
+            format_program_startup_bootstrap_slot_counts(13, 17, 19),
+            "slot0:13|slot1:17|unknown:19"
+        );
+        assert_eq!(
+            format_program_startup_bootstrap_client_counts(
+                &ClientId("real client 0".to_string()),
+                23,
+                &ClientId("real|client,1".to_string()),
+                29,
+                31,
+            ),
+            "real_client_0:23|real_client_1:29|unknown:31"
+        );
+    }
+
+    #[test]
+    fn program_startup_bootstrap_decode_classification_distinguishes_deferred_from_failed() {
+        let input = SwitcherH264DecodeInput {
+            encoded_payload: vec![0, 0, 1, 0x65],
+            width: 2,
+            height: 1,
+            scaled_output_enabled: true,
+            scaled_output_reason: Some("two_real_slot_size".to_string()),
+            source_identity: None,
+        };
+        let failed = SwitcherH264DecodeResult::Failed(SwitcherH264DecodeFailure::from_input(
+            &input,
+            "fixture ffmpeg failed".to_string(),
+            0,
+            Some(1),
+            Some("fixture stderr".to_string()),
+        ));
+        let empty_payload = SwitcherH264DecodeResult::Deferred {
+            reason: SwitcherH264DecodeDeferredReason::EmptyPayload,
+        };
+        let suppressed = SwitcherH264DecodeResult::Deferred {
+            reason: SwitcherH264DecodeDeferredReason::ContinuousOneShotSuppressed,
+        };
+
+        assert_eq!(
+            program_startup_bootstrap_decode_error_class(&failed),
+            Some(super::ProgramStartupBootstrapDecodeErrorClass::Failed)
+        );
+        assert_eq!(
+            program_startup_bootstrap_decode_error_class(&empty_payload),
+            Some(super::ProgramStartupBootstrapDecodeErrorClass::DeferredEmptyPayload)
+        );
+        assert_eq!(
+            program_startup_bootstrap_decode_error_class(&suppressed),
+            Some(
+                super::ProgramStartupBootstrapDecodeErrorClass::DeferredContinuousOneShotSuppressed
+            )
+        );
+        assert!(
+            !program_startup_bootstrap_decode_error_skipped_before_invoke(
+                super::ProgramStartupBootstrapDecodeErrorClass::Failed,
+            )
+        );
+        assert!(
+            program_startup_bootstrap_decode_error_skipped_before_invoke(
+                super::ProgramStartupBootstrapDecodeErrorClass::DeferredEmptyPayload,
+            )
+        );
+        assert!(
+            program_startup_bootstrap_decode_error_skipped_before_invoke(
+                super::ProgramStartupBootstrapDecodeErrorClass::DeferredContinuousOneShotSuppressed,
+            )
+        );
+    }
+
+    #[test]
     fn program_startup_bootstrap_rejection_reason_guards_opt_in_and_priority() {
         let frame = SwitcherSingleViewSelectedEncodedFrame {
             client_id: ClientId("real-client-0".to_string()),
@@ -21414,6 +21811,29 @@ mod tests {
         assert!(formatted.contains("program_startup_bootstrap_attempt_count=0"));
         assert!(formatted.contains("program_startup_bootstrap_success_count=0"));
         assert!(formatted.contains("program_startup_bootstrap_elapsed_ms=0"));
+        assert!(formatted.contains("program_startup_bootstrap_decode_attempt_elapsed_ms=0"));
+        assert!(formatted.contains("program_startup_bootstrap_decode_error_counts=failed:0|deferred_empty_payload:0|deferred_invalid_dimensions:0|deferred_ffmpeg_unavailable:0|deferred_continuous_one_shot_suppressed:0|unknown:0"));
+        assert!(formatted.contains("program_startup_bootstrap_ffmpeg_exit_status=none"));
+        assert!(formatted.contains("program_startup_bootstrap_ffmpeg_stderr_summary=none"));
+        assert!(formatted.contains("program_startup_bootstrap_payload_bytes_min=none"));
+        assert!(formatted.contains("program_startup_bootstrap_payload_bytes_max=0"));
+        assert!(formatted.contains("program_startup_bootstrap_payload_bytes_avg=n/a"));
+        assert!(formatted.contains("program_startup_bootstrap_payload_nal_kinds=none"));
+        assert!(formatted.contains("program_startup_bootstrap_payload_has_sps_count=0"));
+        assert!(formatted.contains("program_startup_bootstrap_payload_has_pps_count=0"));
+        assert!(formatted.contains("program_startup_bootstrap_payload_has_idr_count=0"));
+        assert!(formatted.contains("program_startup_bootstrap_frame_id_min=none"));
+        assert!(formatted.contains("program_startup_bootstrap_frame_id_max=none"));
+        assert!(
+            formatted.contains("program_startup_bootstrap_slot_counts=slot0:0|slot1:0|unknown:0")
+        );
+        assert!(formatted.contains(
+            "program_startup_bootstrap_client_counts=real-client-0:0|real-client-1:0|unknown:0"
+        ));
+        assert!(formatted.contains("program_startup_bootstrap_actual_decode_invoked_count=0"));
+        assert!(
+            formatted.contains("program_startup_bootstrap_decode_skipped_before_invoke_count=0")
+        );
         assert!(formatted.contains(
             "program_startup_bootstrap_source_counts=queue:0|retained_keyframe:0|none:0|unknown:0"
         ));

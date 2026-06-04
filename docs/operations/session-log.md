@@ -2,6 +2,113 @@
 
 ## 2026-06-04
 ### Type
+- Codex ProgramOutput startup bootstrap decode_failed investigation diagnostics
+
+### Work
+- Inspected the ProgramOutput startup bootstrap decode path and compared it with
+  the known working one-shot FFmpeg path.
+- Kept bootstrap opt-in and startup-only.
+- Kept ProgramOutput / Preview separation intact:
+  - no default bootstrap
+  - no Preview tuning restart
+  - no hotkey / control pipe
+  - no OBS automation change
+  - no 4-view-as-Program path
+- Changed bootstrap decode call to use the diagnostics-capable decode hook and
+  surfaced bootstrap-specific failure details in the two-real summary.
+- Added focused tests for bootstrap decode error formatting/classification.
+
+### Runtime Evidence Used
+- Baseline without bootstrap:
+  - `program_output_first_render_elapsed_ms=1964`
+  - `program_output_missing_before_first_render_count=29`
+- Bootstrap run:
+  - `program_startup_bootstrap_enabled=true`
+  - `program_startup_bootstrap_attempt_count=27`
+  - `program_startup_bootstrap_success_count=0`
+  - `program_startup_bootstrap_elapsed_ms=0`
+  - `program_startup_bootstrap_source_counts=queue:0|retained_keyframe:27|none:0|unknown:0`
+  - `program_startup_bootstrap_rejected_reason_counts=disabled:0|not_explicit_selection:0|after_first_render:0|no_selected_frame:7|no_keyframe_candidate:0|continuous_latest_preferred:1|last_valid_preferred:0|selected_decoded_preferred:0|decode_failed:27|unknown:0`
+  - `program_startup_bootstrap_used_for_first_render=false`
+  - `program_output_first_render_elapsed_ms=2666`
+  - `program_output_missing_before_first_render_count=34`
+  - `program_first_source_frame_seen_elapsed_ms=317`
+  - `program_first_continuous_input_elapsed_ms=318`
+  - `program_first_continuous_output_elapsed_ms=2666`
+  - `program_first_renderable_decoded_frame_elapsed_ms=2666`
+- Steady state remained okay:
+  - `program_output_black_frame_render_count=0`
+  - `program_output_placeholder_render_count=0`
+  - `program_render_effective_fps=20.984`
+
+### Findings
+- Existing bootstrap counted every non-`Decoded` result as rejected
+  `decode_failed`, so the old summary could not distinguish FFmpeg process
+  failure from Deferred results such as empty payload, invalid dimensions,
+  unavailable FFmpeg, or continuous one-shot suppression.
+- The working one-shot path already provides useful failure details through
+  `SwitcherH264DecodeFailure`: stdout length, expected output shape,
+  FFmpeg exit status, stderr summary, and payload SPS/PPS/IDR/NAL inspection.
+- The bootstrap path now exposes those details, plus selected frame id,
+  slot/client attribution, payload byte stats, and actual-decode vs pre-invoke
+  skip counts.
+- No bootstrap success is claimed. The A/B result is failed / blocked until the
+  new diagnostics identify why all 27 retained-keyframe-classified candidates
+  failed to produce a decoded frame.
+
+### Added Diagnostics
+- `program_startup_bootstrap_decode_attempt_elapsed_ms`
+- `program_startup_bootstrap_decode_error_counts`
+- `program_startup_bootstrap_ffmpeg_exit_status`
+- `program_startup_bootstrap_ffmpeg_stderr_summary`
+- `program_startup_bootstrap_payload_bytes_min`
+- `program_startup_bootstrap_payload_bytes_max`
+- `program_startup_bootstrap_payload_bytes_avg`
+- `program_startup_bootstrap_payload_nal_kinds`
+- `program_startup_bootstrap_payload_has_sps_count`
+- `program_startup_bootstrap_payload_has_pps_count`
+- `program_startup_bootstrap_payload_has_idr_count`
+- `program_startup_bootstrap_frame_id_min`
+- `program_startup_bootstrap_frame_id_max`
+- `program_startup_bootstrap_slot_counts`
+- `program_startup_bootstrap_client_counts`
+- `program_startup_bootstrap_actual_decode_invoked_count`
+- `program_startup_bootstrap_decode_skipped_before_invoke_count`
+
+### Changed Files
+- `apps/switcher/src/main.rs`
+- `docs/operations/todo.md`
+- `docs/operations/obs-capture-validation.md`
+- `docs/operations/continuous-output-pipeline-experiment-plan.md`
+- `docs/operations/session-log.md`
+
+### TODO Update
+- Recorded bootstrap A/B as failed.
+- Recorded `decode_failed:27`.
+- Kept ProgramOutput closeout blocked.
+- Kept same-loop Preview tuning paused.
+- Moved the next action to bootstrap `decode_failed` investigation.
+
+### Validation
+- `cargo fmt`
+  - result: PASS
+- `cargo check -p stream-sync-switcher`
+  - result: PASS
+  - note: existing dead-code warnings remain
+- `cargo test -p stream-sync-switcher program_startup_bootstrap`
+  - result: PASS
+- `cargo test -p stream-sync-switcher program_output --lib`
+  - result: PASS
+- `cargo test -p stream-sync-switcher program_output`
+  - result: PASS
+- `git diff --check`
+  - result: PASS
+  - note: LF/CRLF warnings only
+
+---
+
+## 2026-06-04
+### Type
 - Codex ProgramOutput startup bootstrap implementation
 
 ### Work

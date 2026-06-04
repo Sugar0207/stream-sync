@@ -544,11 +544,47 @@ Validated command examples for the Program path:
       `program_startup_bootstrap_source_counts`,
       `program_startup_bootstrap_rejected_reason_counts`,
       `program_startup_bootstrap_used_for_first_render`
-  - next validation should A/B clients-before-switcher with and without
-    `--program-startup-bootstrap-one-shot` and compare first-render elapsed,
-    missing-before-first-render count, bootstrap attempt/success, rejected
-    reason counts, and whether bootstrap was used for first render.
-  - other candidate fixes remain deferred until this A/B evidence is read:
+  - clients-before-switcher bootstrap A/B result:
+    - baseline without bootstrap:
+      `program_output_first_render_elapsed_ms=1964`,
+      `program_output_missing_before_first_render_count=29`
+    - bootstrap enabled:
+      `program_startup_bootstrap_enabled=true`,
+      `program_startup_bootstrap_attempt_count=27`,
+      `program_startup_bootstrap_success_count=0`,
+      `program_startup_bootstrap_elapsed_ms=0`,
+      `program_startup_bootstrap_source_counts=queue:0|retained_keyframe:27|none:0|unknown:0`,
+      `program_startup_bootstrap_rejected_reason_counts=disabled:0|not_explicit_selection:0|after_first_render:0|no_selected_frame:7|no_keyframe_candidate:0|continuous_latest_preferred:1|last_valid_preferred:0|selected_decoded_preferred:0|decode_failed:27|unknown:0`,
+      `program_startup_bootstrap_used_for_first_render=false`,
+      `program_output_first_render_elapsed_ms=2666`,
+      `program_output_missing_before_first_render_count=34`
+    - steady state remained okay:
+      `program_output_black_frame_render_count=0`,
+      `program_output_placeholder_render_count=0`,
+      `program_render_effective_fps=20.984`
+    - interpretation: bootstrap attempted retained-keyframe-classified
+      candidates but decoded none, was not used for first render, and worsened
+      startup timing in this run. Do not claim bootstrap success.
+  - bootstrap decode failure investigation now adds diagnostics for:
+    `program_startup_bootstrap_decode_attempt_elapsed_ms`,
+    `program_startup_bootstrap_decode_error_counts`,
+    `program_startup_bootstrap_ffmpeg_exit_status`,
+    `program_startup_bootstrap_ffmpeg_stderr_summary`,
+    `program_startup_bootstrap_payload_bytes_min/max/avg`,
+    `program_startup_bootstrap_payload_nal_kinds`,
+    `program_startup_bootstrap_payload_has_sps_count`,
+    `program_startup_bootstrap_payload_has_pps_count`,
+    `program_startup_bootstrap_payload_has_idr_count`,
+    `program_startup_bootstrap_frame_id_min/max`,
+    `program_startup_bootstrap_slot_counts`,
+    `program_startup_bootstrap_client_counts`,
+    `program_startup_bootstrap_actual_decode_invoked_count`,
+    `program_startup_bootstrap_decode_skipped_before_invoke_count`.
+  - next validation should rerun bootstrap and classify whether `decode_failed`
+    means FFmpeg failure, no stdout frame, invalid payload, missing SPS/PPS/IDR,
+    wrong selected payload, pre-invoke skip, or result-classification bug.
+  - other candidate fixes remain deferred until the bootstrap `decode_failed`
+    evidence is read:
     - startup continuous decode prewarm
     - startup blocking wait for first continuous frame
     - first-frame special policy for ProgramOutput

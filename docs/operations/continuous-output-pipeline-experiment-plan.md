@@ -1122,6 +1122,20 @@ as a later Preview optimization, not a blocker for Program separation.
   - `program_startup_bootstrap_attempt_count`
   - `program_startup_bootstrap_success_count`
   - `program_startup_bootstrap_elapsed_ms`
+  - `program_startup_bootstrap_decode_attempt_elapsed_ms`
+  - `program_startup_bootstrap_decode_error_counts`
+  - `program_startup_bootstrap_ffmpeg_exit_status`
+  - `program_startup_bootstrap_ffmpeg_stderr_summary`
+  - `program_startup_bootstrap_payload_bytes_min/max/avg`
+  - `program_startup_bootstrap_payload_nal_kinds`
+  - `program_startup_bootstrap_payload_has_sps_count`
+  - `program_startup_bootstrap_payload_has_pps_count`
+  - `program_startup_bootstrap_payload_has_idr_count`
+  - `program_startup_bootstrap_frame_id_min/max`
+  - `program_startup_bootstrap_slot_counts`
+  - `program_startup_bootstrap_client_counts`
+  - `program_startup_bootstrap_actual_decode_invoked_count`
+  - `program_startup_bootstrap_decode_skipped_before_invoke_count`
   - `program_startup_bootstrap_source_counts`
   - `program_startup_bootstrap_rejected_reason_counts`
   - `program_startup_bootstrap_used_for_first_render`
@@ -1155,12 +1169,18 @@ operated as follows:
   validation. Do not keep lowering the refresh interval in this path.
 - ProgramOutput is structurally promising but not closeout-ready until
   non-FPS operational blockers and closeout criteria are resolved.
-- Latest clients-before-switcher startup validation reduced first selected
+- Latest clients-before-switcher startup baseline reduced first selected
   source/input visibility to `246ms` and first Program render to `1964ms`, with
-  after-first missing / black / placeholder all `0`. The remaining startup
-  focus is the roughly 1.6s gap to first continuous output, so the next Program
-  startup validation is an A/B with and without
-  `--program-startup-bootstrap-one-shot`.
+  after-first missing / black / placeholder all `0`. The bootstrap A/B did not
+  improve startup: with `--program-startup-bootstrap-one-shot`,
+  `program_startup_bootstrap_attempt_count=27`,
+  `program_startup_bootstrap_success_count=0`, `decode_failed:27`,
+  `program_startup_bootstrap_used_for_first_render=false`,
+  `program_output_first_render_elapsed_ms=2666`, and
+  `program_output_missing_before_first_render_count=34`. ProgramOutput closeout
+  remains blocked; same-loop Preview tuning remains paused. The next Program
+  startup action is bootstrap `decode_failed` investigation with FFmpeg,
+  payload/NAL, slot/client, and actual-invoke diagnostics.
 
 Validated command examples:
 
