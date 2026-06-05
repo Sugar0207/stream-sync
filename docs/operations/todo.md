@@ -35,18 +35,20 @@
 - PASS run では `program_startup_bootstrap_enabled=true`、`program_startup_bootstrap_attempt_count=1`、`program_startup_bootstrap_success_count=1`、`program_startup_bootstrap_actual_decode_invoked_count=1`、`program_startup_bootstrap_decode_skipped_before_invoke_count=0`、`program_startup_bootstrap_decode_error_counts=failed:0|deferred_empty_payload:0|deferred_invalid_dimensions:0|deferred_ffmpeg_unavailable:0|deferred_continuous_one_shot_suppressed:0|unknown:0` を確認した。
 - 初回 Program render は bootstrap frame を使って `program_startup_bootstrap_used_for_first_render=true`、`program_output_first_render_elapsed_ms=354`、`program_output_missing_selected_source_count=0`、`program_output_missing_before_first_render_count=0`、after-first missing / black / placeholder も `0` だった。
 - continuous decoder 自体の初回出力はまだ `program_first_continuous_output_elapsed_ms=1928` / `continuous_decode_first_input_to_first_output_elapsed_ms=1688` と遅いが、clients-before-switcher 条件では bootstrap がその待ちを first Program render から隠せた。
+- switcher-first cold start bootstrap validation も PASS。`program_output_first_render_elapsed_ms=3803`、`program_output_missing_before_first_render_count=102`、`program_output_missing_after_first_render_count=0`、`program_first_source_frame_seen_elapsed_ms=3590`、`program_first_continuous_input_elapsed_ms=3803`、`program_first_renderable_decoded_frame_elapsed_ms=3803`、`program_startup_bootstrap_attempt_count=1`、`program_startup_bootstrap_success_count=1`、`program_startup_bootstrap_actual_decode_invoked_count=1`、`program_startup_bootstrap_used_for_first_render=true`、black / placeholder は `0`。
+- switcher-first cold start の残り待ちは、主に selected client/player2 frame の到着待ち。ProgramOutput は selected-only のため selected source frame が存在する前には描画できず、bootstrap は source frame 到着後の decode / continuous startup latency だけを短縮する。
+- ProgramOutput startup readiness semantics は `program_selection_configured` -> `program_selected_source_waiting` -> `program_selected_source_seen` -> `program_first_frame_bootstrapping` -> `program_first_frame_rendered` -> `program_steady_state` として扱う。将来 diagnostics は `program_startup_readiness_state`、`program_selected_source_wait_elapsed_ms`、`program_startup_waiting_for_selected_source_count`、`program_startup_bootstrap_after_source_seen_elapsed_ms` が候補。
 - ProgramOutput は near-MVP closeout ではない。non-FPS blocker が残るため closeout は引き続き blocked とし、same-loop Preview tuning も paused のままにする。
 - 新 diagnostics は bootstrap decode の elapsed / error class / FFmpeg exit+stderr / payload bytes / NAL kinds / SPS/PPS/IDR / frame_id / slot/client / actual invoke vs pre-invoke skip を読む。
 - selected source identity の視認性、smooth-latest の latency / lag accept criteria、OBS capture safety も未整理のまま残す。
 - 現在の詳細は `docs/operations/obs-capture-validation.md` と `docs/operations/session-log.md` を参照する。
 
 ## 次にやること
-1. [ ] switcher-first cold start で `--program-startup-bootstrap-one-shot` を検証し、server 起動後に switcher を先に立ち上げ、client1 / client2 が後から来る条件でも bootstrap first render が効くか確認する
-2. [ ] switcher-first cold start で失敗した場合は、bootstrap attempt/success/actual invoke/error counts と first-render elapsed を clients-before-switcher PASS と比較し、start-order 起因か decode/path 起因かを切り分ける
-3. [ ] ProgramOutput non-FPS blocker audit を継続し、first render の次に selected identity / lag / OBS safety を確認する
-4. [ ] selected source visual verification と player1 / player2 の見分けやすさを整理する
-5. [ ] smooth-latest の latency / lag acceptance criteria を FPS とは別に定義する
-6. [ ] OBS capture safety checklist を作る
+1. [ ] ProgramOutput startup readiness diagnostics を小さく実装するか判断する。実装する場合は `program_startup_readiness_state`、`program_selected_source_wait_elapsed_ms`、`program_startup_waiting_for_selected_source_count`、`program_startup_bootstrap_after_source_seen_elapsed_ms` に限定する
+2. [ ] ProgramOutput non-FPS blocker audit を継続し、first render の次に selected identity / lag / OBS safety を確認する
+3. [ ] selected source visual verification と player1 / player2 の見分けやすさを整理する
+4. [ ] smooth-latest の latency / lag acceptance criteria を FPS とは別に定義する
+5. [ ] OBS capture safety checklist を作る
 
 ## 保留 / 限定
 - same-loop low-cost Preview refresh tuning
@@ -72,6 +74,8 @@
 - [x] same-loop low-cost Preview refresh tuning は limited / paused に移行済み
 - [x] ProgramOutput near-MVP closeout はまだ行わない方針に更新済み
 - [x] clients-before-switcher bootstrap bypass validation は完了
+- [x] switcher-first cold start bootstrap validation は完了
+- [x] ProgramOutput startup readiness semantics は docs に定義済み
 
 ## 参照メモ
 - ProgramOutput の詳細な未解決点は `docs/operations/obs-capture-validation.md` を参照する。

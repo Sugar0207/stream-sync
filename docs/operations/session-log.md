@@ -2,6 +2,96 @@
 
 ## 2026-06-05
 ### Type
+- Codex ProgramOutput switcher-first startup bootstrap validation docs update
+
+### Work
+- Recorded the latest switcher-first cold-start ProgramOutput startup bootstrap
+  validation result in the operations docs.
+- Marked Program startup bootstrap decode suppression bypass as fixed and
+  validated across both clients-before-switcher and switcher-first startup
+  shapes.
+- Defined ProgramOutput startup readiness semantics without changing runtime
+  behavior.
+- Kept ProgramOutput closeout blocked.
+- Kept same-loop Preview tuning paused.
+- Kept hotkey/control pipe and OBS setup changes out of scope.
+- Kept the step docs-only; no Rust files were changed.
+
+### Runtime Evidence Used
+- Switcher-first cold-start bootstrap rerun:
+  - `program_output_first_render_elapsed_ms=3803`
+  - `program_output_missing_selected_source_count=102`
+  - `program_output_missing_before_first_render_count=102`
+  - `program_output_missing_after_first_render_count=0`
+  - `program_output_first_render_attempt_index=103`
+  - `program_first_source_frame_seen_elapsed_ms=3590`
+  - `program_first_continuous_input_elapsed_ms=3803`
+  - `program_first_renderable_decoded_frame_elapsed_ms=3803`
+  - `program_first_continuous_output_elapsed_ms=5330`
+  - `program_startup_bootstrap_attempt_count=1`
+  - `program_startup_bootstrap_success_count=1`
+  - `program_startup_bootstrap_actual_decode_invoked_count=1`
+  - `program_startup_bootstrap_decode_skipped_before_invoke_count=0`
+  - `program_startup_bootstrap_used_for_first_render=true`
+  - `program_startup_bootstrap_decode_error_counts=failed:0|deferred_empty_payload:0|deferred_invalid_dimensions:0|deferred_ffmpeg_unavailable:0|deferred_continuous_one_shot_suppressed:0|unknown:0`
+  - `program_startup_one_shot_fallback_blocked_reason_counts=no_selected_frame:102|no_selected_decoded_frame:0|continuous_latest_preferred:0|last_valid_preferred:0|unknown:0`
+  - `program_startup_bootstrap_rejected_reason_counts=no_selected_frame:102`
+  - `program_output_black_frame_render_count=0`
+  - `program_output_placeholder_render_count=0`
+  - `program_window_render_success_count=2898`
+  - `program_window_render_failure_count=102`
+  - `program_render_effective_fps=22.381`
+  - `program_selected_source_frame_lag=49`
+
+### Findings
+- Bootstrap bypass fix works in both validated start orders.
+- Bootstrap reaches actual one-shot decode and can supply the first Program
+  render once the selected source frame exists.
+- In switcher-first cold start, the remaining startup delay is mostly selected
+  client/player2 frame arrival:
+  - `program_first_source_frame_seen_elapsed_ms=3590`
+  - first render at `3803ms`
+- Bootstrap cannot render selected-only ProgramOutput before the selected
+  client frame exists.
+- After first render, selected-source missing, black, and placeholder counters
+  remained `0`.
+
+### Startup Readiness Semantics
+- `program_selection_configured`
+- `program_selected_source_waiting`
+- `program_selected_source_seen`
+- `program_first_frame_bootstrapping`
+- `program_first_frame_rendered`
+- `program_steady_state`
+
+### Future Diagnostics Decision
+- Future diagnostics are useful but should stay narrow and diagnostics-only:
+  - `program_startup_readiness_state`
+  - `program_selected_source_wait_elapsed_ms`
+  - `program_startup_waiting_for_selected_source_count`
+  - `program_startup_bootstrap_after_source_seen_elapsed_ms`
+- Do not implement broad runtime behavior from this result alone.
+
+### Changed Files
+- `docs/operations/todo.md`
+- `docs/operations/obs-capture-validation.md`
+- `docs/operations/continuous-output-pipeline-experiment-plan.md`
+- `docs/operations/session-log.md`
+
+### TODO Update
+- Marked switcher-first cold-start bootstrap validation as complete.
+- Added ProgramOutput startup readiness semantics to the current position.
+- Moved next work toward readiness diagnostics decision, selected-source
+  verification, smooth-latest lag criteria, and OBS capture safety.
+- Kept ProgramOutput closeout blocked and same-loop Preview tuning paused.
+
+### Validation
+- Docs-only change; Rust files were not touched.
+- `git diff --check`
+  - result: PASS
+
+## 2026-06-05
+### Type
 - Codex ProgramOutput startup bootstrap bypass validation documentation update
 
 ### Work

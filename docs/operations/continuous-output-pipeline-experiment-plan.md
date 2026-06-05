@@ -2,7 +2,7 @@
 
 # Continuous Output Pipeline Experiment Plan
 
-Last updated: 2026-06-03
+Last updated: 2026-06-05
 
 ## Purpose
 - Design the next docs-first candidates after output availability diagnostics
@@ -203,11 +203,31 @@ Last updated: 2026-06-03
       `program_startup_one_shot_candidate_count`,
       `program_startup_one_shot_candidate_rejected_count`, and
       `program_startup_one_shot_candidate_rejected_reason_counts`.
-    - Next validation should add a clients-before-switcher startup shape:
-      start server and both clients first, wait for live/retained selected
-      frames, then start switcher ProgramOutput. Compare first source frame,
-      continuous input/output, renderable decoded frame, and Program first
-      render elapsed values against the current switcher-first script.
+    - Clients-before-switcher bootstrap bypass validation is now PASS:
+      `program_startup_bootstrap_attempt_count=1`,
+      `program_startup_bootstrap_success_count=1`,
+      `program_startup_bootstrap_actual_decode_invoked_count=1`,
+      `program_startup_bootstrap_decode_skipped_before_invoke_count=0`,
+      `program_startup_bootstrap_used_for_first_render=true`,
+      `program_output_first_render_elapsed_ms=354`, and
+      `program_output_missing_before_first_render_count=0`.
+    - Switcher-first cold-start bootstrap validation is also PASS once the
+      selected source frame exists:
+      `program_output_first_render_elapsed_ms=3803`,
+      `program_output_missing_before_first_render_count=102`,
+      `program_output_missing_after_first_render_count=0`,
+      `program_first_source_frame_seen_elapsed_ms=3590`,
+      `program_first_continuous_input_elapsed_ms=3803`,
+      `program_first_renderable_decoded_frame_elapsed_ms=3803`,
+      `program_first_continuous_output_elapsed_ms=5330`,
+      `program_startup_bootstrap_attempt_count=1`,
+      `program_startup_bootstrap_success_count=1`,
+      `program_startup_bootstrap_actual_decode_invoked_count=1`, and
+      `program_startup_bootstrap_used_for_first_render=true`.
+    - Startup limitation is now explicit: selected-only ProgramOutput cannot
+      render before the selected client frame exists. Bootstrap reduces
+      decode / continuous startup latency after selected source arrival, but it
+      does not remove the switcher-first wait for the selected source.
 - latest optimized BGR24 A/B rerun:
   - root:
     `S:\stream-sync\manual-logs\two-client-optimized-bgr24-ab-rerun-20260528-103130`
@@ -1188,17 +1208,40 @@ operated as follows:
   `program_startup_bootstrap_used_for_first_render=true`,
   `program_output_first_render_elapsed_ms=354`, and
   `program_output_missing_before_first_render_count=0`.
-- This PASS does not close ProgramOutput. Continuous first output still lands at
-  `program_first_continuous_output_elapsed_ms=1928` with
-  `continuous_decode_first_input_to_first_output_elapsed_ms=1688`, so bootstrap
-  is currently a first-render mask rather than a full startup-latency fix.
+- The switcher-first cold-start validation is now also recorded:
+  `program_output_first_render_elapsed_ms=3803`,
+  `program_output_missing_before_first_render_count=102`,
+  `program_output_missing_after_first_render_count=0`,
+  `program_first_source_frame_seen_elapsed_ms=3590`,
+  `program_first_continuous_input_elapsed_ms=3803`,
+  `program_first_renderable_decoded_frame_elapsed_ms=3803`,
+  `program_first_continuous_output_elapsed_ms=5330`,
+  `program_startup_bootstrap_attempt_count=1`,
+  `program_startup_bootstrap_success_count=1`,
+  `program_startup_bootstrap_actual_decode_invoked_count=1`,
+  `program_startup_bootstrap_used_for_first_render=true`,
+  `program_output_black_frame_render_count=0`, and
+  `program_output_placeholder_render_count=0`.
+- Bootstrap bypass is fixed and validated in both start-order shapes, but it is
+  still not a full startup-latency fix. ProgramOutput is selected-only and
+  cannot render before the selected client frame exists. In switcher-first cold
+  start, bootstrap only helps after selected source arrival.
+- ProgramOutput startup readiness semantics are now:
+  `program_selection_configured`,
+  `program_selected_source_waiting`,
+  `program_selected_source_seen`,
+  `program_first_frame_bootstrapping`,
+  `program_first_frame_rendered`, and
+  `program_steady_state`.
+- Future diagnostics may add
+  `program_startup_readiness_state`,
+  `program_selected_source_wait_elapsed_ms`,
+  `program_startup_waiting_for_selected_source_count`, and
+  `program_startup_bootstrap_after_source_seen_elapsed_ms`. Keep these
+  diagnostics-only unless later evidence proves a runtime behavior change is
+  needed.
 - ProgramOutput closeout remains blocked and same-loop Preview tuning remains
   paused.
-- The next Program startup action is a switcher-first cold-start validation:
-  start server first, start switcher before `client1` / `client2`, keep
-  `--program-selected-client-id player2`, and include
-  `--program-startup-bootstrap-one-shot` in the same Program-first smooth-latest
-  command shape.
 
 Validated command examples:
 
@@ -1289,13 +1332,16 @@ Current limitations:
 - Latest optimized BGR24 A/B shows conversion optimization worked, but
   `scaled-bgr24` still does not clearly beat default BGRA end to end.
 - Next candidate order:
-  1. ProgramOutput non-FPS blocker audit and closeout criteria definition:
-     startup / first render, missing selected source before first render,
-     selected-source verification, smooth-latest lag acceptance, OBS capture
-     safety, Program-first validation vs final operator mode, diagnostics
-     completeness, and long-run stability.
-  2. First-render / missing-selected-source investigation focused on
-     `NoDecodedFrameForSelection` before first render.
+  1. Decide whether to add the narrow ProgramOutput startup readiness
+     diagnostics:
+     `program_startup_readiness_state`,
+     `program_selected_source_wait_elapsed_ms`,
+     `program_startup_waiting_for_selected_source_count`, and
+     `program_startup_bootstrap_after_source_seen_elapsed_ms`.
+  2. Continue ProgramOutput non-FPS blocker audit and closeout criteria
+     definition: selected-source verification, smooth-latest lag acceptance,
+     OBS capture safety, Program-first validation vs final operator mode,
+     diagnostics completeness, and long-run stability.
   3. Selected-source visual verification plan, including stronger player1 /
      player2 visual differentiation and client/run/slot identity evidence.
   4. Smooth-latest latency/lag acceptance criteria separate from FPS.

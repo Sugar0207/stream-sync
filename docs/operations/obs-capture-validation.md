@@ -631,19 +631,70 @@ Validated command examples for the Program path:
       this is still not ProgramOutput closeout. Continuous first output remains
       about `1.6-1.9s`, but bootstrap hides that wait for the first Program
       render in this start order.
-  - next validation should move to a switcher-first cold-start shape with
-    bootstrap still opt-in:
-    - start server first and wait for ready
-    - start switcher before `client1` / `client2`
-    - keep Program selection on `player2`
-    - include:
+  - latest switcher-first cold-start bootstrap rerun: PASS / limitation
+    clarified
+    - command shape:
       `--enable-program-output-window --program-selected-client-id player2 --enable-program-continuous-decode --program-continuous-decode-mode smooth-latest --program-first-validation-mode --program-startup-bootstrap-one-shot`
-    - then start `client1`, then `client2`
-    - compare first render, bootstrap success/actual invoke, missing-source,
-      and continuous first-output timing against the clients-before-switcher
-      PASS
-  - other candidate fixes remain deferred until the bootstrap `decode_failed`
-    evidence is read:
+    - `program_output_first_render_elapsed_ms=3803`
+    - `program_output_missing_selected_source_count=102`
+    - `program_output_missing_before_first_render_count=102`
+    - `program_output_missing_after_first_render_count=0`
+    - `program_output_first_render_attempt_index=103`
+    - `program_first_source_frame_seen_elapsed_ms=3590`
+    - `program_first_continuous_input_elapsed_ms=3803`
+    - `program_first_renderable_decoded_frame_elapsed_ms=3803`
+    - `program_first_continuous_output_elapsed_ms=5330`
+    - `program_startup_bootstrap_attempt_count=1`
+    - `program_startup_bootstrap_success_count=1`
+    - `program_startup_bootstrap_actual_decode_invoked_count=1`
+    - `program_startup_bootstrap_decode_skipped_before_invoke_count=0`
+    - `program_startup_bootstrap_used_for_first_render=true`
+    - `program_startup_bootstrap_decode_error_counts=failed:0|deferred_empty_payload:0|deferred_invalid_dimensions:0|deferred_ffmpeg_unavailable:0|deferred_continuous_one_shot_suppressed:0|unknown:0`
+    - `program_startup_one_shot_fallback_blocked_reason_counts=no_selected_frame:102|no_selected_decoded_frame:0|continuous_latest_preferred:0|last_valid_preferred:0|unknown:0`
+    - `program_startup_bootstrap_rejected_reason_counts=no_selected_frame:102`
+    - `program_output_black_frame_render_count=0`
+    - `program_output_placeholder_render_count=0`
+    - `program_window_render_success_count=2898`
+    - `program_window_render_failure_count=102`
+    - `program_render_effective_fps=22.381`
+    - `program_selected_source_frame_lag=49`
+    - interpretation:
+      bootstrap reaches actual one-shot decode in both validated start orders
+      and can be used for the first Program render once a selected source frame
+      exists. In switcher-first cold start, the remaining startup delay is
+      primarily waiting for the selected `player2` source frame to arrive.
+      Bootstrap cannot render selected-only ProgramOutput before that selected
+      frame exists; it only reduces decode / continuous-startup latency after
+      source arrival. After first render, missing selected source, black, and
+      placeholder counters stayed at `0`.
+  - ProgramOutput startup readiness semantics:
+    - `program_selection_configured`:
+      ProgramOutput is enabled and an explicit Program client selection has
+      been resolved.
+    - `program_selected_source_waiting`:
+      selected-only Program is configured, but no selected source frame is
+      available yet. Rendering is not expected in this state.
+    - `program_selected_source_seen`:
+      the selected client/run has produced at least one selected source frame.
+    - `program_first_frame_bootstrapping`:
+      first Program render has not happened yet and startup bootstrap is
+      attempting to convert the selected source frame into a renderable decoded
+      frame.
+    - `program_first_frame_rendered`:
+      first selected Program frame has rendered, whether from bootstrap,
+      continuous latest, selected decoded, or last-valid path.
+    - `program_steady_state`:
+      after first Program render, normal selected-source Program rendering is
+      running; missing selected source / black / placeholder should remain `0`
+      in current validated shapes.
+  - Future readiness diagnostics are useful but should stay narrow:
+    - `program_startup_readiness_state`
+    - `program_selected_source_wait_elapsed_ms`
+    - `program_startup_waiting_for_selected_source_count`
+    - `program_startup_bootstrap_after_source_seen_elapsed_ms`
+    These should be diagnostics-only fields unless later validation proves a
+    runtime behavior change is needed.
+  - other candidate fixes remain deferred:
     - startup continuous decode prewarm
     - startup blocking wait for first continuous frame
     - first-frame special policy for ProgramOutput
