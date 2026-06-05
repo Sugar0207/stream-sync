@@ -47,6 +47,8 @@ Last updated: 2026-06-05
     - keep `--program-first-validation-mode` as ProgramOutput validation mode,
       not final operator mode
     - Preview may be absent, stale, or reduced in this mode
+    - this validation-mode behavior does not remove the production requirement
+      for a usable operator Preview surface outside the OBS Program scene
     - do not add low-frequency Preview refresh yet; a useful refresh path
       without default non-Program one-shot decode pressure needs a separate
       low-cost Preview / multiview design
@@ -1167,7 +1169,10 @@ operated as follows:
 
 - OBS Window Capture target: `StreamSync Program Output`
 - Do not capture `StreamSync 4-view Output` for production Program output
-- `StreamSync 4-view Output` remains human-facing Preview / monitoring output
+- `StreamSync 4-view Output` remains the human-facing `4`-view Preview and is
+  still required for operator monitoring
+- `StreamSync 4-view Output` may remain visible to the operator, but it must
+  not be active in the OBS Program scene
 - Program output is enabled with `--enable-program-output-window`
 - Explicit Program source selection uses `--program-selected-client-id <client_id>`
 - Selected Program continuous decode is opt-in via
@@ -1391,6 +1396,11 @@ Current limitations:
     `validation_source_marker_size`. The marker remains opt-in and source-side;
     ProgramOutput still gets no overlay, watermark, Preview label, or 4-view
     Program fallback.
+  - current improved-marker status:
+    no repo-backed completed manual rerun with `large-corner-band-v2` is
+    recorded yet, so the current criteria-based classification remains the
+    carried-forward `WARNING` until a human-visible `P2` / not-`P1` Program
+    check is captured
 - Next candidate order:
   1. Rerun criteria-based validation using the improved marker:
      - improved marker visible and correct source identity
@@ -1411,6 +1421,8 @@ Current limitations:
      - verify only `StreamSync Program Output` is captured
      - verify `StreamSync 4-view Output` is hidden, removed, or not present in
        the Program scene
+     - allow `StreamSync 4-view Output` to remain visible for operator
+       monitoring outside the Program scene
      - verify no Preview / multiview capture source is present in the Program
        scene
      - verify the ProgramOutput window title
@@ -1420,8 +1432,10 @@ Current limitations:
      final operator mode, diagnostics completeness, and long-run stability.
   4. If lag worsening repeats, start a focused investigation into why
      smooth-latest moved from the earlier `Good` reference to `12 / 12 / 12`.
-  5. Separate Preview cadence/runtime or lighter renderer design for future
-     operator monitoring; current Preview is stable snapshot-only.
+  5. Keep the production operator Preview requirement active while same-loop
+     Preview cadence/runtime tuning stays paused; current Preview is stable
+     snapshot-only and future work may move to a separate cadence/runtime or a
+     lighter renderer.
   6. Program source switching over hotkey/control pipe later, after
      ProgramOutput criteria are defined.
   7. human-side `no-scale-bgra` A/B rerun for the scale path split slice

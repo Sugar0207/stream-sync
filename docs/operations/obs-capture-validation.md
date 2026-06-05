@@ -70,8 +70,11 @@ OBS capture PASS. After Preview / Program separation, the production OBS rule
 is now:
 
 - OBS Window Capture target: `StreamSync Program Output`
-- `StreamSync 4-view Output` remains human-facing Preview / monitoring only
+- `StreamSync 4-view Output` remains the human-facing `4`-view Preview and is
+  still required for production operator monitoring
 - do not use `StreamSync 4-view Output` for production Program capture
+- `StreamSync 4-view Output` may stay visible to the operator, but it must not
+  be active in the OBS Program scene
 - enable Program output with `--enable-program-output-window`
 - select an explicit Program source with `--program-selected-client-id <client_id>`
 
@@ -226,8 +229,9 @@ Validated command examples for the Program path:
     - `--program-first-validation-mode` is a ProgramOutput validation mode, not
       the final operator mode.
     - In this mode, Preview may be absent, stale, or reduced quality.
-    - Practical operation still needs a later low-cost Preview / multiview
-      restore path while Program remains prioritized.
+    - Practical operation still needs a usable `4`-view Preview / multiview
+      surface for operator monitoring, but that Preview must stay outside the
+      OBS Program scene while Program remains prioritized.
     - Low-frequency Preview refresh is deferred until it can be added without
       reintroducing default non-Program one-shot decode pressure.
 - New opt-in operator low-cost Preview restore candidate:
@@ -619,6 +623,11 @@ Validated command examples for the Program path:
         band, high-contrast border, block `P` + digit glyphs, and distinct
         P1/P2 bottom pattern positions so P1 and P2 remain visibly different
         even if text is blurred by encode/decode or OBS scaling.
+      - current improved-marker status:
+        no repo-backed completed manual rerun with `large-corner-band-v2` is
+        recorded yet, so the current criteria-based classification remains a
+        carried-forward `WARNING` until a human-visible `P2` / not-`P1`
+        Program check is captured
     - lag-focused validation checklist for the next rerun:
       - improved marker is visible and matches the selected source identity
       - client summaries include `validation_source_marker_style` and
@@ -651,6 +660,8 @@ Validated command examples for the Program path:
       - the Program scene must capture only `StreamSync Program Output`
       - `StreamSync 4-view Output` must be hidden, removed, or not present in
         the Program scene
+      - `StreamSync 4-view Output` may remain open and visible for operator
+        monitoring outside the Program scene
       - the Program scene must not contain Preview / multiview capture sources
       - verify the actual window title is `StreamSync Program Output`
       - when validation markers are enabled, the selected-source marker must be
@@ -1032,8 +1043,13 @@ Validated command examples for the Program path:
     - no after-first-render selected-source missing regression
     - render FPS and perceived stutter remain within an agreed range
   - Operator visibility / Preview dependency:
-    - ProgramOutput closeout does not depend on final Preview monitoring
-    - current Preview is accepted only as stable snapshot-only
+    - ProgramOutput closeout does not require finishing same-loop final Preview
+      tuning first
+    - production operation still requires a usable `4`-view Preview surface for
+      operator monitoring and source choice
+    - `StreamSync 4-view Output` must stay out of the OBS Program scene even
+      when it remains visible to the operator
+    - current same-loop Preview is accepted only as stable snapshot-only
   - Diagnostics completeness:
     - first render, missing-source reason, selected identity, lag, black /
       placeholder, and OBS target evidence are all available in pasted-back

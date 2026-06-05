@@ -2,6 +2,75 @@
 
 ## 2026-06-06
 ### Type
+- Codex improved-marker validation status carry-forward and 4-view Preview requirement clarification
+
+### Work
+- Reviewed the repo-backed criteria-based ProgramOutput validation evidence after
+  the `large-corner-band-v2` marker implementation.
+- Confirmed that the improved marker is implemented, but a completed manual
+  rerun proving human-visible `P2` and not-`P1` in Program is not yet recorded
+  in the repo.
+- Carried forward the current criteria-based ProgramOutput classification as:
+  - OBS safety: `PASS`
+  - selected-source visual verification: `WARNING`
+  - lag criteria: `Warning`
+  - overall ProgramOutput criteria-based validation: `WARNING`
+- Recorded the reason the current improved-marker phase is still not `PASS`:
+  - improved marker rerun evidence is missing
+  - the latest completed-template lag metrics remain `12 / 12 / 12`
+  - `program_render_effective_fps=20.796`
+- Clarified the production wording for Preview vs Program:
+  - OBS Program scene must capture only `StreamSync Program Output`
+  - `StreamSync 4-view Output` remains required as the operator monitoring
+    Preview surface
+  - `StreamSync 4-view Output` may stay visible to the operator, but must not
+    be active in the OBS Program scene
+- Kept same-loop Preview tuning paused.
+- Kept ProgramOutput closeout blocked.
+- Kept this step docs-only; no Rust files were changed.
+
+### Validation Result Recorded
+- Current improved-marker phase status:
+  carried-forward `WARNING` pending a completed manual rerun with
+  `validation_source_marker_style=large-corner-band-v2`
+- Current classification:
+  - OBS safety: `PASS`
+  - selected-source visual verification: `WARNING`
+  - lag criteria: `Warning`
+  - overall ProgramOutput criteria-based validation: `WARNING`
+- Current basis:
+  - latest completed OBS safety template still shows correct target separation
+  - no Program overlay / watermark / Preview label / 4-view-as-Program fallback
+  - latest lag/FPS evidence still sits at
+    `program_selected_source_frame_lag=12`,
+    `program_continuous_selected_frame_lag=12`,
+    `continuous_decode_latest_selected_to_output_frame_gap=12`,
+    `program_render_effective_fps=20.796`
+  - improved marker implementation exists, but human-visible `P2` / not-`P1`
+    confirmation is still pending
+
+### Changed Files
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+- `docs/operations/obs-capture-validation.md`
+- `docs/operations/continuous-output-pipeline-experiment-plan.md`
+
+### TODO Update
+- Kept the next task as the improved-marker criteria-based rerun with a
+  completed OBS safety template.
+- Promoted lag investigation to the immediate follow-up if the rerun again lands
+  near `12 / 12 / 12`.
+- Clarified in TODO that production operator monitoring still requires
+  `StreamSync 4-view Output`, even though the OBS Program scene must capture
+  only `StreamSync Program Output`.
+
+### Validation
+- Docs-only change; Rust files were not touched.
+- `git diff --check`
+  - result: PASS
+
+## 2026-06-06
+### Type
 - Codex completed OBS safety template WARNING record and marker visibility implementation
 
 ### Work
