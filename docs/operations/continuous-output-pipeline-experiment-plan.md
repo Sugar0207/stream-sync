@@ -1332,28 +1332,51 @@ Current limitations:
   output pipeline evidence rather than threshold tuning.
 - Latest optimized BGR24 A/B shows conversion optimization worked, but
   `scaled-bgr24` still does not clearly beat default BGRA end to end.
-- Selected-source visual verification now has a minimal implemented
+- Selected-source visual verification now has a recorded PASS using the
   validation-only client/source-side marker:
   `--validation-source-marker <label>` on the client real encoded bounded PoC.
-  It draws a small marker/pattern into raw BGRA before encode so ProgramOutput
-  stays clean, selected-only, and overlay-free.
+  In the latest manual validation, player1 used `P1`, player2 used `P2`,
+  Program selected `player2`, OBS captured only `StreamSync Program Output`,
+  Program stayed clean/selected-only, and the visible Program marker matched
+  `P2`.
+- Latest selected-source PASS reference metrics:
+  - `program_selected_source_frame_lag=5`
+  - `program_continuous_selected_frame_lag=0`
+  - `continuous_decode_latest_selected_to_output_frame_gap=5`
+  - `program_render_effective_fps=22.285`
+  - black / placeholder `0`
+- Applying the current draft lag criteria to that result:
+  - classification: `Good`
+  - rationale:
+    visual source verification passed with `P2`, OBS captured only
+    `StreamSync Program Output`, lag/gap were `5 / 0 / 5`, Program FPS was
+    `22.285`, black / placeholder were `0`, perceived stutter was small, and
+    the single one-shot fallback was startup bootstrap only
+    (`program_render_used_one_shot_fallback_count=1`,
+    `program_startup_bootstrap_used_for_first_render=true`) rather than
+    steady-state fallback
 - Next candidate order:
-  1. Run manual selected-source visual verification with distinct client marker
-     labels, for example player1 `--validation-source-marker P1` and player2
-     `--validation-source-marker P2`, then verify `StreamSync Program Output`
-     shows the selected player2 source.
+  1. Prepare the next lag-focused validation rerun using the checklist:
+     - marker visible and correct source identity
+     - OBS ProgramOutput only
+     - no 4-view / border / debug UI / Preview label in Program
+     - black / placeholder counts
+     - perceived stutter
+     - `program_selected_source_frame_lag`
+     - `program_continuous_selected_frame_lag`
+     - `continuous_decode_latest_selected_to_output_frame_gap`
+     - `program_render_effective_fps`
+     - one-shot fallback count and whether it is startup-only
   2. Continue ProgramOutput non-FPS blocker audit and closeout criteria
-     definition: selected-source verification evidence, smooth-latest lag
-     acceptance, OBS capture safety, Program-first validation vs final
-     operator mode, diagnostics completeness, and long-run stability.
-  3. Smooth-latest latency/lag acceptance criteria separate from FPS.
-  4. OBS ProgramOutput capture safety checklist.
-  5. Separate Preview cadence/runtime or lighter renderer design for future
+     definition: OBS capture safety, Program-first validation vs final operator
+     mode, diagnostics completeness, and long-run stability.
+  3. OBS ProgramOutput capture safety checklist.
+  4. Separate Preview cadence/runtime or lighter renderer design for future
      operator monitoring; current Preview is stable snapshot-only.
-  6. Program source switching over hotkey/control pipe later, after
+  5. Program source switching over hotkey/control pipe later, after
      ProgramOutput criteria are defined.
-  7. human-side `no-scale-bgra` A/B rerun for the scale path split slice
-  8. reader/completed latency breakdown diagnostics if no-scale evidence is
+  6. human-side `no-scale-bgra` A/B rerun for the scale path split slice
+  7. reader/completed latency breakdown diagnostics if no-scale evidence is
      ambiguous
   9. direct BGR24 render path docs-first impact review only
 - The `no-scale-bgra` code slice is already implemented; do not broaden it

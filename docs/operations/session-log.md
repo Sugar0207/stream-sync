@@ -2,6 +2,193 @@
 
 ## 2026-06-05
 ### Type
+- Codex smooth-latest lag criteria application and lag-focused validation planning
+
+### Work
+- Applied the drafted smooth-latest lag acceptance criteria to the latest
+  selected-source marker validation result.
+- Recorded that the latest result satisfies draft `Good` under the agreed
+  assumptions:
+  - startup bootstrap one-shot is not counted as steady-state fallback
+  - visible `P2` marker counts as visual source verification PASS
+- Refined the criteria wording so it now distinguishes:
+  - startup bootstrap one-shot vs steady-state one-shot fallback
+  - `program_selected_source_frame_lag`
+  - `program_continuous_selected_frame_lag`
+  - `continuous_decode_latest_selected_to_output_frame_gap`
+- Added a lag-focused validation checklist for the next rerun.
+- Kept ProgramOutput near-MVP closeout blocked.
+- Kept same-loop Preview tuning paused.
+- Kept the step docs-only; no Rust files were changed.
+
+### Applied Criteria Result
+- Latest selected-source marker validation classification: `Good`
+- Basis:
+  - visual verification PASS with visible `P2`
+  - OBS captured `StreamSync Program Output`
+  - `StreamSync 4-view Output` was not captured / displayed
+  - Program did not include 4-view layout, borders, debug UI, or Preview
+    labels
+  - `program_output_black_frame_render_count=0`
+  - `program_output_placeholder_render_count=0`
+  - `program_render_effective_fps=22.285`
+  - `program_selected_source_frame_lag=5`
+  - `program_continuous_selected_frame_lag=0`
+  - `continuous_decode_latest_selected_to_output_frame_gap=5`
+  - `program_render_used_one_shot_fallback_count=1`
+  - `program_startup_bootstrap_used_for_first_render=true`
+  - `program_output_missing_after_first_render_count=0`
+  - perceived stutter was small
+
+### Criteria Refinement
+- `Good` / `Acceptable` now require visual source verification PASS as a
+  mandatory gate.
+- startup-only bootstrap one-shot is explicitly allowed when it is confined to
+  first-render evidence; it is not treated as steady-state fallback dependency.
+- repeated one-shot fallback after steady state is now an explicit downgrade
+  signal.
+- lag metrics are now treated as separate validation lenses:
+  - `program_selected_source_frame_lag`:
+    Program output lag relative to the selected source
+  - `program_continuous_selected_frame_lag`:
+    continuous decoder side lag relative to the selected source
+  - `continuous_decode_latest_selected_to_output_frame_gap`:
+    gap between the latest selected continuous decoded frame and actual Program
+    output
+
+### Lag-Focused Validation Checklist
+- marker is visible and matches the selected source identity
+- OBS captures only `StreamSync Program Output`
+- `StreamSync 4-view Output` is not captured / displayed
+- Program contains no 4-view layout, borders, debug UI, or Preview labels
+- `program_output_black_frame_render_count`
+- `program_output_placeholder_render_count`
+- perceived stutter classification
+- `program_selected_source_frame_lag`
+- `program_continuous_selected_frame_lag`
+- `continuous_decode_latest_selected_to_output_frame_gap`
+- `program_render_effective_fps`
+- `program_render_used_one_shot_fallback_count`
+- whether one-shot fallback was startup-only or steady-state
+- `program_output_missing_after_first_render_count`
+
+### Changed Files
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+- `docs/operations/obs-capture-validation.md`
+- `docs/operations/continuous-output-pipeline-experiment-plan.md`
+
+### TODO Update
+- Recorded the latest selected-source marker validation as draft `Good`.
+- Replaced the next lag task with a next-rerun lag-focused validation record
+  task.
+- Kept ProgramOutput closeout blocked until the OBS capture safety checklist is
+  done.
+- Kept same-loop Preview tuning paused.
+
+### Validation
+- Docs-only change; Rust files were not touched.
+- `git diff --check`
+  - result: PASS
+
+## 2026-06-05
+### Type
+- Codex selected-source visual verification PASS and lag criteria draft docs update
+
+### Work
+- Recorded the latest selected-source visual verification as PASS using the
+  validation-only client/source-side marker.
+- Marked the validation-only marker implementation plus manual visual
+  verification complete in TODO.
+- Started the first smooth-latest lag acceptance criteria draft with
+  `Good / Acceptable / Warning / Fail` categories.
+- Kept ProgramOutput near-MVP closeout blocked.
+- Kept same-loop Preview tuning paused.
+- Kept the step docs-only; no Rust files were changed.
+- Kept hotkey/control pipe, OBS setup changes, and 4-view-as-Program out of
+  scope.
+
+### Validation Result
+- Manual selected-source visual verification:
+  - player1: `--validation-source-marker P1`
+  - player2: `--validation-source-marker P2`
+  - Program selected source:
+    `--program-selected-client-id player2`
+  - OBS captured `StreamSync Program Output`
+  - OBS did not capture / display `StreamSync 4-view Output`
+  - Program did not include 4-view layout, borders, debug UI, or Preview
+    labels
+  - Program black / placeholder: no
+  - Program perceived stutter: small
+  - visible Program marker matched selected source `P2`
+- Supporting reference values:
+  - `program_output_requested_client_id=player2`
+  - `program_output_selected_client_id=player2`
+  - `program_output_selected_slot_index=1`
+  - `program_output_black_frame_render_count=0`
+  - `program_output_placeholder_render_count=0`
+  - `program_selected_source_frame_lag=5`
+  - `program_continuous_selected_frame_lag=0`
+  - `continuous_decode_latest_selected_to_output_frame_gap=5`
+  - `program_render_effective_fps=22.285`
+  - client marker summaries:
+    `validation_source_marker_enabled=true`,
+    `validation_source_marker_label=P1|P2`,
+    `validation_source_marker_render_count=9004`
+
+### Findings
+- Source-side marker validation works without polluting ProgramOutput.
+- Selected Program source can now be visually verified while keeping
+  ProgramOutput clean and selected-only.
+- The latest PASS run provides a practical reference point for the first
+  smooth-latest lag acceptance draft:
+  - current "Good" candidate reference is around lag/gap `5 / 0 / 5`,
+    Program FPS `22.285`, black / placeholder `0`, and visual identity PASS.
+- This does not close ProgramOutput. Remaining closeout blockers still include:
+  - final smooth-latest lag acceptance agreement
+  - OBS capture safety checklist
+  - remaining non-FPS gate completion
+
+### Lag Criteria Draft
+- Good:
+  visual identity PASS, `program_selected_source_frame_lag<=5`,
+  `program_continuous_selected_frame_lag<=1`,
+  `continuous_decode_latest_selected_to_output_frame_gap<=5`,
+  `program_render_effective_fps>=22`, black / placeholder `0`,
+  steady-state one-shot fallback `0`, and only tiny/no perceived stutter.
+- Acceptable:
+  visual identity PASS, lag/gap up to about `8 / 2 / 8`,
+  `program_render_effective_fps>=20`, black / placeholder `0`,
+  and one-shot fallback limited to startup-only or isolated evidence.
+- Warning:
+  visual identity still PASS, but lag/gap drifts toward `12 / 4 / 12`,
+  Program FPS falls toward `18-20`, repeated fallback appears, or isolated
+  black / placeholder appears.
+- Fail:
+  visual identity is not verified or appears wrong, black / placeholder
+  recurs, one-shot fallback is required in steady state, perceived smoothness
+  is poor, or lag/gap / FPS exceed the warning bounds.
+
+### Changed Files
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+- `docs/operations/obs-capture-validation.md`
+- `docs/operations/continuous-output-pipeline-experiment-plan.md`
+
+### TODO Update
+- Marked validation-only selected-source visual verification as complete.
+- Replaced the next manual marker-check task with lag-criteria refinement and
+  OBS safety work.
+- Kept ProgramOutput closeout blocked.
+- Kept same-loop Preview tuning paused.
+
+### Validation
+- Docs-only change; Rust files were not touched.
+- `git diff --check`
+  - result: PASS
+
+## 2026-06-05
+### Type
 - Codex validation-only client/source-side visual marker implementation
 
 ### Work

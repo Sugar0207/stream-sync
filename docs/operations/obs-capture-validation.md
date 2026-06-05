@@ -459,31 +459,123 @@ Validated command examples for the Program path:
         necessary but insufficient. Existing summaries show selected
         client/slot, but manual OBS closeout still needs a visual proof that
         the captured Program image is the requested source.
-    - acceptance criteria for the next validation:
-      - ProgramOutput contains no 4-view layout.
-      - ProgramOutput contains no Preview label, border, or debug UI.
-      - player1/player2 are visually distinguishable during validation.
-      - Start player1/player2 clients with distinct marker labels, for example
-        `--validation-source-marker P1` and `--validation-source-marker P2`.
-      - Client summaries show marker diagnostics, including
+    - latest selected-source visual verification result: PASS
+      - validation setup:
+        player1 `--validation-source-marker P1`,
+        player2 `--validation-source-marker P2`,
+        Program selected source `--program-selected-client-id player2`
+      - client summaries showed:
         `validation_source_marker_enabled=true`,
-        `validation_source_marker_label=P2`, and
-        `validation_source_marker_render_count>0` for the selected player2
-        validation run.
-      - summary diagnostics still show
+        `validation_source_marker_label=P1|P2`, and
+        `validation_source_marker_render_count=9004`
+      - switcher summary showed:
         `program_output_requested_client_id=player2`,
-        `program_output_selected_client_id=player2`, and
-        `program_output_selected_slot_index=1`.
-      - OBS captures only `StreamSync Program Output`.
-      - selected Program output can be manually verified as player2.
+        `program_output_selected_client_id=player2`,
+        `program_output_selected_slot_index=1`,
+        `program_output_black_frame_render_count=0`,
+        `program_output_placeholder_render_count=0`,
+        `program_render_effective_fps=22.285`, and
+        `program_selected_source_frame_lag=5`
+      - OBS captured only `StreamSync Program Output`
+      - OBS did not capture / display `StreamSync 4-view Output`
+      - Program did not mix 4-view layout, borders, debug UI, or Preview labels
+      - Program black / placeholder were not observed
+      - perceived stutter was small
+      - visible marker in ProgramOutput matched selected player2 source (`P2`)
+      - interpretation:
+        validation-only source-side marker works, selected source identity is
+        visually verifiable, and ProgramOutput remains clean / selected-only
   - smooth-latest latency / lag semantics:
-    - current smooth-latest behavior accepts delayed latest decoded output
-      informally
-    - latest lag metrics are large:
-      `program_selected_source_frame_lag=299`,
-      `program_continuous_selected_frame_lag=285`, and
-      `continuous_decode_latest_selected_to_output_frame_gap=299`
-    - acceptable lag must be specified separately from render FPS
+    - current smooth-latest behavior still needs explicit acceptance criteria
+      separate from render FPS
+    - visual source verification is mandatory for `Good` / `Acceptable`.
+      If marker visibility or selected-source identity is not verified, the run
+      cannot be classified above `Warning`.
+    - treat the lag metrics as separate lenses, not one merged number:
+      - `program_selected_source_frame_lag`:
+        top-level Program output lag relative to the selected source
+      - `program_continuous_selected_frame_lag`:
+        continuous decoder side lag relative to the selected source
+      - `continuous_decode_latest_selected_to_output_frame_gap`:
+        gap between the latest selected continuous decoded frame and the frame
+        actually rendered to ProgramOutput
+    - distinguish startup bootstrap one-shot from steady-state one-shot
+      fallback:
+      - startup-only bootstrap usage is allowed for `Good` / `Acceptable` when
+        it is confined to first render evidence such as
+        `program_startup_bootstrap_used_for_first_render=true`
+      - repeated one-shot use after steady state is a downgrade signal and is
+        counted against the category
+    - latest reference values from the selected-source PASS run:
+      `program_selected_source_frame_lag=5`,
+      `program_continuous_selected_frame_lag=0`,
+      `continuous_decode_latest_selected_to_output_frame_gap=5`,
+      `program_render_effective_fps=22.285`,
+      black / placeholder `0`
+    - draft lag acceptance categories:
+      - Good:
+        source identity visually verified,
+        `program_selected_source_frame_lag<=5`,
+        `program_continuous_selected_frame_lag<=1`,
+        `continuous_decode_latest_selected_to_output_frame_gap<=5`,
+        `program_render_effective_fps>=22`,
+        black / placeholder `0`,
+        steady-state one-shot fallback count `0`,
+        startup bootstrap one-shot is allowed if it is first-render-only,
+        perceived smoothness is smooth or only tiny stutter
+      - Acceptable:
+        source identity visually verified,
+        `program_selected_source_frame_lag<=8`,
+        `program_continuous_selected_frame_lag<=2`,
+        `continuous_decode_latest_selected_to_output_frame_gap<=8`,
+        `program_render_effective_fps>=20`,
+        black / placeholder `0`,
+        one-shot fallback limited to startup-only or isolated evidence,
+        perceived stutter remains small / watchable
+      - Warning:
+        source identity is still visually verified, but any of the following is
+        true:
+        `program_selected_source_frame_lag` in `9..12`,
+        `program_continuous_selected_frame_lag` in `3..4`,
+        `continuous_decode_latest_selected_to_output_frame_gap` in `9..12`,
+        `program_render_effective_fps` in `18..19.999`,
+        isolated black / placeholder appears,
+        or one-shot fallback is needed repeatedly beyond startup
+      - Fail:
+        source identity is not visually verified or appears wrong,
+        black / placeholder recurs,
+        one-shot fallback is required as a steady-state crutch,
+        perceived smoothness is clearly poor,
+        `program_selected_source_frame_lag>12`,
+        `program_continuous_selected_frame_lag>4`,
+        `continuous_decode_latest_selected_to_output_frame_gap>12`,
+        or `program_render_effective_fps<18`
+    - current interpretation:
+      the latest selected-source PASS run satisfies draft `Good` because:
+      visual verification passed with visible `P2`, lag/gap were `5 / 0 / 5`,
+      Program FPS was `22.285`, black / placeholder were `0`, perceived
+      stutter was small, and the observed one-shot fallback was startup-only
+      bootstrap (`program_render_used_one_shot_fallback_count=1`,
+      `program_startup_bootstrap_used_for_first_render=true`) rather than
+      steady-state fallback
+    - lag-focused validation checklist for the next rerun:
+      - marker is visible and matches the selected source identity
+      - OBS captures only `StreamSync Program Output`
+      - `StreamSync 4-view Output` is not captured / displayed
+      - Program contains no 4-view layout, borders, debug UI, or Preview labels
+      - `program_output_black_frame_render_count`
+      - `program_output_placeholder_render_count`
+      - perceived stutter classification
+      - `program_selected_source_frame_lag`
+      - `program_continuous_selected_frame_lag`
+      - `continuous_decode_latest_selected_to_output_frame_gap`
+      - `program_render_effective_fps`
+      - `program_render_used_one_shot_fallback_count`
+      - whether one-shot fallback was startup-only or steady-state
+      - `program_output_missing_after_first_render_count`
+    - status:
+      ProgramOutput closeout stays blocked until the separate OBS capture
+      safety checklist is also completed
   - OBS capture safety:
     - latest OBS target separation was correct
     - OBS remains manual and can still be pointed at the wrong window
@@ -793,6 +885,9 @@ Validated command examples for the Program path:
       `program_continuous_selected_frame_lag`, and
       `continuous_decode_latest_selected_to_output_frame_gap` are included in
       the gate
+    - perceived smoothness, black / placeholder count, one-shot fallback count,
+      Program FPS, and visual source verification are included together rather
+      than treating lag as a single-number gate
   - Stability over long run:
     - no black / placeholder regression
     - no after-first-render selected-source missing regression
