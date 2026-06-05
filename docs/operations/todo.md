@@ -39,19 +39,21 @@
 - switcher-first cold start の残り待ちは、主に selected client/player2 frame の到着待ち。ProgramOutput は selected-only のため selected source frame が存在する前には描画できず、bootstrap は source frame 到着後の decode / continuous startup latency だけを短縮する。
 - ProgramOutput startup readiness diagnostics は最小実装済み。summary は `program_startup_readiness_state`、`program_selected_source_wait_elapsed_ms`、`program_startup_waiting_for_selected_source_count`、`program_startup_bootstrap_after_source_seen_elapsed_ms`、`program_startup_selected_source_seen_count` を出す。
 - ProgramOutput startup readiness semantics は `program_selection_configured` -> `program_selected_source_waiting` -> `program_selected_source_seen` -> `program_first_frame_bootstrapping` -> `program_first_frame_rendered` -> `program_steady_state` として扱う。ProgramOutput 無効時の summary 値だけは `disabled`。
-- selected source visual verification 用の validation-only client/source-side marker は PASS 記録済み。player1 を `--validation-source-marker P1`、player2 を `--validation-source-marker P2` で起動し、`--program-selected-client-id player2` の ProgramOutput で P2 marker を視認できた。OBS は `StreamSync Program Output` だけを capture し、4-view / border / debug UI / Preview label は Program に混ざらなかった。
+- selected source visual verification 用の validation-only client/source-side marker は実装済みだが、最新の completed OBS safety template では marker が機械的で P1 / P2 を人間の OBS 目視で判別しにくかったため、この run の selected-source visual verification は incomplete / WARNING とする。
 - ProgramOutput は near-MVP closeout ではない。non-FPS blocker が残るため closeout は引き続き blocked とし、same-loop Preview tuning も paused のままにする。
 - 新 diagnostics は bootstrap decode の elapsed / error class / FFmpeg exit+stderr / payload bytes / NAL kinds / SPS/PPS/IDR / frame_id / slot/client / actual invoke vs pre-invoke skip を読む。
-- source-side marker approach により ProgramOutput は clean / selected-only のまま selected source identity を視認確認できることが分かった。
+- source-side marker approach は維持する。ProgramOutput に overlay / watermark / Preview label を足さず、client/source 側の validation-only marker を改善して selected source identity を再確認する。
 - smooth-latest lag criteria の最新 reference 値は `program_selected_source_frame_lag=5`、`program_continuous_selected_frame_lag=0`、`continuous_decode_latest_selected_to_output_frame_gap=5`、`program_render_effective_fps=22.285`、black / placeholder `0`。
-- 最新の selected-source marker validation result は、startup bootstrap one-shot を steady-state fallback に数えない前提で draft `Good` を満たす暫定判定とする。`program_render_used_one_shot_fallback_count=1` は `program_startup_bootstrap_used_for_first_render=true` の startup-only evidence として扱い、steady-state fallback dependency とはみなさない。
-- OBS ProgramOutput capture safety checklist / operator preflight / manual validation template は docs に追加済みだが、最新 criteria-based validation run では manual OBS safety template の記入が不完全だったため、この run の OBS safety classification は `PASS` で確定していない。
-- 最新の criteria-based ProgramOutput validation run は `WARNING` と記録する。ProgramOutput は clean / stable のままだが、lag が `12 / 12 / 12`、`program_render_effective_fps=20.796` まで悪化し、manual OBS safety template incomplete のため `PASS` にしない。
-- smooth-latest の latency / lag accept criteria と OBS safety checklist は docs に定義済みだが、criteria-based rerun の再確認と completed template 付き manual evidence がまだ必要なため、ProgramOutput closeout blocker として継続する。
+- 以前の selected-source marker reference run は、startup bootstrap one-shot を steady-state fallback に数えない前提の draft `Good` 参考値として残す。ただし最新 completed OBS safety template の結果で上書きして PASS 扱いにはしない。
+- 最新 completed OBS safety template 付き criteria-based ProgramOutput validation run は `WARNING` と記録する。
+- 最新 completed template の内訳は、OBS safety `PASS`、Program cleanliness `PASS`、lag criteria `Warning`、selected-source visual verification `incomplete / WARNING`、overall ProgramOutput criteria-based validation `WARNING`。
+- 最新 metrics は `program_selected_source_frame_lag=12`、`program_continuous_selected_frame_lag=12`、`continuous_decode_latest_selected_to_output_frame_gap=12`、`program_render_effective_fps=20.796`、black / placeholder / after-first missing は `0`。
+- `validation_source_marker_style=large-corner-band-v2` の validation-only source marker は実装済み。P1 / P2 は大きな corner band、block glyph、位置差のある高コントラスト pattern で区別する。既定 behavior は marker disabled のまま。
+- smooth-latest の latency / lag accept criteria と OBS safety checklist は docs に定義済みだが、改善後 marker で selected-source visual verification を再実施する必要があるため、ProgramOutput closeout blocker として継続する。
 - 現在の詳細は `docs/operations/obs-capture-validation.md` と `docs/operations/session-log.md` を参照する。
 
 ## 次にやること
-1. [ ] selected-source marker + refined lag criteria + completed OBS safety template を使った criteria-based ProgramOutput validation rerun を記録する
+1. [ ] 改善後の validation-only source marker + refined lag criteria + completed OBS safety template で criteria-based ProgramOutput validation rerun を記録する
 2. [ ] ProgramOutput non-FPS blocker audit を継続し、lag / one-shot fallback / OBS safety を確認する
 3. [ ] lag 悪化が再現するかを確認し、再現する場合は原因切り分けを始める
 
@@ -84,7 +86,7 @@
 - [x] ProgramOutput startup readiness diagnostics は最小実装済み
 - [x] selected source visual verification 方針は docs に定義済み
 - [x] validation-only client/source-side visual marker は最小実装済み
-- [x] validation-only selected-source visual verification は PASS 記録済み
+- [x] validation-only source marker visibility improvement は実装済み
 - [x] selected-source marker reference validation は draft `Good` lag criteria に暫定一致
 - [x] OBS ProgramOutput capture safety checklist / operator preflight / manual validation template は docs に定義済み
 

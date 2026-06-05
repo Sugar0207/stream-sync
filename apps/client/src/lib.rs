@@ -1,5 +1,5 @@
 use std::{
-    cell::Cell,
+    cell::{Cell, RefCell},
     collections::BTreeMap,
     fs,
     io::{self, Read, Write},
@@ -1361,11 +1361,13 @@ impl ClientAuthRealEncodedVideoFrameBoundedPocLauncher {
         };
 
         let validation_source_marker_render_count = Cell::new(0_u64);
+        let validation_source_marker_last_observation = RefCell::new(None);
         let marked_capture_runtime =
             ClientValidationSourceMarkerCaptureFrameAcquisitionRuntimeHook {
                 inner: capture_runtime_hook,
                 marker: &validation_source_marker,
                 render_count: &validation_source_marker_render_count,
+                last_observation: &validation_source_marker_last_observation,
             };
         let mut runtime = self.continuous_video.run_with_runtime_selection(
             ClientContinuousRealEncodedVideoFrameInput {
@@ -1390,6 +1392,11 @@ impl ClientAuthRealEncodedVideoFrameBoundedPocLauncher {
         runtime.summary.validation_source_marker_label = validation_source_marker.label;
         runtime.summary.validation_source_marker_render_count =
             validation_source_marker_render_count.get();
+        if let Some(observation) = validation_source_marker_last_observation.into_inner() {
+            runtime.summary.validation_source_marker_style = Some(observation.style.to_string());
+            runtime.summary.validation_source_marker_size =
+                Some(format!("{}x{}", observation.width, observation.height));
+        }
 
         ClientContinuousRealEncodedVideoFramePocOutcome::Completed(runtime)
     }
@@ -6025,6 +6032,8 @@ pub struct ClientContinuousRealEncodedVideoFrameSummary {
     pub validation_source_marker_enabled: bool,
     pub validation_source_marker_label: Option<String>,
     pub validation_source_marker_render_count: u64,
+    pub validation_source_marker_style: Option<String>,
+    pub validation_source_marker_size: Option<String>,
     pub stop_reason: Option<ClientContinuousRealEncodedVideoFrameStopReason>,
     pub last_send_failure: Option<ClientVideoFrameEncodeSendFailure>,
 }
@@ -6135,6 +6144,7 @@ struct ClientValidationSourceMarkerCaptureFrameAcquisitionRuntimeHook<'a, T> {
     inner: &'a T,
     marker: &'a ClientValidationSourceMarkerConfig,
     render_count: &'a Cell<u64>,
+    last_observation: &'a RefCell<Option<ClientValidationSourceMarkerRenderObservation>>,
 }
 
 impl<T> ClientCaptureFrameAcquisitionRuntimeHook
@@ -6148,9 +6158,12 @@ where
     ) -> ClientCaptureFrameAcquisitionResult {
         match self.inner.acquire_one_bgra_frame(input) {
             ClientCaptureFrameAcquisitionResult::FrameAcquired { mut frame } => {
-                if render_validation_source_marker_on_frame(&mut frame, self.marker) {
+                if let Some(observation) =
+                    render_validation_source_marker_on_frame(&mut frame, self.marker)
+                {
                     self.render_count
                         .set(self.render_count.get().saturating_add(1));
+                    self.last_observation.replace(Some(observation));
                 }
                 ClientCaptureFrameAcquisitionResult::FrameAcquired { frame }
             }
@@ -6159,38 +6172,47 @@ where
     }
 }
 
+const VALIDATION_SOURCE_MARKER_STYLE: &str = "large-corner-band-v2";
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ClientValidationSourceMarkerRenderObservation {
+    style: &'static str,
+    width: usize,
+    height: usize,
+}
+
 fn render_validation_source_marker_on_frame(
     frame: &mut ClientRawCapturedVideoFrame,
     marker: &ClientValidationSourceMarkerConfig,
-) -> bool {
+) -> Option<ClientValidationSourceMarkerRenderObservation> {
     let Some(label) = marker.label.as_deref() else {
-        return false;
+        return None;
     };
     if label.trim().is_empty()
         || frame.pixel_format != ClientRawVideoPixelFormat::Bgra8
         || frame.width == 0
         || frame.height == 0
     {
-        return false;
+        return None;
     }
 
     let width = frame.width as usize;
     let height = frame.height as usize;
     let stride = match width.checked_mul(4) {
         Some(stride) => stride,
-        None => return false,
+        None => return None,
     };
     let expected_len = match stride.checked_mul(height) {
         Some(expected_len) => expected_len,
-        None => return false,
+        None => return None,
     };
     if frame.pixels.len() < expected_len {
-        return false;
+        return None;
     }
 
-    let marker_width = width.min(180).max(1);
-    let marker_height = height.min(80).max(1);
-    let border = marker_width.min(marker_height).clamp(1, 6);
+    let marker_width = width.min((width.saturating_mul(2) / 5).max(260)).max(1);
+    let marker_height = height.min((height.saturating_mul(3) / 10).max(160)).max(1);
+    let border = marker_width.min(marker_height).clamp(2, 12);
     let (blue, green, red) = validation_source_marker_bgr(label);
 
     draw_validation_source_marker_rect(
@@ -6202,11 +6224,28 @@ fn render_validation_source_marker_on_frame(
         [blue, green, red, 255],
     );
     draw_validation_source_marker_border(frame, marker_width, marker_height, border);
-    draw_validation_source_marker_pattern(frame, label, marker_width, marker_height, border);
-    true
+    draw_validation_source_marker_identity_pattern(
+        frame,
+        label,
+        marker_width,
+        marker_height,
+        border,
+    );
+    draw_validation_source_marker_block_glyphs(frame, label, marker_width, marker_height, border);
+    Some(ClientValidationSourceMarkerRenderObservation {
+        style: VALIDATION_SOURCE_MARKER_STYLE,
+        width: marker_width,
+        height: marker_height,
+    })
 }
 
 fn validation_source_marker_bgr(label: &str) -> (u8, u8, u8) {
+    match validation_source_marker_pattern_kind(label) {
+        1 => return (0, 220, 255),
+        2 => return (255, 32, 192),
+        _ => {}
+    }
+
     let mut hash = 0xcbf2_9ce4_8422_2325_u64;
     for byte in label.as_bytes() {
         hash ^= u64::from(*byte);
@@ -6261,7 +6300,7 @@ fn draw_validation_source_marker_border(
     }
 }
 
-fn draw_validation_source_marker_pattern(
+fn draw_validation_source_marker_identity_pattern(
     frame: &mut ClientRawCapturedVideoFrame,
     label: &str,
     marker_width: usize,
@@ -6278,21 +6317,239 @@ fn draw_validation_source_marker_pattern(
     if usable_width == 0 || usable_height == 0 {
         return;
     }
-    let band_height = usable_height.clamp(1, 18);
+    let marker_kind = validation_source_marker_pattern_kind(label);
+    let band_height = (usable_height / 4).clamp(1, 42);
     let band_y = border + usable_height.saturating_sub(band_height);
-    let stripe_count = usable_width.min(24).max(1);
-    let stripe_width = ((usable_width + stripe_count - 1) / stripe_count).max(1);
+    match marker_kind {
+        1 => {
+            let block_width = (usable_width / 3).max(1);
+            draw_validation_source_marker_rect(
+                frame,
+                border,
+                band_y,
+                block_width,
+                band_height,
+                [255, 255, 255, 255],
+            );
+            draw_validation_source_marker_rect(
+                frame,
+                border + block_width,
+                band_y,
+                usable_width.saturating_sub(block_width),
+                band_height,
+                [0, 0, 0, 255],
+            );
+        }
+        2 => {
+            let block_width = (usable_width / 3).max(1);
+            draw_validation_source_marker_rect(
+                frame,
+                border,
+                band_y,
+                usable_width.saturating_sub(block_width),
+                band_height,
+                [0, 0, 0, 255],
+            );
+            draw_validation_source_marker_rect(
+                frame,
+                border + usable_width.saturating_sub(block_width),
+                band_y,
+                block_width,
+                band_height,
+                [255, 255, 255, 255],
+            );
+        }
+        _ => {
+            let stripe_count = usable_width.min(32).max(1);
+            let stripe_width = ((usable_width + stripe_count - 1) / stripe_count).max(1);
+            for stripe in 0..stripe_count {
+                let byte = bytes[stripe % bytes.len()];
+                let bit = (byte >> (stripe % 8)) & 1;
+                let bgra = if bit == 1 {
+                    [255, 255, 255, 255]
+                } else {
+                    [0, 0, 0, 255]
+                };
+                let x = border + stripe.saturating_mul(stripe_width);
+                draw_validation_source_marker_rect(
+                    frame,
+                    x,
+                    band_y,
+                    stripe_width,
+                    band_height,
+                    bgra,
+                );
+            }
+        }
+    }
+}
 
-    for stripe in 0..stripe_count {
-        let byte = bytes[stripe % bytes.len()];
-        let bit = (byte >> (stripe % 8)) & 1;
-        let bgra = if bit == 1 {
-            [255, 255, 255, 255]
-        } else {
-            [0, 0, 0, 255]
-        };
-        let x = border + stripe.saturating_mul(stripe_width);
-        draw_validation_source_marker_rect(frame, x, band_y, stripe_width, band_height, bgra);
+fn validation_source_marker_pattern_kind(label: &str) -> u8 {
+    let normalized = label.trim().to_ascii_lowercase();
+    if normalized.ends_with('1') || normalized.contains("p1") {
+        1
+    } else if normalized.ends_with('2') || normalized.contains("p2") {
+        2
+    } else {
+        0
+    }
+}
+
+fn draw_validation_source_marker_block_glyphs(
+    frame: &mut ClientRawCapturedVideoFrame,
+    label: &str,
+    marker_width: usize,
+    marker_height: usize,
+    border: usize,
+) {
+    let usable_width = marker_width.saturating_sub(border.saturating_mul(2));
+    let usable_height = marker_height.saturating_sub(border.saturating_mul(2));
+    if usable_width < 12 || usable_height < 12 {
+        return;
+    }
+
+    let glyph_height = (usable_height.saturating_mul(3) / 5).max(1);
+    let glyph_width = (usable_width.saturating_mul(2) / 5).max(1);
+    let glyph_y = border + (usable_height.saturating_sub(glyph_height) / 5).max(1);
+    let gap = (usable_width / 12).max(1);
+    let first_x = border + gap;
+    let second_x = first_x.saturating_add(glyph_width).saturating_add(gap);
+    let second_width = glyph_width.min(marker_width.saturating_sub(second_x + border));
+    let bar = glyph_width.min(glyph_height).saturating_div(6).clamp(2, 18);
+    let shadow = border.min(5).max(1);
+
+    draw_validation_source_marker_letter_p(
+        frame,
+        first_x.saturating_add(shadow),
+        glyph_y.saturating_add(shadow),
+        glyph_width,
+        glyph_height,
+        bar,
+        [0, 0, 0, 255],
+    );
+    draw_validation_source_marker_digit(
+        frame,
+        validation_source_marker_pattern_kind(label),
+        second_x.saturating_add(shadow),
+        glyph_y.saturating_add(shadow),
+        second_width,
+        glyph_height,
+        bar,
+        [0, 0, 0, 255],
+    );
+    draw_validation_source_marker_letter_p(
+        frame,
+        first_x,
+        glyph_y,
+        glyph_width,
+        glyph_height,
+        bar,
+        [255, 255, 255, 255],
+    );
+    draw_validation_source_marker_digit(
+        frame,
+        validation_source_marker_pattern_kind(label),
+        second_x,
+        glyph_y,
+        second_width,
+        glyph_height,
+        bar,
+        [255, 255, 255, 255],
+    );
+}
+
+fn draw_validation_source_marker_letter_p(
+    frame: &mut ClientRawCapturedVideoFrame,
+    x: usize,
+    y: usize,
+    width: usize,
+    height: usize,
+    bar: usize,
+    bgra: [u8; 4],
+) {
+    let half_height = (height / 2).max(bar);
+    draw_validation_source_marker_rect(frame, x, y, bar, height, bgra);
+    draw_validation_source_marker_rect(frame, x, y, width, bar, bgra);
+    draw_validation_source_marker_rect(frame, x, y + half_height, width, bar, bgra);
+    draw_validation_source_marker_rect(
+        frame,
+        x + width.saturating_sub(bar),
+        y,
+        bar,
+        half_height,
+        bgra,
+    );
+}
+
+fn draw_validation_source_marker_digit(
+    frame: &mut ClientRawCapturedVideoFrame,
+    kind: u8,
+    x: usize,
+    y: usize,
+    width: usize,
+    height: usize,
+    bar: usize,
+    bgra: [u8; 4],
+) {
+    if width == 0 || height == 0 {
+        return;
+    }
+    match kind {
+        1 => {
+            let stem_x = x + width.saturating_mul(2) / 3;
+            draw_validation_source_marker_rect(frame, stem_x, y, bar, height, bgra);
+            draw_validation_source_marker_rect(frame, x + width / 3, y, width / 3, bar, bgra);
+            draw_validation_source_marker_rect(
+                frame,
+                x + width / 4,
+                y + height.saturating_sub(bar),
+                width.saturating_mul(2) / 3,
+                bar,
+                bgra,
+            );
+        }
+        2 => {
+            let mid_y = y + height / 2;
+            draw_validation_source_marker_rect(frame, x, y, width, bar, bgra);
+            draw_validation_source_marker_rect(frame, x, mid_y, width, bar, bgra);
+            draw_validation_source_marker_rect(
+                frame,
+                x,
+                y + height.saturating_sub(bar),
+                width,
+                bar,
+                bgra,
+            );
+            draw_validation_source_marker_rect(
+                frame,
+                x + width.saturating_sub(bar),
+                y,
+                bar,
+                height / 2,
+                bgra,
+            );
+            draw_validation_source_marker_rect(frame, x, mid_y, bar, height / 2, bgra);
+        }
+        _ => {
+            draw_validation_source_marker_rect(frame, x, y, width, bar, bgra);
+            draw_validation_source_marker_rect(
+                frame,
+                x,
+                y + height.saturating_sub(bar),
+                width,
+                bar,
+                bgra,
+            );
+            draw_validation_source_marker_rect(frame, x, y, bar, height, bgra);
+            draw_validation_source_marker_rect(
+                frame,
+                x + width.saturating_sub(bar),
+                y,
+                bar,
+                height,
+                bgra,
+            );
+        }
     }
 }
 
@@ -18754,8 +19011,69 @@ mod tests {
             &ClientValidationSourceMarkerConfig::disabled(),
         );
 
-        assert!(!rendered);
+        assert!(rendered.is_none());
         assert_eq!(frame.pixels, original_pixels);
+    }
+
+    #[test]
+    fn client_validation_source_marker_enabled_modifies_frame_buffer() {
+        let mut frame = ClientRawCapturedVideoFrame {
+            capture_timestamp: TimestampMicros(1_000_000),
+            width: 320,
+            height: 180,
+            fps_nominal: 30,
+            pixel_format: ClientRawVideoPixelFormat::Bgra8,
+            pixels: vec![0; 320 * 180 * 4],
+        };
+
+        let rendered = render_validation_source_marker_on_frame(
+            &mut frame,
+            &ClientValidationSourceMarkerConfig::enabled("P1"),
+        )
+        .expect("enabled marker should render");
+
+        assert_eq!(rendered.style, VALIDATION_SOURCE_MARKER_STYLE);
+        assert!(rendered.width >= 260);
+        assert!(rendered.height >= 160);
+        assert!(frame.pixels.iter().any(|pixel| *pixel != 0));
+    }
+
+    #[test]
+    fn client_validation_source_marker_p1_and_p2_use_distinct_visible_patterns() {
+        let mut p1 = ClientRawCapturedVideoFrame {
+            capture_timestamp: TimestampMicros(1_000_000),
+            width: 320,
+            height: 180,
+            fps_nominal: 30,
+            pixel_format: ClientRawVideoPixelFormat::Bgra8,
+            pixels: vec![0; 320 * 180 * 4],
+        };
+        let mut p2 = ClientRawCapturedVideoFrame {
+            pixels: vec![0; 320 * 180 * 4],
+            ..p1.clone()
+        };
+
+        render_validation_source_marker_on_frame(
+            &mut p1,
+            &ClientValidationSourceMarkerConfig::enabled("P1"),
+        )
+        .expect("P1 marker should render");
+        render_validation_source_marker_on_frame(
+            &mut p2,
+            &ClientValidationSourceMarkerConfig::enabled("P2"),
+        )
+        .expect("P2 marker should render");
+
+        let differing_bytes = p1
+            .pixels
+            .iter()
+            .zip(p2.pixels.iter())
+            .filter(|(left, right)| left != right)
+            .count();
+        assert!(
+            differing_bytes > 320 * 180,
+            "P1/P2 marker buffers should differ by a large visible region"
+        );
     }
 
     #[test]
@@ -18852,6 +19170,14 @@ mod tests {
             Some("P2")
         );
         assert_eq!(runtime.summary.validation_source_marker_render_count, 1);
+        assert_eq!(
+            runtime.summary.validation_source_marker_style.as_deref(),
+            Some(VALIDATION_SOURCE_MARKER_STYLE)
+        );
+        assert_eq!(
+            runtime.summary.validation_source_marker_size.as_deref(),
+            Some("8x8")
+        );
         assert_eq!(runtime.summary.frames_sent, 1);
     }
 

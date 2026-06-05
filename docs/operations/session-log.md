@@ -2,6 +2,104 @@
 
 ## 2026-06-06
 ### Type
+- Codex completed OBS safety template WARNING record and marker visibility implementation
+
+### Work
+- Recorded the completed manual OBS safety template result as overall
+  ProgramOutput criteria-based `WARNING`, not `PASS`.
+- Split the latest result into separate classifications:
+  - OBS safety: `PASS`
+  - Program cleanliness: `PASS`
+  - lag criteria: `Warning`
+  - selected-source visual verification: `incomplete / WARNING`
+  - overall ProgramOutput criteria-based validation: `WARNING`
+- Kept ProgramOutput closeout blocked.
+- Inspected the current client/source-side validation marker implementation.
+- Replaced the small mechanical marker with a larger validation-only
+  source-side marker:
+  - style: `large-corner-band-v2`
+  - large top-left corner band
+  - high-contrast border
+  - block `P` + digit glyphs
+  - distinct P1/P2 bottom pattern positions, so the labels remain different
+    even if text is blurred by H.264 decode or OBS scaling
+- Kept default client behavior unchanged: marker remains disabled unless
+  `--validation-source-marker <label>` is supplied.
+- Kept ProgramOutput clean:
+  - no Program overlay
+  - no watermark
+  - no Preview labels
+  - no 4-view-as-Program fallback
+- Added marker diagnostics:
+  - `validation_source_marker_style`
+  - `validation_source_marker_size`
+- Added focused tests for marker disabled/default behavior, enabled frame
+  mutation, P1/P2 distinct buffer patterns, and render-count diagnostics.
+
+### Validation Result Recorded
+- Latest completed manual OBS safety template:
+  - OBS Program scene/source list checked: yes
+  - OBS captured only `StreamSync Program Output`: yes
+  - OBS captured `StreamSync 4-view Output`: no
+  - `StreamSync 4-view Output` Program scene state: hidden
+  - Preview / multiview source in Program scene: no
+  - ProgramOutput window title verified: yes
+  - wrong-window suspicion: none
+  - Program had no 4-view layout
+  - Program had no border/debug UI/Preview label
+  - black / placeholder: none
+  - perceived stutter: small
+  - lag criteria classification: Warning
+  - one-shot fallback startup-only: unknown from manual; previous logs indicate
+    startup bootstrap was used for first render
+  - OBS safety classification: PASS
+- Latest known metrics:
+  - `program_selected_source_frame_lag=12`
+  - `program_continuous_selected_frame_lag=12`
+  - `continuous_decode_latest_selected_to_output_frame_gap=12`
+  - `program_render_effective_fps=20.796`
+  - `program_output_black_frame_render_count=0`
+  - `program_output_placeholder_render_count=0`
+  - `program_output_missing_after_first_render_count=0`
+  - `program_startup_bootstrap_used_for_first_render=true`
+
+### Why Not PASS
+- OBS safety and Program cleanliness are `PASS`, but selected-source visual
+  verification was incomplete because P1 / P2 markers were too mechanical and
+  not human-readable enough in OBS.
+- Smooth-latest lag criteria remained only `Warning` with `12 / 12 / 12` lag
+  and gap metrics.
+- Therefore this run is criteria-based ProgramOutput `WARNING`, not `PASS`.
+
+### Changed Files
+- `apps/client/src/lib.rs`
+- `apps/client/src/main.rs`
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+- `docs/operations/obs-capture-validation.md`
+- `docs/operations/continuous-output-pipeline-experiment-plan.md`
+
+### TODO Update
+- Replaced the next work with a rerun using the improved validation-only
+  source marker, refined lag criteria, and completed OBS safety template.
+- Kept ProgramOutput closeout blocked.
+- Kept same-loop Preview tuning paused.
+
+### Validation
+- `cargo fmt`
+  - result: PASS
+- `cargo check -p stream-sync-client`
+  - result: PASS
+- `cargo test -p stream-sync-client validation_source_marker`
+  - result: PASS, 4 lib tests and 1 bin parser test
+- `cargo test -p stream-sync-client auth_real_encoded_bounded`
+  - result: PASS, 3 lib tests
+- `git diff --check`
+  - result: PASS
+  - note: LF/CRLF warnings only
+
+## 2026-06-06
+### Type
 - Codex criteria-based ProgramOutput validation WARNING docs update
 
 ### Work

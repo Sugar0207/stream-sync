@@ -1332,8 +1332,8 @@ Current limitations:
   output pipeline evidence rather than threshold tuning.
 - Latest optimized BGR24 A/B shows conversion optimization worked, but
   `scaled-bgr24` still does not clearly beat default BGRA end to end.
-- Selected-source visual verification now has a recorded PASS using the
-  validation-only client/source-side marker:
+- Selected-source visual verification has an earlier recorded PASS reference
+  using the validation-only client/source-side marker:
   `--validation-source-marker <label>` on the client real encoded bounded PoC.
   In the latest manual validation, player1 used `P1`, player2 used `P2`,
   Program selected `player2`, OBS captured only `StreamSync Program Output`,
@@ -1355,22 +1355,47 @@ Current limitations:
     (`program_render_used_one_shot_fallback_count=1`,
     `program_startup_bootstrap_used_for_first_render=true`) rather than
     steady-state fallback
-- Latest criteria-based ProgramOutput validation rerun:
+- Latest completed-template criteria-based ProgramOutput validation rerun:
   - log dir:
     `S:\stream-sync\manual-logs\program-output-criteria-validation-20260605-235356`
-  - classification: `WARNING`, not `PASS`
+  - overall ProgramOutput criteria-based validation:
+    `WARNING`, not `PASS`
+  - OBS safety:
+    `PASS`
+  - Program cleanliness:
+    `PASS`
+  - lag criteria:
+    `Warning`
+  - selected-source visual verification:
+    `incomplete / WARNING`
   - retained good facts:
-    selected source diagnostics still resolved to `player2`, marker pipeline
-    still showed `P1` / `P2`, black / placeholder stayed `0`, and startup
-    bootstrap remained startup-only
+    selected source diagnostics still resolved to `player2`, client marker
+    diagnostics still showed `P1` / `P2`, OBS captured only
+    `StreamSync Program Output`, `StreamSync 4-view Output` was not captured
+    and was hidden in the Program scene, Program had no 4-view / border /
+    debug UI / Preview label, black / placeholder / after-first missing stayed
+    `0`, perceived stutter was small, and startup bootstrap remained
+    startup-only
   - warning reasons:
     lag/gap worsened to `12 / 12 / 12`,
     Program FPS fell to `20.796`,
-    and the manual OBS safety template was incomplete, so OBS safety could not
-    be finalized as `PASS`
+    and the validation markers were too mechanical / not human-readable enough
+    for P1 / P2 to be distinguished by human OBS inspection
+  - result handling:
+    OBS safety and Program cleanliness are `PASS`, but the run is not a
+    ProgramOutput `PASS` because selected-source visual verification is
+    incomplete and lag is only `Warning`
+  - marker implementation update:
+    validation-only source marker visibility is improved with
+    `validation_source_marker_style=large-corner-band-v2` and
+    `validation_source_marker_size`. The marker remains opt-in and source-side;
+    ProgramOutput still gets no overlay, watermark, Preview label, or 4-view
+    Program fallback.
 - Next candidate order:
-  1. Prepare the next criteria-based validation rerun using the checklist:
-     - marker visible and correct source identity
+  1. Rerun criteria-based validation using the improved marker:
+     - improved marker visible and correct source identity
+     - client summary includes `validation_source_marker_style` and
+       `validation_source_marker_size`
      - OBS ProgramOutput only
      - no 4-view / border / debug UI / Preview label in Program
      - black / placeholder counts

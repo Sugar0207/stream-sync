@@ -533,8 +533,9 @@ Validated command examples for the Program path:
         one-shot fallback limited to startup-only or isolated evidence,
         perceived stutter remains small / watchable
       - Warning:
-        source identity is still visually verified, but any of the following is
-        true:
+        source identity is visually verified with degraded metrics, or marker
+        readability is incomplete while logs / selected-source diagnostics do
+        not contradict the expected source, and any of the following is true:
         `program_selected_source_frame_lag` in `9..12`,
         `program_continuous_selected_frame_lag` in `3..4`,
         `continuous_decode_latest_selected_to_output_frame_gap` in `9..12`,
@@ -542,7 +543,8 @@ Validated command examples for the Program path:
         isolated black / placeholder appears,
         or one-shot fallback is needed repeatedly beyond startup
       - Fail:
-        source identity is not visually verified or appears wrong,
+        source identity appears wrong,
+        selected-source diagnostics contradict the expected source,
         black / placeholder recurs,
         one-shot fallback is required as a steady-state crutch,
         perceived smoothness is clearly poor,
@@ -558,10 +560,19 @@ Validated command examples for the Program path:
       bootstrap (`program_render_used_one_shot_fallback_count=1`,
       `program_startup_bootstrap_used_for_first_render=true`) rather than
       steady-state fallback
-    - latest criteria-based validation run:
+    - latest completed-template criteria-based validation run:
       - log dir:
         `S:\stream-sync\manual-logs\program-output-criteria-validation-20260605-235356`
-      - classification: `WARNING`, not `PASS`
+      - overall ProgramOutput criteria-based validation:
+        `WARNING`, not `PASS`
+      - OBS safety classification:
+        `PASS`
+      - Program cleanliness:
+        `PASS`
+      - lag criteria classification:
+        `Warning`
+      - selected-source visual verification:
+        `incomplete / WARNING`
       - good facts retained:
         `program_output_requested_client_id=player2`,
         `program_output_selected_client_id=player2`,
@@ -572,27 +583,46 @@ Validated command examples for the Program path:
         `program_startup_bootstrap_success_count=1`,
         `program_startup_bootstrap_actual_decode_invoked_count=1`,
         `program_startup_bootstrap_used_for_first_render=true`,
-        client marker diagnostics `P1` / `P2`
+        client marker diagnostics `P1` / `P2`,
+        OBS Program scene/source list checked,
+        OBS captured only `StreamSync Program Output`,
+        OBS did not capture `StreamSync 4-view Output`,
+        `StreamSync 4-view Output` was hidden in the Program scene,
+        Preview / multiview source was absent in the Program scene,
+        ProgramOutput window title was verified,
+        wrong-window suspicion was none,
+        Program had no 4-view layout,
+        Program had no border/debug UI/Preview label,
+        black / placeholder was none,
+        perceived stutter was small
       - warning facts:
         `program_selected_source_frame_lag=12`,
         `program_continuous_selected_frame_lag=12`,
         `continuous_decode_latest_selected_to_output_frame_gap=12`,
-        `program_render_effective_fps=20.796`
+        `program_render_effective_fps=20.796`,
+        Program P1 marker visible was indeterminate,
+        Program P2 marker visible was indeterminate
       - interpretation:
-        selected-source diagnostics and marker pipeline still look structurally
-        correct, ProgramOutput stayed clean/stable, and black / placeholder
-        stayed `0`; however lag moved into `Warning` territory relative to the
-        refined criteria
-      - OBS safety status:
-        the reusable manual OBS safety template was not fully filled in the
-        pasted-back result, so this run's OBS safety classification cannot be
-        finalized as `PASS` even though wrong-window evidence was not reported
+        OBS safety and Program cleanliness are `PASS`; ProgramOutput stayed
+        clean/stable and black / placeholder stayed `0`. However lag moved into
+        `Warning` territory and the validation markers were too mechanical /
+        not human-readable enough for P1 / P2 to be distinguished by OBS
+        inspection.
       - result handling:
-        keep selected-source marker implementation validated, but treat this
-        run's visual / OBS safety classification as incomplete until the manual
-        template is completed or rerun
+        do not call this run `PASS`; keep ProgramOutput closeout blocked and
+        make validation-only client/source marker visibility the next blocker.
+        The marker must remain source-side and opt-in, with no ProgramOutput
+        overlay, watermark, Preview label, or 4-view-as-Program fallback.
+      - marker improvement:
+        implemented `validation_source_marker_style=large-corner-band-v2` as a
+        larger source-side validation marker. It uses a large top-left corner
+        band, high-contrast border, block `P` + digit glyphs, and distinct
+        P1/P2 bottom pattern positions so P1 and P2 remain visibly different
+        even if text is blurred by encode/decode or OBS scaling.
     - lag-focused validation checklist for the next rerun:
-      - marker is visible and matches the selected source identity
+      - improved marker is visible and matches the selected source identity
+      - client summaries include `validation_source_marker_style` and
+        `validation_source_marker_size`
       - OBS captures only `StreamSync Program Output`
       - `StreamSync 4-view Output` is not captured / displayed
       - Program contains no 4-view layout, borders, debug UI, or Preview labels
@@ -608,8 +638,9 @@ Validated command examples for the Program path:
       - `program_output_missing_after_first_render_count`
       - reusable manual OBS safety template is fully filled in
     - status:
-      ProgramOutput closeout stays blocked until the separate OBS capture
-      safety checklist is also completed
+      ProgramOutput closeout stays blocked until the improved marker rerun
+      completes selected-source visual verification and lag criteria improve or
+      are otherwise accepted.
   - OBS capture safety:
     - latest OBS target separation was correct
     - OBS remains manual and can still be pointed at the wrong window
