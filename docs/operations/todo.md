@@ -2,7 +2,7 @@
 
 # StreamSync TODO
 
-最終更新: 2026-06-05
+最終更新: 2026-06-06
 
 このファイルは、現在位置と次の作業だけを確認するための TODO です。
 時系列の作業履歴は `docs/operations/session-log.md` を正とし、検証の詳細は各運用ドキュメントへ寄せます。
@@ -45,13 +45,15 @@
 - source-side marker approach により ProgramOutput は clean / selected-only のまま selected source identity を視認確認できることが分かった。
 - smooth-latest lag criteria の最新 reference 値は `program_selected_source_frame_lag=5`、`program_continuous_selected_frame_lag=0`、`continuous_decode_latest_selected_to_output_frame_gap=5`、`program_render_effective_fps=22.285`、black / placeholder `0`。
 - 最新の selected-source marker validation result は、startup bootstrap one-shot を steady-state fallback に数えない前提で draft `Good` を満たす暫定判定とする。`program_render_used_one_shot_fallback_count=1` は `program_startup_bootstrap_used_for_first_render=true` の startup-only evidence として扱い、steady-state fallback dependency とはみなさない。
-- smooth-latest の latency / lag accept criteria は refined draft と lag-focused validation checklist を追加済みだが、OBS capture safety は未完了のため ProgramOutput closeout blocker として継続する。
+- OBS ProgramOutput capture safety checklist / operator preflight / manual validation template は docs に追加済みだが、最新 criteria-based validation run では manual OBS safety template の記入が不完全だったため、この run の OBS safety classification は `PASS` で確定していない。
+- 最新の criteria-based ProgramOutput validation run は `WARNING` と記録する。ProgramOutput は clean / stable のままだが、lag が `12 / 12 / 12`、`program_render_effective_fps=20.796` まで悪化し、manual OBS safety template incomplete のため `PASS` にしない。
+- smooth-latest の latency / lag accept criteria と OBS safety checklist は docs に定義済みだが、criteria-based rerun の再確認と completed template 付き manual evidence がまだ必要なため、ProgramOutput closeout blocker として継続する。
 - 現在の詳細は `docs/operations/obs-capture-validation.md` と `docs/operations/session-log.md` を参照する。
 
 ## 次にやること
-1. [ ] refined smooth-latest lag criteria を使って次回 lag-focused validation rerun を記録する
+1. [ ] selected-source marker + refined lag criteria + completed OBS safety template を使った criteria-based ProgramOutput validation rerun を記録する
 2. [ ] ProgramOutput non-FPS blocker audit を継続し、lag / one-shot fallback / OBS safety を確認する
-3. [ ] OBS capture safety checklist を作る
+3. [ ] lag 悪化が再現するかを確認し、再現する場合は原因切り分けを始める
 
 ## 保留 / 限定
 - same-loop low-cost Preview refresh tuning
@@ -83,7 +85,8 @@
 - [x] selected source visual verification 方針は docs に定義済み
 - [x] validation-only client/source-side visual marker は最小実装済み
 - [x] validation-only selected-source visual verification は PASS 記録済み
-- [x] 最新の selected-source marker validation result は draft `Good` lag criteria に暫定一致
+- [x] selected-source marker reference validation は draft `Good` lag criteria に暫定一致
+- [x] OBS ProgramOutput capture safety checklist / operator preflight / manual validation template は docs に定義済み
 
 ## 参照メモ
 - ProgramOutput の詳細な未解決点は `docs/operations/obs-capture-validation.md` を参照する。

@@ -1,5 +1,175 @@
 <!-- stream-sync/docs/operations/session-log.md -->
 
+## 2026-06-06
+### Type
+- Codex criteria-based ProgramOutput validation WARNING docs update
+
+### Work
+- Recorded the latest criteria-based ProgramOutput validation run as
+  `WARNING`, not `PASS`.
+- Preserved the earlier selected-source marker reference run as the `Good`
+  reference instead of overwriting it with the newer worse-metrics run.
+- Recorded why the latest run is not `PASS`:
+  - lag/gap worsened to `12 / 12 / 12`
+  - `program_render_effective_fps=20.796`
+  - the manual OBS safety template was incomplete
+- Kept selected-source marker implementation validated, but marked this run's
+  visual / OBS safety classification incomplete unless completed manual data is
+  later provided.
+- Kept ProgramOutput closeout blocked.
+- Kept same-loop Preview tuning paused.
+- Kept this step docs-only; no Rust files were changed.
+
+### Validation Result
+- Log dir:
+  `S:\stream-sync\manual-logs\program-output-criteria-validation-20260605-235356`
+- Classification:
+  `WARNING`
+- Retained good facts:
+  - client marker diagnostics still show `P1` / `P2`
+  - selected Program source diagnostics still resolve to `player2`
+  - `program_output_black_frame_render_count=0`
+  - `program_output_placeholder_render_count=0`
+  - `program_output_missing_after_first_render_count=0`
+  - startup bootstrap succeeded and was used only for first render
+- Warning facts:
+  - `program_selected_source_frame_lag=12`
+  - `program_continuous_selected_frame_lag=12`
+  - `continuous_decode_latest_selected_to_output_frame_gap=12`
+  - `program_render_effective_fps=20.796`
+- OBS safety status:
+  - the reusable manual OBS safety template was not fully filled in for the
+    pasted result
+  - therefore OBS safety classification is incomplete for this run and cannot
+    be finalized as `PASS`
+
+### Why Not PASS
+- The lag metrics worsened from the earlier `Good` reference (`5 / 0 / 5`) to
+  `12 / 12 / 12`.
+- Program FPS fell from the earlier `22.285` reference to `20.796`.
+- The run still looked structurally clean/stable from logs, but the incomplete
+  manual OBS safety template means wrong-window / scene-list evidence was not
+  fully recorded in the reusable format.
+
+### Changed Files
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+- `docs/operations/obs-capture-validation.md`
+- `docs/operations/continuous-output-pipeline-experiment-plan.md`
+
+### TODO Update
+- Replaced the earlier assumption that the next criteria-based run should
+  simply be recorded as the next validation result.
+- Updated next work to:
+  - rerun criteria-based validation with a completed OBS safety template, or
+  - recover the missing manual OBS safety details if they can be reconstructed
+  - investigate lag worsening if `12 / 12 / 12` repeats
+- Kept ProgramOutput closeout blocked.
+- Kept same-loop Preview tuning paused.
+
+### Validation
+- Docs-only change; Rust files were not touched.
+- `git diff --check`
+  - result: PASS
+
+## 2026-06-05
+### Type
+- Codex OBS ProgramOutput capture safety checklist and validation procedure docs update
+
+### Work
+- Added an OBS ProgramOutput capture safety checklist to the operations docs.
+- Defined `PASS / WARNING / FAIL` categories for manual OBS safety validation.
+- Added a reusable manual validation template for OBS ProgramOutput capture
+  safety.
+- Added a short operator preflight checklist for server / switcher / client /
+  OBS setup before validation.
+- Kept ProgramOutput near-MVP closeout blocked until the new checklist is used
+  in a validation run.
+- Kept same-loop Preview tuning paused.
+- Kept this step docs-only; no Rust files were changed.
+- Kept OBS automation / WebSocket, hotkey/control pipe, and 4-view-as-Program
+  out of scope.
+
+### Added OBS Safety Procedure
+- Program scene requirements:
+  - capture only `StreamSync Program Output`
+  - do not capture `StreamSync 4-view Output`
+  - do not include Preview / multiview capture sources
+  - verify the ProgramOutput window title before validation
+- Validation-only marker requirement:
+  - when markers are enabled, the selected-source marker must be visible and
+    correct
+- Safety rule:
+  - wrong-window capture is automatic `FAIL`
+
+### PASS / WARNING / FAIL
+- PASS:
+  - only `StreamSync Program Output` is captured
+  - correct selected marker is visible
+  - no 4-view / debug / Preview UI is present
+  - black / placeholder count is `0`
+- WARNING:
+  - OBS source list still contains an old / disabled 4-view source, but it is
+    hidden or inactive in the Program scene
+  - marker is hard to read, but source identity is still confirmed by logs and
+    selected-source evidence
+- FAIL:
+  - OBS captures `StreamSync 4-view Output`
+  - Program scene includes a 4-view / multiview source
+  - wrong marker or wrong source appears
+  - debug UI / labels / borders appear
+  - black / placeholder recurs
+
+### Operator Preflight
+- launch server
+- launch switcher with ProgramOutput
+- launch clients with optional `P1` / `P2` markers
+- verify OBS source target
+- verify ProgramOutput window title
+- verify marker / source identity
+- verify no Preview UI appears in Program
+
+### Manual Validation Template
+- validation purpose
+- Program selected source
+- validation markers on/off and labels
+- OBS Program scene/source list checked
+- OBS capture target
+- `StreamSync 4-view Output` present/hidden/absent in Program scene
+- Preview / multiview source present/absent in Program scene
+- ProgramOutput window title verified
+- selected marker visible and correct
+- wrong-window suspicion yes/no
+- Program includes 4-view / border / debug UI / Preview labels yes/no
+- black / placeholder counters
+- lag metrics
+- Program FPS
+- one-shot fallback count
+- startup-only bootstrap or steady-state fallback
+- final safety classification
+- operator notes
+
+### Changed Files
+- `docs/operations/todo.md`
+- `docs/operations/session-log.md`
+- `docs/operations/obs-capture-validation.md`
+- `docs/operations/continuous-output-pipeline-experiment-plan.md`
+
+### TODO Update
+- Marked OBS capture safety checklist work as documented in the current state.
+- Kept ProgramOutput closeout blocked until the checklist is used in a
+  criteria-based validation run.
+- Set the next validation task to a combined run using:
+  - selected-source marker
+  - refined lag criteria
+  - OBS safety checklist
+- Kept same-loop Preview tuning paused.
+
+### Validation
+- Docs-only change; Rust files were not touched.
+- `git diff --check`
+  - result: PASS
+
 ## 2026-06-05
 ### Type
 - Codex smooth-latest lag criteria application and lag-focused validation planning

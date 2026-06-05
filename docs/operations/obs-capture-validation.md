@@ -550,14 +550,47 @@ Validated command examples for the Program path:
         `program_continuous_selected_frame_lag>4`,
         `continuous_decode_latest_selected_to_output_frame_gap>12`,
         or `program_render_effective_fps<18`
-    - current interpretation:
-      the latest selected-source PASS run satisfies draft `Good` because:
+    - reference interpretation:
+      the selected-source PASS reference run satisfies draft `Good` because:
       visual verification passed with visible `P2`, lag/gap were `5 / 0 / 5`,
       Program FPS was `22.285`, black / placeholder were `0`, perceived
       stutter was small, and the observed one-shot fallback was startup-only
       bootstrap (`program_render_used_one_shot_fallback_count=1`,
       `program_startup_bootstrap_used_for_first_render=true`) rather than
       steady-state fallback
+    - latest criteria-based validation run:
+      - log dir:
+        `S:\stream-sync\manual-logs\program-output-criteria-validation-20260605-235356`
+      - classification: `WARNING`, not `PASS`
+      - good facts retained:
+        `program_output_requested_client_id=player2`,
+        `program_output_selected_client_id=player2`,
+        `program_output_selected_slot_index=1`,
+        `program_output_black_frame_render_count=0`,
+        `program_output_placeholder_render_count=0`,
+        `program_output_missing_after_first_render_count=0`,
+        `program_startup_bootstrap_success_count=1`,
+        `program_startup_bootstrap_actual_decode_invoked_count=1`,
+        `program_startup_bootstrap_used_for_first_render=true`,
+        client marker diagnostics `P1` / `P2`
+      - warning facts:
+        `program_selected_source_frame_lag=12`,
+        `program_continuous_selected_frame_lag=12`,
+        `continuous_decode_latest_selected_to_output_frame_gap=12`,
+        `program_render_effective_fps=20.796`
+      - interpretation:
+        selected-source diagnostics and marker pipeline still look structurally
+        correct, ProgramOutput stayed clean/stable, and black / placeholder
+        stayed `0`; however lag moved into `Warning` territory relative to the
+        refined criteria
+      - OBS safety status:
+        the reusable manual OBS safety template was not fully filled in the
+        pasted-back result, so this run's OBS safety classification cannot be
+        finalized as `PASS` even though wrong-window evidence was not reported
+      - result handling:
+        keep selected-source marker implementation validated, but treat this
+        run's visual / OBS safety classification as incomplete until the manual
+        template is completed or rerun
     - lag-focused validation checklist for the next rerun:
       - marker is visible and matches the selected source identity
       - OBS captures only `StreamSync Program Output`
@@ -573,6 +606,7 @@ Validated command examples for the Program path:
       - `program_render_used_one_shot_fallback_count`
       - whether one-shot fallback was startup-only or steady-state
       - `program_output_missing_after_first_render_count`
+      - reusable manual OBS safety template is fully filled in
     - status:
       ProgramOutput closeout stays blocked until the separate OBS capture
       safety checklist is also completed
@@ -581,6 +615,77 @@ Validated command examples for the Program path:
     - OBS remains manual and can still be pointed at the wrong window
     - closeout needs a checklist for exact `StreamSync Program Output` capture,
       wrong-window prevention, and pasted-back evidence
+    - OBS ProgramOutput capture safety checklist:
+      - check the OBS scene/source list before validation begins
+      - the Program scene must capture only `StreamSync Program Output`
+      - `StreamSync 4-view Output` must be hidden, removed, or not present in
+        the Program scene
+      - the Program scene must not contain Preview / multiview capture sources
+      - verify the actual window title is `StreamSync Program Output`
+      - when validation markers are enabled, the selected-source marker must be
+        visible in ProgramOutput
+      - wrong-window capture is automatic `FAIL`
+    - PASS / WARNING / FAIL:
+      - PASS:
+        only `StreamSync Program Output` is captured, the correct selected
+        marker is visible, no 4-view / debug / Preview UI appears, and black /
+        placeholder counts are `0`
+      - WARNING:
+        the OBS source list still contains an old or disabled 4-view source but
+        it is hidden / inactive in the Program scene, or the marker is hard to
+        read but source identity is still confirmed by logs plus selected-source
+        evidence, or the manual OBS safety template is incomplete while the run
+        otherwise looks structurally correct
+      - FAIL:
+        OBS captures `StreamSync 4-view Output`, the Program scene includes a
+        4-view / multiview source, the wrong marker or wrong source appears,
+        debug UI / labels / borders appear in Program, or black / placeholder
+        recurs
+    - operator preflight checklist:
+      - launch server
+      - launch switcher with ProgramOutput enabled
+      - launch clients, adding validation markers such as `P1` / `P2` when the
+        run is a source-identity validation
+      - verify the OBS scene/source target before capture
+      - verify the ProgramOutput window title is `StreamSync Program Output`
+      - verify the expected selected marker / source
+      - verify no Preview / multiview UI appears in Program
+    - reusable manual validation template:
+      - validation purpose:
+        OBS ProgramOutput capture safety
+      - Program selected source:
+        `player2` or current validation target
+      - validation markers:
+        `client1=P1`, `client2=P2`, or `disabled`
+      - OBS Program scene source list checked:
+        `yes/no`
+      - OBS capture target:
+        `StreamSync Program Output` / `other`
+      - `StreamSync 4-view Output` present in Program scene:
+        `no/hidden/disabled/yes`
+      - Preview / multiview source present in Program scene:
+        `no/yes`
+      - ProgramOutput window title verified:
+        `yes/no`
+      - selected marker visible and correct:
+        `yes/no`
+      - wrong-window suspicion:
+        `no/yes`
+      - Program includes 4-view / border / debug UI / Preview labels:
+        `no/yes`
+      - `program_output_black_frame_render_count`
+      - `program_output_placeholder_render_count`
+      - `program_selected_source_frame_lag`
+      - `program_continuous_selected_frame_lag`
+      - `continuous_decode_latest_selected_to_output_frame_gap`
+      - `program_render_effective_fps`
+      - `program_render_used_one_shot_fallback_count`
+      - startup-only bootstrap or steady-state fallback:
+        `startup-only/steady-state/none`
+      - final safety classification:
+        `PASS/WARNING/FAIL`
+      - notes:
+        free-text operator notes
   - Program-first validation mode:
     - `--program-first-validation-mode` is still a validation mode, not final
       operator mode
@@ -879,6 +984,9 @@ Validated command examples for the Program path:
     - OBS captures exactly `StreamSync Program Output`
     - OBS does not capture `StreamSync 4-view Output`
     - wrong/stale window capture is checked and recorded
+    - the Program scene/source list is checked before validation
+    - Preview / multiview capture sources are absent from the Program scene
+    - the checklist result is recorded as `PASS`, `WARNING`, or `FAIL`
   - Latency / lag acceptance:
     - accepted smooth-latest lag bounds are defined
     - `program_selected_source_frame_lag`,

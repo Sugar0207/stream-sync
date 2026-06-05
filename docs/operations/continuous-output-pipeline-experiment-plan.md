@@ -1355,8 +1355,21 @@ Current limitations:
     (`program_render_used_one_shot_fallback_count=1`,
     `program_startup_bootstrap_used_for_first_render=true`) rather than
     steady-state fallback
+- Latest criteria-based ProgramOutput validation rerun:
+  - log dir:
+    `S:\stream-sync\manual-logs\program-output-criteria-validation-20260605-235356`
+  - classification: `WARNING`, not `PASS`
+  - retained good facts:
+    selected source diagnostics still resolved to `player2`, marker pipeline
+    still showed `P1` / `P2`, black / placeholder stayed `0`, and startup
+    bootstrap remained startup-only
+  - warning reasons:
+    lag/gap worsened to `12 / 12 / 12`,
+    Program FPS fell to `20.796`,
+    and the manual OBS safety template was incomplete, so OBS safety could not
+    be finalized as `PASS`
 - Next candidate order:
-  1. Prepare the next lag-focused validation rerun using the checklist:
+  1. Prepare the next criteria-based validation rerun using the checklist:
      - marker visible and correct source identity
      - OBS ProgramOutput only
      - no 4-view / border / debug UI / Preview label in Program
@@ -1367,16 +1380,27 @@ Current limitations:
      - `continuous_decode_latest_selected_to_output_frame_gap`
      - `program_render_effective_fps`
      - one-shot fallback count and whether it is startup-only
-  2. Continue ProgramOutput non-FPS blocker audit and closeout criteria
-     definition: OBS capture safety, Program-first validation vs final operator
-     mode, diagnostics completeness, and long-run stability.
-  3. OBS ProgramOutput capture safety checklist.
-  4. Separate Preview cadence/runtime or lighter renderer design for future
+     - fully completed manual OBS safety template
+  2. Apply the OBS ProgramOutput capture safety procedure in the same rerun:
+     - check the OBS scene/source list before validation
+     - verify only `StreamSync Program Output` is captured
+     - verify `StreamSync 4-view Output` is hidden, removed, or not present in
+       the Program scene
+     - verify no Preview / multiview capture source is present in the Program
+       scene
+     - verify the ProgramOutput window title
+     - classify the run as `PASS`, `WARNING`, or `FAIL`
+  3. Continue ProgramOutput non-FPS blocker audit and closeout criteria
+     definition: OBS capture safety run evidence, Program-first validation vs
+     final operator mode, diagnostics completeness, and long-run stability.
+  4. If lag worsening repeats, start a focused investigation into why
+     smooth-latest moved from the earlier `Good` reference to `12 / 12 / 12`.
+  5. Separate Preview cadence/runtime or lighter renderer design for future
      operator monitoring; current Preview is stable snapshot-only.
-  5. Program source switching over hotkey/control pipe later, after
+  6. Program source switching over hotkey/control pipe later, after
      ProgramOutput criteria are defined.
-  6. human-side `no-scale-bgra` A/B rerun for the scale path split slice
-  7. reader/completed latency breakdown diagnostics if no-scale evidence is
+  7. human-side `no-scale-bgra` A/B rerun for the scale path split slice
+  8. reader/completed latency breakdown diagnostics if no-scale evidence is
      ambiguous
   9. direct BGR24 render path docs-first impact review only
 - The `no-scale-bgra` code slice is already implemented; do not broaden it
