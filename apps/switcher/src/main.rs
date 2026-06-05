@@ -51,13 +51,13 @@ use stream_sync_switcher::{
     SwitcherH264AnnexBPayloadInspectionBoundary, SwitcherH264DecodeDeferredReason,
     SwitcherH264DecodeFailure, SwitcherH264DecodeInput, SwitcherH264DecodeResult,
     SwitcherH264DecodeRuntimeDiagnostics, SwitcherH264DecodeRuntimeHook,
-    SwitcherH264DecodeSourceIdentity, SwitcherLiveTwoViewManualRuntimeBoundary,
-    SwitcherLiveTwoViewManualRuntimeResult, SwitcherPersistentFfmpegH264DecodeRuntimeHook,
-    SwitcherPlaceholderManualVerificationBoundary, SwitcherPlaceholderManualVerificationInput,
-    SwitcherPlaceholderManualVerificationResult, SwitcherProgramOutputBoundary,
-    SwitcherProgramOutputMissingSelectedSourceReason, SwitcherProgramOutputRenderInput,
-    SwitcherProgramOutputRenderResult, SwitcherProgramSelection, SwitcherQueuedFrameHandoff,
-    SwitcherQueuedFrameHandoffInput, SwitcherQueuedFrameHandoffResult,
+    SwitcherH264DecodeRuntimeOutput, SwitcherH264DecodeSourceIdentity,
+    SwitcherLiveTwoViewManualRuntimeBoundary, SwitcherLiveTwoViewManualRuntimeResult,
+    SwitcherPersistentFfmpegH264DecodeRuntimeHook, SwitcherPlaceholderManualVerificationBoundary,
+    SwitcherPlaceholderManualVerificationInput, SwitcherPlaceholderManualVerificationResult,
+    SwitcherProgramOutputBoundary, SwitcherProgramOutputMissingSelectedSourceReason,
+    SwitcherProgramOutputRenderInput, SwitcherProgramOutputRenderResult, SwitcherProgramSelection,
+    SwitcherQueuedFrameHandoff, SwitcherQueuedFrameHandoffInput, SwitcherQueuedFrameHandoffResult,
     SwitcherSingleClientQueueSourceMode, SwitcherSingleClientTargetTimeHandoffSourceResult,
     SwitcherSingleViewSelectedEncodedFrame, SwitcherTwoViewComposedCanvasRenderBoundary,
     SwitcherTwoViewComposedCanvasRenderResult, SwitcherTwoViewCompositionBoundary,
@@ -3869,6 +3869,12 @@ impl TwoRealContinuousDecodeConfig {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TwoRealPreviewLoopDecodePurpose {
+    PreviewFallback,
+    ProgramStartupBootstrap,
+}
+
 struct TwoRealContinuousDecodeRuntime {
     source: TwoRealContinuousDecodeSource,
     config: TwoRealContinuousDecodeConfig,
@@ -5627,11 +5633,69 @@ fn record_slot0_one_shot_suppression(
     }
 }
 
-impl<Runtime> SwitcherH264DecodeRuntimeHook for TimedSwitcherH264DecodeRuntime<'_, Runtime>
+fn should_suppress_continuous_slot0_one_shot_fallback(
+    suppression_enabled: bool,
+    process_running: bool,
+    purpose: TwoRealPreviewLoopDecodePurpose,
+) -> bool {
+    suppression_enabled
+        && process_running
+        && purpose == TwoRealPreviewLoopDecodePurpose::PreviewFallback
+}
+
+fn switcher_h264_decode_runtime_output_from_result(
+    input: &SwitcherH264DecodeInput,
+    result: SwitcherH264DecodeResult,
+) -> SwitcherH264DecodeRuntimeOutput {
+    let output_bytes = match &result {
+        SwitcherH264DecodeResult::Decoded(decoded) => decoded.pixels.len(),
+        SwitcherH264DecodeResult::Failed(failure) => failure.decoded_stdout_len,
+        SwitcherH264DecodeResult::Deferred { .. } => 0,
+    };
+    let (output_width, output_height, output_pixel_format) = match &result {
+        SwitcherH264DecodeResult::Decoded(decoded) => (
+            Some(decoded.width),
+            Some(decoded.height),
+            Some(decoded.pixel_format),
+        ),
+        SwitcherH264DecodeResult::Failed(failure) => (
+            Some(failure.decode_expected_width),
+            Some(failure.decode_expected_height),
+            Some(failure.decode_expected_pixel_format),
+        ),
+        SwitcherH264DecodeResult::Deferred { .. } => (
+            Some(input.width),
+            Some(input.height),
+            Some(SwitcherDecodedFramePixelFormat::Bgra8),
+        ),
+    };
+
+    SwitcherH264DecodeRuntimeOutput {
+        result,
+        diagnostics: SwitcherH264DecodeRuntimeDiagnostics {
+            input_payload_bytes: input.encoded_payload.len(),
+            output_width,
+            output_height,
+            output_pixel_format,
+            scaled_output_enabled: input.scaled_output_enabled,
+            scaled_output_reason: input.scaled_output_reason.clone(),
+            output_bytes,
+            output_expected_bytes: input.width as usize * input.height as usize * 4,
+            buffer_allocation_count: u32::from(output_bytes > 0),
+            ..SwitcherH264DecodeRuntimeDiagnostics::default()
+        },
+    }
+}
+
+impl<'a, Runtime> TimedSwitcherH264DecodeRuntime<'a, Runtime>
 where
     Runtime: SwitcherH264DecodeRuntimeHook,
 {
-    fn decode_annex_b_h264(&self, input: SwitcherH264DecodeInput) -> SwitcherH264DecodeResult {
+    fn decode_annex_b_h264_with_diagnostics_for_purpose(
+        &self,
+        input: SwitcherH264DecodeInput,
+        purpose: TwoRealPreviewLoopDecodePurpose,
+    ) -> SwitcherH264DecodeRuntimeOutput {
         let continuous_input = self.apply_continuous_output_override(input.clone());
         let input = self.apply_output_override(input);
         let source_identity = input.source_identity.clone();
@@ -5690,7 +5754,10 @@ where
                     .render_used_continuous_decoded_count
                     .saturating_add(1);
             }
-            return SwitcherH264DecodeResult::Decoded(decoded);
+            return switcher_h264_decode_runtime_output_from_result(
+                &input,
+                SwitcherH264DecodeResult::Decoded(decoded),
+            );
         }
 
         self.timing.borrow_mut().decode_cache_miss_count += 1;
@@ -5723,7 +5790,10 @@ where
                 timing.render_used_continuous_decoded_count = timing
                     .render_used_continuous_decoded_count
                     .saturating_add(1);
-                return SwitcherH264DecodeResult::Decoded(decoded);
+                return switcher_h264_decode_runtime_output_from_result(
+                    &input,
+                    SwitcherH264DecodeResult::Decoded(decoded),
+                );
             }
             let bounded_candidate = self
                 .continuous_slot0
@@ -5757,7 +5827,10 @@ where
                         timing.render_used_continuous_decoded_count = timing
                             .render_used_continuous_decoded_count
                             .saturating_add(1);
-                        return SwitcherH264DecodeResult::Decoded(decoded);
+                        return switcher_h264_decode_runtime_output_from_result(
+                            &input,
+                            SwitcherH264DecodeResult::Decoded(decoded),
+                        );
                     }
                     let mut timing = self.timing.borrow_mut();
                     if let Some(continuous_slot0) = self.continuous_slot0.borrow().as_ref() {
@@ -5803,32 +5876,47 @@ where
             if let Some(continuous_slot0) = self.continuous_slot0.borrow().as_ref() {
                 continuous_slot0.observe_lookup_miss(&input, &mut timing);
             }
-            if timing.continuous_decode_slot0_one_shot_suppression_enabled
-                && timing.continuous_decode_process_running
-            {
+            if should_suppress_continuous_slot0_one_shot_fallback(
+                timing.continuous_decode_slot0_one_shot_suppression_enabled,
+                timing.continuous_decode_process_running,
+                purpose,
+            ) {
                 record_slot0_one_shot_suppression(&mut timing, suppression_reason);
-                return SwitcherH264DecodeResult::Deferred {
-                    reason: SwitcherH264DecodeDeferredReason::ContinuousOneShotSuppressed,
-                };
+                return switcher_h264_decode_runtime_output_from_result(
+                    &input,
+                    SwitcherH264DecodeResult::Deferred {
+                        reason: SwitcherH264DecodeDeferredReason::ContinuousOneShotSuppressed,
+                    },
+                );
             }
-            timing.continuous_decode_bounded_lookup_fallback_to_one_shot_count = timing
-                .continuous_decode_bounded_lookup_fallback_to_one_shot_count
-                .saturating_add(1);
-            timing.continuous_decode_fallback_to_one_shot_count = timing
-                .continuous_decode_fallback_to_one_shot_count
-                .saturating_add(1);
-            timing.render_used_one_shot_fallback_count =
-                timing.render_used_one_shot_fallback_count.saturating_add(1);
+            if purpose == TwoRealPreviewLoopDecodePurpose::PreviewFallback {
+                timing.continuous_decode_bounded_lookup_fallback_to_one_shot_count = timing
+                    .continuous_decode_bounded_lookup_fallback_to_one_shot_count
+                    .saturating_add(1);
+                timing.continuous_decode_fallback_to_one_shot_count = timing
+                    .continuous_decode_fallback_to_one_shot_count
+                    .saturating_add(1);
+                timing.render_used_one_shot_fallback_count =
+                    timing.render_used_one_shot_fallback_count.saturating_add(1);
+            }
         }
-        if self.maybe_suppress_program_first_preview_one_shot(&input) {
-            return SwitcherH264DecodeResult::Deferred {
-                reason: SwitcherH264DecodeDeferredReason::ContinuousOneShotSuppressed,
-            };
+        if purpose == TwoRealPreviewLoopDecodePurpose::PreviewFallback
+            && self.maybe_suppress_program_first_preview_one_shot(&input)
+        {
+            return switcher_h264_decode_runtime_output_from_result(
+                &input,
+                SwitcherH264DecodeResult::Deferred {
+                    reason: SwitcherH264DecodeDeferredReason::ContinuousOneShotSuppressed,
+                },
+            );
         }
         let start = Instant::now();
         let output = self.inner.decode_annex_b_h264_with_diagnostics(input);
         let decode_elapsed_ms = start.elapsed().as_millis();
-        let result = output.result;
+        let decoded_for_cache = match &output.result {
+            SwitcherH264DecodeResult::Decoded(decoded) => Some(decoded.clone()),
+            _ => None,
+        };
         let operator_preview_decode_refresh_in_progress = self
             .operator_preview_decode_refresh_in_progress
             .replace(false);
@@ -5838,16 +5926,16 @@ where
             timing.operator_preview_decode_refresh_elapsed_ms = timing
                 .operator_preview_decode_refresh_elapsed_ms
                 .saturating_add(decode_elapsed_ms);
-            if matches!(result, SwitcherH264DecodeResult::Decoded(_)) {
+            if decoded_for_cache.is_some() {
                 timing.operator_preview_decode_refresh_success_count = timing
                     .operator_preview_decode_refresh_success_count
                     .saturating_add(1);
             }
         }
         record_two_real_decode_attempt_observation(&mut timing, &key, &output.diagnostics);
-        add_decode_runtime_diagnostics(&mut timing, output.diagnostics);
+        add_decode_runtime_diagnostics(&mut timing, output.diagnostics.clone());
         timing.decode_attempt_count += 1;
-        if let SwitcherH264DecodeResult::Decoded(decoded) = &result {
+        if let Some(decoded) = decoded_for_cache {
             timing.decode_success_count += 1;
             let clone_start = Instant::now();
             let decoded_clone = decoded.clone();
@@ -5856,7 +5944,20 @@ where
             timing.decoded_buffer_clone_count += 1;
             self.decoded_cache.borrow_mut().insert(key, decoded_clone);
         }
-        result
+        output
+    }
+}
+
+impl<Runtime> SwitcherH264DecodeRuntimeHook for TimedSwitcherH264DecodeRuntime<'_, Runtime>
+where
+    Runtime: SwitcherH264DecodeRuntimeHook,
+{
+    fn decode_annex_b_h264(&self, input: SwitcherH264DecodeInput) -> SwitcherH264DecodeResult {
+        self.decode_annex_b_h264_with_diagnostics_for_purpose(
+            input,
+            TwoRealPreviewLoopDecodePurpose::PreviewFallback,
+        )
+        .result
     }
 }
 
@@ -9388,7 +9489,10 @@ where
                                 program_startup_bootstrap_client_unknown_count.saturating_add(1);
                         }
                         let decode_output = timed_decode_runtime
-                            .decode_annex_b_h264_with_diagnostics(bootstrap_input);
+                            .decode_annex_b_h264_with_diagnostics_for_purpose(
+                                bootstrap_input,
+                                TwoRealPreviewLoopDecodePurpose::ProgramStartupBootstrap,
+                            );
                         program_startup_bootstrap_elapsed_ms = program_startup_bootstrap_elapsed_ms
                             .saturating_add(bootstrap_start.elapsed().as_millis());
                         program_startup_bootstrap_decode_attempt_elapsed_ms =
@@ -20450,6 +20554,82 @@ mod tests {
             SwitcherH264DecodeResult::Decoded(_)
         ));
         assert_eq!(timing.borrow().decode_attempt_count, 1);
+    }
+
+    #[test]
+    fn program_startup_bootstrap_purpose_bypasses_continuous_one_shot_suppression_gate() {
+        assert!(super::should_suppress_continuous_slot0_one_shot_fallback(
+            true,
+            true,
+            super::TwoRealPreviewLoopDecodePurpose::PreviewFallback,
+        ));
+        assert!(!super::should_suppress_continuous_slot0_one_shot_fallback(
+            true,
+            true,
+            super::TwoRealPreviewLoopDecodePurpose::ProgramStartupBootstrap,
+        ));
+        assert!(!super::should_suppress_continuous_slot0_one_shot_fallback(
+            true,
+            false,
+            super::TwoRealPreviewLoopDecodePurpose::PreviewFallback,
+        ));
+    }
+
+    #[test]
+    fn program_startup_bootstrap_purpose_invokes_decode_despite_program_first_preview_suppression()
+    {
+        let timing = Rc::new(RefCell::new(TwoRealPreviewLoopRuntimeTiming::default()));
+        let runtime = TimedSwitcherH264DecodeRuntime::new(
+            &DeterministicFourViewFixtureDecodeRuntime,
+            Rc::clone(&timing),
+            None,
+            None,
+            TwoRealContinuousDecodeConfig::default(),
+            Some(TwoRealProgramFirstDecodeSuppressionConfig {
+                program_source: TwoRealContinuousDecodeSource {
+                    client_id: ClientId("real-client-1".to_string()),
+                    run_id: RunId("real-run-1".to_string()),
+                },
+                slot0_source: TwoRealContinuousDecodeSource {
+                    client_id: ClientId("real-client-0".to_string()),
+                    run_id: RunId("real-run-0".to_string()),
+                },
+                slot1_source: TwoRealContinuousDecodeSource {
+                    client_id: ClientId("real-client-1".to_string()),
+                    run_id: RunId("real-run-1".to_string()),
+                },
+            }),
+        );
+        runtime.set_program_first_decode_suppression_active(true);
+
+        let output = runtime.decode_annex_b_h264_with_diagnostics_for_purpose(
+            SwitcherH264DecodeInput {
+                encoded_payload: vec![0x30],
+                width: 2,
+                height: 1,
+                scaled_output_enabled: true,
+                scaled_output_reason: Some("two_real_slot_size".to_string()),
+                source_identity: Some(SwitcherH264DecodeSourceIdentity {
+                    client_id: ClientId("real-client-0".to_string()),
+                    run_id: RunId("real-run-0".to_string()),
+                    frame_id: 3,
+                    source_identity: "selected".to_string(),
+                }),
+            },
+            super::TwoRealPreviewLoopDecodePurpose::ProgramStartupBootstrap,
+        );
+
+        assert!(matches!(
+            output.result,
+            SwitcherH264DecodeResult::Decoded(_)
+        ));
+        let timing = timing.borrow();
+        assert_eq!(
+            timing.program_first_suppressed_preview_one_shot_decode_count,
+            0
+        );
+        assert_eq!(timing.decode_attempt_count, 1);
+        assert_eq!(timing.decode_success_count, 1);
     }
 
     #[test]

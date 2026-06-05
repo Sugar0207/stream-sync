@@ -1178,9 +1178,16 @@ operated as follows:
   `program_startup_bootstrap_used_for_first_render=false`,
   `program_output_first_render_elapsed_ms=2666`, and
   `program_output_missing_before_first_render_count=34`. ProgramOutput closeout
-  remains blocked; same-loop Preview tuning remains paused. The next Program
-  startup action is bootstrap `decode_failed` investigation with FFmpeg,
-  payload/NAL, slot/client, and actual-invoke diagnostics.
+  remains blocked; same-loop Preview tuning remains paused. Follow-up
+  diagnostics showed `program_startup_bootstrap_actual_decode_invoked_count=0`,
+  `program_startup_bootstrap_decode_skipped_before_invoke_count=24`, and
+  `deferred_continuous_one_shot_suppressed:24` despite retained candidates with
+  SPS/PPS/IDR, so the observed `decode_failed` was a pre-invoke suppression
+  routing bug rather than proven FFmpeg decode failure. The code now separates
+  Program startup bootstrap decode purpose from normal Preview fallback decode;
+  bootstrap remains opt-in and unvalidated. The next Program startup action is
+  a bootstrap rerun confirming actual one-shot invocation, then FFmpeg/stdout
+  classification only if actual decode still fails.
 
 Validated command examples:
 

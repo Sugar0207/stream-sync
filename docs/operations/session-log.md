@@ -1,5 +1,71 @@
 <!-- stream-sync/docs/operations/session-log.md -->
 
+## 2026-06-05
+### Type
+- Codex ProgramOutput startup bootstrap suppression bypass fix
+
+### Work
+- Investigated the follow-up bootstrap diagnostics after the failed
+  clients-before-switcher A/B.
+- Compared Program startup bootstrap decode with the normal working one-shot
+  decode path.
+- Found that bootstrap candidates with SPS/PPS/IDR were not reaching actual
+  FFmpeg one-shot decode:
+  - `program_startup_bootstrap_attempt_count=24`
+  - `program_startup_bootstrap_success_count=0`
+  - `program_startup_bootstrap_actual_decode_invoked_count=0`
+  - `program_startup_bootstrap_decode_skipped_before_invoke_count=24`
+  - `deferred_continuous_one_shot_suppressed:24`
+- Split timed decode purpose between normal Preview fallback and Program
+  startup bootstrap.
+- Kept bootstrap opt-in, startup-only, explicit-selection-only, and
+  ProgramOutput-only.
+- Kept normal Preview / continuous one-shot suppression behavior unchanged.
+- Added focused tests for bootstrap purpose bypass and suppression-gate
+  classification.
+
+### Findings
+- The previous `decode_failed:27` A/B result remains a failed bootstrap result.
+- The newer diagnostic set shows the immediate cause was a pre-invoke routing
+  bug: Program startup bootstrap used the same decode entry as Preview fallback,
+  so continuous slot0 one-shot suppression returned
+  `ContinuousOneShotSuppressed` before FFmpeg was invoked.
+- This does not prove bootstrap can decode successfully; it only removes the
+  wrong pre-invoke suppression block.
+
+### Changed Files
+- `apps/switcher/src/main.rs`
+- `docs/operations/todo.md`
+- `docs/operations/obs-capture-validation.md`
+- `docs/operations/continuous-output-pipeline-experiment-plan.md`
+- `docs/operations/session-log.md`
+
+### TODO Update
+- Recorded the failed bootstrap A/B and preserved `decode_failed:27`.
+- Recorded the follow-up root cause:
+  `actual_decode_invoked_count=0`, skipped-before-invoke `24`, and
+  `deferred_continuous_one_shot_suppressed:24`.
+- Updated next action to rerun bootstrap and confirm actual one-shot invocation
+  before investigating FFmpeg/stdout details.
+- Kept ProgramOutput closeout blocked.
+- Kept same-loop Preview tuning paused.
+
+### Validation
+- `cargo fmt`
+  - result: PASS
+- `cargo check -p stream-sync-switcher`
+  - result: PASS
+  - note: existing dead-code warnings remain
+- `cargo test -p stream-sync-switcher program_startup_bootstrap`
+  - result: PASS, 6 tests
+- `cargo test -p stream-sync-switcher program_output --lib`
+  - result: PASS, 2 tests
+- `cargo test -p stream-sync-switcher program_output`
+  - result: PASS, 3 tests across lib/bin filters
+- `git diff --check`
+  - result: PASS
+  - note: LF/CRLF warnings only
+
 ## 2026-06-04
 ### Type
 - Codex ProgramOutput startup bootstrap decode_failed investigation diagnostics

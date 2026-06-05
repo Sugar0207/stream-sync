@@ -565,6 +565,26 @@ Validated command examples for the Program path:
     - interpretation: bootstrap attempted retained-keyframe-classified
       candidates but decoded none, was not used for first render, and worsened
       startup timing in this run. Do not claim bootstrap success.
+  - follow-up bootstrap diagnostics:
+    - `program_startup_bootstrap_attempt_count=24`
+    - `program_startup_bootstrap_success_count=0`
+    - `program_startup_bootstrap_decode_attempt_elapsed_ms=41`
+    - `program_startup_bootstrap_actual_decode_invoked_count=0`
+    - `program_startup_bootstrap_decode_skipped_before_invoke_count=24`
+    - `program_startup_bootstrap_decode_error_counts=failed:0|deferred_empty_payload:0|deferred_invalid_dimensions:0|deferred_ffmpeg_unavailable:0|deferred_continuous_one_shot_suppressed:24|unknown:0`
+    - payload diagnostics showed retained candidates with SPS/PPS/IDR present,
+      so the observed failure was not missing parameter sets or empty payload.
+    - interpretation: bootstrap decode was routed through the continuous slot0
+      one-shot suppression gate and skipped before actual FFmpeg one-shot
+      invocation.
+  - code follow-up:
+    - Program startup bootstrap decode now uses a separate decode purpose from
+      normal Preview fallback decode.
+    - Preview fallback still uses the existing continuous / Program-first
+      one-shot suppression behavior.
+    - bootstrap remains opt-in, startup-only, explicit-selection-only, and
+      ProgramOutput-only. This is not a bootstrap success claim; it requires a
+      new A/B rerun.
   - bootstrap decode failure investigation now adds diagnostics for:
     `program_startup_bootstrap_decode_attempt_elapsed_ms`,
     `program_startup_bootstrap_decode_error_counts`,
@@ -580,9 +600,11 @@ Validated command examples for the Program path:
     `program_startup_bootstrap_client_counts`,
     `program_startup_bootstrap_actual_decode_invoked_count`,
     `program_startup_bootstrap_decode_skipped_before_invoke_count`.
-  - next validation should rerun bootstrap and classify whether `decode_failed`
-    means FFmpeg failure, no stdout frame, invalid payload, missing SPS/PPS/IDR,
-    wrong selected payload, pre-invoke skip, or result-classification bug.
+  - next validation should rerun bootstrap and first confirm actual FFmpeg
+    one-shot invocation. If bootstrap still fails after invocation, classify
+    whether the remaining failure is FFmpeg exit, no stdout frame, invalid
+    payload, missing expected output shape, wrong selected payload, or a result
+    classification bug.
   - other candidate fixes remain deferred until the bootstrap `decode_failed`
     evidence is read:
     - startup continuous decode prewarm
