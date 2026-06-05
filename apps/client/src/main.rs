@@ -317,6 +317,8 @@ fn main() {
                 stream_sync_client::ClientRealEncodedVideoFrameEncoderRuntime::PerFrame;
             let mut cadence_mode =
                 stream_sync_client::ClientContinuousRealEncodedVideoFrameCadenceMode::Fixed;
+            let mut validation_source_marker =
+                stream_sync_client::ClientValidationSourceMarkerConfig::disabled();
             while let Some(flag) = args.next() {
                 match flag.as_str() {
                     "--encoder-runtime" => {
@@ -353,6 +355,12 @@ fn main() {
                             std::process::exit(1);
                         });
                     }
+                    "--validation-source-marker" => {
+                        validation_source_marker = parse_validation_source_marker_or_exit(
+                            args.next(),
+                            "validation-source-marker",
+                        );
+                    }
                     other => {
                         eprintln!(
                             "unexpected argument for bounded auth real encoded video PoC: {other}"
@@ -376,6 +384,7 @@ fn main() {
             startup_config.policy.fragment_pacing = fragment_pacing;
             startup_config.encoder_runtime = encoder_runtime;
             startup_config.policy.cadence_mode = cadence_mode;
+            startup_config.validation_source_marker = validation_source_marker;
             let encoder_config = startup_config.video.encoder_config.clone();
             let ffmpeg_preflight =
                 stream_sync_client::probe_client_ffmpeg_preflight(&encoder_config);
@@ -503,8 +512,12 @@ fn main() {
                             .last_encoder_exit_status
                             .map(|value| value.to_string())
                             .unwrap_or_else(|| "none".to_string());
+                        let validation_source_marker_label = summary
+                            .validation_source_marker_label
+                            .as_deref()
+                            .unwrap_or("none");
                         println!(
-                            "auth real encoded video frame bounded PoC sent AuthRequest {} bytes from {} to {} and received AuthResponse {} bytes from {}; accepted={} reason_code={:?}; bounded_manual_runtime=true; fragment_pacing_every={} fragment_pacing_delay_ms={} encoder_backend={} encoder_width={} encoder_height={} encoder_fps={} encoder_bitrate_kbps={} encoder_gop_frames={} encoder_preset={} encoder_tune={} encoder_pixel_format={} encoder_profile={} encoder_level={} ffmpeg_path={} ffmpeg_version_detected={} ffmpeg_preflight_error={} ffmpeg_spawn_error={} configured_max_frames={} configured_max_ticks={} configured_frame_interval_ms={} cadence_mode={} encoder_runtime={} encoder_process_start_count={} runtime_ticks={} capture_attempts={} frames_captured={} frames_encoded={} frames_sent={} direct_sends={} fragmented_sends={} fragments_attempted={} fragments_sent={} no_frame_count={} capture_failures={} encode_failures={} frame_build_failures={} send_failures={} persistent_access_units_emitted={} persistent_no_complete_access_unit_count={} persistent_stdout_closed_count={} persistent_malformed_stream_count={} h264_parameter_sets_cached={} h264_sps_count={} h264_pps_count={} h264_idr_count={} h264_non_idr_vcl_count={} h264_parameter_sets_prepended_count={} last_payload_had_parameter_sets={} h264_parameter_sets_missing_count={} keyframes_encoded={} keyframes_sent={} first_keyframe_frame_id={} last_keyframe_frame_id={} last_payload_has_sps={} last_payload_has_pps={} last_payload_has_idr={} last_payload_has_non_idr_vcl={} last_encoder_exit_status={} frames_remaining_to_max={} elapsed_ms={} capture_elapsed_ms={} encode_elapsed_ms={} avg_capture_elapsed_ms={} avg_encode_elapsed_ms={} capture_wait_or_no_frame_elapsed_ms={} effective_output_fps={} effective_fresh_capture_fps={} effective_send_fps={} loop_interval_sleep_ms={} deadline_sleep_ms={} deadline_overrun_ms={} late_tick_count={} max_deadline_overrun_ms={} total_fragment_pacing_sleep_ms={} send_elapsed_ms={} ticks_elapsed_while_sending={} last_encode_error={} last_ffmpeg_error={} last_payload_len={} oversized_payload_count={} fragmentation_pressure_count={} stop_reason={:?} last_send_destination={} last_send_local_source={} last_send_frame_id={} last_send_payload_len={} last_send_packet_len={} last_send_error={}",
+                            "auth real encoded video frame bounded PoC sent AuthRequest {} bytes from {} to {} and received AuthResponse {} bytes from {}; accepted={} reason_code={:?}; bounded_manual_runtime=true; fragment_pacing_every={} fragment_pacing_delay_ms={} encoder_backend={} encoder_width={} encoder_height={} encoder_fps={} encoder_bitrate_kbps={} encoder_gop_frames={} encoder_preset={} encoder_tune={} encoder_pixel_format={} encoder_profile={} encoder_level={} ffmpeg_path={} ffmpeg_version_detected={} ffmpeg_preflight_error={} ffmpeg_spawn_error={} configured_max_frames={} configured_max_ticks={} configured_frame_interval_ms={} cadence_mode={} encoder_runtime={} encoder_process_start_count={} validation_source_marker_enabled={} validation_source_marker_label={} validation_source_marker_render_count={} runtime_ticks={} capture_attempts={} frames_captured={} frames_encoded={} frames_sent={} direct_sends={} fragmented_sends={} fragments_attempted={} fragments_sent={} no_frame_count={} capture_failures={} encode_failures={} frame_build_failures={} send_failures={} persistent_access_units_emitted={} persistent_no_complete_access_unit_count={} persistent_stdout_closed_count={} persistent_malformed_stream_count={} h264_parameter_sets_cached={} h264_sps_count={} h264_pps_count={} h264_idr_count={} h264_non_idr_vcl_count={} h264_parameter_sets_prepended_count={} last_payload_had_parameter_sets={} h264_parameter_sets_missing_count={} keyframes_encoded={} keyframes_sent={} first_keyframe_frame_id={} last_keyframe_frame_id={} last_payload_has_sps={} last_payload_has_pps={} last_payload_has_idr={} last_payload_has_non_idr_vcl={} last_encoder_exit_status={} frames_remaining_to_max={} elapsed_ms={} capture_elapsed_ms={} encode_elapsed_ms={} avg_capture_elapsed_ms={} avg_encode_elapsed_ms={} capture_wait_or_no_frame_elapsed_ms={} effective_output_fps={} effective_fresh_capture_fps={} effective_send_fps={} loop_interval_sleep_ms={} deadline_sleep_ms={} deadline_overrun_ms={} late_tick_count={} max_deadline_overrun_ms={} total_fragment_pacing_sleep_ms={} send_elapsed_ms={} ticks_elapsed_while_sending={} last_encode_error={} last_ffmpeg_error={} last_payload_len={} oversized_payload_count={} fragmentation_pressure_count={} stop_reason={:?} last_send_destination={} last_send_local_source={} last_send_frame_id={} last_send_payload_len={} last_send_packet_len={} last_send_error={}",
                             outcome.auth_request_bytes_sent,
                             outcome.local_source,
                             outcome.destination,
@@ -537,6 +550,9 @@ fn main() {
                             summary.cadence_mode.as_config_str(),
                             summary.encoder_runtime.as_config_str(),
                             summary.encoder_process_start_count,
+                            summary.validation_source_marker_enabled,
+                            validation_source_marker_label,
+                            summary.validation_source_marker_render_count,
                             summary.runtime_ticks,
                             summary.capture_attempts,
                             summary.frames_captured,
@@ -749,7 +765,7 @@ fn main() {
         }
         _ => {
             println!(
-                "stream-sync-client scaffold; use --auth-request-poc-once [config-path], --auth-heartbeat-poc-once [config-path], --auth-heartbeat-stats-poc-once [config-path], --placeholder-video-frame-poc-once [config-path], --auth-placeholder-video-frame-poc-once [config-path], --real-encoded-video-frame-poc-once [config-path], --auth-real-encoded-video-frame-poc-once [config-path], --auth-real-encoded-video-frame-poc-bounded [config-path] [max-frames] [fragment-pacing-every] [fragment-pacing-delay-ms] [--encoder-runtime per_frame|persistent] [--cadence-mode fixed|deadline] (internal bounded guard: configured_max_ticks = max(max_frames, max_frames * 10)), --auth-heartbeat-one-tick-runtime [config-path], or --auth-heartbeat-stats-one-tick-runtime [config-path]"
+                "stream-sync-client scaffold; use --auth-request-poc-once [config-path], --auth-heartbeat-poc-once [config-path], --auth-heartbeat-stats-poc-once [config-path], --placeholder-video-frame-poc-once [config-path], --auth-placeholder-video-frame-poc-once [config-path], --real-encoded-video-frame-poc-once [config-path], --auth-real-encoded-video-frame-poc-once [config-path], --auth-real-encoded-video-frame-poc-bounded [config-path] [max-frames] [fragment-pacing-every] [fragment-pacing-delay-ms] [--encoder-runtime per_frame|persistent] [--cadence-mode fixed|deadline] [--validation-source-marker label] (internal bounded guard: configured_max_ticks = max(max_frames, max_frames * 10)), --auth-heartbeat-one-tick-runtime [config-path], or --auth-heartbeat-stats-one-tick-runtime [config-path]"
             );
         }
     }
@@ -863,4 +879,43 @@ where
             std::process::exit(1);
         })
     })
+}
+
+fn parse_validation_source_marker_or_exit(
+    value: Option<String>,
+    name: &str,
+) -> stream_sync_client::ClientValidationSourceMarkerConfig {
+    const MAX_VALIDATION_SOURCE_MARKER_LABEL_LEN: usize = 32;
+    let Some(label) = value else {
+        eprintln!("missing {name} value for bounded auth real encoded video PoC");
+        std::process::exit(1);
+    };
+    let label = label.trim();
+    if label.is_empty() {
+        eprintln!("{name} must not be empty");
+        std::process::exit(1);
+    }
+    if label.len() > MAX_VALIDATION_SOURCE_MARKER_LABEL_LEN {
+        eprintln!("{name} must be {MAX_VALIDATION_SOURCE_MARKER_LABEL_LEN} bytes or fewer");
+        std::process::exit(1);
+    }
+    if label.chars().any(char::is_whitespace) {
+        eprintln!("{name} must not contain whitespace");
+        std::process::exit(1);
+    }
+    stream_sync_client::ClientValidationSourceMarkerConfig::enabled(label.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn validation_source_marker_parser_accepts_compact_label() {
+        let config = super::parse_validation_source_marker_or_exit(
+            Some("P2".to_string()),
+            "validation-source-marker",
+        );
+
+        assert_eq!(config.label.as_deref(), Some("P2"));
+        assert!(config.is_enabled());
+    }
 }

@@ -1332,13 +1332,20 @@ Current limitations:
   output pipeline evidence rather than threshold tuning.
 - Latest optimized BGR24 A/B shows conversion optimization worked, but
   `scaled-bgr24` still does not clearly beat default BGRA end to end.
+- Selected-source visual verification now has a minimal implemented
+  validation-only client/source-side marker:
+  `--validation-source-marker <label>` on the client real encoded bounded PoC.
+  It draws a small marker/pattern into raw BGRA before encode so ProgramOutput
+  stays clean, selected-only, and overlay-free.
 - Next candidate order:
-  1. Continue ProgramOutput non-FPS blocker audit and closeout criteria
-     definition: selected-source verification, smooth-latest lag acceptance,
-     OBS capture safety, Program-first validation vs final operator mode,
-     diagnostics completeness, and long-run stability.
-  2. Selected-source visual verification plan, including stronger player1 /
-     player2 visual differentiation and client/run/slot identity evidence.
+  1. Run manual selected-source visual verification with distinct client marker
+     labels, for example player1 `--validation-source-marker P1` and player2
+     `--validation-source-marker P2`, then verify `StreamSync Program Output`
+     shows the selected player2 source.
+  2. Continue ProgramOutput non-FPS blocker audit and closeout criteria
+     definition: selected-source verification evidence, smooth-latest lag
+     acceptance, OBS capture safety, Program-first validation vs final
+     operator mode, diagnostics completeness, and long-run stability.
   3. Smooth-latest latency/lag acceptance criteria separate from FPS.
   4. OBS ProgramOutput capture safety checklist.
   5. Separate Preview cadence/runtime or lighter renderer design for future

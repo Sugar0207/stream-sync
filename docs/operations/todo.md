@@ -39,14 +39,15 @@
 - switcher-first cold start の残り待ちは、主に selected client/player2 frame の到着待ち。ProgramOutput は selected-only のため selected source frame が存在する前には描画できず、bootstrap は source frame 到着後の decode / continuous startup latency だけを短縮する。
 - ProgramOutput startup readiness diagnostics は最小実装済み。summary は `program_startup_readiness_state`、`program_selected_source_wait_elapsed_ms`、`program_startup_waiting_for_selected_source_count`、`program_startup_bootstrap_after_source_seen_elapsed_ms`、`program_startup_selected_source_seen_count` を出す。
 - ProgramOutput startup readiness semantics は `program_selection_configured` -> `program_selected_source_waiting` -> `program_selected_source_seen` -> `program_first_frame_bootstrapping` -> `program_first_frame_rendered` -> `program_steady_state` として扱う。ProgramOutput 無効時の summary 値だけは `disabled`。
+- selected source visual verification 用の最小 client/source-side marker は opt-in `--validation-source-marker <label>` として実装済み。client の real encoded bounded PoC が encode 前の raw BGRA に小さな corner marker / pattern を焼き込むだけで、ProgramOutput には watermark / label / border / debug UI を追加しない。manual config は player1 / player2 とも `window_title = "Minecraft"` なので、次は player1 / player2 に別 label を付けた手動 OBS 検証が必要。
 - ProgramOutput は near-MVP closeout ではない。non-FPS blocker が残るため closeout は引き続き blocked とし、same-loop Preview tuning も paused のままにする。
 - 新 diagnostics は bootstrap decode の elapsed / error class / FFmpeg exit+stderr / payload bytes / NAL kinds / SPS/PPS/IDR / frame_id / slot/client / actual invoke vs pre-invoke skip を読む。
-- selected source identity の視認性、smooth-latest の latency / lag accept criteria、OBS capture safety も未整理のまま残す。
+- selected source identity の手動視認確認、smooth-latest の latency / lag accept criteria、OBS capture safety も未整理のまま残す。
 - 現在の詳細は `docs/operations/obs-capture-validation.md` と `docs/operations/session-log.md` を参照する。
 
 ## 次にやること
-1. [ ] ProgramOutput non-FPS blocker audit を継続し、first render の次に selected identity / lag / OBS safety を確認する
-2. [ ] selected source visual verification と player1 / player2 の見分けやすさを整理する
+1. [ ] `--validation-source-marker P1/P2` を使って player1 / player2 を別 marker で起動し、`StreamSync Program Output` が `--program-selected-client-id player2` と一致することを OBS で手動確認する
+2. [ ] ProgramOutput non-FPS blocker audit を継続し、selected identity / lag / OBS safety を確認する
 3. [ ] smooth-latest の latency / lag acceptance criteria を FPS とは別に定義する
 4. [ ] OBS capture safety checklist を作る
 
@@ -77,6 +78,8 @@
 - [x] switcher-first cold start bootstrap validation は完了
 - [x] ProgramOutput startup readiness semantics は docs に定義済み
 - [x] ProgramOutput startup readiness diagnostics は最小実装済み
+- [x] selected source visual verification 方針は docs に定義済み
+- [x] validation-only client/source-side visual marker は最小実装済み
 
 ## 参照メモ
 - ProgramOutput の詳細な未解決点は `docs/operations/obs-capture-validation.md` を参照する。

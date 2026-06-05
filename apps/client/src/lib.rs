@@ -1177,6 +1177,7 @@ impl ClientAuthRealEncodedVideoFrameBoundedPocLauncher {
                 },
             },
             encoder_runtime: ClientRealEncodedVideoFrameEncoderRuntime::PerFrame,
+            validation_source_marker: ClientValidationSourceMarkerConfig::disabled(),
         }
     }
 
@@ -1276,6 +1277,7 @@ impl ClientAuthRealEncodedVideoFrameBoundedPocLauncher {
             startup_config.video.clone(),
             startup_config.policy,
             encoder_runtime,
+            startup_config.validation_source_marker,
             session_runtime_hook,
             capture_runtime_hook,
             encoder_runtime_hook,
@@ -1320,6 +1322,7 @@ impl ClientAuthRealEncodedVideoFrameBoundedPocLauncher {
         video_config: ClientRealEncodedVideoFramePocStartupConfig,
         policy: ClientContinuousRealEncodedVideoFramePolicy,
         encoder_runtime: ClientRealEncodedVideoFrameEncoderRuntime,
+        validation_source_marker: ClientValidationSourceMarkerConfig,
         session_runtime_hook: &impl ClientCaptureSessionRuntimeHook,
         capture_runtime_hook: &impl ClientCaptureFrameAcquisitionRuntimeHook,
         encoder_runtime_hook: &impl ClientH264EncoderRuntimeHook,
@@ -1357,27 +1360,38 @@ impl ClientAuthRealEncodedVideoFrameBoundedPocLauncher {
             }
         };
 
-        ClientContinuousRealEncodedVideoFramePocOutcome::Completed(
-            self.continuous_video.run_with_runtime_selection(
-                ClientContinuousRealEncodedVideoFrameInput {
-                    socket,
-                    destination: video_config.destination,
-                    capture_runtime: &mut capture_runtime,
-                    protocol_version: video_config.protocol_version,
-                    client_id: video_config.client_id,
-                    run_id: video_config.run_id,
-                    first_frame_id: video_config.frame_id,
-                    fps_nominal: video_config.fps_nominal,
-                    is_keyframe: video_config.is_keyframe,
-                    start_capture_if_needed: video_config.start_capture_if_needed,
-                    encoder_config: video_config.encoder_config,
-                    policy,
-                },
-                encoder_runtime,
-                capture_runtime_hook,
-                encoder_runtime_hook,
-            ),
-        )
+        let validation_source_marker_render_count = Cell::new(0_u64);
+        let marked_capture_runtime =
+            ClientValidationSourceMarkerCaptureFrameAcquisitionRuntimeHook {
+                inner: capture_runtime_hook,
+                marker: &validation_source_marker,
+                render_count: &validation_source_marker_render_count,
+            };
+        let mut runtime = self.continuous_video.run_with_runtime_selection(
+            ClientContinuousRealEncodedVideoFrameInput {
+                socket,
+                destination: video_config.destination,
+                capture_runtime: &mut capture_runtime,
+                protocol_version: video_config.protocol_version,
+                client_id: video_config.client_id,
+                run_id: video_config.run_id,
+                first_frame_id: video_config.frame_id,
+                fps_nominal: video_config.fps_nominal,
+                is_keyframe: video_config.is_keyframe,
+                start_capture_if_needed: video_config.start_capture_if_needed,
+                encoder_config: video_config.encoder_config,
+                policy,
+            },
+            encoder_runtime,
+            &marked_capture_runtime,
+            encoder_runtime_hook,
+        );
+        runtime.summary.validation_source_marker_enabled = validation_source_marker.is_enabled();
+        runtime.summary.validation_source_marker_label = validation_source_marker.label;
+        runtime.summary.validation_source_marker_render_count =
+            validation_source_marker_render_count.get();
+
+        ClientContinuousRealEncodedVideoFramePocOutcome::Completed(runtime)
     }
 }
 
@@ -6008,6 +6022,9 @@ pub struct ClientContinuousRealEncodedVideoFrameSummary {
     pub max_deadline_overrun_micros: u64,
     pub total_fragment_pacing_sleep_micros: u64,
     pub ticks_elapsed_while_sending: u64,
+    pub validation_source_marker_enabled: bool,
+    pub validation_source_marker_label: Option<String>,
+    pub validation_source_marker_render_count: u64,
     pub stop_reason: Option<ClientContinuousRealEncodedVideoFrameStopReason>,
     pub last_send_failure: Option<ClientVideoFrameEncodeSendFailure>,
 }
@@ -6037,6 +6054,34 @@ impl ClientContinuousRealEncodedVideoFrameSummary {
             .saturating_add(self.persistent_no_complete_access_unit_count)
             .saturating_add(self.h264_parameter_sets_missing_count);
         average_duration_micros(self.encode_elapsed_micros, encode_attempts)
+    }
+}
+
+/// Opt-in source-side marker used only for manual validation runs.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct ClientValidationSourceMarkerConfig {
+    pub label: Option<String>,
+}
+
+impl ClientValidationSourceMarkerConfig {
+    pub fn disabled() -> Self {
+        Self { label: None }
+    }
+
+    pub fn enabled(label: impl Into<String>) -> Self {
+        let label = label.into();
+        if label.trim().is_empty() {
+            Self::disabled()
+        } else {
+            Self { label: Some(label) }
+        }
+    }
+
+    pub fn is_enabled(&self) -> bool {
+        self.label
+            .as_ref()
+            .map(|label| !label.trim().is_empty())
+            .unwrap_or(false)
     }
 }
 
@@ -6083,6 +6128,183 @@ where
         self.elapsed_micros
             .set(started_at.elapsed().as_micros() as u64);
         result
+    }
+}
+
+struct ClientValidationSourceMarkerCaptureFrameAcquisitionRuntimeHook<'a, T> {
+    inner: &'a T,
+    marker: &'a ClientValidationSourceMarkerConfig,
+    render_count: &'a Cell<u64>,
+}
+
+impl<T> ClientCaptureFrameAcquisitionRuntimeHook
+    for ClientValidationSourceMarkerCaptureFrameAcquisitionRuntimeHook<'_, T>
+where
+    T: ClientCaptureFrameAcquisitionRuntimeHook,
+{
+    fn acquire_one_bgra_frame(
+        &self,
+        input: &mut ClientCaptureFrameAcquisitionInput<'_>,
+    ) -> ClientCaptureFrameAcquisitionResult {
+        match self.inner.acquire_one_bgra_frame(input) {
+            ClientCaptureFrameAcquisitionResult::FrameAcquired { mut frame } => {
+                if render_validation_source_marker_on_frame(&mut frame, self.marker) {
+                    self.render_count
+                        .set(self.render_count.get().saturating_add(1));
+                }
+                ClientCaptureFrameAcquisitionResult::FrameAcquired { frame }
+            }
+            other => other,
+        }
+    }
+}
+
+fn render_validation_source_marker_on_frame(
+    frame: &mut ClientRawCapturedVideoFrame,
+    marker: &ClientValidationSourceMarkerConfig,
+) -> bool {
+    let Some(label) = marker.label.as_deref() else {
+        return false;
+    };
+    if label.trim().is_empty()
+        || frame.pixel_format != ClientRawVideoPixelFormat::Bgra8
+        || frame.width == 0
+        || frame.height == 0
+    {
+        return false;
+    }
+
+    let width = frame.width as usize;
+    let height = frame.height as usize;
+    let stride = match width.checked_mul(4) {
+        Some(stride) => stride,
+        None => return false,
+    };
+    let expected_len = match stride.checked_mul(height) {
+        Some(expected_len) => expected_len,
+        None => return false,
+    };
+    if frame.pixels.len() < expected_len {
+        return false;
+    }
+
+    let marker_width = width.min(180).max(1);
+    let marker_height = height.min(80).max(1);
+    let border = marker_width.min(marker_height).clamp(1, 6);
+    let (blue, green, red) = validation_source_marker_bgr(label);
+
+    draw_validation_source_marker_rect(
+        frame,
+        0,
+        0,
+        marker_width,
+        marker_height,
+        [blue, green, red, 255],
+    );
+    draw_validation_source_marker_border(frame, marker_width, marker_height, border);
+    draw_validation_source_marker_pattern(frame, label, marker_width, marker_height, border);
+    true
+}
+
+fn validation_source_marker_bgr(label: &str) -> (u8, u8, u8) {
+    let mut hash = 0xcbf2_9ce4_8422_2325_u64;
+    for byte in label.as_bytes() {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    let blue = 80 + (hash as u8 % 176);
+    let green = 80 + ((hash >> 8) as u8 % 176);
+    let red = 80 + ((hash >> 16) as u8 % 176);
+    (blue, green, red)
+}
+
+fn draw_validation_source_marker_rect(
+    frame: &mut ClientRawCapturedVideoFrame,
+    x: usize,
+    y: usize,
+    width: usize,
+    height: usize,
+    bgra: [u8; 4],
+) {
+    let frame_width = frame.width as usize;
+    let frame_height = frame.height as usize;
+    let x_end = x.saturating_add(width).min(frame_width);
+    let y_end = y.saturating_add(height).min(frame_height);
+    for row in y..y_end {
+        for col in x..x_end {
+            write_validation_source_marker_pixel(frame, col, row, bgra);
+        }
+    }
+}
+
+fn draw_validation_source_marker_border(
+    frame: &mut ClientRawCapturedVideoFrame,
+    marker_width: usize,
+    marker_height: usize,
+    border: usize,
+) {
+    for row in 0..marker_height {
+        for col in 0..marker_width {
+            let in_border = row < border
+                || col < border
+                || row >= marker_height.saturating_sub(border)
+                || col >= marker_width.saturating_sub(border);
+            if in_border {
+                let bgra = if (row + col) % 2 == 0 {
+                    [255, 255, 255, 255]
+                } else {
+                    [0, 0, 0, 255]
+                };
+                write_validation_source_marker_pixel(frame, col, row, bgra);
+            }
+        }
+    }
+}
+
+fn draw_validation_source_marker_pattern(
+    frame: &mut ClientRawCapturedVideoFrame,
+    label: &str,
+    marker_width: usize,
+    marker_height: usize,
+    border: usize,
+) {
+    let bytes = label.as_bytes();
+    if bytes.is_empty() {
+        return;
+    }
+
+    let usable_width = marker_width.saturating_sub(border.saturating_mul(2));
+    let usable_height = marker_height.saturating_sub(border.saturating_mul(2));
+    if usable_width == 0 || usable_height == 0 {
+        return;
+    }
+    let band_height = usable_height.clamp(1, 18);
+    let band_y = border + usable_height.saturating_sub(band_height);
+    let stripe_count = usable_width.min(24).max(1);
+    let stripe_width = ((usable_width + stripe_count - 1) / stripe_count).max(1);
+
+    for stripe in 0..stripe_count {
+        let byte = bytes[stripe % bytes.len()];
+        let bit = (byte >> (stripe % 8)) & 1;
+        let bgra = if bit == 1 {
+            [255, 255, 255, 255]
+        } else {
+            [0, 0, 0, 255]
+        };
+        let x = border + stripe.saturating_mul(stripe_width);
+        draw_validation_source_marker_rect(frame, x, band_y, stripe_width, band_height, bgra);
+    }
+}
+
+fn write_validation_source_marker_pixel(
+    frame: &mut ClientRawCapturedVideoFrame,
+    col: usize,
+    row: usize,
+    bgra: [u8; 4],
+) {
+    let offset = (row * frame.width as usize + col) * 4;
+    if offset + 4 <= frame.pixels.len() {
+        frame.pixels[offset..offset + 4].copy_from_slice(&bgra);
     }
 }
 
@@ -9072,6 +9294,7 @@ pub struct ClientAuthRealEncodedVideoFrameBoundedPocStartupConfig {
     pub video: ClientRealEncodedVideoFramePocStartupConfig,
     pub policy: ClientContinuousRealEncodedVideoFramePolicy,
     pub encoder_runtime: ClientRealEncodedVideoFrameEncoderRuntime,
+    pub validation_source_marker: ClientValidationSourceMarkerConfig,
 }
 
 /// Result of bounded real encoded video after auth and session setup.
@@ -18510,6 +18733,126 @@ mod tests {
 
         assert_eq!(config.policy.max_frames, 100);
         assert_eq!(config.policy.max_ticks, 1_000);
+        assert!(!config.validation_source_marker.is_enabled());
+        assert_eq!(config.validation_source_marker.label, None);
+    }
+
+    #[test]
+    fn client_validation_source_marker_disabled_does_not_mutate_frame() {
+        let mut frame = ClientRawCapturedVideoFrame {
+            capture_timestamp: TimestampMicros(1_000_000),
+            width: 8,
+            height: 8,
+            fps_nominal: 30,
+            pixel_format: ClientRawVideoPixelFormat::Bgra8,
+            pixels: vec![0; 8 * 8 * 4],
+        };
+        let original_pixels = frame.pixels.clone();
+
+        let rendered = render_validation_source_marker_on_frame(
+            &mut frame,
+            &ClientValidationSourceMarkerConfig::disabled(),
+        );
+
+        assert!(!rendered);
+        assert_eq!(frame.pixels, original_pixels);
+    }
+
+    #[test]
+    fn client_video_frame_bounded_validation_source_marker_records_diagnostics() {
+        struct FixtureSession;
+        impl ClientCaptureSessionRuntimeHook for FixtureSession {
+            fn create_windows_graphics_capture_session(
+                &self,
+                _input: &ClientCaptureSessionRuntimeInput,
+            ) -> ClientCaptureSessionRuntimeCreationResult {
+                ClientCaptureSessionRuntimeCreationResult::Created {
+                    runtime: client_capture_session_runtime_for_tests(),
+                }
+            }
+        }
+        struct FixtureCapture;
+        impl ClientCaptureFrameAcquisitionRuntimeHook for FixtureCapture {
+            fn acquire_one_bgra_frame(
+                &self,
+                input: &mut ClientCaptureFrameAcquisitionInput<'_>,
+            ) -> ClientCaptureFrameAcquisitionResult {
+                input.runtime.capture_started = true;
+                ClientCaptureFrameAcquisitionResult::FrameAcquired {
+                    frame: ClientRawCapturedVideoFrame {
+                        capture_timestamp: input.capture_timestamp,
+                        width: 8,
+                        height: 8,
+                        fps_nominal: input.fps_nominal,
+                        pixel_format: ClientRawVideoPixelFormat::Bgra8,
+                        pixels: vec![0; 8 * 8 * 4],
+                    },
+                }
+            }
+        }
+        struct MarkerAwareEncoder;
+        impl ClientH264EncoderRuntimeHook for MarkerAwareEncoder {
+            fn encode_bgra_frame(
+                &self,
+                input: &ClientH264EncoderInput,
+            ) -> ClientH264EncoderHookResult {
+                assert!(input.frame.pixels.iter().any(|pixel| *pixel != 0));
+                ClientH264EncoderHookResult::Encoded {
+                    payload: ClientH264EncodedPayload {
+                        bytes: vec![0x00, 0x00, 0x01, 0x65],
+                    },
+                }
+            }
+        }
+
+        let receiver = UdpSocket::bind("127.0.0.1:0").expect("receiver should bind");
+        let sender = UdpSocket::bind("127.0.0.1:0").expect("sender should bind");
+        let destination = receiver.local_addr().expect("receiver addr should exist");
+        let request = auth_request_for_video_frame_tests();
+
+        let outcome = ClientAuthRealEncodedVideoFrameBoundedPocLauncher::default()
+            .run_video_after_auth_with_socket_and_runtime_selection(
+                &sender,
+                ClientRealEncodedVideoFramePocStartupConfig {
+                    destination,
+                    protocol_version: request.protocol_version,
+                    client_id: request.client_id,
+                    run_id: request.run_id,
+                    frame_id: 90,
+                    is_keyframe: true,
+                    fps_nominal: 30,
+                    start_capture_if_needed: true,
+                    backend_config:
+                        ClientCaptureBackendConfig::windows_graphics_capture_primary_display(),
+                    encoder_config: ClientVideoEncoderConfig::default(),
+                },
+                ClientContinuousRealEncodedVideoFramePolicy {
+                    max_frames: 1,
+                    max_ticks: 2,
+                    frame_wait_timeout_micros: 0,
+                    frame_interval_micros: 0,
+                    cadence_mode: ClientContinuousRealEncodedVideoFrameCadenceMode::Fixed,
+                    stop_on_capture_failure: true,
+                    stop_on_send_failure: true,
+                    fragment_pacing: ClientVideoFrameFragmentPacingPolicy::default(),
+                },
+                ClientRealEncodedVideoFrameEncoderRuntime::PerFrame,
+                ClientValidationSourceMarkerConfig::enabled("P2"),
+                &FixtureSession,
+                &FixtureCapture,
+                &MarkerAwareEncoder,
+            );
+
+        let ClientContinuousRealEncodedVideoFramePocOutcome::Completed(runtime) = outcome else {
+            panic!("validation marker fixture should complete");
+        };
+        assert!(runtime.summary.validation_source_marker_enabled);
+        assert_eq!(
+            runtime.summary.validation_source_marker_label.as_deref(),
+            Some("P2")
+        );
+        assert_eq!(runtime.summary.validation_source_marker_render_count, 1);
+        assert_eq!(runtime.summary.frames_sent, 1);
     }
 
     #[test]
@@ -18738,6 +19081,7 @@ mod tests {
                 fragment_pacing: ClientVideoFrameFragmentPacingPolicy::default(),
             },
             encoder_runtime: ClientRealEncodedVideoFrameEncoderRuntime::PerFrame,
+            validation_source_marker: ClientValidationSourceMarkerConfig::disabled(),
         };
         let response = AuthResponse {
             message_type: MessageType::AuthResponse,
@@ -18878,6 +19222,7 @@ mod tests {
                 fragment_pacing: ClientVideoFrameFragmentPacingPolicy::default(),
             },
             encoder_runtime: ClientRealEncodedVideoFrameEncoderRuntime::PerFrame,
+            validation_source_marker: ClientValidationSourceMarkerConfig::disabled(),
         };
         let response = AuthResponse {
             message_type: MessageType::AuthResponse,

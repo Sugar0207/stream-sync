@@ -418,6 +418,64 @@ Validated command examples for the Program path:
       source verification cannot rely on manual visual impression alone
     - closeout needs explicit selected client/run/slot identity evidence and
       stronger visual distinguishability in the validation setup
+    - current manual client configs use the same capture title for player1 and
+      player2:
+      `window_title = "Minecraft"`, so two locally captured clients can be
+      visually indistinguishable unless the source content itself is prepared
+      differently
+    - selected-source visual verification marker:
+      - Implemented as validation-only client/source-side marker on the real
+        encoded bounded PoC:
+        `--validation-source-marker <label>`.
+      - The marker is produced after capture and before encode / StreamSync
+        transport. It changes the source content for validation only; it does
+        not add any ProgramOutput overlay.
+      - ProgramOutput remains selected-only and clean; it does not draw labels,
+        borders, debug UI, or watermarks in normal Program output.
+      - The marker is explicit opt-in and disabled by default.
+      - Current implementation surface is CLI-only. A future config block can
+        be considered if repeated validation needs less command-line state.
+      - Client summary diagnostics include:
+        `validation_source_marker_enabled`,
+        `validation_source_marker_label`, and
+        `validation_source_marker_render_count`.
+    - approach comparison:
+      - A. Validation-only client visual marker / test pattern:
+        best fit. It makes player1/player2 visually distinguishable while
+        preserving ProgramOutput as a clean selected-source renderer. It proves
+        selected Program output by changing the selected source content, not by
+        adding Program overlay.
+      - B. Validation-only ProgramOutput watermark or corner marker:
+        useful for debugging but not preferred. It risks normalizing Program
+        overlays and can obscure whether ProgramOutput is clean.
+      - C. OBS/manual setup guidance using distinct source windows:
+        safe immediate fallback. It requires no code, but relies on operator
+        discipline and can drift between reruns.
+      - D. Config-level per-client visual marker:
+        acceptable as the implementation surface if clearly under validation
+        config and default-off. It is less ad hoc than CLI-only, but touches
+        config schema.
+      - E. Diagnostics-only source identity validation:
+        necessary but insufficient. Existing summaries show selected
+        client/slot, but manual OBS closeout still needs a visual proof that
+        the captured Program image is the requested source.
+    - acceptance criteria for the next validation:
+      - ProgramOutput contains no 4-view layout.
+      - ProgramOutput contains no Preview label, border, or debug UI.
+      - player1/player2 are visually distinguishable during validation.
+      - Start player1/player2 clients with distinct marker labels, for example
+        `--validation-source-marker P1` and `--validation-source-marker P2`.
+      - Client summaries show marker diagnostics, including
+        `validation_source_marker_enabled=true`,
+        `validation_source_marker_label=P2`, and
+        `validation_source_marker_render_count>0` for the selected player2
+        validation run.
+      - summary diagnostics still show
+        `program_output_requested_client_id=player2`,
+        `program_output_selected_client_id=player2`, and
+        `program_output_selected_slot_index=1`.
+      - OBS captures only `StreamSync Program Output`.
+      - selected Program output can be manually verified as player2.
   - smooth-latest latency / lag semantics:
     - current smooth-latest behavior accepts delayed latest decoded output
       informally

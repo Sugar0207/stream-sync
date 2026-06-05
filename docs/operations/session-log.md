@@ -2,6 +2,162 @@
 
 ## 2026-06-05
 ### Type
+- Codex validation-only client/source-side visual marker implementation
+
+### Work
+- Implemented the minimal opt-in client/source marker for selected ProgramOutput
+  visual verification.
+- Added `--validation-source-marker <label>` to the client real encoded bounded
+  PoC CLI.
+- Kept default client behavior unchanged: marker is disabled unless explicitly
+  enabled.
+- Kept ProgramOutput clean and selected-only:
+  - no ProgramOutput watermark
+  - no ProgramOutput label / border / debug UI
+  - no 4-view-as-Program rendering
+- Kept OBS setup automation, hotkey/control pipe, and same-loop Preview tuning
+  out of scope.
+
+### Implementation
+- Added `ClientValidationSourceMarkerConfig`.
+- The bounded auth real encoded launcher wraps the capture hook with a
+  validation marker hook when the marker config is enabled.
+- The marker is drawn into raw BGRA after capture and before H.264 encode, so
+  both per-frame and persistent encoder runtimes receive the same source-side
+  validation image.
+- The marker is a small corner block / pattern derived from the label. The
+  readable identity remains in diagnostics; the visible purpose is to make
+  player1/player2 distinguishable during validation.
+
+### Diagnostics
+- Added client summary fields:
+  - `validation_source_marker_enabled`
+  - `validation_source_marker_label`
+  - `validation_source_marker_render_count`
+- The client bounded PoC stdout summary now prints these fields.
+
+### Manual Validation Shape
+- Run player1 and player2 clients with distinct labels, for example:
+  - player1: `--validation-source-marker P1`
+  - player2: `--validation-source-marker P2`
+- Keep switcher ProgramOutput selected as:
+  `--program-selected-client-id player2`.
+- OBS should capture only `StreamSync Program Output`.
+- The selected Program output should visually show the player2/P2-marked source.
+
+### Changed Files
+- `apps/client/src/lib.rs`
+- `apps/client/src/main.rs`
+- `docs/operations/todo.md`
+- `docs/operations/obs-capture-validation.md`
+- `docs/operations/continuous-output-pipeline-experiment-plan.md`
+- `docs/operations/session-log.md`
+
+### TODO Update
+- Marked the validation-only client/source-side marker as minimally implemented.
+- Moved the next selected-source work to manual OBS validation using distinct
+  player1/player2 marker labels.
+- Kept ProgramOutput closeout blocked.
+- Kept same-loop Preview tuning paused.
+- Kept remaining blockers:
+  - selected source visual verification evidence
+  - smooth-latest lag acceptance criteria
+  - OBS ProgramOutput capture safety checklist
+
+### Validation
+- `cargo fmt`
+  - result: PASS
+- `cargo check -p stream-sync-client`
+  - result: PASS
+- `cargo test -p stream-sync-client validation_source_marker`
+  - result: PASS, 2 lib tests and 1 bin test
+- `cargo test -p stream-sync-client auth_real_encoded_bounded`
+  - result: PASS, 3 lib tests
+
+## 2026-06-05
+### Type
+- Codex selected-source visual verification design
+
+### Work
+- Inspected the current client/switcher validation surfaces for selected
+  ProgramOutput identity verification.
+- Kept the step docs/design-only; no Rust files were changed.
+- Compared validation approaches for making `player1` / `player2` visually
+  distinguishable without polluting production ProgramOutput.
+- Recommended a validation-only client/source-side visual marker for the next
+  implementation slice.
+- Kept ProgramOutput closeout blocked.
+- Kept same-loop Preview tuning paused.
+- Kept hotkey/control pipe and OBS setup changes out of scope.
+
+### Investigation
+- Current ProgramOutput selection is explicit and CLI/static:
+  `--program-selected-client-id player2`.
+- Summary diagnostics already expose selected identity:
+  - `program_output_requested_client_id`
+  - `program_output_selected_client_id`
+  - `program_output_selected_slot_index`
+- Current manual player1/player2 configs both capture:
+  `window_title = "Minecraft"`.
+- Therefore player1/player2 can be visually identical unless validation source
+  content is made distinct.
+
+### Compared Approaches
+- A. Validation-only client visual marker / test pattern:
+  recommended. It marks the source before encode / transport, so ProgramOutput
+  stays clean and selected-only.
+- B. Validation-only ProgramOutput watermark or corner marker:
+  not preferred. It risks normalizing Program overlays and weakens the clean
+  ProgramOutput evidence.
+- C. OBS/manual setup guidance using distinct source windows:
+  safe immediate fallback, but depends on operator discipline.
+- D. Config-level per-client visual marker:
+  acceptable future implementation surface if under explicit validation config
+  and default-off.
+- E. Diagnostics-only source identity validation:
+  necessary but insufficient for manual OBS closeout because it does not prove
+  the visible Program image is the selected source.
+
+### Recommendation
+- Next implementation slice should add an opt-in validation-only
+  client/source-side marker, not a ProgramOutput overlay.
+- Acceptable future surfaces:
+  - client bounded command flag such as
+    `--validation-source-marker <label/color>`
+  - validation config block such as `[validation.source_marker]`
+- Default behavior must remain unchanged.
+
+### Acceptance Criteria
+- ProgramOutput contains no 4-view layout.
+- ProgramOutput contains no Preview label, border, or debug UI.
+- player1/player2 are visually distinguishable during validation.
+- Summary diagnostics still show selected client id and selected slot index.
+- OBS captures only `StreamSync Program Output`.
+- selected Program output can be manually verified as player2.
+
+### Changed Files
+- `docs/operations/todo.md`
+- `docs/operations/obs-capture-validation.md`
+- `docs/operations/continuous-output-pipeline-experiment-plan.md`
+- `docs/operations/session-log.md`
+
+### TODO Update
+- Marked selected-source visual verification design as recorded.
+- Moved the next selected-source item to possible opt-in client/source marker
+  implementation.
+- Kept ProgramOutput closeout blocked.
+- Kept same-loop Preview tuning paused.
+- Kept remaining next blockers:
+  - smooth-latest lag acceptance criteria
+  - OBS ProgramOutput capture safety checklist
+
+### Validation
+- Docs-only change; Rust files were not touched.
+- `git diff --check`
+  - result: PASS
+
+## 2026-06-05
+### Type
 - Codex ProgramOutput startup readiness diagnostics implementation
 
 ### Work
