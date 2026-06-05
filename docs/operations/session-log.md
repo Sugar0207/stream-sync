@@ -2,6 +2,84 @@
 
 ## 2026-06-05
 ### Type
+- Codex ProgramOutput startup readiness diagnostics implementation
+
+### Work
+- Added minimal ProgramOutput startup readiness diagnostics to the two-real
+  ProgramOutput summary.
+- Kept runtime behavior unchanged:
+  - no bootstrap behavior change
+  - no smooth-latest behavior change
+  - no same-loop Preview tuning restart
+  - no hotkey / control pipe
+  - no OBS setup change
+  - no 4-view-as-Program rendering
+- Added a focused readiness-state classifier and test.
+- Updated operations docs and TODO to mark readiness diagnostics implemented
+  while keeping ProgramOutput closeout blocked.
+
+### Implemented Diagnostics
+- `program_startup_readiness_state`
+- `program_selected_source_wait_elapsed_ms`
+- `program_startup_waiting_for_selected_source_count`
+- `program_startup_bootstrap_after_source_seen_elapsed_ms`
+- `program_startup_selected_source_seen_count`
+
+### Readiness State Semantics
+- `program_selection_configured`:
+  ProgramOutput is enabled and Program selection is configured/resolved, but
+  the selected source wait has not yet been classified.
+- `program_selected_source_waiting`:
+  Program selected source has no selected source frame yet.
+- `program_selected_source_seen`:
+  a selected source frame has been observed before first Program render.
+- `program_first_frame_bootstrapping`:
+  startup bootstrap is attempting to produce the first Program frame.
+- `program_first_frame_rendered`:
+  first Program frame rendered in the current tick.
+- `program_steady_state`:
+  ProgramOutput is past first render.
+- `disabled`:
+  summary-only value when ProgramOutput is disabled.
+
+### Changed Files
+- `apps/switcher/src/main.rs`
+- `docs/operations/todo.md`
+- `docs/operations/obs-capture-validation.md`
+- `docs/operations/continuous-output-pipeline-experiment-plan.md`
+- `docs/operations/session-log.md`
+
+### TODO Update
+- Marked ProgramOutput startup readiness diagnostics as implemented.
+- Kept ProgramOutput closeout blocked.
+- Kept same-loop Preview tuning paused.
+- Kept next blockers as:
+  - selected source visual verification
+  - smooth-latest lag acceptance criteria
+  - OBS capture safety checklist
+
+### Validation
+- `cargo fmt`
+  - result: PASS
+- `cargo check -p stream-sync-switcher`
+  - result: PASS
+  - note: existing dead-code warnings remain
+- `cargo test -p stream-sync-switcher program_startup_readiness_state`
+  - result: PASS, 1 bin test
+- `cargo test -p stream-sync-switcher program_startup_bootstrap`
+  - result: PASS, 6 bin tests
+- `cargo test -p stream-sync-switcher program_output --lib`
+  - result: PASS, 2 lib tests
+- `cargo test -p stream-sync-switcher program_output`
+  - result: PASS, 2 lib tests and 1 bin test
+- `cargo test -p stream-sync-switcher switcher_four_view_two_real_handoff_preview_summary_formats_expected_fields`
+  - result: PASS, 1 bin test
+- `git diff --check`
+  - result: PASS
+  - note: LF/CRLF warnings only
+
+## 2026-06-05
+### Type
 - Codex ProgramOutput switcher-first startup bootstrap validation docs update
 
 ### Work

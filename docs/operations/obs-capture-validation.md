@@ -687,13 +687,26 @@ Validated command examples for the Program path:
       after first Program render, normal selected-source Program rendering is
       running; missing selected source / black / placeholder should remain `0`
       in current validated shapes.
-  - Future readiness diagnostics are useful but should stay narrow:
+  - ProgramOutput startup readiness diagnostics are now implemented as narrow
+    summary-only fields:
     - `program_startup_readiness_state`
     - `program_selected_source_wait_elapsed_ms`
     - `program_startup_waiting_for_selected_source_count`
     - `program_startup_bootstrap_after_source_seen_elapsed_ms`
-    These should be diagnostics-only fields unless later validation proves a
-    runtime behavior change is needed.
+    - `program_startup_selected_source_seen_count`
+    These fields do not change bootstrap, smooth-latest, Preview, OBS, or
+    Program rendering behavior.
+  - Summary value note:
+    - `disabled` is used only when ProgramOutput itself is disabled.
+    - ProgramOutput-enabled startup states remain the readiness states above.
+  - Future readiness diagnostics should not be broadened yet:
+    - `program_startup_readiness_state`
+    - `program_selected_source_wait_elapsed_ms`
+    - `program_startup_waiting_for_selected_source_count`
+    - `program_startup_bootstrap_after_source_seen_elapsed_ms`
+    - `program_startup_selected_source_seen_count`
+    Keep these diagnostics-only unless later validation proves a runtime
+    behavior change is needed.
   - other candidate fixes remain deferred:
     - startup continuous decode prewarm
     - startup blocking wait for first continuous frame

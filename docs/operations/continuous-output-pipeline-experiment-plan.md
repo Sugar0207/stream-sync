@@ -1233,13 +1233,14 @@ operated as follows:
   `program_first_frame_bootstrapping`,
   `program_first_frame_rendered`, and
   `program_steady_state`.
-- Future diagnostics may add
+- Narrow readiness diagnostics are now implemented:
   `program_startup_readiness_state`,
   `program_selected_source_wait_elapsed_ms`,
-  `program_startup_waiting_for_selected_source_count`, and
-  `program_startup_bootstrap_after_source_seen_elapsed_ms`. Keep these
-  diagnostics-only unless later evidence proves a runtime behavior change is
-  needed.
+  `program_startup_waiting_for_selected_source_count`,
+  `program_startup_bootstrap_after_source_seen_elapsed_ms`, and
+  `program_startup_selected_source_seen_count`. These are summary-only and do
+  not change bootstrap, smooth-latest, Program/Preview separation, or OBS
+  setup.
 - ProgramOutput closeout remains blocked and same-loop Preview tuning remains
   paused.
 
@@ -1332,28 +1333,22 @@ Current limitations:
 - Latest optimized BGR24 A/B shows conversion optimization worked, but
   `scaled-bgr24` still does not clearly beat default BGRA end to end.
 - Next candidate order:
-  1. Decide whether to add the narrow ProgramOutput startup readiness
-     diagnostics:
-     `program_startup_readiness_state`,
-     `program_selected_source_wait_elapsed_ms`,
-     `program_startup_waiting_for_selected_source_count`, and
-     `program_startup_bootstrap_after_source_seen_elapsed_ms`.
-  2. Continue ProgramOutput non-FPS blocker audit and closeout criteria
+  1. Continue ProgramOutput non-FPS blocker audit and closeout criteria
      definition: selected-source verification, smooth-latest lag acceptance,
      OBS capture safety, Program-first validation vs final operator mode,
      diagnostics completeness, and long-run stability.
-  3. Selected-source visual verification plan, including stronger player1 /
+  2. Selected-source visual verification plan, including stronger player1 /
      player2 visual differentiation and client/run/slot identity evidence.
-  4. Smooth-latest latency/lag acceptance criteria separate from FPS.
-  5. OBS ProgramOutput capture safety checklist.
-  6. Separate Preview cadence/runtime or lighter renderer design for future
+  3. Smooth-latest latency/lag acceptance criteria separate from FPS.
+  4. OBS ProgramOutput capture safety checklist.
+  5. Separate Preview cadence/runtime or lighter renderer design for future
      operator monitoring; current Preview is stable snapshot-only.
-  7. Program source switching over hotkey/control pipe later, after
+  6. Program source switching over hotkey/control pipe later, after
      ProgramOutput criteria are defined.
-  8. human-side `no-scale-bgra` A/B rerun for the scale path split slice
-  9. reader/completed latency breakdown diagnostics if no-scale evidence is
+  7. human-side `no-scale-bgra` A/B rerun for the scale path split slice
+  8. reader/completed latency breakdown diagnostics if no-scale evidence is
      ambiguous
-  10. direct BGR24 render path docs-first impact review only
+  9. direct BGR24 render path docs-first impact review only
 - The `no-scale-bgra` code slice is already implemented; do not broaden it
   before runtime evidence.
 - Keep one-shot suppression as strong contributor evidence, but not the current
