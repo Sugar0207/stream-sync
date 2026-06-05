@@ -600,11 +600,48 @@ Validated command examples for the Program path:
     `program_startup_bootstrap_client_counts`,
     `program_startup_bootstrap_actual_decode_invoked_count`,
     `program_startup_bootstrap_decode_skipped_before_invoke_count`.
-  - next validation should rerun bootstrap and first confirm actual FFmpeg
-    one-shot invocation. If bootstrap still fails after invocation, classify
-    whether the remaining failure is FFmpeg exit, no stdout frame, invalid
-    payload, missing expected output shape, wrong selected payload, or a result
-    classification bug.
+  - latest clients-before-switcher bootstrap bypass rerun: PASS
+    - command:
+      `--enable-program-output-window --program-selected-client-id player2 --enable-program-continuous-decode --program-continuous-decode-mode smooth-latest --program-first-validation-mode --program-startup-bootstrap-one-shot`
+    - `program_startup_bootstrap_enabled=true`
+    - `program_startup_bootstrap_attempt_count=1`
+    - `program_startup_bootstrap_success_count=1`
+    - `program_startup_bootstrap_actual_decode_invoked_count=1`
+    - `program_startup_bootstrap_decode_skipped_before_invoke_count=0`
+    - `program_startup_bootstrap_decode_error_counts=failed:0|deferred_empty_payload:0|deferred_invalid_dimensions:0|deferred_ffmpeg_unavailable:0|deferred_continuous_one_shot_suppressed:0|unknown:0`
+    - `program_startup_bootstrap_used_for_first_render=true`
+    - `program_output_first_render_elapsed_ms=354`
+    - `program_output_missing_selected_source_count=0`
+    - `program_output_missing_before_first_render_count=0`
+    - `program_output_missing_after_first_render_count=0`
+    - `program_output_black_frame_render_count=0`
+    - `program_output_placeholder_render_count=0`
+    - `program_window_render_success_count=3000`
+    - `program_window_render_failure_count=0`
+    - `program_render_effective_fps=23.279`
+    - `program_render_used_one_shot_fallback_count=1`
+    - `program_first_continuous_output_elapsed_ms=1928`
+    - `continuous_decode_first_input_to_first_output_elapsed_ms=1688`
+    - interpretation:
+      the previous `ContinuousOneShotSuppressed` bootstrap wiring bug is fixed,
+      bootstrap now reaches actual decode, the first Program render uses the
+      bootstrap frame, and the earlier startup missing-selected-source problem
+      is eliminated in the clients-before-switcher shape.
+    - scope note:
+      this is still not ProgramOutput closeout. Continuous first output remains
+      about `1.6-1.9s`, but bootstrap hides that wait for the first Program
+      render in this start order.
+  - next validation should move to a switcher-first cold-start shape with
+    bootstrap still opt-in:
+    - start server first and wait for ready
+    - start switcher before `client1` / `client2`
+    - keep Program selection on `player2`
+    - include:
+      `--enable-program-output-window --program-selected-client-id player2 --enable-program-continuous-decode --program-continuous-decode-mode smooth-latest --program-first-validation-mode --program-startup-bootstrap-one-shot`
+    - then start `client1`, then `client2`
+    - compare first render, bootstrap success/actual invoke, missing-source,
+      and continuous first-output timing against the clients-before-switcher
+      PASS
   - other candidate fixes remain deferred until the bootstrap `decode_failed`
     evidence is read:
     - startup continuous decode prewarm

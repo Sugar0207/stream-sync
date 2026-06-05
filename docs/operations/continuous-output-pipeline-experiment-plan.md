@@ -1171,23 +1171,34 @@ operated as follows:
   non-FPS operational blockers and closeout criteria are resolved.
 - Latest clients-before-switcher startup baseline reduced first selected
   source/input visibility to `246ms` and first Program render to `1964ms`, with
-  after-first missing / black / placeholder all `0`. The bootstrap A/B did not
-  improve startup: with `--program-startup-bootstrap-one-shot`,
-  `program_startup_bootstrap_attempt_count=27`,
-  `program_startup_bootstrap_success_count=0`, `decode_failed:27`,
-  `program_startup_bootstrap_used_for_first_render=false`,
-  `program_output_first_render_elapsed_ms=2666`, and
-  `program_output_missing_before_first_render_count=34`. ProgramOutput closeout
-  remains blocked; same-loop Preview tuning remains paused. Follow-up
+  after-first missing / black / placeholder all `0`. The first bootstrap A/B
+  did not improve startup and exposed `decode_failed:27`, but follow-up
   diagnostics showed `program_startup_bootstrap_actual_decode_invoked_count=0`,
   `program_startup_bootstrap_decode_skipped_before_invoke_count=24`, and
-  `deferred_continuous_one_shot_suppressed:24` despite retained candidates with
-  SPS/PPS/IDR, so the observed `decode_failed` was a pre-invoke suppression
-  routing bug rather than proven FFmpeg decode failure. The code now separates
-  Program startup bootstrap decode purpose from normal Preview fallback decode;
-  bootstrap remains opt-in and unvalidated. The next Program startup action is
-  a bootstrap rerun confirming actual one-shot invocation, then FFmpeg/stdout
-  classification only if actual decode still fails.
+  `deferred_continuous_one_shot_suppressed:24`, so that result was a
+  pre-invoke `ContinuousOneShotSuppressed` routing bug rather than proven
+  FFmpeg decode failure.
+- The bootstrap decode purpose / suppression bypass fix is now validated in the
+  clients-before-switcher shape:
+  `program_startup_bootstrap_attempt_count=1`,
+  `program_startup_bootstrap_success_count=1`,
+  `program_startup_bootstrap_actual_decode_invoked_count=1`,
+  `program_startup_bootstrap_decode_skipped_before_invoke_count=0`,
+  `program_startup_bootstrap_decode_error_counts=failed:0|deferred_empty_payload:0|deferred_invalid_dimensions:0|deferred_ffmpeg_unavailable:0|deferred_continuous_one_shot_suppressed:0|unknown:0`,
+  `program_startup_bootstrap_used_for_first_render=true`,
+  `program_output_first_render_elapsed_ms=354`, and
+  `program_output_missing_before_first_render_count=0`.
+- This PASS does not close ProgramOutput. Continuous first output still lands at
+  `program_first_continuous_output_elapsed_ms=1928` with
+  `continuous_decode_first_input_to_first_output_elapsed_ms=1688`, so bootstrap
+  is currently a first-render mask rather than a full startup-latency fix.
+- ProgramOutput closeout remains blocked and same-loop Preview tuning remains
+  paused.
+- The next Program startup action is a switcher-first cold-start validation:
+  start server first, start switcher before `client1` / `client2`, keep
+  `--program-selected-client-id player2`, and include
+  `--program-startup-bootstrap-one-shot` in the same Program-first smooth-latest
+  command shape.
 
 Validated command examples:
 

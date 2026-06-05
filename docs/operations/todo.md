@@ -2,7 +2,7 @@
 
 # StreamSync TODO
 
-最終更新: 2026-06-04
+最終更新: 2026-06-05
 
 このファイルは、現在位置と次の作業だけを確認するための TODO です。
 時系列の作業履歴は `docs/operations/session-log.md` を正とし、検証の詳細は各運用ドキュメントへ寄せます。
@@ -30,17 +30,19 @@
 - `NoDecodedFrameForSelection` を含む first render / missing selected source の問題は、startup diagnostics と clients-before-switcher rerun で、selection / source identity ではなく selected source frame 到着から continuous first output までの待ちが主要観測点になった。
 - clients-before-switcher 起動順では `program_first_source_frame_seen_elapsed_ms=246`、`program_first_continuous_output_elapsed_ms=1964`、`program_output_first_render_elapsed_ms=1964`、`program_output_missing_before_first_render_count=29`、after-first missing / black / placeholder は `0`。process start order delay は分離できたが、continuous first output まで約 1.6s 残る。
 - ProgramOutput startup one-shot bootstrap は opt-in `--program-startup-bootstrap-one-shot` として実装済み。既定動作は変更せず、ProgramOutput 初回 render 前、明示 `--program-selected-client-id`、continuous latest / last-valid / selected decoded がまだない場合だけ候補化する。
-- clients-before-switcher A/B では bootstrap あり側が改善しなかった。baseline は `program_output_first_render_elapsed_ms=1964` / `program_output_missing_before_first_render_count=29`、bootstrap ありは `program_startup_bootstrap_attempt_count=27` / `program_startup_bootstrap_success_count=0` / `decode_failed:27` / `program_output_first_render_elapsed_ms=2666` / `program_output_missing_before_first_render_count=34`。
-- follow-up diagnostics では valid SPS/PPS/IDR payload が候補化されていたが、`program_startup_bootstrap_actual_decode_invoked_count=0` / `program_startup_bootstrap_decode_skipped_before_invoke_count=24` / `deferred_continuous_one_shot_suppressed:24` で、FFmpeg one-shot 前に continuous slot0 one-shot suppression gate へ流れていた。
-- bootstrap decode path は Program startup bootstrap purpose と Preview fallback purpose を分離し、bootstrap opt-in / startup-only / explicit selected Program source のまま、continuous/Preview one-shot suppression だけを bootstrap では通過するように修正済み。bootstrap success は未確認。
-- bootstrap あり側の steady-state は black / placeholder `0` で崩れていないが、startup bootstrap は成功していない。ProgramOutput closeout は blocked のまま。
+- 以前の clients-before-switcher bootstrap A/B で出ていた `decode_failed:27` は、実 decode failure ではなく `ContinuousOneShotSuppressed` へ誤配線される pre-invoke routing bug だった。bootstrap decode purpose / suppression bypass 修正後、この wiring bug は fixed と扱う。
+- 最新の clients-before-switcher bootstrap bypass validation は PASS。使用コマンドは `--enable-program-output-window --program-selected-client-id player2 --enable-program-continuous-decode --program-continuous-decode-mode smooth-latest --program-first-validation-mode --program-startup-bootstrap-one-shot`。
+- PASS run では `program_startup_bootstrap_enabled=true`、`program_startup_bootstrap_attempt_count=1`、`program_startup_bootstrap_success_count=1`、`program_startup_bootstrap_actual_decode_invoked_count=1`、`program_startup_bootstrap_decode_skipped_before_invoke_count=0`、`program_startup_bootstrap_decode_error_counts=failed:0|deferred_empty_payload:0|deferred_invalid_dimensions:0|deferred_ffmpeg_unavailable:0|deferred_continuous_one_shot_suppressed:0|unknown:0` を確認した。
+- 初回 Program render は bootstrap frame を使って `program_startup_bootstrap_used_for_first_render=true`、`program_output_first_render_elapsed_ms=354`、`program_output_missing_selected_source_count=0`、`program_output_missing_before_first_render_count=0`、after-first missing / black / placeholder も `0` だった。
+- continuous decoder 自体の初回出力はまだ `program_first_continuous_output_elapsed_ms=1928` / `continuous_decode_first_input_to_first_output_elapsed_ms=1688` と遅いが、clients-before-switcher 条件では bootstrap がその待ちを first Program render から隠せた。
+- ProgramOutput は near-MVP closeout ではない。non-FPS blocker が残るため closeout は引き続き blocked とし、same-loop Preview tuning も paused のままにする。
 - 新 diagnostics は bootstrap decode の elapsed / error class / FFmpeg exit+stderr / payload bytes / NAL kinds / SPS/PPS/IDR / frame_id / slot/client / actual invoke vs pre-invoke skip を読む。
 - selected source identity の視認性、smooth-latest の latency / lag accept criteria、OBS capture safety も未整理のまま残す。
 - 現在の詳細は `docs/operations/obs-capture-validation.md` と `docs/operations/session-log.md` を参照する。
 
 ## 次にやること
-1. [ ] `--program-startup-bootstrap-one-shot` を再実行し、`program_startup_bootstrap_actual_decode_invoked_count` が増え、`deferred_continuous_one_shot_suppressed` / skipped-before-invoke が消えるか確認する
-2. [ ] rerun 後も bootstrap が失敗する場合は、FFmpeg exit/stderr、stdout frame、payload NAL/SPS/PPS/IDR、width/height/pix_fmt を読んで実 decode failure として分類する
+1. [ ] switcher-first cold start で `--program-startup-bootstrap-one-shot` を検証し、server 起動後に switcher を先に立ち上げ、client1 / client2 が後から来る条件でも bootstrap first render が効くか確認する
+2. [ ] switcher-first cold start で失敗した場合は、bootstrap attempt/success/actual invoke/error counts と first-render elapsed を clients-before-switcher PASS と比較し、start-order 起因か decode/path 起因かを切り分ける
 3. [ ] ProgramOutput non-FPS blocker audit を継続し、first render の次に selected identity / lag / OBS safety を確認する
 4. [ ] selected source visual verification と player1 / player2 の見分けやすさを整理する
 5. [ ] smooth-latest の latency / lag acceptance criteria を FPS とは別に定義する
@@ -69,6 +71,7 @@
 - [x] current Preview は stable snapshot-only とみなす方針に更新済み
 - [x] same-loop low-cost Preview refresh tuning は limited / paused に移行済み
 - [x] ProgramOutput near-MVP closeout はまだ行わない方針に更新済み
+- [x] clients-before-switcher bootstrap bypass validation は完了
 
 ## 参照メモ
 - ProgramOutput の詳細な未解決点は `docs/operations/obs-capture-validation.md` を参照する。

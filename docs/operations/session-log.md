@@ -2,6 +2,74 @@
 
 ## 2026-06-05
 ### Type
+- Codex ProgramOutput startup bootstrap bypass validation documentation update
+
+### Work
+- Recorded the successful clients-before-switcher ProgramOutput startup
+  bootstrap bypass validation as a PASS in the operations docs.
+- Marked the previous `ContinuousOneShotSuppressed` bootstrap wiring bug as
+  fixed after the decode purpose / suppression bypass rerun showed actual
+  bootstrap decode invocation.
+- Kept ProgramOutput closeout blocked because non-FPS blockers still remain.
+- Kept same-loop Preview tuning paused.
+- Added the next validation shape for switcher-first cold start with server
+  first, switcher before `client1` / `client2`, `player2` still selected for
+  ProgramOutput, and `--program-startup-bootstrap-one-shot` still opt-in.
+
+### Runtime Evidence Used
+- Successful clients-before-switcher bootstrap bypass rerun:
+  - `program_startup_bootstrap_enabled=true`
+  - `program_startup_bootstrap_attempt_count=1`
+  - `program_startup_bootstrap_success_count=1`
+  - `program_startup_bootstrap_actual_decode_invoked_count=1`
+  - `program_startup_bootstrap_decode_skipped_before_invoke_count=0`
+  - `program_startup_bootstrap_decode_error_counts=failed:0|deferred_empty_payload:0|deferred_invalid_dimensions:0|deferred_ffmpeg_unavailable:0|deferred_continuous_one_shot_suppressed:0|unknown:0`
+  - `program_startup_bootstrap_used_for_first_render=true`
+  - `program_output_first_render_elapsed_ms=354`
+  - `program_output_missing_selected_source_count=0`
+  - `program_output_missing_before_first_render_count=0`
+  - `program_output_missing_after_first_render_count=0`
+  - `program_output_black_frame_render_count=0`
+  - `program_output_placeholder_render_count=0`
+  - `program_window_render_success_count=3000`
+  - `program_window_render_failure_count=0`
+  - `program_render_effective_fps=23.279`
+  - `program_render_used_one_shot_fallback_count=1`
+  - `program_first_continuous_output_elapsed_ms=1928`
+  - `continuous_decode_first_input_to_first_output_elapsed_ms=1688`
+
+### Findings
+- The previous failed bootstrap A/B is now explained as a wiring bug rather
+  than a proven FFmpeg decode failure.
+- In the clients-before-switcher shape, bootstrap now reaches actual decode and
+  supplies the first Program render before the continuous decoder produces its
+  first output.
+- This validation removes the previous startup missing-selected-source symptom
+  for the clients-before-switcher shape, but it does not close ProgramOutput:
+  continuous first output is still about `1.6-1.9s`, and other non-FPS
+  blockers remain.
+
+### Changed Files
+- `docs/operations/todo.md`
+- `docs/operations/obs-capture-validation.md`
+- `docs/operations/continuous-output-pipeline-experiment-plan.md`
+- `docs/operations/session-log.md`
+
+### TODO Update
+- Marked the clients-before-switcher bootstrap bypass validation as complete.
+- Replaced the next bootstrap rerun task with a switcher-first cold-start
+  validation using `--program-startup-bootstrap-one-shot`.
+- Kept ProgramOutput closeout blocked.
+- Kept same-loop Preview tuning paused.
+
+### Validation
+- Docs-only change; Rust files were not touched.
+- `git diff --check`
+  - result: PASS
+  - note: LF/CRLF warnings only
+
+## 2026-06-05
+### Type
 - Codex ProgramOutput startup bootstrap suppression bypass fix
 
 ### Work
